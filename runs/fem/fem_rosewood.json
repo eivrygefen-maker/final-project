@@ -1,0 +1,10 @@
+{
+  "steps": {
+    "fem": {
+      "config": "FEM/configs/rect_plate_rosewood_ref.json",
+      "out": "FEM/outputs/rect_plate_rosewood_ref_result.json",
+      "solution_type": "benchmark_ssss",
+      "solution_types_file": "FEM/solutions/solution_types.json"
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "steps": {
+    "fem": {
+      "config": "FEM/configs/rect_plate_rosewood_ref.json",
+      "out": "FEM/outputs/rect_plate_rosewood_ssss_result.json",
+      "solution_type": "benchmark_ssss",
+      "solution_types_file": "FEM/solutions/solution_types.json"
+    },
+    "stk": {
+      "binary": "./guitar_stk",
+      "fem_json": "FEM/outputs/rect_plate_rosewood_ssss_result.json",
+      "modes": 20,
+      "note": "C4",
+      "skip": 0,
+      "dur": 5.0,
+      "amp": 0.2,
+      "out": "/media/sf_gmar/guitar_audio/rosewood_C4_ssss.wav",
+
+      "wet_gain": 2000,
+      "mix": 0.0,
+
+      "q": 95.0,
+      "q_min": 90.0,
+      "q_max": 100.0,
+      "q_mode": "random",
+      "q_seed": 123,
+      "pluck_pos": 0.18,
+      "rad_k": 0.06,
+      "seed": 123
+    }
+  }
+}

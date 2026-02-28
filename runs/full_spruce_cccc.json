@@ -1,0 +1,36 @@
+{
+  "steps": {
+    "fem": {
+      "config": "FEM/configs/rect_plate_spruce_ref.json",
+      "out": "FEM/outputs/rect_plate_spruce_cccc_result.json",
+      "solution_type": "benchmark_cccc",
+      "solution_types_file": "FEM/solutions/solution_types.json"
+    },
+    "stk": {
+      "binary": "./guitar_stk",
+      "fem_json": "FEM/outputs/rect_plate_spruce_cccc_result.json",
+      "modes": 20,
+      "note": "C4",
+      "skip": 0,
+      "dur": 5.0,
+      "amp": 0.2,
+      "out": "/media/sf_gmar/guitar_audio/spruce_C4_cccc.wav",
+
+      "wet_gain": 2000,
+      "mix": 0.0,
+      "mix_min": 0.08,
+      "mix_max": 0.20,
+      "mix_mode": "random",
+      "mix_seed": 7,
+
+      "q": 70,
+      "q_min": 60,
+      "q_max": 80,
+      "q_mode": "random",
+      "q_seed": 123,
+      "pluck_pos": 0.18,
+      "rad_k": 0.06,
+      "seed": 123
+    }
+  }
+}

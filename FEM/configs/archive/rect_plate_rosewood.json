@@ -1,0 +1,23 @@
+{
+  "solver": {
+    "dimension": 2,
+    "model": "plate_ortho_kl_2d",
+    "n_modes": 20,
+    "mesh_size": 0.005
+  },
+  "geometry_2d": {
+    "a": 0.5,
+    "b": 0.4,
+    "h": 0.0025
+  },
+  "material_ortho": {
+    "rho": 830.0,
+    "E_L": 11500000000.0,
+    "E_T": 1300000000.0,
+    "G_LT": 950000000.0,
+    "nu_LT": 0.33
+  },
+  "bc": {
+    "kind": "SSSS"
+  }
+}

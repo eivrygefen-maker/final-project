@@ -1,0 +1,18 @@
+{
+  "solver": {
+    "dimension": 2,
+    "model": "plate_ortho_kl_2d",
+    "n_modes": 20,
+    "mesh_size": 0.00625
+  },
+  "geometry_2d": {
+    "a": 0.5,
+    "b": 0.4,
+    "h": 0.0025
+  },
+  "material_ref": {
+    "library": "FEM/materials/woods_ortho.json",
+    "name": "mahogany_honduran"
+  },
+  "bc": { "kind": "SSSS" }
+}

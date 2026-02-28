@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="$ROOT/.venv/bin/python"
+
+if [ ! -x "$PY" ]; then
+  echo "Error: venv python not found at: $PY"
+  echo "Did you create the venv (.venv) in the project root?"
+  exit 1
+fi
+
+exec "$PY" "$ROOT/python/run.py" "$@"

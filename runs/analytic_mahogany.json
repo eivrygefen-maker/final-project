@@ -1,0 +1,12 @@
+{
+  "steps": {
+    "analytic": {
+      "config": "FEM/configs/rect_plate_mahogany_ref.json",
+      "result": "FEM/outputs/rect_plate_mahogany_ssss_result.json",
+      "mmax": 8,
+      "nmax": 8,
+      "top": 20,
+      "out": "FEM/outputs/compare_mahogany_analytic_vs_numeric.json"
+    }
+  }
+}

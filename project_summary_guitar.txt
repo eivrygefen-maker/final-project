@@ -1,0 +1,299 @@
+===== START PROJECT SUMMARY =====
+Guitar FEM + STK Project — Working Summary for ChatGPT
+(Keep this file inside the repo and paste it at the start of every new chat about the project)
+
+1) Vision / Goal
+
+Build a software tool that lets a user “design” a guitar (shape, dimensions, materials) and then:
+
+Run a numerical physics model (FEM) to estimate physical behavior (natural frequencies / modes; later also mode shapes).
+
+Use an audio synthesis engine (STK / C++) to generate a synthetic sound reflecting the guitar body characteristics.
+
+Pipeline:
+User input → Geometry + materials → Python FEM → modal results (JSON) → C++ STK → WAV audio
+
+2) Environment / Setup (IMPORTANT)
+
+Entire project runs inside an Ubuntu VM (VirtualBox), user: vboxuser, project path: ~/final-project
+
+Development via VS Code inside the VM
+
+Python virtual environment: .venv
+
+STK installed in VM:
+
+Headers: /home/vboxuser/stk/include
+
+Libraries: /home/vboxuser/stk/build
+
+Rawwaves: /home/vboxuser/stk/rawwaves
+
+VM Audio Note (IMPORTANT)
+
+Audio playback inside the VM stutters/underruns; WAV files themselves are correct.
+
+Playing the exported WAV in Windows host is smooth.
+
+Recommended: write/export WAV output to a VirtualBox shared folder and play in Windows.
+
+Ubuntu VM quality-of-life fixes (suggested):
+
+Enable VirtualBox “Auto-resize Guest Display”
+
+Install guest additions packages:
+
+virtualbox-guest-utils, virtualbox-guest-x11, virtualbox-guest-dkms
+
+Disable Ubuntu screen lock / blank screen to avoid resizing issues after unlock.
+
+3) Repository Structure (relevant parts)
+
+Project root: ~/final-project
+
+cpp/
+
+guitar_stk.cpp → STK synthesis program, builds ./guitar_stk
+
+.vscode/
+
+tasks.json / launch.json for building/debugging C++ with correct STK flags
+
+FEM/
+
+scripts/ → FEM API + pipeline + tests
+
+configs/ → FEM run configs (JSON)
+
+outputs/ → FEM results JSON (and optionally VTK later)
+
+mesh/ → reserved for geometry/meshing assets
+
+materials/ (NEW) → material library JSON files
+
+python/
+
+run.py → runner that reads runs/<name>.json and executes FEM and/or STK
+
+notes.json → note-name to Hz mapping
+
+runs/
+
+active run presets (JSON)
+
+runs/archive/ for older/experimental presets
+
+4) FEM Side (Python) — Current Status
+
+Installed/working in .venv: sfepy, numpy, scipy, meshio.
+
+FEM target: compute natural frequencies/modes numerically (modal analysis).
+Roadmap: start with 2D plate (“flat guitar”), then box body (extruded depth), then 3D predefined shapes.
+
+New materials library (IMPORTANT CHANGE)
+
+Previously: each FEM config contained material_ortho directly.
+Now: materials moved to a library file and configs reference them by name:
+
+Library file: FEM/materials/woods_ortho.json
+
+Contains (at least) these materials:
+
+rosewood_indian
+
+rho=830
+
+E_L=11.5e9 Pa
+
+E_T=1.3e9 Pa
+
+G_LT=0.95e9 Pa
+
+nu_LT=0.33
+
+mahogany_honduran
+
+rho=530
+
+E_L=10.8e9 Pa
+
+E_T=0.9e9 Pa
+
+G_LT=0.5e9 Pa
+
+nu_LT=0.35
+
+spruce_sitka
+
+rho=450
+
+E_L=11.0e9 Pa
+
+E_T=0.9e9 Pa
+
+G_LT=0.75e9 Pa
+
+nu_LT=0.37
+
+Configs updated to use material_ref
+
+New configs (examples):
+
+FEM/configs/rect_plate_rosewood_ref.json
+
+FEM/configs/rect_plate_mahogany_ref.json
+
+FEM/configs/rect_plate_spruce_ref.json
+
+Each config uses:
+
+"material_ref": {
+  "library": "FEM/materials/woods_ortho.json",
+  "name": "<material_key>"
+}
+
+
+Small code change added (in FEM config loading) to support material_ref by loading from library and mapping it into material_ortho.
+
+FEM comparisons
+
+All three woods were run successfully and produced similar-but-not-identical eigenfrequencies (expected for numerical method + given geometry).
+
+5) STK Side (C++) — Current Status
+
+File: cpp/guitar_stk.cpp builds to ./guitar_stk
+
+Current synthesis model:
+
+Requires a musical pitch (note) AND optionally applies body coloration using FEM modes_hz from a JSON result file.
+
+Deterministic playback mode (Option A) was used to eliminate unstable random variation.
+
+Parameter input via CLI flags (used by python/run.py).
+
+Key idea:
+
+Musical note frequency defines “what note is played”
+
+FEM modes define “body timbre / coloration”
+
+6) Run System (JSON-driven) — Current Status
+
+Runner: python/run.py
+
+Reads runs/<name>.json
+
+FEM step: runs FEM/scripts/fem_main.py with .venv/bin/python
+
+STK step: runs ./guitar_stk
+
+Important rule (STK step):
+
+Must provide either "note": "A2" or "note_hz": 110.0
+
+Plus either "fem_json" (modal coloration) or "freq" (single frequency mode)
+
+Runs organization (NEW)
+
+Active runs are kept in runs/
+
+Old/experimental runs moved to runs/archive/
+
+Currently kept active (example set):
+
+runs/fem_rosewood.json
+
+runs/fem_mahogany.json
+
+runs/fem_spruce.json
+
+runs/full_plate.json (full pipeline example)
+
+Older presets moved to archive:
+
+runs/fem_only_plate.json
+
+runs/full_plate_A2.json
+
+runs/pluck_A2.json
+
+Full-run per wood (IN PROGRESS)
+
+Goal: add full pipeline runs for each wood:
+
+runs/full_rosewood.json
+
+runs/full_mahogany.json
+
+runs/full_spruce.json
+
+These should:
+
+Run FEM using the corresponding *_ref.json config
+
+Run STK using the corresponding FEM output JSON
+
+Include "note" or "note_hz" in the stk step
+
+Output WAV files per wood to audio/ (or a Windows shared folder path)
+
+7) Key Audio Finding (IMPORTANT)
+
+Even when WAV outputs are correct and deterministic, all three woods currently sound almost identical.
+
+Conclusion:
+
+Differences in modal frequencies alone are not enough with the current simplified model.
+
+The missing ingredients for audible material differences are:
+
+Mode weights (how strongly each body mode is excited / contributes)
+
+Damping / Q (decay per mode; currently simple/constant)
+
+Next major audio upgrades (planned)
+
+Add mode_weights to FEM output JSON (derived from mode shapes and an excitation point/area, e.g., “bridge point”).
+
+Improve Q modeling:
+
+short-term: constant Q per wood (config-driven)
+
+later: Q per mode / Rayleigh damping / calibrated ranges from literature
+
+Later: add “controlled liveliness” (Option B) with a stable seed and bounded variation.
+
+Note:
+
+skip: 1 in STK runs may hide the lowest mode differences; for testing, try skip: 0.
+
+8) Analytic Comparison Context
+
+Partner performs analytic calculations separately.
+Our code provides numerical FEM results for later comparison (do not rely on partner’s computed frequencies inside the numeric solver).
+
+9) How to Build & Run (Current)
+Build C++ (only when C++ changes)
+
+VS Code:
+
+Ctrl+Shift+B → choose build guitar_stk
+(Do not use “build active file”; it breaks STK flags.)
+
+Run presets
+
+From project root:
+
+./run <preset_name> → runs runs/<preset_name>.json
+
+Venv activation is handled automatically by using .venv/bin/python inside the runner.
+
+10) Cleanup Policy
+
+Do not delete old configs/runs immediately.
+
+Move older/unused items to FEM/configs/archive/ and runs/archive/ first.
+
+Delete later only after stable repeat runs.
+
+===== END PROJECT SUMMARY =====

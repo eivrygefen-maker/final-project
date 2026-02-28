@@ -1,0 +1,20 @@
+{
+  "steps": {
+    "fem": {
+      "config": "FEM/configs/rect_plate_rosewood.json",
+      "out": "FEM/outputs/rect_plate_rosewood_result.json"
+    },
+    "stk": {
+      "binary": "./guitar_stk",
+      "fem_json": "FEM/outputs/rect_plate_rosewood_result.json",
+      "note": "A2",
+      "modes": 10,
+      "skip": 1,
+      "dur": 3.0,
+      "amp": 0.4,
+      "mix": 0.65,
+      "q": 50,
+      "out": "/media/sf_gmar/rosewood_A2_body.wav"
+    }
+  }
+}

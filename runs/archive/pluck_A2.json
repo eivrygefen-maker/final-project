@@ -1,0 +1,11 @@
+{
+  "steps": {
+    "stk": {
+      "binary": "./guitar_stk",
+      "note": "A2",
+      "dur": 2.5,
+      "amp": 0.8,
+      "out": "audio/A2_pluck2.wav"
+    }
+  }
+}

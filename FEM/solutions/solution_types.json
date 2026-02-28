@@ -1,0 +1,21 @@
+{
+  "benchmark_ssss": {
+    "solver": {
+      "dimension": 2,
+      "model": "plate_ortho_kl_2d",
+      "n_modes": 20,
+      "mesh_size": 0.00625
+    },
+    "bc": { "kind": "SSSS" }
+  },
+
+  "benchmark_cccc": {
+    "solver": {
+      "dimension": 2,
+      "model": "plate_ortho_kl_2d",
+      "n_modes": 20,
+      "mesh_size": 0.00625
+    },
+    "bc": { "kind": "CCCC" }
+  }
+}
