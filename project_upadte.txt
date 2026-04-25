@@ -1,0 +1,101 @@
+===== START PROJECT SUMMARY (UPDATED 2026-04-21) =====
+Guitar FEM + STK Project — Working Summary
+
+1) Vision / Goal
+Build a software tool that lets a user “design” a guitar (shape, dimensions, materials) and then:
+
+3D Geometry & Meshing: Generate a parametric 3D model with a soundhole using Gmsh.
+
+Numerical Physics (FEM): Estimate physical behavior (natural frequencies/modes) using 3D Elasticity equations.
+
+Audio Synthesis (STK): Generate synthetic sound reflecting the 3D body characteristics.
+
+Interactive UI: A real-time Streamlit dashboard to control dimensions and trigger the pipeline.
+
+Pipeline:
+User Input (GUI) → JSON Config → 3D Mesh (Gmsh) → 3D FEM (Python/Sfepy) → Modal Results (JSON) → C++ STK → WAV Audio.
+
+2) Environment / Setup
+VM: Ubuntu (VirtualBox), user: vboxuser, path: ~/final-project.
+
+Venv: .venv (Sfepy, Gmsh, Streamlit, Numpy, Scipy).
+
+Gmsh: Installed as a Python library and standalone engine for 3D meshing.
+
+Audio: WAV exports to Shared Folder recommended due to VM stuttering.
+
+3) Repository Structure (Updated)
+cpp/ → STK synthesis source and binary (./guitar_stk).
+
+gui/ (NEW) → app.py (Streamlit interface).
+
+FEM/
+
+geometry/ (NEW) → build_3d_guitar.py (Gmsh CAD logic).
+
+scripts/ → fem_main_3d.py (3D Elasticity solver & pipeline).
+
+configs/ → guitar_3d.json (Active 3D parameters).
+
+mesh/ → guitar_3d.msh (Generated 3D tetrahedral mesh).
+
+outputs/ → fem_3d_output.json (3D modal results).
+
+4) FEM Side (3D Evolution) — Current Status
+3D Orthotropic Modeling: Transitioned from 2D plates to 3D volumes. Implementation of the 6x6 Stiffness Matrix (C-matrix) derived from 9 engineering constants (
+E,ν,G
+) for wood.
+
+Geometry Engine (Gmsh): Successfully integrated a parametric 3D "Box" model with:
+
+Adjustable Length, Width, and Depth.
+
+Dynamic Wall Thickness (Hollow Shell).
+
+Circular Soundhole on the top plate.
+
+Physics Status: The pipeline is currently using a Mock Solver (Placeholder) for natural frequencies while waiting for the finalized 3D Structural-Acoustic equations (ASI) from the analytic research.
+
+5) STK Side (C++) — Current Status
+Musical pitch defines the base frequency; FEM modes provide timbre coloration.
+
+Integration Ready: The GUI is prepared to call the compiled ./guitar_stk binary using the 3D JSON output.
+
+6) GUI - Visual Interface (NEW)
+Framework: Built with Streamlit.
+
+Features:
+
+Real-time Sliders: Control over all 3D dimensions and wood types.
+
+Mesh Preview: Triggering Gmsh visualizer directly from the browser to inspect the design.
+
+One-Click Simulation: Coordinated execution of Geometry → FEM → Audio Synthesis.
+
+Integrated Audio: Playback area for the generated WAV file.
+
+7) Analytic Comparison Context
+Partner performs analytic calculations. The 3D FEM provides numerical validation.
+
+Current Task: Bridge the "Physics Placeholder" with verified 3D equations once analytic proofs are ready.
+
+8) Future Roadmap & Goals
+[Short Term] ASI Implementation: Replace the FEM placeholder with the actual 3D structural-acoustic equations (Acoustic-Structure Interaction).
+
+[Short Term] STK Path Bridge: Map the exact local path of the C++ binary to the GUI for seamless audio generation.
+
+[Mid Term] Complex Geometry: Expand build_3d_guitar.py to support non-rectangular shapes (Classic/Dreadnought curves) using Splines in Gmsh.
+
+[Mid Term] Mode Weights: Calculate excitation points (Bridge location) to determine the weight/amplitude of each mode in the final sound.
+
+9) How to Run (3D Pipeline)
+Start GUI: streamlit run gui/app.py
+
+Update Geometry: Adjust sliders and click "Save & Update".
+
+Preview: Click "Preview 3D Mesh" to see the Gmsh model.
+
+Synthesize: Click "Run Simulation" to generate modes and sound.
+
+===== END PROJECT SUMMARY =====
+

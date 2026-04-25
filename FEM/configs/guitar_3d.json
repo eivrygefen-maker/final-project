@@ -1,0 +1,54 @@
+{
+    "geometry": {
+        "shape_type": "Classical",
+        "length": 0.48,
+        "width": 0.37,
+        "depth": 0.1,
+        "thickness": 0.003,
+        "hole_radius": 0.04,
+        "vis_mode": "Mesh + Solid",
+        "exploded_view": false
+    },
+    "materials": {
+        "top": {
+            "density": 450.0,
+            "E_L": 11000000000.0,
+            "E_T": 1000000000.0,
+            "E_R": 700000000.0,
+            "nu_LT": 0.37,
+            "nu_LR": 0.37,
+            "nu_TR": 0.4,
+            "G_LT": 750000000.0,
+            "G_LR": 750000000.0,
+            "G_TR": 50000000.0,
+            "q_min": 60,
+            "q_max": 80,
+            "color": "#FCE6C9",
+            "name": "Sitka Spruce"
+        },
+        "back": {
+            "density": 830.0,
+            "E_L": 11500000000.0,
+            "E_T": 1300000000.0,
+            "E_R": 700000000.0,
+            "nu_LT": 0.33,
+            "nu_LR": 0.33,
+            "nu_TR": 0.4,
+            "G_LT": 950000000.0,
+            "G_LR": 950000000.0,
+            "G_TR": 50000000.0,
+            "q_min": 90,
+            "q_max": 100,
+            "color": "#3D2B1F",
+            "name": "Indian Rosewood"
+        },
+        "air": {
+            "density": 1.204,
+            "speed_of_sound": 343.0
+        }
+    },
+    "solver": {
+        "num_modes": 30,
+        "mesh_file": "/home/vboxuser/final-project/FEM/mesh/guitar_3d.msh"
+    }
+}
