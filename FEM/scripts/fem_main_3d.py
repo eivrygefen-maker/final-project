@@ -1,4 +1,6 @@
 import json
+import logging
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +16,28 @@ try:
     import meshio
 except Exception:
     meshio = None
+
+LOGGER = logging.getLogger("fem3d")
+if not LOGGER.handlers:
+    _handler = logging.StreamHandler(sys.stderr)
+    _handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+    LOGGER.addHandler(_handler)
+LOGGER.setLevel(logging.INFO)
+LOGGER.propagate = False
+
+
+def _emit(message, status_callback=None, level="info"):
+    if level == "error":
+        LOGGER.error(message)
+    elif level == "warning":
+        LOGGER.warning(message)
+    else:
+        LOGGER.info(message)
+    print(message)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    if status_callback is not None:
+        status_callback(message)
 
 
 def isotropic_stiffness(E, nu):
@@ -41,7 +65,7 @@ def _pick_region(domain, name, expr, kind):
     return domain.create_region(name, expr, kind)
 
 
-def _matrix_diagnostics(name, mtx):
+def _matrix_diagnostics(name, mtx, status_callback=None):
     mtx = mtx.tocsr()
     if mtx.nnz > 0:
         data_min = float(mtx.data.min())
@@ -54,14 +78,15 @@ def _matrix_diagnostics(name, mtx):
     mtx_csc = mtx.tocsc()
     zero_cols = int(np.sum(np.diff(mtx_csc.indptr) == 0))
 
-    print(
+    _emit(
         f"[diag] {name}: shape={mtx.shape}, nnz={mtx.nnz}, "
         f"min={data_min:.6e}, max={data_max:.6e}, "
-        f"zero_rows={zero_rows}, zero_cols={zero_cols}"
+        f"zero_rows={zero_rows}, zero_cols={zero_cols}",
+        status_callback=status_callback,
     )
 
 
-def build_coupled_matrices(mesh_file, config):
+def build_coupled_matrices(mesh_file, config, status_callback=None):
     """
     Build block matrices for coupled acoustic-structural modal analysis:
       [Kuu  Kup][u] = w^2 [Muu   0][u]
@@ -136,6 +161,7 @@ def build_coupled_matrices(mesh_file, config):
         vars_ = pb.get_variables()
         vars_.init_state()
 
+    _emit("Step 1/4: Assembling structural and acoustic matrices...", status_callback=status_callback)
     Kuu = _assemble_matrix(pb_u, eq_ku).tocsr()
     Muu = _assemble_matrix(pb_u, eq_mu).tocsr()
     Kpp = _assemble_matrix(pb_p, eq_kp).tocsr()
@@ -165,24 +191,34 @@ def build_coupled_matrices(mesh_file, config):
     M = bmat([[Muu, None], [None, Mpp]], format="csr")
 
     # Diagnostics for conditioning / singularity debugging.
-    _matrix_diagnostics("Kuu", Kuu)
-    _matrix_diagnostics("Muu", Muu)
-    _matrix_diagnostics("Kpp", Kpp)
-    _matrix_diagnostics("Mpp", Mpp)
-    _matrix_diagnostics("K (coupled)", K)
-    _matrix_diagnostics("M (coupled)", M)
+    _emit("Step 2/4: Running matrix diagnostics...", status_callback=status_callback)
+    _matrix_diagnostics("Kuu", Kuu, status_callback=status_callback)
+    _matrix_diagnostics("Muu", Muu, status_callback=status_callback)
+    _matrix_diagnostics("Kpp", Kpp, status_callback=status_callback)
+    _matrix_diagnostics("Mpp", Mpp, status_callback=status_callback)
+    _matrix_diagnostics("K (coupled)", K, status_callback=status_callback)
+    _matrix_diagnostics("M (coupled)", M, status_callback=status_callback)
 
     # Material unit sanity prints (SI expected: Pa, kg/m^3).
-    print(
+    _emit(
         "[diag] material units check: "
         f"E_top={E_top:.6e} Pa, E_back={E_back:.6e} Pa, "
         f"rho_top={rho_top:.3f} kg/m^3, rho_back={rho_back:.3f} kg/m^3, "
-        f"rho_air={rho_air:.6f} kg/m^3, c0={c0:.3f} m/s"
+        f"rho_air={rho_air:.6f} kg/m^3, c0={c0:.3f} m/s",
+        status_callback=status_callback,
     )
     if (E_top < 1e6 or E_back < 1e6 or E_top > 1e12 or E_back > 1e12):
-        print("[diag][warn] Young's modulus seems out of typical SI wood range (1e6..1e12 Pa).")
+        _emit(
+            "[diag][warn] Young's modulus seems out of typical SI wood range (1e6..1e12 Pa).",
+            status_callback=status_callback,
+            level="warning",
+        )
     if (rho_top < 50 or rho_back < 50 or rho_top > 5000 or rho_back > 5000):
-        print("[diag][warn] Wood density seems out of typical SI range (50..5000 kg/m^3).")
+        _emit(
+            "[diag][warn] Wood density seems out of typical SI range (50..5000 kg/m^3).",
+            status_callback=status_callback,
+            level="warning",
+        )
 
     return K, M, mesh, n_u, n_p
 
@@ -225,8 +261,8 @@ def export_mode_shapes(base_mesh_file, out_dir, eigvecs, n_u, n_p):
     return written
 
 
-def solve_3d_coupled_eigenmodes(mesh_file, config, num_modes=10):
-    K, M, mesh, n_u, n_p = build_coupled_matrices(mesh_file, config)
+def solve_3d_coupled_eigenmodes(mesh_file, config, num_modes=10, status_callback=None):
+    K, M, mesh, n_u, n_p = build_coupled_matrices(mesh_file, config, status_callback=status_callback)
 
     n = K.shape[0]
     req_modes = max(1, min(int(num_modes), max(1, n - 2)))
@@ -234,12 +270,18 @@ def solve_3d_coupled_eigenmodes(mesh_file, config, num_modes=10):
     sigma_shift = float(config.get("solver", {}).get("eigs_sigma", 1e-2))
     eig_tol = float(config.get("solver", {}).get("eigs_tol", 1e-6))
     eig_maxiter = int(config.get("solver", {}).get("eigs_maxiter", 2000))
-    print(
+    _emit(
+        "Step 3/4: Solving eigenvalue problem...",
+        status_callback=status_callback,
+    )
+    _emit(
         f"[solver] Starting eigsh: k={req_modes}, sigma={sigma_shift:.6e}, "
         f"tol={eig_tol:.2e}, maxiter={eig_maxiter}"
+        ,
+        status_callback=status_callback,
     )
     vals, vecs = eigsh(K, k=req_modes, M=M, sigma=sigma_shift, which="LM", tol=eig_tol, maxiter=eig_maxiter)
-    print("[solver] eigsh finished.")
+    _emit("[solver] eigsh finished.", status_callback=status_callback)
     vals = np.real(vals)
     vecs = np.real(vecs)
 
@@ -255,7 +297,8 @@ def solve_3d_coupled_eigenmodes(mesh_file, config, num_modes=10):
     return freqs.tolist(), vecs, n_u, n_p
 
 
-def run_fem_3d_simulation(config_path):
+def run_fem_3d_simulation(config_path, status_callback=None):
+    _emit(">>> FEM 3D entrypoint reached (run_fem_3d_simulation).", status_callback=status_callback)
     config_path = Path(config_path)
     with open(config_path, "r") as f:
         config = json.load(f)
@@ -266,10 +309,13 @@ def run_fem_3d_simulation(config_path):
     if not mesh_file.exists():
         raise FileNotFoundError(f"Mesh file not found: {mesh_file}")
 
-    freqs, eigvecs, n_u, n_p = solve_3d_coupled_eigenmodes(str(mesh_file), config, num_modes=num_modes)
+    freqs, eigvecs, n_u, n_p = solve_3d_coupled_eigenmodes(
+        str(mesh_file), config, num_modes=num_modes, status_callback=status_callback
+    )
 
     out_dir = config_path.parents[1] / "outputs"
     mode_dir = out_dir / "modes_3d"
+    _emit("Step 4/4: Exporting mode shapes and writing outputs...", status_callback=status_callback)
     vtk_files = export_mode_shapes(mesh_file, mode_dir, eigvecs, n_u, n_p)
 
     output_data = {
@@ -299,7 +345,7 @@ def run_fem_3d_simulation(config_path):
     with open(config_path, "w") as f:
         json.dump(config, f, indent=4)
 
-    print(f"SUCCESS: Coupled 3D frequencies saved to {output_path}")
+    _emit(f"SUCCESS: Coupled 3D frequencies saved to {output_path}", status_callback=status_callback)
     return output_path
 
 

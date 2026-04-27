@@ -5,7 +5,6 @@ import subprocess
 import sys  # הוסף עבור איתור ה-Python של הסביבה הווירטואלית
 from pathlib import Path
 import wave
-import threading
 import pyvista as pv
 from stpyvista import stpyvista
 from scipy.interpolate import CubicSpline
@@ -18,6 +17,10 @@ FEM_SCRIPT = BASE_DIR / "FEM" / "scripts" / "fem_main_3d.py"
 STK_BINARY = BASE_DIR / "cpp" / "guitar_stk"
 WAV_OUTPUT = BASE_DIR / "audio" / "guitar_sound.wav"
 MESH_FILE = BASE_DIR / "FEM" / "mesh" / "guitar_3d.msh"
+
+# Allow in-process import of FEM solver for live Streamlit status updates.
+sys.path.append(str(BASE_DIR / "FEM" / "scripts"))
+import fem_main_3d
 
 # הגדרות סביבה קריטיות ל-Linux/VM
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -143,8 +146,6 @@ def generate_live_preview_mesh(L, W, D, shape_type, design_mode, upper_bout, wai
 
 st.set_page_config(page_title="3D Guitar Simulator", layout="wide")
 st.title("Guitar Simulator")
-if "fem_thread" not in st.session_state:
-    st.session_state.fem_thread = None
 
 # --- Sidebar ---
 st.sidebar.header("1. Material & Shape")
@@ -263,14 +264,20 @@ with c1:
         
         with st.spinner("Building 3D Model..."):
             subprocess.run([py_exe, str(GEOMETRY_SCRIPT), "-nopopup"], capture_output=True, text=True)
-            
-        def run_heavy_physics():
-            subprocess.run([py_exe, str(FEM_SCRIPT)], capture_output=True, text=True)
 
-        st.session_state.fem_thread = threading.Thread(target=run_heavy_physics)
-        st.session_state.fem_thread.start()
-        
-        st.session_state.fem_ready = True 
+        # Run FEM in-process with live UI status updates.
+        try:
+            with st.status("Running FEM Simulation...", expanded=True) as fem_status:
+                def fem_status_callback(message: str):
+                    fem_status.update(label=message, state="running", expanded=True)
+
+                fem_status_callback("Trigger received from UI. Starting FEM backend...")
+                fem_main_3d.run_fem_3d_simulation(str(CONFIG_PATH), status_callback=fem_status_callback)
+                fem_status.update(label="FEM simulation completed successfully.", state="complete", expanded=False)
+            st.session_state.fem_ready = True
+        except Exception as e:
+            st.session_state.fem_ready = False
+            st.error(f"FEM simulation failed: {e}")
         
         # --- התיקון הקסום שלנו ---
         st.session_state.show_success_msg = True # נזכור להראות הודעה
@@ -286,9 +293,6 @@ with c2:
         save_cfg()
         
         with st.spinner("Synthesizing Audio..."):
-            if st.session_state.fem_thread is not None and st.session_state.fem_thread.is_alive():
-                st.session_state.fem_thread.join() 
-                
             out_json = Path("FEM/outputs/fem_3d_output.json")
             
             if not out_json.exists():
