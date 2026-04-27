@@ -1,8 +1,6 @@
 import gmsh
 import sys
 import json
-import os
-import numpy as np
 from pathlib import Path
 
 def create_guitar_mesh():
@@ -28,15 +26,13 @@ def create_guitar_mesh():
             config = json.load(f)
         p = config['geometry']
         L, W, D = p['length'], p['width'], p['depth']
+        t = p['thickness']
         hr = p['hole_radius']
         shape_type = p.get('shape_type', 'Classical')
-        vis_mode = p.get('vis_mode', 'Mesh + Solid (Wood)')
     else:
-        L, W, D, hr, shape_type, vis_mode = 0.48, 0.37, 0.1, 0.04, 'Classical', 'Mesh + Solid (Wood)'
+        L, W, D, t, hr, shape_type = 0.48, 0.37, 0.1, 0.003, 0.04, 'Classical'
 
     # --- התיקון שלנו: שינוי צפיפות הרשת בהתאם למצב ---
-    t = config['geometry']['thickness']
-    
     if is_preview:
         mesh_size = 0.030  # רשת של 30 מ"מ במקום 80, כדי שהמנוע לא יקרוס בעובי דק!
     else:
@@ -73,6 +69,17 @@ def create_guitar_mesh():
         loop = occ.addCurveLoop([l_top, c_body, -m_c[0][1], -m_l[0][1]])
         return occ.addPlaneSurface([loop])
 
+    def as_dimtags(result):
+        if isinstance(result, tuple):
+            if result and isinstance(result[0], list):
+                return result[0]
+            return list(result)
+        return result
+
+    def get_boundary_tags(dimtags, dim):
+        bnds = gmsh.model.getBoundary(dimtags, oriented=False, recursive=False)
+        return {tag for bdim, tag in bnds if bdim == dim}
+
     # --- בניית הגיאומטריה והאוויר (שלב 1 המעודכן) ---
     if "Box" in shape_type:
         vol_out_id = occ.addBox(-L/2, -W/2, -D/2, L, W, D)
@@ -91,57 +98,95 @@ def create_guitar_mesh():
 
     # יצירת הצילינדר של חור התהודה
     hole_x = shy - L/2 if "Box" not in shape_type else 0
-    hole_cyl = occ.addCylinder(hole_x, 0, D/2 - 2*t, 0, 0, 4*t, hr)
-    
-    # שימוש ב-Fragment במקום Cut כדי להשאיר את האוויר בתוך העץ [cite: 141, 150]
-    # זה יוצר "שיתוף נקודות" (shared nodes) הכרחי לצימוד האקוסטי [cite: 128]
-    occ.fragment([(3, vol_out_id)], [(3, vol_in_id), (3, hole_cyl)])
+    z_inner_top = (D / 2) - t
+    hole_cyl = occ.addCylinder(hole_x, 0, z_inner_top, 0, 0, 2 * t, hr)
+
+    # 1) חלל האוויר: חלל פנימי פחות חור התהודה
+    air_cut = occ.cut([(3, vol_in_id)], [(3, hole_cyl)], removeObject=True, removeTool=False)
+    air_dimtags = [dt for dt in as_dimtags(air_cut) if dt[0] == 3]
+
+    # 2) מעטפת העץ: נפח חיצוני פחות חלל פנימי, ואז פתיחת החור בלוח העליון
+    wood_cut = occ.cut([(3, vol_out_id)], air_dimtags, removeObject=True, removeTool=False)
+    wood_dimtags = [dt for dt in as_dimtags(wood_cut) if dt[0] == 3]
+    wood_hole_cut = occ.cut(wood_dimtags, [(3, hole_cyl)], removeObject=True, removeTool=True)
+    wood_dimtags = [dt for dt in as_dimtags(wood_hole_cut) if dt[0] == 3]
+
+    # 3) Fragment חובה לשיתוף צמתים בין העץ והאוויר
+    frags, _ = occ.fragment(wood_dimtags, air_dimtags, removeObject=True, removeTool=True)
     occ.synchronize()
 
-    # --- שלב 1 המלוטש: אופטימיזציה ויזואלית וחישובית ---
-    
-    # 1. זיהוי נפח האוויר - דילול משמעותי לקיצור זמן ה-JSON
-    air_vols = []
-    for dim, tag in gmsh.model.getEntities(3):
-        com = occ.getCenterOfMass(dim, tag)
-        if np.linalg.norm(com) < min(L, W)/3:
-            air_vols.append(tag)
-            # רשת גסה מאוד לאוויר (פי 6 מהעץ) - זה יגרום ל-JSON לרוץ בשניות
-            gmsh.model.mesh.setSize([(3, tag)], mesh_size * 6) 
-    
+    # סיווג נפחים אחרי ה-fragment לפי טופולוגיה (ללא ניחוש גבהים)
+    resulting_vols = [dt for dt in frags if dt[0] == 3]
+    air_candidate_set = set(tag for _, tag in air_dimtags)
+    air_vols = [tag for _, tag in resulting_vols if tag in air_candidate_set]
+    wood_vols = [tag for _, tag in resulting_vols if tag not in air_candidate_set]
 
-    # --- תיקון: הפרדה ל-Top ו-Body והוספת נפח אוויר ---
-    top_plate_surfs = []
-    body_surfs = []
-    soundhole_surfs = []
-    
-    for dim, tag in gmsh.model.getEntities(2):
-        com = occ.getCenterOfMass(dim, tag)
-        dist_from_hole = np.linalg.norm(com[:2] - np.array([hole_x, 0]))
-        is_at_top = np.isclose(com[2], D/2, atol=1e-3)
-        
-        # זיהוי אזור החור
-        if dist_from_hole < hr * 0.95:
-            if is_at_top:
-                soundhole_surfs.append(tag)
-            else:
-                continue # "פקק" פנימי - לא מוסיפים לקבוצה
-        # הפרדה בין הלוח העליון לשאר הגוף
-        elif is_at_top:
-            top_plate_surfs.append(tag)
-        else:
-            body_surfs.append(tag)
+    if len(air_vols) != 1:
+        raise RuntimeError(f"Expected exactly 1 internal air volume, found {len(air_vols)}")
+
+    if not wood_vols:
+        raise RuntimeError("No wood shell volumes found after boolean operations")
+
+    # זיהוי משטחים לפי קשרי גבול:
+    # interface = גבול משותף עץ/אוויר, soundhole = גבול אוויר חיצוני שאינו interface
+    wood_boundary_surfs = get_boundary_tags([(3, tag) for tag in wood_vols], 2)
+    air_boundary_surfs = get_boundary_tags([(3, tag) for tag in air_vols], 2)
+
+    interface_surfs = sorted(list(wood_boundary_surfs.intersection(air_boundary_surfs)))
+    soundhole_surfs = sorted(list(air_boundary_surfs.difference(interface_surfs)))
+
+    if len(soundhole_surfs) != 1:
+        raise RuntimeError(f"Expected exactly 1 soundhole opening surface, found {len(soundhole_surfs)}")
+
+    # בניית גרף שכנויות על בסיס קווים משותפים בין משטחי ה-interface
+    iface_set = set(interface_surfs)
+    surf_to_curves = {
+        s: get_boundary_tags([(2, s)], 1)
+        for s in interface_surfs
+    }
+
+    curve_to_surfs = {}
+    for s, curves in surf_to_curves.items():
+        for c in curves:
+            curve_to_surfs.setdefault(c, set()).add(s)
+
+    neighbors = {s: set() for s in interface_surfs}
+    for curve, surfs in curve_to_surfs.items():
+        if len(surfs) < 2:
+            continue
+        surfs_list = list(surfs)
+        for i in range(len(surfs_list)):
+            for j in range(i + 1, len(surfs_list)):
+                a, b = surfs_list[i], surfs_list[j]
+                neighbors[a].add(b)
+                neighbors[b].add(a)
+
+    soundhole_curves = get_boundary_tags([(2, soundhole_surfs[0])], 1)
+    top_seeds = [s for s, curves in surf_to_curves.items() if curves.intersection(soundhole_curves)]
+    if not top_seeds:
+        raise RuntimeError("Could not identify Top_Plate surfaces from soundhole topology")
+
+    # flood-fill: כל משטחי ה-interface המחוברים ל-soundhole הם Top_Plate
+    top_plate_set = set()
+    stack = list(top_seeds)
+    while stack:
+        cur = stack.pop()
+        if cur in top_plate_set:
+            continue
+        top_plate_set.add(cur)
+        stack.extend(neighbors[cur] - top_plate_set)
+
+    top_plate_surfs = sorted(list(top_plate_set))
+    body_surfs = sorted(list(iface_set - top_plate_set))
+
+    if not body_surfs:
+        raise RuntimeError("Body_Shell classification failed: no remaining interface surfaces")
 
     # הגדרת הקבוצות הפיזיקליות לפי תגים קבועים
-    if top_plate_surfs:
-        gmsh.model.addPhysicalGroup(2, top_plate_surfs, tag=1, name="Top_Plate")
-    if soundhole_surfs:
-        gmsh.model.addPhysicalGroup(2, soundhole_surfs, tag=2, name="Soundhole_Air")
-    if body_surfs:
-        gmsh.model.addPhysicalGroup(2, body_surfs, tag=3, name="Body_Shell")
-    if air_vols:
-        # הוספת נפח האוויר (שלב 2 של הסולבר)
-        gmsh.model.addPhysicalGroup(3, air_vols, tag=10, name="Air_Internal")
+    gmsh.model.addPhysicalGroup(2, top_plate_surfs, tag=1, name="Top_Plate")
+    gmsh.model.addPhysicalGroup(2, soundhole_surfs, tag=2, name="Soundhole")
+    gmsh.model.addPhysicalGroup(2, body_surfs, tag=3, name="Body_Shell")
+    gmsh.model.addPhysicalGroup(3, air_vols, tag=10, name="Air_Internal")
 
     # הגדרת רשת האלמנטים המאוזנת
     gmsh.option.setNumber("Mesh.MeshSizeMin", mesh_size)
