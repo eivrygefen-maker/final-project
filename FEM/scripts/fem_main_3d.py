@@ -255,10 +255,12 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     m_form = m_uu + m_pp + m_pu
 
     # Eliminate pressure on soundhole to avoid null-space drift.
-    soundhole_facets = facet_tags.find(2)
+    soundhole_facets = np.asarray(facet_tags.find(2), dtype=np.int32)
     p_sub, _ = W.sub(1).collapse()
     p_dofs = fem.locate_dofs_topological((W.sub(1), p_sub), fdim, soundhole_facets)
-    bc_p0 = fem.dirichletbc(PETSc.ScalarType(0.0), p_dofs, W.sub(1))
+    p_dofs = np.asarray(p_dofs, dtype=np.int32)
+    p_zero = np.array(0.0, dtype=PETSc.ScalarType)
+    bc_p0 = fem.dirichletbc(p_zero, p_dofs, W.sub(1))
     bcs = [bc_p0]
 
     A = assemble_matrix(fem.form(a_form), bcs=bcs)
