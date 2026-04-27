@@ -170,9 +170,31 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     eps.setOperators(A, M)
     eps.setProblemType(SLEPc.EPS.ProblemType.GHEP)
     eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
-    eps.setWhichEigenpairs(SLEPc.EPS.Which.SMALLEST_REAL)
-    eps.setDimensions(num_modes, PETSc.DECIDE)
-    eps.setTolerances(float(config.get("solver", {}).get("eigs_tol", 1e-8)), int(config.get("solver", {}).get("eigs_maxiter", 1000)))
+    solver_cfg = config.get("solver", {})
+    target_freq_hz = float(solver_cfg.get("target_freq_hz", 90.0))
+    target_lambda = (2.0 * math.pi * target_freq_hz) ** 2
+
+    # Shift-and-invert around the physically relevant low-frequency range.
+    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_REAL)
+    eps.setTarget(target_lambda)
+    st = eps.getST()
+    st.setType(SLEPc.ST.Type.SINVERT)
+
+    # Preconditioner/factorization hints for the shifted linear solves.
+    ksp = st.getKSP()
+    pc = ksp.getPC()
+    ksp.setType(str(solver_cfg.get("st_ksp_type", "preonly")))
+    pc.setType(str(solver_cfg.get("st_pc_type", "lu")))
+    pc.setFactorSolverType(str(solver_cfg.get("st_factor_solver_type", "mumps")))
+
+    ncv = max(4 * num_modes, 40)
+    eps.setDimensions(num_modes, ncv)
+    eps.setTolerances(float(solver_cfg.get("eigs_tol", 1e-8)), int(solver_cfg.get("eigs_maxiter", 1000)))
+    _emit(
+        f"[solver] shift-invert target: {target_freq_hz:.2f} Hz (lambda={target_lambda:.6e}), "
+        f"KSP={ksp.getType()}, PC={pc.getType()}",
+        status_callback=status_callback,
+    )
     eps.setFromOptions()
     eps.solve()
 
