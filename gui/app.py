@@ -8,7 +8,6 @@ import wave
 import threading
 import pyvista as pv
 from stpyvista import stpyvista
-import numpy as np
 from scipy.interpolate import CubicSpline
 
 # --- Constants & Paths ---
@@ -333,36 +332,72 @@ try:
     plotter.background_color = "#f4f4f9"
     show_edges_flag = ("Mesh" in vis_mode)
 
+    def render_mesh_by_protocol(mesh, show_edges):
+        """
+        Render mesh by physical tags protocol:
+        1=Top_Plate, 2=Soundhole, 3=Body_Shell, 10=Air_Internal(hidden).
+        Returns True if tag-based rendering succeeded, else False (caller should fallback).
+        """
+        tags = mesh.cell_data.get('gmsh:physical')
+        if tags is None:
+            return False
+
+        # Efficient mask creation once, then extract only when needed.
+        is_top = (tags == 1)
+        is_hole = (tags == 2)
+        is_body = (tags == 3)
+
+        if not (is_top.any() or is_body.any() or is_hole.any()):
+            return False
+
+        rendered_any = False
+
+        if is_top.any():
+            top_mesh = mesh.extract_cells(is_top).extract_surface()
+            if top_mesh.n_cells > 0:
+                plotter.add_mesh(
+                    top_mesh,
+                    color=WOOD_LIBRARY[top_wood]["color"],
+                    show_edges=show_edges,
+                    edge_color="#2b1a10"
+                )
+                rendered_any = True
+
+        if is_body.any():
+            body_mesh = mesh.extract_cells(is_body).extract_surface()
+            if body_mesh.n_cells > 0:
+                plotter.add_mesh(
+                    body_mesh,
+                    color=WOOD_LIBRARY[back_wood]["color"],
+                    show_edges=show_edges,
+                    edge_color="#2b1a10"
+                )
+                rendered_any = True
+
+        # Tag 2: represent as dark semi-transparent surface (or leave as hole by not drawing it).
+        if is_hole.any():
+            hole_mesh = mesh.extract_cells(is_hole).extract_surface()
+            if hole_mesh.n_cells > 0:
+                plotter.add_mesh(hole_mesh, color="#111111", opacity=0.45, show_edges=False)
+                rendered_any = True
+
+        # Tag 10 (Air_Internal) is intentionally not rendered to avoid black block.
+        return rendered_any
+
     if is_synced:
         st.success("✅ Viewing High-Fidelity Engineering Mesh (Gmsh)")
         try:
-            # טעינת המודל המלא
             vol_mesh = pv.read(str(MESH_FILE))
-            
-            # שליפת התגים הפיזיקליים מתוך ה-Cell Data
-            # ב-MSH 2.2, התגים נמצאים בדרך כלל תחת השם 'gmsh:physical'
-            if 'gmsh:physical' in vol_mesh.cell_data:
-                tags = vol_mesh.cell_data['gmsh:physical']
-                
-                # 1. חילוץ העץ בלבד (Tag 1 - Wood_Shell)
-                wood_cells = vol_mesh.extract_cells(tags == 1)
-                wood_mesh = wood_cells.extract_surface()
-                
-                # 2. חילוץ החור (Tag 2 - Soundhole_Air)
-                hole_cells = vol_mesh.extract_cells(tags == 2)
-                hole_mesh = hole_cells.extract_surface()
-                
-                # צביעת העץ לפי סוג החומר
-                plotter.add_mesh(wood_mesh, color=WOOD_LIBRARY[back_wood]["color"], 
-                                 show_edges=show_edges_flag, edge_color="#2b1a10")
-                
-                # הצגת החור כחלל כהה ועמוק
-                if hole_mesh.n_points > 0:
-                    plotter.add_mesh(hole_mesh, color="#0a0a0a", opacity=0.9)
-            else:
-                # גיבוי למקרה שהתגים לא נקראו נכון - הצגת המעטפת בלבד
-                st.warning("Physical tags not found, displaying full surface.")
-                plotter.add_mesh(vol_mesh.extract_surface(), color=WOOD_LIBRARY[back_wood]["color"])
+
+            # Preferred path: tag-based rendering by protocol.
+            if not render_mesh_by_protocol(vol_mesh, show_edges_flag):
+                st.warning("Physical tags missing/empty - displaying full surface fallback.")
+                plotter.add_mesh(
+                    vol_mesh.extract_surface(),
+                    color=WOOD_LIBRARY[back_wood]["color"],
+                    show_edges=show_edges_flag,
+                    edge_color="#2b1a10"
+                )
 
         except Exception as e:
             st.error(f"Visualization Error: {e}")
@@ -371,26 +406,11 @@ try:
         preview_mesh = generate_live_preview_mesh(L, W, D, shape_type, design_mode, upper_bout, waist, lower_bout)
         
         if preview_mesh is not None:
-           
-            if 'gmsh:physical' in preview_mesh.cell_data:
-                tags = preview_mesh.cell_data['gmsh:physical']
-                
-                # שליפת המשטחים לפי התגים שהגדרנו ב-BUILD
-                is_top = tags == 1   # Top_Plate
-                is_hole = tags == 2  # Soundhole
-                is_body = tags == 3  # Body_Shell
-                
-                # צביעה חכמה לפי תגים (עוקף את בעיית הרזולוציה של ה-Preview)
-                plotter.add_mesh(preview_mesh.extract_cells(is_top), color=WOOD_LIBRARY[top_wood]["color"], show_edges=False)
-                plotter.add_mesh(preview_mesh.extract_cells(is_body), color=WOOD_LIBRARY[back_wood]["color"], show_edges=False)
-                
-                if is_hole.any():
-                    # חילוץ המשטח של החור וצביעתו בשחור
-                    hole_surf = preview_mesh.extract_cells(is_hole).extract_surface()
-                    plotter.add_mesh(hole_surf, color="#1a1a1a", opacity=0.8)
+            if not render_mesh_by_protocol(preview_mesh, show_edges=False):
+                st.warning("Preview tags missing/empty - displaying full surface fallback.")
+                plotter.add_mesh(preview_mesh, color=WOOD_LIBRARY[back_wood]["color"], show_edges=False)
         else:
-            # גיבוי: אם אין תגים, נצבע את הכל בצבע הגוף
-            plotter.add_mesh(preview_mesh, color=WOOD_LIBRARY[back_wood]["color"])
+            st.warning("Preview mesh is unavailable.")
             
     plotter.enable_anti_aliasing("ssaa") 
     if cam_preset == "Standing Angled (3D)": plotter.camera_position = [(0.0, -0.4, 1.1), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
