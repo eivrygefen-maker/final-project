@@ -55,30 +55,5 @@
     "solver": {
         "num_modes": 10,
         "mesh_file": "/home/vboxuser/final-project/FEM/mesh/guitar_3d.msh"
-    },
-    "results": {
-        "modes_hz": [
-            210.9142998013817,
-            210.9814186115303,
-            210.9964231386383,
-            210.99746105167722,
-            211.00126435016423,
-            211.00330822081463,
-            211.00481835957012,
-            211.00509312115395,
-            211.00638965779925
-        ],
-        "mode_vectors_file": "/home/vboxuser/final-project/FEM/outputs/modes_3d/coupled_modes_raw.npz",
-        "vtk_mode_files": [
-            "/home/vboxuser/final-project/FEM/outputs/modes_3d/mode_01.vtk",
-            "/home/vboxuser/final-project/FEM/outputs/modes_3d/mode_02.vtk",
-            "/home/vboxuser/final-project/FEM/outputs/modes_3d/mode_03.vtk",
-            "/home/vboxuser/final-project/FEM/outputs/modes_3d/mode_04.vtk",
-            "/home/vboxuser/final-project/FEM/outputs/modes_3d/mode_05.vtk",
-            "/home/vboxuser/final-project/FEM/outputs/modes_3d/mode_06.vtk",
-            "/home/vboxuser/final-project/FEM/outputs/modes_3d/mode_07.vtk",
-            "/home/vboxuser/final-project/FEM/outputs/modes_3d/mode_08.vtk",
-            "/home/vboxuser/final-project/FEM/outputs/modes_3d/mode_09.vtk"
-        ]
     }
 }

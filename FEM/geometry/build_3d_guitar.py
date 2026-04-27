@@ -36,7 +36,7 @@ def create_guitar_mesh():
     if is_preview:
         mesh_size = 0.030  # רשת של 30 מ"מ במקום 80, כדי שהמנוע לא יקרוס בעובי דק!
     else:
-        mesh_size = t * 10
+        mesh_size = t * 5
     
     print(f"Building geometry with Thickness: {t*1000:.1f}mm, Mesh Size: {mesh_size*1000:.2f}mm")
     
