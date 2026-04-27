@@ -41,6 +41,26 @@ def _pick_region(domain, name, expr, kind):
     return domain.create_region(name, expr, kind)
 
 
+def _matrix_diagnostics(name, mtx):
+    mtx = mtx.tocsr()
+    if mtx.nnz > 0:
+        data_min = float(mtx.data.min())
+        data_max = float(mtx.data.max())
+    else:
+        data_min = 0.0
+        data_max = 0.0
+
+    zero_rows = int(np.sum(np.diff(mtx.indptr) == 0))
+    mtx_csc = mtx.tocsc()
+    zero_cols = int(np.sum(np.diff(mtx_csc.indptr) == 0))
+
+    print(
+        f"[diag] {name}: shape={mtx.shape}, nnz={mtx.nnz}, "
+        f"min={data_min:.6e}, max={data_max:.6e}, "
+        f"zero_rows={zero_rows}, zero_cols={zero_cols}"
+    )
+
+
 def build_coupled_matrices(mesh_file, config):
     """
     Build block matrices for coupled acoustic-structural modal analysis:
@@ -144,6 +164,26 @@ def build_coupled_matrices(mesh_file, config):
     K = bmat([[Kuu, Kup], [Kpu, Kpp]], format="csr")
     M = bmat([[Muu, None], [None, Mpp]], format="csr")
 
+    # Diagnostics for conditioning / singularity debugging.
+    _matrix_diagnostics("Kuu", Kuu)
+    _matrix_diagnostics("Muu", Muu)
+    _matrix_diagnostics("Kpp", Kpp)
+    _matrix_diagnostics("Mpp", Mpp)
+    _matrix_diagnostics("K (coupled)", K)
+    _matrix_diagnostics("M (coupled)", M)
+
+    # Material unit sanity prints (SI expected: Pa, kg/m^3).
+    print(
+        "[diag] material units check: "
+        f"E_top={E_top:.6e} Pa, E_back={E_back:.6e} Pa, "
+        f"rho_top={rho_top:.3f} kg/m^3, rho_back={rho_back:.3f} kg/m^3, "
+        f"rho_air={rho_air:.6f} kg/m^3, c0={c0:.3f} m/s"
+    )
+    if (E_top < 1e6 or E_back < 1e6 or E_top > 1e12 or E_back > 1e12):
+        print("[diag][warn] Young's modulus seems out of typical SI wood range (1e6..1e12 Pa).")
+    if (rho_top < 50 or rho_back < 50 or rho_top > 5000 or rho_back > 5000):
+        print("[diag][warn] Wood density seems out of typical SI range (50..5000 kg/m^3).")
+
     return K, M, mesh, n_u, n_p
 
 
@@ -191,7 +231,15 @@ def solve_3d_coupled_eigenmodes(mesh_file, config, num_modes=10):
     n = K.shape[0]
     req_modes = max(1, min(int(num_modes), max(1, n - 2)))
 
-    vals, vecs = eigsh(K, k=req_modes, M=M, sigma=0.0, which="LM", tol=1e-7)
+    sigma_shift = float(config.get("solver", {}).get("eigs_sigma", 1e-2))
+    eig_tol = float(config.get("solver", {}).get("eigs_tol", 1e-6))
+    eig_maxiter = int(config.get("solver", {}).get("eigs_maxiter", 2000))
+    print(
+        f"[solver] Starting eigsh: k={req_modes}, sigma={sigma_shift:.6e}, "
+        f"tol={eig_tol:.2e}, maxiter={eig_maxiter}"
+    )
+    vals, vecs = eigsh(K, k=req_modes, M=M, sigma=sigma_shift, which="LM", tol=eig_tol, maxiter=eig_maxiter)
+    print("[solver] eigsh finished.")
     vals = np.real(vals)
     vecs = np.real(vecs)
 
