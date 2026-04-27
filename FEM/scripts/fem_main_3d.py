@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import ufl
-from basix.ufl import element
+from basix.ufl import element, mixed_element
 from dolfinx import fem, io, mesh
 from dolfinx.fem.petsc import assemble_matrix
 from mpi4py import MPI
@@ -193,9 +193,10 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     fdim = tdim - 1
 
     _emit("Step 2/5: Building mixed spaces and weak forms...", status_callback=status_callback)
-    Vu = fem.functionspace(msh, element("Lagrange", msh.basix_cell(), 1, shape=(3,)))
-    Vp = fem.functionspace(msh, element("Lagrange", msh.basix_cell(), 1))
-    W = fem.functionspace(msh, ufl.MixedElement([Vu.ufl_element(), Vp.ufl_element()]))
+    u_el = element("Lagrange", msh.basix_cell(), 1, shape=(3,))
+    p_el = element("Lagrange", msh.basix_cell(), 1)
+    W_el = mixed_element([u_el, p_el])
+    W = fem.functionspace(msh, W_el)
 
     w = ufl.TrialFunction(W)
     z = ufl.TestFunction(W)
