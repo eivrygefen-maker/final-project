@@ -281,9 +281,8 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
     if air.vertices.shape[0] == 0:
         raise RuntimeError("Acoustic region Tag 10 is empty. No volume domain to assemble.")
 
-    # Structural field: 3D displacement components on a 2D manifold (embedded in 3D),
-    # so out-of-plane motion can couple to acoustic pressure.
-    fu = Field.from_args("fu", np.float64, 3, wood_surf, approx_order=1, space="H1")
+    # Structural field: scalar normal-displacement membrane on 2D wood manifold.
+    fu = Field.from_args("fu", np.float64, 1, wood_surf, approx_order=1, space="H1")
     # Acoustic field: explicit 3D volume (tag 10 only).
     fp = Field.from_args("fp", np.float64, 1, air, approx_order=1, space="H1")
 
@@ -313,14 +312,14 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
     c0 = float(air_mat["speed_of_sound"])
     rho_air = float(air_mat["density"])
 
-    # Manifold structural surrogate coefficients (thickness-weighted).
-    k_val = max(E_eff * thick * 1000.0, 1.0)
-    rho_s = max(rho_eff * thick, 1e-9)
+    # Scalar membrane properties (thickness-weighted).
+    k_val = max(E_eff * thick, 1e-12)
+    rho_val = max(rho_eff * thick, 1e-12)
 
     m_s = Material(
         "m_s",
         k_val=np.array([[[k_val]]], dtype=np.float64),
-        rho=np.array([[[rho_s]]], dtype=np.float64),
+        rho_val=np.array([[[rho_val]]], dtype=np.float64),
     )
     m_a = Material(
         "m_a",
@@ -330,9 +329,9 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
     integ_s = Integral("isurf", order=2)  # surface/manifold terms
     integ_v = Integral("ivol", order=2)   # volume terms
 
-    # Manifold-safe structural stiffness surrogate (stable on 2D surface mesh).
-    eq_ku = Equation("Kuu", Term.new("dw_volume_dot(m_s.k_val, v, u)", integ_s, wood_surf, m_s=m_s, v=v, u=u))
-    eq_mu = Equation("Muu", Term.new("dw_volume_dot(m_s.rho, v, u)", integ_s, wood_surf, m_s=m_s, v=v, u=u))
+    # Scalar manifold membrane physics.
+    eq_ku = Equation("Kuu", Term.new("dw_laplace(m_s.k_val, v, u)", integ_s, wood_surf, m_s=m_s, v=v, u=u))
+    eq_mu = Equation("Muu", Term.new("dw_volume_dot(m_s.rho_val, v, u)", integ_s, wood_surf, m_s=m_s, v=v, u=u))
     eq_kp = Equation("Kpp", Term.new("dw_laplace(m_a.inv_rho, q, p)", integ_v, air, m_a=m_a, q=q, p=p))
     eq_mp = Equation("Mpp", Term.new("dw_volume_dot(m_a.inv_rho_c2, q, p)", integ_v, air, m_a=m_a, q=q, p=p))
 
@@ -368,21 +367,18 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
     alpha = float(config.get("solver", {}).get("coupling_alpha", 1.0))
     beta = float(config.get("solver", {}).get("coupling_beta", 1.0))
 
-    # Surface/volume interface coupling scaffold:
-    # map pressure primarily to normal displacement component (z) and vice versa.
-    # For vector-ordered DOFs [ux, uy, uz, ux, ...], z-indices are 2,5,8,...
-    u_z_idx = np.arange(2, n_u, 3, dtype=np.int32)
-    k = min(u_z_idx.size, n_p)
+    # Direct scalar-DOF coupling between membrane displacement and pressure.
+    k = min(n_u, n_p)
     if k == 0:
-        raise RuntimeError("Coupling map is empty: no structural normal DOFs or no pressure DOFs.")
+        raise RuntimeError("Coupling map is empty: no structural or pressure DOFs.")
 
-    rows_up = u_z_idx[:k]
+    rows_up = np.arange(k, dtype=np.int32)
     cols_up = np.arange(k, dtype=np.int32)
     data_up = np.full(k, alpha, dtype=np.float64)
     Kup = csr_matrix((data_up, (rows_up, cols_up)), shape=(n_u, n_p))
 
     rows_pu = np.arange(k, dtype=np.int32)
-    cols_pu = u_z_idx[:k]
+    cols_pu = np.arange(k, dtype=np.int32)
     data_pu = np.full(k, beta, dtype=np.float64)
     Kpu = csr_matrix((data_pu, (rows_pu, cols_pu)), shape=(n_p, n_u))
 
