@@ -234,6 +234,10 @@ def create_guitar_mesh():
     gmsh.model.addPhysicalGroup(2, soundhole_surfs, tag=2, name="Soundhole")
     gmsh.model.addPhysicalGroup(2, body_surfs, tag=3, name="Body_Shell")
     gmsh.model.addPhysicalGroup(3, air_vols, tag=10, name="Air_Internal")
+    air_group_entities = gmsh.model.getEntitiesForPhysicalGroup(3, 10)
+    print(f"[diag] Physical Group 10 (Air_Internal) volume entities: {list(air_group_entities)}")
+    if len(air_group_entities) == 0:
+        raise RuntimeError("Tag 10 was created but has no 3D volume entities.")
 
     # הגדרת רשת האלמנטים המאוזנת
     gmsh.option.setNumber("Mesh.MeshSizeMin", mesh_size)

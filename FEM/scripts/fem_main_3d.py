@@ -40,6 +40,39 @@ def _emit(message, status_callback=None, level="info"):
         status_callback(message)
 
 
+def _mesh_tag_diagnostics(mesh_file, status_callback=None):
+    if meshio is None:
+        _emit("[diag] meshio not available, skipping gmsh-tag diagnostics.", status_callback=status_callback)
+        return
+    try:
+        m = meshio.read(str(mesh_file))
+        _emit(f"[diag] meshio cells: {[c.type for c in m.cells]}", status_callback=status_callback)
+
+        cell_phys = m.cell_data_dict.get("gmsh:physical", {})
+        tet_count = 0
+        tag10_tet = 0
+        for block in m.cells:
+            tags = cell_phys.get(block.type)
+            if block.type in ("tetra", "tetra10"):
+                tet_count += len(block.data)
+                if tags is not None:
+                    tag10_tet += int(np.sum(np.asarray(tags) == 10))
+        _emit(
+            f"[diag] tetra cells={tet_count}, tetra-with-tag10={tag10_tet}",
+            status_callback=status_callback,
+        )
+        if tet_count == 0:
+            _emit("[diag][warn] No tetra volume cells found in mesh.", status_callback=status_callback, level="warning")
+        if tag10_tet == 0:
+            _emit(
+                "[diag][warn] No tetra cells with physical tag 10 detected. Acoustic volume may be missing.",
+                status_callback=status_callback,
+                level="warning",
+            )
+    except Exception as e:
+        _emit(f"[diag][warn] mesh tag diagnostics failed: {e}", status_callback=status_callback, level="warning")
+
+
 def isotropic_stiffness(E, nu):
     """Build 3D isotropic stiffness tensor (6x6 Voigt)."""
     lam = (E * nu) / ((1.0 + nu) * (1.0 - 2.0 * nu))
@@ -92,7 +125,13 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
       [Kuu  Kup][u] = w^2 [Muu   0][u]
       [Kpu  Kpp][p]       [ 0   Mpp][p]
     """
+    _emit("Loading mesh into SfePy...", status_callback=status_callback)
+    _mesh_tag_diagnostics(mesh_file, status_callback=status_callback)
     mesh = Mesh.from_file(mesh_file)
+    _emit(
+        f"[diag] sfepy mesh descs={mesh.descs}, n_nod={mesh.n_nod}",
+        status_callback=status_callback,
+    )
     domain = FEDomain("domain", mesh)
 
     # Tag protocol regions.
@@ -100,10 +139,18 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
     wood_surf = _pick_region(domain, "WoodSurf", "cells of group 1 +c cells of group 3", "facet")
     air = _pick_region(domain, "Air", "cells of group 10", "cell")
     soundhole = _pick_region(domain, "Soundhole", "vertices of group 2", "facet")
+    _emit(
+        f"[diag] region sizes: WoodSurf vertices={wood_surf.vertices.shape[0]}, "
+        f"Air vertices={air.vertices.shape[0]}, Soundhole vertices={soundhole.vertices.shape[0]}",
+        status_callback=status_callback,
+    )
+    if air.vertices.shape[0] == 0:
+        raise RuntimeError("Acoustic region Tag 10 is empty. No volume domain to assemble.")
 
     # Structural field on wood interface vertices (surface shell-like discretization).
     fu = Field.from_args("fu", np.float64, 3, wood_surf, approx_order=1)
     # Acoustic pressure in enclosed air volume.
+    # Explicitly tied to 3D cell region (Tag 10).
     fp = Field.from_args("fp", np.float64, 1, air, approx_order=1)
 
     u = FieldVariable("u", "unknown", fu)
@@ -162,10 +209,18 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
         vars_.init_state()
 
     _emit("Step 1/4: Assembling structural and acoustic matrices...", status_callback=status_callback)
+    _emit("[assemble] Before structural stiffness assembly (Kuu).", status_callback=status_callback)
     Kuu = _assemble_matrix(pb_u, eq_ku).tocsr()
+    _emit("[assemble] After structural stiffness assembly (Kuu).", status_callback=status_callback)
+    _emit("[assemble] Before structural mass assembly (Muu).", status_callback=status_callback)
     Muu = _assemble_matrix(pb_u, eq_mu).tocsr()
+    _emit("[assemble] After structural mass assembly (Muu).", status_callback=status_callback)
+    _emit("[assemble] Before acoustic stiffness assembly (Kpp).", status_callback=status_callback)
     Kpp = _assemble_matrix(pb_p, eq_kp).tocsr()
+    _emit("[assemble] After acoustic stiffness assembly (Kpp).", status_callback=status_callback)
+    _emit("[assemble] Before acoustic mass assembly (Mpp).", status_callback=status_callback)
     Mpp = _assemble_matrix(pb_p, eq_mp).tocsr()
+    _emit("[assemble] After acoustic mass assembly (Mpp).", status_callback=status_callback)
 
     # Interface coupling blocks (lightweight consistent coupling).
     # The shared-node mesh from fragment enforces spatial compatibility.
