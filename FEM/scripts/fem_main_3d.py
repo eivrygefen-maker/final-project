@@ -73,6 +73,51 @@ def _mesh_tag_diagnostics(mesh_file, status_callback=None):
         _emit(f"[diag][warn] mesh tag diagnostics failed: {e}", status_callback=status_callback, level="warning")
 
 
+def _build_tag_submesh(mesh_file, out_path, target_tags, allowed_cell_types, status_callback=None):
+    """
+    Build a filtered submesh containing only selected cell types and physical tags.
+    """
+    if meshio is None:
+        raise RuntimeError("meshio is required to build filtered submeshes.")
+
+    m = meshio.read(str(mesh_file))
+    cell_phys = m.cell_data_dict.get("gmsh:physical", {})
+
+    new_cells = []
+    new_phys = []
+    for block in m.cells:
+        if block.type not in allowed_cell_types:
+            continue
+        tags = cell_phys.get(block.type)
+        if tags is None:
+            continue
+        tags = np.asarray(tags)
+        mask = np.isin(tags, np.asarray(list(target_tags)))
+        if not np.any(mask):
+            continue
+        new_cells.append(meshio.CellBlock(block.type, block.data[mask]))
+        new_phys.append(tags[mask])
+
+    if not new_cells:
+        raise RuntimeError(
+            f"No cells found for tags={list(target_tags)} and cell_types={list(allowed_cell_types)}"
+        )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_mesh = meshio.Mesh(
+        points=m.points,
+        cells=new_cells,
+        cell_data={"gmsh:physical": new_phys},
+    )
+    meshio.write(str(out_path), out_mesh, file_format="gmsh22")
+    _emit(
+        f"[diag] wrote submesh {out_path.name}: "
+        f"blocks={[c.type for c in new_cells]}, total_cells={sum(len(c.data) for c in new_cells)}",
+        status_callback=status_callback,
+    )
+    return out_path
+
+
 def isotropic_stiffness(E, nu):
     """Build 3D isotropic stiffness tensor (6x6 Voigt)."""
     lam = (E * nu) / ((1.0 + nu) * (1.0 - 2.0 * nu))
@@ -119,6 +164,58 @@ def _matrix_diagnostics(name, mtx, status_callback=None):
     )
 
 
+def _build_acoustic_only_matrices(mesh_file, config, status_callback=None):
+    """
+    Debug mode: solve only acoustic pressure on Tag 10 tetra volume.
+    """
+    _emit("[debug] Acoustic-only mode enabled: structural field disabled.", status_callback=status_callback, level="warning")
+    tmp_dir = Path(config.get("solver", {}).get("submesh_dir", "FEM/outputs/submeshes"))
+    air_submesh_path = _build_tag_submesh(
+        mesh_file=mesh_file,
+        out_path=tmp_dir / "air_tag10_only.msh",
+        target_tags={10},
+        allowed_cell_types={"tetra", "tetra10"},
+        status_callback=status_callback,
+    )
+
+    mesh_air = Mesh.from_file(str(air_submesh_path))
+    domain_air = FEDomain("air_domain", mesh_air, dim=3) if "dim" in FEDomain.__init__.__code__.co_varnames else FEDomain("air_domain", mesh_air)
+    air = _pick_region(domain_air, "Air", "all", "cell")
+
+    # Explicit field setup as requested.
+    fp = Field.from_args("fp", np.float64, 1, air, approx_order=1, space="H1")
+    p = FieldVariable("p", "unknown", fp)
+    q = FieldVariable("q", "test", fp, primary_var_name="p")
+
+    air_mat = config["materials"]["air"]
+    c0 = float(air_mat["speed_of_sound"])
+    rho_air = float(air_mat["density"])
+    m_a = Material(
+        "m_a",
+        inv_rho=np.array([[[1.0 / rho_air]]], dtype=np.float64),
+        inv_rho_c2=np.array([[[1.0 / (rho_air * c0 * c0)]]], dtype=np.float64),
+    )
+    integ_v = Integral("ivol", order=2)
+    eq_kp = Equation("Kpp", Term.new("dw_laplace(m_a.inv_rho, q, p)", integ_v, air, m_a=m_a, q=q, p=p))
+    eq_mp = Equation("Mpp", Term.new("dw_volume_dot(m_a.inv_rho_c2, q, p)", integ_v, air, m_a=m_a, q=q, p=p))
+
+    pb_p = Problem("acous_only", equations=Equations([eq_kp, eq_mp]))
+    pb_p.time_update()
+    pb_p.update_materials()
+    pb_p.get_variables().init_state()
+
+    _emit("[assemble] Before acoustic-only stiffness assembly (Kpp).", status_callback=status_callback)
+    Kpp = _assemble_matrix(pb_p, eq_kp).tocsr()
+    _emit("[assemble] After acoustic-only stiffness assembly (Kpp).", status_callback=status_callback)
+    _emit("[assemble] Before acoustic-only mass assembly (Mpp).", status_callback=status_callback)
+    Mpp = _assemble_matrix(pb_p, eq_mp).tocsr()
+    _emit("[assemble] After acoustic-only mass assembly (Mpp).", status_callback=status_callback)
+
+    _matrix_diagnostics("Kpp(acoustic-only)", Kpp, status_callback=status_callback)
+    _matrix_diagnostics("Mpp(acoustic-only)", Mpp, status_callback=status_callback)
+    return Kpp, Mpp, mesh_air, 0, Kpp.shape[0]
+
+
 def build_coupled_matrices(mesh_file, config, status_callback=None):
     """
     Build block matrices for coupled acoustic-structural modal analysis:
@@ -127,36 +224,55 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
     """
     _emit("Loading mesh into SfePy...", status_callback=status_callback)
     _mesh_tag_diagnostics(mesh_file, status_callback=status_callback)
-    mesh = Mesh.from_file(mesh_file)
-    _emit(
-        f"[diag] sfepy mesh descs={mesh.descs}, n_nod={mesh.n_nod}",
+    if bool(config.get("solver", {}).get("acoustic_only", False)):
+        return _build_acoustic_only_matrices(mesh_file, config, status_callback=status_callback)
+
+    # Build separate internal submeshes to avoid mixed-cell connectivity hangs.
+    tmp_dir = Path(config.get("solver", {}).get("submesh_dir", "FEM/outputs/submeshes"))
+    wood_submesh_path = _build_tag_submesh(
+        mesh_file=mesh_file,
+        out_path=tmp_dir / "wood_tag1_3_only.msh",
+        target_tags={1, 3},
+        allowed_cell_types={"triangle", "triangle6"},
         status_callback=status_callback,
     )
-    # Force a 3D domain when supported by this SfePy version.
-    try:
-        domain = FEDomain("domain", mesh, dim=3)
-        _emit("[diag] FEDomain created with explicit dim=3.", status_callback=status_callback)
-    except TypeError:
-        domain = FEDomain("domain", mesh)
-        _emit("[diag] FEDomain(dim=3) unsupported here, using default constructor.", status_callback=status_callback, level="warning")
+    air_submesh_path = _build_tag_submesh(
+        mesh_file=mesh_file,
+        out_path=tmp_dir / "air_tag10_only.msh",
+        target_tags={10},
+        allowed_cell_types={"tetra", "tetra10"},
+        status_callback=status_callback,
+    )
 
-    # Tag protocol regions.
-    # Wood interface surfaces (tags 1+3), acoustic volume (tag 10), soundhole bc (tag 2).
-    wood_surf = _pick_region(domain, "WoodSurf", "cells of group 1 +c cells of group 3", "facet")
-    air = _pick_region(domain, "Air", "cells of group 10", "cell")
-    soundhole = _pick_region(domain, "Soundhole", "vertices of group 2", "facet")
+    mesh_wood = Mesh.from_file(str(wood_submesh_path))
+    mesh_air = Mesh.from_file(str(air_submesh_path))
+    _emit(f"[diag] wood mesh descs={mesh_wood.descs}, n_nod={mesh_wood.n_nod}", status_callback=status_callback)
+    _emit(f"[diag] air mesh descs={mesh_air.descs}, n_nod={mesh_air.n_nod}", status_callback=status_callback)
+
+    # Independent domains by dimension.
+    try:
+        domain_wood = FEDomain("wood_domain", mesh_wood, dim=2)
+    except TypeError:
+        domain_wood = FEDomain("wood_domain", mesh_wood)
+    try:
+        domain_air = FEDomain("air_domain", mesh_air, dim=3)
+    except TypeError:
+        domain_air = FEDomain("air_domain", mesh_air)
+
+    wood_surf = _pick_region(domain_wood, "WoodSurf", "all", "cell")
+    air = _pick_region(domain_air, "Air", "all", "cell")
     _emit(
         f"[diag] region sizes: WoodSurf vertices={wood_surf.vertices.shape[0]}, "
-        f"Air vertices={air.vertices.shape[0]}, Soundhole vertices={soundhole.vertices.shape[0]}",
+        f"Air vertices={air.vertices.shape[0]}",
         status_callback=status_callback,
     )
     if air.vertices.shape[0] == 0:
         raise RuntimeError("Acoustic region Tag 10 is empty. No volume domain to assemble.")
 
-    # Structural field: explicit 2D manifold (surface tags 1+3 embedded in 3D).
-    fu = Field.from_args("fu", np.float64, 3, wood_surf, approx_order=1)
+    # Structural field: explicit 2D manifold.
+    fu = Field.from_args("fu", np.float64, 3, wood_surf, approx_order=1, space="H1")
     # Acoustic field: explicit 3D volume (tag 10 only).
-    fp = Field.from_args("fp", np.float64, 1, air, approx_order=1)
+    fp = Field.from_args("fp", np.float64, 1, air, approx_order=1, space="H1")
 
     u = FieldVariable("u", "unknown", fu)
     v = FieldVariable("v", "test", fu, primary_var_name="u")
@@ -208,9 +324,6 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
 
     # Separate dummy problem for 3D acoustic assembly.
     pb_p = Problem("acous", equations=Equations([eq_kp, eq_mp]))
-
-    # Soundhole: pressure release p=0.
-    pb_p.set_bcs(Conditions([EssentialBC("p0", soundhole, {"p.0": 0.0})]))
 
     for pb in (pb_p,):
         pb.time_update()
@@ -289,7 +402,7 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
             level="warning",
         )
 
-    return K, M, mesh, n_u, n_p
+    return K, M, mesh_air, n_u, n_p
 
 
 def export_mode_shapes(base_mesh_file, out_dir, eigvecs, n_u, n_p):
@@ -363,7 +476,7 @@ def solve_3d_coupled_eigenmodes(mesh_file, config, num_modes=10, status_callback
     freqs = freqs[order]
     vecs = vecs[:, order]
 
-    return freqs.tolist(), vecs, n_u, n_p
+    return freqs.tolist(), vecs, n_u, n_p, bool(config.get("solver", {}).get("acoustic_only", False))
 
 
 def run_fem_3d_simulation(config_path, status_callback=None):
@@ -378,7 +491,7 @@ def run_fem_3d_simulation(config_path, status_callback=None):
     if not mesh_file.exists():
         raise FileNotFoundError(f"Mesh file not found: {mesh_file}")
 
-    freqs, eigvecs, n_u, n_p = solve_3d_coupled_eigenmodes(
+    freqs, eigvecs, n_u, n_p, acoustic_only = solve_3d_coupled_eigenmodes(
         str(mesh_file), config, num_modes=num_modes, status_callback=status_callback
     )
 
@@ -388,7 +501,7 @@ def run_fem_3d_simulation(config_path, status_callback=None):
     vtk_files = export_mode_shapes(mesh_file, mode_dir, eigvecs, n_u, n_p)
 
     output_data = {
-        "analysis": "acoustic_structural_coupled_eigen",
+        "analysis": "acoustic_only_eigen" if acoustic_only else "acoustic_structural_coupled_eigen",
         "modes_hz": freqs,
         "num_modes": len(freqs),
         "mode_vectors_file": str((mode_dir / "coupled_modes_raw.npz").resolve()),
