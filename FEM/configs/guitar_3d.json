@@ -1,26 +1,31 @@
 {
     "geometry": {
+        "design_mode": "Basic (Geometric)",
         "shape_type": "Classical",
         "length": 0.48,
         "width": 0.37,
         "depth": 0.1,
         "thickness": 0.003,
         "hole_radius": 0.04,
+        "lower_bout": 0.37,
+        "upper_bout": 0.27749999999999997,
+        "waist": 0.2405,
+        "soundhole_y": 0.192,
         "vis_mode": "Mesh + Solid",
         "exploded_view": false
     },
     "materials": {
         "top": {
             "density": 450.0,
-            "E_L": 11000000000.0,
-            "E_T": 1000000000.0,
-            "E_R": 700000000.0,
+            "E_L": 1100000000.0,
+            "E_T": 100000000.0,
+            "E_R": 70000000.0,
             "nu_LT": 0.37,
             "nu_LR": 0.37,
             "nu_TR": 0.4,
-            "G_LT": 750000000.0,
-            "G_LR": 750000000.0,
-            "G_TR": 50000000.0,
+            "G_LT": 75000000.0,
+            "G_LR": 75000000.0,
+            "G_TR": 5000000.0,
             "q_min": 60,
             "q_max": 80,
             "color": "#FCE6C9",
@@ -28,15 +33,15 @@
         },
         "back": {
             "density": 830.0,
-            "E_L": 11500000000.0,
-            "E_T": 1300000000.0,
-            "E_R": 700000000.0,
+            "E_L": 1150000000.0,
+            "E_T": 130000000.0,
+            "E_R": 70000000.0,
             "nu_LT": 0.33,
             "nu_LR": 0.33,
             "nu_TR": 0.4,
-            "G_LT": 950000000.0,
-            "G_LR": 950000000.0,
-            "G_TR": 50000000.0,
+            "G_LT": 95000000.0,
+            "G_LR": 95000000.0,
+            "G_TR": 5000000.0,
             "q_min": 90,
             "q_max": 100,
             "color": "#3D2B1F",
@@ -48,7 +53,7 @@
         }
     },
     "solver": {
-        "num_modes": 30,
+        "num_modes": 10,
         "mesh_file": "/home/vboxuser/final-project/FEM/mesh/guitar_3d.msh"
     }
 }
