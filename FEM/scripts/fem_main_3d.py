@@ -255,13 +255,29 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     m_form = m_uu + m_pp + m_pu
 
     # Eliminate pressure on soundhole to avoid null-space drift.
-    soundhole_facets = np.asarray(facet_tags.find(2), dtype=np.int32)
-    p_sub, _ = W.sub(1).collapse()
+    soundhole_facets = np.array(facet_tags.find(2), dtype=np.int32)
+    p_sub = W.sub(1).collapse()[0]
     p_dofs = fem.locate_dofs_topological((W.sub(1), p_sub), fdim, soundhole_facets)
-    p_dofs = np.asarray(p_dofs, dtype=np.int32)
-    p_zero = np.array(0.0, dtype=PETSc.ScalarType)
-    bc_p0 = fem.dirichletbc(p_zero, p_dofs, W.sub(1))
-    bcs = [bc_p0]
+    p_dofs = np.array(p_dofs, dtype=np.int32)
+    # Keep explicit u_dofs typing hook for strict dtype diagnostics.
+    u_dofs = np.array([], dtype=np.int32)
+    bcs = []
+    try:
+        p_zero = fem.Constant(W.sub(1).mesh, PETSc.ScalarType(0.0))
+        bc_p0 = fem.dirichletbc(p_zero, p_dofs, W.sub(1))
+        bcs = [bc_p0]
+    except Exception as e:
+        _emit(
+            "[bc][error] dirichletbc creation failed. "
+            f"p_dofs.dtype={p_dofs.dtype}, p_dofs.shape={p_dofs.shape}, "
+            f"u_dofs.dtype={u_dofs.dtype}, u_dofs.shape={u_dofs.shape}, "
+            f"soundhole_facets.dtype={soundhole_facets.dtype}, "
+            f"soundhole_facets.shape={soundhole_facets.shape}, "
+            f"error={e}",
+            status_callback=status_callback,
+            level="error",
+        )
+        raise
 
     A = assemble_matrix(fem.form(a_form), bcs=bcs)
     A.assemble()
