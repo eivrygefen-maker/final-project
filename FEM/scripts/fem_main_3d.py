@@ -329,8 +329,8 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
     integ_s = Integral("isurf", order=2)  # surface/manifold terms
     integ_v = Integral("ivol", order=2)   # volume terms
 
-    # Scalar manifold membrane physics.
-    eq_ku = Equation("Kuu", Term.new("dw_laplace(m_s.k_val, v, u)", integ_s, wood_surf, m_s=m_s, v=v, u=u))
+    # Derivative-free manifold spring model (Winkler-like) for maximum stability.
+    eq_ku = Equation("Kuu", Term.new("dw_volume_dot(m_s.k_val, v, u)", integ_s, wood_surf, m_s=m_s, v=v, u=u))
     eq_mu = Equation("Muu", Term.new("dw_volume_dot(m_s.rho_val, v, u)", integ_s, wood_surf, m_s=m_s, v=v, u=u))
     eq_kp = Equation("Kpp", Term.new("dw_laplace(m_a.inv_rho, q, p)", integ_v, air, m_a=m_a, q=q, p=p))
     eq_mp = Equation("Mpp", Term.new("dw_volume_dot(m_a.inv_rho_c2, q, p)", integ_v, air, m_a=m_a, q=q, p=p))
