@@ -313,17 +313,13 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
     c0 = float(air_mat["speed_of_sound"])
     rho_air = float(air_mat["density"])
 
-    # Manifold structural surrogate coefficients (thickness-weighted):
-    # kappa ~ in-plane/bending resistance scale, rho_s ~ surface mass density.
-    kappa = max(E_eff * thick, 1.0)
+    # Manifold structural surrogate coefficients (thickness-weighted).
+    k_val = max(E_eff * thick * 1000.0, 1.0)
     rho_s = max(rho_eff * thick, 1e-9)
 
-    # Keep isotropic tensor available for future shell upgrades/debugging.
-    C_iso_3d = isotropic_stiffness(E_eff, nu_eff) * thick
     m_s = Material(
         "m_s",
-        C=C_iso_3d[np.newaxis, :, :],
-        kappa=np.array([[[kappa]]], dtype=np.float64),
+        k_val=np.array([[[k_val]]], dtype=np.float64),
         rho=np.array([[[rho_s]]], dtype=np.float64),
     )
     m_a = Material(
@@ -334,9 +330,8 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
     integ_s = Integral("isurf", order=2)  # surface/manifold terms
     integ_v = Integral("ivol", order=2)   # volume terms
 
-    # True vector structural stiffness using full 3D Voigt tensor (6x6),
-    # thickness-scaled for shell manifold behavior.
-    eq_ku = Equation("Kuu", Term.new("dw_lin_elastic(m_s.C, v, u)", integ_s, wood_surf, m_s=m_s, v=v, u=u))
+    # Manifold-safe structural stiffness surrogate (stable on 2D surface mesh).
+    eq_ku = Equation("Kuu", Term.new("dw_volume_dot(m_s.k_val, v, u)", integ_s, wood_surf, m_s=m_s, v=v, u=u))
     eq_mu = Equation("Muu", Term.new("dw_volume_dot(m_s.rho, v, u)", integ_s, wood_surf, m_s=m_s, v=v, u=u))
     eq_kp = Equation("Kpp", Term.new("dw_laplace(m_a.inv_rho, q, p)", integ_v, air, m_a=m_a, q=q, p=p))
     eq_mp = Equation("Mpp", Term.new("dw_volume_dot(m_a.inv_rho_c2, q, p)", integ_v, air, m_a=m_a, q=q, p=p))
