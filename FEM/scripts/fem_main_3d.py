@@ -254,18 +254,22 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     a_form = a_uu + a_pp + a_up
     m_form = m_uu + m_pp + m_pu
 
-    # Eliminate pressure on soundhole to avoid null-space drift.
+    # Dirichlet BCs using subspace-collapse strategy for strict C++ signatures.
     soundhole_facets = np.array(facet_tags.find(2), dtype=np.int32)
-    p_sub = W.sub(1).collapse()[0]
-    p_dofs = fem.locate_dofs_topological((W.sub(1), p_sub), fdim, soundhole_facets)
+    p_dofs = fem.locate_dofs_topological(W.sub(1), fdim, soundhole_facets)
+    u_dofs = fem.locate_dofs_topological(W.sub(0), fdim, soundhole_facets)
     p_dofs = np.array(p_dofs, dtype=np.int32)
-    # Keep explicit u_dofs typing hook for strict dtype diagnostics.
-    u_dofs = np.array([], dtype=np.int32)
+    u_dofs = np.array(u_dofs, dtype=np.int32)
     bcs = []
     try:
-        p_zero = fem.Constant(W.sub(1).mesh, PETSc.ScalarType(0.0))
-        bc_p0 = fem.dirichletbc(p_zero, p_dofs, W.sub(1))
-        bcs = [bc_p0]
+        V_p, _ = W.sub(1).collapse()
+        p_zero = fem.Constant(V_p, PETSc.ScalarType(0.0))
+        bc_p = fem.dirichletbc(p_zero, p_dofs, V_p)
+
+        V_u, _ = W.sub(0).collapse()
+        u_zero = np.array([0, 0, 0], dtype=PETSc.ScalarType)
+        bc_u = fem.dirichletbc(u_zero, u_dofs, V_u)
+        bcs = [bc_p, bc_u]
     except Exception as e:
         _emit(
             "[bc][error] dirichletbc creation failed. "
