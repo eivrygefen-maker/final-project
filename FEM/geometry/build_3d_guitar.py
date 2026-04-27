@@ -80,6 +80,26 @@ def create_guitar_mesh():
         bnds = gmsh.model.getBoundary(dimtags, oriented=False, recursive=False)
         return {tag for bdim, tag in bnds if bdim == dim}
 
+    def get_surface_center_z(surf_tag):
+        com = occ.getCenterOfMass(2, surf_tag)
+        return com[2]
+
+    def get_surface_normal_z(surf_tag):
+        """
+        Return |nz| at parametric midpoint of a surface.
+        Falls back to None if the CAD kernel/API cannot provide a normal.
+        """
+        try:
+            uv_min, uv_max = gmsh.model.getParametrizationBounds(2, surf_tag)
+            u_mid = 0.5 * (uv_min[0] + uv_max[0])
+            v_mid = 0.5 * (uv_min[1] + uv_max[1])
+            n = gmsh.model.getNormal(surf_tag, [u_mid, v_mid])
+            if n and len(n) >= 3:
+                return abs(float(n[2]))
+        except Exception:
+            return None
+        return None
+
     # --- בניית הגיאומטריה והאוויר (שלב 1 המעודכן) ---
     if "Box" in shape_type:
         vol_out_id = occ.addBox(-L/2, -W/2, -D/2, L, W, D)
@@ -179,8 +199,35 @@ def create_guitar_mesh():
     top_plate_surfs = sorted(list(top_plate_set))
     body_surfs = sorted(list(iface_set - top_plate_set))
 
+    # Fallback robustification:
+    # In some fragmented topologies, flood-fill can accidentally absorb all interface surfaces.
+    # If so, split by surface orientation (normal ~ Z) and top elevation; keep topology as primary.
     if not body_surfs:
-        raise RuntimeError("Body_Shell classification failed: no remaining interface surfaces")
+        z_values = {s: get_surface_center_z(s) for s in interface_surfs}
+        z_top = max(z_values.values()) if z_values else (D / 2.0)
+        z_tol = max(1e-4, 0.35 * t)
+
+        fallback_top = set()
+        for s in interface_surfs:
+            nz_abs = get_surface_normal_z(s)
+            zc = z_values[s]
+
+            # Top candidates: near top elevation and mostly horizontal.
+            # If normal is unavailable, fallback to elevation-only.
+            if (nz_abs is not None and nz_abs >= 0.6 and zc >= (z_top - z_tol)) or \
+               (nz_abs is None and zc >= (z_top - z_tol)):
+                fallback_top.add(s)
+
+        # Guarantee at least one top surface if heuristics were too strict.
+        if not fallback_top and interface_surfs:
+            highest = max(interface_surfs, key=lambda s: z_values[s])
+            fallback_top.add(highest)
+
+        top_plate_surfs = sorted(list(fallback_top))
+        body_surfs = sorted(list(iface_set - fallback_top))
+
+    if not body_surfs:
+        raise RuntimeError("Body_Shell classification failed after topology+normal fallback")
 
     # הגדרת הקבוצות הפיזיקליות לפי תגים קבועים
     gmsh.model.addPhysicalGroup(2, top_plate_surfs, tag=1, name="Top_Plate")
