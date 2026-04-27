@@ -131,6 +131,18 @@ def isotropic_stiffness(E, nu):
     return C
 
 
+def plane_stress_stiffness(E, nu):
+    """Build 2D plane-stress stiffness tensor (3x3 Voigt)."""
+    c = E / (1.0 - nu * nu)
+    C = np.zeros((3, 3), dtype=np.float64)
+    C[0, 0] = c
+    C[1, 1] = c
+    C[0, 1] = c * nu
+    C[1, 0] = c * nu
+    C[2, 2] = c * (1.0 - nu) * 0.5
+    return C
+
+
 def _assemble_matrix(problem, equation):
     mtx = problem.equations.create_matrix_graph()
     out = equation.evaluate(mode="weak", dw_mode="matrix", asm_obj=mtx)
@@ -269,8 +281,8 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
     if air.vertices.shape[0] == 0:
         raise RuntimeError("Acoustic region Tag 10 is empty. No volume domain to assemble.")
 
-    # Structural field: explicit 2D manifold.
-    fu = Field.from_args("fu", np.float64, 3, wood_surf, approx_order=1, space="H1")
+    # Structural field: explicit 2D manifold (plate/membrane kinematics on wood surface mesh).
+    fu = Field.from_args("fu", np.float64, 2, wood_surf, approx_order=1, space="H1")
     # Acoustic field: explicit 3D volume (tag 10 only).
     fp = Field.from_args("fp", np.float64, 1, air, approx_order=1, space="H1")
 
@@ -295,12 +307,19 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
     E_eff = 0.5 * (E_top + E_back)
     nu_eff = 0.5 * (nu_top + nu_back)
     rho_eff = 0.5 * (rho_top + rho_back)
-    C_eff = isotropic_stiffness(E_eff, nu_eff)
+    C_eff = plane_stress_stiffness(E_eff, nu_eff)
+    thick = float(config.get("geometry", {}).get("thickness", 0.003))
 
     c0 = float(air_mat["speed_of_sound"])
     rho_air = float(air_mat["density"])
 
-    m_s = Material("m_s", C=C_eff[np.newaxis, :, :], rho=np.array([[[rho_eff]]], dtype=np.float64))
+    # Plate/shell-like effective properties on the 2D manifold:
+    # stiffness and mass are thickness-weighted for physical scaling.
+    m_s = Material(
+        "m_s",
+        C=(C_eff * thick)[np.newaxis, :, :],
+        rho=np.array([[[rho_eff * thick]]], dtype=np.float64),
+    )
     m_a = Material(
         "m_a",
         inv_rho=np.array([[[1.0 / rho_air]]], dtype=np.float64),
@@ -309,38 +328,32 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
     integ_s = Integral("isurf", order=2)  # surface/manifold terms
     integ_v = Integral("ivol", order=2)   # volume terms
 
-    # Mixed-dimensional robustness:
-    # Do not call 3D volumetric elasticity terms directly on 2D surface regions.
-    # Build a shell-like surrogate on manifold DOFs for debugging and coupling stability.
-    #
-    # Equivalent shell scaling (thickness-weighted):
-    thick = float(config.get("geometry", {}).get("thickness", 0.003))
-    k_scale = max(E_eff * thick, 1.0)
-    m_scale = max(rho_eff * thick, 1e-6)
+    # True structural manifold formulation (replace previous diagonal surrogate).
+    # On 2D manifold domain, these provide membrane/plate-like physics.
+    eq_ku = Equation("Kuu", Term.new("dw_lin_elastic(m_s.C, v, u)", integ_s, wood_surf, m_s=m_s, v=v, u=u))
+    eq_mu = Equation("Muu", Term.new("dw_volume_dot(m_s.rho, v, u)", integ_s, wood_surf, m_s=m_s, v=v, u=u))
 
     # Acoustic operators (3D volume): -div(1/rho grad p) = w^2 * (1/(rho*c^2)) p
     eq_kp = Equation("Kpp", Term.new("dw_laplace(m_a.inv_rho, q, p)", integ_v, air, m_a=m_a, q=q, p=p))
     eq_mp = Equation("Mpp", Term.new("dw_volume_dot(m_a.inv_rho_c2, q, p)", integ_v, air, m_a=m_a, q=q, p=p))
 
-    # Separate dummy problem for 3D acoustic assembly.
+    # Separate problems for structural manifold and 3D acoustic assembly.
+    pb_u = Problem("struct", equations=Equations([eq_ku, eq_mu]))
     pb_p = Problem("acous", equations=Equations([eq_kp, eq_mp]))
 
-    for pb in (pb_p,):
+    for pb in (pb_u, pb_p):
         pb.time_update()
         pb.update_materials()
         vars_ = pb.get_variables()
         vars_.init_state()
 
     _emit("Step 1/4: Assembling structural and acoustic matrices...", status_callback=status_callback)
-    # Structural manifold surrogate matrices (2D shell DOFs in 3D space).
-    n_u = u.n_dof
-    _emit(
-        f"[assemble] Building structural manifold surrogate matrices on WoodSurf DOFs (n_u={n_u}).",
-        status_callback=status_callback,
-    )
-    Kuu = (k_scale * csr_matrix(np.eye(n_u, dtype=np.float64))).tocsr()
-    Muu = (m_scale * csr_matrix(np.eye(n_u, dtype=np.float64))).tocsr()
-    _emit("[assemble] Structural manifold matrices ready (surface-based surrogate).", status_callback=status_callback)
+    _emit("[assemble] Before structural stiffness assembly (Kuu).", status_callback=status_callback)
+    Kuu = _assemble_matrix(pb_u, eq_ku).tocsr()
+    _emit("[assemble] After structural stiffness assembly (Kuu).", status_callback=status_callback)
+    _emit("[assemble] Before structural mass assembly (Muu).", status_callback=status_callback)
+    Muu = _assemble_matrix(pb_u, eq_mu).tocsr()
+    _emit("[assemble] After structural mass assembly (Muu).", status_callback=status_callback)
 
     _emit("[assemble] Before acoustic stiffness assembly (Kpp).", status_callback=status_callback)
     Kpp = _assemble_matrix(pb_p, eq_kp).tocsr()
