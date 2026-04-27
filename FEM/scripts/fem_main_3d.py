@@ -334,14 +334,13 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
     integ_s = Integral("isurf", order=2)  # surface/manifold terms
     integ_v = Integral("ivol", order=2)   # volume terms
 
-    # Stable structural manifold formulation for 3-component displacement on surface:
+      # Stable structural manifold formulation for 3-component displacement on surface:
     # vector Laplace surrogate (stiffness) + vector mass.
     # This avoids dw_lin_elastic shape constraints on manifold vector fields.
     eq_ku = Equation("Kuu", Term.new("dw_laplace(m_s.kappa, v, u)", integ_s, wood_surf, m_s=m_s, v=v, u=u))
-    eq_mu = Equation("Muu", Term.new("dw_volume_dot(m_s.rho, v, u)", integ_s, wood_surf, m_s=m_s, v=v, u=u))
-
-    # Acoustic operators (3D volume): -div(1/rho grad p) = w^2 * (1/(rho*c^2)) p
-    eq_kp = Equation("Kpp", Term.new("dw_laplace(m_a.inv_rho, q, p)", integ_v, air, m_a=m_a, q=q, p=p))
+    # True vector structural stiffness using full 3D Voigt tensor (6x6),
+    # thickness-scaled for shell manifold behavior.
+    eq_ku = Equation("Kuu", Term.new("dw_lin_elastic(m_s.C, v, u)", integ_s, wood_surf, m_s=m_s, v=v, u=u))
     eq_mp = Equation("Mpp", Term.new("dw_volume_dot(m_a.inv_rho_c2, q, p)", integ_v, air, m_a=m_a, q=q, p=p))
 
     # Separate problems for structural manifold and 3D acoustic assembly.
