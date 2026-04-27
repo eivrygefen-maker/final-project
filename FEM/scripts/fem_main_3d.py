@@ -281,8 +281,9 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
     if air.vertices.shape[0] == 0:
         raise RuntimeError("Acoustic region Tag 10 is empty. No volume domain to assemble.")
 
-    # Structural field: explicit 2D manifold (plate/membrane kinematics on wood surface mesh).
-    fu = Field.from_args("fu", np.float64, 2, wood_surf, approx_order=1, space="H1")
+    # Structural field: 3D displacement components on a 2D manifold (embedded in 3D),
+    # so out-of-plane motion can couple to acoustic pressure.
+    fu = Field.from_args("fu", np.float64, 3, wood_surf, approx_order=1, space="H1")
     # Acoustic field: explicit 3D volume (tag 10 only).
     fp = Field.from_args("fp", np.float64, 1, air, approx_order=1, space="H1")
 
@@ -307,18 +308,23 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
     E_eff = 0.5 * (E_top + E_back)
     nu_eff = 0.5 * (nu_top + nu_back)
     rho_eff = 0.5 * (rho_top + rho_back)
-    C_eff = plane_stress_stiffness(E_eff, nu_eff)
     thick = float(config.get("geometry", {}).get("thickness", 0.003))
 
     c0 = float(air_mat["speed_of_sound"])
     rho_air = float(air_mat["density"])
 
-    # Plate/shell-like effective properties on the 2D manifold:
-    # stiffness and mass are thickness-weighted for physical scaling.
+    # Manifold structural surrogate coefficients (thickness-weighted):
+    # kappa ~ in-plane/bending resistance scale, rho_s ~ surface mass density.
+    kappa = max(E_eff * thick, 1.0)
+    rho_s = max(rho_eff * thick, 1e-9)
+
+    # Keep isotropic tensor available for future shell upgrades/debugging.
+    C_iso_3d = isotropic_stiffness(E_eff, nu_eff) * thick
     m_s = Material(
         "m_s",
-        C=(C_eff * thick)[np.newaxis, :, :],
-        rho=np.array([[[rho_eff * thick]]], dtype=np.float64),
+        C=C_iso_3d[np.newaxis, :, :],
+        kappa=np.array([[[kappa]]], dtype=np.float64),
+        rho=np.array([[[rho_s]]], dtype=np.float64),
     )
     m_a = Material(
         "m_a",
@@ -328,9 +334,10 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
     integ_s = Integral("isurf", order=2)  # surface/manifold terms
     integ_v = Integral("ivol", order=2)   # volume terms
 
-    # True structural manifold formulation (replace previous diagonal surrogate).
-    # On 2D manifold domain, these provide membrane/plate-like physics.
-    eq_ku = Equation("Kuu", Term.new("dw_lin_elastic(m_s.C, v, u)", integ_s, wood_surf, m_s=m_s, v=v, u=u))
+    # Stable structural manifold formulation for 3-component displacement on surface:
+    # vector Laplace surrogate (stiffness) + vector mass.
+    # This avoids dw_lin_elastic shape constraints on manifold vector fields.
+    eq_ku = Equation("Kuu", Term.new("dw_laplace(m_s.kappa, v, u)", integ_s, wood_surf, m_s=m_s, v=v, u=u))
     eq_mu = Equation("Muu", Term.new("dw_volume_dot(m_s.rho, v, u)", integ_s, wood_surf, m_s=m_s, v=v, u=u))
 
     # Acoustic operators (3D volume): -div(1/rho grad p) = w^2 * (1/(rho*c^2)) p
@@ -369,16 +376,21 @@ def build_coupled_matrices(mesh_file, config, status_callback=None):
     alpha = float(config.get("solver", {}).get("coupling_alpha", 1.0))
     beta = float(config.get("solver", {}).get("coupling_beta", 1.0))
 
-    # Surface/volume interface coupling scaffold (manual surface integration surrogate).
-    # If needed later, replace with explicit interface term assembled on WoodSurf/Air boundary.
-    k = min(n_u, n_p)
-    rows_up = np.arange(k, dtype=np.int32)
+    # Surface/volume interface coupling scaffold:
+    # map pressure primarily to normal displacement component (z) and vice versa.
+    # For vector-ordered DOFs [ux, uy, uz, ux, ...], z-indices are 2,5,8,...
+    u_z_idx = np.arange(2, n_u, 3, dtype=np.int32)
+    k = min(u_z_idx.size, n_p)
+    if k == 0:
+        raise RuntimeError("Coupling map is empty: no structural normal DOFs or no pressure DOFs.")
+
+    rows_up = u_z_idx[:k]
     cols_up = np.arange(k, dtype=np.int32)
     data_up = np.full(k, alpha, dtype=np.float64)
     Kup = csr_matrix((data_up, (rows_up, cols_up)), shape=(n_u, n_p))
 
     rows_pu = np.arange(k, dtype=np.int32)
-    cols_pu = np.arange(k, dtype=np.int32)
+    cols_pu = u_z_idx[:k]
     data_pu = np.full(k, beta, dtype=np.float64)
     Kpu = csr_matrix((data_pu, (rows_pu, cols_pu)), shape=(n_p, n_u))
 
