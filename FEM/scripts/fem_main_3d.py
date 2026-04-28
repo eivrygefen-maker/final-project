@@ -534,7 +534,7 @@ def _solve_coupled_evp(
     eps.setTarget(target_lambda)
     st = eps.getST()
     st.setType(SLEPc.ST.Type.SINVERT)
-    st.setShift(float(solver_cfg.get("st_shift", -1.0)))
+    st.setShift(-1.0)
 
     # Preconditioner/factorization hints for the shifted linear solves.
     ksp = st.getKSP()
@@ -589,8 +589,7 @@ def _solve_coupled_evp(
     petsc_opts["st_ksp_type"] = str(solver_cfg.get("st_iter_ksp_type", "gmres"))
     petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "unpreconditioned"))
 
-    fast_num_modes = int(solver_cfg.get("target_nev", 30))
-    fast_num_modes = max(fast_num_modes, num_modes)
+    fast_num_modes = 30
     ncv = int(solver_cfg.get("target_ncv", max(40, 4 * fast_num_modes)))
     eps.setDimensions(fast_num_modes, ncv)
     eps.setTolerances(float(solver_cfg.get("eigs_tol", 1e-4)), int(solver_cfg.get("eigs_maxiter", 2000)))
