@@ -104,6 +104,12 @@ class ROMManager:
         solver["mesh_file"] = str((self.base_dir / "FEM" / "mesh" / mesh_name).resolve())
         return cfg
 
+    def _save_shape_base_config(self, shape_name: str, cfg: Dict) -> None:
+        shape_cfg = self.shapes[shape_name]
+        config_path = self.base_dir / shape_cfg["base_config"]
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=4)
+
     def _rebuild_mesh(self, shape_name: str) -> None:
         cfg = self._load_shape_base_config(shape_name)
         mesh_file = Path(cfg["solver"]["mesh_file"])
@@ -406,6 +412,7 @@ class ROMManager:
                     cfg = self._load_shape_base_config(shape_name)
                     for k, v in params.items():
                         self._set_nested(cfg, k, v)
+                    self._save_shape_base_config(shape_name, cfg)
                     t0 = time.perf_counter()
                     fom = fem_main_3d.run_fom_for_rom(cfg, num_modes=num_modes)
                     elapsed = time.perf_counter() - t0
@@ -450,6 +457,7 @@ class ROMManager:
             cfg = self._load_shape_base_config(shape_name)
             for k, v in params.items():
                 self._set_nested(cfg, k, v)
+            self._save_shape_base_config(shape_name, cfg)
             t0 = time.perf_counter()
             fom = fem_main_3d.run_fom_for_rom(cfg, num_modes=num_modes)
             elapsed = time.perf_counter() - t0
@@ -568,6 +576,7 @@ class ROMManager:
         cfg = self._load_shape_base_config(shape_name)
         for k, v in params.items():
             self._set_nested(cfg, k, v)
+        self._save_shape_base_config(shape_name, cfg)
 
         t0 = time.perf_counter()
         fom = fem_main_3d.run_fom_for_rom(cfg, num_modes=max(fom_modes, nev))

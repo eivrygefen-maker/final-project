@@ -2,6 +2,7 @@ import json
 import logging
 import math
 import gc
+import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -16,9 +17,9 @@ from petsc4py import PETSc
 from slepc4py import SLEPc
 
 try:
-    from dolfinx.io import gmshio as dfx_gmshio
+    import meshio
 except Exception:
-    dfx_gmshio = None
+    meshio = None
 
 LOGGER = logging.getLogger("fem3d_dolfinx")
 if not LOGGER.handlers:
@@ -98,30 +99,77 @@ def _cleanup_xdmf_cache_keep_latest(cache_dir: Path, keep_last: int = 2, status_
     )
 
 
-def _load_mesh_with_fallback(mesh_file: Path, status_callback=None):
-    # Strict mode: ONLY dolfinx gmshio is allowed. No fallback loading.
-    if dfx_gmshio is None:
+def _generate_mesh_with_gmsh(status_callback=None) -> None:
+    geom_script = Path(__file__).resolve().parents[1] / "geometry" / "build_3d_guitar.py"
+    cmd = [sys.executable, str(geom_script), "-nopopup"]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
         raise RuntimeError(
-            "Strict mesh loading mode is enabled and dolfinx.io.gmshio is unavailable. "
-            "Mesh fallback is disabled by design."
+            "Gmsh mesh generation failed.\n"
+            f"stdout:\n{proc.stdout}\n\nstderr:\n{proc.stderr}"
         )
 
-    if dfx_gmshio is not None:
-        try:
-            _emit("[mesh] primary loader: dolfinx.io.gmshio.read_from_msh...", status_callback=status_callback)
-            msh, cell_tags, facet_tags = dfx_gmshio.read_from_msh(
-                str(mesh_file),
-                MPI.COMM_WORLD,
-                rank=0,
-                gdim=3,
-            )
-            _emit("[mesh] primary loader succeeded.", status_callback=status_callback)
-            return msh, cell_tags, facet_tags
-        except Exception as e:
-            raise RuntimeError(
-                "Strict mesh loading mode: gmshio.read_from_msh failed and fallback is disabled. "
-                f"Regenerate mesh and retry. Original error: {e}"
-            ) from e
+
+def _convert_msh_to_xdmf_with_meshio(mesh_file: Path, status_callback=None):
+    if meshio is None:
+        raise RuntimeError("meshio is required for strict Generate-Convert-Load flow.")
+    if not mesh_file.exists():
+        raise RuntimeError(f"Expected generated .msh not found: {mesh_file}")
+
+    _emit(f"[mesh] converting .msh via meshio: {mesh_file}", status_callback=status_callback)
+    msh = meshio.read(str(mesh_file))
+    if "gmsh:physical" not in msh.cell_data_dict:
+        raise RuntimeError("meshio read succeeded but gmsh:physical cell_data is missing.")
+
+    cell_phys = msh.cell_data_dict["gmsh:physical"]
+    tetra_cells = msh.get_cells_type("tetra")
+    tri_cells = msh.get_cells_type("triangle")
+    tetra_tags = cell_phys.get("tetra")
+    tri_tags = cell_phys.get("triangle")
+    if tetra_cells is None or len(tetra_cells) == 0 or tetra_tags is None:
+        raise RuntimeError("Generated mesh is missing tetra cells/tags.")
+    if tri_cells is None or len(tri_cells) == 0 or tri_tags is None:
+        raise RuntimeError("Generated mesh is missing triangle cells/tags.")
+
+    xdmf_dir = mesh_file.parent / "_xdmf_cache"
+    xdmf_dir.mkdir(parents=True, exist_ok=True)
+    vol_xdmf = xdmf_dir / "guitar_3d_volume.xdmf"
+    fac_xdmf = xdmf_dir / "guitar_3d_facets.xdmf"
+
+    vol_mesh = meshio.Mesh(
+        points=msh.points,
+        cells=[("tetra", tetra_cells)],
+        cell_data={"name_to_read": [np.asarray(tetra_tags, dtype=np.int32)]},
+    )
+    fac_mesh = meshio.Mesh(
+        points=msh.points,
+        cells=[("triangle", tri_cells)],
+        cell_data={"name_to_read": [np.asarray(tri_tags, dtype=np.int32)]},
+    )
+    meshio.write(str(vol_xdmf), vol_mesh)
+    meshio.write(str(fac_xdmf), fac_mesh)
+
+    if not vol_xdmf.exists() or not fac_xdmf.exists():
+        raise RuntimeError(
+            f"XDMF conversion failed. Missing files: vol={vol_xdmf.exists()}, fac={fac_xdmf.exists()}"
+        )
+    print("[diag] New mesh generated with 2mm wood refinement and converted successfully.")
+    sys.stdout.flush()
+    return vol_xdmf, fac_xdmf
+
+
+def _load_mesh_with_fallback(mesh_file: Path, status_callback=None):
+    # Strict primary path: Generate -> Convert -> Load (no fallback alternatives).
+    vol_xdmf, fac_xdmf = _convert_msh_to_xdmf_with_meshio(mesh_file, status_callback=status_callback)
+
+    with io.XDMFFile(MPI.COMM_WORLD, str(vol_xdmf), "r") as xdmf:
+        msh = xdmf.read_mesh(name="Grid")
+        msh.topology.create_connectivity(msh.topology.dim, msh.topology.dim - 1)
+        cell_tags = xdmf.read_meshtags(msh, name="Grid")
+    with io.XDMFFile(MPI.COMM_WORLD, str(fac_xdmf), "r") as xdmf:
+        msh.topology.create_connectivity(msh.topology.dim - 1, msh.topology.dim)
+        facet_tags = xdmf.read_meshtags(msh, name="Grid")
+    return msh, cell_tags, facet_tags
 
 
 def _load_mesh_and_tags(mesh_file: Path, status_callback=None):
@@ -612,7 +660,10 @@ def assemble_coupled_operators_for_rom(config: Dict, status_callback=None):
 def run_fom_for_rom(config: Dict, num_modes: int = 15, status_callback=None):
     mesh_file = Path(config["solver"]["mesh_file"])
     if not mesh_file.exists():
-        raise FileNotFoundError(f"Mesh file not found: {mesh_file}")
+        _emit(f"[mesh] missing .msh, generating new mesh: {mesh_file}", status_callback=status_callback)
+    _generate_mesh_with_gmsh(status_callback=status_callback)
+    if not mesh_file.exists():
+        raise FileNotFoundError(f"Fresh mesh generation did not create expected file: {mesh_file}")
     msh, W, freqs, eigvecs, n_u, n_p = _solve_coupled_evp(
         mesh_file=mesh_file,
         config=config,
