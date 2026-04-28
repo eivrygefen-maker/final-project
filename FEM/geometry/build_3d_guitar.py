@@ -41,7 +41,7 @@ def create_guitar_mesh():
         mesh_size_max = mesh_size
     else:
         mesh_size = 0.006
-        mesh_size_min = 0.006
+        mesh_size_min = 0.001
         mesh_size_max = 0.006
     
     print("DEBUG: Forcing Mesh Size to 0.006m (6mm).")
@@ -282,6 +282,12 @@ def create_guitar_mesh():
     mesh_resolution_factor = 1.0
     print(f"[diag] mesh_resolution_factor={mesh_resolution_factor}")
 
+    # Deep-probe overrides: force background field dominance.
+    gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+    gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+    gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+    gmsh.option.setNumber("Mesh.Algorithm", 6)  # Frontal-Delaunay
+
     # Local refinement on wood plate/shell surfaces via Distance+Threshold fields.
     if not is_preview:
         wood_surface_tags = top_plate_surfs + body_surfs
@@ -292,6 +298,7 @@ def create_guitar_mesh():
             print(f"[DEBUG] Refining surface {surf}: found {len(pts)} boundary points")
 
         if wood_surface_tags:
+            print(f"[DEBUG] All Wood Surfaces to refine: {wood_surface_tags}")
             # Field 1: distance from all wood surfaces.
             dist_field = gmsh.model.mesh.field.add("Distance")
             gmsh.model.mesh.field.setNumbers(dist_field, "FacesList", wood_surface_tags)
@@ -303,11 +310,14 @@ def create_guitar_mesh():
             gmsh.model.mesh.field.setNumber(thresh_field, "SizeMax", 0.006)
             gmsh.model.mesh.field.setNumber(thresh_field, "DistMin", 0.001)
             gmsh.model.mesh.field.setNumber(thresh_field, "DistMax", 0.04)
-            gmsh.model.mesh.field.setAsBackgroundMesh(thresh_field)
+            field_type = gmsh.model.mesh.field.getType(thresh_field)
+            print(f"[DEBUG] Field {thresh_field} created as type: {field_type}")
             print(
                 f"[diag] Distance+Threshold background field enabled on wood surfaces "
                 f"(n_surfaces={len(wood_surface_tags)})."
             )
+            # Keep this as the very last field instruction before mesh generation.
+            gmsh.model.mesh.field.setAsBackgroundMesh(thresh_field)
 
     try:
         print(
