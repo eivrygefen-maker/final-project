@@ -253,7 +253,7 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
 
     # Small diagonal regularization to improve conditioning of the coupled system.
     # This helps avoid NaN/Inf KSP norms near near-null/rigid-body components.
-    diag_shift = float(config.get("solver", {}).get("diag_shift", 1e-10))
+    diag_shift = float(config.get("solver", {}).get("diag_shift", 1e-6))
     reg_u = diag_shift * ufl.dot(u, v) * wood_ds
     reg_p = diag_shift * p * q * xdmf_dx(AIR_VOLUME_TAG)
 
@@ -302,21 +302,61 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
             )
 
         # Structural grounding fallback: if facet-based displacement dofs are empty,
-        # pin one vector-node to remove rigid-body translational/rotational drift.
+        # pin three distinct boundary points to suppress all rigid-body modes.
         if u_dofs.size == 0:
-            u_anchor = coords[np.argmin(np.linalg.norm(coords - mins, axis=1))]
+            boundary_mask = (
+                np.isclose(coords[:, 0], mins[0], atol=tol)
+                | np.isclose(coords[:, 0], maxs[0], atol=tol)
+                | np.isclose(coords[:, 1], mins[1], atol=tol)
+                | np.isclose(coords[:, 1], maxs[1], atol=tol)
+                | np.isclose(coords[:, 2], mins[2], atol=tol)
+                | np.isclose(coords[:, 2], maxs[2], atol=tol)
+            )
+            boundary_ids = np.where(boundary_mask)[0]
+            if boundary_ids.size == 0:
+                boundary_ids = np.arange(coords.shape[0], dtype=np.int32)
 
-            def _u_anchor_marker(x):
-                return (
-                    np.isclose(x[0], u_anchor[0], atol=tol)
-                    & np.isclose(x[1], u_anchor[1], atol=tol)
-                    & np.isclose(x[2], u_anchor[2], atol=tol)
-                )
+            bcoords = coords[boundary_ids]
+            i_min_x = int(np.argpartition(bcoords[:, 0], 0)[0])
+            i_max_x = int(np.argpartition(bcoords[:, 0], bcoords.shape[0] - 1)[bcoords.shape[0] - 1])
+            i_min_y = int(np.argpartition(bcoords[:, 1], 0)[0])
+            anchor_ids = [int(boundary_ids[i_min_x]), int(boundary_ids[i_max_x]), int(boundary_ids[i_min_y])]
 
-            u_dofs = np.array(fem.locate_dofs_geometrical(V_u, _u_anchor_marker), dtype=np.int32)
+            # Ensure distinct anchors; if duplicates appear, fill from farthest points.
+            unique_anchor_ids = []
+            for idx in anchor_ids:
+                if idx not in unique_anchor_ids:
+                    unique_anchor_ids.append(idx)
+            if len(unique_anchor_ids) < 3:
+                centroid = np.mean(bcoords, axis=0)
+                dist = np.linalg.norm(bcoords - centroid, axis=1)
+                far_order = np.argsort(-dist)
+                for loc in far_order.tolist():
+                    cand = int(boundary_ids[int(loc)])
+                    if cand not in unique_anchor_ids:
+                        unique_anchor_ids.append(cand)
+                    if len(unique_anchor_ids) >= 3:
+                        break
+
+            u_anchor_pts = [coords[idx] for idx in unique_anchor_ids[:3]]
+            u_dof_blocks = []
+            for u_anchor in u_anchor_pts:
+                def _u_anchor_marker(x, pt=u_anchor):
+                    return (
+                        np.isclose(x[0], pt[0], atol=tol)
+                        & np.isclose(x[1], pt[1], atol=tol)
+                        & np.isclose(x[2], pt[2], atol=tol)
+                    )
+
+                u_dof_blocks.append(fem.locate_dofs_geometrical(V_u, _u_anchor_marker))
+
+            if u_dof_blocks:
+                u_dofs = np.array(np.unique(np.concatenate(u_dof_blocks)), dtype=np.int32)
+            else:
+                u_dofs = np.array([], dtype=np.int32)
             _emit(
-                f"[bc][warn] facet-based u_dofs empty; using single-point displacement anchor at {u_anchor.tolist()} "
-                f"(count={u_dofs.size})",
+                f"[bc][warn] facet-based u_dofs empty; using 3-point displacement anchors "
+                f"at {[pt.tolist() for pt in u_anchor_pts]} (count={u_dofs.size})",
                 status_callback=status_callback,
                 level="warning",
             )
@@ -374,6 +414,7 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     eps.setTarget(target_lambda)
     st = eps.getST()
     st.setType(SLEPc.ST.Type.SINVERT)
+    st.setShift(float(solver_cfg.get("st_shift", 1.0)))
 
     # Preconditioner/factorization hints for the shifted linear solves.
     ksp = st.getKSP()
@@ -415,6 +456,7 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     petsc_opts["mg_levels_pc_type"] = mg_levels_pc_type
     petsc_opts["pc_gamg_threshold"] = float(solver_cfg.get("pc_gamg_threshold", 0.02))
     petsc_opts["pc_gamg_square_graph"] = int(solver_cfg.get("pc_gamg_square_graph", 1))
+    petsc_opts["pc_gamg_agg_nsmooths"] = int(solver_cfg.get("pc_gamg_agg_nsmooths", 1))
     petsc_opts["mg_coarse_pc_type"] = str(solver_cfg.get("mg_coarse_pc_type", "svd"))
     # Explicit ST-KSP options for iterative shift-invert stability.
     petsc_opts["st_ksp_type"] = str(solver_cfg.get("st_iter_ksp_type", "gmres"))
