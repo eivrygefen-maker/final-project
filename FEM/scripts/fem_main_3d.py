@@ -20,12 +20,6 @@ try:
 except Exception:
     dfx_gmshio = None
 
-try:
-    import meshio
-except Exception:
-    meshio = None
-
-
 LOGGER = logging.getLogger("fem3d_dolfinx")
 if not LOGGER.handlers:
     handler = logging.StreamHandler(sys.stderr)
@@ -104,65 +98,14 @@ def _cleanup_xdmf_cache_keep_latest(cache_dir: Path, keep_last: int = 2, status_
     )
 
 
-def _convert_msh_to_xdmf_with_meshio(mesh_file: Path, out_dir: Path, status_callback=None):
-    if meshio is None:
-        raise RuntimeError("meshio is not available for fallback conversion.")
-
-    _emit("[mesh-fallback] reading .msh with meshio...", status_callback=status_callback)
-    msh = meshio.read(str(mesh_file))
-    if "gmsh:physical" not in msh.cell_data_dict:
-        raise RuntimeError("meshio read succeeded but gmsh:physical cell_data is missing.")
-
-    cell_phys = msh.cell_data_dict["gmsh:physical"]
-    tetra_cells = msh.get_cells_type("tetra")
-    tri_cells = msh.get_cells_type("triangle")
-    tetra_tags = cell_phys.get("tetra")
-    tri_tags = cell_phys.get("triangle")
-
-    if tetra_cells is None or len(tetra_cells) == 0:
-        raise RuntimeError("No tetra cells found in .msh for air volume.")
-    if tetra_tags is None:
-        raise RuntimeError("No tetra gmsh:physical tags found in .msh.")
-    if tri_cells is None or len(tri_cells) == 0:
-        raise RuntimeError("No triangle cells found in .msh for wood facets.")
-    if tri_tags is None:
-        raise RuntimeError("No triangle gmsh:physical tags found in .msh.")
-
-    _emit(
-        f"[mesh-fallback] tetra={len(tetra_cells)} tri={len(tri_cells)} "
-        f"air(tag=10) count={int(np.sum(np.asarray(tetra_tags) == AIR_VOLUME_TAG))}",
-        status_callback=status_callback,
-    )
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    vol_xdmf = out_dir / "guitar_3d_volume.xdmf"
-    fac_xdmf = out_dir / "guitar_3d_facets.xdmf"
-
-    vol_mesh = meshio.Mesh(
-        points=msh.points,
-        cells=[("tetra", tetra_cells)],
-        cell_data={"name_to_read": [np.asarray(tetra_tags, dtype=np.int32)]},
-    )
-    fac_mesh = meshio.Mesh(
-        points=msh.points,
-        cells=[("triangle", tri_cells)],
-        cell_data={"name_to_read": [np.asarray(tri_tags, dtype=np.int32)]},
-    )
-
-    _emit(f"[mesh-fallback] writing volume XDMF: {vol_xdmf}", status_callback=status_callback)
-    meshio.write(str(vol_xdmf), vol_mesh)
-    _emit(f"[mesh-fallback] writing facet XDMF: {fac_xdmf}", status_callback=status_callback)
-    meshio.write(str(fac_xdmf), fac_mesh)
-    _emit(
-        f"[mesh-fallback] cache verify: vol_exists={vol_xdmf.exists()} size={vol_xdmf.stat().st_size if vol_xdmf.exists() else -1}, "
-        f"fac_exists={fac_xdmf.exists()} size={fac_xdmf.stat().st_size if fac_xdmf.exists() else -1}",
-        status_callback=status_callback,
-    )
-    return vol_xdmf, fac_xdmf
-
-
 def _load_mesh_with_fallback(mesh_file: Path, status_callback=None):
-    # Primary method: dolfinx gmshio
+    # Strict mode: ONLY dolfinx gmshio is allowed. No fallback loading.
+    if dfx_gmshio is None:
+        raise RuntimeError(
+            "Strict mesh loading mode is enabled and dolfinx.io.gmshio is unavailable. "
+            "Mesh fallback is disabled by design."
+        )
+
     if dfx_gmshio is not None:
         try:
             _emit("[mesh] primary loader: dolfinx.io.gmshio.read_from_msh...", status_callback=status_callback)
@@ -175,33 +118,10 @@ def _load_mesh_with_fallback(mesh_file: Path, status_callback=None):
             _emit("[mesh] primary loader succeeded.", status_callback=status_callback)
             return msh, cell_tags, facet_tags
         except Exception as e:
-            _emit(f"[mesh][warn] primary loader failed: {e}", status_callback=status_callback, level="warning")
-    else:
-        _emit("[mesh][warn] dolfinx.io.gmshio import failed; using meshio fallback.", status_callback=status_callback, level="warning")
-
-    # Fallback method: meshio -> XDMF -> XDMFFile
-    _emit("[mesh] fallback loader start: meshio -> XDMF -> dolfinx.io.XDMFFile", status_callback=status_callback)
-    xdmf_dir = mesh_file.parent / "_xdmf_cache"
-    vol_xdmf, fac_xdmf = _convert_msh_to_xdmf_with_meshio(mesh_file, xdmf_dir, status_callback=status_callback)
-    _emit(
-        f"[mesh-fallback] cache files ready: vol={vol_xdmf} exists={vol_xdmf.exists()}, "
-        f"fac={fac_xdmf} exists={fac_xdmf.exists()}",
-        status_callback=status_callback,
-    )
-
-    _emit(f"[mesh-fallback] opening volume XDMF for mesh/tags: {vol_xdmf}", status_callback=status_callback)
-    with io.XDMFFile(MPI.COMM_WORLD, str(vol_xdmf), "r") as xdmf:
-        msh = xdmf.read_mesh(name="Grid")
-        msh.topology.create_connectivity(msh.topology.dim, msh.topology.dim - 1)
-        cell_tags = xdmf.read_meshtags(msh, name="Grid")
-
-    _emit(f"[mesh-fallback] opening facet XDMF for tags: {fac_xdmf}", status_callback=status_callback)
-    with io.XDMFFile(MPI.COMM_WORLD, str(fac_xdmf), "r") as xdmf:
-        msh.topology.create_connectivity(msh.topology.dim - 1, msh.topology.dim)
-        facet_tags = xdmf.read_meshtags(msh, name="Grid")
-
-    _emit("[mesh] fallback loader succeeded.", status_callback=status_callback)
-    return msh, cell_tags, facet_tags
+            raise RuntimeError(
+                "Strict mesh loading mode: gmshio.read_from_msh failed and fallback is disabled. "
+                f"Regenerate mesh and retry. Original error: {e}"
+            ) from e
 
 
 def _load_mesh_and_tags(mesh_file: Path, status_callback=None):

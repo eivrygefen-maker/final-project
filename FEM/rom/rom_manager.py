@@ -1,5 +1,6 @@
 import json
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -96,10 +97,19 @@ class ROMManager:
         shape_cfg = self.shapes[shape_name]
         config_path = self.base_dir / shape_cfg["base_config"]
         with open(config_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            cfg = json.load(f)
+        # Force mesh path to project-local FEM/mesh to avoid stale external paths.
+        solver = cfg.setdefault("solver", {})
+        mesh_name = Path(str(solver.get("mesh_file", "guitar_3d.msh"))).name
+        solver["mesh_file"] = str((self.base_dir / "FEM" / "mesh" / mesh_name).resolve())
+        return cfg
 
     def _rebuild_mesh(self, shape_name: str) -> None:
         cfg = self._load_shape_base_config(shape_name)
+        mesh_file = Path(cfg["solver"]["mesh_file"])
+        xdmf_cache = mesh_file.parent / "_xdmf_cache"
+        if xdmf_cache.exists():
+            shutil.rmtree(xdmf_cache, ignore_errors=True)
         geom_script = self.base_dir / "FEM" / "geometry" / "build_3d_guitar.py"
         cmd = [sys.executable, str(geom_script), "-nopopup"]
         proc = subprocess.run(cmd, cwd=str(self.base_dir), capture_output=True, text=True)
