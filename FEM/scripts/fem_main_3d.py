@@ -1,6 +1,7 @@
 import json
 import logging
 import math
+import gc
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -263,6 +264,7 @@ def _solve_coupled_evp(
     solve_evp: bool = True,
 ):
     msh, cell_tags, facet_tags = _load_mesh_and_tags(mesh_file, status_callback=status_callback)
+    gc.collect()
     tdim = msh.topology.dim
     fdim = tdim - 1
     num_cells_global = msh.topology.index_map(tdim).size_global
@@ -359,6 +361,9 @@ def _solve_coupled_evp(
 
     a_form = a_uu + a_pp + a_up + reg_u + reg_p
     m_form = m_uu + m_pp + m_pu
+
+    # Release no-longer-needed symbolic temporaries once forms are finalized.
+    del eps_u, eps_v, w_n, v_n, wood_tag_top, wood_tag_shell
 
     # Dirichlet BCs using subspace-collapse strategy for strict C++ signatures.
     soundhole_facets = np.array(facet_tags.find(2), dtype=np.int32)
@@ -506,7 +511,14 @@ def _solve_coupled_evp(
     if not solve_evp:
         return msh, W, A, M
 
+    # Release form objects before eigensolve; matrices are already assembled.
+    del a_form, m_form, a_uu, a_pp, a_up, m_uu, m_pp, m_pu, reg_u, reg_p
+    gc.collect()
+
     _emit("Step 3/5: Solving generalized EVP with SLEPc...", status_callback=status_callback)
+    n_dofs = int(W.dofmap.index_map.size_global * W.dofmap.index_map_bs)
+    print(f"Starting solver with {n_dofs} DOFs and proactive memory cleanup...")
+    sys.stdout.flush()
     eps = SLEPc.EPS().create(MPI.COMM_WORLD)
     eps.setOperators(A, M)
     # Coupled structural-acoustic system is generally indefinite/non-Hermitian.
