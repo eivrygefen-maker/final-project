@@ -295,7 +295,7 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
 
     # Small diagonal regularization to improve conditioning of the coupled system.
     # This helps avoid NaN/Inf KSP norms near near-null/rigid-body components.
-    diag_shift = float(config.get("solver", {}).get("diag_shift", 1.0))
+    diag_shift = float(config.get("solver", {}).get("diag_shift", 1.0e4))
     # Global mixed-space regularization so every DOF gets a diagonal anchor.
     reg_u = diag_shift * ufl.dot(u, v) * full_dx
     reg_p = diag_shift * p * q * full_dx
@@ -454,7 +454,7 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
     solver_cfg = config.get("solver", {})
     eps.setKrylovSchurRestart(float(solver_cfg.get("krylov_schur_restart", 0.5)))
-    target_freq_hz = float(solver_cfg.get("target_freq_hz", 100.0))
+    target_freq_hz = float(solver_cfg.get("target_freq_hz", 150.0))
     target_lambda = (2.0 * math.pi * target_freq_hz) ** 2
 
     # Shift-and-invert around the physically relevant low-frequency range.
@@ -467,7 +467,7 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     # Preconditioner/factorization hints for the shifted linear solves.
     ksp = st.getKSP()
     pc = ksp.getPC()
-    use_iterative = bool(solver_cfg.get("st_use_iterative_fallback", True))
+    use_iterative = bool(solver_cfg.get("st_use_iterative_fallback", False))
     if use_iterative:
         # Memory-efficient inner solve for shift-invert.
         ksp.setType(str(solver_cfg.get("st_iter_ksp_type", "gmres")))
