@@ -255,7 +255,13 @@ def _effective_wood_properties(config: Dict) -> Tuple[float, float, float, float
     return E_eff, nu_eff, rho_eff, thickness
 
 
-def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_callback=None):
+def _solve_coupled_evp(
+    mesh_file: Path,
+    config: Dict,
+    num_modes: int,
+    status_callback=None,
+    solve_evp: bool = True,
+):
     msh, cell_tags, facet_tags = _load_mesh_and_tags(mesh_file, status_callback=status_callback)
     tdim = msh.topology.dim
     fdim = tdim - 1
@@ -497,6 +503,9 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     M = assemble_matrix(fem.form(m_form), bcs=bcs)
     M.assemble()
 
+    if not solve_evp:
+        return msh, W, A, M
+
     _emit("Step 3/5: Solving generalized EVP with SLEPc...", status_callback=status_callback)
     eps = SLEPc.EPS().create(MPI.COMM_WORLD)
     eps.setOperators(A, M)
@@ -634,6 +643,40 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     n_u = W.sub(0).dofmap.index_map.size_local * W.sub(0).dofmap.index_map_bs
     n_p = W.sub(1).dofmap.index_map.size_local * W.sub(1).dofmap.index_map_bs
     return msh, W, freqs_hz, eigvecs, n_u, n_p
+
+
+def assemble_coupled_operators_for_rom(config: Dict, status_callback=None):
+    mesh_file = Path(config["solver"]["mesh_file"])
+    if not mesh_file.exists():
+        raise FileNotFoundError(f"Mesh file not found: {mesh_file}")
+    msh, W, A, M = _solve_coupled_evp(
+        mesh_file=mesh_file,
+        config=config,
+        num_modes=1,
+        status_callback=status_callback,
+        solve_evp=False,
+    )
+    return msh, W, A, M
+
+
+def run_fom_for_rom(config: Dict, num_modes: int = 6, status_callback=None):
+    mesh_file = Path(config["solver"]["mesh_file"])
+    if not mesh_file.exists():
+        raise FileNotFoundError(f"Mesh file not found: {mesh_file}")
+    msh, W, freqs, eigvecs, n_u, n_p = _solve_coupled_evp(
+        mesh_file=mesh_file,
+        config=config,
+        num_modes=num_modes,
+        status_callback=status_callback,
+    )
+    return {
+        "mesh": msh,
+        "space": W,
+        "freqs_hz": freqs,
+        "eigvecs": eigvecs,
+        "n_u": n_u,
+        "n_p": n_p,
+    }
 
 
 def _write_mode_files(
