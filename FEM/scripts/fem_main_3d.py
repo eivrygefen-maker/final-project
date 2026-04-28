@@ -5,7 +5,7 @@ import gc
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import ufl
@@ -224,6 +224,138 @@ def _effective_wood_properties(config: Dict) -> Tuple[float, float, float, float
     nu_eff = 0.5 * (nu_top + nu_back)
     rho_eff = 0.5 * (rho_top + rho_back)
     return E_eff, nu_eff, rho_eff, thickness
+
+
+def _wood_mass_energy_ratio(phi: PETSc.Vec, M: PETSc.Mat, M_wood: PETSc.Mat, work: PETSc.Vec) -> float:
+    """Structural (wood shell mass) share of generalized kinetic form: (phi^T M_wood phi) / (phi^T M phi)."""
+    M.mult(phi, work)
+    e_tot = float(np.real(phi.dot(work)))
+    M_wood.mult(phi, work)
+    e_w = float(np.real(phi.dot(work)))
+    if abs(e_tot) < 1e-60:
+        return 0.0
+    return e_w / e_tot
+
+
+def _slepc_shift_invert_batch(
+    A: PETSc.Mat,
+    M: PETSc.Mat,
+    solver_cfg: Dict,
+    shift_hz: float,
+    batch: int,
+    diag_shift: float,
+    status_callback,
+    M_wood: Optional[PETSc.Mat] = None,
+    work: Optional[PETSc.Vec] = None,
+) -> Tuple[int, List[Tuple[float, np.ndarray, Optional[float]]]]:
+    """Run one SLEPc GNHEP shift-invert solve; returns (nconv, list of (freq_hz, eigenvector, wood_ratio|None))."""
+    target_lambda = (2.0 * math.pi * float(shift_hz)) ** 2
+    eps = SLEPc.EPS().create(MPI.COMM_WORLD)
+    eps.setOperators(A, M)
+    eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
+    eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
+    eps.setKrylovSchurRestart(float(solver_cfg.get("krylov_schur_restart", 0.5)))
+    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
+    eps.setTarget(target_lambda)
+    st = eps.getST()
+    st.setType(SLEPc.ST.Type.SINVERT)
+
+    ksp = st.getKSP()
+    pc = ksp.getPC()
+    use_iterative = bool(solver_cfg.get("st_use_iterative_fallback", False))
+    if use_iterative:
+        ksp.setType(str(solver_cfg.get("st_iter_ksp_type", "gmres")))
+        pc.setType(str(solver_cfg.get("st_iter_pc_type", "gamg")))
+        ksp_rtol = float(solver_cfg.get("st_iter_ksp_rtol", 1e-4))
+        ksp_max_it = int(solver_cfg.get("st_iter_ksp_max_it", 1000))
+        ksp.setTolerances(rtol=ksp_rtol, max_it=ksp_max_it)
+        ksp.setConvergenceHistory()
+        ksp.setNormType(PETSc.KSP.NormType.UNPRECONDITIONED)
+        if bool(solver_cfg.get("ksp_monitor", False)):
+            ksp.setMonitor(
+                lambda _ksp, its, rnorm: _emit(f"[ksp] it={its} rnorm={rnorm:.6e}", status_callback=status_callback)
+            )
+        if pc.getType().lower() == "hypre":
+            try:
+                pc.setHYPREType(str(solver_cfg.get("st_iter_hypre_type", "boomeramg")))
+            except Exception:
+                pass
+    else:
+        ksp.setType(str(solver_cfg.get("st_ksp_type", "preonly")))
+        pc.setType(str(solver_cfg.get("st_pc_type", "lu")))
+        pc.setFactorSolverType(str(solver_cfg.get("st_factor_solver_type", "mumps")))
+
+    mumps_icntl_14 = int(solver_cfg.get("mat_mumps_icntl_14", 100))
+    mumps_icntl_24 = int(solver_cfg.get("mat_mumps_icntl_24", 1))
+    mumps_icntl_22 = int(solver_cfg.get("mat_mumps_icntl_22", 1))
+    petsc_opts = PETSc.Options()
+    petsc_opts["mat_mumps_icntl_14"] = mumps_icntl_14
+    petsc_opts["mat_mumps_icntl_24"] = mumps_icntl_24
+    petsc_opts["mat_mumps_icntl_22"] = mumps_icntl_22
+    mg_levels_ksp_type = str(solver_cfg.get("mg_levels_ksp_type", "chebyshev"))
+    mg_levels_pc_type = str(solver_cfg.get("mg_levels_pc_type", "sor"))
+    petsc_opts["mg_levels_ksp_type"] = mg_levels_ksp_type
+    petsc_opts["mg_levels_pc_type"] = mg_levels_pc_type
+    petsc_opts["pc_gamg_threshold"] = float(solver_cfg.get("pc_gamg_threshold", 0.02))
+    petsc_opts["pc_gamg_square_graph"] = int(solver_cfg.get("pc_gamg_square_graph", 1))
+    petsc_opts["pc_gamg_agg_nsmooths"] = int(solver_cfg.get("pc_gamg_agg_nsmooths", 1))
+    petsc_opts["mg_coarse_pc_type"] = str(solver_cfg.get("mg_coarse_pc_type", "jacobi"))
+    petsc_opts["pc_factor_shift_type"] = str(solver_cfg.get("pc_factor_shift_type", "nonzero"))
+    petsc_opts["pc_factor_shift_amount"] = float(solver_cfg.get("pc_factor_shift_amount", 1e-2))
+    petsc_opts["eps_gen_non_hermitian"] = ""
+    petsc_opts["bv_orthog_refine"] = str(solver_cfg.get("bv_orthog_refine", "always"))
+    petsc_opts["st_ksp_type"] = str(solver_cfg.get("st_iter_ksp_type", "gmres"))
+    petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "unpreconditioned"))
+
+    ncv = int(solver_cfg.get("target_ncv", max(40, 4 * batch)))
+    eps.setDimensions(batch, ncv)
+    eps.setTolerances(float(solver_cfg.get("eigs_tol", 1e-4)), int(solver_cfg.get("eigs_maxiter", 2000)))
+
+    diag_vec = A.getDiagonal()
+    diag_arr = np.real(diag_vec.array)
+    if diag_arr.size > 0:
+        diag_min = float(np.min(diag_arr))
+        diag_max = float(np.max(diag_arr))
+    else:
+        diag_min = float("nan")
+        diag_max = float("nan")
+    _emit(
+        f"[solver] shift-invert batch center {shift_hz:.2f} Hz (lambda={target_lambda:.6e} s^-2), "
+        f"batch={batch}, KSP={ksp.getType()}, PC={pc.getType()}, "
+        f"MUMPS(ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}, ICNTL22={mumps_icntl_22}), "
+        f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}, "
+        f"iterative={use_iterative}",
+        status_callback=status_callback,
+    )
+    st.setShift(target_lambda)
+    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
+    eps.setFromOptions()
+    eps.solve()
+
+    its = eps.getIterationNumber()
+    nconv = eps.getConverged()
+    reason = eps.getConvergedReason()
+    _emit(
+        f"[solver] EPS sweep @ {shift_hz:.1f} Hz: iterations={its}, converged={nconv}, reason={reason}",
+        status_callback=status_callback,
+    )
+
+    out: List[Tuple[float, np.ndarray, Optional[float]]] = []
+    rvec = A.createVecRight()
+    for i in range(min(batch, nconv)):
+        eig = eps.getEigenpair(i, rvec)
+        eig_r = float(np.real(eig))
+        if eig_r <= 1.0e-14:
+            continue
+        omega = math.sqrt(eig_r)
+        f_hz = omega / (2.0 * math.pi)
+        ratio: Optional[float] = None
+        if M_wood is not None and work is not None:
+            ratio = _wood_mass_energy_ratio(rvec, M, M_wood, work)
+        out.append((f_hz, rvec.array.copy(), ratio))
+
+    eps.destroy()
+    return nconv, out
 
 
 def _solve_coupled_evp(
@@ -546,6 +678,13 @@ def _solve_coupled_evp(
     M = assemble_matrix(fem.form(m_form), bcs=bcs)
     M.assemble()
 
+    solver_cfg = config.get("solver", {})
+    use_sifter = bool(solver_cfg.get("adaptive_mode_sifter", True))
+    M_wood: Optional[PETSc.Mat] = None
+    if solve_evp and use_sifter:
+        M_wood = assemble_matrix(fem.form(m_uu), bcs=bcs)
+        M_wood.assemble()
+
     if not solve_evp:
         return msh, W, A, M
 
@@ -564,157 +703,132 @@ def _solve_coupled_evp(
     sys.stdout.flush()
     print(f"Starting solver with {n_dofs} DOFs and proactive memory cleanup...")
     sys.stdout.flush()
-    eps = SLEPc.EPS().create(MPI.COMM_WORLD)
-    eps.setOperators(A, M)
-    # Coupled structural-acoustic system is generally indefinite/non-Hermitian.
-    eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
-    eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
-    solver_cfg = config.get("solver", {})
-    eps.setKrylovSchurRestart(float(solver_cfg.get("krylov_schur_restart", 0.5)))
-    shift_target_hz = float(solver_cfg.get("shift_invert_target_hz", 150.0))
-    target_lambda = (2.0 * math.pi * shift_target_hz) ** 2
 
-    # Shift-and-invert around the physically relevant low-frequency range.
-    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
-    eps.setTarget(target_lambda)
-    st = eps.getST()
-    st.setType(SLEPc.ST.Type.SINVERT)
-
-    # Preconditioner/factorization hints for the shifted linear solves.
-    ksp = st.getKSP()
-    pc = ksp.getPC()
-    use_iterative = bool(solver_cfg.get("st_use_iterative_fallback", False))
-    if use_iterative:
-        # Memory-efficient inner solve for shift-invert.
-        ksp.setType(str(solver_cfg.get("st_iter_ksp_type", "gmres")))
-        pc.setType(str(solver_cfg.get("st_iter_pc_type", "gamg")))
-        ksp_rtol = float(solver_cfg.get("st_iter_ksp_rtol", 1e-4))
-        ksp_max_it = int(solver_cfg.get("st_iter_ksp_max_it", 1000))
-        ksp.setTolerances(rtol=ksp_rtol, max_it=ksp_max_it)
-        ksp.setConvergenceHistory()
-        ksp.setNormType(PETSc.KSP.NormType.UNPRECONDITIONED)
-        if bool(solver_cfg.get("ksp_monitor", False)):
-            ksp.setMonitor(lambda _ksp, its, rnorm: _emit(f"[ksp] it={its} rnorm={rnorm:.6e}", status_callback=status_callback))
-        if pc.getType().lower() == "hypre":
-            # BoomerAMG is generally robust for large 3D coupled systems.
-            try:
-                pc.setHYPREType(str(solver_cfg.get("st_iter_hypre_type", "boomeramg")))
-            except Exception:
-                pass
-    else:
-        ksp.setType(str(solver_cfg.get("st_ksp_type", "preonly")))
-        pc.setType(str(solver_cfg.get("st_pc_type", "lu")))
-        pc.setFactorSolverType(str(solver_cfg.get("st_factor_solver_type", "mumps")))
-
-    # PETSc/MUMPS memory and robustness tuning for shifted LU factorizations.
-    # - ICNTL(14): increase MUMPS working memory percentage to reduce OOM (-9).
-    # - ICNTL(24): enhanced null-pivot detection in coupled problems.
-    # - ICNTL(22): out-of-core mode (optional; slower but less RAM pressure).
-    mumps_icntl_14 = int(solver_cfg.get("mat_mumps_icntl_14", 100))
-    mumps_icntl_24 = int(solver_cfg.get("mat_mumps_icntl_24", 1))
-    mumps_icntl_22 = int(solver_cfg.get("mat_mumps_icntl_22", 1))
-    petsc_opts = PETSc.Options()
-    petsc_opts["mat_mumps_icntl_14"] = mumps_icntl_14
-    petsc_opts["mat_mumps_icntl_24"] = mumps_icntl_24
-    petsc_opts["mat_mumps_icntl_22"] = mumps_icntl_22
-    mg_levels_ksp_type = str(solver_cfg.get("mg_levels_ksp_type", "chebyshev"))
-    mg_levels_pc_type = str(solver_cfg.get("mg_levels_pc_type", "sor"))
-    petsc_opts["mg_levels_ksp_type"] = mg_levels_ksp_type
-    petsc_opts["mg_levels_pc_type"] = mg_levels_pc_type
-    petsc_opts["pc_gamg_threshold"] = float(solver_cfg.get("pc_gamg_threshold", 0.02))
-    petsc_opts["pc_gamg_square_graph"] = int(solver_cfg.get("pc_gamg_square_graph", 1))
-    petsc_opts["pc_gamg_agg_nsmooths"] = int(solver_cfg.get("pc_gamg_agg_nsmooths", 1))
-    petsc_opts["mg_coarse_pc_type"] = str(solver_cfg.get("mg_coarse_pc_type", "jacobi"))
-    petsc_opts["pc_factor_shift_type"] = str(solver_cfg.get("pc_factor_shift_type", "nonzero"))
-    petsc_opts["pc_factor_shift_amount"] = float(solver_cfg.get("pc_factor_shift_amount", 1e-2))
-    petsc_opts["eps_gen_non_hermitian"] = ""
-    petsc_opts["bv_orthog_refine"] = str(solver_cfg.get("bv_orthog_refine", "always"))
-    # Explicit ST-KSP options for iterative shift-invert stability.
-    petsc_opts["st_ksp_type"] = str(solver_cfg.get("st_iter_ksp_type", "gmres"))
-    petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "unpreconditioned"))
-
-    fast_num_modes = 100
-    ncv = int(solver_cfg.get("target_ncv", max(40, 4 * fast_num_modes)))
-    eps.setDimensions(fast_num_modes, ncv)
-    eps.setTolerances(float(solver_cfg.get("eigs_tol", 1e-4)), int(solver_cfg.get("eigs_maxiter", 2000)))
-    # Matrix sanity diagnostic: inspect assembled stiffness diagonal spread.
-    diag_vec = A.getDiagonal()
-    diag_arr = np.real(diag_vec.array)
-    if diag_arr.size > 0:
-        diag_min = float(np.min(diag_arr))
-        diag_max = float(np.max(diag_arr))
-    else:
-        diag_min = float("nan")
-        diag_max = float("nan")
-    FORCED_SHIFT = target_lambda
-    _emit(
-        f"[solver] shift-invert target: {shift_target_hz:.2f} Hz "
-        f"(lambda={FORCED_SHIFT:.6e} s^-2), "
-        f"KSP={ksp.getType()}, PC={pc.getType()}, "
-        f"MUMPS(ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}, ICNTL22={mumps_icntl_22}), "
-        f"MG(level_ksp={mg_levels_ksp_type}, level_pc={mg_levels_pc_type}), "
-        f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}, "
-        f"iterative_default={use_iterative}",
-        status_callback=status_callback,
-    )
-    st.setShift(FORCED_SHIFT)
-    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
-    eps.setFromOptions()
-    eps.solve()
-
-    its = eps.getIterationNumber()
-    nconv = eps.getConverged()
-    reason = eps.getConvergedReason()
-    err0 = float("nan")
-    if nconv > 0:
-        try:
-            err0 = float(eps.computeError(0))
-        except Exception:
-            err0 = float("nan")
-    _emit(
-        f"[solver] EPS status: iterations={its}, converged={nconv}, reason={reason}, error_mode0={err0:.6e}",
-        status_callback=status_callback,
-    )
-
-    if nconv <= 0:
-        raise RuntimeError("SLEPc did not converge any eigenpairs.")
-
-    rvec = A.createVecRight()
-    freqs_hz: List[float] = []
-    vectors: List[np.ndarray] = []
-    for i in range(min(fast_num_modes, nconv)):
-        eig = eps.getEigenpair(i, rvec)
-        eig_r = float(np.real(eig))
-        if eig_r <= 1.0e-14:
-            continue
-        omega = math.sqrt(eig_r)
-        freqs_hz.append(omega / (2.0 * math.pi))
-        vectors.append(rvec.array.copy())
-
-    if not freqs_hz:
-        raise RuntimeError("No positive eigenvalues were found.")
-
-    order = np.argsort(np.array(freqs_hz))
-    freqs_hz = [freqs_hz[idx] for idx in order]
-    vectors = [vectors[idx] for idx in order]
-    eigvecs = np.stack(vectors, axis=1)
-
-    print(
-        f"[diag] Solver found {len(freqs_hz)} raw modes. "
-        f"Range: {min(freqs_hz):.2f} to {max(freqs_hz):.2f} Hz."
-    )
-    sys.stdout.flush()
-
-    # Sweep-and-filter: keep only physically valid audible band modes.
     min_valid_hz = float(solver_cfg.get("min_valid_mode_hz", 50.0))
     max_valid_hz = float(solver_cfg.get("max_valid_mode_hz", 1000.0))
-    keep_idx = [i for i, f in enumerate(freqs_hz) if (f >= min_valid_hz and f <= max_valid_hz)]
-    if not keep_idx:
-        raise RuntimeError(
-            f"No modes in [{min_valid_hz:.2f}, {max_valid_hz:.2f}] Hz after filtering."
+    work = M.createVecRight()
+
+    if use_sifter and M_wood is not None:
+        quota = int(solver_cfg.get("sifter_quota", 100))
+        batch = int(solver_cfg.get("sifter_batch_modes", 50))
+        f_center = float(solver_cfg.get("sifter_start_hz", 100.0))
+        f_cap = float(solver_cfg.get("sifter_max_hz", 1000.0))
+        df_s = float(solver_cfg.get("sifter_step_hz", 10.0))
+        ratio_floor = float(solver_cfg.get("sifter_wood_energy_ratio", 0.02))
+        dup_hz = float(solver_cfg.get("sifter_dup_hz", 0.25))
+
+        saved_freqs: List[float] = []
+        saved_vecs: List[np.ndarray] = []
+
+        def _dup(freq: float) -> bool:
+            return any(abs(freq - fs) < dup_hz for fs in saved_freqs)
+
+        _emit(
+            f"[sifter] adaptive ROM mode sifter: quota={quota}, batch={batch}, "
+            f"wood_mass_ratio>{ratio_floor}, sweep {f_center:.0f}–{f_cap:.0f} Hz step {df_s:.0f} Hz.",
+            status_callback=status_callback,
         )
-    freqs_hz = [freqs_hz[i] for i in keep_idx]
-    eigvecs = eigvecs[:, keep_idx]
+
+        while len(saved_freqs) < quota and f_center <= f_cap + 1e-9:
+            nconv, rows = _slepc_shift_invert_batch(
+                A,
+                M,
+                solver_cfg,
+                f_center,
+                batch,
+                diag_shift,
+                status_callback,
+                M_wood=M_wood,
+                work=work,
+            )
+            added = 0
+            for f_hz, vec, ratio in rows:
+                if ratio is None:
+                    continue
+                if ratio <= ratio_floor:
+                    continue
+                if not (min_valid_hz <= f_hz <= max_valid_hz):
+                    continue
+                if _dup(f_hz):
+                    continue
+                saved_freqs.append(float(f_hz))
+                saved_vecs.append(vec)
+                added += 1
+                if len(saved_freqs) >= quota:
+                    break
+            _emit(
+                f"[sifter] center={f_center:.1f} Hz: converged={nconv}, accepted+{added} "
+                f"(total saved={len(saved_freqs)}/{quota}).",
+                status_callback=status_callback,
+            )
+            if len(saved_freqs) >= quota:
+                break
+            f_center += df_s
+
+        if not saved_freqs:
+            M_wood.destroy()
+            raise RuntimeError(
+                "Adaptive mode sifter found no modes with wood_mass/total_mass > "
+                f"{ratio_floor} in [{min_valid_hz:.1f}, {max_valid_hz:.1f}] Hz. "
+                "Try lowering sifter_wood_energy_ratio or widening the frequency band."
+            )
+
+        order = np.argsort(np.array(saved_freqs))
+        freqs_hz = [saved_freqs[int(i)] for i in order]
+        vectors = [saved_vecs[int(i)] for i in order]
+        eigvecs = np.stack(vectors, axis=1)
+        M_wood.destroy()
+        M_wood = None
+
+        print(
+            f"[diag] Adaptive sifter: {len(freqs_hz)} significant modes "
+            f"(range {min(freqs_hz):.2f}–{max(freqs_hz):.2f} Hz)."
+        )
+        sys.stdout.flush()
+    else:
+        shift_target_hz = float(solver_cfg.get("shift_invert_target_hz", 150.0))
+        batch_legacy = int(solver_cfg.get("eigenpair_batch_size", 100))
+        nconv, rows = _slepc_shift_invert_batch(
+            A,
+            M,
+            solver_cfg,
+            shift_target_hz,
+            batch_legacy,
+            diag_shift,
+            status_callback,
+            M_wood=None,
+            work=None,
+        )
+        if nconv <= 0:
+            raise RuntimeError("SLEPc did not converge any eigenpairs.")
+
+        freqs_hz = []
+        vectors = []
+        for f_hz, vec, _ratio in rows:
+            freqs_hz.append(f_hz)
+            vectors.append(vec)
+
+        if not freqs_hz:
+            raise RuntimeError("No positive eigenvalues were found.")
+
+        order = np.argsort(np.array(freqs_hz))
+        freqs_hz = [freqs_hz[idx] for idx in order]
+        vectors = [vectors[idx] for idx in order]
+        eigvecs = np.stack(vectors, axis=1)
+
+        print(
+            f"[diag] Solver found {len(freqs_hz)} raw modes. "
+            f"Range: {min(freqs_hz):.2f} to {max(freqs_hz):.2f} Hz."
+        )
+        sys.stdout.flush()
+
+        keep_idx = [i for i, f in enumerate(freqs_hz) if (f >= min_valid_hz and f <= max_valid_hz)]
+        if not keep_idx:
+            raise RuntimeError(
+                f"No modes in [{min_valid_hz:.2f}, {max_valid_hz:.2f}] Hz after filtering."
+            )
+        freqs_hz = [freqs_hz[i] for i in keep_idx]
+        eigvecs = eigvecs[:, keep_idx]
 
     # Extract split dof counts for output compatibility.
     n_u = W.sub(0).dofmap.index_map.size_local * W.sub(0).dofmap.index_map_bs
