@@ -17,7 +17,7 @@
     "materials": {
         "top": {
             "density": 450.0,
-            "E_L": 1100000000.0,
+            "E_L": 10000000000.0,
             "E_T": 100000000.0,
             "E_R": 70000000.0,
             "nu_LT": 0.37,
@@ -32,16 +32,16 @@
             "name": "Sitka Spruce"
         },
         "back": {
-            "density": 830.0,
-            "E_L": 1150000000.0,
-            "E_T": 130000000.0,
-            "E_R": 70000000.0,
+            "density": 800.0,
+            "E_L": 12000000000.0,
+            "E_T": 1356521739.0,
+            "E_R": 730434783.0,
             "nu_LT": 0.33,
             "nu_LR": 0.33,
             "nu_TR": 0.4,
-            "G_LT": 95000000.0,
-            "G_LR": 95000000.0,
-            "G_TR": 5000000.0,
+            "G_LT": 991304348.0,
+            "G_LR": 991304348.0,
+            "G_TR": 52173913.0,
             "q_min": 90,
             "q_max": 100,
             "color": "#3D2B1F",
@@ -54,7 +54,11 @@
     },
     "solver": {
         "num_modes": 10,
-        "mesh_file": "/home/vboxuser/final-project/FEM/mesh/guitar_3d.msh"
+        "mesh_file": "/home/vboxuser/final-project/FEM/mesh/guitar_3d.msh",
+        "shift_invert_target_hz": 150.0,
+        "pressure_gauge": "air_interior",
+        "min_valid_mode_hz": 50.0,
+        "max_valid_mode_hz": 1000.0
     },
     "results": {
         "modes_hz": [

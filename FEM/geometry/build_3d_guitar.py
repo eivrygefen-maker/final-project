@@ -26,6 +26,18 @@ def create_guitar_mesh():
     if config_path.exists():
         with open(config_path, 'r') as f:
             config = json.load(f)
+        top_mat = config.get("materials", {}).get("top", {})
+        back_mat = config.get("materials", {}).get("back", {})
+        if top_mat:
+            print(
+                f"[diag] FEM materials.top: rho={top_mat.get('density')} kg/m^3, E_L={top_mat.get('E_L')} Pa, "
+                f"name={top_mat.get('name', '')!r}"
+            )
+        if back_mat:
+            print(
+                f"[diag] FEM materials.back: rho={back_mat.get('density')} kg/m^3, E_L={back_mat.get('E_L')} Pa, "
+                f"name={back_mat.get('name', '')!r}"
+            )
         p = config['geometry']
         L, W, D = p['length'], p['width'], p['depth']
         t = p['thickness']

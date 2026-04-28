@@ -260,6 +260,12 @@ def _solve_coupled_evp(
     p_el = element("Lagrange", msh.basix_cell(), 1)
     W_el = mixed_element([u_el, p_el])
     W = fem.functionspace(msh, W_el)
+    n_p_global = int(W.sub(1).dofmap.index_map.size_global * W.sub(1).dofmap.index_map_bs)
+    _emit(
+        f"[form] pressure field: global P1 DOFs n_p={n_p_global} on full mesh "
+        f"(acoustic forms use dx on air cells only, tag={AIR_VOLUME_TAG}).",
+        status_callback=status_callback,
+    )
 
     w = ufl.TrialFunction(W)
     z = ufl.TestFunction(W)
@@ -267,7 +273,13 @@ def _solve_coupled_evp(
     v, q = ufl.split(z)
 
     xdmf_ds = ufl.Measure("ds", domain=msh, subdomain_data=facet_tags)
+    # Volume: subdomain_data=cell_tags so xdmf_dx(AIR_VOLUME_TAG) restricts to air cells.
     xdmf_dx = ufl.Measure("dx", domain=msh, subdomain_data=cell_tags)
+    _emit(
+        f"[form] measures: dx(domain, subdomain_data=cell_tags) for air tag {AIR_VOLUME_TAG}; "
+        f"ds(domain, subdomain_data=facet_tags) for wood shell tags {WOOD_SURFACE_TAGS}.",
+        status_callback=status_callback,
+    )
     full_dx = ufl.Measure("dx", domain=msh)
     n = ufl.FacetNormal(msh)
     P = ufl.Identity(3) - ufl.outer(n, n)
@@ -351,6 +363,7 @@ def _solve_coupled_evp(
 
     # Dirichlet BCs using subspace-collapse strategy for strict C++ signatures.
     soundhole_facets = np.array(facet_tags.find(2), dtype=np.int32)
+    pressure_gauge = str(config.get("solver", {}).get("pressure_gauge", "air_interior")).lower()
     # Structural grounding: prioritize explicit wood_fix support (tag=4).
     fixed_facets = np.array(facet_tags.find(4), dtype=np.int32)
     if fixed_facets.size == 0:
@@ -363,19 +376,58 @@ def _solve_coupled_evp(
         V_p, _ = W.sub(1).collapse()
         V_u, _ = W.sub(0).collapse()
 
-        p_dofs = fem.locate_dofs_topological(V_p, fdim, soundhole_facets)
         u_dofs = fem.locate_dofs_topological(V_u, fdim, fixed_facets)
-        p_dofs = np.array(p_dofs, dtype=np.int32)
         u_dofs = np.array(u_dofs, dtype=np.int32)
+        n_p_collapsed = int(V_p.dofmap.index_map.size_global * V_p.dofmap.index_map_bs)
 
         coords = msh.geometry.x
         mins = np.min(coords, axis=0)
         maxs = np.max(coords, axis=0)
         diag = float(np.linalg.norm(maxs - mins))
         tol = max(1.0e-12, 1.0e-8 * max(1.0, diag))
+        tol_p = max(1.0e-9, 1.0e-5 * max(1.0, diag))
 
-        # Acoustic grounding fallback: if soundhole-based pressure dofs are empty,
-        # pin one pressure dof at a mesh node as reference pressure.
+        # Pressure gauge: default is one dof in air (tag 10) interior so p spans the cavity;
+        # optional "soundhole" pins all pressure dofs on soundhole facets (often hundreds).
+        p_dofs = np.array([], dtype=np.int32)
+        if pressure_gauge == "soundhole":
+            p_dofs = np.array(
+                fem.locate_dofs_topological(V_p, fdim, soundhole_facets),
+                dtype=np.int32,
+            )
+        else:
+            air_cell_idx = cell_tags.find(AIR_VOLUME_TAG)
+            if air_cell_idx.size > 0:
+                msh.topology.create_connectivity(tdim, 0)
+                c_to_v = msh.topology.connectivity(tdim, 0)
+                mid_cell = int(air_cell_idx[air_cell_idx.size // 2])
+                vidx = c_to_v.links(mid_cell)
+                p_anchor = np.mean(coords[vidx], axis=0)
+
+                def _p_air_anchor(x):
+                    d = np.linalg.norm(x.T - p_anchor, axis=1)
+                    return d < tol_p
+
+                p_dofs = np.array(fem.locate_dofs_geometrical(V_p, _p_air_anchor), dtype=np.int32)
+                if p_dofs.size > 1:
+                    p_dofs = np.array([int(p_dofs[0])], dtype=np.int32)
+                _emit(
+                    f"[bc] pressure gauge: single interior air anchor (tag {AIR_VOLUME_TAG}) "
+                    f"near {p_anchor.tolist()} (solver.pressure_gauge=air_interior).",
+                    status_callback=status_callback,
+                )
+            if p_dofs.size == 0:
+                p_dofs = np.array(
+                    fem.locate_dofs_topological(V_p, fdim, soundhole_facets),
+                    dtype=np.int32,
+                )
+                _emit(
+                    "[bc][warn] air-interior pressure anchor failed; falling back to soundhole facets.",
+                    status_callback=status_callback,
+                    level="warning",
+                )
+
+        # Acoustic grounding fallback: if pressure dofs still empty, pin one mesh node.
         if p_dofs.size == 0:
             p_anchor = coords[np.argmin(np.linalg.norm(coords - mins, axis=1))]
 
@@ -388,7 +440,7 @@ def _solve_coupled_evp(
 
             p_dofs = np.array(fem.locate_dofs_geometrical(V_p, _p_anchor_marker), dtype=np.int32)
             _emit(
-                f"[bc][warn] soundhole p_dofs empty; using single-point pressure anchor at {p_anchor.tolist()} "
+                f"[bc][warn] pressure gauge empty; using corner anchor at {p_anchor.tolist()} "
                 f"(count={p_dofs.size})",
                 status_callback=status_callback,
                 level="warning",
@@ -461,11 +513,9 @@ def _solve_coupled_evp(
 
         _emit(
             "[bc][diag] collapsed spaces ready. "
-            f"p_dofs.dtype={p_dofs.dtype}, p_dofs.shape={p_dofs.shape}, "
-            f"u_dofs.dtype={u_dofs.dtype}, u_dofs.shape={u_dofs.shape}, "
-            f"soundhole_facets.dtype={soundhole_facets.dtype}, "
-            f"soundhole_facets.shape={soundhole_facets.shape}, "
-            f"fixed_facets.shape={fixed_facets.shape}",
+            f"pressure BC dof count={p_dofs.size} (gauge; full pressure FE unknowns=n_p_collapsed={n_p_collapsed}), "
+            f"displacement BC u_dofs.shape={u_dofs.shape}, "
+            f"soundhole_facets.shape={soundhole_facets.shape}, fixed_facets.shape={fixed_facets.shape}",
             status_callback=status_callback,
         )
 
@@ -505,6 +555,13 @@ def _solve_coupled_evp(
 
     _emit("Step 3/5: Solving generalized EVP with SLEPc...", status_callback=status_callback)
     n_dofs = int(W.dofmap.index_map.size_global * W.dofmap.index_map_bs)
+    n_u_fe = int(W.sub(0).dofmap.index_map.size_global * W.sub(0).dofmap.index_map_bs)
+    n_p_fe = int(W.sub(1).dofmap.index_map.size_global * W.sub(1).dofmap.index_map_bs)
+    print(
+        f"[DIAG] Final u_dofs={n_u_fe} p_dofs={n_p_fe} "
+        f"(Dirichlet BC active: u_bc={u_dofs.size} p_bc={p_dofs.size})"
+    )
+    sys.stdout.flush()
     print(f"Starting solver with {n_dofs} DOFs and proactive memory cleanup...")
     sys.stdout.flush()
     eps = SLEPc.EPS().create(MPI.COMM_WORLD)
@@ -514,7 +571,8 @@ def _solve_coupled_evp(
     eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
     solver_cfg = config.get("solver", {})
     eps.setKrylovSchurRestart(float(solver_cfg.get("krylov_schur_restart", 0.5)))
-    target_lambda = float(solver_cfg.get("target_lambda", 0.0))
+    shift_target_hz = float(solver_cfg.get("shift_invert_target_hz", 150.0))
+    target_lambda = (2.0 * math.pi * shift_target_hz) ** 2
 
     # Shift-and-invert around the physically relevant low-frequency range.
     eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
@@ -588,9 +646,10 @@ def _solve_coupled_evp(
     else:
         diag_min = float("nan")
         diag_max = float("nan")
-    FORCED_SHIFT = 10.0
+    FORCED_SHIFT = target_lambda
     _emit(
-        f"[solver] shift-invert target: {FORCED_SHIFT:.2f} (forced shift anchor), "
+        f"[solver] shift-invert target: {shift_target_hz:.2f} Hz "
+        f"(lambda={FORCED_SHIFT:.6e} s^-2), "
         f"KSP={ksp.getType()}, PC={pc.getType()}, "
         f"MUMPS(ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}, ICNTL22={mumps_icntl_22}), "
         f"MG(level_ksp={mg_levels_ksp_type}, level_pc={mg_levels_pc_type}), "
@@ -647,8 +706,8 @@ def _solve_coupled_evp(
     sys.stdout.flush()
 
     # Sweep-and-filter: keep only physically valid audible band modes.
-    min_valid_hz = float(solver_cfg.get("min_valid_mode_hz", 80.0))
-    max_valid_hz = float(solver_cfg.get("max_valid_mode_hz", 500.0))
+    min_valid_hz = float(solver_cfg.get("min_valid_mode_hz", 50.0))
+    max_valid_hz = float(solver_cfg.get("max_valid_mode_hz", 1000.0))
     keep_idx = [i for i, f in enumerate(freqs_hz) if (f >= min_valid_hz and f <= max_valid_hz)]
     if not keep_idx:
         raise RuntimeError(
