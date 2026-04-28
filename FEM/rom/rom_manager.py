@@ -204,6 +204,23 @@ class ROMManager:
         self._write_json(pool_path, pool)
         return pool
 
+    def reset_lhs_errors(self, shape_name: str) -> int:
+        paths = self._shape_paths(shape_name)
+        pool_path = paths["lhs_pool"]
+        if not pool_path.exists():
+            return 0
+        with open(pool_path, "r", encoding="utf-8") as f:
+            pool = json.load(f)
+        changed = 0
+        for entry in pool.get("entries", []):
+            if str(entry.get("status", "")) == "error":
+                entry["status"] = "pending"
+                entry["error"] = None
+                changed += 1
+        if changed > 0:
+            self._write_json(pool_path, pool)
+        return changed
+
     @staticmethod
     def _next_snapshot_index(snapshots_dir: Path) -> int:
         pattern = re.compile(r"^snapshot_(\d+)\.npz$")
@@ -222,6 +239,7 @@ class ROMManager:
         lhs_samples: Optional[int] = None,
         seed: int = 123,
         dry_run: bool = False,
+        retry_errors: bool = False,
     ) -> List[Path]:
         shape_cfg = self.shapes[shape_name]
         paths = self._shape_paths(shape_name)
@@ -235,6 +253,15 @@ class ROMManager:
         elif sampling_mode == "lhs":
             n = int(lhs_samples if lhs_samples is not None else shape_cfg.get("lhs_samples", shape_cfg.get("lhs_pool_size", 100)))
             pool = self._load_or_create_lhs_pool(shape_name, sweep_cfg=sweep_cfg, total_samples=n, seed=seed)
+            if retry_errors:
+                changed = 0
+                for entry in pool.get("entries", []):
+                    if str(entry.get("status", "")) == "error":
+                        entry["status"] = "pending"
+                        entry["error"] = None
+                        changed += 1
+                if changed > 0:
+                    self._write_json(paths["lhs_pool"], pool)
             grid = []
         else:
             grid = self._grid_from_sweep(sweep_cfg)

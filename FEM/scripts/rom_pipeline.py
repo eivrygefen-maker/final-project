@@ -82,6 +82,7 @@ def main():
     p_offline.add_argument("--lhs-samples", type=int, default=None)
     p_offline.add_argument("--num-samples", type=int, default=None, help="Alias for --lhs-samples")
     p_offline.add_argument("--dry-run", action="store_true")
+    p_offline.add_argument("--retry-errors", action="store_true", help="Reset LHS pool error entries to pending before run.")
     p_offline.add_argument("--seed", type=int, default=123)
 
     p_basis = sub.add_parser("build-basis", help="Build POD basis from snapshots.")
@@ -122,12 +123,14 @@ def main():
             lhs_samples=lhs_samples,
             seed=args.seed,
             dry_run=args.dry_run,
+            retry_errors=args.retry_errors,
         )
         print(
             json.dumps(
                 {
                     "shape": args.shape,
                     "dry_run": bool(args.dry_run),
+                    "retry_errors": bool(args.retry_errors),
                     "snapshots_written": len(files),
                     "first_snapshot": str(files[0]) if files else None,
                     "last_snapshot": str(files[-1]) if files else None,
