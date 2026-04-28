@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
+from scipy.stats import qmc
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = BASE_DIR / "FEM" / "scripts"
@@ -46,7 +47,8 @@ class ROMManager:
         shape_root = self.rom_root / shape_name
         snapshots_dir = shape_root / "snapshots"
         basis_path = shape_root / "reduced_basis.npz"
-        return {"root": shape_root, "snapshots": snapshots_dir, "basis": basis_path}
+        lhs_pool_path = shape_root / f"lhs_pool_{shape_name}.json"
+        return {"root": shape_root, "snapshots": snapshots_dir, "basis": basis_path, "lhs_pool": lhs_pool_path}
 
     def _load_shape_base_config(self, shape_name: str) -> Dict:
         shape_cfg = self.shapes[shape_name]
@@ -133,6 +135,76 @@ class ROMManager:
         return out
 
     @staticmethod
+    def _write_json(path: Path, data: Dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        tmp.replace(path)
+
+    @staticmethod
+    def _sample_id(i: int) -> str:
+        return f"sample_{i + 1:03d}"
+
+    @classmethod
+    def _lhs_values_for_key(cls, spec, uvals: np.ndarray) -> List:
+        if isinstance(spec, dict) and "min" in spec and "max" in spec:
+            vmin = float(spec["min"])
+            vmax = float(spec["max"])
+            vals = vmin + (vmax - vmin) * uvals
+            dtype = str(spec.get("dtype", "float")).lower()
+            if dtype in ("int", "integer"):
+                vals = np.rint(vals).astype(np.int64)
+            return vals.tolist()
+        options = cls._expand_parameter_values(spec)
+        if len(options) <= 0:
+            raise ValueError("Sweep options list cannot be empty.")
+        idx = np.floor(uvals * len(options)).astype(int)
+        idx = np.clip(idx, 0, len(options) - 1)
+        return [options[int(i)] for i in idx]
+
+    def _create_lhs_pool(self, shape_name: str, sweep_cfg: Dict, total_samples: int, seed: int = 123) -> Dict:
+        if total_samples <= 0:
+            raise ValueError("LHS pool size must be > 0.")
+        keys = sorted(sweep_cfg.keys())
+        if not keys:
+            raise ValueError("LHS sampling requires a non-empty parameter_sweep.")
+
+        sampler = qmc.LatinHypercube(d=len(keys), seed=seed)
+        unit = sampler.random(n=total_samples)
+        cols = {k: self._lhs_values_for_key(sweep_cfg[k], unit[:, i]) for i, k in enumerate(keys)}
+
+        entries = []
+        for i in range(total_samples):
+            params = {k: cols[k][i] for k in keys}
+            entries.append(
+                {
+                    "id": self._sample_id(i),
+                    "parameters": params,
+                    "status": "pending",
+                    "snapshot_file": None,
+                    "error": None,
+                }
+            )
+        return {"shape_name": shape_name, "sampling": "lhs", "seed": int(seed), "total_samples": int(total_samples), "entries": entries}
+
+    def _load_or_create_lhs_pool(
+        self,
+        shape_name: str,
+        sweep_cfg: Dict,
+        total_samples: int,
+        seed: int = 123,
+    ) -> Dict:
+        paths = self._shape_paths(shape_name)
+        pool_path = paths["lhs_pool"]
+        if pool_path.exists():
+            with open(pool_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        pool = self._create_lhs_pool(shape_name, sweep_cfg=sweep_cfg, total_samples=total_samples, seed=seed)
+        self._write_json(pool_path, pool)
+        return pool
+
+    @staticmethod
     def _next_snapshot_index(snapshots_dir: Path) -> int:
         pattern = re.compile(r"^snapshot_(\d+)\.npz$")
         max_idx = -1
@@ -153,6 +225,7 @@ class ROMManager:
     ) -> List[Path]:
         shape_cfg = self.shapes[shape_name]
         paths = self._shape_paths(shape_name)
+        paths["root"].mkdir(parents=True, exist_ok=True)
         paths["snapshots"].mkdir(parents=True, exist_ok=True)
 
         sweep_cfg = shape_cfg.get("parameter_sweep", {})
@@ -160,17 +233,69 @@ class ROMManager:
         if not sweep_cfg:
             grid = [{}]
         elif sampling_mode == "lhs":
-            n = int(lhs_samples if lhs_samples is not None else shape_cfg.get("lhs_samples", 24))
-            grid = self._lhs_from_sweep(sweep_cfg, samples=n, seed=seed)
+            n = int(lhs_samples if lhs_samples is not None else shape_cfg.get("lhs_samples", shape_cfg.get("lhs_pool_size", 100)))
+            pool = self._load_or_create_lhs_pool(shape_name, sweep_cfg=sweep_cfg, total_samples=n, seed=seed)
+            grid = []
         else:
             grid = self._grid_from_sweep(sweep_cfg)
         start_idx = self._next_snapshot_index(paths["snapshots"])
         out_files: List[Path] = []
         if dry_run:
-            return [
-                paths["snapshots"] / f"snapshot_{start_idx + off:04d}.npz"
-                for off in range(len(grid))
-            ]
+            if sampling_mode == "lhs":
+                pending = [e for e in pool.get("entries", []) if e.get("status") == "pending"]
+                return [
+                    paths["snapshots"] / f"snapshot_{start_idx + off:04d}.npz"
+                    for off in range(len(pending))
+                ]
+            return [paths["snapshots"] / f"snapshot_{start_idx + off:04d}.npz" for off in range(len(grid))]
+
+        if sampling_mode == "lhs":
+            pool_path = paths["lhs_pool"]
+            next_idx = start_idx
+            while True:
+                pending_idx = None
+                for i, entry in enumerate(pool.get("entries", [])):
+                    if entry.get("status") == "pending":
+                        pending_idx = i
+                        break
+                if pending_idx is None:
+                    break
+
+                entry = pool["entries"][pending_idx]
+                params = entry.get("parameters", {})
+                entry["status"] = "running"
+                entry["error"] = None
+                self._write_json(pool_path, pool)
+
+                snapshot_path = paths["snapshots"] / f"snapshot_{next_idx:04d}.npz"
+                try:
+                    cfg = self._load_shape_base_config(shape_name)
+                    for k, v in params.items():
+                        self._set_nested(cfg, k, v)
+                    t0 = time.perf_counter()
+                    fom = fem_main_3d.run_fom_for_rom(cfg, num_modes=num_modes)
+                    elapsed = time.perf_counter() - t0
+                    np.savez(
+                        snapshot_path,
+                        params_json=json.dumps(params),
+                        shape_name=shape_name,
+                        sampling_mode=sampling_mode,
+                        sample_id=str(entry.get("id", "")),
+                        freqs_hz=np.array(fom["freqs_hz"], dtype=np.float64),
+                        eigvecs_real=np.real(fom["eigvecs"]).astype(np.float64),
+                        elapsed_s=np.array([elapsed], dtype=np.float64),
+                    )
+                    entry["status"] = "completed"
+                    entry["snapshot_file"] = str(snapshot_path.resolve())
+                    entry["error"] = None
+                    out_files.append(snapshot_path)
+                    next_idx += 1
+                except Exception as exc:
+                    entry["status"] = "error"
+                    entry["error"] = str(exc)
+                finally:
+                    self._write_json(pool_path, pool)
+            return out_files
 
         for off, params in enumerate(grid):
             idx = start_idx + off

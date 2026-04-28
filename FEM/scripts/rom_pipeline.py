@@ -46,6 +46,22 @@ def _print_param_preview(shape_name: str, base_cfg: dict, overrides: dict):
     print(f"\n[online] shape={shape_name} parameter preview")
     print(f"{'parameter':<42} {'value':<24} {'source':<10}")
     print("-" * 80)
+
+
+def _read_lhs_pool_summary(manager: ROMManager, shape_name: str):
+    paths = manager._shape_paths(shape_name)
+    pool_path = paths.get("lhs_pool")
+    if not pool_path or not pool_path.exists():
+        return None
+    with open(pool_path, "r", encoding="utf-8") as f:
+        pool = json.load(f)
+    entries = pool.get("entries", [])
+    counts = {"pending": 0, "running": 0, "completed": 0, "error": 0}
+    for e in entries:
+        st = str(e.get("status", "pending"))
+        if st in counts:
+            counts[st] += 1
+    return {"pool_file": str(pool_path), "total": len(entries), "counts": counts}
     for k, v, src in rows:
         if k.startswith("geometry.") or k.startswith("materials.") or k in overrides:
             print(f"{k:<42} {str(v):<24} {src:<10}")
@@ -115,6 +131,7 @@ def main():
                     "snapshots_written": len(files),
                     "first_snapshot": str(files[0]) if files else None,
                     "last_snapshot": str(files[-1]) if files else None,
+                    "lhs_pool": _read_lhs_pool_summary(manager, args.shape),
                 },
                 indent=2,
             )
