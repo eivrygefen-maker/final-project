@@ -262,22 +262,77 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
 
     # Dirichlet BCs using subspace-collapse strategy for strict C++ signatures.
     soundhole_facets = np.array(facet_tags.find(2), dtype=np.int32)
+    wood_fix_facets = np.array(facet_tags.find(WOOD_SURFACE_TAGS[0]), dtype=np.int32)
+    if wood_fix_facets.size == 0:
+        wood_fix_facets = np.array(facet_tags.find(WOOD_SURFACE_TAGS[1]), dtype=np.int32)
     bcs = []
     try:
         V_p, _ = W.sub(1).collapse()
         V_u, _ = W.sub(0).collapse()
 
         p_dofs = fem.locate_dofs_topological(V_p, fdim, soundhole_facets)
-        u_dofs = fem.locate_dofs_topological(V_u, fdim, soundhole_facets)
+        u_dofs = fem.locate_dofs_topological(V_u, fdim, wood_fix_facets)
         p_dofs = np.array(p_dofs, dtype=np.int32)
         u_dofs = np.array(u_dofs, dtype=np.int32)
+
+        coords = msh.geometry.x
+        mins = np.min(coords, axis=0)
+        maxs = np.max(coords, axis=0)
+        diag = float(np.linalg.norm(maxs - mins))
+        tol = max(1.0e-12, 1.0e-8 * max(1.0, diag))
+
+        # Acoustic grounding fallback: if soundhole-based pressure dofs are empty,
+        # pin one pressure dof at a mesh node as reference pressure.
+        if p_dofs.size == 0:
+            p_anchor = coords[np.argmin(np.linalg.norm(coords - mins, axis=1))]
+
+            def _p_anchor_marker(x):
+                return (
+                    np.isclose(x[0], p_anchor[0], atol=tol)
+                    & np.isclose(x[1], p_anchor[1], atol=tol)
+                    & np.isclose(x[2], p_anchor[2], atol=tol)
+                )
+
+            p_dofs = np.array(fem.locate_dofs_geometrical(V_p, _p_anchor_marker), dtype=np.int32)
+            _emit(
+                f"[bc][warn] soundhole p_dofs empty; using single-point pressure anchor at {p_anchor.tolist()} "
+                f"(count={p_dofs.size})",
+                status_callback=status_callback,
+                level="warning",
+            )
+
+        # Structural grounding fallback: if facet-based displacement dofs are empty,
+        # pin one vector-node to remove rigid-body translational/rotational drift.
+        if u_dofs.size == 0:
+            u_anchor = coords[np.argmin(np.linalg.norm(coords - mins, axis=1))]
+
+            def _u_anchor_marker(x):
+                return (
+                    np.isclose(x[0], u_anchor[0], atol=tol)
+                    & np.isclose(x[1], u_anchor[1], atol=tol)
+                    & np.isclose(x[2], u_anchor[2], atol=tol)
+                )
+
+            u_dofs = np.array(fem.locate_dofs_geometrical(V_u, _u_anchor_marker), dtype=np.int32)
+            _emit(
+                f"[bc][warn] facet-based u_dofs empty; using single-point displacement anchor at {u_anchor.tolist()} "
+                f"(count={u_dofs.size})",
+                status_callback=status_callback,
+                level="warning",
+            )
+
+        if p_dofs.size == 0:
+            raise RuntimeError("Failed to create pressure grounding dofs (p_dofs is empty).")
+        if u_dofs.size == 0:
+            raise RuntimeError("Failed to create displacement grounding dofs (u_dofs is empty).")
 
         _emit(
             "[bc][diag] collapsed spaces ready. "
             f"p_dofs.dtype={p_dofs.dtype}, p_dofs.shape={p_dofs.shape}, "
             f"u_dofs.dtype={u_dofs.dtype}, u_dofs.shape={u_dofs.shape}, "
             f"soundhole_facets.dtype={soundhole_facets.dtype}, "
-            f"soundhole_facets.shape={soundhole_facets.shape}",
+            f"soundhole_facets.shape={soundhole_facets.shape}, "
+            f"wood_fix_facets.shape={wood_fix_facets.shape}",
             status_callback=status_callback,
         )
 
@@ -358,6 +413,9 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     mg_levels_pc_type = str(solver_cfg.get("mg_levels_pc_type", "sor"))
     petsc_opts["mg_levels_ksp_type"] = mg_levels_ksp_type
     petsc_opts["mg_levels_pc_type"] = mg_levels_pc_type
+    petsc_opts["pc_gamg_threshold"] = float(solver_cfg.get("pc_gamg_threshold", 0.02))
+    petsc_opts["pc_gamg_square_graph"] = int(solver_cfg.get("pc_gamg_square_graph", 1))
+    petsc_opts["mg_coarse_pc_type"] = str(solver_cfg.get("mg_coarse_pc_type", "svd"))
     # Explicit ST-KSP options for iterative shift-invert stability.
     petsc_opts["st_ksp_type"] = str(solver_cfg.get("st_iter_ksp_type", "gmres"))
     petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "unpreconditioned"))
