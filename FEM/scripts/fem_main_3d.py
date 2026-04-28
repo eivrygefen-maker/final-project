@@ -587,7 +587,7 @@ def _solve_coupled_evp(
     petsc_opts["st_ksp_type"] = str(solver_cfg.get("st_iter_ksp_type", "gmres"))
     petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "unpreconditioned"))
 
-    fast_num_modes = 100
+    fast_num_modes = 50
     ncv = int(solver_cfg.get("target_ncv", max(40, 4 * fast_num_modes)))
     eps.setDimensions(fast_num_modes, ncv)
     eps.setTolerances(float(solver_cfg.get("eigs_tol", 1e-4)), int(solver_cfg.get("eigs_maxiter", 2000)))
@@ -600,7 +600,7 @@ def _solve_coupled_evp(
     else:
         diag_min = float("nan")
         diag_max = float("nan")
-    FORCED_SHIFT = -1.0
+    FORCED_SHIFT = 150.0
     _emit(
         f"[solver] shift-invert target: {FORCED_SHIFT:.2f} (forced shift anchor), "
         f"KSP={ksp.getType()}, PC={pc.getType()}, "
@@ -634,7 +634,7 @@ def _solve_coupled_evp(
     rvec = A.createVecRight()
     freqs_hz: List[float] = []
     vectors: List[np.ndarray] = []
-    for i in range(min(num_modes, nconv)):
+    for i in range(min(fast_num_modes, nconv)):
         eig = eps.getEigenpair(i, rvec)
         eig_r = float(np.real(eig))
         if eig_r <= 1.0e-14:
@@ -657,11 +657,14 @@ def _solve_coupled_evp(
     )
     sys.stdout.flush()
 
-    # Sweep-and-filter: keep only physically valid modes above cutoff.
-    min_valid_hz = float(solver_cfg.get("min_valid_mode_hz", 50.0))
-    keep_idx = [i for i, f in enumerate(freqs_hz) if f >= min_valid_hz]
+    # Sweep-and-filter: keep only physically valid audible band modes.
+    min_valid_hz = float(solver_cfg.get("min_valid_mode_hz", 80.0))
+    max_valid_hz = float(solver_cfg.get("max_valid_mode_hz", 500.0))
+    keep_idx = [i for i, f in enumerate(freqs_hz) if (f >= min_valid_hz and f <= max_valid_hz)]
     if not keep_idx:
-        raise RuntimeError(f"No modes >= {min_valid_hz:.2f} Hz after filtering.")
+        raise RuntimeError(
+            f"No modes in [{min_valid_hz:.2f}, {max_valid_hz:.2f}] Hz after filtering."
+        )
     freqs_hz = [freqs_hz[i] for i in keep_idx]
     eigvecs = eigvecs[:, keep_idx]
 
