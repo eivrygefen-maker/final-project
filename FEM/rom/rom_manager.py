@@ -99,6 +99,7 @@ class ROMManager:
         with open(config_path, "r", encoding="utf-8") as f:
             cfg = json.load(f)
         # Force mesh path to project-local FEM/mesh to avoid stale external paths.
+        # All other solver keys (adaptive_mode_sifter, sifter_*, shift_invert_target_hz, …) pass through unchanged.
         solver = cfg.setdefault("solver", {})
         mesh_name = Path(str(solver.get("mesh_file", "guitar_3d.msh"))).name
         solver["mesh_file"] = str((self.base_dir / "FEM" / "mesh" / mesh_name).resolve())

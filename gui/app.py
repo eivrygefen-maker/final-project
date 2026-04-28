@@ -82,31 +82,40 @@ def add_silence_to_wav(path, duration=0.3):
 
 def save_cfg():
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    data = {
-        "geometry": {
-            "design_mode": design_mode,
-            "shape_type": shape_type, 
-            "length": L, 
-            "width": W, 
-            "depth": D, 
-            "thickness": thick, 
-            "hole_radius": hr, 
-            "lower_bout": lower_bout,
-            "upper_bout": upper_bout,
-            "waist": waist,
-            "soundhole_y": soundhole_y,
-            "vis_mode": st.session_state.get("vis_mode_ui", "Mesh + Solid"),
-            "exploded_view": exploded
-        },
-        "materials": {
-            "top": {**WOOD_LIBRARY[top_wood], "name": top_wood},
-            "back": {**WOOD_LIBRARY[back_wood], "name": back_wood},
-            "air": {"density": 1.204, "speed_of_sound": 343.0}
-        },
-        # אופטימיזציה: 10 ערכים עצמיים בלבד למהירות חישוב [cite: 1638, 1662]
-        "solver": {"num_modes": 10, "mesh_file": str(MESH_FILE)}
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+    else:
+        data = {}
+    data["geometry"] = {
+        "design_mode": design_mode,
+        "shape_type": shape_type,
+        "length": L,
+        "width": W,
+        "depth": D,
+        "thickness": thick,
+        "hole_radius": hr,
+        "lower_bout": lower_bout,
+        "upper_bout": upper_bout,
+        "waist": waist,
+        "soundhole_y": soundhole_y,
+        "vis_mode": st.session_state.get("vis_mode_ui", "Mesh + Solid"),
+        "exploded_view": exploded,
     }
-    with open(CONFIG_PATH, 'w') as f:
+    data["materials"] = {
+        "top": {**WOOD_LIBRARY[top_wood], "name": top_wood},
+        "back": {**WOOD_LIBRARY[back_wood], "name": back_wood},
+        "air": {"density": 1.204, "speed_of_sound": 343.0},
+    }
+    # Merge solver so GUI updates do not strip FEM keys (adaptive_mode_sifter, sifter_*, shifts, etc.).
+    solver = dict(data.get("solver") or {})
+    solver["num_modes"] = 10
+    solver["mesh_file"] = str(MESH_FILE)
+    data["solver"] = solver
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
 def generate_live_preview_mesh(L, W, D, shape_type, design_mode, upper_bout, waist, lower_bout):

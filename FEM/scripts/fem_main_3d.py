@@ -208,6 +208,24 @@ def _load_mesh_and_tags(mesh_file: Path, status_callback=None):
     return msh, cell_tags, facet_tags
 
 
+def _solver_bool(solver: Dict, key: str, default: bool) -> bool:
+    """Parse solver JSON flags robustly (bool / int / string)."""
+    if key not in solver:
+        return default
+    v = solver[key]
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return bool(int(v))
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in ("0", "false", "no", "off", ""):
+            return False
+        if s in ("1", "true", "yes", "on"):
+            return True
+    return bool(v)
+
+
 def _effective_wood_properties(config: Dict) -> Tuple[float, float, float, float]:
     top = config["materials"]["top"]
     back = config["materials"]["back"]
@@ -365,6 +383,16 @@ def _solve_coupled_evp(
     status_callback=None,
     solve_evp: bool = True,
 ):
+    _solver_early = config.get("solver", {})
+    _ams = _solver_early.get("adaptive_mode_sifter", "<missing>")
+    _sihz = _solver_early.get("shift_invert_target_hz", "<missing>")
+    print(
+        f"[DEBUG] Sifter status: adaptive_mode_sifter={_ams!r} "
+        f"(effective={_solver_bool(_solver_early, 'adaptive_mode_sifter', True)}), "
+        f"shift_invert_target_hz={_sihz!r}, solve_evp={solve_evp}"
+    )
+    sys.stdout.flush()
+
     msh, cell_tags, facet_tags = _load_mesh_and_tags(mesh_file, status_callback=status_callback)
     coords = msh.geometry.x
     print(
@@ -679,7 +707,7 @@ def _solve_coupled_evp(
     M.assemble()
 
     solver_cfg = config.get("solver", {})
-    use_sifter = bool(solver_cfg.get("adaptive_mode_sifter", True))
+    use_sifter = _solver_bool(solver_cfg, "adaptive_mode_sifter", default=True)
     M_wood: Optional[PETSc.Mat] = None
     if solve_evp and use_sifter:
         M_wood = assemble_matrix(fem.form(m_uu), bcs=bcs)
