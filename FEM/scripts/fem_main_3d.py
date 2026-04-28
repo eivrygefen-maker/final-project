@@ -191,6 +191,14 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     msh, cell_tags, facet_tags = _load_mesh_and_tags(mesh_file, status_callback=status_callback)
     tdim = msh.topology.dim
     fdim = tdim - 1
+    num_cells_global = msh.topology.index_map(tdim).size_global
+    _emit(
+        f"[diag] topology check: dim={tdim}, num_cells_global={num_cells_global}, "
+        f"cell_tags={cell_tags is not None}, facet_tags={facet_tags is not None}",
+        status_callback=status_callback,
+    )
+    if num_cells_global <= 0:
+        raise RuntimeError("Mesh topology appears empty (num_cells_global <= 0). Check XDMF read/conversion.")
 
     _emit("Step 2/5: Building mixed spaces and weak forms...", status_callback=status_callback)
     u_el = element("Lagrange", msh.basix_cell(), 1, shape=(3,))
@@ -253,7 +261,7 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
 
     # Small diagonal regularization to improve conditioning of the coupled system.
     # This helps avoid NaN/Inf KSP norms near near-null/rigid-body components.
-    diag_shift = float(config.get("solver", {}).get("diag_shift", 1e-6))
+    diag_shift = float(config.get("solver", {}).get("diag_shift", 1.0))
     reg_u = diag_shift * ufl.dot(u, v) * wood_ds
     reg_p = diag_shift * p * q * xdmf_dx(AIR_VOLUME_TAG)
 
@@ -457,7 +465,9 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     petsc_opts["pc_gamg_threshold"] = float(solver_cfg.get("pc_gamg_threshold", 0.02))
     petsc_opts["pc_gamg_square_graph"] = int(solver_cfg.get("pc_gamg_square_graph", 1))
     petsc_opts["pc_gamg_agg_nsmooths"] = int(solver_cfg.get("pc_gamg_agg_nsmooths", 1))
-    petsc_opts["mg_coarse_pc_type"] = str(solver_cfg.get("mg_coarse_pc_type", "svd"))
+    petsc_opts["mg_coarse_pc_type"] = str(solver_cfg.get("mg_coarse_pc_type", "jacobi"))
+    petsc_opts["pc_factor_shift_type"] = str(solver_cfg.get("pc_factor_shift_type", "nonzero"))
+    petsc_opts["pc_factor_shift_amount"] = float(solver_cfg.get("pc_factor_shift_amount", 1e-2))
     # Explicit ST-KSP options for iterative shift-invert stability.
     petsc_opts["st_ksp_type"] = str(solver_cfg.get("st_iter_ksp_type", "gmres"))
     petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "unpreconditioned"))
