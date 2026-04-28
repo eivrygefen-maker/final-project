@@ -52,6 +52,57 @@ def _emit(message: str, status_callback=None, level: str = "info") -> None:
         status_callback(message)
 
 
+def _wipe_cache_folder(cache_dir: Path, status_callback=None) -> None:
+    if not cache_dir.exists():
+        _emit(f"[cache] clear-on-start requested, cache does not exist: {cache_dir}", status_callback=status_callback)
+        return
+    removed = 0
+    for path in sorted(cache_dir.rglob("*"), reverse=True):
+        if path.is_file():
+            path.unlink()
+            removed += 1
+        elif path.is_dir():
+            try:
+                path.rmdir()
+            except OSError:
+                # Ignore non-empty dirs; later passes may remove their children.
+                pass
+    _emit(f"[cache] clear-on-start removed {removed} file(s) from {cache_dir}", status_callback=status_callback)
+
+
+def _cleanup_xdmf_cache_keep_latest(cache_dir: Path, keep_last: int = 2, status_callback=None) -> None:
+    if not cache_dir.exists():
+        _emit(f"[cache] cleanup skipped, cache does not exist: {cache_dir}", status_callback=status_callback)
+        return
+    files = [p for p in cache_dir.rglob("*") if p.is_file()]
+    if len(files) <= keep_last:
+        _emit(
+            f"[cache] cleanup skipped, file count={len(files)} <= keep_last={keep_last}",
+            status_callback=status_callback,
+        )
+        return
+
+    files_sorted = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+    keep_set = set(files_sorted[:keep_last])
+    removed = 0
+    for path in files_sorted[keep_last:]:
+        if path not in keep_set:
+            path.unlink()
+            removed += 1
+
+    # Prune empty directories after file cleanup.
+    for d in sorted([p for p in cache_dir.rglob("*") if p.is_dir()], reverse=True):
+        try:
+            d.rmdir()
+        except OSError:
+            pass
+
+    _emit(
+        f"[cache] cleanup complete: kept={min(keep_last, len(files_sorted))}, removed={removed}, dir={cache_dir}",
+        status_callback=status_callback,
+    )
+
+
 def _convert_msh_to_xdmf_with_meshio(mesh_file: Path, out_dir: Path, status_callback=None):
     if meshio is None:
         raise RuntimeError("meshio is not available for fallback conversion.")
@@ -609,6 +660,9 @@ def run_fem_3d_simulation(config_path, status_callback=None):
     mesh_file = Path(config["solver"]["mesh_file"])
     if not mesh_file.exists():
         raise FileNotFoundError(f"Mesh file not found: {mesh_file}")
+    cache_dir = mesh_file.parent / "_xdmf_cache"
+    if bool(config.get("solver", {}).get("clear_cache_on_start", False)):
+        _wipe_cache_folder(cache_dir, status_callback=status_callback)
 
     num_modes = int(config.get("solver", {}).get("num_modes", 3))
     msh, W, freqs, eigvecs, n_u, n_p = _solve_coupled_evp(
@@ -650,6 +704,9 @@ def run_fem_3d_simulation(config_path, status_callback=None):
     config["results"]["vtk_mode_files"] = vtk_files
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=4)
+
+    # Keep only the latest cache artifacts after a successful run.
+    _cleanup_xdmf_cache_keep_latest(cache_dir, keep_last=2, status_callback=status_callback)
 
     _emit(f"Step 5/5: SUCCESS -> {output_path}", status_callback=status_callback)
     return output_path
