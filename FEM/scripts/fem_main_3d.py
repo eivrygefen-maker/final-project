@@ -321,12 +321,30 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     pc.setType(str(solver_cfg.get("st_pc_type", "lu")))
     pc.setFactorSolverType(str(solver_cfg.get("st_factor_solver_type", "mumps")))
 
+    # PETSc/MUMPS memory and robustness tuning for shifted LU factorizations.
+    # - ICNTL(14): increase MUMPS working memory percentage to reduce OOM (-9).
+    # - ICNTL(24): enhanced null-pivot detection in coupled problems.
+    # - ICNTL(22): out-of-core mode (optional; slower but less RAM pressure).
+    mumps_icntl_14 = int(solver_cfg.get("mat_mumps_icntl_14", 100))
+    mumps_icntl_24 = int(solver_cfg.get("mat_mumps_icntl_24", 1))
+    mumps_icntl_22 = int(solver_cfg.get("mat_mumps_icntl_22", 1))
+    petsc_opts = PETSc.Options()
+    petsc_opts["mat_mumps_icntl_14"] = mumps_icntl_14
+    petsc_opts["mat_mumps_icntl_24"] = mumps_icntl_24
+    petsc_opts["mat_mumps_icntl_22"] = mumps_icntl_22
+
+    # Optional iterative fallback profile to avoid direct LU memory spikes.
+    if bool(solver_cfg.get("st_use_iterative_fallback", False)):
+        ksp.setType(str(solver_cfg.get("st_iter_ksp_type", "gmres")))
+        pc.setType(str(solver_cfg.get("st_iter_pc_type", "hypre")))
+
     ncv = max(4 * num_modes, 40)
     eps.setDimensions(num_modes, ncv)
     eps.setTolerances(float(solver_cfg.get("eigs_tol", 1e-8)), int(solver_cfg.get("eigs_maxiter", 1000)))
     _emit(
         f"[solver] shift-invert target: {target_freq_hz:.2f} Hz (lambda={target_lambda:.6e}), "
-        f"KSP={ksp.getType()}, PC={pc.getType()}",
+        f"KSP={ksp.getType()}, PC={pc.getType()}, "
+        f"MUMPS(ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}, ICNTL22={mumps_icntl_22})",
         status_callback=status_callback,
     )
     eps.setFromOptions()
