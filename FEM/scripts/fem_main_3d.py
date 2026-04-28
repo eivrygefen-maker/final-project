@@ -234,6 +234,15 @@ def _solve_coupled_evp(
     solve_evp: bool = True,
 ):
     msh, cell_tags, facet_tags = _load_mesh_and_tags(mesh_file, status_callback=status_callback)
+    coords = msh.geometry.x
+    print(
+        f"[DIAG] Mesh Bounds - X: {coords[:, 0].min()} to {coords[:, 0].max()}"
+    )
+    print(
+        f"[DIAG] Mesh Bounds - Y: {coords[:, 1].min()} to {coords[:, 1].max()}, "
+        f"Z: {coords[:, 2].min()} to {coords[:, 2].max()}"
+    )
+    sys.stdout.flush()
     gc.collect()
     tdim = msh.topology.dim
     fdim = tdim - 1
