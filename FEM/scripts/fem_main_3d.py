@@ -449,9 +449,11 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     _emit("Step 3/5: Solving generalized EVP with SLEPc...", status_callback=status_callback)
     eps = SLEPc.EPS().create(MPI.COMM_WORLD)
     eps.setOperators(A, M)
-    eps.setProblemType(SLEPc.EPS.ProblemType.GHEP)
+    # Coupled structural-acoustic system is generally indefinite/non-Hermitian.
+    eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
     eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
     solver_cfg = config.get("solver", {})
+    eps.setKrylovSchurRestart(float(solver_cfg.get("krylov_schur_restart", 0.5)))
     target_freq_hz = float(solver_cfg.get("target_freq_hz", 100.0))
     target_lambda = (2.0 * math.pi * target_freq_hz) ** 2
 
@@ -506,6 +508,8 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     petsc_opts["mg_coarse_pc_type"] = str(solver_cfg.get("mg_coarse_pc_type", "jacobi"))
     petsc_opts["pc_factor_shift_type"] = str(solver_cfg.get("pc_factor_shift_type", "nonzero"))
     petsc_opts["pc_factor_shift_amount"] = float(solver_cfg.get("pc_factor_shift_amount", 1e-2))
+    petsc_opts["eps_gen_non_hermitian"] = ""
+    petsc_opts["bv_orthog_refine"] = str(solver_cfg.get("bv_orthog_refine", "always"))
     # Explicit ST-KSP options for iterative shift-invert stability.
     petsc_opts["st_ksp_type"] = str(solver_cfg.get("st_iter_ksp_type", "gmres"))
     petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "unpreconditioned"))
