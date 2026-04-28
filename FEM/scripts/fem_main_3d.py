@@ -251,7 +251,13 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     # <q, u.n> on interface contributes to generalized mass block.
     m_pu = q * w_n * wood_ds
 
-    a_form = a_uu + a_pp + a_up
+    # Small diagonal regularization to improve conditioning of the coupled system.
+    # This helps avoid NaN/Inf KSP norms near near-null/rigid-body components.
+    diag_shift = float(config.get("solver", {}).get("diag_shift", 1e-10))
+    reg_u = diag_shift * ufl.dot(u, v) * wood_ds
+    reg_p = diag_shift * p * q * xdmf_dx(AIR_VOLUME_TAG)
+
+    a_form = a_uu + a_pp + a_up + reg_u + reg_p
     m_form = m_uu + m_pp + m_pu
 
     # Dirichlet BCs using subspace-collapse strategy for strict C++ signatures.
@@ -305,7 +311,7 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     eps.setProblemType(SLEPc.EPS.ProblemType.GHEP)
     eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
     solver_cfg = config.get("solver", {})
-    target_freq_hz = float(solver_cfg.get("target_freq_hz", 90.0))
+    target_freq_hz = float(solver_cfg.get("target_freq_hz", 100.0))
     target_lambda = (2.0 * math.pi * target_freq_hz) ** 2
 
     # Shift-and-invert around the physically relevant low-frequency range.
@@ -321,10 +327,11 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     if use_iterative:
         # Memory-efficient inner solve for shift-invert.
         ksp.setType(str(solver_cfg.get("st_iter_ksp_type", "gmres")))
-        pc.setType(str(solver_cfg.get("st_iter_pc_type", "hypre")))
+        pc.setType(str(solver_cfg.get("st_iter_pc_type", "gamg")))
         ksp_rtol = float(solver_cfg.get("st_iter_ksp_rtol", 1e-6))
         ksp_max_it = int(solver_cfg.get("st_iter_ksp_max_it", 1000))
         ksp.setTolerances(rtol=ksp_rtol, max_it=ksp_max_it)
+        ksp.setNormType(PETSc.KSP.NormType.UNPRECONDITIONED)
         if pc.getType().lower() == "hypre":
             # BoomerAMG is generally robust for large 3D coupled systems.
             try:
@@ -347,6 +354,13 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     petsc_opts["mat_mumps_icntl_14"] = mumps_icntl_14
     petsc_opts["mat_mumps_icntl_24"] = mumps_icntl_24
     petsc_opts["mat_mumps_icntl_22"] = mumps_icntl_22
+    mg_levels_ksp_type = str(solver_cfg.get("mg_levels_ksp_type", "chebyshev"))
+    mg_levels_pc_type = str(solver_cfg.get("mg_levels_pc_type", "sor"))
+    petsc_opts["mg_levels_ksp_type"] = mg_levels_ksp_type
+    petsc_opts["mg_levels_pc_type"] = mg_levels_pc_type
+    # Explicit ST-KSP options for iterative shift-invert stability.
+    petsc_opts["st_ksp_type"] = str(solver_cfg.get("st_iter_ksp_type", "gmres"))
+    petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "unpreconditioned"))
 
     ncv = max(4 * num_modes, 40)
     eps.setDimensions(num_modes, ncv)
@@ -355,7 +369,8 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
         f"[solver] shift-invert target: {target_freq_hz:.2f} Hz (lambda={target_lambda:.6e}), "
         f"KSP={ksp.getType()}, PC={pc.getType()}, "
         f"MUMPS(ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}, ICNTL22={mumps_icntl_22}), "
-        f"iterative_default={use_iterative}",
+        f"MG(level_ksp={mg_levels_ksp_type}, level_pc={mg_levels_pc_type}), "
+        f"diag_shift={diag_shift:.2e}, iterative_default={use_iterative}",
         status_callback=status_callback,
     )
     eps.setFromOptions()
