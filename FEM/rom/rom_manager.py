@@ -50,6 +50,45 @@ class ROMManager:
         lhs_pool_path = shape_root / f"lhs_pool_{shape_name}.json"
         return {"root": shape_root, "snapshots": snapshots_dir, "basis": basis_path, "lhs_pool": lhs_pool_path}
 
+    @staticmethod
+    def _shape_length_width_depth_bounds(shape_type: str) -> Dict[str, Dict[str, float]]:
+        st = str(shape_type).lower()
+        if "dreadnought" in st:
+            return {
+                "geometry.length": {"min": 0.45, "max": 0.70},
+                "geometry.width": {"min": 0.30, "max": 0.55},
+                "geometry.depth": {"min": 0.10, "max": 0.20},
+            }
+        if "box" in st:
+            return {
+                "geometry.length": {"min": 0.10, "max": 1.00},
+                "geometry.width": {"min": 0.10, "max": 0.80},
+                "geometry.depth": {"min": 0.01, "max": 0.50},
+            }
+        # Classical defaults (match GUI sliders).
+        return {
+            "geometry.length": {"min": 0.35, "max": 0.60},
+            "geometry.width": {"min": 0.20, "max": 0.45},
+            "geometry.depth": {"min": 0.08, "max": 0.15},
+        }
+
+    def _build_5d_lhs_sweep_spec(self, shape_name: str, sweep_cfg: Dict) -> Dict:
+        base_cfg = self._load_shape_base_config(shape_name)
+        shape_type = str(base_cfg.get("geometry", {}).get("shape_type", "Classical"))
+        bounds = self._shape_length_width_depth_bounds(shape_type)
+        spec = {
+            "geometry.length": bounds["geometry.length"],
+            "geometry.width": bounds["geometry.width"],
+            "geometry.depth": bounds["geometry.depth"],
+            "geometry.thickness": {"min": 0.002, "max": 0.010},
+            "materials.top.density": {"min": 300.0, "max": 950.0},
+        }
+        # Allow optional per-shape overrides from config while preserving 5D keys.
+        for key in spec.keys():
+            if key in sweep_cfg:
+                spec[key] = sweep_cfg[key]
+        return spec
+
     def _load_shape_base_config(self, shape_name: str) -> Dict:
         shape_cfg = self.shapes[shape_name]
         config_path = self.base_dir / shape_cfg["base_config"]
@@ -194,12 +233,15 @@ class ROMManager:
         sweep_cfg: Dict,
         total_samples: int,
         seed: int = 123,
+        force_rebuild: bool = False,
     ) -> Dict:
         paths = self._shape_paths(shape_name)
         pool_path = paths["lhs_pool"]
-        if pool_path.exists():
+        if pool_path.exists() and not force_rebuild:
             with open(pool_path, "r", encoding="utf-8") as f:
                 return json.load(f)
+        if pool_path.exists() and force_rebuild:
+            pool_path.unlink()
         pool = self._create_lhs_pool(shape_name, sweep_cfg=sweep_cfg, total_samples=total_samples, seed=seed)
         self._write_json(pool_path, pool)
         return pool
@@ -240,6 +282,7 @@ class ROMManager:
         seed: int = 123,
         dry_run: bool = False,
         retry_errors: bool = False,
+        force_pool_rebuild: bool = False,
     ) -> List[Path]:
         shape_cfg = self.shapes[shape_name]
         paths = self._shape_paths(shape_name)
@@ -252,7 +295,14 @@ class ROMManager:
             grid = [{}]
         elif sampling_mode == "lhs":
             n = int(lhs_samples if lhs_samples is not None else shape_cfg.get("lhs_samples", shape_cfg.get("lhs_pool_size", 100)))
-            pool = self._load_or_create_lhs_pool(shape_name, sweep_cfg=sweep_cfg, total_samples=n, seed=seed)
+            lhs_5d_spec = self._build_5d_lhs_sweep_spec(shape_name, sweep_cfg)
+            pool = self._load_or_create_lhs_pool(
+                shape_name,
+                sweep_cfg=lhs_5d_spec,
+                total_samples=n,
+                seed=seed,
+                force_rebuild=force_pool_rebuild,
+            )
             if retry_errors:
                 changed = 0
                 for entry in pool.get("entries", []):
