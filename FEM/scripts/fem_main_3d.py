@@ -555,7 +555,7 @@ def _solve_coupled_evp(
     petsc_opts["st_ksp_type"] = str(solver_cfg.get("st_iter_ksp_type", "gmres"))
     petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "unpreconditioned"))
 
-    fast_num_modes = 50
+    fast_num_modes = 100
     ncv = int(solver_cfg.get("target_ncv", max(40, 4 * fast_num_modes)))
     eps.setDimensions(fast_num_modes, ncv)
     eps.setTolerances(float(solver_cfg.get("eigs_tol", 1e-4)), int(solver_cfg.get("eigs_maxiter", 2000)))
