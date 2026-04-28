@@ -286,7 +286,7 @@ class ROMManager:
     def collect_snapshots(
         self,
         shape_name: str,
-        num_modes: int = 6,
+        num_modes: int = 15,
         sampling: Optional[str] = None,
         lhs_samples: Optional[int] = None,
         pool_size: int = 500,
@@ -536,7 +536,7 @@ class ROMManager:
         freqs = np.sqrt(lam) / (2.0 * np.pi)
         return {"freqs_hz": freqs.tolist(), "elapsed_s": elapsed, "nev": int(len(freqs))}
 
-    def compare(self, shape_name: str, params: Dict, nev: int = 3, fom_modes: int = 6) -> Dict:
+    def compare(self, shape_name: str, params: Dict, nev: int = 3, fom_modes: int = 15) -> Dict:
         cfg = self._load_shape_base_config(shape_name)
         for k, v in params.items():
             self._set_nested(cfg, k, v)

@@ -77,7 +77,7 @@ def main():
 
     p_offline = sub.add_parser("offline", help="Run FOM parameter sweep and save snapshots.")
     p_offline.add_argument("--shape", required=True)
-    p_offline.add_argument("--num-modes", type=int, default=6)
+    p_offline.add_argument("--num-modes", type=int, default=15)
     p_offline.add_argument("--sampling", choices=["structured", "lhs"], default=None)
     p_offline.add_argument("--lhs-samples", type=int, default=None)
     p_offline.add_argument("--num-samples", type=int, default=None, help="Alias for --lhs-samples")
@@ -111,7 +111,7 @@ def main():
     p_compare = sub.add_parser("compare", help="Run FOM vs ROM comparison.")
     p_compare.add_argument("--shape", required=True)
     p_compare.add_argument("--nev", type=int, default=3)
-    p_compare.add_argument("--fom-modes", type=int, default=6)
+    p_compare.add_argument("--fom-modes", type=int, default=15)
     p_compare.add_argument("--set", nargs="*", default=[], help="Parameter overrides key=value")
 
     args = parser.parse_args()
