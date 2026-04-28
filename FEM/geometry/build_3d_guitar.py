@@ -35,9 +35,14 @@ def create_guitar_mesh():
     # --- התיקון שלנו: שינוי צפיפות הרשת בהתאם למצב ---
     if is_preview:
         mesh_size = 0.030  # רשת של 30 מ"מ במקום 80, כדי שהמנוע לא יקרוס בעובי דק!
+        mesh_size_min = mesh_size
+        mesh_size_max = mesh_size
     else:
         # Benchmark target: 6 mm global mesh size (safer middle ground than very fine meshes).
         mesh_size = 0.006
+        # Force a tighter global size band so gmsh cannot drift too coarse.
+        mesh_size_min = 0.003
+        mesh_size_max = 0.006
     
     print(f"Building geometry with Thickness: {t*1000:.1f}mm, Mesh Size: {mesh_size*1000:.2f}mm")
     
@@ -241,8 +246,12 @@ def create_guitar_mesh():
         raise RuntimeError("Tag 10 was created but has no 3D volume entities.")
 
     # הגדרת רשת האלמנטים המאוזנת
-    gmsh.option.setNumber("Mesh.MeshSizeMin", mesh_size)
-    gmsh.option.setNumber("Mesh.MeshSizeMax", mesh_size)
+    gmsh.option.setNumber("Mesh.MeshSizeMin", mesh_size_min)
+    gmsh.option.setNumber("Mesh.MeshSizeMax", mesh_size_max)
+    # Keep characteristic length controls enabled so lc/global sizing is effective.
+    gmsh.option.setNumber("Mesh.CharacteristicLengthFromPoints", 1)
+    gmsh.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 1)
+    gmsh.option.setNumber("Mesh.CharacteristicLengthExtendFromBoundary", 1)
     
     # --- התיקון שלנו: עקמומיות מושלמת למעגלים ---
     # מפעיל אלגוריתם שמתאים את גודל הרשת לפי הקימור של הצורה
@@ -254,7 +263,11 @@ def create_guitar_mesh():
     gmsh.model.mesh.setOrder(1)
 
     try:
-        print(f"Generating optimized mesh (Density: {mesh_size*1000}mm, Wall: {t*1000}mm)...")
+        print(
+            f"Generating optimized mesh (target={mesh_size*1000:.2f}mm, "
+            f"min={mesh_size_min*1000:.2f}mm, max={mesh_size_max*1000:.2f}mm, "
+            f"wall={t*1000:.2f}mm)..."
+        )
         gmsh.model.mesh.generate(3)
         gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
         gmsh.write(str(out_file))
