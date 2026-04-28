@@ -28,6 +28,7 @@ class ROMManager:
         )
         self.shapes = self._load_shapes_config()
         self._basis_cache: Dict[str, Dict] = {}
+        self._last_collect_summary: Dict = {}
 
     def _load_shapes_config(self) -> Dict:
         if not self.shapes_config_path.exists():
@@ -246,6 +247,15 @@ class ROMManager:
         self._write_json(pool_path, pool)
         return pool
 
+    @staticmethod
+    def _pool_status_counts(pool: Dict) -> Dict[str, int]:
+        counts = {"pending": 0, "running": 0, "completed": 0, "error": 0}
+        for entry in pool.get("entries", []):
+            st = str(entry.get("status", "pending"))
+            if st in counts:
+                counts[st] += 1
+        return counts
+
     def reset_lhs_errors(self, shape_name: str) -> int:
         paths = self._shape_paths(shape_name)
         pool_path = paths["lhs_pool"]
@@ -279,6 +289,8 @@ class ROMManager:
         num_modes: int = 6,
         sampling: Optional[str] = None,
         lhs_samples: Optional[int] = None,
+        pool_size: int = 500,
+        max_runs: int = 50,
         seed: int = 123,
         dry_run: bool = False,
         retry_errors: bool = False,
@@ -294,7 +306,7 @@ class ROMManager:
         if not sweep_cfg:
             grid = [{}]
         elif sampling_mode == "lhs":
-            n = int(lhs_samples if lhs_samples is not None else shape_cfg.get("lhs_samples", shape_cfg.get("lhs_pool_size", 100)))
+            n = int(lhs_samples if lhs_samples is not None else pool_size)
             lhs_5d_spec = self._build_5d_lhs_sweep_spec(shape_name, sweep_cfg)
             pool = self._load_or_create_lhs_pool(
                 shape_name,
@@ -320,16 +332,34 @@ class ROMManager:
         if dry_run:
             if sampling_mode == "lhs":
                 pending = [e for e in pool.get("entries", []) if e.get("status") == "pending"]
+                self._last_collect_summary = {
+                    "shape": shape_name,
+                    "sampling": sampling_mode,
+                    "dry_run": True,
+                    "planned_batch_size": min(len(pending), int(max_runs)),
+                    "pool_counts": self._pool_status_counts(pool),
+                }
                 return [
                     paths["snapshots"] / f"snapshot_{start_idx + off:04d}.npz"
-                    for off in range(len(pending))
+                    for off in range(min(len(pending), int(max_runs)))
                 ]
+            self._last_collect_summary = {
+                "shape": shape_name,
+                "sampling": sampling_mode,
+                "dry_run": True,
+                "planned_batch_size": len(grid),
+            }
             return [paths["snapshots"] / f"snapshot_{start_idx + off:04d}.npz" for off in range(len(grid))]
 
         if sampling_mode == "lhs":
             pool_path = paths["lhs_pool"]
             next_idx = start_idx
+            processed = 0
+            completed_batch = 0
+            error_batch = 0
             while True:
+                if processed >= int(max_runs):
+                    break
                 pending_idx = None
                 for i, entry in enumerate(pool.get("entries", [])):
                     if entry.get("status") == "pending":
@@ -367,11 +397,24 @@ class ROMManager:
                     entry["error"] = None
                     out_files.append(snapshot_path)
                     next_idx += 1
+                    completed_batch += 1
                 except Exception as exc:
                     entry["status"] = "error"
                     entry["error"] = str(exc)
+                    error_batch += 1
                 finally:
+                    processed += 1
                     self._write_json(pool_path, pool)
+            self._last_collect_summary = {
+                "shape": shape_name,
+                "sampling": sampling_mode,
+                "dry_run": False,
+                "max_runs": int(max_runs),
+                "processed_in_batch": processed,
+                "completed_in_batch": completed_batch,
+                "error_in_batch": error_batch,
+                "pool_counts": self._pool_status_counts(pool),
+            }
             return out_files
 
         for off, params in enumerate(grid):
@@ -393,7 +436,18 @@ class ROMManager:
                 elapsed_s=np.array([elapsed], dtype=np.float64),
             )
             out_files.append(snapshot_path)
+        self._last_collect_summary = {
+            "shape": shape_name,
+            "sampling": sampling_mode,
+            "dry_run": False,
+            "processed_in_batch": len(grid),
+            "completed_in_batch": len(grid),
+            "error_in_batch": 0,
+        }
         return out_files
+
+    def get_last_collect_summary(self) -> Dict:
+        return dict(self._last_collect_summary)
 
     def build_basis(self, shape_name: str, energy: float = 0.999, max_rank: int = 128) -> Path:
         paths = self._shape_paths(shape_name)

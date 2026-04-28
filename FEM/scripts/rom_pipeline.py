@@ -46,6 +46,10 @@ def _print_param_preview(shape_name: str, base_cfg: dict, overrides: dict):
     print(f"\n[online] shape={shape_name} parameter preview")
     print(f"{'parameter':<42} {'value':<24} {'source':<10}")
     print("-" * 80)
+    for k, v, src in rows:
+        if k.startswith("geometry.") or k.startswith("materials.") or k in overrides:
+            print(f"{k:<42} {str(v):<24} {src:<10}")
+    print("-" * 80)
 
 
 def _read_lhs_pool_summary(manager: ROMManager, shape_name: str):
@@ -62,10 +66,6 @@ def _read_lhs_pool_summary(manager: ROMManager, shape_name: str):
         if st in counts:
             counts[st] += 1
     return {"pool_file": str(pool_path), "total": len(entries), "counts": counts}
-    for k, v, src in rows:
-        if k.startswith("geometry.") or k.startswith("materials.") or k in overrides:
-            print(f"{k:<42} {str(v):<24} {src:<10}")
-    print("-" * 80)
 
 
 def main():
@@ -81,6 +81,8 @@ def main():
     p_offline.add_argument("--sampling", choices=["structured", "lhs"], default=None)
     p_offline.add_argument("--lhs-samples", type=int, default=None)
     p_offline.add_argument("--num-samples", type=int, default=None, help="Alias for --lhs-samples")
+    p_offline.add_argument("--pool-size", type=int, default=500, help="Total LHS pool size when creating a new pool.")
+    p_offline.add_argument("--max-runs", type=int, default=50, help="Maximum pending LHS samples to process this run.")
     p_offline.add_argument("--dry-run", action="store_true")
     p_offline.add_argument("--retry-errors", action="store_true", help="Reset LHS pool error entries to pending before run.")
     p_offline.add_argument(
@@ -126,11 +128,14 @@ def main():
             num_modes=args.num_modes,
             sampling=args.sampling,
             lhs_samples=lhs_samples,
+            pool_size=args.pool_size,
+            max_runs=args.max_runs,
             seed=args.seed,
             dry_run=args.dry_run,
             retry_errors=args.retry_errors,
             force_pool_rebuild=args.force_pool_rebuild,
         )
+        batch_summary = manager.get_last_collect_summary()
         print(
             json.dumps(
                 {
@@ -138,9 +143,12 @@ def main():
                     "dry_run": bool(args.dry_run),
                     "retry_errors": bool(args.retry_errors),
                     "force_pool_rebuild": bool(args.force_pool_rebuild),
+                    "pool_size": int(args.pool_size),
+                    "max_runs": int(args.max_runs),
                     "snapshots_written": len(files),
                     "first_snapshot": str(files[0]) if files else None,
                     "last_snapshot": str(files[-1]) if files else None,
+                    "batch_summary": batch_summary,
                     "lhs_pool": _read_lhs_pool_summary(manager, args.shape),
                 },
                 indent=2,
