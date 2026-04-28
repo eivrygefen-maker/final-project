@@ -526,15 +526,13 @@ def _solve_coupled_evp(
     eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
     solver_cfg = config.get("solver", {})
     eps.setKrylovSchurRestart(float(solver_cfg.get("krylov_schur_restart", 0.5)))
-    target_freq_hz = float(solver_cfg.get("target_freq_hz", 100.0))
-    target_lambda = (2.0 * math.pi * target_freq_hz) ** 2
+    target_lambda = float(solver_cfg.get("target_lambda", 0.0))
 
     # Shift-and-invert around the physically relevant low-frequency range.
     eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
     eps.setTarget(target_lambda)
     st = eps.getST()
     st.setType(SLEPc.ST.Type.SINVERT)
-    st.setShift(-1.0)
 
     # Preconditioner/factorization hints for the shifted linear solves.
     ksp = st.getKSP()
@@ -602,8 +600,9 @@ def _solve_coupled_evp(
     else:
         diag_min = float("nan")
         diag_max = float("nan")
+    FORCED_SHIFT = -1.0
     _emit(
-        f"[solver] shift-invert target: {target_freq_hz:.2f} Hz (lambda={target_lambda:.6e}), "
+        f"[solver] shift-invert target: {FORCED_SHIFT:.2f} (forced shift anchor), "
         f"KSP={ksp.getType()}, PC={pc.getType()}, "
         f"MUMPS(ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}, ICNTL22={mumps_icntl_22}), "
         f"MG(level_ksp={mg_levels_ksp_type}, level_pc={mg_levels_pc_type}), "
@@ -611,6 +610,7 @@ def _solve_coupled_evp(
         f"iterative_default={use_iterative}",
         status_callback=status_callback,
     )
+    st.setShift(FORCED_SHIFT)
     eps.setFromOptions()
     eps.solve()
 
