@@ -55,7 +55,7 @@ def create_guitar_mesh():
 
     def create_guitar_profile(l, w, is_dreadnought=False, offset=0):
         top_x = 0.50 * l - offset if offset > 0 else 0.50 * l
-        p_top_center = occ.addPoint(top_x, 0, 0)
+        p_top_center = occ.addPoint(top_x, 0, 0, mesh_size)
         x_facs = [0.50, 0.44, 0.25, 0.05, -0.10, -0.25, -0.40, -0.48, -0.50] if is_dreadnought else [0.50, 0.44, 0.25, 0.10, 0.00, -0.15, -0.35, -0.45, -0.50]
         y_facs = [0.08, 0.20, 0.38, 0.35, 0.34, 0.45, 0.50, 0.25, 0.00] if is_dreadnought else [0.08, 0.18, 0.36, 0.30, 0.28, 0.45, 0.50, 0.30, 0.00]
         
@@ -67,7 +67,7 @@ def create_guitar_mesh():
                 y = max(0, y - offset)
                 if x_f == 0.5: x -= offset
                 elif x_f == -0.5: x += offset
-            pts.append(occ.addPoint(x, max(0, y), 0))
+            pts.append(occ.addPoint(x, max(0, y), 0, mesh_size))
             
         l_top = occ.addLine(p_top_center, pts[0]); c_body = occ.addSpline(pts)
         m_l = occ.copy([(1, l_top)]); occ.mirror(m_l, 0, 1, 0, 0)
@@ -252,6 +252,10 @@ def create_guitar_mesh():
     gmsh.option.setNumber("Mesh.CharacteristicLengthFromPoints", 1)
     gmsh.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 1)
     gmsh.option.setNumber("Mesh.CharacteristicLengthExtendFromBoundary", 1)
+    print(
+        f"[diag] Gmsh size controls (meters): target_lc={mesh_size:.6f}, "
+        f"MeshSizeMin={mesh_size_min:.6f}, MeshSizeMax={mesh_size_max:.6f}"
+    )
     
     # --- התיקון שלנו: עקמומיות מושלמת למעגלים ---
     # מפעיל אלגוריתם שמתאים את גודל הרשת לפי הקימור של הצורה
@@ -266,7 +270,8 @@ def create_guitar_mesh():
         print(
             f"Generating optimized mesh (target={mesh_size*1000:.2f}mm, "
             f"min={mesh_size_min*1000:.2f}mm, max={mesh_size_max*1000:.2f}mm, "
-            f"wall={t*1000:.2f}mm)..."
+            f"wall={t*1000:.2f}mm | raw_meters: lc={mesh_size:.6f}, "
+            f"min={mesh_size_min:.6f}, max={mesh_size_max:.6f})..."
         )
         gmsh.model.mesh.generate(3)
         gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
