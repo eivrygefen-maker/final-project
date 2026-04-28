@@ -230,6 +230,7 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
 
     xdmf_ds = ufl.Measure("ds", domain=msh, subdomain_data=facet_tags)
     xdmf_dx = ufl.Measure("dx", domain=msh, subdomain_data=cell_tags)
+    full_dx = ufl.Measure("dx", domain=msh)
     n = ufl.FacetNormal(msh)
     P = ufl.Identity(3) - ufl.outer(n, n)
 
@@ -247,7 +248,23 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
         grad_tan = P * grad_u * P
         return 0.5 * (grad_tan + ufl.transpose(grad_tan))
 
-    wood_ds = xdmf_ds(WOOD_SURFACE_TAGS[0]) + xdmf_ds(WOOD_SURFACE_TAGS[1])
+    wood_tag_top = int(np.sum(facet_tags.values == WOOD_SURFACE_TAGS[0]))
+    wood_tag_shell = int(np.sum(facet_tags.values == WOOD_SURFACE_TAGS[1]))
+    if wood_tag_top + wood_tag_shell > 0:
+        wood_ds = xdmf_ds(WOOD_SURFACE_TAGS[0]) + xdmf_ds(WOOD_SURFACE_TAGS[1])
+        _emit(
+            f"[form] structural shell integration on tagged facets: "
+            f"tag{WOOD_SURFACE_TAGS[0]}={wood_tag_top}, tag{WOOD_SURFACE_TAGS[1]}={wood_tag_shell}",
+            status_callback=status_callback,
+        )
+    else:
+        # Force-physics fallback: if expected structural tags are missing, use all exterior facets.
+        wood_ds = ufl.ds(domain=msh)
+        _emit(
+            "[form][warn] structural facet tags missing; falling back to all exterior facets (ds).",
+            status_callback=status_callback,
+            level="warning",
+        )
 
     eps_u = eps_surface(u)
     eps_v = eps_surface(v)
@@ -279,8 +296,9 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     # Small diagonal regularization to improve conditioning of the coupled system.
     # This helps avoid NaN/Inf KSP norms near near-null/rigid-body components.
     diag_shift = float(config.get("solver", {}).get("diag_shift", 1.0))
-    reg_u = diag_shift * ufl.dot(u, v) * wood_ds
-    reg_p = diag_shift * p * q * xdmf_dx(AIR_VOLUME_TAG)
+    # Global mixed-space regularization so every DOF gets a diagonal anchor.
+    reg_u = diag_shift * ufl.dot(u, v) * full_dx
+    reg_p = diag_shift * p * q * full_dx
 
     a_form = a_uu + a_pp + a_up + reg_u + reg_p
     m_form = m_uu + m_pp + m_pu
