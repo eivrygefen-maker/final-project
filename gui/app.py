@@ -42,23 +42,23 @@ if CONFIG_PATH.exists():
 # --- Material Library (Fine-Tuned Calibration) ---
 WOOD_LIBRARY = {
     "Sitka Spruce": {
-        "density": 450.0, "E_L": 11.0e8, "E_T": 1.0e8, "E_R": 0.7e8,
+        "density": 450.0, "E_L": 11.0e9, "E_T": 1.0e9, "E_R": 0.7e9,
         "nu_LT": 0.37, "nu_LR": 0.37, "nu_TR": 0.4,
-        "G_LT": 0.75e8, "G_LR": 0.75e8, "G_TR": 0.05e8,
+        "G_LT": 0.75e9, "G_LR": 0.75e9, "G_TR": 0.05e9,
         "q_min": 60, "q_max": 80,
         "color": "#FCE6C9"  
     },
     "Honduran Mahogany": {
-        "density": 530.0, "E_L": 10.8e8, "E_T": 0.9e8, "E_R": 0.7e8,
+        "density": 530.0, "E_L": 10.5e9, "E_T": 1.2e9, "E_R": 0.7e9,
         "nu_LT": 0.35, "nu_LR": 0.35, "nu_TR": 0.4,
-        "G_LT": 0.5e8, "G_LR": 0.5e8, "G_TR": 0.05e8,
+        "G_LT": 0.8e9, "G_LR": 0.8e9, "G_TR": 0.05e9,
         "q_min": 45, "q_max": 60,
         "color": "#93441A"  
     },
     "Indian Rosewood": {
-        "density": 830.0, "E_L": 11.5e8, "E_T": 1.3e8, "E_R": 0.7e8,
+        "density": 830.0, "E_L": 11.5e9, "E_T": 1.3e9, "E_R": 0.7e9,
         "nu_LT": 0.33, "nu_LR": 0.33, "nu_TR": 0.4,
-        "G_LT": 0.95e8, "G_LR": 0.95e8, "G_TR": 0.05e8,
+        "G_LT": 0.95e9, "G_LR": 0.95e9, "G_TR": 0.05e9,
         "q_min": 90, "q_max": 100,
         "color": "#3D2B1F"  
     }
