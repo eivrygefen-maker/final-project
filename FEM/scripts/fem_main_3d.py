@@ -101,6 +101,11 @@ def _convert_msh_to_xdmf_with_meshio(mesh_file: Path, out_dir: Path, status_call
     meshio.write(str(vol_xdmf), vol_mesh)
     _emit(f"[mesh-fallback] writing facet XDMF: {fac_xdmf}", status_callback=status_callback)
     meshio.write(str(fac_xdmf), fac_mesh)
+    _emit(
+        f"[mesh-fallback] cache verify: vol_exists={vol_xdmf.exists()} size={vol_xdmf.stat().st_size if vol_xdmf.exists() else -1}, "
+        f"fac_exists={fac_xdmf.exists()} size={fac_xdmf.stat().st_size if fac_xdmf.exists() else -1}",
+        status_callback=status_callback,
+    )
     return vol_xdmf, fac_xdmf
 
 
@@ -126,6 +131,11 @@ def _load_mesh_with_fallback(mesh_file: Path, status_callback=None):
     _emit("[mesh] fallback loader start: meshio -> XDMF -> dolfinx.io.XDMFFile", status_callback=status_callback)
     xdmf_dir = mesh_file.parent / "_xdmf_cache"
     vol_xdmf, fac_xdmf = _convert_msh_to_xdmf_with_meshio(mesh_file, xdmf_dir, status_callback=status_callback)
+    _emit(
+        f"[mesh-fallback] cache files ready: vol={vol_xdmf} exists={vol_xdmf.exists()}, "
+        f"fac={fac_xdmf} exists={fac_xdmf.exists()}",
+        status_callback=status_callback,
+    )
 
     _emit(f"[mesh-fallback] opening volume XDMF for mesh/tags: {vol_xdmf}", status_callback=status_callback)
     with io.XDMFFile(MPI.COMM_WORLD, str(vol_xdmf), "r") as xdmf:
@@ -166,6 +176,13 @@ def _load_mesh_and_tags(mesh_file: Path, status_callback=None):
         f"unique facet tags={np.unique(facet_tags.values).tolist()}",
         status_callback=status_callback,
     )
+    # Explicit per-tag sanity counts requested for fallback validation.
+    vol_counts = {1: int(np.sum(cell_tags.values == 1)), 2: int(np.sum(cell_tags.values == 2)),
+                  3: int(np.sum(cell_tags.values == 3)), 10: int(np.sum(cell_tags.values == 10))}
+    fac_counts = {1: int(np.sum(facet_tags.values == 1)), 2: int(np.sum(facet_tags.values == 2)),
+                  3: int(np.sum(facet_tags.values == 3)), 10: int(np.sum(facet_tags.values == 10))}
+    _emit(f"[diag] volume tag counts: {vol_counts}", status_callback=status_callback)
+    _emit(f"[diag] facet tag counts: {fac_counts}", status_callback=status_callback)
     return msh, cell_tags, facet_tags
 
 
@@ -405,6 +422,9 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
 
     A = assemble_matrix(fem.form(a_form), bcs=bcs)
     A.assemble()
+    # Debug-only hard anchor to test if row-0 pivot singularity can be bypassed.
+    A.setValue(0, 0, PETSc.ScalarType(1.0), addv=PETSc.InsertMode.INSERT_VALUES)
+    A.assemble()
     M = assemble_matrix(fem.form(m_form), bcs=bcs)
     M.assemble()
 
@@ -475,12 +495,22 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     ncv = max(4 * num_modes, 40)
     eps.setDimensions(num_modes, ncv)
     eps.setTolerances(float(solver_cfg.get("eigs_tol", 1e-8)), int(solver_cfg.get("eigs_maxiter", 1000)))
+    # Matrix sanity diagnostic: inspect assembled stiffness diagonal spread.
+    diag_vec = A.getDiagonal()
+    diag_arr = np.real(diag_vec.array)
+    if diag_arr.size > 0:
+        diag_min = float(np.min(diag_arr))
+        diag_max = float(np.max(diag_arr))
+    else:
+        diag_min = float("nan")
+        diag_max = float("nan")
     _emit(
         f"[solver] shift-invert target: {target_freq_hz:.2f} Hz (lambda={target_lambda:.6e}), "
         f"KSP={ksp.getType()}, PC={pc.getType()}, "
         f"MUMPS(ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}, ICNTL22={mumps_icntl_22}), "
         f"MG(level_ksp={mg_levels_ksp_type}, level_pc={mg_levels_pc_type}), "
-        f"diag_shift={diag_shift:.2e}, iterative_default={use_iterative}",
+        f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}, "
+        f"iterative_default={use_iterative}",
         status_callback=status_callback,
     )
     eps.setFromOptions()
