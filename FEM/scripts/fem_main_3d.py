@@ -317,9 +317,24 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     # Preconditioner/factorization hints for the shifted linear solves.
     ksp = st.getKSP()
     pc = ksp.getPC()
-    ksp.setType(str(solver_cfg.get("st_ksp_type", "preonly")))
-    pc.setType(str(solver_cfg.get("st_pc_type", "lu")))
-    pc.setFactorSolverType(str(solver_cfg.get("st_factor_solver_type", "mumps")))
+    use_iterative = bool(solver_cfg.get("st_use_iterative_fallback", True))
+    if use_iterative:
+        # Memory-efficient inner solve for shift-invert.
+        ksp.setType(str(solver_cfg.get("st_iter_ksp_type", "gmres")))
+        pc.setType(str(solver_cfg.get("st_iter_pc_type", "hypre")))
+        ksp_rtol = float(solver_cfg.get("st_iter_ksp_rtol", 1e-6))
+        ksp_max_it = int(solver_cfg.get("st_iter_ksp_max_it", 1000))
+        ksp.setTolerances(rtol=ksp_rtol, max_it=ksp_max_it)
+        if pc.getType().lower() == "hypre":
+            # BoomerAMG is generally robust for large 3D coupled systems.
+            try:
+                pc.setHYPREType(str(solver_cfg.get("st_iter_hypre_type", "boomeramg")))
+            except Exception:
+                pass
+    else:
+        ksp.setType(str(solver_cfg.get("st_ksp_type", "preonly")))
+        pc.setType(str(solver_cfg.get("st_pc_type", "lu")))
+        pc.setFactorSolverType(str(solver_cfg.get("st_factor_solver_type", "mumps")))
 
     # PETSc/MUMPS memory and robustness tuning for shifted LU factorizations.
     # - ICNTL(14): increase MUMPS working memory percentage to reduce OOM (-9).
@@ -333,18 +348,14 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     petsc_opts["mat_mumps_icntl_24"] = mumps_icntl_24
     petsc_opts["mat_mumps_icntl_22"] = mumps_icntl_22
 
-    # Optional iterative fallback profile to avoid direct LU memory spikes.
-    if bool(solver_cfg.get("st_use_iterative_fallback", False)):
-        ksp.setType(str(solver_cfg.get("st_iter_ksp_type", "gmres")))
-        pc.setType(str(solver_cfg.get("st_iter_pc_type", "hypre")))
-
     ncv = max(4 * num_modes, 40)
     eps.setDimensions(num_modes, ncv)
     eps.setTolerances(float(solver_cfg.get("eigs_tol", 1e-8)), int(solver_cfg.get("eigs_maxiter", 1000)))
     _emit(
         f"[solver] shift-invert target: {target_freq_hz:.2f} Hz (lambda={target_lambda:.6e}), "
         f"KSP={ksp.getType()}, PC={pc.getType()}, "
-        f"MUMPS(ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}, ICNTL22={mumps_icntl_22})",
+        f"MUMPS(ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}, ICNTL22={mumps_icntl_22}), "
+        f"iterative_default={use_iterative}",
         status_callback=status_callback,
     )
     eps.setFromOptions()
