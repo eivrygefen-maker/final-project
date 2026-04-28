@@ -77,20 +77,15 @@ def main():
 
     p_offline = sub.add_parser("offline", help="Run FOM parameter sweep and save snapshots.")
     p_offline.add_argument("--shape", required=True)
-    p_offline.add_argument("--num-modes", type=int, default=15, help="Number of eigenmodes to compute")
+    p_offline.add_argument("--pool-size", type=int, default=500)
+    p_offline.add_argument("--max-runs", type=int, default=50)
+    p_offline.add_argument("--num-modes", type=int, default=15)
+    p_offline.add_argument("--force-pool-rebuild", action="store_true", default=False)
     p_offline.add_argument("--sampling", choices=["structured", "lhs"], default="lhs")
     p_offline.add_argument("--lhs-samples", type=int, default=None)
     p_offline.add_argument("--num-samples", type=int, default=None, help="Alias for --lhs-samples")
-    p_offline.add_argument("--pool-size", type=int, default=500, help="Total number of samples in the LHS pool")
-    p_offline.add_argument("--max-runs", type=int, default=50, help="Maximum number of simulations to run in this batch")
     p_offline.add_argument("--dry-run", action="store_true")
     p_offline.add_argument("--retry-errors", action="store_true", help="Reset LHS pool error entries to pending before run.")
-    p_offline.add_argument(
-        "--force-pool-rebuild",
-        action="store_true",
-        default=False,
-        help="Rebuild the LHS pool from scratch",
-    )
     p_offline.add_argument("--seed", type=int, default=123)
 
     p_basis = sub.add_parser("build-basis", help="Build POD basis from snapshots.")
