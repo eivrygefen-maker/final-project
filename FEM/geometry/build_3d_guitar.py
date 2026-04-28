@@ -102,6 +102,9 @@ def create_guitar_mesh():
         com = occ.getCenterOfMass(2, surf_tag)
         return com[2]
 
+    def get_surface_center(surf_tag):
+        return occ.getCenterOfMass(2, surf_tag)
+
     def get_surface_normal_z(surf_tag):
         """
         Return |nz| at parametric midpoint of a surface.
@@ -247,11 +250,26 @@ def create_guitar_mesh():
     if not body_surfs:
         raise RuntimeError("Body_Shell classification failed after topology+normal fallback")
 
+    # Define a compact support region (wood_fix) near neck-side body area.
+    # This provides a deterministic structural clamp for FEM boundary conditions.
+    fix_candidates = []
+    for s in body_surfs:
+        cx, cy, cz = get_surface_center(s)
+        fix_candidates.append((s, cx, abs(cy), cz))
+    # Prefer surfaces near maximum +x and close to centerline (small |y|).
+    fix_candidates.sort(key=lambda row: (-row[1], row[2]))
+    n_fix = min(2, len(fix_candidates))
+    wood_fix_surfs = [row[0] for row in fix_candidates[:n_fix]]
+    if not wood_fix_surfs and body_surfs:
+        wood_fix_surfs = [body_surfs[0]]
+
     # Define physical groups using fixed tag protocol.
     gmsh.model.addPhysicalGroup(2, top_plate_surfs, tag=1, name="Top_Plate")
     gmsh.model.addPhysicalGroup(2, soundhole_surfs, tag=2, name="Soundhole")
     gmsh.model.addPhysicalGroup(2, body_surfs, tag=3, name="Body_Shell")
+    gmsh.model.addPhysicalGroup(2, wood_fix_surfs, tag=4, name="wood_fix")
     gmsh.model.addPhysicalGroup(3, air_vols, tag=10, name="Air_Internal")
+    print(f"[diag] wood_fix surfaces (tag=4): {wood_fix_surfs}")
     air_group_entities = gmsh.model.getEntitiesForPhysicalGroup(3, 10)
     print(f"[diag] Physical Group 10 (Air_Internal) volume entities: {list(air_group_entities)}")
     if len(air_group_entities) == 0:

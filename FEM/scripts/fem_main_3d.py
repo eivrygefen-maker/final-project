@@ -267,6 +267,11 @@ def _solve_coupled_evp(
     air_mat = config["materials"]["air"]
     rho_air = float(air_mat["density"])
     c_air = float(air_mat["speed_of_sound"])
+    _emit(
+        f"[diag] material sanity: E_eff={E_eff:.6e} Pa, rho_eff={rho_eff:.6e} kg/m^3, "
+        f"rho_air={rho_air:.6e} kg/m^3, thickness={thickness:.6e} m",
+        status_callback=status_callback,
+    )
 
     mu = E_eff / (2.0 * (1.0 + nu_eff))
     lam = E_eff * nu_eff / ((1.0 + nu_eff) * (1.0 - 2.0 * nu_eff))
@@ -337,16 +342,20 @@ def _solve_coupled_evp(
 
     # Dirichlet BCs using subspace-collapse strategy for strict C++ signatures.
     soundhole_facets = np.array(facet_tags.find(2), dtype=np.int32)
-    wood_fix_facets = np.array(facet_tags.find(WOOD_SURFACE_TAGS[0]), dtype=np.int32)
-    if wood_fix_facets.size == 0:
-        wood_fix_facets = np.array(facet_tags.find(WOOD_SURFACE_TAGS[1]), dtype=np.int32)
+    # Structural grounding: prioritize explicit wood_fix support (tag=4).
+    fixed_facets = np.array(facet_tags.find(4), dtype=np.int32)
+    if fixed_facets.size == 0:
+        # Fallback to Body_Shell (tag=3) if wood_fix is absent.
+        fixed_facets = np.array(facet_tags.find(WOOD_SURFACE_TAGS[1]), dtype=np.int32)
+    if fixed_facets.size == 0:
+        fixed_facets = np.array(facet_tags.find(WOOD_SURFACE_TAGS[0]), dtype=np.int32)
     bcs = []
     try:
         V_p, _ = W.sub(1).collapse()
         V_u, _ = W.sub(0).collapse()
 
         p_dofs = fem.locate_dofs_topological(V_p, fdim, soundhole_facets)
-        u_dofs = fem.locate_dofs_topological(V_u, fdim, wood_fix_facets)
+        u_dofs = fem.locate_dofs_topological(V_u, fdim, fixed_facets)
         p_dofs = np.array(p_dofs, dtype=np.int32)
         u_dofs = np.array(u_dofs, dtype=np.int32)
 
@@ -447,7 +456,7 @@ def _solve_coupled_evp(
             f"u_dofs.dtype={u_dofs.dtype}, u_dofs.shape={u_dofs.shape}, "
             f"soundhole_facets.dtype={soundhole_facets.dtype}, "
             f"soundhole_facets.shape={soundhole_facets.shape}, "
-            f"wood_fix_facets.shape={wood_fix_facets.shape}",
+            f"fixed_facets.shape={fixed_facets.shape}",
             status_callback=status_callback,
         )
 
@@ -570,7 +579,7 @@ def _solve_coupled_evp(
     else:
         diag_min = float("nan")
         diag_max = float("nan")
-    FORCED_SHIFT = 150.0
+    FORCED_SHIFT = 10.0
     _emit(
         f"[solver] shift-invert target: {FORCED_SHIFT:.2f} (forced shift anchor), "
         f"KSP={ksp.getType()}, PC={pc.getType()}, "
@@ -761,6 +770,7 @@ def run_fem_3d_simulation(config_path, status_callback=None):
             "Top_Plate": 1,
             "Soundhole": 2,
             "Body_Shell": 3,
+            "wood_fix": 4,
             "Air_Internal": 10,
         },
     }
