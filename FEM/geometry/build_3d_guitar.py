@@ -94,6 +94,10 @@ def create_guitar_mesh():
         bnds = gmsh.model.getBoundary([(2, s) for s in surface_tags], oriented=False, recursive=True)
         return {tag for bdim, tag in bnds if bdim == 0}
 
+    def get_point_tags_from_surface(surface_tag):
+        bnds = gmsh.model.getBoundary([(2, surface_tag)], oriented=False, recursive=True)
+        return {tag for bdim, tag in bnds if bdim == 0}
+
     def get_surface_center_z(surf_tag):
         com = occ.getCenterOfMass(2, surf_tag)
         return com[2]
@@ -260,6 +264,9 @@ def create_guitar_mesh():
     gmsh.option.setNumber("Mesh.CharacteristicLengthFromPoints", 1)
     gmsh.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 1)
     gmsh.option.setNumber("Mesh.CharacteristicLengthExtendFromBoundary", 1)
+    # Explicitly enable point/boundary-based sizing controls (requested).
+    gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 1)
+    gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 1)
     print(
         f"[diag] Gmsh size controls (meters): target_lc={mesh_size:.6f}, "
         f"MeshSizeMin={mesh_size_min:.6f}, MeshSizeMax={mesh_size_max:.6f}"
@@ -277,13 +284,32 @@ def create_guitar_mesh():
 
     # Local refinement on wood plate/shell surfaces to better resolve thin structure.
     if not is_preview:
-        wood_point_tags = get_point_tags_from_surfaces(top_plate_surfs + body_surfs)
+        wood_surface_tags = top_plate_surfs + body_surfs
+        for surf in wood_surface_tags:
+            pts = get_point_tags_from_surface(surf)
+            print(f"[DEBUG] Refining surface {surf}: found {len(pts)} boundary points")
+
+        wood_point_tags = get_point_tags_from_surfaces(wood_surface_tags)
         if wood_point_tags:
             wood_local_size = 0.002  # 2 mm local size on wood boundaries
             gmsh.model.mesh.setSize([(0, p) for p in sorted(wood_point_tags)], wood_local_size)
             print(
                 f"[diag] Applied local wood refinement: size={wood_local_size:.6f}m "
                 f"on {len(wood_point_tags)} boundary points."
+            )
+            # Field-based fallback/boost: enforce 2mm near wood surfaces.
+            dist_field = gmsh.model.mesh.field.add("Distance")
+            gmsh.model.mesh.field.setNumbers(dist_field, "FacesList", wood_surface_tags)
+            thresh_field = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(thresh_field, "InField", dist_field)
+            gmsh.model.mesh.field.setNumber(thresh_field, "SizeMin", wood_local_size)
+            gmsh.model.mesh.field.setNumber(thresh_field, "SizeMax", mesh_size_max)
+            gmsh.model.mesh.field.setNumber(thresh_field, "DistMin", 0.0)
+            gmsh.model.mesh.field.setNumber(thresh_field, "DistMax", 0.02)
+            gmsh.model.mesh.field.setAsBackgroundMesh(thresh_field)
+            print(
+                f"[diag] Background mesh field enabled for wood surfaces "
+                f"(SizeMin={wood_local_size:.6f}, SizeMax={mesh_size_max:.6f})."
             )
 
     try:
