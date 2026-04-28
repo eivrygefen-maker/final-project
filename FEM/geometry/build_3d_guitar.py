@@ -40,11 +40,11 @@ def create_guitar_mesh():
         mesh_size_min = mesh_size
         mesh_size_max = mesh_size
     else:
-        mesh_size = 0.006
+        mesh_size = 0.008
         mesh_size_min = 0.001
-        mesh_size_max = 0.006
+        mesh_size_max = 0.008
     
-    print("DEBUG: Forcing Mesh Size to 0.006m (6mm).")
+    print("DEBUG: Forcing Mesh Size to 0.008m (8mm).")
     print(f"Building geometry with Thickness: {t*1000:.1f}mm, Mesh Size: {mesh_size*1000:.2f}mm")
     print(f"[diag] preview_mode={is_preview}, FEM_ALLOW_PREVIEW={os.environ.get('FEM_ALLOW_PREVIEW', '0')}")
     
@@ -306,10 +306,10 @@ def create_guitar_mesh():
             # Field 2: threshold over distance field.
             thresh_field = gmsh.model.mesh.field.add("Threshold")
             gmsh.model.mesh.field.setNumber(thresh_field, "InField", dist_field)
-            gmsh.model.mesh.field.setNumber(thresh_field, "SizeMin", 0.001)
-            gmsh.model.mesh.field.setNumber(thresh_field, "SizeMax", 0.006)
+            gmsh.model.mesh.field.setNumber(thresh_field, "SizeMin", 0.0015)
+            gmsh.model.mesh.field.setNumber(thresh_field, "SizeMax", 0.008)
             gmsh.model.mesh.field.setNumber(thresh_field, "DistMin", 0.001)
-            gmsh.model.mesh.field.setNumber(thresh_field, "DistMax", 0.04)
+            gmsh.model.mesh.field.setNumber(thresh_field, "DistMax", 0.02)
             field_type = gmsh.model.mesh.field.getType(thresh_field)
             print(f"[DEBUG] Field {thresh_field} created as type: {field_type}")
             print(
