@@ -647,19 +647,32 @@ def _write_mode_files(
     mode_dir.mkdir(parents=True, exist_ok=True)
 
     vtk_files: List[str] = []
-    mixed_mode = fem.Function(W)
-    u_fun, p_fun = mixed_mode.split()
-    u_fun.name = "u"
-    p_fun.name = "p"
+    export_count = min(eigvecs.shape[1], 10)
+    _emit(f"[write] exporting first {export_count} mode(s) as real-valued fields.", status_callback=status_callback)
 
-    for i in range(eigvecs.shape[1]):
-        mixed_mode.x.array[:] = eigvecs[:, i]
-        mixed_mode.x.scatter_forward()
+    # Use collapsed subspaces and explicit real-part extraction to avoid XDMF
+    # writer crashes on complex-valued eigenvectors.
+    V_u, u_to_W = W.sub(0).collapse()
+    V_p, p_to_W = W.sub(1).collapse()
+    u_real = fem.Function(V_u)
+    p_real = fem.Function(V_p)
+    u_real.name = "u"
+    p_real.name = "p"
+
+    for i in range(export_count):
+        mode_real = np.real(eigvecs[:, i])
+        u_real.x.array[:] = mode_real[np.asarray(u_to_W, dtype=np.int32)]
+        p_real.x.array[:] = mode_real[np.asarray(p_to_W, dtype=np.int32)]
+        u_real.x.scatter_forward()
+        p_real.x.scatter_forward()
         file_path = mode_dir / f"mode_{i+1:02d}.xdmf"
-        with io.XDMFFile(msh.comm, str(file_path), "w") as xdmf:
+        xdmf = io.XDMFFile(msh.comm, str(file_path), "w")
+        try:
             xdmf.write_mesh(msh)
-            xdmf.write_function(u_fun)
-            xdmf.write_function(p_fun)
+            xdmf.write_function(u_real)
+            xdmf.write_function(p_real)
+        finally:
+            xdmf.close()
         vtk_files.append(str(file_path.resolve()))
     return vtk_files
 
