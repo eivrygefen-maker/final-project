@@ -346,7 +346,7 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
 
     # Small diagonal regularization to improve conditioning of the coupled system.
     # This helps avoid NaN/Inf KSP norms near near-null/rigid-body components.
-    diag_shift = float(config.get("solver", {}).get("diag_shift", 1.0e4))
+    diag_shift = float(config.get("solver", {}).get("diag_shift", 1.0e3))
     # Global mixed-space regularization so every DOF gets a diagonal anchor.
     reg_u = diag_shift * ufl.dot(u, v) * full_dx
     reg_p = diag_shift * p * q * full_dx
@@ -509,7 +509,7 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     target_lambda = (2.0 * math.pi * target_freq_hz) ** 2
 
     # Shift-and-invert around the physically relevant low-frequency range.
-    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_REAL)
+    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
     eps.setTarget(target_lambda)
     st = eps.getST()
     st.setType(SLEPc.ST.Type.SINVERT)
@@ -568,10 +568,10 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     petsc_opts["st_ksp_type"] = str(solver_cfg.get("st_iter_ksp_type", "gmres"))
     petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "unpreconditioned"))
 
-    fast_num_modes = int(solver_cfg.get("target_nev", min(num_modes, 3)))
-    ncv = max(4 * fast_num_modes, 20)
+    fast_num_modes = int(solver_cfg.get("target_nev", 3))
+    ncv = int(solver_cfg.get("target_ncv", 40))
     eps.setDimensions(fast_num_modes, ncv)
-    eps.setTolerances(float(solver_cfg.get("eigs_tol", 1e-4)), int(solver_cfg.get("eigs_maxiter", 600)))
+    eps.setTolerances(float(solver_cfg.get("eigs_tol", 1e-4)), int(solver_cfg.get("eigs_maxiter", 2000)))
     # Matrix sanity diagnostic: inspect assembled stiffness diagonal spread.
     diag_vec = A.getDiagonal()
     diag_arr = np.real(diag_vec.array)
@@ -593,7 +593,20 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     eps.setFromOptions()
     eps.solve()
 
+    its = eps.getIterationNumber()
     nconv = eps.getConverged()
+    reason = eps.getConvergedReason()
+    err0 = float("nan")
+    if nconv > 0:
+        try:
+            err0 = float(eps.computeError(0))
+        except Exception:
+            err0 = float("nan")
+    _emit(
+        f"[solver] EPS status: iterations={its}, converged={nconv}, reason={reason}, error_mode0={err0:.6e}",
+        status_callback=status_callback,
+    )
+
     if nconv <= 0:
         raise RuntimeError("SLEPc did not converge any eigenpairs.")
 
