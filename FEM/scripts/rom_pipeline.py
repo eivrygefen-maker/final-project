@@ -21,6 +21,37 @@ def _parse_overrides(pairs):
     return out
 
 
+def _flatten_dict(data, prefix=""):
+    out = {}
+    for k, v in data.items():
+        key = f"{prefix}.{k}" if prefix else str(k)
+        if isinstance(v, dict):
+            out.update(_flatten_dict(v, key))
+        else:
+            out[key] = v
+    return out
+
+
+def _print_param_preview(shape_name: str, base_cfg: dict, overrides: dict):
+    base_flat = _flatten_dict(base_cfg)
+    keys = sorted(set(overrides.keys()) | set(base_flat.keys()))
+    rows = []
+    for k in keys:
+        if k in overrides:
+            rows.append((k, overrides[k], "override"))
+        else:
+            rows.append((k, base_flat.get(k), "default"))
+
+    # Keep terminal output focused but explicit.
+    print(f"\n[online] shape={shape_name} parameter preview")
+    print(f"{'parameter':<42} {'value':<24} {'source':<10}")
+    print("-" * 80)
+    for k, v, src in rows:
+        if k.startswith("geometry.") or k.startswith("materials.") or k in overrides:
+            print(f"{k:<42} {str(v):<24} {src:<10}")
+    print("-" * 80)
+
+
 def main():
     parser = argparse.ArgumentParser(description="ROM workflow for 3D guitar FEM.")
     parser.add_argument("--shapes-config", type=str, default=None, help="Path to rom_shapes.json")
@@ -46,6 +77,12 @@ def main():
     p_online.add_argument("--shape", required=True)
     p_online.add_argument("--nev", type=int, default=3)
     p_online.add_argument("--set", nargs="*", default=[], help="Parameter overrides key=value")
+    p_online.add_argument(
+        "--params_json",
+        type=str,
+        default=None,
+        help='Raw JSON object for overrides, e.g. \'{"geometry.thickness":0.0035}\'',
+    )
 
     p_compare = sub.add_parser("compare", help="Run FOM vs ROM comparison.")
     p_compare.add_argument("--shape", required=True)
@@ -91,6 +128,16 @@ def main():
 
     if args.cmd == "online":
         params = _parse_overrides(args.set)
+        if args.params_json:
+            raw = json.loads(args.params_json)
+            if not isinstance(raw, dict):
+                raise ValueError("--params_json must decode to a JSON object.")
+            raw_flat = _flatten_dict(raw)
+            params.update(raw_flat)
+
+        # Missing keys keep defaults from the shape base config.
+        base_cfg = manager._load_shape_base_config(args.shape)
+        _print_param_preview(args.shape, base_cfg, params)
         out = manager.solve_online(args.shape, params=params, nev=args.nev)
         print(json.dumps(out, indent=2))
         return
