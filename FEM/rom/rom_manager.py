@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 import time
 from itertools import product
@@ -25,6 +26,7 @@ class ROMManager:
             else self.base_dir / "FEM" / "configs" / "rom_shapes.json"
         )
         self.shapes = self._load_shapes_config()
+        self._basis_cache: Dict[str, Dict] = {}
 
     def _load_shapes_config(self) -> Dict:
         if not self.shapes_config_path.exists():
@@ -63,24 +65,109 @@ class ROMManager:
         cur[parts[-1]] = value
 
     @staticmethod
-    def _grid_from_sweep(sweep: Dict[str, List]) -> List[Dict]:
+    def _expand_parameter_values(spec):
+        if isinstance(spec, list):
+            return spec
+        if isinstance(spec, dict):
+            if "values" in spec:
+                return list(spec["values"])
+            if "min" in spec and "max" in spec:
+                vmin = float(spec["min"])
+                vmax = float(spec["max"])
+                if "count" in spec:
+                    count = int(spec["count"])
+                    if count <= 1:
+                        vals = [vmin]
+                    else:
+                        vals = np.linspace(vmin, vmax, count).tolist()
+                elif "step" in spec:
+                    step = float(spec["step"])
+                    if step <= 0:
+                        raise ValueError(f"Invalid sweep step={step}; must be > 0.")
+                    vals = np.arange(vmin, vmax + 0.5 * step, step).tolist()
+                else:
+                    raise ValueError("Range sweep spec must include either 'count' or 'step'.")
+                dtype = str(spec.get("dtype", "float")).lower()
+                if dtype in ("int", "integer"):
+                    vals = [int(round(v)) for v in vals]
+                return vals
+        raise ValueError(f"Unsupported sweep spec: {spec}")
+
+    @classmethod
+    def _grid_from_sweep(cls, sweep: Dict) -> List[Dict]:
         keys = sorted(sweep.keys())
-        vals = [sweep[k] for k in keys]
+        vals = [cls._expand_parameter_values(sweep[k]) for k in keys]
         combos = []
         for row in product(*vals):
             combos.append({k: v for k, v in zip(keys, row)})
         return combos
 
-    def collect_snapshots(self, shape_name: str, num_modes: int = 6) -> List[Path]:
+    @classmethod
+    def _lhs_from_sweep(cls, sweep: Dict, samples: int, seed: int = 123) -> List[Dict]:
+        if samples <= 0:
+            raise ValueError("LHS samples must be positive.")
+        rng = np.random.default_rng(seed)
+        keys = sorted(sweep.keys())
+        cols: Dict[str, List] = {}
+
+        for key in keys:
+            spec = sweep[key]
+            if isinstance(spec, dict) and "min" in spec and "max" in spec:
+                vmin = float(spec["min"])
+                vmax = float(spec["max"])
+                dtype = str(spec.get("dtype", "float")).lower()
+                perm = rng.permutation(samples)
+                u = (perm + rng.random(samples)) / samples
+                vals = vmin + (vmax - vmin) * u
+                if dtype in ("int", "integer"):
+                    vals = np.rint(vals).astype(np.int64)
+                cols[key] = vals.tolist()
+            else:
+                options = cls._expand_parameter_values(spec)
+                picks = rng.integers(low=0, high=len(options), size=samples)
+                cols[key] = [options[int(i)] for i in picks]
+
+        out = []
+        for i in range(samples):
+            out.append({k: cols[k][i] for k in keys})
+        return out
+
+    @staticmethod
+    def _next_snapshot_index(snapshots_dir: Path) -> int:
+        pattern = re.compile(r"^snapshot_(\d+)\.npz$")
+        max_idx = -1
+        for path in snapshots_dir.glob("snapshot_*.npz"):
+            m = pattern.match(path.name)
+            if m:
+                max_idx = max(max_idx, int(m.group(1)))
+        return max_idx + 1
+
+    def collect_snapshots(
+        self,
+        shape_name: str,
+        num_modes: int = 6,
+        sampling: Optional[str] = None,
+        lhs_samples: Optional[int] = None,
+        seed: int = 123,
+    ) -> List[Path]:
         shape_cfg = self.shapes[shape_name]
         paths = self._shape_paths(shape_name)
         paths["snapshots"].mkdir(parents=True, exist_ok=True)
 
         sweep_cfg = shape_cfg.get("parameter_sweep", {})
-        grid = self._grid_from_sweep(sweep_cfg) if sweep_cfg else [{}]
+        sampling_mode = str(sampling or shape_cfg.get("sampling", "structured")).lower()
+        if not sweep_cfg:
+            grid = [{}]
+        elif sampling_mode == "lhs":
+            n = int(lhs_samples if lhs_samples is not None else shape_cfg.get("lhs_samples", 24))
+            grid = self._lhs_from_sweep(sweep_cfg, samples=n, seed=seed)
+        else:
+            grid = self._grid_from_sweep(sweep_cfg)
         out_files: List[Path] = []
+        start_idx = self._next_snapshot_index(paths["snapshots"])
 
-        for idx, params in enumerate(grid):
+        for off, params in enumerate(grid):
+            idx = start_idx + off
             cfg = self._load_shape_base_config(shape_name)
             for k, v in params.items():
                 self._set_nested(cfg, k, v)
@@ -91,6 +178,8 @@ class ROMManager:
             np.savez(
                 snapshot_path,
                 params_json=json.dumps(params),
+                shape_name=shape_name,
+                sampling_mode=sampling_mode,
                 freqs_hz=np.array(fom["freqs_hz"], dtype=np.float64),
                 eigvecs_real=np.real(fom["eigvecs"]).astype(np.float64),
                 elapsed_s=np.array([elapsed], dtype=np.float64),
@@ -126,26 +215,45 @@ class ROMManager:
             selected_rank=np.array([r], dtype=np.int32),
             snapshots_count=np.array([len(snapshots)], dtype=np.int32),
         )
+        self._basis_cache[shape_name] = {
+            "basis": V,
+            "mtime": paths["basis"].stat().st_mtime,
+            "path": paths["basis"],
+        }
         return paths["basis"]
 
     @staticmethod
     def _project_petsc_mat(mat, V: np.ndarray) -> np.ndarray:
         r = V.shape[1]
         red = np.zeros((r, r), dtype=np.float64)
+        vt = V.T
         x = mat.createVecRight()
         y = mat.createVecRight()
         for j in range(r):
             x.array[:] = V[:, j]
             mat.mult(x, y)
-            red[:, j] = V.T @ np.real(y.array)
+            red[:, j] = vt @ np.real(y.array)
         return red
 
-    def solve_online(self, shape_name: str, params: Dict, nev: int = 3) -> Dict:
+    def _get_basis_cached(self, shape_name: str) -> np.ndarray:
         paths = self._shape_paths(shape_name)
-        if not paths["basis"].exists():
-            raise RuntimeError(f"Reduced basis missing: {paths['basis']}. Run basis generation first.")
-        basis_data = np.load(paths["basis"])
+        basis_path = paths["basis"]
+        if not basis_path.exists():
+            raise RuntimeError(f"Reduced basis missing: {basis_path}. Run basis generation first.")
+
+        mtime = basis_path.stat().st_mtime
+        cached = self._basis_cache.get(shape_name)
+        if cached and cached.get("mtime") == mtime and cached.get("path") == basis_path:
+            return cached["basis"]
+
+        basis_data = np.load(basis_path)
         V = basis_data["basis"]
+        self._basis_cache[shape_name] = {"basis": V, "mtime": mtime, "path": basis_path}
+        return V
+
+    def solve_online(self, shape_name: str, params: Dict, nev: int = 3) -> Dict:
+        # Basis is cached in memory per shape for fast UI switching.
+        V = self._get_basis_cached(shape_name)
 
         cfg = self._load_shape_base_config(shape_name)
         for k, v in params.items():

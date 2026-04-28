@@ -31,6 +31,9 @@ def main():
     p_offline = sub.add_parser("offline", help="Run FOM parameter sweep and save snapshots.")
     p_offline.add_argument("--shape", required=True)
     p_offline.add_argument("--num-modes", type=int, default=6)
+    p_offline.add_argument("--sampling", choices=["structured", "lhs"], default=None)
+    p_offline.add_argument("--lhs-samples", type=int, default=None)
+    p_offline.add_argument("--seed", type=int, default=123)
 
     p_basis = sub.add_parser("build-basis", help="Build POD basis from snapshots.")
     p_basis.add_argument("--shape", required=True)
@@ -56,8 +59,24 @@ def main():
         return
 
     if args.cmd == "offline":
-        files = manager.collect_snapshots(args.shape, num_modes=args.num_modes)
-        print(json.dumps({"shape": args.shape, "snapshots_written": len(files)}, indent=2))
+        files = manager.collect_snapshots(
+            args.shape,
+            num_modes=args.num_modes,
+            sampling=args.sampling,
+            lhs_samples=args.lhs_samples,
+            seed=args.seed,
+        )
+        print(
+            json.dumps(
+                {
+                    "shape": args.shape,
+                    "snapshots_written": len(files),
+                    "first_snapshot": str(files[0]) if files else None,
+                    "last_snapshot": str(files[-1]) if files else None,
+                },
+                indent=2,
+            )
+        )
         return
 
     if args.cmd == "build-basis":
