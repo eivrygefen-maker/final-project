@@ -1,6 +1,7 @@
 import gmsh
 import sys
 import json
+import os
 from pathlib import Path
 
 def create_guitar_mesh():
@@ -11,8 +12,9 @@ def create_guitar_mesh():
     mesh_dir = fem_dir / "mesh"
     mesh_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- התיקון שלנו: זיהוי מצב תצוגה מקדימה ---
-    is_preview = "--preview" in sys.argv
+    # --- Nuclear mesh fix: disable preview mode unless explicitly allowed ---
+    # This prevents accidental coarse preview meshes during offline runs.
+    is_preview = ("--preview" in sys.argv) and (os.environ.get("FEM_ALLOW_PREVIEW", "0") == "1")
     
     if is_preview:
         out_file = mesh_dir / "preview_mesh.msh"
@@ -32,22 +34,30 @@ def create_guitar_mesh():
     else:
         L, W, D, t, hr, shape_type = 0.48, 0.37, 0.1, 0.003, 0.04, 'Classical'
 
-    # --- התיקון שלנו: שינוי צפיפות הרשת בהתאם למצב ---
+    # --- Nuclear mesh fix: force 5mm for full/offline meshing ---
     if is_preview:
-        mesh_size = 0.030  # רשת של 30 מ"מ במקום 80, כדי שהמנוע לא יקרוס בעובי דק!
+        mesh_size = 0.030
         mesh_size_min = mesh_size
         mesh_size_max = mesh_size
     else:
-        # Benchmark target: 6 mm global mesh size (safer middle ground than very fine meshes).
-        mesh_size = 0.006
-        # Force a tighter global size band so gmsh cannot drift too coarse.
-        mesh_size_min = 0.003
-        mesh_size_max = 0.006
+        mesh_size = 0.005
+        mesh_size_min = 0.005
+        mesh_size_max = 0.005
     
+    print("DEBUG: Forcing Mesh Size to 0.005m (5mm).")
     print(f"Building geometry with Thickness: {t*1000:.1f}mm, Mesh Size: {mesh_size*1000:.2f}mm")
+    print(f"[diag] preview_mode={is_preview}, FEM_ALLOW_PREVIEW={os.environ.get('FEM_ALLOW_PREVIEW', '0')}")
     
     shy = (L / 2) + (L * 0.02)
     hr = min(hr, W * 0.40)    
+
+    # Delete stale mesh artifacts to avoid reusing coarse outputs.
+    for old_msh in mesh_dir.glob("*.msh"):
+        try:
+            old_msh.unlink()
+            print(f"[diag] removed stale mesh file: {old_msh}")
+        except Exception as e:
+            print(f"[warn] could not remove stale mesh file {old_msh}: {e}")
 
     gmsh.initialize(sys.argv)
     gmsh.model.add("Guitar3D_Performance_Optimized")
@@ -265,6 +275,8 @@ def create_guitar_mesh():
     # ---------------------------------------------
     
     gmsh.model.mesh.setOrder(1)
+    mesh_resolution_factor = 1.0
+    print(f"[diag] mesh_resolution_factor={mesh_resolution_factor}")
 
     try:
         print(
