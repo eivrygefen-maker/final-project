@@ -78,7 +78,7 @@ def main():
     p_offline = sub.add_parser("offline", help="Run FOM parameter sweep and save snapshots.")
     p_offline.add_argument("--shape", required=True)
     p_offline.add_argument("--num-modes", type=int, default=15, help="Number of eigenmodes to compute")
-    p_offline.add_argument("--sampling", choices=["structured", "lhs"], default=None)
+    p_offline.add_argument("--sampling", choices=["structured", "lhs"], default="lhs")
     p_offline.add_argument("--lhs-samples", type=int, default=None)
     p_offline.add_argument("--num-samples", type=int, default=None, help="Alias for --lhs-samples")
     p_offline.add_argument("--pool-size", type=int, default=500, help="Total number of samples in the LHS pool")
@@ -88,6 +88,7 @@ def main():
     p_offline.add_argument(
         "--force-pool-rebuild",
         action="store_true",
+        default=False,
         help="Rebuild the LHS pool from scratch",
     )
     p_offline.add_argument("--seed", type=int, default=123)
