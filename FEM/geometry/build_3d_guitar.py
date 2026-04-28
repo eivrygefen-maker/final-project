@@ -88,6 +88,12 @@ def create_guitar_mesh():
         bnds = gmsh.model.getBoundary(dimtags, oriented=False, recursive=False)
         return {tag for bdim, tag in bnds if bdim == dim}
 
+    def get_point_tags_from_surfaces(surface_tags):
+        if not surface_tags:
+            return set()
+        bnds = gmsh.model.getBoundary([(2, s) for s in surface_tags], oriented=False, recursive=True)
+        return {tag for bdim, tag in bnds if bdim == 0}
+
     def get_surface_center_z(surf_tag):
         com = occ.getCenterOfMass(2, surf_tag)
         return com[2]
@@ -268,6 +274,17 @@ def create_guitar_mesh():
     gmsh.model.mesh.setOrder(1)
     mesh_resolution_factor = 1.0
     print(f"[diag] mesh_resolution_factor={mesh_resolution_factor}")
+
+    # Local refinement on wood plate/shell surfaces to better resolve thin structure.
+    if not is_preview:
+        wood_point_tags = get_point_tags_from_surfaces(top_plate_surfs + body_surfs)
+        if wood_point_tags:
+            wood_local_size = 0.002  # 2 mm local size on wood boundaries
+            gmsh.model.mesh.setSize([(0, p) for p in sorted(wood_point_tags)], wood_local_size)
+            print(
+                f"[diag] Applied local wood refinement: size={wood_local_size:.6f}m "
+                f"on {len(wood_point_tags)} boundary points."
+            )
 
     try:
         print(

@@ -611,6 +611,7 @@ def _solve_coupled_evp(
         status_callback=status_callback,
     )
     st.setShift(FORCED_SHIFT)
+    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
     eps.setFromOptions()
     eps.solve()
 
