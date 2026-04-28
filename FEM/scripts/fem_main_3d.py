@@ -587,7 +587,7 @@ def _solve_coupled_evp(
     petsc_opts["st_ksp_type"] = str(solver_cfg.get("st_iter_ksp_type", "gmres"))
     petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "unpreconditioned"))
 
-    fast_num_modes = 30
+    fast_num_modes = 100
     ncv = int(solver_cfg.get("target_ncv", max(40, 4 * fast_num_modes)))
     eps.setDimensions(fast_num_modes, ncv)
     eps.setTolerances(float(solver_cfg.get("eigs_tol", 1e-4)), int(solver_cfg.get("eigs_maxiter", 2000)))
@@ -650,6 +650,12 @@ def _solve_coupled_evp(
     freqs_hz = [freqs_hz[idx] for idx in order]
     vectors = [vectors[idx] for idx in order]
     eigvecs = np.stack(vectors, axis=1)
+
+    print(
+        f"[diag] Solver found {len(freqs_hz)} raw modes. "
+        f"Range: {min(freqs_hz):.2f} to {max(freqs_hz):.2f} Hz."
+    )
+    sys.stdout.flush()
 
     # Sweep-and-filter: keep only physically valid modes above cutoff.
     min_valid_hz = float(solver_cfg.get("min_valid_mode_hz", 50.0))
