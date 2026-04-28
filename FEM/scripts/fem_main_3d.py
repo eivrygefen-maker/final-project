@@ -526,11 +526,11 @@ def _solve_coupled_evp(
     eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
     solver_cfg = config.get("solver", {})
     eps.setKrylovSchurRestart(float(solver_cfg.get("krylov_schur_restart", 0.5)))
-    target_freq_hz = float(solver_cfg.get("target_freq_hz", 150.0))
+    target_freq_hz = float(solver_cfg.get("target_freq_hz", 10.0))
     target_lambda = (2.0 * math.pi * target_freq_hz) ** 2
 
     # Shift-and-invert around the physically relevant low-frequency range.
-    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
+    eps.setWhichEigenpairs(SLEPc.EPS.Which.SMALLEST_MAGNITUDE)
     eps.setTarget(target_lambda)
     st = eps.getST()
     st.setType(SLEPc.ST.Type.SINVERT)
