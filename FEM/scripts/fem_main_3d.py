@@ -462,7 +462,7 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     eps.setTarget(target_lambda)
     st = eps.getST()
     st.setType(SLEPc.ST.Type.SINVERT)
-    st.setShift(float(solver_cfg.get("st_shift", 1.0)))
+    st.setShift(float(solver_cfg.get("st_shift", 110.0)))
 
     # Preconditioner/factorization hints for the shifted linear solves.
     ksp = st.getKSP()
@@ -472,10 +472,13 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
         # Memory-efficient inner solve for shift-invert.
         ksp.setType(str(solver_cfg.get("st_iter_ksp_type", "gmres")))
         pc.setType(str(solver_cfg.get("st_iter_pc_type", "gamg")))
-        ksp_rtol = float(solver_cfg.get("st_iter_ksp_rtol", 1e-6))
+        ksp_rtol = float(solver_cfg.get("st_iter_ksp_rtol", 1e-4))
         ksp_max_it = int(solver_cfg.get("st_iter_ksp_max_it", 1000))
         ksp.setTolerances(rtol=ksp_rtol, max_it=ksp_max_it)
+        ksp.setConvergenceHistory()
         ksp.setNormType(PETSc.KSP.NormType.UNPRECONDITIONED)
+        if bool(solver_cfg.get("ksp_monitor", False)):
+            ksp.setMonitor(lambda _ksp, its, rnorm: _emit(f"[ksp] it={its} rnorm={rnorm:.6e}", status_callback=status_callback))
         if pc.getType().lower() == "hypre":
             # BoomerAMG is generally robust for large 3D coupled systems.
             try:
@@ -514,9 +517,10 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
     petsc_opts["st_ksp_type"] = str(solver_cfg.get("st_iter_ksp_type", "gmres"))
     petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "unpreconditioned"))
 
-    ncv = max(4 * num_modes, 40)
-    eps.setDimensions(num_modes, ncv)
-    eps.setTolerances(float(solver_cfg.get("eigs_tol", 1e-8)), int(solver_cfg.get("eigs_maxiter", 1000)))
+    fast_num_modes = int(solver_cfg.get("target_nev", min(num_modes, 3)))
+    ncv = max(4 * fast_num_modes, 20)
+    eps.setDimensions(fast_num_modes, ncv)
+    eps.setTolerances(float(solver_cfg.get("eigs_tol", 1e-4)), int(solver_cfg.get("eigs_maxiter", 600)))
     # Matrix sanity diagnostic: inspect assembled stiffness diagonal spread.
     diag_vec = A.getDiagonal()
     diag_arr = np.real(diag_vec.array)
@@ -606,7 +610,7 @@ def run_fem_3d_simulation(config_path, status_callback=None):
     if not mesh_file.exists():
         raise FileNotFoundError(f"Mesh file not found: {mesh_file}")
 
-    num_modes = int(config.get("solver", {}).get("num_modes", 10))
+    num_modes = int(config.get("solver", {}).get("num_modes", 3))
     msh, W, freqs, eigvecs, n_u, n_p = _solve_coupled_evp(
         mesh_file=mesh_file,
         config=config,
