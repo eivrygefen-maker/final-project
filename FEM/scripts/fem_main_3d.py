@@ -518,6 +518,33 @@ def _solve_coupled_evp(
     a_form = a_uu + a_pp + a_up + reg_u + reg_p
     m_form = m_uu + m_pp + m_pu
 
+    # Lumped masses consistent with m_uu (surface shell) and air volume (tag 10), before EVP solve.
+    _wood_mass_note = (
+        "Top_Plate+Body_Shell facet tags only"
+        if (wood_tag_top + wood_tag_shell) > 0
+        else "WARNING: full exterior ds (wood facet tags missing)"
+    )
+    try:
+        mass_air_kg = float(fem.assemble_scalar(fem.form(rho_air * xdmf_dx(AIR_VOLUME_TAG))))
+    except Exception as exc:
+        mass_air_kg = float("nan")
+        _emit(f"[diag] air mass integral failed: {exc}", status_callback=status_callback, level="warning")
+    try:
+        mass_wood_kg = float(fem.assemble_scalar(fem.form(rho_eff * thickness * wood_ds)))
+    except Exception as exc:
+        mass_wood_kg = float("nan")
+        _emit(f"[diag] wood shell mass integral failed: {exc}", status_callback=status_callback, level="warning")
+    print(
+        f"[DIAG] Total wood mass (integral rho_eff*thickness over shell ds; {_wood_mass_note}): "
+        f"{mass_wood_kg:.6e} kg"
+    )
+    print(f"[DIAG] Total air mass (integral rho_air over air volume tag {AIR_VOLUME_TAG}): {mass_air_kg:.6e} kg")
+    if math.isfinite(mass_air_kg) and math.isfinite(mass_wood_kg) and mass_wood_kg > 0:
+        print(f"[DIAG] Air mass / wood mass ratio: {mass_air_kg / mass_wood_kg:.3e}")
+    elif math.isfinite(mass_air_kg) and math.isfinite(mass_wood_kg) and mass_wood_kg <= 0:
+        print("[DIAG] Air mass / wood mass ratio: undefined (wood mass <= 0)")
+    sys.stdout.flush()
+
     # Release no-longer-needed symbolic temporaries once forms are finalized.
     del eps_u, eps_v, w_n, v_n, wood_tag_top, wood_tag_shell
 
@@ -769,6 +796,16 @@ def _solve_coupled_evp(
                 M_wood=M_wood,
                 work=work,
             )
+            batch_ratios = [
+                float(r)
+                for _f, _v, r in rows
+                if r is not None and np.isfinite(r)
+            ]
+            top5 = sorted(batch_ratios, reverse=True)[:5]
+            top_str = ", ".join(f"{x:.6f}" for x in top5) if top5 else ""
+            print(f"[DIAG] Batch {f_center:.1f}Hz - Top Ratios: [{top_str}]")
+            sys.stdout.flush()
+
             added = 0
             for f_hz, vec, ratio in rows:
                 if ratio is None:
