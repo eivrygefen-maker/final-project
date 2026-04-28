@@ -2,7 +2,7 @@ import streamlit as st
 import json
 import os
 import subprocess
-import sys  # הוסף עבור איתור ה-Python של הסביבה הווירטואלית
+import sys  # Needed to use the current virtualenv Python executable
 from pathlib import Path
 import wave
 import pyvista as pv
@@ -22,7 +22,7 @@ MESH_FILE = BASE_DIR / "FEM" / "mesh" / "guitar_3d.msh"
 sys.path.append(str(BASE_DIR / "FEM" / "scripts"))
 import fem_main_3d
 
-# הגדרות סביבה קריטיות ל-Linux/VM
+# Critical environment settings for Linux/VM
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 pv.OFF_SCREEN = True
 
@@ -114,25 +114,24 @@ def generate_live_preview_mesh(L, W, D, shape_type, design_mode, upper_bout, wai
     
     preview_file = BASE_DIR / "FEM" / "mesh" / "preview_mesh.msh"
     
-    # 1. מחיקת "קובץ הרפאים" הישן! 
-    # ככה נדע בוודאות שאם יש קובץ, הוא חדש ומעודכן מהשנייה האחרונה.
+    # 1) Delete the old preview file so any new file is guaranteed fresh.
     if preview_file.exists():
         preview_file.unlink()
         
-    # 2. הרצת Gmsh
+    # 2) Run Gmsh
     py_exe = sys.executable
     result = subprocess.run([py_exe, str(GEOMETRY_SCRIPT), "-nopopup", "--preview"], capture_output=True, text=True)
     
-    # 3. אם Gmsh נכשל או לא יצר קובץ, אנחנו עוצרים הכל וזורקים את השגיאה למסך!
+    # 3) If Gmsh fails or does not create a file, stop and show the error.
     if not preview_file.exists():
         st.error(f"Gmsh Failed to update preview!\nError Log:\n{result.stderr}")
         return None
         
-    # 4. הקובץ נוצר בהצלחה - מעלים אותו לתצוגה
+    # 4) The file was created successfully, load it for rendering.
     mesh = pv.read(str(preview_file))
     surface_mesh = mesh.extract_surface()
     
-    # התיקון של הפלסטלינה (split_vertices) - שומר על הפינות חדות והמותניים מעוגלות!
+    # Keep corners sharp and waist contours smooth using split vertices.
     surface_mesh.compute_normals(
         cell_normals=False, 
         point_normals=True, 
@@ -190,7 +189,7 @@ else:
     soundhole_y = st.sidebar.slider("Soundhole Position Y (m)", 0.10, 0.60, L_def * 0.4, key="sh_y")
     W = lower_bout
 
-# סליידר דינמי לבחירת עובי לוח התהודה (בין 3 ל-6 מ"מ)
+# Dynamic slider for top plate thickness (3mm to 6mm).
 thick = st.sidebar.slider(
     "Top Plate Thickness (m)", 
     min_value=0.0030, 
@@ -218,7 +217,7 @@ st.sidebar.subheader("🛠️ Engineering Tools")
 if st.sidebar.button("🔍 Open full Model in Gmsh", use_container_width=True):
     save_cfg()
     with st.spinner("Opening Gmsh GUI..."):
-        # שימוש ב-sys.executable להבטחת עבודה בתוך ה-venv
+        # Use sys.executable to ensure execution inside the active virtualenv.
         subprocess.run([sys.executable, str(GEOMETRY_SCRIPT)])
 
 # --- Check Sync State ---
@@ -248,7 +247,7 @@ if not MESH_FILE.exists(): is_synced = False
 st.markdown("### Process Control")
 c1, c2 = st.columns(2)
 
-# 1. נוסיף את המשתנה הזה בתחילת הקובץ (איפה שכל שאר ה-session_state)
+# Track whether to show a one-time success banner after rerun.
 if "show_success_msg" not in st.session_state:
     st.session_state.show_success_msg = False
 
@@ -279,14 +278,14 @@ with c1:
             st.session_state.fem_ready = False
             st.error(f"FEM simulation failed: {e}")
         
-        # --- התיקון הקסום שלנו ---
-        st.session_state.show_success_msg = True # נזכור להראות הודעה
-        st.rerun() # כופה על כל העמוד להיטען מחדש ולהציג את המודל החדש מיד!
+        # Trigger a full rerun so the new model appears immediately.
+        st.session_state.show_success_msg = True  # Show one-time success message
+        st.rerun()  # Force full page refresh and re-render
 
-# 2. מיד אחרי שורת הלחצנים (או מחוץ לבלוק ה-columns), נציג את ההודעה
+# Show one-time success message after rerun.
 if st.session_state.show_success_msg:
     st.success("Design applied! Explore your 3D model below.")
-    st.session_state.show_success_msg = False # מאפסים כדי שלא תישאר לתמיד
+    st.session_state.show_success_msg = False  # Reset so it does not persist forever
 
 with c2:
     if st.button("2. Generate Sound", use_container_width=True, disabled=not st.session_state.fem_ready):
@@ -305,7 +304,7 @@ with c2:
                     "--wet_gain", str(gain_val), "--out", str(WAV_OUTPUT),
                     "--rad_k", "0.06", "--amp", "0.3", "--seed", "123"
                 ]
-                # ... (המשך פקודת ה-STK הרגילה שלך)
+                # ... (rest of the standard STK command)
                 if q_mode == "Random (Realistic)":
                     stk_cmd.extend(["--q_min", str(top_q["q_min"]), "--q_max", str(top_q["q_max"]), "--q_mode", "random"])
                 else:

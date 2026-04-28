@@ -34,30 +34,22 @@ def create_guitar_mesh():
     else:
         L, W, D, t, hr, shape_type = 0.48, 0.37, 0.1, 0.003, 0.04, 'Classical'
 
-    # --- Nuclear mesh fix: force 5mm for full/offline meshing ---
+    # --- Locked mesh target: 6mm for full/offline meshing ---
     if is_preview:
         mesh_size = 0.030
         mesh_size_min = mesh_size
         mesh_size_max = mesh_size
     else:
-        mesh_size = 0.005
-        mesh_size_min = 0.005
-        mesh_size_max = 0.005
+        mesh_size = 0.006
+        mesh_size_min = 0.006
+        mesh_size_max = 0.006
     
-    print("DEBUG: Forcing Mesh Size to 0.005m (5mm).")
+    print("DEBUG: Forcing Mesh Size to 0.006m (6mm).")
     print(f"Building geometry with Thickness: {t*1000:.1f}mm, Mesh Size: {mesh_size*1000:.2f}mm")
     print(f"[diag] preview_mode={is_preview}, FEM_ALLOW_PREVIEW={os.environ.get('FEM_ALLOW_PREVIEW', '0')}")
     
     shy = (L / 2) + (L * 0.02)
     hr = min(hr, W * 0.40)    
-
-    # Delete stale mesh artifacts to avoid reusing coarse outputs.
-    for old_msh in mesh_dir.glob("*.msh"):
-        try:
-            old_msh.unlink()
-            print(f"[diag] removed stale mesh file: {old_msh}")
-        except Exception as e:
-            print(f"[warn] could not remove stale mesh file {old_msh}: {e}")
 
     gmsh.initialize(sys.argv)
     gmsh.model.add("Guitar3D_Performance_Optimized")
@@ -116,7 +108,7 @@ def create_guitar_mesh():
             return None
         return None
 
-    # --- בניית הגיאומטריה והאוויר (שלב 1 המעודכן) ---
+    # Build guitar solid and internal air domain (updated step 1).
     if "Box" in shape_type:
         vol_out_id = occ.addBox(-L/2, -W/2, -D/2, L, W, D)
         vol_in_id = occ.addBox(-L/2+t, -W/2+t, -D/2+t, L-2*t, W-2*t, D-2*t)
@@ -132,26 +124,26 @@ def create_guitar_mesh():
         occ.translate([v for v in v_in if v[0]==3], 0, 0, -D/2 + t)
         vol_in_id = [v[1] for v in v_in if v[0] == 3][0]
 
-    # יצירת הצילינדר של חור התהודה
+    # Create soundhole cylinder.
     hole_x = shy - L/2 if "Box" not in shape_type else 0
     z_inner_top = (D / 2) - t
     hole_cyl = occ.addCylinder(hole_x, 0, z_inner_top, 0, 0, 2 * t, hr)
 
-    # 1) חלל האוויר: חלל פנימי פחות חור התהודה
+    # 1) Air cavity: inner volume minus soundhole cylinder.
     air_cut = occ.cut([(3, vol_in_id)], [(3, hole_cyl)], removeObject=True, removeTool=False)
     air_dimtags = [dt for dt in as_dimtags(air_cut) if dt[0] == 3]
 
-    # 2) מעטפת העץ: נפח חיצוני פחות חלל פנימי, ואז פתיחת החור בלוח העליון
+    # 2) Wood shell: outer volume minus air cavity, then open top soundhole.
     wood_cut = occ.cut([(3, vol_out_id)], air_dimtags, removeObject=True, removeTool=False)
     wood_dimtags = [dt for dt in as_dimtags(wood_cut) if dt[0] == 3]
     wood_hole_cut = occ.cut(wood_dimtags, [(3, hole_cyl)], removeObject=True, removeTool=True)
     wood_dimtags = [dt for dt in as_dimtags(wood_hole_cut) if dt[0] == 3]
 
-    # 3) Fragment חובה לשיתוף צמתים בין העץ והאוויר
+    # 3) Fragment is required to enforce node sharing between wood and air.
     frags, _ = occ.fragment(wood_dimtags, air_dimtags, removeObject=True, removeTool=True)
     occ.synchronize()
 
-    # סיווג נפחים אחרי ה-fragment לפי טופולוגיה (ללא ניחוש גבהים)
+    # Classify volumes after fragment by topology (no height heuristics).
     resulting_vols = [dt for dt in frags if dt[0] == 3]
     air_candidate_set = set(tag for _, tag in air_dimtags)
     air_vols = [tag for _, tag in resulting_vols if tag in air_candidate_set]
@@ -163,8 +155,8 @@ def create_guitar_mesh():
     if not wood_vols:
         raise RuntimeError("No wood shell volumes found after boolean operations")
 
-    # זיהוי משטחים לפי קשרי גבול:
-    # interface = גבול משותף עץ/אוויר, soundhole = גבול אוויר חיצוני שאינו interface
+    # Surface classification by boundary relations:
+    # interface = shared wood/air boundary; soundhole = external air boundary not in interface.
     wood_boundary_surfs = get_boundary_tags([(3, tag) for tag in wood_vols], 2)
     air_boundary_surfs = get_boundary_tags([(3, tag) for tag in air_vols], 2)
 
@@ -174,7 +166,7 @@ def create_guitar_mesh():
     if len(soundhole_surfs) != 1:
         raise RuntimeError(f"Expected exactly 1 soundhole opening surface, found {len(soundhole_surfs)}")
 
-    # בניית גרף שכנויות על בסיס קווים משותפים בין משטחי ה-interface
+    # Build adjacency graph from shared curves among interface surfaces.
     iface_set = set(interface_surfs)
     surf_to_curves = {
         s: get_boundary_tags([(2, s)], 1)
@@ -202,7 +194,7 @@ def create_guitar_mesh():
     if not top_seeds:
         raise RuntimeError("Could not identify Top_Plate surfaces from soundhole topology")
 
-    # flood-fill: כל משטחי ה-interface המחוברים ל-soundhole הם Top_Plate
+    # Flood-fill: all interface surfaces connected to soundhole belong to Top_Plate.
     top_plate_set = set()
     stack = list(top_seeds)
     while stack:
@@ -245,7 +237,7 @@ def create_guitar_mesh():
     if not body_surfs:
         raise RuntimeError("Body_Shell classification failed after topology+normal fallback")
 
-    # הגדרת הקבוצות הפיזיקליות לפי תגים קבועים
+    # Define physical groups using fixed tag protocol.
     gmsh.model.addPhysicalGroup(2, top_plate_surfs, tag=1, name="Top_Plate")
     gmsh.model.addPhysicalGroup(2, soundhole_surfs, tag=2, name="Soundhole")
     gmsh.model.addPhysicalGroup(2, body_surfs, tag=3, name="Body_Shell")
@@ -255,7 +247,7 @@ def create_guitar_mesh():
     if len(air_group_entities) == 0:
         raise RuntimeError("Tag 10 was created but has no 3D volume entities.")
 
-    # הגדרת רשת האלמנטים המאוזנת
+    # Configure balanced meshing options.
     gmsh.option.setNumber("Mesh.MeshSizeMin", mesh_size_min)
     gmsh.option.setNumber("Mesh.MeshSizeMax", mesh_size_max)
     # Keep characteristic length controls enabled so lc/global sizing is effective.
@@ -267,10 +259,9 @@ def create_guitar_mesh():
         f"MeshSizeMin={mesh_size_min:.6f}, MeshSizeMax={mesh_size_max:.6f}"
     )
     
-    # --- התיקון שלנו: עקמומיות מושלמת למעגלים ---
-    # מפעיל אלגוריתם שמתאים את גודל הרשת לפי הקימור של הצורה
+    # Improve circular feature fidelity using curvature-aware mesh sizing.
     gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
-    # מכריח את המערכת להשתמש במינימום 36 נקודות למעגל שלם (כל 10 מעלות = נקודה)
+    # Enforce at least 36 points per full circle (~10 degrees per point).
     gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", 36) 
     # ---------------------------------------------
     
