@@ -256,18 +256,29 @@ def _solve_coupled_evp(mesh_file: Path, config: Dict, num_modes: int, status_cal
 
     # Dirichlet BCs using subspace-collapse strategy for strict C++ signatures.
     soundhole_facets = np.array(facet_tags.find(2), dtype=np.int32)
-    p_dofs = fem.locate_dofs_topological(W.sub(1), fdim, soundhole_facets)
-    u_dofs = fem.locate_dofs_topological(W.sub(0), fdim, soundhole_facets)
-    p_dofs = np.array(p_dofs, dtype=np.int32)
-    u_dofs = np.array(u_dofs, dtype=np.int32)
     bcs = []
     try:
         V_p, _ = W.sub(1).collapse()
-        p_zero = fem.Constant(V_p, PETSc.ScalarType(0.0))
+        V_u, _ = W.sub(0).collapse()
+
+        p_dofs = fem.locate_dofs_topological(V_p, fdim, soundhole_facets)
+        u_dofs = fem.locate_dofs_topological(V_u, fdim, soundhole_facets)
+        p_dofs = np.array(p_dofs, dtype=np.int32)
+        u_dofs = np.array(u_dofs, dtype=np.int32)
+
+        _emit(
+            "[bc][diag] collapsed spaces ready. "
+            f"p_dofs.dtype={p_dofs.dtype}, p_dofs.shape={p_dofs.shape}, "
+            f"u_dofs.dtype={u_dofs.dtype}, u_dofs.shape={u_dofs.shape}, "
+            f"soundhole_facets.dtype={soundhole_facets.dtype}, "
+            f"soundhole_facets.shape={soundhole_facets.shape}",
+            status_callback=status_callback,
+        )
+
+        p_zero = fem.Constant(msh, PETSc.ScalarType(0.0))
         bc_p = fem.dirichletbc(p_zero, p_dofs, V_p)
 
-        V_u, _ = W.sub(0).collapse()
-        u_zero = np.array([0, 0, 0], dtype=PETSc.ScalarType)
+        u_zero = np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType)
         bc_u = fem.dirichletbc(u_zero, u_dofs, V_u)
         bcs = [bc_p, bc_u]
     except Exception as e:
