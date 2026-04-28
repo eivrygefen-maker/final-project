@@ -155,7 +155,7 @@ def _convert_msh_to_xdmf_with_meshio(mesh_file: Path, status_callback=None):
         raise RuntimeError(
             f"XDMF conversion failed. Missing files: vol={vol_xdmf.exists()}, fac={fac_xdmf.exists()}"
         )
-    print("[diag] New mesh calibrated to 1.5mm wood and 8mm air.")
+    print("[diag] Mesh optimized for RAM: 1.5mm wood, 12mm air.")
     sys.stdout.flush()
     return vol_xdmf, fac_xdmf
 

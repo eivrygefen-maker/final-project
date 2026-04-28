@@ -34,17 +34,17 @@ def create_guitar_mesh():
     else:
         L, W, D, t, hr, shape_type = 0.48, 0.37, 0.1, 0.003, 0.04, 'Classical'
 
-    # --- Locked mesh target: 6mm for full/offline meshing ---
+    # --- Locked mesh target: 12mm global with local wood refinement ---
     if is_preview:
         mesh_size = 0.030
         mesh_size_min = mesh_size
         mesh_size_max = mesh_size
     else:
-        mesh_size = 0.008
+        mesh_size = 0.012
         mesh_size_min = 0.001
-        mesh_size_max = 0.008
+        mesh_size_max = 0.012
     
-    print("DEBUG: Forcing Mesh Size to 0.008m (8mm).")
+    print("DEBUG: Forcing Mesh Size to 0.012m (12mm global).")
     print(f"Building geometry with Thickness: {t*1000:.1f}mm, Mesh Size: {mesh_size*1000:.2f}mm")
     print(f"[diag] preview_mode={is_preview}, FEM_ALLOW_PREVIEW={os.environ.get('FEM_ALLOW_PREVIEW', '0')}")
     
@@ -307,9 +307,9 @@ def create_guitar_mesh():
             thresh_field = gmsh.model.mesh.field.add("Threshold")
             gmsh.model.mesh.field.setNumber(thresh_field, "InField", dist_field)
             gmsh.model.mesh.field.setNumber(thresh_field, "SizeMin", 0.0015)
-            gmsh.model.mesh.field.setNumber(thresh_field, "SizeMax", 0.008)
+            gmsh.model.mesh.field.setNumber(thresh_field, "SizeMax", 0.012)
             gmsh.model.mesh.field.setNumber(thresh_field, "DistMin", 0.001)
-            gmsh.model.mesh.field.setNumber(thresh_field, "DistMax", 0.02)
+            gmsh.model.mesh.field.setNumber(thresh_field, "DistMax", 0.015)
             field_type = gmsh.model.mesh.field.getType(thresh_field)
             print(f"[DEBUG] Field {thresh_field} created as type: {field_type}")
             print(
