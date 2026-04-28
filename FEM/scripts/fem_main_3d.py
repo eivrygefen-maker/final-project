@@ -530,7 +530,7 @@ def _solve_coupled_evp(
     target_lambda = (2.0 * math.pi * target_freq_hz) ** 2
 
     # Shift-and-invert around the physically relevant low-frequency range.
-    eps.setWhichEigenpairs(SLEPc.EPS.Which.SMALLEST_MAGNITUDE)
+    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
     eps.setTarget(target_lambda)
     st = eps.getST()
     st.setType(SLEPc.ST.Type.SINVERT)

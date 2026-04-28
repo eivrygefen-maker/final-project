@@ -3,6 +3,7 @@ import re
 import subprocess
 import sys
 import time
+import traceback
 from itertools import product
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -415,6 +416,7 @@ class ROMManager:
                     next_idx += 1
                     completed_batch += 1
                 except Exception as exc:
+                    traceback.print_exc()
                     entry["status"] = "error"
                     entry["error"] = str(exc)
                     error_batch += 1
