@@ -1,5 +1,7 @@
 import json
 import re
+import shutil
+import subprocess
 import sys
 import time
 from itertools import product
@@ -95,6 +97,22 @@ class ROMManager:
         config_path = self.base_dir / shape_cfg["base_config"]
         with open(config_path, "r", encoding="utf-8") as f:
             return json.load(f)
+
+    def _rebuild_mesh_and_clear_xdmf_cache(self, shape_name: str) -> None:
+        cfg = self._load_shape_base_config(shape_name)
+        mesh_file = Path(cfg["solver"]["mesh_file"])
+        cache_dir = mesh_file.parent / "_xdmf_cache"
+        if cache_dir.exists():
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+        geom_script = self.base_dir / "FEM" / "geometry" / "build_3d_guitar.py"
+        cmd = [sys.executable, str(geom_script), "-nopopup"]
+        proc = subprocess.run(cmd, cwd=str(self.base_dir), capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "Mesh regeneration failed during force-pool-rebuild.\n"
+                f"stdout:\n{proc.stdout}\n\nstderr:\n{proc.stderr}"
+            )
 
     @staticmethod
     def _set_nested(config: Dict, dotted_key: str, value):
@@ -301,6 +319,10 @@ class ROMManager:
         paths["root"].mkdir(parents=True, exist_ok=True)
         paths["snapshots"].mkdir(parents=True, exist_ok=True)
 
+        # Full refresh path: rebuild .msh and clear mesh fallback cache once.
+        if force_pool_rebuild:
+            self._rebuild_mesh_and_clear_xdmf_cache(shape_name)
+
         sweep_cfg = shape_cfg.get("parameter_sweep", {})
         sampling_mode = str(sampling or shape_cfg.get("sampling", "structured")).lower()
         if not sweep_cfg:
@@ -377,6 +399,8 @@ class ROMManager:
                 snapshot_path = paths["snapshots"] / f"snapshot_{next_idx:04d}.npz"
                 try:
                     cfg = self._load_shape_base_config(shape_name)
+                    cfg.setdefault("solver", {})
+                    cfg["solver"]["clear_cache_on_start"] = True
                     for k, v in params.items():
                         self._set_nested(cfg, k, v)
                     t0 = time.perf_counter()
@@ -420,6 +444,8 @@ class ROMManager:
         for off, params in enumerate(grid):
             idx = start_idx + off
             cfg = self._load_shape_base_config(shape_name)
+            cfg.setdefault("solver", {})
+            cfg["solver"]["clear_cache_on_start"] = True
             for k, v in params.items():
                 self._set_nested(cfg, k, v)
             t0 = time.perf_counter()
