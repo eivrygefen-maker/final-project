@@ -534,7 +534,7 @@ def _solve_coupled_evp(
     eps.setTarget(target_lambda)
     st = eps.getST()
     st.setType(SLEPc.ST.Type.SINVERT)
-    st.setShift(float(solver_cfg.get("st_shift", 110.0)))
+    st.setShift(float(solver_cfg.get("st_shift", -1.0)))
 
     # Preconditioner/factorization hints for the shifted linear solves.
     ksp = st.getKSP()
@@ -589,7 +589,7 @@ def _solve_coupled_evp(
     petsc_opts["st_ksp_type"] = str(solver_cfg.get("st_iter_ksp_type", "gmres"))
     petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "unpreconditioned"))
 
-    fast_num_modes = int(solver_cfg.get("target_nev", num_modes))
+    fast_num_modes = int(solver_cfg.get("target_nev", 30))
     fast_num_modes = max(fast_num_modes, num_modes)
     ncv = int(solver_cfg.get("target_ncv", max(40, 4 * fast_num_modes)))
     eps.setDimensions(fast_num_modes, ncv)
@@ -651,6 +651,14 @@ def _solve_coupled_evp(
     freqs_hz = [freqs_hz[idx] for idx in order]
     vectors = [vectors[idx] for idx in order]
     eigvecs = np.stack(vectors, axis=1)
+
+    # Sweep-and-filter: keep only physically valid modes above cutoff.
+    min_valid_hz = float(solver_cfg.get("min_valid_mode_hz", 50.0))
+    keep_idx = [i for i, f in enumerate(freqs_hz) if f >= min_valid_hz]
+    if not keep_idx:
+        raise RuntimeError(f"No modes >= {min_valid_hz:.2f} Hz after filtering.")
+    freqs_hz = [freqs_hz[i] for i in keep_idx]
+    eigvecs = eigvecs[:, keep_idx]
 
     # Extract split dof counts for output compatibility.
     n_u = W.sub(0).dofmap.index_map.size_local * W.sub(0).dofmap.index_map_bs
