@@ -149,6 +149,7 @@ class ROMManager:
         sampling: Optional[str] = None,
         lhs_samples: Optional[int] = None,
         seed: int = 123,
+        dry_run: bool = False,
     ) -> List[Path]:
         shape_cfg = self.shapes[shape_name]
         paths = self._shape_paths(shape_name)
@@ -163,8 +164,13 @@ class ROMManager:
             grid = self._lhs_from_sweep(sweep_cfg, samples=n, seed=seed)
         else:
             grid = self._grid_from_sweep(sweep_cfg)
-        out_files: List[Path] = []
         start_idx = self._next_snapshot_index(paths["snapshots"])
+        out_files: List[Path] = []
+        if dry_run:
+            return [
+                paths["snapshots"] / f"snapshot_{start_idx + off:04d}.npz"
+                for off in range(len(grid))
+            ]
 
         for off, params in enumerate(grid):
             idx = start_idx + off

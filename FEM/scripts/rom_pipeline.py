@@ -33,6 +33,8 @@ def main():
     p_offline.add_argument("--num-modes", type=int, default=6)
     p_offline.add_argument("--sampling", choices=["structured", "lhs"], default=None)
     p_offline.add_argument("--lhs-samples", type=int, default=None)
+    p_offline.add_argument("--num-samples", type=int, default=None, help="Alias for --lhs-samples")
+    p_offline.add_argument("--dry-run", action="store_true")
     p_offline.add_argument("--seed", type=int, default=123)
 
     p_basis = sub.add_parser("build-basis", help="Build POD basis from snapshots.")
@@ -59,17 +61,20 @@ def main():
         return
 
     if args.cmd == "offline":
+        lhs_samples = args.lhs_samples if args.lhs_samples is not None else args.num_samples
         files = manager.collect_snapshots(
             args.shape,
             num_modes=args.num_modes,
             sampling=args.sampling,
-            lhs_samples=args.lhs_samples,
+            lhs_samples=lhs_samples,
             seed=args.seed,
+            dry_run=args.dry_run,
         )
         print(
             json.dumps(
                 {
                     "shape": args.shape,
+                    "dry_run": bool(args.dry_run),
                     "snapshots_written": len(files),
                     "first_snapshot": str(files[0]) if files else None,
                     "last_snapshot": str(files[-1]) if files else None,
