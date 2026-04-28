@@ -282,34 +282,23 @@ def create_guitar_mesh():
     mesh_resolution_factor = 1.0
     print(f"[diag] mesh_resolution_factor={mesh_resolution_factor}")
 
-    # Local refinement on wood plate/shell surfaces to better resolve thin structure.
+    # Local refinement on wood plate/shell surfaces (entire surface, not only points).
     if not is_preview:
         wood_surface_tags = top_plate_surfs + body_surfs
         for surf in wood_surface_tags:
             pts = get_point_tags_from_surface(surf)
             print(f"[DEBUG] Refining surface {surf}: found {len(pts)} boundary points")
 
-        wood_point_tags = get_point_tags_from_surfaces(wood_surface_tags)
-        if wood_point_tags:
-            wood_local_size = 0.001  # 1 mm local size on wood boundaries
-            gmsh.model.mesh.setSize([(0, p) for p in sorted(wood_point_tags)], wood_local_size)
+        if wood_surface_tags:
+            wood_local_size = 0.001  # 1 mm target size on wood surfaces
+            const_field = gmsh.model.mesh.field.add("Constant")
+            gmsh.model.mesh.field.setNumbers(const_field, "SurfacesList", wood_surface_tags)
+            gmsh.model.mesh.field.setNumber(const_field, "IncludeBoundary", 1)
+            gmsh.model.mesh.field.setNumber(const_field, "VIn", wood_local_size)
+            gmsh.model.mesh.field.setAsBackgroundMesh(const_field)
             print(
-                f"[diag] Applied local wood refinement: size={wood_local_size:.6f}m "
-                f"on {len(wood_point_tags)} boundary points."
-            )
-            # Field-based fallback/boost: enforce 1mm near wood surfaces.
-            dist_field = gmsh.model.mesh.field.add("Distance")
-            gmsh.model.mesh.field.setNumbers(dist_field, "FacesList", wood_surface_tags)
-            thresh_field = gmsh.model.mesh.field.add("Threshold")
-            gmsh.model.mesh.field.setNumber(thresh_field, "InField", dist_field)
-            gmsh.model.mesh.field.setNumber(thresh_field, "SizeMin", wood_local_size)
-            gmsh.model.mesh.field.setNumber(thresh_field, "SizeMax", mesh_size_max)
-            gmsh.model.mesh.field.setNumber(thresh_field, "DistMin", 0.0)
-            gmsh.model.mesh.field.setNumber(thresh_field, "DistMax", 0.04)
-            gmsh.model.mesh.field.setAsBackgroundMesh(thresh_field)
-            print(
-                f"[diag] Background mesh field enabled for wood surfaces "
-                f"(SizeMin={wood_local_size:.6f}, SizeMax={mesh_size_max:.6f})."
+                f"[diag] Constant background field enabled on wood surfaces "
+                f"(VIn={wood_local_size:.6f}m, IncludeBoundary=1, n_surfaces={len(wood_surface_tags)})."
             )
 
     try:
