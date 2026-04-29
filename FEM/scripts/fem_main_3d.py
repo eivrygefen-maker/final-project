@@ -50,17 +50,22 @@ def _emit(message: str, status_callback=None, level: str = "info") -> None:
         LOGGER.warning(message)
     else:
         LOGGER.info(message)
-    print(message)
-    sys.stdout.flush()
-    sys.stderr.flush()
-    if status_callback is not None:
+    rank = MPI.COMM_WORLD.rank
+    is_root = rank == 0
+    should_print = is_root or level == "error"
+    if should_print:
+        print(message)
+        sys.stdout.flush()
+        sys.stderr.flush()
+    if status_callback is not None and is_root:
         status_callback(message)
 
 
 def _debug_rank(message: str) -> None:
     rank = MPI.COMM_WORLD.rank
-    print(f"[DEBUG] Rank {rank}: {message}")
-    sys.stdout.flush()
+    if rank == 0:
+        print(f"[DEBUG] Rank {rank}: {message}")
+        sys.stdout.flush()
 
 
 def _debug_petsc_comm(name: str, obj) -> None:
@@ -69,6 +74,18 @@ def _debug_petsc_comm(name: str, obj) -> None:
         _debug_rank(f"{name} comm rank={comm.getRank()} size={comm.getSize()}")
     except Exception:
         _debug_rank(f"{name} comm unavailable")
+
+
+def _sync_all_connectivity(msh: mesh.Mesh) -> None:
+    """Build all topology connectivities collectively, then synchronize once."""
+    tdim = msh.topology.dim
+    for d0 in range(tdim + 1):
+        for d1 in range(tdim + 1):
+            try:
+                msh.topology.create_connectivity(d0, d1)
+            except Exception:
+                pass
+    MPI.COMM_WORLD.barrier()
 
 
 def _wipe_cache_folder(cache_dir: Path, status_callback=None) -> None:
@@ -218,7 +235,6 @@ def _load_mesh_with_fallback(mesh_file: Path, status_callback=None):
         _emit("[mesh] gmsh file opened successfully on rank 0.", status_callback=status_callback)
 
     mesh_data = gmshio.model_to_mesh(gmsh_model, MPI.COMM_WORLD, rank, gdim=gdim)
-    MPI.COMM_WORLD.barrier()
 
     if MPI.COMM_WORLD.rank == rank:
         gmsh.finalize()
@@ -227,13 +243,8 @@ def _load_mesh_with_fallback(mesh_file: Path, status_callback=None):
     cell_tags = mesh_data.cell_tags
     facet_tags = mesh_data.facet_tags
 
-    # Ensure connectivity requested elsewhere is available immediately after gmsh import.
-    msh.topology.create_connectivity(msh.topology.dim, msh.topology.dim - 1)
-    msh.topology.create_connectivity(msh.topology.dim - 1, msh.topology.dim)
-    # Explicit vertex<->cell connectivity to avoid delayed connectivity warnings in downstream DOF lookup.
-    msh.topology.create_connectivity(0, msh.topology.dim)
-    msh.topology.create_connectivity(msh.topology.dim, 0)
-    MPI.COMM_WORLD.barrier()
+    # Ensure all topology connectivities (0..tdim) are built on all ranks synchronously.
+    _sync_all_connectivity(msh)
     return msh, cell_tags, facet_tags
 
 
@@ -393,7 +404,7 @@ def _slepc_shift_invert_batch(
         pc.setType(str(solver_cfg.get("st_pc_type", "lu")))
         pc.setFactorSolverType(str(solver_cfg.get("st_factor_solver_type", "mumps")))
 
-    mumps_icntl_14 = int(solver_cfg.get("mat_mumps_icntl_14", 100))
+    mumps_icntl_14 = int(solver_cfg.get("mat_mumps_icntl_14", 200))
     mumps_icntl_24 = int(solver_cfg.get("mat_mumps_icntl_24", 1))
     mumps_icntl_22 = int(solver_cfg.get("mat_mumps_icntl_22", 1))
     mumps_icntl_6 = int(solver_cfg.get("mat_mumps_icntl_6", 7))
@@ -472,6 +483,14 @@ def _slepc_shift_invert_batch(
             rt, rb = _plate_modal_energy_ratios(rvec, M, M_top, M_back, work)
         out.append((f_hz, rvec.array.copy(), rt, rb))
 
+    try:
+        rvec.destroy()
+    except Exception:
+        pass
+    try:
+        diag_vec.destroy()
+    except Exception:
+        pass
     eps.destroy()
     return nconv, out
 
@@ -720,6 +739,7 @@ def _solve_structural_only_evp(
             petsc_opts = PETSc.Options()
             petsc_opts["mat_mumps_icntl_6"] = int(config.get("solver", {}).get("mat_mumps_icntl_6", 7))
             petsc_opts["mat_mumps_icntl_12"] = int(config.get("solver", {}).get("mat_mumps_icntl_12", 1))
+            petsc_opts["mat_mumps_icntl_14"] = int(config.get("solver", {}).get("mat_mumps_icntl_14", 200))
         except Exception:
             pass
         # Make KSP convergence checks essentially irrelevant.
@@ -758,6 +778,10 @@ def _solve_structural_only_evp(
             continue
         freqs_hz.append(math.sqrt(eig_r) / (2.0 * math.pi))
         vectors.append(rvec.array.copy())
+    try:
+        rvec.destroy()
+    except Exception:
+        pass
     eps.destroy()
 
     print(f"[DIAG] Structural-only eigen search: WHICH=SMALLEST_MAGNITUDE")
@@ -776,6 +800,12 @@ def _solve_structural_only_evp(
         print(f"[DIAG] Structural-only first mode: {freqs_hz[0]:.3f} Hz")
     sys.stdout.flush()
     n_u = int(V_u.dofmap.index_map.size_local * V_u.dofmap.index_map_bs)
+    try:
+        A.destroy()
+        K.destroy()
+        M.destroy()
+    except Exception:
+        pass
     return msh, V_u, freqs_hz, eigvecs, n_u, 0
 
 
@@ -1354,6 +1384,12 @@ def _solve_coupled_evp(
     # Extract split dof counts for output compatibility.
     n_u = W.sub(0).dofmap.index_map.size_local * W.sub(0).dofmap.index_map_bs
     n_p = W.sub(1).dofmap.index_map.size_local * W.sub(1).dofmap.index_map_bs
+    # Release solver matrices at end of FOM solve (assemble-only path returns earlier).
+    try:
+        A.destroy()
+        M.destroy()
+    except Exception:
+        pass
     return msh, W, freqs_hz, eigvecs, n_u, n_p
 
 

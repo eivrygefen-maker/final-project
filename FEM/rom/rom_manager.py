@@ -114,7 +114,6 @@ class ROMManager:
         if self.rank == 0:
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(cfg, f, indent=4)
-        self.comm.barrier()
 
     def _rebuild_mesh(self, shape_name: str) -> None:
         cfg = self._load_shape_base_config(shape_name)
@@ -219,8 +218,6 @@ class ROMManager:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             tmp.replace(path)
-        if comm is not None:
-            comm.barrier()
 
     @staticmethod
     def _sample_id(i: int) -> str:
@@ -444,7 +441,6 @@ class ROMManager:
                         out_files.append(snapshot_path)
                         next_idx += 1
                         completed_batch += 1
-                    self.comm.barrier()
                 except Exception as exc:
                     traceback.print_exc()
                     entry["status"] = "error"
@@ -486,7 +482,6 @@ class ROMManager:
                     elapsed_s=np.array([elapsed], dtype=np.float64),
                 )
                 out_files.append(snapshot_path)
-            self.comm.barrier()
         self._last_collect_summary = {
             "shape": shape_name,
             "sampling": sampling_mode,
@@ -529,7 +524,6 @@ class ROMManager:
                 selected_rank=np.array([r], dtype=np.int32),
                 snapshots_count=np.array([len(snapshots)], dtype=np.int32),
             )
-        self.comm.barrier()
         self._basis_cache[shape_name] = {
             "basis": V,
             "mtime": paths["basis"].stat().st_mtime,
