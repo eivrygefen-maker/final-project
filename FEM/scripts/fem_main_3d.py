@@ -400,41 +400,39 @@ def _solve_structural_only_evp(
     _emit("[diag] structural-only diagnosis enabled: solving u-field EVP only.", status_callback=status_callback)
     tdim = msh.topology.dim
     fdim = tdim - 1
-    # Required for robust facet-based tag queries / DOF localization on some meshes.
     msh.topology.create_connectivity(fdim, tdim)
+    msh.topology.create_connectivity(tdim, fdim)
+    msh.topology.create_connectivity(fdim, 0)
+
+    facets_t1 = np.array(facet_tags.find(1), dtype=np.int32)
+    facets_t2 = np.array(facet_tags.find(2), dtype=np.int32)
+    facets_t3 = np.array(facet_tags.find(3), dtype=np.int32)
+    facets_fix = np.array(facet_tags.find(4), dtype=np.int32)
+
+    print(
+        f"[DIAG] facet tag counts: tag1={facets_t1.size}, "
+        f"tag2={facets_t2.size}, tag3={facets_t3.size}, tag4_fix={facets_fix.size}"
+    )
+    sys.stdout.flush()
+
     n = ufl.FacetNormal(msh)
     P = ufl.Identity(3) - ufl.outer(n, n)
-
     u_el = element("Lagrange", msh.basix_cell(), 1, shape=(3,))
     V_u = fem.functionspace(msh, u_el)
     u = ufl.TrialFunction(V_u)
     v = ufl.TestFunction(V_u)
-
     xdmf_ds = ufl.Measure("ds", domain=msh, subdomain_data=facet_tags)
-    structural_tags = (WOOD_SURFACE_TAGS[0], 2, WOOD_SURFACE_TAGS[1])  # include soundhole tag for diag coverage
+
     E_eff, nu_eff, rho_eff, thickness = _effective_wood_properties(config)
     mu = E_eff / (2.0 * (1.0 + nu_eff))
     lam = E_eff * nu_eff / ((1.0 + nu_eff) * (1.0 - 2.0 * nu_eff))
     D_bend = E_eff * thickness ** 3 / (12.0 * (1.0 - nu_eff ** 2))
 
-    wood_tag_top = int(np.sum(facet_tags.values == structural_tags[0]))
-    wood_tag_hole = int(np.sum(facet_tags.values == structural_tags[1]))
-    wood_tag_shell = int(np.sum(facet_tags.values == structural_tags[2]))
-    if wood_tag_top + wood_tag_hole + wood_tag_shell > 0:
-        wood_ds = xdmf_ds(structural_tags[0]) + xdmf_ds(structural_tags[1]) + xdmf_ds(structural_tags[2])
-        _emit(
-            "[diag] structural-only shell tags in stiffness: "
-            f"tag{structural_tags[0]}={wood_tag_top}, tag{structural_tags[1]}={wood_tag_hole}, "
-            f"tag{structural_tags[2]}={wood_tag_shell}",
-            status_callback=status_callback,
-        )
+    if (facets_t1.size + facets_t2.size + facets_t3.size) > 0:
+        shell_ds = xdmf_ds(1) + xdmf_ds(2) + xdmf_ds(3)
     else:
-        wood_ds = ufl.ds(domain=msh)
-        _emit(
-            "[diag][warn] structural-only run: wood facet tags missing; using full exterior ds.",
-            status_callback=status_callback,
-            level="warning",
-        )
+        shell_ds = ufl.ds(domain=msh)
+        _emit("[diag][warn] no facet tags 1/2/3 found; falling back to full ds.", status_callback=status_callback, level="warning")
 
     def eps_surface(uu):
         grad_u = ufl.grad(uu)
@@ -449,19 +447,33 @@ def _solve_structural_only_evp(
     a_uu = (
         thickness * (2.0 * mu * ufl.inner(eps_u, eps_v) + lam * ufl.tr(eps_u) * ufl.tr(eps_v))
         + D_bend * ufl.inner(P * ufl.grad(w_n), P * ufl.grad(v_n))
-    ) * wood_ds
-    m_uu = (rho_eff * thickness) * ufl.dot(u, v) * wood_ds
+    ) * shell_ds
+    m_uu = (rho_eff * thickness) * ufl.dot(u, v) * shell_ds
 
-    # Structural-only BC policy:
-    # - Never clamp whole Tag 3/Tag 1 surfaces (that can fully lock the shell).
-    # - Prefer explicit wood_fix support tag=4.
-    # - If missing/empty, use minimal geometric anchors only.
-    fixed_facets = np.array(facet_tags.find(4), dtype=np.int32)
+    # V_u coverage diagnostic by tag.
+    try:
+        f_to_v = msh.topology.connectivity(fdim, 0)
+        tag_u_counts = {}
+        for tag, facets_tag in ((1, facets_t1), (2, facets_t2), (3, facets_t3)):
+            if facets_tag.size == 0:
+                tag_u_counts[tag] = 0
+                continue
+            verts_tag = np.unique(np.concatenate([f_to_v.links(int(f)) for f in facets_tag])).astype(np.int32)
+            dofs_tag = np.array(fem.locate_dofs_topological(V_u, 0, verts_tag), dtype=np.int32)
+            tag_u_counts[tag] = int(dofs_tag.size)
+        _emit(
+            f"[diag] structural-only V_u coverage (dofs on facets): "
+            f"tag1={tag_u_counts.get(1, 0)}, tag2={tag_u_counts.get(2, 0)}, tag3={tag_u_counts.get(3, 0)}",
+            status_callback=status_callback,
+        )
+    except Exception as exc:
+        _emit(f"[diag][warn] V_u coverage diagnostic failed: {exc}", status_callback=status_callback, level="warning")
+
+    # BC logic: only wood_fix (tag 4), otherwise minimal geometric anchors.
     u_dofs = np.array([], dtype=np.int32)
-    if fixed_facets.size > 0:
-        u_dofs = np.array(fem.locate_dofs_topological(V_u, fdim, fixed_facets), dtype=np.int32)
+    if facets_fix.size > 0:
+        u_dofs = np.array(fem.locate_dofs_topological(V_u, fdim, facets_fix), dtype=np.int32)
     if u_dofs.size == 0:
-        # Geometric fallback (same spirit as coupled path): pin three boundary points.
         coords = msh.geometry.x
         mins = np.min(coords, axis=0)
         maxs = np.max(coords, axis=0)
@@ -495,97 +507,22 @@ def _solve_structural_only_evp(
             u_dof_blocks.append(fem.locate_dofs_geometrical(V_u, _u_anchor_marker))
         if u_dof_blocks:
             u_dofs = np.array(np.unique(np.concatenate(u_dof_blocks)), dtype=np.int32)
-    # Prove V_u carries DOFs across all structural tags (1,2,3), not only tag 3.
-    try:
-        msh.topology.create_connectivity(fdim, 0)
-        f_to_v = msh.topology.connectivity(fdim, 0)
-        tag_u_counts = {}
-        for tag in (1, 2, 3):
-            facets_tag = np.array(facet_tags.find(tag), dtype=np.int32)
-            if facets_tag.size == 0:
-                tag_u_counts[tag] = 0
-                continue
-            verts_tag = np.unique(np.concatenate([f_to_v.links(int(f)) for f in facets_tag])).astype(np.int32)
-            dofs_tag = np.array(fem.locate_dofs_topological(V_u, 0, verts_tag), dtype=np.int32)
-            tag_u_counts[tag] = int(dofs_tag.size)
-        _emit(
-            f"[diag] structural-only V_u coverage (dofs on facets): "
-            f"tag1={tag_u_counts.get(1, 0)}, tag2={tag_u_counts.get(2, 0)}, tag3={tag_u_counts.get(3, 0)}",
-            status_callback=status_callback,
-        )
-    except Exception as exc:
-        _emit(f"[diag][warn] V_u coverage diagnostic failed: {exc}", status_callback=status_callback, level="warning")
 
-    _emit(
-        f"[diag] structural-only BCs: wood_fix_facets={fixed_facets.size}, u_dofs={u_dofs.size}",
-        status_callback=status_callback,
-    )
+    print(f"[DIAG] structural BC dofs: {u_dofs.size}")
+    sys.stdout.flush()
     if u_dofs.size == 0:
-        raise RuntimeError("Structural-only diagnosis failed: u_dofs is empty even after geometric fallback.")
+        raise RuntimeError("Structural-only diagnosis failed: u_dofs is empty after robust localization.")
     bc_u = fem.dirichletbc(np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType), u_dofs, V_u)
 
-    A = assemble_matrix(fem.form(a_uu), bcs=[bc_u])
-    A.assemble()
-    M = assemble_matrix(fem.form(m_uu), bcs=[bc_u])
-    M.assemble()
-    # Tag1<->Tag3 connectivity diagnostic and optional near-node glue penalty.
-    try:
-        msh.topology.create_connectivity(fdim, 0)
-        f_to_v = msh.topology.connectivity(fdim, 0)
-        facets_t1 = np.array(facet_tags.find(WOOD_SURFACE_TAGS[0]), dtype=np.int32)
-        facets_t3 = np.array(facet_tags.find(WOOD_SURFACE_TAGS[1]), dtype=np.int32)
-        verts_t1 = np.unique(
-            np.concatenate([f_to_v.links(int(f)) for f in facets_t1]) if facets_t1.size > 0 else np.array([], dtype=np.int32)
-        ).astype(np.int32)
-        verts_t3 = np.unique(
-            np.concatenate([f_to_v.links(int(f)) for f in facets_t3]) if facets_t3.size > 0 else np.array([], dtype=np.int32)
-        ).astype(np.int32)
-        shared_v = np.intersect1d(verts_t1, verts_t3)
-        _emit(
-            f"[diag] structural interface nodes: tag1_verts={verts_t1.size}, tag3_verts={verts_t3.size}, shared={shared_v.size}",
-            status_callback=status_callback,
-        )
-
-        glue_tol = float(config.get("solver", {}).get("structural_interface_glue_tol", 1.0e-6))
-        glue_k = float(config.get("solver", {}).get("structural_interface_glue_k", 0.0))
-        if shared_v.size == 0 and glue_k > 0.0 and verts_t1.size > 0 and verts_t3.size > 0 and glue_tol > 0.0:
-            coords = msh.geometry.x
-            # O(N*M) nearest pairing under tiny tolerance (diagnostic quick fix).
-            dmat = np.linalg.norm(coords[verts_t1][:, None, :] - coords[verts_t3][None, :, :], axis=2)
-            idx_min = np.argmin(dmat, axis=1)
-            dmin = dmat[np.arange(dmat.shape[0]), idx_min]
-            matched = np.where(dmin <= glue_tol)[0]
-            pair_count = 0
-            for loc in matched.tolist():
-                vi = int(verts_t1[int(loc)])
-                vj = int(verts_t3[int(idx_min[int(loc)])])
-                di = np.array(fem.locate_dofs_topological(V_u, 0, np.array([vi], dtype=np.int32)), dtype=np.int32)
-                dj = np.array(fem.locate_dofs_topological(V_u, 0, np.array([vj], dtype=np.int32)), dtype=np.int32)
-                if di.size == 0 or dj.size == 0:
-                    continue
-                for a, b in zip(di.tolist(), dj.tolist()):
-                    A.setValue(int(a), int(a), PETSc.ScalarType(glue_k), addv=PETSc.InsertMode.ADD_VALUES)
-                    A.setValue(int(b), int(b), PETSc.ScalarType(glue_k), addv=PETSc.InsertMode.ADD_VALUES)
-                    A.setValue(int(a), int(b), PETSc.ScalarType(-glue_k), addv=PETSc.InsertMode.ADD_VALUES)
-                    A.setValue(int(b), int(a), PETSc.ScalarType(-glue_k), addv=PETSc.InsertMode.ADD_VALUES)
-                pair_count += 1
-            if pair_count > 0:
-                A.assemble()
-            _emit(
-                f"[diag] structural glue penalty: tol={glue_tol:.1e}, k={glue_k:.3e}, vertex_pairs={pair_count}",
-                status_callback=status_callback,
-            )
-    except Exception as exc:
-        _emit(f"[diag][warn] structural interface glue diagnostic failed: {exc}", status_callback=status_callback, level="warning")
-    # Diagnostic stabilization for singular pivots: A <- A + eps*M
-    struct_diag_shift = float(config.get("solver", {}).get("structural_diag_shift", 1.0e-6))
-    if struct_diag_shift > 0.0:
-        A.axpy(struct_diag_shift, M, structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN)
+    K = assemble_matrix(fem.form(a_uu), bcs=[bc_u]); K.assemble()
+    M = assemble_matrix(fem.form(m_uu), bcs=[bc_u]); M.assemble()
+    A = K.copy()
+    eps_diag = float(config.get("solver", {}).get("structural_diag_shift", 1.0e-6))
+    if eps_diag > 0:
+        A.axpy(eps_diag, M, structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN)
         A.assemble()
-        _emit(
-            f"[diag] structural-only diagonal shift applied: A += {struct_diag_shift:.2e} * M",
-            status_callback=status_callback,
-        )
+        print(f"[DIAG] structural shift: A = K + {eps_diag:.2e} M")
+        sys.stdout.flush()
 
     eps = SLEPc.EPS().create(MPI.COMM_WORLD)
     eps.setOperators(A, M)
