@@ -778,6 +778,14 @@ def _solve_structural_only_evp(
     a_uu = (2.0 * mu * ufl.inner(eps_u, eps_v) + lam * ufl.div(u) * ufl.div(v)) * wood_dx
     m_uu = (rho_eff * ufl.dot(u, v)) * wood_dx
 
+    # Dummy penalty for air DOFs (vacuum test) to prevent singular zero rows.
+    # This keeps air-associated displacement rows invertible while pushing their
+    # artificial eigencontent far from the structural band of interest.
+    air_tags = [AIR_VOLUME_TAG]
+    for tag in air_tags:
+        a_uu += 1.0e11 * ufl.inner(u, v) * xdmf_dx(tag)
+        m_uu += 1.0e-9 * ufl.inner(u, v) * xdmf_dx(tag)
+
     # V_u coverage diagnostic by tag.
     try:
         f_to_v = msh.topology.connectivity(fdim, 0)
