@@ -305,10 +305,23 @@ def create_guitar_mesh():
         body_surfs = sorted(list(wood_boundary_surfs))
         print("[diag][warn] body_surfs fallback: using all wood boundary surfaces.")
 
-    # Soundhole boundaries: exposed air boundary surfaces (not shared with wood boundaries).
-    soundhole_surfs = sorted(list(set(air_boundary_surfs) - set(wood_boundary_surfs)))
+    # Soundhole boundaries: prefer geometry-based detection around the hole center
+    # on the top opening to avoid empty tags after boolean/fragment operations.
+    soundhole_surfs = []
+    z_top_outer = D / 2.0
+    z_tol = max(5.0e-4, 0.25 * t)
+    r_pick = max(1.0e-6, 0.65 * hr)
+    for s in sorted(list(air_boundary_surfs)):
+        cx, cy, cz = get_surface_center(s)
+        rxy = ((cx - hole_x) ** 2 + (cy - 0.0) ** 2) ** 0.5
+        if abs(cz - z_top_outer) <= z_tol and rxy <= r_pick:
+            soundhole_surfs.append(int(s))
+    soundhole_surfs = sorted(list(set(soundhole_surfs)))
     if not soundhole_surfs:
-        # Fallback: use top boundary surfaces so tagging remains valid for downstream code.
+        # Fallback 1: exposed air boundaries not shared with wood.
+        soundhole_surfs = sorted(list(set(air_boundary_surfs) - set(wood_boundary_surfs)))
+    if not soundhole_surfs:
+        # Fallback 2: use top boundary surfaces so tagging remains valid for downstream code.
         soundhole_surfs = list(top_plate_surfs)
         print("[diag][warn] soundhole_surfs fallback: using top_plate_surfs.")
 
@@ -371,8 +384,12 @@ def create_guitar_mesh():
     print(f"[diag] Physical Group 1 (Top_Plate_Volume) entities: {list(v1)}")
     print(f"[diag] Physical Group 2 (Back_Plate_Volume) entities: {list(v2)}")
     print(f"[diag] Physical Group 3 (Ribs_Sides_Volume) entities: {list(v3)}")
+    sh2 = gmsh.model.getEntitiesForPhysicalGroup(2, 2)
+    print(f"[diag] Physical Group 2 (Soundhole) surface entities: {list(sh2)}")
     if len(air_group_entities) == 0:
         raise RuntimeError("Tag 10 was created but has no 3D volume entities.")
+    if len(sh2) == 0:
+        raise RuntimeError("Tag 2 (Soundhole) was created but has no 2D surface entities.")
 
     # Configure balanced meshing options.
     gmsh.option.setNumber("Mesh.MeshSizeMin", mesh_size_min)
