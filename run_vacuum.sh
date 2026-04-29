@@ -9,6 +9,26 @@ echo "[1/4] Forcing clean state and pulling latest changes..."
 git checkout FEM/configs/guitar_3d.json # Discard local changes to config
 git pull origin main
 
+echo "[1.5/4] Enforcing coupled-run config (no structural-only diagnosis)..."
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+cfg_path = Path("FEM/configs/guitar_3d.json")
+cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+solver = cfg.setdefault("solver", {})
+materials = cfg.setdefault("materials", {})
+air = materials.setdefault("air", {})
+
+solver["structural_only_diagnosis"] = False
+solver["pressure_gauge"] = "soundhole"
+air["density"] = 1.21
+air["speed_of_sound"] = 343.0
+
+cfg_path.write_text(json.dumps(cfg, indent=4), encoding="utf-8")
+print("[config] structural_only_diagnosis=False, pressure_gauge=soundhole, air=(rho=1.21, c=343.0)")
+PY
+
 echo "[2/4] Cleaning stale mesh files..."
 rm -f FEM/mesh/guitar_3d.msh
 
