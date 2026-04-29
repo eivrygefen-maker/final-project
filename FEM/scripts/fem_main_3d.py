@@ -570,6 +570,28 @@ def _solve_structural_only_evp(
     sys.stdout.flush()
     if u_dofs.size == 0:
         raise RuntimeError("Structural-only diagnosis failed: u_dofs is empty after robust localization.")
+
+    # Deactivate non-structural (air) displacement DOFs:
+    # keep only DOFs associated with structural facet tags 1/2/3 and clamp the complement.
+    structural_facets = np.unique(np.concatenate([facets_t1, facets_t2, facets_t3])).astype(np.int32)
+    structural_dofs = np.array([], dtype=np.int32)
+    if structural_facets.size > 0:
+        structural_dofs = np.array(fem.locate_dofs_topological(V_u, fdim, structural_facets), dtype=np.int32)
+    n_u_local = int(V_u.dofmap.index_map.size_local * V_u.dofmap.index_map_bs)
+    all_u_local = np.arange(n_u_local, dtype=np.int32)
+    if structural_dofs.size > 0:
+        structural_dofs = np.unique(structural_dofs)
+        air_dofs = np.setdiff1d(all_u_local, structural_dofs, assume_unique=False).astype(np.int32)
+    else:
+        air_dofs = all_u_local.copy()
+    u_dofs = np.unique(np.concatenate([u_dofs, air_dofs])).astype(np.int32)
+    print(
+        f"[DIAG] structural-only dof partition: "
+        f"n_u_local={n_u_local}, structural_dofs={structural_dofs.size}, "
+        f"air_dofs={air_dofs.size}, constrained_total={u_dofs.size}"
+    )
+    sys.stdout.flush()
+
     bc_u = fem.dirichletbc(np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType), u_dofs, V_u)
 
     K = assemble_matrix(fem.form(a_uu), bcs=[bc_u]); K.assemble()
