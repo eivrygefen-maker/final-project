@@ -229,81 +229,6 @@ def create_guitar_mesh():
             raise RuntimeError("Wood partitioning produced no volumes.")
         print(f"[diag] Wood volumes after Z-partition: {wood_vols}")
 
-    # Surface classification by boundary relations:
-    # interface = shared wood/air boundary; soundhole = external air boundary not in interface.
-    wood_boundary_surfs = get_boundary_tags([(3, tag) for tag in wood_vols], 2)
-    air_boundary_surfs = get_boundary_tags([(3, tag) for tag in air_vols], 2)
-
-    interface_surfs = sorted(list(wood_boundary_surfs.intersection(air_boundary_surfs)))
-    soundhole_surfs = sorted(list(air_boundary_surfs.difference(interface_surfs)))
-    if len(soundhole_surfs) == 0:
-        raise RuntimeError("No soundhole opening surfaces found on air boundary.")
-
-    # Robust Z-based surface classification (fragmentation-safe):
-    #   Top plate surfaces  -> highest interface surfaces in Z
-    #   Body shell surfaces -> remaining interface surfaces (middle/lower)
-    if not interface_surfs:
-        raise RuntimeError("No wood-air interface surfaces found to classify.")
-    z_values = {s: get_surface_center_z(s) for s in interface_surfs}
-    z_max = max(z_values.values())
-    z_min = min(z_values.values())
-    z_span = max(1.0e-9, z_max - z_min)
-    z_tol = max(0.5 * t, 0.08 * z_span)
-
-    top_plate_set = set()
-    for s in interface_surfs:
-        zc = z_values[s]
-        nz_abs = get_surface_normal_z(s)
-        # Prefer elevated and somewhat horizontal surfaces as top plate.
-        if zc >= (z_max - z_tol) and (nz_abs is None or nz_abs >= 0.30):
-            top_plate_set.add(s)
-
-    # Ensure at least one top surface exists.
-    if not top_plate_set:
-        top_plate_set.add(max(interface_surfs, key=lambda s: z_values[s]))
-
-    iface_set = set(interface_surfs)
-    top_plate_surfs = sorted(list(top_plate_set))
-    body_surfs = sorted(list(iface_set - top_plate_set))
-
-    # If everything got classified as top, keep only the highest surface(s) as top.
-    if not body_surfs:
-        z_top = max(z_values[s] for s in top_plate_surfs)
-        top_plate_surfs = sorted([s for s in top_plate_surfs if z_values[s] >= z_top - 1.0e-9])
-        body_surfs = sorted(list(iface_set - set(top_plate_surfs)))
-
-    if not body_surfs:
-        # Last-resort fallback: choose highest as top, others as body.
-        highest = max(interface_surfs, key=lambda s: z_values[s])
-        top_plate_surfs = [highest]
-        body_surfs = sorted([s for s in interface_surfs if s != highest])
-    if not body_surfs:
-        raise RuntimeError("Body_Shell classification failed in Z-based fallback.")
-
-    # Define a compact support region (wood_fix) near neck-side body area.
-    # This provides a deterministic structural clamp for FEM boundary conditions.
-    fix_candidates = []
-    for s in body_surfs:
-        cx, cy, cz = get_surface_center(s)
-        fix_candidates.append((s, cx, abs(cy), cz))
-    # Prefer surfaces near maximum +x and close to centerline (small |y|).
-    fix_candidates.sort(key=lambda row: (-row[1], row[2]))
-    n_fix = min(2, len(fix_candidates))
-    wood_fix_surfs = [row[0] for row in fix_candidates[:n_fix]]
-    if not wood_fix_surfs and body_surfs:
-        wood_fix_surfs = [body_surfs[0]]
-
-    # Define physical groups using fixed tag protocol.
-    # IMPORTANT: 2D tags (facets) and 3D tags (volumes) are both created.
-    # This ensures structural-only volume assembly can target wood cells (1/2/3).
-    pg_top = gmsh.model.addPhysicalGroup(2, top_plate_surfs, tag=1)
-    gmsh.model.setPhysicalName(2, pg_top, "Top_Plate")
-    pg_soundhole = gmsh.model.addPhysicalGroup(2, soundhole_surfs, tag=2)
-    gmsh.model.setPhysicalName(2, pg_soundhole, "Soundhole")
-    pg_body = gmsh.model.addPhysicalGroup(2, body_surfs, tag=3)
-    gmsh.model.setPhysicalName(2, pg_body, "Body_Shell")
-    pg_fix = gmsh.model.addPhysicalGroup(2, wood_fix_surfs, tag=4)
-    gmsh.model.setPhysicalName(2, pg_fix, "wood_fix")
     # Strict one-cell-one-tag policy for 3D physical groups.
     # Sort wood volumes by center-of-mass Z:
     # - highest Z -> tag 1 (Top volume)
@@ -330,6 +255,58 @@ def create_guitar_mesh():
         overlap = sorted(list(assigned_wood.intersection(set(air_vols))))
         raise RuntimeError(f"Wood/Air volume overlap detected: {overlap}")
 
+    # Surface identification via direct boundaries (fragmentation-safe, no interface tracing).
+    wood_boundary_surfs = get_boundary_tags([(3, tag) for tag in wood_vols], 2)
+    air_boundary_surfs = get_boundary_tags([(3, tag) for tag in air_vols], 2)
+    top_plate_surfs = sorted(list(get_boundary_tags([(3, tag) for tag in top_vols], 2))) if top_vols else []
+    if not top_plate_surfs and wood_boundary_surfs:
+        highest = max(list(wood_boundary_surfs), key=lambda s: get_surface_center_z(s))
+        top_plate_surfs = [highest]
+        print("[diag][warn] top_plate_surfs fallback: using highest wood boundary surface.")
+
+    body_surfs = sorted(list(set(wood_boundary_surfs) - set(top_plate_surfs)))
+    if not body_surfs and wood_boundary_surfs:
+        body_surfs = sorted(list(wood_boundary_surfs))
+        print("[diag][warn] body_surfs fallback: using all wood boundary surfaces.")
+
+    # Soundhole boundaries: exposed air boundary surfaces (not shared with wood boundaries).
+    soundhole_surfs = sorted(list(set(air_boundary_surfs) - set(wood_boundary_surfs)))
+    if not soundhole_surfs:
+        # Fallback: use top boundary surfaces so tagging remains valid for downstream code.
+        soundhole_surfs = list(top_plate_surfs)
+        print("[diag][warn] soundhole_surfs fallback: using top_plate_surfs.")
+
+    # Define a compact support region (wood_fix) near neck-side body area.
+    # This provides a deterministic structural clamp for FEM boundary conditions.
+    fix_candidates = []
+    for s in body_surfs:
+        cx, cy, cz = get_surface_center(s)
+        fix_candidates.append((s, cx, abs(cy), cz))
+    # Prefer surfaces near maximum +x and close to centerline (small |y|).
+    fix_candidates.sort(key=lambda row: (-row[1], row[2]))
+    n_fix = min(2, len(fix_candidates))
+    wood_fix_surfs = [row[0] for row in fix_candidates[:n_fix]]
+    if not wood_fix_surfs and body_surfs:
+        wood_fix_surfs = [body_surfs[0]]
+
+    # Define physical groups using fixed tag protocol.
+    # IMPORTANT: 2D tags (facets) and 3D tags (volumes) are both created.
+    # This ensures structural-only volume assembly can target wood cells (1/2/3).
+    if not top_plate_surfs and wood_boundary_surfs:
+        top_plate_surfs = [max(list(wood_boundary_surfs), key=lambda s: get_surface_center_z(s))]
+    if not body_surfs and wood_boundary_surfs:
+        body_surfs = sorted(list(wood_boundary_surfs))
+    if not soundhole_surfs:
+        soundhole_surfs = list(top_plate_surfs)
+
+    pg_top = gmsh.model.addPhysicalGroup(2, top_plate_surfs, tag=1)
+    gmsh.model.setPhysicalName(2, pg_top, "Top_Plate")
+    pg_soundhole = gmsh.model.addPhysicalGroup(2, soundhole_surfs, tag=2)
+    gmsh.model.setPhysicalName(2, pg_soundhole, "Soundhole")
+    pg_body = gmsh.model.addPhysicalGroup(2, body_surfs, tag=3)
+    gmsh.model.setPhysicalName(2, pg_body, "Body_Shell")
+    pg_fix = gmsh.model.addPhysicalGroup(2, wood_fix_surfs, tag=4)
+    gmsh.model.setPhysicalName(2, pg_fix, "wood_fix")
     if top_vols:
         pg_top_v = gmsh.model.addPhysicalGroup(3, top_vols, tag=1)
         gmsh.model.setPhysicalName(3, pg_top_v, "Top_Plate_Volume")
