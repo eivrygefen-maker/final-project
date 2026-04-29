@@ -21,6 +21,8 @@ petsc4py.init(sys.argv)
 from petsc4py import PETSc
 from slepc4py import SLEPc
 
+raise RuntimeError('🚨 BINGO: WE ARE EDITING THE CORRECT FILE 🚨')
+
 # Start PETSc logging on all ranks for collective-call tracing.
 try:
     PETSc.Log.begin()
