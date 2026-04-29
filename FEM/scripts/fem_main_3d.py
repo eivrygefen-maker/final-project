@@ -607,8 +607,10 @@ def _slepc_shift_invert_batch(
     except Exception:
         pass
 
-    mumps_icntl_14 = int(solver_cfg.get("mat_mumps_icntl_14", 5000))
-    mumps_icntl_23 = int(solver_cfg.get("mat_mumps_icntl_23", 0))
+    # ICNTL(14): workspace inflation (%); keep moderate to avoid 32-bit overflow in MUMPS estimates.
+    # ICNTL(23): max working memory (MB); explicit cap lets MUMPS grow into RAM (was 0 = uncapped).
+    mumps_icntl_14 = int(solver_cfg.get("mat_mumps_icntl_14", 500))
+    mumps_icntl_23 = int(solver_cfg.get("mat_mumps_icntl_23", 15000))
     mumps_icntl_22 = int(solver_cfg.get("mat_mumps_icntl_22", 1))
     mumps_icntl_24 = int(solver_cfg.get("mat_mumps_icntl_24", 1))
     mumps_icntl_6 = int(solver_cfg.get("mat_mumps_icntl_6", 7))
@@ -1011,8 +1013,8 @@ def _solve_structural_only_evp(
                 petsc_opts = PETSc.Options()
                 petsc_opts["mat_mumps_icntl_6"] = int(config.get("solver", {}).get("mat_mumps_icntl_6", 7))
                 petsc_opts["mat_mumps_icntl_12"] = int(config.get("solver", {}).get("mat_mumps_icntl_12", 1))
-                petsc_opts["mat_mumps_icntl_14"] = int(config.get("solver", {}).get("mat_mumps_icntl_14", 5000))
-                petsc_opts["mat_mumps_icntl_23"] = int(config.get("solver", {}).get("mat_mumps_icntl_23", 0))
+                petsc_opts["mat_mumps_icntl_14"] = int(config.get("solver", {}).get("mat_mumps_icntl_14", 500))
+                petsc_opts["mat_mumps_icntl_23"] = int(config.get("solver", {}).get("mat_mumps_icntl_23", 15000))
                 petsc_opts["mat_mumps_icntl_22"] = int(config.get("solver", {}).get("mat_mumps_icntl_22", 1))
                 petsc_opts["mat_mumps_icntl_24"] = int(config.get("solver", {}).get("mat_mumps_icntl_24", 1))
                 petsc_opts["mat_mumps_icntl_4"] = int(
