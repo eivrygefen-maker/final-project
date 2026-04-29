@@ -296,47 +296,57 @@ def create_guitar_mesh():
     gmsh.model.setPhysicalName(2, pg_body, "Body_Shell")
     pg_fix = gmsh.model.addPhysicalGroup(2, wood_fix_surfs, tag=4)
     gmsh.model.setPhysicalName(2, pg_fix, "wood_fix")
-    pg_air = gmsh.model.addPhysicalGroup(3, air_vols, tag=10)
-    gmsh.model.setPhysicalName(3, pg_air, "Air_Internal")
-
-    # Build wood volume groups (top/back/ribs) from COM z split with robust fallback.
-    z_split = max(0.2 * t, 0.01 * D)
+    # Strict one-cell-one-tag policy for 3D physical groups.
+    # Sort wood volumes by center-of-mass Z:
+    # - highest Z -> tag 1 (Top volume)
+    # - lowest Z  -> tag 2 (Back volume)
+    # - remaining -> tag 3 (Ribs volume)
+    wood_by_z = sorted([(v, get_volume_center_z(v)) for v in wood_vols], key=lambda row: row[1])
     top_vols = []
     back_vols = []
     rib_vols = []
-    for v in wood_vols:
-        zc = get_volume_center_z(v)
-        if zc > z_split:
-            top_vols.append(v)
-        elif zc < -z_split:
-            back_vols.append(v)
-        else:
-            rib_vols.append(v)
+    if len(wood_by_z) == 1:
+        top_vols = [wood_by_z[0][0]]
+    elif len(wood_by_z) >= 2:
+        back_vols = [wood_by_z[0][0]]
+        top_vols = [wood_by_z[-1][0]]
+        rib_vols = [v for v, _z in wood_by_z[1:-1]]
 
-    # If booleans produced an unsplit shell volume, ensure tags 1/2/3 still exist.
-    if not top_vols:
-        top_vols = list(wood_vols)
-        print("[diag][warn] top wood volume split empty; fallback uses all wood volumes for tag 1.")
-    if not back_vols:
-        back_vols = list(wood_vols)
-        print("[diag][warn] back wood volume split empty; fallback uses all wood volumes for tag 2.")
-    if not rib_vols:
-        rib_vols = list(wood_vols)
-        print("[diag][warn] rib wood volume split empty; fallback uses all wood volumes for tag 3.")
+    assigned_wood = set(top_vols) | set(back_vols) | set(rib_vols)
+    if len(assigned_wood) != len(top_vols) + len(back_vols) + len(rib_vols):
+        raise RuntimeError("Wood volume assignment overlap detected across tags 1/2/3.")
+    if assigned_wood != set(wood_vols):
+        missing = sorted(list(set(wood_vols) - assigned_wood))
+        raise RuntimeError(f"Wood volume assignment incomplete. Unassigned volumes: {missing}")
+    if assigned_wood.intersection(set(air_vols)):
+        overlap = sorted(list(assigned_wood.intersection(set(air_vols))))
+        raise RuntimeError(f"Wood/Air volume overlap detected: {overlap}")
 
-    pg_top_v = gmsh.model.addPhysicalGroup(3, top_vols, tag=1)
-    gmsh.model.setPhysicalName(3, pg_top_v, "Top_Plate_Volume")
-    pg_back_v = gmsh.model.addPhysicalGroup(3, back_vols, tag=2)
-    gmsh.model.setPhysicalName(3, pg_back_v, "Back_Plate_Volume")
-    pg_rib_v = gmsh.model.addPhysicalGroup(3, rib_vols, tag=3)
-    gmsh.model.setPhysicalName(3, pg_rib_v, "Ribs_Sides_Volume")
+    if top_vols:
+        pg_top_v = gmsh.model.addPhysicalGroup(3, top_vols, tag=1)
+        gmsh.model.setPhysicalName(3, pg_top_v, "Top_Plate_Volume")
+    else:
+        print("[diag][warn] Physical Volume 1 (Top_Plate_Volume) is empty.")
+    if back_vols:
+        pg_back_v = gmsh.model.addPhysicalGroup(3, back_vols, tag=2)
+        gmsh.model.setPhysicalName(3, pg_back_v, "Back_Plate_Volume")
+    else:
+        print("[diag][warn] Physical Volume 2 (Back_Plate_Volume) is empty.")
+    if rib_vols:
+        pg_rib_v = gmsh.model.addPhysicalGroup(3, rib_vols, tag=3)
+        gmsh.model.setPhysicalName(3, pg_rib_v, "Ribs_Sides_Volume")
+    else:
+        print("[diag][warn] Physical Volume 3 (Ribs_Sides_Volume) is empty.")
+
+    pg_air = gmsh.model.addPhysicalGroup(3, air_vols, tag=10)
+    gmsh.model.setPhysicalName(3, pg_air, "Air_Internal")
 
     print(f"[diag] wood_fix surfaces (tag=4): {wood_fix_surfs}")
     air_group_entities = gmsh.model.getEntitiesForPhysicalGroup(3, 10)
     print(f"[diag] Physical Group 10 (Air_Internal) volume entities: {list(air_group_entities)}")
-    v1 = gmsh.model.getEntitiesForPhysicalGroup(3, 1)
-    v2 = gmsh.model.getEntitiesForPhysicalGroup(3, 2)
-    v3 = gmsh.model.getEntitiesForPhysicalGroup(3, 3)
+    v1 = gmsh.model.getEntitiesForPhysicalGroup(3, 1) if top_vols else []
+    v2 = gmsh.model.getEntitiesForPhysicalGroup(3, 2) if back_vols else []
+    v3 = gmsh.model.getEntitiesForPhysicalGroup(3, 3) if rib_vols else []
     print(f"[diag] Physical Group 1 (Top_Plate_Volume) entities: {list(v1)}")
     print(f"[diag] Physical Group 2 (Back_Plate_Volume) entities: {list(v2)}")
     print(f"[diag] Physical Group 3 (Ribs_Sides_Volume) entities: {list(v3)}")
