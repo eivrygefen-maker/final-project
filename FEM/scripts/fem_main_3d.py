@@ -244,15 +244,26 @@ def _effective_wood_properties(config: Dict) -> Tuple[float, float, float, float
     return E_eff, nu_eff, rho_eff, thickness
 
 
-def _wood_mass_energy_ratio(phi: PETSc.Vec, M: PETSc.Mat, M_wood: PETSc.Mat, work: PETSc.Vec) -> float:
-    """Structural (wood shell mass) share of generalized kinetic form: (phi^T M_wood phi) / (phi^T M phi)."""
+def _plate_modal_energy_ratios(
+    phi: PETSc.Vec,
+    M: PETSc.Mat,
+    M_top: Optional[PETSc.Mat],
+    M_back: Optional[PETSc.Mat],
+    work: PETSc.Vec,
+) -> Tuple[float, float]:
+    """Top (tag 1) and back/body (tag 3) shares of phi^T M phi (shell mass per facet group / |total|)."""
     M.mult(phi, work)
     e_tot = float(np.real(phi.dot(work)))
-    M_wood.mult(phi, work)
-    e_w = float(np.real(phi.dot(work)))
-    if abs(e_tot) < 1e-60:
-        return 0.0
-    return e_w / e_tot
+    e_top = 0.0
+    e_back = 0.0
+    if M_top is not None:
+        M_top.mult(phi, work)
+        e_top = float(np.real(phi.dot(work)))
+    if M_back is not None:
+        M_back.mult(phi, work)
+        e_back = float(np.real(phi.dot(work)))
+    denom = max(abs(e_tot), 1e-60)
+    return e_top / denom, e_back / denom
 
 
 def _slepc_shift_invert_batch(
@@ -263,10 +274,11 @@ def _slepc_shift_invert_batch(
     batch: int,
     diag_shift: float,
     status_callback,
-    M_wood: Optional[PETSc.Mat] = None,
+    M_top: Optional[PETSc.Mat] = None,
+    M_back: Optional[PETSc.Mat] = None,
     work: Optional[PETSc.Vec] = None,
-) -> Tuple[int, List[Tuple[float, np.ndarray, Optional[float]]]]:
-    """Run one SLEPc GNHEP shift-invert solve; returns (nconv, list of (freq_hz, eigenvector, wood_ratio|None))."""
+) -> Tuple[int, List[Tuple[float, np.ndarray, Optional[float], Optional[float]]]]:
+    """Run one SLEPc GNHEP shift-invert solve; returns rows (freq_hz, eigenvector, top_ratio|None, back_ratio|None)."""
     target_lambda = (2.0 * math.pi * float(shift_hz)) ** 2
     eps = SLEPc.EPS().create(MPI.COMM_WORLD)
     eps.setOperators(A, M)
@@ -358,7 +370,7 @@ def _slepc_shift_invert_batch(
         status_callback=status_callback,
     )
 
-    out: List[Tuple[float, np.ndarray, Optional[float]]] = []
+    out: List[Tuple[float, np.ndarray, Optional[float], Optional[float]]] = []
     rvec = A.createVecRight()
     for i in range(min(batch, nconv)):
         eig = eps.getEigenpair(i, rvec)
@@ -367,10 +379,11 @@ def _slepc_shift_invert_batch(
             continue
         omega = math.sqrt(eig_r)
         f_hz = omega / (2.0 * math.pi)
-        ratio: Optional[float] = None
-        if M_wood is not None and work is not None:
-            ratio = _wood_mass_energy_ratio(rvec, M, M_wood, work)
-        out.append((f_hz, rvec.array.copy(), ratio))
+        rt: Optional[float] = None
+        rb: Optional[float] = None
+        if work is not None and (M_top is not None or M_back is not None):
+            rt, rb = _plate_modal_energy_ratios(rvec, M, M_top, M_back, work)
+        out.append((f_hz, rvec.array.copy(), rt, rb))
 
     eps.destroy()
     return nconv, out
@@ -513,10 +526,18 @@ def _solve_coupled_evp(
     diag_shift = float(config.get("solver", {}).get("diag_shift", 1.0e3))
     # Global mixed-space regularization so every DOF gets a diagonal anchor.
     reg_u = diag_shift * ufl.dot(u, v) * full_dx
-    reg_p = diag_shift * p * q * full_dx
+    # Pressure regularization only on interior air (tag 10); avoids smearing acoustic
+    # stiffness/mass penalty into wood cells outside the cavity.
+    reg_p = diag_shift * p * q * xdmf_dx(AIR_VOLUME_TAG)
 
     a_form = a_uu + a_pp + a_up + reg_u + reg_p
     m_form = m_uu + m_pp + m_pu
+
+    # Per-facet-group shell mass forms for plate-specific sifter (Top tag 1, Body tag 3).
+    m_uu_top_plate = (rho_eff * thickness) * ufl.dot(u, v) * xdmf_ds(WOOD_SURFACE_TAGS[0])
+    m_uu_back_shell = (rho_eff * thickness) * ufl.dot(u, v) * xdmf_ds(WOOD_SURFACE_TAGS[1])
+    has_top_plate_facets = wood_tag_top > 0
+    has_back_shell_facets = wood_tag_shell > 0
 
     # Lumped masses consistent with m_uu (surface shell) and air volume (tag 10), before EVP solve.
     _wood_mass_note = (
@@ -735,16 +756,21 @@ def _solve_coupled_evp(
 
     solver_cfg = config.get("solver", {})
     use_sifter = _solver_bool(solver_cfg, "adaptive_mode_sifter", default=True)
-    M_wood: Optional[PETSc.Mat] = None
+    M_top: Optional[PETSc.Mat] = None
+    M_back: Optional[PETSc.Mat] = None
     if solve_evp and use_sifter:
-        M_wood = assemble_matrix(fem.form(m_uu), bcs=bcs)
-        M_wood.assemble()
+        if has_top_plate_facets:
+            M_top = assemble_matrix(fem.form(m_uu_top_plate), bcs=bcs)
+            M_top.assemble()
+        if has_back_shell_facets:
+            M_back = assemble_matrix(fem.form(m_uu_back_shell), bcs=bcs)
+            M_back.assemble()
 
     if not solve_evp:
         return msh, W, A, M
 
     # Release form objects before eigensolve; matrices are already assembled.
-    del a_form, m_form, a_uu, a_pp, a_up, m_uu, m_pp, m_pu, reg_u, reg_p
+    del a_form, m_form, a_uu, a_pp, a_up, m_uu, m_pp, m_pu, m_uu_top_plate, m_uu_back_shell, reg_u, reg_p
     gc.collect()
 
     _emit("Step 3/5: Solving generalized EVP with SLEPc...", status_callback=status_callback)
@@ -763,13 +789,24 @@ def _solve_coupled_evp(
     max_valid_hz = float(solver_cfg.get("max_valid_mode_hz", 1000.0))
     work = M.createVecRight()
 
-    if use_sifter and M_wood is not None:
+    if use_sifter and (M_top is not None or M_back is not None):
         quota = int(solver_cfg.get("sifter_quota", 100))
         batch = int(solver_cfg.get("sifter_batch_modes", 50))
         f_center = float(solver_cfg.get("sifter_start_hz", 100.0))
         f_cap = float(solver_cfg.get("sifter_max_hz", 1000.0))
         df_s = float(solver_cfg.get("sifter_step_hz", 10.0))
-        ratio_floor = float(solver_cfg.get("sifter_wood_energy_ratio", 0.02))
+        th_top = float(
+            solver_cfg.get(
+                "sifter_top_plate_energy_ratio",
+                solver_cfg.get("sifter_plate_energy_ratio_floor", 0.0005),
+            )
+        )
+        th_back = float(
+            solver_cfg.get(
+                "sifter_back_plate_energy_ratio",
+                solver_cfg.get("sifter_plate_energy_ratio_floor", 0.0005),
+            )
+        )
         dup_hz = float(solver_cfg.get("sifter_dup_hz", 0.25))
 
         saved_freqs: List[float] = []
@@ -779,8 +816,9 @@ def _solve_coupled_evp(
             return any(abs(freq - fs) < dup_hz for fs in saved_freqs)
 
         _emit(
-            f"[sifter] adaptive ROM mode sifter: quota={quota}, batch={batch}, "
-            f"wood_mass_ratio>{ratio_floor}, sweep {f_center:.0f}–{f_cap:.0f} Hz step {df_s:.0f} Hz.",
+            f"[sifter] plate-specific sifter: quota={quota}, batch={batch}, "
+            f"tag1>{th_top:g} or tag3>{th_back:g} (energy / |phi^T M phi|), "
+            f"sweep {f_center:.0f}–{f_cap:.0f} Hz step {df_s:.0f} Hz.",
             status_callback=status_callback,
         )
 
@@ -793,24 +831,28 @@ def _solve_coupled_evp(
                 batch,
                 diag_shift,
                 status_callback,
-                M_wood=M_wood,
+                M_top=M_top,
+                M_back=M_back,
                 work=work,
             )
-            batch_ratios = [
-                float(r)
-                for _f, _v, r in rows
-                if r is not None and np.isfinite(r)
-            ]
-            top5 = sorted(batch_ratios, reverse=True)[:5]
-            top_str = ", ".join(f"{x:.6f}" for x in top5) if top5 else ""
+            scored: List[Tuple[float, float, float]] = []
+            for _f, _v, rt, rb in rows:
+                if rt is None or rb is None:
+                    continue
+                if not (np.isfinite(rt) and np.isfinite(rb)):
+                    continue
+                scored.append((max(rt, rb), float(rt), float(rb)))
+            scored.sort(key=lambda t: -t[0])
+            top5 = scored[:5]
+            top_str = ", ".join(f"(tag1={a:.6f},tag3={b:.6f})" for _, a, b in top5) if top5 else ""
             print(f"[DIAG] Batch {f_center:.1f}Hz - Top Ratios: [{top_str}]")
             sys.stdout.flush()
 
             added = 0
-            for f_hz, vec, ratio in rows:
-                if ratio is None:
+            for f_hz, vec, rt, rb in rows:
+                if rt is None or rb is None:
                     continue
-                if ratio <= ratio_floor:
+                if not (rt > th_top or rb > th_back):
                     continue
                 if not (min_valid_hz <= f_hz <= max_valid_hz):
                     continue
@@ -831,19 +873,26 @@ def _solve_coupled_evp(
             f_center += df_s
 
         if not saved_freqs:
-            M_wood.destroy()
+            if M_top is not None:
+                M_top.destroy()
+            if M_back is not None:
+                M_back.destroy()
             raise RuntimeError(
-                "Adaptive mode sifter found no modes with wood_mass/total_mass > "
-                f"{ratio_floor} in [{min_valid_hz:.1f}, {max_valid_hz:.1f}] Hz. "
-                "Try lowering sifter_wood_energy_ratio or widening the frequency band."
+                "Adaptive plate sifter found no modes with "
+                f"(tag1_energy/|total| > {th_top:g} OR tag3_energy/|total| > {th_back:g}) "
+                f"in [{min_valid_hz:.1f}, {max_valid_hz:.1f}] Hz. "
+                "Try lowering sifter_*_plate_energy_ratio or widening the frequency band."
             )
 
         order = np.argsort(np.array(saved_freqs))
         freqs_hz = [saved_freqs[int(i)] for i in order]
         vectors = [saved_vecs[int(i)] for i in order]
         eigvecs = np.stack(vectors, axis=1)
-        M_wood.destroy()
-        M_wood = None
+        if M_top is not None:
+            M_top.destroy()
+        if M_back is not None:
+            M_back.destroy()
+        M_top = M_back = None
 
         print(
             f"[diag] Adaptive sifter: {len(freqs_hz)} significant modes "
@@ -851,6 +900,13 @@ def _solve_coupled_evp(
         )
         sys.stdout.flush()
     else:
+        if use_sifter:
+            _emit(
+                "[sifter][warn] adaptive sifter is on but no facet-tagged shell mass matrices "
+                "(Top tag 1 / Body tag 3); using legacy single-shift EVP.",
+                status_callback=status_callback,
+                level="warning",
+            )
         shift_target_hz = float(solver_cfg.get("shift_invert_target_hz", 150.0))
         batch_legacy = int(solver_cfg.get("eigenpair_batch_size", 100))
         nconv, rows = _slepc_shift_invert_batch(
@@ -861,7 +917,8 @@ def _solve_coupled_evp(
             batch_legacy,
             diag_shift,
             status_callback,
-            M_wood=None,
+            M_top=None,
+            M_back=None,
             work=None,
         )
         if nconv <= 0:
@@ -869,7 +926,7 @@ def _solve_coupled_evp(
 
         freqs_hz = []
         vectors = []
-        for f_hz, vec, _ratio in rows:
+        for f_hz, vec, _rt, _rb in rows:
             freqs_hz.append(f_hz)
             vectors.append(vec)
 
