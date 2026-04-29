@@ -46,17 +46,17 @@ def create_guitar_mesh():
     else:
         L, W, D, t, hr, shape_type = 0.48, 0.37, 0.1, 0.003, 0.04, 'Classical'
 
-    # --- Locked mesh target: 12mm global with local wood refinement ---
+    # --- Hybrid mesh target: coarse air, refined wood ---
     if is_preview:
         mesh_size = 0.030
         mesh_size_min = mesh_size
         mesh_size_max = mesh_size
     else:
-        mesh_size = 0.012
-        mesh_size_min = 0.001
-        mesh_size_max = 0.012
+        mesh_size = 0.020
+        mesh_size_min = 0.020
+        mesh_size_max = 0.020
     
-    print("DEBUG: Forcing Mesh Size to 0.012m (12mm global).")
+    print("DEBUG: Forcing Triple-Tier Mesh: 0.0015m wood, 0.008m transition, 0.020m far field.")
     print(f"Building geometry with Thickness: {t*1000:.1f}mm, Mesh Size: {mesh_size*1000:.2f}mm")
     print(f"[diag] preview_mode={is_preview}, FEM_ALLOW_PREVIEW={os.environ.get('FEM_ALLOW_PREVIEW', '0')}")
     
@@ -384,7 +384,11 @@ def create_guitar_mesh():
     gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
     gmsh.option.setNumber("Mesh.Algorithm", 6)  # Frontal-Delaunay
 
-    # Local refinement on wood plate/shell surfaces via Distance+Threshold fields.
+    # Triple-tier refinement strategy:
+    #   Level 1 (Fine): 0.0015 m on wood surfaces/volumes
+    #   Level 2 (Transition): 0.0015 -> 0.008 m within 0.02 m from wood
+    #   Level 3 (Coarse): 0.020 m in far-field air
+    # Combined with Min(...) to avoid conflicting constraints.
     if not is_preview:
         wood_surface_tags = top_plate_surfs + body_surfs
         if not top_plate_surfs:
@@ -395,26 +399,44 @@ def create_guitar_mesh():
 
         if wood_surface_tags:
             print(f"[DEBUG] All Wood Surfaces to refine: {wood_surface_tags}")
-            # Field 1: distance from all wood surfaces.
+            # Field 1: distance from wood surfaces.
             dist_field = gmsh.model.mesh.field.add("Distance")
             gmsh.model.mesh.field.setNumbers(dist_field, "FacesList", wood_surface_tags)
 
-            # Field 2: threshold over distance field.
-            thresh_field = gmsh.model.mesh.field.add("Threshold")
-            gmsh.model.mesh.field.setNumber(thresh_field, "InField", dist_field)
-            gmsh.model.mesh.field.setNumber(thresh_field, "SizeMin", 0.0020)
-            gmsh.model.mesh.field.setNumber(thresh_field, "SizeMax", 0.012)
-            gmsh.model.mesh.field.setNumber(thresh_field, "DistMin", 0.001)
-            gmsh.model.mesh.field.setNumber(thresh_field, "DistMax", 0.015)
+            # Level 1 (Fine): constant fine size, restricted to wood entities.
+            fine_const = gmsh.model.mesh.field.add("MathEval")
+            gmsh.model.mesh.field.setString(fine_const, "F", "0.0015")
+            fine_restrict = gmsh.model.mesh.field.add("Restrict")
+            gmsh.model.mesh.field.setNumber(fine_restrict, "InField", fine_const)
+            gmsh.model.mesh.field.setNumbers(fine_restrict, "FacesList", wood_surface_tags)
+            gmsh.model.mesh.field.setNumbers(fine_restrict, "VolumesList", wood_vols)
+
+            # Level 2 (Transition): increase away from wood up to 8 mm at 2 cm.
+            transition_field = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(transition_field, "InField", dist_field)
+            gmsh.model.mesh.field.setNumber(transition_field, "SizeMin", 0.0015)
+            gmsh.model.mesh.field.setNumber(transition_field, "SizeMax", 0.0080)
+            gmsh.model.mesh.field.setNumber(transition_field, "DistMin", 0.0)
+            gmsh.model.mesh.field.setNumber(transition_field, "DistMax", 0.020)
+
+            # Level 3 (Coarse): far-field target in air.
+            coarse_field = gmsh.model.mesh.field.add("MathEval")
+            gmsh.model.mesh.field.setString(coarse_field, "F", "0.020")
+
+            # Combine all constraints using Min to prevent overlap conflicts.
+            min_field = gmsh.model.mesh.field.add("Min")
+            gmsh.model.mesh.field.setNumbers(
+                min_field, "FieldsList", [coarse_field, transition_field, fine_restrict]
+            )
             print(
-                f"[diag] Distance+Threshold background field enabled on wood surfaces "
-                f"(n_surfaces={len(wood_surface_tags)})."
+                "[diag] Triple-tier background field enabled "
+                f"(fine=1.5mm, transition<=8mm@2cm, coarse=20mm; n_surfaces={len(wood_surface_tags)})."
             )
             # Keep this as the very last field instruction before mesh generation.
             try:
-                gmsh.model.mesh.field.setAsBackgroundMesh(thresh_field)
+                gmsh.model.mesh.field.setAsBackgroundMesh(min_field)
             except Exception as exc:
-                raise RuntimeError(f"Failed to set Threshold field as background mesh: {exc}")
+                raise RuntimeError(f"Failed to set triple-tier Min background field: {exc}")
 
     try:
         print(

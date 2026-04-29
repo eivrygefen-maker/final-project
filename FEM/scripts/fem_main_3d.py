@@ -666,6 +666,8 @@ def _slepc_shift_invert_batch(
     opts["eps_monitor"] = None
     opts["eps_converged_reason"] = None
     eps.setFromOptions()
+    print(f"[HEARTBEAT] Rank {MPI.COMM_WORLD.rank} reached EPS Solve")
+    sys.stdout.flush()
     _debug_rank("Entering EPS Solve")
     eps.solve()
 
@@ -1027,6 +1029,8 @@ def _solve_structural_only_evp(
     opts["eps_monitor"] = None
     opts["eps_converged_reason"] = None
     eps.setFromOptions()
+    print(f"[HEARTBEAT] Rank {MPI.COMM_WORLD.rank} reached EPS Solve")
+    sys.stdout.flush()
     _debug_rank("Entering EPS Solve")
     eps.solve()
     _phase_sync(2107, "structural-only after eps.solve", status_callback=status_callback)
