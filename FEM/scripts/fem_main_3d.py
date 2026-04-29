@@ -608,9 +608,10 @@ def _slepc_shift_invert_batch(
         except Exception:
             pass
 
-    # MUMPS workspace: ICNTL(14) scales estimated workspace; ICNTL(23) caps max working memory (MB).
+    # MUMPS: ICNTL(14) inflates estimated workspace (%); ICNTL(23)=0 means no MB cap (dynamic OS alloc).
+    # ICNTL(22)=1 keeps OOC as a safety valve. Prefer a single MPI process for this LU path (see warning below).
     mumps_icntl_14 = int(solver_cfg.get("mat_mumps_icntl_14", 2000))
-    mumps_icntl_23 = int(solver_cfg.get("mat_mumps_icntl_23", 20000))
+    mumps_icntl_23 = int(solver_cfg.get("mat_mumps_icntl_23", 0))
     mumps_icntl_24 = int(solver_cfg.get("mat_mumps_icntl_24", 1))
     mumps_icntl_22 = int(solver_cfg.get("mat_mumps_icntl_22", 1))
     mumps_icntl_6 = int(solver_cfg.get("mat_mumps_icntl_6", 7))
@@ -624,6 +625,19 @@ def _slepc_shift_invert_batch(
     petsc_opts["mat_mumps_icntl_6"] = mumps_icntl_6
     petsc_opts["mat_mumps_icntl_12"] = mumps_icntl_12
     petsc_opts["mat_mumps_icntl_4"] = mumps_icntl_4
+    if (
+        MPI.COMM_WORLD.size > 1
+        and not use_iterative
+        and str(st_pc_type).lower() == "lu"
+        and MPI.COMM_WORLD.rank == ROOT_RANK
+    ):
+        _emit(
+            "[solver][warn] MUMPS LU + shift-invert is most stable with a single MPI process "
+            f"(run e.g. `mpiexec -n 1 python ...` or plain `python3 ...`); current MPI_COMM_WORLD.size="
+            f"{MPI.COMM_WORLD.size}.",
+            status_callback=status_callback,
+            level="warning",
+        )
     mg_levels_ksp_type = str(solver_cfg.get("mg_levels_ksp_type", "chebyshev"))
     mg_levels_pc_type = str(solver_cfg.get("mg_levels_pc_type", "sor"))
     petsc_opts["mg_levels_ksp_type"] = mg_levels_ksp_type
@@ -1008,7 +1022,9 @@ def _solve_structural_only_evp(
                 petsc_opts["mat_mumps_icntl_6"] = int(config.get("solver", {}).get("mat_mumps_icntl_6", 7))
                 petsc_opts["mat_mumps_icntl_12"] = int(config.get("solver", {}).get("mat_mumps_icntl_12", 1))
                 petsc_opts["mat_mumps_icntl_14"] = int(config.get("solver", {}).get("mat_mumps_icntl_14", 2000))
-                petsc_opts["mat_mumps_icntl_23"] = int(config.get("solver", {}).get("mat_mumps_icntl_23", 20000))
+                petsc_opts["mat_mumps_icntl_23"] = int(config.get("solver", {}).get("mat_mumps_icntl_23", 0))
+                petsc_opts["mat_mumps_icntl_22"] = int(config.get("solver", {}).get("mat_mumps_icntl_22", 1))
+                petsc_opts["mat_mumps_icntl_24"] = int(config.get("solver", {}).get("mat_mumps_icntl_24", 1))
                 petsc_opts["mat_mumps_icntl_4"] = int(
                     config.get("solver", {}).get("mat_mumps_icntl_4_root", 2 if MPI.COMM_WORLD.rank == 0 else 0)
                 )
