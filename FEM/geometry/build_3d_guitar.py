@@ -239,78 +239,46 @@ def create_guitar_mesh():
     if len(soundhole_surfs) == 0:
         raise RuntimeError("No soundhole opening surfaces found on air boundary.")
 
-    # Build adjacency graph from shared curves among interface surfaces.
-    iface_set = set(interface_surfs)
-    surf_to_curves = {
-        s: get_boundary_tags([(2, s)], 1)
-        for s in interface_surfs
-    }
+    # Robust Z-based surface classification (fragmentation-safe):
+    #   Top plate surfaces  -> highest interface surfaces in Z
+    #   Body shell surfaces -> remaining interface surfaces (middle/lower)
+    if not interface_surfs:
+        raise RuntimeError("No wood-air interface surfaces found to classify.")
+    z_values = {s: get_surface_center_z(s) for s in interface_surfs}
+    z_max = max(z_values.values())
+    z_min = min(z_values.values())
+    z_span = max(1.0e-9, z_max - z_min)
+    z_tol = max(0.5 * t, 0.08 * z_span)
 
-    curve_to_surfs = {}
-    for s, curves in surf_to_curves.items():
-        for c in curves:
-            curve_to_surfs.setdefault(c, set()).add(s)
-
-    neighbors = {s: set() for s in interface_surfs}
-    for curve, surfs in curve_to_surfs.items():
-        if len(surfs) < 2:
-            continue
-        surfs_list = list(surfs)
-        for i in range(len(surfs_list)):
-            for j in range(i + 1, len(surfs_list)):
-                a, b = surfs_list[i], surfs_list[j]
-                neighbors[a].add(b)
-                neighbors[b].add(a)
-
-    soundhole_curves = set()
-    for shs in soundhole_surfs:
-        soundhole_curves.update(get_boundary_tags([(2, shs)], 1))
-    top_seeds = [s for s, curves in surf_to_curves.items() if curves.intersection(soundhole_curves)]
-    if not top_seeds:
-        raise RuntimeError("Could not identify Top_Plate surfaces from soundhole topology")
-
-    # Flood-fill: all interface surfaces connected to soundhole belong to Top_Plate.
     top_plate_set = set()
-    stack = list(top_seeds)
-    while stack:
-        cur = stack.pop()
-        if cur in top_plate_set:
-            continue
-        top_plate_set.add(cur)
-        stack.extend(neighbors[cur] - top_plate_set)
+    for s in interface_surfs:
+        zc = z_values[s]
+        nz_abs = get_surface_normal_z(s)
+        # Prefer elevated and somewhat horizontal surfaces as top plate.
+        if zc >= (z_max - z_tol) and (nz_abs is None or nz_abs >= 0.30):
+            top_plate_set.add(s)
 
+    # Ensure at least one top surface exists.
+    if not top_plate_set:
+        top_plate_set.add(max(interface_surfs, key=lambda s: z_values[s]))
+
+    iface_set = set(interface_surfs)
     top_plate_surfs = sorted(list(top_plate_set))
     body_surfs = sorted(list(iface_set - top_plate_set))
 
-    # Fallback robustification:
-    # In some fragmented topologies, flood-fill can accidentally absorb all interface surfaces.
-    # If so, split by surface orientation (normal ~ Z) and top elevation; keep topology as primary.
+    # If everything got classified as top, keep only the highest surface(s) as top.
     if not body_surfs:
-        z_values = {s: get_surface_center_z(s) for s in interface_surfs}
-        z_top = max(z_values.values()) if z_values else (D / 2.0)
-        z_tol = max(1e-4, 0.35 * t)
-
-        fallback_top = set()
-        for s in interface_surfs:
-            nz_abs = get_surface_normal_z(s)
-            zc = z_values[s]
-
-            # Top candidates: near top elevation and mostly horizontal.
-            # If normal is unavailable, fallback to elevation-only.
-            if (nz_abs is not None and nz_abs >= 0.6 and zc >= (z_top - z_tol)) or \
-               (nz_abs is None and zc >= (z_top - z_tol)):
-                fallback_top.add(s)
-
-        # Guarantee at least one top surface if heuristics were too strict.
-        if not fallback_top and interface_surfs:
-            highest = max(interface_surfs, key=lambda s: z_values[s])
-            fallback_top.add(highest)
-
-        top_plate_surfs = sorted(list(fallback_top))
-        body_surfs = sorted(list(iface_set - fallback_top))
+        z_top = max(z_values[s] for s in top_plate_surfs)
+        top_plate_surfs = sorted([s for s in top_plate_surfs if z_values[s] >= z_top - 1.0e-9])
+        body_surfs = sorted(list(iface_set - set(top_plate_surfs)))
 
     if not body_surfs:
-        raise RuntimeError("Body_Shell classification failed after topology+normal fallback")
+        # Last-resort fallback: choose highest as top, others as body.
+        highest = max(interface_surfs, key=lambda s: z_values[s])
+        top_plate_surfs = [highest]
+        body_surfs = sorted([s for s in interface_surfs if s != highest])
+    if not body_surfs:
+        raise RuntimeError("Body_Shell classification failed in Z-based fallback.")
 
     # Define a compact support region (wood_fix) near neck-side body area.
     # This provides a deterministic structural clamp for FEM boundary conditions.
