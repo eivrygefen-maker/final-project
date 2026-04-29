@@ -2,6 +2,7 @@ import gmsh
 import sys
 import json
 import os
+import math
 from pathlib import Path
 
 def create_guitar_mesh():
@@ -43,8 +44,10 @@ def create_guitar_mesh():
         t = p['thickness']
         hr = p['hole_radius']
         shape_type = p.get('shape_type', 'Classical')
+        hole_y = float(p.get("soundhole_y", 0.0))
     else:
         L, W, D, t, hr, shape_type = 0.48, 0.37, 0.1, 0.003, 0.04, 'Classical'
+        hole_y = 0.0
 
     # --- Hybrid mesh target: coarse air, refined wood ---
     if is_preview:
@@ -153,10 +156,10 @@ def create_guitar_mesh():
         occ.translate([v for v in v_in if v[0]==3], 0, 0, -D/2 + t)
         vol_in_id = [v[1] for v in v_in if v[0] == 3][0]
 
-    # Create soundhole cylinder.
+    # Create soundhole cylinder (axis +z; center (hole_x, hole_y) from geometry config).
     hole_x = shy - L/2 if "Box" not in shape_type else 0
     z_inner_top = (D / 2) - t
-    hole_cyl = occ.addCylinder(hole_x, 0, z_inner_top, 0, 0, 2 * t, hr)
+    hole_cyl = occ.addCylinder(hole_x, hole_y, z_inner_top, 0, 0, 2 * t, hr)
 
     # 1) Air cavity: inner volume minus soundhole cylinder.
     air_cut = occ.cut([(3, vol_in_id)], [(3, hole_cyl)], removeObject=True, removeTool=False)
@@ -305,25 +308,65 @@ def create_guitar_mesh():
         body_surfs = sorted(list(wood_boundary_surfs))
         print("[diag][warn] body_surfs fallback: using all wood boundary surfaces.")
 
-    # Soundhole boundaries: prefer geometry-based detection around the hole center
-    # on the top opening to avoid empty tags after boolean/fragment operations.
-    soundhole_surfs = []
+    def _xy_dist_point_to_rect(px, py, xmin, xmax, ymin, ymax):
+        if px < xmin:
+            qx = xmin
+        elif px > xmax:
+            qx = xmax
+        else:
+            qx = px
+        if py < ymin:
+            qy = ymin
+        elif py > ymax:
+            qy = ymax
+        else:
+            qy = py
+        return math.hypot(px - qx, py - qy)
+
+    def _select_soundhole_surfaces(shell_tags, z_plane, z_tol, hx, hy, hole_r, max_span_factor=6.0):
+        """
+        Surfaces whose bbox straddles z=z_plane and whose xy projection lies inside the
+        hole disk (center (hx, hy), radius hole_r). Excludes huge faces (e.g. whole top).
+        """
+        scored = []
+        for s in sorted(shell_tags):
+            xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(2, int(s))
+            if zmax < z_plane - z_tol or zmin > z_plane + z_tol:
+                continue
+            dxy = _xy_dist_point_to_rect(hx, hy, xmin, xmax, ymin, ymax)
+            if dxy > hole_r * 1.08:
+                continue
+            span_xy = max(xmax - xmin, ymax - ymin)
+            if span_xy > max_span_factor * hole_r:
+                continue
+            nz = get_surface_normal_z(s)
+            nz_abs = float(nz) if nz is not None else 0.0
+            scored.append((int(s), nz_abs))
+        scored.sort(key=lambda row: -row[1])
+        return [row[0] for row in scored]
+
+    # Soundhole: z = D/2 plane + hole disk (union of wood/air exterior shells).
     z_top_outer = D / 2.0
-    z_tol = max(5.0e-4, 0.25 * t)
-    r_pick = max(1.0e-6, 0.65 * hr)
-    for s in sorted(list(air_boundary_surfs)):
-        cx, cy, cz = get_surface_center(s)
-        rxy = ((cx - hole_x) ** 2 + (cy - 0.0) ** 2) ** 0.5
-        if abs(cz - z_top_outer) <= z_tol and rxy <= r_pick:
-            soundhole_surfs.append(int(s))
-    soundhole_surfs = sorted(list(set(soundhole_surfs)))
+    z_tol = max(2.0e-4, 2.0 * t, 0.05 * hr)
+    all_shell_surfs = sorted(set(wood_boundary_surfs) | set(air_boundary_surfs))
+    soundhole_surfs = _select_soundhole_surfaces(
+        all_shell_surfs, z_top_outer, z_tol, hole_x, hole_y, hr
+    )
     if not soundhole_surfs:
-        # Fallback 1: exposed air boundaries not shared with wood.
+        soundhole_surfs = _select_soundhole_surfaces(
+            sorted(air_boundary_surfs), z_top_outer, z_tol, hole_x, hole_y, hr
+        )
+    if not soundhole_surfs:
         soundhole_surfs = sorted(list(set(air_boundary_surfs) - set(wood_boundary_surfs)))
     if not soundhole_surfs:
-        # Fallback 2: use top boundary surfaces so tagging remains valid for downstream code.
         soundhole_surfs = list(top_plate_surfs)
         print("[diag][warn] soundhole_surfs fallback: using top_plate_surfs.")
+
+    # Do not double-tag hole annulus as Top_Plate / Body_Shell.
+    _sh_set = set(soundhole_surfs)
+    if _sh_set:
+        top_plate_surfs = [s for s in top_plate_surfs if s not in _sh_set]
+        body_surfs = [s for s in body_surfs if s not in _sh_set]
 
     # Define a compact support region (wood_fix) near neck-side body area.
     # This provides a deterministic structural clamp for FEM boundary conditions.
@@ -346,7 +389,14 @@ def create_guitar_mesh():
     if not body_surfs and wood_boundary_surfs:
         body_surfs = sorted(list(wood_boundary_surfs))
     if not soundhole_surfs:
-        soundhole_surfs = list(top_plate_surfs)
+        soundhole_surfs = _select_soundhole_surfaces(
+            all_shell_surfs, z_top_outer, z_tol * 2.5, hole_x, hole_y, hr * 1.05, max_span_factor=12.0
+        )
+    if not soundhole_surfs:
+        raise RuntimeError(
+            "Soundhole tagging: 0 surfaces matched z=D/2 disk selector. "
+            "Check geometry (hole_radius, soundhole_y, depth D) and boolean/fragment output."
+        )
 
     pg_top = gmsh.model.addPhysicalGroup(2, top_plate_surfs, tag=1)
     gmsh.model.setPhysicalName(2, pg_top, "Top_Plate")
@@ -382,10 +432,10 @@ def create_guitar_mesh():
     v2 = gmsh.model.getEntitiesForPhysicalGroup(3, 2) if back_vols else []
     v3 = gmsh.model.getEntitiesForPhysicalGroup(3, 3) if rib_vols else []
     print(f"[diag] Physical Group 1 (Top_Plate_Volume) entities: {list(v1)}")
-    print(f"[diag] Physical Group 2 (Back_Plate_Volume) entities: {list(v2)}")
+    print(f"[diag] Physical Volume 2 (Back_Plate_Volume) entities: {list(v2)}")
     print(f"[diag] Physical Group 3 (Ribs_Sides_Volume) entities: {list(v3)}")
     sh2 = gmsh.model.getEntitiesForPhysicalGroup(2, 2)
-    print(f"[diag] Physical Group 2 (Soundhole) surface entities: {list(sh2)}")
+    print(f"[diag] Physical Surface Group 2 (Soundhole) CAD surface tags: {list(sh2)}")
     if len(air_group_entities) == 0:
         raise RuntimeError("Tag 10 was created but has no 3D volume entities.")
     if len(sh2) == 0:
@@ -485,6 +535,20 @@ def create_guitar_mesh():
         )
         gmsh.model.mesh.generate(3)
         gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
+        # Count mesh facets (2D elements) on Soundhole physical surfaces for downstream BC sanity.
+        n_soundhole_mesh_facets = 0
+        try:
+            for ent in gmsh.model.getEntitiesForPhysicalGroup(2, 2):
+                if isinstance(ent, (list, tuple)) and len(ent) >= 2:
+                    dim_e, tag_e = int(ent[0]), int(ent[1])
+                else:
+                    dim_e, tag_e = 2, int(ent)
+                _types, elem_tags, _nodes = gmsh.model.mesh.getElements(dim_e, tag_e)
+                for arr in elem_tags:
+                    n_soundhole_mesh_facets += int(len(arr))
+        except Exception as _exc:
+            print(f"[diag][warn] Soundhole mesh facet count failed: {_exc}")
+        print(f"PRINT: Found {n_soundhole_mesh_facets} facets for Soundhole")
         gmsh.write(str(out_file))
         print(f"SUCCESS: Optimized mesh saved to {out_file}")
     except Exception as e:
