@@ -82,7 +82,11 @@ def _phase_sync(phase_id: int, label: str, status_callback=None) -> None:
     checksum = comm.allreduce(int(phase_id), op=MPI.SUM)
     expected = int(phase_id) * int(comm.size)
     if comm.rank == 0:
-        _emit(f"[PHASE] {phase_id:04d} {label} checksum={checksum}/{expected}", status_callback=status_callback)
+        msg = f"[PHASE] {phase_id:04d} {label} checksum={checksum}/{expected}"
+        print(msg)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        _emit(msg, status_callback=status_callback)
     if checksum != expected:
         raise RuntimeError(f"Phase checksum mismatch at {phase_id} ({label}): {checksum} != {expected}")
 
@@ -682,14 +686,17 @@ def _solve_structural_only_evp(
     sys.stdout.flush()
     if u_dofs.size == 0:
         raise RuntimeError("Structural-only diagnosis failed: u_dofs is empty after robust localization.")
+    _phase_sync(21001, "2100.1 after BC dofs check", status_callback=status_callback)
 
     # Deactivate non-structural (air) displacement DOFs WITHOUT building a huge DirichletBC.
     # We compute the complement DOF set, then add a tiny diagonal penalty on those DOFs
     # after assembling K/M (memory-safe compared to fem.dirichletbc(air_dofs)).
     structural_facets = np.unique(np.concatenate([facets_t1, facets_t2, facets_t3])).astype(np.int32)
     structural_dofs = np.array([], dtype=np.int32)
+    _phase_sync(21002, "2100.2 after structural facet set", status_callback=status_callback)
     if structural_facets.size > 0:
         structural_dofs = np.array(fem.locate_dofs_topological(V_u, fdim, structural_facets), dtype=np.int32)
+    _phase_sync(21003, "2100.3 after structural dof locate", status_callback=status_callback)
     n_u_local = int(V_u.dofmap.index_map.size_local * V_u.dofmap.index_map_bs)
     all_u_local = np.arange(n_u_local, dtype=np.int32)
     if structural_dofs.size > 0:
@@ -697,6 +704,7 @@ def _solve_structural_only_evp(
         air_dofs = np.setdiff1d(all_u_local, structural_dofs, assume_unique=False).astype(np.int32)
     else:
         air_dofs = all_u_local.copy()
+    _phase_sync(21004, "2100.4 after air dof partition", status_callback=status_callback)
 
     # Keep Dirichlet BCs small (wood_fix + minimal geometric anchors only).
     u_dofs_bc = u_dofs.copy()
@@ -706,8 +714,10 @@ def _solve_structural_only_evp(
         f"air_dofs={air_dofs.size}, bc_dofs={u_dofs_bc.size}"
     )
     sys.stdout.flush()
+    _phase_sync(21005, "2100.5 after dof partition print", status_callback=status_callback)
 
     bc_u = fem.dirichletbc(np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType), u_dofs_bc, V_u)
+    _phase_sync(21006, "2100.6 after dirichletbc creation", status_callback=status_callback)
 
     # Collective-safe JIT form compilation with explicit cache dir.
     _phase_sync(2101, "structural-only before form JIT", status_callback=status_callback)
