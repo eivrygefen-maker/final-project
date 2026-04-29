@@ -76,6 +76,17 @@ def _debug_petsc_comm(name: str, obj) -> None:
         _debug_rank(f"{name} comm unavailable")
 
 
+def _phase_sync(phase_id: int, label: str, status_callback=None) -> None:
+    """Collective phase checksum; hangs exactly where ranks diverge."""
+    comm = MPI.COMM_WORLD
+    checksum = comm.allreduce(int(phase_id), op=MPI.SUM)
+    expected = int(phase_id) * int(comm.size)
+    if comm.rank == 0:
+        _emit(f"[PHASE] {phase_id:04d} {label} checksum={checksum}/{expected}", status_callback=status_callback)
+    if checksum != expected:
+        raise RuntimeError(f"Phase checksum mismatch at {phase_id} ({label}): {checksum} != {expected}")
+
+
 def _sync_all_connectivity(msh: mesh.Mesh) -> None:
     """Build all topology connectivities collectively and synchronize with one collective reduction."""
     tdim = msh.topology.dim
@@ -144,14 +155,24 @@ def _generate_mesh_with_gmsh(status_callback=None) -> None:
     geom_script = Path(__file__).resolve().parents[1] / "geometry" / "build_3d_guitar.py"
     cmd = [sys.executable, str(geom_script), "-nopopup"]
     # In MPI runs, only rank 0 should invoke external gmsh process.
+    comm = MPI.COMM_WORLD
+    root_ok = 1
+    root_err = ""
     if MPI.COMM_WORLD.rank == 0:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
-            raise RuntimeError(
-                "Gmsh mesh generation failed.\n"
-                f"stdout:\n{proc.stdout}\n\nstderr:\n{proc.stderr}"
-            )
-    MPI.COMM_WORLD.barrier()
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    "Gmsh mesh generation failed.\n"
+                    f"stdout:\n{proc.stdout}\n\nstderr:\n{proc.stderr}"
+                )
+        except Exception as exc:
+            root_ok = 0
+            root_err = str(exc)
+    root_ok = comm.bcast(root_ok, root=0)
+    root_err = comm.bcast(root_err, root=0)
+    if int(root_ok) != 1:
+        raise RuntimeError(f"Rank0 mesh generation failure broadcast: {root_err}")
 
 
 def _convert_msh_to_xdmf_with_meshio(mesh_file: Path, status_callback=None):
@@ -227,15 +248,28 @@ def _load_mesh_with_fallback(mesh_file: Path, status_callback=None):
 
     rank = 0
     gdim = 3
+    comm = MPI.COMM_WORLD
 
     # model_to_mesh only processes the gmsh model on `rank`; other ranks can pass `None`.
     gmsh_model = gmsh.model if MPI.COMM_WORLD.rank == rank else None
+    root_ok = 1
+    root_err = ""
     if MPI.COMM_WORLD.rank == rank:
-        gmsh.initialize()
-        gmsh.open(str(mesh_file))
-        _emit("[mesh] gmsh file opened successfully on rank 0.", status_callback=status_callback)
+        try:
+            gmsh.initialize()
+            gmsh.open(str(mesh_file))
+            _emit("[mesh] gmsh file opened successfully on rank 0.", status_callback=status_callback)
+        except Exception as exc:
+            root_ok = 0
+            root_err = str(exc)
+    root_ok = comm.bcast(root_ok, root=0)
+    root_err = comm.bcast(root_err, root=0)
+    if int(root_ok) != 1:
+        raise RuntimeError(f"Rank0 gmsh open failure broadcast: {root_err}")
 
+    _phase_sync(1100, "before model_to_mesh", status_callback=status_callback)
     mesh_data = gmshio.model_to_mesh(gmsh_model, MPI.COMM_WORLD, rank, gdim=gdim)
+    _phase_sync(1101, "after model_to_mesh", status_callback=status_callback)
 
     if MPI.COMM_WORLD.rank == rank:
         gmsh.finalize()
@@ -246,6 +280,7 @@ def _load_mesh_with_fallback(mesh_file: Path, status_callback=None):
 
     # Ensure all topology connectivities (0..tdim) are built on all ranks synchronously.
     _sync_all_connectivity(msh)
+    _phase_sync(1102, "after connectivity sync", status_callback=status_callback)
     return msh, cell_tags, facet_tags
 
 
@@ -513,6 +548,7 @@ def _solve_structural_only_evp(
     status_callback=None,
 ) -> Tuple[mesh.Mesh, fem.FunctionSpace, List[float], np.ndarray, int, int]:
     """Structural-only diagnostic EVP (displacement field only, no acoustic coupling)."""
+    _phase_sync(2100, "structural-only enter", status_callback=status_callback)
     _emit("[diag] structural-only diagnosis enabled: solving u-field EVP only.", status_callback=status_callback)
     tdim = msh.topology.dim
     fdim = tdim - 1
@@ -673,6 +709,7 @@ def _solve_structural_only_evp(
 
     bc_u = fem.dirichletbc(np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType), u_dofs_bc, V_u)
 
+    _phase_sync(2101, "structural-only before matrix assembly", status_callback=status_callback)
     _debug_rank("Entering Matrix Assembly")
     K = assemble_matrix(fem.form(a_uu), bcs=[bc_u]); K.assemble()
     M = assemble_matrix(fem.form(m_uu), bcs=[bc_u]); M.assemble()
@@ -777,8 +814,10 @@ def _solve_structural_only_evp(
     except Exception as exc:
         _emit(f"[error] communicator audit failed before structural EPS solve: {exc}", status_callback=status_callback, level="error")
         raise
+    _phase_sync(2102, "structural-only before eps.solve", status_callback=status_callback)
     _debug_rank("Entering EPS Solve")
     eps.solve()
+    _phase_sync(2103, "structural-only after eps.solve", status_callback=status_callback)
     nconv = eps.getConverged()
     if nconv <= 0:
         raise RuntimeError("Structural-only diagnosis: no converged eigenpairs.")
@@ -836,6 +875,7 @@ def _solve_coupled_evp(
     status_callback=None,
     solve_evp: bool = True,
 ):
+    _phase_sync(2000, "coupled enter", status_callback=status_callback)
     _solver_early = config.get("solver", {})
     _ams = _solver_early.get("adaptive_mode_sifter", "<missing>")
     _sihz = _solver_early.get("shift_invert_target_hz", "<missing>")
@@ -847,6 +887,7 @@ def _solve_coupled_evp(
     sys.stdout.flush()
 
     msh, cell_tags, facet_tags = _load_mesh_and_tags(mesh_file, status_callback=status_callback)
+    _phase_sync(2001, "coupled after mesh load", status_callback=status_callback)
     if solve_evp and _solver_bool(config.get("solver", {}), "structural_only_diagnosis", default=False):
         return _solve_structural_only_evp(
             msh=msh,
@@ -1194,6 +1235,7 @@ def _solve_coupled_evp(
         )
         raise
 
+    _phase_sync(2002, "coupled before matrix assembly", status_callback=status_callback)
     _debug_rank("Entering Matrix Assembly")
     A = assemble_matrix(fem.form(a_form), bcs=bcs)
     A.assemble()
@@ -1272,6 +1314,7 @@ def _solve_coupled_evp(
         )
 
         while len(saved_freqs) < quota and f_center <= f_cap + 1e-9:
+            _phase_sync(2003, "coupled sifter before batch solve", status_callback=status_callback)
             nconv, rows = _slepc_shift_invert_batch(
                 A,
                 M,
@@ -1317,6 +1360,7 @@ def _solve_coupled_evp(
                 f"(total saved={len(saved_freqs)}/{quota}).",
                 status_callback=status_callback,
             )
+            _phase_sync(2004, "coupled sifter after batch solve", status_callback=status_callback)
             if len(saved_freqs) >= quota:
                 break
             f_center += df_s
@@ -1358,6 +1402,7 @@ def _solve_coupled_evp(
             )
         shift_target_hz = float(solver_cfg.get("shift_invert_target_hz", 150.0))
         batch_legacy = int(solver_cfg.get("eigenpair_batch_size", 100))
+        _phase_sync(2005, "coupled legacy before batch solve", status_callback=status_callback)
         nconv, rows = _slepc_shift_invert_batch(
             A,
             M,
@@ -1372,6 +1417,7 @@ def _solve_coupled_evp(
         )
         if nconv <= 0:
             raise RuntimeError("SLEPc did not converge any eigenpairs.")
+        _phase_sync(2006, "coupled legacy after batch solve", status_callback=status_callback)
 
         freqs_hz = []
         vectors = []
@@ -1428,13 +1474,16 @@ def assemble_coupled_operators_for_rom(config: Dict, status_callback=None):
 
 
 def run_fom_for_rom(config: Dict, num_modes: int = 15, status_callback=None):
+    _phase_sync(3000, "run_fom_for_rom enter", status_callback=status_callback)
     mesh_file = Path(config["solver"]["mesh_file"])
     if MPI.COMM_WORLD.rank == 0 and not mesh_file.exists():
         _emit(f"[mesh] missing .msh, generating new mesh: {mesh_file}", status_callback=status_callback)
     _generate_mesh_with_gmsh(status_callback=status_callback)
+    _phase_sync(3001, "run_fom_for_rom after mesh generation", status_callback=status_callback)
     MPI.COMM_WORLD.barrier()
     if not mesh_file.exists():
         raise FileNotFoundError(f"Fresh mesh generation did not create expected file: {mesh_file}")
+    _phase_sync(3002, "run_fom_for_rom before coupled solve", status_callback=status_callback)
     msh, W, freqs, eigvecs, n_u, n_p = _solve_coupled_evp(
         mesh_file=mesh_file,
         config=config,
