@@ -666,10 +666,14 @@ def _solve_structural_only_evp(
     eps.setOperators(A, M)
     eps.setProblemType(SLEPc.EPS.ProblemType.GHEP)
     eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
-    eps.setWhichEigenpairs(SLEPc.EPS.Which.SMALLEST_REAL)
+    shift_hz = float(config.get("solver", {}).get("structural_shift_target_hz", 300.0))
+    target_lambda = (2.0 * math.pi * shift_hz) ** 2
+    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
+    eps.setTarget(target_lambda)
+    st = eps.getST()
+    st.setType(SLEPc.ST.Type.SINVERT)
     # Robustness: prefer direct LU in spectral transformation for tiny pivots.
     try:
-        st = eps.getST()
         ksp = st.getKSP()
         ksp.setType("preonly")
         pc = ksp.getPC()
@@ -695,16 +699,22 @@ def _solve_structural_only_evp(
         raise RuntimeError("Structural-only diagnosis: no converged eigenpairs.")
 
     rvec = A.createVecRight()
+    all_eigs: List[float] = []
     freqs_hz: List[float] = []
     vectors: List[np.ndarray] = []
     for i in range(min(nev, nconv)):
         eig = eps.getEigenpair(i, rvec)
         eig_r = float(np.real(eig))
+        all_eigs.append(eig_r)
         if eig_r <= 1.0e-14:
             continue
         freqs_hz.append(math.sqrt(eig_r) / (2.0 * math.pi))
         vectors.append(rvec.array.copy())
     eps.destroy()
+
+    print(f"[DIAG] Structural-only shift target: {shift_hz:.1f} Hz (lambda={target_lambda:.6e})")
+    print(f"[DIAG] Raw eigenvalues: {[float(x) for x in all_eigs[:10]]}")
+    sys.stdout.flush()
 
     if not freqs_hz:
         raise RuntimeError("Structural-only diagnosis: no positive eigenvalues.")
@@ -743,7 +753,7 @@ def _solve_coupled_evp(
             msh=msh,
             facet_tags=facet_tags,
             config=config,
-            num_modes=max(1, int(config.get("solver", {}).get("structural_only_num_modes", 10))),
+            num_modes=max(1, int(config.get("solver", {}).get("structural_only_num_modes", 30))),
             status_callback=status_callback,
         )
     coords = msh.geometry.x
