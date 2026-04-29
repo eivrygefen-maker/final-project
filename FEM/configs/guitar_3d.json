@@ -56,6 +56,7 @@
         "num_modes": 10,
         "mesh_file": "/home/vboxuser/final-project/FEM/mesh/guitar_3d.msh",
         "shift_invert_target_hz": 100.0,
+        "structural_shift_target_hz": 100.0,
         "structural_only_diagnosis": true,
         "structural_only_num_modes": 10,
         "adaptive_mode_sifter": true,

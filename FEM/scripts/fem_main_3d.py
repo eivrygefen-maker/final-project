@@ -922,9 +922,13 @@ def _solve_structural_only_evp(
     eps.setOperators(A, M)
     eps.setProblemType(SLEPc.EPS.ProblemType.GHEP)
     eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
-    # Structural diagnosis: start from ~0 and move up to capture true fundamentals.
-    eps.setWhichEigenpairs(SLEPc.EPS.Which.SMALLEST_MAGNITUDE)
+    # Target audible-range fundamentals via shift-and-invert.
+    shift_hz = float(config.get("solver", {}).get("structural_shift_target_hz", config.get("solver", {}).get("shift_invert_target_hz", 100.0)))
+    target_lambda = (2.0 * math.pi * shift_hz) ** 2
+    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
+    eps.setTarget(target_lambda)
     st = eps.getST()
+    st.setType(SLEPc.ST.Type.SINVERT)
     # Robustness: prefer direct LU in spectral transformation for tiny pivots.
     try:
         _debug_rank("Entering KSP Setup")
@@ -965,6 +969,22 @@ def _solve_structural_only_evp(
     except Exception as exc:
         _emit(f"[error] communicator audit failed before structural EPS solve: {exc}", status_callback=status_callback, level="error")
         raise
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        try:
+            k_norm = float(K.norm())
+            m_norm = float(M.norm())
+            ratio = (k_norm / m_norm) if m_norm > 0.0 else float("inf")
+            print(
+                f"[DIAG] Structural-only target: shift_hz={shift_hz:.3f}, "
+                f"target_lambda={target_lambda:.6e}"
+            )
+            print(
+                f"[DIAG] Matrix norms before EPS: ||K||={k_norm:.6e}, ||M||={m_norm:.6e}, "
+                f"||K||/||M||={ratio:.6e}"
+            )
+            sys.stdout.flush()
+        except Exception as exc:
+            _emit(f"[diag][warn] failed to compute matrix norms: {exc}", status_callback=status_callback, level="warning")
     _phase_sync(2106, "structural-only before eps.solve", status_callback=status_callback)
     opts = PETSc.Options()
     opts["eps_monitor"] = None
