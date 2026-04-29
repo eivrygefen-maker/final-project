@@ -653,11 +653,10 @@ def _solve_structural_only_evp(
     # BC/topology block: strict empty-array guards and fail-fast MPI abort on any C++ backend failure.
     try:
         def _safe_locate_topo(space, entity_dim: int, entities: np.ndarray, label: str) -> np.ndarray:
+            # MPI alignment: always call into FEniCSx C++ even for empty local arrays.
             if entities is None:
-                return np.array([], dtype=np.int32)
+                entities = np.array([], dtype=np.int32)
             entities = np.asarray(entities, dtype=np.int32)
-            if entities.size == 0:
-                return np.array([], dtype=np.int32)
             return np.array(fem.locate_dofs_topological(space, entity_dim, entities), dtype=np.int32)
 
         # BC logic: only wood_fix (tag 4), otherwise minimal geometric anchors.
@@ -730,9 +729,7 @@ def _solve_structural_only_evp(
         )
         _phase_sync(21005, "2100.5 after dof partition print", status_callback=status_callback)
 
-        bcs_u = []
-        if u_dofs_bc.size > 0:
-            bcs_u = [fem.dirichletbc(np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType), u_dofs_bc, V_u)]
+        bcs_u = [fem.dirichletbc(np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType), u_dofs_bc, V_u)]
         _phase_sync(21006, "2100.6 after dirichletbc creation", status_callback=status_callback)
     except Exception as e:
         try:
