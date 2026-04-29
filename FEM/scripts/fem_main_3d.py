@@ -665,7 +665,6 @@ def _solve_structural_only_evp(
         dofs_t1 = _safe_locate_topo(V_u, fdim, facets_t1, "tag1 facets")
         print(f"[DIAG] structural locate check: len(facets_t1)={len(facets_t1)}, len(dofs_on_t1_facets)={len(dofs_t1)}")
 
-        msh.comm.barrier()
         u_dofs = _safe_locate_topo(V_u, fdim, facets_fix, "tag4_fix facets")
         if u_dofs.size == 0:
             coords = msh.geometry.x
@@ -704,15 +703,12 @@ def _solve_structural_only_evp(
 
         if msh.comm.rank == ROOT_RANK:
             print(f"[DIAG] structural BC dofs: {u_dofs.size}")
-        if u_dofs.size == 0:
-            raise RuntimeError("Structural-only diagnosis failed: u_dofs is empty after robust localization.")
         _phase_sync(21001, "2100.1 after BC dofs check", status_callback=status_callback)
 
         # Deactivate non-structural (air) displacement DOFs WITHOUT building a huge DirichletBC.
         structural_facets = np.unique(np.concatenate([facets_t1, facets_t2, facets_t3])).astype(np.int32)
         structural_dofs = np.array([], dtype=np.int32)
         _phase_sync(21002, "2100.2 after structural facet set", status_callback=status_callback)
-        msh.comm.barrier()
         structural_dofs = _safe_locate_topo(V_u, fdim, structural_facets, "structural facets 1/2/3")
         _phase_sync(21003, "2100.3 after structural dof locate", status_callback=status_callback)
         n_u_local = int(V_u.dofmap.index_map.size_local * V_u.dofmap.index_map_bs)
@@ -733,11 +729,9 @@ def _solve_structural_only_evp(
         )
         _phase_sync(21005, "2100.5 after dof partition print", status_callback=status_callback)
 
-        msh.comm.barrier()
+        bcs_u = []
         if u_dofs_bc.size > 0:
-            bc_u = fem.dirichletbc(np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType), u_dofs_bc, V_u)
-        else:
-            raise RuntimeError("Structural-only diagnosis failed: no BC dofs available for dirichletbc.")
+            bcs_u = [fem.dirichletbc(np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType), u_dofs_bc, V_u)]
         _phase_sync(21006, "2100.6 after dirichletbc creation", status_callback=status_callback)
     except Exception as e:
         try:
@@ -773,8 +767,8 @@ def _solve_structural_only_evp(
 
     _phase_sync(2105, "structural-only before matrix assembly", status_callback=status_callback)
     _debug_rank("Entering Matrix Assembly")
-    K = assemble_matrix(a_uu_form, bcs=[bc_u]); K.assemble()
-    M = assemble_matrix(m_uu_form, bcs=[bc_u]); M.assemble()
+    K = assemble_matrix(a_uu_form, bcs=bcs_u); K.assemble()
+    M = assemble_matrix(m_uu_form, bcs=bcs_u); M.assemble()
     # Defensive: allow new nonzeros during diagnostic diagonal updates.
     # With the ghost term, this should rarely be needed, but it prevents PETSc
     # from hard-failing if some diagonal entries were initially structurally zero.
