@@ -5,11 +5,7 @@ echo "========================================"
 echo "🚀 Starting Vacuum Test Pipeline..."
 echo "========================================"
 
-echo "[1/4] Forcing clean state and pulling latest changes..."
-git checkout FEM/configs/guitar_3d.json # Discard local changes to config
-git pull origin main
-
-echo "[1.5/4] Enforcing coupled-run config (no structural-only diagnosis)..."
+echo "[1/4] Enforcing coupled-run config (no structural-only diagnosis)..."
 python3 - <<'PY'
 import json
 from pathlib import Path
