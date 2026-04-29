@@ -402,7 +402,7 @@ def create_guitar_mesh():
             # Field 2: threshold over distance field.
             thresh_field = gmsh.model.mesh.field.add("Threshold")
             gmsh.model.mesh.field.setNumber(thresh_field, "InField", dist_field)
-            gmsh.model.mesh.field.setNumber(thresh_field, "SizeMin", 0.0015)
+            gmsh.model.mesh.field.setNumber(thresh_field, "SizeMin", 0.0020)
             gmsh.model.mesh.field.setNumber(thresh_field, "SizeMax", 0.012)
             gmsh.model.mesh.field.setNumber(thresh_field, "DistMin", 0.001)
             gmsh.model.mesh.field.setNumber(thresh_field, "DistMax", 0.015)
