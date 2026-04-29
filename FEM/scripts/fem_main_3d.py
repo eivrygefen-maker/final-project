@@ -613,7 +613,8 @@ def _slepc_shift_invert_batch(
     mumps_icntl_24 = int(solver_cfg.get("mat_mumps_icntl_24", 1))
     mumps_icntl_6 = int(solver_cfg.get("mat_mumps_icntl_6", 7))
     mumps_icntl_12 = int(solver_cfg.get("mat_mumps_icntl_12", 1))
-    mumps_icntl_4 = int(solver_cfg.get("mat_mumps_icntl_4_root", 2 if MPI.COMM_WORLD.rank == 0 else 0))
+    # ICNTL(4)=0: silent MUMPS (no statistics I/O); non-zero enables host printing and slows each factorization.
+    mumps_icntl_4 = int(solver_cfg.get("mat_mumps_icntl_4", 0))
     petsc_opts = PETSc.Options()
     petsc_opts["st_mat_mumps_icntl_14"] = mumps_icntl_14
     petsc_opts["st_mat_mumps_icntl_24"] = mumps_icntl_24
@@ -1011,9 +1012,7 @@ def _solve_structural_only_evp(
                 petsc_opts["st_mat_mumps_icntl_6"] = int(config.get("solver", {}).get("mat_mumps_icntl_6", 7))
                 petsc_opts["st_mat_mumps_icntl_12"] = int(config.get("solver", {}).get("mat_mumps_icntl_12", 1))
                 petsc_opts["st_mat_mumps_icntl_24"] = int(config.get("solver", {}).get("mat_mumps_icntl_24", 1))
-                petsc_opts["st_mat_mumps_icntl_4"] = int(
-                    config.get("solver", {}).get("mat_mumps_icntl_4_root", 2 if MPI.COMM_WORLD.rank == 0 else 0)
-                )
+                petsc_opts["st_mat_mumps_icntl_4"] = int(config.get("solver", {}).get("mat_mumps_icntl_4", 0))
             except Exception:
                 pass
         # Make KSP convergence checks essentially irrelevant.
@@ -1057,6 +1056,9 @@ def _solve_structural_only_evp(
         except Exception as exc:
             _emit(f"[diag][warn] failed to compute matrix norms: {exc}", status_callback=status_callback, level="warning")
     _phase_sync(2106, "structural-only before eps.solve", status_callback=status_callback)
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        print("🚀 Starting Production Run: Silent MUMPS, 450Hz Sweep, 300 Mode Quota.")
+        sys.stdout.flush()
     opts = PETSc.Options()
     opts["eps_monitor"] = None
     opts["eps_converged_reason"] = None
@@ -1564,16 +1566,19 @@ def _solve_coupled_evp(
     sys.stdout.flush()
     print(f"Starting solver with {n_dofs} DOFs and proactive memory cleanup...")
     sys.stdout.flush()
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        print("🚀 Starting Production Run: Silent MUMPS, 450Hz Sweep, 300 Mode Quota.")
+        sys.stdout.flush()
 
     min_valid_hz = float(solver_cfg.get("min_valid_mode_hz", 50.0))
     max_valid_hz = float(solver_cfg.get("max_valid_mode_hz", 1000.0))
     work = M.createVecRight()
 
     if use_sifter and (M_top is not None or M_back is not None):
-        quota = int(solver_cfg.get("sifter_quota", 100))
+        quota = int(solver_cfg.get("sifter_quota", 300))
         batch = int(solver_cfg.get("sifter_batch_modes", 50))
         f_center = float(solver_cfg.get("sifter_start_hz", 100.0))
-        f_cap = float(solver_cfg.get("sifter_max_hz", 1000.0))
+        f_cap = float(solver_cfg.get("sifter_max_hz", 450.0))
         df_s = float(solver_cfg.get("sifter_step_hz", 10.0))
         th_top = float(
             solver_cfg.get(
