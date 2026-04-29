@@ -8,11 +8,14 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import petsc4py
 import ufl
 from basix.ufl import element, mixed_element
 from dolfinx import fem, io, mesh
 from dolfinx.fem.petsc import assemble_matrix
 from mpi4py import MPI
+# Explicit PETSc initialization on all ranks.
+petsc4py.init(sys.argv)
 from petsc4py import PETSc
 from slepc4py import SLEPc
 
@@ -46,6 +49,20 @@ def _emit(message: str, status_callback=None, level: str = "info") -> None:
     sys.stderr.flush()
     if status_callback is not None:
         status_callback(message)
+
+
+def _debug_rank(message: str) -> None:
+    rank = MPI.COMM_WORLD.rank
+    print(f"[DEBUG] Rank {rank}: {message}")
+    sys.stdout.flush()
+
+
+def _debug_petsc_comm(name: str, obj) -> None:
+    try:
+        comm = obj.getComm()
+        _debug_rank(f"{name} comm rank={comm.getRank()} size={comm.getSize()}")
+    except Exception:
+        _debug_rank(f"{name} comm unavailable")
 
 
 def _wipe_cache_folder(cache_dir: Path, status_callback=None) -> None:
@@ -332,7 +349,7 @@ def _slepc_shift_invert_batch(
 ) -> Tuple[int, List[Tuple[float, np.ndarray, Optional[float], Optional[float]]]]:
     """Run one SLEPc GNHEP shift-invert solve; returns rows (freq_hz, eigenvector, top_ratio|None, back_ratio|None)."""
     target_lambda = (2.0 * math.pi * float(shift_hz)) ** 2
-    eps = SLEPc.EPS().create(MPI.COMM_WORLD)
+    eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
     eps.setOperators(A, M)
     eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
     eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
@@ -344,6 +361,7 @@ def _slepc_shift_invert_batch(
 
     ksp = st.getKSP()
     pc = ksp.getPC()
+    _debug_rank("Entering KSP Setup")
     use_iterative = bool(solver_cfg.get("st_use_iterative_fallback", False))
     if use_iterative:
         ksp.setType(str(solver_cfg.get("st_iter_ksp_type", "gmres")))
@@ -412,6 +430,11 @@ def _slepc_shift_invert_batch(
     st.setShift(target_lambda)
     eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
     eps.setFromOptions()
+    _debug_petsc_comm("A", A)
+    _debug_petsc_comm("M", M)
+    _debug_petsc_comm("EPS", eps)
+    MPI.COMM_WORLD.barrier()
+    _debug_rank("Entering EPS Solve")
     eps.solve()
 
     its = eps.getIterationNumber()
@@ -609,6 +632,7 @@ def _solve_structural_only_evp(
 
     bc_u = fem.dirichletbc(np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType), u_dofs_bc, V_u)
 
+    _debug_rank("Entering Matrix Assembly")
     K = assemble_matrix(fem.form(a_uu), bcs=[bc_u]); K.assemble()
     M = assemble_matrix(fem.form(m_uu), bcs=[bc_u]); M.assemble()
     # Defensive: allow new nonzeros during diagnostic diagonal updates.
@@ -665,7 +689,7 @@ def _solve_structural_only_evp(
         print(f"[DIAG] structural shift: A = K + {eps_diag:.2e} M")
         sys.stdout.flush()
 
-    eps = SLEPc.EPS().create(MPI.COMM_WORLD)
+    eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
     eps.setOperators(A, M)
     eps.setProblemType(SLEPc.EPS.ProblemType.GHEP)
     eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
@@ -674,6 +698,7 @@ def _solve_structural_only_evp(
     st = eps.getST()
     # Robustness: prefer direct LU in spectral transformation for tiny pivots.
     try:
+        _debug_rank("Entering KSP Setup")
         ksp = st.getKSP()
         ksp.setType("preonly")
         pc = ksp.getPC()
@@ -693,6 +718,12 @@ def _solve_structural_only_evp(
     eps.setDimensions(nev, int(max(40, 4 * nev)))
     eps.setTolerances(1e-6, 2000)
     eps.setFromOptions()
+    _debug_petsc_comm("K", K)
+    _debug_petsc_comm("M", M)
+    _debug_petsc_comm("A", A)
+    _debug_petsc_comm("EPS", eps)
+    MPI.COMM_WORLD.barrier()
+    _debug_rank("Entering EPS Solve")
     eps.solve()
     nconv = eps.getConverged()
     if nconv <= 0:
@@ -1099,6 +1130,7 @@ def _solve_coupled_evp(
         )
         raise
 
+    _debug_rank("Entering Matrix Assembly")
     A = assemble_matrix(fem.form(a_form), bcs=bcs)
     A.assemble()
     # Debug-only hard anchor to test if row-0 pivot singularity can be bypassed.
