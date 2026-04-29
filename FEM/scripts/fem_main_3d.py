@@ -448,6 +448,95 @@ def _audit_and_scale_mesh_units(msh: mesh.Mesh, config: Dict, status_callback=No
     sys.stdout.flush()
 
 
+def _mesh_interface_diagnostic(msh: mesh.Mesh, cell_tags, facet_tags, status_callback=None) -> None:
+    """Report node sharing between wood (1/2/3) and air (10)."""
+    try:
+        tdim = msh.topology.dim
+        fdim = tdim - 1
+        msh.topology.create_connectivity(tdim, 0)
+        msh.topology.create_connectivity(tdim, fdim)
+        msh.topology.create_connectivity(fdim, tdim)
+        msh.topology.create_connectivity(fdim, 0)
+        c2v = msh.topology.connectivity(tdim, 0)
+        c2f = msh.topology.connectivity(tdim, fdim)
+        f2c = msh.topology.connectivity(fdim, tdim)
+        f2v = msh.topology.connectivity(fdim, 0)
+
+        wood_cells = np.array([], dtype=np.int32)
+        for tag in (1, 2, 3):
+            c = np.asarray(cell_tags.find(tag), dtype=np.int32)
+            if c.size > 0:
+                wood_cells = np.unique(np.concatenate([wood_cells, c]).astype(np.int32))
+        air_cells = np.asarray(cell_tags.find(AIR_VOLUME_TAG), dtype=np.int32)
+
+        def _nodes_from_cells(cells: np.ndarray) -> np.ndarray:
+            if cells.size == 0:
+                return np.array([], dtype=np.int32)
+            blocks = [c2v.links(int(ci)) for ci in cells]
+            if not blocks:
+                return np.array([], dtype=np.int32)
+            return np.unique(np.concatenate(blocks)).astype(np.int32)
+
+        wood_nodes = _nodes_from_cells(wood_cells)
+        air_nodes = _nodes_from_cells(air_cells)
+        shared_nodes = np.intersect1d(wood_nodes, air_nodes).astype(np.int32)
+        wood_only_nodes = np.setdiff1d(wood_nodes, air_nodes, assume_unique=False).astype(np.int32)
+        air_only_nodes = np.setdiff1d(air_nodes, wood_nodes, assume_unique=False).astype(np.int32)
+
+        wood_surface_facets = np.unique(
+            np.concatenate(
+                [
+                    np.asarray(facet_tags.find(1), dtype=np.int32),
+                    np.asarray(facet_tags.find(2), dtype=np.int32),
+                    np.asarray(facet_tags.find(3), dtype=np.int32),
+                ]
+            )
+        ).astype(np.int32)
+        wood_surface_nodes = (
+            np.unique(np.concatenate([f2v.links(int(fi)) for fi in wood_surface_facets])).astype(np.int32)
+            if wood_surface_facets.size > 0
+            else np.array([], dtype=np.int32)
+        )
+
+        interface_facets = []
+        wood_tag_set = {1, 2, 3}
+        for ci in air_cells:
+            for fi in c2f.links(int(ci)):
+                nbr_cells = np.asarray(f2c.links(int(fi)), dtype=np.int32)
+                if nbr_cells.size == 0:
+                    continue
+                nbr_tags = set(int(cell_tags.values[int(nc)]) for nc in nbr_cells)
+                if (AIR_VOLUME_TAG in nbr_tags) and any(t in wood_tag_set for t in nbr_tags):
+                    interface_facets.append(int(fi))
+        interface_facets = np.unique(np.asarray(interface_facets, dtype=np.int32))
+        interface_nodes = (
+            np.unique(np.concatenate([f2v.links(int(fi)) for fi in interface_facets])).astype(np.int32)
+            if interface_facets.size > 0
+            else np.array([], dtype=np.int32)
+        )
+
+        boundary_shared = np.intersect1d(wood_surface_nodes, interface_nodes).astype(np.int32)
+
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                f"[DIAG][IFACE] volume nodes: wood_only={wood_only_nodes.size}, "
+                f"air_only={air_only_nodes.size}, shared={shared_nodes.size}"
+            )
+            print(
+                f"[DIAG][IFACE] boundary nodes: wood_surface={wood_surface_nodes.size}, "
+                f"air_inner={interface_nodes.size}, shared_boundary={boundary_shared.size}"
+            )
+            sys.stdout.flush()
+            if boundary_shared.size == 0:
+                _emit(
+                    "[DIAG][IFACE][WARN] shared boundary nodes == 0 (possible unstitched wood-air interface).",
+                    status_callback=status_callback,
+                    level="warning",
+                )
+    except Exception as exc:
+        _emit(f"[diag][warn] mesh interface diagnostic failed: {exc}", status_callback=status_callback, level="warning")
+
+
 def _plate_modal_energy_ratios(
     phi: PETSc.Vec,
     M: PETSc.Mat,
@@ -617,6 +706,7 @@ def _slepc_shift_invert_batch(
 
 def _solve_structural_only_evp(
     msh: mesh.Mesh,
+    cell_tags,
     facet_tags,
     config: Dict,
     num_modes: int,
@@ -645,13 +735,11 @@ def _solve_structural_only_evp(
     )
     sys.stdout.flush()
 
-    n = ufl.FacetNormal(msh)
-    P = ufl.Identity(3) - ufl.outer(n, n)
     u_el = element("Lagrange", msh.basix_cell(), 1, shape=(3,))
     V_u = fem.functionspace(msh, u_el)
     u = ufl.TrialFunction(V_u)
     v = ufl.TestFunction(V_u)
-    xdmf_ds = ufl.Measure("ds", domain=msh, subdomain_data=facet_tags)
+    xdmf_dx = ufl.Measure("dx", domain=msh, subdomain_data=cell_tags)
 
     E_eff, nu_eff, rho_eff, thickness = _effective_wood_properties(config)
     top = config["materials"]["top"]
@@ -665,38 +753,23 @@ def _solve_structural_only_evp(
         )
     mu = E_eff / (2.0 * (1.0 + nu_eff))
     lam = E_eff * nu_eff / ((1.0 + nu_eff) * (1.0 - 2.0 * nu_eff))
-    D_bend = E_eff * thickness ** 3 / (12.0 * (1.0 - nu_eff ** 2))
-
-    if (facets_t1.size + facets_t2.size + facets_t3.size) > 0:
-        shell_ds = xdmf_ds(1) + xdmf_ds(2) + xdmf_ds(3)
+    wood_cell_tags = []
+    for tag in (1, 2, 3):
+        try:
+            if np.asarray(cell_tags.find(tag), dtype=np.int32).size > 0:
+                wood_cell_tags.append(tag)
+        except Exception:
+            pass
+    if wood_cell_tags:
+        wood_dx = sum(xdmf_dx(tag) for tag in wood_cell_tags)
     else:
-        shell_ds = ufl.ds(domain=msh)
-        _emit("[diag][warn] no facet tags 1/2/3 found; falling back to full ds.", status_callback=status_callback, level="warning")
+        wood_dx = ufl.dx(domain=msh)
+        _emit("[diag][warn] no wood cell tags 1/2/3 found; falling back to full dx.", status_callback=status_callback, level="warning")
 
-    def eps_surface(uu):
-        grad_u = ufl.grad(uu)
-        grad_tan = P * grad_u * P
-        return 0.5 * (grad_tan + ufl.transpose(grad_tan))
-
-    eps_u = eps_surface(u)
-    eps_v = eps_surface(v)
-    w_n = ufl.dot(u, n)
-    v_n = ufl.dot(v, n)
-
-    a_uu = (
-        thickness * (2.0 * mu * ufl.inner(eps_u, eps_v) + lam * ufl.tr(eps_u) * ufl.tr(eps_v))
-        + D_bend * ufl.inner(P * ufl.grad(w_n), P * ufl.grad(v_n))
-    ) * shell_ds
-    m_uu = (rho_eff * thickness) * ufl.dot(u, v) * shell_ds
-
-    # Ghost term to guarantee a non-empty diagonal for all displacement DOFs,
-    # including air DOFs that have zero shell measure. This avoids missing-diagonal
-    # PETSc errors and sparsity-pattern insertions.
-    ghost_eps = float(config.get("solver", {}).get("structural_diag_ghost_eps", 1.0e-14))
-    if ghost_eps > 0.0:
-        full_dx = ufl.Measure("dx", domain=msh)
-        a_uu = a_uu + ghost_eps * ufl.dot(u, v) * full_dx
-        m_uu = m_uu + ghost_eps * ufl.dot(u, v) * full_dx
+    eps_u = ufl.sym(ufl.grad(u))
+    eps_v = ufl.sym(ufl.grad(v))
+    a_uu = (2.0 * mu * ufl.inner(eps_u, eps_v) + lam * ufl.div(u) * ufl.div(v)) * wood_dx
+    m_uu = (rho_eff * ufl.dot(u, v)) * wood_dx
 
     # V_u coverage diagnostic by tag.
     try:
@@ -777,27 +850,14 @@ def _solve_structural_only_evp(
         if msh.comm.rank == ROOT_RANK:
             print(f"[DIAG] structural BC dofs: {u_dofs.size}")
 
-        # Deactivate non-structural (air) displacement DOFs WITHOUT building a huge DirichletBC.
-        structural_facets = np.unique(np.concatenate([facets_t1, facets_t2, facets_t3])).astype(np.int32)
-        structural_dofs = np.array([], dtype=np.int32)
-        structural_dofs = _safe_locate_topo(V_u, fdim, structural_facets, "structural facets 1/2/3")
-        n_u_local = int(V_u.dofmap.index_map.size_local * V_u.dofmap.index_map_bs)
-        all_u_local = np.arange(n_u_local, dtype=np.int32)
-        if structural_dofs.size > 0:
-            structural_dofs = np.unique(structural_dofs)
-            air_dofs = np.setdiff1d(all_u_local, structural_dofs, assume_unique=False).astype(np.int32)
-        else:
-            air_dofs = all_u_local.copy()
-        air_dofs = np.asarray(air_dofs, dtype=np.int32)
-
         # Keep Dirichlet BCs small (wood_fix + minimal geometric anchors only).
         # Enforce int32 explicitly before any C++ BC call.
         u_dofs_bc = np.asarray(u_dofs, dtype=np.int32)
         if msh.comm.rank == ROOT_RANK:
             print(
                 f"[DIAG] structural-only dof partition: "
-                f"n_u_local={n_u_local}, structural_dofs={structural_dofs.size}, "
-                f"air_dofs={air_dofs.size}, bc_dofs={u_dofs_bc.size}"
+                f"n_u_local={int(V_u.dofmap.index_map.size_local * V_u.dofmap.index_map_bs)}, "
+                f"bc_dofs={u_dofs_bc.size}"
             )
 
         if msh.comm.rank == ROOT_RANK:
@@ -877,42 +937,7 @@ def _solve_structural_only_evp(
     except Exception:
         pass
 
-    # Avoid singular air rows/diagonals without allocating a massive DirichletBC.
-    # For air displacement DOFs, the structural forms integrated only on ds(1/2/3) can
-    # produce zero stiffness/mass entries. We inject a tiny diagonal penalty on air DOFs.
-    try:
-        if air_dofs.size > 0:
-            air_pen_factor = float(config.get("solver", {}).get("structural_air_diag_penalty", 1.0e-12))
-            diagK = K.getDiagonal()
-            diagM = M.getDiagonal()
-            dK = diagK.array
-            dM = diagM.array
-            k_scale = float(np.max(np.abs(dK))) if dK.size > 0 else 1.0
-            m_scale = float(np.max(np.abs(dM))) if dM.size > 0 else 1.0
-            if not math.isfinite(k_scale) or k_scale <= 0.0:
-                k_scale = 1.0
-            if not math.isfinite(m_scale) or m_scale <= 0.0:
-                m_scale = 1.0
-            dK[air_dofs] += air_pen_factor * k_scale
-            dM[air_dofs] += air_pen_factor * m_scale
-            # Update PETSc diagonals.
-            diagK.array[:] = dK
-            diagM.array[:] = dM
-            K.setDiagonal(diagK)
-            M.setDiagonal(diagM)
-            K.assemble()
-            M.assemble()
-            _emit(
-                f"[diag] structural-only air diagonal penalty: factor={air_pen_factor:.1e}, "
-                f"k_scale={k_scale:.3e}, m_scale={m_scale:.3e}, air_dofs={air_dofs.size}",
-                status_callback=status_callback,
-            )
-    except Exception as exc:
-        _emit(
-            f"[diag][warn] structural-only air diagonal penalty failed: {exc}",
-            status_callback=status_callback,
-            level="warning",
-        )
+    # Vacuum test: no air-diagonal penalty (assembly restricted to wood cells only).
 
     A = K.copy()
     eps_diag = float(config.get("solver", {}).get("structural_diag_shift", 1.0e-6))
@@ -1070,10 +1095,12 @@ def _solve_coupled_evp(
 
     msh, cell_tags, facet_tags = _load_mesh_and_tags(mesh_file, status_callback=status_callback)
     _audit_and_scale_mesh_units(msh, config, status_callback=status_callback)
+    _mesh_interface_diagnostic(msh, cell_tags, facet_tags, status_callback=status_callback)
     _phase_sync(2001, "coupled after mesh load", status_callback=status_callback)
     if solve_evp and _solver_bool(config.get("solver", {}), "structural_only_diagnosis", default=False):
         return _solve_structural_only_evp(
             msh=msh,
+            cell_tags=cell_tags,
             facet_tags=facet_tags,
             config=config,
             num_modes=max(1, int(config.get("solver", {}).get("structural_only_num_modes", 30))),
