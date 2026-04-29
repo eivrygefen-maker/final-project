@@ -18,12 +18,17 @@ air = materials.setdefault("air", {})
 
 solver["structural_only_diagnosis"] = False
 solver["pressure_gauge"] = "soundhole"
-solver["st_ksp_type"] = "gmres"
-solver["st_pc_type"] = "hypre"
-solver["st_hypre_type"] = "boomeramg"
-solver["st_ksp_rtol"] = 1e-7
-solver["st_ksp_atol"] = 1e-10
-solver["st_ksp_max_it"] = 1000
+solver["st_ksp_type"] = "preonly"
+solver["st_pc_type"] = "lu"
+solver["st_pc_factor_mat_solver_type"] = "mumps"
+solver["st_factor_solver_type"] = "mumps"
+solver["mat_mumps_icntl_14"] = 5000
+solver["mat_mumps_icntl_23"] = 0
+solver["mat_mumps_icntl_22"] = 1
+solver["shift_invert_target_hz"] = 105.0
+solver["structural_shift_target_hz"] = 105.0
+solver["st_shift_target_hz"] = 105.0
+solver["sifter_start_hz"] = 105.0
 air["density"] = 1.21
 air["speed_of_sound"] = 343.0
 

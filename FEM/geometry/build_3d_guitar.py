@@ -60,7 +60,7 @@ def create_guitar_mesh():
         mesh_size_max = 0.020
     
     print(
-        "DEBUG: Wood 0.0015m + distance-based air: <=5cm ->15mm, 5-40cm ramp to 120mm, >40cm ->120mm."
+        "DEBUG: Wood 0.0015m + distance-based air: fast ramp to 200mm far-field (lean mesh for direct solvers)."
     )
     print(f"Building geometry with Thickness: {t*1000:.1f}mm, Mesh Size: {mesh_size*1000:.2f}mm")
     print(f"[diag] preview_mode={is_preview}, FEM_ALLOW_PREVIEW={os.environ.get('FEM_ALLOW_PREVIEW', '0')}")
@@ -502,20 +502,20 @@ def create_guitar_mesh():
 
             # Air: distance-based characteristic length (Gmsh Threshold = linear between distances).
             # Convention: I < DistMin -> SizeMin; I > DistMax -> SizeMax; else linear in I.
-            # d < 5 cm -> 15 mm; d in [5 cm, 40 cm] -> 15 mm .. 120 mm; d > 40 cm -> 120 mm.
+            # Shorter near band + shorter ramp => coarser air sooner; far field 200 mm cap.
             air_grad = gmsh.model.mesh.field.add("Threshold")
             gmsh.model.mesh.field.setNumber(air_grad, "InField", dist_field)
-            gmsh.model.mesh.field.setNumber(air_grad, "DistMin", 0.05)
-            gmsh.model.mesh.field.setNumber(air_grad, "DistMax", 0.40)
+            gmsh.model.mesh.field.setNumber(air_grad, "DistMin", 0.025)
+            gmsh.model.mesh.field.setNumber(air_grad, "DistMax", 0.22)
             gmsh.model.mesh.field.setNumber(air_grad, "SizeMin", 0.015)
-            gmsh.model.mesh.field.setNumber(air_grad, "SizeMax", 0.120)
+            gmsh.model.mesh.field.setNumber(air_grad, "SizeMax", 0.200)
 
             # Combine: wood-restricted 1.5 mm vs air gradient (do not add a low plateau field or it caps coarsening).
             min_field = gmsh.model.mesh.field.add("Min")
             gmsh.model.mesh.field.setNumbers(min_field, "FieldsList", [air_grad, fine_restrict])
             print(
                 "[diag] Distance-based air sizing enabled "
-                f"(wood=1.5mm restrict; air: d<=5cm->15mm, 5cm<d<=40cm linear->120mm, d>40cm->120mm; "
+                f"(wood=1.5mm restrict; air: d<=2.5cm->15mm, 2.5-22cm linear->200mm, d>22cm->200mm; "
                 f"n_wood_surfaces={len(wood_surface_tags)})."
             )
             # Keep this as the very last field instruction before mesh generation.

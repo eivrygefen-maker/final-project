@@ -586,19 +586,55 @@ def _slepc_shift_invert_batch(
     ksp = st.getKSP()
     pc = ksp.getPC()
     _debug_rank("Entering KSP Setup")
-    # Shift-invert ST: iterative KSP avoids direct-factor 32-bit / memory walls (O(N) memory vs O(N^2) fill).
-    st_ksp_type = str(solver_cfg.get("st_ksp_type", "gmres"))
-    st_pc_type = str(solver_cfg.get("st_pc_type", "hypre"))
+    # Shift-invert ST: direct LU + MUMPS (lean ICNTL) — iterative ST was unstable on this ill-conditioned system.
+    st_ksp_type = str(solver_cfg.get("st_ksp_type", "preonly"))
+    st_pc_type = str(solver_cfg.get("st_pc_type", "lu"))
     ksp.setType(st_ksp_type)
     pc.setType(st_pc_type)
-    if st_pc_type.lower() == "hypre":
-        pc.setHYPREType(str(solver_cfg.get("st_hypre_type", "boomeramg")))
-    st_rtol = float(solver_cfg.get("st_ksp_rtol", 1.0e-7))
-    st_atol = float(solver_cfg.get("st_ksp_atol", 1.0e-10))
-    st_max_it = int(solver_cfg.get("st_ksp_max_it", 1000))
-    ksp.setTolerances(rtol=st_rtol, atol=st_atol, max_it=st_max_it)
+    if st_pc_type.lower() == "lu":
+        try:
+            pc.setFactorSolverType(
+                str(
+                    solver_cfg.get(
+                        "st_pc_factor_mat_solver_type",
+                        solver_cfg.get("st_factor_solver_type", "mumps"),
+                    )
+                )
+            )
+        except Exception:
+            pass
+    try:
+        ksp.setTolerances(rtol=1.0e-12, atol=1.0e-14, max_it=1)
+    except Exception:
+        pass
 
+    # MUMPS: ICNTL(14) workspace inflation (%); ICNTL(23)=0 uncapped MB; ICNTL(22)=1 enables OOC fallback.
+    mumps_icntl_14 = int(solver_cfg.get("mat_mumps_icntl_14", 5000))
+    mumps_icntl_23 = int(solver_cfg.get("mat_mumps_icntl_23", 0))
+    mumps_icntl_24 = int(solver_cfg.get("mat_mumps_icntl_24", 1))
+    mumps_icntl_22 = int(solver_cfg.get("mat_mumps_icntl_22", 1))
+    mumps_icntl_6 = int(solver_cfg.get("mat_mumps_icntl_6", 7))
+    mumps_icntl_12 = int(solver_cfg.get("mat_mumps_icntl_12", 1))
+    mumps_icntl_4 = int(solver_cfg.get("mat_mumps_icntl_4_root", 2 if MPI.COMM_WORLD.rank == 0 else 0))
     petsc_opts = PETSc.Options()
+    petsc_opts["mat_mumps_icntl_14"] = mumps_icntl_14
+    petsc_opts["mat_mumps_icntl_23"] = mumps_icntl_23
+    petsc_opts["mat_mumps_icntl_24"] = mumps_icntl_24
+    petsc_opts["mat_mumps_icntl_22"] = mumps_icntl_22
+    petsc_opts["mat_mumps_icntl_6"] = mumps_icntl_6
+    petsc_opts["mat_mumps_icntl_12"] = mumps_icntl_12
+    petsc_opts["mat_mumps_icntl_4"] = mumps_icntl_4
+    if (
+        MPI.COMM_WORLD.size > 1
+        and str(st_pc_type).lower() == "lu"
+        and MPI.COMM_WORLD.rank == ROOT_RANK
+    ):
+        _emit(
+            "[solver][warn] MUMPS LU + shift-invert is most stable with a single MPI process "
+            f"(e.g. `mpiexec -n 1` or plain `python3`); MPI_COMM_WORLD.size={MPI.COMM_WORLD.size}.",
+            status_callback=status_callback,
+            level="warning",
+        )
     mg_levels_ksp_type = str(solver_cfg.get("mg_levels_ksp_type", "chebyshev"))
     mg_levels_pc_type = str(solver_cfg.get("mg_levels_pc_type", "sor"))
     petsc_opts["mg_levels_ksp_type"] = mg_levels_ksp_type
@@ -613,8 +649,13 @@ def _slepc_shift_invert_batch(
     petsc_opts["bv_orthog_refine"] = str(solver_cfg.get("bv_orthog_refine", "always"))
     petsc_opts["st_ksp_type"] = st_ksp_type
     petsc_opts["st_pc_type"] = st_pc_type
-    if st_pc_type.lower() == "hypre":
-        petsc_opts["pc_hypre_type"] = str(solver_cfg.get("st_hypre_type", "boomeramg"))
+    if st_pc_type.lower() == "lu":
+        petsc_opts["st_pc_factor_mat_solver_type"] = str(
+            solver_cfg.get(
+                "st_pc_factor_mat_solver_type",
+                solver_cfg.get("st_factor_solver_type", "mumps"),
+            )
+        )
     petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "none"))
 
     ncv = int(solver_cfg.get("target_ncv", max(40, 4 * batch)))
@@ -629,16 +670,11 @@ def _slepc_shift_invert_batch(
     else:
         diag_min = float("nan")
         diag_max = float("nan")
-    hypre_subtype = ""
-    try:
-        if str(st_pc_type).lower() == "hypre":
-            hypre_subtype = str(pc.getHYPREType())
-    except Exception:
-        hypre_subtype = "?"
     _emit(
         f"[solver] shift-invert batch center {shift_hz:.2f} Hz (lambda={target_lambda:.6e} s^-2), "
-        f"batch={batch}, KSP={ksp.getType()}, PC={pc.getType()}, HYPRE={hypre_subtype}, "
-        f"KSP_tol rtol={st_rtol:g} atol={st_atol:g} max_it={st_max_it}, "
+        f"batch={batch}, KSP={ksp.getType()}, PC={pc.getType()}, "
+        f"MUMPS(ICNTL4={mumps_icntl_4}, ICNTL6={mumps_icntl_6}, ICNTL12={mumps_icntl_12}, "
+        f"ICNTL14={mumps_icntl_14}, ICNTL23={mumps_icntl_23}, ICNTL24={mumps_icntl_24}, ICNTL22={mumps_icntl_22}), "
         f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}",
         status_callback=status_callback,
     )
@@ -981,7 +1017,7 @@ def _solve_structural_only_evp(
                 petsc_opts = PETSc.Options()
                 petsc_opts["mat_mumps_icntl_6"] = int(config.get("solver", {}).get("mat_mumps_icntl_6", 7))
                 petsc_opts["mat_mumps_icntl_12"] = int(config.get("solver", {}).get("mat_mumps_icntl_12", 1))
-                petsc_opts["mat_mumps_icntl_14"] = int(config.get("solver", {}).get("mat_mumps_icntl_14", 2000))
+                petsc_opts["mat_mumps_icntl_14"] = int(config.get("solver", {}).get("mat_mumps_icntl_14", 5000))
                 petsc_opts["mat_mumps_icntl_23"] = int(config.get("solver", {}).get("mat_mumps_icntl_23", 0))
                 petsc_opts["mat_mumps_icntl_22"] = int(config.get("solver", {}).get("mat_mumps_icntl_22", 1))
                 petsc_opts["mat_mumps_icntl_24"] = int(config.get("solver", {}).get("mat_mumps_icntl_24", 1))
