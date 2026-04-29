@@ -399,6 +399,55 @@ def _effective_wood_properties(config: Dict) -> Tuple[float, float, float, float
     return E_eff, nu_eff, rho_eff, thickness
 
 
+def _audit_and_scale_mesh_units(msh: mesh.Mesh, config: Dict, status_callback=None) -> None:
+    """Audit mesh coordinate units and apply optional mm->m scaling."""
+    solver_cfg = config.get("solver", {})
+    mode = str(solver_cfg.get("mesh_unit_mode", "auto")).strip().lower()
+    coords = msh.geometry.x
+    mins = np.min(coords, axis=0)
+    maxs = np.max(coords, axis=0)
+    span = maxs - mins
+    span_max = float(np.max(span))
+
+    scale = 1.0
+    # Guitar body characteristic length should be O(1e-1) meters.
+    if mode in ("millimeter", "millimeters", "mm"):
+        scale = 1.0e-3
+    elif mode in ("meter", "meters", "m"):
+        scale = 1.0
+    elif mode == "auto":
+        # If span looks like hundreds (e.g. ~480), assume mm and convert to meters.
+        if span_max > 5.0:
+            scale = 1.0e-3
+    else:
+        _emit(f"[diag][warn] unknown mesh_unit_mode='{mode}', using auto.", status_callback=status_callback, level="warning")
+        if span_max > 5.0:
+            scale = 1.0e-3
+
+    if scale != 1.0:
+        msh.geometry.x[:, :] *= scale
+        coords = msh.geometry.x
+        mins = np.min(coords, axis=0)
+        maxs = np.max(coords, axis=0)
+        span = maxs - mins
+        span_max = float(np.max(span))
+        _emit(
+            f"[diag] mesh coordinate scaling applied: factor={scale:.3e} (mode={mode})",
+            status_callback=status_callback,
+        )
+
+    print(f"[DIAG] Mesh Bounds - X: {mins[0]} to {maxs[0]}")
+    print(f"[DIAG] Mesh Bounds - Y: {mins[1]} to {maxs[1]}, Z: {mins[2]} to {maxs[2]}")
+    print(f"[DIAG] Mesh Span (m): dx={span[0]:.6f}, dy={span[1]:.6f}, dz={span[2]:.6f}")
+    if span_max < 0.05 or span_max > 2.0:
+        _emit(
+            f"[diag][warn] unusual guitar size after unit audit (max span={span_max:.6f} m).",
+            status_callback=status_callback,
+            level="warning",
+        )
+    sys.stdout.flush()
+
+
 def _plate_modal_energy_ratios(
     phi: PETSc.Vec,
     M: PETSc.Mat,
@@ -610,6 +659,15 @@ def _solve_structural_only_evp(
     xdmf_ds = ufl.Measure("ds", domain=msh, subdomain_data=facet_tags)
 
     E_eff, nu_eff, rho_eff, thickness = _effective_wood_properties(config)
+    top = config["materials"]["top"]
+    back = config["materials"]["back"]
+    if msh.comm.rank == ROOT_RANK:
+        print(
+            f"[DIAG] Material audit: "
+            f"top(E={float(top.get('E_L', 0.0)):.3e} Pa, rho={float(top.get('density', 0.0)):.1f}), "
+            f"back(E={float(back.get('E_L', 0.0)):.3e} Pa, rho={float(back.get('density', 0.0)):.1f}), "
+            f"effective(E={E_eff:.3e}, rho={rho_eff:.1f}, t={thickness:.4f} m)"
+        )
     mu = E_eff / (2.0 * (1.0 + nu_eff))
     lam = E_eff * nu_eff / ((1.0 + nu_eff) * (1.0 - 2.0 * nu_eff))
     D_bend = E_eff * thickness ** 3 / (12.0 * (1.0 - nu_eff ** 2))
@@ -989,6 +1047,7 @@ def _solve_coupled_evp(
     sys.stdout.flush()
 
     msh, cell_tags, facet_tags = _load_mesh_and_tags(mesh_file, status_callback=status_callback)
+    _audit_and_scale_mesh_units(msh, config, status_callback=status_callback)
     _phase_sync(2001, "coupled after mesh load", status_callback=status_callback)
     if solve_evp and _solver_bool(config.get("solver", {}), "structural_only_diagnosis", default=False):
         return _solve_structural_only_evp(
@@ -999,14 +1058,6 @@ def _solve_coupled_evp(
             status_callback=status_callback,
         )
     coords = msh.geometry.x
-    print(
-        f"[DIAG] Mesh Bounds - X: {coords[:, 0].min()} to {coords[:, 0].max()}"
-    )
-    print(
-        f"[DIAG] Mesh Bounds - Y: {coords[:, 1].min()} to {coords[:, 1].max()}, "
-        f"Z: {coords[:, 2].min()} to {coords[:, 2].max()}"
-    )
-    sys.stdout.flush()
     gc.collect()
     tdim = msh.topology.dim
     fdim = tdim - 1
