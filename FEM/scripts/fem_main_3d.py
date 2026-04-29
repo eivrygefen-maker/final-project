@@ -450,13 +450,14 @@ def _solve_structural_only_evp(
     ) * wood_ds
     m_uu = (rho_eff * thickness) * ufl.dot(u, v) * wood_ds
 
-    # Same structural grounding protocol as coupled run.
+    # Structural-only BC policy:
+    # - Never clamp whole Tag 3/Tag 1 surfaces (that can fully lock the shell).
+    # - Prefer explicit wood_fix support tag=4.
+    # - If missing/empty, use minimal geometric anchors only.
     fixed_facets = np.array(facet_tags.find(4), dtype=np.int32)
-    if fixed_facets.size == 0:
-        fixed_facets = np.array(facet_tags.find(WOOD_SURFACE_TAGS[1]), dtype=np.int32)
-    if fixed_facets.size == 0:
-        fixed_facets = np.array(facet_tags.find(WOOD_SURFACE_TAGS[0]), dtype=np.int32)
-    u_dofs = np.array(fem.locate_dofs_topological(V_u, fdim, fixed_facets), dtype=np.int32)
+    u_dofs = np.array([], dtype=np.int32)
+    if fixed_facets.size > 0:
+        u_dofs = np.array(fem.locate_dofs_topological(V_u, fdim, fixed_facets), dtype=np.int32)
     if u_dofs.size == 0:
         # Geometric fallback (same spirit as coupled path): pin three boundary points.
         coords = msh.geometry.x
@@ -492,8 +493,29 @@ def _solve_structural_only_evp(
             u_dof_blocks.append(fem.locate_dofs_geometrical(V_u, _u_anchor_marker))
         if u_dof_blocks:
             u_dofs = np.array(np.unique(np.concatenate(u_dof_blocks)), dtype=np.int32)
+    # Prove V_u carries DOFs across all structural tags (1,2,3), not only tag 3.
+    try:
+        msh.topology.create_connectivity(fdim, 0)
+        f_to_v = msh.topology.connectivity(fdim, 0)
+        tag_u_counts = {}
+        for tag in (1, 2, 3):
+            facets_tag = np.array(facet_tags.find(tag), dtype=np.int32)
+            if facets_tag.size == 0:
+                tag_u_counts[tag] = 0
+                continue
+            verts_tag = np.unique(np.concatenate([f_to_v.links(int(f)) for f in facets_tag])).astype(np.int32)
+            dofs_tag = np.array(fem.locate_dofs_topological(V_u, 0, verts_tag), dtype=np.int32)
+            tag_u_counts[tag] = int(dofs_tag.size)
+        _emit(
+            f"[diag] structural-only V_u coverage (dofs on facets): "
+            f"tag1={tag_u_counts.get(1, 0)}, tag2={tag_u_counts.get(2, 0)}, tag3={tag_u_counts.get(3, 0)}",
+            status_callback=status_callback,
+        )
+    except Exception as exc:
+        _emit(f"[diag][warn] V_u coverage diagnostic failed: {exc}", status_callback=status_callback, level="warning")
+
     _emit(
-        f"[diag] structural-only BCs: fixed_facets={fixed_facets.size}, u_dofs={u_dofs.size}",
+        f"[diag] structural-only BCs: wood_fix_facets={fixed_facets.size}, u_dofs={u_dofs.size}",
         status_callback=status_callback,
     )
     if u_dofs.size == 0:
