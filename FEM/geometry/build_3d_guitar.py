@@ -166,6 +166,12 @@ def create_guitar_mesh():
 
     # 3) Fragment is required to enforce node sharing between wood and air.
     frags, _ = occ.fragment(wood_dimtags, air_dimtags, removeObject=True, removeTool=True)
+    # Coherence-equivalent cleanup after BooleanFragments: merge duplicate entities/nodes.
+    # This helps guarantee shared-node interfaces when CAD booleans leave near-duplicates.
+    try:
+        occ.removeAllDuplicates()
+    except Exception:
+        pass
     occ.synchronize()
 
     # Classify volumes after fragment by topology (no height heuristics).

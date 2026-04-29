@@ -504,6 +504,55 @@ def _solve_structural_only_evp(
     A.assemble()
     M = assemble_matrix(fem.form(m_uu), bcs=[bc_u])
     M.assemble()
+    # Tag1<->Tag3 connectivity diagnostic and optional near-node glue penalty.
+    try:
+        msh.topology.create_connectivity(fdim, 0)
+        f_to_v = msh.topology.connectivity(fdim, 0)
+        facets_t1 = np.array(facet_tags.find(WOOD_SURFACE_TAGS[0]), dtype=np.int32)
+        facets_t3 = np.array(facet_tags.find(WOOD_SURFACE_TAGS[1]), dtype=np.int32)
+        verts_t1 = np.unique(
+            np.concatenate([f_to_v.links(int(f)) for f in facets_t1]) if facets_t1.size > 0 else np.array([], dtype=np.int32)
+        ).astype(np.int32)
+        verts_t3 = np.unique(
+            np.concatenate([f_to_v.links(int(f)) for f in facets_t3]) if facets_t3.size > 0 else np.array([], dtype=np.int32)
+        ).astype(np.int32)
+        shared_v = np.intersect1d(verts_t1, verts_t3)
+        _emit(
+            f"[diag] structural interface nodes: tag1_verts={verts_t1.size}, tag3_verts={verts_t3.size}, shared={shared_v.size}",
+            status_callback=status_callback,
+        )
+
+        glue_tol = float(config.get("solver", {}).get("structural_interface_glue_tol", 1.0e-6))
+        glue_k = float(config.get("solver", {}).get("structural_interface_glue_k", 0.0))
+        if shared_v.size == 0 and glue_k > 0.0 and verts_t1.size > 0 and verts_t3.size > 0 and glue_tol > 0.0:
+            coords = msh.geometry.x
+            # O(N*M) nearest pairing under tiny tolerance (diagnostic quick fix).
+            dmat = np.linalg.norm(coords[verts_t1][:, None, :] - coords[verts_t3][None, :, :], axis=2)
+            idx_min = np.argmin(dmat, axis=1)
+            dmin = dmat[np.arange(dmat.shape[0]), idx_min]
+            matched = np.where(dmin <= glue_tol)[0]
+            pair_count = 0
+            for loc in matched.tolist():
+                vi = int(verts_t1[int(loc)])
+                vj = int(verts_t3[int(idx_min[int(loc)])])
+                di = np.array(fem.locate_dofs_topological(V_u, 0, np.array([vi], dtype=np.int32)), dtype=np.int32)
+                dj = np.array(fem.locate_dofs_topological(V_u, 0, np.array([vj], dtype=np.int32)), dtype=np.int32)
+                if di.size == 0 or dj.size == 0:
+                    continue
+                for a, b in zip(di.tolist(), dj.tolist()):
+                    A.setValue(int(a), int(a), PETSc.ScalarType(glue_k), addv=PETSc.InsertMode.ADD_VALUES)
+                    A.setValue(int(b), int(b), PETSc.ScalarType(glue_k), addv=PETSc.InsertMode.ADD_VALUES)
+                    A.setValue(int(a), int(b), PETSc.ScalarType(-glue_k), addv=PETSc.InsertMode.ADD_VALUES)
+                    A.setValue(int(b), int(a), PETSc.ScalarType(-glue_k), addv=PETSc.InsertMode.ADD_VALUES)
+                pair_count += 1
+            if pair_count > 0:
+                A.assemble()
+            _emit(
+                f"[diag] structural glue penalty: tol={glue_tol:.1e}, k={glue_k:.3e}, vertex_pairs={pair_count}",
+                status_callback=status_callback,
+            )
+    except Exception as exc:
+        _emit(f"[diag][warn] structural interface glue diagnostic failed: {exc}", status_callback=status_callback, level="warning")
     # Diagnostic stabilization for singular pivots: A <- A + eps*M
     struct_diag_shift = float(config.get("solver", {}).get("structural_diag_shift", 1.0e-6))
     if struct_diag_shift > 0.0:
