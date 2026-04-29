@@ -77,7 +77,7 @@ def _debug_petsc_comm(name: str, obj) -> None:
 
 
 def _sync_all_connectivity(msh: mesh.Mesh) -> None:
-    """Build all topology connectivities collectively, then synchronize once."""
+    """Build all topology connectivities collectively and synchronize with one collective reduction."""
     tdim = msh.topology.dim
     for d0 in range(tdim + 1):
         for d1 in range(tdim + 1):
@@ -85,7 +85,8 @@ def _sync_all_connectivity(msh: mesh.Mesh) -> None:
                 msh.topology.create_connectivity(d0, d1)
             except Exception:
                 pass
-    MPI.COMM_WORLD.barrier()
+    # Collective sync without explicit barrier (safer for uneven rank progress diagnostics).
+    _ = MPI.COMM_WORLD.allreduce(1, op=MPI.SUM)
 
 
 def _wipe_cache_folder(cache_dir: Path, status_callback=None) -> None:
@@ -409,12 +410,14 @@ def _slepc_shift_invert_batch(
     mumps_icntl_22 = int(solver_cfg.get("mat_mumps_icntl_22", 1))
     mumps_icntl_6 = int(solver_cfg.get("mat_mumps_icntl_6", 7))
     mumps_icntl_12 = int(solver_cfg.get("mat_mumps_icntl_12", 1))
+    mumps_icntl_4 = int(solver_cfg.get("mat_mumps_icntl_4_root", 2 if MPI.COMM_WORLD.rank == 0 else 0))
     petsc_opts = PETSc.Options()
     petsc_opts["mat_mumps_icntl_14"] = mumps_icntl_14
     petsc_opts["mat_mumps_icntl_24"] = mumps_icntl_24
     petsc_opts["mat_mumps_icntl_22"] = mumps_icntl_22
     petsc_opts["mat_mumps_icntl_6"] = mumps_icntl_6
     petsc_opts["mat_mumps_icntl_12"] = mumps_icntl_12
+    petsc_opts["mat_mumps_icntl_4"] = mumps_icntl_4
     mg_levels_ksp_type = str(solver_cfg.get("mg_levels_ksp_type", "chebyshev"))
     mg_levels_pc_type = str(solver_cfg.get("mg_levels_pc_type", "sor"))
     petsc_opts["mg_levels_ksp_type"] = mg_levels_ksp_type
@@ -445,7 +448,7 @@ def _slepc_shift_invert_batch(
     _emit(
         f"[solver] shift-invert batch center {shift_hz:.2f} Hz (lambda={target_lambda:.6e} s^-2), "
         f"batch={batch}, KSP={ksp.getType()}, PC={pc.getType()}, "
-        f"MUMPS(ICNTL6={mumps_icntl_6}, ICNTL12={mumps_icntl_12}, "
+        f"MUMPS(ICNTL4={mumps_icntl_4}, ICNTL6={mumps_icntl_6}, ICNTL12={mumps_icntl_12}, "
         f"ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}, ICNTL22={mumps_icntl_22}), "
         f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}, "
         f"iterative={use_iterative}",
@@ -457,6 +460,13 @@ def _slepc_shift_invert_batch(
     _debug_petsc_comm("A", A)
     _debug_petsc_comm("M", M)
     _debug_petsc_comm("EPS", eps)
+    try:
+        acomm = A.getComm()
+        if acomm.getSize() != MPI.COMM_WORLD.size:
+            raise RuntimeError(f"A communicator size mismatch: {acomm.getSize()} vs world {MPI.COMM_WORLD.size}")
+    except Exception as exc:
+        _emit(f"[error] communicator audit failed before EPS solve: {exc}", status_callback=status_callback, level="error")
+        raise
     _debug_rank("Entering EPS Solve")
     eps.solve()
 
@@ -740,6 +750,9 @@ def _solve_structural_only_evp(
             petsc_opts["mat_mumps_icntl_6"] = int(config.get("solver", {}).get("mat_mumps_icntl_6", 7))
             petsc_opts["mat_mumps_icntl_12"] = int(config.get("solver", {}).get("mat_mumps_icntl_12", 1))
             petsc_opts["mat_mumps_icntl_14"] = int(config.get("solver", {}).get("mat_mumps_icntl_14", 200))
+            petsc_opts["mat_mumps_icntl_4"] = int(
+                config.get("solver", {}).get("mat_mumps_icntl_4_root", 2 if MPI.COMM_WORLD.rank == 0 else 0)
+            )
         except Exception:
             pass
         # Make KSP convergence checks essentially irrelevant.
@@ -757,6 +770,13 @@ def _solve_structural_only_evp(
     _debug_petsc_comm("M", M)
     _debug_petsc_comm("A", A)
     _debug_petsc_comm("EPS", eps)
+    try:
+        acomm = A.getComm()
+        if acomm.getSize() != MPI.COMM_WORLD.size:
+            raise RuntimeError(f"A communicator size mismatch: {acomm.getSize()} vs world {MPI.COMM_WORLD.size}")
+    except Exception as exc:
+        _emit(f"[error] communicator audit failed before structural EPS solve: {exc}", status_callback=status_callback, level="error")
+        raise
     _debug_rank("Entering EPS Solve")
     eps.solve()
     nconv = eps.getConverged()
