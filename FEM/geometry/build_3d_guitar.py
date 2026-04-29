@@ -229,6 +229,42 @@ def create_guitar_mesh():
             raise RuntimeError("Wood partitioning produced no volumes.")
         print(f"[diag] Wood volumes after Z-partition: {wood_vols}")
 
+    # Final geometry unification: remove duplicates and re-fragment wood+air together
+    # so interfaces are shared and overlapping facets are eliminated.
+    try:
+        air_ref_com = occ.getCenterOfMass(3, int(air_vols[0])) if air_vols else (0.0, 0.0, 0.0)
+    except Exception:
+        air_ref_com = (0.0, 0.0, 0.0)
+    try:
+        all_split, _ = occ.fragment(
+            [(3, int(v)) for v in wood_vols],
+            [(3, int(v)) for v in air_vols],
+            removeObject=True,
+            removeTool=True,
+        )
+        try:
+            occ.removeAllDuplicates()
+        except Exception:
+            pass
+        occ.synchronize()
+
+        final_vols = sorted([tag for dim, tag in all_split if dim == 3])
+        if final_vols:
+            # Re-classify after unification using COM proximity to previous air COM.
+            def _dist2_to_air(vtag):
+                cx, cy, cz = occ.getCenterOfMass(3, int(vtag))
+                dx = cx - air_ref_com[0]
+                dy = cy - air_ref_com[1]
+                dz = cz - air_ref_com[2]
+                return dx * dx + dy * dy + dz * dz
+
+            air_pick = min(final_vols, key=_dist2_to_air)
+            air_vols = [int(air_pick)]
+            wood_vols = [int(v) for v in final_vols if int(v) != int(air_pick)]
+            print(f"[diag] Final unified volumes: wood={wood_vols}, air={air_vols}")
+    except Exception as exc:
+        print(f"[diag][warn] final wood/air unification skipped: {exc}")
+
     # Strict one-cell-one-tag policy for 3D physical groups.
     # Sort wood volumes by center-of-mass Z:
     # - highest Z -> tag 1 (Top volume)
