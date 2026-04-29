@@ -721,7 +721,8 @@ def _solve_structural_only_evp(
         _phase_sync(21004, "2100.4 after air dof partition", status_callback=status_callback)
 
         # Keep Dirichlet BCs small (wood_fix + minimal geometric anchors only).
-        u_dofs_bc = u_dofs.copy()
+        # Enforce int32 explicitly before any C++ BC call.
+        u_dofs_bc = np.asarray(u_dofs, dtype=np.int32)
         print(
             f"[DIAG] structural-only dof partition: "
             f"n_u_local={n_u_local}, structural_dofs={structural_dofs.size}, "
