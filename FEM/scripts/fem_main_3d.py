@@ -586,9 +586,14 @@ def _slepc_shift_invert_batch(
     ksp = st.getKSP()
     pc = ksp.getPC()
     _debug_rank("Entering KSP Setup")
-    # Configurable ST solve path (iterative default for VM stability).
-    st_ksp_type = str(solver_cfg.get("st_ksp_type", "cg"))
-    st_pc_type = str(solver_cfg.get("st_pc_type", "gamg"))
+    # Configurable ST solve path; default to direct LU (MUMPS) for robust coupled solves.
+    use_iterative = _solver_bool(solver_cfg, "use_iterative", default=False)
+    if use_iterative:
+        st_ksp_type = str(solver_cfg.get("st_ksp_type", "cg"))
+        st_pc_type = str(solver_cfg.get("st_pc_type", "gamg"))
+    else:
+        st_ksp_type = str(solver_cfg.get("st_ksp_type", "preonly"))
+        st_pc_type = str(solver_cfg.get("st_pc_type", "lu"))
     ksp.setType(st_ksp_type)
     pc.setType(st_pc_type)
     if st_pc_type.lower() == "lu":
