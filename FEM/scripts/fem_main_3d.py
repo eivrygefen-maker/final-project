@@ -389,6 +389,115 @@ def _slepc_shift_invert_batch(
     return nconv, out
 
 
+def _solve_structural_only_evp(
+    msh: mesh.Mesh,
+    facet_tags,
+    config: Dict,
+    num_modes: int,
+    status_callback=None,
+) -> Tuple[mesh.Mesh, fem.FunctionSpace, List[float], np.ndarray, int, int]:
+    """Structural-only diagnostic EVP (displacement field only, no acoustic coupling)."""
+    _emit("[diag] structural-only diagnosis enabled: solving u-field EVP only.", status_callback=status_callback)
+    tdim = msh.topology.dim
+    fdim = tdim - 1
+    n = ufl.FacetNormal(msh)
+    P = ufl.Identity(3) - ufl.outer(n, n)
+
+    u_el = element("Lagrange", msh.basix_cell(), 1, shape=(3,))
+    V_u = fem.functionspace(msh, u_el)
+    u = ufl.TrialFunction(V_u)
+    v = ufl.TestFunction(V_u)
+
+    xdmf_ds = ufl.Measure("ds", domain=msh, subdomain_data=facet_tags)
+    E_eff, nu_eff, rho_eff, thickness = _effective_wood_properties(config)
+    mu = E_eff / (2.0 * (1.0 + nu_eff))
+    lam = E_eff * nu_eff / ((1.0 + nu_eff) * (1.0 - 2.0 * nu_eff))
+    D_bend = E_eff * thickness ** 3 / (12.0 * (1.0 - nu_eff ** 2))
+
+    wood_tag_top = int(np.sum(facet_tags.values == WOOD_SURFACE_TAGS[0]))
+    wood_tag_shell = int(np.sum(facet_tags.values == WOOD_SURFACE_TAGS[1]))
+    if wood_tag_top + wood_tag_shell > 0:
+        wood_ds = xdmf_ds(WOOD_SURFACE_TAGS[0]) + xdmf_ds(WOOD_SURFACE_TAGS[1])
+    else:
+        wood_ds = ufl.ds(domain=msh)
+        _emit(
+            "[diag][warn] structural-only run: wood facet tags missing; using full exterior ds.",
+            status_callback=status_callback,
+            level="warning",
+        )
+
+    def eps_surface(uu):
+        grad_u = ufl.grad(uu)
+        grad_tan = P * grad_u * P
+        return 0.5 * (grad_tan + ufl.transpose(grad_tan))
+
+    eps_u = eps_surface(u)
+    eps_v = eps_surface(v)
+    w_n = ufl.dot(u, n)
+    v_n = ufl.dot(v, n)
+
+    a_uu = (
+        thickness * (2.0 * mu * ufl.inner(eps_u, eps_v) + lam * ufl.tr(eps_u) * ufl.tr(eps_v))
+        + D_bend * ufl.inner(P * ufl.grad(w_n), P * ufl.grad(v_n))
+    ) * wood_ds
+    m_uu = (rho_eff * thickness) * ufl.dot(u, v) * wood_ds
+
+    # Same structural grounding protocol as coupled run.
+    fixed_facets = np.array(facet_tags.find(4), dtype=np.int32)
+    if fixed_facets.size == 0:
+        fixed_facets = np.array(facet_tags.find(WOOD_SURFACE_TAGS[1]), dtype=np.int32)
+    if fixed_facets.size == 0:
+        fixed_facets = np.array(facet_tags.find(WOOD_SURFACE_TAGS[0]), dtype=np.int32)
+    u_dofs = np.array(fem.locate_dofs_topological(V_u, fdim, fixed_facets), dtype=np.int32)
+    if u_dofs.size == 0:
+        raise RuntimeError("Structural-only diagnosis failed: u_dofs is empty.")
+    bc_u = fem.dirichletbc(np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType), u_dofs, V_u)
+
+    A = assemble_matrix(fem.form(a_uu), bcs=[bc_u])
+    A.assemble()
+    M = assemble_matrix(fem.form(m_uu), bcs=[bc_u])
+    M.assemble()
+
+    eps = SLEPc.EPS().create(MPI.COMM_WORLD)
+    eps.setOperators(A, M)
+    eps.setProblemType(SLEPc.EPS.ProblemType.GHEP)
+    eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
+    eps.setWhichEigenpairs(SLEPc.EPS.Which.SMALLEST_REAL)
+    nev = int(max(1, num_modes))
+    eps.setDimensions(nev, int(max(40, 4 * nev)))
+    eps.setTolerances(1e-6, 2000)
+    eps.setFromOptions()
+    eps.solve()
+    nconv = eps.getConverged()
+    if nconv <= 0:
+        raise RuntimeError("Structural-only diagnosis: no converged eigenpairs.")
+
+    rvec = A.createVecRight()
+    freqs_hz: List[float] = []
+    vectors: List[np.ndarray] = []
+    for i in range(min(nev, nconv)):
+        eig = eps.getEigenpair(i, rvec)
+        eig_r = float(np.real(eig))
+        if eig_r <= 1.0e-14:
+            continue
+        freqs_hz.append(math.sqrt(eig_r) / (2.0 * math.pi))
+        vectors.append(rvec.array.copy())
+    eps.destroy()
+
+    if not freqs_hz:
+        raise RuntimeError("Structural-only diagnosis: no positive eigenvalues.")
+    order = np.argsort(np.array(freqs_hz))
+    freqs_hz = [freqs_hz[int(i)] for i in order]
+    eigvecs = np.stack([vectors[int(i)] for i in order], axis=1)
+
+    print(f"[DIAG] Structural-only first {len(freqs_hz)} mode(s): {[round(f, 3) for f in freqs_hz]}")
+    if freqs_hz:
+        print(f"[DIAG] Structural-only first mode: {freqs_hz[0]:.3f} Hz")
+    sys.stdout.flush()
+    n_u = int(V_u.dofmap.index_map.size_local * V_u.dofmap.index_map_bs)
+    return msh, V_u, freqs_hz, eigvecs, n_u, 0
+
+
 def _solve_coupled_evp(
     mesh_file: Path,
     config: Dict,
@@ -407,6 +516,14 @@ def _solve_coupled_evp(
     sys.stdout.flush()
 
     msh, cell_tags, facet_tags = _load_mesh_and_tags(mesh_file, status_callback=status_callback)
+    if solve_evp and _solver_bool(config.get("solver", {}), "structural_only_diagnosis", default=False):
+        return _solve_structural_only_evp(
+            msh=msh,
+            facet_tags=facet_tags,
+            config=config,
+            num_modes=max(1, int(config.get("solver", {}).get("structural_only_num_modes", 10))),
+            status_callback=status_callback,
+        )
     coords = msh.geometry.x
     print(
         f"[DIAG] Mesh Bounds - X: {coords[:, 0].min()} to {coords[:, 0].max()}"
@@ -1062,7 +1179,11 @@ def run_fem_3d_simulation(config_path, status_callback=None):
     npz_file = mode_dir / "coupled_modes_raw.npz"
     mode_dir.mkdir(parents=True, exist_ok=True)
     np.savez(npz_file, eigvecs=eigvecs, n_u=n_u, n_p=n_p)
-    vtk_files = _write_mode_files(msh, W, eigvecs, mode_dir, status_callback=status_callback)
+    if int(n_p) > 0:
+        vtk_files = _write_mode_files(msh, W, eigvecs, mode_dir, status_callback=status_callback)
+    else:
+        vtk_files = []
+        _emit("[diag] structural-only diagnosis run: skipping mixed-field XDMF mode export.", status_callback=status_callback)
 
     output_data = {
         "analysis": "acoustic_structural_coupled_eigen",
