@@ -351,14 +351,15 @@ def create_guitar_mesh():
             gmsh.model.mesh.field.setNumber(thresh_field, "SizeMax", 0.012)
             gmsh.model.mesh.field.setNumber(thresh_field, "DistMin", 0.001)
             gmsh.model.mesh.field.setNumber(thresh_field, "DistMax", 0.015)
-            field_type = gmsh.model.mesh.field.getType(thresh_field)
-            print(f"[DEBUG] Field {thresh_field} created as type: {field_type}")
             print(
                 f"[diag] Distance+Threshold background field enabled on wood surfaces "
                 f"(n_surfaces={len(wood_surface_tags)})."
             )
             # Keep this as the very last field instruction before mesh generation.
-            gmsh.model.mesh.field.setAsBackgroundMesh(thresh_field)
+            try:
+                gmsh.model.mesh.field.setAsBackgroundMesh(thresh_field)
+            except Exception as exc:
+                raise RuntimeError(f"Failed to set Threshold field as background mesh: {exc}")
 
     try:
         print(
