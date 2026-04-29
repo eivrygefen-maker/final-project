@@ -161,16 +161,48 @@ def _convert_msh_to_xdmf_with_meshio(mesh_file: Path, status_callback=None):
 
 
 def _load_mesh_with_fallback(mesh_file: Path, status_callback=None):
-    # Strict primary path: Generate -> Convert -> Load (no fallback alternatives).
-    vol_xdmf, fac_xdmf = _convert_msh_to_xdmf_with_meshio(mesh_file, status_callback=status_callback)
+    # Direct Gmsh->FEniCSx import:
+    # Use dolfinx.io.gmsh.model_to_mesh to construct the mesh and tagged meshtags
+    # directly from the .msh file (no meshio conversion / XDMF loading).
+    _emit(f"[mesh] loading via dolfinx.io.gmsh.model_to_mesh: {mesh_file}", status_callback=status_callback)
 
-    with io.XDMFFile(MPI.COMM_WORLD, str(vol_xdmf), "r") as xdmf:
-        msh = xdmf.read_mesh(name="Grid")
-        msh.topology.create_connectivity(msh.topology.dim, msh.topology.dim - 1)
-        cell_tags = xdmf.read_meshtags(msh, name="Grid")
-    with io.XDMFFile(MPI.COMM_WORLD, str(fac_xdmf), "r") as xdmf:
-        msh.topology.create_connectivity(msh.topology.dim - 1, msh.topology.dim)
-        facet_tags = xdmf.read_meshtags(msh, name="Grid")
+    # Import gmsh and dolfinx gmsh helpers in a version-tolerant way.
+    try:
+        import gmsh  # type: ignore
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "Gmsh Python module is required for dolfinx.io.gmsh.model_to_mesh mesh loading.",
+            name="gmsh",
+        ) from exc
+
+    try:
+        from dolfinx.io import gmsh as gmshio  # dolfinx >= 0.10
+    except Exception:
+        # Older dolfinx variants may expose gmshio under a different name.
+        from dolfinx.io import gmshio as gmshio  # type: ignore
+
+    rank = 0
+    gdim = 3
+
+    # model_to_mesh only processes the gmsh model on `rank`; other ranks can pass `None`.
+    gmsh_model = gmsh.model if MPI.COMM_WORLD.rank == rank else None
+    if MPI.COMM_WORLD.rank == rank:
+        gmsh.initialize()
+        gmsh.open(str(mesh_file))
+        _emit("[mesh] gmsh file opened successfully on rank 0.", status_callback=status_callback)
+
+    mesh_data = gmshio.model_to_mesh(gmsh_model, MPI.COMM_WORLD, rank, gdim=gdim)
+
+    if MPI.COMM_WORLD.rank == rank:
+        gmsh.finalize()
+
+    msh = mesh_data.mesh
+    cell_tags = mesh_data.cell_tags
+    facet_tags = mesh_data.facet_tags
+
+    # Ensure connectivity requested elsewhere is available.
+    msh.topology.create_connectivity(msh.topology.dim, msh.topology.dim - 1)
+    msh.topology.create_connectivity(msh.topology.dim - 1, msh.topology.dim)
     return msh, cell_tags, facet_tags
 
 
@@ -198,6 +230,20 @@ def _load_mesh_and_tags(mesh_file: Path, status_callback=None):
         f"unique facet tags={np.unique(facet_tags.values).tolist()}",
         status_callback=status_callback,
     )
+    try:
+        fdim = msh.topology.dim - 1
+        n_facets_local = int(msh.topology.index_map(fdim).size_local)
+        fidx = np.asarray(facet_tags.indices, dtype=np.int32)
+        in_range = int(np.sum((fidx >= 0) & (fidx < n_facets_local)))
+        _emit(
+            f"[diag] facet_tags map check: dim={facet_tags.dim}, n_local_facets={n_facets_local}, "
+            f"tagged_facets={fidx.size}, in_local_range={in_range}, "
+            f"find1={facet_tags.find(1).size}, find2={facet_tags.find(2).size}, "
+            f"find3={facet_tags.find(3).size}, find4={facet_tags.find(4).size}",
+            status_callback=status_callback,
+        )
+    except Exception as exc:
+        _emit(f"[diag][warn] facet_tags map check failed: {exc}", status_callback=status_callback, level="warning")
     # Explicit per-tag sanity counts requested for fallback validation.
     vol_counts = {1: int(np.sum(cell_tags.values == 1)), 2: int(np.sum(cell_tags.values == 2)),
                   3: int(np.sum(cell_tags.values == 3)), 10: int(np.sum(cell_tags.values == 10))}
