@@ -4,6 +4,7 @@ import math
 import gc
 import subprocess
 import sys
+import builtins
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -41,22 +42,34 @@ LOGGER.propagate = False
 
 WOOD_SURFACE_TAGS = (1, 3)
 AIR_VOLUME_TAG = 10
+ROOT_RANK = 0
+
+
+def _root_print(*args, **kwargs):
+    """Hard silence for worker ranks to avoid MPI stdio contention/spin-waits."""
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        builtins.print(*args, **kwargs)
+        sys.stdout.flush()
+        sys.stderr.flush()
+
+
+# Override module-local print usage to root-only.
+print = _root_print
 
 
 def _emit(message: str, status_callback=None, level: str = "info") -> None:
-    if level == "error":
-        LOGGER.error(message)
-    elif level == "warning":
-        LOGGER.warning(message)
-    else:
-        LOGGER.info(message)
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        if level == "error":
+            LOGGER.error(message)
+        elif level == "warning":
+            LOGGER.warning(message)
+        else:
+            LOGGER.info(message)
     rank = MPI.COMM_WORLD.rank
-    is_root = rank == 0
+    is_root = rank == ROOT_RANK
     should_print = is_root or level == "error"
     if should_print:
         print(message)
-        sys.stdout.flush()
-        sys.stderr.flush()
     if status_callback is not None and is_root:
         status_callback(message)
 
@@ -646,6 +659,7 @@ def _solve_structural_only_evp(
     print(f"[DIAG] structural locate check: len(facets_t1)={len(facets_t1)}, len(dofs_on_t1_facets)={len(dofs_t1)}")
     sys.stdout.flush()
     if facets_fix.size > 0:
+        msh.comm.barrier()
         u_dofs = np.array(fem.locate_dofs_topological(V_u, fdim, facets_fix), dtype=np.int32)
     if u_dofs.size == 0:
         coords = msh.geometry.x
@@ -682,8 +696,8 @@ def _solve_structural_only_evp(
         if u_dof_blocks:
             u_dofs = np.array(np.unique(np.concatenate(u_dof_blocks)), dtype=np.int32)
 
-    print(f"[DIAG] structural BC dofs: {u_dofs.size}")
-    sys.stdout.flush()
+    if msh.comm.rank == ROOT_RANK:
+        print(f"[DIAG] structural BC dofs: {u_dofs.size}")
     if u_dofs.size == 0:
         raise RuntimeError("Structural-only diagnosis failed: u_dofs is empty after robust localization.")
     _phase_sync(21001, "2100.1 after BC dofs check", status_callback=status_callback)
@@ -695,6 +709,7 @@ def _solve_structural_only_evp(
     structural_dofs = np.array([], dtype=np.int32)
     _phase_sync(21002, "2100.2 after structural facet set", status_callback=status_callback)
     if structural_facets.size > 0:
+        msh.comm.barrier()
         structural_dofs = np.array(fem.locate_dofs_topological(V_u, fdim, structural_facets), dtype=np.int32)
     _phase_sync(21003, "2100.3 after structural dof locate", status_callback=status_callback)
     n_u_local = int(V_u.dofmap.index_map.size_local * V_u.dofmap.index_map_bs)
@@ -716,6 +731,7 @@ def _solve_structural_only_evp(
     sys.stdout.flush()
     _phase_sync(21005, "2100.5 after dof partition print", status_callback=status_callback)
 
+    msh.comm.barrier()
     bc_u = fem.dirichletbc(np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType), u_dofs_bc, V_u)
     _phase_sync(21006, "2100.6 after dirichletbc creation", status_callback=status_callback)
 
