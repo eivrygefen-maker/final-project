@@ -505,7 +505,7 @@ def _solve_structural_only_evp(
     # Ghost term to guarantee a non-empty diagonal for all displacement DOFs,
     # including air DOFs that have zero shell measure. This avoids missing-diagonal
     # PETSc errors and sparsity-pattern insertions.
-    ghost_eps = float(config.get("solver", {}).get("structural_diag_ghost_eps", 1.0e-12))
+    ghost_eps = float(config.get("solver", {}).get("structural_diag_ghost_eps", 1.0e-14))
     if ghost_eps > 0.0:
         full_dx = ufl.Measure("dx", domain=msh)
         a_uu = a_uu + ghost_eps * ufl.dot(u, v) * full_dx
@@ -622,7 +622,7 @@ def _solve_structural_only_evp(
     # produce zero stiffness/mass entries. We inject a tiny diagonal penalty on air DOFs.
     try:
         if air_dofs.size > 0:
-            air_pen_factor = float(config.get("solver", {}).get("structural_air_diag_penalty", 1.0))
+            air_pen_factor = float(config.get("solver", {}).get("structural_air_diag_penalty", 1.0e-9))
             diagK = K.getDiagonal()
             diagM = M.getDiagonal()
             dK = diagK.array
@@ -666,12 +666,9 @@ def _solve_structural_only_evp(
     eps.setOperators(A, M)
     eps.setProblemType(SLEPc.EPS.ProblemType.GHEP)
     eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
-    shift_hz = float(config.get("solver", {}).get("structural_shift_target_hz", 300.0))
-    target_lambda = (2.0 * math.pi * shift_hz) ** 2
-    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
-    eps.setTarget(target_lambda)
+    # Structural diagnosis: start from ~0 and move up to capture true fundamentals.
+    eps.setWhichEigenpairs(SLEPc.EPS.Which.SMALLEST_MAGNITUDE)
     st = eps.getST()
-    st.setType(SLEPc.ST.Type.SINVERT)
     # Robustness: prefer direct LU in spectral transformation for tiny pivots.
     try:
         ksp = st.getKSP()
@@ -700,19 +697,23 @@ def _solve_structural_only_evp(
 
     rvec = A.createVecRight()
     all_eigs: List[float] = []
+    rigid_tol = float(config.get("solver", {}).get("structural_rigid_lambda_tol", 1.0e-10))
+    skipped_rigid = 0
     freqs_hz: List[float] = []
     vectors: List[np.ndarray] = []
     for i in range(min(nev, nconv)):
         eig = eps.getEigenpair(i, rvec)
         eig_r = float(np.real(eig))
         all_eigs.append(eig_r)
-        if eig_r <= 1.0e-14:
+        if eig_r <= rigid_tol:
+            skipped_rigid += 1
             continue
         freqs_hz.append(math.sqrt(eig_r) / (2.0 * math.pi))
         vectors.append(rvec.array.copy())
     eps.destroy()
 
-    print(f"[DIAG] Structural-only shift target: {shift_hz:.1f} Hz (lambda={target_lambda:.6e})")
+    print(f"[DIAG] Structural-only eigen search: WHICH=SMALLEST_MAGNITUDE")
+    print(f"[DIAG] Structural-only rigid filter: lambda_tol={rigid_tol:.3e}, skipped={skipped_rigid}")
     print(f"[DIAG] Raw eigenvalues: {[float(x) for x in all_eigs[:10]]}")
     sys.stdout.flush()
 
