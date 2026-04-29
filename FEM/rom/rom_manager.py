@@ -342,7 +342,7 @@ class ROMManager:
     def collect_snapshots(
         self,
         shape_name: str,
-        num_modes: int = 15,
+        num_modes: int = 10,
         sampling: Optional[str] = None,
         lhs_samples: Optional[int] = None,
         pool_size: int = 500,

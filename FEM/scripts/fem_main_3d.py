@@ -1575,7 +1575,7 @@ def assemble_coupled_operators_for_rom(config: Dict, status_callback=None):
     return msh, W, A, M
 
 
-def run_fom_for_rom(config: Dict, num_modes: int = 15, status_callback=None):
+def run_fom_for_rom(config: Dict, num_modes: int = 10, status_callback=None):
     _phase_sync(3000, "run_fom_for_rom enter", status_callback=status_callback)
     mesh_file = Path(config["solver"]["mesh_file"])
     if MPI.COMM_WORLD.rank == 0 and not mesh_file.exists():
@@ -1701,6 +1701,8 @@ def run_fem_3d_simulation(config_path, status_callback=None):
     config["results"]["vtk_mode_files"] = vtk_files
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=4)
+
+    print(f"[RESULT] First {len(freqs)} mode frequencies (Hz): {[round(float(f), 3) for f in freqs]}")
 
     # Keep only the latest cache artifacts after a successful run.
     _cleanup_xdmf_cache_keep_latest(cache_dir, keep_last=2, status_callback=status_callback)

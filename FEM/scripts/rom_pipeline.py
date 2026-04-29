@@ -79,7 +79,7 @@ def main():
     p_offline.add_argument("--shape", required=True)
     p_offline.add_argument("--pool-size", type=int, default=500)
     p_offline.add_argument("--max-runs", type=int, default=50)
-    p_offline.add_argument("--num-modes", type=int, default=15)
+    p_offline.add_argument("--num-modes", type=int, default=10)
     p_offline.add_argument("--force-pool-rebuild", action="store_true", default=False)
     p_offline.add_argument("--sampling", choices=["structured", "lhs"], default="lhs")
     p_offline.add_argument("--lhs-samples", type=int, default=None)
@@ -107,7 +107,7 @@ def main():
     p_compare = sub.add_parser("compare", help="Run FOM vs ROM comparison.")
     p_compare.add_argument("--shape", required=True)
     p_compare.add_argument("--nev", type=int, default=3)
-    p_compare.add_argument("--fom-modes", type=int, default=15)
+    p_compare.add_argument("--fom-modes", type=int, default=10)
     p_compare.add_argument("--set", nargs="*", default=[], help="Parameter overrides key=value")
 
     args = parser.parse_args()
