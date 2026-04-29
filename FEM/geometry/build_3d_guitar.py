@@ -282,11 +282,16 @@ def create_guitar_mesh():
         wood_fix_surfs = [body_surfs[0]]
 
     # Define physical groups using fixed tag protocol.
-    gmsh.model.addPhysicalGroup(2, top_plate_surfs, tag=1, name="Top_Plate")
-    gmsh.model.addPhysicalGroup(2, soundhole_surfs, tag=2, name="Soundhole")
-    gmsh.model.addPhysicalGroup(2, body_surfs, tag=3, name="Body_Shell")
-    gmsh.model.addPhysicalGroup(2, wood_fix_surfs, tag=4, name="wood_fix")
-    gmsh.model.addPhysicalGroup(3, air_vols, tag=10, name="Air_Internal")
+    pg_top = gmsh.model.addPhysicalGroup(2, top_plate_surfs, tag=1)
+    gmsh.model.setPhysicalName(2, pg_top, "Top_Plate")
+    pg_soundhole = gmsh.model.addPhysicalGroup(2, soundhole_surfs, tag=2)
+    gmsh.model.setPhysicalName(2, pg_soundhole, "Soundhole")
+    pg_body = gmsh.model.addPhysicalGroup(2, body_surfs, tag=3)
+    gmsh.model.setPhysicalName(2, pg_body, "Body_Shell")
+    pg_fix = gmsh.model.addPhysicalGroup(2, wood_fix_surfs, tag=4)
+    gmsh.model.setPhysicalName(2, pg_fix, "wood_fix")
+    pg_air = gmsh.model.addPhysicalGroup(3, air_vols, tag=10)
+    gmsh.model.setPhysicalName(3, pg_air, "Air_Internal")
     print(f"[diag] wood_fix surfaces (tag=4): {wood_fix_surfs}")
     air_group_entities = gmsh.model.getEntitiesForPhysicalGroup(3, 10)
     print(f"[diag] Physical Group 10 (Air_Internal) volume entities: {list(air_group_entities)}")
