@@ -59,7 +59,9 @@ def create_guitar_mesh():
         mesh_size_min = 0.020
         mesh_size_max = 0.020
     
-    print("DEBUG: Forcing Triple-Tier Mesh: 0.0015m wood, 0.007m transition, 0.040m far field.")
+    print(
+        "DEBUG: Wood 0.0015m + distance-based air: <=5cm ->15mm, 5-40cm ramp to 120mm, >40cm ->120mm."
+    )
     print(f"Building geometry with Thickness: {t*1000:.1f}mm, Mesh Size: {mesh_size*1000:.2f}mm")
     print(f"[diag] preview_mode={is_preview}, FEM_ALLOW_PREVIEW={os.environ.get('FEM_ALLOW_PREVIEW', '0')}")
     
@@ -472,11 +474,10 @@ def create_guitar_mesh():
     gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
     gmsh.option.setNumber("Mesh.Algorithm", 6)  # Frontal-Delaunay
 
-    # Triple-tier refinement strategy:
-    #   Level 1 (Fine): 0.0015 m on wood surfaces/volumes
-    #   Level 2 (Transition): 0.0015 -> 0.008 m within 0.02 m from wood
-    #   Level 3 (Coarse): 0.020 m in far-field air
-    # Combined with Min(...) to avoid conflicting constraints.
+    # Wood: 1.5 mm via Restrict on wood faces/volumes.
+    # Air: distance from wood surfaces -> Threshold (linear in Gmsh): d<5cm => 15 mm,
+    #      d in [5cm, 40cm] => linear 15 mm -> 120 mm, d>40 cm => 120 mm.
+    # Min(fine_restrict, air_grad) keeps wood dense; air coarsens toward the box boundary.
     if not is_preview:
         wood_surface_tags = top_plate_surfs + body_surfs
         if not top_plate_surfs:
@@ -499,26 +500,23 @@ def create_guitar_mesh():
             gmsh.model.mesh.field.setNumbers(fine_restrict, "FacesList", wood_surface_tags)
             gmsh.model.mesh.field.setNumbers(fine_restrict, "VolumesList", wood_vols)
 
-            # Level 2 (Transition): increase away from wood up to 7 mm at 3 cm.
-            transition_field = gmsh.model.mesh.field.add("Threshold")
-            gmsh.model.mesh.field.setNumber(transition_field, "InField", dist_field)
-            gmsh.model.mesh.field.setNumber(transition_field, "SizeMin", 0.0015)
-            gmsh.model.mesh.field.setNumber(transition_field, "SizeMax", 0.0070)
-            gmsh.model.mesh.field.setNumber(transition_field, "DistMin", 0.0)
-            gmsh.model.mesh.field.setNumber(transition_field, "DistMax", 0.030)
+            # Air: distance-based characteristic length (Gmsh Threshold = linear between distances).
+            # Convention: I < DistMin -> SizeMin; I > DistMax -> SizeMax; else linear in I.
+            # d < 5 cm -> 15 mm; d in [5 cm, 40 cm] -> 15 mm .. 120 mm; d > 40 cm -> 120 mm.
+            air_grad = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(air_grad, "InField", dist_field)
+            gmsh.model.mesh.field.setNumber(air_grad, "DistMin", 0.05)
+            gmsh.model.mesh.field.setNumber(air_grad, "DistMax", 0.40)
+            gmsh.model.mesh.field.setNumber(air_grad, "SizeMin", 0.015)
+            gmsh.model.mesh.field.setNumber(air_grad, "SizeMax", 0.120)
 
-            # Level 3 (Coarse): far-field target in air.
-            coarse_field = gmsh.model.mesh.field.add("MathEval")
-            gmsh.model.mesh.field.setString(coarse_field, "F", "0.040")
-
-            # Combine all constraints using Min to prevent overlap conflicts.
+            # Combine: wood-restricted 1.5 mm vs air gradient (do not add a low plateau field or it caps coarsening).
             min_field = gmsh.model.mesh.field.add("Min")
-            gmsh.model.mesh.field.setNumbers(
-                min_field, "FieldsList", [coarse_field, transition_field, fine_restrict]
-            )
+            gmsh.model.mesh.field.setNumbers(min_field, "FieldsList", [air_grad, fine_restrict])
             print(
-                "[diag] Triple-tier background field enabled "
-                f"(fine=1.5mm, transition<=7mm@3cm, coarse=40mm; n_surfaces={len(wood_surface_tags)})."
+                "[diag] Distance-based air sizing enabled "
+                f"(wood=1.5mm restrict; air: d<=5cm->15mm, 5cm<d<=40cm linear->120mm, d>40cm->120mm; "
+                f"n_wood_surfaces={len(wood_surface_tags)})."
             )
             # Keep this as the very last field instruction before mesh generation.
             try:
