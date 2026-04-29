@@ -650,90 +650,104 @@ def _solve_structural_only_evp(
     except Exception as exc:
         _emit(f"[diag][warn] V_u coverage diagnostic failed: {exc}", status_callback=status_callback, level="warning")
 
-    # BC logic: only wood_fix (tag 4), otherwise minimal geometric anchors.
-    u_dofs = np.array([], dtype=np.int32)
-    # Requested diagnostic: track where facet->dof mapping drops.
-    dofs_t1 = np.array([], dtype=np.int32)
-    if facets_t1.size > 0:
-        dofs_t1 = np.array(fem.locate_dofs_topological(V_u, fdim, facets_t1), dtype=np.int32)
-    print(f"[DIAG] structural locate check: len(facets_t1)={len(facets_t1)}, len(dofs_on_t1_facets)={len(dofs_t1)}")
-    sys.stdout.flush()
-    if facets_fix.size > 0:
+    # BC/topology block: strict empty-array guards and fail-fast MPI abort on any C++ backend failure.
+    try:
+        def _safe_locate_topo(space, entity_dim: int, entities: np.ndarray, label: str) -> np.ndarray:
+            if entities is None:
+                return np.array([], dtype=np.int32)
+            entities = np.asarray(entities, dtype=np.int32)
+            if entities.size == 0:
+                return np.array([], dtype=np.int32)
+            return np.array(fem.locate_dofs_topological(space, entity_dim, entities), dtype=np.int32)
+
+        # BC logic: only wood_fix (tag 4), otherwise minimal geometric anchors.
+        u_dofs = np.array([], dtype=np.int32)
+        dofs_t1 = _safe_locate_topo(V_u, fdim, facets_t1, "tag1 facets")
+        print(f"[DIAG] structural locate check: len(facets_t1)={len(facets_t1)}, len(dofs_on_t1_facets)={len(dofs_t1)}")
+
         msh.comm.barrier()
-        u_dofs = np.array(fem.locate_dofs_topological(V_u, fdim, facets_fix), dtype=np.int32)
-    if u_dofs.size == 0:
-        coords = msh.geometry.x
-        mins = np.min(coords, axis=0)
-        maxs = np.max(coords, axis=0)
-        diag = float(np.linalg.norm(maxs - mins))
-        tol = max(1.0e-12, 1.0e-8 * max(1.0, diag))
-        boundary_mask = (
-            np.isclose(coords[:, 0], mins[0], atol=tol)
-            | np.isclose(coords[:, 0], maxs[0], atol=tol)
-            | np.isclose(coords[:, 1], mins[1], atol=tol)
-            | np.isclose(coords[:, 1], maxs[1], atol=tol)
-            | np.isclose(coords[:, 2], mins[2], atol=tol)
-            | np.isclose(coords[:, 2], maxs[2], atol=tol)
+        u_dofs = _safe_locate_topo(V_u, fdim, facets_fix, "tag4_fix facets")
+        if u_dofs.size == 0:
+            coords = msh.geometry.x
+            mins = np.min(coords, axis=0)
+            maxs = np.max(coords, axis=0)
+            diag = float(np.linalg.norm(maxs - mins))
+            tol = max(1.0e-12, 1.0e-8 * max(1.0, diag))
+            boundary_mask = (
+                np.isclose(coords[:, 0], mins[0], atol=tol)
+                | np.isclose(coords[:, 0], maxs[0], atol=tol)
+                | np.isclose(coords[:, 1], mins[1], atol=tol)
+                | np.isclose(coords[:, 1], maxs[1], atol=tol)
+                | np.isclose(coords[:, 2], mins[2], atol=tol)
+                | np.isclose(coords[:, 2], maxs[2], atol=tol)
+            )
+            boundary_ids = np.where(boundary_mask)[0]
+            if boundary_ids.size == 0:
+                boundary_ids = np.arange(coords.shape[0], dtype=np.int32)
+            bcoords = coords[boundary_ids]
+            i_min_x = int(np.argpartition(bcoords[:, 0], 0)[0])
+            i_max_x = int(np.argpartition(bcoords[:, 0], bcoords.shape[0] - 1)[bcoords.shape[0] - 1])
+            i_min_y = int(np.argpartition(bcoords[:, 1], 0)[0])
+            anchor_ids = [int(boundary_ids[i_min_x]), int(boundary_ids[i_max_x]), int(boundary_ids[i_min_y])]
+            u_dof_blocks = []
+            for idx in anchor_ids:
+                pt = coords[idx]
+                def _u_anchor_marker(x, p=pt):
+                    return (
+                        np.isclose(x[0], p[0], atol=tol)
+                        & np.isclose(x[1], p[1], atol=tol)
+                        & np.isclose(x[2], p[2], atol=tol)
+                    )
+                u_dof_blocks.append(fem.locate_dofs_geometrical(V_u, _u_anchor_marker))
+            if u_dof_blocks:
+                u_dofs = np.array(np.unique(np.concatenate(u_dof_blocks)), dtype=np.int32)
+
+        if msh.comm.rank == ROOT_RANK:
+            print(f"[DIAG] structural BC dofs: {u_dofs.size}")
+        if u_dofs.size == 0:
+            raise RuntimeError("Structural-only diagnosis failed: u_dofs is empty after robust localization.")
+        _phase_sync(21001, "2100.1 after BC dofs check", status_callback=status_callback)
+
+        # Deactivate non-structural (air) displacement DOFs WITHOUT building a huge DirichletBC.
+        structural_facets = np.unique(np.concatenate([facets_t1, facets_t2, facets_t3])).astype(np.int32)
+        structural_dofs = np.array([], dtype=np.int32)
+        _phase_sync(21002, "2100.2 after structural facet set", status_callback=status_callback)
+        msh.comm.barrier()
+        structural_dofs = _safe_locate_topo(V_u, fdim, structural_facets, "structural facets 1/2/3")
+        _phase_sync(21003, "2100.3 after structural dof locate", status_callback=status_callback)
+        n_u_local = int(V_u.dofmap.index_map.size_local * V_u.dofmap.index_map_bs)
+        all_u_local = np.arange(n_u_local, dtype=np.int32)
+        if structural_dofs.size > 0:
+            structural_dofs = np.unique(structural_dofs)
+            air_dofs = np.setdiff1d(all_u_local, structural_dofs, assume_unique=False).astype(np.int32)
+        else:
+            air_dofs = all_u_local.copy()
+        _phase_sync(21004, "2100.4 after air dof partition", status_callback=status_callback)
+
+        # Keep Dirichlet BCs small (wood_fix + minimal geometric anchors only).
+        u_dofs_bc = u_dofs.copy()
+        print(
+            f"[DIAG] structural-only dof partition: "
+            f"n_u_local={n_u_local}, structural_dofs={structural_dofs.size}, "
+            f"air_dofs={air_dofs.size}, bc_dofs={u_dofs_bc.size}"
         )
-        boundary_ids = np.where(boundary_mask)[0]
-        if boundary_ids.size == 0:
-            boundary_ids = np.arange(coords.shape[0], dtype=np.int32)
-        bcoords = coords[boundary_ids]
-        i_min_x = int(np.argpartition(bcoords[:, 0], 0)[0])
-        i_max_x = int(np.argpartition(bcoords[:, 0], bcoords.shape[0] - 1)[bcoords.shape[0] - 1])
-        i_min_y = int(np.argpartition(bcoords[:, 1], 0)[0])
-        anchor_ids = [int(boundary_ids[i_min_x]), int(boundary_ids[i_max_x]), int(boundary_ids[i_min_y])]
-        u_dof_blocks = []
-        for idx in anchor_ids:
-            pt = coords[idx]
-            def _u_anchor_marker(x, p=pt):
-                return (
-                    np.isclose(x[0], p[0], atol=tol)
-                    & np.isclose(x[1], p[1], atol=tol)
-                    & np.isclose(x[2], p[2], atol=tol)
-                )
-            u_dof_blocks.append(fem.locate_dofs_geometrical(V_u, _u_anchor_marker))
-        if u_dof_blocks:
-            u_dofs = np.array(np.unique(np.concatenate(u_dof_blocks)), dtype=np.int32)
+        _phase_sync(21005, "2100.5 after dof partition print", status_callback=status_callback)
 
-    if msh.comm.rank == ROOT_RANK:
-        print(f"[DIAG] structural BC dofs: {u_dofs.size}")
-    if u_dofs.size == 0:
-        raise RuntimeError("Structural-only diagnosis failed: u_dofs is empty after robust localization.")
-    _phase_sync(21001, "2100.1 after BC dofs check", status_callback=status_callback)
-
-    # Deactivate non-structural (air) displacement DOFs WITHOUT building a huge DirichletBC.
-    # We compute the complement DOF set, then add a tiny diagonal penalty on those DOFs
-    # after assembling K/M (memory-safe compared to fem.dirichletbc(air_dofs)).
-    structural_facets = np.unique(np.concatenate([facets_t1, facets_t2, facets_t3])).astype(np.int32)
-    structural_dofs = np.array([], dtype=np.int32)
-    _phase_sync(21002, "2100.2 after structural facet set", status_callback=status_callback)
-    if structural_facets.size > 0:
         msh.comm.barrier()
-        structural_dofs = np.array(fem.locate_dofs_topological(V_u, fdim, structural_facets), dtype=np.int32)
-    _phase_sync(21003, "2100.3 after structural dof locate", status_callback=status_callback)
-    n_u_local = int(V_u.dofmap.index_map.size_local * V_u.dofmap.index_map_bs)
-    all_u_local = np.arange(n_u_local, dtype=np.int32)
-    if structural_dofs.size > 0:
-        structural_dofs = np.unique(structural_dofs)
-        air_dofs = np.setdiff1d(all_u_local, structural_dofs, assume_unique=False).astype(np.int32)
-    else:
-        air_dofs = all_u_local.copy()
-    _phase_sync(21004, "2100.4 after air dof partition", status_callback=status_callback)
-
-    # Keep Dirichlet BCs small (wood_fix + minimal geometric anchors only).
-    u_dofs_bc = u_dofs.copy()
-    print(
-        f"[DIAG] structural-only dof partition: "
-        f"n_u_local={n_u_local}, structural_dofs={structural_dofs.size}, "
-        f"air_dofs={air_dofs.size}, bc_dofs={u_dofs_bc.size}"
-    )
-    sys.stdout.flush()
-    _phase_sync(21005, "2100.5 after dof partition print", status_callback=status_callback)
-
-    msh.comm.barrier()
-    bc_u = fem.dirichletbc(np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType), u_dofs_bc, V_u)
-    _phase_sync(21006, "2100.6 after dirichletbc creation", status_callback=status_callback)
+        if u_dofs_bc.size > 0:
+            bc_u = fem.dirichletbc(np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType), u_dofs_bc, V_u)
+        else:
+            raise RuntimeError("Structural-only diagnosis failed: no BC dofs available for dirichletbc.")
+        _phase_sync(21006, "2100.6 after dirichletbc creation", status_callback=status_callback)
+    except Exception as e:
+        try:
+            rank = int(msh.comm.rank)
+            sys.stderr.write(f"[FATAL][Rank {rank}] topology/BC block failure: {e}\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+        msh.comm.Abort(1)
+        raise
 
     # Collective-safe JIT form compilation with explicit cache dir.
     _phase_sync(2101, "structural-only before form JIT", status_callback=status_callback)
