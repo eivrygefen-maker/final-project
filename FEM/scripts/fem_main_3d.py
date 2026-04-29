@@ -586,21 +586,20 @@ def _slepc_shift_invert_batch(
     ksp = st.getKSP()
     pc = ksp.getPC()
     _debug_rank("Entering KSP Setup")
-    # Shift-invert ST: direct LU + MUMPS (lean ICNTL) — iterative ST was unstable on this ill-conditioned system.
+    # Shift-invert ST: direct LU with PETSc's built-in dense LU (no MUMPS workspace / ICNTL limits).
     st_ksp_type = str(solver_cfg.get("st_ksp_type", "preonly"))
     st_pc_type = str(solver_cfg.get("st_pc_type", "lu"))
     ksp.setType(st_ksp_type)
     pc.setType(st_pc_type)
+    _st_factor = str(
+        solver_cfg.get(
+            "st_pc_factor_mat_solver_type",
+            solver_cfg.get("st_factor_solver_type", "petsc"),
+        )
+    )
     if st_pc_type.lower() == "lu":
         try:
-            pc.setFactorSolverType(
-                str(
-                    solver_cfg.get(
-                        "st_pc_factor_mat_solver_type",
-                        solver_cfg.get("st_factor_solver_type", "mumps"),
-                    )
-                )
-            )
+            pc.setFactorSolverType(_st_factor)
         except Exception:
             pass
     try:
@@ -608,29 +607,14 @@ def _slepc_shift_invert_batch(
     except Exception:
         pass
 
-    # MUMPS: ICNTL(14) workspace inflation (%); ICNTL(23)=0 uncapped MB; ICNTL(22)=1 enables OOC fallback.
-    mumps_icntl_14 = int(solver_cfg.get("mat_mumps_icntl_14", 5000))
-    mumps_icntl_23 = int(solver_cfg.get("mat_mumps_icntl_23", 0))
-    mumps_icntl_24 = int(solver_cfg.get("mat_mumps_icntl_24", 1))
-    mumps_icntl_22 = int(solver_cfg.get("mat_mumps_icntl_22", 1))
-    mumps_icntl_6 = int(solver_cfg.get("mat_mumps_icntl_6", 7))
-    mumps_icntl_12 = int(solver_cfg.get("mat_mumps_icntl_12", 1))
-    mumps_icntl_4 = int(solver_cfg.get("mat_mumps_icntl_4_root", 2 if MPI.COMM_WORLD.rank == 0 else 0))
     petsc_opts = PETSc.Options()
-    petsc_opts["mat_mumps_icntl_14"] = mumps_icntl_14
-    petsc_opts["mat_mumps_icntl_23"] = mumps_icntl_23
-    petsc_opts["mat_mumps_icntl_24"] = mumps_icntl_24
-    petsc_opts["mat_mumps_icntl_22"] = mumps_icntl_22
-    petsc_opts["mat_mumps_icntl_6"] = mumps_icntl_6
-    petsc_opts["mat_mumps_icntl_12"] = mumps_icntl_12
-    petsc_opts["mat_mumps_icntl_4"] = mumps_icntl_4
     if (
         MPI.COMM_WORLD.size > 1
         and str(st_pc_type).lower() == "lu"
         and MPI.COMM_WORLD.rank == ROOT_RANK
     ):
         _emit(
-            "[solver][warn] MUMPS LU + shift-invert is most stable with a single MPI process "
+            "[solver][warn] ST shift-invert LU is most stable with a single MPI process "
             f"(e.g. `mpiexec -n 1` or plain `python3`); MPI_COMM_WORLD.size={MPI.COMM_WORLD.size}.",
             status_callback=status_callback,
             level="warning",
@@ -650,12 +634,7 @@ def _slepc_shift_invert_batch(
     petsc_opts["st_ksp_type"] = st_ksp_type
     petsc_opts["st_pc_type"] = st_pc_type
     if st_pc_type.lower() == "lu":
-        petsc_opts["st_pc_factor_mat_solver_type"] = str(
-            solver_cfg.get(
-                "st_pc_factor_mat_solver_type",
-                solver_cfg.get("st_factor_solver_type", "mumps"),
-            )
-        )
+        petsc_opts["st_pc_factor_mat_solver_type"] = _st_factor
     petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "none"))
 
     ncv = int(solver_cfg.get("target_ncv", max(40, 4 * batch)))
@@ -672,9 +651,7 @@ def _slepc_shift_invert_batch(
         diag_max = float("nan")
     _emit(
         f"[solver] shift-invert batch center {shift_hz:.2f} Hz (lambda={target_lambda:.6e} s^-2), "
-        f"batch={batch}, KSP={ksp.getType()}, PC={pc.getType()}, "
-        f"MUMPS(ICNTL4={mumps_icntl_4}, ICNTL6={mumps_icntl_6}, ICNTL12={mumps_icntl_12}, "
-        f"ICNTL14={mumps_icntl_14}, ICNTL23={mumps_icntl_23}, ICNTL24={mumps_icntl_24}, ICNTL22={mumps_icntl_22}), "
+        f"batch={batch}, KSP={ksp.getType()}, PC={pc.getType()}, factor={_st_factor} (PETSc native LU; no MUMPS ICNTL), "
         f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}",
         status_callback=status_callback,
     )
@@ -766,8 +743,9 @@ def _solve_structural_only_evp(
     )
     sys.stdout.flush()
 
-    # P1 displacement for minimal DOFs (matches node count scale); MUMPS-friendly for large coupled runs.
-    u_el = element("Lagrange", msh.basix_cell(), 1, shape=(3,))
+    # Hard-coded P1 displacement (same as coupled path; config cannot raise FE order here).
+    _u_deg_struct = 1
+    u_el = element("Lagrange", msh.basix_cell(), _u_deg_struct, shape=(3,))
     V_u = fem.functionspace(msh, u_el)
     u = ufl.TrialFunction(V_u)
     v = ufl.TestFunction(V_u)
@@ -1191,15 +1169,36 @@ def _solve_coupled_evp(
         raise RuntimeError("Mesh topology appears empty (num_cells_global <= 0). Check XDMF read/conversion.")
 
     _emit("Step 2/5: Building mixed spaces and weak forms...", status_callback=status_callback)
-    # P1 / P1 mixed space: displacement and pressure both linear (DOFs ~ mesh scale, low MUMPS memory).
-    u_el = element("Lagrange", msh.basix_cell(), 1, shape=(3,))
-    p_el = element("Lagrange", msh.basix_cell(), 1)
+    # Hard-coded P1+P1 (ignore any future config-based FE order): minimizes global DOFs on this mesh.
+    _u_deg_coupled = 1
+    _p_deg_coupled = 1
+    u_el = element("Lagrange", msh.basix_cell(), _u_deg_coupled, shape=(3,))
+    p_el = element("Lagrange", msh.basix_cell(), _p_deg_coupled)
     W_el = mixed_element([u_el, p_el])
     W = fem.functionspace(msh, W_el)
     n_p_global = int(W.sub(1).dofmap.index_map.size_global * W.sub(1).dofmap.index_map_bs)
     n_u_global = int(W.sub(0).dofmap.index_map.size_global * W.sub(0).dofmap.index_map_bs)
+    _deg_u_dbg = getattr(u_el, "degree", None)
+    _deg_p_dbg = getattr(p_el, "degree", None)
+    try:
+        _du = _deg_u_dbg() if callable(_deg_u_dbg) else int(_deg_u_dbg)
+    except Exception:
+        _du = int(W.sub(0).element.basix_element.degree)
+    try:
+        _dp = _deg_p_dbg() if callable(_deg_p_dbg) else int(_deg_p_dbg)
+    except Exception:
+        _dp = int(W.sub(1).element.basix_element.degree)
+    try:
+        print(f"DEBUG: Degree for u is {u_el.degree()} and for p is {p_el.degree()}")
+    except Exception:
+        print(f"DEBUG: Degree for u is {_du} and for p is {_dp} (u_el.degree()/p_el.degree() unavailable)")
+    print(
+        f"DEBUG: mesh geometry nodes={msh.geometry.x.shape[0]}, "
+        f"global u DOFs={n_u_global}, global p DOFs={n_p_global}, "
+        f"mixed W global={n_u_global + n_p_global}"
+    )
     _emit(
-        f"[form] mixed P1+P1: global u DOFs n_u={n_u_global}, p DOFs n_p={n_p_global} "
+        f"[form] mixed P{_u_deg_coupled}+P{_p_deg_coupled}: global u DOFs n_u={n_u_global}, p DOFs n_p={n_p_global} "
         f"(acoustic forms use dx on air cells only, tag={AIR_VOLUME_TAG}).",
         status_callback=status_callback,
     )
