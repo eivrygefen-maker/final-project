@@ -96,8 +96,18 @@ def _debug_petsc_comm(name: str, obj) -> None:
 def _phase_sync(phase_id: int, label: str, status_callback=None) -> None:
     """Collective phase checksum; hangs exactly where ranks diverge."""
     comm = MPI.COMM_WORLD
+    try:
+        sys.stderr.write(f"[MPI-TRACE] Rank {comm.rank} ENTERING phase {phase_id:04d} ({label})\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
     checksum = comm.allreduce(int(phase_id), op=MPI.SUM)
     expected = int(phase_id) * int(comm.size)
+    try:
+        sys.stderr.write(f"[MPI-TRACE] Rank {comm.rank} EXITING phase {phase_id:04d} ({label})\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
     if comm.rank == 0:
         msg = f"[PHASE] {phase_id:04d} {label} checksum={checksum}/{expected}"
         print(msg)
@@ -755,6 +765,11 @@ def _solve_structural_only_evp(
         raise
 
     # Collective-safe JIT form compilation with explicit cache dir.
+    try:
+        sys.stderr.write(f"[MPI-TRACE] Rank {msh.comm.rank} ABOUT_TO_CALL phase_sync 2101\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
     _phase_sync(2101, "structural-only before form JIT", status_callback=status_callback)
     jit_cache_dir = Path(
         config.get("solver", {}).get(
@@ -772,8 +787,28 @@ def _solve_structural_only_evp(
                     pass
     _phase_sync(2102, "structural-only after jit cache prep", status_callback=status_callback)
     jit_options = {"cache_dir": str(jit_cache_dir)}
+    try:
+        sys.stderr.write(f"[MPI-TRACE] Rank {msh.comm.rank} ENTERING fem.form(a_uu)\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
     a_uu_form = fem.form(a_uu, jit_options=jit_options)
+    try:
+        sys.stderr.write(f"[MPI-TRACE] Rank {msh.comm.rank} EXITING fem.form(a_uu)\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+    try:
+        sys.stderr.write(f"[MPI-TRACE] Rank {msh.comm.rank} ENTERING fem.form(m_uu)\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
     m_uu_form = fem.form(m_uu, jit_options=jit_options)
+    try:
+        sys.stderr.write(f"[MPI-TRACE] Rank {msh.comm.rank} EXITING fem.form(m_uu)\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
     _phase_sync(2103, "structural-only after form JIT", status_callback=status_callback)
 
     _phase_sync(2105, "structural-only before matrix assembly", status_callback=status_callback)
