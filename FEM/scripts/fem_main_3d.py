@@ -200,9 +200,12 @@ def _load_mesh_with_fallback(mesh_file: Path, status_callback=None):
     cell_tags = mesh_data.cell_tags
     facet_tags = mesh_data.facet_tags
 
-    # Ensure connectivity requested elsewhere is available.
+    # Ensure connectivity requested elsewhere is available immediately after gmsh import.
     msh.topology.create_connectivity(msh.topology.dim, msh.topology.dim - 1)
     msh.topology.create_connectivity(msh.topology.dim - 1, msh.topology.dim)
+    # Explicit vertex<->cell connectivity to avoid delayed connectivity warnings in downstream DOF lookup.
+    msh.topology.create_connectivity(0, msh.topology.dim)
+    msh.topology.create_connectivity(msh.topology.dim, 0)
     return msh, cell_tags, facet_tags
 
 
@@ -446,9 +449,12 @@ def _solve_structural_only_evp(
     _emit("[diag] structural-only diagnosis enabled: solving u-field EVP only.", status_callback=status_callback)
     tdim = msh.topology.dim
     fdim = tdim - 1
+    # Build all connectivity needed for facet- and vertex-based localization before creating V_u.
     msh.topology.create_connectivity(fdim, tdim)
     msh.topology.create_connectivity(tdim, fdim)
     msh.topology.create_connectivity(fdim, 0)
+    msh.topology.create_connectivity(0, tdim)
+    msh.topology.create_connectivity(tdim, 0)
 
     facets_t1 = np.array(facet_tags.find(1), dtype=np.int32)
     facets_t2 = np.array(facet_tags.find(2), dtype=np.int32)
@@ -517,6 +523,12 @@ def _solve_structural_only_evp(
 
     # BC logic: only wood_fix (tag 4), otherwise minimal geometric anchors.
     u_dofs = np.array([], dtype=np.int32)
+    # Requested diagnostic: track where facet->dof mapping drops.
+    dofs_t1 = np.array([], dtype=np.int32)
+    if facets_t1.size > 0:
+        dofs_t1 = np.array(fem.locate_dofs_topological(V_u, fdim, facets_t1), dtype=np.int32)
+    print(f"[DIAG] structural locate check: len(facets_t1)={len(facets_t1)}, len(dofs_on_t1_facets)={len(dofs_t1)}")
+    sys.stdout.flush()
     if facets_fix.size > 0:
         u_dofs = np.array(fem.locate_dofs_topological(V_u, fdim, facets_fix), dtype=np.int32)
     if u_dofs.size == 0:
