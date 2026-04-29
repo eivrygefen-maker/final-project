@@ -400,6 +400,8 @@ def _solve_structural_only_evp(
     _emit("[diag] structural-only diagnosis enabled: solving u-field EVP only.", status_callback=status_callback)
     tdim = msh.topology.dim
     fdim = tdim - 1
+    # Required for robust facet-based tag queries / DOF localization on some meshes.
+    msh.topology.create_connectivity(fdim, tdim)
     n = ufl.FacetNormal(msh)
     P = ufl.Identity(3) - ufl.outer(n, n)
 
