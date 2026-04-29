@@ -279,7 +279,7 @@ class ROMManager:
             with open(pool_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         if pool_path.exists() and force_rebuild:
-            pool_path.unlink()
+            pool_path.unlink(missing_ok=True)
         pool = self._create_lhs_pool(shape_name, sweep_cfg=sweep_cfg, total_samples=total_samples, seed=seed)
         self._write_json(pool_path, pool, rank=self.rank, comm=self.comm)
         return pool
