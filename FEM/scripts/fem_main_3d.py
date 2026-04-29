@@ -497,28 +497,13 @@ def _slepc_shift_invert_batch(
     ksp = st.getKSP()
     pc = ksp.getPC()
     _debug_rank("Entering KSP Setup")
-    use_iterative = bool(solver_cfg.get("st_use_iterative_fallback", False))
-    if use_iterative:
-        ksp.setType(str(solver_cfg.get("st_iter_ksp_type", "gmres")))
-        pc.setType(str(solver_cfg.get("st_iter_pc_type", "gamg")))
-        ksp_rtol = float(solver_cfg.get("st_iter_ksp_rtol", 1e-4))
-        ksp_max_it = int(solver_cfg.get("st_iter_ksp_max_it", 1000))
-        ksp.setTolerances(rtol=ksp_rtol, max_it=ksp_max_it)
-        ksp.setConvergenceHistory()
-        ksp.setNormType(PETSc.KSP.NormType.UNPRECONDITIONED)
-        if bool(solver_cfg.get("ksp_monitor", False)):
-            ksp.setMonitor(
-                lambda _ksp, its, rnorm: _emit(f"[ksp] it={its} rnorm={rnorm:.6e}", status_callback=status_callback)
-            )
-        if pc.getType().lower() == "hypre":
-            try:
-                pc.setHYPREType(str(solver_cfg.get("st_iter_hypre_type", "boomeramg")))
-            except Exception:
-                pass
-    else:
-        ksp.setType(str(solver_cfg.get("st_ksp_type", "preonly")))
-        pc.setType(str(solver_cfg.get("st_pc_type", "lu")))
-        pc.setFactorSolverType(str(solver_cfg.get("st_factor_solver_type", "mumps")))
+    # Nuclear option: force a direct ST solve path for robustness.
+    ksp.setType("preonly")
+    pc.setType("lu")
+    try:
+        pc.setFactorSolverType("mumps")
+    except Exception:
+        pass
 
     mumps_icntl_14 = int(solver_cfg.get("mat_mumps_icntl_14", 200))
     mumps_icntl_24 = int(solver_cfg.get("mat_mumps_icntl_24", 1))
@@ -545,8 +530,10 @@ def _slepc_shift_invert_batch(
     petsc_opts["pc_factor_shift_amount"] = float(solver_cfg.get("pc_factor_shift_amount", 1e-2))
     petsc_opts["eps_gen_non_hermitian"] = ""
     petsc_opts["bv_orthog_refine"] = str(solver_cfg.get("bv_orthog_refine", "always"))
-    petsc_opts["st_ksp_type"] = str(solver_cfg.get("st_iter_ksp_type", "gmres"))
-    petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "unpreconditioned"))
+    petsc_opts["st_ksp_type"] = "preonly"
+    petsc_opts["st_pc_type"] = "lu"
+    petsc_opts["st_pc_factor_mat_solver_type"] = "mumps"
+    petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "none"))
 
     ncv = int(solver_cfg.get("target_ncv", max(40, 4 * batch)))
     eps.setDimensions(batch, ncv)
@@ -891,7 +878,7 @@ def _solve_structural_only_evp(
     # produce zero stiffness/mass entries. We inject a tiny diagonal penalty on air DOFs.
     try:
         if air_dofs.size > 0:
-            air_pen_factor = float(config.get("solver", {}).get("structural_air_diag_penalty", 1.0e-9))
+            air_pen_factor = float(config.get("solver", {}).get("structural_air_diag_penalty", 1.0e-12))
             diagK = K.getDiagonal()
             diagM = M.getDiagonal()
             dK = diagK.array

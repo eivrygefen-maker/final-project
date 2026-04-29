@@ -55,7 +55,7 @@
     "solver": {
         "num_modes": 10,
         "mesh_file": "/home/vboxuser/final-project/FEM/mesh/guitar_3d.msh",
-        "shift_invert_target_hz": 150.0,
+        "shift_invert_target_hz": 100.0,
         "structural_only_diagnosis": true,
         "structural_only_num_modes": 10,
         "adaptive_mode_sifter": true,
@@ -70,7 +70,11 @@
         "eigenpair_batch_size": 100,
         "pressure_gauge": "air_interior",
         "min_valid_mode_hz": 50.0,
-        "max_valid_mode_hz": 1000.0
+        "max_valid_mode_hz": 1000.0,
+        "st_ksp_type": "preonly",
+        "st_pc_type": "lu",
+        "st_factor_solver_type": "mumps",
+        "structural_air_diag_penalty": 1e-12
     },
     "results": {
         "modes_hz": [
