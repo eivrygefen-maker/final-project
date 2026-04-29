@@ -56,7 +56,7 @@ def create_guitar_mesh():
         mesh_size_min = 0.020
         mesh_size_max = 0.020
     
-    print("DEBUG: Forcing Triple-Tier Mesh: 0.0015m wood, 0.007m transition, 0.015m far field.")
+    print("DEBUG: Forcing Triple-Tier Mesh: 0.0015m wood, 0.007m transition, 0.040m far field.")
     print(f"Building geometry with Thickness: {t*1000:.1f}mm, Mesh Size: {mesh_size*1000:.2f}mm")
     print(f"[diag] preview_mode={is_preview}, FEM_ALLOW_PREVIEW={os.environ.get('FEM_ALLOW_PREVIEW', '0')}")
     
@@ -442,7 +442,7 @@ def create_guitar_mesh():
 
             # Level 3 (Coarse): far-field target in air.
             coarse_field = gmsh.model.mesh.field.add("MathEval")
-            gmsh.model.mesh.field.setString(coarse_field, "F", "0.015")
+            gmsh.model.mesh.field.setString(coarse_field, "F", "0.040")
 
             # Combine all constraints using Min to prevent overlap conflicts.
             min_field = gmsh.model.mesh.field.add("Min")
@@ -451,7 +451,7 @@ def create_guitar_mesh():
             )
             print(
                 "[diag] Triple-tier background field enabled "
-                f"(fine=1.5mm, transition<=7mm@3cm, coarse=15mm; n_surfaces={len(wood_surface_tags)})."
+                f"(fine=1.5mm, transition<=7mm@3cm, coarse=40mm; n_surfaces={len(wood_surface_tags)})."
             )
             # Keep this as the very last field instruction before mesh generation.
             try:

@@ -1175,7 +1175,8 @@ def _solve_coupled_evp(
         raise RuntimeError("Mesh topology appears empty (num_cells_global <= 0). Check XDMF read/conversion.")
 
     _emit("Step 2/5: Building mixed spaces and weak forms...", status_callback=status_callback)
-    u_el = element("Lagrange", msh.basix_cell(), 1, shape=(3,))
+    # Mixed-order production setup: quadratic structure, linear acoustics.
+    u_el = element("Lagrange", msh.basix_cell(), 2, shape=(3,))
     p_el = element("Lagrange", msh.basix_cell(), 1)
     W_el = mixed_element([u_el, p_el])
     W = fem.functionspace(msh, W_el)
