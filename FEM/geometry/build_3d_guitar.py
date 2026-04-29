@@ -190,6 +190,45 @@ def create_guitar_mesh():
     if not wood_vols:
         raise RuntimeError("No wood shell volumes found after boolean operations")
 
+    # If booleans leave wood as a single connected solid, explicitly partition it
+    # into multiple disjoint 3D volumes along Z so Top/Back/Ribs volume groups
+    # are all non-empty and mutually exclusive.
+    if len(wood_vols) < 3:
+        wood_bbox = [float("inf"), float("inf"), float("inf"), -float("inf"), -float("inf"), -float("inf")]
+        for v in wood_vols:
+            xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(3, int(v))
+            wood_bbox[0] = min(wood_bbox[0], xmin)
+            wood_bbox[1] = min(wood_bbox[1], ymin)
+            wood_bbox[2] = min(wood_bbox[2], zmin)
+            wood_bbox[3] = max(wood_bbox[3], xmax)
+            wood_bbox[4] = max(wood_bbox[4], ymax)
+            wood_bbox[5] = max(wood_bbox[5], zmax)
+
+        xmin, ymin, zmin, xmax, ymax, zmax = wood_bbox
+        dz = max(1e-6, zmax - zmin)
+        dx = max(1e-6, xmax - xmin)
+        dy = max(1e-6, ymax - ymin)
+        z1 = zmin + dz / 3.0
+        z2 = zmin + 2.0 * dz / 3.0
+        margin = 0.05 * max(dx, dy, dz)
+
+        b_back = occ.addBox(xmin - margin, ymin - margin, zmin - margin, dx + 2 * margin, dy + 2 * margin, (z1 - zmin) + margin)
+        b_mid = occ.addBox(xmin - margin, ymin - margin, z1, dx + 2 * margin, dy + 2 * margin, max(1e-6, z2 - z1))
+        b_top = occ.addBox(xmin - margin, ymin - margin, z2, dx + 2 * margin, dy + 2 * margin, (zmax - z2) + margin)
+        occ.synchronize()
+
+        split_dimtags, _ = occ.fragment(
+            [(3, int(v)) for v in wood_vols],
+            [(3, b_back), (3, b_mid), (3, b_top)],
+            removeObject=True,
+            removeTool=True,
+        )
+        occ.synchronize()
+        wood_vols = sorted([tag for dim, tag in split_dimtags if dim == 3])
+        if not wood_vols:
+            raise RuntimeError("Wood partitioning produced no volumes.")
+        print(f"[diag] Wood volumes after Z-partition: {wood_vols}")
+
     # Surface classification by boundary relations:
     # interface = shared wood/air boundary; soundhole = external air boundary not in interface.
     wood_boundary_surfs = get_boundary_tags([(3, tag) for tag in wood_vols], 2)
