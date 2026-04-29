@@ -713,14 +713,11 @@ def _solve_structural_only_evp(
 
         if msh.comm.rank == ROOT_RANK:
             print(f"[DIAG] structural BC dofs: {u_dofs.size}")
-        _phase_sync(21001, "2100.1 after BC dofs check", status_callback=status_callback)
 
         # Deactivate non-structural (air) displacement DOFs WITHOUT building a huge DirichletBC.
         structural_facets = np.unique(np.concatenate([facets_t1, facets_t2, facets_t3])).astype(np.int32)
         structural_dofs = np.array([], dtype=np.int32)
-        _phase_sync(21002, "2100.2 after structural facet set", status_callback=status_callback)
         structural_dofs = _safe_locate_topo(V_u, fdim, structural_facets, "structural facets 1/2/3")
-        _phase_sync(21003, "2100.3 after structural dof locate", status_callback=status_callback)
         n_u_local = int(V_u.dofmap.index_map.size_local * V_u.dofmap.index_map_bs)
         all_u_local = np.arange(n_u_local, dtype=np.int32)
         if structural_dofs.size > 0:
@@ -728,17 +725,17 @@ def _solve_structural_only_evp(
             air_dofs = np.setdiff1d(all_u_local, structural_dofs, assume_unique=False).astype(np.int32)
         else:
             air_dofs = all_u_local.copy()
-        _phase_sync(21004, "2100.4 after air dof partition", status_callback=status_callback)
+        air_dofs = np.asarray(air_dofs, dtype=np.int32)
 
         # Keep Dirichlet BCs small (wood_fix + minimal geometric anchors only).
         # Enforce int32 explicitly before any C++ BC call.
         u_dofs_bc = np.asarray(u_dofs, dtype=np.int32)
-        print(
-            f"[DIAG] structural-only dof partition: "
-            f"n_u_local={n_u_local}, structural_dofs={structural_dofs.size}, "
-            f"air_dofs={air_dofs.size}, bc_dofs={u_dofs_bc.size}"
-        )
-        _phase_sync(21005, "2100.5 after dof partition print", status_callback=status_callback)
+        if msh.comm.rank == ROOT_RANK:
+            print(
+                f"[DIAG] structural-only dof partition: "
+                f"n_u_local={n_u_local}, structural_dofs={structural_dofs.size}, "
+                f"air_dofs={air_dofs.size}, bc_dofs={u_dofs_bc.size}"
+            )
 
         if msh.comm.rank == ROOT_RANK:
             builtins.print("--> [DEBUG] ENTERING dirichletbc", flush=True)
@@ -747,7 +744,6 @@ def _solve_structural_only_evp(
         if msh.comm.rank == ROOT_RANK:
             builtins.print("--> [DEBUG] EXITING dirichletbc", flush=True)
             sys.stdout.flush()
-        _phase_sync(21006, "2100.6 after dirichletbc creation", status_callback=status_callback)
     except Exception as e:
         try:
             rank = int(msh.comm.rank)
