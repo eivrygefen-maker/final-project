@@ -22,6 +22,7 @@ solver["st_ksp_type"] = "preonly"
 solver["st_pc_type"] = "lu"
 solver["st_pc_factor_mat_solver_type"] = "mumps"
 solver["st_factor_solver_type"] = "mumps"
+solver["mat_mumps_icntl_14"] = 500
 solver["mat_mumps_icntl_24"] = 1
 solver["shift_invert_target_hz"] = 105.0
 solver["structural_shift_target_hz"] = 105.0
