@@ -593,7 +593,13 @@ def _slepc_shift_invert_batch(
     pc.setType(st_pc_type)
     if st_pc_type.lower() == "lu":
         try:
-            pc.setFactorSolverType(str(solver_cfg.get("st_factor_solver_type", "mumps")))
+            fac = str(
+                solver_cfg.get(
+                    "st_pc_factor_mat_solver_type",
+                    solver_cfg.get("st_factor_solver_type", "mumps"),
+                )
+            )
+            pc.setFactorSolverType(fac)
         except Exception:
             pass
 
@@ -625,7 +631,12 @@ def _slepc_shift_invert_batch(
     petsc_opts["st_ksp_type"] = st_ksp_type
     petsc_opts["st_pc_type"] = st_pc_type
     if st_pc_type.lower() == "lu":
-        petsc_opts["st_pc_factor_mat_solver_type"] = str(solver_cfg.get("st_factor_solver_type", "mumps"))
+        petsc_opts["st_pc_factor_mat_solver_type"] = str(
+            solver_cfg.get(
+                "st_pc_factor_mat_solver_type",
+                solver_cfg.get("st_factor_solver_type", "mumps"),
+            )
+        )
     petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "none"))
 
     ncv = int(solver_cfg.get("target_ncv", max(40, 4 * batch)))
@@ -779,13 +790,12 @@ def _solve_structural_only_evp(
     a_uu = (2.0 * mu * ufl.inner(eps_u, eps_v) + lam * ufl.div(u) * ufl.div(v)) * wood_dx
     m_uu = (rho_eff * ufl.dot(u, v)) * wood_dx
 
-    # Dummy penalty for air DOFs (vacuum test) to prevent singular zero rows.
-    # This keeps air-associated displacement rows invertible while pushing their
-    # artificial eigencontent far from the structural band of interest.
-    air_tags = [AIR_VOLUME_TAG]
-    for tag in air_tags:
-        a_uu += 1.0e11 * ufl.inner(u, v) * xdmf_dx(tag)
-        m_uu += 1.0e-9 * ufl.inner(u, v) * xdmf_dx(tag)
+    # Optional dummy penalty on air cells (vacuum / structural-only diagnostic only).
+    if _solver_bool(config.get("solver", {}), "structural_vacuum_air_dummy", default=True):
+        air_tags = [AIR_VOLUME_TAG]
+        for tag in air_tags:
+            a_uu += 1.0e11 * ufl.inner(u, v) * xdmf_dx(tag)
+            m_uu += 1.0e-9 * ufl.inner(u, v) * xdmf_dx(tag)
 
     # V_u coverage diagnostic by tag.
     try:
@@ -1232,6 +1242,9 @@ def _solve_coupled_evp(
 
     # Pressure load on structure (stiffness-side coupling).
     a_up = -p * v_n * wood_ds
+    # Structure normal displacement drives the acoustic equation (stiffness-side;
+    # together with a_up this yields a non-symmetric coupled operator → GNHEP in SLEPc).
+    a_pu = q * w_n * wood_ds
 
     # Acoustic mass and structure mass.
     m_uu = (rho_eff * thickness) * ufl.dot(u, v) * wood_ds
@@ -1250,7 +1263,7 @@ def _solve_coupled_evp(
     # stiffness/mass penalty into wood cells outside the cavity.
     reg_p = diag_shift * p * q * xdmf_dx(AIR_VOLUME_TAG)
 
-    a_form = a_uu + a_pp + a_up + reg_u + reg_p
+    a_form = a_uu + a_pp + a_up + a_pu + reg_u + reg_p
     m_form = m_uu + m_pp + m_pu
 
     # Per-facet-group shell mass forms for plate-specific sifter (Top tag 1, Body tag 3).
@@ -1470,9 +1483,6 @@ def _solve_coupled_evp(
     _debug_rank("Entering Matrix Assembly")
     A = assemble_matrix(fem.form(a_form), bcs=bcs)
     A.assemble()
-    # Debug-only hard anchor to test if row-0 pivot singularity can be bypassed.
-    A.setValue(0, 0, PETSc.ScalarType(1.0), addv=PETSc.InsertMode.INSERT_VALUES)
-    A.assemble()
     M = assemble_matrix(fem.form(m_form), bcs=bcs)
     M.assemble()
 
@@ -1492,7 +1502,7 @@ def _solve_coupled_evp(
         return msh, W, A, M
 
     # Release form objects before eigensolve; matrices are already assembled.
-    del a_form, m_form, a_uu, a_pp, a_up, m_uu, m_pp, m_pu, m_uu_top_plate, m_uu_back_shell, reg_u, reg_p
+    del a_form, m_form, a_uu, a_pp, a_up, a_pu, m_uu, m_pp, m_pu, m_uu_top_plate, m_uu_back_shell, reg_u, reg_p
     gc.collect()
 
     _emit("Step 3/5: Solving generalized EVP with SLEPc...", status_callback=status_callback)
