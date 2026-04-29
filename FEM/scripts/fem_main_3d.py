@@ -5,6 +5,7 @@ import gc
 import subprocess
 import sys
 import builtins
+import faulthandler
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -25,6 +26,9 @@ try:
     PETSc.Log.begin()
 except Exception:
     pass
+
+# Print Python-level tracebacks on fatal C-level crashes (e.g., segfaults).
+faulthandler.enable()
 
 try:
     import meshio
@@ -657,7 +661,14 @@ def _solve_structural_only_evp(
             if entities is None:
                 entities = np.array([], dtype=np.int32)
             entities = np.asarray(entities, dtype=np.int32)
-            return np.array(fem.locate_dofs_topological(space, entity_dim, entities), dtype=np.int32)
+            if msh.comm.rank == ROOT_RANK:
+                builtins.print(f"--> [DEBUG] ENTERING locate_dofs_topological ({label})", flush=True)
+                sys.stdout.flush()
+            out = np.array(fem.locate_dofs_topological(space, entity_dim, entities), dtype=np.int32)
+            if msh.comm.rank == ROOT_RANK:
+                builtins.print(f"--> [DEBUG] EXITING locate_dofs_topological ({label})", flush=True)
+                sys.stdout.flush()
+            return out
 
         # BC logic: only wood_fix (tag 4), otherwise minimal geometric anchors.
         u_dofs = np.array([], dtype=np.int32)
@@ -729,7 +740,13 @@ def _solve_structural_only_evp(
         )
         _phase_sync(21005, "2100.5 after dof partition print", status_callback=status_callback)
 
+        if msh.comm.rank == ROOT_RANK:
+            builtins.print("--> [DEBUG] ENTERING dirichletbc", flush=True)
+            sys.stdout.flush()
         bcs_u = [fem.dirichletbc(np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType), u_dofs_bc, V_u)]
+        if msh.comm.rank == ROOT_RANK:
+            builtins.print("--> [DEBUG] EXITING dirichletbc", flush=True)
+            sys.stdout.flush()
         _phase_sync(21006, "2100.6 after dirichletbc creation", status_callback=status_callback)
     except Exception as e:
         try:
