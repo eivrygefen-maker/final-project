@@ -19,6 +19,12 @@ petsc4py.init(sys.argv)
 from petsc4py import PETSc
 from slepc4py import SLEPc
 
+# Start PETSc logging on all ranks for collective-call tracing.
+try:
+    PETSc.Log.begin()
+except Exception:
+    pass
+
 try:
     import meshio
 except Exception:
@@ -212,6 +218,7 @@ def _load_mesh_with_fallback(mesh_file: Path, status_callback=None):
         _emit("[mesh] gmsh file opened successfully on rank 0.", status_callback=status_callback)
 
     mesh_data = gmshio.model_to_mesh(gmsh_model, MPI.COMM_WORLD, rank, gdim=gdim)
+    MPI.COMM_WORLD.barrier()
 
     if MPI.COMM_WORLD.rank == rank:
         gmsh.finalize()
@@ -226,6 +233,7 @@ def _load_mesh_with_fallback(mesh_file: Path, status_callback=None):
     # Explicit vertex<->cell connectivity to avoid delayed connectivity warnings in downstream DOF lookup.
     msh.topology.create_connectivity(0, msh.topology.dim)
     msh.topology.create_connectivity(msh.topology.dim, 0)
+    MPI.COMM_WORLD.barrier()
     return msh, cell_tags, facet_tags
 
 
@@ -388,10 +396,14 @@ def _slepc_shift_invert_batch(
     mumps_icntl_14 = int(solver_cfg.get("mat_mumps_icntl_14", 100))
     mumps_icntl_24 = int(solver_cfg.get("mat_mumps_icntl_24", 1))
     mumps_icntl_22 = int(solver_cfg.get("mat_mumps_icntl_22", 1))
+    mumps_icntl_6 = int(solver_cfg.get("mat_mumps_icntl_6", 7))
+    mumps_icntl_12 = int(solver_cfg.get("mat_mumps_icntl_12", 1))
     petsc_opts = PETSc.Options()
     petsc_opts["mat_mumps_icntl_14"] = mumps_icntl_14
     petsc_opts["mat_mumps_icntl_24"] = mumps_icntl_24
     petsc_opts["mat_mumps_icntl_22"] = mumps_icntl_22
+    petsc_opts["mat_mumps_icntl_6"] = mumps_icntl_6
+    petsc_opts["mat_mumps_icntl_12"] = mumps_icntl_12
     mg_levels_ksp_type = str(solver_cfg.get("mg_levels_ksp_type", "chebyshev"))
     mg_levels_pc_type = str(solver_cfg.get("mg_levels_pc_type", "sor"))
     petsc_opts["mg_levels_ksp_type"] = mg_levels_ksp_type
@@ -422,7 +434,8 @@ def _slepc_shift_invert_batch(
     _emit(
         f"[solver] shift-invert batch center {shift_hz:.2f} Hz (lambda={target_lambda:.6e} s^-2), "
         f"batch={batch}, KSP={ksp.getType()}, PC={pc.getType()}, "
-        f"MUMPS(ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}, ICNTL22={mumps_icntl_22}), "
+        f"MUMPS(ICNTL6={mumps_icntl_6}, ICNTL12={mumps_icntl_12}, "
+        f"ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}, ICNTL22={mumps_icntl_22}), "
         f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}, "
         f"iterative={use_iterative}",
         status_callback=status_callback,
@@ -433,7 +446,6 @@ def _slepc_shift_invert_batch(
     _debug_petsc_comm("A", A)
     _debug_petsc_comm("M", M)
     _debug_petsc_comm("EPS", eps)
-    MPI.COMM_WORLD.barrier()
     _debug_rank("Entering EPS Solve")
     eps.solve()
 
@@ -705,6 +717,9 @@ def _solve_structural_only_evp(
         pc.setType("lu")
         try:
             pc.setFactorSolverType("mumps")
+            petsc_opts = PETSc.Options()
+            petsc_opts["mat_mumps_icntl_6"] = int(config.get("solver", {}).get("mat_mumps_icntl_6", 7))
+            petsc_opts["mat_mumps_icntl_12"] = int(config.get("solver", {}).get("mat_mumps_icntl_12", 1))
         except Exception:
             pass
         # Make KSP convergence checks essentially irrelevant.
@@ -722,7 +737,6 @@ def _solve_structural_only_evp(
     _debug_petsc_comm("M", M)
     _debug_petsc_comm("A", A)
     _debug_petsc_comm("EPS", eps)
-    MPI.COMM_WORLD.barrier()
     _debug_rank("Entering EPS Solve")
     eps.solve()
     nconv = eps.getConverged()
