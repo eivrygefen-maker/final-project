@@ -409,15 +409,23 @@ def _solve_structural_only_evp(
     v = ufl.TestFunction(V_u)
 
     xdmf_ds = ufl.Measure("ds", domain=msh, subdomain_data=facet_tags)
+    structural_tags = (WOOD_SURFACE_TAGS[0], 2, WOOD_SURFACE_TAGS[1])  # include soundhole tag for diag coverage
     E_eff, nu_eff, rho_eff, thickness = _effective_wood_properties(config)
     mu = E_eff / (2.0 * (1.0 + nu_eff))
     lam = E_eff * nu_eff / ((1.0 + nu_eff) * (1.0 - 2.0 * nu_eff))
     D_bend = E_eff * thickness ** 3 / (12.0 * (1.0 - nu_eff ** 2))
 
-    wood_tag_top = int(np.sum(facet_tags.values == WOOD_SURFACE_TAGS[0]))
-    wood_tag_shell = int(np.sum(facet_tags.values == WOOD_SURFACE_TAGS[1]))
-    if wood_tag_top + wood_tag_shell > 0:
-        wood_ds = xdmf_ds(WOOD_SURFACE_TAGS[0]) + xdmf_ds(WOOD_SURFACE_TAGS[1])
+    wood_tag_top = int(np.sum(facet_tags.values == structural_tags[0]))
+    wood_tag_hole = int(np.sum(facet_tags.values == structural_tags[1]))
+    wood_tag_shell = int(np.sum(facet_tags.values == structural_tags[2]))
+    if wood_tag_top + wood_tag_hole + wood_tag_shell > 0:
+        wood_ds = xdmf_ds(structural_tags[0]) + xdmf_ds(structural_tags[1]) + xdmf_ds(structural_tags[2])
+        _emit(
+            "[diag] structural-only shell tags in stiffness: "
+            f"tag{structural_tags[0]}={wood_tag_top}, tag{structural_tags[1]}={wood_tag_hole}, "
+            f"tag{structural_tags[2]}={wood_tag_shell}",
+            status_callback=status_callback,
+        )
     else:
         wood_ds = ufl.ds(domain=msh)
         _emit(
@@ -450,13 +458,61 @@ def _solve_structural_only_evp(
         fixed_facets = np.array(facet_tags.find(WOOD_SURFACE_TAGS[0]), dtype=np.int32)
     u_dofs = np.array(fem.locate_dofs_topological(V_u, fdim, fixed_facets), dtype=np.int32)
     if u_dofs.size == 0:
-        raise RuntimeError("Structural-only diagnosis failed: u_dofs is empty.")
+        # Geometric fallback (same spirit as coupled path): pin three boundary points.
+        coords = msh.geometry.x
+        mins = np.min(coords, axis=0)
+        maxs = np.max(coords, axis=0)
+        diag = float(np.linalg.norm(maxs - mins))
+        tol = max(1.0e-12, 1.0e-8 * max(1.0, diag))
+        boundary_mask = (
+            np.isclose(coords[:, 0], mins[0], atol=tol)
+            | np.isclose(coords[:, 0], maxs[0], atol=tol)
+            | np.isclose(coords[:, 1], mins[1], atol=tol)
+            | np.isclose(coords[:, 1], maxs[1], atol=tol)
+            | np.isclose(coords[:, 2], mins[2], atol=tol)
+            | np.isclose(coords[:, 2], maxs[2], atol=tol)
+        )
+        boundary_ids = np.where(boundary_mask)[0]
+        if boundary_ids.size == 0:
+            boundary_ids = np.arange(coords.shape[0], dtype=np.int32)
+        bcoords = coords[boundary_ids]
+        i_min_x = int(np.argpartition(bcoords[:, 0], 0)[0])
+        i_max_x = int(np.argpartition(bcoords[:, 0], bcoords.shape[0] - 1)[bcoords.shape[0] - 1])
+        i_min_y = int(np.argpartition(bcoords[:, 1], 0)[0])
+        anchor_ids = [int(boundary_ids[i_min_x]), int(boundary_ids[i_max_x]), int(boundary_ids[i_min_y])]
+        u_dof_blocks = []
+        for idx in anchor_ids:
+            pt = coords[idx]
+            def _u_anchor_marker(x, p=pt):
+                return (
+                    np.isclose(x[0], p[0], atol=tol)
+                    & np.isclose(x[1], p[1], atol=tol)
+                    & np.isclose(x[2], p[2], atol=tol)
+                )
+            u_dof_blocks.append(fem.locate_dofs_geometrical(V_u, _u_anchor_marker))
+        if u_dof_blocks:
+            u_dofs = np.array(np.unique(np.concatenate(u_dof_blocks)), dtype=np.int32)
+    _emit(
+        f"[diag] structural-only BCs: fixed_facets={fixed_facets.size}, u_dofs={u_dofs.size}",
+        status_callback=status_callback,
+    )
+    if u_dofs.size == 0:
+        raise RuntimeError("Structural-only diagnosis failed: u_dofs is empty even after geometric fallback.")
     bc_u = fem.dirichletbc(np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType), u_dofs, V_u)
 
     A = assemble_matrix(fem.form(a_uu), bcs=[bc_u])
     A.assemble()
     M = assemble_matrix(fem.form(m_uu), bcs=[bc_u])
     M.assemble()
+    # Diagnostic stabilization for singular pivots: A <- A + eps*M
+    struct_diag_shift = float(config.get("solver", {}).get("structural_diag_shift", 1.0e-6))
+    if struct_diag_shift > 0.0:
+        A.axpy(struct_diag_shift, M, structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN)
+        A.assemble()
+        _emit(
+            f"[diag] structural-only diagonal shift applied: A += {struct_diag_shift:.2e} * M",
+            status_callback=status_callback,
+        )
 
     eps = SLEPc.EPS().create(MPI.COMM_WORLD)
     eps.setOperators(A, M)
