@@ -1121,6 +1121,9 @@ def _solve_coupled_evp(
     status_callback=None,
     solve_evp: bool = True,
 ):
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        print("🔴🔴🔴 FORCE-RUNNING FULL COUPLED MODEL - NO DIAGNOSIS 🔴🔴🔴")
+        sys.stdout.flush()
     _phase_sync(2000, "coupled enter", status_callback=status_callback)
     _solver_early = config.get("solver", {})
     _ams = _solver_early.get("adaptive_mode_sifter", "<missing>")
@@ -1144,15 +1147,17 @@ def _solve_coupled_evp(
             f"solve_evp={solve_evp} → {'structural-only branch' if (solve_evp and _sod_eff) else 'full coupled (mixed u,p)'}"
         )
         sys.stdout.flush()
-    if solve_evp and _sod_eff:
-        return _solve_structural_only_evp(
-            msh=msh,
-            cell_tags=cell_tags,
-            facet_tags=facet_tags,
-            config=config,
-            num_modes=max(1, int(config.get("solver", {}).get("structural_only_num_modes", 30))),
-            status_callback=status_callback,
-        )
+    # Hard override: disable structural-only diagnosis branch and always continue
+    # with the full mixed (u, p) coupled EVP path.
+    # if solve_evp and _sod_eff:
+    #     return _solve_structural_only_evp(
+    #         msh=msh,
+    #         cell_tags=cell_tags,
+    #         facet_tags=facet_tags,
+    #         config=config,
+    #         num_modes=max(1, int(config.get("solver", {}).get("structural_only_num_modes", 30))),
+    #         status_callback=status_callback,
+    #     )
     coords = msh.geometry.x
     gc.collect()
     tdim = msh.topology.dim
@@ -1726,6 +1731,8 @@ def assemble_coupled_operators_for_rom(config: Dict, status_callback=None):
 
 
 def run_fom_for_rom(config: Dict, num_modes: int = 10, status_callback=None):
+    cfg = config
+    cfg["solver"]["structural_only_diagnosis"] = False
     _phase_sync(3000, "run_fom_for_rom enter", status_callback=status_callback)
     # ROM offline snapshots must use the coupled EVP; stale guitar_3d.json on disk (e.g. after git pull)
     # can still have structural_only_diagnosis=true — override here so the FOM is never vacuum-only.
