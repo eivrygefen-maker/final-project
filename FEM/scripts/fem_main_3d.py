@@ -737,7 +737,8 @@ def _solve_structural_only_evp(
     )
     sys.stdout.flush()
 
-    u_el = element("Lagrange", msh.basix_cell(), 1, shape=(3,))
+    # Quadratic displacement space reduces shear locking in thin plate-like solids.
+    u_el = element("Lagrange", msh.basix_cell(), 2, shape=(3,))
     V_u = fem.functionspace(msh, u_el)
     u = ufl.TrialFunction(V_u)
     v = ufl.TestFunction(V_u)
@@ -1001,7 +1002,9 @@ def _solve_structural_only_evp(
             pass
     except Exception:
         pass
-    nev = int(max(1, num_modes))
+    nev_target = int(max(1, num_modes))
+    # Request extra modes to skip rigid-body cluster near 0 Hz.
+    nev = int(max(nev_target + 6, nev_target))
     eps.setDimensions(nev, int(max(40, 4 * nev)))
     eps.setTolerances(1e-6, 2000)
     eps.setFromOptions()
@@ -1049,7 +1052,9 @@ def _solve_structural_only_evp(
     rvec = A.createVecRight()
     all_eigs: List[float] = []
     rigid_tol = float(config.get("solver", {}).get("structural_rigid_lambda_tol", 1.0e-10))
+    min_structural_hz = float(config.get("solver", {}).get("structural_min_mode_hz", 10.0))
     skipped_rigid = 0
+    skipped_low_hz = 0
     freqs_hz: List[float] = []
     vectors: List[np.ndarray] = []
     for i in range(min(nev, nconv)):
@@ -1059,7 +1064,11 @@ def _solve_structural_only_evp(
         if eig_r <= rigid_tol:
             skipped_rigid += 1
             continue
-        freqs_hz.append(math.sqrt(eig_r) / (2.0 * math.pi))
+        f_hz = math.sqrt(eig_r) / (2.0 * math.pi)
+        if f_hz < min_structural_hz:
+            skipped_low_hz += 1
+            continue
+        freqs_hz.append(f_hz)
         vectors.append(rvec.array.copy())
     try:
         rvec.destroy()
@@ -1068,15 +1077,18 @@ def _solve_structural_only_evp(
     eps.destroy()
 
     print(f"[DIAG] Structural-only eigen search: WHICH=SMALLEST_MAGNITUDE")
-    print(f"[DIAG] Structural-only rigid filter: lambda_tol={rigid_tol:.3e}, skipped={skipped_rigid}")
+    print(
+        f"[DIAG] Structural-only rigid filter: lambda_tol={rigid_tol:.3e}, "
+        f"skipped_rigid={skipped_rigid}, min_mode_hz={min_structural_hz:.2f}, skipped_low_hz={skipped_low_hz}"
+    )
     print(f"[DIAG] Raw eigenvalues: {[float(x) for x in all_eigs[:10]]}")
     sys.stdout.flush()
 
     if not freqs_hz:
         raise RuntimeError("Structural-only diagnosis: no positive eigenvalues.")
     order = np.argsort(np.array(freqs_hz))
-    freqs_hz = [freqs_hz[int(i)] for i in order]
-    eigvecs = np.stack([vectors[int(i)] for i in order], axis=1)
+    freqs_hz = [freqs_hz[int(i)] for i in order][:nev_target]
+    eigvecs = np.stack([vectors[int(i)] for i in order[: len(freqs_hz)]], axis=1)
 
     print(f"[DIAG] Structural-only first {len(freqs_hz)} mode(s): {[round(f, 3) for f in freqs_hz]}")
     if freqs_hz:
