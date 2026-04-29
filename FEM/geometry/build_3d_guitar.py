@@ -49,20 +49,33 @@ def create_guitar_mesh():
         L, W, D, t, hr, shape_type = 0.48, 0.37, 0.1, 0.003, 0.04, 'Classical'
         hole_y = 0.0
 
-    # --- Hybrid mesh target: coarse air, refined wood ---
+    # --- Golden mesh: coarse wood faces (P1 DOFs), dense through-thickness; graded air ---
+    wood_surface_size = 0.015   # 15 mm on large top/back plate surfaces and long perimeter curves
+    wood_thickness_size = 0.001  # 1 mm on short ~through-thickness edges (>=2–3 elements across ~3 mm wood)
+    thickness_curve_len_max = 0.005  # curves shorter than this (m) are treated as thickness direction
+    # Air Threshold field (distance from wood shell): near-field at soundhole band, coarser far cap for ~500 Hz
+    air_threshold_dist_min = 0.03
+    air_threshold_dist_max = 0.25
+    air_threshold_size_min = 0.010   # 10 mm near wood (Helmholtz / hole region)
+    air_threshold_size_max = 0.080   # 80 mm far field
+
     if is_preview:
         mesh_size = 0.030
         mesh_size_min = mesh_size
         mesh_size_max = mesh_size
     else:
-        mesh_size = 0.020
-        mesh_size_min = 0.020
-        mesh_size_max = 0.020
-    
+        mesh_size = wood_surface_size
+        mesh_size_min = wood_thickness_size
+        mesh_size_max = air_threshold_size_max
+
     print(
-        "DEBUG: Wood 0.0015m + distance-based air: fast ramp to 200mm far-field (lean mesh for direct solvers)."
+        "DEBUG: Golden mesh — wood: 15 mm faces / 1 mm thickness edges; "
+        "air: 10 mm near wood → 80 mm far (Dist 3–25 cm)."
     )
-    print(f"Building geometry with Thickness: {t*1000:.1f}mm, Mesh Size: {mesh_size*1000:.2f}mm")
+    print(
+        f"Building geometry with Thickness: {t*1000:.1f}mm, "
+        f"wood_surface_lc={wood_surface_size*1000:.1f}mm, wood_thickness_lc={wood_thickness_size*1000:.1f}mm"
+    )
     print(f"[diag] preview_mode={is_preview}, FEM_ALLOW_PREVIEW={os.environ.get('FEM_ALLOW_PREVIEW', '0')}")
     
     shy = (L / 2) + (L * 0.02)
@@ -72,9 +85,10 @@ def create_guitar_mesh():
     gmsh.model.add("Guitar3D_Performance_Optimized")
     occ = gmsh.model.occ
 
-    def create_guitar_profile(l, w, is_dreadnought=False, offset=0):
+    def create_guitar_profile(l, w, is_dreadnought=False, offset=0, point_lc=None):
+        lc = point_lc if point_lc is not None else mesh_size
         top_x = 0.50 * l - offset if offset > 0 else 0.50 * l
-        p_top_center = occ.addPoint(top_x, 0, 0, mesh_size)
+        p_top_center = occ.addPoint(top_x, 0, 0, lc)
         x_facs = [0.50, 0.44, 0.25, 0.05, -0.10, -0.25, -0.40, -0.48, -0.50] if is_dreadnought else [0.50, 0.44, 0.25, 0.10, 0.00, -0.15, -0.35, -0.45, -0.50]
         y_facs = [0.08, 0.20, 0.38, 0.35, 0.34, 0.45, 0.50, 0.25, 0.00] if is_dreadnought else [0.08, 0.18, 0.36, 0.30, 0.28, 0.45, 0.50, 0.30, 0.00]
         
@@ -86,7 +100,7 @@ def create_guitar_mesh():
                 y = max(0, y - offset)
                 if x_f == 0.5: x -= offset
                 elif x_f == -0.5: x += offset
-            pts.append(occ.addPoint(x, max(0, y), 0, mesh_size))
+            pts.append(occ.addPoint(x, max(0, y), 0, lc))
             
         l_top = occ.addLine(p_top_center, pts[0]); c_body = occ.addSpline(pts)
         m_l = occ.copy([(1, l_top)]); occ.mirror(m_l, 0, 1, 0, 0)
@@ -126,6 +140,37 @@ def create_guitar_mesh():
         com = occ.getCenterOfMass(3, vol_tag)
         return com[2]
 
+    def _curve_length_m(ctag):
+        """Physical length (m) of OCC curve tag."""
+        try:
+            mass = gmsh.model.occ.getMass(1, int(ctag))
+            if isinstance(mass, (int, float)):
+                return float(mass)
+            if isinstance(mass, (list, tuple)) and len(mass) >= 1:
+                return float(mass[0])
+        except Exception:
+            pass
+        try:
+            xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(1, int(ctag))
+            return float(
+                math.sqrt(
+                    (xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2
+                )
+            )
+        except Exception:
+            return float("inf")
+
+    def _wood_boundary_curve_tags(vol_tags):
+        seen = set()
+        out = []
+        for v in vol_tags:
+            bnd = gmsh.model.getBoundary([(3, int(v))], oriented=False, recursive=True)
+            for dim, tag in bnd:
+                if dim == 1 and tag not in seen:
+                    seen.add(tag)
+                    out.append(int(tag))
+        return out
+
     def get_surface_normal_z(surf_tag):
         """
         Return |nz| at parametric midpoint of a surface.
@@ -148,13 +193,22 @@ def create_guitar_mesh():
         vol_in_id = occ.addBox(-L/2+t, -W/2+t, -D/2+t, L-2*t, W-2*t, D-2*t)
     else:
         is_dread = "Dreadnought" in shape_type
-        surf_out = create_guitar_profile(L, W, is_dread, 0)
-        v_out = occ.extrude([(2, surf_out)], 0, 0, D)
+        profile_lc = mesh_size if is_preview else wood_surface_size
+        surf_out = create_guitar_profile(L, W, is_dread, 0, point_lc=profile_lc)
+        # OCC extrude: numElements may be ignored by OpenCASCADE; thickness resolution is enforced via
+        # curve/field sizing below. When supported, [3] requests prism stacks along the extrusion axis.
+        try:
+            v_out = occ.extrude([(2, surf_out)], 0, 0, D, [3])
+        except (TypeError, ValueError):
+            v_out = occ.extrude([(2, surf_out)], 0, 0, D)
         occ.translate([v for v in v_out if v[0]==3], 0, 0, -D/2)
         vol_out_id = [v[1] for v in v_out if v[0] == 3][0]
         
-        surf_in = create_guitar_profile(L, W, is_dread, t)
-        v_in = occ.extrude([(2, surf_in)], 0, 0, D - 2*t)
+        surf_in = create_guitar_profile(L, W, is_dread, t, point_lc=profile_lc)
+        try:
+            v_in = occ.extrude([(2, surf_in)], 0, 0, D - 2*t, [3])
+        except (TypeError, ValueError):
+            v_in = occ.extrude([(2, surf_in)], 0, 0, D - 2*t)
         occ.translate([v for v in v_in if v[0]==3], 0, 0, -D/2 + t)
         vol_in_id = [v[1] for v in v_in if v[0] == 3][0]
 
@@ -400,6 +454,13 @@ def create_guitar_mesh():
             "Check geometry (hole_radius, soundhole_y, depth D) and boolean/fragment output."
         )
 
+    # Exterior back flat (lowest Z) for explicit plate surface sizing alongside top plate.
+    back_plate_surfs = []
+    if back_vols:
+        b_back = get_boundary_tags([(3, int(v)) for v in back_vols], 2)
+        if b_back:
+            back_plate_surfs = [min(b_back, key=lambda s: get_surface_center_z(s))]
+
     pg_top = gmsh.model.addPhysicalGroup(2, top_plate_surfs, tag=1)
     gmsh.model.setPhysicalName(2, pg_top, "Top_Plate")
     pg_soundhole = gmsh.model.addPhysicalGroup(2, soundhole_surfs, tag=2)
@@ -474,10 +535,9 @@ def create_guitar_mesh():
     gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
     gmsh.option.setNumber("Mesh.Algorithm", 6)  # Frontal-Delaunay
 
-    # Wood: 1.5 mm via Restrict on wood faces/volumes.
-    # Air: distance from wood surfaces -> Threshold (linear in Gmsh): d<5cm => 15 mm,
-    #      d in [5cm, 40cm] => linear 15 mm -> 120 mm, d>40 cm => 120 mm.
-    # Min(fine_restrict, air_grad) keeps wood dense; air coarsens toward the box boundary.
+    # Wood: 15 mm baseline on shell (Restrict), 1 mm in a band around short thickness edges
+    # (mesh.setSize + optional Threshold from EdgesList) so P1 has multiple elements across ~3 mm wood.
+    # Air: distance from wood shell -> Threshold (10 mm near field, 80 mm far, smooth 3–25 cm band).
     if not is_preview:
         wood_surface_tags = top_plate_surfs + body_surfs
         if not top_plate_surfs:
@@ -488,35 +548,73 @@ def create_guitar_mesh():
 
         if wood_surface_tags:
             print(f"[DEBUG] All Wood Surfaces to refine: {wood_surface_tags}")
-            # Field 1: distance from wood surfaces.
+            # Geometry constraints: large plate faces + wood boundary curves (short = thickness).
+            for s in list(dict.fromkeys(top_plate_surfs + back_plate_surfs)):
+                try:
+                    gmsh.model.mesh.setSize(2, int(s), wood_surface_size)
+                except Exception:
+                    pass
+            wood_curve_tags = _wood_boundary_curve_tags(wood_vols)
+            thickness_edge_tags = []
+            for ctag in wood_curve_tags:
+                Lc = _curve_length_m(ctag)
+                try:
+                    if Lc < thickness_curve_len_max:
+                        gmsh.model.mesh.setSize(1, ctag, wood_thickness_size)
+                        thickness_edge_tags.append(ctag)
+                    else:
+                        gmsh.model.mesh.setSize(1, ctag, wood_surface_size)
+                except Exception:
+                    pass
+            print(
+                f"[diag] Wood boundary curves: n={len(wood_curve_tags)}, "
+                f"thickness_edges (L<{thickness_curve_len_max*1000:.1f}mm): {len(thickness_edge_tags)}"
+            )
+
+            # Field 1: distance from wood surfaces (shell used for air gradient).
             dist_field = gmsh.model.mesh.field.add("Distance")
             gmsh.model.mesh.field.setNumbers(dist_field, "FacesList", wood_surface_tags)
 
-            # Level 1 (Fine): constant fine size, restricted to wood entities.
+            # Wood baseline: coarse characteristic length on wood domain (top/sides/back shell).
             fine_const = gmsh.model.mesh.field.add("MathEval")
-            gmsh.model.mesh.field.setString(fine_const, "F", "0.0015")
+            gmsh.model.mesh.field.setString(fine_const, "F", str(wood_surface_size))
             fine_restrict = gmsh.model.mesh.field.add("Restrict")
             gmsh.model.mesh.field.setNumber(fine_restrict, "InField", fine_const)
             gmsh.model.mesh.field.setNumbers(fine_restrict, "FacesList", wood_surface_tags)
             gmsh.model.mesh.field.setNumbers(fine_restrict, "VolumesList", wood_vols)
 
+            # Thickness: refine from short-edge curve set (works with background mesh when Distance is used).
+            thick_thresh = None
+            if thickness_edge_tags:
+                dist_thick = gmsh.model.mesh.field.add("Distance")
+                gmsh.model.mesh.field.setNumbers(dist_thick, "EdgesList", thickness_edge_tags)
+                thick_thresh = gmsh.model.mesh.field.add("Threshold")
+                gmsh.model.mesh.field.setNumber(thick_thresh, "InField", dist_thick)
+                gmsh.model.mesh.field.setNumber(thick_thresh, "DistMin", 0.001)
+                gmsh.model.mesh.field.setNumber(thick_thresh, "DistMax", 0.012)
+                gmsh.model.mesh.field.setNumber(thick_thresh, "SizeMin", wood_thickness_size)
+                gmsh.model.mesh.field.setNumber(thick_thresh, "SizeMax", wood_surface_size)
+
             # Air: distance-based characteristic length (Gmsh Threshold = linear between distances).
-            # Convention: I < DistMin -> SizeMin; I > DistMax -> SizeMax; else linear in I.
-            # Shorter near band + shorter ramp => coarser air sooner; far field 200 mm cap.
+            # I < DistMin -> SizeMin; I > DistMax -> SizeMax; else linear in I.
             air_grad = gmsh.model.mesh.field.add("Threshold")
             gmsh.model.mesh.field.setNumber(air_grad, "InField", dist_field)
-            gmsh.model.mesh.field.setNumber(air_grad, "DistMin", 0.025)
-            gmsh.model.mesh.field.setNumber(air_grad, "DistMax", 0.22)
-            gmsh.model.mesh.field.setNumber(air_grad, "SizeMin", 0.015)
-            gmsh.model.mesh.field.setNumber(air_grad, "SizeMax", 0.200)
+            gmsh.model.mesh.field.setNumber(air_grad, "DistMin", air_threshold_dist_min)
+            gmsh.model.mesh.field.setNumber(air_grad, "DistMax", air_threshold_dist_max)
+            gmsh.model.mesh.field.setNumber(air_grad, "SizeMin", air_threshold_size_min)
+            gmsh.model.mesh.field.setNumber(air_grad, "SizeMax", air_threshold_size_max)
 
-            # Combine: wood-restricted 1.5 mm vs air gradient (do not add a low plateau field or it caps coarsening).
+            combine_list = [air_grad, fine_restrict]
+            if thick_thresh is not None:
+                combine_list.append(thick_thresh)
             min_field = gmsh.model.mesh.field.add("Min")
-            gmsh.model.mesh.field.setNumbers(min_field, "FieldsList", [air_grad, fine_restrict])
+            gmsh.model.mesh.field.setNumbers(min_field, "FieldsList", combine_list)
             print(
-                "[diag] Distance-based air sizing enabled "
-                f"(wood=1.5mm restrict; air: d<=2.5cm->15mm, 2.5-22cm linear->200mm, d>22cm->200mm; "
-                f"n_wood_surfaces={len(wood_surface_tags)})."
+                "[diag] Golden mesh fields: "
+                f"wood restrict lc={wood_surface_size*1000:.0f}mm; "
+                f"air Threshold {air_threshold_size_min*1000:.0f}–{air_threshold_size_max*1000:.0f}mm "
+                f"over d={air_threshold_dist_min*100:.0f}–{air_threshold_dist_max*100:.0f}cm; "
+                f"n_wood_surfaces={len(wood_surface_tags)}."
             )
             # Keep this as the very last field instruction before mesh generation.
             try:
