@@ -5,8 +5,9 @@ echo "========================================"
 echo "🚀 Starting Vacuum Test Pipeline..."
 echo "========================================"
 
-echo "[1/4] Pulling latest changes..."
-git pull origin main || echo "Git pull skipped or failed, continuing..."
+echo "[1/4] Forcing clean state and pulling latest changes..."
+git checkout FEM/configs/guitar_3d.json # Discard local changes to config
+git pull origin main
 
 echo "[2/4] Cleaning stale mesh files..."
 rm -f FEM/mesh/guitar_3d.msh
