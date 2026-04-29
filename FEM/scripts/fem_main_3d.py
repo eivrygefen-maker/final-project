@@ -505,7 +505,7 @@ def _solve_structural_only_evp(
     # Ghost term to guarantee a non-empty diagonal for all displacement DOFs,
     # including air DOFs that have zero shell measure. This avoids missing-diagonal
     # PETSc errors and sparsity-pattern insertions.
-    ghost_eps = float(config.get("solver", {}).get("structural_diag_ghost_eps", 1.0e-20))
+    ghost_eps = float(config.get("solver", {}).get("structural_diag_ghost_eps", 1.0e-12))
     if ghost_eps > 0.0:
         full_dx = ufl.Measure("dx", domain=msh)
         a_uu = a_uu + ghost_eps * ufl.dot(u, v) * full_dx
@@ -622,7 +622,7 @@ def _solve_structural_only_evp(
     # produce zero stiffness/mass entries. We inject a tiny diagonal penalty on air DOFs.
     try:
         if air_dofs.size > 0:
-            air_pen_factor = float(config.get("solver", {}).get("structural_air_diag_penalty", 1.0e-6))
+            air_pen_factor = float(config.get("solver", {}).get("structural_air_diag_penalty", 1.0))
             diagK = K.getDiagonal()
             diagM = M.getDiagonal()
             dK = diagK.array
@@ -667,6 +667,24 @@ def _solve_structural_only_evp(
     eps.setProblemType(SLEPc.EPS.ProblemType.GHEP)
     eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
     eps.setWhichEigenpairs(SLEPc.EPS.Which.SMALLEST_REAL)
+    # Robustness: prefer direct LU in spectral transformation for tiny pivots.
+    try:
+        st = eps.getST()
+        ksp = st.getKSP()
+        ksp.setType("preonly")
+        pc = ksp.getPC()
+        pc.setType("lu")
+        try:
+            pc.setFactorSolverType("mumps")
+        except Exception:
+            pass
+        # Make KSP convergence checks essentially irrelevant.
+        try:
+            ksp.setTolerances(rtol=1.0e-50, atol=1.0e-50, max_it=1, divtol=1.0e50)
+        except Exception:
+            pass
+    except Exception:
+        pass
     nev = int(max(1, num_modes))
     eps.setDimensions(nev, int(max(40, 4 * nev)))
     eps.setTolerances(1e-6, 2000)
