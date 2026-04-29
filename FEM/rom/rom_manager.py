@@ -263,7 +263,14 @@ class ROMManager:
                     "error": None,
                 }
             )
-        return {"shape_name": shape_name, "sampling": "lhs", "seed": int(seed), "total_samples": int(total_samples), "entries": entries}
+        return {
+            "shape_name": shape_name,
+            "sampling": "lhs",
+            "seed": int(seed),
+            "total_samples": int(total_samples),
+            "mpi_world_size": int(self.comm.size),
+            "entries": entries,
+        }
 
     def _load_or_create_lhs_pool(
         self,
@@ -277,7 +284,19 @@ class ROMManager:
         pool_path = paths["lhs_pool"]
         if pool_path.exists() and not force_rebuild:
             with open(pool_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                pool = json.load(f)
+            pool_world_size = int(pool.get("mpi_world_size", 0) or 0)
+            if pool_world_size not in (0, int(self.comm.size)):
+                # Rank-count changes can leave stale in-progress ownership/status;
+                # force a clean pool when communicator size differs.
+                force_rebuild = True
+                if self.rank == 0:
+                    print(
+                        f"[ROM] Rebuilding LHS pool due to MPI size change: "
+                        f"pool={pool_world_size} current={self.comm.size}"
+                    )
+            else:
+                return pool
         if pool_path.exists() and force_rebuild:
             pool_path.unlink(missing_ok=True)
         pool = self._create_lhs_pool(shape_name, sweep_cfg=sweep_cfg, total_samples=total_samples, seed=seed)
