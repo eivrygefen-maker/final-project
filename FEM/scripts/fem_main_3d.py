@@ -571,8 +571,9 @@ def _solve_structural_only_evp(
     if u_dofs.size == 0:
         raise RuntimeError("Structural-only diagnosis failed: u_dofs is empty after robust localization.")
 
-    # Deactivate non-structural (air) displacement DOFs:
-    # keep only DOFs associated with structural facet tags 1/2/3 and clamp the complement.
+    # Deactivate non-structural (air) displacement DOFs WITHOUT building a huge DirichletBC.
+    # We compute the complement DOF set, then add a tiny diagonal penalty on those DOFs
+    # after assembling K/M (memory-safe compared to fem.dirichletbc(air_dofs)).
     structural_facets = np.unique(np.concatenate([facets_t1, facets_t2, facets_t3])).astype(np.int32)
     structural_dofs = np.array([], dtype=np.int32)
     if structural_facets.size > 0:
@@ -584,18 +585,58 @@ def _solve_structural_only_evp(
         air_dofs = np.setdiff1d(all_u_local, structural_dofs, assume_unique=False).astype(np.int32)
     else:
         air_dofs = all_u_local.copy()
-    u_dofs = np.unique(np.concatenate([u_dofs, air_dofs])).astype(np.int32)
+
+    # Keep Dirichlet BCs small (wood_fix + minimal geometric anchors only).
+    u_dofs_bc = u_dofs.copy()
     print(
         f"[DIAG] structural-only dof partition: "
         f"n_u_local={n_u_local}, structural_dofs={structural_dofs.size}, "
-        f"air_dofs={air_dofs.size}, constrained_total={u_dofs.size}"
+        f"air_dofs={air_dofs.size}, bc_dofs={u_dofs_bc.size}"
     )
     sys.stdout.flush()
 
-    bc_u = fem.dirichletbc(np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType), u_dofs, V_u)
+    bc_u = fem.dirichletbc(np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType), u_dofs_bc, V_u)
 
     K = assemble_matrix(fem.form(a_uu), bcs=[bc_u]); K.assemble()
     M = assemble_matrix(fem.form(m_uu), bcs=[bc_u]); M.assemble()
+
+    # Avoid singular air rows/diagonals without allocating a massive DirichletBC.
+    # For air displacement DOFs, the structural forms integrated only on ds(1/2/3) can
+    # produce zero stiffness/mass entries. We inject a tiny diagonal penalty on air DOFs.
+    try:
+        if air_dofs.size > 0:
+            air_pen_factor = float(config.get("solver", {}).get("structural_air_diag_penalty", 1.0e-6))
+            diagK = K.getDiagonal()
+            diagM = M.getDiagonal()
+            dK = diagK.array
+            dM = diagM.array
+            k_scale = float(np.max(np.abs(dK))) if dK.size > 0 else 1.0
+            m_scale = float(np.max(np.abs(dM))) if dM.size > 0 else 1.0
+            if not math.isfinite(k_scale) or k_scale <= 0.0:
+                k_scale = 1.0
+            if not math.isfinite(m_scale) or m_scale <= 0.0:
+                m_scale = 1.0
+            dK[air_dofs] += air_pen_factor * k_scale
+            dM[air_dofs] += air_pen_factor * m_scale
+            # Update PETSc diagonals.
+            diagK.array[:] = dK
+            diagM.array[:] = dM
+            K.setDiagonal(diagK)
+            M.setDiagonal(diagM)
+            K.assemble()
+            M.assemble()
+            _emit(
+                f"[diag] structural-only air diagonal penalty: factor={air_pen_factor:.1e}, "
+                f"k_scale={k_scale:.3e}, m_scale={m_scale:.3e}, air_dofs={air_dofs.size}",
+                status_callback=status_callback,
+            )
+    except Exception as exc:
+        _emit(
+            f"[diag][warn] structural-only air diagonal penalty failed: {exc}",
+            status_callback=status_callback,
+            level="warning",
+        )
+
     A = K.copy()
     eps_diag = float(config.get("solver", {}).get("structural_diag_shift", 1.0e-6))
     if eps_diag > 0:
