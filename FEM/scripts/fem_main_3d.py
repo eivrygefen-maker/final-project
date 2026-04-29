@@ -502,6 +502,15 @@ def _solve_structural_only_evp(
     ) * shell_ds
     m_uu = (rho_eff * thickness) * ufl.dot(u, v) * shell_ds
 
+    # Ghost term to guarantee a non-empty diagonal for all displacement DOFs,
+    # including air DOFs that have zero shell measure. This avoids missing-diagonal
+    # PETSc errors and sparsity-pattern insertions.
+    ghost_eps = float(config.get("solver", {}).get("structural_diag_ghost_eps", 1.0e-20))
+    if ghost_eps > 0.0:
+        full_dx = ufl.Measure("dx", domain=msh)
+        a_uu = a_uu + ghost_eps * ufl.dot(u, v) * full_dx
+        m_uu = m_uu + ghost_eps * ufl.dot(u, v) * full_dx
+
     # V_u coverage diagnostic by tag.
     try:
         f_to_v = msh.topology.connectivity(fdim, 0)
@@ -599,6 +608,14 @@ def _solve_structural_only_evp(
 
     K = assemble_matrix(fem.form(a_uu), bcs=[bc_u]); K.assemble()
     M = assemble_matrix(fem.form(m_uu), bcs=[bc_u]); M.assemble()
+    # Defensive: allow new nonzeros during diagnostic diagonal updates.
+    # With the ghost term, this should rarely be needed, but it prevents PETSc
+    # from hard-failing if some diagonal entries were initially structurally zero.
+    try:
+        K.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
+        M.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
+    except Exception:
+        pass
 
     # Avoid singular air rows/diagonals without allocating a massive DirichletBC.
     # For air displacement DOFs, the structural forms integrated only on ds(1/2/3) can
