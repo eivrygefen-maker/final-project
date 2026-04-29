@@ -582,6 +582,10 @@ def _slepc_shift_invert_batch(
     except Exception as exc:
         _emit(f"[error] communicator audit failed before EPS solve: {exc}", status_callback=status_callback, level="error")
         raise
+    opts = PETSc.Options()
+    opts["eps_monitor"] = None
+    opts["eps_converged_reason"] = None
+    eps.setFromOptions()
     _debug_rank("Entering EPS Solve")
     eps.solve()
 
@@ -975,6 +979,10 @@ def _solve_structural_only_evp(
         _emit(f"[error] communicator audit failed before structural EPS solve: {exc}", status_callback=status_callback, level="error")
         raise
     _phase_sync(2106, "structural-only before eps.solve", status_callback=status_callback)
+    opts = PETSc.Options()
+    opts["eps_monitor"] = None
+    opts["eps_converged_reason"] = None
+    eps.setFromOptions()
     _debug_rank("Entering EPS Solve")
     eps.solve()
     _phase_sync(2107, "structural-only after eps.solve", status_callback=status_callback)
