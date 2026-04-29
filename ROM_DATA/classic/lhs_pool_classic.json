@@ -3,6 +3,7 @@
   "sampling": "lhs",
   "seed": 123,
   "total_samples": 500,
+  "mpi_world_size": 1,
   "entries": [
     {
       "id": "sample_001",
@@ -13,9 +14,9 @@
         "geometry.width": 0.4344078140946507,
         "materials.top.density": 430.0
       },
-      "status": "running",
+      "status": "error",
       "snapshot_file": null,
-      "error": null
+      "error": "error code 71\n[0] EPSSolve() line 136 in ./src/eps/interface/epssolve.c\n[0] EPSSetUp() line 350 in ./src/eps/interface/epssetup.c\n[0] STSetUp() line 582 in ./src/sys/classes/st/interface/stsolve.c\n[0] STSetUp_Sinvert() line 123 in ./src/sys/classes/st/impls/sinvert/sinvert.c\n[0] KSPSetUp() line 406 in ./src/ksp/ksp/interface/itfunc.c\n[0] PCSetUp() line 1017 in ./src/ksp/pc/interface/precon.c\n[0] PCSetUp_LU() line 131 in ./src/ksp/pc/impls/factor/lu/lu.c\n[0] MatLUFactorNumeric() line 3194 in ./src/mat/interface/matrix.c\n[0] MatLUFactorNumeric_SeqAIJ_Inode() line 1806 in ./src/mat/impls/aij/seq/inode.c\n[0] MatPivotCheck() line 829 in ./include/petsc/private/matimpl.h\n[0] MatPivotCheck_none() line 812 in ./include/petsc/private/matimpl.h\n[0] Zero pivot in LU factorization: https://petsc.org/release/faq/#zeropivot\n[0] Zero pivot row 7 value 0. tolerance 2.22045e-14\n"
     },
     {
       "id": "sample_002",

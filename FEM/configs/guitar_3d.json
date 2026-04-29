@@ -2,9 +2,9 @@
     "geometry": {
         "design_mode": "Basic (Geometric)",
         "shape_type": "Classical",
-        "length": 0.48,
-        "width": 0.37,
-        "depth": 0.1,
+        "length": 0.36597308949059887,
+        "width": 0.4344078140946507,
+        "depth": 0.12414447073914527,
         "thickness": 0.003,
         "hole_radius": 0.04,
         "lower_bout": 0.37,
@@ -16,7 +16,7 @@
     },
     "materials": {
         "top": {
-            "density": 450.0,
+            "density": 430.0,
             "E_L": 10000000000.0,
             "E_T": 100000000.0,
             "E_R": 70000000.0,
@@ -78,7 +78,7 @@
         "st_pc_factor_mat_solver_type": "petsc",
         "st_factor_solver_type": "petsc",
         "st_shift_target_hz": 105.0,
-        "structural_air_diag_penalty": 1e-7,
+        "structural_air_diag_penalty": 1e-07,
         "structural_diag_shift": 1.0
     },
     "results": {
