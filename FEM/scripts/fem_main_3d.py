@@ -760,10 +760,15 @@ def _solve_structural_only_evp(
                 wood_cell_tags.append(tag)
         except Exception:
             pass
-    if wood_cell_tags:
-        wood_dx = sum(xdmf_dx(tag) for tag in wood_cell_tags)
+    if not wood_cell_tags:
+        wood_dx = xdmf_dx  # Fallback to full tagged domain if list is empty
     else:
-        wood_dx = ufl.dx(domain=msh)
+        # Build measure sum explicitly to avoid Python sum() starting from int(0).
+        measures = [xdmf_dx(tag) for tag in wood_cell_tags]
+        wood_dx = measures[0]
+        for m in measures[1:]:
+            wood_dx += m
+    if not wood_cell_tags:
         _emit("[diag][warn] no wood cell tags 1/2/3 found; falling back to full dx.", status_callback=status_callback, level="warning")
 
     eps_u = ufl.sym(ufl.grad(u))
