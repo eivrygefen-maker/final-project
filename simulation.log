@@ -104,8 +104,8 @@ Starting solver with 27348 DOFs and proactive memory cleanup...
 [INFO] [PHASE] 2003 coupled sifter before batch solve checksum=2003/2003
 [PHASE] 2003 coupled sifter before batch solve checksum=2003/2003
 [DEBUG] Rank 0: Entering KSP Setup
-[INFO] [solver] shift-invert batch center 105.00 Hz (lambda=4.352496e+05 s^-2), batch=50, KSP=preonly, PC=lu, factor=petsc (PETSc native LU; no MUMPS ICNTL), diag_shift=1.00e+03, A_diag_min=0.000000e+00, A_diag_max=1.645408e+08
-[solver] shift-invert batch center 105.00 Hz (lambda=4.352496e+05 s^-2), batch=50, KSP=preonly, PC=lu, factor=petsc (PETSc native LU; no MUMPS ICNTL), diag_shift=1.00e+03, A_diag_min=0.000000e+00, A_diag_max=1.645408e+08
+[INFO] [solver] shift-invert batch center 105.00 Hz (lambda=4.352496e+05 s^-2), batch=50, KSP=preonly, PC=lu, factor=mumps, MUMPS(ICNTL4=2, ICNTL6=7, ICNTL12=1, ICNTL14=5000, ICNTL23=0, ICNTL24=1, ICNTL22=1), diag_shift=1.00e+03, A_diag_min=0.000000e+00, A_diag_max=1.645408e+08
+[solver] shift-invert batch center 105.00 Hz (lambda=4.352496e+05 s^-2), batch=50, KSP=preonly, PC=lu, factor=mumps, MUMPS(ICNTL4=2, ICNTL6=7, ICNTL12=1, ICNTL14=5000, ICNTL23=0, ICNTL24=1, ICNTL22=1), diag_shift=1.00e+03, A_diag_min=0.000000e+00, A_diag_max=1.645408e+08
 [DEBUG] Rank 0: A comm rank=0 size=1
 [DEBUG] Rank 0: M comm rank=0 size=1
 [DEBUG] Rank 0: EPS comm rank=0 size=1
@@ -114,14 +114,14 @@ Starting solver with 27348 DOFs and proactive memory cleanup...
 Traceback (most recent call last):
   File "/home/vboxuser/final-project/FEM/rom/rom_manager.py", line 446, in collect_snapshots
     fom = fem_main_3d.run_fom_for_rom(cfg, num_modes=num_modes)
-  File "/home/vboxuser/final-project/FEM/scripts/fem_main_3d.py", line 1764, in run_fom_for_rom
+  File "/home/vboxuser/final-project/FEM/scripts/fem_main_3d.py", line 1780, in run_fom_for_rom
     msh, W, freqs, eigvecs, n_u, n_p = _solve_coupled_evp(
-  File "/home/vboxuser/final-project/FEM/scripts/fem_main_3d.py", line 1595, in _solve_coupled_evp
+  File "/home/vboxuser/final-project/FEM/scripts/fem_main_3d.py", line 1611, in _solve_coupled_evp
     nconv, rows = _slepc_shift_invert_batch(
-  File "/home/vboxuser/final-project/FEM/scripts/fem_main_3d.py", line 678, in _slepc_shift_invert_batch
+  File "/home/vboxuser/final-project/FEM/scripts/fem_main_3d.py", line 694, in _slepc_shift_invert_batch
     eps.solve()
   File "SLEPc/EPS.pyx", line 1142, in slepc4py.SLEPc.EPS.solve
-petsc4py.PETSc.Error: error code 71
+petsc4py.PETSc.Error: error code 76
 [0] EPSSolve() line 136 in ./src/eps/interface/epssolve.c
 [0] EPSSetUp() line 350 in ./src/eps/interface/epssetup.c
 [0] STSetUp() line 582 in ./src/sys/classes/st/interface/stsolve.c
@@ -130,11 +130,9 @@ petsc4py.PETSc.Error: error code 71
 [0] PCSetUp() line 1017 in ./src/ksp/pc/interface/precon.c
 [0] PCSetUp_LU() line 131 in ./src/ksp/pc/impls/factor/lu/lu.c
 [0] MatLUFactorNumeric() line 3194 in ./src/mat/interface/matrix.c
-[0] MatLUFactorNumeric_SeqAIJ_Inode() line 1806 in ./src/mat/impls/aij/seq/inode.c
-[0] MatPivotCheck() line 829 in ./include/petsc/private/matimpl.h
-[0] MatPivotCheck_none() line 812 in ./include/petsc/private/matimpl.h
-[0] Zero pivot in LU factorization: https://petsc.org/release/faq/#zeropivot
-[0] Zero pivot row 7 value 0. tolerance 2.22045e-14
+[0] MatFactorNumeric_MUMPS() line 1686 in ./src/mat/impls/aij/mpi/mumps/mumps.c
+[0] Error in external library
+[0] Error reported by MUMPS in numerical factorization phase: INFOG(1)=-9, INFO(2)=3168914
 
 {
   "shape": "classic",
