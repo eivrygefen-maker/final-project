@@ -497,13 +497,16 @@ def _slepc_shift_invert_batch(
     ksp = st.getKSP()
     pc = ksp.getPC()
     _debug_rank("Entering KSP Setup")
-    # Nuclear option: force a direct ST solve path for robustness.
-    ksp.setType("preonly")
-    pc.setType("lu")
-    try:
-        pc.setFactorSolverType("mumps")
-    except Exception:
-        pass
+    # Configurable ST solve path (iterative default for VM stability).
+    st_ksp_type = str(solver_cfg.get("st_ksp_type", "cg"))
+    st_pc_type = str(solver_cfg.get("st_pc_type", "gamg"))
+    ksp.setType(st_ksp_type)
+    pc.setType(st_pc_type)
+    if st_pc_type.lower() == "lu":
+        try:
+            pc.setFactorSolverType(str(solver_cfg.get("st_factor_solver_type", "mumps")))
+        except Exception:
+            pass
 
     mumps_icntl_14 = int(solver_cfg.get("mat_mumps_icntl_14", 200))
     mumps_icntl_24 = int(solver_cfg.get("mat_mumps_icntl_24", 1))
@@ -530,9 +533,10 @@ def _slepc_shift_invert_batch(
     petsc_opts["pc_factor_shift_amount"] = float(solver_cfg.get("pc_factor_shift_amount", 1e-2))
     petsc_opts["eps_gen_non_hermitian"] = ""
     petsc_opts["bv_orthog_refine"] = str(solver_cfg.get("bv_orthog_refine", "always"))
-    petsc_opts["st_ksp_type"] = "preonly"
-    petsc_opts["st_pc_type"] = "lu"
-    petsc_opts["st_pc_factor_mat_solver_type"] = "mumps"
+    petsc_opts["st_ksp_type"] = st_ksp_type
+    petsc_opts["st_pc_type"] = st_pc_type
+    if st_pc_type.lower() == "lu":
+        petsc_opts["st_pc_factor_mat_solver_type"] = str(solver_cfg.get("st_factor_solver_type", "mumps"))
     petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "none"))
 
     ncv = int(solver_cfg.get("target_ncv", max(40, 4 * batch)))
@@ -929,24 +933,27 @@ def _solve_structural_only_evp(
     eps.setTarget(target_lambda)
     st = eps.getST()
     st.setType(SLEPc.ST.Type.SINVERT)
-    # Robustness: prefer direct LU in spectral transformation for tiny pivots.
+    # Robustness: use configurable ST KSP/PC (iterative by default in VM).
     try:
         _debug_rank("Entering KSP Setup")
         ksp = st.getKSP()
-        ksp.setType("preonly")
+        st_ksp_type = str(config.get("solver", {}).get("st_ksp_type", "cg"))
+        st_pc_type = str(config.get("solver", {}).get("st_pc_type", "gamg"))
+        ksp.setType(st_ksp_type)
         pc = ksp.getPC()
-        pc.setType("lu")
-        try:
-            pc.setFactorSolverType("mumps")
-            petsc_opts = PETSc.Options()
-            petsc_opts["mat_mumps_icntl_6"] = int(config.get("solver", {}).get("mat_mumps_icntl_6", 7))
-            petsc_opts["mat_mumps_icntl_12"] = int(config.get("solver", {}).get("mat_mumps_icntl_12", 1))
-            petsc_opts["mat_mumps_icntl_14"] = int(config.get("solver", {}).get("mat_mumps_icntl_14", 200))
-            petsc_opts["mat_mumps_icntl_4"] = int(
-                config.get("solver", {}).get("mat_mumps_icntl_4_root", 2 if MPI.COMM_WORLD.rank == 0 else 0)
-            )
-        except Exception:
-            pass
+        pc.setType(st_pc_type)
+        if st_pc_type.lower() == "lu":
+            try:
+                pc.setFactorSolverType(str(config.get("solver", {}).get("st_factor_solver_type", "mumps")))
+                petsc_opts = PETSc.Options()
+                petsc_opts["mat_mumps_icntl_6"] = int(config.get("solver", {}).get("mat_mumps_icntl_6", 7))
+                petsc_opts["mat_mumps_icntl_12"] = int(config.get("solver", {}).get("mat_mumps_icntl_12", 1))
+                petsc_opts["mat_mumps_icntl_14"] = int(config.get("solver", {}).get("mat_mumps_icntl_14", 200))
+                petsc_opts["mat_mumps_icntl_4"] = int(
+                    config.get("solver", {}).get("mat_mumps_icntl_4_root", 2 if MPI.COMM_WORLD.rank == 0 else 0)
+                )
+            except Exception:
+                pass
         # Make KSP convergence checks essentially irrelevant.
         try:
             ksp.setTolerances(rtol=1.0e-50, atol=1.0e-50, max_it=1, divtol=1.0e50)
