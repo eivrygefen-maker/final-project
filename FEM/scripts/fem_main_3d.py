@@ -102,12 +102,15 @@ def _cleanup_xdmf_cache_keep_latest(cache_dir: Path, keep_last: int = 2, status_
 def _generate_mesh_with_gmsh(status_callback=None) -> None:
     geom_script = Path(__file__).resolve().parents[1] / "geometry" / "build_3d_guitar.py"
     cmd = [sys.executable, str(geom_script), "-nopopup"]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            "Gmsh mesh generation failed.\n"
-            f"stdout:\n{proc.stdout}\n\nstderr:\n{proc.stderr}"
-        )
+    # In MPI runs, only rank 0 should invoke external gmsh process.
+    if MPI.COMM_WORLD.rank == 0:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "Gmsh mesh generation failed.\n"
+                f"stdout:\n{proc.stdout}\n\nstderr:\n{proc.stderr}"
+            )
+    MPI.COMM_WORLD.barrier()
 
 
 def _convert_msh_to_xdmf_with_meshio(mesh_file: Path, status_callback=None):
@@ -1324,9 +1327,10 @@ def assemble_coupled_operators_for_rom(config: Dict, status_callback=None):
 
 def run_fom_for_rom(config: Dict, num_modes: int = 15, status_callback=None):
     mesh_file = Path(config["solver"]["mesh_file"])
-    if not mesh_file.exists():
+    if MPI.COMM_WORLD.rank == 0 and not mesh_file.exists():
         _emit(f"[mesh] missing .msh, generating new mesh: {mesh_file}", status_callback=status_callback)
     _generate_mesh_with_gmsh(status_callback=status_callback)
+    MPI.COMM_WORLD.barrier()
     if not mesh_file.exists():
         raise FileNotFoundError(f"Fresh mesh generation did not create expected file: {mesh_file}")
     msh, W, freqs, eigvecs, n_u, n_p = _solve_coupled_evp(

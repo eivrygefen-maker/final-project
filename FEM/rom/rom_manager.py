@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
+from mpi4py import MPI
 from scipy.stats import qmc
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -21,6 +22,8 @@ import fem_main_3d
 
 class ROMManager:
     def __init__(self, base_dir: Optional[Path] = None, shapes_config_path: Optional[Path] = None):
+        self.comm = MPI.COMM_WORLD
+        self.rank = int(self.comm.rank)
         self.base_dir = Path(base_dir) if base_dir else Path(__file__).resolve().parents[2]
         self.rom_root = self.base_dir / "ROM_DATA"
         self.rom_root.mkdir(parents=True, exist_ok=True)
@@ -108,23 +111,27 @@ class ROMManager:
     def _save_shape_base_config(self, shape_name: str, cfg: Dict) -> None:
         shape_cfg = self.shapes[shape_name]
         config_path = self.base_dir / shape_cfg["base_config"]
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=4)
+        if self.rank == 0:
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=4)
+        self.comm.barrier()
 
     def _rebuild_mesh(self, shape_name: str) -> None:
         cfg = self._load_shape_base_config(shape_name)
         mesh_file = Path(cfg["solver"]["mesh_file"])
         xdmf_cache = mesh_file.parent / "_xdmf_cache"
-        if xdmf_cache.exists():
+        if self.rank == 0 and xdmf_cache.exists():
             shutil.rmtree(xdmf_cache, ignore_errors=True)
         geom_script = self.base_dir / "FEM" / "geometry" / "build_3d_guitar.py"
         cmd = [sys.executable, str(geom_script), "-nopopup"]
-        proc = subprocess.run(cmd, cwd=str(self.base_dir), capture_output=True, text=True)
-        if proc.returncode != 0:
-            raise RuntimeError(
-                "Mesh regeneration failed during force-pool-rebuild.\n"
-                f"stdout:\n{proc.stdout}\n\nstderr:\n{proc.stderr}"
-            )
+        if self.rank == 0:
+            proc = subprocess.run(cmd, cwd=str(self.base_dir), capture_output=True, text=True)
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    "Mesh regeneration failed during force-pool-rebuild.\n"
+                    f"stdout:\n{proc.stdout}\n\nstderr:\n{proc.stderr}"
+                )
+        self.comm.barrier()
 
     @staticmethod
     def _set_nested(config: Dict, dotted_key: str, value):
@@ -205,12 +212,15 @@ class ROMManager:
         return out
 
     @staticmethod
-    def _write_json(path: Path, data: Dict) -> None:
+    def _write_json(path: Path, data: Dict, rank: int = 0, comm=None) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        tmp.replace(path)
+        if rank == 0:
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            tmp.replace(path)
+        if comm is not None:
+            comm.barrier()
 
     @staticmethod
     def _sample_id(i: int) -> str:
@@ -274,7 +284,7 @@ class ROMManager:
         if pool_path.exists() and force_rebuild:
             pool_path.unlink()
         pool = self._create_lhs_pool(shape_name, sweep_cfg=sweep_cfg, total_samples=total_samples, seed=seed)
-        self._write_json(pool_path, pool)
+        self._write_json(pool_path, pool, rank=self.rank, comm=self.comm)
         return pool
 
     @staticmethod
@@ -300,7 +310,7 @@ class ROMManager:
                 entry["error"] = None
                 changed += 1
         if changed > 0:
-            self._write_json(pool_path, pool)
+            self._write_json(pool_path, pool, rank=self.rank, comm=self.comm)
         return changed
 
     @staticmethod
@@ -357,7 +367,7 @@ class ROMManager:
                         entry["error"] = None
                         changed += 1
                 if changed > 0:
-                    self._write_json(paths["lhs_pool"], pool)
+                    self._write_json(paths["lhs_pool"], pool, rank=self.rank, comm=self.comm)
             grid = []
         else:
             grid = self._grid_from_sweep(sweep_cfg)
@@ -406,7 +416,7 @@ class ROMManager:
                 params = entry.get("parameters", {})
                 entry["status"] = "running"
                 entry["error"] = None
-                self._write_json(pool_path, pool)
+                self._write_json(pool_path, pool, rank=self.rank, comm=self.comm)
 
                 snapshot_path = paths["snapshots"] / f"snapshot_{next_idx:04d}.npz"
                 try:
@@ -417,22 +427,24 @@ class ROMManager:
                     t0 = time.perf_counter()
                     fom = fem_main_3d.run_fom_for_rom(cfg, num_modes=num_modes)
                     elapsed = time.perf_counter() - t0
-                    np.savez(
-                        snapshot_path,
-                        params_json=json.dumps(params),
-                        shape_name=shape_name,
-                        sampling_mode=sampling_mode,
-                        sample_id=str(entry.get("id", "")),
-                        freqs_hz=np.array(fom["freqs_hz"], dtype=np.float64),
-                        eigvecs_real=np.real(fom["eigvecs"]).astype(np.float64),
-                        elapsed_s=np.array([elapsed], dtype=np.float64),
-                    )
-                    entry["status"] = "completed"
-                    entry["snapshot_file"] = str(snapshot_path.resolve())
-                    entry["error"] = None
-                    out_files.append(snapshot_path)
-                    next_idx += 1
-                    completed_batch += 1
+                    if self.rank == 0:
+                        np.savez(
+                            snapshot_path,
+                            params_json=json.dumps(params),
+                            shape_name=shape_name,
+                            sampling_mode=sampling_mode,
+                            sample_id=str(entry.get("id", "")),
+                            freqs_hz=np.array(fom["freqs_hz"], dtype=np.float64),
+                            eigvecs_real=np.real(fom["eigvecs"]).astype(np.float64),
+                            elapsed_s=np.array([elapsed], dtype=np.float64),
+                        )
+                        entry["status"] = "completed"
+                        entry["snapshot_file"] = str(snapshot_path.resolve())
+                        entry["error"] = None
+                        out_files.append(snapshot_path)
+                        next_idx += 1
+                        completed_batch += 1
+                    self.comm.barrier()
                 except Exception as exc:
                     traceback.print_exc()
                     entry["status"] = "error"
@@ -440,7 +452,7 @@ class ROMManager:
                     error_batch += 1
                 finally:
                     processed += 1
-                    self._write_json(pool_path, pool)
+                    self._write_json(pool_path, pool, rank=self.rank, comm=self.comm)
             self._last_collect_summary = {
                 "shape": shape_name,
                 "sampling": sampling_mode,
@@ -463,16 +475,18 @@ class ROMManager:
             fom = fem_main_3d.run_fom_for_rom(cfg, num_modes=num_modes)
             elapsed = time.perf_counter() - t0
             snapshot_path = paths["snapshots"] / f"snapshot_{idx:04d}.npz"
-            np.savez(
-                snapshot_path,
-                params_json=json.dumps(params),
-                shape_name=shape_name,
-                sampling_mode=sampling_mode,
-                freqs_hz=np.array(fom["freqs_hz"], dtype=np.float64),
-                eigvecs_real=np.real(fom["eigvecs"]).astype(np.float64),
-                elapsed_s=np.array([elapsed], dtype=np.float64),
-            )
-            out_files.append(snapshot_path)
+            if self.rank == 0:
+                np.savez(
+                    snapshot_path,
+                    params_json=json.dumps(params),
+                    shape_name=shape_name,
+                    sampling_mode=sampling_mode,
+                    freqs_hz=np.array(fom["freqs_hz"], dtype=np.float64),
+                    eigvecs_real=np.real(fom["eigvecs"]).astype(np.float64),
+                    elapsed_s=np.array([elapsed], dtype=np.float64),
+                )
+                out_files.append(snapshot_path)
+            self.comm.barrier()
         self._last_collect_summary = {
             "shape": shape_name,
             "sampling": sampling_mode,
@@ -506,14 +520,16 @@ class ROMManager:
         V = U[:, :r].astype(np.float64)
 
         paths["root"].mkdir(parents=True, exist_ok=True)
-        np.savez(
-            paths["basis"],
-            basis=V,
-            singular_values=sigma.astype(np.float64),
-            energy_curve=energy_curve.astype(np.float64),
-            selected_rank=np.array([r], dtype=np.int32),
-            snapshots_count=np.array([len(snapshots)], dtype=np.int32),
-        )
+        if self.rank == 0:
+            np.savez(
+                paths["basis"],
+                basis=V,
+                singular_values=sigma.astype(np.float64),
+                energy_curve=energy_curve.astype(np.float64),
+                selected_rank=np.array([r], dtype=np.int32),
+                snapshots_count=np.array([len(snapshots)], dtype=np.int32),
+            )
+        self.comm.barrier()
         self._basis_cache[shape_name] = {
             "basis": V,
             "mtime": paths["basis"].stat().st_mtime,
