@@ -766,8 +766,8 @@ def _solve_structural_only_evp(
     )
     sys.stdout.flush()
 
-    # Quadratic displacement space reduces shear locking in thin plate-like solids.
-    u_el = element("Lagrange", msh.basix_cell(), 2, shape=(3,))
+    # P1 displacement for minimal DOFs (matches node count scale); MUMPS-friendly for large coupled runs.
+    u_el = element("Lagrange", msh.basix_cell(), 1, shape=(3,))
     V_u = fem.functionspace(msh, u_el)
     u = ufl.TrialFunction(V_u)
     v = ufl.TestFunction(V_u)
@@ -1191,14 +1191,15 @@ def _solve_coupled_evp(
         raise RuntimeError("Mesh topology appears empty (num_cells_global <= 0). Check XDMF read/conversion.")
 
     _emit("Step 2/5: Building mixed spaces and weak forms...", status_callback=status_callback)
-    # Mixed-order production setup: quadratic structure, linear acoustics.
-    u_el = element("Lagrange", msh.basix_cell(), 2, shape=(3,))
+    # P1 / P1 mixed space: displacement and pressure both linear (DOFs ~ mesh scale, low MUMPS memory).
+    u_el = element("Lagrange", msh.basix_cell(), 1, shape=(3,))
     p_el = element("Lagrange", msh.basix_cell(), 1)
     W_el = mixed_element([u_el, p_el])
     W = fem.functionspace(msh, W_el)
     n_p_global = int(W.sub(1).dofmap.index_map.size_global * W.sub(1).dofmap.index_map_bs)
+    n_u_global = int(W.sub(0).dofmap.index_map.size_global * W.sub(0).dofmap.index_map_bs)
     _emit(
-        f"[form] pressure field: global P1 DOFs n_p={n_p_global} on full mesh "
+        f"[form] mixed P1+P1: global u DOFs n_u={n_u_global}, p DOFs n_p={n_p_global} "
         f"(acoustic forms use dx on air cells only, tag={AIR_VOLUME_TAG}).",
         status_callback=status_callback,
     )
