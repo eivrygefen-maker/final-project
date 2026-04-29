@@ -1136,7 +1136,15 @@ def _solve_coupled_evp(
     _audit_and_scale_mesh_units(msh, config, status_callback=status_callback)
     _mesh_interface_diagnostic(msh, cell_tags, facet_tags, status_callback=status_callback)
     _phase_sync(2001, "coupled after mesh load", status_callback=status_callback)
-    if solve_evp and _solver_bool(config.get("solver", {}), "structural_only_diagnosis", default=False):
+    _sod_raw = config.get("solver", {}).get("structural_only_diagnosis", "<missing>")
+    _sod_eff = _solver_bool(config.get("solver", {}), "structural_only_diagnosis", default=False)
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        print(
+            f"[diag] structural_only_diagnosis: effective={_sod_eff!r} raw={_sod_raw!r} "
+            f"solve_evp={solve_evp} → {'structural-only branch' if (solve_evp and _sod_eff) else 'full coupled (mixed u,p)'}"
+        )
+        sys.stdout.flush()
+    if solve_evp and _sod_eff:
         return _solve_structural_only_evp(
             msh=msh,
             cell_tags=cell_tags,
@@ -1481,6 +1489,9 @@ def _solve_coupled_evp(
 
     _phase_sync(2002, "coupled before matrix assembly", status_callback=status_callback)
     _debug_rank("Entering Matrix Assembly")
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        print("PRINT: ENTERING FULL COUPLED ACOUSTIC-STRUCTURAL SOLVE")
+        sys.stdout.flush()
     A = assemble_matrix(fem.form(a_form), bcs=bcs)
     A.assemble()
     M = assemble_matrix(fem.form(m_form), bcs=bcs)
@@ -1716,6 +1727,15 @@ def assemble_coupled_operators_for_rom(config: Dict, status_callback=None):
 
 def run_fom_for_rom(config: Dict, num_modes: int = 10, status_callback=None):
     _phase_sync(3000, "run_fom_for_rom enter", status_callback=status_callback)
+    # ROM offline snapshots must use the coupled EVP; stale guitar_3d.json on disk (e.g. after git pull)
+    # can still have structural_only_diagnosis=true — override here so the FOM is never vacuum-only.
+    solver_block = config.setdefault("solver", {})
+    solver_block["structural_only_diagnosis"] = False
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        print(
+            "[ROM-FOM] solver.structural_only_diagnosis forced to false for coupled acoustic–structural EVP."
+        )
+        sys.stdout.flush()
     mesh_file = Path(config["solver"]["mesh_file"])
     if MPI.COMM_WORLD.rank == 0 and not mesh_file.exists():
         _emit(f"[mesh] missing .msh, generating new mesh: {mesh_file}", status_callback=status_callback)

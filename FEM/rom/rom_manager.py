@@ -439,6 +439,8 @@ class ROMManager:
                     cfg = self._load_shape_base_config(shape_name)
                     for k, v in params.items():
                         self._set_nested(cfg, k, v)
+                    # Offline ROM FOM must be coupled; persist false so guitar_3d.json cannot drift to vacuum-only.
+                    cfg.setdefault("solver", {})["structural_only_diagnosis"] = False
                     self._save_shape_base_config(shape_name, cfg)
                     t0 = time.perf_counter()
                     fom = fem_main_3d.run_fom_for_rom(cfg, num_modes=num_modes)
@@ -485,6 +487,7 @@ class ROMManager:
             cfg = self._load_shape_base_config(shape_name)
             for k, v in params.items():
                 self._set_nested(cfg, k, v)
+            cfg.setdefault("solver", {})["structural_only_diagnosis"] = False
             self._save_shape_base_config(shape_name, cfg)
             t0 = time.perf_counter()
             fom = fem_main_3d.run_fom_for_rom(cfg, num_modes=num_modes)
