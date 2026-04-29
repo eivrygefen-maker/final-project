@@ -236,9 +236,8 @@ def create_guitar_mesh():
 
     interface_surfs = sorted(list(wood_boundary_surfs.intersection(air_boundary_surfs)))
     soundhole_surfs = sorted(list(air_boundary_surfs.difference(interface_surfs)))
-
-    if len(soundhole_surfs) != 1:
-        raise RuntimeError(f"Expected exactly 1 soundhole opening surface, found {len(soundhole_surfs)}")
+    if len(soundhole_surfs) == 0:
+        raise RuntimeError("No soundhole opening surfaces found on air boundary.")
 
     # Build adjacency graph from shared curves among interface surfaces.
     iface_set = set(interface_surfs)
@@ -263,7 +262,9 @@ def create_guitar_mesh():
                 neighbors[a].add(b)
                 neighbors[b].add(a)
 
-    soundhole_curves = get_boundary_tags([(2, soundhole_surfs[0])], 1)
+    soundhole_curves = set()
+    for shs in soundhole_surfs:
+        soundhole_curves.update(get_boundary_tags([(2, shs)], 1))
     top_seeds = [s for s, curves in surf_to_curves.items() if curves.intersection(soundhole_curves)]
     if not top_seeds:
         raise RuntimeError("Could not identify Top_Plate surfaces from soundhole topology")
