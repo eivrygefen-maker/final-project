@@ -117,6 +117,10 @@ def create_guitar_mesh():
     def get_surface_center(surf_tag):
         return occ.getCenterOfMass(2, surf_tag)
 
+    def get_volume_center_z(vol_tag):
+        com = occ.getCenterOfMass(3, vol_tag)
+        return com[2]
+
     def get_surface_normal_z(surf_tag):
         """
         Return |nz| at parametric midpoint of a surface.
@@ -282,6 +286,8 @@ def create_guitar_mesh():
         wood_fix_surfs = [body_surfs[0]]
 
     # Define physical groups using fixed tag protocol.
+    # IMPORTANT: 2D tags (facets) and 3D tags (volumes) are both created.
+    # This ensures structural-only volume assembly can target wood cells (1/2/3).
     pg_top = gmsh.model.addPhysicalGroup(2, top_plate_surfs, tag=1)
     gmsh.model.setPhysicalName(2, pg_top, "Top_Plate")
     pg_soundhole = gmsh.model.addPhysicalGroup(2, soundhole_surfs, tag=2)
@@ -292,9 +298,48 @@ def create_guitar_mesh():
     gmsh.model.setPhysicalName(2, pg_fix, "wood_fix")
     pg_air = gmsh.model.addPhysicalGroup(3, air_vols, tag=10)
     gmsh.model.setPhysicalName(3, pg_air, "Air_Internal")
+
+    # Build wood volume groups (top/back/ribs) from COM z split with robust fallback.
+    z_split = max(0.2 * t, 0.01 * D)
+    top_vols = []
+    back_vols = []
+    rib_vols = []
+    for v in wood_vols:
+        zc = get_volume_center_z(v)
+        if zc > z_split:
+            top_vols.append(v)
+        elif zc < -z_split:
+            back_vols.append(v)
+        else:
+            rib_vols.append(v)
+
+    # If booleans produced an unsplit shell volume, ensure tags 1/2/3 still exist.
+    if not top_vols:
+        top_vols = list(wood_vols)
+        print("[diag][warn] top wood volume split empty; fallback uses all wood volumes for tag 1.")
+    if not back_vols:
+        back_vols = list(wood_vols)
+        print("[diag][warn] back wood volume split empty; fallback uses all wood volumes for tag 2.")
+    if not rib_vols:
+        rib_vols = list(wood_vols)
+        print("[diag][warn] rib wood volume split empty; fallback uses all wood volumes for tag 3.")
+
+    pg_top_v = gmsh.model.addPhysicalGroup(3, top_vols, tag=1)
+    gmsh.model.setPhysicalName(3, pg_top_v, "Top_Plate_Volume")
+    pg_back_v = gmsh.model.addPhysicalGroup(3, back_vols, tag=2)
+    gmsh.model.setPhysicalName(3, pg_back_v, "Back_Plate_Volume")
+    pg_rib_v = gmsh.model.addPhysicalGroup(3, rib_vols, tag=3)
+    gmsh.model.setPhysicalName(3, pg_rib_v, "Ribs_Sides_Volume")
+
     print(f"[diag] wood_fix surfaces (tag=4): {wood_fix_surfs}")
     air_group_entities = gmsh.model.getEntitiesForPhysicalGroup(3, 10)
     print(f"[diag] Physical Group 10 (Air_Internal) volume entities: {list(air_group_entities)}")
+    v1 = gmsh.model.getEntitiesForPhysicalGroup(3, 1)
+    v2 = gmsh.model.getEntitiesForPhysicalGroup(3, 2)
+    v3 = gmsh.model.getEntitiesForPhysicalGroup(3, 3)
+    print(f"[diag] Physical Group 1 (Top_Plate_Volume) entities: {list(v1)}")
+    print(f"[diag] Physical Group 2 (Back_Plate_Volume) entities: {list(v2)}")
+    print(f"[diag] Physical Group 3 (Ribs_Sides_Volume) entities: {list(v3)}")
     if len(air_group_entities) == 0:
         raise RuntimeError("Tag 10 was created but has no 3D volume entities.")
 
