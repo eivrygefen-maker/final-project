@@ -709,10 +709,32 @@ def _solve_structural_only_evp(
 
     bc_u = fem.dirichletbc(np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType), u_dofs_bc, V_u)
 
-    _phase_sync(2101, "structural-only before matrix assembly", status_callback=status_callback)
+    # Collective-safe JIT form compilation with explicit cache dir.
+    _phase_sync(2101, "structural-only before form JIT", status_callback=status_callback)
+    jit_cache_dir = Path(
+        config.get("solver", {}).get(
+            "structural_jit_cache_dir",
+            str((Path(__file__).resolve().parents[2] / ".ffcx_cache").resolve()),
+        )
+    )
+    if MPI.COMM_WORLD.rank == 0:
+        jit_cache_dir.mkdir(parents=True, exist_ok=True)
+        if bool(config.get("solver", {}).get("structural_jit_clear_stale_lock", True)):
+            for lock in jit_cache_dir.rglob("*.lock"):
+                try:
+                    lock.unlink()
+                except Exception:
+                    pass
+    _phase_sync(2102, "structural-only after jit cache prep", status_callback=status_callback)
+    jit_options = {"cache_dir": str(jit_cache_dir)}
+    a_uu_form = fem.form(a_uu, jit_options=jit_options)
+    m_uu_form = fem.form(m_uu, jit_options=jit_options)
+    _phase_sync(2103, "structural-only after form JIT", status_callback=status_callback)
+
+    _phase_sync(2105, "structural-only before matrix assembly", status_callback=status_callback)
     _debug_rank("Entering Matrix Assembly")
-    K = assemble_matrix(fem.form(a_uu), bcs=[bc_u]); K.assemble()
-    M = assemble_matrix(fem.form(m_uu), bcs=[bc_u]); M.assemble()
+    K = assemble_matrix(a_uu_form, bcs=[bc_u]); K.assemble()
+    M = assemble_matrix(m_uu_form, bcs=[bc_u]); M.assemble()
     # Defensive: allow new nonzeros during diagnostic diagonal updates.
     # With the ghost term, this should rarely be needed, but it prevents PETSc
     # from hard-failing if some diagonal entries were initially structurally zero.
@@ -814,10 +836,10 @@ def _solve_structural_only_evp(
     except Exception as exc:
         _emit(f"[error] communicator audit failed before structural EPS solve: {exc}", status_callback=status_callback, level="error")
         raise
-    _phase_sync(2102, "structural-only before eps.solve", status_callback=status_callback)
+    _phase_sync(2106, "structural-only before eps.solve", status_callback=status_callback)
     _debug_rank("Entering EPS Solve")
     eps.solve()
-    _phase_sync(2103, "structural-only after eps.solve", status_callback=status_callback)
+    _phase_sync(2107, "structural-only after eps.solve", status_callback=status_callback)
     nconv = eps.getConverged()
     if nconv <= 0:
         raise RuntimeError("Structural-only diagnosis: no converged eigenpairs.")
