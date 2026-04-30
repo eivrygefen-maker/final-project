@@ -53,8 +53,7 @@ def _print_param_preview(shape_name: str, base_cfg: dict, overrides: dict):
 
 
 def _read_lhs_pool_summary(manager: ROMManager, shape_name: str):
-    paths = manager._shape_paths(shape_name)
-    pool_path = paths.get("lhs_pool")
+    pool_path = manager.get_lhs_pool_path(shape_name)
     if not pool_path or not pool_path.exists():
         return None
     with open(pool_path, "r", encoding="utf-8") as f:

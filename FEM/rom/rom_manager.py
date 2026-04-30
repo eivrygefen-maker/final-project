@@ -67,6 +67,12 @@ class ROMManager:
         lhs_pool_path = shape_root / f"lhs_pool_{shape_name}.json"
         return {"root": shape_root, "snapshots": snapshots_dir, "basis": basis_path, "lhs_pool": lhs_pool_path}
 
+    def _active_lhs_pool_path(self, shape_name: str, output_subdir: str = "production_runs") -> Path:
+        return (self.rom_root / output_subdir / shape_name / "lhs_pool_active.json").resolve()
+
+    def get_lhs_pool_path(self, shape_name: str, output_subdir: str = "production_runs") -> Path:
+        return self._active_lhs_pool_path(shape_name, output_subdir=output_subdir)
+
     @staticmethod
     def _apply_solver_profile_overrides(cfg: Dict, pool: Dict) -> Dict[str, float]:
         """
@@ -409,12 +415,22 @@ class ROMManager:
         total_samples: int,
         seed: int = 123,
         force_rebuild: bool = False,
+        pool_path: Optional[Path] = None,
+        template_pool_path: Optional[Path] = None,
     ) -> Dict:
         paths = self._shape_paths(shape_name)
-        pool_path = paths["lhs_pool"].resolve()
+        pool_path = (pool_path.resolve() if pool_path is not None else paths["lhs_pool"].resolve())
         master_pool_path = pool_path
         if self.rank == 0:
             print(f"DEBUG: Loading Master Pool from: {os.path.abspath(master_pool_path)}")
+        if not pool_path.exists() and template_pool_path is not None and template_pool_path.exists() and not force_rebuild:
+            pool_path.parent.mkdir(parents=True, exist_ok=True)
+            if self.rank == 0:
+                shutil.copy2(template_pool_path, pool_path)
+                print(
+                    f"DEBUG: Initialized active pool from template: "
+                    f"{os.path.abspath(template_pool_path)} -> {os.path.abspath(pool_path)}"
+                )
         if pool_path.exists() and not force_rebuild:
             with open(pool_path, "r", encoding="utf-8") as f:
                 pool = json.load(f)
@@ -446,8 +462,7 @@ class ROMManager:
         return counts
 
     def reset_lhs_errors(self, shape_name: str) -> int:
-        paths = self._shape_paths(shape_name)
-        pool_path = paths["lhs_pool"]
+        pool_path = self.get_lhs_pool_path(shape_name)
         if not pool_path.exists():
             return 0
         with open(pool_path, "r", encoding="utf-8") as f:
@@ -521,12 +536,17 @@ class ROMManager:
         elif sampling_mode == "lhs":
             n = int(lhs_samples if lhs_samples is not None else pool_size)
             lhs_5d_spec = self._build_5d_lhs_sweep_spec(shape_name, sweep_cfg)
+            template_pool_path = main_paths["lhs_pool"]
+            active_pool_path = self._active_lhs_pool_path(shape_name, output_subdir=str(output_subdir or "production_runs"))
+            paths["lhs_pool"] = active_pool_path
             pool = self._load_or_create_lhs_pool(
                 shape_name,
                 sweep_cfg=lhs_5d_spec,
                 total_samples=n,
                 seed=seed,
                 force_rebuild=force_pool_rebuild,
+                pool_path=active_pool_path,
+                template_pool_path=template_pool_path,
             )
             base_cfg_for_sync = self._load_shape_base_config(shape_name)
             if self._sync_pool_solver_profile_from_base_config(base_cfg_for_sync, pool):
@@ -585,21 +605,27 @@ class ROMManager:
                 selected_status = ""
                 for idx, candidate in enumerate(entries):
                     status_raw = candidate.get("status", "")
-                    status = "" if status_raw is None else str(status_raw).lower()
+                    status_value = "" if status_raw is None else str(status_raw).lower()
+                    if self.rank == 0:
+                        cid = str(candidate.get("id", f"sample_{idx + 1:03d}"))
+                        print(
+                            f"DEBUG: Checking {cid} | Raw Status: '{candidate.get('status')}' "
+                            f"| Processed Status: '{status_value}'"
+                        )
                     if force_rerun:
                         selected_idx = idx
-                        selected_status = status
+                        selected_status = status_value
                         break
                     # Treat these statuses as finished and never re-select them.
-                    if status in ["completed", "success", "processing"]:
+                    if status_value in ["completed", "success", "processing"]:
                         if self.rank == 0:
                             cid = str(candidate.get("id", f"sample_{idx + 1:03d}"))
-                            print(f"DEBUG: Skipping {cid} due to finished status='{status}'")
+                            print(f"DEBUG: Skipping {cid} due to finished status='{status_value}'")
                         continue
                     # Select only clear "not finished yet" states.
-                    if status in ("", "pending", "error", "failed"):
+                    if status_value in ("", "pending", "error", "failed"):
                         selected_idx = idx
-                        selected_status = status
+                        selected_status = status_value
                         break
                 if selected_idx is None:
                     if self.rank == 0:
