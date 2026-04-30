@@ -574,16 +574,26 @@ class ROMManager:
             completed_batch = 0
             error_batch = 0
             skipped_success = 0
-            cursor = 0
             while True:
                 if processed >= int(max_runs):
                     break
                 entries = pool.get("entries", [])
-                if cursor >= len(entries):
+                selected_idx = None
+                for idx, candidate in enumerate(entries):
+                    status_raw = candidate.get("status", "pending")
+                    status = "" if status_raw is None else str(status_raw).lower()
+                    if force_rerun:
+                        selected_idx = idx
+                        break
+                    if status not in ("success", "completed"):
+                        selected_idx = idx
+                        break
+                if selected_idx is None:
+                    if self.rank == 0:
+                        print("All samples completed")
                     break
-                entry = entries[cursor]
-                cursor += 1
-                sample_id = str(entry.get("id", f"sample_{cursor:03d}"))
+                entry = entries[selected_idx]
+                sample_id = str(entry.get("id", f"sample_{selected_idx + 1:03d}"))
                 status = str(entry.get("status", "pending")).lower()
                 if (status in ("success", "completed")) and not force_rerun:
                     if self.rank == 0:
