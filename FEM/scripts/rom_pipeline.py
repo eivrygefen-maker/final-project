@@ -86,6 +86,7 @@ def main():
     p_offline.add_argument("--num-samples", type=int, default=None, help="Alias for --lhs-samples")
     p_offline.add_argument("--dry-run", action="store_true")
     p_offline.add_argument("--retry-errors", action="store_true", help="Reset LHS pool error entries to pending before run.")
+    p_offline.add_argument("--force-rerun", action="store_true", help="Re-run samples even if status is success/completed.")
     p_offline.add_argument("--seed", type=int, default=123)
     p_offline.add_argument(
         "--output-subdir",
@@ -137,6 +138,7 @@ def main():
             retry_errors=args.retry_errors,
             force_pool_rebuild=args.force_pool_rebuild,
             output_subdir=args.output_subdir,
+            force_rerun=args.force_rerun,
         )
         batch_summary = manager.get_last_collect_summary()
         print(
@@ -145,6 +147,7 @@ def main():
                     "shape": args.shape,
                     "dry_run": bool(args.dry_run),
                     "retry_errors": bool(args.retry_errors),
+                    "force_rerun": bool(args.force_rerun),
                     "force_pool_rebuild": bool(args.force_pool_rebuild),
                     "pool_size": int(args.pool_size),
                     "max_runs": int(args.max_runs),

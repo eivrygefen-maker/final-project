@@ -462,6 +462,7 @@ class ROMManager:
         retry_errors: bool = False,
         force_pool_rebuild: bool = False,
         output_subdir: Optional[str] = None,
+        force_rerun: bool = False,
     ) -> List[Path]:
         shape_cfg = self.shapes[shape_name]
         main_paths = self._shape_paths(shape_name)
@@ -549,18 +550,27 @@ class ROMManager:
             processed = 0
             completed_batch = 0
             error_batch = 0
+            skipped_success = 0
+            cursor = 0
             while True:
                 if processed >= int(max_runs):
                     break
-                pending_idx = None
-                for i, entry in enumerate(pool.get("entries", [])):
-                    if entry.get("status") == "pending":
-                        pending_idx = i
-                        break
-                if pending_idx is None:
+                entries = pool.get("entries", [])
+                if cursor >= len(entries):
                     break
-
-                entry = pool["entries"][pending_idx]
+                entry = entries[cursor]
+                cursor += 1
+                sample_id = str(entry.get("id", f"sample_{cursor:03d}"))
+                status = str(entry.get("status", "pending")).lower()
+                if (status in ("success", "completed")) and not force_rerun:
+                    if self.rank == 0:
+                        print(f"INFO: Skipping {sample_id} - already marked as SUCCESS.")
+                    # Persist immediately so skip decisions survive interruptions.
+                    self._write_json(pool_path, pool, rank=self.rank, comm=self.comm)
+                    skipped_success += 1
+                    continue
+                if not force_rerun and status not in ("pending", "error", "running"):
+                    continue
                 params = entry.get("parameters", {})
                 entry["status"] = "running"
                 entry["error"] = None
@@ -651,6 +661,8 @@ class ROMManager:
                 "processed_in_batch": processed,
                 "completed_in_batch": completed_batch,
                 "error_in_batch": error_batch,
+                "skipped_success_in_batch": skipped_success,
+                "force_rerun": bool(force_rerun),
                 "pool_counts": self._pool_status_counts(pool),
             }
             return out_files
