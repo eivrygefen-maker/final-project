@@ -23,9 +23,8 @@
         "geometry.width": 0.4344078140946507,
         "materials.top.density": 430.0
       },
-      "status": "error",
-      "snapshot_file": null,
-      "error": "error code 76\n[0] EPSSolve() line 136 in ./src/eps/interface/epssolve.c\n[0] EPSSetUp() line 350 in ./src/eps/interface/epssetup.c\n[0] STSetUp() line 582 in ./src/sys/classes/st/interface/stsolve.c\n[0] STSetUp_Sinvert() line 123 in ./src/sys/classes/st/impls/sinvert/sinvert.c\n[0] KSPSetUp() line 406 in ./src/ksp/ksp/interface/itfunc.c\n[0] PCSetUp() line 1017 in ./src/ksp/pc/interface/precon.c\n[0] PCSetUp_LU() line 131 in ./src/ksp/pc/impls/factor/lu/lu.c\n[0] MatLUFactorNumeric() line 3194 in ./src/mat/interface/matrix.c\n[0] MatFactorNumeric_MUMPS() line 1686 in ./src/mat/impls/aij/mpi/mumps/mumps.c\n[0] Error in external library\n[0] Error reported by MUMPS in numerical factorization phase: INFOG(1)=-9, INFO(2)=3168914\n"
+      "status": "success",
+      "snapshot_file": "ROM_DATA/classic/snapshots/snapshot_0000.npz"
     },
     {
       "id": "sample_002",
