@@ -35,7 +35,7 @@ class ROMManager:
         self.comm = MPI.COMM_WORLD
         self.rank = int(self.comm.rank)
         self.base_dir = Path(base_dir) if base_dir else Path(__file__).resolve().parents[2]
-        self.rom_root = self.base_dir / "ROM_DATA"
+        self.rom_root = self.base_dir / "ROM"
         self.rom_root.mkdir(parents=True, exist_ok=True)
         self.shapes_config_path = (
             Path(shapes_config_path)
@@ -64,14 +64,11 @@ class ROMManager:
         shape_root = (self.rom_root / shape_name).resolve()
         snapshots_dir = shape_root / "snapshots"
         basis_path = shape_root / "reduced_basis.npz"
-        lhs_pool_path = shape_root / f"lhs_pool_{shape_name}.json"
+        lhs_pool_path = shape_root / "lhs_pool.json"
         return {"root": shape_root, "snapshots": snapshots_dir, "basis": basis_path, "lhs_pool": lhs_pool_path}
 
-    def _active_lhs_pool_path(self, shape_name: str, output_subdir: str = "production_runs") -> Path:
-        return (self.rom_root / output_subdir / shape_name / "lhs_pool_active.json").resolve()
-
-    def get_lhs_pool_path(self, shape_name: str, output_subdir: str = "production_runs") -> Path:
-        return self._active_lhs_pool_path(shape_name, output_subdir=output_subdir)
+    def get_lhs_pool_path(self, shape_name: str) -> Path:
+        return self._shape_paths(shape_name)["lhs_pool"].resolve()
 
     @staticmethod
     def _apply_solver_profile_overrides(cfg: Dict, pool: Dict) -> Dict[str, float]:
@@ -416,21 +413,12 @@ class ROMManager:
         seed: int = 123,
         force_rebuild: bool = False,
         pool_path: Optional[Path] = None,
-        template_pool_path: Optional[Path] = None,
     ) -> Dict:
         paths = self._shape_paths(shape_name)
         pool_path = (pool_path.resolve() if pool_path is not None else paths["lhs_pool"].resolve())
         master_pool_path = pool_path
         if self.rank == 0:
             print(f"DEBUG: Loading Master Pool from: {os.path.abspath(master_pool_path)}")
-        if not pool_path.exists() and template_pool_path is not None and template_pool_path.exists() and not force_rebuild:
-            pool_path.parent.mkdir(parents=True, exist_ok=True)
-            if self.rank == 0:
-                shutil.copy2(template_pool_path, pool_path)
-                print(
-                    f"DEBUG: Initialized active pool from template: "
-                    f"{os.path.abspath(template_pool_path)} -> {os.path.abspath(pool_path)}"
-                )
         if pool_path.exists() and not force_rebuild:
             with open(pool_path, "r", encoding="utf-8") as f:
                 pool = json.load(f)
@@ -504,25 +492,11 @@ class ROMManager:
     ) -> List[Path]:
         shape_cfg = self.shapes[shape_name]
         main_paths = self._shape_paths(shape_name)
-        if output_subdir:
-            shape_root = (self.rom_root / output_subdir / shape_name).resolve()
-            paths = {
-                "root": shape_root,
-                "snapshots": shape_root / "snapshots",
-                "basis": shape_root / "reduced_basis.npz",
-                # Master LHS pool only: never write lhs_pool_*.json under production_runs (no shadow copies).
-                "lhs_pool": main_paths["lhs_pool"],
-            }
-            if self.rank == 0:
-                print(
-                    f"DEBUG: production output root={os.path.abspath(paths['root'])}; "
-                    f"master pool anchored at={os.path.abspath(paths['lhs_pool'])}"
-                )
-        else:
-            paths = main_paths
+        # Enforce strict structure: ROM/<shape>/lhs_pool.json and ROM/<shape>/snapshots/.
+        paths = main_paths
         paths["root"].mkdir(parents=True, exist_ok=True)
         paths["snapshots"].mkdir(parents=True, exist_ok=True)
-        logs_dir = paths["root"] / "logs"
+        logs_dir = self.base_dir / "runs" / "logs" / shape_name
         logs_dir.mkdir(parents=True, exist_ok=True)
 
         # Full refresh path: rebuild .msh once.
@@ -536,17 +510,13 @@ class ROMManager:
         elif sampling_mode == "lhs":
             n = int(lhs_samples if lhs_samples is not None else pool_size)
             lhs_5d_spec = self._build_5d_lhs_sweep_spec(shape_name, sweep_cfg)
-            template_pool_path = main_paths["lhs_pool"]
-            active_pool_path = self._active_lhs_pool_path(shape_name, output_subdir=str(output_subdir or "production_runs"))
-            paths["lhs_pool"] = active_pool_path
             pool = self._load_or_create_lhs_pool(
                 shape_name,
                 sweep_cfg=lhs_5d_spec,
                 total_samples=n,
                 seed=seed,
                 force_rebuild=force_pool_rebuild,
-                pool_path=active_pool_path,
-                template_pool_path=template_pool_path,
+                pool_path=paths["lhs_pool"],
             )
             base_cfg_for_sync = self._load_shape_base_config(shape_name)
             if self._sync_pool_solver_profile_from_base_config(base_cfg_for_sync, pool):
@@ -608,10 +578,7 @@ class ROMManager:
                     status_value = "" if status_raw is None else str(status_raw).lower()
                     if self.rank == 0:
                         cid = str(candidate.get("id", f"sample_{idx + 1:03d}"))
-                        print(
-                            f"DEBUG: Checking {cid} | Raw Status: '{candidate.get('status')}' "
-                            f"| Processed Status: '{status_value}'"
-                        )
+                        print(f"DEBUG: Checking {cid} | Status: {status_value}")
                     if force_rerun:
                         selected_idx = idx
                         selected_status = status_value
@@ -635,7 +602,7 @@ class ROMManager:
                 sample_id = str(entry.get("id", f"sample_{selected_idx + 1:03d}"))
                 status = str(entry.get("status", "")).lower()
                 if self.rank == 0:
-                    print(f"DEBUG: Selected Sample {sample_id} because current status is '{selected_status}'")
+                    print(f"DEBUG: Selected {sample_id} because current status is '{selected_status}'")
                 if (status in ("success", "completed")) and not force_rerun:
                     if self.rank == 0:
                         print(f"INFO: Skipping {sample_id} - already marked as SUCCESS.")
@@ -653,16 +620,14 @@ class ROMManager:
                 snapshot_raw = entry.get("snapshot_file")
                 if isinstance(snapshot_raw, str) and snapshot_raw.strip():
                     candidate_path = Path(snapshot_raw.strip())
-                    if candidate_path.is_absolute():
-                        snapshot_path = candidate_path.resolve()
-                    else:
-                        snapshot_path = (self.base_dir / candidate_path).resolve()
+                    snapshot_name = candidate_path.name if candidate_path.suffix.lower() == ".npz" else f"snapshot_{next_idx:04d}.npz"
+                    snapshot_path = (paths["snapshots"] / snapshot_name).resolve()
                 else:
-                    snapshot_path = paths["snapshots"] / f"snapshot_{next_idx:04d}.npz"
+                    snapshot_path = (paths["snapshots"] / f"snapshot_{next_idx:04d}.npz").resolve()
                 if snapshot_path.name == "snapshot_0000.npz":
                     raise RuntimeError(
                         "Refusing to overwrite Gold Reference snapshot_0000.npz. "
-                        "Use a separate output path (e.g. ROM_DATA/production_runs/...)."
+                        "Use a separate output path under ROM/<shape>/snapshots/."
                     )
                 snapshot_path.parent.mkdir(parents=True, exist_ok=True)
                 run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -705,6 +670,7 @@ class ROMManager:
                         if not (isinstance(snapshot_raw, str) and snapshot_raw.strip()):
                             next_idx += 1
                         completed_batch += 1
+                        self._write_json(pool_path, pool, rank=self.rank, comm=self.comm)
                         log_payload = {
                             "timestamp": run_stamp,
                             "guitar_id": sample_label,
@@ -771,7 +737,7 @@ class ROMManager:
                 if snapshot_path.name == "snapshot_0000.npz":
                     raise RuntimeError(
                         "Refusing to overwrite Gold Reference snapshot_0000.npz. "
-                        "Use a separate output path (e.g. ROM_DATA/production_runs/...)."
+                        "Use a separate output path under ROM/<shape>/snapshots/."
                     )
                 run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 sample_label = f"{idx:04d}"

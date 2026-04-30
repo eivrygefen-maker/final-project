@@ -74,7 +74,10 @@ def main():
 
     p_list = sub.add_parser("list-shapes", help="List configured guitar shapes.")
 
-    p_offline = sub.add_parser("offline", help="Run FOM parameter sweep and save snapshots.")
+    p_offline = sub.add_parser(
+        "offline",
+        help="Run FOM parameter sweep and save snapshots under ROM/<shape>/snapshots/.",
+    )
     p_offline.add_argument("--shape", required=True)
     p_offline.add_argument("--pool-size", type=int, default=500)
     p_offline.add_argument("--max-runs", type=int, default=50)
@@ -87,12 +90,6 @@ def main():
     p_offline.add_argument("--retry-errors", action="store_true", help="Reset LHS pool error entries to pending before run.")
     p_offline.add_argument("--force-rerun", action="store_true", help="Re-run samples even if status is success/completed.")
     p_offline.add_argument("--seed", type=int, default=123)
-    p_offline.add_argument(
-        "--output-subdir",
-        type=str,
-        default="production_runs",
-        help="ROM_DATA subdirectory for offline outputs (default: production_runs).",
-    )
 
     p_basis = sub.add_parser("build-basis", help="Build POD basis from snapshots.")
     p_basis.add_argument("--shape", required=True)
@@ -136,9 +133,11 @@ def main():
             dry_run=args.dry_run,
             retry_errors=args.retry_errors,
             force_pool_rebuild=args.force_pool_rebuild,
-            output_subdir=args.output_subdir,
             force_rerun=args.force_rerun,
         )
+        if not args.dry_run and not files:
+            print(f"All samples for {args.shape} are already completed!")
+            return
         batch_summary = manager.get_last_collect_summary()
         print(
             json.dumps(
