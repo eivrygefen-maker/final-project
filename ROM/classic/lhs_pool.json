@@ -14,7 +14,7 @@
         "geometry.width": 0.4344078140946507,
         "materials.top.density": 430.0
       },
-      "status": "running",
+      "status": "pending",
       "snapshot_file": null,
       "error": null
     },
@@ -6516,9 +6516,9 @@
     "sifter_high_target": 35,
     "low_gear_batch": 45,
     "high_gear_batch": 35,
-    "near_pair_filter_hz": 1.5,
-    "sifter_dup_hz": 1.5,
-    "sifter_uniqueness_min": 0.12,
+    "near_pair_filter_hz": 2.0,
+    "sifter_dup_hz": 2.0,
+    "sifter_uniqueness_min": 0.1,
     "sifter_energy_priority_hz": 2.0,
     "min_wood_participation": 0.15
   }
