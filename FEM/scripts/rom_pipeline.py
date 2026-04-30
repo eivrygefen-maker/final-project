@@ -81,7 +81,12 @@ def main():
     p_offline.add_argument("--shape", required=True)
     p_offline.add_argument("--pool-size", type=int, default=500)
     p_offline.add_argument("--max-runs", type=int, default=50)
-    p_offline.add_argument("--num-modes", type=int, default=10)
+    p_offline.add_argument(
+        "--num-modes",
+        type=int,
+        default=50,
+        help="FOM modes per snapshot (matches solver.num_modes in shape base config unless overridden).",
+    )
     p_offline.add_argument("--force-pool-rebuild", action="store_true", default=False)
     p_offline.add_argument("--sampling", choices=["structured", "lhs"], default="lhs")
     p_offline.add_argument("--lhs-samples", type=int, default=None)
