@@ -570,6 +570,7 @@ def _slepc_shift_invert_batch(
     M_top: Optional[PETSc.Mat] = None,
     M_back: Optional[PETSc.Mat] = None,
     work: Optional[PETSc.Vec] = None,
+    eps_max_it_cap: Optional[int] = None,
 ) -> Tuple[int, List[Tuple[float, np.ndarray, Optional[float], Optional[float]]]]:
     """Run one SLEPc GNHEP shift-invert solve; returns rows (freq_hz, eigenvector, top_ratio|None, back_ratio|None)."""
     target_lambda = (2.0 * math.pi * float(shift_hz)) ** 2
@@ -652,7 +653,10 @@ def _slepc_shift_invert_batch(
 
     ncv = int(solver_cfg.get("target_ncv", max(40, 4 * batch)))
     eps.setDimensions(batch, ncv)
-    eps.setTolerances(float(solver_cfg.get("eigs_tol", 1e-4)), int(solver_cfg.get("eigs_maxiter", 2000)))
+    eps_max_it = int(solver_cfg.get("eigs_maxiter", 2000))
+    if eps_max_it_cap is not None:
+        eps_max_it = min(eps_max_it, int(eps_max_it_cap))
+    eps.setTolerances(float(solver_cfg.get("eigs_tol", 1e-4)), eps_max_it)
 
     diag_vec = A.getDiagonal()
     diag_arr = np.real(diag_vec.array)
@@ -1580,6 +1584,13 @@ def _solve_coupled_evp(
         f_center = float(solver_cfg.get("sifter_start_hz", 100.0))
         f_cap = float(solver_cfg.get("sifter_max_hz", 450.0))
         df_s = float(solver_cfg.get("sifter_step_hz", 10.0))
+        low_f_min = float(solver_cfg.get("sifter_low_freq_min_hz", 90.0))
+        low_f_max = float(solver_cfg.get("sifter_low_freq_max_hz", 160.0))
+        low_step_hz = float(solver_cfg.get("sifter_low_step_hz", 15.0))
+        high_step_hz = float(solver_cfg.get("sifter_high_step_hz", 25.0))
+        low_batch = int(solver_cfg.get("sifter_low_batch_modes", 90))
+        high_batch = int(solver_cfg.get("sifter_high_batch_modes", 70))
+        max_iter_cap = int(solver_cfg.get("sifter_batch_max_it", 50))
         uniq_min = float(solver_cfg.get("sifter_uniqueness_min", 0.2))
         near_hz = float(solver_cfg.get("sifter_energy_priority_hz", 0.5))
         th_top = float(
@@ -1619,14 +1630,20 @@ def _solve_coupled_evp(
             return 1.0 - overlap
 
         _emit(
-            f"[sifter] plate-specific sifter: quota={quota}, batch={batch}, "
+            f"[sifter] plate-specific sifter: quota={quota}, "
             f"tag1>{th_top:g} or tag3>{th_back:g} (energy / |phi^T M phi|), "
-            f"sweep {f_center:.0f}–{f_cap:.0f} Hz step {df_s:.0f} Hz, "
+            f"sweep {f_center:.0f}–{f_cap:.0f} Hz "
+            f"(low gear {low_f_min:.0f}-{low_f_max:.0f}Hz: step={low_step_hz:.0f}, batch={low_batch}; "
+            f"high gear >{low_f_max:.0f}Hz: step={high_step_hz:.0f}, batch={high_batch}), "
+            f"max_it<={max_iter_cap} per batch, "
             f"uniqueness>={uniq_min:.2f}, near-pair winner window={near_hz:.2f} Hz.",
             status_callback=status_callback,
         )
 
         while len(saved_freqs) < quota and f_center <= f_cap + 1e-9:
+            in_low_gear = low_f_min <= f_center <= low_f_max
+            batch = low_batch if in_low_gear else high_batch
+            df_s = low_step_hz if in_low_gear else high_step_hz
             _phase_sync(2003, "coupled sifter before batch solve", status_callback=status_callback)
             nconv, rows = _slepc_shift_invert_batch(
                 A,
@@ -1639,6 +1656,7 @@ def _solve_coupled_evp(
                 M_top=M_top,
                 M_back=M_back,
                 work=work,
+                eps_max_it_cap=max_iter_cap,
             )
             scored: List[Tuple[float, float, float]] = []
             for _f, _v, rt, rb in rows:
@@ -1687,7 +1705,8 @@ def _solve_coupled_evp(
                 if len(saved_freqs) >= quota:
                     break
             _emit(
-                f"[sifter] center={f_center:.1f} Hz: converged={nconv}, accepted+{added} "
+                f"[sifter] center={f_center:.1f} Hz [{('low' if in_low_gear else 'high')} gear: "
+                f"step={df_s:.0f}Hz, batch={batch}, max_it<={max_iter_cap}]: converged={nconv}, accepted+{added} "
                 f"replaced={replaced}, unique-dropped={dropped_unique} "
                 f"(total saved={len(saved_freqs)}/{quota}).",
                 status_callback=status_callback,
