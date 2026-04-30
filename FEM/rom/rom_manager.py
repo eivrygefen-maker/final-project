@@ -34,7 +34,8 @@ class ROMManager:
     def __init__(self, base_dir: Optional[Path] = None, shapes_config_path: Optional[Path] = None):
         self.comm = MPI.COMM_WORLD
         self.rank = int(self.comm.rank)
-        self.base_dir = Path(base_dir) if base_dir else Path(__file__).resolve().parents[2]
+        # Always anchor paths at project root (FEM/rom/rom_manager.py -> ../../).
+        self.base_dir = Path(__file__).resolve().parents[2]
         self.rom_root = self.base_dir / "ROM"
         self.rom_root.mkdir(parents=True, exist_ok=True)
         self.shapes_config_path = (
@@ -487,7 +488,6 @@ class ROMManager:
         dry_run: bool = False,
         retry_errors: bool = False,
         force_pool_rebuild: bool = False,
-        output_subdir: Optional[str] = None,
         force_rerun: bool = False,
     ) -> List[Path]:
         shape_cfg = self.shapes[shape_name]
@@ -661,10 +661,7 @@ class ROMManager:
                             sifter_stats_json=json.dumps(fom.get("sifter_stats", {}), indent=2),
                         )
                         entry["status"] = "completed"
-                        try:
-                            entry["snapshot_file"] = str(snapshot_path.relative_to(self.base_dir))
-                        except Exception:
-                            entry["snapshot_file"] = str(snapshot_path)
+                        entry["snapshot_file"] = f"snapshots/{snapshot_path.name}"
                         entry["error"] = None
                         out_files.append(snapshot_path)
                         if not (isinstance(snapshot_raw, str) and snapshot_raw.strip()):
