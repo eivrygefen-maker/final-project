@@ -1,4 +1,15 @@
 .venv/
 .vscode/
-_pycache_/
-*.pyc
+**/__pycache__/
+**/*.pyc
+/*.npz
+/*.log
+/*.msh
+*.npz
+*.log
+*.msh
+**/snapshots/
+**/production_runs/
+**/comparison/
+FEM/mesh/*.msh
+ROM_DATA/**/*.npz
