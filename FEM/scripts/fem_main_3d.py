@@ -1588,11 +1588,14 @@ def _solve_coupled_evp(
         low_f_max = float(solver_cfg.get("sifter_low_freq_max_hz", 160.0))
         low_step_hz = float(solver_cfg.get("sifter_low_step_hz", 15.0))
         high_step_hz = float(solver_cfg.get("sifter_high_step_hz", 25.0))
-        low_batch = int(solver_cfg.get("sifter_low_batch_modes", 90))
-        high_batch = int(solver_cfg.get("sifter_high_batch_modes", 70))
+        low_batch = int(solver_cfg.get("sifter_low_target", solver_cfg.get("sifter_low_batch_modes", 90)))
+        high_batch = int(solver_cfg.get("sifter_high_target", solver_cfg.get("sifter_high_batch_modes", 70)))
         max_iter_cap = int(solver_cfg.get("sifter_batch_max_it", 50))
         uniq_min = float(solver_cfg.get("sifter_uniqueness_min", 0.2))
-        near_hz = float(solver_cfg.get("sifter_energy_priority_hz", 0.5))
+        near_hz = float(solver_cfg.get("sifter_energy_priority_hz", 2.0))
+        min_wood_participation = float(solver_cfg.get("min_wood_participation", 0.1))
+        max_acoustic_only_keep = int(solver_cfg.get("max_acoustic_only_modes", 3))
+        profile_name = str(solver_cfg.get("solver_profile_name", "default"))
         th_top = float(
             solver_cfg.get(
                 "sifter_top_plate_energy_ratio",
@@ -1620,14 +1623,25 @@ def _solve_coupled_evp(
             return float(np.mean(np.abs(u))) if u.size else 0.0
 
         def _uniqueness(vec: np.ndarray, prev: np.ndarray) -> float:
-            v = np.asarray(vec)
-            p = np.asarray(prev)
+            # Uniqueness is measured on structural DOFs only, so pressure-only wiggles
+            # cannot masquerade as a distinct coupled mode.
+            v = np.asarray(vec[:n_u_fe])
+            p = np.asarray(prev[:n_u_fe])
             denom = float(np.linalg.norm(v) * np.linalg.norm(p))
             if denom <= 0.0:
                 return 1.0
             overlap = abs(np.vdot(v, p)) / denom
             overlap = float(np.clip(overlap, 0.0, 1.0))
             return 1.0 - overlap
+
+        def _participation(vec: np.ndarray) -> Tuple[float, float]:
+            v = np.asarray(vec)
+            u = np.asarray(v[:n_u_fe])
+            p = np.asarray(v[n_u_fe:])
+            nu = float(np.linalg.norm(u))
+            np_ = float(np.linalg.norm(p))
+            tot = max(nu + np_, 1e-30)
+            return nu / tot, np_ / tot
 
         _emit(
             f"[sifter] plate-specific sifter: quota={quota}, "
@@ -1636,10 +1650,15 @@ def _solve_coupled_evp(
             f"(low gear {low_f_min:.0f}-{low_f_max:.0f}Hz: step={low_step_hz:.0f}, batch={low_batch}; "
             f"high gear >{low_f_max:.0f}Hz: step={high_step_hz:.0f}, batch={high_batch}), "
             f"max_it<={max_iter_cap} per batch, "
-            f"uniqueness>={uniq_min:.2f}, near-pair winner window={near_hz:.2f} Hz.",
+            f"uniqueness>={uniq_min:.2f}, near-pair winner window={near_hz:.2f} Hz, "
+            f"min_wood_participation={min_wood_participation:.2f}.",
             status_callback=status_callback,
         )
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(f"Using Solver Profile: {profile_name} - Targets: {low_batch}/{high_batch}")
+            sys.stdout.flush()
 
+        acoustic_only_kept = 0
         while len(saved_freqs) < quota and f_center <= f_cap + 1e-9:
             in_low_gear = low_f_min <= f_center <= low_f_max
             batch = low_batch if in_low_gear else high_batch
@@ -1674,6 +1693,7 @@ def _solve_coupled_evp(
             added = 0
             replaced = 0
             dropped_unique = 0
+            dropped_participation = 0
             for f_hz, vec, rt, rb in rows:
                 if rt is None or rb is None:
                     continue
@@ -1682,6 +1702,15 @@ def _solve_coupled_evp(
                 if not (min_valid_hz <= f_hz <= max_valid_hz):
                     continue
                 if _dup(f_hz):
+                    continue
+                wood_part, air_part = _participation(vec)
+                acoustic_only_like = wood_part < min_wood_participation and air_part > (1.0 - min_wood_participation)
+                if acoustic_only_like:
+                    if acoustic_only_kept >= max_acoustic_only_keep:
+                        dropped_participation += 1
+                        continue
+                elif wood_part < min_wood_participation:
+                    dropped_participation += 1
                     continue
                 cur_f = float(f_hz)
                 cur_e = _mean_disp_energy(vec)
@@ -1701,13 +1730,16 @@ def _solve_coupled_evp(
                 saved_freqs.append(cur_f)
                 saved_vecs.append(vec)
                 saved_energy.append(cur_e)
+                if acoustic_only_like:
+                    acoustic_only_kept += 1
                 added += 1
                 if len(saved_freqs) >= quota:
                     break
             _emit(
                 f"[sifter] center={f_center:.1f} Hz [{('low' if in_low_gear else 'high')} gear: "
                 f"step={df_s:.0f}Hz, batch={batch}, max_it<={max_iter_cap}]: converged={nconv}, accepted+{added} "
-                f"replaced={replaced}, unique-dropped={dropped_unique} "
+                f"replaced={replaced}, unique-dropped={dropped_unique}, participation-dropped={dropped_participation}, "
+                f"acoustic-only-kept={acoustic_only_kept}/{max_acoustic_only_keep} "
                 f"(total saved={len(saved_freqs)}/{quota}).",
                 status_callback=status_callback,
             )

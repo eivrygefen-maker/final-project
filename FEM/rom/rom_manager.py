@@ -77,31 +77,54 @@ class ROMManager:
             low_min = float(solver.get("sifter_low_freq_min_hz", 90.0))
             low_max = float(solver.get("sifter_low_freq_max_hz", 160.0))
 
-        low_batch = int(profile.get("low_gear_batch", solver.get("sifter_low_batch_modes", 90)))
-        high_batch = int(profile.get("high_gear_batch", solver.get("sifter_high_batch_modes", 70)))
+        low_batch = int(
+            profile.get(
+                "sifter_low_target",
+                profile.get("low_gear_batch", solver.get("sifter_low_target", solver.get("sifter_low_batch_modes", 90))),
+            )
+        )
+        high_batch = int(
+            profile.get(
+                "sifter_high_target",
+                profile.get("high_gear_batch", solver.get("sifter_high_target", solver.get("sifter_high_batch_modes", 70))),
+            )
+        )
         near_pair_hz = float(profile.get("near_pair_filter_hz", solver.get("sifter_energy_priority_hz", 0.5)))
         low_step_hz = float(profile.get("low_gear_step_hz", solver.get("sifter_low_step_hz", 15.0)))
         high_step_hz = float(profile.get("high_gear_step_hz", solver.get("sifter_high_step_hz", 25.0)))
         batch_max_it = int(profile.get("batch_max_it", solver.get("sifter_batch_max_it", 50)))
+        min_wood_participation = float(profile.get("min_wood_participation", solver.get("min_wood_participation", 0.1)))
+        max_acoustic_only = int(profile.get("max_acoustic_only_modes", solver.get("max_acoustic_only_modes", 3)))
+        profile_name = str(profile.get("name", profile.get("profile_name", "LHS Pool Profile")))
 
         solver["sifter_low_freq_min_hz"] = low_min
         solver["sifter_low_freq_max_hz"] = low_max
+        solver["sifter_low_target"] = low_batch
+        solver["sifter_high_target"] = high_batch
         solver["sifter_low_batch_modes"] = low_batch
         solver["sifter_high_batch_modes"] = high_batch
         solver["sifter_energy_priority_hz"] = near_pair_hz
         solver["sifter_low_step_hz"] = low_step_hz
         solver["sifter_high_step_hz"] = high_step_hz
         solver["sifter_batch_max_it"] = batch_max_it
+        solver["min_wood_participation"] = min_wood_participation
+        solver["max_acoustic_only_modes"] = max_acoustic_only
+        solver["solver_profile_name"] = profile_name
 
         return {
+            "solver_profile_name": profile_name,
             "sifter_low_freq_min_hz": low_min,
             "sifter_low_freq_max_hz": low_max,
+            "sifter_low_target": low_batch,
+            "sifter_high_target": high_batch,
             "sifter_low_batch_modes": low_batch,
             "sifter_high_batch_modes": high_batch,
             "sifter_energy_priority_hz": near_pair_hz,
             "sifter_low_step_hz": low_step_hz,
             "sifter_high_step_hz": high_step_hz,
             "sifter_batch_max_it": batch_max_it,
+            "min_wood_participation": min_wood_participation,
+            "max_acoustic_only_modes": max_acoustic_only,
         }
 
     @staticmethod
