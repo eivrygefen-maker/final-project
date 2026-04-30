@@ -112,6 +112,12 @@ class ROMManager:
             profile.get("sifter_energy_priority_hz", solver.get("sifter_energy_priority_hz", 2.0))
         )
         uniq_min = float(profile.get("sifter_uniqueness_min", solver.get("sifter_uniqueness_min", 0.12)))
+        uniq_min_high = float(
+            profile.get("sifter_uniqueness_min_high_band", solver.get("sifter_uniqueness_min_high_band", 0.06))
+        )
+        adaptive_break = float(profile.get("sifter_adaptive_break_hz", solver.get("sifter_adaptive_break_hz", 200.0)))
+        dup_hz_high = float(profile.get("sifter_dup_hz_high_band", solver.get("sifter_dup_hz_high_band", 0.8)))
+        wood_high = float(profile.get("min_wood_participation_high_band", solver.get("min_wood_participation_high_band", 0.08)))
         low_step_hz = float(profile.get("low_gear_step_hz", solver.get("sifter_low_step_hz", 15.0)))
         high_step_hz = float(profile.get("high_gear_step_hz", solver.get("sifter_high_step_hz", 25.0)))
         batch_max_it = int(profile.get("batch_max_it", solver.get("sifter_batch_max_it", 50)))
@@ -126,12 +132,16 @@ class ROMManager:
         solver["sifter_low_batch_modes"] = low_batch
         solver["sifter_high_batch_modes"] = high_batch
         solver["sifter_dup_hz"] = dup_gate_hz
+        solver["sifter_dup_hz_high_band"] = dup_hz_high
+        solver["sifter_adaptive_break_hz"] = adaptive_break
         solver["sifter_energy_priority_hz"] = energy_near_hz
         solver["sifter_uniqueness_min"] = uniq_min
+        solver["sifter_uniqueness_min_high_band"] = uniq_min_high
         solver["sifter_low_step_hz"] = low_step_hz
         solver["sifter_high_step_hz"] = high_step_hz
         solver["sifter_batch_max_it"] = batch_max_it
         solver["min_wood_participation"] = min_wood_participation
+        solver["min_wood_participation_high_band"] = wood_high
         solver["max_acoustic_only_modes"] = max_acoustic_only
         solver["solver_profile_name"] = profile_name
 
@@ -144,12 +154,16 @@ class ROMManager:
             "sifter_low_batch_modes": low_batch,
             "sifter_high_batch_modes": high_batch,
             "sifter_dup_hz": dup_gate_hz,
+            "sifter_dup_hz_high_band": dup_hz_high,
+            "sifter_adaptive_break_hz": adaptive_break,
             "sifter_energy_priority_hz": energy_near_hz,
             "sifter_uniqueness_min": uniq_min,
+            "sifter_uniqueness_min_high_band": uniq_min_high,
             "sifter_low_step_hz": low_step_hz,
             "sifter_high_step_hz": high_step_hz,
             "sifter_batch_max_it": batch_max_it,
             "min_wood_participation": min_wood_participation,
+            "min_wood_participation_high_band": wood_high,
             "max_acoustic_only_modes": max_acoustic_only,
         }
 
@@ -180,9 +194,13 @@ class ROMManager:
             "high_gear_batch": int(solver.get("sifter_high_batch_modes", solver.get("sifter_high_target", 40))),
             "near_pair_filter_hz": float(solver.get("sifter_dup_hz", 1.5)),
             "sifter_dup_hz": float(solver.get("sifter_dup_hz", 1.5)),
+            "sifter_dup_hz_high_band": float(solver.get("sifter_dup_hz_high_band", 0.8)),
+            "sifter_adaptive_break_hz": float(solver.get("sifter_adaptive_break_hz", 200.0)),
             "sifter_uniqueness_min": float(solver.get("sifter_uniqueness_min", 0.12)),
+            "sifter_uniqueness_min_high_band": float(solver.get("sifter_uniqueness_min_high_band", 0.06)),
             "sifter_energy_priority_hz": float(solver.get("sifter_energy_priority_hz", 2.0)),
             "min_wood_participation": float(solver.get("min_wood_participation", 0.15)),
+            "min_wood_participation_high_band": float(solver.get("min_wood_participation_high_band", 0.08)),
         }
         changed = False
         for k, v in desired.items():

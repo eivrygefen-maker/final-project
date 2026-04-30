@@ -1596,9 +1596,14 @@ def _solve_coupled_evp(
         low_batch = int(solver_cfg["sifter_low_target"])
         high_batch = int(solver_cfg["sifter_high_target"])
         max_iter_cap = int(solver_cfg.get("sifter_batch_max_it", 50))
-        uniq_min = float(solver_cfg.get("sifter_uniqueness_min", 0.12))
+        adaptive_break = float(solver_cfg.get("sifter_adaptive_break_hz", 200.0))
+        dup_hz_low = float(solver_cfg.get("sifter_dup_hz", 2.0))
+        dup_hz_high = float(solver_cfg.get("sifter_dup_hz_high_band", 0.8))
+        uniq_min_low = float(solver_cfg.get("sifter_uniqueness_min", 0.1))
+        uniq_min_high = float(solver_cfg.get("sifter_uniqueness_min_high_band", 0.06))
         near_hz = float(solver_cfg.get("sifter_energy_priority_hz", 2.0))
-        min_wood_participation = float(solver_cfg.get("min_wood_participation", 0.1))
+        wood_gate_low = float(solver_cfg.get("min_wood_participation", 0.15))
+        wood_gate_high = float(solver_cfg.get("min_wood_participation_high_band", 0.08))
         max_acoustic_only_keep = int(solver_cfg.get("max_acoustic_only_modes", 3))
         profile_name = str(solver_cfg.get("solver_profile_name", "default"))
         th_top = float(
@@ -1613,8 +1618,6 @@ def _solve_coupled_evp(
                 solver_cfg.get("sifter_plate_energy_ratio_floor", 0.0005),
             )
         )
-        dup_hz = float(solver_cfg.get("sifter_dup_hz", 1.5))
-
         saved_freqs: List[float] = []
         saved_vecs: List[np.ndarray] = []
         saved_energy: List[float] = []
@@ -1628,6 +1631,8 @@ def _solve_coupled_evp(
             "total_raw_candidates_seen": 0,
             "accepted_modes": 0,
         }
+
+        dup_hz = dup_hz_low
 
         def _dup(freq: float) -> bool:
             return any(abs(freq - fs) < dup_hz for fs in saved_freqs)
@@ -1672,15 +1677,19 @@ def _solve_coupled_evp(
             f"(low gear {low_f_min:.0f}-{low_f_max:.0f}Hz: step={low_step_hz:.0f}, batch={low_batch}; "
             f"high gear >{low_f_max:.0f}Hz: step={high_step_hz:.0f}, batch={high_batch}), "
             f"max_it<={max_iter_cap} per batch, "
-            f"uniqueness>={uniq_min:.2f}, near-pair winner window={near_hz:.2f} Hz, "
-            f"min_wood_participation={min_wood_participation:.2f}.",
+            f"adaptive break={adaptive_break:.0f}Hz: dup_hz {dup_hz_low:.2f}/{dup_hz_high:.2f}, "
+            f"uniq_min {uniq_min_low:.2f}/{uniq_min_high:.2f}, "
+            f"wood_gate(mode) {wood_gate_low:.2f}/{wood_gate_high:.2f} (f< / f>= {adaptive_break:.0f} Hz), "
+            f"near-pair winner window={near_hz:.2f} Hz.",
             status_callback=status_callback,
         )
         if MPI.COMM_WORLD.rank == ROOT_RANK:
             print(f"Using Solver Profile: {profile_name} - Targets: {low_batch}/{high_batch}")
             print(
-                f"AUDIT_LOG | Targets: {low_batch}/{high_batch} | Gap: {dup_hz:.1f}Hz | "
-                f"Uniq: {uniq_min:.2f} | WoodGate: {min_wood_participation:.2f}"
+                f"AUDIT_LOG | Targets: {low_batch}/{high_batch} | "
+                f"Adaptive@{adaptive_break:.0f}Hz: dup {dup_hz_low:.2f}/{dup_hz_high:.2f}Hz, "
+                f"uniq {uniq_min_low:.2f}/{uniq_min_high:.2f}, wood {wood_gate_low:.2f}/{wood_gate_high:.2f} | "
+                f"near_win={near_hz:.2f}Hz"
             )
             sys.stdout.flush()
 
@@ -1689,6 +1698,8 @@ def _solve_coupled_evp(
             in_low_gear = low_f_min <= f_center <= low_f_max
             batch = low_batch if in_low_gear else high_batch
             df_s = low_step_hz if in_low_gear else high_step_hz
+            dup_hz = dup_hz_low if f_center < adaptive_break else dup_hz_high
+            uniq_min = uniq_min_low if f_center < adaptive_break else uniq_min_high
             _phase_sync(2003, "coupled sifter before batch solve", status_callback=status_callback)
             nconv, rows = _slepc_shift_invert_batch(
                 A,
@@ -1713,7 +1724,11 @@ def _solve_coupled_evp(
             scored.sort(key=lambda t: -t[0])
             top5 = scored[:5]
             top_str = ", ".join(f"(tag1={a:.6f},tag3={b:.6f})" for _, a, b in top5) if top5 else ""
-            print(f"[DIAG] Batch {f_center:.1f}Hz - Top Ratios: [{top_str}]")
+            print(
+                f"[DIAG] Batch {f_center:.1f}Hz - active thresholds: dup_hz={dup_hz:.2f}, "
+                f"uniq_min={uniq_min:.2f}, wood_gate(mode) low/high={wood_gate_low:.2f}/{wood_gate_high:.2f} "
+                f"(break={adaptive_break:.0f}Hz) | Top Ratios: [{top_str}]"
+            )
             sys.stdout.flush()
 
             sifter_stats["total_raw_candidates_seen"] += int(len(rows))
@@ -1734,13 +1749,14 @@ def _solve_coupled_evp(
                     sifter_stats["modes_discarded_by_dup_hz"] += 1
                     continue
                 wood_part, air_part = _participation(vec)
-                acoustic_only_like = wood_part < min_wood_participation and air_part > (1.0 - min_wood_participation)
+                wood_gate = wood_gate_low if f_hz < adaptive_break else wood_gate_high
+                acoustic_only_like = wood_part < wood_gate and air_part > (1.0 - wood_gate)
                 if acoustic_only_like:
                     if acoustic_only_kept >= max_acoustic_only_keep:
                         dropped_participation += 1
                         sifter_stats["modes_discarded_by_wood"] += 1
                         continue
-                elif wood_part < min_wood_participation:
+                elif wood_part < wood_gate:
                     dropped_participation += 1
                     sifter_stats["modes_discarded_by_wood"] += 1
                     continue
@@ -1771,7 +1787,9 @@ def _solve_coupled_evp(
                     break
             _emit(
                 f"[sifter] center={f_center:.1f} Hz [{('low' if in_low_gear else 'high')} gear: "
-                f"step={df_s:.0f}Hz, batch={batch}, max_it<={max_iter_cap}]: converged={nconv}, accepted+{added} "
+                f"step={df_s:.0f}Hz, batch={batch}, max_it<={max_iter_cap}]: "
+                f"active dup_hz={dup_hz:.2f}, uniq_min={uniq_min:.2f}, wood<=/>{adaptive_break:.0f}Hz="
+                f"{wood_gate_low:.2f}/{wood_gate_high:.2f} | converged={nconv}, accepted+{added} "
                 f"replaced={replaced}, unique-dropped={dropped_unique}, participation-dropped={dropped_participation}, "
                 f"acoustic-only-kept={acoustic_only_kept}/{max_acoustic_only_keep} "
                 f"(total saved={len(saved_freqs)}/{quota}).",
