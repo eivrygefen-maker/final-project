@@ -4,6 +4,10 @@
   "seed": 123,
   "total_samples": 500,
   "mpi_world_size": 1,
+  "solver_profile": {
+    "sifter_dup_hz": 0.8,
+    "sifter_uniqueness_min": 0.1
+  },
   "entries": [
     {
       "id": "sample_001",
