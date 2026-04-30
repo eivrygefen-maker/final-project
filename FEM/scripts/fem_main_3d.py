@@ -1596,7 +1596,7 @@ def _solve_coupled_evp(
         low_batch = int(solver_cfg["sifter_low_target"])
         high_batch = int(solver_cfg["sifter_high_target"])
         max_iter_cap = int(solver_cfg.get("sifter_batch_max_it", 50))
-        uniq_min = float(solver_cfg.get("sifter_uniqueness_min", 0.2))
+        uniq_min = float(solver_cfg.get("sifter_uniqueness_min", 0.12))
         near_hz = float(solver_cfg.get("sifter_energy_priority_hz", 2.0))
         min_wood_participation = float(solver_cfg.get("min_wood_participation", 0.1))
         max_acoustic_only_keep = int(solver_cfg.get("max_acoustic_only_modes", 3))
@@ -1613,11 +1613,21 @@ def _solve_coupled_evp(
                 solver_cfg.get("sifter_plate_energy_ratio_floor", 0.0005),
             )
         )
-        dup_hz = float(solver_cfg.get("sifter_dup_hz", 2.0))
+        dup_hz = float(solver_cfg.get("sifter_dup_hz", 1.5))
 
         saved_freqs: List[float] = []
         saved_vecs: List[np.ndarray] = []
         saved_energy: List[float] = []
+        sifter_stats = {
+            "modes_discarded_by_dup_hz": 0,
+            "modes_discarded_by_plate_energy": 0,
+            "modes_discarded_by_band": 0,
+            "modes_discarded_by_wood": 0,
+            "modes_discarded_by_uniqueness": 0,
+            "modes_replaced_near_frequency": 0,
+            "total_raw_candidates_seen": 0,
+            "accepted_modes": 0,
+        }
 
         def _dup(freq: float) -> bool:
             return any(abs(freq - fs) < dup_hz for fs in saved_freqs)
@@ -1627,17 +1637,24 @@ def _solve_coupled_evp(
             u = np.asarray(vec[:n_u_fe])
             return float(np.mean(np.abs(u))) if u.size else 0.0
 
-        def _uniqueness(vec: np.ndarray, prev: np.ndarray) -> float:
-            # Uniqueness is measured on structural DOFs only, so pressure-only wiggles
-            # cannot masquerade as a distinct coupled mode.
-            v = np.asarray(vec[:n_u_fe])
-            p = np.asarray(prev[:n_u_fe])
-            denom = float(np.linalg.norm(v) * np.linalg.norm(p))
-            if denom <= 0.0:
+        def _structural_uniqueness_vs_saved(vec: np.ndarray) -> float:
+            """
+            Double-gate spatial term: 1 - max_j |cos(u, u_j)| over all accepted structural blocks.
+            Require >= uniq_min (e.g. 0.12) so max overlap <= 0.88 vs any saved mode.
+            """
+            v = np.asarray(vec[:n_u_fe], dtype=np.float64)
+            nv = float(np.linalg.norm(v))
+            if nv <= 0.0 or not saved_vecs:
                 return 1.0
-            overlap = abs(np.vdot(v, p)) / denom
-            overlap = float(np.clip(overlap, 0.0, 1.0))
-            return 1.0 - overlap
+            max_ov = 0.0
+            for prev in saved_vecs:
+                p = np.asarray(prev[:n_u_fe], dtype=np.float64)
+                np_ = float(np.linalg.norm(p))
+                if np_ <= 0.0:
+                    continue
+                ov = abs(float(np.vdot(v, p))) / (nv * np_)
+                max_ov = max(max_ov, float(np.clip(ov, 0.0, 1.0)))
+            return 1.0 - max_ov
 
         def _participation(vec: np.ndarray) -> Tuple[float, float]:
             v = np.asarray(vec)
@@ -1663,7 +1680,7 @@ def _solve_coupled_evp(
             print(f"Using Solver Profile: {profile_name} - Targets: {low_batch}/{high_batch}")
             print(
                 f"AUDIT_LOG | Targets: {low_batch}/{high_batch} | Gap: {dup_hz:.1f}Hz | "
-                f"WoodGate: {min_wood_participation:.2f}"
+                f"Uniq: {uniq_min:.2f} | WoodGate: {min_wood_participation:.2f}"
             )
             sys.stdout.flush()
 
@@ -1699,6 +1716,7 @@ def _solve_coupled_evp(
             print(f"[DIAG] Batch {f_center:.1f}Hz - Top Ratios: [{top_str}]")
             sys.stdout.flush()
 
+            sifter_stats["total_raw_candidates_seen"] += int(len(rows))
             added = 0
             replaced = 0
             dropped_unique = 0
@@ -1707,26 +1725,32 @@ def _solve_coupled_evp(
                 if rt is None or rb is None:
                     continue
                 if not (rt > th_top or rb > th_back):
+                    sifter_stats["modes_discarded_by_plate_energy"] += 1
                     continue
                 if not (min_valid_hz <= f_hz <= max_valid_hz):
+                    sifter_stats["modes_discarded_by_band"] += 1
                     continue
                 if _dup(f_hz):
+                    sifter_stats["modes_discarded_by_dup_hz"] += 1
                     continue
                 wood_part, air_part = _participation(vec)
                 acoustic_only_like = wood_part < min_wood_participation and air_part > (1.0 - min_wood_participation)
                 if acoustic_only_like:
                     if acoustic_only_kept >= max_acoustic_only_keep:
                         dropped_participation += 1
+                        sifter_stats["modes_discarded_by_wood"] += 1
                         continue
                 elif wood_part < min_wood_participation:
                     dropped_participation += 1
+                    sifter_stats["modes_discarded_by_wood"] += 1
                     continue
                 cur_f = float(f_hz)
                 cur_e = _mean_disp_energy(vec)
                 if saved_vecs:
-                    uniq = _uniqueness(vec, saved_vecs[-1])
+                    uniq = _structural_uniqueness_vs_saved(vec)
                     if uniq < uniq_min:
                         dropped_unique += 1
+                        sifter_stats["modes_discarded_by_uniqueness"] += 1
                         continue
                 near_idx = next((i for i, fs in enumerate(saved_freqs) if abs(cur_f - fs) < near_hz), None)
                 if near_idx is not None:
@@ -1735,6 +1759,7 @@ def _solve_coupled_evp(
                         saved_vecs[near_idx] = vec
                         saved_energy[near_idx] = cur_e
                         replaced += 1
+                        sifter_stats["modes_replaced_near_frequency"] += 1
                     continue
                 saved_freqs.append(cur_f)
                 saved_vecs.append(vec)
@@ -1773,6 +1798,8 @@ def _solve_coupled_evp(
         freqs_hz = [saved_freqs[int(i)] for i in order]
         vectors = [saved_vecs[int(i)] for i in order]
         eigvecs = np.stack(vectors, axis=1)
+        sifter_stats["accepted_modes"] = int(eigvecs.shape[1])
+        config["_fom_sifter_stats"] = dict(sifter_stats)
         if M_top is not None:
             M_top.destroy()
         if M_back is not None:
@@ -1842,6 +1869,8 @@ def _solve_coupled_evp(
     # Extract split dof counts for output compatibility.
     n_u = W.sub(0).dofmap.index_map.size_local * W.sub(0).dofmap.index_map_bs
     n_p = W.sub(1).dofmap.index_map.size_local * W.sub(1).dofmap.index_map_bs
+    if "_fom_sifter_stats" not in config:
+        config["_fom_sifter_stats"] = {}
     # Release solver matrices at end of FOM solve (assemble-only path returns earlier).
     try:
         A.destroy()
@@ -1882,6 +1911,7 @@ def run_fom_for_rom(config: Dict, num_modes: int = 10, status_callback=None):
         num_modes=num_modes,
         status_callback=status_callback,
     )
+    sifter_stats = dict(config.pop("_fom_sifter_stats", {}) or {})
     return {
         "mesh": msh,
         "space": W,
@@ -1889,6 +1919,7 @@ def run_fom_for_rom(config: Dict, num_modes: int = 10, status_callback=None):
         "eigvecs": eigvecs,
         "n_u": n_u,
         "n_p": n_p,
+        "sifter_stats": sifter_stats,
     }
 
 

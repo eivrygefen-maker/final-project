@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import shutil
@@ -20,6 +21,13 @@ SCRIPTS_DIR = BASE_DIR / "FEM" / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.append(str(SCRIPTS_DIR))
 import fem_main_3d
+
+
+def _logging_reset_handlers() -> None:
+    """Detach all handlers from the root logger to avoid cross-sample log bleed."""
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        root.removeHandler(h)
 
 
 class ROMManager:
@@ -90,7 +98,16 @@ class ROMManager:
                 profile.get("high_gear_batch", solver.get("sifter_high_target", solver.get("sifter_high_batch_modes", 70))),
             )
         )
-        near_pair_hz = float(profile.get("near_pair_filter_hz", solver.get("sifter_energy_priority_hz", 0.5)))
+        dup_gate_hz = float(
+            profile.get(
+                "sifter_dup_hz",
+                profile.get("near_pair_filter_hz", solver.get("sifter_dup_hz", 1.5)),
+            )
+        )
+        energy_near_hz = float(
+            profile.get("sifter_energy_priority_hz", solver.get("sifter_energy_priority_hz", 2.0))
+        )
+        uniq_min = float(profile.get("sifter_uniqueness_min", solver.get("sifter_uniqueness_min", 0.12)))
         low_step_hz = float(profile.get("low_gear_step_hz", solver.get("sifter_low_step_hz", 15.0)))
         high_step_hz = float(profile.get("high_gear_step_hz", solver.get("sifter_high_step_hz", 25.0)))
         batch_max_it = int(profile.get("batch_max_it", solver.get("sifter_batch_max_it", 50)))
@@ -104,7 +121,9 @@ class ROMManager:
         solver["sifter_high_target"] = high_batch
         solver["sifter_low_batch_modes"] = low_batch
         solver["sifter_high_batch_modes"] = high_batch
-        solver["sifter_energy_priority_hz"] = near_pair_hz
+        solver["sifter_dup_hz"] = dup_gate_hz
+        solver["sifter_energy_priority_hz"] = energy_near_hz
+        solver["sifter_uniqueness_min"] = uniq_min
         solver["sifter_low_step_hz"] = low_step_hz
         solver["sifter_high_step_hz"] = high_step_hz
         solver["sifter_batch_max_it"] = batch_max_it
@@ -120,7 +139,9 @@ class ROMManager:
             "sifter_high_target": high_batch,
             "sifter_low_batch_modes": low_batch,
             "sifter_high_batch_modes": high_batch,
-            "sifter_energy_priority_hz": near_pair_hz,
+            "sifter_dup_hz": dup_gate_hz,
+            "sifter_energy_priority_hz": energy_near_hz,
+            "sifter_uniqueness_min": uniq_min,
             "sifter_low_step_hz": low_step_hz,
             "sifter_high_step_hz": high_step_hz,
             "sifter_batch_max_it": batch_max_it,
@@ -153,7 +174,9 @@ class ROMManager:
             "sifter_high_target": int(solver.get("sifter_high_target", solver.get("sifter_high_batch_modes", 40))),
             "low_gear_batch": int(solver.get("sifter_low_batch_modes", solver.get("sifter_low_target", 50))),
             "high_gear_batch": int(solver.get("sifter_high_batch_modes", solver.get("sifter_high_target", 40))),
-            "near_pair_filter_hz": float(solver.get("sifter_dup_hz", 2.0)),
+            "near_pair_filter_hz": float(solver.get("sifter_dup_hz", 1.5)),
+            "sifter_dup_hz": float(solver.get("sifter_dup_hz", 1.5)),
+            "sifter_uniqueness_min": float(solver.get("sifter_uniqueness_min", 0.12)),
             "sifter_energy_priority_hz": float(solver.get("sifter_energy_priority_hz", 2.0)),
             "min_wood_participation": float(solver.get("min_wood_participation", 0.15)),
         }
@@ -472,7 +495,7 @@ class ROMManager:
                 "root": shape_root,
                 "snapshots": shape_root / "snapshots",
                 "basis": shape_root / "reduced_basis.npz",
-                # Single source of truth: always keep LHS pool state in ROM_DATA/<shape>/lhs_pool_<shape>.json.
+                # Master LHS pool only: never write lhs_pool_*.json under production_runs (no shadow copies).
                 "lhs_pool": main_paths["lhs_pool"],
             }
             if self.rank == 0:
@@ -584,10 +607,10 @@ class ROMManager:
                     )
                 run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 sample_label = str(entry.get("id", f"{next_idx:04d}"))
-                safe_label = re.sub(r"[^0-9A-Za-z_-]", "_", sample_label)
-                log_path = logs_dir / f"simulation_guitar_{safe_label}_{run_stamp}.log"
+                log_path = logs_dir / f"simulation_guitar_{sample_label}_{run_stamp}.log"
                 solver_profile_used = None
                 try:
+                    _logging_reset_handlers()
                     cfg = self._load_shape_base_config(shape_name)
                     for k, v in params.items():
                         self._set_nested(cfg, k, v)
@@ -608,6 +631,7 @@ class ROMManager:
                             freqs_hz=np.array(fom["freqs_hz"], dtype=np.float64),
                             eigvecs_real=np.real(fom["eigvecs"]).astype(np.float64),
                             elapsed_s=np.array([elapsed], dtype=np.float64),
+                            sifter_stats_json=json.dumps(fom.get("sifter_stats", {}), indent=2),
                         )
                         entry["status"] = "completed"
                         try:
@@ -651,6 +675,7 @@ class ROMManager:
                                 indent=2,
                             )
                 finally:
+                    _logging_reset_handlers()
                     processed += 1
                     self._write_json(pool_path, pool, rank=self.rank, comm=self.comm)
             self._last_collect_summary = {
@@ -669,48 +694,53 @@ class ROMManager:
 
         for off, params in enumerate(grid):
             idx = start_idx + off
-            cfg = self._load_shape_base_config(shape_name)
-            for k, v in params.items():
-                self._set_nested(cfg, k, v)
-            cfg.setdefault("solver", {})["structural_only_diagnosis"] = False
-            self._save_shape_base_config(shape_name, cfg)
-            t0 = time.perf_counter()
-            fom = fem_main_3d.run_fom_for_rom(cfg, num_modes=num_modes)
-            elapsed = time.perf_counter() - t0
-            snapshot_path = paths["snapshots"] / f"snapshot_{idx:04d}.npz"
-            if snapshot_path.name == "snapshot_0000.npz":
-                raise RuntimeError(
-                    "Refusing to overwrite Gold Reference snapshot_0000.npz. "
-                    "Use a separate output path (e.g. ROM_DATA/production_runs/...)."
-                )
-            run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            sample_label = f"{idx:04d}"
-            log_path = logs_dir / f"simulation_guitar_{sample_label}_{run_stamp}.log"
-            if self.rank == 0:
-                np.savez(
-                    snapshot_path,
-                    params_json=json.dumps(params),
-                    shape_name=shape_name,
-                    sampling_mode=sampling_mode,
-                    freqs_hz=np.array(fom["freqs_hz"], dtype=np.float64),
-                    eigvecs_real=np.real(fom["eigvecs"]).astype(np.float64),
-                    elapsed_s=np.array([elapsed], dtype=np.float64),
-                )
-                out_files.append(snapshot_path)
-                with open(log_path, "w", encoding="utf-8") as lf:
-                    json.dump(
-                        {
-                            "timestamp": run_stamp,
-                            "guitar_id": sample_label,
-                            "shape_name": shape_name,
-                            "sampling_mode": sampling_mode,
-                            "snapshot_file": str(snapshot_path.resolve()),
-                            "elapsed_s": float(elapsed),
-                            "num_modes": int(len(fom.get("freqs_hz", []))),
-                        },
-                        lf,
-                        indent=2,
+            try:
+                _logging_reset_handlers()
+                cfg = self._load_shape_base_config(shape_name)
+                for k, v in params.items():
+                    self._set_nested(cfg, k, v)
+                cfg.setdefault("solver", {})["structural_only_diagnosis"] = False
+                self._save_shape_base_config(shape_name, cfg)
+                t0 = time.perf_counter()
+                fom = fem_main_3d.run_fom_for_rom(cfg, num_modes=num_modes)
+                elapsed = time.perf_counter() - t0
+                snapshot_path = paths["snapshots"] / f"snapshot_{idx:04d}.npz"
+                if snapshot_path.name == "snapshot_0000.npz":
+                    raise RuntimeError(
+                        "Refusing to overwrite Gold Reference snapshot_0000.npz. "
+                        "Use a separate output path (e.g. ROM_DATA/production_runs/...)."
                     )
+                run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                sample_label = f"{idx:04d}"
+                log_path = logs_dir / f"simulation_guitar_{sample_label}_{run_stamp}.log"
+                if self.rank == 0:
+                    np.savez(
+                        snapshot_path,
+                        params_json=json.dumps(params),
+                        shape_name=shape_name,
+                        sampling_mode=sampling_mode,
+                        freqs_hz=np.array(fom["freqs_hz"], dtype=np.float64),
+                        eigvecs_real=np.real(fom["eigvecs"]).astype(np.float64),
+                        elapsed_s=np.array([elapsed], dtype=np.float64),
+                        sifter_stats_json=json.dumps(fom.get("sifter_stats", {}), indent=2),
+                    )
+                    out_files.append(snapshot_path)
+                    with open(log_path, "w", encoding="utf-8") as lf:
+                        json.dump(
+                            {
+                                "timestamp": run_stamp,
+                                "guitar_id": sample_label,
+                                "shape_name": shape_name,
+                                "sampling_mode": sampling_mode,
+                                "snapshot_file": str(snapshot_path.resolve()),
+                                "elapsed_s": float(elapsed),
+                                "num_modes": int(len(fom.get("freqs_hz", []))),
+                            },
+                            lf,
+                            indent=2,
+                        )
+            finally:
+                _logging_reset_handlers()
         self._last_collect_summary = {
             "shape": shape_name,
             "sampling": sampling_mode,
