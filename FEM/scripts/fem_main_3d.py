@@ -1057,7 +1057,7 @@ def _solve_structural_only_evp(
             _emit(f"[diag][warn] failed to compute matrix norms: {exc}", status_callback=status_callback, level="warning")
     _phase_sync(2106, "structural-only before eps.solve", status_callback=status_callback)
     if MPI.COMM_WORLD.rank == ROOT_RANK:
-        print("🚀 Starting Production Run: Silent MUMPS, 450Hz Sweep, 300 Mode Quota.")
+        print("🚀 Starting Production Run: Silent MUMPS, 450Hz Sweep, 100 Mode Quota.")
         sys.stdout.flush()
     opts = PETSc.Options()
     opts["eps_monitor"] = None
@@ -1567,7 +1567,7 @@ def _solve_coupled_evp(
     print(f"Starting solver with {n_dofs} DOFs and proactive memory cleanup...")
     sys.stdout.flush()
     if MPI.COMM_WORLD.rank == ROOT_RANK:
-        print("🚀 Starting Production Run: Silent MUMPS, 450Hz Sweep, 300 Mode Quota.")
+        print("🚀 Starting Production Run: Silent MUMPS, 450Hz Sweep, 100 Mode Quota.")
         sys.stdout.flush()
 
     min_valid_hz = float(solver_cfg.get("min_valid_mode_hz", 50.0))
@@ -1575,11 +1575,13 @@ def _solve_coupled_evp(
     work = M.createVecRight()
 
     if use_sifter and (M_top is not None or M_back is not None):
-        quota = int(solver_cfg.get("sifter_quota", 300))
+        quota = int(solver_cfg.get("sifter_quota", 100))
         batch = int(solver_cfg.get("sifter_batch_modes", 50))
         f_center = float(solver_cfg.get("sifter_start_hz", 100.0))
         f_cap = float(solver_cfg.get("sifter_max_hz", 450.0))
         df_s = float(solver_cfg.get("sifter_step_hz", 10.0))
+        uniq_min = float(solver_cfg.get("sifter_uniqueness_min", 0.2))
+        near_hz = float(solver_cfg.get("sifter_energy_priority_hz", 0.5))
         th_top = float(
             solver_cfg.get(
                 "sifter_top_plate_energy_ratio",
@@ -1596,14 +1598,31 @@ def _solve_coupled_evp(
 
         saved_freqs: List[float] = []
         saved_vecs: List[np.ndarray] = []
+        saved_energy: List[float] = []
 
         def _dup(freq: float) -> bool:
             return any(abs(freq - fs) < dup_hz for fs in saved_freqs)
 
+        def _mean_disp_energy(vec: np.ndarray) -> float:
+            # Mixed eigenvector = [u, p]. "Mean Displacement" should use displacement block only.
+            u = np.asarray(vec[:n_u_fe])
+            return float(np.mean(np.abs(u))) if u.size else 0.0
+
+        def _uniqueness(vec: np.ndarray, prev: np.ndarray) -> float:
+            v = np.asarray(vec)
+            p = np.asarray(prev)
+            denom = float(np.linalg.norm(v) * np.linalg.norm(p))
+            if denom <= 0.0:
+                return 1.0
+            overlap = abs(np.vdot(v, p)) / denom
+            overlap = float(np.clip(overlap, 0.0, 1.0))
+            return 1.0 - overlap
+
         _emit(
             f"[sifter] plate-specific sifter: quota={quota}, batch={batch}, "
             f"tag1>{th_top:g} or tag3>{th_back:g} (energy / |phi^T M phi|), "
-            f"sweep {f_center:.0f}–{f_cap:.0f} Hz step {df_s:.0f} Hz.",
+            f"sweep {f_center:.0f}–{f_cap:.0f} Hz step {df_s:.0f} Hz, "
+            f"uniqueness>={uniq_min:.2f}, near-pair winner window={near_hz:.2f} Hz.",
             status_callback=status_callback,
         )
 
@@ -1635,6 +1654,8 @@ def _solve_coupled_evp(
             sys.stdout.flush()
 
             added = 0
+            replaced = 0
+            dropped_unique = 0
             for f_hz, vec, rt, rb in rows:
                 if rt is None or rb is None:
                     continue
@@ -1644,13 +1665,30 @@ def _solve_coupled_evp(
                     continue
                 if _dup(f_hz):
                     continue
-                saved_freqs.append(float(f_hz))
+                cur_f = float(f_hz)
+                cur_e = _mean_disp_energy(vec)
+                if saved_vecs:
+                    uniq = _uniqueness(vec, saved_vecs[-1])
+                    if uniq < uniq_min:
+                        dropped_unique += 1
+                        continue
+                near_idx = next((i for i, fs in enumerate(saved_freqs) if abs(cur_f - fs) < near_hz), None)
+                if near_idx is not None:
+                    if cur_e > saved_energy[near_idx]:
+                        saved_freqs[near_idx] = cur_f
+                        saved_vecs[near_idx] = vec
+                        saved_energy[near_idx] = cur_e
+                        replaced += 1
+                    continue
+                saved_freqs.append(cur_f)
                 saved_vecs.append(vec)
+                saved_energy.append(cur_e)
                 added += 1
                 if len(saved_freqs) >= quota:
                     break
             _emit(
                 f"[sifter] center={f_center:.1f} Hz: converged={nconv}, accepted+{added} "
+                f"replaced={replaced}, unique-dropped={dropped_unique} "
                 f"(total saved={len(saved_freqs)}/{quota}).",
                 status_callback=status_callback,
             )
