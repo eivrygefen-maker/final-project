@@ -87,6 +87,12 @@ def main():
     p_offline.add_argument("--dry-run", action="store_true")
     p_offline.add_argument("--retry-errors", action="store_true", help="Reset LHS pool error entries to pending before run.")
     p_offline.add_argument("--seed", type=int, default=123)
+    p_offline.add_argument(
+        "--output-subdir",
+        type=str,
+        default="production_runs",
+        help="ROM_DATA subdirectory for offline outputs (default: production_runs).",
+    )
 
     p_basis = sub.add_parser("build-basis", help="Build POD basis from snapshots.")
     p_basis.add_argument("--shape", required=True)
@@ -130,6 +136,7 @@ def main():
             dry_run=args.dry_run,
             retry_errors=args.retry_errors,
             force_pool_rebuild=args.force_pool_rebuild,
+            output_subdir=args.output_subdir,
         )
         batch_summary = manager.get_last_collect_summary()
         print(

@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 import traceback
+from datetime import datetime
 from itertools import product
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -56,6 +57,52 @@ class ROMManager:
         basis_path = shape_root / "reduced_basis.npz"
         lhs_pool_path = shape_root / f"lhs_pool_{shape_name}.json"
         return {"root": shape_root, "snapshots": snapshots_dir, "basis": basis_path, "lhs_pool": lhs_pool_path}
+
+    @staticmethod
+    def _apply_solver_profile_overrides(cfg: Dict, pool: Dict) -> Dict[str, float]:
+        """
+        Apply optional runtime sifter/gear overrides from LHS pool metadata.
+        Returns the resolved values actually written for traceability logs.
+        """
+        solver = cfg.setdefault("solver", {})
+        profile = pool.get("solver_profile", {}) if isinstance(pool, dict) else {}
+        if not isinstance(profile, dict):
+            profile = {}
+
+        low_rng = profile.get("low_gear_hz", [90.0, 160.0])
+        if isinstance(low_rng, (list, tuple)) and len(low_rng) >= 2:
+            low_min = float(low_rng[0])
+            low_max = float(low_rng[1])
+        else:
+            low_min = float(solver.get("sifter_low_freq_min_hz", 90.0))
+            low_max = float(solver.get("sifter_low_freq_max_hz", 160.0))
+
+        low_batch = int(profile.get("low_gear_batch", solver.get("sifter_low_batch_modes", 90)))
+        high_batch = int(profile.get("high_gear_batch", solver.get("sifter_high_batch_modes", 70)))
+        near_pair_hz = float(profile.get("near_pair_filter_hz", solver.get("sifter_energy_priority_hz", 0.5)))
+        low_step_hz = float(profile.get("low_gear_step_hz", solver.get("sifter_low_step_hz", 15.0)))
+        high_step_hz = float(profile.get("high_gear_step_hz", solver.get("sifter_high_step_hz", 25.0)))
+        batch_max_it = int(profile.get("batch_max_it", solver.get("sifter_batch_max_it", 50)))
+
+        solver["sifter_low_freq_min_hz"] = low_min
+        solver["sifter_low_freq_max_hz"] = low_max
+        solver["sifter_low_batch_modes"] = low_batch
+        solver["sifter_high_batch_modes"] = high_batch
+        solver["sifter_energy_priority_hz"] = near_pair_hz
+        solver["sifter_low_step_hz"] = low_step_hz
+        solver["sifter_high_step_hz"] = high_step_hz
+        solver["sifter_batch_max_it"] = batch_max_it
+
+        return {
+            "sifter_low_freq_min_hz": low_min,
+            "sifter_low_freq_max_hz": low_max,
+            "sifter_low_batch_modes": low_batch,
+            "sifter_high_batch_modes": high_batch,
+            "sifter_energy_priority_hz": near_pair_hz,
+            "sifter_low_step_hz": low_step_hz,
+            "sifter_high_step_hz": high_step_hz,
+            "sifter_batch_max_it": batch_max_it,
+        }
 
     @staticmethod
     def _shape_length_width_depth_bounds(shape_type: str) -> Dict[str, Dict[str, float]]:
@@ -351,11 +398,23 @@ class ROMManager:
         dry_run: bool = False,
         retry_errors: bool = False,
         force_pool_rebuild: bool = False,
+        output_subdir: Optional[str] = None,
     ) -> List[Path]:
         shape_cfg = self.shapes[shape_name]
-        paths = self._shape_paths(shape_name)
+        if output_subdir:
+            shape_root = self.rom_root / output_subdir / shape_name
+            paths = {
+                "root": shape_root,
+                "snapshots": shape_root / "snapshots",
+                "basis": shape_root / "reduced_basis.npz",
+                "lhs_pool": shape_root / f"lhs_pool_{shape_name}.json",
+            }
+        else:
+            paths = self._shape_paths(shape_name)
         paths["root"].mkdir(parents=True, exist_ok=True)
         paths["snapshots"].mkdir(parents=True, exist_ok=True)
+        logs_dir = paths["root"] / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
 
         # Full refresh path: rebuild .msh once.
         if force_pool_rebuild:
@@ -387,7 +446,7 @@ class ROMManager:
             grid = []
         else:
             grid = self._grid_from_sweep(sweep_cfg)
-        start_idx = self._next_snapshot_index(paths["snapshots"])
+        start_idx = max(1, self._next_snapshot_index(paths["snapshots"]))
         out_files: List[Path] = []
         if dry_run:
             if sampling_mode == "lhs":
@@ -435,10 +494,21 @@ class ROMManager:
                 self._write_json(pool_path, pool, rank=self.rank, comm=self.comm)
 
                 snapshot_path = paths["snapshots"] / f"snapshot_{next_idx:04d}.npz"
+                if snapshot_path.name == "snapshot_0000.npz":
+                    raise RuntimeError(
+                        "Refusing to overwrite Gold Reference snapshot_0000.npz. "
+                        "Use a separate output path (e.g. ROM_DATA/production_runs/...)."
+                    )
+                run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                sample_label = str(entry.get("id", f"{next_idx:04d}"))
+                safe_label = re.sub(r"[^0-9A-Za-z_-]", "_", sample_label)
+                log_path = logs_dir / f"simulation_guitar_{safe_label}_{run_stamp}.log"
+                solver_profile_used = None
                 try:
                     cfg = self._load_shape_base_config(shape_name)
                     for k, v in params.items():
                         self._set_nested(cfg, k, v)
+                    solver_profile_used = self._apply_solver_profile_overrides(cfg, pool)
                     # Offline ROM FOM must be coupled; persist false so guitar_3d.json cannot drift to vacuum-only.
                     cfg.setdefault("solver", {})["structural_only_diagnosis"] = False
                     self._save_shape_base_config(shape_name, cfg)
@@ -462,11 +532,38 @@ class ROMManager:
                         out_files.append(snapshot_path)
                         next_idx += 1
                         completed_batch += 1
+                        log_payload = {
+                            "timestamp": run_stamp,
+                            "guitar_id": sample_label,
+                            "shape_name": shape_name,
+                            "sampling_mode": sampling_mode,
+                            "snapshot_file": str(snapshot_path.resolve()),
+                            "elapsed_s": float(elapsed),
+                            "num_modes": int(len(fom.get("freqs_hz", []))),
+                            "solver_profile_used": solver_profile_used,
+                        }
+                        with open(log_path, "w", encoding="utf-8") as lf:
+                            json.dump(log_payload, lf, indent=2)
                 except Exception as exc:
                     traceback.print_exc()
                     entry["status"] = "error"
                     entry["error"] = str(exc)
                     error_batch += 1
+                    if self.rank == 0:
+                        with open(log_path, "w", encoding="utf-8") as lf:
+                            json.dump(
+                                {
+                                    "timestamp": run_stamp,
+                                    "guitar_id": sample_label,
+                                    "shape_name": shape_name,
+                                    "sampling_mode": sampling_mode,
+                                    "status": "error",
+                                    "error": str(exc),
+                                    "solver_profile_used": solver_profile_used,
+                                },
+                                lf,
+                                indent=2,
+                            )
                 finally:
                     processed += 1
                     self._write_json(pool_path, pool, rank=self.rank, comm=self.comm)
@@ -493,6 +590,14 @@ class ROMManager:
             fom = fem_main_3d.run_fom_for_rom(cfg, num_modes=num_modes)
             elapsed = time.perf_counter() - t0
             snapshot_path = paths["snapshots"] / f"snapshot_{idx:04d}.npz"
+            if snapshot_path.name == "snapshot_0000.npz":
+                raise RuntimeError(
+                    "Refusing to overwrite Gold Reference snapshot_0000.npz. "
+                    "Use a separate output path (e.g. ROM_DATA/production_runs/...)."
+                )
+            run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            sample_label = f"{idx:04d}"
+            log_path = logs_dir / f"simulation_guitar_{sample_label}_{run_stamp}.log"
             if self.rank == 0:
                 np.savez(
                     snapshot_path,
@@ -504,6 +609,20 @@ class ROMManager:
                     elapsed_s=np.array([elapsed], dtype=np.float64),
                 )
                 out_files.append(snapshot_path)
+                with open(log_path, "w", encoding="utf-8") as lf:
+                    json.dump(
+                        {
+                            "timestamp": run_stamp,
+                            "guitar_id": sample_label,
+                            "shape_name": shape_name,
+                            "sampling_mode": sampling_mode,
+                            "snapshot_file": str(snapshot_path.resolve()),
+                            "elapsed_s": float(elapsed),
+                            "num_modes": int(len(fom.get("freqs_hz", []))),
+                        },
+                        lf,
+                        indent=2,
+                    )
         self._last_collect_summary = {
             "shape": shape_name,
             "sampling": sampling_mode,

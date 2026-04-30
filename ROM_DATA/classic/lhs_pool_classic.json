@@ -4,6 +4,15 @@
   "seed": 123,
   "total_samples": 500,
   "mpi_world_size": 1,
+  "solver_profile": {
+    "low_gear_hz": [
+      90.0,
+      160.0
+    ],
+    "low_gear_batch": 50,
+    "high_gear_batch": 40,
+    "near_pair_filter_hz": 0.5
+  },
   "entries": [
     {
       "id": "sample_001",
