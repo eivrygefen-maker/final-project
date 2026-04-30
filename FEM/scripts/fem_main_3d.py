@@ -1588,8 +1588,13 @@ def _solve_coupled_evp(
         low_f_max = float(solver_cfg.get("sifter_low_freq_max_hz", 160.0))
         low_step_hz = float(solver_cfg.get("sifter_low_step_hz", 15.0))
         high_step_hz = float(solver_cfg.get("sifter_high_step_hz", 25.0))
-        low_batch = int(solver_cfg.get("sifter_low_target", solver_cfg.get("sifter_low_batch_modes", 90)))
-        high_batch = int(solver_cfg.get("sifter_high_target", solver_cfg.get("sifter_high_batch_modes", 70)))
+        if "sifter_low_target" not in solver_cfg or "sifter_high_target" not in solver_cfg:
+            raise RuntimeError(
+                "Missing required solver keys: 'sifter_low_target' and/or 'sifter_high_target'. "
+                "Refusing to fall back to stale defaults."
+            )
+        low_batch = int(solver_cfg["sifter_low_target"])
+        high_batch = int(solver_cfg["sifter_high_target"])
         max_iter_cap = int(solver_cfg.get("sifter_batch_max_it", 50))
         uniq_min = float(solver_cfg.get("sifter_uniqueness_min", 0.2))
         near_hz = float(solver_cfg.get("sifter_energy_priority_hz", 2.0))
@@ -1608,7 +1613,7 @@ def _solve_coupled_evp(
                 solver_cfg.get("sifter_plate_energy_ratio_floor", 0.0005),
             )
         )
-        dup_hz = float(solver_cfg.get("sifter_dup_hz", 0.25))
+        dup_hz = float(solver_cfg.get("sifter_dup_hz", 2.0))
 
         saved_freqs: List[float] = []
         saved_vecs: List[np.ndarray] = []
@@ -1656,6 +1661,10 @@ def _solve_coupled_evp(
         )
         if MPI.COMM_WORLD.rank == ROOT_RANK:
             print(f"Using Solver Profile: {profile_name} - Targets: {low_batch}/{high_batch}")
+            print(
+                f"AUDIT_LOG | Targets: {low_batch}/{high_batch} | Gap: {dup_hz:.1f}Hz | "
+                f"WoodGate: {min_wood_participation:.2f}"
+            )
             sys.stdout.flush()
 
         acoustic_only_kept = 0

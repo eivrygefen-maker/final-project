@@ -5,13 +5,18 @@
   "total_samples": 500,
   "mpi_world_size": 1,
   "solver_profile": {
+    "name": "Quality over Quantity",
     "low_gear_hz": [
       90.0,
       160.0
     ],
+    "sifter_low_target": 50,
+    "sifter_high_target": 40,
     "low_gear_batch": 50,
     "high_gear_batch": 40,
-    "near_pair_filter_hz": 0.5
+    "near_pair_filter_hz": 2.0,
+    "sifter_energy_priority_hz": 2.0,
+    "min_wood_participation": 0.15
   },
   "entries": [
     {

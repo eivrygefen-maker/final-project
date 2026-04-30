@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -52,7 +53,7 @@ class ROMManager:
     def _shape_paths(self, shape_name: str) -> Dict[str, Path]:
         if shape_name not in self.shapes:
             raise KeyError(f"Unknown shape '{shape_name}'. Add it to {self.shapes_config_path}.")
-        shape_root = self.rom_root / shape_name
+        shape_root = (self.rom_root / shape_name).resolve()
         snapshots_dir = shape_root / "snapshots"
         basis_path = shape_root / "reduced_basis.npz"
         lhs_pool_path = shape_root / f"lhs_pool_{shape_name}.json"
@@ -126,6 +127,42 @@ class ROMManager:
             "min_wood_participation": min_wood_participation,
             "max_acoustic_only_modes": max_acoustic_only,
         }
+
+    @staticmethod
+    def _sync_pool_solver_profile_from_base_config(base_cfg: Dict, pool: Dict) -> bool:
+        """
+        Keep pool solver_profile aligned with current base config so new batches inherit
+        the latest "single source of truth" settings (targets, gaps, participation gates).
+        Returns True if pool was modified.
+        """
+        solver = base_cfg.get("solver", {}) if isinstance(base_cfg, dict) else {}
+        if not isinstance(pool, dict):
+            return False
+        prof = pool.get("solver_profile")
+        if not isinstance(prof, dict):
+            prof = {}
+            pool["solver_profile"] = prof
+
+        desired = {
+            "name": str(solver.get("solver_profile_name", "Quality over Quantity")),
+            "low_gear_hz": [
+                float(solver.get("sifter_low_freq_min_hz", 90.0)),
+                float(solver.get("sifter_low_freq_max_hz", 160.0)),
+            ],
+            "sifter_low_target": int(solver.get("sifter_low_target", solver.get("sifter_low_batch_modes", 50))),
+            "sifter_high_target": int(solver.get("sifter_high_target", solver.get("sifter_high_batch_modes", 40))),
+            "low_gear_batch": int(solver.get("sifter_low_batch_modes", solver.get("sifter_low_target", 50))),
+            "high_gear_batch": int(solver.get("sifter_high_batch_modes", solver.get("sifter_high_target", 40))),
+            "near_pair_filter_hz": float(solver.get("sifter_dup_hz", 2.0)),
+            "sifter_energy_priority_hz": float(solver.get("sifter_energy_priority_hz", 2.0)),
+            "min_wood_participation": float(solver.get("min_wood_participation", 0.15)),
+        }
+        changed = False
+        for k, v in desired.items():
+            if prof.get(k) != v:
+                prof[k] = v
+                changed = True
+        return changed
 
     @staticmethod
     def _shape_length_width_depth_bounds(shape_type: str) -> Dict[str, Dict[str, float]]:
@@ -351,7 +388,10 @@ class ROMManager:
         force_rebuild: bool = False,
     ) -> Dict:
         paths = self._shape_paths(shape_name)
-        pool_path = paths["lhs_pool"]
+        pool_path = paths["lhs_pool"].resolve()
+        master_pool_path = pool_path
+        if self.rank == 0:
+            print(f"DEBUG: Loading Master Pool from: {os.path.abspath(master_pool_path)}")
         if pool_path.exists() and not force_rebuild:
             with open(pool_path, "r", encoding="utf-8") as f:
                 pool = json.load(f)
@@ -426,7 +466,7 @@ class ROMManager:
         shape_cfg = self.shapes[shape_name]
         main_paths = self._shape_paths(shape_name)
         if output_subdir:
-            shape_root = self.rom_root / output_subdir / shape_name
+            shape_root = (self.rom_root / output_subdir / shape_name).resolve()
             paths = {
                 "root": shape_root,
                 "snapshots": shape_root / "snapshots",
@@ -434,6 +474,11 @@ class ROMManager:
                 # Single source of truth: always keep LHS pool state in ROM_DATA/<shape>/lhs_pool_<shape>.json.
                 "lhs_pool": main_paths["lhs_pool"],
             }
+            if self.rank == 0:
+                print(
+                    f"DEBUG: production output root={os.path.abspath(paths['root'])}; "
+                    f"master pool anchored at={os.path.abspath(paths['lhs_pool'])}"
+                )
         else:
             paths = main_paths
         paths["root"].mkdir(parents=True, exist_ok=True)
@@ -459,6 +504,9 @@ class ROMManager:
                 seed=seed,
                 force_rebuild=force_pool_rebuild,
             )
+            base_cfg_for_sync = self._load_shape_base_config(shape_name)
+            if self._sync_pool_solver_profile_from_base_config(base_cfg_for_sync, pool):
+                self._write_json(paths["lhs_pool"], pool, rank=self.rank, comm=self.comm)
             if retry_errors:
                 changed = 0
                 for entry in pool.get("entries", []):
