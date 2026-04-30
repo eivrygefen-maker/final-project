@@ -582,14 +582,24 @@ class ROMManager:
                         pool = json.load(f)
                 entries = pool.get("entries", [])
                 selected_idx = None
+                selected_status = ""
                 for idx, candidate in enumerate(entries):
-                    status_raw = candidate.get("status", "pending")
+                    status_raw = candidate.get("status", "")
                     status = "" if status_raw is None else str(status_raw).lower()
                     if force_rerun:
                         selected_idx = idx
+                        selected_status = status
                         break
-                    if status not in ("success", "completed"):
+                    # Treat these statuses as finished and never re-select them.
+                    if status in ["completed", "success", "processing"]:
+                        if self.rank == 0:
+                            cid = str(candidate.get("id", f"sample_{idx + 1:03d}"))
+                            print(f"DEBUG: Skipping {cid} due to finished status='{status}'")
+                        continue
+                    # Select only clear "not finished yet" states.
+                    if status in ("", "pending", "error", "failed"):
                         selected_idx = idx
+                        selected_status = status
                         break
                 if selected_idx is None:
                     if self.rank == 0:
@@ -597,7 +607,9 @@ class ROMManager:
                     break
                 entry = entries[selected_idx]
                 sample_id = str(entry.get("id", f"sample_{selected_idx + 1:03d}"))
-                status = str(entry.get("status", "pending")).lower()
+                status = str(entry.get("status", "")).lower()
+                if self.rank == 0:
+                    print(f"DEBUG: Selected Sample {sample_id} because current status is '{selected_status}'")
                 if (status in ("success", "completed")) and not force_rerun:
                     if self.rank == 0:
                         print(f"INFO: Skipping {sample_id} - already marked as SUCCESS.")
@@ -605,7 +617,7 @@ class ROMManager:
                     self._write_json(pool_path, pool, rank=self.rank, comm=self.comm)
                     skipped_success += 1
                     continue
-                if not force_rerun and status not in ("pending", "error", "running"):
+                if not force_rerun and status not in ("", "pending", "error", "failed"):
                     continue
                 params = entry.get("parameters", {})
                 entry["status"] = "running"
