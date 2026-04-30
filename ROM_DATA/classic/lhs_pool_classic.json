@@ -24,7 +24,7 @@
         "materials.top.density": 430.0
       },
       "status": "success",
-      "snapshot_file": "ROM_DATA/classic/snapshots/snapshot_0000.npz"
+      "snapshot_file": "ROM_DATA/production_runs/classic/snapshots/snapshot_0001.npz"
     },
     {
       "id": "sample_002",

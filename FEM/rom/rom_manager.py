@@ -401,16 +401,18 @@ class ROMManager:
         output_subdir: Optional[str] = None,
     ) -> List[Path]:
         shape_cfg = self.shapes[shape_name]
+        main_paths = self._shape_paths(shape_name)
         if output_subdir:
             shape_root = self.rom_root / output_subdir / shape_name
             paths = {
                 "root": shape_root,
                 "snapshots": shape_root / "snapshots",
                 "basis": shape_root / "reduced_basis.npz",
-                "lhs_pool": shape_root / f"lhs_pool_{shape_name}.json",
+                # Single source of truth: always keep LHS pool state in ROM_DATA/<shape>/lhs_pool_<shape>.json.
+                "lhs_pool": main_paths["lhs_pool"],
             }
         else:
-            paths = self._shape_paths(shape_name)
+            paths = main_paths
         paths["root"].mkdir(parents=True, exist_ok=True)
         paths["snapshots"].mkdir(parents=True, exist_ok=True)
         logs_dir = paths["root"] / "logs"
@@ -527,7 +529,10 @@ class ROMManager:
                             elapsed_s=np.array([elapsed], dtype=np.float64),
                         )
                         entry["status"] = "completed"
-                        entry["snapshot_file"] = str(snapshot_path.resolve())
+                        try:
+                            entry["snapshot_file"] = str(snapshot_path.relative_to(self.base_dir))
+                        except Exception:
+                            entry["snapshot_file"] = str(snapshot_path)
                         entry["error"] = None
                         out_files.append(snapshot_path)
                         next_idx += 1
