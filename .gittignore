@@ -1,3 +1,7 @@
 .venv/
 .vscode/
-
+*.npz
+*.log
+*.msh
+ROM_DATA/production_runs/
+FEM/outputs/comparison/

@@ -95,7 +95,8 @@
         "mat_mumps_icntl_24": 1,
         "st_shift_target_hz": 105.0,
         "structural_air_diag_penalty": 1e-07,
-        "structural_diag_shift": 1.0
+        "structural_diag_shift": 1.0,
+        "solver_profile_name": "Quality over Quantity"
     },
     "results": {
         "modes_hz": [

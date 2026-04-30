@@ -4,20 +4,6 @@
   "seed": 123,
   "total_samples": 500,
   "mpi_world_size": 1,
-  "solver_profile": {
-    "name": "Quality over Quantity",
-    "low_gear_hz": [
-      90.0,
-      160.0
-    ],
-    "sifter_low_target": 50,
-    "sifter_high_target": 40,
-    "low_gear_batch": 50,
-    "high_gear_batch": 40,
-    "near_pair_filter_hz": 2.0,
-    "sifter_energy_priority_hz": 2.0,
-    "min_wood_participation": 0.15
-  },
   "entries": [
     {
       "id": "sample_001",
@@ -28,8 +14,9 @@
         "geometry.width": 0.4344078140946507,
         "materials.top.density": 430.0
       },
-      "status": "success",
-      "snapshot_file": "ROM_DATA/production_runs/classic/snapshots/snapshot_0001.npz"
+      "status": "completed",
+      "snapshot_file": "ROM_DATA/production_runs/classic/snapshots/snapshot_0002.npz",
+      "error": null
     },
     {
       "id": "sample_002",
@@ -6518,5 +6505,19 @@
       "snapshot_file": null,
       "error": null
     }
-  ]
+  ],
+  "solver_profile": {
+    "name": "Quality over Quantity",
+    "low_gear_hz": [
+      90.0,
+      160.0
+    ],
+    "sifter_low_target": 50,
+    "sifter_high_target": 40,
+    "low_gear_batch": 50,
+    "high_gear_batch": 40,
+    "near_pair_filter_hz": 2.0,
+    "sifter_energy_priority_hz": 2.0,
+    "min_wood_participation": 0.15
+  }
 }
