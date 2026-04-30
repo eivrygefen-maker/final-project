@@ -1,7 +1,11 @@
 .venv/
 .vscode/
+**/__pycache__/
 *.npz
 *.log
 *.msh
-ROM_DATA/production_runs/
-FEM/outputs/comparison/
+**/snapshots/
+**/production_runs/
+**/comparison/
+FEM/mesh/*.msh
+ROM_DATA/**/*.npz
