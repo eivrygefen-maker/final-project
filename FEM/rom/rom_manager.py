@@ -577,6 +577,9 @@ class ROMManager:
             while True:
                 if processed >= int(max_runs):
                     break
+                if pool_path.exists():
+                    with open(pool_path, "r", encoding="utf-8") as f:
+                        pool = json.load(f)
                 entries = pool.get("entries", [])
                 selected_idx = None
                 for idx, candidate in enumerate(entries):
@@ -609,15 +612,26 @@ class ROMManager:
                 entry["error"] = None
                 self._write_json(pool_path, pool, rank=self.rank, comm=self.comm)
 
-                snapshot_path = paths["snapshots"] / f"snapshot_{next_idx:04d}.npz"
+                snapshot_raw = entry.get("snapshot_file")
+                if isinstance(snapshot_raw, str) and snapshot_raw.strip():
+                    candidate_path = Path(snapshot_raw.strip())
+                    if candidate_path.is_absolute():
+                        snapshot_path = candidate_path.resolve()
+                    else:
+                        snapshot_path = (self.base_dir / candidate_path).resolve()
+                else:
+                    snapshot_path = paths["snapshots"] / f"snapshot_{next_idx:04d}.npz"
                 if snapshot_path.name == "snapshot_0000.npz":
                     raise RuntimeError(
                         "Refusing to overwrite Gold Reference snapshot_0000.npz. "
                         "Use a separate output path (e.g. ROM_DATA/production_runs/...)."
                     )
+                snapshot_path.parent.mkdir(parents=True, exist_ok=True)
                 run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 sample_label = str(entry.get("id", f"{next_idx:04d}"))
                 log_path = logs_dir / f"simulation_guitar_{sample_label}_{run_stamp}.log"
+                if self.rank == 0:
+                    print(f"DEBUG: Running sample {sample_label} | Targeted Output: {snapshot_path}")
                 solver_profile_used = None
                 try:
                     _logging_reset_handlers()
@@ -650,7 +664,8 @@ class ROMManager:
                             entry["snapshot_file"] = str(snapshot_path)
                         entry["error"] = None
                         out_files.append(snapshot_path)
-                        next_idx += 1
+                        if not (isinstance(snapshot_raw, str) and snapshot_raw.strip()):
+                            next_idx += 1
                         completed_batch += 1
                         log_payload = {
                             "timestamp": run_stamp,
