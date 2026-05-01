@@ -1602,7 +1602,7 @@ def _solve_coupled_evp(
         uniq_min_low = float(solver_cfg.get("sifter_uniqueness_min", 0.1))
         uniq_min_high = float(solver_cfg.get("sifter_uniqueness_min_high_band", 0.06))
         near_hz = float(solver_cfg.get("sifter_energy_priority_hz", 2.0))
-        wood_gate_low = float(solver_cfg.get("min_wood_participation", 0.15))
+        wood_gate_low = float(solver_cfg.get("min_wood_participation", 0.08))
         wood_gate_high = float(solver_cfg.get("min_wood_participation_high_band", 0.08))
         max_acoustic_only_keep = int(solver_cfg.get("max_acoustic_only_modes", 3))
         profile_name = str(solver_cfg.get("solver_profile_name", "default"))
