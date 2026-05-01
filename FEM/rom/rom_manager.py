@@ -121,7 +121,7 @@ class ROMManager:
         low_step_hz = float(profile.get("low_gear_step_hz", solver.get("sifter_low_step_hz", 15.0)))
         high_step_hz = float(profile.get("high_gear_step_hz", solver.get("sifter_high_step_hz", 25.0)))
         batch_max_it = int(profile.get("batch_max_it", solver.get("sifter_batch_max_it", 50)))
-        min_wood_participation = float(profile.get("min_wood_participation", solver.get("min_wood_participation", 0.08)))
+        min_wood_participation = float(profile.get("min_wood_participation", solver.get("min_wood_participation", 0.01)))
         max_acoustic_only = int(profile.get("max_acoustic_only_modes", solver.get("max_acoustic_only_modes", 3)))
         profile_name = str(profile.get("name", profile.get("profile_name", "LHS Pool Profile")))
 
@@ -199,7 +199,7 @@ class ROMManager:
             "sifter_uniqueness_min": float(solver.get("sifter_uniqueness_min", 0.12)),
             "sifter_uniqueness_min_high_band": float(solver.get("sifter_uniqueness_min_high_band", 0.06)),
             "sifter_energy_priority_hz": float(solver.get("sifter_energy_priority_hz", 2.0)),
-            "min_wood_participation": float(solver.get("min_wood_participation", 0.08)),
+            "min_wood_participation": float(solver.get("min_wood_participation", 0.01)),
             "min_wood_participation_high_band": float(solver.get("min_wood_participation_high_band", 0.08)),
         }
         changed = False
