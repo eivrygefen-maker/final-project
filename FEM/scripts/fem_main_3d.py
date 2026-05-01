@@ -1763,9 +1763,11 @@ def _solve_coupled_evp(
             top5 = scored[:5]
             top_str = ", ".join(f"(tag1={a:.6f},tag3={b:.6f})" for _, a, b in top5) if top5 else ""
             print(
-                f"[DIAG] Batch {f_center:.1f}Hz - active thresholds: dup_hz={dup_hz:.2f}, "
-                f"uniq_min={uniq_min:.2f}, wood_gate(mode) low/high={wood_gate_low:.2f}/{wood_gate_high:.2f} "
-                f"(break={adaptive_break:.0f}Hz) | Top Ratios: [{top_str}]"
+                f"[DIAG] Batch {f_center:.1f}Hz - stage1 weak thresholds: dup_hz={weak_dup_hz:.2f}, "
+                f"uniq_min={weak_uniqueness_min:.2f}, wood_min={weak_min_wood:g} | "
+                f"stage2 gates: wood_low/high={global_wood_low:.2f}/{global_wood_high:.2f}, "
+                f"dup_cluster={global_dup_hz:.2f}, uniq_global={global_uniqueness_min:.2f} | "
+                f"Top Ratios: [{top_str}]"
             )
             sys.stdout.flush()
 
