@@ -199,7 +199,7 @@ class ROMManager:
             "sifter_uniqueness_min": float(solver.get("sifter_uniqueness_min", 0.12)),
             "sifter_uniqueness_min_high_band": float(solver.get("sifter_uniqueness_min_high_band", 0.06)),
             "sifter_energy_priority_hz": float(solver.get("sifter_energy_priority_hz", 2.0)),
-            "min_wood_participation": float(solver.get("min_wood_participation", 0.15)),
+            "min_wood_participation": float(solver.get("min_wood_participation", 0.12)),
             "min_wood_participation_high_band": float(solver.get("min_wood_participation_high_band", 0.08)),
         }
         changed = False
