@@ -1581,7 +1581,7 @@ def _solve_coupled_evp(
     use_sifter = _solver_bool(solver_cfg, "adaptive_mode_sifter", default=True)
     M_top: Optional[PETSc.Mat] = None
     M_back: Optional[PETSc.Mat] = None
-    if solve_evp and use_sifter:
+    if solve_evp and (use_sifter or config.get("_worker_target_hz") is not None):
         if has_top_plate_facets:
             M_top = assemble_matrix(fem.form(m_uu_top_plate), bcs=bcs)
             M_top.assemble()
@@ -1614,6 +1614,91 @@ def _solve_coupled_evp(
     min_valid_hz = float(solver_cfg.get("min_valid_mode_hz", 50.0))
     max_valid_hz = float(solver_cfg.get("max_valid_mode_hz", 1000.0))
     work = M.createVecRight()
+
+    _worker_hz = config.get("_worker_target_hz")
+    if _worker_hz is not None:
+        batch_w = max(1, int(config.get("_worker_num_modes", 40)))
+        max_it = int(
+            config.get(
+                "_worker_eps_max_it",
+                int(solver_cfg.get("sifter_batch_max_it", 80)),
+            )
+        )
+        if M_top is None and M_back is None:
+            raise RuntimeError(
+                "Worker single-shift batch requires shell mass matrices M_top/M_back (facet tags 1 and 3). "
+                "Check mesh facet tagging."
+            )
+        _phase_sync(2099, "worker single-shift before batch", status_callback=status_callback)
+        nconv, rows = _slepc_shift_invert_batch(
+            A,
+            M,
+            solver_cfg,
+            float(_worker_hz),
+            batch_w,
+            diag_shift,
+            status_callback,
+            M_top=M_top,
+            M_back=M_back,
+            work=work,
+            eps_max_it_cap=max_it,
+        )
+        _emit(
+            f"[worker] shift @ {float(_worker_hz):.4f} Hz: nconv={nconv}, usable_rows={len(rows)}",
+            status_callback=status_callback,
+        )
+        _phase_sync(2100, "worker single-shift after batch", status_callback=status_callback)
+        row_meta: List[Tuple[float, np.ndarray, float, float]] = []
+        for f_hz, vec, rt, rb in rows:
+            if rt is None or rb is None:
+                continue
+            row_meta.append((float(f_hz), np.asarray(vec, dtype=np.float64), float(rt), float(rb)))
+        if not row_meta:
+            if M_top is not None:
+                M_top.destroy()
+            if M_back is not None:
+                M_back.destroy()
+            try:
+                work.destroy()
+            except Exception:
+                pass
+            try:
+                A.destroy()
+                M.destroy()
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"[worker] No usable modes at {float(_worker_hz):.4f} Hz (convergence or plate-energy ratios missing)."
+            )
+
+        row_meta.sort(key=lambda t: t[0])
+        freqs_hz = [t[0] for t in row_meta]
+        vectors = [t[1] for t in row_meta]
+        config["_worker_tag1"] = [t[2] for t in row_meta]
+        config["_worker_tag3"] = [t[3] for t in row_meta]
+        eigvecs = np.stack(vectors, axis=1)
+
+        config["_fom_sifter_stats"] = {"worker_single_batch": True, "nconv": int(nconv), "rows": int(len(rows))}
+        config["_fom_uniqueness_scores"] = []
+        config["_fom_participation_ratios"] = []
+
+        if M_top is not None:
+            M_top.destroy()
+        if M_back is not None:
+            M_back.destroy()
+
+        n_u = int(W.sub(0).dofmap.index_map.size_local * W.sub(0).dofmap.index_map_bs)
+        n_p = int(W.sub(1).dofmap.index_map.size_local * W.sub(1).dofmap.index_map_bs)
+        try:
+            work.destroy()
+        except Exception:
+            pass
+        try:
+            A.destroy()
+            M.destroy()
+        except Exception:
+            pass
+        return msh, W, freqs_hz, eigvecs, n_u, n_p
 
     if use_sifter and (M_top is not None or M_back is not None):
         quota = int(solver_cfg.get("sifter_quota", 100))

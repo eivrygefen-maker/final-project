@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+"""
+Master driver for ``fem_worker_single.py``: bounded concurrency, dynamic band
+parameters, per-job timeouts, and safe merge of worker JSON into ``candidates_log.json``.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parents[1]
+
+MAX_CONCURRENT_WORKERS = 3
+LOGGER = logging.getLogger("fem_master_dynamic")
+
+
+def hz_result_tag(hz: float) -> int:
+    return int(round(float(hz) * 1000))
+
+
+def result_json_path(sorting_root: Path, hz: float) -> Path:
+    return sorting_root / "temp_results" / f"result_{hz_result_tag(hz)}.json"
+
+
+def get_band_params(current_hz: float) -> Dict[str, Any]:
+    hz = float(current_hz)
+    if 100.0 <= hz < 150.0:
+        return {"step_hz": 5, "num_modes": 40, "timeout_minutes": 25, "label": "Dense Band 1"}
+    if 150.0 <= hz < 250.0:
+        return {"step_hz": 10, "num_modes": 30, "timeout_minutes": 15, "label": "Medium Band"}
+    if 250.0 <= hz < 300.0:
+        return {"step_hz": 5, "num_modes": 50, "timeout_minutes": 25, "label": "Dense Band 2"}
+    if hz >= 300.0:
+        return {"step_hz": 25, "num_modes": 15, "timeout_minutes": 8, "label": "Dead Zone"}
+    raise ValueError(f"get_band_params: hz={hz} is outside the supported sweep (expected hz >= 100).")
+
+
+def build_task_list(hz_max: float) -> List[Tuple[float, Dict[str, Any]]]:
+    tasks: List[Tuple[float, Dict[str, Any]]] = []
+    hz = 100.0
+    while hz <= hz_max + 1e-9:
+        p = dict(get_band_params(hz))
+        tasks.append((hz, p))
+        hz += float(p["step_hz"])
+    return tasks
+
+
+def _merge_result_into_candidates_log(result_path: Path, log_path: Path, lock: threading.Lock) -> None:
+    if not result_path.is_file():
+        return
+    try:
+        incoming = json.loads(result_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        LOGGER.warning("Skipping unreadable result file %s: %s", result_path, exc)
+        return
+
+    cands = list(incoming.get("candidates") or [])
+    if not cands:
+        try:
+            result_path.unlink()
+        except OSError:
+            pass
+        return
+
+    with lock:
+        if log_path.exists():
+            try:
+                payload = json.loads(log_path.read_text(encoding="utf-8"))
+            except Exception:
+                payload = {"candidates": []}
+        else:
+            payload = {"candidates": []}
+        existing = list(payload.get("candidates") or [])
+        mx = max((int(c.get("id", -1)) for c in existing), default=-1)
+        for i, rec in enumerate(cands):
+            new_id = int(mx + 1 + i)
+            row = dict(rec)
+            rel_old = Path(str(row.get("vector_path", "")))
+            old_abs = (sorting_root / rel_old).resolve()
+            new_rel = Path("temp_modes") / f"mode_{new_id:06d}.npy"
+            new_abs = (sorting_root / new_rel).resolve()
+            if old_abs.is_file():
+                if new_abs != old_abs:
+                    if new_abs.exists():
+                        new_abs.unlink()
+                    old_abs.rename(new_abs)
+            row["id"] = new_id
+            row["vector_path"] = str(new_rel).replace("\\", "/")
+            existing.append(row)
+        payload["candidates"] = existing
+        tmp = log_path.with_suffix(log_path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.replace(log_path)
+    try:
+        result_path.unlink()
+    except OSError:
+        LOGGER.warning("Could not delete merged result file: %s", result_path)
+
+
+def _poll_completed(
+    running: Dict[subprocess.Popen, Dict[str, Any]],
+    log_path: Path,
+    sorting_root: Path,
+    merge_lock: threading.Lock,
+) -> None:
+    for proc, meta in list(running.items()):
+        code = proc.poll()
+        if code is None:
+            continue
+        hz = float(meta["hz"])
+        rpath = result_json_path(sorting_root, hz)
+        if code == 0:
+            LOGGER.info("Worker finished OK for %.4f Hz (exit %s).", hz, code)
+            _merge_result_into_candidates_log(rpath, log_path, merge_lock)
+        else:
+            LOGGER.warning("Worker exited with code %s for %.4f Hz (no merge).", code, hz)
+        del running[proc]
+
+
+def _enforce_timeouts(running: Dict[subprocess.Popen, Dict[str, Any]], sorting_root: Path) -> None:
+    now = time.monotonic()
+    for proc, meta in list(running.items()):
+        if proc.poll() is not None:
+            continue
+        if now <= float(meta["deadline"]):
+            continue
+        hz = float(meta["hz"])
+        LOGGER.warning(
+            "TIMEOUT: killing worker for %.4f Hz (limit %.1f min).",
+            hz,
+            float(meta["timeout_minutes"]),
+        )
+        try:
+            proc.kill()
+        except OSError as exc:
+            LOGGER.warning("kill() failed for %.4f Hz: %s", hz, exc)
+        try:
+            proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            LOGGER.warning("wait() after kill timed out for %.4f Hz", hz)
+        rpath = result_json_path(sorting_root, hz)
+        if rpath.is_file():
+            try:
+                rpath.unlink()
+            except OSError:
+                pass
+        del running[proc]
+
+
+def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+
+    parser = argparse.ArgumentParser(description="Master scheduler for fem_worker_single.py")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=REPO_ROOT / "FEM" / "configs" / "guitar_3d.json",
+        help="Passed through to each worker.",
+    )
+    parser.add_argument("--hz-max", type=float, default=450.0, help="Sweep upper bound (Hz).")
+    parser.add_argument(
+        "--use-mpiexec",
+        action="store_true",
+        help="Run each worker as `mpiexec -n 1 <python> ...` (recommended for PETSc/SLEPc).",
+    )
+    args = parser.parse_args()
+
+    worker_script = SCRIPT_DIR / "fem_worker_single.py"
+    if not worker_script.is_file():
+        LOGGER.error("Worker script not found: %s", worker_script)
+        return 1
+
+    sorting_root = REPO_ROOT / "FEM" / "SORTING"
+    log_path = sorting_root / "candidates_log.json"
+    merge_lock = threading.Lock()
+
+    sorting_root.mkdir(parents=True, exist_ok=True)
+    (sorting_root / "temp_results").mkdir(parents=True, exist_ok=True)
+    (sorting_root / "temp_modes").mkdir(parents=True, exist_ok=True)
+    if not log_path.exists():
+        log_path.write_text(json.dumps({"candidates": []}, indent=2), encoding="utf-8")
+
+    tasks = build_task_list(float(args.hz_max))
+    LOGGER.info("Planned %d worker task(s) up to %.1f Hz.", len(tasks), float(args.hz_max))
+
+    running: Dict[subprocess.Popen, Dict[str, Any]] = {}
+    config_path = args.config.resolve()
+    next_i = 0
+
+    def spawn_index(idx: int) -> None:
+        nonlocal next_i
+        hz, params = tasks[idx]
+        timeout_s = float(params["timeout_minutes"]) * 60.0
+        if args.use_mpiexec:
+            cmd: List[str] = [
+                "mpiexec",
+                "-n",
+                "1",
+                sys.executable,
+                str(worker_script),
+                "--target_hz",
+                str(hz),
+                "--num_modes",
+                str(int(params["num_modes"])),
+                "--config",
+                str(config_path),
+            ]
+        else:
+            cmd = [
+                sys.executable,
+                str(worker_script),
+                "--target_hz",
+                str(hz),
+                "--num_modes",
+                str(int(params["num_modes"])),
+                "--config",
+                str(config_path),
+            ]
+        LOGGER.info(
+            "Spawn worker: hz=%.4f (%s) num_modes=%s timeout=%.1f min",
+            hz,
+            params.get("label", ""),
+            params["num_modes"],
+            float(params["timeout_minutes"]),
+        )
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(REPO_ROOT),
+            stdout=None,
+            stderr=None,
+        )
+        running[proc] = {
+            "hz": hz,
+            "deadline": time.monotonic() + timeout_s,
+            "timeout_minutes": float(params["timeout_minutes"]),
+        }
+        next_i = idx + 1
+
+    try:
+        while next_i < len(tasks) or running:
+            _poll_completed(running, log_path, sorting_root, merge_lock)
+            _enforce_timeouts(running, sorting_root)
+            while len(running) < MAX_CONCURRENT_WORKERS and next_i < len(tasks):
+                spawn_index(next_i)
+            time.sleep(0.25)
+    except KeyboardInterrupt:
+        LOGGER.warning("Interrupted — terminating running workers.")
+        for proc in list(running.keys()):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        return 130
+
+    LOGGER.info("Master sweep complete. Log: %s", log_path)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
