@@ -10,7 +10,7 @@ import traceback
 from datetime import datetime
 from itertools import product
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from mpi4py import MPI
@@ -372,6 +372,20 @@ class ROMManager:
             tmp.replace(path)
 
     @staticmethod
+    def _snapshot_telemetry_arrays(fom: Dict, freqs_arr: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Align uniqueness_scores and participation_ratios with freqs_hz; NaN-fill if solver omitted telemetry."""
+        uniq_arr = np.asarray(fom.get("uniqueness_scores", []), dtype=np.float64).reshape(-1)
+        part_arr = np.asarray(fom.get("participation_ratios", []), dtype=np.float64).reshape(-1)
+        n = int(freqs_arr.size)
+        if uniq_arr.size == 0 and part_arr.size == 0 and n > 0:
+            return np.full(n, np.nan, dtype=np.float64), np.full(n, np.nan, dtype=np.float64)
+        if uniq_arr.size != n:
+            raise ValueError(f"uniqueness_scores length ({uniq_arr.size}) != freqs_hz length ({n})")
+        if part_arr.size != n:
+            raise ValueError(f"participation_ratios length ({part_arr.size}) != freqs_hz length ({n})")
+        return uniq_arr, part_arr
+
+    @staticmethod
     def _sample_id(i: int) -> str:
         return f"sample_{i + 1:03d}"
 
@@ -668,16 +682,7 @@ class ROMManager:
                     elapsed = time.perf_counter() - t0
                     if self.rank == 0:
                         freqs_arr = np.array(fom["freqs_hz"], dtype=np.float64)
-                        uniq_arr = np.array(fom.get("uniqueness_scores", []), dtype=np.float64).reshape(-1)
-                        part_arr = np.array(fom.get("participation_ratios", []), dtype=np.float64).reshape(-1)
-                        if uniq_arr.size != freqs_arr.size:
-                            raise ValueError(
-                                f"uniqueness_scores length ({uniq_arr.size}) != freqs_hz length ({freqs_arr.size})"
-                            )
-                        if part_arr.size != freqs_arr.size:
-                            raise ValueError(
-                                f"participation_ratios length ({part_arr.size}) != freqs_hz length ({freqs_arr.size})"
-                            )
+                        uniq_arr, part_arr = self._snapshot_telemetry_arrays(fom, freqs_arr)
                         np.savez(
                             snapshot_path,
                             params_json=json.dumps(params),
@@ -772,16 +777,7 @@ class ROMManager:
                 log_path = logs_dir / f"simulation_guitar_{sample_label}_{run_stamp}.log"
                 if self.rank == 0:
                     freqs_arr = np.array(fom["freqs_hz"], dtype=np.float64)
-                    uniq_arr = np.array(fom.get("uniqueness_scores", []), dtype=np.float64).reshape(-1)
-                    part_arr = np.array(fom.get("participation_ratios", []), dtype=np.float64).reshape(-1)
-                    if uniq_arr.size != freqs_arr.size:
-                        raise ValueError(
-                            f"uniqueness_scores length ({uniq_arr.size}) != freqs_hz length ({freqs_arr.size})"
-                        )
-                    if part_arr.size != freqs_arr.size:
-                        raise ValueError(
-                            f"participation_ratios length ({part_arr.size}) != freqs_hz length ({freqs_arr.size})"
-                        )
+                    uniq_arr, part_arr = self._snapshot_telemetry_arrays(fom, freqs_arr)
                     np.savez(
                         snapshot_path,
                         params_json=json.dumps(params),

@@ -1587,7 +1587,7 @@ def _solve_coupled_evp(
         low_f_min = float(solver_cfg.get("sifter_low_freq_min_hz", 90.0))
         low_f_max = float(solver_cfg.get("sifter_low_freq_max_hz", 160.0))
         low_step_hz = float(solver_cfg.get("sifter_low_step_hz", 15.0))
-        high_step_hz = float(solver_cfg.get("sifter_high_step_hz", 25.0))
+        high_step_hz = float(solver_cfg.get("sifter_high_step_hz", 15.0))
         if "sifter_low_target" not in solver_cfg or "sifter_high_target" not in solver_cfg:
             raise RuntimeError(
                 "Missing required solver keys: 'sifter_low_target' and/or 'sifter_high_target'. "

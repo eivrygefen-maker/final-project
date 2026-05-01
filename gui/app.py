@@ -5,6 +5,7 @@ import subprocess
 import sys  # Needed to use the current virtualenv Python executable
 from pathlib import Path
 import wave
+import numpy as np
 import pyvista as pv
 from stpyvista import stpyvista
 from scipy.interpolate import CubicSpline
@@ -17,6 +18,7 @@ FEM_SCRIPT = BASE_DIR / "FEM" / "scripts" / "fem_main_3d.py"
 STK_BINARY = BASE_DIR / "cpp" / "guitar_stk"
 WAV_OUTPUT = BASE_DIR / "audio" / "guitar_sound.wav"
 MESH_FILE = BASE_DIR / "FEM" / "mesh" / "guitar_3d.msh"
+ROM_CLASSIC_SNAPSHOTS = BASE_DIR / "ROM" / "classic" / "snapshots"
 
 # Allow in-process import of FEM solver for live Streamlit status updates.
 sys.path.append(str(BASE_DIR / "FEM" / "scripts"))
@@ -112,7 +114,7 @@ def save_cfg():
     }
     # Merge solver so GUI updates do not strip FEM keys (adaptive_mode_sifter, sifter_*, shifts, etc.).
     solver = dict(data.get("solver") or {})
-    solver["num_modes"] = 10
+    solver["num_modes"] = int(solver.get("num_modes", 50))
     solver["mesh_file"] = str(MESH_FILE)
     data["solver"] = solver
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -221,6 +223,57 @@ q_mode = st.sidebar.radio("Q Estimation", ["Mean (Stable)", "Random (Realistic)"
 mix_val = 0.98
 gain_val = 400
 
+st.sidebar.header("4. Sifter Settings")
+_solver_cfg: dict = {}
+if CONFIG_PATH.exists():
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as _sf:
+            _solver_cfg = (json.load(_sf).get("solver") or {})
+    except Exception:
+        _solver_cfg = {}
+sifter_break_hz = st.sidebar.number_input(
+    "Break frequency (Hz)",
+    min_value=50.0,
+    max_value=400.0,
+    value=float(_solver_cfg.get("sifter_adaptive_break_hz", 200.0)),
+    step=1.0,
+    help="Adaptive threshold switch: batch center and per-mode wood gate use f < vs ≥ this value.",
+)
+sifter_high_uniq = st.sidebar.number_input(
+    "High-band uniqueness min",
+    min_value=0.01,
+    max_value=0.5,
+    value=float(_solver_cfg.get("sifter_uniqueness_min_high_band", 0.06)),
+    step=0.01,
+    format="%.2f",
+)
+sifter_high_dup_hz = st.sidebar.number_input(
+    "High-band frequency gap / dup (Hz)",
+    min_value=0.1,
+    max_value=5.0,
+    value=float(_solver_cfg.get("sifter_dup_hz_high_band", 0.8)),
+    step=0.1,
+    format="%.1f",
+)
+if st.sidebar.button("Save sifter settings to guitar_3d.json", use_container_width=True):
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg_data = json.load(f)
+        except Exception:
+            cfg_data = {}
+    else:
+        cfg_data = {}
+    sol = dict(cfg_data.get("solver") or {})
+    sol["sifter_adaptive_break_hz"] = float(sifter_break_hz)
+    sol["sifter_uniqueness_min_high_band"] = float(sifter_high_uniq)
+    sol["sifter_dup_hz_high_band"] = float(sifter_high_dup_hz)
+    cfg_data["solver"] = sol
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg_data, f, indent=4)
+    st.sidebar.success("Sifter settings saved.")
+
 st.sidebar.markdown("---")
 st.sidebar.subheader("🛠️ Engineering Tools")
 if st.sidebar.button("🔍 Open full Model in Gmsh", use_container_width=True):
@@ -328,9 +381,84 @@ with c2:
 st.divider()
 
 # ==========================================
+# --- ROM / Classic snapshot modes ---
+# ==========================================
+st.subheader("4. ROM / Classic snapshot analysis")
+if ROM_CLASSIC_SNAPSHOTS.is_dir():
+    npz_list = sorted(ROM_CLASSIC_SNAPSHOTS.glob("snapshot_*.npz"))
+else:
+    npz_list = []
+if not npz_list:
+    st.info("No `snapshot_*.npz` files under `ROM/classic/snapshots/`. Run the offline ROM pipeline to generate snapshots.")
+else:
+    snap_choice = st.selectbox("Snapshot file", npz_list, format_func=lambda p: p.name)
+    try:
+        with np.load(snap_choice, allow_pickle=True) as snap:
+            if "freqs_hz" in snap:
+                freqs = np.asarray(snap["freqs_hz"], dtype=np.float64).reshape(-1)
+            elif "eigenfrequencies_hz" in snap:
+                freqs = np.asarray(snap["eigenfrequencies_hz"], dtype=np.float64).reshape(-1)
+            elif "frequencies_hz" in snap:
+                freqs = np.asarray(snap["frequencies_hz"], dtype=np.float64).reshape(-1)
+            else:
+                freqs = np.array([])
+                st.error("No frequency array found (expected `freqs_hz` first).")
+
+            uniq_arr = snap["uniqueness_scores"] if "uniqueness_scores" in snap else None
+            part_arr = snap["participation_ratios"] if "participation_ratios" in snap else None
+            if uniq_arr is not None:
+                uniq_arr = np.asarray(uniq_arr, dtype=np.float64).reshape(-1)
+            if part_arr is not None:
+                part_arr = np.asarray(part_arr, dtype=np.float64).reshape(-1)
+
+        if freqs.size:
+            order = np.argsort(freqs)
+            f_sorted = freqs[order]
+            u_sorted = uniq_arr[order] if uniq_arr is not None and uniq_arr.size == freqs.size else None
+            p_sorted = part_arr[order] if part_arr is not None and part_arr.size == freqs.size else None
+            if uniq_arr is not None and uniq_arr.size != freqs.size:
+                st.warning("`uniqueness_scores` length does not match `freqs_hz` — showing N/A for uniqueness.")
+            if part_arr is not None and part_arr.size != freqs.size:
+                st.warning("`participation_ratios` length does not match `freqs_hz` — showing N/A for wood participation.")
+            if uniq_arr is None:
+                st.caption("This snapshot has no `uniqueness_scores` (older run). Re-export with the current solver for telemetry.")
+            if part_arr is None:
+                st.caption("This snapshot has no `participation_ratios` (older run). Re-export with the current solver for telemetry.")
+
+            table_rows = []
+            prev_f = None
+            for i in range(f_sorted.size):
+                gap = ""
+                if prev_f is not None:
+                    gap = f"{f_sorted[i] - prev_f:.4f}"
+                u_cell = "N/A"
+                if u_sorted is not None:
+                    _u = float(u_sorted[i])
+                    u_cell = f"{_u:.4f}" if np.isfinite(_u) else "N/A"
+                p_cell = "N/A"
+                if p_sorted is not None:
+                    _p = float(p_sorted[i])
+                    p_cell = f"{_p:.4f}" if np.isfinite(_p) else "N/A"
+                table_rows.append(
+                    {
+                        "Mode": i + 1,
+                        "Frequency (Hz)": float(f_sorted[i]),
+                        "Δ from prev (Hz)": gap if gap else "—",
+                        "Uniqueness": u_cell,
+                        "Wood participation": p_cell,
+                    }
+                )
+                prev_f = float(f_sorted[i])
+            st.dataframe(table_rows, use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.error(f"Failed to load snapshot: {e}")
+
+st.divider()
+
+# ==========================================
 # --- 3D Preview ---
 # ==========================================
-st.subheader("3. 3D Design Preview")
+st.subheader("5. 3D Design Preview")
 
 col_style, col_cam = st.columns(2)
 with col_style:
