@@ -14,7 +14,6 @@ import math
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-import matplotlib.pyplot as plt
 import numpy as np
 
 # =============================
@@ -35,6 +34,10 @@ def _project_root() -> Path:
 
 def _default_candidates_path() -> Path:
     return _project_root() / "FEM" / "SORTING" / "candidates_log.json"
+
+
+def _default_selection_plot_path() -> Path:
+    return _project_root() / "FEM" / "SORTING" / "selection_plot.png"
 
 
 def _load_candidates(path: Path) -> List[Dict]:
@@ -135,7 +138,20 @@ def mmr_select(candidates: List[Dict], quota: int) -> Tuple[List[Dict], List[Dic
     return selected, rejected
 
 
-def _plot_selection(selected: List[Dict], rejected: List[Dict], title: str) -> None:
+def _plot_selection(
+    selected: List[Dict],
+    rejected: List[Dict],
+    title: str,
+    *,
+    headless: bool,
+    save_path: Path,
+) -> None:
+    if headless:
+        import matplotlib
+
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
     fig, ax = plt.subplots(figsize=(12, 6))
 
     if rejected:
@@ -181,7 +197,12 @@ def _plot_selection(selected: List[Dict], rejected: List[Dict], title: str) -> N
     ax.grid(True, alpha=0.25)
     ax.legend()
     plt.tight_layout()
-    plt.show()
+    if headless:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(str(save_path), dpi=150, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        plt.show()
 
 
 def _write_selected_text(selected: List[Dict], out_path: Path) -> None:
@@ -211,6 +232,17 @@ def main() -> int:
         default=_project_root() / "FEM" / "SORTING" / "selected_modes.csv",
         help="CSV export of selected modes",
     )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Non-interactive: save plot to PNG instead of plt.show(), then exit.",
+    )
+    parser.add_argument(
+        "--plot-out",
+        type=Path,
+        default=_default_selection_plot_path(),
+        help="Output path for MMR plot when --headless (default: FEM/SORTING/selection_plot.png)",
+    )
     args = parser.parse_args()
 
     candidates = _load_candidates(args.candidates)
@@ -230,7 +262,15 @@ def main() -> int:
         f"W={W}, U={U}, λ={LAMBDA_VAL}, σ={SIGMA_HZ} Hz | "
         f"vetoes: wood≥{WOOD_FILTER_MIN}, uniqueness≥{UNIQUENESS_VETO_MIN}"
     )
-    _plot_selection(selected, rejected, title)
+    _plot_selection(
+        selected,
+        rejected,
+        title,
+        headless=bool(args.headless),
+        save_path=args.plot_out.resolve(),
+    )
+    if args.headless:
+        print(f"Saved selection plot: {args.plot_out.resolve()}")
     return 0
 
 
