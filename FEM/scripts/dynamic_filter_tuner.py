@@ -2,13 +2,15 @@
 """
 Interactive Stage-2 metadata tuner (no FEM solve).
 
-Reads FEM/SORTING/candidates_log.json, applies dynamic greedy selection, and
-plots selected vs rejected candidates for quick weight tuning.
+Reads FEM/SORTING/candidates_log.json, applies hard veto gates (wood floor and
+uniqueness anti-echo), then Maximal Marginal Relevance (MMR) with Gaussian
+frequency similarity. Plots MMR-selected vs all rejected candidates.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -18,10 +20,13 @@ import numpy as np
 # =============================
 # Tuning parameters (edit here)
 # =============================
-W_WEIGHT = 1.0
-U_WEIGHT = 0.5
-D_WEIGHT = 2.0
-MIN_WOOD_GATE = 0.005
+W = 1.0
+U = 0.5
+LAMBDA_VAL = 0.7
+SIGMA_HZ = 8.0
+WOOD_FILTER_MIN = 0.0008
+UNIQUENESS_VETO_MIN = 0.1
+DEFAULT_QUOTA = 100
 
 
 def _project_root() -> Path:
@@ -57,45 +62,73 @@ def _load_candidates(path: Path) -> List[Dict]:
                 }
             )
         except Exception:
-            # Skip malformed rows to keep tuning robust.
             continue
     return out
 
 
-def _closest_distance_hz(freq: float, selected: List[Dict]) -> float:
-    if not selected:
-        return float("inf")
-    return min(abs(freq - float(s["hz"])) for s in selected)
+def _minmax_norm(x: np.ndarray) -> np.ndarray:
+    lo = float(np.min(x))
+    hi = float(np.max(x))
+    if hi - lo < 1e-15:
+        return np.full_like(x, 0.5, dtype=np.float64)
+    return (x - lo) / (hi - lo)
 
 
-def _clustering_penalty(distance_hz: float) -> float:
-    # Massive penalty under 2 Hz.
-    if distance_hz < 2.0:
-        return 100.0
-    # Moderate proportional penalty from 2..10 Hz.
-    if distance_hz < 10.0:
-        return (10.0 - distance_hz) / 8.0  # maps 2->1.0, 10->0.0
-    # Slight bonus for wide spectral coverage.
-    return -0.05
+def _similarity_gaussian(freq_i: float, freq_j: float, sigma: float) -> float:
+    d = float(freq_i) - float(freq_j)
+    return math.exp(-(d * d) / (2.0 * sigma * sigma))
 
 
-def dynamic_greedy_select(candidates: List[Dict], quota: int) -> Tuple[List[Dict], List[Dict]]:
-    pool = [c for c in candidates if float(c.get("wood_participation", 0.0)) >= MIN_WOOD_GATE]
+def _passes_veto_gates(c: Dict) -> bool:
+    """Hard vetoes before MMR: air-noise floor and geometric echo / duplicate shapes."""
+    w = float(c["wood_participation"])
+    u = float(c["uniqueness"])
+    return w >= WOOD_FILTER_MIN and u >= UNIQUENESS_VETO_MIN
+
+
+def mmr_select(candidates: List[Dict], quota: int) -> Tuple[List[Dict], List[Dict]]:
+    """
+    1) Veto gates (not eligible for MMR): wood < WOOD_FILTER_MIN or uniqueness < UNIQUENESS_VETO_MIN.
+    2) On survivors: min-max w, u; Q_i = W * w_norm_i + U * u_norm_i.
+    3) MMR: Penalty_k = max_j S(k,j), S Gaussian in Hz, sigma = SIGMA_HZ;
+       MMR_k = lambda * Q_k - (1-lambda) * Penalty_k. First pick: argmax Q_i.
+    Rejected = every candidate not in the final selected set (vetoes + MMR overflow).
+    """
+    filtered = [c for c in candidates if _passes_veto_gates(c)]
+    if not filtered:
+        return [], list(candidates)
+
+    w = np.array([float(c["wood_participation"]) for c in filtered], dtype=np.float64)
+    u = np.array([float(c["uniqueness"]) for c in filtered], dtype=np.float64)
+    w_norm = _minmax_norm(w)
+    u_norm = _minmax_norm(u)
+
+    pool: List[Dict] = []
+    for i, c in enumerate(filtered):
+        q_i = W * float(w_norm[i]) + U * float(u_norm[i])
+        cc = dict(c)
+        cc["_Q"] = float(q_i)
+        pool.append(cc)
+
     selected: List[Dict] = []
+    first = max(pool, key=lambda c: float(c["_Q"]))
+    pool.remove(first)
+    selected.append(first)
 
     while pool and len(selected) < quota:
-        best_idx = -1
-        best_score = -float("inf")
-        for i, c in enumerate(pool):
-            wood = float(c.get("wood_participation", 0.0))
-            uniq = float(c.get("uniqueness", 0.0))
-            dist = _closest_distance_hz(float(c["hz"]), selected)
-            penalty = _clustering_penalty(dist)
-            score = (W_WEIGHT * wood) + (U_WEIGHT * uniq) - (D_WEIGHT * penalty)
-            if score > best_score:
-                best_score = score
-                best_idx = i
-        selected.append(pool.pop(best_idx))
+        best: Dict | None = None
+        best_mmr = -float("inf")
+        for k in pool:
+            fk = float(k["hz"])
+            penalty = max(_similarity_gaussian(fk, float(sj["hz"]), SIGMA_HZ) for sj in selected)
+            mmr_k = (LAMBDA_VAL * float(k["_Q"])) - ((1.0 - LAMBDA_VAL) * penalty)
+            if mmr_k > best_mmr:
+                best_mmr = mmr_k
+                best = k
+        if best is None:
+            break
+        pool.remove(best)
+        selected.append(best)
 
     selected_ids = {int(s["id"]) for s in selected}
     rejected = [c for c in candidates if int(c["id"]) not in selected_ids]
@@ -108,7 +141,15 @@ def _plot_selection(selected: List[Dict], rejected: List[Dict], title: str) -> N
     if rejected:
         rx = np.array([float(c["hz"]) for c in rejected], dtype=np.float64)
         ry = np.array([float(c["wood_participation"]) for c in rejected], dtype=np.float64)
-        ax.scatter(rx, ry, marker="x", s=18, c="red", alpha=0.6, label="Rejected")
+        ax.scatter(
+            rx,
+            ry,
+            marker="x",
+            s=22,
+            c="red",
+            alpha=0.55,
+            label="Rejected (veto gates + not MMR-selected)",
+        )
 
     if selected:
         sx = np.array([float(c["hz"]) for c in selected], dtype=np.float64)
@@ -117,12 +158,12 @@ def _plot_selection(selected: List[Dict], rejected: List[Dict], title: str) -> N
             sx,
             sy,
             marker="o",
-            s=90,
+            s=85,
             c="green",
             edgecolors="black",
             linewidths=0.5,
             alpha=0.9,
-            label="Selected",
+            label="MMR selected",
         )
         for c in selected:
             ax.annotate(
@@ -135,7 +176,7 @@ def _plot_selection(selected: List[Dict], rejected: List[Dict], title: str) -> N
             )
 
     ax.set_xlabel("Frequency (Hz)")
-    ax.set_ylabel("Wood Participation")
+    ax.set_ylabel("Wood participation (raw)")
     ax.set_title(title)
     ax.grid(True, alpha=0.25)
     ax.legend()
@@ -145,24 +186,25 @@ def _plot_selection(selected: List[Dict], rejected: List[Dict], title: str) -> N
 
 def _write_selected_text(selected: List[Dict], out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    lines = ["id,hz,wood_participation,uniqueness,tag1_ratio,tag3_ratio"]
+    lines = ["id,hz,wood_participation,uniqueness,tag1_ratio,tag3_ratio,Q_mmr_base"]
     for c in sorted(selected, key=lambda x: float(x["hz"])):
         lines.append(
             f'{int(c["id"])},{float(c["hz"]):.6f},{float(c["wood_participation"]):.6f},'
-            f'{float(c["uniqueness"]):.6f},{float(c["tag1_ratio"]):.6f},{float(c["tag3_ratio"]):.6f}'
+            f'{float(c["uniqueness"]):.6f},{float(c["tag1_ratio"]):.6f},{float(c["tag3_ratio"]):.6f},'
+            f'{float(c.get("_Q", 0.0)):.6f}'
         )
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Dynamic Stage-2 filter tuner over candidates_log.json")
+    parser = argparse.ArgumentParser(description="MMR-based Stage-2 filter tuner over candidates_log.json")
     parser.add_argument(
         "--candidates",
         type=Path,
         default=_default_candidates_path(),
         help="Path to candidates_log.json (default: FEM/SORTING/candidates_log.json)",
     )
-    parser.add_argument("--quota", type=int, default=100, help="Maximum number of selected modes")
+    parser.add_argument("--quota", type=int, default=DEFAULT_QUOTA, help="Number of modes to select (default 100)")
     parser.add_argument(
         "--export",
         type=Path,
@@ -176,15 +218,17 @@ def main() -> int:
         print(f"No valid candidates found in: {args.candidates}")
         return 1
 
-    selected, rejected = dynamic_greedy_select(candidates, quota=max(1, int(args.quota)))
+    quota = max(1, int(args.quota))
+    selected, rejected = mmr_select(candidates, quota=quota)
 
     print(f"Selected {len(selected)} modes. Exporting to text...")
     _write_selected_text(selected, args.export)
     print(f"Exported: {args.export}")
 
     title = (
-        f"Dynamic Filter Tuner | selected={len(selected)} rejected={len(rejected)} | "
-        f"W={W_WEIGHT}, U={U_WEIGHT}, D={D_WEIGHT}, wood_gate={MIN_WOOD_GATE}"
+        f"MMR tuner | selected={len(selected)} rejected={len(rejected)} | "
+        f"W={W}, U={U}, λ={LAMBDA_VAL}, σ={SIGMA_HZ} Hz | "
+        f"vetoes: wood≥{WOOD_FILTER_MIN}, uniqueness≥{UNIQUENESS_VETO_MIN}"
     )
     _plot_selection(selected, rejected, title)
     return 0
