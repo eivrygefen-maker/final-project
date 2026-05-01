@@ -1679,9 +1679,36 @@ def _solve_coupled_evp(
         global_wood_low = float(solver_cfg.get("sifter_stage2_min_wood_low", 0.01))
         global_wood_high = float(solver_cfg.get("sifter_stage2_min_wood_high", 0.08))
         candidate_id = 0
+        harvested_meta: List[Dict] = []
 
         def _dup_weak(freq: float) -> bool:
             return any(abs(freq - fs) < weak_dup_hz for fs in harvested_freqs)
+
+        def _weak_uniqueness_from_disk(vec: np.ndarray, freq_hz: float) -> float:
+            """Compute weak-stage structural uniqueness against already harvested disk vectors."""
+            if MPI.COMM_WORLD.rank != ROOT_RANK:
+                return 1.0
+            if not harvested_meta:
+                return 1.0
+            v = np.asarray(vec[:n_u_fe], dtype=np.float64)
+            nv = float(np.linalg.norm(v))
+            if nv <= 0.0:
+                return 1.0
+            # Compare to nearest prior harvested frequencies to keep disk IO bounded.
+            nearest = sorted(harvested_meta, key=lambda m: abs(float(m["hz"]) - float(freq_hz)))[:24]
+            max_ov = 0.0
+            for m in nearest:
+                try:
+                    prev = np.load(str(m["vector_path"]))
+                except Exception:
+                    continue
+                p = np.asarray(prev[:n_u_fe], dtype=np.float64)
+                np_ = float(np.linalg.norm(p))
+                if np_ <= 0.0:
+                    continue
+                ov = abs(float(np.vdot(v, p))) / max(nv * np_, 1e-30)
+                max_ov = max(max_ov, float(np.clip(ov, 0.0, 1.0)))
+            return 1.0 - max_ov
 
         def _mean_disp_energy(vec: np.ndarray) -> float:
             # Mixed eigenvector = [u, p]. "Mean Displacement" should use displacement block only.
@@ -1788,12 +1815,13 @@ def _solve_coupled_evp(
                     sifter_stats["modes_discarded_by_dup_hz"] += 1
                     continue
                 wood_part, air_part = _participation(vec)
-                if wood_part < weak_min_wood:
+                wood_participation_metric = max(0.0, float(rt) + float(rb))
+                if wood_participation_metric < weak_min_wood:
                     dropped_participation += 1
                     sifter_stats["modes_discarded_by_wood"] += 1
                     continue
                 cur_f = float(f_hz)
-                uniq_cur = 1.0
+                uniq_cur = _weak_uniqueness_from_disk(vec, cur_f)
                 if uniq_cur < weak_uniqueness_min:
                     dropped_unique += 1
                     sifter_stats["modes_discarded_by_uniqueness"] += 1
@@ -1802,17 +1830,17 @@ def _solve_coupled_evp(
                 if MPI.COMM_WORLD.rank == ROOT_RANK:
                     vec_path = SORTING_TEMP_MODES / f"mode_{candidate_id:06d}.npy"
                     np.save(vec_path, np.asarray(vec, dtype=np.float64))
-                    _append_candidate_metadata(
-                        {
-                            "id": int(candidate_id),
-                            "hz": float(cur_f),
-                            "tag1_ratio": float(rt),
-                            "tag3_ratio": float(rb),
-                            "uniqueness": float(uniq_cur),
-                            "wood_participation": float(wood_part),
-                            "vector_path": str(vec_path),
-                        }
-                    )
+                    rec = {
+                        "id": int(candidate_id),
+                        "hz": float(cur_f),
+                        "tag1_ratio": float(rt),
+                        "tag3_ratio": float(rb),
+                        "uniqueness": float(uniq_cur),
+                        "wood_participation": float(wood_participation_metric),
+                        "vector_path": str(vec_path),
+                    }
+                    _append_candidate_metadata(rec)
+                    harvested_meta.append(rec)
                 candidate_id += 1
                 sifter_stats["stage1_candidates_logged"] += 1
                 added += 1
