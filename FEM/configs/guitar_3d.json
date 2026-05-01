@@ -2,10 +2,10 @@
     "geometry": {
         "design_mode": "Basic (Geometric)",
         "shape_type": "Classical",
-        "length": 0.5485383275009864,
-        "width": 0.3655901227192035,
-        "depth": 0.11684630676906818,
-        "thickness": 0.0045,
+        "length": 0.5538712187475452,
+        "width": 0.3653094661260921,
+        "depth": 0.10406212335479505,
+        "thickness": 0.003,
         "hole_radius": 0.04,
         "lower_bout": 0.37,
         "upper_bout": 0.27749999999999997,
@@ -16,7 +16,7 @@
     },
     "materials": {
         "top": {
-            "density": 450.0,
+            "density": 470.0,
             "E_L": 10000000000.0,
             "E_T": 100000000.0,
             "E_R": 70000000.0,

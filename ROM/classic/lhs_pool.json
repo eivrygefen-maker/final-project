@@ -14,8 +14,8 @@
         "geometry.width": 0.4344078140946507,
         "materials.top.density": 430.0
       },
-      "status": "pending",
-      "snapshot_file": null,
+      "status": "completed",
+      "snapshot_file": "snapshots/snapshot_0001.npz",
       "error": null
     },
     {
@@ -27,8 +27,8 @@
         "geometry.width": 0.3655901227192035,
         "materials.top.density": 450.0
       },
-      "status": "pending",
-      "snapshot_file": null,
+      "status": "completed",
+      "snapshot_file": "snapshots/snapshot_0002.npz",
       "error": null
     },
     {
@@ -40,8 +40,8 @@
         "geometry.width": 0.21589311851831247,
         "materials.top.density": 450.0
       },
-      "status": "pending",
-      "snapshot_file": null,
+      "status": "completed",
+      "snapshot_file": "snapshots/snapshot_0003.npz",
       "error": null
     },
     {
@@ -53,8 +53,8 @@
         "geometry.width": 0.22160043743568997,
         "materials.top.density": 430.0
       },
-      "status": "pending",
-      "snapshot_file": null,
+      "status": "completed",
+      "snapshot_file": "snapshots/snapshot_0004.npz",
       "error": null
     },
     {
@@ -66,8 +66,8 @@
         "geometry.width": 0.34570863767969234,
         "materials.top.density": 470.0
       },
-      "status": "pending",
-      "snapshot_file": null,
+      "status": "completed",
+      "snapshot_file": "snapshots/snapshot_0005.npz",
       "error": null
     },
     {
@@ -79,8 +79,8 @@
         "geometry.width": 0.26604069975411326,
         "materials.top.density": 470.0
       },
-      "status": "pending",
-      "snapshot_file": null,
+      "status": "completed",
+      "snapshot_file": "snapshots/snapshot_0006.npz",
       "error": null
     },
     {
@@ -92,8 +92,8 @@
         "geometry.width": 0.4125669362846309,
         "materials.top.density": 430.0
       },
-      "status": "pending",
-      "snapshot_file": null,
+      "status": "completed",
+      "snapshot_file": "snapshots/snapshot_0007.npz",
       "error": null
     },
     {
@@ -105,8 +105,8 @@
         "geometry.width": 0.2488502810521813,
         "materials.top.density": 470.0
       },
-      "status": "pending",
-      "snapshot_file": null,
+      "status": "completed",
+      "snapshot_file": "snapshots/snapshot_0008.npz",
       "error": null
     },
     {
@@ -118,8 +118,8 @@
         "geometry.width": 0.20861751817694818,
         "materials.top.density": 470.0
       },
-      "status": "pending",
-      "snapshot_file": null,
+      "status": "completed",
+      "snapshot_file": "snapshots/snapshot_0009.npz",
       "error": null
     },
     {
@@ -131,8 +131,8 @@
         "geometry.width": 0.2787516490791023,
         "materials.top.density": 470.0
       },
-      "status": "pending",
-      "snapshot_file": null,
+      "status": "completed",
+      "snapshot_file": "snapshots/snapshot_0010.npz",
       "error": null
     },
     {
@@ -6520,6 +6520,10 @@
     "sifter_dup_hz": 2.0,
     "sifter_uniqueness_min": 0.1,
     "sifter_energy_priority_hz": 2.0,
-    "min_wood_participation": 0.15
+    "min_wood_participation": 0.15,
+    "sifter_dup_hz_high_band": 0.8,
+    "sifter_adaptive_break_hz": 200.0,
+    "sifter_uniqueness_min_high_band": 0.06,
+    "min_wood_participation_high_band": 0.08
   }
 }
