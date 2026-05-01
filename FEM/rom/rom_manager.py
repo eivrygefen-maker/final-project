@@ -696,6 +696,7 @@ class ROMManager:
                             elapsed_s=np.array([elapsed], dtype=np.float64),
                             sifter_stats_json=json.dumps(fom.get("sifter_stats", {}), indent=2),
                         )
+                        fem_main_3d.cleanup_sorting_workspace()
                         entry["status"] = "completed"
                         entry["snapshot_file"] = f"snapshots/{snapshot_path.name}"
                         entry["error"] = None
@@ -790,6 +791,7 @@ class ROMManager:
                         elapsed_s=np.array([elapsed], dtype=np.float64),
                         sifter_stats_json=json.dumps(fom.get("sifter_stats", {}), indent=2),
                     )
+                    fem_main_3d.cleanup_sorting_workspace()
                     out_files.append(snapshot_path)
                     with open(log_path, "w", encoding="utf-8") as lf:
                         json.dump(

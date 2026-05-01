@@ -2,6 +2,7 @@ import json
 import logging
 import math
 import gc
+import shutil
 import subprocess
 import sys
 import builtins
@@ -47,6 +48,9 @@ LOGGER.propagate = False
 WOOD_SURFACE_TAGS = (1, 3)
 AIR_VOLUME_TAG = 10
 ROOT_RANK = 0
+SORTING_ROOT = Path(__file__).resolve().parents[1] / "SORTING"
+SORTING_LOG = SORTING_ROOT / "candidates_log.json"
+SORTING_TEMP_MODES = SORTING_ROOT / "temp_modes"
 
 
 def _root_print(*args, **kwargs):
@@ -76,6 +80,39 @@ def _emit(message: str, status_callback=None, level: str = "info") -> None:
         print(message)
     if status_callback is not None and is_root:
         status_callback(message)
+
+
+def _prepare_sorting_workspace() -> None:
+    if MPI.COMM_WORLD.rank != ROOT_RANK:
+        return
+    SORTING_ROOT.mkdir(parents=True, exist_ok=True)
+    SORTING_TEMP_MODES.mkdir(parents=True, exist_ok=True)
+    with open(SORTING_LOG, "w", encoding="utf-8") as f:
+        json.dump({"candidates": []}, f, indent=2)
+
+
+def _append_candidate_metadata(entry: Dict) -> None:
+    if MPI.COMM_WORLD.rank != ROOT_RANK:
+        return
+    if SORTING_LOG.exists():
+        with open(SORTING_LOG, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    else:
+        payload = {"candidates": []}
+    payload.setdefault("candidates", []).append(entry)
+    with open(SORTING_LOG, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+
+def cleanup_sorting_workspace() -> None:
+    """Called after snapshot packing succeeds, to keep SORTING clean."""
+    if MPI.COMM_WORLD.rank != ROOT_RANK:
+        return
+    if SORTING_TEMP_MODES.exists():
+        shutil.rmtree(SORTING_TEMP_MODES, ignore_errors=True)
+    SORTING_ROOT.mkdir(parents=True, exist_ok=True)
+    with open(SORTING_LOG, "w", encoding="utf-8") as f:
+        json.dump({"candidates": []}, f, indent=2)
 
 
 def _debug_rank(message: str) -> None:
@@ -1618,26 +1655,33 @@ def _solve_coupled_evp(
                 solver_cfg.get("sifter_plate_energy_ratio_floor", 0.0005),
             )
         )
-        saved_freqs: List[float] = []
-        saved_vecs: List[np.ndarray] = []
-        saved_energy: List[float] = []
-        saved_uniqueness: List[float] = []
-        saved_participation: List[float] = []
+        harvested_freqs: List[float] = []
         sifter_stats = {
             "modes_discarded_by_dup_hz": 0,
             "modes_discarded_by_plate_energy": 0,
             "modes_discarded_by_band": 0,
             "modes_discarded_by_wood": 0,
             "modes_discarded_by_uniqueness": 0,
-            "modes_replaced_near_frequency": 0,
             "total_raw_candidates_seen": 0,
+            "stage1_candidates_logged": 0,
+            "stage2_after_wood_gate": 0,
+            "stage2_after_cluster": 0,
+            "stage2_after_uniqueness": 0,
             "accepted_modes": 0,
         }
+        weak_step_hz = float(solver_cfg.get("sifter_stage1_step_hz", 10.0))
+        weak_batch = int(solver_cfg.get("sifter_stage1_batch_size", 60))
+        weak_min_wood = float(solver_cfg.get("sifter_stage1_min_wood_participation", 0.0001))
+        weak_uniqueness_min = float(solver_cfg.get("sifter_stage1_uniqueness_min", 0.01))
+        weak_dup_hz = float(solver_cfg.get("sifter_stage1_dup_hz", 0.5))
+        global_dup_hz = float(solver_cfg.get("sifter_stage2_global_dup_hz", 2.0))
+        global_uniqueness_min = float(solver_cfg.get("sifter_stage2_global_uniqueness_min", 0.10))
+        global_wood_low = float(solver_cfg.get("sifter_stage2_min_wood_low", 0.01))
+        global_wood_high = float(solver_cfg.get("sifter_stage2_min_wood_high", 0.08))
+        candidate_id = 0
 
-        dup_hz = dup_hz_low
-
-        def _dup(freq: float) -> bool:
-            return any(abs(freq - fs) < dup_hz for fs in saved_freqs)
+        def _dup_weak(freq: float) -> bool:
+            return any(abs(freq - fs) < weak_dup_hz for fs in harvested_freqs)
 
         def _mean_disp_energy(vec: np.ndarray) -> float:
             # Mixed eigenvector = [u, p]. "Mean Displacement" should use displacement block only.
@@ -1672,17 +1716,12 @@ def _solve_coupled_evp(
             tot = max(nu + np_, 1e-30)
             return nu / tot, np_ / tot
 
+        _prepare_sorting_workspace()
         _emit(
-            f"[sifter] plate-specific sifter: quota={quota}, "
-            f"tag1>{th_top:g} or tag3>{th_back:g} (energy / |phi^T M phi|), "
-            f"sweep {f_center:.0f}–{f_cap:.0f} Hz "
-            f"(low gear {low_f_min:.0f}-{low_f_max:.0f}Hz: step={low_step_hz:.0f}, batch={low_batch}; "
-            f"high gear >{low_f_max:.0f}Hz: step={high_step_hz:.0f}, batch={high_batch}), "
-            f"max_it<={max_iter_cap} per batch, "
-            f"adaptive break={adaptive_break:.0f}Hz: dup_hz {dup_hz_low:.2f}/{dup_hz_high:.2f}, "
-            f"uniq_min {uniq_min_low:.2f}/{uniq_min_high:.2f}, "
-            f"wood_gate(mode) {wood_gate_low:.2f}/{wood_gate_high:.2f} (f< / f>= {adaptive_break:.0f} Hz), "
-            f"near-pair winner window={near_hz:.2f} Hz.",
+            f"[sifter] two-stage pipeline enabled: Stage-1 Harvest (step={weak_step_hz:.0f}Hz, batch={weak_batch}, "
+            f"weak wood>={weak_min_wood:g}, weak uniq>={weak_uniqueness_min:.2f}, weak dup={weak_dup_hz:.2f}Hz) -> "
+            f"Stage-2 Global Curation (wood low/high={global_wood_low:.2f}/{global_wood_high:.2f}, "
+            f"dup cluster={global_dup_hz:.2f}Hz, uniq>={global_uniqueness_min:.2f}, quota={quota}).",
             status_callback=status_callback,
         )
         if MPI.COMM_WORLD.rank == ROOT_RANK:
@@ -1695,13 +1734,10 @@ def _solve_coupled_evp(
             )
             sys.stdout.flush()
 
-        acoustic_only_kept = 0
-        while len(saved_freqs) < quota and f_center <= f_cap + 1e-9:
+        while f_center <= f_cap + 1e-9:
             in_low_gear = low_f_min <= f_center <= low_f_max
-            batch = low_batch if in_low_gear else high_batch
-            df_s = low_step_hz if in_low_gear else high_step_hz
-            dup_hz = dup_hz_low if f_center < adaptive_break else dup_hz_high
-            uniq_min = uniq_min_low if f_center < adaptive_break else uniq_min_high
+            batch = weak_batch
+            df_s = weak_step_hz
             _phase_sync(2003, "coupled sifter before batch solve", status_callback=status_callback)
             nconv, rows = _slepc_shift_invert_batch(
                 A,
@@ -1735,7 +1771,6 @@ def _solve_coupled_evp(
 
             sifter_stats["total_raw_candidates_seen"] += int(len(rows))
             added = 0
-            replaced = 0
             dropped_unique = 0
             dropped_participation = 0
             for f_hz, vec, rt, rb in rows:
@@ -1747,83 +1782,138 @@ def _solve_coupled_evp(
                 if not (min_valid_hz <= f_hz <= max_valid_hz):
                     sifter_stats["modes_discarded_by_band"] += 1
                     continue
-                if _dup(f_hz):
+                if _dup_weak(f_hz):
                     sifter_stats["modes_discarded_by_dup_hz"] += 1
                     continue
                 wood_part, air_part = _participation(vec)
-                wood_gate = wood_gate_low if f_hz < adaptive_break else wood_gate_high
-                acoustic_only_like = wood_part < wood_gate and air_part > (1.0 - wood_gate)
-                if acoustic_only_like:
-                    if acoustic_only_kept >= max_acoustic_only_keep:
-                        dropped_participation += 1
-                        sifter_stats["modes_discarded_by_wood"] += 1
-                        continue
-                elif wood_part < wood_gate:
+                if wood_part < weak_min_wood:
                     dropped_participation += 1
                     sifter_stats["modes_discarded_by_wood"] += 1
                     continue
                 cur_f = float(f_hz)
-                cur_e = _mean_disp_energy(vec)
                 uniq_cur = 1.0
-                if saved_vecs:
-                    uniq_cur = _structural_uniqueness_vs_saved(vec)
-                    if uniq_cur < uniq_min:
-                        dropped_unique += 1
-                        sifter_stats["modes_discarded_by_uniqueness"] += 1
-                        continue
-                near_idx = next((i for i, fs in enumerate(saved_freqs) if abs(cur_f - fs) < near_hz), None)
-                if near_idx is not None:
-                    if cur_e > saved_energy[near_idx]:
-                        saved_freqs[near_idx] = cur_f
-                        saved_vecs[near_idx] = vec
-                        saved_energy[near_idx] = cur_e
-                        saved_uniqueness[near_idx] = float(uniq_cur)
-                        saved_participation[near_idx] = float(wood_part)
-                        replaced += 1
-                        sifter_stats["modes_replaced_near_frequency"] += 1
+                if uniq_cur < weak_uniqueness_min:
+                    dropped_unique += 1
+                    sifter_stats["modes_discarded_by_uniqueness"] += 1
                     continue
-                saved_freqs.append(cur_f)
-                saved_vecs.append(vec)
-                saved_energy.append(cur_e)
-                saved_uniqueness.append(float(uniq_cur))
-                saved_participation.append(float(wood_part))
-                if acoustic_only_like:
-                    acoustic_only_kept += 1
+                harvested_freqs.append(cur_f)
+                if MPI.COMM_WORLD.rank == ROOT_RANK:
+                    vec_path = SORTING_TEMP_MODES / f"mode_{candidate_id:06d}.npy"
+                    np.save(vec_path, np.asarray(vec, dtype=np.float64))
+                    _append_candidate_metadata(
+                        {
+                            "id": int(candidate_id),
+                            "hz": float(cur_f),
+                            "tag1_ratio": float(rt),
+                            "tag3_ratio": float(rb),
+                            "uniqueness": float(uniq_cur),
+                            "wood_participation": float(wood_part),
+                            "vector_path": str(vec_path),
+                        }
+                    )
+                candidate_id += 1
+                sifter_stats["stage1_candidates_logged"] += 1
                 added += 1
-                if len(saved_freqs) >= quota:
-                    break
             _emit(
                 f"[sifter] center={f_center:.1f} Hz [{('low' if in_low_gear else 'high')} gear: "
-                f"step={df_s:.0f}Hz, batch={batch}, max_it<={max_iter_cap}]: "
-                f"active dup_hz={dup_hz:.2f}, uniq_min={uniq_min:.2f}, wood<=/>{adaptive_break:.0f}Hz="
-                f"{wood_gate_low:.2f}/{wood_gate_high:.2f} | converged={nconv}, accepted+{added} "
-                f"replaced={replaced}, unique-dropped={dropped_unique}, participation-dropped={dropped_participation}, "
-                f"acoustic-only-kept={acoustic_only_kept}/{max_acoustic_only_keep} "
-                f"(total saved={len(saved_freqs)}/{quota}).",
+                f"step={df_s:.0f}Hz, batch={batch}, max_it<={max_iter_cap}] "
+                f"weak-thresholds(dup={weak_dup_hz:.2f}, uniq>={weak_uniqueness_min:.2f}, wood>={weak_min_wood:g}): "
+                f"converged={nconv}, harvested+{added}, unique-dropped={dropped_unique}, "
+                f"participation-dropped={dropped_participation} (total stage1={sifter_stats['stage1_candidates_logged']}).",
                 status_callback=status_callback,
             )
             _phase_sync(2004, "coupled sifter after batch solve", status_callback=status_callback)
-            if len(saved_freqs) >= quota:
-                break
             f_center += df_s
 
-        if not saved_freqs:
+        _phase_sync(2007, "coupled sifter global curation begin", status_callback=status_callback)
+        selected_records: Optional[List[Dict]] = None
+        selected_vectors: Optional[List[np.ndarray]] = None
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            with open(SORTING_LOG, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            candidates = list(payload.get("candidates", []))
+            if not candidates:
+                candidates = []
+            stage2_wood = []
+            for c in candidates:
+                hz = float(c.get("hz", 0.0))
+                wood = float(c.get("wood_participation", 0.0))
+                wood_gate = global_wood_low if hz < adaptive_break else global_wood_high
+                if wood >= wood_gate:
+                    stage2_wood.append(c)
+            sifter_stats["stage2_after_wood_gate"] = int(len(stage2_wood))
+            stage2_wood.sort(key=lambda x: float(x.get("hz", 0.0)))
+            clustered: List[List[Dict]] = []
+            cur_cluster: List[Dict] = []
+            for c in stage2_wood:
+                hz = float(c.get("hz", 0.0))
+                if not cur_cluster:
+                    cur_cluster = [c]
+                else:
+                    prev_hz = float(cur_cluster[-1].get("hz", 0.0))
+                    if abs(hz - prev_hz) <= global_dup_hz:
+                        cur_cluster.append(c)
+                    else:
+                        clustered.append(cur_cluster)
+                        cur_cluster = [c]
+            if cur_cluster:
+                clustered.append(cur_cluster)
+            clustered_winners = []
+            for cl in clustered:
+                best = max(cl, key=lambda x: float(x.get("wood_participation", 0.0)))
+                clustered_winners.append(best)
+            sifter_stats["stage2_after_cluster"] = int(len(clustered_winners))
+            clustered_winners.sort(
+                key=lambda x: (
+                    float(x.get("wood_participation", 0.0)),
+                    max(float(x.get("tag1_ratio", 0.0)), float(x.get("tag3_ratio", 0.0))),
+                ),
+                reverse=True,
+            )
+
+            selected_records = []
+            selected_vectors = []
+            for c in clustered_winners:
+                vec = np.load(str(c["vector_path"]))
+                uniq_global = 1.0
+                if selected_vectors:
+                    uniq_global = 1.0 - max(
+                        abs(float(np.vdot(np.asarray(vec[:n_u_fe]), np.asarray(prev[:n_u_fe]))))
+                        / max(
+                            float(np.linalg.norm(np.asarray(vec[:n_u_fe])) * np.linalg.norm(np.asarray(prev[:n_u_fe]))),
+                            1e-30,
+                        )
+                        for prev in selected_vectors
+                    )
+                if uniq_global < global_uniqueness_min:
+                    continue
+                rec = dict(c)
+                rec["uniqueness"] = float(uniq_global)
+                selected_records.append(rec)
+                selected_vectors.append(np.asarray(vec, dtype=np.float64))
+                if len(selected_records) >= quota:
+                    break
+            sifter_stats["stage2_after_uniqueness"] = int(len(selected_records))
+
+        selected_records = MPI.COMM_WORLD.bcast(selected_records, root=ROOT_RANK)
+        selected_vectors = MPI.COMM_WORLD.bcast(selected_vectors, root=ROOT_RANK)
+        _phase_sync(2008, "coupled sifter global curation done", status_callback=status_callback)
+
+        if not selected_records or not selected_vectors:
             if M_top is not None:
                 M_top.destroy()
             if M_back is not None:
                 M_back.destroy()
             raise RuntimeError(
-                "Adaptive plate sifter found no modes with "
-                f"(tag1_energy/|total| > {th_top:g} OR tag3_energy/|total| > {th_back:g}) "
-                f"in [{min_valid_hz:.1f}, {max_valid_hz:.1f}] Hz. "
-                "Try lowering sifter_*_plate_energy_ratio or widening the frequency band."
+                "Two-stage sifter found no globally curated modes. "
+                "Try lowering stage2 wood/uniqueness gates or widening the sweep."
             )
 
-        order = np.argsort(np.array(saved_freqs))
-        freqs_hz = [saved_freqs[int(i)] for i in order]
-        vectors = [saved_vecs[int(i)] for i in order]
-        uniqueness_scores = [saved_uniqueness[int(i)] for i in order]
-        participation_ratios = [saved_participation[int(i)] for i in order]
+        order = np.argsort(np.array([float(r["hz"]) for r in selected_records], dtype=np.float64))
+        freqs_hz = [float(selected_records[int(i)]["hz"]) for i in order]
+        vectors = [np.asarray(selected_vectors[int(i)], dtype=np.float64) for i in order]
+        uniqueness_scores = [float(selected_records[int(i)].get("uniqueness", 1.0)) for i in order]
+        participation_ratios = [float(selected_records[int(i)].get("wood_participation", 0.0)) for i in order]
         eigvecs = np.stack(vectors, axis=1)
         sifter_stats["accepted_modes"] = int(eigvecs.shape[1])
         config["_fom_sifter_stats"] = dict(sifter_stats)
