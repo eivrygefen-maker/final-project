@@ -1621,6 +1621,8 @@ def _solve_coupled_evp(
         saved_freqs: List[float] = []
         saved_vecs: List[np.ndarray] = []
         saved_energy: List[float] = []
+        saved_uniqueness: List[float] = []
+        saved_participation: List[float] = []
         sifter_stats = {
             "modes_discarded_by_dup_hz": 0,
             "modes_discarded_by_plate_energy": 0,
@@ -1762,9 +1764,10 @@ def _solve_coupled_evp(
                     continue
                 cur_f = float(f_hz)
                 cur_e = _mean_disp_energy(vec)
+                uniq_cur = 1.0
                 if saved_vecs:
-                    uniq = _structural_uniqueness_vs_saved(vec)
-                    if uniq < uniq_min:
+                    uniq_cur = _structural_uniqueness_vs_saved(vec)
+                    if uniq_cur < uniq_min:
                         dropped_unique += 1
                         sifter_stats["modes_discarded_by_uniqueness"] += 1
                         continue
@@ -1774,12 +1777,16 @@ def _solve_coupled_evp(
                         saved_freqs[near_idx] = cur_f
                         saved_vecs[near_idx] = vec
                         saved_energy[near_idx] = cur_e
+                        saved_uniqueness[near_idx] = float(uniq_cur)
+                        saved_participation[near_idx] = float(wood_part)
                         replaced += 1
                         sifter_stats["modes_replaced_near_frequency"] += 1
                     continue
                 saved_freqs.append(cur_f)
                 saved_vecs.append(vec)
                 saved_energy.append(cur_e)
+                saved_uniqueness.append(float(uniq_cur))
+                saved_participation.append(float(wood_part))
                 if acoustic_only_like:
                     acoustic_only_kept += 1
                 added += 1
@@ -1815,9 +1822,13 @@ def _solve_coupled_evp(
         order = np.argsort(np.array(saved_freqs))
         freqs_hz = [saved_freqs[int(i)] for i in order]
         vectors = [saved_vecs[int(i)] for i in order]
+        uniqueness_scores = [saved_uniqueness[int(i)] for i in order]
+        participation_ratios = [saved_participation[int(i)] for i in order]
         eigvecs = np.stack(vectors, axis=1)
         sifter_stats["accepted_modes"] = int(eigvecs.shape[1])
         config["_fom_sifter_stats"] = dict(sifter_stats)
+        config["_fom_uniqueness_scores"] = list(uniqueness_scores)
+        config["_fom_participation_ratios"] = list(participation_ratios)
         if M_top is not None:
             M_top.destroy()
         if M_back is not None:
@@ -1889,6 +1900,10 @@ def _solve_coupled_evp(
     n_p = W.sub(1).dofmap.index_map.size_local * W.sub(1).dofmap.index_map_bs
     if "_fom_sifter_stats" not in config:
         config["_fom_sifter_stats"] = {}
+    if "_fom_uniqueness_scores" not in config:
+        config["_fom_uniqueness_scores"] = []
+    if "_fom_participation_ratios" not in config:
+        config["_fom_participation_ratios"] = []
     # Release solver matrices at end of FOM solve (assemble-only path returns earlier).
     try:
         A.destroy()
@@ -1930,6 +1945,8 @@ def run_fom_for_rom(config: Dict, num_modes: int = 10, status_callback=None):
         status_callback=status_callback,
     )
     sifter_stats = dict(config.pop("_fom_sifter_stats", {}) or {})
+    uniqueness_scores = list(config.pop("_fom_uniqueness_scores", []) or [])
+    participation_ratios = list(config.pop("_fom_participation_ratios", []) or [])
     return {
         "mesh": msh,
         "space": W,
@@ -1938,6 +1955,8 @@ def run_fom_for_rom(config: Dict, num_modes: int = 10, status_callback=None):
         "n_u": n_u,
         "n_p": n_p,
         "sifter_stats": sifter_stats,
+        "uniqueness_scores": uniqueness_scores,
+        "participation_ratios": participation_ratios,
     }
 
 

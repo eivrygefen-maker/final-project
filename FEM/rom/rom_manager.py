@@ -667,14 +667,27 @@ class ROMManager:
                     fom = fem_main_3d.run_fom_for_rom(cfg, num_modes=num_modes)
                     elapsed = time.perf_counter() - t0
                     if self.rank == 0:
+                        freqs_arr = np.array(fom["freqs_hz"], dtype=np.float64)
+                        uniq_arr = np.array(fom.get("uniqueness_scores", []), dtype=np.float64).reshape(-1)
+                        part_arr = np.array(fom.get("participation_ratios", []), dtype=np.float64).reshape(-1)
+                        if uniq_arr.size != freqs_arr.size:
+                            raise ValueError(
+                                f"uniqueness_scores length ({uniq_arr.size}) != freqs_hz length ({freqs_arr.size})"
+                            )
+                        if part_arr.size != freqs_arr.size:
+                            raise ValueError(
+                                f"participation_ratios length ({part_arr.size}) != freqs_hz length ({freqs_arr.size})"
+                            )
                         np.savez(
                             snapshot_path,
                             params_json=json.dumps(params),
                             shape_name=shape_name,
                             sampling_mode=sampling_mode,
                             sample_id=str(entry.get("id", "")),
-                            freqs_hz=np.array(fom["freqs_hz"], dtype=np.float64),
+                            freqs_hz=freqs_arr,
                             eigvecs_real=np.real(fom["eigvecs"]).astype(np.float64),
+                            uniqueness_scores=uniq_arr,
+                            participation_ratios=part_arr,
                             elapsed_s=np.array([elapsed], dtype=np.float64),
                             sifter_stats_json=json.dumps(fom.get("sifter_stats", {}), indent=2),
                         )
@@ -758,13 +771,26 @@ class ROMManager:
                 sample_label = f"{idx:04d}"
                 log_path = logs_dir / f"simulation_guitar_{sample_label}_{run_stamp}.log"
                 if self.rank == 0:
+                    freqs_arr = np.array(fom["freqs_hz"], dtype=np.float64)
+                    uniq_arr = np.array(fom.get("uniqueness_scores", []), dtype=np.float64).reshape(-1)
+                    part_arr = np.array(fom.get("participation_ratios", []), dtype=np.float64).reshape(-1)
+                    if uniq_arr.size != freqs_arr.size:
+                        raise ValueError(
+                            f"uniqueness_scores length ({uniq_arr.size}) != freqs_hz length ({freqs_arr.size})"
+                        )
+                    if part_arr.size != freqs_arr.size:
+                        raise ValueError(
+                            f"participation_ratios length ({part_arr.size}) != freqs_hz length ({freqs_arr.size})"
+                        )
                     np.savez(
                         snapshot_path,
                         params_json=json.dumps(params),
                         shape_name=shape_name,
                         sampling_mode=sampling_mode,
-                        freqs_hz=np.array(fom["freqs_hz"], dtype=np.float64),
+                        freqs_hz=freqs_arr,
                         eigvecs_real=np.real(fom["eigvecs"]).astype(np.float64),
+                        uniqueness_scores=uniq_arr,
+                        participation_ratios=part_arr,
                         elapsed_s=np.array([elapsed], dtype=np.float64),
                         sifter_stats_json=json.dumps(fom.get("sifter_stats", {}), indent=2),
                     )
