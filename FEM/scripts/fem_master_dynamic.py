@@ -169,7 +169,7 @@ def main() -> int:
     parser.add_argument(
         "--use-mpiexec",
         action="store_true",
-        help="Run each worker as `mpiexec -n 1 <python> ...` (recommended for PETSc/SLEPc).",
+        help="Run each worker as `mpiexec --bind-to none -n 1 <python> ...` (Open MPI; avoids pinning all ranks to one core).",
     )
     args = parser.parse_args()
 
@@ -202,6 +202,8 @@ def main() -> int:
         if args.use_mpiexec:
             cmd: List[str] = [
                 "mpiexec",
+                "--bind-to",
+                "none",
                 "-n",
                 "1",
                 sys.executable,
