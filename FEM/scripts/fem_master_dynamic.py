@@ -6,8 +6,9 @@ parameters, per-job timeouts, and safe merge of worker JSON into ``candidates_lo
 Resource policy (VM-friendly): at most **2** concurrent workers. On Linux, each worker is
 launched under ``taskset -c <id>`` with ``<id>`` leased from ``{1, 2}``, then
 ``mpiexec --bind-to none -n 1`` so Open MPI does not re-bind ranks onto core 0.
-Starting the **second** concurrent worker waits **30 seconds** after the first so the OS
-can place the first job before the second starts (core 0 for master; other CPUs for OS/UI).
+Starting the **second** concurrent worker waits **10 seconds** after the first for core
+stability. Every spawn is also separated by at least **5 seconds** from the previous spawn
+(throttle). Core 0 stays for the master; other CPUs for OS/UI.
 """
 from __future__ import annotations
 
@@ -44,7 +45,9 @@ REPO_ROOT = _repo_root()
 
 MAX_CONCURRENT_WORKERS = 2
 # Delay before launching the 2nd concurrent worker (same scheduling burst).
-STAGGER_SECOND_WORKER_SECONDS = 30.0
+STAGGER_SECOND_WORKER_SECONDS = 10.0
+# Minimum wall time between any two successful spawns (monotonic clock).
+MIN_SPAWN_GAP_SECONDS = 5.0
 LOGGER = logging.getLogger("fem_master_dynamic")
 
 
@@ -79,7 +82,12 @@ def build_task_list(hz_max: float) -> List[Tuple[float, Dict[str, Any]]]:
     return tasks
 
 
-def _merge_result_into_candidates_log(result_path: Path, log_path: Path, lock: threading.Lock) -> None:
+def _merge_result_into_candidates_log(
+    result_path: Path,
+    log_path: Path,
+    lock: threading.Lock,
+    sorting_root: Path,
+) -> None:
     if not result_path.is_file():
         return
     try:
@@ -147,7 +155,7 @@ def _poll_completed(
         try:
             if code == 0:
                 LOGGER.info("Worker finished OK for %.4f Hz (exit %s).", hz, code)
-                _merge_result_into_candidates_log(rpath, log_path, merge_lock)
+                _merge_result_into_candidates_log(rpath, log_path, merge_lock, sorting_root)
             else:
                 LOGGER.warning("Worker exited with code %s for %.4f Hz (no merge).", code, hz)
         finally:
@@ -239,6 +247,7 @@ def main() -> int:
     running: Dict[subprocess.Popen, Dict[str, Any]] = {}
     config_path = args.config.resolve()
     next_i = 0
+    last_spawn_mono: List[Optional[float]] = [None]
 
     use_taskset = sys.platform.startswith("linux")
     _core_lock = threading.Lock()
@@ -348,6 +357,7 @@ def main() -> int:
             "timeout_minutes": float(params["timeout_minutes"]),
             "core_id": core_id,
         }
+        last_spawn_mono[0] = time.monotonic()
         next_i = idx + 1
 
     try:
@@ -357,10 +367,23 @@ def main() -> int:
             while len(running) < MAX_CONCURRENT_WORKERS and next_i < len(tasks):
                 if len(running) == 1:
                     LOGGER.info(
-                        "Staggered launch: sleeping %.0f s before starting the second concurrent worker.",
+                        "Waiting %.0fs for core stability before second concurrent worker...",
                         STAGGER_SECOND_WORKER_SECONDS,
                     )
                     time.sleep(STAGGER_SECOND_WORKER_SECONDS)
+
+                if last_spawn_mono[0] is not None:
+                    gap = time.monotonic() - float(last_spawn_mono[0])
+                    if gap < MIN_SPAWN_GAP_SECONDS:
+                        wait_s = MIN_SPAWN_GAP_SECONDS - gap
+                        LOGGER.info(
+                            "Enforcing %.1fs throttle gap (%.2fs since last spawn); sleeping %.2fs...",
+                            MIN_SPAWN_GAP_SECONDS,
+                            gap,
+                            wait_s,
+                        )
+                        time.sleep(wait_s)
+
                 spawn_index(next_i)
             time.sleep(0.25)
     except KeyboardInterrupt:
