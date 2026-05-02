@@ -2,12 +2,17 @@
 """
 Master driver for ``fem_worker_single.py``: bounded concurrency, dynamic band
 parameters, per-job timeouts, and safe merge of worker JSON into ``candidates_log.json``.
+
+Resource policy (VM-friendly): at most **2** concurrent workers; with ``--use-mpiexec``,
+each worker is ``mpiexec -n 1`` with ``--map-by core --bind-to core`` so each job uses
+one dedicated core, leaving other CPUs for the master and the OS.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+import os
 import subprocess
 import sys
 import threading
@@ -18,7 +23,7 @@ from typing import Any, Dict, List, Tuple
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
 
-MAX_CONCURRENT_WORKERS = 3
+MAX_CONCURRENT_WORKERS = 2
 LOGGER = logging.getLogger("fem_master_dynamic")
 
 
@@ -169,7 +174,10 @@ def main() -> int:
     parser.add_argument(
         "--use-mpiexec",
         action="store_true",
-        help="Run each worker as `mpiexec --bind-to none -n 1 <python> ...` (Open MPI; avoids pinning all ranks to one core).",
+        help=(
+            "Run each worker as `mpiexec -n 1 --map-by core --bind-to core <python> ...` "
+            "(Open MPI; one rank bound to one core per job)."
+        ),
     )
     args = parser.parse_args()
 
@@ -189,7 +197,12 @@ def main() -> int:
         log_path.write_text(json.dumps({"candidates": []}, indent=2), encoding="utf-8")
 
     tasks = build_task_list(float(args.hz_max))
-    LOGGER.info("Planned %d worker task(s) up to %.1f Hz.", len(tasks), float(args.hz_max))
+    LOGGER.info(
+        "Planned %d worker task(s) up to %.1f Hz (max concurrent=%d; leave spare CPUs for OS/master).",
+        len(tasks),
+        float(args.hz_max),
+        MAX_CONCURRENT_WORKERS,
+    )
 
     running: Dict[subprocess.Popen, Dict[str, Any]] = {}
     config_path = args.config.resolve()
@@ -202,10 +215,12 @@ def main() -> int:
         if args.use_mpiexec:
             cmd: List[str] = [
                 "mpiexec",
-                "--bind-to",
-                "none",
                 "-n",
                 "1",
+                "--map-by",
+                "core",
+                "--bind-to",
+                "core",
                 sys.executable,
                 str(worker_script),
                 "--target_hz",
@@ -233,11 +248,20 @@ def main() -> int:
             params["num_modes"],
             float(params["timeout_minutes"]),
         )
+        env = os.environ.copy()
+        # One MPI rank + one BLAS/OpenMP thread per worker → less contention vs extra worker threads.
+        env.setdefault("OMP_NUM_THREADS", "1")
+        env.setdefault("OPENBLAS_NUM_THREADS", "1")
+        env.setdefault("MKL_NUM_THREADS", "1")
+        env.setdefault("NUMEXPR_NUM_THREADS", "1")
+        env.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+
         proc = subprocess.Popen(
             cmd,
             cwd=str(REPO_ROOT),
             stdout=None,
             stderr=None,
+            env=env,
         )
         running[proc] = {
             "hz": hz,
