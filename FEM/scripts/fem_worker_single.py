@@ -5,8 +5,8 @@ Single-use FEM worker: one SLEPc shift-invert batch at ``--target_hz``, then exi
 Loads coupled operators via ``fem_main_3d`` (expects **exactly one MPI rank** —
 e.g. ``taskset -c 1 mpiexec -n 1 python FEM/scripts/fem_worker_single.py ...`` as spawned by the master).
 
-Writes mode displacement vectors (float32, relative noise sparsified) to
-``FEM/SORTING/temp_modes/mode_XXXXXX.npy`` and a small
+Writes mode displacement vectors as **float32 CSR** sparse columns (relative noise sparsified),
+one file per mode under ``FEM/SORTING/temp_modes/mode_*.smx.npz``, plus a small
 JSON summary to ``FEM/SORTING/temp_results/result_<mHz_tag>.json`` for the master
 to merge into ``candidates_log.json``.
 """
@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Dict, List, Set
 
 import numpy as np
+from scipy import sparse
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 # .../<repo>/FEM/scripts/ → repo root vs FEM package root
@@ -29,7 +30,14 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import fem_main_3d as fem3d
-from fem_mode_array_utils import sparsify_relative_then_float32
+from fem_mode_array_utils import (
+    MODE_VECTOR_FILE_SUFFIX,
+    csr_col_norm,
+    csr_normalized_overlap,
+    csr_u_slice,
+    dense_to_csr_f32_column,
+    save_mode_csr,
+)
 from mpi4py import MPI
 
 
@@ -52,40 +60,42 @@ def _resolve_mesh_path(cfg: dict, config_path: Path) -> Path:
     return (REPO_ROOT / raw).resolve()
 
 
-def _uniqueness_for_vector(
-    vec: np.ndarray,
-    n_u_fe: int,
+def _uniqueness_for_sparse_column(
+    vec_csr: sparse.csr_matrix,
+    n_u: int,
     temp_modes: Path,
     disk_exclude: Set[str],
-    same_batch_vectors: List[np.ndarray],
+    same_batch: List[sparse.csr_matrix],
 ) -> float:
-    v = np.asarray(vec[:n_u_fe], dtype=np.float64)
-    nv = float(np.linalg.norm(v))
+    """1 - max normalized |cos(u, u_j)| using sparse u-blocks only (O(K) per pair)."""
+    v = csr_u_slice(vec_csr, n_u)
+    nv = csr_col_norm(v)
     if nv <= 0.0:
         return 1.0
     max_ov = 0.0
-    for p in same_batch_vectors:
-        pt = np.asarray(p[:n_u_fe], dtype=np.float64)
-        npv = float(np.linalg.norm(pt))
-        if npv <= 0.0:
-            continue
-        ov = abs(float(np.vdot(v, pt))) / max(nv * npv, 1e-30)
-        max_ov = max(max_ov, float(np.clip(ov, 0.0, 1.0)))
+    for p in same_batch:
+        max_ov = max(max_ov, csr_normalized_overlap(v, csr_u_slice(p, n_u)))
     if temp_modes.exists():
+        for path in sorted(temp_modes.glob(f"mode_*{MODE_VECTOR_FILE_SUFFIX}")):
+            key = str(path.resolve())
+            if key in disk_exclude:
+                continue
+            try:
+                prev = sparse.load_npz(str(path)).tocsr().astype(np.float32, copy=False)
+            except Exception:
+                continue
+            max_ov = max(max_ov, csr_normalized_overlap(v, csr_u_slice(prev, n_u)))
+        # Legacy dense .npy on disk
         for path in sorted(temp_modes.glob("mode_*.npy")):
             key = str(path.resolve())
             if key in disk_exclude:
                 continue
             try:
-                prev = np.load(key)
+                arr = np.load(str(path))
             except Exception:
                 continue
-            pt = np.asarray(prev[:n_u_fe], dtype=np.float64)
-            npv = float(np.linalg.norm(pt))
-            if npv <= 0.0:
-                continue
-            ov = abs(float(np.vdot(v, pt))) / max(nv * npv, 1e-30)
-            max_ov = max(max_ov, float(np.clip(ov, 0.0, 1.0)))
+            prev = dense_to_csr_f32_column(arr)
+            max_ov = max(max_ov, csr_normalized_overlap(v, csr_u_slice(prev, n_u)))
     return 1.0 - max_ov
 
 
@@ -189,20 +199,20 @@ def main() -> int:
     n_u_g = int(W.sub(0).dofmap.index_map.size_global * W.sub(0).dofmap.index_map_bs)
     hz_tag = hz_result_tag(float(args.target_hz))
     candidates: List[Dict] = []
-    same_batch: List[np.ndarray] = []
+    same_batch: List[sparse.csr_matrix] = []
     exclude: Set[str] = set()
 
     for j in range(n_modes):
-        vec = sparsify_relative_then_float32(eigvecs[:, j])
+        vec_csr = dense_to_csr_f32_column(eigvecs[:, j])
         rt = float(tag1[j])
         rb = float(tag3[j])
         wood = max(0.0, rt + rb)
-        uniq = _uniqueness_for_vector(vec, n_u_g, temp_modes, exclude, same_batch)
-        rel = Path("temp_modes") / f"mode_w_{hz_tag}_{j:03d}.npy"
+        uniq = _uniqueness_for_sparse_column(vec_csr, n_u_g, temp_modes, exclude, same_batch)
+        rel = Path("temp_modes") / f"mode_w_{hz_tag}_{j:03d}{MODE_VECTOR_FILE_SUFFIX}"
         abs_path = (sorting_root / rel).resolve()
-        np.save(str(abs_path), vec)
+        save_mode_csr(abs_path, vec_csr)
         exclude.add(str(abs_path))
-        same_batch.append(vec.copy())
+        same_batch.append(vec_csr.copy())
         candidates.append(
             {
                 "id": int(j),
@@ -223,7 +233,7 @@ def main() -> int:
     }
     rpath = result_json_path(sorting_root, float(args.target_hz))
     _atomic_write_json(rpath, out)
-    print(f"[worker] Wrote {n_modes} mode(s); metadata -> {rpath}")
+    print(f"[worker] Wrote {n_modes} sparse mode(s); metadata -> {rpath}")
     sys.stdout.flush()
     return 0
 

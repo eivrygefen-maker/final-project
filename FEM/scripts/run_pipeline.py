@@ -6,14 +6,16 @@ Step A uses ``fem_master_dynamic.py`` with at most **3** concurrent FEM workers;
 each is pinned with ``taskset -c 1``, ``2``, or ``3`` before ``mpiexec --bind-to none -n 1``, with a
 **10 s** pause before the second worker and again before the third (mesh load / I/O stagger), plus a
 **5 s** minimum gap between any two spawns; core 0 and other CPUs stay for the master and OS.
-Candidate merge uses **0.4 Hz** gap thinning and a **0.05 %** wood-participation floor
-(see ``fem_master_dynamic.MIN_WOOD_PARTICIPATION``). LHS pool parameters are merged into a
+Candidate merge uses the **conditional adaptive manager** in ``fem_master_dynamic``
+(zone wood floors 0.0008→0.0003, sparse overlap scoring, spectral shaping, HF quota).
+LHS pool parameters are merged into a
 per-sample config before the FEM master runs.
 
 On success: writes snapshot NPZ under ROM/classic/snapshots/, selection plot under
 FEM/results/plots/, runs package_rom --cleanup, then marks the sample completed in
-the pool JSON. Mode vectors are stored as float32 with relative noise sparsification
-in workers and ``package_rom``; the snapshot NPZ is written with ``numpy.savez_compressed``.
+the pool JSON. Mode vectors are CSR float32 (relative sparsification) on disk
+(``*.smx.npz``); ``package_rom`` bundles the stacked CSR into one compressed NPZ
+(``ev_*`` keys + metadata).
 """
 from __future__ import annotations
 
