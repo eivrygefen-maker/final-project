@@ -3,9 +3,9 @@
 Master driver for ``fem_worker_single.py``: bounded concurrency, dynamic band
 parameters, per-job timeouts, and safe merge of worker JSON into ``candidates_log.json``.
 
-Resource policy (VM-friendly): at most **2** concurrent workers; with ``--use-mpiexec``,
-each worker is ``mpiexec -n 1`` with ``--map-by core --bind-to core`` so each job uses
-one dedicated core, leaving other CPUs for the master and the OS.
+Resource policy (VM-friendly): at most **2** concurrent workers. On Linux, each worker is
+launched under ``taskset -c <id>`` with ``<id>`` leased from ``{1, 2}`` so two concurrent
+jobs map to cores 1 and 2 (core 0 left for the master; others for OS/UI), then ``mpiexec -n 1``.
 """
 from __future__ import annotations
 
@@ -17,8 +17,9 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -130,6 +131,7 @@ def _poll_completed(
     log_path: Path,
     sorting_root: Path,
     merge_lock: threading.Lock,
+    release_core: Callable[[Optional[int]], None],
 ) -> None:
     for proc, meta in list(running.items()):
         code = proc.poll()
@@ -137,15 +139,22 @@ def _poll_completed(
             continue
         hz = float(meta["hz"])
         rpath = result_json_path(sorting_root, hz)
-        if code == 0:
-            LOGGER.info("Worker finished OK for %.4f Hz (exit %s).", hz, code)
-            _merge_result_into_candidates_log(rpath, log_path, merge_lock)
-        else:
-            LOGGER.warning("Worker exited with code %s for %.4f Hz (no merge).", code, hz)
-        del running[proc]
+        try:
+            if code == 0:
+                LOGGER.info("Worker finished OK for %.4f Hz (exit %s).", hz, code)
+                _merge_result_into_candidates_log(rpath, log_path, merge_lock)
+            else:
+                LOGGER.warning("Worker exited with code %s for %.4f Hz (no merge).", code, hz)
+        finally:
+            release_core(meta.get("core_id"))  # type: ignore[arg-type]
+            del running[proc]
 
 
-def _enforce_timeouts(running: Dict[subprocess.Popen, Dict[str, Any]], sorting_root: Path) -> None:
+def _enforce_timeouts(
+    running: Dict[subprocess.Popen, Dict[str, Any]],
+    sorting_root: Path,
+    release_core: Callable[[Optional[int]], None],
+) -> None:
     now = time.monotonic()
     for proc, meta in list(running.items()):
         if proc.poll() is not None:
@@ -159,20 +168,23 @@ def _enforce_timeouts(running: Dict[subprocess.Popen, Dict[str, Any]], sorting_r
             float(meta["timeout_minutes"]),
         )
         try:
-            proc.kill()
-        except OSError as exc:
-            LOGGER.warning("kill() failed for %.4f Hz: %s", hz, exc)
-        try:
-            proc.wait(timeout=5.0)
-        except subprocess.TimeoutExpired:
-            LOGGER.warning("wait() after kill timed out for %.4f Hz", hz)
-        rpath = result_json_path(sorting_root, hz)
-        if rpath.is_file():
             try:
-                rpath.unlink()
-            except OSError:
-                pass
-        del running[proc]
+                proc.kill()
+            except OSError as exc:
+                LOGGER.warning("kill() failed for %.4f Hz: %s", hz, exc)
+            try:
+                proc.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                LOGGER.warning("wait() after kill timed out for %.4f Hz", hz)
+            rpath = result_json_path(sorting_root, hz)
+            if rpath.is_file():
+                try:
+                    rpath.unlink()
+                except OSError:
+                    pass
+        finally:
+            release_core(meta.get("core_id"))  # type: ignore[arg-type]
+            del running[proc]
 
 
 def main() -> int:
@@ -190,8 +202,8 @@ def main() -> int:
         "--use-mpiexec",
         action="store_true",
         help=(
-            "Run each worker as `mpiexec -n 1 --map-by core --bind-to core <python> ...` "
-            "(Open MPI; one rank bound to one core per job)."
+            "Linux: run each worker as `taskset -c <1|2> mpiexec -n 1 <python> ...` "
+            "(cores leased from {1,2}; Open MPI single rank)."
         ),
     )
     args = parser.parse_args()
@@ -223,19 +235,33 @@ def main() -> int:
     config_path = args.config.resolve()
     next_i = 0
 
+    use_taskset = sys.platform.startswith("linux")
+    _core_lock = threading.Lock()
+    _core_free: Deque[int] = deque([1, 2]) if use_taskset else deque()
+
+    def lease_core() -> Optional[int]:
+        if not use_taskset:
+            return None
+        with _core_lock:
+            if not _core_free:
+                raise RuntimeError("No worker CPU cores available in pool [1, 2].")
+            return _core_free.popleft()
+
+    def release_core(cid: Optional[int]) -> None:
+        if cid is None or not use_taskset:
+            return
+        with _core_lock:
+            _core_free.append(int(cid))
+
     def spawn_index(idx: int) -> None:
         nonlocal next_i
         hz, params = tasks[idx]
         timeout_s = float(params["timeout_minutes"]) * 60.0
         if args.use_mpiexec:
-            cmd: List[str] = [
+            cmd = [
                 "mpiexec",
                 "-n",
                 "1",
-                "--map-by",
-                "core",
-                "--bind-to",
-                "core",
                 sys.executable,
                 str(worker_script),
                 "--target_hz",
@@ -256,12 +282,20 @@ def main() -> int:
                 "--config",
                 str(config_path),
             ]
+
+        core_id: Optional[int] = None
+        if use_taskset:
+            core_id = lease_core()
+            cmd = ["taskset", "-c", str(core_id)] + cmd
+
+        log_extra = f" taskset_cpu={core_id}" if core_id is not None else ""
         LOGGER.info(
-            "Spawn worker: hz=%.4f (%s) num_modes=%s timeout=%.1f min",
+            "Spawn worker: hz=%.4f (%s) num_modes=%s timeout=%.1f min%s",
             hz,
             params.get("label", ""),
             params["num_modes"],
             float(params["timeout_minutes"]),
+            log_extra,
         )
         env = os.environ.copy()
         # One MPI rank + one BLAS/OpenMP thread per worker → less contention vs extra worker threads.
@@ -271,34 +305,44 @@ def main() -> int:
         env.setdefault("NUMEXPR_NUM_THREADS", "1")
         env.setdefault("VECLIB_MAXIMUM_THREADS", "1")
 
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(REPO_ROOT),
-            stdout=None,
-            stderr=None,
-            env=env,
-        )
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(REPO_ROOT),
+                stdout=None,
+                stderr=None,
+                env=env,
+            )
+        except Exception:
+            if core_id is not None:
+                release_core(core_id)
+            raise
+
         running[proc] = {
             "hz": hz,
             "deadline": time.monotonic() + timeout_s,
             "timeout_minutes": float(params["timeout_minutes"]),
+            "core_id": core_id,
         }
         next_i = idx + 1
 
     try:
         while next_i < len(tasks) or running:
-            _poll_completed(running, log_path, sorting_root, merge_lock)
-            _enforce_timeouts(running, sorting_root)
+            _poll_completed(running, log_path, sorting_root, merge_lock, release_core)
+            _enforce_timeouts(running, sorting_root, release_core)
             while len(running) < MAX_CONCURRENT_WORKERS and next_i < len(tasks):
                 spawn_index(next_i)
             time.sleep(0.25)
     except KeyboardInterrupt:
         LOGGER.warning("Interrupted — terminating running workers.")
-        for proc in list(running.keys()):
+        for proc, meta in list(running.items()):
             try:
                 proc.kill()
             except OSError:
                 pass
+            finally:
+                release_core(meta.get("core_id"))  # type: ignore[arg-type]
+        running.clear()
         return 130
 
     LOGGER.info("Master sweep complete. Log: %s", log_path)

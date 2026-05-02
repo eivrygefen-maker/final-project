@@ -3,7 +3,7 @@
 Single-use FEM worker: one SLEPc shift-invert batch at ``--target_hz``, then exit.
 
 Loads coupled operators via ``fem_main_3d`` (expects **exactly one MPI rank** —
-e.g. ``mpiexec -n 1 --map-by core --bind-to core python FEM/scripts/fem_worker_single.py ...``).
+e.g. ``taskset -c 1 mpiexec -n 1 python FEM/scripts/fem_worker_single.py ...`` as spawned by the master).
 
 Writes full eigenvectors to ``FEM/SORTING/temp_modes/mode_XXXXXX.npy`` and a small
 JSON summary to ``FEM/SORTING/temp_results/result_<mHz_tag>.json`` for the master
@@ -109,7 +109,7 @@ def main() -> int:
         if MPI.COMM_WORLD.rank == 0:
             print(
                 "[worker] Requires a single MPI process "
-                "(e.g. `mpiexec -n 1 --map-by core --bind-to core python FEM/scripts/fem_worker_single.py ...`).",
+                "(e.g. `taskset -c 1 mpiexec -n 1 python FEM/scripts/fem_worker_single.py ...`).",
                 file=sys.stderr,
             )
         return 2
