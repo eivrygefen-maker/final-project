@@ -21,8 +21,22 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-# .../<repo>/FEM/scripts/this_file.py → project root is two levels above scripts/
-REPO_ROOT = SCRIPT_DIR.parents[2]
+
+
+def _repo_root() -> Path:
+    """Walk parents from this file until a directory named ``final-project`` is found."""
+    repo = Path(os.path.abspath(__file__)).resolve()
+    while repo.name != "final-project" and repo.parent != repo:
+        repo = repo.parent
+    if repo.name != "final-project":
+        raise RuntimeError(
+            "Could not locate a parent directory named 'final-project' starting from "
+            f"{Path(__file__).resolve()}"
+        )
+    return repo
+
+
+REPO_ROOT = _repo_root()
 
 MAX_CONCURRENT_WORKERS = 2
 LOGGER = logging.getLogger("fem_master_dynamic")

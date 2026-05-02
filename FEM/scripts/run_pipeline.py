@@ -14,14 +14,29 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+
+def _repo_root() -> Path:
+    """Walk parents from this file until a directory named ``final-project`` is found."""
+    repo = Path(os.path.abspath(__file__)).resolve()
+    while repo.name != "final-project" and repo.parent != repo:
+        repo = repo.parent
+    if repo.name != "final-project":
+        raise RuntimeError(
+            "Could not locate a parent directory named 'final-project' starting from "
+            f"{Path(__file__).resolve()}"
+        )
+    return repo
+
+
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[2]
+REPO_ROOT = _repo_root()
 DEFAULT_CONFIG = REPO_ROOT / "FEM" / "configs" / "guitar_3d.json"
 DEFAULT_POOL_PRIMARY = REPO_ROOT / "FEM" / "configs" / "lhs_pool.json"
 DEFAULT_POOL_FALLBACK = REPO_ROOT / "ROM" / "classic" / "lhs_pool.json"
