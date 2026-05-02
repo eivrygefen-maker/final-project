@@ -4,8 +4,9 @@ Master driver for ``fem_worker_single.py``: bounded concurrency, dynamic band
 parameters, per-job timeouts, and safe merge of worker JSON into ``candidates_log.json``.
 
 Resource policy (VM-friendly): at most **2** concurrent workers. On Linux, each worker is
-launched under ``taskset -c <id>`` with ``<id>`` leased from ``{1, 2}`` so two concurrent
-jobs map to cores 1 and 2 (core 0 left for the master; others for OS/UI), then ``mpiexec -n 1``.
+launched under ``taskset -c <id>`` with ``<id>`` leased from ``{1, 2}``, then ``mpiexec -n 1``.
+Starting the **second** concurrent worker waits **30 seconds** after the first so the OS
+can place the first job before the second starts (core 0 for master; other CPUs for OS/UI).
 """
 from __future__ import annotations
 
@@ -40,6 +41,8 @@ def _repo_root() -> Path:
 REPO_ROOT = _repo_root()
 
 MAX_CONCURRENT_WORKERS = 2
+# Delay before launching the 2nd concurrent worker (same scheduling burst).
+STAGGER_SECOND_WORKER_SECONDS = 30.0
 LOGGER = logging.getLogger("fem_master_dynamic")
 
 
@@ -331,6 +334,12 @@ def main() -> int:
             _poll_completed(running, log_path, sorting_root, merge_lock, release_core)
             _enforce_timeouts(running, sorting_root, release_core)
             while len(running) < MAX_CONCURRENT_WORKERS and next_i < len(tasks):
+                if len(running) == 1:
+                    LOGGER.info(
+                        "Staggered launch: sleeping %.0f s before starting the second concurrent worker.",
+                        STAGGER_SECOND_WORKER_SECONDS,
+                    )
+                    time.sleep(STAGGER_SECOND_WORKER_SECONDS)
                 spawn_index(next_i)
             time.sleep(0.25)
     except KeyboardInterrupt:
