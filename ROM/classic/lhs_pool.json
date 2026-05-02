@@ -157,8 +157,8 @@
         "geometry.width": 0.34786695804399437,
         "materials.top.density": 450.0
       },
-      "status": "pending",
-      "snapshot_file": null,
+      "status": "completed",
+      "snapshot_file": "snapshots/snapshot_0012.npz",
       "error": null
     },
     {
