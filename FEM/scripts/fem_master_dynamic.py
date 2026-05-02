@@ -4,7 +4,8 @@ Master driver for ``fem_worker_single.py``: bounded concurrency, dynamic band
 parameters, per-job timeouts, and safe merge of worker JSON into ``candidates_log.json``.
 
 Resource policy (VM-friendly): at most **2** concurrent workers. On Linux, each worker is
-launched under ``taskset -c <id>`` with ``<id>`` leased from ``{1, 2}``, then ``mpiexec -n 1``.
+launched under ``taskset -c <id>`` with ``<id>`` leased from ``{1, 2}``, then
+``mpiexec --bind-to none -n 1`` so Open MPI does not re-bind ranks onto core 0.
 Starting the **second** concurrent worker waits **30 seconds** after the first so the OS
 can place the first job before the second starts (core 0 for master; other CPUs for OS/UI).
 """
@@ -14,6 +15,7 @@ import argparse
 import json
 import logging
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -205,8 +207,8 @@ def main() -> int:
         "--use-mpiexec",
         action="store_true",
         help=(
-            "Linux: run each worker as `taskset -c <1|2> mpiexec -n 1 <python> ...` "
-            "(cores leased from {1,2}; Open MPI single rank)."
+            "Linux: `taskset -c <1|2> mpiexec --bind-to none -n 1 <python> ...` "
+            "(cores leased from {1,2}; `--bind-to none` avoids Open MPI overriding taskset)."
         ),
     )
     args = parser.parse_args()
@@ -248,7 +250,10 @@ def main() -> int:
         with _core_lock:
             if not _core_free:
                 raise RuntimeError("No worker CPU cores available in pool [1, 2].")
-            return _core_free.popleft()
+            cid = _core_free.popleft()
+            remaining = sorted(_core_free)
+        LOGGER.info("Core lease: assigned cpu=%d (pool still free: %s)", cid, remaining)
+        return cid
 
     def release_core(cid: Optional[int]) -> None:
         if cid is None or not use_taskset:
@@ -261,8 +266,11 @@ def main() -> int:
         hz, params = tasks[idx]
         timeout_s = float(params["timeout_minutes"]) * 60.0
         if args.use_mpiexec:
+            # Open MPI may otherwise hwloc-bind ranks (often to core 0), fighting taskset.
             cmd = [
                 "mpiexec",
+                "--bind-to",
+                "none",
                 "-n",
                 "1",
                 sys.executable,
@@ -291,14 +299,13 @@ def main() -> int:
             core_id = lease_core()
             cmd = ["taskset", "-c", str(core_id)] + cmd
 
-        log_extra = f" taskset_cpu={core_id}" if core_id is not None else ""
         LOGGER.info(
-            "Spawn worker: hz=%.4f (%s) num_modes=%s timeout=%.1f min%s",
+            "Spawn worker: hz=%.4f (%s) num_modes=%s timeout=%.1f min (taskset_cpu=%s)",
             hz,
             params.get("label", ""),
             params["num_modes"],
             float(params["timeout_minutes"]),
-            log_extra,
+            core_id if core_id is not None else "n/a",
         )
         env = os.environ.copy()
         # One MPI rank + one BLAS/OpenMP thread per worker → less contention vs extra worker threads.
@@ -307,6 +314,20 @@ def main() -> int:
         env.setdefault("MKL_NUM_THREADS", "1")
         env.setdefault("NUMEXPR_NUM_THREADS", "1")
         env.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+        # Let taskset + kernel own placement; avoid OpenMP / Open MPI re-pinning to core 0.
+        env["OMP_PROC_BIND"] = "false"
+        env.pop("OMP_PLACES", None)
+        env["OMPI_MCA_hwloc_base_binding_policy"] = "none"
+        env.setdefault("I_MPI_PIN", "0")
+
+        LOGGER.info("Worker exec (argv): %s", shlex.join(cmd))
+        LOGGER.info(
+            "Worker affinity env: OMP_PROC_BIND=%r OMPI_MCA_hwloc_base_binding_policy=%r "
+            "PETSC_OPTIONS=%r",
+            env.get("OMP_PROC_BIND"),
+            env.get("OMPI_MCA_hwloc_base_binding_policy"),
+            env.get("PETSC_OPTIONS"),
+        )
 
         try:
             proc = subprocess.Popen(

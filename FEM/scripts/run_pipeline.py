@@ -3,7 +3,7 @@
 Headless orchestrator: master FEM sweep → MMR selection → ROM packaging → LHS pool update.
 
 Step A uses ``fem_master_dynamic.py`` with at most **2** concurrent FEM workers; on Linux
-each is pinned with ``taskset -c 1`` or ``taskset -c 2`` before ``mpiexec -n 1``, with a
+each is pinned with ``taskset -c 1`` or ``taskset -c 2`` before ``mpiexec --bind-to none -n 1``, with a
 **30 s** pause before the second worker of a pair starts, leaving core 0 and other CPUs
 for the master and OS.
 

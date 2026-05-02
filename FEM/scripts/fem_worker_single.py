@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Set
@@ -113,6 +114,18 @@ def main() -> int:
                 file=sys.stderr,
             )
         return 2
+
+    if sys.platform.startswith("linux") and hasattr(os, "sched_getaffinity"):
+        try:
+            aff = sorted(os.sched_getaffinity(0))
+            print(
+                f"[worker] Linux CPU affinity for PID {os.getpid()}: "
+                f"sched_getaffinity(0) = {{{', '.join(map(str, aff))}}}"
+            )
+            sys.stdout.flush()
+        except OSError as exc:
+            print(f"[worker] sched_getaffinity(0) failed: {exc}", file=sys.stderr)
+            sys.stderr.flush()
 
     config_path = args.config.resolve()
     cfg = json.loads(config_path.read_text(encoding="utf-8"))
