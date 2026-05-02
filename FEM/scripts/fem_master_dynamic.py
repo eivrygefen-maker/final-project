@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import shlex
 import subprocess
@@ -48,6 +49,10 @@ MAX_CONCURRENT_WORKERS = 2
 STAGGER_SECOND_WORKER_SECONDS = 10.0
 # Minimum wall time between any two successful spawns (monotonic clock).
 MIN_SPAWN_GAP_SECONDS = 5.0
+# Merge-time quality gates (worker batches → candidates_log / temp_modes).
+MIN_WOOD_PARTICIPATION = 0.0001
+MIN_UNIQUENESS = 0.0
+MIN_HZ_GAP = 0.2
 LOGGER = logging.getLogger("fem_master_dynamic")
 
 
@@ -70,6 +75,68 @@ def get_band_params(current_hz: float) -> Dict[str, Any]:
     if hz >= 300.0:
         return {"step_hz": 25, "num_modes": 15, "timeout_minutes": 20, "label": "Dead Zone"}
     raise ValueError(f"get_band_params: hz={hz} is outside the supported sweep (expected hz >= 100).")
+
+
+def _passes_candidate_gates(c: Dict[str, Any]) -> bool:
+    """Wood + uniqueness floors before a mode is treated as a merge candidate."""
+    try:
+        w = float(c.get("wood_participation", 0.0) or 0.0)
+        u = float(c.get("uniqueness", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(w) or not math.isfinite(u):
+        return False
+    if w < MIN_WOOD_PARTICIPATION:
+        return False
+    if u < MIN_UNIQUENESS:
+        return False
+    return True
+
+
+def _unlink_worker_npy(row: Dict[str, Any], sorting_root: Path) -> None:
+    rel = Path(str(row.get("vector_path", "") or ""))
+    if not rel.parts:
+        return
+    p = (sorting_root / rel).resolve()
+    try:
+        if p.is_file() and sorting_root in p.parents:
+            p.unlink()
+    except OSError as exc:
+        LOGGER.warning("Could not remove discarded mode vector %s: %s", p, exc)
+
+
+def _thin_frequency_gap_by_uniqueness(
+    rows: List[Dict[str, Any]],
+    min_gap_hz: float,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Sort by Hz; cluster consecutive modes whose frequencies lie within ``min_gap_hz`` of the
+    cluster anchor; keep the mode with highest ``uniqueness`` per cluster.
+    Returns (kept, discarded_from_input_order).
+    """
+    if not rows:
+        return [], []
+    ordered = sorted(rows, key=lambda r: float(r.get("hz", 0.0) or 0.0))
+    kept: List[Dict[str, Any]] = []
+    discarded: List[Dict[str, Any]] = []
+    i = 0
+    n = len(ordered)
+    while i < n:
+        j = i
+        anchor_hz = float(ordered[i].get("hz", 0.0) or 0.0)
+        while j + 1 < n and float(ordered[j + 1].get("hz", 0.0) or 0.0) - anchor_hz <= min_gap_hz:
+            j += 1
+        cluster = ordered[i : j + 1]
+        best = max(
+            cluster,
+            key=lambda r: float(r.get("uniqueness", 0.0) or 0.0),
+        )
+        kept.append(best)
+        for r in cluster:
+            if r is not best:
+                discarded.append(r)
+        i = j + 1
+    return kept, discarded
 
 
 def build_task_list(hz_max: float) -> List[Tuple[float, Dict[str, Any]]]:
@@ -96,8 +163,46 @@ def _merge_result_into_candidates_log(
         LOGGER.warning("Skipping unreadable result file %s: %s", result_path, exc)
         return
 
-    cands = list(incoming.get("candidates") or [])
-    if not cands:
+    raw = list(incoming.get("candidates") or [])
+    if not raw:
+        try:
+            result_path.unlink()
+        except OSError:
+            pass
+        return
+
+    raw_n = len(raw)
+    passed_gates: List[Dict[str, Any]] = []
+    failed_gates: List[Dict[str, Any]] = []
+    for c in raw:
+        if _passes_candidate_gates(c):
+            passed_gates.append(c)
+        else:
+            failed_gates.append(c)
+
+    for c in failed_gates:
+        _unlink_worker_npy(c, sorting_root)
+
+    thin_kept, thin_discarded = _thin_frequency_gap_by_uniqueness(passed_gates, MIN_HZ_GAP)
+    for c in thin_discarded:
+        _unlink_worker_npy(c, sorting_root)
+
+    dropped_total = raw_n - len(thin_kept)
+    if dropped_total > 0:
+        LOGGER.info(
+            "Filtered %d redundant/low-quality modes from batch (wood_or_uniq_gate=%d, freq_thin=%d).",
+            dropped_total,
+            len(failed_gates),
+            len(thin_discarded),
+        )
+
+    if not thin_kept:
+        LOGGER.warning(
+            "No candidates left after gates/thinning for %s; removing result file and worker vectors.",
+            result_path.name,
+        )
+        for c in raw:
+            _unlink_worker_npy(c, sorting_root)
         try:
             result_path.unlink()
         except OSError:
@@ -114,7 +219,7 @@ def _merge_result_into_candidates_log(
             payload = {"candidates": []}
         existing = list(payload.get("candidates") or [])
         mx = max((int(c.get("id", -1)) for c in existing), default=-1)
-        for i, rec in enumerate(cands):
+        for i, rec in enumerate(thin_kept):
             new_id = int(mx + 1 + i)
             row = dict(rec)
             rel_old = Path(str(row.get("vector_path", "")))
