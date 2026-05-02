@@ -145,8 +145,8 @@
         "materials.top.density": 470.0
       },
       "status": "completed",
-      "snapshot_file": null,
-      "error": "snapshots/snapshot_0011.npz"
+      "snapshot_file": "snapshots/snapshot_0011.npz",
+      "error": null
     },
     {
       "id": "sample_012",
