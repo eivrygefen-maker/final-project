@@ -33,13 +33,13 @@ def result_json_path(sorting_root: Path, hz: float) -> Path:
 def get_band_params(current_hz: float) -> Dict[str, Any]:
     hz = float(current_hz)
     if 100.0 <= hz < 150.0:
-        return {"step_hz": 5, "num_modes": 40, "timeout_minutes": 25, "label": "Dense Band 1"}
+        return {"step_hz": 5, "num_modes": 40, "timeout_minutes": 60, "label": "Dense Band 1"}
     if 150.0 <= hz < 250.0:
-        return {"step_hz": 10, "num_modes": 30, "timeout_minutes": 15, "label": "Medium Band"}
+        return {"step_hz": 10, "num_modes": 30, "timeout_minutes": 60, "label": "Medium Band"}
     if 250.0 <= hz < 300.0:
-        return {"step_hz": 5, "num_modes": 50, "timeout_minutes": 25, "label": "Dense Band 2"}
+        return {"step_hz": 5, "num_modes": 50, "timeout_minutes": 60, "label": "Dense Band 2"}
     if hz >= 300.0:
-        return {"step_hz": 25, "num_modes": 15, "timeout_minutes": 8, "label": "Dead Zone"}
+        return {"step_hz": 25, "num_modes": 15, "timeout_minutes": 20, "label": "Dead Zone"}
     raise ValueError(f"get_band_params: hz={hz} is outside the supported sweep (expected hz >= 100).")
 
 
