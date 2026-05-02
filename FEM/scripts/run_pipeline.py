@@ -2,10 +2,11 @@
 """
 Headless orchestrator: master FEM sweep → MMR selection → ROM packaging → LHS pool update.
 
-Step A uses ``fem_master_dynamic.py`` with at most **2** concurrent FEM workers; on Linux
-each is pinned with ``taskset -c 1`` or ``taskset -c 2`` before ``mpiexec --bind-to none -n 1``, with a
-**10 s** pause before the second worker of a pair starts, plus a **5 s** minimum gap between
-any two spawns; core 0 and other CPUs stay for the master and OS.
+Step A uses ``fem_master_dynamic.py`` with at most **3** concurrent FEM workers; on Linux
+each is pinned with ``taskset -c 1``, ``2``, or ``3`` before ``mpiexec --bind-to none -n 1``, with a
+**10 s** pause before the second worker and again before the third (mesh load / I/O stagger), plus a
+**5 s** minimum gap between any two spawns; core 0 and other CPUs stay for the master and OS.
+Candidate merge uses **0.4 Hz** gap thinning and a **0.5 %** wood-participation floor.
 
 On success: writes snapshot NPZ under ROM/classic/snapshots/, selection plot under
 FEM/results/plots/, runs package_rom --cleanup, then marks the sample completed in

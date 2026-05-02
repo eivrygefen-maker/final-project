@@ -1617,7 +1617,7 @@ def _solve_coupled_evp(
 
     _worker_hz = config.get("_worker_target_hz")
     if _worker_hz is not None:
-        batch_w = max(1, int(config.get("_worker_num_modes", 40)))
+        batch_w = max(1, int(config.get("_worker_num_modes", 80)))
         max_it = int(
             config.get(
                 "_worker_eps_max_it",

@@ -3,12 +3,14 @@
 Master driver for ``fem_worker_single.py``: bounded concurrency, dynamic band
 parameters, per-job timeouts, and safe merge of worker JSON into ``candidates_log.json``.
 
-Resource policy (VM-friendly): at most **2** concurrent workers. On Linux, each worker is
-launched under ``taskset -c <id>`` with ``<id>`` leased from ``{1, 2}``, then
+Resource policy (VM-friendly): at most **3** concurrent workers. On Linux, each worker is
+launched under ``taskset -c <id>`` with ``<id>`` leased from ``{1, 2, 3}``, then
 ``mpiexec --bind-to none -n 1`` so Open MPI does not re-bind ranks onto core 0.
-Starting the **second** concurrent worker waits **10 seconds** after the first for core
-stability. Every spawn is also separated by at least **5 seconds** from the previous spawn
-(throttle). Core 0 stays for the master; other CPUs for OS/UI.
+Before launching the **second** worker (when one is already running), and again before the
+**third** (when two are running), the master waits **10 seconds** (mesh load / I/O stagger).
+Every spawn is also separated by at least
+**5 seconds** from the previous spawn (throttle). Core 0 stays for the master; other CPUs for
+OS/UI. Merge uses a **0.4 Hz** frequency-gap thinning pass plus wood-participation gates.
 """
 from __future__ import annotations
 
@@ -44,15 +46,15 @@ def _repo_root() -> Path:
 
 REPO_ROOT = _repo_root()
 
-MAX_CONCURRENT_WORKERS = 2
-# Delay before launching the 2nd concurrent worker (same scheduling burst).
-STAGGER_SECOND_WORKER_SECONDS = 10.0
+MAX_CONCURRENT_WORKERS = 3
+# Delay before launching the 2nd / 3rd concurrent worker (mesh load / memory / I/O).
+STAGGER_ADDITIONAL_WORKER_SECONDS = 10.0
 # Minimum wall time between any two successful spawns (monotonic clock).
 MIN_SPAWN_GAP_SECONDS = 5.0
 # Merge-time quality gates (worker batches → candidates_log / temp_modes).
-MIN_WOOD_PARTICIPATION = 0.0001
+MIN_WOOD_PARTICIPATION = 0.005
 MIN_UNIQUENESS = 0.0
-MIN_HZ_GAP = 0.2
+MIN_HZ_GAP = 0.4
 LOGGER = logging.getLogger("fem_master_dynamic")
 
 
@@ -67,7 +69,7 @@ def result_json_path(sorting_root: Path, hz: float) -> Path:
 def get_band_params(current_hz: float) -> Dict[str, Any]:
     hz = float(current_hz)
     if 100.0 <= hz < 150.0:
-        return {"step_hz": 5, "num_modes": 40, "timeout_minutes": 60, "label": "Dense Band 1"}
+        return {"step_hz": 5, "num_modes": 80, "timeout_minutes": 60, "label": "Dense Band 1"}
     if 150.0 <= hz < 250.0:
         return {"step_hz": 10, "num_modes": 30, "timeout_minutes": 60, "label": "Medium Band"}
     if 250.0 <= hz < 300.0:
@@ -320,8 +322,8 @@ def main() -> int:
         "--use-mpiexec",
         action="store_true",
         help=(
-            "Linux: `taskset -c <1|2> mpiexec --bind-to none -n 1 <python> ...` "
-            "(cores leased from {1,2}; `--bind-to none` avoids Open MPI overriding taskset)."
+            "Linux: `taskset -c <1|2|3> mpiexec --bind-to none -n 1 <python> ...` "
+            "(cores leased from {1,2,3}; `--bind-to none` avoids Open MPI overriding taskset)."
         ),
     )
     args = parser.parse_args()
@@ -341,12 +343,18 @@ def main() -> int:
     if not log_path.exists():
         log_path.write_text(json.dumps({"candidates": []}, indent=2), encoding="utf-8")
 
+    use_taskset = sys.platform.startswith("linux")
     tasks = build_task_list(float(args.hz_max))
+    linux_pin_msg = " Linux: taskset cores leased from {1,2,3}." if use_taskset else ""
     LOGGER.info(
-        "Planned %d worker task(s) up to %.1f Hz (max concurrent=%d; leave spare CPUs for OS/master).",
+        "Planned %d worker task(s) up to %.1f Hz (max concurrent=%d workers.%s "
+        "Merge filter: %.1f Hz frequency-gap thinning, wood floor=%.4f.",
         len(tasks),
         float(args.hz_max),
         MAX_CONCURRENT_WORKERS,
+        linux_pin_msg,
+        MIN_HZ_GAP,
+        MIN_WOOD_PARTICIPATION,
     )
 
     running: Dict[subprocess.Popen, Dict[str, Any]] = {}
@@ -354,16 +362,15 @@ def main() -> int:
     next_i = 0
     last_spawn_mono: List[Optional[float]] = [None]
 
-    use_taskset = sys.platform.startswith("linux")
     _core_lock = threading.Lock()
-    _core_free: Deque[int] = deque([1, 2]) if use_taskset else deque()
+    _core_free: Deque[int] = deque([1, 2, 3]) if use_taskset else deque()
 
     def lease_core() -> Optional[int]:
         if not use_taskset:
             return None
         with _core_lock:
             if not _core_free:
-                raise RuntimeError("No worker CPU cores available in pool [1, 2].")
+                raise RuntimeError("No worker CPU cores available in pool [1, 2, 3].")
             cid = _core_free.popleft()
             remaining = sorted(_core_free)
         LOGGER.info("Core lease: assigned cpu=%d (pool still free: %s)", cid, remaining)
@@ -472,10 +479,16 @@ def main() -> int:
             while len(running) < MAX_CONCURRENT_WORKERS and next_i < len(tasks):
                 if len(running) == 1:
                     LOGGER.info(
-                        "Waiting %.0fs for core stability before second concurrent worker...",
-                        STAGGER_SECOND_WORKER_SECONDS,
+                        "Waiting %.0fs before second concurrent worker (mesh load / I/O stagger)...",
+                        STAGGER_ADDITIONAL_WORKER_SECONDS,
                     )
-                    time.sleep(STAGGER_SECOND_WORKER_SECONDS)
+                    time.sleep(STAGGER_ADDITIONAL_WORKER_SECONDS)
+                elif len(running) == 2:
+                    LOGGER.info(
+                        "Waiting %.0fs before third concurrent worker (mesh load / I/O stagger)...",
+                        STAGGER_ADDITIONAL_WORKER_SECONDS,
+                    )
+                    time.sleep(STAGGER_ADDITIONAL_WORKER_SECONDS)
 
                 if last_spawn_mono[0] is not None:
                     gap = time.monotonic() - float(last_spawn_mono[0])
