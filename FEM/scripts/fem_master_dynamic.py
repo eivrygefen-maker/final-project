@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[1]
+# .../<repo>/FEM/scripts/this_file.py → project root is two levels above scripts/
+REPO_ROOT = SCRIPT_DIR.parents[2]
 
 MAX_CONCURRENT_WORKERS = 2
 LOGGER = logging.getLogger("fem_master_dynamic")

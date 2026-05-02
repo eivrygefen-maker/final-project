@@ -20,7 +20,9 @@ from typing import Dict, List, Set
 import numpy as np
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[1]
+# .../<repo>/FEM/scripts/ → repo root vs FEM package root
+REPO_ROOT = SCRIPT_DIR.parents[2]
+FEM_ROOT = SCRIPT_DIR.parents[1]
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
@@ -40,7 +42,7 @@ def _resolve_mesh_path(cfg: dict, config_path: Path) -> Path:
     raw = Path(cfg["solver"]["mesh_file"])
     if raw.is_absolute():
         return raw
-    for base in (config_path.parent, config_path.parents[1], REPO_ROOT):
+    for base in (config_path.parent, config_path.parents[1], FEM_ROOT, REPO_ROOT):
         cand = (base / raw).resolve()
         if cand.exists():
             return cand
