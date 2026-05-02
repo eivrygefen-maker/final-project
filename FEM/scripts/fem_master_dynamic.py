@@ -425,10 +425,17 @@ def _unlink_worker_vector(row: Dict[str, Any], sorting_root: Path) -> None:
         LOGGER.warning("Could not remove discarded mode vector %s: %s", p, exc)
 
 
-def build_task_list(hz_max: float) -> List[Tuple[float, Dict[str, Any]]]:
+def build_task_list(hz_min: float, hz_max: float) -> List[Tuple[float, Dict[str, Any]]]:
+    """Build worker target Hz list from ``hz_min`` (inclusive) through ``hz_max`` (inclusive)."""
+    lo = float(hz_min)
+    hi = float(hz_max)
+    if lo < 100.0:
+        raise ValueError(f"hz_min must be >= 100.0 (band tables start at 100 Hz), got {lo}")
+    if hi < lo:
+        raise ValueError(f"hz_max ({hi}) must be >= hz_min ({lo})")
     tasks: List[Tuple[float, Dict[str, Any]]] = []
-    hz = 100.0
-    while hz <= hz_max + 1e-9:
+    hz = lo
+    while hz <= hi + 1e-9:
         p = dict(get_band_params(hz))
         tasks.append((hz, p))
         hz += float(p["step_hz"])
@@ -636,7 +643,22 @@ def main() -> int:
         default=REPO_ROOT / "FEM" / "configs" / "guitar_3d.json",
         help="Passed through to each worker.",
     )
-    parser.add_argument("--hz-max", type=float, default=450.0, help="Sweep upper bound (Hz).")
+    parser.add_argument(
+        "--hz-min",
+        type=float,
+        default=100.0,
+        help="Sweep lower bound (Hz), inclusive. Must be >= 100 (default: 100).",
+    )
+    parser.add_argument("--hz-max", type=float, default=450.0, help="Sweep upper bound (Hz), inclusive.")
+    parser.add_argument(
+        "--sorting-root",
+        type=Path,
+        default=None,
+        help=(
+            "Directory containing temp_modes/, temp_results/, and candidates_log.json "
+            "(default: FEM/SORTING under repo root). Use a lab copy to avoid touching the main log."
+        ),
+    )
     parser.add_argument(
         "--use-mpiexec",
         action="store_true",
@@ -652,7 +674,11 @@ def main() -> int:
         LOGGER.error("Worker script not found: %s", worker_script)
         return 1
 
-    sorting_root = REPO_ROOT / "FEM" / "SORTING"
+    sorting_root = (
+        args.sorting_root.resolve()
+        if args.sorting_root is not None
+        else (REPO_ROOT / "FEM" / "SORTING").resolve()
+    )
     log_path = sorting_root / "candidates_log.json"
     merge_lock = threading.Lock()
 
@@ -663,16 +689,23 @@ def main() -> int:
         log_path.write_text(json.dumps({"candidates": []}, indent=2), encoding="utf-8")
 
     use_taskset = sys.platform.startswith("linux")
-    tasks = build_task_list(float(args.hz_max))
+    try:
+        tasks = build_task_list(float(args.hz_min), float(args.hz_max))
+    except ValueError as exc:
+        LOGGER.error("%s", exc)
+        return 1
     linux_pin_msg = " Linux: taskset cores leased from {1,2,3}." if use_taskset else ""
     LOGGER.info(
-        "Planned %d worker task(s) up to %.1f Hz (max concurrent=%d workers.%s "
+        "Planned %d worker task(s) from %.1f–%.1f Hz (max concurrent=%d workers.%s "
+        "sorting_root=%s | "
         "Merge: conditional adaptive manager (zone wood 0.0008→0.0003, sparse overlap, "
         "spectral shaping, HF quota ≥%.0f Hz).",
         len(tasks),
+        float(args.hz_min),
         float(args.hz_max),
         MAX_CONCURRENT_WORKERS,
         linux_pin_msg,
+        sorting_root,
         ZONE_C_MIN_HZ,
     )
 
