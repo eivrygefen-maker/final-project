@@ -5,7 +5,8 @@ Single-use FEM worker: one SLEPc shift-invert batch at ``--target_hz``, then exi
 Loads coupled operators via ``fem_main_3d`` (expects **exactly one MPI rank** —
 e.g. ``taskset -c 1 mpiexec -n 1 python FEM/scripts/fem_worker_single.py ...`` as spawned by the master).
 
-Writes full eigenvectors to ``FEM/SORTING/temp_modes/mode_XXXXXX.npy`` and a small
+Writes mode displacement vectors (float32, relative noise sparsified) to
+``FEM/SORTING/temp_modes/mode_XXXXXX.npy`` and a small
 JSON summary to ``FEM/SORTING/temp_results/result_<mHz_tag>.json`` for the master
 to merge into ``candidates_log.json``.
 """
@@ -28,6 +29,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import fem_main_3d as fem3d
+from fem_mode_array_utils import sparsify_relative_then_float32
 from mpi4py import MPI
 
 
@@ -191,7 +193,7 @@ def main() -> int:
     exclude: Set[str] = set()
 
     for j in range(n_modes):
-        vec = np.asarray(eigvecs[:, j], dtype=np.float64).copy()
+        vec = sparsify_relative_then_float32(eigvecs[:, j])
         rt = float(tag1[j])
         rb = float(tag3[j])
         wood = max(0.0, rt + rb)

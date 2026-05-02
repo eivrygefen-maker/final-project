@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import json
 import os
 import sys
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
+
+from fem_mode_array_utils import sparsify_relative_then_float32
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 FEM_ROOT = SCRIPT_DIR.parent
@@ -110,7 +113,7 @@ def _read_winners(csv_path: Path) -> List[Tuple[int, float, float]]:
     return rows
 
 
-def _cleanup_workspace(sorting_root: Path, keep_csv: Path) -> None:
+def _cleanup_workspace(sorting_root: Path, keep_csv: Path, fem_outputs_modes: Path) -> None:
     temp_modes = sorting_root / "temp_modes"
     temp_results = sorting_root / "temp_results"
     candidates_log = sorting_root / "candidates_log.json"
@@ -138,10 +141,28 @@ def _cleanup_workspace(sorting_root: Path, keep_csv: Path) -> None:
     except OSError:
         pass
 
+    removed_export = 0
+    if fem_outputs_modes.is_dir():
+        for pattern in ("*.vtk", "*.h5", "*.xdmf"):
+            for p in fem_outputs_modes.glob(pattern):
+                try:
+                    os.remove(str(p))
+                    removed_export += 1
+                except OSError:
+                    pass
+        raw_npz = fem_outputs_modes / "coupled_modes_raw.npz"
+        try:
+            if raw_npz.is_file():
+                os.remove(str(raw_npz))
+                removed_export += 1
+        except OSError:
+            pass
+
     print(
         f"Cleanup: removed {removed_npy} file(s) under temp_modes/, "
         f"{removed_json} file(s) under temp_results/, "
-        f"and candidates_log.json (if present). Kept: {keep_csv.name}"
+        f"and candidates_log.json (if present); "
+        f"{removed_export} FEM/outputs/modes_3d artifact(s). Kept: {keep_csv.name}"
     )
 
 
@@ -193,7 +214,7 @@ def main() -> int:
         except Exception as exc:
             print(f"Error loading {npy_path}: {exc}", file=sys.stderr)
             return 1
-        v = np.asarray(v, dtype=np.float64).reshape(-1)
+        v = sparsify_relative_then_float32(v)
         vectors.append(v)
         freqs.append(float(hz))
         woods.append(float(wood))
@@ -207,17 +228,41 @@ def main() -> int:
         print(f"Error: inconsistent eigenvector lengths: {sorted(lengths)}", file=sys.stderr)
         return 1
 
-    eigenvectors = np.column_stack(vectors)
+    eigenvectors = np.column_stack(vectors).astype(np.float32, copy=False)
     frequencies = np.asarray(freqs, dtype=np.float64)
     wood_participations = np.asarray(woods, dtype=np.float64)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(
+    np.savez_compressed(
         str(out_path),
         eigenvectors=eigenvectors,
         frequencies=frequencies,
         wood_participations=wood_participations,
     )
+
+    try:
+        with np.load(str(out_path), allow_pickle=False) as z:
+            if "eigenvectors" not in z.files:
+                print(f"Error: output NPZ missing 'eigenvectors': {out_path}", file=sys.stderr)
+                return 1
+            ev = z["eigenvectors"]
+            if ev.dtype != np.dtype(np.float32):
+                print(
+                    f"Error: expected float32 eigenvectors, got {ev.dtype}: {out_path}",
+                    file=sys.stderr,
+                )
+                return 1
+            if tuple(ev.shape) != tuple(eigenvectors.shape):
+                print(
+                    f"Error: eigenvectors shape mismatch after save {ev.shape} vs {eigenvectors.shape}",
+                    file=sys.stderr,
+                )
+                return 1
+    except OSError as exc:
+        print(f"Error: could not verify saved NPZ {out_path}: {exc}", file=sys.stderr)
+        return 1
+
+    gc.collect()
 
     nbytes = out_path.stat().st_size if out_path.is_file() else 0
     print(
@@ -228,7 +273,8 @@ def main() -> int:
     )
 
     if args.cleanup:
-        _cleanup_workspace(sorting_root, csv_path)
+        _cleanup_workspace(sorting_root, csv_path, FEM_ROOT / "outputs" / "modes_3d")
+        gc.collect()
         print("Workspace reset complete; selected_modes.csv was preserved.")
 
     return 0

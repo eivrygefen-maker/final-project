@@ -16,6 +16,7 @@ floor (diagnostic-friendly; see ``MIN_WOOD_PARTICIPATION``).
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import logging
 import math
@@ -520,6 +521,7 @@ def main() -> int:
         return 130
 
     LOGGER.info("Master sweep complete. Log: %s", log_path)
+    gc.collect()
     return 0
 
 

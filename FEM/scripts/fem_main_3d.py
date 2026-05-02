@@ -12,6 +12,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import petsc4py
+
+from fem_mode_array_utils import sparsify_relative_then_float32
 import ufl
 from basix.ufl import element, mixed_element
 from dolfinx import fem, io, mesh
@@ -1914,7 +1916,7 @@ def _solve_coupled_evp(
                 harvested_freqs.append(cur_f)
                 if MPI.COMM_WORLD.rank == ROOT_RANK:
                     vec_path = SORTING_TEMP_MODES / f"mode_{candidate_id:06d}.npy"
-                    np.save(vec_path, np.asarray(vec, dtype=np.float64))
+                    np.save(vec_path, sparsify_relative_then_float32(vec))
                     rec = {
                         "id": int(candidate_id),
                         "hz": float(cur_f),

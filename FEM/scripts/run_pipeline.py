@@ -12,7 +12,8 @@ per-sample config before the FEM master runs.
 
 On success: writes snapshot NPZ under ROM/classic/snapshots/, selection plot under
 FEM/results/plots/, runs package_rom --cleanup, then marks the sample completed in
-the pool JSON.
+the pool JSON. Mode vectors are stored as float32 with relative noise sparsification
+in workers and ``package_rom``; the snapshot NPZ is written with ``numpy.savez_compressed``.
 """
 from __future__ import annotations
 
