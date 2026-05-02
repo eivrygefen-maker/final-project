@@ -23,7 +23,7 @@ W = 1.0
 U = 0.5
 LAMBDA_VAL = 0.7
 SIGMA_HZ = 8.0
-# Keep in line with ``fem_master_dynamic.MIN_WOOD_PARTICIPATION`` during diagnostic sweeps.
+# Wood gate here is separate from ``fem_master_dynamic`` zone floors (tuner is stage-2 MMR).
 WOOD_FILTER_MIN = 0.0005
 UNIQUENESS_VETO_MIN = 0.1
 DEFAULT_QUOTA = 100

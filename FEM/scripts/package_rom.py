@@ -2,6 +2,11 @@
 """
 Package MMR-selected modes from ``selected_modes.csv`` into a single NPZ ROM file
 and optionally reset SORTING scratch data for the next run.
+
+Mode columns are read as CSR sparse (``*.smx.npz`` from workers) or legacy dense ``.npy``,
+aggregated with ``scipy.sparse.hstack``, and written as one bundled compressed NPZ
+containing CSR arrays (``ev_data``, ``ev_indices``, ``ev_indptr``, ``ev_shape``)
+plus ``frequencies`` and ``wood_participations``.
 """
 from __future__ import annotations
 
@@ -15,8 +20,9 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
+from scipy import sparse
 
-from fem_mode_array_utils import sparsify_relative_then_float32
+from fem_mode_array_utils import MODE_VECTOR_FILE_SUFFIX, load_mode_column_any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 FEM_ROOT = SCRIPT_DIR.parent
@@ -50,15 +56,18 @@ def _load_vector_path_map(candidates_path: Path) -> Dict[int, str]:
     return out
 
 
-def _resolve_npy_path(
+def _resolve_mode_vector_path(
     mode_id: int,
     temp_modes: Path,
     sorting_root: Path,
     path_by_id: Dict[int, str],
 ) -> Path:
-    primary = temp_modes / f"mode_{mode_id:06d}.npy"
+    primary = temp_modes / f"mode_{mode_id:06d}{MODE_VECTOR_FILE_SUFFIX}"
     if primary.is_file():
         return primary
+    legacy = temp_modes / f"mode_{mode_id:06d}.npy"
+    if legacy.is_file():
+        return legacy
     rel = path_by_id.get(mode_id)
     if rel:
         cand = (sorting_root / rel).resolve()
@@ -118,14 +127,15 @@ def _cleanup_workspace(sorting_root: Path, keep_csv: Path, fem_outputs_modes: Pa
     temp_results = sorting_root / "temp_results"
     candidates_log = sorting_root / "candidates_log.json"
 
-    removed_npy = 0
+    removed_vec = 0
     if temp_modes.is_dir():
-        for p in temp_modes.rglob("*.npy"):
-            try:
-                os.remove(str(p))
-                removed_npy += 1
-            except OSError:
-                pass
+        for pattern in ("mode_*.npy", f"mode_*{MODE_VECTOR_FILE_SUFFIX}"):
+            for p in temp_modes.glob(pattern):
+                try:
+                    os.remove(str(p))
+                    removed_vec += 1
+                except OSError:
+                    pass
 
     removed_json = 0
     if temp_results.is_dir():
@@ -159,7 +169,7 @@ def _cleanup_workspace(sorting_root: Path, keep_csv: Path, fem_outputs_modes: Pa
             pass
 
     print(
-        f"Cleanup: removed {removed_npy} file(s) under temp_modes/, "
+        f"Cleanup: removed {removed_vec} mode vector file(s) under temp_modes/, "
         f"{removed_json} file(s) under temp_results/, "
         f"and candidates_log.json (if present); "
         f"{removed_export} FEM/outputs/modes_3d artifact(s). Kept: {keep_csv.name}"
@@ -173,7 +183,7 @@ def main() -> int:
     parser.add_argument(
         "--cleanup",
         action="store_true",
-        help="Delete temp_modes/*.npy, temp_results/*.json, and candidates_log.json (keeps selected_modes.csv).",
+        help="Delete temp_modes vectors, temp_results/*.json, and candidates_log.json (keeps selected_modes.csv).",
     )
     parser.add_argument(
         "--sorting-root",
@@ -199,64 +209,79 @@ def main() -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    vectors: List[np.ndarray] = []
+    cols: List[sparse.csr_matrix] = []
     freqs: List[float] = []
     woods: List[float] = []
     missing: List[int] = []
 
     for mid, hz, wood in winners:
-        npy_path = _resolve_npy_path(mid, temp_modes, sorting_root, path_by_id)
-        if not npy_path.is_file():
+        vec_path = _resolve_mode_vector_path(mid, temp_modes, sorting_root, path_by_id)
+        if not vec_path.is_file():
             missing.append(mid)
             continue
         try:
-            v = np.load(str(npy_path))
+            col = load_mode_column_any(vec_path)
         except Exception as exc:
-            print(f"Error loading {npy_path}: {exc}", file=sys.stderr)
+            print(f"Error loading {vec_path}: {exc}", file=sys.stderr)
             return 1
-        v = sparsify_relative_then_float32(v)
-        vectors.append(v)
+        cols.append(col)
         freqs.append(float(hz))
         woods.append(float(wood))
 
     if missing:
-        print(f"Error: missing .npy for mode id(s): {missing[:20]}{'...' if len(missing) > 20 else ''}", file=sys.stderr)
+        print(
+            f"Error: missing mode vector for id(s): {missing[:20]}{'...' if len(missing) > 20 else ''} "
+            f"(expected *{MODE_VECTOR_FILE_SUFFIX} or .npy under temp_modes/)",
+            file=sys.stderr,
+        )
         return 1
 
-    lengths = {v.shape[0] for v in vectors}
+    lengths = {c.shape[0] for c in cols}
     if len(lengths) != 1:
         print(f"Error: inconsistent eigenvector lengths: {sorted(lengths)}", file=sys.stderr)
         return 1
 
-    eigenvectors = np.column_stack(vectors).astype(np.float32, copy=False)
+    eigenvectors = sparse.hstack(cols, format="csr").astype(np.float32, copy=False)
+    del cols
+    gc.collect()
+
     frequencies = np.asarray(freqs, dtype=np.float64)
     wood_participations = np.asarray(woods, dtype=np.float64)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         str(out_path),
-        eigenvectors=eigenvectors,
+        ev_data=eigenvectors.data,
+        ev_indices=eigenvectors.indices,
+        ev_indptr=eigenvectors.indptr,
+        ev_shape=np.asarray(eigenvectors.shape, dtype=np.int64),
         frequencies=frequencies,
         wood_participations=wood_participations,
     )
 
     try:
         with np.load(str(out_path), allow_pickle=False) as z:
-            if "eigenvectors" not in z.files:
-                print(f"Error: output NPZ missing 'eigenvectors': {out_path}", file=sys.stderr)
+            need = ("ev_data", "ev_indices", "ev_indptr", "ev_shape", "frequencies", "wood_participations")
+            if any(k not in z.files for k in need):
+                print(f"Error: output NPZ missing CSR/metadata keys: {out_path}", file=sys.stderr)
                 return 1
-            ev = z["eigenvectors"]
-            if ev.dtype != np.dtype(np.float32):
+            shape = tuple(int(x) for x in np.asarray(z["ev_shape"]).ravel())
+            ev_chk = sparse.csr_matrix(
+                (z["ev_data"], z["ev_indices"], z["ev_indptr"]),
+                shape=shape,
+                dtype=np.float32,
+            )
+            if ev_chk.dtype != np.dtype(np.float32):
+                print(f"Error: expected float32 CSR data, got {ev_chk.dtype}", file=sys.stderr)
+                return 1
+            if ev_chk.shape != eigenvectors.shape:
                 print(
-                    f"Error: expected float32 eigenvectors, got {ev.dtype}: {out_path}",
+                    f"Error: eigenvectors shape mismatch after save {ev_chk.shape} vs {eigenvectors.shape}",
                     file=sys.stderr,
                 )
                 return 1
-            if tuple(ev.shape) != tuple(eigenvectors.shape):
-                print(
-                    f"Error: eigenvectors shape mismatch after save {ev.shape} vs {eigenvectors.shape}",
-                    file=sys.stderr,
-                )
+            if int(ev_chk.nnz) != int(eigenvectors.nnz):
+                print(f"Error: nnz mismatch after save {ev_chk.nnz} vs {eigenvectors.nnz}", file=sys.stderr)
                 return 1
     except OSError as exc:
         print(f"Error: could not verify saved NPZ {out_path}: {exc}", file=sys.stderr)
@@ -265,9 +290,12 @@ def main() -> int:
     gc.collect()
 
     nbytes = out_path.stat().st_size if out_path.is_file() else 0
+    nrows, ncols = eigenvectors.shape
+    nnz = int(eigenvectors.nnz)
+    sparsity = 1.0 - (nnz / max(float(nrows * ncols), 1.0))
     print(
         f"Created ROM archive: {out_path}\n"
-        f"  eigenvectors shape: {eigenvectors.shape} (dtype {eigenvectors.dtype})\n"
+        f"  eigenvectors CSR: shape {eigenvectors.shape}, nnz={nnz}, sparsity≈{sparsity:.4f}\n"
         f"  frequencies: {frequencies.shape}  |  wood_participations: {wood_participations.shape}\n"
         f"  file size: {nbytes / (1024 * 1024):.2f} MiB ({nbytes} bytes)"
     )

@@ -12,8 +12,17 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import petsc4py
+from scipy import sparse as sp_sparse
 
-from fem_mode_array_utils import sparsify_relative_then_float32
+from fem_mode_array_utils import (
+    MODE_VECTOR_FILE_SUFFIX,
+    csr_col_norm,
+    csr_normalized_overlap,
+    csr_u_slice,
+    dense_to_csr_f32_column,
+    load_mode_column_any,
+    save_mode_csr,
+)
 import ufl
 from basix.ufl import element, mixed_element
 from dolfinx import fem, io, mesh
@@ -1777,8 +1786,8 @@ def _solve_coupled_evp(
                 return 1.0
             if not harvested_meta:
                 return 1.0
-            v = np.asarray(vec[:n_u_fe], dtype=np.float64)
-            nv = float(np.linalg.norm(v))
+            v = csr_u_slice(dense_to_csr_f32_column(vec), n_u_fe)
+            nv = csr_col_norm(v)
             if nv <= 0.0:
                 return 1.0
             # Compare to nearest prior harvested frequencies to keep disk IO bounded.
@@ -1786,15 +1795,14 @@ def _solve_coupled_evp(
             max_ov = 0.0
             for m in nearest:
                 try:
-                    prev = np.load(str(m["vector_path"]))
+                    vp = Path(str(m["vector_path"]))
+                    if not vp.is_absolute():
+                        vp = SORTING_ROOT / vp
+                    prev = load_mode_column_any(vp)
                 except Exception:
                     continue
-                p = np.asarray(prev[:n_u_fe], dtype=np.float64)
-                np_ = float(np.linalg.norm(p))
-                if np_ <= 0.0:
-                    continue
-                ov = abs(float(np.vdot(v, p))) / max(nv * np_, 1e-30)
-                max_ov = max(max_ov, float(np.clip(ov, 0.0, 1.0)))
+                p = csr_u_slice(prev, n_u_fe)
+                max_ov = max(max_ov, csr_normalized_overlap(v, p))
             return 1.0 - max_ov
 
         def _mean_disp_energy(vec: np.ndarray) -> float:
@@ -1915,8 +1923,8 @@ def _solve_coupled_evp(
                     continue
                 harvested_freqs.append(cur_f)
                 if MPI.COMM_WORLD.rank == ROOT_RANK:
-                    vec_path = SORTING_TEMP_MODES / f"mode_{candidate_id:06d}.npy"
-                    np.save(vec_path, sparsify_relative_then_float32(vec))
+                    vec_path = SORTING_TEMP_MODES / f"mode_{candidate_id:06d}{MODE_VECTOR_FILE_SUFFIX}"
+                    save_mode_csr(vec_path, dense_to_csr_f32_column(vec))
                     rec = {
                         "id": int(candidate_id),
                         "hz": float(cur_f),
@@ -1991,23 +1999,22 @@ def _solve_coupled_evp(
             selected_records = []
             selected_vectors = []
             for c in clustered_winners:
-                vec = np.load(str(c["vector_path"]))
+                vp = Path(str(c["vector_path"]))
+                if not vp.is_absolute():
+                    vp = SORTING_ROOT / vp
+                vec_csr = load_mode_column_any(vp)
+                vu = csr_u_slice(vec_csr, n_u_fe)
                 uniq_global = 1.0
                 if selected_vectors:
                     uniq_global = 1.0 - max(
-                        abs(float(np.vdot(np.asarray(vec[:n_u_fe]), np.asarray(prev[:n_u_fe]))))
-                        / max(
-                            float(np.linalg.norm(np.asarray(vec[:n_u_fe])) * np.linalg.norm(np.asarray(prev[:n_u_fe]))),
-                            1e-30,
-                        )
-                        for prev in selected_vectors
+                        csr_normalized_overlap(vu, csr_u_slice(prev, n_u_fe)) for prev in selected_vectors
                     )
                 if uniq_global < global_uniqueness_min:
                     continue
                 rec = dict(c)
                 rec["uniqueness"] = float(uniq_global)
                 selected_records.append(rec)
-                selected_vectors.append(np.asarray(vec, dtype=np.float64))
+                selected_vectors.append(vec_csr)
                 if len(selected_records) >= quota:
                     break
             sifter_stats["stage2_after_uniqueness"] = int(len(selected_records))
@@ -2028,10 +2035,10 @@ def _solve_coupled_evp(
 
         order = np.argsort(np.array([float(r["hz"]) for r in selected_records], dtype=np.float64))
         freqs_hz = [float(selected_records[int(i)]["hz"]) for i in order]
-        vectors = [np.asarray(selected_vectors[int(i)], dtype=np.float64) for i in order]
+        ordered_csr = [selected_vectors[int(i)] for i in order]
         uniqueness_scores = [float(selected_records[int(i)].get("uniqueness", 1.0)) for i in order]
         participation_ratios = [float(selected_records[int(i)].get("wood_participation", 0.0)) for i in order]
-        eigvecs = np.stack(vectors, axis=1)
+        eigvecs = np.asarray(sp_sparse.hstack(ordered_csr, format="csr").toarray(), dtype=np.float64)
         sifter_stats["accepted_modes"] = int(eigvecs.shape[1])
         config["_fom_sifter_stats"] = dict(sifter_stats)
         config["_fom_uniqueness_scores"] = list(uniqueness_scores)
