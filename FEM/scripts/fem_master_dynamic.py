@@ -10,7 +10,8 @@ Before launching the **second** worker (when one is already running), and again 
 **third** (when two are running), the master waits **10 seconds** (mesh load / I/O stagger).
 Every spawn is also separated by at least
 **5 seconds** from the previous spawn (throttle). Core 0 stays for the master; other CPUs for
-OS/UI. Merge uses a **0.4 Hz** frequency-gap thinning pass plus wood-participation gates.
+OS/UI. Merge uses a **0.4 Hz** frequency-gap thinning pass plus a low wood-participation
+floor (diagnostic-friendly; see ``MIN_WOOD_PARTICIPATION``).
 """
 from __future__ import annotations
 
@@ -52,7 +53,9 @@ STAGGER_ADDITIONAL_WORKER_SECONDS = 10.0
 # Minimum wall time between any two successful spawns (monotonic clock).
 MIN_SPAWN_GAP_SECONDS = 5.0
 # Merge-time quality gates (worker batches → candidates_log / temp_modes).
-MIN_WOOD_PARTICIPATION = 0.005
+# Structural wood-energy floor (fraction of mode energy in tagged wood DOFs). Keep low for
+# diagnostic sweeps; raise to suppress air-dominated ghosts once participation is trustworthy.
+MIN_WOOD_PARTICIPATION = 0.0005
 MIN_UNIQUENESS = 0.0
 MIN_HZ_GAP = 0.4
 LOGGER = logging.getLogger("fem_master_dynamic")

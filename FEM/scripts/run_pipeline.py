@@ -6,7 +6,9 @@ Step A uses ``fem_master_dynamic.py`` with at most **3** concurrent FEM workers;
 each is pinned with ``taskset -c 1``, ``2``, or ``3`` before ``mpiexec --bind-to none -n 1``, with a
 **10 s** pause before the second worker and again before the third (mesh load / I/O stagger), plus a
 **5 s** minimum gap between any two spawns; core 0 and other CPUs stay for the master and OS.
-Candidate merge uses **0.4 Hz** gap thinning and a **0.5 %** wood-participation floor.
+Candidate merge uses **0.4 Hz** gap thinning and a **0.05 %** wood-participation floor
+(see ``fem_master_dynamic.MIN_WOOD_PARTICIPATION``). LHS pool parameters are merged into a
+per-sample config before the FEM master runs.
 
 On success: writes snapshot NPZ under ROM/classic/snapshots/, selection plot under
 FEM/results/plots/, runs package_rom --cleanup, then marks the sample completed in
@@ -15,6 +17,7 @@ the pool JSON.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import re
@@ -22,6 +25,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 
 def _repo_root() -> Path:
@@ -77,6 +81,76 @@ def _plot_basename(n: int) -> str:
 def _snapshot_rel_npz(n: int) -> str:
     """Path as stored in lhs_pool.json (relative to ROM/classic/)."""
     return f"snapshots/{_snapshot_basename(n)}"
+
+
+def _find_pool_entry(pool_path: Path, sample_key: str) -> Dict[str, Any]:
+    payload = json.loads(pool_path.read_text(encoding="utf-8"))
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        raise ValueError(f"Pool file has no 'entries' list: {pool_path}")
+    for entry in entries:
+        if isinstance(entry, dict) and str(entry.get("id")) == sample_key:
+            return entry
+    raise ValueError(f"No pool entry with id={sample_key!r} in {pool_path}")
+
+
+def _parameters_from_lhs_samples_file(path: Path, sample_key: str) -> Dict[str, Any]:
+    """Load flat dotted keys (e.g. ``geometry.thickness``) for ``sample_key`` from auxiliary JSON."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, dict):
+        if sample_key in raw and isinstance(raw[sample_key], dict):
+            return dict(raw[sample_key])
+        entries = raw.get("entries")
+        if isinstance(entries, list):
+            for ent in entries:
+                if isinstance(ent, dict) and str(ent.get("id")) == sample_key:
+                    p = ent.get("parameters")
+                    return dict(p) if isinstance(p, dict) else {}
+    if isinstance(raw, list):
+        for ent in raw:
+            if isinstance(ent, dict) and str(ent.get("id")) == sample_key:
+                p = ent.get("parameters")
+                return dict(p) if isinstance(p, dict) else {}
+    return {}
+
+
+def _resolve_sample_parameters(
+    sample_key: str,
+    pool_entry: Dict[str, Any],
+    lhs_samples_path: Optional[Path],
+) -> Dict[str, Any]:
+    params: Dict[str, Any] = {}
+    pe = pool_entry.get("parameters")
+    if isinstance(pe, dict):
+        params = dict(pe)
+    if lhs_samples_path is None:
+        return params
+    path = lhs_samples_path.resolve()
+    if not path.is_file():
+        print(
+            f"Warning: --lhs-samples not found ({path}); using pool parameters only.",
+            file=sys.stderr,
+        )
+        return params
+    extra = _parameters_from_lhs_samples_file(path, sample_key)
+    if extra:
+        params.update(extra)
+    return params
+
+
+def _apply_dotted_parameters(cfg: Dict[str, Any], parameters: Dict[str, Any]) -> None:
+    """Merge flat ``a.b.c`` keys into nested dict ``cfg`` (in-place)."""
+    for dotted, value in parameters.items():
+        if not isinstance(dotted, str) or not dotted.strip():
+            continue
+        parts = dotted.split(".")
+        cur: Any = cfg
+        for key in parts[:-1]:
+            nxt = cur.get(key)
+            if not isinstance(nxt, dict):
+                cur[key] = {}
+            cur = cur[key]
+        cur[parts[-1]] = value
 
 
 def _atomic_write_json(path: Path, data: object) -> None:
@@ -144,6 +218,15 @@ def main() -> int:
         default=None,
         help="lhs_pool.json path (default: FEM/configs/lhs_pool.json if present, else ROM/classic/lhs_pool.json).",
     )
+    parser.add_argument(
+        "--lhs-samples",
+        type=Path,
+        default=None,
+        help=(
+            "Optional LHS JSON (e.g. lhs_samples.json): ``entries`` list with id/parameters, "
+            "or top-level ``sample_XXX`` -> flat dotted keys. Values override the same keys from the pool."
+        ),
+    )
     args = parser.parse_args()
 
     config_path = args.config.resolve()
@@ -162,6 +245,39 @@ def main() -> int:
     if not pool_path.is_file():
         print(f"Error: pool file not found: {pool_path}", file=sys.stderr)
         return 1
+
+    try:
+        pool_entry = _find_pool_entry(pool_path, sample_key)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"Error: could not read pool entry for {sample_key}: {exc}", file=sys.stderr)
+        return 1
+
+    parameters = _resolve_sample_parameters(sample_key, pool_entry, args.lhs_samples)
+    effective_config = config_path
+    if parameters:
+        try:
+            merged_cfg = copy.deepcopy(json.loads(config_path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"Error: could not load base config {config_path}: {exc}", file=sys.stderr)
+            return 1
+        _apply_dotted_parameters(merged_cfg, parameters)
+        merged_dir = REPO_ROOT / "FEM" / "SORTING" / "pipeline_merged_configs"
+        merged_dir.mkdir(parents=True, exist_ok=True)
+        effective_config = merged_dir / f"{sample_key}.json"
+        _atomic_write_json(effective_config, merged_cfg)
+        geom = merged_cfg.get("geometry") if isinstance(merged_cfg.get("geometry"), dict) else {}
+        th = geom.get("thickness")
+        print(f"[pipeline] Wrote merged FEM config -> {effective_config.resolve()}")
+        if isinstance(th, (int, float)):
+            print(f"[pipeline] geometry.thickness = {float(th)} m ({float(th) * 1000.0:.4f} mm)")
+        else:
+            print(f"[pipeline] geometry.thickness = {th!r}")
+        sys.stdout.flush()
+    else:
+        print(
+            f"[pipeline] No LHS parameters dict for {sample_key}; using base config only: {config_path}",
+        )
+        sys.stdout.flush()
 
     py = sys.executable
     master = REPO_ROOT / "FEM" / "scripts" / "fem_master_dynamic.py"
@@ -187,7 +303,7 @@ def main() -> int:
         str(master),
         "--use-mpiexec",
         "--config",
-        str(config_path),
+        str(effective_config.resolve()),
     ]
     if _run_step("Step A — FEM master sweep (subprocess workers)", step_a, REPO_ROOT) != 0:
         return 1
@@ -226,6 +342,7 @@ def main() -> int:
         f"  Status:        SUCCESS\n"
         f"  Total time:    {elapsed:.1f} s\n"
         f"  Sample:        {sample_key}\n"
+        f"  FEM config:    {effective_config.resolve()}\n"
         f"  Final ROM:     {npz_path.resolve()}\n"
         f"  Selection plot:{plot_path.resolve()}\n"
         f"  Pool file:     {pool_path.resolve()}\n"

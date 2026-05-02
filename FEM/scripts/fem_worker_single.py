@@ -129,6 +129,18 @@ def main() -> int:
 
     config_path = args.config.resolve()
     cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    if MPI.COMM_WORLD.rank == 0:
+        geom = cfg.get("geometry") if isinstance(cfg.get("geometry"), dict) else {}
+        th = geom.get("thickness")
+        print(f"[worker] Config file (resolved): {config_path}")
+        if isinstance(th, (int, float)):
+            print(
+                f"[worker] geometry.thickness = {float(th)} m "
+                f"({float(th) * 1000.0:.6f} mm)"
+            )
+        else:
+            print(f"[worker] geometry.thickness = {th!r} (missing or non-numeric)")
+        sys.stdout.flush()
     cfg.setdefault("solver", {})
     cfg["solver"]["adaptive_mode_sifter"] = False
     cfg["_worker_target_hz"] = float(args.target_hz)
