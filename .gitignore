@@ -13,3 +13,4 @@
 **/comparison/
 FEM/mesh/*.msh
 ROM_DATA/**/*.npz
+logs/
