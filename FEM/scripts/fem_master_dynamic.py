@@ -6,9 +6,10 @@ zones**, per-job timeouts, and merge of worker JSON into ``candidates_log.json``
 **Dynamic scheduler (default)**:
   * **Scout seeding**: first tasks at ``f_start+12``, ``f_start+6``, ``f_start`` Hz (W1 carries
     ``role=scout`` for zone reports).
-  * **Zones Z1/Z2/Z3** from scout yield / avg wood (dense / transition / sparse) with
-    **2-report hysteresis**; adaptive steps 6 / 8 / 18 Hz; Z1 caps ``num_modes`` at 75; Z3 clamps
-    ``num_modes`` to 80–100.
+  * **Zones Z1/Z2/Z3** from merge **efficiency** (``kept_modes / spectral_step_hz``) with thresholds
+    12 / 3 modes·Hz⁻¹ plus yield / avg wood when efficiency is neutral, **2-report hysteresis**, and
+    adaptive steps 6 / 8 / 18 Hz; Z1 caps ``num_modes`` at 75; Z3 clamps 80–100; absolute SLEPc cap
+    ``num_modes`` ≤ 100.
   * **Backfill**: Z3→Z1 transition injects ~2 Hz tasks behind the scout to recover resolution.
 
 **Merge (MMR / veto)**:
@@ -113,6 +114,12 @@ ZONE1_NUM_MODES_CAP = 75
 ZONE3_NUM_MODES_MIN = 80
 ZONE3_NUM_MODES_MAX = 100
 
+# --- Adaptive efficiency engine (kept modes / spectral step Hz) ---
+EFFICIENCY_HISTORY_MAX = 5
+EFFICIENCY_HIGH_THRESHOLD = 12.0
+EFFICIENCY_LOW_THRESHOLD = 3.0
+SLEPC_NUM_MODES_ABSOLUTE_CEILING = 100
+
 # --- Isolation / MMR-style spectral shaping ---
 MIN_UNIQUENESS_FOR_ISOLATION = 0.06
 ZONE3_MIN_UNIQUENESS_FOR_ISOLATION = 0.03
@@ -199,6 +206,27 @@ def _recovery_infer_shift_targets_from_candidates(
     return inferred
 
 
+def _resume_efficiency_index_from_log(
+    candidates: List[Dict[str, Any]], completed: Set[float]
+) -> Optional[float]:
+    """
+    Resume-only density: total log modes per Hz of explored shift span.
+
+    Uses ``len(candidates) / (max(completed) - min(completed))`` when at least two shifts
+    exist; otherwise falls back to a nominal ``ZONE2_STEP_HZ`` span (single-shift resume).
+    """
+    if not candidates or not completed:
+        return None
+    ts = sorted(float(t) for t in completed)
+    if len(ts) >= 2:
+        span_hz = float(ts[-1] - ts[0])
+        if span_hz < 1e-6:
+            span_hz = ZONE2_STEP_HZ
+    else:
+        span_hz = ZONE2_STEP_HZ
+    return float(len(candidates)) / max(span_hz, 1e-9)
+
+
 def _persist_completed_shift_targets_union(
     log_path: Path, lock: threading.Lock, completed_sorted: List[float]
 ) -> None:
@@ -243,8 +271,9 @@ class MergeStats:
 @dataclass
 class SpectralScheduler:
     """
-    Scout-led zone classification (Worker 1 first seed) with hysteresis, adaptive step,
-    Zone 3→1 backfill injection, and optional **resume** from ``candidates_log.json``.
+    Scout-seeded sweep with **efficiency-based** zone hints (modes per Hz of spectral spacing),
+    yield/wood fallback, hysteresis, Zone 3→1 backfill on scout transitions, and **resume**
+    from ``candidates_log.json`` (including inferred efficiency and conservative cursor step).
     """
 
     hz_min: float
@@ -259,6 +288,9 @@ class SpectralScheduler:
     _backfill: Deque[Tuple[float, Dict[str, Any], str]] = field(default_factory=deque, repr=False)
     _cursor_hz: float = field(default=float("nan"), repr=False)
     _seeds_drained: bool = field(default=False, repr=False)
+    _efficiency_history: Deque[float] = field(
+        default_factory=lambda: deque(maxlen=EFFICIENCY_HISTORY_MAX), repr=False
+    )
 
     def __post_init__(self) -> None:
         self._n_modes_in_log = 0
@@ -345,6 +377,30 @@ class SpectralScheduler:
                     )
         for t in completed:
             self._scheduled.add(self._hz_key(float(t)))
+
+        inf_eff = _resume_efficiency_index_from_log(cands, completed)
+        if inf_eff is not None and math.isfinite(inf_eff):
+            self._efficiency_history.clear()
+            self._efficiency_history.append(float(inf_eff))
+            if inf_eff > EFFICIENCY_HIGH_THRESHOLD:
+                self._zone_effective = 1
+                self._pending_zone = None
+                self._pending_streak = 0
+                LOGGER.info(
+                    "Resume efficiency: inferred %.2f modes/Hz (high); zone=1 conservative cursor step=%.1f Hz.",
+                    inf_eff,
+                    ZONE1_STEP_HZ,
+                )
+            elif inf_eff < EFFICIENCY_LOW_THRESHOLD:
+                self._zone_effective = 3
+                self._pending_zone = None
+                self._pending_streak = 0
+                LOGGER.info(
+                    "Resume efficiency: inferred %.2f modes/Hz (low); zone=3 coarse cursor step=%.1f Hz.",
+                    inf_eff,
+                    ZONE3_STEP_HZ,
+                )
+
         if completed:
             mx_done = max(completed)
             step0 = float(self._current_step_hz())
@@ -384,6 +440,7 @@ class SpectralScheduler:
         elif z == 3:
             nm = int(base.get("num_modes", 80))
             base["num_modes"] = max(ZONE3_NUM_MODES_MIN, min(ZONE3_NUM_MODES_MAX, nm))
+        base["num_modes"] = min(SLEPC_NUM_MODES_ABSOLUTE_CEILING, max(1, int(base.get("num_modes", 80))))
         base["label"] = f"{base.get('label', '')} [{label_suffix}]".strip()
         return base
 
@@ -494,18 +551,25 @@ class SpectralScheduler:
             return 3
         return 2
 
-    def on_scout_report(self, scout_hz: float, stats: MergeStats) -> None:
-        """Update zone with hysteresis; inject backfill on Zone 3 → Zone 1 transition."""
-        raw = self._classify_raw_zone(stats.yield_kept_over_raw, stats.avg_wood_raw)
+    @staticmethod
+    def _efficiency_zone_override(smooth_eff: float) -> Optional[int]:
+        """Efficiency-only suggestion: Z1 if dense, Z3 if dead air; else defer to yield/wood."""
+        if smooth_eff > EFFICIENCY_HIGH_THRESHOLD:
+            return 1
+        if smooth_eff < EFFICIENCY_LOW_THRESHOLD:
+            return 3
+        return None
+
+    def _apply_zone_hysteresis(self, report_hz: float, raw: int, allow_backfill: bool) -> None:
+        """Update zone with hysteresis; optional Z3→Z1 backfill when ``allow_backfill`` (scout)."""
         if raw == self._zone_effective:
             self._pending_zone = None
             self._pending_streak = 0
             LOGGER.info(
-                "Scout @ %.2f Hz: stable zone=%d yield=%.3f avg_wood=%.5f",
-                scout_hz,
+                "Spectral @ %.4f Hz: stable zone=%d (effective=%d)",
+                report_hz,
                 raw,
-                stats.yield_kept_over_raw,
-                stats.avg_wood_raw,
+                self._zone_effective,
             )
             return
 
@@ -517,11 +581,9 @@ class SpectralScheduler:
 
         if self._pending_streak < ZONE_HYSTERESIS_STREAK:
             LOGGER.info(
-                "Scout @ %.2f Hz: candidate_zone=%d yield=%.3f avg_wood=%.5f (hysteresis %d/%d, effective=%d)",
-                scout_hz,
+                "Spectral @ %.4f Hz: candidate_zone=%d (hysteresis %d/%d, effective=%d)",
+                report_hz,
                 raw,
-                stats.yield_kept_over_raw,
-                stats.avg_wood_raw,
                 self._pending_streak,
                 ZONE_HYSTERESIS_STREAK,
                 self._zone_effective,
@@ -530,18 +592,49 @@ class SpectralScheduler:
 
         prev = self._zone_effective
         LOGGER.info(
-            "Scout @ %.2f Hz: zone %d → %d (yield=%.3f avg_wood=%.5f)",
-            scout_hz,
+            "Spectral @ %.4f Hz: zone %d → %d",
+            report_hz,
             prev,
             raw,
-            stats.yield_kept_over_raw,
-            stats.avg_wood_raw,
         )
-        if prev == 3 and raw == 1:
-            self._inject_backfill(scout_hz)
+        if allow_backfill and prev == 3 and raw == 1:
+            self._inject_backfill(report_hz)
         self._zone_effective = raw
         self._pending_zone = None
         self._pending_streak = 0
+
+    def on_worker_merge(
+        self, report_hz: float, stats: MergeStats, spectral_step_hz: float, role: str
+    ) -> None:
+        """
+        Efficiency index = ``kept_after_manager / spectral_step_hz`` (modes per Hz of sweep spacing).
+        High density forces Z1; low density forces Z3; otherwise yield/wood classification.
+        """
+        step = max(float(spectral_step_hz), 1e-9)
+        instant_eff = float(stats.kept_after_manager) / step
+        self._efficiency_history.append(instant_eff)
+        smooth_eff = (
+            float(sum(self._efficiency_history) / len(self._efficiency_history))
+            if self._efficiency_history
+            else instant_eff
+        )
+
+        eff_raw = self._efficiency_zone_override(smooth_eff)
+        yield_raw = self._classify_raw_zone(stats.yield_kept_over_raw, stats.avg_wood_raw)
+        raw = int(eff_raw) if eff_raw is not None else yield_raw
+
+        pre_zone = int(self._zone_effective)
+        self._apply_zone_hysteresis(report_hz, raw, allow_backfill=(role == "scout"))
+        post_zone = int(self._zone_effective)
+        decision = "Jump" if post_zone != pre_zone else "Stay"
+        next_step = float(self._current_step_hz())
+        LOGGER.info(
+            "[OPTIMIZER] Efficiency: %.2f modes/Hz (smooth=%.2f) | Decision: %s | Next Step: %.1f Hz",
+            instant_eff,
+            smooth_eff,
+            decision,
+            next_step,
+        )
 
     def _inject_backfill(self, scout_hz: float) -> None:
         lo = max(self.hz_min, scout_hz - 28.0)
@@ -1322,12 +1415,10 @@ def _poll_completed(
                     _append_completed_shift_to_log(log_path, merge_lock, hz)
                     if scheduler is not None:
                         scheduler.register_completed_shift(hz)
-                if (
-                    stats is not None
-                    and scheduler is not None
-                    and str(meta.get("role", "")) == "scout"
-                ):
-                    scheduler.on_scout_report(hz, stats)
+                        sp_step = float(meta.get("spectral_step_hz", ZONE2_STEP_HZ))
+                        scheduler.on_worker_merge(
+                            hz, stats, sp_step, str(meta.get("role", "") or "")
+                        )
                 if scheduler is not None:
                     scheduler.log_schedule_snapshot_after_worker(hz, stats)
             else:
@@ -1600,12 +1691,18 @@ def main() -> int:
                 release_core(core_id)
             raise
 
+        spectral_step_hz = (
+            float(scheduler._current_step_hz())
+            if scheduler is not None
+            else float(params.get("step_hz", ZONE2_STEP_HZ))
+        )
         running[proc] = {
             "hz": hz,
             "deadline": time.monotonic() + timeout_s,
             "timeout_minutes": float(params["timeout_minutes"]),
             "core_id": core_id,
             "role": role,
+            "spectral_step_hz": spectral_step_hz,
         }
         last_spawn_mono[0] = time.monotonic()
 
