@@ -21,8 +21,10 @@ zones**, per-job timeouts, and merge of worker JSON into ``candidates_log.json``
 **Legacy**: ``--legacy-static-schedule`` restores fixed ``get_band_params`` stepping.
 
 **Resume**: ``candidates_log.json`` may list ``completed_shift_targets`` (shift ``target_hz`` values).
-Unique mode ``hz`` entries are counted for the resume log line; the spectral cursor starts after the
-last completed shift. ``pop_next`` skips shifts already in that set (no worker). Pending
+If that list is empty but ``candidates`` is not, a **recovery scan** infers shifts from
+``vector_path`` (``mode_w_<mHz>_``) or from mode ``hz`` snapped to the band table step, writes
+``completed_shift_targets`` when ``merge_lock`` is provided, and advances the cursor by the
+scheduler zone step. ``pop_next`` skips shifts already in that set (no worker). Pending
 ``temp_results/result_*.json`` files are merged once at startup before scheduling.
 
 Resource policy: at most **3** concurrent workers; Linux ``taskset`` cores ``{1,2,3}`` +
@@ -165,6 +167,57 @@ def get_band_params(current_hz: float) -> Dict[str, Any]:
     raise ValueError(f"get_band_params: hz={hz} is outside the supported sweep (expected hz >= 100).")
 
 
+def _recovery_infer_shift_targets_from_candidates(
+    candidates: List[Dict[str, Any]], hz_min: float
+) -> Set[float]:
+    """
+    Infer completed shift centers from legacy logs: ``mode_w_<mHz>_`` in ``vector_path``,
+    else snap mode ``hz`` to the nearest ``get_band_params`` step from ``hz_min``.
+    """
+    inferred: Set[float] = set()
+    f0 = float(hz_min)
+    for c in candidates:
+        vp = str(c.get("vector_path", "") or "")
+        m = re.search(r"mode_w_(\d+)_", vp, flags=re.IGNORECASE)
+        if m:
+            inferred.add(round(int(m.group(1)) / 1000.0, 6))
+            continue
+        try:
+            mh = float(c.get("hz", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(mh) or mh < f0:
+            continue
+        hz_band = max(100.0, mh)
+        try:
+            step = float(get_band_params(hz_band).get("step_hz", ZONE2_STEP_HZ))
+        except ValueError:
+            step = ZONE2_STEP_HZ
+        step = max(step, 1e-6)
+        k = f0 + round((mh - f0) / step) * step
+        inferred.add(round(float(k), 6))
+    return inferred
+
+
+def _persist_completed_shift_targets_union(
+    log_path: Path, lock: threading.Lock, completed_sorted: List[float]
+) -> None:
+    """Atomically set ``completed_shift_targets`` while preserving ``candidates``."""
+    with lock:
+        if log_path.exists():
+            try:
+                payload = json.loads(log_path.read_text(encoding="utf-8"))
+            except Exception:
+                payload = {"candidates": [], "completed_shift_targets": []}
+        else:
+            payload = {"candidates": [], "completed_shift_targets": []}
+        payload.setdefault("candidates", list(payload.get("candidates") or []))
+        payload["completed_shift_targets"] = [float(x) for x in completed_sorted]
+        tmp = log_path.with_suffix(log_path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(log_path)
+
+
 BACKFILL_STEP_HZ = 2.0
 
 
@@ -197,6 +250,7 @@ class SpectralScheduler:
     hz_min: float
     hz_max: float
     sorting_root: Optional[Path] = None
+    merge_lock: Optional[threading.Lock] = field(default=None, repr=False)
     _zone_effective: int = field(default=2, repr=False)
     _pending_zone: Optional[int] = field(default=None, repr=False)
     _pending_streak: int = field(default=0, repr=False)
@@ -207,8 +261,11 @@ class SpectralScheduler:
     _seeds_drained: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
+        self._n_modes_in_log = 0
+        self._recovery_shift_count = 0
         self._resume_load_state()
         self._bootstrap_seed_queue()
+        self._log_resume_verification_table()
 
     def _shift_target_done(self, hz: float) -> bool:
         """True if this shift ``target_hz`` was already merged (resume) or consumed."""
@@ -218,9 +275,30 @@ class SpectralScheduler:
         """Mark a shift target finished after a successful merge (same-run dedupe for ``pop_next``)."""
         self._scheduled.add(self._hz_key(float(target_hz)))
 
+    def _log_resume_verification_table(self) -> None:
+        """Startup summary: modes in log, recovery-inferred shifts, first scheduled target."""
+        n_modes = int(getattr(self, "_n_modes_in_log", 0))
+        n_rec = int(getattr(self, "_recovery_shift_count", 0))
+        nxt = self._peek_next_task()
+        if nxt is not None:
+            first_line = f"{float(nxt[0]):.4f}"
+        else:
+            first_line = "(none — sweep complete or empty band)"
+        LOGGER.info(
+            "Resume verification —\n"
+            "  Total Modes Found in Log:     %d\n"
+            "  Recovered Completed Shifts:   %d\n"
+            "  First New Target Frequency:   %s Hz",
+            n_modes,
+            n_rec,
+            first_line,
+        )
+
     def _resume_load_state(self) -> None:
         """Load ``candidates_log.json`` + ``completed_shift_targets``; advance cursor past last shift."""
         self._cursor_hz = float(self.hz_min)
+        self._n_modes_in_log = 0
+        self._recovery_shift_count = 0
         if self.sorting_root is None:
             return
         root = Path(self.sorting_root).resolve()
@@ -235,32 +313,42 @@ class SpectralScheduler:
             LOGGER.warning("Resume: could not parse candidates_log.json: %s", exc)
             return
         cands = list(payload.get("candidates") or [])
-        unique_mode_hz: Set[float] = set()
-        for c in cands:
-            try:
-                unique_mode_hz.add(round(float(c.get("hz", 0.0) or 0.0), 6))
-            except (TypeError, ValueError):
-                continue
-        n_meas = len(unique_mode_hz)
-        completed: Set[float] = set()
+        self._n_modes_in_log = len(cands)
+        initial_completed: Set[float] = set()
         for x in payload.get("completed_shift_targets") or []:
             try:
-                completed.add(round(float(x), 6))
+                initial_completed.add(round(float(x), 6))
             except (TypeError, ValueError):
                 continue
+        completed: Set[float] = set(initial_completed)
+        if not initial_completed and cands:
+            recovered = _recovery_infer_shift_targets_from_candidates(cands, float(self.hz_min))
+            recovery_added = recovered - completed
+            completed |= recovered
+            self._recovery_shift_count = len(recovery_added)
+            if recovery_added:
+                if self.merge_lock is not None:
+                    _persist_completed_shift_targets_union(
+                        log_path, self.merge_lock, sorted(completed)
+                    )
+                    LOGGER.info(
+                        "Recovery scan: inferred %d shift target(s) from log modes; "
+                        "wrote completed_shift_targets to %s.",
+                        len(recovery_added),
+                        log_path,
+                    )
+                else:
+                    LOGGER.warning(
+                        "Recovery scan inferred %d shift target(s) but merge_lock is unset; "
+                        "in-memory resume only (log not patched).",
+                        len(recovery_added),
+                    )
         for t in completed:
             self._scheduled.add(self._hz_key(float(t)))
         if completed:
             mx_done = max(completed)
-            step0 = float(ZONE2_STEP_HZ)
+            step0 = float(self._current_step_hz())
             self._cursor_hz = max(float(self.hz_min), mx_done + step0)
-        LOGGER.info(
-            "Found %d existing measurements. Resuming simulation from the next available frequency "
-            "(completed_shifts=%d, cursor≈%.4f Hz).",
-            n_meas,
-            len(completed),
-            float(self._cursor_hz),
-        )
 
     def _bootstrap_seed_queue(self) -> None:
         f0 = float(self.hz_min)
@@ -930,17 +1018,7 @@ def _merge_result_into_candidates_log(
         return None
 
     path_root = (override_root if override_root is not None else sorting_root).resolve()
-    ctx = merge_ctx if merge_ctx is not None else MergeContext()
-    # Wood V2 (100–450 Hz linear floor) + batch isolation relief (floor×0.6 if >15 Hz from all
-    # peer freqs in this worker JSON) run in _passes_zone_wood_veto_v2 — independent of SLEPc num_modes.
-
     raw_n = len(raw)
-    all_hz: List[float] = []
-    for c in raw:
-        try:
-            all_hz.append(float(c.get("hz", 0.0) or 0.0))
-        except (TypeError, ValueError):
-            all_hz.append(0.0)
     woods: List[float] = []
     for c in raw:
         try:
@@ -948,6 +1026,64 @@ def _merge_result_into_candidates_log(
         except (TypeError, ValueError):
             woods.append(0.0)
     avg_wood_raw = float(np.mean(woods)) if woods else 0.0
+
+    tgt_early: Optional[float] = None
+    try:
+        tz = incoming.get("target_hz")
+        if tz is not None:
+            tgt_early = round(float(tz), 6)
+    except (TypeError, ValueError):
+        tgt_early = None
+    if tgt_early is None:
+        tfn = _target_hz_from_result_filename(result_path)
+        if tfn is not None:
+            tgt_early = round(float(tfn), 6)
+    skip_completed_shift = False
+    if tgt_early is not None:
+        with lock:
+            if log_path.exists():
+                try:
+                    pl_early = json.loads(log_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pl_early = {}
+            else:
+                pl_early = {}
+            done_early: Set[float] = set()
+            for x in pl_early.get("completed_shift_targets") or []:
+                try:
+                    done_early.add(round(float(x), 6))
+                except (TypeError, ValueError):
+                    continue
+            skip_completed_shift = tgt_early in done_early
+    if skip_completed_shift:
+        LOGGER.info(
+            "Merge idempotent: shift %.6f Hz already in completed_shift_targets; skipping merge.",
+            float(tgt_early),
+        )
+        for c in raw:
+            _unlink_worker_vector(c, path_root)
+        try:
+            result_path.unlink()
+        except OSError:
+            pass
+        return MergeStats(
+            raw_n=raw_n,
+            kept_after_veto=0,
+            kept_after_manager=0,
+            avg_wood_raw=avg_wood_raw,
+            yield_kept_over_raw=0.0,
+        )
+
+    ctx = merge_ctx if merge_ctx is not None else MergeContext()
+    # Wood V2 (100–450 Hz linear floor) + batch isolation relief (floor×0.6 if >15 Hz from all
+    # peer freqs in this worker JSON) run in _passes_zone_wood_veto_v2 — independent of SLEPc num_modes.
+
+    all_hz: List[float] = []
+    for c in raw:
+        try:
+            all_hz.append(float(c.get("hz", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            all_hz.append(0.0)
 
     veto_pass: List[Dict[str, Any]] = []
     failed_veto: List[Dict[str, Any]] = []
@@ -1001,6 +1137,7 @@ def _merge_result_into_candidates_log(
             yield_kept_over_raw=0.0,
         )
 
+    n_rows_appended = 0
     with lock:
         if log_path.exists():
             try:
@@ -1048,11 +1185,39 @@ def _merge_result_into_candidates_log(
             )
 
         mx = max((int(c.get("id", -1)) for c in existing), default=-1)
-        for i, rec in enumerate(thin_kept):
-            new_id = int(mx + 1 + i)
+        hz_row_dedup_tol = 5e-5
+        add_i = 0
+        for rec in thin_kept:
             row = dict(rec)
             rel_old = Path(str(row.get("vector_path", "")))
             old_abs = (path_root / rel_old).resolve()
+            try:
+                nh = float(row.get("hz", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                nh = float("nan")
+            row_dupe = False
+            if math.isfinite(nh):
+                for e in existing:
+                    try:
+                        eh = float(e.get("hz", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        continue
+                    if math.isfinite(eh) and abs(eh - nh) <= hz_row_dedup_tol:
+                        row_dupe = True
+                        break
+            if row_dupe:
+                LOGGER.info(
+                    "Merge idempotent: skip new log row (hz≈%.6f Hz matches existing candidate).",
+                    nh,
+                )
+                if old_abs.is_file():
+                    try:
+                        old_abs.unlink()
+                    except OSError:
+                        pass
+                continue
+            new_id = int(mx + 1 + add_i)
+            add_i += 1
             new_rel = Path("temp_modes") / f"mode_{new_id:06d}{MODE_VECTOR_FILE_SUFFIX}"
             new_abs = (path_root / new_rel).resolve()
             if old_abs.is_file():
@@ -1063,6 +1228,7 @@ def _merge_result_into_candidates_log(
             row["id"] = new_id
             row["vector_path"] = str(new_rel).replace("\\", "/")
             existing.append(row)
+        n_rows_appended = add_i
         payload["candidates"] = existing
         tmp = log_path.with_suffix(log_path.suffix + ".tmp")
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -1081,9 +1247,9 @@ def _merge_result_into_candidates_log(
     return MergeStats(
         raw_n=raw_n,
         kept_after_veto=len(veto_pass),
-        kept_after_manager=len(thin_kept),
+        kept_after_manager=n_rows_appended,
         avg_wood_raw=avg_wood_raw,
-        yield_kept_over_raw=(len(thin_kept) / float(raw_n)) if raw_n > 0 else 0.0,
+        yield_kept_over_raw=(n_rows_appended / float(raw_n)) if raw_n > 0 else 0.0,
     )
 
 
@@ -1292,7 +1458,9 @@ def main() -> int:
             LOGGER.error("%s", exc)
             return 1
     else:
-        scheduler = SpectralScheduler(float(args.hz_min), float(args.hz_max), sorting_root)
+        scheduler = SpectralScheduler(
+            float(args.hz_min), float(args.hz_max), sorting_root, merge_lock=merge_lock
+        )
 
     linux_pin_msg = " Linux: taskset cores leased from {1,2,3}." if use_taskset else ""
     if scheduler is not None:
