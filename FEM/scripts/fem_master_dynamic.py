@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
 """
-Master driver for ``fem_worker_single.py``: bounded concurrency, dynamic band
-parameters, per-job timeouts, and safe merge of worker JSON into ``candidates_log.json``.
+Master driver for ``fem_worker_single.py``: bounded concurrency, scout-led **spectral
+zones**, per-job timeouts, and merge of worker JSON into ``candidates_log.json``.
 
-**Conditional Adaptive Manager (merge stage)**:
-  * **Zone wood veto (priority 1)**: wood participation must meet a frequency-dependent
-    floor (0.0008 at 100 Hz → 0.0003 at 350 Hz+) before any score or reward.
-  * **Isolation reward** (secondary): Hz-distance bonus only if the candidate passed the
-    wood veto *and* worker uniqueness ≥ ``MIN_UNIQUENESS_FOR_ISOLATION``; wood-weighted
-    so unique wood-modes beat isolated air-modes.
-  * **Spectral shaping**: exponential penalty when nearest accepted Hz gap < 3 Hz;
-    linear reward for gap > 15 Hz, capped at 40 Hz equivalent span.
-  * **Zone C quota**: at least ``ZONE_C_MIN_QUOTA`` modes with f ≥ 350 Hz when available,
-    trading out lowest-scoring sub-350 picks so HF cannot be saturated away by LF duplicates.
-  * **Sparse core**: overlap vs log + intra-merge picks uses ``scipy.sparse`` CSR float32
-    (``csr_normalized_overlap``); explicit ``gc.collect()`` after vector loads / selection.
+**Dynamic scheduler (default)**:
+  * **Scout seeding**: first tasks at ``f_start+12``, ``f_start+6``, ``f_start`` Hz (W1 carries
+    ``role=scout`` for zone reports).
+  * **Zones Z1/Z2/Z3** from scout yield / avg wood (dense / transition / sparse) with
+    **2-report hysteresis**; adaptive steps 6 / 8 / 18 Hz; Z1 caps ``num_modes`` at 75; Z3 clamps
+    ``num_modes`` to 80–100.
+  * **Backfill**: Z3→Z1 transition injects ~2 Hz tasks behind the scout to recover resolution.
 
-Resource policy (VM-friendly): at most **3** concurrent workers. On Linux, each worker is
-launched under ``taskset -c <id>`` with ``<id>`` leased from ``{1, 2, 3}``, then
-``mpiexec --bind-to none -n 1`` so Open MPI does not re-bind ranks onto core 0.
+**Merge (MMR / veto)**:
+  * **Wood V2**: linear floor 0.0005 @ 100 Hz → 0.0003 @ 450 Hz; **isolation relief**: if a
+    candidate is >15 Hz from all peers in the same worker batch, floor ×0.6.
+  * **Zone-tuned spectral penalty**: Z1 uses tighter ``tau`` (stronger proximity penalty);
+    Z3 lowers uniqueness floor for isolation bonus.
+  * Sparse CSR overlap, Zone-C HF quota, ``gc.collect()`` as before.
+
+**Legacy**: ``--legacy-static-schedule`` restores fixed ``get_band_params`` stepping.
+
+Resource policy: at most **3** concurrent workers; Linux ``taskset`` cores ``{1,2,3}`` +
+``mpiexec --bind-to none -n 1``.
 """
 from __future__ import annotations
 
@@ -34,6 +37,7 @@ import sys
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple
 
@@ -73,14 +77,41 @@ MIN_SPAWN_GAP_SECONDS = 5.0
 # --- Frequency clustering (same scale as legacy gap thinning) ---
 MIN_HZ_GAP = 0.4
 
-# --- Zone wood floors (linear 100 Hz → 350 Hz): 0.0008 → 0.0003 ---
+# --- Legacy zone wood floors (linear 100 Hz → 350 Hz); superseded by V2 when dynamic merge is on ---
 WOOD_FLOOR_HZ_ANCHOR_LO = 100.0
 WOOD_FLOOR_HZ_ANCHOR_HI = 350.0
 WOOD_PARTICIPATION_FLOOR_LO = 0.0008
 WOOD_PARTICIPATION_FLOOR_HI = 0.0003
 
-# --- Isolation reward (only after wood veto + uniqueness floor) ---
+# --- Frequency-dependent wood veto V2 (linear 100 Hz → 450 Hz): 0.0005 → 0.0003 ---
+WOOD_V2_LO_HZ = 100.0
+WOOD_V2_HI_HZ = 450.0
+WOOD_V2_LO = 0.0005
+WOOD_V2_HI = 0.0003
+
+# --- Scout zone classification (Worker 1 / leading scout reports) ---
+SCOUT_YIELD_DENSE = 0.4
+SCOUT_YIELD_SPARSE = 0.15
+SCOUT_AVG_WOOD_DENSE = 0.001
+ZONE_HYSTERESIS_STREAK = 2
+
+# --- Adaptive stepping (Hz) by spectral zone ---
+ZONE1_STEP_HZ = 6.0
+ZONE2_STEP_HZ = 8.0
+ZONE3_STEP_HZ = 18.0
+# Dense (Z1): SLEPc ``nev`` cap — reduced from 100 to cut redundant spectral data (Sim 14).
+ZONE1_NUM_MODES_CAP = 75
+# Sparse (Z3): flexible ``nev`` band while keeping 18 Hz step for fast traversal.
+ZONE3_NUM_MODES_MIN = 80
+ZONE3_NUM_MODES_MAX = 100
+
+# --- Isolation / MMR-style spectral shaping ---
 MIN_UNIQUENESS_FOR_ISOLATION = 0.06
+ZONE3_MIN_UNIQUENESS_FOR_ISOLATION = 0.03
+ISO_BATCH_GAP_HZ = 15.0
+ISOLATION_WOOD_FLOOR_SCALE = 0.6
+ZONE1_SPECTRAL_TAU_SCALE = 0.65
+ZONE1_MIN_HZ_GAP = 1.2
 ISO_DISTANCE_REF_HZ = 120.0
 ISO_WOOD_WEIGHT = 1.0
 ISO_AIR_DAMPING = 0.25
@@ -120,6 +151,245 @@ def get_band_params(current_hz: float) -> Dict[str, Any]:
     raise ValueError(f"get_band_params: hz={hz} is outside the supported sweep (expected hz >= 100).")
 
 
+BACKFILL_STEP_HZ = 2.0
+
+
+@dataclass
+class MergeContext:
+    """Per-merge adaptive manager + veto tuning from spectral zone scheduler."""
+
+    spectral_zone: int = 2
+    min_hz_gap: float = MIN_HZ_GAP
+    spectral_tau_scale: float = 1.0
+    min_uniqueness_iso: float = MIN_UNIQUENESS_FOR_ISOLATION
+
+
+@dataclass
+class MergeStats:
+    raw_n: int
+    kept_after_veto: int
+    kept_after_manager: int
+    avg_wood_raw: float
+    yield_kept_over_raw: float
+
+
+@dataclass
+class SpectralScheduler:
+    """
+    Scout-led zone classification (Worker 1 first seed) with hysteresis, adaptive step,
+    and Zone 3→1 backfill injection.
+    """
+
+    hz_min: float
+    hz_max: float
+    _zone_effective: int = field(default=2, repr=False)
+    _pending_zone: Optional[int] = field(default=None, repr=False)
+    _pending_streak: int = field(default=0, repr=False)
+    _scheduled: Set[str] = field(default_factory=set, repr=False)
+    _seed_queue: Deque[Tuple[float, Dict[str, Any], str]] = field(default_factory=deque, repr=False)
+    _backfill: Deque[Tuple[float, Dict[str, Any], str]] = field(default_factory=deque, repr=False)
+    _cursor_hz: float = field(default=float("nan"), repr=False)
+    _seeds_drained: bool = field(default=False, repr=False)
+
+    def __post_init__(self) -> None:
+        f0 = float(self.hz_min)
+        hi = float(self.hz_max)
+        seeds = [
+            (max(f0, min(hi, f0 + 12.0)), "scout W1"),
+            (max(f0, min(hi, f0 + 6.0)), "W2"),
+            (f0, "W3"),
+        ]
+        for hz, tag in seeds:
+            key = self._hz_key(hz)
+            if key in self._scheduled:
+                continue
+            self._scheduled.add(key)
+            p = self._band_params_with_zone_step(hz, tag)
+            role = "scout" if tag.startswith("scout") else ""
+            self._seed_queue.append((hz, p, role))
+        self._cursor_hz = f0
+
+    def _hz_key(self, hz: float) -> str:
+        return f"{round(float(hz), 4):.4f}"
+
+    def _current_step_hz(self) -> float:
+        z = self._zone_effective
+        if z == 1:
+            return ZONE1_STEP_HZ
+        if z == 3:
+            return ZONE3_STEP_HZ
+        return ZONE2_STEP_HZ
+
+    def _band_params_with_zone_step(self, hz: float, label_suffix: str) -> Dict[str, Any]:
+        base = dict(get_band_params(hz))
+        z = self._zone_effective
+        if z == 1:
+            base["num_modes"] = min(ZONE1_NUM_MODES_CAP, int(base.get("num_modes", 80)))
+        elif z == 3:
+            nm = int(base.get("num_modes", 80))
+            base["num_modes"] = max(ZONE3_NUM_MODES_MIN, min(ZONE3_NUM_MODES_MAX, nm))
+        base["label"] = f"{base.get('label', '')} [{label_suffix}]".strip()
+        return base
+
+    @property
+    def effective_zone(self) -> int:
+        return int(self._zone_effective)
+
+    def _peek_next_task(self) -> Optional[Tuple[float, Dict[str, Any], str]]:
+        """Read-only first upcoming task (same priority order as ``pop_next``)."""
+        if self._backfill:
+            return self._backfill[0]
+        if self._seed_queue:
+            return self._seed_queue[0]
+        cur = float(self._cursor_hz)
+        step = self._current_step_hz()
+        while cur <= self.hz_max + 1e-9:
+            key = self._hz_key(cur)
+            if key not in self._scheduled:
+                hz = float(cur)
+                return (hz, self._band_params_with_zone_step(hz, "peek"), "")
+            cur += step
+        return None
+
+    def log_schedule_snapshot_after_worker(
+        self, completed_target_hz: float, stats: Optional[MergeStats]
+    ) -> None:
+        """Log effective zone and next worker SLEPc quota after a merge (dynamic mode)."""
+        nxt = self._peek_next_task()
+        y = float(stats.yield_kept_over_raw) if stats is not None else float("nan")
+        if nxt is not None:
+            nh, np, _ = nxt
+            LOGGER.info(
+                "Schedule snapshot: effective_zone=%d | merged_shift@%.4f Hz yield=%.4f | "
+                "next_solver_batch: target_hz≈%.4f num_modes=%d step_hz=%.1f",
+                self.effective_zone,
+                completed_target_hz,
+                y,
+                nh,
+                int(np.get("num_modes", 0)),
+                float(self._current_step_hz()),
+            )
+        else:
+            LOGGER.info(
+                "Schedule snapshot: effective_zone=%d | merged_shift@%.4f Hz yield=%.4f | "
+                "next_solver_batch: (queue empty)",
+                self.effective_zone,
+                completed_target_hz,
+                y,
+            )
+
+    def merge_context(self) -> MergeContext:
+        z = self._zone_effective
+        if z == 1:
+            return MergeContext(1, ZONE1_MIN_HZ_GAP, ZONE1_SPECTRAL_TAU_SCALE, MIN_UNIQUENESS_FOR_ISOLATION)
+        if z == 3:
+            return MergeContext(3, MIN_HZ_GAP, 1.0, ZONE3_MIN_UNIQUENESS_FOR_ISOLATION)
+        return MergeContext(2, MIN_HZ_GAP, 1.0, MIN_UNIQUENESS_FOR_ISOLATION)
+
+    def pop_next(self) -> Optional[Tuple[float, Dict[str, Any], str]]:
+        if self._backfill:
+            return self._backfill.popleft()
+        if self._seed_queue:
+            return self._seed_queue.popleft()
+        if not self._seeds_drained:
+            self._seeds_drained = True
+        step = self._current_step_hz()
+        while self._cursor_hz <= self.hz_max + 1e-9:
+            hz = float(self._cursor_hz)
+            self._cursor_hz += step
+            key = self._hz_key(hz)
+            if key in self._scheduled:
+                continue
+            self._scheduled.add(key)
+            p = self._band_params_with_zone_step(hz, "dyn")
+            return (hz, p, "")
+        return None
+
+    def has_pending(self) -> bool:
+        if self._backfill or self._seed_queue:
+            return True
+        return self._cursor_hz <= self.hz_max + 1e-9
+
+    def _classify_raw_zone(self, yield_rate: float, avg_wood: float) -> int:
+        if yield_rate > SCOUT_YIELD_DENSE or avg_wood > SCOUT_AVG_WOOD_DENSE:
+            return 1
+        if yield_rate < SCOUT_YIELD_SPARSE:
+            return 3
+        return 2
+
+    def on_scout_report(self, scout_hz: float, stats: MergeStats) -> None:
+        """Update zone with hysteresis; inject backfill on Zone 3 → Zone 1 transition."""
+        raw = self._classify_raw_zone(stats.yield_kept_over_raw, stats.avg_wood_raw)
+        if raw == self._zone_effective:
+            self._pending_zone = None
+            self._pending_streak = 0
+            LOGGER.info(
+                "Scout @ %.2f Hz: stable zone=%d yield=%.3f avg_wood=%.5f",
+                scout_hz,
+                raw,
+                stats.yield_kept_over_raw,
+                stats.avg_wood_raw,
+            )
+            return
+
+        if self._pending_zone == raw:
+            self._pending_streak += 1
+        else:
+            self._pending_zone = raw
+            self._pending_streak = 1
+
+        if self._pending_streak < ZONE_HYSTERESIS_STREAK:
+            LOGGER.info(
+                "Scout @ %.2f Hz: candidate_zone=%d yield=%.3f avg_wood=%.5f (hysteresis %d/%d, effective=%d)",
+                scout_hz,
+                raw,
+                stats.yield_kept_over_raw,
+                stats.avg_wood_raw,
+                self._pending_streak,
+                ZONE_HYSTERESIS_STREAK,
+                self._zone_effective,
+            )
+            return
+
+        prev = self._zone_effective
+        LOGGER.info(
+            "Scout @ %.2f Hz: zone %d → %d (yield=%.3f avg_wood=%.5f)",
+            scout_hz,
+            prev,
+            raw,
+            stats.yield_kept_over_raw,
+            stats.avg_wood_raw,
+        )
+        if prev == 3 and raw == 1:
+            self._inject_backfill(scout_hz)
+        self._zone_effective = raw
+        self._pending_zone = None
+        self._pending_streak = 0
+
+    def _inject_backfill(self, scout_hz: float) -> None:
+        lo = max(self.hz_min, scout_hz - 28.0)
+        inserted = 0
+        h = lo
+        while h < scout_hz - 0.5 and inserted < 24:
+            hh = round(h, 4)
+            key = self._hz_key(hh)
+            if key not in self._scheduled:
+                self._scheduled.add(key)
+                p = self._band_params_with_zone_step(hh, "backfill")
+                self._backfill.append((hh, p, ""))
+                inserted += 1
+            h += BACKFILL_STEP_HZ
+        if inserted:
+            LOGGER.info(
+                "Backfill: injected %d task(s) ≈%.1f–%.1f Hz @ %.1f Hz step (scout=%.2f)",
+                inserted,
+                lo,
+                scout_hz,
+                BACKFILL_STEP_HZ,
+                scout_hz,
+            )
+
+
 def _wood_floor_for_hz(hz: float) -> float:
     """Linear wood-participation floor from 0.0008 (100 Hz) down to 0.0003 (350 Hz+)."""
     x = float(hz)
@@ -129,6 +399,31 @@ def _wood_floor_for_hz(hz: float) -> float:
         return WOOD_PARTICIPATION_FLOOR_HI
     t = (x - WOOD_FLOOR_HZ_ANCHOR_LO) / (WOOD_FLOOR_HZ_ANCHOR_HI - WOOD_FLOOR_HZ_ANCHOR_LO)
     return WOOD_PARTICIPATION_FLOOR_LO + t * (WOOD_PARTICIPATION_FLOOR_HI - WOOD_PARTICIPATION_FLOOR_LO)
+
+
+def _wood_floor_for_hz_v2(hz: float) -> float:
+    """Linear wood floor 0.0005 @ 100 Hz → 0.0003 @ 450 Hz (merge veto; not tied to zone quota)."""
+    x = float(hz)
+    if x <= WOOD_V2_LO_HZ:
+        return WOOD_V2_LO
+    if x >= WOOD_V2_HI_HZ:
+        return WOOD_V2_HI
+    t = (x - WOOD_V2_LO_HZ) / (WOOD_V2_HI_HZ - WOOD_V2_LO_HZ)
+    return WOOD_V2_LO + t * (WOOD_V2_HI - WOOD_V2_LO)
+
+
+def _peer_min_hz_gap(hz: float, peer_hz: List[float]) -> float:
+    if not peer_hz:
+        return 1.0e6
+    return min(abs(float(hz) - float(ph)) for ph in peer_hz)
+
+
+def _effective_wood_floor_v2(hz: float, peer_hz: List[float]) -> float:
+    """>15 Hz from all peer freqs in this merge batch → floor ×0.6 (40% reduction); applies in merge only."""
+    base = _wood_floor_for_hz_v2(hz)
+    if _peer_min_hz_gap(hz, peer_hz) > ISO_BATCH_GAP_HZ:
+        return base * ISOLATION_WOOD_FLOOR_SCALE
+    return base
 
 
 def _passes_zone_wood_veto(c: Dict[str, Any]) -> bool:
@@ -143,15 +438,28 @@ def _passes_zone_wood_veto(c: Dict[str, Any]) -> bool:
     return w >= _wood_floor_for_hz(hz)
 
 
-def _spectral_multiplier(df_nearest: float) -> float:
+def _passes_zone_wood_veto_v2(c: Dict[str, Any], peer_hz: List[float]) -> bool:
+    """V2 wood gate with frequency-linear floor and batch isolation relief."""
+    try:
+        w = float(c.get("wood_participation", 0.0) or 0.0)
+        hz = float(c.get("hz", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(w) or not math.isfinite(hz):
+        return False
+    return w >= _effective_wood_floor_v2(hz, peer_hz)
+
+
+def _spectral_multiplier(df_nearest: float, tau_scale: float = 1.0) -> float:
     """
     Penalize small Hz gaps (< 3 Hz) exponentially; reward large gaps (> 15 Hz) linearly
     with slope capped as if Δf were at most 40 Hz.
     """
     d = float(df_nearest)
     mult = 1.0
+    tau = max(SPECTRAL_PENALTY_TAU_HZ * float(tau_scale), 1e-9)
     if d < SPECTRAL_CLOSE_HZ:
-        mult *= math.exp(-max(0.0, (SPECTRAL_CLOSE_HZ - d) / max(SPECTRAL_PENALTY_TAU_HZ, 1e-6)))
+        mult *= math.exp(-max(0.0, (SPECTRAL_CLOSE_HZ - d) / tau))
     if d > SPECTRAL_FAR_HZ:
         span = min(d - SPECTRAL_FAR_HZ, SPECTRAL_FAR_CAP_HZ - SPECTRAL_FAR_HZ)
         if span > 0.0:
@@ -159,9 +467,15 @@ def _spectral_multiplier(df_nearest: float) -> float:
     return mult
 
 
-def _isolation_bonus(hz: float, w: float, uniq: float, df_nearest: float) -> float:
+def _isolation_bonus(
+    hz: float,
+    w: float,
+    uniq: float,
+    df_nearest: float,
+    min_uniqueness_iso: float = MIN_UNIQUENESS_FOR_ISOLATION,
+) -> float:
     """Secondary weight: only if wood veto already passed and uniqueness meets floor."""
-    if uniq < MIN_UNIQUENESS_FOR_ISOLATION:
+    if uniq < float(min_uniqueness_iso):
         return 0.0
     d = max(0.0, float(df_nearest))
     iso_shape = math.sqrt(d / max(ISO_DISTANCE_REF_HZ, 1e-9))
@@ -288,13 +602,16 @@ def _master_mode_score(
     existing_csr: List[sparse.csr_matrix],
     picked_hz: List[float],
     picked_csr: List[sparse.csr_matrix],
+    *,
+    spectral_tau_scale: float = 1.0,
+    min_uniqueness_iso: float = MIN_UNIQUENESS_FOR_ISOLATION,
 ) -> float:
     hz_ref = list(existing_hz) + list(picked_hz)
     df_n = _df_nearest(hz, hz_ref)
-    spec = _spectral_multiplier(df_n)
+    spec = _spectral_multiplier(df_n, tau_scale=spectral_tau_scale)
     max_ov = _max_sparse_overlap(csr_c, existing_csr + picked_csr)
     shape = float(np.clip(1.0 - max_ov, 0.0, 1.0))
-    iso = _isolation_bonus(hz, w, uniq, df_n)
+    iso = _isolation_bonus(hz, w, uniq, df_n, min_uniqueness_iso=min_uniqueness_iso)
     return shape * spec + iso
 
 
@@ -322,6 +639,7 @@ def _adaptive_manager_select(
     batch: List[Tuple[Dict[str, Any], sparse.csr_matrix]],
     existing: List[Dict[str, Any]],
     sorting_root: Path,
+    merge_ctx: MergeContext,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, float]]:
     """
     Zone-wood-vetted batch (with CSR) vs log: cluster in Hz, score, pick winners,
@@ -334,7 +652,7 @@ def _adaptive_manager_select(
     existing_hz, existing_csr = _load_existing_csr_pairs(existing, sorting_root)
     score_map: Dict[str, float] = {}
 
-    clusters = _cluster_by_min_gap(batch, MIN_HZ_GAP)
+    clusters = _cluster_by_min_gap(batch, float(merge_ctx.min_hz_gap))
     picked_rows: List[Dict[str, Any]] = []
     picked_csr: List[sparse.csr_matrix] = []
     picked_hz: List[float] = []
@@ -352,7 +670,18 @@ def _adaptive_manager_select(
                 uniq = float(row.get("uniqueness", 0.0) or 0.0)
             except (TypeError, ValueError):
                 continue
-            s = _master_mode_score(hz, w, uniq, csr_i, existing_hz, existing_csr, picked_hz, picked_csr)
+            s = _master_mode_score(
+                hz,
+                w,
+                uniq,
+                csr_i,
+                existing_hz,
+                existing_csr,
+                picked_hz,
+                picked_csr,
+                spectral_tau_scale=float(merge_ctx.spectral_tau_scale),
+                min_uniqueness_iso=float(merge_ctx.min_uniqueness_iso),
+            )
             rk = str(_row_key(row))
             score_map[rk] = s
             if s > best_s:
@@ -405,6 +734,8 @@ def _adaptive_manager_select(
                 existing_csr,
                 picked_hz,
                 picked_csr,
+                spectral_tau_scale=float(merge_ctx.spectral_tau_scale),
+                min_uniqueness_iso=float(merge_ctx.min_uniqueness_iso),
             )
             unused_hf.append((i, dict(row), csr_i, s))
         unused_hf.sort(key=lambda t: t[3], reverse=True)
@@ -484,21 +815,24 @@ def _merge_result_into_candidates_log(
     sorting_root: Path,
     *,
     override_root: Optional[Path] = None,
-) -> None:
+    merge_ctx: Optional[MergeContext] = None,
+) -> Optional[MergeStats]:
     """
     Merge one worker ``result_*.json`` into ``candidates_log.json``.
 
     ``sorting_root`` is the workspace that holds ``temp_results/`` and ``candidates_log.json``.
     ``override_root`` (LAB / custom layouts): when set, resolve ``vector_path`` and unlink
     worker vectors under this directory instead of ``sorting_root``. Defaults to ``sorting_root``.
+    ``merge_ctx`` tunes clustering / spectral MMR penalty and isolation floor (from spectral zone).
+    Returns merge statistics for scout feedback (or ``None`` if nothing merged).
     """
     if not result_path.is_file():
-        return
+        return None
     try:
         incoming = json.loads(result_path.read_text(encoding="utf-8"))
     except Exception as exc:
         LOGGER.warning("Skipping unreadable result file %s: %s", result_path, exc)
-        return
+        return None
 
     raw = list(incoming.get("candidates") or [])
     if not raw:
@@ -506,15 +840,37 @@ def _merge_result_into_candidates_log(
             result_path.unlink()
         except OSError:
             pass
-        return
+        return None
 
     path_root = (override_root if override_root is not None else sorting_root).resolve()
+    ctx = merge_ctx if merge_ctx is not None else MergeContext()
+    # Wood V2 (100–450 Hz linear floor) + batch isolation relief (floor×0.6 if >15 Hz from all
+    # peer freqs in this worker JSON) run in _passes_zone_wood_veto_v2 — independent of SLEPc num_modes.
 
     raw_n = len(raw)
+    all_hz: List[float] = []
+    for c in raw:
+        try:
+            all_hz.append(float(c.get("hz", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            all_hz.append(0.0)
+    woods: List[float] = []
+    for c in raw:
+        try:
+            woods.append(float(c.get("wood_participation", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            woods.append(0.0)
+    avg_wood_raw = float(np.mean(woods)) if woods else 0.0
+
     veto_pass: List[Dict[str, Any]] = []
     failed_veto: List[Dict[str, Any]] = []
     for c in raw:
-        if _passes_zone_wood_veto(c):
+        try:
+            chz = float(c.get("hz", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            chz = 0.0
+        peers = [h for h in all_hz if abs(h - chz) > 1e-6]
+        if _passes_zone_wood_veto_v2(c, peers):
             veto_pass.append(c)
         else:
             failed_veto.append(c)
@@ -533,7 +889,13 @@ def _merge_result_into_candidates_log(
             result_path.unlink()
         except OSError:
             pass
-        return
+        return MergeStats(
+            raw_n=raw_n,
+            kept_after_veto=0,
+            kept_after_manager=0,
+            avg_wood_raw=avg_wood_raw,
+            yield_kept_over_raw=0.0,
+        )
 
     batch_loaded = _load_batch_csr_pairs(veto_pass, path_root)
     if not batch_loaded:
@@ -544,7 +906,13 @@ def _merge_result_into_candidates_log(
             result_path.unlink()
         except OSError:
             pass
-        return
+        return MergeStats(
+            raw_n=raw_n,
+            kept_after_veto=len(veto_pass),
+            kept_after_manager=0,
+            avg_wood_raw=avg_wood_raw,
+            yield_kept_over_raw=0.0,
+        )
 
     with lock:
         if log_path.exists():
@@ -556,7 +924,7 @@ def _merge_result_into_candidates_log(
             payload = {"candidates": []}
         existing = list(payload.get("candidates") or [])
 
-        thin_kept, thin_discarded, _scores = _adaptive_manager_select(batch_loaded, existing, path_root)
+        thin_kept, thin_discarded, _scores = _adaptive_manager_select(batch_loaded, existing, path_root, ctx)
 
         for c in thin_discarded:
             _unlink_worker_vector(c, path_root)
@@ -583,7 +951,13 @@ def _merge_result_into_candidates_log(
             except OSError:
                 pass
             gc.collect()
-            return
+            return MergeStats(
+                raw_n=raw_n,
+                kept_after_veto=len(veto_pass),
+                kept_after_manager=0,
+                avg_wood_raw=avg_wood_raw,
+                yield_kept_over_raw=0.0,
+            )
 
         mx = max((int(c.get("id", -1)) for c in existing), default=-1)
         for i, rec in enumerate(thin_kept):
@@ -616,6 +990,13 @@ def _merge_result_into_candidates_log(
         LOGGER.warning("Could not delete merged result file: %s", result_path)
 
     gc.collect()
+    return MergeStats(
+        raw_n=raw_n,
+        kept_after_veto=len(veto_pass),
+        kept_after_manager=len(thin_kept),
+        avg_wood_raw=avg_wood_raw,
+        yield_kept_over_raw=(len(thin_kept) / float(raw_n)) if raw_n > 0 else 0.0,
+    )
 
 
 def _poll_completed(
@@ -624,6 +1005,7 @@ def _poll_completed(
     sorting_root: Path,
     merge_lock: threading.Lock,
     release_core: Callable[[Optional[int]], None],
+    scheduler: Optional[SpectralScheduler] = None,
 ) -> None:
     for proc, meta in list(running.items()):
         code = proc.poll()
@@ -634,7 +1016,16 @@ def _poll_completed(
         try:
             if code == 0:
                 LOGGER.info("Worker finished OK for %.4f Hz (exit %s).", hz, code)
-                _merge_result_into_candidates_log(rpath, log_path, merge_lock, sorting_root)
+                ctx = scheduler.merge_context() if scheduler is not None else None
+                stats = _merge_result_into_candidates_log(rpath, log_path, merge_lock, sorting_root, merge_ctx=ctx)
+                if (
+                    stats is not None
+                    and scheduler is not None
+                    and str(meta.get("role", "")) == "scout"
+                ):
+                    scheduler.on_scout_report(hz, stats)
+                if scheduler is not None:
+                    scheduler.log_schedule_snapshot_after_worker(hz, stats)
             else:
                 LOGGER.warning("Worker exited with code %s for %.4f Hz (no merge).", code, hz)
         finally:
@@ -713,6 +1104,14 @@ def main() -> int:
             "(cores leased from {1,2,3}; `--bind-to none` avoids Open MPI overriding taskset)."
         ),
     )
+    parser.add_argument(
+        "--legacy-static-schedule",
+        action="store_true",
+        help=(
+            "Use legacy fixed stepping from get_band_params (no scout zones / backfill). "
+            "Default: scout-seeded dynamic scheduler with zone hysteresis."
+        ),
+    )
     args = parser.parse_args()
 
     worker_script = SCRIPT_DIR / "fem_worker_single.py"
@@ -741,29 +1140,52 @@ def main() -> int:
     )
 
     use_taskset = sys.platform.startswith("linux")
-    try:
-        tasks = build_task_list(float(args.hz_min), float(args.hz_max))
-    except ValueError as exc:
-        LOGGER.error("%s", exc)
-        return 1
+    scheduler: Optional[SpectralScheduler] = None
+    tasks_static: Optional[List[Tuple[float, Dict[str, Any]]]] = None
+    if args.legacy_static_schedule:
+        try:
+            tasks_static = build_task_list(float(args.hz_min), float(args.hz_max))
+        except ValueError as exc:
+            LOGGER.error("%s", exc)
+            return 1
+    else:
+        scheduler = SpectralScheduler(float(args.hz_min), float(args.hz_max))
+
     linux_pin_msg = " Linux: taskset cores leased from {1,2,3}." if use_taskset else ""
-    LOGGER.info(
-        "Planned %d worker task(s) from %.1f–%.1f Hz (max concurrent=%d workers.%s "
-        "sorting_root=%s | "
-        "Merge: conditional adaptive manager (zone wood 0.0008→0.0003, sparse overlap, "
-        "spectral shaping, HF quota ≥%.0f Hz).",
-        len(tasks),
-        float(args.hz_min),
-        float(args.hz_max),
-        MAX_CONCURRENT_WORKERS,
-        linux_pin_msg,
-        sorting_root,
-        ZONE_C_MIN_HZ,
-    )
+    if scheduler is not None:
+        LOGGER.info(
+            "Dynamic scout scheduler: seeds W1=f_start+12 Hz, W2=+6, W3=f_start; "
+            "zones Z1 step=%.0f Z2=%.0f Z3=%.0f Hz | Z1 num_modes≤%d Z3∈[%d,%d] | "
+            "merge wood V2 (100–450 Hz) + isolation relief (independent of SLEPc quota) | "
+            "max concurrent=%d workers.%s sorting_root=%s | HF quota ≥%.0f Hz.",
+            ZONE1_STEP_HZ,
+            ZONE2_STEP_HZ,
+            ZONE3_STEP_HZ,
+            ZONE1_NUM_MODES_CAP,
+            ZONE3_NUM_MODES_MIN,
+            ZONE3_NUM_MODES_MAX,
+            MAX_CONCURRENT_WORKERS,
+            linux_pin_msg,
+            sorting_root,
+            ZONE_C_MIN_HZ,
+        )
+    else:
+        assert tasks_static is not None
+        LOGGER.info(
+            "Planned %d worker task(s) from %.1f–%.1f Hz (max concurrent=%d workers.%s "
+            "sorting_root=%s | legacy static merge (HF quota ≥%.0f Hz).",
+            len(tasks_static),
+            float(args.hz_min),
+            float(args.hz_max),
+            MAX_CONCURRENT_WORKERS,
+            linux_pin_msg,
+            sorting_root,
+            ZONE_C_MIN_HZ,
+        )
 
     running: Dict[subprocess.Popen, Dict[str, Any]] = {}
     config_path = args.config.resolve()
-    next_i = 0
+    static_idx = 0
     last_spawn_mono: List[Optional[float]] = [None]
 
     _core_lock = threading.Lock()
@@ -786,9 +1208,7 @@ def main() -> int:
         with _core_lock:
             _core_free.append(int(cid))
 
-    def spawn_index(idx: int) -> None:
-        nonlocal next_i
-        hz, params = tasks[idx]
+    def spawn_worker(hz: float, params: Dict[str, Any], role: str) -> None:
         timeout_s = float(params["timeout_minutes"]) * 60.0
         if args.use_mpiexec:
             cmd = [
@@ -828,12 +1248,13 @@ def main() -> int:
             cmd = ["taskset", "-c", str(core_id)] + cmd
 
         LOGGER.info(
-            "Spawn worker: hz=%.4f (%s) num_modes=%s timeout=%.1f min (taskset_cpu=%s)",
+            "Spawn worker: hz=%.4f (%s) num_modes=%s timeout=%.1f min (taskset_cpu=%s) role=%s",
             hz,
             params.get("label", ""),
             params["num_modes"],
             float(params["timeout_minutes"]),
             core_id if core_id is not None else "n/a",
+            role or "-",
         )
         env = os.environ.copy()
         env.setdefault("OMP_NUM_THREADS", "1")
@@ -873,15 +1294,21 @@ def main() -> int:
             "deadline": time.monotonic() + timeout_s,
             "timeout_minutes": float(params["timeout_minutes"]),
             "core_id": core_id,
+            "role": role,
         }
         last_spawn_mono[0] = time.monotonic()
-        next_i = idx + 1
+
+    def _has_pending_tasks() -> bool:
+        if scheduler is not None:
+            return scheduler.has_pending()
+        assert tasks_static is not None
+        return static_idx < len(tasks_static)
 
     try:
-        while next_i < len(tasks) or running:
-            _poll_completed(running, log_path, sorting_root, merge_lock, release_core)
+        while _has_pending_tasks() or running:
+            _poll_completed(running, log_path, sorting_root, merge_lock, release_core, scheduler=scheduler)
             _enforce_timeouts(running, sorting_root, release_core)
-            while len(running) < MAX_CONCURRENT_WORKERS and next_i < len(tasks):
+            while len(running) < MAX_CONCURRENT_WORKERS and _has_pending_tasks():
                 if len(running) == 1:
                     LOGGER.info(
                         "Waiting %.0fs before second concurrent worker (mesh load / I/O stagger)...",
@@ -907,7 +1334,19 @@ def main() -> int:
                         )
                         time.sleep(wait_s)
 
-                spawn_index(next_i)
+                if scheduler is not None:
+                    nxt = scheduler.pop_next()
+                    if nxt is None:
+                        break
+                    hz_n, par_n, role_n = nxt
+                    spawn_worker(hz_n, par_n, role_n)
+                else:
+                    assert tasks_static is not None
+                    if static_idx >= len(tasks_static):
+                        break
+                    hz_s, par_s = tasks_static[static_idx]
+                    static_idx += 1
+                    spawn_worker(hz_s, par_s, "")
             time.sleep(0.25)
     except KeyboardInterrupt:
         LOGGER.warning("Interrupted — terminating running workers.")
