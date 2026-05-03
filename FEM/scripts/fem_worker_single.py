@@ -9,6 +9,11 @@ Writes mode displacement vectors as **float32 CSR** sparse columns (relative noi
 one file per mode under ``<sorting-root>/temp_modes/mode_*.smx.npz`` (default: ``FEM/SORTING``),
 plus JSON to ``<sorting-root>/temp_results/result_<mHz_tag>.json``. Use ``--sorting-root``
 to match ``fem_master_dynamic`` (required when the master uses a non-default lab SORTING).
+
+**Uniqueness** for each mode is computed only against (a) prior modes in the same worker batch and
+(b) existing vectors under ``temp_modes/`` on disk—not against rows in ``candidates_log.json`` whose
+files are missing. Modes below ``WORKER_UNIQUENESS_MIN`` are dropped before writing JSON; the master
+merge applies the same floor as a safety net.
 """
 from __future__ import annotations
 
@@ -42,6 +47,8 @@ from fem_mode_array_utils import (
 
 # Near-degenerate eigenpairs in one shift-invert batch (Hz); drop weak-unique duplicates.
 NEAR_MODE_HZ_WORKER = 0.05
+# Minimum uniqueness vs same-batch vectors + everything under ``temp_modes/`` (not candidates_log rows).
+WORKER_UNIQUENESS_MIN = 0.04
 from mpi4py import MPI
 
 
@@ -71,7 +78,18 @@ def _uniqueness_for_sparse_column(
     disk_exclude: Set[str],
     same_batch: List[sparse.csr_matrix],
 ) -> float:
-    """1 - max normalized |cos(u, u_j)| using sparse u-blocks only (O(K) per pair)."""
+    """
+    Structural uniqueness in ``[0, 1]``: ``1 - max_j |cos(u, u_j)|`` over sparse displacement blocks.
+
+    **Scope (local + on-disk, not the JSON log)**:
+    * ``same_batch``: CSR columns already accepted earlier in *this* worker invocation.
+    * ``temp_modes/``: every ``mode_*`` vector file on disk except paths in ``disk_exclude``.
+
+    Rows that exist only in ``candidates_log.json`` but whose ``vector_path`` files were removed
+    are invisible here; the master merge applies an additional uniqueness floor for those cases.
+    ``disk_exclude`` must include the absolute path of the slot about to be written so a stale
+    file from a prior run is not treated as ``self`` (which would force uniqueness to 0.0).
+    """
     v = csr_u_slice(vec_csr, n_u)
     nv = csr_col_norm(v)
     if nv <= 0.0:
@@ -100,7 +118,7 @@ def _uniqueness_for_sparse_column(
                 continue
             prev = dense_to_csr_f32_column(arr)
             max_ov = max(max_ov, csr_normalized_overlap(v, csr_u_slice(prev, n_u)))
-    return 1.0 - max_ov
+    return float(max(0.0, min(1.0, 1.0 - max_ov)))
 
 
 def _atomic_write_json(path: Path, payload: Dict) -> None:
@@ -224,19 +242,26 @@ def main() -> int:
         rt = float(tag1[j])
         rb = float(tag3[j])
         wood = max(0.0, rt + rb)
-        uniq = _uniqueness_for_sparse_column(vec_csr, n_u_g, temp_modes, exclude, same_batch)
+        rel = Path("temp_modes") / f"mode_w_{hz_tag}_{j:03d}{MODE_VECTOR_FILE_SUFFIX}"
+        pending_abs = str((sorting_root / rel).resolve())
+        disk_exclude_scan = set(exclude)
+        disk_exclude_scan.add(pending_abs)
+        uniq = _uniqueness_for_sparse_column(
+            vec_csr, n_u_g, temp_modes, disk_exclude_scan, same_batch
+        )
         fj = float(freqs_hz[j])
         if (
             math.isfinite(last_kept_hz)
             and abs(fj - last_kept_hz) < NEAR_MODE_HZ_WORKER
-            and float(uniq) < 0.04
+            and float(uniq) < WORKER_UNIQUENESS_MIN
         ):
+            continue
+        if float(uniq) < WORKER_UNIQUENESS_MIN - 1e-15:
             continue
         u_blk = csr_u_slice(vec_csr, n_u_g)
         col_norm = float(csr_col_norm(u_blk))
         if col_norm < 1e-12:
             continue
-        rel = Path("temp_modes") / f"mode_w_{hz_tag}_{j:03d}{MODE_VECTOR_FILE_SUFFIX}"
         abs_path = (sorting_root / rel).resolve()
         save_mode_csr(abs_path, vec_csr)
         exclude.add(str(abs_path))
@@ -258,12 +283,12 @@ def main() -> int:
     out = {
         "target_hz": float(args.target_hz),
         "num_modes_requested": int(args.num_modes),
-        "num_modes_returned": int(n_modes),
+        "num_modes_returned": int(len(candidates)),
         "candidates": candidates,
     }
     rpath = result_json_path(sorting_root, float(args.target_hz))
     _atomic_write_json(rpath, out)
-    print(f"[worker] Wrote {n_modes} sparse mode(s); metadata -> {rpath}")
+    print(f"[worker] Wrote {len(candidates)} sparse mode(s); metadata -> {rpath}")
     sys.stdout.flush()
     return 0
 

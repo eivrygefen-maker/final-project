@@ -161,6 +161,8 @@ SLEPC_NUM_MODES_ABSOLUTE_CEILING = 100
 MERGE_SHIFT_CLUSTER_SPAN_HZ = 1.0
 MERGE_SHIFT_CLUSTER_MIN_MODES = 20
 WORKER_COL_NORM_MIN = 1e-9
+# Incoming worker rows must meet this uniqueness floor (matches worker thin gate).
+MERGE_INCOMING_UNIQUENESS_MIN = 0.04
 
 # --- Isolation / MMR-style spectral shaping ---
 MIN_UNIQUENESS_FOR_ISOLATION = 0.06
@@ -1223,6 +1225,33 @@ def _merge_result_into_candidates_log(
             "Merge: dropped %d worker candidate(s) with column_l2_norm < %.1e (ghost / null displacement).",
             ghost_drops,
             WORKER_COL_NORM_MIN,
+        )
+    if not raw:
+        try:
+            result_path.unlink()
+        except OSError:
+            pass
+        return None
+
+    uniq_drops = 0
+    raw_uq: List[Dict[str, Any]] = []
+    for c in raw:
+        try:
+            ru = c.get("uniqueness", None)
+            u = float(ru) if ru is not None else -1.0
+        except (TypeError, ValueError):
+            u = -1.0
+        if u < MERGE_INCOMING_UNIQUENESS_MIN - 1e-15:
+            uniq_drops += 1
+            _unlink_worker_vector(c, path_root)
+            continue
+        raw_uq.append(c)
+    raw = raw_uq
+    if uniq_drops:
+        LOGGER.info(
+            "Merge: dropped %d incoming candidate(s) with uniqueness < %.2f (master safety net).",
+            uniq_drops,
+            MERGE_INCOMING_UNIQUENESS_MIN,
         )
     if not raw:
         try:
