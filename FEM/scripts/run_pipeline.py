@@ -301,12 +301,15 @@ def main() -> int:
 
     t0 = time.perf_counter()
 
+    sorting_root = (REPO_ROOT / "FEM" / "SORTING").resolve()
     step_a = [
         py,
         str(master),
         "--use-mpiexec",
         "--config",
         str(effective_config.resolve()),
+        "--sorting-root",
+        str(sorting_root),
     ]
     if _run_step("Step A — FEM master sweep (subprocess workers)", step_a, REPO_ROOT) != 0:
         return 1

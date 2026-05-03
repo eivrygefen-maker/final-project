@@ -64,6 +64,19 @@ SORTING_LOG = SORTING_ROOT / "candidates_log.json"
 SORTING_TEMP_MODES = SORTING_ROOT / "temp_modes"
 
 
+def set_sorting_root(path: Path) -> None:
+    """
+    Redirect ``SORTING_ROOT`` / ``SORTING_LOG`` / ``SORTING_TEMP_MODES`` (e.g. worker subprocess
+    when ``fem_master_dynamic`` uses ``--sorting-root`` or a LAB layout). Must be called on all
+    MPI ranks before any sorting-path I/O if workers are not using the default ``FEM/SORTING``.
+    """
+    global SORTING_ROOT, SORTING_LOG, SORTING_TEMP_MODES
+    root = Path(path).expanduser().resolve()
+    SORTING_ROOT = root
+    SORTING_LOG = root / "candidates_log.json"
+    SORTING_TEMP_MODES = root / "temp_modes"
+
+
 def _root_print(*args, **kwargs):
     """Hard silence for worker ranks to avoid MPI stdio contention/spin-waits."""
     if MPI.COMM_WORLD.rank == ROOT_RANK:

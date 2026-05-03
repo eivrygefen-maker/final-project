@@ -6,9 +6,9 @@ Loads coupled operators via ``fem_main_3d`` (expects **exactly one MPI rank** â€
 e.g. ``taskset -c 1 mpiexec -n 1 python FEM/scripts/fem_worker_single.py ...`` as spawned by the master).
 
 Writes mode displacement vectors as **float32 CSR** sparse columns (relative noise sparsified),
-one file per mode under ``FEM/SORTING/temp_modes/mode_*.smx.npz``, plus a small
-JSON summary to ``FEM/SORTING/temp_results/result_<mHz_tag>.json`` for the master
-to merge into ``candidates_log.json``.
+one file per mode under ``<sorting-root>/temp_modes/mode_*.smx.npz`` (default: ``FEM/SORTING``),
+plus JSON to ``<sorting-root>/temp_results/result_<mHz_tag>.json``. Use ``--sorting-root``
+to match ``fem_master_dynamic`` (required when the master uses a non-default lab SORTING).
 """
 from __future__ import annotations
 
@@ -116,7 +116,19 @@ def main() -> int:
         default=REPO_ROOT / "FEM" / "configs" / "guitar_3d.json",
         help="Case JSON (same as main 3D FEM driver).",
     )
+    parser.add_argument(
+        "--sorting-root",
+        type=Path,
+        default=None,
+        help=(
+            "SORTING workspace (temp_modes/, temp_results/, candidates_log.json). "
+            "Must match fem_master_dynamic --sorting-root (default: FEM/SORTING next to FEM package)."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.sorting_root is not None:
+        fem3d.set_sorting_root(args.sorting_root.resolve())
 
     if MPI.COMM_WORLD.size != 1:
         if MPI.COMM_WORLD.rank == 0:

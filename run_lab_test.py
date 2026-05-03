@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
-Isolated FEM lab run: copy config + mesh into LAB/test_run_<timestamp>/, sweep with
-``fem_master_dynamic`` into a private SORTING tree (no global candidates_log / ROM),
-then MMR + package ROM under the lab folder only.
+Isolated FEM lab run: copy config + mesh into ``LABS/test_run_<timestamp>/``, sweep with
+``fem_master_dynamic`` into that lab's ``SORTING/`` tree only.
+
+``fem_master_dynamic`` passes ``--sorting-root`` to every ``fem_worker_single`` subprocess so
+mode vectors and ``temp_results/*.json`` are written under the lab SORTING folder (never the
+repo's ``FEM/SORTING`` production tree), then MMR + package ROM use the same paths.
 """
 from __future__ import annotations
 
@@ -174,6 +177,11 @@ def main() -> int:
     lab_rom = lab / "rom" / "lab_rom.npz"
     csv_out = sorting_root / "selected_modes.csv"
     plot_out = sorting_root / "selection_plot.png"
+
+    print(
+        f"[lab] Isolated SORTING (master + workers via --sorting-root): {sorting_root}",
+        flush=True,
+    )
 
     master_cmd = [
         py,

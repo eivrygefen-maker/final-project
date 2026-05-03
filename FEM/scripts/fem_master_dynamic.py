@@ -182,12 +182,46 @@ def _row_key(c: Dict[str, Any]) -> Tuple[float, str]:
     return (float(c.get("hz", 0.0) or 0.0), str(c.get("vector_path", "") or ""))
 
 
-def _resolve_vector_abs(row: Dict[str, Any], sorting_root: Path) -> Optional[Path]:
+def _is_resolved_path_under_root(path: Path, root: Path) -> bool:
+    """True if ``path`` is ``root`` or a descendant (after resolve). Robust vs ``Path.parents`` identity quirks."""
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_vector_abs(row: Dict[str, Any], path_root: Path) -> Optional[Path]:
+    """
+    Resolve ``row['vector_path']`` (relative to ``path_root``) to an existing file.
+    Logs the full candidate path whenever resolution fails (no silent skip).
+    """
     rel = Path(str(row.get("vector_path", "") or ""))
+    root = path_root.resolve()
     if not rel.parts:
+        LOGGER.warning(
+            "merge: missing vector_path (path_root=%s row hz=%r id=%r)",
+            root,
+            row.get("hz"),
+            row.get("id"),
+        )
         return None
-    p = (sorting_root / rel).resolve()
-    if not p.is_file() or sorting_root not in p.parents:
+    p = (root / rel).resolve()
+    if not p.is_file():
+        LOGGER.warning(
+            "merge: mode vector not found | path_root=%s | vector_path=%s | resolved=%s | parent_exists=%s",
+            root,
+            rel.as_posix(),
+            p,
+            p.parent.is_dir(),
+        )
+        return None
+    if not _is_resolved_path_under_root(p, root):
+        LOGGER.warning(
+            "merge: resolved vector outside path_root (refusing) | path_root=%s | resolved=%s",
+            root,
+            p,
+        )
         return None
     return p
 
@@ -413,13 +447,14 @@ def _adaptive_manager_select(
     return picked_rows, discarded, score_map
 
 
-def _unlink_worker_vector(row: Dict[str, Any], sorting_root: Path) -> None:
+def _unlink_worker_vector(row: Dict[str, Any], path_root: Path) -> None:
     rel = Path(str(row.get("vector_path", "") or ""))
     if not rel.parts:
         return
-    p = (sorting_root / rel).resolve()
+    root = path_root.resolve()
+    p = (root / rel).resolve()
     try:
-        if p.is_file() and sorting_root in p.parents:
+        if p.is_file() and _is_resolved_path_under_root(p, root):
             p.unlink()
     except OSError as exc:
         LOGGER.warning("Could not remove discarded mode vector %s: %s", p, exc)
@@ -447,7 +482,16 @@ def _merge_result_into_candidates_log(
     log_path: Path,
     lock: threading.Lock,
     sorting_root: Path,
+    *,
+    override_root: Optional[Path] = None,
 ) -> None:
+    """
+    Merge one worker ``result_*.json`` into ``candidates_log.json``.
+
+    ``sorting_root`` is the workspace that holds ``temp_results/`` and ``candidates_log.json``.
+    ``override_root`` (LAB / custom layouts): when set, resolve ``vector_path`` and unlink
+    worker vectors under this directory instead of ``sorting_root``. Defaults to ``sorting_root``.
+    """
     if not result_path.is_file():
         return
     try:
@@ -464,6 +508,8 @@ def _merge_result_into_candidates_log(
             pass
         return
 
+    path_root = (override_root if override_root is not None else sorting_root).resolve()
+
     raw_n = len(raw)
     veto_pass: List[Dict[str, Any]] = []
     failed_veto: List[Dict[str, Any]] = []
@@ -474,7 +520,7 @@ def _merge_result_into_candidates_log(
             failed_veto.append(c)
 
     for c in failed_veto:
-        _unlink_worker_vector(c, sorting_root)
+        _unlink_worker_vector(c, path_root)
 
     if not veto_pass:
         LOGGER.warning(
@@ -482,18 +528,18 @@ def _merge_result_into_candidates_log(
             result_path.name,
         )
         for c in raw:
-            _unlink_worker_vector(c, sorting_root)
+            _unlink_worker_vector(c, path_root)
         try:
             result_path.unlink()
         except OSError:
             pass
         return
 
-    batch_loaded = _load_batch_csr_pairs(veto_pass, sorting_root)
+    batch_loaded = _load_batch_csr_pairs(veto_pass, path_root)
     if not batch_loaded:
         LOGGER.warning("No loadable sparse vectors after wood veto for %s.", result_path.name)
         for c in raw:
-            _unlink_worker_vector(c, sorting_root)
+            _unlink_worker_vector(c, path_root)
         try:
             result_path.unlink()
         except OSError:
@@ -510,10 +556,10 @@ def _merge_result_into_candidates_log(
             payload = {"candidates": []}
         existing = list(payload.get("candidates") or [])
 
-        thin_kept, thin_discarded, _scores = _adaptive_manager_select(batch_loaded, existing, sorting_root)
+        thin_kept, thin_discarded, _scores = _adaptive_manager_select(batch_loaded, existing, path_root)
 
         for c in thin_discarded:
-            _unlink_worker_vector(c, sorting_root)
+            _unlink_worker_vector(c, path_root)
 
         dropped_total = raw_n - len(thin_kept)
         if dropped_total > 0:
@@ -531,7 +577,7 @@ def _merge_result_into_candidates_log(
                 result_path.name,
             )
             for c in raw:
-                _unlink_worker_vector(c, sorting_root)
+                _unlink_worker_vector(c, path_root)
             try:
                 result_path.unlink()
             except OSError:
@@ -544,9 +590,9 @@ def _merge_result_into_candidates_log(
             new_id = int(mx + 1 + i)
             row = dict(rec)
             rel_old = Path(str(row.get("vector_path", "")))
-            old_abs = (sorting_root / rel_old).resolve()
+            old_abs = (path_root / rel_old).resolve()
             new_rel = Path("temp_modes") / f"mode_{new_id:06d}{MODE_VECTOR_FILE_SUFFIX}"
-            new_abs = (sorting_root / new_rel).resolve()
+            new_abs = (path_root / new_rel).resolve()
             if old_abs.is_file():
                 if new_abs != old_abs:
                     if new_abs.exists():
@@ -688,6 +734,12 @@ def main() -> int:
     if not log_path.exists():
         log_path.write_text(json.dumps({"candidates": []}, indent=2), encoding="utf-8")
 
+    LOGGER.info(
+        "sorting_root=%s — each worker is spawned with the same --sorting-root so vectors "
+        "and temp_results JSON land here (matches merge path resolution).",
+        sorting_root,
+    )
+
     use_taskset = sys.platform.startswith("linux")
     try:
         tasks = build_task_list(float(args.hz_min), float(args.hz_max))
@@ -753,6 +805,8 @@ def main() -> int:
                 str(int(params["num_modes"])),
                 "--config",
                 str(config_path),
+                "--sorting-root",
+                str(sorting_root),
             ]
         else:
             cmd = [
@@ -764,6 +818,8 @@ def main() -> int:
                 str(int(params["num_modes"])),
                 "--config",
                 str(config_path),
+                "--sorting-root",
+                str(sorting_root),
             ]
 
         core_id: Optional[int] = None
