@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -38,6 +39,9 @@ from fem_mode_array_utils import (
     dense_to_csr_f32_column,
     save_mode_csr,
 )
+
+# Near-degenerate eigenpairs in one shift-invert batch (Hz); drop weak-unique duplicates.
+NEAR_MODE_HZ_WORKER = 0.05
 from mpi4py import MPI
 
 
@@ -213,6 +217,7 @@ def main() -> int:
     candidates: List[Dict] = []
     same_batch: List[sparse.csr_matrix] = []
     exclude: Set[str] = set()
+    last_kept_hz: float = float("-inf")
 
     for j in range(n_modes):
         vec_csr = dense_to_csr_f32_column(eigvecs[:, j])
@@ -220,6 +225,17 @@ def main() -> int:
         rb = float(tag3[j])
         wood = max(0.0, rt + rb)
         uniq = _uniqueness_for_sparse_column(vec_csr, n_u_g, temp_modes, exclude, same_batch)
+        fj = float(freqs_hz[j])
+        if (
+            math.isfinite(last_kept_hz)
+            and abs(fj - last_kept_hz) < NEAR_MODE_HZ_WORKER
+            and float(uniq) < 0.04
+        ):
+            continue
+        u_blk = csr_u_slice(vec_csr, n_u_g)
+        col_norm = float(csr_col_norm(u_blk))
+        if col_norm < 1e-12:
+            continue
         rel = Path("temp_modes") / f"mode_w_{hz_tag}_{j:03d}{MODE_VECTOR_FILE_SUFFIX}"
         abs_path = (sorting_root / rel).resolve()
         save_mode_csr(abs_path, vec_csr)
@@ -234,8 +250,10 @@ def main() -> int:
                 "tag1_ratio": float(rt),
                 "tag3_ratio": float(rb),
                 "vector_path": str(rel).replace("\\", "/"),
+                "column_l2_norm": float(col_norm),
             }
         )
+        last_kept_hz = fj
 
     out = {
         "target_hz": float(args.target_hz),

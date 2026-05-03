@@ -22,10 +22,12 @@ zones**, per-job timeouts, and merge of worker JSON into ``candidates_log.json``
 **Legacy**: ``--legacy-static-schedule`` restores fixed ``get_band_params`` stepping.
 
 **Resume**: ``candidates_log.json`` may list ``completed_shift_targets`` (shift ``target_hz`` values).
+All shift identity checks use ``HZ_TOLERANCE`` (1e-4 Hz) via ``hz_shift_key`` / ``hz_shift_quantize``.
 If that list is empty but ``candidates`` is not, a **recovery scan** infers shifts from
 ``vector_path`` (``mode_w_<mHz>_``) or from mode ``hz`` snapped to the band table step, writes
 ``completed_shift_targets`` when ``merge_lock`` is provided, and advances the cursor by the
-scheduler zone step. ``pop_next`` skips shifts already in that set (no worker). Pending
+scheduler zone step. Scout seeds and the cursor never schedule below ``max(completed_shift_targets)``
+(see ``_max_completed_shift_hz``). ``pop_next`` skips shifts already in that set (no worker). Pending
 ``temp_results/result_*.json`` files are merged once at startup before scheduling.
 
 Resource policy: at most **3** concurrent workers; Linux ``taskset`` cores ``{1,2,3}`` +
@@ -86,6 +88,41 @@ MIN_SPAWN_GAP_SECONDS = 5.0
 # --- Frequency clustering (same scale as legacy gap thinning) ---
 MIN_HZ_GAP = 0.4
 
+# --- Shift identity / resume idempotency (float-safe; all "completed?" checks use this) ---
+HZ_TOLERANCE = 1e-4
+
+
+def hz_shift_quantize(hz: float) -> float:
+    """Canonical shift frequency on a fixed grid (``HZ_TOLERANCE`` Hz)."""
+    return round(float(hz) / HZ_TOLERANCE) * HZ_TOLERANCE
+
+
+def hz_shift_key(hz: float) -> str:
+    """Stable dict/set key for a shift center (tolerant to tiny float noise)."""
+    return f"{hz_shift_quantize(hz):.8f}"
+
+
+def hz_shift_markers_match(a: float, b: float) -> bool:
+    """True if two shift centers represent the same bucket (within ``HZ_TOLERANCE``)."""
+    return abs(hz_shift_quantize(a) - hz_shift_quantize(b)) <= HZ_TOLERANCE + 1e-12
+
+
+def hz_any_matches_completed_shift(target: float, completed_values: List[float]) -> bool:
+    for x in completed_values:
+        if hz_shift_markers_match(target, float(x)):
+            return True
+    return False
+
+
+def efficiency_index_sanitized(raw_modes_per_hz: float) -> float:
+    """Map raw modes/Hz into ``[3, 15]`` for zone hysteresis (limits optimiser noise)."""
+    lo, hi = 3.0, 15.0
+    x = math.log1p(max(0.0, float(raw_modes_per_hz)))
+    denom = math.log1p(25.0)
+    if denom <= 0.0:
+        return lo
+    return float(lo + (hi - lo) * min(1.0, x / denom))
+
 # --- Legacy zone wood floors (linear 100 Hz → 350 Hz); superseded by V2 when dynamic merge is on ---
 WOOD_FLOOR_HZ_ANCHOR_LO = 100.0
 WOOD_FLOOR_HZ_ANCHOR_HI = 350.0
@@ -119,6 +156,11 @@ EFFICIENCY_HISTORY_MAX = 5
 EFFICIENCY_HIGH_THRESHOLD = 12.0
 EFFICIENCY_LOW_THRESHOLD = 3.0
 SLEPC_NUM_MODES_ABSOLUTE_CEILING = 100
+
+# --- Merge-time physical density (numerical duplicate clusters) ---
+MERGE_SHIFT_CLUSTER_SPAN_HZ = 1.0
+MERGE_SHIFT_CLUSTER_MIN_MODES = 20
+WORKER_COL_NORM_MIN = 1e-9
 
 # --- Isolation / MMR-style spectral shaping ---
 MIN_UNIQUENESS_FOR_ISOLATION = 0.06
@@ -187,7 +229,7 @@ def _recovery_infer_shift_targets_from_candidates(
         vp = str(c.get("vector_path", "") or "")
         m = re.search(r"mode_w_(\d+)_", vp, flags=re.IGNORECASE)
         if m:
-            inferred.add(round(int(m.group(1)) / 1000.0, 6))
+            inferred.add(hz_shift_quantize(int(m.group(1)) / 1000.0))
             continue
         try:
             mh = float(c.get("hz", 0.0) or 0.0)
@@ -202,7 +244,7 @@ def _recovery_infer_shift_targets_from_candidates(
             step = ZONE2_STEP_HZ
         step = max(step, 1e-6)
         k = f0 + round((mh - f0) / step) * step
-        inferred.add(round(float(k), 6))
+        inferred.add(hz_shift_quantize(float(k)))
     return inferred
 
 
@@ -291,6 +333,7 @@ class SpectralScheduler:
     _efficiency_history: Deque[float] = field(
         default_factory=lambda: deque(maxlen=EFFICIENCY_HISTORY_MAX), repr=False
     )
+    _max_completed_shift_hz: float = field(default=-math.inf, repr=False)
 
     def __post_init__(self) -> None:
         self._n_modes_in_log = 0
@@ -305,7 +348,9 @@ class SpectralScheduler:
 
     def register_completed_shift(self, target_hz: float) -> None:
         """Mark a shift target finished after a successful merge (same-run dedupe for ``pop_next``)."""
-        self._scheduled.add(self._hz_key(float(target_hz)))
+        th = float(target_hz)
+        self._scheduled.add(self._hz_key(th))
+        self._max_completed_shift_hz = max(self._max_completed_shift_hz, th)
 
     def _log_resume_verification_table(self) -> None:
         """Startup summary: modes in log, recovery-inferred shifts, first scheduled target."""
@@ -349,7 +394,7 @@ class SpectralScheduler:
         initial_completed: Set[float] = set()
         for x in payload.get("completed_shift_targets") or []:
             try:
-                initial_completed.add(round(float(x), 6))
+                initial_completed.add(hz_shift_quantize(float(x)))
             except (TypeError, ValueError):
                 continue
         completed: Set[float] = set(initial_completed)
@@ -377,11 +422,15 @@ class SpectralScheduler:
                     )
         for t in completed:
             self._scheduled.add(self._hz_key(float(t)))
+        if completed:
+            self._max_completed_shift_hz = max(float(t) for t in completed)
+        else:
+            self._max_completed_shift_hz = -math.inf
 
         inf_eff = _resume_efficiency_index_from_log(cands, completed)
         if inf_eff is not None and math.isfinite(inf_eff):
             self._efficiency_history.clear()
-            self._efficiency_history.append(float(inf_eff))
+            self._efficiency_history.append(efficiency_index_sanitized(float(inf_eff)))
             if inf_eff > EFFICIENCY_HIGH_THRESHOLD:
                 self._zone_effective = 1
                 self._pending_zone = None
@@ -414,7 +463,15 @@ class SpectralScheduler:
             (max(f0, min(hi, f0 + 6.0)), "W2"),
             (f0, "W3"),
         ]
+        mx_done = float(self._max_completed_shift_hz)
         for hz, tag in seeds:
+            if math.isfinite(mx_done) and float(hz) <= mx_done + HZ_TOLERANCE:
+                LOGGER.info(
+                    "Resume: skip scout seed %.4f Hz (at or behind max completed shift %.4f Hz).",
+                    float(hz),
+                    mx_done,
+                )
+                continue
             if self._shift_target_done(hz):
                 continue
             p = self._band_params_with_zone_step(hz, tag)
@@ -422,7 +479,7 @@ class SpectralScheduler:
             self._seed_queue.append((hz, p, role))
 
     def _hz_key(self, hz: float) -> str:
-        return f"{round(float(hz), 4):.4f}"
+        return hz_shift_key(hz)
 
     def _current_step_hz(self) -> float:
         z = self._zone_effective
@@ -450,16 +507,24 @@ class SpectralScheduler:
 
     def _peek_next_task(self) -> Optional[Tuple[float, Dict[str, Any], str]]:
         """Read-only first upcoming task (same priority order as ``pop_next``)."""
+        mx_done = float(self._max_completed_shift_hz)
         for hz, p, role in list(self._backfill):
+            if math.isfinite(mx_done) and float(hz) <= mx_done + HZ_TOLERANCE:
+                continue
             if not self._shift_target_done(hz):
                 return (hz, p, role)
         for hz, p, role in list(self._seed_queue):
+            if math.isfinite(mx_done) and float(hz) <= mx_done + HZ_TOLERANCE:
+                continue
             if not self._shift_target_done(hz):
                 return (hz, p, role)
         cur = float(self._cursor_hz)
         step = self._current_step_hz()
         while cur <= self.hz_max + 1e-9:
             hz = float(cur)
+            if math.isfinite(mx_done) and hz <= mx_done + HZ_TOLERANCE:
+                cur += step
+                continue
             if not self._shift_target_done(hz):
                 return (hz, self._band_params_with_zone_step(hz, "peek"), "")
             cur += step
@@ -501,8 +566,16 @@ class SpectralScheduler:
         return MergeContext(2, MIN_HZ_GAP, 1.0, MIN_UNIQUENESS_FOR_ISOLATION)
 
     def pop_next(self) -> Optional[Tuple[float, Dict[str, Any], str]]:
+        mx_done = float(self._max_completed_shift_hz)
         while self._backfill:
             hz, p, role = self._backfill.popleft()
+            if math.isfinite(mx_done) and float(hz) <= mx_done + HZ_TOLERANCE:
+                LOGGER.debug(
+                    "Resume skip: backfill %.4f Hz at or behind max completed %.4f Hz.",
+                    float(hz),
+                    mx_done,
+                )
+                continue
             if self._shift_target_done(hz):
                 LOGGER.debug(
                     "Resume skip: shift %.4f Hz already completed (backfill queue); advancing without worker.",
@@ -513,6 +586,13 @@ class SpectralScheduler:
             return (hz, p, role)
         while self._seed_queue:
             hz, p, role = self._seed_queue.popleft()
+            if math.isfinite(mx_done) and float(hz) <= mx_done + HZ_TOLERANCE:
+                LOGGER.debug(
+                    "Resume skip: seed %.4f Hz at or behind max completed %.4f Hz.",
+                    float(hz),
+                    mx_done,
+                )
+                continue
             if self._shift_target_done(hz):
                 LOGGER.debug(
                     "Resume skip: shift %.4f Hz already completed (seed queue); advancing without worker.",
@@ -524,9 +604,17 @@ class SpectralScheduler:
         if not self._seeds_drained:
             self._seeds_drained = True
         step = self._current_step_hz()
+        mx_done = float(self._max_completed_shift_hz)
         while self._cursor_hz <= self.hz_max + 1e-9:
             hz = float(self._cursor_hz)
             self._cursor_hz += step
+            if math.isfinite(mx_done) and hz <= mx_done + HZ_TOLERANCE:
+                LOGGER.debug(
+                    "Resume skip: cursor %.4f Hz at or behind max completed %.4f Hz; advancing.",
+                    hz,
+                    mx_done,
+                )
+                continue
             key = self._hz_key(hz)
             if key in self._scheduled:
                 LOGGER.debug(
@@ -611,7 +699,8 @@ class SpectralScheduler:
         High density forces Z1; low density forces Z3; otherwise yield/wood classification.
         """
         step = max(float(spectral_step_hz), 1e-9)
-        instant_eff = float(stats.kept_after_manager) / step
+        instant_raw = float(stats.kept_after_manager) / step
+        instant_eff = efficiency_index_sanitized(instant_raw)
         self._efficiency_history.append(instant_eff)
         smooth_eff = (
             float(sum(self._efficiency_history) / len(self._efficiency_history))
@@ -629,15 +718,19 @@ class SpectralScheduler:
         decision = "Jump" if post_zone != pre_zone else "Stay"
         next_step = float(self._current_step_hz())
         LOGGER.info(
-            "[OPTIMIZER] Efficiency: %.2f modes/Hz (smooth=%.2f) | Decision: %s | Next Step: %.1f Hz",
-            instant_eff,
+            "[OPTIMIZER] Efficiency: %.2f modes/Hz raw (sanitized smooth=%.2f) | Decision: %s | Next Step: %.1f Hz",
+            instant_raw,
             smooth_eff,
             decision,
             next_step,
         )
 
     def _inject_backfill(self, scout_hz: float) -> None:
-        lo = max(self.hz_min, scout_hz - 28.0)
+        mx_c = float(self._max_completed_shift_hz)
+        lo_scout = max(float(self.hz_min), float(scout_hz) - 28.0)
+        lo = lo_scout
+        if math.isfinite(mx_c):
+            lo = max(lo, mx_c + HZ_TOLERANCE)
         inserted = 0
         h = lo
         while h < scout_hz - 0.5 and inserted < 24:
@@ -1111,6 +1204,33 @@ def _merge_result_into_candidates_log(
         return None
 
     path_root = (override_root if override_root is not None else sorting_root).resolve()
+    ghost_drops = 0
+    raw_pruned: List[Dict[str, Any]] = []
+    for c in raw:
+        nz = c.get("column_l2_norm")
+        if nz is not None:
+            try:
+                if float(nz) < WORKER_COL_NORM_MIN:
+                    ghost_drops += 1
+                    _unlink_worker_vector(c, path_root)
+                    continue
+            except (TypeError, ValueError):
+                pass
+        raw_pruned.append(c)
+    raw = raw_pruned
+    if ghost_drops:
+        LOGGER.info(
+            "Merge: dropped %d worker candidate(s) with column_l2_norm < %.1e (ghost / null displacement).",
+            ghost_drops,
+            WORKER_COL_NORM_MIN,
+        )
+    if not raw:
+        try:
+            result_path.unlink()
+        except OSError:
+            pass
+        return None
+
     raw_n = len(raw)
     woods: List[float] = []
     for c in raw:
@@ -1124,13 +1244,13 @@ def _merge_result_into_candidates_log(
     try:
         tz = incoming.get("target_hz")
         if tz is not None:
-            tgt_early = round(float(tz), 6)
+            tgt_early = hz_shift_quantize(float(tz))
     except (TypeError, ValueError):
         tgt_early = None
     if tgt_early is None:
         tfn = _target_hz_from_result_filename(result_path)
         if tfn is not None:
-            tgt_early = round(float(tfn), 6)
+            tgt_early = hz_shift_quantize(float(tfn))
     skip_completed_shift = False
     if tgt_early is not None:
         with lock:
@@ -1141,13 +1261,13 @@ def _merge_result_into_candidates_log(
                     pl_early = {}
             else:
                 pl_early = {}
-            done_early: Set[float] = set()
+            done_early_list: List[float] = []
             for x in pl_early.get("completed_shift_targets") or []:
                 try:
-                    done_early.add(round(float(x), 6))
+                    done_early_list.append(hz_shift_quantize(float(x)))
                 except (TypeError, ValueError):
                     continue
-            skip_completed_shift = tgt_early in done_early
+            skip_completed_shift = hz_any_matches_completed_shift(float(tgt_early), done_early_list)
     if skip_completed_shift:
         LOGGER.info(
             "Merge idempotent: shift %.6f Hz already in completed_shift_targets; skipping merge.",
@@ -1177,6 +1297,31 @@ def _merge_result_into_candidates_log(
             all_hz.append(float(c.get("hz", 0.0) or 0.0))
         except (TypeError, ValueError):
             all_hz.append(0.0)
+    finite_hz = [float(h) for h in all_hz if math.isfinite(float(h))]
+    if len(finite_hz) >= MERGE_SHIFT_CLUSTER_MIN_MODES:
+        hz_span = float(max(finite_hz) - min(finite_hz))
+        if hz_span < MERGE_SHIFT_CLUSTER_SPAN_HZ - 1e-12:
+            LOGGER.warning(
+                "Suspect shift (density ceiling): %d modes within %.4f Hz span (< %.1f Hz); "
+                "rejecting merge for %s (numerical duplicate cluster / poisoned batch).",
+                len(finite_hz),
+                hz_span,
+                MERGE_SHIFT_CLUSTER_SPAN_HZ,
+                result_path.name,
+            )
+            for c in raw:
+                _unlink_worker_vector(c, path_root)
+            try:
+                result_path.unlink()
+            except OSError:
+                pass
+            return MergeStats(
+                raw_n=raw_n,
+                kept_after_veto=0,
+                kept_after_manager=0,
+                avg_wood_raw=avg_wood_raw,
+                yield_kept_over_raw=0.0,
+            )
 
     veto_pass: List[Dict[str, Any]] = []
     failed_veto: List[Dict[str, Any]] = []
@@ -1278,7 +1423,6 @@ def _merge_result_into_candidates_log(
             )
 
         mx = max((int(c.get("id", -1)) for c in existing), default=-1)
-        hz_row_dedup_tol = 5e-5
         add_i = 0
         for rec in thin_kept:
             row = dict(rec)
@@ -1295,7 +1439,7 @@ def _merge_result_into_candidates_log(
                         eh = float(e.get("hz", 0.0) or 0.0)
                     except (TypeError, ValueError):
                         continue
-                    if math.isfinite(eh) and abs(eh - nh) <= hz_row_dedup_tol:
+                    if math.isfinite(eh) and math.isfinite(nh) and hz_shift_markers_match(eh, nh):
                         row_dupe = True
                         break
             if row_dupe:
@@ -1347,8 +1491,8 @@ def _merge_result_into_candidates_log(
 
 
 def _append_completed_shift_to_log(log_path: Path, lock: threading.Lock, target_hz: float) -> None:
-    """Persist ``completed_shift_targets`` (idempotent) for resume across runs."""
-    key = round(float(target_hz), 6)
+    """Persist ``completed_shift_targets`` (idempotent, ``HZ_TOLERANCE``-aware) for resume across runs."""
+    key = hz_shift_quantize(float(target_hz))
     with lock:
         if not log_path.exists():
             payload: Dict[str, Any] = {"candidates": [], "completed_shift_targets": []}
@@ -1357,8 +1501,8 @@ def _append_completed_shift_to_log(log_path: Path, lock: threading.Lock, target_
                 payload = json.loads(log_path.read_text(encoding="utf-8"))
             except Exception:
                 payload = {"candidates": [], "completed_shift_targets": []}
-        arr = [round(float(x), 6) for x in (payload.get("completed_shift_targets") or [])]
-        if key in arr:
+        arr = [hz_shift_quantize(float(x)) for x in (payload.get("completed_shift_targets") or [])]
+        if hz_any_matches_completed_shift(key, arr):
             return
         arr.append(float(key))
         arr.sort()
