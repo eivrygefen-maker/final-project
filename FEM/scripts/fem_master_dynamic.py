@@ -20,6 +20,11 @@ zones**, per-job timeouts, and merge of worker JSON into ``candidates_log.json``
 
 **Legacy**: ``--legacy-static-schedule`` restores fixed ``get_band_params`` stepping.
 
+**Resume**: ``candidates_log.json`` may list ``completed_shift_targets`` (shift ``target_hz`` values).
+Unique mode ``hz`` entries are counted for the resume log line; the spectral cursor starts after the
+last completed shift. ``pop_next`` skips shifts already in that set (no worker). Pending
+``temp_results/result_*.json`` files are merged once at startup before scheduling.
+
 Resource policy: at most **3** concurrent workers; Linux ``taskset`` cores ``{1,2,3}`` +
 ``mpiexec --bind-to none -n 1``.
 """
@@ -29,6 +34,7 @@ import argparse
 import gc
 import json
 import logging
+import re
 import math
 import os
 import shlex
@@ -138,6 +144,14 @@ def result_json_path(sorting_root: Path, hz: float) -> Path:
     return sorting_root / "temp_results" / f"result_{hz_result_tag(hz)}.json"
 
 
+def _target_hz_from_result_filename(path: Path) -> Optional[float]:
+    """Decode ``result_<mHz_tag>.json`` → shift ``target_hz`` (same convention as ``hz_result_tag``)."""
+    m = re.match(r"^result_(\d+)\.json$", path.name, flags=re.IGNORECASE)
+    if not m:
+        return None
+    return int(m.group(1)) / 1000.0
+
+
 def get_band_params(current_hz: float) -> Dict[str, Any]:
     hz = float(current_hz)
     if 100.0 <= hz < 150.0:
@@ -177,11 +191,12 @@ class MergeStats:
 class SpectralScheduler:
     """
     Scout-led zone classification (Worker 1 first seed) with hysteresis, adaptive step,
-    and Zone 3→1 backfill injection.
+    Zone 3→1 backfill injection, and optional **resume** from ``candidates_log.json``.
     """
 
     hz_min: float
     hz_max: float
+    sorting_root: Optional[Path] = None
     _zone_effective: int = field(default=2, repr=False)
     _pending_zone: Optional[int] = field(default=None, repr=False)
     _pending_streak: int = field(default=0, repr=False)
@@ -192,6 +207,62 @@ class SpectralScheduler:
     _seeds_drained: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
+        self._resume_load_state()
+        self._bootstrap_seed_queue()
+
+    def _shift_target_done(self, hz: float) -> bool:
+        """True if this shift ``target_hz`` was already merged (resume) or consumed."""
+        return self._hz_key(hz) in self._scheduled
+
+    def register_completed_shift(self, target_hz: float) -> None:
+        """Mark a shift target finished after a successful merge (same-run dedupe for ``pop_next``)."""
+        self._scheduled.add(self._hz_key(float(target_hz)))
+
+    def _resume_load_state(self) -> None:
+        """Load ``candidates_log.json`` + ``completed_shift_targets``; advance cursor past last shift."""
+        self._cursor_hz = float(self.hz_min)
+        if self.sorting_root is None:
+            return
+        root = Path(self.sorting_root).resolve()
+        self.sorting_root = root
+        log_path = root / "candidates_log.json"
+        if not log_path.is_file():
+            LOGGER.info("Resume: no candidates_log.json at %s (cold start).", log_path)
+            return
+        try:
+            payload = json.loads(log_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            LOGGER.warning("Resume: could not parse candidates_log.json: %s", exc)
+            return
+        cands = list(payload.get("candidates") or [])
+        unique_mode_hz: Set[float] = set()
+        for c in cands:
+            try:
+                unique_mode_hz.add(round(float(c.get("hz", 0.0) or 0.0), 6))
+            except (TypeError, ValueError):
+                continue
+        n_meas = len(unique_mode_hz)
+        completed: Set[float] = set()
+        for x in payload.get("completed_shift_targets") or []:
+            try:
+                completed.add(round(float(x), 6))
+            except (TypeError, ValueError):
+                continue
+        for t in completed:
+            self._scheduled.add(self._hz_key(float(t)))
+        if completed:
+            mx_done = max(completed)
+            step0 = float(ZONE2_STEP_HZ)
+            self._cursor_hz = max(float(self.hz_min), mx_done + step0)
+        LOGGER.info(
+            "Found %d existing measurements. Resuming simulation from the next available frequency "
+            "(completed_shifts=%d, cursor≈%.4f Hz).",
+            n_meas,
+            len(completed),
+            float(self._cursor_hz),
+        )
+
+    def _bootstrap_seed_queue(self) -> None:
         f0 = float(self.hz_min)
         hi = float(self.hz_max)
         seeds = [
@@ -200,14 +271,11 @@ class SpectralScheduler:
             (f0, "W3"),
         ]
         for hz, tag in seeds:
-            key = self._hz_key(hz)
-            if key in self._scheduled:
+            if self._shift_target_done(hz):
                 continue
-            self._scheduled.add(key)
             p = self._band_params_with_zone_step(hz, tag)
             role = "scout" if tag.startswith("scout") else ""
             self._seed_queue.append((hz, p, role))
-        self._cursor_hz = f0
 
     def _hz_key(self, hz: float) -> str:
         return f"{round(float(hz), 4):.4f}"
@@ -237,16 +305,17 @@ class SpectralScheduler:
 
     def _peek_next_task(self) -> Optional[Tuple[float, Dict[str, Any], str]]:
         """Read-only first upcoming task (same priority order as ``pop_next``)."""
-        if self._backfill:
-            return self._backfill[0]
-        if self._seed_queue:
-            return self._seed_queue[0]
+        for hz, p, role in list(self._backfill):
+            if not self._shift_target_done(hz):
+                return (hz, p, role)
+        for hz, p, role in list(self._seed_queue):
+            if not self._shift_target_done(hz):
+                return (hz, p, role)
         cur = float(self._cursor_hz)
         step = self._current_step_hz()
         while cur <= self.hz_max + 1e-9:
-            key = self._hz_key(cur)
-            if key not in self._scheduled:
-                hz = float(cur)
+            hz = float(cur)
+            if not self._shift_target_done(hz):
                 return (hz, self._band_params_with_zone_step(hz, "peek"), "")
             cur += step
         return None
@@ -287,10 +356,26 @@ class SpectralScheduler:
         return MergeContext(2, MIN_HZ_GAP, 1.0, MIN_UNIQUENESS_FOR_ISOLATION)
 
     def pop_next(self) -> Optional[Tuple[float, Dict[str, Any], str]]:
-        if self._backfill:
-            return self._backfill.popleft()
-        if self._seed_queue:
-            return self._seed_queue.popleft()
+        while self._backfill:
+            hz, p, role = self._backfill.popleft()
+            if self._shift_target_done(hz):
+                LOGGER.debug(
+                    "Resume skip: shift %.4f Hz already completed (backfill queue); advancing without worker.",
+                    hz,
+                )
+                continue
+            self._scheduled.add(self._hz_key(hz))
+            return (hz, p, role)
+        while self._seed_queue:
+            hz, p, role = self._seed_queue.popleft()
+            if self._shift_target_done(hz):
+                LOGGER.debug(
+                    "Resume skip: shift %.4f Hz already completed (seed queue); advancing without worker.",
+                    hz,
+                )
+                continue
+            self._scheduled.add(self._hz_key(hz))
+            return (hz, p, role)
         if not self._seeds_drained:
             self._seeds_drained = True
         step = self._current_step_hz()
@@ -299,6 +384,10 @@ class SpectralScheduler:
             self._cursor_hz += step
             key = self._hz_key(hz)
             if key in self._scheduled:
+                LOGGER.debug(
+                    "Resume skip: shift %.4f Hz already completed (cursor sweep); advancing without worker.",
+                    hz,
+                )
                 continue
             self._scheduled.add(key)
             p = self._band_params_with_zone_step(hz, "dyn")
@@ -372,9 +461,7 @@ class SpectralScheduler:
         h = lo
         while h < scout_hz - 0.5 and inserted < 24:
             hh = round(h, 4)
-            key = self._hz_key(hh)
-            if key not in self._scheduled:
-                self._scheduled.add(key)
+            if not self._shift_target_done(hh):
                 p = self._band_params_with_zone_step(hh, "backfill")
                 self._backfill.append((hh, p, ""))
                 inserted += 1
@@ -919,9 +1006,10 @@ def _merge_result_into_candidates_log(
             try:
                 payload = json.loads(log_path.read_text(encoding="utf-8"))
             except Exception:
-                payload = {"candidates": []}
+                payload = {"candidates": [], "completed_shift_targets": []}
         else:
-            payload = {"candidates": []}
+            payload = {"candidates": [], "completed_shift_targets": []}
+        payload.setdefault("completed_shift_targets", list(payload.get("completed_shift_targets") or []))
         existing = list(payload.get("candidates") or [])
 
         thin_kept, thin_discarded, _scores = _adaptive_manager_select(batch_loaded, existing, path_root, ctx)
@@ -999,6 +1087,52 @@ def _merge_result_into_candidates_log(
     )
 
 
+def _append_completed_shift_to_log(log_path: Path, lock: threading.Lock, target_hz: float) -> None:
+    """Persist ``completed_shift_targets`` (idempotent) for resume across runs."""
+    key = round(float(target_hz), 6)
+    with lock:
+        if not log_path.exists():
+            payload: Dict[str, Any] = {"candidates": [], "completed_shift_targets": []}
+        else:
+            try:
+                payload = json.loads(log_path.read_text(encoding="utf-8"))
+            except Exception:
+                payload = {"candidates": [], "completed_shift_targets": []}
+        arr = [round(float(x), 6) for x in (payload.get("completed_shift_targets") or [])]
+        if key in arr:
+            return
+        arr.append(float(key))
+        arr.sort()
+        payload["completed_shift_targets"] = arr
+        tmp = log_path.with_suffix(log_path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(log_path)
+
+
+def flush_pending_worker_shifts(
+    sorting_root: Path,
+    log_path: Path,
+    lock: threading.Lock,
+) -> int:
+    """Merge leftover ``temp_results/result_*.json`` before scheduling (resume-safe)."""
+    tr = sorting_root / "temp_results"
+    if not tr.is_dir():
+        return 0
+    paths = sorted(tr.glob("result_*.json"))
+    n = 0
+    for p in paths:
+        th = _target_hz_from_result_filename(p)
+        stats = _merge_result_into_candidates_log(
+            p, log_path, lock, sorting_root, merge_ctx=MergeContext()
+        )
+        if th is not None and stats is not None:
+            _append_completed_shift_to_log(log_path, lock, float(th))
+        n += 1
+    if n:
+        LOGGER.info("Resume flush: merged %d pending worker result file(s) under temp_results/.", n)
+    return n
+
+
 def _poll_completed(
     running: Dict[subprocess.Popen, Dict[str, Any]],
     log_path: Path,
@@ -1018,6 +1152,10 @@ def _poll_completed(
                 LOGGER.info("Worker finished OK for %.4f Hz (exit %s).", hz, code)
                 ctx = scheduler.merge_context() if scheduler is not None else None
                 stats = _merge_result_into_candidates_log(rpath, log_path, merge_lock, sorting_root, merge_ctx=ctx)
+                if stats is not None:
+                    _append_completed_shift_to_log(log_path, merge_lock, hz)
+                    if scheduler is not None:
+                        scheduler.register_completed_shift(hz)
                 if (
                     stats is not None
                     and scheduler is not None
@@ -1131,7 +1269,12 @@ def main() -> int:
     (sorting_root / "temp_results").mkdir(parents=True, exist_ok=True)
     (sorting_root / "temp_modes").mkdir(parents=True, exist_ok=True)
     if not log_path.exists():
-        log_path.write_text(json.dumps({"candidates": []}, indent=2), encoding="utf-8")
+        log_path.write_text(
+            json.dumps({"candidates": [], "completed_shift_targets": []}, indent=2),
+            encoding="utf-8",
+        )
+
+    flush_pending_worker_shifts(sorting_root, log_path, merge_lock)
 
     LOGGER.info(
         "sorting_root=%s — each worker is spawned with the same --sorting-root so vectors "
@@ -1149,7 +1292,7 @@ def main() -> int:
             LOGGER.error("%s", exc)
             return 1
     else:
-        scheduler = SpectralScheduler(float(args.hz_min), float(args.hz_max))
+        scheduler = SpectralScheduler(float(args.hz_min), float(args.hz_max), sorting_root)
 
     linux_pin_msg = " Linux: taskset cores leased from {1,2,3}." if use_taskset else ""
     if scheduler is not None:
