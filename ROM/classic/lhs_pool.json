@@ -183,8 +183,8 @@
         "geometry.width": 0.36652694328949464,
         "materials.top.density": 470.0
       },
-      "status": "pending",
-      "snapshot_file": null,
+      "status": "completed",
+      "snapshot_file": "snapshots/snapshot_0014.npz",
       "error": null
     },
     {
@@ -196,8 +196,8 @@
         "geometry.width": 0.4047106021405744,
         "materials.top.density": 470.0
       },
-      "status": "pending",
-      "snapshot_file": null,
+      "status": "completed",
+      "snapshot_file": "snapshots/snapshot_0015.npz",
       "error": null
     },
     {
@@ -209,8 +209,8 @@
         "geometry.width": 0.4082850848397829,
         "materials.top.density": 470.0
       },
-      "status": "pending",
-      "snapshot_file": null,
+      "status": "completed",
+      "snapshot_file": "snapshots/snapshot_0016.npz",
       "error": null
     },
     {
@@ -222,8 +222,8 @@
         "geometry.width": 0.4072550059811706,
         "materials.top.density": 430.0
       },
-      "status": "pending",
-      "snapshot_file": null,
+      "status": "completed",
+      "snapshot_file": "snapshots/snapshot_0017.npz",
       "error": null
     },
     {
@@ -235,8 +235,8 @@
         "geometry.width": 0.2535511158555369,
         "materials.top.density": 430.0
       },
-      "status": "pending",
-      "snapshot_file": null,
+      "status": "completed",
+      "snapshot_file": "snapshots/snapshot_0018.npz",
       "error": null
     },
     {
@@ -248,8 +248,8 @@
         "geometry.width": 0.24538564827261222,
         "materials.top.density": 470.0
       },
-      "status": "pending",
-      "snapshot_file": null,
+      "status": "completed",
+      "snapshot_file": "snapshots/snapshot_0019.npz",
       "error": null
     },
     {
@@ -261,8 +261,8 @@
         "geometry.width": 0.2139104366212561,
         "materials.top.density": 470.0
       },
-      "status": "pending",
-      "snapshot_file": null,
+      "status": "completed",
+      "snapshot_file": "snapshots/snapshot_0020.npz",
       "error": null
     },
     {
