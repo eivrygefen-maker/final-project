@@ -21,6 +21,12 @@ zones**, per-job timeouts, and merge of worker JSON into ``candidates_log.json``
 
 **Legacy**: ``--legacy-static-schedule`` restores fixed ``get_band_params`` stepping.
 
+**Adaptive frequency ceiling (ROM-safe)**: once per run, when a merged shift reaches **435 Hz**,
+the master reads the current **spectral zone** (density / yield from the existing scheduler) and
+sets the sweep ``hz_max`` to **440 / 470 / 490 Hz** (saturated → sparse interest). Initial default
+``--hz-max`` remains **450 Hz** until that single conductor decision. Mode selection (MMR / top-100
+export) is unchanged elsewhere; this only bounds how far the shift sweep runs.
+
 **Resume**: ``candidates_log.json`` may list ``completed_shift_targets`` (shift ``target_hz`` values).
 All shift identity checks use ``HZ_TOLERANCE`` (1e-4 Hz) via ``hz_shift_key`` / ``hz_shift_quantize``.
 If that list is empty but ``candidates`` is not, a **recovery scan** infers shifts from
@@ -157,6 +163,14 @@ EFFICIENCY_HIGH_THRESHOLD = 12.0
 EFFICIENCY_LOW_THRESHOLD = 3.0
 SLEPC_NUM_MODES_ABSOLUTE_CEILING = 100
 
+# --- Adaptive sweep ceiling (conductor, once per run at 435 Hz; spectral zone → hz_max) ---
+# Spectral zone from ``SpectralScheduler`` / ``on_worker_merge``: 1 = dense (saturated), 2 = normal,
+# 3 = sparse (high interest). Maps to user "Conductor" zones and ceilings for ROM-safe sweep span.
+CONDUCTOR_TRIGGER_HZ = 435.0
+CONDUCTOR_CEILING_SPECTRAL_ZONE_1 = 440.0  # saturated / low spectral interest → stop early
+CONDUCTOR_CEILING_SPECTRAL_ZONE_2 = 470.0
+CONDUCTOR_CEILING_SPECTRAL_ZONE_3 = 490.0  # sparse / high interest → extend
+
 # --- Merge-time physical density (numerical duplicate clusters) ---
 MERGE_SHIFT_CLUSTER_SPAN_HZ = 1.0
 MERGE_SHIFT_CLUSTER_MIN_MODES = 20
@@ -187,6 +201,31 @@ ZONE_C_MIN_HZ = 350.0
 ZONE_C_MIN_QUOTA = 4
 
 LOGGER = logging.getLogger("fem_master_dynamic")
+
+
+def _conductor_ceiling_hz_for_spectral_zone(zone: int) -> float:
+    z = int(zone)
+    if z == 1:
+        return CONDUCTOR_CEILING_SPECTRAL_ZONE_1
+    if z == 3:
+        return CONDUCTOR_CEILING_SPECTRAL_ZONE_3
+    return CONDUCTOR_CEILING_SPECTRAL_ZONE_2
+
+
+def _conductor_user_zone_label(spectral_zone: int) -> Tuple[int, str]:
+    """
+    User-facing Conductor zone (1/2/3) and label for logging.
+
+    Spectral Z3 (sparse) → Conductor 1 (high interest / sparse spectrum).
+    Spectral Z2 → Conductor 2 (normal).
+    Spectral Z1 (dense) → Conductor 3 (saturated / low interest).
+    """
+    sz = int(spectral_zone)
+    if sz == 3:
+        return (1, "high interest/sparse")
+    if sz == 2:
+        return (2, "normal")
+    return (3, "saturated/low interest")
 
 
 def hz_result_tag(hz: float) -> int:
@@ -336,6 +375,7 @@ class SpectralScheduler:
         default_factory=lambda: deque(maxlen=EFFICIENCY_HISTORY_MAX), repr=False
     )
     _max_completed_shift_hz: float = field(default=-math.inf, repr=False)
+    _conductor_ceiling_applied: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
         self._n_modes_in_log = 0
@@ -558,6 +598,30 @@ class SpectralScheduler:
                 completed_target_hz,
                 y,
             )
+
+    def try_apply_conductor_ceiling(self, merged_shift_hz: float) -> None:
+        """
+        Once per sample run: when a completed shift reaches ``CONDUCTOR_TRIGGER_HZ``, set ``hz_max``
+        from the current spectral zone (density / participation path already in ``on_worker_merge``).
+        """
+        if self._conductor_ceiling_applied:
+            return
+        if float(merged_shift_hz) + 1e-12 < CONDUCTOR_TRIGGER_HZ:
+            return
+        old = float(self.hz_max)
+        sz = int(self._zone_effective)
+        new_hi = float(_conductor_ceiling_hz_for_spectral_zone(sz))
+        cz, label = _conductor_user_zone_label(sz)
+        self.hz_max = new_hi
+        self._conductor_ceiling_applied = True
+        LOGGER.info(
+            "[Conductor] Zone %d (%s) detected at %.0f Hz. Adjusting ceiling from %.0f Hz to %.0f Hz.",
+            cz,
+            label,
+            CONDUCTOR_TRIGGER_HZ,
+            old,
+            new_hi,
+        )
 
     def merge_context(self) -> MergeContext:
         z = self._zone_effective
@@ -1592,6 +1656,7 @@ def _poll_completed(
                         scheduler.on_worker_merge(
                             hz, stats, sp_step, str(meta.get("role", "") or "")
                         )
+                        scheduler.try_apply_conductor_ceiling(hz)
                 if scheduler is not None:
                     scheduler.log_schedule_snapshot_after_worker(hz, stats)
             else:
@@ -1654,7 +1719,15 @@ def main() -> int:
         default=100.0,
         help="Sweep lower bound (Hz), inclusive. Must be >= 100 (default: 100).",
     )
-    parser.add_argument("--hz-max", type=float, default=450.0, help="Sweep upper bound (Hz), inclusive.")
+    parser.add_argument(
+        "--hz-max",
+        type=float,
+        default=450.0,
+        help=(
+            "Initial sweep upper bound (Hz), inclusive; dynamic scheduler may set 440/470/490 once "
+            f"at {CONDUCTOR_TRIGGER_HZ:.0f} Hz from spectral zone (see [Conductor] log line)."
+        ),
+    )
     parser.add_argument(
         "--sorting-root",
         type=Path,
@@ -1731,6 +1804,7 @@ def main() -> int:
         LOGGER.info(
             "Dynamic scout scheduler: seeds W1=f_start+12 Hz, W2=+6, W3=f_start; "
             "zones Z1 step=%.0f Z2=%.0f Z3=%.0f Hz | Z1 num_modes≤%d Z3∈[%d,%d] | "
+            "adaptive ceiling @%.0f Hz (zone→440/470/490) | "
             "merge wood V2 (100–450 Hz) + isolation relief (independent of SLEPc quota) | "
             "max concurrent=%d workers.%s sorting_root=%s | HF quota ≥%.0f Hz.",
             ZONE1_STEP_HZ,
@@ -1739,6 +1813,7 @@ def main() -> int:
             ZONE1_NUM_MODES_CAP,
             ZONE3_NUM_MODES_MIN,
             ZONE3_NUM_MODES_MAX,
+            CONDUCTOR_TRIGGER_HZ,
             MAX_CONCURRENT_WORKERS,
             linux_pin_msg,
             sorting_root,

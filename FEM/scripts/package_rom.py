@@ -6,7 +6,8 @@ and optionally reset SORTING scratch data for the next run.
 Mode columns are read as CSR sparse (``*.smx.npz`` from workers) or legacy dense ``.npy``,
 aggregated with ``scipy.sparse.hstack``, and written as one bundled compressed NPZ
 containing CSR arrays (``ev_data``, ``ev_indices``, ``ev_indptr``, ``ev_shape``)
-plus ``frequencies`` and ``wood_participations``.
+plus ``frequencies`` and ``wood_participations``. There is no upper frequency cutoff in this script:
+every row in ``selected_modes.csv`` is packaged regardless of Hz (ROM column count follows the CSV).
 """
 from __future__ import annotations
 
