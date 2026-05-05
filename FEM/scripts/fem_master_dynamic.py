@@ -247,7 +247,7 @@ def _target_hz_from_result_filename(path: Path) -> Optional[float]:
 
 def get_band_params(current_hz: float) -> Dict[str, Any]:
     hz = float(current_hz)
-    if 100.0 <= hz < 150.0:
+    if 80.0 <= hz < 150.0:
         return {"step_hz": 5, "num_modes": 80, "timeout_minutes": 60, "label": "Dense Band 1"}
     if 150.0 <= hz < 250.0:
         return {"step_hz": 10, "num_modes": 30, "timeout_minutes": 60, "label": "Medium Band"}
@@ -255,7 +255,7 @@ def get_band_params(current_hz: float) -> Dict[str, Any]:
         return {"step_hz": 5, "num_modes": 50, "timeout_minutes": 60, "label": "Dense Band 2"}
     if hz >= 300.0:
         return {"step_hz": 25, "num_modes": 15, "timeout_minutes": 20, "label": "Dead Zone"}
-    raise ValueError(f"get_band_params: hz={hz} is outside the supported sweep (expected hz >= 100).")
+    raise ValueError(f"get_band_params: hz={hz} is outside the supported sweep (expected hz >= 80).")
 
 
 def _recovery_infer_shift_targets_from_candidates(
@@ -279,7 +279,7 @@ def _recovery_infer_shift_targets_from_candidates(
             continue
         if not math.isfinite(mh) or mh < f0:
             continue
-        hz_band = max(100.0, mh)
+        hz_band = max(80.0, mh)
         try:
             step = float(get_band_params(hz_band).get("step_hz", ZONE2_STEP_HZ))
         except ValueError:
@@ -1237,8 +1237,8 @@ def build_task_list(hz_min: float, hz_max: float) -> List[Tuple[float, Dict[str,
     """Build worker target Hz list from ``hz_min`` (inclusive) through ``hz_max`` (inclusive)."""
     lo = float(hz_min)
     hi = float(hz_max)
-    if lo < 100.0:
-        raise ValueError(f"hz_min must be >= 100.0 (band tables start at 100 Hz), got {lo}")
+    if lo < 80.0:
+        raise ValueError(f"hz_min must be >= 80.0 (band tables start at 80 Hz), got {lo}")
     if hi < lo:
         raise ValueError(f"hz_max ({hi}) must be >= hz_min ({lo})")
     tasks: List[Tuple[float, Dict[str, Any]]] = []
@@ -1731,8 +1731,8 @@ def main() -> int:
     parser.add_argument(
         "--hz-min",
         type=float,
-        default=100.0,
-        help="Sweep lower bound (Hz), inclusive. Must be >= 100 (default: 100).",
+        default=80.0,
+        help="Sweep lower bound (Hz), inclusive. Must be >= 80 (default: 80).",
     )
     parser.add_argument(
         "--hz-max",
