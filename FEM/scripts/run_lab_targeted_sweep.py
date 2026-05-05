@@ -6,6 +6,11 @@ This script is intentionally isolated and does NOT merge into the production/mas
 training set automatically. It writes all artifacts under:
 
     FEM/results/EXTRA_RESULTS/sample_XXX/
+
+Per window, after ``dynamic_filter_tuner`` and ``package_rom`` succeed: the NPZ is
+verified, ``SORTING/temp_modes`` and ``SORTING/temp_results`` are removed, and
+``candidates_log.json`` is copied to ``candidates_log.archived.<window>.json`` then
+reset to an empty log so later runs start clean.
 """
 from __future__ import annotations
 
@@ -13,10 +18,13 @@ import argparse
 import copy
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
 
 
 DEFAULT_WINDOWS: Tuple[Tuple[float, float], ...] = ((80.0, 100.0), (400.0, 600.0))
@@ -145,6 +153,76 @@ def _sample_dir(root: Path, sample_id: int) -> Path:
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _verify_targeted_window_npz(npz_path: Path, expected_mode_count: int) -> Tuple[bool, str]:
+    """
+    Confirm the ROM archive exists and matches package_rom CSR layout.
+    ``expected_mode_count`` is the number of selected rows (0 = skip column count check).
+    """
+    if not npz_path.is_file():
+        return False, f"missing file: {npz_path}"
+    if npz_path.stat().st_size < 64:
+        return False, f"NPZ too small: {npz_path}"
+    need = ("ev_data", "ev_indices", "ev_indptr", "ev_shape", "frequencies", "wood_participations")
+    try:
+        with np.load(npz_path, allow_pickle=False) as z:
+            if any(k not in z.files for k in need):
+                return False, f"NPZ missing keys {need}: {npz_path}"
+            shape = tuple(int(x) for x in np.asarray(z["ev_shape"]).ravel())
+            if len(shape) != 2:
+                return False, f"unexpected ev_shape {shape}"
+            ncols = int(shape[1])
+            if expected_mode_count > 0 and ncols != expected_mode_count:
+                return (
+                    False,
+                    f"NPZ column count {ncols} != selected CSV rows {expected_mode_count}",
+                )
+            freqs = np.asarray(z["frequencies"]).ravel()
+            woods = np.asarray(z["wood_participations"]).ravel()
+            if int(freqs.size) != ncols or int(woods.size) != ncols:
+                return False, "frequencies/wood_participations length mismatch vs ev_shape"
+    except OSError as exc:
+        return False, f"could not read NPZ: {exc}"
+    return True, "ok"
+
+
+def _purge_sorting_workspace_after_archive(
+    wdir: Path,
+    sorting_root: Path,
+    wtag: str,
+) -> Tuple[Optional[Path], Optional[str]]:
+    """
+    Remove ``temp_modes`` and ``temp_results`` under ``sorting_root``.
+    Move ``candidates_log.json`` to ``wdir`` backup and write an empty log for a clean tree.
+    Returns (backup_path, error_message).
+    """
+    err_parts: List[str] = []
+    for name in ("temp_modes", "temp_results"):
+        p = sorting_root / name
+        if p.is_dir():
+            try:
+                shutil.rmtree(p, ignore_errors=False)
+            except OSError as exc:
+                err_parts.append(f"{name}: {exc}")
+    backup: Optional[Path] = None
+    log_path = sorting_root / "candidates_log.json"
+    if log_path.is_file():
+        backup = wdir / f"candidates_log.archived.{wtag}.json"
+        try:
+            shutil.copy2(log_path, backup)
+        except OSError as exc:
+            err_parts.append(f"candidates_log backup: {exc}")
+        try:
+            _write_json(
+                log_path,
+                {"candidates": [], "completed_shift_targets": []},
+            )
+        except OSError as exc:
+            err_parts.append(f"candidates_log clear: {exc}")
+    if err_parts:
+        return backup, "; ".join(err_parts)
+    return backup, None
 
 
 def _count_selected_rows(csv_path: Path) -> int:
@@ -354,8 +432,18 @@ def main() -> int:
                 "--sorting-root",
                 str(sorting_root),
             ]
-            if _run_step(f"{skey} window {wtag} | Step C package", pack_cmd, repo) != 0:
+            if _run_step(f"{skey} window {wtag} | Step C package (selected → targeted_window_rom.npz)", pack_cmd, repo) != 0:
                 failures.append(f"{skey} window {wtag}: package failed")
+                continue
+
+            ok_npz, npz_msg = _verify_targeted_window_npz(window_npz.resolve(), int(selected_count))
+            if not ok_npz:
+                failures.append(f"{skey} window {wtag}: NPZ verify failed: {npz_msg}")
+                continue
+
+            backup_log, purge_err = _purge_sorting_workspace_after_archive(wdir, sorting_root, wtag)
+            if purge_err:
+                failures.append(f"{skey} window {wtag}: post-archive purge: {purge_err}")
                 continue
 
             sample_report["windows"].append(
@@ -369,6 +457,10 @@ def main() -> int:
                     "selected_count": int(selected_count),
                     "selection_type": selection_type,
                     "npz": str(window_npz),
+                    "npz_verify": npz_msg,
+                    "candidates_log_archived": str(backup_log) if backup_log else None,
+                    "temp_modes_purged": True,
+                    "temp_results_purged": True,
                 }
             )
 
