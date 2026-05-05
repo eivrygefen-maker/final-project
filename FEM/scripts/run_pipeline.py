@@ -2,10 +2,11 @@
 """
 Headless orchestrator: master FEM sweep → MMR selection → ROM packaging → LHS pool update.
 
-Step A uses ``fem_master_dynamic.py`` with at most **3** concurrent FEM workers; on Linux
-each is pinned with ``taskset -c 1``, ``2``, or ``3`` before ``mpiexec --bind-to none -n 1``, with a
-**10 s** pause before the second worker and again before the third (mesh load / I/O stagger), plus a
-**5 s** minimum gap between any two spawns; core 0 and other CPUs stay for the master and OS.
+Step A uses ``fem_master_dynamic.py`` with at most ``--max-workers`` concurrent FEM workers
+(default **2**); on Linux each is pinned with ``taskset -c 1..N`` where ``N=max-workers``
+before ``mpiexec --bind-to none -n 1``, with a
+**10 s** pause before the second worker (mesh load / I/O stagger), plus a **5 s** minimum gap
+between any two spawns; core 0 and other CPUs stay for the master and OS.
 Candidate merge uses the **conditional adaptive manager** in ``fem_master_dynamic``
 (zone wood floors 0.0008→0.0003, sparse overlap scoring, spectral shaping, HF quota).
 LHS pool parameters are merged into a
@@ -230,7 +231,19 @@ def main() -> int:
             "or top-level ``sample_XXX`` -> flat dotted keys. Values override the same keys from the pool."
         ),
     )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=2,
+        help=(
+            "Maximum concurrent workers passed to fem_master_dynamic "
+            "(default: 2). Use 1 for debugging or higher values for lab stress tests."
+        ),
+    )
     args = parser.parse_args()
+    if int(args.max_workers) < 1:
+        print(f"Error: --max-workers must be >= 1 (got {args.max_workers})", file=sys.stderr)
+        return 1
 
     config_path = args.config.resolve()
     if not config_path.is_file():
@@ -306,6 +319,8 @@ def main() -> int:
         py,
         str(master),
         "--use-mpiexec",
+        "--max-workers",
+        str(int(args.max_workers)),
         "--config",
         str(effective_config.resolve()),
         "--sorting-root",

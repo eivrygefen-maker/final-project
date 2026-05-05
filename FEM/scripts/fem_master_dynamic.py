@@ -4,7 +4,7 @@ Master driver for ``fem_worker_single.py``: bounded concurrency, scout-led **spe
 zones**, per-job timeouts, and merge of worker JSON into ``candidates_log.json``.
 
 **Dynamic scheduler (default)**:
-  * **Scout seeding**: first tasks at ``f_start+12``, ``f_start+6``, ``f_start`` Hz (W1 carries
+  * **Scout seeding**: first tasks at ``f_start+6`` then ``f_start`` Hz (W0 carries
     ``role=scout`` for zone reports).
   * **Zones Z1/Z2/Z3** from merge **efficiency** (``kept_modes / spectral_step_hz``) with thresholds
     12 / 3 modes·Hz⁻¹ plus yield / avg wood when efficiency is neutral, **2-report hysteresis**, and
@@ -36,8 +36,9 @@ scheduler zone step. Scout seeds and the cursor never schedule below ``max(compl
 (see ``_max_completed_shift_hz``). ``pop_next`` skips shifts already in that set (no worker). Pending
 ``temp_results/result_*.json`` files are merged once at startup before scheduling.
 
-Resource policy: at most **3** concurrent workers; Linux ``taskset`` cores ``{1,2,3}`` +
-``mpiexec --bind-to none -n 1``.
+Resource policy: at most ``--max-workers`` concurrent workers (default **2**); on Linux,
+workers use ``taskset`` cores ``{1..N}`` where ``N=max_workers`` with core 0 reserved for
+the master/OS, then ``mpiexec --bind-to none -n 1``.
 """
 from __future__ import annotations
 
@@ -87,7 +88,7 @@ def _repo_root() -> Path:
 
 REPO_ROOT = _repo_root()
 
-MAX_CONCURRENT_WORKERS = 3
+DEFAULT_MAX_WORKERS = 2
 STAGGER_ADDITIONAL_WORKER_SECONDS = 10.0
 MIN_SPAWN_GAP_SECONDS = 5.0
 
@@ -361,6 +362,7 @@ class SpectralScheduler:
 
     hz_min: float
     hz_max: float
+    max_workers: int = DEFAULT_MAX_WORKERS
     sorting_root: Optional[Path] = None
     merge_lock: Optional[threading.Lock] = field(default=None, repr=False)
     _zone_effective: int = field(default=2, repr=False)
@@ -500,13 +502,27 @@ class SpectralScheduler:
     def _bootstrap_seed_queue(self) -> None:
         f0 = float(self.hz_min)
         hi = float(self.hz_max)
-        seeds = [
-            (max(f0, min(hi, f0 + 12.0)), "scout W1"),
-            (max(f0, min(hi, f0 + 6.0)), "W2"),
-            (f0, "W3"),
-        ]
+        step = float(ZONE1_STEP_HZ)
+        n_workers = max(1, int(self.max_workers))
+        seed_targets: List[Tuple[float, str, str]] = []
+        # Scout (rank 0) starts furthest ahead; remaining workers fill lower offsets.
+        scout_hz = max(f0, min(hi, f0 + (n_workers - 1) * step))
+        seed_targets.append((scout_hz, "scout W0", "scout"))
+        for rank in range(1, n_workers):
+            offset_idx = n_workers - 1 - rank
+            hz = max(f0, min(hi, f0 + offset_idx * step))
+            seed_targets.append((hz, f"W{rank}", ""))
+
+        seen: Set[str] = set()
+        seeds: List[Tuple[float, str, str]] = []
+        for hz, tag, role in seed_targets:
+            key = self._hz_key(hz)
+            if key in seen:
+                continue
+            seen.add(key)
+            seeds.append((hz, tag, role))
         mx_done = float(self._max_completed_shift_hz)
-        for hz, tag in seeds:
+        for hz, tag, role in seeds:
             if math.isfinite(mx_done) and float(hz) <= mx_done + HZ_TOLERANCE:
                 LOGGER.info(
                     "Resume: skip scout seed %.4f Hz (at or behind max completed shift %.4f Hz).",
@@ -517,7 +533,6 @@ class SpectralScheduler:
             if self._shift_target_done(hz):
                 continue
             p = self._band_params_with_zone_step(hz, tag)
-            role = "scout" if tag.startswith("scout") else ""
             self._seed_queue.append((hz, p, role))
 
     def _hz_key(self, hz: float) -> str:
@@ -1741,8 +1756,17 @@ def main() -> int:
         "--use-mpiexec",
         action="store_true",
         help=(
-            "Linux: `taskset -c <1|2|3> mpiexec --bind-to none -n 1 <python> ...` "
-            "(cores leased from {1,2,3}; `--bind-to none` avoids Open MPI overriding taskset)."
+            "Linux: `taskset -c <1..N> mpiexec --bind-to none -n 1 <python> ...` "
+            "where N=--max-workers; `--bind-to none` avoids Open MPI overriding taskset."
+        ),
+    )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=DEFAULT_MAX_WORKERS,
+        help=(
+            f"Maximum concurrent worker subprocesses (default: {DEFAULT_MAX_WORKERS}). "
+            "Also controls scout seed batch width and Linux taskset core leasing."
         ),
     )
     parser.add_argument(
@@ -1785,6 +1809,21 @@ def main() -> int:
         sorting_root,
     )
 
+    max_workers = int(args.max_workers)
+    if max_workers < 1:
+        LOGGER.error("--max-workers must be >= 1 (got %d).", max_workers)
+        return 1
+    logical_cores = int(os.cpu_count() or 1)
+    max_allowed_workers = max(1, logical_cores - 1)
+    if max_workers > max_allowed_workers:
+        LOGGER.error(
+            "--max-workers=%d exceeds available worker capacity on this host (logical cores=%d, max allowed=%d with one core reserved for OS/master).",
+            max_workers,
+            logical_cores,
+            max_allowed_workers,
+        )
+        return 1
+
     use_taskset = sys.platform.startswith("linux")
     scheduler: Optional[SpectralScheduler] = None
     tasks_static: Optional[List[Tuple[float, Dict[str, Any]]]] = None
@@ -1796,17 +1835,24 @@ def main() -> int:
             return 1
     else:
         scheduler = SpectralScheduler(
-            float(args.hz_min), float(args.hz_max), sorting_root, merge_lock=merge_lock
+            float(args.hz_min),
+            float(args.hz_max),
+            max_workers=max_workers,
+            sorting_root=sorting_root,
+            merge_lock=merge_lock,
         )
 
-    linux_pin_msg = " Linux: taskset cores leased from {1,2,3}." if use_taskset else ""
+    worker_cores = list(range(1, max_workers + 1))
+    cores_fmt = "{" + ",".join(str(c) for c in worker_cores) + "}"
+    linux_pin_msg = f" Linux: taskset cores leased from {cores_fmt}." if use_taskset else ""
     if scheduler is not None:
         LOGGER.info(
-            "Dynamic scout scheduler: seeds W1=f_start+12 Hz, W2=+6, W3=f_start; "
+            "Dynamic scout scheduler: scout W0=f_start+(N-1)*%.0f Hz, others fill descending to f_start; "
             "zones Z1 step=%.0f Z2=%.0f Z3=%.0f Hz | Z1 num_modes≤%d Z3∈[%d,%d] | "
             "adaptive ceiling @%.0f Hz (zone→440/470/490) | "
             "merge wood V2 (100–450 Hz) + isolation relief (independent of SLEPc quota) | "
             "max concurrent=%d workers.%s sorting_root=%s | HF quota ≥%.0f Hz.",
+            ZONE1_STEP_HZ,
             ZONE1_STEP_HZ,
             ZONE2_STEP_HZ,
             ZONE3_STEP_HZ,
@@ -1814,7 +1860,7 @@ def main() -> int:
             ZONE3_NUM_MODES_MIN,
             ZONE3_NUM_MODES_MAX,
             CONDUCTOR_TRIGGER_HZ,
-            MAX_CONCURRENT_WORKERS,
+            max_workers,
             linux_pin_msg,
             sorting_root,
             ZONE_C_MIN_HZ,
@@ -1827,7 +1873,7 @@ def main() -> int:
             len(tasks_static),
             float(args.hz_min),
             float(args.hz_max),
-            MAX_CONCURRENT_WORKERS,
+            max_workers,
             linux_pin_msg,
             sorting_root,
             ZONE_C_MIN_HZ,
@@ -1839,14 +1885,14 @@ def main() -> int:
     last_spawn_mono: List[Optional[float]] = [None]
 
     _core_lock = threading.Lock()
-    _core_free: Deque[int] = deque([1, 2, 3]) if use_taskset else deque()
+    _core_free: Deque[int] = deque(worker_cores) if use_taskset else deque()
 
     def lease_core() -> Optional[int]:
         if not use_taskset:
             return None
         with _core_lock:
             if not _core_free:
-                raise RuntimeError("No worker CPU cores available in pool [1, 2, 3].")
+                raise RuntimeError(f"No worker CPU cores available in pool {worker_cores}.")
             cid = _core_free.popleft()
             remaining = sorted(_core_free)
         LOGGER.info("Core lease: assigned cpu=%d (pool still free: %s)", cid, remaining)
@@ -1964,7 +2010,7 @@ def main() -> int:
         while _has_pending_tasks() or running:
             _poll_completed(running, log_path, sorting_root, merge_lock, release_core, scheduler=scheduler)
             _enforce_timeouts(running, sorting_root, release_core)
-            while len(running) < MAX_CONCURRENT_WORKERS and _has_pending_tasks():
+            while len(running) < max_workers and _has_pending_tasks():
                 if len(running) == 1:
                     LOGGER.info(
                         "Waiting %.0fs before second concurrent worker (mesh load / I/O stagger)...",
