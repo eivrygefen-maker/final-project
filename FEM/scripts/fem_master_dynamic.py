@@ -1299,6 +1299,7 @@ def _merge_result_into_candidates_log(
     *,
     override_root: Optional[Path] = None,
     merge_ctx: Optional[MergeContext] = None,
+    force_emergency: bool = False,
 ) -> Optional[MergeStats]:
     """
     Merge one worker ``result_*.json`` into ``candidates_log.json``.
@@ -1320,7 +1321,8 @@ def _merge_result_into_candidates_log(
     raw = list(incoming.get("candidates") or [])
     if not raw:
         try:
-            result_path.unlink()
+            if not force_emergency:
+                result_path.unlink()
         except OSError:
             pass
         return None
@@ -1332,7 +1334,7 @@ def _merge_result_into_candidates_log(
         nz = c.get("column_l2_norm")
         if nz is not None:
             try:
-                if float(nz) < WORKER_COL_NORM_MIN:
+                if (not force_emergency) and float(nz) < WORKER_COL_NORM_MIN:
                     ghost_drops += 1
                     _unlink_worker_vector(c, path_root)
                     continue
@@ -1348,7 +1350,8 @@ def _merge_result_into_candidates_log(
         )
     if not raw:
         try:
-            result_path.unlink()
+            if not force_emergency:
+                result_path.unlink()
         except OSError:
             pass
         return None
@@ -1361,7 +1364,7 @@ def _merge_result_into_candidates_log(
             u = float(ru) if ru is not None else -1.0
         except (TypeError, ValueError):
             u = -1.0
-        if u < MERGE_INCOMING_UNIQUENESS_MIN - 1e-15:
+        if (not force_emergency) and u < MERGE_INCOMING_UNIQUENESS_MIN - 1e-15:
             uniq_drops += 1
             _unlink_worker_vector(c, path_root)
             continue
@@ -1375,7 +1378,8 @@ def _merge_result_into_candidates_log(
         )
     if not raw:
         try:
-            result_path.unlink()
+            if not force_emergency:
+                result_path.unlink()
         except OSError:
             pass
         return None
@@ -1422,12 +1426,13 @@ def _merge_result_into_candidates_log(
             "Merge idempotent: shift %.6f Hz already in completed_shift_targets; skipping merge.",
             float(tgt_early),
         )
-        for c in raw:
-            _unlink_worker_vector(c, path_root)
-        try:
-            result_path.unlink()
-        except OSError:
-            pass
+        if not force_emergency:
+            for c in raw:
+                _unlink_worker_vector(c, path_root)
+            try:
+                result_path.unlink()
+            except OSError:
+                pass
         return MergeStats(
             raw_n=raw_n,
             kept_after_veto=0,
@@ -1447,7 +1452,7 @@ def _merge_result_into_candidates_log(
         except (TypeError, ValueError):
             all_hz.append(0.0)
     finite_hz = [float(h) for h in all_hz if math.isfinite(float(h))]
-    if len(finite_hz) >= MERGE_SHIFT_CLUSTER_MIN_MODES:
+    if (not force_emergency) and len(finite_hz) >= MERGE_SHIFT_CLUSTER_MIN_MODES:
         hz_span = float(max(finite_hz) - min(finite_hz))
         if hz_span < MERGE_SHIFT_CLUSTER_SPAN_HZ - 1e-12:
             LOGGER.warning(
@@ -1474,31 +1479,34 @@ def _merge_result_into_candidates_log(
 
     veto_pass: List[Dict[str, Any]] = []
     failed_veto: List[Dict[str, Any]] = []
-    for c in raw:
-        try:
-            chz = float(c.get("hz", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            chz = 0.0
-        peers = [h for h in all_hz if abs(h - chz) > 1e-6]
-        if _passes_zone_wood_veto_v2(c, peers):
-            veto_pass.append(c)
-        else:
-            failed_veto.append(c)
-
-    for c in failed_veto:
-        _unlink_worker_vector(c, path_root)
+    if force_emergency:
+        veto_pass = list(raw)
+    else:
+        for c in raw:
+            try:
+                chz = float(c.get("hz", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                chz = 0.0
+            peers = [h for h in all_hz if abs(h - chz) > 1e-6]
+            if _passes_zone_wood_veto_v2(c, peers):
+                veto_pass.append(c)
+            else:
+                failed_veto.append(c)
+        for c in failed_veto:
+            _unlink_worker_vector(c, path_root)
 
     if not veto_pass:
         LOGGER.warning(
             "No candidates passed zone wood veto for %s; removing result file and worker vectors.",
             result_path.name,
         )
-        for c in raw:
-            _unlink_worker_vector(c, path_root)
-        try:
-            result_path.unlink()
-        except OSError:
-            pass
+        if not force_emergency:
+            for c in raw:
+                _unlink_worker_vector(c, path_root)
+            try:
+                result_path.unlink()
+            except OSError:
+                pass
         return MergeStats(
             raw_n=raw_n,
             kept_after_veto=0,
@@ -1510,12 +1518,13 @@ def _merge_result_into_candidates_log(
     batch_loaded = _load_batch_csr_pairs(veto_pass, path_root)
     if not batch_loaded:
         LOGGER.warning("No loadable sparse vectors after wood veto for %s.", result_path.name)
-        for c in raw:
-            _unlink_worker_vector(c, path_root)
-        try:
-            result_path.unlink()
-        except OSError:
-            pass
+        if not force_emergency:
+            for c in raw:
+                _unlink_worker_vector(c, path_root)
+            try:
+                result_path.unlink()
+            except OSError:
+                pass
         return MergeStats(
             raw_n=raw_n,
             kept_after_veto=len(veto_pass),
@@ -1536,10 +1545,13 @@ def _merge_result_into_candidates_log(
         payload.setdefault("completed_shift_targets", list(payload.get("completed_shift_targets") or []))
         existing = list(payload.get("candidates") or [])
 
-        thin_kept, thin_discarded, _scores = _adaptive_manager_select(batch_loaded, existing, path_root, ctx)
-
-        for c in thin_discarded:
-            _unlink_worker_vector(c, path_root)
+        if force_emergency:
+            thin_kept = [dict(row) for row, _ in batch_loaded]
+            thin_discarded: List[Dict[str, Any]] = []
+        else:
+            thin_kept, thin_discarded, _scores = _adaptive_manager_select(batch_loaded, existing, path_root, ctx)
+            for c in thin_discarded:
+                _unlink_worker_vector(c, path_root)
 
         dropped_total = raw_n - len(thin_kept)
         if dropped_total > 0:
@@ -1556,12 +1568,13 @@ def _merge_result_into_candidates_log(
                 "No candidates left after adaptive manager for %s; removing result file and worker vectors.",
                 result_path.name,
             )
-            for c in raw:
-                _unlink_worker_vector(c, path_root)
-            try:
-                result_path.unlink()
-            except OSError:
-                pass
+            if not force_emergency:
+                for c in raw:
+                    _unlink_worker_vector(c, path_root)
+                try:
+                    result_path.unlink()
+                except OSError:
+                    pass
             gc.collect()
             return MergeStats(
                 raw_n=raw_n,
@@ -1582,7 +1595,7 @@ def _merge_result_into_candidates_log(
             except (TypeError, ValueError):
                 nh = float("nan")
             row_dupe = False
-            if math.isfinite(nh):
+            if (not force_emergency) and math.isfinite(nh):
                 for e in existing:
                     try:
                         eh = float(e.get("hz", 0.0) or 0.0)
@@ -1596,7 +1609,7 @@ def _merge_result_into_candidates_log(
                     "Merge idempotent: skip new log row (hz≈%.6f Hz matches existing candidate).",
                     nh,
                 )
-                if old_abs.is_file():
+                if old_abs.is_file() and not force_emergency:
                     try:
                         old_abs.unlink()
                     except OSError:
@@ -1624,10 +1637,11 @@ def _merge_result_into_candidates_log(
     del thin_discarded
     gc.collect()
 
-    try:
-        result_path.unlink()
-    except OSError:
-        LOGGER.warning("Could not delete merged result file: %s", result_path)
+    if not force_emergency:
+        try:
+            result_path.unlink()
+        except OSError:
+            LOGGER.warning("Could not delete merged result file: %s", result_path)
 
     gc.collect()
     return MergeStats(
@@ -1665,6 +1679,8 @@ def flush_pending_worker_shifts(
     sorting_root: Path,
     log_path: Path,
     lock: threading.Lock,
+    *,
+    force_emergency: bool = False,
 ) -> int:
     """Merge leftover ``temp_results/result_*.json`` before scheduling (resume-safe)."""
     tr = sorting_root / "temp_results"
@@ -1675,7 +1691,7 @@ def flush_pending_worker_shifts(
     for p in paths:
         th = _target_hz_from_result_filename(p)
         stats = _merge_result_into_candidates_log(
-            p, log_path, lock, sorting_root, merge_ctx=MergeContext()
+            p, log_path, lock, sorting_root, merge_ctx=MergeContext(), force_emergency=force_emergency
         )
         if th is not None and stats is not None:
             _append_completed_shift_to_log(log_path, lock, float(th))
@@ -1692,6 +1708,8 @@ def _poll_completed(
     merge_lock: threading.Lock,
     release_core: Callable[[Optional[int]], None],
     scheduler: Optional[SpectralScheduler] = None,
+    *,
+    force_emergency: bool = False,
 ) -> None:
     for proc, meta in list(running.items()):
         code = proc.poll()
@@ -1703,7 +1721,14 @@ def _poll_completed(
             if code == 0:
                 LOGGER.info("Worker finished OK for %.4f Hz (exit %s).", hz, code)
                 ctx = scheduler.merge_context() if scheduler is not None else None
-                stats = _merge_result_into_candidates_log(rpath, log_path, merge_lock, sorting_root, merge_ctx=ctx)
+                stats = _merge_result_into_candidates_log(
+                    rpath,
+                    log_path,
+                    merge_lock,
+                    sorting_root,
+                    merge_ctx=ctx,
+                    force_emergency=force_emergency,
+                )
                 if stats is not None:
                     _append_completed_shift_to_log(log_path, merge_lock, hz)
                     if scheduler is not None:
@@ -1712,7 +1737,8 @@ def _poll_completed(
                         scheduler.on_worker_merge(
                             hz, stats, sp_step, str(meta.get("role", "") or "")
                         )
-                        scheduler.try_apply_conductor_ceiling(hz)
+                        if not force_emergency:
+                            scheduler.try_apply_conductor_ceiling(hz)
                 if scheduler is not None:
                     scheduler.log_schedule_snapshot_after_worker(hz, stats)
             else:
@@ -1811,6 +1837,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--force-emergency",
+        action="store_true",
+        help=(
+            "Coverage-anchor run mode: disable conductor pruning (wood/manager filtering and vector/result cleanup) "
+            "and disable adaptive ceiling reduction so full sweep coverage is preserved."
+        ),
+    )
+    parser.add_argument(
         "--legacy-static-schedule",
         action="store_true",
         help=(
@@ -1842,7 +1876,9 @@ def main() -> int:
             encoding="utf-8",
         )
 
-    flush_pending_worker_shifts(sorting_root, log_path, merge_lock)
+    flush_pending_worker_shifts(
+        sorting_root, log_path, merge_lock, force_emergency=bool(args.force_emergency)
+    )
 
     LOGGER.info(
         "sorting_root=%s — each worker is spawned with the same --sorting-root so vectors "
@@ -1892,7 +1928,7 @@ def main() -> int:
             "zones Z1 step=%.0f Z2=%.0f Z3=%.0f Hz | Z1 num_modes≤%d Z3∈[%d,%d] | "
             "adaptive ceiling @%.0f Hz (zone→440/470/490) | "
             "merge wood V2 (100–450 Hz) + isolation relief (independent of SLEPc quota) | "
-            "max concurrent=%d workers.%s sorting_root=%s | HF quota ≥%.0f Hz.",
+            "max concurrent=%d workers.%s sorting_root=%s | HF quota ≥%.0f Hz.%s",
             ZONE1_STEP_HZ,
             ZONE1_STEP_HZ,
             ZONE2_STEP_HZ,
@@ -1905,6 +1941,9 @@ def main() -> int:
             linux_pin_msg,
             sorting_root,
             ZONE_C_MIN_HZ,
+            " [FORCE-EMERGENCY: pruning disabled + no adaptive ceiling]"
+            if bool(args.force_emergency)
+            else "",
         )
     else:
         assert tasks_static is not None
@@ -2049,7 +2088,15 @@ def main() -> int:
 
     try:
         while _has_pending_tasks() or running:
-            _poll_completed(running, log_path, sorting_root, merge_lock, release_core, scheduler=scheduler)
+            _poll_completed(
+                running,
+                log_path,
+                sorting_root,
+                merge_lock,
+                release_core,
+                scheduler=scheduler,
+                force_emergency=bool(args.force_emergency),
+            )
             _enforce_timeouts(running, sorting_root, release_core)
             while len(running) < max_workers and _has_pending_tasks():
                 if len(running) == 1:

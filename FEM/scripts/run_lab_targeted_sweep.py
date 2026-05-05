@@ -284,6 +284,8 @@ def main() -> int:
                 "--sorting-root",
                 str(sorting_root),
             ]
+            if force_emergency:
+                master_cmd.append("--force-emergency")
             if args.mpiexec:
                 master_cmd.append("--use-mpiexec")
 
