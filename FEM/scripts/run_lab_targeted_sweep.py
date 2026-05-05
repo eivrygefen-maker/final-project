@@ -16,7 +16,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 DEFAULT_WINDOWS: Tuple[Tuple[float, float], ...] = ((80.0, 100.0), (400.0, 600.0))
@@ -147,6 +147,27 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+def _count_selected_rows(csv_path: Path) -> int:
+    if not csv_path.is_file():
+        return 0
+    lines = csv_path.read_text(encoding="utf-8").splitlines()
+    if not lines:
+        return 0
+    # First line is header.
+    return max(0, len(lines) - 1)
+
+
+def _load_coverage_pending(sorting_root: Path) -> bool:
+    p = sorting_root / "coverage_anchor_state.json"
+    if not p.is_file():
+        return False
+    try:
+        payload = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return bool(payload.get("coverage_emergency_pending", False))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -228,6 +249,8 @@ def main() -> int:
         _write_json(merged_cfg_path, merged_cfg)
 
         sample_report: Dict[str, Any] = {"sample_id": skey, "windows": []}
+        low_selected_streak = 0
+        emergency_for_next_window = False
         for win in windows:
             lo, hi = win
             wtag = _window_tag(win)
@@ -260,6 +283,9 @@ def main() -> int:
 
             selected_csv = wdir / "selected_modes.csv"
             plot_out = wdir / "selection_plot.png"
+            selection_metadata = wdir / "selection_metadata.json"
+            emergency_for_this_window = bool(emergency_for_next_window or _load_coverage_pending(sorting_root))
+            selection_type = "coverage_anchor" if emergency_for_this_window else "primary"
             tuner_cmd = [
                 py,
                 str(tuner),
@@ -277,14 +303,34 @@ def main() -> int:
                 "--adaptive-veto",
                 "--adaptive-steps",
                 "12",
+                "--selection-type",
+                selection_type,
+                "--metadata-out",
+                str(selection_metadata),
                 "--export",
                 str(selected_csv),
                 "--plot-out",
                 str(plot_out),
             ]
+            if emergency_for_this_window:
+                tuner_cmd.extend(
+                    [
+                        "--wood-floor-min",
+                        "0.0",
+                        "--min-selected",
+                        "5",
+                    ]
+                )
             if _run_step(f"{skey} window {wtag} | Step B tuner", tuner_cmd, repo) != 0:
                 failures.append(f"{skey} window {wtag}: tuner failed")
                 continue
+
+            selected_count = _count_selected_rows(selected_csv)
+            if selected_count <= 1:
+                low_selected_streak += 1
+            else:
+                low_selected_streak = 0
+            emergency_for_next_window = low_selected_streak >= 2
 
             window_npz = wdir / "targeted_window_rom.npz"
             pack_cmd = [
@@ -308,6 +354,9 @@ def main() -> int:
                     "sorting_root": str(sorting_root),
                     "selected_csv": str(selected_csv),
                     "plot": str(plot_out),
+                    "selection_metadata": str(selection_metadata),
+                    "selected_count": int(selected_count),
+                    "selection_type": selection_type,
                     "npz": str(window_npz),
                 }
             )

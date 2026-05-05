@@ -378,13 +378,53 @@ class SpectralScheduler:
     )
     _max_completed_shift_hz: float = field(default=-math.inf, repr=False)
     _conductor_ceiling_applied: bool = field(default=False, repr=False)
+    _low_keep_streak: int = field(default=0, repr=False)
+    _coverage_emergency_pending: bool = field(default=False, repr=False)
+    _last_kept_after_manager: int = field(default=0, repr=False)
+    _last_report_hz: float = field(default=float("nan"), repr=False)
 
     def __post_init__(self) -> None:
         self._n_modes_in_log = 0
         self._recovery_shift_count = 0
         self._resume_load_state()
         self._bootstrap_seed_queue()
+        self._write_coverage_anchor_state()
         self._log_resume_verification_table()
+
+    def _write_coverage_anchor_state(self) -> None:
+        if self.sorting_root is None:
+            return
+        payload = {
+            "coverage_emergency_pending": bool(self._coverage_emergency_pending),
+            "low_keep_streak": int(self._low_keep_streak),
+            "last_kept_after_manager": int(self._last_kept_after_manager),
+            "last_report_hz": None if not math.isfinite(self._last_report_hz) else float(self._last_report_hz),
+            "rule": "trigger when two consecutive merged shifts keep <=1 candidate each",
+        }
+        try:
+            root = Path(self.sorting_root).resolve()
+            p = root / "coverage_anchor_state.json"
+            tmp = p.with_suffix(p.suffix + ".tmp")
+            tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            tmp.replace(p)
+        except OSError as exc:
+            LOGGER.warning("Could not write coverage_anchor_state.json: %s", exc)
+
+    def _update_coverage_anchor_state(self, report_hz: float, kept_after_manager: int) -> None:
+        self._last_report_hz = float(report_hz)
+        self._last_kept_after_manager = int(kept_after_manager)
+        if int(kept_after_manager) <= 1:
+            self._low_keep_streak += 1
+        else:
+            self._low_keep_streak = 0
+            self._coverage_emergency_pending = False
+        if self._low_keep_streak >= 2:
+            self._coverage_emergency_pending = True
+            LOGGER.info(
+                "[Coverage Anchor] Emergency coverage mode armed after consecutive low-keep shifts (<=1). "
+                "Next tuner selection should relax wood veto and enforce minimum anchors."
+            )
+        self._write_coverage_anchor_state()
 
     def _shift_target_done(self, hz: float) -> bool:
         """True if this shift ``target_hz`` was already merged (resume) or consumed."""
@@ -805,6 +845,7 @@ class SpectralScheduler:
             decision,
             next_step,
         )
+        self._update_coverage_anchor_state(report_hz, int(stats.kept_after_manager))
 
     def _inject_backfill(self, scout_hz: float) -> None:
         mx_c = float(self._max_completed_shift_hz)

@@ -41,6 +41,10 @@ def _default_selection_plot_path() -> Path:
     return _project_root() / "FEM" / "SORTING" / "selection_plot.png"
 
 
+def _default_metadata_path() -> Path:
+    return _project_root() / "FEM" / "SORTING" / "selection_metadata.json"
+
+
 def _load_candidates(path: Path) -> List[Dict]:
     if not path.exists():
         raise FileNotFoundError(f"Candidates log not found: {path}")
@@ -151,6 +155,7 @@ def mmr_select_with_thresholds(
     *,
     wood_min: float,
     uniqueness_min: float,
+    selection_type: str = "primary",
 ) -> Tuple[List[Dict], List[Dict]]:
     filtered = [c for c in candidates if _passes_veto_gates_with_thresholds(c, wood_min, uniqueness_min)]
     if not filtered:
@@ -163,9 +168,14 @@ def mmr_select_with_thresholds(
 
     pool: List[Dict] = []
     for i, c in enumerate(filtered):
-        q_i = W * float(w_norm[i]) + U * float(u_norm[i])
+        if str(selection_type).strip().lower() == "coverage_anchor":
+            # Coverage anchors intentionally prioritize basis diversity over acoustic loudness.
+            q_i = float(u_norm[i])
+        else:
+            q_i = W * float(w_norm[i]) + U * float(u_norm[i])
         cc = dict(c)
         cc["_Q"] = float(q_i)
+        cc["selection_type"] = str(selection_type)
         pool.append(cc)
 
     selected: List[Dict] = []
@@ -276,14 +286,49 @@ def _plot_selection(
 
 def _write_selected_text(selected: List[Dict], out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    lines = ["id,hz,wood_participation,uniqueness,tag1_ratio,tag3_ratio,Q_mmr_base"]
+    lines = ["id,hz,wood_participation,uniqueness,tag1_ratio,tag3_ratio,Q_mmr_base,selection_type"]
     for c in sorted(selected, key=lambda x: float(x["hz"])):
         lines.append(
             f'{int(c["id"])},{float(c["hz"]):.6f},{float(c["wood_participation"]):.6f},'
             f'{float(c["uniqueness"]):.6f},{float(c["tag1_ratio"]):.6f},{float(c["tag3_ratio"]):.6f},'
-            f'{float(c.get("_Q", 0.0)):.6f}'
+            f'{float(c.get("_Q", 0.0)):.6f},{str(c.get("selection_type", "primary"))}'
         )
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_selection_metadata(
+    selected: List[Dict],
+    out_path: Path,
+    *,
+    selection_type: str,
+    candidate_count: int,
+    selected_count: int,
+    min_selected: int,
+    wood_threshold_used: float,
+    uniqueness_threshold_used: float,
+    window_min: Optional[float],
+    window_max: Optional[float],
+) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    payload: Dict[str, object] = {
+        "selection_type": str(selection_type),
+        "candidate_count": int(candidate_count),
+        "selected_count": int(selected_count),
+        "min_selected_target": int(min_selected),
+        "wood_threshold_used": float(wood_threshold_used),
+        "uniqueness_threshold_used": float(uniqueness_threshold_used),
+        "window_min_hz": None if window_min is None else float(window_min),
+        "window_max_hz": None if window_max is None else float(window_max),
+        "selected_candidates": [
+            {
+                "id": int(c["id"]),
+                "hz": float(c["hz"]),
+                "selection_type": str(c.get("selection_type", selection_type)),
+            }
+            for c in sorted(selected, key=lambda x: float(x["hz"]))
+        ],
+    }
+    out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def main() -> int:
@@ -343,6 +388,18 @@ def main() -> int:
         default=0.0,
         help="Lowest allowed uniqueness veto floor during adaptive relaxation (default: 0.0).",
     )
+    parser.add_argument(
+        "--selection-type",
+        type=str,
+        default="primary",
+        help='Selection mode label. Use "coverage_anchor" to prioritize uniqueness/frequency spacing over wood loudness.',
+    )
+    parser.add_argument(
+        "--metadata-out",
+        type=Path,
+        default=_default_metadata_path(),
+        help="Path to JSON metadata that records selected candidates and selection_type.",
+    )
     args = parser.parse_args()
 
     candidates = _load_candidates(args.candidates)
@@ -364,12 +421,17 @@ def main() -> int:
     base_uniq = float(UNIQUENESS_VETO_MIN)
     min_wood = max(0.0, float(args.wood_floor_min))
     min_uniq = max(0.0, float(args.uniqueness_floor_min))
+    selection_type = str(args.selection_type).strip() or "primary"
+    if selection_type.lower() == "coverage_anchor":
+        min_wood = 0.0
+        min_selected_target = max(5, min_selected_target)
+        quota = max(quota, min_selected_target)
 
+    chosen_wood = base_wood
+    chosen_uniq = base_uniq
     if args.adaptive_veto:
         best_selected: List[Dict] = []
         best_rejected: List[Dict] = list(candidates)
-        chosen_wood = base_wood
-        chosen_uniq = base_uniq
         for i in range(adaptive_steps + 1):
             t = float(i) / float(adaptive_steps)
             wood_thr = base_wood - (base_wood - min_wood) * t
@@ -379,6 +441,7 @@ def main() -> int:
                 quota=quota,
                 wood_min=max(min_wood, wood_thr),
                 uniqueness_min=max(min_uniq, uniq_thr),
+                selection_type=selection_type,
             )
             if len(sel_i) > len(best_selected):
                 best_selected = sel_i
@@ -397,11 +460,30 @@ def main() -> int:
             f"selected={len(selected)} target={min_selected_target or quota}"
         )
     else:
-        selected, rejected = mmr_select(candidates, quota=quota)
+        selected, rejected = mmr_select_with_thresholds(
+            candidates,
+            quota=quota,
+            wood_min=base_wood,
+            uniqueness_min=base_uniq,
+            selection_type=selection_type,
+        )
 
     print(f"Selected {len(selected)} modes. Exporting to text...")
     _write_selected_text(selected, args.export)
+    _write_selection_metadata(
+        selected,
+        args.metadata_out,
+        selection_type=selection_type,
+        candidate_count=len(candidates),
+        selected_count=len(selected),
+        min_selected=min_selected_target,
+        wood_threshold_used=chosen_wood,
+        uniqueness_threshold_used=chosen_uniq,
+        window_min=args.window_min,
+        window_max=args.window_max,
+    )
     print(f"Exported: {args.export}")
+    print(f"Metadata: {args.metadata_out}")
 
     title = (
         f"MMR tuner | selected={len(selected)} rejected={len(rejected)} | "
