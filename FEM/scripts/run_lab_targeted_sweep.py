@@ -191,6 +191,14 @@ def main() -> int:
     )
     parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS, help="Forwarded to fem_master_dynamic (default: 2).")
     parser.add_argument("--mpiexec", action="store_true", help="Pass --use-mpiexec to fem_master_dynamic.")
+    parser.add_argument(
+        "--force-emergency",
+        action="store_true",
+        help=(
+            "Every window: run the tuner as coverage_anchor with --wood-floor-min 0.0, "
+            "ignoring streak / scheduler emergency state."
+        ),
+    )
     args = parser.parse_args()
 
     if int(args.max_workers) != 2:
@@ -223,6 +231,7 @@ def main() -> int:
         "windows": [{"min_hz": lo, "max_hz": hi} for lo, hi in windows],
         "max_workers": 2,
         "window_quota": WINDOW_QUOTA,
+        "force_emergency": bool(args.force_emergency),
         "note": "No automatic merge into master training set.",
     }
     _write_json(extra_root / "run_manifest.json", manifest)
@@ -248,7 +257,8 @@ def main() -> int:
         merged_cfg_path = sdir / "merged_config.json"
         _write_json(merged_cfg_path, merged_cfg)
 
-        sample_report: Dict[str, Any] = {"sample_id": skey, "windows": []}
+        force_emergency = bool(args.force_emergency)
+        sample_report: Dict[str, Any] = {"sample_id": skey, "force_emergency": force_emergency, "windows": []}
         low_selected_streak = 0
         emergency_for_next_window = False
         for win in windows:
@@ -284,7 +294,9 @@ def main() -> int:
             selected_csv = wdir / "selected_modes.csv"
             plot_out = wdir / "selection_plot.png"
             selection_metadata = wdir / "selection_metadata.json"
-            emergency_for_this_window = bool(emergency_for_next_window or _load_coverage_pending(sorting_root))
+            emergency_for_this_window = bool(
+                force_emergency or emergency_for_next_window or _load_coverage_pending(sorting_root)
+            )
             selection_type = "coverage_anchor" if emergency_for_this_window else "primary"
             tuner_cmd = [
                 py,
@@ -313,24 +325,21 @@ def main() -> int:
                 str(plot_out),
             ]
             if emergency_for_this_window:
-                tuner_cmd.extend(
-                    [
-                        "--wood-floor-min",
-                        "0.0",
-                        "--min-selected",
-                        "5",
-                    ]
-                )
+                tuner_cmd.extend(["--wood-floor-min", "0.0"])
+                # Streak-triggered emergency: require at least 5 anchors; global --force-emergency keeps WINDOW_QUOTA.
+                if not force_emergency:
+                    tuner_cmd.extend(["--min-selected", "5"])
             if _run_step(f"{skey} window {wtag} | Step B tuner", tuner_cmd, repo) != 0:
                 failures.append(f"{skey} window {wtag}: tuner failed")
                 continue
 
             selected_count = _count_selected_rows(selected_csv)
-            if selected_count <= 1:
-                low_selected_streak += 1
-            else:
-                low_selected_streak = 0
-            emergency_for_next_window = low_selected_streak >= 2
+            if not force_emergency:
+                if selected_count <= 1:
+                    low_selected_streak += 1
+                else:
+                    low_selected_streak = 0
+                emergency_for_next_window = low_selected_streak >= 2
 
             window_npz = wdir / "targeted_window_rom.npz"
             pack_cmd = [
