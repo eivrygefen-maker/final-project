@@ -12,7 +12,7 @@ import argparse
 import json
 import math
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -90,6 +90,12 @@ def _passes_veto_gates(c: Dict) -> bool:
     return w >= WOOD_FILTER_MIN and u >= UNIQUENESS_VETO_MIN
 
 
+def _passes_veto_gates_with_thresholds(c: Dict, wood_min: float, uniq_min: float) -> bool:
+    w = float(c["wood_participation"])
+    u = float(c["uniqueness"])
+    return w >= float(wood_min) and u >= float(uniq_min)
+
+
 def mmr_select(candidates: List[Dict], quota: int) -> Tuple[List[Dict], List[Dict]]:
     """
     1) Veto gates (not eligible for MMR): wood < WOOD_FILTER_MIN or uniqueness < UNIQUENESS_VETO_MIN.
@@ -137,6 +143,68 @@ def mmr_select(candidates: List[Dict], quota: int) -> Tuple[List[Dict], List[Dic
     selected_ids = {int(s["id"]) for s in selected}
     rejected = [c for c in candidates if int(c["id"]) not in selected_ids]
     return selected, rejected
+
+
+def mmr_select_with_thresholds(
+    candidates: List[Dict],
+    quota: int,
+    *,
+    wood_min: float,
+    uniqueness_min: float,
+) -> Tuple[List[Dict], List[Dict]]:
+    filtered = [c for c in candidates if _passes_veto_gates_with_thresholds(c, wood_min, uniqueness_min)]
+    if not filtered:
+        return [], list(candidates)
+
+    w = np.array([float(c["wood_participation"]) for c in filtered], dtype=np.float64)
+    u = np.array([float(c["uniqueness"]) for c in filtered], dtype=np.float64)
+    w_norm = _minmax_norm(w)
+    u_norm = _minmax_norm(u)
+
+    pool: List[Dict] = []
+    for i, c in enumerate(filtered):
+        q_i = W * float(w_norm[i]) + U * float(u_norm[i])
+        cc = dict(c)
+        cc["_Q"] = float(q_i)
+        pool.append(cc)
+
+    selected: List[Dict] = []
+    first = max(pool, key=lambda c: float(c["_Q"]))
+    pool.remove(first)
+    selected.append(first)
+
+    while pool and len(selected) < quota:
+        best: Dict | None = None
+        best_mmr = -float("inf")
+        for k in pool:
+            fk = float(k["hz"])
+            penalty = max(_similarity_gaussian(fk, float(sj["hz"]), SIGMA_HZ) for sj in selected)
+            mmr_k = (LAMBDA_VAL * float(k["_Q"])) - ((1.0 - LAMBDA_VAL) * penalty)
+            if mmr_k > best_mmr:
+                best_mmr = mmr_k
+                best = k
+        if best is None:
+            break
+        pool.remove(best)
+        selected.append(best)
+
+    selected_ids = {int(s["id"]) for s in selected}
+    rejected = [c for c in candidates if int(c["id"]) not in selected_ids]
+    return selected, rejected
+
+
+def _filter_frequency_window(candidates: List[Dict], hz_min: Optional[float], hz_max: Optional[float]) -> List[Dict]:
+    if hz_min is None and hz_max is None:
+        return list(candidates)
+    out: List[Dict] = []
+    for c in candidates:
+        hz = float(c["hz"])
+        if hz_min is not None and hz < float(hz_min):
+            continue
+        if hz_max is not None and hz > float(hz_max):
+            continue
+        out.append(c)
+    return out
 
 
 def _plot_selection(
@@ -244,6 +312,37 @@ def main() -> int:
         default=_default_selection_plot_path(),
         help="Output path for MMR plot when --headless (default: FEM/SORTING/selection_plot.png)",
     )
+    parser.add_argument("--window-min", type=float, default=None, help="Optional minimum frequency for selection window.")
+    parser.add_argument("--window-max", type=float, default=None, help="Optional maximum frequency for selection window.")
+    parser.add_argument(
+        "--min-selected",
+        type=int,
+        default=0,
+        help="Minimum selected modes target; if unmet and --adaptive-veto is enabled, veto thresholds are relaxed.",
+    )
+    parser.add_argument(
+        "--adaptive-veto",
+        action="store_true",
+        help="Adaptively lower wood/uniqueness veto thresholds until --min-selected is reached or limits are hit.",
+    )
+    parser.add_argument(
+        "--adaptive-steps",
+        type=int,
+        default=8,
+        help="Number of adaptive-veto relaxation steps (default: 8).",
+    )
+    parser.add_argument(
+        "--wood-floor-min",
+        type=float,
+        default=0.0,
+        help="Lowest allowed wood veto floor during adaptive relaxation (default: 0.0).",
+    )
+    parser.add_argument(
+        "--uniqueness-floor-min",
+        type=float,
+        default=0.0,
+        help="Lowest allowed uniqueness veto floor during adaptive relaxation (default: 0.0).",
+    )
     args = parser.parse_args()
 
     candidates = _load_candidates(args.candidates)
@@ -251,8 +350,54 @@ def main() -> int:
         print(f"No valid candidates found in: {args.candidates}")
         return 1
 
+    candidates = _filter_frequency_window(candidates, args.window_min, args.window_max)
+    if not candidates:
+        print(
+            f"No valid candidates in requested window [{args.window_min}, {args.window_max}] from: {args.candidates}"
+        )
+        return 1
+
     quota = max(1, int(args.quota))
-    selected, rejected = mmr_select(candidates, quota=quota)
+    min_selected_target = max(0, int(args.min_selected))
+    adaptive_steps = max(1, int(args.adaptive_steps))
+    base_wood = float(WOOD_FILTER_MIN)
+    base_uniq = float(UNIQUENESS_VETO_MIN)
+    min_wood = max(0.0, float(args.wood_floor_min))
+    min_uniq = max(0.0, float(args.uniqueness_floor_min))
+
+    if args.adaptive_veto:
+        best_selected: List[Dict] = []
+        best_rejected: List[Dict] = list(candidates)
+        chosen_wood = base_wood
+        chosen_uniq = base_uniq
+        for i in range(adaptive_steps + 1):
+            t = float(i) / float(adaptive_steps)
+            wood_thr = base_wood - (base_wood - min_wood) * t
+            uniq_thr = base_uniq - (base_uniq - min_uniq) * t
+            sel_i, rej_i = mmr_select_with_thresholds(
+                candidates,
+                quota=quota,
+                wood_min=max(min_wood, wood_thr),
+                uniqueness_min=max(min_uniq, uniq_thr),
+            )
+            if len(sel_i) > len(best_selected):
+                best_selected = sel_i
+                best_rejected = rej_i
+                chosen_wood = max(min_wood, wood_thr)
+                chosen_uniq = max(min_uniq, uniq_thr)
+            if min_selected_target > 0 and len(sel_i) >= min_selected_target:
+                best_selected = sel_i
+                best_rejected = rej_i
+                chosen_wood = max(min_wood, wood_thr)
+                chosen_uniq = max(min_uniq, uniq_thr)
+                break
+        selected, rejected = best_selected, best_rejected
+        print(
+            f"Adaptive veto thresholds used: wood>={chosen_wood:.6f}, uniqueness>={chosen_uniq:.6f}. "
+            f"selected={len(selected)} target={min_selected_target or quota}"
+        )
+    else:
+        selected, rejected = mmr_select(candidates, quota=quota)
 
     print(f"Selected {len(selected)} modes. Exporting to text...")
     _write_selected_text(selected, args.export)
