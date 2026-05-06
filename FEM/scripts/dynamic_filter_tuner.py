@@ -14,8 +14,6 @@ import math
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import numpy as np
-
 # =============================
 # Tuning parameters (edit here)
 # =============================
@@ -74,12 +72,15 @@ def _load_candidates(path: Path) -> List[Dict]:
     return out
 
 
-def _minmax_norm(x: np.ndarray) -> np.ndarray:
-    lo = float(np.min(x))
-    hi = float(np.max(x))
+def _minmax_norm_list(x: List[float]) -> List[float]:
+    if not x:
+        return []
+    lo = float(min(x))
+    hi = float(max(x))
     if hi - lo < 1e-15:
-        return np.full_like(x, 0.5, dtype=np.float64)
-    return (x - lo) / (hi - lo)
+        return [0.5 for _ in x]
+    den = hi - lo
+    return [(float(v) - lo) / den for v in x]
 
 
 def _similarity_gaussian(freq_i: float, freq_j: float, sigma: float) -> float:
@@ -112,10 +113,10 @@ def mmr_select(candidates: List[Dict], quota: int) -> Tuple[List[Dict], List[Dic
     if not filtered:
         return [], list(candidates)
 
-    w = np.array([float(c["wood_participation"]) for c in filtered], dtype=np.float64)
-    u = np.array([float(c["uniqueness"]) for c in filtered], dtype=np.float64)
-    w_norm = _minmax_norm(w)
-    u_norm = _minmax_norm(u)
+    w = [float(c["wood_participation"]) for c in filtered]
+    u = [float(c["uniqueness"]) for c in filtered]
+    w_norm = _minmax_norm_list(w)
+    u_norm = _minmax_norm_list(u)
 
     pool: List[Dict] = []
     for i, c in enumerate(filtered):
@@ -156,15 +157,17 @@ def mmr_select_with_thresholds(
     wood_min: float,
     uniqueness_min: float,
     selection_type: str = "primary",
+    sigma_hz: float = SIGMA_HZ,
+    lambda_val: float = LAMBDA_VAL,
 ) -> Tuple[List[Dict], List[Dict]]:
     filtered = [c for c in candidates if _passes_veto_gates_with_thresholds(c, wood_min, uniqueness_min)]
     if not filtered:
         return [], list(candidates)
 
-    w = np.array([float(c["wood_participation"]) for c in filtered], dtype=np.float64)
-    u = np.array([float(c["uniqueness"]) for c in filtered], dtype=np.float64)
-    w_norm = _minmax_norm(w)
-    u_norm = _minmax_norm(u)
+    w = [float(c["wood_participation"]) for c in filtered]
+    u = [float(c["uniqueness"]) for c in filtered]
+    w_norm = _minmax_norm_list(w)
+    u_norm = _minmax_norm_list(u)
 
     pool: List[Dict] = []
     for i, c in enumerate(filtered):
@@ -188,8 +191,8 @@ def mmr_select_with_thresholds(
         best_mmr = -float("inf")
         for k in pool:
             fk = float(k["hz"])
-            penalty = max(_similarity_gaussian(fk, float(sj["hz"]), SIGMA_HZ) for sj in selected)
-            mmr_k = (LAMBDA_VAL * float(k["_Q"])) - ((1.0 - LAMBDA_VAL) * penalty)
+            penalty = max(_similarity_gaussian(fk, float(sj["hz"]), sigma_hz) for sj in selected)
+            mmr_k = (float(lambda_val) * float(k["_Q"])) - ((1.0 - float(lambda_val)) * penalty)
             if mmr_k > best_mmr:
                 best_mmr = mmr_k
                 best = k
@@ -234,8 +237,8 @@ def _plot_selection(
     fig, ax = plt.subplots(figsize=(12, 6))
 
     if rejected:
-        rx = np.array([float(c["hz"]) for c in rejected], dtype=np.float64)
-        ry = np.array([float(c["wood_participation"]) for c in rejected], dtype=np.float64)
+        rx = [float(c["hz"]) for c in rejected]
+        ry = [float(c["wood_participation"]) for c in rejected]
         ax.scatter(
             rx,
             ry,
@@ -247,8 +250,8 @@ def _plot_selection(
         )
 
     if selected:
-        sx = np.array([float(c["hz"]) for c in selected], dtype=np.float64)
-        sy = np.array([float(c["wood_participation"]) for c in selected], dtype=np.float64)
+        sx = [float(c["hz"]) for c in selected]
+        sy = [float(c["wood_participation"]) for c in selected]
         ax.scatter(
             sx,
             sy,
@@ -400,6 +403,19 @@ def main() -> int:
         default=_default_metadata_path(),
         help="Path to JSON metadata that records selected candidates and selection_type.",
     )
+    parser.add_argument(
+        "--sigma",
+        type=float,
+        default=SIGMA_HZ,
+        help=f"Gaussian frequency similarity sigma in Hz (default: {SIGMA_HZ}).",
+    )
+    parser.add_argument(
+        "--lambda",
+        dest="lambda_val",
+        type=float,
+        default=LAMBDA_VAL,
+        help=f"MMR trade-off lambda in [0,1] (default: {LAMBDA_VAL}).",
+    )
     args = parser.parse_args()
 
     candidates = _load_candidates(args.candidates)
@@ -415,6 +431,8 @@ def main() -> int:
         return 1
 
     quota = max(1, int(args.quota))
+    sigma_hz = max(1e-6, float(args.sigma))
+    lambda_val = min(1.0, max(0.0, float(args.lambda_val)))
     min_selected_target = max(0, int(args.min_selected))
     adaptive_steps = max(1, int(args.adaptive_steps))
     base_wood = float(WOOD_FILTER_MIN)
@@ -442,6 +460,8 @@ def main() -> int:
                 wood_min=max(min_wood, wood_thr),
                 uniqueness_min=max(min_uniq, uniq_thr),
                 selection_type=selection_type,
+                sigma_hz=sigma_hz,
+                lambda_val=lambda_val,
             )
             if len(sel_i) > len(best_selected):
                 best_selected = sel_i
@@ -466,6 +486,8 @@ def main() -> int:
             wood_min=base_wood,
             uniqueness_min=base_uniq,
             selection_type=selection_type,
+            sigma_hz=sigma_hz,
+            lambda_val=lambda_val,
         )
 
     print(f"Selected {len(selected)} modes. Exporting to text...")
@@ -487,7 +509,7 @@ def main() -> int:
 
     title = (
         f"MMR tuner | selected={len(selected)} rejected={len(rejected)} | "
-        f"W={W}, U={U}, λ={LAMBDA_VAL}, σ={SIGMA_HZ} Hz | "
+        f"W={W}, U={U}, λ={lambda_val}, σ={sigma_hz} Hz | "
         f"vetoes: wood≥{WOOD_FILTER_MIN}, uniqueness≥{UNIQUENESS_VETO_MIN}"
     )
     _plot_selection(
