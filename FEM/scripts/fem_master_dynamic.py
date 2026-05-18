@@ -138,7 +138,7 @@ WOOD_PARTICIPATION_FLOOR_HI = 0.0003
 
 # --- Frequency-dependent wood veto V2 (linear 100 Hz → 450 Hz): 0.0005 → 0.0003 ---
 WOOD_V2_LO_HZ = 100.0
-WOOD_V2_HI_HZ = 450.0
+WOOD_V2_HI_HZ = 480.0
 WOOD_V2_LO = 0.0005
 WOOD_V2_HI = 0.0003
 
@@ -168,9 +168,9 @@ SLEPC_NUM_MODES_ABSOLUTE_CEILING = 100
 # Spectral zone from ``SpectralScheduler`` / ``on_worker_merge``: 1 = dense (saturated), 2 = normal,
 # 3 = sparse (high interest). Maps to user "Conductor" zones and ceilings for ROM-safe sweep span.
 CONDUCTOR_TRIGGER_HZ = 435.0
-CONDUCTOR_CEILING_SPECTRAL_ZONE_1 = 440.0  # saturated / low spectral interest → stop early
-CONDUCTOR_CEILING_SPECTRAL_ZONE_2 = 470.0
-CONDUCTOR_CEILING_SPECTRAL_ZONE_3 = 490.0  # sparse / high interest → extend
+CONDUCTOR_CEILING_SPECTRAL_ZONE_1 = 460.0  # saturated / low spectral interest → stop early
+CONDUCTOR_CEILING_SPECTRAL_ZONE_2 = 480.0
+CONDUCTOR_CEILING_SPECTRAL_ZONE_3 = 480.0  # sparse / high interest → extend (capped at sweep max)
 
 # --- Merge-time physical density (numerical duplicate clusters) ---
 MERGE_SHIFT_CLUSTER_SPAN_HZ = 1.0
@@ -247,7 +247,7 @@ def _target_hz_from_result_filename(path: Path) -> Optional[float]:
 
 def get_band_params(current_hz: float) -> Dict[str, Any]:
     hz = float(current_hz)
-    if 80.0 <= hz < 150.0:
+    if 60.0 <= hz < 150.0:
         return {"step_hz": 5, "num_modes": 80, "timeout_minutes": 60, "label": "Dense Band 1"}
     if 150.0 <= hz < 250.0:
         return {"step_hz": 10, "num_modes": 30, "timeout_minutes": 60, "label": "Medium Band"}
@@ -255,7 +255,7 @@ def get_band_params(current_hz: float) -> Dict[str, Any]:
         return {"step_hz": 5, "num_modes": 50, "timeout_minutes": 60, "label": "Dense Band 2"}
     if hz >= 300.0:
         return {"step_hz": 25, "num_modes": 15, "timeout_minutes": 20, "label": "Dead Zone"}
-    raise ValueError(f"get_band_params: hz={hz} is outside the supported sweep (expected hz >= 80).")
+    raise ValueError(f"get_band_params: hz={hz} is outside the supported sweep (expected hz >= 60).")
 
 
 def _recovery_infer_shift_targets_from_candidates(
@@ -279,7 +279,7 @@ def _recovery_infer_shift_targets_from_candidates(
             continue
         if not math.isfinite(mh) or mh < f0:
             continue
-        hz_band = max(80.0, mh)
+        hz_band = max(60.0, mh)
         try:
             step = float(get_band_params(hz_band).get("step_hz", ZONE2_STEP_HZ))
         except ValueError:
@@ -1278,8 +1278,8 @@ def build_task_list(hz_min: float, hz_max: float) -> List[Tuple[float, Dict[str,
     """Build worker target Hz list from ``hz_min`` (inclusive) through ``hz_max`` (inclusive)."""
     lo = float(hz_min)
     hi = float(hz_max)
-    if lo < 80.0:
-        raise ValueError(f"hz_min must be >= 80.0 (band tables start at 80 Hz), got {lo}")
+    if lo < 60.0:
+        raise ValueError(f"hz_min must be >= 60.0 (band tables start at 60 Hz), got {lo}")
     if hi < lo:
         raise ValueError(f"hz_max ({hi}) must be >= hz_min ({lo})")
     tasks: List[Tuple[float, Dict[str, Any]]] = []
@@ -1798,16 +1798,16 @@ def main() -> int:
     parser.add_argument(
         "--hz-min",
         type=float,
-        default=80.0,
-        help="Sweep lower bound (Hz), inclusive. Must be >= 80 (default: 80).",
+        default=60.0,
+        help="Sweep lower bound (Hz), inclusive. Must be >= 60 (default: 60).",
     )
     parser.add_argument(
         "--hz-max",
         type=float,
-        default=450.0,
+        default=480.0,
         help=(
-            "Initial sweep upper bound (Hz), inclusive; dynamic scheduler may set 440/470/490 once "
-            f"at {CONDUCTOR_TRIGGER_HZ:.0f} Hz from spectral zone (see [Conductor] log line)."
+            "Sweep upper bound (Hz), inclusive (default: 480). Dynamic scheduler may lower ceiling "
+            f"once at {CONDUCTOR_TRIGGER_HZ:.0f} Hz from spectral zone (see [Conductor] log line)."
         ),
     )
     parser.add_argument(

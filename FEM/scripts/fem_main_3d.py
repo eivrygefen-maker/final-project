@@ -442,22 +442,37 @@ def _solver_bool(solver: Dict, key: str, default: bool) -> bool:
     return bool(v)
 
 
-def _effective_wood_properties(config: Dict) -> Tuple[float, float, float, float]:
+def _shell_isotropic_params(mat: Dict) -> Tuple[float, float, float, float]:
+    """Lamé parameters and bending modulus E from a 3D config material block."""
+    E = float(mat.get("E_L", 1.0e9))
+    nu = float(mat.get("nu_LT", 0.3))
+    rho = float(mat["density"])
+    mu = E / (2.0 * (1.0 + nu))
+    lam = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
+    return mu, lam, rho, E
+
+
+def _split_wood_materials(config: Dict) -> Tuple[Dict[str, float], Dict[str, float], float]:
+    """
+    Per-region shell properties for Top Plate (facet tag 1) and Back/Sides (facet tag 3).
+
+    Returns (top_dict, back_dict, thickness) where each dict has keys
+    mu, lam, rho, E, D_bend.
+    """
     top = config["materials"]["top"]
     back = config["materials"]["back"]
     thickness = float(config.get("geometry", {}).get("thickness", 0.003))
 
-    E_top = float(top.get("E_L", 1.0e9))
-    E_back = float(back.get("E_L", 1.0e9))
-    nu_top = float(top.get("nu_LT", 0.3))
-    nu_back = float(back.get("nu_LT", 0.3))
-    rho_top = float(top["density"])
-    rho_back = float(back["density"])
+    mu_t, lam_t, rho_t, E_t = _shell_isotropic_params(top)
+    mu_b, lam_b, rho_b, E_b = _shell_isotropic_params(back)
+    nu_t = float(top.get("nu_LT", 0.3))
+    nu_b = float(back.get("nu_LT", 0.3))
+    D_t = E_t * thickness ** 3 / (12.0 * (1.0 - nu_t ** 2))
+    D_b = E_b * thickness ** 3 / (12.0 * (1.0 - nu_b ** 2))
 
-    E_eff = 0.5 * (E_top + E_back)
-    nu_eff = 0.5 * (nu_top + nu_back)
-    rho_eff = 0.5 * (rho_top + rho_back)
-    return E_eff, nu_eff, rho_eff, thickness
+    top_out = {"mu": mu_t, "lam": lam_t, "rho": rho_t, "E": E_t, "D_bend": D_t, "nu": nu_t}
+    back_out = {"mu": mu_b, "lam": lam_b, "rho": rho_b, "E": E_b, "D_bend": D_b, "nu": nu_b}
+    return top_out, back_out, thickness
 
 
 def _audit_and_scale_mesh_units(msh: mesh.Mesh, config: Dict, status_callback=None) -> None:
@@ -831,40 +846,29 @@ def _solve_structural_only_evp(
     v = ufl.TestFunction(V_u)
     xdmf_dx = ufl.Measure("dx", domain=msh, subdomain_data=cell_tags)
 
-    E_eff, nu_eff, rho_eff, thickness = _effective_wood_properties(config)
-    top = config["materials"]["top"]
-    back = config["materials"]["back"]
+    top_m, back_m, thickness = _split_wood_materials(config)
+    top_mat = config["materials"]["top"]
+    back_mat = config["materials"]["back"]
     if msh.comm.rank == ROOT_RANK:
         print(
-            f"[DIAG] Material audit: "
-            f"top(E={float(top.get('E_L', 0.0)):.3e} Pa, rho={float(top.get('density', 0.0)):.1f}), "
-            f"back(E={float(back.get('E_L', 0.0)):.3e} Pa, rho={float(back.get('density', 0.0)):.1f}), "
-            f"effective(E={E_eff:.3e}, rho={rho_eff:.1f}, t={thickness:.4f} m)"
+            f"[DIAG] Material audit (per-tag, no averaging): "
+            f"top tag1(E={top_m['E']:.3e} Pa, rho={top_m['rho']:.1f}), "
+            f"back tag3(E={back_m['E']:.3e} Pa, rho={back_m['rho']:.1f}), "
+            f"t={thickness:.4f} m | {top_mat.get('name', '')!r} / {back_mat.get('name', '')!r}"
         )
-    mu = E_eff / (2.0 * (1.0 + nu_eff))
-    lam = E_eff * nu_eff / ((1.0 + nu_eff) * (1.0 - 2.0 * nu_eff))
-    wood_cell_tags = []
-    for tag in (1, 2, 3):
-        try:
-            if np.asarray(cell_tags.find(tag), dtype=np.int32).size > 0:
-                wood_cell_tags.append(tag)
-        except Exception:
-            pass
-    if not wood_cell_tags:
-        wood_dx = xdmf_dx  # Fallback to full tagged domain if list is empty
-    else:
-        # Build measure sum explicitly to avoid Python sum() starting from int(0).
-        measures = [xdmf_dx(tag) for tag in wood_cell_tags]
-        wood_dx = measures[0]
-        for m in measures[1:]:
-            wood_dx += m
-    if not wood_cell_tags:
-        _emit("[diag][warn] no wood cell tags 1/2/3 found; falling back to full dx.", status_callback=status_callback, level="warning")
+    # Volume tags: 1=top plate, 2=back plate, 3=ribs/sides (back wood).
+    vol_top = xdmf_dx(1)
+    vol_back_sides = xdmf_dx(2) + xdmf_dx(3)
+    wood_dx = vol_top + vol_back_sides
 
     eps_u = ufl.sym(ufl.grad(u))
     eps_v = ufl.sym(ufl.grad(v))
-    a_uu = (2.0 * mu * ufl.inner(eps_u, eps_v) + lam * ufl.div(u) * ufl.div(v)) * wood_dx
-    m_uu = (rho_eff * ufl.dot(u, v)) * wood_dx
+    a_uu = (
+        2.0 * top_m["mu"] * ufl.inner(eps_u, eps_v) + top_m["lam"] * ufl.div(u) * ufl.div(v)
+    ) * vol_top + (
+        2.0 * back_m["mu"] * ufl.inner(eps_u, eps_v) + back_m["lam"] * ufl.div(u) * ufl.div(v)
+    ) * vol_back_sides
+    m_uu = top_m["rho"] * ufl.dot(u, v) * vol_top + back_m["rho"] * ufl.dot(u, v) * vol_back_sides
 
     # Optional dummy penalty on air cells (vacuum / structural-only diagnostic only).
     if _solver_bool(config.get("solver", {}), "structural_vacuum_air_dummy", default=True):
@@ -1299,37 +1303,44 @@ def _solve_coupled_evp(
     n = ufl.FacetNormal(msh)
     P = ufl.Identity(3) - ufl.outer(n, n)
 
-    E_eff, nu_eff, rho_eff, thickness = _effective_wood_properties(config)
+    top_m, back_m, thickness = _split_wood_materials(config)
     air_mat = config["materials"]["air"]
     rho_air = float(air_mat["density"])
     c_air = float(air_mat["speed_of_sound"])
+    top_mat = config["materials"]["top"]
+    back_mat = config["materials"]["back"]
     _emit(
-        f"[diag] material sanity: E_eff={E_eff:.6e} Pa, rho_eff={rho_eff:.6e} kg/m^3, "
-        f"rho_air={rho_air:.6e} kg/m^3, thickness={thickness:.6e} m",
+        f"[diag] material sanity (tag1 top / tag3 back): "
+        f"top E={top_m['E']:.6e} rho={top_m['rho']:.6e} | "
+        f"back E={back_m['E']:.6e} rho={back_m['rho']:.6e} | "
+        f"rho_air={rho_air:.6e} thickness={thickness:.6e} m | "
+        f"{top_mat.get('name', '')!r} / {back_mat.get('name', '')!r}",
         status_callback=status_callback,
     )
 
-    mu = E_eff / (2.0 * (1.0 + nu_eff))
-    lam = E_eff * nu_eff / ((1.0 + nu_eff) * (1.0 - 2.0 * nu_eff))
-    D_bend = E_eff * thickness ** 3 / (12.0 * (1.0 - nu_eff ** 2))
+    tag_top = int(WOOD_SURFACE_TAGS[0])
+    tag_back = int(WOOD_SURFACE_TAGS[1])
 
     def eps_surface(uu):
         grad_u = ufl.grad(uu)
         grad_tan = P * grad_u * P
         return 0.5 * (grad_tan + ufl.transpose(grad_tan))
 
-    wood_tag_top = int(np.sum(facet_tags.values == WOOD_SURFACE_TAGS[0]))
-    wood_tag_shell = int(np.sum(facet_tags.values == WOOD_SURFACE_TAGS[1]))
+    wood_tag_top = int(np.sum(facet_tags.values == tag_top))
+    wood_tag_shell = int(np.sum(facet_tags.values == tag_back))
+    ds_top = xdmf_ds(tag_top)
+    ds_back = xdmf_ds(tag_back)
     if wood_tag_top + wood_tag_shell > 0:
-        wood_ds = xdmf_ds(WOOD_SURFACE_TAGS[0]) + xdmf_ds(WOOD_SURFACE_TAGS[1])
+        wood_ds = ds_top + ds_back
         _emit(
             f"[form] structural shell integration on tagged facets: "
-            f"tag{WOOD_SURFACE_TAGS[0]}={wood_tag_top}, tag{WOOD_SURFACE_TAGS[1]}={wood_tag_shell}",
+            f"tag{tag_top}={wood_tag_top} (top plate), tag{tag_back}={wood_tag_shell} (back/sides)",
             status_callback=status_callback,
         )
     else:
-        # Force-physics fallback: if expected structural tags are missing, use all exterior facets.
         wood_ds = ufl.ds(domain=msh)
+        ds_top = wood_ds
+        ds_back = wood_ds
         _emit(
             "[form][warn] structural facet tags missing; falling back to all exterior facets (ds).",
             status_callback=status_callback,
@@ -1341,13 +1352,21 @@ def _solve_coupled_evp(
     w_n = ufl.dot(u, n)
     v_n = ufl.dot(v, n)
 
-    # Shell-like stiffness on wood manifold:
-    # - membrane term: thickness * in-surface elasticity
-    # - bending-like term: D * |grad_tan(w_n)|^2
-    a_uu = (
-        thickness * (2.0 * mu * ufl.inner(eps_u, eps_v) + lam * ufl.tr(eps_u) * ufl.tr(eps_v))
-        + D_bend * ufl.inner(P * ufl.grad(w_n), P * ufl.grad(v_n))
-    ) * wood_ds
+    def _shell_stiffness(mu_v, lam_v, D_bend_v):
+        return (
+            thickness * (2.0 * mu_v * ufl.inner(eps_u, eps_v) + lam_v * ufl.tr(eps_u) * ufl.tr(eps_v))
+            + D_bend_v * ufl.inner(P * ufl.grad(w_n), P * ufl.grad(v_n))
+        )
+
+    if wood_tag_top + wood_tag_shell > 0:
+        a_uu = _shell_stiffness(top_m["mu"], top_m["lam"], top_m["D_bend"]) * ds_top + _shell_stiffness(
+            back_m["mu"], back_m["lam"], back_m["D_bend"]
+        ) * ds_back
+    else:
+        a_uu = (
+            _shell_stiffness(top_m["mu"], top_m["lam"], top_m["D_bend"])
+            + _shell_stiffness(back_m["mu"], back_m["lam"], back_m["D_bend"])
+        ) * wood_ds
 
     # Acoustic stiffness in internal air volume.
     a_pp = (1.0 / rho_air) * ufl.inner(ufl.grad(p), ufl.grad(q)) * xdmf_dx(AIR_VOLUME_TAG)
@@ -1358,8 +1377,13 @@ def _solve_coupled_evp(
     # together with a_up this yields a non-symmetric coupled operator → GNHEP in SLEPc).
     a_pu = q * w_n * wood_ds
 
-    # Acoustic mass and structure mass.
-    m_uu = (rho_eff * thickness) * ufl.dot(u, v) * wood_ds
+    # Acoustic mass and structure mass (per facet tag).
+    if wood_tag_top + wood_tag_shell > 0:
+        m_uu = (top_m["rho"] * thickness) * ufl.dot(u, v) * ds_top + (back_m["rho"] * thickness) * ufl.dot(
+            u, v
+        ) * ds_back
+    else:
+        m_uu = ((top_m["rho"] + back_m["rho"]) * thickness) * ufl.dot(u, v) * wood_ds
     m_pp = (1.0 / (rho_air * c_air * c_air)) * p * q * xdmf_dx(AIR_VOLUME_TAG)
 
     # Acceleration coupling in acoustic equation:
@@ -1379,8 +1403,8 @@ def _solve_coupled_evp(
     m_form = m_uu + m_pp + m_pu
 
     # Per-facet-group shell mass forms for plate-specific sifter (Top tag 1, Body tag 3).
-    m_uu_top_plate = (rho_eff * thickness) * ufl.dot(u, v) * xdmf_ds(WOOD_SURFACE_TAGS[0])
-    m_uu_back_shell = (rho_eff * thickness) * ufl.dot(u, v) * xdmf_ds(WOOD_SURFACE_TAGS[1])
+    m_uu_top_plate = (top_m["rho"] * thickness) * ufl.dot(u, v) * xdmf_ds(tag_top)
+    m_uu_back_shell = (back_m["rho"] * thickness) * ufl.dot(u, v) * xdmf_ds(tag_back)
     has_top_plate_facets = wood_tag_top > 0
     has_back_shell_facets = wood_tag_shell > 0
 
@@ -1396,12 +1420,16 @@ def _solve_coupled_evp(
         mass_air_kg = float("nan")
         _emit(f"[diag] air mass integral failed: {exc}", status_callback=status_callback, level="warning")
     try:
-        mass_wood_kg = float(fem.assemble_scalar(fem.form(rho_eff * thickness * wood_ds)))
+        mass_wood_kg = float(
+            fem.assemble_scalar(
+                fem.form(top_m["rho"] * thickness * ds_top + back_m["rho"] * thickness * ds_back)
+            )
+        )
     except Exception as exc:
         mass_wood_kg = float("nan")
         _emit(f"[diag] wood shell mass integral failed: {exc}", status_callback=status_callback, level="warning")
     print(
-        f"[DIAG] Total wood mass (integral rho_eff*thickness over shell ds; {_wood_mass_note}): "
+        f"[DIAG] Total wood mass (integral rho*thickness per tag1/tag3 shell ds; {_wood_mass_note}): "
         f"{mass_wood_kg:.6e} kg"
     )
     print(f"[DIAG] Total air mass (integral rho_air over air volume tag {AIR_VOLUME_TAG}): {mass_air_kg:.6e} kg")

@@ -1,32 +1,35 @@
 import json
 import math
+import sys
 from pathlib import Path
 
 import numpy as np
 from scipy.io import wavfile
 from scipy.signal import find_peaks
 
+_SCRIPTS = Path(__file__).resolve().parents[1] / "FEM" / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+from paths import shared_audio_path
+
 # =========================
 # EDIT ONLY THESE
 # =========================
-WAV_PATH = Path("/media/sf_gmar/guitar_audio/spruce_C4_cccc.wav")
+WAV_PATH = shared_audio_path("spruce_C4_cccc.wav")
 FEM_JSON_PATH = Path("FEM/outputs/rect_plate_spruce_cccc_result.json")
 
-START_S = 0.25   # analyze after attack
-END_S   = 2.00
+START_S = 0.25
+END_S = 2.00
 
 MIN_HZ = 20
 MAX_HZ = 5000
 
-TOL_PCT = 0.10   # ±10% comparison tolerance
+TOL_PCT = 0.10
 
-# "Presence" threshold relative to noise floor (lower = detects more, but may include junk)
-SNR_DB = 3.0     # 3 dB above median noise floor is VERY permissive
+SNR_DB = 3.0
 
-# Peak spacing (to avoid printing thousands of nearly-identical bins)
 MIN_SEP_HZ = 5.0
 
-# Optional: limit how many FEM modes to check
 MAX_MODES = 20
 
 
@@ -53,7 +56,6 @@ def main():
 
     sr, x = wavfile.read(WAV_PATH)
 
-    # mono + float normalize
     if x.ndim == 2:
         x = x.mean(axis=1)
     x = x.astype(np.float64)
@@ -75,24 +77,20 @@ def main():
     mag = np.abs(X) + 1e-20
     df = freqs[1] - freqs[0]
 
-    # band-limit
     band = (freqs >= MIN_HZ) & (freqs <= MAX_HZ)
     freqs_b = freqs[band]
     mag_b = mag[band]
 
-    # convert to dB for robust thresholding
     mag_db = 20.0 * np.log10(mag_b)
 
-    # noise floor estimate (median)
     floor_db = float(np.median(mag_db))
     thr_db = floor_db + SNR_DB
 
-    # peak finding: permissive (we're trying to capture even weak components)
     min_dist_bins = max(1, int(round(MIN_SEP_HZ / df)))
     peaks, props = find_peaks(mag_db, height=thr_db, distance=min_dist_bins)
 
     detected = freqs_b[peaks]
-    detected = np.unique(np.round(detected, 3))  # small cleanup
+    detected = np.unique(np.round(detected, 3))
     detected.sort()
 
     print(f"\nWAV: {WAV_PATH}")
@@ -103,9 +101,6 @@ def main():
     print("Detected frequencies (Hz), low -> high:")
     print(", ".join(f"{f:.3f}" for f in detected))
 
-    # -------------------------
-    # Compare to FEM modes (±10%)
-    # -------------------------
     print("\n\nCompare to FEM modes (±10%):")
     print("mode(Hz) -> match(Hz) | ΔHz | Δ% | status")
     print("-" * 60)
@@ -122,7 +117,6 @@ def main():
             print(f"{f0:8.3f} -> {'-':>8} |  -  |  -  | NOT FOUND")
             continue
 
-        # closest
         fp = float(cand[np.argmin(np.abs(cand - f0))])
         dhz = abs(fp - f0)
         dpct = 100.0 * dhz / max(f0, 1e-12)

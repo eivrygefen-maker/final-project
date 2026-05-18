@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Manual merge utility for EXTRA_RESULTS targeted LAB outputs.
+Merge per-sample LAB/ROM selection CSVs into one training table.
 
-This script is command-driven and does not run automatically from targeted sweeps.
-It builds curated per-sample selections by taking top-K from each target zone.
+Reads ``FEM/results/LAB_RESULTS/sample_XXX/selected_modes.csv`` (single-band layout).
+Legacy dual-window paths under ``EXTRA_RESULTS`` are no longer used.
 """
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ import csv
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+
+from paths import FEM_LAB_RESULTS_DIR, shared_rom_csv_path
 
 
 def _read_csv_rows(path: Path) -> List[Dict[str, Any]]:
@@ -34,14 +36,6 @@ def _read_csv_rows(path: Path) -> List[Dict[str, Any]]:
     return rows
 
 
-def _zone_for_hz(hz: float) -> str:
-    if 80.0 <= hz <= 100.0:
-        return "low_080_100"
-    if 400.0 <= hz <= 600.0:
-        return "high_400_600"
-    return "other"
-
-
 def _score(row: Dict[str, Any]) -> Tuple[float, float, float]:
     return (
         float(row.get("Q_mmr_base", 0.0)),
@@ -50,13 +44,21 @@ def _score(row: Dict[str, Any]) -> Tuple[float, float, float]:
     )
 
 
-def _sample_dirs(extra_root: Path) -> List[Path]:
-    return sorted([p for p in extra_root.glob("sample_*") if p.is_dir()])
+def _sample_dirs(root: Path) -> List[Path]:
+    return sorted([p for p in root.glob("sample_*") if p.is_dir()])
 
 
 def _write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    headers = ["sample_id", "zone", "id", "hz", "wood_participation", "uniqueness", "Q_mmr_base", "source_csv"]
+    headers = [
+        "sample_id",
+        "id",
+        "hz",
+        "wood_participation",
+        "uniqueness",
+        "Q_mmr_base",
+        "source_csv",
+    ]
     with path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=headers)
         writer.writeheader()
@@ -65,88 +67,67 @@ def _write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Manually combine targeted EXTRA_RESULTS selections. "
-            "Picks top-K per zone (default K=30) for each sample."
-        )
-    )
+    parser = argparse.ArgumentParser(description="Merge LAB_RESULTS selected_modes.csv files.")
     parser.add_argument(
-        "--extra-root",
+        "--lab-root",
         type=Path,
-        default=Path("FEM/results/EXTRA_RESULTS"),
-        help="Root directory containing sample_XXX targeted outputs (default: FEM/results/EXTRA_RESULTS).",
+        default=FEM_LAB_RESULTS_DIR,
+        help="Root with sample_XXX/selected_modes.csv (default: FEM/results/LAB_RESULTS).",
     )
     parser.add_argument(
-        "--per-zone-top-k",
+        "--per-sample-top-k",
         type=int,
-        default=30,
-        help="Top K candidates per zone per sample (default: 30).",
+        default=0,
+        help="If >0, keep only top K modes per sample by MMR score (0 = keep all).",
     )
     parser.add_argument(
         "--out-csv",
         type=Path,
-        default=Path("FEM/results/EXTRA_RESULTS/merged_targeted_training_set.csv"),
-        help="Output merged CSV path.",
+        default=None,
+        help="Output CSV (default: shared host merged_targeted_training_set.csv).",
     )
     parser.add_argument(
         "--out-json",
         type=Path,
-        default=Path("FEM/results/EXTRA_RESULTS/merged_targeted_summary.json"),
-        help="Output summary JSON path.",
+        default=None,
+        help="Summary JSON alongside out-csv.",
     )
     args = parser.parse_args()
 
-    extra_root = args.extra_root.resolve()
-    if not extra_root.is_dir():
-        print(f"Error: extra-root not found: {extra_root}")
+    lab_root = args.lab_root.resolve()
+    if not lab_root.is_dir():
+        print(f"Error: lab-root not found: {lab_root}")
         return 1
-    k = max(1, int(args.per_zone_top_k))
+
+    out_csv = args.out_csv.resolve() if args.out_csv else shared_rom_csv_path("merged_lab_training_set.csv")
+    out_json = args.out_json.resolve() if args.out_json else out_csv.with_suffix(".summary.json")
+    k = max(0, int(args.per_sample_top_k))
 
     merged_rows: List[Dict[str, Any]] = []
-    summary: Dict[str, Any] = {"extra_root": str(extra_root), "per_zone_top_k": k, "samples": {}}
+    summary: Dict[str, Any] = {"lab_root": str(lab_root), "per_sample_top_k": k, "samples": {}}
 
-    for sdir in _sample_dirs(extra_root):
+    for sdir in _sample_dirs(lab_root):
         sample_id = sdir.name
-        csvs = sorted(sdir.glob("window_*/selected_modes.csv"))
-        if not csvs:
+        csv_path = sdir / "selected_modes.csv"
+        if not csv_path.is_file():
             continue
-        zone_rows: Dict[str, List[Dict[str, Any]]] = {"low_080_100": [], "high_400_600": []}
-        for csv_path in csvs:
-            rows = _read_csv_rows(csv_path)
-            for r in rows:
-                zone = _zone_for_hz(float(r["hz"]))
-                if zone not in zone_rows:
-                    continue
-                rr = dict(r)
-                rr["sample_id"] = sample_id
-                rr["zone"] = zone
-                rr["source_csv"] = str(csv_path.resolve())
-                zone_rows[zone].append(rr)
+        rows = _read_csv_rows(csv_path)
+        n_avail = len(rows)
+        for r in rows:
+            r["sample_id"] = sample_id
+            r["source_csv"] = str(csv_path.resolve())
+        if k > 0:
+            rows = sorted(rows, key=_score, reverse=True)[:k]
+        merged_rows.extend(rows)
+        summary["samples"][sample_id] = {"available": n_avail, "selected": len(rows)}
 
-        sample_kept = 0
-        summary["samples"][sample_id] = {}
-        for zone, rows in zone_rows.items():
-            rows_sorted = sorted(rows, key=_score, reverse=True)
-            top_rows = rows_sorted[:k]
-            merged_rows.extend(top_rows)
-            summary["samples"][sample_id][zone] = {
-                "available": len(rows),
-                "selected": len(top_rows),
-            }
-            sample_kept += len(top_rows)
-        summary["samples"][sample_id]["total_selected"] = sample_kept
-
-    _write_csv(args.out_csv.resolve(), merged_rows)
-    args.out_json.resolve().write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-
+    _write_csv(out_csv, merged_rows)
+    out_json.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(f"Merged rows: {len(merged_rows)}")
-    print(f"CSV:  {args.out_csv.resolve()}")
-    print(f"JSON: {args.out_json.resolve()}")
-    print("This merge is manual/explicit and does not modify master datasets automatically.")
+    print(f"CSV:  {out_csv}")
+    print(f"JSON: {out_json}")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

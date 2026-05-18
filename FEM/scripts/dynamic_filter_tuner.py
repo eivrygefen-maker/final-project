@@ -19,12 +19,12 @@ from typing import Dict, List, Optional, Tuple
 # =============================
 W = 1.0
 U = 0.5
-LAMBDA_VAL = 0.7
-SIGMA_HZ = 8.0
+LAMBDA_VAL = 0.4
+SIGMA_HZ = 15.0
 # Wood gate here is separate from ``fem_master_dynamic`` zone floors (tuner is stage-2 MMR).
 WOOD_FILTER_MIN = 0.0005
 UNIQUENESS_VETO_MIN = 0.1
-DEFAULT_QUOTA = 100
+DEFAULT_QUOTA = 150
 
 
 def _project_root() -> Path:

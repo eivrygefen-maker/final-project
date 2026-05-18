@@ -7,6 +7,13 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
+import sys
+
+_SCRIPTS = Path(__file__).resolve().parents[1] / "FEM" / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+from paths import resolve_shared_path
+
 
 def die(msg: str, code: int = 1) -> None:
     print(msg, file=sys.stderr)
@@ -148,7 +155,8 @@ def main() -> int:
     stk = steps.get("stk")
     if stk is not None:
         binary = stk.get("binary", "./guitar_stk")
-        out_wav = stk.get("out", "audio/out.wav")
+        out_wav = resolve_shared_path(stk.get("out", "audio/out.wav"))
+        out_wav.parent.mkdir(parents=True, exist_ok=True)
         dur = float(stk.get("dur", 3.0))
         amp = float(stk.get("amp", 0.2))
 

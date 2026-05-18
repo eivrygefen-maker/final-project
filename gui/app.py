@@ -23,6 +23,7 @@ ROM_CLASSIC_SNAPSHOTS = BASE_DIR / "ROM" / "classic" / "snapshots"
 # Allow in-process import of FEM solver for live Streamlit status updates.
 sys.path.append(str(BASE_DIR / "FEM" / "scripts"))
 import fem_main_3d
+from wood_library import BACK_WOOD_IDS, TOP_WOOD_IDS, material_block_for_id
 
 # Critical environment settings for Linux/VM
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -41,30 +42,18 @@ if CONFIG_PATH.exists():
     except:
         pass
 
-# --- Material Library (Fine-Tuned Calibration) ---
-WOOD_LIBRARY = {
-    "Sitka Spruce": {
-        "density": 450.0, "E_L": 11.0e9, "E_T": 1.0e9, "E_R": 0.7e9,
-        "nu_LT": 0.37, "nu_LR": 0.37, "nu_TR": 0.4,
-        "G_LT": 0.75e9, "G_LR": 0.75e9, "G_TR": 0.05e9,
-        "q_min": 60, "q_max": 80,
-        "color": "#FCE6C9"  
-    },
-    "Honduran Mahogany": {
-        "density": 530.0, "E_L": 10.5e9, "E_T": 1.2e9, "E_R": 0.7e9,
-        "nu_LT": 0.35, "nu_LR": 0.35, "nu_TR": 0.4,
-        "G_LT": 0.8e9, "G_LR": 0.8e9, "G_TR": 0.05e9,
-        "q_min": 45, "q_max": 60,
-        "color": "#93441A"  
-    },
-    "Indian Rosewood": {
-        "density": 830.0, "E_L": 11.5e9, "E_T": 1.3e9, "E_R": 0.7e9,
-        "nu_LT": 0.33, "nu_LR": 0.33, "nu_TR": 0.4,
-        "G_LT": 0.95e9, "G_LR": 0.95e9, "G_TR": 0.05e9,
-        "q_min": 90, "q_max": 100,
-        "color": "#3D2B1F"  
-    }
+# --- Discrete wood library (5 species; matches FEM/scripts/wood_library.py) ---
+TOP_WOOD_LABELS = {
+    "Sitka Spruce": "spruce",
+    "Western Red Cedar": "cedar",
 }
+BACK_WOOD_LABELS = {
+    "Indian Rosewood": "rosewood",
+    "Honduran Mahogany": "mahogany",
+    "Maple": "maple",
+}
+assert set(TOP_WOOD_LABELS.values()) == set(TOP_WOOD_IDS)
+assert set(BACK_WOOD_LABELS.values()) == set(BACK_WOOD_IDS)
 
 NOTES_DICT = {
     "E2": 82.41, "A2": 110.00, "D3": 146.83, "G3": 196.00, "B3": 246.94, "E4": 329.63
@@ -107,9 +96,11 @@ def save_cfg():
         "vis_mode": st.session_state.get("vis_mode_ui", "Mesh + Solid"),
         "exploded_view": exploded,
     }
+    top_id = TOP_WOOD_LABELS[top_wood]
+    back_id = BACK_WOOD_LABELS[back_wood]
     data["materials"] = {
-        "top": {**WOOD_LIBRARY[top_wood], "name": top_wood},
-        "back": {**WOOD_LIBRARY[back_wood], "name": back_wood},
+        "top": {**material_block_for_id(top_id), "name": top_wood, "wood_id": top_id},
+        "back": {**material_block_for_id(back_id), "name": back_wood, "wood_id": back_id},
         "air": {"density": 1.204, "speed_of_sound": 343.0},
     }
     # Merge solver so GUI updates do not strip FEM keys (adaptive_mode_sifter, sifter_*, shifts, etc.).
@@ -176,12 +167,12 @@ else:
 
 col_top, col_back = st.sidebar.columns(2)
 with col_top:
-    top_wood = st.selectbox("Front (Top)", list(WOOD_LIBRARY.keys()), index=0)
+    top_wood = st.selectbox("Front (Top)", list(TOP_WOOD_LABELS.keys()), index=0)
 with col_back:
-    back_wood = st.selectbox("Back & Sides", list(WOOD_LIBRARY.keys()), index=2) 
+    back_wood = st.selectbox("Back & Sides", list(BACK_WOOD_LABELS.keys()), index=0)
 
 exploded = st.sidebar.checkbox("Exploded View", value=False)
-hr = st.sidebar.slider("Soundhole Radius (m)", 0.01, 0.08, 0.04)
+hr = st.sidebar.slider("Soundhole Radius (m)", 0.035, 0.055, 0.04)
 
 st.sidebar.header("2. Geometry")
 design_mode = st.sidebar.radio("Design Mode", ["Basic (Geometric)", "Professional (Luthier)"])
@@ -359,7 +350,7 @@ with c2:
             if not out_json.exists():
                 st.error("Audio synthesis failed. Try tweaking the dimensions.")
             else:
-                top_q = WOOD_LIBRARY[top_wood]
+                top_q = material_block_for_id(TOP_WOOD_LABELS[top_wood])
                 stk_cmd = [
                     str(STK_BINARY), "--fem_json", str(out_json),
                     "--note_hz", str(note_hz), "--dur", "3.0", "--mix", str(mix_val),
@@ -497,7 +488,7 @@ try:
             if top_mesh.n_cells > 0:
                 plotter.add_mesh(
                     top_mesh,
-                    color=WOOD_LIBRARY[top_wood]["color"],
+                    color=material_block_for_id(TOP_WOOD_LABELS[top_wood])["color"],
                     show_edges=show_edges,
                     edge_color="#2b1a10"
                 )
@@ -508,7 +499,7 @@ try:
             if body_mesh.n_cells > 0:
                 plotter.add_mesh(
                     body_mesh,
-                    color=WOOD_LIBRARY[back_wood]["color"],
+                    color=material_block_for_id(BACK_WOOD_LABELS[back_wood])["color"],
                     show_edges=show_edges,
                     edge_color="#2b1a10"
                 )
@@ -534,7 +525,7 @@ try:
                 st.warning("Physical tags missing/empty - displaying full surface fallback.")
                 plotter.add_mesh(
                     vol_mesh.extract_surface(),
-                    color=WOOD_LIBRARY[back_wood]["color"],
+                    color=material_block_for_id(BACK_WOOD_LABELS[back_wood])["color"],
                     show_edges=show_edges_flag,
                     edge_color="#2b1a10"
                 )
@@ -548,7 +539,7 @@ try:
         if preview_mesh is not None:
             if not render_mesh_by_protocol(preview_mesh, show_edges=False):
                 st.warning("Preview tags missing/empty - displaying full surface fallback.")
-                plotter.add_mesh(preview_mesh, color=WOOD_LIBRARY[back_wood]["color"], show_edges=False)
+                plotter.add_mesh(preview_mesh, color=material_block_for_id(BACK_WOOD_LABELS[back_wood])["color"], show_edges=False)
         else:
             st.warning("Preview mesh is unavailable.")
             

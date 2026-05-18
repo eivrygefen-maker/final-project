@@ -31,6 +31,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from paths import FEM_RESULTS_PLOTS_DIR, shared_plot_path
+from wood_library import apply_lhs_parameters_to_config
+
 
 def _repo_root() -> Path:
     """Walk parents from this file until a directory named ``final-project`` is found."""
@@ -50,7 +53,7 @@ REPO_ROOT = _repo_root()
 DEFAULT_CONFIG = REPO_ROOT / "FEM" / "configs" / "guitar_3d.json"
 DEFAULT_POOL_PRIMARY = REPO_ROOT / "FEM" / "configs" / "lhs_pool.json"
 DEFAULT_POOL_FALLBACK = REPO_ROOT / "ROM" / "classic" / "lhs_pool.json"
-PLOTS_DIR = REPO_ROOT / "FEM" / "results" / "plots"
+PLOTS_DIR = FEM_RESULTS_PLOTS_DIR
 SNAPSHOTS_DIR = REPO_ROOT / "ROM" / "classic" / "snapshots"
 
 
@@ -276,7 +279,7 @@ def main() -> int:
         except (OSError, json.JSONDecodeError) as exc:
             print(f"Error: could not load base config {config_path}: {exc}", file=sys.stderr)
             return 1
-        _apply_dotted_parameters(merged_cfg, parameters)
+        apply_lhs_parameters_to_config(merged_cfg, parameters)
         merged_dir = REPO_ROOT / "FEM" / "SORTING" / "pipeline_merged_configs"
         merged_dir.mkdir(parents=True, exist_ok=True)
         effective_config = merged_dir / f"{sample_key}.json"
@@ -308,7 +311,8 @@ def main() -> int:
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
     SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    plot_path = PLOTS_DIR / _plot_basename(n)
+    plot_path = shared_plot_path(_plot_basename(n))
+    local_plot_path = PLOTS_DIR / _plot_basename(n)
     npz_path = SNAPSHOTS_DIR / _snapshot_basename(n)
     snapshot_rel = _snapshot_rel_npz(n)
 
@@ -335,9 +339,18 @@ def main() -> int:
         "--headless",
         "--plot-out",
         str(plot_path.resolve()),
+        "--export",
+        str((REPO_ROOT / "FEM" / "SORTING" / "selected_modes.csv").resolve()),
     ]
     if _run_step("Step B — MMR selection (headless CSV + plot)", step_b, REPO_ROOT) != 0:
         return 1
+    try:
+        import shutil
+
+        local_plot_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(plot_path, local_plot_path)
+    except OSError:
+        pass
 
     step_c = [
         py,
@@ -365,7 +378,7 @@ def main() -> int:
         f"  Sample:        {sample_key}\n"
         f"  FEM config:    {effective_config.resolve()}\n"
         f"  Final ROM:     {npz_path.resolve()}\n"
-        f"  Selection plot:{plot_path.resolve()}\n"
+        f"  Selection plot:{plot_path.resolve()} (local copy: {local_plot_path.resolve()})\n"
         f"  Pool file:     {pool_path.resolve()}\n"
         f"{'=' * 72}\n"
     )

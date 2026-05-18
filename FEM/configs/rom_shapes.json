@@ -5,17 +5,6 @@
       "parameter_sweep": {
         "geometry.shape_type": [
           "Classical"
-        ],
-        "geometry.thickness": [
-          0.003,
-          0.0035,
-          0.004,
-          0.0045
-        ],
-        "materials.top.density": [
-          430.0,
-          450.0,
-          470.0
         ]
       }
     },
@@ -24,20 +13,8 @@
       "parameter_sweep": {
         "geometry.shape_type": [
           "Dreadnought"
-        ],
-        "geometry.thickness": [
-          0.003,
-          0.0035,
-          0.004,
-      0.0045
-        ],
-        "materials.top.density": [
-          430.0,
-          450.0,
-          470.0
         ]
       }
     }
   }
 }
-

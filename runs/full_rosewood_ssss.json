@@ -14,7 +14,7 @@
       "skip": 0,
       "dur": 5.0,
       "amp": 0.2,
-      "out": "/media/sf_gmar/guitar_audio/rosewood_C4_ssss.wav",
+      "out": "{SHARED_HOST}/guitar_audio/rosewood_C4_ssss.wav",
 
       "wet_gain": 2000,
       "mix": 0.0,

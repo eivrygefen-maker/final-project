@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 """
-Targeted LAB sweep for specific samples and disjoint frequency windows.
+Single-band LAB sweep (60–480 Hz) for selected LHS samples.
 
-This script is intentionally isolated and does NOT merge into the production/master
-training set automatically. It writes all artifacts under:
-
-    FEM/results/EXTRA_RESULTS/sample_XXX/
-
-Per window, after ``dynamic_filter_tuner`` and ``package_rom`` succeed: the NPZ is
-verified, ``SORTING/temp_modes`` and ``SORTING/temp_results`` are removed, and
-``candidates_log.json`` is copied to ``candidates_log.archived.<window>.json`` then
-reset to an empty log so later runs start clean.
+Writes artifacts under ``FEM/results/LAB_RESULTS/sample_XXX/`` (no dual-window
+subfolders). Pipeline: ``fem_master_dynamic`` → ``dynamic_filter_tuner`` (150 modes)
+→ ``package_rom`` → optional SORTING purge.
 """
 from __future__ import annotations
 
@@ -26,11 +20,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from paths import FEM_LAB_RESULTS_DIR, shared_plot_path, shared_rom_csv_path
+from wood_library import apply_lhs_parameters_to_config
 
-DEFAULT_WINDOWS: Tuple[Tuple[float, float], ...] = ((80.0, 100.0), (400.0, 600.0))
-DEFAULT_SAMPLE_IDS: Tuple[int, ...] = tuple(list(range(1, 8)) + list(range(12, 21)))
+HZ_MIN_DEFAULT = 60.0
+HZ_MAX_DEFAULT = 480.0
 DEFAULT_MAX_WORKERS = 2
-WINDOW_QUOTA = 30
 
 
 def _repo_root() -> Path:
@@ -56,8 +51,7 @@ def _parse_samples(raw: str) -> List[int]:
     for part in (x.strip() for x in raw.split(",") if x.strip()):
         if "-" in part:
             lo_s, hi_s = part.split("-", 1)
-            lo = int(lo_s)
-            hi = int(hi_s)
+            lo, hi = int(lo_s), int(hi_s)
             if hi < lo:
                 lo, hi = hi, lo
             out.extend(range(lo, hi + 1))
@@ -67,22 +61,6 @@ def _parse_samples(raw: str) -> List[int]:
     if not dedup_sorted:
         raise ValueError("No valid sample ids were parsed.")
     return dedup_sorted
-
-
-def _parse_windows(raw: str) -> List[Tuple[float, float]]:
-    out: List[Tuple[float, float]] = []
-    for part in (x.strip() for x in raw.split(",") if x.strip()):
-        if ":" not in part:
-            raise ValueError(f"Invalid window '{part}' (expected min:max).")
-        lo_s, hi_s = part.split(":", 1)
-        lo = float(lo_s)
-        hi = float(hi_s)
-        if hi < lo:
-            lo, hi = hi, lo
-        out.append((lo, hi))
-    if not out:
-        raise ValueError("No windows parsed.")
-    return out
 
 
 def _pool_sample_id(n: int) -> str:
@@ -102,52 +80,9 @@ def _find_pool_entry(pool_path: Path, sample_key: str) -> Dict[str, Any]:
     if not isinstance(entries, list):
         raise ValueError(f"Pool missing 'entries' list: {pool_path}")
     for e in entries:
-        if not isinstance(e, dict):
-            continue
-        if str(e.get("id", "")) == sample_key:
+        if isinstance(e, dict) and str(e.get("id", "")) == sample_key:
             return e
     raise ValueError(f"Sample {sample_key} not found in pool: {pool_path}")
-
-
-def _apply_dotted_parameters(config: Dict[str, Any], parameters: Dict[str, Any]) -> None:
-    for key, val in parameters.items():
-        if not isinstance(key, str) or "." not in key:
-            continue
-        cur: Dict[str, Any] = config
-        parts = [p for p in key.split(".") if p]
-        if not parts:
-            continue
-        for p in parts[:-1]:
-            nxt = cur.get(p)
-            if not isinstance(nxt, dict):
-                nxt = {}
-                cur[p] = nxt
-            cur = nxt
-        cur[parts[-1]] = val
-
-
-def _resolve_sample_parameters(pool_entry: Dict[str, Any]) -> Dict[str, Any]:
-    params = pool_entry.get("parameters", {})
-    return dict(params) if isinstance(params, dict) else {}
-
-
-def _window_tag(window: Tuple[float, float]) -> str:
-    lo, hi = window
-    return f"{int(lo):03d}_{int(hi):03d}"
-
-
-def _ensure_scripts(repo: Path) -> Tuple[Path, Path, Path]:
-    master = repo / "FEM" / "scripts" / "fem_master_dynamic.py"
-    tuner = repo / "FEM" / "scripts" / "dynamic_filter_tuner.py"
-    packer = repo / "FEM" / "scripts" / "package_rom.py"
-    for p in (master, tuner, packer):
-        if not p.is_file():
-            raise FileNotFoundError(f"Missing script: {p}")
-    return master, tuner, packer
-
-
-def _sample_dir(root: Path, sample_id: int) -> Path:
-    return root / _pool_sample_id(sample_id)
 
 
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
@@ -155,345 +90,242 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def _verify_targeted_window_npz(npz_path: Path, expected_mode_count: int) -> Tuple[bool, str]:
-    """
-    Confirm the ROM archive exists and matches package_rom CSR layout.
-    ``expected_mode_count`` is the number of selected rows (0 = skip column count check).
-    """
+def _verify_rom_npz(npz_path: Path, expected_mode_count: int) -> Tuple[bool, str]:
     if not npz_path.is_file():
         return False, f"missing file: {npz_path}"
-    if npz_path.stat().st_size < 64:
-        return False, f"NPZ too small: {npz_path}"
     need = ("ev_data", "ev_indices", "ev_indptr", "ev_shape", "frequencies", "wood_participations")
     try:
         with np.load(npz_path, allow_pickle=False) as z:
             if any(k not in z.files for k in need):
-                return False, f"NPZ missing keys {need}: {npz_path}"
+                return False, f"NPZ missing keys {need}"
             shape = tuple(int(x) for x in np.asarray(z["ev_shape"]).ravel())
-            if len(shape) != 2:
-                return False, f"unexpected ev_shape {shape}"
             ncols = int(shape[1])
             if expected_mode_count > 0 and ncols != expected_mode_count:
-                return (
-                    False,
-                    f"NPZ column count {ncols} != selected CSV rows {expected_mode_count}",
-                )
-            freqs = np.asarray(z["frequencies"]).ravel()
-            woods = np.asarray(z["wood_participations"]).ravel()
-            if int(freqs.size) != ncols or int(woods.size) != ncols:
-                return False, "frequencies/wood_participations length mismatch vs ev_shape"
+                return False, f"NPZ columns {ncols} != CSV rows {expected_mode_count}"
     except OSError as exc:
-        return False, f"could not read NPZ: {exc}"
+        return False, str(exc)
     return True, "ok"
 
 
-def _purge_sorting_workspace_after_archive(
-    wdir: Path,
-    sorting_root: Path,
-    wtag: str,
-) -> Tuple[Optional[Path], Optional[str]]:
-    """
-    Remove ``temp_modes`` and ``temp_results`` under ``sorting_root``.
-    Move ``candidates_log.json`` to ``wdir`` backup and write an empty log for a clean tree.
-    Returns (backup_path, error_message).
-    """
+def _purge_sorting_workspace(sorting_root: Path, sdir: Path) -> Tuple[Optional[Path], Optional[str]]:
     err_parts: List[str] = []
     for name in ("temp_modes", "temp_results"):
         p = sorting_root / name
         if p.is_dir():
             try:
-                shutil.rmtree(p, ignore_errors=False)
+                shutil.rmtree(p)
             except OSError as exc:
                 err_parts.append(f"{name}: {exc}")
     backup: Optional[Path] = None
     log_path = sorting_root / "candidates_log.json"
     if log_path.is_file():
-        backup = wdir / f"candidates_log.archived.{wtag}.json"
+        backup = sdir / "candidates_log.archived.json"
         try:
             shutil.copy2(log_path, backup)
+            _write_json(log_path, {"candidates": [], "completed_shift_targets": []})
         except OSError as exc:
-            err_parts.append(f"candidates_log backup: {exc}")
-        try:
-            _write_json(
-                log_path,
-                {"candidates": [], "completed_shift_targets": []},
-            )
-        except OSError as exc:
-            err_parts.append(f"candidates_log clear: {exc}")
+            err_parts.append(f"candidates_log: {exc}")
     if err_parts:
         return backup, "; ".join(err_parts)
     return backup, None
 
 
-def _count_selected_rows(csv_path: Path) -> int:
+def _count_csv_rows(csv_path: Path) -> int:
     if not csv_path.is_file():
         return 0
     lines = csv_path.read_text(encoding="utf-8").splitlines()
-    if not lines:
-        return 0
-    # First line is header.
     return max(0, len(lines) - 1)
-
-
-def _load_coverage_pending(sorting_root: Path) -> bool:
-    p = sorting_root / "coverage_anchor_state.json"
-    if not p.is_file():
-        return False
-    try:
-        payload = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return False
-    return bool(payload.get("coverage_emergency_pending", False))
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description=(
-            "Run targeted LAB windows for selected samples and write outputs to "
-            "FEM/results/EXTRA_RESULTS/sample_XXX/. No automatic merge into master."
-        )
+        description="LAB single-band sweep (60–480 Hz) → FEM/results/LAB_RESULTS/sample_XXX/"
     )
-    parser.add_argument("--config", type=Path, default=None, help="Base FEM config JSON (default: FEM/configs/guitar_3d.json).")
-    parser.add_argument("--pool", type=Path, default=None, help="LHS pool path (default: FEM/configs/lhs_pool.json or ROM/classic/lhs_pool.json).")
-    parser.add_argument(
-        "--samples",
-        type=str,
-        default="1-7,12-20",
-        help="Comma/range sample ids, e.g. '1-7,12-20' (default: 1-7,12-20).",
-    )
-    parser.add_argument(
-        "--windows",
-        type=str,
-        default="80:100,400:600",
-        help="Comma-separated windows as min:max (default: 80:100,400:600).",
-    )
-    parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS, help="Forwarded to fem_master_dynamic (default: 2).")
-    parser.add_argument("--mpiexec", action="store_true", help="Pass --use-mpiexec to fem_master_dynamic.")
-    parser.add_argument(
-        "--force-emergency",
-        action="store_true",
-        help=(
-            "Every window: run the tuner as coverage_anchor with --wood-floor-min 0.0, "
-            "ignoring streak / scheduler emergency state."
-        ),
-    )
+    parser.add_argument("--config", type=Path, default=None, help="Base FEM config (default: FEM/configs/guitar_3d.json).")
+    parser.add_argument("--pool", type=Path, default=None, help="LHS pool JSON path.")
+    parser.add_argument("--samples", type=str, default="1-7,12-20", help="Sample ids, e.g. 1-7,12-20.")
+    parser.add_argument("--hz-min", type=float, default=HZ_MIN_DEFAULT)
+    parser.add_argument("--hz-max", type=float, default=HZ_MAX_DEFAULT)
+    parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
+    parser.add_argument("--mpiexec", action="store_true")
+    parser.add_argument("--no-purge", action="store_true", help="Keep SORTING temp_modes/temp_results after pack.")
     args = parser.parse_args()
 
     if int(args.max_workers) != 2:
-        print(
-            f"Error: this LAB targeted runner enforces --max-workers 2 for OOM safety (got {args.max_workers}).",
-            file=sys.stderr,
-        )
+        print("Error: LAB runner enforces --max-workers 2 for OOM safety.", file=sys.stderr)
         return 1
 
     repo = _repo_root()
     py = sys.executable
-    master, tuner, packer = _ensure_scripts(repo)
-    base_config = (args.config.resolve() if args.config else (repo / "FEM" / "configs" / "guitar_3d.json").resolve())
-    if not base_config.is_file():
-        print(f"Error: base config not found: {base_config}", file=sys.stderr)
+    master = repo / "FEM" / "scripts" / "fem_master_dynamic.py"
+    tuner = repo / "FEM" / "scripts" / "dynamic_filter_tuner.py"
+    packer = repo / "FEM" / "scripts" / "package_rom.py"
+    for p in (master, tuner, packer):
+        if not p.is_file():
+            print(f"Error: missing {p}", file=sys.stderr)
+            return 1
+
+    base_config = args.config.resolve() if args.config else (repo / "FEM" / "configs" / "guitar_3d.json")
+    pool_path = args.pool.resolve() if args.pool else _default_pool_path(repo)
+    if not base_config.is_file() or not pool_path.is_file():
+        print("Error: base config or pool not found.", file=sys.stderr)
         return 1
-    pool_path = (args.pool.resolve() if args.pool else _default_pool_path(repo))
-    if not pool_path.is_file():
-        print(f"Error: pool not found: {pool_path}", file=sys.stderr)
-        return 1
 
-    samples = _parse_samples(str(args.samples))
-    windows = _parse_windows(str(args.windows))
+    lab_root = FEM_LAB_RESULTS_DIR.resolve()
+    lab_root.mkdir(parents=True, exist_ok=True)
+    hz_lo, hz_hi = float(args.hz_min), float(args.hz_max)
 
-    extra_root = (repo / "FEM" / "results" / "EXTRA_RESULTS").resolve()
-    extra_root.mkdir(parents=True, exist_ok=True)
-
-    manifest: Dict[str, Any] = {
-        "samples": samples,
-        "windows": [{"min_hz": lo, "max_hz": hi} for lo, hi in windows],
-        "max_workers": 2,
-        "window_quota": WINDOW_QUOTA,
-        "force_emergency": bool(args.force_emergency),
-        "note": "No automatic merge into master training set.",
-    }
-    _write_json(extra_root / "run_manifest.json", manifest)
+    _write_json(
+        lab_root / "run_manifest.json",
+        {
+            "hz_min": hz_lo,
+            "hz_max": hz_hi,
+            "samples": _parse_samples(str(args.samples)),
+            "max_workers": 2,
+            "note": "Single contiguous band; no dual-window splits.",
+        },
+    )
 
     failures: List[str] = []
-    for sid in samples:
+    for sid in _parse_samples(str(args.samples)):
         skey = _pool_sample_id(sid)
-        sdir = _sample_dir(extra_root, sid)
+        sdir = lab_root / skey
         sdir.mkdir(parents=True, exist_ok=True)
         try:
             entry = _find_pool_entry(pool_path, skey)
         except Exception as exc:
-            failures.append(f"{skey}: pool entry missing ({exc})")
+            failures.append(f"{skey}: {exc}")
+            continue
+
+        merged_cfg = copy.deepcopy(json.loads(base_config.read_text(encoding="utf-8")))
+        params = entry.get("parameters", {})
+        if isinstance(params, dict):
+            apply_lhs_parameters_to_config(merged_cfg, params)
+        merged_path = sdir / "merged_config.json"
+        _write_json(merged_path, merged_cfg)
+
+        sorting_root = sdir / "SORTING"
+        (sorting_root / "temp_modes").mkdir(parents=True, exist_ok=True)
+        (sorting_root / "temp_results").mkdir(parents=True, exist_ok=True)
+        _write_json(sorting_root / "candidates_log.json", {"candidates": [], "completed_shift_targets": []})
+
+        master_cmd = [
+            py,
+            str(master),
+            "--config",
+            str(merged_path),
+            "--hz-min",
+            str(hz_lo),
+            "--hz-max",
+            str(hz_hi),
+            "--max-workers",
+            "2",
+            "--sorting-root",
+            str(sorting_root),
+        ]
+        if args.mpiexec:
+            master_cmd.append("--use-mpiexec")
+
+        if _run_step(f"{skey} | master {hz_lo:.0f}-{hz_hi:.0f} Hz", master_cmd, repo) != 0:
+            failures.append(f"{skey}: master failed")
+            continue
+
+        selected_csv = sdir / "selected_modes.csv"
+        shared_csv = shared_rom_csv_path(f"{skey}_selected_modes.csv")
+        plot_out = shared_plot_path(f"{skey}_selection_plot.png")
+        tuner_cmd = [
+            py,
+            str(tuner),
+            "--headless",
+            "--candidates",
+            str(sorting_root / "candidates_log.json"),
+            "--window-min",
+            str(hz_lo),
+            "--window-max",
+            str(hz_hi),
+            "--quota",
+            "150",
+            "--min-selected",
+            "150",
+            "--adaptive-veto",
+            "--adaptive-steps",
+            "12",
+            "--export",
+            str(selected_csv),
+            "--metadata-out",
+            str(sdir / "selection_metadata.json"),
+            "--plot-out",
+            str(plot_out),
+        ]
+        if _run_step(f"{skey} | tuner (150 modes)", tuner_cmd, repo) != 0:
+            failures.append(f"{skey}: tuner failed")
             continue
 
         try:
-            cfg = json.loads(base_config.read_text(encoding="utf-8"))
-        except Exception as exc:
-            print(f"Error: cannot read base config {base_config}: {exc}", file=sys.stderr)
-            return 1
-        merged_cfg = copy.deepcopy(cfg)
-        _apply_dotted_parameters(merged_cfg, _resolve_sample_parameters(entry))
-        merged_cfg_path = sdir / "merged_config.json"
-        _write_json(merged_cfg_path, merged_cfg)
+            shutil.copy2(selected_csv, shared_csv)
+        except OSError:
+            pass
 
-        force_emergency = bool(args.force_emergency)
-        sample_report: Dict[str, Any] = {"sample_id": skey, "force_emergency": force_emergency, "windows": []}
-        low_selected_streak = 0
-        emergency_for_next_window = False
-        for win in windows:
-            lo, hi = win
-            wtag = _window_tag(win)
-            wdir = sdir / f"window_{wtag}"
-            sorting_root = wdir / "SORTING"
-            (sorting_root / "temp_modes").mkdir(parents=True, exist_ok=True)
-            (sorting_root / "temp_results").mkdir(parents=True, exist_ok=True)
-            _write_json(sorting_root / "candidates_log.json", {"candidates": [], "completed_shift_targets": []})
-
-            master_cmd = [
-                py,
-                str(master),
-                "--config",
-                str(merged_cfg_path),
-                "--hz-min",
-                str(float(lo)),
-                "--hz-max",
-                str(float(hi)),
-                "--max-workers",
-                "2",
-                "--sorting-root",
-                str(sorting_root),
-            ]
-            if force_emergency:
-                master_cmd.append("--force-emergency")
-            if args.mpiexec:
-                master_cmd.append("--use-mpiexec")
-
-            if _run_step(f"{skey} window {wtag} | Step A master sweep", master_cmd, repo) != 0:
-                failures.append(f"{skey} window {wtag}: master failed")
-                continue
-
-            selected_csv = wdir / "selected_modes.csv"
-            plot_out = wdir / "selection_plot.png"
-            selection_metadata = wdir / "selection_metadata.json"
-            emergency_for_this_window = bool(
-                force_emergency or emergency_for_next_window or _load_coverage_pending(sorting_root)
+        rom_npz = sdir / "lab_window_rom.npz"
+        if (
+            _run_step(
+                f"{skey} | package_rom",
+                [
+                    py,
+                    str(packer),
+                    "--csv",
+                    str(selected_csv),
+                    "--out",
+                    str(rom_npz),
+                    "--sorting-root",
+                    str(sorting_root),
+                ],
+                repo,
             )
-            selection_type = "coverage_anchor" if emergency_for_this_window else "primary"
-            tuner_cmd = [
-                py,
-                str(tuner),
-                "--headless",
-                "--candidates",
-                str(sorting_root / "candidates_log.json"),
-                "--window-min",
-                str(float(lo)),
-                "--window-max",
-                str(float(hi)),
-                "--quota",
-                str(WINDOW_QUOTA),
-                "--min-selected",
-                str(WINDOW_QUOTA),
-                "--adaptive-veto",
-                "--adaptive-steps",
-                "12",
-                "--selection-type",
-                selection_type,
-                "--metadata-out",
-                str(selection_metadata),
-                "--export",
-                str(selected_csv),
-                "--plot-out",
-                str(plot_out),
-            ]
-            if emergency_for_this_window:
-                tuner_cmd.extend(["--wood-floor-min", "0.0"])
-                # Streak-triggered emergency: require at least 5 anchors; global --force-emergency keeps WINDOW_QUOTA.
-                if not force_emergency:
-                    tuner_cmd.extend(["--min-selected", "5"])
-            if _run_step(f"{skey} window {wtag} | Step B tuner", tuner_cmd, repo) != 0:
-                failures.append(f"{skey} window {wtag}: tuner failed")
-                continue
+            != 0
+        ):
+            failures.append(f"{skey}: package failed")
+            continue
 
-            selected_count = _count_selected_rows(selected_csv)
-            if not force_emergency:
-                if selected_count <= 1:
-                    low_selected_streak += 1
-                else:
-                    low_selected_streak = 0
-                emergency_for_next_window = low_selected_streak >= 2
+        n_sel = _count_csv_rows(selected_csv)
+        ok, msg = _verify_rom_npz(rom_npz, n_sel)
+        if not ok:
+            failures.append(f"{skey}: NPZ verify: {msg}")
+            continue
 
-            window_npz = wdir / "targeted_window_rom.npz"
-            pack_cmd = [
-                py,
-                str(packer),
-                "--csv",
-                str(selected_csv),
-                "--out",
-                str(window_npz),
-                "--sorting-root",
-                str(sorting_root),
-            ]
-            if _run_step(f"{skey} window {wtag} | Step C package (selected → targeted_window_rom.npz)", pack_cmd, repo) != 0:
-                failures.append(f"{skey} window {wtag}: package failed")
-                continue
-
-            ok_npz, npz_msg = _verify_targeted_window_npz(window_npz.resolve(), int(selected_count))
-            if not ok_npz:
-                failures.append(f"{skey} window {wtag}: NPZ verify failed: {npz_msg}")
-                continue
-
-            backup_log, purge_err = _purge_sorting_workspace_after_archive(wdir, sorting_root, wtag)
+        archived = None
+        purge_err = None
+        if not args.no_purge:
+            archived, purge_err = _purge_sorting_workspace(sorting_root, sdir)
             if purge_err:
-                failures.append(f"{skey} window {wtag}: post-archive purge: {purge_err}")
+                failures.append(f"{skey}: purge: {purge_err}")
                 continue
 
-            sample_report["windows"].append(
-                {
-                    "window": {"min_hz": lo, "max_hz": hi},
-                    "window_tag": wtag,
-                    "sorting_root": str(sorting_root),
-                    "selected_csv": str(selected_csv),
-                    "plot": str(plot_out),
-                    "selection_metadata": str(selection_metadata),
-                    "selected_count": int(selected_count),
-                    "selection_type": selection_type,
-                    "npz": str(window_npz),
-                    "npz_verify": npz_msg,
-                    "candidates_log_archived": str(backup_log) if backup_log else None,
-                    "temp_modes_purged": True,
-                    "temp_results_purged": True,
-                }
-            )
+        _write_json(
+            sdir / "sample_manifest.json",
+            {
+                "sample_id": skey,
+                "hz_min": hz_lo,
+                "hz_max": hz_hi,
+                "selected_count": n_sel,
+                "selected_csv": str(selected_csv),
+                "shared_csv": str(shared_csv),
+                "selection_plot": str(plot_out),
+                "rom_npz": str(rom_npz),
+                "npz_verify": msg,
+                "candidates_log_archived": str(archived) if archived else None,
+            },
+        )
 
-        _write_json(sdir / "sample_manifest.json", sample_report)
-
-    status = {
-        "ok": len(failures) == 0,
-        "failures": failures,
-        "root": str(extra_root),
-        "manual_merge_hint": (
-            "python FEM/scripts/merge_extra_results.py "
-            "--extra-root FEM/results/EXTRA_RESULTS --per-zone-top-k 30"
-        ),
-    }
-    _write_json(extra_root / "run_status.json", status)
-
+    status = {"ok": not failures, "failures": failures, "root": str(lab_root)}
+    _write_json(lab_root / "run_status.json", status)
     if failures:
-        print("\nCompleted with failures:")
         for f in failures:
             print(f"  - {f}")
-        print(f"\nOutputs preserved at: {extra_root}")
-        print("No merge into master was performed.")
         return 1
-
-    print(f"\nTargeted LAB sweep complete: {extra_root}")
-    print("No merge into master was performed.")
-    print(
-        "To merge targeted selections manually, run:\n"
-        "  python FEM/scripts/merge_extra_results.py --extra-root FEM/results/EXTRA_RESULTS --per-zone-top-k 30"
-    )
+    print(f"LAB sweep complete: {lab_root}")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

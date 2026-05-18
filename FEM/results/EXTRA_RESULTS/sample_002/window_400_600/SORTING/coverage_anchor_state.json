@@ -1,7 +1,0 @@
-{
-  "coverage_emergency_pending": false,
-  "low_keep_streak": 0,
-  "last_kept_after_manager": 3,
-  "last_report_hz": 596.0,
-  "rule": "trigger when two consecutive merged shifts keep <=1 candidate each"
-}

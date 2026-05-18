@@ -21,6 +21,7 @@ SCRIPTS_DIR = BASE_DIR / "FEM" / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.append(str(SCRIPTS_DIR))
 import fem_main_3d
+from wood_library import apply_lhs_parameters_to_config
 
 
 def _logging_reset_handlers() -> None:
@@ -231,7 +232,10 @@ class ROMManager:
             "geometry.depth": {"min": 0.08, "max": 0.15},
         }
 
-    def _build_5d_lhs_sweep_spec(self, shape_name: str, sweep_cfg: Dict) -> Dict:
+    def _build_7d_lhs_sweep_spec(self, shape_name: str, sweep_cfg: Dict) -> Dict:
+        """Seven-parameter LHS: L, W, D, thickness, hole radius, top wood ID, back wood ID."""
+        from wood_library import BACK_WOOD_IDS, TOP_WOOD_IDS
+
         base_cfg = self._load_shape_base_config(shape_name)
         shape_type = str(base_cfg.get("geometry", {}).get("shape_type", "Classical"))
         bounds = self._shape_length_width_depth_bounds(shape_type)
@@ -239,14 +243,18 @@ class ROMManager:
             "geometry.length": bounds["geometry.length"],
             "geometry.width": bounds["geometry.width"],
             "geometry.depth": bounds["geometry.depth"],
-            "geometry.thickness": {"min": 0.002, "max": 0.010},
-            "materials.top.density": {"min": 300.0, "max": 950.0},
+            "geometry.thickness": {"min": 0.002, "max": 0.006},
+            "geometry.hole_radius": {"min": 0.035, "max": 0.055},
+            "top_wood_id": list(TOP_WOOD_IDS),
+            "back_wood_id": list(BACK_WOOD_IDS),
         }
-        # Allow optional per-shape overrides from config while preserving 5D keys.
-        for key in spec.keys():
+        for key in list(spec.keys()):
             if key in sweep_cfg:
                 spec[key] = sweep_cfg[key]
         return spec
+
+    # Backward-compatible alias
+    _build_5d_lhs_sweep_spec = _build_7d_lhs_sweep_spec
 
     def _load_shape_base_config(self, shape_name: str) -> Dict:
         shape_cfg = self.shapes[shape_name]
@@ -283,6 +291,11 @@ class ROMManager:
                     f"stdout:\n{proc.stdout}\n\nstderr:\n{proc.stderr}"
                 )
         self.comm.barrier()
+
+    @staticmethod
+    def _apply_parameters_to_config(config: Dict, parameters: Dict) -> None:
+        """Merge LHS flat parameters and discrete wood IDs into a FEM config."""
+        apply_lhs_parameters_to_config(config, parameters)
 
     @staticmethod
     def _set_nested(config: Dict, dotted_key: str, value):
@@ -541,10 +554,10 @@ class ROMManager:
             grid = [{}]
         elif sampling_mode == "lhs":
             n = int(lhs_samples if lhs_samples is not None else pool_size)
-            lhs_5d_spec = self._build_5d_lhs_sweep_spec(shape_name, sweep_cfg)
+            lhs_7d_spec = self._build_7d_lhs_sweep_spec(shape_name, sweep_cfg)
             pool = self._load_or_create_lhs_pool(
                 shape_name,
-                sweep_cfg=lhs_5d_spec,
+                sweep_cfg=lhs_7d_spec,
                 total_samples=n,
                 seed=seed,
                 force_rebuild=force_pool_rebuild,
@@ -671,8 +684,7 @@ class ROMManager:
                 try:
                     _logging_reset_handlers()
                     cfg = self._load_shape_base_config(shape_name)
-                    for k, v in params.items():
-                        self._set_nested(cfg, k, v)
+                    self._apply_parameters_to_config(cfg, params)
                     solver_profile_used = self._apply_solver_profile_overrides(cfg, pool)
                     # Offline ROM FOM must be coupled; persist false so guitar_3d.json cannot drift to vacuum-only.
                     cfg.setdefault("solver", {})["structural_only_diagnosis"] = False
@@ -760,8 +772,7 @@ class ROMManager:
             try:
                 _logging_reset_handlers()
                 cfg = self._load_shape_base_config(shape_name)
-                for k, v in params.items():
-                    self._set_nested(cfg, k, v)
+                self._apply_parameters_to_config(cfg, params)
                 cfg.setdefault("solver", {})["structural_only_diagnosis"] = False
                 self._save_shape_base_config(shape_name, cfg)
                 t0 = time.perf_counter()
@@ -892,8 +903,7 @@ class ROMManager:
         V = self._get_basis_cached(shape_name)
 
         cfg = self._load_shape_base_config(shape_name)
-        for k, v in params.items():
-            self._set_nested(cfg, k, v)
+        self._apply_parameters_to_config(cfg, params)
 
         t0 = time.perf_counter()
         _, _, A, M = fem_main_3d.assemble_coupled_operators_for_rom(cfg)
@@ -912,8 +922,7 @@ class ROMManager:
 
     def compare(self, shape_name: str, params: Dict, nev: int = 3, fom_modes: int = 15) -> Dict:
         cfg = self._load_shape_base_config(shape_name)
-        for k, v in params.items():
-            self._set_nested(cfg, k, v)
+        self._apply_parameters_to_config(cfg, params)
         self._save_shape_base_config(shape_name, cfg)
 
         t0 = time.perf_counter()

@@ -7,6 +7,19 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict
 
+# Central I/O roots (override with env SHARED_HOST_DIR).
+try:
+    from paths import (  # noqa: F401
+        REPO_ROOT,
+        SHARED_AUDIO_DIR,
+        SHARED_EXPORTS_DIR,
+        SHARED_HOST_DIR,
+        resolve_shared_path,
+        shared_audio_path,
+    )
+except ImportError:
+    pass
+
 try:
     from fem_api import (
         FemCase,
