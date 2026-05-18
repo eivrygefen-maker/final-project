@@ -14,6 +14,10 @@ import math
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
+
+from paths import DEFAULT_SHAPE_NAME, resolve_plot_output_path, shared_plot_path
+
 # =============================
 # Tuning parameters (edit here)
 # =============================
@@ -26,6 +30,19 @@ WOOD_FILTER_MIN = 0.0005
 UNIQUENESS_VETO_MIN = 0.1
 DEFAULT_QUOTA = 150
 
+# ---------------------------------------------------------------------------
+# Shared-host plot export — set env SHARED_HOST_DIR or edit default in paths.py
+# Example: export SHARED_HOST_DIR=/media/sf_gmar
+# Plots: {SHARED_HOST_DIR}/{shape}/plots/<filename>
+# ---------------------------------------------------------------------------
+DEFAULT_SHARED_PLOT_PATH = shared_plot_path("selection_plot.png", shape_name=DEFAULT_SHAPE_NAME)
+
+# Y-axis scaling: cap = quantile(0.95) * scale; drop display outliers above cap (diverged runs).
+Y_OUTLIER_QUANTILE = 0.95
+Y_QUANTILE_LIMIT_SCALE = 1.2
+# Wood participation is a sum of normalized plate-energy ratios; values above ~1 are non-physical.
+PHYSICAL_WOOD_PARTICIPATION_Y_MAX = 1.0
+
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -36,7 +53,7 @@ def _default_candidates_path() -> Path:
 
 
 def _default_selection_plot_path() -> Path:
-    return _project_root() / "FEM" / "SORTING" / "selection_plot.png"
+    return DEFAULT_SHARED_PLOT_PATH
 
 
 def _default_metadata_path() -> Path:
@@ -220,6 +237,45 @@ def _filter_frequency_window(candidates: List[Dict], hz_min: Optional[float], hz
     return out
 
 
+def _wood_participation_values(candidates: List[Dict]) -> List[float]:
+    out: List[float] = []
+    for c in candidates:
+        try:
+            y = float(c.get("wood_participation", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(y) and y >= 0.0:
+            out.append(y)
+    return out
+
+
+def _robust_wood_y_upper(all_y: List[float]) -> float:
+    """Cap Y-axis at min(quantile(0.95)*1.2, physical ceiling) for readable wood-participation scale."""
+    if not all_y:
+        return PHYSICAL_WOOD_PARTICIPATION_Y_MAX
+    arr = np.asarray(all_y, dtype=np.float64)
+    y_top = float(np.quantile(arr, Y_OUTLIER_QUANTILE)) * Y_QUANTILE_LIMIT_SCALE
+    y_top = min(y_top, PHYSICAL_WOOD_PARTICIPATION_Y_MAX)
+    return max(y_top, 1e-6)
+
+
+def _filter_plot_candidates_by_y(candidates: List[Dict], y_max: float) -> Tuple[List[Dict], int]:
+    """Drop non-finite or extreme Y outliers before scatter (keeps scale readable)."""
+    kept: List[Dict] = []
+    dropped = 0
+    for c in candidates:
+        try:
+            y = float(c.get("wood_participation", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            dropped += 1
+            continue
+        if not math.isfinite(y) or y < 0.0 or y > y_max:
+            dropped += 1
+            continue
+        kept.append(c)
+    return kept, dropped
+
+
 def _plot_selection(
     selected: List[Dict],
     rejected: List[Dict],
@@ -234,11 +290,17 @@ def _plot_selection(
         matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    all_y = _wood_participation_values(selected) + _wood_participation_values(rejected)
+    y_upper = _robust_wood_y_upper(all_y)
+    plot_rejected, n_drop_rej = _filter_plot_candidates_by_y(rejected, y_upper)
+    plot_selected, n_drop_sel = _filter_plot_candidates_by_y(selected, y_upper)
+    n_outliers = n_drop_rej + n_drop_sel
+
     fig, ax = plt.subplots(figsize=(12, 6))
 
-    if rejected:
-        rx = [float(c["hz"]) for c in rejected]
-        ry = [float(c["wood_participation"]) for c in rejected]
+    if plot_rejected:
+        rx = [float(c["hz"]) for c in plot_rejected]
+        ry = [float(c["wood_participation"]) for c in plot_rejected]
         ax.scatter(
             rx,
             ry,
@@ -249,9 +311,9 @@ def _plot_selection(
             label="Rejected (veto gates + not MMR-selected)",
         )
 
-    if selected:
-        sx = [float(c["hz"]) for c in selected]
-        sy = [float(c["wood_participation"]) for c in selected]
+    if plot_selected:
+        sx = [float(c["hz"]) for c in plot_selected]
+        sy = [float(c["wood_participation"]) for c in plot_selected]
         ax.scatter(
             sx,
             sy,
@@ -263,7 +325,7 @@ def _plot_selection(
             alpha=0.9,
             label="MMR selected",
         )
-        for c in selected:
+        for c in plot_selected:
             ax.annotate(
                 str(c["id"]),
                 (float(c["hz"]), float(c["wood_participation"])),
@@ -276,12 +338,25 @@ def _plot_selection(
     ax.set_xlabel("Frequency (Hz)")
     ax.set_ylabel("Wood participation (raw)")
     ax.set_title(title)
+    ax.set_ylim(0.0, y_upper)
+    if n_outliers:
+        ax.text(
+            0.01,
+            0.99,
+            f"{n_outliers} outlier(s) above Y cap omitted",
+            transform=ax.transAxes,
+            va="top",
+            ha="left",
+            fontsize=8,
+            color="gray",
+        )
     ax.grid(True, alpha=0.25)
     ax.legend()
     plt.tight_layout()
     if headless:
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(str(save_path), dpi=150, bbox_inches="tight")
+        out = resolve_plot_output_path(save_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(str(out), dpi=150, bbox_inches="tight")
         plt.close(fig)
     else:
         plt.show()
@@ -358,7 +433,10 @@ def main() -> int:
         "--plot-out",
         type=Path,
         default=_default_selection_plot_path(),
-        help="Output path for MMR plot when --headless (default: FEM/SORTING/selection_plot.png)",
+        help=(
+            "Output path for MMR plot when --headless "
+            f"(default: shared host {DEFAULT_SHARED_PLOT_PATH.as_posix()})"
+        ),
     )
     parser.add_argument("--window-min", type=float, default=None, help="Optional minimum frequency for selection window.")
     parser.add_argument("--window-max", type=float, default=None, help="Optional maximum frequency for selection window.")
@@ -512,15 +590,16 @@ def main() -> int:
         f"W={W}, U={U}, λ={lambda_val}, σ={sigma_hz} Hz | "
         f"vetoes: wood≥{WOOD_FILTER_MIN}, uniqueness≥{UNIQUENESS_VETO_MIN}"
     )
+    plot_dest = resolve_plot_output_path(args.plot_out)
     _plot_selection(
         selected,
         rejected,
         title,
         headless=bool(args.headless),
-        save_path=args.plot_out.resolve(),
+        save_path=plot_dest,
     )
     if args.headless:
-        print(f"Saved selection plot: {args.plot_out.resolve()}")
+        print(f"Saved selection plot: {plot_dest.resolve()}")
     return 0
 
 

@@ -33,6 +33,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from paths import DEFAULT_SHAPE_NAME, shared_plot_path
+
 
 def _repo_root() -> Path:
     repo = Path(os.path.abspath(__file__)).resolve()
@@ -214,8 +216,11 @@ def main() -> int:
     ap.add_argument(
         "--plots-dir",
         type=Path,
-        default=REPO_ROOT / "FEM" / "results" / "plots",
-        help="Output directory for snapshot_XXXX.png",
+        default=None,
+        help=(
+            "Output directory for snapshot_XXXX.png "
+            f"(default: shared host {shared_plot_path('snapshot_0001.png', DEFAULT_SHAPE_NAME).parent.as_posix()})"
+        ),
     )
     ap.add_argument(
         "--skip-existing",
@@ -225,7 +230,11 @@ def main() -> int:
     args = ap.parse_args()
 
     snapshots_dir = args.snapshots_dir.resolve()
-    plots_dir = args.plots_dir.resolve()
+    plots_dir = (
+        args.plots_dir.resolve()
+        if args.plots_dir is not None
+        else shared_plot_path("snapshot_0001.png", shape_name=DEFAULT_SHAPE_NAME).parent
+    )
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     lo = int(args.start)

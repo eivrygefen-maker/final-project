@@ -12,8 +12,8 @@ Candidate merge uses the **conditional adaptive manager** in ``fem_master_dynami
 LHS pool parameters are merged into a
 per-sample config before the FEM master runs.
 
-On success: writes snapshot NPZ under ROM/classic/snapshots/, selection plot under
-FEM/results/plots/, runs package_rom --cleanup, then marks the sample completed in
+On success: writes snapshot NPZ under ROM/classic/snapshots/, selection plot on the
+shared host (``SHARED_HOST_DIR`` / shape / plots /), runs package_rom --cleanup, then marks
 the pool JSON. Mode vectors are CSR float32 (relative sparsification) on disk
 (``*.smx.npz``); ``package_rom`` bundles the stacked CSR into one compressed NPZ
 (``ev_*`` keys + metadata).
@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from paths import DEFAULT_SHAPE_NAME, FEM_RESULTS_PLOTS_DIR, infer_shape_from_pool_path, shared_plot_path
+from paths import DEFAULT_SHAPE_NAME, infer_shape_from_pool_path, shared_plot_path
 from wood_library import apply_lhs_parameters_to_config
 
 
@@ -53,7 +53,6 @@ REPO_ROOT = _repo_root()
 DEFAULT_CONFIG = REPO_ROOT / "FEM" / "configs" / "guitar_3d.json"
 DEFAULT_POOL_PRIMARY = REPO_ROOT / "FEM" / "configs" / "lhs_pool.json"
 DEFAULT_POOL_FALLBACK = REPO_ROOT / "ROM" / "classic" / "lhs_pool.json"
-PLOTS_DIR = FEM_RESULTS_PLOTS_DIR
 SNAPSHOTS_DIR = REPO_ROOT / "ROM" / "classic" / "snapshots"
 
 
@@ -315,11 +314,9 @@ def main() -> int:
             print(f"Error: missing script {label} at {script}", file=sys.stderr)
             return 1
 
-    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
     SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
     plot_path = shared_plot_path(_plot_basename(n), shape_name=shape_name)
-    local_plot_path = PLOTS_DIR / _plot_basename(n)
     npz_path = SNAPSHOTS_DIR / _snapshot_basename(n)
     snapshot_rel = _snapshot_rel_npz(n)
 
@@ -351,13 +348,6 @@ def main() -> int:
     ]
     if _run_step("Step B — MMR selection (headless CSV + plot)", step_b, REPO_ROOT) != 0:
         return 1
-    try:
-        import shutil
-
-        local_plot_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(plot_path, local_plot_path)
-    except OSError:
-        pass
 
     step_c = [
         py,
@@ -385,7 +375,7 @@ def main() -> int:
         f"  Sample:        {sample_key}\n"
         f"  FEM config:    {effective_config.resolve()}\n"
         f"  Final ROM:     {npz_path.resolve()}\n"
-        f"  Selection plot:{plot_path.resolve()} (local copy: {local_plot_path.resolve()})\n"
+        f"  Selection plot:{plot_path.resolve()}\n"
         f"  Pool file:     {pool_path.resolve()}\n"
         f"{'=' * 72}\n"
     )

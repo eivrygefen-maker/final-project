@@ -91,6 +91,56 @@ def shared_plot_path(filename: str, shape_name: str = DEFAULT_SHAPE_NAME) -> Pat
     return shared_asset_path(shape_name, ASSET_PLOTS, filename)
 
 
+# VM-local directories that must not receive pipeline PNG exports (shared host only).
+_VM_PLOT_BAN_ROOTS = (
+    FEM_RESULTS_PLOTS_DIR,
+    FEM_SORTING_DIR,
+    REPO_ROOT / "FEM" / "results",
+)
+
+
+def resolve_plot_output_path(
+    path: str | Path,
+    *,
+    shape_name: str = DEFAULT_SHAPE_NAME,
+    default_filename: str = "selection_plot.png",
+) -> Path:
+    """
+    Force plot ``savefig`` targets onto the shared host.
+
+    Repo-local paths under ``FEM/results/plots`` or ``FEM/SORTING`` are rewritten to
+    ``{SHARED_HOST_DIR}/{shape}/plots/<basename>``. Paths already under ``SHARED_HOST_DIR``
+    are returned resolved; any other path uses ``default_filename`` on the shared plots tree.
+    """
+    raw = Path(path)
+    name = raw.name or default_filename
+    repo = REPO_ROOT.resolve()
+    shared_root = SHARED_HOST_DIR.resolve()
+
+    try:
+        raw.resolve().relative_to(shared_root)
+        out = raw.resolve()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        return out
+    except ValueError:
+        pass
+
+    for banned in _VM_PLOT_BAN_ROOTS:
+        try:
+            raw.resolve().relative_to(banned.resolve())
+            return shared_plot_path(name, shape_name=shape_name)
+        except ValueError:
+            continue
+
+    try:
+        raw.resolve().relative_to(repo)
+        return shared_plot_path(name, shape_name=shape_name)
+    except ValueError:
+        pass
+
+    return shared_plot_path(name, shape_name=shape_name)
+
+
 def shared_rom_csv_path(filename: str, shape_name: str = DEFAULT_SHAPE_NAME) -> Path:
     return shared_asset_path(shape_name, ASSET_ROM_DATA, filename)
 
