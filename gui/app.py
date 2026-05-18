@@ -23,7 +23,13 @@ ROM_CLASSIC_SNAPSHOTS = BASE_DIR / "ROM" / "classic" / "snapshots"
 # Allow in-process import of FEM solver for live Streamlit status updates.
 sys.path.append(str(BASE_DIR / "FEM" / "scripts"))
 import fem_main_3d
-from wood_library import BACK_WOOD_IDS, TOP_WOOD_IDS, material_block_for_id
+from wood_library import (
+    BACK_WOOD_IDS,
+    TOP_WOOD_IDS,
+    material_block_for_id,
+    plot_color_for_wood,
+    wood_display_name,
+)
 
 # Critical environment settings for Linux/VM
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -42,18 +48,10 @@ if CONFIG_PATH.exists():
     except:
         pass
 
-# --- Discrete wood library (5 species; matches FEM/scripts/wood_library.py) ---
-TOP_WOOD_LABELS = {
-    "Sitka Spruce": "spruce",
-    "Western Red Cedar": "cedar",
-}
-BACK_WOOD_LABELS = {
-    "Indian Rosewood": "rosewood",
-    "Honduran Mahogany": "mahogany",
-    "Maple": "maple",
-}
-assert set(TOP_WOOD_LABELS.values()) == set(TOP_WOOD_IDS)
-assert set(BACK_WOOD_LABELS.values()) == set(BACK_WOOD_IDS)
+# Physical tags in Gmsh mesh (must match FEM geometry protocol).
+TAG_TOP_PLATE = 1
+TAG_SOUNDHOLE = 2
+TAG_BACK_SIDES = 3
 
 NOTES_DICT = {
     "E2": 82.41, "A2": 110.00, "D3": 146.83, "G3": 196.00, "B3": 246.94, "E4": 329.63
@@ -96,11 +94,9 @@ def save_cfg():
         "vis_mode": st.session_state.get("vis_mode_ui", "Mesh + Solid"),
         "exploded_view": exploded,
     }
-    top_id = TOP_WOOD_LABELS[top_wood]
-    back_id = BACK_WOOD_LABELS[back_wood]
     data["materials"] = {
-        "top": {**material_block_for_id(top_id), "name": top_wood, "wood_id": top_id},
-        "back": {**material_block_for_id(back_id), "name": back_wood, "wood_id": back_id},
+        "top": {**material_block_for_id(top_wood_id), "name": wood_display_name(top_wood_id), "wood_id": top_wood_id},
+        "back": {**material_block_for_id(back_wood_id), "name": wood_display_name(back_wood_id), "wood_id": back_wood_id},
         "air": {"density": 1.204, "speed_of_sound": 343.0},
     }
     # Merge solver so GUI updates do not strip FEM keys (adaptive_mode_sifter, sifter_*, shifts, etc.).
@@ -165,11 +161,29 @@ else:
     W_min, W_max, W_def = 0.10, 0.80, 0.30
     D_min, D_max, D_def = 0.01, 0.50, 0.10
 
+def _wood_option_label(wood_id: str) -> str:
+    """Sidebar label: explicit wood_id plus common name."""
+    return f"{wood_id} — {wood_display_name(wood_id)}"
+
 col_top, col_back = st.sidebar.columns(2)
 with col_top:
-    top_wood = st.selectbox("Front (Top)", list(TOP_WOOD_LABELS.keys()), index=0)
+    top_wood_id = st.selectbox(
+        "Top Wood",
+        TOP_WOOD_IDS,
+        index=0,
+        format_func=_wood_option_label,
+        help="spruce, cedar",
+    )
 with col_back:
-    back_wood = st.selectbox("Back & Sides", list(BACK_WOOD_LABELS.keys()), index=0)
+    back_wood_id = st.selectbox(
+        "Back/Sides Wood",
+        BACK_WOOD_IDS,
+        index=0,
+        format_func=_wood_option_label,
+        help="rosewood, mahogany, maple",
+    )
+top_plot_color = plot_color_for_wood(top_wood_id)
+back_plot_color = plot_color_for_wood(back_wood_id)
 
 exploded = st.sidebar.checkbox("Exploded View", value=False)
 hr = st.sidebar.slider("Soundhole Radius (m)", 0.035, 0.055, 0.04)
@@ -350,7 +364,7 @@ with c2:
             if not out_json.exists():
                 st.error("Audio synthesis failed. Try tweaking the dimensions.")
             else:
-                top_q = material_block_for_id(TOP_WOOD_LABELS[top_wood])
+                top_q = material_block_for_id(top_wood_id)
                 stk_cmd = [
                     str(STK_BINARY), "--fem_json", str(out_json),
                     "--note_hz", str(note_hz), "--dur", "3.0", "--mix", str(mix_val),
@@ -463,10 +477,10 @@ try:
     plotter.background_color = "#f4f4f9"
     show_edges_flag = ("Mesh" in vis_mode)
 
-    def render_mesh_by_protocol(mesh, show_edges):
+    def render_mesh_by_protocol(mesh, show_edges, top_color: str, back_color: str):
         """
         Render mesh by physical tags protocol:
-        1=Top_Plate, 2=Soundhole, 3=Body_Shell, 10=Air_Internal(hidden).
+        1=Top_Plate, 2=Soundhole, 3=Back/Sides, 10=Air_Internal(hidden).
         Returns True if tag-based rendering succeeded, else False (caller should fallback).
         """
         tags = mesh.cell_data.get('gmsh:physical')
@@ -474,9 +488,9 @@ try:
             return False
 
         # Efficient mask creation once, then extract only when needed.
-        is_top = (tags == 1)
-        is_hole = (tags == 2)
-        is_body = (tags == 3)
+        is_top = (tags == TAG_TOP_PLATE)
+        is_hole = (tags == TAG_SOUNDHOLE)
+        is_body = (tags == TAG_BACK_SIDES)
 
         if not (is_top.any() or is_body.any() or is_hole.any()):
             return False
@@ -488,7 +502,7 @@ try:
             if top_mesh.n_cells > 0:
                 plotter.add_mesh(
                     top_mesh,
-                    color=material_block_for_id(TOP_WOOD_LABELS[top_wood])["color"],
+                    color=top_color,
                     show_edges=show_edges,
                     edge_color="#2b1a10"
                 )
@@ -499,7 +513,7 @@ try:
             if body_mesh.n_cells > 0:
                 plotter.add_mesh(
                     body_mesh,
-                    color=material_block_for_id(BACK_WOOD_LABELS[back_wood])["color"],
+                    color=back_color,
                     show_edges=show_edges,
                     edge_color="#2b1a10"
                 )
@@ -521,11 +535,11 @@ try:
             vol_mesh = pv.read(str(MESH_FILE))
 
             # Preferred path: tag-based rendering by protocol.
-            if not render_mesh_by_protocol(vol_mesh, show_edges_flag):
+            if not render_mesh_by_protocol(vol_mesh, show_edges_flag, top_plot_color, back_plot_color):
                 st.warning("Physical tags missing/empty - displaying full surface fallback.")
                 plotter.add_mesh(
                     vol_mesh.extract_surface(),
-                    color=material_block_for_id(BACK_WOOD_LABELS[back_wood])["color"],
+                    color=back_plot_color,
                     show_edges=show_edges_flag,
                     edge_color="#2b1a10"
                 )
@@ -537,9 +551,9 @@ try:
         preview_mesh = generate_live_preview_mesh(L, W, D, shape_type, design_mode, upper_bout, waist, lower_bout)
         
         if preview_mesh is not None:
-            if not render_mesh_by_protocol(preview_mesh, show_edges=False):
+            if not render_mesh_by_protocol(preview_mesh, show_edges=False, top_color=top_plot_color, back_color=back_plot_color):
                 st.warning("Preview tags missing/empty - displaying full surface fallback.")
-                plotter.add_mesh(preview_mesh, color=material_block_for_id(BACK_WOOD_LABELS[back_wood])["color"], show_edges=False)
+                plotter.add_mesh(preview_mesh, color=back_plot_color, show_edges=False)
         else:
             st.warning("Preview mesh is unavailable.")
             
@@ -555,5 +569,8 @@ try:
 except Exception as e:
     st.warning("Visualizer syncing...")
 
-if is_synced: st.caption(f"Visual: Top ({top_wood}) | Body ({back_wood}) | CAD Mode: ON")
+if is_synced:
+    st.caption(
+        f"Visual: top={top_wood_id} ({top_plot_color}) | back/sides={back_wood_id} ({back_plot_color}) | CAD Mode: ON"
+    )
 else: st.caption("Visual: Live Shape Prototype (Solid Block)")

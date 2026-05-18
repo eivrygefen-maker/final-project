@@ -12,6 +12,15 @@ from typing import Any, Dict, List, Optional
 TOP_WOOD_IDS: List[str] = ["spruce", "cedar"]
 BACK_WOOD_IDS: List[str] = ["rosewood", "mahogany", "maple"]
 
+# PyVista / GUI surface colors (physical tag 1 = top, tag 3 = back/sides).
+WOOD_PLOT_COLORS: Dict[str, str] = {
+    "spruce": "#FFF8DC",    # pale ivory
+    "cedar": "#A0522D",     # warm reddish-brown (sienna)
+    "maple": "#FFDEAD",     # blonde cream (navajowhite)
+    "mahogany": "#8B4513",  # saddle brown
+    "rosewood": "#3E1F12",  # dark chocolate brown
+}
+
 # 3D shell model uses isotropic reduction from orthotropic sheet constants (E_L, nu_LT, rho).
 WOOD_SPECS: Dict[str, Dict[str, Any]] = {
     "spruce": {
@@ -30,7 +39,7 @@ WOOD_SPECS: Dict[str, Dict[str, Any]] = {
         "G_TR": 0.05e9,
         "q_min": 60,
         "q_max": 80,
-        "color": "#FCE6C9",
+        "color": WOOD_PLOT_COLORS["spruce"],
     },
     "cedar": {
         "wood_id": "cedar",
@@ -48,7 +57,7 @@ WOOD_SPECS: Dict[str, Dict[str, Any]] = {
         "G_TR": 0.05e9,
         "q_min": 55,
         "q_max": 75,
-        "color": "#E8D4B8",
+        "color": WOOD_PLOT_COLORS["cedar"],
     },
     "rosewood": {
         "wood_id": "rosewood",
@@ -66,7 +75,7 @@ WOOD_SPECS: Dict[str, Dict[str, Any]] = {
         "G_TR": 0.05e9,
         "q_min": 90,
         "q_max": 100,
-        "color": "#3D2B1F",
+        "color": WOOD_PLOT_COLORS["rosewood"],
     },
     "mahogany": {
         "wood_id": "mahogany",
@@ -84,7 +93,7 @@ WOOD_SPECS: Dict[str, Dict[str, Any]] = {
         "G_TR": 0.05e9,
         "q_min": 45,
         "q_max": 60,
-        "color": "#93441A",
+        "color": WOOD_PLOT_COLORS["mahogany"],
     },
     "maple": {
         "wood_id": "maple",
@@ -102,13 +111,28 @@ WOOD_SPECS: Dict[str, Dict[str, Any]] = {
         "G_TR": 0.05e9,
         "q_min": 70,
         "q_max": 90,
-        "color": "#F5E6D3",
+        "color": WOOD_PLOT_COLORS["maple"],
     },
 }
 
 
 def _normalize_id(wood_id: str) -> str:
     return str(wood_id).strip().lower().replace(" ", "_")
+
+
+def plot_color_for_wood(wood_id: str) -> str:
+    """Hex color for PyVista tag-based rendering (GUI preview)."""
+    key = _normalize_id(wood_id)
+    if key not in WOOD_PLOT_COLORS:
+        raise KeyError(f"Unknown wood_id {wood_id!r}; known: {sorted(WOOD_PLOT_COLORS)}")
+    return WOOD_PLOT_COLORS[key]
+
+
+def wood_display_name(wood_id: str) -> str:
+    key = _normalize_id(wood_id)
+    if key not in WOOD_SPECS:
+        raise KeyError(f"Unknown wood_id {wood_id!r}")
+    return str(WOOD_SPECS[key]["name"])
 
 
 def material_block_for_id(wood_id: str) -> Dict[str, Any]:
@@ -211,7 +235,7 @@ def woods_ortho_json_export() -> Dict[str, Any]:
         "nu_TR": 0.40,
         "q_min": 55,
         "q_max": 75,
-        "color": "#E8D4B8",
+        "color": WOOD_PLOT_COLORS["cedar"],
     }
     out["maple_hard"] = {
         "rho": 650.0,
@@ -226,6 +250,6 @@ def woods_ortho_json_export() -> Dict[str, Any]:
         "nu_TR": 0.40,
         "q_min": 70,
         "q_max": 90,
-        "color": "#F5E6D3",
+        "color": WOOD_PLOT_COLORS["maple"],
     }
     return out
