@@ -234,19 +234,20 @@ class ROMManager:
 
     def _build_7d_lhs_sweep_spec(self, shape_name: str, sweep_cfg: Dict) -> Dict:
         """Seven-parameter LHS: L, W, D, thickness, hole radius, top wood ID, back wood ID."""
-        from wood_library import BACK_WOOD_IDS, TOP_WOOD_IDS
+        from wood_library import ALL_WOOD_IDS
 
         base_cfg = self._load_shape_base_config(shape_name)
         shape_type = str(base_cfg.get("geometry", {}).get("shape_type", "Classical"))
         bounds = self._shape_length_width_depth_bounds(shape_type)
+        wood_options = list(ALL_WOOD_IDS)
         spec = {
             "geometry.length": bounds["geometry.length"],
             "geometry.width": bounds["geometry.width"],
             "geometry.depth": bounds["geometry.depth"],
             "geometry.thickness": {"min": 0.002, "max": 0.006},
             "geometry.hole_radius": {"min": 0.035, "max": 0.055},
-            "top_wood_id": list(TOP_WOOD_IDS),
-            "back_wood_id": list(BACK_WOOD_IDS),
+            "top_wood_id": wood_options,
+            "back_wood_id": wood_options,
         }
         for key in list(spec.keys()):
             if key in sweep_cfg:
@@ -445,6 +446,7 @@ class ROMManager:
         return {
             "shape_name": shape_name,
             "sampling": "lhs",
+            "wood_assignment": "unrestricted_5x5",
             "seed": int(seed),
             "total_samples": int(total_samples),
             "mpi_world_size": int(self.comm.size),

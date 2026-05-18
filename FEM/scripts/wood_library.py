@@ -1,8 +1,8 @@
 """
 Discrete wood species library for 3D guitar FEM (top / back assignment).
 
-Top woods: Sitka Spruce, Western Red Cedar.
-Back woods: Indian Rosewood, Honduran Mahogany, Maple.
+Five species; LHS and FEM may assign any species to tag 1 (top) or tag 3 (back),
+including identical top/back pairs (e.g. cedar + cedar).
 """
 from __future__ import annotations
 
@@ -115,6 +115,8 @@ WOOD_SPECS: Dict[str, Dict[str, Any]] = {
     },
 }
 
+ALL_WOOD_IDS: List[str] = sorted(WOOD_SPECS.keys())
+
 
 def _normalize_id(wood_id: str) -> str:
     return str(wood_id).strip().lower().replace(" ", "_")
@@ -155,13 +157,13 @@ def apply_wood_ids_to_config(
     """Set ``materials.top`` / ``materials.back`` from discrete wood IDs (in-place)."""
     if top_wood_id is not None:
         tid = _normalize_id(top_wood_id)
-        if tid not in TOP_WOOD_IDS:
-            raise ValueError(f"top_wood_id must be one of {TOP_WOOD_IDS}, got {top_wood_id!r}")
+        if tid not in ALL_WOOD_IDS:
+            raise ValueError(f"top_wood_id must be one of {ALL_WOOD_IDS}, got {top_wood_id!r}")
         config.setdefault("materials", {})["top"] = material_block_for_id(tid)
     if back_wood_id is not None:
         bid = _normalize_id(back_wood_id)
-        if bid not in BACK_WOOD_IDS:
-            raise ValueError(f"back_wood_id must be one of {BACK_WOOD_IDS}, got {back_wood_id!r}")
+        if bid not in ALL_WOOD_IDS:
+            raise ValueError(f"back_wood_id must be one of {ALL_WOOD_IDS}, got {back_wood_id!r}")
         config.setdefault("materials", {})["back"] = material_block_for_id(bid)
 
 
