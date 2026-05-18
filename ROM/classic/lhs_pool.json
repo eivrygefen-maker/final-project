@@ -16,8 +16,8 @@
         "geometry.width": 0.39909395274667214,
         "top_wood_id": "spruce"
       },
-      "status": "pending",
-      "snapshot_file": null,
+      "status": "completed",
+      "snapshot_file": "snapshots/snapshot_0001.npz",
       "error": null
     },
     {
