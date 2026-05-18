@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from paths import FEM_RESULTS_PLOTS_DIR, shared_plot_path
+from paths import DEFAULT_SHAPE_NAME, FEM_RESULTS_PLOTS_DIR, infer_shape_from_pool_path, shared_plot_path
 from wood_library import apply_lhs_parameters_to_config
 
 
@@ -243,6 +243,12 @@ def main() -> int:
             "(default: 2). Use 1 for debugging or higher values for lab stress tests."
         ),
     )
+    parser.add_argument(
+        "--shape",
+        type=str,
+        default=DEFAULT_SHAPE_NAME,
+        help="ROM shape name for shared-host export paths (default: classic).",
+    )
     args = parser.parse_args()
     if int(args.max_workers) < 1:
         print(f"Error: --max-workers must be >= 1 (got {args.max_workers})", file=sys.stderr)
@@ -261,6 +267,7 @@ def main() -> int:
 
     sample_key = _pool_sample_id(n)
     pool_path = (args.pool.resolve() if args.pool is not None else _default_pool_path())
+    shape_name = str(args.shape).strip() or infer_shape_from_pool_path(pool_path)
     if not pool_path.is_file():
         print(f"Error: pool file not found: {pool_path}", file=sys.stderr)
         return 1
@@ -311,7 +318,7 @@ def main() -> int:
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
     SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    plot_path = shared_plot_path(_plot_basename(n))
+    plot_path = shared_plot_path(_plot_basename(n), shape_name=shape_name)
     local_plot_path = PLOTS_DIR / _plot_basename(n)
     npz_path = SNAPSHOTS_DIR / _snapshot_basename(n)
     snapshot_rel = _snapshot_rel_npz(n)

@@ -12,7 +12,7 @@ import sys
 _SCRIPTS = Path(__file__).resolve().parents[1] / "FEM" / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
-from paths import resolve_shared_path
+from paths import DEFAULT_SHAPE_NAME, resolve_shared_path, shared_audio_path
 
 
 def die(msg: str, code: int = 1) -> None:
@@ -155,8 +155,12 @@ def main() -> int:
     stk = steps.get("stk")
     if stk is not None:
         binary = stk.get("binary", "./guitar_stk")
-        out_wav = resolve_shared_path(stk.get("out", "audio/out.wav"))
-        out_wav.parent.mkdir(parents=True, exist_ok=True)
+        shape_name = str(stk.get("shape", DEFAULT_SHAPE_NAME)).strip() or DEFAULT_SHAPE_NAME
+        out_raw = stk.get("out", "out.wav")
+        if isinstance(out_raw, str) and ("/" in out_raw or "\\" in out_raw):
+            out_wav = resolve_shared_path(out_raw, shape_name=shape_name)
+        else:
+            out_wav = shared_audio_path(Path(str(out_raw)).name, shape_name=shape_name)
         dur = float(stk.get("dur", 3.0))
         amp = float(stk.get("amp", 0.2))
 

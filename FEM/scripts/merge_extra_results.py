@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from paths import FEM_LAB_RESULTS_DIR, shared_rom_csv_path
+from paths import DEFAULT_SHAPE_NAME, FEM_LAB_RESULTS_DIR, shared_rom_csv_path
 
 
 def _read_csv_rows(path: Path) -> List[Dict[str, Any]]:
@@ -92,6 +92,12 @@ def main() -> int:
         default=None,
         help="Summary JSON alongside out-csv.",
     )
+    parser.add_argument(
+        "--shape",
+        type=str,
+        default=DEFAULT_SHAPE_NAME,
+        help="ROM shape name for shared-host export paths (default: classic).",
+    )
     args = parser.parse_args()
 
     lab_root = args.lab_root.resolve()
@@ -99,12 +105,22 @@ def main() -> int:
         print(f"Error: lab-root not found: {lab_root}")
         return 1
 
-    out_csv = args.out_csv.resolve() if args.out_csv else shared_rom_csv_path("merged_lab_training_set.csv")
+    shape_name = str(args.shape).strip() or DEFAULT_SHAPE_NAME
+    out_csv = (
+        args.out_csv.resolve()
+        if args.out_csv
+        else shared_rom_csv_path("merged_lab_training_set.csv", shape_name=shape_name)
+    )
     out_json = args.out_json.resolve() if args.out_json else out_csv.with_suffix(".summary.json")
     k = max(0, int(args.per_sample_top_k))
 
     merged_rows: List[Dict[str, Any]] = []
-    summary: Dict[str, Any] = {"lab_root": str(lab_root), "per_sample_top_k": k, "samples": {}}
+    summary: Dict[str, Any] = {
+        "lab_root": str(lab_root),
+        "shape_name": shape_name,
+        "per_sample_top_k": k,
+        "samples": {},
+    }
 
     for sdir in _sample_dirs(lab_root):
         sample_id = sdir.name

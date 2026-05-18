@@ -10,12 +10,12 @@ from scipy.signal import find_peaks
 _SCRIPTS = Path(__file__).resolve().parents[1] / "FEM" / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
-from paths import shared_audio_path
+from paths import DEFAULT_SHAPE_NAME, shared_audio_path
 
 # =========================
 # EDIT ONLY THESE
 # =========================
-WAV_PATH = shared_audio_path("spruce_C4_cccc.wav")
+WAV_PATH = shared_audio_path("spruce_C4_cccc.wav", shape_name=DEFAULT_SHAPE_NAME)
 FEM_JSON_PATH = Path("FEM/outputs/rect_plate_spruce_cccc_result.json")
 
 START_S = 0.25

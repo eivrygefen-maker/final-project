@@ -10,12 +10,18 @@ from typing import Any, Dict
 # Central I/O roots (override with env SHARED_HOST_DIR).
 try:
     from paths import (  # noqa: F401
+        ASSET_AUDIO,
+        ASSET_PLOTS,
+        ASSET_ROM_DATA,
+        DEFAULT_SHAPE_NAME,
         REPO_ROOT,
-        SHARED_AUDIO_DIR,
-        SHARED_EXPORTS_DIR,
         SHARED_HOST_DIR,
+        get_shared_dir,
+        normalize_shape_name,
         resolve_shared_path,
         shared_audio_path,
+        shared_plot_path,
+        shared_rom_csv_path,
     )
 except ImportError:
     pass

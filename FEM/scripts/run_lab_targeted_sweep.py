@@ -20,7 +20,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from paths import FEM_LAB_RESULTS_DIR, shared_plot_path, shared_rom_csv_path
+from paths import (
+    DEFAULT_SHAPE_NAME,
+    FEM_LAB_RESULTS_DIR,
+    infer_shape_from_pool_path,
+    shared_plot_path,
+    shared_rom_csv_path,
+    shared_rom_npz_path,
+)
 from wood_library import apply_lhs_parameters_to_config
 
 HZ_MIN_DEFAULT = 60.0
@@ -149,6 +156,12 @@ def main() -> int:
     parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     parser.add_argument("--mpiexec", action="store_true")
     parser.add_argument("--no-purge", action="store_true", help="Keep SORTING temp_modes/temp_results after pack.")
+    parser.add_argument(
+        "--shape",
+        type=str,
+        default=DEFAULT_SHAPE_NAME,
+        help="ROM shape name for shared-host export paths (default: classic).",
+    )
     args = parser.parse_args()
 
     if int(args.max_workers) != 2:
@@ -167,6 +180,7 @@ def main() -> int:
 
     base_config = args.config.resolve() if args.config else (repo / "FEM" / "configs" / "guitar_3d.json")
     pool_path = args.pool.resolve() if args.pool else _default_pool_path(repo)
+    shape_name = str(args.shape).strip() or infer_shape_from_pool_path(pool_path)
     if not base_config.is_file() or not pool_path.is_file():
         print("Error: base config or pool not found.", file=sys.stderr)
         return 1
@@ -178,6 +192,7 @@ def main() -> int:
     _write_json(
         lab_root / "run_manifest.json",
         {
+            "shape_name": shape_name,
             "hz_min": hz_lo,
             "hz_max": hz_hi,
             "samples": _parse_samples(str(args.samples)),
@@ -231,8 +246,8 @@ def main() -> int:
             continue
 
         selected_csv = sdir / "selected_modes.csv"
-        shared_csv = shared_rom_csv_path(f"{skey}_selected_modes.csv")
-        plot_out = shared_plot_path(f"{skey}_selection_plot.png")
+        shared_csv = shared_rom_csv_path(f"{skey}_selected_modes.csv", shape_name=shape_name)
+        plot_out = shared_plot_path(f"{skey}_selection_plot.png", shape_name=shape_name)
         tuner_cmd = [
             py,
             str(tuner),
@@ -266,7 +281,8 @@ def main() -> int:
         except OSError:
             pass
 
-        rom_npz = sdir / "lab_window_rom.npz"
+        rom_npz_local = sdir / "lab_window_rom.npz"
+        rom_npz_shared = shared_rom_npz_path(f"{skey}_lab_window_rom.npz", shape_name=shape_name)
         if (
             _run_step(
                 f"{skey} | package_rom",
@@ -276,7 +292,7 @@ def main() -> int:
                     "--csv",
                     str(selected_csv),
                     "--out",
-                    str(rom_npz),
+                    str(rom_npz_local),
                     "--sorting-root",
                     str(sorting_root),
                 ],
@@ -287,8 +303,13 @@ def main() -> int:
             failures.append(f"{skey}: package failed")
             continue
 
+        try:
+            shutil.copy2(rom_npz_local, rom_npz_shared)
+        except OSError:
+            pass
+
         n_sel = _count_csv_rows(selected_csv)
-        ok, msg = _verify_rom_npz(rom_npz, n_sel)
+        ok, msg = _verify_rom_npz(rom_npz_local, n_sel)
         if not ok:
             failures.append(f"{skey}: NPZ verify: {msg}")
             continue
@@ -311,7 +332,9 @@ def main() -> int:
                 "selected_csv": str(selected_csv),
                 "shared_csv": str(shared_csv),
                 "selection_plot": str(plot_out),
-                "rom_npz": str(rom_npz),
+                "shape_name": shape_name,
+                "rom_npz": str(rom_npz_local),
+                "rom_npz_shared": str(rom_npz_shared),
                 "npz_verify": msg,
                 "candidates_log_archived": str(archived) if archived else None,
             },
