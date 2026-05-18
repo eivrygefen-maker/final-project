@@ -167,10 +167,10 @@ SLEPC_NUM_MODES_ABSOLUTE_CEILING = 100
 # --- Adaptive sweep ceiling (conductor, once per run at 435 Hz; spectral zone → hz_max) ---
 # Spectral zone from ``SpectralScheduler`` / ``on_worker_merge``: 1 = dense (saturated), 2 = normal,
 # 3 = sparse (high interest). Maps to user "Conductor" zones and ceilings for ROM-safe sweep span.
-CONDUCTOR_TRIGGER_HZ = 435.0
-CONDUCTOR_CEILING_SPECTRAL_ZONE_1 = 460.0  # saturated / low spectral interest → stop early
+CONDUCTOR_TRIGGER_HZ = 450.0
+CONDUCTOR_CEILING_SPECTRAL_ZONE_1 = 480.0  # saturated / low spectral interest → stop at sweep max
 CONDUCTOR_CEILING_SPECTRAL_ZONE_2 = 480.0
-CONDUCTOR_CEILING_SPECTRAL_ZONE_3 = 480.0  # sparse / high interest → extend (capped at sweep max)
+CONDUCTOR_CEILING_SPECTRAL_ZONE_3 = 480.0  # sparse / high interest → full sweep max
 
 # --- Merge-time physical density (numerical duplicate clusters) ---
 MERGE_SHIFT_CLUSTER_SPAN_HZ = 1.0
@@ -249,11 +249,11 @@ def get_band_params(current_hz: float) -> Dict[str, Any]:
     hz = float(current_hz)
     if 60.0 <= hz < 150.0:
         return {"step_hz": 5, "num_modes": 80, "timeout_minutes": 60, "label": "Dense Band 1"}
-    if 150.0 <= hz < 250.0:
-        return {"step_hz": 10, "num_modes": 30, "timeout_minutes": 60, "label": "Medium Band"}
-    if 250.0 <= hz < 300.0:
-        return {"step_hz": 5, "num_modes": 50, "timeout_minutes": 60, "label": "Dense Band 2"}
-    if hz >= 300.0:
+    if 150.0 <= hz < 300.0:
+        return {"step_hz": 10, "num_modes": 50, "timeout_minutes": 60, "label": "Medium Band"}
+    if 300.0 <= hz <= 480.0:
+        return {"step_hz": 10, "num_modes": 40, "timeout_minutes": 60, "label": "High Band"}
+    if hz > 480.0:
         return {"step_hz": 25, "num_modes": 15, "timeout_minutes": 20, "label": "Dead Zone"}
     raise ValueError(f"get_band_params: hz={hz} is outside the supported sweep (expected hz >= 60).")
 
