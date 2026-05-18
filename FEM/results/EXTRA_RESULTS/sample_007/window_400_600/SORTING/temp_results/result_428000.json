@@ -1,0 +1,17 @@
+{
+  "target_hz": 428.0,
+  "num_modes_requested": 15,
+  "num_modes_returned": 1,
+  "candidates": [
+    {
+      "id": 13,
+      "hz": 475.1159735206932,
+      "wood_participation": 0.00015898550412687812,
+      "uniqueness": 0.14575982093811035,
+      "tag1_ratio": 4.919928496174913e-16,
+      "tag3_ratio": 0.00015898550412638614,
+      "vector_path": "temp_modes/mode_w_428000_013.smx.npz",
+      "column_l2_norm": 1.0
+    }
+  ]
+}

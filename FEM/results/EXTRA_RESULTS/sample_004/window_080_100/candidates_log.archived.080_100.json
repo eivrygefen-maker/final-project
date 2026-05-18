@@ -1,0 +1,2010 @@
+{
+  "candidates": [
+    {
+      "id": 0,
+      "hz": 80.81196196140714,
+      "wood_participation": 0.0017528439848217769,
+      "uniqueness": 1.0,
+      "tag1_ratio": 6.828078433893882e-16,
+      "tag3_ratio": 0.001752843984821094,
+      "vector_path": "temp_modes/mode_000000.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 1,
+      "hz": 80.84864988459803,
+      "wood_participation": 0.0018466104442484575,
+      "uniqueness": 0.11989328622499917,
+      "tag1_ratio": 1.6875871834853894e-16,
+      "tag3_ratio": 0.0018466104442482888,
+      "vector_path": "temp_modes/mode_000001.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 2,
+      "hz": 80.99066111867627,
+      "wood_participation": 0.001934232017307067,
+      "uniqueness": 0.6944246201045696,
+      "tag1_ratio": 4.43695129399505e-18,
+      "tag3_ratio": 0.0019342320173070626,
+      "vector_path": "temp_modes/mode_000002.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 3,
+      "hz": 81.63474015659408,
+      "wood_participation": 0.0019401729146920944,
+      "uniqueness": 0.06841555441664282,
+      "tag1_ratio": 6.756270049098178e-16,
+      "tag3_ratio": 0.0019401729146914187,
+      "vector_path": "temp_modes/mode_000003.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 4,
+      "hz": 81.97284983601045,
+      "wood_participation": 0.0018567020845797714,
+      "uniqueness": 0.179908836486669,
+      "tag1_ratio": 1.71321380330574e-16,
+      "tag3_ratio": 0.0018567020845796,
+      "vector_path": "temp_modes/mode_000004.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 5,
+      "hz": 82.04939064795747,
+      "wood_participation": 0.002011878690380171,
+      "uniqueness": 0.5835062141271296,
+      "tag1_ratio": 1.4291323421267692e-17,
+      "tag3_ratio": 0.0020118786903801566,
+      "vector_path": "temp_modes/mode_000005.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 6,
+      "hz": 82.9443602137841,
+      "wood_participation": 0.0017118693959507175,
+      "uniqueness": 0.08422097814741625,
+      "tag1_ratio": 9.270002346854398e-16,
+      "tag3_ratio": 0.0017118693959497905,
+      "vector_path": "temp_modes/mode_000006.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 7,
+      "hz": 82.96658696575113,
+      "wood_participation": 0.00218308998131003,
+      "uniqueness": 0.06667623122561628,
+      "tag1_ratio": 1.7819192256288216e-15,
+      "tag3_ratio": 0.002183089981308248,
+      "vector_path": "temp_modes/mode_000007.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 8,
+      "hz": 83.72605933648012,
+      "wood_participation": 0.0018019417149676654,
+      "uniqueness": 0.07419321162084336,
+      "tag1_ratio": 1.88979096718935e-15,
+      "tag3_ratio": 0.0018019417149657756,
+      "vector_path": "temp_modes/mode_000008.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 9,
+      "hz": 84.00886709202858,
+      "wood_participation": 0.001674611977405513,
+      "uniqueness": 0.05433550638960283,
+      "tag1_ratio": 5.1816747600096955e-15,
+      "tag3_ratio": 0.0016746119774003314,
+      "vector_path": "temp_modes/mode_000009.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 10,
+      "hz": 84.01859027139749,
+      "wood_participation": 0.0019181419426572647,
+      "uniqueness": 0.2487692757340615,
+      "tag1_ratio": 4.27226434158441e-16,
+      "tag3_ratio": 0.0019181419426568375,
+      "vector_path": "temp_modes/mode_000010.smx.npz",
+      "column_l2_norm": 0.9999999403953534
+    },
+    {
+      "id": 11,
+      "hz": 84.02949555109787,
+      "wood_participation": 0.0022160085189861702,
+      "uniqueness": 0.0684702674010279,
+      "tag1_ratio": 3.5307540172160603e-15,
+      "tag3_ratio": 0.0022160085189826396,
+      "vector_path": "temp_modes/mode_000011.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 12,
+      "hz": 84.04586459897318,
+      "wood_participation": 0.001717560251855991,
+      "uniqueness": 0.21613784980362793,
+      "tag1_ratio": 4.758209792601842e-16,
+      "tag3_ratio": 0.0017175602518555153,
+      "vector_path": "temp_modes/mode_000012.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 13,
+      "hz": 84.12417394159245,
+      "wood_participation": 0.0020082576748842334,
+      "uniqueness": 0.041747751340135975,
+      "tag1_ratio": 7.789762813134535e-15,
+      "tag3_ratio": 0.0020082576748764436,
+      "vector_path": "temp_modes/mode_000013.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 14,
+      "hz": 84.17775230089138,
+      "wood_participation": 0.0018160367088639027,
+      "uniqueness": 0.055763931744215456,
+      "tag1_ratio": 5.656910587133907e-15,
+      "tag3_ratio": 0.0018160367088582458,
+      "vector_path": "temp_modes/mode_000014.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 15,
+      "hz": 84.31032060896898,
+      "wood_participation": 0.001757187709521565,
+      "uniqueness": 0.6685761015758569,
+      "tag1_ratio": 3.798485720951802e-17,
+      "tag3_ratio": 0.0017571877095215272,
+      "vector_path": "temp_modes/mode_000015.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 16,
+      "hz": 84.33473656103781,
+      "wood_participation": 0.0018811576095558967,
+      "uniqueness": 0.05889895382824306,
+      "tag1_ratio": 6.005044184775976e-15,
+      "tag3_ratio": 0.0018811576095498917,
+      "vector_path": "temp_modes/mode_000016.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 17,
+      "hz": 84.37613206000997,
+      "wood_participation": 0.0018929514199421947,
+      "uniqueness": 0.6878044512213601,
+      "tag1_ratio": 3.4725934004410074e-17,
+      "tag3_ratio": 0.00189295141994216,
+      "vector_path": "temp_modes/mode_000017.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 18,
+      "hz": 84.54282093457374,
+      "wood_participation": 0.0018654919307697843,
+      "uniqueness": 0.8855321000674993,
+      "tag1_ratio": 1.3524350995090264e-18,
+      "tag3_ratio": 0.001865491930769783,
+      "vector_path": "temp_modes/mode_000018.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 19,
+      "hz": 84.74742134824187,
+      "wood_participation": 0.001808773600692148,
+      "uniqueness": 0.2929240639760532,
+      "tag1_ratio": 6.997014134932734e-16,
+      "tag3_ratio": 0.0018087736006914483,
+      "vector_path": "temp_modes/mode_000019.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 20,
+      "hz": 84.79525186471155,
+      "wood_participation": 0.001864230120362376,
+      "uniqueness": 0.39955626128781596,
+      "tag1_ratio": 3.801236746747964e-16,
+      "tag3_ratio": 0.001864230120361996,
+      "vector_path": "temp_modes/mode_000020.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 21,
+      "hz": 85.06759518873922,
+      "wood_participation": 0.0015468791095951673,
+      "uniqueness": 0.685764729976654,
+      "tag1_ratio": 1.0237081226332225e-16,
+      "tag3_ratio": 0.001546879109595065,
+      "vector_path": "temp_modes/mode_000021.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 22,
+      "hz": 85.08300445238959,
+      "wood_participation": 0.0017634151240992438,
+      "uniqueness": 0.3599319243471656,
+      "tag1_ratio": 1.146208444566532e-15,
+      "tag3_ratio": 0.0017634151240980976,
+      "vector_path": "temp_modes/mode_000022.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 23,
+      "hz": 85.08994726653235,
+      "wood_participation": 0.0017210335901834736,
+      "uniqueness": 0.42981919227952914,
+      "tag1_ratio": 6.310714485927591e-16,
+      "tag3_ratio": 0.0017210335901828426,
+      "vector_path": "temp_modes/mode_000023.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 24,
+      "hz": 85.10212150458483,
+      "wood_participation": 0.001994921460557109,
+      "uniqueness": 0.8000206708901912,
+      "tag1_ratio": 4.1640016854877484e-17,
+      "tag3_ratio": 0.0019949214605570675,
+      "vector_path": "temp_modes/mode_000024.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 25,
+      "hz": 85.4356298868947,
+      "wood_participation": 0.0017562037684761863,
+      "uniqueness": 0.8368661653061558,
+      "tag1_ratio": 3.670689577083027e-17,
+      "tag3_ratio": 0.0017562037684761497,
+      "vector_path": "temp_modes/mode_000025.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 26,
+      "hz": 85.61378019496313,
+      "wood_participation": 0.001779242985439652,
+      "uniqueness": 0.892840676009655,
+      "tag1_ratio": 1.018633533957867e-18,
+      "tag3_ratio": 0.001779242985439651,
+      "vector_path": "temp_modes/mode_000026.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 27,
+      "hz": 85.81534158031054,
+      "wood_participation": 0.0015775353730809766,
+      "uniqueness": 0.8692967703728904,
+      "tag1_ratio": 5.272379984766287e-19,
+      "tag3_ratio": 0.0015775353730809762,
+      "vector_path": "temp_modes/mode_000027.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 28,
+      "hz": 85.82572333455798,
+      "wood_participation": 0.001771591304879237,
+      "uniqueness": 0.8122449852374187,
+      "tag1_ratio": 1.4310338369852647e-17,
+      "tag3_ratio": 0.0017715913048792227,
+      "vector_path": "temp_modes/mode_000028.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 29,
+      "hz": 85.94612913193286,
+      "wood_participation": 0.0017908416658466886,
+      "uniqueness": 0.8600432360146498,
+      "tag1_ratio": 3.200440493935718e-20,
+      "tag3_ratio": 0.0017908416658466886,
+      "vector_path": "temp_modes/mode_000029.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 30,
+      "hz": 86.01069004931807,
+      "wood_participation": 0.0018553437229982138,
+      "uniqueness": 0.7973357439041138,
+      "tag1_ratio": 1.8418319469880226e-19,
+      "tag3_ratio": 0.0018553437229982136,
+      "vector_path": "temp_modes/mode_000030.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 31,
+      "hz": 86.04492994284446,
+      "wood_participation": 0.0016968943991450337,
+      "uniqueness": 0.7700538635253906,
+      "tag1_ratio": 2.764220798215799e-20,
+      "tag3_ratio": 0.0016968943991450337,
+      "vector_path": "temp_modes/mode_000031.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 32,
+      "hz": 86.07494785519621,
+      "wood_participation": 0.0017540757297085012,
+      "uniqueness": 0.7865480929613113,
+      "tag1_ratio": 1.2864426056835217e-19,
+      "tag3_ratio": 0.001754075729708501,
+      "vector_path": "temp_modes/mode_000032.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 33,
+      "hz": 86.24010122704246,
+      "wood_participation": 0.0017940481157519169,
+      "uniqueness": 0.883645794770372,
+      "tag1_ratio": 3.593340616899378e-18,
+      "tag3_ratio": 0.0017940481157519132,
+      "vector_path": "temp_modes/mode_000033.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 34,
+      "hz": 86.32393362006725,
+      "wood_participation": 0.0019276752209131652,
+      "uniqueness": 0.8406342518518641,
+      "tag1_ratio": 1.0497375504740502e-17,
+      "tag3_ratio": 0.0019276752209131547,
+      "vector_path": "temp_modes/mode_000034.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 35,
+      "hz": 87.24244478116083,
+      "wood_participation": 0.001566791155166004,
+      "uniqueness": 0.3304406005406738,
+      "tag1_ratio": 8.627437346426233e-16,
+      "tag3_ratio": 0.0015667911551651413,
+      "vector_path": "temp_modes/mode_000035.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 36,
+      "hz": 87.28830239201905,
+      "wood_participation": 0.0018146878912090375,
+      "uniqueness": 0.3616398953414014,
+      "tag1_ratio": 5.00951199169825e-16,
+      "tag3_ratio": 0.0018146878912085366,
+      "vector_path": "temp_modes/mode_000036.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 37,
+      "hz": 87.34390552796269,
+      "wood_participation": 0.0018240471835314236,
+      "uniqueness": 0.8681793361902237,
+      "tag1_ratio": 6.99008415768372e-19,
+      "tag3_ratio": 0.001824047183531423,
+      "vector_path": "temp_modes/mode_000037.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 38,
+      "hz": 87.46682652852985,
+      "wood_participation": 0.001687084402552525,
+      "uniqueness": 0.7129493228823345,
+      "tag1_ratio": 2.6100008684431514e-17,
+      "tag3_ratio": 0.001687084402552499,
+      "vector_path": "temp_modes/mode_000038.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 39,
+      "hz": 87.5334980265853,
+      "wood_participation": 0.0018060970964977811,
+      "uniqueness": 0.6256026514054134,
+      "tag1_ratio": 7.909600047083053e-17,
+      "tag3_ratio": 0.001806097096497702,
+      "vector_path": "temp_modes/mode_000039.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 40,
+      "hz": 87.66235373252694,
+      "wood_participation": 0.0017217963144588787,
+      "uniqueness": 0.6393213545669334,
+      "tag1_ratio": 1.5302786436634883e-17,
+      "tag3_ratio": 0.0017217963144588633,
+      "vector_path": "temp_modes/mode_000040.smx.npz",
+      "column_l2_norm": 0.9999999403953534
+    },
+    {
+      "id": 41,
+      "hz": 88.0409106508777,
+      "wood_participation": 0.0015821862109989258,
+      "uniqueness": 0.1226937247928217,
+      "tag1_ratio": 1.0752064726979104e-15,
+      "tag3_ratio": 0.0015821862109978505,
+      "vector_path": "temp_modes/mode_000041.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 42,
+      "hz": 88.08658503778145,
+      "wood_participation": 0.0021143588868977868,
+      "uniqueness": 0.5162266050644695,
+      "tag1_ratio": 8.74703248520455e-17,
+      "tag3_ratio": 0.002114358886897699,
+      "vector_path": "temp_modes/mode_000042.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 43,
+      "hz": 88.11817222043723,
+      "wood_participation": 0.0015475068576093918,
+      "uniqueness": 0.0558216886467241,
+      "tag1_ratio": 2.1892277694336553e-15,
+      "tag3_ratio": 0.0015475068576072026,
+      "vector_path": "temp_modes/mode_000043.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 44,
+      "hz": 88.14757216990179,
+      "wood_participation": 0.0021953854756867398,
+      "uniqueness": 0.4673871835287564,
+      "tag1_ratio": 1.0539006139387299e-16,
+      "tag3_ratio": 0.0021953854756866344,
+      "vector_path": "temp_modes/mode_000044.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 45,
+      "hz": 88.31232781645339,
+      "wood_participation": 0.0015718308087530764,
+      "uniqueness": 0.7322722157158776,
+      "tag1_ratio": 7.362970370074558e-18,
+      "tag3_ratio": 0.001571830808753069,
+      "vector_path": "temp_modes/mode_000045.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 46,
+      "hz": 88.33303349729955,
+      "wood_participation": 0.0020298032885947646,
+      "uniqueness": 0.04156899699979999,
+      "tag1_ratio": 5.951615813233779e-15,
+      "tag3_ratio": 0.002029803288588813,
+      "vector_path": "temp_modes/mode_000046.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 47,
+      "hz": 88.84332305897924,
+      "wood_participation": 0.0016919859223500572,
+      "uniqueness": 0.13435337347845322,
+      "tag1_ratio": 4.877121602020035e-16,
+      "tag3_ratio": 0.0016919859223495696,
+      "vector_path": "temp_modes/mode_000047.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 48,
+      "hz": 88.859821084042,
+      "wood_participation": 0.001511390253950917,
+      "uniqueness": 0.16704223057753498,
+      "tag1_ratio": 3.510415666070685e-16,
+      "tag3_ratio": 0.001511390253950566,
+      "vector_path": "temp_modes/mode_000048.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 49,
+      "hz": 88.8828486608283,
+      "wood_participation": 0.0018381324942967757,
+      "uniqueness": 0.7597977524875255,
+      "tag1_ratio": 2.5572293513576587e-18,
+      "tag3_ratio": 0.0018381324942967731,
+      "vector_path": "temp_modes/mode_000049.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 50,
+      "hz": 88.89989267612845,
+      "wood_participation": 0.0018999172474852334,
+      "uniqueness": 0.11109492513820263,
+      "tag1_ratio": 6.838040813865831e-16,
+      "tag3_ratio": 0.0018999172474845497,
+      "vector_path": "temp_modes/mode_000050.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 51,
+      "hz": 89.40906546160163,
+      "wood_participation": 0.0016172634299527699,
+      "uniqueness": 0.3055892379757532,
+      "tag1_ratio": 9.549552305224489e-17,
+      "tag3_ratio": 0.0016172634299526745,
+      "vector_path": "temp_modes/mode_000051.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 52,
+      "hz": 89.81794017806945,
+      "wood_participation": 0.001755272777385831,
+      "uniqueness": 0.13300745886519638,
+      "tag1_ratio": 2.768578451857274e-16,
+      "tag3_ratio": 0.0017552727773855541,
+      "vector_path": "temp_modes/mode_000052.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 53,
+      "hz": 89.86940997952364,
+      "wood_participation": 0.0017984542212648694,
+      "uniqueness": 0.09694752386055916,
+      "tag1_ratio": 4.716493010200168e-16,
+      "tag3_ratio": 0.0017984542212643978,
+      "vector_path": "temp_modes/mode_000053.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 54,
+      "hz": 90.2508692728867,
+      "wood_participation": 0.001489883131377431,
+      "uniqueness": 0.07742175690596531,
+      "tag1_ratio": 4.759302784213508e-16,
+      "tag3_ratio": 0.0014898831313769551,
+      "vector_path": "temp_modes/mode_000054.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 55,
+      "hz": 90.2660733993458,
+      "wood_participation": 0.0017720658488594506,
+      "uniqueness": 0.09149175882339478,
+      "tag1_ratio": 4.7055154029117e-16,
+      "tag3_ratio": 0.00177206584885898,
+      "vector_path": "temp_modes/mode_000055.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 56,
+      "hz": 90.61558973358123,
+      "wood_participation": 0.0016464963942064313,
+      "uniqueness": 0.22580858392093517,
+      "tag1_ratio": 9.449326088607984e-17,
+      "tag3_ratio": 0.0016464963942063367,
+      "vector_path": "temp_modes/mode_000056.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 57,
+      "hz": 75.1658098782424,
+      "wood_participation": 0.002026170454232877,
+      "uniqueness": 0.41692088296773655,
+      "tag1_ratio": 1.7558758476402987e-17,
+      "tag3_ratio": 0.0020261704542328595,
+      "vector_path": "temp_modes/mode_000057.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 58,
+      "hz": 75.86128230611827,
+      "wood_participation": 0.0018828407100110259,
+      "uniqueness": 0.07313240010335442,
+      "tag1_ratio": 5.366402463322755e-16,
+      "tag3_ratio": 0.0018828407100104892,
+      "vector_path": "temp_modes/mode_000058.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 59,
+      "hz": 75.95561680225966,
+      "wood_participation": 0.00221007292017904,
+      "uniqueness": 0.05628001689910889,
+      "tag1_ratio": 8.275572347591295e-16,
+      "tag3_ratio": 0.0022100729201782127,
+      "vector_path": "temp_modes/mode_000059.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 60,
+      "hz": 76.83433568988758,
+      "wood_participation": 0.0019497739679874176,
+      "uniqueness": 0.17580077576043496,
+      "tag1_ratio": 1.9071940609798742e-16,
+      "tag3_ratio": 0.0019497739679872267,
+      "vector_path": "temp_modes/mode_000060.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 61,
+      "hz": 76.8583035060721,
+      "wood_participation": 0.0019766360555881334,
+      "uniqueness": 0.23874734986549728,
+      "tag1_ratio": 1.094090512220625e-16,
+      "tag3_ratio": 0.001976636055588024,
+      "vector_path": "temp_modes/mode_000061.smx.npz",
+      "column_l2_norm": 0.9999999403953534
+    },
+    {
+      "id": 62,
+      "hz": 76.90434229561309,
+      "wood_participation": 0.0021726180580637095,
+      "uniqueness": 0.07680657734890473,
+      "tag1_ratio": 6.51066784717496e-16,
+      "tag3_ratio": 0.0021726180580630586,
+      "vector_path": "temp_modes/mode_000062.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 63,
+      "hz": 77.18775638279756,
+      "wood_participation": 0.0018895199575278347,
+      "uniqueness": 0.13245371378820248,
+      "tag1_ratio": 3.2375055537700366e-16,
+      "tag3_ratio": 0.001889519957527511,
+      "vector_path": "temp_modes/mode_000063.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 64,
+      "hz": 77.20198989299298,
+      "wood_participation": 0.0021917503224689666,
+      "uniqueness": 0.23857593536376953,
+      "tag1_ratio": 1.810166408697043e-16,
+      "tag3_ratio": 0.0021917503224687857,
+      "vector_path": "temp_modes/mode_000064.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 65,
+      "hz": 77.39673231605285,
+      "wood_participation": 0.0018128020422064502,
+      "uniqueness": 0.25489405557197464,
+      "tag1_ratio": 1.9919036925139296e-16,
+      "tag3_ratio": 0.001812802042206251,
+      "vector_path": "temp_modes/mode_000065.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 66,
+      "hz": 77.6752444300092,
+      "wood_participation": 0.0020560933169750445,
+      "uniqueness": 0.7543027249394219,
+      "tag1_ratio": 5.9761995137029585e-18,
+      "tag3_ratio": 0.0020560933169750384,
+      "vector_path": "temp_modes/mode_000066.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 67,
+      "hz": 77.71857053628544,
+      "wood_participation": 0.002365357407774699,
+      "uniqueness": 0.07700380912434446,
+      "tag1_ratio": 1.3729584765410244e-15,
+      "tag3_ratio": 0.002365357407773326,
+      "vector_path": "temp_modes/mode_000067.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 68,
+      "hz": 78.19695913320064,
+      "wood_participation": 0.0018901356064431561,
+      "uniqueness": 0.1410026466248827,
+      "tag1_ratio": 1.0281667665155614e-15,
+      "tag3_ratio": 0.0018901356064421279,
+      "vector_path": "temp_modes/mode_000068.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 69,
+      "hz": 78.27098370209178,
+      "wood_participation": 0.001793364361910524,
+      "uniqueness": 0.22859448194503784,
+      "tag1_ratio": 4.745602278156523e-16,
+      "tag3_ratio": 0.0017933643619100494,
+      "vector_path": "temp_modes/mode_000069.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 70,
+      "hz": 78.3293200041407,
+      "wood_participation": 0.0020304768632896566,
+      "uniqueness": 0.0688018521309447,
+      "tag1_ratio": 3.401692713874826e-15,
+      "tag3_ratio": 0.002030476863286255,
+      "vector_path": "temp_modes/mode_000070.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 71,
+      "hz": 78.38738211699172,
+      "wood_participation": 0.0020150094125244255,
+      "uniqueness": 0.07846128472916414,
+      "tag1_ratio": 2.702489476993214e-15,
+      "tag3_ratio": 0.002015009412521723,
+      "vector_path": "temp_modes/mode_000071.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 72,
+      "hz": 78.6138251785607,
+      "wood_participation": 0.0019368874238629066,
+      "uniqueness": 0.7745429709826125,
+      "tag1_ratio": 1.1156522520294061e-17,
+      "tag3_ratio": 0.0019368874238628955,
+      "vector_path": "temp_modes/mode_000072.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 73,
+      "hz": 78.72846056235903,
+      "wood_participation": 0.0019591579673532123,
+      "uniqueness": 0.1498725160918386,
+      "tag1_ratio": 2.006983357505916e-15,
+      "tag3_ratio": 0.001959157967351205,
+      "vector_path": "temp_modes/mode_000073.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 74,
+      "hz": 78.80826144136468,
+      "wood_participation": 0.002051285488479713,
+      "uniqueness": 0.06650272209950414,
+      "tag1_ratio": 5.948705182076484e-15,
+      "tag3_ratio": 0.0020512854884737644,
+      "vector_path": "temp_modes/mode_000074.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 75,
+      "hz": 78.81182865938936,
+      "wood_participation": 0.0021275862310088187,
+      "uniqueness": 0.5985368133463367,
+      "tag1_ratio": 1.1219020545883505e-16,
+      "tag3_ratio": 0.0021275862310087064,
+      "vector_path": "temp_modes/mode_000075.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 76,
+      "hz": 78.87852526834396,
+      "wood_participation": 0.0020733594586408747,
+      "uniqueness": 0.09584325551986694,
+      "tag1_ratio": 6.041734445158799e-15,
+      "tag3_ratio": 0.002073359458634833,
+      "vector_path": "temp_modes/mode_000076.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 77,
+      "hz": 78.99558686301651,
+      "wood_participation": 0.0019460388717785614,
+      "uniqueness": 0.3238488234236483,
+      "tag1_ratio": 8.581393382898248e-16,
+      "tag3_ratio": 0.0019460388717777034,
+      "vector_path": "temp_modes/mode_000077.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 78,
+      "hz": 79.63703456163694,
+      "wood_participation": 0.0018873326744812788,
+      "uniqueness": 0.7893785238265991,
+      "tag1_ratio": 2.5049533080872344e-17,
+      "tag3_ratio": 0.0018873326744812536,
+      "vector_path": "temp_modes/mode_000078.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 79,
+      "hz": 79.69874036056002,
+      "wood_participation": 0.001767394679640257,
+      "uniqueness": 0.7537318990746705,
+      "tag1_ratio": 3.7824653569551887e-17,
+      "tag3_ratio": 0.0017673946796402194,
+      "vector_path": "temp_modes/mode_000079.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 80,
+      "hz": 79.72144305179854,
+      "wood_participation": 0.002375309964292255,
+      "uniqueness": 0.8115104920572336,
+      "tag1_ratio": 3.916654683660696e-17,
+      "tag3_ratio": 0.002375309964292216,
+      "vector_path": "temp_modes/mode_000080.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 81,
+      "hz": 79.76388888435785,
+      "wood_participation": 0.0020368782570939813,
+      "uniqueness": 0.833710129073564,
+      "tag1_ratio": 2.3306396190624514e-18,
+      "tag3_ratio": 0.002036878257093979,
+      "vector_path": "temp_modes/mode_000081.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 82,
+      "hz": 80.02428754000783,
+      "wood_participation": 0.001893419170817841,
+      "uniqueness": 0.8158951103687286,
+      "tag1_ratio": 3.6899885810929173e-20,
+      "tag3_ratio": 0.001893419170817841,
+      "vector_path": "temp_modes/mode_000082.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 83,
+      "hz": 80.09384615154464,
+      "wood_participation": 0.0017592225589361044,
+      "uniqueness": 0.8035348142940028,
+      "tag1_ratio": 4.660074170734203e-18,
+      "tag3_ratio": 0.0017592225589360998,
+      "vector_path": "temp_modes/mode_000083.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 84,
+      "hz": 80.10453384640607,
+      "wood_participation": 0.00203884891457571,
+      "uniqueness": 0.7962331026792526,
+      "tag1_ratio": 1.6995671750057275e-17,
+      "tag3_ratio": 0.002038848914575693,
+      "vector_path": "temp_modes/mode_000084.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 85,
+      "hz": 80.1705423927258,
+      "wood_participation": 0.0019557502557097737,
+      "uniqueness": 0.8326680461962193,
+      "tag1_ratio": 3.059948468708034e-19,
+      "tag3_ratio": 0.0019557502557097733,
+      "vector_path": "temp_modes/mode_000085.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 86,
+      "hz": 80.426851914227,
+      "wood_participation": 0.0019407792133473978,
+      "uniqueness": 0.7700078189373016,
+      "tag1_ratio": 1.776500446814172e-18,
+      "tag3_ratio": 0.001940779213347396,
+      "vector_path": "temp_modes/mode_000086.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 87,
+      "hz": 80.64138992882125,
+      "wood_participation": 0.0019442800679500248,
+      "uniqueness": 0.31543493270874023,
+      "tag1_ratio": 2.1764734261245234e-15,
+      "tag3_ratio": 0.0019442800679478484,
+      "vector_path": "temp_modes/mode_000087.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 88,
+      "hz": 80.81196198790705,
+      "wood_participation": 0.001752844505819144,
+      "uniqueness": 0.24579337971786763,
+      "tag1_ratio": 1.5757926364371886e-15,
+      "tag3_ratio": 0.0017528445058175683,
+      "vector_path": "temp_modes/mode_000088.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 89,
+      "hz": 80.84864989495279,
+      "wood_participation": 0.0018466103627973968,
+      "uniqueness": 0.6376795686674368,
+      "tag1_ratio": 1.1581299420256615e-17,
+      "tag3_ratio": 0.0018466103627973853,
+      "vector_path": "temp_modes/mode_000089.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 90,
+      "hz": 80.89357820552664,
+      "wood_participation": 0.0018634325242416067,
+      "uniqueness": 0.7625314891338348,
+      "tag1_ratio": 4.737273457759312e-18,
+      "tag3_ratio": 0.0018634325242416019,
+      "vector_path": "temp_modes/mode_000090.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 91,
+      "hz": 80.99066111932275,
+      "wood_participation": 0.0019342320399776557,
+      "uniqueness": 0.20018491745546174,
+      "tag1_ratio": 1.206853571842124e-16,
+      "tag3_ratio": 0.0019342320399775349,
+      "vector_path": "temp_modes/mode_000091.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 92,
+      "hz": 81.54748295212956,
+      "wood_participation": 0.0018085004228158218,
+      "uniqueness": 0.047243447519643156,
+      "tag1_ratio": 7.525431363147009e-15,
+      "tag3_ratio": 0.0018085004228082964,
+      "vector_path": "temp_modes/mode_000092.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 93,
+      "hz": 81.63474012362018,
+      "wood_participation": 0.0019401737459287575,
+      "uniqueness": 0.05622345209121704,
+      "tag1_ratio": 4.241063572308991e-15,
+      "tag3_ratio": 0.0019401737459245165,
+      "vector_path": "temp_modes/mode_000093.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 94,
+      "hz": 81.75610952995153,
+      "wood_participation": 0.0018424819167553797,
+      "uniqueness": 0.18077020759759954,
+      "tag1_ratio": 6.756341287682357e-16,
+      "tag3_ratio": 0.001842481916754704,
+      "vector_path": "temp_modes/mode_000094.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 95,
+      "hz": 81.85607571196742,
+      "wood_participation": 0.0017174277618209905,
+      "uniqueness": 0.4738205671310387,
+      "tag1_ratio": 7.015038967166269e-17,
+      "tag3_ratio": 0.0017174277618209203,
+      "vector_path": "temp_modes/mode_000095.smx.npz",
+      "column_l2_norm": 0.9999999403953534
+    },
+    {
+      "id": 96,
+      "hz": 81.97284985715824,
+      "wood_participation": 0.0018567025022654315,
+      "uniqueness": 0.15987048029513562,
+      "tag1_ratio": 6.505163665245624e-16,
+      "tag3_ratio": 0.001856702502264781,
+      "vector_path": "temp_modes/mode_000096.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 97,
+      "hz": 82.04939063908208,
+      "wood_participation": 0.002011878726228115,
+      "uniqueness": 0.3846241235733032,
+      "tag1_ratio": 1.2266182247914067e-16,
+      "tag3_ratio": 0.002011878726227992,
+      "vector_path": "temp_modes/mode_000097.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 98,
+      "hz": 82.81497572839905,
+      "wood_participation": 0.0020074295409427704,
+      "uniqueness": 0.49221140146255493,
+      "tag1_ratio": 3.9913387620535985e-17,
+      "tag3_ratio": 0.0020074295409427305,
+      "vector_path": "temp_modes/mode_000098.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 99,
+      "hz": 84.5428210010296,
+      "wood_participation": 0.001865492326105967,
+      "uniqueness": 0.04176777850197422,
+      "tag1_ratio": 1.0408041260114486e-15,
+      "tag3_ratio": 0.0018654923261049261,
+      "vector_path": "temp_modes/mode_000099.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 100,
+      "hz": 85.06759519794655,
+      "wood_participation": 0.0015468790829667363,
+      "uniqueness": 0.174606691277426,
+      "tag1_ratio": 7.997778262803348e-17,
+      "tag3_ratio": 0.0015468790829666563,
+      "vector_path": "temp_modes/mode_000100.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 101,
+      "hz": 85.10212149563635,
+      "wood_participation": 0.0019949214335824032,
+      "uniqueness": 0.08429882181581283,
+      "tag1_ratio": 2.2920138475442746e-16,
+      "tag3_ratio": 0.001994921433582174,
+      "vector_path": "temp_modes/mode_000101.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 102,
+      "hz": 83.7260593390123,
+      "wood_participation": 0.0018019419464946776,
+      "uniqueness": 0.12350502978280231,
+      "tag1_ratio": 5.769725201298953e-17,
+      "tag3_ratio": 0.00180194194649462,
+      "vector_path": "temp_modes/mode_000102.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 103,
+      "hz": 85.06759520567243,
+      "wood_participation": 0.0015468789528795732,
+      "uniqueness": 0.16693484783172607,
+      "tag1_ratio": 1.8698389372550727e-16,
+      "tag3_ratio": 0.0015468789528793863,
+      "vector_path": "temp_modes/mode_000103.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 104,
+      "hz": 85.61378020162952,
+      "wood_participation": 0.0017792428689299934,
+      "uniqueness": 0.1207162999893302,
+      "tag1_ratio": 1.0107659639038795e-15,
+      "tag3_ratio": 0.0017792428689289827,
+      "vector_path": "temp_modes/mode_000104.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 105,
+      "hz": 85.94612913575695,
+      "wood_participation": 0.0017908415383082424,
+      "uniqueness": 0.15833071346076433,
+      "tag1_ratio": 7.182642373140179e-16,
+      "tag3_ratio": 0.0017908415383075243,
+      "vector_path": "temp_modes/mode_000105.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 106,
+      "hz": 86.04492995960679,
+      "wood_participation": 0.0016968940811385718,
+      "uniqueness": 0.0654609203338623,
+      "tag1_ratio": 3.810216497794952e-15,
+      "tag3_ratio": 0.0016968940811347615,
+      "vector_path": "temp_modes/mode_000106.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 107,
+      "hz": 86.24010122887262,
+      "wood_participation": 0.0017940480110718437,
+      "uniqueness": 0.1594995355307779,
+      "tag1_ratio": 1.0649572108313994e-15,
+      "tag3_ratio": 0.0017940480110707788,
+      "vector_path": "temp_modes/mode_000107.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 108,
+      "hz": 86.3239336223885,
+      "wood_participation": 0.0019276750823918165,
+      "uniqueness": 0.1550449477149527,
+      "tag1_ratio": 1.145148380245414e-15,
+      "tag3_ratio": 0.0019276750823906713,
+      "vector_path": "temp_modes/mode_000108.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 109,
+      "hz": 87.24244476712398,
+      "wood_participation": 0.0015667909305269248,
+      "uniqueness": 0.3159497772440245,
+      "tag1_ratio": 2.2801256770587805e-15,
+      "tag3_ratio": 0.0015667909305246447,
+      "vector_path": "temp_modes/mode_000109.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 110,
+      "hz": 87.28830239609789,
+      "wood_participation": 0.0018146878391376584,
+      "uniqueness": 0.3252633213996887,
+      "tag1_ratio": 5.238586433678796e-17,
+      "tag3_ratio": 0.001814687839137606,
+      "vector_path": "temp_modes/mode_000110.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 111,
+      "hz": 87.34390552273241,
+      "wood_participation": 0.0018240472127239585,
+      "uniqueness": 0.16991721570985074,
+      "tag1_ratio": 1.2096931071132834e-15,
+      "tag3_ratio": 0.0018240472127227488,
+      "vector_path": "temp_modes/mode_000111.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 112,
+      "hz": 87.46682652741374,
+      "wood_participation": 0.0016870842798602493,
+      "uniqueness": 0.05696946042957973,
+      "tag1_ratio": 1.839440650725863e-15,
+      "tag3_ratio": 0.0016870842798584098,
+      "vector_path": "temp_modes/mode_000112.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 113,
+      "hz": 88.04091065047217,
+      "wood_participation": 0.0015821860762432933,
+      "uniqueness": 0.53161861096676,
+      "tag1_ratio": 1.1291925119160334e-19,
+      "tag3_ratio": 0.0015821860762432931,
+      "vector_path": "temp_modes/mode_000113.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 114,
+      "hz": 88.08658503030868,
+      "wood_participation": 0.0021143588876138633,
+      "uniqueness": 0.116710364818573,
+      "tag1_ratio": 3.464351416662863e-17,
+      "tag3_ratio": 0.0021143588876138286,
+      "vector_path": "temp_modes/mode_000114.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 115,
+      "hz": 88.11817220680496,
+      "wood_participation": 0.0015475065526693978,
+      "uniqueness": 0.675189127016715,
+      "tag1_ratio": 6.6412044165140576e-18,
+      "tag3_ratio": 0.001547506552669391,
+      "vector_path": "temp_modes/mode_000115.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 116,
+      "hz": 88.14757216896207,
+      "wood_participation": 0.0021953854414305304,
+      "uniqueness": 0.14719587564468384,
+      "tag1_ratio": 4.865322963807794e-19,
+      "tag3_ratio": 0.00219538544143053,
+      "vector_path": "temp_modes/mode_000116.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 117,
+      "hz": 88.33303349742448,
+      "wood_participation": 0.002029802385675217,
+      "uniqueness": 0.7468711658379782,
+      "tag1_ratio": 3.0081414207573596e-17,
+      "tag3_ratio": 0.002029802385675187,
+      "vector_path": "temp_modes/mode_000117.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 118,
+      "hz": 88.61907785071324,
+      "wood_participation": 0.0016989172682199672,
+      "uniqueness": 0.6744323372840881,
+      "tag1_ratio": 2.444501330698613e-16,
+      "tag3_ratio": 0.0016989172682197228,
+      "vector_path": "temp_modes/mode_000118.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 119,
+      "hz": 88.65211818610642,
+      "wood_participation": 0.001983660602857118,
+      "uniqueness": 0.2584841251373291,
+      "tag1_ratio": 3.5346685742438995e-15,
+      "tag3_ratio": 0.0019836606028535834,
+      "vector_path": "temp_modes/mode_000119.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 120,
+      "hz": 88.84332305800612,
+      "wood_participation": 0.0016919859691977785,
+      "uniqueness": 0.050774426781368676,
+      "tag1_ratio": 1.5476596485487062e-15,
+      "tag3_ratio": 0.0016919859691962309,
+      "vector_path": "temp_modes/mode_000120.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 121,
+      "hz": 88.88284865879127,
+      "wood_participation": 0.001838132505577286,
+      "uniqueness": 0.09208870482973486,
+      "tag1_ratio": 1.6988466042377937e-16,
+      "tag3_ratio": 0.0018381325055771161,
+      "vector_path": "temp_modes/mode_000121.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 122,
+      "hz": 88.8998926577194,
+      "wood_participation": 0.0018999181160164961,
+      "uniqueness": 0.10152402822744888,
+      "tag1_ratio": 7.900617808312646e-15,
+      "tag3_ratio": 0.0018999181160085955,
+      "vector_path": "temp_modes/mode_000122.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 123,
+      "hz": 89.40906545407859,
+      "wood_participation": 0.0016172633507423118,
+      "uniqueness": 0.25510027244387945,
+      "tag1_ratio": 8.327442812399601e-16,
+      "tag3_ratio": 0.0016172633507414791,
+      "vector_path": "temp_modes/mode_000123.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 124,
+      "hz": 89.43321830397588,
+      "wood_participation": 0.001895449399138816,
+      "uniqueness": 0.05307510337009336,
+      "tag1_ratio": 9.225689994126155e-15,
+      "tag3_ratio": 0.0018954493991295903,
+      "vector_path": "temp_modes/mode_000124.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 125,
+      "hz": 89.74192225439883,
+      "wood_participation": 0.0016812257803781188,
+      "uniqueness": 0.08716765305899499,
+      "tag1_ratio": 2.3041274303492657e-15,
+      "tag3_ratio": 0.0016812257803758147,
+      "vector_path": "temp_modes/mode_000125.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 126,
+      "hz": 89.86940997806731,
+      "wood_participation": 0.0017984542212123034,
+      "uniqueness": 0.14827844942445867,
+      "tag1_ratio": 1.216912955671001e-15,
+      "tag3_ratio": 0.0017984542212110865,
+      "vector_path": "temp_modes/mode_000126.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 127,
+      "hz": 90.25086924666147,
+      "wood_participation": 0.0014898830968715366,
+      "uniqueness": 0.1938616393167265,
+      "tag1_ratio": 5.09622504963351e-16,
+      "tag3_ratio": 0.001489883096871027,
+      "vector_path": "temp_modes/mode_000127.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 128,
+      "hz": 91.7334205977979,
+      "wood_participation": 0.0015953233746220173,
+      "uniqueness": 0.058717103562268336,
+      "tag1_ratio": 1.1505098280247468e-15,
+      "tag3_ratio": 0.0015953233746208667,
+      "vector_path": "temp_modes/mode_000128.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 129,
+      "hz": 91.74423577873961,
+      "wood_participation": 0.0017606216517834746,
+      "uniqueness": 0.24694638671991676,
+      "tag1_ratio": 3.127925331947202e-17,
+      "tag3_ratio": 0.0017606216517834434,
+      "vector_path": "temp_modes/mode_000129.smx.npz",
+      "column_l2_norm": 0.9999999403953534
+    },
+    {
+      "id": 130,
+      "hz": 91.86759005739108,
+      "wood_participation": 0.0016963906169448373,
+      "uniqueness": 0.09708234957105921,
+      "tag1_ratio": 3.363226141246011e-16,
+      "tag3_ratio": 0.001696390616944501,
+      "vector_path": "temp_modes/mode_000130.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 131,
+      "hz": 91.62550098139418,
+      "wood_participation": 0.0016460042769014722,
+      "uniqueness": 0.0488746507949811,
+      "tag1_ratio": 1.482035009894107e-15,
+      "tag3_ratio": 0.00164600427689999,
+      "vector_path": "temp_modes/mode_000131.smx.npz",
+      "column_l2_norm": 0.9999999403953534
+    },
+    {
+      "id": 132,
+      "hz": 91.73342065421389,
+      "wood_participation": 0.0015953231236989782,
+      "uniqueness": 0.06799223816417566,
+      "tag1_ratio": 7.476937744968584e-16,
+      "tag3_ratio": 0.0015953231236982305,
+      "vector_path": "temp_modes/mode_000132.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 133,
+      "hz": 91.74423576126662,
+      "wood_participation": 0.001760621426363189,
+      "uniqueness": 0.07395020347685188,
+      "tag1_ratio": 7.730260366060549e-16,
+      "tag3_ratio": 0.001760621426362416,
+      "vector_path": "temp_modes/mode_000133.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 134,
+      "hz": 91.86759005992465,
+      "wood_participation": 0.0016963905491707478,
+      "uniqueness": 0.4141162037849426,
+      "tag1_ratio": 5.773527005988454e-17,
+      "tag3_ratio": 0.0016963905491706901,
+      "vector_path": "temp_modes/mode_000134.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 135,
+      "hz": 91.94971971274879,
+      "wood_participation": 0.0017233028409721848,
+      "uniqueness": 0.08164784555577731,
+      "tag1_ratio": 6.568108877465041e-16,
+      "tag3_ratio": 0.001723302840971528,
+      "vector_path": "temp_modes/mode_000135.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 136,
+      "hz": 92.31948206120481,
+      "wood_participation": 0.001714386035038893,
+      "uniqueness": 0.13223633564222825,
+      "tag1_ratio": 3.5365680101089606e-16,
+      "tag3_ratio": 0.0017143860350385394,
+      "vector_path": "temp_modes/mode_000136.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 137,
+      "hz": 92.41967054780547,
+      "wood_participation": 0.0015656604156957688,
+      "uniqueness": 0.05983143688252779,
+      "tag1_ratio": 1.334590465540764e-15,
+      "tag3_ratio": 0.0015656604156944341,
+      "vector_path": "temp_modes/mode_000137.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 138,
+      "hz": 92.45748252109709,
+      "wood_participation": 0.001836510796482043,
+      "uniqueness": 0.4436657858987384,
+      "tag1_ratio": 5.3274445048127087e-17,
+      "tag3_ratio": 0.0018365107964819897,
+      "vector_path": "temp_modes/mode_000138.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 139,
+      "hz": 92.59293714548193,
+      "wood_participation": 0.0015399536672030575,
+      "uniqueness": 0.09758088283481803,
+      "tag1_ratio": 7.607947278275448e-16,
+      "tag3_ratio": 0.0015399536672022966,
+      "vector_path": "temp_modes/mode_000139.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 140,
+      "hz": 92.73454368398492,
+      "wood_participation": 0.0015646431349411695,
+      "uniqueness": 0.05507847830887036,
+      "tag1_ratio": 2.315678282172574e-15,
+      "tag3_ratio": 0.0015646431349388538,
+      "vector_path": "temp_modes/mode_000140.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 141,
+      "hz": 92.80714886318556,
+      "wood_participation": 0.0016792339372134581,
+      "uniqueness": 0.058728042765143096,
+      "tag1_ratio": 2.040869232348642e-15,
+      "tag3_ratio": 0.0016792339372114172,
+      "vector_path": "temp_modes/mode_000141.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 142,
+      "hz": 92.9075510815616,
+      "wood_participation": 0.0015897505546363594,
+      "uniqueness": 0.07051098346710205,
+      "tag1_ratio": 1.2658711042684968e-15,
+      "tag3_ratio": 0.0015897505546350935,
+      "vector_path": "temp_modes/mode_000142.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 143,
+      "hz": 93.23889087610206,
+      "wood_participation": 0.0014061703779361984,
+      "uniqueness": 0.07052979083447986,
+      "tag1_ratio": 1.8258872122449813e-15,
+      "tag3_ratio": 0.0014061703779343726,
+      "vector_path": "temp_modes/mode_000143.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 144,
+      "hz": 93.25194577023353,
+      "wood_participation": 0.001464651586745481,
+      "uniqueness": 0.1180081297154334,
+      "tag1_ratio": 9.783748355977575e-16,
+      "tag3_ratio": 0.0014646515867445026,
+      "vector_path": "temp_modes/mode_000144.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 145,
+      "hz": 93.25701410406862,
+      "wood_participation": 0.0017011636281847673,
+      "uniqueness": 0.4086001515388489,
+      "tag1_ratio": 1.1971489820388822e-16,
+      "tag3_ratio": 0.0017011636281846476,
+      "vector_path": "temp_modes/mode_000145.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 146,
+      "hz": 93.30944061033817,
+      "wood_participation": 0.0015224001664375251,
+      "uniqueness": 0.615814763778888,
+      "tag1_ratio": 2.5103371906887884e-17,
+      "tag3_ratio": 0.0015224001664375,
+      "vector_path": "temp_modes/mode_000146.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 147,
+      "hz": 93.41431249184942,
+      "wood_participation": 0.0016725689338796203,
+      "uniqueness": 0.7821058034896851,
+      "tag1_ratio": 2.8986507373765457e-18,
+      "tag3_ratio": 0.0016725689338796174,
+      "vector_path": "temp_modes/mode_000147.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 148,
+      "hz": 93.57888877843142,
+      "wood_participation": 0.0017512597765417654,
+      "uniqueness": 0.15393510919615916,
+      "tag1_ratio": 7.398480840969427e-16,
+      "tag3_ratio": 0.0017512597765410255,
+      "vector_path": "temp_modes/mode_000148.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 149,
+      "hz": 93.77311303729961,
+      "wood_participation": 0.0016091249581555317,
+      "uniqueness": 0.3903417405587951,
+      "tag1_ratio": 1.8602300921530945e-16,
+      "tag3_ratio": 0.0016091249581553456,
+      "vector_path": "temp_modes/mode_000149.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 150,
+      "hz": 93.82535351060645,
+      "wood_participation": 0.0017004865129081692,
+      "uniqueness": 0.6165105700492859,
+      "tag1_ratio": 3.578977843358284e-17,
+      "tag3_ratio": 0.0017004865129081335,
+      "vector_path": "temp_modes/mode_000150.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 151,
+      "hz": 93.92484885571727,
+      "wood_participation": 0.0016902037997644863,
+      "uniqueness": 0.4178633863370578,
+      "tag1_ratio": 1.9657711814864308e-16,
+      "tag3_ratio": 0.0016902037997642897,
+      "vector_path": "temp_modes/mode_000151.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 152,
+      "hz": 94.09255465592796,
+      "wood_participation": 0.0016782143706870027,
+      "uniqueness": 0.44384533166885376,
+      "tag1_ratio": 1.827863279807027e-16,
+      "tag3_ratio": 0.00167821437068682,
+      "vector_path": "temp_modes/mode_000152.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 153,
+      "hz": 94.28427250722542,
+      "wood_participation": 0.0015809117486426962,
+      "uniqueness": 0.7936280606278199,
+      "tag1_ratio": 2.0660485134297817e-20,
+      "tag3_ratio": 0.0015809117486426962,
+      "vector_path": "temp_modes/mode_000153.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 154,
+      "hz": 94.42740939967797,
+      "wood_participation": 0.0016956327117410891,
+      "uniqueness": 0.7505990415454478,
+      "tag1_ratio": 1.7663118739487593e-17,
+      "tag3_ratio": 0.0016956327117410715,
+      "vector_path": "temp_modes/mode_000154.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 155,
+      "hz": 94.88795956231702,
+      "wood_participation": 0.001665803637435466,
+      "uniqueness": 0.5922285196849261,
+      "tag1_ratio": 1.861019635527621e-16,
+      "tag3_ratio": 0.00166580363743528,
+      "vector_path": "temp_modes/mode_000155.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 156,
+      "hz": 94.93049880744611,
+      "wood_participation": 0.0017771112029509024,
+      "uniqueness": 0.5550362467765808,
+      "tag1_ratio": 2.3120860343435695e-16,
+      "tag3_ratio": 0.0017771112029506713,
+      "vector_path": "temp_modes/mode_000156.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 157,
+      "hz": 95.17123121259719,
+      "wood_participation": 0.0015922253784974956,
+      "uniqueness": 0.7529476135969162,
+      "tag1_ratio": 1.0928656003330351e-16,
+      "tag3_ratio": 0.0015922253784973863,
+      "vector_path": "temp_modes/mode_000157.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 158,
+      "hz": 95.20639633500973,
+      "wood_participation": 0.0015967574709708288,
+      "uniqueness": 0.5974066613558917,
+      "tag1_ratio": 3.5066147332148547e-16,
+      "tag3_ratio": 0.0015967574709704782,
+      "vector_path": "temp_modes/mode_000158.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 159,
+      "hz": 95.25355983420359,
+      "wood_participation": 0.0018015961366765856,
+      "uniqueness": 0.6507870554924011,
+      "tag1_ratio": 2.404245313587981e-16,
+      "tag3_ratio": 0.001801596136676345,
+      "vector_path": "temp_modes/mode_000159.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 160,
+      "hz": 95.29097194310671,
+      "wood_participation": 0.001757189568738334,
+      "uniqueness": 0.685895491487056,
+      "tag1_ratio": 2.3816921415617494e-16,
+      "tag3_ratio": 0.0017571895687380958,
+      "vector_path": "temp_modes/mode_000160.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 161,
+      "hz": 95.39640399744337,
+      "wood_participation": 0.001447796647333236,
+      "uniqueness": 0.6939485784738404,
+      "tag1_ratio": 5.883819710003643e-17,
+      "tag3_ratio": 0.0014477966473331772,
+      "vector_path": "temp_modes/mode_000161.smx.npz",
+      "column_l2_norm": 0.9999999403953534
+    },
+    {
+      "id": 162,
+      "hz": 95.42810661946453,
+      "wood_participation": 0.0018225506983209265,
+      "uniqueness": 0.7772113680839539,
+      "tag1_ratio": 2.4076662440157495e-18,
+      "tag3_ratio": 0.0018225506983209241,
+      "vector_path": "temp_modes/mode_000162.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 163,
+      "hz": 95.59837098286287,
+      "wood_participation": 0.0014641101966142043,
+      "uniqueness": 0.8377060487620772,
+      "tag1_ratio": 1.0544931635016972e-16,
+      "tag3_ratio": 0.001464110196614099,
+      "vector_path": "temp_modes/mode_000163.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 164,
+      "hz": 95.62277440590397,
+      "wood_participation": 0.001640145677209729,
+      "uniqueness": 0.6683229207992554,
+      "tag1_ratio": 2.657784096382476e-17,
+      "tag3_ratio": 0.0016401456772097023,
+      "vector_path": "temp_modes/mode_000164.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 165,
+      "hz": 95.69668996380835,
+      "wood_participation": 0.0014435588845651778,
+      "uniqueness": 0.7847064669342776,
+      "tag1_ratio": 3.772989091107367e-17,
+      "tag3_ratio": 0.00144355888456514,
+      "vector_path": "temp_modes/mode_000165.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 166,
+      "hz": 95.85707642857865,
+      "wood_participation": 0.0015000341043770091,
+      "uniqueness": 0.7611918527243092,
+      "tag1_ratio": 1.1389783339401348e-17,
+      "tag3_ratio": 0.0015000341043769976,
+      "vector_path": "temp_modes/mode_000166.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 167,
+      "hz": 96.09394495535724,
+      "wood_participation": 0.0014594478177260737,
+      "uniqueness": 0.7758536354216116,
+      "tag1_ratio": 8.175373573080591e-20,
+      "tag3_ratio": 0.0014594478177260737,
+      "vector_path": "temp_modes/mode_000167.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 168,
+      "hz": 96.10964565707714,
+      "wood_participation": 0.0017579748404466047,
+      "uniqueness": 0.7848586823004091,
+      "tag1_ratio": 8.154504729431474e-17,
+      "tag3_ratio": 0.0017579748404465232,
+      "vector_path": "temp_modes/mode_000168.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 169,
+      "hz": 96.15079762644926,
+      "wood_participation": 0.0015455316888671594,
+      "uniqueness": 0.6567798154586497,
+      "tag1_ratio": 9.44422662307711e-18,
+      "tag3_ratio": 0.00154553168886715,
+      "vector_path": "temp_modes/mode_000169.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 170,
+      "hz": 96.17493433805114,
+      "wood_participation": 0.001720856433259027,
+      "uniqueness": 0.6618498462989879,
+      "tag1_ratio": 1.2090327726178113e-18,
+      "tag3_ratio": 0.0017208564332590257,
+      "vector_path": "temp_modes/mode_000170.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 171,
+      "hz": 96.23092479702471,
+      "wood_participation": 0.0016086348186916026,
+      "uniqueness": 0.7615761621685222,
+      "tag1_ratio": 2.5609595446802803e-18,
+      "tag3_ratio": 0.0016086348186916,
+      "vector_path": "temp_modes/mode_000171.smx.npz",
+      "column_l2_norm": 0.9999999403953534
+    },
+    {
+      "id": 172,
+      "hz": 96.28373871961922,
+      "wood_participation": 0.001769833799859116,
+      "uniqueness": 0.7835162301967278,
+      "tag1_ratio": 1.0797520666668265e-16,
+      "tag3_ratio": 0.001769833799859008,
+      "vector_path": "temp_modes/mode_000172.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 173,
+      "hz": 96.71403988605468,
+      "wood_participation": 0.001496933080373754,
+      "uniqueness": 0.759034052491188,
+      "tag1_ratio": 3.5608366526864576e-17,
+      "tag3_ratio": 0.0014969330803737185,
+      "vector_path": "temp_modes/mode_000173.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 174,
+      "hz": 96.74180885584731,
+      "wood_participation": 0.001570241168852487,
+      "uniqueness": 0.7406016963540991,
+      "tag1_ratio": 4.199227856216685e-17,
+      "tag3_ratio": 0.0015702411688524448,
+      "vector_path": "temp_modes/mode_000174.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 175,
+      "hz": 96.78928216513557,
+      "wood_participation": 0.0014825926433697605,
+      "uniqueness": 0.721722857849427,
+      "tag1_ratio": 1.3234697750812805e-16,
+      "tag3_ratio": 0.0014825926433696282,
+      "vector_path": "temp_modes/mode_000175.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 176,
+      "hz": 96.8497585117716,
+      "wood_participation": 0.001710906416465772,
+      "uniqueness": 0.5182235097355694,
+      "tag1_ratio": 6.196082146436503e-16,
+      "tag3_ratio": 0.0017109064164651524,
+      "vector_path": "temp_modes/mode_000176.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 177,
+      "hz": 97.23846071234762,
+      "wood_participation": 0.0013872641135457375,
+      "uniqueness": 0.42502693608482844,
+      "tag1_ratio": 1.1059132703887598e-15,
+      "tag3_ratio": 0.0013872641135446316,
+      "vector_path": "temp_modes/mode_000177.smx.npz",
+      "column_l2_norm": 0.9999999105930288
+    },
+    {
+      "id": 178,
+      "hz": 97.26511128023753,
+      "wood_participation": 0.0015389058686925768,
+      "uniqueness": 0.6737708941834626,
+      "tag1_ratio": 1.216647270389237e-16,
+      "tag3_ratio": 0.0015389058686924551,
+      "vector_path": "temp_modes/mode_000178.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 179,
+      "hz": 97.40863196375047,
+      "wood_participation": 0.0016123942902832697,
+      "uniqueness": 0.5645636022090912,
+      "tag1_ratio": 1.1699976303096967e-16,
+      "tag3_ratio": 0.0016123942902831526,
+      "vector_path": "temp_modes/mode_000179.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 180,
+      "hz": 97.65835388383111,
+      "wood_participation": 0.001498501353726208,
+      "uniqueness": 0.22403742218240497,
+      "tag1_ratio": 8.963784475556938e-16,
+      "tag3_ratio": 0.0014985013537253116,
+      "vector_path": "temp_modes/mode_000180.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 181,
+      "hz": 97.67920784868535,
+      "wood_participation": 0.0017752461253031867,
+      "uniqueness": 0.6069053294332423,
+      "tag1_ratio": 8.409503309321816e-17,
+      "tag3_ratio": 0.0017752461253031026,
+      "vector_path": "temp_modes/mode_000181.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 182,
+      "hz": 97.81510745375057,
+      "wood_participation": 0.001496446595306394,
+      "uniqueness": 0.7003137379978219,
+      "tag1_ratio": 3.396886752415138e-17,
+      "tag3_ratio": 0.00149644659530636,
+      "vector_path": "temp_modes/mode_000182.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 183,
+      "hz": 97.83871976651304,
+      "wood_participation": 0.0017419532169309037,
+      "uniqueness": 0.6558393137407097,
+      "tag1_ratio": 6.010356334089259e-20,
+      "tag3_ratio": 0.0017419532169309037,
+      "vector_path": "temp_modes/mode_000183.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 184,
+      "hz": 98.0328262102186,
+      "wood_participation": 0.0014909305771387807,
+      "uniqueness": 0.7008195937168351,
+      "tag1_ratio": 1.5078415859069935e-18,
+      "tag3_ratio": 0.0014909305771387792,
+      "vector_path": "temp_modes/mode_000184.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 185,
+      "hz": 98.26306413134188,
+      "wood_participation": 0.0015249277458246535,
+      "uniqueness": 0.6880975067615509,
+      "tag1_ratio": 2.5729863339080993e-17,
+      "tag3_ratio": 0.0015249277458246277,
+      "vector_path": "temp_modes/mode_000185.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 186,
+      "hz": 98.26960969658217,
+      "wood_participation": 0.0015869591788753266,
+      "uniqueness": 0.21183851992602676,
+      "tag1_ratio": 5.989778749561655e-16,
+      "tag3_ratio": 0.0015869591788747277,
+      "vector_path": "temp_modes/mode_000186.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 187,
+      "hz": 98.36581826791358,
+      "wood_participation": 0.0014196205272579308,
+      "uniqueness": 0.2870093412989758,
+      "tag1_ratio": 3.881247966753896e-16,
+      "tag3_ratio": 0.0014196205272575427,
+      "vector_path": "temp_modes/mode_000187.smx.npz",
+      "column_l2_norm": 1.000000059604643
+    },
+    {
+      "id": 188,
+      "hz": 98.38678809270422,
+      "wood_participation": 0.0017413425351857895,
+      "uniqueness": 0.2292970878304773,
+      "tag1_ratio": 4.985904108089514e-16,
+      "tag3_ratio": 0.001741342535185291,
+      "vector_path": "temp_modes/mode_000188.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 189,
+      "hz": 98.4952599253276,
+      "wood_participation": 0.001493484609459208,
+      "uniqueness": 0.12555852906580323,
+      "tag1_ratio": 1.1527359075303104e-15,
+      "tag3_ratio": 0.0014934846094580552,
+      "vector_path": "temp_modes/mode_000189.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 190,
+      "hz": 98.52475067975791,
+      "wood_participation": 0.0016671412566376877,
+      "uniqueness": 0.08005473733437651,
+      "tag1_ratio": 1.728104615854988e-15,
+      "tag3_ratio": 0.0016671412566359597,
+      "vector_path": "temp_modes/mode_000190.smx.npz",
+      "column_l2_norm": 0.9999999403953534
+    },
+    {
+      "id": 191,
+      "hz": 98.62047967870099,
+      "wood_participation": 0.0015367074698839878,
+      "uniqueness": 0.3279504179954529,
+      "tag1_ratio": 2.130932183998169e-16,
+      "tag3_ratio": 0.0015367074698837747,
+      "vector_path": "temp_modes/mode_000191.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 192,
+      "hz": 99.3991837775852,
+      "wood_participation": 0.001537709168095861,
+      "uniqueness": 0.19542816863739954,
+      "tag1_ratio": 3.061803640176763e-16,
+      "tag3_ratio": 0.0015377091680955548,
+      "vector_path": "temp_modes/mode_000192.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 193,
+      "hz": 99.75186839242245,
+      "wood_participation": 0.0014599260576172298,
+      "uniqueness": 0.05984327375421705,
+      "tag1_ratio": 1.426213262393451e-15,
+      "tag3_ratio": 0.0014599260576158037,
+      "vector_path": "temp_modes/mode_000193.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 194,
+      "hz": 99.76876700253476,
+      "wood_participation": 0.0015377031894076355,
+      "uniqueness": 0.046341271589435906,
+      "tag1_ratio": 2.1858826610233185e-15,
+      "tag3_ratio": 0.0015377031894054495,
+      "vector_path": "temp_modes/mode_000194.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 195,
+      "hz": 99.8023462015284,
+      "wood_participation": 0.0016567955516599996,
+      "uniqueness": 0.06437757803134814,
+      "tag1_ratio": 1.2339733774164188e-15,
+      "tag3_ratio": 0.0016567955516587655,
+      "vector_path": "temp_modes/mode_000195.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 196,
+      "hz": 99.8401310089154,
+      "wood_participation": 0.0014294865559321749,
+      "uniqueness": 0.3665047287940979,
+      "tag1_ratio": 7.475897831760412e-17,
+      "tag3_ratio": 0.0014294865559321,
+      "vector_path": "temp_modes/mode_000196.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 197,
+      "hz": 99.86321988154216,
+      "wood_participation": 0.0019028640793300378,
+      "uniqueness": 0.19196128845214844,
+      "tag1_ratio": 2.4058508492428817e-16,
+      "tag3_ratio": 0.001902864079329797,
+      "vector_path": "temp_modes/mode_000197.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 198,
+      "hz": 100.09230268658996,
+      "wood_participation": 0.001698111593240119,
+      "uniqueness": 0.14799741351596718,
+      "tag1_ratio": 2.9243216706046485e-16,
+      "tag3_ratio": 0.0016981115932398264,
+      "vector_path": "temp_modes/mode_000198.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 199,
+      "hz": 100.37414363315364,
+      "wood_participation": 0.001424753408512269,
+      "uniqueness": 0.051689326763153076,
+      "tag1_ratio": 1.4688879030160435e-15,
+      "tag3_ratio": 0.0014247534085108002,
+      "vector_path": "temp_modes/mode_000199.smx.npz",
+      "column_l2_norm": 1.0
+    }
+  ],
+  "completed_shift_targets": [
+    80.0,
+    86.0,
+    88.0,
+    96.0
+  ]
+}

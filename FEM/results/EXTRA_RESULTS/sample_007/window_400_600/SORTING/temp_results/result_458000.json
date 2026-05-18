@@ -1,0 +1,37 @@
+{
+  "target_hz": 458.0,
+  "num_modes_requested": 15,
+  "num_modes_returned": 3,
+  "candidates": [
+    {
+      "id": 6,
+      "hz": 460.24587673782,
+      "wood_participation": 0.00010969000087369318,
+      "uniqueness": 0.11403209650707824,
+      "tag1_ratio": 5.23959791133491e-15,
+      "tag3_ratio": 0.00010969000086845359,
+      "vector_path": "temp_modes/mode_w_458000_006.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 7,
+      "hz": 460.3908994403756,
+      "wood_participation": 0.00011113054306495804,
+      "uniqueness": 0.048704329055805795,
+      "tag1_ratio": 2.4177958187812722e-16,
+      "tag3_ratio": 0.00011113054306471626,
+      "vector_path": "temp_modes/mode_w_458000_007.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    },
+    {
+      "id": 8,
+      "hz": 475.1159722910983,
+      "wood_participation": 0.00015898557946819025,
+      "uniqueness": 0.2938414566327865,
+      "tag1_ratio": 1.4535133310434232e-15,
+      "tag3_ratio": 0.00015898557946673674,
+      "vector_path": "temp_modes/mode_w_458000_008.smx.npz",
+      "column_l2_norm": 0.9999999701976772
+    }
+  ]
+}

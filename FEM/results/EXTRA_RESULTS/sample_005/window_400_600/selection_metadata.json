@@ -1,0 +1,162 @@
+{
+  "selection_type": "coverage_anchor",
+  "candidate_count": 306,
+  "selected_count": 30,
+  "min_selected_target": 30,
+  "wood_threshold_used": 0.0005,
+  "uniqueness_threshold_used": 0.1,
+  "window_min_hz": 400.0,
+  "window_max_hz": 600.0,
+  "selected_candidates": [
+    {
+      "id": 26,
+      "hz": 400.2979777233127,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 0,
+      "hz": 405.5409068771869,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 1,
+      "hz": 405.5453910696489,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 2,
+      "hz": 405.6020349243134,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 3,
+      "hz": 405.6138230584128,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 4,
+      "hz": 405.6190515104305,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 5,
+      "hz": 405.74118937884117,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 6,
+      "hz": 405.7586253015233,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 8,
+      "hz": 406.05188265658114,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 9,
+      "hz": 406.13515102109346,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 10,
+      "hz": 406.15410250435997,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 11,
+      "hz": 406.52912654515706,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 12,
+      "hz": 406.5345418701274,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 13,
+      "hz": 406.7261191904029,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 33,
+      "hz": 407.46004828475355,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 34,
+      "hz": 407.46907474393606,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 46,
+      "hz": 414.99921806273414,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 54,
+      "hz": 416.0658394131068,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 60,
+      "hz": 420.884131306746,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 61,
+      "hz": 421.1326659552692,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 83,
+      "hz": 428.65754816273716,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 97,
+      "hz": 434.27730420304874,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 106,
+      "hz": 439.03379670911625,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 123,
+      "hz": 445.36584005442865,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 143,
+      "hz": 452.22318589574974,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 152,
+      "hz": 456.7333451870844,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 172,
+      "hz": 465.3218694499646,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 205,
+      "hz": 479.7669809629057,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 262,
+      "hz": 518.1066589988565,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 298,
+      "hz": 555.4063831248119,
+      "selection_type": "coverage_anchor"
+    }
+  ]
+}

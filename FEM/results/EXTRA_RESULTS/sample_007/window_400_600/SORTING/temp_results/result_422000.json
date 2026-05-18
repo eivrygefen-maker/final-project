@@ -1,0 +1,27 @@
+{
+  "target_hz": 422.0,
+  "num_modes_requested": 15,
+  "num_modes_returned": 2,
+  "candidates": [
+    {
+      "id": 7,
+      "hz": 413.17678601694706,
+      "wood_participation": 0.00014170930146964334,
+      "uniqueness": 0.0666545033454895,
+      "tag1_ratio": 4.461572084192092e-17,
+      "tag3_ratio": 0.00014170930146959872,
+      "vector_path": "temp_modes/mode_w_422000_007.smx.npz",
+      "column_l2_norm": 1.0
+    },
+    {
+      "id": 8,
+      "hz": 414.729456570143,
+      "wood_participation": 7.748635192839819e-05,
+      "uniqueness": 0.06916575799395874,
+      "tag1_ratio": 1.0432941693760498e-14,
+      "tag3_ratio": 7.748635191796525e-05,
+      "vector_path": "temp_modes/mode_w_422000_008.smx.npz",
+      "column_l2_norm": 1.0000001192092824
+    }
+  ]
+}

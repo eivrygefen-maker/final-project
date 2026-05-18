@@ -1,0 +1,42 @@
+{
+  "selection_type": "coverage_anchor",
+  "candidate_count": 20,
+  "selected_count": 6,
+  "min_selected_target": 5,
+  "wood_threshold_used": 0.000125,
+  "uniqueness_threshold_used": 0.024999999999999994,
+  "window_min_hz": 400.0,
+  "window_max_hz": 600.0,
+  "selected_candidates": [
+    {
+      "id": 8,
+      "hz": 413.1767855552775,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 10,
+      "hz": 413.17678601694706,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 4,
+      "hz": 413.17678609929703,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 24,
+      "hz": 475.1159722910983,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 12,
+      "hz": 475.1159735206932,
+      "selection_type": "coverage_anchor"
+    },
+    {
+      "id": 21,
+      "hz": 475.4976603503492,
+      "selection_type": "coverage_anchor"
+    }
+  ]
+}

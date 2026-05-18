@@ -1,0 +1,6 @@
+{
+  "ok": true,
+  "failures": [],
+  "root": "/home/vboxuser/final-project/FEM/results/EXTRA_RESULTS",
+  "manual_merge_hint": "python FEM/scripts/merge_extra_results.py --extra-root FEM/results/EXTRA_RESULTS --per-zone-top-k 30"
+}
