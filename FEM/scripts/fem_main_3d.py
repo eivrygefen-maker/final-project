@@ -1070,13 +1070,14 @@ def _slepc_physical_lambda(
     if name in ("sinvert", "shift_invert"):
         if mu <= 0.0:
             return float("nan"), "reject"
-        # Physical λ returned directly (typical for sinvert band solves on this stack).
-        if _ok(mu):
-            return mu, "raw"
+        # sinvert Ritz θ ≈ 1/(λ-σ); map via invert when |θ| is moderate.
         if mu > 0.0 and abs(mu) <= mu_invert_max:
             lam_inv = sigma + (1.0 / mu)
             if _ok(lam_inv) and abs(lam_inv - sigma) >= min_dlam:
                 return lam_inv, "invert"
+        # Some builds return physical λ; reject σ-locked raw (μ ≈ σ = ω² at shift).
+        if _ok(mu) and abs(mu - sigma) >= min_dlam:
+            return mu, "raw"
         return float("nan"), "reject"
 
     lam_shift = mu + sigma
@@ -1137,6 +1138,20 @@ def _slepc_eps_strategy(
             "TARGET_MAGNITUDE",
             use_st_shift,
             broad_hz > 0.0,
+        )
+    if which in ("SMALLEST_MAGNITUDE", "SMALLEST_MAG"):
+        if use_st_shift:
+            raise ValueError(
+                "solver.eps_which=SMALLEST_MAGNITUDE requires st_type=sinvert "
+                "(shift-invert spectrum away from σ)."
+            )
+        if broad_hz <= 0.0:
+            broad_hz = 1.5
+        return (
+            SLEPc.EPS.Which.SMALLEST_MAGNITUDE,
+            "SMALLEST_MAGNITUDE",
+            False,
+            True,
         )
     raise ValueError(f"Unsupported solver.eps_which={which!r}")
 
@@ -1856,7 +1871,8 @@ def _slepc_shift_invert_batch(
             and abs(f_hz - st_sigma_hz) <= sigma_spurious_hz + 1.0e-9
         ):
             continue
-        rank_score = wood + 0.25 * p_frac
+        rank_by_p = _solver_bool(solver_cfg, "eps_harvest_rank_by_p_frac", default=False)
+        rank_score = (p_frac + 0.25 * wood) if rank_by_p else (wood + 0.25 * p_frac)
         candidates.append((rank_score, f_hz, arr, float(rt), float(rb), u_n, p_n, p_block_max))
 
     if rank_by_wood and candidates:
