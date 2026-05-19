@@ -456,6 +456,28 @@ def create_guitar_mesh():
             back_plate_surfs = [min(b_back, key=lambda s: get_surface_center_z(s))]
             print("[diag][warn] back_plate_surfs fallback: lowest-Z back volume face.")
 
+    # Geometry fallback when Z-partition yields only top+back volumes (no rib volume):
+    # assign remaining exterior wood shell to back (lowest Z / outward -Z) and ribs (rest).
+    _claimed = set(soundhole_surfs) | set(top_plate_surfs) | set(back_plate_surfs) | set(rib_surfs)
+    _pool = sorted(set(wood_boundary_surfs) - _claimed)
+    if not back_plate_surfs and _pool:
+        back_plate_surfs = [
+            min(
+                _pool,
+                key=lambda s: (
+                    get_surface_center_z(s),
+                    -(get_surface_normal_z(s) or 0.0),
+                ),
+            )
+        ]
+        _claimed |= set(back_plate_surfs)
+        _pool = sorted(set(wood_boundary_surfs) - _claimed)
+        print("[diag][warn] back_plate_surfs geometry fallback from wood shell pool.")
+    if not rib_surfs:
+        rib_surfs = sorted(set(wood_boundary_surfs) - _claimed)
+        if rib_surfs:
+            print(f"[diag][warn] rib_surfs geometry fallback: {len(rib_surfs)} shell surfaces → tag 4.")
+
     # Optional neck patch (tag 5); ribs (tag 4) are clamped in FEM, not wood_fix.
     fix_candidates = []
     for s in rib_surfs + back_plate_surfs:
@@ -484,23 +506,26 @@ def create_guitar_mesh():
             "Check geometry (hole_radius, soundhole_y, depth D) and boolean/fragment output."
         )
 
-    pg_top = gmsh.model.addPhysicalGroup(2, top_plate_surfs, tag=1)
-    gmsh.model.setPhysicalName(2, pg_top, "Top_Plate")
-    pg_soundhole = gmsh.model.addPhysicalGroup(2, soundhole_surfs, tag=2)
-    gmsh.model.setPhysicalName(2, pg_soundhole, "Soundhole")
-    if back_plate_surfs:
-        pg_back = gmsh.model.addPhysicalGroup(2, back_plate_surfs, tag=3)
-        gmsh.model.setPhysicalName(2, pg_back, "Back_Plate")
-    else:
-        print("[diag][warn] back_plate_surfs empty; facet tag 3 not created.")
-    if rib_surfs:
-        pg_ribs = gmsh.model.addPhysicalGroup(2, rib_surfs, tag=4)
-        gmsh.model.setPhysicalName(2, pg_ribs, "Ribs_Sides")
-    else:
-        print("[diag][warn] rib_surfs empty; facet tag 4 not created.")
+    def _add_surface_physical_group(surfaces, tag: int, name: str, required: bool = True) -> int:
+        if not surfaces:
+            if required:
+                raise RuntimeError(
+                    f"Facet physical group {tag} ({name}) has no surfaces; "
+                    "FEM cannot apply shell BCs/material regions."
+                )
+            print(f"[diag][warn] Facet physical group {tag} ({name}) skipped (empty).")
+            return -1
+        pg = gmsh.model.addPhysicalGroup(2, surfaces, tag=tag)
+        gmsh.model.setPhysicalName(2, pg, name)
+        return int(pg)
+
+    # 2D facet protocol (must match fem_main_3d WOOD_SURFACE_TAGS): 1=Top, 2=Soundhole, 3=Back, 4=Ribs, 5=wood_fix
+    _add_surface_physical_group(top_plate_surfs, 1, "Top_Plate", required=True)
+    _add_surface_physical_group(soundhole_surfs, 2, "Soundhole", required=True)
+    _add_surface_physical_group(back_plate_surfs, 3, "Back_Plate", required=True)
+    _add_surface_physical_group(rib_surfs, 4, "Ribs_Sides", required=True)
     if wood_fix_surfs:
-        pg_fix = gmsh.model.addPhysicalGroup(2, wood_fix_surfs, tag=5)
-        gmsh.model.setPhysicalName(2, pg_fix, "wood_fix")
+        _add_surface_physical_group(wood_fix_surfs, 5, "wood_fix", required=False)
     else:
         print("[diag][warn] wood_fix surfaces empty; tag 5 not created.")
     if top_vols:
@@ -669,7 +694,30 @@ def create_guitar_mesh():
             f"min={mesh_size_min:.6f}, max={mesh_size_max:.6f})..."
         )
         gmsh.model.mesh.generate(3)
+
+        def _count_mesh_elements_for_physical(dim: int, phys_tag: int) -> int:
+            n_elem = 0
+            for ent in gmsh.model.getEntitiesForPhysicalGroup(dim, int(phys_tag)):
+                if isinstance(ent, (list, tuple)) and len(ent) >= 2:
+                    dim_e, tag_e = int(ent[0]), int(ent[1])
+                else:
+                    dim_e, tag_e = dim, int(ent)
+                _types, elem_tags, _nodes = gmsh.model.mesh.getElements(dim_e, tag_e)
+                for arr in elem_tags:
+                    n_elem += int(len(arr))
+            return n_elem
+
+        facet_audit = {t: _count_mesh_elements_for_physical(2, t) for t in (1, 2, 3, 4)}
+        print(f"[diag] post-generate facet element counts by physical tag: {facet_audit}")
+        for req_tag, label in ((1, "Top"), (3, "Back"), (4, "Ribs")):
+            if facet_audit.get(req_tag, 0) <= 0:
+                raise RuntimeError(
+                    f"Mesh has 0 triangle elements on facet physical tag {req_tag} ({label}). "
+                    "Check shell surface classification and addPhysicalGroup assignments."
+                )
+
         gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
+        gmsh.option.setNumber("Mesh.SaveAll", 0)
         # Count mesh facets (2D elements) on Soundhole physical surfaces for downstream BC sanity.
         n_soundhole_mesh_facets = 0
         try:
