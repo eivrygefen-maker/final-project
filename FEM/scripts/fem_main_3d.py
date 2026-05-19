@@ -61,6 +61,8 @@ STRUCTURAL_DIAG_SURFACE_TAGS = (1, 3)  # facet shell diagnostic: top + back only
 RIBS_SURFACE_TAG = 4
 WOOD_FIX_SURFACE_TAG = 5
 AIR_VOLUME_TAG = 10
+FSI_INTERFACE_FACET_TAG = 20  # topology wood↔air facets (not gmsh physical tag)
+WOOD_VOLUME_TAGS = (1, 2, 3)
 ROOT_RANK = 0
 SORTING_ROOT = Path(__file__).resolve().parents[1] / "SORTING"
 SORTING_LOG = SORTING_ROOT / "candidates_log.json"
@@ -631,7 +633,7 @@ def _mesh_interface_diagnostic(msh: mesh.Mesh, cell_tags, facet_tags, status_cal
         f2v = msh.topology.connectivity(fdim, 0)
 
         wood_cells = np.array([], dtype=np.int32)
-        for tag in (1, 2, 3):
+        for tag in WOOD_VOLUME_TAGS:
             c = np.asarray(cell_tags.find(tag), dtype=np.int32)
             if c.size > 0:
                 wood_cells = np.unique(np.concatenate([wood_cells, c]).astype(np.int32))
@@ -667,7 +669,7 @@ def _mesh_interface_diagnostic(msh: mesh.Mesh, cell_tags, facet_tags, status_cal
         )
 
         interface_facets = []
-        wood_tag_set = {1, 2, 3, 4}
+        wood_tag_set = set(WOOD_VOLUME_TAGS)
         for ci in air_cells:
             for fi in c2f.links(int(ci)):
                 nbr_cells = np.asarray(f2c.links(int(fi)), dtype=np.int32)
@@ -703,6 +705,134 @@ def _mesh_interface_diagnostic(msh: mesh.Mesh, cell_tags, facet_tags, status_cal
                 )
     except Exception as exc:
         _emit(f"[diag][warn] mesh interface diagnostic failed: {exc}", status_callback=status_callback, level="warning")
+
+
+def _find_air_wood_interface_facets(msh: mesh.Mesh, cell_tags) -> np.ndarray:
+    """Facets with one adjacent air (tag 10) cell and one adjacent wood volume cell (1/2/3)."""
+    tdim = msh.topology.dim
+    fdim = tdim - 1
+    msh.topology.create_connectivity(fdim, tdim)
+    msh.topology.create_connectivity(tdim, fdim)
+    f2c = msh.topology.connectivity(fdim, tdim)
+    c2f = msh.topology.connectivity(tdim, fdim)
+    air_cells = np.asarray(cell_tags.find(AIR_VOLUME_TAG), dtype=np.int32)
+    wood_tags = set(WOOD_VOLUME_TAGS)
+    iface: List[int] = []
+    for ci in air_cells:
+        for fi in c2f.links(int(ci)):
+            nbrs = np.asarray(f2c.links(int(fi)), dtype=np.int32)
+            if nbrs.size < 2:
+                continue
+            tags = {int(cell_tags.values[int(nc)]) for nc in nbrs}
+            if AIR_VOLUME_TAG in tags and bool(tags & wood_tags):
+                iface.append(int(fi))
+    return np.unique(np.asarray(iface, dtype=np.int32))
+
+
+def _find_air_exterior_pressure_facets(
+    msh: mesh.Mesh,
+    cell_tags,
+    facet_tags,
+    interface_facets: np.ndarray,
+) -> np.ndarray:
+    """
+    Air-boundary facets for ``p = 0`` (exterior of the cavity), excluding the FSI interface
+    and soundhole (tag 2, already in the pressure gauge).
+    """
+    tdim = msh.topology.dim
+    fdim = tdim - 1
+    msh.topology.create_connectivity(fdim, tdim)
+    msh.topology.create_connectivity(tdim, fdim)
+    f2c = msh.topology.connectivity(fdim, tdim)
+    c2f = msh.topology.connectivity(tdim, fdim)
+    air_cells = np.asarray(cell_tags.find(AIR_VOLUME_TAG), dtype=np.int32)
+    iface_set = set(int(f) for f in np.asarray(interface_facets, dtype=np.int32))
+    soundhole_set = set(int(f) for f in np.asarray(facet_tags.find(2), dtype=np.int32))
+    out: List[int] = []
+    for ci in air_cells:
+        for fi in c2f.links(int(ci)):
+            fi = int(fi)
+            if fi in iface_set or fi in soundhole_set:
+                continue
+            nbrs = np.asarray(f2c.links(fi), dtype=np.int32)
+            if nbrs.size != 1:
+                continue
+            if int(cell_tags.values[int(nbrs[0])]) == AIR_VOLUME_TAG:
+                out.append(fi)
+    return np.unique(np.asarray(out, dtype=np.int32))
+
+
+def _meshtags_on_facets(msh: mesh.Mesh, facet_indices: np.ndarray, tag_value: int):
+    """Build a facet ``MeshTags`` for a subset of local facet indices."""
+    fdim = msh.topology.dim - 1
+    idx = np.asarray(facet_indices, dtype=np.int32)
+    if idx.size == 0:
+        vals = np.array([], dtype=np.int32)
+    else:
+        vals = np.full(idx.shape, int(tag_value), dtype=np.int32)
+    return mesh.meshtags(msh, fdim, idx, vals)
+
+
+def _mesh_characteristic_length(msh: mesh.Mesh) -> float:
+    """Length scale for Nitsche penalty (domain diagonal)."""
+    coords = msh.geometry.x
+    mins = np.min(coords, axis=0)
+    maxs = np.max(coords, axis=0)
+    return float(max(np.linalg.norm(maxs - mins), 1.0e-6))
+
+
+def _fsi_nitsche_gamma(
+    solver_cfg: Dict,
+    *,
+    E_ref: float,
+    h_char: float,
+    p_scale: float,
+) -> float:
+    """Nitsche penalty scale ``γ`` (Pa/m scale after similarity ``p_scale``)."""
+    base = float(solver_cfg.get("fsi_nitsche_penalty", 50.0))
+    frac = float(solver_cfg.get("fsi_nitsche_penalty_frac", 1.0e-3))
+    h = max(float(h_char), 1.0e-6)
+    return base * frac * max(float(E_ref), 1.0e3) * max(float(p_scale), 1.0) / h
+
+
+def _audit_assembled_mixed_coupling(
+    W: fem.FunctionSpace,
+    a_up_form,
+    m_pu_form,
+    bcs: List[fem.DirichletBC],
+    *,
+    status_callback=None,
+) -> None:
+    """Assemble FSI off-diagonal blocks on ``W`` and report Frobenius norms (post-BC)."""
+    if MPI.COMM_WORLD.rank != ROOT_RANK:
+        return
+    try:
+        A_up = assemble_matrix(fem.form(a_up_form), bcs=bcs)
+        A_up.assemble()
+        M_pu = assemble_matrix(fem.form(m_pu_form), bcs=bcs)
+        M_pu.assemble()
+        n_up = float(A_up.norm())
+        n_pu = float(M_pu.norm())
+        print(
+            f"[FSI-AUDIT] assembled mixed blocks on W: ||A_up||_F={n_up:.6e}, "
+            f"||M_pu||_F={n_pu:.6e} (bcs={len(bcs)})"
+        )
+        if n_up < 1.0e-20 and n_pu < 1.0e-20:
+            _emit(
+                "[FSI-AUDIT][CRITICAL] assembled FSI coupling blocks are numerically zero — "
+                "check interface facet measure and mixed TrialFunction layout.",
+                status_callback=status_callback,
+                level="error",
+            )
+        sys.stdout.flush()
+    except Exception as exc:
+        _emit(f"[FSI-AUDIT][warn] assembled coupling audit failed: {exc}", status_callback=status_callback, level="warning")
+    finally:
+        try:
+            A_up.destroy()
+            M_pu.destroy()
+        except Exception:
+            pass
 
 
 def _mat_frobenius_norm(a_form) -> float:
@@ -1553,14 +1683,12 @@ def _resolvent_symmetric_equilibrate(
 ) -> Tuple[PETSc.Vec, PETSc.Vec]:
     """Symmetric diagonal scaling ``K' = D K D``, ``b' = D b`` with ``D_ii = 1/sqrt(|K_ii|)``."""
     d = K.getDiagonal()
-    inv_sqrt = d.copy()
-    inv_sqrt.abs()
-    inv_sqrt.sqrt()
-    inv_sqrt.reciprocal()
-    arr_d = np.asarray(d.array, dtype=np.float64)
-    arr_s = np.asarray(inv_sqrt.array, dtype=np.float64)
-    arr_s[np.abs(arr_d) < 1.0e-30] = 1.0
-    inv_sqrt.setArray(arr_s.astype(PETSc.ScalarType, copy=False))
+    arr_d = np.abs(np.asarray(d.array, dtype=np.float64))
+    arr_s = 1.0 / np.sqrt(np.maximum(arr_d, 1.0e-30))
+    arr_s[arr_d < 1.0e-30] = 1.0
+    inv_sqrt = PETSc.Vec().createWithArray(
+        arr_s.astype(PETSc.ScalarType, copy=False), comm=K.getComm()
+    )
     K.diagonalScale(inv_sqrt, inv_sqrt)
     b_scaled = b.duplicate()
     b_scaled.copy(b)
@@ -2976,6 +3104,36 @@ def _solve_coupled_evp(
     n = ufl.FacetNormal(msh)
     P = ufl.Identity(3) - ufl.outer(n, n)
 
+    fsi_iface_facets = _find_air_wood_interface_facets(msh, cell_tags)
+    air_ext_p_facets = _find_air_exterior_pressure_facets(
+        msh, cell_tags, facet_tags, fsi_iface_facets
+    )
+    if fsi_iface_facets.size == 0:
+        raise RuntimeError(
+            "FSI interface: no facets found between air volume (tag 10) and wood volumes (1/2/3). "
+            "Check mesh boolean/fragment and cell_tags."
+        )
+    iface_meshtags = _meshtags_on_facets(msh, fsi_iface_facets, FSI_INTERFACE_FACET_TAG)
+    iface_ds = ufl.Measure("ds", domain=msh, subdomain_data=iface_meshtags)(
+        FSI_INTERFACE_FACET_TAG
+    )
+    h_char = _mesh_characteristic_length(msh)
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        n_wood_tagged = int(
+            np.sum(
+                np.isin(
+                    facet_tags.values,
+                    np.asarray(WOOD_SURFACE_TAGS, dtype=np.int32),
+                )
+            )
+        )
+        print(
+            f"[FSI-IFACE] topology interface facets={fsi_iface_facets.size} "
+            f"(wood tagged shell facets={n_wood_tagged}, ribs excluded from iface measure); "
+            f"air exterior p=0 facets={air_ext_p_facets.size}, h_char={h_char:.4e} m"
+        )
+        sys.stdout.flush()
+
     top_m, back_m, t_top, t_back = _split_wood_materials(config)
     air_mat = config["materials"]["air"]
     rho_air = float(air_mat["density"])
@@ -3063,10 +3221,33 @@ def _solve_coupled_evp(
     # Acoustic stiffness in internal air volume.
     a_pp = p2 * (1.0 / rho_air) * ufl.inner(ufl.grad(p), ufl.grad(q)) * xdmf_dx(AIR_VOLUME_TAG)
 
-    # FSI interface (wood_ds): trial/test must span different sub-spaces for off-diagonal nnz.
+    # FSI on wood↔air interface facets only (topology), not exterior ribs (tag 4).
     fsi_gain = _fsi_coupling_gain(config.get("solver", {}))
-    # Stiffness — fluid pressure traction on structure: trial p, test v  → block (u, p).
-    a_up = -p_scale * fsi_gain * p * ufl.dot(n, v) * wood_ds
+    gamma_n = _fsi_nitsche_gamma(
+        solver_cfg,
+        E_ref=float(top_m["E_L"]),
+        h_char=h_char,
+        p_scale=p_scale,
+    )
+    use_nitsche = _solver_bool(solver_cfg, "fsi_nitsche_enable", default=True)
+    traction_up = -p_scale * fsi_gain * p * ufl.dot(n, v) * iface_ds
+    mass_pu = p_scale * fsi_gain * rho_air * ufl.dot(u, n) * q * iface_ds
+    if use_nitsche:
+        nit_uu = gamma_n * ufl.dot(u, n) * ufl.dot(v, n) * iface_ds
+        nit_up = gamma_n * p * ufl.dot(v, n) * iface_ds
+        nit_pu = gamma_n * ufl.dot(u, n) * q * iface_ds
+        a_uu = a_uu + nit_uu
+        a_up = traction_up + nit_up
+        m_pu = mass_pu + nit_pu
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                f"[form] FSI Nitsche on iface: gamma_n={gamma_n:.6e}, "
+                f"fsi_gain={fsi_gain:.4g}, iface_facets={fsi_iface_facets.size}"
+            )
+            sys.stdout.flush()
+    else:
+        a_up = traction_up
+        m_pu = mass_pu
 
     _audit_pressure_scale_block_balance(
         a_uu,
@@ -3089,9 +3270,6 @@ def _solve_coupled_evp(
     else:
         m_uu = (top_m["rho"] * t_top + back_m["rho"] * t_back) * ufl.dot(u, v) * wood_ds
     m_pp = p2 * (1.0 / (rho_air * c_air * c_air)) * p * q * xdmf_dx(AIR_VOLUME_TAG)
-
-    # Mass — structural normal acceleration drives acoustic: trial u, test q  → block (p, u).
-    m_pu = p_scale * fsi_gain * rho_air * ufl.dot(u, n) * q * wood_ds
 
     _print_raw_coupling_block_norms(a_up, m_pu, status_callback=status_callback)
 
@@ -3219,12 +3397,23 @@ def _solve_coupled_evp(
         tol_p = max(1.0e-9, 1.0e-5 * max(1.0, diag))
 
         if pressure_gauge == "soundhole":
+            p_gauge_facets = soundhole_facets
+            if air_ext_p_facets.size > 0:
+                p_gauge_facets = np.unique(
+                    np.concatenate([soundhole_facets, air_ext_p_facets]).astype(np.int32)
+                )
             p_dofs = np.array(
-                fem.locate_dofs_topological(V_p, fdim, soundhole_facets),
+                fem.locate_dofs_topological(V_p, fdim, p_gauge_facets),
                 dtype=np.int32,
             )
             _emit(
-                f"[bc] pressure gauge: P=0 on soundhole facets (count={p_dofs.size}).",
+                f"[bc] pressure gauge: P=0 on soundhole ({soundhole_facets.size} facets)"
+                + (
+                    f" + air exterior ({air_ext_p_facets.size} facets, iface excluded)"
+                    if air_ext_p_facets.size > 0
+                    else ""
+                )
+                + f" → {p_dofs.size} pressure DOFs.",
                 status_callback=status_callback,
             )
         else:
@@ -3397,6 +3586,10 @@ def _solve_coupled_evp(
     A.assemble()
     M = assemble_matrix(fem.form(m_form), bcs=bcs)
     M.assemble()
+
+    _audit_assembled_mixed_coupling(
+        W, a_up, m_pu, bcs, status_callback=status_callback
+    )
 
     gnhep_scale = _normalize_assembled_gnhep(A, M, solver_cfg)
     if MPI.COMM_WORLD.rank == ROOT_RANK and gnhep_scale != 1.0:

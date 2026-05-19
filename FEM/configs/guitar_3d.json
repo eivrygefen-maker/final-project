@@ -154,6 +154,9 @@
         "resolvent_pc_factor_diagonal_scaling": true,
         "resolvent_symmetric_equilibrate": true,
         "resolvent_mass_reg_retry_fracs": [1.0e-6, 1.0e-4, 1.0e-2, 0.1],
+        "fsi_nitsche_enable": true,
+        "fsi_nitsche_penalty": 50.0,
+        "fsi_nitsche_penalty_frac": 0.001,
         "solver_profile_name": "Quality over Quantity"
     },
     "results": {
