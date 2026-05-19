@@ -57,6 +57,7 @@ LOGGER.propagate = False
 
 
 WOOD_SURFACE_TAGS = (1, 3, 4)  # top plate, back plate, ribs/sides (FSI shell)
+STRUCTURAL_DIAG_SURFACE_TAGS = (1, 3)  # facet shell diagnostic: top + back only (no ribs)
 RIBS_SURFACE_TAG = 4
 WOOD_FIX_SURFACE_TAG = 5
 AIR_VOLUME_TAG = 10
@@ -821,6 +822,23 @@ def _plate_modal_energy_ratios(
     return e_top / total_wood_energy, e_back / total_wood_energy
 
 
+def _is_structural_only_run(config: Dict, solve_evp: bool) -> bool:
+    """True → displacement-only shell EVP (no acoustic DOFs / no FSI)."""
+    if not solve_evp:
+        return False
+    solver = config.get("solver", {})
+    if not _solver_bool(solver, "couple_fluid", default=True):
+        return True
+    return _solver_bool(solver, "structural_only_diagnosis", default=False)
+
+
+def _structural_diag_facet_tags(solver_cfg: Dict) -> Tuple[int, ...]:
+    raw = solver_cfg.get("structural_shell_facet_tags", STRUCTURAL_DIAG_SURFACE_TAGS)
+    if isinstance(raw, (list, tuple)):
+        return tuple(int(t) for t in raw)
+    return STRUCTURAL_DIAG_SURFACE_TAGS
+
+
 def _coupled_pressure_dof_scale(solver_cfg: Dict) -> float:
     """
     Similarity scale s on pressure DOFs (D = diag(I, s·I_p)); applied consistently to all
@@ -1169,16 +1187,21 @@ def _solve_structural_only_evp(
     msh.topology.create_connectivity(0, tdim)
     msh.topology.create_connectivity(tdim, 0)
 
-    facets_t1 = np.array(facet_tags.find(1), dtype=np.int32)
+    solver_cfg = config.get("solver", {})
+    diag_tags = _structural_diag_facet_tags(solver_cfg)
+    tag_top = int(diag_tags[0]) if len(diag_tags) > 0 else 1
+    tag_back = int(diag_tags[1]) if len(diag_tags) > 1 else 3
+
+    facets_t1 = np.array(facet_tags.find(tag_top), dtype=np.int32)
     facets_t2 = np.array(facet_tags.find(2), dtype=np.int32)
-    facets_t3 = np.array(facet_tags.find(3), dtype=np.int32)
+    facets_t3 = np.array(facet_tags.find(tag_back), dtype=np.int32)
     facets_t4 = np.array(facet_tags.find(RIBS_SURFACE_TAG), dtype=np.int32)
     facets_fix = np.array(facet_tags.find(WOOD_FIX_SURFACE_TAG), dtype=np.int32)
 
     print(
-        f"[DIAG] facet tag counts: tag1={facets_t1.size}, "
-        f"tag2={facets_t2.size}, tag3_back={facets_t3.size}, "
-        f"tag4_ribs={facets_t4.size}, tag5_fix={facets_fix.size}"
+        f"[DIAG] facet tag counts: top(tag{tag_top})={facets_t1.size}, "
+        f"soundhole(tag2)={facets_t2.size}, back(tag{tag_back})={facets_t3.size}, "
+        f"ribs(tag4)={facets_t4.size}, fix(tag5)={facets_fix.size}"
     )
     sys.stdout.flush()
 
@@ -1188,52 +1211,70 @@ def _solve_structural_only_evp(
     V_u = fem.functionspace(msh, u_el)
     u = ufl.TrialFunction(V_u)
     v = ufl.TestFunction(V_u)
-    xdmf_dx = ufl.Measure("dx", domain=msh, subdomain_data=cell_tags)
 
     top_m, back_m, t_top, t_back = _split_wood_materials(config)
     top_mat = config["materials"]["top"]
     back_mat = config["materials"]["back"]
     if msh.comm.rank == ROOT_RANK:
         print(
-            f"[DIAG] Material audit (per-tag, no averaging): "
-            f"top tag1(D11={top_m['D11']:.3e}, E_L={top_m['E_L']:.3e}, rho={top_m['rho']:.1f}), "
-            f"back tag3(D11={back_m['D11']:.3e}, E_L={back_m['E_L']:.3e}, rho={back_m['rho']:.1f}), "
+            f"[DIAG] Structural-only shell diagnostic: facet tags {diag_tags} "
+            f"(top={tag_top}, back={tag_back}); NO fluid/pressure DOFs."
+        )
+        print(
+            f"[DIAG] Material audit: "
+            f"top(D11={top_m['D11']:.3e}, E_L={top_m['E_L']:.3e}, rho={top_m['rho']:.1f}), "
+            f"back(D11={back_m['D11']:.3e}, E_L={back_m['E_L']:.3e}, rho={back_m['rho']:.1f}), "
             f"t_top={t_top:.4f} m t_back={t_back:.4f} m | "
             f"{top_mat.get('name', '')!r} / {back_mat.get('name', '')!r}"
         )
-    # Volume diagnostic branch: isotropic 3D reduction from E_L (coupled path uses facet KL shell).
-    nu_t = float(top_m["nu_LT"])
-    nu_b = float(back_m["nu_LT"])
-    mu_t = top_m["E_L"] / (2.0 * (1.0 + nu_t))
-    lam_t = top_m["E_L"] * nu_t / ((1.0 + nu_t) * (1.0 - 2.0 * nu_t))
-    mu_b = back_m["E_L"] / (2.0 * (1.0 + nu_b))
-    lam_b = back_m["E_L"] * nu_b / ((1.0 + nu_b) * (1.0 - 2.0 * nu_b))
-    # Volume tags: 1=top plate, 2=back plate, 3=ribs/sides (back wood).
-    vol_top = xdmf_dx(1)
-    vol_back_sides = xdmf_dx(2) + xdmf_dx(3)
-    wood_dx = vol_top + vol_back_sides
 
-    eps_u = ufl.sym(ufl.grad(u))
-    eps_v = ufl.sym(ufl.grad(v))
-    a_uu = (
-        2.0 * mu_t * ufl.inner(eps_u, eps_v) + lam_t * ufl.div(u) * ufl.div(v)
-    ) * vol_top + (
-        2.0 * mu_b * ufl.inner(eps_u, eps_v) + lam_b * ufl.div(u) * ufl.div(v)
-    ) * vol_back_sides
-    m_uu = top_m["rho"] * ufl.dot(u, v) * vol_top + back_m["rho"] * ufl.dot(u, v) * vol_back_sides
+    xdmf_ds = ufl.Measure("ds", domain=msh, subdomain_data=facet_tags)
+    n = ufl.FacetNormal(msh)
+    P = ufl.Identity(3) - ufl.outer(n, n)
 
-    # Optional dummy penalty on air cells (vacuum / structural-only diagnostic only).
-    if _solver_bool(config.get("solver", {}), "structural_vacuum_air_dummy", default=True):
-        air_tags = [AIR_VOLUME_TAG]
-        for tag in air_tags:
-            a_uu += 1.0e11 * ufl.inner(u, v) * xdmf_dx(tag)
-            m_uu += 1.0e-9 * ufl.inner(u, v) * xdmf_dx(tag)
+    def eps_surface(uu):
+        grad_u = ufl.grad(uu)
+        grad_tan = P * grad_u * P
+        return 0.5 * (grad_tan + ufl.transpose(grad_tan))
+
+    ds_top = xdmf_ds(tag_top)
+    ds_back = xdmf_ds(tag_back)
+    eps_u = eps_surface(u)
+    eps_v = eps_surface(v)
+    w_n = ufl.dot(u, n)
+    v_n = ufl.dot(v, n)
+    e1, e2 = _plate_local_frame(n, P)
+    shell_top = _orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, top_m)
+    shell_back = _orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
+    a_uu = shell_top * ds_top + shell_back * ds_back
+    m_uu = (top_m["rho"] * t_top) * ufl.dot(u, v) * ds_top + (back_m["rho"] * t_back) * ufl.dot(u, v) * ds_back
+
+    _diagnose_shell_stiffness_assembly(
+        a_uu,
+        shell_top,
+        shell_back,
+        ds_top,
+        ds_back,
+        tag_top,
+        tag_back,
+        int(np.sum(facet_tags.values == tag_top)),
+        int(np.sum(facet_tags.values == tag_back)),
+        status_callback=status_callback,
+    )
+
+    m_uu_top_plate = (top_m["rho"] * t_top) * ufl.dot(u, v) * ds_top
+    m_uu_back_shell = (back_m["rho"] * t_back) * ufl.dot(u, v) * ds_back
 
     # V_u coverage diagnostic by tag.
     try:
         f_to_v = msh.topology.connectivity(fdim, 0)
         tag_u_counts = {}
-        for tag, facets_tag in ((1, facets_t1), (2, facets_t2), (3, facets_t3)):
+        for tag, facets_tag in (
+            (tag_top, facets_t1),
+            (2, facets_t2),
+            (tag_back, facets_t3),
+            (RIBS_SURFACE_TAG, facets_t4),
+        ):
             if facets_tag.size == 0:
                 tag_u_counts[tag] = 0
                 continue
@@ -1264,10 +1305,13 @@ def _solve_structural_only_evp(
                 sys.stdout.flush()
             return out
 
-        # Free–free structural diagnostic: no displacement Dirichlet BCs.
+        # Structural diagnostic: free–free; ribs clamp intentionally disabled (see coupled clamp_ribs).
         bcs_u: List = []
         if msh.comm.rank == ROOT_RANK:
-            print("[DIAG] structural-only: free–free (no displacement constraints).")
+            print(
+                "[DIAG] structural-only: free–free (no displacement BCs; "
+                "ribs tag-4 clamp NOT applied in this branch)."
+            )
     except Exception as e:
         try:
             rank = int(msh.comm.rank)
@@ -1327,8 +1371,21 @@ def _solve_structural_only_evp(
 
     _phase_sync(2105, "structural-only before matrix assembly", status_callback=status_callback)
     _debug_rank("Entering Matrix Assembly")
-    K = assemble_matrix(a_uu_form, bcs=bcs_u); K.assemble()
-    M = assemble_matrix(m_uu_form, bcs=bcs_u); M.assemble()
+    K = assemble_matrix(a_uu_form, bcs=bcs_u)
+    K.assemble()
+    M = assemble_matrix(m_uu_form, bcs=bcs_u)
+    M.assemble()
+    M_top = assemble_matrix(fem.form(m_uu_top_plate), bcs=bcs_u)
+    M_top.assemble()
+    M_back = assemble_matrix(fem.form(m_uu_back_shell), bcs=bcs_u)
+    M_back.assemble()
+    mass_top_kg = float(fem.assemble_scalar(fem.form(top_m["rho"] * t_top * ds_top)))
+    mass_back_kg = float(fem.assemble_scalar(fem.form(back_m["rho"] * t_back * ds_back)))
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        print(
+            f"[DIAG] Shell lumped mass: mass_top={mass_top_kg:.4e} kg, "
+            f"mass_back={mass_back_kg:.4e} kg"
+        )
     # Defensive: allow new nonzeros during diagnostic diagonal updates.
     # With the ghost term, this should rarely be needed, but it prevents PETSc
     # from hard-failing if some diagonal entries were initially structurally zero.
@@ -1444,6 +1501,8 @@ def _solve_structural_only_evp(
     skipped_low_hz = 0
     freqs_hz: List[float] = []
     vectors: List[np.ndarray] = []
+    plate_ratios: List[Tuple[float, float]] = []
+    work = M.createVecRight()
     for i in range(min(nev, nconv)):
         eig = eps.getEigenpair(i, rvec)
         eig_r = float(np.real(eig))
@@ -1451,19 +1510,30 @@ def _solve_structural_only_evp(
         if eig_r <= rigid_tol:
             skipped_rigid += 1
             continue
-        f_hz = math.sqrt(eig_r) / (2.0 * math.pi)
+        f_hz = math.sqrt(max(eig_r, 0.0)) / (2.0 * math.pi)
         if f_hz < min_structural_hz:
             skipped_low_hz += 1
             continue
+        rt, rb = _plate_modal_energy_ratios(rvec, M_top, M_back, work, mass_top_kg, mass_back_kg)
         freqs_hz.append(f_hz)
         vectors.append(rvec.array.copy())
+        plate_ratios.append((float(rt), float(rb)))
+    try:
+        work.destroy()
+    except Exception:
+        pass
     try:
         rvec.destroy()
     except Exception:
         pass
+    try:
+        M_top.destroy()
+        M_back.destroy()
+    except Exception:
+        pass
     eps.destroy()
 
-    print(f"[DIAG] Structural-only eigen search: WHICH=SMALLEST_MAGNITUDE")
+    print("[DIAG] Structural-only eigen search: TARGET_MAGNITUDE (shell facet tags 1+3)")
     print(
         f"[DIAG] Structural-only rigid filter: lambda_tol={rigid_tol:.3e}, "
         f"skipped_rigid={skipped_rigid}, min_mode_hz={min_structural_hz:.2f}, skipped_low_hz={skipped_low_hz}"
@@ -1474,10 +1544,26 @@ def _solve_structural_only_evp(
     if not freqs_hz:
         raise RuntimeError("Structural-only diagnosis: no positive eigenvalues.")
     order = np.argsort(np.array(freqs_hz))
-    freqs_hz = [freqs_hz[int(i)] for i in order][:nev_target]
-    eigvecs = np.stack([vectors[int(i)] for i in order[: len(freqs_hz)]], axis=1)
+    order_list = [int(i) for i in order][:nev_target]
+    freqs_hz = [freqs_hz[i] for i in order_list]
+    plate_ratios = [plate_ratios[i] for i in order_list]
+    eigvecs = np.stack([vectors[i] for i in order_list], axis=1)
 
     print(f"[DIAG] Structural-only first {len(freqs_hz)} mode(s): {[round(f, 3) for f in freqs_hz]}")
+    for idx, (f_hz, (rt, rb)) in enumerate(zip(freqs_hz[:5], plate_ratios[:5])):
+        wood = rt + rb
+        loc = "top-dominated" if rt > 0.6 else "back-dominated" if rb > 0.6 else "mixed/localized"
+        print(
+            f"[DIAG]   mode {idx + 1}: f={f_hz:.2f} Hz, tag1_ratio={rt:.4f}, tag3_ratio={rb:.4f}, "
+            f"wood_participation={wood:.4f} ({loc})"
+        )
+    band_lo = float(solver_cfg.get("structural_expected_hz_min", 80.0))
+    band_hi = float(solver_cfg.get("structural_expected_hz_max", 200.0))
+    in_band = [f for f in freqs_hz[:5] if band_lo <= f <= band_hi]
+    print(
+        f"[DIAG] Modes in expected band [{band_lo:.0f}, {band_hi:.0f}] Hz (first 5): "
+        f"{[round(f, 1) for f in in_band]} ({'OK' if in_band else 'CHECK mesh/materials'})"
+    )
     if freqs_hz:
         print(f"[DIAG] Structural-only first mode: {freqs_hz[0]:.3f} Hz")
     sys.stdout.flush()
@@ -1498,17 +1584,23 @@ def _solve_coupled_evp(
     status_callback=None,
     solve_evp: bool = True,
 ):
-    if MPI.COMM_WORLD.rank == ROOT_RANK:
-        print("🔴🔴🔴 FORCE-RUNNING FULL COUPLED MODEL - NO DIAGNOSIS 🔴🔴🔴")
-        sys.stdout.flush()
     _phase_sync(2000, "coupled enter", status_callback=status_callback)
     _solver_early = config.get("solver", {})
+    _struct_only = _is_structural_only_run(config, solve_evp)
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        if _struct_only:
+            print("🟢 STRUCTURAL-ONLY SHELL DIAGNOSTIC (couple_fluid=False, facet tags 1+3, no FSI)")
+        else:
+            print("🔴 FULL COUPLED ACOUSTIC–STRUCTURAL MODEL (mixed u,p + FSI)")
+        sys.stdout.flush()
     _ams = _solver_early.get("adaptive_mode_sifter", "<missing>")
     _sihz = _solver_early.get("shift_invert_target_hz", "<missing>")
     print(
         f"[DEBUG] Sifter status: adaptive_mode_sifter={_ams!r} "
         f"(effective={_solver_bool(_solver_early, 'adaptive_mode_sifter', True)}), "
-        f"shift_invert_target_hz={_sihz!r}, solve_evp={solve_evp}"
+        f"shift_invert_target_hz={_sihz!r}, solve_evp={solve_evp}, "
+        f"couple_fluid={_solver_bool(_solver_early, 'couple_fluid', True)}, "
+        f"structural_only={_struct_only}"
     )
     sys.stdout.flush()
 
@@ -1516,15 +1608,12 @@ def _solve_coupled_evp(
     _audit_and_scale_mesh_units(msh, config, status_callback=status_callback)
     _mesh_interface_diagnostic(msh, cell_tags, facet_tags, status_callback=status_callback)
     _phase_sync(2001, "coupled after mesh load", status_callback=status_callback)
-    _sod_raw = config.get("solver", {}).get("structural_only_diagnosis", "<missing>")
-    _sod_eff = _solver_bool(config.get("solver", {}), "structural_only_diagnosis", default=False)
     if MPI.COMM_WORLD.rank == ROOT_RANK:
         print(
-            f"[diag] structural_only_diagnosis: effective={_sod_eff!r} raw={_sod_raw!r} "
-            f"solve_evp={solve_evp} → {'structural-only branch' if (solve_evp and _sod_eff) else 'full coupled (mixed u,p)'}"
+            f"[diag] branch: {'structural-only shell (tags {STRUCTURAL_DIAG_SURFACE_TAGS})' if _struct_only else 'full coupled (mixed u,p)'}"
         )
         sys.stdout.flush()
-    if solve_evp and _sod_eff:
+    if _struct_only:
         return _solve_structural_only_evp(
             msh=msh,
             cell_tags=cell_tags,
@@ -1862,13 +1951,19 @@ def _solve_coupled_evp(
         p_zero = fem.Constant(msh, PETSc.ScalarType(0.0))
         bc_p = fem.dirichletbc(p_zero, p_dofs, V_p)
         bcs = [bc_p]
-        if u_dofs_ribs.size > 0:
+        clamp_ribs = _solver_bool(solver_cfg, "clamp_ribs", default=True)
+        if clamp_ribs and u_dofs_ribs.size > 0:
             u_zero = np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType)
             bc_u = fem.dirichletbc(u_zero, u_dofs_ribs, V_u)
             bcs.append(bc_u)
             _emit(
                 f"[bc] ribs clamp: u = 0 on tag {RIBS_SURFACE_TAG} "
                 f"({facets_ribs.size} facets, {u_dofs_ribs.size} displacement DOFs).",
+                status_callback=status_callback,
+            )
+        elif not clamp_ribs:
+            _emit(
+                "[bc] ribs clamp DISABLED (clamp_ribs=false); top/back free, tag-4 u unconstrained.",
                 status_callback=status_callback,
             )
         else:
@@ -2587,8 +2682,13 @@ def run_fem_3d_simulation(config_path, status_callback=None):
         vtk_files = []
         _emit("[diag] structural-only diagnosis run: skipping mixed-field XDMF mode export.", status_callback=status_callback)
 
+    analysis_name = (
+        "structural_shell_diagnostic"
+        if _is_structural_only_run(config, True)
+        else "acoustic_structural_coupled_eigen"
+    )
     output_data = {
-        "analysis": "acoustic_structural_coupled_eigen",
+        "analysis": analysis_name,
         "modes_hz": freqs,
         "num_modes": len(freqs),
         "mode_vectors_file": str(npz_file.resolve()),
