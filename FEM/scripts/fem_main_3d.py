@@ -827,11 +827,15 @@ def _audit_u_subspace_global(
         n_coll = _u_global_dof_count(V_u_collapsed)
         msg += f", collapsed={n_coll}"
         if n_coll != n_direct:
+            level = "warning"
+            note = "unexpected — BC/dof maps may be inconsistent"
+            if "coupled W.sub(0)" in label:
+                level = "info"
+                note = "expected for mixed W.sub(0) (use collapsed V_u for BCs)"
             _emit(
-                f"{label}: W.sub(0).collapse() DOF count {n_coll} != direct subspace {n_direct} "
-                "(unexpected — BC/dof maps may be inconsistent).",
+                f"{label}: collapse() n_u={n_coll} vs subspace index_map n_u={n_direct} ({note}).",
                 status_callback=status_callback,
-                level="warning",
+                level=level,
             )
     _emit(msg, status_callback=status_callback)
 
@@ -1903,7 +1907,7 @@ def _solve_coupled_evp(
     solve_evp: bool = True,
 ):
     _phase_sync(2000, "coupled enter", status_callback=status_callback)
-    _solver_early = config.get("solver", {})
+    solver_cfg = config.get("solver", {})
     _struct_only = _is_structural_only_run(config, solve_evp)
     if MPI.COMM_WORLD.rank == ROOT_RANK:
         if _struct_only:
@@ -1911,13 +1915,13 @@ def _solve_coupled_evp(
         else:
             print("🔴 FULL COUPLED ACOUSTIC–STRUCTURAL MODEL (mixed u,p + FSI)")
         sys.stdout.flush()
-    _ams = _solver_early.get("adaptive_mode_sifter", "<missing>")
-    _sihz = _solver_early.get("shift_invert_target_hz", "<missing>")
+    _ams = solver_cfg.get("adaptive_mode_sifter", "<missing>")
+    _sihz = solver_cfg.get("shift_invert_target_hz", "<missing>")
     print(
         f"[DEBUG] Sifter status: adaptive_mode_sifter={_ams!r} "
-        f"(effective={_solver_bool(_solver_early, 'adaptive_mode_sifter', True)}), "
+        f"(effective={_solver_bool(solver_cfg, 'adaptive_mode_sifter', True)}), "
         f"shift_invert_target_hz={_sihz!r}, solve_evp={solve_evp}, "
-        f"couple_fluid={_solver_bool(_solver_early, 'couple_fluid', True)}, "
+        f"couple_fluid={_solver_bool(solver_cfg, 'couple_fluid', True)}, "
         f"structural_only={_struct_only}"
     )
     sys.stdout.flush()
@@ -2365,7 +2369,6 @@ def _solve_coupled_evp(
     M = assemble_matrix(fem.form(m_form), bcs=bcs)
     M.assemble()
 
-    solver_cfg = config.get("solver", {})
     gnhep_scale = _normalize_assembled_gnhep(A, M, solver_cfg)
     if MPI.COMM_WORLD.rank == ROOT_RANK and gnhep_scale != 1.0:
         print(
