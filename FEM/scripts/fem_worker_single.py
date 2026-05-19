@@ -212,16 +212,12 @@ def main() -> int:
     cfg["_worker_target_hz"] = _target_hz
     cfg["_worker_num_modes"] = _nm
     if MPI.COMM_WORLD.rank == 0:
-        _which = str(cfg.get("solver", {}).get("eps_which", "TARGET_MAGNITUDE"))
-        _broad = float(cfg.get("solver", {}).get("eps_broad_search_hz", 0.0))
-        _win = (
-            f", window=[{_target_hz - _broad:.2f}, {_target_hz + _broad:.2f}] Hz"
-            if _broad > 0.0
-            else ""
-        )
+        _solver = cfg.get("solver", {}) or {}
+        _which = str(_solver.get("eps_which", "SHIFT"))
+        _st = str(_solver.get("st_type", "shift"))
         print(
             f"[worker] EPS target: f={_target_hz:.4f} Hz, "
-            f"lambda=(2*pi*f)^2={_target_lambda:.6e}, which={_which}{_win}, st=sinvert"
+            f"lambda=(2*pi*f)^2={_target_lambda:.6e}, which={_which}, st={_st}"
         )
         sys.stdout.flush()
 

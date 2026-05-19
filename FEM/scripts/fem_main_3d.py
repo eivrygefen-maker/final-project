@@ -8,7 +8,7 @@ import sys
 import builtins
 import faulthandler
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import petsc4py
@@ -1013,6 +1013,54 @@ def _eps_use_target_real(solver_cfg: Dict) -> bool:
     return _solver_bool(solver_cfg, "eps_use_target_real", default=False)
 
 
+def _slepc_eps_strategy(
+    solver_cfg: Dict,
+) -> Tuple[Any, str, bool, bool]:
+    """
+    Resolve SLEPc ``which`` + ST pairing from config.
+
+    Returns ``(eps_which_enum, label, use_st_shift, use_broad_hz_window)``.
+  When ``eps_which`` is ``SHIFT``, use ``st_type='shift'`` so modes are found
+    around σ rather than pinned by shift-invert at σ.
+    """
+    which = str(solver_cfg.get("eps_which", "SHIFT")).strip().upper()
+    if which == "SHIFT":
+        eps_which = getattr(SLEPc.EPS.Which, "SHIFT", None)
+        if eps_which is None:
+            raise RuntimeError(
+                "SLEPc.EPS.Which.SHIFT is unavailable in this SLEPc build; "
+                "upgrade SLEPc or set solver.eps_which to TARGET_MAGNITUDE."
+            )
+        return eps_which, "SHIFT", True, False
+    if which in ("TARGET_REAL", "TARGET_REAL_PART") or _eps_use_target_real(solver_cfg):
+        return SLEPc.EPS.Which.TARGET_REAL, "TARGET_REAL", False, True
+    if which in ("TARGET_MAGNITUDE", "TARGET_MAG", ""):
+        return SLEPc.EPS.Which.TARGET_MAGNITUDE, "TARGET_MAGNITUDE", False, False
+    raise ValueError(f"Unsupported solver.eps_which={which!r}")
+
+
+def _print_raw_coupling_block_norms(
+    a_up,
+    m_pu,
+    *,
+    status_callback=None,
+) -> None:
+    """Ground-truth Frobenius norms of FSI blocks before GNHEP scaling."""
+    if MPI.COMM_WORLD.rank != ROOT_RANK:
+        return
+    try:
+        norm_a_up = _mat_frobenius_norm(a_up)
+        norm_m_pu = _mat_frobenius_norm(m_pu)
+    except Exception as exc:
+        _emit(f"[GNHEP-raw][warn] block norm trace failed: {exc}", status_callback=status_callback, level="warning")
+        return
+    print(
+        f"[GNHEP-raw] before any GNHEP scaling: ||A_up||_F={norm_a_up:.6e}, "
+        f"||M_pu||_F={norm_m_pu:.6e} (u→p mass coupling; M_up ≡ M_pu^T in mixed layout)"
+    )
+    sys.stdout.flush()
+
+
 def _collapsed_u_from_mixed_vec(
     phi_arr: np.ndarray,
     u_to_W: np.ndarray,
@@ -1373,37 +1421,31 @@ def _slepc_shift_invert_batch(
     dofs_back: Optional[np.ndarray] = None,
 ) -> Tuple[int, List[Tuple[float, np.ndarray, Optional[float], Optional[float], float, float]]]:
     """
-    Krylov-Schur GNHEP batch: shift-invert at ``shift_hz`` (TARGET_MAGNITUDE on λ = ω²).
+    Krylov-Schur GNHEP batch at ``shift_hz`` (λ = ω²).
 
-    ``shift_hz`` is the worker/master target frequency; ST sinvert inverts around that band.
+    Default config uses ``eps_which=SHIFT`` with ``st_type=shift`` so modes are sought
+    around the band center, not pinned at a shift-invert spectral point.
     """
     min_hz = _slepc_spectrum_min_hz(solver_cfg, shift_hz)
     target_hz = float(shift_hz)
     target_lambda = (2.0 * math.pi * target_hz) ** 2
-    use_target_real = _eps_use_target_real(solver_cfg)
+    eps_which, eps_which_label, use_st_shift, use_broad_window = _slepc_eps_strategy(solver_cfg)
     broad_hz = float(solver_cfg.get("eps_broad_search_hz", 0.0))
     f_window_lo: Optional[float] = None
     f_window_hi: Optional[float] = None
-    if use_target_real and broad_hz > 0.0:
+    if use_broad_window and broad_hz > 0.0:
         f_window_lo = target_hz - broad_hz
         f_window_hi = target_hz + broad_hz
     rigid_tol = float(solver_cfg.get("coupled_rigid_lambda_tol", 1.0e-10))
     rigid_buf = int(solver_cfg.get("eps_rigid_mode_buffer", 10))
     nev_request = int(batch) + max(rigid_buf, 0)
 
-    # ST σ: broad TARGET_REAL window uses band center; else target + jitter.
     shift_jitter_hz = float(solver_cfg.get("shift_jitter_hz", 0.0))
-    if use_target_real and broad_hz > 0.0:
+    if use_broad_window and broad_hz > 0.0:
         st_sigma_hz = max(1.0, target_hz)
     else:
         st_sigma_hz = max(1.0, target_hz + shift_jitter_hz)
     st_sigma = (2.0 * math.pi * st_sigma_hz) ** 2
-    eps_which_label = "TARGET_REAL" if use_target_real else "TARGET_MAGNITUDE"
-    eps_which = (
-        SLEPc.EPS.Which.TARGET_REAL
-        if use_target_real
-        else SLEPc.EPS.Which.TARGET_MAGNITUDE
-    )
 
     eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
     eps.setOperators(A, M)
@@ -1421,7 +1463,9 @@ def _slepc_shift_invert_batch(
             pass
 
     st = eps.getST()
-    _st_name = str(solver_cfg.get("st_type", "sinvert")).strip().lower()
+    _st_name = str(solver_cfg.get("st_type", "shift" if use_st_shift else "sinvert")).strip().lower()
+    if use_st_shift:
+        _st_name = "shift"
     if _st_name in ("shift", "stshift"):
         st.setType(SLEPc.ST.Type.SHIFT)
     else:
@@ -1489,10 +1533,9 @@ def _slepc_shift_invert_batch(
     petsc_opts["pc_factor_shift_amount"] = float(solver_cfg.get("pc_factor_shift_amount", 1e-2))
     petsc_opts["eps_gen_non_hermitian"] = ""
     petsc_opts["bv_orthog_refine"] = str(solver_cfg.get("bv_orthog_refine", "always"))
-    petsc_opts["eps_which"] = "target_real" if use_target_real else "target_magnitude"
+    petsc_opts["eps_which"] = eps_which_label.lower()
     petsc_opts["eps_target"] = target_lambda
-    if _st_name not in ("shift", "stshift"):
-        petsc_opts["st_type"] = "sinvert"
+    petsc_opts["st_type"] = "shift" if _st_name in ("shift", "stshift") else "sinvert"
     petsc_opts["st_ksp_type"] = st_ksp_type
     petsc_opts["st_pc_type"] = st_pc_type
     if st_pc_type.lower() == "lu":
@@ -1626,7 +1669,7 @@ def _slepc_shift_invert_batch(
     reject_decoupled = _solver_bool(solver_cfg, "eps_reject_decoupled_u_only", default=True)
     min_pressure_frac = float(solver_cfg.get("eps_harvest_min_pressure_fraction", 0.02))
     reject_sigma_spurious = _solver_bool(solver_cfg, "eps_reject_sigma_spurious", default=True)
-    if use_target_real and broad_hz > 0.0:
+    if use_st_shift or (use_broad_window and broad_hz > 0.0):
         reject_sigma_spurious = False
     sigma_spurious_hz = float(solver_cfg.get("eps_sigma_spurious_tol_hz", 0.35))
 
@@ -1736,13 +1779,14 @@ def _slepc_shift_invert_batch(
             f"{n_woodish}, max_wood={max_wood:.4f}, f_span={f_span:.3f} Hz, "
             f"ST_sigma={st_sigma_hz:.2f} Hz"
         )
-        for j, (_score, f_hz, _arr, rt, rb, u_n, p_n) in enumerate(
+        for j, (_score, f_hz, _arr, rt, rb, u_n, p_n, p_block_max) in enumerate(
             sorted(candidates, key=lambda t: -t[0])[: min(5, len(candidates))]
         ):
             p_frac = p_n / max(u_n + p_n, 1.0e-30)
             print(
                 f"[solver]   wood-rank {j + 1}: f={f_hz:.2f} Hz wood={rt + rb:.4f} "
-                f"tag1={rt:.4f} tag3={rb:.4f} ||u||={u_n:.3e} ||p||={p_n:.3e} p_frac={p_frac:.3e}"
+                f"tag1={rt:.4f} tag3={rb:.4f} ||u||={u_n:.3e} ||p||={p_n:.3e} "
+                f"max|p|={p_block_max:.3e} p_frac={p_frac:.3e}"
             )
         sys.stdout.flush()
 
@@ -2413,6 +2457,20 @@ def _solve_coupled_evp(
     # Mass — structural normal acceleration drives acoustic: trial u, test q  → block (p, u).
     m_pu = p_scale * fsi_gain * rho_air * ufl.dot(u, n) * q * wood_ds
 
+    _print_raw_coupling_block_norms(a_up, m_pu, status_callback=status_callback)
+
+    acoustic_mass_scale = float(
+        solver_cfg.get("acoustic_mass_scale", solver_cfg.get("mass_scale", 1.0))
+    )
+    if acoustic_mass_scale != 1.0:
+        m_pp = acoustic_mass_scale * m_pp
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                f"[form] acoustic_mass_scale={acoustic_mass_scale:.6e} applied to M_pp only "
+                f"(air mass block; M_pu unchanged)"
+            )
+            sys.stdout.flush()
+
     # Pressure-only regularization (optional); displacement is free–free (no reg_u).
     diag_shift = float(config.get("solver", {}).get("diag_shift", 0.0))
     reg_p = p2 * diag_shift * p * q * xdmf_dx(AIR_VOLUME_TAG)
@@ -2818,7 +2876,10 @@ def _solve_coupled_evp(
         config["_worker_p_frac"] = [t[4] for t in row_meta]
         config["_worker_p_block_max"] = [t[5] for t in row_meta]
         _shift_jitter = float(solver_cfg.get("shift_jitter_hz", 0.0))
-        if _eps_use_target_real(solver_cfg) and float(solver_cfg.get("eps_broad_search_hz", 0.0)) > 0.0:
+        _, _, _use_st_shift, _ = _slepc_eps_strategy(solver_cfg)
+        if _use_st_shift:
+            config["_worker_st_sigma_hz"] = max(1.0, float(_worker_hz) + _shift_jitter)
+        elif _eps_use_target_real(solver_cfg) and float(solver_cfg.get("eps_broad_search_hz", 0.0)) > 0.0:
             config["_worker_st_sigma_hz"] = max(1.0, float(_worker_hz))
         else:
             config["_worker_st_sigma_hz"] = max(1.0, float(_worker_hz) + _shift_jitter)
