@@ -135,7 +135,7 @@ def _report_mat(label: str, K: PETSc.Mat, n_u: int) -> None:
     )
     if nz == 0:
         print(f"    [FAIL] {label} is empty.")
-    elif nz_up == 0 and nz_pu == 0 and label in ("A_up", "A_pu"):
+    elif nz_up == 0 and nz_pu == 0 and ("A_up" in label or "M_pu" in label):
         print(f"    [FAIL] {label} has no u↔p off-diagonal entries (FSI disconnected).")
     elif nz_up > 0 or nz_pu > 0:
         print(f"    [OK] {label} has FSI coupling entries.")
@@ -183,15 +183,11 @@ def run_audit(config_path: Path) -> int:
     if MPI.COMM_WORLD.rank == ROOT_RANK:
         print(f"\n[mixed space] n_u = {n_u}, n_p = {n_p}, n_total = {n_u + n_p}")
 
-    w = ufl.TrialFunction(W)
-    z = ufl.TestFunction(W)
-    u, p = ufl.split(w)
-    v, q = ufl.split(z)
+    u, p = ufl.TrialFunctions(W)
+    v, q = ufl.TestFunctions(W)
     xdmf_ds = ufl.Measure("ds", domain=msh, subdomain_data=facet_tags)
     xdmf_dx = ufl.Measure("dx", domain=msh, subdomain_data=cell_tags)
     n = ufl.FacetNormal(msh)
-    w_n = ufl.dot(u, n)
-    v_n = ufl.dot(v, n)
 
     solver_cfg = cfg.get("solver", {})
     p_scale = _coupled_pressure_dof_scale(solver_cfg)
@@ -201,8 +197,8 @@ def run_audit(config_path: Path) -> int:
     ds_body = xdmf_ds(TAG_BODY)
     wood_ds = ds_top + ds_body
 
-    a_up = -p_scale * p * v_n * wood_ds
-    a_pu = p_scale * q * w_n * wood_ds
+    a_up = -p_scale * p * ufl.dot(n, v) * wood_ds
+    m_pu = p_scale * rho_air * ufl.dot(u, n) * q * wood_ds
     a_pp = (p_scale**2) * (1.0 / rho_air) * ufl.inner(ufl.grad(p), ufl.grad(q)) * xdmf_dx(AIR_VOLUME_TAG)
     # Minimal structural placeholder on wood (not orthotropic — norm reference only).
     a_uu = ufl.inner(ufl.grad(u), ufl.grad(v)) * wood_ds
@@ -214,10 +210,10 @@ def run_audit(config_path: Path) -> int:
         print("[assembly] with soundhole pressure gauge BCs\n")
 
     mats = [
-        ("A_up (full wood_ds)", assemble_matrix(fem.form(a_up), bcs=bcs)),
-        ("A_pu (full wood_ds)", assemble_matrix(fem.form(a_pu), bcs=bcs)),
-        ("A_up (tag1 top only)", assemble_matrix(fem.form(-p_scale * p * v_n * ds_top), bcs=bcs)),
-        ("A_up (tag3 body only)", assemble_matrix(fem.form(-p_scale * p * v_n * ds_body), bcs=bcs)),
+        ("A_up (p→u stiffness, full wood_ds)", assemble_matrix(fem.form(a_up), bcs=bcs)),
+        ("M_pu (u→p mass, full wood_ds)", assemble_matrix(fem.form(m_pu), bcs=bcs)),
+        ("A_up (tag1 top only)", assemble_matrix(fem.form(-p_scale * p * ufl.dot(n, v) * ds_top), bcs=bcs)),
+        ("A_up (tag3 body only)", assemble_matrix(fem.form(-p_scale * p * ufl.dot(n, v) * ds_body), bcs=bcs)),
         ("A_pp (air vol)", assemble_matrix(fem.form(a_pp), bcs=bcs)),
         ("A_uu (wood placeholder)", assemble_matrix(fem.form(a_uu), bcs=bcs)),
     ]

@@ -1525,10 +1525,10 @@ def _solve_coupled_evp(
         status_callback=status_callback,
     )
 
-    w = ufl.TrialFunction(W)
-    z = ufl.TestFunction(W)
-    u, p = ufl.split(w)
-    v, q = ufl.split(z)
+    # Sub-space arguments must use TrialFunctions/TestFunctions (not ufl.split on W)
+    # or dolfinx assembles each block only on its diagonal — FSI off-diagonal nnz stays 0.
+    u, p = ufl.TrialFunctions(W)
+    v, q = ufl.TestFunctions(W)
 
     xdmf_ds = ufl.Measure("ds", domain=msh, subdomain_data=facet_tags)
     # Volume: subdomain_data=cell_tags so xdmf_dx(AIR_VOLUME_TAG) restricts to air cells.
@@ -1623,11 +1623,9 @@ def _solve_coupled_evp(
     # Acoustic stiffness in internal air volume.
     a_pp = p2 * (1.0 / rho_air) * ufl.inner(ufl.grad(p), ufl.grad(q)) * xdmf_dx(AIR_VOLUME_TAG)
 
-    # Pressure load on structure (stiffness-side coupling).
-    a_up = -p_scale * p * v_n * wood_ds
-    # Structure normal displacement drives the acoustic equation (stiffness-side;
-    # together with a_up this yields a non-symmetric coupled operator → GNHEP in SLEPc).
-    a_pu = p_scale * q * w_n * wood_ds
+    # FSI interface (wood_ds): trial/test must span different sub-spaces for off-diagonal nnz.
+    # Stiffness — fluid pressure traction on structure: trial p, test v  → block (u, p).
+    a_up = -p_scale * p * ufl.dot(n, v) * wood_ds
 
     # Acoustic mass and structure mass (per facet tag).
     if wood_tag_top + wood_tag_shell > 0:
@@ -1636,15 +1634,14 @@ def _solve_coupled_evp(
         m_uu = (top_m["rho"] * t_top + back_m["rho"] * t_back) * ufl.dot(u, v) * wood_ds
     m_pp = p2 * (1.0 / (rho_air * c_air * c_air)) * p * q * xdmf_dx(AIR_VOLUME_TAG)
 
-    # Acceleration coupling in acoustic equation:
-    # <q, u.n> on interface contributes to generalized mass block.
-    m_pu = p_scale * q * w_n * wood_ds
+    # Mass — structural normal acceleration drives acoustic: trial u, test q  → block (p, u).
+    m_pu = p_scale * rho_air * ufl.dot(u, n) * q * wood_ds
 
     # Pressure-only regularization (optional); displacement is free–free (no reg_u).
     diag_shift = float(config.get("solver", {}).get("diag_shift", 0.0))
     reg_p = p2 * diag_shift * p * q * xdmf_dx(AIR_VOLUME_TAG)
 
-    a_form = a_uu + a_pp + a_up + a_pu + reg_p
+    a_form = a_uu + a_pp + a_up + reg_p
     m_form = m_uu + m_pp + m_pu
 
     # Per-facet-group shell mass forms for plate-specific sifter (Top tag 1, Body tag 3).
@@ -1827,7 +1824,7 @@ def _solve_coupled_evp(
         return msh, W, A, M
 
     # Release form objects before eigensolve; matrices are already assembled.
-    del a_form, m_form, a_uu, a_pp, a_up, a_pu, m_uu, m_pp, m_pu, m_uu_top_plate, m_uu_back_shell, reg_p
+    del a_form, m_form, a_uu, a_pp, a_up, m_uu, m_pp, m_pu, m_uu_top_plate, m_uu_back_shell, reg_p
     gc.collect()
 
     _emit("Step 3/5: Solving generalized EVP with SLEPc...", status_callback=status_callback)
