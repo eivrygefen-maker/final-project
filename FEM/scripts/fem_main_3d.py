@@ -1013,6 +1013,35 @@ def _eps_use_target_real(solver_cfg: Dict) -> bool:
     return _solver_bool(solver_cfg, "eps_use_target_real", default=False)
 
 
+def _slepc_physical_lambda(
+    eig_r: float,
+    st_sigma: float,
+    st_name: str,
+) -> float:
+    """
+    Map EPS/ST Ritz value to physical GNHEP eigenvalue λ = ω² (rad/s)².
+
+    ``st_type=sinvert``: returned μ ≈ 1/(λ-σ)  →  λ = σ + 1/μ.
+    ``st_type=shift``: returned ν ≈ λ-σ  →  λ = ν + σ (with invert fallback when |ν| is huge).
+    """
+    sigma = float(st_sigma)
+    mu = float(np.real(eig_r))
+    name = str(st_name).strip().lower()
+    if name in ("sinvert", "shift_invert"):
+        if mu <= 0.0 or not math.isfinite(mu):
+            return max(sigma, 0.0)
+        return sigma + (1.0 / mu)
+    if name in ("shift", "stshift"):
+        lam = mu + sigma
+        # Krylov-Schur + LU often returns invert-spectrum μ even when ST is labeled shift.
+        if abs(mu) > max(1.0e4, 100.0 * max(sigma, 1.0)) and mu > 0.0:
+            lam_inv = sigma + (1.0 / mu)
+            if lam_inv > 0.0 and math.isfinite(lam_inv):
+                return lam_inv
+        return max(lam, 0.0)
+    return max(mu, 0.0)
+
+
 def _slepc_eps_strategy(
     solver_cfg: Dict,
 ) -> Tuple[Any, str, bool, bool]:
@@ -1021,12 +1050,12 @@ def _slepc_eps_strategy(
 
     Returns ``(eps_which_enum, label, use_st_shift, use_broad_hz_window)``.
 
-    Preferred band solve: ``st_type=shift`` (ST spectral shift, not shift-invert) with
-    ``TARGET_REAL`` near the band center. Config ``eps_which=SHIFT`` is used when the
-    SLEPc build exposes ``EPS.Which.SHIFT``; otherwise we fall back without aborting.
+    Default band solve: ``st_type=sinvert`` + ``TARGET_MAGNITUDE`` at the band center
+    (harvest must apply ``_slepc_physical_lambda``). Config ``eps_which=SHIFT`` is used
+    when the SLEPc build exposes ``EPS.Which.SHIFT``; otherwise we fall back without aborting.
     """
-    which = str(solver_cfg.get("eps_which", "TARGET_REAL")).strip().upper()
-    st_name = str(solver_cfg.get("st_type", "shift")).strip().lower()
+    which = str(solver_cfg.get("eps_which", "TARGET_MAGNITUDE")).strip().upper()
+    st_name = str(solver_cfg.get("st_type", "sinvert")).strip().lower()
     use_st_shift = st_name in ("shift", "stshift")
     broad_hz = float(solver_cfg.get("eps_broad_search_hz", 0.0))
 
@@ -1447,7 +1476,7 @@ def _slepc_shift_invert_batch(
     """
     Krylov-Schur GNHEP batch at ``shift_hz`` (λ = ω²).
 
-    Default config uses ``TARGET_REAL`` + ``st_type=shift`` (portable across SLEPc builds).
+    Default config uses ``TARGET_MAGNITUDE`` + ``st_type=sinvert`` (portable across SLEPc builds).
     """
     min_hz = _slepc_spectrum_min_hz(solver_cfg, shift_hz)
     target_hz = float(shift_hz)
@@ -1713,10 +1742,11 @@ def _slepc_shift_invert_batch(
                 raise
             continue
         eig_r = float(np.real(eig))
-        if eig_r <= rigid_tol:
+        lam_phys = _slepc_physical_lambda(eig_r, st_sigma, _st_name)
+        if lam_phys <= rigid_tol:
             skipped_rigid += 1
             continue
-        omega = math.sqrt(max(eig_r, 0.0))
+        omega = math.sqrt(max(lam_phys, 0.0))
         f_hz = omega / (2.0 * math.pi)
         rt = 0.0
         rb = 0.0
@@ -1744,7 +1774,8 @@ def _slepc_shift_invert_batch(
         p_block_max = _max_pressure_block_abs(arr, p_to_W)
         if MPI.COMM_WORLD.rank == ROOT_RANK:
             print(
-                f"[eps-p-diag] converged slot={i} f={f_hz:.4f} Hz "
+                f"[eps-p-diag] converged slot={i} raw_eig={eig_r:.6e} "
+                f"lam_phys={lam_phys:.6e} f={f_hz:.4f} Hz "
                 f"max|p|={p_block_max:.6e} p_frac={p_frac:.3e} wood={wood:.4f}",
                 flush=True,
             )
