@@ -3204,13 +3204,10 @@ def _solve_coupled_evp(
         status_callback=status_callback,
     )
 
-    # Trial/test on W.sub(0) and W.sub(1) so coupling blocks map to the correct mixed DOFs.
-    W_u = W.sub(0)
-    W_p = W.sub(1)
-    u = ufl.TrialFunction(W_u)
-    p = ufl.TrialFunction(W_p)
-    v = ufl.TestFunction(W_u)
-    q = ufl.TestFunction(W_p)
+    # Single mixed TrialFunctions(W) — required so a_form = a_uu + a_pp + a_up assembles
+    # as one PETSc matrix (separate W.sub(0)/W.sub(1) TrialFunctions break UFL extraction).
+    u, p = ufl.TrialFunctions(W)
+    v, q = ufl.TestFunctions(W)
     _audit_mixed_w_dof_maps(W, status_callback=status_callback)
 
     xdmf_ds = ufl.Measure("ds", domain=msh, subdomain_data=facet_tags)
