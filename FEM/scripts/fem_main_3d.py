@@ -792,6 +792,165 @@ def _diagnose_shell_stiffness_assembly(
     sys.stdout.flush()
 
 
+def _u_global_dof_count(V_u) -> int:
+    return int(V_u.dofmap.index_map.size_global * V_u.dofmap.index_map_bs)
+
+
+def _audit_u_subspace_global(
+    V_u,
+    *,
+    label: str,
+    V_u_collapsed=None,
+    status_callback=None,
+) -> None:
+    """Confirm displacement space is the full mesh P1^3 field (collapse must not shrink DOF set)."""
+    if MPI.COMM_WORLD.rank != ROOT_RANK:
+        return
+    n_direct = _u_global_dof_count(V_u)
+    msg = f"[DIAG] {label}: global u DOFs (direct)={n_direct}"
+    if V_u_collapsed is not None:
+        n_coll = _u_global_dof_count(V_u_collapsed)
+        msg += f", collapsed={n_coll}"
+        if n_coll != n_direct:
+            _emit(
+                f"{label}: W.sub(0).collapse() DOF count {n_coll} != direct subspace {n_direct} "
+                "(unexpected — BC/dof maps may be inconsistent).",
+                status_callback=status_callback,
+                level="warning",
+            )
+    _emit(msg, status_callback=status_callback)
+
+
+def _locate_facet_displacement_dofs(V_u, msh, facet_indices: np.ndarray) -> np.ndarray:
+    """Locate all displacement DOFs supported on facet entities (vector P1 → use fdim)."""
+    if facet_indices is None or facet_indices.size == 0:
+        return np.array([], dtype=np.int32)
+    fdim = msh.topology.dim - 1
+    msh.topology.create_connectivity(fdim, msh.topology.dim)
+    return np.array(
+        fem.locate_dofs_topological(V_u, fdim, np.asarray(facet_indices, dtype=np.int32)),
+        dtype=np.int32,
+    )
+
+
+def _audit_shell_facet_dof_coverage(
+    msh,
+    facet_tags,
+    V_u,
+    *,
+    tag_top: int,
+    tag_back: int,
+    tag_ribs: int = RIBS_SURFACE_TAG,
+    label: str = "V_u",
+    constrained_u_dofs: Optional[np.ndarray] = None,
+    status_callback=None,
+) -> Dict[int, int]:
+    """
+    Report facet counts and len(dofs) per physical tag on the displacement space.
+    Uses fdim-based localization (correct for vector Lagrange on shell facets).
+    """
+    if MPI.COMM_WORLD.rank != ROOT_RANK:
+        return {}
+
+    facets_top = np.array(facet_tags.find(int(tag_top)), dtype=np.int32)
+    facets_back = np.array(facet_tags.find(int(tag_back)), dtype=np.int32)
+    facets_ribs = np.array(facet_tags.find(int(tag_ribs)), dtype=np.int32)
+    facets_fix = np.array(facet_tags.find(WOOD_FIX_SURFACE_TAG), dtype=np.int32)
+
+    dofs_top = _locate_facet_displacement_dofs(V_u, msh, facets_top)
+    dofs_back = _locate_facet_displacement_dofs(V_u, msh, facets_back)
+    dofs_ribs = _locate_facet_displacement_dofs(V_u, msh, facets_ribs)
+    dofs_fix = _locate_facet_displacement_dofs(V_u, msh, facets_fix)
+
+    print(
+        f"[DIAG] {label} shell facet coverage: "
+        f"tag{tag_top} facets={facets_top.size} len(dofs_top)={dofs_top.size}, "
+        f"tag{tag_back} facets={facets_back.size} len(dofs_back)={dofs_back.size}, "
+        f"tag{tag_ribs} facets={facets_ribs.size} len(dofs_ribs)={dofs_ribs.size}, "
+        f"tag{WOOD_FIX_SURFACE_TAG}(fix) facets={facets_fix.size} len(dofs_fix)={dofs_fix.size}"
+    )
+    if dofs_top.size == 0 and facets_top.size > 0:
+        _emit(
+            f"[DIAG][CRITICAL] tag {tag_top} has {facets_top.size} facets but len(dofs_top)=0 — "
+            "locate_dofs_topological(fdim, facets) found no displacement DOFs. "
+            "Check facet_tags mapping vs build_3d_guitar physical groups.",
+            status_callback=status_callback,
+            level="error",
+        )
+    elif dofs_top.size == 0:
+        _emit(
+            f"[DIAG][warn] tag {tag_top}: zero facets and zero DOFs on displacement space.",
+            status_callback=status_callback,
+            level="warning",
+        )
+
+    if constrained_u_dofs is not None and constrained_u_dofs.size > 0:
+        cset = np.unique(np.asarray(constrained_u_dofs, dtype=np.int32))
+        for tname, tdofs in (
+            ("top", dofs_top),
+            ("back", dofs_back),
+            ("ribs", dofs_ribs),
+            ("wood_fix", dofs_fix),
+        ):
+            if tdofs.size == 0:
+                continue
+            overlap = np.intersect1d(tdofs, cset)
+            if overlap.size > 0:
+                print(
+                    f"[DIAG] {label}: {overlap.size} displacement DOFs on {tname} shell "
+                    f"overlap Dirichlet BC set (expected only at rib/top junction if ribs clamped)."
+                )
+        top_bc = np.intersect1d(dofs_top, cset)
+        if top_bc.size > 0:
+            _emit(
+                f"[DIAG][CRITICAL] {top_bc.size} tag-{tag_top} (top plate) displacement DOFs are "
+                "inside a Dirichlet BC — top plate is not free.",
+                status_callback=status_callback,
+                level="error",
+            )
+    sys.stdout.flush()
+    return {
+        int(tag_top): int(dofs_top.size),
+        int(tag_back): int(dofs_back.size),
+        int(tag_ribs): int(dofs_ribs.size),
+        WOOD_FIX_SURFACE_TAG: int(dofs_fix.size),
+    }
+
+
+def _assert_no_top_plate_dirichlet_bc(
+    facet_tags,
+    V_u,
+    msh,
+    u_dofs_constrained: np.ndarray,
+    *,
+    tag_top: int,
+    status_callback=None,
+) -> None:
+    """Coupled path guard: constrained displacement DOFs must not include free top-plate facets."""
+    facets_top = np.array(facet_tags.find(int(tag_top)), dtype=np.int32)
+    dofs_top = _locate_facet_displacement_dofs(V_u, msh, facets_top)
+    if dofs_top.size == 0 or u_dofs_constrained.size == 0:
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            _emit(
+                f"[bc] verified: no displacement BC overlap on tag-{tag_top} top "
+                f"(len(dofs_top)={dofs_top.size}, constrained u dofs={u_dofs_constrained.size}).",
+                status_callback=status_callback,
+            )
+        return
+    overlap = np.intersect1d(dofs_top, np.asarray(u_dofs_constrained, dtype=np.int32))
+    if overlap.size > 0:
+        raise RuntimeError(
+            f"Displacement BC constrains {overlap.size} top-plate (tag {tag_top}) DOFs; "
+            "only ribs (tag 4) may be clamped. Set clamp_ribs=false or fix facet tagging."
+        )
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        _emit(
+            f"[bc] verified: no displacement BC on tag-{tag_top} top plate "
+            f"(len(dofs_top)={dofs_top.size}, rib-constrained dofs={u_dofs_constrained.size}).",
+            status_callback=status_callback,
+        )
+
+
 def _plate_modal_energy_ratios(
     phi: PETSc.Vec,
     M_top: Optional[PETSc.Mat],
@@ -1246,8 +1405,32 @@ def _solve_structural_only_evp(
     e1, e2 = _plate_local_frame(n, P)
     shell_top = _orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, top_m)
     shell_back = _orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
+    shell_ribs = _orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
     a_uu = shell_top * ds_top + shell_back * ds_back
     m_uu = (top_m["rho"] * t_top) * ufl.dot(u, v) * ds_top + (back_m["rho"] * t_back) * ufl.dot(u, v) * ds_back
+    include_ribs_shell = _solver_bool(solver_cfg, "structural_shell_include_ribs", default=True)
+    if include_ribs_shell and facets_t4.size > 0:
+        ds_ribs = xdmf_ds(RIBS_SURFACE_TAG)
+        a_uu = a_uu + shell_ribs * ds_ribs
+        m_uu = m_uu + (back_m["rho"] * t_back) * ufl.dot(u, v) * ds_ribs
+        if msh.comm.rank == ROOT_RANK:
+            print(
+                f"[DIAG] structural-only: rib shell (tag {RIBS_SURFACE_TAG}) included for "
+                f"top/back structural coupling ({facets_t4.size} facets)."
+            )
+
+    _audit_u_subspace_global(V_u, label="structural-only V_u")
+    _audit_shell_facet_dof_coverage(
+        msh,
+        facet_tags,
+        V_u,
+        tag_top=tag_top,
+        tag_back=tag_back,
+        tag_ribs=RIBS_SURFACE_TAG,
+        label="structural-only V_u",
+        constrained_u_dofs=None,
+        status_callback=status_callback,
+    )
 
     _diagnose_shell_stiffness_assembly(
         a_uu,
@@ -1265,62 +1448,13 @@ def _solve_structural_only_evp(
     m_uu_top_plate = (top_m["rho"] * t_top) * ufl.dot(u, v) * ds_top
     m_uu_back_shell = (back_m["rho"] * t_back) * ufl.dot(u, v) * ds_back
 
-    # V_u coverage diagnostic by tag.
-    try:
-        f_to_v = msh.topology.connectivity(fdim, 0)
-        tag_u_counts = {}
-        for tag, facets_tag in (
-            (tag_top, facets_t1),
-            (2, facets_t2),
-            (tag_back, facets_t3),
-            (RIBS_SURFACE_TAG, facets_t4),
-        ):
-            if facets_tag.size == 0:
-                tag_u_counts[tag] = 0
-                continue
-            verts_tag = np.unique(np.concatenate([f_to_v.links(int(f)) for f in facets_tag])).astype(np.int32)
-            dofs_tag = np.array(fem.locate_dofs_topological(V_u, 0, verts_tag), dtype=np.int32)
-            tag_u_counts[tag] = int(dofs_tag.size)
-        _emit(
-            f"[diag] structural-only V_u coverage (dofs on facets): "
-            f"tag1={tag_u_counts.get(1, 0)}, tag2={tag_u_counts.get(2, 0)}, tag3={tag_u_counts.get(3, 0)}",
-            status_callback=status_callback,
+    # Structural diagnostic: free–free; no displacement BC on tags 1/3/4/5 (see coupled clamp_ribs).
+    bcs_u: List = []
+    if msh.comm.rank == ROOT_RANK:
+        print(
+            "[DIAG] structural-only: free–free (no displacement DirichletBC; "
+            f"tag-{tag_top} top / tag-{tag_back} back / tag-{RIBS_SURFACE_TAG} ribs unconstrained)."
         )
-    except Exception as exc:
-        _emit(f"[diag][warn] V_u coverage diagnostic failed: {exc}", status_callback=status_callback, level="warning")
-
-    # BC/topology block: strict empty-array guards and fail-fast MPI abort on any C++ backend failure.
-    try:
-        def _safe_locate_topo(space, entity_dim: int, entities: np.ndarray, label: str) -> np.ndarray:
-            # MPI alignment: always call into FEniCSx C++ even for empty local arrays.
-            if entities is None:
-                entities = np.array([], dtype=np.int32)
-            entities = np.asarray(entities, dtype=np.int32)
-            if msh.comm.rank == ROOT_RANK:
-                builtins.print(f"--> [DEBUG] ENTERING locate_dofs_topological ({label})", flush=True)
-                sys.stdout.flush()
-            out = np.array(fem.locate_dofs_topological(space, entity_dim, entities), dtype=np.int32)
-            if msh.comm.rank == ROOT_RANK:
-                builtins.print(f"--> [DEBUG] EXITING locate_dofs_topological ({label})", flush=True)
-                sys.stdout.flush()
-            return out
-
-        # Structural diagnostic: free–free; ribs clamp intentionally disabled (see coupled clamp_ribs).
-        bcs_u: List = []
-        if msh.comm.rank == ROOT_RANK:
-            print(
-                "[DIAG] structural-only: free–free (no displacement BCs; "
-                "ribs tag-4 clamp NOT applied in this branch)."
-            )
-    except Exception as e:
-        try:
-            rank = int(msh.comm.rank)
-            sys.stderr.write(f"[FATAL][Rank {rank}] topology/BC block failure: {e}\n")
-            sys.stderr.flush()
-        except Exception:
-            pass
-        msh.comm.Abort(1)
-        raise
 
     # Collective-safe JIT form compilation with explicit cache dir.
     try:
@@ -1550,6 +1684,8 @@ def _solve_structural_only_evp(
     eigvecs = np.stack([vectors[i] for i in order_list], axis=1)
 
     print(f"[DIAG] Structural-only first {len(freqs_hz)} mode(s): {[round(f, 3) for f in freqs_hz]}")
+    dofs_top_mode = _locate_facet_displacement_dofs(V_u, msh, facets_t1)
+    dofs_back_mode = _locate_facet_displacement_dofs(V_u, msh, facets_t3)
     for idx, (f_hz, (rt, rb)) in enumerate(zip(freqs_hz[:5], plate_ratios[:5])):
         wood = rt + rb
         loc = "top-dominated" if rt > 0.6 else "back-dominated" if rb > 0.6 else "mixed/localized"
@@ -1557,6 +1693,29 @@ def _solve_structural_only_evp(
             f"[DIAG]   mode {idx + 1}: f={f_hz:.2f} Hz, tag1_ratio={rt:.4f}, tag3_ratio={rb:.4f}, "
             f"wood_participation={wood:.4f} ({loc})"
         )
+        if idx == 0 and eigvecs.size > 0:
+            u_mode = eigvecs[:, 0]
+            def _dof_kinetic_energy(dof_idx: np.ndarray) -> float:
+                if dof_idx.size == 0:
+                    return 0.0
+                vals = u_mode[np.asarray(dof_idx, dtype=np.int32)]
+                return float(np.dot(vals, vals))
+
+            e_top_dof = _dof_kinetic_energy(dofs_top_mode)
+            e_back_dof = _dof_kinetic_energy(dofs_back_mode)
+            print(
+                f"[DIAG]   mode 1 dof kinetic proxy: top len(dofs_top)={dofs_top_mode.size} "
+                f"E_top={e_top_dof:.6e}, back len(dofs_back)={dofs_back_mode.size} E_back={e_back_dof:.6e}"
+            )
+            if dofs_top_mode.size == 0:
+                print(
+                    "[DIAG][CRITICAL] mode 1: len(dofs_top)=0 — top plate facets are not coupled to V_u DOFs."
+                )
+            elif e_top_dof < 1.0e-24 and e_back_dof > 1.0e-24:
+                print(
+                    "[DIAG][warn] mode 1: back vibrates but top dof energy ≈ 0 — "
+                    "check shell_top*ds(tag1) assembly or disconnected top/back without rib shell."
+                )
     band_lo = float(solver_cfg.get("structural_expected_hz_min", 80.0))
     band_hi = float(solver_cfg.get("structural_expected_hz_max", 200.0))
     in_band = [f for f in freqs_hz[:5] if band_lo <= f <= band_hi]
@@ -1933,15 +2092,27 @@ def _solve_coupled_evp(
             raise RuntimeError("Failed to create pressure grounding dofs (p_dofs is empty).")
 
         V_u, _ = W.sub(0).collapse()
+        _audit_u_subspace_global(
+            W.sub(0),
+            label="coupled W.sub(0)",
+            V_u_collapsed=V_u,
+            status_callback=status_callback,
+        )
         facets_ribs = np.array(facet_tags.find(RIBS_SURFACE_TAG), dtype=np.int32)
-        u_dofs_ribs = np.array([], dtype=np.int32)
-        if facets_ribs.size > 0:
-            u_dofs_ribs = np.array(
-                fem.locate_dofs_topological(V_u, fdim, facets_ribs),
-                dtype=np.int32,
-            )
+        u_dofs_ribs = _locate_facet_displacement_dofs(V_u, msh, facets_ribs)
+        _audit_shell_facet_dof_coverage(
+            msh,
+            facet_tags,
+            V_u,
+            tag_top=tag_top,
+            tag_back=tag_back,
+            tag_ribs=RIBS_SURFACE_TAG,
+            label="coupled V_u (collapsed)",
+            constrained_u_dofs=None,
+            status_callback=status_callback,
+        )
         _emit(
-            "[bc][diag] pressure gauge + ribs clamp (tag 4). "
+            "[bc][diag] pressure gauge + optional ribs clamp (tag 4 only). "
             f"pressure BC dof count={p_dofs.size} (full pressure FE unknowns=n_p_collapsed={n_p_collapsed}), "
             f"ribs facets={facets_ribs.size}, ribs u_dof count={u_dofs_ribs.size}, "
             f"soundhole_facets.shape={soundhole_facets.shape}",
@@ -1957,8 +2128,9 @@ def _solve_coupled_evp(
             bc_u = fem.dirichletbc(u_zero, u_dofs_ribs, V_u)
             bcs.append(bc_u)
             _emit(
-                f"[bc] ribs clamp: u = 0 on tag {RIBS_SURFACE_TAG} "
-                f"({facets_ribs.size} facets, {u_dofs_ribs.size} displacement DOFs).",
+                f"[bc] ribs clamp: u = 0 on tag {RIBS_SURFACE_TAG} only "
+                f"({facets_ribs.size} facets, {u_dofs_ribs.size} displacement DOFs); "
+                f"tags {tag_top} (top) and {tag_back} (back) remain free.",
                 status_callback=status_callback,
             )
         elif not clamp_ribs:
@@ -1972,6 +2144,25 @@ def _solve_coupled_evp(
                 status_callback=status_callback,
                 level="warning",
             )
+        _audit_shell_facet_dof_coverage(
+            msh,
+            facet_tags,
+            V_u,
+            tag_top=tag_top,
+            tag_back=tag_back,
+            tag_ribs=RIBS_SURFACE_TAG,
+            label="coupled V_u (with BC overlap check)",
+            constrained_u_dofs=u_dofs_ribs if clamp_ribs and u_dofs_ribs.size > 0 else None,
+            status_callback=status_callback,
+        )
+        _assert_no_top_plate_dirichlet_bc(
+            facet_tags,
+            V_u,
+            msh,
+            u_dofs_ribs if clamp_ribs and u_dofs_ribs.size > 0 else np.array([], dtype=np.int32),
+            tag_top=tag_top,
+            status_callback=status_callback,
+        )
     except Exception as e:
         _emit(
             "[bc][error] dirichletbc creation failed. "
