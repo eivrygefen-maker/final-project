@@ -695,6 +695,93 @@ def _mesh_interface_diagnostic(msh: mesh.Mesh, cell_tags, facet_tags, status_cal
         _emit(f"[diag][warn] mesh interface diagnostic failed: {exc}", status_callback=status_callback, level="warning")
 
 
+def _mat_frobenius_norm(a_form) -> float:
+    """Assemble a bilinear form and return its Frobenius norm (PETSc default norm)."""
+    K = assemble_matrix(fem.form(a_form))
+    K.assemble()
+    try:
+        return float(K.norm())
+    finally:
+        K.destroy()
+
+
+def _diagnose_shell_stiffness_assembly(
+    a_uu,
+    shell_top,
+    shell_back,
+    ds_top,
+    ds_back,
+    tag_top: int,
+    tag_back: int,
+    n_facets_top: int,
+    n_facets_back: int,
+    *,
+    status_callback=None,
+) -> None:
+    """
+    Stiffness assembly diagnostic: verify shell forms integrate on tagged facets (1 top, 3 back).
+    """
+    if MPI.COMM_WORLD.rank != ROOT_RANK:
+        return
+    print(
+        f"[DEBUG] Shell ds measures: ds_top → facet tag {tag_top} (n_local_facets={n_facets_top}), "
+        f"ds_back → facet tag {tag_back} (n_local_facets={n_facets_back})"
+    )
+    a_uu_norm = float("nan")
+    top_norm = float("nan")
+    back_norm = float("nan")
+    try:
+        a_uu_norm = _mat_frobenius_norm(a_uu)
+        print(f"[DEBUG] Matrix norm of a_uu: {a_uu_norm:.6e}")
+    except Exception as exc:
+        _emit(f"[DEBUG][warn] a_uu norm assembly failed: {exc}", status_callback=status_callback, level="warning")
+    if n_facets_top > 0:
+        try:
+            top_norm = _mat_frobenius_norm(shell_top * ds_top)
+            print(f"[DEBUG] Matrix norm of shell_top*ds(tag{tag_top}): {top_norm:.6e}")
+        except Exception as exc:
+            _emit(
+                f"[DEBUG][warn] shell_top*ds(tag{tag_top}) norm failed: {exc}",
+                status_callback=status_callback,
+                level="warning",
+            )
+    else:
+        print(f"[DEBUG][warn] tag {tag_top} has zero local facets — shell_top contributes nothing.")
+    if n_facets_back > 0:
+        try:
+            back_norm = _mat_frobenius_norm(shell_back * ds_back)
+            print(f"[DEBUG] Matrix norm of shell_back*ds(tag{tag_back}): {back_norm:.6e}")
+        except Exception as exc:
+            _emit(
+                f"[DEBUG][warn] shell_back*ds(tag{tag_back}) norm failed: {exc}",
+                status_callback=status_callback,
+                level="warning",
+            )
+    else:
+        print(f"[DEBUG][warn] tag {tag_back} has zero local facets — shell_back contributes nothing.")
+    if (not math.isfinite(a_uu_norm)) or a_uu_norm < 1.0e-15:
+        _emit(
+            "[DEBUG][CRITICAL] ||a_uu|| ≈ 0 — structural shell stiffness is not assembled. "
+            f"Check mesh facet tags ({tag_top} top, {tag_back} back) vs build_3d_guitar physical groups "
+            "and that ds subdomain_data matches facet_tags.",
+            status_callback=status_callback,
+            level="error",
+        )
+    elif top_norm < 1.0e-15 and n_facets_top > 0:
+        _emit(
+            f"[DEBUG][warn] shell_top*ds(tag{tag_top}) norm ≈ 0 despite {n_facets_top} tagged facets.",
+            status_callback=status_callback,
+            level="warning",
+        )
+    elif back_norm < 1.0e-15 and n_facets_back > 0:
+        _emit(
+            f"[DEBUG][warn] shell_back*ds(tag{tag_back}) norm ≈ 0 despite {n_facets_back} tagged facets.",
+            status_callback=status_callback,
+            level="warning",
+        )
+    sys.stdout.flush()
+
+
 def _plate_modal_energy_ratios(
     phi: PETSc.Vec,
     M_top: Optional[PETSc.Mat],
@@ -1398,6 +1485,19 @@ def _solve_coupled_evp(
         a_uu = shell_top * ds_top + shell_back * ds_back
     else:
         a_uu = (shell_top + shell_back) * wood_ds
+
+    _diagnose_shell_stiffness_assembly(
+        a_uu,
+        shell_top,
+        shell_back,
+        ds_top,
+        ds_back,
+        tag_top,
+        tag_back,
+        wood_tag_top,
+        wood_tag_shell,
+        status_callback=status_callback,
+    )
 
     # Acoustic stiffness in internal air volume.
     a_pp = (1.0 / rho_air) * ufl.inner(ufl.grad(p), ufl.grad(q)) * xdmf_dx(AIR_VOLUME_TAG)
