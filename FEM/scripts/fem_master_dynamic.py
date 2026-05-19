@@ -181,15 +181,14 @@ MERGE_SHIFT_CLUSTER_KEEP_MAX = 8
 WORKER_COL_NORM_MIN = 1e-9
 # Strict coupled-mode harvest gate (merge): true FSI vs structural spurious vs σ-locked.
 HARVEST_GATE_MIN_WOOD = 0.01
-HARVEST_GATE_MIN_WOOD_PROBE = 0.25
 HARVEST_GATE_MIN_P_FRAC_FSI = 1.0e-4
-HARVEST_GATE_ACCEPT_PROBE_WOOD = True
+HARVEST_GATE_TEMPLATE_TAG_TOL = 0.04
+HARVEST_GATE_TEMPLATE_P_FRAC = 1.0e-3
 LADDER_HALF_STEP_HZ = 0.5
 LADDER_OFFSETS_HZ: Tuple[float, ...] = (-LADDER_HALF_STEP_HZ, 0.0, LADDER_HALF_STEP_HZ)
 HARVEST_GATE_SIGMA_TOL_HZ = 0.35
 HARVEST_GATE_SIGMA_P_FRAC = 1.0e-4
-# Debug: keep wood-participating modes at f≈σ for spectrum inspection (do not tag sigma_locked).
-HARVEST_GATE_BYPASS_SIGMA_LOCK = True
+HARVEST_GATE_BYPASS_SIGMA_LOCK = False
 # Incoming worker rows must meet this uniqueness floor (matches worker thin gate).
 MERGE_INCOMING_UNIQUENESS_MIN = 0.04
 
@@ -1406,28 +1405,53 @@ def _passes_harvest_gate(
     ):
         return False, "sigma_locked"
 
+    if structural_only_run:
+        if wood >= HARVEST_GATE_MIN_WOOD:
+            c["harvest_tag"] = "structural_only"
+            return True, "structural_only"
+        return False, "low_wood"
+
+    if wood >= HARVEST_GATE_MIN_WOOD and p_frac >= HARVEST_GATE_MIN_P_FRAC_FSI:
+        return True, "coupled_fsi"
+
     if wood >= HARVEST_GATE_MIN_WOOD:
-        if p_frac >= HARVEST_GATE_MIN_P_FRAC_FSI:
-            return True, "coupled_fsi"
         c["harvest_tag"] = "structural_spurious"
-        if structural_only_run or HARVEST_GATE_BYPASS_SIGMA_LOCK:
-            return True, "structural_spurious"
         return False, "structural_spurious"
 
-    if (
-        HARVEST_GATE_ACCEPT_PROBE_WOOD
-        and wood >= HARVEST_GATE_MIN_WOOD_PROBE
-        and not structural_only_run
-    ):
-        try:
-            col_norm = float(c.get("column_l2_norm", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            col_norm = 0.0
-        if col_norm >= WORKER_COL_NORM_MIN:
-            c["harvest_tag"] = "global_u_probe"
-            return True, "global_u_probe"
-
     return False, "low_wood"
+
+
+def _matches_template_spurious(
+    row: Dict[str, Any],
+    existing: List[Dict[str, Any]],
+) -> bool:
+    """Reject σ-ladder clones: same top/back split, negligible pressure, new frequency."""
+    try:
+        p_frac = float(row.get("p_frac", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        p_frac = 0.0
+    if p_frac >= HARVEST_GATE_TEMPLATE_P_FRAC:
+        return False
+    try:
+        t1 = float(row.get("tag1_ratio", 0.0) or 0.0)
+        t3 = float(row.get("tag3_ratio", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return False
+    for e in existing:
+        try:
+            ep = float(e.get("p_frac", 0.0) or 0.0)
+            e1 = float(e.get("tag1_ratio", 0.0) or 0.0)
+            e3 = float(e.get("tag3_ratio", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if ep >= HARVEST_GATE_TEMPLATE_P_FRAC:
+            continue
+        if (
+            abs(e1 - t1) <= HARVEST_GATE_TEMPLATE_TAG_TOL
+            and abs(e3 - t3) <= HARVEST_GATE_TEMPLATE_TAG_TOL
+        ):
+            return True
+    return False
 
 
 def _merge_result_into_candidates_log(
@@ -1821,6 +1845,21 @@ def _merge_result_into_candidates_log(
                     nh,
                 )
                 if old_abs.is_file() and not force_emergency:
+                    try:
+                        old_abs.unlink()
+                    except OSError:
+                        pass
+                continue
+            if (not force_emergency) and _matches_template_spurious(row, existing):
+                LOGGER.info(
+                    "Merge: skip template spurious at %.4f Hz (tag1≈%.3f tag3≈%.3f p_frac=%.2e; "
+                    "matches prior decoupled mode shape).",
+                    nh,
+                    float(row.get("tag1_ratio", 0.0) or 0.0),
+                    float(row.get("tag3_ratio", 0.0) or 0.0),
+                    float(row.get("p_frac", 0.0) or 0.0),
+                )
+                if old_abs.is_file():
                     try:
                         old_abs.unlink()
                     except OSError:

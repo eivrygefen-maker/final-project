@@ -1080,8 +1080,8 @@ def _slepc_physical_lambda(
             lam_inv = sigma + (1.0 / mu)
             if _ok(lam_inv) and abs(lam_inv - sigma) >= min_dlam:
                 return lam_inv, "invert"
-        # Physical λ at σ (common for sinvert+TARGET_MAGNITUDE); harvest may σ-filter later.
-        if _ok(mu):
+        # Physical λ at σ (sinvert+TARGET_MAGNITUDE) — discard when too close to σ (spurious anchor).
+        if _ok(mu) and abs(mu - sigma) >= min_dlam:
             return mu, "raw"
         return float("nan"), "reject"
 
@@ -1240,11 +1240,6 @@ def _plate_modal_energy_ratios(
         )
         if rt_dof + rb_dof > 1.0e-12:
             return rt_dof, rb_dof
-        u_norm = float(np.linalg.norm(u_collapsed))
-        if u_norm > 1.0e-30:
-            # Displacement energy on shell facet DOFs can be ~0 while ||u||>0 on interior
-            # nodes (P1 volume field); use a neutral split so merge gates see structural content.
-            return 0.5, 0.5
 
     vec_u = phi
     work_out = work_u if work_u is not None else work
@@ -2125,10 +2120,11 @@ def _slepc_shift_invert_batch(
     reject_decoupled = _solver_bool(solver_cfg, "eps_reject_decoupled_u_only", default=True)
     min_pressure_frac = float(solver_cfg.get("eps_harvest_min_pressure_fraction", 0.02))
     reject_sigma_spurious = _solver_bool(solver_cfg, "eps_reject_sigma_spurious", default=True)
-    if use_st_shift or use_ciss:
+    if use_ciss:
         reject_sigma_spurious = False
     sigma_spurious_hz = float(solver_cfg.get("eps_sigma_spurious_tol_hz", 0.35))
     sigma_p_frac_max = float(solver_cfg.get("eps_sigma_spurious_max_p_frac", 1.0e-3))
+    reject_target_locked = _solver_bool(solver_cfg, "eps_reject_target_locked", default=True)
 
     candidates: List[Tuple[float, float, np.ndarray, float, float, float, float, float]] = []
     rvec = A.createVecRight()
@@ -2216,14 +2212,16 @@ def _slepc_shift_invert_batch(
         ):
             skipped_decoupled += 1
             continue
-        if (
-            not allow_weak
-            and reject_sigma_spurious
-            and abs(f_hz - st_sigma_hz) <= sigma_spurious_hz + 1.0e-9
-            and p_frac < sigma_p_frac_max
-        ):
-            skipped_sigma += 1
-            continue
+        if reject_sigma_spurious and p_frac < sigma_p_frac_max:
+            if abs(f_hz - st_sigma_hz) <= sigma_spurious_hz + 1.0e-9:
+                skipped_sigma += 1
+                continue
+            if (
+                reject_target_locked
+                and abs(f_hz - target_hz) <= sigma_spurious_hz + 1.0e-9
+            ):
+                skipped_sigma += 1
+                continue
         rank_by_p = _solver_bool(solver_cfg, "eps_harvest_rank_by_p_frac", default=False)
         rank_score = (p_frac + 0.25 * wood) if rank_by_p else (wood + 0.25 * p_frac)
         candidates.append((rank_score, f_hz, arr, float(rt), float(rb), u_n, p_n, p_block_max))
