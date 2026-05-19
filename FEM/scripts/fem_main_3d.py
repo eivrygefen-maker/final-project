@@ -1687,6 +1687,8 @@ def _block_frobenius_normalize_coupled_forms(
     reg_p,
     solver_cfg: Dict,
     *,
+    s_u_ref: Optional[float] = None,
+    s_p_ref: Optional[float] = None,
     status_callback=None,
 ):
     """
@@ -1698,8 +1700,14 @@ def _block_frobenius_normalize_coupled_forms(
     if _solver_bool(solver_cfg, "gnhep_normalize_matrices", default=False):
         return a_uu, a_pp, a_up, m_uu, m_pp, m_pu, reg_p, 1.0, 1.0
 
-    s_u = max(_mat_frobenius_norm(a_uu), 1.0e-30)
-    s_p = max(_mat_frobenius_norm(a_pp), 1.0e-30)
+    if s_u_ref is not None and math.isfinite(float(s_u_ref)) and float(s_u_ref) > 0.0:
+        s_u = float(s_u_ref)
+    else:
+        s_u = max(_mat_frobenius_norm(a_uu, label="a_uu_block_scale"), 1.0e-30)
+    if s_p_ref is not None and math.isfinite(float(s_p_ref)) and float(s_p_ref) > 0.0:
+        s_p = float(s_p_ref)
+    else:
+        s_p = max(_mat_frobenius_norm(a_pp, label="a_pp_block_scale"), 1.0e-30)
     s_c = math.sqrt(s_u * s_p)
     inv_u = 1.0 / s_u
     inv_p = 1.0 / s_p
@@ -1713,8 +1721,17 @@ def _block_frobenius_normalize_coupled_forms(
     m_pu_s = inv_c * m_pu
     reg_p_s = inv_p * reg_p
     if MPI.COMM_WORLD.rank == ROOT_RANK:
-        m_uu_n = _mat_frobenius_norm(m_uu_s)
-        m_pp_n = _mat_frobenius_norm(m_pp_s)
+        m_uu_n = float("nan")
+        m_pp_n = float("nan")
+        try:
+            m_uu_n = _mat_frobenius_norm(m_uu_s, label="m_uu_scaled")
+            m_pp_n = _mat_frobenius_norm(m_pp_s, label="m_pp_scaled")
+        except Exception as exc:
+            _emit(
+                f"[form][warn] scaled mass block norm trace failed: {type(exc).__name__}: {exc!r}",
+                status_callback=status_callback,
+                level="warning",
+            )
         print(
             f"[form] GNHEP block Frobenius scales: s_uu={s_u:.6e}, s_pp={s_p:.6e}, s_couple={s_c:.6e} "
             f"(||M_uu||_F={m_uu_n:.6e}, ||M_pp||_F={m_pp_n:.6e} after block scaling)"
@@ -3417,7 +3434,28 @@ def _solve_coupled_evp(
         else norm_uu_for_nitsche
     )
 
+    block_solver_cfg = (
+        _resolvent_probe_block_solver_cfg(solver_cfg)
+        if probe_spec is not None
+        else solver_cfg
+    )
+    # Block-scale before probe soft penalties (avoids re-assembling perturbed a_uu for s_u).
+    a_uu, a_pp, a_up, m_uu, m_pp, m_pu, reg_p, _s_uu, _s_pp = _block_frobenius_normalize_coupled_forms(
+        a_uu,
+        a_pp,
+        a_up,
+        m_uu,
+        m_pp,
+        m_pu,
+        reg_p,
+        block_solver_cfg,
+        s_u_ref=norm_uu_ref if probe_spec is not None else None,
+        s_p_ref=norm_pp_ref if probe_spec is not None else None,
+        status_callback=status_callback,
+    )
+
     if probe_spec is not None:
+        # Penalties apply after block Frobenius scaling (||A_uu||_F, ||A_pp||_F ≈ 1).
         a_uu, reg_p, _k_u, _k_p, _nu, _np = _append_resolvent_probe_stabilization(
             a_uu,
             a_pp,
@@ -3430,27 +3468,10 @@ def _solve_coupled_evp(
             wood_ds=wood_ds,
             air_dx=xdmf_dx(AIR_VOLUME_TAG),
             solver_cfg=solver_cfg,
-            norm_uu_ref=norm_uu_ref,
-            norm_pp_ref=norm_pp_ref,
+            norm_uu_ref=1.0,
+            norm_pp_ref=1.0,
             status_callback=status_callback,
         )
-
-    block_solver_cfg = (
-        _resolvent_probe_block_solver_cfg(solver_cfg)
-        if probe_spec is not None
-        else solver_cfg
-    )
-    a_uu, a_pp, a_up, m_uu, m_pp, m_pu, reg_p, _s_uu, _s_pp = _block_frobenius_normalize_coupled_forms(
-        a_uu,
-        a_pp,
-        a_up,
-        m_uu,
-        m_pp,
-        m_pu,
-        reg_p,
-        block_solver_cfg,
-        status_callback=status_callback,
-    )
 
     a_form = a_uu + a_pp + a_up + reg_p
     m_form = m_uu + m_pp + m_pu
