@@ -181,7 +181,9 @@ MERGE_SHIFT_CLUSTER_KEEP_MAX = 8
 WORKER_COL_NORM_MIN = 1e-9
 # Strict coupled-mode harvest gate (merge): true FSI vs structural spurious vs σ-locked.
 HARVEST_GATE_MIN_WOOD = 0.01
+HARVEST_GATE_MIN_WOOD_PROBE = 0.25
 HARVEST_GATE_MIN_P_FRAC_FSI = 1.0e-4
+HARVEST_GATE_ACCEPT_PROBE_WOOD = True
 LADDER_HALF_STEP_HZ = 0.5
 LADDER_OFFSETS_HZ: Tuple[float, ...] = (-LADDER_HALF_STEP_HZ, 0.0, LADDER_HALF_STEP_HZ)
 HARVEST_GATE_SIGMA_TOL_HZ = 0.35
@@ -1411,6 +1413,19 @@ def _passes_harvest_gate(
         if structural_only_run or HARVEST_GATE_BYPASS_SIGMA_LOCK:
             return True, "structural_spurious"
         return False, "structural_spurious"
+
+    if (
+        HARVEST_GATE_ACCEPT_PROBE_WOOD
+        and wood >= HARVEST_GATE_MIN_WOOD_PROBE
+        and not structural_only_run
+    ):
+        try:
+            col_norm = float(c.get("column_l2_norm", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            col_norm = 0.0
+        if col_norm >= WORKER_COL_NORM_MIN:
+            c["harvest_tag"] = "global_u_probe"
+            return True, "global_u_probe"
 
     return False, "low_wood"
 

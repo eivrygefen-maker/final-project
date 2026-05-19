@@ -1232,13 +1232,19 @@ def _plate_modal_energy_ratios(
     """
     map_u = u_to_W if u_to_W is not None else u_parent_indices
     if map_u is not None and dofs_top is not None and dofs_back is not None:
+        u_collapsed = _collapsed_u_from_mixed_vec(phi.array, map_u)
         rt_dof, rb_dof = _plate_facet_dof_energy_ratios(
-            _collapsed_u_from_mixed_vec(phi.array, map_u),
+            u_collapsed,
             np.asarray(dofs_top, dtype=np.int32),
             np.asarray(dofs_back, dtype=np.int32),
         )
         if rt_dof + rb_dof > 1.0e-12:
             return rt_dof, rb_dof
+        u_norm = float(np.linalg.norm(u_collapsed))
+        if u_norm > 1.0e-30:
+            # Displacement energy on shell facet DOFs can be ~0 while ||u||>0 on interior
+            # nodes (P1 volume field); use a neutral split so merge gates see structural content.
+            return 0.5, 0.5
 
     vec_u = phi
     work_out = work_u if work_u is not None else work
@@ -1692,6 +1698,25 @@ def _slepc_configure_st_ksp_pc(
     return st_ksp_type, pc.getType()
 
 
+def _slepc_clear_ciss_petsc_options() -> None:
+    """Remove CISS/RG keys so a Krylov-Schur shift-invert retry is not contaminated."""
+    opts = PETSc.Options()
+    opts["eps_type"] = "krylovschur"
+    for key in (
+        "rg_type",
+        "rg_interval_endpoints",
+        "eps_ciss_integration_points",
+        "eps_ciss_blocksize",
+        "eps_ciss_moments",
+        "eps_ciss_realmats",
+        "eps_ciss_usest",
+    ):
+        try:
+            opts.delValue(key)
+        except Exception:
+            pass
+
+
 def _slepc_configure_ciss_region(
     eps: SLEPc.EPS,
     lam_lo: float,
@@ -1793,6 +1818,8 @@ def _slepc_shift_invert_batch(
         st_sigma = _slepc_hz_to_lambda(st_sigma_hz)
 
     block_is = _slepc_build_mixed_block_is(u_to_W, p_to_W, A.getComm())
+    if not use_ciss:
+        _slepc_clear_ciss_petsc_options()
 
     eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
     eps.setOperators(A, M)
@@ -2310,6 +2337,7 @@ def _slepc_shift_invert_batch(
         fb_cfg["st_pc_type"] = "lu"
         fb_cfg["st_use_fieldsplit"] = False
         fb_cfg["st_ciss_use_fieldsplit"] = False
+        _slepc_clear_ciss_petsc_options()
         n_fb, out_fb = _slepc_shift_invert_batch(
             A,
             M,
