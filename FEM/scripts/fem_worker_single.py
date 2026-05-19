@@ -198,8 +198,7 @@ def main() -> int:
         cfg["solver"]["structural_only_diagnosis"] = True
     _target_hz = float(args.target_hz)
     _target_lambda = (2.0 * math.pi * _target_hz) ** 2
-    cfg["solver"]["st_type"] = "sinvert"
-    cfg["solver"]["eps_which"] = "TARGET_MAGNITUDE"
+    # Respect merged config (e.g. eps_which=SHIFT, st_type=shift); do not force sinvert here.
     cfg["solver"].pop("eps_smallest_magnitude", None)
     cfg["solver"].pop("eps_use_which_user", None)
     cfg["_worker_eps_target_lambda"] = _target_lambda
