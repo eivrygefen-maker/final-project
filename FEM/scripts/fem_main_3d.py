@@ -1284,13 +1284,17 @@ def _block_frobenius_normalize_coupled_forms(
     s_u = max(_mat_frobenius_norm(a_uu), 1.0e-30)
     s_p = max(_mat_frobenius_norm(a_pp), 1.0e-30)
     s_c = math.sqrt(s_u * s_p)
-    a_uu_s = a_uu / s_u
-    a_pp_s = a_pp / s_p
-    a_up_s = a_up / s_c
-    m_uu_s = m_uu / s_u
-    m_pp_s = m_pp / s_p
-    m_pu_s = m_pu / s_c
-    reg_p_s = reg_p / s_p
+    inv_u = 1.0 / s_u
+    inv_p = 1.0 / s_p
+    inv_c = 1.0 / s_c
+    # UFL Forms do not support ``form / float``; scale with scalar multiply.
+    a_uu_s = inv_u * a_uu
+    a_pp_s = inv_p * a_pp
+    a_up_s = inv_c * a_up
+    m_uu_s = inv_u * m_uu
+    m_pp_s = inv_p * m_pp
+    m_pu_s = inv_c * m_pu
+    reg_p_s = inv_p * reg_p
     if MPI.COMM_WORLD.rank == ROOT_RANK:
         m_uu_n = _mat_frobenius_norm(m_uu_s)
         m_pp_n = _mat_frobenius_norm(m_pp_s)
