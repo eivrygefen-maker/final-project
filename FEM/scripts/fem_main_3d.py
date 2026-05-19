@@ -3822,6 +3822,22 @@ def _solve_coupled_evp(
                 status_callback=status_callback,
                 level="warning",
             )
+        if probe_spec is not None and _solver_bool(
+            solver_cfg, "resolvent_pin_fix_tag5", default=True
+        ):
+            facets_fix = np.array(facet_tags.find(WOOD_FIX_SURFACE_TAG), dtype=np.int32)
+            u_dofs_fix = _locate_facet_displacement_dofs(V_u, msh, facets_fix)
+            if u_dofs_fix.size > 0:
+                u_zero_fix = np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType)
+                bc_fix = fem.dirichletbc(u_zero_fix, u_dofs_fix, V_u)
+                bcs.append(bc_fix)
+                bcs_u_only.append(bc_fix)
+                _emit(
+                    f"[bc][resolvent-probe] pin u=0 on tag-{WOOD_FIX_SURFACE_TAG} fix facets "
+                    f"({facets_fix.size} facets, {u_dofs_fix.size} displacement DOFs) "
+                    "to remove rigid-body drift in the harmonic solve.",
+                    status_callback=status_callback,
+                )
         _audit_shell_facet_dof_coverage(
             msh,
             facet_tags,
@@ -4609,6 +4625,46 @@ def _solve_coupled_evp(
     return msh, W, freqs_hz, eigvecs, n_u, n_p
 
 
+def _resolvent_relative_residual(
+    K: PETSc.Mat, x: PETSc.Vec, b: PETSc.Vec
+) -> Tuple[float, float, float]:
+    """Return ``(rel_residual, ||r||, ||b||)`` for ``r = Kx - b``."""
+    r = K.createVecRight()
+    try:
+        K.mult(x, r)
+        r.axpy(-1.0, b)
+        r_norm = float(r.norm())
+        b_norm = max(float(b.norm()), 1.0e-30)
+        return r_norm / b_norm, r_norm, b_norm
+    finally:
+        try:
+            r.destroy()
+        except Exception:
+            pass
+
+
+def _resolvent_probe_block_norms(
+    uh: fem.Function,
+    *,
+    u_to_W: np.ndarray,
+    p_to_W: np.ndarray,
+) -> Tuple[float, float, float]:
+    """L2 norms of displacement / pressure blocks and full mixed vector."""
+    arr = np.asarray(uh.x.array, dtype=np.float64)
+    x_norm = float(np.linalg.norm(arr))
+    u_norm, p_norm = _mixed_eigenvector_block_norms(arr, u_to_W=u_to_W, p_to_W=p_to_W)
+    try:
+        u_sub = float(uh.sub(0).x.norm())
+        p_sub = float(uh.sub(1).x.norm())
+        if u_sub > u_norm:
+            u_norm = u_sub
+        if p_sub > p_norm:
+            p_norm = p_sub
+    except Exception:
+        pass
+    return u_norm, p_norm, x_norm
+
+
 def _configure_probe_direct_ksp(ksp: PETSc.KSP, pc: PETSc.PC, solver_cfg: Dict) -> None:
     """Monolithic MUMPS LU for the resolvent probe (matches production ST defaults)."""
     prefix = "probe_"
@@ -4772,9 +4828,14 @@ def _coupled_resolvent_solve(
     reason = -9999
     its = 0
     reg_used = 0.0
+    rel_res = float("nan")
+    solve_mode = "shifted"
     ksp: Optional[PETSc.KSP] = None
     K: Optional[PETSc.Mat] = None
-    x: Optional[PETSc.Vec] = None
+    uh = fem.Function(W)
+    x = uh.x.petsc_vec
+    res_tol = float(solver_cfg.get("resolvent_residual_tol", 1.0e-6))
+    min_x_frac = float(solver_cfg.get("resolvent_min_solution_frac_of_rhs", 1.0e-12))
 
     a_norm_f = float(A.norm())
     m_norm_f = float(M.norm())
@@ -4846,14 +4907,17 @@ def _coupled_resolvent_solve(
         else:
             b_try = b_try_rhs
 
-        x_try = K_try.createVecRight()
-        x_try.set(0.0)
+        x.set(0.0)
         ksp_try = PETSc.KSP().create(comm)
         ksp_try.setOperators(K_try)
         _configure_probe_direct_ksp(ksp_try, ksp_try.getPC(), solver_cfg)
-        ksp_try.solve(b_try, x_try)
+        ksp_try.solve(b_try, x)
+        uh.x.scatter_forward()
         if inv_sqrt is not None:
-            _resolvent_unscale_solution(x_try, inv_sqrt)
+            _resolvent_unscale_solution(x, inv_sqrt)
+            uh.x.scatter_forward()
+        rel_try, r_norm_try, b_norm_try = _resolvent_relative_residual(K_try, x, b_try)
+        x_norm_try = float(x.norm())
         try:
             if b_try is not b_try_rhs:
                 b_try.destroy()
@@ -4864,16 +4928,24 @@ def _coupled_resolvent_solve(
             pass
         reason_try = int(ksp_try.getConvergedReason())
         its_try = int(ksp_try.getIterationNumber())
+        accepted = (
+            reason_try > 0
+            and rel_try <= res_tol
+            and x_norm_try > min_x_frac * max(b_norm_try, 1.0e-30)
+        )
 
-        if reason_try > 0:
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                f"[resolvent-probe] try reg_frac={reg_frac:.2e}: "
+                f"reason={reason_try} rel_res={rel_try:.3e} "
+                f"||x||={x_norm_try:.6e} ||r||={r_norm_try:.6e}"
+            )
+            sys.stdout.flush()
+
+        if accepted:
             if K is not None:
                 try:
                     K.destroy()
-                except Exception:
-                    pass
-            if x is not None:
-                try:
-                    x.destroy()
                 except Exception:
                     pass
             if ksp is not None:
@@ -4881,8 +4953,8 @@ def _coupled_resolvent_solve(
                     ksp.destroy()
                 except Exception:
                     pass
-            K, x, ksp = K_try, x_try, ksp_try
-            reason, its, reg_used = reason_try, its_try, float(reg_frac)
+            K, ksp = K_try, ksp_try
+            reason, its, reg_used, rel_res = reason_try, its_try, float(reg_frac), rel_try
             break
 
         if MPI.COMM_WORLD.rank == ROOT_RANK:
@@ -4899,37 +4971,70 @@ def _coupled_resolvent_solve(
             )
         try:
             ksp_try.destroy()
-            x_try.destroy()
             K_try.destroy()
         except Exception:
             pass
 
-    solve_ok = reason > 0 and x is not None and K is not None and ksp is not None
+    if K is None or ksp is None:
+        if _solver_bool(solver_cfg, "resolvent_static_fallback", default=True):
+            if MPI.COMM_WORLD.rank == ROOT_RANK:
+                print(
+                    "[resolvent-probe] shifted solves failed or degenerate; "
+                    "trying static fallback (A x = F, no ω²M shift).",
+                    flush=True,
+                )
+            K_static = A.copy()
+            K_static.assemble()
+            x.set(0.0)
+            ksp = PETSc.KSP().create(comm)
+            ksp.setOperators(K_static)
+            _configure_probe_direct_ksp(ksp, ksp.getPC(), solver_cfg)
+            ksp.solve(b, x)
+            uh.x.scatter_forward()
+            rel_res, _, b_ref = _resolvent_relative_residual(K_static, x, b)
+            reason = int(ksp.getConvergedReason())
+            its = int(ksp.getIterationNumber())
+            reg_used = 0.0
+            solve_mode = "static"
+            K = K_static
+            if MPI.COMM_WORLD.rank == ROOT_RANK:
+                print(
+                    f"[resolvent-probe] static fallback: reason={reason} "
+                    f"rel_res={rel_res:.3e} ||x||={float(x.norm()):.6e}",
+                    flush=True,
+                )
+
+    solve_ok = (
+        K is not None
+        and ksp is not None
+        and reason > 0
+        and math.isfinite(rel_res)
+        and rel_res <= res_tol
+    )
     u_norm = float("nan")
     p_norm = float("nan")
     ratio = float("nan")
     coupled_visible = False
+    x_norm_f = float("nan")
 
-    x_norm_f = float(x.norm()) if solve_ok and x is not None else float("nan")
-
-    if solve_ok and x is not None:
-        arr = x.array.copy()
-        if np.all(np.isfinite(arr)):
-            u_norm, p_norm = _mixed_eigenvector_block_norms(
-                arr, u_to_W=u_to_W_map, p_to_W=p_to_W_map
-            )
-            if u_norm < 1.0e-30 and p_norm < 1.0e-30 and x_norm_f > 1.0e-30:
-                u_collapsed = _collapsed_u_from_mixed_vec(arr, u_to_W_map)
-                u_norm = float(np.linalg.norm(u_collapsed))
-                p_idx = np.asarray(p_to_W_map, dtype=np.int32).ravel()
-                if p_idx.size > 0:
-                    p_norm = float(np.linalg.norm(arr[p_idx]))
-            ratio = p_norm / max(u_norm, 1.0e-30)
-            p_floor = 1.0e-6 * max(u_norm, 1.0e-30)
-            coupled_visible = bool(np.isfinite(p_norm) and np.isfinite(u_norm) and p_norm > p_floor)
-        else:
+    if solve_ok:
+        uh.x.scatter_forward()
+        u_norm, p_norm, x_norm_f = _resolvent_probe_block_norms(
+            uh, u_to_W=u_to_W_map, p_to_W=p_to_W_map
+        )
+        if (
+            not (np.isfinite(u_norm) and np.isfinite(p_norm) and np.isfinite(x_norm_f))
+            or x_norm_f <= min_x_frac * max(b_norm, 1.0e-30)
+        ):
             solve_ok = False
             reason = -8888
+        else:
+            ratio = p_norm / max(u_norm, 1.0e-30)
+            p_floor = float(solver_cfg.get("resolvent_coupling_p_over_u_floor", 1.0e-6))
+            p_abs_floor = float(solver_cfg.get("resolvent_coupling_p_abs_floor", 1.0e-20))
+            coupled_visible = bool(
+                p_norm > max(p_floor * u_norm, p_abs_floor) and u_norm > 1.0e-30
+            )
 
     if MPI.COMM_WORLD.rank == ROOT_RANK:
         if solve_ok:
@@ -4937,6 +5042,12 @@ def _coupled_resolvent_solve(
                 "COUPLED (physics OK — prioritize solver strategy)"
                 if coupled_visible
                 else "DECOUPLED (physics/coupling issue — fix FSI formulation before eigensolver)"
+            )
+        elif not solve_ok and b_norm > 1.0e-30:
+            verdict = (
+                "SOLVE_FAILED (zero/trivial response with nonzero load — "
+                "rigid-body null space or singular shifted operator; "
+                "enable resolvent_pin_fix_tag5 or increase resolvent_mass_reg_frac)"
             )
         else:
             verdict = (
@@ -4946,6 +5057,7 @@ def _coupled_resolvent_solve(
         print(
             f"[resolvent-probe] f={frequency_hz:.4f} Hz omega={omega:.6e} rad/s "
             f"lambda_shift={lam_shift:.6e} mass_reg_frac={reg_used:.2e} "
+            f"mode={solve_mode} rel_res={rel_res:.3e} "
             f"force_tag={tag} (n_facets={n_facets}) force_scale={force_scale:.4e}"
         )
         print(
@@ -4960,10 +5072,11 @@ def _coupled_resolvent_solve(
                 f"[resolvent-probe] ||x||={x_norm_f:.6e} ||u||={u_norm:.6e} "
                 f"||p||={p_norm:.6e} ||p||/||u||={ratio:.6e}"
             )
-            p_floor = 1.0e-6 * max(u_norm, 1.0e-30)
+            p_floor = float(solver_cfg.get("resolvent_coupling_p_over_u_floor", 1.0e-6))
+            p_abs_floor = float(solver_cfg.get("resolvent_coupling_p_abs_floor", 1.0e-20))
             print(
-                f"[resolvent-probe] coupling_check (||p|| > 1e-6*||u||): "
-                f"{coupled_visible} (threshold ||p|| > {p_floor:.6e})"
+                f"[resolvent-probe] coupling_check (||p|| > max({p_floor:.0e}*||u||, {p_abs_floor:.0e})): "
+                f"{coupled_visible}"
             )
         print(f"[resolvent-probe] VERDICT: {verdict}")
         sys.stdout.flush()
@@ -4971,8 +5084,6 @@ def _coupled_resolvent_solve(
     try:
         if ksp is not None:
             ksp.destroy()
-        if x is not None:
-            x.destroy()
         if K is not None:
             K.destroy()
         b.destroy()
@@ -4993,6 +5104,8 @@ def _coupled_resolvent_solve(
         "u_norm": u_norm,
         "p_norm": p_norm,
         "p_over_u": ratio,
+        "relative_residual": rel_res,
+        "solve_mode": solve_mode,
         "balance_lambda_shift": bool(balance_shift),
         "coupling_check_pass": bool(coupled_visible),
         "solve_ok": bool(solve_ok),
