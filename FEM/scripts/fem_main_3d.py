@@ -1020,22 +1020,46 @@ def _slepc_eps_strategy(
     Resolve SLEPc ``which`` + ST pairing from config.
 
     Returns ``(eps_which_enum, label, use_st_shift, use_broad_hz_window)``.
-  When ``eps_which`` is ``SHIFT``, use ``st_type='shift'`` so modes are found
-    around σ rather than pinned by shift-invert at σ.
+
+    Preferred band solve: ``st_type=shift`` (ST spectral shift, not shift-invert) with
+    ``TARGET_REAL`` near the band center. Config ``eps_which=SHIFT`` is used when the
+    SLEPc build exposes ``EPS.Which.SHIFT``; otherwise we fall back without aborting.
     """
-    which = str(solver_cfg.get("eps_which", "SHIFT")).strip().upper()
+    which = str(solver_cfg.get("eps_which", "TARGET_REAL")).strip().upper()
+    st_name = str(solver_cfg.get("st_type", "shift")).strip().lower()
+    use_st_shift = st_name in ("shift", "stshift")
+    broad_hz = float(solver_cfg.get("eps_broad_search_hz", 0.0))
+
     if which == "SHIFT":
-        eps_which = getattr(SLEPc.EPS.Which, "SHIFT", None)
-        if eps_which is None:
-            raise RuntimeError(
-                "SLEPc.EPS.Which.SHIFT is unavailable in this SLEPc build; "
-                "upgrade SLEPc or set solver.eps_which to TARGET_MAGNITUDE."
+        eps_shift = getattr(SLEPc.EPS.Which, "SHIFT", None)
+        if eps_shift is not None:
+            return eps_shift, "SHIFT", True, broad_hz > 0.0
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                "[solver][warn] SLEPc.EPS.Which.SHIFT unavailable in this build; "
+                "using TARGET_REAL + ST shift (set eps_which=TARGET_REAL to silence).",
+                flush=True,
             )
-        return eps_which, "SHIFT", True, False
+        which = "TARGET_REAL"
+        if broad_hz <= 0.0:
+            broad_hz = 1.5
+
     if which in ("TARGET_REAL", "TARGET_REAL_PART") or _eps_use_target_real(solver_cfg):
-        return SLEPc.EPS.Which.TARGET_REAL, "TARGET_REAL", False, True
+        if use_st_shift and broad_hz <= 0.0:
+            broad_hz = 1.5
+        return (
+            SLEPc.EPS.Which.TARGET_REAL,
+            "TARGET_REAL",
+            use_st_shift,
+            broad_hz > 0.0,
+        )
     if which in ("TARGET_MAGNITUDE", "TARGET_MAG", ""):
-        return SLEPc.EPS.Which.TARGET_MAGNITUDE, "TARGET_MAGNITUDE", False, False
+        return (
+            SLEPc.EPS.Which.TARGET_MAGNITUDE,
+            "TARGET_MAGNITUDE",
+            use_st_shift,
+            broad_hz > 0.0,
+        )
     raise ValueError(f"Unsupported solver.eps_which={which!r}")
 
 
@@ -1423,14 +1447,15 @@ def _slepc_shift_invert_batch(
     """
     Krylov-Schur GNHEP batch at ``shift_hz`` (λ = ω²).
 
-    Default config uses ``eps_which=SHIFT`` with ``st_type=shift`` so modes are sought
-    around the band center, not pinned at a shift-invert spectral point.
+    Default config uses ``TARGET_REAL`` + ``st_type=shift`` (portable across SLEPc builds).
     """
     min_hz = _slepc_spectrum_min_hz(solver_cfg, shift_hz)
     target_hz = float(shift_hz)
     target_lambda = (2.0 * math.pi * target_hz) ** 2
     eps_which, eps_which_label, use_st_shift, use_broad_window = _slepc_eps_strategy(solver_cfg)
     broad_hz = float(solver_cfg.get("eps_broad_search_hz", 0.0))
+    if use_broad_window and broad_hz <= 0.0:
+        broad_hz = 1.5
     f_window_lo: Optional[float] = None
     f_window_hi: Optional[float] = None
     if use_broad_window and broad_hz > 0.0:

@@ -198,7 +198,7 @@ def main() -> int:
         cfg["solver"]["structural_only_diagnosis"] = True
     _target_hz = float(args.target_hz)
     _target_lambda = (2.0 * math.pi * _target_hz) ** 2
-    # Respect merged config (e.g. eps_which=SHIFT, st_type=shift); do not force sinvert here.
+    # Respect merged config (e.g. eps_which=TARGET_REAL, st_type=shift); do not force sinvert here.
     cfg["solver"].pop("eps_smallest_magnitude", None)
     cfg["solver"].pop("eps_use_which_user", None)
     cfg["_worker_eps_target_lambda"] = _target_lambda
@@ -212,7 +212,7 @@ def main() -> int:
     cfg["_worker_num_modes"] = _nm
     if MPI.COMM_WORLD.rank == 0:
         _solver = cfg.get("solver", {}) or {}
-        _which = str(_solver.get("eps_which", "SHIFT"))
+        _which = str(_solver.get("eps_which", "TARGET_REAL"))
         _st = str(_solver.get("st_type", "shift"))
         print(
             f"[worker] EPS target: f={_target_hz:.4f} Hz, "
