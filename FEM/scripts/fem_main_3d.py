@@ -1043,16 +1043,23 @@ def _slepc_physical_lambda(
     Returns ``(λ, tag)`` with ``tag`` in
     ``raw|shift|invert|reject``. Non-finite λ means discard the Ritz pair.
 
-    SLEPc may report λ, λ-σ, or 1/(λ-σ) depending on ST type and build.
-    Astronomical |μ| (ill-conditioned shift / spurious infinite modes) must not
-    use the invert fallback σ+1/μ — that pins every mode to the shift frequency.
+    SLEPc builds differ: μ may already be physical λ, or λ-σ (shift ST), or
+  1/(λ-σ) (sinvert). Never apply σ+1/μ when |μ| is astronomical — that pins all
+    modes to the shift. For sinvert+TARGET_MAGNITUDE many builds return physical λ
+    directly when μ ≈ σ (ω² scale).
     """
     sigma = float(st_sigma)
     mu = float(np.real(eig_r))
     name = str(st_name).strip().lower()
     lam_lo, lam_hi = _slepc_lambda_hz_bounds(solver_cfg)
-    # |λ-σ| or moderate |1/(λ-σ)| for guitar band; 1e28 is never physical.
-    mu_cap = max(1.0e6, 80.0 * max(sigma, 1.0))
+    # |1/(λ-σ)| for sinvert; |λ-σ| for shift — both are modest for band modes.
+    mu_invert_max = float(
+        solver_cfg.get("eps_map_invert_mu_max", 1.0e8) if solver_cfg else 1.0e8
+    )
+    sigma_sep = float(
+        solver_cfg.get("eps_map_min_sigma_sep_frac", 0.02) if solver_cfg else 0.02
+    )
+    min_dlam = max(1.0, sigma_sep * max(sigma, 1.0))
 
     def _ok(lam: float) -> bool:
         return math.isfinite(lam) and lam_lo <= lam <= lam_hi
@@ -1060,31 +1067,28 @@ def _slepc_physical_lambda(
     if not math.isfinite(mu):
         return float("nan"), "reject"
 
-    choices: List[Tuple[float, str]] = []
-    if _ok(mu):
-        choices.append((mu, "raw"))
-    lam_shift = mu + sigma
-    if _ok(lam_shift):
-        choices.append((lam_shift, "shift"))
-    if mu > 0.0 and abs(mu) <= mu_cap:
-        lam_inv = sigma + (1.0 / mu)
-        if _ok(lam_inv):
-            choices.append((lam_inv, "invert"))
-
-    if not choices:
+    if name in ("sinvert", "shift_invert"):
+        if mu <= 0.0:
+            return float("nan"), "reject"
+        # Physical λ returned directly (typical for sinvert band solves on this stack).
+        if _ok(mu):
+            return mu, "raw"
+        if mu > 0.0 and abs(mu) <= mu_invert_max:
+            lam_inv = sigma + (1.0 / mu)
+            if _ok(lam_inv) and abs(lam_inv - sigma) >= min_dlam:
+                return lam_inv, "invert"
         return float("nan"), "reject"
 
-    if name in ("shift", "stshift"):
-        for lam, tag in choices:
-            if tag == "shift":
-                return lam, tag
-    if name in ("sinvert", "shift_invert"):
-        for lam, tag in choices:
-            if tag == "invert":
-                return lam, tag
-    # Fallback: Ritz value closest to the shift (typical band target).
-    lam_best, tag_best = min(choices, key=lambda t: abs(t[0] - sigma))
-    return lam_best, tag_best
+    lam_shift = mu + sigma
+    if _ok(lam_shift):
+        return lam_shift, "shift"
+    if _ok(mu):
+        return mu, "raw"
+    if mu > 0.0 and abs(mu) <= mu_invert_max:
+        lam_inv = sigma + (1.0 / mu)
+        if _ok(lam_inv) and abs(lam_inv - sigma) >= min_dlam:
+            return lam_inv, "invert"
+    return float("nan"), "reject"
 
 
 def _slepc_eps_strategy(
@@ -1778,6 +1782,8 @@ def _slepc_shift_invert_batch(
     skipped_below_min = 0
     skipped_window = 0
     skipped_unavailable = 0
+    map_tag_counts: Dict[str, int] = {}
+    raw_eig_samples: List[float] = []
     for i in range(int(harvest_slots)):
         try:
             eig = eps.getEigenpair(i, rvec)
@@ -1790,6 +1796,9 @@ def _slepc_shift_invert_batch(
         lam_phys, lam_map_tag = _slepc_physical_lambda(
             eig_r, st_sigma, _st_name, solver_cfg
         )
+        map_tag_counts[lam_map_tag] = map_tag_counts.get(lam_map_tag, 0) + 1
+        if len(raw_eig_samples) < 5:
+            raw_eig_samples.append(eig_r)
         if (not math.isfinite(lam_phys)) or lam_phys <= rigid_tol:
             skipped_rigid += 1
             continue
@@ -1889,6 +1898,17 @@ def _slepc_shift_invert_batch(
             f"{n_woodish}, max_wood={max_wood:.4f}, f_span={f_span:.3f} Hz, "
             f"ST_sigma={st_sigma_hz:.2f} Hz"
         )
+        if len(candidates) == 0 and nconv_marked > 0:
+            _lam_lo, _lam_hi = _slepc_lambda_hz_bounds(solver_cfg)
+            tags = ", ".join(f"{k}={v}" for k, v in sorted(map_tag_counts.items()))
+            raw_s = ", ".join(f"{x:.3e}" for x in raw_eig_samples)
+            print(
+                f"[solver][warn] EPS map: all {nconv_marked} Ritz pairs rejected before harvest "
+                f"(ST={_st_name}, σ={st_sigma:.3e}); map_tags: {tags or 'none'}; "
+                f"sample raw_eig: [{raw_s}]; lam band [{_lam_lo:.3e}, {_lam_hi:.3e}]. "
+                f"Try st_type=sinvert + eps_which=TARGET_MAGNITUDE if using shift+TARGET_REAL.",
+                flush=True,
+            )
         for j, (_score, f_hz, _arr, rt, rb, u_n, p_n, p_block_max) in enumerate(
             sorted(candidates, key=lambda t: -t[0])[: min(5, len(candidates))]
         ):
