@@ -130,6 +130,8 @@ def main() -> int:
         out_path = config_path.parent / "resolvent_probe_result.json"
         out_path.write_text(json.dumps(stats, indent=2), encoding="utf-8")
         print(f"[resolvent-probe] Wrote {out_path}")
+        if not stats.get("solve_ok", False):
+            return 2
         return 0 if stats.get("coupling_check_pass") else 3
 
     return 0

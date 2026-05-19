@@ -3909,6 +3909,10 @@ def _solve_coupled_evp(
 
 def _configure_probe_direct_ksp(ksp: PETSc.KSP, pc: PETSc.PC, solver_cfg: Dict) -> None:
     """Monolithic MUMPS LU for the resolvent probe (matches production ST defaults)."""
+    prefix = "probe_"
+    ksp.setOptionsPrefix(prefix)
+    pc.setOptionsPrefix(prefix)
+
     st_ksp_type = str(solver_cfg.get("st_ksp_type", "preonly"))
     st_factor = str(
         solver_cfg.get(
@@ -3930,23 +3934,33 @@ def _configure_probe_direct_ksp(ksp: PETSc.KSP, pc: PETSc.PC, solver_cfg: Dict) 
     )
     shift_amt = float(
         solver_cfg.get(
-            "st_pc_factor_shift_amount",
-            solver_cfg.get("pc_factor_shift_amount", 1.0e-8),
+            "resolvent_pc_factor_shift_amount",
+            solver_cfg.get(
+                "st_pc_factor_shift_amount",
+                solver_cfg.get("pc_factor_shift_amount", 1.0e-6),
+            ),
         )
     )
     opts = PETSc.Options()
-    opts["probe_pc_factor_shift_type"] = shift_type
-    opts["probe_pc_factor_shift_amount"] = shift_amt
+    opts[f"{prefix}ksp_type"] = st_ksp_type
+    opts[f"{prefix}pc_type"] = str(solver_cfg.get("st_pc_type", "lu"))
+    opts[f"{prefix}pc_factor_mat_solver_type"] = st_factor
+    opts[f"{prefix}pc_factor_shift_type"] = shift_type
+    opts[f"{prefix}pc_factor_shift_amount"] = shift_amt
+    opts[f"{prefix}mat_mumps_icntl_14"] = int(solver_cfg.get("mat_mumps_icntl_14", 500))
+    opts[f"{prefix}mat_mumps_icntl_24"] = int(solver_cfg.get("mat_mumps_icntl_24", 1))
+    opts[f"{prefix}mat_mumps_icntl_6"] = int(solver_cfg.get("mat_mumps_icntl_6", 7))
+    opts[f"{prefix}mat_mumps_icntl_12"] = int(solver_cfg.get("mat_mumps_icntl_12", 1))
+    opts[f"{prefix}mat_mumps_icntl_4"] = int(solver_cfg.get("mat_mumps_icntl_4", 0))
     try:
         pc.setFactorShiftType(shift_type)
         pc.setFactorShiftAmount(shift_amt)
     except Exception:
         pass
-    for key, val in solver_cfg.items():
-        if key.startswith("mat_mumps_icntl_"):
-            suffix = key.replace("mat_mumps_icntl_", "")
-            opts[f"probe_pc_factor_mat_solver_type"] = st_factor
-            opts[f"probe_mat_mumps_icntl_{suffix}"] = int(val)
+    try:
+        ksp.setTolerances(rtol=1.0e-12, atol=1.0e-14, max_it=1)
+    except Exception:
+        pass
     ksp.setFromOptions()
 
 
@@ -3998,59 +4012,138 @@ def _coupled_resolvent_solve(
             "Check facet tagging and BC overlap on the loaded surface."
         )
 
-    K = A.copy()
-    K.assemble()
-    K.axpy(-lam_shift, M)
+    reg_base = float(solver_cfg.get("resolvent_mass_reg_frac", 1.0e-6))
+    reg_retries = solver_cfg.get("resolvent_mass_reg_retry_fracs", (1.0e-6, 1.0e-4, 1.0e-2))
+    if isinstance(reg_retries, (list, tuple)):
+        reg_fracs = [float(reg_base)] + [float(r) for r in reg_retries if float(r) > float(reg_base)]
+    else:
+        reg_fracs = [reg_base, 1.0e-4, 1.0e-2]
+    seen_reg: set = set()
+    reg_fracs_unique: List[float] = []
+    for r in reg_fracs:
+        if r not in seen_reg:
+            seen_reg.add(r)
+            reg_fracs_unique.append(r)
 
-    x = K.createVecRight()
-    x.set(0.0)
-    ksp = PETSc.KSP().create(PETSc.COMM_WORLD)
-    ksp.setOperators(K)
-    _configure_probe_direct_ksp(ksp, ksp.getPC(), solver_cfg)
-    ksp.solve(b, x)
-    reason = ksp.getConvergedReason()
-    its = ksp.getIterationNumber()
-    if reason < 0 and MPI.COMM_WORLD.rank == ROOT_RANK:
-        _emit(
-            f"[resolvent-probe][warn] KSP diverged (reason={reason}, its={its}); "
-            "norms below may be unreliable.",
-            status_callback=status_callback,
-            level="warning",
-        )
+    comm = A.getComm()
+    reason = -9999
+    its = 0
+    reg_used = 0.0
+    ksp: Optional[PETSc.KSP] = None
+    K: Optional[PETSc.Mat] = None
+    x: Optional[PETSc.Vec] = None
 
-    arr = x.array.copy()
-    u_norm, p_norm = _mixed_eigenvector_block_norms(
-        arr, u_to_W=u_to_W_map, p_to_W=p_to_W_map
-    )
-    ratio = p_norm / max(u_norm, 1.0e-30)
-    p_floor = 1.0e-6 * max(u_norm, 1.0e-30)
-    coupled_visible = p_norm > p_floor
+    for reg_frac in reg_fracs_unique:
+        reg_lambda = float(reg_frac) * float(lam_shift)
+        K_try = A.duplicate()
+        K_try.copy(A)
+        K_try.assemble()
+        K_try.axpy(-lam_shift, M)
+        if reg_lambda > 0.0:
+            K_try.axpy(reg_lambda, M)
+
+        x_try = K_try.createVecRight()
+        x_try.set(0.0)
+        ksp_try = PETSc.KSP().create(comm)
+        ksp_try.setOperators(K_try)
+        _configure_probe_direct_ksp(ksp_try, ksp_try.getPC(), solver_cfg)
+        ksp_try.solve(b, x_try)
+        reason_try = int(ksp_try.getConvergedReason())
+        its_try = int(ksp_try.getIterationNumber())
+
+        if reason_try > 0:
+            if K is not None:
+                try:
+                    K.destroy()
+                except Exception:
+                    pass
+            if x is not None:
+                try:
+                    x.destroy()
+                except Exception:
+                    pass
+            if ksp is not None:
+                try:
+                    ksp.destroy()
+                except Exception:
+                    pass
+            K, x, ksp = K_try, x_try, ksp_try
+            reason, its, reg_used = reason_try, its_try, float(reg_frac)
+            break
+
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            _emit(
+                f"[resolvent-probe][warn] KSP failed (reason={reason_try}, its={its_try}) "
+                f"with mass reg_frac={reg_frac:.2e} "
+                f"(K = A - ({lam_shift:.3e} - {reg_lambda:.3e}) M); retrying.",
+                status_callback=status_callback,
+                level="warning",
+            )
+        try:
+            ksp_try.destroy()
+            x_try.destroy()
+            K_try.destroy()
+        except Exception:
+            pass
+
+    solve_ok = reason > 0 and x is not None and K is not None and ksp is not None
+    u_norm = float("nan")
+    p_norm = float("nan")
+    ratio = float("nan")
+    coupled_visible = False
+
+    if solve_ok and x is not None:
+        arr = x.array.copy()
+        if np.all(np.isfinite(arr)):
+            u_norm, p_norm = _mixed_eigenvector_block_norms(
+                arr, u_to_W=u_to_W_map, p_to_W=p_to_W_map
+            )
+            ratio = p_norm / max(u_norm, 1.0e-30)
+            p_floor = 1.0e-6 * max(u_norm, 1.0e-30)
+            coupled_visible = bool(np.isfinite(p_norm) and np.isfinite(u_norm) and p_norm > p_floor)
+        else:
+            solve_ok = False
+            reason = -8888
 
     if MPI.COMM_WORLD.rank == ROOT_RANK:
-        verdict = (
-            "COUPLED (physics OK — prioritize solver strategy)"
-            if coupled_visible
-            else "DECOUPLED (physics/coupling issue — fix FSI formulation before eigensolver)"
-        )
+        if solve_ok:
+            verdict = (
+                "COUPLED (physics OK — prioritize solver strategy)"
+                if coupled_visible
+                else "DECOUPLED (physics/coupling issue — fix FSI formulation before eigensolver)"
+            )
+        else:
+            verdict = (
+                "SOLVE_FAILED (shifted operator singular/ill-conditioned — "
+                "try another Hz or increase resolvent_mass_reg_frac)"
+            )
         print(
             f"[resolvent-probe] f={frequency_hz:.4f} Hz omega={omega:.6e} rad/s "
-            f"lambda_shift={lam_shift:.6e} force_tag={tag} (n_facets={n_facets}) "
-            f"force_scale={force_scale:.4e}"
+            f"lambda_shift={lam_shift:.6e} mass_reg_frac={reg_used:.2e} "
+            f"force_tag={tag} (n_facets={n_facets}) force_scale={force_scale:.4e}"
+        )
+        print(
+            f"[resolvent-probe] ||A||_F={float(A.norm()):.6e} ||M||_F={float(M.norm()):.6e}"
         )
         print(f"[resolvent-probe] ||F||={b_norm:.6e} KSP its={its} reason={reason}")
-        print(f"[resolvent-probe] ||u||={u_norm:.6e} ||p||={p_norm:.6e} ||p||/||u||={ratio:.6e}")
-        print(
-            f"[resolvent-probe] coupling_check (||p|| > 1e-6*||u||): "
-            f"{coupled_visible} (threshold ||p|| > {p_floor:.6e})"
-        )
+        if solve_ok:
+            print(f"[resolvent-probe] ||u||={u_norm:.6e} ||p||={p_norm:.6e} ||p||/||u||={ratio:.6e}")
+            p_floor = 1.0e-6 * max(u_norm, 1.0e-30)
+            print(
+                f"[resolvent-probe] coupling_check (||p|| > 1e-6*||u||): "
+                f"{coupled_visible} (threshold ||p|| > {p_floor:.6e})"
+            )
         print(f"[resolvent-probe] VERDICT: {verdict}")
         sys.stdout.flush()
 
     try:
-        ksp.destroy()
-        x.destroy()
+        if ksp is not None:
+            ksp.destroy()
+        if x is not None:
+            x.destroy()
+        if K is not None:
+            K.destroy()
         b.destroy()
-        K.destroy()
     except Exception:
         pass
 
@@ -4058,6 +4151,7 @@ def _coupled_resolvent_solve(
         "frequency_hz": float(frequency_hz),
         "omega_rad_s": float(omega),
         "lambda_shift": float(lam_shift),
+        "mass_reg_frac": float(reg_used),
         "force_facet_tag": int(tag),
         "force_facet_count": int(n_facets),
         "force_scale": float(force_scale),
@@ -4066,6 +4160,7 @@ def _coupled_resolvent_solve(
         "p_norm": p_norm,
         "p_over_u": ratio,
         "coupling_check_pass": bool(coupled_visible),
+        "solve_ok": bool(solve_ok),
         "ksp_iterations": int(its),
         "ksp_reason": int(reason),
     }
