@@ -4033,14 +4033,37 @@ def _coupled_resolvent_solve(
     K: Optional[PETSc.Mat] = None
     x: Optional[PETSc.Vec] = None
 
+    a_norm_f = float(A.norm())
+    m_norm_f = float(M.norm())
+    if a_norm_f < 1.0e-30 and MPI.COMM_WORLD.rank == ROOT_RANK:
+        try:
+            d_a = A.getDiagonal()
+            d_sum = float(np.sum(np.abs(d_a.array)))
+            _emit(
+                f"[resolvent-probe][warn] ||A||_F≈0 but sum|diag(A)|={d_sum:.6e} — "
+                "check matrix assembly.",
+                status_callback=status_callback,
+                level="warning",
+            )
+        except Exception:
+            pass
+
     for reg_frac in reg_fracs_unique:
         reg_lambda = float(reg_frac) * float(lam_shift)
-        K_try = A.duplicate()
-        K_try.copy(A)
+        K_try = A.copy()
         K_try.assemble()
-        K_try.axpy(-lam_shift, M)
+        K_try.axpy(
+            -lam_shift,
+            M,
+            structure=PETSc.Mat.Structure.SAME_NONZERO_PATTERN,
+        )
         if reg_lambda > 0.0:
-            K_try.axpy(reg_lambda, M)
+            K_try.axpy(
+                reg_lambda,
+                M,
+                structure=PETSc.Mat.Structure.SAME_NONZERO_PATTERN,
+            )
+        K_try.assemble()
 
         x_try = K_try.createVecRight()
         x_try.set(0.0)
@@ -4072,9 +4095,13 @@ def _coupled_resolvent_solve(
             break
 
         if MPI.COMM_WORLD.rank == ROOT_RANK:
+            try:
+                k_norm_try = float(K_try.norm())
+            except Exception:
+                k_norm_try = float("nan")
             _emit(
                 f"[resolvent-probe][warn] KSP failed (reason={reason_try}, its={its_try}) "
-                f"with mass reg_frac={reg_frac:.2e} "
+                f"with mass reg_frac={reg_frac:.2e} ||K||_F={k_norm_try:.6e} "
                 f"(K = A - ({lam_shift:.3e} - {reg_lambda:.3e}) M); retrying.",
                 status_callback=status_callback,
                 level="warning",
@@ -4123,7 +4150,7 @@ def _coupled_resolvent_solve(
             f"force_tag={tag} (n_facets={n_facets}) force_scale={force_scale:.4e}"
         )
         print(
-            f"[resolvent-probe] ||A||_F={float(A.norm()):.6e} ||M||_F={float(M.norm()):.6e}"
+            f"[resolvent-probe] ||A||_F={a_norm_f:.6e} ||M||_F={m_norm_f:.6e}"
         )
         print(f"[resolvent-probe] ||F||={b_norm:.6e} KSP its={its} reason={reason}")
         if solve_ok:
