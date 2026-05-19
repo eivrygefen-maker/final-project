@@ -1585,6 +1585,12 @@ def _slepc_shift_invert_batch(
             arr, n_u_global, u_to_W=u_to_W, p_to_W=p_to_W
         )
         p_frac = p_n / max(u_n + p_n, 1.0e-30)
+        if p_frac < 1.0e-5 and MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                f"[FSI-AUDIT][warn] Mode f={f_hz:.2f} Hz: p_frac={p_frac:.3e} — "
+                "coupling effectively absent (||p|| negligible vs ||u||); "
+                "check fsi_coupling_gain / pressure_dof_scale."
+            )
         if reject_decoupled and p_frac < min_pressure_frac and wood < min_wood_harvest:
             continue
         if (

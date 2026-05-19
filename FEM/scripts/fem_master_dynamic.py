@@ -2058,14 +2058,20 @@ def main() -> int:
     last_spawn_mono: List[Optional[float]] = [None]
 
     _core_lock = threading.Lock()
+    _core_cond = threading.Condition(_core_lock)
     _core_free: Deque[int] = deque(worker_cores) if use_taskset else deque()
 
-    def lease_core() -> Optional[int]:
+    def lease_core(*, block: bool = True) -> Optional[int]:
+        """Lease a worker CPU. Blocks until one is free unless ``block=False`` (returns None)."""
         if not use_taskset:
             return None
-        with _core_lock:
-            if not _core_free:
-                raise RuntimeError(f"No worker CPU cores available in pool {worker_cores}.")
+        with _core_cond:
+            if not block:
+                if not _core_free:
+                    return None
+            else:
+                while not _core_free:
+                    _core_cond.wait()
             cid = _core_free.popleft()
             remaining = sorted(_core_free)
         LOGGER.info("Core lease: assigned cpu=%d (pool still free: %s)", cid, remaining)
@@ -2074,8 +2080,9 @@ def main() -> int:
     def release_core(cid: Optional[int]) -> None:
         if cid is None or not use_taskset:
             return
-        with _core_lock:
+        with _core_cond:
             _core_free.append(int(cid))
+            _core_cond.notify()
 
     def spawn_worker(
         hz: float,
@@ -2122,7 +2129,16 @@ def main() -> int:
 
         core_id: Optional[int] = None
         if use_taskset:
-            core_id = lease_core()
+            core_id = lease_core(block=not structural_fallback)
+            if core_id is None:
+                LOGGER.warning(
+                    "Skipping worker spawn at %.4f Hz (%s): no CPU core available "
+                    "(all %d worker slots busy).",
+                    hz,
+                    role or "-",
+                    max_workers,
+                )
+                return
             cmd = ["taskset", "-c", str(core_id)] + cmd
 
         LOGGER.info(
