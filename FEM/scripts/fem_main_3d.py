@@ -812,6 +812,29 @@ def _plate_modal_energy_ratios(
     return e_top / total_wood_energy, e_back / total_wood_energy
 
 
+def _coupled_pressure_dof_scale(solver_cfg: Dict) -> float:
+    """
+    Similarity scale s on pressure DOFs (D = diag(I, s·I_p)); applied consistently to all
+    pressure blocks so GNHEP eigenvalues (ω²) are unchanged but block magnitudes match u.
+    """
+    s = float(solver_cfg.get("pressure_dof_scale", 1.0e-4))
+    return s if s > 0.0 else 1.0
+
+
+def _normalize_assembled_gnhep(A: PETSc.Mat, M: PETSc.Mat, solver_cfg: Dict) -> float:
+    """Common Frobenius scaling of A and M (preserves eigenvalues; improves EPS conditioning)."""
+    if not _solver_bool(solver_cfg, "gnhep_normalize_matrices", default=True):
+        return 1.0
+    a_n = float(A.norm())
+    m_n = float(M.norm())
+    scale = max(a_n, m_n, 1.0e-30)
+    if not math.isfinite(scale) or scale <= 0.0:
+        return 1.0
+    A.scale(1.0 / scale)
+    M.scale(1.0 / scale)
+    return scale
+
+
 def _slepc_spectrum_min_hz(solver_cfg: Dict, scheduler_hz: float) -> float:
     """Lower frequency bound (Hz) for physical modes; scheduler_hz is logging/scheduling only."""
     return float(
@@ -848,9 +871,10 @@ def _slepc_shift_invert_batch(
     rigid_buf = int(solver_cfg.get("eps_rigid_mode_buffer", 10))
     nev_request = int(batch) + max(rigid_buf, 0)
 
-    # ST precondition shift below the band (not the eigenvalue selection target).
+    # ST shift-invert σ below the band + jitter to avoid shift singularities (not a mode target).
     st_offset_hz = float(solver_cfg.get("st_precondition_offset_hz", 15.0))
-    st_sigma_hz = max(1.0, float(min_hz) - st_offset_hz)
+    shift_jitter_hz = float(solver_cfg.get("shift_jitter_hz", 5.0))
+    st_sigma_hz = max(1.0, float(min_hz) - st_offset_hz + shift_jitter_hz)
     st_sigma = (2.0 * math.pi * st_sigma_hz) ** 2
 
     eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
@@ -861,6 +885,12 @@ def _slepc_shift_invert_batch(
     if ks_restart <= 0.0:
         ks_restart = 0.5
     eps.setKrylovSchurRestart(ks_restart)
+    ks_pert = float(solver_cfg.get("eps_krylovschur_pertsize", 1.0e-8))
+    if ks_pert > 0.0:
+        try:
+            eps.setKrylovSchurPertSize(ks_pert)
+        except AttributeError:
+            pass
 
     # Smallest magnitude on the transformed problem; harvest f >= min_hz post-solve.
     _which_user = getattr(SLEPc.EPS.Which, "USER", None)
@@ -871,7 +901,7 @@ def _slepc_shift_invert_batch(
         eps.setWhichEigenpairs(SLEPc.EPS.Which.SMALLEST_MAGNITUDE)
 
     st = eps.getST()
-    _st_name = str(solver_cfg.get("st_type", "shift")).strip().lower()
+    _st_name = str(solver_cfg.get("st_type", "sinvert")).strip().lower()
     if _st_name in ("shift", "stshift"):
         st.setType(SLEPc.ST.Type.SHIFT)
     else:
@@ -944,17 +974,20 @@ def _slepc_shift_invert_batch(
     if st_pc_type.lower() == "lu":
         petsc_opts["st_pc_factor_mat_solver_type"] = _st_factor
     petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "none"))
+    if ks_pert > 0.0:
+        petsc_opts["eps_krylovschur_pertsize"] = ks_pert
 
     ncv_min_factor = float(solver_cfg.get("eps_ncv_min_factor", 3.0))
     ncv_floor = int(math.ceil(max(3.0, ncv_min_factor) * float(nev_request)))
     ncv_cfg = int(solver_cfg.get("target_ncv", 0))
     ncv = max(ncv_floor, ncv_cfg, 40)
     eps.setDimensions(int(nev_request), int(ncv))
-    eps_max_it = int(solver_cfg.get("eigs_maxiter", 2000))
+    eps_max_it = int(solver_cfg.get("eigs_maxiter", solver_cfg.get("eps_max_it", 3000)))
     if eps_max_it_cap is not None:
         # Never cap below batch-scaled floor (legacy bug used sifter_batch_max_it ≈ 50 for nev=80).
         eps_max_it = max(int(eps_max_it_cap), int(batch) * 5, 200)
-    eps.setTolerances(float(solver_cfg.get("eigs_tol", 1e-4)), eps_max_it)
+    eps_tol = float(solver_cfg.get("eps_tol", solver_cfg.get("eigs_tol", 1.0e-6)))
+    eps.setTolerances(eps_tol, eps_max_it)
 
     diag_vec = A.getDiagonal()
     diag_arr = np.real(diag_vec.array)
@@ -967,10 +1000,10 @@ def _slepc_shift_invert_batch(
     _emit(
         f"[solver] EPS spectrum batch (scheduler={shift_hz:.2f} Hz): "
         f"min_hz={min_hz:.2f}, lambda_min={lambda_min:.6e}, "
-        f"ST={_st_name} sigma={st_sigma_hz:.2f} Hz, "
-        f"which=SMALLEST_MAGNITUDE, ks_restart={ks_restart:.3f}, "
+        f"ST={_st_name} sigma={st_sigma_hz:.2f} Hz (jitter={shift_jitter_hz:.2f}), "
+        f"which=SMALLEST_MAGNITUDE, ks_restart={ks_restart:.3f}, ks_pert={ks_pert:.2e}, "
         f"nev_request={nev_request} (batch={batch}+rigid_buf={rigid_buf}), "
-        f"ncv={ncv}, eps_max_it={eps_max_it}, "
+        f"ncv={ncv}, eps_tol={eps_tol:.1e}, eps_max_it={eps_max_it}, "
         f"KSP={ksp.getType()}, PC={pc.getType()}, factor={_st_factor}, "
         f"MUMPS via ST opts: ICNTL4={mumps_icntl_4}, ICNTL6={mumps_icntl_6}, ICNTL12={mumps_icntl_12}, "
         f"ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}), "
@@ -1574,29 +1607,36 @@ def _solve_coupled_evp(
         status_callback=status_callback,
     )
 
+    # Pressure DOF similarity scale: balances u (~1e9) and acoustic (~1e1) block magnitudes.
+    p_scale = _coupled_pressure_dof_scale(config.get("solver", {}))
+    p2 = p_scale * p_scale
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        print(f"[form] coupled pressure_dof_scale={p_scale:.4e} (similarity on all p-blocks)")
+        sys.stdout.flush()
+
     # Acoustic stiffness in internal air volume.
-    a_pp = (1.0 / rho_air) * ufl.inner(ufl.grad(p), ufl.grad(q)) * xdmf_dx(AIR_VOLUME_TAG)
+    a_pp = p2 * (1.0 / rho_air) * ufl.inner(ufl.grad(p), ufl.grad(q)) * xdmf_dx(AIR_VOLUME_TAG)
 
     # Pressure load on structure (stiffness-side coupling).
-    a_up = -p * v_n * wood_ds
+    a_up = -p_scale * p * v_n * wood_ds
     # Structure normal displacement drives the acoustic equation (stiffness-side;
     # together with a_up this yields a non-symmetric coupled operator → GNHEP in SLEPc).
-    a_pu = q * w_n * wood_ds
+    a_pu = p_scale * q * w_n * wood_ds
 
     # Acoustic mass and structure mass (per facet tag).
     if wood_tag_top + wood_tag_shell > 0:
         m_uu = (top_m["rho"] * t_top) * ufl.dot(u, v) * ds_top + (back_m["rho"] * t_back) * ufl.dot(u, v) * ds_back
     else:
         m_uu = (top_m["rho"] * t_top + back_m["rho"] * t_back) * ufl.dot(u, v) * wood_ds
-    m_pp = (1.0 / (rho_air * c_air * c_air)) * p * q * xdmf_dx(AIR_VOLUME_TAG)
+    m_pp = p2 * (1.0 / (rho_air * c_air * c_air)) * p * q * xdmf_dx(AIR_VOLUME_TAG)
 
     # Acceleration coupling in acoustic equation:
     # <q, u.n> on interface contributes to generalized mass block.
-    m_pu = q * w_n * wood_ds
+    m_pu = p_scale * q * w_n * wood_ds
 
     # Pressure-only regularization (optional); displacement is free–free (no reg_u).
     diag_shift = float(config.get("solver", {}).get("diag_shift", 0.0))
-    reg_p = diag_shift * p * q * xdmf_dx(AIR_VOLUME_TAG)
+    reg_p = p2 * diag_shift * p * q * xdmf_dx(AIR_VOLUME_TAG)
 
     a_form = a_uu + a_pp + a_up + a_pu + reg_p
     m_form = m_uu + m_pp + m_pu
@@ -1759,6 +1799,13 @@ def _solve_coupled_evp(
     M.assemble()
 
     solver_cfg = config.get("solver", {})
+    gnhep_scale = _normalize_assembled_gnhep(A, M, solver_cfg)
+    if MPI.COMM_WORLD.rank == ROOT_RANK and gnhep_scale != 1.0:
+        print(
+            f"[form] GNHEP Frobenius normalization: scale={gnhep_scale:.6e} "
+            f"(||A||_F={float(A.norm()):.6e}, ||M||_F={float(M.norm()):.6e})"
+        )
+        sys.stdout.flush()
     use_sifter = _solver_bool(solver_cfg, "adaptive_mode_sifter", default=True)
     M_top: Optional[PETSc.Mat] = None
     M_back: Optional[PETSc.Mat] = None
@@ -1802,7 +1849,7 @@ def _solve_coupled_evp(
         max_it = int(
             config.get(
                 "_worker_eps_max_it",
-                int(solver_cfg.get("eigs_maxiter", 2000)),
+                int(solver_cfg.get("eigs_maxiter", solver_cfg.get("eps_max_it", 3000))),
             )
         )
         if M_top is None and M_back is None:
