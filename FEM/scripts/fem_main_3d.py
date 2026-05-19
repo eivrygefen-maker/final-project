@@ -1754,6 +1754,7 @@ def _assemble_coupled_matrix_safe(
     bcs: List[fem.DirichletBC],
     *,
     label: str,
+    retry_empty_bcs: bool = False,
 ) -> PETSc.Mat:
     """Assemble with a clear error label (dolfinx often raises bare AssertionError)."""
     try:
@@ -1761,14 +1762,46 @@ def _assemble_coupled_matrix_safe(
         mat.assemble()
         return mat
     except Exception as exc:
+        if retry_empty_bcs and bcs:
+            try:
+                mat = assemble_matrix(fem.form(bilinear_form), bcs=[])
+                mat.assemble()
+                if MPI.COMM_WORLD.rank == ROOT_RANK:
+                    print(
+                        f"[assembly][warn] {label}: assembly with {len(bcs)} BC(s) failed "
+                        f"({type(exc).__name__}); retried with bcs=[]."
+                    )
+                    sys.stdout.flush()
+                return mat
+            except Exception:
+                pass
         raise RuntimeError(
             f"Matrix assembly failed ({label}): {type(exc).__name__}: {exc!r}"
         ) from exc
 
 
+def _coupled_block_dirichlet_bcs(
+    block_name: str,
+    *,
+    bcs_u: List[fem.DirichletBC],
+    bcs_p: List[fem.DirichletBC],
+    bcs_all: List[fem.DirichletBC],
+) -> List[fem.DirichletBC]:
+    """
+    Route Dirichlet BCs to the blocks they constrain.
+
+    Applying pressure gauge BCs while assembling shell-only ``a_uu`` triggers bare
+    ``AssertionError`` in dolfinx/ffcx; diagnostics use ``bcs=[]`` and succeed.
+    """
+    if block_name in ("uu", "nit_uu"):
+        return list(bcs_u)
+    if block_name in ("pp", "reg_p"):
+        return list(bcs_p)
+    return list(bcs_all)
+
+
 def _sum_assembled_blocks(
-    block_forms: List[Tuple[str, Any]],
-    bcs: List[fem.DirichletBC],
+    block_forms: List[Tuple[str, Any, List[fem.DirichletBC]]],
     *,
     operator_label: str,
     status_callback=None,
@@ -1782,8 +1815,18 @@ def _sum_assembled_blocks(
     if not block_forms:
         raise RuntimeError(f"{operator_label}: no blocks to assemble")
     mats: List[Tuple[str, PETSc.Mat]] = []
-    for name, form in block_forms:
-        mats.append((name, _assemble_coupled_matrix_safe(form, bcs, label=f"{operator_label}_{name}")))
+    for name, form, block_bcs in block_forms:
+        mats.append(
+            (
+                name,
+                _assemble_coupled_matrix_safe(
+                    form,
+                    block_bcs,
+                    label=f"{operator_label}_{name}",
+                    retry_empty_bcs=(name in ("uu", "nit_uu", "pp", "reg_p")),
+                ),
+            )
+        )
     try:
         out = mats[0][1].copy()
         out.assemble()
@@ -1823,7 +1866,8 @@ def _apply_resolvent_probe_matrix_penalties(
     wood_ds,
     air_dx,
     p2: float,
-    bcs: List[fem.DirichletBC],
+    bcs_u: List[fem.DirichletBC],
+    bcs_p: List[fem.DirichletBC],
     solver_cfg: Dict,
     norm_uu_ref: float = 1.0,
     norm_pp_ref: float = 1.0,
@@ -1846,7 +1890,10 @@ def _apply_resolvent_probe_matrix_penalties(
         pass
     if k_u > 0.0:
         Ku = _assemble_coupled_matrix_safe(
-            k_u * ufl.dot(u, v) * wood_ds, bcs, label="probe_reg_u"
+            k_u * ufl.dot(u, v) * wood_ds,
+            bcs_u,
+            label="probe_reg_u",
+            retry_empty_bcs=True,
         )
         try:
             A.axpy(
@@ -1859,7 +1906,9 @@ def _apply_resolvent_probe_matrix_penalties(
             Ku.destroy()
     if k_p > 0.0:
         Kp = _assemble_coupled_matrix_safe(
-            k_p * p2 * p * q * air_dx, bcs, label="probe_reg_p"
+            k_p * p2 * p * q * air_dx,
+            bcs_p,
+            label="probe_reg_p",
         )
         try:
             A.axpy(
@@ -1881,6 +1930,25 @@ def _apply_resolvent_probe_matrix_penalties(
         status_callback=status_callback,
     )
     return k_u, k_p
+
+
+def _resolvent_stabilize_shifted_matrix(K: PETSc.Mat, solver_cfg: Dict) -> float:
+    """Add a small diagonal shift to ``K`` before the resolvent LU factorization."""
+    frac = float(solver_cfg.get("resolvent_ksp_diagonal_shift_frac", 1.0e-8))
+    if frac <= 0.0:
+        return 0.0
+    try:
+        d = K.getDiagonal()
+        arr = np.abs(np.asarray(d.array, dtype=np.float64))
+        shift = frac * max(float(np.max(arr)) if arr.size > 0 else 0.0, 1.0e-30)
+        if shift > 0.0:
+            arr = np.asarray(d.array, dtype=np.float64) + shift
+            d.setArray(arr.astype(PETSc.ScalarType, copy=False))
+            K.setDiagonal(d)
+            K.assemble()
+        return float(shift)
+    except Exception:
+        return 0.0
 
 
 def _resolvent_symmetric_equilibrate(
@@ -3451,22 +3519,20 @@ def _solve_coupled_evp(
     use_nitsche = _solver_bool(solver_cfg, "fsi_nitsche_enable", default=True)
     traction_up = -p_scale * fsi_gain * p * ufl.dot(n, v) * iface_ds
     mass_pu = p_scale * fsi_gain * rho_air * ufl.dot(u, n) * q * iface_ds
+    nit_uu = nit_up = nit_pu = None
     if use_nitsche:
         nit_uu = gamma_n * ufl.dot(u, n) * ufl.dot(v, n) * iface_ds
         nit_up = gamma_n * p * ufl.dot(v, n) * iface_ds
         nit_pu = gamma_n * ufl.dot(u, n) * q * iface_ds
-        a_uu = a_uu + nit_uu
-        a_up = traction_up + nit_up
-        m_pu = mass_pu + nit_pu
         if MPI.COMM_WORLD.rank == ROOT_RANK:
             print(
                 f"[form] FSI Nitsche on iface: gamma_n={gamma_n:.6e}, "
-                f"fsi_gain={fsi_gain:.4g}, iface_facets={fsi_iface_facets.size}"
+                f"fsi_gain={fsi_gain:.4g}, iface_facets={fsi_iface_facets.size} "
+                "(separate blockwise assembly)"
             )
             sys.stdout.flush()
-    else:
-        a_up = traction_up
-        m_pu = mass_pu
+    a_up = traction_up
+    m_pu = mass_pu
 
     _audit_pressure_scale_block_balance(
         a_uu,
@@ -3525,7 +3591,7 @@ def _solve_coupled_evp(
         else solver_cfg
     )
     # Block-scale before probe soft penalties (avoids re-assembling perturbed a_uu for s_u).
-    a_uu, a_pp, a_up, m_uu, m_pp, m_pu, reg_p, _s_uu, _s_pp = _block_frobenius_normalize_coupled_forms(
+    a_uu, a_pp, a_up, m_uu, m_pp, m_pu, reg_p, s_uu, s_pp = _block_frobenius_normalize_coupled_forms(
         a_uu,
         a_pp,
         a_up,
@@ -3538,6 +3604,11 @@ def _solve_coupled_evp(
         s_p_ref=norm_pp_ref if probe_spec is not None else None,
         status_callback=status_callback,
     )
+    inv_u = 1.0 / max(float(s_uu), 1.0e-30)
+    inv_c = 1.0 / math.sqrt(max(float(s_uu) * float(s_pp), 1.0e-30))
+    nit_uu_a = inv_u * nit_uu if nit_uu is not None else None
+    nit_up_a = inv_c * nit_up if nit_up is not None else None
+    nit_pu_m = inv_c * nit_pu if nit_pu is not None else None
 
     a_form = a_uu + a_pp + a_up + reg_p
     m_form = m_uu + m_pp + m_pu
@@ -3599,8 +3670,10 @@ def _solve_coupled_evp(
     # Dirichlet BCs: soundhole pressure gauge + clamped ribs (tag 4); top/back remain free.
     soundhole_facets = np.array(facet_tags.find(2), dtype=np.int32)
     pressure_gauge = str(config.get("solver", {}).get("pressure_gauge", "soundhole")).lower()
-    bcs = []
-    bcs_u_only: List = []
+    bcs: List[fem.DirichletBC] = []
+    bcs_u_only: List[fem.DirichletBC] = []
+    bcs_p_only: List[fem.DirichletBC] = []
+    bc_p = None
     p_dofs = np.array([], dtype=np.int32)
     try:
         V_p, _ = W.sub(1).collapse()
@@ -3725,7 +3798,8 @@ def _solve_coupled_evp(
 
         p_zero = fem.Constant(msh, PETSc.ScalarType(0.0))
         bc_p = fem.dirichletbc(p_zero, p_dofs, V_p)
-        bcs = [bc_p]
+        bcs_p_only = [bc_p]
+        bcs = list(bcs_p_only)
         clamp_ribs = _solver_bool(solver_cfg, "clamp_ribs", default=True)
         if clamp_ribs and u_dofs_ribs.size > 0:
             u_zero = np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType)
@@ -3801,24 +3875,86 @@ def _solve_coupled_evp(
         sys.stdout.flush()
     use_blockwise = _solver_bool(solver_cfg, "coupled_blockwise_assembly", default=True)
     if use_blockwise:
-        A_blocks: List[Tuple[str, Any]] = [
-            ("uu", a_uu),
-            ("pp", a_pp),
-            ("up", a_up),
+
+        def _blk(name: str, form) -> Tuple[str, Any, List[fem.DirichletBC]]:
+            return (
+                name,
+                form,
+                _coupled_block_dirichlet_bcs(
+                    name,
+                    bcs_u=bcs_u_only,
+                    bcs_p=bcs_p_only,
+                    bcs_all=bcs,
+                ),
+            )
+
+        A_blocks: List[Tuple[str, Any, List[fem.DirichletBC]]] = [
+            _blk("uu", a_uu),
+            _blk("pp", a_pp),
+            _blk("up", a_up),
         ]
+        if nit_uu_a is not None:
+            A_blocks.append(_blk("nit_uu", nit_uu_a))
+        if nit_up_a is not None:
+            A_blocks.append(_blk("nit_up", nit_up_a))
         if diag_shift > 0.0:
-            A_blocks.append(("reg_p", reg_p))
-        M_blocks: List[Tuple[str, Any]] = [
-            ("uu", m_uu),
-            ("pp", m_pp),
-            ("pu", m_pu),
+            A_blocks.append(_blk("reg_p", reg_p))
+        M_blocks: List[Tuple[str, Any, List[fem.DirichletBC]]] = [
+            _blk("uu", m_uu),
+            _blk("pp", m_pp),
+            _blk("pu", m_pu),
         ]
-        A = _sum_assembled_blocks(
-            A_blocks, bcs, operator_label="A", status_callback=status_callback
-        )
-        M = _sum_assembled_blocks(
-            M_blocks, bcs, operator_label="M", status_callback=status_callback
-        )
+        if nit_pu_m is not None:
+            M_blocks.append(_blk("nit_pu", nit_pu_m))
+        try:
+            A = _sum_assembled_blocks(
+                A_blocks, operator_label="A", status_callback=status_callback
+            )
+        except Exception as exc:
+            if nit_uu_a is not None or nit_up_a is not None:
+                _emit(
+                    f"[assembly][warn] A blockwise with Nitsche failed ({exc!r}); "
+                    "retrying shell+FSI traction without Nitsche blocks.",
+                    status_callback=status_callback,
+                    level="warning",
+                )
+                A_blocks_fallback = [
+                    _blk("uu", a_uu),
+                    _blk("pp", a_pp),
+                    _blk("up", a_up),
+                ]
+                if diag_shift > 0.0:
+                    A_blocks_fallback.append(_blk("reg_p", reg_p))
+                A = _sum_assembled_blocks(
+                    A_blocks_fallback,
+                    operator_label="A_no_nitsche",
+                    status_callback=status_callback,
+                )
+            else:
+                raise
+        try:
+            M = _sum_assembled_blocks(
+                M_blocks, operator_label="M", status_callback=status_callback
+            )
+        except Exception as exc:
+            if nit_pu_m is not None:
+                _emit(
+                    f"[assembly][warn] M blockwise with Nitsche nit_pu failed ({exc!r}); "
+                    "retrying without nit_pu.",
+                    status_callback=status_callback,
+                    level="warning",
+                )
+                M = _sum_assembled_blocks(
+                    [
+                        _blk("uu", m_uu),
+                        _blk("pp", m_pp),
+                        _blk("pu", m_pu),
+                    ],
+                    operator_label="M_no_nitsche",
+                    status_callback=status_callback,
+                )
+            else:
+                raise
     else:
         A = _assemble_coupled_matrix_safe(a_form, bcs, label="coupled_stiffness_A")
         M = _assemble_coupled_matrix_safe(m_form, bcs, label="coupled_mass_M")
@@ -3844,7 +3980,8 @@ def _solve_coupled_evp(
             wood_ds=wood_ds,
             air_dx=xdmf_dx(AIR_VOLUME_TAG),
             p2=p2,
-            bcs=bcs,
+            bcs_u=bcs_u_only,
+            bcs_p=bcs_p_only,
             solver_cfg=solver_cfg,
             norm_uu_ref=1.0,
             norm_pp_ref=1.0,
@@ -4565,10 +4702,21 @@ def _coupled_resolvent_solve(
     tag = int(force_facet_tag)
     n_facets = int(np.sum(facet_tags.values == tag))
     if n_facets <= 0:
-        raise ValueError(
-            f"Resolvent probe: force facet tag {tag} has no facets on this mesh "
-            f"(valid wood tags: {WOOD_SURFACE_TAGS})."
+        err = (
+            f"force facet tag {tag} has no facets on this mesh "
+            f"(valid wood tags: {WOOD_SURFACE_TAGS})"
         )
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(f"[resolvent-probe] {err}", file=sys.stderr)
+        return {
+            "frequency_hz": float(frequency_hz),
+            "force_facet_tag": tag,
+            "force_scale": float(force_scale),
+            "solve_ok": False,
+            "coupling_check_pass": False,
+            "pipeline_error": err,
+            "ksp_reason": -9998,
+        }
     L = f_amp * ufl.dot(v, n) * xdmf_ds(tag)
     L_form = fem.form(L)
 
@@ -4578,15 +4726,26 @@ def _coupled_resolvent_solve(
 
     b_norm = float(b.norm())
     if b_norm < 1.0e-30:
-        raise RuntimeError(
-            f"Resolvent probe: assembled load vector has ||F||≈0 (tag={tag}, facets={n_facets}). "
-            "Check facet tagging and BC overlap on the loaded surface."
+        err = (
+            f"assembled load vector has ||F||≈0 (tag={tag}, facets={n_facets}); "
+            "check facet tagging and BC overlap on the loaded surface"
         )
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(f"[resolvent-probe] {err}", file=sys.stderr)
+        return {
+            "frequency_hz": float(frequency_hz),
+            "force_facet_tag": tag,
+            "force_scale": float(force_scale),
+            "solve_ok": False,
+            "coupling_check_pass": False,
+            "pipeline_error": err,
+            "ksp_reason": -9997,
+        }
 
     reg_base = float(solver_cfg.get("resolvent_mass_reg_frac", 1.0e-6))
     reg_retries = solver_cfg.get(
         "resolvent_mass_reg_retry_fracs",
-        (1.0e-6, 1.0e-4, 1.0e-2, 0.1),
+        (1.0e-6, 1.0e-4, 1.0e-2, 0.1, 0.5, 1.0),
     )
     use_equilibrate = _solver_bool(solver_cfg, "resolvent_symmetric_equilibrate", default=True)
     if isinstance(reg_retries, (list, tuple)):
@@ -4639,6 +4798,11 @@ def _coupled_resolvent_solve(
                 structure=PETSc.Mat.Structure.SAME_NONZERO_PATTERN,
             )
         K_try.assemble()
+        try:
+            K_try.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
+        except Exception:
+            pass
+        _resolvent_stabilize_shifted_matrix(K_try, solver_cfg)
 
         b_try = b.duplicate()
         b_try.copy(b)
