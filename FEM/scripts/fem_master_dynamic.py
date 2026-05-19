@@ -176,6 +176,8 @@ CONDUCTOR_CEILING_SPECTRAL_ZONE_3 = 480.0  # sparse / high interest → full swe
 # --- Merge-time physical density (numerical duplicate clusters) ---
 MERGE_SHIFT_CLUSTER_SPAN_HZ = 1.0
 MERGE_SHIFT_CLUSTER_MIN_MODES = 20
+# When a batch is σ-locked (all modes at one Hz), keep the best few instead of poisoning merge.
+MERGE_SHIFT_CLUSTER_KEEP_MAX = 8
 WORKER_COL_NORM_MIN = 1e-9
 # Strict coupled-mode harvest gate (merge): true FSI vs structural spurious vs σ-locked.
 HARVEST_GATE_MIN_WOOD = 0.01
@@ -1668,27 +1670,43 @@ def _merge_result_into_candidates_log(
     if (not force_emergency) and len(finite_hz) >= MERGE_SHIFT_CLUSTER_MIN_MODES:
         hz_span = float(max(finite_hz) - min(finite_hz))
         if hz_span < MERGE_SHIFT_CLUSTER_SPAN_HZ - 1e-12:
+            cluster_hz = float(np.median(finite_hz))
+            raw.sort(
+                key=lambda row: (
+                    -float(row.get("p_frac", 0.0) or 0.0),
+                    -float(row.get("uniqueness", 0.0) or 0.0),
+                    -float(row.get("wood_participation", 0.0) or 0.0),
+                )
+            )
+            keep_n = min(len(raw), MERGE_SHIFT_CLUSTER_KEEP_MAX)
+            drop_cluster = raw[keep_n:]
+            raw = raw[:keep_n]
             LOGGER.warning(
-                "Suspect shift (density ceiling): %d modes within %.4f Hz span (< %.1f Hz); "
-                "rejecting merge for %s (numerical duplicate cluster / poisoned batch).",
+                "Suspect shift cluster: %d modes within %.4f Hz span at ~%.4f Hz "
+                "(< %.1f Hz); keeping top %d by p_frac/uniqueness (dropped %d) for %s.",
                 len(finite_hz),
                 hz_span,
+                cluster_hz,
                 MERGE_SHIFT_CLUSTER_SPAN_HZ,
+                keep_n,
+                len(drop_cluster),
                 result_path.name,
             )
-            for c in raw:
+            for c in drop_cluster:
                 _unlink_worker_vector(c, path_root)
-            try:
-                result_path.unlink()
-            except OSError:
-                pass
-            return MergeStats(
-                raw_n=raw_n,
-                kept_after_veto=0,
-                kept_after_manager=0,
-                avg_wood_raw=avg_wood_raw,
-                yield_kept_over_raw=0.0,
-            )
+            raw_n = len(raw)
+            if not raw:
+                try:
+                    result_path.unlink()
+                except OSError:
+                    pass
+                return MergeStats(
+                    raw_n=0,
+                    kept_after_veto=0,
+                    kept_after_manager=0,
+                    avg_wood_raw=avg_wood_raw,
+                    yield_kept_over_raw=0.0,
+                )
 
     veto_pass: List[Dict[str, Any]] = list(raw)
     failed_veto: List[Dict[str, Any]] = []

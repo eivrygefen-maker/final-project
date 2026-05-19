@@ -1021,16 +1021,32 @@ def _slepc_physical_lambda(
     """
     Map EPS/ST Ritz value to physical GNHEP eigenvalue λ = ω² (rad/s)².
 
-    ``st_type=sinvert``: returned μ ≈ 1/(λ-σ)  →  λ = σ + 1/μ.
+  Many SLEPc builds return the **original-pencil** eigenvalue λ directly from
+  ``EPS.getEigenpair``, not the spectral-transform coordinate ν. For
+  ``st_type=sinvert`` the transform value is ν ≈ 1/(λ-σ); when |ν| is on the
+  scale of σ (ω²) the reported number is already λ — applying σ+1/μ would pin
+  every mode to the shift (f_span=0, density-ceiling merge rejects).
+
+    ``st_type=sinvert``: use ν → λ = σ + 1/ν only when |ν| ≪ σ; else treat μ as λ.
     ``st_type=shift``: returned ν ≈ λ-σ  →  λ = ν + σ (with invert fallback when |ν| is huge).
     """
     sigma = float(st_sigma)
     mu = float(np.real(eig_r))
     name = str(st_name).strip().lower()
+    if not math.isfinite(mu):
+        return max(sigma, 0.0)
     if name in ("sinvert", "shift_invert"):
-        if mu <= 0.0 or not math.isfinite(mu):
+        if mu <= 0.0:
             return max(sigma, 0.0)
-        return sigma + (1.0 / mu)
+        lam_invert = sigma + (1.0 / mu)
+        # Original-pencil λ is O(σ); invert Ritz ν is usually modest unless λ→σ.
+        if mu >= max(1.0, 0.02 * max(sigma, 1.0)):
+            return max(mu, 0.0)
+        if abs(mu) > max(1.0e4, 100.0 * max(sigma, 1.0)) and lam_invert > 0.0:
+            return lam_invert
+        if abs(lam_invert - mu) <= 0.05 * max(abs(mu), 1.0):
+            return max(mu, 0.0)
+        return max(lam_invert, 0.0)
     if name in ("shift", "stshift"):
         lam = mu + sigma
         # Krylov-Schur + LU often returns invert-spectrum μ even when ST is labeled shift.
@@ -1823,6 +1839,13 @@ def _slepc_shift_invert_batch(
         max_wood = max((c[3] + c[4] for c in candidates), default=0.0)
         freqs = [c[1] for c in candidates]
         f_span = (max(freqs) - min(freqs)) if freqs else 0.0
+        if len(freqs) >= 10 and f_span < 0.05:
+            print(
+                f"[solver][warn] EPS harvest: f_span={f_span:.4f} Hz at ST_sigma={st_sigma_hz:.2f} Hz "
+                f"({len(freqs)} candidates) — σ-cluster / TARGET_MAGNITUDE+sinvert lock; "
+                "prefer eps_which=TARGET_REAL + st_type=shift for band spread.",
+                flush=True,
+            )
         print(
             f"[solver] EPS harvest: kept={len(out)}/{batch} from nconv_marked={nconv_marked} "
             f"(skip rigid={skipped_rigid}, f<{min_hz:.1f}Hz={skipped_below_min}, "
