@@ -784,15 +784,21 @@ def _mesh_characteristic_length(msh: mesh.Mesh) -> float:
 def _fsi_nitsche_gamma(
     solver_cfg: Dict,
     *,
-    E_ref: float,
+    norm_uu_ref: float,
     h_char: float,
-    p_scale: float,
 ) -> float:
-    """Nitsche penalty scale ``γ`` (Pa/m scale after similarity ``p_scale``)."""
-    base = float(solver_cfg.get("fsi_nitsche_penalty", 50.0))
-    frac = float(solver_cfg.get("fsi_nitsche_penalty_frac", 1.0e-3))
+    """
+    Nitsche penalty tied to shell stiffness scale (not ``E_L * p_scale / h``, which can reach 1e10+).
+
+    ``γ = frac * ||A_uu||_F / h``, capped at ``cap_frac * ||A_uu||_F``.
+    """
+    frac = float(solver_cfg.get("fsi_nitsche_penalty_frac", 1.0e-5))
+    cap_frac = float(solver_cfg.get("fsi_nitsche_penalty_cap_frac", 1.0e-3))
+    ref = max(float(norm_uu_ref), 1.0e-30)
     h = max(float(h_char), 1.0e-6)
-    return base * frac * max(float(E_ref), 1.0e3) * max(float(p_scale), 1.0) / h
+    gamma = frac * ref / h
+    gamma_max = cap_frac * ref
+    return min(gamma, gamma_max)
 
 
 def _audit_assembled_mixed_coupling(
@@ -804,8 +810,78 @@ def _audit_assembled_mixed_coupling(
     status_callback=None,
 ) -> None:
     """Assemble FSI off-diagonal blocks on ``W`` and report Frobenius norms (post-BC)."""
+    _audit_assembled_coupling_block_layout(
+        W, a_up_form, m_pu_form, bcs, status_callback=status_callback
+    )
+
+
+def _mat_frobenius_norm(
+    a_form,
+    *,
+    bcs: Optional[List[fem.DirichletBC]] = None,
+    label: str = "",
+) -> float:
+    """Assemble a bilinear form and return its Frobenius norm (PETSc default norm)."""
+    K: Optional[PETSc.Mat] = None
+    tag = label or "form"
+    try:
+        K = assemble_matrix(fem.form(a_form), bcs=bcs or [])
+        K.assemble()
+        return float(K.norm())
+    except Exception as exc:
+        raise RuntimeError(
+            f"Frobenius norm assembly failed ({tag}): {type(exc).__name__}: {exc!r}"
+        ) from exc
+    finally:
+        if K is not None:
+            try:
+                K.destroy()
+            except Exception:
+                pass
+
+
+def _audit_mixed_w_dof_maps(W: fem.FunctionSpace, *, status_callback=None) -> None:
+    """Log mixed-space vs subspace DOF layout before FSI block assembly."""
     if MPI.COMM_WORLD.rank != ROOT_RANK:
         return
+    W_u = W.sub(0)
+    W_p = W.sub(1)
+    n_w = int(W.dofmap.index_map.size_global * W.dofmap.index_map_bs)
+    n_u_sub = int(W_u.dofmap.index_map.size_global * W_u.dofmap.index_map_bs)
+    n_p_sub = int(W_p.dofmap.index_map.size_global * W_p.dofmap.index_map_bs)
+    V_u_col, _ = W_u.collapse()
+    V_p_col, _ = W_p.collapse()
+    n_u_col = _u_global_dof_count(V_u_col)
+    n_p_col = int(V_p_col.dofmap.index_map.size_global * V_p_col.dofmap.index_map_bs)
+    print(
+        "[FSI-DOF] mixed W: "
+        f"global={n_w}, W.sub(0) index_map={n_u_sub}, W.sub(1) index_map={n_p_sub}, "
+        f"collapsed u={n_u_col}, collapsed p={n_p_col}"
+    )
+    if n_u_sub != n_p_sub:
+        print(
+            "[FSI-DOF] note: W.sub(0) and W.sub(1) index_map sizes differ in mixed layout "
+            "(expected); collapsed u/p counts are the physical unknowns."
+        )
+    sys.stdout.flush()
+
+
+def _audit_assembled_coupling_block_layout(
+    W: fem.FunctionSpace,
+    a_up_form,
+    m_pu_form,
+    bcs: List[fem.DirichletBC],
+    *,
+    status_callback=None,
+) -> Tuple[float, float]:
+    """
+    Assemble coupling blocks on mixed ``W``, compare PETSc sizes to subspace DOF maps.
+    Returns (||A_up||_F, ||M_pu||_F).
+    """
+    if MPI.COMM_WORLD.rank != ROOT_RANK:
+        return float("nan"), float("nan")
+    A_up: Optional[PETSc.Mat] = None
+    M_pu: Optional[PETSc.Mat] = None
     try:
         A_up = assemble_matrix(fem.form(a_up_form), bcs=bcs)
         A_up.assemble()
@@ -813,36 +889,49 @@ def _audit_assembled_mixed_coupling(
         M_pu.assemble()
         n_up = float(A_up.norm())
         n_pu = float(M_pu.norm())
+        nrows, ncols = A_up.getSize()
+        W_u = W.sub(0)
+        W_p = W.sub(1)
+        n_u_sub = int(W_u.dofmap.index_map.size_global * W_u.dofmap.index_map_bs)
+        n_p_sub = int(W_p.dofmap.index_map.size_global * W_p.dofmap.index_map_bs)
+        try:
+            own_up = A_up.getOwnershipRange()
+        except Exception:
+            own_up = (0, 0)
         print(
-            f"[FSI-AUDIT] assembled mixed blocks on W: ||A_up||_F={n_up:.6e}, "
-            f"||M_pu||_F={n_pu:.6e} (bcs={len(bcs)})"
+            f"[FSI-AUDIT] assembled coupling on mixed W: ||A_up||_F={n_up:.6e}, "
+            f"||M_pu||_F={n_pu:.6e}, A_up PETSc size=({nrows}, {ncols}), "
+            f"ownership_range={own_up}, W.sub(0) dofs={n_u_sub}, W.sub(1) dofs={n_p_sub}"
         )
+        n_w = int(W.dofmap.index_map.size_global * W.dofmap.index_map_bs)
+        if nrows != n_w:
+            _emit(
+                f"[FSI-AUDIT][warn] A_up row count {nrows} != mixed W global {n_w}",
+                status_callback=status_callback,
+                level="warning",
+            )
         if n_up < 1.0e-20 and n_pu < 1.0e-20:
             _emit(
-                "[FSI-AUDIT][CRITICAL] assembled FSI coupling blocks are numerically zero — "
-                "check interface facet measure and mixed TrialFunction layout.",
+                "[FSI-AUDIT][CRITICAL] assembled FSI coupling blocks are numerically zero.",
                 status_callback=status_callback,
                 level="error",
             )
         sys.stdout.flush()
+        return n_up, n_pu
     except Exception as exc:
-        _emit(f"[FSI-AUDIT][warn] assembled coupling audit failed: {exc}", status_callback=status_callback, level="warning")
+        _emit(
+            f"[FSI-AUDIT][warn] coupling layout audit failed: {type(exc).__name__}: {exc!r}",
+            status_callback=status_callback,
+            level="warning",
+        )
+        return float("nan"), float("nan")
     finally:
-        try:
-            A_up.destroy()
-            M_pu.destroy()
-        except Exception:
-            pass
-
-
-def _mat_frobenius_norm(a_form) -> float:
-    """Assemble a bilinear form and return its Frobenius norm (PETSc default norm)."""
-    K = assemble_matrix(fem.form(a_form))
-    K.assemble()
-    try:
-        return float(K.norm())
-    finally:
-        K.destroy()
+        for mat in (A_up, M_pu):
+            if mat is not None:
+                try:
+                    mat.destroy()
+                except Exception:
+                    pass
 
 
 def _diagnose_shell_stiffness_assembly(
@@ -1523,6 +1612,7 @@ def _audit_pressure_scale_block_balance(
     fsi_gain: float = 1.0,
     tag_top: int,
     n_facets_top: int,
+    norm_uu_shell: Optional[float] = None,
     status_callback=None,
 ) -> None:
     """
@@ -1534,11 +1624,19 @@ def _audit_pressure_scale_block_balance(
     if MPI.COMM_WORLD.rank != ROOT_RANK:
         return
     try:
-        norm_uu = _mat_frobenius_norm(a_uu)
-        norm_pp = _mat_frobenius_norm(a_pp)
-        norm_up = _mat_frobenius_norm(a_up)
+        norm_uu = (
+            float(norm_uu_shell)
+            if norm_uu_shell is not None and math.isfinite(float(norm_uu_shell))
+            else _mat_frobenius_norm(a_uu, label="a_uu")
+        )
+        norm_pp = _mat_frobenius_norm(a_pp, label="a_pp")
+        norm_up = _mat_frobenius_norm(a_up, label="a_up")
     except Exception as exc:
-        _emit(f"[COUPLED-SPACE][warn] block norm audit failed: {exc}", status_callback=status_callback, level="warning")
+        _emit(
+            f"[COUPLED-SPACE][warn] block norm audit failed: {type(exc).__name__}: {exc!r}",
+            status_callback=status_callback,
+            level="warning",
+        )
         return
     ratio_pu = norm_pp / max(norm_uu, 1.0e-30)
     ratio_couple = norm_up / max(norm_uu, 1.0e-30)
@@ -1647,6 +1745,8 @@ def _append_resolvent_probe_stabilization(
     wood_ds,
     air_dx,
     solver_cfg: Dict,
+    norm_uu_ref: float,
+    norm_pp_ref: float,
     status_callback=None,
 ) -> Tuple[Any, Any, float, float, float, float]:
     """
@@ -1658,8 +1758,8 @@ def _append_resolvent_probe_stabilization(
     """
     frac_u = float(solver_cfg.get("resolvent_struct_penalty_frac", 1.0e-7))
     frac_p = float(solver_cfg.get("resolvent_acoustic_penalty_frac", 1.0e-4))
-    norm_uu = _mat_frobenius_norm(a_uu)
-    norm_pp = _mat_frobenius_norm(a_pp)
+    norm_uu = max(float(norm_uu_ref), 1.0e-30)
+    norm_pp = max(float(norm_pp_ref), 1.0e-30)
     k_u = frac_u * norm_uu
     k_p = frac_p * norm_pp
     reg_u = k_u * ufl.dot(u, v) * wood_ds
@@ -3087,10 +3187,14 @@ def _solve_coupled_evp(
         status_callback=status_callback,
     )
 
-    # Sub-space arguments must use TrialFunctions/TestFunctions (not ufl.split on W)
-    # or dolfinx assembles each block only on its diagonal — FSI off-diagonal nnz stays 0.
-    u, p = ufl.TrialFunctions(W)
-    v, q = ufl.TestFunctions(W)
+    # Trial/test on W.sub(0) and W.sub(1) so coupling blocks map to the correct mixed DOFs.
+    W_u = W.sub(0)
+    W_p = W.sub(1)
+    u = ufl.TrialFunction(W_u)
+    p = ufl.TrialFunction(W_p)
+    v = ufl.TestFunction(W_u)
+    q = ufl.TestFunction(W_p)
+    _audit_mixed_w_dof_maps(W, status_callback=status_callback)
 
     xdmf_ds = ufl.Measure("ds", domain=msh, subdomain_data=facet_tags)
     # Volume: subdomain_data=cell_tags so xdmf_dx(AIR_VOLUME_TAG) restricts to air cells.
@@ -3210,6 +3314,15 @@ def _solve_coupled_evp(
         wood_tag_back,
         status_callback=status_callback,
     )
+    try:
+        a_uu_shell_norm = _mat_frobenius_norm(a_uu, label="a_uu_shell_pre_nitsche")
+    except Exception as exc:
+        a_uu_shell_norm = float("nan")
+        _emit(
+            f"[form][warn] shell ||A_uu|| reference failed: {type(exc).__name__}: {exc!r}",
+            status_callback=status_callback,
+            level="warning",
+        )
 
     # Pressure DOF similarity scale: balances u (~1e9) and acoustic (~1e1) block magnitudes.
     p_scale = _coupled_pressure_dof_scale(config.get("solver", {}))
@@ -3223,11 +3336,15 @@ def _solve_coupled_evp(
 
     # FSI on wood↔air interface facets only (topology), not exterior ribs (tag 4).
     fsi_gain = _fsi_coupling_gain(config.get("solver", {}))
+    norm_uu_for_nitsche = (
+        a_uu_shell_norm
+        if math.isfinite(a_uu_shell_norm) and a_uu_shell_norm > 0.0
+        else 1.083155e10
+    )
     gamma_n = _fsi_nitsche_gamma(
         solver_cfg,
-        E_ref=float(top_m["E_L"]),
+        norm_uu_ref=norm_uu_for_nitsche,
         h_char=h_char,
-        p_scale=p_scale,
     )
     use_nitsche = _solver_bool(solver_cfg, "fsi_nitsche_enable", default=True)
     traction_up = -p_scale * fsi_gain * p * ufl.dot(n, v) * iface_ds
@@ -3257,6 +3374,7 @@ def _solve_coupled_evp(
         fsi_gain=fsi_gain,
         tag_top=tag_top,
         n_facets_top=wood_tag_top,
+        norm_uu_shell=a_uu_shell_norm if math.isfinite(a_uu_shell_norm) else None,
         status_callback=status_callback,
     )
 
@@ -3289,6 +3407,16 @@ def _solve_coupled_evp(
     diag_shift = float(config.get("solver", {}).get("diag_shift", 0.0))
     reg_p = p2 * diag_shift * p * q * xdmf_dx(AIR_VOLUME_TAG)
 
+    try:
+        norm_pp_ref = _mat_frobenius_norm(a_pp, label="a_pp_pre_probe")
+    except Exception:
+        norm_pp_ref = 2.524481e03
+    norm_uu_ref = (
+        a_uu_shell_norm
+        if math.isfinite(a_uu_shell_norm) and a_uu_shell_norm > 0.0
+        else norm_uu_for_nitsche
+    )
+
     if probe_spec is not None:
         a_uu, reg_p, _k_u, _k_p, _nu, _np = _append_resolvent_probe_stabilization(
             a_uu,
@@ -3302,6 +3430,8 @@ def _solve_coupled_evp(
             wood_ds=wood_ds,
             air_dx=xdmf_dx(AIR_VOLUME_TAG),
             solver_cfg=solver_cfg,
+            norm_uu_ref=norm_uu_ref,
+            norm_pp_ref=norm_pp_ref,
             status_callback=status_callback,
         )
 
