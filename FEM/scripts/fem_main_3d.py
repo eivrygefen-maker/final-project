@@ -826,7 +826,7 @@ def _coupled_pressure_dof_scale(solver_cfg: Dict) -> float:
     Similarity scale s on pressure DOFs (D = diag(I, s·I_p)); applied consistently to all
     pressure blocks so GNHEP eigenvalues (ω²) are unchanged but block magnitudes match u.
     """
-    s = float(solver_cfg.get("pressure_dof_scale", 1.0e5))
+    s = float(solver_cfg.get("pressure_dof_scale", 30.0))
     return s if s > 0.0 else 1.0
 
 

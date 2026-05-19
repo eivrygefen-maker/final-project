@@ -101,7 +101,7 @@
         "st_type": "sinvert",
         "eps_which": "TARGET_MAGNITUDE",
         "shift_jitter_hz": 5.0,
-        "pressure_dof_scale": 1.0e5,
+        "pressure_dof_scale": 30.0,
         "gnhep_normalize_matrices": true,
         "eps_rigid_mode_buffer": 10,
         "coupled_rigid_lambda_tol": 1.0e-10,
