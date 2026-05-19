@@ -970,14 +970,55 @@ def _assert_no_top_plate_dirichlet_bc(
         )
 
 
-def _mixed_eigenvector_block_norms(arr: np.ndarray, n_u_dofs: int) -> Tuple[float, float]:
-    """L2 norms of u and p blocks in a stacked mixed (u then p) eigenvector."""
+def _mixed_eigenvector_block_norms(
+    arr: np.ndarray,
+    n_u_dofs: int = 0,
+    *,
+    u_to_W: Optional[np.ndarray] = None,
+    p_to_W: Optional[np.ndarray] = None,
+) -> Tuple[float, float]:
+    """L2 norms of u and p on the mixed W global vector (use collapse maps when provided)."""
+    if u_to_W is not None and p_to_W is not None:
+        u_idx = np.asarray(u_to_W, dtype=np.int32).ravel()
+        p_idx = np.asarray(p_to_W, dtype=np.int32).ravel()
+        u_norm = float(np.linalg.norm(arr[u_idx])) if u_idx.size > 0 else 0.0
+        p_norm = float(np.linalg.norm(arr[p_idx])) if p_idx.size > 0 else 0.0
+        return u_norm, p_norm
     n = max(0, int(n_u_dofs))
     if arr.size < n:
         return 0.0, 0.0
     u_norm = float(np.linalg.norm(arr[:n]))
     p_norm = float(np.linalg.norm(arr[n:])) if arr.size > n else 0.0
     return u_norm, p_norm
+
+
+def _collapsed_u_from_mixed_vec(
+    phi_arr: np.ndarray,
+    u_to_W: np.ndarray,
+) -> np.ndarray:
+    """Extract collapsed displacement coefficients (same indexing as XDMF export)."""
+    idx = np.asarray(u_to_W, dtype=np.int32).ravel()
+    return np.asarray(phi_arr, dtype=np.float64)[idx]
+
+
+def _plate_facet_dof_energy_ratios(
+    u_collapsed: np.ndarray,
+    dofs_top: np.ndarray,
+    dofs_back: np.ndarray,
+) -> Tuple[float, float]:
+    """Kinetic proxy on facet displacement DOFs (tag 1 / tag 3); robust for shell-tagged modes."""
+    e_top = 0.0
+    e_back = 0.0
+    if dofs_top.size > 0:
+        ut = u_collapsed[np.asarray(dofs_top, dtype=np.int32)]
+        e_top = float(np.dot(ut, ut))
+    if dofs_back.size > 0:
+        ub = u_collapsed[np.asarray(dofs_back, dtype=np.int32)]
+        e_back = float(np.dot(ub, ub))
+    total = e_top + e_back
+    if total < 1.0e-30:
+        return 0.0, 0.0
+    return e_top / total, e_back / total
 
 
 def _plate_modal_energy_ratios(
@@ -991,18 +1032,26 @@ def _plate_modal_energy_ratios(
     u_parent_indices: Optional[np.ndarray] = None,
     phi_u: Optional[PETSc.Vec] = None,
     work_u: Optional[PETSc.Vec] = None,
+    u_to_W: Optional[np.ndarray] = None,
+    dofs_top: Optional[np.ndarray] = None,
+    dofs_back: Optional[np.ndarray] = None,
 ) -> Tuple[float, float]:
     """
-    Relative shell participation on each plate mass block (scale-invariant to coupled SLEPc norm).
+    Relative shell participation on each plate (tag1 top / tag3 back).
 
-    tag1_ratio = phi^T M_top phi / (phi^T M_top phi + phi^T M_back phi)
-    tag3_ratio = phi^T M_back phi / (phi^T M_top phi + phi^T M_back phi)
-
-    When ``u_parent_indices`` and ``phi_u`` are set, ``M_top``/``M_back`` are on collapsed V_u and
-  the mixed eigenvector is restricted to structural DOFs before the quadratic forms.
-
-    ``mass_top`` / ``mass_back`` are retained for call-site compatibility (unused here).
+    Prefer facet-DOF kinetic ratios (matches structural diagnostic); fall back to M_top/M_back
+    quadratic forms when facet DOFs carry no energy.
     """
+    map_u = u_to_W if u_to_W is not None else u_parent_indices
+    if map_u is not None and dofs_top is not None and dofs_back is not None:
+        rt_dof, rb_dof = _plate_facet_dof_energy_ratios(
+            _collapsed_u_from_mixed_vec(phi.array, map_u),
+            np.asarray(dofs_top, dtype=np.int32),
+            np.asarray(dofs_back, dtype=np.int32),
+        )
+        if rt_dof + rb_dof > 1.0e-12:
+            return rt_dof, rb_dof
+
     vec_u = phi
     work_out = work_u if work_u is not None else work
     if u_parent_indices is not None and phi_u is not None:
@@ -1243,6 +1292,10 @@ def _slepc_shift_invert_batch(
     eps_max_it_cap: Optional[int] = None,
     u_parent_indices: Optional[np.ndarray] = None,
     n_u_global: int = 0,
+    u_to_W: Optional[np.ndarray] = None,
+    p_to_W: Optional[np.ndarray] = None,
+    dofs_top: Optional[np.ndarray] = None,
+    dofs_back: Optional[np.ndarray] = None,
 ) -> Tuple[int, List[Tuple[float, np.ndarray, Optional[float], Optional[float]]]]:
     """
     Krylov-Schur GNHEP batch: shift-invert at ``shift_hz`` (TARGET_MAGNITUDE on λ = ω²).
@@ -1474,8 +1527,12 @@ def _slepc_shift_invert_batch(
 
     rank_by_wood = _solver_bool(solver_cfg, "eps_harvest_rank_by_wood", default=True)
     min_wood_harvest = float(solver_cfg.get("eps_harvest_min_wood", 0.01))
+    reject_decoupled = _solver_bool(solver_cfg, "eps_reject_decoupled_u_only", default=True)
+    min_pressure_frac = float(solver_cfg.get("eps_harvest_min_pressure_fraction", 0.02))
+    reject_sigma_spurious = _solver_bool(solver_cfg, "eps_reject_sigma_spurious", default=True)
+    sigma_spurious_hz = float(solver_cfg.get("eps_sigma_spurious_tol_hz", 0.35))
 
-    candidates: List[Tuple[float, float, np.ndarray, float, float]] = []
+    candidates: List[Tuple[float, float, np.ndarray, float, float, float, float]] = []
     rvec = A.createVecRight()
     skipped_rigid = 0
     skipped_below_min = 0
@@ -1510,45 +1567,64 @@ def _slepc_shift_invert_batch(
                 u_parent_indices=u_parent_indices,
                 phi_u=phi_u,
                 work_u=work_u,
+                u_to_W=u_to_W if u_to_W is not None else u_parent_indices,
+                dofs_top=dofs_top,
+                dofs_back=dofs_back,
             )
         wood = float(rt) + float(rb)
-        candidates.append((wood, f_hz, rvec.array.copy(), float(rt), float(rb)))
+        arr = rvec.array.copy()
+        u_n, p_n = _mixed_eigenvector_block_norms(
+            arr, n_u_global, u_to_W=u_to_W, p_to_W=p_to_W
+        )
+        p_frac = p_n / max(u_n + p_n, 1.0e-30)
+        if reject_decoupled and p_frac < min_pressure_frac and wood < min_wood_harvest:
+            continue
+        if (
+            reject_sigma_spurious
+            and wood < min_wood_harvest
+            and abs(f_hz - st_sigma_hz) <= sigma_spurious_hz + 1.0e-9
+        ):
+            continue
+        rank_score = wood + 0.25 * p_frac
+        candidates.append((rank_score, f_hz, arr, float(rt), float(rb), u_n, p_n))
 
     if rank_by_wood and candidates:
         candidates.sort(key=lambda t: (-t[0], abs(t[1] - target_hz)))
-        strong = [c for c in candidates if c[0] >= min_wood_harvest - 1.0e-15]
-        weak = [c for c in candidates if c[0] < min_wood_harvest - 1.0e-15]
+        strong = [c for c in candidates if (c[3] + c[4]) >= min_wood_harvest - 1.0e-15]
+        weak = [c for c in candidates if (c[3] + c[4]) < min_wood_harvest - 1.0e-15]
         ordered = strong + weak
     else:
         ordered = candidates
 
     out: List[Tuple[float, np.ndarray, Optional[float], Optional[float]]] = []
-    for wood, f_hz, arr, rt, rb in ordered:
+    for _score, f_hz, arr, rt, rb, _u_n, _p_n in ordered:
         out.append((f_hz, arr, rt, rb))
         if len(out) >= int(batch):
             break
 
     if MPI.COMM_WORLD.rank == ROOT_RANK:
-        n_woodish = sum(1 for c in candidates if c[0] >= min_wood_harvest)
-        max_wood = max((c[0] for c in candidates), default=0.0)
+        n_woodish = sum(1 for c in candidates if (c[3] + c[4]) >= min_wood_harvest)
+        max_wood = max((c[3] + c[4] for c in candidates), default=0.0)
         freqs = [c[1] for c in candidates]
         f_span = (max(freqs) - min(freqs)) if freqs else 0.0
         print(
             f"[solver] EPS harvest: kept={len(out)}/{batch} from nconv_marked={nconv_marked} "
             f"(skip rigid={skipped_rigid}, f<{min_hz:.1f}Hz={skipped_below_min}, "
-            f"unavail={skipped_unavailable}, rank_by_wood={rank_by_wood})"
+            f"unavail={skipped_unavailable}, rank_by_wood={rank_by_wood}, "
+            f"reject_decoupled={reject_decoupled}, reject_sigma_spurious={reject_sigma_spurious})"
         )
         print(
             f"[solver] EPS wood scan: slots={len(candidates)}, wood>={min_wood_harvest:.3f}: "
-            f"{n_woodish}, max_wood={max_wood:.4f}, f_span={f_span:.3f} Hz"
+            f"{n_woodish}, max_wood={max_wood:.4f}, f_span={f_span:.3f} Hz, "
+            f"ST_sigma={st_sigma_hz:.2f} Hz"
         )
-        for j, (wood, f_hz, _arr, rt, rb) in enumerate(
+        for j, (_score, f_hz, _arr, rt, rb, u_n, p_n) in enumerate(
             sorted(candidates, key=lambda t: -t[0])[: min(5, len(candidates))]
         ):
-            u_n, p_n = _mixed_eigenvector_block_norms(_arr, n_u_global)
+            p_frac = p_n / max(u_n + p_n, 1.0e-30)
             print(
-                f"[solver]   wood-rank {j + 1}: f={f_hz:.2f} Hz wood={wood:.4f} "
-                f"tag1={rt:.4f} tag3={rb:.4f} ||u||={u_n:.3e} ||p||={p_n:.3e}"
+                f"[solver]   wood-rank {j + 1}: f={f_hz:.2f} Hz wood={rt + rb:.4f} "
+                f"tag1={rt:.4f} tag3={rb:.4f} ||u||={u_n:.3e} ||p||={p_n:.3e} p_frac={p_frac:.3e}"
             )
         sys.stdout.flush()
 
@@ -2451,6 +2527,20 @@ def _solve_coupled_evp(
         )
         raise
 
+    _, p_to_W_map = W.sub(1).collapse()
+    p_to_W_map = np.asarray(p_to_W_map, dtype=np.int32)
+    u_to_W_map = np.asarray(u_parent_indices, dtype=np.int32)
+    shell_dofs_top = _locate_facet_displacement_dofs(
+        V_u_collapsed,
+        msh,
+        np.array(facet_tags.find(tag_top), dtype=np.int32),
+    )
+    shell_dofs_back = _locate_facet_displacement_dofs(
+        V_u_collapsed,
+        msh,
+        np.array(facet_tags.find(tag_back), dtype=np.int32),
+    )
+
     _phase_sync(2002, "coupled before matrix assembly", status_callback=status_callback)
     _debug_rank("Entering Matrix Assembly")
     if MPI.COMM_WORLD.rank == ROOT_RANK:
@@ -2524,7 +2614,6 @@ def _solve_coupled_evp(
                 "Check mesh facet tagging."
             )
         _phase_sync(2099, "worker single-shift before batch", status_callback=status_callback)
-        _u_parent = np.asarray(u_parent_indices, dtype=np.int32)
         nconv, rows = _slepc_shift_invert_batch(
             A,
             M,
@@ -2539,8 +2628,12 @@ def _solve_coupled_evp(
             mass_top=mass_top_kg,
             mass_back=mass_back_kg,
             eps_max_it_cap=max_it,
-            u_parent_indices=_u_parent,
+            u_parent_indices=u_to_W_map,
             n_u_global=n_u_fe,
+            u_to_W=u_to_W_map,
+            p_to_W=p_to_W_map,
+            dofs_top=shell_dofs_top,
+            dofs_back=shell_dofs_back,
         )
         _emit(
             f"[worker] shift @ {float(_worker_hz):.4f} Hz: nconv={nconv}, usable_rows={len(rows)}",
@@ -2769,8 +2862,12 @@ def _solve_coupled_evp(
                 mass_top=mass_top_kg,
                 mass_back=mass_back_kg,
                 eps_max_it_cap=max_iter_cap,
-                u_parent_indices=np.asarray(u_parent_indices, dtype=np.int32),
+                u_parent_indices=u_to_W_map,
                 n_u_global=n_u_fe,
+                u_to_W=u_to_W_map,
+                p_to_W=p_to_W_map,
+                dofs_top=shell_dofs_top,
+                dofs_back=shell_dofs_back,
             )
             scored: List[Tuple[float, float, float]] = []
             for _f, _v, rt, rb in rows:
