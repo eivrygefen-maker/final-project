@@ -1030,10 +1030,12 @@ def _audit_coupled_displacement_space(
     status_callback=None,
 ) -> Tuple[fem.FunctionSpace, fem.FunctionSpace, np.ndarray]:
     """
-    Coupled-space audit: structural ``fem.functionspace(msh, u_el)`` vs ``W.sub(0)``.
+    Coupled-space audit for mixed W vs structural ``fem.functionspace(msh, u_el)``.
 
-    These are different Python objects; DOLFINx guarantees coupling only if dofmaps align.
-    Returns (V_u_standalone, V_u_collapsed, u_parent_indices) for downstream mapping checks.
+    ``W.sub(0)`` is not the same object as standalone ``V_u`` and its ``dofmap.list`` length is
+  *not* comparable (mixed subspaces use parent dofmap layout).  The coupled path uses
+    ``V_u_collapsed, map = W.sub(0).collapse()`` for BCs and mode export; standalone ``V_u``
+    must match ``V_u_collapsed`` global DOF count for structural→W transfer.
     """
     V_u_standalone = fem.functionspace(msh, u_el)
     V_u_sub = W.sub(0)
@@ -1042,48 +1044,59 @@ def _audit_coupled_displacement_space(
     if MPI.COMM_WORLD.rank != ROOT_RANK:
         return V_u_standalone, V_u_collapsed, u_parent_indices
 
-    len_sub = _dofmap_list_length(V_u_sub)
+    len_sub_list = _dofmap_list_length(V_u_sub)
     len_standalone = _dofmap_list_length(V_u_standalone)
     len_collapsed = _dofmap_list_length(V_u_collapsed)
-    same_object = V_u_sub is V_u_standalone
+    n_u_sub_reported = _u_global_dof_count(V_u_sub)
+    n_u_standalone = _u_global_dof_count(V_u_standalone)
+    n_u_collapsed = _u_global_dof_count(V_u_collapsed)
+    n_p = _u_global_dof_count(W.sub(1))
+    n_w_total = int(W.dofmap.index_map.size_global * W.dofmap.index_map_bs)
+
     print(
-        "[COUPLED-SPACE] dofmap.list lengths at coupled solve entry: "
-        f"len(W.sub(0).dofmap.list)={len_sub}, "
+        "[COUPLED-SPACE] dofmap.list lengths (informational): "
+        f"len(W.sub(0).dofmap.list)={len_sub_list}, "
         f"len(V_u_standalone.dofmap.list)={len_standalone}, "
         f"len(V_u_collapsed.dofmap.list)={len_collapsed}"
     )
+    if len_sub_list != len_collapsed:
+        print(
+            "[COUPLED-SPACE] note: W.sub(0).dofmap.list length differs from collapsed V_u — "
+            "expected for mixed subspaces; do not compare these list lengths."
+        )
     print(
-        "[COUPLED-SPACE] global u DOFs: "
-        f"W.sub(0)={_u_global_dof_count(V_u_sub)}, "
-        f"V_u_standalone={_u_global_dof_count(V_u_standalone)}, "
-        f"V_u_collapsed={_u_global_dof_count(V_u_collapsed)}, "
-        f"W_mixed_total={int(W.dofmap.index_map.size_global * W.dofmap.index_map_bs)}"
+        "[COUPLED-SPACE] global DOFs: "
+        f"V_u_standalone={n_u_standalone}, V_u_collapsed={n_u_collapsed}, "
+        f"W.sub(0) index_map reports={n_u_sub_reported} (may include mixed layout), "
+        f"W.sub(1) p={n_p}, W total={n_w_total}"
     )
     print(
-        f"[COUPLED-SPACE] W.sub(0) is V_u_standalone object? {same_object} "
-        f"(expected False — use collapse map / matching dofmap for structural→W transfer)"
+        f"[COUPLED-SPACE] W.sub(0) is V_u_standalone object? {V_u_sub is V_u_standalone} "
+        "(expected False; coupled BCs use V_u_collapsed + collapse map)"
     )
-    if len_sub != len_standalone or len_sub != len_collapsed:
+
+    if n_u_standalone != n_u_collapsed:
         raise RuntimeError(
-            "Coupled-space audit failed: dofmap.list lengths differ between "
-            f"W.sub(0) ({len_sub}), standalone V_u ({len_standalone}), and collapsed V_u ({len_collapsed}). "
-            "Structural eigenvectors cannot be embedded in W without a remap."
+            "Coupled-space audit failed: standalone V_u and W.sub(0).collapse() global DOF "
+            f"counts differ ({n_u_standalone} vs {n_u_collapsed})."
         )
-    if _u_global_dof_count(V_u_sub) != _u_global_dof_count(V_u_standalone):
-        raise RuntimeError(
-            "Coupled-space audit failed: global displacement DOF counts differ between "
-            "W.sub(0) and standalone V_u on the same mesh/element."
-        )
+
     parent_idx = np.asarray(u_parent_indices, dtype=np.int32)
-    n_parent = int(W.dofmap.index_map.size_local * W.dofmap.index_map_bs)
-    if parent_idx.size > 0 and (int(parent_idx.max()) >= n_parent or int(parent_idx.min()) < 0):
+    n_collapsed_local = int(V_u_collapsed.dofmap.index_map.size_local * V_u_collapsed.dofmap.index_map_bs)
+    n_w_local = int(W.dofmap.index_map.size_local * W.dofmap.index_map_bs)
+    if parent_idx.size != n_collapsed_local:
         raise RuntimeError(
-            f"collapse() parent indices out of range for local W vector (max={int(parent_idx.max())}, "
-            f"local_W_size={n_parent})."
+            f"collapse() map length {parent_idx.size} != collapsed V_u local size {n_collapsed_local}."
         )
+    if parent_idx.size > 0 and (int(parent_idx.max()) >= n_w_local or int(parent_idx.min()) < 0):
+        raise RuntimeError(
+            f"collapse() parent indices out of range for local mixed W vector "
+            f"(max={int(parent_idx.max())}, local_W_size={n_w_local})."
+        )
+
     _emit(
-        f"[COUPLED-SPACE] OK: displacement spaces align "
-        f"(list_len={len_sub}, collapse_parent_map_len={parent_idx.size}).",
+        f"[COUPLED-SPACE] OK: standalone V_u matches collapsed subspace "
+        f"(n_u={n_u_collapsed}, collapse_map_len={parent_idx.size}, W_total={n_w_total}).",
         status_callback=status_callback,
     )
     sys.stdout.flush()
@@ -2259,10 +2272,10 @@ def _solve_coupled_evp(
         )
         if MPI.COMM_WORLD.rank == ROOT_RANK:
             print(
-                "[COUPLED-SPACE] BC/displacement map uses V_u from W.sub(0).collapse(); "
-                f"len(V_u.dofmap.list)={_dofmap_list_length(V_u)}, "
-                f"len(W.sub(0).dofmap.list)={_dofmap_list_length(W.sub(0))}, "
-                f"len(V_u_standalone.dofmap.list)={_dofmap_list_length(V_u_standalone)}"
+                "[COUPLED-SPACE] BC/displacement map uses V_u_collapsed; "
+                f"global n_u={_u_global_dof_count(V_u)}, "
+                f"collapse_map_len={len(np.asarray(u_parent_indices, dtype=np.int32))}, "
+                f"standalone n_u={_u_global_dof_count(V_u_standalone)}"
             )
             sys.stdout.flush()
         facets_ribs = np.array(facet_tags.find(RIBS_SURFACE_TAG), dtype=np.int32)
