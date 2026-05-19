@@ -130,7 +130,8 @@ def efficiency_index_sanitized(raw_modes_per_hz: float) -> float:
         return lo
     return float(lo + (hi - lo) * min(1.0, x / denom))
 
-# --- Legacy zone wood floors (linear 100 Hz → 350 Hz); superseded by V2 when dynamic merge is on ---
+SWEEP_HZ_MIN = 90.0
+
 WOOD_FLOOR_HZ_ANCHOR_LO = 100.0
 WOOD_FLOOR_HZ_ANCHOR_HI = 350.0
 WOOD_PARTICIPATION_FLOOR_LO = 0.0008
@@ -247,7 +248,7 @@ def _target_hz_from_result_filename(path: Path) -> Optional[float]:
 
 def get_band_params(current_hz: float) -> Dict[str, Any]:
     hz = float(current_hz)
-    if 60.0 <= hz < 150.0:
+    if SWEEP_HZ_MIN <= hz < 150.0:
         return {"step_hz": 5, "num_modes": 80, "timeout_minutes": 60, "label": "Dense Band 1"}
     if 150.0 <= hz < 300.0:
         return {"step_hz": 10, "num_modes": 50, "timeout_minutes": 60, "label": "Medium Band"}
@@ -255,7 +256,9 @@ def get_band_params(current_hz: float) -> Dict[str, Any]:
         return {"step_hz": 10, "num_modes": 40, "timeout_minutes": 60, "label": "High Band"}
     if hz > 480.0:
         return {"step_hz": 25, "num_modes": 15, "timeout_minutes": 20, "label": "Dead Zone"}
-    raise ValueError(f"get_band_params: hz={hz} is outside the supported sweep (expected hz >= 60).")
+    raise ValueError(
+        f"get_band_params: hz={hz} is outside the supported sweep (expected hz >= {SWEEP_HZ_MIN})."
+    )
 
 
 def _recovery_infer_shift_targets_from_candidates(
@@ -279,7 +282,7 @@ def _recovery_infer_shift_targets_from_candidates(
             continue
         if not math.isfinite(mh) or mh < f0:
             continue
-        hz_band = max(60.0, mh)
+        hz_band = max(SWEEP_HZ_MIN, mh)
         try:
             step = float(get_band_params(hz_band).get("step_hz", ZONE2_STEP_HZ))
         except ValueError:
@@ -1278,8 +1281,10 @@ def build_task_list(hz_min: float, hz_max: float) -> List[Tuple[float, Dict[str,
     """Build worker target Hz list from ``hz_min`` (inclusive) through ``hz_max`` (inclusive)."""
     lo = float(hz_min)
     hi = float(hz_max)
-    if lo < 60.0:
-        raise ValueError(f"hz_min must be >= 60.0 (band tables start at 60 Hz), got {lo}")
+    if lo < SWEEP_HZ_MIN:
+        raise ValueError(
+            f"hz_min must be >= {SWEEP_HZ_MIN} (band tables start at {SWEEP_HZ_MIN:g} Hz), got {lo}"
+        )
     if hi < lo:
         raise ValueError(f"hz_max ({hi}) must be >= hz_min ({lo})")
     tasks: List[Tuple[float, Dict[str, Any]]] = []
@@ -1762,8 +1767,8 @@ def main() -> int:
     parser.add_argument(
         "--hz-min",
         type=float,
-        default=60.0,
-        help="Sweep lower bound (Hz), inclusive. Must be >= 60 (default: 60).",
+        default=SWEEP_HZ_MIN,
+        help=f"Sweep lower bound (Hz), inclusive. Must be >= {SWEEP_HZ_MIN:g} (default: {SWEEP_HZ_MIN:g}).",
     )
     parser.add_argument(
         "--hz-max",

@@ -340,6 +340,8 @@ def main() -> int:
         "--use-mpiexec",
         "--max-workers",
         str(int(args.max_workers)),
+        "--hz-min",
+        "90",
         "--config",
         str(effective_config.resolve()),
         "--sorting-root",
