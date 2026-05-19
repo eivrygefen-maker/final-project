@@ -99,7 +99,7 @@
         "mat_mumps_icntl_24": 1,
         "st_shift_target_hz": 90.0,
         "st_type": "sinvert",
-        "st_precondition_offset_hz": 15.0,
+        "eps_which": "TARGET_MAGNITUDE",
         "shift_jitter_hz": 5.0,
         "pressure_dof_scale": 1.0e-4,
         "gnhep_normalize_matrices": true,

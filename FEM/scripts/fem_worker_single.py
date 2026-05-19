@@ -189,14 +189,27 @@ def main() -> int:
         sys.stdout.flush()
     cfg.setdefault("solver", {})
     cfg["solver"]["adaptive_mode_sifter"] = False
+    _target_hz = float(args.target_hz)
+    _target_lambda = (2.0 * math.pi * _target_hz) ** 2
+    cfg["solver"]["st_type"] = "sinvert"
+    cfg["solver"]["eps_which"] = "TARGET_MAGNITUDE"
+    cfg["solver"].pop("eps_smallest_magnitude", None)
+    cfg["solver"].pop("eps_use_which_user", None)
+    cfg["_worker_eps_target_lambda"] = _target_lambda
     _nm = max(1, int(args.num_modes))
     cfg["solver"]["target_ncv"] = max(
         int(cfg["solver"].get("target_ncv", 0)),
         int(math.ceil(3.0 * _nm)),
     )
     cfg["_worker_eps_max_it"] = int(cfg["solver"].get("eigs_maxiter", cfg["solver"].get("eps_max_it", 3000)))
-    cfg["_worker_target_hz"] = float(args.target_hz)
+    cfg["_worker_target_hz"] = _target_hz
     cfg["_worker_num_modes"] = _nm
+    if MPI.COMM_WORLD.rank == 0:
+        print(
+            f"[worker] EPS target: f={_target_hz:.4f} Hz, "
+            f"lambda=(2*pi*f)^2={_target_lambda:.6e}, which=TARGET_MAGNITUDE, st=sinvert"
+        )
+        sys.stdout.flush()
 
     mesh_file = _resolve_mesh_path(cfg, config_path)
     if MPI.COMM_WORLD.rank == 0 and not mesh_file.exists():

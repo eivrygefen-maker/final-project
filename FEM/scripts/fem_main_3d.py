@@ -861,20 +861,20 @@ def _slepc_shift_invert_batch(
     eps_max_it_cap: Optional[int] = None,
 ) -> Tuple[int, List[Tuple[float, np.ndarray, Optional[float], Optional[float]]]]:
     """
-    Krylov-Schur GNHEP batch: smallest-|lambda| search with f >= min_hz (no TARGET_MAGNITUDE lock).
+    Krylov-Schur GNHEP batch: shift-invert at ``shift_hz`` (TARGET_MAGNITUDE on λ = ω²).
 
-    ``shift_hz`` is the master scheduler label only; the EPS does not target that frequency.
+    ``shift_hz`` is the worker/master target frequency; ST sinvert inverts around that band.
     """
     min_hz = _slepc_spectrum_min_hz(solver_cfg, shift_hz)
-    lambda_min = (2.0 * math.pi * float(min_hz)) ** 2
+    target_hz = float(shift_hz)
+    target_lambda = (2.0 * math.pi * target_hz) ** 2
     rigid_tol = float(solver_cfg.get("coupled_rigid_lambda_tol", 1.0e-10))
     rigid_buf = int(solver_cfg.get("eps_rigid_mode_buffer", 10))
     nev_request = int(batch) + max(rigid_buf, 0)
 
-    # ST shift-invert σ below the band + jitter to avoid shift singularities (not a mode target).
-    st_offset_hz = float(solver_cfg.get("st_precondition_offset_hz", 15.0))
+    # ST σ near target + jitter keeps inversion away from an exact eigenvalue on the shift.
     shift_jitter_hz = float(solver_cfg.get("shift_jitter_hz", 5.0))
-    st_sigma_hz = max(1.0, float(min_hz) - st_offset_hz + shift_jitter_hz)
+    st_sigma_hz = max(1.0, target_hz + shift_jitter_hz)
     st_sigma = (2.0 * math.pi * st_sigma_hz) ** 2
 
     eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
@@ -891,14 +891,6 @@ def _slepc_shift_invert_batch(
             eps.setKrylovSchurPertSize(ks_pert)
         except AttributeError:
             pass
-
-    # Smallest magnitude on the transformed problem; harvest f >= min_hz post-solve.
-    _which_user = getattr(SLEPc.EPS.Which, "USER", None)
-    if _which_user is not None and bool(solver_cfg.get("eps_use_which_user", False)):
-        eps.setWhichEigenpairs(_which_user)
-        eps.setTarget(lambda_min)
-    else:
-        eps.setWhichEigenpairs(SLEPc.EPS.Which.SMALLEST_MAGNITUDE)
 
     st = eps.getST()
     _st_name = str(solver_cfg.get("st_type", "sinvert")).strip().lower()
@@ -969,6 +961,10 @@ def _slepc_shift_invert_batch(
     petsc_opts["pc_factor_shift_amount"] = float(solver_cfg.get("pc_factor_shift_amount", 1e-2))
     petsc_opts["eps_gen_non_hermitian"] = ""
     petsc_opts["bv_orthog_refine"] = str(solver_cfg.get("bv_orthog_refine", "always"))
+    petsc_opts["eps_which"] = "target_magnitude"
+    petsc_opts["eps_target"] = target_lambda
+    if _st_name not in ("shift", "stshift"):
+        petsc_opts["st_type"] = "sinvert"
     petsc_opts["st_ksp_type"] = st_ksp_type
     petsc_opts["st_pc_type"] = st_pc_type
     if st_pc_type.lower() == "lu":
@@ -998,10 +994,10 @@ def _slepc_shift_invert_batch(
         diag_min = float("nan")
         diag_max = float("nan")
     _emit(
-        f"[solver] EPS spectrum batch (scheduler={shift_hz:.2f} Hz): "
-        f"min_hz={min_hz:.2f}, lambda_min={lambda_min:.6e}, "
+        f"[solver] EPS spectrum batch (target={target_hz:.2f} Hz): "
+        f"target_lambda={target_lambda:.6e}, min_hz={min_hz:.2f}, "
         f"ST={_st_name} sigma={st_sigma_hz:.2f} Hz (jitter={shift_jitter_hz:.2f}), "
-        f"which=SMALLEST_MAGNITUDE, ks_restart={ks_restart:.3f}, ks_pert={ks_pert:.2e}, "
+        f"which=TARGET_MAGNITUDE, ks_restart={ks_restart:.3f}, ks_pert={ks_pert:.2e}, "
         f"nev_request={nev_request} (batch={batch}+rigid_buf={rigid_buf}), "
         f"ncv={ncv}, eps_tol={eps_tol:.1e}, eps_max_it={eps_max_it}, "
         f"KSP={ksp.getType()}, PC={pc.getType()}, factor={_st_factor}, "
@@ -1025,6 +1021,16 @@ def _slepc_shift_invert_batch(
     opts["eps_monitor"] = None
     opts["eps_converged_reason"] = None
     eps.setFromOptions()
+    # Re-apply after setFromOptions so CLI/options cannot leave sinvert without eps_target.
+    eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
+    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
+    eps.setTarget(target_lambda)
+    st = eps.getST()
+    if _st_name in ("shift", "stshift"):
+        st.setType(SLEPc.ST.Type.SHIFT)
+    else:
+        st.setType(SLEPc.ST.Type.SINVERT)
+    st.setShift(st_sigma)
     print(f"[HEARTBEAT] Rank {MPI.COMM_WORLD.rank} reached EPS Solve")
     sys.stdout.flush()
     _debug_rank("Entering EPS Solve")
