@@ -1067,6 +1067,11 @@ def _slepc_physical_lambda(
     if not math.isfinite(mu):
         return float("nan"), "reject"
 
+    if name in ("ciss", "ciss_contour"):
+        if _ok(mu):
+            return mu, "raw"
+        return float("nan"), "reject"
+
     if name in ("sinvert", "shift_invert"):
         if mu <= 0.0:
             return float("nan"), "reject"
@@ -1518,9 +1523,22 @@ def _slepc_hz_to_lambda(hz: float) -> float:
     return (2.0 * math.pi * f) ** 2
 
 
-def _slepc_use_interval_slicing(solver_cfg: Dict) -> bool:
+def _slepc_band_solver_strategy(solver_cfg: Dict) -> str:
+    """
+    Band eigensolver for coupled GNHEP.
+
+    ``ciss`` — contour integral (non-symmetric GNHEP; interval on real λ axis).
+    ``shift_invert`` — Krylov-Schur + sinvert at band center (legacy).
+    ``interval`` — deprecated alias; Krylov-Schur spectrum slicing requires symmetric
+    GHEP and fails on FSI GNHEP (SLEPc error 56); remapped via ``eps_interval_fallback``.
+    """
     mode = str(solver_cfg.get("eps_band_solver", "shift_invert")).strip().lower()
-    return mode in ("interval", "spectrum_slicing", "slice", "band_interval")
+    if mode in ("interval", "spectrum_slicing", "slice", "band_interval"):
+        fb = str(solver_cfg.get("eps_interval_fallback", "ciss")).strip().lower()
+        return fb if fb in ("ciss", "shift_invert") else "ciss"
+    if mode in ("ciss", "contour", "contour_integral", "ciss_contour"):
+        return "ciss"
+    return "shift_invert"
 
 
 def _slepc_interval_hz_band(
@@ -1540,6 +1558,126 @@ def _slepc_interval_hz_band(
     f_mid = 0.5 * (f_lo + f_hi)
     lam_mid = 0.5 * (lam_lo + lam_hi)
     return f_lo, f_hi, lam_lo, lam_hi, f_mid, lam_mid
+
+
+def _slepc_build_mixed_block_is(
+    u_to_W: Optional[np.ndarray],
+    p_to_W: Optional[np.ndarray],
+    comm: PETSc.Comm,
+) -> Optional[Tuple[PETSc.IS, PETSc.IS]]:
+    """Global row/column index sets for displacement (u) and pressure (p) blocks."""
+    if u_to_W is None or p_to_W is None:
+        return None
+    u_idx = np.unique(np.asarray(u_to_W, dtype=np.int32).ravel())
+    p_idx = np.unique(np.asarray(p_to_W, dtype=np.int32).ravel())
+    if u_idx.size == 0 or p_idx.size == 0:
+        return None
+    is_u = PETSc.IS().createGeneral(u_idx, comm=comm)
+    is_p = PETSc.IS().createGeneral(p_idx, comm=comm)
+    return is_u, is_p
+
+
+def _slepc_configure_st_ksp_pc(
+    ksp: PETSc.KSP,
+    pc: PETSc.PC,
+    solver_cfg: Dict,
+    *,
+    block_is: Optional[Tuple[PETSc.IS, PETSc.IS]] = None,
+    opts_prefix: str = "st_",
+) -> Tuple[str, str]:
+    """
+    ST inner linear solve: direct LU (MUMPS) or block FieldSplit on (u, p).
+
+    Returns ``(ksp_type_label, pc_type_label)`` for logging.
+    """
+    st_ksp_type = str(solver_cfg.get("st_ksp_type", "preonly"))
+    st_pc_type_cfg = str(solver_cfg.get("st_pc_type", "lu")).strip().lower()
+    use_fs = st_pc_type_cfg in ("fieldsplit", "fs") or _solver_bool(
+        solver_cfg, "st_use_fieldsplit", default=False
+    )
+    ksp.setType(st_ksp_type)
+    petsc_opts = PETSc.Options()
+    st_factor = str(
+        solver_cfg.get(
+            "st_pc_factor_mat_solver_type",
+            solver_cfg.get("st_factor_solver_type", "mumps"),
+        )
+    )
+
+    if use_fs and block_is is not None:
+        is_u, is_p = block_is
+        pc.setType("fieldsplit")
+        fs_type = str(solver_cfg.get("st_fieldsplit_type", "additive")).strip().lower()
+        if fs_type in ("schur", "schur_complement"):
+            pc.setFieldSplitType(PETSc.PC.CompositeType.SCHUR)
+            schur_fact = str(solver_cfg.get("st_fieldsplit_schur_fact", "full")).lower()
+            _fact_map = {
+                "full": PETSc.PC.FieldSplitSchurFactType.FULL,
+                "upper": PETSc.PC.FieldSplitSchurFactType.UPPER,
+                "lower": PETSc.PC.FieldSplitSchurFactType.LOWER,
+            }
+            pc.setFieldSplitSchurFactType(
+                _fact_map.get(schur_fact, PETSc.PC.FieldSplitSchurFactType.FULL)
+            )
+            schur_pre = str(solver_cfg.get("st_fieldsplit_schur_pre", "self")).lower()
+            _pre_map = {
+                "self": PETSc.PC.FieldSplitSchurPreType.SELF,
+                "selfp0": PETSc.PC.FieldSplitSchurPreType.SELFP0,
+                "a11": PETSc.PC.FieldSplitSchurPreType.A11,
+                "user": PETSc.PC.FieldSplitSchurPreType.USER,
+            }
+            pc.setFieldSplitSchurPreType(
+                _pre_map.get(schur_pre, PETSc.PC.FieldSplitSchurPreType.SELF)
+            )
+            pc_label = f"fieldsplit/schur({schur_fact})"
+        else:
+            pc.setFieldSplitType(PETSc.PC.CompositeType.ADDITIVE)
+            pc_label = "fieldsplit/additive"
+        pc.setFieldSplitIS(("u", is_u), ("p", is_p))
+        for blk in ("u", "p"):
+            petsc_opts[f"{opts_prefix}fieldsplit_{blk}_ksp_type"] = str(
+                solver_cfg.get(f"st_fieldsplit_{blk}_ksp_type", "preonly")
+            )
+            petsc_opts[f"{opts_prefix}fieldsplit_{blk}_pc_type"] = str(
+                solver_cfg.get(f"st_fieldsplit_{blk}_pc_type", "lu")
+            )
+            petsc_opts[f"{opts_prefix}fieldsplit_{blk}_pc_factor_mat_solver_type"] = st_factor
+        return st_ksp_type, pc_label
+
+    pc.setType(st_pc_type_cfg if st_pc_type_cfg not in ("fieldsplit", "fs") else "lu")
+    if st_pc_type_cfg == "lu":
+        try:
+            pc.setFactorSolverType(st_factor)
+        except Exception:
+            pass
+    return st_ksp_type, pc.getType()
+
+
+def _slepc_configure_ciss_region(
+    eps: SLEPc.EPS,
+    lam_lo: float,
+    lam_hi: float,
+    solver_cfg: Dict,
+) -> None:
+    """Real-axis λ interval [lam_lo, lam_hi] via SLEPc region object (RGINTERVAL)."""
+    rg = eps.getRG()
+    rg_type = getattr(SLEPc.RG.Type, "INTERVAL", None)
+    if rg_type is not None:
+        rg.setType(rg_type)
+    else:
+        rg.setType("interval")
+    try:
+        rg.setIntervalEndpoints(float(lam_lo), float(lam_hi), 0.0, 0.0)
+    except AttributeError:
+        petsc_opts = PETSc.Options()
+        petsc_opts["rg_type"] = "interval"
+        petsc_opts["rg_interval_endpoints"] = f"{lam_lo},{lam_hi},0,0"
+    pad = float(solver_cfg.get("eps_ciss_imag_pad", 0.0))
+    if pad > 0.0:
+        try:
+            rg.setIntervalEndpoints(float(lam_lo), float(lam_hi), -pad, pad)
+        except Exception:
+            pass
 
 
 def _slepc_shift_invert_batch(
@@ -1564,44 +1702,46 @@ def _slepc_shift_invert_batch(
     dofs_back: Optional[np.ndarray] = None,
 ) -> Tuple[int, List[Tuple[float, np.ndarray, Optional[float], Optional[float], float, float]]]:
     """
-    Krylov-Schur GNHEP batch at ``shift_hz`` (λ = ω²).
+    GNHEP band batch at ``shift_hz`` (λ = ω²).
 
-    ``eps_band_solver=interval``: SLEPc spectrum slicing — ``setInterval(λ_lo, λ_hi)`` +
-    ``EPS.Which.ALL`` + ``ST.SINVERT`` (finds modes in a physical band, not a single σ).
+    ``eps_band_solver=ciss``: contour integral (CISS) + RGINTERVAL on [λ_lo, λ_hi]
+    (non-symmetric GNHEP; no Krylov-Schur inertia slicing).
 
-    ``eps_band_solver=shift_invert`` (legacy): ``TARGET_MAGNITUDE`` at one shift.
-    """
+    ``eps_band_solver=shift_invert``: Krylov-Schur + sinvert at band center σ.
+  """
     min_hz = _slepc_spectrum_min_hz(solver_cfg, shift_hz)
     target_hz = float(shift_hz)
     target_lambda = _slepc_hz_to_lambda(target_hz)
-    use_interval = _slepc_use_interval_slicing(solver_cfg)
-    strategy_label = "interval_slicing" if use_interval else "shift_invert"
+    strategy = _slepc_band_solver_strategy(solver_cfg)
+    raw_mode = str(solver_cfg.get("eps_band_solver", "shift_invert")).strip().lower()
+    if raw_mode in ("interval", "spectrum_slicing", "slice", "band_interval") and MPI.COMM_WORLD.rank == ROOT_RANK:
+        print(
+            f"[solver][warn] eps_band_solver={raw_mode!r} is unsupported for non-symmetric GNHEP "
+            f"(Krylov-Schur spectrum slicing requires symmetric GHEP); using {strategy!r} instead.",
+            flush=True,
+        )
+    use_ciss = strategy == "ciss"
+    strategy_label = "ciss_contour" if use_ciss else "shift_invert"
+    st_map_name = "ciss" if use_ciss else str(solver_cfg.get("st_type", "sinvert")).strip().lower()
     shift_jitter_hz = float(solver_cfg.get("shift_jitter_hz", 0.0))
     rigid_tol = float(solver_cfg.get("coupled_rigid_lambda_tol", 1.0e-10))
     rigid_buf = int(solver_cfg.get("eps_rigid_mode_buffer", 10))
     nev_request = int(batch) + max(rigid_buf, 0)
 
-    if use_interval:
-        f_window_lo, f_window_hi, lam_lo, lam_hi, st_sigma_hz, st_sigma = _slepc_interval_hz_band(
-            solver_cfg, target_hz, min_hz
-        )
-        eps_which = getattr(SLEPc.EPS.Which, "ALL", None)
-        if eps_which is None:
-            raise RuntimeError(
-                "eps_band_solver=interval requires SLEPc.EPS.Which.ALL (spectrum slicing)."
-            )
-        eps_which_label = "ALL"
+    f_window_lo, f_window_hi, lam_lo, lam_hi, st_sigma_hz, st_sigma = _slepc_interval_hz_band(
+        solver_cfg, target_hz, min_hz
+    )
+    broad_hz = 0.5 * (float(f_window_hi) - float(f_window_lo))
+
+    if use_ciss:
+        eps_which_label = "CISS_REGION"
         use_st_shift = False
         use_broad_window = True
-        broad_hz = 0.5 * (float(f_window_hi) - float(f_window_lo))
     else:
-        lam_lo = lam_hi = lam_mid = 0.0  # unused
         eps_which, eps_which_label, use_st_shift, use_broad_window = _slepc_eps_strategy(solver_cfg)
         broad_hz = float(solver_cfg.get("eps_broad_search_hz", 0.0))
         if use_broad_window and broad_hz <= 0.0:
             broad_hz = 1.5
-        f_window_lo = None
-        f_window_hi = None
         if use_broad_window and broad_hz > 0.0:
             f_window_lo = target_hz - broad_hz
             f_window_hi = target_hz + broad_hz
@@ -1612,50 +1752,75 @@ def _slepc_shift_invert_batch(
             st_sigma_hz = max(1.0, target_hz)
         st_sigma = _slepc_hz_to_lambda(st_sigma_hz)
 
+    block_is = _slepc_build_mixed_block_is(u_to_W, p_to_W, A.getComm())
+
     eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
     eps.setOperators(A, M)
     eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
-    eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
+    _ciss_eps_type = getattr(SLEPc.EPS.Type, "CISS", None)
+    if use_ciss:
+        if _ciss_eps_type is None:
+            if MPI.COMM_WORLD.rank == ROOT_RANK:
+                print(
+                    "[solver][warn] SLEPc.EPS.Type.CISS unavailable; falling back to shift_invert.",
+                    flush=True,
+                )
+            use_ciss = False
+            strategy_label = "shift_invert"
+            st_map_name = str(solver_cfg.get("st_type", "sinvert")).strip().lower()
+            eps_which, eps_which_label, use_st_shift, use_broad_window = _slepc_eps_strategy(solver_cfg)
+            broad_hz = float(solver_cfg.get("eps_broad_search_hz", 0.0))
+            if use_broad_window and broad_hz <= 0.0:
+                broad_hz = 1.5
+            if use_broad_window and broad_hz > 0.0:
+                f_window_lo = target_hz - broad_hz
+                f_window_hi = target_hz + broad_hz
+            use_sigma_jitter = _solver_bool(solver_cfg, "eps_st_sigma_use_jitter", default=False)
+            if use_sigma_jitter and abs(shift_jitter_hz) > 0.0:
+                st_sigma_hz = max(1.0, target_hz + shift_jitter_hz)
+            else:
+                st_sigma_hz = max(1.0, target_hz)
+            st_sigma = _slepc_hz_to_lambda(st_sigma_hz)
+            eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
+        else:
+            eps.setType(_ciss_eps_type)
+    if not use_ciss:
+        eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
     ks_restart = float(solver_cfg.get("krylov_schur_restart", 0.5))
     if ks_restart <= 0.0:
         ks_restart = 0.5
-    eps.setKrylovSchurRestart(ks_restart)
     ks_pert = float(solver_cfg.get("eps_krylovschur_pertsize", 1.0e-8))
-    if ks_pert > 0.0:
-        try:
-            eps.setKrylovSchurPertSize(ks_pert)
-        except AttributeError:
-            pass
+    if not use_ciss:
+        eps.setKrylovSchurRestart(ks_restart)
+        if ks_pert > 0.0:
+            try:
+                eps.setKrylovSchurPertSize(ks_pert)
+            except AttributeError:
+                pass
 
     st = eps.getST()
     _st_name = str(solver_cfg.get("st_type", "shift" if use_st_shift else "sinvert")).strip().lower()
-    if use_st_shift:
-        _st_name = "shift"
-    if _st_name in ("shift", "stshift"):
-        st.setType(SLEPc.ST.Type.SHIFT)
-    else:
-        st.setType(SLEPc.ST.Type.SINVERT)
-    st.setShift(st_sigma)
+    if not use_ciss:
+        if use_st_shift:
+            _st_name = "shift"
+        if _st_name in ("shift", "stshift"):
+            st.setType(SLEPc.ST.Type.SHIFT)
+        else:
+            st.setType(SLEPc.ST.Type.SINVERT)
+        st.setShift(st_sigma)
 
     ksp = st.getKSP()
     pc = ksp.getPC()
     _debug_rank("Entering KSP Setup")
-    # Shift-invert ST: direct LU + MUMPS (robust pivoting on coupled indefinite blocks; P1 keeps DOFs small).
-    st_ksp_type = str(solver_cfg.get("st_ksp_type", "preonly"))
-    st_pc_type = str(solver_cfg.get("st_pc_type", "lu"))
-    ksp.setType(st_ksp_type)
-    pc.setType(st_pc_type)
+    st_ksp_type, st_pc_label = _slepc_configure_st_ksp_pc(
+        ksp, pc, solver_cfg, block_is=block_is, opts_prefix="st_"
+    )
     _st_factor = str(
         solver_cfg.get(
             "st_pc_factor_mat_solver_type",
             solver_cfg.get("st_factor_solver_type", "mumps"),
         )
     )
-    if st_pc_type.lower() == "lu":
-        try:
-            pc.setFactorSolverType(_st_factor)
-        except Exception:
-            pass
     try:
         ksp.setTolerances(rtol=1.0e-12, atol=1.0e-14, max_it=1)
     except Exception:
@@ -1677,7 +1842,7 @@ def _slepc_shift_invert_batch(
     petsc_opts["st_mat_mumps_icntl_4"] = mumps_icntl_4
     if (
         MPI.COMM_WORLD.size > 1
-        and str(st_pc_type).lower() == "lu"
+        and "lu" in str(st_pc_label).lower()
         and MPI.COMM_WORLD.rank == ROOT_RANK
     ):
         _emit(
@@ -1698,20 +1863,29 @@ def _slepc_shift_invert_batch(
     petsc_opts["pc_factor_shift_amount"] = float(solver_cfg.get("pc_factor_shift_amount", 1e-2))
     petsc_opts["eps_gen_non_hermitian"] = ""
     petsc_opts["bv_orthog_refine"] = str(solver_cfg.get("bv_orthog_refine", "always"))
-    petsc_opts["eps_which"] = eps_which_label.lower()
-    if use_interval:
-        petsc_opts["eps_interval"] = f"{lam_lo},{lam_hi}"
-        petsc_opts["eps_target"] = st_sigma
+    if use_ciss:
+        petsc_opts["eps_type"] = "ciss"
+        petsc_opts["rg_type"] = "interval"
+        petsc_opts["rg_interval_endpoints"] = f"{lam_lo},{lam_hi},0,0"
+        ciss_ip = int(solver_cfg.get("eps_ciss_integration_points", 32))
+        ciss_bs = int(solver_cfg.get("eps_ciss_blocksize", max(16, nev_request)))
+        ciss_ms = int(solver_cfg.get("eps_ciss_moments", 8))
+        petsc_opts["eps_ciss_integration_points"] = ciss_ip
+        petsc_opts["eps_ciss_blocksize"] = ciss_bs
+        petsc_opts["eps_ciss_moments"] = ciss_ms
+        petsc_opts["eps_ciss_realmats"] = 1
+        petsc_opts["eps_ciss_usest"] = 1
     else:
+        petsc_opts["eps_which"] = eps_which_label.lower()
         petsc_opts["eps_target"] = target_lambda
-    petsc_opts["st_type"] = "shift" if _st_name in ("shift", "stshift") else "sinvert"
+        petsc_opts["st_type"] = "shift" if _st_name in ("shift", "stshift") else "sinvert"
+        if ks_pert > 0.0:
+            petsc_opts["eps_krylovschur_pertsize"] = ks_pert
     petsc_opts["st_ksp_type"] = st_ksp_type
-    petsc_opts["st_pc_type"] = st_pc_type
-    if st_pc_type.lower() == "lu":
+    petsc_opts["st_pc_type"] = pc.getType()
+    if "lu" in str(st_pc_label).lower() and "fieldsplit" not in str(st_pc_label).lower():
         petsc_opts["st_pc_factor_mat_solver_type"] = _st_factor
     petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "none"))
-    if ks_pert > 0.0:
-        petsc_opts["eps_krylovschur_pertsize"] = ks_pert
 
     ncv_min_factor = float(solver_cfg.get("eps_ncv_min_factor", 4.0))
     ncv_floor = int(math.ceil(max(4.0, ncv_min_factor) * float(nev_request)))
@@ -1744,18 +1918,21 @@ def _slepc_shift_invert_batch(
         if f_window_lo is not None and f_window_hi is not None
         else ""
     )
-    if use_interval:
+    _fs_note = " block_is=ok" if block_is is not None else " block_is=missing"
+    if use_ciss:
+        ciss_ip = int(solver_cfg.get("eps_ciss_integration_points", 32))
+        ciss_bs = int(solver_cfg.get("eps_ciss_blocksize", max(16, nev_request)))
+        ciss_ms = int(solver_cfg.get("eps_ciss_moments", 8))
         _emit(
             f"[solver] EPS spectrum batch (target={target_hz:.2f} Hz, strategy={strategy_label}): "
-            f"interval=[{f_window_lo:.2f}, {f_window_hi:.2f}] Hz "
+            f"band=[{f_window_lo:.2f}, {f_window_hi:.2f}] Hz "
             f"(λ=[{lam_lo:.6e}, {lam_hi:.6e}]), min_hz={min_hz:.2f}, "
-            f"ST={_st_name} sigma_mid={st_sigma_hz:.2f} Hz, which={eps_which_label}, "
-            f"conv=REL, ks_restart={ks_restart:.3f}, ks_pert={ks_pert:.2e}, "
+            f"CISS ip={ciss_ip} bs={ciss_bs} ms={ciss_ms}, "
             f"nev_request={nev_request} (batch={batch}+rigid_buf={rigid_buf}), "
             f"ncv={ncv}, eps_tol={eps_tol:.1e}, eps_max_it={eps_max_it}, "
-            f"KSP={ksp.getType()}, PC={pc.getType()}, factor={_st_factor}, "
-            f"MUMPS via ST opts: ICNTL4={mumps_icntl_4}, ICNTL6={mumps_icntl_6}, "
-            f"ICNTL12={mumps_icntl_12}, ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}), "
+            f"ST-KSP={st_ksp_type}, ST-PC={st_pc_label}{_fs_note}, factor={_st_factor}, "
+            f"MUMPS ICNTL4={mumps_icntl_4} ICNTL6={mumps_icntl_6} ICNTL12={mumps_icntl_12} "
+            f"ICNTL14={mumps_icntl_14} ICNTL24={mumps_icntl_24}, "
             f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}",
             status_callback=status_callback,
         )
@@ -1768,10 +1945,9 @@ def _slepc_shift_invert_batch(
             f"ks_pert={ks_pert:.2e}, "
             f"nev_request={nev_request} (batch={batch}+rigid_buf={rigid_buf}), "
             f"ncv={ncv}, eps_tol={eps_tol:.1e}, eps_max_it={eps_max_it}, "
-            f"KSP={ksp.getType()}, PC={pc.getType()}, factor={_st_factor}, "
-            f"MUMPS via ST opts: ICNTL4={mumps_icntl_4}, ICNTL6={mumps_icntl_6}, "
-            f"ICNTL12={mumps_icntl_12}, "
-            f"ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}), "
+            f"ST-KSP={st_ksp_type}, ST-PC={st_pc_label}{_fs_note}, factor={_st_factor}, "
+            f"MUMPS ICNTL4={mumps_icntl_4} ICNTL6={mumps_icntl_6} ICNTL12={mumps_icntl_12} "
+            f"ICNTL14={mumps_icntl_14} ICNTL24={mumps_icntl_24}, "
             f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}",
             status_callback=status_callback,
         )
@@ -1790,31 +1966,36 @@ def _slepc_shift_invert_batch(
     opts["eps_monitor"] = None
     opts["eps_converged_reason"] = None
     eps.setFromOptions()
-    # Re-apply after setFromOptions so CLI/options cannot leave sinvert without eps_target.
+    # Re-apply after setFromOptions so CLI/options cannot override GNHEP band strategy.
     eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
-    eps.setWhichEigenpairs(eps_which)
-    if use_interval:
+    if use_ciss:
+        _slepc_configure_ciss_region(eps, lam_lo, lam_hi, solver_cfg)
+        ciss_ip = int(solver_cfg.get("eps_ciss_integration_points", 32))
+        ciss_bs = int(solver_cfg.get("eps_ciss_blocksize", max(16, nev_request)))
+        ciss_ms = int(solver_cfg.get("eps_ciss_moments", 8))
         try:
-            eps.setInterval(float(lam_lo), float(lam_hi))
-        except AttributeError as exc:
-            raise RuntimeError(
-                "eps_band_solver=interval requires SLEPc EPS.setInterval (upgrade slepc4py)."
-            ) from exc
-        eps.setTarget(st_sigma)
-        ks_parts = int(solver_cfg.get("eps_krylov_schur_partitions", 0))
-        if ks_parts > 1:
-            try:
-                eps.setKrylovSchurPartitions(ks_parts)
-            except AttributeError:
-                pass
+            eps.setCISSSizes(
+                ip=ciss_ip,
+                bs=ciss_bs,
+                ms=ciss_ms,
+                realmats=True,
+            )
+            eps.setCISSUseST(True)
+        except AttributeError:
+            pass
+        st = eps.getST()
+        _slepc_configure_st_ksp_pc(
+            st.getKSP(), st.getPC(), solver_cfg, block_is=block_is, opts_prefix="st_"
+        )
     else:
+        eps.setWhichEigenpairs(eps_which)
         eps.setTarget(target_lambda)
-    st = eps.getST()
-    if _st_name in ("shift", "stshift"):
-        st.setType(SLEPc.ST.Type.SHIFT)
-    else:
-        st.setType(SLEPc.ST.Type.SINVERT)
-    st.setShift(st_sigma)
+        st = eps.getST()
+        if _st_name in ("shift", "stshift"):
+            st.setType(SLEPc.ST.Type.SHIFT)
+        else:
+            st.setType(SLEPc.ST.Type.SINVERT)
+        st.setShift(st_sigma)
     if _eps_conv_rel is not None:
         try:
             eps.setConvergenceTest(_eps_conv_rel)
@@ -1871,7 +2052,7 @@ def _slepc_shift_invert_batch(
     reject_decoupled = _solver_bool(solver_cfg, "eps_reject_decoupled_u_only", default=True)
     min_pressure_frac = float(solver_cfg.get("eps_harvest_min_pressure_fraction", 0.02))
     reject_sigma_spurious = _solver_bool(solver_cfg, "eps_reject_sigma_spurious", default=True)
-    if use_st_shift:
+    if use_st_shift or use_ciss:
         reject_sigma_spurious = False
     sigma_spurious_hz = float(solver_cfg.get("eps_sigma_spurious_tol_hz", 0.35))
     sigma_p_frac_max = float(solver_cfg.get("eps_sigma_spurious_max_p_frac", 1.0e-3))
@@ -1887,7 +2068,7 @@ def _slepc_shift_invert_batch(
     allow_weak = _solver_bool(
         solver_cfg,
         "eps_harvest_allow_weak_coupling",
-        default=not use_interval,
+        default=not use_ciss,
     )
     map_tag_counts: Dict[str, int] = {}
     raw_eig_samples: List[float] = []
@@ -1901,7 +2082,7 @@ def _slepc_shift_invert_batch(
             continue
         eig_r = float(np.real(eig))
         lam_phys, lam_map_tag = _slepc_physical_lambda(
-            eig_r, st_sigma, _st_name, solver_cfg
+            eig_r, st_sigma, st_map_name, solver_cfg
         )
         map_tag_counts[lam_map_tag] = map_tag_counts.get(lam_map_tag, 0) + 1
         if len(raw_eig_samples) < 5:
@@ -2010,8 +2191,8 @@ def _slepc_shift_invert_batch(
             f"reject_decoupled={reject_decoupled}, reject_sigma_spurious={reject_sigma_spurious})"
         )
         _sigma_lbl = (
-            f"interval=[{f_window_lo:.2f},{f_window_hi:.2f}] Hz"
-            if use_interval and f_window_lo is not None and f_window_hi is not None
+            f"band=[{f_window_lo:.2f},{f_window_hi:.2f}] Hz"
+            if use_ciss and f_window_lo is not None and f_window_hi is not None
             else f"ST_sigma={st_sigma_hz:.2f} Hz"
         )
         print(
@@ -2072,7 +2253,7 @@ def _slepc_spectrum_batch(
     *args: Any,
     **kwargs: Any,
 ) -> Tuple[int, List[Tuple[float, np.ndarray, Optional[float], Optional[float], float, float]]]:
-    """Dispatch wrapper: interval spectrum slicing or legacy shift-invert batch."""
+    """Dispatch wrapper: CISS contour band solve or Krylov-Schur shift-invert batch."""
     return _slepc_shift_invert_batch(*args, **kwargs)
 
 

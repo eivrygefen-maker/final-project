@@ -216,15 +216,24 @@ def main() -> int:
         _st = str(_solver.get("st_type", "shift"))
         _band = str(_solver.get("eps_band_solver", "shift_invert"))
         _half = float(_solver.get("eps_interval_half_width_hz", 5.0))
-        _band_str = (
-            f"interval=[{_target_hz - _half:.2f}, {_target_hz + _half:.2f}] Hz (λ band)"
-            if _band.strip().lower() in ("interval", "spectrum_slicing", "slice", "band_interval")
-            else f"shift @ {_target_hz:.4f} Hz"
+        _band_lo = _target_hz - _half
+        _band_hi = _target_hz + _half
+        if _band.strip().lower() in ("ciss", "contour", "contour_integral"):
+            _band_str = f"CISS band=[{_band_lo:.2f}, {_band_hi:.2f}] Hz (RGINTERVAL)"
+        elif _band.strip().lower() in ("interval", "spectrum_slicing", "slice", "band_interval"):
+            _fb = str(_solver.get("eps_interval_fallback", "ciss"))
+            _band_str = f"band=[{_band_lo:.2f}, {_band_hi:.2f}] Hz (interval→{_fb})"
+        else:
+            _band_str = f"shift @ {_target_hz:.4f} Hz"
+        _fs = _solver.get("st_use_fieldsplit", False) or str(_solver.get("st_pc_type", "")).lower() in (
+            "fieldsplit",
+            "fs",
         )
         print(
             f"[worker] EPS target: {_band_str}, "
             f"lambda_center=(2*pi*f)^2={_target_lambda:.6e}, "
-            f"band_solver={_band}, which={_which}, st={_st}"
+            f"band_solver={_band}, which={_which}, st={_st}, "
+            f"st_fieldsplit={bool(_fs)}"
         )
         sys.stdout.flush()
 
