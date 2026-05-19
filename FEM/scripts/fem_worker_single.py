@@ -189,8 +189,14 @@ def main() -> int:
         sys.stdout.flush()
     cfg.setdefault("solver", {})
     cfg["solver"]["adaptive_mode_sifter"] = False
+    _nm = max(1, int(args.num_modes))
+    cfg["solver"]["target_ncv"] = max(
+        int(cfg["solver"].get("target_ncv", 0)),
+        int(math.ceil(3.0 * _nm)),
+    )
+    cfg["_worker_eps_max_it"] = int(cfg["solver"].get("eigs_maxiter", 2000))
     cfg["_worker_target_hz"] = float(args.target_hz)
-    cfg["_worker_num_modes"] = max(1, int(args.num_modes))
+    cfg["_worker_num_modes"] = _nm
 
     mesh_file = _resolve_mesh_path(cfg, config_path)
     if MPI.COMM_WORLD.rank == 0 and not mesh_file.exists():
@@ -223,6 +229,12 @@ def main() -> int:
     tag1 = list(cfg.pop("_worker_tag1", []) or [])
     tag3 = list(cfg.pop("_worker_tag3", []) or [])
     n_modes = int(eigvecs.shape[1]) if eigvecs.ndim == 2 else 0
+    if MPI.COMM_WORLD.rank == 0:
+        print(
+            f"[worker] SLEPc usable modes at target {float(args.target_hz):.4f} Hz: "
+            f"n_modes={n_modes} (requested {int(args.num_modes)})"
+        )
+        sys.stdout.flush()
     if len(tag1) != n_modes or len(tag3) != n_modes:
         print(
             f"[worker] Internal mismatch: modes={n_modes}, tag1={len(tag1)}, tag3={len(tag3)}",
@@ -288,7 +300,10 @@ def main() -> int:
     }
     rpath = result_json_path(sorting_root, float(args.target_hz))
     _atomic_write_json(rpath, out)
-    print(f"[worker] Wrote {len(candidates)} sparse mode(s); metadata -> {rpath}")
+    print(
+        f"[worker] Wrote {len(candidates)} sparse mode(s) after uniqueness filter "
+        f"(from {n_modes} SLEPc rows); metadata -> {rpath}"
+    )
     sys.stdout.flush()
     return 0
 

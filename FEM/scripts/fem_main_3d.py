@@ -828,12 +828,15 @@ def _slepc_shift_invert_batch(
     eps_max_it_cap: Optional[int] = None,
 ) -> Tuple[int, List[Tuple[float, np.ndarray, Optional[float], Optional[float]]]]:
     """Run one SLEPc GNHEP shift-invert solve; returns rows (freq_hz, eigenvector, top_ratio|None, back_ratio|None)."""
-    target_lambda = (2.0 * math.pi * float(shift_hz)) ** 2
+    # Tiny shift offset avoids ST LU singularity when sigma lands exactly on an eigenvalue.
+    _sigma_jitter_hz = float(solver_cfg.get("shift_jitter_hz", 0.05))
+    target_lambda = (2.0 * math.pi * (float(shift_hz) + _sigma_jitter_hz)) ** 2
     eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
     eps.setOperators(A, M)
     eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
     eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
     eps.setKrylovSchurRestart(float(solver_cfg.get("krylov_schur_restart", 0.5)))
+    # Shift-invert: eigenvalues closest in magnitude to sigma (spectral band around shift_hz).
     eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
     eps.setTarget(target_lambda)
     st = eps.getST()
@@ -906,11 +909,15 @@ def _slepc_shift_invert_batch(
         petsc_opts["st_pc_factor_mat_solver_type"] = _st_factor
     petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "none"))
 
-    ncv = int(solver_cfg.get("target_ncv", max(40, 4 * batch)))
-    eps.setDimensions(batch, ncv)
+    ncv_min_factor = float(solver_cfg.get("eps_ncv_min_factor", 3.0))
+    ncv_floor = int(math.ceil(max(3.0, ncv_min_factor) * float(batch)))
+    ncv_cfg = int(solver_cfg.get("target_ncv", 0))
+    ncv = max(ncv_floor, ncv_cfg, 40)
+    eps.setDimensions(int(batch), int(ncv))
     eps_max_it = int(solver_cfg.get("eigs_maxiter", 2000))
     if eps_max_it_cap is not None:
-        eps_max_it = min(eps_max_it, int(eps_max_it_cap))
+        # Never cap below batch-scaled floor (legacy bug used sifter_batch_max_it ≈ 50 for nev=80).
+        eps_max_it = max(int(eps_max_it_cap), int(batch) * 5, 200)
     eps.setTolerances(float(solver_cfg.get("eigs_tol", 1e-4)), eps_max_it)
 
     diag_vec = A.getDiagonal()
@@ -922,15 +929,16 @@ def _slepc_shift_invert_batch(
         diag_min = float("nan")
         diag_max = float("nan")
     _emit(
-        f"[solver] shift-invert batch center {shift_hz:.2f} Hz (lambda={target_lambda:.6e} s^-2), "
-        f"batch={batch}, KSP={ksp.getType()}, PC={pc.getType()}, factor={_st_factor}, "
+        f"[solver] shift-invert batch center {shift_hz:.2f} Hz (lambda={target_lambda:.6e} s^-2, "
+        f"jitter={_sigma_jitter_hz:.3f} Hz), "
+        f"batch={batch}, ncv={ncv}, eps_max_it={eps_max_it}, "
+        f"KSP={ksp.getType()}, PC={pc.getType()}, factor={_st_factor}, "
         f"MUMPS via ST opts: ICNTL4={mumps_icntl_4}, ICNTL6={mumps_icntl_6}, ICNTL12={mumps_icntl_12}, "
         f"ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}), "
         f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}",
         status_callback=status_callback,
     )
     st.setShift(target_lambda)
-    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
     eps.setFromOptions()
     _debug_petsc_comm("A", A)
     _debug_petsc_comm("M", M)
@@ -955,9 +963,17 @@ def _slepc_shift_invert_batch(
     nconv = eps.getConverged()
     reason = eps.getConvergedReason()
     _emit(
-        f"[solver] EPS sweep @ {shift_hz:.1f} Hz: iterations={its}, converged={nconv}, reason={reason}",
+        f"[solver] EPS sweep @ {shift_hz:.1f} Hz: iterations={its}, converged={nconv}, "
+        f"requested={batch}, reason={reason}",
         status_callback=status_callback,
     )
+    if nconv < int(batch) and MPI.COMM_WORLD.rank == ROOT_RANK:
+        _emit(
+            f"[solver][warn] EPS converged {nconv}/{batch} modes at shift {shift_hz:.2f} Hz; "
+            f"increase eigs_maxiter (now {eps_max_it}) or target_ncv (now {ncv}).",
+            status_callback=status_callback,
+            level="warning",
+        )
 
     out: List[Tuple[float, np.ndarray, Optional[float], Optional[float]]] = []
     rvec = A.createVecRight()
@@ -1732,7 +1748,7 @@ def _solve_coupled_evp(
         max_it = int(
             config.get(
                 "_worker_eps_max_it",
-                int(solver_cfg.get("sifter_batch_max_it", 80)),
+                int(solver_cfg.get("eigs_maxiter", 2000)),
             )
         )
         if M_top is None and M_back is None:

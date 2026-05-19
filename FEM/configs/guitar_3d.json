@@ -98,6 +98,10 @@
         "mat_mumps_icntl_4": 0,
         "mat_mumps_icntl_24": 1,
         "st_shift_target_hz": 90.0,
+        "shift_jitter_hz": 0.05,
+        "eps_ncv_min_factor": 3.0,
+        "eigs_maxiter": 2000,
+        "eigs_tol": 1.0e-4,
         "structural_air_diag_penalty": 1e-07,
         "structural_diag_shift": 1.0,
         "solver_profile_name": "Quality over Quantity"
