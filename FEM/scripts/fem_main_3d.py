@@ -792,6 +792,21 @@ def _diagnose_shell_stiffness_assembly(
     sys.stdout.flush()
 
 
+def _displacement_element(msh: mesh.Mesh, degree: int = 1):
+    """Shared P{degree} vector Lagrange element for structural-only V_u and coupled W.sub(0)."""
+    return element("Lagrange", msh.basix_cell(), int(degree), shape=(3,))
+
+
+def _dofmap_list_length(V) -> int:
+    """Length of the dofmap adjacency list (local mesh entities → DOF indices)."""
+    dm_list = V.dofmap.list
+    if hasattr(dm_list, "num_nodes"):
+        return int(dm_list.num_nodes)
+    if hasattr(dm_list, "size"):
+        return int(dm_list.size)
+    return int(len(np.asarray(dm_list.array)))
+
+
 def _u_global_dof_count(V_u) -> int:
     return int(V_u.dofmap.index_map.size_global * V_u.dofmap.index_map_bs)
 
@@ -1005,6 +1020,137 @@ def _coupled_pressure_dof_scale(solver_cfg: Dict) -> float:
     """
     s = float(solver_cfg.get("pressure_dof_scale", 30.0))
     return s if s > 0.0 else 1.0
+
+
+def _audit_coupled_displacement_space(
+    msh: mesh.Mesh,
+    W: fem.FunctionSpace,
+    u_el,
+    *,
+    status_callback=None,
+) -> Tuple[fem.FunctionSpace, fem.FunctionSpace, np.ndarray]:
+    """
+    Coupled-space audit: structural ``fem.functionspace(msh, u_el)`` vs ``W.sub(0)``.
+
+    These are different Python objects; DOLFINx guarantees coupling only if dofmaps align.
+    Returns (V_u_standalone, V_u_collapsed, u_parent_indices) for downstream mapping checks.
+    """
+    V_u_standalone = fem.functionspace(msh, u_el)
+    V_u_sub = W.sub(0)
+    V_u_collapsed, u_parent_indices = V_u_sub.collapse()
+
+    if MPI.COMM_WORLD.rank != ROOT_RANK:
+        return V_u_standalone, V_u_collapsed, u_parent_indices
+
+    len_sub = _dofmap_list_length(V_u_sub)
+    len_standalone = _dofmap_list_length(V_u_standalone)
+    len_collapsed = _dofmap_list_length(V_u_collapsed)
+    same_object = V_u_sub is V_u_standalone
+    print(
+        "[COUPLED-SPACE] dofmap.list lengths at coupled solve entry: "
+        f"len(W.sub(0).dofmap.list)={len_sub}, "
+        f"len(V_u_standalone.dofmap.list)={len_standalone}, "
+        f"len(V_u_collapsed.dofmap.list)={len_collapsed}"
+    )
+    print(
+        "[COUPLED-SPACE] global u DOFs: "
+        f"W.sub(0)={_u_global_dof_count(V_u_sub)}, "
+        f"V_u_standalone={_u_global_dof_count(V_u_standalone)}, "
+        f"V_u_collapsed={_u_global_dof_count(V_u_collapsed)}, "
+        f"W_mixed_total={int(W.dofmap.index_map.size_global * W.dofmap.index_map_bs)}"
+    )
+    print(
+        f"[COUPLED-SPACE] W.sub(0) is V_u_standalone object? {same_object} "
+        f"(expected False — use collapse map / matching dofmap for structural→W transfer)"
+    )
+    if len_sub != len_standalone or len_sub != len_collapsed:
+        raise RuntimeError(
+            "Coupled-space audit failed: dofmap.list lengths differ between "
+            f"W.sub(0) ({len_sub}), standalone V_u ({len_standalone}), and collapsed V_u ({len_collapsed}). "
+            "Structural eigenvectors cannot be embedded in W without a remap."
+        )
+    if _u_global_dof_count(V_u_sub) != _u_global_dof_count(V_u_standalone):
+        raise RuntimeError(
+            "Coupled-space audit failed: global displacement DOF counts differ between "
+            "W.sub(0) and standalone V_u on the same mesh/element."
+        )
+    parent_idx = np.asarray(u_parent_indices, dtype=np.int32)
+    n_parent = int(W.dofmap.index_map.size_local * W.dofmap.index_map_bs)
+    if parent_idx.size > 0 and (int(parent_idx.max()) >= n_parent or int(parent_idx.min()) < 0):
+        raise RuntimeError(
+            f"collapse() parent indices out of range for local W vector (max={int(parent_idx.max())}, "
+            f"local_W_size={n_parent})."
+        )
+    _emit(
+        f"[COUPLED-SPACE] OK: displacement spaces align "
+        f"(list_len={len_sub}, collapse_parent_map_len={parent_idx.size}).",
+        status_callback=status_callback,
+    )
+    sys.stdout.flush()
+    return V_u_standalone, V_u_collapsed, parent_idx
+
+
+def _audit_pressure_scale_block_balance(
+    a_uu,
+    a_pp,
+    a_up,
+    *,
+    p_scale: float,
+    tag_top: int,
+    n_facets_top: int,
+    status_callback=None,
+) -> None:
+    """
+    Verify pressure similarity scale does not swamp shell stiffness A_uu (tag-1 facets).
+
+    ``pressure_dof_scale`` only enters p–p and u–p blocks; A_uu is unchanged, but the full
+    GNHEP may be ill-conditioned if coupling blocks dominate after scaling.
+    """
+    if MPI.COMM_WORLD.rank != ROOT_RANK:
+        return
+    try:
+        norm_uu = _mat_frobenius_norm(a_uu)
+        norm_pp = _mat_frobenius_norm(a_pp)
+        norm_up = _mat_frobenius_norm(a_up)
+    except Exception as exc:
+        _emit(f"[COUPLED-SPACE][warn] block norm audit failed: {exc}", status_callback=status_callback, level="warning")
+        return
+    ratio_pu = norm_pp / max(norm_uu, 1.0e-30)
+    ratio_couple = norm_up / max(norm_uu, 1.0e-30)
+    print(
+        f"[COUPLED-SPACE] block Frobenius norms (configured pressure_dof_scale={p_scale:.4g}): "
+        f"||A_uu||={norm_uu:.6e} (tag{tag_top} facets={n_facets_top}), "
+        f"||A_pp||={norm_pp:.6e}, ||A_up||={norm_up:.6e}"
+    )
+    print(
+        f"[COUPLED-SPACE] ||A_pp||/||A_uu||={ratio_pu:.6e}, ||A_up||/||A_uu||={ratio_couple:.6e} "
+        f"(A_uu independent of pressure_dof_scale; coupling scales ∝ s and s²)"
+    )
+    for probe_s in (5.0, p_scale):
+        if probe_s <= 0.0:
+            continue
+        s_ratio = probe_s / max(p_scale, 1.0e-30)
+        est_up = norm_up * abs(s_ratio)
+        est_pp = norm_pp * (s_ratio * s_ratio)
+        print(
+            f"[COUPLED-SPACE] probe s={probe_s:.4g}: estimated ||A_up||≈{est_up:.6e}, "
+            f"||A_pp||≈{est_pp:.6e} vs ||A_uu||={norm_uu:.6e}"
+        )
+    if norm_uu < 1.0e-15 and n_facets_top > 0:
+        _emit(
+            f"[COUPLED-SPACE][CRITICAL] ||A_uu||≈0 with {n_facets_top} tag-{tag_top} facets — "
+            "shell stiffness missing before pressure scaling.",
+            status_callback=status_callback,
+            level="error",
+        )
+    elif ratio_couple > 1.0e6 or ratio_pu > 1.0e8:
+        _emit(
+            "[COUPLED-SPACE][warn] pressure blocks may dominate A_uu in Frobenius norm — "
+            "consider adjusting pressure_dof_scale or enabling gnhep_normalize_matrices.",
+            status_callback=status_callback,
+            level="warning",
+        )
+    sys.stdout.flush()
 
 
 def _normalize_assembled_gnhep(A: PETSc.Mat, M: PETSc.Mat, solver_cfg: Dict) -> float:
@@ -1364,9 +1510,9 @@ def _solve_structural_only_evp(
     )
     sys.stdout.flush()
 
-    # Hard-coded P1 displacement (same as coupled path; config cannot raise FE order here).
+    # Hard-coded P1 displacement (same element factory as coupled W.sub(0)).
     _u_deg_struct = 1
-    u_el = element("Lagrange", msh.basix_cell(), _u_deg_struct, shape=(3,))
+    u_el = _displacement_element(msh, _u_deg_struct)
     V_u = fem.functionspace(msh, u_el)
     u = ufl.TrialFunction(V_u)
     v = ufl.TestFunction(V_u)
@@ -1798,10 +1944,13 @@ def _solve_coupled_evp(
     # Hard-coded P1+P1 (ignore any future config-based FE order): minimizes global DOFs on this mesh.
     _u_deg_coupled = 1
     _p_deg_coupled = 1
-    u_el = element("Lagrange", msh.basix_cell(), _u_deg_coupled, shape=(3,))
+    u_el = _displacement_element(msh, _u_deg_coupled)
     p_el = element("Lagrange", msh.basix_cell(), _p_deg_coupled)
     W_el = mixed_element([u_el, p_el])
     W = fem.functionspace(msh, W_el)
+    V_u_standalone, V_u_collapsed, u_parent_indices = _audit_coupled_displacement_space(
+        msh, W, u_el, status_callback=status_callback
+    )
     n_p_global = int(W.sub(1).dofmap.index_map.size_global * W.sub(1).dofmap.index_map_bs)
     n_u_global = int(W.sub(0).dofmap.index_map.size_global * W.sub(0).dofmap.index_map_bs)
     _deg_u_dbg = getattr(u_el, "degree", None)
@@ -1936,6 +2085,16 @@ def _solve_coupled_evp(
     # FSI interface (wood_ds): trial/test must span different sub-spaces for off-diagonal nnz.
     # Stiffness — fluid pressure traction on structure: trial p, test v  → block (u, p).
     a_up = -p_scale * p * ufl.dot(n, v) * wood_ds
+
+    _audit_pressure_scale_block_balance(
+        a_uu,
+        a_pp,
+        a_up,
+        p_scale=p_scale,
+        tag_top=tag_top,
+        n_facets_top=wood_tag_top,
+        status_callback=status_callback,
+    )
 
     # Acoustic mass and structure mass (per facet tag).
     if wood_tag_top + wood_tag_back + wood_tag_ribs > 0:
@@ -2091,13 +2250,21 @@ def _solve_coupled_evp(
         if p_dofs.size == 0:
             raise RuntimeError("Failed to create pressure grounding dofs (p_dofs is empty).")
 
-        V_u, _ = W.sub(0).collapse()
+        V_u = V_u_collapsed
         _audit_u_subspace_global(
             W.sub(0),
             label="coupled W.sub(0)",
             V_u_collapsed=V_u,
             status_callback=status_callback,
         )
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                "[COUPLED-SPACE] BC/displacement map uses V_u from W.sub(0).collapse(); "
+                f"len(V_u.dofmap.list)={_dofmap_list_length(V_u)}, "
+                f"len(W.sub(0).dofmap.list)={_dofmap_list_length(W.sub(0))}, "
+                f"len(V_u_standalone.dofmap.list)={_dofmap_list_length(V_u_standalone)}"
+            )
+            sys.stdout.flush()
         facets_ribs = np.array(facet_tags.find(RIBS_SURFACE_TAG), dtype=np.int32)
         u_dofs_ribs = _locate_facet_displacement_dofs(V_u, msh, facets_ribs)
         _audit_shell_facet_dof_coverage(
