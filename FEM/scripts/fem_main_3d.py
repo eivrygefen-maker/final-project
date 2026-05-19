@@ -791,8 +791,12 @@ def _plate_modal_energy_ratios(
     mass_back: float,
 ) -> Tuple[float, float]:
     """
-    Energy-per-unit-mass on each plate shell mass block:
-    tag1_ratio = phi^T M_top phi / mass_top, tag3_ratio = phi^T M_back phi / mass_back.
+    Relative shell participation on each plate mass block (scale-invariant to coupled SLEPc norm).
+
+    tag1_ratio = phi^T M_top phi / (phi^T M_top phi + phi^T M_back phi)
+    tag3_ratio = phi^T M_back phi / (phi^T M_top phi + phi^T M_back phi)
+
+    ``mass_top`` / ``mass_back`` are retained for call-site compatibility (unused here).
     """
     e_top = 0.0
     e_back = 0.0
@@ -802,9 +806,10 @@ def _plate_modal_energy_ratios(
     if M_back is not None:
         M_back.mult(phi, work)
         e_back = float(np.real(phi.dot(work)))
-    mt = max(float(mass_top), 1e-30)
-    mb = max(float(mass_back), 1e-30)
-    return e_top / mt, e_back / mb
+    total_wood_energy = e_top + e_back
+    if total_wood_energy < 1.0e-18:
+        return 0.0, 0.0
+    return e_top / total_wood_energy, e_back / total_wood_energy
 
 
 def _slepc_shift_invert_batch(
