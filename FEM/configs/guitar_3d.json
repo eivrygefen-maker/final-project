@@ -146,6 +146,14 @@
         "eps_force_harvest_partial": true,
         "structural_air_diag_penalty": 1e-07,
         "structural_diag_shift": 1.0,
+        "resolvent_struct_penalty_frac": 1.0e-7,
+        "resolvent_acoustic_penalty_frac": 1.0e-4,
+        "resolvent_block_frobenius_normalize": true,
+        "resolvent_pc_factor_shift_type": "nonzero",
+        "resolvent_pc_factor_shift_amount": 0.01,
+        "resolvent_pc_factor_diagonal_scaling": true,
+        "resolvent_symmetric_equilibrate": true,
+        "resolvent_mass_reg_retry_fracs": [1.0e-6, 1.0e-4, 1.0e-2, 0.1],
         "solver_profile_name": "Quality over Quantity"
     },
     "results": {

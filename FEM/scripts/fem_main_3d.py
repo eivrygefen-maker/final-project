@@ -1495,6 +1495,87 @@ def _block_frobenius_normalize_coupled_forms(
     return a_uu_s, a_pp_s, a_up_s, m_uu_s, m_pp_s, m_pu_s, reg_p_s, s_u, s_p
 
 
+def _resolvent_probe_block_solver_cfg(solver_cfg: Dict) -> Dict:
+    """Probe path: force block Frobenius scaling so ||A_uu|| and ||A_pp|| are O(1)."""
+    if not _solver_bool(solver_cfg, "resolvent_block_frobenius_normalize", default=True):
+        return solver_cfg
+    merged = dict(solver_cfg)
+    merged["gnhep_block_frobenius_normalize"] = True
+    return merged
+
+
+def _append_resolvent_probe_stabilization(
+    a_uu,
+    a_pp,
+    reg_p,
+    *,
+    u,
+    v,
+    p,
+    q,
+    p2: float,
+    wood_ds,
+    air_dx,
+    solver_cfg: Dict,
+    status_callback=None,
+) -> Tuple[Any, Any, float, float, float, float]:
+    """
+    Soft grounding for the harmonic resolvent probe (free–free shell + acoustic null modes).
+
+    - Structural: ``k_u = frac_u * ||A_uu||_F`` on wood shell facets (default frac_u=1e-7).
+    - Acoustic: ``k_p = frac_p * ||A_pp||_F`` on air volume (default frac_p=1e-4), in addition
+      to the soundhole pressure gauge BC.
+    """
+    frac_u = float(solver_cfg.get("resolvent_struct_penalty_frac", 1.0e-7))
+    frac_p = float(solver_cfg.get("resolvent_acoustic_penalty_frac", 1.0e-4))
+    norm_uu = _mat_frobenius_norm(a_uu)
+    norm_pp = _mat_frobenius_norm(a_pp)
+    k_u = frac_u * norm_uu
+    k_p = frac_p * norm_pp
+    reg_u = k_u * ufl.dot(u, v) * wood_ds
+    reg_p_extra = k_p * p2 * p * q * air_dx
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        print(
+            f"[resolvent-probe] stabilization: k_u={k_u:.6e} ({frac_u:.1e}*||A_uu||), "
+            f"k_p={k_p:.6e} ({frac_p:.1e}*||A_pp||) on wood shell + air volume"
+        )
+        sys.stdout.flush()
+    _emit(
+        f"[resolvent-probe] soft penalties: k_u={k_u:.6e}, k_p={k_p:.6e} "
+        f"(soundhole gauge BC unchanged)",
+        status_callback=status_callback,
+    )
+    return a_uu + reg_u, reg_p + reg_p_extra, k_u, k_p, norm_uu, norm_pp
+
+
+def _resolvent_symmetric_equilibrate(
+    K: PETSc.Mat, b: PETSc.Vec
+) -> Tuple[PETSc.Vec, PETSc.Vec]:
+    """Symmetric diagonal scaling ``K' = D K D``, ``b' = D b`` with ``D_ii = 1/sqrt(|K_ii|)``."""
+    d = K.getDiagonal()
+    inv_sqrt = d.copy()
+    inv_sqrt.abs()
+    inv_sqrt.sqrt()
+    inv_sqrt.reciprocal()
+    arr_d = np.asarray(d.array, dtype=np.float64)
+    arr_s = np.asarray(inv_sqrt.array, dtype=np.float64)
+    arr_s[np.abs(arr_d) < 1.0e-30] = 1.0
+    inv_sqrt.setArray(arr_s.astype(PETSc.ScalarType, copy=False))
+    K.diagonalScale(inv_sqrt, inv_sqrt)
+    b_scaled = b.duplicate()
+    b_scaled.copy(b)
+    b_scaled.pointwiseMult(inv_sqrt)
+    return inv_sqrt, b_scaled
+
+
+def _resolvent_unscale_solution(x: PETSc.Vec, inv_sqrt: PETSc.Vec) -> None:
+    """Recover physical solution from equilibrated unknowns (``x = D^{-1} x_hat``)."""
+    arr_x = np.asarray(x.array, dtype=np.float64)
+    arr_s = np.asarray(inv_sqrt.array, dtype=np.float64)
+    arr_x /= np.maximum(arr_s, 1.0e-30)
+    x.setArray(arr_x.astype(PETSc.ScalarType, copy=False))
+
+
 def _normalize_assembled_gnhep(A: PETSc.Mat, M: PETSc.Mat, solver_cfg: Dict) -> float:
     """Common Frobenius scaling of A and M (preserves eigenvalues; improves EPS conditioning)."""
     if not _solver_bool(solver_cfg, "gnhep_normalize_matrices", default=False):
@@ -3030,6 +3111,27 @@ def _solve_coupled_evp(
     diag_shift = float(config.get("solver", {}).get("diag_shift", 0.0))
     reg_p = p2 * diag_shift * p * q * xdmf_dx(AIR_VOLUME_TAG)
 
+    if probe_spec is not None:
+        a_uu, reg_p, _k_u, _k_p, _nu, _np = _append_resolvent_probe_stabilization(
+            a_uu,
+            a_pp,
+            reg_p,
+            u=u,
+            v=v,
+            p=p,
+            q=q,
+            p2=p2,
+            wood_ds=wood_ds,
+            air_dx=xdmf_dx(AIR_VOLUME_TAG),
+            solver_cfg=solver_cfg,
+            status_callback=status_callback,
+        )
+
+    block_solver_cfg = (
+        _resolvent_probe_block_solver_cfg(solver_cfg)
+        if probe_spec is not None
+        else solver_cfg
+    )
     a_uu, a_pp, a_up, m_uu, m_pp, m_pu, reg_p, _s_uu, _s_pp = _block_frobenius_normalize_coupled_forms(
         a_uu,
         a_pp,
@@ -3038,7 +3140,7 @@ def _solve_coupled_evp(
         m_pp,
         m_pu,
         reg_p,
-        config.get("solver", {}),
+        block_solver_cfg,
         status_callback=status_callback,
     )
 
@@ -3928,8 +4030,11 @@ def _configure_probe_direct_ksp(ksp: PETSc.KSP, pc: PETSc.PC, solver_cfg: Dict) 
         pass
     shift_type = str(
         solver_cfg.get(
-            "st_pc_factor_shift_type",
-            solver_cfg.get("pc_factor_shift_type", "nonzero"),
+            "resolvent_pc_factor_shift_type",
+            solver_cfg.get(
+                "st_pc_factor_shift_type",
+                solver_cfg.get("pc_factor_shift_type", "nonzero"),
+            ),
         )
     )
     shift_amt = float(
@@ -3937,16 +4042,19 @@ def _configure_probe_direct_ksp(ksp: PETSc.KSP, pc: PETSc.PC, solver_cfg: Dict) 
             "resolvent_pc_factor_shift_amount",
             solver_cfg.get(
                 "st_pc_factor_shift_amount",
-                solver_cfg.get("pc_factor_shift_amount", 1.0e-6),
+                solver_cfg.get("pc_factor_shift_amount", 1.0e-2),
             ),
         )
     )
+    diag_scale = _solver_bool(solver_cfg, "resolvent_pc_factor_diagonal_scaling", default=True)
     opts = PETSc.Options()
     opts[f"{prefix}ksp_type"] = st_ksp_type
     opts[f"{prefix}pc_type"] = str(solver_cfg.get("st_pc_type", "lu"))
     opts[f"{prefix}pc_factor_mat_solver_type"] = st_factor
     opts[f"{prefix}pc_factor_shift_type"] = shift_type
     opts[f"{prefix}pc_factor_shift_amount"] = shift_amt
+    if diag_scale:
+        opts[f"{prefix}pc_factor_diagonal_scaling"] = True
     opts[f"{prefix}mat_mumps_icntl_14"] = int(solver_cfg.get("mat_mumps_icntl_14", 500))
     opts[f"{prefix}mat_mumps_icntl_24"] = int(solver_cfg.get("mat_mumps_icntl_24", 1))
     opts[f"{prefix}mat_mumps_icntl_6"] = int(solver_cfg.get("mat_mumps_icntl_6", 7))
@@ -4013,7 +4121,11 @@ def _coupled_resolvent_solve(
         )
 
     reg_base = float(solver_cfg.get("resolvent_mass_reg_frac", 1.0e-6))
-    reg_retries = solver_cfg.get("resolvent_mass_reg_retry_fracs", (1.0e-6, 1.0e-4, 1.0e-2))
+    reg_retries = solver_cfg.get(
+        "resolvent_mass_reg_retry_fracs",
+        (1.0e-6, 1.0e-4, 1.0e-2, 0.1),
+    )
+    use_equilibrate = _solver_bool(solver_cfg, "resolvent_symmetric_equilibrate", default=True)
     if isinstance(reg_retries, (list, tuple)):
         reg_fracs = [float(reg_base)] + [float(r) for r in reg_retries if float(r) > float(reg_base)]
     else:
@@ -4065,12 +4177,35 @@ def _coupled_resolvent_solve(
             )
         K_try.assemble()
 
+        b_try = b.duplicate()
+        b_try.copy(b)
+        inv_sqrt: Optional[PETSc.Vec] = None
+        if use_equilibrate:
+            try:
+                inv_sqrt, b_try = _resolvent_symmetric_equilibrate(K_try, b_try)
+            except Exception as exc:
+                if MPI.COMM_WORLD.rank == ROOT_RANK:
+                    _emit(
+                        f"[resolvent-probe][warn] symmetric equilibration failed: {exc}",
+                        status_callback=status_callback,
+                        level="warning",
+                    )
+                b_try.copy(b)
+
         x_try = K_try.createVecRight()
         x_try.set(0.0)
         ksp_try = PETSc.KSP().create(comm)
         ksp_try.setOperators(K_try)
         _configure_probe_direct_ksp(ksp_try, ksp_try.getPC(), solver_cfg)
-        ksp_try.solve(b, x_try)
+        ksp_try.solve(b_try, x_try)
+        if inv_sqrt is not None:
+            _resolvent_unscale_solution(x_try, inv_sqrt)
+        try:
+            b_try.destroy()
+            if inv_sqrt is not None:
+                inv_sqrt.destroy()
+        except Exception:
+            pass
         reason_try = int(ksp_try.getConvergedReason())
         its_try = int(ksp_try.getIterationNumber())
 

@@ -17,6 +17,9 @@ Usage (VM, single MPI rank — same as fem_worker_single):
 Interpretation:
   - ||p||/||u|| > 1e-6  -> coupling visible; physics OK, focus on eigensolver strategy.
   - ||p||/||u|| ~ 0      -> formulation/interface coupling issue before tuning SLEPc.
+
+Stabilization (probe path only): soft shell grounding, air-volume pressure penalty,
+block Frobenius scaling of A/M blocks, symmetric diagonal equilibration, MUMPS shift 1e-2.
 """
 from __future__ import annotations
 
