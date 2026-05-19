@@ -1766,6 +1766,56 @@ def _assemble_coupled_matrix_safe(
         ) from exc
 
 
+def _sum_assembled_blocks(
+    block_forms: List[Tuple[str, Any]],
+    bcs: List[fem.DirichletBC],
+    *,
+    operator_label: str,
+    status_callback=None,
+) -> PETSc.Mat:
+    """
+    Assemble mixed blocks separately and sum with ``axpy``.
+
+    dolfinx/ffcx can raise bare ``AssertionError`` on a single combined
+    ``a_uu + a_pp + a_up`` form even when each block assembles alone.
+    """
+    if not block_forms:
+        raise RuntimeError(f"{operator_label}: no blocks to assemble")
+    mats: List[Tuple[str, PETSc.Mat]] = []
+    for name, form in block_forms:
+        mats.append((name, _assemble_coupled_matrix_safe(form, bcs, label=f"{operator_label}_{name}")))
+    try:
+        out = mats[0][1].copy()
+        out.assemble()
+        for name, kmat in mats[1:]:
+            try:
+                out.axpy(
+                    1.0,
+                    kmat,
+                    structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"{operator_label} axpy failed adding block {name}: "
+                    f"{type(exc).__name__}: {exc!r}"
+                ) from exc
+        out.assemble()
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            parts = ", ".join(f"{n}={float(k.norm()):.3e}" for n, k in mats)
+            print(
+                f"[assembly] {operator_label} blockwise: ||{operator_label}||_F="
+                f"{float(out.norm()):.6e} ({parts})"
+            )
+            sys.stdout.flush()
+        return out
+    finally:
+        for _name, kmat in mats:
+            try:
+                kmat.destroy()
+            except Exception:
+                pass
+
+
 def _apply_resolvent_probe_matrix_penalties(
     A: PETSc.Mat,
     W: fem.FunctionSpace,
@@ -3749,21 +3799,43 @@ def _solve_coupled_evp(
     if MPI.COMM_WORLD.rank == ROOT_RANK:
         print("PRINT: ENTERING FULL COUPLED ACOUSTIC-STRUCTURAL SOLVE")
         sys.stdout.flush()
-    A = _assemble_coupled_matrix_safe(a_form, bcs, label="coupled_stiffness_A")
-    M = _assemble_coupled_matrix_safe(m_form, bcs, label="coupled_mass_M")
-    if MPI.COMM_WORLD.rank == ROOT_RANK:
-        try:
-            print(
-                f"[assembly] ||A||_F={float(A.norm()):.6e} "
-                f"||M||_F={float(M.norm()):.6e}"
-            )
-            sys.stdout.flush()
-        except Exception as exc:
-            _emit(
-                f"[assembly][warn] matrix norm check failed: {type(exc).__name__}: {exc!r}",
-                status_callback=status_callback,
-                level="warning",
-            )
+    use_blockwise = _solver_bool(solver_cfg, "coupled_blockwise_assembly", default=True)
+    if use_blockwise:
+        A_blocks: List[Tuple[str, Any]] = [
+            ("uu", a_uu),
+            ("pp", a_pp),
+            ("up", a_up),
+        ]
+        if diag_shift > 0.0:
+            A_blocks.append(("reg_p", reg_p))
+        M_blocks: List[Tuple[str, Any]] = [
+            ("uu", m_uu),
+            ("pp", m_pp),
+            ("pu", m_pu),
+        ]
+        A = _sum_assembled_blocks(
+            A_blocks, bcs, operator_label="A", status_callback=status_callback
+        )
+        M = _sum_assembled_blocks(
+            M_blocks, bcs, operator_label="M", status_callback=status_callback
+        )
+    else:
+        A = _assemble_coupled_matrix_safe(a_form, bcs, label="coupled_stiffness_A")
+        M = _assemble_coupled_matrix_safe(m_form, bcs, label="coupled_mass_M")
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            try:
+                print(
+                    f"[assembly] ||A||_F={float(A.norm()):.6e} "
+                    f"||M||_F={float(M.norm()):.6e}"
+                )
+                sys.stdout.flush()
+            except Exception as exc:
+                _emit(
+                    f"[assembly][warn] matrix norm check failed: "
+                    f"{type(exc).__name__}: {exc!r}",
+                    status_callback=status_callback,
+                    level="warning",
+                )
 
     if probe_spec is not None:
         _apply_resolvent_probe_matrix_penalties(
