@@ -1984,8 +1984,9 @@ def _slepc_shift_invert_batch(
         except AttributeError:
             pass
         st = eps.getST()
+        ksp_st = st.getKSP()
         _slepc_configure_st_ksp_pc(
-            st.getKSP(), st.getPC(), solver_cfg, block_is=block_is, opts_prefix="st_"
+            ksp_st, ksp_st.getPC(), solver_cfg, block_is=block_is, opts_prefix="st_"
         )
     else:
         eps.setWhichEigenpairs(eps_which)
