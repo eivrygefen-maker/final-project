@@ -177,6 +177,11 @@ CONDUCTOR_CEILING_SPECTRAL_ZONE_3 = 480.0  # sparse / high interest → full swe
 MERGE_SHIFT_CLUSTER_SPAN_HZ = 1.0
 MERGE_SHIFT_CLUSTER_MIN_MODES = 20
 WORKER_COL_NORM_MIN = 1e-9
+# Strict coupled-mode harvest gate (merge): true FSI vs structural spurious vs σ-locked.
+HARVEST_GATE_MIN_WOOD = 0.01
+HARVEST_GATE_MIN_P_FRAC_FSI = 0.02
+HARVEST_GATE_SIGMA_TOL_HZ = 0.35
+HARVEST_GATE_SIGMA_P_FRAC = 1.0e-4
 # Incoming worker rows must meet this uniqueness floor (matches worker thin gate).
 MERGE_INCOMING_UNIQUENESS_MIN = 0.04
 
@@ -353,6 +358,7 @@ class MergeStats:
     kept_after_manager: int
     avg_wood_raw: float
     yield_kept_over_raw: float
+    coupled_valid_kept: int = 0
 
 
 @dataclass
@@ -1296,6 +1302,46 @@ def build_task_list(hz_min: float, hz_max: float) -> List[Tuple[float, Dict[str,
     return tasks
 
 
+def _passes_harvest_gate(
+    c: Dict[str, Any],
+    *,
+    st_sigma_hz: float,
+    structural_only_run: bool = False,
+) -> Tuple[bool, str]:
+    """
+    Coupled-mode harvest eligibility for merge.
+
+    Returns ``(merge_eligible, tag)`` where ``tag`` is one of:
+    ``coupled_fsi``, ``structural_spurious``, ``sigma_locked``, ``low_wood``.
+    """
+    try:
+        wood = float(c.get("wood_participation", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        wood = 0.0
+    try:
+        p_frac = float(c.get("p_frac", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        p_frac = 0.0
+    try:
+        f_hz = float(c.get("hz", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        f_hz = 0.0
+
+    sigma = float(st_sigma_hz)
+    if abs(f_hz - sigma) < HARVEST_GATE_SIGMA_TOL_HZ and p_frac < HARVEST_GATE_SIGMA_P_FRAC:
+        return False, "sigma_locked"
+
+    if wood >= HARVEST_GATE_MIN_WOOD:
+        if p_frac >= HARVEST_GATE_MIN_P_FRAC_FSI:
+            return True, "coupled_fsi"
+        c["harvest_tag"] = "structural_spurious"
+        if structural_only_run:
+            return True, "structural_spurious"
+        return False, "structural_spurious"
+
+    return False, "low_wood"
+
+
 def _merge_result_into_candidates_log(
     result_path: Path,
     log_path: Path,
@@ -1388,6 +1434,61 @@ def _merge_result_into_candidates_log(
         except OSError:
             pass
         return None
+
+    structural_only_run = bool(incoming.get("structural_only_run", False))
+    try:
+        st_sigma_hz = float(
+            incoming.get("st_sigma_hz", incoming.get("target_hz", 0.0)) or 0.0
+        )
+    except (TypeError, ValueError):
+        st_sigma_hz = 0.0
+    if st_sigma_hz <= 0.0:
+        tfn_sigma = _target_hz_from_result_filename(result_path)
+        if tfn_sigma is not None:
+            st_sigma_hz = float(tfn_sigma)
+
+    harvest_gate_drops = 0
+    gate_kept: List[Dict[str, Any]] = []
+    coupled_valid_pre = 0
+    for c in raw:
+        eligible, tag = _passes_harvest_gate(
+            c,
+            st_sigma_hz=st_sigma_hz,
+            structural_only_run=structural_only_run,
+        )
+        if eligible:
+            if tag == "coupled_fsi":
+                coupled_valid_pre += 1
+            gate_kept.append(c)
+        else:
+            harvest_gate_drops += 1
+            if not force_emergency:
+                _unlink_worker_vector(c, path_root)
+    if harvest_gate_drops:
+        LOGGER.info(
+            "Harvest gate: dropped %d candidate(s) (σ=%.4f Hz, structural_only=%s); "
+            "kept %d (coupled_fsi=%d).",
+            harvest_gate_drops,
+            st_sigma_hz,
+            structural_only_run,
+            len(gate_kept),
+            coupled_valid_pre,
+        )
+    raw = gate_kept
+    if not raw:
+        try:
+            if not force_emergency:
+                result_path.unlink()
+        except OSError:
+            pass
+        return MergeStats(
+            raw_n=0,
+            kept_after_veto=0,
+            kept_after_manager=0,
+            avg_wood_raw=0.0,
+            yield_kept_over_raw=0.0,
+            coupled_valid_kept=0,
+        )
 
     raw_n = len(raw)
     woods: List[float] = []
@@ -1619,6 +1720,7 @@ def _merge_result_into_candidates_log(
         kept_after_manager=n_rows_appended,
         avg_wood_raw=avg_wood_raw,
         yield_kept_over_raw=(n_rows_appended / float(raw_n)) if raw_n > 0 else 0.0,
+        coupled_valid_kept=coupled_valid_pre,
     )
 
 
@@ -1679,6 +1781,7 @@ def _poll_completed(
     scheduler: Optional[SpectralScheduler] = None,
     *,
     force_emergency: bool = False,
+    spawn_worker: Optional[Callable[..., None]] = None,
 ) -> None:
     for proc, meta in list(running.items()):
         code = proc.poll()
@@ -1710,6 +1813,27 @@ def _poll_completed(
                             scheduler.try_apply_conductor_ceiling(hz)
                 if scheduler is not None:
                     scheduler.log_schedule_snapshot_after_worker(hz, stats)
+                if (
+                    spawn_worker is not None
+                    and stats is not None
+                    and int(stats.coupled_valid_kept) == 0
+                    and not meta.get("structural_only")
+                    and not meta.get("structural_fallback")
+                    and not force_emergency
+                ):
+                    par_fb = dict(meta.get("params") or get_band_params(hz))
+                    LOGGER.warning(
+                        "Coupled harvest: 0 true FSI modes (wood+p_frac) at %.4f Hz; "
+                        "spawning structural-only fallback worker.",
+                        hz,
+                    )
+                    spawn_worker(
+                        hz,
+                        par_fb,
+                        "structural-fallback",
+                        structural_only=True,
+                        structural_fallback=True,
+                    )
             else:
                 LOGGER.warning("Worker exited with code %s for %.4f Hz (no merge).", code, hz)
         finally:
@@ -1953,7 +2077,14 @@ def main() -> int:
         with _core_lock:
             _core_free.append(int(cid))
 
-    def spawn_worker(hz: float, params: Dict[str, Any], role: str) -> None:
+    def spawn_worker(
+        hz: float,
+        params: Dict[str, Any],
+        role: str,
+        *,
+        structural_only: bool = False,
+        structural_fallback: bool = False,
+    ) -> None:
         timeout_s = float(params["timeout_minutes"]) * 60.0
         if args.use_mpiexec:
             cmd = [
@@ -1986,6 +2117,8 @@ def main() -> int:
                 "--sorting-root",
                 str(sorting_root),
             ]
+        if structural_only:
+            cmd.append("--structural-only")
 
         core_id: Optional[int] = None
         if use_taskset:
@@ -2046,6 +2179,9 @@ def main() -> int:
             "core_id": core_id,
             "role": role,
             "spectral_step_hz": spectral_step_hz,
+            "params": dict(params),
+            "structural_only": bool(structural_only),
+            "structural_fallback": bool(structural_fallback),
         }
         last_spawn_mono[0] = time.monotonic()
 
@@ -2065,6 +2201,7 @@ def main() -> int:
                 release_core,
                 scheduler=scheduler,
                 force_emergency=bool(args.force_emergency),
+                spawn_worker=spawn_worker,
             )
             _enforce_timeouts(running, sorting_root, release_core)
             while len(running) < max_workers and _has_pending_tasks():

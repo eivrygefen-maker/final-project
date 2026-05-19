@@ -1099,6 +1099,12 @@ def _structural_diag_facet_tags(solver_cfg: Dict) -> Tuple[int, ...]:
     return STRUCTURAL_DIAG_SURFACE_TAGS
 
 
+def _fsi_coupling_gain(solver_cfg: Dict) -> float:
+    """Scalar boost on u–p interface blocks so SLEPc sees FSI coupling in the GNHEP."""
+    g = float(solver_cfg.get("fsi_coupling_gain", 1.0e4))
+    return g if g > 0.0 else 1.0
+
+
 def _coupled_pressure_dof_scale(solver_cfg: Dict) -> float:
     """
     Similarity scale s on pressure DOFs (D = diag(I, s·I_p)); applied consistently to all
@@ -1195,6 +1201,7 @@ def _audit_pressure_scale_block_balance(
     a_up,
     *,
     p_scale: float,
+    fsi_gain: float = 1.0,
     tag_top: int,
     n_facets_top: int,
     status_callback=None,
@@ -1217,13 +1224,14 @@ def _audit_pressure_scale_block_balance(
     ratio_pu = norm_pp / max(norm_uu, 1.0e-30)
     ratio_couple = norm_up / max(norm_uu, 1.0e-30)
     print(
-        f"[COUPLED-SPACE] block Frobenius norms (configured pressure_dof_scale={p_scale:.4g}): "
+        f"[COUPLED-SPACE] block Frobenius norms "
+        f"(pressure_dof_scale={p_scale:.4g}, fsi_coupling_gain={fsi_gain:.4g}): "
         f"||A_uu||={norm_uu:.6e} (tag{tag_top} facets={n_facets_top}), "
         f"||A_pp||={norm_pp:.6e}, ||A_up||={norm_up:.6e}"
     )
     print(
         f"[COUPLED-SPACE] ||A_pp||/||A_uu||={ratio_pu:.6e}, ||A_up||/||A_uu||={ratio_couple:.6e} "
-        f"(A_uu independent of pressure_dof_scale; coupling scales ∝ s and s²)"
+        f"(A_uu independent of pressure_dof_scale; coupling scales ∝ s·gain and s²·gain)"
     )
     for probe_s in (5.0, p_scale):
         if probe_s <= 0.0:
@@ -1296,7 +1304,7 @@ def _slepc_shift_invert_batch(
     p_to_W: Optional[np.ndarray] = None,
     dofs_top: Optional[np.ndarray] = None,
     dofs_back: Optional[np.ndarray] = None,
-) -> Tuple[int, List[Tuple[float, np.ndarray, Optional[float], Optional[float]]]]:
+) -> Tuple[int, List[Tuple[float, np.ndarray, Optional[float], Optional[float], float]]]:
     """
     Krylov-Schur GNHEP batch: shift-invert at ``shift_hz`` (TARGET_MAGNITUDE on λ = ω²).
 
@@ -1310,7 +1318,7 @@ def _slepc_shift_invert_batch(
     nev_request = int(batch) + max(rigid_buf, 0)
 
     # ST σ near target + jitter keeps inversion away from an exact eigenvalue on the shift.
-    shift_jitter_hz = float(solver_cfg.get("shift_jitter_hz", 5.0))
+    shift_jitter_hz = float(solver_cfg.get("shift_jitter_hz", 0.0))
     st_sigma_hz = max(1.0, target_hz + shift_jitter_hz)
     st_sigma = (2.0 * math.pi * st_sigma_hz) ** 2
 
@@ -1597,8 +1605,9 @@ def _slepc_shift_invert_batch(
         ordered = candidates
 
     out: List[Tuple[float, np.ndarray, Optional[float], Optional[float]]] = []
-    for _score, f_hz, arr, rt, rb, _u_n, _p_n in ordered:
-        out.append((f_hz, arr, rt, rb))
+    for _score, f_hz, arr, rt, rb, u_n, p_n in ordered:
+        p_frac = p_n / max(u_n + p_n, 1.0e-30)
+        out.append((f_hz, arr, rt, rb, float(p_frac)))
         if len(out) >= int(batch):
             break
 
@@ -2266,14 +2275,16 @@ def _solve_coupled_evp(
     a_pp = p2 * (1.0 / rho_air) * ufl.inner(ufl.grad(p), ufl.grad(q)) * xdmf_dx(AIR_VOLUME_TAG)
 
     # FSI interface (wood_ds): trial/test must span different sub-spaces for off-diagonal nnz.
+    fsi_gain = _fsi_coupling_gain(config.get("solver", {}))
     # Stiffness — fluid pressure traction on structure: trial p, test v  → block (u, p).
-    a_up = -p_scale * p * ufl.dot(n, v) * wood_ds
+    a_up = -p_scale * fsi_gain * p * ufl.dot(n, v) * wood_ds
 
     _audit_pressure_scale_block_balance(
         a_uu,
         a_pp,
         a_up,
         p_scale=p_scale,
+        fsi_gain=fsi_gain,
         tag_top=tag_top,
         n_facets_top=wood_tag_top,
         status_callback=status_callback,
@@ -2291,7 +2302,7 @@ def _solve_coupled_evp(
     m_pp = p2 * (1.0 / (rho_air * c_air * c_air)) * p * q * xdmf_dx(AIR_VOLUME_TAG)
 
     # Mass — structural normal acceleration drives acoustic: trial u, test q  → block (p, u).
-    m_pu = p_scale * rho_air * ufl.dot(u, n) * q * wood_ds
+    m_pu = p_scale * fsi_gain * rho_air * ufl.dot(u, n) * q * wood_ds
 
     # Pressure-only regularization (optional); displacement is free–free (no reg_u).
     diag_shift = float(config.get("solver", {}).get("diag_shift", 0.0))
@@ -2640,11 +2651,13 @@ def _solve_coupled_evp(
             status_callback=status_callback,
         )
         _phase_sync(2100, "worker single-shift after batch", status_callback=status_callback)
-        row_meta: List[Tuple[float, np.ndarray, float, float]] = []
-        for f_hz, vec, rt, rb in rows:
+        row_meta: List[Tuple[float, np.ndarray, float, float, float]] = []
+        for f_hz, vec, rt, rb, p_frac in rows:
             if rt is None or rb is None:
                 continue
-            row_meta.append((float(f_hz), np.asarray(vec, dtype=np.float64), float(rt), float(rb)))
+            row_meta.append(
+                (float(f_hz), np.asarray(vec, dtype=np.float64), float(rt), float(rb), float(p_frac))
+            )
         if not row_meta:
             _emit(
                 f"[worker][warn] No usable modes at {float(_worker_hz):.4f} Hz "
@@ -2674,6 +2687,9 @@ def _solve_coupled_evp(
         vectors = [t[1] for t in row_meta]
         config["_worker_tag1"] = [t[2] for t in row_meta]
         config["_worker_tag3"] = [t[3] for t in row_meta]
+        config["_worker_p_frac"] = [t[4] for t in row_meta]
+        _shift_jitter = float(solver_cfg.get("shift_jitter_hz", 0.0))
+        config["_worker_st_sigma_hz"] = max(1.0, float(_worker_hz) + _shift_jitter)
         eigvecs = np.stack(vectors, axis=1)
 
         config["_fom_sifter_stats"] = {"worker_single_batch": True, "nconv": int(nconv), "rows": int(len(rows))}
@@ -2870,7 +2886,7 @@ def _solve_coupled_evp(
                 dofs_back=shell_dofs_back,
             )
             scored: List[Tuple[float, float, float]] = []
-            for _f, _v, rt, rb in rows:
+            for _f, _v, rt, rb, _pf in rows:
                 if rt is None or rb is None:
                     continue
                 if not (np.isfinite(rt) and np.isfinite(rb)):
@@ -2892,7 +2908,7 @@ def _solve_coupled_evp(
             added = 0
             dropped_unique = 0
             dropped_participation = 0
-            for f_hz, vec, rt, rb in rows:
+            for f_hz, vec, rt, rb, _pf in rows:
                 if rt is None or rb is None:
                     continue
                 if not (rt > th_top or rb > th_back):
@@ -3082,7 +3098,7 @@ def _solve_coupled_evp(
 
         freqs_hz = []
         vectors = []
-        for f_hz, vec, _rt, _rb in rows:
+        for f_hz, vec, _rt, _rb, _pf in rows:
             freqs_hz.append(f_hz)
             vectors.append(vec)
 

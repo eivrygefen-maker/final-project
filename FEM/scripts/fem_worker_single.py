@@ -148,6 +148,11 @@ def main() -> int:
             "Must match fem_master_dynamic --sorting-root (default: FEM/SORTING next to FEM package)."
         ),
     )
+    parser.add_argument(
+        "--structural-only",
+        action="store_true",
+        help="Displacement-only shell EVP (structural_only_diagnosis); used by master fallback.",
+    )
     args = parser.parse_args()
 
     if args.sorting_root is not None:
@@ -189,6 +194,8 @@ def main() -> int:
         sys.stdout.flush()
     cfg.setdefault("solver", {})
     cfg["solver"]["adaptive_mode_sifter"] = False
+    if args.structural_only:
+        cfg["solver"]["structural_only_diagnosis"] = True
     _target_hz = float(args.target_hz)
     _target_lambda = (2.0 * math.pi * _target_hz) ** 2
     cfg["solver"]["st_type"] = "sinvert"
@@ -241,6 +248,11 @@ def main() -> int:
 
     tag1 = list(cfg.pop("_worker_tag1", []) or [])
     tag3 = list(cfg.pop("_worker_tag3", []) or [])
+    p_fracs = list(cfg.pop("_worker_p_frac", []) or [])
+    _shift_jitter = float(cfg.get("solver", {}).get("shift_jitter_hz", 0.0))
+    st_sigma_hz = float(
+        cfg.pop("_worker_st_sigma_hz", max(1.0, float(args.target_hz) + _shift_jitter))
+    )
     n_modes = int(eigvecs.shape[1]) if eigvecs.ndim == 2 else 0
     if MPI.COMM_WORLD.rank == 0:
         print(
@@ -254,6 +266,8 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    if len(p_fracs) != n_modes:
+        p_fracs = [0.0] * n_modes
 
     n_u_g = int(W.sub(0).dofmap.index_map.size_global * W.sub(0).dofmap.index_map_bs)
     hz_tag = hz_result_tag(float(args.target_hz))
@@ -296,6 +310,7 @@ def main() -> int:
                 "id": int(j),
                 "hz": float(freqs_hz[j]),
                 "wood_participation": float(wood),
+                "p_frac": float(p_fracs[j]),
                 "uniqueness": float(uniq),
                 "tag1_ratio": float(rt),
                 "tag3_ratio": float(rb),
@@ -305,8 +320,14 @@ def main() -> int:
         )
         last_kept_hz = fj
 
+    structural_only_run = bool(
+        args.structural_only
+        or cfg.get("solver", {}).get("structural_only_diagnosis", False)
+    )
     out = {
         "target_hz": float(args.target_hz),
+        "st_sigma_hz": float(st_sigma_hz),
+        "structural_only_run": structural_only_run,
         "num_modes_requested": int(args.num_modes),
         "num_modes_returned": int(len(candidates)),
         "candidates": candidates,
