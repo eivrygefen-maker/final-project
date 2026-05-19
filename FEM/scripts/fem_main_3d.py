@@ -1741,8 +1741,8 @@ def _block_frobenius_normalize_coupled_forms(
 
 
 def _resolvent_probe_block_solver_cfg(solver_cfg: Dict) -> Dict:
-    """Probe path: force block Frobenius scaling so ||A_uu|| and ||A_pp|| are O(1)."""
-    if not _solver_bool(solver_cfg, "resolvent_block_frobenius_normalize", default=True):
+    """Optional block Frobenius scaling for the probe (off by default — preserves load/operator balance)."""
+    if not _solver_bool(solver_cfg, "resolvent_block_frobenius_normalize", default=False):
         return solver_cfg
     merged = dict(solver_cfg)
     merged["gnhep_block_frobenius_normalize"] = True
@@ -1964,8 +1964,7 @@ def _resolvent_symmetric_equilibrate(
     )
     K.diagonalScale(inv_sqrt, inv_sqrt)
     b_scaled = b.duplicate()
-    b_scaled.copy(b)
-    b_scaled.pointwiseMult(inv_sqrt)
+    b_scaled.pointwiseMult(inv_sqrt, b)
     return inv_sqrt, b_scaled
 
 
@@ -4036,6 +4035,7 @@ def _solve_coupled_evp(
                 frequency_hz=float(probe_spec.get("frequency_hz", 102.0)),
                 force_facet_tag=int(probe_spec.get("force_facet_tag", WOOD_SURFACE_TAGS[1])),
                 force_scale=float(probe_spec.get("force_scale", 1.0)),
+                block_scales={"s_uu": float(s_uu), "s_pp": float(s_pp)},
                 status_callback=status_callback,
             )
         return msh, W, A, M
@@ -4687,6 +4687,7 @@ def _coupled_resolvent_solve(
     frequency_hz: float,
     force_facet_tag: int,
     force_scale: float = 1.0,
+    block_scales: Optional[Dict[str, float]] = None,
     status_callback=None,
 ) -> Dict[str, Any]:
     """
@@ -4724,7 +4725,15 @@ def _coupled_resolvent_solve(
     b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
     set_bc(b, bcs)
 
+    s_uu_load = 1.0
+    if block_scales:
+        s_uu_load = max(float(block_scales.get("s_uu", 1.0)), 1.0e-30)
+        if abs(s_uu_load - 1.0) > 0.0:
+            b.scale(1.0 / s_uu_load)
+
     b_norm = float(b.norm())
+    u_idx = np.asarray(u_to_W_map, dtype=np.int32).ravel()
+    b_u_norm = float(np.linalg.norm(np.asarray(b.array, dtype=np.float64)[u_idx])) if u_idx.size else 0.0
     if b_norm < 1.0e-30:
         err = (
             f"assembled load vector has ||F||≈0 (tag={tag}, facets={n_facets}); "
@@ -4769,6 +4778,14 @@ def _coupled_resolvent_solve(
 
     a_norm_f = float(A.norm())
     m_norm_f = float(M.norm())
+    balance_shift = _solver_bool(solver_cfg, "resolvent_balance_lambda_shift", default=True)
+    if MPI.COMM_WORLD.rank == ROOT_RANK and lam_shift > 0.0:
+        print(
+            f"[resolvent-probe] shift balance: balance_lambda={balance_shift} "
+            f"est ||λM||/||A||≈{(lam_shift * m_norm_f) / max(a_norm_f, 1.0e-30):.3e} "
+            f"b_u_block||F||={b_u_norm:.6e}"
+        )
+        sys.stdout.flush()
     if a_norm_f < 1.0e-30 and MPI.COMM_WORLD.rank == ROOT_RANK:
         try:
             d_a = A.getDiagonal()
@@ -4786,17 +4803,27 @@ def _coupled_resolvent_solve(
         reg_lambda = float(reg_frac) * float(lam_shift)
         K_try = A.copy()
         K_try.assemble()
-        K_try.axpy(
-            -lam_shift,
-            M,
-            structure=PETSc.Mat.Structure.SAME_NONZERO_PATTERN,
-        )
-        if reg_lambda > 0.0:
+        b_try_rhs = b.duplicate()
+        b_try_rhs.copy(b)
+        if balance_shift and lam_shift > 0.0:
+            inv_lam = 1.0 / float(lam_shift)
+            K_try.scale(inv_lam)
+            b_try_rhs.scale(inv_lam)
+            K_try.axpy(-1.0, M, structure=PETSc.Mat.Structure.SAME_NONZERO_PATTERN)
+            if reg_lambda > 0.0:
+                K_try.axpy(reg_frac, M, structure=PETSc.Mat.Structure.SAME_NONZERO_PATTERN)
+        else:
             K_try.axpy(
-                reg_lambda,
+                -lam_shift,
                 M,
                 structure=PETSc.Mat.Structure.SAME_NONZERO_PATTERN,
             )
+            if reg_lambda > 0.0:
+                K_try.axpy(
+                    reg_lambda,
+                    M,
+                    structure=PETSc.Mat.Structure.SAME_NONZERO_PATTERN,
+                )
         K_try.assemble()
         try:
             K_try.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
@@ -4804,12 +4831,11 @@ def _coupled_resolvent_solve(
             pass
         _resolvent_stabilize_shifted_matrix(K_try, solver_cfg)
 
-        b_try = b.duplicate()
-        b_try.copy(b)
+        b_try = b_try_rhs
         inv_sqrt: Optional[PETSc.Vec] = None
         if use_equilibrate:
             try:
-                inv_sqrt, b_try = _resolvent_symmetric_equilibrate(K_try, b_try)
+                inv_sqrt, b_try = _resolvent_symmetric_equilibrate(K_try, b_try_rhs)
             except Exception as exc:
                 if MPI.COMM_WORLD.rank == ROOT_RANK:
                     _emit(
@@ -4817,7 +4843,8 @@ def _coupled_resolvent_solve(
                         status_callback=status_callback,
                         level="warning",
                     )
-                b_try.copy(b)
+        else:
+            b_try = b_try_rhs
 
         x_try = K_try.createVecRight()
         x_try.set(0.0)
@@ -4828,7 +4855,9 @@ def _coupled_resolvent_solve(
         if inv_sqrt is not None:
             _resolvent_unscale_solution(x_try, inv_sqrt)
         try:
-            b_try.destroy()
+            if b_try is not b_try_rhs:
+                b_try.destroy()
+            b_try_rhs.destroy()
             if inv_sqrt is not None:
                 inv_sqrt.destroy()
         except Exception:
@@ -4881,12 +4910,20 @@ def _coupled_resolvent_solve(
     ratio = float("nan")
     coupled_visible = False
 
+    x_norm_f = float(x.norm()) if solve_ok and x is not None else float("nan")
+
     if solve_ok and x is not None:
         arr = x.array.copy()
         if np.all(np.isfinite(arr)):
             u_norm, p_norm = _mixed_eigenvector_block_norms(
                 arr, u_to_W=u_to_W_map, p_to_W=p_to_W_map
             )
+            if u_norm < 1.0e-30 and p_norm < 1.0e-30 and x_norm_f > 1.0e-30:
+                u_collapsed = _collapsed_u_from_mixed_vec(arr, u_to_W_map)
+                u_norm = float(np.linalg.norm(u_collapsed))
+                p_idx = np.asarray(p_to_W_map, dtype=np.int32).ravel()
+                if p_idx.size > 0:
+                    p_norm = float(np.linalg.norm(arr[p_idx]))
             ratio = p_norm / max(u_norm, 1.0e-30)
             p_floor = 1.0e-6 * max(u_norm, 1.0e-30)
             coupled_visible = bool(np.isfinite(p_norm) and np.isfinite(u_norm) and p_norm > p_floor)
@@ -4914,9 +4951,15 @@ def _coupled_resolvent_solve(
         print(
             f"[resolvent-probe] ||A||_F={a_norm_f:.6e} ||M||_F={m_norm_f:.6e}"
         )
-        print(f"[resolvent-probe] ||F||={b_norm:.6e} KSP its={its} reason={reason}")
+        print(
+            f"[resolvent-probe] ||F||={b_norm:.6e} ||F_u||={b_u_norm:.6e} "
+            f"KSP its={its} reason={reason}"
+        )
         if solve_ok:
-            print(f"[resolvent-probe] ||u||={u_norm:.6e} ||p||={p_norm:.6e} ||p||/||u||={ratio:.6e}")
+            print(
+                f"[resolvent-probe] ||x||={x_norm_f:.6e} ||u||={u_norm:.6e} "
+                f"||p||={p_norm:.6e} ||p||/||u||={ratio:.6e}"
+            )
             p_floor = 1.0e-6 * max(u_norm, 1.0e-30)
             print(
                 f"[resolvent-probe] coupling_check (||p|| > 1e-6*||u||): "
@@ -4945,9 +4988,12 @@ def _coupled_resolvent_solve(
         "force_facet_count": int(n_facets),
         "force_scale": float(force_scale),
         "load_norm": b_norm,
+        "load_u_norm": b_u_norm,
+        "x_norm": x_norm_f,
         "u_norm": u_norm,
         "p_norm": p_norm,
         "p_over_u": ratio,
+        "balance_lambda_shift": bool(balance_shift),
         "coupling_check_pass": bool(coupled_visible),
         "solve_ok": bool(solve_ok),
         "ksp_iterations": int(its),

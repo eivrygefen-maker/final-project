@@ -155,6 +155,8 @@
         "resolvent_symmetric_equilibrate": true,
         "resolvent_mass_reg_retry_fracs": [1.0e-6, 1.0e-4, 1.0e-2, 0.1, 0.5, 1.0],
         "resolvent_ksp_diagonal_shift_frac": 1.0e-8,
+        "resolvent_balance_lambda_shift": true,
+        "resolvent_block_frobenius_normalize": false,
         "coupled_blockwise_assembly": true,
         "fsi_nitsche_enable": true,
         "fsi_nitsche_penalty_frac": 1.0e-5,
