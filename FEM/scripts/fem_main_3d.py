@@ -1013,49 +1013,78 @@ def _eps_use_target_real(solver_cfg: Dict) -> bool:
     return _solver_bool(solver_cfg, "eps_use_target_real", default=False)
 
 
+def _slepc_lambda_hz_bounds(solver_cfg: Optional[Dict] = None) -> Tuple[float, float]:
+    """Plausible physical frequency band for mapped λ = ω² (rad/s)²."""
+    f_lo = 50.0
+    f_hi = 600.0
+    if solver_cfg:
+        try:
+            f_lo = max(10.0, 0.5 * float(solver_cfg.get("min_valid_mode_hz", 90.0)))
+        except (TypeError, ValueError):
+            pass
+        try:
+            f_hi = 1.25 * float(solver_cfg.get("max_valid_mode_hz", 480.0))
+        except (TypeError, ValueError):
+            pass
+    lam_lo = (2.0 * math.pi * f_lo) ** 2
+    lam_hi = (2.0 * math.pi * f_hi) ** 2
+    return lam_lo, lam_hi
+
+
 def _slepc_physical_lambda(
     eig_r: float,
     st_sigma: float,
     st_name: str,
-) -> float:
+    solver_cfg: Optional[Dict] = None,
+) -> Tuple[float, str]:
     """
-    Map EPS/ST Ritz value to physical GNHEP eigenvalue λ = ω² (rad/s)².
+    Map EPS/ST Ritz value μ to physical GNHEP eigenvalue λ = ω² (rad/s)².
 
-  Many SLEPc builds return the **original-pencil** eigenvalue λ directly from
-  ``EPS.getEigenpair``, not the spectral-transform coordinate ν. For
-  ``st_type=sinvert`` the transform value is ν ≈ 1/(λ-σ); when |ν| is on the
-  scale of σ (ω²) the reported number is already λ — applying σ+1/μ would pin
-  every mode to the shift (f_span=0, density-ceiling merge rejects).
+    Returns ``(λ, tag)`` with ``tag`` in
+    ``raw|shift|invert|reject``. Non-finite λ means discard the Ritz pair.
 
-    ``st_type=sinvert``: use ν → λ = σ + 1/ν only when |ν| ≪ σ; else treat μ as λ.
-    ``st_type=shift``: returned ν ≈ λ-σ  →  λ = ν + σ (with invert fallback when |ν| is huge).
+    SLEPc may report λ, λ-σ, or 1/(λ-σ) depending on ST type and build.
+    Astronomical |μ| (ill-conditioned shift / spurious infinite modes) must not
+    use the invert fallback σ+1/μ — that pins every mode to the shift frequency.
     """
     sigma = float(st_sigma)
     mu = float(np.real(eig_r))
     name = str(st_name).strip().lower()
+    lam_lo, lam_hi = _slepc_lambda_hz_bounds(solver_cfg)
+    # |λ-σ| or moderate |1/(λ-σ)| for guitar band; 1e28 is never physical.
+    mu_cap = max(1.0e6, 80.0 * max(sigma, 1.0))
+
+    def _ok(lam: float) -> bool:
+        return math.isfinite(lam) and lam_lo <= lam <= lam_hi
+
     if not math.isfinite(mu):
-        return max(sigma, 0.0)
-    if name in ("sinvert", "shift_invert"):
-        if mu <= 0.0:
-            return max(sigma, 0.0)
-        lam_invert = sigma + (1.0 / mu)
-        # Original-pencil λ is O(σ); invert Ritz ν is usually modest unless λ→σ.
-        if mu >= max(1.0, 0.02 * max(sigma, 1.0)):
-            return max(mu, 0.0)
-        if abs(mu) > max(1.0e4, 100.0 * max(sigma, 1.0)) and lam_invert > 0.0:
-            return lam_invert
-        if abs(lam_invert - mu) <= 0.05 * max(abs(mu), 1.0):
-            return max(mu, 0.0)
-        return max(lam_invert, 0.0)
+        return float("nan"), "reject"
+
+    choices: List[Tuple[float, str]] = []
+    if _ok(mu):
+        choices.append((mu, "raw"))
+    lam_shift = mu + sigma
+    if _ok(lam_shift):
+        choices.append((lam_shift, "shift"))
+    if mu > 0.0 and abs(mu) <= mu_cap:
+        lam_inv = sigma + (1.0 / mu)
+        if _ok(lam_inv):
+            choices.append((lam_inv, "invert"))
+
+    if not choices:
+        return float("nan"), "reject"
+
     if name in ("shift", "stshift"):
-        lam = mu + sigma
-        # Krylov-Schur + LU often returns invert-spectrum μ even when ST is labeled shift.
-        if abs(mu) > max(1.0e4, 100.0 * max(sigma, 1.0)) and mu > 0.0:
-            lam_inv = sigma + (1.0 / mu)
-            if lam_inv > 0.0 and math.isfinite(lam_inv):
-                return lam_inv
-        return max(lam, 0.0)
-    return max(mu, 0.0)
+        for lam, tag in choices:
+            if tag == "shift":
+                return lam, tag
+    if name in ("sinvert", "shift_invert"):
+        for lam, tag in choices:
+            if tag == "invert":
+                return lam, tag
+    # Fallback: Ritz value closest to the shift (typical band target).
+    lam_best, tag_best = min(choices, key=lambda t: abs(t[0] - sigma))
+    return lam_best, tag_best
 
 
 def _slepc_eps_strategy(
@@ -1758,8 +1787,10 @@ def _slepc_shift_invert_batch(
                 raise
             continue
         eig_r = float(np.real(eig))
-        lam_phys = _slepc_physical_lambda(eig_r, st_sigma, _st_name)
-        if lam_phys <= rigid_tol:
+        lam_phys, lam_map_tag = _slepc_physical_lambda(
+            eig_r, st_sigma, _st_name, solver_cfg
+        )
+        if (not math.isfinite(lam_phys)) or lam_phys <= rigid_tol:
             skipped_rigid += 1
             continue
         omega = math.sqrt(max(lam_phys, 0.0))
@@ -1791,7 +1822,7 @@ def _slepc_shift_invert_batch(
         if MPI.COMM_WORLD.rank == ROOT_RANK:
             print(
                 f"[eps-p-diag] converged slot={i} raw_eig={eig_r:.6e} "
-                f"lam_phys={lam_phys:.6e} f={f_hz:.4f} Hz "
+                f"lam_phys={lam_phys:.6e} map={lam_map_tag} f={f_hz:.6f} Hz "
                 f"max|p|={p_block_max:.6e} p_frac={p_frac:.3e} wood={wood:.4f}",
                 flush=True,
             )
@@ -1841,9 +1872,9 @@ def _slepc_shift_invert_batch(
         f_span = (max(freqs) - min(freqs)) if freqs else 0.0
         if len(freqs) >= 10 and f_span < 0.05:
             print(
-                f"[solver][warn] EPS harvest: f_span={f_span:.4f} Hz at ST_sigma={st_sigma_hz:.2f} Hz "
-                f"({len(freqs)} candidates) — σ-cluster / TARGET_MAGNITUDE+sinvert lock; "
-                "prefer eps_which=TARGET_REAL + st_type=shift for band spread.",
+                f"[solver][warn] EPS harvest: f_span={f_span:.6f} Hz at ST_sigma={st_sigma_hz:.2f} Hz "
+                f"({len(freqs)} candidates) — σ-cluster; check spurious Ritz / rigid null-space "
+                f"or widen eps_broad_search_hz (now {broad_hz:.2f}).",
                 flush=True,
             )
         print(
