@@ -36,8 +36,8 @@ UNIQUENESS_VETO_MIN = 0.1
 DEFAULT_QUOTA = 150
 TOP_PLATE_QUOTA = 120
 BACK_PLATE_QUOTA = 30
-TAG1_RATIO_MIN = 0.0001
-TAG3_RATIO_MIN = 0.0005
+TAG1_RATIO_MIN = 0.0
+TAG3_RATIO_MIN = 0.0
 
 # Legacy combined-wood MMR (``--legacy-combined`` only)
 W = 1.0
@@ -622,13 +622,13 @@ def main() -> int:
         "--tag1-min",
         type=float,
         default=TAG1_RATIO_MIN,
-        help="Minimum tag1_ratio for top pool (default 0.0001)",
+        help="Minimum tag1_ratio for top pool (default 0.0)",
     )
     parser.add_argument(
         "--tag3-min",
         type=float,
         default=TAG3_RATIO_MIN,
-        help="Minimum tag3_ratio for back pool (default 0.0005)",
+        help="Minimum tag3_ratio for back pool (default 0.0)",
     )
     parser.add_argument(
         "--export",

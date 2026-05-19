@@ -1441,9 +1441,8 @@ def _merge_result_into_candidates_log(
             yield_kept_over_raw=0.0,
         )
 
-    ctx = merge_ctx if merge_ctx is not None else MergeContext()
-    # Wood V2 (100–450 Hz linear floor) + batch isolation relief (floor×0.6 if >15 Hz from all
-    # peer freqs in this worker JSON) run in _passes_zone_wood_veto_v2 — independent of SLEPc num_modes.
+    # Wood participation absolute floor veto disabled: finer meshes scale L2-normalized
+    # tag ratios down; downstream split-quota MMR in dynamic_filter_tuner ranks relatively.
 
     all_hz: List[float] = []
     for c in raw:
@@ -1477,43 +1476,8 @@ def _merge_result_into_candidates_log(
                 yield_kept_over_raw=0.0,
             )
 
-    veto_pass: List[Dict[str, Any]] = []
+    veto_pass: List[Dict[str, Any]] = list(raw)
     failed_veto: List[Dict[str, Any]] = []
-    if force_emergency:
-        veto_pass = list(raw)
-    else:
-        for c in raw:
-            try:
-                chz = float(c.get("hz", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                chz = 0.0
-            peers = [h for h in all_hz if abs(h - chz) > 1e-6]
-            if _passes_zone_wood_veto_v2(c, peers):
-                veto_pass.append(c)
-            else:
-                failed_veto.append(c)
-        for c in failed_veto:
-            _unlink_worker_vector(c, path_root)
-
-    if not veto_pass:
-        LOGGER.warning(
-            "No candidates passed zone wood veto for %s; removing result file and worker vectors.",
-            result_path.name,
-        )
-        if not force_emergency:
-            for c in raw:
-                _unlink_worker_vector(c, path_root)
-            try:
-                result_path.unlink()
-            except OSError:
-                pass
-        return MergeStats(
-            raw_n=raw_n,
-            kept_after_veto=0,
-            kept_after_manager=0,
-            avg_wood_raw=avg_wood_raw,
-            yield_kept_over_raw=0.0,
-        )
 
     batch_loaded = _load_batch_csr_pairs(veto_pass, path_root)
     if not batch_loaded:
@@ -1549,9 +1513,9 @@ def _merge_result_into_candidates_log(
             thin_kept = [dict(row) for row, _ in batch_loaded]
             thin_discarded: List[Dict[str, Any]] = []
         else:
-            thin_kept, thin_discarded, _scores = _adaptive_manager_select(batch_loaded, existing, path_root, ctx)
-            for c in thin_discarded:
-                _unlink_worker_vector(c, path_root)
+            # Pass-through: retain all worker modes; MMR selection runs in dynamic_filter_tuner.
+            thin_kept = [dict(row) for row, _ in batch_loaded]
+            thin_discarded = []
 
         dropped_total = raw_n - len(thin_kept)
         if dropped_total > 0:
