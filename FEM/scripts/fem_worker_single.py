@@ -199,7 +199,7 @@ def main() -> int:
     _nm = max(1, int(args.num_modes))
     cfg["solver"]["target_ncv"] = max(
         int(cfg["solver"].get("target_ncv", 0)),
-        int(math.ceil(3.0 * _nm)),
+        int(math.ceil(4.0 * _nm)),
     )
     cfg["_worker_eps_max_it"] = int(cfg["solver"].get("eigs_maxiter", cfg["solver"].get("eps_max_it", 3000)))
     cfg["_worker_target_hz"] = _target_hz

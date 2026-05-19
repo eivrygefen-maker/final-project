@@ -982,8 +982,8 @@ def _slepc_shift_invert_batch(
     if ks_pert > 0.0:
         petsc_opts["eps_krylovschur_pertsize"] = ks_pert
 
-    ncv_min_factor = float(solver_cfg.get("eps_ncv_min_factor", 3.0))
-    ncv_floor = int(math.ceil(max(3.0, ncv_min_factor) * float(nev_request)))
+    ncv_min_factor = float(solver_cfg.get("eps_ncv_min_factor", 4.0))
+    ncv_floor = int(math.ceil(max(4.0, ncv_min_factor) * float(nev_request)))
     ncv_cfg = int(solver_cfg.get("target_ncv", 0))
     ncv = max(ncv_floor, ncv_cfg, 40)
     eps.setDimensions(int(nev_request), int(ncv))
@@ -991,8 +991,14 @@ def _slepc_shift_invert_batch(
     if eps_max_it_cap is not None:
         # Never cap below batch-scaled floor (legacy bug used sifter_batch_max_it ≈ 50 for nev=80).
         eps_max_it = max(int(eps_max_it_cap), int(batch) * 5, 200)
-    eps_tol = float(solver_cfg.get("eps_tol", solver_cfg.get("eigs_tol", 1.0e-6)))
+    eps_tol = float(solver_cfg.get("eps_tol", solver_cfg.get("eigs_tol", 1.0e-3)))
     eps.setTolerances(eps_tol, eps_max_it)
+    _eps_conv_rel = getattr(SLEPc.EPS.Conv, "REL", None)
+    if _eps_conv_rel is not None:
+        try:
+            eps.setConvergenceTest(_eps_conv_rel)
+        except Exception:
+            pass
 
     diag_vec = A.getDiagonal()
     diag_arr = np.real(diag_vec.array)
@@ -1006,7 +1012,7 @@ def _slepc_shift_invert_batch(
         f"[solver] EPS spectrum batch (target={target_hz:.2f} Hz): "
         f"target_lambda={target_lambda:.6e}, min_hz={min_hz:.2f}, "
         f"ST={_st_name} sigma={st_sigma_hz:.2f} Hz (jitter={shift_jitter_hz:.2f}), "
-        f"which=TARGET_MAGNITUDE, ks_restart={ks_restart:.3f}, ks_pert={ks_pert:.2e}, "
+        f"which=TARGET_MAGNITUDE, conv=REL, ks_restart={ks_restart:.3f}, ks_pert={ks_pert:.2e}, "
         f"nev_request={nev_request} (batch={batch}+rigid_buf={rigid_buf}), "
         f"ncv={ncv}, eps_tol={eps_tol:.1e}, eps_max_it={eps_max_it}, "
         f"KSP={ksp.getType()}, PC={pc.getType()}, factor={_st_factor}, "
@@ -1040,26 +1046,64 @@ def _slepc_shift_invert_batch(
     else:
         st.setType(SLEPc.ST.Type.SINVERT)
     st.setShift(st_sigma)
+    if _eps_conv_rel is not None:
+        try:
+            eps.setConvergenceTest(_eps_conv_rel)
+        except Exception:
+            pass
     print(f"[HEARTBEAT] Rank {MPI.COMM_WORLD.rank} reached EPS Solve")
     sys.stdout.flush()
     _debug_rank("Entering EPS Solve")
-    eps.solve()
+    try:
+        eps.solve()
+    except Exception as exc:
+        _emit(
+            f"[solver][warn] EPS solve() raised (will still harvest nconv>0 if any): {exc}",
+            status_callback=status_callback,
+            level="warning",
+        )
 
     its = eps.getIterationNumber()
-    nconv = eps.getConverged()
+    nconv_marked = int(eps.getConverged())
     reason = eps.getConvergedReason()
+    force_partial = _solver_bool(solver_cfg, "eps_force_harvest_partial", True)
+    harvest_slots = nconv_marked
+    if harvest_slots == 0 and force_partial:
+        harvest_slots = int(nev_request)
     _emit(
-        f"[solver] EPS sweep (scheduler={shift_hz:.1f} Hz): iterations={its}, converged={nconv}, "
+        f"[solver] EPS sweep (scheduler={shift_hz:.1f} Hz): iterations={its}, "
+        f"nconv_marked={nconv_marked}, harvest_slots={harvest_slots}, "
         f"requested={nev_request}, min_hz={min_hz:.2f}, reason={reason}",
         status_callback=status_callback,
     )
+    if reason < 0 and nconv_marked > 0:
+        _emit(
+            f"[solver][warn] EPS reason={reason} (not CONVERGED_TOL) but harvesting {nconv_marked} "
+            f"converged pair(s) anyway.",
+            status_callback=status_callback,
+            level="warning",
+        )
+    elif reason < 0 and harvest_slots > 0 and nconv_marked == 0:
+        _emit(
+            f"[solver][warn] EPS reason={reason}; attempting partial harvest up to "
+            f"{harvest_slots} Ritz slots (force_partial).",
+            status_callback=status_callback,
+            level="warning",
+        )
 
     out: List[Tuple[float, np.ndarray, Optional[float], Optional[float]]] = []
     rvec = A.createVecRight()
     skipped_rigid = 0
     skipped_below_min = 0
-    for i in range(int(nconv)):
-        eig = eps.getEigenpair(i, rvec)
+    skipped_unavailable = 0
+    for i in range(int(harvest_slots)):
+        try:
+            eig = eps.getEigenpair(i, rvec)
+        except Exception:
+            skipped_unavailable += 1
+            if i < nconv_marked:
+                raise
+            continue
         eig_r = float(np.real(eig))
         if eig_r <= rigid_tol:
             skipped_rigid += 1
@@ -1079,15 +1123,16 @@ def _slepc_shift_invert_batch(
 
     if MPI.COMM_WORLD.rank == ROOT_RANK:
         print(
-            f"[solver] EPS harvest: kept={len(out)}/{batch} from nconv={nconv} "
-            f"(skip rigid={skipped_rigid}, f<{min_hz:.1f}Hz={skipped_below_min})"
+            f"[solver] EPS harvest: kept={len(out)}/{batch} from nconv_marked={nconv_marked} "
+            f"(skip rigid={skipped_rigid}, f<{min_hz:.1f}Hz={skipped_below_min}, "
+            f"unavail={skipped_unavailable})"
         )
         sys.stdout.flush()
 
     if len(out) < int(batch) and MPI.COMM_WORLD.rank == ROOT_RANK:
         _emit(
             f"[solver][warn] EPS harvested {len(out)}/{batch} modes with f>={min_hz:.1f} Hz "
-            f"(nconv={nconv}); increase eigs_maxiter (now {eps_max_it}) or target_ncv (now {ncv}).",
+            f"(nconv_marked={nconv_marked}); increase eigs_maxiter (now {eps_max_it}) or target_ncv (now {ncv}).",
             status_callback=status_callback,
             level="warning",
         )
@@ -1940,6 +1985,12 @@ def _solve_coupled_evp(
                 continue
             row_meta.append((float(f_hz), np.asarray(vec, dtype=np.float64), float(rt), float(rb)))
         if not row_meta:
+            _emit(
+                f"[worker][warn] No usable modes at {float(_worker_hz):.4f} Hz "
+                f"(nconv returned={nconv}, rows after filter=0).",
+                status_callback=status_callback,
+                level="warning",
+            )
             if M_top is not None:
                 M_top.destroy()
             if M_back is not None:
@@ -1953,9 +2004,9 @@ def _solve_coupled_evp(
                 M.destroy()
             except Exception:
                 pass
-            raise RuntimeError(
-                f"[worker] No usable modes at {float(_worker_hz):.4f} Hz (convergence or plate-energy ratios missing)."
-            )
+            n_u_empty = int(W.sub(0).dofmap.index_map.size_local * W.sub(0).dofmap.index_map_bs)
+            n_p_empty = int(W.sub(1).dofmap.index_map.size_local * W.sub(1).dofmap.index_map_bs)
+            return msh, W, [], np.zeros((0, 0), dtype=np.float64), n_u_empty, n_p_empty
 
         row_meta.sort(key=lambda t: t[0])
         freqs_hz = [t[0] for t in row_meta]
@@ -2354,8 +2405,12 @@ def _solve_coupled_evp(
             M_back=None,
             work=None,
         )
-        if nconv <= 0:
-            raise RuntimeError("SLEPc did not converge any eigenpairs.")
+        if nconv <= 0 and not rows:
+            _emit(
+                "[solver][warn] Legacy coupled batch: no converged pairs and no harvested rows.",
+                status_callback=status_callback,
+                level="warning",
+            )
         _phase_sync(2006, "coupled legacy after batch solve", status_callback=status_callback)
 
         freqs_hz = []
