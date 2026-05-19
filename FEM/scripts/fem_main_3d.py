@@ -812,6 +812,16 @@ def _plate_modal_energy_ratios(
     return e_top / total_wood_energy, e_back / total_wood_energy
 
 
+def _slepc_spectrum_min_hz(solver_cfg: Dict, scheduler_hz: float) -> float:
+    """Lower frequency bound (Hz) for physical modes; scheduler_hz is logging/scheduling only."""
+    return float(
+        solver_cfg.get(
+            "min_valid_mode_hz",
+            solver_cfg.get("eps_spectrum_min_hz", scheduler_hz),
+        )
+    )
+
+
 def _slepc_shift_invert_batch(
     A: PETSc.Mat,
     M: PETSc.Mat,
@@ -827,20 +837,46 @@ def _slepc_shift_invert_batch(
     mass_back: float = 1.0,
     eps_max_it_cap: Optional[int] = None,
 ) -> Tuple[int, List[Tuple[float, np.ndarray, Optional[float], Optional[float]]]]:
-    """Run one SLEPc GNHEP shift-invert solve; returns rows (freq_hz, eigenvector, top_ratio|None, back_ratio|None)."""
-    # Tiny shift offset avoids ST LU singularity when sigma lands exactly on an eigenvalue.
-    _sigma_jitter_hz = float(solver_cfg.get("shift_jitter_hz", 0.05))
-    target_lambda = (2.0 * math.pi * (float(shift_hz) + _sigma_jitter_hz)) ** 2
+    """
+    Krylov-Schur GNHEP batch: smallest-|lambda| search with f >= min_hz (no TARGET_MAGNITUDE lock).
+
+    ``shift_hz`` is the master scheduler label only; the EPS does not target that frequency.
+    """
+    min_hz = _slepc_spectrum_min_hz(solver_cfg, shift_hz)
+    lambda_min = (2.0 * math.pi * float(min_hz)) ** 2
+    rigid_tol = float(solver_cfg.get("coupled_rigid_lambda_tol", 1.0e-10))
+    rigid_buf = int(solver_cfg.get("eps_rigid_mode_buffer", 10))
+    nev_request = int(batch) + max(rigid_buf, 0)
+
+    # ST precondition shift below the band (not the eigenvalue selection target).
+    st_offset_hz = float(solver_cfg.get("st_precondition_offset_hz", 15.0))
+    st_sigma_hz = max(1.0, float(min_hz) - st_offset_hz)
+    st_sigma = (2.0 * math.pi * st_sigma_hz) ** 2
+
     eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
     eps.setOperators(A, M)
     eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
     eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
-    eps.setKrylovSchurRestart(float(solver_cfg.get("krylov_schur_restart", 0.5)))
-    # Shift-invert: eigenvalues closest in magnitude to sigma (spectral band around shift_hz).
-    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
-    eps.setTarget(target_lambda)
+    ks_restart = float(solver_cfg.get("krylov_schur_restart", 0.5))
+    if ks_restart <= 0.0:
+        ks_restart = 0.5
+    eps.setKrylovSchurRestart(ks_restart)
+
+    # Smallest magnitude on the transformed problem; harvest f >= min_hz post-solve.
+    _which_user = getattr(SLEPc.EPS.Which, "USER", None)
+    if _which_user is not None and bool(solver_cfg.get("eps_use_which_user", False)):
+        eps.setWhichEigenpairs(_which_user)
+        eps.setTarget(lambda_min)
+    else:
+        eps.setWhichEigenpairs(SLEPc.EPS.Which.SMALLEST_MAGNITUDE)
+
     st = eps.getST()
-    st.setType(SLEPc.ST.Type.SINVERT)
+    _st_name = str(solver_cfg.get("st_type", "shift")).strip().lower()
+    if _st_name in ("shift", "stshift"):
+        st.setType(SLEPc.ST.Type.SHIFT)
+    else:
+        st.setType(SLEPc.ST.Type.SINVERT)
+    st.setShift(st_sigma)
 
     ksp = st.getKSP()
     pc = ksp.getPC()
@@ -910,10 +946,10 @@ def _slepc_shift_invert_batch(
     petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "none"))
 
     ncv_min_factor = float(solver_cfg.get("eps_ncv_min_factor", 3.0))
-    ncv_floor = int(math.ceil(max(3.0, ncv_min_factor) * float(batch)))
+    ncv_floor = int(math.ceil(max(3.0, ncv_min_factor) * float(nev_request)))
     ncv_cfg = int(solver_cfg.get("target_ncv", 0))
     ncv = max(ncv_floor, ncv_cfg, 40)
-    eps.setDimensions(int(batch), int(ncv))
+    eps.setDimensions(int(nev_request), int(ncv))
     eps_max_it = int(solver_cfg.get("eigs_maxiter", 2000))
     if eps_max_it_cap is not None:
         # Never cap below batch-scaled floor (legacy bug used sifter_batch_max_it ≈ 50 for nev=80).
@@ -929,16 +965,18 @@ def _slepc_shift_invert_batch(
         diag_min = float("nan")
         diag_max = float("nan")
     _emit(
-        f"[solver] shift-invert batch center {shift_hz:.2f} Hz (lambda={target_lambda:.6e} s^-2, "
-        f"jitter={_sigma_jitter_hz:.3f} Hz), "
-        f"batch={batch}, ncv={ncv}, eps_max_it={eps_max_it}, "
+        f"[solver] EPS spectrum batch (scheduler={shift_hz:.2f} Hz): "
+        f"min_hz={min_hz:.2f}, lambda_min={lambda_min:.6e}, "
+        f"ST={_st_name} sigma={st_sigma_hz:.2f} Hz, "
+        f"which=SMALLEST_MAGNITUDE, ks_restart={ks_restart:.3f}, "
+        f"nev_request={nev_request} (batch={batch}+rigid_buf={rigid_buf}), "
+        f"ncv={ncv}, eps_max_it={eps_max_it}, "
         f"KSP={ksp.getType()}, PC={pc.getType()}, factor={_st_factor}, "
         f"MUMPS via ST opts: ICNTL4={mumps_icntl_4}, ICNTL6={mumps_icntl_6}, ICNTL12={mumps_icntl_12}, "
         f"ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}), "
         f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}",
         status_callback=status_callback,
     )
-    st.setShift(target_lambda)
     eps.setFromOptions()
     _debug_petsc_comm("A", A)
     _debug_petsc_comm("M", M)
@@ -963,32 +1001,48 @@ def _slepc_shift_invert_batch(
     nconv = eps.getConverged()
     reason = eps.getConvergedReason()
     _emit(
-        f"[solver] EPS sweep @ {shift_hz:.1f} Hz: iterations={its}, converged={nconv}, "
-        f"requested={batch}, reason={reason}",
+        f"[solver] EPS sweep (scheduler={shift_hz:.1f} Hz): iterations={its}, converged={nconv}, "
+        f"requested={nev_request}, min_hz={min_hz:.2f}, reason={reason}",
         status_callback=status_callback,
     )
-    if nconv < int(batch) and MPI.COMM_WORLD.rank == ROOT_RANK:
-        _emit(
-            f"[solver][warn] EPS converged {nconv}/{batch} modes at shift {shift_hz:.2f} Hz; "
-            f"increase eigs_maxiter (now {eps_max_it}) or target_ncv (now {ncv}).",
-            status_callback=status_callback,
-            level="warning",
-        )
 
     out: List[Tuple[float, np.ndarray, Optional[float], Optional[float]]] = []
     rvec = A.createVecRight()
-    for i in range(min(batch, nconv)):
+    skipped_rigid = 0
+    skipped_below_min = 0
+    for i in range(int(nconv)):
         eig = eps.getEigenpair(i, rvec)
         eig_r = float(np.real(eig))
-        if eig_r <= 1.0e-14:
+        if eig_r <= rigid_tol:
+            skipped_rigid += 1
             continue
-        omega = math.sqrt(eig_r)
+        omega = math.sqrt(max(eig_r, 0.0))
         f_hz = omega / (2.0 * math.pi)
+        if f_hz + 1e-9 < float(min_hz):
+            skipped_below_min += 1
+            continue
         rt: Optional[float] = None
         rb: Optional[float] = None
         if work is not None and (M_top is not None or M_back is not None):
             rt, rb = _plate_modal_energy_ratios(rvec, M_top, M_back, work, mass_top, mass_back)
         out.append((f_hz, rvec.array.copy(), rt, rb))
+        if len(out) >= int(batch):
+            break
+
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        print(
+            f"[solver] EPS harvest: kept={len(out)}/{batch} from nconv={nconv} "
+            f"(skip rigid={skipped_rigid}, f<{min_hz:.1f}Hz={skipped_below_min})"
+        )
+        sys.stdout.flush()
+
+    if len(out) < int(batch) and MPI.COMM_WORLD.rank == ROOT_RANK:
+        _emit(
+            f"[solver][warn] EPS harvested {len(out)}/{batch} modes with f>={min_hz:.1f} Hz "
+            f"(nconv={nconv}); increase eigs_maxiter (now {eps_max_it}) or target_ncv (now {ncv}).",
+            status_callback=status_callback,
+            level="warning",
+        )
 
     try:
         rvec.destroy()
@@ -999,7 +1053,7 @@ def _slepc_shift_invert_batch(
     except Exception:
         pass
     eps.destroy()
-    return nconv, out
+    return len(out), out
 
 
 def _solve_structural_only_evp(
