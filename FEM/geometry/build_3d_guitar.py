@@ -5,11 +5,22 @@ import os
 import math
 from pathlib import Path
 
+def _resolve_config_path(fem_dir: Path) -> Path:
+    """CLI ``--config PATH`` overrides default ``configs/guitar_3d.json``."""
+    for i, arg in enumerate(sys.argv):
+        if arg == "--config" and i + 1 < len(sys.argv):
+            p = Path(sys.argv[i + 1]).expanduser()
+            if not p.is_absolute():
+                p = (Path.cwd() / p).resolve()
+            return p
+    return fem_dir / "configs" / "guitar_3d.json"
+
+
 def create_guitar_mesh():
     # 1. Setup paths
     geometry_dir = Path(__file__).resolve().parent
-    fem_dir = geometry_dir.parent 
-    config_path = fem_dir / "configs" / "guitar_3d.json"
+    fem_dir = geometry_dir.parent
+    config_path = _resolve_config_path(fem_dir)
     mesh_dir = fem_dir / "mesh"
     mesh_dir.mkdir(parents=True, exist_ok=True)
 
@@ -24,8 +35,9 @@ def create_guitar_mesh():
     # -------------------------------------------
 
     # 2. Load geometry data
+    print(f"[diag] mesh build config: {config_path}")
     if config_path.exists():
-        with open(config_path, 'r') as f:
+        with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
         top_mat = config.get("materials", {}).get("top", {})
         back_mat = config.get("materials", {}).get("back", {})
@@ -39,24 +51,28 @@ def create_guitar_mesh():
                 f"[diag] FEM materials.back: rho={back_mat.get('density')} kg/m^3, E_L={back_mat.get('E_L')} Pa, "
                 f"name={back_mat.get('name', '')!r}"
             )
-        p = config['geometry']
-        L, W, D = p['length'], p['width'], p['depth']
-        t = p['thickness']
-        hr = p['hole_radius']
+        p = config["geometry"]
+        L, W, D = p["length"], p["width"], p["depth"]
+        # CAD wall offset uses top-plate thickness (back is thicker in FEM shell forms only).
+        t = float(p.get("top_thickness", p.get("thickness", 0.003)))
+        hr = p["hole_radius"]
         shape_type = p.get('shape_type', 'Classical')
         hole_y = float(p.get("soundhole_y", 0.0))
     else:
         L, W, D, t, hr, shape_type = 0.48, 0.37, 0.1, 0.003, 0.04, 'Classical'
         hole_y = 0.0
 
-    # --- Golden mesh: coarse wood faces (P1 DOFs), dense through-thickness; graded air ---
-    wood_surface_size = 0.015   # 15 mm on large top/back plate surfaces and long perimeter curves
+    # --- Golden mesh: graded wood faces (6.5 mm), dense through-thickness (1 mm); graded air ---
+    wood_surface_size = 0.0065   # 6.5 mm on large top/back plate surfaces and long perimeter curves
     wood_thickness_size = 0.001  # 1 mm on short ~through-thickness edges (>=2–3 elements across ~3 mm wood)
     thickness_curve_len_max = 0.005  # curves shorter than this (m) are treated as thickness direction
+    # Thickness-edge Threshold: smooth 1 mm → 6.5 mm over ~8 mm band from short edges
+    thickness_threshold_dist_min = 0.0005
+    thickness_threshold_dist_max = 0.008
     # Air Threshold field (distance from wood shell): near-field at soundhole band, coarser far cap for ~500 Hz
-    air_threshold_dist_min = 0.03
+    air_threshold_dist_min = 0.015
     air_threshold_dist_max = 0.25
-    air_threshold_size_min = 0.010   # 10 mm near wood (Helmholtz / hole region)
+    air_threshold_size_min = 0.008   # 8 mm near wood (Helmholtz / hole region; bridges 6.5 mm shell)
     air_threshold_size_max = 0.080   # 80 mm far field
 
     if is_preview:
@@ -69,8 +85,8 @@ def create_guitar_mesh():
         mesh_size_max = air_threshold_size_max
 
     print(
-        "DEBUG: Golden mesh — wood: 15 mm faces / 1 mm thickness edges; "
-        "air: 10 mm near wood → 80 mm far (Dist 3–25 cm)."
+        "DEBUG: Golden mesh — wood: 6.5 mm faces / 1 mm thickness edges; "
+        "air: 8 mm near wood → 80 mm far (Dist 1.5–25 cm)."
     )
     print(
         f"Building geometry with Thickness: {t*1000:.1f}mm, "
@@ -535,9 +551,9 @@ def create_guitar_mesh():
     gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
     gmsh.option.setNumber("Mesh.Algorithm", 6)  # Frontal-Delaunay
 
-    # Wood: 15 mm baseline on shell (Restrict), 1 mm in a band around short thickness edges
-    # (mesh.setSize + optional Threshold from EdgesList) so P1 has multiple elements across ~3 mm wood.
-    # Air: distance from wood shell -> Threshold (10 mm near field, 80 mm far, smooth 3–25 cm band).
+    # Wood: 6.5 mm baseline on shell (Restrict), 1 mm in a band around short thickness edges
+    # (mesh.setSize + Threshold from EdgesList) so P1 has multiple elements across ~3 mm wood.
+    # Air: distance from wood shell -> Threshold (8 mm near field, 80 mm far, smooth 1.5–25 cm band).
     if not is_preview:
         wood_surface_tags = top_plate_surfs + body_surfs
         if not top_plate_surfs:
@@ -590,8 +606,8 @@ def create_guitar_mesh():
                 gmsh.model.mesh.field.setNumbers(dist_thick, "EdgesList", thickness_edge_tags)
                 thick_thresh = gmsh.model.mesh.field.add("Threshold")
                 gmsh.model.mesh.field.setNumber(thick_thresh, "InField", dist_thick)
-                gmsh.model.mesh.field.setNumber(thick_thresh, "DistMin", 0.001)
-                gmsh.model.mesh.field.setNumber(thick_thresh, "DistMax", 0.012)
+                gmsh.model.mesh.field.setNumber(thick_thresh, "DistMin", thickness_threshold_dist_min)
+                gmsh.model.mesh.field.setNumber(thick_thresh, "DistMax", thickness_threshold_dist_max)
                 gmsh.model.mesh.field.setNumber(thick_thresh, "SizeMin", wood_thickness_size)
                 gmsh.model.mesh.field.setNumber(thick_thresh, "SizeMax", wood_surface_size)
 
@@ -611,7 +627,9 @@ def create_guitar_mesh():
             gmsh.model.mesh.field.setNumbers(min_field, "FieldsList", combine_list)
             print(
                 "[diag] Golden mesh fields: "
-                f"wood restrict lc={wood_surface_size*1000:.0f}mm; "
+                f"wood restrict lc={wood_surface_size*1000:.1f}mm; "
+                f"thickness Threshold {wood_thickness_size*1000:.1f}–{wood_surface_size*1000:.1f}mm "
+                f"over d={thickness_threshold_dist_min*1000:.1f}–{thickness_threshold_dist_max*1000:.1f}mm; "
                 f"air Threshold {air_threshold_size_min*1000:.0f}–{air_threshold_size_max*1000:.0f}mm "
                 f"over d={air_threshold_dist_min*100:.0f}–{air_threshold_dist_max*100:.0f}cm; "
                 f"n_wood_surfaces={len(wood_surface_tags)}."

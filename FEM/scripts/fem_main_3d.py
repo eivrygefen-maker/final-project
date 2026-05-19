@@ -243,21 +243,21 @@ def _cleanup_xdmf_cache_keep_latest(cache_dir: Path, keep_last: int = 2, status_
     )
 
 
-def _generate_mesh_with_gmsh(status_callback=None) -> None:
-    geom_script = Path(__file__).resolve().parents[1] / "geometry" / "build_3d_guitar.py"
-    cmd = [sys.executable, str(geom_script), "-nopopup"]
+def _generate_mesh_with_gmsh(
+    config_path: Optional[Path] = None,
+    status_callback=None,
+) -> None:
+    from mesh_sync import build_mesh_for_config
+
+    repo = Path(__file__).resolve().parents[2]
+    cfg = Path(config_path).resolve() if config_path is not None else repo / "FEM" / "configs" / "guitar_3d.json"
     # In MPI runs, only rank 0 should invoke external gmsh process.
     comm = MPI.COMM_WORLD
     root_ok = 1
     root_err = ""
     if MPI.COMM_WORLD.rank == 0:
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True)
-            if proc.returncode != 0:
-                raise RuntimeError(
-                    "Gmsh mesh generation failed.\n"
-                    f"stdout:\n{proc.stdout}\n\nstderr:\n{proc.stderr}"
-                )
+            build_mesh_for_config(cfg, repo)
         except Exception as exc:
             root_ok = 0
             root_err = str(exc)
@@ -265,6 +265,7 @@ def _generate_mesh_with_gmsh(status_callback=None) -> None:
     root_err = comm.bcast(root_err, root=0)
     if int(root_ok) != 1:
         raise RuntimeError(f"Rank0 mesh generation failure broadcast: {root_err}")
+    _emit(f"[mesh] built from config {cfg}", status_callback=status_callback)
 
 
 def _convert_msh_to_xdmf_with_meshio(mesh_file: Path, status_callback=None):
@@ -442,37 +443,118 @@ def _solver_bool(solver: Dict, key: str, default: bool) -> bool:
     return bool(v)
 
 
-def _shell_isotropic_params(mat: Dict) -> Tuple[float, float, float, float]:
-    """Lamé parameters and bending modulus E from a 3D config material block."""
-    E = float(mat.get("E_L", 1.0e9))
-    nu = float(mat.get("nu_LT", 0.3))
+def _orthotropic_plate_stiffness(mat: Dict, thickness: float) -> Dict[str, float]:
+    """
+    Kirchhoff–Love orthotropic plate stiffnesses (membrane A_ij and bending D_ij).
+
+    Grain direction (1) aligns with local e1 on each facet (≈ guitar body +x).
+    Matches ``solver_2d_plate._compute_bending_stiffness_from_engineering_constants``.
+    """
+    E_L = float(mat.get("E_L", 1.0e9))
+    E_T = float(mat.get("E_T", E_L))
+    G_LT = float(mat.get("G_LT", E_L / 10.0))
+    nu_LT = float(mat.get("nu_LT", 0.3))
     rho = float(mat["density"])
-    mu = E / (2.0 * (1.0 + nu))
-    lam = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
-    return mu, lam, rho, E
+    h = float(thickness)
+    nu_TL = nu_LT * (E_T / E_L)
+    denom = 1.0 - nu_LT * nu_TL
+    if abs(denom) < 1e-12:
+        raise ValueError(f"Invalid orthotropic constants: 1 - nu_LT*nu_TL ≈ 0 (E_L={E_L}, E_T={E_T})")
+    h3_over_12 = (h**3) / 12.0
+    D11 = (E_L * h3_over_12) / denom
+    D22 = (E_T * h3_over_12) / denom
+    D12 = (nu_TL * E_L * h3_over_12) / denom
+    D66 = G_LT * h3_over_12
+    A11 = (E_L * h) / denom
+    A22 = (E_T * h) / denom
+    A12 = (nu_TL * E_L * h) / denom
+    A66 = G_LT * h
+    return {
+        "rho": rho,
+        "E_L": E_L,
+        "E_T": E_T,
+        "G_LT": G_LT,
+        "nu_LT": nu_LT,
+        "A11": A11,
+        "A22": A22,
+        "A12": A12,
+        "A66": A66,
+        "D11": D11,
+        "D22": D22,
+        "D12": D12,
+        "D66": D66,
+    }
 
 
-def _split_wood_materials(config: Dict) -> Tuple[Dict[str, float], Dict[str, float], float]:
+def _split_wood_materials(config: Dict) -> Tuple[Dict[str, float], Dict[str, float], float, float]:
     """
-    Per-region shell properties for Top Plate (facet tag 1) and Back/Sides (facet tag 3).
+    Per-region orthotropic shell properties for Top Plate (facet tag 1) and Back/Sides (tag 3).
 
-    Returns (top_dict, back_dict, thickness) where each dict has keys
-    mu, lam, rho, E, D_bend.
+    Returns (top_dict, back_dict, top_thickness_m, back_thickness_m).
     """
+    from wood_library import resolve_plate_thicknesses
+
     top = config["materials"]["top"]
     back = config["materials"]["back"]
-    thickness = float(config.get("geometry", {}).get("thickness", 0.003))
+    t_top, t_back = resolve_plate_thicknesses(config)
+    top_out = _orthotropic_plate_stiffness(top, t_top)
+    back_out = _orthotropic_plate_stiffness(back, t_back)
+    return top_out, back_out, t_top, t_back
 
-    mu_t, lam_t, rho_t, E_t = _shell_isotropic_params(top)
-    mu_b, lam_b, rho_b, E_b = _shell_isotropic_params(back)
-    nu_t = float(top.get("nu_LT", 0.3))
-    nu_b = float(back.get("nu_LT", 0.3))
-    D_t = E_t * thickness ** 3 / (12.0 * (1.0 - nu_t ** 2))
-    D_b = E_b * thickness ** 3 / (12.0 * (1.0 - nu_b ** 2))
 
-    top_out = {"mu": mu_t, "lam": lam_t, "rho": rho_t, "E": E_t, "D_bend": D_t, "nu": nu_t}
-    back_out = {"mu": mu_b, "lam": lam_b, "rho": rho_b, "E": E_b, "D_bend": D_b, "nu": nu_b}
-    return top_out, back_out, thickness
+def _plate_local_frame(n, P):
+    """Local orthotropic axes on a curved facet: e1 ≈ projected body +x, e2 = n × e1."""
+    ex = ufl.as_vector((1.0, 0.0, 0.0))
+    ey = ufl.as_vector((0.0, 1.0, 0.0))
+    e1x = P * ex
+    e1y = P * ey
+    n1 = ufl.sqrt(ufl.dot(e1x, e1x))
+    n2 = ufl.sqrt(ufl.dot(e1y, e1y))
+    e1 = e1x / (n1 + 1e-30) * ufl.conditional(ufl.gt(n1, 1e-8), 1.0, 0.0) + e1y / (n2 + 1e-30) * ufl.conditional(
+        ufl.le(n1, 1e-8), 1.0, 0.0
+    )
+    e2 = ufl.cross(n, e1)
+    e2 = e2 / (ufl.sqrt(ufl.dot(e2, e2)) + 1e-30)
+    return e1, e2
+
+
+def _membrane_strain_voigt(eps, e1, e2):
+    e11 = ufl.dot(e1, eps * e1)
+    e22 = ufl.dot(e2, eps * e2)
+    e12 = ufl.dot(e1, eps * e2) + ufl.dot(e2, eps * e1)
+    return e11, e22, e12
+
+
+def _curvature_voigt(w_n, e1, e2, P):
+    """Surface curvatures κ_ij from normal displacement (Kirchhoff–Love, facet-local)."""
+    gw = P * ufl.grad(w_n)
+    k11 = ufl.dot(e1, P * ufl.grad(ufl.dot(e1, gw)))
+    k22 = ufl.dot(e2, P * ufl.grad(ufl.dot(e2, gw)))
+    k12 = 0.5 * (
+        ufl.dot(e1, P * ufl.grad(ufl.dot(e2, gw))) + ufl.dot(e2, P * ufl.grad(ufl.dot(e1, gw)))
+    )
+    return k11, k22, k12
+
+
+def _orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, ortho: Dict[str, float]):
+    """Membrane + bending bilinear form for one orthotropic plate region."""
+    eu11, eu22, eu12 = _membrane_strain_voigt(eps_u, e1, e2)
+    ev11, ev22, ev12 = _membrane_strain_voigt(eps_v, e1, e2)
+    mem = (
+        ortho["A11"] * eu11 * ev11
+        + ortho["A22"] * eu22 * ev22
+        + ortho["A12"] * (eu11 * ev22 + eu22 * ev11)
+        + ortho["A66"] * eu12 * ev12
+    )
+    ku11, ku22, ku12 = _curvature_voigt(w_n, e1, e2, P)
+    kv11, kv22, kv12 = _curvature_voigt(v_n, e1, e2, P)
+    bend = (
+        ortho["D11"] * ku11 * kv11
+        + ortho["D22"] * ku22 * kv22
+        + ortho["D12"] * (ku11 * kv22 + ku22 * kv11)
+        + 4.0 * ortho["D66"] * ku12 * kv12
+    )
+    return mem + bend
 
 
 def _audit_and_scale_mesh_units(msh: mesh.Mesh, config: Dict, status_callback=None) -> None:
@@ -615,14 +697,16 @@ def _mesh_interface_diagnostic(msh: mesh.Mesh, cell_tags, facet_tags, status_cal
 
 def _plate_modal_energy_ratios(
     phi: PETSc.Vec,
-    M: PETSc.Mat,
     M_top: Optional[PETSc.Mat],
     M_back: Optional[PETSc.Mat],
     work: PETSc.Vec,
+    mass_top: float,
+    mass_back: float,
 ) -> Tuple[float, float]:
-    """Top (tag 1) and back/body (tag 3) shares of phi^T M phi (shell mass per facet group / |total|)."""
-    M.mult(phi, work)
-    e_tot = float(np.real(phi.dot(work)))
+    """
+    Energy-per-unit-mass on each plate shell mass block:
+    tag1_ratio = phi^T M_top phi / mass_top, tag3_ratio = phi^T M_back phi / mass_back.
+    """
     e_top = 0.0
     e_back = 0.0
     if M_top is not None:
@@ -631,8 +715,9 @@ def _plate_modal_energy_ratios(
     if M_back is not None:
         M_back.mult(phi, work)
         e_back = float(np.real(phi.dot(work)))
-    denom = max(abs(e_tot), 1e-60)
-    return e_top / denom, e_back / denom
+    mt = max(float(mass_top), 1e-30)
+    mb = max(float(mass_back), 1e-30)
+    return e_top / mt, e_back / mb
 
 
 def _slepc_shift_invert_batch(
@@ -646,6 +731,8 @@ def _slepc_shift_invert_batch(
     M_top: Optional[PETSc.Mat] = None,
     M_back: Optional[PETSc.Mat] = None,
     work: Optional[PETSc.Vec] = None,
+    mass_top: float = 1.0,
+    mass_back: float = 1.0,
     eps_max_it_cap: Optional[int] = None,
 ) -> Tuple[int, List[Tuple[float, np.ndarray, Optional[float], Optional[float]]]]:
     """Run one SLEPc GNHEP shift-invert solve; returns rows (freq_hz, eigenvector, top_ratio|None, back_ratio|None)."""
@@ -792,7 +879,7 @@ def _slepc_shift_invert_batch(
         rt: Optional[float] = None
         rb: Optional[float] = None
         if work is not None and (M_top is not None or M_back is not None):
-            rt, rb = _plate_modal_energy_ratios(rvec, M, M_top, M_back, work)
+            rt, rb = _plate_modal_energy_ratios(rvec, M_top, M_back, work, mass_top, mass_back)
         out.append((f_hz, rvec.array.copy(), rt, rb))
 
     try:
@@ -846,16 +933,24 @@ def _solve_structural_only_evp(
     v = ufl.TestFunction(V_u)
     xdmf_dx = ufl.Measure("dx", domain=msh, subdomain_data=cell_tags)
 
-    top_m, back_m, thickness = _split_wood_materials(config)
+    top_m, back_m, t_top, t_back = _split_wood_materials(config)
     top_mat = config["materials"]["top"]
     back_mat = config["materials"]["back"]
     if msh.comm.rank == ROOT_RANK:
         print(
             f"[DIAG] Material audit (per-tag, no averaging): "
-            f"top tag1(E={top_m['E']:.3e} Pa, rho={top_m['rho']:.1f}), "
-            f"back tag3(E={back_m['E']:.3e} Pa, rho={back_m['rho']:.1f}), "
-            f"t={thickness:.4f} m | {top_mat.get('name', '')!r} / {back_mat.get('name', '')!r}"
+            f"top tag1(D11={top_m['D11']:.3e}, E_L={top_m['E_L']:.3e}, rho={top_m['rho']:.1f}), "
+            f"back tag3(D11={back_m['D11']:.3e}, E_L={back_m['E_L']:.3e}, rho={back_m['rho']:.1f}), "
+            f"t_top={t_top:.4f} m t_back={t_back:.4f} m | "
+            f"{top_mat.get('name', '')!r} / {back_mat.get('name', '')!r}"
         )
+    # Volume diagnostic branch: isotropic 3D reduction from E_L (coupled path uses facet KL shell).
+    nu_t = float(top_m["nu_LT"])
+    nu_b = float(back_m["nu_LT"])
+    mu_t = top_m["E_L"] / (2.0 * (1.0 + nu_t))
+    lam_t = top_m["E_L"] * nu_t / ((1.0 + nu_t) * (1.0 - 2.0 * nu_t))
+    mu_b = back_m["E_L"] / (2.0 * (1.0 + nu_b))
+    lam_b = back_m["E_L"] * nu_b / ((1.0 + nu_b) * (1.0 - 2.0 * nu_b))
     # Volume tags: 1=top plate, 2=back plate, 3=ribs/sides (back wood).
     vol_top = xdmf_dx(1)
     vol_back_sides = xdmf_dx(2) + xdmf_dx(3)
@@ -864,9 +959,9 @@ def _solve_structural_only_evp(
     eps_u = ufl.sym(ufl.grad(u))
     eps_v = ufl.sym(ufl.grad(v))
     a_uu = (
-        2.0 * top_m["mu"] * ufl.inner(eps_u, eps_v) + top_m["lam"] * ufl.div(u) * ufl.div(v)
+        2.0 * mu_t * ufl.inner(eps_u, eps_v) + lam_t * ufl.div(u) * ufl.div(v)
     ) * vol_top + (
-        2.0 * back_m["mu"] * ufl.inner(eps_u, eps_v) + back_m["lam"] * ufl.div(u) * ufl.div(v)
+        2.0 * mu_b * ufl.inner(eps_u, eps_v) + lam_b * ufl.div(u) * ufl.div(v)
     ) * vol_back_sides
     m_uu = top_m["rho"] * ufl.dot(u, v) * vol_top + back_m["rho"] * ufl.dot(u, v) * vol_back_sides
 
@@ -912,67 +1007,10 @@ def _solve_structural_only_evp(
                 sys.stdout.flush()
             return out
 
-        # BC logic: only wood_fix (tag 4), otherwise minimal geometric anchors.
-        u_dofs = np.array([], dtype=np.int32)
-        dofs_t1 = _safe_locate_topo(V_u, fdim, facets_t1, "tag1 facets")
-        print(f"[DIAG] structural locate check: len(facets_t1)={len(facets_t1)}, len(dofs_on_t1_facets)={len(dofs_t1)}")
-
-        u_dofs = _safe_locate_topo(V_u, fdim, facets_fix, "tag4_fix facets")
-        if u_dofs.size == 0:
-            coords = msh.geometry.x
-            mins = np.min(coords, axis=0)
-            maxs = np.max(coords, axis=0)
-            diag = float(np.linalg.norm(maxs - mins))
-            tol = max(1.0e-12, 1.0e-8 * max(1.0, diag))
-            boundary_mask = (
-                np.isclose(coords[:, 0], mins[0], atol=tol)
-                | np.isclose(coords[:, 0], maxs[0], atol=tol)
-                | np.isclose(coords[:, 1], mins[1], atol=tol)
-                | np.isclose(coords[:, 1], maxs[1], atol=tol)
-                | np.isclose(coords[:, 2], mins[2], atol=tol)
-                | np.isclose(coords[:, 2], maxs[2], atol=tol)
-            )
-            boundary_ids = np.where(boundary_mask)[0]
-            if boundary_ids.size == 0:
-                boundary_ids = np.arange(coords.shape[0], dtype=np.int32)
-            bcoords = coords[boundary_ids]
-            i_min_x = int(np.argpartition(bcoords[:, 0], 0)[0])
-            i_max_x = int(np.argpartition(bcoords[:, 0], bcoords.shape[0] - 1)[bcoords.shape[0] - 1])
-            i_min_y = int(np.argpartition(bcoords[:, 1], 0)[0])
-            anchor_ids = [int(boundary_ids[i_min_x]), int(boundary_ids[i_max_x]), int(boundary_ids[i_min_y])]
-            u_dof_blocks = []
-            for idx in anchor_ids:
-                pt = coords[idx]
-                def _u_anchor_marker(x, p=pt):
-                    return (
-                        np.isclose(x[0], p[0], atol=tol)
-                        & np.isclose(x[1], p[1], atol=tol)
-                        & np.isclose(x[2], p[2], atol=tol)
-                    )
-                u_dof_blocks.append(fem.locate_dofs_geometrical(V_u, _u_anchor_marker))
-            if u_dof_blocks:
-                u_dofs = np.array(np.unique(np.concatenate(u_dof_blocks)), dtype=np.int32)
-
+        # Free–free structural diagnostic: no displacement Dirichlet BCs.
+        bcs_u: List = []
         if msh.comm.rank == ROOT_RANK:
-            print(f"[DIAG] structural BC dofs: {u_dofs.size}")
-
-        # Keep Dirichlet BCs small (wood_fix + minimal geometric anchors only).
-        # Enforce int32 explicitly before any C++ BC call.
-        u_dofs_bc = np.asarray(u_dofs, dtype=np.int32)
-        if msh.comm.rank == ROOT_RANK:
-            print(
-                f"[DIAG] structural-only dof partition: "
-                f"n_u_local={int(V_u.dofmap.index_map.size_local * V_u.dofmap.index_map_bs)}, "
-                f"bc_dofs={u_dofs_bc.size}"
-            )
-
-        if msh.comm.rank == ROOT_RANK:
-            builtins.print("--> [DEBUG] ENTERING dirichletbc", flush=True)
-            sys.stdout.flush()
-        bcs_u = [fem.dirichletbc(np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType), u_dofs_bc, V_u)]
-        if msh.comm.rank == ROOT_RANK:
-            builtins.print("--> [DEBUG] EXITING dirichletbc", flush=True)
-            sys.stdout.flush()
+            print("[DIAG] structural-only: free–free (no displacement constraints).")
     except Exception as e:
         try:
             rank = int(msh.comm.rank)
@@ -1303,17 +1341,17 @@ def _solve_coupled_evp(
     n = ufl.FacetNormal(msh)
     P = ufl.Identity(3) - ufl.outer(n, n)
 
-    top_m, back_m, thickness = _split_wood_materials(config)
+    top_m, back_m, t_top, t_back = _split_wood_materials(config)
     air_mat = config["materials"]["air"]
     rho_air = float(air_mat["density"])
     c_air = float(air_mat["speed_of_sound"])
     top_mat = config["materials"]["top"]
     back_mat = config["materials"]["back"]
     _emit(
-        f"[diag] material sanity (tag1 top / tag3 back): "
-        f"top E={top_m['E']:.6e} rho={top_m['rho']:.6e} | "
-        f"back E={back_m['E']:.6e} rho={back_m['rho']:.6e} | "
-        f"rho_air={rho_air:.6e} thickness={thickness:.6e} m | "
+        f"[diag] material sanity (tag1 top / tag3 back, orthotropic KL): "
+        f"top D11={top_m['D11']:.6e} E_L={top_m['E_L']:.6e} rho={top_m['rho']:.6e} | "
+        f"back D11={back_m['D11']:.6e} E_L={back_m['E_L']:.6e} rho={back_m['rho']:.6e} | "
+        f"rho_air={rho_air:.6e} t_top={t_top:.6e} m t_back={t_back:.6e} m | "
         f"{top_mat.get('name', '')!r} / {back_mat.get('name', '')!r}",
         status_callback=status_callback,
     )
@@ -1351,22 +1389,15 @@ def _solve_coupled_evp(
     eps_v = eps_surface(v)
     w_n = ufl.dot(u, n)
     v_n = ufl.dot(v, n)
+    e1, e2 = _plate_local_frame(n, P)
 
-    def _shell_stiffness(mu_v, lam_v, D_bend_v):
-        return (
-            thickness * (2.0 * mu_v * ufl.inner(eps_u, eps_v) + lam_v * ufl.tr(eps_u) * ufl.tr(eps_v))
-            + D_bend_v * ufl.inner(P * ufl.grad(w_n), P * ufl.grad(v_n))
-        )
+    shell_top = _orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, top_m)
+    shell_back = _orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
 
     if wood_tag_top + wood_tag_shell > 0:
-        a_uu = _shell_stiffness(top_m["mu"], top_m["lam"], top_m["D_bend"]) * ds_top + _shell_stiffness(
-            back_m["mu"], back_m["lam"], back_m["D_bend"]
-        ) * ds_back
+        a_uu = shell_top * ds_top + shell_back * ds_back
     else:
-        a_uu = (
-            _shell_stiffness(top_m["mu"], top_m["lam"], top_m["D_bend"])
-            + _shell_stiffness(back_m["mu"], back_m["lam"], back_m["D_bend"])
-        ) * wood_ds
+        a_uu = (shell_top + shell_back) * wood_ds
 
     # Acoustic stiffness in internal air volume.
     a_pp = (1.0 / rho_air) * ufl.inner(ufl.grad(p), ufl.grad(q)) * xdmf_dx(AIR_VOLUME_TAG)
@@ -1379,32 +1410,25 @@ def _solve_coupled_evp(
 
     # Acoustic mass and structure mass (per facet tag).
     if wood_tag_top + wood_tag_shell > 0:
-        m_uu = (top_m["rho"] * thickness) * ufl.dot(u, v) * ds_top + (back_m["rho"] * thickness) * ufl.dot(
-            u, v
-        ) * ds_back
+        m_uu = (top_m["rho"] * t_top) * ufl.dot(u, v) * ds_top + (back_m["rho"] * t_back) * ufl.dot(u, v) * ds_back
     else:
-        m_uu = ((top_m["rho"] + back_m["rho"]) * thickness) * ufl.dot(u, v) * wood_ds
+        m_uu = (top_m["rho"] * t_top + back_m["rho"] * t_back) * ufl.dot(u, v) * wood_ds
     m_pp = (1.0 / (rho_air * c_air * c_air)) * p * q * xdmf_dx(AIR_VOLUME_TAG)
 
     # Acceleration coupling in acoustic equation:
     # <q, u.n> on interface contributes to generalized mass block.
     m_pu = q * w_n * wood_ds
 
-    # Small diagonal regularization to improve conditioning of the coupled system.
-    # This helps avoid NaN/Inf KSP norms near near-null/rigid-body components.
-    diag_shift = float(config.get("solver", {}).get("diag_shift", 1.0e3))
-    # Global mixed-space regularization so every DOF gets a diagonal anchor.
-    reg_u = diag_shift * ufl.dot(u, v) * full_dx
-    # Pressure regularization only on interior air (tag 10); avoids smearing acoustic
-    # stiffness/mass penalty into wood cells outside the cavity.
+    # Pressure-only regularization (optional); displacement is free–free (no reg_u).
+    diag_shift = float(config.get("solver", {}).get("diag_shift", 0.0))
     reg_p = diag_shift * p * q * xdmf_dx(AIR_VOLUME_TAG)
 
-    a_form = a_uu + a_pp + a_up + a_pu + reg_u + reg_p
+    a_form = a_uu + a_pp + a_up + a_pu + reg_p
     m_form = m_uu + m_pp + m_pu
 
     # Per-facet-group shell mass forms for plate-specific sifter (Top tag 1, Body tag 3).
-    m_uu_top_plate = (top_m["rho"] * thickness) * ufl.dot(u, v) * xdmf_ds(tag_top)
-    m_uu_back_shell = (back_m["rho"] * thickness) * ufl.dot(u, v) * xdmf_ds(tag_back)
+    m_uu_top_plate = (top_m["rho"] * t_top) * ufl.dot(u, v) * xdmf_ds(tag_top)
+    m_uu_back_shell = (back_m["rho"] * t_back) * ufl.dot(u, v) * xdmf_ds(tag_back)
     has_top_plate_facets = wood_tag_top > 0
     has_back_shell_facets = wood_tag_shell > 0
 
@@ -1414,6 +1438,8 @@ def _solve_coupled_evp(
         if (wood_tag_top + wood_tag_shell) > 0
         else "WARNING: full exterior ds (wood facet tags missing)"
     )
+    mass_top_kg = float("nan")
+    mass_back_kg = float("nan")
     try:
         mass_air_kg = float(fem.assemble_scalar(fem.form(rho_air * xdmf_dx(AIR_VOLUME_TAG))))
     except Exception as exc:
@@ -1422,15 +1448,19 @@ def _solve_coupled_evp(
     try:
         mass_wood_kg = float(
             fem.assemble_scalar(
-                fem.form(top_m["rho"] * thickness * ds_top + back_m["rho"] * thickness * ds_back)
+                fem.form(top_m["rho"] * t_top * ds_top + back_m["rho"] * t_back * ds_back)
             )
         )
+        mass_top_kg = float(fem.assemble_scalar(fem.form(top_m["rho"] * t_top * ds_top)))
+        mass_back_kg = float(fem.assemble_scalar(fem.form(back_m["rho"] * t_back * ds_back)))
     except Exception as exc:
         mass_wood_kg = float("nan")
+        mass_top_kg = float("nan")
+        mass_back_kg = float("nan")
         _emit(f"[diag] wood shell mass integral failed: {exc}", status_callback=status_callback, level="warning")
     print(
         f"[DIAG] Total wood mass (integral rho*thickness per tag1/tag3 shell ds; {_wood_mass_note}): "
-        f"{mass_wood_kg:.6e} kg"
+        f"{mass_wood_kg:.6e} kg | mass_top={mass_top_kg:.6e} kg mass_back={mass_back_kg:.6e} kg"
     )
     print(f"[DIAG] Total air mass (integral rho_air over air volume tag {AIR_VOLUME_TAG}): {mass_air_kg:.6e} kg")
     if math.isfinite(mass_air_kg) and math.isfinite(mass_wood_kg) and mass_wood_kg > 0:
@@ -1442,39 +1472,30 @@ def _solve_coupled_evp(
     # Release no-longer-needed symbolic temporaries once forms are finalized.
     del eps_u, eps_v, w_n, v_n, wood_tag_top, wood_tag_shell
 
-    # Dirichlet BCs using subspace-collapse strategy for strict C++ signatures.
+    # Dirichlet BCs: pressure gauge only; structural shell is free–free (no displacement constraints).
     soundhole_facets = np.array(facet_tags.find(2), dtype=np.int32)
-    pressure_gauge = str(config.get("solver", {}).get("pressure_gauge", "air_interior")).lower()
-    # Structural grounding: prioritize explicit wood_fix support (tag=4).
-    fixed_facets = np.array(facet_tags.find(4), dtype=np.int32)
-    if fixed_facets.size == 0:
-        # Fallback to Body_Shell (tag=3) if wood_fix is absent.
-        fixed_facets = np.array(facet_tags.find(WOOD_SURFACE_TAGS[1]), dtype=np.int32)
-    if fixed_facets.size == 0:
-        fixed_facets = np.array(facet_tags.find(WOOD_SURFACE_TAGS[0]), dtype=np.int32)
+    pressure_gauge = str(config.get("solver", {}).get("pressure_gauge", "soundhole")).lower()
     bcs = []
+    p_dofs = np.array([], dtype=np.int32)
     try:
         V_p, _ = W.sub(1).collapse()
-        V_u, _ = W.sub(0).collapse()
 
-        u_dofs = fem.locate_dofs_topological(V_u, fdim, fixed_facets)
-        u_dofs = np.array(u_dofs, dtype=np.int32)
         n_p_collapsed = int(V_p.dofmap.index_map.size_global * V_p.dofmap.index_map_bs)
 
         coords = msh.geometry.x
         mins = np.min(coords, axis=0)
         maxs = np.max(coords, axis=0)
         diag = float(np.linalg.norm(maxs - mins))
-        tol = max(1.0e-12, 1.0e-8 * max(1.0, diag))
         tol_p = max(1.0e-9, 1.0e-5 * max(1.0, diag))
 
-        # Pressure gauge: default is one dof in air (tag 10) interior so p spans the cavity;
-        # optional "soundhole" pins all pressure dofs on soundhole facets (often hundreds).
-        p_dofs = np.array([], dtype=np.int32)
         if pressure_gauge == "soundhole":
             p_dofs = np.array(
                 fem.locate_dofs_topological(V_p, fdim, soundhole_facets),
                 dtype=np.int32,
+            )
+            _emit(
+                f"[bc] pressure gauge: P=0 on soundhole facets (count={p_dofs.size}).",
+                status_callback=status_callback,
             )
         else:
             air_cell_idx = cell_tags.find(AIR_VOLUME_TAG)
@@ -1508,9 +1529,9 @@ def _solve_coupled_evp(
                     level="warning",
                 )
 
-        # Acoustic grounding fallback: if pressure dofs still empty, pin one mesh node.
         if p_dofs.size == 0:
             p_anchor = coords[np.argmin(np.linalg.norm(coords - mins, axis=1))]
+            tol = max(1.0e-12, 1.0e-8 * max(1.0, diag))
 
             def _p_anchor_marker(x):
                 return (
@@ -1527,90 +1548,23 @@ def _solve_coupled_evp(
                 level="warning",
             )
 
-        # Structural grounding fallback: if facet-based displacement dofs are empty,
-        # pin three distinct boundary points to suppress all rigid-body modes.
-        if u_dofs.size == 0:
-            boundary_mask = (
-                np.isclose(coords[:, 0], mins[0], atol=tol)
-                | np.isclose(coords[:, 0], maxs[0], atol=tol)
-                | np.isclose(coords[:, 1], mins[1], atol=tol)
-                | np.isclose(coords[:, 1], maxs[1], atol=tol)
-                | np.isclose(coords[:, 2], mins[2], atol=tol)
-                | np.isclose(coords[:, 2], maxs[2], atol=tol)
-            )
-            boundary_ids = np.where(boundary_mask)[0]
-            if boundary_ids.size == 0:
-                boundary_ids = np.arange(coords.shape[0], dtype=np.int32)
-
-            bcoords = coords[boundary_ids]
-            i_min_x = int(np.argpartition(bcoords[:, 0], 0)[0])
-            i_max_x = int(np.argpartition(bcoords[:, 0], bcoords.shape[0] - 1)[bcoords.shape[0] - 1])
-            i_min_y = int(np.argpartition(bcoords[:, 1], 0)[0])
-            anchor_ids = [int(boundary_ids[i_min_x]), int(boundary_ids[i_max_x]), int(boundary_ids[i_min_y])]
-
-            # Ensure distinct anchors; if duplicates appear, fill from farthest points.
-            unique_anchor_ids = []
-            for idx in anchor_ids:
-                if idx not in unique_anchor_ids:
-                    unique_anchor_ids.append(idx)
-            if len(unique_anchor_ids) < 3:
-                centroid = np.mean(bcoords, axis=0)
-                dist = np.linalg.norm(bcoords - centroid, axis=1)
-                far_order = np.argsort(-dist)
-                for loc in far_order.tolist():
-                    cand = int(boundary_ids[int(loc)])
-                    if cand not in unique_anchor_ids:
-                        unique_anchor_ids.append(cand)
-                    if len(unique_anchor_ids) >= 3:
-                        break
-
-            u_anchor_pts = [coords[idx] for idx in unique_anchor_ids[:3]]
-            u_dof_blocks = []
-            for u_anchor in u_anchor_pts:
-                def _u_anchor_marker(x, pt=u_anchor):
-                    return (
-                        np.isclose(x[0], pt[0], atol=tol)
-                        & np.isclose(x[1], pt[1], atol=tol)
-                        & np.isclose(x[2], pt[2], atol=tol)
-                    )
-
-                u_dof_blocks.append(fem.locate_dofs_geometrical(V_u, _u_anchor_marker))
-
-            if u_dof_blocks:
-                u_dofs = np.array(np.unique(np.concatenate(u_dof_blocks)), dtype=np.int32)
-            else:
-                u_dofs = np.array([], dtype=np.int32)
-            _emit(
-                f"[bc][warn] facet-based u_dofs empty; using 3-point displacement anchors "
-                f"at {[pt.tolist() for pt in u_anchor_pts]} (count={u_dofs.size})",
-                status_callback=status_callback,
-                level="warning",
-            )
-
         if p_dofs.size == 0:
             raise RuntimeError("Failed to create pressure grounding dofs (p_dofs is empty).")
-        if u_dofs.size == 0:
-            raise RuntimeError("Failed to create displacement grounding dofs (u_dofs is empty).")
 
         _emit(
-            "[bc][diag] collapsed spaces ready. "
-            f"pressure BC dof count={p_dofs.size} (gauge; full pressure FE unknowns=n_p_collapsed={n_p_collapsed}), "
-            f"displacement BC u_dofs.shape={u_dofs.shape}, "
-            f"soundhole_facets.shape={soundhole_facets.shape}, fixed_facets.shape={fixed_facets.shape}",
+            "[bc][diag] free–free structure; pressure gauge only. "
+            f"pressure BC dof count={p_dofs.size} (full pressure FE unknowns=n_p_collapsed={n_p_collapsed}), "
+            f"soundhole_facets.shape={soundhole_facets.shape}",
             status_callback=status_callback,
         )
 
         p_zero = fem.Constant(msh, PETSc.ScalarType(0.0))
         bc_p = fem.dirichletbc(p_zero, p_dofs, V_p)
-
-        u_zero = np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType)
-        bc_u = fem.dirichletbc(u_zero, u_dofs, V_u)
-        bcs = [bc_p, bc_u]
+        bcs = [bc_p]
     except Exception as e:
         _emit(
             "[bc][error] dirichletbc creation failed. "
             f"p_dofs.dtype={p_dofs.dtype}, p_dofs.shape={p_dofs.shape}, "
-            f"u_dofs.dtype={u_dofs.dtype}, u_dofs.shape={u_dofs.shape}, "
             f"soundhole_facets.dtype={soundhole_facets.dtype}, "
             f"soundhole_facets.shape={soundhole_facets.shape}, "
             f"error={e}",
@@ -1645,7 +1599,7 @@ def _solve_coupled_evp(
         return msh, W, A, M
 
     # Release form objects before eigensolve; matrices are already assembled.
-    del a_form, m_form, a_uu, a_pp, a_up, a_pu, m_uu, m_pp, m_pu, m_uu_top_plate, m_uu_back_shell, reg_u, reg_p
+    del a_form, m_form, a_uu, a_pp, a_up, a_pu, m_uu, m_pp, m_pu, m_uu_top_plate, m_uu_back_shell, reg_p
     gc.collect()
 
     _emit("Step 3/5: Solving generalized EVP with SLEPc...", status_callback=status_callback)
@@ -1654,7 +1608,7 @@ def _solve_coupled_evp(
     n_p_fe = int(W.sub(1).dofmap.index_map.size_global * W.sub(1).dofmap.index_map_bs)
     print(
         f"[DIAG] Final u_dofs={n_u_fe} p_dofs={n_p_fe} "
-        f"(Dirichlet BC active: u_bc={u_dofs.size} p_bc={p_dofs.size})"
+        f"(free–free structure; pressure gauge p_bc={p_dofs.size})"
     )
     sys.stdout.flush()
     print(f"Starting solver with {n_dofs} DOFs and proactive memory cleanup...")
@@ -1693,6 +1647,8 @@ def _solve_coupled_evp(
             M_top=M_top,
             M_back=M_back,
             work=work,
+            mass_top=mass_top_kg,
+            mass_back=mass_back_kg,
             eps_max_it_cap=max_it,
         )
         _emit(
@@ -1913,6 +1869,8 @@ def _solve_coupled_evp(
                 M_top=M_top,
                 M_back=M_back,
                 work=work,
+                mass_top=mass_top_kg,
+                mass_back=mass_back_kg,
                 eps_max_it_cap=max_iter_cap,
             )
             scored: List[Tuple[float, float, float]] = []
@@ -2182,12 +2140,20 @@ def assemble_coupled_operators_for_rom(config: Dict, status_callback=None):
     return msh, W, A, M
 
 
-def run_fom_for_rom(config: Dict, num_modes: int = 10, status_callback=None):
+def run_fom_for_rom(
+    config: Dict,
+    num_modes: int = 10,
+    status_callback=None,
+    *,
+    regenerate_mesh: bool = True,
+    mesh_config_path: Optional[Path] = None,
+):
     _phase_sync(3000, "run_fom_for_rom enter", status_callback=status_callback)
     mesh_file = Path(config["solver"]["mesh_file"])
-    if MPI.COMM_WORLD.rank == 0 and not mesh_file.exists():
-        _emit(f"[mesh] missing .msh, generating new mesh: {mesh_file}", status_callback=status_callback)
-    _generate_mesh_with_gmsh(status_callback=status_callback)
+    if regenerate_mesh:
+        if MPI.COMM_WORLD.rank == 0:
+            _emit(f"[mesh] generating mesh for config: {mesh_config_path or 'default'}", status_callback=status_callback)
+        _generate_mesh_with_gmsh(config_path=mesh_config_path, status_callback=status_callback)
     _phase_sync(3001, "run_fom_for_rom after mesh generation", status_callback=status_callback)
     MPI.COMM_WORLD.barrier()
     if not mesh_file.exists():

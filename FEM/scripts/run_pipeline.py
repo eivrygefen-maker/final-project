@@ -31,8 +31,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from mesh_sync import build_mesh_for_config
 from paths import DEFAULT_SHAPE_NAME, infer_shape_from_pool_path, shared_plot_path
-from wood_library import apply_lhs_parameters_to_config
+from wood_library import apply_lhs_parameters_to_config, finalize_plate_thickness_geometry
 
 
 def _repo_root() -> Path:
@@ -291,12 +292,16 @@ def main() -> int:
         effective_config = merged_dir / f"{sample_key}.json"
         _atomic_write_json(effective_config, merged_cfg)
         geom = merged_cfg.get("geometry") if isinstance(merged_cfg.get("geometry"), dict) else {}
-        th = geom.get("thickness")
+        if isinstance(geom, dict):
+            finalize_plate_thickness_geometry(geom)
+        t_top = geom.get("top_thickness") if isinstance(geom, dict) else None
+        t_back = geom.get("back_thickness") if isinstance(geom, dict) else None
         print(f"[pipeline] Wrote merged FEM config -> {effective_config.resolve()}")
-        if isinstance(th, (int, float)):
-            print(f"[pipeline] geometry.thickness = {float(th)} m ({float(th) * 1000.0:.4f} mm)")
-        else:
-            print(f"[pipeline] geometry.thickness = {th!r}")
+        if isinstance(t_top, (int, float)) and isinstance(t_back, (int, float)):
+            print(
+                f"[pipeline] geometry.top_thickness = {float(t_top) * 1000.0:.4f} mm, "
+                f"back_thickness = {float(t_back) * 1000.0:.4f} mm"
+            )
         sys.stdout.flush()
     else:
         print(
@@ -321,6 +326,12 @@ def main() -> int:
     snapshot_rel = _snapshot_rel_npz(n)
 
     t0 = time.perf_counter()
+
+    try:
+        build_mesh_for_config(Path(effective_config).resolve(), REPO_ROOT)
+    except (OSError, RuntimeError) as exc:
+        print(f"Error: mesh build failed before FEM workers: {exc}", file=sys.stderr)
+        return 1
 
     sorting_root = (REPO_ROOT / "FEM" / "SORTING").resolve()
     step_a = [

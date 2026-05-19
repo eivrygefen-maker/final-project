@@ -60,7 +60,7 @@
         "structural_only_diagnosis": false,
         "structural_vacuum_air_dummy": false,
         "structural_only_num_modes": 10,
-        "adaptive_mode_sifter": true,
+        "adaptive_mode_sifter": false,
         "sifter_quota": 150,
         "sifter_batch_modes": 50,
         "sifter_start_hz": 65.0,

@@ -36,6 +36,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import fem_main_3d as fem3d
+from wood_library import resolve_plate_thicknesses
 from fem_mode_array_utils import (
     MODE_VECTOR_FILE_SUFFIX,
     csr_col_norm,
@@ -176,16 +177,15 @@ def main() -> int:
     config_path = args.config.resolve()
     cfg = json.loads(config_path.read_text(encoding="utf-8"))
     if MPI.COMM_WORLD.rank == 0:
-        geom = cfg.get("geometry") if isinstance(cfg.get("geometry"), dict) else {}
-        th = geom.get("thickness")
         print(f"[worker] Config file (resolved): {config_path}")
-        if isinstance(th, (int, float)):
+        try:
+            t_top, t_back = resolve_plate_thicknesses(cfg)
             print(
-                f"[worker] geometry.thickness = {float(th)} m "
-                f"({float(th) * 1000.0:.6f} mm)"
+                f"[worker] geometry.top_thickness = {t_top:.6f} m ({t_top * 1000.0:.4f} mm), "
+                f"geometry.back_thickness = {t_back:.6f} m ({t_back * 1000.0:.4f} mm)"
             )
-        else:
-            print(f"[worker] geometry.thickness = {th!r} (missing or non-numeric)")
+        except (KeyError, TypeError, ValueError) as exc:
+            print(f"[worker] asymmetric plate thickness unavailable: {exc}")
         sys.stdout.flush()
     cfg.setdefault("solver", {})
     cfg["solver"]["adaptive_mode_sifter"] = False

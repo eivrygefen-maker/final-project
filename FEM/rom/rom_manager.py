@@ -233,8 +233,8 @@ class ROMManager:
         }
 
     def _build_7d_lhs_sweep_spec(self, shape_name: str, sweep_cfg: Dict) -> Dict:
-        """Seven-parameter LHS: L, W, D, thickness, hole radius, top wood ID, back wood ID."""
-        from wood_library import ALL_WOOD_IDS
+        """Seven-parameter LHS: L, W, D, top thickness, hole radius, top wood ID, back wood ID."""
+        from wood_library import ALL_WOOD_IDS, TOP_THICKNESS_MAX_M, TOP_THICKNESS_MIN_M
 
         base_cfg = self._load_shape_base_config(shape_name)
         shape_type = str(base_cfg.get("geometry", {}).get("shape_type", "Classical"))
@@ -244,7 +244,7 @@ class ROMManager:
             "geometry.length": bounds["geometry.length"],
             "geometry.width": bounds["geometry.width"],
             "geometry.depth": bounds["geometry.depth"],
-            "geometry.thickness": {"min": 0.002, "max": 0.006},
+            "geometry.top_thickness": {"min": TOP_THICKNESS_MIN_M, "max": TOP_THICKNESS_MAX_M},
             "geometry.hole_radius": {"min": 0.035, "max": 0.055},
             "top_wood_id": wood_options,
             "back_wood_id": wood_options,
@@ -276,21 +276,17 @@ class ROMManager:
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(cfg, f, indent=4)
 
-    def _rebuild_mesh(self, shape_name: str) -> None:
+    def _rebuild_mesh(self, shape_name: str, config_path: Optional[Path] = None) -> None:
         cfg = self._load_shape_base_config(shape_name)
         mesh_file = Path(cfg["solver"]["mesh_file"])
         xdmf_cache = mesh_file.parent / "_xdmf_cache"
         if self.rank == 0 and xdmf_cache.exists():
             shutil.rmtree(xdmf_cache, ignore_errors=True)
-        geom_script = self.base_dir / "FEM" / "geometry" / "build_3d_guitar.py"
-        cmd = [sys.executable, str(geom_script), "-nopopup"]
+        cfg_path = config_path or (self.base_dir / self.shapes[shape_name]["base_config"])
         if self.rank == 0:
-            proc = subprocess.run(cmd, cwd=str(self.base_dir), capture_output=True, text=True)
-            if proc.returncode != 0:
-                raise RuntimeError(
-                    "Mesh regeneration failed during force-pool-rebuild.\n"
-                    f"stdout:\n{proc.stdout}\n\nstderr:\n{proc.stderr}"
-                )
+            from mesh_sync import build_mesh_for_config
+
+            build_mesh_for_config(Path(cfg_path).resolve(), self.base_dir)
         self.comm.barrier()
 
     @staticmethod
@@ -432,8 +428,10 @@ class ROMManager:
         cols = {k: self._lhs_values_for_key(sweep_cfg[k], unit[:, i]) for i, k in enumerate(keys)}
 
         entries = []
+        from wood_library import finalize_lhs_thickness_params
+
         for i in range(total_samples):
-            params = {k: cols[k][i] for k in keys}
+            params = finalize_lhs_thickness_params({k: cols[k][i] for k in keys})
             entries.append(
                 {
                     "id": self._sample_id(i),
@@ -690,9 +688,25 @@ class ROMManager:
                     solver_profile_used = self._apply_solver_profile_overrides(cfg, pool)
                     # Offline ROM FOM must be coupled; persist false so guitar_3d.json cannot drift to vacuum-only.
                     cfg.setdefault("solver", {})["structural_only_diagnosis"] = False
-                    self._save_shape_base_config(shape_name, cfg)
+                    merged_dir = self.base_dir / "FEM" / "SORTING" / "pipeline_merged_configs"
+                    merged_dir.mkdir(parents=True, exist_ok=True)
+                    merged_path = merged_dir / f"{sample_label}.json"
+                    if self.rank == 0:
+                        with open(merged_path, "w", encoding="utf-8") as mf:
+                            json.dump(cfg, mf, indent=4)
+                    self.comm.barrier()
+                    if self.rank == 0:
+                        from mesh_sync import build_mesh_for_config
+
+                        build_mesh_for_config(merged_path, self.base_dir)
+                    self.comm.barrier()
                     t0 = time.perf_counter()
-                    fom = fem_main_3d.run_fom_for_rom(cfg, num_modes=num_modes)
+                    fom = fem_main_3d.run_fom_for_rom(
+                        cfg,
+                        num_modes=num_modes,
+                        regenerate_mesh=False,
+                        mesh_config_path=merged_path,
+                    )
                     elapsed = time.perf_counter() - t0
                     if self.rank == 0:
                         freqs_arr = np.array(fom["freqs_hz"], dtype=np.float64)

@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 import numpy as np
 
 from paths import REPO_ROOT
-from wood_library import ALL_WOOD_IDS
+from wood_library import ALL_WOOD_IDS, TOP_THICKNESS_MAX_M, TOP_THICKNESS_MIN_M, finalize_lhs_thickness_params
 
 
 def _shape_length_width_depth_bounds(shape_type: str) -> Dict[str, Dict[str, float]]:
@@ -42,7 +42,7 @@ def build_7d_lhs_sweep_spec(base_cfg: Dict[str, Any], sweep_cfg: Dict) -> Dict:
         "geometry.length": bounds["geometry.length"],
         "geometry.width": bounds["geometry.width"],
         "geometry.depth": bounds["geometry.depth"],
-        "geometry.thickness": {"min": 0.002, "max": 0.006},
+        "geometry.top_thickness": {"min": TOP_THICKNESS_MIN_M, "max": TOP_THICKNESS_MAX_M},
         "geometry.hole_radius": {"min": 0.035, "max": 0.055},
         "top_wood_id": wood_options,
         "back_wood_id": wood_options,
@@ -96,7 +96,7 @@ def create_lhs_pool(
     cols = {k: _lhs_values_for_key(sweep_cfg[k], unit[:, i]) for i, k in enumerate(keys)}
     entries = []
     for i in range(total_samples):
-        params = {k: cols[k][i] for k in keys}
+        params = finalize_lhs_thickness_params({k: cols[k][i] for k in keys})
         entries.append(
             {
                 "id": f"sample_{i + 1:03d}",

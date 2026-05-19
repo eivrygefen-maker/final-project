@@ -7,7 +7,7 @@ including identical top/back pairs (e.g. cedar + cedar).
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 TOP_WOOD_IDS: List[str] = ["spruce", "cedar"]
 BACK_WOOD_IDS: List[str] = ["rosewood", "mahogany", "maple"]
@@ -21,7 +21,7 @@ WOOD_PLOT_COLORS: Dict[str, str] = {
     "rosewood": "#3E1F12",  # dark chocolate brown
 }
 
-# 3D shell model uses isotropic reduction from orthotropic sheet constants (E_L, nu_LT, rho).
+# 3D coupled shell uses full orthotropic KL plate constants (E_L, E_T, G_LT, nu_LT) on facet tags.
 WOOD_SPECS: Dict[str, Dict[str, Any]] = {
     "spruce": {
         "wood_id": "spruce",
@@ -117,6 +117,11 @@ WOOD_SPECS: Dict[str, Dict[str, Any]] = {
 
 ALL_WOOD_IDS: List[str] = sorted(WOOD_SPECS.keys())
 
+# Luthier-style plate thickness: LHS samples top only; back = top × factor.
+BACK_THICKNESS_FACTOR = 1.1
+TOP_THICKNESS_MIN_M = 0.0025
+TOP_THICKNESS_MAX_M = 0.0035
+
 
 def _normalize_id(wood_id: str) -> str:
     return str(wood_id).strip().lower().replace(" ", "_")
@@ -182,9 +187,49 @@ def materialize_lhs_parameters(parameters: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def finalize_plate_thickness_geometry(geom: Dict[str, Any]) -> None:
+    """Ensure ``top_thickness`` / ``back_thickness`` (back = top × 1.1) in a geometry dict."""
+    if geom.get("top_thickness") is not None:
+        t_top = float(geom["top_thickness"])
+    elif geom.get("thickness") is not None:
+        t_top = float(geom["thickness"])
+    else:
+        t_top = 0.003
+    geom["top_thickness"] = t_top
+    geom["back_thickness"] = float(geom.get("back_thickness", t_top * BACK_THICKNESS_FACTOR))
+
+
+def finalize_lhs_thickness_params(parameters: Dict[str, Any]) -> Dict[str, Any]:
+    """After LHS draw: set ``geometry.back_thickness`` from sampled top; drop legacy single thickness."""
+    out = dict(parameters)
+    if "geometry.top_thickness" in out:
+        t_top = float(out["geometry.top_thickness"])
+    elif "geometry.thickness" in out:
+        t_top = float(out.pop("geometry.thickness"))
+        out["geometry.top_thickness"] = t_top
+    elif "top_thickness" in out:
+        t_top = float(out.pop("top_thickness"))
+        out["geometry.top_thickness"] = t_top
+    else:
+        return out
+    out["geometry.back_thickness"] = float(
+        out.get("geometry.back_thickness", t_top * BACK_THICKNESS_FACTOR)
+    )
+    out.pop("geometry.thickness", None)
+    return out
+
+
+def resolve_plate_thicknesses(config: Dict[str, Any]) -> Tuple[float, float]:
+    """Return (top_thickness_m, back_thickness_m) from a FEM config."""
+    geom = config.get("geometry") if isinstance(config.get("geometry"), dict) else {}
+    finalize_plate_thickness_geometry(geom)
+    config["geometry"] = geom
+    return float(geom["top_thickness"]), float(geom["back_thickness"])
+
+
 def apply_lhs_parameters_to_config(config: Dict[str, Any], parameters: Dict[str, Any]) -> None:
     """Apply flat/dotted LHS parameters plus discrete wood IDs to a FEM config dict."""
-    flat = materialize_lhs_parameters(parameters)
+    flat = materialize_lhs_parameters(finalize_lhs_thickness_params(parameters))
     tid = flat.pop("materials.top_wood_id", None)
     bid = flat.pop("materials.back_wood_id", None)
     apply_wood_ids_to_config(config, top_wood_id=tid, back_wood_id=bid)
@@ -200,6 +245,9 @@ def apply_lhs_parameters_to_config(config: Dict[str, Any], parameters: Dict[str,
                 cur[p] = nxt
             cur = nxt
         cur[parts[-1]] = val
+    geom = config.get("geometry")
+    if isinstance(geom, dict):
+        finalize_plate_thickness_geometry(geom)
 
 
 def woods_ortho_json_export() -> Dict[str, Any]:
