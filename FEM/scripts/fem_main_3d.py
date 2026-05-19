@@ -1577,6 +1577,24 @@ def _slepc_build_mixed_block_is(
     return is_u, is_p
 
 
+def _slepc_st_allow_fieldsplit(solver_cfg: Dict, *, use_ciss: bool) -> bool:
+    """FieldSplit on shifted CISS operators often hits zero pivots; default off for CISS."""
+    if use_ciss:
+        return _solver_bool(solver_cfg, "st_ciss_use_fieldsplit", default=False)
+    return str(solver_cfg.get("st_pc_type", "lu")).strip().lower() in (
+        "fieldsplit",
+        "fs",
+    ) or _solver_bool(solver_cfg, "st_use_fieldsplit", default=False)
+
+
+def _slepc_eps_destroy_safe(eps: Any) -> None:
+    try:
+        eps.destroy()
+    except Exception as exc:
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(f"[solver][warn] EPS destroy failed (ignored): {exc}", flush=True)
+
+
 def _slepc_configure_st_ksp_pc(
     ksp: PETSc.KSP,
     pc: PETSc.PC,
@@ -1584,6 +1602,8 @@ def _slepc_configure_st_ksp_pc(
     *,
     block_is: Optional[Tuple[PETSc.IS, PETSc.IS]] = None,
     opts_prefix: str = "st_",
+    allow_fieldsplit: Optional[bool] = None,
+    use_ciss: bool = False,
 ) -> Tuple[str, str]:
     """
     ST inner linear solve: direct LU (MUMPS) or block FieldSplit on (u, p).
@@ -1592,9 +1612,9 @@ def _slepc_configure_st_ksp_pc(
     """
     st_ksp_type = str(solver_cfg.get("st_ksp_type", "preonly"))
     st_pc_type_cfg = str(solver_cfg.get("st_pc_type", "lu")).strip().lower()
-    use_fs = st_pc_type_cfg in ("fieldsplit", "fs") or _solver_bool(
-        solver_cfg, "st_use_fieldsplit", default=False
-    )
+    if allow_fieldsplit is None:
+        allow_fieldsplit = _slepc_st_allow_fieldsplit(solver_cfg, use_ciss=use_ciss)
+    use_fs = bool(allow_fieldsplit) and block_is is not None
     ksp.setType(st_ksp_type)
     petsc_opts = PETSc.Options()
     st_factor = str(
@@ -1645,9 +1665,28 @@ def _slepc_configure_st_ksp_pc(
         return st_ksp_type, pc_label
 
     pc.setType(st_pc_type_cfg if st_pc_type_cfg not in ("fieldsplit", "fs") else "lu")
-    if st_pc_type_cfg == "lu":
+    if pc.getType().lower() == "lu":
         try:
             pc.setFactorSolverType(st_factor)
+        except Exception:
+            pass
+        shift_type = str(
+            solver_cfg.get(
+                "st_pc_factor_shift_type",
+                solver_cfg.get("pc_factor_shift_type", "nonzero"),
+            )
+        )
+        shift_amt = float(
+            solver_cfg.get(
+                "st_pc_factor_shift_amount",
+                solver_cfg.get("pc_factor_shift_amount", 1.0e-8),
+            )
+        )
+        petsc_opts[f"{opts_prefix}pc_factor_shift_type"] = shift_type
+        petsc_opts[f"{opts_prefix}pc_factor_shift_amount"] = shift_amt
+        try:
+            pc.setFactorShiftType(shift_type)
+            pc.setFactorShiftAmount(shift_amt)
         except Exception:
             pass
     return st_ksp_type, pc.getType()
@@ -1700,6 +1739,7 @@ def _slepc_shift_invert_batch(
     p_to_W: Optional[np.ndarray] = None,
     dofs_top: Optional[np.ndarray] = None,
     dofs_back: Optional[np.ndarray] = None,
+    _fallback_depth: int = 0,
 ) -> Tuple[int, List[Tuple[float, np.ndarray, Optional[float], Optional[float], float, float]]]:
     """
     GNHEP band batch at ``shift_hz`` (λ = ω²).
@@ -1813,7 +1853,7 @@ def _slepc_shift_invert_batch(
     pc = ksp.getPC()
     _debug_rank("Entering KSP Setup")
     st_ksp_type, st_pc_label = _slepc_configure_st_ksp_pc(
-        ksp, pc, solver_cfg, block_is=block_is, opts_prefix="st_"
+        ksp, pc, solver_cfg, block_is=block_is, opts_prefix="st_", use_ciss=use_ciss
     )
     _st_factor = str(
         solver_cfg.get(
@@ -1986,7 +2026,12 @@ def _slepc_shift_invert_batch(
         st = eps.getST()
         ksp_st = st.getKSP()
         _slepc_configure_st_ksp_pc(
-            ksp_st, ksp_st.getPC(), solver_cfg, block_is=block_is, opts_prefix="st_"
+            ksp_st,
+            ksp_st.getPC(),
+            solver_cfg,
+            block_is=block_is,
+            opts_prefix="st_",
+            use_ciss=True,
         )
     else:
         eps.setWhichEigenpairs(eps_which)
@@ -2246,7 +2291,49 @@ def _slepc_shift_invert_batch(
         diag_vec.destroy()
     except Exception:
         pass
-    eps.destroy()
+    _slepc_eps_destroy_safe(eps)
+
+    if (
+        len(out) == 0
+        and use_ciss
+        and int(_fallback_depth) == 0
+        and _solver_bool(solver_cfg, "eps_ciss_fallback_shift_invert", default=True)
+    ):
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                "[solver][warn] CISS band solve returned 0 harvestable modes; "
+                "retrying with shift_invert + monolithic MUMPS LU.",
+                flush=True,
+            )
+        fb_cfg = dict(solver_cfg)
+        fb_cfg["eps_band_solver"] = "shift_invert"
+        fb_cfg["st_pc_type"] = "lu"
+        fb_cfg["st_use_fieldsplit"] = False
+        fb_cfg["st_ciss_use_fieldsplit"] = False
+        n_fb, out_fb = _slepc_shift_invert_batch(
+            A,
+            M,
+            fb_cfg,
+            shift_hz,
+            batch,
+            diag_shift,
+            status_callback,
+            M_top=M_top,
+            M_back=M_back,
+            work=work,
+            mass_top=mass_top,
+            mass_back=mass_back,
+            eps_max_it_cap=eps_max_it_cap,
+            u_parent_indices=u_parent_indices,
+            n_u_global=n_u_global,
+            u_to_W=u_to_W,
+            p_to_W=p_to_W,
+            dofs_top=dofs_top,
+            dofs_back=dofs_back,
+            _fallback_depth=1,
+        )
+        return n_fb, out_fb
+
     return len(out), out
 
 
