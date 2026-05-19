@@ -184,6 +184,8 @@ LADDER_HALF_STEP_HZ = 0.5
 LADDER_OFFSETS_HZ: Tuple[float, ...] = (-LADDER_HALF_STEP_HZ, 0.0, LADDER_HALF_STEP_HZ)
 HARVEST_GATE_SIGMA_TOL_HZ = 0.35
 HARVEST_GATE_SIGMA_P_FRAC = 1.0e-4
+# Debug: keep wood-participating modes at f≈σ for spectrum inspection (do not tag sigma_locked).
+HARVEST_GATE_BYPASS_SIGMA_LOCK = True
 # Incoming worker rows must meet this uniqueness floor (matches worker thin gate).
 MERGE_INCOMING_UNIQUENESS_MIN = 0.04
 
@@ -1393,14 +1395,18 @@ def _passes_harvest_gate(
         f_hz = 0.0
 
     sigma = float(st_sigma_hz)
-    if abs(f_hz - sigma) < HARVEST_GATE_SIGMA_TOL_HZ and p_frac < HARVEST_GATE_SIGMA_P_FRAC:
+    if (
+        not HARVEST_GATE_BYPASS_SIGMA_LOCK
+        and abs(f_hz - sigma) < HARVEST_GATE_SIGMA_TOL_HZ
+        and p_frac < HARVEST_GATE_SIGMA_P_FRAC
+    ):
         return False, "sigma_locked"
 
     if wood >= HARVEST_GATE_MIN_WOOD:
         if p_frac >= HARVEST_GATE_MIN_P_FRAC_FSI:
             return True, "coupled_fsi"
         c["harvest_tag"] = "structural_spurious"
-        if structural_only_run:
+        if structural_only_run or HARVEST_GATE_BYPASS_SIGMA_LOCK:
             return True, "structural_spurious"
         return False, "structural_spurious"
 

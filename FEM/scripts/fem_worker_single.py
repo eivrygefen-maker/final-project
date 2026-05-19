@@ -212,9 +212,16 @@ def main() -> int:
     cfg["_worker_target_hz"] = _target_hz
     cfg["_worker_num_modes"] = _nm
     if MPI.COMM_WORLD.rank == 0:
+        _which = str(cfg.get("solver", {}).get("eps_which", "TARGET_MAGNITUDE"))
+        _broad = float(cfg.get("solver", {}).get("eps_broad_search_hz", 0.0))
+        _win = (
+            f", window=[{_target_hz - _broad:.2f}, {_target_hz + _broad:.2f}] Hz"
+            if _broad > 0.0
+            else ""
+        )
         print(
             f"[worker] EPS target: f={_target_hz:.4f} Hz, "
-            f"lambda=(2*pi*f)^2={_target_lambda:.6e}, which=TARGET_MAGNITUDE, st=sinvert"
+            f"lambda=(2*pi*f)^2={_target_lambda:.6e}, which={_which}{_win}, st=sinvert"
         )
         sys.stdout.flush()
 
@@ -249,6 +256,7 @@ def main() -> int:
     tag1 = list(cfg.pop("_worker_tag1", []) or [])
     tag3 = list(cfg.pop("_worker_tag3", []) or [])
     p_fracs = list(cfg.pop("_worker_p_frac", []) or [])
+    p_block_maxes = list(cfg.pop("_worker_p_block_max", []) or [])
     _shift_jitter = float(cfg.get("solver", {}).get("shift_jitter_hz", 0.0))
     st_sigma_hz = float(
         cfg.pop("_worker_st_sigma_hz", max(1.0, float(args.target_hz) + _shift_jitter))
@@ -268,6 +276,8 @@ def main() -> int:
         return 1
     if len(p_fracs) != n_modes:
         p_fracs = [0.0] * n_modes
+    if len(p_block_maxes) != n_modes:
+        p_block_maxes = [0.0] * n_modes
 
     n_u_g = int(W.sub(0).dofmap.index_map.size_global * W.sub(0).dofmap.index_map_bs)
     hz_tag = hz_result_tag(float(args.target_hz))
@@ -281,6 +291,12 @@ def main() -> int:
         rt = float(tag1[j])
         rb = float(tag3[j])
         wood = max(0.0, rt + rb)
+        pbm = float(p_block_maxes[j])
+        print(
+            f"[worker][pre-gate] mode {j}: f={float(freqs_hz[j]):.4f} Hz "
+            f"max|p|={pbm:.6e} p_frac={float(p_fracs[j]):.3e} wood={wood:.4f}",
+            flush=True,
+        )
         rel = Path("temp_modes") / f"mode_w_{hz_tag}_{j:03d}{MODE_VECTOR_FILE_SUFFIX}"
         pending_abs = str((sorting_root / rel).resolve())
         disk_exclude_scan = set(exclude)

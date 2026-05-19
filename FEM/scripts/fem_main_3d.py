@@ -992,6 +992,27 @@ def _mixed_eigenvector_block_norms(
     return u_norm, p_norm
 
 
+def _max_pressure_block_abs(
+    arr: np.ndarray,
+    p_to_W: Optional[np.ndarray] = None,
+) -> float:
+    """Max absolute pressure coefficient on mixed W (collapse map when provided)."""
+    if p_to_W is None:
+        return 0.0
+    p_idx = np.asarray(p_to_W, dtype=np.int32).ravel()
+    if p_idx.size == 0:
+        return 0.0
+    flat = np.asarray(arr, dtype=np.float64).ravel()
+    return float(np.max(np.abs(flat[p_idx])))
+
+
+def _eps_use_target_real(solver_cfg: Dict) -> bool:
+    which = str(solver_cfg.get("eps_which", "")).strip().upper()
+    if which in ("TARGET_REAL", "TARGET_REAL_PART"):
+        return True
+    return _solver_bool(solver_cfg, "eps_use_target_real", default=False)
+
+
 def _collapsed_u_from_mixed_vec(
     phi_arr: np.ndarray,
     u_to_W: np.ndarray,
@@ -1350,7 +1371,7 @@ def _slepc_shift_invert_batch(
     p_to_W: Optional[np.ndarray] = None,
     dofs_top: Optional[np.ndarray] = None,
     dofs_back: Optional[np.ndarray] = None,
-) -> Tuple[int, List[Tuple[float, np.ndarray, Optional[float], Optional[float], float]]]:
+) -> Tuple[int, List[Tuple[float, np.ndarray, Optional[float], Optional[float], float, float]]]:
     """
     Krylov-Schur GNHEP batch: shift-invert at ``shift_hz`` (TARGET_MAGNITUDE on λ = ω²).
 
@@ -1359,14 +1380,30 @@ def _slepc_shift_invert_batch(
     min_hz = _slepc_spectrum_min_hz(solver_cfg, shift_hz)
     target_hz = float(shift_hz)
     target_lambda = (2.0 * math.pi * target_hz) ** 2
+    use_target_real = _eps_use_target_real(solver_cfg)
+    broad_hz = float(solver_cfg.get("eps_broad_search_hz", 0.0))
+    f_window_lo: Optional[float] = None
+    f_window_hi: Optional[float] = None
+    if use_target_real and broad_hz > 0.0:
+        f_window_lo = target_hz - broad_hz
+        f_window_hi = target_hz + broad_hz
     rigid_tol = float(solver_cfg.get("coupled_rigid_lambda_tol", 1.0e-10))
     rigid_buf = int(solver_cfg.get("eps_rigid_mode_buffer", 10))
     nev_request = int(batch) + max(rigid_buf, 0)
 
-    # ST σ near target + jitter keeps inversion away from an exact eigenvalue on the shift.
+    # ST σ: broad TARGET_REAL window uses band center; else target + jitter.
     shift_jitter_hz = float(solver_cfg.get("shift_jitter_hz", 0.0))
-    st_sigma_hz = max(1.0, target_hz + shift_jitter_hz)
+    if use_target_real and broad_hz > 0.0:
+        st_sigma_hz = max(1.0, target_hz)
+    else:
+        st_sigma_hz = max(1.0, target_hz + shift_jitter_hz)
     st_sigma = (2.0 * math.pi * st_sigma_hz) ** 2
+    eps_which_label = "TARGET_REAL" if use_target_real else "TARGET_MAGNITUDE"
+    eps_which = (
+        SLEPc.EPS.Which.TARGET_REAL
+        if use_target_real
+        else SLEPc.EPS.Which.TARGET_MAGNITUDE
+    )
 
     eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
     eps.setOperators(A, M)
@@ -1452,7 +1489,7 @@ def _slepc_shift_invert_batch(
     petsc_opts["pc_factor_shift_amount"] = float(solver_cfg.get("pc_factor_shift_amount", 1e-2))
     petsc_opts["eps_gen_non_hermitian"] = ""
     petsc_opts["bv_orthog_refine"] = str(solver_cfg.get("bv_orthog_refine", "always"))
-    petsc_opts["eps_which"] = "target_magnitude"
+    petsc_opts["eps_which"] = "target_real" if use_target_real else "target_magnitude"
     petsc_opts["eps_target"] = target_lambda
     if _st_name not in ("shift", "stshift"):
         petsc_opts["st_type"] = "sinvert"
@@ -1490,11 +1527,16 @@ def _slepc_shift_invert_batch(
     else:
         diag_min = float("nan")
         diag_max = float("nan")
+    _win_str = (
+        f", window=[{f_window_lo:.2f}, {f_window_hi:.2f}] Hz"
+        if f_window_lo is not None and f_window_hi is not None
+        else ""
+    )
     _emit(
         f"[solver] EPS spectrum batch (target={target_hz:.2f} Hz): "
         f"target_lambda={target_lambda:.6e}, min_hz={min_hz:.2f}, "
         f"ST={_st_name} sigma={st_sigma_hz:.2f} Hz (jitter={shift_jitter_hz:.2f}), "
-        f"which=TARGET_MAGNITUDE, conv=REL, ks_restart={ks_restart:.3f}, ks_pert={ks_pert:.2e}, "
+        f"which={eps_which_label}{_win_str}, conv=REL, ks_restart={ks_restart:.3f}, ks_pert={ks_pert:.2e}, "
         f"nev_request={nev_request} (batch={batch}+rigid_buf={rigid_buf}), "
         f"ncv={ncv}, eps_tol={eps_tol:.1e}, eps_max_it={eps_max_it}, "
         f"KSP={ksp.getType()}, PC={pc.getType()}, factor={_st_factor}, "
@@ -1520,7 +1562,7 @@ def _slepc_shift_invert_batch(
     eps.setFromOptions()
     # Re-apply after setFromOptions so CLI/options cannot leave sinvert without eps_target.
     eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
-    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
+    eps.setWhichEigenpairs(eps_which)
     eps.setTarget(target_lambda)
     st = eps.getST()
     if _st_name in ("shift", "stshift"):
@@ -1584,12 +1626,15 @@ def _slepc_shift_invert_batch(
     reject_decoupled = _solver_bool(solver_cfg, "eps_reject_decoupled_u_only", default=True)
     min_pressure_frac = float(solver_cfg.get("eps_harvest_min_pressure_fraction", 0.02))
     reject_sigma_spurious = _solver_bool(solver_cfg, "eps_reject_sigma_spurious", default=True)
+    if use_target_real and broad_hz > 0.0:
+        reject_sigma_spurious = False
     sigma_spurious_hz = float(solver_cfg.get("eps_sigma_spurious_tol_hz", 0.35))
 
-    candidates: List[Tuple[float, float, np.ndarray, float, float, float, float]] = []
+    candidates: List[Tuple[float, float, np.ndarray, float, float, float, float, float]] = []
     rvec = A.createVecRight()
     skipped_rigid = 0
     skipped_below_min = 0
+    skipped_window = 0
     skipped_unavailable = 0
     for i in range(int(harvest_slots)):
         try:
@@ -1605,9 +1650,6 @@ def _slepc_shift_invert_batch(
             continue
         omega = math.sqrt(max(eig_r, 0.0))
         f_hz = omega / (2.0 * math.pi)
-        if f_hz + 1e-9 < float(min_hz):
-            skipped_below_min += 1
-            continue
         rt = 0.0
         rb = 0.0
         if work is not None and (M_top is not None or M_back is not None):
@@ -1631,6 +1673,20 @@ def _slepc_shift_invert_batch(
             arr, n_u_global, u_to_W=u_to_W, p_to_W=p_to_W
         )
         p_frac = p_n / max(u_n + p_n, 1.0e-30)
+        p_block_max = _max_pressure_block_abs(arr, p_to_W)
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                f"[eps-p-diag] converged slot={i} f={f_hz:.4f} Hz "
+                f"max|p|={p_block_max:.6e} p_frac={p_frac:.3e} wood={wood:.4f}",
+                flush=True,
+            )
+        if f_hz + 1e-9 < float(min_hz):
+            skipped_below_min += 1
+            continue
+        if f_window_lo is not None and f_window_hi is not None:
+            if f_hz < f_window_lo - 1.0e-9 or f_hz > f_window_hi + 1.0e-9:
+                skipped_window += 1
+                continue
         if p_frac < 1.0e-5 and MPI.COMM_WORLD.rank == ROOT_RANK:
             print(
                 f"[FSI-AUDIT][warn] Mode f={f_hz:.2f} Hz: p_frac={p_frac:.3e} — "
@@ -1646,7 +1702,7 @@ def _slepc_shift_invert_batch(
         ):
             continue
         rank_score = wood + 0.25 * p_frac
-        candidates.append((rank_score, f_hz, arr, float(rt), float(rb), u_n, p_n))
+        candidates.append((rank_score, f_hz, arr, float(rt), float(rb), u_n, p_n, p_block_max))
 
     if rank_by_wood and candidates:
         candidates.sort(key=lambda t: (-t[0], abs(t[1] - target_hz)))
@@ -1656,10 +1712,10 @@ def _slepc_shift_invert_batch(
     else:
         ordered = candidates
 
-    out: List[Tuple[float, np.ndarray, Optional[float], Optional[float]]] = []
-    for _score, f_hz, arr, rt, rb, u_n, p_n in ordered:
+    out: List[Tuple[float, np.ndarray, Optional[float], Optional[float], float, float]] = []
+    for _score, f_hz, arr, rt, rb, u_n, p_n, p_block_max in ordered:
         p_frac = p_n / max(u_n + p_n, 1.0e-30)
-        out.append((f_hz, arr, rt, rb, float(p_frac)))
+        out.append((f_hz, arr, rt, rb, float(p_frac), float(p_block_max)))
         if len(out) >= int(batch):
             break
 
@@ -1671,6 +1727,7 @@ def _slepc_shift_invert_batch(
         print(
             f"[solver] EPS harvest: kept={len(out)}/{batch} from nconv_marked={nconv_marked} "
             f"(skip rigid={skipped_rigid}, f<{min_hz:.1f}Hz={skipped_below_min}, "
+            f"outside_window={skipped_window}, "
             f"unavail={skipped_unavailable}, rank_by_wood={rank_by_wood}, "
             f"reject_decoupled={reject_decoupled}, reject_sigma_spurious={reject_sigma_spurious})"
         )
@@ -2716,11 +2773,18 @@ def _solve_coupled_evp(
         )
         _phase_sync(2100, "worker single-shift after batch", status_callback=status_callback)
         row_meta: List[Tuple[float, np.ndarray, float, float, float]] = []
-        for f_hz, vec, rt, rb, p_frac in rows:
+        for f_hz, vec, rt, rb, p_frac, p_block_max in rows:
             if rt is None or rb is None:
                 continue
             row_meta.append(
-                (float(f_hz), np.asarray(vec, dtype=np.float64), float(rt), float(rb), float(p_frac))
+                (
+                    float(f_hz),
+                    np.asarray(vec, dtype=np.float64),
+                    float(rt),
+                    float(rb),
+                    float(p_frac),
+                    float(p_block_max),
+                )
             )
         if not row_meta:
             _emit(
@@ -2752,8 +2816,12 @@ def _solve_coupled_evp(
         config["_worker_tag1"] = [t[2] for t in row_meta]
         config["_worker_tag3"] = [t[3] for t in row_meta]
         config["_worker_p_frac"] = [t[4] for t in row_meta]
+        config["_worker_p_block_max"] = [t[5] for t in row_meta]
         _shift_jitter = float(solver_cfg.get("shift_jitter_hz", 0.0))
-        config["_worker_st_sigma_hz"] = max(1.0, float(_worker_hz) + _shift_jitter)
+        if _eps_use_target_real(solver_cfg) and float(solver_cfg.get("eps_broad_search_hz", 0.0)) > 0.0:
+            config["_worker_st_sigma_hz"] = max(1.0, float(_worker_hz))
+        else:
+            config["_worker_st_sigma_hz"] = max(1.0, float(_worker_hz) + _shift_jitter)
         eigvecs = np.stack(vectors, axis=1)
 
         config["_fom_sifter_stats"] = {"worker_single_batch": True, "nconv": int(nconv), "rows": int(len(rows))}
@@ -2950,7 +3018,7 @@ def _solve_coupled_evp(
                 dofs_back=shell_dofs_back,
             )
             scored: List[Tuple[float, float, float]] = []
-            for _f, _v, rt, rb, _pf in rows:
+            for _f, _v, rt, rb, _pf, _pbm in rows:
                 if rt is None or rb is None:
                     continue
                 if not (np.isfinite(rt) and np.isfinite(rb)):
@@ -2972,7 +3040,7 @@ def _solve_coupled_evp(
             added = 0
             dropped_unique = 0
             dropped_participation = 0
-            for f_hz, vec, rt, rb, _pf in rows:
+            for f_hz, vec, rt, rb, _pf, _pbm in rows:
                 if rt is None or rb is None:
                     continue
                 if not (rt > th_top or rb > th_back):
@@ -3162,7 +3230,7 @@ def _solve_coupled_evp(
 
         freqs_hz = []
         vectors = []
-        for f_hz, vec, _rt, _rb, _pf in rows:
+        for f_hz, vec, _rt, _rb, _pf, _pbm in rows:
             freqs_hz.append(f_hz)
             vectors.append(vec)
 
