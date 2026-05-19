@@ -56,7 +56,9 @@ LOGGER.setLevel(logging.INFO)
 LOGGER.propagate = False
 
 
-WOOD_SURFACE_TAGS = (1, 3)
+WOOD_SURFACE_TAGS = (1, 3, 4)  # top plate, back plate, ribs/sides (FSI shell)
+RIBS_SURFACE_TAG = 4
+WOOD_FIX_SURFACE_TAG = 5
 AIR_VOLUME_TAG = 10
 ROOT_RANK = 0
 SORTING_ROOT = Path(__file__).resolve().parents[1] / "SORTING"
@@ -383,7 +385,7 @@ def _load_mesh_and_tags(mesh_file: Path, status_callback=None):
     if cell_tags is None:
         raise RuntimeError("No 3D physical tags detected in mesh. Expected Air_Internal=10.")
     if facet_tags is None:
-        raise RuntimeError("No 2D physical tags detected in mesh. Expected Top_Plate/Body_Shell tags.")
+        raise RuntimeError("No 2D physical tags detected in mesh. Expected Top/Back/Ribs facet tags.")
 
     air_cells = np.where(cell_tags.values == AIR_VOLUME_TAG)[0]
     wood_facets = np.where(np.isin(facet_tags.values, np.asarray(WOOD_SURFACE_TAGS, dtype=np.int32)))[0]
@@ -410,7 +412,8 @@ def _load_mesh_and_tags(mesh_file: Path, status_callback=None):
             f"[diag] facet_tags map check: dim={facet_tags.dim}, n_local_facets={n_facets_local}, "
             f"tagged_facets={fidx.size}, in_local_range={in_range}, "
             f"find1={facet_tags.find(1).size}, find2={facet_tags.find(2).size}, "
-            f"find3={facet_tags.find(3).size}, find4={facet_tags.find(4).size}",
+            f"find3={facet_tags.find(3).size}, find4={facet_tags.find(4).size}, "
+            f"find5={facet_tags.find(5).size}",
             status_callback=status_callback,
         )
     except Exception as exc:
@@ -418,8 +421,14 @@ def _load_mesh_and_tags(mesh_file: Path, status_callback=None):
     # Explicit per-tag sanity counts requested for fallback validation.
     vol_counts = {1: int(np.sum(cell_tags.values == 1)), 2: int(np.sum(cell_tags.values == 2)),
                   3: int(np.sum(cell_tags.values == 3)), 10: int(np.sum(cell_tags.values == 10))}
-    fac_counts = {1: int(np.sum(facet_tags.values == 1)), 2: int(np.sum(facet_tags.values == 2)),
-                  3: int(np.sum(facet_tags.values == 3)), 10: int(np.sum(facet_tags.values == 10))}
+    fac_counts = {
+        1: int(np.sum(facet_tags.values == 1)),
+        2: int(np.sum(facet_tags.values == 2)),
+        3: int(np.sum(facet_tags.values == 3)),
+        4: int(np.sum(facet_tags.values == 4)),
+        5: int(np.sum(facet_tags.values == 5)),
+        10: int(np.sum(facet_tags.values == 10)),
+    }
     _emit(f"[diag] volume tag counts: {vol_counts}", status_callback=status_callback)
     _emit(f"[diag] facet tag counts: {fac_counts}", status_callback=status_callback)
     return msh, cell_tags, facet_tags
@@ -645,8 +654,8 @@ def _mesh_interface_diagnostic(msh: mesh.Mesh, cell_tags, facet_tags, status_cal
             np.concatenate(
                 [
                     np.asarray(facet_tags.find(1), dtype=np.int32),
-                    np.asarray(facet_tags.find(2), dtype=np.int32),
                     np.asarray(facet_tags.find(3), dtype=np.int32),
+                    np.asarray(facet_tags.find(4), dtype=np.int32),
                 ]
             )
         ).astype(np.int32)
@@ -657,7 +666,7 @@ def _mesh_interface_diagnostic(msh: mesh.Mesh, cell_tags, facet_tags, status_cal
         )
 
         interface_facets = []
-        wood_tag_set = {1, 2, 3}
+        wood_tag_set = {1, 2, 3, 4}
         for ci in air_cells:
             for fi in c2f.links(int(ci)):
                 nbr_cells = np.asarray(f2c.links(int(fi)), dtype=np.int32)
@@ -817,7 +826,7 @@ def _coupled_pressure_dof_scale(solver_cfg: Dict) -> float:
     Similarity scale s on pressure DOFs (D = diag(I, s·I_p)); applied consistently to all
     pressure blocks so GNHEP eigenvalues (ω²) are unchanged but block magnitudes match u.
     """
-    s = float(solver_cfg.get("pressure_dof_scale", 1.0e-4))
+    s = float(solver_cfg.get("pressure_dof_scale", 1.0e5))
     return s if s > 0.0 else 1.0
 
 
@@ -1118,11 +1127,13 @@ def _solve_structural_only_evp(
     facets_t1 = np.array(facet_tags.find(1), dtype=np.int32)
     facets_t2 = np.array(facet_tags.find(2), dtype=np.int32)
     facets_t3 = np.array(facet_tags.find(3), dtype=np.int32)
-    facets_fix = np.array(facet_tags.find(4), dtype=np.int32)
+    facets_t4 = np.array(facet_tags.find(RIBS_SURFACE_TAG), dtype=np.int32)
+    facets_fix = np.array(facet_tags.find(WOOD_FIX_SURFACE_TAG), dtype=np.int32)
 
     print(
         f"[DIAG] facet tag counts: tag1={facets_t1.size}, "
-        f"tag2={facets_t2.size}, tag3={facets_t3.size}, tag4_fix={facets_fix.size}"
+        f"tag2={facets_t2.size}, tag3_back={facets_t3.size}, "
+        f"tag4_ribs={facets_t4.size}, tag5_fix={facets_fix.size}"
     )
     sys.stdout.flush()
 
@@ -1559,6 +1570,7 @@ def _solve_coupled_evp(
 
     tag_top = int(WOOD_SURFACE_TAGS[0])
     tag_back = int(WOOD_SURFACE_TAGS[1])
+    tag_ribs = int(WOOD_SURFACE_TAGS[2])
 
     def eps_surface(uu):
         grad_u = ufl.grad(uu)
@@ -1566,20 +1578,24 @@ def _solve_coupled_evp(
         return 0.5 * (grad_tan + ufl.transpose(grad_tan))
 
     wood_tag_top = int(np.sum(facet_tags.values == tag_top))
-    wood_tag_shell = int(np.sum(facet_tags.values == tag_back))
+    wood_tag_back = int(np.sum(facet_tags.values == tag_back))
+    wood_tag_ribs = int(np.sum(facet_tags.values == tag_ribs))
     ds_top = xdmf_ds(tag_top)
     ds_back = xdmf_ds(tag_back)
-    if wood_tag_top + wood_tag_shell > 0:
-        wood_ds = ds_top + ds_back
+    ds_ribs = xdmf_ds(tag_ribs)
+    if wood_tag_top + wood_tag_back + wood_tag_ribs > 0:
+        wood_ds = ds_top + ds_back + ds_ribs
         _emit(
             f"[form] structural shell integration on tagged facets: "
-            f"tag{tag_top}={wood_tag_top} (top plate), tag{tag_back}={wood_tag_shell} (back/sides)",
+            f"tag{tag_top}={wood_tag_top} (top), tag{tag_back}={wood_tag_back} (back), "
+            f"tag{tag_ribs}={wood_tag_ribs} (ribs/sides)",
             status_callback=status_callback,
         )
     else:
         wood_ds = ufl.ds(domain=msh)
         ds_top = wood_ds
         ds_back = wood_ds
+        ds_ribs = wood_ds
         _emit(
             "[form][warn] structural facet tags missing; falling back to all exterior facets (ds).",
             status_callback=status_callback,
@@ -1594,11 +1610,12 @@ def _solve_coupled_evp(
 
     shell_top = _orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, top_m)
     shell_back = _orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
+    shell_ribs = _orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
 
-    if wood_tag_top + wood_tag_shell > 0:
-        a_uu = shell_top * ds_top + shell_back * ds_back
+    if wood_tag_top + wood_tag_back + wood_tag_ribs > 0:
+        a_uu = shell_top * ds_top + shell_back * ds_back + shell_ribs * ds_ribs
     else:
-        a_uu = (shell_top + shell_back) * wood_ds
+        a_uu = (shell_top + shell_back + shell_ribs) * wood_ds
 
     _diagnose_shell_stiffness_assembly(
         a_uu,
@@ -1609,7 +1626,7 @@ def _solve_coupled_evp(
         tag_top,
         tag_back,
         wood_tag_top,
-        wood_tag_shell,
+        wood_tag_back,
         status_callback=status_callback,
     )
 
@@ -1628,8 +1645,12 @@ def _solve_coupled_evp(
     a_up = -p_scale * p * ufl.dot(n, v) * wood_ds
 
     # Acoustic mass and structure mass (per facet tag).
-    if wood_tag_top + wood_tag_shell > 0:
-        m_uu = (top_m["rho"] * t_top) * ufl.dot(u, v) * ds_top + (back_m["rho"] * t_back) * ufl.dot(u, v) * ds_back
+    if wood_tag_top + wood_tag_back + wood_tag_ribs > 0:
+        m_uu = (
+            (top_m["rho"] * t_top) * ufl.dot(u, v) * ds_top
+            + (back_m["rho"] * t_back) * ufl.dot(u, v) * ds_back
+            + (back_m["rho"] * t_back) * ufl.dot(u, v) * ds_ribs
+        )
     else:
         m_uu = (top_m["rho"] * t_top + back_m["rho"] * t_back) * ufl.dot(u, v) * wood_ds
     m_pp = p2 * (1.0 / (rho_air * c_air * c_air)) * p * q * xdmf_dx(AIR_VOLUME_TAG)
@@ -1647,13 +1668,15 @@ def _solve_coupled_evp(
     # Per-facet-group shell mass forms for plate-specific sifter (Top tag 1, Body tag 3).
     m_uu_top_plate = (top_m["rho"] * t_top) * ufl.dot(u, v) * xdmf_ds(tag_top)
     m_uu_back_shell = (back_m["rho"] * t_back) * ufl.dot(u, v) * xdmf_ds(tag_back)
+    m_uu_ribs_shell = (back_m["rho"] * t_back) * ufl.dot(u, v) * xdmf_ds(tag_ribs)
     has_top_plate_facets = wood_tag_top > 0
-    has_back_shell_facets = wood_tag_shell > 0
+    has_back_shell_facets = wood_tag_back > 0
+    has_ribs_facets = wood_tag_ribs > 0
 
     # Lumped masses consistent with m_uu (surface shell) and air volume (tag 10), before EVP solve.
     _wood_mass_note = (
-        "Top_Plate+Body_Shell facet tags only"
-        if (wood_tag_top + wood_tag_shell) > 0
+        "Top+Back+Ribs facet tags (1/3/4)"
+        if (wood_tag_top + wood_tag_back + wood_tag_ribs) > 0
         else "WARNING: full exterior ds (wood facet tags missing)"
     )
     mass_top_kg = float("nan")
@@ -1666,18 +1689,24 @@ def _solve_coupled_evp(
     try:
         mass_wood_kg = float(
             fem.assemble_scalar(
-                fem.form(top_m["rho"] * t_top * ds_top + back_m["rho"] * t_back * ds_back)
+                fem.form(
+                    top_m["rho"] * t_top * ds_top
+                    + back_m["rho"] * t_back * ds_back
+                    + back_m["rho"] * t_back * ds_ribs
+                )
             )
         )
         mass_top_kg = float(fem.assemble_scalar(fem.form(top_m["rho"] * t_top * ds_top)))
-        mass_back_kg = float(fem.assemble_scalar(fem.form(back_m["rho"] * t_back * ds_back)))
+        mass_back_kg = float(
+            fem.assemble_scalar(fem.form(back_m["rho"] * t_back * (ds_back + ds_ribs)))
+        )
     except Exception as exc:
         mass_wood_kg = float("nan")
         mass_top_kg = float("nan")
         mass_back_kg = float("nan")
         _emit(f"[diag] wood shell mass integral failed: {exc}", status_callback=status_callback, level="warning")
     print(
-        f"[DIAG] Total wood mass (integral rho*thickness per tag1/tag3 shell ds; {_wood_mass_note}): "
+        f"[DIAG] Total wood mass (integral rho*thickness per tags 1/3/4 shell ds; {_wood_mass_note}): "
         f"{mass_wood_kg:.6e} kg | mass_top={mass_top_kg:.6e} kg mass_back={mass_back_kg:.6e} kg"
     )
     print(f"[DIAG] Total air mass (integral rho_air over air volume tag {AIR_VOLUME_TAG}): {mass_air_kg:.6e} kg")
@@ -1688,9 +1717,9 @@ def _solve_coupled_evp(
     sys.stdout.flush()
 
     # Release no-longer-needed symbolic temporaries once forms are finalized.
-    del eps_u, eps_v, w_n, v_n, wood_tag_top, wood_tag_shell
+    del eps_u, eps_v, w_n, v_n, wood_tag_top, wood_tag_back, wood_tag_ribs
 
-    # Dirichlet BCs: pressure gauge only; structural shell is free–free (no displacement constraints).
+    # Dirichlet BCs: soundhole pressure gauge + clamped ribs (tag 4); top/back remain free.
     soundhole_facets = np.array(facet_tags.find(2), dtype=np.int32)
     pressure_gauge = str(config.get("solver", {}).get("pressure_gauge", "soundhole")).lower()
     bcs = []
@@ -1769,9 +1798,18 @@ def _solve_coupled_evp(
         if p_dofs.size == 0:
             raise RuntimeError("Failed to create pressure grounding dofs (p_dofs is empty).")
 
+        V_u, _ = W.sub(0).collapse()
+        facets_ribs = np.array(facet_tags.find(RIBS_SURFACE_TAG), dtype=np.int32)
+        u_dofs_ribs = np.array([], dtype=np.int32)
+        if facets_ribs.size > 0:
+            u_dofs_ribs = np.array(
+                fem.locate_dofs_topological(V_u, fdim, facets_ribs),
+                dtype=np.int32,
+            )
         _emit(
-            "[bc][diag] free–free structure; pressure gauge only. "
+            "[bc][diag] pressure gauge + ribs clamp (tag 4). "
             f"pressure BC dof count={p_dofs.size} (full pressure FE unknowns=n_p_collapsed={n_p_collapsed}), "
+            f"ribs facets={facets_ribs.size}, ribs u_dof count={u_dofs_ribs.size}, "
             f"soundhole_facets.shape={soundhole_facets.shape}",
             status_callback=status_callback,
         )
@@ -1779,6 +1817,21 @@ def _solve_coupled_evp(
         p_zero = fem.Constant(msh, PETSc.ScalarType(0.0))
         bc_p = fem.dirichletbc(p_zero, p_dofs, V_p)
         bcs = [bc_p]
+        if u_dofs_ribs.size > 0:
+            u_zero = np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType)
+            bc_u = fem.dirichletbc(u_zero, u_dofs_ribs, V_u)
+            bcs.append(bc_u)
+            _emit(
+                f"[bc] ribs clamp: u = 0 on tag {RIBS_SURFACE_TAG} "
+                f"({facets_ribs.size} facets, {u_dofs_ribs.size} displacement DOFs).",
+                status_callback=status_callback,
+            )
+        else:
+            _emit(
+                f"[bc][warn] no facets on tag {RIBS_SURFACE_TAG}; ribs not clamped.",
+                status_callback=status_callback,
+                level="warning",
+            )
     except Exception as e:
         _emit(
             "[bc][error] dirichletbc creation failed. "
@@ -2488,8 +2541,9 @@ def run_fem_3d_simulation(config_path, status_callback=None):
         "tag_protocol": {
             "Top_Plate": 1,
             "Soundhole": 2,
-            "Body_Shell": 3,
-            "wood_fix": 4,
+            "Back_Plate": 3,
+            "Ribs_Sides": 4,
+            "wood_fix": 5,
             "Air_Internal": 10,
         },
     }

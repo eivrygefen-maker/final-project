@@ -375,10 +375,17 @@ def create_guitar_mesh():
         top_plate_surfs = [highest]
         print("[diag][warn] top_plate_surfs fallback: using highest wood boundary surface.")
 
-    body_surfs = sorted(list(set(wood_boundary_surfs) - set(top_plate_surfs)))
-    if not body_surfs and wood_boundary_surfs:
-        body_surfs = sorted(list(wood_boundary_surfs))
-        print("[diag][warn] body_surfs fallback: using all wood boundary surfaces.")
+    back_plate_surfs = (
+        sorted(list(get_boundary_tags([(3, int(v)) for v in back_vols], 2))) if back_vols else []
+    )
+    rib_surfs = (
+        sorted(list(get_boundary_tags([(3, int(v)) for v in rib_vols], 2))) if rib_vols else []
+    )
+    if not back_plate_surfs and not rib_surfs:
+        legacy_body = sorted(list(set(wood_boundary_surfs) - set(top_plate_surfs)))
+        if legacy_body:
+            rib_surfs = legacy_body
+            print("[diag][warn] back/rib volume boundaries empty; legacy body shell → ribs tag 4.")
 
     def _xy_dist_point_to_rect(px, py, xmin, xmax, ymin, ymax):
         if px < xmin:
@@ -434,32 +441,39 @@ def create_guitar_mesh():
         soundhole_surfs = list(top_plate_surfs)
         print("[diag][warn] soundhole_surfs fallback: using top_plate_surfs.")
 
-    # Do not double-tag hole annulus as Top_Plate / Body_Shell.
+    # Do not double-tag hole annulus; keep top / back / ribs disjoint.
     _sh_set = set(soundhole_surfs)
+    _top_set = set(top_plate_surfs)
     if _sh_set:
         top_plate_surfs = [s for s in top_plate_surfs if s not in _sh_set]
-        body_surfs = [s for s in body_surfs if s not in _sh_set]
+        back_plate_surfs = [s for s in back_plate_surfs if s not in _sh_set and s not in _top_set]
+        rib_surfs = [s for s in rib_surfs if s not in _sh_set and s not in _top_set]
+    _back_set = set(back_plate_surfs)
+    rib_surfs = [s for s in rib_surfs if s not in _back_set]
+    if not back_plate_surfs and back_vols:
+        b_back = get_boundary_tags([(3, int(v)) for v in back_vols], 2)
+        if b_back:
+            back_plate_surfs = [min(b_back, key=lambda s: get_surface_center_z(s))]
+            print("[diag][warn] back_plate_surfs fallback: lowest-Z back volume face.")
 
-    # Define a compact support region (wood_fix) near neck-side body area.
-    # This provides a deterministic structural clamp for FEM boundary conditions.
+    # Optional neck patch (tag 5); ribs (tag 4) are clamped in FEM, not wood_fix.
     fix_candidates = []
-    for s in body_surfs:
+    for s in rib_surfs + back_plate_surfs:
         cx, cy, cz = get_surface_center(s)
         fix_candidates.append((s, cx, abs(cy), cz))
-    # Prefer surfaces near maximum +x and close to centerline (small |y|).
     fix_candidates.sort(key=lambda row: (-row[1], row[2]))
     n_fix = min(2, len(fix_candidates))
     wood_fix_surfs = [row[0] for row in fix_candidates[:n_fix]]
-    if not wood_fix_surfs and body_surfs:
-        wood_fix_surfs = [body_surfs[0]]
+    if wood_fix_surfs:
+        _fix_set = set(wood_fix_surfs)
+        rib_surfs = [s for s in rib_surfs if s not in _fix_set]
+        back_plate_surfs = [s for s in back_plate_surfs if s not in _fix_set]
 
     # Define physical groups using fixed tag protocol.
     # IMPORTANT: 2D tags (facets) and 3D tags (volumes) are both created.
     # This ensures structural-only volume assembly can target wood cells (1/2/3).
     if not top_plate_surfs and wood_boundary_surfs:
         top_plate_surfs = [max(list(wood_boundary_surfs), key=lambda s: get_surface_center_z(s))]
-    if not body_surfs and wood_boundary_surfs:
-        body_surfs = sorted(list(wood_boundary_surfs))
     if not soundhole_surfs:
         soundhole_surfs = _select_soundhole_surfaces(
             all_shell_surfs, z_top_outer, z_tol * 2.5, hole_x, hole_y, hr * 1.05, max_span_factor=12.0
@@ -470,21 +484,25 @@ def create_guitar_mesh():
             "Check geometry (hole_radius, soundhole_y, depth D) and boolean/fragment output."
         )
 
-    # Exterior back flat (lowest Z) for explicit plate surface sizing alongside top plate.
-    back_plate_surfs = []
-    if back_vols:
-        b_back = get_boundary_tags([(3, int(v)) for v in back_vols], 2)
-        if b_back:
-            back_plate_surfs = [min(b_back, key=lambda s: get_surface_center_z(s))]
-
     pg_top = gmsh.model.addPhysicalGroup(2, top_plate_surfs, tag=1)
     gmsh.model.setPhysicalName(2, pg_top, "Top_Plate")
     pg_soundhole = gmsh.model.addPhysicalGroup(2, soundhole_surfs, tag=2)
     gmsh.model.setPhysicalName(2, pg_soundhole, "Soundhole")
-    pg_body = gmsh.model.addPhysicalGroup(2, body_surfs, tag=3)
-    gmsh.model.setPhysicalName(2, pg_body, "Body_Shell")
-    pg_fix = gmsh.model.addPhysicalGroup(2, wood_fix_surfs, tag=4)
-    gmsh.model.setPhysicalName(2, pg_fix, "wood_fix")
+    if back_plate_surfs:
+        pg_back = gmsh.model.addPhysicalGroup(2, back_plate_surfs, tag=3)
+        gmsh.model.setPhysicalName(2, pg_back, "Back_Plate")
+    else:
+        print("[diag][warn] back_plate_surfs empty; facet tag 3 not created.")
+    if rib_surfs:
+        pg_ribs = gmsh.model.addPhysicalGroup(2, rib_surfs, tag=4)
+        gmsh.model.setPhysicalName(2, pg_ribs, "Ribs_Sides")
+    else:
+        print("[diag][warn] rib_surfs empty; facet tag 4 not created.")
+    if wood_fix_surfs:
+        pg_fix = gmsh.model.addPhysicalGroup(2, wood_fix_surfs, tag=5)
+        gmsh.model.setPhysicalName(2, pg_fix, "wood_fix")
+    else:
+        print("[diag][warn] wood_fix surfaces empty; tag 5 not created.")
     if top_vols:
         pg_top_v = gmsh.model.addPhysicalGroup(3, top_vols, tag=1)
         gmsh.model.setPhysicalName(3, pg_top_v, "Top_Plate_Volume")
@@ -504,7 +522,10 @@ def create_guitar_mesh():
     pg_air = gmsh.model.addPhysicalGroup(3, air_vols, tag=10)
     gmsh.model.setPhysicalName(3, pg_air, "Air_Internal")
 
-    print(f"[diag] wood_fix surfaces (tag=4): {wood_fix_surfs}")
+    print(
+        f"[diag] facet groups: top={len(top_plate_surfs)}, back={len(back_plate_surfs)}, "
+        f"ribs={len(rib_surfs)}, wood_fix={len(wood_fix_surfs)}"
+    )
     air_group_entities = gmsh.model.getEntitiesForPhysicalGroup(3, 10)
     print(f"[diag] Physical Group 10 (Air_Internal) volume entities: {list(air_group_entities)}")
     v1 = gmsh.model.getEntitiesForPhysicalGroup(3, 1) if top_vols else []
@@ -555,7 +576,7 @@ def create_guitar_mesh():
     # (mesh.setSize + Threshold from EdgesList) so P1 has multiple elements across ~3 mm wood.
     # Air: distance from wood shell -> Threshold (8 mm near field, 80 mm far, smooth 1.5–25 cm band).
     if not is_preview:
-        wood_surface_tags = top_plate_surfs + body_surfs
+        wood_surface_tags = top_plate_surfs + back_plate_surfs + rib_surfs
         if not top_plate_surfs:
             raise RuntimeError("top_plate_surfs is empty; cannot apply wood refinement field.")
         for surf in wood_surface_tags:

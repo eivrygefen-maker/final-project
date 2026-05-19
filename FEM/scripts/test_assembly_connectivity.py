@@ -44,8 +44,9 @@ from fem_main_3d import (  # noqa: E402  # SLEPc is imported by fem_main_3d but 
 
 TAG_TOP = 1
 TAG_SOUNDHOLE = 2
-TAG_BODY = 3
-TAG_WOOD_FIX = 4
+TAG_BACK = 3
+TAG_RIBS = 4
+TAG_WOOD_FIX = 5
 
 
 def _resolve_mesh_path(cfg: dict, config_path: Path) -> Path:
@@ -142,7 +143,7 @@ def _report_mat(label: str, K: PETSc.Mat, n_u: int) -> None:
 
 
 def _facet_tag_counts(facet_tags) -> Dict[int, int]:
-    out = {TAG_TOP: 0, TAG_SOUNDHOLE: 0, TAG_BODY: 0, TAG_WOOD_FIX: 0}
+    out = {TAG_TOP: 0, TAG_SOUNDHOLE: 0, TAG_BACK: 0, TAG_RIBS: 0, TAG_WOOD_FIX: 0}
     for tag in out:
         out[tag] = int(facet_tags.find(tag).size)
     return out
@@ -165,7 +166,8 @@ def run_audit(config_path: Path) -> int:
         for tag, name in (
             (TAG_TOP, "Top_Plate"),
             (TAG_SOUNDHOLE, "Soundhole"),
-            (TAG_BODY, "Body_Shell (back+sides in current mesh)"),
+            (TAG_BACK, "Back_Plate"),
+            (TAG_RIBS, "Ribs_Sides"),
             (TAG_WOOD_FIX, "wood_fix (neck patch)"),
         ):
             print(f"  tag {tag} ({name}): {fac[tag]}")
@@ -194,8 +196,9 @@ def run_audit(config_path: Path) -> int:
     rho_air = float(cfg["materials"]["air"]["density"])
 
     ds_top = xdmf_ds(TAG_TOP)
-    ds_body = xdmf_ds(TAG_BODY)
-    wood_ds = ds_top + ds_body
+    ds_back = xdmf_ds(TAG_BACK)
+    ds_ribs = xdmf_ds(TAG_RIBS)
+    wood_ds = ds_top + ds_back + ds_ribs
 
     a_up = -p_scale * p * ufl.dot(n, v) * wood_ds
     m_pu = p_scale * rho_air * ufl.dot(u, n) * q * wood_ds
@@ -213,7 +216,8 @@ def run_audit(config_path: Path) -> int:
         ("A_up (p→u stiffness, full wood_ds)", assemble_matrix(fem.form(a_up), bcs=bcs)),
         ("M_pu (u→p mass, full wood_ds)", assemble_matrix(fem.form(m_pu), bcs=bcs)),
         ("A_up (tag1 top only)", assemble_matrix(fem.form(-p_scale * p * ufl.dot(n, v) * ds_top), bcs=bcs)),
-        ("A_up (tag3 body only)", assemble_matrix(fem.form(-p_scale * p * ufl.dot(n, v) * ds_body), bcs=bcs)),
+        ("A_up (tag3 back only)", assemble_matrix(fem.form(-p_scale * p * ufl.dot(n, v) * ds_back), bcs=bcs)),
+        ("A_up (tag4 ribs only)", assemble_matrix(fem.form(-p_scale * p * ufl.dot(n, v) * ds_ribs), bcs=bcs)),
         ("A_pp (air vol)", assemble_matrix(fem.form(a_pp), bcs=bcs)),
         ("A_uu (wood placeholder)", assemble_matrix(fem.form(a_uu), bcs=bcs)),
     ]
@@ -225,7 +229,7 @@ def run_audit(config_path: Path) -> int:
 
         print("\n[interpretation]")
         print("  • nnz(u→p)=0 AND nnz(p→u)=0 on A_up/A_pu → wood–air FSI is topologically disconnected.")
-        print("  • tag3 = back + sides today; tag4 = wood_fix only (not in WOOD_SURFACE_TAGS).")
+        print("  • FSI shell tags 1/3/4; tag 4 ribs clamped in production fem_main_3d.")
         print("  • Compare ||A_up||_F to ||A_uu||_F: large gap suggests block scaling / ill-conditioning.")
         print("=" * 72)
 
