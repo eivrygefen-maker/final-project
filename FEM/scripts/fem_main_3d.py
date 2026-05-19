@@ -1513,6 +1513,35 @@ def _slepc_spectrum_min_hz(solver_cfg: Dict, scheduler_hz: float) -> float:
     )
 
 
+def _slepc_hz_to_lambda(hz: float) -> float:
+    f = max(float(hz), 0.0)
+    return (2.0 * math.pi * f) ** 2
+
+
+def _slepc_use_interval_slicing(solver_cfg: Dict) -> bool:
+    mode = str(solver_cfg.get("eps_band_solver", "shift_invert")).strip().lower()
+    return mode in ("interval", "spectrum_slicing", "slice", "band_interval")
+
+
+def _slepc_interval_hz_band(
+    solver_cfg: Dict,
+    target_hz: float,
+    min_hz: float,
+) -> Tuple[float, float, float, float, float]:
+    """Physical Hz band and λ interval for spectrum slicing around ``target_hz``."""
+    half = float(solver_cfg.get("eps_interval_half_width_hz", 5.0))
+    max_hz = float(solver_cfg.get("max_valid_mode_hz", 600.0))
+    f_lo = max(float(min_hz), float(target_hz) - half)
+    f_hi = min(max_hz, float(target_hz) + half)
+    if f_hi <= f_lo + 1.0e-9:
+        f_hi = f_lo + max(0.5, half)
+    lam_lo = _slepc_hz_to_lambda(f_lo)
+    lam_hi = _slepc_hz_to_lambda(f_hi)
+    f_mid = 0.5 * (f_lo + f_hi)
+    lam_mid = 0.5 * (lam_lo + lam_hi)
+    return f_lo, f_hi, lam_lo, lam_hi, f_mid, lam_mid
+
+
 def _slepc_shift_invert_batch(
     A: PETSc.Mat,
     M: PETSc.Mat,
@@ -1537,32 +1566,51 @@ def _slepc_shift_invert_batch(
     """
     Krylov-Schur GNHEP batch at ``shift_hz`` (λ = ω²).
 
-    Default config uses ``TARGET_MAGNITUDE`` + ``st_type=sinvert`` (portable across SLEPc builds).
+    ``eps_band_solver=interval``: SLEPc spectrum slicing — ``setInterval(λ_lo, λ_hi)`` +
+    ``EPS.Which.ALL`` + ``ST.SINVERT`` (finds modes in a physical band, not a single σ).
+
+    ``eps_band_solver=shift_invert`` (legacy): ``TARGET_MAGNITUDE`` at one shift.
     """
     min_hz = _slepc_spectrum_min_hz(solver_cfg, shift_hz)
     target_hz = float(shift_hz)
-    target_lambda = (2.0 * math.pi * target_hz) ** 2
-    eps_which, eps_which_label, use_st_shift, use_broad_window = _slepc_eps_strategy(solver_cfg)
-    broad_hz = float(solver_cfg.get("eps_broad_search_hz", 0.0))
-    if use_broad_window and broad_hz <= 0.0:
-        broad_hz = 1.5
-    f_window_lo: Optional[float] = None
-    f_window_hi: Optional[float] = None
-    if use_broad_window and broad_hz > 0.0:
-        f_window_lo = target_hz - broad_hz
-        f_window_hi = target_hz + broad_hz
+    target_lambda = _slepc_hz_to_lambda(target_hz)
+    use_interval = _slepc_use_interval_slicing(solver_cfg)
+    strategy_label = "interval_slicing" if use_interval else "shift_invert"
+    shift_jitter_hz = float(solver_cfg.get("shift_jitter_hz", 0.0))
     rigid_tol = float(solver_cfg.get("coupled_rigid_lambda_tol", 1.0e-10))
     rigid_buf = int(solver_cfg.get("eps_rigid_mode_buffer", 10))
     nev_request = int(batch) + max(rigid_buf, 0)
 
-    shift_jitter_hz = float(solver_cfg.get("shift_jitter_hz", 0.0))
-    # ST shift tracks band center; jitter breaks exact σ=f_target degeneracy when enabled.
-    use_sigma_jitter = _solver_bool(solver_cfg, "eps_st_sigma_use_jitter", default=False)
-    if use_sigma_jitter and abs(shift_jitter_hz) > 0.0:
-        st_sigma_hz = max(1.0, target_hz + shift_jitter_hz)
+    if use_interval:
+        f_window_lo, f_window_hi, lam_lo, lam_hi, st_sigma_hz, st_sigma = _slepc_interval_hz_band(
+            solver_cfg, target_hz, min_hz
+        )
+        eps_which = getattr(SLEPc.EPS.Which, "ALL", None)
+        if eps_which is None:
+            raise RuntimeError(
+                "eps_band_solver=interval requires SLEPc.EPS.Which.ALL (spectrum slicing)."
+            )
+        eps_which_label = "ALL"
+        use_st_shift = False
+        use_broad_window = True
+        broad_hz = 0.5 * (float(f_window_hi) - float(f_window_lo))
     else:
-        st_sigma_hz = max(1.0, target_hz)
-    st_sigma = (2.0 * math.pi * st_sigma_hz) ** 2
+        lam_lo = lam_hi = lam_mid = 0.0  # unused
+        eps_which, eps_which_label, use_st_shift, use_broad_window = _slepc_eps_strategy(solver_cfg)
+        broad_hz = float(solver_cfg.get("eps_broad_search_hz", 0.0))
+        if use_broad_window and broad_hz <= 0.0:
+            broad_hz = 1.5
+        f_window_lo = None
+        f_window_hi = None
+        if use_broad_window and broad_hz > 0.0:
+            f_window_lo = target_hz - broad_hz
+            f_window_hi = target_hz + broad_hz
+        use_sigma_jitter = _solver_bool(solver_cfg, "eps_st_sigma_use_jitter", default=False)
+        if use_sigma_jitter and abs(shift_jitter_hz) > 0.0:
+            st_sigma_hz = max(1.0, target_hz + shift_jitter_hz)
+        else:
+            st_sigma_hz = max(1.0, target_hz)
+        st_sigma = _slepc_hz_to_lambda(st_sigma_hz)
 
     eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
     eps.setOperators(A, M)
@@ -1651,7 +1699,11 @@ def _slepc_shift_invert_batch(
     petsc_opts["eps_gen_non_hermitian"] = ""
     petsc_opts["bv_orthog_refine"] = str(solver_cfg.get("bv_orthog_refine", "always"))
     petsc_opts["eps_which"] = eps_which_label.lower()
-    petsc_opts["eps_target"] = target_lambda
+    if use_interval:
+        petsc_opts["eps_interval"] = f"{lam_lo},{lam_hi}"
+        petsc_opts["eps_target"] = st_sigma
+    else:
+        petsc_opts["eps_target"] = target_lambda
     petsc_opts["st_type"] = "shift" if _st_name in ("shift", "stshift") else "sinvert"
     petsc_opts["st_ksp_type"] = st_ksp_type
     petsc_opts["st_pc_type"] = st_pc_type
@@ -1692,19 +1744,37 @@ def _slepc_shift_invert_batch(
         if f_window_lo is not None and f_window_hi is not None
         else ""
     )
-    _emit(
-        f"[solver] EPS spectrum batch (target={target_hz:.2f} Hz): "
-        f"target_lambda={target_lambda:.6e}, min_hz={min_hz:.2f}, "
-        f"ST={_st_name} sigma={st_sigma_hz:.2f} Hz (jitter={shift_jitter_hz:.2f}), "
-        f"which={eps_which_label}{_win_str}, conv=REL, ks_restart={ks_restart:.3f}, ks_pert={ks_pert:.2e}, "
-        f"nev_request={nev_request} (batch={batch}+rigid_buf={rigid_buf}), "
-        f"ncv={ncv}, eps_tol={eps_tol:.1e}, eps_max_it={eps_max_it}, "
-        f"KSP={ksp.getType()}, PC={pc.getType()}, factor={_st_factor}, "
-        f"MUMPS via ST opts: ICNTL4={mumps_icntl_4}, ICNTL6={mumps_icntl_6}, ICNTL12={mumps_icntl_12}, "
-        f"ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}), "
-        f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}",
-        status_callback=status_callback,
-    )
+    if use_interval:
+        _emit(
+            f"[solver] EPS spectrum batch (target={target_hz:.2f} Hz, strategy={strategy_label}): "
+            f"interval=[{f_window_lo:.2f}, {f_window_hi:.2f}] Hz "
+            f"(λ=[{lam_lo:.6e}, {lam_hi:.6e}]), min_hz={min_hz:.2f}, "
+            f"ST={_st_name} sigma_mid={st_sigma_hz:.2f} Hz, which={eps_which_label}, "
+            f"conv=REL, ks_restart={ks_restart:.3f}, ks_pert={ks_pert:.2e}, "
+            f"nev_request={nev_request} (batch={batch}+rigid_buf={rigid_buf}), "
+            f"ncv={ncv}, eps_tol={eps_tol:.1e}, eps_max_it={eps_max_it}, "
+            f"KSP={ksp.getType()}, PC={pc.getType()}, factor={_st_factor}, "
+            f"MUMPS via ST opts: ICNTL4={mumps_icntl_4}, ICNTL6={mumps_icntl_6}, "
+            f"ICNTL12={mumps_icntl_12}, ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}), "
+            f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}",
+            status_callback=status_callback,
+        )
+    else:
+        _emit(
+            f"[solver] EPS spectrum batch (target={target_hz:.2f} Hz, strategy={strategy_label}): "
+            f"target_lambda={target_lambda:.6e}, min_hz={min_hz:.2f}, "
+            f"ST={_st_name} sigma={st_sigma_hz:.2f} Hz (jitter={shift_jitter_hz:.2f}), "
+            f"which={eps_which_label}{_win_str}, conv=REL, ks_restart={ks_restart:.3f}, "
+            f"ks_pert={ks_pert:.2e}, "
+            f"nev_request={nev_request} (batch={batch}+rigid_buf={rigid_buf}), "
+            f"ncv={ncv}, eps_tol={eps_tol:.1e}, eps_max_it={eps_max_it}, "
+            f"KSP={ksp.getType()}, PC={pc.getType()}, factor={_st_factor}, "
+            f"MUMPS via ST opts: ICNTL4={mumps_icntl_4}, ICNTL6={mumps_icntl_6}, "
+            f"ICNTL12={mumps_icntl_12}, "
+            f"ICNTL14={mumps_icntl_14}, ICNTL24={mumps_icntl_24}), "
+            f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}",
+            status_callback=status_callback,
+        )
     eps.setFromOptions()
     _debug_petsc_comm("A", A)
     _debug_petsc_comm("M", M)
@@ -1723,7 +1793,22 @@ def _slepc_shift_invert_batch(
     # Re-apply after setFromOptions so CLI/options cannot leave sinvert without eps_target.
     eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
     eps.setWhichEigenpairs(eps_which)
-    eps.setTarget(target_lambda)
+    if use_interval:
+        try:
+            eps.setInterval(float(lam_lo), float(lam_hi))
+        except AttributeError as exc:
+            raise RuntimeError(
+                "eps_band_solver=interval requires SLEPc EPS.setInterval (upgrade slepc4py)."
+            ) from exc
+        eps.setTarget(st_sigma)
+        ks_parts = int(solver_cfg.get("eps_krylov_schur_partitions", 0))
+        if ks_parts > 1:
+            try:
+                eps.setKrylovSchurPartitions(ks_parts)
+            except AttributeError:
+                pass
+    else:
+        eps.setTarget(target_lambda)
     st = eps.getST()
     if _st_name in ("shift", "stshift"):
         st.setType(SLEPc.ST.Type.SHIFT)
@@ -1797,6 +1882,13 @@ def _slepc_shift_invert_batch(
     skipped_below_min = 0
     skipped_window = 0
     skipped_unavailable = 0
+    skipped_decoupled = 0
+    skipped_sigma = 0
+    allow_weak = _solver_bool(
+        solver_cfg,
+        "eps_harvest_allow_weak_coupling",
+        default=not use_interval,
+    )
     map_tag_counts: Dict[str, int] = {}
     raw_eig_samples: List[float] = []
     for i in range(int(harvest_slots)):
@@ -1863,13 +1955,20 @@ def _slepc_shift_invert_batch(
                 "coupling effectively absent (||p|| negligible vs ||u||); "
                 "check fsi_coupling_gain / pressure_dof_scale."
             )
-        if reject_decoupled and p_frac < min_pressure_frac:
+        if (
+            not allow_weak
+            and reject_decoupled
+            and p_frac < min_pressure_frac
+        ):
+            skipped_decoupled += 1
             continue
         if (
-            reject_sigma_spurious
+            not allow_weak
+            and reject_sigma_spurious
             and abs(f_hz - st_sigma_hz) <= sigma_spurious_hz + 1.0e-9
             and p_frac < sigma_p_frac_max
         ):
+            skipped_sigma += 1
             continue
         rank_by_p = _solver_bool(solver_cfg, "eps_harvest_rank_by_p_frac", default=False)
         rank_score = (p_frac + 0.25 * wood) if rank_by_p else (wood + 0.25 * p_frac)
@@ -1905,24 +2004,30 @@ def _slepc_shift_invert_batch(
         print(
             f"[solver] EPS harvest: kept={len(out)}/{batch} from nconv_marked={nconv_marked} "
             f"(skip rigid={skipped_rigid}, f<{min_hz:.1f}Hz={skipped_below_min}, "
-            f"outside_window={skipped_window}, "
-            f"unavail={skipped_unavailable}, rank_by_wood={rank_by_wood}, "
+            f"outside_window={skipped_window}, unavail={skipped_unavailable}, "
+            f"skip_decoupled={skipped_decoupled}, skip_sigma={skipped_sigma}, "
+            f"allow_weak_coupling={allow_weak}, rank_by_wood={rank_by_wood}, "
             f"reject_decoupled={reject_decoupled}, reject_sigma_spurious={reject_sigma_spurious})"
+        )
+        _sigma_lbl = (
+            f"interval=[{f_window_lo:.2f},{f_window_hi:.2f}] Hz"
+            if use_interval and f_window_lo is not None and f_window_hi is not None
+            else f"ST_sigma={st_sigma_hz:.2f} Hz"
         )
         print(
             f"[solver] EPS wood scan: slots={len(candidates)}, wood>={min_wood_harvest:.3f}: "
-            f"{n_woodish}, max_wood={max_wood:.4f}, f_span={f_span:.3f} Hz, "
-            f"ST_sigma={st_sigma_hz:.2f} Hz"
+            f"{n_woodish}, max_wood={max_wood:.4f}, f_span={f_span:.3f} Hz, {_sigma_lbl}"
         )
         if len(candidates) == 0 and nconv_marked > 0:
             _lam_lo, _lam_hi = _slepc_lambda_hz_bounds(solver_cfg)
             tags = ", ".join(f"{k}={v}" for k, v in sorted(map_tag_counts.items()))
             raw_s = ", ".join(f"{x:.3e}" for x in raw_eig_samples)
             print(
-                f"[solver][warn] EPS map: all {nconv_marked} Ritz pairs rejected before harvest "
+                f"[solver][warn] EPS harvest: 0 slots after filters from nconv_marked={nconv_marked} "
                 f"(ST={_st_name}, σ={st_sigma:.3e}); map_tags: {tags or 'none'}; "
-                f"sample raw_eig: [{raw_s}]; lam band [{_lam_lo:.3e}, {_lam_hi:.3e}]. "
-                f"Try st_type=sinvert + eps_which=TARGET_MAGNITUDE if using shift+TARGET_REAL.",
+                f"skip_decoupled={skipped_decoupled}, skip_sigma={skipped_sigma}, "
+                f"allow_weak_coupling={allow_weak}; sample raw_eig: [{raw_s}]. "
+                f"Set eps_harvest_allow_weak_coupling=true or lower eps_harvest_min_pressure_fraction.",
                 flush=True,
             )
         for j, (_score, f_hz, _arr, rt, rb, u_n, p_n, p_block_max) in enumerate(
@@ -1961,6 +2066,14 @@ def _slepc_shift_invert_batch(
         pass
     eps.destroy()
     return len(out), out
+
+
+def _slepc_spectrum_batch(
+    *args: Any,
+    **kwargs: Any,
+) -> Tuple[int, List[Tuple[float, np.ndarray, Optional[float], Optional[float], float, float]]]:
+    """Dispatch wrapper: interval spectrum slicing or legacy shift-invert batch."""
+    return _slepc_shift_invert_batch(*args, **kwargs)
 
 
 def _solve_structural_only_evp(
