@@ -1749,50 +1749,88 @@ def _resolvent_probe_block_solver_cfg(solver_cfg: Dict) -> Dict:
     return merged
 
 
-def _append_resolvent_probe_stabilization(
-    a_uu,
-    a_pp,
-    reg_p,
+def _assemble_coupled_matrix_safe(
+    bilinear_form,
+    bcs: List[fem.DirichletBC],
     *,
-    u,
-    v,
-    p,
-    q,
-    p2: float,
+    label: str,
+) -> PETSc.Mat:
+    """Assemble with a clear error label (dolfinx often raises bare AssertionError)."""
+    try:
+        mat = assemble_matrix(fem.form(bilinear_form), bcs=bcs)
+        mat.assemble()
+        return mat
+    except Exception as exc:
+        raise RuntimeError(
+            f"Matrix assembly failed ({label}): {type(exc).__name__}: {exc!r}"
+        ) from exc
+
+
+def _apply_resolvent_probe_matrix_penalties(
+    A: PETSc.Mat,
+    W: fem.FunctionSpace,
+    *,
     wood_ds,
     air_dx,
+    p2: float,
+    bcs: List[fem.DirichletBC],
     solver_cfg: Dict,
-    norm_uu_ref: float,
-    norm_pp_ref: float,
+    norm_uu_ref: float = 1.0,
+    norm_pp_ref: float = 1.0,
     status_callback=None,
-) -> Tuple[Any, Any, float, float, float, float]:
+) -> Tuple[float, float]:
     """
-    Soft grounding for the harmonic resolvent probe (free–free shell + acoustic null modes).
+    Add soft shell / air penalties directly to assembled ``A`` (avoids UFL re-assembly failures).
 
-    - Structural: ``k_u = frac_u * ||A_uu||_F`` on wood shell facets (default frac_u=1e-7).
-    - Acoustic: ``k_p = frac_p * ||A_pp||_F`` on air volume (default frac_p=1e-4), in addition
-      to the soundhole pressure gauge BC.
+    Applied after block Frobenius scaling (use ``norm_uu_ref=norm_pp_ref=1``).
     """
     frac_u = float(solver_cfg.get("resolvent_struct_penalty_frac", 1.0e-7))
     frac_p = float(solver_cfg.get("resolvent_acoustic_penalty_frac", 1.0e-4))
-    norm_uu = max(float(norm_uu_ref), 1.0e-30)
-    norm_pp = max(float(norm_pp_ref), 1.0e-30)
-    k_u = frac_u * norm_uu
-    k_p = frac_p * norm_pp
-    reg_u = k_u * ufl.dot(u, v) * wood_ds
-    reg_p_extra = k_p * p2 * p * q * air_dx
+    k_u = frac_u * max(float(norm_uu_ref), 1.0e-30)
+    k_p = frac_p * max(float(norm_pp_ref), 1.0e-30)
+    u, p = ufl.TrialFunctions(W)
+    v, q = ufl.TestFunctions(W)
+    try:
+        A.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
+    except Exception:
+        pass
+    if k_u > 0.0:
+        Ku = _assemble_coupled_matrix_safe(
+            k_u * ufl.dot(u, v) * wood_ds, bcs, label="probe_reg_u"
+        )
+        try:
+            A.axpy(
+                1.0,
+                Ku,
+                structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN,
+            )
+            A.assemble()
+        finally:
+            Ku.destroy()
+    if k_p > 0.0:
+        Kp = _assemble_coupled_matrix_safe(
+            k_p * p2 * p * q * air_dx, bcs, label="probe_reg_p"
+        )
+        try:
+            A.axpy(
+                1.0,
+                Kp,
+                structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN,
+            )
+            A.assemble()
+        finally:
+            Kp.destroy()
     if MPI.COMM_WORLD.rank == ROOT_RANK:
         print(
-            f"[resolvent-probe] stabilization: k_u={k_u:.6e} ({frac_u:.1e}*||A_uu||), "
-            f"k_p={k_p:.6e} ({frac_p:.1e}*||A_pp||) on wood shell + air volume"
+            f"[resolvent-probe] matrix penalties: k_u={k_u:.6e}, k_p={k_p:.6e} "
+            f"(post-assembly axpy on A; soundhole gauge unchanged)"
         )
         sys.stdout.flush()
     _emit(
-        f"[resolvent-probe] soft penalties: k_u={k_u:.6e}, k_p={k_p:.6e} "
-        f"(soundhole gauge BC unchanged)",
+        f"[resolvent-probe] soft penalties: k_u={k_u:.6e}, k_p={k_p:.6e}",
         status_callback=status_callback,
     )
-    return a_uu + reg_u, reg_p + reg_p_extra, k_u, k_p, norm_uu, norm_pp
+    return k_u, k_p
 
 
 def _resolvent_symmetric_equilibrate(
@@ -3451,25 +3489,6 @@ def _solve_coupled_evp(
         status_callback=status_callback,
     )
 
-    if probe_spec is not None:
-        # Penalties apply after block Frobenius scaling (||A_uu||_F, ||A_pp||_F ≈ 1).
-        a_uu, reg_p, _k_u, _k_p, _nu, _np = _append_resolvent_probe_stabilization(
-            a_uu,
-            a_pp,
-            reg_p,
-            u=u,
-            v=v,
-            p=p,
-            q=q,
-            p2=p2,
-            wood_ds=wood_ds,
-            air_dx=xdmf_dx(AIR_VOLUME_TAG),
-            solver_cfg=solver_cfg,
-            norm_uu_ref=1.0,
-            norm_pp_ref=1.0,
-            status_callback=status_callback,
-        )
-
     a_form = a_uu + a_pp + a_up + reg_p
     m_form = m_uu + m_pp + m_pu
 
@@ -3730,14 +3749,45 @@ def _solve_coupled_evp(
     if MPI.COMM_WORLD.rank == ROOT_RANK:
         print("PRINT: ENTERING FULL COUPLED ACOUSTIC-STRUCTURAL SOLVE")
         sys.stdout.flush()
-    A = assemble_matrix(fem.form(a_form), bcs=bcs)
-    A.assemble()
-    M = assemble_matrix(fem.form(m_form), bcs=bcs)
-    M.assemble()
+    A = _assemble_coupled_matrix_safe(a_form, bcs, label="coupled_stiffness_A")
+    M = _assemble_coupled_matrix_safe(m_form, bcs, label="coupled_mass_M")
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        try:
+            print(
+                f"[assembly] ||A||_F={float(A.norm()):.6e} "
+                f"||M||_F={float(M.norm()):.6e}"
+            )
+            sys.stdout.flush()
+        except Exception as exc:
+            _emit(
+                f"[assembly][warn] matrix norm check failed: {type(exc).__name__}: {exc!r}",
+                status_callback=status_callback,
+                level="warning",
+            )
 
-    _audit_assembled_mixed_coupling(
-        W, a_up, m_pu, bcs, status_callback=status_callback
+    if probe_spec is not None:
+        _apply_resolvent_probe_matrix_penalties(
+            A,
+            W,
+            wood_ds=wood_ds,
+            air_dx=xdmf_dx(AIR_VOLUME_TAG),
+            p2=p2,
+            bcs=bcs,
+            solver_cfg=solver_cfg,
+            norm_uu_ref=1.0,
+            norm_pp_ref=1.0,
+            status_callback=status_callback,
+        )
+
+    skip_reaudit = _solver_bool(
+        solver_cfg,
+        "resolvent_skip_coupling_reaudit",
+        default=(probe_spec is not None),
     )
+    if not skip_reaudit:
+        _audit_assembled_mixed_coupling(
+            W, a_up, m_pu, bcs, status_callback=status_callback
+        )
 
     gnhep_scale = _normalize_assembled_gnhep(A, M, solver_cfg)
     if MPI.COMM_WORLD.rank == ROOT_RANK and gnhep_scale != 1.0:
@@ -4689,14 +4739,29 @@ def run_coupled_resolvent_probe(
         "force_facet_tag": int(force_facet_tag),
         "force_scale": float(force_scale),
     }
-    result = _solve_coupled_evp(
-        mesh_file=mesh_file,
-        config=config,
-        num_modes=0,
-        status_callback=status_callback,
-        solve_evp=False,
-        probe_spec=probe_spec,
-    )
+    try:
+        result = _solve_coupled_evp(
+            mesh_file=mesh_file,
+            config=config,
+            num_modes=0,
+            status_callback=status_callback,
+            solve_evp=False,
+            probe_spec=probe_spec,
+        )
+    except Exception as exc:
+        err = f"{type(exc).__name__}: {exc!r}"
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(f"[resolvent-probe] pipeline error: {err}", file=sys.stderr)
+            sys.stderr.flush()
+        return {
+            "frequency_hz": float(frequency_hz),
+            "force_facet_tag": int(force_facet_tag),
+            "force_scale": float(force_scale),
+            "solve_ok": False,
+            "coupling_check_pass": False,
+            "pipeline_error": err,
+            "ksp_reason": -9999,
+        }
     if not isinstance(result, dict):
         raise RuntimeError(
             "Resolvent probe did not return diagnostics (internal error: probe_spec ignored)."

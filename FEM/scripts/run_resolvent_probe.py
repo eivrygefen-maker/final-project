@@ -126,13 +126,21 @@ def main() -> int:
         )
     except Exception as exc:
         if MPI.COMM_WORLD.rank == 0:
-            print(f"[resolvent-probe] FAILED: {exc}", file=sys.stderr)
+            import traceback
+
+            print(
+                f"[resolvent-probe] FAILED: {type(exc).__name__}: {exc!r}",
+                file=sys.stderr,
+            )
+            traceback.print_exc()
         return 1
 
     if MPI.COMM_WORLD.rank == 0:
         out_path = config_path.parent / "resolvent_probe_result.json"
         out_path.write_text(json.dumps(stats, indent=2), encoding="utf-8")
         print(f"[resolvent-probe] Wrote {out_path}")
+        if stats.get("pipeline_error"):
+            return 2
         if not stats.get("solve_ok", False):
             return 2
         return 0 if stats.get("coupling_check_pass") else 3
