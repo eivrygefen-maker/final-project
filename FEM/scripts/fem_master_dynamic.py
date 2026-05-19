@@ -181,13 +181,13 @@ MERGE_SHIFT_CLUSTER_KEEP_MAX = 8
 WORKER_COL_NORM_MIN = 1e-9
 # Strict coupled-mode harvest gate (merge): true FSI vs structural spurious vs σ-locked.
 HARVEST_GATE_MIN_WOOD = 0.01
-HARVEST_GATE_MIN_P_FRAC_FSI = 1.0e-5  # debug: relaxed from 0.02 to surface weak coupling
+HARVEST_GATE_MIN_P_FRAC_FSI = 1.0e-4
 LADDER_HALF_STEP_HZ = 0.5
 LADDER_OFFSETS_HZ: Tuple[float, ...] = (-LADDER_HALF_STEP_HZ, 0.0, LADDER_HALF_STEP_HZ)
 HARVEST_GATE_SIGMA_TOL_HZ = 0.35
 HARVEST_GATE_SIGMA_P_FRAC = 1.0e-4
 # Debug: keep wood-participating modes at f≈σ for spectrum inspection (do not tag sigma_locked).
-HARVEST_GATE_BYPASS_SIGMA_LOCK = True
+HARVEST_GATE_BYPASS_SIGMA_LOCK = False
 # Incoming worker rows must meet this uniqueness floor (matches worker thin gate).
 MERGE_INCOMING_UNIQUENESS_MIN = 0.04
 

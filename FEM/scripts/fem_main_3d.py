@@ -1556,10 +1556,12 @@ def _slepc_shift_invert_batch(
     nev_request = int(batch) + max(rigid_buf, 0)
 
     shift_jitter_hz = float(solver_cfg.get("shift_jitter_hz", 0.0))
-    if use_broad_window and broad_hz > 0.0:
-        st_sigma_hz = max(1.0, target_hz)
-    else:
+    # ST shift tracks band center; jitter breaks exact σ=f_target degeneracy when enabled.
+    use_sigma_jitter = _solver_bool(solver_cfg, "eps_st_sigma_use_jitter", default=False)
+    if use_sigma_jitter and abs(shift_jitter_hz) > 0.0:
         st_sigma_hz = max(1.0, target_hz + shift_jitter_hz)
+    else:
+        st_sigma_hz = max(1.0, target_hz)
     st_sigma = (2.0 * math.pi * st_sigma_hz) ** 2
 
     eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
@@ -1784,9 +1786,10 @@ def _slepc_shift_invert_batch(
     reject_decoupled = _solver_bool(solver_cfg, "eps_reject_decoupled_u_only", default=True)
     min_pressure_frac = float(solver_cfg.get("eps_harvest_min_pressure_fraction", 0.02))
     reject_sigma_spurious = _solver_bool(solver_cfg, "eps_reject_sigma_spurious", default=True)
-    if use_st_shift or (use_broad_window and broad_hz > 0.0):
+    if use_st_shift:
         reject_sigma_spurious = False
     sigma_spurious_hz = float(solver_cfg.get("eps_sigma_spurious_tol_hz", 0.35))
+    sigma_p_frac_max = float(solver_cfg.get("eps_sigma_spurious_max_p_frac", 1.0e-3))
 
     candidates: List[Tuple[float, float, np.ndarray, float, float, float, float, float]] = []
     rvec = A.createVecRight()
@@ -1860,12 +1863,12 @@ def _slepc_shift_invert_batch(
                 "coupling effectively absent (||p|| negligible vs ||u||); "
                 "check fsi_coupling_gain / pressure_dof_scale."
             )
-        if reject_decoupled and p_frac < min_pressure_frac and wood < min_wood_harvest:
+        if reject_decoupled and p_frac < min_pressure_frac:
             continue
         if (
             reject_sigma_spurious
-            and wood < min_wood_harvest
             and abs(f_hz - st_sigma_hz) <= sigma_spurious_hz + 1.0e-9
+            and p_frac < sigma_p_frac_max
         ):
             continue
         rank_by_p = _solver_bool(solver_cfg, "eps_harvest_rank_by_p_frac", default=False)
