@@ -1075,8 +1075,8 @@ def _slepc_physical_lambda(
             lam_inv = sigma + (1.0 / mu)
             if _ok(lam_inv) and abs(lam_inv - sigma) >= min_dlam:
                 return lam_inv, "invert"
-        # Some builds return physical λ; reject σ-locked raw (μ ≈ σ = ω² at shift).
-        if _ok(mu) and abs(mu - sigma) >= min_dlam:
+        # Physical λ at σ (common for sinvert+TARGET_MAGNITUDE); harvest may σ-filter later.
+        if _ok(mu):
             return mu, "raw"
         return float("nan"), "reject"
 
@@ -1132,26 +1132,23 @@ def _slepc_eps_strategy(
             use_st_shift,
             broad_hz > 0.0,
         )
+    if which in ("SMALLEST_MAGNITUDE", "SMALLEST_MAG"):
+        # SLEPc shift-invert only accepts *target* which (TARGET_MAGNITUDE / TARGET_REAL).
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                "[solver][warn] eps_which=SMALLEST_MAGNITUDE is incompatible with "
+                "st_type=sinvert (SLEPc: 'Shift-and-invert requires a target which'); "
+                "falling back to TARGET_MAGNITUDE. Use eps_broad_search_hz + per-shift "
+                "ladder for band coverage.",
+                flush=True,
+            )
+        which = "TARGET_MAGNITUDE"
     if which in ("TARGET_MAGNITUDE", "TARGET_MAG", ""):
         return (
             SLEPc.EPS.Which.TARGET_MAGNITUDE,
             "TARGET_MAGNITUDE",
             use_st_shift,
             broad_hz > 0.0,
-        )
-    if which in ("SMALLEST_MAGNITUDE", "SMALLEST_MAG"):
-        if use_st_shift:
-            raise ValueError(
-                "solver.eps_which=SMALLEST_MAGNITUDE requires st_type=sinvert "
-                "(shift-invert spectrum away from σ)."
-            )
-        if broad_hz <= 0.0:
-            broad_hz = 1.5
-        return (
-            SLEPc.EPS.Which.SMALLEST_MAGNITUDE,
-            "SMALLEST_MAGNITUDE",
-            False,
-            True,
         )
     raise ValueError(f"Unsupported solver.eps_which={which!r}")
 

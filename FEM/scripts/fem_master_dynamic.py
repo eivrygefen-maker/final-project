@@ -187,7 +187,7 @@ LADDER_OFFSETS_HZ: Tuple[float, ...] = (-LADDER_HALF_STEP_HZ, 0.0, LADDER_HALF_S
 HARVEST_GATE_SIGMA_TOL_HZ = 0.35
 HARVEST_GATE_SIGMA_P_FRAC = 1.0e-4
 # Debug: keep wood-participating modes at f≈σ for spectrum inspection (do not tag sigma_locked).
-HARVEST_GATE_BYPASS_SIGMA_LOCK = False
+HARVEST_GATE_BYPASS_SIGMA_LOCK = True
 # Incoming worker rows must meet this uniqueness floor (matches worker thin gate).
 MERGE_INCOMING_UNIQUENESS_MIN = 0.04
 

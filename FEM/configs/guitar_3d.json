@@ -102,7 +102,7 @@
         "mat_mumps_icntl_24": 1,
         "st_shift_target_hz": 90.0,
         "st_type": "sinvert",
-        "eps_which": "SMALLEST_MAGNITUDE",
+        "eps_which": "TARGET_MAGNITUDE",
         "eps_broad_search_hz": 1.5,
         "shift_jitter_hz": 2.0,
         "eps_map_min_sigma_sep_frac": 0.01,
