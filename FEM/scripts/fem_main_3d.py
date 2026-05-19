@@ -1260,9 +1260,51 @@ def _audit_pressure_scale_block_balance(
     sys.stdout.flush()
 
 
+def _block_frobenius_normalize_coupled_forms(
+    a_uu,
+    a_pp,
+    a_up,
+    m_uu,
+    m_pp,
+    m_pu,
+    reg_p,
+    solver_cfg: Dict,
+    *,
+    status_callback=None,
+):
+    """
+    Scale ``A_uu`` and ``A_pp`` (and matching mass / coupling blocks) by separate Frobenius
+    factors so ``M`` is not crushed by a single global ``max(||A||_F, ||M||_F)`` scale.
+    """
+    if not _solver_bool(solver_cfg, "gnhep_block_frobenius_normalize", default=True):
+        return a_uu, a_pp, a_up, m_uu, m_pp, m_pu, reg_p, 1.0, 1.0
+    if _solver_bool(solver_cfg, "gnhep_normalize_matrices", default=False):
+        return a_uu, a_pp, a_up, m_uu, m_pp, m_pu, reg_p, 1.0, 1.0
+
+    s_u = max(_mat_frobenius_norm(a_uu), 1.0e-30)
+    s_p = max(_mat_frobenius_norm(a_pp), 1.0e-30)
+    s_c = math.sqrt(s_u * s_p)
+    a_uu_s = a_uu / s_u
+    a_pp_s = a_pp / s_p
+    a_up_s = a_up / s_c
+    m_uu_s = m_uu / s_u
+    m_pp_s = m_pp / s_p
+    m_pu_s = m_pu / s_c
+    reg_p_s = reg_p / s_p
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        m_uu_n = _mat_frobenius_norm(m_uu_s)
+        m_pp_n = _mat_frobenius_norm(m_pp_s)
+        print(
+            f"[form] GNHEP block Frobenius scales: s_uu={s_u:.6e}, s_pp={s_p:.6e}, s_couple={s_c:.6e} "
+            f"(||M_uu||_F={m_uu_n:.6e}, ||M_pp||_F={m_pp_n:.6e} after block scaling)"
+        )
+        sys.stdout.flush()
+    return a_uu_s, a_pp_s, a_up_s, m_uu_s, m_pp_s, m_pu_s, reg_p_s, s_u, s_p
+
+
 def _normalize_assembled_gnhep(A: PETSc.Mat, M: PETSc.Mat, solver_cfg: Dict) -> float:
     """Common Frobenius scaling of A and M (preserves eigenvalues; improves EPS conditioning)."""
-    if not _solver_bool(solver_cfg, "gnhep_normalize_matrices", default=True):
+    if not _solver_bool(solver_cfg, "gnhep_normalize_matrices", default=False):
         return 1.0
     a_n = float(A.norm())
     m_n = float(M.norm())
@@ -2313,6 +2355,18 @@ def _solve_coupled_evp(
     # Pressure-only regularization (optional); displacement is free–free (no reg_u).
     diag_shift = float(config.get("solver", {}).get("diag_shift", 0.0))
     reg_p = p2 * diag_shift * p * q * xdmf_dx(AIR_VOLUME_TAG)
+
+    a_uu, a_pp, a_up, m_uu, m_pp, m_pu, reg_p, _s_uu, _s_pp = _block_frobenius_normalize_coupled_forms(
+        a_uu,
+        a_pp,
+        a_up,
+        m_uu,
+        m_pp,
+        m_pu,
+        reg_p,
+        config.get("solver", {}),
+        status_callback=status_callback,
+    )
 
     a_form = a_uu + a_pp + a_up + reg_p
     m_form = m_uu + m_pp + m_pu

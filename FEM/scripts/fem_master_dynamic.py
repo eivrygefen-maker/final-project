@@ -179,7 +179,9 @@ MERGE_SHIFT_CLUSTER_MIN_MODES = 20
 WORKER_COL_NORM_MIN = 1e-9
 # Strict coupled-mode harvest gate (merge): true FSI vs structural spurious vs σ-locked.
 HARVEST_GATE_MIN_WOOD = 0.01
-HARVEST_GATE_MIN_P_FRAC_FSI = 0.02
+HARVEST_GATE_MIN_P_FRAC_FSI = 1.0e-5  # debug: relaxed from 0.02 to surface weak coupling
+LADDER_HALF_STEP_HZ = 0.5
+LADDER_OFFSETS_HZ: Tuple[float, ...] = (-LADDER_HALF_STEP_HZ, 0.0, LADDER_HALF_STEP_HZ)
 HARVEST_GATE_SIGMA_TOL_HZ = 0.35
 HARVEST_GATE_SIGMA_P_FRAC = 1.0e-4
 # Incoming worker rows must meet this uniqueness floor (matches worker thin gate).
@@ -379,6 +381,7 @@ class SpectralScheduler:
     _pending_streak: int = field(default=0, repr=False)
     _scheduled: Set[str] = field(default_factory=set, repr=False)
     _seed_queue: Deque[Tuple[float, Dict[str, Any], str]] = field(default_factory=deque, repr=False)
+    _ladder_queue: Deque[Tuple[float, Dict[str, Any], str]] = field(default_factory=deque, repr=False)
     _backfill: Deque[Tuple[float, Dict[str, Any], str]] = field(default_factory=deque, repr=False)
     _cursor_hz: float = field(default=float("nan"), repr=False)
     _seeds_drained: bool = field(default=False, repr=False)
@@ -438,6 +441,44 @@ class SpectralScheduler:
     def _shift_target_done(self, hz: float) -> bool:
         """True if this shift ``target_hz`` was already merged (resume) or consumed."""
         return self._hz_key(hz) in self._scheduled
+
+    def _enqueue_frequency_ladder(
+        self, center_hz: float, role: str, *, label_suffix: str = "ladder"
+    ) -> None:
+        """Queue ``[T−0.5, T, T+0.5]`` Hz workers for one spectral center ``T``."""
+        center = float(center_hz)
+        queued = 0
+        for delta in LADDER_OFFSETS_HZ:
+            hz_l = center + float(delta)
+            if hz_l + 1e-9 < float(self.hz_min) or hz_l - 1e-9 > float(self.hz_max):
+                continue
+            if self._shift_target_done(hz_l):
+                continue
+            p = self._band_params_with_zone_step(hz_l, label_suffix)
+            tag = f"{role}|ladder{delta:+.1f}Hz".strip("|")
+            self._ladder_queue.append((hz_l, p, tag))
+            queued += 1
+        if queued:
+            LOGGER.info(
+                "Frequency ladder: center=%.4f Hz queued %d rung(s) "
+                "([%.2f, %.2f, %.2f] Hz band).",
+                center,
+                queued,
+                center + LADDER_OFFSETS_HZ[0],
+                center,
+                center + LADDER_OFFSETS_HZ[-1],
+            )
+
+    def _pop_ladder_task(self, mx_done: float) -> Optional[Tuple[float, Dict[str, Any], str]]:
+        while self._ladder_queue:
+            hz, p, role = self._ladder_queue.popleft()
+            if math.isfinite(mx_done) and float(hz) <= mx_done + HZ_TOLERANCE:
+                continue
+            if self._shift_target_done(hz):
+                continue
+            self._scheduled.add(self._hz_key(hz))
+            return (hz, p, role)
+        return None
 
     def register_completed_shift(self, target_hz: float) -> None:
         """Mark a shift target finished after a successful merge (same-run dedupe for ``pop_next``)."""
@@ -613,6 +654,8 @@ class SpectralScheduler:
 
     def _peek_next_task(self) -> Optional[Tuple[float, Dict[str, Any], str]]:
         """Read-only first upcoming task (same priority order as ``pop_next``)."""
+        if self._ladder_queue:
+            return self._ladder_queue[0]
         mx_done = float(self._max_completed_shift_hz)
         for hz, p, role in list(self._backfill):
             if math.isfinite(mx_done) and float(hz) <= mx_done + HZ_TOLERANCE:
@@ -697,8 +740,11 @@ class SpectralScheduler:
 
     def pop_next(self) -> Optional[Tuple[float, Dict[str, Any], str]]:
         mx_done = float(self._max_completed_shift_hz)
+        task = self._pop_ladder_task(mx_done)
+        if task is not None:
+            return task
         while self._backfill:
-            hz, p, role = self._backfill.popleft()
+            hz, _p, role = self._backfill.popleft()
             if math.isfinite(mx_done) and float(hz) <= mx_done + HZ_TOLERANCE:
                 LOGGER.debug(
                     "Resume skip: backfill %.4f Hz at or behind max completed %.4f Hz.",
@@ -712,10 +758,13 @@ class SpectralScheduler:
                     hz,
                 )
                 continue
-            self._scheduled.add(self._hz_key(hz))
-            return (hz, p, role)
+            self._enqueue_frequency_ladder(hz, role, label_suffix="backfill")
+            task = self._pop_ladder_task(mx_done)
+            if task is not None:
+                return task
+            continue
         while self._seed_queue:
-            hz, p, role = self._seed_queue.popleft()
+            hz, _p, role = self._seed_queue.popleft()
             if math.isfinite(mx_done) and float(hz) <= mx_done + HZ_TOLERANCE:
                 LOGGER.debug(
                     "Resume skip: seed %.4f Hz at or behind max completed %.4f Hz.",
@@ -729,8 +778,11 @@ class SpectralScheduler:
                     hz,
                 )
                 continue
-            self._scheduled.add(self._hz_key(hz))
-            return (hz, p, role)
+            self._enqueue_frequency_ladder(hz, role, label_suffix="seed")
+            task = self._pop_ladder_task(mx_done)
+            if task is not None:
+                return task
+            continue
         if not self._seeds_drained:
             self._seeds_drained = True
         step = self._current_step_hz()
@@ -752,13 +804,15 @@ class SpectralScheduler:
                     hz,
                 )
                 continue
-            self._scheduled.add(key)
-            p = self._band_params_with_zone_step(hz, "dyn")
-            return (hz, p, "")
-        return None
+            self._enqueue_frequency_ladder(hz, "", label_suffix="dyn")
+            task = self._pop_ladder_task(mx_done)
+            if task is not None:
+                return task
+            continue
+        return self._pop_ladder_task(mx_done)
 
     def has_pending(self) -> bool:
-        if self._backfill or self._seed_queue:
+        if self._backfill or self._seed_queue or self._ladder_queue:
             return True
         return self._cursor_hz <= self.hz_max + 1e-9
 
@@ -1283,6 +1337,17 @@ def _unlink_worker_vector(row: Dict[str, Any], path_root: Path) -> None:
         LOGGER.warning("Could not remove discarded mode vector %s: %s", p, exc)
 
 
+def frequency_ladder_shifts(center_hz: float, hz_min: float, hz_max: float) -> List[float]:
+    """Three ST targets per band center: ``[T−0.5, T, T+0.5]`` Hz (in-band only)."""
+    out: List[float] = []
+    for delta in LADDER_OFFSETS_HZ:
+        hz = float(center_hz) + float(delta)
+        if hz + 1e-9 < float(hz_min) or hz - 1e-9 > float(hz_max):
+            continue
+        out.append(hz)
+    return out
+
+
 def build_task_list(hz_min: float, hz_max: float) -> List[Tuple[float, Dict[str, Any]]]:
     """Build worker target Hz list from ``hz_min`` (inclusive) through ``hz_max`` (inclusive)."""
     lo = float(hz_min)
@@ -1446,6 +1511,43 @@ def _merge_result_into_candidates_log(
         tfn_sigma = _target_hz_from_result_filename(result_path)
         if tfn_sigma is not None:
             st_sigma_hz = float(tfn_sigma)
+
+    def _wood_audit_rows(cands: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        ranked = sorted(
+            cands,
+            key=lambda row: -float(row.get("wood_participation", 0.0) or 0.0),
+        )
+        return ranked[:5]
+
+    for rank_i, c in enumerate(_wood_audit_rows(raw), start=1):
+        try:
+            f_hz = float(c.get("hz", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            f_hz = float("nan")
+        try:
+            wood = float(c.get("wood_participation", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            wood = 0.0
+        try:
+            p_frac = float(c.get("p_frac", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            p_frac = 0.0
+        eligible, tag = _passes_harvest_gate(
+            c,
+            st_sigma_hz=st_sigma_hz,
+            structural_only_run=structural_only_run,
+        )
+        LOGGER.info(
+            "Harvest audit [pre-gate] rank %d: f=%.4f Hz wood=%.4f p_frac=%.3e "
+            "σ=%.4f Hz eligible=%s tag=%s",
+            rank_i,
+            f_hz,
+            wood,
+            p_frac,
+            st_sigma_hz,
+            eligible,
+            tag,
+        )
 
     harvest_gate_drops = 0
     gate_kept: List[Dict[str, Any]] = []
@@ -2054,7 +2156,7 @@ def main() -> int:
 
     running: Dict[subprocess.Popen, Dict[str, Any]] = {}
     config_path = args.config.resolve()
-    static_idx = 0
+    static_ladder_queue: Optional[Deque[Tuple[float, Dict[str, Any], str]]] = None
     last_spawn_mono: List[Optional[float]] = [None]
 
     _core_lock = threading.Lock()
@@ -2205,7 +2307,9 @@ def main() -> int:
         if scheduler is not None:
             return scheduler.has_pending()
         assert tasks_static is not None
-        return static_idx < len(tasks_static)
+        if static_ladder_queue is not None and static_ladder_queue:
+            return True
+        return bool(tasks_static)
 
     try:
         while _has_pending_tasks() or running:
@@ -2254,11 +2358,19 @@ def main() -> int:
                     spawn_worker(hz_n, par_n, role_n)
                 else:
                     assert tasks_static is not None
-                    if static_idx >= len(tasks_static):
+                    if static_ladder_queue is None:
+                        static_ladder_queue = deque()
+                        for hz_s, _par_s in tasks_static:
+                            for hz_l in frequency_ladder_shifts(
+                                float(hz_s), float(args.hz_min), float(args.hz_max)
+                            ):
+                                static_ladder_queue.append(
+                                    (hz_l, dict(get_band_params(hz_l)), "")
+                                )
+                    if not static_ladder_queue:
                         break
-                    hz_s, par_s = tasks_static[static_idx]
-                    static_idx += 1
-                    spawn_worker(hz_s, par_s, "")
+                    hz_s, par_s, role_s = static_ladder_queue.popleft()
+                    spawn_worker(hz_s, par_s, role_s)
             time.sleep(0.25)
     except KeyboardInterrupt:
         LOGGER.warning("Interrupted — terminating running workers.")
