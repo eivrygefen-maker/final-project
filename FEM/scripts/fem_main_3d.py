@@ -26,7 +26,7 @@ from fem_mode_array_utils import (
 import ufl
 from basix.ufl import element, mixed_element
 from dolfinx import fem, io, mesh
-from dolfinx.fem.petsc import assemble_matrix
+from dolfinx.fem.petsc import assemble_matrix, assemble_vector, set_bc
 from mpi4py import MPI
 # Explicit PETSc initialization on all ranks.
 petsc4py.init(sys.argv)
@@ -2787,6 +2787,7 @@ def _solve_coupled_evp(
     num_modes: int,
     status_callback=None,
     solve_evp: bool = True,
+    probe_spec: Optional[Dict[str, Any]] = None,
 ):
     _phase_sync(2000, "coupled enter", status_callback=status_callback)
     solver_cfg = config.get("solver", {})
@@ -3318,6 +3319,23 @@ def _solve_coupled_evp(
             M_back.assemble()
 
     if not solve_evp:
+        if probe_spec is not None:
+            return _coupled_resolvent_solve(
+                msh,
+                W,
+                A,
+                M,
+                facet_tags=facet_tags,
+                bcs=bcs,
+                u_to_W_map=u_to_W_map,
+                p_to_W_map=p_to_W_map,
+                solver_cfg=solver_cfg,
+                xdmf_ds=xdmf_ds,
+                frequency_hz=float(probe_spec.get("frequency_hz", 102.0)),
+                force_facet_tag=int(probe_spec.get("force_facet_tag", WOOD_SURFACE_TAGS[1])),
+                force_scale=float(probe_spec.get("force_scale", 1.0)),
+                status_callback=status_callback,
+            )
         return msh, W, A, M
 
     # Release form objects before eigensolve; matrices are already assembled.
@@ -3887,6 +3905,205 @@ def _solve_coupled_evp(
     except Exception:
         pass
     return msh, W, freqs_hz, eigvecs, n_u, n_p
+
+
+def _configure_probe_direct_ksp(ksp: PETSc.KSP, pc: PETSc.PC, solver_cfg: Dict) -> None:
+    """Monolithic MUMPS LU for the resolvent probe (matches production ST defaults)."""
+    st_ksp_type = str(solver_cfg.get("st_ksp_type", "preonly"))
+    st_factor = str(
+        solver_cfg.get(
+            "st_pc_factor_mat_solver_type",
+            solver_cfg.get("st_factor_solver_type", "mumps"),
+        )
+    )
+    ksp.setType(st_ksp_type)
+    pc.setType(str(solver_cfg.get("st_pc_type", "lu")))
+    try:
+        pc.setFactorSolverType(st_factor)
+    except Exception:
+        pass
+    shift_type = str(
+        solver_cfg.get(
+            "st_pc_factor_shift_type",
+            solver_cfg.get("pc_factor_shift_type", "nonzero"),
+        )
+    )
+    shift_amt = float(
+        solver_cfg.get(
+            "st_pc_factor_shift_amount",
+            solver_cfg.get("pc_factor_shift_amount", 1.0e-8),
+        )
+    )
+    opts = PETSc.Options()
+    opts["probe_pc_factor_shift_type"] = shift_type
+    opts["probe_pc_factor_shift_amount"] = shift_amt
+    try:
+        pc.setFactorShiftType(shift_type)
+        pc.setFactorShiftAmount(shift_amt)
+    except Exception:
+        pass
+    for key, val in solver_cfg.items():
+        if key.startswith("mat_mumps_icntl_"):
+            suffix = key.replace("mat_mumps_icntl_", "")
+            opts[f"probe_pc_factor_mat_solver_type"] = st_factor
+            opts[f"probe_mat_mumps_icntl_{suffix}"] = int(val)
+    ksp.setFromOptions()
+
+
+def _coupled_resolvent_solve(
+    msh: mesh.Mesh,
+    W: fem.FunctionSpace,
+    A: PETSc.Mat,
+    M: PETSc.Mat,
+    *,
+    facet_tags,
+    bcs: List[fem.DirichletBC],
+    u_to_W_map: np.ndarray,
+    p_to_W_map: np.ndarray,
+    solver_cfg: Dict,
+    xdmf_ds,
+    frequency_hz: float,
+    force_facet_tag: int,
+    force_scale: float = 1.0,
+    status_callback=None,
+) -> Dict[str, Any]:
+    """
+    Harmonic resolvent probe: solve ``(A - ω² M) x = F`` with facet traction on structure.
+
+    Returns norms and coupling diagnostics for ``||p||/||u||``.
+    """
+    omega = 2.0 * math.pi * float(frequency_hz)
+    lam_shift = omega * omega
+    v, _q = ufl.TestFunctions(W)
+    n = ufl.FacetNormal(msh)
+    f_amp = fem.Constant(msh, PETSc.ScalarType(float(force_scale)))
+    tag = int(force_facet_tag)
+    n_facets = int(np.sum(facet_tags.values == tag))
+    if n_facets <= 0:
+        raise ValueError(
+            f"Resolvent probe: force facet tag {tag} has no facets on this mesh "
+            f"(valid wood tags: {WOOD_SURFACE_TAGS})."
+        )
+    L = f_amp * ufl.dot(v, n) * xdmf_ds(tag)
+    L_form = fem.form(L)
+
+    b = assemble_vector(L_form)
+    b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+    set_bc(b, bcs)
+
+    b_norm = float(b.norm())
+    if b_norm < 1.0e-30:
+        raise RuntimeError(
+            f"Resolvent probe: assembled load vector has ||F||≈0 (tag={tag}, facets={n_facets}). "
+            "Check facet tagging and BC overlap on the loaded surface."
+        )
+
+    K = A.copy()
+    K.assemble()
+    K.axpy(-lam_shift, M)
+
+    x = K.createVecRight()
+    x.set(0.0)
+    ksp = PETSc.KSP().create(PETSc.COMM_WORLD)
+    ksp.setOperators(K)
+    _configure_probe_direct_ksp(ksp, ksp.getPC(), solver_cfg)
+    ksp.solve(b, x)
+    reason = ksp.getConvergedReason()
+    its = ksp.getIterationNumber()
+    if reason < 0 and MPI.COMM_WORLD.rank == ROOT_RANK:
+        _emit(
+            f"[resolvent-probe][warn] KSP diverged (reason={reason}, its={its}); "
+            "norms below may be unreliable.",
+            status_callback=status_callback,
+            level="warning",
+        )
+
+    arr = x.array.copy()
+    u_norm, p_norm = _mixed_eigenvector_block_norms(
+        arr, u_to_W=u_to_W_map, p_to_W=p_to_W_map
+    )
+    ratio = p_norm / max(u_norm, 1.0e-30)
+    p_floor = 1.0e-6 * max(u_norm, 1.0e-30)
+    coupled_visible = p_norm > p_floor
+
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        verdict = (
+            "COUPLED (physics OK — prioritize solver strategy)"
+            if coupled_visible
+            else "DECOUPLED (physics/coupling issue — fix FSI formulation before eigensolver)"
+        )
+        print(
+            f"[resolvent-probe] f={frequency_hz:.4f} Hz omega={omega:.6e} rad/s "
+            f"lambda_shift={lam_shift:.6e} force_tag={tag} (n_facets={n_facets}) "
+            f"force_scale={force_scale:.4e}"
+        )
+        print(f"[resolvent-probe] ||F||={b_norm:.6e} KSP its={its} reason={reason}")
+        print(f"[resolvent-probe] ||u||={u_norm:.6e} ||p||={p_norm:.6e} ||p||/||u||={ratio:.6e}")
+        print(
+            f"[resolvent-probe] coupling_check (||p|| > 1e-6*||u||): "
+            f"{coupled_visible} (threshold ||p|| > {p_floor:.6e})"
+        )
+        print(f"[resolvent-probe] VERDICT: {verdict}")
+        sys.stdout.flush()
+
+    try:
+        ksp.destroy()
+        x.destroy()
+        b.destroy()
+        K.destroy()
+    except Exception:
+        pass
+
+    return {
+        "frequency_hz": float(frequency_hz),
+        "omega_rad_s": float(omega),
+        "lambda_shift": float(lam_shift),
+        "force_facet_tag": int(tag),
+        "force_facet_count": int(n_facets),
+        "force_scale": float(force_scale),
+        "load_norm": b_norm,
+        "u_norm": u_norm,
+        "p_norm": p_norm,
+        "p_over_u": ratio,
+        "coupling_check_pass": bool(coupled_visible),
+        "ksp_iterations": int(its),
+        "ksp_reason": int(reason),
+    }
+
+
+def run_coupled_resolvent_probe(
+    config: Dict,
+    frequency_hz: float = 102.0,
+    force_facet_tag: int = 3,
+    force_scale: float = 1.0,
+    status_callback=None,
+) -> Dict[str, Any]:
+    """
+    Assemble the coupled GNHEP operators and run one harmonic resolvent solve.
+
+    Uses the same mesh, BCs, and ``A``/``M`` assembly path as the main EVP driver.
+    """
+    mesh_file = Path(config["solver"]["mesh_file"])
+    if not mesh_file.exists():
+        raise FileNotFoundError(f"Mesh file not found: {mesh_file}")
+    probe_spec = {
+        "frequency_hz": float(frequency_hz),
+        "force_facet_tag": int(force_facet_tag),
+        "force_scale": float(force_scale),
+    }
+    result = _solve_coupled_evp(
+        mesh_file=mesh_file,
+        config=config,
+        num_modes=0,
+        status_callback=status_callback,
+        solve_evp=False,
+        probe_spec=probe_spec,
+    )
+    if not isinstance(result, dict):
+        raise RuntimeError(
+            "Resolvent probe did not return diagnostics (internal error: probe_spec ignored)."
+        )
+    return result
 
 
 def assemble_coupled_operators_for_rom(config: Dict, status_callback=None):
