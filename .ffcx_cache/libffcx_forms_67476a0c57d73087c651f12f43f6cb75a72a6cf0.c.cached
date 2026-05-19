@@ -1,0 +1,6 @@
+generating /home/vboxuser/final-project/.ffcx_cache/libffcx_forms_67476a0c57d73087c651f12f43f6cb75a72a6cf0.c
+setting the current directory to '/home/vboxuser/final-project/.ffcx_cache'
+running build_ext
+building 'libffcx_forms_67476a0c57d73087c651f12f43f6cb75a72a6cf0' extension
+x86_64-linux-gnu-gcc -Wno-unused-result -Wsign-compare -DNDEBUG -g -fwrapv -O2 -Wall -g -fstack-protector-strong -Wformat -Werror=format-security -g -fwrapv -O2 -g -fstack-protector-strong -Wformat -Werror=format-security -Wdate-time -D_FORTIFY_SOURCE=2 -fPIC -I/usr/lib/python3/dist-packages/ffcx/codegeneration -I/home/vboxuser/final-project/.venv/include -I/usr/include/python3.10 -c libffcx_forms_67476a0c57d73087c651f12f43f6cb75a72a6cf0.c -o ./libffcx_forms_67476a0c57d73087c651f12f43f6cb75a72a6cf0.o -std=c17 -O2 -g0
+x86_64-linux-gnu-gcc -shared -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,-Bsymbolic-functions -g -fwrapv -O2 -Wl,-Bsymbolic-functions -g -fwrapv -O2 -g -fstack-protector-strong -Wformat -Werror=format-security -Wdate-time -D_FORTIFY_SOURCE=2 ./libffcx_forms_67476a0c57d73087c651f12f43f6cb75a72a6cf0.o -lm -o ./libffcx_forms_67476a0c57d73087c651f12f43f6cb75a72a6cf0.cpython-310-x86_64-linux-gnu.so

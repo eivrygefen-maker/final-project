@@ -1,35 +1,26 @@
 {
-    "analysis": "acoustic_structural_coupled_eigen",
+    "analysis": "structural_shell_diagnostic",
     "modes_hz": [
-        124.98599628278058,
-        125.3467821526049,
-        131.91682024774747,
-        134.00473910163322,
-        135.56391204327332,
-        136.76667524691234,
-        137.09632951676366,
-        138.15324617529808,
-        142.9116071999897,
-        150.52120266978525
+        109.12425400280469,
+        110.63266868727375,
+        111.85855327771944,
+        112.83957881748732,
+        113.310800985606,
+        115.22238835415511,
+        118.51591788788616,
+        120.39591498836181,
+        120.65254621540316,
+        121.18978308031339
     ],
     "num_modes": 10,
     "mode_vectors_file": "/home/vboxuser/final-project/FEM/outputs/modes_3d/coupled_modes_raw.npz",
-    "vtk_mode_files": [
-        "/home/vboxuser/final-project/FEM/outputs/modes_3d/mode_01.xdmf",
-        "/home/vboxuser/final-project/FEM/outputs/modes_3d/mode_02.xdmf",
-        "/home/vboxuser/final-project/FEM/outputs/modes_3d/mode_03.xdmf",
-        "/home/vboxuser/final-project/FEM/outputs/modes_3d/mode_04.xdmf",
-        "/home/vboxuser/final-project/FEM/outputs/modes_3d/mode_05.xdmf",
-        "/home/vboxuser/final-project/FEM/outputs/modes_3d/mode_06.xdmf",
-        "/home/vboxuser/final-project/FEM/outputs/modes_3d/mode_07.xdmf",
-        "/home/vboxuser/final-project/FEM/outputs/modes_3d/mode_08.xdmf",
-        "/home/vboxuser/final-project/FEM/outputs/modes_3d/mode_09.xdmf",
-        "/home/vboxuser/final-project/FEM/outputs/modes_3d/mode_10.xdmf"
-    ],
+    "vtk_mode_files": [],
     "tag_protocol": {
         "Top_Plate": 1,
         "Soundhole": 2,
-        "Body_Shell": 3,
+        "Back_Plate": 3,
+        "Ribs_Sides": 4,
+        "wood_fix": 5,
         "Air_Internal": 10
     }
 }
