@@ -4832,6 +4832,35 @@ def _configure_probe_direct_ksp(ksp: PETSc.KSP, pc: PETSc.PC, solver_cfg: Dict) 
     ksp.setFromOptions()
 
 
+def _dirichlet_bc_local_dof_indices(bc: fem.DirichletBC) -> np.ndarray:
+    """Local dof indices in ``bc.function_space`` (scalar or vector)."""
+    try:
+        di = bc.dof_indices()
+    except Exception:
+        return np.array([], dtype=np.int32)
+    if isinstance(di, tuple) and len(di) >= 1 and di[0] is not None:
+        return np.asarray(di[0], dtype=np.int32).ravel()
+    return np.asarray(di, dtype=np.int32).ravel()
+
+
+def _split_resolvent_bcs_by_bs(
+    bcs: List[fem.DirichletBC],
+) -> Tuple[List[fem.DirichletBC], List[fem.DirichletBC]]:
+    """Displacement BCs (bs=3) vs pressure BCs (bs=1) on collapsed subspaces."""
+    bcs_u: List[fem.DirichletBC] = []
+    bcs_p: List[fem.DirichletBC] = []
+    for bc in bcs:
+        try:
+            bs = int(bc.function_space.dofmap.index_map_bs)
+        except Exception:
+            bs = 1
+        if bs == 3:
+            bcs_u.append(bc)
+        else:
+            bcs_p.append(bc)
+    return bcs_u, bcs_p
+
+
 def _assemble_resolvent_probe_traction_into_mixed(
     msh: mesh.Mesh,
     W: fem.FunctionSpace,
@@ -4840,11 +4869,14 @@ def _assemble_resolvent_probe_traction_into_mixed(
     facet_tag: int,
     force_scale: float,
     u_to_W_map: np.ndarray,
+    p_to_W_map: np.ndarray,
+    bcs: List[fem.DirichletBC],
     rhs_fn: fem.Function,
 ) -> Tuple[float, float]:
     """
-    Neumann traction ``∫ f · (v·n) ds`` on wood shell facets, assembled on collapsed ``V_u`` and
-    scattered into ``rhs_fn`` (mixed ``W`` layout; must not alias the solution ``Function``).
+    Neumann traction on collapsed ``V_u``, ``set_bc`` on that sub-vector only, then scatter into
+    mixed ``rhs_fn``. Do **not** call ``set_bc`` on the mixed ``W`` vector when BCs are defined on
+    collapsed ``V_u`` / ``V_p`` (can zero the entire RHS in some dolfinx layouts).
     """
     b_vec = rhs_fn.x.petsc_vec
     V_u_rhs, _ = W.sub(0).collapse()
@@ -4854,8 +4886,13 @@ def _assemble_resolvent_probe_traction_into_mixed(
     L_u = f_amp * ufl.inner(v_u, n) * xdmf_ds(facet_tag)
     b_u = assemble_vector(fem.form(L_u))
     b_u.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
-    parent = np.asarray(u_to_W_map, dtype=np.int32).ravel()
+    bu_before = np.asarray(b_u.array, dtype=np.float64).copy()
+    b_u_norm_raw = float(np.linalg.norm(bu_before))
+    bcs_u, bcs_p = _split_resolvent_bcs_by_bs(bcs)
+    if bcs_u:
+        set_bc(b_u, bcs_u)
     bu = np.asarray(b_u.array)
+    parent = np.asarray(u_to_W_map, dtype=np.int32).ravel()
     b_arr = np.asarray(b_vec.array)
     if parent.size != bu.size:
         try:
@@ -4870,10 +4907,18 @@ def _assemble_resolvent_probe_traction_into_mixed(
         b_u.destroy()
     except Exception:
         pass
+    p_map = np.asarray(p_to_W_map, dtype=np.int32).ravel()
+    for bc_p in bcs_p:
+        pd = _dirichlet_bc_local_dof_indices(bc_p)
+        if pd.size == 0 or p_map.size == 0:
+            continue
+        if np.min(pd) < 0 or np.max(pd) >= p_map.size:
+            continue
+        w_idx = p_map[pd]
+        b_arr[w_idx] = 0.0
     rhs_fn.x.scatter_forward()
-    b_u_norm = float(np.linalg.norm(bu))
     b_mix_norm = float(np.linalg.norm(b_arr))
-    return b_u_norm, b_mix_norm
+    return b_u_norm_raw, b_mix_norm
 
 
 def _coupled_resolvent_solve(
@@ -4931,6 +4976,8 @@ def _coupled_resolvent_solve(
         facet_tag=tag,
         force_scale=float(force_scale),
         u_to_W_map=u_to_W_map,
+        p_to_W_map=p_to_W_map,
+        bcs=bcs,
         rhs_fn=rhs_fn,
     )
     if MPI.COMM_WORLD.rank == ROOT_RANK:
@@ -4939,8 +4986,6 @@ def _coupled_resolvent_solve(
             f"||F_u||_collapsed={b_u_norm_raw:.6e} ||F||_mixed_after_lift={b_lift_norm:.6e}",
             flush=True,
         )
-
-    set_bc(rhs, bcs)
 
     s_uu_load = 1.0
     if block_scales:
