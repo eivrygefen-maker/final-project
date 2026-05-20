@@ -4667,6 +4667,8 @@ def _resolvent_solve_linear_system(
     """
     Solve ``K x = b`` in physical scaling (no RHS / operator rescaling).
 
+    ``b`` must **not** alias ``uh.x.petsc_vec`` (zeroing the initial guess would erase the RHS).
+
     Conditioning: rely on ``pc_factor_diagonal_scaling`` (MUMPS) from
     ``_configure_probe_direct_ksp``; optional symmetric diagonal equilibration
     only if ``resolvent_symmetric_equilibrate`` is true.
@@ -4675,14 +4677,14 @@ def _resolvent_solve_linear_system(
     must destroy ``ksp`` and ``K_work``. On failure both are destroyed inside.
     """
     comm = K.getComm()
-    x = uh.x.petsc_vec
-    x.set(0.0)
-    K_work = K.copy()
-    K_work.assemble()
     b_work = b.duplicate()
     b_work.copy(b)
     b_norm_local = float(np.linalg.norm(np.asarray(b_work.array, dtype=np.float64)))
     b_norm_petsc = float(b_work.norm())
+    x = uh.x.petsc_vec
+    x.set(0.0)
+    K_work = K.copy()
+    K_work.assemble()
     try:
         K_work.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
     except Exception:
@@ -4838,14 +4840,13 @@ def _assemble_resolvent_probe_traction_into_mixed(
     facet_tag: int,
     force_scale: float,
     u_to_W_map: np.ndarray,
-    b_vec: PETSc.Vec,
-    uh: fem.Function,
+    rhs_fn: fem.Function,
 ) -> Tuple[float, float]:
     """
     Neumann traction ``∫ f · (v·n) ds`` on wood shell facets, assembled on collapsed ``V_u`` and
-    scattered into the mixed ``W`` PETSc vector (mixed ``assemble_vector`` can yield a zero RHS
-    for surface forms using ``TestFunctions(W)`` in some dolfinx layouts).
+    scattered into ``rhs_fn`` (mixed ``W`` layout; must not alias the solution ``Function``).
     """
+    b_vec = rhs_fn.x.petsc_vec
     V_u_rhs, _ = W.sub(0).collapse()
     v_u = ufl.TestFunction(V_u_rhs)
     n = ufl.FacetNormal(msh)
@@ -4869,7 +4870,7 @@ def _assemble_resolvent_probe_traction_into_mixed(
         b_u.destroy()
     except Exception:
         pass
-    uh.x.scatter_forward()
+    rhs_fn.x.scatter_forward()
     b_u_norm = float(np.linalg.norm(bu))
     b_mix_norm = float(np.linalg.norm(b_arr))
     return b_u_norm, b_mix_norm
@@ -4920,8 +4921,9 @@ def _coupled_resolvent_solve(
         }
 
     uh = fem.Function(W)
-    b = uh.x.petsc_vec
-    b.zeroEntries()
+    rhs_fn = fem.Function(W)
+    rhs = rhs_fn.x.petsc_vec
+    rhs.zeroEntries()
     b_u_norm_raw, b_lift_norm = _assemble_resolvent_probe_traction_into_mixed(
         msh,
         W,
@@ -4929,8 +4931,7 @@ def _coupled_resolvent_solve(
         facet_tag=tag,
         force_scale=float(force_scale),
         u_to_W_map=u_to_W_map,
-        b_vec=b,
-        uh=uh,
+        rhs_fn=rhs_fn,
     )
     if MPI.COMM_WORLD.rank == ROOT_RANK:
         print(
@@ -4939,19 +4940,19 @@ def _coupled_resolvent_solve(
             flush=True,
         )
 
-    set_bc(b, bcs)
+    set_bc(rhs, bcs)
 
     s_uu_load = 1.0
     if block_scales:
         s_uu_load = max(float(block_scales.get("s_uu", 1.0)), 1.0e-30)
         if abs(s_uu_load - 1.0) > 0.0:
-            b.scale(1.0 / s_uu_load)
+            rhs.scale(1.0 / s_uu_load)
 
-    b_norm_petsc = float(b.norm())
-    b_norm_numpy = float(np.linalg.norm(np.asarray(b.array, dtype=np.float64)))
+    b_norm_petsc = float(rhs.norm())
+    b_norm_numpy = float(np.linalg.norm(np.asarray(rhs.array, dtype=np.float64)))
     b_norm = max(b_norm_petsc, b_norm_numpy, 1.0e-30)
     u_idx = np.asarray(u_to_W_map, dtype=np.int32).ravel()
-    b_u_norm = float(np.linalg.norm(np.asarray(b.array, dtype=np.float64)[u_idx])) if u_idx.size else 0.0
+    b_u_norm = float(np.linalg.norm(np.asarray(rhs.array, dtype=np.float64)[u_idx])) if u_idx.size else 0.0
     if b_norm < 1.0e-30:
         err = (
             f"assembled load vector has ||F||≈0 (tag={tag}, facets={n_facets}); "
@@ -4994,7 +4995,6 @@ def _coupled_resolvent_solve(
     solve_mode = "shifted"
     ksp: Optional[PETSc.KSP] = None
     K: Optional[PETSc.Mat] = None
-    x = uh.x.petsc_vec
     res_tol = float(solver_cfg.get("resolvent_residual_tol", 1.0e-6))
     min_x_norm = float(solver_cfg.get("resolvent_min_x_norm", 1.0e-24))
 
@@ -5040,7 +5040,7 @@ def _coupled_resolvent_solve(
         accepted, reason_try, its_try, rel_try, _xn, ksp_try, K_solved = (
             _resolvent_solve_linear_system(
                 K_op,
-                b,
+                rhs,
                 uh,
                 solver_cfg,
                 label=f"shifted reg_frac={reg_frac:.2e}",
@@ -5096,7 +5096,7 @@ def _coupled_resolvent_solve(
                 accepted, reason_s, its_s, rel_s, _xn, ksp_s, K_s = (
                     _resolvent_solve_linear_system(
                         K_op,
-                        b,
+                        rhs,
                         uh,
                         solver_cfg,
                         label=label,
@@ -5200,7 +5200,6 @@ def _coupled_resolvent_solve(
             ksp.destroy()
         if K is not None:
             K.destroy()
-        b.destroy()
     except Exception:
         pass
 
