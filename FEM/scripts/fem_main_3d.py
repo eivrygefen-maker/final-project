@@ -1906,14 +1906,25 @@ def _slepc_eps_strategy(
             broad_hz = 1.5
 
     if which in ("TARGET_REAL", "TARGET_REAL_PART") or _eps_use_target_real(solver_cfg):
-        if use_st_shift and broad_hz <= 0.0:
+        st_name = str(solver_cfg.get("st_type", "sinvert")).strip().lower()
+        if st_name not in ("shift", "stshift"):
+            if MPI.COMM_WORLD.rank == ROOT_RANK:
+                print(
+                    "[solver][warn] eps_which=TARGET_REAL with st_type=sinvert can segfault on "
+                    "coupled GNHEP (SLEPc target scale mismatch); using TARGET_MAGNITUDE. "
+                    "Enable eps_st_sigma_use_jitter for harvest away from σ.",
+                    flush=True,
+                )
+            which = "TARGET_MAGNITUDE"
+        elif use_st_shift and broad_hz <= 0.0:
             broad_hz = 1.5
-        return (
-            SLEPc.EPS.Which.TARGET_REAL,
-            "TARGET_REAL",
-            use_st_shift,
-            broad_hz > 0.0,
-        )
+        if which in ("TARGET_REAL", "TARGET_REAL_PART"):
+            return (
+                SLEPc.EPS.Which.TARGET_REAL,
+                "TARGET_REAL",
+                use_st_shift,
+                broad_hz > 0.0,
+            )
     if which in ("SMALLEST_MAGNITUDE", "SMALLEST_MAG"):
         # SLEPc shift-invert only accepts *target* which (TARGET_MAGNITUDE / TARGET_REAL).
         if MPI.COMM_WORLD.rank == ROOT_RANK:
@@ -3296,6 +3307,9 @@ def _slepc_shift_invert_batch(
             f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}",
             status_callback=status_callback,
         )
+    opts = PETSc.Options()
+    opts["eps_monitor"] = None
+    opts["eps_converged_reason"] = None
     eps.setFromOptions()
     _debug_petsc_comm("A", A)
     _debug_petsc_comm("M", M)
@@ -3307,10 +3321,6 @@ def _slepc_shift_invert_batch(
     except Exception as exc:
         _emit(f"[error] communicator audit failed before EPS solve: {exc}", status_callback=status_callback, level="error")
         raise
-    opts = PETSc.Options()
-    opts["eps_monitor"] = None
-    opts["eps_converged_reason"] = None
-    eps.setFromOptions()
     # Re-apply after setFromOptions so CLI/options cannot override GNHEP band strategy.
     eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
     if use_ciss:
@@ -3577,8 +3587,8 @@ def _slepc_shift_invert_batch(
                 print(
                     "[solver][warn] All converged Ritz values sit on the shift (σ-cluster). "
                     "sinvert + TARGET_MAGNITUDE preferentially returns spurious anchor modes at σ. "
-                    "Keep st_type=sinvert; set eps_which=TARGET_REAL and eps_broad_search_hz>=5 "
-                    "(do not use st_type=shift — it can segfault in EPS solve). "
+                    "Keep st_type=sinvert + TARGET_MAGNITUDE; enable eps_st_sigma_use_jitter "
+                    "and eps_broad_search_hz>=5 (avoid TARGET_REAL and st_type=shift on GNHEP). "
                     "Also try a different --target-hz or fem_master_dynamic.py multi-shift sweep.",
                     flush=True,
                 )
