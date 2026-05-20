@@ -778,9 +778,92 @@ def _meshtags_on_facets(msh: mesh.Mesh, facet_indices: np.ndarray, tag_value: in
     return mesh.meshtags(msh, fdim, idx, vals)
 
 
+def _wood_air_dS_facet_measure(msh: mesh.Mesh, facet_tags) -> Any:
+    """
+    Interior-facet measure on wood shell physical tags (top/back/ribs).
+
+    ``dS`` must use ``subdomain_data=facet_tags`` (not volume ``cell_tags``).
+    """
+    dS_iface = ufl.Measure("dS", domain=msh, subdomain_data=facet_tags)
+    measure = None
+    for tag in WOOD_SURFACE_TAGS:
+        part = dS_iface(int(tag))
+        measure = part if measure is None else measure + part
+    if measure is None:
+        raise RuntimeError("FSI interface: no wood surface facet tags for dS measure.")
+    return measure
+
+
+def _fsi_coupling_interface_forms(
+    msh: mesh.Mesh,
+    u,
+    v,
+    p,
+    q,
+    iface_measure,
+    *,
+    p_scale: float,
+    fsi_gain: float,
+    rho_air: float,
+    use_interior_pm: bool,
+):
+    """
+    FSI traction / mass-like interface blocks on ``iface_measure``.
+
+    For interior ``dS`` on tagged wood shell facets, use ``+/-`` traces so coupling is
+    robust to dolfinx interior-facet orientation (both sides of the wood–air seam).
+    """
+    n = ufl.FacetNormal(msh)
+    if use_interior_pm:
+        n_plus = n("+")
+        u_n_both = ufl.dot(u("+"), n_plus) + ufl.dot(u("-"), n("-"))
+        p_avg = 0.5 * (p("+") + p("-"))
+        v_n_both = ufl.dot(v("+"), n_plus) + ufl.dot(v("-"), n("-"))
+        q_pm = 0.5 * (q("+") + q("-"))
+        traction_up = -p_scale * fsi_gain * p_avg * v_n_both * iface_measure
+        traction_pu = p_scale * fsi_gain * u_n_both * q_pm * iface_measure
+        mass_pu = p_scale * fsi_gain * rho_air * u_n_both * q_pm * iface_measure
+        return traction_up, traction_pu, mass_pu, u_n_both, p_avg, v_n_both, q_pm
+    traction_up = -p_scale * fsi_gain * p * ufl.dot(n, v) * iface_measure
+    traction_pu = p_scale * fsi_gain * ufl.dot(u, n) * q * iface_measure
+    mass_pu = p_scale * fsi_gain * rho_air * ufl.dot(u, n) * q * iface_measure
+    return traction_up, traction_pu, mass_pu, None, None, None, None
+
+
+def _fsi_nitsche_interface_forms(
+    msh: mesh.Mesh,
+    gamma_n: float,
+    u,
+    v,
+    p,
+    q,
+    iface_measure,
+    *,
+    use_interior_pm: bool,
+    u_n_both=None,
+    p_avg=None,
+    v_n_both=None,
+    q_pm=None,
+):
+    """Nitsche stabilization on the FSI interface (optional)."""
+    if use_interior_pm:
+        return (
+            gamma_n * u_n_both * v_n_both * iface_measure,
+            gamma_n * p_avg * v_n_both * iface_measure,
+            gamma_n * u_n_both * q_pm * iface_measure,
+        )
+    n = ufl.FacetNormal(msh)
+    return (
+        gamma_n * ufl.dot(u, n) * ufl.dot(v, n) * iface_measure,
+        gamma_n * p * ufl.dot(v, n) * iface_measure,
+        gamma_n * ufl.dot(u, n) * q * iface_measure,
+    )
+
+
 def _wood_air_interface_measure(
     msh: mesh.Mesh,
     cell_tags,
+    facet_tags,
     solver_cfg: Dict,
     *,
     status_callback=None,
@@ -788,58 +871,51 @@ def _wood_air_interface_measure(
     """
     Wood↔air interface measure for FSI traction / Nitsche forms.
 
-    Default ``fsi_iface_measure=meshtags``: topology facets + ``ds(tag=20)`` (works with
-    gmsh ``model_to_mesh`` on this project). Optional ``dS`` / ``interior`` tries
-    ``dS(air, wood)`` with ``cell_tags``; many dolfinx builds raise ``Invalid metadata``
-    for that pairing, so we fall back to meshtags automatically.
+    Default ``fsi_iface_measure=dS``: interior ``dS`` on wood shell **facet** tags
+    ``(1, 3, 4)`` with ``subdomain_data=facet_tags``. Legacy ``meshtags`` uses topology
+    facets + exterior ``ds(tag=20)`` (opt-in only).
     """
-    mode = str(solver_cfg.get("fsi_iface_measure", "meshtags")).strip().lower()
+    mode = str(solver_cfg.get("fsi_iface_measure", "dS")).strip().lower()
     facets = _find_air_wood_interface_facets(msh, cell_tags)
     if facets.size == 0:
         raise RuntimeError(
             "FSI interface: no facets between air volume (tag 10) and wood volumes (1/2/3)."
         )
 
-    def _meshtags_iface_measure() -> Tuple[str, Any, np.ndarray]:
+    if mode in ("meshtags", "meshtags_ds", "tagged_ds"):
         iface_meshtags = _meshtags_on_facets(msh, facets, FSI_INTERFACE_FACET_TAG)
         measure = ufl.Measure("ds", domain=msh, subdomain_data=iface_meshtags)(
             FSI_INTERFACE_FACET_TAG
         )
         return "meshtags_ds", measure, facets
 
-    if mode in ("meshtags", "facet_tags", "tagged_ds", "meshtags_ds", "ds"):
-        return _meshtags_iface_measure()
-
-    if mode in ("interior", "interior_ds", "ds_interior", "dS_air_wood"):
+    if mode in (
+        "ds",
+        "dS",
+        "interior",
+        "interior_ds",
+        "ds_interior",
+        "dS_facet",
+        "dS_facet_wood",
+        "facet_tags",
+    ):
         try:
-            dS = ufl.Measure("dS", domain=msh, subdomain_data=cell_tags)
-            parts = []
-            wood_first = _solver_bool(solver_cfg, "fsi_dS_wood_first", default=False)
-            for wtag in WOOD_VOLUME_TAGS:
-                if wood_first:
-                    parts.append(dS(int(wtag), AIR_VOLUME_TAG))
-                else:
-                    parts.append(dS(AIR_VOLUME_TAG, int(wtag)))
-            measure = parts[0]
-            for part in parts[1:]:
-                measure = measure + part
-            tag = "dS_wood_air" if wood_first else "dS_air_wood"
-            return tag, measure, facets
+            measure = _wood_air_dS_facet_measure(msh, facet_tags)
+            return "dS_facet_wood", measure, facets
         except (ValueError, AttributeError, TypeError, RuntimeError) as exc:
-            _emit(
-                f"[FSI-IFACE][warn] interior dS measure failed ({type(exc).__name__}: {exc!r}); "
-                "falling back to meshtags_ds.",
-                status_callback=status_callback,
-                level="warning",
-            )
-            return _meshtags_iface_measure()
+            raise RuntimeError(
+                "FSI interior dS on facet_tags "
+                f"{WOOD_SURFACE_TAGS} failed ({type(exc).__name__}: {exc!r}). "
+                "Use fsi_iface_measure=meshtags only for debugging."
+            ) from exc
 
     _emit(
-        f"[FSI-IFACE][warn] unknown fsi_iface_measure={mode!r}; using meshtags_ds.",
+        f"[FSI-IFACE][warn] unknown fsi_iface_measure={mode!r}; using dS_facet_wood.",
         status_callback=status_callback,
         level="warning",
     )
-    return _meshtags_iface_measure()
+    measure = _wood_air_dS_facet_measure(msh, facet_tags)
+    return "dS_facet_wood", measure, facets
 
 
 def _audit_fsi_traction_pair_norms(
@@ -3868,8 +3944,9 @@ def _solve_coupled_evp(
     P = ufl.Identity(3) - ufl.outer(n, n)
 
     iface_mode, iface_measure, fsi_iface_facets = _wood_air_interface_measure(
-        msh, cell_tags, solver_cfg, status_callback=status_callback
+        msh, cell_tags, facet_tags, solver_cfg, status_callback=status_callback
     )
+    use_dS_interior_pm = iface_mode.startswith("dS")
     air_ext_p_facets = _find_air_exterior_pressure_facets(
         msh, cell_tags, facet_tags, fsi_iface_facets
     )
@@ -4002,11 +4079,27 @@ def _solve_coupled_evp(
     # Traction / mass-like interface pair (mixed GNHEP blocks):
     #   A_up (u rows, p cols): ∫_Γ p (n·v) dS  — pressure traction on the shell test v
     #   A_pu (p rows, u cols): ∫_Γ (u·n) q dS  — REQUIRED for static A x=F to excite pressure
-    # ``n = FacetNormal(msh)`` with ``dS(air, wood)`` uses the UFL interior-facet convention
-    # (normal from wood volume tag toward air tag in the measure restriction).
-    traction_up = -p_scale * fsi_gain * p * ufl.dot(n, v) * iface_measure
-    traction_pu = p_scale * fsi_gain * ufl.dot(u, n) * q * iface_measure
-    mass_pu = p_scale * fsi_gain * rho_air * ufl.dot(u, n) * q * iface_measure
+    # Interior ``dS`` on facet_tags (1/3/4) uses +/- traces for orientation-robust coupling.
+    (
+        traction_up,
+        traction_pu,
+        mass_pu,
+        _u_n_both,
+        _p_avg,
+        _v_n_both,
+        _q_pm,
+    ) = _fsi_coupling_interface_forms(
+        msh,
+        u,
+        v,
+        p,
+        q,
+        iface_measure,
+        p_scale=p_scale,
+        fsi_gain=fsi_gain,
+        rho_air=rho_air,
+        use_interior_pm=use_dS_interior_pm,
+    )
     _audit_fsi_traction_pair_norms(
         traction_up=traction_up,
         traction_pu=traction_pu,
@@ -4016,9 +4109,20 @@ def _solve_coupled_evp(
     )
     nit_uu = nit_up = nit_pu = None
     if use_nitsche:
-        nit_uu = gamma_n * ufl.dot(u, n) * ufl.dot(v, n) * iface_measure
-        nit_up = gamma_n * p * ufl.dot(v, n) * iface_measure
-        nit_pu = gamma_n * ufl.dot(u, n) * q * iface_measure
+        nit_uu, nit_up, nit_pu = _fsi_nitsche_interface_forms(
+            msh,
+            gamma_n,
+            u,
+            v,
+            p,
+            q,
+            iface_measure,
+            use_interior_pm=use_dS_interior_pm,
+            u_n_both=_u_n_both,
+            p_avg=_p_avg,
+            v_n_both=_v_n_both,
+            q_pm=_q_pm,
+        )
         if MPI.COMM_WORLD.rank == ROOT_RANK:
             print(
                 f"[form] FSI Nitsche on iface: gamma_n={gamma_n:.6e}, "
