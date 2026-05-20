@@ -3316,9 +3316,6 @@ def _slepc_shift_invert_batch(
             f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}",
             status_callback=status_callback,
         )
-    opts = PETSc.Options()
-    opts["eps_monitor"] = None
-    opts["eps_converged_reason"] = None
     eps.setFromOptions()
     _debug_petsc_comm("A", A)
     _debug_petsc_comm("M", M)
@@ -3330,6 +3327,10 @@ def _slepc_shift_invert_batch(
     except Exception as exc:
         _emit(f"[error] communicator audit failed before EPS solve: {exc}", status_callback=status_callback, level="error")
         raise
+    opts = PETSc.Options()
+    opts["eps_monitor"] = None
+    opts["eps_converged_reason"] = None
+    eps.setFromOptions()
     # Re-apply after setFromOptions so CLI/options cannot override GNHEP band strategy.
     eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
     if use_ciss:
@@ -3364,16 +3365,6 @@ def _slepc_shift_invert_batch(
         st.setType(SLEPc.ST.Type.SINVERT)
         st.setShift(st_sigma)
         _st_name = "sinvert"
-        ksp_st = st.getKSP()
-        _slepc_configure_st_ksp_pc(
-            ksp_st,
-            ksp_st.getPC(),
-            solver_cfg,
-            block_is=block_is,
-            opts_prefix="st_",
-            use_ciss=False,
-        )
-        # Re-apply MUMPS workspace after setFromOptions (ST prefix options can be reset).
         _opts = PETSc.Options()
         _opts["st_mat_mumps_icntl_14"] = mumps_icntl_14
         _opts["st_mat_mumps_icntl_24"] = mumps_icntl_24
