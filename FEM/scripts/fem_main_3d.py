@@ -1741,8 +1741,8 @@ def _block_frobenius_normalize_coupled_forms(
 
 
 def _resolvent_probe_block_solver_cfg(solver_cfg: Dict) -> Dict:
-    """Optional block Frobenius scaling for the probe (off by default — preserves load/operator balance)."""
-    if not _solver_bool(solver_cfg, "resolvent_block_frobenius_normalize", default=False):
+    """Probe path: block Frobenius scale A_uu/A_pp (and matching blocks) unless disabled."""
+    if not _solver_bool(solver_cfg, "resolvent_block_frobenius_normalize", default=True):
         return solver_cfg
     merged = dict(solver_cfg)
     merged["gnhep_block_frobenius_normalize"] = True
@@ -1878,8 +1878,8 @@ def _apply_resolvent_probe_matrix_penalties(
 
     Applied after block Frobenius scaling (use ``norm_uu_ref=norm_pp_ref=1``).
     """
-    frac_u = float(solver_cfg.get("resolvent_struct_penalty_frac", 1.0e-4))
-    frac_p = float(solver_cfg.get("resolvent_acoustic_penalty_frac", 1.0e-3))
+    frac_u = float(solver_cfg.get("resolvent_struct_penalty_frac", 1.0e-7))
+    frac_p = float(solver_cfg.get("resolvent_acoustic_penalty_frac", 1.0e-4))
     k_u = frac_u * max(float(norm_uu_ref), 1.0e-30)
     k_p = frac_p * max(float(norm_pp_ref), 1.0e-30)
     u, p = ufl.TrialFunctions(W)
@@ -4651,15 +4651,6 @@ def _resolvent_vec_is_finite(vec: PETSc.Vec) -> bool:
         return False
 
 
-def _resolvent_scale_unit_rhs(K: PETSc.Mat, b: PETSc.Vec) -> float:
-    """Scale ``K`` and ``b`` by ``1/||b||`` (solution ``x`` unchanged; improves LU scaling)."""
-    b_norm = max(float(b.norm()), 1.0e-30)
-    inv = 1.0 / b_norm
-    K.scale(inv)
-    b.scale(inv)
-    return b_norm
-
-
 def _resolvent_solve_linear_system(
     K: PETSc.Mat,
     b: PETSc.Vec,
@@ -4674,7 +4665,11 @@ def _resolvent_solve_linear_system(
     use_equilibrate: bool = True,
 ) -> Tuple[bool, int, int, float, float, Optional[PETSc.KSP], Optional[PETSc.Mat]]:
     """
-    Solve ``K x = b`` with unit-RHS scaling and acceptance checks.
+    Solve ``K x = b`` in physical scaling (no RHS / operator rescaling).
+
+    Conditioning: rely on ``pc_factor_diagonal_scaling`` (MUMPS) from
+    ``_configure_probe_direct_ksp``; optional symmetric diagonal equilibration
+    only if ``resolvent_symmetric_equilibrate`` is true.
 
     On success returns ``(True, reason, its, rel_res, x_norm, ksp, K_work)``; caller
     must destroy ``ksp`` and ``K_work``. On failure both are destroyed inside.
@@ -4686,7 +4681,8 @@ def _resolvent_solve_linear_system(
     K_work.assemble()
     b_work = b.duplicate()
     b_work.copy(b)
-    rhs_norm = _resolvent_scale_unit_rhs(K_work, b_work)
+    b_norm_local = float(np.linalg.norm(np.asarray(b_work.array, dtype=np.float64)))
+    b_norm_petsc = float(b_work.norm())
     try:
         K_work.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
     except Exception:
@@ -4720,7 +4716,7 @@ def _resolvent_solve_linear_system(
         print(
             f"[resolvent-probe] {label}: reason={reason} its={its} rel_res={rel_res:.3e} "
             f"||x||={x_norm:.6e} ||r||={r_norm:.6e} ||b||_phy={physical_b_norm:.6e} "
-            f"rhs_scale={rhs_norm:.6e}",
+            f"||b||_petsc={b_norm_petsc:.6e} ||b||_np={b_norm_local:.6e}",
             flush=True,
         )
     accepted = (
@@ -4893,7 +4889,9 @@ def _coupled_resolvent_solve(
         if abs(s_uu_load - 1.0) > 0.0:
             b.scale(1.0 / s_uu_load)
 
-    b_norm = float(b.norm())
+    b_norm_petsc = float(b.norm())
+    b_norm_numpy = float(np.linalg.norm(np.asarray(b.array, dtype=np.float64)))
+    b_norm = max(b_norm_petsc, b_norm_numpy, 1.0e-30)
     u_idx = np.asarray(u_to_W_map, dtype=np.int32).ravel()
     b_u_norm = float(np.linalg.norm(np.asarray(b.array, dtype=np.float64)[u_idx])) if u_idx.size else 0.0
     if b_norm < 1.0e-30:
@@ -4918,7 +4916,7 @@ def _coupled_resolvent_solve(
         "resolvent_mass_reg_retry_fracs",
         (1.0e-6, 1.0e-4, 1.0e-2, 0.1, 0.5, 1.0),
     )
-    use_equilibrate = _solver_bool(solver_cfg, "resolvent_symmetric_equilibrate", default=True)
+    use_equilibrate = _solver_bool(solver_cfg, "resolvent_symmetric_equilibrate", default=False)
     if isinstance(reg_retries, (list, tuple)):
         reg_fracs = [float(reg_base)] + [float(r) for r in reg_retries if float(r) > float(reg_base)]
     else:
@@ -4949,7 +4947,8 @@ def _coupled_resolvent_solve(
         print(
             "[resolvent-probe] shifted operator: "
             f"est ||λM||/||A||≈{(lam_shift * m_norm_f) / max(a_norm_f, 1.0e-30):.3e} "
-            f"(unit-RHS scaling; no λ scaling of b) b_u_block||F||={b_u_norm:.6e}",
+            f"||F||_petsc={b_norm_petsc:.6e} ||F||_np={b_norm_numpy:.6e} "
+            f"||F_u||_np={b_u_norm:.6e}",
             flush=True,
         )
     if a_norm_f < 1.0e-30 and MPI.COMM_WORLD.rank == ROOT_RANK:
