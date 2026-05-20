@@ -1815,7 +1815,10 @@ def _slepc_target_lambda(solver_cfg: Optional[Dict]) -> float:
     tl = float(solver_cfg.get("_worker_eps_target_lambda", 0.0) or 0.0)
     if tl > 0.0:
         return tl
-    thz = solver_cfg.get("_worker_target_hz", solver_cfg.get("shift_invert_target_hz"))
+    thz = solver_cfg.get(
+        "_batch_target_hz",
+        solver_cfg.get("_worker_target_hz", solver_cfg.get("shift_invert_target_hz")),
+    )
     if thz is not None:
         try:
             return _slepc_hz_to_lambda(float(thz))
@@ -1868,24 +1871,14 @@ def _slepc_physical_lambda(
     if name in ("sinvert", "shift_invert"):
         if mu <= 0.0:
             return float("nan"), "reject"
-        # sinvert Ritz θ ≈ 1/(λ-σ); map via invert when |θ| is moderate.
+        # Many SLEPc builds return physical λ = ω² directly (especially TARGET_MAGNITUDE).
+        if _ok(mu):
+            return mu, "raw"
+        # sinvert Ritz θ ≈ 1/(λ-σ); map when |θ| is moderate (θ not on ω² scale).
         if mu > 0.0 and abs(mu) <= mu_invert_max:
             lam_inv = sigma + (1.0 / mu)
-            if _ok(lam_inv) and abs(lam_inv - sigma) >= min_dlam:
+            if _ok(lam_inv):
                 return lam_inv, "invert"
-        # Physical λ (sinvert+TARGET_MAGNITUDE often returns ω² directly, not 1/(λ-σ)).
-        if _ok(mu) and abs(mu - sigma) >= min_dlam:
-            return mu, "raw"
-        target_lam = _slepc_target_lambda(solver_cfg)
-        target_frac = float(
-            solver_cfg.get("eps_map_target_lam_frac", 0.08) if solver_cfg else 0.08
-        )
-        if (
-            _ok(mu)
-            and target_lam > 0.0
-            and abs(mu - target_lam) <= max(min_dlam, target_frac * target_lam)
-        ):
-            return mu, "raw_target"
         return float("nan"), "reject"
 
     lam_shift = mu + sigma
@@ -3087,6 +3080,10 @@ def _slepc_shift_invert_batch(
     min_hz = _slepc_spectrum_min_hz(solver_cfg, shift_hz)
     target_hz = float(shift_hz)
     target_lambda = _slepc_hz_to_lambda(target_hz)
+    # Worker passes shift on the root config; harvest must not use stale shift_invert_target_hz.
+    solver_cfg["_batch_target_hz"] = target_hz
+    solver_cfg["_worker_target_hz"] = target_hz
+    solver_cfg["_worker_eps_target_lambda"] = target_lambda
     strategy = _slepc_band_solver_strategy(solver_cfg)
     raw_mode = str(solver_cfg.get("eps_band_solver", "shift_invert")).strip().lower()
     if raw_mode in ("interval", "spectrum_slicing", "slice", "band_interval") and MPI.COMM_WORLD.rank == ROOT_RANK:
