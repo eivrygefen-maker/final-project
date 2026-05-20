@@ -3407,6 +3407,7 @@ def _slepc_shift_invert_batch(
     candidates: List[Tuple[float, float, np.ndarray, float, float, float, float, float]] = []
     rvec = A.createVecRight()
     skipped_rigid = 0
+    skipped_unmap = 0
     skipped_below_min = 0
     skipped_window = 0
     skipped_unavailable = 0
@@ -3434,7 +3435,10 @@ def _slepc_shift_invert_batch(
         map_tag_counts[lam_map_tag] = map_tag_counts.get(lam_map_tag, 0) + 1
         if len(raw_eig_samples) < 5:
             raw_eig_samples.append(eig_r)
-        if (not math.isfinite(lam_phys)) or lam_phys <= rigid_tol:
+        if not math.isfinite(lam_phys):
+            skipped_unmap += 1
+            continue
+        if lam_phys <= rigid_tol:
             skipped_rigid += 1
             continue
         omega = math.sqrt(max(lam_phys, 0.0))
@@ -3533,7 +3537,7 @@ def _slepc_shift_invert_batch(
             )
         print(
             f"[solver] EPS harvest: kept={len(out)}/{batch} from nconv_marked={nconv_marked} "
-            f"(skip rigid={skipped_rigid}, f<{min_hz:.1f}Hz={skipped_below_min}, "
+            f"(skip unmap={skipped_unmap}, rigid={skipped_rigid}, f<{min_hz:.1f}Hz={skipped_below_min}, "
             f"outside_window={skipped_window}, unavail={skipped_unavailable}, "
             f"skip_decoupled={skipped_decoupled}, skip_sigma={skipped_sigma}, "
             f"allow_weak_coupling={allow_weak}, rank_by_wood={rank_by_wood}, "
@@ -3555,11 +3559,27 @@ def _slepc_shift_invert_batch(
             print(
                 f"[solver][warn] EPS harvest: 0 slots after filters from nconv_marked={nconv_marked} "
                 f"(ST={_st_name}, σ={st_sigma:.3e}); map_tags: {tags or 'none'}; "
-                f"skip_decoupled={skipped_decoupled}, skip_sigma={skipped_sigma}, "
-                f"allow_weak_coupling={allow_weak}; sample raw_eig: [{raw_s}]. "
+                f"skip_unmap={skipped_unmap}, skip_decoupled={skipped_decoupled}, "
+                f"skip_sigma={skipped_sigma}, allow_weak_coupling={allow_weak}; "
+                f"sample raw_eig: [{raw_s}]. "
                 f"Set eps_harvest_allow_weak_coupling=true or lower eps_harvest_min_pressure_fraction.",
                 flush=True,
             )
+            if (
+                skipped_unmap >= nconv_marked
+                and raw_eig_samples
+                and abs(float(raw_eig_samples[0]) - st_sigma)
+                < 0.05 * max(abs(st_sigma), 1.0)
+            ):
+                print(
+                    "[solver][warn] All converged Ritz values sit on the shift (σ-cluster). "
+                    "st_type=sinvert + eps_which=TARGET_MAGNITUDE preferentially returns "
+                    "spurious anchor modes at σ (not guitar modes in the harvest window). "
+                    "Try solver.st_type='shift' with eps_broad_search_hz>=5, "
+                    "eps_which=TARGET_REAL, a different --target-hz (e.g. 120–150), "
+                    "or the master multi-shift sweep (fem_master_dynamic.py).",
+                    flush=True,
+                )
         for j, (_score, f_hz, _arr, rt, rb, u_n, p_n, p_block_max) in enumerate(
             sorted(candidates, key=lambda t: -t[0])[: min(5, len(candidates))]
         ):
