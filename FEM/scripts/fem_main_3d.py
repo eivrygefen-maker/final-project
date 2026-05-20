@@ -4677,8 +4677,26 @@ def _resolvent_solve_linear_system(
     must destroy ``ksp`` and ``K_work``. On failure both are destroyed inside.
     """
     comm = K.getComm()
+    # Snapshot RHS before touching a duplicate. Do not use ``b_work.copy(b)``: in
+    # petsc4py, ``Vec.copy(other)`` writes **into** ``other`` from ``self``, so a
+    # zero ``duplicate()`` would overwrite ``b`` (``rhs``) and leave ``b_work`` at
+    # zero — breaking every ``reg_frac`` retry that reuses the same ``rhs``.
+    b_original = np.array(b.array, copy=True)
     b_work = b.duplicate()
-    b_work.copy(b)
+    np.copyto(np.asarray(b_work.array), b_original)
+    try:
+        b_work.ghostUpdate(
+            addv=PETSc.InsertMode.INSERT_VALUES,
+            mode=PETSc.ScatterMode.FORWARD,
+        )
+    except Exception:
+        try:
+            b_work.ghostUpdate(
+                addv=PETSc.InsertMode.INSERT,
+                mode=PETSc.ScatterMode.FORWARD,
+            )
+        except Exception:
+            pass
     b_norm_local = float(np.linalg.norm(np.asarray(b_work.array, dtype=np.float64)))
     b_norm_petsc = float(b_work.norm())
     x = uh.x.petsc_vec
