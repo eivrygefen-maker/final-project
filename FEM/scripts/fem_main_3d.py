@@ -26,7 +26,7 @@ from fem_mode_array_utils import (
 import ufl
 from basix.ufl import element, mixed_element
 from dolfinx import fem, io, mesh
-from dolfinx.fem.petsc import assemble_matrix, assemble_vector, set_bc
+from dolfinx.fem.petsc import assemble_matrix, assemble_vector
 from mpi4py import MPI
 # Explicit PETSc initialization on all ranks.
 petsc4py.init(sys.argv)
@@ -1800,16 +1800,97 @@ def _coupled_block_dirichlet_bcs(
     bcs_all: List[fem.DirichletBC],
 ) -> List[fem.DirichletBC]:
     """
-    Route Dirichlet BCs to the blocks they constrain.
+    Blockwise ``assemble_matrix`` is called with ``bcs=[]``.
 
-    Applying pressure gauge BCs while assembling shell-only ``a_uu`` triggers bare
-    ``AssertionError`` in dolfinx/ffcx; diagnostics use ``bcs=[]`` and succeed.
+    Dirichlet constraints (pressure gauge, ribs, probe pin) are enforced **after**
+    assembly on the monolithic PETSc ``A`` / ``M`` (and on the resolvent ``K`` / ``b``)
+    via algebraic row operations so off-diagonal blocks stay consistent.
     """
-    if block_name in ("uu", "nit_uu"):
-        return list(bcs_u)
-    if block_name in ("pp", "reg_p"):
-        return list(bcs_p)
-    return list(bcs_all)
+    return []
+
+
+def _coupled_algebraic_dirichlet_rows(
+    u_map: np.ndarray,
+    p_map: np.ndarray,
+    *,
+    p_gauge_dofs_v: np.ndarray,
+    u_ribs_dofs_v: np.ndarray,
+    u_fix_dofs_v: np.ndarray,
+) -> np.ndarray:
+    """Map collapsed pressure / displacement BC dofs to global mixed-space row indices."""
+    chunks: List[np.ndarray] = []
+    u_map = np.asarray(u_map, dtype=np.int32).ravel()
+    p_map = np.asarray(p_map, dtype=np.int32).ravel()
+    pv = np.asarray(p_gauge_dofs_v, dtype=np.int32).ravel()
+    if pv.size and p_map.size and np.min(pv) >= 0 and np.max(pv) < p_map.size:
+        chunks.append(p_map[pv])
+    ur = np.asarray(u_ribs_dofs_v, dtype=np.int32).ravel()
+    if ur.size and u_map.size and np.min(ur) >= 0 and np.max(ur) < u_map.size:
+        chunks.append(u_map[ur])
+    uf = np.asarray(u_fix_dofs_v, dtype=np.int32).ravel()
+    if uf.size and u_map.size and np.min(uf) >= 0 and np.max(uf) < u_map.size:
+        chunks.append(u_map[uf])
+    if not chunks:
+        return np.array([], dtype=np.int32)
+    return np.unique(np.concatenate(chunks).astype(np.int32, copy=False))
+
+
+def _petsc_owned_global_rows(obj, global_rows: np.ndarray) -> np.ndarray:
+    r = np.unique(np.asarray(global_rows, dtype=np.int32).ravel())
+    if r.size == 0:
+        return r
+    r_lo, r_hi = obj.getOwnershipRange()
+    return r[(r >= r_lo) & (r < r_hi)]
+
+
+def _petsc_mat_zero_dirichlet_rows(mat: PETSc.Mat, global_rows: np.ndarray, *, diag: float = 1.0) -> None:
+    rows = _petsc_owned_global_rows(mat, global_rows)
+    if rows.size == 0:
+        return
+    try:
+        mat.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
+    except Exception:
+        pass
+    d = float(diag)
+    try:
+        mat.zeroRows(rows, diag=d)
+    except Exception:
+        try:
+            mat.zeroRows(rows.astype(np.int32), diag=d)
+        except Exception:
+            is_rows = PETSc.IS().createGeneral(rows, comm=mat.getComm())
+            try:
+                mat.zeroRows(is_rows, diag=d)
+            finally:
+                is_rows.destroy()
+
+
+def _petsc_vec_zero_global_dofs(vec: PETSc.Vec, global_rows: np.ndarray) -> None:
+    rows = _petsc_owned_global_rows(vec, global_rows)
+    if rows.size == 0:
+        return
+    z = np.zeros(rows.shape[0], dtype=PETSc.ScalarType)
+    try:
+        vec.setValues(rows, z, addv=PETSc.InsertMode.INSERT_VALUES)
+    except Exception:
+        vec.setValues(rows, z, addv=PETSc.InsertMode.INSERT)
+    try:
+        vec.assemble()
+    except Exception:
+        pass
+    try:
+        vec.ghostUpdate(
+            addv=PETSc.InsertMode.INSERT_VALUES,
+            mode=PETSc.ScatterMode.FORWARD,
+        )
+    except Exception:
+        try:
+            vec.ghostUpdate(
+                addv=PETSc.InsertMode.INSERT,
+                mode=PETSc.ScatterMode.FORWARD,
+            )
+        except Exception:
+            pass
 
 
 def _sum_assembled_blocks(
@@ -3680,19 +3761,21 @@ def _solve_coupled_evp(
     # Release no-longer-needed symbolic temporaries once forms are finalized.
     del eps_u, eps_v, w_n, v_n, wood_tag_top, wood_tag_back, wood_tag_ribs
 
-    # Dirichlet BCs: soundhole pressure gauge + clamped ribs (tag 4); top/back remain free.
+    # Algebraic Dirichlet: locate BC dofs on collapsed ``V_p`` / ``V_u``, map to mixed rows
+    # after ``collapse()`` maps exist; enforce on assembled ``A`` / ``M`` (and ``K`` / ``b`` for
+    # the resolvent) via PETSc ``zeroRows``. Blockwise ``assemble_matrix`` uses ``bcs=[]``.
     soundhole_facets = np.array(facet_tags.find(2), dtype=np.int32)
     pressure_gauge = str(config.get("solver", {}).get("pressure_gauge", "soundhole")).lower()
     bcs: List[fem.DirichletBC] = []
     bcs_u_only: List[fem.DirichletBC] = []
     bcs_p_only: List[fem.DirichletBC] = []
     bc_p = None
+    p_gauge_dofs_v = np.array([], dtype=np.int32)
+    u_dofs_fix_bc = np.array([], dtype=np.int32)
+    clamp_ribs = _solver_bool(solver_cfg, "clamp_ribs", default=True)
     p_dofs = np.array([], dtype=np.int32)
     try:
         V_p, _ = W.sub(1).collapse()
-        W1 = W.sub(1)
-        W0 = W.sub(0)
-        p_zero = fem.Constant(msh, PETSc.ScalarType(0.0))
 
         n_p_collapsed = int(V_p.dofmap.index_map.size_global * V_p.dofmap.index_map_bs)
 
@@ -3702,20 +3785,18 @@ def _solve_coupled_evp(
         diag = float(np.linalg.norm(maxs - mins))
         tol_p = max(1.0e-9, 1.0e-5 * max(1.0, diag))
 
-        p_bc_pairs = np.zeros((0, 2), dtype=np.int32)
-
         if pressure_gauge == "soundhole":
             p_gauge_facets = soundhole_facets
             if air_ext_p_facets.size > 0:
                 p_gauge_facets = np.unique(
                     np.concatenate([soundhole_facets, air_ext_p_facets]).astype(np.int32)
                 )
-            p_bc_pairs = np.asarray(
+            p_gauge_dofs_v = np.asarray(
                 fem.locate_dofs_topological(
-                    (W1, V_p), fdim, np.asarray(p_gauge_facets, dtype=np.int32)
+                    V_p, fdim, np.asarray(p_gauge_facets, dtype=np.int32)
                 ),
                 dtype=np.int32,
-            )
+            ).ravel()
             _emit(
                 f"[bc] pressure gauge: P=0 on soundhole ({soundhole_facets.size} facets)"
                 + (
@@ -3723,7 +3804,7 @@ def _solve_coupled_evp(
                     if air_ext_p_facets.size > 0
                     else ""
                 )
-                + f" → {p_bc_pairs.shape[0]} pressure DOFs (mixed W.sub(1) + V_p map).",
+                + f" → {p_gauge_dofs_v.size} pressure DOFs (algebraic on mixed rows).",
                 status_callback=status_callback,
             )
         else:
@@ -3739,31 +3820,31 @@ def _solve_coupled_evp(
                     d = np.linalg.norm(x.T - p_anchor, axis=1)
                     return d < tol_p
 
-                p_bc_pairs = np.asarray(
-                    fem.locate_dofs_geometrical((W1, V_p), _p_air_anchor),
+                p_gauge_dofs_v = np.asarray(
+                    fem.locate_dofs_geometrical(V_p, _p_air_anchor),
                     dtype=np.int32,
-                )
-                if p_bc_pairs.shape[0] > 1:
-                    p_bc_pairs = p_bc_pairs[:1, :].copy()
+                ).ravel()
+                if p_gauge_dofs_v.size > 1:
+                    p_gauge_dofs_v = p_gauge_dofs_v[:1].copy()
                 _emit(
                     f"[bc] pressure gauge: single interior air anchor (tag {AIR_VOLUME_TAG}) "
                     f"near {p_anchor.tolist()} (solver.pressure_gauge=air_interior).",
                     status_callback=status_callback,
                 )
-            if p_bc_pairs.shape[0] == 0:
-                p_bc_pairs = np.asarray(
+            if p_gauge_dofs_v.size == 0:
+                p_gauge_dofs_v = np.asarray(
                     fem.locate_dofs_topological(
-                        (W1, V_p), fdim, np.asarray(soundhole_facets, dtype=np.int32)
+                        V_p, fdim, np.asarray(soundhole_facets, dtype=np.int32)
                     ),
                     dtype=np.int32,
-                )
+                ).ravel()
                 _emit(
                     "[bc][warn] air-interior pressure anchor failed; falling back to soundhole facets.",
                     status_callback=status_callback,
                     level="warning",
                 )
 
-        if p_bc_pairs.shape[0] == 0:
+        if p_gauge_dofs_v.size == 0:
             p_anchor = coords[np.argmin(np.linalg.norm(coords - mins, axis=1))]
             tol = max(1.0e-12, 1.0e-8 * max(1.0, diag))
 
@@ -3774,24 +3855,22 @@ def _solve_coupled_evp(
                     & np.isclose(x[2], p_anchor[2], atol=tol)
                 )
 
-            p_bc_pairs = np.asarray(
-                fem.locate_dofs_geometrical((W1, V_p), _p_anchor_marker),
+            p_gauge_dofs_v = np.asarray(
+                fem.locate_dofs_geometrical(V_p, _p_anchor_marker),
                 dtype=np.int32,
-            )
+            ).ravel()
             _emit(
                 f"[bc][warn] pressure gauge empty; using corner anchor at {p_anchor.tolist()} "
-                f"(count={p_bc_pairs.shape[0]})",
+                f"(count={p_gauge_dofs_v.size})",
                 status_callback=status_callback,
                 level="warning",
             )
 
-        if p_bc_pairs.shape[0] == 0:
-            raise RuntimeError("Failed to create pressure grounding dofs (p_bc_pairs is empty).")
+        if p_gauge_dofs_v.size == 0:
+            raise RuntimeError("Failed to create pressure grounding dofs (p_gauge_dofs_v is empty).")
 
-        p_dofs = np.asarray(p_bc_pairs[:, 0], dtype=np.int32)
-        bc_p = fem.dirichletbc(p_zero, p_bc_pairs, W1)
-        bcs_p_only = [bc_p]
-        bcs = list(bcs_p_only)
+        p_dofs = np.asarray(p_gauge_dofs_v, dtype=np.int32).copy()
+
         V_u = V_u_collapsed
         _audit_u_subspace_global(
             W.sub(0),
@@ -3822,31 +3901,19 @@ def _solve_coupled_evp(
         )
         _emit(
             "[bc][diag] pressure gauge + optional ribs clamp (tag 4 only). "
-            f"pressure BC dof count={p_dofs.size} (full pressure FE unknowns=n_p_collapsed={n_p_collapsed}), "
+            f"pressure BC dof count={p_gauge_dofs_v.size} (full pressure FE unknowns=n_p_collapsed={n_p_collapsed}), "
             f"ribs facets={facets_ribs.size}, ribs u_dof count={u_dofs_ribs.size}, "
             f"soundhole_facets.shape={soundhole_facets.shape}",
             status_callback=status_callback,
         )
 
-        clamp_ribs = _solver_bool(solver_cfg, "clamp_ribs", default=True)
-        if clamp_ribs and facets_ribs.size > 0:
-            rib_pairs = np.asarray(
-                fem.locate_dofs_topological(
-                    (W0, V_u), fdim, np.asarray(facets_ribs, dtype=np.int32)
-                ),
-                dtype=np.int32,
+        if clamp_ribs and facets_ribs.size > 0 and u_dofs_ribs.size > 0:
+            _emit(
+                f"[bc] ribs clamp (algebraic): u = 0 on tag {RIBS_SURFACE_TAG} only "
+                f"({facets_ribs.size} facets, {u_dofs_ribs.size} displacement DOFs); "
+                f"tags {tag_top} (top) and {tag_back} (back) remain free.",
+                status_callback=status_callback,
             )
-            if rib_pairs.shape[0] > 0:
-                u_zero = np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType)
-                bc_u = fem.dirichletbc(u_zero, rib_pairs, W0)
-                bcs.append(bc_u)
-                bcs_u_only.append(bc_u)
-                _emit(
-                    f"[bc] ribs clamp: u = 0 on tag {RIBS_SURFACE_TAG} only "
-                    f"({facets_ribs.size} facets, {rib_pairs.shape[0]} mixed displacement DOFs); "
-                    f"tags {tag_top} (top) and {tag_back} (back) remain free.",
-                    status_callback=status_callback,
-                )
         elif not clamp_ribs:
             _emit(
                 "[bc] ribs clamp DISABLED (clamp_ribs=false); top/back free, tag-4 u unconstrained.",
@@ -3862,21 +3929,12 @@ def _solve_coupled_evp(
             solver_cfg, "resolvent_pin_fix_tag5", default=True
         ):
             facets_fix = np.array(facet_tags.find(WOOD_FIX_SURFACE_TAG), dtype=np.int32)
-            fix_pairs = np.asarray(
-                fem.locate_dofs_topological(
-                    (W0, V_u), fdim, np.asarray(facets_fix, dtype=np.int32)
-                ),
-                dtype=np.int32,
-            )
-            if fix_pairs.shape[0] > 0:
-                u_zero_fix = np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType)
-                bc_fix = fem.dirichletbc(u_zero_fix, fix_pairs, W0)
-                bcs.append(bc_fix)
-                bcs_u_only.append(bc_fix)
+            u_dofs_fix_bc = _locate_facet_displacement_dofs(V_u, msh, facets_fix)
+            if u_dofs_fix_bc.size > 0:
                 _emit(
                     f"[bc][resolvent-probe] pin u=0 on tag-{WOOD_FIX_SURFACE_TAG} fix facets "
-                    f"({facets_fix.size} facets, {fix_pairs.shape[0]} mixed displacement DOFs) "
-                    "to remove rigid-body drift in the harmonic solve.",
+                    f"({facets_fix.size} facets, {u_dofs_fix_bc.size} displacement DOFs) "
+                    "(algebraic on mixed rows).",
                     status_callback=status_callback,
                 )
         _audit_shell_facet_dof_coverage(
@@ -3900,8 +3958,8 @@ def _solve_coupled_evp(
         )
     except Exception as e:
         _emit(
-            "[bc][error] dirichletbc creation failed. "
-            f"p_dofs.dtype={p_dofs.dtype}, p_dofs.shape={p_dofs.shape}, "
+            "[bc][error] pressure / displacement BC setup failed. "
+            f"p_gauge_dofs_v.shape={np.asarray(p_gauge_dofs_v).shape}, "
             f"soundhole_facets.dtype={soundhole_facets.dtype}, "
             f"soundhole_facets.shape={soundhole_facets.shape}, "
             f"error={e}",
@@ -3913,6 +3971,28 @@ def _solve_coupled_evp(
     _, p_to_W_map = W.sub(1).collapse()
     p_to_W_map = np.asarray(p_to_W_map, dtype=np.int32)
     u_to_W_map = np.asarray(u_parent_indices, dtype=np.int32)
+    u_ribs_alg = (
+        u_dofs_ribs
+        if clamp_ribs and u_dofs_ribs.size > 0
+        else np.array([], dtype=np.int32)
+    )
+    coupled_dirichlet_rows = _coupled_algebraic_dirichlet_rows(
+        u_to_W_map,
+        p_to_W_map,
+        p_gauge_dofs_v=p_gauge_dofs_v,
+        u_ribs_dofs_v=u_ribs_alg,
+        u_fix_dofs_v=u_dofs_fix_bc,
+    )
+    _u_alg_parts: List[np.ndarray] = []
+    if clamp_ribs and u_dofs_ribs.size > 0:
+        _u_alg_parts.append(np.asarray(u_dofs_ribs, dtype=np.int32).ravel())
+    if u_dofs_fix_bc.size > 0:
+        _u_alg_parts.append(np.asarray(u_dofs_fix_bc, dtype=np.int32).ravel())
+    u_alg_zero = (
+        np.unique(np.concatenate(_u_alg_parts).astype(np.int32, copy=False))
+        if _u_alg_parts
+        else np.array([], dtype=np.int32)
+    )
     shell_dofs_top = _locate_facet_displacement_dofs(
         V_u_collapsed,
         msh,
@@ -4012,8 +4092,8 @@ def _solve_coupled_evp(
             else:
                 raise
     else:
-        A = _assemble_coupled_matrix_safe(a_form, bcs, label="coupled_stiffness_A")
-        M = _assemble_coupled_matrix_safe(m_form, bcs, label="coupled_mass_M")
+        A = _assemble_coupled_matrix_safe(a_form, [], label="coupled_stiffness_A")
+        M = _assemble_coupled_matrix_safe(m_form, [], label="coupled_mass_M")
         if MPI.COMM_WORLD.rank == ROOT_RANK:
             try:
                 print(
@@ -4036,8 +4116,8 @@ def _solve_coupled_evp(
             wood_ds=wood_ds,
             air_dx=xdmf_dx(AIR_VOLUME_TAG),
             p2=p2,
-            bcs_u=bcs_u_only,
-            bcs_p=bcs_p_only,
+            bcs_u=[],
+            bcs_p=[],
             solver_cfg=solver_cfg,
             norm_uu_ref=1.0,
             norm_pp_ref=1.0,
@@ -4051,7 +4131,7 @@ def _solve_coupled_evp(
     )
     if not skip_reaudit:
         _audit_assembled_mixed_coupling(
-            W, a_up, m_pu, bcs, status_callback=status_callback
+            W, a_up, m_pu, [], status_callback=status_callback
         )
 
     gnhep_scale = _normalize_assembled_gnhep(A, M, solver_cfg)
@@ -4061,6 +4141,21 @@ def _solve_coupled_evp(
             f"(||A||_F={float(A.norm()):.6e}, ||M||_F={float(M.norm()):.6e})"
         )
         sys.stdout.flush()
+    if coupled_dirichlet_rows.size > 0:
+        _petsc_mat_zero_dirichlet_rows(A, coupled_dirichlet_rows, diag=1.0)
+        _petsc_mat_zero_dirichlet_rows(M, coupled_dirichlet_rows, diag=1.0)
+        try:
+            A.assemble()
+            M.assemble()
+        except Exception:
+            pass
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                f"[bc] algebraic Dirichlet: {coupled_dirichlet_rows.size} mixed rows "
+                f"(||A||_F={float(A.norm()):.6e}, ||M||_F={float(M.norm()):.6e})",
+                flush=True,
+            )
+            sys.stdout.flush()
     use_sifter = _solver_bool(solver_cfg, "adaptive_mode_sifter", default=True)
     M_top: Optional[PETSc.Mat] = None
     M_back: Optional[PETSc.Mat] = None
@@ -4070,10 +4165,10 @@ def _solve_coupled_evp(
         m_shell_top_u = (top_m["rho"] * t_top) * ufl.dot(u_shell, v_shell) * xdmf_ds(tag_top)
         m_shell_back_u = (back_m["rho"] * t_back) * ufl.dot(u_shell, v_shell) * xdmf_ds(tag_back)
         if has_top_plate_facets:
-            M_top = assemble_matrix(fem.form(m_shell_top_u), bcs=bcs_u_only)
+            M_top = assemble_matrix(fem.form(m_shell_top_u), bcs=[])
             M_top.assemble()
         if has_back_shell_facets:
-            M_back = assemble_matrix(fem.form(m_shell_back_u), bcs=bcs_u_only)
+            M_back = assemble_matrix(fem.form(m_shell_back_u), bcs=[])
             M_back.assemble()
 
     if not solve_evp:
@@ -4084,7 +4179,8 @@ def _solve_coupled_evp(
                 A,
                 M,
                 facet_tags=facet_tags,
-                bcs=bcs,
+                algebraic_dirichlet_rows=coupled_dirichlet_rows,
+                u_dofs_zero_collapsed=u_alg_zero,
                 u_to_W_map=u_to_W_map,
                 p_to_W_map=p_to_W_map,
                 solver_cfg=solver_cfg,
@@ -4704,6 +4800,7 @@ def _resolvent_solve_linear_system(
     min_x_norm: float,
     pc_shift_amount: Optional[float] = None,
     use_equilibrate: bool = True,
+    algebraic_dirichlet_rows: Optional[np.ndarray] = None,
 ) -> Tuple[bool, int, int, float, float, Optional[PETSc.KSP], Optional[PETSc.Mat]]:
     """
     Solve ``K x = b`` in physical scaling (no RHS / operator rescaling).
@@ -4716,6 +4813,10 @@ def _resolvent_solve_linear_system(
 
     On success returns ``(True, reason, its, rel_res, x_norm, ksp, K_work)``; caller
     must destroy ``ksp`` and ``K_work``. On failure both are destroyed inside.
+
+    When ``algebraic_dirichlet_rows`` is provided, owned rows of ``K_work`` and the
+    solve RHS are zeroed **after** optional symmetric equilibration and **before**
+    ``ksp.solve`` (same global DOF indices as the mixed function space).
     """
     comm = K.getComm()
     # Snapshot RHS before touching a duplicate. Do not use ``b_work.copy(b)``: in
@@ -4757,6 +4858,19 @@ def _resolvent_solve_linear_system(
             inv_sqrt, b_solve = _resolvent_symmetric_equilibrate(K_work, b_work)
         except Exception:
             b_solve = b_work
+
+    adr = (
+        np.asarray(algebraic_dirichlet_rows, dtype=np.int32).ravel()
+        if algebraic_dirichlet_rows is not None
+        else np.array([], dtype=np.int32)
+    )
+    if adr.size > 0:
+        _petsc_mat_zero_dirichlet_rows(K_work, adr, diag=1.0)
+        _petsc_vec_zero_global_dofs(b_solve, adr)
+        try:
+            K_work.assemble()
+        except Exception:
+            pass
 
     ksp = PETSc.KSP().create(comm)
     ksp.setOperators(K_work)
@@ -4891,35 +5005,6 @@ def _configure_probe_direct_ksp(ksp: PETSc.KSP, pc: PETSc.PC, solver_cfg: Dict) 
     ksp.setFromOptions()
 
 
-def _dirichlet_bc_local_dof_indices(bc: fem.DirichletBC) -> np.ndarray:
-    """Local dof indices in ``bc.function_space`` (scalar or vector)."""
-    try:
-        di = bc.dof_indices()
-    except Exception:
-        return np.array([], dtype=np.int32)
-    if isinstance(di, tuple) and len(di) >= 1 and di[0] is not None:
-        return np.asarray(di[0], dtype=np.int32).ravel()
-    return np.asarray(di, dtype=np.int32).ravel()
-
-
-def _split_resolvent_bcs_by_bs(
-    bcs: List[fem.DirichletBC],
-) -> Tuple[List[fem.DirichletBC], List[fem.DirichletBC]]:
-    """Displacement BCs (bs=3) vs pressure BCs (bs=1); BCs may target ``W.sub(0/1)`` (mixed)."""
-    bcs_u: List[fem.DirichletBC] = []
-    bcs_p: List[fem.DirichletBC] = []
-    for bc in bcs:
-        try:
-            bs = int(bc.function_space.dofmap.index_map_bs)
-        except Exception:
-            bs = 1
-        if bs == 3:
-            bcs_u.append(bc)
-        else:
-            bcs_p.append(bc)
-    return bcs_u, bcs_p
-
-
 def _assemble_resolvent_probe_traction_into_mixed(
     msh: mesh.Mesh,
     W: fem.FunctionSpace,
@@ -4928,14 +5013,14 @@ def _assemble_resolvent_probe_traction_into_mixed(
     facet_tag: int,
     force_scale: float,
     u_to_W_map: np.ndarray,
-    bcs: List[fem.DirichletBC],
+    u_dofs_zero_collapsed: np.ndarray,
+    algebraic_dirichlet_rows: np.ndarray,
     rhs_fn: fem.Function,
 ) -> Tuple[float, float]:
     """
-    Neumann traction on collapsed ``V_u``, ``set_bc`` on that sub-vector only, then scatter into
-    mixed ``rhs_fn``. Pressure gauge uses ``set_bc`` on the mixed PETSc vector when BCs live on
-    ``W.sub(1)`` with ``(W.sub(1), V_p)`` dof pairs (do not use ``set_bc`` on ``W`` with BCs
-    defined only on collapsed ``V_p`` — index maps will not match ``rhs_fn``).
+    Neumann traction on collapsed ``V_u``, optional zeros on collapsed displacement BC dofs,
+    scatter into mixed ``rhs_fn``, ``scatter_forward``, then zero algebraic Dirichlet rows on
+    the mixed PETSc vector.
     """
     b_vec = rhs_fn.x.petsc_vec
     V_u_rhs, _ = W.sub(0).collapse()
@@ -4947,9 +5032,12 @@ def _assemble_resolvent_probe_traction_into_mixed(
     b_u.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
     bu_before = np.asarray(b_u.array, dtype=np.float64).copy()
     b_u_norm_raw = float(np.linalg.norm(bu_before))
-    bcs_u, bcs_p = _split_resolvent_bcs_by_bs(bcs)
-    if bcs_u:
-        set_bc(b_u, bcs_u)
+    uz = np.unique(np.asarray(u_dofs_zero_collapsed, dtype=np.int32).ravel())
+    if uz.size > 0:
+        bu_arr = np.asarray(b_u.array)
+        uz = uz[(uz >= 0) & (uz < bu_arr.size)]
+        if uz.size > 0:
+            bu_arr[uz] = 0.0
     bu = np.asarray(b_u.array)
     parent = np.asarray(u_to_W_map, dtype=np.int32).ravel()
     b_arr = np.asarray(b_vec.array)
@@ -4966,10 +5054,11 @@ def _assemble_resolvent_probe_traction_into_mixed(
         b_u.destroy()
     except Exception:
         pass
-    if bcs_p:
-        set_bc(b_vec, bcs_p)
     rhs_fn.x.scatter_forward()
-    b_mix_norm = float(np.linalg.norm(b_arr))
+    adr = np.asarray(algebraic_dirichlet_rows, dtype=np.int32).ravel()
+    if adr.size > 0:
+        _petsc_vec_zero_global_dofs(b_vec, adr)
+    b_mix_norm = float(b_vec.norm())
     return b_u_norm_raw, b_mix_norm
 
 
@@ -4980,7 +5069,8 @@ def _coupled_resolvent_solve(
     M: PETSc.Mat,
     *,
     facet_tags,
-    bcs: List[fem.DirichletBC],
+    algebraic_dirichlet_rows: np.ndarray,
+    u_dofs_zero_collapsed: np.ndarray,
     u_to_W_map: np.ndarray,
     p_to_W_map: np.ndarray,
     solver_cfg: Dict,
@@ -5021,6 +5111,7 @@ def _coupled_resolvent_solve(
     rhs_fn = fem.Function(W)
     rhs = rhs_fn.x.petsc_vec
     rhs.zeroEntries()
+    adr = np.asarray(algebraic_dirichlet_rows, dtype=np.int32).ravel()
     b_u_norm_raw, b_lift_norm = _assemble_resolvent_probe_traction_into_mixed(
         msh,
         W,
@@ -5028,7 +5119,8 @@ def _coupled_resolvent_solve(
         facet_tag=tag,
         force_scale=float(force_scale),
         u_to_W_map=u_to_W_map,
-        bcs=bcs,
+        u_dofs_zero_collapsed=u_dofs_zero_collapsed,
+        algebraic_dirichlet_rows=adr,
         rhs_fn=rhs_fn,
     )
     if MPI.COMM_WORLD.rank == ROOT_RANK:
@@ -5144,6 +5236,7 @@ def _coupled_resolvent_solve(
                 res_tol=res_tol,
                 min_x_norm=min_x_norm,
                 use_equilibrate=use_equilibrate,
+                algebraic_dirichlet_rows=adr,
             )
         )
         try:
@@ -5201,6 +5294,7 @@ def _coupled_resolvent_solve(
                         min_x_norm=min_x_norm,
                         pc_shift_amount=shift_amt,
                         use_equilibrate=use_equilibrate,
+                        algebraic_dirichlet_rows=adr,
                     )
                 )
                 try:
