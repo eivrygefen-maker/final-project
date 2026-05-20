@@ -131,8 +131,23 @@ def _atomic_write_json(path: Path, payload: Dict) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Single-target-Hz FEM worker (one batch, then exit).")
-    parser.add_argument("--target_hz", type=float, required=True)
-    parser.add_argument("--num_modes", type=int, required=True)
+    parser.add_argument(
+        "--target_hz",
+        "--target-hz",
+        dest="target_hz",
+        type=float,
+        required=True,
+        metavar="HZ",
+        help="Shift-invert band center frequency (Hz).",
+    )
+    parser.add_argument(
+        "--num_modes",
+        "--num-modes",
+        dest="num_modes",
+        type=int,
+        required=True,
+        help="Number of modes to request from SLEPc harvest.",
+    )
     parser.add_argument(
         "--config",
         type=Path,
