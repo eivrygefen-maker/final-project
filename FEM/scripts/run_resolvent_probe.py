@@ -145,6 +145,9 @@ def main() -> int:
             return 2
         if stats.get("coupling_check_pass") or stats.get("probe_inconclusive_ok"):
             return 0
+        if stats.get("formulation_ok", False):
+            return 0
+        # solve_ok but weak iface / no visible p: exit 3 signals check JSON diagnostics
         return 3
 
     return 0

@@ -879,11 +879,11 @@ def _wood_air_interface_measure(
     """
     Wood↔air interface measure for FSI traction / Nitsche forms.
 
-    Default ``fsi_iface_measure=dS``: interior ``dS`` on **topology** air↔wood facets
-    (8644 facets) via ``MeshTags`` + ``subdomain_data=facet_tags``. Shell tags 1/3/4
-    are for ``ds`` stiffness only. Opt-in ``dS_facet_wood`` uses shell tags (usually weak).
+    Default ``fsi_iface_measure=meshtags``: ``ds`` on topology air↔wood facets (8644)
+    via ``MeshTags`` tag 20 — the only measure that assembles O(1e7) coupling on this
+    gmsh mesh in dolfinx. ``dS`` / ``dS_topology`` often integrate to ~1e-9 (no usable flux).
     """
-    mode = str(solver_cfg.get("fsi_iface_measure", "dS")).strip().lower()
+    mode = str(solver_cfg.get("fsi_iface_measure", "meshtags")).strip().lower()
     facets = _find_air_wood_interface_facets(msh, cell_tags)
     if facets.size == 0:
         raise RuntimeError(
@@ -927,12 +927,15 @@ def _wood_air_interface_measure(
             ) from exc
 
     _emit(
-        f"[FSI-IFACE][warn] unknown fsi_iface_measure={mode!r}; using dS_topology.",
+        f"[FSI-IFACE][warn] unknown fsi_iface_measure={mode!r}; using meshtags_ds.",
         status_callback=status_callback,
         level="warning",
     )
-    measure = _wood_air_dS_topology_measure(msh, facets)
-    return "dS_topology", measure, facets
+    iface_meshtags = _meshtags_on_facets(msh, facets, FSI_INTERFACE_FACET_TAG)
+    measure = ufl.Measure("ds", domain=msh, subdomain_data=iface_meshtags)(
+        FSI_INTERFACE_FACET_TAG
+    )
+    return "meshtags_ds", measure, facets
 
 
 def _audit_fsi_traction_pair_norms(
@@ -4129,9 +4132,56 @@ def _solve_coupled_evp(
         label=iface_mode,
         status_callback=status_callback,
     )
+    fb_thr = float(solver_cfg.get("fsi_iface_meshtags_fallback_threshold", 1.0e3))
+    if (
+        math.isfinite(n_up_fsi)
+        and n_up_fsi < fb_thr
+        and not iface_mode.startswith("meshtags")
+        and _solver_bool(solver_cfg, "fsi_iface_meshtags_fallback", default=True)
+    ):
+        _emit(
+            f"[FSI-IFACE][warn] {iface_mode} ||A_up||_F={n_up_fsi:.6e} < {fb_thr:.6e}; "
+            "rebuilding interface forms with meshtags_ds.",
+            status_callback=status_callback,
+            level="warning",
+        )
+        iface_meshtags = _meshtags_on_facets(msh, fsi_iface_facets, FSI_INTERFACE_FACET_TAG)
+        iface_measure = ufl.Measure("ds", domain=msh, subdomain_data=iface_meshtags)(
+            FSI_INTERFACE_FACET_TAG
+        )
+        iface_mode = "meshtags_ds"
+        use_dS_interior_pm = False
+        (
+            traction_up,
+            traction_pu,
+            mass_pu,
+            _u_n_both,
+            _p_avg,
+            _v_n_both,
+            _q_avg,
+        ) = _fsi_coupling_interface_forms(
+            msh,
+            u,
+            v,
+            p,
+            q,
+            iface_measure,
+            p_scale=p_scale,
+            fsi_gain=fsi_gain,
+            rho_air=rho_air,
+            use_interior_pm=False,
+        )
+        n_up_fsi, n_pu_fsi, n_mp_fsi = _audit_fsi_traction_pair_norms(
+            traction_up=traction_up,
+            traction_pu=traction_pu,
+            mass_pu=mass_pu,
+            label=iface_mode,
+            status_callback=status_callback,
+        )
     if probe_spec is not None:
         probe_spec["fsi_a_up_frobenius"] = float(n_up_fsi)
         probe_spec["fsi_a_pu_frobenius"] = float(n_pu_fsi)
+        probe_spec["fsi_iface_mode"] = iface_mode
     nit_uu = nit_up = nit_pu = None
     if use_nitsche:
         nit_uu, nit_up, nit_pu = _fsi_nitsche_interface_forms(
@@ -6161,6 +6211,13 @@ def _coupled_resolvent_solve(
     asm = assembly_matvec_diag or {}
     p_load_unit_asm = float(asm.get("p_load_unit_u", float("nan")))
     a_up_ref_json = float(fsi_a_up_frobenius)
+    u_map_coeff_norm = float("nan")
+    if solve_ok:
+        u_idx = np.asarray(u_to_W_map, dtype=np.int32).ravel()
+        if u_idx.size > 0:
+            u_map_coeff_norm = float(
+                np.linalg.norm(np.asarray(uh.x.array, dtype=np.float64)[u_idx])
+            )
     if not math.isfinite(p_load_unit_u) and math.isfinite(p_load_unit_asm):
         p_load_unit_u = p_load_unit_asm
     coupling_index_ok = bool(
@@ -6218,6 +6275,7 @@ def _coupled_resolvent_solve(
         "fsi_a_up_frobenius": a_up_ref_json,
         "fsi_a_pu_frobenius": float(fsi_a_pu_frobenius),
         "formulation_ok": bool(formulation_ok),
+        "u_map_coeff_norm": u_map_coeff_norm,
         "solve_ok": bool(solve_ok),
         "ksp_iterations": int(its),
         "ksp_reason": int(reason),
