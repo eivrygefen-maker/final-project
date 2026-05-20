@@ -1072,6 +1072,7 @@ def _audit_mixed_coupling_matvec_alignment(
     uh: Optional[fem.Function] = None,
     iface_u_parent: Optional[np.ndarray] = None,
     wood_u_parent: Optional[np.ndarray] = None,
+    force_iface_topology: bool = False,
     status_callback=None,
 ) -> Dict[str, float]:
     """
@@ -1223,10 +1224,15 @@ def _audit_mixed_coupling_matvec_alignment(
         and math.isfinite(diag["u_norm_iface"])
         and diag["u_norm_iface"] > 1.0e-20
     ):
+        hint_load = (
+            "shifted solve gave ||u||≈0 (pressure-only); compare static retry"
+            if force_iface_topology
+            else "try --force-iface, top-plate load, or static A x=F"
+        )
         print(
             "[FSI-MATVEC][hint] A_pu is active (unit iface excitation) but the solved interface "
-            "u pattern yields ~zero pressure-row load — signed normal-flux cancellation on "
-            "wood↔air facets (try --force-iface or top-plate load / higher Hz)."
+            f"u pattern yields ~zero pressure-row load — signed normal-flux cancellation on "
+            f"wood↔air facets ({hint_load})."
         )
     sys.stdout.flush()
     return diag
@@ -5804,6 +5810,60 @@ def _resolvent_solve_linear_system(
     return False, reason, its, rel_res, x_norm, None, None
 
 
+def _resolvent_probe_coupling_metrics(
+    u_norm: float,
+    p_norm: float,
+    *,
+    load_norm: float,
+    solver_cfg: Dict,
+    ax_p_ok: bool = False,
+) -> Dict[str, Any]:
+    """
+    Decide whether harmonic probe shows balanced u–p FSI (not matrix-index tests).
+
+    Rejects false positives where ||u||≈0 makes ||p||/||u|| huge while the structure
+    did not move (common for mass-dominated shifted solves with --force-iface).
+    """
+    p_floor = float(solver_cfg.get("resolvent_coupling_p_over_u_floor", 1.0e-6))
+    p_abs_floor = float(solver_cfg.get("resolvent_coupling_p_abs_floor", 1.0e-20))
+    u_min = float(solver_cfg.get("resolvent_min_u_norm", 1.0e-12))
+    p_min = float(solver_cfg.get("resolvent_min_p_norm", 1.0e-15))
+    p_over_u_max = float(solver_cfg.get("resolvent_p_over_u_max", 1.0e8))
+    balance_min = float(solver_cfg.get("resolvent_u_p_balance_min", 1.0e-6))
+    u_load_min = float(solver_cfg.get("resolvent_min_u_over_load", 1.0e-9))
+
+    ratio = float(p_norm) / max(float(u_norm), 1.0e-30)
+    balance = min(float(u_norm), float(p_norm)) / max(float(u_norm), float(p_norm), 1.0e-30)
+    u_over_load = float(u_norm) / max(float(load_norm), 1.0e-30)
+    structure_responds = bool(u_norm >= u_min and u_over_load >= u_load_min)
+    pressure_visible = bool(p_norm >= p_min)
+    p_over_u_sane = bool(ratio <= p_over_u_max)
+    norm_coupled = bool(
+        structure_responds
+        and pressure_visible
+        and p_over_u_sane
+        and balance >= balance_min
+        and p_norm > max(p_floor * u_norm, p_abs_floor)
+    )
+    pressure_only_shifted = bool(
+        pressure_visible
+        and not structure_responds
+        and p_norm < max(1.0e-3 * load_norm, 1.0e-12)
+    )
+    coupled_visible = bool(norm_coupled or (ax_p_ok and structure_responds and pressure_visible))
+    return {
+        "p_over_u": ratio,
+        "u_p_balance": balance,
+        "u_over_load": u_over_load,
+        "structure_responds": structure_responds,
+        "pressure_visible": pressure_visible,
+        "p_over_u_sane": p_over_u_sane,
+        "pressure_only_shifted": pressure_only_shifted,
+        "norm_coupled": norm_coupled,
+        "coupled_visible": coupled_visible,
+    }
+
+
 def _resolvent_probe_block_norms(
     uh: fem.Function,
     *,
@@ -6273,6 +6333,11 @@ def _coupled_resolvent_solve(
     ratio = float("nan")
     coupled_visible = False
     formulation_ok = False
+    structure_responds = False
+    pressure_only_shifted = False
+    u_p_balance = float("nan")
+    u_over_load = float("nan")
+    p_over_u_sane = True
     x_norm_f = float("nan")
 
     if solve_ok:
@@ -6290,29 +6355,23 @@ def _coupled_resolvent_solve(
             solve_ok = False
             reason = -8888
         else:
-            ratio = p_norm / max(u_norm, 1.0e-30)
-            p_floor = float(solver_cfg.get("resolvent_coupling_p_over_u_floor", 1.0e-6))
-            p_abs_floor = float(solver_cfg.get("resolvent_coupling_p_abs_floor", 1.0e-20))
-            norm_coupled = bool(
-                p_norm > max(p_floor * u_norm, p_abs_floor) and u_norm > 1.0e-30
-            )
             matvec_local: Dict[str, float] = {}
             b_p_from_u = float("nan")
             p_load_unit_u = float("nan")
-            if u_norm > 1.0e-30:
-                matvec_local = _audit_mixed_coupling_matvec_alignment(
-                    A,
-                    W,
-                    u_to_W_map,
-                    p_to_W_map,
-                    uh=uh,
-                    iface_u_parent=iface_u_parent,
-                    wood_u_parent=wood_u_parent,
-                    status_callback=status_callback,
-                )
-                b_p_from_u = float(matvec_local.get("p_load_solution", float("nan")))
-                p_load_unit_u = float(matvec_local.get("p_load_unit_u", float("nan")))
-            if MPI.COMM_WORLD.rank == ROOT_RANK and u_norm > 1.0e-30:
+            matvec_local = _audit_mixed_coupling_matvec_alignment(
+                A,
+                W,
+                u_to_W_map,
+                p_to_W_map,
+                uh=uh,
+                iface_u_parent=iface_u_parent,
+                wood_u_parent=wood_u_parent,
+                force_iface_topology=use_iface_force,
+                status_callback=status_callback,
+            )
+            b_p_from_u = float(matvec_local.get("p_load_solution", float("nan")))
+            p_load_unit_u = float(matvec_local.get("p_load_unit_u", float("nan")))
+            if MPI.COMM_WORLD.rank == ROOT_RANK:
                 print(
                     f"[resolvent-probe] diagnostic A·x pressure-block load from displacement: "
                     f"||(A x)_p||={b_p_from_u:.6e} (should be ≫0 if A_pu couples u→p)",
@@ -6334,24 +6393,51 @@ def _coupled_resolvent_solve(
                 * max(p_load_unit_u, 1.0e-30)
                 * max(u_norm, 1.0e-30)
             )
-            coupled_visible = bool(
-                norm_coupled
-                and formulation_ok
-                and (ax_p_ok or ratio > float(solver_cfg.get("resolvent_p_over_u_strong", 1.0e-4)))
+            cm = _resolvent_probe_coupling_metrics(
+                u_norm,
+                p_norm,
+                load_norm=b_norm,
+                solver_cfg=solver_cfg,
+                ax_p_ok=ax_p_ok,
             )
+            ratio = float(cm["p_over_u"])
+            coupled_visible = bool(formulation_ok and cm["coupled_visible"])
+            pressure_only_shifted = bool(cm["pressure_only_shifted"])
+            structure_responds = bool(cm["structure_responds"])
+            u_p_balance = float(cm["u_p_balance"])
+            u_over_load = float(cm["u_over_load"])
+            p_over_u_sane = bool(cm["p_over_u_sane"])
 
             mass_dom_threshold = float(
                 solver_cfg.get("resolvent_mass_dom_ratio_threshold", 1.0e3)
             )
-            if (
+            u_min_retry = float(solver_cfg.get("resolvent_min_u_norm", 1.0e-12))
+            need_static_retry = (
                 not coupled_visible
                 and _solver_bool(solver_cfg, "resolvent_static_coupling_retry", default=True)
-                and math.isfinite(mass_dom_ratio)
-                and mass_dom_ratio > mass_dom_threshold
-            ):
+                and (
+                    (
+                        math.isfinite(mass_dom_ratio)
+                        and mass_dom_ratio > mass_dom_threshold
+                    )
+                    or u_norm < u_min_retry
+                    or pressure_only_shifted
+                )
+            )
+            if need_static_retry:
                 if MPI.COMM_WORLD.rank == ROOT_RANK:
+                    why = (
+                        "mass-dominated shift"
+                        if math.isfinite(mass_dom_ratio)
+                        and mass_dom_ratio > mass_dom_threshold
+                        else (
+                            "||u|| below resolvent_min_u_norm"
+                            if u_norm < u_min_retry
+                            else "shifted pressure-only response (||u||≈0)"
+                        )
+                    )
                     print(
-                        "[resolvent-probe] shifted coupling inconclusive at mass-dominated Hz; "
+                        f"[resolvent-probe] shifted coupling inconclusive ({why}); "
                         "retrying static (A x = F) for ||p||/||u|| diagnostic.",
                         flush=True,
                     )
@@ -6383,14 +6469,21 @@ def _coupled_resolvent_solve(
                         p_to_W=p_to_W_map,
                         p_bc_rows_w=p_bc_rows_w,
                     )
-                    ratio_s = p_s / max(u_s, 1.0e-30)
+                    cm_s = _resolvent_probe_coupling_metrics(
+                        u_s,
+                        p_s,
+                        load_norm=b_norm,
+                        solver_cfg=solver_cfg,
+                    )
+                    ratio_s = float(cm_s["p_over_u"])
                     coupled_static = bool(
-                        p_s > max(p_floor * u_s, p_abs_floor) and u_s > 1.0e-30
+                        formulation_ok and cm_s["coupled_visible"]
                     )
                     if MPI.COMM_WORLD.rank == ROOT_RANK:
                         print(
                             f"[resolvent-probe] static retry: ||u||={u_s:.6e} ||p||={p_s:.6e} "
-                            f"||p||/||u||={ratio_s:.6e} coupling={coupled_static}",
+                            f"||p||/||u||={ratio_s:.6e} structure_responds="
+                            f"{cm_s['structure_responds']} coupling={coupled_static}",
                             flush=True,
                         )
                     if coupled_static:
@@ -6449,6 +6542,7 @@ def _coupled_resolvent_solve(
             uh=uh,
             iface_u_parent=iface_u_parent,
             wood_u_parent=wood_u_parent,
+            force_iface_topology=use_iface_force,
             status_callback=status_callback,
         )
         a_times_x_p = float(post_matvec.get("p_load_solution", float("nan")))
@@ -6489,6 +6583,8 @@ def _coupled_resolvent_solve(
     )
     if solve_ok and coupled_visible and coupling_index_ok:
         probe_verdict = "COUPLED"
+    elif solve_ok and pressure_only_shifted:
+        probe_verdict = "SHIFTED_PRESSURE_ONLY"
     elif solve_ok and not formulation_ok:
         probe_verdict = "WEAK_FSI_FORMULATION"
     elif solve_ok and iface_flux_cancelled:
@@ -6505,7 +6601,12 @@ def _coupled_resolvent_solve(
     if MPI.COMM_WORLD.rank == ROOT_RANK:
         if solve_ok:
             if coupled_visible:
-                verdict = "COUPLED (physics OK — prioritize solver strategy)"
+                verdict = "COUPLED (balanced u–p response — prioritize solver strategy)"
+            elif pressure_only_shifted:
+                verdict = (
+                    "SHIFTED_PRESSURE_ONLY (||u||≈0, tiny ||p|| — mass-dominated "
+                    "(A−λM) with iface traction; use static retry / shell-tag load / EVP)"
+                )
             elif iface_flux_cancelled:
                 verdict = (
                     "DECOUPLED (iface flux cancellation — A_pu OK but solved u·n cancels on "
@@ -6555,11 +6656,11 @@ def _coupled_resolvent_solve(
                     else ""
                 )
             )
-            p_floor = float(solver_cfg.get("resolvent_coupling_p_over_u_floor", 1.0e-6))
-            p_abs_floor = float(solver_cfg.get("resolvent_coupling_p_abs_floor", 1.0e-20))
             print(
-                f"[resolvent-probe] coupling_check (||p|| > max({p_floor:.0e}*||u||, {p_abs_floor:.0e})): "
-                f"{coupled_visible}"
+                f"[resolvent-probe] coupling_check: {coupled_visible} "
+                f"(structure_responds={structure_responds} pressure_visible="
+                f"{math.isfinite(p_norm) and p_norm >= float(solver_cfg.get('resolvent_min_p_norm', 1.0e-15))} "
+                f"u/load={u_over_load:.3e} u_p_balance={u_p_balance:.3e} p_over_u_sane={p_over_u_sane})"
             )
         print(f"[resolvent-probe] VERDICT: {verdict}")
         sys.stdout.flush()
@@ -6597,7 +6698,15 @@ def _coupled_resolvent_solve(
         ),
         "lambda_mass_over_a_fro": mass_dom_ratio,
         "coupling_check_pass": bool(coupled_visible),
-        "probe_inconclusive_ok": inconclusive_mass_dom,
+        "structure_responds": bool(structure_responds),
+        "pressure_only_shifted": bool(pressure_only_shifted),
+        "u_p_balance": u_p_balance,
+        "u_over_load": u_over_load,
+        "p_over_u_sane": bool(p_over_u_sane),
+        "probe_inconclusive_ok": bool(
+            inconclusive_mass_dom
+            or (solve_ok and pressure_only_shifted and not coupled_visible)
+        ),
         "probe_verdict": probe_verdict,
         "fsi_iface_mode": str(fsi_iface_mode),
         "p_load_unit_u": p_load_unit_u,

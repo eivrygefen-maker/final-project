@@ -15,8 +15,10 @@ Usage (VM, single MPI rank — same as fem_worker_single):
     --hz 102 --force-tag 3 --force-scale 1.0
 
 Interpretation:
-  - ||p||/||u|| > 1e-6  -> coupling visible; physics OK, focus on eigensolver strategy.
-  - ||p||/||u|| ~ 0      -> formulation/interface coupling issue before tuning SLEPc.
+  - probe_verdict COUPLED with structure_responds true -> balanced u–p FSI; OK for EVP tuning.
+  - SHIFTED_PRESSURE_ONLY / huge p_over_u with ||u||~0 -> false positive if using p/u alone;
+    mass-dominated (A−ω²M) with iface load; check static retry lines in log.
+  - DECOUPLED_IFACE_FLUX_CANCEL with shell tag-3 load -> formulation OK, load does not pump iface.
 
 Stabilization (probe path only): soft shell grounding, air-volume pressure penalty,
 block Frobenius scaling of A/M blocks, symmetric diagonal equilibration, MUMPS shift 1e-2.
