@@ -1030,6 +1030,39 @@ def _probe_monolithic_coupling_pressure_load(
             pass
 
 
+def _mixed_matvec_pressure_row_norm(
+    A: PETSc.Mat,
+    x_vec: PETSc.Vec,
+    p_map: np.ndarray,
+) -> float:
+    y = A.createVecRight()
+    try:
+        A.mult(x_vec, y)
+        try:
+            y.ghostUpdate(
+                addv=PETSc.InsertMode.INSERT_VALUES,
+                mode=PETSc.ScatterMode.FORWARD,
+            )
+        except Exception:
+            try:
+                y.ghostUpdate(
+                    addv=PETSc.InsertMode.INSERT,
+                    mode=PETSc.ScatterMode.FORWARD,
+                )
+            except Exception:
+                pass
+        owned_p = _petsc_owned_global_rows(y, p_map)
+        if owned_p.size == 0:
+            return 0.0
+        vals = np.asarray(y.getValues(owned_p), dtype=np.float64)
+        return float(np.linalg.norm(vals))
+    finally:
+        try:
+            y.destroy()
+        except Exception:
+            pass
+
+
 def _audit_mixed_coupling_matvec_alignment(
     A: PETSc.Mat,
     W: fem.FunctionSpace,
@@ -1037,6 +1070,7 @@ def _audit_mixed_coupling_matvec_alignment(
     p_to_W: np.ndarray,
     *,
     uh: Optional[fem.Function] = None,
+    iface_u_parent: Optional[np.ndarray] = None,
     status_callback=None,
 ) -> Dict[str, float]:
     """
@@ -1054,7 +1088,11 @@ def _audit_mixed_coupling_matvec_alignment(
         "p_idx_max": float(np.max(p_map)) if p_map.size else -1.0,
         "map_overlap": float(overlap.size),
         "p_load_unit_u": 0.0,
+        "p_load_unit_iface": 0.0,
         "p_load_solution": float("nan"),
+        "p_load_solution_iface": float("nan"),
+        "u_norm_iface": float("nan"),
+        "u_norm_noniface": float("nan"),
         "p_sub_norm": float("nan"),
     }
     if overlap.size > 0:
@@ -1072,33 +1110,58 @@ def _audit_mixed_coupling_matvec_alignment(
             np.ones(owned_u.size, dtype=PETSc.ScalarType),
         )
     x_unit.x.scatter_forward()
-    y = A.createVecRight()
-    try:
-        A.mult(x_unit.x.petsc_vec, y)
-        try:
-            y.ghostUpdate(
-                addv=PETSc.InsertMode.INSERT_VALUES,
-                mode=PETSc.ScatterMode.FORWARD,
+    diag["p_load_unit_u"] = _mixed_matvec_pressure_row_norm(
+        A, x_unit.x.petsc_vec, p_map
+    )
+    iface_parent = (
+        np.asarray(iface_u_parent, dtype=np.int32).ravel()
+        if iface_u_parent is not None
+        else np.array([], dtype=np.int32)
+    )
+    if iface_parent.size > 0:
+        x_iface = fem.Function(W)
+        x_iface.x.petsc_vec.set(0.0)
+        owned_iface = _petsc_owned_global_rows(x_iface.x.petsc_vec, iface_parent)
+        if owned_iface.size > 0:
+            x_iface.x.petsc_vec.setValues(
+                owned_iface,
+                np.ones(owned_iface.size, dtype=PETSc.ScalarType),
             )
-        except Exception:
-            pass
-        owned_p = _petsc_owned_global_rows(y, p_map)
-        if owned_p.size > 0:
-            vals = np.asarray(y.getValues(owned_p), dtype=np.float64)
-            diag["p_load_unit_u"] = float(np.linalg.norm(vals))
-    finally:
-        try:
-            y.destroy()
-        except Exception:
-            pass
+        x_iface.x.scatter_forward()
+        diag["p_load_unit_iface"] = _mixed_matvec_pressure_row_norm(
+            A, x_iface.x.petsc_vec, p_map
+        )
     if uh is not None:
+        uh.x.scatter_forward()
         diag["p_load_solution"] = _probe_monolithic_coupling_pressure_load(
             A, uh, p_to_W=p_map, u_to_W=u_map
         )
-        try:
-            diag["p_sub_norm"] = float(uh.sub(1).x.norm())
-        except Exception:
-            pass
+        diag["p_sub_norm"] = _petsc_vec_norm_on_global_indices(
+            uh.x.petsc_vec, p_map
+        )
+        if iface_parent.size > 0:
+            diag["u_norm_iface"] = _petsc_vec_norm_on_global_indices(
+                uh.x.petsc_vec, iface_parent
+            )
+            non_iface = np.setdiff1d(u_map, iface_parent, assume_unique=False)
+            diag["u_norm_noniface"] = _petsc_vec_norm_on_global_indices(
+                uh.x.petsc_vec, non_iface
+            )
+            x_sol_iface = fem.Function(W)
+            x_sol_iface.x.petsc_vec.set(0.0)
+            owned_ui = _petsc_owned_global_rows(
+                x_sol_iface.x.petsc_vec, iface_parent
+            )
+            if owned_ui.size > 0:
+                vals_ui = uh.x.petsc_vec.getValues(owned_ui)
+                x_sol_iface.x.petsc_vec.setValues(
+                    owned_ui,
+                    np.asarray(vals_ui, dtype=PETSc.ScalarType),
+                )
+            x_sol_iface.x.scatter_forward()
+            diag["p_load_solution_iface"] = _mixed_matvec_pressure_row_norm(
+                A, x_sol_iface.x.petsc_vec, p_map
+            )
     blocked = (
         u_map.size > 0
         and p_map.size > 0
@@ -1110,13 +1173,29 @@ def _audit_mixed_coupling_matvec_alignment(
         f"p=[{diag['p_idx_min']:.0f},{diag['p_idx_max']:.0f}] "
         f"blocked_layout={blocked} overlap={int(diag['map_overlap'])} "
         f"||(A·e_u)_p||={diag['p_load_unit_u']:.6e} "
+        f"||(A·e_u_iface)_p||={diag['p_load_unit_iface']:.6e} "
         f"||(A·x)_p||={diag['p_load_solution']:.6e} "
-        f"||p_sub||={diag['p_sub_norm']:.6e}"
+        f"||(A·x_iface)_p||={diag['p_load_solution_iface']:.6e} "
+        f"||u||_iface={diag['u_norm_iface']:.6e} "
+        f"||p||_petsc={diag['p_sub_norm']:.6e}"
     )
     if diag["p_load_unit_u"] < 1.0e-20:
         print(
             "[FSI-MATVEC][CRITICAL] A_pu columns do not couple to displacement parent indices "
             "(unit u excitation produces zero pressure-row load)."
+        )
+    elif (
+        math.isfinite(diag["p_load_unit_u"])
+        and diag["p_load_unit_u"] > 1.0e3
+        and math.isfinite(diag["p_load_solution"])
+        and diag["p_load_solution"] < 1.0e-6 * diag["p_load_unit_u"]
+        and math.isfinite(diag["u_norm_iface"])
+        and diag["u_norm_iface"] < 1.0e-6 * max(diag.get("u_norm_noniface", 1.0), 1.0e-30)
+    ):
+        print(
+            "[FSI-MATVEC][hint] Unit u excites pressure rows strongly but the solved u has "
+            "negligible interface DOFs — back-plate load may not pump normal velocity on "
+            "wood↔air iface (check ||u||_iface vs shell)."
         )
     sys.stdout.flush()
     return diag
@@ -1423,6 +1502,33 @@ def _locate_facet_displacement_dofs(V_u, msh, facet_indices: np.ndarray) -> np.n
         fem.locate_dofs_topological(V_u, fdim, np.asarray(facet_indices, dtype=np.int32)),
         dtype=np.int32,
     )
+
+
+def _fsi_interface_u_parent_indices(
+    V_u,
+    msh: mesh.Mesh,
+    iface_facets: np.ndarray,
+    u_to_W: np.ndarray,
+) -> np.ndarray:
+    """Mixed-space parent indices for displacement DOFs on wood↔air interface facets."""
+    dofs = _locate_facet_displacement_dofs(V_u, msh, iface_facets)
+    u_map = np.asarray(u_to_W, dtype=np.int32).ravel()
+    if dofs.size == 0 or u_map.size == 0:
+        return np.array([], dtype=np.int32)
+    valid = dofs[(dofs >= 0) & (dofs < u_map.size)]
+    if valid.size == 0:
+        return np.array([], dtype=np.int32)
+    return np.unique(u_map[valid].astype(np.int32, copy=False))
+
+
+def _petsc_vec_norm_on_global_indices(vec: PETSc.Vec, global_indices: np.ndarray) -> float:
+    """L2 norm of vector entries at owned global indices."""
+    idx = np.asarray(global_indices, dtype=np.int32).ravel()
+    owned = _petsc_owned_global_rows(vec, idx)
+    if owned.size == 0:
+        return 0.0
+    vals = np.asarray(vec.getValues(owned), dtype=np.float64)
+    return float(np.linalg.norm(vals))
 
 
 def _audit_shell_facet_dof_coverage(
@@ -2217,12 +2323,17 @@ def _petsc_mat_zero_dirichlet_rows(
     *,
     diag: float = 1.0,
     batch_size: int = 512,
+    zero_columns: bool = False,
+    x: Optional[PETSc.Vec] = None,
+    b: Optional[PETSc.Vec] = None,
 ) -> None:
     """
-    Zero entire owned global rows (all columns, including off-diagonal blocks).
+    Enforce algebraic Dirichlet on owned global rows (and optionally columns).
 
-    Uses batched ``Mat.zeroRows`` with a global ``IS`` (never ``zeroRowsLocal`` — that
-    path segfaults on large dolfinx-assembled operators in petsc4py).
+    Uses batched ``Mat.zeroRows`` / ``Mat.zeroRowsColumns`` with a global ``IS`` (never
+    ``zeroRowsLocal`` — that path segfaults on large dolfinx-assembled operators).
+    Row-only elimination leaves spurious column coupling in monolithic FSI blocks;
+    probes default to ``zero_columns=True``.
     """
     rows = _petsc_owned_global_rows(mat, global_rows)
     if rows.size == 0:
@@ -2251,7 +2362,10 @@ def _petsc_mat_zero_dirichlet_rows(
         except Exception:
             pass
         try:
-            mat.zeroRows(is_rows, diag=d)
+            if zero_columns:
+                mat.zeroRowsColumns(is_rows, diag=d, x=x, b=b)
+            else:
+                mat.zeroRows(is_rows, diag=d, x=x, b=b)
         finally:
             is_rows.destroy()
     try:
@@ -4182,6 +4296,8 @@ def _solve_coupled_evp(
         probe_spec["fsi_a_up_frobenius"] = float(n_up_fsi)
         probe_spec["fsi_a_pu_frobenius"] = float(n_pu_fsi)
         probe_spec["fsi_iface_mode"] = iface_mode
+        probe_spec["fsi_iface_facets"] = fsi_iface_facets
+        probe_spec["fsi_iface_n_facets"] = int(fsi_iface_facets.size)
     nit_uu = nit_up = nit_pu = None
     if use_nitsche:
         nit_uu, nit_up, nit_pu = _fsi_nitsche_interface_forms(
@@ -4662,8 +4778,18 @@ def _solve_coupled_evp(
                     level="warning",
                 )
 
+    iface_u_parent = _fsi_interface_u_parent_indices(
+        V_u_collapsed, msh, fsi_iface_facets, u_to_W_map
+    )
+    if probe_spec is not None:
+        probe_spec["iface_u_parent_n"] = int(iface_u_parent.size)
     matvec_diag = _audit_mixed_coupling_matvec_alignment(
-        A, W, u_to_W_map, p_to_W_map, status_callback=status_callback
+        A,
+        W,
+        u_to_W_map,
+        p_to_W_map,
+        iface_u_parent=iface_u_parent,
+        status_callback=status_callback,
     )
     assembly_matvec_diag = dict(matvec_diag)
     p_unit = float(matvec_diag.get("p_load_unit_u", 0.0))
@@ -4806,6 +4932,7 @@ def _solve_coupled_evp(
                 u_dofs_zero_collapsed=u_alg_zero,
                 u_to_W_map=u_to_W_map,
                 p_to_W_map=p_to_W_map,
+                iface_u_parent=iface_u_parent,
                 solver_cfg=solver_cfg,
                 xdmf_ds=xdmf_ds,
                 frequency_hz=float(probe_spec.get("frequency_hz", 102.0)),
@@ -5492,8 +5619,32 @@ def _resolvent_solve_linear_system(
         else np.array([], dtype=np.int32)
     )
     if adr.size > 0:
-        _petsc_mat_zero_dirichlet_rows(K_work, adr, diag=1.0)
-        _petsc_vec_zero_global_dofs(b_solve, adr)
+        zero_cols = _solver_bool(
+            solver_cfg, "resolvent_bc_zero_columns", default=True
+        )
+        bc_mode = "zeroRowsColumns" if zero_cols else "zeroRows"
+        try:
+            _petsc_mat_zero_dirichlet_rows(
+                K_work,
+                adr,
+                diag=1.0,
+                zero_columns=zero_cols,
+                x=x,
+                b=b_solve,
+            )
+        except Exception as bc_exc:
+            _emit(
+                f"[bc][warn] {bc_mode} failed ({type(bc_exc).__name__}: {bc_exc!r}); "
+                "falling back to row-only zeroRows.",
+                status_callback=None,
+                level="warning",
+            )
+            _petsc_mat_zero_dirichlet_rows(K_work, adr, diag=1.0, zero_columns=False)
+            _petsc_vec_zero_global_dofs(b_solve, adr)
+            bc_mode = "zeroRows_fallback"
+        else:
+            if not zero_cols:
+                _petsc_vec_zero_global_dofs(b_solve, adr)
         try:
             K_work.assemble()
         except Exception:
@@ -5501,7 +5652,7 @@ def _resolvent_solve_linear_system(
         if MPI.COMM_WORLD.rank == ROOT_RANK:
             print(
                 f"[bc] resolvent algebraic Dirichlet: {adr.size} mixed rows on K "
-                f"(batched zeroRows + RHS zero before KSP)",
+                f"({bc_mode} + RHS adjust before KSP)",
                 flush=True,
             )
 
@@ -5717,6 +5868,7 @@ def _coupled_resolvent_solve(
     u_dofs_zero_collapsed: np.ndarray,
     u_to_W_map: np.ndarray,
     p_to_W_map: np.ndarray,
+    iface_u_parent: Optional[np.ndarray] = None,
     solver_cfg: Dict,
     xdmf_ds,
     frequency_hz: float,
@@ -6017,6 +6169,7 @@ def _coupled_resolvent_solve(
                     u_to_W_map,
                     p_to_W_map,
                     uh=uh,
+                    iface_u_parent=iface_u_parent,
                     status_callback=status_callback,
                 )
                 b_p_from_u = float(matvec_local.get("p_load_solution", float("nan")))
@@ -6204,6 +6357,7 @@ def _coupled_resolvent_solve(
             u_to_W_map,
             p_to_W_map,
             uh=uh,
+            iface_u_parent=iface_u_parent,
             status_callback=status_callback,
         )
         a_times_x_p = float(post_matvec.get("p_load_solution", float("nan")))
@@ -6268,6 +6422,17 @@ def _coupled_resolvent_solve(
         "p_load_unit_u": p_load_unit_u,
         "p_load_unit_u_assembly": p_load_unit_asm,
         "a_times_x_p_norm": a_times_x_p,
+        "a_times_x_iface_p_norm": float(
+            post_matvec.get("p_load_solution_iface", float("nan"))
+        ),
+        "p_load_unit_iface": float(post_matvec.get("p_load_unit_iface", float("nan"))),
+        "u_norm_iface": float(post_matvec.get("u_norm_iface", float("nan"))),
+        "u_norm_noniface": float(post_matvec.get("u_norm_noniface", float("nan"))),
+        "iface_u_parent_n": int(
+            np.asarray(iface_u_parent, dtype=np.int32).size
+            if iface_u_parent is not None
+            else 0
+        ),
         "p_sub_norm": float(post_matvec.get("p_sub_norm", float("nan"))),
         "u_map_max": float(post_matvec.get("u_idx_max", asm.get("u_idx_max", float("nan")))),
         "p_map_min": float(post_matvec.get("p_idx_min", asm.get("p_idx_min", float("nan")))),
