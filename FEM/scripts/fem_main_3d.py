@@ -1753,11 +1753,19 @@ def _block_frobenius_normalize_coupled_forms(
 
 
 def _resolvent_probe_block_solver_cfg(solver_cfg: Dict) -> Dict:
-    """Probe path: block Frobenius scale A_uu/A_pp (and matching blocks) unless disabled."""
-    if not _solver_bool(solver_cfg, "resolvent_block_frobenius_normalize", default=True):
-        return solver_cfg
+    """
+    Optional probe-only override for block Frobenius scaling.
+
+    When ``resolvent_block_frobenius_normalize`` is **absent**, the merged JSON
+    ``gnhep_block_frobenius_normalize`` is used unchanged (production default: off).
+    Set ``resolvent_block_frobenius_normalize`` explicitly to force probe scaling on/off.
+    """
     merged = dict(solver_cfg)
-    merged["gnhep_block_frobenius_normalize"] = True
+    if "resolvent_block_frobenius_normalize" not in solver_cfg:
+        return merged
+    merged["gnhep_block_frobenius_normalize"] = _solver_bool(
+        solver_cfg, "resolvent_block_frobenius_normalize", default=False
+    )
     return merged
 
 
@@ -1869,6 +1877,17 @@ def _petsc_mat_zero_dirichlet_rows(mat: PETSc.Mat, global_rows: np.ndarray, *, d
                     mat.zeroRows(is_rows, diag=d)
                 finally:
                     is_rows.destroy()
+    try:
+        mat.zeroRowsColumns(rows, diag=d)
+    except Exception:
+        try:
+            is_rows = PETSc.IS().createGeneral(rows, comm=mat.getComm())
+            try:
+                mat.zeroRowsColumns(is_rows, diag=d)
+            finally:
+                is_rows.destroy()
+        except Exception:
+            pass
 
 
 def _petsc_vec_zero_global_dofs(vec: PETSc.Vec, global_rows: np.ndarray) -> None:
@@ -5143,6 +5162,7 @@ def _coupled_resolvent_solve(
         )
 
     s_uu_load = 1.0
+    load_norm_raw = float(b_lift_norm)
     if block_scales:
         s_uu_load = max(float(block_scales.get("s_uu", 1.0)), 1.0e-30)
         if abs(s_uu_load - 1.0) > 0.0:
@@ -5151,6 +5171,12 @@ def _coupled_resolvent_solve(
     b_norm_petsc = float(rhs.norm())
     b_norm_numpy = float(np.linalg.norm(np.asarray(rhs.array, dtype=np.float64)))
     b_norm = max(b_norm_petsc, b_norm_numpy, 1.0e-30)
+    if MPI.COMM_WORLD.rank == ROOT_RANK and abs(s_uu_load - 1.0) > 0.0:
+        print(
+            f"[resolvent-probe] RHS block scale 1/s_uu={1.0 / s_uu_load:.6e}: "
+            f"||F||_raw={load_norm_raw:.6e} → ||F||_scaled={b_norm:.6e}",
+            flush=True,
+        )
     u_idx = np.asarray(u_to_W_map, dtype=np.int32).ravel()
     b_u_norm = float(np.linalg.norm(np.asarray(rhs.array, dtype=np.float64)[u_idx])) if u_idx.size else 0.0
     if b_norm < 1.0e-30:
@@ -5200,6 +5226,14 @@ def _coupled_resolvent_solve(
 
     a_norm_f = float(A.norm())
     m_norm_f = float(M.norm())
+    mass_dom_ratio = float("nan")
+    if (
+        math.isfinite(lam_shift)
+        and math.isfinite(a_norm_f)
+        and math.isfinite(m_norm_f)
+        and a_norm_f > 1.0e-30
+    ):
+        mass_dom_ratio = (lam_shift * m_norm_f) / a_norm_f
     if MPI.COMM_WORLD.rank == ROOT_RANK and lam_shift > 0.0:
         print(
             "[resolvent-probe] shifted operator: "
@@ -5352,14 +5386,73 @@ def _coupled_resolvent_solve(
                 p_norm > max(p_floor * u_norm, p_abs_floor) and u_norm > 1.0e-30
             )
 
-    mass_dom_ratio = float("nan")
-    if (
-        math.isfinite(lam_shift)
-        and math.isfinite(a_norm_f)
-        and math.isfinite(m_norm_f)
-        and a_norm_f > 1.0e-30
-    ):
-        mass_dom_ratio = (lam_shift * m_norm_f) / a_norm_f
+            mass_dom_threshold = float(
+                solver_cfg.get("resolvent_mass_dom_ratio_threshold", 1.0e3)
+            )
+            if (
+                not coupled_visible
+                and _solver_bool(solver_cfg, "resolvent_static_coupling_retry", default=True)
+                and math.isfinite(mass_dom_ratio)
+                and mass_dom_ratio > mass_dom_threshold
+            ):
+                if MPI.COMM_WORLD.rank == ROOT_RANK:
+                    print(
+                        "[resolvent-probe] shifted coupling inconclusive at mass-dominated Hz; "
+                        "retrying static (A x = F) for ||p||/||u|| diagnostic.",
+                        flush=True,
+                    )
+                uh_static = fem.Function(W)
+                rhs_static = rhs.duplicate()
+                accepted_s, reason_s, its_s, rel_s, _xn_s, ksp_s, K_s = (
+                    _resolvent_solve_linear_system(
+                        A,
+                        rhs_static,
+                        uh_static,
+                        solver_cfg,
+                        label="static coupling retry",
+                        physical_b_norm=b_norm,
+                        res_tol=res_tol,
+                        min_x_norm=min_x_norm,
+                        use_equilibrate=use_equilibrate,
+                        algebraic_dirichlet_rows=adr,
+                    )
+                )
+                try:
+                    rhs_static.destroy()
+                except Exception:
+                    pass
+                if accepted_s:
+                    uh_static.x.scatter_forward()
+                    u_s, p_s, x_s = _resolvent_probe_block_norms(
+                        uh_static, u_to_W=u_to_W_map, p_to_W=p_to_W_map
+                    )
+                    ratio_s = p_s / max(u_s, 1.0e-30)
+                    coupled_static = bool(
+                        p_s > max(p_floor * u_s, p_abs_floor) and u_s > 1.0e-30
+                    )
+                    if MPI.COMM_WORLD.rank == ROOT_RANK:
+                        print(
+                            f"[resolvent-probe] static retry: ||u||={u_s:.6e} ||p||={p_s:.6e} "
+                            f"||p||/||u||={ratio_s:.6e} coupling={coupled_static}",
+                            flush=True,
+                        )
+                    if coupled_static:
+                        uh.x.array[:] = uh_static.x.array
+                        uh.x.scatter_forward()
+                        u_norm, p_norm, x_norm_f = u_s, p_s, x_s
+                        ratio = ratio_s
+                        coupled_visible = True
+                        solve_mode = "static_coupling_retry"
+                        rel_res = rel_s
+                        reason = reason_s
+                        its = its_s
+                try:
+                    if ksp_s is not None:
+                        ksp_s.destroy()
+                    if K_s is not None:
+                        K_s.destroy()
+                except Exception:
+                    pass
 
     if MPI.COMM_WORLD.rank == ROOT_RANK:
         if solve_ok:
@@ -5431,7 +5524,9 @@ def _coupled_resolvent_solve(
         "force_facet_count": int(n_facets),
         "force_scale": float(force_scale),
         "load_norm": b_norm,
+        "load_norm_raw": load_norm_raw,
         "load_u_norm": b_u_norm,
+        "block_scale_s_uu": float(s_uu_load),
         "x_norm": x_norm_f,
         "u_norm": u_norm,
         "p_norm": p_norm,
