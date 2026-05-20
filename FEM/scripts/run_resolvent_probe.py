@@ -76,6 +76,11 @@ def main() -> int:
         default=1.0,
         help="Traction amplitude (N/m^2 scale in weak form units).",
     )
+    parser.add_argument(
+        "--force-iface",
+        action="store_true",
+        help="Apply traction on wood↔air topology facets (tag 20 meshtags) instead of shell tag.",
+    )
     args = parser.parse_args()
 
     if MPI.COMM_WORLD.size != 1:
@@ -111,6 +116,7 @@ def main() -> int:
         print(
             f"[resolvent-probe] f={args.hz} Hz, force_tag={args.force_tag}, "
             f"force_scale={args.force_scale}"
+            + (" force_iface_topology=1" if args.force_iface else "")
         )
         sys.stdout.flush()
 
@@ -123,6 +129,7 @@ def main() -> int:
             frequency_hz=float(args.hz),
             force_facet_tag=int(args.force_tag),
             force_scale=float(args.force_scale),
+            force_iface_topology=bool(args.force_iface),
         )
     except Exception as exc:
         if MPI.COMM_WORLD.rank == 0:

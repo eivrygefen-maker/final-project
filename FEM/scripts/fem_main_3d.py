@@ -1071,6 +1071,7 @@ def _audit_mixed_coupling_matvec_alignment(
     *,
     uh: Optional[fem.Function] = None,
     iface_u_parent: Optional[np.ndarray] = None,
+    wood_u_parent: Optional[np.ndarray] = None,
     status_callback=None,
 ) -> Dict[str, float]:
     """
@@ -1089,10 +1090,12 @@ def _audit_mixed_coupling_matvec_alignment(
         "map_overlap": float(overlap.size),
         "p_load_unit_u": 0.0,
         "p_load_unit_iface": 0.0,
+        "p_load_unit_wood": 0.0,
         "p_load_solution": float("nan"),
         "p_load_solution_iface": float("nan"),
         "u_norm_iface": float("nan"),
         "u_norm_noniface": float("nan"),
+        "u_norm_wood_vol": float("nan"),
         "p_sub_norm": float("nan"),
     }
     if overlap.size > 0:
@@ -1131,6 +1134,24 @@ def _audit_mixed_coupling_matvec_alignment(
         diag["p_load_unit_iface"] = _mixed_matvec_pressure_row_norm(
             A, x_iface.x.petsc_vec, p_map
         )
+    wood_parent = (
+        np.asarray(wood_u_parent, dtype=np.int32).ravel()
+        if wood_u_parent is not None
+        else np.array([], dtype=np.int32)
+    )
+    if wood_parent.size > 0:
+        x_wood = fem.Function(W)
+        x_wood.x.petsc_vec.set(0.0)
+        owned_w = _petsc_owned_global_rows(x_wood.x.petsc_vec, wood_parent)
+        if owned_w.size > 0:
+            x_wood.x.petsc_vec.setValues(
+                owned_w,
+                np.ones(owned_w.size, dtype=PETSc.ScalarType),
+            )
+        x_wood.x.scatter_forward()
+        diag["p_load_unit_wood"] = _mixed_matvec_pressure_row_norm(
+            A, x_wood.x.petsc_vec, p_map
+        )
     if uh is not None:
         uh.x.scatter_forward()
         diag["p_load_solution"] = _probe_monolithic_coupling_pressure_load(
@@ -1162,6 +1183,10 @@ def _audit_mixed_coupling_matvec_alignment(
             diag["p_load_solution_iface"] = _mixed_matvec_pressure_row_norm(
                 A, x_sol_iface.x.petsc_vec, p_map
             )
+        if wood_parent.size > 0:
+            diag["u_norm_wood_vol"] = _petsc_vec_norm_on_global_indices(
+                uh.x.petsc_vec, wood_parent
+            )
     blocked = (
         u_map.size > 0
         and p_map.size > 0
@@ -1174,9 +1199,11 @@ def _audit_mixed_coupling_matvec_alignment(
         f"blocked_layout={blocked} overlap={int(diag['map_overlap'])} "
         f"||(A·e_u)_p||={diag['p_load_unit_u']:.6e} "
         f"||(A·e_u_iface)_p||={diag['p_load_unit_iface']:.6e} "
+        f"||(A·e_u_wood)_p||={diag['p_load_unit_wood']:.6e} "
         f"||(A·x)_p||={diag['p_load_solution']:.6e} "
         f"||(A·x_iface)_p||={diag['p_load_solution_iface']:.6e} "
         f"||u||_iface={diag['u_norm_iface']:.6e} "
+        f"||u||_wood={diag['u_norm_wood_vol']:.6e} "
         f"||p||_petsc={diag['p_sub_norm']:.6e}"
     )
     if diag["p_load_unit_u"] < 1.0e-20:
@@ -1189,13 +1216,17 @@ def _audit_mixed_coupling_matvec_alignment(
         and diag["p_load_unit_u"] > 1.0e3
         and math.isfinite(diag["p_load_solution"])
         and diag["p_load_solution"] < 1.0e-6 * diag["p_load_unit_u"]
+        and math.isfinite(diag["p_load_unit_iface"])
+        and diag["p_load_unit_iface"] > 1.0e3
+        and math.isfinite(diag["p_load_solution_iface"])
+        and diag["p_load_solution_iface"] < 1.0e-6 * diag["p_load_unit_iface"]
         and math.isfinite(diag["u_norm_iface"])
-        and diag["u_norm_iface"] < 1.0e-6 * max(diag.get("u_norm_noniface", 1.0), 1.0e-30)
+        and diag["u_norm_iface"] > 1.0e-20
     ):
         print(
-            "[FSI-MATVEC][hint] Unit u excites pressure rows strongly but the solved u has "
-            "negligible interface DOFs — back-plate load may not pump normal velocity on "
-            "wood↔air iface (check ||u||_iface vs shell)."
+            "[FSI-MATVEC][hint] A_pu is active (unit iface excitation) but the solved interface "
+            "u pattern yields ~zero pressure-row load — signed normal-flux cancellation on "
+            "wood↔air facets (try --force-iface or top-plate load / higher Hz)."
         )
     sys.stdout.flush()
     return diag
@@ -1519,6 +1550,61 @@ def _fsi_interface_u_parent_indices(
     if valid.size == 0:
         return np.array([], dtype=np.int32)
     return np.unique(u_map[valid].astype(np.int32, copy=False))
+
+
+def _wood_volume_u_parent_indices(
+    V_u,
+    msh: mesh.Mesh,
+    cell_tags,
+    u_to_W: np.ndarray,
+) -> np.ndarray:
+    """Mixed parent indices for displacement DOFs on wood volume cells (tags 1/2/3)."""
+    chunks: List[np.ndarray] = []
+    tdim = msh.topology.dim
+    for tag in WOOD_VOLUME_TAGS:
+        cells = np.asarray(cell_tags.find(int(tag)), dtype=np.int32)
+        if cells.size > 0:
+            chunks.append(
+                np.asarray(
+                    fem.locate_dofs_topological(V_u, tdim, cells),
+                    dtype=np.int32,
+                ).ravel()
+            )
+    if not chunks:
+        return np.array([], dtype=np.int32)
+    dofs = np.unique(np.concatenate(chunks).astype(np.int32, copy=False))
+    u_map = np.asarray(u_to_W, dtype=np.int32).ravel()
+    valid = dofs[(dofs >= 0) & (dofs < u_map.size)]
+    if valid.size == 0:
+        return np.array([], dtype=np.int32)
+    return np.unique(u_map[valid].astype(np.int32, copy=False))
+
+
+def _fsi_interface_normal_flux_diagnostic(
+    msh: mesh.Mesh,
+    u_field: fem.Function,
+    iface_facets: np.ndarray,
+    *,
+    tag_value: int = FSI_INTERFACE_FACET_TAG,
+) -> Tuple[float, float]:
+    """
+    Signed and L1 normal-velocity flux ∫ (u·n) dS and ∫ |u·n| dS on topology FSI facets.
+    """
+    if iface_facets.size == 0:
+        return 0.0, 0.0
+    n = ufl.FacetNormal(msh)
+    u_n = ufl.dot(u_field, n)
+    mt = _meshtags_on_facets(msh, iface_facets, tag_value)
+    measure = ufl.Measure("ds", domain=msh, subdomain_data=mt)(tag_value)
+    flux_signed = float(
+        fem.assemble_scalar(fem.form(u_n * measure))
+    )
+    flux_abs = float(
+        fem.assemble_scalar(
+            fem.form(ufl.conditional(ufl.gt(u_n, 0), u_n, -u_n) * measure)
+        )
+    )
+    return flux_signed, flux_abs
 
 
 def _petsc_vec_norm_on_global_indices(vec: PETSc.Vec, global_indices: np.ndarray) -> float:
@@ -4781,14 +4867,19 @@ def _solve_coupled_evp(
     iface_u_parent = _fsi_interface_u_parent_indices(
         V_u_collapsed, msh, fsi_iface_facets, u_to_W_map
     )
+    wood_u_parent = _wood_volume_u_parent_indices(
+        V_u_collapsed, msh, cell_tags, u_to_W_map
+    )
     if probe_spec is not None:
         probe_spec["iface_u_parent_n"] = int(iface_u_parent.size)
+        probe_spec["wood_u_parent_n"] = int(wood_u_parent.size)
     matvec_diag = _audit_mixed_coupling_matvec_alignment(
         A,
         W,
         u_to_W_map,
         p_to_W_map,
         iface_u_parent=iface_u_parent,
+        wood_u_parent=wood_u_parent,
         status_callback=status_callback,
     )
     assembly_matvec_diag = dict(matvec_diag)
@@ -4933,11 +5024,16 @@ def _solve_coupled_evp(
                 u_to_W_map=u_to_W_map,
                 p_to_W_map=p_to_W_map,
                 iface_u_parent=iface_u_parent,
+                wood_u_parent=wood_u_parent,
+                fsi_iface_facets=fsi_iface_facets,
                 solver_cfg=solver_cfg,
                 xdmf_ds=xdmf_ds,
                 frequency_hz=float(probe_spec.get("frequency_hz", 102.0)),
                 force_facet_tag=int(probe_spec.get("force_facet_tag", WOOD_SURFACE_TAGS[1])),
                 force_scale=float(probe_spec.get("force_scale", 1.0)),
+                force_iface_topology=bool(
+                    probe_spec.get("force_iface_topology", False)
+                ),
                 block_scales={"s_uu": float(s_uu), "s_pp": float(s_pp)},
                 assembly_matvec_diag=probe_spec.get("assembly_matvec_diag"),
                 fsi_iface_mode=str(probe_spec.get("fsi_iface_mode", "")),
@@ -5810,18 +5906,31 @@ def _assemble_resolvent_probe_traction_into_mixed(
     u_dofs_zero_collapsed: np.ndarray,
     algebraic_dirichlet_rows: np.ndarray,
     rhs_fn: fem.Function,
+    iface_facets: Optional[np.ndarray] = None,
 ) -> Tuple[float, float]:
     """
     Neumann traction on collapsed ``V_u``, optional zeros on collapsed displacement BC dofs,
     scatter into mixed ``rhs_fn``, ``scatter_forward``, then zero algebraic Dirichlet rows on
     the mixed PETSc vector.
+
+    When ``iface_facets`` is set, traction uses topology wood↔air ``meshtags_ds`` (tag 20)
+    instead of a wood shell physical tag from ``xdmf_ds``.
     """
     b_vec = rhs_fn.x.petsc_vec
     V_u_rhs, _ = W.sub(0).collapse()
     v_u = ufl.TestFunction(V_u_rhs)
     n = ufl.FacetNormal(msh)
     f_amp = fem.Constant(msh, PETSc.ScalarType(float(force_scale)))
-    L_u = f_amp * ufl.inner(v_u, n) * xdmf_ds(facet_tag)
+    if iface_facets is not None and np.asarray(iface_facets).size > 0:
+        mt = _meshtags_on_facets(
+            msh, np.asarray(iface_facets, dtype=np.int32), FSI_INTERFACE_FACET_TAG
+        )
+        iface_measure = ufl.Measure("ds", domain=msh, subdomain_data=mt)(
+            FSI_INTERFACE_FACET_TAG
+        )
+        L_u = f_amp * ufl.inner(v_u, n) * iface_measure
+    else:
+        L_u = f_amp * ufl.inner(v_u, n) * xdmf_ds(facet_tag)
     b_u = assemble_vector(fem.form(L_u))
     b_u.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
     bu_before = np.asarray(b_u.array, dtype=np.float64).copy()
@@ -5869,11 +5978,14 @@ def _coupled_resolvent_solve(
     u_to_W_map: np.ndarray,
     p_to_W_map: np.ndarray,
     iface_u_parent: Optional[np.ndarray] = None,
+    wood_u_parent: Optional[np.ndarray] = None,
+    fsi_iface_facets: Optional[np.ndarray] = None,
     solver_cfg: Dict,
     xdmf_ds,
     frequency_hz: float,
     force_facet_tag: int,
     force_scale: float = 1.0,
+    force_iface_topology: bool = False,
     block_scales: Optional[Dict[str, float]] = None,
     assembly_matvec_diag: Optional[Dict[str, float]] = None,
     fsi_iface_mode: str = "",
@@ -5888,13 +6000,32 @@ def _coupled_resolvent_solve(
     """
     omega = 2.0 * math.pi * float(frequency_hz)
     lam_shift = omega * omega
+    use_iface_force = bool(force_iface_topology)
     tag = int(force_facet_tag)
-    n_facets = int(np.sum(facet_tags.values == tag))
-    if n_facets <= 0:
+    iface_arr = (
+        np.asarray(fsi_iface_facets, dtype=np.int32).ravel()
+        if fsi_iface_facets is not None
+        else np.array([], dtype=np.int32)
+    )
+    n_facets = int(iface_arr.size) if use_iface_force else int(np.sum(facet_tags.values == tag))
+    if not use_iface_force and n_facets <= 0:
         err = (
             f"force facet tag {tag} has no facets on this mesh "
             f"(valid wood tags: {WOOD_SURFACE_TAGS})"
         )
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(f"[resolvent-probe] {err}", file=sys.stderr)
+        return {
+            "frequency_hz": float(frequency_hz),
+            "force_facet_tag": tag,
+            "force_scale": float(force_scale),
+            "solve_ok": False,
+            "coupling_check_pass": False,
+            "pipeline_error": err,
+            "ksp_reason": -9998,
+        }
+    if use_iface_force and iface_arr.size <= 0:
+        err = "force_iface_topology requested but no wood↔air interface facets found"
         if MPI.COMM_WORLD.rank == ROOT_RANK:
             print(f"[resolvent-probe] {err}", file=sys.stderr)
         return {
@@ -5922,10 +6053,16 @@ def _coupled_resolvent_solve(
         u_dofs_zero_collapsed=u_dofs_zero_collapsed,
         algebraic_dirichlet_rows=adr,
         rhs_fn=rhs_fn,
+        iface_facets=iface_arr if use_iface_force else None,
     )
     if MPI.COMM_WORLD.rank == ROOT_RANK:
+        load_label = (
+            f"iface_topology tag={FSI_INTERFACE_FACET_TAG}"
+            if use_iface_force
+            else f"shell tag={tag}"
+        )
         print(
-            f"[resolvent-probe] RHS traction: tag={tag} facets={n_facets} "
+            f"[resolvent-probe] RHS traction: {load_label} facets={n_facets} "
             f"||F_u||_collapsed={b_u_norm_raw:.6e} ||F||_mixed_after_lift={b_lift_norm:.6e}",
             flush=True,
         )
@@ -6170,6 +6307,7 @@ def _coupled_resolvent_solve(
                     p_to_W_map,
                     uh=uh,
                     iface_u_parent=iface_u_parent,
+                    wood_u_parent=wood_u_parent,
                     status_callback=status_callback,
                 )
                 b_p_from_u = float(matvec_local.get("p_load_solution", float("nan")))
@@ -6273,12 +6411,107 @@ def _coupled_resolvent_solve(
                 except Exception:
                     pass
 
+    inconclusive_mass_dom = bool(
+        solve_ok
+        and not coupled_visible
+        and math.isfinite(mass_dom_ratio)
+        and mass_dom_ratio > float(solver_cfg.get("resolvent_mass_dom_ratio_threshold", 1.0e3))
+    )
+    iface_flux_signed = float("nan")
+    iface_flux_abs = float("nan")
+    if solve_ok and iface_arr.size > 0 and MPI.COMM_WORLD.rank == ROOT_RANK:
+        try:
+            iface_flux_signed, iface_flux_abs = _fsi_interface_normal_flux_diagnostic(
+                msh, uh.sub(0), iface_arr
+            )
+            print(
+                f"[resolvent-probe] iface normal flux: "
+                f"signed={iface_flux_signed:.6e} abs={iface_flux_abs:.6e} m²/s "
+                f"(|signed|/abs={abs(iface_flux_signed) / max(iface_flux_abs, 1.0e-30):.3e})",
+                flush=True,
+            )
+        except Exception as flux_exc:
+            _emit(
+                f"[resolvent-probe][warn] iface flux diagnostic failed: "
+                f"{type(flux_exc).__name__}: {flux_exc!r}",
+                status_callback=status_callback,
+                level="warning",
+            )
+    post_matvec: Dict[str, float] = {}
+    a_times_x_p = float("nan")
+    p_load_unit_u = float("nan")
+    if solve_ok:
+        post_matvec = _audit_mixed_coupling_matvec_alignment(
+            A,
+            W,
+            u_to_W_map,
+            p_to_W_map,
+            uh=uh,
+            iface_u_parent=iface_u_parent,
+            wood_u_parent=wood_u_parent,
+            status_callback=status_callback,
+        )
+        a_times_x_p = float(post_matvec.get("p_load_solution", float("nan")))
+        p_load_unit_u = float(post_matvec.get("p_load_unit_u", float("nan")))
+    asm = assembly_matvec_diag or {}
+    p_load_unit_asm = float(asm.get("p_load_unit_u", float("nan")))
+    a_up_ref_json = float(fsi_a_up_frobenius)
+    u_map_coeff_norm = float("nan")
+    if solve_ok:
+        u_idx = np.asarray(u_to_W_map, dtype=np.int32).ravel()
+        if u_idx.size > 0:
+            u_map_coeff_norm = float(
+                np.linalg.norm(np.asarray(uh.x.array, dtype=np.float64)[u_idx])
+            )
+    if not math.isfinite(p_load_unit_u) and math.isfinite(p_load_unit_asm):
+        p_load_unit_u = p_load_unit_asm
+    coupling_index_ok = bool(
+        math.isfinite(p_load_unit_u)
+        and math.isfinite(a_up_ref_json)
+        and a_up_ref_json >= float(solver_cfg.get("resolvent_fsi_a_up_fro_min", 1.0e3))
+        and p_load_unit_u >= 1.0e-4 * max(a_up_ref_json, 1.0e-30)
+    )
+    p_load_unit_iface_json = float(post_matvec.get("p_load_unit_iface", float("nan")))
+    a_times_x_iface_p = float(post_matvec.get("p_load_solution_iface", float("nan")))
+    u_norm_iface_json = float(post_matvec.get("u_norm_iface", float("nan")))
+    iface_flux_cancelled = bool(
+        solve_ok
+        and formulation_ok
+        and coupling_index_ok
+        and not coupled_visible
+        and math.isfinite(p_load_unit_iface_json)
+        and p_load_unit_iface_json > 1.0e3
+        and math.isfinite(a_times_x_iface_p)
+        and a_times_x_iface_p
+        < 1.0e-6 * max(p_load_unit_iface_json, 1.0e-30)
+        and math.isfinite(u_norm_iface_json)
+        and u_norm_iface_json > 1.0e-20
+    )
+    if solve_ok and coupled_visible and coupling_index_ok:
+        probe_verdict = "COUPLED"
+    elif solve_ok and not formulation_ok:
+        probe_verdict = "WEAK_FSI_FORMULATION"
+    elif solve_ok and iface_flux_cancelled:
+        probe_verdict = "DECOUPLED_IFACE_FLUX_CANCEL"
+    elif solve_ok and inconclusive_mass_dom:
+        probe_verdict = "INCONCLUSIVE_MASS_DOMINATED"
+    elif solve_ok and not coupling_index_ok:
+        probe_verdict = "DECOUPLED_INDEX_OR_FORMULATION"
+    elif solve_ok:
+        probe_verdict = "DECOUPLED"
+    else:
+        probe_verdict = "SOLVE_FAILED"
+
     if MPI.COMM_WORLD.rank == ROOT_RANK:
         if solve_ok:
-            weak_mass_dom = math.isfinite(mass_dom_ratio) and mass_dom_ratio > 1.0e3
             if coupled_visible:
                 verdict = "COUPLED (physics OK — prioritize solver strategy)"
-            elif weak_mass_dom:
+            elif iface_flux_cancelled:
+                verdict = (
+                    "DECOUPLED (iface flux cancellation — A_pu OK but solved u·n cancels on "
+                    "wood↔air seam; try --force-iface, top-plate load, or higher Hz)"
+                )
+            elif inconclusive_mass_dom:
                 verdict = (
                     "INCONCLUSIVE (||λM|| ≫ ||A|| at this Hz — tiny ||p|| can be benign "
                     "(mass-dominated harmonic) or weak iface u·n for this load; "
@@ -6340,65 +6573,13 @@ def _coupled_resolvent_solve(
     except Exception:
         pass
 
-    inconclusive_mass_dom = bool(
-        solve_ok
-        and not coupled_visible
-        and math.isfinite(mass_dom_ratio)
-        and mass_dom_ratio > float(solver_cfg.get("resolvent_mass_dom_ratio_threshold", 1.0e3))
-    )
-
-    post_matvec: Dict[str, float] = {}
-    a_times_x_p = float("nan")
-    p_load_unit_u = float("nan")
-    if solve_ok:
-        post_matvec = _audit_mixed_coupling_matvec_alignment(
-            A,
-            W,
-            u_to_W_map,
-            p_to_W_map,
-            uh=uh,
-            iface_u_parent=iface_u_parent,
-            status_callback=status_callback,
-        )
-        a_times_x_p = float(post_matvec.get("p_load_solution", float("nan")))
-        p_load_unit_u = float(post_matvec.get("p_load_unit_u", float("nan")))
-    asm = assembly_matvec_diag or {}
-    p_load_unit_asm = float(asm.get("p_load_unit_u", float("nan")))
-    a_up_ref_json = float(fsi_a_up_frobenius)
-    u_map_coeff_norm = float("nan")
-    if solve_ok:
-        u_idx = np.asarray(u_to_W_map, dtype=np.int32).ravel()
-        if u_idx.size > 0:
-            u_map_coeff_norm = float(
-                np.linalg.norm(np.asarray(uh.x.array, dtype=np.float64)[u_idx])
-            )
-    if not math.isfinite(p_load_unit_u) and math.isfinite(p_load_unit_asm):
-        p_load_unit_u = p_load_unit_asm
-    coupling_index_ok = bool(
-        math.isfinite(p_load_unit_u)
-        and math.isfinite(a_up_ref_json)
-        and a_up_ref_json >= float(solver_cfg.get("resolvent_fsi_a_up_fro_min", 1.0e3))
-        and p_load_unit_u >= 1.0e-4 * max(a_up_ref_json, 1.0e-30)
-    )
-    if solve_ok and coupled_visible and coupling_index_ok:
-        probe_verdict = "COUPLED"
-    elif solve_ok and not formulation_ok:
-        probe_verdict = "WEAK_FSI_FORMULATION"
-    elif solve_ok and inconclusive_mass_dom:
-        probe_verdict = "INCONCLUSIVE_MASS_DOMINATED"
-    elif solve_ok and not coupling_index_ok:
-        probe_verdict = "DECOUPLED_INDEX_OR_FORMULATION"
-    elif solve_ok:
-        probe_verdict = "DECOUPLED"
-    else:
-        probe_verdict = "SOLVE_FAILED"
-
     return {
         "frequency_hz": float(frequency_hz),
         "omega_rad_s": float(omega),
         "lambda_shift": float(lam_shift),
         "mass_reg_frac": float(reg_used),
         "force_facet_tag": int(tag),
+        "force_iface_topology": bool(use_iface_force),
         "force_facet_count": int(n_facets),
         "force_scale": float(force_scale),
         "load_norm": b_norm,
@@ -6426,8 +6607,13 @@ def _coupled_resolvent_solve(
             post_matvec.get("p_load_solution_iface", float("nan"))
         ),
         "p_load_unit_iface": float(post_matvec.get("p_load_unit_iface", float("nan"))),
+        "p_load_unit_wood": float(post_matvec.get("p_load_unit_wood", float("nan"))),
         "u_norm_iface": float(post_matvec.get("u_norm_iface", float("nan"))),
         "u_norm_noniface": float(post_matvec.get("u_norm_noniface", float("nan"))),
+        "u_norm_wood_vol": float(post_matvec.get("u_norm_wood_vol", float("nan"))),
+        "iface_flux_signed": iface_flux_signed,
+        "iface_flux_abs": iface_flux_abs,
+        "iface_flux_cancelled": iface_flux_cancelled,
         "iface_u_parent_n": int(
             np.asarray(iface_u_parent, dtype=np.int32).size
             if iface_u_parent is not None
@@ -6452,6 +6638,7 @@ def run_coupled_resolvent_probe(
     frequency_hz: float = 102.0,
     force_facet_tag: int = 3,
     force_scale: float = 1.0,
+    force_iface_topology: bool = False,
     status_callback=None,
 ) -> Dict[str, Any]:
     """
@@ -6466,6 +6653,7 @@ def run_coupled_resolvent_probe(
         "frequency_hz": float(frequency_hz),
         "force_facet_tag": int(force_facet_tag),
         "force_scale": float(force_scale),
+        "force_iface_topology": bool(force_iface_topology),
     }
     try:
         result = _solve_coupled_evp(
