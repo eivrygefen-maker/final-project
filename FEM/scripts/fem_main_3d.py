@@ -773,6 +773,106 @@ def _meshtags_on_facets(msh: mesh.Mesh, facet_indices: np.ndarray, tag_value: in
     return mesh.meshtags(msh, fdim, idx, vals)
 
 
+def _wood_air_interface_measure(
+    msh: mesh.Mesh,
+    cell_tags,
+    solver_cfg: Dict,
+) -> Tuple[str, Any, np.ndarray]:
+    """
+    Interior wood↔air interface measure for FSI traction / Nitsche forms.
+
+    Default ``fsi_iface_measure=dS``: ``dS(air, wood)`` on each wood volume tag (1/2/3).
+    This is the standard UFL interior-facet restriction and avoids ambiguous ``ds`` on
+    stitched interior facets. Fallback ``meshtags`` uses topology facets + ``ds(tag=20)``.
+    """
+    mode = str(solver_cfg.get("fsi_iface_measure", "dS")).strip().lower()
+    facets = _find_air_wood_interface_facets(msh, cell_tags)
+    if facets.size == 0:
+        raise RuntimeError(
+            "FSI interface: no facets between air volume (tag 10) and wood volumes (1/2/3)."
+        )
+    if mode in ("ds", "meshtags", "facet_tags", "tagged_ds"):
+        iface_meshtags = _meshtags_on_facets(msh, facets, FSI_INTERFACE_FACET_TAG)
+        measure = ufl.Measure("ds", domain=msh, subdomain_data=iface_meshtags)(
+            FSI_INTERFACE_FACET_TAG
+        )
+        return "meshtags_ds", measure, facets
+
+    dS = ufl.Measure("dS", domain=msh, subdomain_data=cell_tags)
+    parts = []
+    wood_first = _solver_bool(solver_cfg, "fsi_dS_wood_first", default=False)
+    for wtag in WOOD_VOLUME_TAGS:
+        if wood_first:
+            parts.append(dS(int(wtag), AIR_VOLUME_TAG))
+        else:
+            parts.append(dS(AIR_VOLUME_TAG, int(wtag)))
+    measure = parts[0]
+    for part in parts[1:]:
+        measure = measure + part
+    tag = "dS_wood_air" if wood_first else "dS_air_wood"
+    return tag, measure, facets
+
+
+def _audit_fsi_traction_pair_norms(
+    *,
+    traction_up,
+    traction_pu,
+    mass_pu,
+    label: str,
+    status_callback=None,
+) -> Tuple[float, float, float]:
+    """Assemble u←p (A_up), p←u (A_pu), and mass (M_pu) blocks separately; warn if A_pu≈0."""
+    if MPI.COMM_WORLD.rank != ROOT_RANK:
+        return float("nan"), float("nan"), float("nan")
+    n_up = n_pu = n_mp = float("nan")
+    try:
+        n_up = _mat_frobenius_norm(traction_up, label=f"{label}_a_up")
+        n_pu = _mat_frobenius_norm(traction_pu, label=f"{label}_a_pu")
+        n_mp = _mat_frobenius_norm(mass_pu, label=f"{label}_m_pu")
+    except Exception as exc:
+        _emit(
+            f"[FSI-IFACE][warn] traction pair norm failed ({label}): {type(exc).__name__}: {exc!r}",
+            status_callback=status_callback,
+            level="warning",
+        )
+        return n_up, n_pu, n_mp
+    print(
+        f"[FSI-IFACE] traction blocks ({label}): ||A_up||_F={n_up:.6e}, "
+        f"||A_pu||_F={n_pu:.6e}, ||M_pu||_F={n_mp:.6e}"
+    )
+    if n_up > 1.0e-12 and n_pu < 1.0e-12 * n_up:
+        print(
+            "[FSI-IFACE][CRITICAL] A_pu (pressure-row ∫ (u·n) q) is negligible vs A_up "
+            "(∫ p (n·v)). Static/harmonic solves will show ||u||>0 with ||p||≈0 — "
+            "check fsi_iface_measure (try dS), FacetNormal orientation, or fsi_coupling_gain."
+        )
+    sys.stdout.flush()
+    return n_up, n_pu, n_mp
+
+
+def _probe_monolithic_coupling_pressure_load(
+    A: PETSc.Mat,
+    uh: fem.Function,
+    *,
+    p_to_W: np.ndarray,
+    u_to_W: np.ndarray,
+) -> float:
+    """||A·x|| on pressure rows (collapsed map) — how much displacement drives pressure equations."""
+    y = A.createVecRight()
+    try:
+        A.mult(uh.x.petsc_vec, y)
+        arr = np.asarray(y.array, dtype=np.float64)
+        p_idx = np.asarray(p_to_W, dtype=np.int32).ravel()
+        if p_idx.size == 0:
+            return 0.0
+        return float(np.linalg.norm(arr[p_idx]))
+    finally:
+        try:
+            y.destroy()
+        except Exception:
+            pass
+
+
 def _mesh_characteristic_length(msh: mesh.Mesh) -> float:
     """Length scale for Nitsche penalty (domain diagonal)."""
     coords = msh.geometry.x
@@ -1392,6 +1492,7 @@ def _print_raw_coupling_block_norms(
     a_up,
     m_pu,
     *,
+    a_pu=None,
     status_callback=None,
 ) -> None:
     """Ground-truth Frobenius norms of FSI blocks before GNHEP scaling."""
@@ -1399,13 +1500,15 @@ def _print_raw_coupling_block_norms(
         return
     try:
         norm_a_up = _mat_frobenius_norm(a_up)
+        norm_a_pu = _mat_frobenius_norm(a_pu) if a_pu is not None else float("nan")
         norm_m_pu = _mat_frobenius_norm(m_pu)
     except Exception as exc:
         _emit(f"[GNHEP-raw][warn] block norm trace failed: {exc}", status_callback=status_callback, level="warning")
         return
     print(
         f"[GNHEP-raw] before any GNHEP scaling: ||A_up||_F={norm_a_up:.6e}, "
-        f"||M_pu||_F={norm_m_pu:.6e} (u→p mass coupling; M_up ≡ M_pu^T in mixed layout)"
+        f"||A_pu||_F={norm_a_pu:.6e}, ||M_pu||_F={norm_m_pu:.6e} "
+        "(A_pu is the static pressure-row coupling; M_pu is ω² mass)"
     )
     sys.stdout.flush()
 
@@ -1708,15 +1811,16 @@ def _block_frobenius_normalize_coupled_forms(
     s_u_ref: Optional[float] = None,
     s_p_ref: Optional[float] = None,
     status_callback=None,
+    a_pu=None,
 ):
     """
     Scale ``A_uu`` and ``A_pp`` (and matching mass / coupling blocks) by separate Frobenius
     factors so ``M`` is not crushed by a single global ``max(||A||_F, ||M||_F)`` scale.
     """
     if not _solver_bool(solver_cfg, "gnhep_block_frobenius_normalize", default=True):
-        return a_uu, a_pp, a_up, m_uu, m_pp, m_pu, reg_p, 1.0, 1.0
+        return a_uu, a_pp, a_up, a_pu, m_uu, m_pp, m_pu, reg_p, 1.0, 1.0
     if _solver_bool(solver_cfg, "gnhep_normalize_matrices", default=False):
-        return a_uu, a_pp, a_up, m_uu, m_pp, m_pu, reg_p, 1.0, 1.0
+        return a_uu, a_pp, a_up, a_pu, m_uu, m_pp, m_pu, reg_p, 1.0, 1.0
 
     if s_u_ref is not None and math.isfinite(float(s_u_ref)) and float(s_u_ref) > 0.0:
         s_u = float(s_u_ref)
@@ -1734,6 +1838,7 @@ def _block_frobenius_normalize_coupled_forms(
     a_uu_s = inv_u * a_uu
     a_pp_s = inv_p * a_pp
     a_up_s = inv_c * a_up
+    a_pu_s = inv_c * a_pu if a_pu is not None else None
     m_uu_s = inv_u * m_uu
     m_pp_s = inv_p * m_pp
     m_pu_s = inv_c * m_pu
@@ -1755,7 +1860,7 @@ def _block_frobenius_normalize_coupled_forms(
             f"(||M_uu||_F={m_uu_n:.6e}, ||M_pp||_F={m_pp_n:.6e} after block scaling)"
         )
         sys.stdout.flush()
-    return a_uu_s, a_pp_s, a_up_s, m_uu_s, m_pp_s, m_pu_s, reg_p_s, s_u, s_p
+    return a_uu_s, a_pp_s, a_up_s, a_pu_s, m_uu_s, m_pp_s, m_pu_s, reg_p_s, s_u, s_p
 
 
 def _resolvent_probe_block_solver_cfg(solver_cfg: Dict) -> Dict:
@@ -3531,18 +3636,11 @@ def _solve_coupled_evp(
     n = ufl.FacetNormal(msh)
     P = ufl.Identity(3) - ufl.outer(n, n)
 
-    fsi_iface_facets = _find_air_wood_interface_facets(msh, cell_tags)
+    iface_mode, iface_measure, fsi_iface_facets = _wood_air_interface_measure(
+        msh, cell_tags, solver_cfg
+    )
     air_ext_p_facets = _find_air_exterior_pressure_facets(
         msh, cell_tags, facet_tags, fsi_iface_facets
-    )
-    if fsi_iface_facets.size == 0:
-        raise RuntimeError(
-            "FSI interface: no facets found between air volume (tag 10) and wood volumes (1/2/3). "
-            "Check mesh boolean/fragment and cell_tags."
-        )
-    iface_meshtags = _meshtags_on_facets(msh, fsi_iface_facets, FSI_INTERFACE_FACET_TAG)
-    iface_ds = ufl.Measure("ds", domain=msh, subdomain_data=iface_meshtags)(
-        FSI_INTERFACE_FACET_TAG
     )
     h_char = _mesh_characteristic_length(msh)
     if MPI.COMM_WORLD.rank == ROOT_RANK:
@@ -3555,8 +3653,8 @@ def _solve_coupled_evp(
             )
         )
         print(
-            f"[FSI-IFACE] topology interface facets={fsi_iface_facets.size} "
-            f"(wood tagged shell facets={n_wood_tagged}, ribs excluded from iface measure); "
+            f"[FSI-IFACE] measure={iface_mode} topology_facets={fsi_iface_facets.size} "
+            f"(wood tagged shell facets={n_wood_tagged}, ribs excluded); "
             f"air exterior p=0 facets={air_ext_p_facets.size}, h_char={h_char:.4e} m"
         )
         sys.stdout.flush()
@@ -3670,21 +3768,35 @@ def _solve_coupled_evp(
         h_char=h_char,
     )
     use_nitsche = _solver_bool(solver_cfg, "fsi_nitsche_enable", default=True)
-    traction_up = -p_scale * fsi_gain * p * ufl.dot(n, v) * iface_ds
-    mass_pu = p_scale * fsi_gain * rho_air * ufl.dot(u, n) * q * iface_ds
+    # Traction / mass-like interface pair (mixed GNHEP blocks):
+    #   A_up (u rows, p cols): ∫_Γ p (n·v) dS  — pressure traction on the shell test v
+    #   A_pu (p rows, u cols): ∫_Γ (u·n) q dS  — REQUIRED for static A x=F to excite pressure
+    # ``n = FacetNormal(msh)`` with ``dS(air, wood)`` uses the UFL interior-facet convention
+    # (normal from wood volume tag toward air tag in the measure restriction).
+    traction_up = -p_scale * fsi_gain * p * ufl.dot(n, v) * iface_measure
+    traction_pu = p_scale * fsi_gain * ufl.dot(u, n) * q * iface_measure
+    mass_pu = p_scale * fsi_gain * rho_air * ufl.dot(u, n) * q * iface_measure
+    _audit_fsi_traction_pair_norms(
+        traction_up=traction_up,
+        traction_pu=traction_pu,
+        mass_pu=mass_pu,
+        label=iface_mode,
+        status_callback=status_callback,
+    )
     nit_uu = nit_up = nit_pu = None
     if use_nitsche:
-        nit_uu = gamma_n * ufl.dot(u, n) * ufl.dot(v, n) * iface_ds
-        nit_up = gamma_n * p * ufl.dot(v, n) * iface_ds
-        nit_pu = gamma_n * ufl.dot(u, n) * q * iface_ds
+        nit_uu = gamma_n * ufl.dot(u, n) * ufl.dot(v, n) * iface_measure
+        nit_up = gamma_n * p * ufl.dot(v, n) * iface_measure
+        nit_pu = gamma_n * ufl.dot(u, n) * q * iface_measure
         if MPI.COMM_WORLD.rank == ROOT_RANK:
             print(
                 f"[form] FSI Nitsche on iface: gamma_n={gamma_n:.6e}, "
                 f"fsi_gain={fsi_gain:.4g}, iface_facets={fsi_iface_facets.size} "
-                "(separate blockwise assembly)"
+                "(separate blockwise assembly; nit_pu on A and M)"
             )
             sys.stdout.flush()
     a_up = traction_up
+    a_pu = traction_pu
     m_pu = mass_pu
 
     _audit_pressure_scale_block_balance(
@@ -3710,7 +3822,7 @@ def _solve_coupled_evp(
         m_uu = (top_m["rho"] * t_top + back_m["rho"] * t_back) * ufl.dot(u, v) * wood_ds
     m_pp = p2 * (1.0 / (rho_air * c_air * c_air)) * p * q * xdmf_dx(AIR_VOLUME_TAG)
 
-    _print_raw_coupling_block_norms(a_up, m_pu, status_callback=status_callback)
+    _print_raw_coupling_block_norms(a_up, m_pu, a_pu=a_pu, status_callback=status_callback)
 
     # Legacy ``acoustic_mass_scale`` / ``mass_scale``: inflating only ``m_pp`` (or even both
     # ``m_pp`` and ``m_pu``) breaks physical balance in ``(A - ω²M)`` and GNHEP row scaling.
@@ -3746,7 +3858,7 @@ def _solve_coupled_evp(
         else solver_cfg
     )
     # Block-scale before probe soft penalties (avoids re-assembling perturbed a_uu for s_u).
-    a_uu, a_pp, a_up, m_uu, m_pp, m_pu, reg_p, s_uu, s_pp = _block_frobenius_normalize_coupled_forms(
+    a_uu, a_pp, a_up, a_pu, m_uu, m_pp, m_pu, reg_p, s_uu, s_pp = _block_frobenius_normalize_coupled_forms(
         a_uu,
         a_pp,
         a_up,
@@ -3758,14 +3870,16 @@ def _solve_coupled_evp(
         s_u_ref=norm_uu_ref if probe_spec is not None else None,
         s_p_ref=norm_pp_ref if probe_spec is not None else None,
         status_callback=status_callback,
+        a_pu=a_pu,
     )
     inv_u = 1.0 / max(float(s_uu), 1.0e-30)
     inv_c = 1.0 / math.sqrt(max(float(s_uu) * float(s_pp), 1.0e-30))
     nit_uu_a = inv_u * nit_uu if nit_uu is not None else None
     nit_up_a = inv_c * nit_up if nit_up is not None else None
+    nit_pu_a = inv_c * nit_pu if nit_pu is not None else None
     nit_pu_m = inv_c * nit_pu if nit_pu is not None else None
 
-    a_form = a_uu + a_pp + a_up + reg_p
+    a_form = a_uu + a_pp + a_up + a_pu + reg_p
     m_form = m_uu + m_pp + m_pu
 
     # Per-facet-group shell mass forms for plate-specific sifter (Top tag 1, Body tag 3).
@@ -4095,11 +4209,14 @@ def _solve_coupled_evp(
             _blk("uu", a_uu),
             _blk("pp", a_pp),
             _blk("up", a_up),
+            _blk("pu", a_pu),
         ]
         if nit_uu_a is not None:
             A_blocks.append(_blk("nit_uu", nit_uu_a))
         if nit_up_a is not None:
             A_blocks.append(_blk("nit_up", nit_up_a))
+        if nit_pu_a is not None:
+            A_blocks.append(_blk("nit_pu", nit_pu_a))
         if diag_shift > 0.0:
             A_blocks.append(_blk("reg_p", reg_p))
         M_blocks: List[Tuple[str, Any, List[fem.DirichletBC]]] = [
@@ -4125,6 +4242,7 @@ def _solve_coupled_evp(
                     _blk("uu", a_uu),
                     _blk("pp", a_pp),
                     _blk("up", a_up),
+                    _blk("pu", a_pu),
                 ]
                 if diag_shift > 0.0:
                     A_blocks_fallback.append(_blk("reg_p", reg_p))
@@ -4194,11 +4312,18 @@ def _solve_coupled_evp(
     skip_reaudit = _solver_bool(
         solver_cfg,
         "resolvent_skip_coupling_reaudit",
-        default=(probe_spec is not None),
+        default=False,
     )
     if not skip_reaudit:
         _audit_assembled_mixed_coupling(
             W, a_up, m_pu, [], status_callback=status_callback
+        )
+        _audit_fsi_traction_pair_norms(
+            traction_up=a_up,
+            traction_pu=a_pu,
+            mass_pu=m_pu,
+            label="post_blockwise_A",
+            status_callback=status_callback,
         )
 
     gnhep_scale = _normalize_assembled_gnhep(A, M, solver_cfg)
@@ -5443,6 +5568,15 @@ def _coupled_resolvent_solve(
             coupled_visible = bool(
                 p_norm > max(p_floor * u_norm, p_abs_floor) and u_norm > 1.0e-30
             )
+            if MPI.COMM_WORLD.rank == ROOT_RANK and u_norm > 1.0e-30:
+                b_p_from_u = _probe_monolithic_coupling_pressure_load(
+                    A, uh, p_to_W=p_to_W_map, u_to_W=u_to_W_map
+                )
+                print(
+                    f"[resolvent-probe] diagnostic A·x pressure-block load from displacement: "
+                    f"||(A x)_p||={b_p_from_u:.6e} (should be ≫0 if A_pu couples u→p)",
+                    flush=True,
+                )
 
             mass_dom_threshold = float(
                 solver_cfg.get("resolvent_mass_dom_ratio_threshold", 1.0e3)
