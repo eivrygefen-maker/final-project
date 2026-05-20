@@ -3563,7 +3563,19 @@ def _solve_coupled_evp(
     )
     if acoustic_mass_scale != 1.0:
         m_pp = acoustic_mass_scale * m_pp
-        if MPI.COMM_WORLD.rank == ROOT_RANK:
+        # EVP-only tuning historically scaled M_pp alone. For the harmonic resolvent
+        # ``(A - ω²M)x = F``, the pressure row balances ``-ω² M_pu u`` against ``-ω² M_pp p``
+        # (plus A_*u); inflating only M_pp makes ``K_pp`` huge relative to ``K_pu`` and
+        # drives ||p|| to ~0 even when FSI blocks are healthy — scale M_pu the same way.
+        if probe_spec is not None:
+            m_pu = acoustic_mass_scale * m_pu
+            if MPI.COMM_WORLD.rank == ROOT_RANK:
+                print(
+                    f"[form] acoustic_mass_scale={acoustic_mass_scale:.6e} applied to M_pp "
+                    f"and M_pu (harmonic probe: consistent -ω²M on pressure row)."
+                )
+                sys.stdout.flush()
+        elif MPI.COMM_WORLD.rank == ROOT_RANK:
             print(
                 f"[form] acoustic_mass_scale={acoustic_mass_scale:.6e} applied to M_pp only "
                 f"(air mass block; M_pu unchanged)"
@@ -5213,13 +5225,30 @@ def _coupled_resolvent_solve(
                 p_norm > max(p_floor * u_norm, p_abs_floor) and u_norm > 1.0e-30
             )
 
+    mass_dom_ratio = float("nan")
+    if (
+        math.isfinite(lam_shift)
+        and math.isfinite(a_norm_f)
+        and math.isfinite(m_norm_f)
+        and a_norm_f > 1.0e-30
+    ):
+        mass_dom_ratio = (lam_shift * m_norm_f) / a_norm_f
+
     if MPI.COMM_WORLD.rank == ROOT_RANK:
         if solve_ok:
-            verdict = (
-                "COUPLED (physics OK — prioritize solver strategy)"
-                if coupled_visible
-                else "DECOUPLED (physics/coupling issue — fix FSI formulation before eigensolver)"
-            )
+            weak_mass_dom = math.isfinite(mass_dom_ratio) and mass_dom_ratio > 1.0e3
+            if coupled_visible:
+                verdict = "COUPLED (physics OK — prioritize solver strategy)"
+            elif weak_mass_dom:
+                verdict = (
+                    "INCONCLUSIVE (||λM|| ≫ ||A|| at this Hz — tiny ||p|| is often benign; "
+                    "if EVP used acoustic_mass_scale on M_pp only, harmonic probe now scales "
+                    "M_pu as well. Also check iface u·n for this load before raising fsi_gain)"
+                )
+            else:
+                verdict = (
+                    "DECOUPLED (physics/coupling issue — fix FSI formulation before eigensolver)"
+                )
         elif not solve_ok and b_norm > 1.0e-30:
             verdict = (
                 "SOLVE_FAILED (zero/trivial response with nonzero load — "
@@ -5282,7 +5311,10 @@ def _coupled_resolvent_solve(
         "p_over_u": ratio,
         "relative_residual": rel_res,
         "solve_mode": solve_mode,
-        "balance_lambda_shift": False,
+        "balance_lambda_shift": bool(
+            math.isfinite(mass_dom_ratio) and mass_dom_ratio > 1.0e3
+        ),
+        "lambda_mass_over_a_fro": mass_dom_ratio,
         "coupling_check_pass": bool(coupled_visible),
         "solve_ok": bool(solve_ok),
         "ksp_iterations": int(its),
