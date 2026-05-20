@@ -1851,8 +1851,19 @@ def _petsc_owned_global_rows(obj, global_rows: np.ndarray) -> np.ndarray:
     return r[(r >= r_lo) & (r < r_hi)]
 
 
-def _petsc_mat_zero_dirichlet_rows(mat: PETSc.Mat, global_rows: np.ndarray, *, diag: float = 1.0) -> None:
-    """Zero entire owned global rows (all columns, including off-diagonal blocks)."""
+def _petsc_mat_zero_dirichlet_rows(
+    mat: PETSc.Mat,
+    global_rows: np.ndarray,
+    *,
+    diag: float = 1.0,
+    batch_size: int = 512,
+) -> None:
+    """
+    Zero entire owned global rows (all columns, including off-diagonal blocks).
+
+    Uses batched ``Mat.zeroRows`` with a global ``IS`` (never ``zeroRowsLocal`` — that
+    path segfaults on large dolfinx-assembled operators in petsc4py).
+    """
     rows = _petsc_owned_global_rows(mat, global_rows)
     if rows.size == 0:
         return
@@ -1860,23 +1871,33 @@ def _petsc_mat_zero_dirichlet_rows(mat: PETSc.Mat, global_rows: np.ndarray, *, d
         mat.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
     except Exception:
         pass
-    d = float(diag)
-    r_lo, _ = mat.getOwnershipRange()
-    local_rows = (rows - int(r_lo)).astype(np.int32)
     try:
-        mat.zeroRowsLocal(local_rows, diag=d)
+        n_global = int(mat.getSize()[0])
     except Exception:
+        n_global = 0
+    if n_global > 0:
+        rows = rows[(rows >= 0) & (rows < n_global)]
+    if rows.size == 0:
+        return
+    rows = np.unique(rows.astype(np.int32, copy=False))
+    d = float(diag)
+    comm = mat.getComm()
+    bs = max(1, int(batch_size))
+    for start in range(0, int(rows.size), bs):
+        chunk = rows[start : start + bs]
+        is_rows = PETSc.IS().createGeneral(chunk, comm=comm)
         try:
-            mat.zeroRows(rows, diag=d)
+            is_rows.setType(PETSc.IS.Type.GENERAL)
         except Exception:
-            try:
-                mat.zeroRows(rows.astype(np.int32), diag=d)
-            except Exception:
-                is_rows = PETSc.IS().createGeneral(rows, comm=mat.getComm())
-                try:
-                    mat.zeroRows(is_rows, diag=d)
-                finally:
-                    is_rows.destroy()
+            pass
+        try:
+            mat.zeroRows(is_rows, diag=d)
+        finally:
+            is_rows.destroy()
+    try:
+        mat.assemble()
+    except Exception:
+        pass
 
 
 def _petsc_vec_zero_global_dofs(vec: PETSc.Vec, global_rows: np.ndarray) -> None:
@@ -4133,8 +4154,8 @@ def _solve_coupled_evp(
             bcs_u=[],
             bcs_p=[],
             solver_cfg=solver_cfg,
-            norm_uu_ref=1.0,
-            norm_pp_ref=1.0,
+            norm_uu_ref=max(float(s_uu), float(norm_uu_ref)),
+            norm_pp_ref=max(float(s_pp), float(norm_pp_ref)),
             status_callback=status_callback,
         )
 
@@ -4155,21 +4176,27 @@ def _solve_coupled_evp(
             f"(||A||_F={float(A.norm()):.6e}, ||M||_F={float(M.norm()):.6e})"
         )
         sys.stdout.flush()
-    if coupled_dirichlet_rows.size > 0:
+    apply_bc_on_am = coupled_dirichlet_rows.size > 0 and (
+        probe_spec is None
+        or _solver_bool(solver_cfg, "resolvent_algebraic_bc_on_am", default=False)
+    )
+    if apply_bc_on_am:
         _petsc_mat_zero_dirichlet_rows(A, coupled_dirichlet_rows, diag=1.0)
         _petsc_mat_zero_dirichlet_rows(M, coupled_dirichlet_rows, diag=1.0)
-        try:
-            A.assemble()
-            M.assemble()
-        except Exception:
-            pass
         if MPI.COMM_WORLD.rank == ROOT_RANK:
             print(
-                f"[bc] algebraic Dirichlet: {coupled_dirichlet_rows.size} mixed rows "
+                f"[bc] algebraic Dirichlet on A/M: {coupled_dirichlet_rows.size} mixed rows "
                 f"(||A||_F={float(A.norm()):.6e}, ||M||_F={float(M.norm()):.6e})",
                 flush=True,
             )
             sys.stdout.flush()
+    elif probe_spec is not None and coupled_dirichlet_rows.size > 0 and MPI.COMM_WORLD.rank == ROOT_RANK:
+        print(
+            f"[bc] resolvent probe: defer {coupled_dirichlet_rows.size} algebraic Dirichlet rows "
+            "to KSP operator copies (skip zeroRows on assembled A/M).",
+            flush=True,
+        )
+        sys.stdout.flush()
     use_sifter = _solver_bool(solver_cfg, "adaptive_mode_sifter", default=True)
     M_top: Optional[PETSc.Mat] = None
     M_back: Optional[PETSc.Mat] = None
@@ -4888,7 +4915,7 @@ def _resolvent_solve_linear_system(
         if MPI.COMM_WORLD.rank == ROOT_RANK:
             print(
                 f"[bc] resolvent algebraic Dirichlet: {adr.size} mixed rows on K "
-                f"(zeroRowsLocal + RHS zero before KSP)",
+                f"(batched zeroRows + RHS zero before KSP)",
                 flush=True,
             )
 
