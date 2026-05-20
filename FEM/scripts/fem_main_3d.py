@@ -4830,6 +4830,51 @@ def _configure_probe_direct_ksp(ksp: PETSc.KSP, pc: PETSc.PC, solver_cfg: Dict) 
     ksp.setFromOptions()
 
 
+def _assemble_resolvent_probe_traction_into_mixed(
+    msh: mesh.Mesh,
+    W: fem.FunctionSpace,
+    *,
+    xdmf_ds,
+    facet_tag: int,
+    force_scale: float,
+    u_to_W_map: np.ndarray,
+    b_vec: PETSc.Vec,
+    uh: fem.Function,
+) -> Tuple[float, float]:
+    """
+    Neumann traction ``∫ f · (v·n) ds`` on wood shell facets, assembled on collapsed ``V_u`` and
+    scattered into the mixed ``W`` PETSc vector (mixed ``assemble_vector`` can yield a zero RHS
+    for surface forms using ``TestFunctions(W)`` in some dolfinx layouts).
+    """
+    V_u_rhs, _ = W.sub(0).collapse()
+    v_u = ufl.TestFunction(V_u_rhs)
+    n = ufl.FacetNormal(msh)
+    f_amp = fem.Constant(msh, PETSc.ScalarType(float(force_scale)))
+    L_u = f_amp * ufl.inner(v_u, n) * xdmf_ds(facet_tag)
+    b_u = assemble_vector(fem.form(L_u))
+    b_u.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+    parent = np.asarray(u_to_W_map, dtype=np.int32).ravel()
+    bu = np.asarray(b_u.array)
+    b_arr = np.asarray(b_vec.array)
+    if parent.size != bu.size:
+        try:
+            b_u.destroy()
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"resolvent RHS scatter: collapse map len={parent.size} != assembled b_u len={bu.size}"
+        )
+    np.add.at(b_arr, parent, bu.astype(b_arr.dtype, copy=False))
+    try:
+        b_u.destroy()
+    except Exception:
+        pass
+    uh.x.scatter_forward()
+    b_u_norm = float(np.linalg.norm(bu))
+    b_mix_norm = float(np.linalg.norm(b_arr))
+    return b_u_norm, b_mix_norm
+
+
 def _coupled_resolvent_solve(
     msh: mesh.Mesh,
     W: fem.FunctionSpace,
@@ -4855,9 +4900,6 @@ def _coupled_resolvent_solve(
     """
     omega = 2.0 * math.pi * float(frequency_hz)
     lam_shift = omega * omega
-    v, _q = ufl.TestFunctions(W)
-    n = ufl.FacetNormal(msh)
-    f_amp = fem.Constant(msh, PETSc.ScalarType(float(force_scale)))
     tag = int(force_facet_tag)
     n_facets = int(np.sum(facet_tags.values == tag))
     if n_facets <= 0:
@@ -4876,11 +4918,27 @@ def _coupled_resolvent_solve(
             "pipeline_error": err,
             "ksp_reason": -9998,
         }
-    L = f_amp * ufl.dot(v, n) * xdmf_ds(tag)
-    L_form = fem.form(L)
 
-    b = assemble_vector(L_form)
-    b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+    uh = fem.Function(W)
+    b = uh.x.petsc_vec
+    b.zeroEntries()
+    b_u_norm_raw, b_lift_norm = _assemble_resolvent_probe_traction_into_mixed(
+        msh,
+        W,
+        xdmf_ds=xdmf_ds,
+        facet_tag=tag,
+        force_scale=float(force_scale),
+        u_to_W_map=u_to_W_map,
+        b_vec=b,
+        uh=uh,
+    )
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        print(
+            f"[resolvent-probe] RHS traction: tag={tag} facets={n_facets} "
+            f"||F_u||_collapsed={b_u_norm_raw:.6e} ||F||_mixed_after_lift={b_lift_norm:.6e}",
+            flush=True,
+        )
+
     set_bc(b, bcs)
 
     s_uu_load = 1.0
@@ -4936,7 +4994,6 @@ def _coupled_resolvent_solve(
     solve_mode = "shifted"
     ksp: Optional[PETSc.KSP] = None
     K: Optional[PETSc.Mat] = None
-    uh = fem.Function(W)
     x = uh.x.petsc_vec
     res_tol = float(solver_cfg.get("resolvent_residual_tol", 1.0e-6))
     min_x_norm = float(solver_cfg.get("resolvent_min_x_norm", 1.0e-24))
