@@ -1877,17 +1877,6 @@ def _petsc_mat_zero_dirichlet_rows(mat: PETSc.Mat, global_rows: np.ndarray, *, d
                     mat.zeroRows(is_rows, diag=d)
                 finally:
                     is_rows.destroy()
-    try:
-        mat.zeroRowsColumns(rows, diag=d)
-    except Exception:
-        try:
-            is_rows = PETSc.IS().createGeneral(rows, comm=mat.getComm())
-            try:
-                mat.zeroRowsColumns(is_rows, diag=d)
-            finally:
-                is_rows.destroy()
-        except Exception:
-            pass
 
 
 def _petsc_vec_zero_global_dofs(vec: PETSc.Vec, global_rows: np.ndarray) -> None:
