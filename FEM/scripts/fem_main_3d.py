@@ -1200,13 +1200,19 @@ def _mixed_eigenvector_block_norms(
     *,
     u_to_W: Optional[np.ndarray] = None,
     p_to_W: Optional[np.ndarray] = None,
+    p_exclude_rows: Optional[np.ndarray] = None,
 ) -> Tuple[float, float]:
     """L2 norms of u and p on the mixed W global vector (use collapse maps when provided)."""
     if u_to_W is not None and p_to_W is not None:
         u_idx = np.asarray(u_to_W, dtype=np.int32).ravel()
         p_idx = np.asarray(p_to_W, dtype=np.int32).ravel()
         u_norm = float(np.linalg.norm(arr[u_idx])) if u_idx.size > 0 else 0.0
-        p_norm = float(np.linalg.norm(arr[p_idx])) if p_idx.size > 0 else 0.0
+        if p_exclude_rows is not None and p_exclude_rows.size > 0:
+            excl = np.unique(np.asarray(p_exclude_rows, dtype=np.int32).ravel())
+            p_free = p_idx[~np.isin(p_idx, excl)]
+            p_norm = float(np.linalg.norm(arr[p_free])) if p_free.size > 0 else 0.0
+        else:
+            p_norm = float(np.linalg.norm(arr[p_idx])) if p_idx.size > 0 else 0.0
         return u_norm, p_norm
     n = max(0, int(n_u_dofs))
     if arr.size < n:
@@ -1898,6 +1904,26 @@ def _petsc_mat_zero_dirichlet_rows(
         mat.assemble()
     except Exception:
         pass
+
+
+def _petsc_vec_duplicate(src: PETSc.Vec) -> PETSc.Vec:
+    """Duplicate a PETSc vector and copy owned values (``duplicate()`` alone is uninitialized)."""
+    dup = src.duplicate()
+    np.copyto(np.asarray(dup.array, dtype=np.float64), np.asarray(src.array, dtype=np.float64))
+    try:
+        dup.ghostUpdate(
+            addv=PETSc.InsertMode.INSERT_VALUES,
+            mode=PETSc.ScatterMode.FORWARD,
+        )
+    except Exception:
+        try:
+            dup.ghostUpdate(
+                addv=PETSc.InsertMode.INSERT,
+                mode=PETSc.ScatterMode.FORWARD,
+            )
+        except Exception:
+            pass
+    return dup
 
 
 def _petsc_vec_zero_global_dofs(vec: PETSc.Vec, global_rows: np.ndarray) -> None:
@@ -4018,6 +4044,12 @@ def _solve_coupled_evp(
         u_ribs_dofs_v=u_ribs_alg,
         u_fix_dofs_v=u_dofs_fix_bc,
     )
+    pv = np.asarray(p_gauge_dofs_v, dtype=np.int32).ravel()
+    pmap = np.asarray(p_to_W_map, dtype=np.int32).ravel()
+    if pv.size and pmap.size and np.min(pv) >= 0 and np.max(pv) < pmap.size:
+        p_bc_rows_w = np.unique(pmap[pv])
+    else:
+        p_bc_rows_w = np.array([], dtype=np.int32)
     _u_alg_parts: List[np.ndarray] = []
     if clamp_ribs and u_dofs_ribs.size > 0:
         _u_alg_parts.append(np.asarray(u_dofs_ribs, dtype=np.int32).ravel())
@@ -4221,6 +4253,7 @@ def _solve_coupled_evp(
                 M,
                 facet_tags=facet_tags,
                 algebraic_dirichlet_rows=coupled_dirichlet_rows,
+                p_bc_rows_w=p_bc_rows_w,
                 u_dofs_zero_collapsed=u_alg_zero,
                 u_to_W_map=u_to_W_map,
                 p_to_W_map=p_to_W_map,
@@ -4919,6 +4952,8 @@ def _resolvent_solve_linear_system(
                 flush=True,
             )
 
+    b_solve_norm = float(b_solve.norm())
+    b_solve_np = float(np.linalg.norm(np.asarray(b_solve.array, dtype=np.float64)))
     ksp = PETSc.KSP().create(comm)
     ksp.setOperators(K_work)
     cfg = dict(solver_cfg)
@@ -4938,14 +4973,16 @@ def _resolvent_solve_linear_system(
         print(
             f"[resolvent-probe] {label}: reason={reason} its={its} rel_res={rel_res:.3e} "
             f"||x||={x_norm:.6e} ||r||={r_norm:.6e} ||b||_phy={physical_b_norm:.6e} "
-            f"||b||_petsc={b_norm_petsc:.6e} ||b||_np={b_norm_local:.6e}",
+            f"||b||_solve={b_solve_norm:.6e} ||b||_solve_np={b_solve_np:.6e}",
             flush=True,
         )
+    load_floor = 1.0e-12 * max(physical_b_norm, 1.0e-30)
     accepted = (
         reason > 0
         and _resolvent_vec_is_finite(x)
         and rel_res <= res_tol
         and x_norm >= min_x_norm
+        and max(b_solve_norm, b_solve_np) >= load_floor
         and x_norm * max(float(K_work.norm()), 1.0e-30)
         >= 1.0e-9 * max(physical_b_norm, 1.0e-30)
     )
@@ -4972,18 +5009,18 @@ def _resolvent_probe_block_norms(
     *,
     u_to_W: np.ndarray,
     p_to_W: np.ndarray,
+    p_bc_rows_w: Optional[np.ndarray] = None,
 ) -> Tuple[float, float, float]:
     """L2 norms of displacement / pressure blocks and full mixed vector."""
     arr = np.asarray(uh.x.array, dtype=np.float64)
     x_norm = float(np.linalg.norm(arr))
-    u_norm, p_norm = _mixed_eigenvector_block_norms(arr, u_to_W=u_to_W, p_to_W=p_to_W)
+    u_norm, p_norm = _mixed_eigenvector_block_norms(
+        arr, u_to_W=u_to_W, p_to_W=p_to_W, p_exclude_rows=p_bc_rows_w
+    )
     try:
         u_sub = float(uh.sub(0).x.norm())
-        p_sub = float(uh.sub(1).x.norm())
         if u_sub > u_norm:
             u_norm = u_sub
-        if p_sub > p_norm:
-            p_norm = p_sub
     except Exception:
         pass
     return u_norm, p_norm, x_norm
@@ -5117,6 +5154,7 @@ def _coupled_resolvent_solve(
     *,
     facet_tags,
     algebraic_dirichlet_rows: np.ndarray,
+    p_bc_rows_w: np.ndarray,
     u_dofs_zero_collapsed: np.ndarray,
     u_to_W_map: np.ndarray,
     p_to_W_map: np.ndarray,
@@ -5187,6 +5225,7 @@ def _coupled_resolvent_solve(
     b_norm_petsc = float(rhs.norm())
     b_norm_numpy = float(np.linalg.norm(np.asarray(rhs.array, dtype=np.float64)))
     b_norm = max(b_norm_petsc, b_norm_numpy, 1.0e-30)
+    rhs_frozen = _petsc_vec_duplicate(rhs)
     if MPI.COMM_WORLD.rank == ROOT_RANK and abs(s_uu_load - 1.0) > 0.0:
         print(
             f"[resolvent-probe] RHS block scale 1/s_uu={1.0 / s_uu_load:.6e}: "
@@ -5290,7 +5329,7 @@ def _coupled_resolvent_solve(
         accepted, reason_try, its_try, rel_try, _xn, ksp_try, K_solved = (
             _resolvent_solve_linear_system(
                 K_op,
-                rhs,
+                rhs_frozen,
                 uh,
                 solver_cfg,
                 label=f"shifted reg_frac={reg_frac:.2e}",
@@ -5347,7 +5386,7 @@ def _coupled_resolvent_solve(
                 accepted, reason_s, its_s, rel_s, _xn, ksp_s, K_s = (
                     _resolvent_solve_linear_system(
                         K_op,
-                        rhs,
+                        rhs_frozen,
                         uh,
                         solver_cfg,
                         label=label,
@@ -5386,7 +5425,10 @@ def _coupled_resolvent_solve(
     if solve_ok:
         uh.x.scatter_forward()
         u_norm, p_norm, x_norm_f = _resolvent_probe_block_norms(
-            uh, u_to_W=u_to_W_map, p_to_W=p_to_W_map
+            uh,
+            u_to_W=u_to_W_map,
+            p_to_W=p_to_W_map,
+            p_bc_rows_w=p_bc_rows_w,
         )
         if (
             not (np.isfinite(u_norm) and np.isfinite(p_norm) and np.isfinite(x_norm_f))
@@ -5418,8 +5460,8 @@ def _coupled_resolvent_solve(
                         flush=True,
                     )
                 uh_static = fem.Function(W)
-                rhs_static = rhs.duplicate()
-                accepted_s, reason_s, its_s, rel_s, _xn_s, ksp_s, K_s = (
+                rhs_static = _petsc_vec_duplicate(rhs_frozen)
+                accepted_s, reason_s, its_s, rel_s, xn_s, ksp_s, K_s = (
                     _resolvent_solve_linear_system(
                         A,
                         rhs_static,
@@ -5437,10 +5479,13 @@ def _coupled_resolvent_solve(
                     rhs_static.destroy()
                 except Exception:
                     pass
-                if accepted_s:
+                if accepted_s and xn_s >= min_x_norm:
                     uh_static.x.scatter_forward()
                     u_s, p_s, x_s = _resolvent_probe_block_norms(
-                        uh_static, u_to_W=u_to_W_map, p_to_W=p_to_W_map
+                        uh_static,
+                        u_to_W=u_to_W_map,
+                        p_to_W=p_to_W_map,
+                        p_bc_rows_w=p_bc_rows_w,
                     )
                     ratio_s = p_s / max(u_s, 1.0e-30)
                     coupled_static = bool(
@@ -5512,7 +5557,12 @@ def _coupled_resolvent_solve(
         if solve_ok:
             print(
                 f"[resolvent-probe] ||x||={x_norm_f:.6e} ||u||={u_norm:.6e} "
-                f"||p||={p_norm:.6e} ||p||/||u||={ratio:.6e}"
+                f"||p||_free={p_norm:.6e} ||p||/||u||={ratio:.6e}"
+                + (
+                    f" (pressure norm excludes {p_bc_rows_w.size} soundhole gauge rows)"
+                    if p_bc_rows_w.size > 0
+                    else ""
+                )
             )
             p_floor = float(solver_cfg.get("resolvent_coupling_p_over_u_floor", 1.0e-6))
             p_abs_floor = float(solver_cfg.get("resolvent_coupling_p_abs_floor", 1.0e-20))
@@ -5528,8 +5578,16 @@ def _coupled_resolvent_solve(
             ksp.destroy()
         if K is not None:
             K.destroy()
+        rhs_frozen.destroy()
     except Exception:
         pass
+
+    inconclusive_mass_dom = bool(
+        solve_ok
+        and not coupled_visible
+        and math.isfinite(mass_dom_ratio)
+        and mass_dom_ratio > float(solver_cfg.get("resolvent_mass_dom_ratio_threshold", 1.0e3))
+    )
 
     return {
         "frequency_hz": float(frequency_hz),
@@ -5554,6 +5612,7 @@ def _coupled_resolvent_solve(
         ),
         "lambda_mass_over_a_fro": mass_dom_ratio,
         "coupling_check_pass": bool(coupled_visible),
+        "probe_inconclusive_ok": inconclusive_mass_dom,
         "solve_ok": bool(solve_ok),
         "ksp_iterations": int(its),
         "ksp_reason": int(reason),

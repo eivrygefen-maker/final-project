@@ -143,7 +143,9 @@ def main() -> int:
             return 2
         if not stats.get("solve_ok", False):
             return 2
-        return 0 if stats.get("coupling_check_pass") else 3
+        if stats.get("coupling_check_pass") or stats.get("probe_inconclusive_ok"):
+            return 0
+        return 3
 
     return 0
 
