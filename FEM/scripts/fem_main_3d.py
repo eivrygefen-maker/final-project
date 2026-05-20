@@ -782,42 +782,64 @@ def _wood_air_interface_measure(
     msh: mesh.Mesh,
     cell_tags,
     solver_cfg: Dict,
+    *,
+    status_callback=None,
 ) -> Tuple[str, Any, np.ndarray]:
     """
-    Interior wood↔air interface measure for FSI traction / Nitsche forms.
+    Wood↔air interface measure for FSI traction / Nitsche forms.
 
-    Default ``fsi_iface_measure=dS``: ``dS(air, wood)`` on each wood volume tag (1/2/3).
-    This is the standard UFL interior-facet restriction and avoids ambiguous ``ds`` on
-    stitched interior facets. Fallback ``meshtags`` uses topology facets + ``ds(tag=20)``.
+    Default ``fsi_iface_measure=meshtags``: topology facets + ``ds(tag=20)`` (works with
+    gmsh ``model_to_mesh`` on this project). Optional ``dS`` / ``interior`` tries
+    ``dS(air, wood)`` with ``cell_tags``; many dolfinx builds raise ``Invalid metadata``
+    for that pairing, so we fall back to meshtags automatically.
     """
-    # Default interior ``dS(air, wood)``. Do not treat ``"dS".lower() == "ds"`` as meshtags:
-    # that typo routed the default to ``meshtags_ds`` and broke iface physics.
-    mode = str(solver_cfg.get("fsi_iface_measure", "dS")).strip().lower()
+    mode = str(solver_cfg.get("fsi_iface_measure", "meshtags")).strip().lower()
     facets = _find_air_wood_interface_facets(msh, cell_tags)
     if facets.size == 0:
         raise RuntimeError(
             "FSI interface: no facets between air volume (tag 10) and wood volumes (1/2/3)."
         )
-    if mode in ("meshtags", "facet_tags", "tagged_ds", "meshtags_ds"):
+
+    def _meshtags_iface_measure() -> Tuple[str, Any, np.ndarray]:
         iface_meshtags = _meshtags_on_facets(msh, facets, FSI_INTERFACE_FACET_TAG)
         measure = ufl.Measure("ds", domain=msh, subdomain_data=iface_meshtags)(
             FSI_INTERFACE_FACET_TAG
         )
         return "meshtags_ds", measure, facets
 
-    dS = ufl.Measure("dS", domain=msh, subdomain_data=cell_tags)
-    parts = []
-    wood_first = _solver_bool(solver_cfg, "fsi_dS_wood_first", default=False)
-    for wtag in WOOD_VOLUME_TAGS:
-        if wood_first:
-            parts.append(dS(int(wtag), AIR_VOLUME_TAG))
-        else:
-            parts.append(dS(AIR_VOLUME_TAG, int(wtag)))
-    measure = parts[0]
-    for part in parts[1:]:
-        measure = measure + part
-    tag = "dS_wood_air" if wood_first else "dS_air_wood"
-    return tag, measure, facets
+    if mode in ("meshtags", "facet_tags", "tagged_ds", "meshtags_ds", "ds"):
+        return _meshtags_iface_measure()
+
+    if mode in ("interior", "interior_ds", "ds_interior", "dS_air_wood"):
+        try:
+            dS = ufl.Measure("dS", domain=msh, subdomain_data=cell_tags)
+            parts = []
+            wood_first = _solver_bool(solver_cfg, "fsi_dS_wood_first", default=False)
+            for wtag in WOOD_VOLUME_TAGS:
+                if wood_first:
+                    parts.append(dS(int(wtag), AIR_VOLUME_TAG))
+                else:
+                    parts.append(dS(AIR_VOLUME_TAG, int(wtag)))
+            measure = parts[0]
+            for part in parts[1:]:
+                measure = measure + part
+            tag = "dS_wood_air" if wood_first else "dS_air_wood"
+            return tag, measure, facets
+        except (ValueError, AttributeError, TypeError, RuntimeError) as exc:
+            _emit(
+                f"[FSI-IFACE][warn] interior dS measure failed ({type(exc).__name__}: {exc!r}); "
+                "falling back to meshtags_ds.",
+                status_callback=status_callback,
+                level="warning",
+            )
+            return _meshtags_iface_measure()
+
+    _emit(
+        f"[FSI-IFACE][warn] unknown fsi_iface_measure={mode!r}; using meshtags_ds.",
+        status_callback=status_callback,
+        level="warning",
+    )
+    return _meshtags_iface_measure()
 
 
 def _audit_fsi_traction_pair_norms(
@@ -3846,7 +3868,7 @@ def _solve_coupled_evp(
     P = ufl.Identity(3) - ufl.outer(n, n)
 
     iface_mode, iface_measure, fsi_iface_facets = _wood_air_interface_measure(
-        msh, cell_tags, solver_cfg
+        msh, cell_tags, solver_cfg, status_callback=status_callback
     )
     air_ext_p_facets = _find_air_exterior_pressure_facets(
         msh, cell_tags, facet_tags, fsi_iface_facets
