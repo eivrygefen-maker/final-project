@@ -217,10 +217,15 @@ def main() -> int:
     cfg["solver"].pop("eps_smallest_magnitude", None)
     cfg["solver"].pop("eps_use_which_user", None)
     cfg["_worker_eps_target_lambda"] = _target_lambda
+    cfg["solver"]["_worker_eps_target_lambda"] = _target_lambda
+    cfg["solver"]["_worker_target_hz"] = _target_hz
     _nm = max(1, int(args.num_modes))
-    cfg["solver"]["target_ncv"] = max(
-        int(cfg["solver"].get("target_ncv", 0)),
-        int(math.ceil(4.0 * _nm)),
+    cfg["solver"]["target_ncv"] = min(
+        max(
+            int(cfg["solver"].get("target_ncv", 0)),
+            int(math.ceil(4.0 * _nm)),
+        ),
+        int(cfg["solver"].get("eps_ncv_max", 180) or 180),
     )
     cfg["_worker_eps_max_it"] = int(cfg["solver"].get("eigs_maxiter", cfg["solver"].get("eps_max_it", 3000)))
     cfg["_worker_target_hz"] = _target_hz

@@ -3280,6 +3280,24 @@ def _slepc_shift_invert_batch(
     ncv_floor = int(math.ceil(max(4.0, ncv_min_factor) * float(nev_request)))
     ncv_cfg = int(solver_cfg.get("target_ncv", 0))
     ncv = max(ncv_floor, ncv_cfg, 40)
+    ncv_cap = int(solver_cfg.get("eps_ncv_max", 0))
+    if ncv_cap <= 0:
+        try:
+            n_glob = int(A.getSize()[0])
+        except Exception:
+            n_glob = 0
+        if n_glob >= 200_000:
+            ncv_cap = 180
+        elif n_glob >= 100_000:
+            ncv_cap = 220
+    if ncv_cap > 0 and ncv > ncv_cap:
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                f"[solver][warn] EPS ncv capped {ncv} -> {ncv_cap} "
+                f"(large coupled model; high ncv can OOM/segfault on small VMs).",
+                flush=True,
+            )
+        ncv = ncv_cap
     eps.setDimensions(int(nev_request), int(ncv))
     eps_max_it = int(solver_cfg.get("eigs_maxiter", solver_cfg.get("eps_max_it", 3000)))
     if eps_max_it_cap is not None:
