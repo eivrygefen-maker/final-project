@@ -27,6 +27,11 @@ import ufl
 from basix.ufl import element, mixed_element
 from dolfinx import fem, io, mesh
 from dolfinx.fem.petsc import assemble_matrix, assemble_vector
+
+try:
+    from dolfinx.fem.petsc import assemble_matrix_block as _assemble_matrix_block
+except ImportError:
+    _assemble_matrix_block = None
 from mpi4py import MPI
 # Explicit PETSc initialization on all ranks.
 petsc4py.init(sys.argv)
@@ -785,13 +790,15 @@ def _wood_air_interface_measure(
     This is the standard UFL interior-facet restriction and avoids ambiguous ``ds`` on
     stitched interior facets. Fallback ``meshtags`` uses topology facets + ``ds(tag=20)``.
     """
+    # Default interior ``dS(air, wood)``. Do not treat ``"dS".lower() == "ds"`` as meshtags:
+    # that typo routed the default to ``meshtags_ds`` and broke iface physics.
     mode = str(solver_cfg.get("fsi_iface_measure", "dS")).strip().lower()
     facets = _find_air_wood_interface_facets(msh, cell_tags)
     if facets.size == 0:
         raise RuntimeError(
             "FSI interface: no facets between air volume (tag 10) and wood volumes (1/2/3)."
         )
-    if mode in ("ds", "meshtags", "facet_tags", "tagged_ds"):
+    if mode in ("meshtags", "facet_tags", "tagged_ds", "meshtags_ds"):
         iface_meshtags = _meshtags_on_facets(msh, facets, FSI_INTERFACE_FACET_TAG)
         measure = ufl.Measure("ds", domain=msh, subdomain_data=iface_meshtags)(
             FSI_INTERFACE_FACET_TAG
@@ -850,6 +857,16 @@ def _audit_fsi_traction_pair_norms(
     return n_up, n_pu, n_mp
 
 
+def _mixed_collapse_parent_maps(W: fem.FunctionSpace) -> Tuple[np.ndarray, np.ndarray]:
+    """Parent (mixed W) indices for collapsed displacement and pressure dofs."""
+    _, u_map = W.sub(0).collapse()
+    _, p_map = W.sub(1).collapse()
+    return (
+        np.asarray(u_map, dtype=np.int32).ravel(),
+        np.asarray(p_map, dtype=np.int32).ravel(),
+    )
+
+
 def _probe_monolithic_coupling_pressure_load(
     A: PETSc.Mat,
     uh: fem.Function,
@@ -860,17 +877,126 @@ def _probe_monolithic_coupling_pressure_load(
     """||A·x|| on pressure rows (collapsed map) — how much displacement drives pressure equations."""
     y = A.createVecRight()
     try:
+        uh.x.scatter_forward()
         A.mult(uh.x.petsc_vec, y)
-        arr = np.asarray(y.array, dtype=np.float64)
+        try:
+            y.ghostUpdate(
+                addv=PETSc.InsertMode.INSERT_VALUES,
+                mode=PETSc.ScatterMode.FORWARD,
+            )
+        except Exception:
+            try:
+                y.ghostUpdate(
+                    addv=PETSc.InsertMode.INSERT,
+                    mode=PETSc.ScatterMode.FORWARD,
+                )
+            except Exception:
+                pass
         p_idx = np.asarray(p_to_W, dtype=np.int32).ravel()
         if p_idx.size == 0:
             return 0.0
-        return float(np.linalg.norm(arr[p_idx]))
+        owned_p = _petsc_owned_global_rows(y, p_idx)
+        if owned_p.size == 0:
+            return 0.0
+        vals = np.asarray(y.getValues(owned_p), dtype=np.float64)
+        return float(np.linalg.norm(vals))
     finally:
         try:
             y.destroy()
         except Exception:
             pass
+
+
+def _audit_mixed_coupling_matvec_alignment(
+    A: PETSc.Mat,
+    W: fem.FunctionSpace,
+    u_to_W: np.ndarray,
+    p_to_W: np.ndarray,
+    *,
+    uh: Optional[fem.Function] = None,
+    status_callback=None,
+) -> Dict[str, float]:
+    """
+    Verify A_pu columns align with displacement parent indices (unit u excitation on W).
+    """
+    if MPI.COMM_WORLD.rank != ROOT_RANK:
+        return {}
+    u_map = np.asarray(u_to_W, dtype=np.int32).ravel()
+    p_map = np.asarray(p_to_W, dtype=np.int32).ravel()
+    overlap = np.intersect1d(u_map, p_map)
+    diag: Dict[str, float] = {
+        "u_idx_min": float(np.min(u_map)) if u_map.size else -1.0,
+        "u_idx_max": float(np.max(u_map)) if u_map.size else -1.0,
+        "p_idx_min": float(np.min(p_map)) if p_map.size else -1.0,
+        "p_idx_max": float(np.max(p_map)) if p_map.size else -1.0,
+        "map_overlap": float(overlap.size),
+        "p_load_unit_u": 0.0,
+        "p_load_solution": float("nan"),
+        "p_sub_norm": float("nan"),
+    }
+    if overlap.size > 0:
+        _emit(
+            f"[FSI-MATVEC][CRITICAL] u/p collapse maps overlap on {int(overlap.size)} indices",
+            status_callback=status_callback,
+            level="error",
+        )
+    x_unit = fem.Function(W)
+    x_unit.x.petsc_vec.set(0.0)
+    owned_u = _petsc_owned_global_rows(x_unit.x.petsc_vec, u_map)
+    if owned_u.size > 0:
+        x_unit.x.petsc_vec.setValues(
+            owned_u,
+            np.ones(owned_u.size, dtype=PETSc.ScalarType),
+        )
+    x_unit.x.scatter_forward()
+    y = A.createVecRight()
+    try:
+        A.mult(x_unit.x.petsc_vec, y)
+        try:
+            y.ghostUpdate(
+                addv=PETSc.InsertMode.INSERT_VALUES,
+                mode=PETSc.ScatterMode.FORWARD,
+            )
+        except Exception:
+            pass
+        owned_p = _petsc_owned_global_rows(y, p_map)
+        if owned_p.size > 0:
+            vals = np.asarray(y.getValues(owned_p), dtype=np.float64)
+            diag["p_load_unit_u"] = float(np.linalg.norm(vals))
+    finally:
+        try:
+            y.destroy()
+        except Exception:
+            pass
+    if uh is not None:
+        diag["p_load_solution"] = _probe_monolithic_coupling_pressure_load(
+            A, uh, p_to_W=p_map, u_to_W=u_map
+        )
+        try:
+            diag["p_sub_norm"] = float(uh.sub(1).x.norm())
+        except Exception:
+            pass
+    blocked = (
+        u_map.size > 0
+        and p_map.size > 0
+        and int(diag["u_idx_max"]) < int(diag["p_idx_min"])
+    )
+    print(
+        "[FSI-MATVEC] collapse maps: "
+        f"u=[{diag['u_idx_min']:.0f},{diag['u_idx_max']:.0f}] "
+        f"p=[{diag['p_idx_min']:.0f},{diag['p_idx_max']:.0f}] "
+        f"blocked_layout={blocked} overlap={int(diag['map_overlap'])} "
+        f"||(A·e_u)_p||={diag['p_load_unit_u']:.6e} "
+        f"||(A·x)_p||={diag['p_load_solution']:.6e} "
+        f"||p_sub||={diag['p_sub_norm']:.6e}"
+    )
+    if diag["p_load_unit_u"] < 1.0e-20:
+        print(
+            "[FSI-MATVEC][CRITICAL] A_pu columns do not couple to displacement parent indices "
+            "(unit u excitation produces zero pressure-row load)."
+        )
+    sys.stdout.flush()
+    return diag
 
 
 def _mesh_characteristic_length(msh: mesh.Mesh) -> float:
@@ -2057,6 +2183,89 @@ def _petsc_vec_zero_global_dofs(vec: PETSc.Vec, global_rows: np.ndarray) -> None
             )
         except Exception:
             pass
+
+
+def _ufl_add_terms(*terms: Any) -> Any:
+    out = None
+    for term in terms:
+        if term is None:
+            continue
+        out = term if out is None else out + term
+    if out is None:
+        raise ValueError("no UFL terms to add")
+    return out
+
+
+def _assemble_coupled_AM_operators(
+    *,
+    a_uu,
+    a_pp,
+    a_up,
+    a_pu,
+    m_uu,
+    m_pp,
+    m_pu,
+    reg_p,
+    nit_uu_a,
+    nit_up_a,
+    nit_pu_a,
+    nit_pu_m,
+    status_callback=None,
+) -> Tuple[PETSc.Mat, PETSc.Mat]:
+    """
+    Assemble coupled (A, M) with correct mixed off-diagonal layout.
+
+    Prefer ``assemble_matrix_block`` so A_pu rows/cols use W.sub(1)/W.sub(0) parent dofmaps.
+    Fall back to a single coupling-form assembly + uu/pp axpy (not per-block axpy of full mats).
+    """
+    a00 = _ufl_add_terms(a_uu, nit_uu_a)
+    a01 = _ufl_add_terms(a_up, nit_up_a)
+    a10 = _ufl_add_terms(a_pu, nit_pu_a)
+    a11 = _ufl_add_terms(a_pp, reg_p)
+    m10 = _ufl_add_terms(m_pu, nit_pu_m)
+
+    if _assemble_matrix_block is not None:
+        try:
+            A = _assemble_matrix_block(
+                fem.form([[a00, a01], [a10, a11]]),
+                bcs=[],
+            )
+            A.assemble()
+            M = _assemble_matrix_block(
+                fem.form([[m_uu, None], [m10, m_pp]]),
+                bcs=[],
+            )
+            M.assemble()
+            if MPI.COMM_WORLD.rank == ROOT_RANK:
+                print(
+                    "[assembly] coupled A/M via assemble_matrix_block "
+                    f"(||A||_F={float(A.norm()):.6e}, ||M||_F={float(M.norm()):.6e})"
+                )
+                sys.stdout.flush()
+            return A, M
+        except Exception as exc:
+            _emit(
+                f"[assembly][warn] assemble_matrix_block failed ({type(exc).__name__}: {exc!r}); "
+                "falling back to bundled coupling-form assembly.",
+                status_callback=status_callback,
+                level="warning",
+            )
+
+    a_couple = _ufl_add_terms(a_up, a_pu, nit_up_a, nit_pu_a)
+    m_couple = m10
+    A_blocks: List[Tuple[str, Any, List[fem.DirichletBC]]] = [
+        ("uu", a00, []),
+        ("pp", a11, []),
+        ("coupling", a_couple, []),
+    ]
+    M_blocks: List[Tuple[str, Any, List[fem.DirichletBC]]] = [
+        ("uu", m_uu, []),
+        ("pp", m_pp, []),
+        ("coupling", m_couple, []),
+    ]
+    A = _sum_assembled_blocks(A_blocks, operator_label="A", status_callback=status_callback)
+    M = _sum_assembled_blocks(M_blocks, operator_label="M", status_callback=status_callback)
+    return A, M
 
 
 def _sum_assembled_blocks(
@@ -4191,87 +4400,45 @@ def _solve_coupled_evp(
         print("PRINT: ENTERING FULL COUPLED ACOUSTIC-STRUCTURAL SOLVE")
         sys.stdout.flush()
     use_blockwise = _solver_bool(solver_cfg, "coupled_blockwise_assembly", default=True)
+    reg_p_block = reg_p if diag_shift > 0.0 else None
     if use_blockwise:
-
-        def _blk(name: str, form) -> Tuple[str, Any, List[fem.DirichletBC]]:
-            return (
-                name,
-                form,
-                _coupled_block_dirichlet_bcs(
-                    name,
-                    bcs_u=bcs_u_only,
-                    bcs_p=bcs_p_only,
-                    bcs_all=bcs,
-                ),
-            )
-
-        A_blocks: List[Tuple[str, Any, List[fem.DirichletBC]]] = [
-            _blk("uu", a_uu),
-            _blk("pp", a_pp),
-            _blk("up", a_up),
-            _blk("pu", a_pu),
-        ]
-        if nit_uu_a is not None:
-            A_blocks.append(_blk("nit_uu", nit_uu_a))
-        if nit_up_a is not None:
-            A_blocks.append(_blk("nit_up", nit_up_a))
-        if nit_pu_a is not None:
-            A_blocks.append(_blk("nit_pu", nit_pu_a))
-        if diag_shift > 0.0:
-            A_blocks.append(_blk("reg_p", reg_p))
-        M_blocks: List[Tuple[str, Any, List[fem.DirichletBC]]] = [
-            _blk("uu", m_uu),
-            _blk("pp", m_pp),
-            _blk("pu", m_pu),
-        ]
-        if nit_pu_m is not None:
-            M_blocks.append(_blk("nit_pu", nit_pu_m))
         try:
-            A = _sum_assembled_blocks(
-                A_blocks, operator_label="A", status_callback=status_callback
+            A, M = _assemble_coupled_AM_operators(
+                a_uu=a_uu,
+                a_pp=a_pp,
+                a_up=a_up,
+                a_pu=a_pu,
+                m_uu=m_uu,
+                m_pp=m_pp,
+                m_pu=m_pu,
+                reg_p=reg_p_block,
+                nit_uu_a=nit_uu_a,
+                nit_up_a=nit_up_a,
+                nit_pu_a=nit_pu_a,
+                nit_pu_m=nit_pu_m,
+                status_callback=status_callback,
             )
         except Exception as exc:
-            if nit_uu_a is not None or nit_up_a is not None:
+            if nit_uu_a is not None or nit_up_a is not None or nit_pu_a is not None:
                 _emit(
-                    f"[assembly][warn] A blockwise with Nitsche failed ({exc!r}); "
-                    "retrying shell+FSI traction without Nitsche blocks.",
+                    f"[assembly][warn] coupled block assembly with Nitsche failed ({exc!r}); "
+                    "retrying without Nitsche blocks.",
                     status_callback=status_callback,
                     level="warning",
                 )
-                A_blocks_fallback = [
-                    _blk("uu", a_uu),
-                    _blk("pp", a_pp),
-                    _blk("up", a_up),
-                    _blk("pu", a_pu),
-                ]
-                if diag_shift > 0.0:
-                    A_blocks_fallback.append(_blk("reg_p", reg_p))
-                A = _sum_assembled_blocks(
-                    A_blocks_fallback,
-                    operator_label="A_no_nitsche",
-                    status_callback=status_callback,
-                )
-            else:
-                raise
-        try:
-            M = _sum_assembled_blocks(
-                M_blocks, operator_label="M", status_callback=status_callback
-            )
-        except Exception as exc:
-            if nit_pu_m is not None:
-                _emit(
-                    f"[assembly][warn] M blockwise with Nitsche nit_pu failed ({exc!r}); "
-                    "retrying without nit_pu.",
-                    status_callback=status_callback,
-                    level="warning",
-                )
-                M = _sum_assembled_blocks(
-                    [
-                        _blk("uu", m_uu),
-                        _blk("pp", m_pp),
-                        _blk("pu", m_pu),
-                    ],
-                    operator_label="M_no_nitsche",
+                A, M = _assemble_coupled_AM_operators(
+                    a_uu=a_uu,
+                    a_pp=a_pp,
+                    a_up=a_up,
+                    a_pu=a_pu,
+                    m_uu=m_uu,
+                    m_pp=m_pp,
+                    m_pu=m_pu,
+                    reg_p=reg_p_block,
+                    nit_uu_a=None,
+                    nit_up_a=None,
+                    nit_pu_a=None,
+                    nit_pu_m=None,
                     status_callback=status_callback,
                 )
             else:
@@ -4293,6 +4460,58 @@ def _solve_coupled_evp(
                     status_callback=status_callback,
                     level="warning",
                 )
+
+    matvec_diag = _audit_mixed_coupling_matvec_alignment(
+        A, W, u_to_W_map, p_to_W_map, status_callback=status_callback
+    )
+    p_unit = float(matvec_diag.get("p_load_unit_u", 0.0))
+    if (
+        use_blockwise
+        and p_unit < 1.0e-20 * max(float(A.norm()), 1.0)
+        and _solver_bool(solver_cfg, "coupled_monolithic_fallback", default=True)
+    ):
+        _emit(
+            "[assembly][warn] block assembly produced zero A_pu matvec on u parent indices; "
+            "retrying monolithic coupled form assembly.",
+            status_callback=status_callback,
+            level="warning",
+        )
+        try:
+            a_full = _ufl_add_terms(
+                a_uu,
+                a_pp,
+                a_up,
+                a_pu,
+                reg_p_block,
+                nit_uu_a,
+                nit_up_a,
+                nit_pu_a,
+            )
+            m_full = _ufl_add_terms(m_uu, m_pp, m_pu, nit_pu_m)
+            A_prev, M_prev = A, M
+            A = _assemble_coupled_matrix_safe(a_full, [], label="coupled_stiffness_A_mono")
+            M = _assemble_coupled_matrix_safe(m_full, [], label="coupled_mass_M_mono")
+            try:
+                A_prev.destroy()
+                M_prev.destroy()
+            except Exception:
+                pass
+            if MPI.COMM_WORLD.rank == ROOT_RANK:
+                print(
+                    f"[assembly] monolithic fallback: ||A||_F={float(A.norm()):.6e} "
+                    f"||M||_F={float(M.norm()):.6e}"
+                )
+                sys.stdout.flush()
+            matvec_diag = _audit_mixed_coupling_matvec_alignment(
+                A, W, u_to_W_map, p_to_W_map, status_callback=status_callback
+            )
+        except Exception as exc:
+            _emit(
+                f"[assembly][warn] monolithic coupled fallback failed: "
+                f"{type(exc).__name__}: {exc!r}",
+                status_callback=status_callback,
+                level="warning",
+            )
 
     if probe_spec is not None:
         _apply_resolvent_probe_matrix_penalties(
@@ -5148,6 +5367,12 @@ def _resolvent_probe_block_norms(
             u_norm = u_sub
     except Exception:
         pass
+    try:
+        p_sub = float(uh.sub(1).x.norm())
+        if p_sub > p_norm:
+            p_norm = p_sub
+    except Exception:
+        pass
     return u_norm, p_norm, x_norm
 
 
@@ -5576,6 +5801,14 @@ def _coupled_resolvent_solve(
                     f"[resolvent-probe] diagnostic A·x pressure-block load from displacement: "
                     f"||(A x)_p||={b_p_from_u:.6e} (should be ≫0 if A_pu couples u→p)",
                     flush=True,
+                )
+                _audit_mixed_coupling_matvec_alignment(
+                    A,
+                    W,
+                    u_to_W_map,
+                    p_to_W_map,
+                    uh=uh,
+                    status_callback=status_callback,
                 )
 
             mass_dom_threshold = float(
