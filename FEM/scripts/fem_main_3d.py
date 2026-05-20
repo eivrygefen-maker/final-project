@@ -778,12 +778,20 @@ def _meshtags_on_facets(msh: mesh.Mesh, facet_indices: np.ndarray, tag_value: in
     return mesh.meshtags(msh, fdim, idx, vals)
 
 
-def _wood_air_dS_facet_measure(msh: mesh.Mesh, facet_tags) -> Any:
+def _wood_air_dS_topology_measure(msh: mesh.Mesh, iface_facets: np.ndarray) -> Any:
     """
-    Interior-facet measure on wood shell physical tags (top/back/ribs).
+    Interior ``dS`` on topology wood↔air facets (``_find_air_wood_interface_facets``).
 
-    ``dS`` must use ``subdomain_data=facet_tags`` (not volume ``cell_tags``).
+    Uses a dedicated ``MeshTags`` (tag 20) — **not** wood shell physical tags 1/3/4, which
+    label mostly exterior shell facets and yield negligible ``dS`` coupling (~1e-9).
     """
+    iface_meshtags = _meshtags_on_facets(msh, iface_facets, FSI_INTERFACE_FACET_TAG)
+    dS_iface = ufl.Measure("dS", domain=msh, subdomain_data=iface_meshtags)
+    return dS_iface(FSI_INTERFACE_FACET_TAG)
+
+
+def _wood_air_dS_shell_tag_measure(msh: mesh.Mesh, facet_tags) -> Any:
+    """Opt-in: ``dS`` restricted by wood shell facet tags (1/3/4); often wrong for FSI."""
     dS_iface = ufl.Measure("dS", domain=msh, subdomain_data=facet_tags)
     measure = None
     for tag in WOOD_SURFACE_TAGS:
@@ -810,20 +818,20 @@ def _fsi_coupling_interface_forms(
     """
     FSI traction / mass-like interface blocks on ``iface_measure``.
 
-    For interior ``dS`` on tagged wood shell facets, use ``+/-`` traces so coupling is
-    robust to dolfinx interior-facet orientation (both sides of the wood–air seam).
+    For interior ``dS`` on topology iface facets, use UFL ``jump`` / ``avg`` so flux is
+    taken across the wood–air seam (not ``u++u-`` on exterior shell tags).
     """
     n = ufl.FacetNormal(msh)
     if use_interior_pm:
         n_plus = n("+")
-        u_n_both = ufl.dot(u("+"), n_plus) + ufl.dot(u("-"), n("-"))
-        p_avg = 0.5 * (p("+") + p("-"))
-        v_n_both = ufl.dot(v("+"), n_plus) + ufl.dot(v("-"), n("-"))
-        q_pm = 0.5 * (q("+") + q("-"))
-        traction_up = -p_scale * fsi_gain * p_avg * v_n_both * iface_measure
-        traction_pu = p_scale * fsi_gain * u_n_both * q_pm * iface_measure
-        mass_pu = p_scale * fsi_gain * rho_air * u_n_both * q_pm * iface_measure
-        return traction_up, traction_pu, mass_pu, u_n_both, p_avg, v_n_both, q_pm
+        u_jump_n = ufl.inner(ufl.jump(u), n_plus)
+        v_jump_n = ufl.inner(ufl.jump(v), n_plus)
+        p_avg = ufl.avg(p)
+        q_avg = ufl.avg(q)
+        traction_up = -p_scale * fsi_gain * p_avg * v_jump_n * iface_measure
+        traction_pu = p_scale * fsi_gain * u_jump_n * q_avg * iface_measure
+        mass_pu = p_scale * fsi_gain * rho_air * u_jump_n * q_avg * iface_measure
+        return traction_up, traction_pu, mass_pu, u_jump_n, p_avg, v_jump_n, q_avg
     traction_up = -p_scale * fsi_gain * p * ufl.dot(n, v) * iface_measure
     traction_pu = p_scale * fsi_gain * ufl.dot(u, n) * q * iface_measure
     mass_pu = p_scale * fsi_gain * rho_air * ufl.dot(u, n) * q * iface_measure
@@ -843,14 +851,14 @@ def _fsi_nitsche_interface_forms(
     u_n_both=None,
     p_avg=None,
     v_n_both=None,
-    q_pm=None,
+    q_avg=None,
 ):
     """Nitsche stabilization on the FSI interface (optional)."""
     if use_interior_pm:
         return (
             gamma_n * u_n_both * v_n_both * iface_measure,
             gamma_n * p_avg * v_n_both * iface_measure,
-            gamma_n * u_n_both * q_pm * iface_measure,
+            gamma_n * u_n_both * q_avg * iface_measure,
         )
     n = ufl.FacetNormal(msh)
     return (
@@ -871,9 +879,9 @@ def _wood_air_interface_measure(
     """
     Wood↔air interface measure for FSI traction / Nitsche forms.
 
-    Default ``fsi_iface_measure=dS``: interior ``dS`` on wood shell **facet** tags
-    ``(1, 3, 4)`` with ``subdomain_data=facet_tags``. Legacy ``meshtags`` uses topology
-    facets + exterior ``ds(tag=20)`` (opt-in only).
+    Default ``fsi_iface_measure=dS``: interior ``dS`` on **topology** air↔wood facets
+    (8644 facets) via ``MeshTags`` + ``subdomain_data=facet_tags``. Shell tags 1/3/4
+    are for ``ds`` stiffness only. Opt-in ``dS_facet_wood`` uses shell tags (usually weak).
     """
     mode = str(solver_cfg.get("fsi_iface_measure", "dS")).strip().lower()
     facets = _find_air_wood_interface_facets(msh, cell_tags)
@@ -889,6 +897,16 @@ def _wood_air_interface_measure(
         )
         return "meshtags_ds", measure, facets
 
+    if mode in ("dS_facet_wood", "dS_shell_tags", "facet_tags_shell"):
+        _emit(
+            "[FSI-IFACE][warn] dS on wood shell facet tags 1/3/4 — not the topology "
+            "air↔wood seam; coupling blocks are often ~1e-9.",
+            status_callback=status_callback,
+            level="warning",
+        )
+        measure = _wood_air_dS_shell_tag_measure(msh, facet_tags)
+        return "dS_facet_wood", measure, facets
+
     if mode in (
         "ds",
         "dS",
@@ -896,26 +914,25 @@ def _wood_air_interface_measure(
         "interior_ds",
         "ds_interior",
         "dS_facet",
-        "dS_facet_wood",
-        "facet_tags",
+        "dS_iface",
+        "dS_topology",
     ):
         try:
-            measure = _wood_air_dS_facet_measure(msh, facet_tags)
-            return "dS_facet_wood", measure, facets
+            measure = _wood_air_dS_topology_measure(msh, facets)
+            return "dS_topology", measure, facets
         except (ValueError, AttributeError, TypeError, RuntimeError) as exc:
             raise RuntimeError(
-                "FSI interior dS on facet_tags "
-                f"{WOOD_SURFACE_TAGS} failed ({type(exc).__name__}: {exc!r}). "
-                "Use fsi_iface_measure=meshtags only for debugging."
+                "FSI interior dS on topology air↔wood facets failed "
+                f"({type(exc).__name__}: {exc!r})."
             ) from exc
 
     _emit(
-        f"[FSI-IFACE][warn] unknown fsi_iface_measure={mode!r}; using dS_facet_wood.",
+        f"[FSI-IFACE][warn] unknown fsi_iface_measure={mode!r}; using dS_topology.",
         status_callback=status_callback,
         level="warning",
     )
-    measure = _wood_air_dS_facet_measure(msh, facet_tags)
-    return "dS_facet_wood", measure, facets
+    measure = _wood_air_dS_topology_measure(msh, facets)
+    return "dS_topology", measure, facets
 
 
 def _audit_fsi_traction_pair_norms(
@@ -950,6 +967,11 @@ def _audit_fsi_traction_pair_norms(
             "[FSI-IFACE][CRITICAL] A_pu (pressure-row ∫ (u·n) q) is negligible vs A_up "
             "(∫ p (n·v)). Static/harmonic solves will show ||u||>0 with ||p||≈0 — "
             "check fsi_iface_measure (try dS), FacetNormal orientation, or fsi_coupling_gain."
+        )
+    if n_up < 1.0e3:
+        print(
+            f"[FSI-IFACE][CRITICAL] ||A_up||_F={n_up:.6e} on {label} — FSI iface measure "
+            "likely wrong (use dS_topology on air↔wood facets, not shell tags 1/3/4)."
         )
     sys.stdout.flush()
     return n_up, n_pu, n_mp
@@ -4079,7 +4101,7 @@ def _solve_coupled_evp(
     # Traction / mass-like interface pair (mixed GNHEP blocks):
     #   A_up (u rows, p cols): ∫_Γ p (n·v) dS  — pressure traction on the shell test v
     #   A_pu (p rows, u cols): ∫_Γ (u·n) q dS  — REQUIRED for static A x=F to excite pressure
-    # Interior ``dS`` on facet_tags (1/3/4) uses +/- traces for orientation-robust coupling.
+    # Interior ``dS`` on topology air↔wood facets uses jump/avg across the seam.
     (
         traction_up,
         traction_pu,
@@ -4087,7 +4109,7 @@ def _solve_coupled_evp(
         _u_n_both,
         _p_avg,
         _v_n_both,
-        _q_pm,
+        _q_avg,
     ) = _fsi_coupling_interface_forms(
         msh,
         u,
@@ -4100,13 +4122,16 @@ def _solve_coupled_evp(
         rho_air=rho_air,
         use_interior_pm=use_dS_interior_pm,
     )
-    _audit_fsi_traction_pair_norms(
+    n_up_fsi, n_pu_fsi, n_mp_fsi = _audit_fsi_traction_pair_norms(
         traction_up=traction_up,
         traction_pu=traction_pu,
         mass_pu=mass_pu,
         label=iface_mode,
         status_callback=status_callback,
     )
+    if probe_spec is not None:
+        probe_spec["fsi_a_up_frobenius"] = float(n_up_fsi)
+        probe_spec["fsi_a_pu_frobenius"] = float(n_pu_fsi)
     nit_uu = nit_up = nit_pu = None
     if use_nitsche:
         nit_uu, nit_up, nit_pu = _fsi_nitsche_interface_forms(
@@ -4121,7 +4146,7 @@ def _solve_coupled_evp(
             u_n_both=_u_n_both,
             p_avg=_p_avg,
             v_n_both=_v_n_both,
-            q_pm=_q_pm,
+            q_avg=_q_avg,
         )
         if MPI.COMM_WORLD.rank == ROOT_RANK:
             print(
@@ -4739,6 +4764,8 @@ def _solve_coupled_evp(
                 block_scales={"s_uu": float(s_uu), "s_pp": float(s_pp)},
                 assembly_matvec_diag=probe_spec.get("assembly_matvec_diag"),
                 fsi_iface_mode=str(probe_spec.get("fsi_iface_mode", "")),
+                fsi_a_up_frobenius=float(probe_spec.get("fsi_a_up_frobenius", float("nan"))),
+                fsi_a_pu_frobenius=float(probe_spec.get("fsi_a_pu_frobenius", float("nan"))),
                 status_callback=status_callback,
             )
         return msh, W, A, M
@@ -5648,6 +5675,8 @@ def _coupled_resolvent_solve(
     block_scales: Optional[Dict[str, float]] = None,
     assembly_matvec_diag: Optional[Dict[str, float]] = None,
     fsi_iface_mode: str = "",
+    fsi_a_up_frobenius: float = float("nan"),
+    fsi_a_pu_frobenius: float = float("nan"),
     status_callback=None,
 ) -> Dict[str, Any]:
     """
@@ -5904,6 +5933,7 @@ def _coupled_resolvent_solve(
     p_norm = float("nan")
     ratio = float("nan")
     coupled_visible = False
+    formulation_ok = False
     x_norm_f = float("nan")
 
     if solve_ok:
@@ -5924,19 +5954,14 @@ def _coupled_resolvent_solve(
             ratio = p_norm / max(u_norm, 1.0e-30)
             p_floor = float(solver_cfg.get("resolvent_coupling_p_over_u_floor", 1.0e-6))
             p_abs_floor = float(solver_cfg.get("resolvent_coupling_p_abs_floor", 1.0e-20))
-            coupled_visible = bool(
+            norm_coupled = bool(
                 p_norm > max(p_floor * u_norm, p_abs_floor) and u_norm > 1.0e-30
             )
-            if MPI.COMM_WORLD.rank == ROOT_RANK and u_norm > 1.0e-30:
-                b_p_from_u = _probe_monolithic_coupling_pressure_load(
-                    A, uh, p_to_W=p_to_W_map, u_to_W=u_to_W_map
-                )
-                print(
-                    f"[resolvent-probe] diagnostic A·x pressure-block load from displacement: "
-                    f"||(A x)_p||={b_p_from_u:.6e} (should be ≫0 if A_pu couples u→p)",
-                    flush=True,
-                )
-                _audit_mixed_coupling_matvec_alignment(
+            matvec_local: Dict[str, float] = {}
+            b_p_from_u = float("nan")
+            p_load_unit_u = float("nan")
+            if u_norm > 1.0e-30:
+                matvec_local = _audit_mixed_coupling_matvec_alignment(
                     A,
                     W,
                     u_to_W_map,
@@ -5944,6 +5969,35 @@ def _coupled_resolvent_solve(
                     uh=uh,
                     status_callback=status_callback,
                 )
+                b_p_from_u = float(matvec_local.get("p_load_solution", float("nan")))
+                p_load_unit_u = float(matvec_local.get("p_load_unit_u", float("nan")))
+            if MPI.COMM_WORLD.rank == ROOT_RANK and u_norm > 1.0e-30:
+                print(
+                    f"[resolvent-probe] diagnostic A·x pressure-block load from displacement: "
+                    f"||(A x)_p||={b_p_from_u:.6e} (should be ≫0 if A_pu couples u→p)",
+                    flush=True,
+                )
+            a_up_ref = float(fsi_a_up_frobenius)
+            form_strength_min = float(
+                solver_cfg.get("resolvent_fsi_a_up_fro_min", 1.0e3)
+            )
+            formulation_ok = (
+                math.isfinite(a_up_ref) and a_up_ref >= form_strength_min
+            )
+            ax_p_floor = float(
+                solver_cfg.get("resolvent_ax_p_frac_of_unit", 1.0e-6)
+            )
+            ax_p_ok = math.isfinite(b_p_from_u) and (
+                b_p_from_u
+                > ax_p_floor
+                * max(p_load_unit_u, 1.0e-30)
+                * max(u_norm, 1.0e-30)
+            )
+            coupled_visible = bool(
+                norm_coupled
+                and formulation_ok
+                and (ax_p_ok or ratio > float(solver_cfg.get("resolvent_p_over_u_strong", 1.0e-4)))
+            )
 
             mass_dom_threshold = float(
                 solver_cfg.get("resolvent_mass_dom_ratio_threshold", 1.0e3)
@@ -6106,15 +6160,19 @@ def _coupled_resolvent_solve(
         p_load_unit_u = float(post_matvec.get("p_load_unit_u", float("nan")))
     asm = assembly_matvec_diag or {}
     p_load_unit_asm = float(asm.get("p_load_unit_u", float("nan")))
+    a_up_ref_json = float(fsi_a_up_frobenius)
+    if not math.isfinite(p_load_unit_u) and math.isfinite(p_load_unit_asm):
+        p_load_unit_u = p_load_unit_asm
     coupling_index_ok = bool(
         math.isfinite(p_load_unit_u)
-        and p_load_unit_u > 1.0e-20 * max(a_norm_f, 1.0e-30)
-    ) or bool(
-        math.isfinite(p_load_unit_asm)
-        and p_load_unit_asm > 1.0e-20 * max(a_norm_f, 1.0e-30)
+        and math.isfinite(a_up_ref_json)
+        and a_up_ref_json >= float(solver_cfg.get("resolvent_fsi_a_up_fro_min", 1.0e3))
+        and p_load_unit_u >= 1.0e-4 * max(a_up_ref_json, 1.0e-30)
     )
-    if solve_ok and coupled_visible:
+    if solve_ok and coupled_visible and coupling_index_ok:
         probe_verdict = "COUPLED"
+    elif solve_ok and not formulation_ok:
+        probe_verdict = "WEAK_FSI_FORMULATION"
     elif solve_ok and inconclusive_mass_dom:
         probe_verdict = "INCONCLUSIVE_MASS_DOMINATED"
     elif solve_ok and not coupling_index_ok:
@@ -6157,6 +6215,9 @@ def _coupled_resolvent_solve(
         "u_map_max": float(post_matvec.get("u_idx_max", asm.get("u_idx_max", float("nan")))),
         "p_map_min": float(post_matvec.get("p_idx_min", asm.get("p_idx_min", float("nan")))),
         "coupling_index_ok": coupling_index_ok,
+        "fsi_a_up_frobenius": a_up_ref_json,
+        "fsi_a_pu_frobenius": float(fsi_a_pu_frobenius),
+        "formulation_ok": bool(formulation_ok),
         "solve_ok": bool(solve_ok),
         "ksp_iterations": int(its),
         "ksp_reason": int(reason),
