@@ -122,7 +122,6 @@
         "eps_reject_target_locked": true,
         "pressure_dof_scale": 30.0,
         "fsi_coupling_gain": 1000000.0,
-        "acoustic_mass_scale": 1.0,
         "eps_harvest_allow_weak_coupling": false,
         "eps_harvest_rank_by_wood": true,
         "eps_harvest_rank_by_p_frac": true,

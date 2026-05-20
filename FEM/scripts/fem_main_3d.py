@@ -791,6 +791,11 @@ def _fsi_nitsche_gamma(
     Nitsche penalty tied to shell stiffness scale (not ``E_L * p_scale / h``, which can reach 1e10+).
 
     ``γ = frac * ||A_uu||_F / h``, capped at ``cap_frac * ||A_uu||_F``.
+
+    After this, coupled assembly applies the same block Frobenius factors as the shell
+    blocks: ``nit_uu`` / ``nit_up`` / ``nit_pu`` are multiplied by ``1/s_uu`` and
+    ``1/s_couple`` alongside ``a_uu`` and ``a_up``, so Nitsche enters the normalized
+    operator on the same footing as the primary stiffness (tune ``fsi_nitsche_penalty_frac``).
     """
     frac = float(solver_cfg.get("fsi_nitsche_penalty_frac", 1.0e-5))
     cap_frac = float(solver_cfg.get("fsi_nitsche_penalty_cap_frac", 1.0e-3))
@@ -1508,7 +1513,14 @@ def _structural_diag_facet_tags(solver_cfg: Dict) -> Tuple[int, ...]:
 
 
 def _fsi_coupling_gain(solver_cfg: Dict) -> float:
-    """Scalar boost on u–p interface blocks so SLEPc sees FSI coupling in the GNHEP."""
+    """
+    Scalar boost on u–p interface traction / mass-coupling forms.
+
+    With ``gnhep_block_frobenius_normalize``, ``a_up`` and ``m_pu`` are multiplied by
+    ``1/s_couple`` (``s_couple = sqrt(s_uu s_pp)``) together with the rest of the coupled
+    forms, so ``fsi_coupling_gain`` scales those blocks **before** that normalization and
+    remains the primary knob for FSI strength in the balanced GNHEP.
+    """
     g = float(solver_cfg.get("fsi_coupling_gain", 1.0e4))
     return g if g > 0.0 else 1.0
 
@@ -3558,29 +3570,19 @@ def _solve_coupled_evp(
 
     _print_raw_coupling_block_norms(a_up, m_pu, status_callback=status_callback)
 
-    acoustic_mass_scale = float(
+    # Legacy ``acoustic_mass_scale`` / ``mass_scale``: inflating only ``m_pp`` (or even both
+    # ``m_pp`` and ``m_pu``) breaks physical balance in ``(A - ω²M)`` and GNHEP row scaling.
+    # Conditioning is handled by ``gnhep_block_frobenius_normalize`` (and probe RHS scaling).
+    _legacy_mass_scale = float(
         solver_cfg.get("acoustic_mass_scale", solver_cfg.get("mass_scale", 1.0))
     )
-    if acoustic_mass_scale != 1.0:
-        m_pp = acoustic_mass_scale * m_pp
-        # EVP-only tuning historically scaled M_pp alone. For the harmonic resolvent
-        # ``(A - ω²M)x = F``, the pressure row balances ``-ω² M_pu u`` against ``-ω² M_pp p``
-        # (plus A_*u); inflating only M_pp makes ``K_pp`` huge relative to ``K_pu`` and
-        # drives ||p|| to ~0 even when FSI blocks are healthy — scale M_pu the same way.
-        if probe_spec is not None:
-            m_pu = acoustic_mass_scale * m_pu
-            if MPI.COMM_WORLD.rank == ROOT_RANK:
-                print(
-                    f"[form] acoustic_mass_scale={acoustic_mass_scale:.6e} applied to M_pp "
-                    f"and M_pu (harmonic probe: consistent -ω²M on pressure row)."
-                )
-                sys.stdout.flush()
-        elif MPI.COMM_WORLD.rank == ROOT_RANK:
-            print(
-                f"[form] acoustic_mass_scale={acoustic_mass_scale:.6e} applied to M_pp only "
-                f"(air mass block; M_pu unchanged)"
-            )
-            sys.stdout.flush()
+    if abs(_legacy_mass_scale - 1.0) > 1.0e-15:
+        _emit(
+            f"[form][warn] solver.acoustic_mass_scale / mass_scale={_legacy_mass_scale:g} "
+            "is ignored (use gnhep_block_frobenius_normalize; air vs wood density stays in m_pp/m_pu UFL).",
+            status_callback=status_callback,
+            level="warning",
+        )
 
     # Pressure-only regularization (optional); displacement is free–free (no reg_u).
     diag_shift = float(config.get("solver", {}).get("diag_shift", 0.0))
@@ -5241,9 +5243,9 @@ def _coupled_resolvent_solve(
                 verdict = "COUPLED (physics OK — prioritize solver strategy)"
             elif weak_mass_dom:
                 verdict = (
-                    "INCONCLUSIVE (||λM|| ≫ ||A|| at this Hz — tiny ||p|| is often benign; "
-                    "if EVP used acoustic_mass_scale on M_pp only, harmonic probe now scales "
-                    "M_pu as well. Also check iface u·n for this load before raising fsi_gain)"
+                    "INCONCLUSIVE (||λM|| ≫ ||A|| at this Hz — tiny ||p|| can be benign "
+                    "(mass-dominated harmonic) or weak iface u·n for this load; "
+                    "tune coupling floors / fsi_coupling_gain only after checking physics)"
                 )
             else:
                 verdict = (
