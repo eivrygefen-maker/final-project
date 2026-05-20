@@ -3690,6 +3690,9 @@ def _solve_coupled_evp(
     p_dofs = np.array([], dtype=np.int32)
     try:
         V_p, _ = W.sub(1).collapse()
+        W1 = W.sub(1)
+        W0 = W.sub(0)
+        p_zero = fem.Constant(msh, PETSc.ScalarType(0.0))
 
         n_p_collapsed = int(V_p.dofmap.index_map.size_global * V_p.dofmap.index_map_bs)
 
@@ -3699,14 +3702,18 @@ def _solve_coupled_evp(
         diag = float(np.linalg.norm(maxs - mins))
         tol_p = max(1.0e-9, 1.0e-5 * max(1.0, diag))
 
+        p_bc_pairs = np.zeros((0, 2), dtype=np.int32)
+
         if pressure_gauge == "soundhole":
             p_gauge_facets = soundhole_facets
             if air_ext_p_facets.size > 0:
                 p_gauge_facets = np.unique(
                     np.concatenate([soundhole_facets, air_ext_p_facets]).astype(np.int32)
                 )
-            p_dofs = np.array(
-                fem.locate_dofs_topological(V_p, fdim, p_gauge_facets),
+            p_bc_pairs = np.asarray(
+                fem.locate_dofs_topological(
+                    (W1, V_p), fdim, np.asarray(p_gauge_facets, dtype=np.int32)
+                ),
                 dtype=np.int32,
             )
             _emit(
@@ -3716,7 +3723,7 @@ def _solve_coupled_evp(
                     if air_ext_p_facets.size > 0
                     else ""
                 )
-                + f" → {p_dofs.size} pressure DOFs.",
+                + f" → {p_bc_pairs.shape[0]} pressure DOFs (mixed W.sub(1) + V_p map).",
                 status_callback=status_callback,
             )
         else:
@@ -3732,17 +3739,22 @@ def _solve_coupled_evp(
                     d = np.linalg.norm(x.T - p_anchor, axis=1)
                     return d < tol_p
 
-                p_dofs = np.array(fem.locate_dofs_geometrical(V_p, _p_air_anchor), dtype=np.int32)
-                if p_dofs.size > 1:
-                    p_dofs = np.array([int(p_dofs[0])], dtype=np.int32)
+                p_bc_pairs = np.asarray(
+                    fem.locate_dofs_geometrical((W1, V_p), _p_air_anchor),
+                    dtype=np.int32,
+                )
+                if p_bc_pairs.shape[0] > 1:
+                    p_bc_pairs = p_bc_pairs[:1, :].copy()
                 _emit(
                     f"[bc] pressure gauge: single interior air anchor (tag {AIR_VOLUME_TAG}) "
                     f"near {p_anchor.tolist()} (solver.pressure_gauge=air_interior).",
                     status_callback=status_callback,
                 )
-            if p_dofs.size == 0:
-                p_dofs = np.array(
-                    fem.locate_dofs_topological(V_p, fdim, soundhole_facets),
+            if p_bc_pairs.shape[0] == 0:
+                p_bc_pairs = np.asarray(
+                    fem.locate_dofs_topological(
+                        (W1, V_p), fdim, np.asarray(soundhole_facets, dtype=np.int32)
+                    ),
                     dtype=np.int32,
                 )
                 _emit(
@@ -3751,7 +3763,7 @@ def _solve_coupled_evp(
                     level="warning",
                 )
 
-        if p_dofs.size == 0:
+        if p_bc_pairs.shape[0] == 0:
             p_anchor = coords[np.argmin(np.linalg.norm(coords - mins, axis=1))]
             tol = max(1.0e-12, 1.0e-8 * max(1.0, diag))
 
@@ -3762,17 +3774,24 @@ def _solve_coupled_evp(
                     & np.isclose(x[2], p_anchor[2], atol=tol)
                 )
 
-            p_dofs = np.array(fem.locate_dofs_geometrical(V_p, _p_anchor_marker), dtype=np.int32)
+            p_bc_pairs = np.asarray(
+                fem.locate_dofs_geometrical((W1, V_p), _p_anchor_marker),
+                dtype=np.int32,
+            )
             _emit(
                 f"[bc][warn] pressure gauge empty; using corner anchor at {p_anchor.tolist()} "
-                f"(count={p_dofs.size})",
+                f"(count={p_bc_pairs.shape[0]})",
                 status_callback=status_callback,
                 level="warning",
             )
 
-        if p_dofs.size == 0:
-            raise RuntimeError("Failed to create pressure grounding dofs (p_dofs is empty).")
+        if p_bc_pairs.shape[0] == 0:
+            raise RuntimeError("Failed to create pressure grounding dofs (p_bc_pairs is empty).")
 
+        p_dofs = np.asarray(p_bc_pairs[:, 0], dtype=np.int32)
+        bc_p = fem.dirichletbc(p_zero, p_bc_pairs, W1)
+        bcs_p_only = [bc_p]
+        bcs = list(bcs_p_only)
         V_u = V_u_collapsed
         _audit_u_subspace_global(
             W.sub(0),
@@ -3809,22 +3828,25 @@ def _solve_coupled_evp(
             status_callback=status_callback,
         )
 
-        p_zero = fem.Constant(msh, PETSc.ScalarType(0.0))
-        bc_p = fem.dirichletbc(p_zero, p_dofs, V_p)
-        bcs_p_only = [bc_p]
-        bcs = list(bcs_p_only)
         clamp_ribs = _solver_bool(solver_cfg, "clamp_ribs", default=True)
-        if clamp_ribs and u_dofs_ribs.size > 0:
-            u_zero = np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType)
-            bc_u = fem.dirichletbc(u_zero, u_dofs_ribs, V_u)
-            bcs.append(bc_u)
-            bcs_u_only.append(bc_u)
-            _emit(
-                f"[bc] ribs clamp: u = 0 on tag {RIBS_SURFACE_TAG} only "
-                f"({facets_ribs.size} facets, {u_dofs_ribs.size} displacement DOFs); "
-                f"tags {tag_top} (top) and {tag_back} (back) remain free.",
-                status_callback=status_callback,
+        if clamp_ribs and facets_ribs.size > 0:
+            rib_pairs = np.asarray(
+                fem.locate_dofs_topological(
+                    (W0, V_u), fdim, np.asarray(facets_ribs, dtype=np.int32)
+                ),
+                dtype=np.int32,
             )
+            if rib_pairs.shape[0] > 0:
+                u_zero = np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType)
+                bc_u = fem.dirichletbc(u_zero, rib_pairs, W0)
+                bcs.append(bc_u)
+                bcs_u_only.append(bc_u)
+                _emit(
+                    f"[bc] ribs clamp: u = 0 on tag {RIBS_SURFACE_TAG} only "
+                    f"({facets_ribs.size} facets, {rib_pairs.shape[0]} mixed displacement DOFs); "
+                    f"tags {tag_top} (top) and {tag_back} (back) remain free.",
+                    status_callback=status_callback,
+                )
         elif not clamp_ribs:
             _emit(
                 "[bc] ribs clamp DISABLED (clamp_ribs=false); top/back free, tag-4 u unconstrained.",
@@ -3840,15 +3862,20 @@ def _solve_coupled_evp(
             solver_cfg, "resolvent_pin_fix_tag5", default=True
         ):
             facets_fix = np.array(facet_tags.find(WOOD_FIX_SURFACE_TAG), dtype=np.int32)
-            u_dofs_fix = _locate_facet_displacement_dofs(V_u, msh, facets_fix)
-            if u_dofs_fix.size > 0:
+            fix_pairs = np.asarray(
+                fem.locate_dofs_topological(
+                    (W0, V_u), fdim, np.asarray(facets_fix, dtype=np.int32)
+                ),
+                dtype=np.int32,
+            )
+            if fix_pairs.shape[0] > 0:
                 u_zero_fix = np.array([0.0, 0.0, 0.0], dtype=PETSc.ScalarType)
-                bc_fix = fem.dirichletbc(u_zero_fix, u_dofs_fix, V_u)
+                bc_fix = fem.dirichletbc(u_zero_fix, fix_pairs, W0)
                 bcs.append(bc_fix)
                 bcs_u_only.append(bc_fix)
                 _emit(
                     f"[bc][resolvent-probe] pin u=0 on tag-{WOOD_FIX_SURFACE_TAG} fix facets "
-                    f"({facets_fix.size} facets, {u_dofs_fix.size} displacement DOFs) "
+                    f"({facets_fix.size} facets, {fix_pairs.shape[0]} mixed displacement DOFs) "
                     "to remove rigid-body drift in the harmonic solve.",
                     status_callback=status_callback,
                 )
@@ -4878,7 +4905,7 @@ def _dirichlet_bc_local_dof_indices(bc: fem.DirichletBC) -> np.ndarray:
 def _split_resolvent_bcs_by_bs(
     bcs: List[fem.DirichletBC],
 ) -> Tuple[List[fem.DirichletBC], List[fem.DirichletBC]]:
-    """Displacement BCs (bs=3) vs pressure BCs (bs=1) on collapsed subspaces."""
+    """Displacement BCs (bs=3) vs pressure BCs (bs=1); BCs may target ``W.sub(0/1)`` (mixed)."""
     bcs_u: List[fem.DirichletBC] = []
     bcs_p: List[fem.DirichletBC] = []
     for bc in bcs:
@@ -4901,14 +4928,14 @@ def _assemble_resolvent_probe_traction_into_mixed(
     facet_tag: int,
     force_scale: float,
     u_to_W_map: np.ndarray,
-    p_to_W_map: np.ndarray,
     bcs: List[fem.DirichletBC],
     rhs_fn: fem.Function,
 ) -> Tuple[float, float]:
     """
     Neumann traction on collapsed ``V_u``, ``set_bc`` on that sub-vector only, then scatter into
-    mixed ``rhs_fn``. Do **not** call ``set_bc`` on the mixed ``W`` vector when BCs are defined on
-    collapsed ``V_u`` / ``V_p`` (can zero the entire RHS in some dolfinx layouts).
+    mixed ``rhs_fn``. Pressure gauge uses ``set_bc`` on the mixed PETSc vector when BCs live on
+    ``W.sub(1)`` with ``(W.sub(1), V_p)`` dof pairs (do not use ``set_bc`` on ``W`` with BCs
+    defined only on collapsed ``V_p`` — index maps will not match ``rhs_fn``).
     """
     b_vec = rhs_fn.x.petsc_vec
     V_u_rhs, _ = W.sub(0).collapse()
@@ -4939,15 +4966,8 @@ def _assemble_resolvent_probe_traction_into_mixed(
         b_u.destroy()
     except Exception:
         pass
-    p_map = np.asarray(p_to_W_map, dtype=np.int32).ravel()
-    for bc_p in bcs_p:
-        pd = _dirichlet_bc_local_dof_indices(bc_p)
-        if pd.size == 0 or p_map.size == 0:
-            continue
-        if np.min(pd) < 0 or np.max(pd) >= p_map.size:
-            continue
-        w_idx = p_map[pd]
-        b_arr[w_idx] = 0.0
+    if bcs_p:
+        set_bc(b_vec, bcs_p)
     rhs_fn.x.scatter_forward()
     b_mix_norm = float(np.linalg.norm(b_arr))
     return b_u_norm_raw, b_mix_norm
@@ -5008,7 +5028,6 @@ def _coupled_resolvent_solve(
         facet_tag=tag,
         force_scale=float(force_scale),
         u_to_W_map=u_to_W_map,
-        p_to_W_map=p_to_W_map,
         bcs=bcs,
         rhs_fn=rhs_fn,
     )
