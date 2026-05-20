@@ -4486,6 +4486,7 @@ def _solve_coupled_evp(
     matvec_diag = _audit_mixed_coupling_matvec_alignment(
         A, W, u_to_W_map, p_to_W_map, status_callback=status_callback
     )
+    assembly_matvec_diag = dict(matvec_diag)
     p_unit = float(matvec_diag.get("p_load_unit_u", 0.0))
     if (
         use_blockwise
@@ -4527,6 +4528,7 @@ def _solve_coupled_evp(
             matvec_diag = _audit_mixed_coupling_matvec_alignment(
                 A, W, u_to_W_map, p_to_W_map, status_callback=status_callback
             )
+            assembly_matvec_diag = dict(matvec_diag)
         except Exception as exc:
             _emit(
                 f"[assembly][warn] monolithic coupled fallback failed: "
@@ -4536,6 +4538,8 @@ def _solve_coupled_evp(
             )
 
     if probe_spec is not None:
+        probe_spec["assembly_matvec_diag"] = assembly_matvec_diag
+        probe_spec["fsi_iface_mode"] = iface_mode
         _apply_resolvent_probe_matrix_penalties(
             A,
             W,
@@ -4629,6 +4633,8 @@ def _solve_coupled_evp(
                 force_facet_tag=int(probe_spec.get("force_facet_tag", WOOD_SURFACE_TAGS[1])),
                 force_scale=float(probe_spec.get("force_scale", 1.0)),
                 block_scales={"s_uu": float(s_uu), "s_pp": float(s_pp)},
+                assembly_matvec_diag=probe_spec.get("assembly_matvec_diag"),
+                fsi_iface_mode=str(probe_spec.get("fsi_iface_mode", "")),
                 status_callback=status_callback,
             )
         return msh, W, A, M
@@ -5536,6 +5542,8 @@ def _coupled_resolvent_solve(
     force_facet_tag: int,
     force_scale: float = 1.0,
     block_scales: Optional[Dict[str, float]] = None,
+    assembly_matvec_diag: Optional[Dict[str, float]] = None,
+    fsi_iface_mode: str = "",
     status_callback=None,
 ) -> Dict[str, Any]:
     """
@@ -5978,6 +5986,40 @@ def _coupled_resolvent_solve(
         and mass_dom_ratio > float(solver_cfg.get("resolvent_mass_dom_ratio_threshold", 1.0e3))
     )
 
+    post_matvec: Dict[str, float] = {}
+    a_times_x_p = float("nan")
+    p_load_unit_u = float("nan")
+    if solve_ok:
+        post_matvec = _audit_mixed_coupling_matvec_alignment(
+            A,
+            W,
+            u_to_W_map,
+            p_to_W_map,
+            uh=uh,
+            status_callback=status_callback,
+        )
+        a_times_x_p = float(post_matvec.get("p_load_solution", float("nan")))
+        p_load_unit_u = float(post_matvec.get("p_load_unit_u", float("nan")))
+    asm = assembly_matvec_diag or {}
+    p_load_unit_asm = float(asm.get("p_load_unit_u", float("nan")))
+    coupling_index_ok = bool(
+        math.isfinite(p_load_unit_u)
+        and p_load_unit_u > 1.0e-20 * max(a_norm_f, 1.0e-30)
+    ) or bool(
+        math.isfinite(p_load_unit_asm)
+        and p_load_unit_asm > 1.0e-20 * max(a_norm_f, 1.0e-30)
+    )
+    if solve_ok and coupled_visible:
+        probe_verdict = "COUPLED"
+    elif solve_ok and inconclusive_mass_dom:
+        probe_verdict = "INCONCLUSIVE_MASS_DOMINATED"
+    elif solve_ok and not coupling_index_ok:
+        probe_verdict = "DECOUPLED_INDEX_OR_FORMULATION"
+    elif solve_ok:
+        probe_verdict = "DECOUPLED"
+    else:
+        probe_verdict = "SOLVE_FAILED"
+
     return {
         "frequency_hz": float(frequency_hz),
         "omega_rad_s": float(omega),
@@ -6002,6 +6044,15 @@ def _coupled_resolvent_solve(
         "lambda_mass_over_a_fro": mass_dom_ratio,
         "coupling_check_pass": bool(coupled_visible),
         "probe_inconclusive_ok": inconclusive_mass_dom,
+        "probe_verdict": probe_verdict,
+        "fsi_iface_mode": str(fsi_iface_mode),
+        "p_load_unit_u": p_load_unit_u,
+        "p_load_unit_u_assembly": p_load_unit_asm,
+        "a_times_x_p_norm": a_times_x_p,
+        "p_sub_norm": float(post_matvec.get("p_sub_norm", float("nan"))),
+        "u_map_max": float(post_matvec.get("u_idx_max", asm.get("u_idx_max", float("nan")))),
+        "p_map_min": float(post_matvec.get("p_idx_min", asm.get("p_idx_min", float("nan")))),
+        "coupling_index_ok": coupling_index_ok,
         "solve_ok": bool(solve_ok),
         "ksp_iterations": int(its),
         "ksp_reason": int(reason),
