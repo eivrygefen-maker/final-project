@@ -1808,6 +1808,22 @@ def _slepc_lambda_hz_bounds(solver_cfg: Optional[Dict] = None) -> Tuple[float, f
     return lam_lo, lam_hi
 
 
+def _slepc_target_lambda(solver_cfg: Optional[Dict]) -> float:
+    """Harvest / EPS target λ = ω² from worker or config (rad/s)²."""
+    if not solver_cfg:
+        return 0.0
+    tl = float(solver_cfg.get("_worker_eps_target_lambda", 0.0) or 0.0)
+    if tl > 0.0:
+        return tl
+    thz = solver_cfg.get("_worker_target_hz", solver_cfg.get("shift_invert_target_hz"))
+    if thz is not None:
+        try:
+            return _slepc_hz_to_lambda(float(thz))
+        except (TypeError, ValueError):
+            pass
+    return 0.0
+
+
 def _slepc_physical_lambda(
     eig_r: float,
     st_sigma: float,
@@ -1818,7 +1834,7 @@ def _slepc_physical_lambda(
     Map EPS/ST Ritz value μ to physical GNHEP eigenvalue λ = ω² (rad/s)².
 
     Returns ``(λ, tag)`` with ``tag`` in
-    ``raw|shift|invert|reject``. Non-finite λ means discard the Ritz pair.
+    ``raw|raw_target|shift|invert|reject``. Non-finite λ means discard the Ritz pair.
 
     SLEPc builds differ: μ may already be physical λ, or λ-σ (shift ST), or
   1/(λ-σ) (sinvert). Never apply σ+1/μ when |μ| is astronomical — that pins all
@@ -1857,9 +1873,19 @@ def _slepc_physical_lambda(
             lam_inv = sigma + (1.0 / mu)
             if _ok(lam_inv) and abs(lam_inv - sigma) >= min_dlam:
                 return lam_inv, "invert"
-        # Physical λ at σ (sinvert+TARGET_MAGNITUDE) — discard when too close to σ (spurious anchor).
+        # Physical λ (sinvert+TARGET_MAGNITUDE often returns ω² directly, not 1/(λ-σ)).
         if _ok(mu) and abs(mu - sigma) >= min_dlam:
             return mu, "raw"
+        target_lam = _slepc_target_lambda(solver_cfg)
+        target_frac = float(
+            solver_cfg.get("eps_map_target_lam_frac", 0.08) if solver_cfg else 0.08
+        )
+        if (
+            _ok(mu)
+            and target_lam > 0.0
+            and abs(mu - target_lam) <= max(min_dlam, target_frac * target_lam)
+        ):
+            return mu, "raw_target"
         return float("nan"), "reject"
 
     lam_shift = mu + sigma
@@ -3100,6 +3126,7 @@ def _slepc_shift_invert_batch(
         else:
             st_sigma_hz = max(1.0, target_hz)
         st_sigma = _slepc_hz_to_lambda(st_sigma_hz)
+    solver_cfg["_batch_st_sigma_hz"] = float(st_sigma_hz)
 
     block_is = _slepc_build_mixed_block_is(u_to_W, p_to_W, A.getComm())
     if not use_ciss:
@@ -5206,14 +5233,9 @@ def _solve_coupled_evp(
         config["_worker_tag3"] = [t[3] for t in row_meta]
         config["_worker_p_frac"] = [t[4] for t in row_meta]
         config["_worker_p_block_max"] = [t[5] for t in row_meta]
-        _shift_jitter = float(solver_cfg.get("shift_jitter_hz", 0.0))
-        _, _, _use_st_shift, _ = _slepc_eps_strategy(solver_cfg)
-        if _use_st_shift:
-            config["_worker_st_sigma_hz"] = max(1.0, float(_worker_hz) + _shift_jitter)
-        elif _eps_use_target_real(solver_cfg) and float(solver_cfg.get("eps_broad_search_hz", 0.0)) > 0.0:
-            config["_worker_st_sigma_hz"] = max(1.0, float(_worker_hz))
-        else:
-            config["_worker_st_sigma_hz"] = max(1.0, float(_worker_hz) + _shift_jitter)
+        config["_worker_st_sigma_hz"] = float(
+            solver_cfg.get("_batch_st_sigma_hz", max(1.0, float(_worker_hz)))
+        )
         eigvecs = np.stack(vectors, axis=1)
 
         config["_fom_sifter_stats"] = {"worker_single_batch": True, "nconv": int(nconv), "rows": int(len(rows))}
