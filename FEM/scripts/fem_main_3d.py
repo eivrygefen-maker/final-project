@@ -3140,14 +3140,19 @@ def _slepc_shift_invert_batch(
 
     st = eps.getST()
     _st_name = str(solver_cfg.get("st_type", "shift" if use_st_shift else "sinvert")).strip().lower()
+    if _st_name in ("shift", "stshift") and not use_ciss:
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                "[solver][warn] st_type=shift is not safe for coupled GNHEP+MUMPS on this model; "
+                "using sinvert (shift-invert). Use eps_which=TARGET_REAL to avoid σ-cluster harvest.",
+                flush=True,
+            )
+        _st_name = "sinvert"
+        st_map_name = "sinvert"
     if not use_ciss:
-        if use_st_shift:
-            _st_name = "shift"
-        if _st_name in ("shift", "stshift"):
-            st.setType(SLEPc.ST.Type.SHIFT)
-        else:
-            st.setType(SLEPc.ST.Type.SINVERT)
+        st.setType(SLEPc.ST.Type.SINVERT)
         st.setShift(st_sigma)
+        _st_name = "sinvert"
 
     ksp = st.getKSP()
     pc = ksp.getPC()
@@ -3337,11 +3342,9 @@ def _slepc_shift_invert_batch(
         eps.setWhichEigenpairs(eps_which)
         eps.setTarget(target_lambda)
         st = eps.getST()
-        if _st_name in ("shift", "stshift"):
-            st.setType(SLEPc.ST.Type.SHIFT)
-        else:
-            st.setType(SLEPc.ST.Type.SINVERT)
+        st.setType(SLEPc.ST.Type.SINVERT)
         st.setShift(st_sigma)
+        _st_name = "sinvert"
     if _eps_conv_rel is not None:
         try:
             eps.setConvergenceTest(_eps_conv_rel)
@@ -3573,11 +3576,10 @@ def _slepc_shift_invert_batch(
             ):
                 print(
                     "[solver][warn] All converged Ritz values sit on the shift (σ-cluster). "
-                    "st_type=sinvert + eps_which=TARGET_MAGNITUDE preferentially returns "
-                    "spurious anchor modes at σ (not guitar modes in the harvest window). "
-                    "Try solver.st_type='shift' with eps_broad_search_hz>=5, "
-                    "eps_which=TARGET_REAL, a different --target-hz (e.g. 120–150), "
-                    "or the master multi-shift sweep (fem_master_dynamic.py).",
+                    "sinvert + TARGET_MAGNITUDE preferentially returns spurious anchor modes at σ. "
+                    "Keep st_type=sinvert; set eps_which=TARGET_REAL and eps_broad_search_hz>=5 "
+                    "(do not use st_type=shift — it can segfault in EPS solve). "
+                    "Also try a different --target-hz or fem_master_dynamic.py multi-shift sweep.",
                     flush=True,
                 )
         for j, (_score, f_hz, _arr, rt, rb, u_n, p_n, p_block_max) in enumerate(
