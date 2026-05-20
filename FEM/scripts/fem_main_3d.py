@@ -3185,6 +3185,15 @@ def _slepc_shift_invert_batch(
     # MUMPS options for the ST inner KSP/PC must use the SLEPc "st_" prefix (e.g. st_mat_mumps_icntl_*),
     # otherwise PETSc ignores them and MUMPS keeps factory workspace estimates.
     mumps_icntl_14 = int(solver_cfg.get("mat_mumps_icntl_14", 500))
+    mumps_icntl_14_floor = int(solver_cfg.get("mat_mumps_icntl_14_min", 400))
+    if mumps_icntl_14 < mumps_icntl_14_floor:
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                f"[solver][warn] mat_mumps_icntl_14={mumps_icntl_14} raised to "
+                f"{mumps_icntl_14_floor} (low values can make MUMPS LU segfault on ~200k DOFs).",
+                flush=True,
+            )
+        mumps_icntl_14 = mumps_icntl_14_floor
     mumps_icntl_24 = int(solver_cfg.get("mat_mumps_icntl_24", 1))
     mumps_icntl_6 = int(solver_cfg.get("mat_mumps_icntl_6", 7))
     mumps_icntl_12 = int(solver_cfg.get("mat_mumps_icntl_12", 1))
@@ -3355,6 +3364,22 @@ def _slepc_shift_invert_batch(
         st.setType(SLEPc.ST.Type.SINVERT)
         st.setShift(st_sigma)
         _st_name = "sinvert"
+        ksp_st = st.getKSP()
+        _slepc_configure_st_ksp_pc(
+            ksp_st,
+            ksp_st.getPC(),
+            solver_cfg,
+            block_is=block_is,
+            opts_prefix="st_",
+            use_ciss=False,
+        )
+        # Re-apply MUMPS workspace after setFromOptions (ST prefix options can be reset).
+        _opts = PETSc.Options()
+        _opts["st_mat_mumps_icntl_14"] = mumps_icntl_14
+        _opts["st_mat_mumps_icntl_24"] = mumps_icntl_24
+        _opts["st_mat_mumps_icntl_6"] = mumps_icntl_6
+        _opts["st_mat_mumps_icntl_12"] = mumps_icntl_12
+        _opts["st_mat_mumps_icntl_4"] = mumps_icntl_4
     if _eps_conv_rel is not None:
         try:
             eps.setConvergenceTest(_eps_conv_rel)
