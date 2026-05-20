@@ -1844,6 +1844,7 @@ def _petsc_owned_global_rows(obj, global_rows: np.ndarray) -> np.ndarray:
 
 
 def _petsc_mat_zero_dirichlet_rows(mat: PETSc.Mat, global_rows: np.ndarray, *, diag: float = 1.0) -> None:
+    """Zero entire owned global rows (all columns, including off-diagonal blocks)."""
     rows = _petsc_owned_global_rows(mat, global_rows)
     if rows.size == 0:
         return
@@ -1852,17 +1853,22 @@ def _petsc_mat_zero_dirichlet_rows(mat: PETSc.Mat, global_rows: np.ndarray, *, d
     except Exception:
         pass
     d = float(diag)
+    r_lo, _ = mat.getOwnershipRange()
+    local_rows = (rows - int(r_lo)).astype(np.int32)
     try:
-        mat.zeroRows(rows, diag=d)
+        mat.zeroRowsLocal(local_rows, diag=d)
     except Exception:
         try:
-            mat.zeroRows(rows.astype(np.int32), diag=d)
+            mat.zeroRows(rows, diag=d)
         except Exception:
-            is_rows = PETSc.IS().createGeneral(rows, comm=mat.getComm())
             try:
-                mat.zeroRows(is_rows, diag=d)
-            finally:
-                is_rows.destroy()
+                mat.zeroRows(rows.astype(np.int32), diag=d)
+            except Exception:
+                is_rows = PETSc.IS().createGeneral(rows, comm=mat.getComm())
+                try:
+                    mat.zeroRows(is_rows, diag=d)
+                finally:
+                    is_rows.destroy()
 
 
 def _petsc_vec_zero_global_dofs(vec: PETSc.Vec, global_rows: np.ndarray) -> None:
@@ -4871,6 +4877,12 @@ def _resolvent_solve_linear_system(
             K_work.assemble()
         except Exception:
             pass
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                f"[bc] resolvent algebraic Dirichlet: {adr.size} mixed rows on K "
+                f"(zeroRowsLocal + RHS zero before KSP)",
+                flush=True,
+            )
 
     ksp = PETSc.KSP().create(comm)
     ksp.setOperators(K_work)
