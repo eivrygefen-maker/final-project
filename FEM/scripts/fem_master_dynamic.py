@@ -165,6 +165,8 @@ EFFICIENCY_HISTORY_MAX = 5
 EFFICIENCY_HIGH_THRESHOLD = 12.0
 EFFICIENCY_LOW_THRESHOLD = 3.0
 SLEPC_NUM_MODES_ABSOLUTE_CEILING = 100
+# Coupled FSI workers: cap SLEPc ``nev`` for monolithic MUMPS LU on ~230k-DOF VMs (override via env).
+COUPLED_WORKER_NUM_MODES_CAP = int(os.environ.get("FEM_COUPLED_WORKER_NUM_MODES_CAP", "32"))
 
 # --- Adaptive sweep ceiling (conductor, once per run at 435 Hz; spectral zone → hz_max) ---
 # Spectral zone from ``SpectralScheduler`` / ``on_worker_merge``: 1 = dense (saturated), 2 = normal,
@@ -651,6 +653,10 @@ class SpectralScheduler:
             nm = int(base.get("num_modes", 80))
             base["num_modes"] = max(ZONE3_NUM_MODES_MIN, min(ZONE3_NUM_MODES_MAX, nm))
         base["num_modes"] = min(SLEPC_NUM_MODES_ABSOLUTE_CEILING, max(1, int(base.get("num_modes", 80))))
+        base["num_modes"] = min(
+            COUPLED_WORKER_NUM_MODES_CAP,
+            max(1, int(base.get("num_modes", COUPLED_WORKER_NUM_MODES_CAP))),
+        )
         base["label"] = f"{base.get('label', '')} [{label_suffix}]".strip()
         return base
 
@@ -2333,6 +2339,8 @@ def main() -> int:
             ]
         if structural_only:
             cmd.append("--structural-only")
+        else:
+            cmd.extend(["--eps-band-solver", "shift_invert"])
 
         core_id: Optional[int] = None
         if use_taskset:

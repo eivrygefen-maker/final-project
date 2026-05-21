@@ -53,6 +53,49 @@ NEAR_MODE_HZ_WORKER = 0.05
 WORKER_UNIQUENESS_MIN = 0.04
 from mpi4py import MPI
 
+# SLEPc batch size for master-spawned coupled workers (LU memory / ncv stability on VMs).
+_DEFAULT_WORKER_NUM_MODES_CAP = 32
+
+
+def _apply_master_worker_solver_profile(
+    cfg: dict,
+    *,
+    num_modes: int,
+    structural_only: bool,
+    eps_band_solver: str | None,
+) -> int:
+    """
+    Force the production shift-invert stack used on the stable 155 Hz monolithic runs.
+
+    Overrides stale merged JSON (e.g. ``guitar_3d.json`` with ``st_fieldsplit: true``,
+    ``eps_ncv_max: 180``) so master-spawned workers always match ``sample_001`` intent.
+    """
+    s = cfg.setdefault("solver", {})
+    s["adaptive_mode_sifter"] = False
+    if eps_band_solver is not None:
+        s["eps_band_solver"] = str(eps_band_solver)
+    if structural_only:
+        return max(1, int(num_modes))
+    s["eps_band_solver"] = "shift_invert"
+    s["st_use_fieldsplit"] = False
+    s["st_fieldsplit"] = False
+    s["st_pc_type"] = "lu"
+    s["gnhep_block_frobenius_normalize"] = True
+    s.setdefault("eps_pin_fix_tag5", True)
+    s.setdefault("eps_algebraic_bc_zero_columns", True)
+    cap = int(s.get("eps_worker_num_modes_cap", _DEFAULT_WORKER_NUM_MODES_CAP) or _DEFAULT_WORKER_NUM_MODES_CAP)
+    cap = max(1, cap)
+    nm = min(max(1, int(num_modes)), cap)
+    ncv_max = int(s.get("eps_ncv_max", 32) or 32)
+    if ncv_max <= 0:
+        ncv_max = 32
+    s["eps_ncv_max"] = ncv_max
+    s["target_ncv"] = min(
+        max(int(s.get("target_ncv", 0)), int(math.ceil(4.0 * nm))),
+        ncv_max,
+    )
+    return nm
+
 
 def hz_result_tag(hz: float) -> int:
     return int(round(float(hz) * 1000))
@@ -219,10 +262,12 @@ def main() -> int:
         except (KeyError, TypeError, ValueError) as exc:
             print(f"[worker] asymmetric plate thickness unavailable: {exc}")
         sys.stdout.flush()
-    cfg.setdefault("solver", {})
-    cfg["solver"]["adaptive_mode_sifter"] = False
-    if args.eps_band_solver is not None:
-        cfg["solver"]["eps_band_solver"] = str(args.eps_band_solver)
+    _worker_num_modes = _apply_master_worker_solver_profile(
+        cfg,
+        num_modes=int(args.num_modes),
+        structural_only=bool(args.structural_only),
+        eps_band_solver=args.eps_band_solver,
+    )
     _band_solver = str(cfg["solver"].get("eps_band_solver", "shift_invert")).strip().lower()
     if _band_solver in ("shift_invert", "shift-invert", "sinvert"):
         # Coupled FSI harvest: keep converged modes near target and at the actual ST shift.
@@ -242,17 +287,15 @@ def main() -> int:
     cfg["_worker_eps_target_lambda"] = _target_lambda
     cfg["solver"]["_worker_eps_target_lambda"] = _target_lambda
     cfg["solver"]["_worker_target_hz"] = _target_hz
-    _nm = max(1, int(args.num_modes))
-    cfg["solver"]["target_ncv"] = min(
-        max(
-            int(cfg["solver"].get("target_ncv", 0)),
-            int(math.ceil(4.0 * _nm)),
-        ),
-        int(cfg["solver"].get("eps_ncv_max", 180) or 180),
-    )
     cfg["_worker_eps_max_it"] = int(cfg["solver"].get("eigs_maxiter", cfg["solver"].get("eps_max_it", 3000)))
     cfg["_worker_target_hz"] = _target_hz
-    cfg["_worker_num_modes"] = _nm
+    cfg["_worker_num_modes"] = _worker_num_modes
+    if MPI.COMM_WORLD.rank == 0 and _worker_num_modes != int(args.num_modes):
+        print(
+            f"[worker] Production cap: num_modes {int(args.num_modes)} -> {_worker_num_modes} "
+            f"(eps_worker_num_modes_cap / monolithic LU profile)"
+        )
+        sys.stdout.flush()
     if MPI.COMM_WORLD.rank == 0:
         _solver = cfg.get("solver", {}) or {}
         _which = str(_solver.get("eps_which", "TARGET_MAGNITUDE"))
@@ -302,7 +345,7 @@ def main() -> int:
         _msh, W, freqs_hz, eigvecs, _n_u, _n_p = fem3d._solve_coupled_evp(
             mesh_file=mesh_file,
             config=cfg,
-            num_modes=max(1, int(args.num_modes)),
+            num_modes=_worker_num_modes,
             status_callback=None,
         )
     except Exception as exc:
@@ -325,7 +368,8 @@ def main() -> int:
     if MPI.COMM_WORLD.rank == 0:
         print(
             f"[worker] SLEPc usable modes at target {float(args.target_hz):.4f} Hz: "
-            f"n_modes={n_modes} (requested {int(args.num_modes)})"
+            f"n_modes={n_modes} (requested {int(_worker_num_modes)}, "
+            f"argv num_modes={int(args.num_modes)})"
         )
         sys.stdout.flush()
     if len(tag1) != n_modes or len(tag3) != n_modes:
@@ -419,7 +463,8 @@ def main() -> int:
         "target_hz": float(args.target_hz),
         "st_sigma_hz": float(st_sigma_hz),
         "structural_only_run": structural_only_run,
-        "num_modes_requested": int(args.num_modes),
+        "num_modes_requested": int(_worker_num_modes),
+        "num_modes_argv": int(args.num_modes),
         "num_modes_returned": int(len(candidates)),
         "candidates": candidates,
     }

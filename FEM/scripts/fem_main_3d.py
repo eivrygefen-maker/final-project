@@ -2997,6 +2997,22 @@ def _slepc_interval_hz_band(
     return f_lo, f_hi, lam_lo, lam_hi, f_mid, lam_mid
 
 
+def _slepc_st_setup_error_kind(exc: BaseException) -> str:
+    """Short label for ST setUp failures (MUMPS/LU vs FieldSplit vs generic PETSc)."""
+    if _slepc_is_mumps_factorization_failure(exc):
+        return "MUMPS/LU"
+    msg = f"{type(exc).__name__}: {exc} {exc!r}".lower()
+    if "fieldsplit" in msg or "schur" in msg:
+        return "FieldSplit"
+    try:
+        ierr = int(getattr(exc, "ierr", -1))
+        if ierr >= 0:
+            return f"PETSc({ierr}): {exc}"
+    except (TypeError, ValueError):
+        pass
+    return f"{type(exc).__name__}: {exc}"
+
+
 def _slepc_is_mumps_factorization_failure(exc: BaseException) -> bool:
     """True when MUMPS / ST LU setup failed (singular matrix, zero pivot, PETSc 76)."""
     try:
@@ -3273,11 +3289,7 @@ def _slepc_try_eps_st_setup(
                     if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                         raise
                     last_exc = exc
-                    kind = (
-                        "MUMPS/LU"
-                        if _slepc_is_mumps_factorization_failure(exc)
-                        else type(exc).__name__
-                    )
+                    kind = _slepc_st_setup_error_kind(exc)
                     if MPI.COMM_WORLD.rank == ROOT_RANK:
                         _emit(
                             f"[solver][warn] ST setUp failed at σ={try_hz:.2f} Hz "

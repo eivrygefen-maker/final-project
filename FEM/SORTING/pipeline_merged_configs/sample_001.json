@@ -174,6 +174,7 @@
     "eps_ncv_min_factor": 2.0,
     "eps_ncv_floor_min": 24,
     "eps_ncv_max": 32,
+    "eps_worker_num_modes_cap": 32,
     "eps_ciss_fallback_shift_invert": true,
     "coupled_rigid_lambda_tol": 1e-10,
     "krylov_schur_restart": 0.5,
