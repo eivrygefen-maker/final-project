@@ -103,6 +103,8 @@ from fem_spectral_schedule import (
     resolve_spectral_band_params,
     spectral_band_centers,
     spectral_harvest_worker_overrides,
+    primary_sigma_offset_hz_outside_harvest,
+    sigma_retry_offset_candidates,
     sigma_retry_offset_ladder,
     verify_spectral_coverage,
     worker_slepc_quota_for_target,
@@ -521,10 +523,24 @@ class SpectralScheduler:
         if "eps_st_sigma_primary_offset_hz" in so:
             tried.add(round(float(so["eps_st_sigma_primary_offset_hz"]), 2))
             return
-        th = float(hz)
-        tried.add(round(max(8.0, 0.12 * th), 2))
-        if th < 400.0:
-            tried.add(round(-max(15.0, 0.14 * th), 2))
+        try:
+            lo = float(params.get("harvest_lo_hz"))
+            hi = float(params.get("harvest_hi_hz"))
+        except (TypeError, ValueError):
+            lo = hi = 0.0
+        if lo > 0.0 and hi > lo:
+            tried.add(
+                round(
+                    primary_sigma_offset_hz_outside_harvest(
+                        float(hz),
+                        lo,
+                        hi,
+                        hz_min=float(self.hz_min),
+                        hz_max=float(self.hz_max),
+                    ),
+                    2,
+                )
+            )
 
     def next_sigma_retry_params(
         self, hz: float, base_params: Dict[str, Any]
@@ -536,7 +552,22 @@ class SpectralScheduler:
         """
         key = self._hz_key(hz)
         tried = self._sigma_retry_attempted.setdefault(key, set())
-        ladder = sigma_retry_offset_ladder(self.solver_cfg)
+        try:
+            lo = float(base_params.get("harvest_lo_hz"))
+            hi = float(base_params.get("harvest_hi_hz"))
+        except (TypeError, ValueError):
+            lo = hi = 0.0
+        if lo > 0.0 and hi > lo:
+            ladder = sigma_retry_offset_candidates(
+                float(hz),
+                lo,
+                hi,
+                hz_min=float(self.hz_min),
+                hz_max=float(self.hz_max),
+                solver_cfg=self.solver_cfg,
+            )
+        else:
+            ladder = sigma_retry_offset_ladder(self.solver_cfg)
         for off in ladder:
             key_off = round(float(off), 2)
             if key_off in tried:
@@ -544,8 +575,13 @@ class SpectralScheduler:
             p = dict(base_params)
             so = dict(p.get("solver_overrides") or {})
             so["eps_st_sigma_primary_offset_hz"] = float(off)
+            sigma_hz = max(1.0, float(hz) + float(off))
             p["solver_overrides"] = so
-            p["label"] = f"{p.get('label', '')} [sigma-retry {off:+.1f}Hz]".strip()
+            p["eps_st_sigma_primary_offset_hz"] = float(off)
+            p["eps_st_sigma_hz_planned"] = float(sigma_hz)
+            p["label"] = (
+                f"{p.get('label', '')} [sigma-retry σ={sigma_hz:.1f}Hz off={off:+.1f}]"
+            ).strip()
             return p
         return None
 
@@ -1662,11 +1698,29 @@ def _merge_result_into_candidates_log(
     raw = list(incoming.get("candidates") or [])
     if not raw:
         try:
+            tgt = float(incoming.get("target_hz", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            tgt = 0.0
+        n_returned = int(incoming.get("num_modes_returned", 0) or 0)
+        LOGGER.warning(
+            "Merge: 0 worker candidates at target %.4f Hz (%d SLEPc row(s) pre-filter); "
+            "recording zero-yield (coupled_valid_kept=0) for σ-retry.",
+            tgt,
+            n_returned,
+        )
+        try:
             if not force_emergency:
                 result_path.unlink()
         except OSError:
             pass
-        return None
+        return MergeStats(
+            raw_n=0,
+            kept_after_veto=0,
+            kept_after_manager=0,
+            avg_wood_raw=0.0,
+            yield_kept_over_raw=0.0,
+            coupled_valid_kept=0,
+        )
 
     path_root = (override_root if override_root is not None else sorting_root).resolve()
     ghost_drops = 0
@@ -2731,14 +2785,21 @@ def main() -> int:
                 return
             cmd = ["taskset", "-c", str(core_id)] + cmd
 
+        sigma_plan = params.get("eps_st_sigma_hz_planned")
+        harvest_lo = params.get("harvest_lo_hz")
+        harvest_hi = params.get("harvest_hi_hz")
         LOGGER.info(
-            "Spawn worker: hz=%.4f (%s) num_modes=%s timeout=%.1f min (taskset_cpu=%s) role=%s",
+            "Spawn worker: hz=%.4f (%s) num_modes=%s timeout=%.1f min (taskset_cpu=%s) role=%s "
+            "harvest=[%.2f, %.2f] Hz planned_sigma=%s",
             hz,
             params.get("label", ""),
             params["num_modes"],
             float(params["timeout_minutes"]),
             core_id if core_id is not None else "n/a",
             role or "-",
+            float(harvest_lo) if harvest_lo is not None else float("nan"),
+            float(harvest_hi) if harvest_hi is not None else float("nan"),
+            f"{float(sigma_plan):.2f}" if sigma_plan is not None else "n/a",
         )
         env = os.environ.copy()
         env.setdefault("OMP_NUM_THREADS", "1")

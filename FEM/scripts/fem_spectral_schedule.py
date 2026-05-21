@@ -2,14 +2,14 @@
 """
 Overlapping spectral bands for multi-shift FSI harvest (60–550 Hz).
 
-Each band defines a worker ``target_hz`` (scheduler shift center), an ST σ offset
-(12–18% in ``fem_main_3d``, higher above 400 Hz), and a harvest window wide enough
-to keep physical modes without gaps on ``[hz_min, hz_max]``.
+Each band defines a worker ``target_hz`` (scheduler shift center), an ST σ placed
+**outside** the harvest window ``[harvest_lo_hz, harvest_hi_hz]``, and overlapping
+windows wide enough to avoid gaps on ``[hz_min, hz_max]``.
 """
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 # Default production sweep (override via JSON ``spectral_bands`` or master ``--hz-min/max``).
 SWEEP_HZ_MIN = 60.0
@@ -26,6 +26,10 @@ ULTRA_HF_STABILITY_THRESHOLD_HZ = 480.0
 # SLEPc quota for dense HF spectrum (still capped by VM LU memory in master).
 HF_WORKER_NUM_MODES = 40
 HF_EPS_NCV_MAX = 56
+
+# ST σ must sit outside the per-shift harvest window so σ-Ritz is not the only
+# strongly coupled mode inside [harvest_lo_hz, harvest_hi_hz].
+SIGMA_OUTSIDE_HARVEST_MARGIN_HZ = 12.0
 
 
 def hz_shift_quantize(hz: float, tol: float = 1e-4) -> float:
@@ -169,6 +173,63 @@ def harvest_window_for_target(
     return float(lo), float(hi), float(broad)
 
 
+def _sigma_hz_from_offset(target_hz: float, offset_hz: float) -> float:
+    return max(1.0, float(target_hz) + float(offset_hz))
+
+
+def sigma_hz_outside_harvest_window(
+    sigma_hz: float,
+    harvest_lo_hz: float,
+    harvest_hi_hz: float,
+    *,
+    margin_hz: float = SIGMA_OUTSIDE_HARVEST_MARGIN_HZ,
+) -> bool:
+    """True when ``sigma_hz`` is not inside the harvest band (with margin)."""
+    s = float(sigma_hz)
+    lo = float(harvest_lo_hz) - float(margin_hz)
+    hi = float(harvest_hi_hz) + float(margin_hz)
+    return s < lo - 1.0e-9 or s > hi + 1.0e-9
+
+
+def primary_sigma_offset_hz_outside_harvest(
+    target_hz: float,
+    harvest_lo_hz: float,
+    harvest_hi_hz: float,
+    *,
+    hz_min: float = SWEEP_HZ_MIN,
+    hz_max: float = SWEEP_HZ_MAX,
+    margin_hz: float = SIGMA_OUTSIDE_HARVEST_MARGIN_HZ,
+) -> float:
+    """
+    Offset (Hz) for ``eps_st_sigma_primary_offset_hz`` so ST σ lies outside ``[lo, hi]``.
+
+    Prefers σ just below ``harvest_lo_hz``; if that violates ``hz_min``, uses just above
+    ``harvest_hi_hz`` (still outside the window).
+    """
+    target = float(target_hz)
+    lo = float(harvest_lo_hz)
+    hi = float(harvest_hi_hz)
+    margin = max(8.0, float(margin_hz))
+    f0 = max(1.0, float(hz_min))
+    f1 = max(f0, float(hz_max))
+
+    sigma_below = lo - margin
+    off_below = sigma_below - target
+    if sigma_below >= f0 + 1.0e-9:
+        return float(off_below)
+
+    sigma_above = hi + margin
+    off_above = sigma_above - target
+    if sigma_above <= f1 - 1.0e-9:
+        return float(off_above)
+
+    # Last resort: push σ to the sweep edge farthest from the harvest window centre.
+    mid = 0.5 * (lo + hi)
+    if mid >= 0.5 * (f0 + f1):
+        return float((f0 + 1.0) - target)
+    return float((f1 - 1.0) - target)
+
+
 def solver_stability_overrides_for_target(target_hz: float) -> Dict[str, Any]:
     """
     Per-shift ST/LU stabilizers for high-frequency bands (reduces MUMPS -10).
@@ -177,11 +238,6 @@ def solver_stability_overrides_for_target(target_hz: float) -> Dict[str, Any]:
     """
     hz = float(target_hz)
     out: Dict[str, Any] = {}
-    # Low/mid band: place σ below target so the σ-Ritz does not dominate the harvest window
-    # while physical modes near target_hz remain in the interval filter.
-    if hz < HF_STABILITY_THRESHOLD_HZ:
-        neg_off = -max(15.0, 0.14 * hz)
-        out["eps_st_sigma_primary_offset_hz"] = float(neg_off)
     if hz >= HF_STABILITY_THRESHOLD_HZ:
         out["eps_st_sigma_frac_offset"] = 0.15
         out["eps_st_sigma_min_offset_hz"] = 12.0
@@ -253,14 +309,92 @@ def spectral_harvest_worker_overrides(
         "spectral_hz_min": float(hz_min),
         "spectral_hz_max": float(hz_max),
     }
-    out["solver_overrides"] = solver_stability_overrides_for_target(float(target_hz))
+    so = solver_stability_overrides_for_target(float(target_hz))
+    sigma_off = primary_sigma_offset_hz_outside_harvest(
+        float(target_hz),
+        lo,
+        hi,
+        hz_min=float(hz_min),
+        hz_max=float(hz_max),
+    )
+    so["eps_st_sigma_primary_offset_hz"] = float(sigma_off)
+    out["solver_overrides"] = so
+    out["eps_st_sigma_primary_offset_hz"] = float(sigma_off)
+    out["eps_st_sigma_hz_planned"] = float(_sigma_hz_from_offset(float(target_hz), sigma_off))
     return out
+
+
+def sigma_retry_offset_candidates(
+    target_hz: float,
+    harvest_lo_hz: float,
+    harvest_hi_hz: float,
+    *,
+    hz_min: float = SWEEP_HZ_MIN,
+    hz_max: float = SWEEP_HZ_MAX,
+    solver_cfg: Optional[Mapping[str, Any]] = None,
+) -> List[float]:
+    """
+    Ordered ST σ offsets (Hz) for master retry after zero-yield merge.
+
+    Every candidate places σ outside ``[harvest_lo_hz, harvest_hi_hz]`` (with margin).
+    """
+    target = float(target_hz)
+    lo = float(harvest_lo_hz)
+    hi = float(harvest_hi_hz)
+    margin = float(SIGMA_OUTSIDE_HARVEST_MARGIN_HZ)
+    f0 = float(hz_min)
+    f1 = float(hz_max)
+
+    primary = primary_sigma_offset_hz_outside_harvest(
+        target, lo, hi, hz_min=f0, hz_max=f1, margin_hz=margin
+    )
+    extra_steps: List[float] = [18.0, 28.0, 38.0]
+    if solver_cfg:
+        raw_cfg = solver_cfg.get("eps_st_sigma_retry_offsets_hz")
+        if isinstance(raw_cfg, (list, tuple)):
+            for x in raw_cfg:
+                try:
+                    v = float(x)
+                    if abs(v) not in {abs(e) for e in extra_steps}:
+                        extra_steps.append(v)
+                except (TypeError, ValueError):
+                    pass
+
+    candidates: List[float] = []
+    seen_off: Set[float] = set()
+    seen_sigma: set = set()
+
+    def _try_offset(off: float) -> None:
+        key = round(float(off), 2)
+        if key in seen_off:
+            return
+        s_hz = _sigma_hz_from_offset(target, off)
+        if not sigma_hz_outside_harvest_window(s_hz, lo, hi, margin_hz=margin):
+            return
+        sk = round(s_hz, 2)
+        if sk in seen_sigma:
+            return
+        seen_sigma.add(sk)
+        seen_off.add(key)
+        candidates.append(float(off))
+
+    _try_offset(primary)
+    for step in extra_steps:
+        if abs(float(step)) < 1.0e-9:
+            continue
+        sigma_below = lo - margin - abs(float(step))
+        if sigma_below >= f0 + 1.0e-9:
+            _try_offset(sigma_below - target)
+        sigma_above = hi + margin + abs(float(step))
+        if sigma_above <= f1 - 1.0e-9:
+            _try_offset(sigma_above - target)
+    return candidates
 
 
 def sigma_retry_offset_ladder(
     solver_cfg: Optional[Mapping[str, Any]] = None,
 ) -> List[float]:
-    """Alternate ST σ offsets (Hz) to try when a shift merges zero coupled FSI modes."""
+    """Legacy flat retry offsets (used only when harvest bounds are unavailable)."""
     default = (18.0, 28.0, -18.0, -28.0, 35.0, -35.0, 42.0, -42.0)
     if not solver_cfg:
         return list(default)
