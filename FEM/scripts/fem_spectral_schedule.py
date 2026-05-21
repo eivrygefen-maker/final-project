@@ -177,6 +177,11 @@ def solver_stability_overrides_for_target(target_hz: float) -> Dict[str, Any]:
     """
     hz = float(target_hz)
     out: Dict[str, Any] = {}
+    # Low/mid band: place σ below target so the σ-Ritz does not dominate the harvest window
+    # while physical modes near target_hz remain in the interval filter.
+    if hz < HF_STABILITY_THRESHOLD_HZ:
+        neg_off = -max(15.0, 0.14 * hz)
+        out["eps_st_sigma_primary_offset_hz"] = float(neg_off)
     if hz >= HF_STABILITY_THRESHOLD_HZ:
         out["eps_st_sigma_frac_offset"] = 0.15
         out["eps_st_sigma_min_offset_hz"] = 12.0
@@ -250,6 +255,27 @@ def spectral_harvest_worker_overrides(
     }
     out["solver_overrides"] = solver_stability_overrides_for_target(float(target_hz))
     return out
+
+
+def sigma_retry_offset_ladder(
+    solver_cfg: Optional[Mapping[str, Any]] = None,
+) -> List[float]:
+    """Alternate ST σ offsets (Hz) to try when a shift merges zero coupled FSI modes."""
+    default = (18.0, 28.0, -18.0, -28.0, 35.0, -35.0, 42.0, -42.0)
+    if not solver_cfg:
+        return list(default)
+    raw = solver_cfg.get("eps_st_sigma_retry_offsets_hz", default)
+    if not isinstance(raw, (list, tuple)):
+        return list(default)
+    out: List[float] = []
+    for x in raw:
+        try:
+            v = float(x)
+            if v not in out:
+                out.append(v)
+        except (TypeError, ValueError):
+            continue
+    return out if out else list(default)
 
 
 def build_spectral_band_task_list(

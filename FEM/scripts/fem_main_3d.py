@@ -3119,6 +3119,12 @@ def _slepc_st_sigma_hz_candidates(solver_cfg: Dict, target_hz: float) -> List[fl
     frac = float(solver_cfg.get("eps_st_sigma_frac_offset", 0.12))
     fixed = float(solver_cfg.get("eps_st_sigma_min_offset_hz", 5.0))
     base_off = max(fixed, frac * target_hz)
+    primary_off = solver_cfg.get("eps_st_sigma_primary_offset_hz")
+    if primary_off is not None:
+        try:
+            base_off = float(primary_off)
+        except (TypeError, ValueError):
+            pass
     raw_retry = solver_cfg.get(
         "eps_st_sigma_retry_offsets_hz",
         (18.0, 28.0, -15.0, 35.0, -25.0, 42.0),

@@ -495,6 +495,8 @@ def main() -> int:
         )
         if h_label == "sigma_ritz" and not hcfg.keep_sigma_reference:
             continue
+        if not h_rom:
+            continue
         u_blk = csr_u_slice(vec_csr, n_u_g)
         col_norm = float(csr_col_norm(u_blk))
         if col_norm < 1e-12:

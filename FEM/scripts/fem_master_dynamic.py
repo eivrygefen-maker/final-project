@@ -103,6 +103,7 @@ from fem_spectral_schedule import (
     resolve_spectral_band_params,
     spectral_band_centers,
     spectral_harvest_worker_overrides,
+    sigma_retry_offset_ladder,
     verify_spectral_coverage,
     worker_slepc_quota_for_target,
 )
@@ -452,6 +453,10 @@ class SpectralScheduler:
     _coverage_emergency_pending: bool = field(default=False, repr=False)
     _last_kept_after_manager: int = field(default=0, repr=False)
     _last_report_hz: float = field(default=float("nan"), repr=False)
+    _sigma_retry_attempted: Dict[str, Set[float]] = field(default_factory=dict, repr=False)
+    _sigma_retry_queue: Deque[Tuple[float, Dict[str, Any], str]] = field(
+        default_factory=deque, repr=False
+    )
 
     def __post_init__(self) -> None:
         if self.harvest_filter_cfg is None and isinstance(self.solver_cfg, dict):
@@ -507,6 +512,42 @@ class SpectralScheduler:
     def _shift_target_done(self, hz: float) -> bool:
         """True if this shift ``target_hz`` was already merged (resume) or consumed."""
         return self._hz_key(hz) in self._scheduled
+
+    def _mark_sigma_offset_attempted(self, hz: float, params: Dict[str, Any]) -> None:
+        """Record which ST σ offset (Hz) was used for this shift target."""
+        key = self._hz_key(hz)
+        tried = self._sigma_retry_attempted.setdefault(key, set())
+        so = dict(params.get("solver_overrides") or {})
+        if "eps_st_sigma_primary_offset_hz" in so:
+            tried.add(round(float(so["eps_st_sigma_primary_offset_hz"]), 2))
+            return
+        th = float(hz)
+        tried.add(round(max(8.0, 0.12 * th), 2))
+        if th < 400.0:
+            tried.add(round(-max(15.0, 0.14 * th), 2))
+
+    def next_sigma_retry_params(
+        self, hz: float, base_params: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Build worker params for the next alternate σ offset after a zero-yield merge.
+
+        Returns ``None`` when the retry ladder is exhausted for this target.
+        """
+        key = self._hz_key(hz)
+        tried = self._sigma_retry_attempted.setdefault(key, set())
+        ladder = sigma_retry_offset_ladder(self.solver_cfg)
+        for off in ladder:
+            key_off = round(float(off), 2)
+            if key_off in tried:
+                continue
+            p = dict(base_params)
+            so = dict(p.get("solver_overrides") or {})
+            so["eps_st_sigma_primary_offset_hz"] = float(off)
+            p["solver_overrides"] = so
+            p["label"] = f"{p.get('label', '')} [sigma-retry {off:+.1f}Hz]".strip()
+            return p
+        return None
 
     def _enqueue_frequency_ladder(
         self, center_hz: float, role: str, *, label_suffix: str = "ladder"
@@ -851,6 +892,12 @@ class SpectralScheduler:
 
     def pop_next(self) -> Optional[Tuple[float, Dict[str, Any], str]]:
         mx_done = float(self._max_completed_shift_hz)
+        while self._sigma_retry_queue:
+            hz, p, role = self._sigma_retry_queue.popleft()
+            if self._shift_target_done(hz):
+                continue
+            self._scheduled.add(self._hz_key(hz))
+            return (hz, p, role)
         task = self._pop_ladder_task(mx_done)
         if task is not None:
             return task
@@ -2154,39 +2201,84 @@ def _poll_completed(
                     filter_cfg=hcfg,
                     force_emergency=force_emergency,
                 )
-                if stats is not None:
+                par_shift = dict(meta.get("params") or get_band_params(hz))
+                if scheduler is not None:
+                    scheduler._mark_sigma_offset_attempted(hz, par_shift)
+                shift_has_fsi = stats is not None and (
+                    int(stats.coupled_valid_kept) > 0 or int(stats.kept_after_manager) > 0
+                )
+                if shift_has_fsi:
                     _append_completed_shift_to_log(log_path, merge_lock, hz)
                     if scheduler is not None:
                         scheduler.register_completed_shift(hz)
-                        sp_step = float(meta.get("spectral_step_hz", ZONE2_STEP_HZ))
-                        scheduler.on_worker_merge(
-                            hz, stats, sp_step, str(meta.get("role", "") or "")
-                        )
-                        if not force_emergency:
-                            scheduler.try_apply_conductor_ceiling(hz)
+                elif stats is not None and not meta.get("structural_only"):
+                    LOGGER.warning(
+                        "Coupled harvest: 0 ROM-ready FSI modes at %.4f Hz — "
+                        "shift NOT marked complete (will retry σ ladder if slots free).",
+                        hz,
+                    )
+                if stats is not None and scheduler is not None:
+                    sp_step = float(meta.get("spectral_step_hz", ZONE2_STEP_HZ))
+                    scheduler.on_worker_merge(
+                        hz, stats, sp_step, str(meta.get("role", "") or "")
+                    )
+                    if shift_has_fsi and not force_emergency:
+                        scheduler.try_apply_conductor_ceiling(hz)
                 if scheduler is not None:
                     scheduler.log_schedule_snapshot_after_worker(hz, stats)
                 if (
                     spawn_worker is not None
                     and stats is not None
                     and int(stats.coupled_valid_kept) == 0
+                    and int(stats.kept_after_manager) == 0
                     and not meta.get("structural_only")
                     and not meta.get("structural_fallback")
+                    and not meta.get("sigma_retry")
                     and not force_emergency
+                    and scheduler is not None
                 ):
-                    par_fb = dict(meta.get("params") or get_band_params(hz))
-                    LOGGER.warning(
-                        "Coupled harvest: 0 true FSI modes (wood+p_frac) at %.4f Hz; "
-                        "spawning structural-only fallback worker.",
-                        hz,
-                    )
-                    spawn_worker(
-                        hz,
-                        par_fb,
-                        "structural-fallback",
-                        structural_only=True,
-                        structural_fallback=True,
-                    )
+                    par_retry = scheduler.next_sigma_retry_params(hz, par_shift)
+                    if par_retry is not None:
+                        off = float(
+                            (par_retry.get("solver_overrides") or {}).get(
+                                "eps_st_sigma_primary_offset_hz", 0.0
+                            )
+                        )
+                        LOGGER.warning(
+                            "Coupled harvest: 0 ROM-ready FSI at %.4f Hz; "
+                            "spawning σ-retry worker (offset %+.1f Hz).",
+                            hz,
+                            off,
+                        )
+                        n_running = len(running)
+                        worker_cap = (
+                            int(scheduler.max_workers) if scheduler is not None else max(1, n_running)
+                        )
+                        if n_running >= worker_cap:
+                            scheduler._sigma_retry_queue.append(
+                                (hz, par_retry, f"sigma-retry@{off:+.1f}Hz")
+                            )
+                            LOGGER.warning(
+                                "σ-retry queued for %.4f Hz (all %d worker slots busy).",
+                                hz,
+                                worker_cap,
+                            )
+                        else:
+                            spawn_worker(
+                                hz,
+                                par_retry,
+                                f"sigma-retry@{off:+.1f}Hz",
+                                sigma_retry=True,
+                            )
+                    else:
+                        LOGGER.warning(
+                            "Coupled harvest: 0 ROM-ready FSI at %.4f Hz; "
+                            "σ-retry ladder exhausted — marking shift complete (zero yield).",
+                            hz,
+                        )
+                        _append_completed_shift_to_log(log_path, merge_lock, hz)
+                        if scheduler is not None:
+                            scheduler.register_completed_shift(hz)
             else:
                 LOGGER.warning("Worker exited with code %s for %.4f Hz (no merge).", code, hz)
         finally:
@@ -2575,6 +2667,7 @@ def main() -> int:
         *,
         structural_only: bool = False,
         structural_fallback: bool = False,
+        sigma_retry: bool = False,
     ) -> None:
         timeout_s = float(params["timeout_minutes"]) * 60.0
         if args.use_mpiexec:
@@ -2703,6 +2796,7 @@ def main() -> int:
             "params": dict(params),
             "structural_only": bool(structural_only),
             "structural_fallback": bool(structural_fallback),
+            "sigma_retry": bool(sigma_retry),
         }
         last_spawn_mono[0] = time.monotonic()
 
