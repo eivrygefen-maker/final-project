@@ -4,9 +4,11 @@ Post-solve harvest classification for coupled shift-invert FOM snapshots.
 Distinguishes physical FSI modes (``physical_fsi``) from shift-locked Ritz artifacts
 (``sigma_ritz``) using frequency proximity to ``st_sigma_hz``, not ``p_frac`` alone.
 
-**Staged filtering** (``staged_filtering: true``): below ``staged_crossover_hz`` use strict
-``min_p_frac_rom``; at/above crossover use ``min_p_frac_rom_high`` when wood and uniqueness
-pass. σ-cluster width can tighten above ``staged_sigma_tighten_hz`` (default 400 Hz).
+**Staged filtering** (``staged_filtering: true``): below ``staged_crossover_hz`` use
+``min_p_frac_rom_low`` (default 0.02); at/above crossover use ``min_p_frac_rom_high``.
+Wood-dominated body modes below ``wood_bypass_max_hz`` may pass when ``max|p|`` exceeds
+``min_p_block_max_wood_bypass`` even if ``p_frac`` is far below the ROM gate. σ-cluster
+width can tighten above ``staged_sigma_tighten_hz`` (default 400 Hz).
 
 Policy version ``HARVEST_FILTER_POLICY_VERSION`` is stamped in ``candidates_log.json``
 ``pipeline_meta`` and per-mode rows.
@@ -19,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-HARVEST_FILTER_POLICY_VERSION = "staged_v1_60_550"
+HARVEST_FILTER_POLICY_VERSION = "staged_v2_unified_p02_wood_bypass"
 
 
 @dataclass
@@ -39,12 +41,18 @@ class HarvestFilterConfig:
     # Staged FSI gate (60–550 Hz production sweep).
     staged_filtering: bool = True
     staged_crossover_hz: float = 350.0
-    min_p_frac_rom_low: float = 0.10
-    min_p_frac_rom_high: float = 0.03
+    min_p_frac_rom_low: float = 0.02
+    min_p_frac_rom_high: float = 0.02
     min_decoupled_p_frac: float = 0.02
     staged_sigma_tighten_hz: float = 400.0
     sigma_cluster_hz_high: float = 3.0
     min_wood_high_hz: float = 0.01
+    # Wood-dominated body modes below crossover often have p_frac ~ 1e-10–1e-13
+    # while max|p| remains finite; bypass weak p_frac when wood and |p|_max pass.
+    wood_dominated_rom_bypass: bool = True
+    min_wood_dominated_bypass: float = 0.90
+    wood_bypass_max_hz: float = 350.0
+    min_p_block_max_wood_bypass: float = 1.0e-14
 
     @classmethod
     def from_solver_cfg(cls, solver_cfg: Optional[Dict[str, Any]]) -> "HarvestFilterConfig":
@@ -111,6 +119,16 @@ class HarvestFilterConfig:
             staged_sigma_tighten_hz=_f("staged_sigma_tighten_hz", cls.staged_sigma_tighten_hz),
             sigma_cluster_hz_high=_f("sigma_cluster_hz_high", cls.sigma_cluster_hz_high),
             min_wood_high_hz=_f("min_wood_high_hz", _f("min_wood", cls.min_wood)),
+            wood_dominated_rom_bypass=_b(
+                "wood_dominated_rom_bypass", cls.wood_dominated_rom_bypass
+            ),
+            min_wood_dominated_bypass=_f(
+                "min_wood_dominated_bypass", cls.min_wood_dominated_bypass
+            ),
+            wood_bypass_max_hz=_f("wood_bypass_max_hz", cls.wood_bypass_max_hz),
+            min_p_block_max_wood_bypass=_f(
+                "min_p_block_max_wood_bypass", cls.min_p_block_max_wood_bypass
+            ),
         )
 
 
@@ -134,6 +152,32 @@ def min_wood_threshold_for_mode(f_hz: float, cfg: HarvestFilterConfig) -> float:
     if cfg.staged_filtering and float(f_hz) >= float(cfg.staged_crossover_hz):
         return float(cfg.min_wood_high_hz)
     return float(cfg.min_wood)
+
+
+def _wood_dominated_bypass_ok(
+    candidate: Dict[str, Any],
+    *,
+    f_hz: float,
+    wood: float,
+    cfg: HarvestFilterConfig,
+) -> Tuple[bool, str]:
+    """True when a low-band, wood-heavy mode may skip strict p_frac gates."""
+    if not cfg.wood_dominated_rom_bypass:
+        return False, "bypass_disabled"
+    if float(f_hz) >= float(cfg.wood_bypass_max_hz) - 1e-9:
+        return False, "above_wood_bypass_hz"
+    if wood + 1e-15 < float(cfg.min_wood_dominated_bypass):
+        return False, f"wood={wood:.4f}<{cfg.min_wood_dominated_bypass}"
+    try:
+        p_block_max = float(candidate.get("p_block_max", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        p_block_max = 0.0
+    if p_block_max + 1.0e-30 < float(cfg.min_p_block_max_wood_bypass):
+        return (
+            False,
+            f"max|p|={p_block_max:.3e}<{cfg.min_p_block_max_wood_bypass:.3e}",
+        )
+    return True, f"wood_dominated_bypass(max|p|={p_block_max:.3e})"
 
 
 def classify_mode_candidate(
@@ -177,7 +221,11 @@ def classify_mode_candidate(
     if f_hz + 1e-9 < float(cfg.min_hz) or f_hz > float(cfg.max_hz) + 1e-9:
         return "out_of_band", False, f"hz={f_hz:.2f} outside [{cfg.min_hz},{cfg.max_hz}]"
 
-    if p_frac < float(cfg.min_decoupled_p_frac):
+    bypass_ok, bypass_detail = _wood_dominated_bypass_ok(
+        candidate, f_hz=f_hz, wood=wood, cfg=cfg
+    )
+
+    if p_frac < float(cfg.min_decoupled_p_frac) and not bypass_ok:
         return "decoupled", False, f"p_frac={p_frac:.3e}<{cfg.min_decoupled_p_frac}"
 
     wood_min = min_wood_threshold_for_mode(f_hz, cfg)
@@ -189,6 +237,12 @@ def classify_mode_candidate(
 
     p_need = min_p_frac_threshold_for_mode(f_hz, cfg)
     if p_frac < p_need:
+        if bypass_ok:
+            return (
+                "physical_fsi",
+                True,
+                f"wood_dominated_low_band({bypass_detail},p_frac={p_frac:.3e})",
+            )
         return "weak_coupling", False, f"p_frac={p_frac:.3f}<{p_need:.3f}"
 
     if cfg.staged_filtering and float(f_hz) >= float(cfg.staged_crossover_hz):
@@ -290,6 +344,10 @@ def filter_result_payload(
         "staged_crossover_hz": float(cfg.staged_crossover_hz),
         "min_p_frac_rom_low": float(cfg.min_p_frac_rom_low),
         "min_p_frac_rom_high": float(cfg.min_p_frac_rom_high),
+        "wood_dominated_rom_bypass": bool(cfg.wood_dominated_rom_bypass),
+        "min_wood_dominated_bypass": float(cfg.min_wood_dominated_bypass),
+        "wood_bypass_max_hz": float(cfg.wood_bypass_max_hz),
+        "min_p_block_max_wood_bypass": float(cfg.min_p_block_max_wood_bypass),
     }
     return out
 

@@ -441,6 +441,7 @@ def main() -> int:
             {
                 "hz": fj,
                 "p_frac": float(p_fracs[j]) if j < len(p_fracs) else 0.0,
+                "p_block_max": float(p_block_maxes[j]) if j < len(p_block_maxes) else 0.0,
                 "wood_participation": float(tag1[j]) + float(tag3[j]),
             },
             target_hz=float(args.target_hz),
@@ -486,6 +487,7 @@ def main() -> int:
             {
                 "hz": float(freqs_hz[j]),
                 "p_frac": float(p_fracs[j]),
+                "p_block_max": float(p_block_maxes[j]),
                 "wood_participation": float(wood),
                 "uniqueness": float(uniq),
             },
@@ -512,6 +514,7 @@ def main() -> int:
                 "source_target_hz": float(args.target_hz),
                 "wood_participation": float(wood),
                 "p_frac": float(p_fracs[j]),
+                "p_block_max": float(p_block_maxes[j]),
                 "uniqueness": float(uniq),
                 "tag1_ratio": float(rt),
                 "tag3_ratio": float(rb),
