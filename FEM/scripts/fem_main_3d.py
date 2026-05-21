@@ -3458,9 +3458,10 @@ def _slepc_shift_invert_batch(
                 flush=True,
             )
         mumps_icntl_14 = mumps_icntl_14_floor
-    mumps_icntl_24 = int(solver_cfg.get("mat_mumps_icntl_24", 1))
+    mumps_icntl_24 = int(solver_cfg.get("mat_mumps_icntl_24", 0))
     mumps_icntl_6 = int(solver_cfg.get("mat_mumps_icntl_6", 7))
     mumps_icntl_12 = int(solver_cfg.get("mat_mumps_icntl_12", 1))
+    mumps_icntl_7 = int(solver_cfg.get("mat_mumps_icntl_7", 0))
     # ICNTL(4)=0: silent MUMPS (no statistics I/O); non-zero enables host printing and slows each factorization.
     mumps_icntl_4 = int(solver_cfg.get("mat_mumps_icntl_4", 0))
     petsc_opts = PETSc.Options()
@@ -3468,6 +3469,7 @@ def _slepc_shift_invert_batch(
     petsc_opts["st_mat_mumps_icntl_24"] = mumps_icntl_24
     petsc_opts["st_mat_mumps_icntl_6"] = mumps_icntl_6
     petsc_opts["st_mat_mumps_icntl_12"] = mumps_icntl_12
+    petsc_opts["st_mat_mumps_icntl_7"] = mumps_icntl_7
     petsc_opts["st_mat_mumps_icntl_4"] = mumps_icntl_4
     if (
         MPI.COMM_WORLD.size > 1
@@ -3578,8 +3580,8 @@ def _slepc_shift_invert_batch(
             f"nev_request={nev_request} (batch={batch}+rigid_buf={rigid_buf}), "
             f"ncv={ncv}, eps_tol={eps_tol:.1e}, eps_max_it={eps_max_it}, "
             f"ST-KSP={st_ksp_type}, ST-PC={st_pc_label}{_fs_note}, factor={_st_factor}, "
-            f"MUMPS ICNTL4={mumps_icntl_4} ICNTL6={mumps_icntl_6} ICNTL12={mumps_icntl_12} "
-            f"ICNTL14={mumps_icntl_14} ICNTL24={mumps_icntl_24}, "
+            f"MUMPS ICNTL4={mumps_icntl_4} ICNTL6={mumps_icntl_6} ICNTL7={mumps_icntl_7} "
+            f"ICNTL12={mumps_icntl_12} ICNTL14={mumps_icntl_14} ICNTL24={mumps_icntl_24}, "
             f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}",
             status_callback=status_callback,
         )
@@ -3593,8 +3595,8 @@ def _slepc_shift_invert_batch(
             f"nev_request={nev_request} (batch={batch}+rigid_buf={rigid_buf}), "
             f"ncv={ncv}, eps_tol={eps_tol:.1e}, eps_max_it={eps_max_it}, "
             f"ST-KSP={st_ksp_type}, ST-PC={st_pc_label}{_fs_note}, factor={_st_factor}, "
-            f"MUMPS ICNTL4={mumps_icntl_4} ICNTL6={mumps_icntl_6} ICNTL12={mumps_icntl_12} "
-            f"ICNTL14={mumps_icntl_14} ICNTL24={mumps_icntl_24}, "
+            f"MUMPS ICNTL4={mumps_icntl_4} ICNTL6={mumps_icntl_6} ICNTL7={mumps_icntl_7} "
+            f"ICNTL12={mumps_icntl_12} ICNTL14={mumps_icntl_14} ICNTL24={mumps_icntl_24}, "
             f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}",
             status_callback=status_callback,
         )
@@ -3651,6 +3653,7 @@ def _slepc_shift_invert_batch(
         _opts["st_mat_mumps_icntl_14"] = mumps_icntl_14
         _opts["st_mat_mumps_icntl_24"] = mumps_icntl_24
         _opts["st_mat_mumps_icntl_6"] = mumps_icntl_6
+        _opts["st_mat_mumps_icntl_7"] = mumps_icntl_7
         _opts["st_mat_mumps_icntl_12"] = mumps_icntl_12
         _opts["st_mat_mumps_icntl_4"] = mumps_icntl_4
         ksp_st = st.getKSP()
@@ -4846,6 +4849,21 @@ def _solve_coupled_evp(
             print(
                 f"[form] EPS acoustic mass floor: eps_mass_reg_frac={eps_mass_reg_frac:.6e} "
                 f"→ lumped air mass coeff={mass_reg_scale:.6e} (before GNHEP block scaling)",
+                flush=True,
+            )
+
+    eps_struct_mass_reg_frac = float(solver_cfg.get("eps_struct_mass_reg_frac", 0.0))
+    if eps_struct_mass_reg_frac > 0.0:
+        if _solver_bool(solver_cfg, "eps_struct_mass_reg_scale_with_a_uu", default=True):
+            struct_mass_scale = eps_struct_mass_reg_frac * max(float(norm_uu_ref), 1.0e-30)
+        else:
+            struct_mass_scale = eps_struct_mass_reg_frac
+        m_uu = m_uu + struct_mass_scale * ufl.dot(u, v) * wood_ds
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                f"[form] EPS structural mass floor: eps_struct_mass_reg_frac="
+                f"{eps_struct_mass_reg_frac:.6e} → shell lumped mass coeff={struct_mass_scale:.6e} "
+                "(before GNHEP block scaling; avoids zero M_uu rows in shift-invert LU)",
                 flush=True,
             )
 
@@ -6317,8 +6335,9 @@ def _configure_probe_direct_ksp(ksp: PETSc.KSP, pc: PETSc.PC, solver_cfg: Dict) 
     if diag_scale:
         opts[f"{prefix}pc_factor_diagonal_scaling"] = True
     opts[f"{prefix}mat_mumps_icntl_14"] = int(solver_cfg.get("mat_mumps_icntl_14", 500))
-    opts[f"{prefix}mat_mumps_icntl_24"] = int(solver_cfg.get("mat_mumps_icntl_24", 1))
+    opts[f"{prefix}mat_mumps_icntl_24"] = int(solver_cfg.get("mat_mumps_icntl_24", 0))
     opts[f"{prefix}mat_mumps_icntl_6"] = int(solver_cfg.get("mat_mumps_icntl_6", 7))
+    opts[f"{prefix}mat_mumps_icntl_7"] = int(solver_cfg.get("mat_mumps_icntl_7", 0))
     opts[f"{prefix}mat_mumps_icntl_12"] = int(solver_cfg.get("mat_mumps_icntl_12", 1))
     opts[f"{prefix}mat_mumps_icntl_4"] = int(solver_cfg.get("mat_mumps_icntl_4", 0))
     try:
