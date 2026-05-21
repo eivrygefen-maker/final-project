@@ -3001,15 +3001,15 @@ def _slepc_st_setup_error_kind(exc: BaseException) -> str:
     """Short label for ST setUp failures (MUMPS/LU vs FieldSplit vs generic PETSc)."""
     if _slepc_is_mumps_factorization_failure(exc):
         return "MUMPS/LU"
-    msg = f"{type(exc).__name__}: {exc} {exc!r}".lower()
-    if "fieldsplit" in msg or "schur" in msg:
-        return "FieldSplit"
     try:
         ierr = int(getattr(exc, "ierr", -1))
         if ierr >= 0:
             return f"PETSc({ierr}): {exc}"
     except (TypeError, ValueError):
         pass
+    msg = f"{type(exc).__name__}: {exc}".lower()
+    if "fieldsplit" in msg or "schur" in msg:
+        return "FieldSplit"
     return f"{type(exc).__name__}: {exc}"
 
 
@@ -3259,6 +3259,19 @@ def _slepc_try_eps_st_setup(
                 except Exception:
                     pass
                 try:
+                    st.setType(SLEPc.ST.Type.SINVERT)
+                    _slepc_clear_st_fieldsplit_petsc_options("st_")
+                    ksp = st.getKSP()
+                    pc = ksp.getPC()
+                    _st_ksp_label, _st_pc_label = _slepc_configure_st_ksp_pc(
+                        ksp,
+                        pc,
+                        solver_cfg,
+                        block_is=None,
+                        opts_prefix="st_",
+                        allow_fieldsplit=False,
+                        use_ciss=False,
+                    )
                     eps.setUp()
                     if (
                         (
@@ -3290,10 +3303,16 @@ def _slepc_try_eps_st_setup(
                         raise
                     last_exc = exc
                     kind = _slepc_st_setup_error_kind(exc)
+                    pc_note = ""
+                    if MPI.COMM_WORLD.rank == ROOT_RANK:
+                        try:
+                            pc_note = f", ST-PC={ksp.getPC().getType()}"
+                        except Exception:
+                            pc_note = ""
                     if MPI.COMM_WORLD.rank == ROOT_RANK:
                         _emit(
                             f"[solver][warn] ST setUp failed at σ={try_hz:.2f} Hz "
-                            f"(a_shift={stiff_frac:.3g}, reg={reg_frac:.3g}, {kind}); "
+                            f"(a_shift={stiff_frac:.3g}, reg={reg_frac:.3g}, {kind}{pc_note}); "
                             f"trying next σ/regularization.",
                             status_callback=status_callback,
                             level="warning",
@@ -3487,6 +3506,9 @@ def _slepc_configure_st_ksp_pc(
         )
     )
 
+    if not use_fs:
+        _slepc_clear_st_fieldsplit_petsc_options(opts_prefix)
+
     if use_fs and block_is is not None:
         is_u, is_p = block_is
         fs_type = str(solver_cfg.get("st_fieldsplit_type", "additive")).strip().lower()
@@ -3559,6 +3581,40 @@ def _slepc_configure_st_ksp_pc(
         except Exception:
             pass
     return st_ksp_type, pc.getType()
+
+
+def _slepc_clear_st_fieldsplit_petsc_options(opts_prefix: str = "st_") -> None:
+    """
+    Remove FieldSplit keys from the PETSc options DB and force monolithic LU on the ST KSP.
+
+    ``_petsc_inject_fieldsplit_options`` sets ``st_pc_type=fieldsplit`` globally; after
+    ``eps.reset()`` / ``ksp.reset()``, ``eps.setUp()`` can re-read those keys even when the
+    in-memory PC was configured as LU.
+    """
+    opts = PETSc.Options()
+    pfx = _petsc_fieldsplit_option_keys(opts_prefix)
+    opts[f"{opts_prefix}pc_type"] = "lu"
+    for key in (
+        f"{pfx}_type",
+        f"{pfx}_schur_fact",
+        f"{pfx}_schur_fact_type",
+        f"{pfx}_schur_precondition",
+        f"{pfx}_schur_block",
+        f"{pfx}_u_ksp_type",
+        f"{pfx}_u_pc_type",
+        f"{pfx}_u_pc_factor_mat_solver_type",
+        f"{pfx}_u_pc_factor_shift_type",
+        f"{pfx}_u_pc_factor_shift_amount",
+        f"{pfx}_p_ksp_type",
+        f"{pfx}_p_pc_type",
+        f"{pfx}_p_pc_factor_mat_solver_type",
+        f"{pfx}_p_pc_factor_shift_type",
+        f"{pfx}_p_pc_factor_shift_amount",
+    ):
+        try:
+            opts.delValue(key)
+        except Exception:
+            pass
 
 
 def _slepc_clear_ciss_petsc_options() -> None:
@@ -3961,6 +4017,8 @@ def _slepc_shift_invert_batch(
             f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}",
             status_callback=status_callback,
         )
+    if not use_ciss and not _slepc_st_allow_fieldsplit(solver_cfg, use_ciss=False):
+        _slepc_clear_st_fieldsplit_petsc_options("st_")
     eps.setFromOptions()
     _debug_petsc_comm("A", A)
     _debug_petsc_comm("M", M)
@@ -3975,6 +4033,8 @@ def _slepc_shift_invert_batch(
     opts = PETSc.Options()
     opts["eps_monitor"] = None
     opts["eps_converged_reason"] = None
+    if not use_ciss and not _slepc_st_allow_fieldsplit(solver_cfg, use_ciss=False):
+        _slepc_clear_st_fieldsplit_petsc_options("st_")
     eps.setFromOptions()
     # Re-apply after setFromOptions so CLI/options cannot override GNHEP band strategy.
     _slepc_eps_ensure_operators(eps, A, M)
