@@ -3055,8 +3055,20 @@ def _slepc_primary_st_sigma_hz(
     return float(candidates[0]) if candidates else max(1.0, float(target_hz))
 
 
+def _slepc_eps_ensure_operators(
+    eps: Any,
+    A: PETSc.Mat,
+    M: PETSc.Mat,
+) -> None:
+    """Re-bind GNHEP operators after ``setFromOptions`` / ST reconfiguration (PETSc may clear them)."""
+    eps.setOperators(A, M)
+    eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
+
+
 def _slepc_try_eps_st_setup(
     eps: Any,
+    A: PETSc.Mat,
+    M: PETSc.Mat,
     sigma_hz_list: List[float],
     solver_cfg: Dict,
     *,
@@ -3067,6 +3079,7 @@ def _slepc_try_eps_st_setup(
 
     Returns ``(ok, sigma_hz_used, sigma_lambda_used)``.
     """
+    _slepc_eps_ensure_operators(eps, A, M)
     st = eps.getST()
     last_exc: Optional[BaseException] = None
     for try_hz in sigma_hz_list:
@@ -3077,6 +3090,7 @@ def _slepc_try_eps_st_setup(
             eps.reset()
         except Exception:
             pass
+        _slepc_eps_ensure_operators(eps, A, M)
         try:
             ksp = st.getKSP()
             ksp.reset()
@@ -3765,7 +3779,7 @@ def _slepc_shift_invert_batch(
     opts["eps_converged_reason"] = None
     eps.setFromOptions()
     # Re-apply after setFromOptions so CLI/options cannot override GNHEP band strategy.
-    eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
+    _slepc_eps_ensure_operators(eps, A, M)
     if use_ciss:
         _slepc_configure_ciss_region(eps, lam_lo, lam_hi, solver_cfg)
         try:
@@ -3823,6 +3837,8 @@ def _slepc_shift_invert_batch(
         if sigma_hz_candidates:
             _st_ok, st_sigma_hz, st_sigma = _slepc_try_eps_st_setup(
                 eps,
+                A,
+                M,
                 sigma_hz_candidates,
                 solver_cfg,
                 status_callback=status_callback,
@@ -3836,6 +3852,7 @@ def _slepc_shift_invert_batch(
     print(f"[HEARTBEAT] Rank {MPI.COMM_WORLD.rank} reached EPS Solve")
     sys.stdout.flush()
     _debug_rank("Entering EPS Solve")
+    _slepc_eps_ensure_operators(eps, A, M)
     try:
         eps.solve()
     except Exception as exc:
@@ -4125,8 +4142,14 @@ def _slepc_shift_invert_batch(
         fb_cfg["eps_band_solver"] = "shift_invert"
         fb_cfg["st_pc_type"] = "lu"
         fb_cfg["st_use_fieldsplit"] = False
+        fb_cfg["st_fieldsplit"] = False
         fb_cfg["st_ciss_use_fieldsplit"] = False
         _slepc_clear_ciss_petsc_options()
+        try:
+            A.assemble()
+            M.assemble()
+        except Exception:
+            pass
         n_fb, out_fb = _slepc_shift_invert_batch(
             A,
             M,
