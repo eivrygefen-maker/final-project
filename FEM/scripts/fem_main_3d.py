@@ -3123,12 +3123,18 @@ def _slepc_st_sigma_hz_candidates(solver_cfg: Dict, target_hz: float) -> List[fl
         "eps_st_sigma_retry_offsets_hz",
         (18.0, 28.0, -15.0, 35.0, -25.0, 42.0),
     )
-    # Try σ at the harvest target first (best for TARGET_MAGNITUDE); offsets follow for pole avoidance.
-    offsets: List[float] = [0.0, base_off]
+    # Primary σ is offset from target (avoids shift-locked Ritz at target_hz); target σ is a fallback only.
+    offsets: List[float] = [base_off]
+    if _solver_bool(solver_cfg, "eps_st_sigma_try_target_first", default=False):
+        offsets.insert(0, 0.0)
+    elif _solver_bool(solver_cfg, "eps_st_sigma_include_target_in_ladder", default=True):
+        offsets.append(0.0)
     if isinstance(raw_retry, (list, tuple)):
         for x in raw_retry:
             try:
-                offsets.append(float(x))
+                v = float(x)
+                if v not in offsets:
+                    offsets.append(v)
             except (TypeError, ValueError):
                 pass
     seen: set = set()

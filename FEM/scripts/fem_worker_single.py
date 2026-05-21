@@ -389,12 +389,30 @@ def main() -> int:
 
     n_u_g = int(W.sub(0).dofmap.index_map.size_global * W.sub(0).dofmap.index_map_bs)
     hz_tag = hz_result_tag(float(args.target_hz))
+    hcfg = HarvestFilterConfig.from_solver_cfg(cfg.get("solver", {}))
+    # Classify first; process ROM-ready (physical) modes before σ-ritz so uniqueness keeps resonances.
+    slot_order = list(range(n_modes))
+    def _harvest_sort_key(j: int) -> tuple:
+        fj = float(freqs_hz[j])
+        _, rom, _ = classify_mode_candidate(
+            {
+                "hz": fj,
+                "p_frac": float(p_fracs[j]) if j < len(p_fracs) else 0.0,
+                "wood_participation": float(tag1[j]) + float(tag3[j]),
+            },
+            target_hz=float(args.target_hz),
+            st_sigma_hz=st_sigma_hz,
+            cfg=hcfg,
+        )
+        return (0 if rom else 1, abs(fj - st_sigma_hz), -fj)
+
+    slot_order.sort(key=_harvest_sort_key)
     candidates: List[Dict] = []
     same_batch: List[sparse.csr_matrix] = []
     exclude: Set[str] = set()
     last_kept_hz: float = float("-inf")
 
-    for j in range(n_modes):
+    for j in slot_order:
         vec_csr = dense_to_csr_f32_column(eigvecs[:, j])
         rt = float(tag1[j])
         rb = float(tag3[j])
@@ -429,7 +447,6 @@ def main() -> int:
         save_mode_csr(abs_path, vec_csr)
         exclude.add(str(abs_path))
         same_batch.append(vec_csr.copy())
-        hcfg = HarvestFilterConfig.from_solver_cfg(cfg.get("solver", {}))
         h_label, h_rom, h_reason = classify_mode_candidate(
             {
                 "hz": float(freqs_hz[j]),

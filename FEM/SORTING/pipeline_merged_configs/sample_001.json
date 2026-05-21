@@ -130,6 +130,8 @@
     "eps_interval_half_width_hz": 50.0,
     "eps_st_sigma_frac_offset": 0.12,
     "eps_st_sigma_min_offset_hz": 8.0,
+    "eps_st_sigma_try_target_first": false,
+    "eps_st_sigma_include_target_in_ladder": true,
     "eps_st_sigma_retry_offsets_hz": [18.0, 28.0, -15.0, 35.0, -25.0, 42.0],
     "eps_st_a_diagonal_shift_frac": 0.001,
     "eps_st_a_diagonal_shift_frac_ladder": [0.001, 0.0, 0.005, 0.02],
