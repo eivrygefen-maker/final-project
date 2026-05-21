@@ -1859,11 +1859,11 @@ def _slepc_lambda_hz_bounds(solver_cfg: Optional[Dict] = None) -> Tuple[float, f
     f_hi = 600.0
     if solver_cfg:
         try:
-            f_lo = max(10.0, 0.5 * float(solver_cfg.get("min_valid_mode_hz", 90.0)))
+            f_lo = max(10.0, 0.5 * float(solver_cfg.get("min_valid_mode_hz", 60.0)))
         except (TypeError, ValueError):
             pass
         try:
-            f_hi = 1.25 * float(solver_cfg.get("max_valid_mode_hz", 480.0))
+            f_hi = 1.25 * float(solver_cfg.get("max_valid_mode_hz", 550.0))
         except (TypeError, ValueError):
             pass
     lam_lo = (2.0 * math.pi * f_lo) ** 2
@@ -6177,9 +6177,9 @@ def _solve_coupled_evp(
         quota = int(solver_cfg.get("sifter_quota", 100))
         batch = int(solver_cfg.get("sifter_batch_modes", 50))
         f_center = float(solver_cfg.get("sifter_start_hz", 100.0))
-        f_cap = float(solver_cfg.get("sifter_max_hz", 450.0))
+        f_cap = float(solver_cfg.get("sifter_max_hz", 550.0))
         df_s = float(solver_cfg.get("sifter_step_hz", 10.0))
-        low_f_min = float(solver_cfg.get("sifter_low_freq_min_hz", 90.0))
+        low_f_min = float(solver_cfg.get("sifter_low_freq_min_hz", 60.0))
         low_f_max = float(solver_cfg.get("sifter_low_freq_max_hz", 160.0))
         low_step_hz = float(solver_cfg.get("sifter_low_step_hz", 15.0))
         high_step_hz = float(solver_cfg.get("sifter_high_step_hz", 15.0))

@@ -249,6 +249,14 @@ def main() -> int:
         default=DEFAULT_SHAPE_NAME,
         help="ROM shape name for shared-host export paths (default: classic).",
     )
+    parser.add_argument(
+        "--clean-start",
+        action="store_true",
+        help=(
+            "Pass --clean-start to fem_master_dynamic: wipe temp_results, temp_modes, "
+            "and reset candidates_log.json before the 60–550 Hz sweep."
+        ),
+    )
     args = parser.parse_args()
     if int(args.max_workers) < 1:
         print(f"Error: --max-workers must be >= 1 (got {args.max_workers})", file=sys.stderr)
@@ -341,12 +349,18 @@ def main() -> int:
         "--max-workers",
         str(int(args.max_workers)),
         "--hz-min",
-        "90",
+        "60",
+        "--hz-max",
+        "550",
+        "--schedule",
+        "spectral-bands+fill",
         "--config",
         str(effective_config.resolve()),
         "--sorting-root",
         str(sorting_root),
     ]
+    if args.clean_start:
+        step_a.append("--clean-start")
     if _run_step("Step A — FEM master sweep (subprocess workers)", step_a, REPO_ROOT) != 0:
         return 1
 

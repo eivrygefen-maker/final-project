@@ -6,8 +6,7 @@ and optionally reset SORTING scratch data for the next run.
 Mode columns are read as CSR sparse (``*.smx.npz`` from workers) or legacy dense ``.npy``,
 aggregated with ``scipy.sparse.hstack``, and written as one bundled compressed NPZ
 containing CSR arrays (``ev_data``, ``ev_indices``, ``ev_indptr``, ``ev_shape``)
-plus ``frequencies`` and ``wood_participations``. There is no upper frequency cutoff in this script:
-every row in ``selected_modes.csv`` is packaged regardless of Hz (ROM column count follows the CSV).
+plus ``frequencies``, ``wood_participations``, and pipeline provenance metadata.
 """
 from __future__ import annotations
 
@@ -18,14 +17,18 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from scipy import sparse
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from fem_harvest_filter import HARVEST_FILTER_POLICY_VERSION
 from fem_mode_array_utils import MODE_VECTOR_FILE_SUFFIX, load_mode_column_any
 
-SCRIPT_DIR = Path(__file__).resolve().parent
 FEM_ROOT = SCRIPT_DIR.parent
 SORTING_ROOT = FEM_ROOT / "SORTING"
 
@@ -57,6 +60,17 @@ def _load_vector_path_map(candidates_path: Path) -> Dict[int, str]:
     return out
 
 
+def _load_pipeline_meta(candidates_path: Path) -> Dict[str, object]:
+    if not candidates_path.is_file():
+        return {}
+    try:
+        data = json.loads(candidates_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    meta = data.get("pipeline_meta")
+    return dict(meta) if isinstance(meta, dict) else {}
+
+
 def _resolve_mode_vector_path(
     mode_id: int,
     temp_modes: Path,
@@ -81,14 +95,6 @@ def _resolve_mode_vector_path(
 
 
 def _resolve_sorting_root(csv_path: Path, explicit: Path | None) -> Path:
-    """
-    Directory that contains ``temp_modes/`` and (optionally) ``candidates_log.json``.
-
-    If ``--sorting-root`` is omitted: use the CSV's parent when it already contains
-    ``temp_modes`` (typical: CSV lives in FEM/SORTING); otherwise default to the
-    project's ``FEM/SORTING`` so a CSV copied elsewhere still finds vectors under
-    the canonical SORTING tree when that is the only copy of ``temp_modes``.
-    """
     if explicit is not None:
         return explicit.resolve()
     parent = csv_path.parent.resolve()
@@ -97,10 +103,10 @@ def _resolve_sorting_root(csv_path: Path, explicit: Path | None) -> Path:
     return SORTING_ROOT.resolve()
 
 
-def _read_winners(csv_path: Path) -> List[Tuple[int, float, float]]:
+def _read_winners(csv_path: Path) -> List[Dict[str, object]]:
     if not csv_path.is_file():
         raise FileNotFoundError(f"Selected modes CSV not found: {csv_path}")
-    rows: List[Tuple[int, float, float]] = []
+    rows: List[Dict[str, object]] = []
     with open(csv_path, "r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         if reader.fieldnames is None:
@@ -110,14 +116,25 @@ def _read_winners(csv_path: Path) -> List[Tuple[int, float, float]]:
             if key not in fields:
                 raise ValueError(f"CSV missing required column '{key}'. Found: {list(reader.fieldnames)}")
         id_h, hz_h, wood_h = fields["id"], fields["hz"], fields["wood_participation"]
+        st_h = fields.get("source_target_hz")
+        pol_h = fields.get("harvest_filter_policy")
+        cls_h = fields.get("harvest_class")
         for rec in reader:
             try:
-                mid = int(float(rec[id_h]))
-                hz = float(rec[hz_h])
-                wood = float(rec[wood_h])
+                row: Dict[str, object] = {
+                    "id": int(float(rec[id_h])),
+                    "hz": float(rec[hz_h]),
+                    "wood": float(rec[wood_h]),
+                }
+                if st_h and rec.get(st_h, "").strip():
+                    row["source_target_hz"] = float(rec[st_h])
+                if pol_h and rec.get(pol_h, "").strip():
+                    row["harvest_filter_policy"] = str(rec[pol_h]).strip()
+                if cls_h and rec.get(cls_h, "").strip():
+                    row["harvest_class"] = str(rec[cls_h]).strip()
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError(f"Bad CSV row {rec!r}: {exc}") from exc
-            rows.append((mid, hz, wood))
+            rows.append(row)
     if not rows:
         raise ValueError(f"No data rows in {csv_path}")
     return rows
@@ -203,6 +220,7 @@ def main() -> int:
     temp_modes = sorting_root / "temp_modes"
     candidates_path = sorting_root / "candidates_log.json"
     path_by_id = _load_vector_path_map(candidates_path)
+    pipeline_meta = _load_pipeline_meta(candidates_path)
 
     try:
         winners = _read_winners(csv_path)
@@ -213,9 +231,15 @@ def main() -> int:
     cols: List[sparse.csr_matrix] = []
     freqs: List[float] = []
     woods: List[float] = []
+    source_targets: List[float] = []
+    harvest_policies: List[str] = []
+    harvest_classes: List[str] = []
     missing: List[int] = []
 
-    for mid, hz, wood in winners:
+    for row in winners:
+        mid = int(row["id"])
+        hz = float(row["hz"])
+        wood = float(row["wood"])
         vec_path = _resolve_mode_vector_path(mid, temp_modes, sorting_root, path_by_id)
         if not vec_path.is_file():
             missing.append(mid)
@@ -226,8 +250,14 @@ def main() -> int:
             print(f"Error loading {vec_path}: {exc}", file=sys.stderr)
             return 1
         cols.append(col)
-        freqs.append(float(hz))
-        woods.append(float(wood))
+        freqs.append(hz)
+        woods.append(wood)
+        st = row.get("source_target_hz")
+        source_targets.append(float(st) if st is not None else float("nan"))
+        harvest_policies.append(
+            str(row.get("harvest_filter_policy") or pipeline_meta.get("harvest_filter_policy") or HARVEST_FILTER_POLICY_VERSION)
+        )
+        harvest_classes.append(str(row.get("harvest_class") or ""))
 
     if missing:
         print(
@@ -248,6 +278,15 @@ def main() -> int:
 
     frequencies = np.asarray(freqs, dtype=np.float64)
     wood_participations = np.asarray(woods, dtype=np.float64)
+    source_target_hz = np.asarray(source_targets, dtype=np.float64)
+    policy_arr = np.asarray(harvest_policies, dtype="U64")
+    class_arr = np.asarray(harvest_classes, dtype="U32")
+
+    sweep_lo = float(pipeline_meta.get("sweep_hz_min", 60.0))
+    sweep_hi = float(pipeline_meta.get("sweep_hz_max", 550.0))
+    policy_version = str(
+        pipeline_meta.get("harvest_filter_policy", HARVEST_FILTER_POLICY_VERSION)
+    )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -258,11 +297,29 @@ def main() -> int:
         ev_shape=np.asarray(eigenvectors.shape, dtype=np.int64),
         frequencies=frequencies,
         wood_participations=wood_participations,
+        source_target_hz=source_target_hz,
+        harvest_filter_policy=policy_arr,
+        harvest_class=class_arr,
+        pipeline_harvest_filter_policy=np.asarray(policy_version, dtype="U64"),
+        pipeline_sweep_hz_min=np.asarray(sweep_lo, dtype=np.float64),
+        pipeline_sweep_hz_max=np.asarray(sweep_hi, dtype=np.float64),
+        pipeline_coupled_worker_num_modes_cap=np.asarray(
+            int(pipeline_meta.get("coupled_worker_num_modes_cap", 40)), dtype=np.int32
+        ),
     )
 
     try:
         with np.load(str(out_path), allow_pickle=False) as z:
-            need = ("ev_data", "ev_indices", "ev_indptr", "ev_shape", "frequencies", "wood_participations")
+            need = (
+                "ev_data",
+                "ev_indices",
+                "ev_indptr",
+                "ev_shape",
+                "frequencies",
+                "wood_participations",
+                "source_target_hz",
+                "pipeline_harvest_filter_policy",
+            )
             if any(k not in z.files for k in need):
                 print(f"Error: output NPZ missing CSR/metadata keys: {out_path}", file=sys.stderr)
                 return 1
@@ -298,6 +355,7 @@ def main() -> int:
         f"Created ROM archive: {out_path}\n"
         f"  eigenvectors CSR: shape {eigenvectors.shape}, nnz={nnz}, sparsity≈{sparsity:.4f}\n"
         f"  frequencies: {frequencies.shape}  |  wood_participations: {wood_participations.shape}\n"
+        f"  provenance: policy={policy_version!r} sweep=[{sweep_lo:.0f},{sweep_hi:.0f}] Hz\n"
         f"  file size: {nbytes / (1024 * 1024):.2f} MiB ({nbytes} bytes)"
     )
 

@@ -3,6 +3,13 @@ Post-solve harvest classification for coupled shift-invert FOM snapshots.
 
 Distinguishes physical FSI modes (``physical_fsi``) from shift-locked Ritz artifacts
 (``sigma_ritz``) using frequency proximity to ``st_sigma_hz``, not ``p_frac`` alone.
+
+**Staged filtering** (``staged_filtering: true``): below ``staged_crossover_hz`` use strict
+``min_p_frac_rom``; at/above crossover use ``min_p_frac_rom_high`` when wood and uniqueness
+pass. σ-cluster width can tighten above ``staged_sigma_tighten_hz`` (default 400 Hz).
+
+Policy version ``HARVEST_FILTER_POLICY_VERSION`` is stamped in ``candidates_log.json``
+``pipeline_meta`` and per-mode rows.
 """
 from __future__ import annotations
 
@@ -12,13 +19,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+HARVEST_FILTER_POLICY_VERSION = "staged_v1_60_550"
+
 
 @dataclass
 class HarvestFilterConfig:
     """ROM-ready selection thresholds (override via JSON ``solver.harvest_filter``)."""
 
-    min_hz: float = 90.0
-    max_hz: float = 480.0
+    min_hz: float = 60.0
+    max_hz: float = 550.0
     min_p_frac_rom: float = 0.10
     min_wood: float = 0.01
     sigma_cluster_hz: float = 2.0
@@ -27,6 +36,15 @@ class HarvestFilterConfig:
     max_sigma_reference_per_shift: int = 0
     near_dup_hz: float = 0.05
     min_uniqueness: float = 0.04
+    # Staged FSI gate (60–550 Hz production sweep).
+    staged_filtering: bool = True
+    staged_crossover_hz: float = 350.0
+    min_p_frac_rom_low: float = 0.10
+    min_p_frac_rom_high: float = 0.03
+    min_decoupled_p_frac: float = 0.02
+    staged_sigma_tighten_hz: float = 400.0
+    sigma_cluster_hz_high: float = 3.0
+    min_wood_high_hz: float = 0.01
 
     @classmethod
     def from_solver_cfg(cls, solver_cfg: Optional[Dict[str, Any]]) -> "HarvestFilterConfig":
@@ -67,10 +85,13 @@ class HarvestFilterConfig:
             except (TypeError, ValueError):
                 return default
 
+        min_p_low = _f("min_p_frac_rom_low", _f("min_p_frac_rom", _f("min_p_frac", cls.min_p_frac_rom)))
+        min_p_default = _f("min_p_frac_rom", _f("min_p_frac", min_p_low))
+
         return cls(
             min_hz=_f("min_hz", cls.min_hz),
             max_hz=_f("max_hz", cls.max_hz),
-            min_p_frac_rom=_f("min_p_frac_rom", _f("min_p_frac", cls.min_p_frac_rom)),
+            min_p_frac_rom=min_p_default,
             min_wood=_f("min_wood", cls.min_wood),
             sigma_cluster_hz=_f("sigma_cluster_hz", cls.sigma_cluster_hz),
             min_sigma_sep_from_target_hz=_f(
@@ -82,7 +103,37 @@ class HarvestFilterConfig:
             ),
             near_dup_hz=_f("near_dup_hz", cls.near_dup_hz),
             min_uniqueness=_f("min_uniqueness", cls.min_uniqueness),
+            staged_filtering=_b("staged_filtering", cls.staged_filtering),
+            staged_crossover_hz=_f("staged_crossover_hz", cls.staged_crossover_hz),
+            min_p_frac_rom_low=_f("min_p_frac_rom_low", min_p_low),
+            min_p_frac_rom_high=_f("min_p_frac_rom_high", _f("min_p_frac_rom_high", 0.03)),
+            min_decoupled_p_frac=_f("min_decoupled_p_frac", cls.min_decoupled_p_frac),
+            staged_sigma_tighten_hz=_f("staged_sigma_tighten_hz", cls.staged_sigma_tighten_hz),
+            sigma_cluster_hz_high=_f("sigma_cluster_hz_high", cls.sigma_cluster_hz_high),
+            min_wood_high_hz=_f("min_wood_high_hz", _f("min_wood", cls.min_wood)),
         )
+
+
+def sigma_cluster_hz_for_mode(f_hz: float, cfg: HarvestFilterConfig) -> float:
+    """σ-cluster half-width (Hz); tighter above ``staged_sigma_tighten_hz`` when staged."""
+    if cfg.staged_filtering and float(f_hz) >= float(cfg.staged_sigma_tighten_hz):
+        return float(cfg.sigma_cluster_hz_high)
+    return float(cfg.sigma_cluster_hz)
+
+
+def min_p_frac_threshold_for_mode(f_hz: float, cfg: HarvestFilterConfig) -> float:
+    """Required ``p_frac`` for ROM eligibility at mode frequency ``f_hz``."""
+    if cfg.staged_filtering and float(f_hz) >= float(cfg.staged_crossover_hz):
+        return float(cfg.min_p_frac_rom_high)
+    if cfg.staged_filtering:
+        return float(cfg.min_p_frac_rom_low)
+    return float(cfg.min_p_frac_rom)
+
+
+def min_wood_threshold_for_mode(f_hz: float, cfg: HarvestFilterConfig) -> float:
+    if cfg.staged_filtering and float(f_hz) >= float(cfg.staged_crossover_hz):
+        return float(cfg.min_wood_high_hz)
+    return float(cfg.min_wood)
 
 
 def classify_mode_candidate(
@@ -118,32 +169,36 @@ def classify_mode_candidate(
         return "invalid", False, "non_finite_hz"
 
     sigma = float(st_sigma_hz)
-    target = float(target_hz)
+    sig_tol = sigma_cluster_hz_for_mode(f_hz, cfg)
 
-    if abs(f_hz - sigma) <= float(cfg.sigma_cluster_hz):
-        return "sigma_ritz", False, f"|f-st_sigma|={abs(f_hz - sigma):.3f}<={cfg.sigma_cluster_hz}"
+    if abs(f_hz - sigma) <= sig_tol:
+        return "sigma_ritz", False, f"|f-st_sigma|={abs(f_hz - sigma):.3f}<={sig_tol}"
 
     if f_hz + 1e-9 < float(cfg.min_hz) or f_hz > float(cfg.max_hz) + 1e-9:
         return "out_of_band", False, f"hz={f_hz:.2f} outside [{cfg.min_hz},{cfg.max_hz}]"
 
-    if (
-        float(cfg.min_sigma_sep_from_target_hz) > 0.0
-        and abs(f_hz - target) < float(cfg.min_sigma_sep_from_target_hz)
-        and abs(f_hz - sigma) > float(cfg.sigma_cluster_hz)
-    ):
-        pass
+    if p_frac < float(cfg.min_decoupled_p_frac):
+        return "decoupled", False, f"p_frac={p_frac:.3e}<{cfg.min_decoupled_p_frac}"
 
-    if p_frac < 0.02:
-        return "decoupled", False, f"p_frac={p_frac:.3e}<0.02"
-
-    if wood < float(cfg.min_wood):
-        return "low_wood", False, f"wood={wood:.4f}<{cfg.min_wood}"
-
-    if p_frac < float(cfg.min_p_frac_rom):
-        return "weak_coupling", False, f"p_frac={p_frac:.3f}<{cfg.min_p_frac_rom}"
+    wood_min = min_wood_threshold_for_mode(f_hz, cfg)
+    if wood < wood_min:
+        return "low_wood", False, f"wood={wood:.4f}<{wood_min}"
 
     if uniq < float(cfg.min_uniqueness) - 1e-15:
         return "low_uniqueness", False, f"uniqueness={uniq:.3f}<{cfg.min_uniqueness}"
+
+    p_need = min_p_frac_threshold_for_mode(f_hz, cfg)
+    if p_frac < p_need:
+        return "weak_coupling", False, f"p_frac={p_frac:.3f}<{p_need:.3f}"
+
+    if cfg.staged_filtering and float(f_hz) >= float(cfg.staged_crossover_hz):
+        if p_frac < float(cfg.min_p_frac_rom_low):
+            return (
+                "physical_fsi",
+                True,
+                f"staged_hf_ok(p_frac={p_frac:.3f}>={p_need:.3f},wood={wood:.3f})",
+            )
+        return "physical_fsi", True, "coupled_fsi_ok"
 
     return "physical_fsi", True, "coupled_fsi_ok"
 
@@ -231,6 +286,10 @@ def filter_result_payload(
         "n_incoming": len(raw),
         "n_rom_ready": len(deduped),
         "class_counts": counts,
+        "staged_filtering": bool(cfg.staged_filtering),
+        "staged_crossover_hz": float(cfg.staged_crossover_hz),
+        "min_p_frac_rom_low": float(cfg.min_p_frac_rom_low),
+        "min_p_frac_rom_high": float(cfg.min_p_frac_rom_high),
     }
     return out
 

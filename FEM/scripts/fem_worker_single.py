@@ -37,7 +37,11 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import fem_main_3d as fem3d
 from wood_library import resolve_plate_thicknesses
-from fem_harvest_filter import HarvestFilterConfig, classify_mode_candidate
+from fem_harvest_filter import (
+    HARVEST_FILTER_POLICY_VERSION,
+    HarvestFilterConfig,
+    classify_mode_candidate,
+)
 from fem_mode_array_utils import (
     MODE_VECTOR_FILE_SUFFIX,
     csr_col_norm,
@@ -54,7 +58,7 @@ WORKER_UNIQUENESS_MIN = 0.04
 from mpi4py import MPI
 
 # SLEPc batch size for master-spawned coupled workers (LU memory / ncv stability on VMs).
-_DEFAULT_WORKER_NUM_MODES_CAP = 32
+_DEFAULT_WORKER_NUM_MODES_CAP = 40
 
 
 def _apply_master_worker_solver_profile(
@@ -84,7 +88,7 @@ def _apply_master_worker_solver_profile(
     s.setdefault("eps_pin_fix_tag5", True)
     s.setdefault("eps_algebraic_bc_zero_columns", True)
     cap = int(s.get("eps_worker_num_modes_cap", _DEFAULT_WORKER_NUM_MODES_CAP) or _DEFAULT_WORKER_NUM_MODES_CAP)
-    cap = max(1, cap)
+    cap = max(1, min(cap, 48))
     nm = min(max(1, int(num_modes)), cap)
     rigid_buf = int(s.get("eps_rigid_mode_buffer", 5) or 5)
     # SLEPc requires ncv >= nev+1 with nev ~= num_modes + rigid_buf.
@@ -273,6 +277,14 @@ def main() -> int:
 
     config_path = args.config.resolve()
     cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    _patch_raw = os.environ.get("FEM_WORKER_SOLVER_OVERRIDES", "").strip()
+    if _patch_raw:
+        try:
+            _patch = json.loads(_patch_raw)
+            if isinstance(_patch, dict):
+                cfg.setdefault("solver", {}).update(_patch)
+        except json.JSONDecodeError as exc:
+            print(f"[worker] FEM_WORKER_SOLVER_OVERRIDES JSON invalid: {exc}", file=sys.stderr)
     if MPI.COMM_WORLD.rank == 0:
         print(f"[worker] Config file (resolved): {config_path}")
         try:
@@ -495,6 +507,7 @@ def main() -> int:
             {
                 "id": int(j),
                 "hz": float(freqs_hz[j]),
+                "source_target_hz": float(args.target_hz),
                 "wood_participation": float(wood),
                 "p_frac": float(p_fracs[j]),
                 "uniqueness": float(uniq),
@@ -505,6 +518,7 @@ def main() -> int:
                 "harvest_class": h_label,
                 "rom_ready": bool(h_rom),
                 "harvest_reason": h_reason,
+                "harvest_filter_policy": HARVEST_FILTER_POLICY_VERSION,
             }
         )
         last_kept_hz = fj
@@ -516,6 +530,7 @@ def main() -> int:
     out = {
         "target_hz": float(args.target_hz),
         "st_sigma_hz": float(st_sigma_hz),
+        "harvest_filter_policy": HARVEST_FILTER_POLICY_VERSION,
         "structural_only_run": structural_only_run,
         "num_modes_requested": int(_worker_num_modes),
         "num_modes_argv": int(args.num_modes),

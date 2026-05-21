@@ -72,13 +72,39 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from fem_harvest_filter import HarvestFilterConfig, classify_mode_candidate
+from fem_harvest_filter import (
+    HARVEST_FILTER_POLICY_VERSION,
+    HarvestFilterConfig,
+    classify_mode_candidate,
+)
+from fem_sorting_workspace import fresh_candidates_log_payload, reset_sorting_workspace
+
+# Set in ``main()`` from ``solver.harvest_filter`` + CLI sweep bounds (merge / resume flush).
+_MASTER_HARVEST_FILTER_CFG: Optional[HarvestFilterConfig] = None
+
+
+def _build_master_harvest_filter_cfg(
+    solver_cfg: Dict[str, Any],
+    *,
+    hz_min: float,
+    hz_max: float,
+) -> HarvestFilterConfig:
+    cfg = HarvestFilterConfig.from_solver_cfg(solver_cfg)
+    cfg.min_hz = max(float(cfg.min_hz), float(hz_min))
+    cfg.max_hz = min(float(cfg.max_hz), float(hz_max))
+    return cfg
 from fem_spectral_schedule import (
     SPECTRAL_BAND_HALF_HZ,
     SPECTRAL_BAND_STEP_HZ,
+    SWEEP_HZ_MAX,
+    SWEEP_HZ_MIN,
     build_spectral_band_task_list,
+    format_coverage_report,
+    resolve_spectral_band_params,
     spectral_band_centers,
     spectral_harvest_worker_overrides,
+    verify_spectral_coverage,
+    worker_slepc_quota_for_target,
 )
 from fem_mode_array_utils import (
     MODE_VECTOR_FILE_SUFFIX,
@@ -144,7 +170,7 @@ def efficiency_index_sanitized(raw_modes_per_hz: float) -> float:
         return lo
     return float(lo + (hi - lo) * min(1.0, x / denom))
 
-SWEEP_HZ_MIN = 90.0
+# Sweep limits: defaults in ``fem_spectral_schedule`` (60–550 Hz); overridden by CLI / JSON.
 
 WOOD_FLOOR_HZ_ANCHOR_LO = 100.0
 WOOD_FLOOR_HZ_ANCHOR_HI = 350.0
@@ -153,7 +179,7 @@ WOOD_PARTICIPATION_FLOOR_HI = 0.0003
 
 # --- Frequency-dependent wood veto V2 (linear 100 Hz → 450 Hz): 0.0005 → 0.0003 ---
 WOOD_V2_LO_HZ = 100.0
-WOOD_V2_HI_HZ = 480.0
+WOOD_V2_HI_HZ = 550.0
 WOOD_V2_LO = 0.0005
 WOOD_V2_HI = 0.0003
 
@@ -178,16 +204,16 @@ EFFICIENCY_HISTORY_MAX = 5
 EFFICIENCY_HIGH_THRESHOLD = 12.0
 EFFICIENCY_LOW_THRESHOLD = 3.0
 SLEPC_NUM_MODES_ABSOLUTE_CEILING = 100
-# Coupled FSI workers: cap SLEPc ``nev`` for monolithic MUMPS LU on ~230k-DOF VMs (override via env).
-COUPLED_WORKER_NUM_MODES_CAP = int(os.environ.get("FEM_COUPLED_WORKER_NUM_MODES_CAP", "32"))
+# Coupled FSI workers: production SLEPc ``nev`` cap for 60–550 Hz HF bands (hardcoded; not env-dependent).
+COUPLED_WORKER_NUM_MODES_CAP = 40
 
 # --- Adaptive sweep ceiling (conductor, once per run at 435 Hz; spectral zone → hz_max) ---
 # Spectral zone from ``SpectralScheduler`` / ``on_worker_merge``: 1 = dense (saturated), 2 = normal,
 # 3 = sparse (high interest). Maps to user "Conductor" zones and ceilings for ROM-safe sweep span.
-CONDUCTOR_TRIGGER_HZ = 450.0
-CONDUCTOR_CEILING_SPECTRAL_ZONE_1 = 480.0  # saturated / low spectral interest → stop at sweep max
-CONDUCTOR_CEILING_SPECTRAL_ZONE_2 = 480.0
-CONDUCTOR_CEILING_SPECTRAL_ZONE_3 = 480.0  # sparse / high interest → full sweep max
+CONDUCTOR_TRIGGER_HZ = 500.0
+CONDUCTOR_CEILING_SPECTRAL_ZONE_1 = 550.0  # saturated / low spectral interest → stop at sweep max
+CONDUCTOR_CEILING_SPECTRAL_ZONE_2 = 550.0
+CONDUCTOR_CEILING_SPECTRAL_ZONE_3 = 550.0  # sparse / high interest → full sweep max
 
 # --- Merge-time physical density (numerical duplicate clusters) ---
 MERGE_SHIFT_CLUSTER_SPAN_HZ = 1.0
@@ -274,18 +300,26 @@ def _target_hz_from_result_filename(path: Path) -> Optional[float]:
     return int(m.group(1)) / 1000.0
 
 
-def get_band_params(current_hz: float) -> Dict[str, Any]:
+def get_band_params(current_hz: float, *, sweep_hz_min: float = SWEEP_HZ_MIN) -> Dict[str, Any]:
     hz = float(current_hz)
-    if SWEEP_HZ_MIN <= hz < 150.0:
+    f0 = float(sweep_hz_min)
+    if f0 <= hz < 150.0:
         return {"step_hz": 5, "num_modes": 80, "timeout_minutes": 60, "label": "Dense Band 1"}
     if 150.0 <= hz < 300.0:
         return {"step_hz": 10, "num_modes": 50, "timeout_minutes": 60, "label": "Medium Band"}
-    if 300.0 <= hz <= 480.0:
+    if 300.0 <= hz < 420.0:
         return {"step_hz": 10, "num_modes": 40, "timeout_minutes": 60, "label": "High Band"}
-    if hz > 480.0:
+    if 420.0 <= hz <= 550.0:
+        return {
+            "step_hz": 10,
+            "num_modes": 40,
+            "timeout_minutes": 75,
+            "label": "Ultra-high Band",
+        }
+    if hz > 550.0:
         return {"step_hz": 25, "num_modes": 15, "timeout_minutes": 20, "label": "Dead Zone"}
     raise ValueError(
-        f"get_band_params: hz={hz} is outside the supported sweep (expected hz >= {SWEEP_HZ_MIN})."
+        f"get_band_params: hz={hz} is outside the supported sweep (expected hz >= {f0})."
     )
 
 
@@ -398,6 +432,8 @@ class SpectralScheduler:
     sorting_root: Optional[Path] = None
     merge_lock: Optional[threading.Lock] = field(default=None, repr=False)
     schedule_mode: str = field(default="dynamic", repr=False)
+    solver_cfg: Optional[Dict[str, Any]] = field(default=None, repr=False)
+    harvest_filter_cfg: Optional[HarvestFilterConfig] = field(default=None, repr=False)
     _zone_effective: int = field(default=2, repr=False)
     _pending_zone: Optional[int] = field(default=None, repr=False)
     _pending_streak: int = field(default=0, repr=False)
@@ -418,6 +454,12 @@ class SpectralScheduler:
     _last_report_hz: float = field(default=float("nan"), repr=False)
 
     def __post_init__(self) -> None:
+        if self.harvest_filter_cfg is None and isinstance(self.solver_cfg, dict):
+            self.harvest_filter_cfg = _build_master_harvest_filter_cfg(
+                self.solver_cfg,
+                hz_min=float(self.hz_min),
+                hz_max=float(self.hz_max),
+            )
         self._n_modes_in_log = 0
         self._recovery_shift_count = 0
         self._resume_load_state()
@@ -687,7 +729,7 @@ class SpectralScheduler:
         return ZONE2_STEP_HZ
 
     def _band_params_with_zone_step(self, hz: float, label_suffix: str) -> Dict[str, Any]:
-        base = dict(get_band_params(hz))
+        base = dict(get_band_params(hz, sweep_hz_min=float(self.hz_min)))
         z = self._zone_effective
         if z == 1:
             base["num_modes"] = min(ZONE1_NUM_MODES_CAP, int(base.get("num_modes", 80)))
@@ -695,13 +737,25 @@ class SpectralScheduler:
             nm = int(base.get("num_modes", 80))
             base["num_modes"] = max(ZONE3_NUM_MODES_MIN, min(ZONE3_NUM_MODES_MAX, nm))
         base["num_modes"] = min(SLEPC_NUM_MODES_ABSOLUTE_CEILING, max(1, int(base.get("num_modes", 80))))
-        base["num_modes"] = min(
-            COUPLED_WORKER_NUM_MODES_CAP,
-            max(1, int(base.get("num_modes", COUPLED_WORKER_NUM_MODES_CAP))),
+        quota = worker_slepc_quota_for_target(
+            float(hz),
+            int(base.get("num_modes", COUPLED_WORKER_NUM_MODES_CAP)),
+            coupled_cap=COUPLED_WORKER_NUM_MODES_CAP,
         )
+        base["num_modes"] = min(
+            quota["eps_worker_num_modes_cap"],
+            max(1, int(quota["num_modes"])),
+        )
+        base["eps_worker_num_modes_cap"] = int(quota["eps_worker_num_modes_cap"])
+        base["eps_ncv_max"] = int(quota["eps_ncv_max"])
         base["label"] = f"{base.get('label', '')} [{label_suffix}]".strip()
         base.update(
-            spectral_harvest_worker_overrides(float(hz), float(self.hz_min), float(self.hz_max))
+            spectral_harvest_worker_overrides(
+                float(hz),
+                float(self.hz_min),
+                float(self.hz_max),
+                solver_cfg=self.solver_cfg,
+            )
         )
         return base
 
@@ -1405,9 +1459,9 @@ def frequency_ladder_shifts(center_hz: float, hz_min: float, hz_max: float) -> L
     return out
 
 
-def _worker_band_params_base(hz: float) -> Dict[str, Any]:
+def _worker_band_params_base(hz: float, *, sweep_hz_min: float = SWEEP_HZ_MIN) -> Dict[str, Any]:
     """Band table + coupled worker ``nev`` cap (static / spectral-band schedules)."""
-    p = dict(get_band_params(hz))
+    p = dict(get_band_params(hz, sweep_hz_min=float(sweep_hz_min)))
     p["num_modes"] = min(
         COUPLED_WORKER_NUM_MODES_CAP,
         SLEPC_NUM_MODES_ABSOLUTE_CEILING,
@@ -1461,10 +1515,14 @@ def _passes_harvest_gate(
             return True, "structural_only"
         return False, "low_wood"
 
-    cfg = filter_cfg or HarvestFilterConfig(
-        sigma_cluster_hz=max(HARVEST_GATE_SIGMA_TOL_HZ, 2.0),
-        min_p_frac_rom=max(HARVEST_GATE_MIN_P_FRAC_FSI, 0.10),
-        min_wood=HARVEST_GATE_MIN_WOOD,
+    cfg = (
+        filter_cfg
+        or _MASTER_HARVEST_FILTER_CFG
+        or HarvestFilterConfig(
+            staged_filtering=True,
+            min_hz=SWEEP_HZ_MIN,
+            max_hz=SWEEP_HZ_MAX,
+        )
     )
     tgt = float(target_hz) if target_hz > 0.0 else float(st_sigma_hz)
     label, rom_ready, reason = classify_mode_candidate(
@@ -1534,6 +1592,7 @@ def _merge_result_into_candidates_log(
     *,
     override_root: Optional[Path] = None,
     merge_ctx: Optional[MergeContext] = None,
+    filter_cfg: Optional[HarvestFilterConfig] = None,
     force_emergency: bool = False,
 ) -> Optional[MergeStats]:
     """
@@ -1631,6 +1690,27 @@ def _merge_result_into_candidates_log(
         if tfn_sigma is not None:
             st_sigma_hz = float(tfn_sigma)
 
+    try:
+        target_hz_merge = float(incoming.get("target_hz", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        target_hz_merge = 0.0
+    if target_hz_merge <= 0.0:
+        tfn_tgt = _target_hz_from_result_filename(result_path)
+        if tfn_tgt is not None:
+            target_hz_merge = float(tfn_tgt)
+
+    effective_filter_cfg = (
+        filter_cfg
+        or _MASTER_HARVEST_FILTER_CFG
+        or HarvestFilterConfig(
+            staged_filtering=True,
+            min_hz=SWEEP_HZ_MIN,
+            max_hz=SWEEP_HZ_MAX,
+            min_wood=HARVEST_GATE_MIN_WOOD,
+            min_uniqueness=MERGE_INCOMING_UNIQUENESS_MIN,
+        )
+    )
+
     def _wood_audit_rows(cands: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         ranked = sorted(
             cands,
@@ -1655,6 +1735,8 @@ def _merge_result_into_candidates_log(
             c,
             st_sigma_hz=st_sigma_hz,
             structural_only_run=structural_only_run,
+            target_hz=target_hz_merge if target_hz_merge > 0.0 else st_sigma_hz,
+            filter_cfg=effective_filter_cfg,
         )
         LOGGER.info(
             "Harvest audit [pre-gate] rank %d: f=%.4f Hz wood=%.4f p_frac=%.3e "
@@ -1668,21 +1750,6 @@ def _merge_result_into_candidates_log(
             tag,
         )
 
-    try:
-        target_hz_merge = float(incoming.get("target_hz", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        target_hz_merge = 0.0
-    if target_hz_merge <= 0.0:
-        tfn_tgt = _target_hz_from_result_filename(result_path)
-        if tfn_tgt is not None:
-            target_hz_merge = float(tfn_tgt)
-    filter_cfg = HarvestFilterConfig(
-        sigma_cluster_hz=2.0,
-        min_p_frac_rom=0.10,
-        min_wood=HARVEST_GATE_MIN_WOOD,
-        min_uniqueness=MERGE_INCOMING_UNIQUENESS_MIN,
-    )
-
     harvest_gate_drops = 0
     gate_kept: List[Dict[str, Any]] = []
     coupled_valid_pre = 0
@@ -1692,7 +1759,7 @@ def _merge_result_into_candidates_log(
             st_sigma_hz=st_sigma_hz,
             structural_only_run=structural_only_run,
             target_hz=target_hz_merge,
-            filter_cfg=filter_cfg,
+            filter_cfg=effective_filter_cfg,
         )
         if eligible:
             if tag == "coupled_fsi":
@@ -1965,6 +2032,11 @@ def _merge_result_into_candidates_log(
                     old_abs.rename(new_abs)
             row["id"] = new_id
             row["vector_path"] = str(new_rel).replace("\\", "/")
+            if target_hz_merge > 0.0:
+                row["source_target_hz"] = float(target_hz_merge)
+            row.setdefault("harvest_filter_policy", HARVEST_FILTER_POLICY_VERSION)
+            if not row.get("harvest_class"):
+                row["harvest_class"] = row.get("harvest_tag", "coupled_fsi")
             existing.append(row)
         n_rows_appended = add_i
         payload["candidates"] = existing
@@ -2031,7 +2103,13 @@ def flush_pending_worker_shifts(
     for p in paths:
         th = _target_hz_from_result_filename(p)
         stats = _merge_result_into_candidates_log(
-            p, log_path, lock, sorting_root, merge_ctx=MergeContext(), force_emergency=force_emergency
+            p,
+            log_path,
+            lock,
+            sorting_root,
+            merge_ctx=MergeContext(),
+            filter_cfg=_MASTER_HARVEST_FILTER_CFG,
+            force_emergency=force_emergency,
         )
         if th is not None and stats is not None:
             _append_completed_shift_to_log(log_path, lock, float(th))
@@ -2062,12 +2140,18 @@ def _poll_completed(
             if code == 0:
                 LOGGER.info("Worker finished OK for %.4f Hz (exit %s).", hz, code)
                 ctx = scheduler.merge_context() if scheduler is not None else None
+                hcfg = (
+                    scheduler.harvest_filter_cfg
+                    if scheduler is not None
+                    else _MASTER_HARVEST_FILTER_CFG
+                )
                 stats = _merge_result_into_candidates_log(
                     rpath,
                     log_path,
                     merge_lock,
                     sorting_root,
                     merge_ctx=ctx,
+                    filter_cfg=hcfg,
                     force_emergency=force_emergency,
                 )
                 if stats is not None:
@@ -2166,10 +2250,10 @@ def main() -> int:
     parser.add_argument(
         "--hz-max",
         type=float,
-        default=480.0,
+        default=SWEEP_HZ_MAX,
         help=(
-            "Sweep upper bound (Hz), inclusive (default: 480). Dynamic scheduler may lower ceiling "
-            f"once at {CONDUCTOR_TRIGGER_HZ:.0f} Hz from spectral zone (see [Conductor] log line)."
+            f"Sweep upper bound (Hz), inclusive (default: {SWEEP_HZ_MAX:g}). Dynamic scheduler may "
+            f"lower ceiling once at {CONDUCTOR_TRIGGER_HZ:.0f} Hz from spectral zone (see [Conductor] log)."
         ),
     )
     parser.add_argument(
@@ -2224,6 +2308,15 @@ def main() -> int:
             "spectral-bands+fill: band centers first, then adaptive fill (default)."
         ),
     )
+    parser.add_argument(
+        "--clean-start",
+        action="store_true",
+        help=(
+            "Reset SORTING scratch before scheduling: clear temp_results/*.json, "
+            "temp_modes vectors, and reinitialize candidates_log.json with pipeline_meta "
+            "(60–550 Hz staged harvest). Does not delete selected_modes.csv."
+        ),
+    )
     args = parser.parse_args()
 
     worker_script = SCRIPT_DIR / "fem_worker_single.py"
@@ -2242,21 +2335,6 @@ def main() -> int:
     sorting_root.mkdir(parents=True, exist_ok=True)
     (sorting_root / "temp_results").mkdir(parents=True, exist_ok=True)
     (sorting_root / "temp_modes").mkdir(parents=True, exist_ok=True)
-    if not log_path.exists():
-        log_path.write_text(
-            json.dumps({"candidates": [], "completed_shift_targets": []}, indent=2),
-            encoding="utf-8",
-        )
-
-    flush_pending_worker_shifts(
-        sorting_root, log_path, merge_lock, force_emergency=bool(args.force_emergency)
-    )
-
-    LOGGER.info(
-        "sorting_root=%s — each worker is spawned with the same --sorting-root so vectors "
-        "and temp_results JSON land here (matches merge path resolution).",
-        sorting_root,
-    )
 
     max_workers = int(args.max_workers)
     if max_workers < 1:
@@ -2273,7 +2351,110 @@ def main() -> int:
         )
         return 1
 
+    config_path = args.config.resolve()
     use_taskset = sys.platform.startswith("linux")
+    solver_cfg: Dict[str, Any] = {}
+    try:
+        _cfg_payload = json.loads(config_path.read_text(encoding="utf-8"))
+        if isinstance(_cfg_payload.get("solver"), dict):
+            solver_cfg = dict(_cfg_payload["solver"])
+    except Exception as exc:
+        LOGGER.warning("Could not read solver block from %s: %s", config_path, exc)
+
+    sweep_lo, sweep_hi, step_hz, half_hz = resolve_spectral_band_params(
+        solver_cfg, hz_min=float(args.hz_min), hz_max=float(args.hz_max)
+    )
+    if float(args.hz_min) < sweep_lo - 1e-9:
+        LOGGER.warning(
+            "--hz-min=%.1f below spectral schedule minimum %.1f; using %.1f.",
+            float(args.hz_min),
+            sweep_lo,
+            sweep_lo,
+        )
+    hz_min_run = max(float(args.hz_min), sweep_lo)
+    hz_max_run = min(float(args.hz_max), sweep_hi)
+
+    if args.clean_start:
+        counts = reset_sorting_workspace(
+            sorting_root,
+            sweep_hz_min=hz_min_run,
+            sweep_hz_max=hz_max_run,
+        )
+        LOGGER.info(
+            "Clean start: removed %d temp_results JSON, %d temp_modes vectors; "
+            "reinitialized candidates_log.json.",
+            counts["temp_results"],
+            counts["temp_modes"],
+        )
+    elif not log_path.exists():
+        log_path.write_text(
+            json.dumps(
+                fresh_candidates_log_payload(
+                    sweep_hz_min=hz_min_run,
+                    sweep_hz_max=hz_max_run,
+                ),
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    global _MASTER_HARVEST_FILTER_CFG
+    _MASTER_HARVEST_FILTER_CFG = _build_master_harvest_filter_cfg(
+        solver_cfg, hz_min=hz_min_run, hz_max=hz_max_run
+    )
+    if int(solver_cfg.get("eps_worker_num_modes_cap", 0) or 0) < COUPLED_WORKER_NUM_MODES_CAP:
+        solver_cfg["eps_worker_num_modes_cap"] = COUPLED_WORKER_NUM_MODES_CAP
+    LOGGER.info(
+        "Production worker quota: coupled num_modes cap=%d (eps_ncv_max from config/HF overrides).",
+        COUPLED_WORKER_NUM_MODES_CAP,
+    )
+    if _MASTER_HARVEST_FILTER_CFG.staged_filtering:
+        LOGGER.info(
+            "Staged harvest filter: f<%.0f Hz p_frac≥%.2f; f≥%.0f Hz p_frac≥%.2f "
+            "(wood≥%.3f; σ-cluster %.1f/%.1f Hz below/above %.0f Hz).",
+            _MASTER_HARVEST_FILTER_CFG.staged_crossover_hz,
+            _MASTER_HARVEST_FILTER_CFG.min_p_frac_rom_low,
+            _MASTER_HARVEST_FILTER_CFG.staged_crossover_hz,
+            _MASTER_HARVEST_FILTER_CFG.min_p_frac_rom_high,
+            _MASTER_HARVEST_FILTER_CFG.min_wood_high_hz,
+            _MASTER_HARVEST_FILTER_CFG.sigma_cluster_hz,
+            _MASTER_HARVEST_FILTER_CFG.sigma_cluster_hz_high,
+            _MASTER_HARVEST_FILTER_CFG.staged_sigma_tighten_hz,
+        )
+    LOGGER.info("Harvest filter policy: %s", HARVEST_FILTER_POLICY_VERSION)
+
+    flush_pending_worker_shifts(
+        sorting_root,
+        log_path,
+        merge_lock,
+        force_emergency=bool(args.force_emergency),
+    )
+
+    LOGGER.info(
+        "sorting_root=%s — each worker is spawned with the same --sorting-root so vectors "
+        "and temp_results JSON land here (matches merge path resolution).",
+        sorting_root,
+    )
+
+    cov_ok, max_gap, gaps = verify_spectral_coverage(
+        hz_min_run, hz_max_run, step_hz=step_hz, half_hz=half_hz
+    )
+    LOGGER.info(
+        "%s",
+        format_coverage_report(hz_min_run, hz_max_run, solver_cfg=solver_cfg),
+    )
+    if not cov_ok:
+        LOGGER.warning(
+            "Spectral coverage check failed (max_gap=%.2f Hz, gaps=%s). "
+            "Adjust spectral_bands.step_hz / half_hz in config.",
+            max_gap,
+            gaps,
+        )
+
+    def _band_params_for_static(hz: float) -> Dict[str, Any]:
+        return _worker_band_params_base(hz, sweep_hz_min=hz_min_run)
+
     scheduler: Optional[SpectralScheduler] = None
     tasks_static: Optional[List[Tuple[float, Dict[str, Any]]]] = None
     schedule_mode = str(args.schedule)
@@ -2282,14 +2463,17 @@ def main() -> int:
     if schedule_mode == "spectral-bands":
         try:
             tasks_static = build_spectral_band_task_list(
-                float(args.hz_min),
-                float(args.hz_max),
-                _worker_band_params_base,
+                hz_min_run,
+                hz_max_run,
+                _band_params_for_static,
+                solver_cfg=solver_cfg,
             )
         except ValueError as exc:
             LOGGER.error("%s", exc)
             return 1
-        centers = spectral_band_centers(float(args.hz_min), float(args.hz_max))
+        centers = spectral_band_centers(
+            hz_min_run, hz_max_run, step_hz=step_hz, half_hz=half_hz
+        )
         LOGGER.info(
             "Spectral-band schedule: %d static workers at centers %s",
             len(tasks_static),
@@ -2297,19 +2481,20 @@ def main() -> int:
         )
     elif schedule_mode == "legacy-static":
         try:
-            tasks_static = build_task_list(float(args.hz_min), float(args.hz_max))
+            tasks_static = build_task_list(hz_min_run, hz_max_run)
         except ValueError as exc:
             LOGGER.error("%s", exc)
             return 1
     else:
         dyn_mode = "dynamic" if schedule_mode == "dynamic" else "spectral-bands+fill"
         scheduler = SpectralScheduler(
-            float(args.hz_min),
-            float(args.hz_max),
+            hz_min_run,
+            hz_max_run,
             max_workers=max_workers,
             sorting_root=sorting_root,
             merge_lock=merge_lock,
             schedule_mode=dyn_mode,
+            solver_cfg=solver_cfg,
         )
 
     worker_cores = list(range(1, max_workers + 1))
@@ -2353,7 +2538,6 @@ def main() -> int:
         )
 
     running: Dict[subprocess.Popen, Dict[str, Any]] = {}
-    config_path = args.config.resolve()
     static_ladder_queue: Optional[Deque[Tuple[float, Dict[str, Any], str]]] = None
     last_spawn_mono: List[Optional[float]] = [None]
 
@@ -2473,6 +2657,14 @@ def main() -> int:
         env.pop("OMP_PLACES", None)
         env["OMPI_MCA_hwloc_base_binding_policy"] = "none"
         env.setdefault("I_MPI_PIN", "0")
+        patch_solver: Dict[str, Any] = {}
+        if params.get("solver_overrides"):
+            patch_solver.update(dict(params["solver_overrides"]))
+        for key in ("eps_worker_num_modes_cap", "eps_ncv_max"):
+            if params.get(key) is not None:
+                patch_solver[key] = params[key]
+        if patch_solver:
+            env["FEM_WORKER_SOLVER_OVERRIDES"] = json.dumps(patch_solver)
 
         LOGGER.info("Worker exec (argv): %s", shlex.join(cmd))
         LOGGER.info(

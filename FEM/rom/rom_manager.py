@@ -83,12 +83,12 @@ class ROMManager:
         if not isinstance(profile, dict):
             profile = {}
 
-        low_rng = profile.get("low_gear_hz", [90.0, 160.0])
+        low_rng = profile.get("low_gear_hz", [60.0, 160.0])
         if isinstance(low_rng, (list, tuple)) and len(low_rng) >= 2:
             low_min = float(low_rng[0])
             low_max = float(low_rng[1])
         else:
-            low_min = float(solver.get("sifter_low_freq_min_hz", 90.0))
+            low_min = float(solver.get("sifter_low_freq_min_hz", 60.0))
             low_max = float(solver.get("sifter_low_freq_max_hz", 160.0))
 
         low_batch = int(
@@ -186,7 +186,7 @@ class ROMManager:
         desired = {
             "name": str(solver.get("solver_profile_name", "Quality over Quantity")),
             "low_gear_hz": [
-                float(solver.get("sifter_low_freq_min_hz", 90.0)),
+                float(solver.get("sifter_low_freq_min_hz", 60.0)),
                 float(solver.get("sifter_low_freq_max_hz", 160.0)),
             ],
             "sifter_low_target": int(solver.get("sifter_low_target", solver.get("sifter_low_batch_modes", 50))),

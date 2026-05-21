@@ -22,15 +22,21 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from fem_harvest_filter import HARVEST_FILTER_POLICY_VERSION
 from paths import DEFAULT_SHAPE_NAME, resolve_plot_output_path, shared_plot_path
 
 # =============================
 # Tuning parameters (edit here)
 # =============================
 LAMBDA_VAL = 0.4
-# Gaussian spectral penalty bandwidth (60–480 Hz band): ~5 Hz minimum spacing between picks.
+# Gaussian spectral penalty bandwidth (60–550 Hz production sweep).
 SIGMA_HZ = 5.0
-UNIQUENESS_VETO_MIN = 0.1
+# Aligned with worker/merge harvest floor (``fem_harvest_filter`` / ``MERGE_INCOMING_UNIQUENESS_MIN``).
+UNIQUENESS_VETO_MIN = 0.04
 
 # Split-quota (80% top / 20% back)
 DEFAULT_QUOTA = 150
@@ -90,16 +96,24 @@ def _load_candidates(path: Path) -> List[Dict]:
         try:
             t1 = float(c.get("tag1_ratio", 0.0) or 0.0)
             t3 = float(c.get("tag3_ratio", 0.0) or 0.0)
-            out.append(
-                {
-                    "id": int(c.get("id")),
-                    "hz": float(c.get("hz")),
-                    "wood_participation": float(c.get("wood_participation", t1 + t3)),
-                    "uniqueness": float(c.get("uniqueness", 0.0)),
-                    "tag1_ratio": t1,
-                    "tag3_ratio": t3,
-                }
-            )
+            row = {
+                "id": int(c.get("id")),
+                "hz": float(c.get("hz")),
+                "wood_participation": float(c.get("wood_participation", t1 + t3)),
+                "uniqueness": float(c.get("uniqueness", 0.0)),
+                "tag1_ratio": t1,
+                "tag3_ratio": t3,
+            }
+            if c.get("source_target_hz") is not None:
+                try:
+                    row["source_target_hz"] = float(c.get("source_target_hz"))
+                except (TypeError, ValueError):
+                    pass
+            if c.get("harvest_filter_policy"):
+                row["harvest_filter_policy"] = str(c.get("harvest_filter_policy"))
+            if c.get("harvest_class"):
+                row["harvest_class"] = str(c.get("harvest_class"))
+            out.append(row)
         except Exception:
             continue
     return out
@@ -538,13 +552,21 @@ def _plot_selection(
 
 def _write_selected_text(selected: List[Dict], out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    lines = ["id,hz,wood_participation,uniqueness,tag1_ratio,tag3_ratio,Q_mmr_base,selection_type"]
+    lines = [
+        "id,hz,wood_participation,uniqueness,tag1_ratio,tag3_ratio,"
+        "source_target_hz,harvest_filter_policy,harvest_class,Q_mmr_base,selection_type"
+    ]
     for c in selected:
         _sync_wood_participation(c)
     for c in sorted(selected, key=lambda x: float(x["hz"])):
+        st_hz = c.get("source_target_hz", "")
+        st_s = f"{float(st_hz):.6f}" if st_hz not in ("", None) else ""
+        hpol = str(c.get("harvest_filter_policy", "") or "")
+        hcls = str(c.get("harvest_class", "") or "")
         lines.append(
             f'{int(c["id"])},{float(c["hz"]):.6f},{float(c["wood_participation"]):.6f},'
             f'{float(c["uniqueness"]):.6f},{float(c["tag1_ratio"]):.6f},{float(c["tag3_ratio"]):.6f},'
+            f'{st_s},{hpol},{hcls},'
             f'{float(c.get("_Q", 0.0)):.6f},{str(c.get("selection_type", SELECTION_TOP))}'
         )
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -584,6 +606,7 @@ def _write_selection_metadata(
         "uniqueness_threshold_used": float(uniqueness_threshold_used),
         "window_min_hz": None if window_min is None else float(window_min),
         "window_max_hz": None if window_max is None else float(window_max),
+        "harvest_filter_policy": HARVEST_FILTER_POLICY_VERSION,
         "selected_candidates": [
             {
                 "id": int(c["id"]),
