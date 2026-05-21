@@ -106,6 +106,7 @@
     "st_pc_factor_shift_amount": 0.08,
     "diag_shift": 1.0e-2,
     "eps_pin_fix_tag5": true,
+    "eps_algebraic_bc_zero_columns": true,
     "eps_st_mass_reg_frac": 0.03,
     "eps_st_mass_reg_frac_ladder": [0.05, 0.1, 0.18],
     "eps_mass_reg_frac": 0.05,

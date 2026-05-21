@@ -3017,6 +3017,51 @@ def _slepc_is_mumps_factorization_failure(exc: BaseException) -> bool:
     )
 
 
+def _slepc_st_stiffness_stabilize(
+    A_st: PETSc.Mat,
+    solver_cfg: Dict,
+    *,
+    sigma_lambda: float = 0.0,
+    shift_frac: Optional[float] = None,
+) -> float:
+    """
+    ST-only diagonal stabilization on a copy of ``A`` (does not alter harvest operators).
+
+    Floors small/negative pivots and adds a σ-weighted shift (same idea as resolvent ``K`` shift).
+    """
+    frac = float(
+        shift_frac
+        if shift_frac is not None
+        else solver_cfg.get("eps_st_a_diagonal_shift_frac", 1.0e-3)
+    )
+    sigma_frac = float(solver_cfg.get("eps_st_sigma_diagonal_frac", 0.0))
+    if frac <= 0.0 and sigma_frac <= 0.0:
+        return 0.0
+    try:
+        d = A_st.getDiagonal()
+        arr = np.asarray(d.array, dtype=np.float64)
+        ref = max(float(np.max(np.abs(arr))) if arr.size > 0 else 0.0, 1.0e-30)
+        shift = 0.0
+        if frac > 0.0:
+            floor = frac * ref
+            bad = arr < floor
+            if np.any(bad):
+                arr = arr.copy()
+                arr[bad] = floor
+            shift = max(shift, floor)
+        if sigma_frac > 0.0 and sigma_lambda > 0.0:
+            arr = arr.copy() if not isinstance(arr, np.ndarray) or not arr.flags.writeable else arr
+            sig_shift = sigma_frac * float(sigma_lambda) * ref / max(float(sigma_lambda), 1.0e-30)
+            arr = np.asarray(arr, dtype=np.float64) + sig_shift
+            shift = max(shift, float(sig_shift))
+        d.setArray(arr.astype(PETSc.ScalarType, copy=False))
+        A_st.setDiagonal(d)
+        A_st.assemble()
+        return float(shift)
+    except Exception:
+        return 0.0
+
+
 def _slepc_st_mass_operator_for_shift(
     M: PETSc.Mat,
     mass_reg_frac: float,
@@ -3119,73 +3164,136 @@ def _slepc_try_eps_st_setup(
     solver_cfg: Dict,
     *,
     status_callback=None,
-) -> Tuple[bool, float, float, PETSc.Mat, Optional[PETSc.Mat]]:
+) -> Tuple[
+    bool,
+    float,
+    float,
+    PETSc.Mat,
+    Optional[PETSc.Mat],
+    PETSc.Mat,
+    Optional[PETSc.Mat],
+]:
     """
     Run ``eps.setUp()`` for shift-invert ST until MUMPS factorization succeeds.
 
-    Returns ``(ok, sigma_hz_used, sigma_lambda_used, M_for_solve, owned_M_copy)``.
+    Returns ``(ok, sigma_hz, sigma_lambda, M_for_solve, owned_M, A_for_solve, owned_A)``.
     """
     _slepc_eps_ensure_operators(eps, A, M)
     st = eps.getST()
     last_exc: Optional[BaseException] = None
     reg_ladder = _slepc_st_mass_reg_ladder(solver_cfg)
-    for reg_frac in reg_ladder:
-        M_work, M_owned = _slepc_st_mass_operator_for_shift(M, reg_frac)
-        if reg_frac > 0.0 and MPI.COMM_WORLD.rank == ROOT_RANK:
-            _emit(
-                f"[solver] ST mass regularization: M_eff=(1-{reg_frac:.3g})*M "
-                f"(shift-invert LU only)",
-                status_callback=status_callback,
-            )
-        for try_hz in sigma_hz_list:
-            try_lam = _slepc_hz_to_lambda(try_hz)
-            st.setShift(try_lam)
-            solver_cfg["_batch_st_sigma_hz"] = float(try_hz)
-            solver_cfg["_batch_st_mass_reg_frac"] = float(reg_frac)
+    stiff_ladder_raw = solver_cfg.get(
+        "eps_st_a_diagonal_shift_frac_ladder", (0.0, 1.0e-3, 5.0e-3, 2.0e-2)
+    )
+    stiff_ladder: List[float] = [0.0]
+    if isinstance(stiff_ladder_raw, (list, tuple)):
+        for x in stiff_ladder_raw:
             try:
-                eps.reset()
-            except Exception:
-                pass
-            _slepc_eps_ensure_operators(eps, A, M_work)
-            try:
-                ksp = st.getKSP()
-                ksp.reset()
-                ksp.getPC().reset()
-            except Exception:
-                pass
-            try:
-                eps.setUp()
-                if (
-                    (try_hz != sigma_hz_list[0] or reg_frac > 0.0)
-                    and MPI.COMM_WORLD.rank == ROOT_RANK
-                ):
-                    _emit(
-                        f"[solver][warn] ST shift-invert LU succeeded after retry: "
-                        f"σ={try_hz:.2f} Hz (λ={try_lam:.6e}), "
-                        f"st_mass_reg_frac={reg_frac:.3g}",
-                        status_callback=status_callback,
-                        level="warning",
-                    )
-                return True, float(try_hz), float(try_lam), M_work, M_owned
-            except BaseException as exc:
-                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
-                    raise
-                last_exc = exc
-                kind = (
-                    "MUMPS/LU"
-                    if _slepc_is_mumps_factorization_failure(exc)
-                    else type(exc).__name__
+                v = float(x)
+            except (TypeError, ValueError):
+                continue
+            if v not in stiff_ladder:
+                stiff_ladder.append(v)
+    use_stiff_copy = any(v > 0.0 for v in stiff_ladder)
+    for stiff_frac in stiff_ladder:
+        A_work = A
+        A_owned: Optional[PETSc.Mat] = None
+        if use_stiff_copy and stiff_frac > 0.0:
+            A_work = A.copy()
+            A_work.assemble()
+            A_owned = A_work
+        for reg_frac in reg_ladder:
+            M_work, M_owned = _slepc_st_mass_operator_for_shift(M, reg_frac)
+            if reg_frac > 0.0 and MPI.COMM_WORLD.rank == ROOT_RANK:
+                _emit(
+                    f"[solver] ST mass regularization: M_eff=(1-{reg_frac:.3g})*M "
+                    f"(shift-invert LU only)",
+                    status_callback=status_callback,
                 )
-                if MPI.COMM_WORLD.rank == ROOT_RANK:
-                    _emit(
-                        f"[solver][warn] ST setUp failed at σ={try_hz:.2f} Hz "
-                        f"(reg={reg_frac:.3g}, {kind}); trying next σ/regularization.",
-                        status_callback=status_callback,
-                        level="warning",
+            for try_hz in sigma_hz_list:
+                try_lam = _slepc_hz_to_lambda(try_hz)
+                if A_owned is not None:
+                    _slepc_st_stiffness_stabilize(
+                        A_work,
+                        solver_cfg,
+                        sigma_lambda=try_lam,
+                        shift_frac=stiff_frac,
                     )
-        if M_owned is not None:
+                    solver_cfg["_eps_st_a_shift_frac"] = float(stiff_frac)
+                st.setShift(try_lam)
+                imag_frac = float(solver_cfg.get("eps_st_imag_sigma_frac", 0.0))
+                if imag_frac > 0.0:
+                    try:
+                        PETSc.Options()["st_shift_imag_part"] = float(
+                            imag_frac * try_lam
+                        )
+                    except Exception:
+                        pass
+                solver_cfg["_batch_st_sigma_hz"] = float(try_hz)
+                solver_cfg["_batch_st_mass_reg_frac"] = float(reg_frac)
+                try:
+                    eps.reset()
+                except Exception:
+                    pass
+                _slepc_eps_ensure_operators(eps, A_work, M_work)
+                try:
+                    ksp = st.getKSP()
+                    ksp.reset()
+                    ksp.getPC().reset()
+                except Exception:
+                    pass
+                try:
+                    eps.setUp()
+                    if (
+                        (
+                            try_hz != sigma_hz_list[0]
+                            or reg_frac > 0.0
+                            or stiff_frac > 0.0
+                        )
+                        and MPI.COMM_WORLD.rank == ROOT_RANK
+                    ):
+                        _emit(
+                            f"[solver][warn] ST shift-invert LU succeeded after retry: "
+                            f"σ={try_hz:.2f} Hz (λ={try_lam:.6e}), "
+                            f"st_mass_reg_frac={reg_frac:.3g}, "
+                            f"st_a_shift_frac={stiff_frac:.3g}",
+                            status_callback=status_callback,
+                            level="warning",
+                        )
+                    return (
+                        True,
+                        float(try_hz),
+                        float(try_lam),
+                        M_work,
+                        M_owned,
+                        A_work,
+                        A_owned,
+                    )
+                except BaseException as exc:
+                    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    last_exc = exc
+                    kind = (
+                        "MUMPS/LU"
+                        if _slepc_is_mumps_factorization_failure(exc)
+                        else type(exc).__name__
+                    )
+                    if MPI.COMM_WORLD.rank == ROOT_RANK:
+                        _emit(
+                            f"[solver][warn] ST setUp failed at σ={try_hz:.2f} Hz "
+                            f"(a_shift={stiff_frac:.3g}, reg={reg_frac:.3g}, {kind}); "
+                            f"trying next σ/regularization.",
+                            status_callback=status_callback,
+                            level="warning",
+                        )
+            if M_owned is not None:
+                try:
+                    M_owned.destroy()
+                except Exception:
+                    pass
+        if A_owned is not None:
             try:
-                M_owned.destroy()
+                A_owned.destroy()
             except Exception:
                 pass
     if last_exc is not None and MPI.COMM_WORLD.rank == ROOT_RANK:
@@ -3200,6 +3308,8 @@ def _slepc_try_eps_st_setup(
         float(sigma_hz_list[0]),
         _slepc_hz_to_lambda(sigma_hz_list[0]),
         M,
+        None,
+        A,
         None,
     )
 
@@ -3858,6 +3968,8 @@ def _slepc_shift_invert_batch(
     _slepc_eps_ensure_operators(eps, A, M)
     M_solve = M
     M_solve_owned: Optional[PETSc.Mat] = None
+    A_solve = A
+    A_solve_owned: Optional[PETSc.Mat] = None
     if use_ciss:
         _slepc_configure_ciss_region(eps, lam_lo, lam_hi, solver_cfg)
         try:
@@ -3920,28 +4032,31 @@ def _slepc_shift_invert_batch(
                     f"mass-reg levels={_slepc_st_mass_reg_ladder(solver_cfg)}",
                     status_callback=status_callback,
                 )
-            _st_ok, st_sigma_hz, st_sigma, M_solve, M_solve_owned = _slepc_try_eps_st_setup(
-                eps,
-                A,
-                M,
-                sigma_hz_candidates,
-                solver_cfg,
-                status_callback=status_callback,
+            _st_ok, st_sigma_hz, st_sigma, M_solve, M_solve_owned, A_solve, A_solve_owned = (
+                _slepc_try_eps_st_setup(
+                    eps,
+                    A,
+                    M,
+                    sigma_hz_candidates,
+                    solver_cfg,
+                    status_callback=status_callback,
+                )
             )
             solver_cfg["_batch_st_sigma_hz"] = float(st_sigma_hz)
             if not _st_ok:
                 _emit(
                     "[solver][error] shift-invert ST setup failed for all σ and mass-reg "
                     "levels; skipping EPS solve (0 modes). "
-                    "Try eps_pin_fix_tag5, larger eps_st_mass_reg_frac, or CISS.",
+                    "Try eps_algebraic_bc_zero_columns, eps_pin_fix_tag5, or CISS.",
                     status_callback=status_callback,
                     level="error",
                 )
-                if M_solve_owned is not None:
-                    try:
-                        M_solve_owned.destroy()
-                    except Exception:
-                        pass
+                for _owned in (M_solve_owned, A_solve_owned):
+                    if _owned is not None:
+                        try:
+                            _owned.destroy()
+                        except Exception:
+                            pass
                 return 0, []
     if _eps_conv_rel is not None:
         try:
@@ -3951,7 +4066,7 @@ def _slepc_shift_invert_batch(
     print(f"[HEARTBEAT] Rank {MPI.COMM_WORLD.rank} reached EPS Solve")
     sys.stdout.flush()
     _debug_rank("Entering EPS Solve")
-    _slepc_eps_ensure_operators(eps, A, M_solve)
+    _slepc_eps_ensure_operators(eps, A_solve, M_solve)
     try:
         eps.solve()
     except Exception as exc:
@@ -3961,11 +4076,12 @@ def _slepc_shift_invert_batch(
             level="warning",
         )
     finally:
-        if M_solve_owned is not None:
-            try:
-                M_solve_owned.destroy()
-            except Exception:
-                pass
+        for _owned in (M_solve_owned, A_solve_owned):
+            if _owned is not None:
+                try:
+                    _owned.destroy()
+                except Exception:
+                    pass
 
     its = eps.getIterationNumber()
     nconv_marked = int(eps.getConverged())
@@ -5681,12 +5797,24 @@ def _solve_coupled_evp(
         or _solver_bool(solver_cfg, "resolvent_algebraic_bc_on_am", default=False)
     )
     if apply_bc_on_am:
-        _petsc_mat_zero_dirichlet_rows(A, coupled_dirichlet_rows, diag=1.0)
-        _petsc_mat_zero_dirichlet_rows(M, coupled_dirichlet_rows, diag=1.0)
+        zero_cols = _solver_bool(solver_cfg, "eps_algebraic_bc_zero_columns", default=True)
+        _petsc_mat_zero_dirichlet_rows(
+            A, coupled_dirichlet_rows, diag=1.0, zero_columns=zero_cols
+        )
+        _petsc_mat_zero_dirichlet_rows(
+            M, coupled_dirichlet_rows, diag=1.0, zero_columns=zero_cols
+        )
         if MPI.COMM_WORLD.rank == ROOT_RANK:
+            try:
+                d_a = np.asarray(A.getDiagonal().array, dtype=np.float64)
+                a_dmin = float(np.min(d_a)) if d_a.size else float("nan")
+                a_dmax = float(np.max(d_a)) if d_a.size else float("nan")
+            except Exception:
+                a_dmin = a_dmax = float("nan")
             print(
                 f"[bc] algebraic Dirichlet on A/M: {coupled_dirichlet_rows.size} mixed rows "
-                f"(||A||_F={float(A.norm()):.6e}, ||M||_F={float(M.norm()):.6e})",
+                f"(zero_columns={zero_cols}, ||A||_F={float(A.norm()):.6e}, "
+                f"||M||_F={float(M.norm()):.6e}, A_diag_min={a_dmin:.6e}, A_diag_max={a_dmax:.6e})",
                 flush=True,
             )
             sys.stdout.flush()
