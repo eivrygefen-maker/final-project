@@ -4835,6 +4835,20 @@ def _solve_coupled_evp(
         else norm_uu_for_nitsche
     )
 
+    eps_mass_reg_frac = float(solver_cfg.get("eps_mass_reg_frac", 0.0))
+    if eps_mass_reg_frac > 0.0:
+        if _solver_bool(solver_cfg, "eps_mass_reg_scale_with_a_pp", default=True):
+            mass_reg_scale = eps_mass_reg_frac * max(float(norm_pp_ref), 1.0e-30)
+        else:
+            mass_reg_scale = eps_mass_reg_frac
+        m_pp = m_pp + mass_reg_scale * p2 * p * q * xdmf_dx(AIR_VOLUME_TAG)
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                f"[form] EPS acoustic mass floor: eps_mass_reg_frac={eps_mass_reg_frac:.6e} "
+                f"→ lumped air mass coeff={mass_reg_scale:.6e} (before GNHEP block scaling)",
+                flush=True,
+            )
+
     block_solver_cfg = (
         _resolvent_probe_block_solver_cfg(solver_cfg)
         if probe_spec is not None
