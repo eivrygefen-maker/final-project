@@ -109,6 +109,7 @@
     "st_type": "sinvert",
     "eps_which": "TARGET_MAGNITUDE",
     "eps_st_sigma_use_jitter": false,
+    "eps_st_sigma_min_offset_hz": 2.0,
     "eps_reject_target_locked": false,
     "eps_broad_search_hz": 8.0,
     "shift_jitter_hz": 2.0,

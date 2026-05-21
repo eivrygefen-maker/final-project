@@ -3118,10 +3118,19 @@ def _slepc_shift_invert_batch(
             f_window_lo = target_hz - broad_hz
             f_window_hi = target_hz + broad_hz
         use_sigma_jitter = _solver_bool(solver_cfg, "eps_st_sigma_use_jitter", default=False)
+        st_sigma_hz = max(1.0, target_hz)
         if use_sigma_jitter and abs(shift_jitter_hz) > 0.0:
             st_sigma_hz = max(1.0, target_hz + shift_jitter_hz)
         else:
-            st_sigma_hz = max(1.0, target_hz)
+            # LU stability: σ exactly on a resonance makes (A-σM) singular → MUMPS/SLEPc segfault.
+            min_off = float(
+                solver_cfg.get(
+                    "eps_st_sigma_min_offset_hz",
+                    shift_jitter_hz if abs(shift_jitter_hz) > 0.0 else 2.0,
+                )
+            )
+            if min_off > 0.0:
+                st_sigma_hz = max(1.0, target_hz + min_off)
         st_sigma = _slepc_hz_to_lambda(st_sigma_hz)
     solver_cfg["_batch_st_sigma_hz"] = float(st_sigma_hz)
 
@@ -3251,7 +3260,7 @@ def _slepc_shift_invert_batch(
     petsc_opts["pc_factor_shift_type"] = str(solver_cfg.get("pc_factor_shift_type", "nonzero"))
     petsc_opts["pc_factor_shift_amount"] = float(solver_cfg.get("pc_factor_shift_amount", 1e-2))
     petsc_opts["eps_gen_non_hermitian"] = ""
-    petsc_opts["bv_orthog_refine"] = str(solver_cfg.get("bv_orthog_refine", "always"))
+    petsc_opts["bv_orthog_refine"] = str(solver_cfg.get("bv_orthog_refine", "never"))
     if use_ciss:
         petsc_opts["eps_type"] = "ciss"
         petsc_opts["rg_type"] = "interval"
