@@ -2555,6 +2555,58 @@ def _ufl_add_terms(*terms: Any) -> Any:
     return out
 
 
+def _coupled_am_assembly_block_lists(
+    *,
+    a_uu,
+    a_pp,
+    a_up,
+    a_pu,
+    m_uu,
+    m_pp,
+    m_pu,
+    reg_p,
+    nit_uu_a,
+    nit_up_a,
+    nit_pu_a,
+    nit_pu_m,
+) -> Tuple[
+    List[Tuple[str, Any, List[fem.DirichletBC]]],
+    List[Tuple[str, Any, List[fem.DirichletBC]]],
+]:
+    """
+    Build per-block UFL lists for ``_sum_assembled_blocks``.
+
+    FFC/ffcx often raises bare ``AssertionError`` when shell ``ds(tag 1/3/4)`` and FSI
+    interface ``meshtags_ds(tag 20)`` Nitsche penalties are UFL-summed into one form.
+    Assemble each block on mixed ``W`` and sum with PETSc ``axpy`` instead.
+    """
+    a11 = _ufl_add_terms(a_pp, reg_p)
+    a_couple = _ufl_add_terms(a_up, a_pu)
+    A_blocks: List[Tuple[str, Any, List[fem.DirichletBC]]] = [
+        ("uu", a_uu, []),
+        ("pp", a11, []),
+    ]
+    if a_couple is not None:
+        A_blocks.append(("coupling", a_couple, []))
+    for name, form in (
+        ("nit_uu", nit_uu_a),
+        ("nit_up", nit_up_a),
+        ("nit_pu", nit_pu_a),
+    ):
+        if form is not None:
+            A_blocks.append((name, form, []))
+
+    M_blocks: List[Tuple[str, Any, List[fem.DirichletBC]]] = [
+        ("uu", m_uu, []),
+        ("pp", m_pp, []),
+    ]
+    if m_pu is not None:
+        M_blocks.append(("coupling", m_pu, []))
+    if nit_pu_m is not None:
+        M_blocks.append(("nit_pu", nit_pu_m, []))
+    return A_blocks, M_blocks
+
+
 def _assemble_coupled_AM_operators(
     *,
     a_uu,
@@ -2574,24 +2626,24 @@ def _assemble_coupled_AM_operators(
     """
     Assemble coupled (A, M) with correct mixed off-diagonal layout.
 
-    Prefer ``assemble_matrix_block`` so A_pu rows/cols use W.sub(1)/W.sub(0) parent dofmaps.
-    Fall back to a single coupling-form assembly + uu/pp axpy (not per-block axpy of full mats).
+    Prefer ``assemble_matrix_block`` when no Nitsche blocks (fast path).
+    With Nitsche, assemble shell, acoustic, traction, and penalty blocks separately
+    and sum with ``axpy`` (avoids FFC AssertionError on merged facet measures).
     """
-    a00 = _ufl_add_terms(a_uu, nit_uu_a)
-    a01 = _ufl_add_terms(a_up, nit_up_a)
-    a10 = _ufl_add_terms(a_pu, nit_pu_a)
+    has_nitsche = any(
+        x is not None for x in (nit_uu_a, nit_up_a, nit_pu_a, nit_pu_m)
+    )
     a11 = _ufl_add_terms(a_pp, reg_p)
-    m10 = _ufl_add_terms(m_pu, nit_pu_m)
 
-    if _assemble_matrix_block is not None:
+    if _assemble_matrix_block is not None and not has_nitsche:
         try:
             A = _assemble_matrix_block(
-                fem.form([[a00, a01], [a10, a11]]),
+                fem.form([[a_uu, a_up], [a_pu, a11]]),
                 bcs=[],
             )
             A.assemble()
             M = _assemble_matrix_block(
-                fem.form([[m_uu, None], [m10, m_pp]]),
+                fem.form([[m_uu, None], [m_pu, m_pp]]),
                 bcs=[],
             )
             M.assemble()
@@ -2605,23 +2657,34 @@ def _assemble_coupled_AM_operators(
         except Exception as exc:
             _emit(
                 f"[assembly][warn] assemble_matrix_block failed ({type(exc).__name__}: {exc!r}); "
-                "falling back to bundled coupling-form assembly.",
+                "falling back to per-block axpy assembly.",
                 status_callback=status_callback,
                 level="warning",
             )
 
-    a_couple = _ufl_add_terms(a_up, a_pu, nit_up_a, nit_pu_a)
-    m_couple = m10
-    A_blocks: List[Tuple[str, Any, List[fem.DirichletBC]]] = [
-        ("uu", a00, []),
-        ("pp", a11, []),
-        ("coupling", a_couple, []),
-    ]
-    M_blocks: List[Tuple[str, Any, List[fem.DirichletBC]]] = [
-        ("uu", m_uu, []),
-        ("pp", m_pp, []),
-        ("coupling", m_couple, []),
-    ]
+    A_blocks, M_blocks = _coupled_am_assembly_block_lists(
+        a_uu=a_uu,
+        a_pp=a_pp,
+        a_up=a_up,
+        a_pu=a_pu,
+        m_uu=m_uu,
+        m_pp=m_pp,
+        m_pu=m_pu,
+        reg_p=reg_p,
+        nit_uu_a=nit_uu_a,
+        nit_up_a=nit_up_a,
+        nit_pu_a=nit_pu_a,
+        nit_pu_m=nit_pu_m,
+    )
+    if has_nitsche and MPI.COMM_WORLD.rank == ROOT_RANK:
+        nit_labels = [n for n, _f, _b in A_blocks if n.startswith("nit_")]
+        nit_m = [n for n, _f, _b in M_blocks if n.startswith("nit_")]
+        print(
+            "[assembly] FSI Nitsche: per-block axpy assembly "
+            f"(A blocks={len(A_blocks)} incl. {nit_labels}; "
+            f"M blocks={len(M_blocks)} incl. {nit_m})"
+        )
+        sys.stdout.flush()
     A = _sum_assembled_blocks(A_blocks, operator_label="A", status_callback=status_callback)
     M = _sum_assembled_blocks(M_blocks, operator_label="M", status_callback=status_callback)
     return A, M
@@ -2650,7 +2713,9 @@ def _sum_assembled_blocks(
                     form,
                     block_bcs,
                     label=f"{operator_label}_{name}",
-                    retry_empty_bcs=(name in ("uu", "nit_uu", "pp", "reg_p")),
+                    retry_empty_bcs=(
+                        name in ("uu", "nit_uu", "nit_up", "nit_pu", "pp", "reg_p", "coupling")
+                    ),
                 ),
             )
         )
@@ -4603,6 +4668,29 @@ def _solve_coupled_evp(
     nit_up_a = inv_c * nit_up if nit_up is not None else None
     nit_pu_a = inv_c * nit_pu if nit_pu is not None else None
     nit_pu_m = inv_c * nit_pu if nit_pu is not None else None
+    if use_nitsche and MPI.COMM_WORLD.rank == ROOT_RANK:
+        for nit_label, nit_form in (
+            ("nit_uu", nit_uu_a),
+            ("nit_up", nit_up_a),
+            ("nit_pu", nit_pu_a),
+        ):
+            if nit_form is None:
+                continue
+            try:
+                n_nit = _mat_frobenius_norm(nit_form, label=f"{nit_label}_precheck")
+                print(
+                    f"[assembly] Nitsche precheck ||{nit_label}||_F={n_nit:.6e} "
+                    f"(standalone; merged with shell ds triggers FFC AssertionError)"
+                )
+            except Exception as exc:
+                _emit(
+                    f"[assembly][error] Nitsche block {nit_label} failed standalone assembly: "
+                    f"{type(exc).__name__}: {exc!r}",
+                    status_callback=status_callback,
+                    level="error",
+                )
+                raise
+        sys.stdout.flush()
 
     a_form = a_uu + a_pp + a_up + a_pu + reg_p
     m_form = m_uu + m_pp + m_pu
@@ -4918,47 +5006,21 @@ def _solve_coupled_evp(
     use_blockwise = _solver_bool(solver_cfg, "coupled_blockwise_assembly", default=True)
     reg_p_block = reg_p if diag_shift > 0.0 else None
     if use_blockwise:
-        try:
-            A, M = _assemble_coupled_AM_operators(
-                a_uu=a_uu,
-                a_pp=a_pp,
-                a_up=a_up,
-                a_pu=a_pu,
-                m_uu=m_uu,
-                m_pp=m_pp,
-                m_pu=m_pu,
-                reg_p=reg_p_block,
-                nit_uu_a=nit_uu_a,
-                nit_up_a=nit_up_a,
-                nit_pu_a=nit_pu_a,
-                nit_pu_m=nit_pu_m,
-                status_callback=status_callback,
-            )
-        except Exception as exc:
-            if nit_uu_a is not None or nit_up_a is not None or nit_pu_a is not None:
-                _emit(
-                    f"[assembly][warn] coupled block assembly with Nitsche failed ({exc!r}); "
-                    "retrying without Nitsche blocks.",
-                    status_callback=status_callback,
-                    level="warning",
-                )
-                A, M = _assemble_coupled_AM_operators(
-                    a_uu=a_uu,
-                    a_pp=a_pp,
-                    a_up=a_up,
-                    a_pu=a_pu,
-                    m_uu=m_uu,
-                    m_pp=m_pp,
-                    m_pu=m_pu,
-                    reg_p=reg_p_block,
-                    nit_uu_a=None,
-                    nit_up_a=None,
-                    nit_pu_a=None,
-                    nit_pu_m=None,
-                    status_callback=status_callback,
-                )
-            else:
-                raise
+        A, M = _assemble_coupled_AM_operators(
+            a_uu=a_uu,
+            a_pp=a_pp,
+            a_up=a_up,
+            a_pu=a_pu,
+            m_uu=m_uu,
+            m_pp=m_pp,
+            m_pu=m_pu,
+            reg_p=reg_p_block,
+            nit_uu_a=nit_uu_a,
+            nit_up_a=nit_up_a,
+            nit_pu_a=nit_pu_a,
+            nit_pu_m=nit_pu_m,
+            status_callback=status_callback,
+        )
     else:
         A = _assemble_coupled_matrix_safe(a_form, [], label="coupled_stiffness_A")
         M = _assemble_coupled_matrix_safe(m_form, [], label="coupled_mass_M")
@@ -4997,10 +5059,14 @@ def _solve_coupled_evp(
     )
     assembly_matvec_diag = dict(matvec_diag)
     p_unit = float(matvec_diag.get("p_load_unit_u", 0.0))
+    nitsche_active = any(
+        x is not None for x in (nit_uu_a, nit_up_a, nit_pu_a, nit_pu_m)
+    )
     if (
         use_blockwise
         and p_unit < 1.0e-20 * max(float(A.norm()), 1.0)
         and _solver_bool(solver_cfg, "coupled_monolithic_fallback", default=True)
+        and not nitsche_active
     ):
         _emit(
             "[assembly][warn] block assembly produced zero A_pu matvec on u parent indices; "
@@ -5015,11 +5081,8 @@ def _solve_coupled_evp(
                 a_up,
                 a_pu,
                 reg_p_block,
-                nit_uu_a,
-                nit_up_a,
-                nit_pu_a,
             )
-            m_full = _ufl_add_terms(m_uu, m_pp, m_pu, nit_pu_m)
+            m_full = _ufl_add_terms(m_uu, m_pp, m_pu)
             A_prev, M_prev = A, M
             A = _assemble_coupled_matrix_safe(a_full, [], label="coupled_stiffness_A_mono")
             M = _assemble_coupled_matrix_safe(m_full, [], label="coupled_mass_M_mono")
