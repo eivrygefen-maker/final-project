@@ -227,6 +227,24 @@ def main() -> int:
             "(finds band modes); 'shift_invert' is σ-anchored (often wood-only spurious)."
         ),
     )
+    parser.add_argument(
+        "--harvest-lo-hz",
+        type=float,
+        default=None,
+        help="Master spectral-band harvest lower bound (Hz); sets solver harvest window.",
+    )
+    parser.add_argument(
+        "--harvest-hi-hz",
+        type=float,
+        default=None,
+        help="Master spectral-band harvest upper bound (Hz).",
+    )
+    parser.add_argument(
+        "--eps-broad-search-hz",
+        type=float,
+        default=None,
+        help="Override solver.eps_broad_search_hz (half-width) for this shift.",
+    )
     args = parser.parse_args()
 
     if args.sorting_root is not None:
@@ -280,7 +298,13 @@ def main() -> int:
         cfg["solver"]["eps_reject_decoupled_u_only"] = False
         cfg["solver"]["eps_harvest_allow_weak_coupling"] = True
         _broad = float(cfg["solver"].get("eps_broad_search_hz", 8.0))
-        cfg["solver"]["eps_broad_search_hz"] = max(_broad, 50.0)
+        if args.eps_broad_search_hz is not None:
+            cfg["solver"]["eps_broad_search_hz"] = max(float(args.eps_broad_search_hz), 8.0)
+        else:
+            cfg["solver"]["eps_broad_search_hz"] = max(_broad, 50.0)
+    if args.harvest_lo_hz is not None and args.harvest_hi_hz is not None:
+        cfg["solver"]["_worker_harvest_lo_hz"] = float(args.harvest_lo_hz)
+        cfg["solver"]["_worker_harvest_hi_hz"] = float(args.harvest_hi_hz)
     if args.structural_only:
         cfg["solver"]["structural_only_diagnosis"] = True
     _target_hz = float(args.target_hz)
@@ -315,8 +339,15 @@ def main() -> int:
             _band_str = f"band=[{_band_lo:.2f}, {_band_hi:.2f}] Hz (interval→{_fb})"
         else:
             _broad_h = float(_solver.get("eps_broad_search_hz", 8.0))
+            _hw_lo = _solver.get("_worker_harvest_lo_hz")
+            _hw_hi = _solver.get("_worker_harvest_hi_hz")
+            _harvest_note = (
+                f" harvest=[{float(_hw_lo):.2f}, {float(_hw_hi):.2f}] Hz"
+                if _hw_lo is not None and _hw_hi is not None
+                else ""
+            )
             _band_str = (
-                f"shift @ {_target_hz:.4f} Hz "
+                f"shift @ {_target_hz:.4f} Hz{_harvest_note} "
                 f"(harvest [{_target_hz - _broad_h:.1f}, {_target_hz + _broad_h:.1f}] Hz)"
             )
         _fs = (
@@ -439,14 +470,6 @@ def main() -> int:
             continue
         if float(uniq) < WORKER_UNIQUENESS_MIN - 1e-15:
             continue
-        u_blk = csr_u_slice(vec_csr, n_u_g)
-        col_norm = float(csr_col_norm(u_blk))
-        if col_norm < 1e-12:
-            continue
-        abs_path = (sorting_root / rel).resolve()
-        save_mode_csr(abs_path, vec_csr)
-        exclude.add(str(abs_path))
-        same_batch.append(vec_csr.copy())
         h_label, h_rom, h_reason = classify_mode_candidate(
             {
                 "hz": float(freqs_hz[j]),
@@ -458,6 +481,16 @@ def main() -> int:
             st_sigma_hz=float(st_sigma_hz),
             cfg=hcfg,
         )
+        if h_label == "sigma_ritz" and not hcfg.keep_sigma_reference:
+            continue
+        u_blk = csr_u_slice(vec_csr, n_u_g)
+        col_norm = float(csr_col_norm(u_blk))
+        if col_norm < 1e-12:
+            continue
+        abs_path = (sorting_root / rel).resolve()
+        save_mode_csr(abs_path, vec_csr)
+        exclude.add(str(abs_path))
+        same_batch.append(vec_csr.copy())
         candidates.append(
             {
                 "id": int(j),

@@ -4259,14 +4259,21 @@ def _slepc_shift_invert_batch(
         st_sigma_used = float(solver_cfg.get("_batch_st_sigma_hz", st_sigma_hz))
         margin = float(solver_cfg.get("eps_harvest_sigma_margin_hz", 10.0))
         broad_cfg = float(solver_cfg.get("eps_broad_search_hz", 0.0))
-        half_need = max(
-            float(target_hz) - float(f_window_lo),
-            float(f_window_hi) - float(target_hz),
-            abs(st_sigma_used - float(target_hz)) + margin,
-        )
-        half_eff = max(broad_cfg, half_need, 0.5)
-        f_window_lo = float(target_hz) - half_eff
-        f_window_hi = float(target_hz) + half_eff
+        w_lo = solver_cfg.get("_worker_harvest_lo_hz")
+        w_hi = solver_cfg.get("_worker_harvest_hi_hz")
+        if w_lo is not None and w_hi is not None:
+            f_window_lo = max(float(min_hz), float(w_lo))
+            f_window_hi = min(float(solver_cfg.get("max_valid_mode_hz", 600.0)), float(w_hi))
+        else:
+            half_need = max(
+                float(target_hz) - float(f_window_lo),
+                float(f_window_hi) - float(target_hz),
+                abs(st_sigma_used - float(target_hz)) + margin,
+            )
+            half_eff = max(broad_cfg, half_need, 0.5)
+            mid = 0.5 * (float(target_hz) + st_sigma_used)
+            f_window_lo = mid - half_eff
+            f_window_hi = mid + half_eff
         if MPI.COMM_WORLD.rank == ROOT_RANK:
             print(
                 f"[solver] EPS harvest window (post-ST): [{f_window_lo:.2f}, {f_window_hi:.2f}] Hz "

@@ -19,6 +19,12 @@ zones**, per-job timeouts, and merge of worker JSON into ``candidates_log.json``
     Z3 lowers uniqueness floor for isolation bonus.
   * Sparse CSR overlap, Zone-C HF quota, ``gc.collect()`` as before.
 
+**Multi-band sweep** (``--schedule spectral-bands`` or ``spectral-bands+fill``):
+  overlapping harvest windows per band center (see ``fem_spectral_schedule.py``); workers get
+  ``--harvest-lo-hz`` / ``--harvest-hi-hz`` so modes like 106 Hz are not dropped by a narrow
+  target±50 window. ``spectral-bands`` runs band centers only; ``spectral-bands+fill`` runs
+  bands first then the adaptive zone cursor.
+
 **Legacy**: ``--legacy-static-schedule`` restores fixed ``get_band_params`` stepping.
 
 **Adaptive frequency ceiling (ROM-safe)**: once per run, when a merged shift reaches **435 Hz**,
@@ -67,6 +73,13 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from fem_harvest_filter import HarvestFilterConfig, classify_mode_candidate
+from fem_spectral_schedule import (
+    SPECTRAL_BAND_HALF_HZ,
+    SPECTRAL_BAND_STEP_HZ,
+    build_spectral_band_task_list,
+    spectral_band_centers,
+    spectral_harvest_worker_overrides,
+)
 from fem_mode_array_utils import (
     MODE_VECTOR_FILE_SUFFIX,
     csr_normalized_overlap,
@@ -384,6 +397,7 @@ class SpectralScheduler:
     max_workers: int = DEFAULT_MAX_WORKERS
     sorting_root: Optional[Path] = None
     merge_lock: Optional[threading.Lock] = field(default=None, repr=False)
+    schedule_mode: str = field(default="dynamic", repr=False)
     _zone_effective: int = field(default=2, repr=False)
     _pending_zone: Optional[int] = field(default=None, repr=False)
     _pending_streak: int = field(default=0, repr=False)
@@ -407,6 +421,8 @@ class SpectralScheduler:
         self._n_modes_in_log = 0
         self._recovery_shift_count = 0
         self._resume_load_state()
+        if str(self.schedule_mode) in ("spectral-bands+fill", "spectral-bands-fill"):
+            self._enqueue_spectral_band_shifts()
         self._bootstrap_seed_queue()
         self._write_coverage_anchor_state()
         self._log_resume_verification_table()
@@ -597,7 +613,33 @@ class SpectralScheduler:
             step0 = float(self._current_step_hz())
             self._cursor_hz = max(float(self.hz_min), mx_done + step0)
 
+    def _enqueue_spectral_band_shifts(self) -> None:
+        """Prepend one worker per overlapping spectral band center (multi-σ sweep)."""
+        centers = spectral_band_centers(self.hz_min, self.hz_max)
+        mx_done = float(self._max_completed_shift_hz)
+        queued = 0
+        for hz in centers:
+            if math.isfinite(mx_done) and float(hz) <= mx_done + HZ_TOLERANCE:
+                continue
+            if self._shift_target_done(hz):
+                continue
+            p = self._band_params_with_zone_step(float(hz), "spectral-band")
+            self._seed_queue.append((float(hz), p, "spectral-band"))
+            queued += 1
+        LOGGER.info(
+            "Spectral band preload: %d/%d centers (step=%.0f Hz, harvest half=%.0f Hz) "
+            "for [%.0f, %.0f] Hz before scout/cursor.",
+            queued,
+            len(centers),
+            SPECTRAL_BAND_STEP_HZ,
+            SPECTRAL_BAND_HALF_HZ,
+            float(self.hz_min),
+            float(self.hz_max),
+        )
+
     def _bootstrap_seed_queue(self) -> None:
+        if str(self.schedule_mode) == "spectral-bands":
+            return
         f0 = float(self.hz_min)
         hi = float(self.hz_max)
         step = float(ZONE1_STEP_HZ)
@@ -658,6 +700,9 @@ class SpectralScheduler:
             max(1, int(base.get("num_modes", COUPLED_WORKER_NUM_MODES_CAP))),
         )
         base["label"] = f"{base.get('label', '')} [{label_suffix}]".strip()
+        base.update(
+            spectral_harvest_worker_overrides(float(hz), float(self.hz_min), float(self.hz_max))
+        )
         return base
 
     @property
@@ -1358,6 +1403,17 @@ def frequency_ladder_shifts(center_hz: float, hz_min: float, hz_max: float) -> L
             continue
         out.append(hz)
     return out
+
+
+def _worker_band_params_base(hz: float) -> Dict[str, Any]:
+    """Band table + coupled worker ``nev`` cap (static / spectral-band schedules)."""
+    p = dict(get_band_params(hz))
+    p["num_modes"] = min(
+        COUPLED_WORKER_NUM_MODES_CAP,
+        SLEPC_NUM_MODES_ABSOLUTE_CEILING,
+        max(1, int(p.get("num_modes", COUPLED_WORKER_NUM_MODES_CAP))),
+    )
+    return p
 
 
 def build_task_list(hz_min: float, hz_max: float) -> List[Tuple[float, Dict[str, Any]]]:
@@ -2158,6 +2214,16 @@ def main() -> int:
             "Default: scout-seeded dynamic scheduler with zone hysteresis."
         ),
     )
+    parser.add_argument(
+        "--schedule",
+        choices=("dynamic", "spectral-bands", "spectral-bands+fill"),
+        default="spectral-bands+fill",
+        help=(
+            "dynamic: adaptive scout/zone cursor only; "
+            "spectral-bands: overlapping band centers only (production multi-σ pass); "
+            "spectral-bands+fill: band centers first, then adaptive fill (default)."
+        ),
+    )
     args = parser.parse_args()
 
     worker_script = SCRIPT_DIR / "fem_worker_single.py"
@@ -2210,19 +2276,40 @@ def main() -> int:
     use_taskset = sys.platform.startswith("linux")
     scheduler: Optional[SpectralScheduler] = None
     tasks_static: Optional[List[Tuple[float, Dict[str, Any]]]] = None
+    schedule_mode = str(args.schedule)
     if args.legacy_static_schedule:
+        schedule_mode = "legacy-static"
+    if schedule_mode == "spectral-bands":
+        try:
+            tasks_static = build_spectral_band_task_list(
+                float(args.hz_min),
+                float(args.hz_max),
+                _worker_band_params_base,
+            )
+        except ValueError as exc:
+            LOGGER.error("%s", exc)
+            return 1
+        centers = spectral_band_centers(float(args.hz_min), float(args.hz_max))
+        LOGGER.info(
+            "Spectral-band schedule: %d static workers at centers %s",
+            len(tasks_static),
+            ", ".join(f"{c:.1f}" for c in centers),
+        )
+    elif schedule_mode == "legacy-static":
         try:
             tasks_static = build_task_list(float(args.hz_min), float(args.hz_max))
         except ValueError as exc:
             LOGGER.error("%s", exc)
             return 1
     else:
+        dyn_mode = "dynamic" if schedule_mode == "dynamic" else "spectral-bands+fill"
         scheduler = SpectralScheduler(
             float(args.hz_min),
             float(args.hz_max),
             max_workers=max_workers,
             sorting_root=sorting_root,
             merge_lock=merge_lock,
+            schedule_mode=dyn_mode,
         )
 
     worker_cores = list(range(1, max_workers + 1))
@@ -2341,6 +2428,17 @@ def main() -> int:
             cmd.append("--structural-only")
         else:
             cmd.extend(["--eps-band-solver", "shift_invert"])
+        if params.get("harvest_lo_hz") is not None and params.get("harvest_hi_hz") is not None:
+            cmd.extend(
+                [
+                    "--harvest-lo-hz",
+                    str(float(params["harvest_lo_hz"])),
+                    "--harvest-hi-hz",
+                    str(float(params["harvest_hi_hz"])),
+                ]
+            )
+        if params.get("eps_broad_search_hz") is not None:
+            cmd.extend(["--eps-broad-search-hz", str(float(params["eps_broad_search_hz"]))])
 
         core_id: Optional[int] = None
         if use_taskset:
