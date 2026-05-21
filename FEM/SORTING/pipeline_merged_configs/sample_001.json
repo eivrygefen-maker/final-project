@@ -153,6 +153,17 @@
     "eps_harvest_min_pressure_fraction": 0.02,
     "eps_harvest_allow_weak_coupling": true,
     "eps_sigma_spurious_tol_hz": 0.35,
+    "harvest_filter": {
+      "min_hz": 90.0,
+      "max_hz": 480.0,
+      "min_p_frac_rom": 0.10,
+      "min_wood": 0.01,
+      "sigma_cluster_hz": 2.0,
+      "min_uniqueness": 0.04,
+      "keep_sigma_reference": false,
+      "max_sigma_reference_per_shift": 0,
+      "near_dup_hz": 0.05
+    },
     "gnhep_normalize_matrices": false,
     "gnhep_block_frobenius_normalize": true,
     "fsi_nitsche_penalty_frac": 0.0001,

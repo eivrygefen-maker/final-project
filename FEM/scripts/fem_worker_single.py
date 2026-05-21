@@ -37,6 +37,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import fem_main_3d as fem3d
 from wood_library import resolve_plate_thicknesses
+from fem_harvest_filter import HarvestFilterConfig, classify_mode_candidate
 from fem_mode_array_utils import (
     MODE_VECTOR_FILE_SUFFIX,
     csr_col_norm,
@@ -380,6 +381,18 @@ def main() -> int:
         save_mode_csr(abs_path, vec_csr)
         exclude.add(str(abs_path))
         same_batch.append(vec_csr.copy())
+        hcfg = HarvestFilterConfig.from_solver_cfg(cfg.get("solver", {}))
+        h_label, h_rom, h_reason = classify_mode_candidate(
+            {
+                "hz": float(freqs_hz[j]),
+                "p_frac": float(p_fracs[j]),
+                "wood_participation": float(wood),
+                "uniqueness": float(uniq),
+            },
+            target_hz=float(args.target_hz),
+            st_sigma_hz=float(st_sigma_hz),
+            cfg=hcfg,
+        )
         candidates.append(
             {
                 "id": int(j),
@@ -391,6 +404,9 @@ def main() -> int:
                 "tag3_ratio": float(rb),
                 "vector_path": str(rel).replace("\\", "/"),
                 "column_l2_norm": float(col_norm),
+                "harvest_class": h_label,
+                "rom_ready": bool(h_rom),
+                "harvest_reason": h_reason,
             }
         )
         last_kept_hz = fj

@@ -66,6 +66,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from fem_harvest_filter import HarvestFilterConfig, classify_mode_candidate
 from fem_mode_array_utils import (
     MODE_VECTOR_FILE_SUFFIX,
     csr_normalized_overlap,
@@ -175,7 +176,7 @@ CONDUCTOR_CEILING_SPECTRAL_ZONE_3 = 480.0  # sparse / high interest → full swe
 
 # --- Merge-time physical density (numerical duplicate clusters) ---
 MERGE_SHIFT_CLUSTER_SPAN_HZ = 1.0
-MERGE_SHIFT_CLUSTER_MIN_MODES = 20
+MERGE_SHIFT_CLUSTER_MIN_MODES = 4
 # When a batch is σ-locked (all modes at one Hz), keep the best few instead of poisoning merge.
 MERGE_SHIFT_CLUSTER_KEEP_MAX = 8
 WORKER_COL_NORM_MIN = 1e-9
@@ -1377,48 +1378,57 @@ def _passes_harvest_gate(
     *,
     st_sigma_hz: float,
     structural_only_run: bool = False,
+    target_hz: float = 0.0,
+    filter_cfg: Optional[HarvestFilterConfig] = None,
 ) -> Tuple[bool, str]:
     """
     Coupled-mode harvest eligibility for merge.
 
     Returns ``(merge_eligible, tag)`` where ``tag`` is one of:
-    ``coupled_fsi``, ``structural_spurious``, ``sigma_locked``, ``low_wood``.
+    ``coupled_fsi``, ``structural_spurious``, ``sigma_locked``, ``low_wood``, etc.
     """
-    try:
-        wood = float(c.get("wood_participation", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        wood = 0.0
-    try:
-        p_frac = float(c.get("p_frac", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        p_frac = 0.0
-    try:
-        f_hz = float(c.get("hz", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        f_hz = 0.0
-
-    sigma = float(st_sigma_hz)
-    if (
-        not HARVEST_GATE_BYPASS_SIGMA_LOCK
-        and abs(f_hz - sigma) < HARVEST_GATE_SIGMA_TOL_HZ
-        and p_frac < HARVEST_GATE_SIGMA_P_FRAC
-    ):
-        return False, "sigma_locked"
-
     if structural_only_run:
+        try:
+            wood = float(c.get("wood_participation", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            wood = 0.0
         if wood >= HARVEST_GATE_MIN_WOOD:
             c["harvest_tag"] = "structural_only"
+            c["harvest_class"] = "structural_only"
+            c["rom_ready"] = True
             return True, "structural_only"
         return False, "low_wood"
 
-    if wood >= HARVEST_GATE_MIN_WOOD and p_frac >= HARVEST_GATE_MIN_P_FRAC_FSI:
+    cfg = filter_cfg or HarvestFilterConfig(
+        sigma_cluster_hz=max(HARVEST_GATE_SIGMA_TOL_HZ, 2.0),
+        min_p_frac_rom=max(HARVEST_GATE_MIN_P_FRAC_FSI, 0.10),
+        min_wood=HARVEST_GATE_MIN_WOOD,
+    )
+    tgt = float(target_hz) if target_hz > 0.0 else float(st_sigma_hz)
+    label, rom_ready, reason = classify_mode_candidate(
+        c,
+        target_hz=tgt,
+        st_sigma_hz=float(st_sigma_hz),
+        cfg=cfg,
+    )
+    c["harvest_class"] = label
+    c["harvest_reason"] = reason
+    c["rom_ready"] = bool(rom_ready)
+    if rom_ready:
+        c["harvest_tag"] = "coupled_fsi"
         return True, "coupled_fsi"
-
-    if wood >= HARVEST_GATE_MIN_WOOD:
+    if label == "sigma_ritz":
+        return False, "sigma_locked"
+    if label in ("weak_coupling", "decoupled"):
         c["harvest_tag"] = "structural_spurious"
         return False, "structural_spurious"
-
-    return False, "low_wood"
+    if label == "low_wood":
+        return False, "low_wood"
+    if label == "out_of_band":
+        return False, "out_of_band"
+    if label == "low_uniqueness":
+        return False, "low_uniqueness"
+    return False, label
 
 
 def _matches_template_spurious(
@@ -1596,6 +1606,21 @@ def _merge_result_into_candidates_log(
             tag,
         )
 
+    try:
+        target_hz_merge = float(incoming.get("target_hz", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        target_hz_merge = 0.0
+    if target_hz_merge <= 0.0:
+        tfn_tgt = _target_hz_from_result_filename(result_path)
+        if tfn_tgt is not None:
+            target_hz_merge = float(tfn_tgt)
+    filter_cfg = HarvestFilterConfig(
+        sigma_cluster_hz=2.0,
+        min_p_frac_rom=0.10,
+        min_wood=HARVEST_GATE_MIN_WOOD,
+        min_uniqueness=MERGE_INCOMING_UNIQUENESS_MIN,
+    )
+
     harvest_gate_drops = 0
     gate_kept: List[Dict[str, Any]] = []
     coupled_valid_pre = 0
@@ -1604,6 +1629,8 @@ def _merge_result_into_candidates_log(
             c,
             st_sigma_hz=st_sigma_hz,
             structural_only_run=structural_only_run,
+            target_hz=target_hz_merge,
+            filter_cfg=filter_cfg,
         )
         if eligible:
             if tag == "coupled_fsi":
