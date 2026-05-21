@@ -3368,6 +3368,39 @@ def _slepc_clear_ciss_petsc_options() -> None:
             pass
 
 
+def _slepc_ciss_integration_sizes(
+    solver_cfg: Dict,
+    nev_request: int,
+    *,
+    n_dof: int = 0,
+) -> Tuple[int, int, int]:
+    """
+    CISS (ip, blocksize, moments) with optional hard caps for large coupled models.
+
+    Each contour point triggers an ST shift-invert + monolithic MUMPS LU on ~n_dof rows;
+    ``ip`` and ``blocksize`` dominate RAM on small VMs.
+    """
+    ip = int(solver_cfg.get("eps_ciss_integration_points", 32))
+    bs_cfg = int(solver_cfg.get("eps_ciss_blocksize", 0))
+    bs = bs_cfg if bs_cfg > 0 else max(16, int(nev_request))
+    ms = int(solver_cfg.get("eps_ciss_moments", 8))
+    ip_cap = int(solver_cfg.get("eps_ciss_integration_points_max", 0))
+    bs_cap = int(solver_cfg.get("eps_ciss_blocksize_max", 0))
+    if int(n_dof) >= 200_000:
+        if ip_cap <= 0:
+            ip_cap = 16
+        if bs_cap <= 0:
+            bs_cap = 24
+    if ip_cap > 0 and ip > ip_cap:
+        ip = ip_cap
+    if bs_cap > 0 and bs > bs_cap:
+        bs = bs_cap
+    ip = max(4, ip)
+    bs = max(8, bs)
+    ms = max(4, min(ms, bs))
+    return ip, bs, ms
+
+
 def _slepc_configure_ciss_region(
     eps: SLEPc.EPS,
     lam_lo: float,
@@ -3605,13 +3638,18 @@ def _slepc_shift_invert_batch(
     petsc_opts["pc_factor_shift_amount"] = float(solver_cfg.get("pc_factor_shift_amount", 1e-2))
     petsc_opts["eps_gen_non_hermitian"] = ""
     petsc_opts["bv_orthog_refine"] = str(solver_cfg.get("bv_orthog_refine", "never"))
+    ciss_ip, ciss_bs, ciss_ms = 0, 0, 0
     if use_ciss:
+        try:
+            n_glob_ciss = int(A.getSize()[0])
+        except Exception:
+            n_glob_ciss = 0
+        ciss_ip, ciss_bs, ciss_ms = _slepc_ciss_integration_sizes(
+            solver_cfg, nev_request, n_dof=n_glob_ciss
+        )
         petsc_opts["eps_type"] = "ciss"
         petsc_opts["rg_type"] = "interval"
         petsc_opts["rg_interval_endpoints"] = f"{lam_lo},{lam_hi},0,0"
-        ciss_ip = int(solver_cfg.get("eps_ciss_integration_points", 32))
-        ciss_bs = int(solver_cfg.get("eps_ciss_blocksize", max(16, nev_request)))
-        ciss_ms = int(solver_cfg.get("eps_ciss_moments", 8))
         petsc_opts["eps_ciss_integration_points"] = ciss_ip
         petsc_opts["eps_ciss_blocksize"] = ciss_bs
         petsc_opts["eps_ciss_moments"] = ciss_ms
@@ -3632,8 +3670,11 @@ def _slepc_shift_invert_batch(
     ncv_min_factor = float(solver_cfg.get("eps_ncv_min_factor", 4.0))
     ncv_floor = int(math.ceil(max(4.0, ncv_min_factor) * float(nev_request)))
     ncv_cfg = int(solver_cfg.get("target_ncv", 0))
-    ncv = max(ncv_floor, ncv_cfg, 40)
     ncv_cap = int(solver_cfg.get("eps_ncv_max", 0))
+    ncv_floor_min = int(solver_cfg.get("eps_ncv_floor_min", 40))
+    if ncv_cap > 0:
+        ncv_floor_min = min(ncv_floor_min, ncv_cap)
+    ncv = max(ncv_floor, ncv_cfg, ncv_floor_min)
     if ncv_cap <= 0:
         try:
             n_glob = int(A.getSize()[0])
@@ -3680,9 +3721,6 @@ def _slepc_shift_invert_batch(
     )
     _fs_note = " block_is=ok" if block_is is not None else " block_is=missing"
     if use_ciss:
-        ciss_ip = int(solver_cfg.get("eps_ciss_integration_points", 32))
-        ciss_bs = int(solver_cfg.get("eps_ciss_blocksize", max(16, nev_request)))
-        ciss_ms = int(solver_cfg.get("eps_ciss_moments", 8))
         _emit(
             f"[solver] EPS spectrum batch (target={target_hz:.2f} Hz, strategy={strategy_label}): "
             f"band=[{f_window_lo:.2f}, {f_window_hi:.2f}] Hz "
@@ -3730,9 +3768,6 @@ def _slepc_shift_invert_batch(
     eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
     if use_ciss:
         _slepc_configure_ciss_region(eps, lam_lo, lam_hi, solver_cfg)
-        ciss_ip = int(solver_cfg.get("eps_ciss_integration_points", 32))
-        ciss_bs = int(solver_cfg.get("eps_ciss_blocksize", max(16, nev_request)))
-        ciss_ms = int(solver_cfg.get("eps_ciss_moments", 8))
         try:
             eps.setCISSSizes(
                 ip=ciss_ip,
