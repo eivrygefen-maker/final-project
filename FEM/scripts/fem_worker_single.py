@@ -258,9 +258,10 @@ def main() -> int:
             _band_str = f"band=[{_band_lo:.2f}, {_band_hi:.2f}] Hz (interval→{_fb})"
         else:
             _band_str = f"shift @ {_target_hz:.4f} Hz"
-        _fs = _solver.get("st_use_fieldsplit", False) or str(_solver.get("st_pc_type", "")).lower() in (
-            "fieldsplit",
-            "fs",
+        _fs = (
+            _solver.get("st_use_fieldsplit", False)
+            or _solver.get("st_fieldsplit", False)
+            or str(_solver.get("st_pc_type", "")).lower() in ("fieldsplit", "fs")
         )
         print(
             f"[worker] EPS target: {_band_str}, "

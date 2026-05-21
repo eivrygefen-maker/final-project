@@ -1262,13 +1262,70 @@ def _fsi_nitsche_gamma(
     ``1/s_couple`` alongside ``a_uu`` and ``a_up``, so Nitsche enters the normalized
     operator on the same footing as the primary stiffness (tune ``fsi_nitsche_penalty_frac``).
     """
-    frac = float(solver_cfg.get("fsi_nitsche_penalty_frac", 1.0e-5))
-    cap_frac = float(solver_cfg.get("fsi_nitsche_penalty_cap_frac", 1.0e-3))
+    frac = float(solver_cfg.get("fsi_nitsche_penalty_frac", 1.0e-4))
+    cap_frac = float(solver_cfg.get("fsi_nitsche_penalty_cap_frac", 1.0e-2))
     ref = max(float(norm_uu_ref), 1.0e-30)
     h = max(float(h_char), 1.0e-6)
     gamma = frac * ref / h
     gamma_max = cap_frac * ref
     return min(gamma, gamma_max)
+
+
+def _fsi_nitsche_balance_multiplier(
+    solver_cfg: Dict,
+    *,
+    norm_uu_shell: float,
+    nit_uu,
+    status_callback=None,
+) -> float:
+    """
+    Scale Nitsche UFL blocks so ``||nit_uu||_F ≈ fsi_nitsche_a_uu_frac * ||A_uu||_F`` (pre-GNHEP scale).
+
+    Without this, interface penalties (~10²) sit ~8 orders below shell stiffness (~10¹⁰),
+    so shift-invert MUMPS LU on the monolithic matrix can segfault. Set ``fsi_nitsche_gain``
+    explicitly to override auto-balance.
+    """
+    manual = solver_cfg.get("fsi_nitsche_gain")
+    if manual is not None:
+        try:
+            g = float(manual)
+            if g > 0.0 and math.isfinite(g):
+                if MPI.COMM_WORLD.rank == ROOT_RANK:
+                    print(
+                        f"[form] FSI Nitsche manual gain={g:.6e} (fsi_nitsche_gain)",
+                        flush=True,
+                    )
+                return g
+        except (TypeError, ValueError):
+            pass
+    if not _solver_bool(solver_cfg, "fsi_nitsche_auto_balance", default=True):
+        return 1.0
+    target_frac = float(solver_cfg.get("fsi_nitsche_a_uu_frac", 1.0e-3))
+    target_frac = max(target_frac, 1.0e-12)
+    n_u = max(float(norm_uu_shell), 1.0e-30)
+    try:
+        n_nit = _mat_frobenius_norm(nit_uu, label="nit_uu_balance")
+    except Exception as exc:
+        _emit(
+            f"[form][warn] Nitsche auto-balance skipped ({type(exc).__name__}: {exc!r})",
+            status_callback=status_callback,
+            level="warning",
+        )
+        return 1.0
+    if n_nit < 1.0e-30:
+        return 1.0
+    gain = target_frac * n_u / n_nit
+    gain_min = float(solver_cfg.get("fsi_nitsche_gain_min", 1.0))
+    gain_max = float(solver_cfg.get("fsi_nitsche_gain_max", 1.0e8))
+    gain = min(max(gain, gain_min), gain_max)
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        print(
+            f"[form] FSI Nitsche auto-balance: target ||nit_uu||/||A_uu||={target_frac:.3e}, "
+            f"||A_uu||_F={n_u:.3e}, ||nit_uu||_F={n_nit:.3e} → gain={gain:.6e} "
+            f"(expected ||nit_uu||_F≈{target_frac * n_u:.3e})",
+            flush=True,
+        )
+    return gain
 
 
 def _audit_assembled_mixed_coupling(
@@ -2958,7 +3015,9 @@ def _slepc_st_allow_fieldsplit(solver_cfg: Dict, *, use_ciss: bool) -> bool:
     return str(solver_cfg.get("st_pc_type", "lu")).strip().lower() in (
         "fieldsplit",
         "fs",
-    ) or _solver_bool(solver_cfg, "st_use_fieldsplit", default=False)
+    ) or _solver_bool(solver_cfg, "st_use_fieldsplit", default=False) or _solver_bool(
+        solver_cfg, "st_fieldsplit", default=False
+    )
 
 
 def _slepc_eps_destroy_safe(eps: Any) -> None:
@@ -4578,10 +4637,21 @@ def _solve_coupled_evp(
             v_n_both=_v_n_both,
             q_avg=_q_avg,
         )
+        nit_gain = _fsi_nitsche_balance_multiplier(
+            solver_cfg,
+            norm_uu_shell=norm_uu_for_nitsche,
+            nit_uu=nit_uu,
+            status_callback=status_callback,
+        )
+        if abs(nit_gain - 1.0) > 1.0e-15:
+            nit_uu = nit_gain * nit_uu
+            nit_up = nit_gain * nit_up
+            nit_pu = nit_gain * nit_pu
         if MPI.COMM_WORLD.rank == ROOT_RANK:
             print(
                 f"[form] FSI Nitsche on iface: gamma_n={gamma_n:.6e}, "
-                f"fsi_gain={fsi_gain:.4g}, iface_facets={fsi_iface_facets.size} "
+                f"fsi_gain={fsi_gain:.4g}, nit_balance_gain={nit_gain:.6e}, "
+                f"iface_facets={fsi_iface_facets.size} "
                 "(separate blockwise assembly; nit_pu on A and M)"
             )
             sys.stdout.flush()
