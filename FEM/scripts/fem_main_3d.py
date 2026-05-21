@@ -945,6 +945,7 @@ def _audit_fsi_traction_pair_norms(
     mass_pu,
     label: str,
     status_callback=None,
+    min_up_norm: Optional[float] = None,
 ) -> Tuple[float, float, float]:
     """Assemble u←p (A_up), p←u (A_pu), and mass (M_pu) blocks separately; warn if A_pu≈0."""
     if MPI.COMM_WORLD.rank != ROOT_RANK:
@@ -971,10 +972,15 @@ def _audit_fsi_traction_pair_norms(
             "(∫ p (n·v)). Static/harmonic solves will show ||u||>0 with ||p||≈0 — "
             "check fsi_iface_measure (try dS), FacetNormal orientation, or fsi_coupling_gain."
         )
-    if n_up < 1.0e3:
+    min_up = float(min_up_norm) if min_up_norm is not None else 1.0e3
+    if n_up < min_up:
+        hint = (
+            " (post-GNHEP block scaling: ||A_up|| is O(1) — expected; not a wrong iface measure)"
+            if min_up < 1.0e3
+            else ""
+        )
         print(
-            f"[FSI-IFACE][CRITICAL] ||A_up||_F={n_up:.6e} on {label} — FSI iface measure "
-            "likely wrong (use dS_topology on air↔wood facets, not shell tags 1/3/4)."
+            f"[FSI-IFACE][warn] ||A_up||_F={n_up:.6e} on {label} below audit floor {min_up:.3e}{hint}."
         )
     sys.stdout.flush()
     return n_up, n_pu, n_mp
@@ -3008,6 +3014,31 @@ def _slepc_build_mixed_block_is(
     return is_u, is_p
 
 
+def _fieldsplit_schur_settings(solver_cfg: Dict) -> Tuple[str, str, int]:
+    """
+    Resolve Schur FieldSplit options (JSON aliases supported).
+
+    ``st_fieldsplit_schur_fact_type`` → ``st_fieldsplit_schur_fact``;
+    ``st_fieldsplit_schur_precondition`` → ``st_fieldsplit_schur_pre`` (``selfp`` → ``selfp0``).
+    Default Schur block index ``1`` = pressure (eliminate structure first: S = A_pp - A_pu A_uu⁻¹ A_up).
+    """
+    fact = solver_cfg.get("st_fieldsplit_schur_fact")
+    if fact is None:
+        fact = solver_cfg.get("st_fieldsplit_schur_fact_type", "full")
+    pre = solver_cfg.get("st_fieldsplit_schur_pre")
+    if pre is None:
+        pre = solver_cfg.get("st_fieldsplit_schur_precondition", "selfp0")
+    fact_s = str(fact).strip().lower()
+    pre_s = str(pre).strip().lower()
+    if pre_s == "selfp":
+        pre_s = "selfp0"
+    try:
+        schur_block = int(solver_cfg.get("st_fieldsplit_schur_block", 1))
+    except (TypeError, ValueError):
+        schur_block = 1
+    return fact_s, pre_s, schur_block
+
+
 def _slepc_st_allow_fieldsplit(solver_cfg: Dict, *, use_ciss: bool) -> bool:
     """FieldSplit on shifted CISS operators often hits zero pivots; default off for CISS."""
     if use_ciss:
@@ -3057,13 +3088,26 @@ def _slepc_configure_st_ksp_pc(
         )
     )
 
+    shift_type = str(
+        solver_cfg.get(
+            f"{opts_prefix}pc_factor_shift_type",
+            solver_cfg.get("pc_factor_shift_type", "nonzero"),
+        )
+    )
+    shift_amt = float(
+        solver_cfg.get(
+            f"{opts_prefix}pc_factor_shift_amount",
+            solver_cfg.get("pc_factor_shift_amount", 1.0e-8),
+        )
+    )
+
     if use_fs and block_is is not None:
         is_u, is_p = block_is
         pc.setType("fieldsplit")
         fs_type = str(solver_cfg.get("st_fieldsplit_type", "additive")).strip().lower()
         if fs_type in ("schur", "schur_complement"):
+            schur_fact, schur_pre, schur_block = _fieldsplit_schur_settings(solver_cfg)
             pc.setFieldSplitType(PETSc.PC.CompositeType.SCHUR)
-            schur_fact = str(solver_cfg.get("st_fieldsplit_schur_fact", "full")).lower()
             _fact_map = {
                 "full": PETSc.PC.FieldSplitSchurFactType.FULL,
                 "upper": PETSc.PC.FieldSplitSchurFactType.UPPER,
@@ -3072,7 +3116,6 @@ def _slepc_configure_st_ksp_pc(
             pc.setFieldSplitSchurFactType(
                 _fact_map.get(schur_fact, PETSc.PC.FieldSplitSchurFactType.FULL)
             )
-            schur_pre = str(solver_cfg.get("st_fieldsplit_schur_pre", "self")).lower()
             _pre_map = {
                 "self": PETSc.PC.FieldSplitSchurPreType.SELF,
                 "selfp0": PETSc.PC.FieldSplitSchurPreType.SELFP0,
@@ -3080,21 +3123,54 @@ def _slepc_configure_st_ksp_pc(
                 "user": PETSc.PC.FieldSplitSchurPreType.USER,
             }
             pc.setFieldSplitSchurPreType(
-                _pre_map.get(schur_pre, PETSc.PC.FieldSplitSchurPreType.SELF)
+                _pre_map.get(schur_pre, PETSc.PC.FieldSplitSchurPreType.SELFP0)
             )
-            pc_label = f"fieldsplit/schur({schur_fact})"
+            try:
+                pc.setFieldSplitSchurBlock(int(schur_block))
+            except (AttributeError, TypeError):
+                petsc_opts[f"{opts_prefix}fieldsplit_schur_block"] = int(schur_block)
+            petsc_opts[f"{opts_prefix}fieldsplit_type"] = "schur"
+            petsc_opts[f"{opts_prefix}fieldsplit_schur_fact"] = schur_fact
+            petsc_opts[f"{opts_prefix}fieldsplit_schur_precondition"] = schur_pre
+            petsc_opts[f"{opts_prefix}fieldsplit_schur_block"] = int(schur_block)
+            pc_label = f"fieldsplit/schur({schur_fact},{schur_pre},b={schur_block})"
         else:
             pc.setFieldSplitType(PETSc.PC.CompositeType.ADDITIVE)
+            petsc_opts[f"{opts_prefix}fieldsplit_type"] = "additive"
             pc_label = "fieldsplit/additive"
         pc.setFieldSplitIS(("u", is_u), ("p", is_p))
         for blk in ("u", "p"):
             petsc_opts[f"{opts_prefix}fieldsplit_{blk}_ksp_type"] = str(
                 solver_cfg.get(f"st_fieldsplit_{blk}_ksp_type", "preonly")
             )
-            petsc_opts[f"{opts_prefix}fieldsplit_{blk}_pc_type"] = str(
-                solver_cfg.get(f"st_fieldsplit_{blk}_pc_type", "lu")
-            )
+            blk_pc = str(solver_cfg.get(f"st_fieldsplit_{blk}_pc_type", "lu"))
+            petsc_opts[f"{opts_prefix}fieldsplit_{blk}_pc_type"] = blk_pc
             petsc_opts[f"{opts_prefix}fieldsplit_{blk}_pc_factor_mat_solver_type"] = st_factor
+            petsc_opts[f"{opts_prefix}fieldsplit_{blk}_pc_factor_shift_type"] = str(
+                solver_cfg.get(
+                    f"st_fieldsplit_{blk}_pc_factor_shift_type",
+                    shift_type,
+                )
+            )
+            petsc_opts[f"{opts_prefix}fieldsplit_{blk}_pc_factor_shift_amount"] = float(
+                solver_cfg.get(
+                    f"st_fieldsplit_{blk}_pc_factor_shift_amount",
+                    shift_amt if blk == "p" else shift_amt * 0.1,
+                )
+            )
+            if blk_pc.lower() == "lu":
+                try:
+                    sub_pc = pc.getFieldSplitSubPC(blk)
+                    sub_pc.setFactorSolverType(st_factor)
+                    sub_pc.setFactorShiftType(
+                        petsc_opts[f"{opts_prefix}fieldsplit_{blk}_pc_factor_shift_type"]
+                    )
+                    sub_pc.setFactorShiftAmount(
+                        petsc_opts[f"{opts_prefix}fieldsplit_{blk}_pc_factor_shift_amount"]
+                    )
+                except Exception:
+                    pass
+        petsc_opts[f"{opts_prefix}pc_type"] = "fieldsplit"
         return st_ksp_type, pc_label
 
     pc.setType(st_pc_type_cfg if st_pc_type_cfg not in ("fieldsplit", "fs") else "lu")
@@ -3525,7 +3601,7 @@ def _slepc_shift_invert_batch(
             pass
         st = eps.getST()
         ksp_st = st.getKSP()
-        _slepc_configure_st_ksp_pc(
+        st_ksp_type, st_pc_label = _slepc_configure_st_ksp_pc(
             ksp_st,
             ksp_st.getPC(),
             solver_cfg,
@@ -3546,6 +3622,22 @@ def _slepc_shift_invert_batch(
         _opts["st_mat_mumps_icntl_6"] = mumps_icntl_6
         _opts["st_mat_mumps_icntl_12"] = mumps_icntl_12
         _opts["st_mat_mumps_icntl_4"] = mumps_icntl_4
+        ksp_st = st.getKSP()
+        st_ksp_type, st_pc_label = _slepc_configure_st_ksp_pc(
+            ksp_st,
+            ksp_st.getPC(),
+            solver_cfg,
+            block_is=block_is,
+            opts_prefix="st_",
+            use_ciss=False,
+        )
+        _fs_note = " block_is=ok" if block_is is not None else " block_is=missing"
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                f"[solver] ST-PC re-applied after setFromOptions: "
+                f"{st_ksp_type}, {st_pc_label}{_fs_note}",
+                flush=True,
+            )
     if _eps_conv_rel is not None:
         try:
             eps.setConvergenceTest(_eps_conv_rel)
@@ -5205,12 +5297,18 @@ def _solve_coupled_evp(
         _audit_assembled_mixed_coupling(
             W, a_up, m_pu, [], status_callback=status_callback
         )
+        _audit_up_min = float(solver_cfg.get("fsi_iface_audit_aup_min_norm", 1.0e3))
+        if _solver_bool(solver_cfg, "gnhep_block_frobenius_normalize", default=True):
+            _audit_up_min = float(
+                solver_cfg.get("fsi_iface_audit_aup_min_norm_scaled", 0.5)
+            )
         _audit_fsi_traction_pair_norms(
             traction_up=a_up,
             traction_pu=a_pu,
             mass_pu=m_pu,
             label="post_blockwise_A",
             status_callback=status_callback,
+            min_up_norm=_audit_up_min,
         )
 
     gnhep_scale = _normalize_assembled_gnhep(A, M, solver_cfg)
