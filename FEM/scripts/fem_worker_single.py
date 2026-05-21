@@ -222,6 +222,15 @@ def main() -> int:
     cfg["solver"]["adaptive_mode_sifter"] = False
     if args.eps_band_solver is not None:
         cfg["solver"]["eps_band_solver"] = str(args.eps_band_solver)
+    _band_solver = str(cfg["solver"].get("eps_band_solver", "shift_invert")).strip().lower()
+    if _band_solver in ("shift_invert", "shift-invert", "sinvert"):
+        # Coupled FSI harvest: keep converged modes near target and at the actual ST shift.
+        cfg["solver"]["eps_reject_sigma_spurious"] = False
+        cfg["solver"]["eps_reject_target_locked"] = False
+        cfg["solver"]["eps_reject_decoupled_u_only"] = False
+        cfg["solver"]["eps_harvest_allow_weak_coupling"] = True
+        _broad = float(cfg["solver"].get("eps_broad_search_hz", 8.0))
+        cfg["solver"]["eps_broad_search_hz"] = max(_broad, 50.0)
     if args.structural_only:
         cfg["solver"]["structural_only_diagnosis"] = True
     _target_hz = float(args.target_hz)
@@ -257,7 +266,11 @@ def main() -> int:
             _fb = str(_solver.get("eps_interval_fallback", "ciss"))
             _band_str = f"band=[{_band_lo:.2f}, {_band_hi:.2f}] Hz (interval→{_fb})"
         else:
-            _band_str = f"shift @ {_target_hz:.4f} Hz"
+            _broad_h = float(_solver.get("eps_broad_search_hz", 8.0))
+            _band_str = (
+                f"shift @ {_target_hz:.4f} Hz "
+                f"(harvest [{_target_hz - _broad_h:.1f}, {_target_hz + _broad_h:.1f}] Hz)"
+            )
         _fs = (
             _solver.get("st_use_fieldsplit", False)
             or _solver.get("st_fieldsplit", False)

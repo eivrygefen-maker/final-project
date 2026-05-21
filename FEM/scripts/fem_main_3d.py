@@ -4117,6 +4117,25 @@ def _slepc_shift_invert_batch(
         phi_u = M_top.createVecRight() if M_top is not None else M_back.createVecRight()
         work_u = phi_u.duplicate()
 
+    if not use_ciss and f_window_lo is not None and f_window_hi is not None:
+        st_sigma_used = float(solver_cfg.get("_batch_st_sigma_hz", st_sigma_hz))
+        margin = float(solver_cfg.get("eps_harvest_sigma_margin_hz", 10.0))
+        broad_cfg = float(solver_cfg.get("eps_broad_search_hz", 0.0))
+        half_need = max(
+            float(target_hz) - float(f_window_lo),
+            float(f_window_hi) - float(target_hz),
+            abs(st_sigma_used - float(target_hz)) + margin,
+        )
+        half_eff = max(broad_cfg, half_need, 0.5)
+        f_window_lo = float(target_hz) - half_eff
+        f_window_hi = float(target_hz) + half_eff
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                f"[solver] EPS harvest window (post-ST): [{f_window_lo:.2f}, {f_window_hi:.2f}] Hz "
+                f"(target={target_hz:.2f}, ST_sigma={st_sigma_used:.2f}, margin={margin:.1f})",
+                flush=True,
+            )
+
     rank_by_wood = _solver_bool(solver_cfg, "eps_harvest_rank_by_wood", default=True)
     min_wood_harvest = float(solver_cfg.get("eps_harvest_min_wood", 0.01))
     reject_decoupled = _solver_bool(solver_cfg, "eps_reject_decoupled_u_only", default=True)
