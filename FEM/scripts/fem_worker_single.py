@@ -86,9 +86,13 @@ def _apply_master_worker_solver_profile(
     cap = int(s.get("eps_worker_num_modes_cap", _DEFAULT_WORKER_NUM_MODES_CAP) or _DEFAULT_WORKER_NUM_MODES_CAP)
     cap = max(1, cap)
     nm = min(max(1, int(num_modes)), cap)
-    ncv_max = int(s.get("eps_ncv_max", 32) or 32)
+    rigid_buf = int(s.get("eps_rigid_mode_buffer", 5) or 5)
+    # SLEPc requires ncv >= nev+1 with nev ~= num_modes + rigid_buf.
+    ncv_min = int(nm) + max(rigid_buf, 0) + 2
+    ncv_max = int(s.get("eps_ncv_max", 48) or 48)
     if ncv_max <= 0:
-        ncv_max = 32
+        ncv_max = 48
+    ncv_max = max(ncv_max, ncv_min)
     s["eps_ncv_max"] = ncv_max
     s["target_ncv"] = min(
         max(int(s.get("target_ncv", 0)), int(math.ceil(4.0 * nm))),

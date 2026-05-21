@@ -3260,6 +3260,7 @@ def _slepc_try_eps_st_setup(
                     pass
                 try:
                     st.setType(SLEPc.ST.Type.SINVERT)
+                    st.setShift(try_lam)
                     _slepc_clear_st_fieldsplit_petsc_options("st_")
                     ksp = st.getKSP()
                     pc = ksp.getPC()
@@ -3272,6 +3273,10 @@ def _slepc_try_eps_st_setup(
                         allow_fieldsplit=False,
                         use_ciss=False,
                     )
+                    _nev = int(solver_cfg.get("_batch_eps_nev", 0) or 0)
+                    _ncv = int(solver_cfg.get("_batch_eps_ncv", 0) or 0)
+                    if _nev > 0 and _ncv > _nev:
+                        eps.setDimensions(_nev, _ncv)
                     eps.setUp()
                     if (
                         (
@@ -3636,6 +3641,65 @@ def _slepc_clear_ciss_petsc_options() -> None:
             pass
 
 
+def _slepc_resolve_eps_nev_ncv(
+    solver_cfg: Dict,
+    batch: int,
+    *,
+    n_dof: int = 0,
+) -> Tuple[int, int]:
+    """
+    SLEPc Krylov-Schur dimensions with ``ncv >= nev + 1`` (required by EPSSetUp).
+
+    When ``eps_ncv_max`` is set for VM safety, ``nev`` may be trimmed (rigid buffer first)
+    so the cap can still satisfy ``ncv >= nev + 1``.
+    """
+    rigid_buf = int(solver_cfg.get("eps_rigid_mode_buffer", 10))
+    nev = int(batch) + max(rigid_buf, 0)
+    ncv_min_factor = float(solver_cfg.get("eps_ncv_min_factor", 4.0))
+    ncv_floor = int(math.ceil(max(4.0, ncv_min_factor) * float(nev)))
+    ncv_cfg = int(solver_cfg.get("target_ncv", 0))
+    ncv_cap = int(solver_cfg.get("eps_ncv_max", 0))
+    ncv_floor_min = int(solver_cfg.get("eps_ncv_floor_min", 40))
+    if ncv_cap > 0:
+        ncv_floor_min = min(ncv_floor_min, ncv_cap)
+    ncv = max(ncv_floor, ncv_cfg, ncv_floor_min)
+    if ncv_cap <= 0 and n_dof > 0:
+        if n_dof >= 200_000:
+            ncv_cap = 180
+        elif n_dof >= 100_000:
+            ncv_cap = 220
+    ncv_before_cap = ncv
+    if ncv_cap > 0 and ncv > ncv_cap:
+        ncv = ncv_cap
+    min_ncv = int(nev) + 1
+    if ncv < min_ncv:
+        if ncv_cap > 0 and min_ncv > ncv_cap:
+            nev_old = int(nev)
+            ncv = int(ncv_cap)
+            nev = min(int(nev), int(ncv) - 1)
+            if MPI.COMM_WORLD.rank == ROOT_RANK:
+                print(
+                    f"[solver][warn] EPS nev trimmed {nev_old} -> {nev} so "
+                    f"ncv={ncv} satisfies ncv>=nev+1 under eps_ncv_max={ncv_cap}.",
+                    flush=True,
+                )
+        else:
+            ncv = min_ncv
+    if ncv < int(nev) + 1:
+        ncv = int(nev) + 1
+    if ncv_before_cap != ncv and ncv_before_cap > int(solver_cfg.get("eps_ncv_max", 0) or 0):
+        if MPI.COMM_WORLD.rank == ROOT_RANK and int(solver_cfg.get("eps_ncv_max", 0) or 0) > 0:
+            print(
+                f"[solver][warn] EPS ncv capped {ncv_before_cap} -> {ncv} "
+                f"(eps_ncv_max={int(solver_cfg.get('eps_ncv_max', 0))}; "
+                f"nev={nev}, ncv>=nev+1 enforced).",
+                flush=True,
+            )
+    solver_cfg["_batch_eps_nev"] = int(nev)
+    solver_cfg["_batch_eps_ncv"] = int(ncv)
+    return int(nev), int(ncv)
+
+
 def _slepc_ciss_integration_sizes(
     solver_cfg: Dict,
     nev_request: int,
@@ -3747,7 +3811,6 @@ def _slepc_shift_invert_batch(
     shift_jitter_hz = float(solver_cfg.get("shift_jitter_hz", 0.0))
     rigid_tol = float(solver_cfg.get("coupled_rigid_lambda_tol", 1.0e-10))
     rigid_buf = int(solver_cfg.get("eps_rigid_mode_buffer", 10))
-    nev_request = int(batch) + max(rigid_buf, 0)
 
     f_window_lo, f_window_hi, lam_lo, lam_hi, st_sigma_hz, st_sigma = _slepc_interval_hz_band(
         solver_cfg, target_hz, min_hz
@@ -3935,31 +3998,13 @@ def _slepc_shift_invert_batch(
         petsc_opts["st_pc_factor_mat_solver_type"] = _st_factor
     petsc_opts["st_ksp_norm_type"] = str(solver_cfg.get("st_ksp_norm_type", "none"))
 
-    ncv_min_factor = float(solver_cfg.get("eps_ncv_min_factor", 4.0))
-    ncv_floor = int(math.ceil(max(4.0, ncv_min_factor) * float(nev_request)))
-    ncv_cfg = int(solver_cfg.get("target_ncv", 0))
-    ncv_cap = int(solver_cfg.get("eps_ncv_max", 0))
-    ncv_floor_min = int(solver_cfg.get("eps_ncv_floor_min", 40))
-    if ncv_cap > 0:
-        ncv_floor_min = min(ncv_floor_min, ncv_cap)
-    ncv = max(ncv_floor, ncv_cfg, ncv_floor_min)
-    if ncv_cap <= 0:
-        try:
-            n_glob = int(A.getSize()[0])
-        except Exception:
-            n_glob = 0
-        if n_glob >= 200_000:
-            ncv_cap = 180
-        elif n_glob >= 100_000:
-            ncv_cap = 220
-    if ncv_cap > 0 and ncv > ncv_cap:
-        if MPI.COMM_WORLD.rank == ROOT_RANK:
-            print(
-                f"[solver][warn] EPS ncv capped {ncv} -> {ncv_cap} "
-                f"(large coupled model; high ncv can OOM/segfault on small VMs).",
-                flush=True,
-            )
-        ncv = ncv_cap
+    try:
+        n_glob = int(A.getSize()[0])
+    except Exception:
+        n_glob = 0
+    nev_request, ncv = _slepc_resolve_eps_nev_ncv(
+        solver_cfg, int(batch), n_dof=n_glob
+    )
     eps.setDimensions(int(nev_request), int(ncv))
     eps_max_it = int(solver_cfg.get("eigs_maxiter", solver_cfg.get("eps_max_it", 3000)))
     if eps_max_it_cap is not None:
