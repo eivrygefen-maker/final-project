@@ -3039,6 +3039,63 @@ def _fieldsplit_schur_settings(solver_cfg: Dict) -> Tuple[str, str, int]:
     return fact_s, pre_s, schur_block
 
 
+def _petsc_fieldsplit_option_keys(opts_prefix: str) -> str:
+    """PETSc option stem for FieldSplit on a KSP with prefix ``opts_prefix`` (e.g. ``st_`` → ``st_pc_fieldsplit_``)."""
+    return f"{opts_prefix}pc_fieldsplit"
+
+
+def _petsc_inject_fieldsplit_options(
+    petsc_opts: Any,
+    opts_prefix: str,
+    solver_cfg: Dict,
+    *,
+    fs_type: str,
+    schur_fact: str,
+    schur_pre: str,
+    schur_block: int,
+    st_factor: str,
+    shift_type: str,
+    shift_amt: float,
+) -> None:
+    """
+    Configure FieldSplit via the PETSc options database only (no petsc4py Schur enums).
+
+    SLEPc ST inner solve uses prefix ``st_`` → keys like ``-st_pc_type fieldsplit``.
+    """
+    pfx = _petsc_fieldsplit_option_keys(opts_prefix)
+    fs = str(fs_type).strip().lower()
+    petsc_opts[f"{opts_prefix}pc_type"] = "fieldsplit"
+    petsc_opts[f"{pfx}_type"] = fs
+    if fs in ("schur", "schur_complement"):
+        fact = str(schur_fact).strip().lower()
+        pre = str(schur_pre).strip().lower()
+        if pre == "selfp0":
+            pre = "selfp"
+        petsc_opts[f"{pfx}_schur_fact"] = fact
+        petsc_opts[f"{pfx}_schur_fact_type"] = fact
+        petsc_opts[f"{pfx}_schur_precondition"] = pre
+        petsc_opts[f"{pfx}_schur_block"] = int(schur_block)
+    for blk in ("u", "p"):
+        petsc_opts[f"{pfx}_{blk}_ksp_type"] = str(
+            solver_cfg.get(f"st_fieldsplit_{blk}_ksp_type", "preonly")
+        )
+        blk_pc = str(solver_cfg.get(f"st_fieldsplit_{blk}_pc_type", "lu"))
+        petsc_opts[f"{pfx}_{blk}_pc_type"] = blk_pc
+        petsc_opts[f"{pfx}_{blk}_pc_factor_mat_solver_type"] = st_factor
+        petsc_opts[f"{pfx}_{blk}_pc_factor_shift_type"] = str(
+            solver_cfg.get(
+                f"st_fieldsplit_{blk}_pc_factor_shift_type",
+                shift_type,
+            )
+        )
+        petsc_opts[f"{pfx}_{blk}_pc_factor_shift_amount"] = float(
+            solver_cfg.get(
+                f"st_fieldsplit_{blk}_pc_factor_shift_amount",
+                shift_amt if blk == "p" else shift_amt * 0.1,
+            )
+        )
+
+
 def _slepc_st_allow_fieldsplit(solver_cfg: Dict, *, use_ciss: bool) -> bool:
     """FieldSplit on shifted CISS operators often hits zero pivots; default off for CISS."""
     if use_ciss:
@@ -3103,74 +3160,48 @@ def _slepc_configure_st_ksp_pc(
 
     if use_fs and block_is is not None:
         is_u, is_p = block_is
-        pc.setType("fieldsplit")
         fs_type = str(solver_cfg.get("st_fieldsplit_type", "additive")).strip().lower()
-        if fs_type in ("schur", "schur_complement"):
-            schur_fact, schur_pre, schur_block = _fieldsplit_schur_settings(solver_cfg)
-            pc.setFieldSplitType(PETSc.PC.CompositeType.SCHUR)
-            _fact_map = {
-                "full": PETSc.PC.FieldSplitSchurFactType.FULL,
-                "upper": PETSc.PC.FieldSplitSchurFactType.UPPER,
-                "lower": PETSc.PC.FieldSplitSchurFactType.LOWER,
-            }
-            pc.setFieldSplitSchurFactType(
-                _fact_map.get(schur_fact, PETSc.PC.FieldSplitSchurFactType.FULL)
-            )
-            _pre_map = {
-                "self": PETSc.PC.FieldSplitSchurPreType.SELF,
-                "selfp0": PETSc.PC.FieldSplitSchurPreType.SELFP0,
-                "a11": PETSc.PC.FieldSplitSchurPreType.A11,
-                "user": PETSc.PC.FieldSplitSchurPreType.USER,
-            }
-            pc.setFieldSplitSchurPreType(
-                _pre_map.get(schur_pre, PETSc.PC.FieldSplitSchurPreType.SELFP0)
-            )
-            try:
-                pc.setFieldSplitSchurBlock(int(schur_block))
-            except (AttributeError, TypeError):
-                petsc_opts[f"{opts_prefix}fieldsplit_schur_block"] = int(schur_block)
-            petsc_opts[f"{opts_prefix}fieldsplit_type"] = "schur"
-            petsc_opts[f"{opts_prefix}fieldsplit_schur_fact"] = schur_fact
-            petsc_opts[f"{opts_prefix}fieldsplit_schur_precondition"] = schur_pre
-            petsc_opts[f"{opts_prefix}fieldsplit_schur_block"] = int(schur_block)
-            pc_label = f"fieldsplit/schur({schur_fact},{schur_pre},b={schur_block})"
-        else:
-            pc.setFieldSplitType(PETSc.PC.CompositeType.ADDITIVE)
-            petsc_opts[f"{opts_prefix}fieldsplit_type"] = "additive"
-            pc_label = "fieldsplit/additive"
+        schur_fact, schur_pre, schur_block = _fieldsplit_schur_settings(solver_cfg)
+        _petsc_inject_fieldsplit_options(
+            petsc_opts,
+            opts_prefix,
+            solver_cfg,
+            fs_type=fs_type,
+            schur_fact=schur_fact,
+            schur_pre=schur_pre,
+            schur_block=schur_block,
+            st_factor=st_factor,
+            shift_type=shift_type,
+            shift_amt=shift_amt,
+        )
+        pc.setType("fieldsplit")
         pc.setFieldSplitIS(("u", is_u), ("p", is_p))
-        for blk in ("u", "p"):
-            petsc_opts[f"{opts_prefix}fieldsplit_{blk}_ksp_type"] = str(
-                solver_cfg.get(f"st_fieldsplit_{blk}_ksp_type", "preonly")
-            )
-            blk_pc = str(solver_cfg.get(f"st_fieldsplit_{blk}_pc_type", "lu"))
-            petsc_opts[f"{opts_prefix}fieldsplit_{blk}_pc_type"] = blk_pc
-            petsc_opts[f"{opts_prefix}fieldsplit_{blk}_pc_factor_mat_solver_type"] = st_factor
-            petsc_opts[f"{opts_prefix}fieldsplit_{blk}_pc_factor_shift_type"] = str(
-                solver_cfg.get(
-                    f"st_fieldsplit_{blk}_pc_factor_shift_type",
-                    shift_type,
+        try:
+            pc.setFromOptions()
+        except Exception:
+            pass
+        if fs_type in ("schur", "schur_complement"):
+            pre_label = "selfp" if str(schur_pre).lower() == "selfp0" else schur_pre
+            pc_label = f"fieldsplit/schur({schur_fact},{pre_label},b={schur_block})"
+        else:
+            pc_label = "fieldsplit/additive"
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            pfx = _petsc_fieldsplit_option_keys(opts_prefix)
+            if fs_type in ("schur", "schur_complement"):
+                pre_log = "selfp" if str(schur_pre).lower() == "selfp0" else schur_pre
+                print(
+                    f"[solver] FieldSplit via PETSc options: "
+                    f"-{opts_prefix}pc_type fieldsplit, -{pfx}_type schur, "
+                    f"-{pfx}_schur_fact {schur_fact}, "
+                    f"-{pfx}_schur_precondition {pre_log}, -{pfx}_schur_block {schur_block}",
+                    flush=True,
                 )
-            )
-            petsc_opts[f"{opts_prefix}fieldsplit_{blk}_pc_factor_shift_amount"] = float(
-                solver_cfg.get(
-                    f"st_fieldsplit_{blk}_pc_factor_shift_amount",
-                    shift_amt if blk == "p" else shift_amt * 0.1,
+            else:
+                print(
+                    f"[solver] FieldSplit via PETSc options: "
+                    f"-{opts_prefix}pc_type fieldsplit, -{pfx}_type additive",
+                    flush=True,
                 )
-            )
-            if blk_pc.lower() == "lu":
-                try:
-                    sub_pc = pc.getFieldSplitSubPC(blk)
-                    sub_pc.setFactorSolverType(st_factor)
-                    sub_pc.setFactorShiftType(
-                        petsc_opts[f"{opts_prefix}fieldsplit_{blk}_pc_factor_shift_type"]
-                    )
-                    sub_pc.setFactorShiftAmount(
-                        petsc_opts[f"{opts_prefix}fieldsplit_{blk}_pc_factor_shift_amount"]
-                    )
-                except Exception:
-                    pass
-        petsc_opts[f"{opts_prefix}pc_type"] = "fieldsplit"
         return st_ksp_type, pc_label
 
     pc.setType(st_pc_type_cfg if st_pc_type_cfg not in ("fieldsplit", "fs") else "lu")
