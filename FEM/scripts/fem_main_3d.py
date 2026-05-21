@@ -2997,6 +2997,123 @@ def _slepc_interval_hz_band(
     return f_lo, f_hi, lam_lo, lam_hi, f_mid, lam_mid
 
 
+def _slepc_is_mumps_factorization_failure(exc: BaseException) -> bool:
+    """True when MUMPS analysis/factorization failed (singular / zero pivot)."""
+    msg = f"{type(exc).__name__}: {exc!r}".lower()
+    return (
+        "infog(1)=-10" in msg
+        or "infog(1)=-6" in msg
+        or "error code 76" in msg
+        or "error in external library" in msg
+    )
+
+
+def _slepc_st_sigma_hz_candidates(solver_cfg: Dict, target_hz: float) -> List[float]:
+    """
+    ST shift frequencies (Hz) to try for shift-invert LU.
+
+    Avoids σ landing on a resonance (MUMPS INFOG=-10). First entry is the primary offset;
+    later entries are retried only if factorization fails.
+    """
+    target_hz = float(target_hz)
+    frac = float(solver_cfg.get("eps_st_sigma_frac_offset", 0.12))
+    fixed = float(solver_cfg.get("eps_st_sigma_min_offset_hz", 5.0))
+    base_off = max(fixed, frac * target_hz)
+    raw_retry = solver_cfg.get(
+        "eps_st_sigma_retry_offsets_hz",
+        (18.0, 28.0, -15.0, 35.0, -25.0, 42.0),
+    )
+    offsets: List[float] = [base_off]
+    if isinstance(raw_retry, (list, tuple)):
+        for x in raw_retry:
+            try:
+                offsets.append(float(x))
+            except (TypeError, ValueError):
+                pass
+    seen: set = set()
+    out: List[float] = []
+    for off in offsets:
+        hz = max(1.0, target_hz + float(off))
+        key = round(hz, 3)
+        if key not in seen:
+            seen.add(key)
+            out.append(hz)
+    return out
+
+
+def _slepc_primary_st_sigma_hz(
+    solver_cfg: Dict,
+    target_hz: float,
+    *,
+    shift_jitter_hz: float = 0.0,
+) -> float:
+    """Primary σ (Hz) for shift-invert (first candidate in the retry list)."""
+    use_sigma_jitter = _solver_bool(solver_cfg, "eps_st_sigma_use_jitter", default=False)
+    if use_sigma_jitter and abs(shift_jitter_hz) > 0.0:
+        return max(1.0, float(target_hz) + float(shift_jitter_hz))
+    candidates = _slepc_st_sigma_hz_candidates(solver_cfg, target_hz)
+    return float(candidates[0]) if candidates else max(1.0, float(target_hz))
+
+
+def _slepc_try_eps_st_setup(
+    eps: Any,
+    sigma_hz_list: List[float],
+    solver_cfg: Dict,
+    *,
+    status_callback=None,
+) -> Tuple[bool, float, float]:
+    """
+    Run ``eps.setUp()`` for shift-invert ST until MUMPS factorization succeeds.
+
+    Returns ``(ok, sigma_hz_used, sigma_lambda_used)``.
+    """
+    st = eps.getST()
+    last_exc: Optional[BaseException] = None
+    for try_hz in sigma_hz_list:
+        try_lam = _slepc_hz_to_lambda(try_hz)
+        st.setShift(try_lam)
+        solver_cfg["_batch_st_sigma_hz"] = float(try_hz)
+        try:
+            eps.reset()
+        except Exception:
+            pass
+        try:
+            ksp = st.getKSP()
+            ksp.reset()
+            ksp.getPC().reset()
+        except Exception:
+            pass
+        try:
+            eps.setUp()
+            if try_hz != sigma_hz_list[0] and MPI.COMM_WORLD.rank == ROOT_RANK:
+                _emit(
+                    f"[solver][warn] ST shift-invert LU succeeded after σ retry: "
+                    f"using σ={try_hz:.2f} Hz (λ={try_lam:.6e})",
+                    status_callback=status_callback,
+                    level="warning",
+                )
+            return True, float(try_hz), float(try_lam)
+        except Exception as exc:
+            last_exc = exc
+            if not _slepc_is_mumps_factorization_failure(exc):
+                raise
+            if MPI.COMM_WORLD.rank == ROOT_RANK:
+                _emit(
+                    f"[solver][warn] ST setUp failed at σ={try_hz:.2f} Hz "
+                    f"(MUMPS singular/zero pivot); trying next offset.",
+                    status_callback=status_callback,
+                    level="warning",
+                )
+    if last_exc is not None and MPI.COMM_WORLD.rank == ROOT_RANK:
+        _emit(
+            f"[solver][warn] ST setUp failed for all σ candidates "
+            f"({len(sigma_hz_list)} tries); last error: {last_exc!r}",
+            status_callback=status_callback,
+            level="warning",
+        )
+    return False, float(sigma_hz_list[0]), _slepc_hz_to_lambda(sigma_hz_list[0])
+
+
 def _slepc_build_mixed_block_is(
     u_to_W: Optional[np.ndarray],
     p_to_W: Optional[np.ndarray],
@@ -3336,6 +3453,7 @@ def _slepc_shift_invert_batch(
     )
     broad_hz = 0.5 * (float(f_window_hi) - float(f_window_lo))
 
+    sigma_hz_candidates: List[float] = []
     if use_ciss:
         eps_which_label = "CISS_REGION"
         use_st_shift = False
@@ -3348,21 +3466,11 @@ def _slepc_shift_invert_batch(
         if use_broad_window and broad_hz > 0.0:
             f_window_lo = target_hz - broad_hz
             f_window_hi = target_hz + broad_hz
-        use_sigma_jitter = _solver_bool(solver_cfg, "eps_st_sigma_use_jitter", default=False)
-        st_sigma_hz = max(1.0, target_hz)
-        if use_sigma_jitter and abs(shift_jitter_hz) > 0.0:
-            st_sigma_hz = max(1.0, target_hz + shift_jitter_hz)
-        else:
-            # LU stability: σ exactly on a resonance makes (A-σM) singular → MUMPS/SLEPc segfault.
-            min_off = float(
-                solver_cfg.get(
-                    "eps_st_sigma_min_offset_hz",
-                    shift_jitter_hz if abs(shift_jitter_hz) > 0.0 else 2.0,
-                )
-            )
-            if min_off > 0.0:
-                st_sigma_hz = max(1.0, target_hz + min_off)
+        st_sigma_hz = _slepc_primary_st_sigma_hz(
+            solver_cfg, target_hz, shift_jitter_hz=shift_jitter_hz
+        )
         st_sigma = _slepc_hz_to_lambda(st_sigma_hz)
+        sigma_hz_candidates = _slepc_st_sigma_hz_candidates(solver_cfg, target_hz)
     solver_cfg["_batch_st_sigma_hz"] = float(st_sigma_hz)
 
     block_is = _slepc_build_mixed_block_is(u_to_W, p_to_W, A.getComm())
@@ -3390,12 +3498,12 @@ def _slepc_shift_invert_batch(
             if use_broad_window and broad_hz > 0.0:
                 f_window_lo = target_hz - broad_hz
                 f_window_hi = target_hz + broad_hz
-            use_sigma_jitter = _solver_bool(solver_cfg, "eps_st_sigma_use_jitter", default=False)
-            if use_sigma_jitter and abs(shift_jitter_hz) > 0.0:
-                st_sigma_hz = max(1.0, target_hz + shift_jitter_hz)
-            else:
-                st_sigma_hz = max(1.0, target_hz)
+            st_sigma_hz = _slepc_primary_st_sigma_hz(
+                solver_cfg, target_hz, shift_jitter_hz=shift_jitter_hz
+            )
             st_sigma = _slepc_hz_to_lambda(st_sigma_hz)
+            sigma_hz_candidates = _slepc_st_sigma_hz_candidates(solver_cfg, target_hz)
+            solver_cfg["_batch_st_sigma_hz"] = float(st_sigma_hz)
             eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
         else:
             eps.setType(_ciss_eps_type)
@@ -3462,6 +3570,7 @@ def _slepc_shift_invert_batch(
     mumps_icntl_6 = int(solver_cfg.get("mat_mumps_icntl_6", 7))
     mumps_icntl_12 = int(solver_cfg.get("mat_mumps_icntl_12", 1))
     mumps_icntl_7 = int(solver_cfg.get("mat_mumps_icntl_7", 0))
+    mumps_icntl_11 = int(solver_cfg.get("mat_mumps_icntl_11", 0))
     # ICNTL(4)=0: silent MUMPS (no statistics I/O); non-zero enables host printing and slows each factorization.
     mumps_icntl_4 = int(solver_cfg.get("mat_mumps_icntl_4", 0))
     petsc_opts = PETSc.Options()
@@ -3470,6 +3579,8 @@ def _slepc_shift_invert_batch(
     petsc_opts["st_mat_mumps_icntl_6"] = mumps_icntl_6
     petsc_opts["st_mat_mumps_icntl_12"] = mumps_icntl_12
     petsc_opts["st_mat_mumps_icntl_7"] = mumps_icntl_7
+    if mumps_icntl_11 > 0:
+        petsc_opts["st_mat_mumps_icntl_11"] = mumps_icntl_11
     petsc_opts["st_mat_mumps_icntl_4"] = mumps_icntl_4
     if (
         MPI.COMM_WORLD.size > 1
@@ -3654,6 +3765,8 @@ def _slepc_shift_invert_batch(
         _opts["st_mat_mumps_icntl_24"] = mumps_icntl_24
         _opts["st_mat_mumps_icntl_6"] = mumps_icntl_6
         _opts["st_mat_mumps_icntl_7"] = mumps_icntl_7
+        if mumps_icntl_11 > 0:
+            _opts["st_mat_mumps_icntl_11"] = mumps_icntl_11
         _opts["st_mat_mumps_icntl_12"] = mumps_icntl_12
         _opts["st_mat_mumps_icntl_4"] = mumps_icntl_4
         ksp_st = st.getKSP()
@@ -3672,6 +3785,14 @@ def _slepc_shift_invert_batch(
                 f"{st_ksp_type}, {st_pc_label}{_fs_note}",
                 flush=True,
             )
+        if sigma_hz_candidates:
+            _st_ok, st_sigma_hz, st_sigma = _slepc_try_eps_st_setup(
+                eps,
+                sigma_hz_candidates,
+                solver_cfg,
+                status_callback=status_callback,
+            )
+            solver_cfg["_batch_st_sigma_hz"] = float(st_sigma_hz)
     if _eps_conv_rel is not None:
         try:
             eps.setConvergenceTest(_eps_conv_rel)
