@@ -3013,6 +3013,17 @@ def _slepc_st_setup_error_kind(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+def _slepc_st_setup_error_detail(exc: BaseException) -> str:
+    """One-line ST setUp failure for logs (kind + first line of PETSc/SLEPc text)."""
+    kind = _slepc_st_setup_error_kind(exc)
+    text = str(exc).replace("\n", " ").strip()
+    if not text or text in kind:
+        return kind
+    if len(text) > 220:
+        text = text[:217] + "..."
+    return f"{kind}: {text}"
+
+
 def _slepc_is_mumps_factorization_failure(exc: BaseException) -> bool:
     """True when MUMPS / ST LU setup failed (singular matrix, zero pivot, PETSc 76)."""
     try:
@@ -3112,7 +3123,8 @@ def _slepc_st_sigma_hz_candidates(solver_cfg: Dict, target_hz: float) -> List[fl
         "eps_st_sigma_retry_offsets_hz",
         (18.0, 28.0, -15.0, 35.0, -25.0, 42.0),
     )
-    offsets: List[float] = [base_off]
+    # Try σ at the harvest target first (best for TARGET_MAGNITUDE); offsets follow for pole avoidance.
+    offsets: List[float] = [0.0, base_off]
     if isinstance(raw_retry, (list, tuple)):
         for x in raw_retry:
             try:
@@ -3199,9 +3211,10 @@ def _slepc_try_eps_st_setup(
     last_exc: Optional[BaseException] = None
     reg_ladder = _slepc_st_mass_reg_ladder(solver_cfg)
     stiff_ladder_raw = solver_cfg.get(
-        "eps_st_a_diagonal_shift_frac_ladder", (0.0, 1.0e-3, 5.0e-3, 2.0e-2)
+        "eps_st_a_diagonal_shift_frac_ladder",
+        (1.0e-3, 0.0, 5.0e-3, 2.0e-2),
     )
-    stiff_ladder: List[float] = [0.0]
+    stiff_ladder: List[float] = []
     if isinstance(stiff_ladder_raw, (list, tuple)):
         for x in stiff_ladder_raw:
             try:
@@ -3210,6 +3223,8 @@ def _slepc_try_eps_st_setup(
                 continue
             if v not in stiff_ladder:
                 stiff_ladder.append(v)
+    if not stiff_ladder:
+        stiff_ladder = [1.0e-3, 0.0]
     use_stiff_copy = any(v > 0.0 for v in stiff_ladder)
     for stiff_frac in stiff_ladder:
         A_work = A
@@ -3307,7 +3322,7 @@ def _slepc_try_eps_st_setup(
                     if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                         raise
                     last_exc = exc
-                    kind = _slepc_st_setup_error_kind(exc)
+                    detail = _slepc_st_setup_error_detail(exc)
                     pc_note = ""
                     if MPI.COMM_WORLD.rank == ROOT_RANK:
                         try:
@@ -3317,7 +3332,7 @@ def _slepc_try_eps_st_setup(
                     if MPI.COMM_WORLD.rank == ROOT_RANK:
                         _emit(
                             f"[solver][warn] ST setUp failed at σ={try_hz:.2f} Hz "
-                            f"(a_shift={stiff_frac:.3g}, reg={reg_frac:.3g}, {kind}{pc_note}); "
+                            f"(a_shift={stiff_frac:.3g}, reg={reg_frac:.3g}, {detail}{pc_note}); "
                             f"trying next σ/regularization.",
                             status_callback=status_callback,
                             level="warning",
