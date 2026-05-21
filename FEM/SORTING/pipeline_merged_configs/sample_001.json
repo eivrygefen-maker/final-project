@@ -126,6 +126,7 @@
     "eps_harvest_min_wood": 0.01,
     "eps_reject_decoupled_u_only": true,
     "eps_harvest_min_pressure_fraction": 0.02,
+    "eps_harvest_allow_weak_coupling": true,
     "eps_sigma_spurious_tol_hz": 0.35,
     "gnhep_normalize_matrices": false,
     "gnhep_block_frobenius_normalize": false,
