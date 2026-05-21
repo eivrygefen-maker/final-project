@@ -3641,22 +3641,30 @@ def _slepc_shift_invert_batch(
                 f"(ST={_st_name}, σ={st_sigma:.3e}); map_tags: {tags or 'none'}; "
                 f"skip_unmap={skipped_unmap}, skip_decoupled={skipped_decoupled}, "
                 f"skip_sigma={skipped_sigma}, allow_weak_coupling={allow_weak}; "
-                f"sample raw_eig: [{raw_s}]. "
-                f"Set eps_harvest_allow_weak_coupling=true or lower eps_harvest_min_pressure_fraction.",
+                f"sample raw_eig: [{raw_s}].",
                 flush=True,
             )
-            if (
-                skipped_unmap >= nconv_marked
-                and raw_eig_samples
-                and abs(float(raw_eig_samples[0]) - st_sigma)
-                < 0.05 * max(abs(st_sigma), 1.0)
-            ):
+            if skipped_sigma >= max(1, int(0.9 * nconv_marked)):
                 print(
-                    "[solver][warn] All converged Ritz values sit on the shift (σ-cluster). "
-                    "sinvert + TARGET_MAGNITUDE preferentially returns spurious anchor modes at σ. "
-                    "Keep st_type=sinvert + TARGET_MAGNITUDE; enable eps_st_sigma_use_jitter "
-                    "and eps_broad_search_hz>=5 (avoid TARGET_REAL and st_type=shift on GNHEP). "
-                    "Also try a different --target-hz or fem_master_dynamic.py multi-shift sweep.",
+                    "[solver][warn] Converged modes are σ-locked structural spurious pairs "
+                    f"(wood≈1, p_frac<{sigma_p_frac_max:.1e} near ST_sigma={st_sigma_hz:.1f} Hz). "
+                    "They are correctly rejected — not a too-small nev/ncv pool. "
+                    "shift_invert+TARGET_MAGNITUDE does not scan the band; it returns anchor modes at σ. "
+                    "Try eps_band_solver=ciss (contour on [f_lo,f_hi]) or fem_master_dynamic.py "
+                    "multi-shift ladder across 90–480 Hz.",
+                    flush=True,
+                )
+            elif skipped_unmap >= nconv_marked:
+                print(
+                    "[solver][warn] All Ritz values failed λ mapping (unmap). "
+                    "Check eps_map_* settings or ST/harvest target mismatch.",
+                    flush=True,
+                )
+            elif skipped_decoupled >= max(1, int(0.5 * nconv_marked)):
+                print(
+                    "[solver][warn] Most modes failed decoupled filter "
+                    f"(eps_harvest_min_pressure_fraction={min_pressure_frac:.2e}). "
+                    "Lower threshold only for diagnostics — kept modes may be non-FSI.",
                     flush=True,
                 )
         for j, (_score, f_hz, _arr, rt, rb, u_n, p_n, p_block_max) in enumerate(

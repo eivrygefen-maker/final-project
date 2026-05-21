@@ -168,6 +168,17 @@ def main() -> int:
         action="store_true",
         help="Displacement-only shell EVP (structural_only_diagnosis); used by master fallback.",
     )
+    parser.add_argument(
+        "--eps-band-solver",
+        "--eps_band_solver",
+        dest="eps_band_solver",
+        choices=("shift_invert", "ciss"),
+        default=None,
+        help=(
+            "Override solver.eps_band_solver: 'ciss' contours [target±half_width] Hz "
+            "(finds band modes); 'shift_invert' is σ-anchored (often wood-only spurious)."
+        ),
+    )
     args = parser.parse_args()
 
     if args.sorting_root is not None:
@@ -209,6 +220,8 @@ def main() -> int:
         sys.stdout.flush()
     cfg.setdefault("solver", {})
     cfg["solver"]["adaptive_mode_sifter"] = False
+    if args.eps_band_solver is not None:
+        cfg["solver"]["eps_band_solver"] = str(args.eps_band_solver)
     if args.structural_only:
         cfg["solver"]["structural_only_diagnosis"] = True
     _target_hz = float(args.target_hz)
