@@ -537,6 +537,7 @@ def main() -> int:
         "num_modes_requested": int(_worker_num_modes),
         "num_modes_argv": int(args.num_modes),
         "num_modes_returned": int(len(candidates)),
+        "num_modes_slepc": int(n_modes),
         "candidates": candidates,
     }
     rpath = result_json_path(sorting_root, float(args.target_hz))

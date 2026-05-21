@@ -531,13 +531,7 @@ class SpectralScheduler:
         if lo > 0.0 and hi > lo:
             tried.add(
                 round(
-                    primary_sigma_offset_hz_outside_harvest(
-                        float(hz),
-                        lo,
-                        hi,
-                        hz_min=float(self.hz_min),
-                        hz_max=float(self.hz_max),
-                    ),
+                    primary_sigma_offset_hz_outside_harvest(float(hz), lo, hi),
                     2,
                 )
             )
@@ -1702,10 +1696,12 @@ def _merge_result_into_candidates_log(
         except (TypeError, ValueError):
             tgt = 0.0
         n_returned = int(incoming.get("num_modes_returned", 0) or 0)
+        n_slepc = int(incoming.get("num_modes_slepc", n_returned) or 0)
         LOGGER.warning(
-            "Merge: 0 worker candidates at target %.4f Hz (%d SLEPc row(s) pre-filter); "
+            "Merge: 0 worker candidates at target %.4f Hz (%d SLEPc row(s), %d ROM-ready); "
             "recording zero-yield (coupled_valid_kept=0) for σ-retry.",
             tgt,
+            n_slepc,
             n_returned,
         )
         try:
@@ -2300,8 +2296,9 @@ def _poll_completed(
                         )
                         LOGGER.warning(
                             "Coupled harvest: 0 ROM-ready FSI at %.4f Hz; "
-                            "spawning σ-retry worker (offset %+.1f Hz).",
+                            "spawning σ-retry worker (σ≈%.2f Hz, offset %+.1f Hz).",
                             hz,
+                            float(par_retry.get("eps_st_sigma_hz_planned", hz + off)),
                             off,
                         )
                         n_running = len(running)

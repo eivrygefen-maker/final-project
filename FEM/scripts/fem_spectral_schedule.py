@@ -30,6 +30,9 @@ HF_EPS_NCV_MAX = 56
 # ST σ must sit outside the per-shift harvest window so σ-Ritz is not the only
 # strongly coupled mode inside [harvest_lo_hz, harvest_hi_hz].
 SIGMA_OUTSIDE_HARVEST_MARGIN_HZ = 12.0
+# ST shift-invert σ must stay positive; solver harvest still uses ``min_hz`` (often 60).
+ST_SIGMA_HZ_FLOOR = 60.0
+ST_SIGMA_HZ_CEILING = 600.0
 
 
 def hz_shift_quantize(hz: float, tol: float = 1e-4) -> float:
@@ -203,31 +206,31 @@ def primary_sigma_offset_hz_outside_harvest(
     """
     Offset (Hz) for ``eps_st_sigma_primary_offset_hz`` so ST σ lies outside ``[lo, hi]``.
 
-    Prefers σ just below ``harvest_lo_hz``; if that violates ``hz_min``, uses just above
-    ``harvest_hi_hz`` (still outside the window).
+    Prefers σ just below ``harvest_lo_hz``; otherwise just above ``harvest_hi_hz``.
+    Placement uses the harvest window only (not scheduler ``hz_min``/``hz_max``), so σ-retry
+    can still run when the sweep span is narrower than the harvest band.
     """
     target = float(target_hz)
     lo = float(harvest_lo_hz)
     hi = float(harvest_hi_hz)
     margin = max(8.0, float(margin_hz))
-    f0 = max(1.0, float(hz_min))
-    f1 = max(f0, float(hz_max))
+    sigma_floor = max(1.0, float(ST_SIGMA_HZ_FLOOR))
+    sigma_ceil = max(sigma_floor, float(ST_SIGMA_HZ_CEILING))
 
-    sigma_below = lo - margin
+    sigma_below = max(sigma_floor, lo - margin)
     off_below = sigma_below - target
-    if sigma_below >= f0 + 1.0e-9:
+    if sigma_below < lo - 1.0e-9:
         return float(off_below)
 
-    sigma_above = hi + margin
+    sigma_above = min(sigma_ceil, hi + margin)
     off_above = sigma_above - target
-    if sigma_above <= f1 - 1.0e-9:
+    if sigma_above > hi + 1.0e-9:
         return float(off_above)
 
-    # Last resort: push σ to the sweep edge farthest from the harvest window centre.
     mid = 0.5 * (lo + hi)
-    if mid >= 0.5 * (f0 + f1):
-        return float((f0 + 1.0) - target)
-    return float((f1 - 1.0) - target)
+    if mid >= 0.5 * target:
+        return float((sigma_floor + 1.0) - target)
+    return float((sigma_ceil - 1.0) - target)
 
 
 def solver_stability_overrides_for_target(target_hz: float) -> Dict[str, Any]:
@@ -310,13 +313,7 @@ def spectral_harvest_worker_overrides(
         "spectral_hz_max": float(hz_max),
     }
     so = solver_stability_overrides_for_target(float(target_hz))
-    sigma_off = primary_sigma_offset_hz_outside_harvest(
-        float(target_hz),
-        lo,
-        hi,
-        hz_min=float(hz_min),
-        hz_max=float(hz_max),
-    )
+    sigma_off = primary_sigma_offset_hz_outside_harvest(float(target_hz), lo, hi)
     so["eps_st_sigma_primary_offset_hz"] = float(sigma_off)
     out["solver_overrides"] = so
     out["eps_st_sigma_primary_offset_hz"] = float(sigma_off)
@@ -342,11 +339,11 @@ def sigma_retry_offset_candidates(
     lo = float(harvest_lo_hz)
     hi = float(harvest_hi_hz)
     margin = float(SIGMA_OUTSIDE_HARVEST_MARGIN_HZ)
-    f0 = float(hz_min)
-    f1 = float(hz_max)
+    sigma_floor = max(1.0, float(ST_SIGMA_HZ_FLOOR))
+    sigma_ceil = max(sigma_floor, float(ST_SIGMA_HZ_CEILING))
 
     primary = primary_sigma_offset_hz_outside_harvest(
-        target, lo, hi, hz_min=f0, hz_max=f1, margin_hz=margin
+        target, lo, hi, margin_hz=margin
     )
     extra_steps: List[float] = [18.0, 28.0, 38.0]
     if solver_cfg:
@@ -382,11 +379,11 @@ def sigma_retry_offset_candidates(
     for step in extra_steps:
         if abs(float(step)) < 1.0e-9:
             continue
-        sigma_below = lo - margin - abs(float(step))
-        if sigma_below >= f0 + 1.0e-9:
+        sigma_below = max(sigma_floor, lo - margin - abs(float(step)))
+        if sigma_below < lo - 1.0e-9:
             _try_offset(sigma_below - target)
-        sigma_above = hi + margin + abs(float(step))
-        if sigma_above <= f1 - 1.0e-9:
+        sigma_above = min(sigma_ceil, hi + margin + abs(float(step)))
+        if sigma_above > hi + 1.0e-9:
             _try_offset(sigma_above - target)
     return candidates
 
