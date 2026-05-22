@@ -218,51 +218,59 @@ def _occ_perimeter_walk_surface(
     full_perimeter: Sequence[Tuple[float, float]], lc: float
 ) -> int:
     """
-    Passive OCC profile: addPoint → addPolygon → synchronize → plane surface.
+    Tag-agnostic OCC profile: addPoint → addLine (no stored line tags) → auto wire/loop.
 
-    No manual line tags, tag reuse, or removeAllDuplicates (avoids OCC re-index crashes).
+    Curve loop is built from all 1D entities after synchronize/removeAllDuplicates.
     """
     occ = gmsh.model.occ
-    add_polygon = getattr(occ, "addPolygon", None)
-    if add_polygon is None:
-        raise RuntimeError(
-            "gmsh.model.occ.addPolygon is required for passive perimeter build."
-        )
-
     ring = list(full_perimeter)
     n = len(ring)
     if n < 4:
         raise RuntimeError(f"OCC perimeter walk needs >= 4 points (got {n}).")
 
-    # addPolygon closes last→first; omit duplicate neck vertex when head==tail.
     if len(ring) >= 2 and ring[-1] is ring[0]:
         ring_poly = ring[:-1]
     else:
         ring_poly = ring
     if len(ring_poly) < 3:
         raise RuntimeError(
-            f"OCC polygon needs >= 3 unique vertices (got {len(ring_poly)})."
+            f"OCC perimeter needs >= 3 unique vertices (got {len(ring_poly)})."
         )
 
     p_tags = [
         int(occ.addPoint(float(pt[0]), float(pt[1]), 0.0, lc)) for pt in ring_poly
     ]
-    wire_tag = int(add_polygon(p_tags))
+    n_pts = len(p_tags)
+    for i in range(n_pts):
+        occ.addLine(p_tags[i], p_tags[(i + 1) % n_pts])
+
+    occ.synchronize()
+    try:
+        occ.removeAllDuplicates()
+    except Exception:
+        pass
     occ.synchronize()
 
+    curve_dimtags = occ.getEntities(1)
+    curve_tags = [int(tag) for dim, tag in curve_dimtags if int(dim) == 1]
+    if len(curve_tags) < 3:
+        raise RuntimeError(
+            f"OCC auto-loop found {len(curve_tags)} curves (need >= 3)."
+        )
+
     add_wire = getattr(occ, "addWire", None)
+    wire_tag: Optional[int] = None
     if add_wire is not None:
         try:
-            loop_tag = int(add_wire([wire_tag]))
+            wire_tag = int(add_wire(curve_tags))
         except Exception:
-            loop_tag = wire_tag
-    else:
-        loop_tag = wire_tag
+            wire_tag = None
 
+    loop_tag = int(occ.addCurveLoop(curve_tags))
     surface_tag = int(occ.addPlaneSurface([loop_tag]))
     occ.synchronize()
     print(
-        f"[diag] OCC passive polygon: n_ring={n} n_poly_pts={len(p_tags)} "
+        f"[diag] OCC tag-agnostic loop: n_ring={n} n_pts={n_pts} n_curves={len(curve_tags)} "
         f"wire={wire_tag} loop={loop_tag} surface={surface_tag}"
     )
     return int(surface_tag)
