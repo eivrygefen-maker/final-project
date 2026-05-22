@@ -37,8 +37,7 @@ sys.path.append(str(BASE_DIR / "FEM" / "rom"))
 import fem_main_3d
 from fem_rom_postprocess import DOMINANT_TAG_BACK, DOMINANT_TAG_TOP, dominant_tag_for_row
 from wood_library import (
-    BACK_WOOD_IDS,
-    TOP_WOOD_IDS,
+    ALL_WOOD_IDS,
     material_block_for_id,
     plot_color_for_wood,
     wood_display_name,
@@ -48,9 +47,11 @@ from wood_library import (
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 pv.OFF_SCREEN = True
 
-# --- Initialization ---
-if "fem_ready" not in st.session_state:
-    st.session_state.fem_ready = False
+# --- Session state (two-button pipeline) ---
+if "physics_ready" not in st.session_state:
+    st.session_state.physics_ready = False
+if "physics_geom_fp" not in st.session_state:
+    st.session_state.physics_geom_fp = ""
 if "developer_fom_mode" not in st.session_state:
     st.session_state.developer_fom_mode = False
 if "last_engine" not in st.session_state:
@@ -59,6 +60,8 @@ if "rom_last_result" not in st.session_state:
     st.session_state.rom_last_result = {}
 if "live_preview_fp" not in st.session_state:
     st.session_state.live_preview_fp = ""
+if "stk_body_json" not in st.session_state:
+    st.session_state.stk_body_json = ""
 if "show_physics_success" not in st.session_state:
     st.session_state.show_physics_success = False
 
@@ -237,20 +240,14 @@ def _execute_rom_engine(
     return result
 
 
-def _run_physics_and_audio(
+def _run_physics_compute(
     *,
     fom_mode: bool,
     lhs_params: Dict[str, Any],
     rom_shape: str,
-    note_hz: float,
-    top_wood_id: str,
-    q_mode: str,
-) -> None:
-    """
-    Heavy path only (button-triggered): engineering mesh → ROM/FOM → STK.
-
-    Does not touch the live preview mesh; geometry was already synced via sliders.
-    """
+    geom_fp: str,
+) -> Path:
+    """Button 1: engineering mesh + ROM/FOM (no STK). Returns body JSON path for audio."""
     py_exe = sys.executable
 
     if FEM_FOM_JSON.exists():
@@ -258,7 +255,7 @@ def _run_physics_and_audio(
     if ROM_STK_JSON.exists():
         ROM_STK_JSON.unlink()
 
-    with st.spinner("Building engineering mesh for solvers..."):
+    with st.spinner("Building high-fidelity engineering mesh…"):
         _build_engineering_mesh(py_exe)
 
     if fom_mode:
@@ -277,7 +274,7 @@ def _run_physics_and_audio(
         st.session_state.last_engine = "fom"
         stk_json = FEM_FOM_JSON
     else:
-        with st.spinner("ROM engine (reduced basis online solve)..."):
+        with st.spinner("ROM online solve (reduced basis)…"):
             rom_result = _execute_rom_engine(
                 rom_shape=rom_shape,
                 lhs_params=lhs_params,
@@ -287,16 +284,27 @@ def _run_physics_and_audio(
         st.session_state.last_engine = "rom"
         stk_json = ROM_STK_JSON
 
-    with st.spinner("Synthesizing audio (STK)..."):
+    st.session_state.physics_ready = True
+    st.session_state.physics_geom_fp = geom_fp
+    st.session_state.stk_body_json = str(stk_json)
+    return stk_json
+
+
+def _run_stk_audio(
+    *,
+    body_json: Path,
+    top_wood_id: str,
+    note_hz: float,
+    q_mode: str,
+) -> None:
+    """Button 2: C++ STK synthesis only (requires prior physics compute)."""
+    with st.spinner("Synthesizing audio (STK)…"):
         _run_stk_synthesis(
-            body_json=stk_json,
+            body_json=body_json,
             top_wood_id=top_wood_id,
             note_hz=note_hz,
             q_mode=q_mode,
         )
-
-    st.session_state.fem_ready = True
-    st.session_state.stk_body_json = str(stk_json)
 
 
 def _modal_rows_from_packaged_rom(npz_path: Path) -> List[Dict[str, Any]]:
@@ -478,6 +486,8 @@ def save_cfg_from_state(
         data = {}
     g = dict(geom)
     g["vis_mode"] = vis_mode
+    g["top_wood_id"] = top_wood_id
+    g["back_wood_id"] = back_wood_id
     data["geometry"] = g
     data["materials"] = {
         "top": {
@@ -500,52 +510,94 @@ def save_cfg_from_state(
         json.dump(data, f, indent=4)
 
 
+def _drop_outer_box_facets(
+    points: np.ndarray,
+    tri: np.ndarray,
+    tags: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Remove axis-aligned outer-domain quads (air bounding box) that leak in as tag 1/3/4.
+
+    Keeps curved guitar shell triangles; drops huge facets glued to the global AABB.
+    """
+    if tri.size == 0:
+        return tri, tags
+    pts = points[tri]
+    cent = pts.mean(axis=1)
+    xmin, xmax = float(points[:, 0].min()), float(points[:, 0].max())
+    ymin, ymax = float(points[:, 1].min()), float(points[:, 1].max())
+    zmin, zmax = float(points[:, 2].min()), float(points[:, 2].max())
+    dx = max(xmax - xmin, 1.0e-6)
+    dy = max(ymax - ymin, 1.0e-6)
+    dz = max(zmax - zmin, 1.0e-6)
+    tol = max(0.002, 0.015 * max(dx, dy, dz))
+    v0, v1, v2 = pts[:, 0], pts[:, 1], pts[:, 2]
+    max_edge = np.linalg.norm(
+        np.stack([v1 - v0, v2 - v1, v0 - v2], axis=1),
+        axis=2,
+    ).max(axis=1)
+    on_aabb = (
+        (np.abs(cent[:, 0] - xmin) < tol)
+        | (np.abs(cent[:, 0] - xmax) < tol)
+        | (np.abs(cent[:, 1] - ymin) < tol)
+        | (np.abs(cent[:, 1] - ymax) < tol)
+        | (np.abs(cent[:, 2] - zmin) < tol)
+        | (np.abs(cent[:, 2] - zmax) < tol)
+    )
+    span_lim = 0.50 * max(dx, dy, dz)
+    keep = ~(on_aabb & (max_edge > span_lim))
+    return tri[keep], tags[keep]
+
+
 def _load_guitar_surface_from_msh(msh_path: Path) -> Optional[Any]:
     """
-    Load guitar **wood shell** triangles only (physical tags 1, 3, 4).
+    Load curved guitar shell triangles only (facet tags 1, 3, 4).
 
-    Drops air-cavity / outer-domain facets (e.g. tag 10) so the body is not drawn
-    inside a surrounding box. Soundhole opening is implied by the top-plate cut.
+    Ignores air cavity (10), soundhole (2), fix (5), and outer box-domain walls.
     """
     try:
         import meshio
     except ImportError:
-        meshio = None  # type: ignore[assignment]
+        return None
 
-    if meshio is not None:
-        try:
-            msh = meshio.read(str(msh_path))
-            phys = msh.cell_data_dict.get("gmsh:physical")
-            tri = msh.get_cells_type("triangle")
-            if phys and tri is not None and len(tri) > 0:
-                tri_tags = phys.get("triangle")
-                if tri_tags is not None:
-                    tags = np.asarray(tri_tags, dtype=np.int32).ravel()
-                    keep = np.isin(tags, list(SHELL_VIS_TAGS))
-                    if not np.any(keep):
-                        return None
-                    tri = np.asarray(tri, dtype=np.int64)[keep]
-                    tags = tags[keep]
-                    faces = np.hstack(
-                        [np.full((tri.shape[0], 1), 3, dtype=np.int64), tri]
-                    ).ravel()
-                    poly = pv.PolyData(np.asarray(msh.points, dtype=np.float64), faces)
-                    poly.cell_data["gmsh:physical"] = tags
-                    poly.compute_normals(
-                        cell_normals=False,
-                        point_normals=True,
-                        feature_angle=30,
-                        split_vertices=True,
-                        inplace=True,
-                        auto_orient_normals=True,
-                    )
-                    return poly
-        except Exception:
-            pass
+    try:
+        msh = meshio.read(str(msh_path))
+        phys = msh.cell_data_dict.get("gmsh:physical")
+        tri = msh.get_cells_type("triangle")
+        if not phys or tri is None or len(tri) == 0:
+            return None
+        tri_tags = phys.get("triangle")
+        if tri_tags is None:
+            return None
 
-    # Without meshio we cannot reliably strip air-box facets — do not fall back to
-    # volume extract_surface (that reintroduces the trapped-box artifact).
-    return None
+        points = np.asarray(msh.points, dtype=np.float64)
+        tags = np.asarray(tri_tags, dtype=np.int32).ravel()
+        tri = np.asarray(tri, dtype=np.int64)
+
+        # Strict whitelist: top, back, ribs only.
+        keep = np.isin(tags, list(SHELL_VIS_TAGS))
+        if not np.any(keep):
+            return None
+        tri = tri[keep]
+        tags = tags[keep]
+        tri, tags = _drop_outer_box_facets(points, tri, tags)
+        if tri.size == 0:
+            return None
+
+        faces = np.hstack([np.full((tri.shape[0], 1), 3, dtype=np.int64), tri]).ravel()
+        poly = pv.PolyData(points, faces)
+        poly.cell_data["gmsh:physical"] = tags
+        poly.compute_normals(
+            cell_normals=False,
+            point_normals=True,
+            feature_angle=30,
+            split_vertices=True,
+            inplace=True,
+            auto_orient_normals=True,
+        )
+        return poly
+    except Exception:
+        return None
 
 
 def _build_live_preview_surface(
@@ -589,6 +641,7 @@ def _build_live_preview_surface(
         return None
 
     st.session_state.live_preview_fp = fp
+    st.session_state.physics_ready = False
     return _load_guitar_surface_from_msh(PREVIEW_MESH_FILE)
 
 
@@ -600,6 +653,7 @@ def _render_pyvista_guitar(
     show_edges: bool,
     cam_preset: str,
     plot_key: str,
+    sketch_mode: bool = False,
 ) -> None:
     plotter = pv.Plotter(window_size=[1100, 620])
     plotter.background_color = "#f4f4f9"
@@ -610,16 +664,25 @@ def _render_pyvista_guitar(
         part = mesh.extract_cells(mask)
         if part.n_cells <= 0:
             return False
-        plotter.add_mesh(
-            part,
-            color=color,
-            opacity=opacity,
-            show_edges=edges,
-            edge_color="#2b1a10",
-            smooth_shading=True,
-            lighting=True,
-            scalar_bar_args=None,
-        )
+        if sketch_mode:
+            plotter.add_mesh(
+                part,
+                style="wireframe",
+                color=color,
+                line_width=2.0,
+                opacity=1.0,
+                lighting=False,
+            )
+        else:
+            plotter.add_mesh(
+                part,
+                color=color,
+                opacity=opacity,
+                show_edges=edges,
+                edge_color="#2b1a10",
+                smooth_shading=True,
+                lighting=True,
+            )
         return True
 
     def render_mesh_by_protocol(mesh, show_edges_flag: bool, top_c: str, back_c: str) -> bool:
@@ -681,7 +744,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.title("Guitar Simulator")
-st.caption("Geometry updates live on every slider move. Physics and audio run only when you click the simulation button.")
+st.caption(
+    "Sketch mode updates live on slider moves. Save physics, then generate audio — two explicit steps."
+)
 
 # --- Sidebar ---
 st.sidebar.header("1. Shape & materials")
@@ -704,19 +769,27 @@ def _wood_option_label(wood_id: str) -> str:
     """Sidebar label: explicit wood_id plus common name."""
     return f"{wood_id} — {wood_display_name(wood_id)}"
 
+def _wood_index(wood_id: str, options: List[str]) -> int:
+    key = str(wood_id).strip().lower().replace(" ", "_")
+    return options.index(key) if key in options else 0
+
+
+_saved_top = str(saved_geom.get("top_wood_id") or saved_geom.get("wood_id") or "spruce")
+_saved_back = str(saved_geom.get("back_wood_id") or saved_geom.get("body_wood_id") or "rosewood")
+
 wood_id = st.sidebar.selectbox(
-    "Soundboard wood",
-    TOP_WOOD_IDS,
-    index=0,
+    "Soundboard Wood",
+    ALL_WOOD_IDS,
+    index=_wood_index(_saved_top, ALL_WOOD_IDS),
     format_func=_wood_option_label,
-    help="Top plate material (spruce, cedar).",
+    help="Any of the five orthotropic species (independent of back/sides).",
 )
 body_wood_id = st.sidebar.selectbox(
-    "Back & sides wood",
-    BACK_WOOD_IDS,
-    index=0,
+    "Back & Sides Wood",
+    ALL_WOOD_IDS,
+    index=_wood_index(_saved_back, ALL_WOOD_IDS),
     format_func=_wood_option_label,
-    help="Back plate and rim material.",
+    help="Any of the five orthotropic species (independent of soundboard).",
 )
 top_wood_id = wood_id
 back_wood_id = body_wood_id
@@ -800,7 +873,13 @@ geom_state = _geometry_state_dict(
     soundhole_y=soundhole_y,
     exploded=exploded,
 )
-geom_fp = _geometry_fingerprint(geom_state)
+geom_fp = _geometry_fingerprint(
+    {**geom_state, "top_wood_id": top_wood_id, "back_wood_id": back_wood_id}
+)
+
+# Sketch mode: any design drift invalidates saved physics + audio gate.
+if geom_fp != st.session_state.physics_geom_fp:
+    st.session_state.physics_ready = False
 
 lhs_params = _gui_lhs_params(
     shape_type=shape_type,
@@ -833,11 +912,13 @@ tab_design, tab_physics, tab_rom = st.tabs(["Design", "Physics & audio", "ROM au
 with tab_design:
     preview_card = st.container(border=True)
     with preview_card:
+        physics_ready = bool(st.session_state.get("physics_ready", False))
+        show_engineering = physics_ready and MESH_FILE.is_file()
+
         st.subheader("Live 3D design preview")
-        st.caption(
-            "Reactive CAD preview mesh. Updates when you move geometry sliders — "
-            "no solvers run here."
-        )
+        mode_label = "Engineering mesh (physics saved)" if show_engineering else "Sketch mode (slider-driven)"
+        st.caption(mode_label)
+
         ctrl1, ctrl2, ctrl3 = st.columns([1, 1, 2])
         with ctrl1:
             vis_mode = st.selectbox("Visual style", ["Mesh + Solid", "Solid Wood"], key="vis_mode_ui")
@@ -852,98 +933,129 @@ with tab_design:
                 ],
             )
         with ctrl3:
-            preview_status = (
-                "Cached preview (slider unchanged)"
-                if st.session_state.live_preview_fp == geom_fp
-                else "Regenerating preview mesh…"
-            )
-            st.info(preview_status)
+            if show_engineering:
+                st.success("Physics locked — detailed shell shown.")
+            elif st.session_state.live_preview_fp == geom_fp:
+                st.info("Sketch cached — move a slider to refresh.")
+            else:
+                st.info("Sketch mode — regenerating outline…")
 
         show_edges_flag = "Mesh" in vis_mode
-        regen_preview = st.session_state.live_preview_fp != geom_fp
-        if regen_preview:
-            with st.spinner("Updating live preview…"):
-                live_surface = _build_live_preview_surface(
+        display_mesh = None
+        plot_suffix = geom_fp[:12]
+
+        if show_engineering:
+            display_mesh = _load_guitar_surface_from_msh(MESH_FILE)
+            plot_suffix = f"eng_{st.session_state.physics_geom_fp[:12]}"
+        else:
+            regen_preview = st.session_state.live_preview_fp != geom_fp
+            if regen_preview:
+                with st.spinner("Updating sketch mesh…"):
+                    display_mesh = _build_live_preview_surface(
+                        geom=geom_state,
+                        top_wood_id=top_wood_id,
+                        back_wood_id=back_wood_id,
+                        vis_mode=vis_mode,
+                    )
+            else:
+                display_mesh = _build_live_preview_surface(
                     geom=geom_state,
                     top_wood_id=top_wood_id,
                     back_wood_id=back_wood_id,
                     vis_mode=vis_mode,
                 )
-        else:
-            live_surface = _build_live_preview_surface(
-                geom=geom_state,
-                top_wood_id=top_wood_id,
-                back_wood_id=back_wood_id,
-                vis_mode=vis_mode,
-            )
 
         try:
             pv.set_jupyter_backend("static")
             _render_pyvista_guitar(
-                live_surface,
+                display_mesh,
                 top_color=top_plot_color,
                 back_color=back_plot_color,
-                show_edges=show_edges_flag,
+                show_edges=show_edges_flag or not show_engineering,
                 cam_preset=cam_preset,
-                plot_key=f"live_preview_{geom_fp[:12]}",
+                plot_key=f"view_{plot_suffix}",
+                sketch_mode=not show_engineering,
             )
         except Exception as exc:
             st.warning(f"3D preview render issue: {exc}")
 
         st.caption(
-            f"Materials: soundboard **{top_wood_id}** ({top_plot_color}) · "
+            f"Soundboard **{top_wood_id}** ({top_plot_color}) · "
             f"back/sides **{back_wood_id}** ({back_plot_color})"
         )
+
+        col1, col2 = st.columns(2)
+        fom_mode = bool(st.session_state.developer_fom_mode)
+        engine_label = "FOM (developer)" if fom_mode else "ROM (production)"
+
+        with col1:
+            if st.button(
+                "Save Changes & Compute Physics",
+                use_container_width=True,
+                type="primary",
+            ):
+                try:
+                    save_cfg_from_state(
+                        geom=geom_state,
+                        top_wood_id=top_wood_id,
+                        back_wood_id=back_wood_id,
+                        vis_mode=vis_mode,
+                    )
+                    _run_physics_compute(
+                        fom_mode=fom_mode,
+                        lhs_params=lhs_params,
+                        rom_shape=DEFAULT_ROM_SHAPE,
+                        geom_fp=geom_fp,
+                    )
+                    st.session_state.show_physics_success = True
+                    st.rerun()
+                except Exception as exc:
+                    st.session_state.physics_ready = False
+                    st.error(f"Physics compute failed: {exc}")
+
+        with col2:
+            stk_path = Path(st.session_state.stk_body_json) if st.session_state.stk_body_json else None
+            if st.button(
+                "Generate Audio (STK)",
+                use_container_width=True,
+                disabled=not physics_ready,
+                help="Unlocks after Save Changes & Compute Physics completes.",
+            ):
+                if stk_path is None or not stk_path.is_file():
+                    st.error("Physics body JSON missing — run physics compute first.")
+                else:
+                    try:
+                        _run_stk_audio(
+                            body_json=stk_path,
+                            top_wood_id=top_wood_id,
+                            note_hz=float(note_hz),
+                            q_mode=q_mode,
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"STK synthesis failed: {exc}")
+
+        st.caption(f"Physics engine: **{engine_label}**")
+        if st.session_state.show_physics_success:
+            eng = str(st.session_state.get("last_engine", "")).upper() or "—"
+            st.success(f"Physics saved ({eng}). Generate audio when ready.")
+            st.session_state.show_physics_success = False
+
+        if WAV_OUTPUT.is_file():
+            st.audio(str(WAV_OUTPUT))
+            if st.session_state.stk_body_json:
+                st.caption(f"STK modes: `{st.session_state.stk_body_json}`")
 
 with tab_physics:
     physics_card = st.container(border=True)
     with physics_card:
-        st.subheader("Physics simulation & sound")
-        fom_mode = bool(st.session_state.developer_fom_mode)
-        engine_label = "FOM (developer)" if fom_mode else "ROM (production)"
-        st.caption(
-            f"Engine: **{engine_label}**. Uses the current slider geometry and builds the "
-            f"engineering mesh (`guitar_3d.msh`) only when you click run."
-        )
-
-        if st.button(
-            "Run Physics Simulation & Generate Sound",
-            use_container_width=True,
-            type="primary",
-        ):
-            try:
-                save_cfg_from_state(
-                    geom=geom_state,
-                    top_wood_id=top_wood_id,
-                    back_wood_id=back_wood_id,
-                    vis_mode=vis_mode,
-                )
-                _run_physics_and_audio(
-                    fom_mode=fom_mode,
-                    lhs_params=lhs_params,
-                    rom_shape=DEFAULT_ROM_SHAPE,
-                    note_hz=float(note_hz),
-                    top_wood_id=top_wood_id,
-                    q_mode=q_mode,
-                )
-                st.session_state.show_physics_success = True
-                st.rerun()
-            except Exception as exc:
-                st.session_state.fem_ready = False
-                st.error(f"Physics simulation failed: {exc}")
-
-        if st.session_state.show_physics_success:
-            eng = str(st.session_state.get("last_engine", "")).upper() or "—"
-            st.success(f"Simulation complete ({eng}).")
-            st.session_state.show_physics_success = False
-
-        if st.session_state.fem_ready and WAV_OUTPUT.is_file():
-            st.audio(str(WAV_OUTPUT))
-            stk_src = st.session_state.get("stk_body_json", "")
-            if stk_src:
-                st.caption(f"STK body modes: `{stk_src}`")
+        st.subheader("Physics results")
+        if st.session_state.get("physics_ready"):
+            st.success("Physics data is saved for the current geometry lock.")
             if MESH_FILE.is_file():
-                st.caption("Engineering mesh written for solvers (not shown in live preview).")
+                st.caption(f"Engineering mesh: `{MESH_FILE.relative_to(BASE_DIR).as_posix()}`")
+        else:
+            st.info("Sketch mode — click **Save Changes & Compute Physics** on the Design tab.")
 
         if st.session_state.get("last_engine") == "rom" and st.session_state.get("rom_last_result"):
             with st.expander("Last ROM solve", expanded=False):

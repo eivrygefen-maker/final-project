@@ -1,16 +1,18 @@
 """
-Discrete wood species library for 3D guitar FEM (top / back assignment).
+Unified orthotropic wood library for 3D guitar FEM.
 
-Five species; LHS and FEM may assign any species to tag 1 (top) or tag 3 (back),
-including identical top/back pairs (e.g. cedar + cedar).
+Five species (Spruce, Cedar, Mahogany, Rosewood, Maple). Any species may be assigned
+independently to the soundboard (tag 1) or back/sides (tag 3/4), including identical pairs.
 """
 from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
-TOP_WOOD_IDS: List[str] = ["spruce", "cedar"]
-BACK_WOOD_IDS: List[str] = ["rosewood", "mahogany", "maple"]
+# Display order for GUI dropdowns (all five in both menus).
+WOOD_IDS: List[str] = ["spruce", "cedar", "mahogany", "rosewood", "maple"]
+TOP_WOOD_IDS: List[str] = list(WOOD_IDS)
+BACK_WOOD_IDS: List[str] = list(WOOD_IDS)
 
 # PyVista / GUI surface colors (physical tag 1 = top, tag 3 = back/sides).
 WOOD_PLOT_COLORS: Dict[str, str] = {
@@ -25,7 +27,7 @@ WOOD_PLOT_COLORS: Dict[str, str] = {
 WOOD_SPECS: Dict[str, Dict[str, Any]] = {
     "spruce": {
         "wood_id": "spruce",
-        "role": "top",
+        "role": "plate",
         "name": "Sitka Spruce",
         "density": 450.0,
         "E_L": 11.0e9,
@@ -43,7 +45,7 @@ WOOD_SPECS: Dict[str, Dict[str, Any]] = {
     },
     "cedar": {
         "wood_id": "cedar",
-        "role": "top",
+        "role": "plate",
         "name": "Western Red Cedar",
         "density": 390.0,
         "E_L": 9.0e9,
@@ -61,7 +63,7 @@ WOOD_SPECS: Dict[str, Dict[str, Any]] = {
     },
     "rosewood": {
         "wood_id": "rosewood",
-        "role": "back",
+        "role": "plate",
         "name": "Indian Rosewood",
         "density": 830.0,
         "E_L": 11.5e9,
@@ -79,7 +81,7 @@ WOOD_SPECS: Dict[str, Dict[str, Any]] = {
     },
     "mahogany": {
         "wood_id": "mahogany",
-        "role": "back",
+        "role": "plate",
         "name": "Honduran Mahogany",
         "density": 540.0,
         "E_L": 10.5e9,
@@ -97,7 +99,7 @@ WOOD_SPECS: Dict[str, Dict[str, Any]] = {
     },
     "maple": {
         "wood_id": "maple",
-        "role": "back",
+        "role": "plate",
         "name": "Maple",
         "density": 650.0,
         "E_L": 1.1e10,
@@ -115,7 +117,7 @@ WOOD_SPECS: Dict[str, Dict[str, Any]] = {
     },
 }
 
-ALL_WOOD_IDS: List[str] = sorted(WOOD_SPECS.keys())
+ALL_WOOD_IDS: List[str] = list(WOOD_IDS)
 
 # Luthier-style plate thickness: LHS samples top only; back = top × factor.
 BACK_THICKNESS_FACTOR = 1.1
