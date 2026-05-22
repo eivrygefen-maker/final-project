@@ -67,8 +67,8 @@ if "stk_body_json" not in st.session_state:
 if "show_physics_success" not in st.session_state:
     st.session_state.show_physics_success = False
 # Bust stale preview meshes when preview CAD schema changes.
-if st.session_state.get("preview_cad_schema", 0) < 8:
-    st.session_state.preview_cad_schema = 8
+if st.session_state.get("preview_cad_schema", 0) < 9:
+    st.session_state.preview_cad_schema = 9
     st.session_state.live_preview_fp = ""
     if PREVIEW_MESH_FILE.is_file():
         PREVIEW_MESH_FILE.unlink(missing_ok=True)
@@ -95,8 +95,8 @@ NOTES_DICT = {
     "E2": 82.41, "A2": 110.00, "D3": 146.83, "G3": 196.00, "B3": 246.94, "E4": 329.63
 }
 
-# Classical placement: soundhole ~17 cm from neck on 48 cm body → 0.354·L along body axis.
-SOUNDHOLE_FROM_NECK_RATIO = 0.354
+# Neck at x=+L/2; hole in lower bout (~19–21 cm from neck on 48 cm classical body).
+SOUNDHOLE_FROM_NECK_RATIO = 0.43
 
 
 def _soundhole_center_x(length: float) -> float:
@@ -641,26 +641,59 @@ def _build_live_preview_surface(
     return _load_guitar_surface_from_msh(PREVIEW_MESH_FILE, allow_all_shell=True)
 
 
-def _mesh_cell_rgb(mesh, *, top_color: str, back_color: str) -> Optional[Any]:
-    """One RGB value per triangle — single opaque draw call (no layered transparency)."""
-    tags = mesh.cell_data.get("gmsh:physical")
-    if tags is None:
+def _mesh_cell_rgb(
+    mesh,
+    *,
+    top_color: str,
+    back_color: str,
+    hole_x: float,
+    hole_y: float,
+    hole_r: float,
+) -> Optional[Any]:
+    """
+    Paint by plate geometry (not Gmsh tags): top plate only = soundboard wood;
+    back plate + all side ribs = back/sides wood. Stable when soundhole radius changes.
+    """
+    if mesh is None or mesh.n_cells <= 0:
         return None
-    tags = np.asarray(tags).ravel()
+    work = mesh.copy(deep=True)
+    work.compute_normals(cell_normals=True, point_normals=False, inplace=True)
+    normals = np.asarray(work.cell_data["Normals"], dtype=np.float64)
+    centers = work.cell_centers().points
+    z = centers[:, 2]
+    x = centers[:, 0]
+    y = centers[:, 1]
+    zmax = float(np.max(z))
+    zmin = float(np.min(z))
+    dz = max(zmax - zmin, 1.0e-6)
+    nz = normals[:, 2]
+
     top_rgb = np.array(_hex_to_rgb01(top_color), dtype=np.float32)
     back_rgb = np.array(_hex_to_rgb01(back_color), dtype=np.float32)
-    hole_rgb = np.array((0.05, 0.05, 0.05), dtype=np.float32)
-    colors = np.zeros((mesh.n_cells, 3), dtype=np.float32)
-    for i, tag in enumerate(tags):
-        if int(tag) == TAG_TOP_PLATE:
-            colors[i] = top_rgb
-        elif int(tag) == TAG_SOUNDHOLE:
-            colors[i] = hole_rgb
-        else:
+    hole_rgb = np.array((0.06, 0.06, 0.06), dtype=np.float32)
+    colors = np.zeros((work.n_cells, 3), dtype=np.float32)
+
+    top_z = zmax - 0.08 * dz
+    back_z = zmin + 0.08 * dz
+    hr2 = float(hole_r) ** 2
+
+    for i in range(work.n_cells):
+        # Soundboard: nearly flat upward face in the top Z band only (not sides).
+        if nz[i] > 0.72 and z[i] >= top_z:
+            dx = x[i] - float(hole_x)
+            dy = y[i] - float(hole_y)
+            if dx * dx + dy * dy <= hr2 * 1.15:
+                colors[i] = hole_rgb
+            else:
+                colors[i] = top_rgb
+        elif nz[i] < -0.72 and z[i] <= back_z:
             colors[i] = back_rgb
-    out = mesh.copy(deep=True)
-    out.cell_data["rgb"] = colors
-    return out
+        else:
+            # Back plate sides + waist + bout sides (never soundboard color).
+            colors[i] = back_rgb
+
+    work.cell_data["rgb"] = colors
+    return work
 
 
 def _render_pyvista_guitar(
@@ -668,6 +701,9 @@ def _render_pyvista_guitar(
     *,
     top_color: str,
     back_color: str,
+    hole_x: float,
+    hole_y: float,
+    hole_r: float,
     show_edges: bool,
     cam_preset: str,
     plot_key: str,
@@ -677,7 +713,14 @@ def _render_pyvista_guitar(
     plotter.background_color = "#f4f4f9"
 
     if surface_mesh is not None:
-        colored = _mesh_cell_rgb(surface_mesh, top_color=top_color, back_color=back_color)
+        colored = _mesh_cell_rgb(
+            surface_mesh,
+            top_color=top_color,
+            back_color=back_color,
+            hole_x=hole_x,
+            hole_y=hole_y,
+            hole_r=hole_r,
+        )
         if colored is not None:
             plotter.add_mesh(
                 colored,
@@ -1021,6 +1064,9 @@ with col_visual:
             display_mesh,
             top_color=top_plot_color,
             back_color=back_plot_color,
+            hole_x=float(geom_state.get("soundhole_x", soundhole_x)),
+            hole_y=0.0,
+            hole_r=float(geom_state.get("hole_radius", hr)),
             show_edges=("Mesh" in vis_mode) or sketch_mode,
             cam_preset=cam_preset,
             plot_key=f"view_{plot_suffix}",

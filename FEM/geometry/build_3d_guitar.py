@@ -80,11 +80,11 @@ def create_guitar_mesh():
         t = float(p.get("top_thickness", p.get("thickness", 0.003)))
         hr = p["hole_radius"]
         shape_type = p.get('shape_type', 'Classical')
-        hole_from_neck_ratio = float(p.get("soundhole_from_neck_ratio", 0.354))
+        hole_from_neck_ratio = float(p.get("soundhole_from_neck_ratio", 0.43))
         hole_x = float(p.get("soundhole_x", 0.5 * L - hole_from_neck_ratio * L))
     else:
         L, W, D, t, hr, shape_type = 0.48, 0.37, 0.1, 0.003, 0.04, 'Classical'
-        hole_from_neck_ratio = 0.354
+        hole_from_neck_ratio = 0.43
         hole_x = 0.5 * L - hole_from_neck_ratio * L
     # Soundhole on body centreline (y=0). Lateral offset removed from GUI — old configs ignored.
     hole_y = 0.0
@@ -458,38 +458,32 @@ def create_guitar_mesh():
     )
 
     def _classify_shell_facets_for_preview(shell_surfs: list) -> tuple:
-        """Single hollow volume: classify exterior facets by outward normal (+Z top, -Z back)."""
+        """
+        Top plate = flat upward faces in the top Z band only.
+        Back plate = flat downward faces in the bottom Z band.
+        All remaining exterior facets = ribs/sides (back & sides wood in FEM).
+        """
         if not shell_surfs:
             return [], [], []
+        zs = [(int(s), get_surface_center_z(s)) for s in shell_surfs]
+        zmax = max(z for _, z in zs)
+        zmin = min(z for _, z in zs)
+        dz = max(zmax - zmin, 1e-6)
+        top_z = zmax - 0.08 * dz
+        back_z = zmin + 0.08 * dz
+
         top: list = []
         back: list = []
         ribs: list = []
-        unclassified: list = []
-        for s in shell_surfs:
-            sid = int(s)
+        for sid, z in zs:
             nz = get_surface_normal_signed_z(sid)
-            if nz is None:
-                unclassified.append(sid)
-            elif nz > 0.35:
+            if nz is not None and nz > 0.72 and z >= top_z:
                 top.append(sid)
-            elif nz < -0.35:
+            elif nz is not None and nz < -0.72 and z <= back_z:
                 back.append(sid)
             else:
                 ribs.append(sid)
-        if unclassified:
-            zs = [(sid, get_surface_center_z(sid)) for sid in unclassified]
-            zmax = max(z for _, z in zs)
-            zmin = min(z for _, z in zs)
-            dz = max(zmax - zmin, 1e-6)
-            top_band = zmax - 0.10 * dz
-            back_band = zmin + 0.10 * dz
-            for sid, z in zs:
-                if z >= top_band:
-                    top.append(sid)
-                elif z <= back_band:
-                    back.append(sid)
-                else:
-                    ribs.append(sid)
+
         if not top:
             top = [int(max(shell_surfs, key=lambda s: get_surface_center_z(s)))]
         if not back:
@@ -497,28 +491,9 @@ def create_guitar_mesh():
         top_set = set(top)
         back_set = set(back)
         ribs = [int(s) for s in shell_surfs if int(s) not in top_set and int(s) not in back_set]
-        if not ribs:
-            scored = [
-                (int(s), abs(get_surface_normal_signed_z(int(s)) or 0.0))
-                for s in shell_surfs
-                if int(s) not in top_set and int(s) not in back_set
-            ]
-            scored.sort(key=lambda row: row[1])
-            ribs = [row[0] for row in scored]
-        if not ribs:
-            ribs = [
-                int(s)
-                for s in shell_surfs
-                if int(s) not in top_set and int(s) not in back_set
-            ]
-        shell_ids = {int(s) for s in shell_surfs}
-        claimed = set(top) | set(back) | set(ribs)
-        orphans = sorted(shell_ids - claimed)
-        if orphans:
-            ribs.extend(orphans)
         print(
             f"[diag] preview facet classify: top={len(top)} back={len(back)} ribs={len(ribs)} "
-            f"(shell n={len(shell_surfs)}, orphans={len(orphans)})"
+            f"(shell n={len(shell_surfs)})"
         )
         return top, back, ribs
 
