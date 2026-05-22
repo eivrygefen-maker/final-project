@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
 """
-Package MMR-selected modes from ``selected_modes.csv`` into a single NPZ ROM file
-and optionally reset SORTING scratch data for the next run.
+Package unified-pool modes from ``selected_modes.csv`` into ``final_guitar_rom.npz``.
 
-Mode columns are read as CSR sparse (``*.smx.npz`` from workers) or legacy dense ``.npy``,
-aggregated with ``scipy.sparse.hstack``, and written as one bundled compressed NPZ
-containing CSR arrays (``ev_data``, ``ev_indices``, ``ev_indptr``, ``ev_shape``)
-plus ``frequencies``, ``wood_participations``, and pipeline provenance metadata.
+Stacks full coupled CSR mode columns (no plate splitting). Basis size follows the CSV row count.
 """
 from __future__ import annotations
 
@@ -17,7 +13,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 from scipy import sparse
@@ -28,16 +24,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from fem_harvest_filter import HARVEST_FILTER_POLICY_VERSION
 from fem_mode_array_utils import MODE_VECTOR_FILE_SUFFIX, load_mode_column_any
-from fem_rom_postprocess import (
-    MODAL_PRUNE_DF_HF_HZ,
-    MODAL_PRUNE_DF_LF_MF_HZ,
-    MODAL_PRUNE_HF_CROSSOVER_HZ,
-    MODAL_PRUNE_LOG_P_FRAC_TOL_DEFAULT,
-    MODAL_PRUNE_TAG_TOL_DEFAULT,
-    annotate_dominant_tags,
-    dominant_tag_for_row,
-    prune_modes_two_layer,
-)
+from fem_rom_postprocess import annotate_dominant_tags, dominant_tag_for_row
 
 FEM_ROOT = SCRIPT_DIR.parent
 SORTING_ROOT = FEM_ROOT / "SORTING"
@@ -129,6 +116,10 @@ def _read_winners(csv_path: Path) -> List[Dict[str, object]]:
         st_h = fields.get("source_target_hz")
         pol_h = fields.get("harvest_filter_policy")
         cls_h = fields.get("harvest_class")
+        pf_h = fields.get("p_frac")
+        t1_h = fields.get("tag1_ratio")
+        t3_h = fields.get("tag3_ratio")
+        dom_h = fields.get("dominant_tag")
         for rec in reader:
             try:
                 row: Dict[str, object] = {
@@ -142,16 +133,12 @@ def _read_winners(csv_path: Path) -> List[Dict[str, object]]:
                     row["harvest_filter_policy"] = str(rec[pol_h]).strip()
                 if cls_h and rec.get(cls_h, "").strip():
                     row["harvest_class"] = str(rec[cls_h]).strip()
-                pf_h = fields.get("p_frac")
                 if pf_h and rec.get(pf_h, "").strip():
                     row["p_frac"] = float(rec[pf_h])
-                t1_h = fields.get("tag1_ratio")
-                t3_h = fields.get("tag3_ratio")
                 if t1_h and rec.get(t1_h, "").strip():
                     row["tag1_ratio"] = float(rec[t1_h])
                 if t3_h and rec.get(t3_h, "").strip():
                     row["tag3_ratio"] = float(rec[t3_h])
-                dom_h = fields.get("dominant_tag")
                 if dom_h and rec.get(dom_h, "").strip():
                     row["dominant_tag"] = str(rec[dom_h]).strip()
             except (KeyError, TypeError, ValueError) as exc:
@@ -209,41 +196,17 @@ def _cleanup_workspace(sorting_root: Path, keep_csv: Path, fem_outputs_modes: Pa
             pass
 
     print(
-        f"Cleanup: removed {removed_vec} mode vector file(s) under temp_modes/, "
-        f"{removed_json} file(s) under temp_results/, "
-        f"and candidates_log.json (if present); "
-        f"{removed_export} FEM/outputs/modes_3d artifact(s). Kept: {keep_csv.name}"
+        f"Cleanup: removed {removed_vec} mode vector file(s), {removed_json} temp_results JSON, "
+        f"{removed_export} modes_3d artifact(s). Kept: {keep_csv.name}"
     )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Package selected_modes.csv into final_guitar_rom.npz")
-    parser.add_argument("--csv", type=Path, default=_default_csv(), help="Path to selected_modes.csv")
-    parser.add_argument("--out", type=Path, default=_default_npz(), help="Output NPZ path")
-    parser.add_argument(
-        "--cleanup",
-        action="store_true",
-        help="Delete temp_modes vectors, temp_results/*.json, and candidates_log.json (keeps selected_modes.csv).",
-    )
-    parser.add_argument(
-        "--sorting-root",
-        type=Path,
-        default=None,
-        help=(
-            "Folder containing temp_modes/ and candidates_log.json (default: parent of --csv if it has "
-            "temp_modes/, else FEM/SORTING next to this script)."
-        ),
-    )
-    parser.add_argument("--hf-crossover-hz", type=float, default=MODAL_PRUNE_HF_CROSSOVER_HZ)
-    parser.add_argument("--df-lf-mf-hz", type=float, default=MODAL_PRUNE_DF_LF_MF_HZ)
-    parser.add_argument("--df-hf-hz", type=float, default=MODAL_PRUNE_DF_HF_HZ)
-    parser.add_argument("--tag-tol", type=float, default=MODAL_PRUNE_TAG_TOL_DEFAULT)
-    parser.add_argument("--log-p-frac-tol", type=float, default=MODAL_PRUNE_LOG_P_FRAC_TOL_DEFAULT)
-    parser.add_argument(
-        "--no-modal-prune",
-        action="store_true",
-        help="Disable final two-layer de-duplication before packaging.",
-    )
+    parser.add_argument("--csv", type=Path, default=_default_csv())
+    parser.add_argument("--out", type=Path, default=_default_npz())
+    parser.add_argument("--cleanup", action="store_true")
+    parser.add_argument("--sorting-root", type=Path, default=None)
     args = parser.parse_args()
 
     csv_path = args.csv.resolve()
@@ -255,31 +218,10 @@ def main() -> int:
     pipeline_meta = _load_pipeline_meta(candidates_path)
 
     try:
-        winners = _read_winners(csv_path)
+        winners = annotate_dominant_tags([dict(w) for w in _read_winners(csv_path)])
     except (OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
-
-    if not args.no_modal_prune:
-        kept, pruned = prune_modes_two_layer(
-            [dict(w) for w in winners],
-            hf_crossover_hz=float(args.hf_crossover_hz),
-            df_lf_mf_hz=float(args.df_lf_mf_hz),
-            df_hf_hz=float(args.df_hf_hz),
-            tag_tol=float(args.tag_tol),
-            log_p_frac_tol=float(args.log_p_frac_tol),
-        )
-        if pruned:
-            print(
-                f"Two-layer prune (package): dropped {len(pruned)} duplicate row(s) "
-                f"(Δf {args.df_lf_mf_hz:g}/{args.df_hf_hz:g} Hz)."
-            )
-        winners = kept
-        if not winners:
-            print("Error: no modes remain after two-layer modal prune.", file=sys.stderr)
-            return 1
-
-    winners = annotate_dominant_tags([dict(w) for w in winners])
 
     cols: List[sparse.csr_matrix] = []
     freqs: List[float] = []
@@ -316,14 +258,17 @@ def main() -> int:
         st = row.get("source_target_hz")
         source_targets.append(float(st) if st is not None else float("nan"))
         harvest_policies.append(
-            str(row.get("harvest_filter_policy") or pipeline_meta.get("harvest_filter_policy") or HARVEST_FILTER_POLICY_VERSION)
+            str(
+                row.get("harvest_filter_policy")
+                or pipeline_meta.get("harvest_filter_policy")
+                or HARVEST_FILTER_POLICY_VERSION
+            )
         )
         harvest_classes.append(str(row.get("harvest_class") or ""))
 
     if missing:
         print(
-            f"Error: missing mode vector for id(s): {missing[:20]}{'...' if len(missing) > 20 else ''} "
-            f"(expected *{MODE_VECTOR_FILE_SUFFIX} or .npy under temp_modes/)",
+            f"Error: missing mode vector for id(s): {missing[:20]}{'...' if len(missing) > 20 else ''}",
             file=sys.stderr,
         )
         return 1
@@ -349,9 +294,7 @@ def main() -> int:
 
     sweep_lo = float(pipeline_meta.get("sweep_hz_min", 60.0))
     sweep_hi = float(pipeline_meta.get("sweep_hz_max", 550.0))
-    policy_version = str(
-        pipeline_meta.get("harvest_filter_policy", HARVEST_FILTER_POLICY_VERSION)
-    )
+    policy_version = str(pipeline_meta.get("harvest_filter_policy", HARVEST_FILTER_POLICY_VERSION))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -377,62 +320,19 @@ def main() -> int:
         ),
     )
 
-    try:
-        with np.load(str(out_path), allow_pickle=False) as z:
-            need = (
-                "ev_data",
-                "ev_indices",
-                "ev_indptr",
-                "ev_shape",
-                "frequencies",
-                "wood_participations",
-                "source_target_hz",
-                "pipeline_harvest_filter_policy",
-            )
-            if any(k not in z.files for k in need):
-                print(f"Error: output NPZ missing CSR/metadata keys: {out_path}", file=sys.stderr)
-                return 1
-            shape = tuple(int(x) for x in np.asarray(z["ev_shape"]).ravel())
-            ev_chk = sparse.csr_matrix(
-                (z["ev_data"], z["ev_indices"], z["ev_indptr"]),
-                shape=shape,
-                dtype=np.float32,
-            )
-            if ev_chk.dtype != np.dtype(np.float32):
-                print(f"Error: expected float32 CSR data, got {ev_chk.dtype}", file=sys.stderr)
-                return 1
-            if ev_chk.shape != eigenvectors.shape:
-                print(
-                    f"Error: eigenvectors shape mismatch after save {ev_chk.shape} vs {eigenvectors.shape}",
-                    file=sys.stderr,
-                )
-                return 1
-            if int(ev_chk.nnz) != int(eigenvectors.nnz):
-                print(f"Error: nnz mismatch after save {ev_chk.nnz} vs {eigenvectors.nnz}", file=sys.stderr)
-                return 1
-    except OSError as exc:
-        print(f"Error: could not verify saved NPZ {out_path}: {exc}", file=sys.stderr)
-        return 1
-
-    gc.collect()
-
     nbytes = out_path.stat().st_size if out_path.is_file() else 0
     nrows, ncols = eigenvectors.shape
     nnz = int(eigenvectors.nnz)
     sparsity = 1.0 - (nnz / max(float(nrows * ncols), 1.0))
     print(
         f"Created ROM archive: {out_path}\n"
-        f"  eigenvectors CSR: shape {eigenvectors.shape}, nnz={nnz}, sparsity≈{sparsity:.4f}\n"
-        f"  frequencies: {frequencies.shape}  |  modes={ncols} (dynamic basis)\n"
-        f"  wood_participations: {wood_participations.shape}  |  dominant_tag in NPZ\n"
-        f"  provenance: policy={policy_version!r} sweep=[{sweep_lo:.0f},{sweep_hi:.0f}] Hz\n"
-        f"  file size: {nbytes / (1024 * 1024):.2f} MiB ({nbytes} bytes)"
+        f"  CSR shape {eigenvectors.shape}, nnz={nnz}, sparsity≈{sparsity:.4f}\n"
+        f"  modes={ncols} (dynamic basis)  |  file size: {nbytes / (1024 * 1024):.2f} MiB"
     )
 
     if args.cleanup:
         _cleanup_workspace(sorting_root, csv_path, FEM_ROOT / "outputs" / "modes_3d")
         gc.collect()
-        print("Workspace reset complete; selected_modes.csv was preserved.")
 
     return 0
 

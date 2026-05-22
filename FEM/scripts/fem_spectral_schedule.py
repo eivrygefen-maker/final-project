@@ -41,8 +41,22 @@ SIGMA_OUTSIDE_HARVEST_MARGIN_HZ = 12.0
 ST_SIGMA_HZ_FLOOR = 60.0
 ST_SIGMA_HZ_CEILING = 600.0
 
-# Master scheduler: primary + σ-retry workers per shift before fail-fast (see fem_rom_postprocess).
+# Master scheduler: primary + σ-retry workers per shift before fail-fast.
 SIGMA_RETRY_MAX_ATTEMPTS_PER_SHIFT = 5
+
+
+def sigma_retry_max_attempts_per_shift(
+    solver_cfg: Optional[Mapping[str, Any]] = None,
+) -> int:
+    """Max ST solve attempts per scheduler shift (primary + σ-retry workers)."""
+    default = int(SIGMA_RETRY_MAX_ATTEMPTS_PER_SHIFT)
+    if not solver_cfg:
+        return default
+    try:
+        v = int(solver_cfg.get("eps_sigma_retry_max_per_shift", default))
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(12, v))
 
 
 def hz_shift_quantize(hz: float, tol: float = 1e-4) -> float:

@@ -72,7 +72,6 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from fem_rom_postprocess import sigma_retry_max_attempts_per_shift
 from fem_harvest_filter import (
     HARVEST_FILTER_POLICY_VERSION,
     HarvestFilterConfig,
@@ -106,6 +105,7 @@ from fem_spectral_schedule import (
     spectral_band_centers,
     spectral_harvest_worker_overrides,
     primary_sigma_offset_hz_outside_harvest,
+    sigma_retry_max_attempts_per_shift,
     sigma_retry_offset_candidates,
     sigma_retry_offset_ladder,
     verify_spectral_coverage,
@@ -2097,7 +2097,7 @@ def _merge_result_into_candidates_log(
         )
 
     # Wood participation absolute floor veto disabled: finer meshes scale L2-normalized
-    # tag ratios down; downstream split-quota MMR in dynamic_filter_tuner ranks relatively.
+    # tag ratios down; downstream unified-pool selection in dynamic_filter_tuner.
 
     all_hz: List[float] = []
     for c in raw:

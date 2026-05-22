@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Plot the 150 packaged modes for snapshot_0001 (sample_001) as mode index vs wood participation.
+Plot packaged modes for snapshot_0001 (sample_001) as mode index vs wood participation.
 
-Data source: ``FEM/SORTING/selected_modes.csv`` — same 150 rows written by the pipeline tuner
-and packaged into ``ROM/classic/snapshots/snapshot_0001.npz``.
+Data source: ``FEM/SORTING/selected_modes.csv`` — same rows written by the pipeline tuner
+and packaged into ``ROM/classic/snapshots/snapshot_0001.npz`` (dynamic basis size).
 
 Output (shared host only): ``{SHARED_HOST_DIR}/classic/plots/snapshot_0001_fixed_scale.png``
 """
@@ -51,7 +51,7 @@ def _y_upper_from_modes(wood: np.ndarray) -> float:
     Y-axis top from the maximum *physical* wood value in this snapshot only.
 
     Ignores non-finite, negative, and non-physical values (> ``PHYSICAL_WOOD_MAX``).
-    All 150 inlier modes are used — no cross-run quantile cap.
+    All modes in the CSV are used — no cross-run quantile cap.
     """
     valid = wood[np.isfinite(wood) & (wood >= 0.0) & (wood <= PHYSICAL_WOOD_MAX)]
     if valid.size == 0:
@@ -68,8 +68,7 @@ def main() -> int:
 
     mode_idx, wood, hz = _load_snapshot_0001_modes(csv_path)
     n = int(mode_idx.size)
-    if n != 150:
-        print(f"Warning: expected 150 modes, found {n} in {csv_path}", file=sys.stderr)
+    print(f"Packaged modes in CSV: {n}")
 
     y_top = _y_upper_from_modes(wood)
     out_path = shared_plot_path(OUTPUT_NAME, shape_name=DEFAULT_SHAPE_NAME)

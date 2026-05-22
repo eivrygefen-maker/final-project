@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-ROM post-processing: two-layer modal de-duplication, dominant-tag labeling,
-terminal diagnostics (no Streamlit), and σ-retry limit helpers.
+3D coupled-ROM post-processing: two-layer modal de-duplication, dominant-tag labeling,
+and terminal diagnostic plots (no Streamlit).
 """
 from __future__ import annotations
 
@@ -9,12 +9,8 @@ import argparse
 import json
 import math
 import sys
-from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
-
-# Legacy single Δf (Hz); prefer two-layer prune below.
-MODAL_PRUNE_DF_HZ_DEFAULT = 0.5
 
 MODAL_PRUNE_HF_CROSSOVER_HZ = 350.0
 MODAL_PRUNE_DF_LF_MF_HZ = 1.5
@@ -25,10 +21,6 @@ MODAL_PRUNE_LOG_P_FRAC_TOL_DEFAULT = 1.0
 DOMINANT_TAG_TOP = "Top"
 DOMINANT_TAG_BACK = "Back"
 
-# Per scheduler shift: primary + σ-retry workers (fail-fast).
-SIGMA_RETRY_MAX_ATTEMPTS_PER_SHIFT_DEFAULT = 5
-ST_SIGMA_LADDER_MAX_DEFAULT = 6
-
 
 def _as_float(row: Mapping[str, Any], key: str, default: float = 0.0) -> float:
     try:
@@ -38,18 +30,13 @@ def _as_float(row: Mapping[str, Any], key: str, default: float = 0.0) -> float:
 
 
 def dominant_tag_for_row(row: Mapping[str, Any]) -> str:
-    """
-    Visualization label only: which plate carries more modal energy on the shell.
-
-    Does not affect ROM inclusion — every mode keeps its full coupled displacement vector.
-    """
+    """Diagnostic label only (Top vs Back shell energy); does not filter ROM modes."""
     t1 = _as_float(row, "tag1_ratio")
     t3 = _as_float(row, "tag3_ratio")
     return DOMINANT_TAG_TOP if t1 >= t3 else DOMINANT_TAG_BACK
 
 
 def annotate_dominant_tags(candidates: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Return shallow copies with ``dominant_tag`` set (Top / Back)."""
     out: List[Dict[str, Any]] = []
     for row in candidates:
         cc = dict(row)
@@ -65,14 +52,12 @@ def df_hz_threshold_for_frequency(
     df_lf_mf_hz: float = MODAL_PRUNE_DF_LF_MF_HZ,
     df_hf_hz: float = MODAL_PRUNE_DF_HF_HZ,
 ) -> float:
-    """Band-dependent frequency merge tolerance (Hz)."""
     if float(f_hz) >= float(hf_crossover_hz):
         return max(1.0e-9, float(df_hf_hz))
     return max(1.0e-9, float(df_lf_mf_hz))
 
 
 def pair_df_threshold_hz(f_a: float, f_b: float, **kwargs: Any) -> float:
-    """Use the looser of the two band thresholds when frequencies straddle crossover."""
     ta = df_hz_threshold_for_frequency(f_a, **kwargs)
     tb = df_hz_threshold_for_frequency(f_b, **kwargs)
     return max(ta, tb)
@@ -85,27 +70,18 @@ def modes_physically_similar(
     tag_tol: float = MODAL_PRUNE_TAG_TOL_DEFAULT,
     log_p_frac_tol: float = MODAL_PRUNE_LOG_P_FRAC_TOL_DEFAULT,
 ) -> bool:
-    """
-    Layer-2 similarity: comparable top/back energy split and pressure participation.
-
-    Modes with very different ``p_frac`` (orders of magnitude) are never merged — e.g. a
-    strongly coupled mode at σ must not collapse onto a wood-only neighbor.
-    """
     t1a, t3a = _as_float(a, "tag1_ratio"), _as_float(a, "tag3_ratio")
     t1b, t3b = _as_float(b, "tag1_ratio"), _as_float(b, "tag3_ratio")
     if abs(t1a - t1b) > float(tag_tol) or abs(t3a - t3b) > float(tag_tol):
         return False
-
     pa = max(_as_float(a, "p_frac"), 1.0e-30)
     pb = max(_as_float(b, "p_frac"), 1.0e-30)
-    log_gap = abs(math.log10(pa) - math.log10(pb))
-    if log_gap > float(log_p_frac_tol):
+    if abs(math.log10(pa) - math.log10(pb)) > float(log_p_frac_tol):
         return False
     return True
 
 
 def _mode_merit_p_frac(row: Mapping[str, Any]) -> Tuple[float, ...]:
-    """Higher is better: primary ``p_frac``, then wood, then uniqueness."""
     return (
         _as_float(row, "p_frac"),
         _as_float(row, "wood_participation"),
@@ -122,12 +98,6 @@ def prune_modes_two_layer(
     tag_tol: float = MODAL_PRUNE_TAG_TOL_DEFAULT,
     log_p_frac_tol: float = MODAL_PRUNE_LOG_P_FRAC_TOL_DEFAULT,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """
-    Two-layer de-duplication on a sorted frequency axis.
-
-    Layer 1: chain modes while ``Δf`` is below the band-dependent threshold.
-    Layer 2: within each frequency chain, merge physics-similar modes; keep highest ``p_frac``.
-    """
     pool = sorted(candidates, key=lambda c: _as_float(c, "hz"))
     if not pool:
         return [], []
@@ -186,58 +156,13 @@ def prune_modes_two_layer(
             kept.append(survivors[0])
             continue
 
-        # Residual chain without physics match: keep best p_frac only.
         best = max(survivors, key=lambda r: _mode_merit_p_frac(r))
         kept.append(best)
         for row in survivors:
             if row is not best:
                 pruned.append(row)
 
-    kept = annotate_dominant_tags(kept)
-    return kept, pruned
-
-
-def prune_near_duplicate_modes(
-    candidates: Sequence[Dict[str, Any]],
-    *,
-    df_hz: float = MODAL_PRUNE_DF_HZ_DEFAULT,
-    merit_prefer: Sequence[str] = ("p_frac", "wood_participation"),
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """
-    Backward-compatible wrapper: uniform ``df_hz`` maps to LF/MF and HF layer-1 thresholds.
-    """
-    _ = merit_prefer
-    return prune_modes_two_layer(
-        candidates,
-        df_lf_mf_hz=float(df_hz),
-        df_hf_hz=float(df_hz),
-    )
-
-
-def sigma_retry_max_attempts_per_shift(
-    solver_cfg: Optional[Mapping[str, Any]] = None,
-) -> int:
-    """Max ST solve attempts per scheduler shift (primary + σ-retry workers)."""
-    default = int(SIGMA_RETRY_MAX_ATTEMPTS_PER_SHIFT_DEFAULT)
-    if not solver_cfg:
-        return default
-    try:
-        v = int(solver_cfg.get("eps_sigma_retry_max_per_shift", default))
-    except (TypeError, ValueError):
-        return default
-    return max(1, min(12, v))
-
-
-def st_sigma_ladder_max(solver_cfg: Optional[Mapping[str, Any]] = None) -> int:
-    """Max σ values tried inside one worker EPS ST setup (LU fail-fast)."""
-    default = int(ST_SIGMA_LADDER_MAX_DEFAULT)
-    if not solver_cfg:
-        return default
-    try:
-        v = int(solver_cfg.get("eps_st_sigma_ladder_max", default))
-    except (TypeError, ValueError):
-        return default
-    return max(1, min(16, v))
+    return annotate_dominant_tags(kept), pruned
 
 
 def _load_candidates_json(path: Path) -> List[Dict[str, Any]]:
@@ -276,11 +201,6 @@ def plot_modal_pool_diagnostics(
     save_path: Optional[Path] = None,
     show: bool = False,
 ) -> Path:
-    """
-    Terminal diagnostic: frequency vs tag1 ratio, colored by ``dominant_tag``.
-
-    Optional second panel: ``p_frac`` vs frequency (log scale) for coupling audit.
-    """
     import matplotlib
 
     matplotlib.use("Agg")
@@ -291,7 +211,6 @@ def plot_modal_pool_diagnostics(
     pruned_set = {int(r["id"]) for r in (pruned or []) if "id" in r}
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5.5))
-
     for ax, ykey, ylabel in (
         (axes[0], "tag1_ratio", "Top plate energy ratio (tag 1)"),
         (axes[1], "p_frac", "Pressure fraction (log scale)"),
@@ -348,10 +267,7 @@ def plot_modal_pool_diagnostics(
         ax.grid(True, alpha=0.25)
         ax.legend(loc="best", fontsize=8)
 
-    n_in = len(all_rows)
-    n_k = len(kept or [])
-    n_p = len(pruned or [])
-    fig.suptitle(f"{title} | input={n_in} kept={n_k} pruned={n_p}")
+    fig.suptitle(f"{title} | input={len(all_rows)} kept={len(kept or [])} pruned={len(pruned or [])}")
     plt.tight_layout()
 
     out = Path(save_path or "modal_pool_diagnostics.png").resolve()
@@ -364,27 +280,15 @@ def plot_modal_pool_diagnostics(
 
 
 def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Modal pool diagnostics and two-layer pruning (terminal plots)."
-    )
-    parser.add_argument(
-        "--candidates",
-        type=Path,
-        required=True,
-        help="candidates_log.json (or list JSON).",
-    )
-    parser.add_argument(
-        "--plot-out",
-        type=Path,
-        default=Path("modal_pool_diagnostics.png"),
-        help="PNG output path.",
-    )
+    parser = argparse.ArgumentParser(description="Two-layer modal prune + diagnostic plot.")
+    parser.add_argument("--candidates", type=Path, required=True)
+    parser.add_argument("--plot-out", type=Path, default=Path("modal_pool_diagnostics.png"))
     parser.add_argument("--hf-crossover-hz", type=float, default=MODAL_PRUNE_HF_CROSSOVER_HZ)
     parser.add_argument("--df-lf-mf-hz", type=float, default=MODAL_PRUNE_DF_LF_MF_HZ)
     parser.add_argument("--df-hf-hz", type=float, default=MODAL_PRUNE_DF_HF_HZ)
     parser.add_argument("--tag-tol", type=float, default=MODAL_PRUNE_TAG_TOL_DEFAULT)
     parser.add_argument("--log-p-frac-tol", type=float, default=MODAL_PRUNE_LOG_P_FRAC_TOL_DEFAULT)
-    parser.add_argument("--show", action="store_true", help="Also open interactive window.")
+    parser.add_argument("--show", action="store_true")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     raw = _load_candidates_json(args.candidates.resolve())
@@ -411,8 +315,7 @@ def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"Candidates: {len(raw)} -> kept {len(kept)}, pruned {len(pruned)}")
     print(f"Diagnostic plot: {out}")
     top_n = sum(1 for r in kept if r.get("dominant_tag") == DOMINANT_TAG_TOP)
-    back_n = len(kept) - top_n
-    print(f"Dominant-tag mix (kept): Top={top_n} Back={back_n}")
+    print(f"Dominant-tag mix (kept): Top={top_n} Back={len(kept) - top_n}")
     return 0
 
 
