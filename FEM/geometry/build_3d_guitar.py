@@ -167,20 +167,6 @@ def _filter_ring_min_spacing(
     return clean
 
 
-def _sort_ring_points_polar(points: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
-    """
-    Order ring vertices CCW by polar angle about the ring centroid.
-
-    Prevents pinwheel self-crossing when half-profile + mirror lists are not perimeter-ordered.
-    """
-    pts: List[Tuple[float, float]] = [(float(x), float(y)) for x, y in points]
-    if len(pts) < 4:
-        return pts
-    cx = sum(p[0] for p in pts) / len(pts)
-    cy = sum(p[1] for p in pts) / len(pts)
-    return sorted(pts, key=lambda pt: math.atan2(pt[1] - cy, pt[0] - cx))
-
-
 def _occ_polygon_contour_from_point_tags(p_tags: List[int]) -> int:
     """
     OCC closed polygon wire when ``addPolygon`` is unavailable (spacing already filtered).
@@ -505,12 +491,12 @@ def create_guitar_mesh():
         clean_ring_points = _filter_ring_min_spacing(full_ring_points, min_dist=1e-4)
 
         if sketch_use_geo:
-            sorted_ring_points = _sort_ring_points_polar(clean_ring_points)
-            surface_tag = _geo_closed_polyline_surface(sorted_ring_points, lc)
+            # Perimeter order from _full_ring_points_from_half (neck→tail→return); no polar sort
+            # (atan2 breaks non-convex guitar waists).
+            surface_tag = _geo_closed_polyline_surface(clean_ring_points, lc)
             print(
                 f"[diag] template profile (geo sketch): ring_in={len(full_ring_points)} "
-                f"filtered={len(clean_ring_points)} polar_sorted={len(sorted_ring_points)} "
-                f"surface={surface_tag}"
+                f"perimeter_pts={len(clean_ring_points)} surface={surface_tag}"
             )
             return surface_tag
 
