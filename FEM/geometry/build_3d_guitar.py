@@ -165,25 +165,61 @@ def _occ_closed_polyline_surface(
     full_ring_points: Sequence[Tuple[float, float]], lc: float
 ) -> int:
     """
-    Closed profile as straight OCC line segments (no BSpline — avoids cusp overshoot/self-cross).
+    Closed profile via OCC line segments only (gmsh.model.occ — never geo).
+
+    Wire → plane surface → single synchronize. No pre-loop sync (avoids open-loop races).
     """
     occ = gmsh.model.occ
-    if len(full_ring_points) < 4:
-        raise RuntimeError("Full ring needs at least 4 distinct vertices.")
+    if occ is not gmsh.model.occ:
+        raise RuntimeError("OCC kernel handle invalid (geo/occ cross-contamination guard).")
+
+    min_seg = 1.0e-5
+    ring: List[Tuple[float, float]] = []
+    for pt in full_ring_points:
+        if not ring:
+            ring.append((float(pt[0]), float(pt[1])))
+            continue
+        if math.hypot(pt[0] - ring[-1][0], pt[1] - ring[-1][1]) >= min_seg:
+            ring.append((float(pt[0]), float(pt[1])))
+    if len(ring) >= 2 and math.hypot(ring[-1][0] - ring[0][0], ring[-1][1] - ring[0][1]) < min_seg:
+        ring.pop()
+    if len(ring) < 4:
+        raise RuntimeError("Full ring needs at least 4 distinct vertices for OCC polyline.")
 
     p_tags: List[int] = []
-    for pt in full_ring_points:
-        p_tags.append(int(occ.addPoint(float(pt[0]), float(pt[1]), 0.0, lc)))
+    for x, y in ring:
+        p_tags.append(int(occ.addPoint(x, y, 0.0, lc)))
 
     line_tags: List[int] = []
     n_pts = len(p_tags)
-    for i in range(n_pts - 1):
-        line_tags.append(int(occ.addLine(p_tags[i], p_tags[i + 1])))
-    line_tags.append(int(occ.addLine(p_tags[-1], p_tags[0])))
+    for i in range(n_pts):
+        j = (i + 1) % n_pts
+        line_tags.append(int(occ.addLine(p_tags[i], p_tags[j])))
 
-    occ.synchronize()
-    loop_tag = int(occ.addCurveLoop(line_tags))
-    surface_tag = int(occ.addPlaneSurface([loop_tag]))
+    # OCC only — never gmsh.model.geo.addCurveLoop / addPlaneSurface.
+    contour_tag: Optional[int] = None
+    loop_err: Optional[Exception] = None
+    wire_err: Optional[Exception] = None
+    try:
+        contour_tag = int(occ.addCurveLoop(line_tags))
+    except Exception as exc:
+        loop_err = exc
+        try:
+            contour_tag = int(occ.addWire(line_tags, tag=-1, checkClosed=True))
+        except TypeError:
+            try:
+                contour_tag = int(occ.addWire(line_tags))
+            except Exception as exc2:
+                wire_err = exc2
+        except Exception as exc2:
+            wire_err = exc2
+
+    if contour_tag is None:
+        raise RuntimeError(
+            f"OCC closed polyline failed (addCurveLoop: {loop_err}; addWire: {wire_err})"
+        ) from (loop_err or wire_err)
+
+    surface_tag = int(occ.addPlaneSurface([int(contour_tag)]))
     occ.synchronize()
     return surface_tag
 
