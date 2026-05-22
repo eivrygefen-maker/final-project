@@ -77,6 +77,8 @@ TAG_SOUNDHOLE = 2
 TAG_BACK_PLATE = 3
 TAG_RIBS = 4
 TAG_AIR = 10  # volume / cavity — never rendered in live preview
+# Live preview: wood shell facets only (drops air box walls, soundhole tag, fix patches).
+SHELL_VIS_TAGS = frozenset({TAG_TOP_PLATE, TAG_BACK_PLATE, TAG_RIBS})
 
 NOTES_DICT = {
     "E2": 82.41, "A2": 110.00, "D3": 146.83, "G3": 196.00, "B3": 246.94, "E4": 329.63
@@ -500,10 +502,10 @@ def save_cfg_from_state(
 
 def _load_guitar_surface_from_msh(msh_path: Path) -> Optional[Any]:
     """
-    Load boundary triangles with 2D ``gmsh:physical`` facet tags (1/2/3/4).
+    Load guitar **wood shell** triangles only (physical tags 1, 3, 4).
 
-    PyVista volume + extract_surface maps 3D volume tags (1/2/3/10) and breaks
-    wood colormap — this path keeps the FEM facet protocol for rendering.
+    Drops air-cavity / outer-domain facets (e.g. tag 10) so the body is not drawn
+    inside a surrounding box. Soundhole opening is implied by the top-plate cut.
     """
     try:
         import meshio
@@ -519,12 +521,11 @@ def _load_guitar_surface_from_msh(msh_path: Path) -> Optional[Any]:
                 tri_tags = phys.get("triangle")
                 if tri_tags is not None:
                     tags = np.asarray(tri_tags, dtype=np.int32).ravel()
-                    keep = tags != TAG_AIR
-                    if keep.any():
-                        tri = np.asarray(tri, dtype=np.int64)[keep]
-                        tags = tags[keep]
-                    else:
-                        tri = np.asarray(tri, dtype=np.int64)
+                    keep = np.isin(tags, list(SHELL_VIS_TAGS))
+                    if not np.any(keep):
+                        return None
+                    tri = np.asarray(tri, dtype=np.int64)[keep]
+                    tags = tags[keep]
                     faces = np.hstack(
                         [np.full((tri.shape[0], 1), 3, dtype=np.int64), tri]
                     ).ravel()
@@ -542,20 +543,9 @@ def _load_guitar_surface_from_msh(msh_path: Path) -> Optional[Any]:
         except Exception:
             pass
 
-    try:
-        mesh = pv.read(str(msh_path))
-        surface = mesh.extract_surface()
-        surface.compute_normals(
-            cell_normals=False,
-            point_normals=True,
-            feature_angle=30,
-            split_vertices=True,
-            inplace=True,
-            auto_orient_normals=True,
-        )
-        return surface
-    except Exception:
-        return None
+    # Without meshio we cannot reliably strip air-box facets — do not fall back to
+    # volume extract_surface (that reintroduces the trapped-box artifact).
+    return None
 
 
 def _build_live_preview_surface(
@@ -637,16 +627,14 @@ def _render_pyvista_guitar(
         if tags is None:
             return False
         tags = np.asarray(tags).ravel()
-        # Facet protocol: 1=top, 2=soundhole, 3=back, 4=ribs; hide air (10).
+        # Wood shell only (loader keeps tags 1, 3, 4). Opening is the top-plate boolean cut.
         is_top = tags == TAG_TOP_PLATE
-        is_hole = tags == TAG_SOUNDHOLE
         is_back_wood = (tags == TAG_BACK_PLATE) | (tags == TAG_RIBS)
-        if not (is_top.any() or is_back_wood.any() or is_hole.any()):
+        if not (is_top.any() or is_back_wood.any()):
             return False
         rendered = False
         rendered |= _add_part(mesh, is_top, top_c, edges=show_edges_flag)
         rendered |= _add_part(mesh, is_back_wood, back_c, edges=show_edges_flag)
-        rendered |= _add_part(mesh, is_hole, "#111111", opacity=0.35, edges=False)
         return rendered
 
     if surface_mesh is not None:
@@ -736,15 +724,6 @@ top_plot_color = plot_color_for_wood(top_wood_id)
 back_plot_color = plot_color_for_wood(back_wood_id)
 
 exploded = st.sidebar.checkbox("Exploded View", value=False)
-hr = st.sidebar.slider(
-    "Soundhole Radius (m)",
-    min_value=0.035,
-    max_value=0.055,
-    value=0.04,
-    step=0.0005,
-    format="%.4f",
-    help="Passed 1:1 to Gmsh as hole_radius (m).",
-)
 
 st.sidebar.header("2. Geometry")
 design_mode = st.sidebar.radio("Design Mode", ["Basic (Geometric)", "Professional (Luthier)"])
@@ -762,6 +741,19 @@ else:
     waist = st.sidebar.slider("Waist Width (m)", 0.10, 0.40, W_def * 0.65, key="wst")
     soundhole_y = st.sidebar.slider("Soundhole Position Y (m)", 0.10, 0.60, L_def * 0.4, key="sh_y")
     W = lower_bout
+
+_hr_default = float(saved_geom.get("hole_radius", 0.04))
+_hr_lo = 0.020
+_hr_hi = max(0.055, min(0.18, float(W) * 0.55))
+hr = st.sidebar.slider(
+    "Soundhole Radius (m)",
+    min_value=_hr_lo,
+    max_value=_hr_hi,
+    value=min(max(_hr_default, _hr_lo), _hr_hi),
+    step=0.0005,
+    format="%.4f",
+    help="1:1 to Gmsh hole_radius. Large values clip at the spline edge via OCC booleans.",
+)
 
 # Dynamic slider for top plate thickness (3mm to 6mm).
 thick = st.sidebar.slider(

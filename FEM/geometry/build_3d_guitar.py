@@ -96,11 +96,8 @@ def create_guitar_mesh():
     print(f"[diag] preview_mode={is_preview}, FEM_ALLOW_PREVIEW={os.environ.get('FEM_ALLOW_PREVIEW', '0')}")
 
     shy = (L / 2) + (L * 0.02)
-    hr_requested = float(hr)
-    hr_max = min(float(W), float(L)) * 0.45
-    hr = max(1.0e-4, min(hr_requested, hr_max))
-    if abs(hr - hr_requested) > 1.0e-9:
-        print(f"[diag] hole_radius clamped {hr_requested:.6f} -> {hr:.6f} m (max={hr_max:.6f})")
+    # No artificial radius cap — OCC cut/fragment clips overflow at plate edges.
+    hr = max(1.0e-4, float(hr))
 
     gmsh.initialize(sys.argv)
     gmsh.model.add("Guitar3D_Performance_Optimized")
@@ -408,21 +405,25 @@ def create_guitar_mesh():
             qy = py
         return math.hypot(px - qx, py - qy)
 
-    def _select_soundhole_surfaces(shell_tags, z_plane, z_tol, hx, hy, hole_r, max_span_factor=6.0):
+    def _select_soundhole_surfaces(shell_tags, z_plane, z_tol, hx, hy, hole_r):
         """
-        Surfaces whose bbox straddles z=z_plane and whose xy projection lies inside the
-        hole disk (center (hx, hy), radius hole_r). Excludes huge faces (e.g. whole top).
+        Surfaces on the top opening after the soundhole boolean (tag 2 for FEM).
+
+        No radius clamp — large cylinders clip at the spline boundary via OCC.
+        Span filter scales with body size so edge-bite holes stay selectable.
         """
         scored = []
+        body_scale = max(float(W), float(L), 1.0e-3)
+        span_limit = max(6.0 * hole_r, 0.35 * body_scale)
         for s in sorted(shell_tags):
             xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(2, int(s))
             if zmax < z_plane - z_tol or zmin > z_plane + z_tol:
                 continue
             dxy = _xy_dist_point_to_rect(hx, hy, xmin, xmax, ymin, ymax)
-            if dxy > hole_r * 1.08:
+            if dxy > hole_r * 1.25:
                 continue
             span_xy = max(xmax - xmin, ymax - ymin)
-            if span_xy > max_span_factor * hole_r:
+            if span_xy > span_limit:
                 continue
             nz = get_surface_normal_z(s)
             nz_abs = float(nz) if nz is not None else 0.0
@@ -441,11 +442,7 @@ def create_guitar_mesh():
         soundhole_surfs = _select_soundhole_surfaces(
             sorted(air_boundary_surfs), z_top_outer, z_tol, hole_x, hole_y, hr
         )
-    if not soundhole_surfs:
-        soundhole_surfs = sorted(list(set(air_boundary_surfs) - set(wood_boundary_surfs)))
-    if not soundhole_surfs:
-        soundhole_surfs = list(top_plate_surfs)
-        print("[diag][warn] soundhole_surfs fallback: using top_plate_surfs.")
+    # Do not assign whole top plate or raw air shell to tag 2 (causes jumps / wrong BCs).
 
     # Do not double-tag hole annulus; keep top / back / ribs disjoint.
     _sh_set = set(soundhole_surfs)
@@ -504,12 +501,12 @@ def create_guitar_mesh():
         top_plate_surfs = [max(list(wood_boundary_surfs), key=lambda s: get_surface_center_z(s))]
     if not soundhole_surfs:
         soundhole_surfs = _select_soundhole_surfaces(
-            all_shell_surfs, z_top_outer, z_tol * 2.5, hole_x, hole_y, hr * 1.05, max_span_factor=12.0
+            all_shell_surfs, z_top_outer, z_tol * 2.5, hole_x, hole_y, hr
         )
     if not soundhole_surfs:
-        raise RuntimeError(
-            "Soundhole tagging: 0 surfaces matched z=D/2 disk selector. "
-            "Check geometry (hole_radius, soundhole_y, depth D) and boolean/fragment output."
+        print(
+            "[diag][warn] Soundhole tag 2 empty after boolean clip — "
+            "edge-bite hole may share top-plate facets only (FEM uses top opening)."
         )
 
     def _add_surface_physical_group(surfaces, tag: int, name: str, required: bool = True) -> int:
@@ -527,7 +524,7 @@ def create_guitar_mesh():
 
     # 2D facet protocol (must match fem_main_3d WOOD_SURFACE_TAGS): 1=Top, 2=Soundhole, 3=Back, 4=Ribs, 5=wood_fix
     _add_surface_physical_group(top_plate_surfs, 1, "Top_Plate", required=True)
-    _add_surface_physical_group(soundhole_surfs, 2, "Soundhole", required=True)
+    _add_surface_physical_group(soundhole_surfs, 2, "Soundhole", required=False)
     _add_surface_physical_group(back_plate_surfs, 3, "Back_Plate", required=True)
     _add_surface_physical_group(rib_surfs, 4, "Ribs_Sides", required=True)
     if wood_fix_surfs:
@@ -570,7 +567,7 @@ def create_guitar_mesh():
     if len(air_group_entities) == 0:
         raise RuntimeError("Tag 10 was created but has no 3D volume entities.")
     if len(sh2) == 0:
-        raise RuntimeError("Tag 2 (Soundhole) was created but has no 2D surface entities.")
+        print("[diag][warn] Tag 2 (Soundhole) has no 2D entities — acceptable for edge-clipped holes.")
 
     # Configure balanced meshing options.
     gmsh.option.setNumber("Mesh.MeshSizeMin", mesh_size_min)
