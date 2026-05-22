@@ -302,10 +302,9 @@ def create_guitar_mesh():
     if not wood_vols:
         raise RuntimeError("No wood shell volumes found after boolean operations")
 
-    # If booleans leave wood as a single connected solid, explicitly partition it
-    # into multiple disjoint 3D volumes along Z so Top/Back/Ribs volume groups
-    # are all non-empty and mutually exclusive.
-    if len(wood_vols) < 3:
+    # Z-partition with axis-aligned boxes is for FSI volume tagging only (creates boxy
+    # facet artifacts in UI preview). Skip in preview — classify from exterior skin only.
+    if not is_preview and len(wood_vols) < 3:
         wood_bbox = [float("inf"), float("inf"), float("inf"), -float("inf"), -float("inf"), -float("inf")]
         for v in wood_vols:
             xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(3, int(v))
@@ -405,6 +404,24 @@ def create_guitar_mesh():
 
     # Surface identification via direct boundaries (fragmentation-safe, no interface tracing).
     wood_boundary_surfs = get_boundary_tags([(3, tag) for tag in wood_vols], 2)
+
+    if is_preview and wood_vols:
+        # Hollow shell: drop interior cavity lining; mesh/tag exterior skin only.
+        def _keep_exterior_facet(surf_tag: int, vol_tag: int) -> bool:
+            sx, sy, _sz = get_surface_center(surf_tag)
+            vcom = occ.getCenterOfMass(3, int(vol_tag))
+            xmin, ymin, _zmin, xmax, ymax, _zmax = gmsh.model.getBoundingBox(3, int(vol_tag))
+            hx = 0.5 * (xmax - xmin)
+            hy = 0.5 * (ymax - ymin)
+            r_xy = math.hypot(sx - vcom[0], sy - vcom[1])
+            return r_xy > 0.38 * max(hx, hy, 1.0e-4)
+
+        primary_vol = int(wood_vols[0])
+        wood_boundary_surfs = [
+            int(s) for s in wood_boundary_surfs if _keep_exterior_facet(int(s), primary_vol)
+        ]
+        print(f"[diag] preview exterior facets: n={len(wood_boundary_surfs)}")
+
     air_boundary_surfs = (
         get_boundary_tags([(3, tag) for tag in air_vols], 2) if air_vols else []
     )
