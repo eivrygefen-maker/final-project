@@ -218,59 +218,59 @@ def _occ_perimeter_walk_surface(
     full_perimeter: Sequence[Tuple[float, float]], lc: float
 ) -> int:
     """
-    Tag-agnostic OCC profile: addPoint → addLine (no stored line tags) → auto wire/loop.
+    Synchronize-once OCC profile: points → segment lines → wire → sync → surface.
 
-    Curve loop is built from all 1D entities after synchronize/removeAllDuplicates.
+    No mid-build synchronize, no getEntities curve harvesting, no manual curve-loop tags
+    before the wire exists (avoids OCC tag-binding conflicts).
     """
     occ = gmsh.model.occ
+    add_wire = getattr(occ, "addWire", None)
+    if add_wire is None:
+        raise RuntimeError(
+            "gmsh.model.occ.addWire is required for synchronize-once perimeter build."
+        )
+
     ring = list(full_perimeter)
     n = len(ring)
     if n < 4:
         raise RuntimeError(f"OCC perimeter walk needs >= 4 points (got {n}).")
 
+    # Head==tail snap uses one tuple; unique vertices for OCC (closure via last→first line).
     if len(ring) >= 2 and ring[-1] is ring[0]:
-        ring_poly = ring[:-1]
+        ring_pts = ring[:-1]
     else:
-        ring_poly = ring
-    if len(ring_poly) < 3:
+        ring_pts = ring
+    if len(ring_pts) < 3:
         raise RuntimeError(
-            f"OCC perimeter needs >= 3 unique vertices (got {len(ring_poly)})."
+            f"OCC perimeter needs >= 3 unique vertices (got {len(ring_pts)})."
         )
 
     p_tags = [
-        int(occ.addPoint(float(pt[0]), float(pt[1]), 0.0, lc)) for pt in ring_poly
+        int(occ.addPoint(float(pt[0]), float(pt[1]), 0.0, lc)) for pt in ring_pts
     ]
-    n_pts = len(p_tags)
-    for i in range(n_pts):
-        occ.addLine(p_tags[i], p_tags[(i + 1) % n_pts])
+    segments = [
+        int(occ.addLine(p_tags[i], p_tags[i + 1]))
+        for i in range(len(p_tags) - 1)
+    ]
+    segments.append(int(occ.addLine(p_tags[-1], p_tags[0])))
 
+    wire_tag = int(add_wire(segments))
     occ.synchronize()
     try:
         occ.removeAllDuplicates()
     except Exception:
         pass
-    occ.synchronize()
 
-    curve_dimtags = occ.getEntities(1)
-    curve_tags = [int(tag) for dim, tag in curve_dimtags if int(dim) == 1]
-    if len(curve_tags) < 3:
-        raise RuntimeError(
-            f"OCC auto-loop found {len(curve_tags)} curves (need >= 3)."
-        )
+    loop_tag: Optional[int] = None
+    try:
+        loop_tag = int(occ.addCurveLoop([wire_tag]))
+        surface_tag = int(occ.addPlaneSurface([loop_tag]))
+    except Exception:
+        surface_tag = int(occ.addPlaneSurface([wire_tag]))
 
-    add_wire = getattr(occ, "addWire", None)
-    wire_tag: Optional[int] = None
-    if add_wire is not None:
-        try:
-            wire_tag = int(add_wire(curve_tags))
-        except Exception:
-            wire_tag = None
-
-    loop_tag = int(occ.addCurveLoop(curve_tags))
-    surface_tag = int(occ.addPlaneSurface([loop_tag]))
     occ.synchronize()
     print(
-        f"[diag] OCC tag-agnostic loop: n_ring={n} n_pts={n_pts} n_curves={len(curve_tags)} "
+        f"[diag] OCC sync-once wire: n_ring={n} n_pts={len(p_tags)} n_segs={len(segments)} "
         f"wire={wire_tag} loop={loop_tag} surface={surface_tag}"
     )
     return int(surface_tag)
