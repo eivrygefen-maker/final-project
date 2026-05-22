@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from mpi4py import MPI
+from scipy import sparse
 from scipy.stats import qmc
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -849,18 +850,83 @@ class ROMManager:
     def get_last_collect_summary(self) -> Dict:
         return dict(self._last_collect_summary)
 
+    @staticmethod
+    def _snapshot_mode_matrix(data: np.lib.npyio.NpzFile) -> np.ndarray:
+        """
+        Load full coupled mode columns from a pipeline snapshot or legacy FOM export.
+
+        Supports dense ``eigvecs_real`` and CSR ``ev_*`` bundles from ``package_rom.py``.
+        """
+        files = set(data.files)
+        if "eigvecs_real" in files:
+            eig = np.asarray(data["eigvecs_real"], dtype=np.float64)
+            if eig.ndim != 2:
+                raise ValueError(f"eigvecs_real must be 2-D, got shape {eig.shape}")
+            return eig
+
+        need = ("ev_data", "ev_indices", "ev_indptr", "ev_shape")
+        if all(k in files for k in need):
+            shape = tuple(int(x) for x in np.asarray(data["ev_shape"]).ravel())
+            mat = sparse.csr_matrix(
+                (
+                    np.asarray(data["ev_data"]),
+                    np.asarray(data["ev_indices"]),
+                    np.asarray(data["ev_indptr"]),
+                ),
+                shape=shape,
+                dtype=np.float32,
+            )
+            ncols = int(shape[1])
+            if ncols < 1:
+                raise ValueError(f"CSR snapshot has no mode columns: shape={shape}")
+            cols = [
+                np.asarray(mat[:, j].toarray(), dtype=np.float64).reshape(-1) for j in range(ncols)
+            ]
+            return np.column_stack(cols)
+
+        raise KeyError(
+            "Snapshot NPZ must contain eigvecs_real or CSR ev_data/ev_indices/ev_indptr/ev_shape."
+        )
+
+    @staticmethod
+    def read_reduced_basis_npz(basis_path: Path) -> Tuple[np.ndarray, Dict[str, int]]:
+        """Load ``reduced_basis.npz`` without constructing an MPI manager (GUI-safe)."""
+        if not basis_path.is_file():
+            raise FileNotFoundError(f"Reduced basis not found: {basis_path}")
+        with np.load(basis_path, allow_pickle=False) as z:
+            if "basis" not in z.files:
+                raise KeyError(f"NPZ missing 'basis' array: {basis_path}")
+            V = np.asarray(z["basis"], dtype=np.float64)
+            rank = int(V.shape[1])
+            if "selected_rank" in z.files:
+                try:
+                    rank = int(np.asarray(z["selected_rank"]).reshape(-1)[0])
+                except (TypeError, ValueError, IndexError):
+                    rank = int(V.shape[1])
+        if V.ndim != 2 or V.shape[0] < 1 or V.shape[1] < 1:
+            raise ValueError(f"Invalid basis shape {V.shape} in {basis_path}")
+        rank = max(1, min(int(V.shape[1]), int(rank)))
+        meta = {
+            "num_dof": int(V.shape[0]),
+            "num_basis_modes": int(V.shape[1]),
+            "selected_rank": int(rank),
+        }
+        return V, meta
+
     def build_basis(self, shape_name: str, energy: float = 0.999, max_rank: int = 128) -> Path:
         paths = self._shape_paths(shape_name)
         snapshots = sorted(paths["snapshots"].glob("snapshot_*.npz"))
         if not snapshots:
             raise RuntimeError(f"No snapshots found in {paths['snapshots']}. Run offline collection first.")
 
-        columns = []
+        columns: List[np.ndarray] = []
         for snap in snapshots:
-            data = np.load(snap, allow_pickle=True)
-            eig = data["eigvecs_real"]
-            for k in range(eig.shape[1]):
+            with np.load(snap, allow_pickle=True) as data:
+                eig = self._snapshot_mode_matrix(data)
+            for k in range(int(eig.shape[1])):
                 columns.append(eig[:, k])
+        if not columns:
+            raise RuntimeError("No mode columns found across snapshots.")
         S = np.column_stack(columns)
         U, sigma, _ = np.linalg.svd(S, full_matrices=False)
         energy_curve = np.cumsum(sigma ** 2) / np.sum(sigma ** 2)
@@ -877,6 +943,7 @@ class ROMManager:
                 energy_curve=energy_curve.astype(np.float64),
                 selected_rank=np.array([r], dtype=np.int32),
                 snapshots_count=np.array([len(snapshots)], dtype=np.int32),
+                source_mode_columns=np.array([int(S.shape[1])], dtype=np.int32),
             )
         self._basis_cache[shape_name] = {
             "basis": V,
@@ -898,7 +965,7 @@ class ROMManager:
             red[:, j] = vt @ np.real(y.array)
         return red
 
-    def _get_basis_cached(self, shape_name: str) -> np.ndarray:
+    def _get_basis_cached(self, shape_name: str) -> Tuple[np.ndarray, Dict[str, int]]:
         paths = self._shape_paths(shape_name)
         basis_path = paths["basis"]
         if not basis_path.exists():
@@ -907,16 +974,23 @@ class ROMManager:
         mtime = basis_path.stat().st_mtime
         cached = self._basis_cache.get(shape_name)
         if cached and cached.get("mtime") == mtime and cached.get("path") == basis_path:
-            return cached["basis"]
+            V = cached["basis"]
+            meta = dict(cached.get("meta") or {})
+            return V, meta
 
-        basis_data = np.load(basis_path)
-        V = basis_data["basis"]
-        self._basis_cache[shape_name] = {"basis": V, "mtime": mtime, "path": basis_path}
-        return V
+        V, meta = self.read_reduced_basis_npz(basis_path)
+        self._basis_cache[shape_name] = {
+            "basis": V,
+            "meta": meta,
+            "mtime": mtime,
+            "path": basis_path,
+        }
+        return V, meta
 
     def solve_online(self, shape_name: str, params: Dict, nev: int = 3) -> Dict:
-        # Basis is cached in memory per shape for fast UI switching.
-        V = self._get_basis_cached(shape_name)
+        """Project assembled operators onto the dynamic reduced basis (any column count)."""
+        V, basis_meta = self._get_basis_cached(shape_name)
+        num_basis = int(V.shape[1])
 
         cfg = self._load_shape_base_config(shape_name)
         self._apply_parameters_to_config(cfg, params)
@@ -932,9 +1006,19 @@ class ROMManager:
         lam = lam[np.isfinite(lam)]
         lam = lam[lam > 1e-12]
         lam.sort()
-        lam = lam[:nev]
+        nev_out = num_basis if int(nev) <= 0 else min(int(nev), num_basis, int(lam.size))
+        nev_out = max(1, nev_out)
+        lam = lam[:nev_out]
         freqs = np.sqrt(lam) / (2.0 * np.pi)
-        return {"freqs_hz": freqs.tolist(), "elapsed_s": elapsed, "nev": int(len(freqs))}
+        return {
+            "freqs_hz": freqs.tolist(),
+            "elapsed_s": elapsed,
+            "nev": int(len(freqs)),
+            "nev_requested": int(nev),
+            "num_basis_modes": num_basis,
+            "num_dof": int(basis_meta.get("num_dof", V.shape[0])),
+            "basis_path": str(self._shape_paths(shape_name)["basis"]),
+        }
 
     def compare(self, shape_name: str, params: Dict, nev: int = 3, fom_modes: int = 15) -> Dict:
         cfg = self._load_shape_base_config(shape_name)
