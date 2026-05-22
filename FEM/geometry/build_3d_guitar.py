@@ -97,22 +97,29 @@ def warp_template_half_profile(
     return out
 
 
-def _closed_ring_from_half_profile(half: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
-    """
-    Build a closed outer ring: neck (+y arc) → tail → mirrored (-y arc) → neck.
-    Sequential line segments between these points always form a closed OCC loop.
-    """
-    if len(half) < 3:
-        raise RuntimeError("Half profile needs at least 3 points.")
-    ring: List[Tuple[float, float]] = list(half)
-    ring.extend((float(x), -float(y)) for x, y in reversed(half[1:-1]))
-    deduped: List[Tuple[float, float]] = [ring[0]]
-    for p in ring[1:]:
-        if math.hypot(p[0] - deduped[-1][0], p[1] - deduped[-1][1]) > 1.0e-9:
-            deduped.append(p)
-    if len(deduped) < 4:
-        raise RuntimeError("Closed profile ring collapsed after deduplication.")
-    return deduped
+def _subsample_chain(coords: Sequence[Tuple[float, float]], n_max: int = 28) -> List[Tuple[float, float]]:
+    """Reduce OCC spline control count while keeping neck→tail endpoints."""
+    pts = [(float(x), float(y)) for x, y in coords]
+    if len(pts) <= n_max:
+        return pts
+    out = [pts[0]]
+    for i in range(1, n_max - 1):
+        j = int(round(i * (len(pts) - 1) / float(n_max - 1)))
+        if math.hypot(pts[j][0] - out[-1][0], pts[j][1] - out[-1][1]) > 1.0e-9:
+            out.append(pts[j])
+    if math.hypot(pts[-1][0] - out[-1][0], pts[-1][1] - out[-1][1]) > 1.0e-9:
+        out.append(pts[-1])
+    return out
+
+
+def _stabilize_half_profile(half: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    """Nudge the first outer points off the centerline so OCC lines are non-degenerate."""
+    out = [(float(x), float(y)) for x, y in half]
+    if len(out) >= 2 and out[1][1] < 1.0e-5:
+        out[1] = (out[1][0], 1.0e-4)
+    if len(out) >= 3 and out[-2][1] < 1.0e-5:
+        out[-2] = (out[-2][0], 1.0e-4)
+    return out
 
 
 def audit_enabled() -> bool:
@@ -295,6 +302,39 @@ def create_guitar_mesh():
     gmsh.option.setNumber("Geometry.OCCFixSmallEdges", 1)
     gmsh.option.setNumber("Geometry.OCCFixSmallFaces", 1)
 
+    def _occ_add_body_curve(body_ptags: List[int]):
+        """Spline/BSpline through ordered body points (first outer → tail)."""
+        if len(body_ptags) >= 2:
+            try:
+                return occ.addBSpline(body_ptags)
+            except Exception:
+                return occ.addSpline(body_ptags)
+        if len(body_ptags) == 1:
+            raise RuntimeError("Body profile has only one point after subsampling.")
+        raise RuntimeError("Body profile is empty.")
+
+    def _mirrored_curve_tag(copy_dimtags) -> int:
+        """Return 1D curve tag after copy + mirror (Gmsh returns mirrored outDimTags)."""
+        mirrored = occ.mirror(copy_dimtags, 0, 1, 0, 0)
+        if mirrored and len(mirrored) > 0 and len(mirrored[0]) > 1:
+            return int(mirrored[0][1])
+        return int(copy_dimtags[0][1])
+
+    def _occ_closed_half_loop(l_neck: int, c_body: int, ml_tag: int, mc_tag: int) -> int:
+        """Try known-good OCC half-profile loop windings (mirror + spline)."""
+        specs = (
+            [l_neck, c_body, -mc_tag, -ml_tag],
+            [l_neck, c_body, -ml_tag, -mc_tag],
+            [l_neck, -mc_tag, c_body, -ml_tag],
+        )
+        last_err: Optional[Exception] = None
+        for spec in specs:
+            try:
+                return int(occ.addCurveLoop(spec))
+            except Exception as exc:
+                last_err = exc
+        raise RuntimeError(f"Profile curve loop could not be closed: {last_err}")
+
     def create_template_profile_surface(
         *,
         length: float,
@@ -306,25 +346,40 @@ def create_guitar_mesh():
         point_lc: Optional[float] = None,
     ) -> int:
         """
-        Inject a closed profile into OCC via sequential line segments (no mirror/spline loop).
+        Template half-profile → neck line + subsampled spline + Y-mirror (industry CAD pattern).
         """
         lc = float(point_lc if point_lc is not None else mesh_size)
-        half = warp_template_half_profile(
-            template,
-            length=length,
-            upper_bout=upper_bout,
-            waist=waist,
-            lower_bout=lower_bout,
-            wall_offset=wall_offset,
+        half = _stabilize_half_profile(
+            warp_template_half_profile(
+                template,
+                length=length,
+                upper_bout=upper_bout,
+                waist=waist,
+                lower_bout=lower_bout,
+                wall_offset=wall_offset,
+            )
         )
-        ring = _closed_ring_from_half_profile(half)
-        if len(ring) < 4:
-            raise RuntimeError("Template profile produced too few ring points for OCC injection.")
-        ptags = [occ.addPoint(float(x), float(y), 0.0, lc) for x, y in ring]
-        lines = [occ.addLine(ptags[i], ptags[(i + 1) % len(ptags)]) for i in range(len(ptags))]
-        loop = occ.addCurveLoop(lines)
+        if len(half) < 4:
+            raise RuntimeError("Template half-profile has too few points.")
+        neck_xy = half[0]
+        body = _subsample_chain(half[1:], n_max=28)
+
+        p_neck = occ.addPoint(neck_xy[0], neck_xy[1], 0.0, lc)
+        p_body = [occ.addPoint(x, y, 0.0, lc) for x, y in body]
+        l_neck = occ.addLine(p_neck, p_body[0])
+        c_body = _occ_add_body_curve(p_body)
+
+        ml_tag = _mirrored_curve_tag(occ.copy([(1, l_neck)]))
+        mc_tag = _mirrored_curve_tag(occ.copy([(1, c_body)]))
+        try:
+            occ.removeAllDuplicates()
+        except Exception:
+            pass
         occ.synchronize()
-        return occ.addPlaneSurface([loop])
+
+        cl = _occ_closed_half_loop(l_neck, c_body, ml_tag, mc_tag)
+        occ.synchronize()
+        return int(occ.addPlaneSurface([cl]))
 
     def as_dimtags(result):
         if isinstance(result, tuple):
