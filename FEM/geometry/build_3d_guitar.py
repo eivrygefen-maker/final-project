@@ -5,6 +5,29 @@ import os
 import math
 from pathlib import Path
 
+def _script_flags() -> tuple[bool, bool]:
+    """Script-only CLI flags (must not be passed to ``gmsh.initialize``)."""
+    argv = sys.argv[1:]
+    return ("--preview" in argv, "-nopopup" in argv)
+
+
+def _gmsh_initialize_argv() -> list[str]:
+    """Argv for Gmsh: drop script-only tokens so Gmsh does not warn on unknown options."""
+    skip_next = False
+    out = [sys.argv[0]]
+    for i, arg in enumerate(sys.argv[1:], start=1):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in ("--preview", "-nopopup"):
+            continue
+        if arg == "--config":
+            skip_next = True
+            continue
+        out.append(arg)
+    return out
+
+
 def _resolve_config_path(fem_dir: Path) -> Path:
     """CLI ``--config PATH`` overrides default ``configs/guitar_3d.json``."""
     for i, arg in enumerate(sys.argv):
@@ -24,9 +47,9 @@ def create_guitar_mesh():
     mesh_dir = fem_dir / "mesh"
     mesh_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- Nuclear mesh fix: disable preview mode unless explicitly allowed ---
-    # This prevents accidental coarse preview meshes during offline runs.
-    is_preview = ("--preview" in sys.argv) and (os.environ.get("FEM_ALLOW_PREVIEW", "0") == "1")
+    # Preview: env gate (Streamlit) + optional ``--preview`` script flag; never a Gmsh CLI option.
+    preview_cli, _nopopup = _script_flags()
+    is_preview = (os.environ.get("FEM_ALLOW_PREVIEW", "0") == "1") or preview_cli
     
     if is_preview:
         out_file = mesh_dir / "preview_mesh.msh"
@@ -99,7 +122,7 @@ def create_guitar_mesh():
     # No artificial radius cap — OCC cut/fragment clips overflow at plate edges.
     hr = max(1.0e-4, float(hr))
 
-    gmsh.initialize(sys.argv)
+    gmsh.initialize(_gmsh_initialize_argv())
     gmsh.model.add("Guitar3D_Performance_Optimized")
     occ = gmsh.model.occ
 
@@ -562,10 +585,17 @@ def create_guitar_mesh():
     print(f"[diag] Physical Group 1 (Top_Plate_Volume) entities: {list(v1)}")
     print(f"[diag] Physical Volume 2 (Back_Plate_Volume) entities: {list(v2)}")
     print(f"[diag] Physical Group 3 (Ribs_Sides_Volume) entities: {list(v3)}")
-    sh2 = gmsh.model.getEntitiesForPhysicalGroup(2, 2)
-    print(f"[diag] Physical Surface Group 2 (Soundhole) CAD surface tags: {list(sh2)}")
     if len(air_group_entities) == 0:
         raise RuntimeError("Tag 10 was created but has no 3D volume entities.")
+    sh2: list = []
+    try:
+        sh2 = list(gmsh.model.getEntitiesForPhysicalGroup(2, 2))
+        print(f"[diag] Physical Surface Group 2 (Soundhole) CAD surface tags: {sh2}")
+    except Exception:
+        print(
+            "[diag][warn] Physical Surface 2 (Soundhole) not created — "
+            "edge-clipped hole uses top-plate opening only."
+        )
     if len(sh2) == 0:
         print("[diag][warn] Tag 2 (Soundhole) has no 2D entities — acceptable for edge-clipped holes.")
 
@@ -712,7 +742,11 @@ def create_guitar_mesh():
 
         def _count_mesh_elements_for_physical(dim: int, phys_tag: int) -> int:
             n_elem = 0
-            for ent in gmsh.model.getEntitiesForPhysicalGroup(dim, int(phys_tag)):
+            try:
+                entities = gmsh.model.getEntitiesForPhysicalGroup(dim, int(phys_tag))
+            except Exception:
+                return 0
+            for ent in entities:
                 if isinstance(ent, (list, tuple)) and len(ent) >= 2:
                     dim_e, tag_e = int(ent[0]), int(ent[1])
                 else:

@@ -578,7 +578,7 @@ def _build_live_preview_surface(
     py_exe = sys.executable
     preview_env = {**os.environ, "FEM_ALLOW_PREVIEW": "1"}
     result = subprocess.run(
-        [py_exe, str(GEOMETRY_SCRIPT), "-nopopup", "--preview"],
+        [py_exe, str(GEOMETRY_SCRIPT), "-nopopup"],
         capture_output=True,
         text=True,
         env=preview_env,
@@ -835,7 +835,7 @@ with tab_design:
     with preview_card:
         st.subheader("Live 3D design preview")
         st.caption(
-            "Reactive CAD mesh (`--preview`). Updates when you move geometry sliders — "
+            "Reactive CAD preview mesh. Updates when you move geometry sliders — "
             "no solvers run here."
         )
         ctrl1, ctrl2, ctrl3 = st.columns([1, 1, 2])
