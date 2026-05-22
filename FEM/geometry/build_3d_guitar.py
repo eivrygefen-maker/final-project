@@ -83,18 +83,20 @@ def create_guitar_mesh():
         L, W, D = p["length"], p["width"], p["depth"]
         # CAD wall offset uses top-plate thickness (back is thicker in FEM shell forms only).
         t = float(p.get("top_thickness", p.get("thickness", 0.003)))
-        hr = min(float(p["hole_radius"]), 0.12)
+        hr = min(float(p["hole_radius"]), 0.08)
         shape_type = str(p.get("shape_type", "Classical")).strip()
+        hole_from_neck_ratio = float(p.get("soundhole_from_neck_ratio", 0.58))
     else:
         L, W, D, t, hr, shape_type = 0.48, 0.37, 0.1, 0.003, 0.04, "Classical"
+        hole_from_neck_ratio = 0.58
 
     def _is_box_shape(st: str) -> bool:
         return str(st).strip().lower() == "box"
 
     print(f"[diag] shape_type={shape_type!r} engineering={not is_preview}")
 
-    # Fixed luthier placement: 43% of L from neck toward bridge, centreline y=0.
-    hole_from_neck_ratio = 0.43
+    # Soundhole centre: measured from neck (+x) toward bridge; higher ratio → lower bout.
+    hole_from_neck_ratio = float(max(0.05, min(0.95, hole_from_neck_ratio)))
     hole_x = 0.5 * L - hole_from_neck_ratio * L
     hole_y = 0.0
 
@@ -983,6 +985,28 @@ def create_guitar_mesh():
             combine_list = [air_grad, fine_restrict]
             if thick_thresh is not None:
                 combine_list.append(thick_thresh)
+            # Soundhole annulus: extra refinement (engineering only) for circular opening.
+            hole_lc_target = max(wood_thickness_size, min(0.002, hr / 6.0))
+            if soundhole_surfs:
+                for s in soundhole_surfs:
+                    try:
+                        gmsh.model.mesh.setSize(2, int(s), hole_lc_target)
+                    except Exception:
+                        pass
+                dist_hole = gmsh.model.mesh.field.add("Distance")
+                gmsh.model.mesh.field.setNumbers(dist_hole, "FacesList", [int(s) for s in soundhole_surfs])
+                hole_thresh = gmsh.model.mesh.field.add("Threshold")
+                gmsh.model.mesh.field.setNumber(hole_thresh, "InField", dist_hole)
+                gmsh.model.mesh.field.setNumber(hole_thresh, "DistMin", 0.0005)
+                gmsh.model.mesh.field.setNumber(hole_thresh, "DistMax", max(0.015, 2.5 * hr))
+                gmsh.model.mesh.field.setNumber(hole_thresh, "SizeMin", hole_lc_target)
+                gmsh.model.mesh.field.setNumber(hole_thresh, "SizeMax", air_threshold_size_min)
+                combine_list.append(hole_thresh)
+                print(
+                    f"[diag] engineering soundhole refine: lc={hole_lc_target*1000:.2f}mm "
+                    f"over d=0.5–{max(0.015, 2.5 * hr)*1000:.1f}mm, n_faces={len(soundhole_surfs)}"
+                )
+
             min_field = gmsh.model.mesh.field.add("Min")
             gmsh.model.mesh.field.setNumbers(min_field, "FieldsList", combine_list)
             print(

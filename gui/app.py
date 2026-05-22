@@ -43,8 +43,8 @@ FALLBACK_MODES_CSV = BASE_DIR / "FEM" / "configs" / "archive" / "selected_modes_
 
 DEFAULT_ROM_SHAPE = "classic"
 SHAPE_OPTIONS = ("Classical", "Dreadnought", "Box")
-HOLE_RADIUS_MAX_M = 0.12
-SOUNDHOLE_FROM_NECK_RATIO = 0.43
+HOLE_RADIUS_MAX_M = 0.08
+SOUNDHOLE_FROM_NECK_RATIO = 0.58  # from neck (+x) toward bridge; +0.15 vs legacy 0.43
 TOP_Z_BAND_FRAC = 0.10
 HOLE_VIS_COLOR = "#0c0c0c"
 SHELL_VIS_TAGS = frozenset({1, 2, 3, 4})
@@ -86,6 +86,8 @@ def _init_session() -> None:
         "stk_body_json": "",
         "acoustics_pending": False,
         "developer_fom_mode": False,
+        "show_engineering_mesh": False,
+        "fixture_fp": "",
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -95,14 +97,22 @@ def _init_session() -> None:
 _init_session()
 
 
-def _load_saved_geometry() -> Dict[str, Any]:
+def _load_saved_config() -> Dict[str, Any]:
     if not CONFIG_PATH.is_file():
         return {}
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
-            return json.load(f).get("geometry", {}) or {}
+            return json.load(f)
     except Exception:
         return {}
+
+
+def _load_saved_geometry() -> Dict[str, Any]:
+    return _load_saved_config().get("geometry", {}) or {}
+
+
+def _load_saved_solver() -> Dict[str, Any]:
+    return _load_saved_config().get("solver", {}) or {}
 
 
 # ---------------------------------------------------------------------------
@@ -177,15 +187,16 @@ def lhs_params_from_ui(
 # ---------------------------------------------------------------------------
 # Config persistence
 # ---------------------------------------------------------------------------
-def save_config(geom: Dict[str, Any], *, top_wood: str, back_wood: str) -> None:
+def save_config(
+    geom: Dict[str, Any],
+    *,
+    top_wood: str,
+    back_wood: str,
+    clamp_ribs: bool,
+    pin_neck_fix: bool,
+) -> None:
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    data: Dict[str, Any] = {}
-    if CONFIG_PATH.is_file():
-        try:
-            with open(CONFIG_PATH, encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            data = {}
+    data: Dict[str, Any] = _load_saved_config()
     data["geometry"] = {
         **geom,
         "top_wood_id": top_wood,
@@ -199,6 +210,8 @@ def save_config(geom: Dict[str, Any], *, top_wood: str, back_wood: str) -> None:
     solver = dict(data.get("solver") or {})
     solver["mesh_file"] = str(MESH_FILE)
     solver.setdefault("num_modes", 50)
+    solver["clamp_ribs"] = bool(clamp_ribs)
+    solver["eps_pin_fix_tag5"] = bool(pin_neck_fix)
     data["solver"] = solver
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
@@ -218,7 +231,13 @@ def gmsh_argv() -> List[str]:
 
 
 def run_gmsh_preview() -> None:
-    save_config(st.session_state["_geom"], top_wood=st.session_state["_top_wood"], back_wood=st.session_state["_back_wood"])
+    save_config(
+        st.session_state["_geom"],
+        top_wood=st.session_state["_top_wood"],
+        back_wood=st.session_state["_back_wood"],
+        clamp_ribs=st.session_state["_clamp_ribs"],
+        pin_neck_fix=st.session_state["_pin_neck_fix"],
+    )
     if PREVIEW_MESH_FILE.is_file():
         PREVIEW_MESH_FILE.unlink()
     env = {**os.environ, "FEM_ALLOW_PREVIEW": "1"}
@@ -229,7 +248,13 @@ def run_gmsh_preview() -> None:
 
 
 def run_gmsh_engineering() -> None:
-    save_config(st.session_state["_geom"], top_wood=st.session_state["_top_wood"], back_wood=st.session_state["_back_wood"])
+    save_config(
+        st.session_state["_geom"],
+        top_wood=st.session_state["_top_wood"],
+        back_wood=st.session_state["_back_wood"],
+        clamp_ribs=st.session_state["_clamp_ribs"],
+        pin_neck_fix=st.session_state["_pin_neck_fix"],
+    )
     if MESH_FILE.is_file():
         MESH_FILE.unlink()
     env = {k: v for k, v in os.environ.items() if k != "FEM_ALLOW_PREVIEW"}
@@ -355,25 +380,36 @@ def render_guitar(
     plotter.close()
 
 
-def get_display_mesh(geom_fp: str, *, sketch_mode: bool) -> Tuple[Optional[pv.PolyData], bool]:
-    """Return (mesh, is_sketch). Engineering mesh wins when fingerprint matches."""
-    eng_match = (
-        st.session_state.physics_geom_fp == geom_fp
+def engineering_display_active(geom_fp: str) -> bool:
+    """True only after Save Changes — never while sliders are dirty."""
+    return (
+        bool(st.session_state.get("show_engineering_mesh"))
+        and st.session_state.physics_geom_fp == geom_fp
         and MESH_FILE.is_file()
-        and not sketch_mode
     )
-    if eng_match:
-        return load_surface_mesh(MESH_FILE), False
+
+
+def get_display_mesh(geom_fp: str) -> Tuple[Optional[pv.PolyData], bool, str]:
+    """
+    Return (mesh, sketch_mode, source_label).
+
+    Engineering ``guitar_3d.msh`` is used only when explicitly activated by Save.
+    All other cases use ``preview_mesh.msh`` (visual sketch; not used for FEM/ROM).
+    """
+    if engineering_display_active(geom_fp):
+        eng = load_surface_mesh(MESH_FILE)
+        if eng is not None:
+            return eng, False, "guitar_3d.msh"
 
     if st.session_state.live_preview_fp == geom_fp and PREVIEW_MESH_FILE.is_file():
         cached = load_surface_mesh(PREVIEW_MESH_FILE)
         if cached is not None:
-            return cached, True
+            return cached, True, "preview_mesh.msh"
 
-    with st.spinner("Building sketch mesh…"):
+    with st.spinner("Building sketch preview (low-poly wireframe)…"):
         run_gmsh_preview()
     st.session_state.live_preview_fp = geom_fp
-    return load_surface_mesh(PREVIEW_MESH_FILE), True
+    return load_surface_mesh(PREVIEW_MESH_FILE), True, "preview_mesh.msh"
 
 
 # ---------------------------------------------------------------------------
@@ -568,14 +604,17 @@ def invalidate_physics() -> None:
     st.session_state.physics_ready = False
     st.session_state.acoustics_pending = False
     st.session_state.stk_body_json = ""
+    st.session_state.show_engineering_mesh = False
 
 
 def on_save_changes(geom_fp: str, lhs_params: Dict[str, Any]) -> None:
-    """Phase 1: engineering mesh only; acoustics runs on next rerun after plot."""
+    """Phase 1: full FSI engineering mesh; acoustics runs on next rerun after plot."""
     invalidate_physics()
-    with st.spinner("Building detailed model…"):
+    st.session_state.live_preview_fp = ""
+    with st.spinner("Building engineering mesh (full FSI, high-fidelity)…"):
         run_gmsh_engineering()
     st.session_state.physics_geom_fp = geom_fp
+    st.session_state.show_engineering_mesh = True
     st.session_state.acoustics_pending = True
     st.rerun()
 
@@ -593,6 +632,7 @@ def on_generate_sound(*, top_wood: str, note_hz: float, q_mode: str) -> None:
 # ---------------------------------------------------------------------------
 def main() -> None:
     saved = _load_saved_geometry()
+    saved_solver = _load_saved_solver()
     saved_shape = str(saved.get("shape_type", "Classical"))
     if saved_shape not in SHAPE_OPTIONS:
         saved_shape = "Classical"
@@ -665,27 +705,50 @@ def main() -> None:
     st.session_state["_top_wood"] = top_wood
     st.session_state["_back_wood"] = back_wood
 
+    fixture_fp = json.dumps(
+        {
+            "clamp_ribs": bool(st.session_state.get("_clamp_ribs")),
+            "pin_neck_fix": bool(st.session_state.get("_pin_neck_fix")),
+        },
+        sort_keys=True,
+    )
     if geom_fp != st.session_state.physics_geom_fp:
         invalidate_physics()
         st.session_state.live_preview_fp = ""
+    elif fixture_fp != st.session_state.fixture_fp:
+        invalidate_physics()
+    st.session_state.fixture_fp = fixture_fp
 
-    sketch_mode = geom_fp != st.session_state.physics_geom_fp or not MESH_FILE.is_file()
+    eng_view = engineering_display_active(geom_fp)
     top_color = plot_color_for_wood(top_wood)
     back_color = plot_color_for_wood(back_wood)
 
     with col_vis:
+        st.subheader("Guitar fixtures")
+        st.session_state["_clamp_ribs"] = st.checkbox(
+            "Clamp ribs / sides (u = 0, tag 4)",
+            value=bool(st.session_state.get("_clamp_ribs", saved_solver.get("clamp_ribs", False))),
+            help="solver.clamp_ribs — applied on engineering mesh (tag 4 DOFs).",
+        )
+        st.session_state["_pin_neck_fix"] = st.checkbox(
+            "Pin neck patch (u = 0, tag 5 wood_fix)",
+            value=bool(st.session_state.get("_pin_neck_fix", saved_solver.get("eps_pin_fix_tag5", True))),
+            help="solver.eps_pin_fix_tag5 — neck patch on engineering mesh only.",
+        )
+
         st.subheader("PREVIEW")
 
-        if sketch_mode:
-            st.caption("Sketch mode — adjust sliders, then Save Changes for the detailed model.")
-        elif st.session_state.physics_ready:
-            st.caption("Detailed model — acoustics ready.")
-        elif st.session_state.acoustics_pending:
-            st.caption("Detailed model — computing acoustics…")
+        if eng_view:
+            if st.session_state.physics_ready:
+                st.caption("Engineering model (`guitar_3d.msh`) — acoustics ready.")
+            elif st.session_state.acoustics_pending:
+                st.caption("Engineering model (`guitar_3d.msh`) — computing acoustics…")
+            else:
+                st.caption("Engineering model (`guitar_3d.msh`) — saved.")
         else:
-            st.caption("Detailed model saved.")
+            st.caption("Sketch preview (`preview_mesh.msh`) — visual only. Save Changes for FEM/ROM mesh.")
 
-        mesh, is_sketch = get_display_mesh(geom_fp, sketch_mode=sketch_mode)
+        mesh, is_sketch, mesh_src = get_display_mesh(geom_fp)
         try:
             pv.set_jupyter_backend("static")
             render_guitar(
@@ -695,7 +758,7 @@ def main() -> None:
                 body_length=geom["length"],
                 hole_radius=geom["hole_radius"],
                 sketch_mode=is_sketch,
-                plot_key=f"v_{geom_fp[:16]}",
+                plot_key=f"{'sk' if is_sketch else 'eng'}_{geom_fp[:12]}",
             )
         except Exception as exc:
             st.warning(f"Render error: {exc}")
