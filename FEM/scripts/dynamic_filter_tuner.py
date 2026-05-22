@@ -27,6 +27,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from fem_harvest_filter import HARVEST_FILTER_POLICY_VERSION
+from fem_rom_postprocess import MODAL_PRUNE_DF_HZ_DEFAULT, prune_near_duplicate_modes
 from paths import DEFAULT_SHAPE_NAME, resolve_plot_output_path, shared_plot_path
 
 # =============================
@@ -113,6 +114,11 @@ def _load_candidates(path: Path) -> List[Dict]:
                 row["harvest_filter_policy"] = str(c.get("harvest_filter_policy"))
             if c.get("harvest_class"):
                 row["harvest_class"] = str(c.get("harvest_class"))
+            if c.get("p_frac") is not None:
+                try:
+                    row["p_frac"] = float(c.get("p_frac"))
+                except (TypeError, ValueError):
+                    pass
             out.append(row)
         except Exception:
             continue
@@ -654,6 +660,20 @@ def main() -> int:
         help="Minimum tag3_ratio for back pool (default 0.0)",
     )
     parser.add_argument(
+        "--modal-prune-df-hz",
+        type=float,
+        default=MODAL_PRUNE_DF_HZ_DEFAULT,
+        help=(
+            "Drop near-duplicate candidates within this frequency gap (Hz) before MMR; "
+            "keeps higher wood_participation / p_frac per cluster."
+        ),
+    )
+    parser.add_argument(
+        "--no-modal-prune",
+        action="store_true",
+        help="Disable pre-MMR frequency de-duplication.",
+    )
+    parser.add_argument(
         "--export",
         type=Path,
         default=_project_root() / "FEM" / "SORTING" / "selected_modes.csv",
@@ -731,6 +751,19 @@ def main() -> int:
             f"No valid candidates in requested window [{args.window_min}, {args.window_max}] from: {args.candidates}"
         )
         return 1
+
+    pruned_freq: List[Dict] = []
+    if not args.no_modal_prune:
+        prune_df = max(1.0e-6, float(args.modal_prune_df_hz))
+        candidates, pruned_freq = prune_near_duplicate_modes(candidates, df_hz=prune_df)
+        if pruned_freq:
+            print(
+                f"Modal frequency prune: removed {len(pruned_freq)} near-duplicate(s) "
+                f"(Δf<{prune_df:g} Hz; kept higher wood/p_frac per cluster)."
+            )
+        if not candidates:
+            print("No candidates remain after modal frequency prune.")
+            return 1
 
     total_quota = max(1, int(args.quota))
     top_quota = max(0, int(args.top_quota))

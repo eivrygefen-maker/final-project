@@ -51,7 +51,7 @@ class HarvestFilterConfig:
     # while max|p| remains finite; bypass weak p_frac when wood and |p|_max pass.
     wood_dominated_rom_bypass: bool = True
     min_wood_dominated_bypass: float = 0.90
-    wood_bypass_max_hz: float = 350.0
+    wood_bypass_max_hz: float = 550.0
     min_p_block_max_wood_bypass: float = 1.0e-14
 
     @classmethod

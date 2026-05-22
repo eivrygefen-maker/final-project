@@ -3151,7 +3151,12 @@ def _slepc_st_sigma_hz_candidates(solver_cfg: Dict, target_hz: float) -> List[fl
         if key not in seen:
             seen.add(key)
             out.append(hz)
-    return out
+    try:
+        ladder_max = int(solver_cfg.get("eps_st_sigma_ladder_max", 6))
+    except (TypeError, ValueError):
+        ladder_max = 6
+    ladder_max = max(1, min(16, ladder_max))
+    return out[:ladder_max]
 
 
 def _slepc_primary_st_sigma_hz(

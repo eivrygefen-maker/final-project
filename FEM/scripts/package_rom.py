@@ -28,6 +28,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from fem_harvest_filter import HARVEST_FILTER_POLICY_VERSION
 from fem_mode_array_utils import MODE_VECTOR_FILE_SUFFIX, load_mode_column_any
+from fem_rom_postprocess import MODAL_PRUNE_DF_HZ_DEFAULT, prune_near_duplicate_modes
 
 FEM_ROOT = SCRIPT_DIR.parent
 SORTING_ROOT = FEM_ROOT / "SORTING"
@@ -132,6 +133,9 @@ def _read_winners(csv_path: Path) -> List[Dict[str, object]]:
                     row["harvest_filter_policy"] = str(rec[pol_h]).strip()
                 if cls_h and rec.get(cls_h, "").strip():
                     row["harvest_class"] = str(rec[cls_h]).strip()
+                pf_h = fields.get("p_frac")
+                if pf_h and rec.get(pf_h, "").strip():
+                    row["p_frac"] = float(rec[pf_h])
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError(f"Bad CSV row {rec!r}: {exc}") from exc
             rows.append(row)
@@ -212,6 +216,17 @@ def main() -> int:
             "temp_modes/, else FEM/SORTING next to this script)."
         ),
     )
+    parser.add_argument(
+        "--modal-prune-df-hz",
+        type=float,
+        default=MODAL_PRUNE_DF_HZ_DEFAULT,
+        help="Final NPZ guard: drop CSV rows within this Δf (Hz), keeping higher wood/p_frac.",
+    )
+    parser.add_argument(
+        "--no-modal-prune",
+        action="store_true",
+        help="Disable final frequency de-duplication before packaging.",
+    )
     args = parser.parse_args()
 
     csv_path = args.csv.resolve()
@@ -227,6 +242,22 @@ def main() -> int:
     except (OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+
+    if not args.no_modal_prune:
+        prune_df = max(1.0e-6, float(args.modal_prune_df_hz))
+        kept, pruned = prune_near_duplicate_modes(
+            [dict(w) for w in winners],
+            df_hz=prune_df,
+        )
+        if pruned:
+            print(
+                f"Modal frequency prune (package): dropped {len(pruned)} near-duplicate row(s) "
+                f"(Δf<{prune_df:g} Hz)."
+            )
+        winners = kept
+        if not winners:
+            print("Error: no modes remain after modal frequency prune.", file=sys.stderr)
+            return 1
 
     cols: List[sparse.csr_matrix] = []
     freqs: List[float] = []

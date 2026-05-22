@@ -2,9 +2,12 @@
 """
 Overlapping spectral bands for multi-shift FSI harvest (60–550 Hz).
 
-Each band defines a worker ``target_hz`` (scheduler shift center), an ST σ placed
-**outside** the harvest window ``[harvest_lo_hz, harvest_hi_hz]``, and overlapping
-windows wide enough to avoid gaps on ``[hz_min, hz_max]``.
+Each band defines a worker ``target_hz`` (scheduler shift center), an ST σ, and
+overlapping harvest windows on ``[hz_min, hz_max]``. Below ~480 Hz, σ is placed
+**outside** the harvest window so σ-Ritz does not dominate the band. At ultra-HF
+(≥480 Hz), σ tracks **inside** the harvest window near the target so sinvert-mapped
+Ritz pairs land in ``[harvest_lo_hz, harvest_hi_hz]`` (σ below the window pins every
+invert mode at e.g. 480 Hz while the harvest band is [492, 550]).
 """
 from __future__ import annotations
 
@@ -33,6 +36,9 @@ SIGMA_OUTSIDE_HARVEST_MARGIN_HZ = 12.0
 # ST shift-invert σ must stay positive; solver harvest still uses ``min_hz`` (often 60).
 ST_SIGMA_HZ_FLOOR = 60.0
 ST_SIGMA_HZ_CEILING = 600.0
+
+# Master scheduler: primary + σ-retry workers per shift before fail-fast (see fem_rom_postprocess).
+SIGMA_RETRY_MAX_ATTEMPTS_PER_SHIFT = 5
 
 
 def hz_shift_quantize(hz: float, tol: float = 1e-4) -> float:
@@ -194,6 +200,29 @@ def sigma_hz_outside_harvest_window(
     return s < lo - 1.0e-9 or s > hi + 1.0e-9
 
 
+def _ultra_hf_sigma_track_hz(
+    target_hz: float,
+    harvest_lo_hz: float,
+    harvest_hi_hz: float,
+    *,
+    margin_hz: float = SIGMA_OUTSIDE_HARVEST_MARGIN_HZ,
+) -> float:
+    """ST σ (Hz) inside the harvest band, tracking the scheduler target (ultra-HF)."""
+    target = float(target_hz)
+    lo = float(harvest_lo_hz)
+    hi = float(harvest_hi_hz)
+    margin = max(8.0, float(margin_hz))
+    sigma_floor = max(1.0, float(ST_SIGMA_HZ_FLOOR))
+    sigma_ceil = max(sigma_floor, float(ST_SIGMA_HZ_CEILING))
+    inner_lo = lo + margin
+    inner_hi = hi - margin
+    if inner_hi > inner_lo + 1.0:
+        sigma_track = max(inner_lo, min(inner_hi, target - 0.5 * margin))
+    else:
+        sigma_track = 0.5 * (lo + hi)
+    return float(max(sigma_floor, min(sigma_ceil, sigma_track)))
+
+
 def primary_sigma_offset_hz_outside_harvest(
     target_hz: float,
     harvest_lo_hz: float,
@@ -204,11 +233,10 @@ def primary_sigma_offset_hz_outside_harvest(
     margin_hz: float = SIGMA_OUTSIDE_HARVEST_MARGIN_HZ,
 ) -> float:
     """
-    Offset (Hz) for ``eps_st_sigma_primary_offset_hz`` so ST σ lies outside ``[lo, hi]``.
+    Offset (Hz) for ``eps_st_sigma_primary_offset_hz``.
 
-    Prefers σ just below ``harvest_lo_hz``; otherwise just above ``harvest_hi_hz``.
-    Placement uses the harvest window only (not scheduler ``hz_min``/``hz_max``), so σ-retry
-    can still run when the sweep span is narrower than the harvest band.
+    Ultra-HF (≥480 Hz): σ inside ``[lo, hi]`` near ``target_hz`` so mapped modes fall in
+    the harvest window. Lower bands: σ outside ``[lo, hi]`` (below ``lo`` preferred).
     """
     target = float(target_hz)
     lo = float(harvest_lo_hz)
@@ -216,6 +244,12 @@ def primary_sigma_offset_hz_outside_harvest(
     margin = max(8.0, float(margin_hz))
     sigma_floor = max(1.0, float(ST_SIGMA_HZ_FLOOR))
     sigma_ceil = max(sigma_floor, float(ST_SIGMA_HZ_CEILING))
+
+    if target >= ULTRA_HF_STABILITY_THRESHOLD_HZ:
+        sigma_track = _ultra_hf_sigma_track_hz(
+            target, lo, hi, margin_hz=margin
+        )
+        return float(sigma_track - target)
 
     sigma_below = max(sigma_floor, lo - margin)
     off_below = sigma_below - target
@@ -361,12 +395,18 @@ def sigma_retry_offset_candidates(
     seen_off: Set[float] = set()
     seen_sigma: set = set()
 
-    def _try_offset(off: float) -> None:
+    def _try_offset(
+        off: float,
+        *,
+        require_outside: bool = True,
+    ) -> None:
         key = round(float(off), 2)
         if key in seen_off:
             return
         s_hz = _sigma_hz_from_offset(target, off)
-        if not sigma_hz_outside_harvest_window(s_hz, lo, hi, margin_hz=margin):
+        if require_outside and not sigma_hz_outside_harvest_window(
+            s_hz, lo, hi, margin_hz=margin
+        ):
             return
         sk = round(s_hz, 2)
         if sk in seen_sigma:
@@ -374,6 +414,14 @@ def sigma_retry_offset_candidates(
         seen_sigma.add(sk)
         seen_off.add(key)
         candidates.append(float(off))
+
+    if target >= ULTRA_HF_STABILITY_THRESHOLD_HZ:
+        inner_lo = lo + margin
+        inner_hi = hi - margin
+        for delta in (0.0, -8.0, 8.0, -16.0, 16.0, -24.0, 24.0):
+            s_hz = max(inner_lo, min(inner_hi, target + float(delta)))
+            _try_offset(s_hz - target, require_outside=False)
+        return candidates
 
     _try_offset(primary)
     for step in extra_steps:

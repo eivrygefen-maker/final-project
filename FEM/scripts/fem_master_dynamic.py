@@ -72,6 +72,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from fem_rom_postprocess import sigma_retry_max_attempts_per_shift
 from fem_harvest_filter import (
     HARVEST_FILTER_POLICY_VERSION,
     HarvestFilterConfig,
@@ -542,10 +543,19 @@ class SpectralScheduler:
         """
         Build worker params for the next alternate σ offset after a zero-yield merge.
 
-        Returns ``None`` when the retry ladder is exhausted for this target.
+        Returns ``None`` when the retry ladder is exhausted or fail-fast cap is hit.
         """
         key = self._hz_key(hz)
         tried = self._sigma_retry_attempted.setdefault(key, set())
+        max_attempts = sigma_retry_max_attempts_per_shift(self.solver_cfg)
+        if len(tried) >= max_attempts:
+            LOGGER.warning(
+                "σ-retry fail-fast: %d/%d ST attempt(s) at %.4f Hz — marking shift complete.",
+                len(tried),
+                max_attempts,
+                float(hz),
+            )
+            return None
         try:
             lo = float(base_params.get("harvest_lo_hz"))
             hi = float(base_params.get("harvest_hi_hz"))
