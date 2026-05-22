@@ -161,18 +161,54 @@ def _volume_tags_from_extrude(out) -> List[int]:
     return tags
 
 
-def _geo_extrude_shell_volume(surface_tag: int, dz: float, z_shift: float) -> int:
-    """Extrude a geo 2D profile surface to a 3D volume (geo kernel, not OCC)."""
-    geo = gmsh.model.geo
+def _occ_profile_surface_from_points(
+    points: Sequence[Tuple[float, float]], lc: float
+) -> int:
+    """Build a closed 2D profile surface in the OCC kernel (int tags only)."""
+    occ = gmsh.model.occ
+    if len(points) < 3:
+        raise RuntimeError("Profile perimeter needs at least 3 distinct points.")
+
+    p_tags: List[int] = []
+    for pt in points:
+        p_tags.append(int(occ.addPoint(float(pt[0]), float(pt[1]), 0.0, lc)))
+
+    l_tags: List[int] = []
+    for i in range(len(p_tags) - 1):
+        l_tags.append(int(occ.addLine(p_tags[i], p_tags[i + 1])))
+    l_tags.append(int(occ.addLine(p_tags[-1], p_tags[0])))
+
+    occ.synchronize()
+
+    last_err: Optional[Exception] = None
+    curve_loop_tag: Optional[int] = None
+    for line_ring in (l_tags, list(reversed(l_tags))):
+        try:
+            curve_loop_tag = int(occ.addCurveLoop(line_ring))
+            break
+        except Exception as exc:
+            last_err = exc
+
+    if curve_loop_tag is None:
+        raise RuntimeError(f"OCC profile curve loop failed: {last_err}")
+
+    surface_tag = int(occ.addPlaneSurface([curve_loop_tag]))
+    occ.synchronize()
+    return surface_tag
+
+
+def _occ_extrude_shell_volume(surface_tag: int, dz: float, z_shift: float) -> int:
+    """Extrude an OCC 2D profile surface to a 3D volume."""
+    occ = gmsh.model.occ
     try:
-        ext = geo.extrude([(2, int(surface_tag))], 0, 0, float(dz), [3])
+        ext = occ.extrude([(2, int(surface_tag))], 0, 0, float(dz), [3])
     except (TypeError, ValueError):
-        ext = geo.extrude([(2, int(surface_tag))], 0, 0, float(dz))
+        ext = occ.extrude([(2, int(surface_tag))], 0, 0, float(dz))
     vol_tags = _volume_tags_from_extrude(ext)
     if not vol_tags:
-        raise RuntimeError(f"geo.extrude produced no volume (dz={dz}).")
-    geo.translate([(3, vol_tags[0])], 0, 0, float(z_shift))
-    geo.synchronize()
+        raise RuntimeError(f"occ.extrude produced no volume (dz={dz}).")
+    occ.translate([(3, vol_tags[0])], 0, 0, float(z_shift))
+    occ.synchronize()
     return vol_tags[0]
 
 
@@ -376,12 +412,8 @@ def create_guitar_mesh():
         wall_offset: float = 0.0,
         point_lc: Optional[float] = None,
     ) -> int:
-        """
-        Normalized template → flat Python polygon → geo kernel lines (int tags only).
-        Uses geo (not OCC) for the closed loop; OCC extrude consumes the geo surface after sync.
-        """
+        """Normalized template → Python perimeter ring → OCC surface (same kernel as booleans)."""
         lc = float(point_lc if point_lc is not None else mesh_size)
-        geo = gmsh.model.geo
         half = _stabilize_half_profile(
             warp_template_half_profile(
                 template,
@@ -392,38 +424,10 @@ def create_guitar_mesh():
                 wall_offset=wall_offset,
             )
         )
-        points: List[Tuple[float, float]] = _perimeter_points_from_half(half, n_side_max=32)
-        if len(points) < 3:
-            raise RuntimeError("Profile perimeter needs at least 3 distinct points.")
-
-        p_tags: List[int] = []
-        for pt in points:
-            p_tags.append(int(geo.addPoint(float(pt[0]), float(pt[1]), 0.0, lc)))
-
-        l_tags: List[int] = []
-        for i in range(len(p_tags) - 1):
-            l_tags.append(int(geo.addLine(p_tags[i], p_tags[i + 1])))
-        l_tags.append(int(geo.addLine(p_tags[-1], p_tags[0])))
-
-        geo.synchronize()
-
-        last_err: Optional[Exception] = None
-        curve_loop_tag: Optional[int] = None
-        for line_ring in (l_tags, list(reversed(l_tags))):
-            try:
-                curve_loop_tag = int(geo.addCurveLoop(line_ring))
-                break
-            except Exception as exc:
-                last_err = exc
-
-        if curve_loop_tag is None:
-            raise RuntimeError(f"Profile curve loop could not be created: {last_err}")
-
-        surface_tag = int(geo.addPlaneSurface([curve_loop_tag]))
-        geo.synchronize()
+        points = _perimeter_points_from_half(half, n_side_max=32)
+        surface_tag = _occ_profile_surface_from_points(points, lc)
         print(
-            f"[diag] template profile surface (geo): n_pts={len(points)} n_lines={len(l_tags)} "
-            f"curve_loop={curve_loop_tag} surface={surface_tag}"
+            f"[diag] template profile surface (occ): n_pts={len(points)} surface={surface_tag}"
         )
         return surface_tag
 
@@ -579,7 +583,7 @@ def create_guitar_mesh():
             wall_offset=0.0,
             point_lc=profile_lc,
         )
-        vol_out_id = _geo_extrude_shell_volume(surf_out, D, -D / 2.0)
+        vol_out_id = _occ_extrude_shell_volume(surf_out, D, -D / 2.0)
 
         surf_in = create_template_profile_surface(
             length=L,
@@ -590,9 +594,8 @@ def create_guitar_mesh():
             wall_offset=t,
             point_lc=profile_lc,
         )
-        vol_in_id = _geo_extrude_shell_volume(surf_in, inner_depth, -D / 2.0 + t)
-
-        occ.synchronize()
+        vol_in_id = _occ_extrude_shell_volume(surf_in, inner_depth, -D / 2.0 + t)
+        print(f"[diag] OCC shell volumes: outer={vol_out_id} inner={vol_in_id}")
 
     # Soundhole cutter: vertical cylinder through top plate only (does not slice ribs/sides).
     if _is_box_shape(shape_type):
@@ -631,15 +634,18 @@ def create_guitar_mesh():
             removeTool=True,
         )
         wood_dimtags = [dt for dt in as_dimtags(wood_shell) if dt[0] == 3]
-        wood_hole_cut = _audit_boolean(
-            "preview_soundhole_cut",
-            occ.cut,
-            wood_dimtags,
-            [(3, hole_cyl)],
-            removeObject=True,
-            removeTool=True,
-        )
-        wood_dimtags = [dt for dt in as_dimtags(wood_hole_cut) if dt[0] == 3]
+        if is_display:
+            wood_hole_cut = _audit_boolean(
+                "display_soundhole_cut",
+                occ.cut,
+                wood_dimtags,
+                [(3, hole_cyl)],
+                removeObject=True,
+                removeTool=True,
+            )
+            wood_dimtags = [dt for dt in as_dimtags(wood_hole_cut) if dt[0] == 3]
+        else:
+            print("[diag] preview CAD: soundhole OCC cut skipped (GUI paints hole)")
         try:
             occ.removeAllDuplicates()
         except Exception:
