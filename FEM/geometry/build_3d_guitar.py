@@ -217,22 +217,46 @@ def _filter_ring_min_spacing(
 def _occ_perimeter_walk_surface(
     full_perimeter: Sequence[Tuple[float, float]], lc: float
 ) -> int:
-    """OCC closed profile: points → sync → lines → sync → curve loop → plane surface → sync."""
+    """
+    OCC closed profile; ``full_perimeter`` must already have head=tail (same object).
+
+    Reuses one OCC point tag at the neck; deduplicates immediately before ``addCurveLoop``.
+    """
     occ = gmsh.model.occ
-    ring = [(float(x), float(y)) for x, y in full_perimeter]
+    ring = list(full_perimeter)
     n = len(ring)
     if n < 4:
         raise RuntimeError(f"OCC perimeter walk needs >= 4 points (got {n}).")
 
-    p_tags = [int(occ.addPoint(pt[0], pt[1], 0.0, lc)) for pt in ring]
+    p_tags: List[int] = []
+    for i, pt in enumerate(ring):
+        if i > 0 and pt is ring[0]:
+            p_tags.append(p_tags[0])
+        else:
+            p_tags.append(int(occ.addPoint(float(pt[0]), float(pt[1]), 0.0, lc)))
+
+    l_tags: List[int] = []
+    for i in range(len(p_tags)):
+        j = (i + 1) % len(p_tags)
+        if p_tags[i] != p_tags[j]:
+            l_tags.append(int(occ.addLine(p_tags[i], p_tags[j])))
+    if len(l_tags) < 3:
+        raise RuntimeError(
+            f"OCC perimeter walk produced {len(l_tags)} lines (need >= 3)."
+        )
+
     occ.synchronize()
-    l_tags = [
-        int(occ.addLine(p_tags[i], p_tags[(i + 1) % n])) for i in range(n)
-    ]
-    occ.synchronize()
+    try:
+        occ.removeAllDuplicates()
+    except Exception:
+        pass
     loop_tag = int(occ.addCurveLoop(l_tags))
     surface_tag = int(occ.addPlaneSurface([loop_tag]))
     occ.synchronize()
+    print(
+        f"[diag] OCC perimeter wire: n_pts={n} n_lines={len(l_tags)} "
+        f"neck_tag={p_tags[0]} loop={loop_tag} surface={surface_tag}"
+    )
     return int(surface_tag)
 
 
@@ -492,6 +516,23 @@ def create_guitar_mesh():
         full_perimeter = _filter_ring_min_spacing(
             _full_ring_points_from_half(half, n_side_max=40), min_dist=1e-4
         )
+        if len(full_perimeter) < 2:
+            raise RuntimeError("Profile perimeter too short for neck closure.")
+        neck = (float(full_perimeter[0][0]), 0.0)
+        full_perimeter[0] = neck
+        full_perimeter[-1] = full_perimeter[0]
+        head_tail_dist = math.hypot(
+            full_perimeter[0][0] - full_perimeter[-1][0],
+            full_perimeter[0][1] - full_perimeter[-1][1],
+        )
+        print(
+            f"DEBUG: Distance between first and last point: {head_tail_dist}"
+        )
+        if head_tail_dist != 0.0:
+            raise RuntimeError(
+                f"Head-tail snap failed: distance={head_tail_dist} "
+                f"(first={full_perimeter[0]!r} last={full_perimeter[-1]!r})"
+            )
         _verify_perimeter_ring(full_perimeter)
         surface_tag = _occ_perimeter_walk_surface(full_perimeter, lc)
         print(
