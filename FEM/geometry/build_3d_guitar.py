@@ -165,43 +165,42 @@ def _occ_closed_polyline_surface(
     full_ring_points: Sequence[Tuple[float, float]], lc: float
 ) -> int:
     """
-    Closed profile via OCC line segments only (gmsh.model.occ — never geo).
+    Closed profile: OCC points → lines → pre-loop synchronize → curve loop → surface.
 
-    Points → lines → synchronize → curve loop → plane surface → synchronize.
+    Pure-Python ring cleanup only (no tolerance collapsing). Uses gmsh.model.occ exclusively.
     """
     occ = gmsh.model.occ
 
-    min_seg = 1.0e-5
+    # 1) Python-only ring filter (before any Gmsh calls).
     ring: List[Tuple[float, float]] = [(float(x), float(y)) for x, y in full_ring_points]
-    if len(ring) >= 2:
-        dx = ring[-1][0] - ring[0][0]
-        dy = ring[-1][1] - ring[0][1]
-        if math.hypot(dx, dy) < min_seg:
-            ring.pop()
-
-    deduped: List[Tuple[float, float]] = []
+    if len(ring) >= 2 and ring[0] == ring[-1]:
+        ring.pop()
+    clean: List[Tuple[float, float]] = []
     for pt in ring:
-        if not deduped:
-            deduped.append(pt)
-            continue
-        if math.hypot(pt[0] - deduped[-1][0], pt[1] - deduped[-1][1]) >= min_seg:
-            deduped.append(pt)
-    ring = deduped
-    if len(ring) < 4:
-        raise RuntimeError("Full ring needs at least 4 distinct vertices for OCC polyline.")
+        if not clean or pt != clean[-1]:
+            clean.append(pt)
+    if len(clean) < 4:
+        raise RuntimeError(
+            f"OCC polyline ring needs >= 4 unique vertices (got {len(clean)} after Python filter)."
+        )
 
-    p_tags: List[int] = [int(occ.addPoint(x, y, 0.0, lc)) for x, y in ring]
+    # 2) OCC injection: points → lines → pre-loop bake → loop → surface → final bake.
+    p_tags: List[int] = [int(occ.addPoint(pt[0], pt[1], 0.0, lc)) for pt in clean]
 
     l_tags: List[int] = []
-    n_pts = len(p_tags)
-    for i in range(n_pts):
-        j = (i + 1) % n_pts
-        l_tags.append(int(occ.addLine(p_tags[i], p_tags[j])))
+    for i in range(len(p_tags)):
+        start = p_tags[i]
+        end = p_tags[(i + 1) % len(p_tags)]
+        if start == end:
+            raise RuntimeError(
+                f"OCC polyline degenerate edge at index {i} (identical point tags {start})."
+            )
+        l_tags.append(int(occ.addLine(start, end)))
 
-    occ.synchronize()
-    loop_tag = int(occ.addCurveLoop(l_tags))
-    surface_tag = int(occ.addPlaneSurface([loop_tag]))
-    occ.synchronize()
+    gmsh.model.occ.synchronize()
+    loop_tag = int(gmsh.model.occ.addCurveLoop(l_tags))
+    surface_tag = int(gmsh.model.occ.addPlaneSurface([loop_tag]))
+    gmsh.model.occ.synchronize()
     return surface_tag
 
 
