@@ -19,6 +19,7 @@ FEM_SCRIPT = BASE_DIR / "FEM" / "scripts" / "fem_main_3d.py"
 STK_BINARY = BASE_DIR / "cpp" / "guitar_stk"
 WAV_OUTPUT = BASE_DIR / "audio" / "guitar_sound.wav"
 MESH_FILE = BASE_DIR / "FEM" / "mesh" / "guitar_3d.msh"
+PREVIEW_MESH_FILE = BASE_DIR / "FEM" / "mesh" / "preview_mesh.msh"
 FEM_FOM_JSON = BASE_DIR / "FEM" / "outputs" / "fem_3d_output.json"
 ROM_STK_JSON = BASE_DIR / "FEM" / "outputs" / "rom_stk_body.json"
 DEFAULT_ROM_SHAPE = "classic"
@@ -56,6 +57,10 @@ if "last_engine" not in st.session_state:
     st.session_state.last_engine = ""
 if "rom_last_result" not in st.session_state:
     st.session_state.rom_last_result = {}
+if "live_preview_fp" not in st.session_state:
+    st.session_state.live_preview_fp = ""
+if "show_physics_success" not in st.session_state:
+    st.session_state.show_physics_success = False
 
 # Load saved geometry for Live Preview comparison
 saved_geom = {}
@@ -228,7 +233,7 @@ def _execute_rom_engine(
     return result
 
 
-def _on_generate_3d_guitar_model(
+def _run_physics_and_audio(
     *,
     fom_mode: bool,
     lhs_params: Dict[str, Any],
@@ -237,8 +242,11 @@ def _on_generate_3d_guitar_model(
     top_wood_id: str,
     q_mode: str,
 ) -> None:
-    """Single production entry: mesh build → ROM or FOM engine → STK audio."""
-    save_cfg()
+    """
+    Heavy path only (button-triggered): engineering mesh → ROM/FOM → STK.
+
+    Does not touch the live preview mesh; geometry was already synced via sliders.
+    """
     py_exe = sys.executable
 
     if FEM_FOM_JSON.exists():
@@ -246,7 +254,7 @@ def _on_generate_3d_guitar_model(
     if ROM_STK_JSON.exists():
         ROM_STK_JSON.unlink()
 
-    with st.spinner("Building 3D mesh..."):
+    with st.spinner("Building engineering mesh for solvers..."):
         _build_engineering_mesh(py_exe)
 
     if fom_mode:
@@ -413,7 +421,48 @@ def add_silence_to_wav(path, duration=0.3):
     except Exception as e:
         pass
 
-def save_cfg():
+def _geometry_state_dict(
+    *,
+    design_mode: str,
+    shape_type: str,
+    length: float,
+    width: float,
+    depth: float,
+    thickness: float,
+    hole_radius: float,
+    lower_bout: float,
+    upper_bout: float,
+    waist: float,
+    soundhole_y: float,
+    exploded: bool,
+) -> Dict[str, Any]:
+    return {
+        "design_mode": design_mode,
+        "shape_type": shape_type,
+        "length": float(length),
+        "width": float(width),
+        "depth": float(depth),
+        "thickness": float(thickness),
+        "hole_radius": float(hole_radius),
+        "lower_bout": float(lower_bout),
+        "upper_bout": float(upper_bout),
+        "waist": float(waist),
+        "soundhole_y": float(soundhole_y),
+        "exploded_view": bool(exploded),
+    }
+
+
+def _geometry_fingerprint(geom: Dict[str, Any]) -> str:
+    return json.dumps(geom, sort_keys=True, default=str)
+
+
+def save_cfg_from_state(
+    *,
+    geom: Dict[str, Any],
+    top_wood_id: str,
+    back_wood_id: str,
+    vis_mode: str = "Mesh + Solid",
+) -> None:
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     if CONFIG_PATH.exists():
         try:
@@ -423,27 +472,22 @@ def save_cfg():
             data = {}
     else:
         data = {}
-    data["geometry"] = {
-        "design_mode": design_mode,
-        "shape_type": shape_type,
-        "length": L,
-        "width": W,
-        "depth": D,
-        "thickness": thick,
-        "hole_radius": hr,
-        "lower_bout": lower_bout,
-        "upper_bout": upper_bout,
-        "waist": waist,
-        "soundhole_y": soundhole_y,
-        "vis_mode": st.session_state.get("vis_mode_ui", "Mesh + Solid"),
-        "exploded_view": exploded,
-    }
+    g = dict(geom)
+    g["vis_mode"] = vis_mode
+    data["geometry"] = g
     data["materials"] = {
-        "top": {**material_block_for_id(top_wood_id), "name": wood_display_name(top_wood_id), "wood_id": top_wood_id},
-        "back": {**material_block_for_id(back_wood_id), "name": wood_display_name(back_wood_id), "wood_id": back_wood_id},
+        "top": {
+            **material_block_for_id(top_wood_id),
+            "name": wood_display_name(top_wood_id),
+            "wood_id": top_wood_id,
+        },
+        "back": {
+            **material_block_for_id(back_wood_id),
+            "name": wood_display_name(back_wood_id),
+            "wood_id": back_wood_id,
+        },
         "air": {"density": 1.204, "speed_of_sound": 343.0},
     }
-    # Merge solver so GUI updates do not strip FEM keys (adaptive_mode_sifter, sifter_*, shifts, etc.).
     solver = dict(data.get("solver") or {})
     solver["num_modes"] = int(solver.get("num_modes", 50))
     solver["mesh_file"] = str(MESH_FILE)
@@ -451,42 +495,144 @@ def save_cfg():
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
-def generate_live_preview_mesh(L, W, D, shape_type, design_mode, upper_bout, waist, lower_bout):
-    save_cfg() 
-    
-    preview_file = BASE_DIR / "FEM" / "mesh" / "preview_mesh.msh"
-    
-    # 1) Delete the old preview file so any new file is guaranteed fresh.
-    if preview_file.exists():
-        preview_file.unlink()
-        
-    # 2) Run Gmsh
-    py_exe = sys.executable
-    result = subprocess.run([py_exe, str(GEOMETRY_SCRIPT), "-nopopup", "--preview"], capture_output=True, text=True)
-    
-    # 3) If Gmsh fails or does not create a file, stop and show the error.
-    if not preview_file.exists():
-        st.error(f"Gmsh Failed to update preview!\nError Log:\n{result.stderr}")
-        return None
-        
-    # 4) The file was created successfully, load it for rendering.
-    mesh = pv.read(str(preview_file))
-    surface_mesh = mesh.extract_surface()
-    
-    # Keep corners sharp and waist contours smooth using split vertices.
-    surface_mesh.compute_normals(
-        cell_normals=False, 
-        point_normals=True, 
-        feature_angle=30, 
-        split_vertices=True, 
-        inplace=True, 
-        auto_orient_normals=True
-    )
-    
-    return surface_mesh
 
-st.set_page_config(page_title="3D Guitar Simulator", layout="wide")
+def _build_live_preview_surface(
+    *,
+    geom: Dict[str, Any],
+    top_wood_id: str,
+    back_wood_id: str,
+    vis_mode: str,
+) -> Optional[Any]:
+    """
+    Fast Gmsh preview (--preview). Runs only when the geometry fingerprint changes.
+
+    Called on every Streamlit rerun; skipped when sliders are unchanged.
+    """
+    fp = _geometry_fingerprint(geom)
+    if st.session_state.live_preview_fp == fp and PREVIEW_MESH_FILE.is_file():
+        try:
+            mesh = pv.read(str(PREVIEW_MESH_FILE))
+            surface = mesh.extract_surface()
+            surface.compute_normals(
+                cell_normals=False,
+                point_normals=True,
+                feature_angle=30,
+                split_vertices=True,
+                inplace=True,
+                auto_orient_normals=True,
+            )
+            return surface
+        except Exception:
+            pass
+
+    save_cfg_from_state(
+        geom=geom,
+        top_wood_id=top_wood_id,
+        back_wood_id=back_wood_id,
+        vis_mode=vis_mode,
+    )
+    if PREVIEW_MESH_FILE.exists():
+        PREVIEW_MESH_FILE.unlink()
+
+    py_exe = sys.executable
+    preview_env = {**os.environ, "FEM_ALLOW_PREVIEW": "1"}
+    result = subprocess.run(
+        [py_exe, str(GEOMETRY_SCRIPT), "-nopopup", "--preview"],
+        capture_output=True,
+        text=True,
+        env=preview_env,
+    )
+    if not PREVIEW_MESH_FILE.is_file():
+        st.session_state.live_preview_fp = ""
+        st.error(f"Gmsh preview failed.\n{result.stderr}")
+        return None
+
+    st.session_state.live_preview_fp = fp
+    mesh = pv.read(str(PREVIEW_MESH_FILE))
+    surface = mesh.extract_surface()
+    surface.compute_normals(
+        cell_normals=False,
+        point_normals=True,
+        feature_angle=30,
+        split_vertices=True,
+        inplace=True,
+        auto_orient_normals=True,
+    )
+    return surface
+
+
+def _render_pyvista_guitar(
+    surface_mesh,
+    *,
+    top_color: str,
+    back_color: str,
+    show_edges: bool,
+    cam_preset: str,
+    plot_key: str,
+) -> None:
+    plotter = pv.Plotter(window_size=[1100, 620])
+    plotter.background_color = "#f4f4f9"
+
+    def render_mesh_by_protocol(mesh, show_edges_flag: bool, top_c: str, back_c: str) -> bool:
+        tags = mesh.cell_data.get("gmsh:physical")
+        if tags is None:
+            return False
+        is_top = tags == TAG_TOP_PLATE
+        is_hole = tags == TAG_SOUNDHOLE
+        is_body = tags == TAG_BACK_SIDES
+        if not (is_top.any() or is_body.any() or is_hole.any()):
+            return False
+        rendered = False
+        if is_top.any():
+            top_m = mesh.extract_cells(is_top).extract_surface()
+            if top_m.n_cells > 0:
+                plotter.add_mesh(top_m, color=top_c, show_edges=show_edges_flag, edge_color="#2b1a10")
+                rendered = True
+        if is_body.any():
+            body_m = mesh.extract_cells(is_body).extract_surface()
+            if body_m.n_cells > 0:
+                plotter.add_mesh(body_m, color=back_c, show_edges=show_edges_flag, edge_color="#2b1a10")
+                rendered = True
+        if is_hole.any():
+            hole_m = mesh.extract_cells(is_hole).extract_surface()
+            if hole_m.n_cells > 0:
+                plotter.add_mesh(hole_m, color="#111111", opacity=0.45, show_edges=False)
+                rendered = True
+        return rendered
+
+    if surface_mesh is not None:
+        if not render_mesh_by_protocol(surface_mesh, show_edges, top_color, back_color):
+            plotter.add_mesh(surface_mesh, color=back_color, show_edges=show_edges)
+    else:
+        plotter.add_text("Preview unavailable", position="upper_left", font_size=12)
+
+    plotter.enable_anti_aliasing("ssaa")
+    if cam_preset == "Standing Angled (3D)":
+        plotter.camera_position = [(0.0, -0.4, 1.1), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+    elif cam_preset == "Standing Upright (Front)":
+        plotter.camera_position = [(0.0, 0.0, 1.2), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+    elif cam_preset == "Laying Flat (Top View)":
+        plotter.camera_position = [(0.0, 0.0, 1.2), (0.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
+    elif cam_preset == "Laying on Side (Profile)":
+        plotter.camera_position = [(0.0, -1.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+
+    stpyvista(plotter, key=plot_key)
+    plotter.close()
+
+st.set_page_config(page_title="3D Guitar Simulator", layout="wide", initial_sidebar_state="expanded")
+
+st.markdown(
+    """
+    <style>
+    div[data-testid="stVerticalBlock"] > div:has(> div[data-testid="stVerticalBlockBorderWrapper"]) {
+        border-radius: 0.5rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 st.title("Guitar Simulator")
+st.caption("Geometry updates live on every slider move. Physics and audio run only when you click the simulation button.")
 
 # --- Sidebar ---
 st.sidebar.header("1. Shape & materials")
@@ -569,13 +715,6 @@ else:
 
 q_mode = st.sidebar.radio("Q Estimation", ["Mean (Stable)", "Random (Realistic)"])
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("Engineering tools")
-if st.sidebar.button("Open full model in Gmsh", use_container_width=True):
-    save_cfg()
-    with st.spinner("Opening Gmsh GUI..."):
-        subprocess.run([sys.executable, str(GEOMETRY_SCRIPT)])
-
 with st.sidebar.expander("Advanced Diagnostics", expanded=False):
     developer_fom_mode = st.checkbox(
         "Enable Developer FOM Mode",
@@ -585,6 +724,22 @@ with st.sidebar.expander("Advanced Diagnostics", expanded=False):
     st.session_state.developer_fom_mode = bool(developer_fom_mode)
     if developer_fom_mode:
         st.caption("Diagnostics: FOM + fem_3d_output.json. Default users stay on ROM.")
+
+geom_state = _geometry_state_dict(
+    design_mode=design_mode,
+    shape_type=shape_type,
+    length=L,
+    width=W,
+    depth=D,
+    thickness=thick,
+    hole_radius=hr,
+    lower_bout=lower_bout,
+    upper_bout=upper_bout,
+    waist=waist,
+    soundhole_y=soundhole_y,
+    exploded=exploded,
+)
+geom_fp = _geometry_fingerprint(geom_state)
 
 lhs_params = _gui_lhs_params(
     shape_type=shape_type,
@@ -601,312 +756,257 @@ lhs_params = _gui_lhs_params(
     back_wood=back_wood_id,
 )
 
-# --- Check Sync State ---
-current_geom = {
-    "design_mode": design_mode, "shape_type": shape_type, "length": L, 
-    "width": W, "depth": D, "thickness": thick, "hole_radius": hr, 
-    "lower_bout": lower_bout, "upper_bout": upper_bout, "waist": waist, 
-    "soundhole_y": soundhole_y
-}
+st.sidebar.markdown("---")
+st.sidebar.subheader("Engineering tools")
+if st.sidebar.button("Open full model in Gmsh", use_container_width=True):
+    save_cfg_from_state(geom=geom_state, top_wood_id=top_wood_id, back_wood_id=back_wood_id)
+    with st.spinner("Opening Gmsh GUI..."):
+        subprocess.run([sys.executable, str(GEOMETRY_SCRIPT)])
 
-is_synced = True
-for k, v in current_geom.items():
-    if type(v) is float:
-        if abs(v - saved_geom.get(k, 0)) > 1e-4:
-            is_synced = False
-            break
-    else:
-        if v != saved_geom.get(k):
-            is_synced = False
-            break
+# =============================================================================
+# MAIN DASHBOARD — geometry first (reactive), physics on demand (button only)
+# =============================================================================
 
-if not MESH_FILE.exists(): is_synced = False
+tab_design, tab_physics, tab_rom = st.tabs(["Design", "Physics & audio", "ROM audit"])
 
-# ==========================================
-# --- Process Control (dual engine routing) ---
-# ==========================================
-st.markdown("### Generate 3D Guitar Model")
-fom_mode = bool(st.session_state.developer_fom_mode)
-engine_label = "FOM (developer)" if fom_mode else "ROM (production)"
-st.caption(f"Active engine: **{engine_label}** — mesh, modal synthesis, and STK in one step.")
-
-if "show_success_msg" not in st.session_state:
-    st.session_state.show_success_msg = False
-
-if st.button("Generate 3D Guitar Model", use_container_width=True, type="primary"):
-    try:
-        _on_generate_3d_guitar_model(
-            fom_mode=fom_mode,
-            lhs_params=lhs_params,
-            rom_shape=DEFAULT_ROM_SHAPE,
-            note_hz=float(note_hz),
-            top_wood_id=top_wood_id,
-            q_mode=q_mode,
+with tab_design:
+    preview_card = st.container(border=True)
+    with preview_card:
+        st.subheader("Live 3D design preview")
+        st.caption(
+            "Reactive CAD mesh (`--preview`). Updates when you move geometry sliders — "
+            "no solvers run here."
         )
-        st.session_state.show_success_msg = True
-        st.rerun()
-    except Exception as exc:
-        st.session_state.fem_ready = False
-        st.error(f"Generate 3D Guitar Model failed: {exc}")
+        ctrl1, ctrl2, ctrl3 = st.columns([1, 1, 2])
+        with ctrl1:
+            vis_mode = st.selectbox("Visual style", ["Mesh + Solid", "Solid Wood"], key="vis_mode_ui")
+        with ctrl2:
+            cam_preset = st.selectbox(
+                "Camera",
+                [
+                    "Standing Angled (3D)",
+                    "Standing Upright (Front)",
+                    "Laying Flat (Top View)",
+                    "Laying on Side (Profile)",
+                ],
+            )
+        with ctrl3:
+            preview_status = (
+                "Cached preview (slider unchanged)"
+                if st.session_state.live_preview_fp == geom_fp
+                else "Regenerating preview mesh…"
+            )
+            st.info(preview_status)
 
-if st.session_state.show_success_msg:
-    eng = str(st.session_state.get("last_engine", "")).upper() or "—"
-    st.success(f"Model ready ({eng} engine). Mesh and audio updated below.")
-    st.session_state.show_success_msg = False
+        show_edges_flag = "Mesh" in vis_mode
+        regen_preview = st.session_state.live_preview_fp != geom_fp
+        if regen_preview:
+            with st.spinner("Updating live preview…"):
+                live_surface = _build_live_preview_surface(
+                    geom=geom_state,
+                    top_wood_id=top_wood_id,
+                    back_wood_id=back_wood_id,
+                    vis_mode=vis_mode,
+                )
+        else:
+            live_surface = _build_live_preview_surface(
+                geom=geom_state,
+                top_wood_id=top_wood_id,
+                back_wood_id=back_wood_id,
+                vis_mode=vis_mode,
+            )
 
-if st.session_state.fem_ready and WAV_OUTPUT.is_file():
-    st.audio(str(WAV_OUTPUT))
-    stk_src = st.session_state.get("stk_body_json", "")
-    if stk_src:
-        st.caption(f"STK body modes: `{stk_src}`")
-
-if st.session_state.get("last_engine") == "rom" and st.session_state.get("rom_last_result"):
-    with st.expander("Last ROM solve (diagnostics)", expanded=False):
-        st.json(st.session_state.rom_last_result)
-
-st.divider()
-
-# ==========================================
-# --- ROM: unified modal basis & audit ---
-# ==========================================
-st.subheader("4. ROM — unified modal basis & audit")
-st.caption(
-    "Coupled ROM uses every mode in the packaged NPZ / reduced basis (30–40 typical). "
-    "`dominant_tag` (Top/Back) is diagnostic only and is never used to filter modes or audio."
-)
-
-rom_tab_audit, rom_tab_online, rom_tab_table = st.tabs(
-    ["Modal pool audit", "Online ROM solve", "Mode table"]
-)
-
-with rom_tab_audit:
-    audit_sources: List[Tuple[str, Path]] = []
-    if PACKAGED_ROM_NPZ.is_file():
-        audit_sources.append(("Packaged ROM (pipeline)", PACKAGED_ROM_NPZ))
-    if CANDIDATES_LOG.is_file():
-        audit_sources.append(("Harvest candidates log", CANDIDATES_LOG))
-    if ROM_CLASSIC_SNAPSHOTS.is_dir():
-        for p in sorted(ROM_CLASSIC_SNAPSHOTS.glob("snapshot_*.npz")):
-            audit_sources.append((f"Snapshot {p.name}", p))
-    if not audit_sources:
-        st.info("Run the FEM pipeline (Steps A–C) to create `final_guitar_rom.npz` or snapshot NPZ files.")
-    else:
-        labels = [x[0] for x in audit_sources]
-        pick = st.selectbox("Audit data source", range(len(labels)), format_func=lambda i: labels[i])
-        src_path = audit_sources[int(pick)][1]
         try:
-            if src_path == CANDIDATES_LOG:
-                audit_rows = _modal_rows_from_candidates_json(src_path)
-            else:
-                audit_rows = _modal_rows_from_packaged_rom(src_path)
-            top_n = sum(1 for r in audit_rows if r.get("dominant_tag") == DOMINANT_TAG_TOP)
-            st.metric("Modes in pool", len(audit_rows))
-            col_m1, col_m2, col_m3 = st.columns(3)
-            col_m1.metric("Top-dominant", top_n)
-            col_m2.metric("Back-dominant", len(audit_rows) - top_n)
-            col_m3.metric("Source", src_path.name)
-            _render_modal_audit_plot(
-                audit_rows,
-                title=f"Unified frequency axis — {labels[int(pick)]}",
+            pv.set_jupyter_backend("static")
+            _render_pyvista_guitar(
+                live_surface,
+                top_color=top_plot_color,
+                back_color=back_plot_color,
+                show_edges=show_edges_flag,
+                cam_preset=cam_preset,
+                plot_key=f"live_preview_{geom_fp[:12]}",
             )
         except Exception as exc:
-            st.error(f"Audit plot failed: {exc}")
+            st.warning(f"3D preview render issue: {exc}")
 
-with rom_tab_online:
-    ROMManagerCls, rom_import_err = _try_import_rom_manager()
-    if ROMManagerCls is None:
-        st.warning(f"ROMManager unavailable (MPI/PETSc required for online solve): {rom_import_err}")
-    else:
-        shape_names = ["classic"]
-        if SHAPES_CONFIG.is_file():
+        st.caption(
+            f"Materials: soundboard **{top_wood_id}** ({top_plot_color}) · "
+            f"back/sides **{back_wood_id}** ({back_plot_color})"
+        )
+
+with tab_physics:
+    physics_card = st.container(border=True)
+    with physics_card:
+        st.subheader("Physics simulation & sound")
+        fom_mode = bool(st.session_state.developer_fom_mode)
+        engine_label = "FOM (developer)" if fom_mode else "ROM (production)"
+        st.caption(
+            f"Engine: **{engine_label}**. Uses the current slider geometry and builds the "
+            f"engineering mesh (`guitar_3d.msh`) only when you click run."
+        )
+
+        if st.button(
+            "Run Physics Simulation & Generate Sound",
+            use_container_width=True,
+            type="primary",
+        ):
             try:
-                shape_names = sorted(json.loads(SHAPES_CONFIG.read_text(encoding="utf-8")).get("shapes", {}).keys())
-            except Exception:
-                pass
-        rom_shape = st.selectbox("ROM shape", shape_names, index=0)
-        nev_rom = st.number_input("Eigenvalues to return (0 = all basis modes)", min_value=0, max_value=128, value=5)
-        basis_path = BASE_DIR / "ROM" / rom_shape / "reduced_basis.npz"
-        if basis_path.is_file():
+                save_cfg_from_state(
+                    geom=geom_state,
+                    top_wood_id=top_wood_id,
+                    back_wood_id=back_wood_id,
+                    vis_mode=vis_mode,
+                )
+                _run_physics_and_audio(
+                    fom_mode=fom_mode,
+                    lhs_params=lhs_params,
+                    rom_shape=DEFAULT_ROM_SHAPE,
+                    note_hz=float(note_hz),
+                    top_wood_id=top_wood_id,
+                    q_mode=q_mode,
+                )
+                st.session_state.show_physics_success = True
+                st.rerun()
+            except Exception as exc:
+                st.session_state.fem_ready = False
+                st.error(f"Physics simulation failed: {exc}")
+
+        if st.session_state.show_physics_success:
+            eng = str(st.session_state.get("last_engine", "")).upper() or "—"
+            st.success(f"Simulation complete ({eng}).")
+            st.session_state.show_physics_success = False
+
+        if st.session_state.fem_ready and WAV_OUTPUT.is_file():
+            st.audio(str(WAV_OUTPUT))
+            stk_src = st.session_state.get("stk_body_json", "")
+            if stk_src:
+                st.caption(f"STK body modes: `{stk_src}`")
+            if MESH_FILE.is_file():
+                st.caption("Engineering mesh written for solvers (not shown in live preview).")
+
+        if st.session_state.get("last_engine") == "rom" and st.session_state.get("rom_last_result"):
+            with st.expander("Last ROM solve", expanded=False):
+                st.json(st.session_state.rom_last_result)
+
+with tab_rom:
+    st.caption(
+        "Unified modal pool diagnostics. `dominant_tag` is labeling only — never filters ROM or audio."
+    )
+    rom_tab_audit, rom_tab_online, rom_tab_table = st.tabs(
+        ["Modal pool plot", "Basis check", "Mode table"]
+    )
+
+    with rom_tab_audit:
+        audit_sources: List[Tuple[str, Path]] = []
+        if PACKAGED_ROM_NPZ.is_file():
+            audit_sources.append(("Packaged ROM (pipeline)", PACKAGED_ROM_NPZ))
+        if CANDIDATES_LOG.is_file():
+            audit_sources.append(("Harvest candidates log", CANDIDATES_LOG))
+        if ROM_CLASSIC_SNAPSHOTS.is_dir():
+            for p in sorted(ROM_CLASSIC_SNAPSHOTS.glob("snapshot_*.npz")):
+                audit_sources.append((f"Snapshot {p.name}", p))
+        if not audit_sources:
+            st.info("Run the FEM pipeline (Steps A–C) to create `final_guitar_rom.npz` or snapshot NPZ files.")
+        else:
+            labels = [x[0] for x in audit_sources]
+            pick = st.selectbox("Audit data source", range(len(labels)), format_func=lambda i: labels[i])
+            src_path = audit_sources[int(pick)][1]
             try:
-                V, bmeta = ROMManagerCls.read_reduced_basis_npz(basis_path)
-                st.success(
-                    f"Reduced basis loaded: DOF={bmeta['num_dof']} × modes={bmeta['num_basis_modes']} "
-                    f"(selected_rank={bmeta['selected_rank']})"
+                if src_path == CANDIDATES_LOG:
+                    audit_rows = _modal_rows_from_candidates_json(src_path)
+                else:
+                    audit_rows = _modal_rows_from_packaged_rom(src_path)
+                top_n = sum(1 for r in audit_rows if r.get("dominant_tag") == DOMINANT_TAG_TOP)
+                st.metric("Modes in pool", len(audit_rows))
+                col_m1, col_m2, col_m3 = st.columns(3)
+                col_m1.metric("Top-dominant", top_n)
+                col_m2.metric("Back-dominant", len(audit_rows) - top_n)
+                col_m3.metric("Source", src_path.name)
+                _render_modal_audit_plot(
+                    audit_rows,
+                    title=f"Unified frequency axis — {labels[int(pick)]}",
                 )
             except Exception as exc:
-                st.error(f"Could not read reduced basis: {exc}")
-        else:
-            st.info(f"No `{basis_path.name}` yet. Run `build_basis` after pipeline snapshots exist.")
+                st.error(f"Audit plot failed: {exc}")
 
-        if st.button("Run ROMManager.solve_online()", type="primary", use_container_width=True):
-            with st.spinner("Projecting operators onto reduced basis..."):
+    with rom_tab_online:
+        ROMManagerCls, rom_import_err = _try_import_rom_manager()
+        if ROMManagerCls is None:
+            st.warning(f"ROMManager unavailable (MPI/PETSc required for online solve): {rom_import_err}")
+        else:
+            shape_names = ["classic"]
+            if SHAPES_CONFIG.is_file():
                 try:
-                    manager = ROMManagerCls(shapes_config_path=SHAPES_CONFIG)
-                    result = manager.solve_online(
-                        rom_shape,
-                        params=lhs_params,
-                        nev=int(nev_rom),
+                    shape_names = sorted(
+                        json.loads(SHAPES_CONFIG.read_text(encoding="utf-8")).get("shapes", {}).keys()
                     )
-                    st.json(result)
-                    if result.get("freqs_hz"):
-                        st.line_chart(
-                            {
-                                "ROM frequency (Hz)": result["freqs_hz"],
-                            }
-                        )
+                except Exception:
+                    pass
+            rom_shape = st.selectbox("ROM shape", shape_names, index=0)
+            nev_rom = st.number_input(
+                "Eigenvalues to return (0 = all basis modes)", min_value=0, max_value=128, value=5
+            )
+            basis_path = BASE_DIR / "ROM" / rom_shape / "reduced_basis.npz"
+            if basis_path.is_file():
+                try:
+                    _V, bmeta = ROMManagerCls.read_reduced_basis_npz(basis_path)
+                    st.success(
+                        f"Reduced basis loaded: DOF={bmeta['num_dof']} × modes={bmeta['num_basis_modes']} "
+                        f"(selected_rank={bmeta['selected_rank']})"
+                    )
                 except Exception as exc:
-                    st.error(f"Online ROM solve failed: {exc}")
+                    st.error(f"Could not read reduced basis: {exc}")
+            else:
+                st.info(f"No `{basis_path.name}` yet. Run `build_basis` after pipeline snapshots exist.")
 
-with rom_tab_table:
-    table_path: Optional[Path] = None
-    if PACKAGED_ROM_NPZ.is_file():
-        table_path = PACKAGED_ROM_NPZ
-    elif ROM_CLASSIC_SNAPSHOTS.is_dir():
-        snaps = sorted(ROM_CLASSIC_SNAPSHOTS.glob("snapshot_*.npz"))
-        if snaps:
-            table_path = snaps[-1]
-    if table_path is None:
-        st.info("No packaged ROM NPZ available for the mode table.")
-    else:
-        try:
-            trows = _modal_rows_from_packaged_rom(table_path)
-            prev_f = None
-            table_out = []
-            for i, r in enumerate(sorted(trows, key=lambda x: float(x["hz"]))):
-                gap = "—"
-                if prev_f is not None:
-                    gap = f"{float(r['hz']) - prev_f:.4f}"
-                pf = r.get("p_frac")
-                table_out.append(
-                    {
-                        "Mode": i + 1,
-                        "Frequency (Hz)": float(r["hz"]),
-                        "Δ from prev (Hz)": gap,
-                        "Dominant tag": str(r.get("dominant_tag", "")),
-                        "tag1_ratio": float(r.get("tag1_ratio", float("nan"))),
-                        "tag3_ratio": float(r.get("tag3_ratio", float("nan"))),
-                        "p_frac": float(pf) if pf is not None and np.isfinite(float(pf)) else None,
-                    }
-                )
-                prev_f = float(r["hz"])
-            st.dataframe(table_out, use_container_width=True, hide_index=True)
-            st.caption(f"Loaded from `{table_path.relative_to(BASE_DIR).as_posix()}`")
-        except Exception as exc:
-            st.error(f"Mode table failed: {exc}")
+            if st.button("Run ROMManager.solve_online()", type="primary", use_container_width=True):
+                with st.spinner("Projecting operators onto reduced basis..."):
+                    try:
+                        manager = ROMManagerCls(shapes_config_path=SHAPES_CONFIG)
+                        result = manager.solve_online(
+                            rom_shape,
+                            params=lhs_params,
+                            nev=int(nev_rom),
+                        )
+                        st.json(result)
+                        if result.get("freqs_hz"):
+                            st.line_chart({"ROM frequency (Hz)": result["freqs_hz"]})
+                    except Exception as exc:
+                        st.error(f"Online ROM solve failed: {exc}")
 
-st.divider()
-
-# ==========================================
-# --- 3D Preview ---
-# ==========================================
-st.subheader("5. 3D Design Preview")
-
-col_style, col_cam = st.columns(2)
-with col_style:
-    vis_mode = st.selectbox("Visual Style", ["Mesh + Solid", "Solid Wood"], key="vis_mode_ui")
-with col_cam:
-    cam_preset = st.selectbox("Camera Anchor (Auto-Reset)", ["Standing Angled (3D)", "Standing Upright (Front)", "Laying Flat (Top View)", "Laying on Side (Profile)"])
-
-try:
-    pv.set_jupyter_backend('static') 
-    plotter = pv.Plotter(window_size=[900, 500])
-    plotter.background_color = "#f4f4f9"
-    show_edges_flag = ("Mesh" in vis_mode)
-
-    def render_mesh_by_protocol(mesh, show_edges, top_color: str, back_color: str):
-        """
-        Render mesh by physical tags protocol:
-        1=Top_Plate, 2=Soundhole, 3=Back/Sides, 10=Air_Internal(hidden).
-        Returns True if tag-based rendering succeeded, else False (caller should fallback).
-        """
-        tags = mesh.cell_data.get('gmsh:physical')
-        if tags is None:
-            return False
-
-        # Efficient mask creation once, then extract only when needed.
-        is_top = (tags == TAG_TOP_PLATE)
-        is_hole = (tags == TAG_SOUNDHOLE)
-        is_body = (tags == TAG_BACK_SIDES)
-
-        if not (is_top.any() or is_body.any() or is_hole.any()):
-            return False
-
-        rendered_any = False
-
-        if is_top.any():
-            top_mesh = mesh.extract_cells(is_top).extract_surface()
-            if top_mesh.n_cells > 0:
-                plotter.add_mesh(
-                    top_mesh,
-                    color=top_color,
-                    show_edges=show_edges,
-                    edge_color="#2b1a10"
-                )
-                rendered_any = True
-
-        if is_body.any():
-            body_mesh = mesh.extract_cells(is_body).extract_surface()
-            if body_mesh.n_cells > 0:
-                plotter.add_mesh(
-                    body_mesh,
-                    color=back_color,
-                    show_edges=show_edges,
-                    edge_color="#2b1a10"
-                )
-                rendered_any = True
-
-        # Tag 2: represent as dark semi-transparent surface (or leave as hole by not drawing it).
-        if is_hole.any():
-            hole_mesh = mesh.extract_cells(is_hole).extract_surface()
-            if hole_mesh.n_cells > 0:
-                plotter.add_mesh(hole_mesh, color="#111111", opacity=0.45, show_edges=False)
-                rendered_any = True
-
-        # Tag 10 (Air_Internal) is intentionally not rendered to avoid black block.
-        return rendered_any
-
-    if is_synced:
-        st.success("✅ Viewing High-Fidelity Engineering Mesh (Gmsh)")
-        try:
-            vol_mesh = pv.read(str(MESH_FILE))
-
-            # Preferred path: tag-based rendering by protocol.
-            if not render_mesh_by_protocol(vol_mesh, show_edges_flag, top_plot_color, back_plot_color):
-                st.warning("Physical tags missing/empty - displaying full surface fallback.")
-                plotter.add_mesh(
-                    vol_mesh.extract_surface(),
-                    color=back_plot_color,
-                    show_edges=show_edges_flag,
-                    edge_color="#2b1a10"
-                )
-
-        except Exception as e:
-            st.error(f"Visualization Error: {e}")
-    else:
-        st.warning("⚠️ Live Preview Mode (Fast CAD)")
-        preview_mesh = generate_live_preview_mesh(L, W, D, shape_type, design_mode, upper_bout, waist, lower_bout)
-        
-        if preview_mesh is not None:
-            if not render_mesh_by_protocol(preview_mesh, show_edges=False, top_color=top_plot_color, back_color=back_plot_color):
-                st.warning("Preview tags missing/empty - displaying full surface fallback.")
-                plotter.add_mesh(preview_mesh, color=back_plot_color, show_edges=False)
+    with rom_tab_table:
+        table_path: Optional[Path] = None
+        if PACKAGED_ROM_NPZ.is_file():
+            table_path = PACKAGED_ROM_NPZ
+        elif ROM_CLASSIC_SNAPSHOTS.is_dir():
+            snaps = sorted(ROM_CLASSIC_SNAPSHOTS.glob("snapshot_*.npz"))
+            if snaps:
+                table_path = snaps[-1]
+        if table_path is None:
+            st.info("No packaged ROM NPZ available for the mode table.")
         else:
-            st.warning("Preview mesh is unavailable.")
-            
-    plotter.enable_anti_aliasing("ssaa") 
-    if cam_preset == "Standing Angled (3D)": plotter.camera_position = [(0.0, -0.4, 1.1), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
-    elif cam_preset == "Standing Upright (Front)": plotter.camera_position = [(0.0, 0.0, 1.2), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
-    elif cam_preset == "Laying Flat (Top View)": plotter.camera_position = [(0.0, 0.0, 1.2), (0.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
-    elif cam_preset == "Laying on Side (Profile)": plotter.camera_position = [(0.0, -1.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
-
-    stpyvista(plotter, key="guitar_3d_preview")
-    plotter.close()
-
-except Exception as e:
-    st.warning("Visualizer syncing...")
-
-if is_synced:
-    st.caption(
-        f"Visual: top={top_wood_id} ({top_plot_color}) | back/sides={back_wood_id} ({back_plot_color}) | CAD Mode: ON"
-    )
-else: st.caption("Visual: Live Shape Prototype (Solid Block)")
+            try:
+                trows = _modal_rows_from_packaged_rom(table_path)
+                prev_f = None
+                table_out = []
+                for i, r in enumerate(sorted(trows, key=lambda x: float(x["hz"]))):
+                    gap = "—"
+                    if prev_f is not None:
+                        gap = f"{float(r['hz']) - prev_f:.4f}"
+                    pf = r.get("p_frac")
+                    table_out.append(
+                        {
+                            "Mode": i + 1,
+                            "Frequency (Hz)": float(r["hz"]),
+                            "Δ from prev (Hz)": gap,
+                            "Dominant tag": str(r.get("dominant_tag", "")),
+                            "tag1_ratio": float(r.get("tag1_ratio", float("nan"))),
+                            "tag3_ratio": float(r.get("tag3_ratio", float("nan"))),
+                            "p_frac": float(pf) if pf is not None and np.isfinite(float(pf)) else None,
+                        }
+                    )
+                    prev_f = float(r["hz"])
+                st.dataframe(table_out, use_container_width=True, hide_index=True)
+                st.caption(f"Loaded from `{table_path.relative_to(BASE_DIR).as_posix()}`")
+            except Exception as exc:
+                st.error(f"Mode table failed: {exc}")
