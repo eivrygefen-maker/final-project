@@ -167,59 +167,40 @@ def _occ_closed_polyline_surface(
     """
     Closed profile via OCC line segments only (gmsh.model.occ — never geo).
 
-    Wire → plane surface → single synchronize. No pre-loop sync (avoids open-loop races).
+    Points → lines → synchronize → curve loop → plane surface → synchronize.
     """
     occ = gmsh.model.occ
-    if occ is not gmsh.model.occ:
-        raise RuntimeError("OCC kernel handle invalid (geo/occ cross-contamination guard).")
 
     min_seg = 1.0e-5
-    ring: List[Tuple[float, float]] = []
-    for pt in full_ring_points:
-        if not ring:
-            ring.append((float(pt[0]), float(pt[1])))
+    ring: List[Tuple[float, float]] = [(float(x), float(y)) for x, y in full_ring_points]
+    if len(ring) >= 2:
+        dx = ring[-1][0] - ring[0][0]
+        dy = ring[-1][1] - ring[0][1]
+        if math.hypot(dx, dy) < min_seg:
+            ring.pop()
+
+    deduped: List[Tuple[float, float]] = []
+    for pt in ring:
+        if not deduped:
+            deduped.append(pt)
             continue
-        if math.hypot(pt[0] - ring[-1][0], pt[1] - ring[-1][1]) >= min_seg:
-            ring.append((float(pt[0]), float(pt[1])))
-    if len(ring) >= 2 and math.hypot(ring[-1][0] - ring[0][0], ring[-1][1] - ring[0][1]) < min_seg:
-        ring.pop()
+        if math.hypot(pt[0] - deduped[-1][0], pt[1] - deduped[-1][1]) >= min_seg:
+            deduped.append(pt)
+    ring = deduped
     if len(ring) < 4:
         raise RuntimeError("Full ring needs at least 4 distinct vertices for OCC polyline.")
 
-    p_tags: List[int] = []
-    for x, y in ring:
-        p_tags.append(int(occ.addPoint(x, y, 0.0, lc)))
+    p_tags: List[int] = [int(occ.addPoint(x, y, 0.0, lc)) for x, y in ring]
 
-    line_tags: List[int] = []
+    l_tags: List[int] = []
     n_pts = len(p_tags)
     for i in range(n_pts):
         j = (i + 1) % n_pts
-        line_tags.append(int(occ.addLine(p_tags[i], p_tags[j])))
+        l_tags.append(int(occ.addLine(p_tags[i], p_tags[j])))
 
-    # OCC only — never gmsh.model.geo.addCurveLoop / addPlaneSurface.
-    contour_tag: Optional[int] = None
-    loop_err: Optional[Exception] = None
-    wire_err: Optional[Exception] = None
-    try:
-        contour_tag = int(occ.addCurveLoop(line_tags))
-    except Exception as exc:
-        loop_err = exc
-        try:
-            contour_tag = int(occ.addWire(line_tags, tag=-1, checkClosed=True))
-        except TypeError:
-            try:
-                contour_tag = int(occ.addWire(line_tags))
-            except Exception as exc2:
-                wire_err = exc2
-        except Exception as exc2:
-            wire_err = exc2
-
-    if contour_tag is None:
-        raise RuntimeError(
-            f"OCC closed polyline failed (addCurveLoop: {loop_err}; addWire: {wire_err})"
-        ) from (loop_err or wire_err)
-
-    surface_tag = int(occ.addPlaneSurface([int(contour_tag)]))
+    occ.synchronize()
+    loop_tag = int(occ.addCurveLoop(l_tags))
+    surface_tag = int(occ.addPlaneSurface([loop_tag]))
     occ.synchronize()
     return surface_tag
 
