@@ -565,10 +565,18 @@ def create_guitar_mesh():
             print(f"[diag] dropped {dropped} wood/wood partition interface facets")
         return kept
 
+    # Sketch: solid outer volume only (20 mm lc cannot mesh a 3 mm hollow gap).
+    # Display / FOM: hollow shell via outer − inner boolean.
+    solid_sketch = bool(is_preview)
+
     # Build guitar solid and internal air domain (updated step 1).
     if _is_box_shape(shape_type):
         vol_out_id = occ.addBox(-L/2, -W/2, -D/2, L, W, D)
-        vol_in_id = occ.addBox(-L/2+t, -W/2+t, -D/2+t, L-2*t, W-2*t, D-2*t)
+        vol_in_id = (
+            occ.addBox(-L/2 + t, -W/2 + t, -D/2 + t, L - 2 * t, W - 2 * t, D - 2 * t)
+            if not solid_sketch
+            else vol_out_id
+        )
     else:
         profile_template = _template_for_shape(shape_type)
         profile_lc = mesh_size
@@ -587,17 +595,21 @@ def create_guitar_mesh():
         )
         vol_out_id = _occ_extrude_shell_volume(surf_out, D, -D / 2.0)
 
-        surf_in = create_template_profile_surface(
-            length=L,
-            upper_bout=upper_bout,
-            waist=waist,
-            lower_bout=lower_bout,
-            template=profile_template,
-            wall_offset=t,
-            point_lc=profile_lc,
-        )
-        vol_in_id = _occ_extrude_shell_volume(surf_in, inner_depth, -D / 2.0 + t)
-        print(f"[diag] OCC shell volumes: outer={vol_out_id} inner={vol_in_id}")
+        if solid_sketch:
+            vol_in_id = vol_out_id
+            print(f"[diag] sketch solid CAD: outer volume={vol_out_id} (inner profile/cut skipped)")
+        else:
+            surf_in = create_template_profile_surface(
+                length=L,
+                upper_bout=upper_bout,
+                waist=waist,
+                lower_bout=lower_bout,
+                template=profile_template,
+                wall_offset=t,
+                point_lc=profile_lc,
+            )
+            vol_in_id = _occ_extrude_shell_volume(surf_in, inner_depth, -D / 2.0 + t)
+            print(f"[diag] OCC hollow shell volumes: outer={vol_out_id} inner={vol_in_id}")
 
     # Soundhole cutter: vertical cylinder through top plate only (does not slice ribs/sides).
     if _is_box_shape(shape_type):
@@ -625,17 +637,25 @@ def create_guitar_mesh():
             raise
 
     if shell_only:
-        # Sketch + display: hollow wood shell only — no acoustic air volume.
-        print(f"[diag] {mode} CAD: wood shell + soundhole cut (air domain disabled)")
-        wood_shell = _audit_boolean(
-            "preview_hollow_shell",
-            occ.cut,
-            [(3, vol_out_id)],
-            [(3, vol_in_id)],
-            removeObject=True,
-            removeTool=True,
-        )
-        wood_dimtags = [dt for dt in as_dimtags(wood_shell) if dt[0] == 3]
+        # Sketch + display: wood only (no acoustic air volume).
+        if solid_sketch:
+            print(
+                "[diag] sketch CAD: solid outer volume only "
+                "(no occ.cut hollow — 20 mm lc cannot fill 3 mm wall gap)"
+            )
+            wood_dimtags = [(3, int(vol_out_id))]
+            occ.synchronize()
+        else:
+            print(f"[diag] {mode} CAD: hollow wood shell (outer − inner cut)")
+            wood_shell = _audit_boolean(
+                "display_hollow_shell",
+                occ.cut,
+                [(3, vol_out_id)],
+                [(3, vol_in_id)],
+                removeObject=True,
+                removeTool=True,
+            )
+            wood_dimtags = [dt for dt in as_dimtags(wood_shell) if dt[0] == 3]
         if is_display:
             wood_hole_cut = _audit_boolean(
                 "display_soundhole_cut",
@@ -815,14 +835,21 @@ def create_guitar_mesh():
 
     if shell_only and wood_vols:
         all_b = [int(s) for s in wood_boundary_surfs]
-        primary_vol = int(wood_vols[0])
-        exterior = [s for s in all_b if _is_exterior_boundary_facet(s, primary_vol)]
-        if len(exterior) >= max(12, len(all_b) // 4):
-            wood_boundary_surfs = exterior
-        print(
-            f"[diag] preview exterior shell: kept {len(wood_boundary_surfs)} / {len(all_b)} "
-            "boundary facets (outer skin only)"
-        )
+        if solid_sketch:
+            wood_boundary_surfs = all_b
+            print(
+                f"[diag] sketch solid exterior: all {len(all_b)} boundary facets "
+                "(no cavity-skin filter)"
+            )
+        else:
+            primary_vol = int(wood_vols[0])
+            exterior = [s for s in all_b if _is_exterior_boundary_facet(s, primary_vol)]
+            if len(exterior) >= max(12, len(all_b) // 4):
+                wood_boundary_surfs = exterior
+            print(
+                f"[diag] display exterior shell: kept {len(wood_boundary_surfs)} / {len(all_b)} "
+                "boundary facets (outer skin only)"
+            )
 
     air_boundary_surfs = (
         get_boundary_tags([(3, tag) for tag in air_vols], 2) if air_vols else []
@@ -1077,10 +1104,15 @@ def create_guitar_mesh():
                 key=lambda row: row[1],
             )
             rib_surfs = [row[0] for row in side_scored[: max(4, len(side_scored) // 3)]]
-        if not rib_surfs:
-            raise RuntimeError(
-                "Preview shell has no rib facets (tag 4); exterior facet filter may be too aggressive."
+        if not rib_surfs and wood_boundary_surfs:
+            rib_surfs = sorted(
+                set(int(s) for s in wood_boundary_surfs)
+                - set(int(s) for s in top_plate_surfs)
+                - set(int(s) for s in back_plate_surfs)
+                - set(int(s) for s in soundhole_surfs)
             )
+            if rib_surfs:
+                print(f"[diag][warn] rib_surfs fallback from solid shell: {len(rib_surfs)} facets → tag 4.")
 
     req_back = is_fom
     req_ribs = True
