@@ -115,12 +115,12 @@ def _subsample_chain_monotonic(
     return [pts[i] for i in idx]
 
 
-def _perimeter_points_from_half(
-    half: Sequence[Tuple[float, float]], n_side_max: int = 32
+def _full_ring_points_from_half(
+    half: Sequence[Tuple[float, float]], n_side_max: int = 40
 ) -> List[Tuple[float, float]]:
     """
-    Full closed 2D perimeter: neck (+y arc) → tail → (-y arc) → back to neck.
-    First point != last (closing segment added in Gmsh).
+    Full closed 2D boundary in Python (+y half → mirrored −y return to neck).
+    First vertex is neck; last vertex is distinct (OCC spline seals with p_tags[0]).
     """
     side = _subsample_chain_monotonic(half, n_side_max)
     if len(side) < 3:
@@ -133,9 +133,9 @@ def _perimeter_points_from_half(
         if math.hypot(p[0] - out[-1][0], p[1] - out[-1][1]) > min_seg:
             out.append(p)
     if len(out) < 4:
-        raise RuntimeError("Closed profile perimeter collapsed (too few vertices).")
+        raise RuntimeError("Closed profile ring collapsed (too few vertices).")
     if math.hypot(out[-1][0] - out[0][0], out[-1][1] - out[0][1]) < min_seg:
-        raise RuntimeError("Profile perimeter endpoints collapsed to one point.")
+        raise RuntimeError("Profile ring endpoints collapsed to one point.")
     return out
 
 
@@ -161,38 +161,39 @@ def _volume_tags_from_extrude(out) -> List[int]:
     return tags
 
 
-def _occ_profile_surface_from_points(
-    points: Sequence[Tuple[float, float]], lc: float
+def _occ_single_closed_spline_surface(
+    full_ring_points: Sequence[Tuple[float, float]], lc: float
 ) -> int:
-    """Build a closed 2D profile surface in the OCC kernel (int tags only)."""
+    """
+    One closed BSpline/Spline through the full Python ring (no mirror, no multi-segment loop).
+    """
     occ = gmsh.model.occ
-    if len(points) < 3:
-        raise RuntimeError("Profile perimeter needs at least 3 distinct points.")
+    if len(full_ring_points) < 4:
+        raise RuntimeError("Full ring needs at least 4 distinct vertices.")
 
     p_tags: List[int] = []
-    for pt in points:
+    for pt in full_ring_points:
         p_tags.append(int(occ.addPoint(float(pt[0]), float(pt[1]), 0.0, lc)))
-
-    l_tags: List[int] = []
-    for i in range(len(p_tags) - 1):
-        l_tags.append(int(occ.addLine(p_tags[i], p_tags[i + 1])))
-    l_tags.append(int(occ.addLine(p_tags[-1], p_tags[0])))
-
-    occ.synchronize()
+    p_tags.append(p_tags[0])
 
     last_err: Optional[Exception] = None
-    curve_loop_tag: Optional[int] = None
-    for line_ring in (l_tags, list(reversed(l_tags))):
+    spline_tag: Optional[int] = None
+    for maker_name, maker in (
+        ("BSpline", lambda: occ.addBSpline(p_tags)),
+        ("Spline", lambda: occ.addSpline(p_tags)),
+    ):
         try:
-            curve_loop_tag = int(occ.addCurveLoop(line_ring))
+            spline_tag = int(maker())
             break
         except Exception as exc:
             last_err = exc
 
-    if curve_loop_tag is None:
-        raise RuntimeError(f"OCC profile curve loop failed: {last_err}")
+    if spline_tag is None:
+        raise RuntimeError(f"OCC closed profile spline failed: {last_err}")
 
-    surface_tag = int(occ.addPlaneSurface([curve_loop_tag]))
+    occ.synchronize()
+    loop_tag = int(occ.addCurveLoop([spline_tag]))
+    surface_tag = int(occ.addPlaneSurface([loop_tag]))
     occ.synchronize()
     return surface_tag
 
@@ -412,7 +413,7 @@ def create_guitar_mesh():
         wall_offset: float = 0.0,
         point_lc: Optional[float] = None,
     ) -> int:
-        """Normalized template → Python perimeter ring → OCC surface (same kernel as booleans)."""
+        """Normalized template → Python full ring → single closed OCC spline → surface."""
         lc = float(point_lc if point_lc is not None else mesh_size)
         half = _stabilize_half_profile(
             warp_template_half_profile(
@@ -424,10 +425,11 @@ def create_guitar_mesh():
                 wall_offset=wall_offset,
             )
         )
-        points = _perimeter_points_from_half(half, n_side_max=32)
-        surface_tag = _occ_profile_surface_from_points(points, lc)
+        full_ring_points = _full_ring_points_from_half(half, n_side_max=40)
+        surface_tag = _occ_single_closed_spline_surface(full_ring_points, lc)
         print(
-            f"[diag] template profile surface (occ): n_pts={len(points)} surface={surface_tag}"
+            f"[diag] template profile (occ closed spline): ring_pts={len(full_ring_points)} "
+            f"surface={surface_tag}"
         )
         return surface_tag
 
