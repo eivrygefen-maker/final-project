@@ -67,8 +67,8 @@ if "stk_body_json" not in st.session_state:
 if "show_physics_success" not in st.session_state:
     st.session_state.show_physics_success = False
 # Bust stale preview meshes when preview CAD schema changes.
-if st.session_state.get("preview_cad_schema", 0) < 3:
-    st.session_state.preview_cad_schema = 3
+if st.session_state.get("preview_cad_schema", 0) < 4:
+    st.session_state.preview_cad_schema = 4
     st.session_state.live_preview_fp = ""
     if PREVIEW_MESH_FILE.is_file():
         PREVIEW_MESH_FILE.unlink(missing_ok=True)
@@ -811,7 +811,7 @@ def _wood_index(wood_id: str, options: List[str]) -> int:
 _saved_top = str(saved_geom.get("top_wood_id") or saved_geom.get("wood_id") or "spruce")
 _saved_back = str(saved_geom.get("back_wood_id") or saved_geom.get("body_wood_id") or "rosewood")
 
-col_controls, col_visual = st.columns(2)
+col_controls, col_visual = st.columns([0.28, 0.72], gap="large")
 
 with col_controls:
     st.subheader("Design controls")
@@ -923,6 +923,7 @@ lhs_params = _gui_lhs_params(
 with col_visual:
     st.subheader("3D preview")
     physics_ready = bool(st.session_state.get("physics_ready", False))
+    fom_mode = bool(st.session_state.developer_fom_mode)
     vis_mode = st.selectbox("Visual style", ["Mesh + Solid", "Solid Wood"], key="vis_mode_ui")
     cam_preset = st.selectbox(
         "Camera",
@@ -933,41 +934,8 @@ with col_visual:
             "Laying on Side (Profile)",
         ],
     )
-    if physics_ready and MESH_FILE.is_file():
-        st.success("Solid engineering model")
-    else:
-        st.info("Wireframe sketch — adjust sliders to explore shape")
-
-    display_mesh, sketch_mode, plot_suffix = _resolve_display_mesh(
-        geom_state=geom_state,
-        geom_fp=geom_fp,
-        top_wood_id=top_wood_id,
-        back_wood_id=back_wood_id,
-        vis_mode=vis_mode,
-        physics_ready=physics_ready,
-    )
-    try:
-        pv.set_jupyter_backend("static")
-        _render_pyvista_guitar(
-            display_mesh,
-            top_color=top_plot_color,
-            back_color=back_plot_color,
-            show_edges=("Mesh" in vis_mode) or sketch_mode,
-            cam_preset=cam_preset,
-            plot_key=f"view_{plot_suffix}",
-            sketch_mode=sketch_mode,
-        )
-    except Exception as exc:
-        st.warning(f"3D render issue: {exc}")
-
-    st.caption(
-        f"Soundboard {top_wood_id} ({top_plot_color}) · "
-        f"back/sides {back_wood_id} ({back_plot_color})"
-    )
 
     btn_save, btn_audio = st.columns(2)
-    fom_mode = bool(st.session_state.developer_fom_mode)
-
     with btn_save:
         if st.button(
             "Save Changes & Compute Physics",
@@ -1005,6 +973,38 @@ with col_visual:
                 st.rerun()
             except Exception as exc:
                 st.error(f"Audio failed: {exc}")
+
+    if physics_ready and MESH_FILE.is_file():
+        st.success("Solid engineering model — audio unlocked")
+    else:
+        st.info("Wireframe sketch — move a slider to refresh")
+
+    display_mesh, sketch_mode, plot_suffix = _resolve_display_mesh(
+        geom_state=geom_state,
+        geom_fp=geom_fp,
+        top_wood_id=top_wood_id,
+        back_wood_id=back_wood_id,
+        vis_mode=vis_mode,
+        physics_ready=physics_ready,
+    )
+    try:
+        pv.set_jupyter_backend("static")
+        _render_pyvista_guitar(
+            display_mesh,
+            top_color=top_plot_color,
+            back_color=back_plot_color,
+            show_edges=("Mesh" in vis_mode) or sketch_mode,
+            cam_preset=cam_preset,
+            plot_key=f"view_{plot_suffix}",
+            sketch_mode=sketch_mode,
+        )
+    except Exception as exc:
+        st.warning(f"3D render issue: {exc}")
+
+    st.caption(
+        f"Soundboard {top_wood_id} ({top_plot_color}) · "
+        f"back/sides {back_wood_id} ({back_plot_color})"
+    )
 
     if st.session_state.show_physics_success:
         eng = str(st.session_state.get("last_engine", "")).upper() or "ROM"

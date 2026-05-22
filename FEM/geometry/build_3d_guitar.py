@@ -414,34 +414,87 @@ def create_guitar_mesh():
             hx = 0.5 * (xmax - xmin)
             hy = 0.5 * (ymax - ymin)
             r_xy = math.hypot(sx - vcom[0], sy - vcom[1])
-            return r_xy > 0.38 * max(hx, hy, 1.0e-4)
+            # Keep outer skin; drop interior cavity lining (closer to COM in XY).
+            return r_xy > 0.30 * max(hx, hy, 1.0e-4)
 
         primary_vol = int(wood_vols[0])
-        wood_boundary_surfs = [
-            int(s) for s in wood_boundary_surfs if _keep_exterior_facet(int(s), primary_vol)
+        all_b = [int(s) for s in wood_boundary_surfs]
+        radii = [
+            math.hypot(
+                get_surface_center(s)[0] - occ.getCenterOfMass(3, primary_vol)[0],
+                get_surface_center(s)[1] - occ.getCenterOfMass(3, primary_vol)[1],
+            )
+            for s in all_b
         ]
-        print(f"[diag] preview exterior facets: n={len(wood_boundary_surfs)}")
+        r_keep = max(radii) * 0.88 if radii else 0.0
+        wood_boundary_surfs = [
+            s for s, r in zip(all_b, radii) if r >= r_keep and _keep_exterior_facet(s, primary_vol)
+        ]
+        if len(wood_boundary_surfs) < 8:
+            wood_boundary_surfs = [s for s in all_b if _keep_exterior_facet(s, primary_vol)]
+        print(f"[diag] preview exterior facets: n={len(wood_boundary_surfs)} (of {len(all_b)})")
 
     air_boundary_surfs = (
         get_boundary_tags([(3, tag) for tag in air_vols], 2) if air_vols else []
     )
-    top_plate_surfs = sorted(list(get_boundary_tags([(3, tag) for tag in top_vols], 2))) if top_vols else []
-    if not top_plate_surfs and wood_boundary_surfs:
-        highest = max(list(wood_boundary_surfs), key=lambda s: get_surface_center_z(s))
-        top_plate_surfs = [highest]
-        print("[diag][warn] top_plate_surfs fallback: using highest wood boundary surface.")
 
-    back_plate_surfs = (
-        sorted(list(get_boundary_tags([(3, int(v)) for v in back_vols], 2))) if back_vols else []
-    )
-    rib_surfs = (
-        sorted(list(get_boundary_tags([(3, int(v)) for v in rib_vols], 2))) if rib_vols else []
-    )
-    if not back_plate_surfs and not rib_surfs:
-        legacy_body = sorted(list(set(wood_boundary_surfs) - set(top_plate_surfs)))
-        if legacy_body:
-            rib_surfs = legacy_body
-            print("[diag][warn] back/rib volume boundaries empty; legacy body shell → ribs tag 4.")
+    def _classify_shell_facets_for_preview(shell_surfs: list) -> tuple:
+        """Single hollow volume: split exterior facets by Z bands (no volume partition)."""
+        if not shell_surfs:
+            return [], [], []
+        zs = [(int(s), get_surface_center_z(s)) for s in shell_surfs]
+        zmax = max(z for _, z in zs)
+        zmin = min(z for _, z in zs)
+        dz = max(zmax - zmin, 1e-6)
+        top_band = zmax - 0.12 * dz
+        back_band = zmin + 0.12 * dz
+        top = [s for s, z in zs if z >= top_band]
+        back = [s for s, z in zs if z <= back_band]
+        claimed = set(top) | set(back)
+        ribs = [int(s) for s in shell_surfs if int(s) not in claimed]
+        if not top:
+            top = [int(max(shell_surfs, key=lambda s: get_surface_center_z(s)))]
+            claimed |= set(top)
+        if not back:
+            back = [int(min(shell_surfs, key=lambda s: get_surface_center_z(s)))]
+            claimed |= set(back)
+        ribs = [int(s) for s in shell_surfs if int(s) not in claimed]
+        if not ribs:
+            ribs = [
+                int(s)
+                for s in shell_surfs
+                if int(s) not in set(top) and int(s) not in set(back)
+            ]
+        print(
+            f"[diag] preview facet bands: top={len(top)} back={len(back)} ribs={len(ribs)} "
+            f"(z in [{zmin:.4f},{zmax:.4f}])"
+        )
+        return top, back, ribs
+
+    if is_preview:
+        top_plate_surfs, back_plate_surfs, rib_surfs = _classify_shell_facets_for_preview(
+            wood_boundary_surfs
+        )
+    else:
+        top_plate_surfs = (
+            sorted(list(get_boundary_tags([(3, tag) for tag in top_vols], 2))) if top_vols else []
+        )
+        if not top_plate_surfs and wood_boundary_surfs:
+            highest = max(list(wood_boundary_surfs), key=lambda s: get_surface_center_z(s))
+            top_plate_surfs = [highest]
+            print("[diag][warn] top_plate_surfs fallback: using highest wood boundary surface.")
+
+        back_plate_surfs = (
+            sorted(list(get_boundary_tags([(3, int(v)) for v in back_vols], 2))) if back_vols else []
+        )
+        rib_surfs = (
+            sorted(list(get_boundary_tags([(3, int(v)) for v in rib_vols], 2))) if rib_vols else []
+        )
+        if not back_plate_surfs and not rib_surfs:
+            legacy_body = sorted(list(set(wood_boundary_surfs) - set(top_plate_surfs)))
+            if legacy_body:
+                rib_surfs = legacy_body
+                print("[diag][warn] back/rib volume boundaries empty; legacy body shell → ribs tag 4.")
 
     def _xy_dist_point_to_rect(px, py, xmin, xmax, ymin, ymax):
         if px < xmin:
@@ -579,10 +632,12 @@ def create_guitar_mesh():
         return int(pg)
 
     # 2D facet protocol (must match fem_main_3d WOOD_SURFACE_TAGS): 1=Top, 2=Soundhole, 3=Back, 4=Ribs, 5=wood_fix
+    req_back = not is_preview
+    req_ribs = not is_preview
     _add_surface_physical_group(top_plate_surfs, 1, "Top_Plate", required=True)
     _add_surface_physical_group(soundhole_surfs, 2, "Soundhole", required=False)
-    _add_surface_physical_group(back_plate_surfs, 3, "Back_Plate", required=True)
-    _add_surface_physical_group(rib_surfs, 4, "Ribs_Sides", required=True)
+    _add_surface_physical_group(back_plate_surfs, 3, "Back_Plate", required=req_back)
+    _add_surface_physical_group(rib_surfs, 4, "Ribs_Sides", required=req_ribs)
     if wood_fix_surfs:
         _add_surface_physical_group(wood_fix_surfs, 5, "wood_fix", required=False)
     else:
