@@ -218,44 +218,52 @@ def _occ_perimeter_walk_surface(
     full_perimeter: Sequence[Tuple[float, float]], lc: float
 ) -> int:
     """
-    OCC closed profile; ``full_perimeter`` must already have head=tail (same object).
+    Passive OCC profile: addPoint → addPolygon → synchronize → plane surface.
 
-    Reuses one OCC point tag at the neck; deduplicates immediately before ``addCurveLoop``.
+    No manual line tags, tag reuse, or removeAllDuplicates (avoids OCC re-index crashes).
     """
     occ = gmsh.model.occ
+    add_polygon = getattr(occ, "addPolygon", None)
+    if add_polygon is None:
+        raise RuntimeError(
+            "gmsh.model.occ.addPolygon is required for passive perimeter build."
+        )
+
     ring = list(full_perimeter)
     n = len(ring)
     if n < 4:
         raise RuntimeError(f"OCC perimeter walk needs >= 4 points (got {n}).")
 
-    p_tags: List[int] = []
-    for i, pt in enumerate(ring):
-        if i > 0 and pt is ring[0]:
-            p_tags.append(p_tags[0])
-        else:
-            p_tags.append(int(occ.addPoint(float(pt[0]), float(pt[1]), 0.0, lc)))
-
-    l_tags: List[int] = []
-    for i in range(len(p_tags)):
-        j = (i + 1) % len(p_tags)
-        if p_tags[i] != p_tags[j]:
-            l_tags.append(int(occ.addLine(p_tags[i], p_tags[j])))
-    if len(l_tags) < 3:
+    # addPolygon closes last→first; omit duplicate neck vertex when head==tail.
+    if len(ring) >= 2 and ring[-1] is ring[0]:
+        ring_poly = ring[:-1]
+    else:
+        ring_poly = ring
+    if len(ring_poly) < 3:
         raise RuntimeError(
-            f"OCC perimeter walk produced {len(l_tags)} lines (need >= 3)."
+            f"OCC polygon needs >= 3 unique vertices (got {len(ring_poly)})."
         )
 
+    p_tags = [
+        int(occ.addPoint(float(pt[0]), float(pt[1]), 0.0, lc)) for pt in ring_poly
+    ]
+    wire_tag = int(add_polygon(p_tags))
     occ.synchronize()
-    try:
-        occ.removeAllDuplicates()
-    except Exception:
-        pass
-    loop_tag = int(occ.addCurveLoop(l_tags))
+
+    add_wire = getattr(occ, "addWire", None)
+    if add_wire is not None:
+        try:
+            loop_tag = int(add_wire([wire_tag]))
+        except Exception:
+            loop_tag = wire_tag
+    else:
+        loop_tag = wire_tag
+
     surface_tag = int(occ.addPlaneSurface([loop_tag]))
     occ.synchronize()
     print(
-        f"[diag] OCC perimeter wire: n_pts={n} n_lines={len(l_tags)} "
-        f"neck_tag={p_tags[0]} loop={loop_tag} surface={surface_tag}"
+        f"[diag] OCC passive polygon: n_ring={n} n_poly_pts={len(p_tags)} "
+        f"wire={wire_tag} loop={loop_tag} surface={surface_tag}"
     )
     return int(surface_tag)
 
