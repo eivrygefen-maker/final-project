@@ -64,6 +64,12 @@ if "stk_body_json" not in st.session_state:
     st.session_state.stk_body_json = ""
 if "show_physics_success" not in st.session_state:
     st.session_state.show_physics_success = False
+# Bust stale preview meshes built before wood-only preview CAD (schema 2).
+if st.session_state.get("preview_cad_schema", 0) < 2:
+    st.session_state.preview_cad_schema = 2
+    st.session_state.live_preview_fp = ""
+    if PREVIEW_MESH_FILE.is_file():
+        PREVIEW_MESH_FILE.unlink(missing_ok=True)
 
 # Load saved geometry for Live Preview comparison
 saved_geom = {}
@@ -510,50 +516,12 @@ def save_cfg_from_state(
         json.dump(data, f, indent=4)
 
 
-def _drop_outer_box_facets(
-    points: np.ndarray,
-    tri: np.ndarray,
-    tags: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Remove axis-aligned outer-domain quads (air bounding box) that leak in as tag 1/3/4.
-
-    Keeps curved guitar shell triangles; drops huge facets glued to the global AABB.
-    """
-    if tri.size == 0:
-        return tri, tags
-    pts = points[tri]
-    cent = pts.mean(axis=1)
-    xmin, xmax = float(points[:, 0].min()), float(points[:, 0].max())
-    ymin, ymax = float(points[:, 1].min()), float(points[:, 1].max())
-    zmin, zmax = float(points[:, 2].min()), float(points[:, 2].max())
-    dx = max(xmax - xmin, 1.0e-6)
-    dy = max(ymax - ymin, 1.0e-6)
-    dz = max(zmax - zmin, 1.0e-6)
-    tol = max(0.002, 0.015 * max(dx, dy, dz))
-    v0, v1, v2 = pts[:, 0], pts[:, 1], pts[:, 2]
-    max_edge = np.linalg.norm(
-        np.stack([v1 - v0, v2 - v1, v0 - v2], axis=1),
-        axis=2,
-    ).max(axis=1)
-    on_aabb = (
-        (np.abs(cent[:, 0] - xmin) < tol)
-        | (np.abs(cent[:, 0] - xmax) < tol)
-        | (np.abs(cent[:, 1] - ymin) < tol)
-        | (np.abs(cent[:, 1] - ymax) < tol)
-        | (np.abs(cent[:, 2] - zmin) < tol)
-        | (np.abs(cent[:, 2] - zmax) < tol)
-    )
-    span_lim = 0.50 * max(dx, dy, dz)
-    keep = ~(on_aabb & (max_edge > span_lim))
-    return tri[keep], tags[keep]
-
-
 def _load_guitar_surface_from_msh(msh_path: Path) -> Optional[Any]:
     """
-    Load curved guitar shell triangles only (facet tags 1, 3, 4).
+    Load guitar shell triangles (facet tags 1=top, 3=back, 4=ribs).
 
-    Ignores air cavity (10), soundhole (2), fix (5), and outer box-domain walls.
+    Preview meshes contain wood skin only (no air volume in CAD). Engineering meshes
+    may include tag-10 volume tets but facet whitelist still selects the wood shell.
     """
     try:
         import meshio
@@ -580,9 +548,6 @@ def _load_guitar_surface_from_msh(msh_path: Path) -> Optional[Any]:
             return None
         tri = tri[keep]
         tags = tags[keep]
-        tri, tags = _drop_outer_box_facets(points, tri, tags)
-        if tri.size == 0:
-            return None
 
         faces = np.hstack([np.full((tri.shape[0], 1), 3, dtype=np.int64), tri]).ravel()
         poly = pv.PolyData(points, faces)

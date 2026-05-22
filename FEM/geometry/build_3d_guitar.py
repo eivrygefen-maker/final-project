@@ -259,34 +259,45 @@ def create_guitar_mesh():
     z_inner_top = (D / 2) - t
     hole_cyl = occ.addCylinder(hole_x, hole_y, z_inner_top, 0, 0, 2 * t, hr)
 
-    # 1) Air cavity: inner volume minus soundhole cylinder.
-    air_cut = occ.cut([(3, vol_in_id)], [(3, hole_cyl)], removeObject=True, removeTool=False)
-    air_dimtags = [dt for dt in as_dimtags(air_cut) if dt[0] == 3]
+    if is_preview:
+        # UI sketch: hollow wood shell only — no acoustic air volume or outer air box.
+        print("[diag] preview CAD: wood shell + soundhole cut (air domain disabled)")
+        wood_shell = occ.cut([(3, vol_out_id)], [(3, vol_in_id)], removeObject=True, removeTool=True)
+        wood_dimtags = [dt for dt in as_dimtags(wood_shell) if dt[0] == 3]
+        wood_hole_cut = occ.cut(wood_dimtags, [(3, hole_cyl)], removeObject=True, removeTool=True)
+        wood_dimtags = [dt for dt in as_dimtags(wood_hole_cut) if dt[0] == 3]
+        try:
+            occ.removeAllDuplicates()
+        except Exception:
+            pass
+        occ.synchronize()
+        wood_vols = [int(tag) for _, tag in wood_dimtags]
+        air_vols: list = []
+        air_dimtags: list = []
+    else:
+        # FSI engineering mesh: internal air cavity + shared interface with wood.
+        air_cut = occ.cut([(3, vol_in_id)], [(3, hole_cyl)], removeObject=True, removeTool=False)
+        air_dimtags = [dt for dt in as_dimtags(air_cut) if dt[0] == 3]
 
-    # 2) Wood shell: outer volume minus air cavity, then open top soundhole.
-    wood_cut = occ.cut([(3, vol_out_id)], air_dimtags, removeObject=True, removeTool=False)
-    wood_dimtags = [dt for dt in as_dimtags(wood_cut) if dt[0] == 3]
-    wood_hole_cut = occ.cut(wood_dimtags, [(3, hole_cyl)], removeObject=True, removeTool=True)
-    wood_dimtags = [dt for dt in as_dimtags(wood_hole_cut) if dt[0] == 3]
+        wood_cut = occ.cut([(3, vol_out_id)], air_dimtags, removeObject=True, removeTool=False)
+        wood_dimtags = [dt for dt in as_dimtags(wood_cut) if dt[0] == 3]
+        wood_hole_cut = occ.cut(wood_dimtags, [(3, hole_cyl)], removeObject=True, removeTool=True)
+        wood_dimtags = [dt for dt in as_dimtags(wood_hole_cut) if dt[0] == 3]
 
-    # 3) Fragment is required to enforce node sharing between wood and air.
-    frags, _ = occ.fragment(wood_dimtags, air_dimtags, removeObject=True, removeTool=True)
-    # Coherence-equivalent cleanup after BooleanFragments: merge duplicate entities/nodes.
-    # This helps guarantee shared-node interfaces when CAD booleans leave near-duplicates.
-    try:
-        occ.removeAllDuplicates()
-    except Exception:
-        pass
-    occ.synchronize()
+        frags, _ = occ.fragment(wood_dimtags, air_dimtags, removeObject=True, removeTool=True)
+        try:
+            occ.removeAllDuplicates()
+        except Exception:
+            pass
+        occ.synchronize()
 
-    # Classify volumes after fragment by topology (no height heuristics).
-    resulting_vols = [dt for dt in frags if dt[0] == 3]
-    air_candidate_set = set(tag for _, tag in air_dimtags)
-    air_vols = [tag for _, tag in resulting_vols if tag in air_candidate_set]
-    wood_vols = [tag for _, tag in resulting_vols if tag not in air_candidate_set]
+        resulting_vols = [dt for dt in frags if dt[0] == 3]
+        air_candidate_set = set(tag for _, tag in air_dimtags)
+        air_vols = [tag for _, tag in resulting_vols if tag in air_candidate_set]
+        wood_vols = [tag for _, tag in resulting_vols if tag not in air_candidate_set]
 
-    if len(air_vols) != 1:
-        raise RuntimeError(f"Expected exactly 1 internal air volume, found {len(air_vols)}")
+        if len(air_vols) != 1:
+            raise RuntimeError(f"Expected exactly 1 internal air volume, found {len(air_vols)}")
 
     if not wood_vols:
         raise RuntimeError("No wood shell volumes found after boolean operations")
@@ -330,41 +341,41 @@ def create_guitar_mesh():
             raise RuntimeError("Wood partitioning produced no volumes.")
         print(f"[diag] Wood volumes after Z-partition: {wood_vols}")
 
-    # Final geometry unification: remove duplicates and re-fragment wood+air together
-    # so interfaces are shared and overlapping facets are eliminated.
-    try:
-        air_ref_com = occ.getCenterOfMass(3, int(air_vols[0])) if air_vols else (0.0, 0.0, 0.0)
-    except Exception:
-        air_ref_com = (0.0, 0.0, 0.0)
-    try:
-        all_split, _ = occ.fragment(
-            [(3, int(v)) for v in wood_vols],
-            [(3, int(v)) for v in air_vols],
-            removeObject=True,
-            removeTool=True,
-        )
+    if not is_preview:
+        # Final geometry unification: re-fragment wood+air for shared FSI interfaces.
         try:
-            occ.removeAllDuplicates()
+            air_ref_com = occ.getCenterOfMass(3, int(air_vols[0])) if air_vols else (0.0, 0.0, 0.0)
         except Exception:
-            pass
-        occ.synchronize()
+            air_ref_com = (0.0, 0.0, 0.0)
+        try:
+            all_split, _ = occ.fragment(
+                [(3, int(v)) for v in wood_vols],
+                [(3, int(v)) for v in air_vols],
+                removeObject=True,
+                removeTool=True,
+            )
+            try:
+                occ.removeAllDuplicates()
+            except Exception:
+                pass
+            occ.synchronize()
 
-        final_vols = sorted([tag for dim, tag in all_split if dim == 3])
-        if final_vols:
-            # Re-classify after unification using COM proximity to previous air COM.
-            def _dist2_to_air(vtag):
-                cx, cy, cz = occ.getCenterOfMass(3, int(vtag))
-                dx = cx - air_ref_com[0]
-                dy = cy - air_ref_com[1]
-                dz = cz - air_ref_com[2]
-                return dx * dx + dy * dy + dz * dz
+            final_vols = sorted([tag for dim, tag in all_split if dim == 3])
+            if final_vols:
 
-            air_pick = min(final_vols, key=_dist2_to_air)
-            air_vols = [int(air_pick)]
-            wood_vols = [int(v) for v in final_vols if int(v) != int(air_pick)]
-            print(f"[diag] Final unified volumes: wood={wood_vols}, air={air_vols}")
-    except Exception as exc:
-        print(f"[diag][warn] final wood/air unification skipped: {exc}")
+                def _dist2_to_air(vtag):
+                    cx, cy, cz = occ.getCenterOfMass(3, int(vtag))
+                    dx = cx - air_ref_com[0]
+                    dy = cy - air_ref_com[1]
+                    dz = cz - air_ref_com[2]
+                    return dx * dx + dy * dy + dz * dz
+
+                air_pick = min(final_vols, key=_dist2_to_air)
+                air_vols = [int(air_pick)]
+                wood_vols = [int(v) for v in final_vols if int(v) != int(air_pick)]
+                print(f"[diag] Final unified volumes: wood={wood_vols}, air={air_vols}")
+        except Exception as exc:
+            print(f"[diag][warn] final wood/air unification skipped: {exc}")
 
     # Strict one-cell-one-tag policy for 3D physical groups.
     # Sort wood volumes by center-of-mass Z:
@@ -388,13 +399,15 @@ def create_guitar_mesh():
     if assigned_wood != set(wood_vols):
         missing = sorted(list(set(wood_vols) - assigned_wood))
         raise RuntimeError(f"Wood volume assignment incomplete. Unassigned volumes: {missing}")
-    if assigned_wood.intersection(set(air_vols)):
+    if air_vols and assigned_wood.intersection(set(air_vols)):
         overlap = sorted(list(assigned_wood.intersection(set(air_vols))))
         raise RuntimeError(f"Wood/Air volume overlap detected: {overlap}")
 
     # Surface identification via direct boundaries (fragmentation-safe, no interface tracing).
     wood_boundary_surfs = get_boundary_tags([(3, tag) for tag in wood_vols], 2)
-    air_boundary_surfs = get_boundary_tags([(3, tag) for tag in air_vols], 2)
+    air_boundary_surfs = (
+        get_boundary_tags([(3, tag) for tag in air_vols], 2) if air_vols else []
+    )
     top_plate_surfs = sorted(list(get_boundary_tags([(3, tag) for tag in top_vols], 2))) if top_vols else []
     if not top_plate_surfs and wood_boundary_surfs:
         highest = max(list(wood_boundary_surfs), key=lambda s: get_surface_center_z(s))
@@ -454,14 +467,17 @@ def create_guitar_mesh():
         scored.sort(key=lambda row: -row[1])
         return [row[0] for row in scored]
 
-    # Soundhole: z = D/2 plane + hole disk (union of wood/air exterior shells).
+    # Soundhole: z = D/2 plane + hole disk on exterior shell.
     z_top_outer = D / 2.0
     z_tol = max(1.0e-4, t, 0.25 * hr)
-    all_shell_surfs = sorted(set(wood_boundary_surfs) | set(air_boundary_surfs))
+    if is_preview:
+        all_shell_surfs = sorted(wood_boundary_surfs)
+    else:
+        all_shell_surfs = sorted(set(wood_boundary_surfs) | set(air_boundary_surfs))
     soundhole_surfs = _select_soundhole_surfaces(
         all_shell_surfs, z_top_outer, z_tol, hole_x, hole_y, hr
     )
-    if not soundhole_surfs:
+    if not soundhole_surfs and air_boundary_surfs:
         soundhole_surfs = _select_soundhole_surfaces(
             sorted(air_boundary_surfs), z_top_outer, z_tol, hole_x, hole_y, hr
         )
@@ -570,23 +586,27 @@ def create_guitar_mesh():
     else:
         print("[diag][warn] Physical Volume 3 (Ribs_Sides_Volume) is empty.")
 
-    pg_air = gmsh.model.addPhysicalGroup(3, air_vols, tag=10)
-    gmsh.model.setPhysicalName(3, pg_air, "Air_Internal")
+    if not is_preview:
+        pg_air = gmsh.model.addPhysicalGroup(3, air_vols, tag=10)
+        gmsh.model.setPhysicalName(3, pg_air, "Air_Internal")
 
     print(
         f"[diag] facet groups: top={len(top_plate_surfs)}, back={len(back_plate_surfs)}, "
-        f"ribs={len(rib_surfs)}, wood_fix={len(wood_fix_surfs)}"
+        f"ribs={len(rib_surfs)}, wood_fix={len(wood_fix_surfs)}, preview={is_preview}"
     )
-    air_group_entities = gmsh.model.getEntitiesForPhysicalGroup(3, 10)
-    print(f"[diag] Physical Group 10 (Air_Internal) volume entities: {list(air_group_entities)}")
+    if not is_preview:
+        air_group_entities = gmsh.model.getEntitiesForPhysicalGroup(3, 10)
+        print(f"[diag] Physical Group 10 (Air_Internal) volume entities: {list(air_group_entities)}")
+        if len(air_group_entities) == 0:
+            raise RuntimeError("Tag 10 was created but has no 3D volume entities.")
+    else:
+        print("[diag] preview mesh: no Air_Internal (tag 10) — outer boundary is wood skin only")
     v1 = gmsh.model.getEntitiesForPhysicalGroup(3, 1) if top_vols else []
     v2 = gmsh.model.getEntitiesForPhysicalGroup(3, 2) if back_vols else []
     v3 = gmsh.model.getEntitiesForPhysicalGroup(3, 3) if rib_vols else []
     print(f"[diag] Physical Group 1 (Top_Plate_Volume) entities: {list(v1)}")
     print(f"[diag] Physical Volume 2 (Back_Plate_Volume) entities: {list(v2)}")
     print(f"[diag] Physical Group 3 (Ribs_Sides_Volume) entities: {list(v3)}")
-    if len(air_group_entities) == 0:
-        raise RuntimeError("Tag 10 was created but has no 3D volume entities.")
     sh2: list = []
     try:
         sh2 = list(gmsh.model.getEntitiesForPhysicalGroup(2, 2))
