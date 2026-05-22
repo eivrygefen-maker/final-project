@@ -44,18 +44,23 @@ FALLBACK_MODES_CSV = BASE_DIR / "FEM" / "configs" / "archive" / "selected_modes_
 DEFAULT_ROM_SHAPE = "classic"
 SHAPE_OPTIONS = ("Classical", "Dreadnought", "Box")
 HOLE_RADIUS_MAX_M = 0.08
-SOUNDHOLE_FROM_NECK_RATIO = 0.58  # from neck (+x) toward bridge; +0.15 vs legacy 0.43
+SOUNDHOLE_FROM_NECK_RATIO = 0.5
 TOP_Z_BAND_FRAC = 0.10
 HOLE_VIS_COLOR = "#0c0c0c"
 SHELL_VIS_TAGS = frozenset({1, 2, 3, 4})
+DEFAULT_STK_NOTE_HZ = 110.0  # A2 — fixed pitch for synthesis
 
-NOTES: Dict[str, float] = {
-    "E2": 82.41,
-    "A2": 110.00,
-    "D3": 146.83,
-    "G3": 196.00,
-    "B3": 246.94,
-    "E4": 329.63,
+FIXTURE_PRESETS = (
+    "Standing Angled (3D)",
+    "Standing Upright (Front)",
+    "Laying Flat (Top View)",
+    "Laying on Side (Profile)",
+)
+CAMERA_BY_FIXTURE: Dict[str, Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]] = {
+    "Standing Angled (3D)": ((0.0, -0.45, 1.05), (0.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+    "Standing Upright (Front)": ((0.0, 0.0, 1.2), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+    "Laying Flat (Top View)": ((0.0, 0.0, 1.2), (0.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+    "Laying on Side (Profile)": ((0.0, -1.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
 }
 
 sys.path.insert(0, str(BASE_DIR / "FEM" / "scripts"))
@@ -194,6 +199,7 @@ def save_config(
     back_wood: str,
     clamp_ribs: bool,
     pin_neck_fix: bool,
+    fixture_preset: str,
 ) -> None:
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     data: Dict[str, Any] = _load_saved_config()
@@ -237,6 +243,7 @@ def run_gmsh_preview() -> None:
         back_wood=st.session_state["_back_wood"],
         clamp_ribs=st.session_state["_clamp_ribs"],
         pin_neck_fix=st.session_state["_pin_neck_fix"],
+        fixture_preset=st.session_state["_fixture_preset"],
     )
     if PREVIEW_MESH_FILE.is_file():
         PREVIEW_MESH_FILE.unlink()
@@ -254,6 +261,7 @@ def run_gmsh_engineering() -> None:
         back_wood=st.session_state["_back_wood"],
         clamp_ribs=st.session_state["_clamp_ribs"],
         pin_neck_fix=st.session_state["_pin_neck_fix"],
+        fixture_preset=st.session_state["_fixture_preset"],
     )
     if MESH_FILE.is_file():
         MESH_FILE.unlink()
@@ -350,6 +358,7 @@ def render_guitar(
     hole_radius: float,
     sketch_mode: bool,
     plot_key: str,
+    fixture_preset: str,
 ) -> None:
     plotter = pv.Plotter(window_size=[1100, 620], lighting="three lights")
     plotter.background_color = "#f4f4f9"
@@ -374,7 +383,9 @@ def render_guitar(
         )
     else:
         plotter.add_text("Preview unavailable", position="upper_left", font_size=12)
-    plotter.camera_position = [(0.0, -0.45, 1.05), (0.0, 0.0, 0.0), (0.0, 0.0, 1.0)]
+    plotter.camera_position = CAMERA_BY_FIXTURE.get(
+        fixture_preset, CAMERA_BY_FIXTURE["Standing Angled (3D)"]
+    )
     plotter.enable_anti_aliasing("ssaa")
     stpyvista(plotter, key=plot_key)
     plotter.close()
@@ -558,7 +569,7 @@ def append_silence_wav(path: Path, seconds: float) -> None:
         pass
 
 
-def run_stk(*, body_json: Path, top_wood: str, note_hz: float, q_mode: str) -> None:
+def run_stk(*, body_json: Path, top_wood: str) -> None:
     if not body_json.is_file():
         raise FileNotFoundError("Acoustics data missing — save changes first.")
     if not STK_BINARY.is_file():
@@ -569,7 +580,7 @@ def run_stk(*, body_json: Path, top_wood: str, note_hz: float, q_mode: str) -> N
         "--fem_json",
         str(body_json),
         "--note_hz",
-        str(note_hz),
+        str(DEFAULT_STK_NOTE_HZ),
         "--dur",
         "3.0",
         "--mix",
@@ -589,10 +600,8 @@ def run_stk(*, body_json: Path, top_wood: str, note_hz: float, q_mode: str) -> N
         "--skip",
         "0",
     ]
-    if q_mode == "Random (Realistic)":
-        cmd += ["--q_min", str(top_q["q_min"]), "--q_max", str(top_q["q_max"]), "--q_mode", "random"]
-    else:
-        cmd += ["--q", str((top_q["q_min"] + top_q["q_max"]) / 2.0)]
+    q_mean = (float(top_q["q_min"]) + float(top_q["q_max"])) / 2.0
+    cmd.extend(["--q", str(q_mean)])
     subprocess.run(cmd, check=False)
     append_silence_wav(WAV_OUTPUT, 0.3)
 
@@ -619,10 +628,10 @@ def on_save_changes(geom_fp: str, lhs_params: Dict[str, Any]) -> None:
     st.rerun()
 
 
-def on_generate_sound(*, top_wood: str, note_hz: float, q_mode: str) -> None:
+def on_generate_sound(*, top_wood: str) -> None:
     body = Path(st.session_state.stk_body_json)
     with st.spinner("Synthesizing sound…"):
-        run_stk(body_json=body, top_wood=top_wood, note_hz=note_hz, q_mode=q_mode)
+        run_stk(body_json=body, top_wood=top_wood)
     if WAV_OUTPUT.is_file():
         st.audio(WAV_OUTPUT.read_bytes(), format="audio/wav")
 
@@ -647,6 +656,8 @@ def main() -> None:
         unsafe_allow_html=True,
     )
     st.title("GUITAR SIMULATOR")
+
+    btn_save_col, btn_sound_col = st.columns(2)
 
     col_ctrl, col_vis = st.columns([0.22, 0.78], gap="large")
 
@@ -679,16 +690,15 @@ def main() -> None:
         hr_def = min(float(saved.get("hole_radius", 0.04)), HOLE_RADIUS_MAX_M)
         hole_r = st.slider("Hole radius (m)", 0.02, HOLE_RADIUS_MAX_M, hr_def, 0.0005, format="%.4f")
 
-        st.markdown("**Sound**")
-        note = st.selectbox("Note (E2–E4)", list(NOTES.keys()), index=1)
-        note_hz = NOTES[note]
-        q_mode = st.radio("Q", ["Mean (Stable)", "Random (Realistic)"], horizontal=True)
-
         with st.expander("Advanced"):
             st.session_state.developer_fom_mode = st.checkbox(
                 "FOM developer mode",
                 value=bool(st.session_state.developer_fom_mode),
             )
+
+    _saved_fixture = str(saved.get("fixture_preset", "Standing Angled (3D)"))
+    if _saved_fixture not in FIXTURE_PRESETS:
+        _saved_fixture = "Standing Angled (3D)"
 
     geom = build_geometry_state(
         shape_type=shape,
@@ -705,48 +715,84 @@ def main() -> None:
     st.session_state["_top_wood"] = top_wood
     st.session_state["_back_wood"] = back_wood
 
-    fixture_fp = json.dumps(
-        {
-            "clamp_ribs": bool(st.session_state.get("_clamp_ribs")),
-            "pin_neck_fix": bool(st.session_state.get("_pin_neck_fix")),
-        },
-        sort_keys=True,
-    )
     if geom_fp != st.session_state.physics_geom_fp:
         invalidate_physics()
         st.session_state.live_preview_fp = ""
-    elif fixture_fp != st.session_state.fixture_fp:
-        invalidate_physics()
-    st.session_state.fixture_fp = fixture_fp
 
-    eng_view = engineering_display_active(geom_fp)
-    top_color = plot_color_for_wood(top_wood)
-    back_color = plot_color_for_wood(back_wood)
+    with btn_save_col:
+        if st.button("SAVE CHANGES", type="primary", use_container_width=True):
+            try:
+                on_save_changes(geom_fp, lhs_params)
+            except Exception as exc:
+                st.session_state.physics_geom_fp = ""
+                invalidate_physics()
+                st.error(f"Save failed: {exc}")
+
+    with btn_sound_col:
+        if st.button(
+            "GENERATE SOUND",
+            use_container_width=True,
+            disabled=not st.session_state.physics_ready,
+            help="Requires Save Changes and acoustics solve.",
+        ):
+            try:
+                on_generate_sound(top_wood=top_wood)
+            except Exception as exc:
+                st.error(f"Sound failed: {exc}")
 
     with col_vis:
         st.subheader("Guitar fixtures")
-        st.session_state["_clamp_ribs"] = st.checkbox(
-            "Clamp ribs / sides (u = 0, tag 4)",
-            value=bool(st.session_state.get("_clamp_ribs", saved_solver.get("clamp_ribs", False))),
-            help="solver.clamp_ribs — applied on engineering mesh (tag 4 DOFs).",
+        fixture_preset = st.selectbox(
+            "Display & support orientation",
+            FIXTURE_PRESETS,
+            index=FIXTURE_PRESETS.index(_saved_fixture),
+            help="Saved to config; neck-pin / rib-clamp BCs apply on the engineering mesh.",
         )
-        st.session_state["_pin_neck_fix"] = st.checkbox(
-            "Pin neck patch (u = 0, tag 5 wood_fix)",
-            value=bool(st.session_state.get("_pin_neck_fix", saved_solver.get("eps_pin_fix_tag5", True))),
-            help="solver.eps_pin_fix_tag5 — neck patch on engineering mesh only.",
+        st.session_state["_fixture_preset"] = fixture_preset
+
+        bc1, bc2 = st.columns(2)
+        with bc1:
+            st.session_state["_clamp_ribs"] = st.checkbox(
+                "Clamp ribs (tag 4)",
+                value=bool(st.session_state.get("_clamp_ribs", saved_solver.get("clamp_ribs", False))),
+            )
+        with bc2:
+            st.session_state["_pin_neck_fix"] = st.checkbox(
+                "Pin neck (tag 5)",
+                value=bool(st.session_state.get("_pin_neck_fix", saved_solver.get("eps_pin_fix_tag5", True))),
+            )
+
+        fixture_fp = json.dumps(
+            {
+                "clamp_ribs": bool(st.session_state.get("_clamp_ribs")),
+                "pin_neck_fix": bool(st.session_state.get("_pin_neck_fix")),
+                "fixture_preset": fixture_preset,
+            },
+            sort_keys=True,
         )
+        if fixture_fp != st.session_state.fixture_fp:
+            invalidate_physics()
+            st.session_state.live_preview_fp = ""
+        st.session_state.fixture_fp = fixture_fp
+
+        eng_view = engineering_display_active(geom_fp)
+        top_color = plot_color_for_wood(top_wood)
+        back_color = plot_color_for_wood(back_wood)
 
         st.subheader("PREVIEW")
-
         if eng_view:
+            n_cells = ""
+            eng_mesh = load_surface_mesh(MESH_FILE)
+            if eng_mesh is not None:
+                n_cells = f" — {eng_mesh.n_cells:,} surface triangles"
             if st.session_state.physics_ready:
-                st.caption("Engineering model (`guitar_3d.msh`) — acoustics ready.")
+                st.caption(f"High-fidelity engineering mesh (`guitar_3d.msh`){n_cells} — acoustics ready.")
             elif st.session_state.acoustics_pending:
-                st.caption("Engineering model (`guitar_3d.msh`) — computing acoustics…")
+                st.caption(f"High-fidelity engineering mesh (`guitar_3d.msh`){n_cells} — computing acoustics…")
             else:
-                st.caption("Engineering model (`guitar_3d.msh`) — saved.")
+                st.caption(f"High-fidelity engineering mesh (`guitar_3d.msh`){n_cells}.")
         else:
-            st.caption("Sketch preview (`preview_mesh.msh`) — visual only. Save Changes for FEM/ROM mesh.")
+            st.caption("Low-poly sketch (`preview_mesh.msh`, lc≈30 mm) — Save Changes for engineering mesh.")
 
         mesh, is_sketch, mesh_src = get_display_mesh(geom_fp)
         try:
@@ -758,51 +804,31 @@ def main() -> None:
                 body_length=geom["length"],
                 hole_radius=geom["hole_radius"],
                 sketch_mode=is_sketch,
-                plot_key=f"{'sk' if is_sketch else 'eng'}_{geom_fp[:12]}",
+                plot_key=f"{'sk' if is_sketch else 'eng'}_{mesh_src}_{geom_fp[:10]}",
+                fixture_preset=fixture_preset,
             )
         except Exception as exc:
             st.warning(f"Render error: {exc}")
 
-        btn_save, btn_sound = st.columns(2)
-        with btn_save:
-            if st.button("SAVE CHANGES", type="primary", use_container_width=True):
-                try:
-                    on_save_changes(geom_fp, lhs_params)
-                except Exception as exc:
-                    st.session_state.physics_geom_fp = ""
-                    invalidate_physics()
-                    st.error(f"Save failed: {exc}")
-
-        with btn_sound:
-            if st.button(
-                "GENERATE SOUND",
-                use_container_width=True,
-                disabled=not st.session_state.physics_ready,
-            ):
-                try:
-                    on_generate_sound(top_wood=top_wood, note_hz=note_hz, q_mode=q_mode)
-                except Exception as exc:
-                    st.error(f"Sound failed: {exc}")
-
         if WAV_OUTPUT.is_file() and st.session_state.physics_ready:
             st.audio(WAV_OUTPUT.read_bytes(), format="audio/wav")
 
-        # Phase 2 acoustics: only after detailed mesh is on screen
         if (
             st.session_state.acoustics_pending
             and st.session_state.physics_geom_fp == geom_fp
             and MESH_FILE.is_file()
         ):
-            try:
-                stk_path = run_acoustics(lhs_params)
-                st.session_state.stk_body_json = str(stk_path)
-                st.session_state.physics_ready = True
-                st.session_state.acoustics_pending = False
-                st.rerun()
-            except Exception as exc:
-                st.session_state.acoustics_pending = False
-                invalidate_physics()
-                st.error(f"Acoustics failed: {exc}")
+            with st.spinner("Computing acoustics on engineering mesh…"):
+                try:
+                    stk_path = run_acoustics(lhs_params)
+                    st.session_state.stk_body_json = str(stk_path)
+                    st.session_state.physics_ready = True
+                    st.session_state.acoustics_pending = False
+                    st.rerun()
+                except Exception as exc:
+                    st.session_state.acoustics_pending = False
+                    invalidate_physics()
+                    st.error(f"Acoustics failed: {exc}")
 
 
 main()

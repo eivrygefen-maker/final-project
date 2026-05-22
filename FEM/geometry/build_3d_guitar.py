@@ -85,10 +85,10 @@ def create_guitar_mesh():
         t = float(p.get("top_thickness", p.get("thickness", 0.003)))
         hr = min(float(p["hole_radius"]), 0.08)
         shape_type = str(p.get("shape_type", "Classical")).strip()
-        hole_from_neck_ratio = float(p.get("soundhole_from_neck_ratio", 0.58))
+        hole_from_neck_ratio = float(p.get("soundhole_from_neck_ratio", 0.5))
     else:
         L, W, D, t, hr, shape_type = 0.48, 0.37, 0.1, 0.003, 0.04, "Classical"
-        hole_from_neck_ratio = 0.58
+        hole_from_neck_ratio = 0.5
 
     def _is_box_shape(st: str) -> bool:
         return str(st).strip().lower() == "box"
@@ -100,8 +100,8 @@ def create_guitar_mesh():
     hole_x = 0.5 * L - hole_from_neck_ratio * L
     hole_y = 0.0
 
-    # --- Golden mesh: graded wood faces (6.5 mm), dense through-thickness (1 mm); graded air ---
-    wood_surface_size = 0.0065   # 6.5 mm on large top/back plate surfaces and long perimeter curves
+    # Engineering: high-density shell (6 mm) + 1 mm thickness edges; preview uses coarse lc (30 mm).
+    wood_surface_size = 0.006   # 6 mm engineering baseline (user target lc)
     wood_thickness_size = 0.001  # 1 mm on short ~through-thickness edges (>=2–3 elements across ~3 mm wood)
     thickness_curve_len_max = 0.005  # curves shorter than this (m) are treated as thickness direction
     # Thickness-edge Threshold: smooth 1 mm → 6.5 mm over ~8 mm band from short edges
@@ -113,11 +113,11 @@ def create_guitar_mesh():
     air_threshold_size_min = 0.008   # 8 mm near wood (Helmholtz / hole region; bridges 6.5 mm shell)
     air_threshold_size_max = 0.080   # 80 mm far field
 
-    # Preview: identical CAD/booleans; only mesh sizing is coarser (not shape creation).
+    # Preview: coarse sketch mesh only. Engineering: dense FSI mesh + soundhole refinement.
     if is_preview:
-        mesh_size = 0.014
-        mesh_size_min = 0.006
-        mesh_size_max = 0.028
+        mesh_size = 0.03
+        mesh_size_min = 0.015
+        mesh_size_max = 0.05
     else:
         mesh_size = wood_surface_size
         mesh_size_min = wood_thickness_size
