@@ -5,6 +5,96 @@ import os
 import math
 import time
 from pathlib import Path
+from typing import List, Optional, Sequence, Tuple
+
+# Normalized half-profile templates: x_norm 0=neck → 1=tail, y_norm 0=centerline → 1=max half-width.
+# Pre-calculated from stable analytical Torres / Martin D-28 proportions (64 points, no splines).
+
+
+def _smoothstep(u: float) -> float:
+    u = max(0.0, min(1.0, float(u)))
+    return u * u * (3.0 - 2.0 * u)
+
+
+def _bout_width_scale(x_norm: float, upper_bout: float, waist: float, lower_bout: float) -> float:
+    """Smooth upper → waist → lower bout multipliers along normalized length."""
+    xn = max(0.0, min(1.0, float(x_norm)))
+    u, w, l = float(upper_bout), float(waist), float(lower_bout)
+    if xn < 0.36:
+        return u + (w - u) * _smoothstep(xn / 0.36)
+    if xn < 0.58:
+        return w + (l - w) * _smoothstep((xn - 0.36) / 0.22)
+    return l * (1.0 - _smoothstep((xn - 0.58) / 0.42))
+
+
+def _classical_y_norm(x_norm: float) -> float:
+    """Torres/Hauser-style half-width envelope (deterministic, non-inflecting)."""
+    u = max(0.0, min(1.0, float(x_norm)))
+    lower = math.exp(-((u - 0.56) / 0.11) ** 2)
+    waist = 1.0 - 0.28 * math.exp(-((u - 0.40) / 0.09) ** 2)
+    upper = 0.62 + 0.38 * math.exp(-((u - 0.14) / 0.16) ** 2)
+    neck = math.sin(0.5 * math.pi * u / 0.12) ** 0.9 if u < 0.12 else 1.0
+    tail = math.sin(0.5 * math.pi * (1.0 - u) / 0.12) ** 1.1 if u > 0.88 else 1.0
+    return max(0.0, lower * waist * upper * neck * tail)
+
+
+def _dreadnought_y_norm(x_norm: float) -> float:
+    """Martin D-28-style half-width envelope (broader shoulders, shallower waist)."""
+    u = max(0.0, min(1.0, float(x_norm)))
+    lower = math.exp(-((u - 0.54) / 0.13) ** 2)
+    waist = 1.0 - 0.12 * math.exp(-((u - 0.38) / 0.12) ** 2)
+    upper = 0.72 + 0.28 * math.exp(-((u - 0.12) / 0.14) ** 2)
+    neck = math.sin(0.5 * math.pi * u / 0.10) ** 0.85 if u < 0.10 else 1.0
+    tail = math.sin(0.5 * math.pi * (1.0 - u) / 0.10) ** 1.0 if u > 0.90 else 1.0
+    return max(0.0, lower * waist * upper * neck * tail)
+
+
+def _build_normalized_template(kind: str, n: int = 64) -> Tuple[Tuple[float, float], ...]:
+    yn_fn = _dreadnought_y_norm if kind == "dreadnought" else _classical_y_norm
+    pts: List[Tuple[float, float]] = []
+    for i in range(n):
+        xn = i / float(n - 1)
+        pts.append((xn, yn_fn(xn)))
+    ymax = max(y for _, y in pts) or 1.0
+    normed = [(xn, (y / ymax if ymax > 1.0e-9 else y)) for xn, y in pts]
+    normed[0] = (0.0, 0.0)
+    normed[-1] = (1.0, 0.0)
+    return tuple(normed)
+
+
+CLASSICAL_TEMPLATE_2D: Tuple[Tuple[float, float], ...] = _build_normalized_template("classical")
+DREADNOUGHT_TEMPLATE_2D: Tuple[Tuple[float, float], ...] = _build_normalized_template("dreadnought")
+
+
+def _template_for_shape(shape_type: str) -> Tuple[Tuple[float, float], ...]:
+    if "dread" in str(shape_type).strip().lower():
+        return DREADNOUGHT_TEMPLATE_2D
+    return CLASSICAL_TEMPLATE_2D
+
+
+def warp_template_half_profile(
+    template: Sequence[Tuple[float, float]],
+    *,
+    length: float,
+    upper_bout: float,
+    waist: float,
+    lower_bout: float,
+    wall_offset: float = 0.0,
+) -> List[Tuple[float, float]]:
+    """Map normalized template → physical half-profile (neck +L/2, tail -L/2, +y side)."""
+    L = float(length)
+    out: List[Tuple[float, float]] = []
+    for x_norm, y_norm in template:
+        x = L * (0.5 - float(x_norm))
+        y = float(y_norm) * _bout_width_scale(x_norm, upper_bout, waist, lower_bout)
+        if wall_offset > 0.0:
+            y = max(0.0, y - wall_offset)
+            if x_norm < 0.06:
+                x += wall_offset
+            elif x_norm > 0.94:
+                x -= wall_offset
+        out.append((x, y))
+    return out
 
 
 def audit_enabled() -> bool:
@@ -97,9 +187,13 @@ def create_guitar_mesh():
         t = float(p.get("top_thickness", p.get("thickness", 0.003)))
         hr = min(float(p["hole_radius"]), 0.08)
         shape_type = str(p.get("shape_type", "Classical")).strip()
+        upper_bout = float(p.get("upper_bout", W * 0.75))
+        lower_bout = float(p.get("lower_bout", W))
+        waist = float(p.get("waist", W * 0.65))
         hole_from_neck_ratio = float(p.get("soundhole_from_neck_ratio", 0.5))
     else:
         L, W, D, t, hr, shape_type = 0.48, 0.37, 0.1, 0.003, 0.04, "Classical"
+        upper_bout, lower_bout, waist = W * 0.75, W, W * 0.65
         hole_from_neck_ratio = 0.5
 
     def _is_box_shape(st: str) -> bool:
@@ -117,7 +211,8 @@ def create_guitar_mesh():
     hole_x = 0.5 * L - hole_from_neck_ratio * L
     hole_y = 0.0
 
-    # Engineering: high-density shell (6 mm) + 1 mm thickness edges; preview uses coarse lc (30 mm).
+    # Engineering: high-density shell (6 mm) + 1 mm thickness edges.
+    # Preview sketch: uniform lc >= 20 mm only. Display shell: uniform 4 mm.
     wood_surface_size = 0.006   # 6 mm engineering baseline (user target lc)
     wood_thickness_size = 0.001  # 1 mm on short ~through-thickness edges (>=2–3 elements across ~3 mm wood)
     thickness_curve_len_max = 0.005  # curves shorter than this (m) are treated as thickness direction
@@ -135,19 +230,11 @@ def create_guitar_mesh():
         mesh_size = 0.004
         mesh_size_min = 0.004
         mesh_size_max = 0.004
-        shell_lc_cap = max(0.0015, float(t) / 2.5)
-        mesh_size = min(mesh_size, shell_lc_cap)
-        mesh_size_min = mesh_size
-        mesh_size_max = mesh_size
     elif is_preview:
-        mesh_size = 0.03
-        mesh_size_min = 0.015
-        mesh_size_max = 0.05
-        # Cap lc so the 3D PLC mesher keeps >=2 elements across the wood shell wall.
-        shell_lc_cap = max(0.0015, float(t) / 2.5)
-        mesh_size = min(mesh_size, shell_lc_cap)
-        mesh_size_min = min(mesh_size_min, mesh_size)
-        mesh_size_max = min(mesh_size_max, max(mesh_size, shell_lc_cap * 2.0))
+        # Real-time sketch: extremely coarse uniform grid (lag-free slider exploration).
+        mesh_size = 0.020
+        mesh_size_min = 0.020
+        mesh_size_max = 0.020
     else:
         mesh_size = wood_surface_size
         mesh_size_min = wood_thickness_size
@@ -190,27 +277,43 @@ def create_guitar_mesh():
     gmsh.option.setNumber("Geometry.OCCFixSmallEdges", 1)
     gmsh.option.setNumber("Geometry.OCCFixSmallFaces", 1)
 
-    def create_guitar_profile(l, w, is_dreadnought=False, offset=0, point_lc=None):
-        lc = point_lc if point_lc is not None else mesh_size
-        top_x = 0.50 * l - offset if offset > 0 else 0.50 * l
-        p_top_center = occ.addPoint(top_x, 0, 0, lc)
-        x_facs = [0.50, 0.44, 0.25, 0.05, -0.10, -0.25, -0.40, -0.48, -0.50] if is_dreadnought else [0.50, 0.44, 0.25, 0.10, 0.00, -0.15, -0.35, -0.45, -0.50]
-        y_facs = [0.08, 0.20, 0.38, 0.35, 0.34, 0.45, 0.50, 0.25, 0.00] if is_dreadnought else [0.08, 0.18, 0.36, 0.30, 0.28, 0.45, 0.50, 0.30, 0.00]
-        
-        pts = []
-        for i, (x_f, y_f) in enumerate(zip(x_facs, y_facs)):
-            x = x_f * l
-            y = y_f * w
-            if offset > 0:
-                y = max(0, y - offset)
-                if x_f == 0.5: x -= offset
-                elif x_f == -0.5: x += offset
-            pts.append(occ.addPoint(x, max(0, y), 0, lc))
-            
-        l_top = occ.addLine(p_top_center, pts[0]); c_body = occ.addSpline(pts)
-        m_l = occ.copy([(1, l_top)]); occ.mirror(m_l, 0, 1, 0, 0)
-        m_c = occ.copy([(1, c_body)]); occ.mirror(m_c, 0, 1, 0, 0)
-        loop = occ.addCurveLoop([l_top, c_body, -m_c[0][1], -m_l[0][1]])
+    def create_template_profile_surface(
+        *,
+        length: float,
+        upper_bout: float,
+        waist: float,
+        lower_bout: float,
+        template: Sequence[Tuple[float, float]],
+        wall_offset: float = 0.0,
+        point_lc: Optional[float] = None,
+    ) -> int:
+        """
+        Inject a pre-verified closed half-profile into OCC (no analytical spline fitting).
+        Uses sequential points + one spline + mirror for a non-self-intersecting loop.
+        """
+        lc = float(point_lc if point_lc is not None else mesh_size)
+        coords = warp_template_half_profile(
+            template,
+            length=length,
+            upper_bout=upper_bout,
+            waist=waist,
+            lower_bout=lower_bout,
+            wall_offset=wall_offset,
+        )
+        ptags = [occ.addPoint(float(x), float(y), 0.0, lc) for x, y in coords]
+        if len(ptags) < 3:
+            raise RuntimeError("Template profile produced too few points for OCC injection.")
+        l_neck = occ.addLine(ptags[0], ptags[1])
+        body_pts = ptags[1:]
+        if len(body_pts) >= 2:
+            c_body = occ.addSpline(body_pts)
+        else:
+            c_body = occ.addLine(body_pts[0], body_pts[-1])
+        m_l = occ.copy([(1, l_neck)])
+        occ.mirror(m_l, 0, 1, 0, 0)
+        m_c = occ.copy([(1, c_body)])
+        occ.mirror(m_c, 0, 1, 0, 0)
+        loop = occ.addCurveLoop([l_neck, c_body, -m_c[0][1], -m_l[0][1]])
         return occ.addPlaneSurface([loop])
 
     def as_dimtags(result):
@@ -350,10 +453,21 @@ def create_guitar_mesh():
         vol_out_id = occ.addBox(-L/2, -W/2, -D/2, L, W, D)
         vol_in_id = occ.addBox(-L/2+t, -W/2+t, -D/2+t, L-2*t, W-2*t, D-2*t)
     else:
-        is_dread = "Dreadnought" in shape_type
-        # Fine spline control points even in preview (silhouette fidelity).
-        profile_lc = wood_surface_size
-        surf_out = create_guitar_profile(L, W, is_dread, 0, point_lc=profile_lc)
+        profile_template = _template_for_shape(shape_type)
+        profile_lc = mesh_size
+        print(
+            f"[diag] template engine: shape={shape_type!r} n_pts={len(profile_template)} "
+            f"upper={upper_bout:.4f} waist={waist:.4f} lower={lower_bout:.4f} lc={profile_lc*1000:.1f}mm"
+        )
+        surf_out = create_template_profile_surface(
+            length=L,
+            upper_bout=upper_bout,
+            waist=waist,
+            lower_bout=lower_bout,
+            template=profile_template,
+            wall_offset=0.0,
+            point_lc=profile_lc,
+        )
         # OCC extrude: numElements may be ignored by OpenCASCADE; thickness resolution is enforced via
         # curve/field sizing below. When supported, [3] requests prism stacks along the extrusion axis.
         try:
@@ -363,7 +477,15 @@ def create_guitar_mesh():
         occ.translate([v for v in v_out if v[0]==3], 0, 0, -D/2)
         vol_out_id = [v[1] for v in v_out if v[0] == 3][0]
         
-        surf_in = create_guitar_profile(L, W, is_dread, t, point_lc=profile_lc)
+        surf_in = create_template_profile_surface(
+            length=L,
+            upper_bout=upper_bout,
+            waist=waist,
+            lower_bout=lower_bout,
+            template=profile_template,
+            wall_offset=t,
+            point_lc=profile_lc,
+        )
         try:
             v_in = occ.extrude([(2, surf_in)], 0, 0, inner_depth, [3])
         except (TypeError, ValueError):
@@ -925,11 +1047,12 @@ def create_guitar_mesh():
         f"MeshSizeMin={mesh_size_min:.6f}, MeshSizeMax={mesh_size_max:.6f}"
     )
     
-    # Improve circular feature fidelity using curvature-aware mesh sizing.
-    gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
-    # Enforce at least 36 points per full circle (~10 degrees per point).
-    gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", 36) 
-    # ---------------------------------------------
+    if shell_only:
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+        gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", 8)
+    else:
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
+        gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", 36)
     
     gmsh.model.mesh.setOrder(1)
     mesh_resolution_factor = 1.0
@@ -955,17 +1078,17 @@ def create_guitar_mesh():
         shell_surf_tags = sorted(
             set(int(s) for s in top_plate_surfs + back_plate_surfs + rib_surfs + soundhole_surfs)
         )
-        preview_hole_lc = max(mesh_size_min, min(mesh_size, hr / 5.0))
         for s in shell_surf_tags:
             try:
-                lc_s = preview_hole_lc if int(s) in set(soundhole_surfs) else mesh_size
-                gmsh.model.mesh.setSize(2, int(s), lc_s)
+                gmsh.model.mesh.setSize(2, int(s), mesh_size)
             except Exception:
                 pass
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
         print(
-            f"[diag] preview shell sizing: global_lc={mesh_size*1000:.1f}mm, "
-            f"hole_lc={preview_hole_lc*1000:.1f}mm, n_surfaces={len(shell_surf_tags)}, "
-            f"hole_facets={len(soundhole_surfs)}"
+            f"[diag] preview shell sizing: uniform_lc={mesh_size*1000:.1f}mm ONLY, "
+            f"n_surfaces={len(shell_surf_tags)} (no hole refinement)"
         )
 
     # Deep-probe overrides: force background field dominance.
@@ -1092,7 +1215,10 @@ def create_guitar_mesh():
             f"wall={t*1000:.2f}mm | raw_meters: lc={mesh_size:.6f}, "
             f"min={mesh_size_min:.6f}, max={mesh_size_max:.6f})..."
         )
-        gmsh.model.mesh.generate(3)
+        if shell_only:
+            gmsh.model.mesh.generate(2)
+        else:
+            gmsh.model.mesh.generate(3)
 
         def _audit_soundhole_boundary_mesh():
             """Edge-length stats on curves bounding soundhole tag-2 surfaces."""

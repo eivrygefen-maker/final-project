@@ -654,7 +654,7 @@ def main() -> None:
             else:
                 st.caption(f"Display mesh (`display_mesh.msh`){n}.")
         else:
-            st.caption("Sketch mode (`preview_mesh.msh`, lc≈30 mm) — Save Changes for display + acoustics.")
+            st.caption("Sketch mode (`preview_mesh.msh`, uniform lc=20 mm) — Save Changes for display + acoustics.")
 
         mesh, is_sketch, mesh_src = get_view_mesh(geom_fp)
         try:
