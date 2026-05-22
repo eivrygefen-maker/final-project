@@ -3,7 +3,12 @@ import sys
 import json
 import os
 import math
+import time
 from pathlib import Path
+
+
+def audit_enabled() -> bool:
+    return os.environ.get("FEM_RENDER_AUDIT", "0").strip().lower() in ("1", "true", "yes", "on")
 
 def _script_flags() -> tuple[bool, bool]:
     """Script-only CLI flags (must not be passed to ``gmsh.initialize``)."""
@@ -136,6 +141,10 @@ def create_guitar_mesh():
     )
 
     gmsh.initialize(_gmsh_initialize_argv())
+    if audit_enabled():
+        gmsh.option.setNumber("General.Terminal", 1)
+        gmsh.option.setNumber("General.Verbosity", 5)
+        print("[AUDIT] Gmsh verbosity elevated (General.Verbosity=5)")
     gmsh.model.add("Guitar3D_Performance_Optimized")
     occ = gmsh.model.occ
 
@@ -327,12 +336,44 @@ def create_guitar_mesh():
     z_hole_hi = (D / 2.0) + 0.001
     hole_cyl = occ.addCylinder(hole_x, hole_y, z_hole_lo, 0, 0, z_hole_hi - z_hole_lo, hr)
 
+    def _audit_boolean(stage: str, op, *args, **kwargs):
+        """Log OCC boolean stage (B-rep / NURBS — always before gmsh.model.mesh.generate)."""
+        if not audit_enabled():
+            return op(*args, **kwargs)
+        t0 = time.perf_counter()
+        print(
+            f"[AUDIT] Soundhole/wood boolean stage={stage!r} "
+            "backend=OpenCASCADE_BRep (pre-discretization)"
+        )
+        try:
+            out = op(*args, **kwargs)
+            dt = time.perf_counter() - t0
+            print(f"[AUDIT] stage={stage!r} completed in {dt:.3f}s")
+            return out
+        except Exception as exc:
+            print(f"[AUDIT][ERROR] stage={stage!r} failed: {exc}")
+            raise
+
     if is_preview:
         # UI sketch: hollow wood shell only — no acoustic air volume or outer air box.
         print("[diag] preview CAD: wood shell + soundhole cut (air domain disabled)")
-        wood_shell = occ.cut([(3, vol_out_id)], [(3, vol_in_id)], removeObject=True, removeTool=True)
+        wood_shell = _audit_boolean(
+            "preview_hollow_shell",
+            occ.cut,
+            [(3, vol_out_id)],
+            [(3, vol_in_id)],
+            removeObject=True,
+            removeTool=True,
+        )
         wood_dimtags = [dt for dt in as_dimtags(wood_shell) if dt[0] == 3]
-        wood_hole_cut = occ.cut(wood_dimtags, [(3, hole_cyl)], removeObject=True, removeTool=True)
+        wood_hole_cut = _audit_boolean(
+            "preview_soundhole_cut",
+            occ.cut,
+            wood_dimtags,
+            [(3, hole_cyl)],
+            removeObject=True,
+            removeTool=True,
+        )
         wood_dimtags = [dt for dt in as_dimtags(wood_hole_cut) if dt[0] == 3]
         try:
             occ.removeAllDuplicates()
@@ -344,12 +385,33 @@ def create_guitar_mesh():
         air_dimtags: list = []
     else:
         # FSI engineering mesh: internal air cavity + shared interface with wood.
-        air_cut = occ.cut([(3, vol_in_id)], [(3, hole_cyl)], removeObject=True, removeTool=False)
+        air_cut = _audit_boolean(
+            "engineering_air_hole",
+            occ.cut,
+            [(3, vol_in_id)],
+            [(3, hole_cyl)],
+            removeObject=True,
+            removeTool=False,
+        )
         air_dimtags = [dt for dt in as_dimtags(air_cut) if dt[0] == 3]
 
-        wood_cut = occ.cut([(3, vol_out_id)], air_dimtags, removeObject=True, removeTool=False)
+        wood_cut = _audit_boolean(
+            "engineering_wood_hollow",
+            occ.cut,
+            [(3, vol_out_id)],
+            air_dimtags,
+            removeObject=True,
+            removeTool=False,
+        )
         wood_dimtags = [dt for dt in as_dimtags(wood_cut) if dt[0] == 3]
-        wood_hole_cut = occ.cut(wood_dimtags, [(3, hole_cyl)], removeObject=True, removeTool=True)
+        wood_hole_cut = _audit_boolean(
+            "engineering_soundhole_cut",
+            occ.cut,
+            wood_dimtags,
+            [(3, hole_cyl)],
+            removeObject=True,
+            removeTool=True,
+        )
         wood_dimtags = [dt for dt in as_dimtags(wood_hole_cut) if dt[0] == 3]
 
         frags, _ = occ.fragment(wood_dimtags, air_dimtags, removeObject=True, removeTool=True)
@@ -946,6 +1008,63 @@ def create_guitar_mesh():
             f"min={mesh_size_min:.6f}, max={mesh_size_max:.6f})..."
         )
         gmsh.model.mesh.generate(3)
+
+        def _audit_soundhole_boundary_mesh():
+            """Edge-length stats on curves bounding soundhole tag-2 surfaces."""
+            if not audit_enabled():
+                return
+            edge_lens: List[float] = []
+            n_tri = 0
+            n_line = 0
+            try:
+                sh_entities = gmsh.model.getEntitiesForPhysicalGroup(2, 2)
+            except Exception as exc:
+                print(f"[AUDIT][warn] Soundhole physical group 2 unavailable: {exc}")
+                return
+            curve_tags: set = set()
+            for ent in sh_entities:
+                dim_e = int(ent[0]) if isinstance(ent, (list, tuple)) else 2
+                tag_e = int(ent[1]) if isinstance(ent, (list, tuple)) else int(ent)
+                bnd = gmsh.model.getBoundary([(dim_e, tag_e)], oriented=False, recursive=True)
+                for bdim, btag in bnd:
+                    if int(bdim) == 1:
+                        curve_tags.add(int(btag))
+                etypes, etags, _nodes = gmsh.model.mesh.getElements(dim_e, tag_e)
+                for et, arr in zip(etypes, etags):
+                    if et == 2:
+                        n_tri += int(len(arr))
+                    elif et == 1:
+                        n_line += int(len(arr))
+            for ctag in sorted(curve_tags):
+                try:
+                    etypes, etags, node_tags = gmsh.model.mesh.getElements(1, ctag)
+                except Exception:
+                    continue
+                for et, e_arr, n_arr in zip(etypes, etags, node_tags):
+                    if et != 1:
+                        continue
+                    coords = gmsh.model.mesh.getNode(int(n_arr[0]))[1]
+                    coords2 = gmsh.model.mesh.getNode(int(n_arr[1]))[1]
+                    edge_lens.append(
+                        math.dist(
+                            (coords[0], coords[1], coords[2]),
+                            (coords2[0], coords2[1], coords2[2]),
+                        )
+                    )
+            if edge_lens:
+                print(
+                    "[AUDIT] Soundhole boundary mesh: "
+                    f"n_curves={len(curve_tags)} n_line_elems={n_line} n_tri_facets={n_tri} "
+                    f"edge_len_min={min(edge_lens):.6e} max={max(edge_lens):.6e} "
+                    f"mean={sum(edge_lens)/len(edge_lens):.6e} (m)"
+                )
+            else:
+                print(
+                    f"[AUDIT][warn] Soundhole boundary: no 1D edge lengths "
+                    f"(tag2_surfaces={len(list(sh_entities))}, n_tri={n_tri})"
+                )
+
+        _audit_soundhole_boundary_mesh()
 
         def _count_mesh_elements_for_physical(dim: int, phys_tag: int) -> int:
             n_elem = 0
