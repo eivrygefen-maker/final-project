@@ -67,8 +67,8 @@ if "stk_body_json" not in st.session_state:
 if "show_physics_success" not in st.session_state:
     st.session_state.show_physics_success = False
 # Bust stale preview meshes when preview CAD schema changes.
-if st.session_state.get("preview_cad_schema", 0) < 4:
-    st.session_state.preview_cad_schema = 4
+if st.session_state.get("preview_cad_schema", 0) < 5:
+    st.session_state.preview_cad_schema = 5
     st.session_state.live_preview_fp = ""
     if PREVIEW_MESH_FILE.is_file():
         PREVIEW_MESH_FILE.unlink(missing_ok=True)
@@ -604,7 +604,8 @@ def _build_live_preview_surface(
     )
     if not PREVIEW_MESH_FILE.is_file():
         st.session_state.live_preview_fp = ""
-        st.error(f"Gmsh preview failed.\n{result.stderr}")
+        err_tail = (result.stderr or "").strip() or (result.stdout or "").strip() or "unknown error"
+        st.error(f"Gmsh preview failed.\n{err_tail}")
         return None
 
     st.session_state.live_preview_fp = fp
@@ -811,7 +812,7 @@ def _wood_index(wood_id: str, options: List[str]) -> int:
 _saved_top = str(saved_geom.get("top_wood_id") or saved_geom.get("wood_id") or "spruce")
 _saved_back = str(saved_geom.get("back_wood_id") or saved_geom.get("body_wood_id") or "rosewood")
 
-col_controls, col_visual = st.columns([0.28, 0.72], gap="large")
+col_controls, col_visual = st.columns([0.22, 0.78], gap="large")
 
 with col_controls:
     st.subheader("Design controls")

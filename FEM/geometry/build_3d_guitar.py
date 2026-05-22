@@ -212,21 +212,23 @@ def create_guitar_mesh():
                     out.append(int(tag))
         return out
 
-    def get_surface_normal_z(surf_tag):
-        """
-        Return |nz| at parametric midpoint of a surface.
-        Falls back to None if the CAD kernel/API cannot provide a normal.
-        """
+    def get_surface_normal_signed_z(surf_tag):
+        """Signed nz at surface midpoint (+Z = outward top). None if unavailable."""
         try:
             uv_min, uv_max = gmsh.model.getParametrizationBounds(2, surf_tag)
             u_mid = 0.5 * (uv_min[0] + uv_max[0])
             v_mid = 0.5 * (uv_min[1] + uv_max[1])
             n = gmsh.model.getNormal(surf_tag, [u_mid, v_mid])
             if n and len(n) >= 3:
-                return abs(float(n[2]))
+                return float(n[2])
         except Exception:
             return None
         return None
+
+    def get_surface_normal_z(surf_tag):
+        """Return |nz| at parametric midpoint (soundhole span filter)."""
+        nz = get_surface_normal_signed_z(surf_tag)
+        return abs(nz) if nz is not None else None
 
     # Build guitar solid and internal air domain (updated step 1).
     if "Box" in shape_type:
@@ -439,35 +441,62 @@ def create_guitar_mesh():
     )
 
     def _classify_shell_facets_for_preview(shell_surfs: list) -> tuple:
-        """Single hollow volume: split exterior facets by Z bands (no volume partition)."""
+        """Single hollow volume: classify exterior facets by outward normal (+Z top, -Z back)."""
         if not shell_surfs:
             return [], [], []
-        zs = [(int(s), get_surface_center_z(s)) for s in shell_surfs]
-        zmax = max(z for _, z in zs)
-        zmin = min(z for _, z in zs)
-        dz = max(zmax - zmin, 1e-6)
-        top_band = zmax - 0.12 * dz
-        back_band = zmin + 0.12 * dz
-        top = [s for s, z in zs if z >= top_band]
-        back = [s for s, z in zs if z <= back_band]
-        claimed = set(top) | set(back)
-        ribs = [int(s) for s in shell_surfs if int(s) not in claimed]
+        top: list = []
+        back: list = []
+        ribs: list = []
+        unclassified: list = []
+        for s in shell_surfs:
+            sid = int(s)
+            nz = get_surface_normal_signed_z(sid)
+            if nz is None:
+                unclassified.append(sid)
+            elif nz > 0.35:
+                top.append(sid)
+            elif nz < -0.35:
+                back.append(sid)
+            else:
+                ribs.append(sid)
+        if unclassified:
+            zs = [(sid, get_surface_center_z(sid)) for sid in unclassified]
+            zmax = max(z for _, z in zs)
+            zmin = min(z for _, z in zs)
+            dz = max(zmax - zmin, 1e-6)
+            top_band = zmax - 0.10 * dz
+            back_band = zmin + 0.10 * dz
+            for sid, z in zs:
+                if z >= top_band:
+                    top.append(sid)
+                elif z <= back_band:
+                    back.append(sid)
+                else:
+                    ribs.append(sid)
         if not top:
             top = [int(max(shell_surfs, key=lambda s: get_surface_center_z(s)))]
-            claimed |= set(top)
         if not back:
             back = [int(min(shell_surfs, key=lambda s: get_surface_center_z(s)))]
-            claimed |= set(back)
-        ribs = [int(s) for s in shell_surfs if int(s) not in claimed]
+        top_set = set(top)
+        back_set = set(back)
+        ribs = [int(s) for s in shell_surfs if int(s) not in top_set and int(s) not in back_set]
+        if not ribs:
+            scored = [
+                (int(s), abs(get_surface_normal_signed_z(int(s)) or 0.0))
+                for s in shell_surfs
+                if int(s) not in top_set and int(s) not in back_set
+            ]
+            scored.sort(key=lambda row: row[1])
+            ribs = [row[0] for row in scored]
         if not ribs:
             ribs = [
                 int(s)
                 for s in shell_surfs
-                if int(s) not in set(top) and int(s) not in set(back)
+                if int(s) not in top_set and int(s) not in back_set
             ]
         print(
-            f"[diag] preview facet bands: top={len(top)} back={len(back)} ribs={len(ribs)} "
-            f"(z in [{zmin:.4f},{zmax:.4f}])"
+            f"[diag] preview facet classify: top={len(top)} back={len(back)} ribs={len(ribs)} "
+            f"(shell n={len(shell_surfs)})"
         )
         return top, back, ribs
 
@@ -560,9 +589,17 @@ def create_guitar_mesh():
         top_plate_surfs = [s for s in top_plate_surfs if s not in _sh_set]
         back_plate_surfs = [s for s in back_plate_surfs if s not in _sh_set and s not in _top_set]
         rib_surfs = [s for s in rib_surfs if s not in _sh_set and s not in _top_set]
+        if is_preview and not rib_surfs:
+            rib_surfs = [
+                int(s)
+                for s in wood_boundary_surfs
+                if int(s) not in _top_set
+                and int(s) not in set(int(x) for x in back_plate_surfs)
+                and int(s) not in _sh_set
+            ]
     _back_set = set(back_plate_surfs)
     rib_surfs = [s for s in rib_surfs if s not in _back_set]
-    if not back_plate_surfs and back_vols:
+    if not is_preview and not back_plate_surfs and back_vols:
         b_back = get_boundary_tags([(3, int(v)) for v in back_vols], 2)
         if b_back:
             back_plate_surfs = [min(b_back, key=lambda s: get_surface_center_z(s))]
@@ -591,17 +628,19 @@ def create_guitar_mesh():
             print(f"[diag][warn] rib_surfs geometry fallback: {len(rib_surfs)} shell surfaces → tag 4.")
 
     # Optional neck patch (tag 5); ribs (tag 4) are clamped in FEM, not wood_fix.
-    fix_candidates = []
-    for s in rib_surfs + back_plate_surfs:
-        cx, cy, cz = get_surface_center(s)
-        fix_candidates.append((s, cx, abs(cy), cz))
-    fix_candidates.sort(key=lambda row: (-row[1], row[2]))
-    n_fix = min(2, len(fix_candidates))
-    wood_fix_surfs = [row[0] for row in fix_candidates[:n_fix]]
-    if wood_fix_surfs:
-        _fix_set = set(wood_fix_surfs)
-        rib_surfs = [s for s in rib_surfs if s not in _fix_set]
-        back_plate_surfs = [s for s in back_plate_surfs if s not in _fix_set]
+    wood_fix_surfs: list = []
+    if not is_preview:
+        fix_candidates = []
+        for s in rib_surfs + back_plate_surfs:
+            cx, cy, cz = get_surface_center(s)
+            fix_candidates.append((s, cx, abs(cy), cz))
+        fix_candidates.sort(key=lambda row: (-row[1], row[2]))
+        n_fix = min(2, len(fix_candidates))
+        wood_fix_surfs = [row[0] for row in fix_candidates[:n_fix]]
+        if wood_fix_surfs:
+            _fix_set = set(wood_fix_surfs)
+            rib_surfs = [s for s in rib_surfs if s not in _fix_set]
+            back_plate_surfs = [s for s in back_plate_surfs if s not in _fix_set]
 
     # Define physical groups using fixed tag protocol.
     # IMPORTANT: 2D tags (facets) and 3D tags (volumes) are both created.
@@ -632,8 +671,47 @@ def create_guitar_mesh():
         return int(pg)
 
     # 2D facet protocol (must match fem_main_3d WOOD_SURFACE_TAGS): 1=Top, 2=Soundhole, 3=Back, 4=Ribs, 5=wood_fix
+    if is_preview:
+        _hole_pre = set(int(s) for s in soundhole_surfs)
+        _top_set_pre = set(int(s) for s in top_plate_surfs)
+        _back_set_pre = set(int(s) for s in back_plate_surfs)
+        if not back_plate_surfs:
+            pool_b = [
+                int(s)
+                for s in wood_boundary_surfs
+                if int(s) not in _top_set_pre and int(s) not in _hole_pre
+            ]
+            if pool_b:
+                back_plate_surfs = [min(pool_b, key=lambda s: get_surface_center_z(s))]
+                _back_set_pre = set(back_plate_surfs)
+        if not rib_surfs:
+            rib_surfs = [
+                int(s)
+                for s in wood_boundary_surfs
+                if int(s) not in _top_set_pre
+                and int(s) not in _back_set_pre
+                and int(s) not in _hole_pre
+            ]
+        if not rib_surfs and wood_boundary_surfs:
+            side_scored = sorted(
+                [
+                    (
+                        int(s),
+                        abs(get_surface_normal_signed_z(int(s)) or 0.0),
+                    )
+                    for s in wood_boundary_surfs
+                    if int(s) not in _top_set_pre and int(s) not in _hole_pre
+                ],
+                key=lambda row: row[1],
+            )
+            rib_surfs = [row[0] for row in side_scored[: max(4, len(side_scored) // 3)]]
+        if not rib_surfs:
+            raise RuntimeError(
+                "Preview shell has no rib facets (tag 4); exterior facet filter may be too aggressive."
+            )
+
     req_back = not is_preview
-    req_ribs = not is_preview
+    req_ribs = True
     _add_surface_physical_group(top_plate_surfs, 1, "Top_Plate", required=True)
     _add_surface_physical_group(soundhole_surfs, 2, "Soundhole", required=False)
     _add_surface_physical_group(back_plate_surfs, 3, "Back_Plate", required=req_back)
@@ -848,9 +926,23 @@ def create_guitar_mesh():
                     n_elem += int(len(arr))
             return n_elem
 
-        facet_audit = {t: _count_mesh_elements_for_physical(2, t) for t in (1, 2, 3, 4)}
+        audit_tags = [1, 2, 3, 4]
+        if is_preview:
+            audit_tags = [1]
+            if back_plate_surfs:
+                audit_tags.append(3)
+            if rib_surfs:
+                audit_tags.append(4)
+        facet_audit = {t: _count_mesh_elements_for_physical(2, t) for t in audit_tags}
         print(f"[diag] post-generate facet element counts by physical tag: {facet_audit}")
-        for req_tag, label in ((1, "Top"), (3, "Back"), (4, "Ribs")):
+        req_checks = [(1, "Top"), (3, "Back"), (4, "Ribs")]
+        if is_preview:
+            req_checks = [(1, "Top")]
+            if back_plate_surfs:
+                req_checks.append((3, "Back"))
+            if rib_surfs:
+                req_checks.append((4, "Ribs"))
+        for req_tag, label in req_checks:
             if facet_audit.get(req_tag, 0) <= 0:
                 raise RuntimeError(
                     f"Mesh has 0 triangle elements on facet physical tag {req_tag} ({label}). "
@@ -876,9 +968,17 @@ def create_guitar_mesh():
         gmsh.write(str(out_file))
         print(f"SUCCESS: Optimized mesh saved to {out_file}")
     except Exception as e:
-        print(f"Mesh generation failed: {e}")
-    
+        print(f"Mesh generation failed: {e}", file=sys.stderr)
+        gmsh.finalize()
+        raise SystemExit(1) from e
+
     gmsh.finalize()
 
 if __name__ == "__main__":
-    create_guitar_mesh()
+    try:
+        create_guitar_mesh()
+    except SystemExit:
+        raise
+    except Exception as exc:
+        print(f"FATAL: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
