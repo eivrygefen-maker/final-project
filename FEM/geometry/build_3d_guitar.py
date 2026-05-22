@@ -97,40 +97,45 @@ def warp_template_half_profile(
     return out
 
 
-def _full_boundary_ring(half: Sequence[Tuple[float, float]], n_side_max: int = 24) -> List[Tuple[float, float]]:
+def _subsample_chain_monotonic(
+    coords: Sequence[Tuple[float, float]], n_max: int = 32
+) -> List[Tuple[float, float]]:
+    """Subsample while preserving template order (strictly increasing indices)."""
+    pts = [(float(x), float(y)) for x, y in coords]
+    n = len(pts)
+    if n <= n_max:
+        return pts
+    raw_idx = [int(round(k * (n - 1) / float(n_max - 1))) for k in range(n_max)]
+    idx: List[int] = []
+    for j in raw_idx:
+        if not idx or j > idx[-1]:
+            idx.append(j)
+    if idx[-1] != n - 1:
+        idx.append(n - 1)
+    return [pts[i] for i in idx]
+
+
+def _perimeter_points_from_half(
+    half: Sequence[Tuple[float, float]], n_side_max: int = 32
+) -> List[Tuple[float, float]]:
     """
-    Closed-body polyline in Python (+y half then -y return), strictly ordered.
-    No OCC mirror — avoids invalid mirrored curve tags.
+    Full closed 2D perimeter: neck (+y arc) → tail → (-y arc) → back to neck.
+    First point != last (closing segment added in Gmsh).
     """
-    side = _subsample_chain(half, n_side_max)
+    side = _subsample_chain_monotonic(half, n_side_max)
     if len(side) < 3:
-        raise RuntimeError("Half profile too short for closed ring.")
-    ring: List[Tuple[float, float]] = list(side)
-    ring.extend((float(x), -float(y)) for x, y in reversed(side[1:-1]))
+        raise RuntimeError("Half profile too short for closed perimeter.")
+    lower = [(float(x), -float(y)) for x, y in reversed(side[1:-1])]
+    ring: List[Tuple[float, float]] = list(side) + lower
     out: List[Tuple[float, float]] = [ring[0]]
-    min_seg = 1.0e-5
+    min_seg = 1.0e-6
     for p in ring[1:]:
         if math.hypot(p[0] - out[-1][0], p[1] - out[-1][1]) > min_seg:
             out.append(p)
-    if math.hypot(out[-1][0] - out[0][0], out[-1][1] - out[0][1]) < min_seg and len(out) > 1:
-        out.pop()
     if len(out) < 4:
-        raise RuntimeError("Closed profile ring collapsed (too few vertices).")
-    return out
-
-
-def _subsample_chain(coords: Sequence[Tuple[float, float]], n_max: int = 28) -> List[Tuple[float, float]]:
-    """Reduce OCC spline control count while keeping neck→tail endpoints."""
-    pts = [(float(x), float(y)) for x, y in coords]
-    if len(pts) <= n_max:
-        return pts
-    out = [pts[0]]
-    for i in range(1, n_max - 1):
-        j = int(round(i * (len(pts) - 1) / float(n_max - 1)))
-        if math.hypot(pts[j][0] - out[-1][0], pts[j][1] - out[-1][1]) > 1.0e-9:
-            out.append(pts[j])
-    if math.hypot(pts[-1][0] - out[-1][0], pts[-1][1] - out[-1][1]) > 1.0e-9:
-        out.append(pts[-1])
+        raise RuntimeError("Closed profile perimeter collapsed (too few vertices).")
+    if math.hypot(out[-1][0] - out[0][0], out[-1][1] - out[0][1]) < min_seg:
+        raise RuntimeError("Profile perimeter endpoints collapsed to one point.")
     return out
 
 
@@ -335,9 +340,11 @@ def create_guitar_mesh():
         point_lc: Optional[float] = None,
     ) -> int:
         """
-        Normalized template → flat Python polygon → OCC points/lines (int tags only).
+        Normalized template → flat Python polygon → geo kernel lines (int tags only).
+        Uses geo (not OCC) for the closed loop; OCC extrude consumes the geo surface after sync.
         """
         lc = float(point_lc if point_lc is not None else mesh_size)
+        geo = gmsh.model.geo
         half = _stabilize_half_profile(
             warp_template_half_profile(
                 template,
@@ -348,26 +355,26 @@ def create_guitar_mesh():
                 wall_offset=wall_offset,
             )
         )
-        points: List[Tuple[float, float]] = _full_boundary_ring(half, n_side_max=24)
+        points: List[Tuple[float, float]] = _perimeter_points_from_half(half, n_side_max=32)
         if len(points) < 3:
             raise RuntimeError("Profile perimeter needs at least 3 distinct points.")
 
         p_tags: List[int] = []
         for pt in points:
-            p_tags.append(int(occ.addPoint(float(pt[0]), float(pt[1]), 0.0, lc)))
+            p_tags.append(int(geo.addPoint(float(pt[0]), float(pt[1]), 0.0, lc)))
 
         l_tags: List[int] = []
         for i in range(len(p_tags) - 1):
-            l_tags.append(int(occ.addLine(p_tags[i], p_tags[i + 1])))
-        l_tags.append(int(occ.addLine(p_tags[-1], p_tags[0])))
+            l_tags.append(int(geo.addLine(p_tags[i], p_tags[i + 1])))
+        l_tags.append(int(geo.addLine(p_tags[-1], p_tags[0])))
 
-        occ.synchronize()
+        geo.synchronize()
 
         last_err: Optional[Exception] = None
         curve_loop_tag: Optional[int] = None
         for line_ring in (l_tags, list(reversed(l_tags))):
             try:
-                curve_loop_tag = int(occ.addCurveLoop(line_ring))
+                curve_loop_tag = int(geo.addCurveLoop(line_ring))
                 break
             except Exception as exc:
                 last_err = exc
@@ -375,11 +382,11 @@ def create_guitar_mesh():
         if curve_loop_tag is None:
             raise RuntimeError(f"Profile curve loop could not be created: {last_err}")
 
-        occ.synchronize()
-        surface_tag = int(occ.addPlaneSurface([curve_loop_tag]))
+        surface_tag = int(geo.addPlaneSurface([curve_loop_tag]))
+        geo.synchronize()
         occ.synchronize()
         print(
-            f"[diag] template profile surface: n_pts={len(points)} n_lines={len(l_tags)} "
+            f"[diag] template profile surface (geo): n_pts={len(points)} n_lines={len(l_tags)} "
             f"curve_loop={curve_loop_tag} surface={surface_tag}"
         )
         return surface_tag
