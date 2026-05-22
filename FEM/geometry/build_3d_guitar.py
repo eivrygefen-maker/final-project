@@ -125,7 +125,8 @@ def _full_ring_points_from_half(
     side = _subsample_chain_monotonic(half, n_side_max)
     if len(side) < 3:
         raise RuntimeError("Half profile too short for closed perimeter.")
-    lower = [(float(x), -float(y)) for x, y in reversed(side[1:-1])]
+    # Include mirrored tail (side[1:]); side[1:-1] left a tail-corner gap → self-crossing polyline.
+    lower = [(float(x), -float(y)) for x, y in reversed(side[1:])]
     ring: List[Tuple[float, float]] = list(side) + lower
     out: List[Tuple[float, float]] = [ring[0]]
     min_seg = 1.0e-6
@@ -159,49 +160,6 @@ def _volume_tags_from_extrude(out) -> List[int]:
 
     _walk(out)
     return tags
-
-
-def _occ_closed_polyline_surface(
-    full_ring_points: Sequence[Tuple[float, float]], lc: float
-) -> int:
-    """
-    Closed profile: OCC points → lines → pre-loop synchronize → curve loop → surface.
-
-    Pure-Python ring cleanup only (no tolerance collapsing). Uses gmsh.model.occ exclusively.
-    """
-    occ = gmsh.model.occ
-
-    # 1) Python-only ring filter (before any Gmsh calls).
-    ring: List[Tuple[float, float]] = [(float(x), float(y)) for x, y in full_ring_points]
-    if len(ring) >= 2 and ring[0] == ring[-1]:
-        ring.pop()
-    clean: List[Tuple[float, float]] = []
-    for pt in ring:
-        if not clean or pt != clean[-1]:
-            clean.append(pt)
-    if len(clean) < 4:
-        raise RuntimeError(
-            f"OCC polyline ring needs >= 4 unique vertices (got {len(clean)} after Python filter)."
-        )
-
-    # 2) OCC injection: points → lines → pre-loop bake → loop → surface → final bake.
-    p_tags: List[int] = [int(occ.addPoint(pt[0], pt[1], 0.0, lc)) for pt in clean]
-
-    l_tags: List[int] = []
-    for i in range(len(p_tags)):
-        start = p_tags[i]
-        end = p_tags[(i + 1) % len(p_tags)]
-        if start == end:
-            raise RuntimeError(
-                f"OCC polyline degenerate edge at index {i} (identical point tags {start})."
-            )
-        l_tags.append(int(occ.addLine(start, end)))
-
-    gmsh.model.occ.synchronize()
-    loop_tag = int(gmsh.model.occ.addCurveLoop(l_tags))
-    surface_tag = int(gmsh.model.occ.addPlaneSurface([loop_tag]))
-    gmsh.model.occ.synchronize()
-    return surface_tag
 
 
 def _occ_extrude_shell_volume(surface_tag: int, dz: float, z_shift: float) -> int:
@@ -432,10 +390,47 @@ def create_guitar_mesh():
             )
         )
         full_ring_points = _full_ring_points_from_half(half, n_side_max=40)
-        surface_tag = _occ_closed_polyline_surface(full_ring_points, lc)
+
+        # Python-only ring filter (before any Gmsh calls). No geo kernel is used anywhere.
+        ring: List[Tuple[float, float]] = [(float(x), float(y)) for x, y in full_ring_points]
+        if len(ring) >= 2 and ring[0] == ring[-1]:
+            ring.pop()
+        clean: List[Tuple[float, float]] = []
+        for pt in ring:
+            if not clean or pt != clean[-1]:
+                clean.append(pt)
+        if len(clean) < 4:
+            raise RuntimeError(
+                f"OCC profile ring needs >= 4 vertices (got {len(clean)} after Python filter)."
+            )
+
+        # OCC-only profile: points → lines → pre-loop sync → curve loop → surface → final sync.
+        p_tags: List[int] = [
+            int(gmsh.model.occ.addPoint(pt[0], pt[1], 0.0, lc)) for pt in clean
+        ]
+        l_tags: List[int] = []
+        for i in range(len(p_tags)):
+            start = p_tags[i]
+            end = p_tags[(i + 1) % len(p_tags)]
+            if start == end:
+                raise RuntimeError(
+                    f"OCC profile degenerate edge at index {i} (point tag {start})."
+                )
+            l_tags.append(int(gmsh.model.occ.addLine(start, end)))
+
+        gmsh.model.occ.synchronize()
+        try:
+            loop_tag = int(gmsh.model.occ.addCurveLoop(l_tags))
+            surface_tag = int(gmsh.model.occ.addPlaneSurface([loop_tag]))
+        except Exception as exc:
+            raise RuntimeError(
+                f"OCC addCurveLoop/addPlaneSurface failed (not geo): {exc}"
+            ) from exc
+        gmsh.model.occ.synchronize()
+
         print(
-            f"[diag] template profile (occ closed polyline): ring_pts={len(full_ring_points)} "
-            f"segments={len(full_ring_points)} surface={surface_tag}"
+            f"[diag] template profile (OCC polyline only, no geo): ring_pts={len(clean)} "
+            f"lines={len(l_tags)} surface={surface_tag}"
         )
         return surface_tag
 
