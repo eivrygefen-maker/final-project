@@ -407,34 +407,9 @@ def create_guitar_mesh():
     # Surface identification via direct boundaries (fragmentation-safe, no interface tracing).
     wood_boundary_surfs = get_boundary_tags([(3, tag) for tag in wood_vols], 2)
 
-    if is_preview and wood_vols:
-        # Hollow shell: drop interior cavity lining; mesh/tag exterior skin only.
-        def _keep_exterior_facet(surf_tag: int, vol_tag: int) -> bool:
-            sx, sy, _sz = get_surface_center(surf_tag)
-            vcom = occ.getCenterOfMass(3, int(vol_tag))
-            xmin, ymin, _zmin, xmax, ymax, _zmax = gmsh.model.getBoundingBox(3, int(vol_tag))
-            hx = 0.5 * (xmax - xmin)
-            hy = 0.5 * (ymax - ymin)
-            r_xy = math.hypot(sx - vcom[0], sy - vcom[1])
-            # Keep outer skin; drop interior cavity lining (closer to COM in XY).
-            return r_xy > 0.30 * max(hx, hy, 1.0e-4)
-
-        primary_vol = int(wood_vols[0])
-        all_b = [int(s) for s in wood_boundary_surfs]
-        radii = [
-            math.hypot(
-                get_surface_center(s)[0] - occ.getCenterOfMass(3, primary_vol)[0],
-                get_surface_center(s)[1] - occ.getCenterOfMass(3, primary_vol)[1],
-            )
-            for s in all_b
-        ]
-        r_keep = max(radii) * 0.88 if radii else 0.0
-        wood_boundary_surfs = [
-            s for s, r in zip(all_b, radii) if r >= r_keep and _keep_exterior_facet(s, primary_vol)
-        ]
-        if len(wood_boundary_surfs) < 8:
-            wood_boundary_surfs = [s for s in all_b if _keep_exterior_facet(s, primary_vol)]
-        print(f"[diag] preview exterior facets: n={len(wood_boundary_surfs)} (of {len(all_b)})")
+    if is_preview:
+        # Live UI sketch: keep the full hollow-shell boundary (no aggressive facet culling).
+        print(f"[diag] preview shell facets: n={len(wood_boundary_surfs)} (full wood boundary)")
 
     air_boundary_surfs = (
         get_boundary_tags([(3, tag) for tag in air_vols], 2) if air_vols else []
@@ -494,9 +469,14 @@ def create_guitar_mesh():
                 for s in shell_surfs
                 if int(s) not in top_set and int(s) not in back_set
             ]
+        shell_ids = {int(s) for s in shell_surfs}
+        claimed = set(top) | set(back) | set(ribs)
+        orphans = sorted(shell_ids - claimed)
+        if orphans:
+            ribs.extend(orphans)
         print(
             f"[diag] preview facet classify: top={len(top)} back={len(back)} ribs={len(ribs)} "
-            f"(shell n={len(shell_surfs)})"
+            f"(shell n={len(shell_surfs)}, orphans={len(orphans)})"
         )
         return top, back, ribs
 
@@ -795,15 +775,17 @@ def create_guitar_mesh():
     print(f"[diag] mesh_resolution_factor={mesh_resolution_factor}")
 
     if is_preview:
-        preview_hole_lc = max(0.006, min(mesh_size, 0.45 * hr))
-        for s in soundhole_surfs:
+        shell_surf_tags = sorted(
+            set(int(s) for s in top_plate_surfs + back_plate_surfs + rib_surfs + soundhole_surfs)
+        )
+        for s in shell_surf_tags:
             try:
-                gmsh.model.mesh.setSize(2, int(s), preview_hole_lc)
+                gmsh.model.mesh.setSize(2, int(s), mesh_size)
             except Exception:
                 pass
         print(
-            f"[diag] preview local sizing: global_lc={mesh_size*1000:.1f}mm, "
-            f"soundhole_lc={preview_hole_lc*1000:.1f}mm, hole_r={hr*1000:.1f}mm"
+            f"[diag] preview uniform shell sizing: lc={mesh_size*1000:.1f}mm on "
+            f"{len(shell_surf_tags)} surfaces, hole_r={hr*1000:.1f}mm"
         )
 
     # Deep-probe overrides: force background field dominance.

@@ -67,8 +67,8 @@ if "stk_body_json" not in st.session_state:
 if "show_physics_success" not in st.session_state:
     st.session_state.show_physics_success = False
 # Bust stale preview meshes when preview CAD schema changes.
-if st.session_state.get("preview_cad_schema", 0) < 5:
-    st.session_state.preview_cad_schema = 5
+if st.session_state.get("preview_cad_schema", 0) < 6:
+    st.session_state.preview_cad_schema = 6
     st.session_state.live_preview_fp = ""
     if PREVIEW_MESH_FILE.is_file():
         PREVIEW_MESH_FILE.unlink(missing_ok=True)
@@ -88,8 +88,8 @@ TAG_SOUNDHOLE = 2
 TAG_BACK_PLATE = 3
 TAG_RIBS = 4
 TAG_AIR = 10  # volume / cavity — never rendered in live preview
-# Live preview: wood shell facets only (drops air box walls, soundhole tag, fix patches).
-SHELL_VIS_TAGS = frozenset({TAG_TOP_PLATE, TAG_BACK_PLATE, TAG_RIBS})
+# Live preview: wood shell facets (soundhole annulus uses top color in PyVista).
+SHELL_VIS_TAGS = frozenset({TAG_TOP_PLATE, TAG_SOUNDHOLE, TAG_BACK_PLATE, TAG_RIBS})
 
 NOTES_DICT = {
     "E2": 82.41, "A2": 110.00, "D3": 146.83, "G3": 196.00, "B3": 246.94, "E4": 329.63
@@ -212,7 +212,16 @@ def _run_stk_synthesis(
 def _build_engineering_mesh(py_exe: str) -> None:
     if MESH_FILE.exists():
         os.remove(MESH_FILE)
-    subprocess.run([py_exe, str(GEOMETRY_SCRIPT), "-nopopup"], capture_output=True, text=True)
+    eng_env = {k: v for k, v in os.environ.items() if k != "FEM_ALLOW_PREVIEW"}
+    result = subprocess.run(
+        [py_exe, str(GEOMETRY_SCRIPT), "-nopopup"],
+        capture_output=True,
+        text=True,
+        env=eng_env,
+    )
+    if not MESH_FILE.is_file():
+        err_tail = (result.stderr or "").strip() or (result.stdout or "").strip()
+        raise RuntimeError(f"Engineering mesh failed.\n{err_tail}")
     if not MESH_FILE.exists():
         raise RuntimeError("Gmsh did not produce guitar_3d.msh")
 
@@ -518,7 +527,7 @@ def save_cfg_from_state(
         json.dump(data, f, indent=4)
 
 
-def _load_guitar_surface_from_msh(msh_path: Path) -> Optional[Any]:
+def _load_guitar_surface_from_msh(msh_path: Path, *, allow_all_shell: bool = False) -> Optional[Any]:
     """
     Load guitar shell triangles (facet tags 1=top, 3=back, 4=ribs).
 
@@ -544,8 +553,9 @@ def _load_guitar_surface_from_msh(msh_path: Path) -> Optional[Any]:
         tags = np.asarray(tri_tags, dtype=np.int32).ravel()
         tri = np.asarray(tri, dtype=np.int64)
 
-        # Strict whitelist: top, back, ribs only.
         keep = np.isin(tags, list(SHELL_VIS_TAGS))
+        if allow_all_shell and np.sum(keep) < max(12, int(0.05 * tri.shape[0])):
+            keep = tags != TAG_AIR
         if not np.any(keep):
             return None
         tri = tri[keep]
@@ -581,7 +591,7 @@ def _build_live_preview_surface(
     """
     fp = _geometry_fingerprint(geom)
     if st.session_state.live_preview_fp == fp and PREVIEW_MESH_FILE.is_file():
-        cached = _load_guitar_surface_from_msh(PREVIEW_MESH_FILE)
+        cached = _load_guitar_surface_from_msh(PREVIEW_MESH_FILE, allow_all_shell=True)
         if cached is not None:
             return cached
 
@@ -610,7 +620,7 @@ def _build_live_preview_surface(
 
     st.session_state.live_preview_fp = fp
     st.session_state.physics_ready = False
-    return _load_guitar_surface_from_msh(PREVIEW_MESH_FILE)
+    return _load_guitar_surface_from_msh(PREVIEW_MESH_FILE, allow_all_shell=True)
 
 
 def _render_pyvista_guitar(
@@ -635,11 +645,13 @@ def _render_pyvista_guitar(
         if sketch_mode:
             plotter.add_mesh(
                 part,
-                style="wireframe",
                 color=color,
-                line_width=2.0,
-                opacity=1.0,
-                lighting=False,
+                opacity=0.9,
+                show_edges=True,
+                edge_color="#2b1a10",
+                line_width=1.0,
+                smooth_shading=True,
+                lighting=True,
             )
         else:
             plotter.add_mesh(
@@ -658,8 +670,7 @@ def _render_pyvista_guitar(
         if tags is None:
             return False
         tags = np.asarray(tags).ravel()
-        # Wood shell only (loader keeps tags 1, 3, 4). Opening is the top-plate boolean cut.
-        is_top = tags == TAG_TOP_PLATE
+        is_top = (tags == TAG_TOP_PLATE) | (tags == TAG_SOUNDHOLE)
         is_back_wood = (tags == TAG_BACK_PLATE) | (tags == TAG_RIBS)
         if not (is_top.any() or is_back_wood.any()):
             return False
@@ -791,7 +802,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.title("Guitar Simulator")
-st.caption("Move sliders for a live wireframe sketch. Save physics, then generate audio.")
+st.caption(
+    "Sliders: coarse Gmsh sketch with wood colors. Save: full Gmsh mesh + ROM physics, then STK audio."
+)
 
 def _shape_limits(shape: str) -> Tuple[float, float, float, float, float, float, float, float, float]:
     if shape == "Classical":
@@ -925,15 +938,11 @@ with col_visual:
     st.subheader("3D preview")
     physics_ready = bool(st.session_state.get("physics_ready", False))
     fom_mode = bool(st.session_state.developer_fom_mode)
-    vis_mode = st.selectbox("Visual style", ["Mesh + Solid", "Solid Wood"], key="vis_mode_ui")
-    cam_preset = st.selectbox(
-        "Camera",
-        [
-            "Standing Angled (3D)",
-            "Standing Upright (Front)",
-            "Laying Flat (Top View)",
-            "Laying on Side (Profile)",
-        ],
+    vis_mode = str(
+        st.session_state.get(
+            "vis_mode_ui",
+            saved_geom.get("vis_mode", "Mesh + Solid"),
+        )
     )
 
     btn_save, btn_audio = st.columns(2)
@@ -975,10 +984,26 @@ with col_visual:
             except Exception as exc:
                 st.error(f"Audio failed: {exc}")
 
+    vis_mode = st.selectbox(
+        "Visual style",
+        ["Mesh + Solid", "Solid Wood"],
+        index=0 if "Mesh" in vis_mode else 1,
+        key="vis_mode_ui",
+    )
+    cam_preset = st.selectbox(
+        "Camera",
+        [
+            "Standing Angled (3D)",
+            "Standing Upright (Front)",
+            "Laying Flat (Top View)",
+            "Laying on Side (Profile)",
+        ],
+    )
+
     if physics_ready and MESH_FILE.is_file():
-        st.success("Solid engineering model — audio unlocked")
+        st.success("Detailed engineering mesh — ROM/FOM complete, audio unlocked")
     else:
-        st.info("Wireframe sketch — move a slider to refresh")
+        st.info("Live sketch — move sliders to update shape and wood colors")
 
     display_mesh, sketch_mode, plot_suffix = _resolve_display_mesh(
         geom_state=geom_state,
