@@ -28,6 +28,9 @@ ROM_CLASSIC_SNAPSHOTS = ROM_CLASSIC_ROOT / "snapshots"
 ROM_REDUCED_BASIS = ROM_CLASSIC_ROOT / "reduced_basis.npz"
 PACKAGED_ROM_NPZ = BASE_DIR / "FEM" / "SORTING" / "final_guitar_rom.npz"
 SELECTED_MODES_CSV = BASE_DIR / "FEM" / "SORTING" / "selected_modes.csv"
+FALLBACK_MODES_CSV = BASE_DIR / "FEM" / "configs" / "archive" / "selected_modes_SIM1.csv"
+HOLE_RADIUS_MAX_M = 0.12
+SHAPE_OPTIONS = ["Classical", "Dreadnought", "Box"]
 CANDIDATES_LOG = BASE_DIR / "FEM" / "SORTING" / "candidates_log.json"
 SHAPES_CONFIG = BASE_DIR / "FEM" / "configs" / "rom_shapes.json"
 
@@ -69,8 +72,8 @@ if "show_acoustics_ready" not in st.session_state:
 if "solver_pending" not in st.session_state:
     st.session_state.solver_pending = False
 # Bust stale preview meshes when preview CAD schema changes.
-if st.session_state.get("preview_cad_schema", 0) < 10:
-    st.session_state.preview_cad_schema = 10
+if st.session_state.get("preview_cad_schema", 0) < 12:
+    st.session_state.preview_cad_schema = 12
     st.session_state.live_preview_fp = ""
     if PREVIEW_MESH_FILE.is_file():
         PREVIEW_MESH_FILE.unlink(missing_ok=True)
@@ -230,15 +233,27 @@ def _run_stk_synthesis(
     add_silence_to_wav(WAV_OUTPUT, 0.3)
 
 
+def _gmsh_cmd(py_exe: str) -> List[str]:
+    """Gmsh build argv: explicit config path so Save uses the same geometry as the UI."""
+    return [
+        py_exe,
+        str(GEOMETRY_SCRIPT),
+        "--config",
+        str(CONFIG_PATH.resolve()),
+        "-nopopup",
+    ]
+
+
 def _build_engineering_mesh(py_exe: str) -> None:
     if MESH_FILE.exists():
         os.remove(MESH_FILE)
     eng_env = {k: v for k, v in os.environ.items() if k != "FEM_ALLOW_PREVIEW"}
     result = subprocess.run(
-        [py_exe, str(GEOMETRY_SCRIPT), "-nopopup"],
+        _gmsh_cmd(py_exe),
         capture_output=True,
         text=True,
         env=eng_env,
+        cwd=str(BASE_DIR),
     )
     if not MESH_FILE.is_file():
         err_tail = (result.stderr or "").strip() or (result.stdout or "").strip()
@@ -260,6 +275,66 @@ def _execute_fom_engine(config_path: Path, status_callback) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _load_frequencies_from_npz(npz_path: Path) -> List[float]:
+    with np.load(npz_path, allow_pickle=True) as z:
+        if "frequencies" in z.files:
+            arr = np.asarray(z["frequencies"], dtype=np.float64).reshape(-1)
+        elif "freqs_hz" in z.files:
+            arr = np.asarray(z["freqs_hz"], dtype=np.float64).reshape(-1)
+        else:
+            raise KeyError(f"{npz_path}: missing frequencies / freqs_hz")
+    return [float(f) for f in arr if float(f) > 0.0]
+
+
+def _load_frequencies_from_csv(csv_path: Path) -> List[float]:
+    import csv
+
+    freqs: List[float] = []
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            hz = row.get("hz") or row.get("frequency_hz") or row.get("freq_hz")
+            if hz is None:
+                continue
+            try:
+                val = float(hz)
+            except (TypeError, ValueError):
+                continue
+            if val > 0.0:
+                freqs.append(val)
+    if not freqs:
+        raise ValueError(f"{csv_path}: no hz column values")
+    return sorted(freqs)
+
+
+def _rom_frequency_fallback() -> Tuple[List[float], str]:
+    for path, label in (
+        (PACKAGED_ROM_NPZ, "packaged_rom_npz"),
+        (SELECTED_MODES_CSV, "selected_modes_csv"),
+        (FALLBACK_MODES_CSV, "archive_modes_csv"),
+    ):
+        if not path.is_file():
+            continue
+        try:
+            if path.suffix.lower() == ".npz":
+                return _load_frequencies_from_npz(path), label
+            return _load_frequencies_from_csv(path), label
+        except Exception:
+            continue
+    return [], ""
+
+
+def _ensure_rom_basis(rom_shape: str) -> None:
+    if ROM_REDUCED_BASIS.is_file():
+        return
+    if not ROM_CLASSIC_SNAPSHOTS.is_dir() or not any(ROM_CLASSIC_SNAPSHOTS.glob("snapshot_*.npz")):
+        return
+    ROMManagerCls, import_err = _try_import_rom_manager()
+    if ROMManagerCls is None:
+        raise RuntimeError(f"ROMManager unavailable: {import_err}")
+    ROMManagerCls(shapes_config_path=SHAPES_CONFIG).build_basis(rom_shape, energy=0.999, max_rank=128)
+
+
 def _execute_rom_engine(
     *,
     rom_shape: str,
@@ -270,8 +345,29 @@ def _execute_rom_engine(
     ROMManagerCls, import_err = _try_import_rom_manager()
     if ROMManagerCls is None:
         raise RuntimeError(f"ROMManager unavailable: {import_err}")
+
+    _ensure_rom_basis(rom_shape)
     manager = ROMManagerCls(shapes_config_path=SHAPES_CONFIG)
-    result = manager.solve_online(rom_shape, params=lhs_params, nev=int(nev))
+    try:
+        result = manager.solve_online(rom_shape, params=lhs_params, nev=int(nev))
+    except RuntimeError as exc:
+        if "Reduced basis missing" not in str(exc):
+            raise
+        freqs, fb_label = _rom_frequency_fallback()
+        if not freqs:
+            raise RuntimeError(
+                f"{exc}\n\n"
+                "To enable live ROM acoustics:\n"
+                "  python FEM/scripts/rom_pipeline.py collect classic --pool-size 8\n"
+                "  python FEM/scripts/rom_pipeline.py build-basis classic"
+            ) from exc
+        _write_rom_stk_body_json(freqs, ROM_STK_JSON)
+        return {
+            "freqs_hz": freqs,
+            "stk_body_json": str(ROM_STK_JSON),
+            "fallback": fb_label,
+        }
+
     freqs = list(result.get("freqs_hz") or [])
     _write_rom_stk_body_json(freqs, ROM_STK_JSON)
     result["stk_body_json"] = str(ROM_STK_JSON)
@@ -307,8 +403,13 @@ def _run_acoustics_solver(
             nev=0,
         )
         st.session_state.rom_last_result = rom_result
-        st.session_state.last_engine = "rom"
+        st.session_state.last_engine = str(rom_result.get("fallback") or "rom")
         stk_json = ROM_STK_JSON
+        if rom_result.get("fallback"):
+            st.warning(
+                "Using archived mode frequencies (ROM basis not built on this machine). "
+                "Generate Audio still works."
+            )
 
     st.session_state.physics_ready = True
     st.session_state.stk_body_json = str(stk_json)
@@ -511,6 +612,7 @@ def save_cfg_from_state(
     else:
         data = {}
     g = dict(geom)
+    g["hole_radius"] = min(float(g.get("hole_radius", 0.04)), HOLE_RADIUS_MAX_M)
     g["vis_mode"] = vis_mode
     g["top_wood_id"] = top_wood_id
     g["back_wood_id"] = back_wood_id
@@ -562,7 +664,7 @@ def _load_guitar_surface_from_msh(msh_path: Path) -> Optional[Any]:
             tri_tags = phys.get("triangle")
             if tri_tags is not None:
                 tags = np.asarray(tri_tags, dtype=np.int32).ravel()
-                keep = tags != TAG_AIR
+                keep = np.isin(tags, list(SHELL_VIS_TAGS))
                 tri = tri[keep]
 
         if tri.shape[0] < 3:
@@ -613,10 +715,11 @@ def _build_live_preview_surface(
     py_exe = sys.executable
     preview_env = {**os.environ, "FEM_ALLOW_PREVIEW": "1"}
     result = subprocess.run(
-        [py_exe, str(GEOMETRY_SCRIPT), "-nopopup"],
+        _gmsh_cmd(py_exe),
         capture_output=True,
         text=True,
         env=preview_env,
+        cwd=str(BASE_DIR),
     )
     if not PREVIEW_MESH_FILE.is_file():
         st.session_state.live_preview_fp = ""
@@ -890,7 +993,14 @@ col_controls, col_visual = st.columns([0.22, 0.78], gap="large")
 with col_controls:
     st.subheader("Design controls")
 
-    shape_type = st.selectbox("Guitar shape", ["Classical", "Dreadnought", "Box"])
+    _saved_shape = str(saved_geom.get("shape_type", "Classical")).strip()
+    if _saved_shape not in SHAPE_OPTIONS:
+        _saved_shape = "Classical"
+    shape_type = st.selectbox(
+        "Guitar shape",
+        SHAPE_OPTIONS,
+        index=SHAPE_OPTIONS.index(_saved_shape),
+    )
     L_min, L_max, L_def, W_min, W_max, W_def, D_min, D_max, D_def = _shape_limits(shape_type)
 
     top_wood_id = st.selectbox(
@@ -913,7 +1023,7 @@ with col_controls:
     soundhole_x = _soundhole_center_x(L)
 
     _hr_default = float(saved_geom.get("hole_radius", 0.04))
-    _hr_lo, _hr_hi = 0.020, max(0.055, min(0.18, float(W) * 0.55))
+    _hr_lo, _hr_hi = 0.020, HOLE_RADIUS_MAX_M
     hr = st.slider(
         "Soundhole radius (m)",
         min_value=_hr_lo,

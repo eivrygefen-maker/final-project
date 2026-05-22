@@ -78,10 +78,15 @@ def create_guitar_mesh():
         L, W, D = p["length"], p["width"], p["depth"]
         # CAD wall offset uses top-plate thickness (back is thicker in FEM shell forms only).
         t = float(p.get("top_thickness", p.get("thickness", 0.003)))
-        hr = p["hole_radius"]
-        shape_type = p.get('shape_type', 'Classical')
+        hr = min(float(p["hole_radius"]), 0.12)
+        shape_type = str(p.get("shape_type", "Classical")).strip()
     else:
-        L, W, D, t, hr, shape_type = 0.48, 0.37, 0.1, 0.003, 0.04, 'Classical'
+        L, W, D, t, hr, shape_type = 0.48, 0.37, 0.1, 0.003, 0.04, "Classical"
+
+    def _is_box_shape(st: str) -> bool:
+        return str(st).strip().lower() == "box"
+
+    print(f"[diag] shape_type={shape_type!r} engineering={not is_preview}")
 
     # Fixed luthier placement: 43% of L from neck toward bridge, centreline y=0.
     hole_from_neck_ratio = 0.43
@@ -261,8 +266,36 @@ def create_guitar_mesh():
         dot = n[0] * vc[0] + n[1] * vc[1] + n[2] * vc[2]
         return dot > -5.0e-7
 
+    def _wood_volumes_adjacent_to_surface(surf_tag: int, wood_vol_set: set) -> set:
+        """Wood volume tags sharing a surface (Z-partition internal faces touch two)."""
+        found: set = set()
+        try:
+            up, down = gmsh.model.getAdjacencies(2, int(surf_tag))
+            for lst in (up, down):
+                for dim, etag in lst:
+                    if int(dim) == 3 and int(etag) in wood_vol_set:
+                        found.add(int(etag))
+        except Exception:
+            pass
+        return found
+
+    def _drop_wood_partition_interfaces(surfaces: list, wood_vol_set: set) -> list:
+        """Remove horizontal Z-slab cuts from facet groups (they look like a box in the UI)."""
+        if not surfaces or not wood_vol_set:
+            return list(surfaces)
+        kept = []
+        dropped = 0
+        for s in surfaces:
+            if len(_wood_volumes_adjacent_to_surface(int(s), wood_vol_set)) >= 2:
+                dropped += 1
+                continue
+            kept.append(int(s))
+        if dropped:
+            print(f"[diag] dropped {dropped} wood/wood partition interface facets")
+        return kept
+
     # Build guitar solid and internal air domain (updated step 1).
-    if "Box" in shape_type:
+    if _is_box_shape(shape_type):
         vol_out_id = occ.addBox(-L/2, -W/2, -D/2, L, W, D)
         vol_in_id = occ.addBox(-L/2+t, -W/2+t, -D/2+t, L-2*t, W-2*t, D-2*t)
     else:
@@ -288,7 +321,7 @@ def create_guitar_mesh():
         vol_in_id = [v[1] for v in v_in if v[0] == 3][0]
 
     # Soundhole cutter: vertical cylinder through top plate only (does not slice ribs/sides).
-    if "Box" in shape_type:
+    if _is_box_shape(shape_type):
         hole_x, hole_y = 0.0, 0.0
     z_hole_lo = (D / 2.0) - t - 0.001
     z_hole_hi = (D / 2.0) + 0.001
@@ -500,9 +533,11 @@ def create_guitar_mesh():
             wood_boundary_surfs
         )
     else:
+        wood_vol_set = {int(v) for v in wood_vols}
         top_plate_surfs = (
             sorted(list(get_boundary_tags([(3, tag) for tag in top_vols], 2))) if top_vols else []
         )
+        top_plate_surfs = _drop_wood_partition_interfaces(top_plate_surfs, wood_vol_set)
         if not top_plate_surfs and wood_boundary_surfs:
             highest = max(list(wood_boundary_surfs), key=lambda s: get_surface_center_z(s))
             top_plate_surfs = [highest]
@@ -511,9 +546,11 @@ def create_guitar_mesh():
         back_plate_surfs = (
             sorted(list(get_boundary_tags([(3, int(v)) for v in back_vols], 2))) if back_vols else []
         )
+        back_plate_surfs = _drop_wood_partition_interfaces(back_plate_surfs, wood_vol_set)
         rib_surfs = (
             sorted(list(get_boundary_tags([(3, int(v)) for v in rib_vols], 2))) if rib_vols else []
         )
+        rib_surfs = _drop_wood_partition_interfaces(rib_surfs, wood_vol_set)
         if not back_plate_surfs and not rib_surfs:
             legacy_body = sorted(list(set(wood_boundary_surfs) - set(top_plate_surfs)))
             if legacy_body:
