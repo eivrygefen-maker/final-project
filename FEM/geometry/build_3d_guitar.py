@@ -81,9 +81,13 @@ def create_guitar_mesh():
         hr = p["hole_radius"]
         shape_type = p.get('shape_type', 'Classical')
         hole_y = float(p.get("soundhole_y", 0.0))
+        hole_from_neck_ratio = float(p.get("soundhole_from_neck_ratio", 0.354))
+        hole_x = float(p.get("soundhole_x", 0.5 * L - hole_from_neck_ratio * L))
     else:
         L, W, D, t, hr, shape_type = 0.48, 0.37, 0.1, 0.003, 0.04, 'Classical'
         hole_y = 0.0
+        hole_from_neck_ratio = 0.354
+        hole_x = 0.5 * L - hole_from_neck_ratio * L
 
     # --- Golden mesh: graded wood faces (6.5 mm), dense through-thickness (1 mm); graded air ---
     wood_surface_size = 0.0065   # 6.5 mm on large top/back plate surfaces and long perimeter curves
@@ -118,9 +122,15 @@ def create_guitar_mesh():
     )
     print(f"[diag] preview_mode={is_preview}, FEM_ALLOW_PREVIEW={os.environ.get('FEM_ALLOW_PREVIEW', '0')}")
 
-    shy = (L / 2) + (L * 0.02)
-    # No artificial radius cap — OCC cut/fragment clips overflow at plate edges.
+    # Body frame: x = +L/2 at neck, x = -L/2 at tail; y = lateral; z = up.
+    # Classical soundhole ≈ 17 cm from neck on 48 cm body → 0.354·L from neck along +x.
     hr = max(1.0e-4, float(hr))
+    hole_x = float(max(-0.5 * L + hr, min(0.5 * L - hr, hole_x)))
+    hole_y = float(max(-0.5 * W + hr, min(0.5 * W - hr, hole_y)))
+    print(
+        f"[diag] soundhole centre (m): x={hole_x:.4f} y={hole_y:.4f} r={hr:.4f} "
+        f"(from_neck_ratio={hole_from_neck_ratio:.3f})"
+    )
 
     gmsh.initialize(_gmsh_initialize_argv())
     gmsh.model.add("Guitar3D_Performance_Optimized")
@@ -230,6 +240,29 @@ def create_guitar_mesh():
         nz = get_surface_normal_signed_z(surf_tag)
         return abs(nz) if nz is not None else None
 
+    def get_surface_normal_vec(surf_tag):
+        try:
+            uv_min, uv_max = gmsh.model.getParametrizationBounds(2, int(surf_tag))
+            u_mid = 0.5 * (uv_min[0] + uv_max[0])
+            v_mid = 0.5 * (uv_min[1] + uv_max[1])
+            n = gmsh.model.getNormal(int(surf_tag), [u_mid, v_mid])
+            if n and len(n) >= 3:
+                return (float(n[0]), float(n[1]), float(n[2]))
+        except Exception:
+            pass
+        return None
+
+    def _is_exterior_boundary_facet(surf_tag: int, vol_tag: int) -> bool:
+        """Keep outer mould faces; drop interior cavity lining from hollow-shell boundary."""
+        c = get_surface_center(surf_tag)
+        vcom = occ.getCenterOfMass(3, int(vol_tag))
+        vc = (c[0] - vcom[0], c[1] - vcom[1], c[2] - vcom[2])
+        n = get_surface_normal_vec(surf_tag)
+        if n is None:
+            return True
+        dot = n[0] * vc[0] + n[1] * vc[1] + n[2] * vc[2]
+        return dot > -5.0e-7
+
     # Build guitar solid and internal air domain (updated step 1).
     if "Box" in shape_type:
         vol_out_id = occ.addBox(-L/2, -W/2, -D/2, L, W, D)
@@ -256,10 +289,12 @@ def create_guitar_mesh():
         occ.translate([v for v in v_in if v[0]==3], 0, 0, -D/2 + t)
         vol_in_id = [v[1] for v in v_in if v[0] == 3][0]
 
-    # Create soundhole cylinder (axis +z; center (hole_x, hole_y) from geometry config).
-    hole_x = shy - L/2 if "Box" not in shape_type else 0
-    z_inner_top = (D / 2) - t
-    hole_cyl = occ.addCylinder(hole_x, hole_y, z_inner_top, 0, 0, 2 * t, hr)
+    # Soundhole cutter: vertical cylinder through top plate only (does not slice ribs/sides).
+    if "Box" in shape_type:
+        hole_x, hole_y = 0.0, 0.0
+    z_hole_lo = (D / 2.0) - t - 0.001
+    z_hole_hi = (D / 2.0) + 0.001
+    hole_cyl = occ.addCylinder(hole_x, hole_y, z_hole_lo, 0, 0, z_hole_hi - z_hole_lo, hr)
 
     if is_preview:
         # UI sketch: hollow wood shell only — no acoustic air volume or outer air box.
@@ -407,9 +442,16 @@ def create_guitar_mesh():
     # Surface identification via direct boundaries (fragmentation-safe, no interface tracing).
     wood_boundary_surfs = get_boundary_tags([(3, tag) for tag in wood_vols], 2)
 
-    if is_preview:
-        # Live UI sketch: keep the full hollow-shell boundary (no aggressive facet culling).
-        print(f"[diag] preview shell facets: n={len(wood_boundary_surfs)} (full wood boundary)")
+    if is_preview and wood_vols:
+        all_b = [int(s) for s in wood_boundary_surfs]
+        primary_vol = int(wood_vols[0])
+        exterior = [s for s in all_b if _is_exterior_boundary_facet(s, primary_vol)]
+        if len(exterior) >= max(12, len(all_b) // 4):
+            wood_boundary_surfs = exterior
+        print(
+            f"[diag] preview exterior shell: kept {len(wood_boundary_surfs)} / {len(all_b)} "
+            "boundary facets (outer skin only)"
+        )
 
     air_boundary_surfs = (
         get_boundary_tags([(3, tag) for tag in air_vols], 2) if air_vols else []
@@ -778,14 +820,17 @@ def create_guitar_mesh():
         shell_surf_tags = sorted(
             set(int(s) for s in top_plate_surfs + back_plate_surfs + rib_surfs + soundhole_surfs)
         )
+        preview_hole_lc = max(mesh_size_min, min(mesh_size, hr / 5.0))
         for s in shell_surf_tags:
             try:
-                gmsh.model.mesh.setSize(2, int(s), mesh_size)
+                lc_s = preview_hole_lc if int(s) in set(soundhole_surfs) else mesh_size
+                gmsh.model.mesh.setSize(2, int(s), lc_s)
             except Exception:
                 pass
         print(
-            f"[diag] preview uniform shell sizing: lc={mesh_size*1000:.1f}mm on "
-            f"{len(shell_surf_tags)} surfaces, hole_r={hr*1000:.1f}mm"
+            f"[diag] preview shell sizing: global_lc={mesh_size*1000:.1f}mm, "
+            f"hole_lc={preview_hole_lc*1000:.1f}mm, n_surfaces={len(shell_surf_tags)}, "
+            f"hole_facets={len(soundhole_surfs)}"
         )
 
     # Deep-probe overrides: force background field dominance.
