@@ -119,25 +119,23 @@ def _full_ring_points_from_half(
     half: Sequence[Tuple[float, float]], n_side_max: int = 40
 ) -> List[Tuple[float, float]]:
     """
-    Full closed 2D boundary in Python (+y half → mirrored −y return to neck).
-    First vertex is neck; last vertex is distinct (polyline closes last → first).
+    Strict centerline closure: neck/tail snapped to y=0, lower leg mirrors side[1:-1] only.
+
+    Avoids floating-point asymmetry at the centerline that breaks OCC wire assembly.
     """
-    side = _subsample_chain_monotonic(half, n_side_max)
+    side = [(float(x), float(y)) for x, y in _subsample_chain_monotonic(half, n_side_max)]
     if len(side) < 3:
         raise RuntimeError("Half profile too short for closed perimeter.")
-    # Include mirrored tail (side[1:]); side[1:-1] left a tail-corner gap → self-crossing polyline.
-    lower = [(float(x), -float(y)) for x, y in reversed(side[1:])]
-    ring: List[Tuple[float, float]] = list(side) + lower
-    out: List[Tuple[float, float]] = [ring[0]]
-    min_seg = 1.0e-6
-    for p in ring[1:]:
-        if math.hypot(p[0] - out[-1][0], p[1] - out[-1][1]) > min_seg:
-            out.append(p)
-    if len(out) < 4:
+
+    # Force exact centerline anchors before mirroring (warp may leave y ≈ 1e-16, not 0).
+    side[0] = (side[0][0], 0.0)
+    side[-1] = (side[-1][0], 0.0)
+
+    lower_half = [(pt[0], -pt[1]) for pt in reversed(side[1:-1])]
+    full_ring_points = list(side) + lower_half
+    if len(full_ring_points) < 4:
         raise RuntimeError("Closed profile ring collapsed (too few vertices).")
-    if math.hypot(out[-1][0] - out[0][0], out[-1][1] - out[0][1]) < min_seg:
-        raise RuntimeError("Profile ring endpoints collapsed to one point.")
-    return out
+    return full_ring_points
 
 
 def _volume_tags_from_extrude(out) -> List[int]:
@@ -391,7 +389,7 @@ def create_guitar_mesh():
         )
         full_ring_points = _full_ring_points_from_half(half, n_side_max=40)
 
-        # Python-only ring filter (before any Gmsh calls). No geo kernel is used anywhere.
+        # Python-only ring filter (strict centerline ring — no geo kernel).
         ring: List[Tuple[float, float]] = [(float(x), float(y)) for x, y in full_ring_points]
         if len(ring) >= 2 and ring[0] == ring[-1]:
             ring.pop()
