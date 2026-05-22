@@ -2,6 +2,7 @@
 """Build ``FEM/mesh/guitar_3d.msh`` from a specific FEM case JSON (LHS-merged sample config)."""
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -96,7 +97,8 @@ def build_mesh_for_config(config_path: Path, repo_root: Path | None = None) -> P
     _remove_stale_mesh_artifacts(mesh_out)
 
     cmd = [sys.executable, str(script), "-nopopup", "--config", str(cfg)]
-    proc = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True)
+    env = {**os.environ, "FEM_ALLOW_FOM": "1"}
+    proc = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True, env=env)
     if proc.stdout:
         print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
     if proc.returncode != 0:

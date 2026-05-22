@@ -52,14 +52,26 @@ def create_guitar_mesh():
     mesh_dir = fem_dir / "mesh"
     mesh_dir.mkdir(parents=True, exist_ok=True)
 
-    # Preview: env gate (Streamlit) + optional ``--preview`` script flag; never a Gmsh CLI option.
+    # Mesh pipeline mode (mutually exclusive; set by gui/app.py subprocess env):
+    #   FEM_ALLOW_PREVIEW=1  → sketch wireframe (coarse lc)
+    #   FEM_ALLOW_DISPLAY=1 → PyVista display shell only (uniform lc, no air)
+    #   FEM_ALLOW_FOM=1     → full FSI volume mesh for FEM (never shown in PyVista)
     preview_cli, _nopopup = _script_flags()
-    is_preview = (os.environ.get("FEM_ALLOW_PREVIEW", "0") == "1") or preview_cli
-    
-    if is_preview:
+    is_display = os.environ.get("FEM_ALLOW_DISPLAY", "0") == "1"
+    is_preview = (os.environ.get("FEM_ALLOW_PREVIEW", "0") == "1" or preview_cli) and not is_display
+    is_fom = os.environ.get("FEM_ALLOW_FOM", "0") == "1"
+    shell_only = is_preview or is_display
+
+    if is_display:
+        out_file = mesh_dir / "display_mesh.msh"
+    elif is_preview:
         out_file = mesh_dir / "preview_mesh.msh"
-    else:
+    elif is_fom:
         out_file = mesh_dir / "guitar_3d.msh"
+    else:
+        raise RuntimeError(
+            "Set exactly one mesh mode env var: FEM_ALLOW_PREVIEW, FEM_ALLOW_DISPLAY, or FEM_ALLOW_FOM."
+        )
     # -------------------------------------------
 
     # 2. Load geometry data
@@ -93,7 +105,8 @@ def create_guitar_mesh():
     def _is_box_shape(st: str) -> bool:
         return str(st).strip().lower() == "box"
 
-    print(f"[diag] shape_type={shape_type!r} engineering={not is_preview}")
+    mode = "display" if is_display else ("sketch" if is_preview else "fom")
+    print(f"[diag] shape_type={shape_type!r} mesh_mode={mode}")
 
     # Soundhole centre: measured from neck (+x) toward bridge; higher ratio → lower bout.
     hole_from_neck_ratio = float(max(0.05, min(0.95, hole_from_neck_ratio)))
@@ -113,8 +126,12 @@ def create_guitar_mesh():
     air_threshold_size_min = 0.008   # 8 mm near wood (Helmholtz / hole region; bridges 6.5 mm shell)
     air_threshold_size_max = 0.080   # 80 mm far field
 
-    # Preview: coarse sketch mesh only. Engineering: dense FSI mesh + soundhole refinement.
-    if is_preview:
+    # Sketch: coarse. Display: uniform 4 mm shell (no adaptive fields). FOM: full graded FSI mesh.
+    if is_display:
+        mesh_size = 0.004
+        mesh_size_min = 0.004
+        mesh_size_max = 0.004
+    elif is_preview:
         mesh_size = 0.03
         mesh_size_min = 0.015
         mesh_size_max = 0.05
@@ -131,7 +148,12 @@ def create_guitar_mesh():
         f"Building geometry with Thickness: {t*1000:.1f}mm, "
         f"wood_surface_lc={wood_surface_size*1000:.1f}mm, wood_thickness_lc={wood_thickness_size*1000:.1f}mm"
     )
-    print(f"[diag] preview_mode={is_preview}, FEM_ALLOW_PREVIEW={os.environ.get('FEM_ALLOW_PREVIEW', '0')}")
+    print(
+        f"[diag] mesh_mode={mode} preview={is_preview} display={is_display} fom={is_fom} "
+        f"FEM_ALLOW_PREVIEW={os.environ.get('FEM_ALLOW_PREVIEW', '0')} "
+        f"FEM_ALLOW_DISPLAY={os.environ.get('FEM_ALLOW_DISPLAY', '0')} "
+        f"FEM_ALLOW_FOM={os.environ.get('FEM_ALLOW_FOM', '0')}"
+    )
 
     # Body frame: x = +L/2 at neck, x = -L/2 at tail; y = lateral; z = up.
     hr = max(1.0e-4, float(hr))
@@ -356,9 +378,9 @@ def create_guitar_mesh():
             print(f"[AUDIT][ERROR] stage={stage!r} failed: {exc}")
             raise
 
-    if is_preview:
-        # UI sketch: hollow wood shell only — no acoustic air volume or outer air box.
-        print("[diag] preview CAD: wood shell + soundhole cut (air domain disabled)")
+    if shell_only:
+        # Sketch + display: hollow wood shell only — no acoustic air volume.
+        print(f"[diag] {mode} CAD: wood shell + soundhole cut (air domain disabled)")
         wood_shell = _audit_boolean(
             "preview_hollow_shell",
             occ.cut,
@@ -436,7 +458,7 @@ def create_guitar_mesh():
 
     # Z-partition with axis-aligned boxes is for FSI volume tagging only (creates boxy
     # facet artifacts in UI preview). Skip in preview — classify from exterior skin only.
-    if not is_preview and len(wood_vols) < 3:
+    if is_fom and len(wood_vols) < 3:
         wood_bbox = [float("inf"), float("inf"), float("inf"), -float("inf"), -float("inf"), -float("inf")]
         for v in wood_vols:
             xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(3, int(v))
@@ -472,7 +494,7 @@ def create_guitar_mesh():
             raise RuntimeError("Wood partitioning produced no volumes.")
         print(f"[diag] Wood volumes after Z-partition: {wood_vols}")
 
-    if not is_preview:
+    if is_fom:
         # Final geometry unification: re-fragment wood+air for shared FSI interfaces.
         try:
             air_ref_com = occ.getCenterOfMass(3, int(air_vols[0])) if air_vols else (0.0, 0.0, 0.0)
@@ -537,7 +559,7 @@ def create_guitar_mesh():
     # Surface identification via direct boundaries (fragmentation-safe, no interface tracing).
     wood_boundary_surfs = get_boundary_tags([(3, tag) for tag in wood_vols], 2)
 
-    if is_preview and wood_vols:
+    if shell_only and wood_vols:
         all_b = [int(s) for s in wood_boundary_surfs]
         primary_vol = int(wood_vols[0])
         exterior = [s for s in all_b if _is_exterior_boundary_facet(s, primary_vol)]
@@ -592,7 +614,7 @@ def create_guitar_mesh():
         )
         return top, back, ribs
 
-    if is_preview:
+    if shell_only:
         top_plate_surfs, back_plate_surfs, rib_surfs = _classify_shell_facets_for_preview(
             wood_boundary_surfs
         )
@@ -685,7 +707,7 @@ def create_guitar_mesh():
         top_plate_surfs = [s for s in top_plate_surfs if s not in _sh_set]
         back_plate_surfs = [s for s in back_plate_surfs if s not in _sh_set and s not in _top_set]
         rib_surfs = [s for s in rib_surfs if s not in _sh_set and s not in _top_set]
-        if is_preview and not rib_surfs:
+        if shell_only and not rib_surfs:
             rib_surfs = [
                 int(s)
                 for s in wood_boundary_surfs
@@ -695,7 +717,7 @@ def create_guitar_mesh():
             ]
     _back_set = set(back_plate_surfs)
     rib_surfs = [s for s in rib_surfs if s not in _back_set]
-    if not is_preview and not back_plate_surfs and back_vols:
+    if is_fom and not back_plate_surfs and back_vols:
         b_back = get_boundary_tags([(3, int(v)) for v in back_vols], 2)
         if b_back:
             back_plate_surfs = [min(b_back, key=lambda s: get_surface_center_z(s))]
@@ -725,7 +747,7 @@ def create_guitar_mesh():
 
     # Optional neck patch (tag 5); ribs (tag 4) are clamped in FEM, not wood_fix.
     wood_fix_surfs: list = []
-    if not is_preview:
+    if is_fom:
         fix_candidates = []
         for s in rib_surfs + back_plate_surfs:
             cx, cy, cz = get_surface_center(s)
@@ -767,7 +789,7 @@ def create_guitar_mesh():
         return int(pg)
 
     # 2D facet protocol (must match fem_main_3d WOOD_SURFACE_TAGS): 1=Top, 2=Soundhole, 3=Back, 4=Ribs, 5=wood_fix
-    if is_preview:
+    if shell_only:
         _hole_pre = set(int(s) for s in soundhole_surfs)
         _top_set_pre = set(int(s) for s in top_plate_surfs)
         _back_set_pre = set(int(s) for s in back_plate_surfs)
@@ -806,7 +828,7 @@ def create_guitar_mesh():
                 "Preview shell has no rib facets (tag 4); exterior facet filter may be too aggressive."
             )
 
-    req_back = not is_preview
+    req_back = is_fom
     req_ribs = True
     _add_surface_physical_group(top_plate_surfs, 1, "Top_Plate", required=True)
     _add_surface_physical_group(soundhole_surfs, 2, "Soundhole", required=False)
@@ -832,15 +854,15 @@ def create_guitar_mesh():
     else:
         print("[diag][warn] Physical Volume 3 (Ribs_Sides_Volume) is empty.")
 
-    if not is_preview:
+    if is_fom:
         pg_air = gmsh.model.addPhysicalGroup(3, air_vols, tag=10)
         gmsh.model.setPhysicalName(3, pg_air, "Air_Internal")
 
     print(
         f"[diag] facet groups: top={len(top_plate_surfs)}, back={len(back_plate_surfs)}, "
-        f"ribs={len(rib_surfs)}, wood_fix={len(wood_fix_surfs)}, preview={is_preview}"
+        f"ribs={len(rib_surfs)}, wood_fix={len(wood_fix_surfs)}, mode={mode}"
     )
-    if not is_preview:
+    if is_fom:
         air_group_entities = gmsh.model.getEntitiesForPhysicalGroup(3, 10)
         print(f"[diag] Physical Group 10 (Air_Internal) volume entities: {list(air_group_entities)}")
         if len(air_group_entities) == 0:
@@ -890,7 +912,23 @@ def create_guitar_mesh():
     mesh_resolution_factor = 1.0
     print(f"[diag] mesh_resolution_factor={mesh_resolution_factor}")
 
-    if is_preview:
+    if is_display:
+        shell_surf_tags = sorted(
+            set(int(s) for s in top_plate_surfs + back_plate_surfs + rib_surfs + soundhole_surfs)
+        )
+        for s in shell_surf_tags:
+            try:
+                gmsh.model.mesh.setSize(2, int(s), mesh_size)
+            except Exception:
+                pass
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+        print(
+            f"[diag] display shell sizing: uniform_lc={mesh_size*1000:.1f}mm, "
+            f"n_surfaces={len(shell_surf_tags)} (no FSI fields)"
+        )
+    elif is_preview:
         shell_surf_tags = sorted(
             set(int(s) for s in top_plate_surfs + back_plate_surfs + rib_surfs + soundhole_surfs)
         )
@@ -916,7 +954,7 @@ def create_guitar_mesh():
     # Wood: 6.5 mm baseline on shell (Restrict), 1 mm in a band around short thickness edges
     # (mesh.setSize + Threshold from EdgesList) so P1 has multiple elements across ~3 mm wood.
     # Air: distance from wood shell -> Threshold (8 mm near field, 80 mm far, smooth 1.5–25 cm band).
-    if not is_preview:
+    if is_fom:
         wood_surface_tags = top_plate_surfs + back_plate_surfs + rib_surfs
         if not top_plate_surfs:
             raise RuntimeError("top_plate_surfs is empty; cannot apply wood refinement field.")
@@ -1107,7 +1145,7 @@ def create_guitar_mesh():
             return n_elem
 
         audit_tags = [1, 2, 3, 4]
-        if is_preview:
+        if shell_only:
             audit_tags = [1]
             if back_plate_surfs:
                 audit_tags.append(3)
@@ -1116,7 +1154,7 @@ def create_guitar_mesh():
         facet_audit = {t: _count_mesh_elements_for_physical(2, t) for t in audit_tags}
         print(f"[diag] post-generate facet element counts by physical tag: {facet_audit}")
         req_checks = [(1, "Top"), (3, "Back"), (4, "Ribs")]
-        if is_preview:
+        if shell_only:
             req_checks = [(1, "Top")]
             if back_plate_surfs:
                 req_checks.append((3, "Back"))
