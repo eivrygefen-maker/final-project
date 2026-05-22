@@ -291,11 +291,11 @@ def load_surface_mesh(msh_path: Path) -> Optional[pv.PolyData]:
         faces = np.hstack([np.full((tri.shape[0], 1), 3, dtype=np.int64), tri]).ravel()
         poly = pv.PolyData(points, faces)
         poly.compute_normals(
-            cell_normals=False,
-            point_normals=True,
-            feature_angle=30,
-            split_vertices=True,
-            inplace=True,
+        cell_normals=False, 
+        point_normals=True, 
+        feature_angle=30, 
+        split_vertices=True, 
+        inplace=True, 
             auto_orient_normals=True,
         )
         return poly
@@ -643,7 +643,7 @@ def main() -> None:
                 st.caption(f"Display mesh (`display_mesh.msh`, lc=4 mm){n} — ROM/FOM acoustics ready.")
             elif st.session_state.acoustics_pending:
                 st.caption(f"Display mesh (`display_mesh.msh`){n} — computing acoustics…")
-            else:
+    else:
                 st.caption(f"Display mesh (`display_mesh.msh`){n}.")
         else:
             st.caption("Sketch mode (`preview_mesh.msh`, lc≈30 mm) — Save Changes for display + acoustics.")
