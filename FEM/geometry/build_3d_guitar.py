@@ -139,6 +139,43 @@ def _perimeter_points_from_half(
     return out
 
 
+def _volume_tags_from_extrude(out) -> List[int]:
+    """Parse ``geo/occ.extrude`` return value into 3D volume tags (ints only)."""
+    tags: List[int] = []
+
+    def _walk(obj) -> None:
+        if isinstance(obj, (list, tuple)):
+            if len(obj) >= 2:
+                try:
+                    dim = int(obj[0])
+                    tag = int(obj[1])
+                    if dim == 3:
+                        tags.append(tag)
+                        return
+                except (TypeError, ValueError):
+                    pass
+            for child in obj:
+                _walk(child)
+
+    _walk(out)
+    return tags
+
+
+def _geo_extrude_shell_volume(surface_tag: int, dz: float, z_shift: float) -> int:
+    """Extrude a geo 2D profile surface to a 3D volume (geo kernel, not OCC)."""
+    geo = gmsh.model.geo
+    try:
+        ext = geo.extrude([(2, int(surface_tag))], 0, 0, float(dz), [3])
+    except (TypeError, ValueError):
+        ext = geo.extrude([(2, int(surface_tag))], 0, 0, float(dz))
+    vol_tags = _volume_tags_from_extrude(ext)
+    if not vol_tags:
+        raise RuntimeError(f"geo.extrude produced no volume (dz={dz}).")
+    geo.translate([(3, vol_tags[0])], 0, 0, float(z_shift))
+    geo.synchronize()
+    return vol_tags[0]
+
+
 def _stabilize_half_profile(half: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
     """Nudge the first outer points off the centerline so OCC lines are non-degenerate."""
     out = [(float(x), float(y)) for x, y in half]
@@ -384,7 +421,6 @@ def create_guitar_mesh():
 
         surface_tag = int(geo.addPlaneSurface([curve_loop_tag]))
         geo.synchronize()
-        occ.synchronize()
         print(
             f"[diag] template profile surface (geo): n_pts={len(points)} n_lines={len(l_tags)} "
             f"curve_loop={curve_loop_tag} surface={surface_tag}"
@@ -543,15 +579,8 @@ def create_guitar_mesh():
             wall_offset=0.0,
             point_lc=profile_lc,
         )
-        # OCC extrude: numElements may be ignored by OpenCASCADE; thickness resolution is enforced via
-        # curve/field sizing below. When supported, [3] requests prism stacks along the extrusion axis.
-        try:
-            v_out = occ.extrude([(2, surf_out)], 0, 0, D, [3])
-        except (TypeError, ValueError):
-            v_out = occ.extrude([(2, surf_out)], 0, 0, D)
-        occ.translate([v for v in v_out if v[0]==3], 0, 0, -D/2)
-        vol_out_id = [v[1] for v in v_out if v[0] == 3][0]
-        
+        vol_out_id = _geo_extrude_shell_volume(surf_out, D, -D / 2.0)
+
         surf_in = create_template_profile_surface(
             length=L,
             upper_bout=upper_bout,
@@ -561,12 +590,9 @@ def create_guitar_mesh():
             wall_offset=t,
             point_lc=profile_lc,
         )
-        try:
-            v_in = occ.extrude([(2, surf_in)], 0, 0, inner_depth, [3])
-        except (TypeError, ValueError):
-            v_in = occ.extrude([(2, surf_in)], 0, 0, inner_depth)
-        occ.translate([v for v in v_in if v[0]==3], 0, 0, -D/2 + t)
-        vol_in_id = [v[1] for v in v_in if v[0] == 3][0]
+        vol_in_id = _geo_extrude_shell_volume(surf_in, inner_depth, -D / 2.0 + t)
+
+        occ.synchronize()
 
     # Soundhole cutter: vertical cylinder through top plate only (does not slice ribs/sides).
     if _is_box_shape(shape_type):
