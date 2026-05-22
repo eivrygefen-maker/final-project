@@ -215,7 +215,9 @@ def classify_mode_candidate(
     sigma = float(st_sigma_hz)
     sig_tol = sigma_cluster_hz_for_mode(f_hz, cfg)
 
-    if abs(f_hz - sigma) <= sig_tol:
+    # In-window σ harvest: a mode landing on σ with real pressure coupling is physical,
+    # not a spurious Ritz artifact (e.g. 250 Hz band, σ=244 Hz, f=244 Hz, p_frac≈0.45).
+    if abs(f_hz - sigma) <= sig_tol and p_frac < float(cfg.min_p_frac_rom_low):
         return "sigma_ritz", False, f"|f-st_sigma|={abs(f_hz - sigma):.3f}<={sig_tol}"
 
     if f_hz + 1e-9 < float(cfg.min_hz) or f_hz > float(cfg.max_hz) + 1e-9:

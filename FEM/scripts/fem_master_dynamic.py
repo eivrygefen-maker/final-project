@@ -231,6 +231,9 @@ HARVEST_GATE_MIN_WOOD = 0.01
 HARVEST_GATE_MIN_P_FRAC_FSI = 1.0e-4
 HARVEST_GATE_TEMPLATE_TAG_TOL = 0.04
 HARVEST_GATE_TEMPLATE_P_FRAC = 1.0e-3
+# Template dedupe only when |Δf| is small (same σ-ladder clone); spectrum-slice bands
+# reuse top/back splits at new frequencies and must not be dropped vs distant pool modes.
+HARVEST_GATE_TEMPLATE_MAX_DF_HZ = 5.0
 LADDER_HALF_STEP_HZ = 0.5
 LADDER_OFFSETS_HZ: Tuple[float, ...] = (-LADDER_HALF_STEP_HZ, 0.0, LADDER_HALF_STEP_HZ)
 # Spectrum slicing: one ST solve per spectral band center; parallelize across bands, not ±0.5 Hz rungs.
@@ -1768,7 +1771,7 @@ def _matches_template_spurious(
     row: Dict[str, Any],
     existing: List[Dict[str, Any]],
 ) -> bool:
-    """Reject σ-ladder clones: same top/back split, negligible pressure, new frequency."""
+    """Reject σ-ladder clones: same top/back split, negligible pressure, nearby frequency."""
     try:
         p_frac = float(row.get("p_frac", 0.0) or 0.0)
     except (TypeError, ValueError):
@@ -1778,16 +1781,24 @@ def _matches_template_spurious(
     try:
         t1 = float(row.get("tag1_ratio", 0.0) or 0.0)
         t3 = float(row.get("tag3_ratio", 0.0) or 0.0)
+        f_row = float(row.get("hz", 0.0) or 0.0)
     except (TypeError, ValueError):
+        return False
+    if not math.isfinite(f_row):
         return False
     for e in existing:
         try:
             ep = float(e.get("p_frac", 0.0) or 0.0)
             e1 = float(e.get("tag1_ratio", 0.0) or 0.0)
             e3 = float(e.get("tag3_ratio", 0.0) or 0.0)
+            f_exist = float(e.get("hz", 0.0) or 0.0)
         except (TypeError, ValueError):
             continue
         if ep >= HARVEST_GATE_TEMPLATE_P_FRAC:
+            continue
+        if not math.isfinite(f_exist):
+            continue
+        if abs(f_exist - f_row) > float(HARVEST_GATE_TEMPLATE_MAX_DF_HZ):
             continue
         if (
             abs(e1 - t1) <= HARVEST_GATE_TEMPLATE_TAG_TOL
@@ -2390,9 +2401,7 @@ def _poll_completed(
                 par_shift = dict(meta.get("params") or get_band_params(hz))
                 if scheduler is not None:
                     scheduler._mark_sigma_offset_attempted(hz, par_shift)
-                shift_has_fsi = stats is not None and (
-                    int(stats.coupled_valid_kept) > 0 or int(stats.kept_after_manager) > 0
-                )
+                shift_has_fsi = stats is not None and int(stats.kept_after_manager) > 0
                 if shift_has_fsi:
                     done_hz = (
                         scheduler.completed_shift_record_hz(
@@ -3020,6 +3029,9 @@ def main() -> int:
 
     try:
         while _has_pending_tasks() or running:
+            merge_emergency = bool(args.force_emergency)
+            if scheduler is not None and scheduler._coverage_emergency_pending:
+                merge_emergency = True
             _poll_completed(
                 running,
                 log_path,
@@ -3027,7 +3039,7 @@ def main() -> int:
                 merge_lock,
                 release_core,
                 scheduler=scheduler,
-                force_emergency=bool(args.force_emergency),
+                force_emergency=merge_emergency,
                 spawn_worker=spawn_worker,
             )
             _enforce_timeouts(running, sorting_root, release_core)
