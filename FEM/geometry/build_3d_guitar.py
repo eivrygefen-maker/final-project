@@ -12,8 +12,15 @@ _MODELS_DIR = Path(__file__).resolve().parent / "models"
 
 
 def _reference_step_filename(shape_type: str) -> str:
+    """Map simulator ``shape_type`` → ``FEM/geometry/models/*.step``."""
     st = str(shape_type).strip().lower()
-    if st == "box" or "rect" in st:
+    if st in ("box", "rect", "rectangular"):
+        return "box.step"
+    if st in ("acoustic", "dreadnought", "dread", "martin"):
+        return "acoustic.step"
+    if st in ("classical", "classic", "torres", "hauser"):
+        return "classic.step"
+    if "box" in st or "rect" in st:
         return "box.step"
     if "dread" in st or "acoustic" in st or "martin" in st:
         return "acoustic.step"

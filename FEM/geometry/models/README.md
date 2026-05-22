@@ -27,7 +27,12 @@ From the repo root (with `gmsh` in your venv):
 python3 FEM/geometry/generate_reference_models.py
 ```
 
-This writes `classic.step`, `acoustic.step`, and `box.step` into this directory. Replace them later with high-quality CAD when available.
+This writes `classic.step`, `acoustic.step`, and `box.step` into this directory:
+
+- **classic** / **acoustic**: B-spline figure-8 half-profile (upper bout / waist / lower bout), extruded to a solid.
+- **box**: simple rectangular solid for debug.
+
+Replace with external CAD later if you need higher-fidelity bracing or arching.
 
 ## Sketch vs engineering
 
