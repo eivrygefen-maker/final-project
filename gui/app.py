@@ -64,8 +64,10 @@ if "live_preview_fp" not in st.session_state:
     st.session_state.live_preview_fp = ""
 if "stk_body_json" not in st.session_state:
     st.session_state.stk_body_json = ""
-if "show_physics_success" not in st.session_state:
-    st.session_state.show_physics_success = False
+if "show_acoustics_ready" not in st.session_state:
+    st.session_state.show_acoustics_ready = False
+if "solver_pending" not in st.session_state:
+    st.session_state.solver_pending = False
 # Bust stale preview meshes when preview CAD schema changes.
 if st.session_state.get("preview_cad_schema", 0) < 10:
     st.session_state.preview_cad_schema = 10
@@ -276,52 +278,39 @@ def _execute_rom_engine(
     return result
 
 
-def _run_physics_compute(
+def _run_acoustics_solver(
     *,
     fom_mode: bool,
     lhs_params: Dict[str, Any],
     rom_shape: str,
-    geom_fp: str,
 ) -> Path:
-    """Button 1: engineering mesh + ROM/FOM (no STK). Returns body JSON path for audio."""
-    py_exe = sys.executable
-
+    """Acoustics solve only (after engineering mesh is built and shown). Returns body JSON for STK."""
     if FEM_FOM_JSON.exists():
         FEM_FOM_JSON.unlink()
     if ROM_STK_JSON.exists():
         ROM_STK_JSON.unlink()
 
-    with st.spinner("Building high-fidelity engineering mesh…"):
-        _build_engineering_mesh(py_exe)
-
     if fom_mode:
-        with st.status("FOM engine (developer diagnostics)...", expanded=True) as fem_status:
+        with st.status("Developer acoustics solve…", expanded=True) as fem_status:
 
             def _cb(msg: str) -> None:
                 fem_status.update(label=msg, state="running", expanded=True)
 
-            try:
-                _cb("Starting full-order FEM solve...")
-                _execute_fom_engine(CONFIG_PATH, _cb)
-                fem_status.update(label="FOM simulation complete.", state="complete", expanded=False)
-            except Exception as exc:
-                fem_status.update(label="FOM simulation failed.", state="error", expanded=True)
-                raise exc
+            _execute_fom_engine(CONFIG_PATH, _cb)
+            fem_status.update(label="Acoustics solve complete.", state="complete", expanded=False)
         st.session_state.last_engine = "fom"
         stk_json = FEM_FOM_JSON
     else:
-        with st.spinner("ROM online solve (reduced basis)…"):
-            rom_result = _execute_rom_engine(
-                rom_shape=rom_shape,
-                lhs_params=lhs_params,
-                nev=0,
-            )
-            st.session_state.rom_last_result = rom_result
+        rom_result = _execute_rom_engine(
+            rom_shape=rom_shape,
+            lhs_params=lhs_params,
+            nev=0,
+        )
+        st.session_state.rom_last_result = rom_result
         st.session_state.last_engine = "rom"
         stk_json = ROM_STK_JSON
 
     st.session_state.physics_ready = True
-    st.session_state.physics_geom_fp = geom_fp
     st.session_state.stk_body_json = str(stk_json)
     return stk_json
 
@@ -755,6 +744,15 @@ def _render_pyvista_guitar(
 
 def _invalidate_physics_state() -> None:
     st.session_state.physics_ready = False
+    st.session_state.solver_pending = False
+
+
+def _engineering_mesh_matches(geom_fp: str) -> bool:
+    return (
+        bool(st.session_state.get("physics_geom_fp"))
+        and st.session_state.physics_geom_fp == geom_fp
+        and MESH_FILE.is_file()
+    )
 
 
 def _on_button_save(
@@ -764,23 +762,39 @@ def _on_button_save(
     top_wood_id: str,
     back_wood_id: str,
     vis_mode: str,
-    fom_mode: bool,
-    lhs_params: Dict[str, Any],
 ) -> None:
-    """Button 1: lock design, build engineering mesh, run ROM/FOM."""
+    """Phase 1: persist design and build Gmsh engineering mesh (acoustics runs next)."""
     save_cfg_from_state(
         geom=geom_state,
         top_wood_id=top_wood_id,
         back_wood_id=back_wood_id,
         vis_mode=vis_mode,
     )
-    _run_physics_compute(
-        fom_mode=fom_mode,
-        lhs_params=lhs_params,
-        rom_shape=DEFAULT_ROM_SHAPE,
-        geom_fp=geom_fp,
-    )
-    st.session_state.show_physics_success = True
+    st.session_state.physics_ready = False
+    st.session_state.solver_pending = False
+    st.session_state.stk_body_json = ""
+    py_exe = sys.executable
+    with st.spinner("Building detailed model…"):
+        _build_engineering_mesh(py_exe)
+    st.session_state.physics_geom_fp = geom_fp
+    st.session_state.solver_pending = True
+    st.rerun()
+
+
+def _run_pending_acoustics(
+    *,
+    fom_mode: bool,
+    lhs_params: Dict[str, Any],
+) -> None:
+    """Phase 2: run acoustics after the engineering mesh is on screen."""
+    with st.spinner("Computing acoustics…"):
+        _run_acoustics_solver(
+            fom_mode=fom_mode,
+            lhs_params=lhs_params,
+            rom_shape=DEFAULT_ROM_SHAPE,
+        )
+    st.session_state.solver_pending = False
+    st.session_state.show_acoustics_ready = True
 
 
 def _on_button_audio(
@@ -792,7 +806,7 @@ def _on_button_audio(
     """Button 2: STK synthesis (requires physics_ready)."""
     stk_path = Path(st.session_state.stk_body_json)
     if not stk_path.is_file():
-        raise FileNotFoundError("Physics body JSON missing — run Save & Compute Physics first.")
+        raise FileNotFoundError("Acoustics data missing — click Save Changes first.")
     _run_stk_audio(
         body_json=stk_path,
         top_wood_id=top_wood_id,
@@ -808,10 +822,9 @@ def _resolve_display_mesh(
     top_wood_id: str,
     back_wood_id: str,
     vis_mode: str,
-    physics_ready: bool,
 ) -> Tuple[Optional[Any], bool, str]:
     """Return (mesh, sketch_mode, plot_key_suffix)."""
-    if physics_ready and MESH_FILE.is_file():
+    if _engineering_mesh_matches(geom_fp):
         mesh = _load_guitar_surface_from_msh(MESH_FILE)
         return mesh, False, f"eng_{st.session_state.physics_geom_fp[:12]}"
 
@@ -850,7 +863,7 @@ st.markdown(
 )
 st.title("Guitar Simulator")
 st.caption(
-    "Sliders: coarse Gmsh sketch with wood colors. Save: full Gmsh mesh + ROM physics, then STK audio."
+    "Sliders: live sketch. Save Changes: detailed model, then acoustics. Generate Audio when ready."
 )
 
 def _shape_limits(shape: str) -> Tuple[float, float, float, float, float, float, float, float, float]:
@@ -984,7 +997,7 @@ with col_visual:
     btn_save, btn_audio = st.columns(2)
     with btn_save:
         if st.button(
-            "Save Changes & Compute Physics",
+            "Save Changes",
             use_container_width=True,
             type="primary",
         ):
@@ -995,20 +1008,18 @@ with col_visual:
                     top_wood_id=top_wood_id,
                     back_wood_id=back_wood_id,
                     vis_mode=vis_mode,
-                    fom_mode=fom_mode,
-                    lhs_params=lhs_params,
                 )
-                st.rerun()
             except Exception as exc:
                 _invalidate_physics_state()
-                st.error(f"Physics failed: {exc}")
+                st.session_state.physics_geom_fp = ""
+                st.error(f"Save failed: {exc}")
 
     with btn_audio:
         if st.button(
-            "Generate Audio (STK)",
+            "Generate Audio",
             use_container_width=True,
             disabled=not physics_ready,
-            help="Enabled after physics compute finishes.",
+            help="Enabled after acoustics finish computing.",
         ):
             try:
                 _on_button_audio(
@@ -1038,8 +1049,10 @@ with col_visual:
         ],
     )
 
-    if physics_ready and MESH_FILE.is_file():
-        st.success("Detailed engineering mesh — ROM/FOM complete, audio unlocked")
+    if physics_ready:
+        st.success("Acoustics ready — you can generate audio.")
+    elif _engineering_mesh_matches(geom_fp):
+        st.info("Detailed model — computing acoustics…" if st.session_state.solver_pending else "Detailed model saved.")
     else:
         st.info("Live sketch — move sliders to update shape and wood colors")
 
@@ -1049,7 +1062,6 @@ with col_visual:
         top_wood_id=top_wood_id,
         back_wood_id=back_wood_id,
         vis_mode=vis_mode,
-        physics_ready=physics_ready,
     )
     try:
         pv.set_jupyter_backend("static")
@@ -1067,10 +1079,18 @@ with col_visual:
     except Exception as exc:
         st.warning(f"3D render issue: {exc}")
 
-    if st.session_state.show_physics_success:
-        eng = str(st.session_state.get("last_engine", "")).upper() or "ROM"
-        st.success(f"Physics saved ({eng}). You can generate audio.")
-        st.session_state.show_physics_success = False
+    if st.session_state.get("solver_pending") and _engineering_mesh_matches(geom_fp):
+        try:
+            _run_pending_acoustics(fom_mode=fom_mode, lhs_params=lhs_params)
+            st.rerun()
+        except Exception as exc:
+            st.session_state.solver_pending = False
+            _invalidate_physics_state()
+            st.error(f"Acoustics failed: {exc}")
+
+    if st.session_state.show_acoustics_ready:
+        st.success("Save complete. Generate Audio is now available.")
+        st.session_state.show_acoustics_ready = False
 
     if st.session_state.get("last_engine") == "rom" and st.session_state.get("rom_last_result"):
         with st.expander("ROM solve details"):
