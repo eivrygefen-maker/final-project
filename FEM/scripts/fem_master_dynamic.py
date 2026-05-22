@@ -20,10 +20,10 @@ zones**, per-job timeouts, and merge of worker JSON into ``candidates_log.json``
   * Sparse CSR overlap, Zone-C HF quota, ``gc.collect()`` as before.
 
 **Multi-band sweep** (``--schedule spectral-bands`` or ``spectral-bands+fill``):
-  overlapping harvest windows per band center (see ``fem_spectral_schedule.py``); workers get
-  ``--harvest-lo-hz`` / ``--harvest-hi-hz`` so modes like 106 Hz are not dropped by a narrow
-  target±50 window. ``spectral-bands`` runs band centers only; ``spectral-bands+fill`` runs
-  bands first then the adaptive zone cursor.
+  overlapping harvest windows per band center (see ``fem_spectral_schedule.py``). **Spectrum
+  slicing** (default): at most one worker per band center — concurrent workers explore different
+  bands (e.g. 106 / 154 / 202 Hz), not ±0.5 Hz ladder rungs. σ-retry runs only after a band
+  finishes with zero ROM-ready modes (conditional, not pre-queued).
 
 **Legacy**: ``--legacy-static-schedule`` restores fixed ``get_band_params`` stepping.
 
@@ -101,6 +101,7 @@ from fem_spectral_schedule import (
     SWEEP_HZ_MIN,
     build_spectral_band_task_list,
     format_coverage_report,
+    nearest_band_center,
     resolve_spectral_band_params,
     spectral_band_centers,
     spectral_harvest_worker_overrides,
@@ -232,6 +233,8 @@ HARVEST_GATE_TEMPLATE_TAG_TOL = 0.04
 HARVEST_GATE_TEMPLATE_P_FRAC = 1.0e-3
 LADDER_HALF_STEP_HZ = 0.5
 LADDER_OFFSETS_HZ: Tuple[float, ...] = (-LADDER_HALF_STEP_HZ, 0.0, LADDER_HALF_STEP_HZ)
+# Spectrum slicing: one ST solve per spectral band center; parallelize across bands, not ±0.5 Hz rungs.
+SPECTRUM_SLICE_ENABLED = True
 HARVEST_GATE_SIGMA_TOL_HZ = 0.35
 HARVEST_GATE_SIGMA_P_FRAC = 1.0e-4
 HARVEST_GATE_BYPASS_SIGMA_LOCK = False
@@ -473,7 +476,10 @@ class SpectralScheduler:
         self._resume_load_state()
         if str(self.schedule_mode) in ("spectral-bands+fill", "spectral-bands-fill"):
             self._enqueue_spectral_band_shifts()
-        self._bootstrap_seed_queue()
+        if not self._use_spectrum_slice():
+            self._bootstrap_seed_queue()
+        elif str(self.schedule_mode) not in ("spectral-bands+fill", "spectral-bands-fill"):
+            self._enqueue_spectrum_slice_band_seeds()
         self._write_coverage_anchor_state()
         self._log_resume_verification_table()
 
@@ -512,9 +518,37 @@ class SpectralScheduler:
             )
         self._write_coverage_anchor_state()
 
-    def _shift_target_done(self, hz: float) -> bool:
-        """True if this shift ``target_hz`` was already merged (resume) or consumed."""
-        return self._hz_key(hz) in self._scheduled
+    def _use_spectrum_slice(self) -> bool:
+        """One worker per spectral band center (no concurrent ±0.5 Hz ladder)."""
+        if not SPECTRUM_SLICE_ENABLED:
+            return False
+        return str(self.schedule_mode) != "legacy-static"
+
+    def _canonical_band_center_hz(self, hz: float) -> float:
+        """Band center for spectrum-sliced scheduling (overlapping harvest window anchor)."""
+        return float(
+            nearest_band_center(
+                float(hz),
+                float(self.hz_min),
+                float(self.hz_max),
+            )
+        )
+
+    def _schedule_key(self, hz: float, *, sigma_retry: bool = False) -> str:
+        if self._use_spectrum_slice() and not sigma_retry:
+            return self._hz_key(self._canonical_band_center_hz(hz))
+        return self._hz_key(hz)
+
+    def _shift_target_done(self, hz: float, *, sigma_retry: bool = False) -> bool:
+        """True if this shift (or its band center) was already merged or claimed."""
+        return self._schedule_key(hz, sigma_retry=sigma_retry) in self._scheduled
+
+    def completed_shift_record_hz(self, target_hz: float, *, sigma_retry: bool = False) -> float:
+        """Hz value stored in ``completed_shift_targets`` (band center when slicing)."""
+        th = float(target_hz)
+        if self._use_spectrum_slice() and not sigma_retry:
+            return self._canonical_band_center_hz(th)
+        return th
 
     def _mark_sigma_offset_attempted(self, hz: float, params: Dict[str, Any]) -> None:
         """Record which ST σ offset (Hz) was used for this shift target."""
@@ -592,7 +626,9 @@ class SpectralScheduler:
     def _enqueue_frequency_ladder(
         self, center_hz: float, role: str, *, label_suffix: str = "ladder"
     ) -> None:
-        """Queue ``[T−0.5, T, T+0.5]`` Hz workers for one spectral center ``T``."""
+        """Queue ``[T−0.5, T, T+0.5]`` Hz workers (legacy only; disabled for spectrum slicing)."""
+        if self._use_spectrum_slice():
+            return
         center = float(center_hz)
         queued = 0
         for delta in LADDER_OFFSETS_HZ:
@@ -616,7 +652,72 @@ class SpectralScheduler:
                 center + LADDER_OFFSETS_HZ[-1],
             )
 
+    def _enqueue_spectrum_slice_band_seeds(self) -> None:
+        """Preload band centers for ``dynamic`` schedule (no ±0.5 Hz ladder)."""
+        centers = spectral_band_centers(self.hz_min, self.hz_max)
+        mx_done = float(self._max_completed_shift_hz)
+        queued = 0
+        for hz in centers:
+            if math.isfinite(mx_done) and float(hz) <= mx_done + HZ_TOLERANCE:
+                continue
+            if self._shift_target_done(float(hz)):
+                continue
+            p = self._band_params_with_zone_step(float(hz), "spectrum-slice")
+            self._seed_queue.append((float(hz), p, "spectrum-slice"))
+            queued += 1
+        if queued:
+            LOGGER.info(
+                "Spectrum slice preload: %d band center(s) queued (step=%.0f Hz, half=%.0f Hz); "
+                "no frequency ladder — parallel workers use distinct bands.",
+                queued,
+                SPECTRAL_BAND_STEP_HZ,
+                SPECTRAL_BAND_HALF_HZ,
+            )
+
+    def _claim_band_task(
+        self,
+        hz: float,
+        params: Dict[str, Any],
+        role: str,
+        *,
+        sigma_retry: bool = False,
+        label_suffix: str = "",
+    ) -> Tuple[float, Dict[str, Any], str]:
+        """Return worker target; spectrum slice snaps to band center (one LU per band)."""
+        if self._use_spectrum_slice() and not sigma_retry:
+            center = self._canonical_band_center_hz(hz)
+            if abs(center - float(hz)) > 1.0e-3:
+                LOGGER.debug(
+                    "Spectrum slice: scheduler target %.4f Hz → band center %.4f Hz",
+                    float(hz),
+                    center,
+                )
+            par = self._band_params_with_zone_step(center, label_suffix or "slice")
+            self._scheduled.add(self._schedule_key(center, sigma_retry=False))
+            return (center, par, role)
+        self._scheduled.add(self._schedule_key(float(hz), sigma_retry=sigma_retry))
+        return (float(hz), dict(params), role)
+
+    def _pop_next_band_center(
+        self, mx_done: float
+    ) -> Optional[Tuple[float, Dict[str, Any], str]]:
+        """Next unscheduled spectral band center (fill phase; no ladder)."""
+        for hz in spectral_band_centers(self.hz_min, self.hz_max):
+            if math.isfinite(mx_done) and float(hz) <= mx_done + HZ_TOLERANCE:
+                continue
+            if self._shift_target_done(float(hz)):
+                continue
+            return self._claim_band_task(
+                float(hz),
+                {},
+                "spectrum-slice",
+                label_suffix="fill",
+            )
+        return None
+
     def _pop_ladder_task(self, mx_done: float) -> Optional[Tuple[float, Dict[str, Any], str]]:
+        if self._use_spectrum_slice():
+            return None
         while self._ladder_queue:
             hz, p, role = self._ladder_queue.popleft()
             if math.isfinite(mx_done) and float(hz) <= mx_done + HZ_TOLERANCE:
@@ -627,11 +728,14 @@ class SpectralScheduler:
             return (hz, p, role)
         return None
 
-    def register_completed_shift(self, target_hz: float) -> None:
-        """Mark a shift target finished after a successful merge (same-run dedupe for ``pop_next``)."""
+    def register_completed_shift(
+        self, target_hz: float, *, sigma_retry: bool = False
+    ) -> None:
+        """Mark a shift finished after merge (band center when spectrum slicing)."""
         th = float(target_hz)
-        self._scheduled.add(self._hz_key(th))
-        self._max_completed_shift_hz = max(self._max_completed_shift_hz, th)
+        self._scheduled.add(self._schedule_key(th, sigma_retry=sigma_retry))
+        record_hz = self.completed_shift_record_hz(th, sigma_retry=sigma_retry)
+        self._max_completed_shift_hz = max(self._max_completed_shift_hz, float(record_hz))
 
     def _log_resume_verification_table(self) -> None:
         """Startup summary: modes in log, recovery-inferred shifts, first scheduled target."""
@@ -702,7 +806,7 @@ class SpectralScheduler:
                         len(recovery_added),
                     )
         for t in completed:
-            self._scheduled.add(self._hz_key(float(t)))
+            self._scheduled.add(self._schedule_key(float(t), sigma_retry=False))
         if completed:
             self._max_completed_shift_hz = max(float(t) for t in completed)
         else:
@@ -846,7 +950,7 @@ class SpectralScheduler:
 
     def _peek_next_task(self) -> Optional[Tuple[float, Dict[str, Any], str]]:
         """Read-only first upcoming task (same priority order as ``pop_next``)."""
-        if self._ladder_queue:
+        if not self._use_spectrum_slice() and self._ladder_queue:
             return self._ladder_queue[0]
         mx_done = float(self._max_completed_shift_hz)
         for hz, p, role in list(self._backfill):
@@ -861,6 +965,13 @@ class SpectralScheduler:
                 return (hz, p, role)
         cur = float(self._cursor_hz)
         step = self._current_step_hz()
+        if self._use_spectrum_slice():
+            for hz in spectral_band_centers(self.hz_min, self.hz_max):
+                if math.isfinite(mx_done) and float(hz) <= mx_done + HZ_TOLERANCE:
+                    continue
+                if not self._shift_target_done(float(hz)):
+                    return (float(hz), self._band_params_with_zone_step(float(hz), "peek"), "")
+            return None
         while cur <= self.hz_max + 1e-9:
             hz = float(cur)
             if math.isfinite(mx_done) and hz <= mx_done + HZ_TOLERANCE:
@@ -934,15 +1045,15 @@ class SpectralScheduler:
         mx_done = float(self._max_completed_shift_hz)
         while self._sigma_retry_queue:
             hz, p, role = self._sigma_retry_queue.popleft()
-            if self._shift_target_done(hz):
+            if self._shift_target_done(hz, sigma_retry=True):
                 continue
-            self._scheduled.add(self._hz_key(hz))
-            return (hz, p, role)
-        task = self._pop_ladder_task(mx_done)
-        if task is not None:
-            return task
+            return self._claim_band_task(hz, p, role, sigma_retry=True)
+        if not self._use_spectrum_slice():
+            task = self._pop_ladder_task(mx_done)
+            if task is not None:
+                return task
         while self._backfill:
-            hz, _p, role = self._backfill.popleft()
+            hz, p, role = self._backfill.popleft()
             if math.isfinite(mx_done) and float(hz) <= mx_done + HZ_TOLERANCE:
                 LOGGER.debug(
                     "Resume skip: backfill %.4f Hz at or behind max completed %.4f Hz.",
@@ -956,13 +1067,15 @@ class SpectralScheduler:
                     hz,
                 )
                 continue
+            if self._use_spectrum_slice():
+                return self._claim_band_task(hz, p, role, label_suffix="backfill")
             self._enqueue_frequency_ladder(hz, role, label_suffix="backfill")
             task = self._pop_ladder_task(mx_done)
             if task is not None:
                 return task
             continue
         while self._seed_queue:
-            hz, _p, role = self._seed_queue.popleft()
+            hz, p, role = self._seed_queue.popleft()
             if math.isfinite(mx_done) and float(hz) <= mx_done + HZ_TOLERANCE:
                 LOGGER.debug(
                     "Resume skip: seed %.4f Hz at or behind max completed %.4f Hz.",
@@ -976,6 +1089,8 @@ class SpectralScheduler:
                     hz,
                 )
                 continue
+            if self._use_spectrum_slice():
+                return self._claim_band_task(hz, p, role, label_suffix="seed")
             self._enqueue_frequency_ladder(hz, role, label_suffix="seed")
             task = self._pop_ladder_task(mx_done)
             if task is not None:
@@ -983,6 +1098,8 @@ class SpectralScheduler:
             continue
         if not self._seeds_drained:
             self._seeds_drained = True
+        if self._use_spectrum_slice():
+            return self._pop_next_band_center(mx_done)
         step = self._current_step_hz()
         mx_done = float(self._max_completed_shift_hz)
         while self._cursor_hz <= self.hz_max + 1e-9:
@@ -995,8 +1112,7 @@ class SpectralScheduler:
                     mx_done,
                 )
                 continue
-            key = self._hz_key(hz)
-            if key in self._scheduled:
+            if self._shift_target_done(hz):
                 LOGGER.debug(
                     "Resume skip: shift %.4f Hz already completed (cursor sweep); advancing without worker.",
                     hz,
@@ -1010,8 +1126,18 @@ class SpectralScheduler:
         return self._pop_ladder_task(mx_done)
 
     def has_pending(self) -> bool:
-        if self._backfill or self._seed_queue or self._ladder_queue:
+        if self._sigma_retry_queue or self._backfill or self._seed_queue:
             return True
+        if not self._use_spectrum_slice() and self._ladder_queue:
+            return True
+        if self._use_spectrum_slice():
+            mx_done = float(self._max_completed_shift_hz)
+            for hz in spectral_band_centers(self.hz_min, self.hz_max):
+                if math.isfinite(mx_done) and float(hz) <= mx_done + HZ_TOLERANCE:
+                    continue
+                if not self._shift_target_done(float(hz)):
+                    return True
+            return False
         return self._cursor_hz <= self.hz_max + 1e-9
 
     def _classify_raw_zone(self, yield_rate: float, avg_wood: float) -> int:
@@ -2268,9 +2394,18 @@ def _poll_completed(
                     int(stats.coupled_valid_kept) > 0 or int(stats.kept_after_manager) > 0
                 )
                 if shift_has_fsi:
-                    _append_completed_shift_to_log(log_path, merge_lock, hz)
+                    done_hz = (
+                        scheduler.completed_shift_record_hz(
+                            hz, sigma_retry=bool(meta.get("sigma_retry"))
+                        )
+                        if scheduler is not None
+                        else float(hz)
+                    )
+                    _append_completed_shift_to_log(log_path, merge_lock, done_hz)
                     if scheduler is not None:
-                        scheduler.register_completed_shift(hz)
+                        scheduler.register_completed_shift(
+                            hz, sigma_retry=bool(meta.get("sigma_retry"))
+                        )
                 elif stats is not None and not meta.get("structural_only"):
                     LOGGER.warning(
                         "Coupled harvest: 0 ROM-ready FSI modes at %.4f Hz — "
@@ -2337,9 +2472,14 @@ def _poll_completed(
                             "σ-retry ladder exhausted — marking shift complete (zero yield).",
                             hz,
                         )
-                        _append_completed_shift_to_log(log_path, merge_lock, hz)
+                        done_hz = (
+                            scheduler.completed_shift_record_hz(hz, sigma_retry=False)
+                            if scheduler is not None
+                            else float(hz)
+                        )
+                        _append_completed_shift_to_log(log_path, merge_lock, done_hz)
                         if scheduler is not None:
-                            scheduler.register_completed_shift(hz)
+                            scheduler.register_completed_shift(hz, sigma_retry=False)
             else:
                 LOGGER.warning("Worker exited with code %s for %.4f Hz (no merge).", code, hz)
         finally:
@@ -2655,12 +2795,14 @@ def main() -> int:
     linux_pin_msg = f" Linux: taskset cores leased from {cores_fmt}." if use_taskset else ""
     if scheduler is not None:
         LOGGER.info(
-            "Dynamic scout scheduler: scout W0=f_start+(N-1)*%.0f Hz, others fill descending to f_start; "
-            "zones Z1 step=%.0f Z2=%.0f Z3=%.0f Hz | Z1 num_modes≤%d Z3∈[%d,%d] | "
+            "Dynamic scheduler (spectrum slice): one worker per band center (step=%.0f Hz); "
+            "max %d concurrent bands — no ±0.5 Hz ladder; σ-retry only after zero yield. "
+            "Zones Z1 step=%.0f Z2=%.0f Z3=%.0f Hz | Z1 num_modes≤%d Z3∈[%d,%d] | "
             "adaptive ceiling @%.0f Hz (zone→440/470/490) | "
             "merge wood V2 (100–450 Hz) + isolation relief (independent of SLEPc quota) | "
             "max concurrent=%d workers.%s sorting_root=%s | HF quota ≥%.0f Hz.%s",
-            ZONE1_STEP_HZ,
+            SPECTRAL_BAND_STEP_HZ,
+            max_workers,
             ZONE1_STEP_HZ,
             ZONE2_STEP_HZ,
             ZONE3_STEP_HZ,
@@ -2925,13 +3067,8 @@ def main() -> int:
                     assert tasks_static is not None
                     if static_ladder_queue is None:
                         static_ladder_queue = deque()
-                        for hz_s, _par_s in tasks_static:
-                            for hz_l in frequency_ladder_shifts(
-                                float(hz_s), float(args.hz_min), float(args.hz_max)
-                            ):
-                                static_ladder_queue.append(
-                                    (hz_l, dict(get_band_params(hz_l)), "")
-                                )
+                        for hz_s, par_s in tasks_static:
+                            static_ladder_queue.append((float(hz_s), dict(par_s), ""))
                     if not static_ladder_queue:
                         break
                     hz_s, par_s, role_s = static_ladder_queue.popleft()
