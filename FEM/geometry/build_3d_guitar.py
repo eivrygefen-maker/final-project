@@ -335,8 +335,7 @@ def create_guitar_mesh():
         point_lc: Optional[float] = None,
     ) -> int:
         """
-        Template → closed polyline in Python → OCC line segments → wire → plane surface.
-        No mirror/spline (avoids 'Unknown OpenCASCADE curve' / open loop failures).
+        Normalized template → flat Python polygon → OCC points/lines (int tags only).
         """
         lc = float(point_lc if point_lc is not None else mesh_size)
         half = _stabilize_half_profile(
@@ -349,33 +348,41 @@ def create_guitar_mesh():
                 wall_offset=wall_offset,
             )
         )
-        ring = _full_boundary_ring(half, n_side_max=24)
-        ptags = [occ.addPoint(float(x), float(y), 0.0, lc) for x, y in ring]
-        n = len(ptags)
-        curves = [occ.addLine(ptags[i], ptags[(i + 1) % n]) for i in range(n)]
+        points: List[Tuple[float, float]] = _full_boundary_ring(half, n_side_max=24)
+        if len(points) < 3:
+            raise RuntimeError("Profile perimeter needs at least 3 distinct points.")
+
+        p_tags: List[int] = []
+        for pt in points:
+            p_tags.append(int(occ.addPoint(float(pt[0]), float(pt[1]), 0.0, lc)))
+
+        l_tags: List[int] = []
+        for i in range(len(p_tags) - 1):
+            l_tags.append(int(occ.addLine(p_tags[i], p_tags[i + 1])))
+        l_tags.append(int(occ.addLine(p_tags[-1], p_tags[0])))
+
         occ.synchronize()
 
         last_err: Optional[Exception] = None
-        for maker in (
-            lambda: int(occ.addCurveLoop(curves)),
-            lambda: int(occ.addCurveLoop(list(reversed(curves)))),
-        ):
+        curve_loop_tag: Optional[int] = None
+        for line_ring in (l_tags, list(reversed(l_tags))):
             try:
-                cl = maker()
-                occ.synchronize()
-                return int(occ.addPlaneSurface([cl]))
+                curve_loop_tag = int(occ.addCurveLoop(line_ring))
+                break
             except Exception as exc:
                 last_err = exc
 
-        try:
-            wire_dt = occ.addWire(curves)
-            occ.synchronize()
-            wtag = int(wire_dt[0][1]) if wire_dt else int(curves[0])
-            return int(occ.addPlaneSurface([wtag]))
-        except Exception as exc:
-            last_err = exc
+        if curve_loop_tag is None:
+            raise RuntimeError(f"Profile curve loop could not be created: {last_err}")
 
-        raise RuntimeError(f"Profile surface could not be created: {last_err}")
+        occ.synchronize()
+        surface_tag = int(occ.addPlaneSurface([curve_loop_tag]))
+        occ.synchronize()
+        print(
+            f"[diag] template profile surface: n_pts={len(points)} n_lines={len(l_tags)} "
+            f"curve_loop={curve_loop_tag} surface={surface_tag}"
+        )
+        return surface_tag
 
     def as_dimtags(result):
         if isinstance(result, tuple):
