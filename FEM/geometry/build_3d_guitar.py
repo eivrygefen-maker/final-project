@@ -309,6 +309,40 @@ def _geo_box_volume(L: float, W: float, D: float) -> int:
     return vol_tags[0]
 
 
+def _geo_sketch_proxy_ellipse_volume(
+    length: float, width: float, depth: float, lc: float
+) -> int:
+    """
+    Sketch preview proxy: convex geo ellipse (no Classical template polyline).
+
+    Avoids pinwheel/self-cross from non-convex template → addLine chains.
+    """
+    geo = gmsh.model.geo
+    rx = 0.47 * float(length) / 2.0
+    ry = 0.47 * float(width) / 2.0
+    try:
+        curve_tag = int(geo.addEllipse(0.0, 0.0, 0.0, rx, ry))
+        profile_kind = "ellipse"
+    except Exception:
+        r_eff = math.sqrt(max(rx * ry, 1.0e-9))
+        curve_tag = int(geo.addCircle(0.0, 0.0, 0.0, r_eff))
+        profile_kind = f"circle(r={r_eff:.4f})"
+    loop_tag = int(geo.addCurveLoop([curve_tag]))
+    surface_tag = int(geo.addPlaneSurface([loop_tag]))
+    geo.synchronize()
+    ext = geo.extrude([(2, int(surface_tag))], 0, 0, float(depth))
+    vol_tags = _volume_tags_from_extrude(ext)
+    if not vol_tags:
+        raise RuntimeError("geo sketch proxy extrude produced no volume.")
+    geo.translate([(3, vol_tags[0])], 0, 0, -float(depth) / 2.0)
+    geo.synchronize()
+    print(
+        f"[diag] sketch geo proxy body: {profile_kind} rx={rx*1000:.1f}mm ry={ry*1000:.1f}mm "
+        f"depth={depth*1000:.1f}mm volume={vol_tags[0]}"
+    )
+    return vol_tags[0]
+
+
 def _occ_extrude_shell_volume(surface_tag: int, dz: float, z_shift: float) -> int:
     """Extrude an OCC 2D profile surface to a 3D volume."""
     occ = gmsh.model.occ
@@ -517,7 +551,10 @@ def create_guitar_mesh():
         gmsh.option.setNumber("Geometry.OCCFixSmallEdges", 1)
         gmsh.option.setNumber("Geometry.OCCFixSmallFaces", 1)
     if sketch_use_geo:
-        print("[diag] CAD kernel fork: sketch → gmsh.model.geo (solid preview, no OCC booleans)")
+        print(
+            "[diag] CAD kernel fork: sketch → gmsh.model.geo "
+            "(convex ellipse proxy — no template polyline / no OCC)"
+        )
     else:
         print(f"[diag] CAD kernel fork: {mode} → gmsh.model.occ (hollow/FSI booleans)")
 
@@ -531,7 +568,7 @@ def create_guitar_mesh():
         wall_offset: float = 0.0,
         point_lc: Optional[float] = None,
     ) -> int:
-        """Normalized template → closed ring → geo (sketch) or OCC (display/FOM) surface."""
+        """Engineering (display/FOM): Classical template → OCC closed profile surface."""
         lc = float(point_lc if point_lc is not None else mesh_size)
         half = _stabilize_half_profile(
             warp_template_half_profile(
@@ -546,14 +583,6 @@ def create_guitar_mesh():
         full_ring_points = _full_ring_points_from_half(half, n_side_max=40)
         clean_ring_points = _filter_ring_min_spacing(full_ring_points, min_dist=1e-4)
         _verify_perimeter_ring(clean_ring_points)
-
-        if sketch_use_geo:
-            surface_tag = _geo_closed_polyline_surface(clean_ring_points, lc)
-            print(
-                f"[diag] template profile (geo sketch): ring_in={len(full_ring_points)} "
-                f"perimeter_pts={len(clean_ring_points)} surface={surface_tag}"
-            )
-            return surface_tag
 
         p_tags: List[int] = [
             int(gmsh.model.occ.addPoint(pt[0], pt[1], 0.0, lc)) for pt in clean_ring_points
@@ -600,6 +629,13 @@ def create_guitar_mesh():
         return {tag for bdim, tag in bnds if bdim == 0}
 
     def _entity_center_of_mass(dim: int, entity_tag: int) -> Tuple[float, float, float]:
+        if sketch_use_geo:
+            bb = gmsh.model.getBoundingBox(int(dim), int(entity_tag))
+            return (
+                0.5 * (bb[0] + bb[3]),
+                0.5 * (bb[1] + bb[4]),
+                0.5 * (bb[2] + bb[5]),
+            )
         try:
             com = occ.getCenterOfMass(int(dim), int(entity_tag))
             return (float(com[0]), float(com[1]), float(com[2]))
@@ -729,26 +765,11 @@ def create_guitar_mesh():
         if _is_box_shape(shape_type):
             vol_out_id = _geo_box_volume(L, W, D)
         else:
-            profile_template = _template_for_shape(shape_type)
-            profile_lc = mesh_size
-            print(
-                f"[diag] template engine: shape={shape_type!r} n_pts={len(profile_template)} "
-                f"upper={upper_bout:.4f} waist={waist:.4f} lower={lower_bout:.4f} lc={profile_lc*1000:.1f}mm"
-            )
-            surf_out = create_template_profile_surface(
-                length=L,
-                upper_bout=upper_bout,
-                waist=waist,
-                lower_bout=lower_bout,
-                template=profile_template,
-                wall_offset=0.0,
-                point_lc=profile_lc,
-            )
-            vol_out_id = _geo_extrude_shell_volume(surf_out, D, -D / 2.0)
+            vol_out_id = _geo_sketch_proxy_ellipse_volume(L, W, D, mesh_size)
         vol_in_id = vol_out_id
         print(
             f"[diag] sketch geo solid: volume={vol_out_id} "
-            "(no OCC inner shell / soundhole cut)"
+            "(proxy body — template spline deferred to display/FOM OCC)"
         )
     elif _is_box_shape(shape_type):
         vol_out_id = occ.addBox(-L/2, -W/2, -D/2, L, W, D)
