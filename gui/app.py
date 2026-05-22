@@ -71,10 +71,12 @@ if CONFIG_PATH.exists():
     except:
         pass
 
-# Physical tags in Gmsh mesh (must match FEM geometry protocol).
+# 2D facet physical tags from build_3d_guitar.py (must match FEM geometry protocol).
 TAG_TOP_PLATE = 1
 TAG_SOUNDHOLE = 2
-TAG_BACK_SIDES = 3
+TAG_BACK_PLATE = 3
+TAG_RIBS = 4
+TAG_AIR = 10  # volume / cavity — never rendered in live preview
 
 NOTES_DICT = {
     "E2": 82.41, "A2": 110.00, "D3": 146.83, "G3": 196.00, "B3": 246.94, "E4": 329.63
@@ -496,6 +498,66 @@ def save_cfg_from_state(
         json.dump(data, f, indent=4)
 
 
+def _load_guitar_surface_from_msh(msh_path: Path) -> Optional[Any]:
+    """
+    Load boundary triangles with 2D ``gmsh:physical`` facet tags (1/2/3/4).
+
+    PyVista volume + extract_surface maps 3D volume tags (1/2/3/10) and breaks
+    wood colormap — this path keeps the FEM facet protocol for rendering.
+    """
+    try:
+        import meshio
+    except ImportError:
+        meshio = None  # type: ignore[assignment]
+
+    if meshio is not None:
+        try:
+            msh = meshio.read(str(msh_path))
+            phys = msh.cell_data_dict.get("gmsh:physical")
+            tri = msh.get_cells_type("triangle")
+            if phys and tri is not None and len(tri) > 0:
+                tri_tags = phys.get("triangle")
+                if tri_tags is not None:
+                    tags = np.asarray(tri_tags, dtype=np.int32).ravel()
+                    keep = tags != TAG_AIR
+                    if keep.any():
+                        tri = np.asarray(tri, dtype=np.int64)[keep]
+                        tags = tags[keep]
+                    else:
+                        tri = np.asarray(tri, dtype=np.int64)
+                    faces = np.hstack(
+                        [np.full((tri.shape[0], 1), 3, dtype=np.int64), tri]
+                    ).ravel()
+                    poly = pv.PolyData(np.asarray(msh.points, dtype=np.float64), faces)
+                    poly.cell_data["gmsh:physical"] = tags
+                    poly.compute_normals(
+                        cell_normals=False,
+                        point_normals=True,
+                        feature_angle=30,
+                        split_vertices=True,
+                        inplace=True,
+                        auto_orient_normals=True,
+                    )
+                    return poly
+        except Exception:
+            pass
+
+    try:
+        mesh = pv.read(str(msh_path))
+        surface = mesh.extract_surface()
+        surface.compute_normals(
+            cell_normals=False,
+            point_normals=True,
+            feature_angle=30,
+            split_vertices=True,
+            inplace=True,
+            auto_orient_normals=True,
+        )
+        return surface
+    except Exception:
+        return None
+
+
 def _build_live_preview_surface(
     *,
     geom: Dict[str, Any],
@@ -510,20 +572,9 @@ def _build_live_preview_surface(
     """
     fp = _geometry_fingerprint(geom)
     if st.session_state.live_preview_fp == fp and PREVIEW_MESH_FILE.is_file():
-        try:
-            mesh = pv.read(str(PREVIEW_MESH_FILE))
-            surface = mesh.extract_surface()
-            surface.compute_normals(
-                cell_normals=False,
-                point_normals=True,
-                feature_angle=30,
-                split_vertices=True,
-                inplace=True,
-                auto_orient_normals=True,
-            )
-            return surface
-        except Exception:
-            pass
+        cached = _load_guitar_surface_from_msh(PREVIEW_MESH_FILE)
+        if cached is not None:
+            return cached
 
     save_cfg_from_state(
         geom=geom,
@@ -548,17 +599,7 @@ def _build_live_preview_surface(
         return None
 
     st.session_state.live_preview_fp = fp
-    mesh = pv.read(str(PREVIEW_MESH_FILE))
-    surface = mesh.extract_surface()
-    surface.compute_normals(
-        cell_normals=False,
-        point_normals=True,
-        feature_angle=30,
-        split_vertices=True,
-        inplace=True,
-        auto_orient_normals=True,
-    )
-    return surface
+    return _load_guitar_surface_from_msh(PREVIEW_MESH_FILE)
 
 
 def _render_pyvista_guitar(
@@ -573,36 +614,56 @@ def _render_pyvista_guitar(
     plotter = pv.Plotter(window_size=[1100, 620])
     plotter.background_color = "#f4f4f9"
 
+    def _add_part(mesh, mask, color: str, *, opacity: float = 1.0, edges: bool = False) -> bool:
+        if not np.any(mask):
+            return False
+        part = mesh.extract_cells(mask)
+        if part.n_cells <= 0:
+            return False
+        plotter.add_mesh(
+            part,
+            color=color,
+            opacity=opacity,
+            show_edges=edges,
+            edge_color="#2b1a10",
+            smooth_shading=True,
+            lighting=True,
+            scalar_bar_args=None,
+        )
+        return True
+
     def render_mesh_by_protocol(mesh, show_edges_flag: bool, top_c: str, back_c: str) -> bool:
         tags = mesh.cell_data.get("gmsh:physical")
         if tags is None:
             return False
+        tags = np.asarray(tags).ravel()
+        # Facet protocol: 1=top, 2=soundhole, 3=back, 4=ribs; hide air (10).
         is_top = tags == TAG_TOP_PLATE
         is_hole = tags == TAG_SOUNDHOLE
-        is_body = tags == TAG_BACK_SIDES
-        if not (is_top.any() or is_body.any() or is_hole.any()):
+        is_back_wood = (tags == TAG_BACK_PLATE) | (tags == TAG_RIBS)
+        if not (is_top.any() or is_back_wood.any() or is_hole.any()):
             return False
         rendered = False
-        if is_top.any():
-            top_m = mesh.extract_cells(is_top).extract_surface()
-            if top_m.n_cells > 0:
-                plotter.add_mesh(top_m, color=top_c, show_edges=show_edges_flag, edge_color="#2b1a10")
-                rendered = True
-        if is_body.any():
-            body_m = mesh.extract_cells(is_body).extract_surface()
-            if body_m.n_cells > 0:
-                plotter.add_mesh(body_m, color=back_c, show_edges=show_edges_flag, edge_color="#2b1a10")
-                rendered = True
-        if is_hole.any():
-            hole_m = mesh.extract_cells(is_hole).extract_surface()
-            if hole_m.n_cells > 0:
-                plotter.add_mesh(hole_m, color="#111111", opacity=0.45, show_edges=False)
-                rendered = True
+        rendered |= _add_part(mesh, is_top, top_c, edges=show_edges_flag)
+        rendered |= _add_part(mesh, is_back_wood, back_c, edges=show_edges_flag)
+        rendered |= _add_part(mesh, is_hole, "#111111", opacity=0.35, edges=False)
         return rendered
 
     if surface_mesh is not None:
+        for key in list(surface_mesh.cell_data.keys()):
+            if key != "gmsh:physical":
+                try:
+                    del surface_mesh.cell_data[key]
+                except Exception:
+                    pass
         if not render_mesh_by_protocol(surface_mesh, show_edges, top_color, back_color):
-            plotter.add_mesh(surface_mesh, color=back_color, show_edges=show_edges)
+            plotter.add_mesh(
+                surface_mesh,
+                color=back_color,
+                show_edges=show_edges,
+                smooth_shading=True,
+                scalar_bar_args=None,
+            )
     else:
         plotter.add_text("Preview unavailable", position="upper_left", font_size=12)
 
@@ -675,7 +736,15 @@ top_plot_color = plot_color_for_wood(top_wood_id)
 back_plot_color = plot_color_for_wood(back_wood_id)
 
 exploded = st.sidebar.checkbox("Exploded View", value=False)
-hr = st.sidebar.slider("Soundhole Radius (m)", 0.035, 0.055, 0.04)
+hr = st.sidebar.slider(
+    "Soundhole Radius (m)",
+    min_value=0.035,
+    max_value=0.055,
+    value=0.04,
+    step=0.0005,
+    format="%.4f",
+    help="Passed 1:1 to Gmsh as hole_radius (m).",
+)
 
 st.sidebar.header("2. Geometry")
 design_mode = st.sidebar.radio("Design Mode", ["Basic (Geometric)", "Professional (Luthier)"])

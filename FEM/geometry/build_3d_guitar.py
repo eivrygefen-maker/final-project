@@ -75,10 +75,11 @@ def create_guitar_mesh():
     air_threshold_size_min = 0.008   # 8 mm near wood (Helmholtz / hole region; bridges 6.5 mm shell)
     air_threshold_size_max = 0.080   # 80 mm far field
 
+    # Preview: identical CAD/booleans; only mesh sizing is coarser (not shape creation).
     if is_preview:
-        mesh_size = 0.030
-        mesh_size_min = mesh_size
-        mesh_size_max = mesh_size
+        mesh_size = 0.014
+        mesh_size_min = 0.006
+        mesh_size_max = 0.028
     else:
         mesh_size = wood_surface_size
         mesh_size_min = wood_thickness_size
@@ -93,9 +94,13 @@ def create_guitar_mesh():
         f"wood_surface_lc={wood_surface_size*1000:.1f}mm, wood_thickness_lc={wood_thickness_size*1000:.1f}mm"
     )
     print(f"[diag] preview_mode={is_preview}, FEM_ALLOW_PREVIEW={os.environ.get('FEM_ALLOW_PREVIEW', '0')}")
-    
+
     shy = (L / 2) + (L * 0.02)
-    hr = min(hr, W * 0.40)    
+    hr_requested = float(hr)
+    hr_max = min(float(W), float(L)) * 0.45
+    hr = max(1.0e-4, min(hr_requested, hr_max))
+    if abs(hr - hr_requested) > 1.0e-9:
+        print(f"[diag] hole_radius clamped {hr_requested:.6f} -> {hr:.6f} m (max={hr_max:.6f})")
 
     gmsh.initialize(sys.argv)
     gmsh.model.add("Guitar3D_Performance_Optimized")
@@ -209,7 +214,8 @@ def create_guitar_mesh():
         vol_in_id = occ.addBox(-L/2+t, -W/2+t, -D/2+t, L-2*t, W-2*t, D-2*t)
     else:
         is_dread = "Dreadnought" in shape_type
-        profile_lc = mesh_size if is_preview else wood_surface_size
+        # Fine spline control points even in preview (silhouette fidelity).
+        profile_lc = wood_surface_size
         surf_out = create_guitar_profile(L, W, is_dread, 0, point_lc=profile_lc)
         # OCC extrude: numElements may be ignored by OpenCASCADE; thickness resolution is enforced via
         # curve/field sizing below. When supported, [3] requests prism stacks along the extrusion axis.
@@ -426,7 +432,7 @@ def create_guitar_mesh():
 
     # Soundhole: z = D/2 plane + hole disk (union of wood/air exterior shells).
     z_top_outer = D / 2.0
-    z_tol = max(2.0e-4, 2.0 * t, 0.05 * hr)
+    z_tol = max(1.0e-4, t, 0.25 * hr)
     all_shell_surfs = sorted(set(wood_boundary_surfs) | set(air_boundary_surfs))
     soundhole_surfs = _select_soundhole_surfaces(
         all_shell_surfs, z_top_outer, z_tol, hole_x, hole_y, hr
@@ -590,6 +596,18 @@ def create_guitar_mesh():
     gmsh.model.mesh.setOrder(1)
     mesh_resolution_factor = 1.0
     print(f"[diag] mesh_resolution_factor={mesh_resolution_factor}")
+
+    if is_preview:
+        preview_hole_lc = max(0.006, min(mesh_size, 0.45 * hr))
+        for s in soundhole_surfs:
+            try:
+                gmsh.model.mesh.setSize(2, int(s), preview_hole_lc)
+            except Exception:
+                pass
+        print(
+            f"[diag] preview local sizing: global_lc={mesh_size*1000:.1f}mm, "
+            f"soundhole_lc={preview_hole_lc*1000:.1f}mm, hole_r={hr*1000:.1f}mm"
+        )
 
     # Deep-probe overrides: force background field dominance.
     gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
