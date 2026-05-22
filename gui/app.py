@@ -643,7 +643,7 @@ def main() -> None:
                 st.caption(f"Display mesh (`display_mesh.msh`, lc=4 mm){n} — ROM/FOM acoustics ready.")
             elif st.session_state.acoustics_pending:
                 st.caption(f"Display mesh (`display_mesh.msh`){n} — computing acoustics…")
-    else:
+            else:
                 st.caption(f"Display mesh (`display_mesh.msh`){n}.")
         else:
             st.caption("Sketch mode (`preview_mesh.msh`, lc≈30 mm) — Save Changes for display + acoustics.")
