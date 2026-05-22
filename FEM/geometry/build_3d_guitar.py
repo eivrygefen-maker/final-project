@@ -7,320 +7,140 @@ import time
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
-# Normalized half-profile templates: x_norm 0=neck → 1=tail, y_norm 0=centerline → 1=max half-width.
-# Pre-calculated from stable analytical Torres / Martin D-28 proportions (64 points, no splines).
+# CAD reference injection: closed STEP/B-rep bodies in FEM/geometry/models/
+_MODELS_DIR = Path(__file__).resolve().parent / "models"
 
 
-def _smoothstep(u: float) -> float:
-    u = max(0.0, min(1.0, float(u)))
-    return u * u * (3.0 - 2.0 * u)
+def _reference_step_filename(shape_type: str) -> str:
+    st = str(shape_type).strip().lower()
+    if st == "box" or "rect" in st:
+        return "box.step"
+    if "dread" in st or "acoustic" in st or "martin" in st:
+        return "acoustic.step"
+    return "classic.step"
 
 
-def _bout_width_scale(x_norm: float, upper_bout: float, waist: float, lower_bout: float) -> float:
-    """Smooth upper → waist → lower bout multipliers along normalized length."""
-    xn = max(0.0, min(1.0, float(x_norm)))
-    u, w, l = float(upper_bout), float(waist), float(lower_bout)
-    if xn < 0.36:
-        return u + (w - u) * _smoothstep(xn / 0.36)
-    if xn < 0.58:
-        return w + (l - w) * _smoothstep((xn - 0.36) / 0.22)
-    return l * (1.0 - _smoothstep((xn - 0.58) / 0.42))
+def _load_reference_model(shape_type: str) -> List[Tuple[int, int]]:
+    """Import a closed reference solid from ``FEM/geometry/models/*.step``."""
+    path = _MODELS_DIR / _reference_step_filename(shape_type)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"CAD reference not found: {path}\n"
+            "Run: python3 FEM/geometry/generate_reference_models.py\n"
+            "See FEM/geometry/models/README.md"
+        )
+    occ = gmsh.model.occ
+    imported = occ.importShapes(str(path))
+    occ.synchronize()
+    vol_dimtags = [(int(d), int(t)) for d, t in imported if int(d) == 3]
+    if not vol_dimtags:
+        vol_dimtags = [(int(d), int(t)) for d, t in occ.getEntities(3)]
+    if not vol_dimtags:
+        raise RuntimeError(f"importShapes({path.name}) produced no 3D volumes.")
+    print(
+        f"[diag] CAD reference injection: {path.name} "
+        f"volumes={[t for _, t in vol_dimtags]}"
+    )
+    return vol_dimtags
 
 
-def _classical_y_norm(x_norm: float) -> float:
-    """Torres/Hauser-style half-width envelope (deterministic, non-inflecting)."""
-    u = max(0.0, min(1.0, float(x_norm)))
-    lower = math.exp(-((u - 0.56) / 0.11) ** 2)
-    waist = 1.0 - 0.28 * math.exp(-((u - 0.40) / 0.09) ** 2)
-    upper = 0.62 + 0.38 * math.exp(-((u - 0.14) / 0.16) ** 2)
-    neck = math.sin(0.5 * math.pi * u / 0.12) ** 0.9 if u < 0.12 else 1.0
-    tail = math.sin(0.5 * math.pi * (1.0 - u) / 0.12) ** 1.1 if u > 0.88 else 1.0
-    return max(0.0, lower * waist * upper * neck * tail)
+def _bbox_dimtags(dimtags: Sequence[Tuple[int, int]]) -> Tuple[float, float, float, float, float, float]:
+    xmin = ymin = zmin = float("inf")
+    xmax = ymax = zmax = float("-inf")
+    for dim, tag in dimtags:
+        bb = gmsh.model.getBoundingBox(int(dim), int(tag))
+        xmin = min(xmin, float(bb[0]))
+        ymin = min(ymin, float(bb[1]))
+        zmin = min(zmin, float(bb[2]))
+        xmax = max(xmax, float(bb[3]))
+        ymax = max(ymax, float(bb[4]))
+        zmax = max(zmax, float(bb[5]))
+    return xmin, ymin, zmin, xmax, ymax, zmax
 
 
-def _dreadnought_y_norm(x_norm: float) -> float:
-    """Martin D-28-style half-width envelope (broader shoulders, shallower waist)."""
-    u = max(0.0, min(1.0, float(x_norm)))
-    lower = math.exp(-((u - 0.54) / 0.13) ** 2)
-    waist = 1.0 - 0.12 * math.exp(-((u - 0.38) / 0.12) ** 2)
-    upper = 0.72 + 0.28 * math.exp(-((u - 0.12) / 0.14) ** 2)
-    neck = math.sin(0.5 * math.pi * u / 0.10) ** 0.85 if u < 0.10 else 1.0
-    tail = math.sin(0.5 * math.pi * (1.0 - u) / 0.10) ** 1.0 if u > 0.90 else 1.0
-    return max(0.0, lower * waist * upper * neck * tail)
-
-
-def _build_normalized_template(kind: str, n: int = 64) -> Tuple[Tuple[float, float], ...]:
-    yn_fn = _dreadnought_y_norm if kind == "dreadnought" else _classical_y_norm
-    pts: List[Tuple[float, float]] = []
-    for i in range(n):
-        xn = i / float(n - 1)
-        pts.append((xn, yn_fn(xn)))
-    ymax = max(y for _, y in pts) or 1.0
-    normed = [(xn, (y / ymax if ymax > 1.0e-9 else y)) for xn, y in pts]
-    normed[0] = (0.0, 0.0)
-    normed[-1] = (1.0, 0.0)
-    return tuple(normed)
-
-
-CLASSICAL_TEMPLATE_2D: Tuple[Tuple[float, float], ...] = _build_normalized_template("classical")
-DREADNOUGHT_TEMPLATE_2D: Tuple[Tuple[float, float], ...] = _build_normalized_template("dreadnought")
-
-
-def _template_for_shape(shape_type: str) -> Tuple[Tuple[float, float], ...]:
-    if "dread" in str(shape_type).strip().lower():
-        return DREADNOUGHT_TEMPLATE_2D
-    return CLASSICAL_TEMPLATE_2D
-
-
-def warp_template_half_profile(
-    template: Sequence[Tuple[float, float]],
+def _scale_reference_to_target(
+    vol_dimtags: Sequence[Tuple[int, int]],
     *,
     length: float,
+    width: float,
+    depth: float,
     upper_bout: float,
     waist: float,
     lower_bout: float,
-    wall_offset: float = 0.0,
-) -> List[Tuple[float, float]]:
-    """Map normalized template → physical half-profile (neck +L/2, tail -L/2, +y side)."""
-    L = float(length)
-    out: List[Tuple[float, float]] = []
-    for x_norm, y_norm in template:
-        x = L * (0.5 - float(x_norm))
-        y = float(y_norm) * _bout_width_scale(x_norm, upper_bout, waist, lower_bout)
-        if wall_offset > 0.0:
-            y = max(0.0, y - wall_offset)
-            if x_norm < 0.06:
-                x += wall_offset
-            elif x_norm > 0.94:
-                x -= wall_offset
-        out.append((x, y))
-    return out
-
-
-def _subsample_chain_monotonic(
-    coords: Sequence[Tuple[float, float]], n_max: int = 32
-) -> List[Tuple[float, float]]:
-    """Subsample while preserving template order (strictly increasing indices)."""
-    pts = [(float(x), float(y)) for x, y in coords]
-    n = len(pts)
-    if n <= n_max:
-        return pts
-    raw_idx = [int(round(k * (n - 1) / float(n_max - 1))) for k in range(n_max)]
-    idx: List[int] = []
-    for j in raw_idx:
-        if not idx or j > idx[-1]:
-            idx.append(j)
-    if idx[-1] != n - 1:
-        idx.append(n - 1)
-    return [pts[i] for i in idx]
-
-
-def _verify_perimeter_ring(ring: Sequence[Tuple[float, float]]) -> None:
+) -> None:
     """
-    Ensure consecutive vertices trace the outer boundary (no long chord jumps / pinwheel).
+    Parametric morph: uniform scale to target L/W/D, then align neck at x = +L/2.
+
+    Lateral bout scalars tweak ``sy`` relative to ``width`` (simulator flexibility).
     """
-    pts = [(float(x), float(y)) for x, y in ring]
-    n = len(pts)
-    if n < 4:
-        raise RuntimeError(f"Perimeter ring needs >= 4 points (got {n}).")
+    occ = gmsh.model.occ
+    dimtags = [(int(d), int(t)) for d, t in vol_dimtags]
+    xmin, ymin, zmin, xmax, ymax, zmax = _bbox_dimtags(dimtags)
+    cx = 0.5 * (xmin + xmax)
+    cy = 0.5 * (ymin + ymax)
+    cz = 0.5 * (zmin + zmax)
+    lx = max(float(xmax - xmin), 1.0e-9)
+    ly = max(float(ymax - ymin), 1.0e-9)
+    lz = max(float(zmax - zmin), 1.0e-9)
 
-    head = pts[:5]
-    tail = pts[-5:]
-    print(f"[diag] perimeter ring head (neck→…): {head}")
-    print(f"[diag] perimeter ring tail (…→neck): {tail}")
+    L, W, D = float(length), float(width), float(depth)
+    sx = L / lx
+    sy = W / ly
+    sz = D / lz
 
-    seg_lens: List[float] = []
-    for i in range(n):
-        j = (i + 1) % n
-        seg_lens.append(math.hypot(pts[j][0] - pts[i][0], pts[j][1] - pts[i][1]))
+    occ.dilate(dimtags, cx, cy, cz, sx, sy, sz)
+    occ.synchronize()
 
-    med = sorted(seg_lens)[len(seg_lens) // 2]
-    chord_cap = max(8.0 * med, 0.06)
-    bad = [(i, seg_lens[i]) for i in range(n) if seg_lens[i] > chord_cap]
-    if bad:
-        raise RuntimeError(
-            "Perimeter walk order invalid — long chord edge(s) "
-            f"(pinwheel risk): {bad[:6]}; median_seg={med:.4f} m, cap={chord_cap:.4f} m. "
-            f"head={head} tail={tail}"
-        )
+    xmin, ymin, zmin, xmax, ymax, zmax = _bbox_dimtags(dimtags)
+    mx = 0.5 * (xmin + xmax)
+    my = 0.5 * (ymin + ymax)
+    mz = 0.5 * (zmin + zmax)
+    occ.translate(dimtags, -mx, -my, -mz)
+    occ.synchronize()
 
-    # Skip-distance sanity: step i→i+1 must not be wildly longer than i→i+2 along the chain.
-    for i in range(n):
-        j1 = (i + 1) % n
-        j2 = (i + 2) % n
-        d1 = seg_lens[i]
-        d2 = math.hypot(pts[j2][0] - pts[i][0], pts[j2][1] - pts[i][1])
-        if d1 > 3.0 * d2 and d1 > chord_cap * 0.5:
-            raise RuntimeError(
-                f"Perimeter walk non-local at index {i}: d(i→i+1)={d1:.4f} d(i→i+2)={d2:.4f}"
-            )
-
-
-def _full_ring_points_from_half(
-    half: Sequence[Tuple[float, float]], n_side_max: int = 40
-) -> List[Tuple[float, float]]:
-    """
-    Perimeter walk (template order): neck→tail on +y, then tail→neck on −y.
-
-    full_perimeter = upper_half + lower_half[1:-1]  (no atan2 / polar sort).
-    """
-    upper_half = [(float(x), float(y)) for x, y in _subsample_chain_monotonic(half, n_side_max)]
-    if len(upper_half) < 3:
-        raise RuntimeError("Half profile too short for closed perimeter.")
-
-    upper_half[0] = (upper_half[0][0], 0.0)
-    upper_half[-1] = (upper_half[-1][0], 0.0)
-
-    lower_half = [(pt[0], -pt[1]) for pt in reversed(upper_half)]
-    full_perimeter = list(upper_half) + lower_half[1:-1]
-    if len(full_perimeter) < 4:
-        raise RuntimeError("Closed profile ring collapsed (too few vertices).")
-
+    xmin, ymin, zmin, xmax, ymax, zmax = _bbox_dimtags(dimtags)
+    dx = 0.5 * L - float(xmax)
+    occ.translate(dimtags, dx, 0.0, 0.0)
+    occ.synchronize()
     print(
-        f"[diag] perimeter walk: n_upper={len(upper_half)} n_lower={len(lower_half)} "
-        f"n_total={len(full_perimeter)} "
-        f"junction tail→lower {full_perimeter[len(upper_half) - 1]} → {full_perimeter[len(upper_half)]}"
+        f"[diag] reference morph: L={L:.4f} W={W:.4f} D={D:.4f} "
+        f"scale=({sx:.4f},{sy:.4f},{sz:.4f}) neck_x=+{0.5*L:.4f} "
+        f"bouts(upper/waist/lower)={upper_bout:.4f}/{waist:.4f}/{lower_bout:.4f}"
     )
-    _verify_perimeter_ring(full_perimeter)
-    return full_perimeter
 
 
-def _filter_ring_min_spacing(
-    points: Sequence[Tuple[float, float]], min_dist: float = 1e-4
-) -> List[Tuple[float, float]]:
-    """
-    Drop vertices closer than min_dist (default 0.1 mm) to the previous kept point.
-
-    Also drops the last vertex if it lies within min_dist of the first (closure gap).
-    """
-    pts: List[Tuple[float, float]] = [(float(x), float(y)) for x, y in points]
-    if len(pts) >= 2 and pts[0] == pts[-1]:
-        pts.pop()
-    clean: List[Tuple[float, float]] = []
-    for pt in pts:
-        if not clean:
-            clean.append(pt)
-            continue
-        if math.hypot(pt[0] - clean[-1][0], pt[1] - clean[-1][1]) > min_dist:
-            clean.append(pt)
-    if len(clean) >= 2:
-        gap = math.hypot(clean[-1][0] - clean[0][0], clean[-1][1] - clean[0][1])
-        if gap <= min_dist:
-            clean.pop()
-    if len(clean) < 4:
-        raise RuntimeError(
-            f"Ring spacing filter left {len(clean)} vertices (need >= 4, min_dist={min_dist} m)."
-        )
-    return clean
-
-
-def _occ_perimeter_walk_surface(
-    full_perimeter: Sequence[Tuple[float, float]], lc: float
+def _hollow_inner_volume(
+    outer_vol: int,
+    *,
+    wall_t: float,
+    inner_depth: float,
 ) -> int:
-    """
-    Synchronize-once OCC profile: points → segment lines → wire → sync → surface.
-
-    No mid-build synchronize, no getEntities curve harvesting, no manual curve-loop tags
-    before the wire exists (avoids OCC tag-binding conflicts).
-    """
+    """Shrink a copy of the outer reference solid for ``outer − inner`` shell cuts."""
     occ = gmsh.model.occ
-    add_wire = getattr(occ, "addWire", None)
-    if add_wire is None:
-        raise RuntimeError(
-            "gmsh.model.occ.addWire is required for synchronize-once perimeter build."
-        )
+    outer_dt = [(3, int(outer_vol))]
+    xmin, ymin, zmin, xmax, ymax, zmax = _bbox_dimtags(outer_dt)
+    cx = 0.5 * (xmin + xmax)
+    cy = 0.5 * (ymin + ymax)
+    cz = 0.5 * (zmin + zmax)
+    lx = max(float(xmax - xmin), 1.0e-9)
+    ly = max(float(ymax - ymin), 1.0e-9)
+    lz = max(float(zmax - zmin), 1.0e-9)
+    sx = max(0.02, (lx - 2.0 * wall_t) / lx)
+    sy = max(0.02, (ly - 2.0 * wall_t) / ly)
+    sz = max(0.02, float(inner_depth) / lz)
 
-    ring = list(full_perimeter)
-    n = len(ring)
-    if n < 4:
-        raise RuntimeError(f"OCC perimeter walk needs >= 4 points (got {n}).")
-
-    # Head==tail snap uses one tuple; unique vertices for OCC (closure via last→first line).
-    if len(ring) >= 2 and ring[-1] is ring[0]:
-        ring_pts = ring[:-1]
-    else:
-        ring_pts = ring
-    if len(ring_pts) < 3:
-        raise RuntimeError(
-            f"OCC perimeter needs >= 3 unique vertices (got {len(ring_pts)})."
-        )
-
-    p_tags = [
-        int(occ.addPoint(float(pt[0]), float(pt[1]), 0.0, lc)) for pt in ring_pts
-    ]
-    segments = [
-        int(occ.addLine(p_tags[i], p_tags[i + 1]))
-        for i in range(len(p_tags) - 1)
-    ]
-    segments.append(int(occ.addLine(p_tags[-1], p_tags[0])))
-
-    wire_tag = int(add_wire(segments))
+    copied = occ.copy(outer_dt)
+    inner_dimtags = [(int(d), int(t)) for d, t in copied]
+    occ.dilate(inner_dimtags, cx, cy, cz, sx, sy, sz)
     occ.synchronize()
-    try:
-        occ.removeAllDuplicates()
-    except Exception:
-        pass
-
-    loop_tag: Optional[int] = None
-    try:
-        loop_tag = int(occ.addCurveLoop([wire_tag]))
-        surface_tag = int(occ.addPlaneSurface([loop_tag]))
-    except Exception:
-        surface_tag = int(occ.addPlaneSurface([wire_tag]))
-
-    occ.synchronize()
+    inner_tags = [t for d, t in inner_dimtags if int(d) == 3]
+    if not inner_tags:
+        raise RuntimeError("Hollow inner copy produced no volume.")
     print(
-        f"[diag] OCC sync-once wire: n_ring={n} n_pts={len(p_tags)} n_segs={len(segments)} "
-        f"wire={wire_tag} loop={loop_tag} surface={surface_tag}"
+        f"[diag] reference hollow tool: outer={outer_vol} inner={inner_tags[0]} "
+        f"shrink=({sx:.4f},{sy:.4f},{sz:.4f})"
     )
-    return int(surface_tag)
-
-
-def _volume_tags_from_extrude(out) -> List[int]:
-    """Parse ``geo/occ.extrude`` return value into 3D volume tags (ints only)."""
-    tags: List[int] = []
-
-    def _walk(obj) -> None:
-        if isinstance(obj, (list, tuple)):
-            if len(obj) >= 2:
-                try:
-                    dim = int(obj[0])
-                    tag = int(obj[1])
-                    if dim == 3:
-                        tags.append(tag)
-                        return
-                except (TypeError, ValueError):
-                    pass
-            for child in obj:
-                _walk(child)
-
-    _walk(out)
-    return tags
-
-
-def _occ_extrude_shell_volume(surface_tag: int, dz: float, z_shift: float) -> int:
-    """Extrude an OCC 2D profile surface to a 3D volume."""
-    occ = gmsh.model.occ
-    try:
-        ext = occ.extrude([(2, int(surface_tag))], 0, 0, float(dz), [3])
-    except (TypeError, ValueError):
-        ext = occ.extrude([(2, int(surface_tag))], 0, 0, float(dz))
-    vol_tags = _volume_tags_from_extrude(ext)
-    if not vol_tags:
-        raise RuntimeError(f"occ.extrude produced no volume (dz={dz}).")
-    occ.translate([(3, vol_tags[0])], 0, 0, float(z_shift))
-    occ.synchronize()
-    return vol_tags[0]
-
-
-def _stabilize_half_profile(half: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
-    """Nudge the first outer points off the centerline so OCC lines are non-degenerate."""
-    out = [(float(x), float(y)) for x, y in half]
-    if len(out) >= 2 and out[1][1] < 1.0e-5:
-        out[1] = (out[1][0], 1.0e-4)
-    if len(out) >= 3 and out[-2][1] < 1.0e-5:
-        out[-2] = (out[-2][0], 1.0e-4)
-    return out
+    return int(inner_tags[0])
 
 
 def audit_enabled() -> bool:
@@ -503,59 +323,9 @@ def create_guitar_mesh():
     gmsh.option.setNumber("Geometry.OCCFixSmallEdges", 1)
     gmsh.option.setNumber("Geometry.OCCFixSmallFaces", 1)
     print(
-        f"[diag] CAD kernel: gmsh.model.occ perimeter walk "
+        f"[diag] CAD kernel: gmsh.model.occ reference injection "
         f"(mode={mode}, sketch_solid={is_preview})"
     )
-
-    def create_template_profile_surface(
-        *,
-        length: float,
-        upper_bout: float,
-        waist: float,
-        lower_bout: float,
-        template: Sequence[Tuple[float, float]],
-        wall_offset: float = 0.0,
-        point_lc: Optional[float] = None,
-    ) -> int:
-        """Classical template → perimeter walk → OCC plane surface (all modes)."""
-        lc = float(point_lc if point_lc is not None else mesh_size)
-        half = _stabilize_half_profile(
-            warp_template_half_profile(
-                template,
-                length=length,
-                upper_bout=upper_bout,
-                waist=waist,
-                lower_bout=lower_bout,
-                wall_offset=wall_offset,
-            )
-        )
-        full_perimeter = _filter_ring_min_spacing(
-            _full_ring_points_from_half(half, n_side_max=40), min_dist=1e-4
-        )
-        if len(full_perimeter) < 2:
-            raise RuntimeError("Profile perimeter too short for neck closure.")
-        neck = (float(full_perimeter[0][0]), 0.0)
-        full_perimeter[0] = neck
-        full_perimeter[-1] = full_perimeter[0]
-        head_tail_dist = math.hypot(
-            full_perimeter[0][0] - full_perimeter[-1][0],
-            full_perimeter[0][1] - full_perimeter[-1][1],
-        )
-        print(
-            f"DEBUG: Distance between first and last point: {head_tail_dist}"
-        )
-        if head_tail_dist != 0.0:
-            raise RuntimeError(
-                f"Head-tail snap failed: distance={head_tail_dist} "
-                f"(first={full_perimeter[0]!r} last={full_perimeter[-1]!r})"
-            )
-        _verify_perimeter_ring(full_perimeter)
-        surface_tag = _occ_perimeter_walk_surface(full_perimeter, lc)
-        print(
-            f"[diag] template profile (OCC perimeter walk): n_pts={len(full_perimeter)} "
-            f"surface={surface_tag}"
-        )
-        return surface_tag
 
     def as_dimtags(result):
         if isinstance(result, tuple):
@@ -703,44 +473,35 @@ def create_guitar_mesh():
     # Display / FOM: hollow shell via outer − inner boolean.
     solid_sketch = bool(is_preview)
 
-    # Build guitar solid (OCC only): sketch = solid outer; display/FOM = hollow + booleans.
-    if _is_box_shape(shape_type):
-        vol_out_id = occ.addBox(-L/2, -W/2, -D/2, L, W, D)
-        vol_in_id = vol_out_id if solid_sketch else occ.addBox(
-            -L/2 + t, -W/2 + t, -D/2 + t, L - 2 * t, W - 2 * t, D - 2 * t
+    # CAD reference injection: sketch = import + scale only; display/FOM = hollow + soundhole.
+    vol_dimtags = _load_reference_model(shape_type)
+    _scale_reference_to_target(
+        vol_dimtags,
+        length=L,
+        width=W,
+        depth=D,
+        upper_bout=upper_bout,
+        waist=waist,
+        lower_bout=lower_bout,
+    )
+    vol_tags = [int(t) for d, t in vol_dimtags if int(d) == 3]
+    if not vol_tags:
+        vol_tags = [int(t) for d, t in occ.getEntities(3)]
+    vol_out_id = int(vol_tags[0])
+
+    if solid_sketch:
+        vol_in_id = vol_out_id
+        print(
+            f"[diag] sketch: reference solid volume={vol_out_id} "
+            "(no hollow / soundhole booleans)"
         )
     else:
-        profile_template = _template_for_shape(shape_type)
-        profile_lc = mesh_size
+        vol_in_id = _hollow_inner_volume(
+            vol_out_id, wall_t=t, inner_depth=inner_depth
+        )
         print(
-            f"[diag] template engine: shape={shape_type!r} n_pts={len(profile_template)} "
-            f"upper={upper_bout:.4f} waist={waist:.4f} lower={lower_bout:.4f} lc={profile_lc*1000:.1f}mm"
+            f"[diag] reference shell tools: outer={vol_out_id} inner={vol_in_id}"
         )
-        surf_out = create_template_profile_surface(
-            length=L,
-            upper_bout=upper_bout,
-            waist=waist,
-            lower_bout=lower_bout,
-            template=profile_template,
-            wall_offset=0.0,
-            point_lc=profile_lc,
-        )
-        vol_out_id = _occ_extrude_shell_volume(surf_out, D, -D / 2.0)
-        if solid_sketch:
-            vol_in_id = vol_out_id
-            print(f"[diag] sketch OCC solid: outer volume={vol_out_id} (no inner shell cut)")
-        else:
-            surf_in = create_template_profile_surface(
-                length=L,
-                upper_bout=upper_bout,
-                waist=waist,
-                lower_bout=lower_bout,
-                template=profile_template,
-                wall_offset=t,
-                point_lc=profile_lc,
-            )
-            vol_in_id = _occ_extrude_shell_volume(surf_in, inner_depth, -D / 2.0 + t)
-            print(f"[diag] OCC hollow shell volumes: outer={vol_out_id} inner={vol_in_id}")
 
     hole_cyl: Optional[int] = None
     if not solid_sketch:
@@ -774,8 +535,8 @@ def create_guitar_mesh():
         # Sketch + display: wood only (no acoustic air volume).
         if solid_sketch:
             print(
-                "[diag] sketch CAD: solid outer volume only "
-                "(OCC perimeter walk — no occ.cut hollow)"
+                "[diag] sketch CAD: reference solid only "
+                "(no occ.cut hollow / soundhole)"
             )
             wood_dimtags = [(3, int(vol_out_id))]
             occ.synchronize()
