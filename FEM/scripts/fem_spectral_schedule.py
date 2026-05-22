@@ -3,11 +3,13 @@
 Overlapping spectral bands for multi-shift FSI harvest (60–550 Hz).
 
 Each band defines a worker ``target_hz`` (scheduler shift center), an ST σ, and
-overlapping harvest windows on ``[hz_min, hz_max]``. Below ~480 Hz, σ is placed
-**outside** the harvest window so σ-Ritz does not dominate the band. At ultra-HF
-(≥480 Hz), σ tracks **inside** the harvest window near the target so sinvert-mapped
-Ritz pairs land in ``[harvest_lo_hz, harvest_hi_hz]`` (σ below the window pins every
-invert mode at e.g. 480 Hz while the harvest band is [492, 550]).
+overlapping harvest windows on ``[hz_min, hz_max]``. Below **250 Hz**, σ is placed **outside** the harvest window so σ-Ritz does not
+dominate the band. From **250 Hz** upward (including mid-band centers 250–442 Hz),
+σ tracks **inside** the harvest window near the target so sinvert-mapped Ritz pairs
+land in ``[harvest_lo_hz, harvest_hi_hz]``. With spectrum slicing (one worker per
+band), σ below the window pins every invert mode at e.g. 192 Hz while harvest is
+[204, 296] → ``outside_window`` and zero yield. Ultra-HF (≥480 Hz) keeps stronger
+solver stabilizers.
 """
 from __future__ import annotations
 
@@ -24,6 +26,8 @@ SPECTRAL_BAND_HALF_HZ = 46.0
 
 # High-frequency stability (MUMPS INFOG=-10 near ~450–550 Hz).
 HF_STABILITY_THRESHOLD_HZ = 400.0
+# In-window σ + in-window σ-retry ladder (spectrum slice needs per-band EPS yield).
+SIGMA_TRACK_IN_WINDOW_MIN_HZ = 250.0
 ULTRA_HF_STABILITY_THRESHOLD_HZ = 480.0
 
 # SLEPc quota for dense HF spectrum (still capped by VM LU memory in master).
@@ -235,8 +239,8 @@ def primary_sigma_offset_hz_outside_harvest(
     """
     Offset (Hz) for ``eps_st_sigma_primary_offset_hz``.
 
-    Ultra-HF (≥480 Hz): σ inside ``[lo, hi]`` near ``target_hz`` so mapped modes fall in
-    the harvest window. Lower bands: σ outside ``[lo, hi]`` (below ``lo`` preferred).
+    Targets ≥ ``SIGMA_TRACK_IN_WINDOW_MIN_HZ``: σ inside ``[lo, hi]`` near ``target_hz``
+    so mapped modes fall in the harvest window. Lower bands: σ outside ``[lo, hi]``.
     """
     target = float(target_hz)
     lo = float(harvest_lo_hz)
@@ -245,7 +249,7 @@ def primary_sigma_offset_hz_outside_harvest(
     sigma_floor = max(1.0, float(ST_SIGMA_HZ_FLOOR))
     sigma_ceil = max(sigma_floor, float(ST_SIGMA_HZ_CEILING))
 
-    if target >= ULTRA_HF_STABILITY_THRESHOLD_HZ:
+    if target >= SIGMA_TRACK_IN_WINDOW_MIN_HZ:
         sigma_track = _ultra_hf_sigma_track_hz(
             target, lo, hi, margin_hz=margin
         )
@@ -415,7 +419,7 @@ def sigma_retry_offset_candidates(
         seen_off.add(key)
         candidates.append(float(off))
 
-    if target >= ULTRA_HF_STABILITY_THRESHOLD_HZ:
+    if target >= SIGMA_TRACK_IN_WINDOW_MIN_HZ:
         inner_lo = lo + margin
         inner_hi = hi - margin
         for delta in (0.0, -8.0, 8.0, -16.0, 16.0, -24.0, 24.0):
