@@ -105,6 +105,10 @@ def create_guitar_mesh():
     def _is_box_shape(st: str) -> bool:
         return str(st).strip().lower() == "box"
 
+    # Feasible wall thickness for hollow-shell booleans (avoids zero-thickness / PLC mesh failures).
+    t = max(0.001, min(float(t), max(0.001, 0.45 * float(D))))
+    inner_depth = max(1.0e-4, float(D) - 2.0 * t)
+
     mode = "display" if is_display else ("sketch" if is_preview else "fom")
     print(f"[diag] shape_type={shape_type!r} mesh_mode={mode}")
 
@@ -131,10 +135,19 @@ def create_guitar_mesh():
         mesh_size = 0.004
         mesh_size_min = 0.004
         mesh_size_max = 0.004
+        shell_lc_cap = max(0.0015, float(t) / 2.5)
+        mesh_size = min(mesh_size, shell_lc_cap)
+        mesh_size_min = mesh_size
+        mesh_size_max = mesh_size
     elif is_preview:
         mesh_size = 0.03
         mesh_size_min = 0.015
         mesh_size_max = 0.05
+        # Cap lc so the 3D PLC mesher keeps >=2 elements across the wood shell wall.
+        shell_lc_cap = max(0.0015, float(t) / 2.5)
+        mesh_size = min(mesh_size, shell_lc_cap)
+        mesh_size_min = min(mesh_size_min, mesh_size)
+        mesh_size_max = min(mesh_size_max, max(mesh_size, shell_lc_cap * 2.0))
     else:
         mesh_size = wood_surface_size
         mesh_size_min = wood_thickness_size
@@ -145,9 +158,11 @@ def create_guitar_mesh():
         "air: 8 mm near wood → 80 mm far (Dist 1.5–25 cm)."
     )
     print(
-        f"Building geometry with Thickness: {t*1000:.1f}mm, "
+        f"Building geometry with Thickness: {t*1000:.1f}mm (inner_depth={inner_depth*1000:.1f}mm), "
         f"wood_surface_lc={wood_surface_size*1000:.1f}mm, wood_thickness_lc={wood_thickness_size*1000:.1f}mm"
     )
+    if shell_only:
+        print(f"[diag] shell mesh target lc={mesh_size*1000:.2f}mm (mode={mode})")
     print(
         f"[diag] mesh_mode={mode} preview={is_preview} display={is_display} fom={is_fom} "
         f"FEM_ALLOW_PREVIEW={os.environ.get('FEM_ALLOW_PREVIEW', '0')} "
@@ -171,6 +186,9 @@ def create_guitar_mesh():
         print("[AUDIT] Gmsh verbosity elevated (General.Verbosity=5)")
     gmsh.model.add("Guitar3D_Performance_Optimized")
     occ = gmsh.model.occ
+    gmsh.option.setNumber("Geometry.Tolerance", 1.0e-4)
+    gmsh.option.setNumber("Geometry.OCCFixSmallEdges", 1)
+    gmsh.option.setNumber("Geometry.OCCFixSmallFaces", 1)
 
     def create_guitar_profile(l, w, is_dreadnought=False, offset=0, point_lc=None):
         lc = point_lc if point_lc is not None else mesh_size
@@ -347,9 +365,9 @@ def create_guitar_mesh():
         
         surf_in = create_guitar_profile(L, W, is_dread, t, point_lc=profile_lc)
         try:
-            v_in = occ.extrude([(2, surf_in)], 0, 0, D - 2*t, [3])
+            v_in = occ.extrude([(2, surf_in)], 0, 0, inner_depth, [3])
         except (TypeError, ValueError):
-            v_in = occ.extrude([(2, surf_in)], 0, 0, D - 2*t)
+            v_in = occ.extrude([(2, surf_in)], 0, 0, inner_depth)
         occ.translate([v for v in v_in if v[0]==3], 0, 0, -D/2 + t)
         vol_in_id = [v[1] for v in v_in if v[0] == 3][0]
 
@@ -438,6 +456,11 @@ def create_guitar_mesh():
         )
         wood_dimtags = [dt for dt in as_dimtags(wood_hole_cut) if dt[0] == 3]
 
+        if not wood_dimtags or not air_dimtags:
+            raise RuntimeError(
+                f"FSI fragment skipped: wood_vols={len(wood_dimtags)} air_vols={len(air_dimtags)} "
+                "(boolean hollow/soundhole may have failed)."
+            )
         frags, _ = occ.fragment(wood_dimtags, air_dimtags, removeObject=True, removeTool=True)
         try:
             occ.removeAllDuplicates()

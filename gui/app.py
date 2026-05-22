@@ -142,6 +142,7 @@ def build_geometry_state(
         "width": W,
         "depth": float(depth),
         "thickness": float(thickness),
+        "top_thickness": float(thickness),
         "hole_radius": min(float(hole_radius), HOLE_RADIUS_MAX_M),
         "lower_bout": W,
         "upper_bout": W * 0.75,
