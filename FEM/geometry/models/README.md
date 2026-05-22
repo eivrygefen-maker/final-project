@@ -29,7 +29,7 @@ python3 FEM/geometry/generate_reference_models.py
 
 This writes `classic.step`, `acoustic.step`, and `box.step` into this directory:
 
-- **classic** / **acoustic**: fixed classical / dreadnought point templates (flat neck & tail, B-spline bouts), extruded to a solid. No polar or Gaussian envelope math.
+- **classic** / **acoustic**: fixed point templates (flat neck, **rounded 3-point tail arc**, B-spline bouts). Classical: waist 0.11 m, lower bout 0.17 m. Acoustic: waist 0.13 m, lower bout 0.20 m, wider shoulders.
 - **box**: simple rectangular solid for debug.
 
 Replace with external CAD later if you need higher-fidelity bracing or arching.

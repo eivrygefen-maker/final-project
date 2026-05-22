@@ -2,8 +2,8 @@
 """
 Write STEP reference bodies into FEM/geometry/models/.
 
-Classical / dreadnought silhouettes use **fixed perimeter point templates** (no polar
-or Gaussian envelope math). Box stays rectangular.
+Classical / dreadnought silhouettes use fixed perimeter point templates (no polar math).
+Tail end is a 3-point B-spline arc (rounded), not a flat vertical cut.
 
     python3 FEM/geometry/generate_reference_models.py
 """
@@ -19,91 +19,89 @@ MODELS_DIR = Path(__file__).resolve().parent / "models"
 
 Point2 = Tuple[float, float]
 
-# ---------------------------------------------------------------------------
-# Classical guitar template (L = 0.50 m nominal, neck at x = +0.25, tail at −0.25)
-# Frame: +x neck, −x tail, ±y lateral. Flat neck & flat tail = vertical lines at ±L/2.
-# ---------------------------------------------------------------------------
+# Nominal length L = 0.50 m: neck x = +0.25, tail x = −0.25.  All widths are half-widths (m).
 
+# --- Classical (refined): narrow waist 0.11, lower bout 0.17, moderate shoulders ---
 CLASSICAL_NECK_TOP: Point2 = (0.25, 0.05)
 CLASSICAL_NECK_BOTTOM: Point2 = (0.25, -0.05)
-CLASSICAL_TAIL_TOP: Point2 = (-0.25, 0.18)
-CLASSICAL_TAIL_BOTTOM: Point2 = (-0.25, -0.18)
-CLASSICAL_WAIST: Point2 = (0.0, 0.12)
-
-# +y stations neck → tail (interior only; neck/tail flats are separate line segments).
-CLASSICAL_UPPER_BODY: Tuple[Point2, ...] = (
-    (0.23, 0.085),
-    (0.20, 0.112),
-    (0.17, 0.132),
-    (0.14, 0.138),  # flat shoulder
-    (0.11, 0.136),
-    (0.08, 0.128),
-    (0.05, 0.123),
-    (0.02, 0.121),
-    CLASSICAL_WAIST,
-    (-0.02, 0.123),
-    (-0.05, 0.131),
-    (-0.08, 0.143),
-    (-0.11, 0.158),
-    (-0.14, 0.170),
-    (-0.17, 0.176),
-    (-0.20, 0.178),
-    (-0.23, 0.179),
+CLASSICAL_WAIST: Point2 = (0.0, 0.11)
+CLASSICAL_LOWER_BOUT: float = 0.17
+CLASSICAL_TAIL_ARC: Tuple[Point2, Point2, Point2] = (
+    (-0.25, CLASSICAL_LOWER_BOUT),
+    (-0.265, 0.0),
+    (-0.25, -CLASSICAL_LOWER_BOUT),
 )
 
-# Dreadnought: broader shoulders & lower bout, gentler waist (L = 0.50 m).
-DREADNOUGHT_NECK_TOP: Point2 = (0.25, 0.052)
-DREADNOUGHT_NECK_BOTTOM: Point2 = (0.25, -0.052)
-DREADNOUGHT_TAIL_TOP: Point2 = (-0.25, 0.195)
-DREADNOUGHT_TAIL_BOTTOM: Point2 = (-0.25, -0.195)
-DREADNOUGHT_WAIST: Point2 = (0.0, 0.125)
+CLASSICAL_UPPER_BODY: Tuple[Point2, ...] = (
+    (0.23, 0.082),
+    (0.20, 0.108),
+    (0.17, 0.128),
+    (0.14, 0.134),  # shoulder (refined, narrower)
+    (0.11, 0.132),
+    (0.08, 0.124),
+    (0.05, 0.118),
+    (0.02, 0.114),
+    CLASSICAL_WAIST,
+    (-0.02, 0.116),
+    (-0.05, 0.124),
+    (-0.08, 0.136),
+    (-0.11, 0.150),
+    (-0.14, 0.162),
+    (-0.17, 0.168),
+    (-0.20, 0.170),
+    (-0.23, 0.169),
+)
 
-DREADNOUGHT_UPPER_BODY: Tuple[Point2, ...] = (
-    (0.23, 0.098),
-    (0.20, 0.128),
-    (0.17, 0.148),
-    (0.14, 0.152),
-    (0.11, 0.150),
-    (0.08, 0.144),
-    (0.05, 0.138),
-    (0.02, 0.132),
-    DREADNOUGHT_WAIST,
-    (-0.02, 0.134),
-    (-0.05, 0.142),
-    (-0.08, 0.155),
-    (-0.11, 0.172),
-    (-0.14, 0.186),
-    (-0.17, 0.192),
-    (-0.20, 0.194),
-    (-0.23, 0.195),
+# --- Acoustic / dreadnought (beefy): waist 0.13, lower bout 0.20, wide shoulders ---
+ACOUSTIC_NECK_TOP: Point2 = (0.25, 0.052)
+ACOUSTIC_NECK_BOTTOM: Point2 = (0.25, -0.052)
+ACOUSTIC_WAIST: Point2 = (0.0, 0.13)
+ACOUSTIC_LOWER_BOUT: float = 0.20
+ACOUSTIC_TAIL_ARC: Tuple[Point2, Point2, Point2] = (
+    (-0.25, ACOUSTIC_LOWER_BOUT),
+    (-0.270, 0.0),
+    (-0.25, -ACOUSTIC_LOWER_BOUT),
+)
+
+ACOUSTIC_UPPER_BODY: Tuple[Point2, ...] = (
+    (0.23, 0.102),
+    (0.20, 0.132),
+    (0.17, 0.152),
+    (0.14, 0.158),  # shoulder (significantly wider than classical)
+    (0.11, 0.156),
+    (0.08, 0.148),
+    (0.05, 0.140),
+    (0.02, 0.134),
+    ACOUSTIC_WAIST,
+    (-0.02, 0.136),
+    (-0.05, 0.146),
+    (-0.08, 0.160),
+    (-0.11, 0.178),
+    (-0.14, 0.192),
+    (-0.17, 0.198),
+    (-0.20, 0.199),
+    (-0.23, 0.199),
 )
 
 
 def classical_guitar_perimeter(length: float = 0.50) -> List[Point2]:
-    """
-    Closed perimeter (CCW): flat neck line → upper B-spline chain → flat tail → lower chain.
-
-    Points are authored for ``length=0.5`` m and scaled uniformly when ``length`` differs.
-    """
+    """Closed perimeter: flat neck, +y body, rounded 3-point tail arc, −y body."""
     return _closed_template_perimeter(
         length,
         neck_top=CLASSICAL_NECK_TOP,
         neck_bottom=CLASSICAL_NECK_BOTTOM,
-        tail_top=CLASSICAL_TAIL_TOP,
-        tail_bottom=CLASSICAL_TAIL_BOTTOM,
         upper_body=CLASSICAL_UPPER_BODY,
+        tail_arc=CLASSICAL_TAIL_ARC,
     )
 
 
 def dreadnought_guitar_perimeter(length: float = 0.50) -> List[Point2]:
-    """Dreadnought template (same perimeter walk as classical)."""
     return _closed_template_perimeter(
         length,
-        neck_top=DREADNOUGHT_NECK_TOP,
-        neck_bottom=DREADNOUGHT_NECK_BOTTOM,
-        tail_top=DREADNOUGHT_TAIL_TOP,
-        tail_bottom=DREADNOUGHT_TAIL_BOTTOM,
-        upper_body=DREADNOUGHT_UPPER_BODY,
+        neck_top=ACOUSTIC_NECK_TOP,
+        neck_bottom=ACOUSTIC_NECK_BOTTOM,
+        upper_body=ACOUSTIC_UPPER_BODY,
+        tail_arc=ACOUSTIC_TAIL_ARC,
     )
 
 
@@ -112,20 +110,20 @@ def _closed_template_perimeter(
     *,
     neck_top: Point2,
     neck_bottom: Point2,
-    tail_top: Point2,
-    tail_bottom: Point2,
     upper_body: Sequence[Point2],
+    tail_arc: Tuple[Point2, Point2, Point2],
 ) -> List[Point2]:
     scale = float(length) / 0.50
 
     def _s(pt: Point2) -> Point2:
         return (float(pt[0]) * scale, float(pt[1]) * scale)
 
-    upper = [_s(neck_top)] + [_s(p) for p in upper_body] + [_s(tail_top)]
-    lower_return = [_s(tail_bottom)] + [
+    upper = [_s(neck_top)] + [_s(p) for p in upper_body]
+    tail = [_s(p) for p in tail_arc]
+    lower_return = [
         (sx, -sy) for x, y in reversed(upper_body) for sx, sy in [_s((x, y))]
-    ] + [_s(neck_bottom)]
-    return upper + lower_return
+    ]
+    return upper + tail + lower_return + [_s(neck_bottom)]
 
 
 def _volume_tags_from_extrude(out) -> List[int]:
@@ -155,16 +153,15 @@ def _build_closed_bspline_solid(
     n_upper_body: int,
 ) -> None:
     """
-    Extrude a closed profile to a solid.
+    Perimeter layout (``n_upper_body`` body stations):
 
-    Perimeter layout:
-    ``[neck_top, *upper_body, tail_top, tail_bottom, *lower_mirror, neck_bottom]``
+    ``[neck_top, *upper_body, tail_arc×3, *lower_mirror, neck_bottom]``
 
-    Flat neck & tail = ``addLine``; bouts = ``addBSpline`` (no polar / atan2 math).
+    Flat neck = ``addLine``; bouts & rounded tail = ``addBSpline``.
     """
     ring = list(perimeter)
     n = len(ring)
-    expected = 2 * int(n_upper_body) + 4
+    expected = 2 + 2 * int(n_upper_body) + 3
     if n != expected:
         raise RuntimeError(f"Perimeter length {n} != expected {expected} for template.")
 
@@ -177,14 +174,14 @@ def _build_closed_bspline_solid(
     p_tags = [int(occ.addPoint(float(x), float(y), 0.0, lc)) for x, y in ring]
 
     i_neck_top = 0
-    i_tail_top = 1 + int(n_upper_body)
-    i_tail_bot = i_tail_top + 1
+    i_tail_arc = 1 + int(n_upper_body)
+    i_lower_start = i_tail_arc + 3
     i_neck_bot = n - 1
 
     c_neck = int(occ.addLine(p_tags[i_neck_bot], p_tags[i_neck_top]))
-    c_upper = int(occ.addBSpline(p_tags[i_neck_top : i_tail_top + 1]))
-    c_tail = int(occ.addLine(p_tags[i_tail_top], p_tags[i_tail_bot]))
-    c_lower = int(occ.addBSpline(p_tags[i_tail_bot : i_neck_bot + 1]))
+    c_upper = int(occ.addBSpline(p_tags[i_neck_top : i_tail_arc]))
+    c_tail = int(occ.addBSpline(p_tags[i_tail_arc : i_tail_arc + 3]))
+    c_lower = int(occ.addBSpline(p_tags[i_lower_start : i_neck_bot + 1]))
     loop_tag = int(occ.addCurveLoop([c_neck, c_upper, c_tail, c_lower]))
 
     surf_tag = int(occ.addPlaneSurface([loop_tag]))
@@ -210,7 +207,10 @@ def _write_step(name: str, builder) -> None:
 
 def _classic(occ) -> None:
     ring = classical_guitar_perimeter(0.50)
-    print(f"[diag] classical template: n_perimeter={len(ring)}")
+    print(
+        f"[diag] classical: n={len(ring)} waist={CLASSICAL_WAIST[1]} "
+        f"lower={CLASSICAL_LOWER_BOUT} shoulder≈{CLASSICAL_UPPER_BODY[3][1]}"
+    )
     _build_closed_bspline_solid(
         occ, ring, depth=0.10, n_upper_body=len(CLASSICAL_UPPER_BODY)
     )
@@ -218,9 +218,12 @@ def _classic(occ) -> None:
 
 def _acoustic(occ) -> None:
     ring = dreadnought_guitar_perimeter(0.50)
-    print(f"[diag] dreadnought template: n_perimeter={len(ring)}")
+    print(
+        f"[diag] acoustic: n={len(ring)} waist={ACOUSTIC_WAIST[1]} "
+        f"lower={ACOUSTIC_LOWER_BOUT} shoulder≈{ACOUSTIC_UPPER_BODY[3][1]}"
+    )
     _build_closed_bspline_solid(
-        occ, ring, depth=0.10, n_upper_body=len(DREADNOUGHT_UPPER_BODY)
+        occ, ring, depth=0.10, n_upper_body=len(ACOUSTIC_UPPER_BODY)
     )
 
 
