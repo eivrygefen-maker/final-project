@@ -6,95 +6,6 @@ import math
 import time
 from pathlib import Path
 
-import numpy as np
-from scipy.interpolate import CubicSpline
-
-
-# Half-profile anchor x positions as fractions of body length (neck x=0 → tail x=L).
-_GUITAR_SHAPE_ANCHORS = {
-    "classic": {"L_upper": 0.22, "L_waist": 0.48, "L_lower": 0.82},
-    "dreadnought": {"L_upper": 0.20, "L_waist": 0.58, "L_lower": 0.88},
-}
-
-
-def _shape_namespace(shape_type: str) -> str:
-    st = str(shape_type).strip().lower()
-    if "dreadnought" in st:
-        return "dreadnought"
-    return "classic"
-
-
-def _half_profile_anchor_xy(
-    length: float,
-    upper_bout: float,
-    waist: float,
-    lower_bout: float,
-    shape_ns: str,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Acoustic half-profile anchors in body frame: x=0 at neck, x=length at tail; y = half-width.
-    """
-    frac = _GUITAR_SHAPE_ANCHORS[shape_ns]
-    L = float(length)
-    x = np.array(
-        [
-            0.0,
-            frac["L_upper"] * L,
-            frac["L_waist"] * L,
-            frac["L_lower"] * L,
-            L,
-        ],
-        dtype=float,
-    )
-    y = np.array(
-        [
-            0.5 * float(upper_bout),
-            0.5 * float(upper_bout),
-            0.5 * float(waist),
-            0.5 * float(lower_bout),
-            0.0,
-        ],
-        dtype=float,
-    )
-    return x, y
-
-
-def _build_half_profile_spline(
-    length: float,
-    upper_bout: float,
-    waist: float,
-    lower_bout: float,
-    shape_ns: str,
-    n_dense: int = 96,
-) -> tuple[np.ndarray, np.ndarray]:
-    """C2 cubic spline half-profile; dense samples for Gmsh perimeter injection."""
-    x_a, y_a = _half_profile_anchor_xy(length, upper_bout, waist, lower_bout, shape_ns)
-    # Clamped slopes at neck and tail (dy/dx = 0) for smooth centerline symmetry.
-    cs = CubicSpline(x_a, y_a, bc_type=((1, 0.0), (1, 0.0)))
-    n = max(32, int(n_dense))
-    x_dense = np.linspace(0.0, float(length), n, dtype=float)
-    y_dense = np.maximum(cs(x_dense), 0.0)
-    return x_dense, y_dense
-
-
-def _profile_xy_to_gmsh(
-    x_profile: np.ndarray,
-    y_half: np.ndarray,
-    length: float,
-    offset: float = 0.0,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Map profile frame (neck→tail, +y half) to Gmsh OCC frame (+x neck, +y lateral)."""
-    L = float(length)
-    off = float(max(0.0, offset))
-    x_g = 0.5 * L - np.asarray(x_profile, dtype=float)
-    y_g = np.maximum(np.asarray(y_half, dtype=float) - off, 0.0)
-    if off > 0.0:
-        neck = np.isclose(x_profile, 0.0)
-        tail = np.isclose(x_profile, L)
-        x_g = np.where(neck, x_g - off, x_g)
-        x_g = np.where(tail, x_g + off, x_g)
-    return x_g, y_g
-
 
 def audit_enabled() -> bool:
     return os.environ.get("FEM_RENDER_AUDIT", "0").strip().lower() in ("1", "true", "yes", "on")
@@ -186,31 +97,13 @@ def create_guitar_mesh():
         t = float(p.get("top_thickness", p.get("thickness", 0.003)))
         hr = min(float(p["hole_radius"]), 0.08)
         shape_type = str(p.get("shape_type", "Classical")).strip()
-        upper_bout = float(p.get("upper_bout", W * 0.75))
-        lower_bout = float(p.get("lower_bout", W))
-        waist = float(p.get("waist", W * 0.65))
         hole_from_neck_ratio = float(p.get("soundhole_from_neck_ratio", 0.5))
     else:
         L, W, D, t, hr, shape_type = 0.48, 0.37, 0.1, 0.003, 0.04, "Classical"
-        upper_bout, lower_bout, waist = W * 0.75, W, W * 0.65
         hole_from_neck_ratio = 0.5
 
     def _is_box_shape(st: str) -> bool:
         return str(st).strip().lower() == "box"
-
-    # Keep wall thickness feasible for hollow-shell booleans (avoids PLC / fragment failures).
-    t = max(0.001, min(float(t), max(0.001, 0.45 * float(D))))
-    inner_depth = max(1.0e-4, float(D) - 2.0 * t)
-    if not _is_box_shape(shape_type):
-        lower_bout = float(max(0.15 * W, min(lower_bout, 1.05 * W)))
-        upper_bout = float(max(0.15 * W, min(upper_bout, lower_bout)))
-        waist = float(max(0.15 * W, min(waist, min(upper_bout, lower_bout))))
-
-    if not _is_box_shape(shape_type):
-        print(
-            f"[diag] bout spline anchors (m): upper={upper_bout:.4f} waist={waist:.4f} "
-            f"lower={lower_bout:.4f} namespace={_shape_namespace(shape_type)!r}"
-        )
 
     mode = "display" if is_display else ("sketch" if is_preview else "fom")
     print(f"[diag] shape_type={shape_type!r} mesh_mode={mode}")
@@ -278,41 +171,27 @@ def create_guitar_mesh():
         print("[AUDIT] Gmsh verbosity elevated (General.Verbosity=5)")
     gmsh.model.add("Guitar3D_Performance_Optimized")
     occ = gmsh.model.occ
-    gmsh.option.setNumber("Geometry.Tolerance", 1.0e-4)
-    gmsh.option.setNumber("Geometry.OCCFixSmallEdges", 1)
-    gmsh.option.setNumber("Geometry.OCCFixSmallFaces", 1)
 
-    profile_shape_ns = _shape_namespace(shape_type)
-
-    def create_guitar_profile(
-        l,
-        upper_w,
-        waist_w,
-        lower_w,
-        shape_ns,
-        offset=0,
-        point_lc=None,
-        n_dense=96,
-    ):
-        """
-        Build closed 2D body face from a C2 CubicSpline half-profile (scipy), mirrored on y=0.
-        """
+    def create_guitar_profile(l, w, is_dreadnought=False, offset=0, point_lc=None):
         lc = point_lc if point_lc is not None else mesh_size
-        x_p, y_p = _build_half_profile_spline(
-            l, upper_w, waist_w, lower_w, shape_ns, n_dense=n_dense
-        )
-        x_g, y_g = _profile_xy_to_gmsh(x_p, y_p, l, offset=offset)
-
-        neck_x = 0.5 * l - (offset if offset > 0 else 0.0)
-        p_top_center = occ.addPoint(neck_x, 0.0, 0.0, lc)
-        pts = [occ.addPoint(float(xg), float(yg), 0.0, lc) for xg, yg in zip(x_g, y_g)]
-
-        l_top = occ.addLine(p_top_center, pts[0])
-        c_body = occ.addSpline(pts)
-        m_l = occ.copy([(1, l_top)])
-        occ.mirror(m_l, 0, 1, 0, 0)
-        m_c = occ.copy([(1, c_body)])
-        occ.mirror(m_c, 0, 1, 0, 0)
+        top_x = 0.50 * l - offset if offset > 0 else 0.50 * l
+        p_top_center = occ.addPoint(top_x, 0, 0, lc)
+        x_facs = [0.50, 0.44, 0.25, 0.05, -0.10, -0.25, -0.40, -0.48, -0.50] if is_dreadnought else [0.50, 0.44, 0.25, 0.10, 0.00, -0.15, -0.35, -0.45, -0.50]
+        y_facs = [0.08, 0.20, 0.38, 0.35, 0.34, 0.45, 0.50, 0.25, 0.00] if is_dreadnought else [0.08, 0.18, 0.36, 0.30, 0.28, 0.45, 0.50, 0.30, 0.00]
+        
+        pts = []
+        for i, (x_f, y_f) in enumerate(zip(x_facs, y_facs)):
+            x = x_f * l
+            y = y_f * w
+            if offset > 0:
+                y = max(0, y - offset)
+                if x_f == 0.5: x -= offset
+                elif x_f == -0.5: x += offset
+            pts.append(occ.addPoint(x, max(0, y), 0, lc))
+            
+        l_top = occ.addLine(p_top_center, pts[0]); c_body = occ.addSpline(pts)
+        m_l = occ.copy([(1, l_top)]); occ.mirror(m_l, 0, 1, 0, 0)
+        m_c = occ.copy([(1, c_body)]); occ.mirror(m_c, 0, 1, 0, 0)
         loop = occ.addCurveLoop([l_top, c_body, -m_c[0][1], -m_l[0][1]])
         return occ.addPlaneSurface([loop])
 
@@ -453,19 +332,10 @@ def create_guitar_mesh():
         vol_out_id = occ.addBox(-L/2, -W/2, -D/2, L, W, D)
         vol_in_id = occ.addBox(-L/2+t, -W/2+t, -D/2+t, L-2*t, W-2*t, D-2*t)
     else:
-        # Dense spline samples for silhouette fidelity in preview, display, and FOM meshes.
+        is_dread = "Dreadnought" in shape_type
+        # Fine spline control points even in preview (silhouette fidelity).
         profile_lc = wood_surface_size
-        profile_n_dense = 72 if is_preview else 120
-        surf_out = create_guitar_profile(
-            L,
-            upper_bout,
-            waist,
-            lower_bout,
-            profile_shape_ns,
-            0,
-            point_lc=profile_lc,
-            n_dense=profile_n_dense,
-        )
+        surf_out = create_guitar_profile(L, W, is_dread, 0, point_lc=profile_lc)
         # OCC extrude: numElements may be ignored by OpenCASCADE; thickness resolution is enforced via
         # curve/field sizing below. When supported, [3] requests prism stacks along the extrusion axis.
         try:
@@ -475,20 +345,11 @@ def create_guitar_mesh():
         occ.translate([v for v in v_out if v[0]==3], 0, 0, -D/2)
         vol_out_id = [v[1] for v in v_out if v[0] == 3][0]
         
-        surf_in = create_guitar_profile(
-            L,
-            upper_bout,
-            waist,
-            lower_bout,
-            profile_shape_ns,
-            t,
-            point_lc=profile_lc,
-            n_dense=profile_n_dense,
-        )
+        surf_in = create_guitar_profile(L, W, is_dread, t, point_lc=profile_lc)
         try:
-            v_in = occ.extrude([(2, surf_in)], 0, 0, inner_depth, [3])
+            v_in = occ.extrude([(2, surf_in)], 0, 0, D - 2*t, [3])
         except (TypeError, ValueError):
-            v_in = occ.extrude([(2, surf_in)], 0, 0, inner_depth)
+            v_in = occ.extrude([(2, surf_in)], 0, 0, D - 2*t)
         occ.translate([v for v in v_in if v[0]==3], 0, 0, -D/2 + t)
         vol_in_id = [v[1] for v in v_in if v[0] == 3][0]
 
@@ -529,19 +390,15 @@ def create_guitar_mesh():
             removeTool=True,
         )
         wood_dimtags = [dt for dt in as_dimtags(wood_shell) if dt[0] == 3]
-        # Sketch preview: skip OCC soundhole cut (PyVista paints the hole); avoids PLC on coarse lc.
-        if is_display:
-            wood_hole_cut = _audit_boolean(
-                "display_soundhole_cut",
-                occ.cut,
-                wood_dimtags,
-                [(3, hole_cyl)],
-                removeObject=True,
-                removeTool=True,
-            )
-            wood_dimtags = [dt for dt in as_dimtags(wood_hole_cut) if dt[0] == 3]
-        else:
-            print("[diag] preview CAD: soundhole OCC cut skipped (spatial hole in GUI)")
+        wood_hole_cut = _audit_boolean(
+            "preview_soundhole_cut",
+            occ.cut,
+            wood_dimtags,
+            [(3, hole_cyl)],
+            removeObject=True,
+            removeTool=True,
+        )
+        wood_dimtags = [dt for dt in as_dimtags(wood_hole_cut) if dt[0] == 3]
         try:
             occ.removeAllDuplicates()
         except Exception:
@@ -1212,11 +1069,7 @@ def create_guitar_mesh():
             f"wall={t*1000:.2f}mm | raw_meters: lc={mesh_size:.6f}, "
             f"min={mesh_size_min:.6f}, max={mesh_size_max:.6f})..."
         )
-        if shell_only:
-            # Visual pipelines only need a clean outer surface mesh (no FSI volume tets).
-            gmsh.model.mesh.generate(2)
-        else:
-            gmsh.model.mesh.generate(3)
+        gmsh.model.mesh.generate(3)
 
         def _audit_soundhole_boundary_mesh():
             """Edge-length stats on curves bounding soundhole tag-2 surfaces."""
