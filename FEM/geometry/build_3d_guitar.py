@@ -138,6 +138,56 @@ def _full_ring_points_from_half(
     return full_ring_points
 
 
+def _filter_ring_min_spacing(
+    points: Sequence[Tuple[float, float]], min_dist: float = 1e-4
+) -> List[Tuple[float, float]]:
+    """
+    Drop vertices closer than min_dist (default 0.1 mm) to the previous kept point.
+
+    Also drops the last vertex if it lies within min_dist of the first (closure gap).
+    """
+    pts: List[Tuple[float, float]] = [(float(x), float(y)) for x, y in points]
+    if len(pts) >= 2 and pts[0] == pts[-1]:
+        pts.pop()
+    clean: List[Tuple[float, float]] = []
+    for pt in pts:
+        if not clean:
+            clean.append(pt)
+            continue
+        if math.hypot(pt[0] - clean[-1][0], pt[1] - clean[-1][1]) > min_dist:
+            clean.append(pt)
+    if len(clean) >= 2:
+        gap = math.hypot(clean[-1][0] - clean[0][0], clean[-1][1] - clean[0][1])
+        if gap <= min_dist:
+            clean.pop()
+    if len(clean) < 4:
+        raise RuntimeError(
+            f"Ring spacing filter left {len(clean)} vertices (need >= 4, min_dist={min_dist} m)."
+        )
+    return clean
+
+
+def _occ_polygon_contour_from_point_tags(p_tags: List[int]) -> int:
+    """
+    OCC closed polygon wire when ``addPolygon`` is unavailable (spacing already filtered).
+    """
+    occ = gmsh.model.occ
+    n = len(p_tags)
+    if n < 4:
+        raise RuntimeError(f"OCC polygon needs >= 4 point tags (got {n}).")
+    l_tags = [
+        int(occ.addLine(p_tags[i], p_tags[(i + 1) % n])) for i in range(n)
+    ]
+    occ.synchronize()
+    add_wire = getattr(occ, "addWire", None)
+    if add_wire is not None:
+        try:
+            return int(add_wire(l_tags, tag=-1, checkClosed=True))
+        except TypeError:
+            return int(add_wire(l_tags))
+    return int(occ.addCurveLoop(l_tags))
+
+
 def _volume_tags_from_extrude(out) -> List[int]:
     """Parse ``geo/occ.extrude`` return value into 3D volume tags (ints only)."""
     tags: List[int] = []
@@ -375,7 +425,7 @@ def create_guitar_mesh():
         wall_offset: float = 0.0,
         point_lc: Optional[float] = None,
     ) -> int:
-        """Normalized template → Python full ring → closed OCC polyline → surface."""
+        """Normalized template → strict ring → OCC native polygon → plane surface."""
         lc = float(point_lc if point_lc is not None else mesh_size)
         half = _stabilize_half_profile(
             warp_template_half_profile(
@@ -388,47 +438,30 @@ def create_guitar_mesh():
             )
         )
         full_ring_points = _full_ring_points_from_half(half, n_side_max=40)
+        clean_ring_points = _filter_ring_min_spacing(full_ring_points, min_dist=1e-4)
 
-        # Python-only ring filter (strict centerline ring — no geo kernel).
-        ring: List[Tuple[float, float]] = [(float(x), float(y)) for x, y in full_ring_points]
-        if len(ring) >= 2 and ring[0] == ring[-1]:
-            ring.pop()
-        clean: List[Tuple[float, float]] = []
-        for pt in ring:
-            if not clean or pt != clean[-1]:
-                clean.append(pt)
-        if len(clean) < 4:
-            raise RuntimeError(
-                f"OCC profile ring needs >= 4 vertices (got {len(clean)} after Python filter)."
-            )
-
-        # OCC-only profile: points → lines → pre-loop sync → curve loop → surface → final sync.
         p_tags: List[int] = [
-            int(gmsh.model.occ.addPoint(pt[0], pt[1], 0.0, lc)) for pt in clean
+            int(gmsh.model.occ.addPoint(pt[0], pt[1], 0.0, lc)) for pt in clean_ring_points
         ]
-        l_tags: List[int] = []
-        for i in range(len(p_tags)):
-            start = p_tags[i]
-            end = p_tags[(i + 1) % len(p_tags)]
-            if start == end:
-                raise RuntimeError(
-                    f"OCC profile degenerate edge at index {i} (point tag {start})."
-                )
-            l_tags.append(int(gmsh.model.occ.addLine(start, end)))
 
-        gmsh.model.occ.synchronize()
+        add_polygon = getattr(gmsh.model.occ, "addPolygon", None)
+        polygon_mode = "addPolygon"
         try:
-            loop_tag = int(gmsh.model.occ.addCurveLoop(l_tags))
-            surface_tag = int(gmsh.model.occ.addPlaneSurface([loop_tag]))
+            if add_polygon is not None:
+                polygon_loop_tag = int(add_polygon(p_tags))
+            else:
+                polygon_mode = "addWire(fallback)"
+                polygon_loop_tag = _occ_polygon_contour_from_point_tags(p_tags)
+            surface_tag = int(gmsh.model.occ.addPlaneSurface([polygon_loop_tag]))
         except Exception as exc:
             raise RuntimeError(
-                f"OCC addCurveLoop/addPlaneSurface failed (not geo): {exc}"
+                f"OCC polygon profile failed ({polygon_mode}, not geo): {exc}"
             ) from exc
         gmsh.model.occ.synchronize()
 
         print(
-            f"[diag] template profile (OCC polyline only, no geo): ring_pts={len(clean)} "
-            f"lines={len(l_tags)} surface={surface_tag}"
+            f"[diag] template profile (OCC {polygon_mode}): ring_in={len(full_ring_points)} "
+            f"ring_out={len(clean_ring_points)} pts={len(p_tags)} surface={surface_tag}"
         )
         return surface_tag
 
