@@ -80,14 +80,14 @@ def create_guitar_mesh():
         t = float(p.get("top_thickness", p.get("thickness", 0.003)))
         hr = p["hole_radius"]
         shape_type = p.get('shape_type', 'Classical')
-        hole_y = float(p.get("soundhole_y", 0.0))
         hole_from_neck_ratio = float(p.get("soundhole_from_neck_ratio", 0.354))
         hole_x = float(p.get("soundhole_x", 0.5 * L - hole_from_neck_ratio * L))
     else:
         L, W, D, t, hr, shape_type = 0.48, 0.37, 0.1, 0.003, 0.04, 'Classical'
-        hole_y = 0.0
         hole_from_neck_ratio = 0.354
         hole_x = 0.5 * L - hole_from_neck_ratio * L
+    # Soundhole on body centreline (y=0). Lateral offset removed from GUI — old configs ignored.
+    hole_y = 0.0
 
     # --- Golden mesh: graded wood faces (6.5 mm), dense through-thickness (1 mm); graded air ---
     wood_surface_size = 0.0065   # 6.5 mm on large top/back plate surfaces and long perimeter curves
@@ -126,7 +126,7 @@ def create_guitar_mesh():
     # Classical soundhole ≈ 17 cm from neck on 48 cm body → 0.354·L from neck along +x.
     hr = max(1.0e-4, float(hr))
     hole_x = float(max(-0.5 * L + hr, min(0.5 * L - hr, hole_x)))
-    hole_y = float(max(-0.5 * W + hr, min(0.5 * W - hr, hole_y)))
+    hole_y = 0.0
     print(
         f"[diag] soundhole centre (m): x={hole_x:.4f} y={hole_y:.4f} r={hr:.4f} "
         f"(from_neck_ratio={hole_from_neck_ratio:.3f})"

@@ -67,8 +67,8 @@ if "stk_body_json" not in st.session_state:
 if "show_physics_success" not in st.session_state:
     st.session_state.show_physics_success = False
 # Bust stale preview meshes when preview CAD schema changes.
-if st.session_state.get("preview_cad_schema", 0) < 7:
-    st.session_state.preview_cad_schema = 7
+if st.session_state.get("preview_cad_schema", 0) < 8:
+    st.session_state.preview_cad_schema = 8
     st.session_state.live_preview_fp = ""
     if PREVIEW_MESH_FILE.is_file():
         PREVIEW_MESH_FILE.unlink(missing_ok=True)
@@ -99,14 +99,18 @@ NOTES_DICT = {
 SOUNDHOLE_FROM_NECK_RATIO = 0.354
 
 
-def _soundhole_center_xy(length: float, width: float, lateral_y: float) -> Tuple[float, float]:
-    """Neck at x=+L/2; hole on centreline by default (y=0)."""
+def _soundhole_center_x(length: float) -> float:
+    """Neck at x=+L/2; classical soundhole ~0.354·L toward the tail along x; y=0 (centreline)."""
     hole_x = 0.5 * float(length) - SOUNDHOLE_FROM_NECK_RATIO * float(length)
-    hole_y = float(lateral_y)
-    hr_margin = 0.02
-    hole_x = max(-0.5 * length + hr_margin, min(0.5 * length - hr_margin, hole_x))
-    hole_y = max(-0.5 * width + hr_margin, min(0.5 * width - hr_margin, hole_y))
-    return hole_x, hole_y
+    margin = 0.02
+    return max(-0.5 * float(length) + margin, min(0.5 * float(length) - margin, hole_x))
+
+
+def _hex_to_rgb01(hex_color: str) -> Tuple[float, float, float]:
+    h = str(hex_color).strip().lstrip("#")
+    if len(h) != 6:
+        return (0.7, 0.5, 0.35)
+    return (int(h[0:2], 16) / 255.0, int(h[2:4], 16) / 255.0, int(h[4:6], 16) / 255.0)
 
 DOMINANT_COLOR = {DOMINANT_TAG_TOP: "#2e7d32", DOMINANT_TAG_BACK: "#1565c0"}
 
@@ -465,7 +469,6 @@ def add_silence_to_wav(path, duration=0.3):
 
 def _geometry_state_dict(
     *,
-    design_mode: str,
     shape_type: str,
     length: float,
     width: float,
@@ -475,12 +478,11 @@ def _geometry_state_dict(
     lower_bout: float,
     upper_bout: float,
     waist: float,
-    soundhole_y: float,
     soundhole_x: float,
     exploded: bool,
 ) -> Dict[str, Any]:
     return {
-        "design_mode": design_mode,
+        "design_mode": "Basic (Geometric)",
         "shape_type": shape_type,
         "length": float(length),
         "width": float(width),
@@ -490,7 +492,7 @@ def _geometry_state_dict(
         "lower_bout": float(lower_bout),
         "upper_bout": float(upper_bout),
         "waist": float(waist),
-        "soundhole_y": float(soundhole_y),
+        "soundhole_y": 0.0,
         "soundhole_x": float(soundhole_x),
         "soundhole_from_neck_ratio": SOUNDHOLE_FROM_NECK_RATIO,
         "exploded_view": bool(exploded),
@@ -639,6 +641,28 @@ def _build_live_preview_surface(
     return _load_guitar_surface_from_msh(PREVIEW_MESH_FILE, allow_all_shell=True)
 
 
+def _mesh_cell_rgb(mesh, *, top_color: str, back_color: str) -> Optional[Any]:
+    """One RGB value per triangle — single opaque draw call (no layered transparency)."""
+    tags = mesh.cell_data.get("gmsh:physical")
+    if tags is None:
+        return None
+    tags = np.asarray(tags).ravel()
+    top_rgb = np.array(_hex_to_rgb01(top_color), dtype=np.float32)
+    back_rgb = np.array(_hex_to_rgb01(back_color), dtype=np.float32)
+    hole_rgb = np.array((0.05, 0.05, 0.05), dtype=np.float32)
+    colors = np.zeros((mesh.n_cells, 3), dtype=np.float32)
+    for i, tag in enumerate(tags):
+        if int(tag) == TAG_TOP_PLATE:
+            colors[i] = top_rgb
+        elif int(tag) == TAG_SOUNDHOLE:
+            colors[i] = hole_rgb
+        else:
+            colors[i] = back_rgb
+    out = mesh.copy(deep=True)
+    out.cell_data["rgb"] = colors
+    return out
+
+
 def _render_pyvista_guitar(
     surface_mesh,
     *,
@@ -649,81 +673,34 @@ def _render_pyvista_guitar(
     plot_key: str,
     sketch_mode: bool = False,
 ) -> None:
-    plotter = pv.Plotter(window_size=[1100, 620])
+    plotter = pv.Plotter(window_size=[1100, 620], lighting="three lights")
     plotter.background_color = "#f4f4f9"
 
-    def _add_part(
-        mesh,
-        mask,
-        color: str,
-        *,
-        opacity: float = 1.0,
-        edges: bool = False,
-        sketch: bool = False,
-    ) -> bool:
-        if not np.any(mask):
-            return False
-        part = mesh.extract_cells(mask)
-        if part.n_cells <= 0:
-            return False
-        plotter.add_mesh(
-            part,
-            color=color,
-            opacity=float(opacity),
-            show_edges=edges or sketch,
-            edge_color="#2b1a10",
-            line_width=1.0 if sketch else 0.5,
-            smooth_shading=True,
-            lighting=True,
-            ambient=0.35,
-            diffuse=0.65,
-            specular=0.15,
-        )
-        return True
-
-    def render_mesh_by_protocol(mesh, show_edges_flag: bool, top_c: str, back_c: str) -> bool:
-        tags = mesh.cell_data.get("gmsh:physical")
-        if tags is None:
-            return False
-        tags = np.asarray(tags).ravel()
-        is_hole = tags == TAG_SOUNDHOLE
-        is_top = tags == TAG_TOP_PLATE
-        is_back_wood = (tags == TAG_BACK_PLATE) | (tags == TAG_RIBS)
-        if not (is_top.any() or is_back_wood.any() or is_hole.any()):
-            return False
-        rendered = False
-        # Opaque draw order: body first, soundboard, hole rim last (dark).
-        rendered |= _add_part(
-            mesh, is_back_wood, back_c, opacity=1.0, edges=show_edges_flag, sketch=sketch_mode
-        )
-        rendered |= _add_part(
-            mesh, is_top, top_c, opacity=1.0, edges=show_edges_flag, sketch=sketch_mode
-        )
-        if is_hole.any():
-            rendered |= _add_part(
-                mesh,
-                is_hole,
-                "#0c0c0c",
-                opacity=1.0,
-                edges=False,
-                sketch=sketch_mode,
-            )
-        return rendered
-
     if surface_mesh is not None:
-        for key in list(surface_mesh.cell_data.keys()):
-            if key != "gmsh:physical":
-                try:
-                    del surface_mesh.cell_data[key]
-                except Exception:
-                    pass
-        if not render_mesh_by_protocol(surface_mesh, show_edges, top_color, back_color):
+        colored = _mesh_cell_rgb(surface_mesh, top_color=top_color, back_color=back_color)
+        if colored is not None:
+            plotter.add_mesh(
+                colored,
+                scalars="rgb",
+                rgb=True,
+                opacity=1.0,
+                show_edges=show_edges or sketch_mode,
+                edge_color="#3d2817",
+                line_width=0.6,
+                smooth_shading=True,
+                lighting=True,
+                preference="surface",
+                backface_culling=True,
+                pickable=False,
+            )
+        else:
             plotter.add_mesh(
                 surface_mesh,
-                color=back_color,
+                color=_hex_to_rgb01(back_color),
+                opacity=1.0,
                 show_edges=show_edges,
                 smooth_shading=True,
-                scalar_bar_args=None,
+                preference="surface",
             )
     else:
         plotter.add_text("Preview unavailable", position="upper_left", font_size=12)
@@ -828,6 +805,11 @@ st.markdown(
     div[data-testid="stVerticalBlock"] > div:has(> div[data-testid="stVerticalBlockBorderWrapper"]) {
         border-radius: 0.5rem;
     }
+    /* stpyvista: force opaque VTK canvas (no faded actors). */
+    div[data-testid="stpyvista"] canvas,
+    div[data-testid="stpyvista"] iframe {
+        opacity: 1 !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -877,31 +859,11 @@ with col_controls:
         format_func=_wood_option_label,
     )
 
-    design_mode = st.radio("Design mode", ["Basic (Geometric)", "Professional (Luthier)"])
-    if design_mode == "Basic (Geometric)":
-        L = st.slider("Length (m)", L_min, L_max, L_def, key=f"L_{shape_type}")
-        W = st.slider("Width (m)", W_min, W_max, W_def, key=f"W_{shape_type}")
-        D = st.slider("Depth (m)", D_min, D_max, D_def, key=f"D_{shape_type}")
-        lower_bout, upper_bout, waist = W, W * 0.75, W * 0.65
-        soundhole_y = 0.0
-    else:
-        L = st.slider("Total body length (m)", L_min, L_max, L_def, key=f"L_prof_{shape_type}")
-        D = st.slider("Depth (m)", D_min, D_max, D_def, key=f"D_prof_{shape_type}")
-        lower_bout = st.slider("Lower bout (m)", 0.20, 0.60, W_def, key="lb")
-        upper_bout = st.slider("Upper bout (m)", 0.15, 0.50, W_def * 0.75, key="ub")
-        waist = st.slider("Waist (m)", 0.10, 0.40, W_def * 0.65, key="wst")
-        soundhole_y = st.slider(
-            "Soundhole lateral offset (m)",
-            -0.5 * W_def,
-            0.5 * W_def,
-            0.0,
-            step=0.005,
-            key="sh_y",
-            help="0 = on body centreline (classical).",
-        )
-        W = lower_bout
-
-    soundhole_x, soundhole_y = _soundhole_center_xy(L, W, soundhole_y)
+    L = st.slider("Length (m)", L_min, L_max, L_def, key=f"L_{shape_type}")
+    W = st.slider("Width (m)", W_min, W_max, W_def, key=f"W_{shape_type}")
+    D = st.slider("Depth (m)", D_min, D_max, D_def, key=f"D_{shape_type}")
+    lower_bout, upper_bout, waist = W, W * 0.75, W * 0.65
+    soundhole_x = _soundhole_center_x(L)
 
     _hr_default = float(saved_geom.get("hole_radius", 0.04))
     _hr_lo, _hr_hi = 0.020, max(0.055, min(0.18, float(W) * 0.55))
@@ -942,7 +904,6 @@ with col_controls:
 top_plot_color = plot_color_for_wood(top_wood_id)
 back_plot_color = plot_color_for_wood(back_wood_id)
 geom_state = _geometry_state_dict(
-    design_mode=design_mode,
     shape_type=shape_type,
     length=L,
     width=W,
@@ -952,7 +913,6 @@ geom_state = _geometry_state_dict(
     lower_bout=lower_bout,
     upper_bout=upper_bout,
     waist=waist,
-    soundhole_y=soundhole_y,
     soundhole_x=soundhole_x,
     exploded=exploded,
 )
@@ -972,7 +932,7 @@ lhs_params = _gui_lhs_params(
     lower_bout=lower_bout,
     upper_bout=upper_bout,
     waist=waist,
-    soundhole_y=soundhole_y,
+    soundhole_y=0.0,
     top_wood=top_wood_id,
     back_wood=back_wood_id,
 )

@@ -11,7 +11,7 @@
         "upper_bout": 0.27749999999999997,
         "waist": 0.2405,
         "soundhole_y": 0.0,
-        "soundhole_x": 0.146,
+        "soundhole_x": 0.070,
         "soundhole_from_neck_ratio": 0.354,
         "vis_mode": "Mesh + Solid",
         "exploded_view": false
