@@ -160,38 +160,29 @@ def _full_ring_points_from_half(
     half: Sequence[Tuple[float, float]], n_side_max: int = 40
 ) -> List[Tuple[float, float]]:
     """
-    Perimeter-ordered closed ring: +y half (neck→tail) then −y return (tail→neck).
+    Perimeter walk (template order): neck→tail on +y, then tail→neck on −y.
 
-    P = side + [(x, -y) for (x, y) in reversed(side[1:-1])]
-    No polar sort — guitar waist is non-convex.
+    full_perimeter = upper_half + lower_half[1:-1]  (no atan2 / polar sort).
     """
-    side = [(float(x), float(y)) for x, y in _subsample_chain_monotonic(half, n_side_max)]
-    if len(side) < 3:
+    upper_half = [(float(x), float(y)) for x, y in _subsample_chain_monotonic(half, n_side_max)]
+    if len(upper_half) < 3:
         raise RuntimeError("Half profile too short for closed perimeter.")
 
-    for i in range(len(side) - 1):
-        if side[i + 1][0] > side[i][0] + 1.0e-6:
-            raise RuntimeError(
-                f"Half profile x not monotone neck→tail at index {i} "
-                f"({side[i]} → {side[i + 1]}); cannot build perimeter walk."
-            )
+    upper_half[0] = (upper_half[0][0], 0.0)
+    upper_half[-1] = (upper_half[-1][0], 0.0)
 
-    # Neck / tail on centerline (template x_norm 0 and 1).
-    side[0] = (side[0][0], 0.0)
-    side[-1] = (side[-1][0], 0.0)
-
-    return_leg = [(pt[0], -pt[1]) for pt in reversed(side[1:-1])]
-    full_ring_points = list(side) + return_leg
-    if len(full_ring_points) < 4:
+    lower_half = [(pt[0], -pt[1]) for pt in reversed(upper_half)]
+    full_perimeter = list(upper_half) + lower_half[1:-1]
+    if len(full_perimeter) < 4:
         raise RuntimeError("Closed profile ring collapsed (too few vertices).")
 
     print(
-        f"[diag] perimeter walk: n_upper={len(side)} n_return={len(return_leg)} "
-        f"n_total={len(full_ring_points)} "
-        f"junction_tail→return {full_ring_points[len(side) - 1]} → {full_ring_points[len(side)]}"
+        f"[diag] perimeter walk: n_upper={len(upper_half)} n_lower={len(lower_half)} "
+        f"n_total={len(full_perimeter)} "
+        f"junction tail→lower {full_perimeter[len(upper_half) - 1]} → {full_perimeter[len(upper_half)]}"
     )
-    _verify_perimeter_ring(full_ring_points)
-    return full_ring_points
+    _verify_perimeter_ring(full_perimeter)
+    return full_perimeter
 
 
 def _filter_ring_min_spacing(
@@ -223,25 +214,26 @@ def _filter_ring_min_spacing(
     return clean
 
 
-def _occ_polygon_contour_from_point_tags(p_tags: List[int]) -> int:
-    """
-    OCC closed polygon wire when ``addPolygon`` is unavailable (spacing already filtered).
-    """
+def _occ_perimeter_walk_surface(
+    full_perimeter: Sequence[Tuple[float, float]], lc: float
+) -> int:
+    """OCC closed profile: points → sync → lines → sync → curve loop → plane surface → sync."""
     occ = gmsh.model.occ
-    n = len(p_tags)
+    ring = [(float(x), float(y)) for x, y in full_perimeter]
+    n = len(ring)
     if n < 4:
-        raise RuntimeError(f"OCC polygon needs >= 4 point tags (got {n}).")
+        raise RuntimeError(f"OCC perimeter walk needs >= 4 points (got {n}).")
+
+    p_tags = [int(occ.addPoint(pt[0], pt[1], 0.0, lc)) for pt in ring]
+    occ.synchronize()
     l_tags = [
         int(occ.addLine(p_tags[i], p_tags[(i + 1) % n])) for i in range(n)
     ]
     occ.synchronize()
-    add_wire = getattr(occ, "addWire", None)
-    if add_wire is not None:
-        try:
-            return int(add_wire(l_tags, tag=-1, checkClosed=True))
-        except TypeError:
-            return int(add_wire(l_tags))
-    return int(occ.addCurveLoop(l_tags))
+    loop_tag = int(occ.addCurveLoop(l_tags))
+    surface_tag = int(occ.addPlaneSurface([loop_tag]))
+    occ.synchronize()
+    return int(surface_tag)
 
 
 def _volume_tags_from_extrude(out) -> List[int]:
@@ -264,83 +256,6 @@ def _volume_tags_from_extrude(out) -> List[int]:
 
     _walk(out)
     return tags
-
-
-def _geo_closed_polyline_surface(
-    ring_points: Sequence[Tuple[float, float]], lc: float
-) -> int:
-    """Sketch preview profile: built-in geo kernel (stable closed polygon loops)."""
-    geo = gmsh.model.geo
-    p_tags = [int(geo.addPoint(float(x), float(y), 0.0, lc)) for x, y in ring_points]
-    n_pts = len(p_tags)
-    if n_pts < 4:
-        raise RuntimeError(f"Geo profile needs >= 4 points (got {n_pts}).")
-    l_tags = [
-        int(geo.addLine(p_tags[i], p_tags[(i + 1) % n_pts])) for i in range(n_pts)
-    ]
-    loop_tag = int(geo.addCurveLoop(l_tags))
-    surface_tag = int(geo.addPlaneSurface([loop_tag]))
-    geo.synchronize()
-    return surface_tag
-
-
-def _geo_extrude_shell_volume(surface_tag: int, dz: float, z_shift: float) -> int:
-    """Extrude a geo 2D profile surface to a 3D volume."""
-    geo = gmsh.model.geo
-    ext = geo.extrude([(2, int(surface_tag))], 0, 0, float(dz))
-    vol_tags = _volume_tags_from_extrude(ext)
-    if not vol_tags:
-        raise RuntimeError(f"geo.extrude produced no volume (dz={dz}).")
-    geo.translate([(3, vol_tags[0])], 0, 0, float(z_shift))
-    geo.synchronize()
-    return vol_tags[0]
-
-
-def _geo_box_volume(L: float, W: float, D: float) -> int:
-    """Solid box via geo rectangle + extrude (sketch preview)."""
-    geo = gmsh.model.geo
-    surf = int(geo.addRectangle(-L / 2.0, -W / 2.0, 0.0, L, W))
-    ext = geo.extrude([(2, surf)], 0, 0, float(D))
-    vol_tags = _volume_tags_from_extrude(ext)
-    if not vol_tags:
-        raise RuntimeError("geo box extrude produced no volume.")
-    geo.translate([(3, vol_tags[0])], 0, 0, -D / 2.0)
-    geo.synchronize()
-    return vol_tags[0]
-
-
-def _geo_sketch_proxy_ellipse_volume(
-    length: float, width: float, depth: float, lc: float
-) -> int:
-    """
-    Sketch preview proxy: convex geo ellipse (no Classical template polyline).
-
-    Avoids pinwheel/self-cross from non-convex template → addLine chains.
-    """
-    geo = gmsh.model.geo
-    rx = 0.47 * float(length) / 2.0
-    ry = 0.47 * float(width) / 2.0
-    try:
-        curve_tag = int(geo.addEllipse(0.0, 0.0, 0.0, rx, ry))
-        profile_kind = "ellipse"
-    except Exception:
-        r_eff = math.sqrt(max(rx * ry, 1.0e-9))
-        curve_tag = int(geo.addCircle(0.0, 0.0, 0.0, r_eff))
-        profile_kind = f"circle(r={r_eff:.4f})"
-    loop_tag = int(geo.addCurveLoop([curve_tag]))
-    surface_tag = int(geo.addPlaneSurface([loop_tag]))
-    geo.synchronize()
-    ext = geo.extrude([(2, int(surface_tag))], 0, 0, float(depth))
-    vol_tags = _volume_tags_from_extrude(ext)
-    if not vol_tags:
-        raise RuntimeError("geo sketch proxy extrude produced no volume.")
-    geo.translate([(3, vol_tags[0])], 0, 0, -float(depth) / 2.0)
-    geo.synchronize()
-    print(
-        f"[diag] sketch geo proxy body: {profile_kind} rx={rx*1000:.1f}mm ry={ry*1000:.1f}mm "
-        f"depth={depth*1000:.1f}mm volume={vol_tags[0]}"
-    )
-    return vol_tags[0]
 
 
 def _occ_extrude_shell_volume(surface_tag: int, dz: float, z_shift: float) -> int:
@@ -544,19 +459,13 @@ def create_guitar_mesh():
         print("[AUDIT] Gmsh verbosity elevated (General.Verbosity=5)")
     gmsh.model.add("Guitar3D_Performance_Optimized")
     occ = gmsh.model.occ
-    geo = gmsh.model.geo
-    sketch_use_geo = bool(is_preview)
     gmsh.option.setNumber("Geometry.Tolerance", 1.0e-4)
-    if not sketch_use_geo:
-        gmsh.option.setNumber("Geometry.OCCFixSmallEdges", 1)
-        gmsh.option.setNumber("Geometry.OCCFixSmallFaces", 1)
-    if sketch_use_geo:
-        print(
-            "[diag] CAD kernel fork: sketch → gmsh.model.geo "
-            "(convex ellipse proxy — no template polyline / no OCC)"
-        )
-    else:
-        print(f"[diag] CAD kernel fork: {mode} → gmsh.model.occ (hollow/FSI booleans)")
+    gmsh.option.setNumber("Geometry.OCCFixSmallEdges", 1)
+    gmsh.option.setNumber("Geometry.OCCFixSmallFaces", 1)
+    print(
+        f"[diag] CAD kernel: gmsh.model.occ perimeter walk "
+        f"(mode={mode}, sketch_solid={is_preview})"
+    )
 
     def create_template_profile_surface(
         *,
@@ -568,7 +477,7 @@ def create_guitar_mesh():
         wall_offset: float = 0.0,
         point_lc: Optional[float] = None,
     ) -> int:
-        """Engineering (display/FOM): Classical template → OCC closed profile surface."""
+        """Classical template → perimeter walk → OCC plane surface (all modes)."""
         lc = float(point_lc if point_lc is not None else mesh_size)
         half = _stabilize_half_profile(
             warp_template_half_profile(
@@ -580,30 +489,14 @@ def create_guitar_mesh():
                 wall_offset=wall_offset,
             )
         )
-        full_ring_points = _full_ring_points_from_half(half, n_side_max=40)
-        clean_ring_points = _filter_ring_min_spacing(full_ring_points, min_dist=1e-4)
-        _verify_perimeter_ring(clean_ring_points)
-
-        p_tags: List[int] = [
-            int(gmsh.model.occ.addPoint(pt[0], pt[1], 0.0, lc)) for pt in clean_ring_points
-        ]
-        add_polygon = getattr(gmsh.model.occ, "addPolygon", None)
-        polygon_mode = "addPolygon"
-        try:
-            if add_polygon is not None:
-                polygon_loop_tag = int(add_polygon(p_tags))
-            else:
-                polygon_mode = "addWire(fallback)"
-                polygon_loop_tag = _occ_polygon_contour_from_point_tags(p_tags)
-            surface_tag = int(gmsh.model.occ.addPlaneSurface([polygon_loop_tag]))
-        except Exception as exc:
-            raise RuntimeError(
-                f"OCC polygon profile failed ({polygon_mode}): {exc}"
-            ) from exc
-        gmsh.model.occ.synchronize()
+        full_perimeter = _filter_ring_min_spacing(
+            _full_ring_points_from_half(half, n_side_max=40), min_dist=1e-4
+        )
+        _verify_perimeter_ring(full_perimeter)
+        surface_tag = _occ_perimeter_walk_surface(full_perimeter, lc)
         print(
-            f"[diag] template profile (OCC {polygon_mode}): ring_in={len(full_ring_points)} "
-            f"ring_out={len(clean_ring_points)} pts={len(p_tags)} surface={surface_tag}"
+            f"[diag] template profile (OCC perimeter walk): n_pts={len(full_perimeter)} "
+            f"surface={surface_tag}"
         )
         return surface_tag
 
@@ -629,13 +522,6 @@ def create_guitar_mesh():
         return {tag for bdim, tag in bnds if bdim == 0}
 
     def _entity_center_of_mass(dim: int, entity_tag: int) -> Tuple[float, float, float]:
-        if sketch_use_geo:
-            bb = gmsh.model.getBoundingBox(int(dim), int(entity_tag))
-            return (
-                0.5 * (bb[0] + bb[3]),
-                0.5 * (bb[1] + bb[4]),
-                0.5 * (bb[2] + bb[5]),
-            )
         try:
             com = occ.getCenterOfMass(int(dim), int(entity_tag))
             return (float(com[0]), float(com[1]), float(com[2]))
@@ -760,20 +646,10 @@ def create_guitar_mesh():
     # Display / FOM: hollow shell via outer − inner boolean.
     solid_sketch = bool(is_preview)
 
-    # Build guitar solid (sketch → geo solid; display/FOM → OCC hollow + booleans).
-    if sketch_use_geo:
-        if _is_box_shape(shape_type):
-            vol_out_id = _geo_box_volume(L, W, D)
-        else:
-            vol_out_id = _geo_sketch_proxy_ellipse_volume(L, W, D, mesh_size)
-        vol_in_id = vol_out_id
-        print(
-            f"[diag] sketch geo solid: volume={vol_out_id} "
-            "(proxy body — template spline deferred to display/FOM OCC)"
-        )
-    elif _is_box_shape(shape_type):
+    # Build guitar solid (OCC only): sketch = solid outer; display/FOM = hollow + booleans.
+    if _is_box_shape(shape_type):
         vol_out_id = occ.addBox(-L/2, -W/2, -D/2, L, W, D)
-        vol_in_id = occ.addBox(
+        vol_in_id = vol_out_id if solid_sketch else occ.addBox(
             -L/2 + t, -W/2 + t, -D/2 + t, L - 2 * t, W - 2 * t, D - 2 * t
         )
     else:
@@ -793,20 +669,24 @@ def create_guitar_mesh():
             point_lc=profile_lc,
         )
         vol_out_id = _occ_extrude_shell_volume(surf_out, D, -D / 2.0)
-        surf_in = create_template_profile_surface(
-            length=L,
-            upper_bout=upper_bout,
-            waist=waist,
-            lower_bout=lower_bout,
-            template=profile_template,
-            wall_offset=t,
-            point_lc=profile_lc,
-        )
-        vol_in_id = _occ_extrude_shell_volume(surf_in, inner_depth, -D / 2.0 + t)
-        print(f"[diag] OCC hollow shell volumes: outer={vol_out_id} inner={vol_in_id}")
+        if solid_sketch:
+            vol_in_id = vol_out_id
+            print(f"[diag] sketch OCC solid: outer volume={vol_out_id} (no inner shell cut)")
+        else:
+            surf_in = create_template_profile_surface(
+                length=L,
+                upper_bout=upper_bout,
+                waist=waist,
+                lower_bout=lower_bout,
+                template=profile_template,
+                wall_offset=t,
+                point_lc=profile_lc,
+            )
+            vol_in_id = _occ_extrude_shell_volume(surf_in, inner_depth, -D / 2.0 + t)
+            print(f"[diag] OCC hollow shell volumes: outer={vol_out_id} inner={vol_in_id}")
 
     hole_cyl: Optional[int] = None
-    if not sketch_use_geo:
+    if not solid_sketch:
         if _is_box_shape(shape_type):
             hole_x, hole_y = 0.0, 0.0
         z_hole_lo = (D / 2.0) - t - 0.001
@@ -838,13 +718,10 @@ def create_guitar_mesh():
         if solid_sketch:
             print(
                 "[diag] sketch CAD: solid outer volume only "
-                "(geo kernel — no occ.cut hollow)"
+                "(OCC perimeter walk — no occ.cut hollow)"
             )
             wood_dimtags = [(3, int(vol_out_id))]
-            if sketch_use_geo:
-                geo.synchronize()
-            else:
-                occ.synchronize()
+            occ.synchronize()
         else:
             print(f"[diag] {mode} CAD: hollow wood shell (outer − inner cut)")
             wood_shell = _audit_boolean(
