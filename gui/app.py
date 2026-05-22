@@ -683,15 +683,14 @@ def _render_pyvista_guitar(
                 colored,
                 scalars="rgb",
                 rgb=True,
+                preference="cell",
                 opacity=1.0,
                 show_edges=show_edges or sketch_mode,
                 edge_color="#3d2817",
                 line_width=0.6,
                 smooth_shading=True,
                 lighting=True,
-                preference="surface",
                 backface_culling=True,
-                pickable=False,
             )
         else:
             plotter.add_mesh(
@@ -700,7 +699,6 @@ def _render_pyvista_guitar(
                 opacity=1.0,
                 show_edges=show_edges,
                 smooth_shading=True,
-                preference="surface",
             )
     else:
         plotter.add_text("Preview unavailable", position="upper_left", font_size=12)
@@ -1031,18 +1029,10 @@ with col_visual:
     except Exception as exc:
         st.warning(f"3D render issue: {exc}")
 
-    st.caption(
-        f"Soundboard {top_wood_id} ({top_plot_color}) · "
-        f"back/sides {back_wood_id} ({back_plot_color})"
-    )
-
     if st.session_state.show_physics_success:
         eng = str(st.session_state.get("last_engine", "")).upper() or "ROM"
         st.success(f"Physics saved ({eng}). You can generate audio.")
         st.session_state.show_physics_success = False
-
-    if WAV_OUTPUT.is_file():
-        st.audio(str(WAV_OUTPUT))
 
     if st.session_state.get("last_engine") == "rom" and st.session_state.get("rom_last_result"):
         with st.expander("ROM solve details"):
