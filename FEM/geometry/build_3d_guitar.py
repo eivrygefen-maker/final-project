@@ -115,26 +115,82 @@ def _subsample_chain_monotonic(
     return [pts[i] for i in idx]
 
 
+def _verify_perimeter_ring(ring: Sequence[Tuple[float, float]]) -> None:
+    """
+    Ensure consecutive vertices trace the outer boundary (no long chord jumps / pinwheel).
+    """
+    pts = [(float(x), float(y)) for x, y in ring]
+    n = len(pts)
+    if n < 4:
+        raise RuntimeError(f"Perimeter ring needs >= 4 points (got {n}).")
+
+    head = pts[:5]
+    tail = pts[-5:]
+    print(f"[diag] perimeter ring head (neck→…): {head}")
+    print(f"[diag] perimeter ring tail (…→neck): {tail}")
+
+    seg_lens: List[float] = []
+    for i in range(n):
+        j = (i + 1) % n
+        seg_lens.append(math.hypot(pts[j][0] - pts[i][0], pts[j][1] - pts[i][1]))
+
+    med = sorted(seg_lens)[len(seg_lens) // 2]
+    chord_cap = max(8.0 * med, 0.06)
+    bad = [(i, seg_lens[i]) for i in range(n) if seg_lens[i] > chord_cap]
+    if bad:
+        raise RuntimeError(
+            "Perimeter walk order invalid — long chord edge(s) "
+            f"(pinwheel risk): {bad[:6]}; median_seg={med:.4f} m, cap={chord_cap:.4f} m. "
+            f"head={head} tail={tail}"
+        )
+
+    # Skip-distance sanity: step i→i+1 must not be wildly longer than i→i+2 along the chain.
+    for i in range(n):
+        j1 = (i + 1) % n
+        j2 = (i + 2) % n
+        d1 = seg_lens[i]
+        d2 = math.hypot(pts[j2][0] - pts[i][0], pts[j2][1] - pts[i][1])
+        if d1 > 3.0 * d2 and d1 > chord_cap * 0.5:
+            raise RuntimeError(
+                f"Perimeter walk non-local at index {i}: d(i→i+1)={d1:.4f} d(i→i+2)={d2:.4f}"
+            )
+
+
 def _full_ring_points_from_half(
     half: Sequence[Tuple[float, float]], n_side_max: int = 40
 ) -> List[Tuple[float, float]]:
     """
-    Strict centerline closure: neck/tail snapped to y=0, lower leg mirrors side[1:-1] only.
+    Perimeter-ordered closed ring: +y half (neck→tail) then −y return (tail→neck).
 
-    Avoids floating-point asymmetry at the centerline that breaks OCC wire assembly.
+    P = side + [(x, -y) for (x, y) in reversed(side[1:-1])]
+    No polar sort — guitar waist is non-convex.
     """
     side = [(float(x), float(y)) for x, y in _subsample_chain_monotonic(half, n_side_max)]
     if len(side) < 3:
         raise RuntimeError("Half profile too short for closed perimeter.")
 
-    # Force exact centerline anchors before mirroring (warp may leave y ≈ 1e-16, not 0).
+    for i in range(len(side) - 1):
+        if side[i + 1][0] > side[i][0] + 1.0e-6:
+            raise RuntimeError(
+                f"Half profile x not monotone neck→tail at index {i} "
+                f"({side[i]} → {side[i + 1]}); cannot build perimeter walk."
+            )
+
+    # Neck / tail on centerline (template x_norm 0 and 1).
     side[0] = (side[0][0], 0.0)
     side[-1] = (side[-1][0], 0.0)
 
-    lower_half = [(pt[0], -pt[1]) for pt in reversed(side[1:-1])]
-    full_ring_points = list(side) + lower_half
+    return_leg = [(pt[0], -pt[1]) for pt in reversed(side[1:-1])]
+    full_ring_points = list(side) + return_leg
     if len(full_ring_points) < 4:
         raise RuntimeError("Closed profile ring collapsed (too few vertices).")
+
+    print(
+        f"[diag] perimeter walk: n_upper={len(side)} n_return={len(return_leg)} "
+        f"n_total={len(full_ring_points)} "
+        f"junction_tail→return {full_ring_points[len(side) - 1]} → {full_ring_points[len(side)]}"
+    )
+    _verify_perimeter_ring(full_ring_points)
     return full_ring_points
 
 
@@ -489,10 +545,9 @@ def create_guitar_mesh():
         )
         full_ring_points = _full_ring_points_from_half(half, n_side_max=40)
         clean_ring_points = _filter_ring_min_spacing(full_ring_points, min_dist=1e-4)
+        _verify_perimeter_ring(clean_ring_points)
 
         if sketch_use_geo:
-            # Perimeter order from _full_ring_points_from_half (neck→tail→return); no polar sort
-            # (atan2 breaks non-convex guitar waists).
             surface_tag = _geo_closed_polyline_surface(clean_ring_points, lc)
             print(
                 f"[diag] template profile (geo sketch): ring_in={len(full_ring_points)} "
