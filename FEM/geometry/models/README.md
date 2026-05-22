@@ -29,7 +29,7 @@ python3 FEM/geometry/generate_reference_models.py
 
 This writes `classic.step`, `acoustic.step`, and `box.step` into this directory:
 
-- **classic** / **acoustic**: B-spline figure-8 half-profile (upper bout / waist / lower bout), extruded to a solid.
+- **classic** / **acoustic**: fixed classical / dreadnought point templates (flat neck & tail, B-spline bouts), extruded to a solid. No polar or Gaussian envelope math.
 - **box**: simple rectangular solid for debug.
 
 Replace with external CAD later if you need higher-fidelity bracing or arching.

@@ -2,13 +2,13 @@
 """
 Write STEP reference bodies into FEM/geometry/models/.
 
-Classical and dreadnought bodies use closed B-spline figure-8 outlines; box stays rectangular.
+Classical / dreadnought silhouettes use **fixed perimeter point templates** (no polar
+or Gaussian envelope math). Box stays rectangular.
 
     python3 FEM/geometry/generate_reference_models.py
 """
 from __future__ import annotations
 
-import math
 import sys
 from pathlib import Path
 from typing import List, Sequence, Tuple
@@ -19,80 +19,113 @@ MODELS_DIR = Path(__file__).resolve().parent / "models"
 
 Point2 = Tuple[float, float]
 
+# ---------------------------------------------------------------------------
+# Classical guitar template (L = 0.50 m nominal, neck at x = +0.25, tail at −0.25)
+# Frame: +x neck, −x tail, ±y lateral. Flat neck & flat tail = vertical lines at ±L/2.
+# ---------------------------------------------------------------------------
 
-def _smoothstep(u: float) -> float:
-    u = max(0.0, min(1.0, float(u)))
-    return u * u * (3.0 - 2.0 * u)
+CLASSICAL_NECK_TOP: Point2 = (0.25, 0.05)
+CLASSICAL_NECK_BOTTOM: Point2 = (0.25, -0.05)
+CLASSICAL_TAIL_TOP: Point2 = (-0.25, 0.18)
+CLASSICAL_TAIL_BOTTOM: Point2 = (-0.25, -0.18)
+CLASSICAL_WAIST: Point2 = (0.0, 0.12)
+
+# +y stations neck → tail (interior only; neck/tail flats are separate line segments).
+CLASSICAL_UPPER_BODY: Tuple[Point2, ...] = (
+    (0.23, 0.085),
+    (0.20, 0.112),
+    (0.17, 0.132),
+    (0.14, 0.138),  # flat shoulder
+    (0.11, 0.136),
+    (0.08, 0.128),
+    (0.05, 0.123),
+    (0.02, 0.121),
+    CLASSICAL_WAIST,
+    (-0.02, 0.123),
+    (-0.05, 0.131),
+    (-0.08, 0.143),
+    (-0.11, 0.158),
+    (-0.14, 0.170),
+    (-0.17, 0.176),
+    (-0.20, 0.178),
+    (-0.23, 0.179),
+)
+
+# Dreadnought: broader shoulders & lower bout, gentler waist (L = 0.50 m).
+DREADNOUGHT_NECK_TOP: Point2 = (0.25, 0.052)
+DREADNOUGHT_NECK_BOTTOM: Point2 = (0.25, -0.052)
+DREADNOUGHT_TAIL_TOP: Point2 = (-0.25, 0.195)
+DREADNOUGHT_TAIL_BOTTOM: Point2 = (-0.25, -0.195)
+DREADNOUGHT_WAIST: Point2 = (0.0, 0.125)
+
+DREADNOUGHT_UPPER_BODY: Tuple[Point2, ...] = (
+    (0.23, 0.098),
+    (0.20, 0.128),
+    (0.17, 0.148),
+    (0.14, 0.152),
+    (0.11, 0.150),
+    (0.08, 0.144),
+    (0.05, 0.138),
+    (0.02, 0.132),
+    DREADNOUGHT_WAIST,
+    (-0.02, 0.134),
+    (-0.05, 0.142),
+    (-0.08, 0.155),
+    (-0.11, 0.172),
+    (-0.14, 0.186),
+    (-0.17, 0.192),
+    (-0.20, 0.194),
+    (-0.23, 0.195),
+)
 
 
-def _half_width_classical(x_norm: float, *, upper: float, waist: float, lower: float) -> float:
-    """Half-width along body (x_norm: 0=neck, 1=tail). Torres-style figure-8."""
-    u = max(0.0, min(1.0, float(x_norm)))
-    y_upper = (upper / 2.0) * (0.55 + 0.45 * math.exp(-((u - 0.14) / 0.11) ** 2))
-    y_waist = (waist / 2.0) * (1.0 - 0.12 * math.exp(-((u - 0.40) / 0.10) ** 2))
-    y_lower = (lower / 2.0) * math.exp(-((u - 0.58) / 0.14) ** 2)
-    y = y_upper
-    if u > 0.22:
-        y = y_upper + (y_waist - y_upper) * _smoothstep((u - 0.22) / 0.18)
-    if u > 0.40:
-        y = y_waist + (y_lower - y_waist) * _smoothstep((u - 0.40) / 0.22)
-    if u > 0.72:
-        y = y_lower * (1.0 - _smoothstep((u - 0.72) / 0.28))
-    neck = math.sin(0.5 * math.pi * min(u / 0.10, 1.0)) ** 0.9 if u < 0.10 else 1.0
-    tail = math.sin(0.5 * math.pi * min((1.0 - u) / 0.10, 1.0)) ** 1.0 if u > 0.90 else 1.0
-    return max(0.0, y * neck * tail)
+def classical_guitar_perimeter(length: float = 0.50) -> List[Point2]:
+    """
+    Closed perimeter (CCW): flat neck line → upper B-spline chain → flat tail → lower chain.
+
+    Points are authored for ``length=0.5`` m and scaled uniformly when ``length`` differs.
+    """
+    return _closed_template_perimeter(
+        length,
+        neck_top=CLASSICAL_NECK_TOP,
+        neck_bottom=CLASSICAL_NECK_BOTTOM,
+        tail_top=CLASSICAL_TAIL_TOP,
+        tail_bottom=CLASSICAL_TAIL_BOTTOM,
+        upper_body=CLASSICAL_UPPER_BODY,
+    )
 
 
-def _half_width_dreadnought(x_norm: float, *, upper: float, waist: float, lower: float) -> float:
-    """Dreadnought: broader shoulders/lower bout, shallower waist."""
-    u = max(0.0, min(1.0, float(x_norm)))
-    y_upper = (upper / 2.0) * (0.62 + 0.38 * math.exp(-((u - 0.12) / 0.13) ** 2))
-    y_waist = (waist / 2.0) * (1.0 - 0.06 * math.exp(-((u - 0.36) / 0.12) ** 2))
-    y_lower = (lower / 2.0) * math.exp(-((u - 0.54) / 0.16) ** 2)
-    y = y_upper
-    if u > 0.18:
-        y = y_upper + (y_waist - y_upper) * _smoothstep((u - 0.18) / 0.16)
-    if u > 0.36:
-        y = y_waist + (y_lower - y_waist) * _smoothstep((u - 0.36) / 0.24)
-    if u > 0.70:
-        y = y_lower * (1.0 - _smoothstep((u - 0.70) / 0.30))
-    neck = math.sin(0.5 * math.pi * min(u / 0.09, 1.0)) ** 0.85 if u < 0.09 else 1.0
-    tail = math.sin(0.5 * math.pi * min((1.0 - u) / 0.09, 1.0)) ** 0.95 if u > 0.91 else 1.0
-    return max(0.0, y * neck * tail)
+def dreadnought_guitar_perimeter(length: float = 0.50) -> List[Point2]:
+    """Dreadnought template (same perimeter walk as classical)."""
+    return _closed_template_perimeter(
+        length,
+        neck_top=DREADNOUGHT_NECK_TOP,
+        neck_bottom=DREADNOUGHT_NECK_BOTTOM,
+        tail_top=DREADNOUGHT_TAIL_TOP,
+        tail_bottom=DREADNOUGHT_TAIL_BOTTOM,
+        upper_body=DREADNOUGHT_UPPER_BODY,
+    )
 
 
-def _half_profile(
+def _closed_template_perimeter(
     length: float,
     *,
-    upper_bout: float,
-    waist: float,
-    lower_bout: float,
-    kind: str,
-    n_stations: int = 32,
+    neck_top: Point2,
+    neck_bottom: Point2,
+    tail_top: Point2,
+    tail_bottom: Point2,
+    upper_body: Sequence[Point2],
 ) -> List[Point2]:
-    """+y half-profile: neck (+L/2, 0) → tail (−L/2, 0)."""
-    L = float(length)
-    width_fn = _half_width_dreadnought if kind == "dreadnought" else _half_width_classical
-    pts: List[Point2] = []
-    for i in range(n_stations):
-        x_norm = i / float(n_stations - 1)
-        x = 0.5 * L - x_norm * L
-        y = width_fn(x_norm, upper=upper_bout, waist=waist, lower=lower_bout)
-        pts.append((x, y))
-    pts[0] = (0.5 * L, 0.0)
-    pts[-1] = (-0.5 * L, 0.0)
-    if len(pts) >= 2 and pts[1][1] < 1.0e-5:
-        pts[1] = (pts[1][0], 1.0e-4)
-    if len(pts) >= 3 and pts[-2][1] < 1.0e-5:
-        pts[-2] = (pts[-2][0], 1.0e-4)
-    return pts
+    scale = float(length) / 0.50
 
+    def _s(pt: Point2) -> Point2:
+        return (float(pt[0]) * scale, float(pt[1]) * scale)
 
-def _closed_perimeter(half: Sequence[Point2]) -> List[Point2]:
-    """Perimeter walk: upper (+y) then lower (−y), neck → tail → neck."""
-    upper = list(half)
-    lower = [(x, -y) for x, y in reversed(upper)]
-    return upper + lower[1:-1]
+    upper = [_s(neck_top)] + [_s(p) for p in upper_body] + [_s(tail_top)]
+    lower_return = [_s(tail_bottom)] + [
+        (sx, -sy) for x, y in reversed(upper_body) for sx, sy in [_s((x, y))]
+    ] + [_s(neck_bottom)]
+    return upper + lower_return
 
 
 def _volume_tags_from_extrude(out) -> List[int]:
@@ -114,37 +147,45 @@ def _volume_tags_from_extrude(out) -> List[int]:
     return tags
 
 
-def _extrude_figure8_solid(
+def _build_closed_bspline_solid(
     occ,
+    perimeter: Sequence[Point2],
     *,
-    length: float,
-    upper_bout: float,
-    waist: float,
-    lower_bout: float,
     depth: float,
-    kind: str,
+    n_upper_body: int,
 ) -> None:
-    """BSpline figure-8 outline in xy, extruded along +z, centred on z=0."""
-    half = _half_profile(
-        length,
-        upper_bout=upper_bout,
-        waist=waist,
-        lower_bout=lower_bout,
-        kind=kind,
-    )
-    ring = _closed_perimeter(half)
-    lc = max(float(length), float(depth)) / 80.0
+    """
+    Extrude a closed profile to a solid.
+
+    Perimeter layout:
+    ``[neck_top, *upper_body, tail_top, tail_bottom, *lower_mirror, neck_bottom]``
+
+    Flat neck & tail = ``addLine``; bouts = ``addBSpline`` (no polar / atan2 math).
+    """
+    ring = list(perimeter)
+    n = len(ring)
+    expected = 2 * int(n_upper_body) + 4
+    if n != expected:
+        raise RuntimeError(f"Perimeter length {n} != expected {expected} for template.")
+
+    lc = max(
+        max(abs(p[0]) for p in ring),
+        max(abs(p[1]) for p in ring),
+        float(depth),
+    ) / 60.0
 
     p_tags = [int(occ.addPoint(float(x), float(y), 0.0, lc)) for x, y in ring]
-    try:
-        bsp = int(occ.addBSpline(p_tags))
-        loop_tag = int(occ.addCurveLoop([bsp, int(occ.addLine(p_tags[-1], p_tags[0]))]))
-    except Exception:
-        line_tags = [
-            int(occ.addLine(p_tags[i], p_tags[(i + 1) % len(p_tags)]))
-            for i in range(len(p_tags))
-        ]
-        loop_tag = int(occ.addCurveLoop(line_tags))
+
+    i_neck_top = 0
+    i_tail_top = 1 + int(n_upper_body)
+    i_tail_bot = i_tail_top + 1
+    i_neck_bot = n - 1
+
+    c_neck = int(occ.addLine(p_tags[i_neck_bot], p_tags[i_neck_top]))
+    c_upper = int(occ.addBSpline(p_tags[i_neck_top : i_tail_top + 1]))
+    c_tail = int(occ.addLine(p_tags[i_tail_top], p_tags[i_tail_bot]))
+    c_lower = int(occ.addBSpline(p_tags[i_tail_bot : i_neck_bot + 1]))
+    loop_tag = int(occ.addCurveLoop([c_neck, c_upper, c_tail, c_lower]))
 
     surf_tag = int(occ.addPlaneSurface([loop_tag]))
     try:
@@ -153,7 +194,7 @@ def _extrude_figure8_solid(
         ext = occ.extrude([(2, surf_tag)], 0, 0, float(depth))
     vol_tags = _volume_tags_from_extrude(ext)
     if not vol_tags:
-        raise RuntimeError(f"Extrude failed for {kind} reference (depth={depth}).")
+        raise RuntimeError("Extrude produced no volume.")
     occ.translate([(3, vol_tags[0])], 0, 0, -float(depth) / 2.0)
 
 
@@ -168,28 +209,18 @@ def _write_step(name: str, builder) -> None:
 
 
 def _classic(occ) -> None:
-    """Nominal 0.50 × 0.36 × 0.10 m classical (Torres proportions)."""
-    _extrude_figure8_solid(
-        occ,
-        length=0.50,
-        upper_bout=0.277,
-        waist=0.241,
-        lower_bout=0.365,
-        depth=0.10,
-        kind="classical",
+    ring = classical_guitar_perimeter(0.50)
+    print(f"[diag] classical template: n_perimeter={len(ring)}")
+    _build_closed_bspline_solid(
+        occ, ring, depth=0.10, n_upper_body=len(CLASSICAL_UPPER_BODY)
     )
 
 
 def _acoustic(occ) -> None:
-    """Nominal dreadnought: 0.50 × 0.40 × 0.10 m, broader bouts."""
-    _extrude_figure8_solid(
-        occ,
-        length=0.50,
-        upper_bout=0.305,
-        waist=0.238,
-        lower_bout=0.400,
-        depth=0.10,
-        kind="dreadnought",
+    ring = dreadnought_guitar_perimeter(0.50)
+    print(f"[diag] dreadnought template: n_perimeter={len(ring)}")
+    _build_closed_bspline_solid(
+        occ, ring, depth=0.10, n_upper_body=len(DREADNOUGHT_UPPER_BODY)
     )
 
 
