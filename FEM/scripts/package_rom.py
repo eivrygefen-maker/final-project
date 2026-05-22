@@ -28,7 +28,16 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from fem_harvest_filter import HARVEST_FILTER_POLICY_VERSION
 from fem_mode_array_utils import MODE_VECTOR_FILE_SUFFIX, load_mode_column_any
-from fem_rom_postprocess import MODAL_PRUNE_DF_HZ_DEFAULT, prune_near_duplicate_modes
+from fem_rom_postprocess import (
+    MODAL_PRUNE_DF_HF_HZ,
+    MODAL_PRUNE_DF_LF_MF_HZ,
+    MODAL_PRUNE_HF_CROSSOVER_HZ,
+    MODAL_PRUNE_LOG_P_FRAC_TOL_DEFAULT,
+    MODAL_PRUNE_TAG_TOL_DEFAULT,
+    annotate_dominant_tags,
+    dominant_tag_for_row,
+    prune_modes_two_layer,
+)
 
 FEM_ROOT = SCRIPT_DIR.parent
 SORTING_ROOT = FEM_ROOT / "SORTING"
@@ -136,6 +145,15 @@ def _read_winners(csv_path: Path) -> List[Dict[str, object]]:
                 pf_h = fields.get("p_frac")
                 if pf_h and rec.get(pf_h, "").strip():
                     row["p_frac"] = float(rec[pf_h])
+                t1_h = fields.get("tag1_ratio")
+                t3_h = fields.get("tag3_ratio")
+                if t1_h and rec.get(t1_h, "").strip():
+                    row["tag1_ratio"] = float(rec[t1_h])
+                if t3_h and rec.get(t3_h, "").strip():
+                    row["tag3_ratio"] = float(rec[t3_h])
+                dom_h = fields.get("dominant_tag")
+                if dom_h and rec.get(dom_h, "").strip():
+                    row["dominant_tag"] = str(rec[dom_h]).strip()
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError(f"Bad CSV row {rec!r}: {exc}") from exc
             rows.append(row)
@@ -216,16 +234,15 @@ def main() -> int:
             "temp_modes/, else FEM/SORTING next to this script)."
         ),
     )
-    parser.add_argument(
-        "--modal-prune-df-hz",
-        type=float,
-        default=MODAL_PRUNE_DF_HZ_DEFAULT,
-        help="Final NPZ guard: drop CSV rows within this Δf (Hz), keeping higher wood/p_frac.",
-    )
+    parser.add_argument("--hf-crossover-hz", type=float, default=MODAL_PRUNE_HF_CROSSOVER_HZ)
+    parser.add_argument("--df-lf-mf-hz", type=float, default=MODAL_PRUNE_DF_LF_MF_HZ)
+    parser.add_argument("--df-hf-hz", type=float, default=MODAL_PRUNE_DF_HF_HZ)
+    parser.add_argument("--tag-tol", type=float, default=MODAL_PRUNE_TAG_TOL_DEFAULT)
+    parser.add_argument("--log-p-frac-tol", type=float, default=MODAL_PRUNE_LOG_P_FRAC_TOL_DEFAULT)
     parser.add_argument(
         "--no-modal-prune",
         action="store_true",
-        help="Disable final frequency de-duplication before packaging.",
+        help="Disable final two-layer de-duplication before packaging.",
     )
     args = parser.parse_args()
 
@@ -244,24 +261,33 @@ def main() -> int:
         return 1
 
     if not args.no_modal_prune:
-        prune_df = max(1.0e-6, float(args.modal_prune_df_hz))
-        kept, pruned = prune_near_duplicate_modes(
+        kept, pruned = prune_modes_two_layer(
             [dict(w) for w in winners],
-            df_hz=prune_df,
+            hf_crossover_hz=float(args.hf_crossover_hz),
+            df_lf_mf_hz=float(args.df_lf_mf_hz),
+            df_hf_hz=float(args.df_hf_hz),
+            tag_tol=float(args.tag_tol),
+            log_p_frac_tol=float(args.log_p_frac_tol),
         )
         if pruned:
             print(
-                f"Modal frequency prune (package): dropped {len(pruned)} near-duplicate row(s) "
-                f"(Δf<{prune_df:g} Hz)."
+                f"Two-layer prune (package): dropped {len(pruned)} duplicate row(s) "
+                f"(Δf {args.df_lf_mf_hz:g}/{args.df_hf_hz:g} Hz)."
             )
         winners = kept
         if not winners:
-            print("Error: no modes remain after modal frequency prune.", file=sys.stderr)
+            print("Error: no modes remain after two-layer modal prune.", file=sys.stderr)
             return 1
+
+    winners = annotate_dominant_tags([dict(w) for w in winners])
 
     cols: List[sparse.csr_matrix] = []
     freqs: List[float] = []
     woods: List[float] = []
+    p_fracs: List[float] = []
+    tag1_ratios: List[float] = []
+    tag3_ratios: List[float] = []
+    dominant_tags: List[str] = []
     source_targets: List[float] = []
     harvest_policies: List[str] = []
     harvest_classes: List[str] = []
@@ -283,6 +309,10 @@ def main() -> int:
         cols.append(col)
         freqs.append(hz)
         woods.append(wood)
+        p_fracs.append(float(row["p_frac"]) if row.get("p_frac") is not None else float("nan"))
+        tag1_ratios.append(float(row.get("tag1_ratio", float("nan"))))
+        tag3_ratios.append(float(row.get("tag3_ratio", float("nan"))))
+        dominant_tags.append(str(row.get("dominant_tag", dominant_tag_for_row(row))))
         st = row.get("source_target_hz")
         source_targets.append(float(st) if st is not None else float("nan"))
         harvest_policies.append(
@@ -309,6 +339,10 @@ def main() -> int:
 
     frequencies = np.asarray(freqs, dtype=np.float64)
     wood_participations = np.asarray(woods, dtype=np.float64)
+    p_frac_arr = np.asarray(p_fracs, dtype=np.float64)
+    tag1_ratio_arr = np.asarray(tag1_ratios, dtype=np.float64)
+    tag3_ratio_arr = np.asarray(tag3_ratios, dtype=np.float64)
+    dominant_tag_arr = np.asarray(dominant_tags, dtype="U8")
     source_target_hz = np.asarray(source_targets, dtype=np.float64)
     policy_arr = np.asarray(harvest_policies, dtype="U64")
     class_arr = np.asarray(harvest_classes, dtype="U32")
@@ -328,6 +362,10 @@ def main() -> int:
         ev_shape=np.asarray(eigenvectors.shape, dtype=np.int64),
         frequencies=frequencies,
         wood_participations=wood_participations,
+        p_frac=p_frac_arr,
+        tag1_ratio=tag1_ratio_arr,
+        tag3_ratio=tag3_ratio_arr,
+        dominant_tag=dominant_tag_arr,
         source_target_hz=source_target_hz,
         harvest_filter_policy=policy_arr,
         harvest_class=class_arr,
@@ -385,7 +423,8 @@ def main() -> int:
     print(
         f"Created ROM archive: {out_path}\n"
         f"  eigenvectors CSR: shape {eigenvectors.shape}, nnz={nnz}, sparsity≈{sparsity:.4f}\n"
-        f"  frequencies: {frequencies.shape}  |  wood_participations: {wood_participations.shape}\n"
+        f"  frequencies: {frequencies.shape}  |  modes={ncols} (dynamic basis)\n"
+        f"  wood_participations: {wood_participations.shape}  |  dominant_tag in NPZ\n"
         f"  provenance: policy={policy_version!r} sweep=[{sweep_lo:.0f},{sweep_hi:.0f}] Hz\n"
         f"  file size: {nbytes / (1024 * 1024):.2f} MiB ({nbytes} bytes)"
     )

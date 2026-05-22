@@ -2,14 +2,15 @@
 """
 Stage-2 metadata tuner (no FEM solve).
 
-Reads ``candidates_log.json``, applies a **split-quota** MMR strategy aligned with
-guitar acoustics: top plate (tag 1) drives the basis; back/sides (tag 3) add color.
+Reads ``candidates_log.json``, applies two-layer modal pruning, then selects from a
+**single unified pool** (no sequential top/back quota). Full coupled mode vectors are
+always exported; ``dominant_tag`` (Top/Back) is labeling for diagnostics only.
 
-Default selection (150 modes total):
-  * **120** modes from ``tag1_ratio >= TAG1_RATIO_MIN`` (MMR merit = normalized tag1)
-  * **30** modes from ``tag3_ratio >= TAG3_RATIO_MIN``, excluding top picks (MMR merit = tag3)
+Default: keep every mode that survives pruning (``--quota 0``). Optional ``--quota N``
+runs unified MMR on ``p_frac`` + wood + uniqueness merit.
 
-Legacy combined ``wood_participation`` MMR is available via ``--legacy-combined``.
+Diagnostic plots call ``fem_rom_postprocess.plot_modal_pool_diagnostics`` (terminal PNG).
+Legacy ``--split-quota`` and ``--legacy-combined`` remain for comparison runs.
 """
 from __future__ import annotations
 
@@ -27,7 +28,19 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from fem_harvest_filter import HARVEST_FILTER_POLICY_VERSION
-from fem_rom_postprocess import MODAL_PRUNE_DF_HZ_DEFAULT, prune_near_duplicate_modes
+from fem_rom_postprocess import (
+    DOMINANT_TAG_BACK,
+    DOMINANT_TAG_TOP,
+    MODAL_PRUNE_DF_HF_HZ,
+    MODAL_PRUNE_DF_LF_MF_HZ,
+    MODAL_PRUNE_HF_CROSSOVER_HZ,
+    MODAL_PRUNE_LOG_P_FRAC_TOL_DEFAULT,
+    MODAL_PRUNE_TAG_TOL_DEFAULT,
+    annotate_dominant_tags,
+    dominant_tag_for_row,
+    plot_modal_pool_diagnostics,
+    prune_modes_two_layer,
+)
 from paths import DEFAULT_SHAPE_NAME, resolve_plot_output_path, shared_plot_path
 
 # =============================
@@ -39,8 +52,9 @@ SIGMA_HZ = 5.0
 # Aligned with worker/merge harvest floor (``fem_harvest_filter`` / ``MERGE_INCOMING_UNIQUENESS_MIN``).
 UNIQUENESS_VETO_MIN = 0.04
 
-# Split-quota (80% top / 20% back)
-DEFAULT_QUOTA = 150
+# Unified pool: 0 = keep all modes after two-layer prune (dynamic ROM size).
+DEFAULT_QUOTA = 0
+# Legacy split-quota (``--split-quota`` only)
 TOP_PLATE_QUOTA = 120
 BACK_PLATE_QUOTA = 30
 TAG1_RATIO_MIN = 0.0
@@ -210,6 +224,78 @@ def mmr_select_by_merit(
         pool.remove(best)
         selected.append(best)
 
+    selected_ids = {int(s["id"]) for s in selected}
+    rejected = [c for c in candidates if int(c["id"]) not in selected_ids]
+    return selected, rejected
+
+
+def unified_mmr_select(
+    candidates: List[Dict],
+    quota: int,
+    *,
+    uniqueness_min: float = UNIQUENESS_VETO_MIN,
+    sigma_hz: float = SIGMA_HZ,
+    lambda_val: float = LAMBDA_VAL,
+) -> Tuple[List[Dict], List[Dict]]:
+    """
+    Single-pool MMR: merit blends ``p_frac`` (when present), wood, and uniqueness.
+
+    ``quota <= 0`` keeps every candidate (sorted by frequency); no plate-based filtering.
+    """
+    target = int(quota)
+    if target <= 0:
+        out = annotate_dominant_tags(sorted(candidates, key=lambda c: float(c["hz"])))
+        for c in out:
+            c["selection_type"] = str(c.get("dominant_tag", ""))
+            _sync_wood_participation(c)
+        return out, []
+
+    pool_in = [c for c in candidates if _passes_uniqueness_veto(c, uniqueness_min)]
+    if not pool_in:
+        return [], list(candidates)
+
+    p_vals = [float(c.get("p_frac", 0.0) or 0.0) for c in pool_in]
+    has_p = max(p_vals) > 1.0e-30
+    w_vals = [float(c["wood_participation"]) for c in pool_in]
+    u_vals = [float(c["uniqueness"]) for c in pool_in]
+    p_norm = _minmax_norm_list(p_vals) if has_p else [0.0] * len(pool_in)
+    w_norm = _minmax_norm_list(w_vals)
+    u_norm = _minmax_norm_list(u_vals)
+
+    pool: List[Dict] = []
+    for i, c in enumerate(pool_in):
+        if has_p:
+            q_i = 0.5 * float(p_norm[i]) + 0.25 * float(w_norm[i]) + 0.25 * float(u_norm[i])
+        else:
+            q_i = W * float(w_norm[i]) + U * float(u_norm[i])
+        cc = dict(c)
+        cc["_Q"] = float(q_i)
+        cc["dominant_tag"] = dominant_tag_for_row(cc)
+        cc["selection_type"] = str(cc["dominant_tag"])
+        _sync_wood_participation(cc)
+        pool.append(cc)
+
+    selected: List[Dict] = []
+    first = max(pool, key=lambda c: float(c["_Q"]))
+    pool.remove(first)
+    selected.append(first)
+
+    while pool and len(selected) < target:
+        best: Dict | None = None
+        best_mmr = -float("inf")
+        for k in pool:
+            fk = float(k["hz"])
+            penalty = max(_similarity_gaussian(fk, float(sj["hz"]), sigma_hz) for sj in selected)
+            mmr_k = (float(lambda_val) * float(k["_Q"])) - ((1.0 - float(lambda_val)) * penalty)
+            if mmr_k > best_mmr:
+                best_mmr = mmr_k
+                best = k
+        if best is None:
+            break
+        pool.remove(best)
+        selected.append(best)
+
+    selected.sort(key=lambda x: float(x["hz"]))
     selected_ids = {int(s["id"]) for s in selected}
     rejected = [c for c in candidates if int(c["id"]) not in selected_ids]
     return selected, rejected
@@ -559,21 +645,27 @@ def _plot_selection(
 def _write_selected_text(selected: List[Dict], out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
-        "id,hz,wood_participation,uniqueness,tag1_ratio,tag3_ratio,"
+        "id,hz,wood_participation,uniqueness,tag1_ratio,tag3_ratio,p_frac,dominant_tag,"
         "source_target_hz,harvest_filter_policy,harvest_class,Q_mmr_base,selection_type"
     ]
     for c in selected:
         _sync_wood_participation(c)
+        if "dominant_tag" not in c:
+            c["dominant_tag"] = dominant_tag_for_row(c)
     for c in sorted(selected, key=lambda x: float(x["hz"])):
         st_hz = c.get("source_target_hz", "")
         st_s = f"{float(st_hz):.6f}" if st_hz not in ("", None) else ""
         hpol = str(c.get("harvest_filter_policy", "") or "")
         hcls = str(c.get("harvest_class", "") or "")
+        pf = c.get("p_frac")
+        pf_s = f"{float(pf):.8g}" if pf not in ("", None) else ""
+        dom = str(c.get("dominant_tag", dominant_tag_for_row(c)))
         lines.append(
             f'{int(c["id"])},{float(c["hz"]):.6f},{float(c["wood_participation"]):.6f},'
             f'{float(c["uniqueness"]):.6f},{float(c["tag1_ratio"]):.6f},{float(c["tag3_ratio"]):.6f},'
+            f'{pf_s},{dom},'
             f'{st_s},{hpol},{hcls},'
-            f'{float(c.get("_Q", 0.0)):.6f},{str(c.get("selection_type", SELECTION_TOP))}'
+            f'{float(c.get("_Q", 0.0)):.6f},{str(c.get("selection_type", dom))}'
         )
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -585,16 +677,20 @@ def _write_selection_metadata(
     strategy: str,
     candidate_count: int,
     selected_count: int,
-    top_count: int,
-    back_count: int,
+    pruned_count: int,
+    quota_target: int,
+    dominant_top_count: int,
+    dominant_back_count: int,
     min_selected: int,
     uniqueness_threshold_used: float,
-    tag1_min_used: float,
-    tag3_min_used: float,
-    top_quota_target: int,
-    back_quota_target: int,
     window_min: Optional[float],
     window_max: Optional[float],
+    top_count: int = 0,
+    back_count: int = 0,
+    top_quota_target: int = 0,
+    back_quota_target: int = 0,
+    tag1_min_used: float = 0.0,
+    tag3_min_used: float = 0.0,
     wood_threshold_used: Optional[float] = None,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -602,12 +698,10 @@ def _write_selection_metadata(
         "selection_strategy": str(strategy),
         "candidate_count": int(candidate_count),
         "selected_count": int(selected_count),
-        "top_plate_selected": int(top_count),
-        "back_plate_selected": int(back_count),
-        "top_quota_target": int(top_quota_target),
-        "back_quota_target": int(back_quota_target),
-        "tag1_ratio_min": float(tag1_min_used),
-        "tag3_ratio_min": float(tag3_min_used),
+        "pruned_by_two_layer": int(pruned_count),
+        "quota_target": int(quota_target),
+        "dominant_tag_top": int(dominant_top_count),
+        "dominant_tag_back": int(dominant_back_count),
         "min_selected_target": int(min_selected),
         "uniqueness_threshold_used": float(uniqueness_threshold_used),
         "window_min_hz": None if window_min is None else float(window_min),
@@ -619,11 +713,20 @@ def _write_selection_metadata(
                 "hz": float(c["hz"]),
                 "tag1_ratio": float(c["tag1_ratio"]),
                 "tag3_ratio": float(c["tag3_ratio"]),
+                "dominant_tag": str(c.get("dominant_tag", dominant_tag_for_row(c))),
+                "p_frac": float(c["p_frac"]) if c.get("p_frac") is not None else None,
                 "selection_type": str(c.get("selection_type", "")),
             }
             for c in sorted(selected, key=lambda x: float(x["hz"]))
         ],
     }
+    if strategy == "split_quota":
+        payload["top_plate_selected"] = int(top_count)
+        payload["back_plate_selected"] = int(back_count)
+        payload["top_quota_target"] = int(top_quota_target)
+        payload["back_quota_target"] = int(back_quota_target)
+        payload["tag1_ratio_min"] = float(tag1_min_used)
+        payload["tag3_ratio_min"] = float(tag3_min_used)
     if wood_threshold_used is not None:
         payload["wood_threshold_used"] = float(wood_threshold_used)
     out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -631,7 +734,7 @@ def _write_selection_metadata(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Split-quota MMR Stage-2 tuner (120 top tag1 + 30 back tag3 = 150 modes)"
+        description="Unified-pool Stage-2 tuner: two-layer prune, optional MMR cap (--quota)"
     )
     parser.add_argument(
         "--candidates",
@@ -643,10 +746,15 @@ def main() -> int:
         "--quota",
         type=int,
         default=DEFAULT_QUOTA,
-        help="Total modes (default 150; split 120/30 unless overridden)",
+        help="Unified MMR cap (default 0 = keep all modes after two-layer prune)",
     )
-    parser.add_argument("--top-quota", type=int, default=TOP_PLATE_QUOTA, help="Top plate MMR quota (default 120)")
-    parser.add_argument("--back-quota", type=int, default=BACK_PLATE_QUOTA, help="Back plate MMR quota (default 30)")
+    parser.add_argument(
+        "--split-quota",
+        action="store_true",
+        help="Legacy: sequential top/back pools (requires --quota > 0).",
+    )
+    parser.add_argument("--top-quota", type=int, default=TOP_PLATE_QUOTA, help="Legacy split: top plate quota")
+    parser.add_argument("--back-quota", type=int, default=BACK_PLATE_QUOTA, help="Legacy split: back plate quota")
     parser.add_argument(
         "--tag1-min",
         type=float,
@@ -659,15 +767,11 @@ def main() -> int:
         default=TAG3_RATIO_MIN,
         help="Minimum tag3_ratio for back pool (default 0.0)",
     )
-    parser.add_argument(
-        "--modal-prune-df-hz",
-        type=float,
-        default=MODAL_PRUNE_DF_HZ_DEFAULT,
-        help=(
-            "Drop near-duplicate candidates within this frequency gap (Hz) before MMR; "
-            "keeps higher wood_participation / p_frac per cluster."
-        ),
-    )
+    parser.add_argument("--hf-crossover-hz", type=float, default=MODAL_PRUNE_HF_CROSSOVER_HZ)
+    parser.add_argument("--df-lf-mf-hz", type=float, default=MODAL_PRUNE_DF_LF_MF_HZ)
+    parser.add_argument("--df-hf-hz", type=float, default=MODAL_PRUNE_DF_HF_HZ)
+    parser.add_argument("--tag-tol", type=float, default=MODAL_PRUNE_TAG_TOL_DEFAULT)
+    parser.add_argument("--log-p-frac-tol", type=float, default=MODAL_PRUNE_LOG_P_FRAC_TOL_DEFAULT)
     parser.add_argument(
         "--no-modal-prune",
         action="store_true",
@@ -740,7 +844,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    candidates = _load_candidates(args.candidates)
+    raw_candidates = _load_candidates(args.candidates)
+    candidates = list(raw_candidates)
     if not candidates:
         print(f"No valid candidates found in: {args.candidates}")
         return 1
@@ -754,26 +859,35 @@ def main() -> int:
 
     pruned_freq: List[Dict] = []
     if not args.no_modal_prune:
-        prune_df = max(1.0e-6, float(args.modal_prune_df_hz))
-        candidates, pruned_freq = prune_near_duplicate_modes(candidates, df_hz=prune_df)
+        candidates, pruned_freq = prune_modes_two_layer(
+            candidates,
+            hf_crossover_hz=float(args.hf_crossover_hz),
+            df_lf_mf_hz=float(args.df_lf_mf_hz),
+            df_hf_hz=float(args.df_hf_hz),
+            tag_tol=float(args.tag_tol),
+            log_p_frac_tol=float(args.log_p_frac_tol),
+        )
         if pruned_freq:
             print(
-                f"Modal frequency prune: removed {len(pruned_freq)} near-duplicate(s) "
-                f"(Δf<{prune_df:g} Hz; kept higher wood/p_frac per cluster)."
+                f"Two-layer modal prune: removed {len(pruned_freq)} duplicate(s) "
+                f"(Δf {args.df_lf_mf_hz:g}/{args.df_hf_hz:g} Hz LF/MF/HF; physics layer on tag+p_frac)."
             )
         if not candidates:
-            print("No candidates remain after modal frequency prune.")
+            print("No candidates remain after two-layer modal prune.")
             return 1
 
-    total_quota = max(1, int(args.quota))
+    total_quota = int(args.quota)
     top_quota = max(0, int(args.top_quota))
     back_quota = max(0, int(args.back_quota))
-    if top_quota + back_quota != total_quota and not args.legacy_combined:
-        back_quota = max(0, total_quota - top_quota)
-        print(
-            f"Note: top_quota + back_quota adjusted to {top_quota} + {back_quota} = {top_quota + back_quota} "
-            f"(--quota {total_quota})"
-        )
+    if args.split_quota and not args.legacy_combined:
+        if total_quota <= 0:
+            total_quota = max(1, top_quota + back_quota)
+        if top_quota + back_quota != total_quota:
+            back_quota = max(0, total_quota - top_quota)
+            print(
+                f"Note: top_quota + back_quota adjusted to {top_quota} + {back_quota} = {top_quota + back_quota} "
+                f"(--quota {total_quota})"
+            )
 
     sigma_hz = max(1e-6, float(args.sigma))
     lambda_val = min(1.0, max(0.0, float(args.lambda_val)))
@@ -788,10 +902,11 @@ def main() -> int:
     back_selected: List[Dict] = []
     selected: List[Dict] = []
     rejected: List[Dict] = []
-    strategy = "split_quota"
+    strategy = "unified_pool"
 
     if args.legacy_combined:
         strategy = "legacy_combined"
+        legacy_quota = total_quota if total_quota > 0 else len(candidates)
         base_wood = float(WOOD_FILTER_MIN)
         min_wood = max(0.0, float(args.wood_floor_min))
         chosen_wood = base_wood
@@ -805,7 +920,7 @@ def main() -> int:
                 uniq_thr = chosen_uniq - (chosen_uniq - min_uniq) * t
                 sel_i, rej_i = mmr_select_with_thresholds(
                     candidates,
-                    quota=total_quota,
+                    quota=legacy_quota,
                     wood_min=max(min_wood, wood_thr),
                     uniqueness_min=max(min_uniq, uniq_thr),
                     selection_type=selection_type,
@@ -823,37 +938,40 @@ def main() -> int:
         else:
             selected, rejected = mmr_select_with_thresholds(
                 candidates,
-                quota=total_quota,
+                quota=legacy_quota,
                 wood_min=base_wood,
                 uniqueness_min=chosen_uniq,
                 selection_type=selection_type,
                 sigma_hz=sigma_hz,
                 lambda_val=lambda_val,
             )
+        selected = annotate_dominant_tags(selected)
+        for c in selected:
+            c["selection_type"] = str(c.get("dominant_tag", ""))
         selected.sort(key=lambda x: float(x["hz"]))
         print(
             f"Legacy combined MMR: selected={len(selected)} "
             f"(wood>={chosen_wood:.6f}, uniqueness>={chosen_uniq:.6f})"
         )
+        dom_top = sum(1 for c in selected if c.get("dominant_tag") == DOMINANT_TAG_TOP)
         _write_selection_metadata(
             selected,
             args.metadata_out,
             strategy=strategy,
-            candidate_count=len(candidates),
+            candidate_count=len(raw_candidates),
             selected_count=len(selected),
-            top_count=0,
-            back_count=0,
+            pruned_count=len(pruned_freq),
+            quota_target=legacy_quota,
+            dominant_top_count=dom_top,
+            dominant_back_count=len(selected) - dom_top,
             min_selected=min_selected_target,
             uniqueness_threshold_used=chosen_uniq,
-            tag1_min_used=tag1_min,
-            tag3_min_used=tag3_min,
-            top_quota_target=top_quota,
-            back_quota_target=back_quota,
             window_min=args.window_min,
             window_max=args.window_max,
-            wood_threshold_used=chosen_wood if args.legacy_combined else None,
+            wood_threshold_used=chosen_wood,
         )
-    else:
+    elif args.split_quota:
+        strategy = "split_quota"
         if args.adaptive_veto:
             best_merged: List[Dict] = []
             best_rejected: List[Dict] = list(candidates)
@@ -915,20 +1033,78 @@ def main() -> int:
             f"back={len(back_selected)}/{back_quota} (tag3>={tag3_min:g}), "
             f"total={len(selected)}, uniqueness>={chosen_uniq:.6f}"
         )
+        dom_top = sum(1 for c in selected if c.get("dominant_tag") == DOMINANT_TAG_TOP)
         _write_selection_metadata(
             selected,
             args.metadata_out,
             strategy=strategy,
-            candidate_count=len(candidates),
+            candidate_count=len(raw_candidates),
             selected_count=len(selected),
-            top_count=len(top_selected),
-            back_count=len(back_selected),
+            pruned_count=len(pruned_freq),
+            quota_target=total_quota,
+            dominant_top_count=dom_top,
+            dominant_back_count=len(selected) - dom_top,
             min_selected=min_selected_target,
             uniqueness_threshold_used=chosen_uniq,
-            tag1_min_used=tag1_min,
-            tag3_min_used=tag3_min,
+            window_min=args.window_min,
+            window_max=args.window_max,
+            top_count=len(top_selected),
+            back_count=len(back_selected),
             top_quota_target=top_quota,
             back_quota_target=back_quota,
+            tag1_min_used=tag1_min,
+            tag3_min_used=tag3_min,
+        )
+    else:
+        if args.adaptive_veto:
+            best_selected: List[Dict] = []
+            best_rejected: List[Dict] = list(candidates)
+            for i in range(adaptive_steps + 1):
+                t = float(i) / float(adaptive_steps)
+                uniq_thr = chosen_uniq - (chosen_uniq - min_uniq) * t
+                sel_i, rej_i = unified_mmr_select(
+                    candidates,
+                    quota=total_quota,
+                    uniqueness_min=max(min_uniq, uniq_thr),
+                    sigma_hz=sigma_hz,
+                    lambda_val=lambda_val,
+                )
+                if len(sel_i) > len(best_selected):
+                    best_selected, best_rejected = sel_i, rej_i
+                    chosen_uniq = max(min_uniq, uniq_thr)
+                if min_selected_target > 0 and len(sel_i) >= min_selected_target:
+                    best_selected, best_rejected = sel_i, rej_i
+                    chosen_uniq = max(min_uniq, uniq_thr)
+                    break
+            selected, rejected = best_selected, best_rejected
+        else:
+            selected, rejected = unified_mmr_select(
+                candidates,
+                quota=total_quota,
+                uniqueness_min=chosen_uniq,
+                sigma_hz=sigma_hz,
+                lambda_val=lambda_val,
+            )
+
+        dom_top = sum(1 for c in selected if c.get("dominant_tag") == DOMINANT_TAG_TOP)
+        quota_label = "all pruned" if total_quota <= 0 else str(total_quota)
+        print(
+            f"Unified pool: selected={len(selected)} (quota={quota_label}), "
+            f"dominant_tag Top={dom_top} Back={len(selected) - dom_top}, "
+            f"uniqueness>={chosen_uniq:.6f}"
+        )
+        _write_selection_metadata(
+            selected,
+            args.metadata_out,
+            strategy=strategy,
+            candidate_count=len(raw_candidates),
+            selected_count=len(selected),
+            pruned_count=len(pruned_freq),
+            quota_target=total_quota,
+            dominant_top_count=dom_top,
+            dominant_back_count=len(selected) - dom_top,
+            min_selected=min_selected_target,
+            uniqueness_threshold_used=chosen_uniq,
             window_min=args.window_min,
             window_max=args.window_max,
         )
@@ -938,26 +1114,25 @@ def main() -> int:
     print(f"Exported: {args.export.resolve()}")
     print(f"Metadata: {args.metadata_out.resolve()}")
 
+    quota_label = "all" if total_quota <= 0 else str(total_quota)
     title = (
-        f"Split-quota MMR | top={len(top_selected)} back={len(back_selected)} "
-        f"rejected={len(rejected)} | λ={lambda_val}, σ={sigma_hz} Hz | uniq≥{chosen_uniq:.2f}"
+        f"{strategy} | selected={len(selected)} pruned={len(pruned_freq)} "
+        f"quota={quota_label} | λ={lambda_val}, σ={sigma_hz} Hz"
     )
-    if args.legacy_combined:
-        title = (
-            f"Legacy combined MMR | selected={len(selected)} rejected={len(rejected)} | "
-            f"λ={lambda_val}, σ={sigma_hz} Hz"
-        )
 
     plot_dest = resolve_plot_output_path(args.plot_out)
-    _plot_split_selection(
-        selected,
-        rejected,
-        title,
-        headless=bool(args.headless),
+    plot_all = list(raw_candidates)
+    plot_rej = list(pruned_freq) + list(rejected)
+    out_png = plot_modal_pool_diagnostics(
+        plot_all,
+        kept=selected,
+        pruned=plot_rej,
+        title=title,
         save_path=plot_dest,
+        show=not bool(args.headless),
     )
     if args.headless:
-        print(f"Saved selection plot: {plot_dest.resolve()}")
+        print(f"Saved modal pool diagnostic: {out_png.resolve()}")
     return 0
 
 
