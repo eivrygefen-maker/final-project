@@ -153,36 +153,63 @@ def _build_closed_bspline_solid(
     n_upper_body: int,
 ) -> None:
     """
-    Perimeter layout (``n_upper_body`` body stations):
+    Single closed wire from the full perimeter (no multi-segment B-spline stitch).
 
-    ``[neck_top, *upper_body, tail_arc×3, *lower_mirror, neck_bottom]``
-
-    Flat neck = ``addLine``; bouts & rounded tail = ``addBSpline``.
+    ``[neck_top, *upper_body, tail_arc×3, *lower_mirror, neck_bottom, neck_top]``
     """
     ring = list(perimeter)
-    n = len(ring)
     expected = 2 + 2 * int(n_upper_body) + 3
-    if n != expected:
-        raise RuntimeError(f"Perimeter length {n} != expected {expected} for template.")
+    if len(ring) != expected:
+        raise RuntimeError(
+            f"Perimeter length {len(ring)} != expected {expected} for template."
+        )
+
+    neck = (float(ring[0][0]), float(ring[0][1]))
+    if ring[-1] != ring[0]:
+        ring.append(ring[0])
+    ring[-1] = ring[0]
+    verts = ring[:-1]
 
     lc = max(
-        max(abs(p[0]) for p in ring),
-        max(abs(p[1]) for p in ring),
+        max(abs(p[0]) for p in verts),
+        max(abs(p[1]) for p in verts),
         float(depth),
     ) / 60.0
 
-    p_tags = [int(occ.addPoint(float(x), float(y), 0.0, lc)) for x, y in ring]
+    p_tags = [int(occ.addPoint(float(x), float(y), 0.0, lc)) for x, y in verts]
+    n_pts = len(p_tags)
 
-    i_neck_top = 0
-    i_tail_arc = 1 + int(n_upper_body)
-    i_lower_start = i_tail_arc + 3
-    i_neck_bot = n - 1
+    loop_tag: int
+    add_polygon = getattr(occ, "addPolygon", None)
+    if add_polygon is not None:
+        try:
+            loop_tag = int(add_polygon(p_tags))
+            occ.synchronize()
+            print(f"[diag] profile loop via addPolygon ({n_pts} pts)")
+        except Exception:
+            loop_tag = 0
+    else:
+        loop_tag = 0
 
-    c_neck = int(occ.addLine(p_tags[i_neck_bot], p_tags[i_neck_top]))
-    c_upper = int(occ.addBSpline(p_tags[i_neck_top : i_tail_arc]))
-    c_tail = int(occ.addBSpline(p_tags[i_tail_arc : i_tail_arc + 3]))
-    c_lower = int(occ.addBSpline(p_tags[i_lower_start : i_neck_bot + 1]))
-    loop_tag = int(occ.addCurveLoop([c_neck, c_upper, c_tail, c_lower]))
+    if not loop_tag:
+        for i in range(n_pts):
+            occ.addLine(p_tags[i], p_tags[(i + 1) % n_pts])
+        occ.synchronize()
+        try:
+            occ.removeAllDuplicates()
+        except Exception:
+            pass
+        occ.synchronize()
+        curve_tags = [int(t) for dim, t in occ.getEntities(1) if int(dim) == 1]
+        if len(curve_tags) < 3:
+            raise RuntimeError(
+                f"OCC found {len(curve_tags)} curves after perimeter lines (need >= 3)."
+            )
+        loop_tag = int(occ.addCurveLoop(curve_tags))
+        print(
+            f"[diag] profile loop via {len(curve_tags)} line segments "
+            f"(ring_pts={n_pts}, closure={neck})"
+        )
 
     surf_tag = int(occ.addPlaneSurface([loop_tag]))
     try:
