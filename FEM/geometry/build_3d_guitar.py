@@ -338,7 +338,7 @@ def create_guitar_mesh():
     hole_y = 0.0
 
     # Engineering: high-density shell (6 mm) + 1 mm thickness edges.
-    # Preview sketch: uniform lc >= 20 mm only. Display shell: uniform 4 mm.
+    # Preview sketch: adaptive 4–20 mm (coarse flats, fine along 78-pt spline). Display: uniform 4 mm.
     wood_surface_size = 0.006   # 6 mm engineering baseline (user target lc)
     wood_thickness_size = 0.001  # 1 mm on short ~through-thickness edges (>=2–3 elements across ~3 mm wood)
     thickness_curve_len_max = 0.005  # curves shorter than this (m) are treated as thickness direction
@@ -357,9 +357,9 @@ def create_guitar_mesh():
         mesh_size_min = 0.004
         mesh_size_max = 0.004
     elif is_preview:
-        # Real-time sketch: extremely coarse uniform grid (lag-free slider exploration).
+        # Real-time sketch: 20 mm target on flats; allow down to 4 mm on dense spline edges.
         mesh_size = 0.020
-        mesh_size_min = 0.020
+        mesh_size_min = 0.004
         mesh_size_max = 0.020
     else:
         mesh_size = wood_surface_size
@@ -1189,8 +1189,12 @@ def create_guitar_mesh():
     )
     
     if shell_only:
-        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
-        gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", 8)
+        if is_preview:
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
+            gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", 12)
+        else:
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+            gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", 8)
     else:
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
         gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", 36)
@@ -1216,26 +1220,20 @@ def create_guitar_mesh():
             f"n_surfaces={len(shell_surf_tags)} (no FSI fields)"
         )
     elif is_preview:
-        shell_surf_tags = sorted(
-            set(int(s) for s in top_plate_surfs + back_plate_surfs + rib_surfs + soundhole_surfs)
-        )
-        for s in shell_surf_tags:
-            try:
-                gmsh.model.mesh.setSize(2, int(s), mesh_size)
-            except Exception:
-                pass
-        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
-        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
-        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+        gmsh.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 1)
+        gmsh.option.setNumber("Mesh.CharacteristicLengthExtendFromBoundary", 1)
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 1)
         print(
-            f"[diag] preview shell sizing: uniform_lc={mesh_size*1000:.1f}mm ONLY, "
-            f"n_surfaces={len(shell_surf_tags)} (no hole refinement)"
+            f"[diag] preview shell sizing: adaptive lc {mesh_size_min*1000:.0f}–{mesh_size_max*1000:.0f}mm "
+            f"(target={mesh_size*1000:.0f}mm, curvature+boundary extend ON; no uniform surface lock)"
         )
 
-    # Deep-probe overrides: force background field dominance.
-    gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
-    gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
-    gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+    # Deep-probe overrides (display/FOM): uniform shell sizing must not fight background fields.
+    if not is_preview:
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
     gmsh.option.setNumber("Mesh.Algorithm", 6)  # Frontal-Delaunay
 
     # Wood: 6.5 mm baseline on shell (Restrict), 1 mm in a band around short thickness edges
