@@ -67,8 +67,8 @@ if "stk_body_json" not in st.session_state:
 if "show_physics_success" not in st.session_state:
     st.session_state.show_physics_success = False
 # Bust stale preview meshes when preview CAD schema changes.
-if st.session_state.get("preview_cad_schema", 0) < 9:
-    st.session_state.preview_cad_schema = 9
+if st.session_state.get("preview_cad_schema", 0) < 10:
+    st.session_state.preview_cad_schema = 10
     st.session_state.live_preview_fp = ""
     if PREVIEW_MESH_FILE.is_file():
         PREVIEW_MESH_FILE.unlink(missing_ok=True)
@@ -88,22 +88,24 @@ TAG_SOUNDHOLE = 2
 TAG_BACK_PLATE = 3
 TAG_RIBS = 4
 TAG_AIR = 10  # volume / cavity — never rendered in live preview
-# Live preview: wood shell facets (soundhole annulus uses top color in PyVista).
+# Gmsh facet tags (FEM only). PyVista colors use geometry, not these tags.
 SHELL_VIS_TAGS = frozenset({TAG_TOP_PLATE, TAG_SOUNDHOLE, TAG_BACK_PLATE, TAG_RIBS})
 
 NOTES_DICT = {
     "E2": 82.41, "A2": 110.00, "D3": 146.83, "G3": 196.00, "B3": 246.94, "E4": 329.63
 }
 
-# Neck at x=+L/2; hole in lower bout (~19–21 cm from neck on 48 cm classical body).
+# Soundhole: 43% of body length L from neck (+x) toward bridge; centreline y=0.
 SOUNDHOLE_FROM_NECK_RATIO = 0.43
+HOLE_VIS_COLOR = "#0c0c0c"
+# Top soundboard = triangles whose centroid Z lies in the upper band of the shell.
+TOP_Z_BAND_FRAC = 0.10
 
 
-def _soundhole_center_x(length: float) -> float:
-    """Neck at x=+L/2; classical soundhole ~0.354·L toward the tail along x; y=0 (centreline)."""
-    hole_x = 0.5 * float(length) - SOUNDHOLE_FROM_NECK_RATIO * float(length)
-    margin = 0.02
-    return max(-0.5 * float(length) + margin, min(0.5 * float(length) - margin, hole_x))
+def _soundhole_center_x(body_length: float) -> float:
+    """Neck at x=+L/2; hole centre at exactly 43%·L toward the bridge; y=0."""
+    L = float(body_length)
+    return 0.5 * L - SOUNDHOLE_FROM_NECK_RATIO * L
 
 
 def _hex_to_rgb01(hex_color: str) -> Tuple[float, float, float]:
@@ -545,12 +547,12 @@ def save_cfg_from_state(
         json.dump(data, f, indent=4)
 
 
-def _load_guitar_surface_from_msh(msh_path: Path, *, allow_all_shell: bool = False) -> Optional[Any]:
+def _load_guitar_surface_from_msh(msh_path: Path) -> Optional[Any]:
     """
-    Load guitar shell triangles (facet tags 1=top, 3=back, 4=ribs).
+    Load exterior wood-shell triangles for PyVista.
 
-    Preview meshes contain wood skin only (no air volume in CAD). Engineering meshes
-    may include tag-10 volume tets but facet whitelist still selects the wood shell.
+    Visualization colors are applied later by Z-position (_apply_geometry_colormap),
+    not by Gmsh physical tags, so tag-based filtering is not used here.
     """
     try:
         import meshio
@@ -559,29 +561,26 @@ def _load_guitar_surface_from_msh(msh_path: Path, *, allow_all_shell: bool = Fal
 
     try:
         msh = meshio.read(str(msh_path))
-        phys = msh.cell_data_dict.get("gmsh:physical")
         tri = msh.get_cells_type("triangle")
-        if not phys or tri is None or len(tri) == 0:
-            return None
-        tri_tags = phys.get("triangle")
-        if tri_tags is None:
+        if tri is None or len(tri) == 0:
             return None
 
         points = np.asarray(msh.points, dtype=np.float64)
-        tags = np.asarray(tri_tags, dtype=np.int32).ravel()
         tri = np.asarray(tri, dtype=np.int64)
 
-        keep = np.isin(tags, list(SHELL_VIS_TAGS))
-        if allow_all_shell and np.sum(keep) < max(12, int(0.05 * tri.shape[0])):
-            keep = tags != TAG_AIR
-        if not np.any(keep):
+        phys = msh.cell_data_dict.get("gmsh:physical")
+        if phys is not None:
+            tri_tags = phys.get("triangle")
+            if tri_tags is not None:
+                tags = np.asarray(tri_tags, dtype=np.int32).ravel()
+                keep = tags != TAG_AIR
+                tri = tri[keep]
+
+        if tri.shape[0] < 3:
             return None
-        tri = tri[keep]
-        tags = tags[keep]
 
         faces = np.hstack([np.full((tri.shape[0], 1), 3, dtype=np.int64), tri]).ravel()
         poly = pv.PolyData(points, faces)
-        poly.cell_data["gmsh:physical"] = tags
         poly.compute_normals(
             cell_normals=False,
             point_normals=True,
@@ -609,7 +608,7 @@ def _build_live_preview_surface(
     """
     fp = _geometry_fingerprint(geom)
     if st.session_state.live_preview_fp == fp and PREVIEW_MESH_FILE.is_file():
-        cached = _load_guitar_surface_from_msh(PREVIEW_MESH_FILE, allow_all_shell=True)
+        cached = _load_guitar_surface_from_msh(PREVIEW_MESH_FILE)
         if cached is not None:
             return cached
 
@@ -638,62 +637,53 @@ def _build_live_preview_surface(
 
     st.session_state.live_preview_fp = fp
     st.session_state.physics_ready = False
-    return _load_guitar_surface_from_msh(PREVIEW_MESH_FILE, allow_all_shell=True)
+    return _load_guitar_surface_from_msh(PREVIEW_MESH_FILE)
 
 
-def _mesh_cell_rgb(
+def _apply_geometry_colormap(
     mesh,
     *,
     top_color: str,
     back_color: str,
-    hole_x: float,
-    hole_y: float,
-    hole_r: float,
+    body_length: float,
+    hole_radius: float,
 ) -> Optional[Any]:
     """
-    Paint by plate geometry (not Gmsh tags): top plate only = soundboard wood;
-    back plate + all side ribs = back/sides wood. Stable when soundhole radius changes.
+    Geometry-based colormap (not Gmsh tags).
+
+    - Top wood: triangle centroids in the upper Z band of the shell.
+    - Back/sides wood: all other triangles.
+    - Soundhole: static #0c0c0c disk on the top band (radius only affects hole size).
     """
     if mesh is None or mesh.n_cells <= 0:
         return None
-    work = mesh.copy(deep=True)
-    work.compute_normals(cell_normals=True, point_normals=False, inplace=True)
-    normals = np.asarray(work.cell_data["Normals"], dtype=np.float64)
-    centers = work.cell_centers().points
+
+    centers = mesh.cell_centers().points
     z = centers[:, 2]
     x = centers[:, 0]
     y = centers[:, 1]
     zmax = float(np.max(z))
     zmin = float(np.min(z))
-    dz = max(zmax - zmin, 1.0e-6)
-    nz = normals[:, 2]
+    dz = max(zmax - zmin, 1.0e-9)
+    top_z_thresh = zmax - TOP_Z_BAND_FRAC * dz
+
+    hole_x = _soundhole_center_x(body_length)
+    hr2 = float(hole_radius) ** 2
 
     top_rgb = np.array(_hex_to_rgb01(top_color), dtype=np.float32)
     back_rgb = np.array(_hex_to_rgb01(back_color), dtype=np.float32)
-    hole_rgb = np.array((0.06, 0.06, 0.06), dtype=np.float32)
-    colors = np.zeros((work.n_cells, 3), dtype=np.float32)
+    hole_rgb = np.array(_hex_to_rgb01(HOLE_VIS_COLOR), dtype=np.float32)
 
-    top_z = zmax - 0.08 * dz
-    back_z = zmin + 0.08 * dz
-    hr2 = float(hole_r) ** 2
+    is_top = z >= top_z_thresh
+    in_hole = is_top & ((x - hole_x) ** 2 + y**2 <= hr2 * 1.05)
 
-    for i in range(work.n_cells):
-        # Soundboard: nearly flat upward face in the top Z band only (not sides).
-        if nz[i] > 0.72 and z[i] >= top_z:
-            dx = x[i] - float(hole_x)
-            dy = y[i] - float(hole_y)
-            if dx * dx + dy * dy <= hr2 * 1.15:
-                colors[i] = hole_rgb
-            else:
-                colors[i] = top_rgb
-        elif nz[i] < -0.72 and z[i] <= back_z:
-            colors[i] = back_rgb
-        else:
-            # Back plate sides + waist + bout sides (never soundboard color).
-            colors[i] = back_rgb
+    colors = np.tile(back_rgb, (mesh.n_cells, 1))
+    colors[is_top & ~in_hole] = top_rgb
+    colors[in_hole] = hole_rgb
 
-    work.cell_data["rgb"] = colors
-    return work
+    out = mesh.copy(deep=True)
+    out.cell_data["rgb"] = colors
+    return out
 
 
 def _render_pyvista_guitar(
@@ -701,25 +691,29 @@ def _render_pyvista_guitar(
     *,
     top_color: str,
     back_color: str,
-    hole_x: float,
-    hole_y: float,
-    hole_r: float,
+    body_length: float,
+    hole_radius: float,
     show_edges: bool,
     cam_preset: str,
     plot_key: str,
     sketch_mode: bool = False,
 ) -> None:
+    """
+    stpyvista render path.
+
+    Wood colors come only from dropdown selections + Z-based geometry colormap.
+    Gmsh tag changes (e.g. when soundhole radius changes) do not affect colors.
+    """
     plotter = pv.Plotter(window_size=[1100, 620], lighting="three lights")
     plotter.background_color = "#f4f4f9"
 
     if surface_mesh is not None:
-        colored = _mesh_cell_rgb(
+        colored = _apply_geometry_colormap(
             surface_mesh,
             top_color=top_color,
             back_color=back_color,
-            hole_x=hole_x,
-            hole_y=hole_y,
-            hole_r=hole_r,
+            body_length=body_length,
+            hole_radius=hole_radius,
         )
         if colored is not None:
             plotter.add_mesh(
@@ -733,7 +727,6 @@ def _render_pyvista_guitar(
                 line_width=0.6,
                 smooth_shading=True,
                 lighting=True,
-                backface_culling=True,
             )
         else:
             plotter.add_mesh(
@@ -1064,9 +1057,8 @@ with col_visual:
             display_mesh,
             top_color=top_plot_color,
             back_color=back_plot_color,
-            hole_x=float(geom_state.get("soundhole_x", soundhole_x)),
-            hole_y=0.0,
-            hole_r=float(geom_state.get("hole_radius", hr)),
+            body_length=float(geom_state.get("length", L)),
+            hole_radius=float(geom_state.get("hole_radius", hr)),
             show_edges=("Mesh" in vis_mode) or sketch_mode,
             cam_preset=cam_preset,
             plot_key=f"view_{plot_suffix}",

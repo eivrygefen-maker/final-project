@@ -80,13 +80,12 @@ def create_guitar_mesh():
         t = float(p.get("top_thickness", p.get("thickness", 0.003)))
         hr = p["hole_radius"]
         shape_type = p.get('shape_type', 'Classical')
-        hole_from_neck_ratio = float(p.get("soundhole_from_neck_ratio", 0.43))
-        hole_x = float(p.get("soundhole_x", 0.5 * L - hole_from_neck_ratio * L))
     else:
         L, W, D, t, hr, shape_type = 0.48, 0.37, 0.1, 0.003, 0.04, 'Classical'
-        hole_from_neck_ratio = 0.43
-        hole_x = 0.5 * L - hole_from_neck_ratio * L
-    # Soundhole on body centreline (y=0). Lateral offset removed from GUI — old configs ignored.
+
+    # Fixed luthier placement: 43% of L from neck toward bridge, centreline y=0.
+    hole_from_neck_ratio = 0.43
+    hole_x = 0.5 * L - hole_from_neck_ratio * L
     hole_y = 0.0
 
     # --- Golden mesh: graded wood faces (6.5 mm), dense through-thickness (1 mm); graded air ---
@@ -123,7 +122,6 @@ def create_guitar_mesh():
     print(f"[diag] preview_mode={is_preview}, FEM_ALLOW_PREVIEW={os.environ.get('FEM_ALLOW_PREVIEW', '0')}")
 
     # Body frame: x = +L/2 at neck, x = -L/2 at tail; y = lateral; z = up.
-    # Classical soundhole ≈ 17 cm from neck on 48 cm body → 0.354·L from neck along +x.
     hr = max(1.0e-4, float(hr))
     hole_x = float(max(-0.5 * L + hr, min(0.5 * L - hr, hole_x)))
     hole_y = 0.0
