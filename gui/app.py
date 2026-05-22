@@ -387,8 +387,15 @@ def get_view_mesh(geom_fp: str) -> Tuple[Optional[pv.PolyData], bool, str]:
         cached = load_surface_mesh(PREVIEW_MESH_FILE)
         if cached is not None:
             return cached, True, "preview_mesh.msh"
-    with st.spinner("Building sketch preview (low-poly)…"):
-        run_gmsh_sketch()
+    try:
+        with st.spinner("Building sketch preview (low-poly)…"):
+            run_gmsh_sketch()
+    except Exception as exc:
+        if PREVIEW_MESH_FILE.is_file():
+            PREVIEW_MESH_FILE.unlink()
+        raise RuntimeError(
+            f"Sketch mesh failed ({exc}). Try adjusting depth/thickness or shape, then move a slider again."
+        ) from exc
     st.session_state.live_preview_fp = geom_fp
     return load_surface_mesh(PREVIEW_MESH_FILE), True, "preview_mesh.msh"
 
