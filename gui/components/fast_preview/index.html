@@ -300,8 +300,10 @@
     let animating = true;
     const STUDIO_W = 1200;
     const STUDIO_H = 950;
-    const EXTRUDE_CURVE_SEGMENTS = 24;
-    const MODEL_ROTATE_SENS = 0.004;
+    const EXTRUDE_CURVE_SEGMENTS = 32;
+    const EXTRUDE_TOP_CURVE_SEGMENTS = 64;
+    const HOLE_CIRCLE_SEGMENTS = 128;
+    const TOP_PLATE_GAP_M = 0.00015;
     let initThreeScheduled = false;
 
     function forceViewportLayout() {
@@ -522,8 +524,6 @@
     let studioPivot = null;
     let bodyGroup = null;
     let initialized3d = false;
-    let modelDragActive = false;
-    let modelDragPrev = { x: 0, y: 0 };
 
     function mergeRomState(data) {
       if (!data || typeof data !== "object") return;
@@ -573,14 +573,32 @@
       return 0.5 * len - ratio * len;
     }
 
-    /** Anchor soundhole center at world origin (top-surface hole point). */
+    /** Anchor soundhole (top-surface center) at world origin. */
     function bodyPivotY(D, tTop) {
-      return -(num(D, 0.095) + num(tTop, 0.0045) / 2);
+      return -(num(D, 0.095) + TOP_PLATE_GAP_M + num(tTop, 0.0045));
     }
 
-    function applyBodyPivot(D, tTop) {
-      if (!bodyGroup) return;
-      bodyGroup.position.set(0, bodyPivotY(D, tTop), 0);
+    function ringSignedArea(pts) {
+      let area = 0;
+      for (let i = 0, n = pts.length; i < n; i++) {
+        const j = (i + 1) % n;
+        area += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1];
+      }
+      return area * 0.5;
+    }
+
+    function appendSoundholeHole(shape, hr, outerPtsShifted) {
+      const hole = new THREE.Path();
+      const outerCcw = ringSignedArea(outerPtsShifted) > 0;
+      for (let i = 0; i <= HOLE_CIRCLE_SEGMENTS; i++) {
+        const t = (2 * Math.PI * i) / HOLE_CIRCLE_SEGMENTS;
+        const angle = outerCcw ? (2 * Math.PI - t) : t;
+        const x = hr * Math.cos(angle);
+        const y = hr * Math.sin(angle);
+        if (i === 0) hole.moveTo(x, y);
+        else hole.lineTo(x, y);
+      }
+      shape.holes.push(hole);
     }
 
     function makeOutlineShape(pts, pivotX, holeRadius, cutHole) {
@@ -590,12 +608,13 @@
       for (let i = 1; i < shifted.length; i++) shape.lineTo(shifted[i][0], shifted[i][1]);
       shape.closePath();
       const hr = num(holeRadius, 0);
-      if (cutHole && hr > 0.005) {
-        const holePath = new THREE.Path();
-        holePath.absellipse(0, 0, hr, hr, 0, Math.PI * 2, false, 0);
-        shape.holes.push(holePath);
-      }
+      if (cutHole && hr > 0.005) appendSoundholeHole(shape, hr, shifted);
       return shape;
+    }
+
+    function applyBodyPivot(D, tTop) {
+      if (!bodyGroup) return;
+      bodyGroup.position.set(0, bodyPivotY(D, tTop), 0);
     }
 
     function boxOutlinePts(L, W) {
@@ -682,48 +701,6 @@
       if (g.parent) g.parent.remove(g);
     }
 
-    function installModelDragControls() {
-      if (!renderer || !renderer.domElement) return;
-      const el = renderer.domElement;
-      const camRight = new THREE.Vector3();
-      const qY = new THREE.Quaternion();
-      const qX = new THREE.Quaternion();
-
-      el.addEventListener("pointerdown", function (e) {
-        if (e.button !== 0 || !studioPivot) return;
-        modelDragActive = true;
-        modelDragPrev.x = e.clientX;
-        modelDragPrev.y = e.clientY;
-        try {
-          el.setPointerCapture(e.pointerId);
-        } catch (_cap) { /* ignore */ }
-      });
-
-      function endDrag(e) {
-        if (!modelDragActive) return;
-        modelDragActive = false;
-        try {
-          if (e && e.pointerId != null) el.releasePointerCapture(e.pointerId);
-        } catch (_rel) { /* ignore */ }
-      }
-
-      el.addEventListener("pointermove", function (e) {
-        if (!modelDragActive || !studioPivot) return;
-        const dx = e.clientX - modelDragPrev.x;
-        const dy = e.clientY - modelDragPrev.y;
-        modelDragPrev.x = e.clientX;
-        modelDragPrev.y = e.clientY;
-        qY.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -dx * MODEL_ROTATE_SENS);
-        camRight.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
-        qX.setFromAxisAngle(camRight, -dy * MODEL_ROTATE_SENS);
-        studioPivot.quaternion.premultiply(qY).premultiply(qX);
-        renderFrame();
-      });
-      el.addEventListener("pointerup", endDrag);
-      el.addEventListener("pointercancel", endDrag);
-      el.addEventListener("pointerleave", endDrag);
-    }
-
     function buildBody() {
       if (typeof THREE === "undefined" || !scene || !studioPivot) return;
       disposeGroup(bodyGroup);
@@ -738,15 +715,18 @@
       const topCol = woodColorHex(state.top_wood_id);
       const matBack = new THREE.MeshPhongMaterial({
         color: backCol,
-        shininess: 32,
-        specular: 0x222222,
+        shininess: 18,
+        specular: 0x111111,
         flatShading: false,
       });
       const matTop = new THREE.MeshPhongMaterial({
         color: topCol,
-        shininess: 48,
-        specular: 0x333333,
+        shininess: 22,
+        specular: 0x151515,
         flatShading: false,
+        polygonOffset: true,
+        polygonOffsetFactor: 1,
+        polygonOffsetUnits: 1,
       });
       const extrudeBack = {
         depth: D,
@@ -756,7 +736,7 @@
       const extrudeTop = {
         depth: tTop,
         bevelEnabled: false,
-        curveSegments: EXTRUDE_CURVE_SEGMENTS,
+        curveSegments: EXTRUDE_TOP_CURVE_SEGMENTS,
       };
 
       function addExtrudedPair(outlinePts) {
@@ -767,13 +747,15 @@
         geomBack.translate(0, D, 0);
         const meshBack = new THREE.Mesh(geomBack, matBack);
         meshBack.name = "back";
+        meshBack.renderOrder = 0;
         bodyGroup.add(meshBack);
 
         const geomTop = new THREE.ExtrudeGeometry(shapeTop, extrudeTop);
         geomTop.rotateX(-Math.PI / 2);
-        geomTop.translate(0, D, 0);
+        geomTop.translate(0, D + TOP_PLATE_GAP_M, 0);
         const meshTop = new THREE.Mesh(geomTop, matTop);
         meshTop.name = "top";
+        meshTop.renderOrder = 1;
         bodyGroup.add(meshTop);
       }
 
@@ -869,12 +851,19 @@
           controls = new THREE.OrbitControls(camera, renderer.domElement);
           controls.enableDamping = true;
           controls.dampingFactor = 0.08;
-          controls.enableRotate = false;
+          controls.enableRotate = true;
+          controls.rotateSpeed = 0.85;
           controls.screenSpacePanning = true;
           controls.target.set(0, 0, 0);
+          /* Match PyVista/Gmsh trackball: object follows the drag direction. */
+          if (typeof controls.rotateLeft === "function" && typeof controls.rotateUp === "function") {
+            const orbitLeft = controls.rotateLeft.bind(controls);
+            const orbitUp = controls.rotateUp.bind(controls);
+            controls.rotateLeft = function (angle) { orbitLeft(-angle); };
+            controls.rotateUp = function (angle) { orbitUp(-angle); };
+          }
           controls.update();
         }
-        installModelDragControls();
 
         setupStudioLighting();
 
