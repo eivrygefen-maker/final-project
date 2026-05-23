@@ -33,7 +33,8 @@
       font-family: var(--st-font);
       color: var(--st-text);
       background: #1a1c24;
-      overflow: hidden;
+      overflow-x: hidden;
+      overflow-y: visible;
       min-height: 850px;
       height: 850px;
     }
@@ -55,14 +56,12 @@
     }
     .panel.panel-controls {
       position: relative;
-      z-index: 30;
+      z-index: 20;
       overflow: visible;
-      max-height: 100%;
-      overflow-y: auto;
-      overflow-x: visible;
     }
-    .panel.panel-controls:focus-within {
-      overflow: visible;
+    .panel.panel-controls select {
+      position: relative;
+      z-index: 50;
     }
     .panel h3 {
       margin: 0 0 4px;
@@ -94,6 +93,8 @@
       font-family: inherit;
       font-size: 0.85rem;
       cursor: pointer;
+      appearance: auto;
+      -webkit-appearance: menulist;
     }
     select option {
       background-color: #ffffff;
@@ -110,11 +111,6 @@
         color: #fafafa;
       }
     }
-    .select-wrap {
-      position: relative;
-      z-index: 40;
-      margin-bottom: 2px;
-    }
     .val {
       float: right;
       font-weight: 500;
@@ -127,6 +123,7 @@
     }
     .view-wrap {
       position: relative;
+      z-index: 1;
       border-radius: var(--st-radius);
       border: 1px solid var(--st-border);
       overflow: hidden;
@@ -215,13 +212,11 @@
       <div class="mode-pill" id="modeLabel">User (ROM)</div>
 
       <label for="shapeSelect">Shape</label>
-      <div class="select-wrap">
       <select id="shapeSelect">
         <option value="Classical">Classical (Torres)</option>
         <option value="Dreadnought">Dreadnought (Martin)</option>
         <option value="Box">Box (debug)</option>
       </select>
-      </div>
 
       <label>Length L (m) <span class="val" id="lengthVal">—</span></label>
       <input type="range" id="length" step="0.005" />
@@ -239,14 +234,10 @@
       <input type="range" id="holeRadius" step="0.001" />
 
       <label for="topWood">Top wood</label>
-      <div class="select-wrap">
-        <select id="topWood"></select>
-      </div>
+      <select id="topWood"></select>
 
       <label for="backWood">Back &amp; sides wood</label>
-      <div class="select-wrap">
-        <select id="backWood"></select>
-      </div>
+      <select id="backWood"></select>
 
       <div class="actions">
         <button type="button" class="primary" id="btnSave">Save &amp; Sync</button>
@@ -484,6 +475,16 @@
       bounds_by_shape: {},
     };
 
+    /* Matches FEM/scripts/wood_library.py WOOD_PLOT_COLORS */
+    const WOOD_COLORS_BUILTIN = {
+      spruce: "#FFF8DC",
+      cedar: "#A0522D",
+      maple: "#FFDEAD",
+      mahogany: "#8B4513",
+      rosewood: "#3E1F12",
+    };
+    state.wood_colors = Object.assign({}, WOOD_COLORS_BUILTIN, state.wood_colors);
+
     /* Built-in luthier loops (used if Python omits templates on later reruns) */
     const TEMPLATES_BUILTIN = {
       Classical: {
@@ -524,7 +525,7 @@
       if (data.top_thickness_bounds) state.top_thickness_bounds = data.top_thickness_bounds;
       if (data.hole_radius_bounds) state.hole_radius_bounds = data.hole_radius_bounds;
       if (data.wood_ids) state.wood_ids = data.wood_ids;
-      if (data.wood_colors) state.wood_colors = data.wood_colors;
+      if (data.wood_colors) state.wood_colors = Object.assign({}, WOOD_COLORS_BUILTIN, data.wood_colors);
       if (data.templates && typeof data.templates === "object") {
         state.templates = Object.assign({}, state.templates, data.templates);
       }
@@ -592,6 +593,12 @@
       return loop.map(([x, y]) => [x * sx, y * sy]);
     }
 
+  function woodColorHex(woodId) {
+    const key = String(woodId || "").toLowerCase();
+    const hex = state.wood_colors && state.wood_colors[key];
+    return hexColor(hex || WOOD_COLORS_BUILTIN[key] || "#8B7355");
+  }
+
   function hexColor(hex) {
     const h = String(hex || "#8B7355").replace("#", "");
     if (h.length !== 6) return new THREE.Color(0.55, 0.45, 0.35);
@@ -622,8 +629,8 @@
       const W = num(state.width, 0.37);
       const D = num(state.depth, 0.095);
       const tTop = num(state.top_thickness, 0.0045);
-    const backCol = hexColor(state.wood_colors[state.back_wood_id] || "#5c4033");
-    const topCol = hexColor(state.wood_colors[state.top_wood_id] || "#FFF8DC");
+    const backCol = woodColorHex(state.back_wood_id);
+    const topCol = woodColorHex(state.top_wood_id);
     const matBack = new THREE.MeshPhongMaterial({ color: backCol, shininess: 28, flatShading: false });
     const matTop = new THREE.MeshPhongMaterial({ color: topCol, shininess: 40, flatShading: false });
 

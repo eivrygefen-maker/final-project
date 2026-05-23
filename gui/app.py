@@ -284,7 +284,7 @@ def sanitize_studio_payload(data: Optional[Dict[str, Any]], shape_type: str = "C
         "top_thickness_bounds": list(src.get("top_thickness_bounds") or [TOP_THICKNESS_MIN_M, TOP_THICKNESS_MAX_M]),
         "hole_radius_bounds": list(src.get("hole_radius_bounds") or list(ROM_HOLE_RADIUS_BOUNDS)),
         "wood_ids": list(src.get("wood_ids") or ALL_WOOD_IDS),
-        "wood_colors": dict(src.get("wood_colors") or {w: plot_color_for_wood(w) for w in ALL_WOOD_IDS}),
+        "wood_colors": dict(src.get("wood_colors") or wood_colors_for_studio()),
         "templates": dict(src.get("templates") or export_luthier_templates()),
         "soundhole_from_neck_ratio": float(src.get("soundhole_from_neck_ratio", SOUNDHOLE_FROM_NECK_RATIO)),
     }
@@ -326,6 +326,11 @@ def studio_initial_from_saved(
     return payload
 
 
+def wood_colors_for_studio() -> Dict[str, str]:
+    """Hex surface colors from ``wood_library.WOOD_PLOT_COLORS`` (FEM/PyVista parity)."""
+    return {wid: plot_color_for_wood(wid) for wid in ALL_WOOD_IDS}
+
+
 def studio_payload_for_component(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Omit heavy template geometry after first iframe load (cached client-side)."""
     out = dict(payload)
@@ -346,15 +351,17 @@ def studio_iframe_payload_fp(payload: Dict[str, Any]) -> str:
 def studio_payload_for_iframe(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Stable component ``initial`` dict — avoids remount churn when only PyVista/session
-    state changes. After the first successful mount, omit templates and skip redundant
-    metadata when the ROM fingerprint is unchanged.
+    state changes. After the first successful mount, omit templates only (keep wood colors).
     """
     out = studio_payload_for_component(payload)
+    out["wood_colors"] = dict(out.get("wood_colors") or wood_colors_for_studio())
     fp = studio_iframe_payload_fp(out)
     last_fp = str(st.session_state.get("_studio_iframe_payload_fp", ""))
     ready = bool(st.session_state.get("_studio_component_ready"))
     if ready and last_fp and fp == last_fp:
-        return {k: out[k] for k in STUDIO_ROM_PAYLOAD_KEYS if k in out}
+        slim = {k: v for k, v in out.items() if k != "templates"}
+        slim["wood_colors"] = out["wood_colors"]
+        return slim
     st.session_state._studio_iframe_payload_fp = fp
     return out
 
@@ -381,20 +388,19 @@ def record_studio_handshake(event: Dict[str, Any]) -> None:
 
 
 def render_fast_preview_studio(initial: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Mount the Design Studio iframe with fixed height and a safe fallback."""
+    """Mount the Design Studio iframe (single instance, fixed height)."""
     try:
-        with st.container():
-            out = fast_preview(
-                initial=initial,
-                key="fast_preview_geom",
-                height=FAST_PREVIEW_HEIGHT,
-            )
-            st.session_state._studio_component_ready = True
-            return out
+        out = fast_preview(
+            initial=initial,
+            key="fast_preview_geom",
+            height=FAST_PREVIEW_HEIGHT,
+        )
+        st.session_state._studio_component_ready = True
+        return out
     except FileNotFoundError as exc:
         st.error(f"Design Studio assets missing: {exc}")
     except Exception as exc:
-        st.warning(f"Design Studio failed to mount: {exc}")
+        st.error(f"Design Studio failed to mount: {exc}")
     return None
 
 
@@ -1175,10 +1181,6 @@ def _render_interactive_panel(
             st.audio(WAV_OUTPUT.read_bytes(), format="audio/wav")
 
 
-if hasattr(st, "fragment"):
-    _render_interactive_panel = st.fragment(_render_interactive_panel)
-
-
 def main() -> None:
     saved = _load_saved_config().get("geometry", {}) or {}
     saved_solver = _load_saved_config().get("solver", {}) or {}
@@ -1193,18 +1195,24 @@ def main() -> None:
         <style>
         h1 { letter-spacing: 0.06em; font-weight: 700; }
         div[data-testid="stpyvista"] canvas { opacity: 1 !important; }
-        /* Keep custom component iframe at declared height (avoids 0-height timeout races). */
+        /* Single Design Studio iframe — hide stale Streamlit timeout placeholder */
+        div[data-testid="stCustomComponentV1"]:not(:has(iframe[src*="fast_preview"])) {
+            display: none !important;
+            height: 0 !important;
+            min-height: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            overflow: hidden !important;
+        }
+        div[data-testid="stCustomComponentV1"]:has(iframe[title="components.fast_preview.fast_preview"]) {
+            display: block !important;
+            min-height: {FAST_PREVIEW_HEIGHT}px;
+            overflow: visible;
+        }
         iframe[title="components.fast_preview.fast_preview"] {
             min-height: {FAST_PREVIEW_HEIGHT}px !important;
             height: {FAST_PREVIEW_HEIGHT}px !important;
             display: block !important;
-        }
-        div[data-testid="stCustomComponentV1"] {
-            min-height: {FAST_PREVIEW_HEIGHT}px;
-            overflow: visible;
-        }
-        div[data-testid="stCustomComponentV1"] iframe {
-            overflow: visible;
         }
         </style>
         """,
