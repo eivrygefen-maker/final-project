@@ -304,7 +304,7 @@
     const EXTRUDE_CURVE_SEGMENTS = 32;
     const EXTRUDE_TOP_CURVE_SEGMENTS = 64;
     const HOLE_CIRCLE_SEGMENTS = 128;
-    const TOP_PLATE_GAP_M = 0.00015;
+    const TOP_PLATE_GAP_M = 0.0008;
     let initThreeScheduled = false;
 
     function forceViewportLayout() {
@@ -559,7 +559,35 @@
 
     let scene, camera, renderer, controls;
     let bodyGroup = null;
+    let meshTopRef = null;
+    let meshBackRef = null;
     let initialized3d = false;
+
+    function readDomSliderValues() {
+      return {
+        shape_type: document.getElementById("shapeSelect")?.value || state.shape_type,
+        length: num(document.getElementById("length")?.value, state.length),
+        width: num(document.getElementById("width")?.value, state.width),
+        depth: num(document.getElementById("depth")?.value, state.depth),
+        top_thickness: num(document.getElementById("topThickness")?.value, state.top_thickness),
+        hole_radius: num(document.getElementById("holeRadius")?.value, state.hole_radius),
+      };
+    }
+
+    const ROM_GEOM_KEYS = [
+      "shape_type", "length", "width", "depth", "top_thickness", "hole_radius",
+    ];
+
+    function filterIncomingRom(data) {
+      if (!localSliderDrag || !data) return data;
+      const out = Object.assign({}, data);
+      const dom = readDomSliderValues();
+      ROM_GEOM_KEYS.forEach((k) => {
+        if (out[k] === undefined || out[k] === null) return;
+        if (Math.abs(num(out[k]) - num(dom[k])) > 1e-6) delete out[k];
+      });
+      return out;
+    }
 
     function mergeRomState(data) {
       if (!data || typeof data !== "object") return;
@@ -603,12 +631,6 @@
       ].join("|");
     }
 
-    function soundholeX(L) {
-      const ratio = num(state.soundhole_from_neck_ratio, 0.5);
-      const len = num(L, 0.49);
-      return 0.5 * len - ratio * len;
-    }
-
     function ringSignedArea(pts) {
       let area = 0;
       for (let i = 0, n = pts.length; i < n; i++) {
@@ -618,10 +640,18 @@
       return area * 0.5;
     }
 
-    function soundholeShapeXY(L) {
-      const hx = soundholeX(L);
-      const len = num(L, 0.49);
-      return [hx - 0.5 * len, 0];
+    function soundholeShapeXY(outlinePts) {
+      let minX = Infinity;
+      let maxX = -Infinity;
+      for (let i = 0; i < outlinePts.length; i++) {
+        const x = outlinePts[i][0];
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+      }
+      const ratio = num(state.soundhole_from_neck_ratio, 0.5);
+      // Blueprint loop: neck at +X; hole position measured from neck along length.
+      const hx = maxX - ratio * (maxX - minX);
+      return [hx, 0];
     }
 
     function makeOutlineShape(pts, holeRadius, cutHole, holeXY) {
@@ -663,19 +693,13 @@
     }
 
     function updateTopMaterial() {
-      if (!bodyGroup) return;
-      const topCol = woodColorHex(state.top_wood_id);
-      bodyGroup.traverse((obj) => {
-        if (obj.isMesh && obj.name === "top" && obj.material) obj.material.color.copy(topCol);
-      });
+      if (!meshTopRef || !meshTopRef.material) return;
+      meshTopRef.material.color.copy(woodColorHex(state.top_wood_id));
     }
 
     function updateBackMaterial() {
-      if (!bodyGroup) return;
-      const backCol = woodColorHex(state.back_wood_id);
-      bodyGroup.traverse((obj) => {
-        if (obj.isMesh && obj.name === "back" && obj.material) obj.material.color.copy(backCol);
-      });
+      if (!meshBackRef || !meshBackRef.material) return;
+      meshBackRef.material.color.copy(woodColorHex(state.back_wood_id));
     }
 
     function setupStudioLighting() {
@@ -743,16 +767,30 @@
       if (g.parent) g.parent.remove(g);
     }
 
+    function resolveOutlinePts(L, W) {
+      if (state.shape_type === "Box") {
+        return boxOutlinePts(L, W);
+      }
+      const tmpl = state.templates[state.shape_type] || state.templates.Classical;
+      if (!tmpl || !tmpl.loop || tmpl.loop.length < 3) {
+        return boxOutlinePts(L, W);
+      }
+      return scaleLoop(tmpl.loop, L, W, tmpl.nominal_length, tmpl.nominal_width);
+    }
+
     function buildBody() {
       if (typeof THREE === "undefined" || !scene) return;
       disposeGroup(bodyGroup);
+      meshTopRef = null;
+      meshBackRef = null;
       bodyGroup = new THREE.Group();
       const L = num(state.length, 0.49);
       const W = num(state.width, 0.37);
       const D = num(state.depth, 0.095);
       const tTop = num(state.top_thickness, 0.0045);
       const hr = num(state.hole_radius, 0.045);
-      const holeXY = soundholeShapeXY(L);
+      const outlinePts = resolveOutlinePts(L, W);
+      const holeXY = soundholeShapeXY(outlinePts);
       const backCol = woodColorHex(state.back_wood_id);
       const topCol = woodColorHex(state.top_wood_id);
       const matBack = new THREE.MeshPhongMaterial({
@@ -766,9 +804,6 @@
         shininess: 22,
         specular: 0x151515,
         flatShading: false,
-        polygonOffset: true,
-        polygonOffsetFactor: 1,
-        polygonOffsetUnits: 1,
       });
       const extrudeBack = {
         depth: D,
@@ -795,6 +830,7 @@
         const meshBack = new THREE.Mesh(geomBack, matBack);
         meshBack.name = "back";
         meshBack.renderOrder = 0;
+        meshBackRef = meshBack;
         bodyGroup.add(meshBack);
 
         const geomTop = new THREE.ExtrudeGeometry(shapeTop, extrudeTop);
@@ -808,23 +844,11 @@
         const meshTop = new THREE.Mesh(geomTop, matTop);
         meshTop.name = "top";
         meshTop.renderOrder = 1;
+        meshTopRef = meshTop;
         bodyGroup.add(meshTop);
       }
 
-      if (state.shape_type === "Box") {
-        addExtrudedPair(boxOutlinePts(L, W));
-      } else {
-        const tmpl = state.templates[state.shape_type] || state.templates.Classical;
-        if (!tmpl || !tmpl.loop || tmpl.loop.length < 3) {
-          const geom = new THREE.BoxGeometry(L, D, W * 0.5);
-          const mesh = new THREE.Mesh(geom, matBack);
-          mesh.name = "back";
-          bodyGroup.add(mesh);
-        } else {
-          const pts = scaleLoop(tmpl.loop, L, W, tmpl.nominal_length, tmpl.nominal_width);
-          addExtrudedPair(pts);
-        }
-      }
+      addExtrudedPair(outlinePts);
 
       const box = new THREE.Box3().setFromObject(bodyGroup);
       const center = box.getCenter(new THREE.Vector3());
@@ -1127,8 +1151,9 @@
   }
 
     function applyArgs(rawArgs) {
-      const data = normalizeArgs(rawArgs);
+      const data = filterIncomingRom(normalizeArgs(rawArgs));
       const hadTemplates = Boolean(data.templates && Object.keys(data.templates).length);
+      const prevRomFp = lastRomFp;
       mergeRomState(data);
       if (!state.bounds && state.bounds_by_shape && state.bounds_by_shape[state.shape_type]) {
         state.bounds = state.bounds_by_shape[state.shape_type];
@@ -1161,27 +1186,39 @@
       const romFp = romFingerprint();
       const geomFp = geometryFingerprint();
       if (geomFp !== lastGeomFp || hadTemplates || !initialized3d) {
+        if (localSliderDrag) {
+          lastRomFp = romFp;
+          return;
+        }
         lastGeomFp = geomFp;
         lastRomFp = romFp;
         sync3dFromState();
       } else if (romFp !== lastRomFp) {
+        const prevParts = prevRomFp.split("|");
+        const newParts = romFp.split("|");
         lastRomFp = romFp;
-        updateTopMaterial();
-        updateBackMaterial();
+        if (prevParts[6] !== newParts[6]) updateTopMaterial();
+        if (prevParts[7] !== newParts[7]) updateBackMaterial();
         renderFrame();
       }
     }
 
+    let sliderReleaseTimer = null;
     ["length", "width", "depth", "topThickness", "holeRadius"].forEach((id) => {
       const el = document.getElementById(id);
       if (!el) return;
       el.addEventListener("pointerdown", function () { localSliderDrag = true; });
-      el.addEventListener("input", preview3dFromSliders);
-      el.addEventListener("change", function () {
-        localSliderDrag = false;
-        notifyParamChange();
+      el.addEventListener("input", function () {
+        localSliderDrag = true;
+        preview3dFromSliders();
       });
-      el.addEventListener("pointerup", function () { localSliderDrag = false; });
+      el.addEventListener("change", function () {
+        clearTimeout(sliderReleaseTimer);
+        sliderReleaseTimer = setTimeout(function () {
+          localSliderDrag = false;
+          notifyParamChange();
+        }, 80);
+      });
     });
     document.getElementById("shapeSelect").addEventListener("change", () => {
       state.shape_type = document.getElementById("shapeSelect").value || "Classical";

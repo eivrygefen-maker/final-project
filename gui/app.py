@@ -252,6 +252,14 @@ STUDIO_META_KEYS = (
 )
 
 
+def _round_studio_dim(v: Any, ndigits: int = 5) -> float:
+    """Round ROM slider dimensions so Python↔iframe sync does not jitter on float noise."""
+    try:
+        return round(float(v), ndigits)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def sanitize_studio_payload(data: Optional[Dict[str, Any]], shape_type: str = "Classical") -> Dict[str, Any]:
     """Strip legacy bout/waist keys; keep only ROM 7D + component metadata."""
     src = dict(data or {})
@@ -275,11 +283,11 @@ def sanitize_studio_payload(data: Optional[Dict[str, Any]], shape_type: str = "C
     bounds = rom_lwd_bounds(shape)
     out: Dict[str, Any] = {
         "shape_type": shape,
-        "length": float(src.get("length", rom_def["length"])),
-        "width": float(width),
-        "depth": float(src.get("depth", rom_def["depth"])),
-        "top_thickness": float(top_t),
-        "hole_radius": float(hole),
+        "length": _round_studio_dim(src.get("length", rom_def["length"])),
+        "width": _round_studio_dim(width),
+        "depth": _round_studio_dim(src.get("depth", rom_def["depth"])),
+        "top_thickness": _round_studio_dim(top_t),
+        "hole_radius": _round_studio_dim(hole),
         "top_wood_id": top_wood,
         "back_wood_id": back_wood,
         "gui_mode": str(src.get("gui_mode", "user")),
