@@ -7,24 +7,6 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
-    html, body, #root, canvas#viewport {
-      width: 1000px !important;
-      height: 850px !important;
-      min-width: 1000px !important;
-      min-height: 850px !important;
-      display: block !important;
-      visibility: visible !important;
-      opacity: 1 !important;
-    }
-    html, body {
-      margin: 0;
-      padding: 0;
-      overflow: hidden;
-      background: transparent !important;
-    }
-    canvas#viewport {
-      background: transparent !important;
-    }
     :root {
       --st-font: "Source Sans 3", "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       --st-primary: #ff4b4b;
@@ -44,12 +26,39 @@
         --st-panel: rgba(38, 39, 48, 0.9);
       }
     }
-    * { box-sizing: border-box; }
     html, body {
+      width: 1000px !important;
+      height: 850px !important;
+      overflow: hidden !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      display: block !important;
+      visibility: visible !important;
+      opacity: 1 !important;
       font-family: var(--st-font);
       color: var(--st-text);
       background: #1a1c24;
     }
+    #root {
+      width: 1000px !important;
+      height: 850px !important;
+      min-width: 1000px !important;
+      min-height: 850px !important;
+      display: block !important;
+      overflow: hidden !important;
+      position: relative !important;
+    }
+    #viewport {
+      display: block !important;
+      width: 1000px !important;
+      height: 850px !important;
+      min-width: 1000px !important;
+      min-height: 850px !important;
+    }
+    canvas#viewport {
+      background: transparent !important;
+    }
+    * { box-sizing: border-box; }
     .studio {
       position: relative;
       width: 1000px;
@@ -138,23 +147,16 @@
       position: absolute;
       top: 0;
       left: 0;
-      width: 1000px;
-      height: 850px;
-      min-width: 1000px;
-      min-height: 850px;
+      width: 1000px !important;
+      height: 850px !important;
+      min-width: 1000px !important;
+      min-height: 850px !important;
+      display: block !important;
       border-radius: var(--st-radius);
       border: 1px solid var(--st-border);
       background: linear-gradient(165deg, #e8eaef 0%, #d4d8e0 45%, #c5cad4 100%);
       overflow: hidden;
       z-index: 1;
-    }
-    #viewport {
-      width: 1000px;
-      height: 850px;
-      min-width: 1000px;
-      min-height: 850px;
-      display: block;
-      border-radius: inherit;
     }
     .badge {
       position: absolute;
@@ -306,8 +308,10 @@
     let animating = true;
     const STUDIO_W = 1000;
     const STUDIO_H = 850;
+    let initThreeScheduled = false;
 
-    function forceViewportSize() {
+    function forceViewportLayout() {
+      console.log("STARTUP: Forcing viewport layout...");
       document.documentElement.style.width = STUDIO_W + "px";
       document.documentElement.style.height = STUDIO_H + "px";
       document.body.style.width = STUDIO_W + "px";
@@ -328,6 +332,26 @@
         viewport.style.height = STUDIO_H + "px";
       }
       window.dispatchEvent(new Event("resize"));
+    }
+
+    function scheduleInitThreeCore() {
+      if (initThreeScheduled || initialized3d) return;
+      initThreeScheduled = true;
+      function runAfterLayoutPaint() {
+        forceViewportLayout();
+        whenThreeReady(initThreeCore);
+      }
+      if (document.readyState === "complete") {
+        setTimeout(runAfterLayoutPaint, 500);
+        return;
+      }
+      window.addEventListener(
+        "load",
+        function () {
+          setTimeout(runAfterLayoutPaint, 500);
+        },
+        { once: true }
+      );
     }
 
     function logError(msg) {
@@ -721,7 +745,7 @@
      */
     function initThreeCore() {
       if (initialized3d) return;
-      forceViewportSize();
+      forceViewportLayout();
       var checkpoint = 0;
       try {
         const canvas = document.getElementById("viewport");
@@ -800,7 +824,7 @@
 
     function initThree() {
       if (initialized3d) return;
-      whenThreeReady(initThreeCore);
+      scheduleInitThreeCore();
     }
 
     function animate() {
@@ -1023,26 +1047,7 @@
     applySliderBounds();
     updateLabels();
     updateModeUi();
-
-    function bootstrapStudio3d() {
-      console.log("STARTUP: Three.js engine starting");
-      if (!initialized3d) {
-        initThree();
-      } else {
-        buildBody();
-        renderFrame();
-      }
-    }
-
-    function startAfterHandshake() {
-      if (!window.__studioHandshakeDone) {
-        setTimeout(startAfterHandshake, 5);
-        return;
-      }
-      forceViewportSize();
-      whenThreeReady(bootstrapStudio3d);
-    }
-    startAfterHandshake();
+    scheduleInitThreeCore();
 
     } catch (e) {
       console.error("FATAL JS ERROR:", e);
