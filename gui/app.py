@@ -47,6 +47,7 @@ SOUNDHOLE_FROM_NECK_RATIO = 0.5
 ROM_HOLE_RADIUS_BOUNDS = (0.035, 0.055)
 
 FAST_PREVIEW_HEIGHT = 850
+FAST_PREVIEW_WIDTH = 1000
 ROM_ONLINE_MODES = 15
 STUDIO_HANDSHAKE_ACTIONS = frozenset({"ready", "_handshake", "handshake", "_ready_ping"})
 STUDIO_ROM_PAYLOAD_KEYS = (
@@ -402,6 +403,36 @@ def record_studio_handshake(event: Dict[str, Any]) -> None:
         return
     st.session_state._studio_handshake_id = eid
     st.session_state._studio_component_ready = True
+
+
+def inject_fast_preview_layout_css() -> None:
+    """Prevent Streamlit from collapsing the custom-component iframe (850px studio)."""
+    h = FAST_PREVIEW_HEIGHT
+    st.markdown(
+        f"""
+        <style>
+        div[data-testid="stCustomComponentV1"] {{
+            display: block !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            min-height: {h}px !important;
+            height: {h}px !important;
+            overflow: visible !important;
+        }}
+        div[data-testid="stCustomComponentV1"] iframe {{
+            display: block !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            width: 100% !important;
+            min-width: 400px !important;
+            height: {h}px !important;
+            min-height: {h}px !important;
+            border: 0;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def verify_fast_preview_component_paths() -> bool:
@@ -1151,6 +1182,7 @@ def _render_main_studio(
     iframe_initial = stable_studio_iframe_initial(fp_seed)
 
     with col_vis:
+        inject_fast_preview_layout_css()
         studio_event = mount_design_studio_iframe(iframe_initial)
 
     process_fast_preview_event(

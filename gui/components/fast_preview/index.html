@@ -8,10 +8,11 @@
   <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
     html, body {
-      width: 100vw;
-      height: 100vh;
+      width: 1000px;
+      height: 850px;
       margin: 0;
       padding: 0;
+      overflow: hidden;
     }
     :root {
       --st-font: "Source Sans 3", "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -251,9 +252,17 @@
   <script src="./streamlit_bridge.js"></script>
   <script>
     try {
+      document.documentElement.style.width = "1000px";
+      document.documentElement.style.height = "850px";
+      document.body.style.width = "1000px";
+      document.body.style.height = "850px";
       if (window.Streamlit && typeof window.Streamlit.setComponentReady === "function") {
         window.Streamlit.setComponentReady();
         console.log("STARTUP: setComponentReady called");
+      }
+      if (window.Streamlit && typeof window.Streamlit.setFrameHeight === "function") {
+        window.Streamlit.setFrameHeight(850);
+        console.log("STARTUP: setFrameHeight(850) called (parent iframe sizing)");
       }
     } catch (e) {
       console.error("FATAL JS ERROR (pre-Three.js ready):", e);
@@ -757,15 +766,16 @@
     });
 
     function onResize() {
-    if (!renderer || !camera) return;
-    const wrap = document.getElementById("viewport").parentElement;
-    const w = wrap.clientWidth;
-    const h = wrap.clientHeight;
-    camera.aspect = w / h;
-    camera.updateProjectionMatrix();
-    renderer.setSize(w, h);
-  }
-    window.addEventListener("resize", onResize);
+      if (!renderer || !camera) return;
+      const wrap = document.getElementById("viewport").parentElement;
+      const w = Math.max(wrap.clientWidth, 400);
+      const h = Math.max(wrap.clientHeight, 560);
+      if (w < 1 || h < 1) return;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    }
+    /* Resize listener disabled — fixed 1000×850 layout; avoids zero-height collapse */
 
     function fmt(v, dec) {
       return num(v, 0).toFixed(dec);
