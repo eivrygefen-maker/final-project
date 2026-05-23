@@ -117,6 +117,8 @@ def _init_session() -> None:
         "acoustics_pending": False,
         "developer_fom_mode": False,
         "show_display_mesh": False,
+        "show_fom_mesh": False,
+        "_fom_view_rom_fp": "",
         "fixture_fp": "",
         "_clamp_ribs": False,
         "_pin_neck_fix": True,
@@ -129,6 +131,7 @@ def _init_session() -> None:
         "_studio_component_ready": False,
         "_studio_handshake_id": "",
         "_studio_iframe_payload_fp": "",
+        "_viewport_slot": None,
         "_rom_online_fp": "",
         "rom_frequencies_hz": [],
         "rom_mode_shapes": {},
@@ -331,6 +334,30 @@ def wood_colors_for_studio() -> Dict[str, str]:
     return {wid: plot_color_for_wood(wid) for wid in ALL_WOOD_IDS}
 
 
+def enter_fom_mesh_view(rom_fp: str) -> None:
+    """Show Gmsh/PyVista validation mesh instead of the Three.js Design Studio."""
+    st.session_state.show_fom_mesh = True
+    st.session_state.show_display_mesh = True
+    st.session_state._fom_view_rom_fp = rom_fp
+
+
+def revert_to_design_studio() -> None:
+    """Return to the interactive Three.js Design Studio viewport."""
+    st.session_state.show_fom_mesh = False
+    st.session_state._fom_view_rom_fp = ""
+
+
+def auto_revert_fom_if_params_changed(current_rom_fp: str) -> bool:
+    """If 7D ROM parameters drift while FOM mesh is visible, restore Design Studio."""
+    if not st.session_state.get("show_fom_mesh"):
+        return False
+    pinned = str(st.session_state.get("_fom_view_rom_fp", ""))
+    if not pinned or current_rom_fp == pinned:
+        return False
+    revert_to_design_studio()
+    return True
+
+
 def studio_payload_for_component(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Omit heavy template geometry after first iframe load (cached client-side)."""
     out = dict(payload)
@@ -390,13 +417,11 @@ def record_studio_handshake(event: Dict[str, Any]) -> None:
 def render_fast_preview_studio(initial: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Mount the Design Studio iframe (single instance, fixed height)."""
     try:
-        out = fast_preview(
+        return fast_preview(
             initial=initial,
             key="fast_preview_geom",
             height=FAST_PREVIEW_HEIGHT,
         )
-        st.session_state._studio_component_ready = True
-        return out
     except FileNotFoundError as exc:
         st.error(f"Design Studio assets missing: {exc}")
     except Exception as exc:
@@ -495,6 +520,7 @@ def process_fast_preview_event(
             geom_fp=geom_fp,
         )
         invalidate_physics_state()
+        enter_fom_mesh_view(rom_mesh_fingerprint(geom, top_wood=top_wood, back_wood=back_wood))
 
     if action == "run_rom":
         st.session_state.developer_fom_mode = False
@@ -768,6 +794,43 @@ def render_guitar(
     plotter.close()
 
 
+def render_validation_mesh_viewport(
+    geom: Dict[str, Any],
+    *,
+    top_wood: str,
+    back_wood: str,
+    geom_fp: str,
+    fixture_preset: str,
+) -> None:
+    """Gmsh ``display_mesh.msh`` in the main viewport (replaces Design Studio when active)."""
+    st.subheader("Validation mesh (Gmsh / PyVista)")
+    st.caption(
+        "Compiled ``display_mesh.msh`` (lc=4 mm) — same config as ROM/FEM. "
+        "Move any Design Studio slider to return to the live Three.js preview."
+    )
+    mesh, _, mesh_src = get_view_mesh(geom_fp)
+    if mesh is None and not DISPLAY_MESH_FILE.is_file():
+        st.info("Mesh file missing. Click **Regenerate Gmsh mesh** or **Save & Sync** in the Design Studio.")
+        return
+    dm = load_surface_mesh(DISPLAY_MESH_FILE)
+    n_cells = f"{dm.n_cells:,} triangles" if dm is not None else "—"
+    st.caption(f"`display_mesh.msh` · {n_cells} · source: {mesh_src or 'display_mesh.msh'}")
+    try:
+        pv.set_jupyter_backend("static")
+        render_guitar(
+            mesh,
+            top_color=plot_color_for_wood(top_wood),
+            back_color=plot_color_for_wood(back_wood),
+            body_length=geom["length"],
+            hole_radius=geom["hole_radius"],
+            sketch_mode=False,
+            plot_key=f"display_{mesh_src}_{geom_fp[:12]}",
+            fixture_preset=fixture_preset,
+        )
+    except Exception as exc:
+        st.warning(f"Render error: {exc}")
+
+
 def display_mesh_active(geom_fp: str) -> bool:
     return (
         bool(st.session_state.show_display_mesh)
@@ -1019,7 +1082,7 @@ def _render_interactive_panel(
     saved_shape: str,
     saved_fixture: str,
 ) -> None:
-    """Controls + Design Studio + PyVista (isolated via ``st.fragment`` when available)."""
+    """Controls + Design Studio + PyVista."""
     clamp_ribs = bool(st.session_state.get("_clamp_ribs", saved_solver.get("clamp_ribs", False)))
     pin_neck = bool(st.session_state.get("_pin_neck_fix", saved_solver.get("eps_pin_fix_tag5", True)))
     fixture_preset = str(st.session_state.get("_fixture_preset", saved_fixture))
@@ -1057,7 +1120,20 @@ def _render_interactive_panel(
 
         rom_metrics_slot = st.empty()
 
+        if st.session_state.show_fom_mesh:
+            st.caption("Viewport: **Validation mesh** (Gmsh / PyVista)")
+        else:
+            st.caption("Viewport: **Design Studio** (Three.js live preview)")
+
         st.subheader("Actions")
+        if st.session_state.show_fom_mesh:
+            if st.button(
+                "← Design Studio (live preview)",
+                use_container_width=True,
+                key="btn_back_to_studio",
+            ):
+                revert_to_design_studio()
+                st.rerun()
         regen_mesh = st.button("Regenerate Gmsh mesh", use_container_width=True, key="btn_regen_mesh")
         gen_sound = st.button(
             "Generate sound",
@@ -1067,31 +1143,17 @@ def _render_interactive_panel(
         )
 
     fp_seed["gui_mode"] = "admin" if st.session_state.developer_fom_mode else "user"
-    fp_for_component = studio_payload_for_iframe(fp_seed)
 
     with col_vis:
-        st.subheader("Design Studio")
-        studio_event = render_fast_preview_studio(fp_for_component)
-        process_fast_preview_event(
-            studio_event,
-            clamp_ribs=clamp_ribs,
-            pin_neck=pin_neck,
-            fixture_preset=fixture_preset,
-        )
-
         fp_live = sanitize_studio_payload(
             st.session_state.get("_fast_preview_geom") or fp_seed,
             saved_shape,
         )
+        geom, top_wood, back_wood = geom_from_studio_event(fp_live)
         shape = str(fp_live.get("shape_type", saved_shape))
         if shape not in SHAPE_OPTIONS:
             shape = saved_shape
-        geom, top_wood, back_wood = geom_from_studio_event(fp_live)
-        lhs_params = lhs_params_from_ui(geom, top_wood=top_wood, back_wood=back_wood)
-        st.session_state["_geom"] = geom
-        st.session_state["_top_wood"] = top_wood
-        st.session_state["_back_wood"] = back_wood
-
+        rom_fp = rom_mesh_fingerprint(geom, top_wood=top_wood, back_wood=back_wood)
         geom_fp = geometry_fingerprint(
             geom,
             top_wood,
@@ -1100,6 +1162,50 @@ def _render_interactive_panel(
             pin_neck_fix=pin_neck,
             fixture_preset=fixture_preset,
         )
+
+        if auto_revert_fom_if_params_changed(rom_fp):
+            st.rerun()
+
+        if st.session_state._viewport_slot is None:
+            st.session_state._viewport_slot = st.empty()
+
+        studio_event: Optional[Dict[str, Any]] = None
+        if not st.session_state.show_fom_mesh:
+            fp_for_component = studio_payload_for_iframe(fp_seed)
+            fp_for_component["wood_colors"] = wood_colors_for_studio()
+            with st.session_state._viewport_slot.container():
+                studio_event = render_fast_preview_studio(fp_for_component)
+            process_fast_preview_event(
+                studio_event,
+                clamp_ribs=clamp_ribs,
+                pin_neck=pin_neck,
+                fixture_preset=fixture_preset,
+            )
+            fp_live = sanitize_studio_payload(
+                st.session_state.get("_fast_preview_geom") or fp_seed,
+                saved_shape,
+            )
+            geom, top_wood, back_wood = geom_from_studio_event(fp_live)
+            shape = str(fp_live.get("shape_type", saved_shape))
+            if shape not in SHAPE_OPTIONS:
+                shape = saved_shape
+            rom_fp = rom_mesh_fingerprint(geom, top_wood=top_wood, back_wood=back_wood)
+            if auto_revert_fom_if_params_changed(rom_fp):
+                st.rerun()
+        else:
+            with st.session_state._viewport_slot.container():
+                render_validation_mesh_viewport(
+                    geom,
+                    top_wood=top_wood,
+                    back_wood=back_wood,
+                    geom_fp=geom_fp,
+                    fixture_preset=fixture_preset,
+                )
+
+        lhs_params = lhs_params_from_ui(geom, top_wood=top_wood, back_wood=back_wood)
+        st.session_state["_geom"] = geom
+        st.session_state["_top_wood"] = top_wood
+        st.session_state["_back_wood"] = back_wood
 
         update_rom_online_prediction(geom, top_wood=top_wood, back_wood=back_wood, shape_type=shape)
         with rom_metrics_slot.container():
@@ -1118,7 +1224,8 @@ def _render_interactive_panel(
                         geom_fp=geom_fp,
                     )
                 invalidate_physics_state()
-                st.success("Mesh updated.")
+                enter_fom_mesh_view(rom_fp)
+                st.success("Mesh updated — showing validation mesh.")
                 st.rerun()
             except Exception as exc:
                 st.error(f"Rebuild failed: {exc}")
@@ -1137,33 +1244,11 @@ def _render_interactive_panel(
                     stk_path = run_fom_acoustics()
                     st.session_state.stk_body_json = str(stk_path)
                     st.session_state.physics_ready = True
-                    st.success("Full FEM complete.")
+                    enter_fom_mesh_view(rom_fp)
+                    st.success("Full FEM complete — showing validation mesh.")
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Full FEM failed: {exc}")
-
-        st.subheader("High-fidelity 3D (PyVista)")
-        mesh, is_sketch, mesh_src = get_view_mesh(geom_fp)
-        if mesh is None and not DISPLAY_MESH_FILE.is_file():
-            st.info("Click **Save & Sync** in the Design Studio to build `display_mesh.msh` via Gmsh.")
-        else:
-            dm = load_surface_mesh(DISPLAY_MESH_FILE)
-            n_cells = f"{dm.n_cells:,} triangles" if dm is not None else "—"
-            st.caption(f"`display_mesh.msh` (lc=4 mm) · {n_cells} · same config as ROM/FEM")
-            try:
-                pv.set_jupyter_backend("static")
-                render_guitar(
-                    mesh,
-                    top_color=plot_color_for_wood(top_wood),
-                    back_color=plot_color_for_wood(back_wood),
-                    body_length=geom["length"],
-                    hole_radius=geom["hole_radius"],
-                    sketch_mode=False,
-                    plot_key=f"display_{mesh_src}_{geom_fp[:12]}",
-                    fixture_preset=fixture_preset,
-                )
-            except Exception as exc:
-                st.warning(f"Render error: {exc}")
 
         if st.session_state.acoustics_pending and display_mesh_active(geom_fp):
             with st.spinner("Computing acoustics…"):
@@ -1195,8 +1280,8 @@ def main() -> None:
         <style>
         h1 { letter-spacing: 0.06em; font-weight: 700; }
         div[data-testid="stpyvista"] canvas { opacity: 1 !important; }
-        /* Single Design Studio iframe — hide stale Streamlit timeout placeholder */
-        div[data-testid="stCustomComponentV1"]:not(:has(iframe[src*="fast_preview"])) {
+        /* Single Design Studio iframe — drop stale/timeout duplicates, keep last mount */
+        div[data-testid="stCustomComponentV1"]:not(:has(iframe[title*="fast_preview"])) {
             display: none !important;
             height: 0 !important;
             min-height: 0 !important;
@@ -1204,15 +1289,25 @@ def main() -> None:
             padding: 0 !important;
             overflow: hidden !important;
         }
-        div[data-testid="stCustomComponentV1"]:has(iframe[title="components.fast_preview.fast_preview"]) {
+        div[data-testid="stCustomComponentV1"]:has(iframe[title*="fast_preview"]):not(:last-of-type) {
+            display: none !important;
+            height: 0 !important;
+            min-height: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            overflow: hidden !important;
+            visibility: hidden !important;
+        }
+        div[data-testid="stCustomComponentV1"]:has(iframe[title*="fast_preview"]):last-of-type {
             display: block !important;
             min-height: {FAST_PREVIEW_HEIGHT}px;
             overflow: visible;
         }
-        iframe[title="components.fast_preview.fast_preview"] {
+        iframe[title*="components.fast_preview.fast_preview"] {
             min-height: {FAST_PREVIEW_HEIGHT}px !important;
             height: {FAST_PREVIEW_HEIGHT}px !important;
             display: block !important;
+            border: none;
         }
         </style>
         """,
@@ -1220,8 +1315,9 @@ def main() -> None:
     )
     st.title("GUITAR SIMULATOR")
     st.caption(
-        "Design Studio: instant Three.js preview (ROM sliders). "
-        "PyVista below: high-fidelity ``display_mesh.msh`` from ``build_3d_guitar.py`` after **Save & Sync**."
+        "Design Studio: live Three.js ROM preview. "
+        "After **Regenerate Gmsh mesh**, **Save & Sync**, or **Run FEM**, the viewport swaps to the "
+        "Gmsh/PyVista validation mesh; move any studio slider to return to the interactive preview."
     )
 
     _rom_mgr, _rom_init_err = get_rom_manager()

@@ -33,8 +33,7 @@
       font-family: var(--st-font);
       color: var(--st-text);
       background: #1a1c24;
-      overflow-x: hidden;
-      overflow-y: visible;
+      overflow: visible;
       min-height: 850px;
       height: 850px;
     }
@@ -46,6 +45,8 @@
       min-height: 850px;
       padding: 8px 10px 10px;
       overflow: visible;
+      position: relative;
+      isolation: isolate;
     }
     .panel {
       background: var(--st-panel);
@@ -56,12 +57,18 @@
     }
     .panel.panel-controls {
       position: relative;
-      z-index: 20;
+      z-index: 999 !important;
       overflow: visible;
+      padding-bottom: 24px;
     }
     .panel.panel-controls select {
       position: relative;
-      z-index: 50;
+      z-index: 1000;
+      isolation: auto;
+    }
+    .panel.panel-controls label {
+      position: relative;
+      z-index: 999;
     }
     .panel h3 {
       margin: 0 0 4px;
@@ -129,8 +136,11 @@
       overflow: hidden;
       background: linear-gradient(165deg, #e8eaef 0%, #d4d8e0 45%, #c5cad4 100%);
       min-height: 580px;
+      pointer-events: auto;
     }
     #viewport {
+      position: relative;
+      z-index: 1;
       width: 100%;
       height: 100%;
       min-height: 580px;
@@ -566,25 +576,34 @@
     }
 
     function setupStudioLighting() {
-      scene.add(new THREE.AmbientLight(0xffffff, 0.48));
-      const hemi = new THREE.HemisphereLight(0xffffff, 0x9aa3ad, 0.38);
+      scene.add(new THREE.AmbientLight(0xffffff, 0.58));
+      const hemi = new THREE.HemisphereLight(0xf4f6fa, 0x8a9199, 0.52);
+      hemi.position.set(0, 0.85, 0);
       scene.add(hemi);
 
-      const topKey = new THREE.DirectionalLight(0xffffff, 0.62);
-      topKey.position.set(0.5, 1.6, 0.65);
+      const topKey = new THREE.DirectionalLight(0xffffff, 0.46);
+      topKey.position.set(0.35, 1.55, 0.75);
       scene.add(topKey);
 
-      const bottomFill = new THREE.DirectionalLight(0xfff4e8, 0.52);
-      bottomFill.position.set(-0.45, -1.25, 0.35);
+      const bottomFill = new THREE.DirectionalLight(0xfff0dc, 0.58);
+      bottomFill.position.set(0.15, -1.05, -0.55);
       scene.add(bottomFill);
 
-      const frontRim = new THREE.DirectionalLight(0xffffff, 0.32);
-      frontRim.position.set(0.15, 0.35, 1.35);
+      const frontRim = new THREE.DirectionalLight(0xffffff, 0.38);
+      frontRim.position.set(0.05, 0.55, 1.25);
       scene.add(frontRim);
 
-      const backRim = new THREE.DirectionalLight(0xffffff, 0.32);
-      backRim.position.set(-0.15, 0.35, -1.35);
+      const backRim = new THREE.DirectionalLight(0xffffff, 0.42);
+      backRim.position.set(-0.05, 0.45, -1.25);
       scene.add(backRim);
+
+      const sideLeft = new THREE.DirectionalLight(0xffffff, 0.22);
+      sideLeft.position.set(-1.15, 0.25, 0.15);
+      scene.add(sideLeft);
+
+      const sideRight = new THREE.DirectionalLight(0xffffff, 0.22);
+      sideRight.position.set(1.15, 0.25, 0.15);
+      scene.add(sideRight);
     }
 
     function scaleLoop(loop, L, W, nominalLength, nominalWidth) {
