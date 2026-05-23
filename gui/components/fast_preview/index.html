@@ -7,12 +7,21 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
+    html, body, #root, canvas {
+      width: 1000px !important;
+      height: 850px !important;
+      display: block !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+    }
     html, body {
-      width: 1000px;
-      height: 850px;
       margin: 0;
       padding: 0;
       overflow: hidden;
+      background: transparent !important;
+    }
+    canvas#viewport {
+      background: transparent !important;
     }
     :root {
       --st-font: "Source Sans 3", "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -251,25 +260,35 @@
   <!-- Local bridge + Three.js (lib/ — no external CDN; CSP-safe) -->
   <script src="./streamlit_bridge.js"></script>
   <script>
-    try {
+    /* Streamlit handshake — runs on DOMContentLoaded, before Three.js modules */
+    var STUDIO_FRAME_HEIGHT = 850;
+    function runStreamlitHandshake() {
       document.documentElement.style.width = "1000px";
-      document.documentElement.style.height = "850px";
+      document.documentElement.style.height = STUDIO_FRAME_HEIGHT + "px";
       document.body.style.width = "1000px";
-      document.body.style.height = "850px";
-      if (window.Streamlit && typeof window.Streamlit.setComponentReady === "function") {
-        window.Streamlit.setComponentReady();
-        console.log("STARTUP: setComponentReady called");
+      document.body.style.height = STUDIO_FRAME_HEIGHT + "px";
+      var sl = window.Streamlit;
+      if (sl && typeof sl.setComponentReady === "function") {
+        sl.setComponentReady();
+        console.log("STARTUP: setComponentReady called (DOMContentLoaded)");
       }
-      if (window.Streamlit && typeof window.Streamlit.setFrameHeight === "function") {
-        window.Streamlit.setFrameHeight(850);
-        console.log("STARTUP: setFrameHeight(850) called (parent iframe sizing)");
+      if (sl && typeof sl.setFrameHeight === "function") {
+        sl.setFrameHeight(STUDIO_FRAME_HEIGHT);
+        console.log("STARTUP: setFrameHeight(" + STUDIO_FRAME_HEIGHT + ") called (DOMContentLoaded)");
       }
-    } catch (e) {
-      console.error("FATAL JS ERROR (pre-Three.js ready):", e);
-      if (e && e.stack) console.error(e.stack);
-      try {
-        if (window.Streamlit) window.Streamlit.setComponentReady();
-      } catch (_e2) { /* ignore */ }
+      if (!window.__fastPreviewStayAlive) {
+        window.__fastPreviewStayAlive = setInterval(function () {
+          if (window.Streamlit && typeof window.Streamlit.setFrameHeight === "function") {
+            window.Streamlit.setFrameHeight(STUDIO_FRAME_HEIGHT);
+          }
+        }, 2000);
+        console.log("STARTUP: stay-alive setFrameHeight ping every 2s");
+      }
+    }
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", runStreamlitHandshake);
+    } else {
+      runStreamlitHandshake();
     }
   </script>
   <script type="importmap">
@@ -685,6 +704,19 @@
         const canvas = document.getElementById("viewport");
         if (!canvas) throw new Error("viewport canvas not found");
         const wrap = canvas.parentElement;
+        const rootEl = document.getElementById("root");
+        console.log(
+          "DEBUG: Canvas parent display:",
+          wrap ? window.getComputedStyle(wrap).display : "no parent",
+          "| root:",
+          rootEl ? window.getComputedStyle(rootEl).display : "no #root"
+        );
+        console.log(
+          "DEBUG: #viewport size:",
+          canvas.clientWidth + "x" + canvas.clientHeight,
+          "| wrap:",
+          wrap ? wrap.clientWidth + "x" + wrap.clientHeight : "n/a"
+        );
         const w = Math.max(wrap.clientWidth, 400);
         const h = Math.max(wrap.clientHeight, 560);
 
