@@ -405,29 +405,46 @@ def record_studio_handshake(event: Dict[str, Any]) -> None:
     st.session_state._studio_component_ready = True
 
 
-def inject_fast_preview_layout_css() -> None:
-    """Prevent Streamlit from collapsing the custom-component iframe (850px studio)."""
+def inject_studio_viewport_css() -> None:
+    """Fixed-height studio stack: iframe always mounted; Gmsh PyVista overlays without remount."""
     h = FAST_PREVIEW_HEIGHT
     st.markdown(
         f"""
         <style>
-        div[data-testid="stCustomComponentV1"] {{
-            display: block !important;
-            visibility: visible !important;
-            opacity: 1 !important;
+        div[data-testid="column"]:has(div[data-testid="stCustomComponentV1"]) {{
+            position: relative !important;
             min-height: {h}px !important;
-            height: {h}px !important;
             overflow: visible !important;
         }}
+        div[data-testid="stCustomComponentV1"] {{
+            height: {h}px !important;
+            overflow: visible !important;
+            z-index: 10 !important;
+            position: relative !important;
+        }}
         div[data-testid="stCustomComponentV1"] iframe {{
+            height: {h}px !important;
+            width: 100% !important;
+            z-index: 10 !important;
             display: block !important;
             visibility: visible !important;
             opacity: 1 !important;
+            border: 0;
+        }}
+        div[data-testid="stVerticalBlock"]:has(div[data-testid="stpyvista"]) {{
+            position: absolute !important;
+            top: 0 !important;
+            left: 0 !important;
+            right: 0 !important;
             width: 100% !important;
-            min-width: 400px !important;
+            height: {h}px !important;
+            z-index: 20 !important;
+            background: #0e1117 !important;
+            pointer-events: auto !important;
+        }}
+        div[data-testid="stpyvista"] {{
             height: {h}px !important;
             min-height: {h}px !important;
-            border: 0;
         }}
         </style>
         """,
@@ -853,7 +870,7 @@ def render_validation_mesh_viewport(
     geom_fp: str,
     fixture_preset: str,
 ) -> None:
-    """Gmsh ``display_mesh.msh`` — isolated tab; never shares the Design Studio iframe slot."""
+    """Gmsh ``display_mesh.msh`` — absolute overlay; Design Studio iframe stays mounted."""
     st.caption(
         "Compiled ``display_mesh.msh`` (lc=4 mm) from **Save & Sync** or **Regenerate Gmsh mesh**. "
         "Same configuration as ROM/FEM; independent of the Three.js studio."
@@ -1182,7 +1199,7 @@ def _render_main_studio(
     iframe_initial = stable_studio_iframe_initial(fp_seed)
 
     with col_vis:
-        inject_fast_preview_layout_css()
+        inject_studio_viewport_css()
         studio_event = mount_design_studio_iframe(iframe_initial)
 
     process_fast_preview_event(

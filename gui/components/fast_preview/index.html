@@ -7,9 +7,10 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
-    html, body, #root, canvas {
-      width: 1000px !important;
+    html, body, #root {
+      width: 100% !important;
       height: 850px !important;
+      min-height: 850px !important;
       display: block !important;
       visibility: visible !important;
       opacity: 1 !important;
@@ -130,7 +131,10 @@
       border-radius: var(--st-radius);
       border: 1px solid var(--st-border);
       background: linear-gradient(165deg, #e8eaef 0%, #d4d8e0 45%, #c5cad4 100%);
+      flex: 1 1 auto;
       min-height: 580px;
+      height: 100%;
+      overflow: hidden;
     }
     #viewport {
       width: 100%;
@@ -260,36 +264,16 @@
   <!-- Local bridge + Three.js (lib/ — no external CDN; CSP-safe) -->
   <script src="./streamlit_bridge.js"></script>
   <script>
-    /* Streamlit handshake — runs on DOMContentLoaded, before Three.js modules */
-    var STUDIO_FRAME_HEIGHT = 850;
-    function runStreamlitHandshake() {
-      document.documentElement.style.width = "1000px";
-      document.documentElement.style.height = STUDIO_FRAME_HEIGHT + "px";
-      document.body.style.width = "1000px";
-      document.body.style.height = STUDIO_FRAME_HEIGHT + "px";
+    /* Streamlit handshake — sync, before Three.js; height fixed by parent CSS only */
+    (function runStreamlitHandshake() {
+      window.__studioHandshakeDone = false;
       var sl = window.Streamlit;
       if (sl && typeof sl.setComponentReady === "function") {
         sl.setComponentReady();
-        console.log("STARTUP: setComponentReady called (DOMContentLoaded)");
+        console.log("STARTUP: setComponentReady (sync handshake)");
       }
-      if (sl && typeof sl.setFrameHeight === "function") {
-        sl.setFrameHeight(STUDIO_FRAME_HEIGHT);
-        console.log("STARTUP: setFrameHeight(" + STUDIO_FRAME_HEIGHT + ") called (DOMContentLoaded)");
-      }
-      if (!window.__fastPreviewStayAlive) {
-        window.__fastPreviewStayAlive = setInterval(function () {
-          if (window.Streamlit && typeof window.Streamlit.setFrameHeight === "function") {
-            window.Streamlit.setFrameHeight(STUDIO_FRAME_HEIGHT);
-          }
-        }, 2000);
-        console.log("STARTUP: stay-alive setFrameHeight ping every 2s");
-      }
-    }
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", runStreamlitHandshake);
-    } else {
-      runStreamlitHandshake();
-    }
+      window.__studioHandshakeDone = true;
+    })();
   </script>
   <script type="importmap">
     {
@@ -697,6 +681,20 @@
      * Synchronous Three.js boot (no await / GLTF / texture loaders).
      * Geometry build is deferred to the next task so the mount handshake is not blocked.
      */
+    function waitForLayoutThenInit(attempt) {
+      if (initialized3d) return;
+      var wrap = document.querySelector(".view-wrap");
+      var w = wrap ? wrap.clientWidth : 0;
+      var h = wrap ? wrap.clientHeight : 0;
+      if ((w < 10 || h < 10) && attempt < 80) {
+        requestAnimationFrame(function () {
+          waitForLayoutThenInit(attempt + 1);
+        });
+        return;
+      }
+      initThreeCore();
+    }
+
     function initThreeCore() {
       if (initialized3d) return;
       var checkpoint = 0;
@@ -777,7 +775,9 @@
 
     function initThree() {
       if (initialized3d) return;
-      whenThreeReady(initThreeCore);
+      whenThreeReady(function () {
+        waitForLayoutThenInit(0);
+      });
     }
 
     function animate() {
@@ -1002,15 +1002,25 @@
     applySliderBounds();
     updateLabels();
     updateModeUi();
-    whenThreeReady(function bootstrapStudio3d() {
+
+    function bootstrapStudio3d() {
       console.log("STARTUP: Three.js engine starting");
       if (!initialized3d) {
-        initThreeCore();
+        initThree();
       } else {
         buildBody();
         renderFrame();
       }
-    });
+    }
+
+    function startAfterHandshake() {
+      if (!window.__studioHandshakeDone) {
+        setTimeout(startAfterHandshake, 5);
+        return;
+      }
+      whenThreeReady(bootstrapStudio3d);
+    }
+    startAfterHandshake();
 
     } catch (e) {
       console.error("FATAL JS ERROR:", e);
