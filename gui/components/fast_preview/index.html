@@ -378,7 +378,7 @@
     function setupViewportControls() {
       controls = null;
       if (typeof window.THREE.ArcballControls === "function") {
-        controls = new window.THREE.ArcballControls(camera, renderer.domElement, scene);
+        controls = new window.THREE.ArcballControls(camera, renderer.domElement);
         controls.enableGizmos = false;
         if (typeof controls.setGizmosVisible === "function") controls.setGizmosVisible(false);
         controls.enableAnimations = true;
@@ -558,7 +558,6 @@
     state.templates = Object.assign({}, TEMPLATES_BUILTIN, state.templates);
 
     let scene, camera, renderer, controls;
-    let studioPivot = null;
     let bodyGroup = null;
     let initialized3d = false;
 
@@ -610,11 +609,6 @@
       return 0.5 * len - ratio * len;
     }
 
-    /** Anchor soundhole (top-surface center) at world origin. */
-    function bodyPivotY(D, tTop) {
-      return -(num(D, 0.095) + TOP_PLATE_GAP_M + num(tTop, 0.0045));
-    }
-
     function ringSignedArea(pts) {
       let area = 0;
       for (let i = 0, n = pts.length; i < n; i++) {
@@ -624,34 +618,40 @@
       return area * 0.5;
     }
 
-    function appendSoundholeHole(shape, hr, outerPtsShifted) {
-      const hole = new THREE.Path();
-      const outerCcw = ringSignedArea(outerPtsShifted) > 0;
-      for (let i = 0; i <= HOLE_CIRCLE_SEGMENTS; i++) {
-        const t = (2 * Math.PI * i) / HOLE_CIRCLE_SEGMENTS;
-        const angle = outerCcw ? (2 * Math.PI - t) : t;
-        const x = hr * Math.cos(angle);
-        const y = hr * Math.sin(angle);
-        if (i === 0) hole.moveTo(x, y);
-        else hole.lineTo(x, y);
-      }
-      shape.holes.push(hole);
+    function soundholeShapeXY(L) {
+      const hx = soundholeX(L);
+      const len = num(L, 0.49);
+      return [hx - 0.5 * len, 0];
     }
 
-    function makeOutlineShape(pts, pivotX, holeRadius, cutHole) {
+    function makeOutlineShape(pts, holeRadius, cutHole, holeXY) {
       const shape = new THREE.Shape();
-      const shifted = pts.map(([x, y]) => [x - pivotX, y]);
-      shape.moveTo(shifted[0][0], shifted[0][1]);
-      for (let i = 1; i < shifted.length; i++) shape.lineTo(shifted[i][0], shifted[i][1]);
+      shape.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i][0], pts[i][1]);
       shape.closePath();
       const hr = num(holeRadius, 0);
-      if (cutHole && hr > 0.005) appendSoundholeHole(shape, hr, shifted);
+      if (cutHole && hr > 0.005) {
+        const hx = holeXY ? holeXY[0] : 0;
+        const hy = holeXY ? holeXY[1] : 0;
+        const holePath = new THREE.Path();
+        let holeClockwise = true;
+        if (THREE.ShapeUtils && typeof THREE.ShapeUtils.isClockWise === "function") {
+          const contour = pts.map(([x, y]) => new THREE.Vector2(x, y));
+          holeClockwise = !THREE.ShapeUtils.isClockWise(contour);
+        } else {
+          holeClockwise = ringSignedArea(pts) > 0;
+        }
+        for (let i = 0; i <= HOLE_CIRCLE_SEGMENTS; i++) {
+          const t = (2 * Math.PI * i) / HOLE_CIRCLE_SEGMENTS;
+          const angle = holeClockwise ? (2 * Math.PI - t) : t;
+          const x = hx + hr * Math.cos(angle);
+          const y = hy + hr * Math.sin(angle);
+          if (i === 0) holePath.moveTo(x, y);
+          else holePath.lineTo(x, y);
+        }
+        shape.holes.push(holePath);
+      }
       return shape;
-    }
-
-    function applyBodyPivot(D, tTop) {
-      if (!bodyGroup) return;
-      bodyGroup.position.set(0, bodyPivotY(D, tTop), 0);
     }
 
     function boxOutlinePts(L, W) {
@@ -744,7 +744,7 @@
     }
 
     function buildBody() {
-      if (typeof THREE === "undefined" || !scene || !studioPivot) return;
+      if (typeof THREE === "undefined" || !scene) return;
       disposeGroup(bodyGroup);
       bodyGroup = new THREE.Group();
       const L = num(state.length, 0.49);
@@ -752,7 +752,7 @@
       const D = num(state.depth, 0.095);
       const tTop = num(state.top_thickness, 0.0045);
       const hr = num(state.hole_radius, 0.045);
-      const hx = soundholeX(L);
+      const holeXY = soundholeShapeXY(L);
       const backCol = woodColorHex(state.back_wood_id);
       const topCol = woodColorHex(state.top_wood_id);
       const matBack = new THREE.MeshPhongMaterial({
@@ -782,8 +782,8 @@
       };
 
       function addExtrudedPair(outlinePts) {
-        const shapeBack = makeOutlineShape(outlinePts, hx, hr, false);
-        const shapeTop = makeOutlineShape(outlinePts, hx, hr, true);
+        const shapeBack = makeOutlineShape(outlinePts, hr, false, null);
+        const shapeTop = makeOutlineShape(outlinePts, hr, true, holeXY);
         const geomBack = new THREE.ExtrudeGeometry(shapeBack, extrudeBack);
         geomBack.rotateX(-Math.PI / 2);
         geomBack.translate(0, D, 0);
@@ -816,8 +816,11 @@
         }
       }
 
-      applyBodyPivot(D, tTop);
-      studioPivot.add(bodyGroup);
+      const box = new THREE.Box3().setFromObject(bodyGroup);
+      const center = box.getCenter(new THREE.Vector3());
+      bodyGroup.position.sub(center);
+      scene.add(bodyGroup);
+      if (controls && controls.target) controls.target.set(0, 0, 0);
       renderFrame();
     }
 
@@ -874,8 +877,6 @@
         console.log("CHECKPOINT 3: Scene setup");
         scene = new THREE.Scene();
         scene.background = new THREE.Color(0xe8eaef);
-        studioPivot = new THREE.Group();
-        scene.add(studioPivot);
 
         checkpoint = 2;
         console.log("CHECKPOINT 2: Camera setup");
