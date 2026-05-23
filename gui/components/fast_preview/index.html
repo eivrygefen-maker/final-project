@@ -7,6 +7,19 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
+    /* Streamlit parent + studio: never clip native / portal dropdowns */
+    .streamlit-container,
+    .stCustomComponentV1,
+    .element-container {
+      overflow: visible !important;
+    }
+    .studio-panel {
+      overflow: visible !important;
+    }
+    select {
+      position: relative !important;
+      z-index: 10000 !important;
+    }
     :root {
       --st-font: "Source Sans 3", "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       --st-primary: #ff4b4b;
@@ -46,7 +59,6 @@
       padding: 8px 10px 10px;
       overflow: visible;
       position: relative;
-      isolation: isolate;
     }
     .panel {
       background: var(--st-panel);
@@ -55,20 +67,53 @@
       padding: 12px 14px;
       color: var(--st-text);
     }
-    .panel.panel-controls {
+    .panel.panel-controls,
+    .studio-panel {
       position: relative;
-      z-index: 999 !important;
-      overflow: visible;
-      padding-bottom: 24px;
-    }
-    .panel.panel-controls select {
-      position: relative;
-      z-index: 1000;
-      isolation: auto;
+      z-index: 9999 !important;
+      overflow: visible !important;
+      padding-bottom: 32px;
     }
     .panel.panel-controls label {
       position: relative;
-      z-index: 999;
+      z-index: 10000;
+    }
+    .select-portal-menu {
+      position: fixed;
+      z-index: 99999;
+      margin: 0;
+      padding: 4px 0;
+      list-style: none;
+      min-width: 160px;
+      max-height: min(280px, 60vh);
+      overflow-y: auto;
+      background: #ffffff;
+      color: #1a1c24;
+      border: 1px solid var(--st-border);
+      border-radius: var(--st-radius);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+    }
+    .select-portal-menu button {
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 8px 12px;
+      border: none;
+      border-radius: 0;
+      background: transparent;
+      color: inherit;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+    .select-portal-menu button:hover,
+    .select-portal-menu button.active {
+      background: rgba(255, 75, 75, 0.12);
+    }
+    @media (prefers-color-scheme: dark) {
+      .select-portal-menu {
+        background: #262730;
+        color: #fafafa;
+      }
     }
     .panel h3 {
       margin: 0 0 4px;
@@ -216,7 +261,7 @@
 </head>
 <body>
   <div class="studio">
-    <aside class="panel panel-controls" id="controls">
+    <aside class="panel panel-controls studio-panel" id="controls">
       <h3>Design Studio</h3>
       <p class="sub">ROM/LHS parameters only — instant Three.js preview. Save &amp; Sync pushes to Gmsh/PyVista.</p>
       <div class="mode-pill" id="modeLabel">User (ROM)</div>
@@ -262,29 +307,23 @@
       <pre id="errorPanel" hidden aria-live="polite"></pre>
     </div>
   </div>
+  <div id="select-portal" hidden aria-hidden="true"></div>
 
   <!-- Local bridge + Three.js (lib/ — no external CDN; CSP-safe) -->
   <script src="./streamlit_bridge.js"></script>
-  <!-- Signal Streamlit immediately — independent of Three.js / main app script -->
   <script>
     (function () {
       var FRAME_H = 850;
       function post(type, payload) {
         window.parent.postMessage(Object.assign({ type: type }, payload || {}), "*");
       }
-      function pingReady() {
-        if (window.Streamlit && typeof Streamlit.setComponentReady === "function") {
-          Streamlit.setComponentReady();
-          Streamlit.setFrameHeight(FRAME_H);
-        } else {
-          post("streamlit:componentReady", { isStreamlitComponent: true });
-          post("streamlit:setFrameHeight", { height: FRAME_H });
-        }
+      if (window.Streamlit && typeof Streamlit.setComponentReady === "function") {
+        Streamlit.setComponentReady();
+        Streamlit.setFrameHeight(FRAME_H);
+      } else {
+        post("streamlit:componentReady", { isStreamlitComponent: true });
+        post("streamlit:setFrameHeight", { height: FRAME_H });
       }
-      pingReady();
-      document.addEventListener("DOMContentLoaded", pingReady);
-      setTimeout(pingReady, 50);
-      setTimeout(pingReady, 250);
     })();
   </script>
   <script type="importmap">
@@ -387,8 +426,6 @@
         );
       }
       setFrameHeight(frameHeight, true);
-      setTimeout(function () { setFrameHeight(frameHeight, true); }, 50);
-      setTimeout(function () { setFrameHeight(frameHeight, true); }, 250);
     }
 
   /** Streamlit passes kwargs as args; ROM payload lives under args.initial */
@@ -445,7 +482,6 @@
     function bootStreamlitBridge() {
       wireStreamlitEvents();
       signalComponentReady(DEFAULT_FRAME_HEIGHT);
-      handshakeStreamlitParent();
     }
 
     if (document.readyState === "loading") {
@@ -889,6 +925,85 @@
     back.value = state.back_wood_id;
   }
 
+    let portalMenuEl = null;
+    let portalSelectEl = null;
+
+    function closePortalMenu() {
+      const root = document.getElementById("select-portal");
+      if (root) {
+        root.innerHTML = "";
+        root.hidden = true;
+      }
+      portalMenuEl = null;
+      portalSelectEl = null;
+    }
+
+    function openPortalMenu(selectEl) {
+      closePortalMenu();
+      const root = document.getElementById("select-portal");
+      if (!root || !selectEl || !selectEl.options.length) return;
+      const rect = selectEl.getBoundingClientRect();
+      const menu = document.createElement("div");
+      menu.className = "select-portal-menu";
+      menu.setAttribute("role", "listbox");
+      menu.style.position = "fixed";
+      menu.style.zIndex = "99999";
+      menu.style.left = rect.left + "px";
+      menu.style.minWidth = Math.max(rect.width, 160) + "px";
+      const rowH = 36;
+      const estH = selectEl.options.length * rowH + 8;
+      const spaceBelow = window.innerHeight - rect.bottom;
+      if (estH > spaceBelow && rect.top > spaceBelow) {
+        menu.style.top = Math.max(4, rect.top - estH - 4) + "px";
+      } else {
+        menu.style.top = rect.bottom + 4 + "px";
+      }
+      Array.from(selectEl.options).forEach((opt) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = opt.textContent;
+        btn.dataset.value = opt.value;
+        if (opt.value === selectEl.value) btn.classList.add("active");
+        btn.addEventListener("click", () => {
+          selectEl.value = opt.value;
+          selectEl.dispatchEvent(new Event("change", { bubbles: true }));
+          closePortalMenu();
+        });
+        menu.appendChild(btn);
+      });
+      root.appendChild(menu);
+      root.hidden = false;
+      portalMenuEl = menu;
+      portalSelectEl = selectEl;
+    }
+
+    function wirePortalSelects() {
+      document.querySelectorAll(".studio-panel select").forEach((sel) => {
+        if (sel.dataset.portalWired === "1") return;
+        sel.dataset.portalWired = "1";
+        sel.addEventListener("mousedown", (ev) => {
+          ev.preventDefault();
+          openPortalMenu(sel);
+        });
+        sel.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter" || ev.key === " ") {
+            ev.preventDefault();
+            openPortalMenu(sel);
+          }
+        });
+      });
+      if (!window.__portalSelectGlobalWired) {
+        window.__portalSelectGlobalWired = true;
+        document.addEventListener("click", (ev) => {
+          if (!portalMenuEl) return;
+          if (portalMenuEl.contains(ev.target) || (portalSelectEl && portalSelectEl.contains(ev.target))) return;
+          closePortalMenu();
+        });
+        window.addEventListener("resize", closePortalMenu);
+        window.addEventListener("scroll", closePortalMenu, true);
+      }
+    }
+
     function applyArgs(rawArgs) {
       const data = normalizeArgs(rawArgs);
       const hadTemplates = Boolean(data.templates && Object.keys(data.templates).length);
@@ -899,6 +1014,7 @@
       const shapeEl = document.getElementById("shapeSelect");
       if (shapeEl && shapeEl.value !== state.shape_type) shapeEl.value = state.shape_type;
       fillWoodSelects();
+      wirePortalSelects();
       applySliderBounds();
       const ids = [
         ["length", state.length],
@@ -964,28 +1080,7 @@
       }
     });
 
-    function handshakeStreamlitParent() {
-      if (window.Streamlit && typeof window.Streamlit.setComponentReady === "function") {
-        console.log("[Design Studio] Bridge: Triggering componentReady");
-        window.Streamlit.setComponentReady();
-        window.Streamlit.setFrameHeight(DEFAULT_FRAME_HEIGHT);
-      } else {
-        console.error("[Design Studio] Streamlit object not found on window");
-        window.parent.postMessage(
-          { type: "streamlit:componentReady", isStreamlitComponent: true },
-          "*"
-        );
-        window.parent.postMessage(
-          { type: "streamlit:setFrameHeight", height: DEFAULT_FRAME_HEIGHT },
-          "*"
-        );
-      }
-    }
-
-    window.addEventListener("load", handshakeStreamlitParent);
-    if (document.readyState === "complete") {
-      handshakeStreamlitParent();
-    }
+    wirePortalSelects();
   </script>
 </body>
 </html>

@@ -131,7 +131,6 @@ def _init_session() -> None:
         "_studio_component_ready": False,
         "_studio_handshake_id": "",
         "_studio_iframe_payload_fp": "",
-        "_viewport_slot": None,
         "_rom_online_fp": "",
         "rom_frequencies_hz": [],
         "rom_mode_shapes": {},
@@ -414,6 +413,88 @@ def record_studio_handshake(event: Dict[str, Any]) -> None:
     st.session_state._studio_component_ready = True
 
 
+def inject_viewport_layout_css(*, studio_mode: bool) -> None:
+    """Force a single visible 3D surface — hide stale iframes, timeout shells, and the inactive backend."""
+    h = FAST_PREVIEW_HEIGHT
+    if studio_mode:
+        st.markdown(
+            f"""
+            <style>
+            h1 {{ letter-spacing: 0.06em; font-weight: 700; }}
+            section.main div[data-testid="stpyvista"] {{
+                display: none !important;
+                height: 0 !important;
+                min-height: 0 !important;
+                max-height: 0 !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                overflow: hidden !important;
+                visibility: hidden !important;
+            }}
+            section.main div[data-testid="stCustomComponentV1"] {{
+                display: none !important;
+                height: 0 !important;
+                min-height: 0 !important;
+                max-height: 0 !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                overflow: hidden !important;
+                visibility: hidden !important;
+                border: none !important;
+            }}
+            section.main div[data-testid="stCustomComponentV1"]:has(iframe[title*="fast_preview"]):last-of-type {{
+                display: block !important;
+                visibility: visible !important;
+                height: auto !important;
+                min-height: {h}px !important;
+                max-height: none !important;
+                overflow: visible !important;
+            }}
+            section.main div[data-testid="stCustomComponentV1"] iframe[title*="fast_preview"] {{
+                display: block !important;
+                width: 100% !important;
+                height: {h}px !important;
+                min-height: {h}px !important;
+                border: none !important;
+            }}
+            section.main div[data-testid="stCustomComponentV1"] [data-testid="stAlert"],
+            section.main div[data-testid="stCustomComponentV1"] .stAlert,
+            section.main div[data-testid="stCustomComponentV1"] [data-testid="stException"] {{
+                display: none !important;
+                height: 0 !important;
+                min-height: 0 !important;
+                overflow: hidden !important;
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            """
+            <style>
+            h1 { letter-spacing: 0.06em; font-weight: 700; }
+            section.main div[data-testid="stCustomComponentV1"],
+            section.main iframe[title*="fast_preview"] {
+                display: none !important;
+                height: 0 !important;
+                min-height: 0 !important;
+                max-height: 0 !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                overflow: hidden !important;
+                visibility: hidden !important;
+                border: none !important;
+            }
+            section.main div[data-testid="stpyvista"] canvas {
+                opacity: 1 !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
 def render_fast_preview_studio(initial: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Mount the Design Studio iframe (single instance, fixed height)."""
     try:
@@ -422,11 +503,59 @@ def render_fast_preview_studio(initial: Dict[str, Any]) -> Optional[Dict[str, An
             key="fast_preview_geom",
             height=FAST_PREVIEW_HEIGHT,
         )
-    except FileNotFoundError as exc:
-        st.error(f"Design Studio assets missing: {exc}")
+    except FileNotFoundError:
+        return None
     except Exception as exc:
         st.error(f"Design Studio failed to mount: {exc}")
-    return None
+        return None
+
+
+def render_main_viewport(
+    fp_seed: Dict[str, Any],
+    *,
+    saved_shape: str,
+    geom: Dict[str, Any],
+    top_wood: str,
+    back_wood: str,
+    geom_fp: str,
+    fixture_preset: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Binary viewport: exactly one of Design Studio (Three.js) OR validation mesh (PyVista).
+    Never mounts both; never reserves empty iframe shells.
+    """
+    studio_mode = not bool(st.session_state.show_fom_mesh)
+    inject_viewport_layout_css(studio_mode=studio_mode)
+
+    if st.session_state.show_fom_mesh:
+        mesh, _, _ = get_view_mesh(geom_fp)
+        if mesh is None and not DISPLAY_MESH_FILE.is_file():
+            st.info(
+                "Validation mesh is not built yet. Click **Regenerate Gmsh mesh** or "
+                "**Save & Sync** in the Design Studio, then return here."
+            )
+            return None
+        render_validation_mesh_viewport(
+            geom,
+            top_wood=top_wood,
+            back_wood=back_wood,
+            geom_fp=geom_fp,
+            fixture_preset=fixture_preset,
+        )
+        return None
+
+    from components.fast_preview import component_dir  # noqa: WPS433
+
+    if not (Path(component_dir()) / "index.html").is_file():
+        st.info(
+            "Design Studio assets are missing on this machine. "
+            "Sync the full `gui/components/fast_preview/` directory (including `lib/`), then reload."
+        )
+        return None
+
+    fp_for_component = studio_payload_for_iframe(fp_seed)
+    fp_for_component["wood_colors"] = wood_colors_for_studio()
+    return render_fast_preview_studio(fp_for_component)
 
 
 def studio_event_id(event: Dict[str, Any]) -> str:
@@ -1166,15 +1295,16 @@ def _render_interactive_panel(
         if auto_revert_fom_if_params_changed(rom_fp):
             st.rerun()
 
-        if st.session_state._viewport_slot is None:
-            st.session_state._viewport_slot = st.empty()
-
-        studio_event: Optional[Dict[str, Any]] = None
+        studio_event = render_main_viewport(
+            fp_seed,
+            saved_shape=saved_shape,
+            geom=geom,
+            top_wood=top_wood,
+            back_wood=back_wood,
+            geom_fp=geom_fp,
+            fixture_preset=fixture_preset,
+        )
         if not st.session_state.show_fom_mesh:
-            fp_for_component = studio_payload_for_iframe(fp_seed)
-            fp_for_component["wood_colors"] = wood_colors_for_studio()
-            with st.session_state._viewport_slot.container():
-                studio_event = render_fast_preview_studio(fp_for_component)
             process_fast_preview_event(
                 studio_event,
                 clamp_ribs=clamp_ribs,
@@ -1192,15 +1322,6 @@ def _render_interactive_panel(
             rom_fp = rom_mesh_fingerprint(geom, top_wood=top_wood, back_wood=back_wood)
             if auto_revert_fom_if_params_changed(rom_fp):
                 st.rerun()
-        else:
-            with st.session_state._viewport_slot.container():
-                render_validation_mesh_viewport(
-                    geom,
-                    top_wood=top_wood,
-                    back_wood=back_wood,
-                    geom_fp=geom_fp,
-                    fixture_preset=fixture_preset,
-                )
 
         lhs_params = lhs_params_from_ui(geom, top_wood=top_wood, back_wood=back_wood)
         st.session_state["_geom"] = geom
@@ -1275,44 +1396,6 @@ def main() -> None:
     saved_fixture = str(saved.get("fixture_preset", "Standing Angled (3D)"))
     if saved_fixture not in FIXTURE_PRESETS:
         saved_fixture = "Standing Angled (3D)"
-    st.markdown(
-        """
-        <style>
-        h1 { letter-spacing: 0.06em; font-weight: 700; }
-        div[data-testid="stpyvista"] canvas { opacity: 1 !important; }
-        /* Single Design Studio iframe — drop stale/timeout duplicates, keep last mount */
-        div[data-testid="stCustomComponentV1"]:not(:has(iframe[title*="fast_preview"])) {
-            display: none !important;
-            height: 0 !important;
-            min-height: 0 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            overflow: hidden !important;
-        }
-        div[data-testid="stCustomComponentV1"]:has(iframe[title*="fast_preview"]):not(:last-of-type) {
-            display: none !important;
-            height: 0 !important;
-            min-height: 0 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            overflow: hidden !important;
-            visibility: hidden !important;
-        }
-        div[data-testid="stCustomComponentV1"]:has(iframe[title*="fast_preview"]):last-of-type {
-            display: block !important;
-            min-height: {FAST_PREVIEW_HEIGHT}px;
-            overflow: visible;
-        }
-        iframe[title*="components.fast_preview.fast_preview"] {
-            min-height: {FAST_PREVIEW_HEIGHT}px !important;
-            height: {FAST_PREVIEW_HEIGHT}px !important;
-            display: block !important;
-            border: none;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
     st.title("GUITAR SIMULATOR")
     st.caption(
         "Design Studio: live Three.js ROM preview. "
