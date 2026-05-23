@@ -131,6 +131,7 @@ def _init_session() -> None:
         "_studio_iframe_payload_fp": "",
         "_studio_iframe_initial": None,
         "_studio_param_change_fp": "",
+        "_fast_preview_paths_verified": False,
         "show_mesh_overlay": False,
         "_mesh_overlay_rom_fp": "",
         "_rom_online_fp": "",
@@ -403,8 +404,32 @@ def record_studio_handshake(event: Dict[str, Any]) -> None:
     st.session_state._studio_component_ready = True
 
 
+def verify_fast_preview_component_paths() -> bool:
+    """Print absolute paths for fast_preview static assets before iframe mount."""
+    from components.fast_preview import component_dir
+
+    comp_dir = os.path.abspath(component_dir())
+    index_path = os.path.join(comp_dir, "index.html")
+    bridge_path = os.path.join(comp_dir, "streamlit_bridge.js")
+    checks = (
+        ("component_dir (declare_component path)", comp_dir, os.path.isdir(comp_dir)),
+        ("index.html", index_path, os.path.isfile(index_path)),
+        ("streamlit_bridge.js", bridge_path, os.path.isfile(bridge_path)),
+    )
+    all_ok = True
+    for label, path, ok in checks:
+        abs_path = os.path.abspath(path)
+        print(f"DEBUG fast_preview: {label} -> {abs_path} exists={ok}", flush=True)
+        all_ok = all_ok and ok
+    print(f"DEBUG fast_preview: all assets OK={all_ok}", flush=True)
+    return all_ok
+
+
 def mount_design_studio_iframe(initial: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Mount Design Studio; ``initial`` should come from ``stable_studio_iframe_initial``."""
+    if not st.session_state.get("_fast_preview_paths_verified"):
+        verify_fast_preview_component_paths()
+        st.session_state._fast_preview_paths_verified = True
     return fast_preview(
         initial=initial,
         key="fast_preview_geom",

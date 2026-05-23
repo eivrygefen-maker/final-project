@@ -250,16 +250,18 @@
   <!-- Local bridge + Three.js (lib/ — no external CDN; CSP-safe) -->
   <script src="./streamlit_bridge.js"></script>
   <script>
-    let isReady = false;
-    function signalReady() {
-      if (isReady) return;
-      if (window.Streamlit && typeof Streamlit.setComponentReady === "function") {
-        Streamlit.setComponentReady();
-        isReady = true;
+    try {
+      if (window.Streamlit && typeof window.Streamlit.setComponentReady === "function") {
+        window.Streamlit.setComponentReady();
+        console.log("STARTUP: setComponentReady called");
       }
+    } catch (e) {
+      console.error("FATAL JS ERROR (pre-Three.js ready):", e);
+      if (e && e.stack) console.error(e.stack);
+      try {
+        if (window.Streamlit) window.Streamlit.setComponentReady();
+      } catch (_e2) { /* ignore */ }
     }
-    signalReady();
-    window.addEventListener("load", signalReady);
   </script>
   <script type="importmap">
     {
@@ -270,6 +272,8 @@
   </script>
   <script type="module" src="./lib/load-three.mjs"></script>
   <script>
+  (function () {
+    try {
     /* ── Streamlit bridge (./streamlit_bridge.js → Streamlit.* API) ─── */
     let eventsWired = false;
     let lastRomFp = "";
@@ -650,7 +654,6 @@
     }
 
     function initThreeCore() {
-      console.log("THREE.JS: Initializing...");
       if (initialized3d) return;
       const canvas = document.getElementById("viewport");
       const wrap = canvas.parentElement;
@@ -908,27 +911,35 @@
       setComponentValue(payload("run_fem"));
     });
 
-    try {
-      applySliderBounds();
-      updateLabels();
-      updateModeUi();
-      whenThreeReady(function bootstrapStudio3d() {
-        try {
-          if (!initialized3d) {
-            initThreeCore();
-          } else {
-            buildBody();
-            renderFrame();
-          }
-        } catch (err) {
-          console.error("[Design Studio] Three.js bootstrap failed:", err);
-          if (err && err.stack) console.error(err.stack);
+    applySliderBounds();
+    updateLabels();
+    updateModeUi();
+    whenThreeReady(function bootstrapStudio3d() {
+      console.log("STARTUP: Three.js engine starting");
+      if (!initialized3d) {
+        initThreeCore();
+      } else {
+        buildBody();
+        renderFrame();
+      }
+    });
+
+    } catch (e) {
+      console.error("FATAL JS ERROR:", e);
+      if (e && e.stack) console.error(e.stack);
+      if (typeof logError === "function") {
+        logError("FATAL: " + (e && e.message ? e.message : e));
+      }
+      try {
+        if (window.Streamlit && typeof window.Streamlit.setComponentReady === "function") {
+          window.Streamlit.setComponentReady();
+          console.log("STARTUP: setComponentReady called (fatal catch)");
         }
-      });
-    } catch (err) {
-      console.error("[Design Studio] initialization failed:", err);
-      if (err && err.stack) console.error(err.stack);
+      } catch (e2) {
+        console.error("FATAL JS ERROR (ready fallback):", e2);
+      }
     }
+  })();
   </script>
 </body>
 </html>
