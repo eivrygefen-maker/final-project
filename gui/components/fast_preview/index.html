@@ -406,6 +406,7 @@
     function bootStreamlitBridge() {
       wireStreamlitEvents();
       signalComponentReady(DEFAULT_FRAME_HEIGHT);
+      handshakeStreamlitParent();
     }
 
     if (document.readyState === "loading") {
@@ -854,6 +855,29 @@
     applySliderBounds();
     updateLabels();
     updateModeUi();
+
+    function handshakeStreamlitParent() {
+      if (window.Streamlit && typeof window.Streamlit.setComponentReady === "function") {
+        console.log("[Design Studio] Bridge: Triggering componentReady");
+        window.Streamlit.setComponentReady();
+        window.Streamlit.setFrameHeight(DEFAULT_FRAME_HEIGHT);
+      } else {
+        console.error("[Design Studio] Streamlit object not found on window");
+        window.parent.postMessage(
+          { type: "streamlit:componentReady", isStreamlitComponent: true },
+          "*"
+        );
+        window.parent.postMessage(
+          { type: "streamlit:setFrameHeight", height: DEFAULT_FRAME_HEIGHT },
+          "*"
+        );
+      }
+    }
+
+    window.addEventListener("load", handshakeStreamlitParent);
+    if (document.readyState === "complete") {
+      handshakeStreamlitParent();
+    }
   </script>
 </body>
 </html>
