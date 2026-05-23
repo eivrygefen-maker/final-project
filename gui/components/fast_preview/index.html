@@ -785,6 +785,11 @@
         const shapeBack = makeOutlineShape(outlinePts, hr, false, null);
         const shapeTop = makeOutlineShape(outlinePts, hr, true, holeXY);
         const geomBack = new THREE.ExtrudeGeometry(shapeBack, extrudeBack);
+        if (geomBack && geomBack.attributes && geomBack.attributes.position) {
+          console.log("DIAGNOSTIC: Back Geometry Vertex Count =", geomBack.attributes.position.count);
+        } else {
+          console.log("DIAGNOSTIC: Back Geometry failed to generate vertices or is undefined!");
+        }
         geomBack.rotateX(-Math.PI / 2);
         geomBack.translate(0, D, 0);
         const meshBack = new THREE.Mesh(geomBack, matBack);
@@ -793,6 +798,11 @@
         bodyGroup.add(meshBack);
 
         const geomTop = new THREE.ExtrudeGeometry(shapeTop, extrudeTop);
+        if (geomTop && geomTop.attributes && geomTop.attributes.position) {
+          console.log("DIAGNOSTIC: Top Geometry Vertex Count =", geomTop.attributes.position.count);
+        } else {
+          console.log("DIAGNOSTIC: Top Geometry failed to generate vertices or is undefined!");
+        }
         geomTop.rotateX(-Math.PI / 2);
         geomTop.translate(0, D + TOP_PLATE_GAP_M, 0);
         const meshTop = new THREE.Mesh(geomTop, matTop);
@@ -820,6 +830,14 @@
       const center = box.getCenter(new THREE.Vector3());
       bodyGroup.position.sub(center);
       scene.add(bodyGroup);
+      console.log(
+        "DIAGNOSTIC: bodyGroup mesh count =",
+        bodyGroup.children.length,
+        "| center offset =",
+        center.x.toFixed(4),
+        center.y.toFixed(4),
+        center.z.toFixed(4)
+      );
       if (controls && controls.target) controls.target.set(0, 0, 0);
       renderFrame();
     }
@@ -827,6 +845,16 @@
     function renderFrame() {
       if (!renderer || !scene || !camera) return;
       try {
+        if (!window.didLogCamera) {
+          const target = controls && controls.target ? controls.target : null;
+          console.log(
+            "DIAGNOSTIC: Camera Position =",
+            { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+            "Target =",
+            target ? { x: target.x, y: target.y, z: target.z } : "n/a"
+          );
+          window.didLogCamera = true;
+        }
         if (controls) controls.update();
         renderer.render(scene, camera);
       } catch (err) {
@@ -893,6 +921,13 @@
         setupViewportControls();
 
         setupStudioLighting();
+
+        const testGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
+        const testMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+        const testBox = new THREE.Mesh(testGeo, testMat);
+        testBox.position.set(0, 0, 0);
+        scene.add(testBox);
+        console.log("DIAGNOSTIC: Red test box added to scene at (0,0,0)");
 
         checkpoint = 4;
         console.log("CHECKPOINT 4: Loading geometry...");
@@ -1120,7 +1155,7 @@
       const tw = document.getElementById("topWood");
       const bw = document.getElementById("backWood");
       if (tw && tw.value !== state.top_wood_id) tw.value = state.top_wood_id;
-      if (bw && bw.value =!= state.back_wood_id) bw.value = state.back_wood_id;
+      if (bw && bw.value !== state.back_wood_id) bw.value = state.back_wood_id;
       updateLabels();
       updateModeUi();
       const romFp = romFingerprint();
