@@ -129,6 +129,8 @@ def _init_session() -> None:
         "_studio_component_ready": False,
         "_studio_handshake_id": "",
         "_studio_iframe_payload_fp": "",
+        "_studio_iframe_initial": None,
+        "_studio_param_change_fp": "",
         "show_mesh_overlay": False,
         "_mesh_overlay_rom_fp": "",
         "_rom_online_fp": "",
@@ -367,6 +369,19 @@ def studio_payload_for_iframe(payload: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def stable_studio_iframe_initial(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    """Return cached iframe props unless ROM-relevant fields changed (avoids iframe reload)."""
+    prepared = studio_payload_for_iframe(candidate)
+    fp = studio_iframe_payload_fp(prepared)
+    cached_fp = st.session_state.get("_studio_iframe_payload_fp", "")
+    cached = st.session_state.get("_studio_iframe_initial")
+    if fp == cached_fp and isinstance(cached, dict):
+        return cached
+    st.session_state._studio_iframe_payload_fp = fp
+    st.session_state._studio_iframe_initial = prepared
+    return prepared
+
+
 def is_studio_handshake_event(event: Dict[str, Any]) -> bool:
     """True for mount/ping payloads from the iframe (no geometry side effects)."""
     action = str(event.get("action") or "").strip().lower()
@@ -389,18 +404,11 @@ def record_studio_handshake(event: Dict[str, Any]) -> None:
 
 
 def mount_design_studio_iframe(initial: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Single direct mount — no wrappers, no visibility gates."""
-    from components.fast_preview import component_dir
-
-    index_path = os.path.join(component_dir(), "index.html")
-    abs_path = os.path.abspath(index_path)
-    print(f"DEBUG: Component path is: {abs_path}", flush=True)
-    print(f"DEBUG: index.html exists: {os.path.isfile(abs_path)}", flush=True)
+    """Mount Design Studio; ``initial`` should come from ``stable_studio_iframe_initial``."""
     return fast_preview(
         initial=initial,
         key="fast_preview_geom",
-        height=850,
-        width=1000,
+        height=FAST_PREVIEW_HEIGHT,
     )
 
 
@@ -476,6 +484,10 @@ def process_fast_preview_event(
     st.session_state._back_wood = back_wood
 
     if action == "param_change":
+        param_fp = studio_iframe_payload_fp(clean)
+        if param_fp == st.session_state.get("_studio_param_change_fp", ""):
+            return
+        st.session_state._studio_param_change_fp = param_fp
         st.session_state.show_mesh_overlay = False
         st.session_state._mesh_overlay_rom_fp = ""
         return
@@ -1111,11 +1123,10 @@ def _render_main_studio(
             key="btn_gen_sound",
         )
 
-    fp_for_component = studio_payload_for_iframe(fp_seed)
-    fp_for_component["wood_colors"] = wood_colors_for_studio()
+    iframe_initial = stable_studio_iframe_initial(fp_seed)
 
     with col_vis:
-        studio_event = mount_design_studio_iframe(fp_for_component)
+        studio_event = mount_design_studio_iframe(iframe_initial)
 
     process_fast_preview_event(
         studio_event,

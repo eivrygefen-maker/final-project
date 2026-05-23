@@ -250,11 +250,16 @@
   <!-- Local bridge + Three.js (lib/ — no external CDN; CSP-safe) -->
   <script src="./streamlit_bridge.js"></script>
   <script>
-    const { Streamlit } = window;
-    Streamlit.setComponentReady();
-    window.addEventListener("load", () => {
-      Streamlit.setComponentReady();
-    });
+    let isReady = false;
+    function signalReady() {
+      if (isReady) return;
+      if (window.Streamlit && typeof Streamlit.setComponentReady === "function") {
+        Streamlit.setComponentReady();
+        isReady = true;
+      }
+    }
+    signalReady();
+    window.addEventListener("load", signalReady);
   </script>
   <script type="importmap">
     {
@@ -266,8 +271,6 @@
   <script type="module" src="./lib/load-three.mjs"></script>
   <script>
     /* ── Streamlit bridge (./streamlit_bridge.js → Streamlit.* API) ─── */
-    const DEFAULT_FRAME_HEIGHT = 850;
-    let lastFrameHeight = 0;
     let eventsWired = false;
     let lastRomFp = "";
     let lastRenderArgsFp = "";
@@ -321,22 +324,6 @@
       );
     }
 
-    function postFrameHeight(height) {
-      const h = Math.max(400, Number(height) || DEFAULT_FRAME_HEIGHT);
-      if (window.Streamlit && typeof Streamlit.setFrameHeight === "function") {
-        Streamlit.setFrameHeight(h);
-      } else {
-        window.parent.postMessage({ type: "streamlit:setFrameHeight", height: h }, "*");
-      }
-    }
-
-    function setFrameHeight(h, force) {
-      const height = Math.max(400, Number(h) || DEFAULT_FRAME_HEIGHT);
-      if (!force && height === lastFrameHeight) return;
-      lastFrameHeight = height;
-      postFrameHeight(height);
-    }
-
     function setComponentValue(value) {
       if (window.Streamlit && typeof Streamlit.setComponentValue === "function") {
         Streamlit.setComponentValue(value);
@@ -348,11 +335,6 @@
     if (!raw || typeof raw !== "object") return {};
     if (raw.initial && typeof raw.initial === "object") return raw.initial;
     return raw;
-  }
-
-  function frameHeightFromArgs(args) {
-    if (args && args.height != null) return Number(args.height) || DEFAULT_FRAME_HEIGHT;
-    return DEFAULT_FRAME_HEIGHT;
   }
 
     function renderArgsFingerprint(args) {
@@ -374,11 +356,9 @@
       }
       const rfp = renderArgsFingerprint(args);
       if (rfp === lastRenderArgsFp && initialized3d) {
-        setFrameHeight(frameHeightFromArgs(args), true);
         return;
       }
       lastRenderArgsFp = rfp;
-      setFrameHeight(frameHeightFromArgs(args), true);
       try {
         applyArgs(args);
       } catch (err) {
@@ -821,7 +801,7 @@
       };
     }
 
-    function refresh3d() {
+    function sync3dFromState() {
       try {
         readSliders();
         if (!initialized3d) {
@@ -830,10 +810,14 @@
           buildBody();
           renderFrame();
         }
-        notifyParamChange();
       } catch (err) {
-        console.error("[Design Studio] refresh3d:", err);
+        console.error("[Design Studio] sync3dFromState:", err);
       }
+    }
+
+    function refresh3d() {
+      sync3dFromState();
+      notifyParamChange();
     }
 
     let paramNotifyTimer = null;
@@ -893,7 +877,7 @@
       const fp = romFingerprint();
       if (fp !== lastRomFp || hadTemplates || !initialized3d) {
         lastRomFp = fp;
-        refresh3d();
+        sync3dFromState();
       }
     }
 

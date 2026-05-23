@@ -10,6 +10,7 @@ console.log("JS BRIDGE: Loaded successfully");
   var RENDER_EVENT = "streamlit:render";
 
   var handlers = {};
+  var componentReadySent = false;
 
   function post(type, payload) {
     global.parent.postMessage(Object.assign({ type: type }, payload || {}), "*");
@@ -40,11 +41,14 @@ console.log("JS BRIDGE: Loaded successfully");
       },
     },
     setComponentReady: function () {
+      if (componentReadySent) return;
+      componentReadySent = true;
       console.log("JS BRIDGE: Attempting to notify parent...");
       try {
         post("streamlit:componentReady", { isStreamlitComponent: true });
         console.log("JS BRIDGE: componentReady postMessage sent");
       } catch (err) {
+        componentReadySent = false;
         console.error("JS BRIDGE: setComponentReady failed", err);
         if (err && err.stack) console.error(err.stack);
       }
