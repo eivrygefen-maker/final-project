@@ -48,6 +48,9 @@ ROM_HOLE_RADIUS_BOUNDS = (0.035, 0.055)
 
 FAST_PREVIEW_HEIGHT = 850
 ROM_ONLINE_MODES = 15
+GUI_PAGE_STUDIO = "Design Studio"
+GUI_PAGE_MESH = "Gmsh validation mesh"
+GUI_PAGES = (GUI_PAGE_STUDIO, GUI_PAGE_MESH)
 STUDIO_HANDSHAKE_ACTIONS = frozenset({"ready", "_handshake", "handshake", "_ready_ping"})
 STUDIO_ROM_PAYLOAD_KEYS = (
     "shape_type",
@@ -129,6 +132,7 @@ def _init_session() -> None:
         "_studio_component_ready": False,
         "_studio_handshake_id": "",
         "_studio_iframe_payload_fp": "",
+        "gui_page": GUI_PAGE_STUDIO,
         "_rom_online_fp": "",
         "rom_frequencies_hz": [],
         "rom_mode_shapes": {},
@@ -359,20 +363,9 @@ def studio_iframe_payload_fp(payload: Dict[str, Any]) -> str:
 
 
 def studio_payload_for_iframe(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Stable component ``initial`` dict — avoids remount churn when only PyVista/session
-    state changes. After the first successful mount, omit templates only (keep wood colors).
-    """
+    """Payload for the Design Studio iframe (templates omitted after first send)."""
     out = studio_payload_for_component(payload)
     out["wood_colors"] = dict(out.get("wood_colors") or wood_colors_for_studio())
-    fp = studio_iframe_payload_fp(out)
-    last_fp = str(st.session_state.get("_studio_iframe_payload_fp", ""))
-    ready = bool(st.session_state.get("_studio_component_ready"))
-    if ready and last_fp and fp == last_fp:
-        slim = {k: v for k, v in out.items() if k != "templates"}
-        slim["wood_colors"] = out["wood_colors"]
-        return slim
-    st.session_state._studio_iframe_payload_fp = fp
     return out
 
 
@@ -397,8 +390,19 @@ def record_studio_handshake(event: Dict[str, Any]) -> None:
     st.session_state._studio_component_ready = True
 
 
-def render_fast_preview_studio(initial: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Mount the Design Studio iframe (single instance, fixed height)."""
+def mount_design_studio_iframe(initial: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Mount ``fast_preview()`` in its dedicated host — the only custom component on this page.
+    """
+    from components.fast_preview import component_dir  # noqa: WPS433
+
+    index_path = Path(component_dir()) / "index.html"
+    if not index_path.is_file():
+        st.error(
+            "Design Studio assets are missing. Sync `gui/components/fast_preview/` "
+            "(including `index.html` and `lib/`) to this machine, then reload."
+        )
+        return None
     try:
         return fast_preview(
             initial=initial,
@@ -406,6 +410,10 @@ def render_fast_preview_studio(initial: Dict[str, Any]) -> Optional[Dict[str, An
             height=FAST_PREVIEW_HEIGHT,
         )
     except FileNotFoundError:
+        st.error(
+            "Design Studio component files not found. "
+            "Sync `gui/components/fast_preview/` to this machine."
+        )
         return None
     except Exception as exc:
         st.error(f"Design Studio failed to mount: {exc}")
@@ -1087,13 +1095,13 @@ def _render_mesh_validation_tab(
     )
 
 
-def _render_interactive_panel(
+def _render_design_studio_tab(
     saved: Dict[str, Any],
     saved_solver: Dict[str, Any],
     saved_shape: str,
     saved_fixture: str,
 ) -> None:
-    """Controls + Design Studio (Three.js only in the main viewport)."""
+    """Tab 1 — sidebar controls + dedicated Three.js iframe host (no PyVista)."""
     clamp_ribs = bool(st.session_state.get("_clamp_ribs", saved_solver.get("clamp_ribs", False)))
     pin_neck = bool(st.session_state.get("_pin_neck_fix", saved_solver.get("eps_pin_fix_tag5", True)))
     fixture_preset = str(st.session_state.get("_fixture_preset", saved_fixture))
@@ -1105,9 +1113,17 @@ def _render_interactive_panel(
     if isinstance(fp_raw, dict) and fp_raw:
         fp_seed = sanitize_studio_payload({**fp_seed, **fp_raw}, saved_shape)
 
-    col_ctrl, col_vis = st.columns([0.2, 0.8], gap="large")
+    fp_seed["gui_mode"] = "admin" if st.session_state.developer_fom_mode else "user"
 
-    with col_ctrl:
+    col_side, col_studio = st.columns([0.22, 0.78], gap="medium")
+
+    studio_event: Optional[Dict[str, Any]] = None
+    with col_studio:
+        with st.container(border=True):
+            fp_for_component = studio_payload_for_iframe(fp_seed)
+            studio_event = mount_design_studio_iframe(fp_for_component)
+
+    with col_side:
         st.subheader("Session")
         mode_ix = 1 if st.session_state.developer_fom_mode else 0
         mode = st.radio(
@@ -1129,8 +1145,6 @@ def _render_interactive_panel(
         st.session_state["_clamp_ribs"] = clamp_ribs
         st.session_state["_pin_neck_fix"] = pin_neck
 
-        rom_metrics_slot = st.empty()
-
         st.subheader("Actions")
         regen_mesh = st.button("Regenerate Gmsh mesh", use_container_width=True, key="btn_regen_mesh")
         gen_sound = st.button(
@@ -1140,43 +1154,37 @@ def _render_interactive_panel(
             key="btn_gen_sound",
         )
 
-    fp_seed["gui_mode"] = "admin" if st.session_state.developer_fom_mode else "user"
+    process_fast_preview_event(
+        studio_event,
+        clamp_ribs=clamp_ribs,
+        pin_neck=pin_neck,
+        fixture_preset=fixture_preset,
+    )
+    fp_live = sanitize_studio_payload(
+        st.session_state.get("_fast_preview_geom") or fp_seed,
+        saved_shape,
+    )
+    geom, top_wood, back_wood = geom_from_studio_event(fp_live)
+    shape = str(fp_live.get("shape_type", saved_shape))
+    if shape not in SHAPE_OPTIONS:
+        shape = saved_shape
+    geom_fp = geometry_fingerprint(
+        geom,
+        top_wood,
+        back_wood,
+        clamp_ribs=clamp_ribs,
+        pin_neck_fix=pin_neck,
+        fixture_preset=fixture_preset,
+    )
 
-    with col_vis:
-        fp_for_component = studio_payload_for_iframe(fp_seed)
-        fp_for_component["wood_colors"] = wood_colors_for_studio()
-        studio_event = render_fast_preview_studio(fp_for_component)
-        process_fast_preview_event(
-            studio_event,
-            clamp_ribs=clamp_ribs,
-            pin_neck=pin_neck,
-            fixture_preset=fixture_preset,
-        )
-        fp_live = sanitize_studio_payload(
-            st.session_state.get("_fast_preview_geom") or fp_seed,
-            saved_shape,
-        )
-        geom, top_wood, back_wood = geom_from_studio_event(fp_live)
-        shape = str(fp_live.get("shape_type", saved_shape))
-        if shape not in SHAPE_OPTIONS:
-            shape = saved_shape
-        geom_fp = geometry_fingerprint(
-            geom,
-            top_wood,
-            back_wood,
-            clamp_ribs=clamp_ribs,
-            pin_neck_fix=pin_neck,
-            fixture_preset=fixture_preset,
-        )
+    lhs_params = lhs_params_from_ui(geom, top_wood=top_wood, back_wood=back_wood)
+    st.session_state["_geom"] = geom
+    st.session_state["_top_wood"] = top_wood
+    st.session_state["_back_wood"] = back_wood
 
-        lhs_params = lhs_params_from_ui(geom, top_wood=top_wood, back_wood=back_wood)
-        st.session_state["_geom"] = geom
-        st.session_state["_top_wood"] = top_wood
-        st.session_state["_back_wood"] = back_wood
-
-        update_rom_online_prediction(geom, top_wood=top_wood, back_wood=back_wood, shape_type=shape)
-        with rom_metrics_slot.container():
-            render_rom_metrics_dashboard(shape)
+    update_rom_online_prediction(geom, top_wood=top_wood, back_wood=back_wood, shape_type=shape)
+    with col_side:
+        render_rom_metrics_dashboard(shape)
 
         if regen_mesh:
             try:
@@ -1191,7 +1199,8 @@ def _render_interactive_panel(
                         geom_fp=geom_fp,
                     )
                 invalidate_physics_state()
-                st.success("Mesh updated. Open the **Gmsh validation mesh** tab to view it.")
+                st.session_state.gui_page = GUI_PAGE_MESH
+                st.success("Mesh updated. Switch to **Gmsh validation mesh** to view it.")
                 st.rerun()
             except Exception as exc:
                 st.error(f"Rebuild failed: {exc}")
@@ -1203,32 +1212,32 @@ def _render_interactive_panel(
             except Exception as exc:
                 st.error(f"Sound failed: {exc}")
 
-        if st.session_state.get("_pending_fom_run") and display_mesh_active(geom_fp):
-            st.session_state._pending_fom_run = False
-            with st.spinner("Running full FEM…"):
-                try:
-                    stk_path = run_fom_acoustics()
-                    st.session_state.stk_body_json = str(stk_path)
-                    st.session_state.physics_ready = True
-                    st.success("Full FEM complete.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Full FEM failed: {exc}")
+    if st.session_state.get("_pending_fom_run") and display_mesh_active(geom_fp):
+        st.session_state._pending_fom_run = False
+        with st.spinner("Running full FEM…"):
+            try:
+                stk_path = run_fom_acoustics()
+                st.session_state.stk_body_json = str(stk_path)
+                st.session_state.physics_ready = True
+                st.success("Full FEM complete.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Full FEM failed: {exc}")
 
-        if st.session_state.acoustics_pending and display_mesh_active(geom_fp):
-            with st.spinner("Computing acoustics…"):
-                try:
-                    stk_path = run_acoustics(lhs_params, shape)
-                    st.session_state.stk_body_json = str(stk_path)
-                    st.session_state.physics_ready = True
-                    st.session_state.acoustics_pending = False
-                    st.rerun()
-                except Exception as exc:
-                    st.session_state.acoustics_pending = False
-                    st.error(f"Acoustics failed: {exc}")
+    if st.session_state.acoustics_pending and display_mesh_active(geom_fp):
+        with st.spinner("Computing acoustics…"):
+            try:
+                stk_path = run_acoustics(lhs_params, shape)
+                st.session_state.stk_body_json = str(stk_path)
+                st.session_state.physics_ready = True
+                st.session_state.acoustics_pending = False
+                st.rerun()
+            except Exception as exc:
+                st.session_state.acoustics_pending = False
+                st.error(f"Acoustics failed: {exc}")
 
-        if WAV_OUTPUT.is_file() and st.session_state.physics_ready:
-            st.audio(WAV_OUTPUT.read_bytes(), format="audio/wav")
+    if WAV_OUTPUT.is_file() and st.session_state.physics_ready:
+        st.audio(WAV_OUTPUT.read_bytes(), format="audio/wav")
 
 
 def main() -> None:
@@ -1246,28 +1255,41 @@ def main() -> None:
         saved_fixture = "Standing Angled (3D)"
     st.title("GUITAR SIMULATOR")
     st.caption(
-        "**Design Studio** tab: live Three.js ROM preview (7D sliders). "
-        "**Gmsh validation mesh** tab: PyVista view of ``display_mesh.msh`` — separate from the studio."
+        "One view at a time: **Design Studio** (Three.js) or **Gmsh validation mesh** (PyVista). "
+        "They never share the same container."
     )
 
     _rom_mgr, _rom_init_err = get_rom_manager()
     if _rom_init_err:
         st.sidebar.warning(f"ROM engine offline: {_rom_init_err}")
 
-    tab_studio, tab_mesh = st.tabs(["Design Studio", "Gmsh validation mesh"])
+    page_ix = (
+        GUI_PAGES.index(st.session_state.gui_page)
+        if st.session_state.gui_page in GUI_PAGES
+        else 0
+    )
+    page = st.radio(
+        "Section",
+        GUI_PAGES,
+        index=page_ix,
+        horizontal=True,
+        label_visibility="collapsed",
+        key="gui_page_radio",
+    )
+    st.session_state.gui_page = page
 
-    with tab_studio:
-        _render_interactive_panel(saved, saved_solver, saved_shape, saved_fixture)
-
-    with tab_mesh:
-        _render_mesh_validation_tab(
-            saved_shape,
-            clamp_ribs=bool(st.session_state.get("_clamp_ribs", False)),
-            pin_neck=bool(st.session_state.get("_pin_neck_fix", True)),
-            fixture_preset=str(
-                st.session_state.get("_fixture_preset", saved_fixture)
-            ),
-        )
+    if page == GUI_PAGE_STUDIO:
+        _render_design_studio_tab(saved, saved_solver, saved_shape, saved_fixture)
+    else:
+        with st.container(border=True):
+            _render_mesh_validation_tab(
+                saved_shape,
+                clamp_ribs=bool(st.session_state.get("_clamp_ribs", False)),
+                pin_neck=bool(st.session_state.get("_pin_neck_fix", True)),
+                fixture_preset=str(
+                    st.session_state.get("_fixture_preset", saved_fixture)
+                ),
+            )
 
 
 main()
