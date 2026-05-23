@@ -187,6 +187,100 @@ def _hollow_inner_volume(
     return int(inner_tags[0])
 
 
+def _vol_center_z(vol_tag: int) -> float:
+    try:
+        com = gmsh.model.occ.getCenterOfMass(3, int(vol_tag))
+        return float(com[2])
+    except Exception:
+        bb = gmsh.model.getBoundingBox(3, int(vol_tag))
+        return 0.5 * (float(bb[2]) + float(bb[5]))
+
+
+def _split_and_fragment_wood_shell_for_conforming_interfaces(
+    wood_vols: List[int],
+    t: float,
+    occ,
+) -> List[int]:
+    """
+    Split hollow display shell into plate/side volumes, then ``occ.fragment`` so
+    plate–rim interfaces share identical mesh nodes (conforming boundary).
+    """
+    if len(wood_vols) != 1:
+        if len(wood_vols) > 1:
+            frags, _ = occ.fragment(
+                [(3, int(v)) for v in wood_vols],
+                [],
+                removeObject=True,
+                removeTool=False,
+            )
+            gmsh.model.occ.synchronize()
+            unified = sorted([int(tag) for dim, tag in frags if dim == 3])
+            print(
+                f"[diag] conforming fragment: {len(wood_vols)} volumes → "
+                f"{len(unified)} fragmented (shared interface nodes)"
+            )
+            return unified if unified else wood_vols
+        return wood_vols
+
+    v = int(wood_vols[0])
+    xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(3, v)
+    margin = 0.02 * max(float(xmax - xmin), float(ymax - ymin), float(zmax - zmin), 1e-3)
+    dx = (float(xmax) - float(xmin)) + 2.0 * margin
+    dy = (float(ymax) - float(ymin)) + 2.0 * margin
+    t_plate = max(float(t), 1.0e-4)
+    z_top_lo = float(zmax) - t_plate
+    b_bot = occ.addBox(
+        float(xmin) - margin,
+        float(ymin) - margin,
+        float(zmin) - margin,
+        dx,
+        dy,
+        t_plate + margin,
+    )
+    b_top = occ.addBox(
+        float(xmin) - margin,
+        float(ymin) - margin,
+        z_top_lo,
+        dx,
+        dy,
+        t_plate + margin,
+    )
+    gmsh.model.occ.synchronize()
+    split_out, _ = occ.fragment(
+        [(3, v)],
+        [(3, int(b_bot)), (3, int(b_top))],
+        removeObject=True,
+        removeTool=True,
+    )
+    gmsh.model.occ.synchronize()
+    pieces = sorted([int(tag) for dim, tag in split_out if dim == 3])
+    if len(pieces) < 2:
+        print("[diag][warn] plate/side split produced <2 volumes; keeping monolithic shell")
+        return wood_vols
+
+    pieces.sort(key=_vol_center_z)
+    back_v = pieces[0]
+    top_v = pieces[-1]
+    side_vs = pieces[1:-1] if len(pieces) > 2 else []
+    vol_tags = [back_v] + side_vs + [top_v]
+    if len(vol_tags) < 2:
+        return wood_vols
+
+    frags, _ = occ.fragment(
+        [(3, int(tg)) for tg in vol_tags],
+        [],
+        removeObject=True,
+        removeTool=False,
+    )
+    gmsh.model.occ.synchronize()
+    unified = sorted([int(tag) for dim, tag in frags if dim == 3])
+    print(
+        f"[diag] conforming shell: 1 vol → {len(pieces)} pieces → "
+        f"fragment {len(unified)} vols (plate/rim nodes matched)"
+    )
+    return unified if unified else wood_vols
+
+
 def audit_enabled() -> bool:
     return os.environ.get("FEM_RENDER_AUDIT", "0").strip().lower() in ("1", "true", "yes", "on")
 
@@ -636,6 +730,10 @@ def create_guitar_mesh():
             pass
         occ.synchronize()
         wood_vols = [int(tag) for _, tag in wood_dimtags]
+        if not solid_sketch:
+            wood_vols = _split_and_fragment_wood_shell_for_conforming_interfaces(
+                wood_vols, t, occ
+            )
         air_vols: list = []
         air_dimtags: list = []
     else:
@@ -1191,6 +1289,29 @@ def create_guitar_mesh():
                     curve_tags.add(int(btag))
         return sorted(curve_tags)
 
+    def _interface_refinement_curve_tags() -> List[int]:
+        """Plate perimeters + rib↔plate contact lines (boundary refinement zone)."""
+        curve_tags: set = set(_plate_interface_curve_tags())
+        top_set = set(int(s) for s in top_plate_surfs)
+        back_set = set(int(s) for s in back_plate_surfs)
+        for rs in rib_surfs:
+            try:
+                bnd = gmsh.model.getBoundary([(2, int(rs))], oriented=False, recursive=False)
+            except Exception:
+                continue
+            for bdim, ctag in bnd:
+                if int(bdim) != 1:
+                    continue
+                ctag = int(ctag)
+                try:
+                    up, _down = gmsh.model.getAdjacencies(1, ctag)
+                except Exception:
+                    up, _down = [], []
+                adj_faces = set(int(t) for t in up if int(t) > 0)
+                if adj_faces & top_set or adj_faces & back_set:
+                    curve_tags.add(ctag)
+        return sorted(curve_tags)
+
     def _apply_shell_coarse_global_local_fields(
         global_lc: float,
         fine_lc: float,
@@ -1217,17 +1338,17 @@ def create_guitar_mesh():
             gmsh.model.mesh.field.setNumber(thresh_hole, "SizeMax", float(global_lc))
             field_ids.append(thresh_hole)
 
-        plate_curves = _plate_interface_curve_tags()
-        if plate_curves:
-            dist_plate = gmsh.model.mesh.field.add("Distance")
-            gmsh.model.mesh.field.setNumbers(dist_plate, "CurvesList", plate_curves)
-            thresh_plate = gmsh.model.mesh.field.add("Threshold")
-            gmsh.model.mesh.field.setNumber(thresh_plate, "InField", dist_plate)
-            gmsh.model.mesh.field.setNumber(thresh_plate, "DistMin", 0.0002)
-            gmsh.model.mesh.field.setNumber(thresh_plate, "DistMax", 0.012)
-            gmsh.model.mesh.field.setNumber(thresh_plate, "SizeMin", float(fine_lc))
-            gmsh.model.mesh.field.setNumber(thresh_plate, "SizeMax", float(global_lc))
-            field_ids.append(thresh_plate)
+        interface_curves = _interface_refinement_curve_tags()
+        if interface_curves:
+            dist_iface = gmsh.model.mesh.field.add("Distance")
+            gmsh.model.mesh.field.setNumbers(dist_iface, "CurvesList", interface_curves)
+            thresh_iface = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(thresh_iface, "InField", dist_iface)
+            gmsh.model.mesh.field.setNumber(thresh_iface, "DistMin", 0.0002)
+            gmsh.model.mesh.field.setNumber(thresh_iface, "DistMax", 0.012)
+            gmsh.model.mesh.field.setNumber(thresh_iface, "SizeMin", float(fine_lc))
+            gmsh.model.mesh.field.setNumber(thresh_iface, "SizeMax", float(global_lc))
+            field_ids.append(thresh_iface)
 
         min_field = gmsh.model.mesh.field.add("Min")
         gmsh.model.mesh.field.setNumbers(min_field, "FieldsList", field_ids)
@@ -1240,7 +1361,7 @@ def create_guitar_mesh():
         print(
             f"[diag] shell mesh: global_lc={global_lc * 1000:.1f}mm, "
             f"local_lc={fine_lc * 1000:.2f}mm at soundhole ({len(soundhole_surfs)} faces) "
-            f"and plate edges ({len(plate_curves)} curves)"
+            f"and interface refinement zone ({len(interface_curves)} curves)"
         )
 
     if is_display or is_preview:

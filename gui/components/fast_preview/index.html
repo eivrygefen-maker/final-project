@@ -299,6 +299,8 @@
     let lastRenderArgsFp = "";
     /** Owner-flag: while true, Streamlit payloads must not touch sliders or ROM state. */
     let isUserDragging = false;
+    /** When true, applyArgs updates wood materials only (no buildBody / viewport reset). */
+    let isMaterialChangeOnly = false;
     let animating = true;
     const STUDIO_W = 1200;
     const STUDIO_H = 950;
@@ -614,6 +616,46 @@
     function incomingWoodDiffers(key, data) {
       if (!hasOwnPayloadKey(data, key)) return false;
       return String(data[key]).toLowerCase() !== activeWoodId(key);
+    }
+
+    function payloadTouchesGeometry(data) {
+      if (!data || typeof data !== "object") return false;
+      const dom = readDomSliderValues();
+      for (let i = 0; i < ROM_GEOM_KEYS.length; i++) {
+        const k = ROM_GEOM_KEYS[i];
+        if (!hasOwnPayloadKey(data, k)) continue;
+        if (k === "shape_type") {
+          if (String(data[k]) !== String(dom.shape_type)) return true;
+        } else if (Math.abs(num(data[k]) - num(dom[k])) > 1e-6) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function detectMaterialChangeOnly(data, hadTemplates) {
+      if (!initialized3d || hadTemplates || isUserDragging) return false;
+      if (payloadTouchesGeometry(data)) return false;
+      const topWoodChanged = incomingWoodDiffers("top_wood_id", data);
+      const backWoodChanged = incomingWoodDiffers("back_wood_id", data);
+      return topWoodChanged || backWoodChanged;
+    }
+
+    function applyMaterialOnlyUpdate(data) {
+      const tw = document.getElementById("topWood");
+      const bw = document.getElementById("backWood");
+      if (incomingWoodDiffers("top_wood_id", data)) {
+        state.top_wood_id = String(data.top_wood_id).toLowerCase();
+        if (tw) tw.value = state.top_wood_id;
+        updateTopMaterial();
+      }
+      if (incomingWoodDiffers("back_wood_id", data)) {
+        state.back_wood_id = String(data.back_wood_id).toLowerCase();
+        if (bw) bw.value = state.back_wood_id;
+        updateBackMaterial();
+      }
+      lastRomFp = romFingerprint();
+      renderFrame();
     }
 
     function mergeRomStateDelta(data) {
@@ -1291,6 +1333,16 @@
       if (isUserDragging) return;
       const data = normalizeArgs(rawArgs);
       const hadTemplates = Boolean(data.templates && Object.keys(data.templates).length);
+      isMaterialChangeOnly = detectMaterialChangeOnly(data, hadTemplates);
+      if (isMaterialChangeOnly) {
+        if (data.gui_mode) state.gui_mode = data.gui_mode;
+        if (data.wood_colors) state.wood_colors = Object.assign({}, WOOD_COLORS_BUILTIN, data.wood_colors);
+        fillWoodSelects();
+        applyMaterialOnlyUpdate(data);
+        isMaterialChangeOnly = false;
+        return;
+      }
+      isMaterialChangeOnly = false;
       const prevRomFp = lastRomFp;
       mergeRomStateDelta(data);
       if (!state.bounds && state.bounds_by_shape && state.bounds_by_shape[state.shape_type]) {
@@ -1396,16 +1448,18 @@
     });
     document.getElementById("topWood").addEventListener("change", function () {
       state.top_wood_id = document.getElementById("topWood").value || "spruce";
-      lastRomFp = romFingerprint();
       updateTopMaterial();
       renderFrame();
+      lastRomFp = romFingerprint();
+      isMaterialChangeOnly = true;
       notifyParamChange();
     });
     document.getElementById("backWood").addEventListener("change", function () {
       state.back_wood_id = document.getElementById("backWood").value || "rosewood";
-      lastRomFp = romFingerprint();
       updateBackMaterial();
       renderFrame();
+      lastRomFp = romFingerprint();
+      isMaterialChangeOnly = true;
       notifyParamChange();
     });
 
