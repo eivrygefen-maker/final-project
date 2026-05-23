@@ -363,6 +363,8 @@ def process_fast_preview_event(
     action = str(event.get("action") or "").strip().lower()
     if not action:
         return
+    if event.get("_ts") is None:
+        return
 
     eid = studio_event_id(event)
     if eid == st.session_state.get("_studio_event_id"):
@@ -404,7 +406,7 @@ def process_fast_preview_event(
         st.session_state.developer_fom_mode = True
         st.session_state._pending_fom_run = True
 
-    st.rerun()
+    # Do not call st.rerun() here — setComponentValue already triggers one rerun.
 
 
 def rom_mesh_fingerprint(
@@ -820,30 +822,13 @@ def run_stk(*, body_json: Path, top_wood: str) -> None:
     append_silence_wav(WAV_OUTPUT, 0.3)
 
 
-def main() -> None:
-    saved = _load_saved_config().get("geometry", {}) or {}
-    saved_solver = _load_saved_config().get("solver", {}) or {}
-    saved_shape = str(saved.get("shape_type", "Classical"))
-    if saved_shape not in SHAPE_OPTIONS:
-        saved_shape = "Classical"
-    saved_fixture = str(saved.get("fixture_preset", "Standing Angled (3D)"))
-    if saved_fixture not in FIXTURE_PRESETS:
-        saved_fixture = "Standing Angled (3D)"
-    st.markdown(
-        """
-        <style>
-        h1 { letter-spacing: 0.06em; font-weight: 700; }
-        div[data-testid="stpyvista"] canvas { opacity: 1 !important; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.title("GUITAR SIMULATOR")
-    st.caption(
-        "Design Studio: instant Three.js preview (ROM sliders). "
-        "PyVista below: high-fidelity ``display_mesh.msh`` from ``build_3d_guitar.py`` after **Save & Sync**."
-    )
-
+def _render_interactive_panel(
+    saved: Dict[str, Any],
+    saved_solver: Dict[str, Any],
+    saved_shape: str,
+    saved_fixture: str,
+) -> None:
+    """Controls + Design Studio + PyVista (isolated via ``st.fragment`` when available)."""
     row_btn = st.columns(2)
     col_ctrl, col_vis = st.columns([0.18, 0.82], gap="large")
 
@@ -884,7 +869,7 @@ def main() -> None:
 
     with col_vis:
         st.subheader("Design Studio")
-        studio_event = fast_preview(initial=fp_for_component, key="fast_preview_geom", height=700)
+        studio_event = fast_preview(initial=fp_for_component, key="fast_preview_geom", height=720)
         process_fast_preview_event(
             studio_event,
             clamp_ribs=clamp_ribs,
@@ -994,6 +979,37 @@ def main() -> None:
                     run_stk(body_json=Path(st.session_state.stk_body_json), top_wood=top_wood)
             except Exception as exc:
                 st.error(f"Sound failed: {exc}")
+
+
+if hasattr(st, "fragment"):
+    _render_interactive_panel = st.fragment(_render_interactive_panel)
+
+
+def main() -> None:
+    saved = _load_saved_config().get("geometry", {}) or {}
+    saved_solver = _load_saved_config().get("solver", {}) or {}
+    saved_shape = str(saved.get("shape_type", "Classical"))
+    if saved_shape not in SHAPE_OPTIONS:
+        saved_shape = "Classical"
+    saved_fixture = str(saved.get("fixture_preset", "Standing Angled (3D)"))
+    if saved_fixture not in FIXTURE_PRESETS:
+        saved_fixture = "Standing Angled (3D)"
+    st.markdown(
+        """
+        <style>
+        h1 { letter-spacing: 0.06em; font-weight: 700; }
+        div[data-testid="stpyvista"] canvas { opacity: 1 !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.title("GUITAR SIMULATOR")
+    st.caption(
+        "Design Studio: instant Three.js preview (ROM sliders). "
+        "PyVista below: high-fidelity ``display_mesh.msh`` from ``build_3d_guitar.py`` after **Save & Sync**."
+    )
+
+    _render_interactive_panel(saved, saved_solver, saved_shape, saved_fixture)
 
 
 main()

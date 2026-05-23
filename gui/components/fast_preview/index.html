@@ -32,15 +32,17 @@
       padding: 0;
       font-family: var(--st-font);
       color: var(--st-text);
-      background: transparent;
+      background: #1a1c24;
       overflow: hidden;
+      min-height: 700px;
+      height: 700px;
     }
     .studio {
       display: grid;
       grid-template-columns: minmax(220px, 280px) 1fr;
       gap: 12px;
-      height: 100%;
-      min-height: 620px;
+      height: 700px;
+      min-height: 700px;
       padding: 8px 10px 10px;
     }
     .panel {
@@ -228,7 +230,7 @@
   <script src="https://unpkg.com/three@0.149.0/examples/js/controls/OrbitControls.js"></script>
   <script>
     /* ── Streamlit bridge (./streamlit_bridge.js → Streamlit.* API) ─── */
-    const DEFAULT_FRAME_HEIGHT = 700;
+    const DEFAULT_FRAME_HEIGHT = 720;
     let bridgeReady = false;
     let lastFrameHeight = 0;
     let eventsWired = false;
@@ -251,13 +253,20 @@
       return false;
     };
 
-    function setFrameHeight(h) {
-      const height = Math.max(400, Number(h) || DEFAULT_FRAME_HEIGHT);
-      if (height === lastFrameHeight) return;
-      lastFrameHeight = height;
+    function postFrameHeight(height) {
+      const h = Math.max(400, Number(height) || DEFAULT_FRAME_HEIGHT);
       if (window.Streamlit && typeof Streamlit.setFrameHeight === "function") {
-        Streamlit.setFrameHeight(height);
+        Streamlit.setFrameHeight(h);
+      } else {
+        window.parent.postMessage({ type: "streamlit:setFrameHeight", height: h }, "*");
       }
+    }
+
+    function setFrameHeight(h, force) {
+      const height = Math.max(400, Number(h) || DEFAULT_FRAME_HEIGHT);
+      if (!force && height === lastFrameHeight) return;
+      lastFrameHeight = height;
+      postFrameHeight(height);
     }
 
     function setComponentValue(value) {
@@ -271,8 +280,15 @@
       bridgeReady = true;
       if (window.Streamlit && typeof Streamlit.setComponentReady === "function") {
         Streamlit.setComponentReady();
+      } else {
+        window.parent.postMessage(
+          { type: "streamlit:componentReady", isStreamlitComponent: true },
+          "*"
+        );
       }
-      setFrameHeight(frameHeight);
+      setFrameHeight(frameHeight, true);
+      setTimeout(function () { setFrameHeight(frameHeight, true); }, 50);
+      setTimeout(function () { setFrameHeight(frameHeight, true); }, 250);
     }
 
   /** Streamlit passes kwargs as args; ROM payload lives under args.initial */
@@ -306,10 +322,11 @@
       }
       const rfp = renderArgsFingerprint(args);
       if (rfp === lastRenderArgsFp && initialized3d) {
+        setFrameHeight(frameHeightFromArgs(args), true);
         return;
       }
       lastRenderArgsFp = rfp;
-      setFrameHeight(frameHeightFromArgs(args));
+      setFrameHeight(frameHeightFromArgs(args), true);
       try {
         applyArgs(args);
       } catch (err) {
@@ -525,8 +542,12 @@
     }
 
     function initThree() {
-      if (initialized3d || typeof THREE === "undefined") return;
-    const canvas = document.getElementById("viewport");
+      if (initialized3d) return;
+      if (typeof THREE === "undefined") {
+        logError("Three.js failed to load. Check internet access to unpkg.com or open browser console (F12).");
+        return;
+      }
+      const canvas = document.getElementById("viewport");
     const wrap = canvas.parentElement;
     const w = Math.max(wrap.clientWidth, 400);
     const h = Math.max(wrap.clientHeight, 560);

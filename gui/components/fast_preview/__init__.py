@@ -36,7 +36,7 @@ def fast_preview(
     *,
     initial: Optional[Dict[str, Any]] = None,
     key: Optional[str] = None,
-    height: int = 700,
+    height: int = 720,
 ) -> Optional[Dict[str, Any]]:
     """
     3D Design Studio — instant Three.js preview; returns a dict on user actions.

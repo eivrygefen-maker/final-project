@@ -41,7 +41,8 @@
       post("streamlit:componentReady", { isStreamlitComponent: true });
     },
     setFrameHeight: function (height) {
-      post("streamlit:setFrameHeight", { height: height });
+      var h = Math.max(400, Number(height) || 700);
+      post("streamlit:setFrameHeight", { height: h });
     },
     setComponentValue: function (value) {
       post("streamlit:setComponentValue", { value: value });
