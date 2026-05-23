@@ -46,7 +46,8 @@ HOLE_RADIUS_MAX_M = 0.08
 SOUNDHOLE_FROM_NECK_RATIO = 0.5
 ROM_HOLE_RADIUS_BOUNDS = (0.035, 0.055)
 
-FAST_PREVIEW_HEIGHT = 720
+FAST_PREVIEW_HEIGHT = 850
+ROM_ONLINE_MODES = 15
 STUDIO_HANDSHAKE_ACTIONS = frozenset({"ready", "_handshake", "handshake", "_ready_ping"})
 STUDIO_ROM_PAYLOAD_KEYS = (
     "shape_type",
@@ -128,6 +129,12 @@ def _init_session() -> None:
         "_studio_component_ready": False,
         "_studio_handshake_id": "",
         "_studio_iframe_payload_fp": "",
+        "_rom_online_fp": "",
+        "rom_frequencies_hz": [],
+        "rom_mode_shapes": {},
+        "rom_basis_missing": False,
+        "rom_solver_error": "",
+        "rom_solve_elapsed_s": 0.0,
     }.items():
         if key not in st.session_state:
             st.session_state[key] = val
@@ -795,6 +802,99 @@ def try_import_rom():
         return None, exc
 
 
+@st.cache_resource(show_spinner=False)
+def get_rom_manager():
+    """Singleton ROM manager for online reduced-basis solves (MPI-aware)."""
+    ROMManager, err = try_import_rom()
+    if ROMManager is None:
+        return None, str(err)
+    try:
+        return ROMManager(shapes_config_path=SHAPES_CONFIG), None
+    except Exception as exc:
+        return None, str(exc)
+
+
+def update_rom_online_prediction(
+    geom: Dict[str, Any],
+    *,
+    top_wood: str,
+    back_wood: str,
+    shape_type: str,
+) -> None:
+    """Project 7D ROM parameters through ``ROMManager.solve_online``; cache modal frequencies."""
+    fp = rom_mesh_fingerprint(geom, top_wood=top_wood, back_wood=back_wood)
+    if fp == st.session_state.get("_rom_online_fp"):
+        return
+    st.session_state._rom_online_fp = fp
+
+    ns = rom_namespace(shape_type)
+    basis = rom_basis_path(shape_type)
+    if not basis.is_file():
+        st.session_state.rom_basis_missing = True
+        st.session_state.rom_frequencies_hz = []
+        st.session_state.rom_mode_shapes = {}
+        st.session_state.rom_solver_error = ""
+        return
+
+    st.session_state.rom_basis_missing = False
+    manager, err = get_rom_manager()
+    if manager is None:
+        st.session_state.rom_solver_error = err or "ROMManager unavailable"
+        st.session_state.rom_frequencies_hz = []
+        st.session_state.rom_mode_shapes = {}
+        return
+
+    lhs_params = lhs_params_from_ui(geom, top_wood=top_wood, back_wood=back_wood)
+    try:
+        result = manager.solve_online(ns, params=lhs_params, nev=ROM_ONLINE_MODES)
+        freqs = [float(f) for f in (result.get("freqs_hz") or [])[:ROM_ONLINE_MODES]]
+        st.session_state.rom_frequencies_hz = freqs
+        st.session_state.rom_mode_shapes = dict(result)
+        st.session_state.rom_solve_elapsed_s = float(result.get("elapsed_s") or 0.0)
+        st.session_state.rom_solver_error = ""
+    except Exception as exc:
+        st.session_state.rom_solver_error = str(exc)
+        st.session_state.rom_frequencies_hz = []
+        st.session_state.rom_mode_shapes = {}
+
+
+def render_rom_metrics_dashboard(shape_type: str) -> None:
+    """Natural-frequency dashboard fed by the online ROM solver."""
+    st.subheader("ROM modes")
+    ns = rom_namespace(shape_type)
+    basis = rom_basis_path(shape_type)
+
+    if st.session_state.get("rom_basis_missing") or not basis.is_file():
+        st.info(
+            f"No reduced basis found for **{shape_type}** (`ROM/{ns}/reduced_basis.npz`). "
+            "Run an offline LHS batch first:\n\n"
+            f"`python FEM/scripts/rom_pipeline.py collect {ns} --pool-size 8`\n\n"
+            f"`python FEM/scripts/rom_pipeline.py build-basis {ns}`"
+        )
+        return
+
+    err = str(st.session_state.get("rom_solver_error") or "").strip()
+    if err:
+        st.warning(f"ROM online solve: {err}")
+        return
+
+    freqs: List[float] = list(st.session_state.get("rom_frequencies_hz") or [])
+    elapsed = float(st.session_state.get("rom_solve_elapsed_s") or 0.0)
+    if not freqs:
+        st.caption("Adjust sliders to predict modes…")
+        return
+
+    st.caption(f"Online ROM · {len(freqs)} modes · {elapsed * 1000.0:.0f} ms")
+    row_size = 5
+    for row_start in range(0, min(len(freqs), ROM_ONLINE_MODES), row_size):
+        cols = st.columns(row_size)
+        for col_ix, col in enumerate(cols):
+            mode_ix = row_start + col_ix
+            if mode_ix >= len(freqs):
+                break
+            col.metric(f"Mode {mode_ix + 1}", f"{freqs[mode_ix]:.1f} Hz")
+
+
 def write_stk_body_json(freqs_hz: Sequence[float], out_path: Path) -> Path:
     freqs = [float(f) for f in freqs_hz if float(f) > 0.0]
     if not freqs:
@@ -823,14 +923,15 @@ def run_rom_acoustics(lhs_params: Dict[str, Any], shape_type: str) -> Path:
             f"Run: python FEM/scripts/rom_pipeline.py collect {ns} --pool-size 8\n"
             f"     python FEM/scripts/rom_pipeline.py build-basis {ns}"
         )
-    ROMManager, err = try_import_rom()
-    if ROMManager is None:
+    manager, err = get_rom_manager()
+    if manager is None:
         raise RuntimeError(f"ROM unavailable: {err}")
-    manager = ROMManager(shapes_config_path=SHAPES_CONFIG)
     result = manager.solve_online(ns, params=lhs_params, nev=0)
     freqs = list(result.get("freqs_hz") or [])
     if not freqs:
         raise RuntimeError("ROM solve_online returned no frequencies.")
+    st.session_state.rom_frequencies_hz = [float(f) for f in freqs[:ROM_ONLINE_MODES]]
+    st.session_state.rom_mode_shapes = dict(result)
     write_stk_body_json(freqs, ROM_STK_JSON)
     return ROM_STK_JSON
 
@@ -913,12 +1014,18 @@ def _render_interactive_panel(
     saved_fixture: str,
 ) -> None:
     """Controls + Design Studio + PyVista (isolated via ``st.fragment`` when available)."""
-    row_btn = st.columns(2)
-    col_ctrl, col_vis = st.columns([0.18, 0.82], gap="large")
-
     clamp_ribs = bool(st.session_state.get("_clamp_ribs", saved_solver.get("clamp_ribs", False)))
     pin_neck = bool(st.session_state.get("_pin_neck_fix", saved_solver.get("eps_pin_fix_tag5", True)))
     fixture_preset = str(st.session_state.get("_fixture_preset", saved_fixture))
+
+    fp_seed = studio_initial_from_saved(
+        saved, saved_shape, developer_fom_mode=st.session_state.developer_fom_mode
+    )
+    fp_raw = st.session_state.get("_fast_preview_geom")
+    if isinstance(fp_raw, dict) and fp_raw:
+        fp_seed = sanitize_studio_payload({**fp_seed, **fp_raw}, saved_shape)
+
+    col_ctrl, col_vis = st.columns([0.2, 0.8], gap="large")
 
     with col_ctrl:
         st.subheader("Session")
@@ -942,12 +1049,17 @@ def _render_interactive_panel(
         st.session_state["_clamp_ribs"] = clamp_ribs
         st.session_state["_pin_neck_fix"] = pin_neck
 
-    fp_seed = studio_initial_from_saved(
-        saved, saved_shape, developer_fom_mode=st.session_state.developer_fom_mode
-    )
-    fp_raw = st.session_state.get("_fast_preview_geom")
-    if isinstance(fp_raw, dict) and fp_raw:
-        fp_seed = sanitize_studio_payload({**fp_seed, **fp_raw}, saved_shape)
+        rom_metrics_slot = st.empty()
+
+        st.subheader("Actions")
+        regen_mesh = st.button("Regenerate Gmsh mesh", use_container_width=True, key="btn_regen_mesh")
+        gen_sound = st.button(
+            "Generate sound",
+            use_container_width=True,
+            disabled=not st.session_state.physics_ready,
+            key="btn_gen_sound",
+        )
+
     fp_seed["gui_mode"] = "admin" if st.session_state.developer_fom_mode else "user"
     fp_for_component = studio_payload_for_iframe(fp_seed)
 
@@ -982,6 +1094,35 @@ def _render_interactive_panel(
             pin_neck_fix=pin_neck,
             fixture_preset=fixture_preset,
         )
+
+        update_rom_online_prediction(geom, top_wood=top_wood, back_wood=back_wood, shape_type=shape)
+        with rom_metrics_slot.container():
+            render_rom_metrics_dashboard(shape)
+
+        if regen_mesh:
+            try:
+                with st.spinner("Rebuilding display mesh…"):
+                    regenerate_display_mesh(
+                        geom,
+                        top_wood=top_wood,
+                        back_wood=back_wood,
+                        clamp_ribs=clamp_ribs,
+                        pin_neck_fix=pin_neck,
+                        fixture_preset=fixture_preset,
+                        geom_fp=geom_fp,
+                    )
+                invalidate_physics_state()
+                st.success("Mesh updated.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Rebuild failed: {exc}")
+
+        if gen_sound:
+            try:
+                with st.spinner("Synthesizing sound…"):
+                    run_stk(body_json=Path(st.session_state.stk_body_json), top_wood=top_wood)
+            except Exception as exc:
+                st.error(f"Sound failed: {exc}")
 
         if st.session_state.get("_pending_fom_run") and display_mesh_active(geom_fp):
             st.session_state._pending_fom_run = False
@@ -1033,37 +1174,6 @@ def _render_interactive_panel(
         if WAV_OUTPUT.is_file() and st.session_state.physics_ready:
             st.audio(WAV_OUTPUT.read_bytes(), format="audio/wav")
 
-    with row_btn[0]:
-        if st.button("Regenerate Gmsh mesh", use_container_width=True):
-            try:
-                with st.spinner("Rebuilding display mesh…"):
-                    regenerate_display_mesh(
-                        geom,
-                        top_wood=top_wood,
-                        back_wood=back_wood,
-                        clamp_ribs=clamp_ribs,
-                        pin_neck_fix=pin_neck,
-                        fixture_preset=fixture_preset,
-                        geom_fp=geom_fp,
-                    )
-                invalidate_physics_state()
-                st.success("Mesh updated.")
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Rebuild failed: {exc}")
-
-    with row_btn[1]:
-        if st.button(
-            "Generate sound",
-            use_container_width=True,
-            disabled=not st.session_state.physics_ready,
-        ):
-            try:
-                with st.spinner("Synthesizing sound…"):
-                    run_stk(body_json=Path(st.session_state.stk_body_json), top_wood=top_wood)
-            except Exception as exc:
-                st.error(f"Sound failed: {exc}")
-
 
 if hasattr(st, "fragment"):
     _render_interactive_panel = st.fragment(_render_interactive_panel)
@@ -1091,6 +1201,10 @@ def main() -> None:
         }
         div[data-testid="stCustomComponentV1"] {
             min-height: {FAST_PREVIEW_HEIGHT}px;
+            overflow: visible;
+        }
+        div[data-testid="stCustomComponentV1"] iframe {
+            overflow: visible;
         }
         </style>
         """,
@@ -1101,6 +1215,10 @@ def main() -> None:
         "Design Studio: instant Three.js preview (ROM sliders). "
         "PyVista below: high-fidelity ``display_mesh.msh`` from ``build_3d_guitar.py`` after **Save & Sync**."
     )
+
+    _rom_mgr, _rom_init_err = get_rom_manager()
+    if _rom_init_err:
+        st.sidebar.warning(f"ROM engine offline: {_rom_init_err}")
 
     _render_interactive_panel(saved, saved_solver, saved_shape, saved_fixture)
 

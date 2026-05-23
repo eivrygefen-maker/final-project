@@ -34,24 +34,35 @@
       color: var(--st-text);
       background: #1a1c24;
       overflow: hidden;
-      min-height: 700px;
-      height: 700px;
+      min-height: 850px;
+      height: 850px;
     }
     .studio {
       display: grid;
       grid-template-columns: minmax(220px, 280px) 1fr;
       gap: 12px;
-      height: 700px;
-      min-height: 700px;
+      height: 850px;
+      min-height: 850px;
       padding: 8px 10px 10px;
+      overflow: visible;
     }
     .panel {
       background: var(--st-panel);
       border: 1px solid var(--st-border);
       border-radius: var(--st-radius);
       padding: 12px 14px;
-      overflow-y: auto;
+      color: var(--st-text);
+    }
+    .panel.panel-controls {
+      position: relative;
+      z-index: 30;
+      overflow: visible;
       max-height: 100%;
+      overflow-y: auto;
+      overflow-x: visible;
+    }
+    .panel.panel-controls:focus-within {
+      overflow: visible;
     }
     .panel h3 {
       margin: 0 0 4px;
@@ -78,10 +89,31 @@
       padding: 6px 8px;
       border-radius: var(--st-radius);
       border: 1px solid var(--st-border);
-      background: transparent;
-      color: inherit;
+      background-color: #f6f7fb;
+      color: #1a1c24;
       font-family: inherit;
       font-size: 0.85rem;
+      cursor: pointer;
+    }
+    select option {
+      background-color: #ffffff;
+      color: #1a1c24;
+    }
+    @media (prefers-color-scheme: dark) {
+      select {
+        background-color: #262730;
+        color: #fafafa;
+        border-color: rgba(250, 250, 250, 0.2);
+      }
+      select option {
+        background-color: #262730;
+        color: #fafafa;
+      }
+    }
+    .select-wrap {
+      position: relative;
+      z-index: 40;
+      margin-bottom: 2px;
     }
     .val {
       float: right;
@@ -177,17 +209,19 @@
 </head>
 <body>
   <div class="studio">
-    <aside class="panel" id="controls">
+    <aside class="panel panel-controls" id="controls">
       <h3>Design Studio</h3>
       <p class="sub">ROM/LHS parameters only — instant Three.js preview. Save &amp; Sync pushes to Gmsh/PyVista.</p>
       <div class="mode-pill" id="modeLabel">User (ROM)</div>
 
       <label for="shapeSelect">Shape</label>
+      <div class="select-wrap">
       <select id="shapeSelect">
         <option value="Classical">Classical (Torres)</option>
         <option value="Dreadnought">Dreadnought (Martin)</option>
         <option value="Box">Box (debug)</option>
       </select>
+      </div>
 
       <label>Length L (m) <span class="val" id="lengthVal">—</span></label>
       <input type="range" id="length" step="0.005" />
@@ -205,10 +239,14 @@
       <input type="range" id="holeRadius" step="0.001" />
 
       <label for="topWood">Top wood</label>
-      <select id="topWood"></select>
+      <div class="select-wrap">
+        <select id="topWood"></select>
+      </div>
 
       <label for="backWood">Back &amp; sides wood</label>
-      <select id="backWood"></select>
+      <div class="select-wrap">
+        <select id="backWood"></select>
+      </div>
 
       <div class="actions">
         <button type="button" class="primary" id="btnSave">Save &amp; Sync</button>
@@ -229,7 +267,7 @@
   <!-- Signal Streamlit immediately — independent of Three.js / main app script -->
   <script>
     (function () {
-      var FRAME_H = 720;
+      var FRAME_H = 850;
       function post(type, payload) {
         window.parent.postMessage(Object.assign({ type: type }, payload || {}), "*");
       }
@@ -258,7 +296,7 @@
   <script type="module" src="./lib/load-three.mjs"></script>
   <script>
     /* ── Streamlit bridge (./streamlit_bridge.js → Streamlit.* API) ─── */
-    const DEFAULT_FRAME_HEIGHT = 720;
+    const DEFAULT_FRAME_HEIGHT = 850;
     let bridgeReady = false;
     let lastFrameHeight = 0;
     let eventsWired = false;
@@ -515,6 +553,39 @@
       return 0.5 * len - ratio * len;
     }
 
+    function addSoundhole(L, D, tTop) {
+      const hr = num(state.hole_radius, 0.045);
+      if (hr <= 0.005) return;
+      const hx = soundholeX(L);
+      const holeGeom = new THREE.CylinderGeometry(hr, hr, Math.max(tTop * 2.2, 0.008), 32);
+      const holeMat = new THREE.MeshPhongMaterial({ color: 0x0a0a0a, shininess: 4 });
+      const holeMesh = new THREE.Mesh(holeGeom, holeMat);
+      holeMesh.position.set(hx, D + tTop * 0.5, 0);
+      bodyGroup.add(holeMesh);
+    }
+
+    function setupStudioLighting() {
+      scene.add(new THREE.AmbientLight(0xffffff, 0.48));
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x9aa3ad, 0.38);
+      scene.add(hemi);
+
+      const topKey = new THREE.DirectionalLight(0xffffff, 0.62);
+      topKey.position.set(0.5, 1.6, 0.65);
+      scene.add(topKey);
+
+      const bottomFill = new THREE.DirectionalLight(0xfff4e8, 0.52);
+      bottomFill.position.set(-0.45, -1.25, 0.35);
+      scene.add(bottomFill);
+
+      const frontRim = new THREE.DirectionalLight(0xffffff, 0.32);
+      frontRim.position.set(0.15, 0.35, 1.35);
+      scene.add(frontRim);
+
+      const backRim = new THREE.DirectionalLight(0xffffff, 0.32);
+      backRim.position.set(-0.15, 0.35, -1.35);
+      scene.add(backRim);
+    }
+
     function scaleLoop(loop, L, W, nominalLength, nominalWidth) {
       const sx = num(L, 0.49) / Math.max(num(nominalLength, 0.49), 1e-9);
       const sy = num(W, 0.37) / Math.max(num(nominalWidth, 0.37), 1e-9);
@@ -557,10 +628,15 @@
     const matTop = new THREE.MeshPhongMaterial({ color: topCol, shininess: 40, flatShading: false });
 
     if (state.shape_type === "Box") {
-      const geom = new THREE.BoxGeometry(L, D, W);
-      const mesh = new THREE.Mesh(geom, matBack);
-      mesh.position.set(0, D / 2, 0);
-      bodyGroup.add(mesh);
+      const bodyGeom = new THREE.BoxGeometry(L, D, W);
+      const bodyMesh = new THREE.Mesh(bodyGeom, matBack);
+      bodyMesh.position.set(0, D / 2, 0);
+      bodyGroup.add(bodyMesh);
+
+      const topGeom = new THREE.BoxGeometry(L, tTop, W);
+      const topMesh = new THREE.Mesh(topGeom, matTop);
+      topMesh.position.set(0, D + tTop / 2, 0);
+      bodyGroup.add(topMesh);
     } else {
       const tmpl = state.templates[state.shape_type] || state.templates.Classical;
       if (!tmpl || !tmpl.loop || tmpl.loop.length < 3) {
@@ -587,20 +663,23 @@
       }
     }
 
-      const hx = soundholeX(L);
-      const hr = num(state.hole_radius, 0.045);
-      if (hr > 0.005 && state.shape_type !== "Box") {
-        const holeGeom = new THREE.CylinderGeometry(hr, hr, tTop * 2.2, 32);
-        const holeMat = new THREE.MeshPhongMaterial({ color: 0x0a0a0a, shininess: 4 });
-        const holeMesh = new THREE.Mesh(holeGeom, holeMat);
-        holeMesh.position.set(hx, D + tTop * 0.5, 0);
-        bodyGroup.add(holeMesh);
-      }
+      addSoundhole(L, D, tTop);
 
       const box = new THREE.Box3().setFromObject(bodyGroup);
       const center = box.getCenter(new THREE.Vector3());
       bodyGroup.position.sub(center);
       scene.add(bodyGroup);
+      renderFrame();
+    }
+
+    function renderFrame() {
+      if (!renderer || !scene || !camera) return;
+      try {
+        if (controls) controls.update();
+        renderer.render(scene, camera);
+      } catch (err) {
+        console.error("[Design Studio] renderFrame:", err);
+      }
     }
 
     function initThreeCore() {
@@ -622,27 +701,18 @@
 
       if (typeof THREE.OrbitControls === "function") {
         controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.rotateSpeed = 0.8;
         controls.enableDamping = true;
-        controls.dampingFactor = 0.06;
+        controls.dampingFactor = 0.05;
         controls.target.set(0, 0.05, 0);
         controls.update();
       }
 
-      scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-      const key = new THREE.DirectionalLight(0xffffff, 0.85);
-      key.position.set(1.2, 1.5, 0.8);
-      key.castShadow = true;
-      scene.add(key);
-      const fill = new THREE.DirectionalLight(0xffffff, 0.35);
-      fill.position.set(-0.8, 0.4, -1);
-      scene.add(fill);
-
-      const grid = new THREE.GridHelper(1.2, 20, 0x999999, 0xcccccc);
-      grid.position.y = -0.02;
-      scene.add(grid);
+      setupStudioLighting();
 
       initialized3d = true;
       buildBody();
+      renderFrame();
       animate();
     }
 
@@ -765,8 +835,12 @@
     function refresh3d() {
       try {
         readSliders();
-        if (!initialized3d) initThree();
-        else buildBody();
+        if (!initialized3d) {
+          initThree();
+        } else {
+          buildBody();
+          renderFrame();
+        }
       } catch (err) {
         console.error("[Design Studio] refresh3d:", err);
       }
@@ -851,10 +925,18 @@
       setComponentValue(payload("run_fem"));
     });
 
-    /* UI defaults; Three.js starts on first Streamlit render */
+    /* UI defaults; kick off 3D once Streamlit args arrive (also on first render event) */
     applySliderBounds();
     updateLabels();
     updateModeUi();
+    whenThreeReady(function bootstrapStudio3d() {
+      if (!initialized3d) {
+        initThreeCore();
+      } else {
+        buildBody();
+        renderFrame();
+      }
+    });
 
     function handshakeStreamlitParent() {
       if (window.Streamlit && typeof window.Streamlit.setComponentReady === "function") {
