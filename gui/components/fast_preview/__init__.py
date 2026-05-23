@@ -1,17 +1,20 @@
 """Streamlit custom component: ROM-aligned 3D Design Studio (Three.js)."""
 from __future__ import annotations
 
-from pathlib import Path
+import os
 from typing import Any, Dict, Optional
 
 import streamlit.components.v1 as components
 
-_COMPONENT_DIR = Path(__file__).resolve().parent
+_RELEASE = True
 
-_fast_preview = components.declare_component(
-    "fast_preview",
-    path=str(_COMPONENT_DIR),
-)
+if _RELEASE:
+    # Point directly to the folder containing index.html
+    parent_dir = os.path.dirname(os.path.abspath(__file__))
+    _fast_preview = components.declare_component("fast_preview", path=parent_dir)
+else:
+    # Disable development server fallback
+    _fast_preview = components.declare_component("fast_preview", url="http://localhost:3001")
 
 
 def fast_preview(
