@@ -46,8 +46,8 @@ HOLE_RADIUS_MAX_M = 0.08
 SOUNDHOLE_FROM_NECK_RATIO = 0.5
 ROM_HOLE_RADIUS_BOUNDS = (0.035, 0.055)
 
-FAST_PREVIEW_HEIGHT = 850
-FAST_PREVIEW_WIDTH = 1000
+FAST_PREVIEW_HEIGHT = 950
+FAST_PREVIEW_WIDTH = 1200
 ROM_ONLINE_MODES = 15
 STUDIO_HANDSHAKE_ACTIONS = frozenset({"ready", "_handshake", "handshake", "_ready_ping"})
 STUDIO_ROM_PAYLOAD_KEYS = (
@@ -493,6 +493,7 @@ def mount_design_studio_iframe(initial: Dict[str, Any]) -> Optional[Dict[str, An
         initial=initial,
         key="fast_preview_geom",
         height=FAST_PREVIEW_HEIGHT,
+        width=FAST_PREVIEW_WIDTH,
     )
 
 
