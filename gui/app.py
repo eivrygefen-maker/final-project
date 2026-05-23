@@ -418,13 +418,18 @@ def inject_studio_viewport_css() -> None:
         }}
         div[data-testid="stCustomComponentV1"] {{
             height: {h}px !important;
+            min-height: {h}px !important;
+            width: {FAST_PREVIEW_WIDTH}px !important;
+            min-width: {FAST_PREVIEW_WIDTH}px !important;
             overflow: visible !important;
             z-index: 10 !important;
             position: relative !important;
         }}
         div[data-testid="stCustomComponentV1"] iframe {{
             height: {h}px !important;
-            width: 100% !important;
+            min-height: {h}px !important;
+            width: {FAST_PREVIEW_WIDTH}px !important;
+            min-width: {FAST_PREVIEW_WIDTH}px !important;
             z-index: 10 !important;
             display: block !important;
             visibility: visible !important;
@@ -478,10 +483,20 @@ def mount_design_studio_iframe(initial: Dict[str, Any]) -> Optional[Dict[str, An
     if not st.session_state.get("_fast_preview_paths_verified"):
         verify_fast_preview_component_paths()
         st.session_state._fast_preview_paths_verified = True
+    st.markdown(
+        f"""
+        <div style="height: {FAST_PREVIEW_HEIGHT}px; width: {FAST_PREVIEW_WIDTH}px;
+            min-height: {FAST_PREVIEW_HEIGHT}px; min-width: {FAST_PREVIEW_WIDTH}px;
+            border: 1px solid transparent; display: block; box-sizing: border-box;">
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     return fast_preview(
         initial=initial,
         key="fast_preview_geom",
         height=FAST_PREVIEW_HEIGHT,
+        width=FAST_PREVIEW_WIDTH,
     )
 
 

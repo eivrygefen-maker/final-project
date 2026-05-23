@@ -7,9 +7,10 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
-    html, body, #root {
-      width: 100% !important;
+    html, body, #root, canvas#viewport {
+      width: 1000px !important;
       height: 850px !important;
+      min-width: 1000px !important;
       min-height: 850px !important;
       display: block !important;
       visibility: visible !important;
@@ -50,13 +51,23 @@
       background: #1a1c24;
     }
     .studio {
-      display: grid;
-      grid-template-columns: minmax(220px, 280px) 1fr;
-      gap: 12px;
-      height: 850px;
-      min-height: 850px;
-      padding: 8px 10px 10px;
       position: relative;
+      width: 1000px;
+      height: 850px;
+      min-width: 1000px;
+      min-height: 850px;
+      overflow: hidden;
+    }
+    .panel.panel-controls {
+      position: absolute;
+      left: 8px;
+      top: 8px;
+      width: 260px;
+      max-height: 834px;
+      overflow-y: auto;
+      overflow-x: visible;
+      z-index: 20;
+      padding-bottom: 32px;
     }
     .panel {
       background: var(--st-panel);
@@ -64,9 +75,6 @@
       border-radius: var(--st-radius);
       padding: 12px 14px;
       color: var(--st-text);
-    }
-    .panel.panel-controls {
-      padding-bottom: 32px;
     }
     .panel h3 {
       margin: 0 0 4px;
@@ -127,19 +135,24 @@
       height: 4px;
     }
     .view-wrap {
-      position: relative;
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 1000px;
+      height: 850px;
+      min-width: 1000px;
+      min-height: 850px;
       border-radius: var(--st-radius);
       border: 1px solid var(--st-border);
       background: linear-gradient(165deg, #e8eaef 0%, #d4d8e0 45%, #c5cad4 100%);
-      flex: 1 1 auto;
-      min-height: 580px;
-      height: 100%;
       overflow: hidden;
+      z-index: 1;
     }
     #viewport {
-      width: 100%;
-      height: 100%;
-      min-height: 580px;
+      width: 1000px;
+      height: 850px;
+      min-width: 1000px;
+      min-height: 850px;
       display: block;
       border-radius: inherit;
     }
@@ -291,6 +304,31 @@
     let lastRomFp = "";
     let lastRenderArgsFp = "";
     let animating = true;
+    const STUDIO_W = 1000;
+    const STUDIO_H = 850;
+
+    function forceViewportSize() {
+      document.documentElement.style.width = STUDIO_W + "px";
+      document.documentElement.style.height = STUDIO_H + "px";
+      document.body.style.width = STUDIO_W + "px";
+      document.body.style.height = STUDIO_H + "px";
+      const rootEl = document.getElementById("root");
+      if (rootEl) {
+        rootEl.style.width = STUDIO_W + "px";
+        rootEl.style.height = STUDIO_H + "px";
+      }
+      const wrap = document.querySelector(".view-wrap");
+      if (wrap) {
+        wrap.style.width = STUDIO_W + "px";
+        wrap.style.height = STUDIO_H + "px";
+      }
+      const viewport = document.getElementById("viewport");
+      if (viewport) {
+        viewport.style.width = STUDIO_W + "px";
+        viewport.style.height = STUDIO_H + "px";
+      }
+      window.dispatchEvent(new Event("resize"));
+    }
 
     function logError(msg) {
       const text = String(msg || "unknown error");
@@ -681,22 +719,9 @@
      * Synchronous Three.js boot (no await / GLTF / texture loaders).
      * Geometry build is deferred to the next task so the mount handshake is not blocked.
      */
-    function waitForLayoutThenInit(attempt) {
-      if (initialized3d) return;
-      var wrap = document.querySelector(".view-wrap");
-      var w = wrap ? wrap.clientWidth : 0;
-      var h = wrap ? wrap.clientHeight : 0;
-      if ((w < 10 || h < 10) && attempt < 80) {
-        requestAnimationFrame(function () {
-          waitForLayoutThenInit(attempt + 1);
-        });
-        return;
-      }
-      initThreeCore();
-    }
-
     function initThreeCore() {
       if (initialized3d) return;
+      forceViewportSize();
       var checkpoint = 0;
       try {
         const canvas = document.getElementById("viewport");
@@ -715,8 +740,8 @@
           "| wrap:",
           wrap ? wrap.clientWidth + "x" + wrap.clientHeight : "n/a"
         );
-        const w = Math.max(wrap.clientWidth, 400);
-        const h = Math.max(wrap.clientHeight, 560);
+        const w = STUDIO_W;
+        const h = STUDIO_H;
 
         checkpoint = 3;
         console.log("CHECKPOINT 3: Scene setup");
@@ -775,9 +800,7 @@
 
     function initThree() {
       if (initialized3d) return;
-      whenThreeReady(function () {
-        waitForLayoutThenInit(0);
-      });
+      whenThreeReady(initThreeCore);
     }
 
     function animate() {
@@ -799,10 +822,8 @@
 
     function onResize() {
       if (!renderer || !camera) return;
-      const wrap = document.getElementById("viewport").parentElement;
-      const w = Math.max(wrap.clientWidth, 400);
-      const h = Math.max(wrap.clientHeight, 560);
-      if (w < 1 || h < 1) return;
+      const w = STUDIO_W;
+      const h = STUDIO_H;
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
@@ -1018,6 +1039,7 @@
         setTimeout(startAfterHandshake, 5);
         return;
       }
+      forceViewportSize();
       whenThreeReady(bootstrapStudio3d);
     }
     startAfterHandshake();
