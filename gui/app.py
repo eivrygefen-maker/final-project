@@ -46,6 +46,20 @@ HOLE_RADIUS_MAX_M = 0.08
 SOUNDHOLE_FROM_NECK_RATIO = 0.5
 ROM_HOLE_RADIUS_BOUNDS = (0.035, 0.055)
 
+FAST_PREVIEW_HEIGHT = 720
+STUDIO_HANDSHAKE_ACTIONS = frozenset({"ready", "_handshake", "handshake", "_ready_ping"})
+STUDIO_ROM_PAYLOAD_KEYS = (
+    "shape_type",
+    "length",
+    "width",
+    "depth",
+    "top_thickness",
+    "hole_radius",
+    "top_wood_id",
+    "back_wood_id",
+    "gui_mode",
+)
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(BASE_DIR / "FEM" / "geometry"))
 from generate_reference_models import (  # noqa: E402
@@ -111,6 +125,9 @@ def _init_session() -> None:
         "_fast_preview_geom": None,
         "_studio_event_id": "",
         "_studio_templates_sent": False,
+        "_studio_component_ready": False,
+        "_studio_handshake_id": "",
+        "_studio_iframe_payload_fp": "",
     }.items():
         if key not in st.session_state:
             st.session_state[key] = val
@@ -312,6 +329,68 @@ def studio_payload_for_component(payload: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def studio_iframe_payload_fp(payload: Dict[str, Any]) -> str:
+    """Fingerprint of props that should trigger a full iframe re-render."""
+    subset = {k: payload.get(k) for k in STUDIO_ROM_PAYLOAD_KEYS}
+    subset["has_templates"] = "templates" in payload
+    return json.dumps(subset, sort_keys=True, default=str)
+
+
+def studio_payload_for_iframe(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Stable component ``initial`` dict — avoids remount churn when only PyVista/session
+    state changes. After the first successful mount, omit templates and skip redundant
+    metadata when the ROM fingerprint is unchanged.
+    """
+    out = studio_payload_for_component(payload)
+    fp = studio_iframe_payload_fp(out)
+    last_fp = str(st.session_state.get("_studio_iframe_payload_fp", ""))
+    ready = bool(st.session_state.get("_studio_component_ready"))
+    if ready and last_fp and fp == last_fp:
+        return {k: out[k] for k in STUDIO_ROM_PAYLOAD_KEYS if k in out}
+    st.session_state._studio_iframe_payload_fp = fp
+    return out
+
+
+def is_studio_handshake_event(event: Dict[str, Any]) -> bool:
+    """True for mount/ping payloads from the iframe (no geometry side effects)."""
+    action = str(event.get("action") or "").strip().lower()
+    if action in STUDIO_HANDSHAKE_ACTIONS:
+        return True
+    evt_type = str(event.get("type") or "").strip().lower()
+    return evt_type in {"ready", "handshake", "component_ready"}
+
+
+def record_studio_handshake(event: Dict[str, Any]) -> None:
+    """Mark the Design Studio iframe as mounted; dedupe repeated ready pings."""
+    token = event.get("_ts")
+    if token is None:
+        token = event.get("_handshake_ts")
+    eid = f"handshake:{token if token is not None else 'mount'}"
+    if eid == st.session_state.get("_studio_handshake_id"):
+        return
+    st.session_state._studio_handshake_id = eid
+    st.session_state._studio_component_ready = True
+
+
+def render_fast_preview_studio(initial: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Mount the Design Studio iframe with fixed height and a safe fallback."""
+    try:
+        with st.container():
+            out = fast_preview(
+                initial=initial,
+                key="fast_preview_geom",
+                height=FAST_PREVIEW_HEIGHT,
+            )
+            st.session_state._studio_component_ready = True
+            return out
+    except FileNotFoundError as exc:
+        st.error(f"Design Studio assets missing: {exc}")
+    except Exception as exc:
+        st.warning(f"Design Studio failed to mount: {exc}")
+    return None
+
+
 def studio_event_id(event: Dict[str, Any]) -> str:
     """Unique id for a component button event (dedupes stale return values across reruns)."""
     clean = sanitize_studio_payload(event)
@@ -360,6 +439,11 @@ def process_fast_preview_event(
     """Handle Save & Sync / Run ROM / Run FEM from the Design Studio."""
     if not event or not isinstance(event, dict):
         return
+
+    if is_studio_handshake_event(event):
+        record_studio_handshake(event)
+        return
+
     action = str(event.get("action") or "").strip().lower()
     if not action:
         return
@@ -865,11 +949,11 @@ def _render_interactive_panel(
     if isinstance(fp_raw, dict) and fp_raw:
         fp_seed = sanitize_studio_payload({**fp_seed, **fp_raw}, saved_shape)
     fp_seed["gui_mode"] = "admin" if st.session_state.developer_fom_mode else "user"
-    fp_for_component = studio_payload_for_component(fp_seed)
+    fp_for_component = studio_payload_for_iframe(fp_seed)
 
     with col_vis:
         st.subheader("Design Studio")
-        studio_event = fast_preview(initial=fp_for_component, key="fast_preview_geom", height=720)
+        studio_event = render_fast_preview_studio(fp_for_component)
         process_fast_preview_event(
             studio_event,
             clamp_ribs=clamp_ribs,
@@ -999,6 +1083,15 @@ def main() -> None:
         <style>
         h1 { letter-spacing: 0.06em; font-weight: 700; }
         div[data-testid="stpyvista"] canvas { opacity: 1 !important; }
+        /* Keep custom component iframe at declared height (avoids 0-height timeout races). */
+        iframe[title="components.fast_preview.fast_preview"] {
+            min-height: {FAST_PREVIEW_HEIGHT}px !important;
+            height: {FAST_PREVIEW_HEIGHT}px !important;
+            display: block !important;
+        }
+        div[data-testid="stCustomComponentV1"] {
+            min-height: {FAST_PREVIEW_HEIGHT}px;
+        }
         </style>
         """,
         unsafe_allow_html=True,
