@@ -193,6 +193,78 @@ def _loop_to_xy(loop: Sequence[Tuple[float, float]]) -> List[List[float]]:
     return [[x, y] for x, y in pts]
 
 
+# Keys sent to / returned from the Design Studio (7D ROM + presentation metadata).
+STUDIO_ROM_KEYS = (
+    "shape_type",
+    "length",
+    "width",
+    "depth",
+    "top_thickness",
+    "hole_radius",
+    "top_wood_id",
+    "back_wood_id",
+)
+STUDIO_META_KEYS = (
+    "gui_mode",
+    "bounds",
+    "bounds_by_shape",
+    "top_thickness_bounds",
+    "hole_radius_bounds",
+    "wood_ids",
+    "wood_colors",
+    "templates",
+    "soundhole_from_neck_ratio",
+)
+
+
+def sanitize_studio_payload(data: Optional[Dict[str, Any]], shape_type: str = "Classical") -> Dict[str, Any]:
+    """Strip legacy bout/waist keys; keep only ROM 7D + component metadata."""
+    src = dict(data or {})
+    shape = str(src.get("shape_type", shape_type)).strip()
+    if shape not in SHAPE_OPTIONS:
+        shape = shape_type if shape_type in SHAPE_OPTIONS else "Classical"
+    rom_def = rom_defaults(shape)
+    width = src.get("width")
+    if width is None:
+        width = src.get("lower_bout_width") or src.get("lower_bout")
+    if width is None:
+        width = rom_def["width"]
+    top_t = src.get("top_thickness", src.get("thickness", rom_def["top_thickness"]))
+    hole = src.get("hole_radius", src.get("soundhole_radius", rom_def["hole_radius"]))
+    top_wood = str(src.get("top_wood_id", "spruce")).lower()
+    back_wood = str(src.get("back_wood_id", "rosewood")).lower()
+    if top_wood not in ALL_WOOD_IDS:
+        top_wood = "spruce"
+    if back_wood not in ALL_WOOD_IDS:
+        back_wood = "rosewood"
+    bounds = rom_lwd_bounds(shape)
+    out: Dict[str, Any] = {
+        "shape_type": shape,
+        "length": float(src.get("length", rom_def["length"])),
+        "width": float(width),
+        "depth": float(src.get("depth", rom_def["depth"])),
+        "top_thickness": float(top_t),
+        "hole_radius": float(hole),
+        "top_wood_id": top_wood,
+        "back_wood_id": back_wood,
+        "gui_mode": str(src.get("gui_mode", "user")),
+        "bounds": src.get("bounds") or {
+            "length": list(bounds["length"]),
+            "width": list(bounds["width"]),
+            "depth": list(bounds["depth"]),
+        },
+        "bounds_by_shape": src.get("bounds_by_shape")
+        or {s: {k: list(v) for k, v in rom_lwd_bounds(s).items()} for s in SHAPE_OPTIONS},
+        "top_thickness_bounds": list(src.get("top_thickness_bounds") or [TOP_THICKNESS_MIN_M, TOP_THICKNESS_MAX_M]),
+        "hole_radius_bounds": list(src.get("hole_radius_bounds") or list(ROM_HOLE_RADIUS_BOUNDS)),
+        "wood_ids": list(src.get("wood_ids") or ALL_WOOD_IDS),
+        "wood_colors": dict(src.get("wood_colors") or {w: plot_color_for_wood(w) for w in ALL_WOOD_IDS}),
+        "templates": dict(src.get("templates") or export_luthier_templates()),
+        "soundhole_from_neck_ratio": float(src.get("soundhole_from_neck_ratio", SOUNDHOLE_FROM_NECK_RATIO)),
+    }
+    return out
+
+
 def export_luthier_templates() -> Dict[str, Dict[str, Any]]:
     """Closed-loop control points for the Design Studio (matches Python STEP blueprints)."""
     cdef = get_luthier_gui_defaults("Classical")
@@ -217,62 +289,30 @@ def studio_initial_from_saved(
     *,
     developer_fom_mode: bool,
 ) -> Dict[str, Any]:
-    """Payload for the Three.js Design Studio component."""
-    rom_def = rom_defaults(shape_type)
+    """Payload for the Three.js Design Studio component (7D ROM + metadata only)."""
     cfg = _load_saved_config()
     mats = cfg.get("materials") or {}
-    top_wood = str(saved_geom.get("top_wood_id") or (mats.get("top") or {}).get("wood_id", "spruce")).lower()
-    back_wood = str(saved_geom.get("back_wood_id") or (mats.get("back") or {}).get("wood_id", "rosewood")).lower()
-    if top_wood not in ALL_WOOD_IDS:
-        top_wood = "spruce"
-    if back_wood not in ALL_WOOD_IDS:
-        back_wood = "rosewood"
-    bounds = rom_lwd_bounds(shape_type)
-    return {
-        "shape_type": shape_type,
-        "length": float(saved_geom.get("length", rom_def["length"])),
-        "width": float(saved_geom.get("width", rom_def["width"])),
-        "depth": float(saved_geom.get("depth", rom_def["depth"])),
-        "top_thickness": float(
-            saved_geom.get("top_thickness", saved_geom.get("thickness", rom_def["top_thickness"]))
-        ),
-        "hole_radius": float(saved_geom.get("hole_radius", rom_def["hole_radius"])),
-        "top_wood_id": top_wood,
-        "back_wood_id": back_wood,
-        "gui_mode": "admin" if developer_fom_mode else "user",
-        "bounds": {
-            "length": list(bounds["length"]),
-            "width": list(bounds["width"]),
-            "depth": list(bounds["depth"]),
-        },
-        "bounds_by_shape": {s: {k: list(v) for k, v in rom_lwd_bounds(s).items()} for s in SHAPE_OPTIONS},
-        "top_thickness_bounds": [TOP_THICKNESS_MIN_M, TOP_THICKNESS_MAX_M],
-        "hole_radius_bounds": list(ROM_HOLE_RADIUS_BOUNDS),
-        "wood_ids": list(ALL_WOOD_IDS),
-        "wood_colors": {w: plot_color_for_wood(w) for w in ALL_WOOD_IDS},
-        "templates": export_luthier_templates(),
-        "soundhole_from_neck_ratio": SOUNDHOLE_FROM_NECK_RATIO,
-    }
+    merged = dict(saved_geom)
+    merged.setdefault("top_wood_id", (mats.get("top") or {}).get("wood_id", "spruce"))
+    merged.setdefault("back_wood_id", (mats.get("back") or {}).get("wood_id", "rosewood"))
+    payload = sanitize_studio_payload(merged, shape_type)
+    payload["gui_mode"] = "admin" if developer_fom_mode else "user"
+    return payload
 
 
 def geom_from_studio_event(event: Dict[str, Any]) -> Tuple[Dict[str, Any], str, str]:
-    """Parse component event into geometry dict and wood IDs."""
-    shape = str(event.get("shape_type", "Classical"))
-    if shape not in SHAPE_OPTIONS:
-        shape = "Classical"
-    top_wood = str(event.get("top_wood_id", "spruce")).lower()
-    back_wood = str(event.get("back_wood_id", "rosewood")).lower()
-    if top_wood not in ALL_WOOD_IDS:
-        top_wood = "spruce"
-    if back_wood not in ALL_WOOD_IDS:
-        back_wood = "rosewood"
+    """Parse component event into geometry dict and wood IDs (7D ROM only)."""
+    clean = sanitize_studio_payload(event)
+    shape = str(clean["shape_type"])
+    top_wood = str(clean["top_wood_id"])
+    back_wood = str(clean["back_wood_id"])
     geom = build_geometry_state(
         shape_type=shape,
-        length=float(event["length"]),
-        width=float(event["width"]),
-        depth=float(event["depth"]),
-        top_thickness=float(event.get("top_thickness", event.get("thickness", rom_defaults(shape)["top_thickness"]))),
-        hole_radius=float(event.get("hole_radius", rom_defaults(shape)["hole_radius"])),
+        length=float(clean["length"]),
+        width=float(clean["width"]),
+        depth=float(clean["depth"]),
+        top_thickness=float(clean["top_thickness"]),
+        hole_radius=float(clean["hole_radius"]),
     )
     return geom, top_wood, back_wood
 
@@ -291,8 +331,9 @@ def process_fast_preview_event(
     if not action:
         return
 
-    geom, top_wood, back_wood = geom_from_studio_event(event)
-    st.session_state._fast_preview_geom = dict(event)
+    clean = sanitize_studio_payload(event)
+    geom, top_wood, back_wood = geom_from_studio_event(clean)
+    st.session_state._fast_preview_geom = clean
     st.session_state._geom = geom
     st.session_state._top_wood = top_wood
     st.session_state._back_wood = back_wood
@@ -794,9 +835,12 @@ def main() -> None:
         st.session_state["_clamp_ribs"] = clamp_ribs
         st.session_state["_pin_neck_fix"] = pin_neck
 
-    fp_seed = st.session_state.get("_fast_preview_geom") or studio_initial_from_saved(
+    fp_seed = studio_initial_from_saved(
         saved, saved_shape, developer_fom_mode=st.session_state.developer_fom_mode
     )
+    fp_raw = st.session_state.get("_fast_preview_geom")
+    if isinstance(fp_raw, dict) and fp_raw:
+        fp_seed = sanitize_studio_payload({**fp_seed, **fp_raw}, saved_shape)
     fp_seed["gui_mode"] = "admin" if st.session_state.developer_fom_mode else "user"
 
     with col_vis:
@@ -809,7 +853,10 @@ def main() -> None:
             fixture_preset=fixture_preset,
         )
 
-        fp_live = st.session_state.get("_fast_preview_geom") or fp_seed
+        fp_live = sanitize_studio_payload(
+            st.session_state.get("_fast_preview_geom") or fp_seed,
+            saved_shape,
+        )
         shape = str(fp_live.get("shape_type", saved_shape))
         if shape not in SHAPE_OPTIONS:
             shape = saved_shape

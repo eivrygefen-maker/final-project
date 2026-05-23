@@ -218,15 +218,37 @@
     function setComponentValue(value) {
       sendMessage("streamlit:setComponentValue", { value: value });
     }
+
+    /** Streamlit passes kwargs as args; ROM payload lives under args.initial */
+    function normalizeArgs(raw) {
+      if (!raw || typeof raw !== "object") return {};
+      if (raw.initial && typeof raw.initial === "object") return raw.initial;
+      return raw;
+    }
+
     function onRender(event) {
       if (!event.data || event.data.type !== "streamlit:render") return;
-      applyArgs(event.data.args || {});
+      try {
+        applyArgs(event.data.args || {});
+      } catch (err) {
+        console.error("[Design Studio] applyArgs failed:", err);
+      }
     }
     window.addEventListener("message", onRender);
     sendMessage("streamlit:componentReady", { isStreamlitComponent: true });
     setFrameHeight(700);
 
-    /* ── State ──────────────────────────────────────────────────────── */
+    const ROM_KEYS = [
+      "shape_type", "length", "width", "depth",
+      "top_thickness", "hole_radius", "top_wood_id", "back_wood_id",
+    ];
+
+    function num(v, fallback) {
+      const n = parseFloat(v);
+      return Number.isFinite(n) ? n : fallback;
+    }
+
+    /* ── State (7D ROM + metadata only) ─────────────────────────────── */
     const state = {
       shape_type: "Classical",
       length: 0.49,
@@ -237,7 +259,7 @@
       top_wood_id: "spruce",
       back_wood_id: "rosewood",
       gui_mode: "user",
-      bounds: {},
+      bounds: { length: [0.35, 0.6], width: [0.2, 0.45], depth: [0.08, 0.15] },
       top_thickness_bounds: [0.003, 0.006],
       hole_radius_bounds: [0.035, 0.055],
       wood_ids: ["spruce", "cedar", "mahogany", "rosewood", "maple"],
@@ -248,18 +270,43 @@
     };
 
     let scene, camera, renderer, controls;
-    let bodyGroup, holeMesh;
+    let bodyGroup = null;
     let initialized3d = false;
 
-  function soundholeX(L) {
-    return 0.5 * L - state.soundhole_from_neck_ratio * L;
-  }
+    function mergeRomState(data) {
+      if (!data || typeof data !== "object") return;
+      ROM_KEYS.forEach((k) => {
+        if (data[k] !== undefined && data[k] !== null) state[k] = data[k];
+      });
+      if (data.gui_mode) state.gui_mode = data.gui_mode;
+      if (data.bounds) state.bounds = data.bounds;
+      if (data.bounds_by_shape) state.bounds_by_shape = data.bounds_by_shape;
+      if (data.top_thickness_bounds) state.top_thickness_bounds = data.top_thickness_bounds;
+      if (data.hole_radius_bounds) state.hole_radius_bounds = data.hole_radius_bounds;
+      if (data.wood_ids) state.wood_ids = data.wood_ids;
+      if (data.wood_colors) state.wood_colors = data.wood_colors;
+      if (data.templates) state.templates = data.templates;
+      if (data.soundhole_from_neck_ratio != null) {
+        state.soundhole_from_neck_ratio = num(data.soundhole_from_neck_ratio, 0.5);
+      }
+      state.length = num(state.length, 0.49);
+      state.width = num(state.width, 0.37);
+      state.depth = num(state.depth, 0.095);
+      state.top_thickness = num(state.top_thickness, 0.0045);
+      state.hole_radius = num(state.hole_radius, 0.045);
+    }
 
-  function scaleLoop(loop, L, W, nominalLength, nominalWidth) {
-    const sx = L / Math.max(nominalLength, 1e-9);
-    const sy = W / Math.max(nominalWidth, 1e-9);
-    return loop.map(([x, y]) => [x * sx, y * sy]);
-  }
+    function soundholeX(L) {
+      const ratio = num(state.soundhole_from_neck_ratio, 0.5);
+      const len = num(L, 0.49);
+      return 0.5 * len - ratio * len;
+    }
+
+    function scaleLoop(loop, L, W, nominalLength, nominalWidth) {
+      const sx = num(L, 0.49) / Math.max(num(nominalLength, 0.49), 1e-9);
+      const sy = num(W, 0.37) / Math.max(num(nominalWidth, 0.37), 1e-9);
+      return loop.map(([x, y]) => [x * sx, y * sy]);
+    }
 
   function hexColor(hex) {
     const h = String(hex || "#8B7355").replace("#", "");
@@ -271,24 +318,26 @@
     );
   }
 
-  function disposeGroup(g) {
-    if (!g) return;
-    g.traverse((obj) => {
-      if (obj.geometry) obj.geometry.dispose();
-      if (obj.material) {
-        if (Array.isArray(obj.material)) obj.material.forEach((m) => m.dispose());
-        else obj.material.dispose();
-      }
-    });
-    scene.remove(g);
-  }
+    function disposeGroup(g) {
+      if (!g || !scene) return;
+      g.traverse((obj) => {
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) {
+          if (Array.isArray(obj.material)) obj.material.forEach((m) => m.dispose());
+          else obj.material.dispose();
+        }
+      });
+      scene.remove(g);
+    }
 
-  function buildBody() {
-    disposeGroup(bodyGroup);
-    bodyGroup = new THREE.Group();
-    const L = state.length;
-    const W = state.width;
-    const D = state.depth;
+    function buildBody() {
+      if (typeof THREE === "undefined" || !scene) return;
+      disposeGroup(bodyGroup);
+      bodyGroup = new THREE.Group();
+      const L = num(state.length, 0.49);
+      const W = num(state.width, 0.37);
+      const D = num(state.depth, 0.095);
+      const tTop = num(state.top_thickness, 0.0045);
     const backCol = hexColor(state.wood_colors[state.back_wood_id] || "#5c4033");
     const topCol = hexColor(state.wood_colors[state.top_wood_id] || "#FFF8DC");
     const matBack = new THREE.MeshPhongMaterial({ color: backCol, shininess: 28, flatShading: false });
@@ -317,7 +366,7 @@
         const mesh = new THREE.Mesh(geom, matBack);
         bodyGroup.add(mesh);
 
-        const topGeom = new THREE.ExtrudeGeometry(shape, { depth: state.top_thickness, bevelEnabled: false });
+        const topGeom = new THREE.ExtrudeGeometry(shape, { depth: tTop, bevelEnabled: false });
         topGeom.rotateX(-Math.PI / 2);
         topGeom.translate(0, D, 0);
         const topMesh = new THREE.Mesh(topGeom, matTop);
@@ -325,24 +374,24 @@
       }
     }
 
-    const hx = soundholeX(L);
-    const hr = state.hole_radius;
-    if (hr > 0.005 && state.shape_type !== "Box") {
-      const holeGeom = new THREE.CylinderGeometry(hr, hr, state.top_thickness * 2.2, 32);
-      const holeMat = new THREE.MeshPhongMaterial({ color: 0x0a0a0a, shininess: 4 });
-      holeMesh = new THREE.Mesh(holeGeom, holeMat);
-      holeMesh.position.set(hx, D + state.top_thickness * 0.5, 0);
-      bodyGroup.add(holeMesh);
+      const hx = soundholeX(L);
+      const hr = num(state.hole_radius, 0.045);
+      if (hr > 0.005 && state.shape_type !== "Box") {
+        const holeGeom = new THREE.CylinderGeometry(hr, hr, tTop * 2.2, 32);
+        const holeMat = new THREE.MeshPhongMaterial({ color: 0x0a0a0a, shininess: 4 });
+        const holeMesh = new THREE.Mesh(holeGeom, holeMat);
+        holeMesh.position.set(hx, D + tTop * 0.5, 0);
+        bodyGroup.add(holeMesh);
+      }
+
+      const box = new THREE.Box3().setFromObject(bodyGroup);
+      const center = box.getCenter(new THREE.Vector3());
+      bodyGroup.position.sub(center);
+      scene.add(bodyGroup);
     }
 
-    const box = new THREE.Box3().setFromObject(bodyGroup);
-    const center = box.getCenter(new THREE.Vector3());
-    bodyGroup.position.sub(center);
-    scene.add(bodyGroup);
-  }
-
-  function initThree() {
-    if (initialized3d) return;
+    function initThree() {
+      if (initialized3d || typeof THREE === "undefined") return;
     const canvas = document.getElementById("viewport");
     const wrap = canvas.parentElement;
     const w = Math.max(wrap.clientWidth, 400);
@@ -358,11 +407,13 @@
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
 
-    controls = new THREE.OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.06;
-    controls.target.set(0, 0.05, 0);
-    controls.update();
+    if (typeof THREE.OrbitControls === "function") {
+      controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.06;
+      controls.target.set(0, 0.05, 0);
+      controls.update();
+    }
 
     scene.add(new THREE.AmbientLight(0xffffff, 0.55));
     const key = new THREE.DirectionalLight(0xffffff, 0.85);
@@ -377,18 +428,22 @@
     grid.position.y = -0.02;
     scene.add(grid);
 
-    initialized3d = true;
-    buildBody();
-    animate();
-  }
+      initialized3d = true;
+      buildBody();
+      animate();
+    }
 
-  function animate() {
-    requestAnimationFrame(animate);
-    if (controls) controls.update();
-    if (renderer && scene && camera) renderer.render(scene, camera);
-  }
+    function animate() {
+      requestAnimationFrame(animate);
+      try {
+        if (controls) controls.update();
+        if (renderer && scene && camera) renderer.render(scene, camera);
+      } catch (err) {
+        console.error("[Design Studio] render:", err);
+      }
+    }
 
-  function onResize() {
+    function onResize() {
     if (!renderer || !camera) return;
     const wrap = document.getElementById("viewport").parentElement;
     const w = wrap.clientWidth;
@@ -397,46 +452,59 @@
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
   }
-  window.addEventListener("resize", onResize);
+    window.addEventListener("resize", onResize);
 
-  function fmt(v, dec) {
-    return Number(v).toFixed(dec);
-  }
+    function fmt(v, dec) {
+      return num(v, 0).toFixed(dec);
+    }
 
-  function applySliderBounds() {
-    const b = state.bounds || {};
-    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
-    const setRange = (id, key, fallback) => {
-      const el = document.getElementById(id);
-      const pair = b[key] || fallback;
-      el.min = pair[0];
-      el.max = pair[1];
-      const cur = state[key] ?? pair[0];
-      el.value = clamp(cur, pair[0], pair[1]);
-      state[key] = parseFloat(el.value);
-    };
-    setRange("length", "length", [0.35, 0.6]);
-    setRange("width", "width", [0.2, 0.45]);
-    setRange("depth", "depth", [0.08, 0.15]);
-    const tt = state.top_thickness_bounds;
-    const hr = state.hole_radius_bounds;
-    const tEl = document.getElementById("topThickness");
-    tEl.min = tt[0]; tEl.max = tt[1]; tEl.value = state.top_thickness;
-    const hEl = document.getElementById("holeRadius");
-    hEl.min = hr[0]; hEl.max = hr[1]; hEl.value = state.hole_radius;
-  }
+    function applySliderBounds() {
+      const b = state.bounds || {};
+      const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+      const setRange = (id, key, fallback) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const pair = b[key] || fallback;
+        const lo = num(pair[0], fallback[0]);
+        const hi = num(pair[1], fallback[1]);
+        el.min = lo;
+        el.max = hi;
+        const cur = num(state[key], lo);
+        el.value = clamp(cur, lo, hi);
+        state[key] = num(el.value, lo);
+      };
+      setRange("length", "length", [0.35, 0.6]);
+      setRange("width", "width", [0.2, 0.45]);
+      setRange("depth", "depth", [0.08, 0.15]);
+      const tt = state.top_thickness_bounds || [0.003, 0.006];
+      const hr = state.hole_radius_bounds || [0.035, 0.055];
+      const tEl = document.getElementById("topThickness");
+      if (tEl) {
+        tEl.min = num(tt[0], 0.003);
+        tEl.max = num(tt[1], 0.006);
+        tEl.value = num(state.top_thickness, tEl.min);
+        state.top_thickness = num(tEl.value, 0.0045);
+      }
+      const hEl = document.getElementById("holeRadius");
+      if (hEl) {
+        hEl.min = num(hr[0], 0.035);
+        hEl.max = num(hr[1], 0.055);
+        hEl.value = num(state.hole_radius, hEl.min);
+        state.hole_radius = num(hEl.value, 0.045);
+      }
+    }
 
-  function readSliders() {
-    state.shape_type = document.getElementById("shapeSelect").value;
-    state.length = parseFloat(document.getElementById("length").value);
-    state.width = parseFloat(document.getElementById("width").value);
-    state.depth = parseFloat(document.getElementById("depth").value);
-    state.top_thickness = parseFloat(document.getElementById("topThickness").value);
-    state.hole_radius = parseFloat(document.getElementById("holeRadius").value);
-    state.top_wood_id = document.getElementById("topWood").value;
-    state.back_wood_id = document.getElementById("backWood").value;
-    updateLabels();
-  }
+    function readSliders() {
+      state.shape_type = document.getElementById("shapeSelect").value || "Classical";
+      state.length = num(document.getElementById("length").value, state.length);
+      state.width = num(document.getElementById("width").value, state.width);
+      state.depth = num(document.getElementById("depth").value, state.depth);
+      state.top_thickness = num(document.getElementById("topThickness").value, state.top_thickness);
+      state.hole_radius = num(document.getElementById("holeRadius").value, state.hole_radius);
+      state.top_wood_id = document.getElementById("topWood").value || "spruce";
+      state.back_wood_id = document.getElementById("backWood").value || "rosewood";
+      updateLabels();
+    }
 
   function updateLabels() {
     document.getElementById("lengthVal").textContent = fmt(state.length, 3);
@@ -453,27 +521,30 @@
     document.getElementById("btnFem").style.display = admin ? "block" : "none";
   }
 
-  function payload(action) {
-    return {
-      action,
-      shape_type: state.shape_type,
-      length: state.length,
-      width: state.width,
-      depth: state.depth,
-      top_thickness: state.top_thickness,
-      hole_radius: state.hole_radius,
-      top_wood_id: state.top_wood_id,
-      back_wood_id: state.back_wood_id,
-      gui_mode: state.gui_mode,
-      soundhole_x: soundholeX(state.length),
-    };
-  }
+    function payload(action) {
+      return {
+        action,
+        shape_type: state.shape_type,
+        length: num(state.length, 0.49),
+        width: num(state.width, 0.37),
+        depth: num(state.depth, 0.095),
+        top_thickness: num(state.top_thickness, 0.0045),
+        hole_radius: num(state.hole_radius, 0.045),
+        top_wood_id: state.top_wood_id,
+        back_wood_id: state.back_wood_id,
+        gui_mode: state.gui_mode,
+      };
+    }
 
-  function refresh3d() {
-    readSliders();
-    if (!initialized3d) initThree();
-    else buildBody();
-  }
+    function refresh3d() {
+      try {
+        readSliders();
+        if (!initialized3d) initThree();
+        else buildBody();
+      } catch (err) {
+        console.error("[Design Studio] refresh3d:", err);
+      }
+    }
 
   function fillWoodSelects() {
     const top = document.getElementById("topWood");
@@ -492,55 +563,72 @@
     back.value = state.back_wood_id;
   }
 
-  function applyArgs(args) {
-    Object.assign(state, args);
-    if (args.bounds_by_shape) state.bounds_by_shape = args.bounds_by_shape;
-    if (args.gui_mode) state.gui_mode = args.gui_mode;
-    if (!state.bounds && state.bounds_by_shape && state.bounds_by_shape[state.shape_type]) {
-      state.bounds = state.bounds_by_shape[state.shape_type];
+    function applyArgs(rawArgs) {
+      const data = normalizeArgs(rawArgs);
+      mergeRomState(data);
+      if (!state.bounds && state.bounds_by_shape && state.bounds_by_shape[state.shape_type]) {
+        state.bounds = state.bounds_by_shape[state.shape_type];
+      }
+      const shapeEl = document.getElementById("shapeSelect");
+      if (shapeEl) shapeEl.value = state.shape_type;
+      fillWoodSelects();
+      applySliderBounds();
+      const ids = [
+        ["length", state.length],
+        ["width", state.width],
+        ["depth", state.depth],
+        ["topThickness", state.top_thickness],
+        ["holeRadius", state.hole_radius],
+      ];
+      ids.forEach(([id, val]) => {
+        const el = document.getElementById(id);
+        if (el) el.value = val;
+      });
+      const tw = document.getElementById("topWood");
+      const bw = document.getElementById("backWood");
+      if (tw) tw.value = state.top_wood_id;
+      if (bw) bw.value = state.back_wood_id;
+      updateLabels();
+      updateModeUi();
+      refresh3d();
     }
-    document.getElementById("shapeSelect").value = state.shape_type;
-    fillWoodSelects();
+
+    ["length", "width", "depth", "topThickness", "holeRadius"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener("input", refresh3d);
+    });
+    document.getElementById("shapeSelect").addEventListener("change", () => {
+      state.shape_type = document.getElementById("shapeSelect").value || "Classical";
+      const byShape = state.bounds_by_shape || {};
+      if (byShape[state.shape_type]) state.bounds = byShape[state.shape_type];
+      applySliderBounds();
+      refresh3d();
+    });
+    document.getElementById("topWood").addEventListener("change", refresh3d);
+    document.getElementById("backWood").addEventListener("change", refresh3d);
+
+    document.getElementById("btnSave").addEventListener("click", () => {
+      readSliders();
+      setComponentValue(payload("save_sync"));
+    });
+    document.getElementById("btnRom").addEventListener("click", () => {
+      readSliders();
+      setComponentValue(payload("run_rom"));
+    });
+    document.getElementById("btnFem").addEventListener("click", () => {
+      readSliders();
+      setComponentValue(payload("run_fem"));
+    });
+
+    /* Boot with safe defaults before first Streamlit render */
     applySliderBounds();
-    document.getElementById("length").value = state.length;
-    document.getElementById("width").value = state.width;
-    document.getElementById("depth").value = state.depth;
-    document.getElementById("topThickness").value = state.top_thickness;
-    document.getElementById("holeRadius").value = state.hole_radius;
-    document.getElementById("topWood").value = state.top_wood_id;
-    document.getElementById("backWood").value = state.back_wood_id;
     updateLabels();
     updateModeUi();
-    refresh3d();
-  }
-
-  ["length", "width", "depth", "topThickness", "holeRadius"].forEach((id) => {
-    document.getElementById(id).addEventListener("input", refresh3d);
-  });
-  document.getElementById("shapeSelect").addEventListener("change", () => {
-    state.shape_type = document.getElementById("shapeSelect").value;
-    const byShape = state.bounds_by_shape || {};
-    if (byShape[state.shape_type]) {
-      state.bounds = byShape[state.shape_type];
-    }
-    applySliderBounds();
-    refresh3d();
-  });
-  document.getElementById("topWood").addEventListener("change", refresh3d);
-  document.getElementById("backWood").addEventListener("change", refresh3d);
-
-  document.getElementById("btnSave").addEventListener("click", () => {
-    readSliders();
-    setComponentValue(payload("save_sync"));
-  });
-  document.getElementById("btnRom").addEventListener("click", () => {
-    readSliders();
-    setComponentValue(payload("run_rom"));
-  });
-  document.getElementById("btnFem").addEventListener("click", () => {
-    readSliders();
-    setComponentValue(payload("run_fem"));
-  });
+    window.addEventListener("load", () => {
+      setTimeout(() => {
+        if (!initialized3d) refresh3d();
+      }, 100);
+    });
   </script>
 </body>
 </html>
