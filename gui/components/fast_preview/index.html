@@ -653,39 +653,85 @@
       }
     }
 
+    function signalReadyAfterCrash(checkpoint) {
+      console.error("DEBUG CRASH AT CHECKPOINT " + checkpoint);
+      try {
+        if (window.Streamlit && typeof window.Streamlit.setComponentReady === "function") {
+          window.Streamlit.setComponentReady();
+          console.log("STARTUP: setComponentReady called (post-crash checkpoint " + checkpoint + ")");
+        }
+      } catch (readyErr) {
+        console.error("DEBUG: setComponentReady failed after crash:", readyErr);
+      }
+    }
+
+    /**
+     * Synchronous Three.js boot (no await / GLTF / texture loaders).
+     * Geometry build is deferred to the next task so the mount handshake is not blocked.
+     */
     function initThreeCore() {
       if (initialized3d) return;
-      const canvas = document.getElementById("viewport");
-      const wrap = canvas.parentElement;
-      const w = Math.max(wrap.clientWidth, 400);
-      const h = Math.max(wrap.clientHeight, 560);
+      var checkpoint = 0;
+      try {
+        const canvas = document.getElementById("viewport");
+        if (!canvas) throw new Error("viewport canvas not found");
+        const wrap = canvas.parentElement;
+        const w = Math.max(wrap.clientWidth, 400);
+        const h = Math.max(wrap.clientHeight, 560);
 
-      scene = new THREE.Scene();
-      scene.background = new THREE.Color(0xe8eaef);
-      camera = new THREE.PerspectiveCamera(42, w / h, 0.01, 10);
-      camera.position.set(0.35, 0.28, 0.55);
+        checkpoint = 3;
+        console.log("CHECKPOINT 3: Scene setup");
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xe8eaef);
 
-      renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
-      renderer.setSize(w, h);
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-      renderer.shadowMap.enabled = true;
+        checkpoint = 2;
+        console.log("CHECKPOINT 2: Camera setup");
+        camera = new THREE.PerspectiveCamera(42, w / h, 0.01, 10);
+        camera.position.set(0.35, 0.28, 0.55);
 
-      if (typeof THREE.OrbitControls === "function") {
-        controls = new THREE.OrbitControls(camera, renderer.domElement);
-        controls.enableDamping = true;
-        controls.dampingFactor = 0.05;
-        controls.rotateSpeed = 0.5;
-        controls.screenSpacePanning = true;
-        controls.target.set(0, 0.05, 0);
-        controls.update();
+        checkpoint = 1;
+        console.log("CHECKPOINT 1: Renderer setup");
+        renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+        renderer.setSize(w, h);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = true;
+
+        if (typeof THREE.OrbitControls === "function") {
+          controls = new THREE.OrbitControls(camera, renderer.domElement);
+          controls.enableDamping = true;
+          controls.dampingFactor = 0.05;
+          controls.rotateSpeed = 0.5;
+          controls.screenSpacePanning = true;
+          controls.target.set(0, 0.05, 0);
+          controls.update();
+        }
+
+        setupStudioLighting();
+
+        checkpoint = 4;
+        console.log("CHECKPOINT 4: Loading geometry...");
+        setTimeout(function () {
+          var geoCheckpoint = 4;
+          try {
+            buildBody();
+            geoCheckpoint = 5;
+            console.log("CHECKPOINT 5: Geometry loaded");
+            renderFrame();
+            initialized3d = true;
+            animate();
+            geoCheckpoint = 6;
+            console.log("CHECKPOINT 6: Engine fully initialized");
+          } catch (geoErr) {
+            console.error("DEBUG CRASH AT CHECKPOINT " + geoCheckpoint, geoErr);
+            if (geoErr && geoErr.stack) console.error(geoErr.stack);
+            signalReadyAfterCrash(geoCheckpoint);
+          }
+        }, 0);
+      } catch (error) {
+        console.error("DEBUG CRASH AT CHECKPOINT " + checkpoint, error);
+        if (error && error.stack) console.error(error.stack);
+        signalReadyAfterCrash(checkpoint);
       }
-
-      setupStudioLighting();
-
-      initialized3d = true;
-      buildBody();
-      renderFrame();
-      animate();
     }
 
     function initThree() {
