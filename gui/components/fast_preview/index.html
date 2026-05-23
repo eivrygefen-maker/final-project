@@ -561,7 +561,9 @@
     let bodyGroup = null;
     let meshTopRef = null;
     let meshBackRef = null;
+    let meshSidesRef = null;
     let initialized3d = false;
+    let lastOutboundRom = null;
 
     function readDomSliderValues() {
       return {
@@ -578,22 +580,50 @@
       "shape_type", "length", "width", "depth", "top_thickness", "hole_radius",
     ];
 
-    function filterIncomingRom(data) {
-      if (!localSliderDrag || !data) return data;
-      const out = Object.assign({}, data);
-      const dom = readDomSliderValues();
-      ROM_GEOM_KEYS.forEach((k) => {
-        if (out[k] === undefined || out[k] === null) return;
-        if (Math.abs(num(out[k]) - num(dom[k])) > 1e-6) delete out[k];
-      });
-      return out;
+    function hasOwnPayloadKey(obj, key) {
+      return Object.prototype.hasOwnProperty.call(obj, key) && obj[key] !== undefined && obj[key] !== null;
     }
 
-    function mergeRomState(data) {
+    /** Accept Python value only when it is a deliberate delta (not a stale full-payload echo). */
+    function acceptIncomingRomKey(key, incoming, domVal) {
+      if (!hasOwnPayloadKey(incoming, key)) return false;
+      const next = incoming[key];
+      if (localSliderDrag && ROM_GEOM_KEYS.indexOf(key) >= 0) {
+        if (Math.abs(num(next) - num(domVal)) > 1e-6) return false;
+      }
+      if (lastOutboundRom && ROM_KEYS.indexOf(key) >= 0) {
+        if (hasOwnPayloadKey(lastOutboundRom, key)) {
+          const sent = lastOutboundRom[key];
+          if (Math.abs(num(next) - num(sent)) > 1e-6 && Math.abs(num(domVal) - num(sent)) <= 1e-6) {
+            return false;
+          }
+        }
+      }
+      return true;
+    }
+
+    function mergeRomStateDelta(data) {
       if (!data || typeof data !== "object") return;
-      ROM_KEYS.forEach((k) => {
-        if (data[k] !== undefined && data[k] !== null) state[k] = data[k];
+      const dom = readDomSliderValues();
+      const domTopWood = document.getElementById("topWood")?.value || state.top_wood_id;
+      const domBackWood = document.getElementById("backWood")?.value || state.back_wood_id;
+
+      ROM_GEOM_KEYS.forEach((k) => {
+        state[k] = dom[k];
       });
+      state.shape_type = dom.shape_type;
+      state.top_wood_id = domTopWood;
+      state.back_wood_id = domBackWood;
+
+      ROM_KEYS.forEach((k) => {
+        let domVal;
+        if (k === "top_wood_id") domVal = domTopWood;
+        else if (k === "back_wood_id") domVal = domBackWood;
+        else if (k === "shape_type") domVal = dom.shape_type;
+        else domVal = dom[k];
+        if (acceptIncomingRomKey(k, data, domVal)) state[k] = data[k];
+      });
+
       if (data.gui_mode) state.gui_mode = data.gui_mode;
       if (data.bounds) state.bounds = data.bounds;
       if (data.bounds_by_shape) state.bounds_by_shape = data.bounds_by_shape;
@@ -607,11 +637,6 @@
       if (data.soundhole_from_neck_ratio != null) {
         state.soundhole_from_neck_ratio = num(data.soundhole_from_neck_ratio, 0.5);
       }
-      state.length = num(state.length, 0.49);
-      state.width = num(state.width, 0.37);
-      state.depth = num(state.depth, 0.095);
-      state.top_thickness = num(state.top_thickness, 0.0045);
-      state.hole_radius = num(state.hole_radius, 0.045);
     }
 
     function romFingerprint() {
@@ -698,8 +723,51 @@
     }
 
     function updateBackMaterial() {
-      if (!meshBackRef || !meshBackRef.material) return;
-      meshBackRef.material.color.copy(woodColorHex(state.back_wood_id));
+      const col = woodColorHex(state.back_wood_id);
+      [meshBackRef, meshSidesRef].forEach((mesh) => {
+        if (mesh && mesh.material) mesh.material.color.copy(col);
+      });
+    }
+
+    function insetLoop(pts, frac) {
+      let cx = 0;
+      let cy = 0;
+      const n = pts.length;
+      for (let i = 0; i < n; i++) {
+        cx += pts[i][0];
+        cy += pts[i][1];
+      }
+      cx /= n;
+      cy /= n;
+      return pts.map(([x, y]) => [cx + (x - cx) * frac, cy + (y - cy) * frac]);
+    }
+
+    function appendLoopToPath(path, pts, reverse) {
+      const order = reverse ? pts.slice().reverse() : pts;
+      for (let i = 0; i < order.length; i++) {
+        const x = order[i][0];
+        const y = order[i][1];
+        if (i === 0) path.moveTo(x, y);
+        else path.lineTo(x, y);
+      }
+      path.closePath();
+    }
+
+    function makeSidesShape(outerPts, insetFrac) {
+      const innerPts = insetLoop(outerPts, insetFrac);
+      const shape = new THREE.Shape();
+      appendLoopToPath(shape, outerPts, false);
+      const rimHole = new THREE.Path();
+      let innerClockwise = true;
+      if (THREE.ShapeUtils && typeof THREE.ShapeUtils.isClockWise === "function") {
+        const innerContour = innerPts.map(([x, y]) => new THREE.Vector2(x, y));
+        innerClockwise = THREE.ShapeUtils.isClockWise(innerContour);
+      } else {
+        innerClockwise = ringSignedArea(innerPts) > 0;
+      }
+      appendLoopToPath(rimHole, innerPts, innerClockwise);
+      shape.holes.push(rimHole);
+      return shape;
     }
 
     function setupStudioLighting() {
@@ -783,14 +851,17 @@
       disposeGroup(bodyGroup);
       meshTopRef = null;
       meshBackRef = null;
+      meshSidesRef = null;
       bodyGroup = new THREE.Group();
       const L = num(state.length, 0.49);
       const W = num(state.width, 0.37);
       const D = num(state.depth, 0.095);
-      const tTop = num(state.top_thickness, 0.0045);
+      const tTop = Math.min(num(state.top_thickness, 0.0045), D * 0.45);
       const hr = num(state.hole_radius, 0.045);
       const outlinePts = resolveOutlinePts(L, W);
       const holeXY = soundholeShapeXY(outlinePts);
+      const rimInset = Math.max(0.82, Math.min(0.97, 1 - (2.2 * tTop) / Math.max(W, L, 1e-6)));
+      const sideDepth = Math.max(D - 2 * tTop, tTop * 0.5);
       const backCol = woodColorHex(state.back_wood_id);
       const topCol = woodColorHex(state.top_wood_id);
       const matBack = new THREE.MeshPhongMaterial({
@@ -805,50 +876,48 @@
         specular: 0x151515,
         flatShading: false,
       });
-      const extrudeBack = {
-        depth: D,
-        bevelEnabled: false,
-        curveSegments: EXTRUDE_CURVE_SEGMENTS,
-      };
-      const extrudeTop = {
+      const extrudePlate = {
         depth: tTop,
         bevelEnabled: false,
         curveSegments: EXTRUDE_TOP_CURVE_SEGMENTS,
       };
+      const extrudeSides = {
+        depth: sideDepth,
+        bevelEnabled: false,
+        curveSegments: EXTRUDE_CURVE_SEGMENTS,
+      };
 
-      function addExtrudedPair(outlinePts) {
-        const shapeBack = makeOutlineShape(outlinePts, hr, false, null);
-        const shapeTop = makeOutlineShape(outlinePts, hr, true, holeXY);
-        const geomBack = new THREE.ExtrudeGeometry(shapeBack, extrudeBack);
-        if (geomBack && geomBack.attributes && geomBack.attributes.position) {
-          console.log("DIAGNOSTIC: Back Geometry Vertex Count =", geomBack.attributes.position.count);
-        } else {
-          console.log("DIAGNOSTIC: Back Geometry failed to generate vertices or is undefined!");
-        }
-        geomBack.rotateX(-Math.PI / 2);
-        geomBack.translate(0, D, 0);
-        const meshBack = new THREE.Mesh(geomBack, matBack);
-        meshBack.name = "back";
-        meshBack.renderOrder = 0;
-        meshBackRef = meshBack;
-        bodyGroup.add(meshBack);
-
-        const geomTop = new THREE.ExtrudeGeometry(shapeTop, extrudeTop);
-        if (geomTop && geomTop.attributes && geomTop.attributes.position) {
-          console.log("DIAGNOSTIC: Top Geometry Vertex Count =", geomTop.attributes.position.count);
-        } else {
-          console.log("DIAGNOSTIC: Top Geometry failed to generate vertices or is undefined!");
-        }
-        geomTop.rotateX(-Math.PI / 2);
-        geomTop.translate(0, D + TOP_PLATE_GAP_M, 0);
-        const meshTop = new THREE.Mesh(geomTop, matTop);
-        meshTop.name = "top";
-        meshTop.renderOrder = 1;
-        meshTopRef = meshTop;
-        bodyGroup.add(meshTop);
+      function orientPlate(geom, yBase) {
+        geom.rotateX(-Math.PI / 2);
+        geom.translate(0, yBase, 0);
       }
 
-      addExtrudedPair(outlinePts);
+      const shapeBack = makeOutlineShape(outlinePts, hr, false, null);
+      const geomBack = new THREE.ExtrudeGeometry(shapeBack, extrudePlate);
+      orientPlate(geomBack, 0);
+      const meshBack = new THREE.Mesh(geomBack, matBack);
+      meshBack.name = "back";
+      meshBack.renderOrder = 0;
+      meshBackRef = meshBack;
+      bodyGroup.add(meshBack);
+
+      const shapeSides = makeSidesShape(outlinePts, rimInset);
+      const geomSides = new THREE.ExtrudeGeometry(shapeSides, extrudeSides);
+      orientPlate(geomSides, tTop);
+      const meshSides = new THREE.Mesh(geomSides, matBack);
+      meshSides.name = "sides";
+      meshSides.renderOrder = 0;
+      meshSidesRef = meshSides;
+      bodyGroup.add(meshSides);
+
+      const shapeTop = makeOutlineShape(outlinePts, hr, true, holeXY);
+      const geomTop = new THREE.ExtrudeGeometry(shapeTop, extrudePlate);
+      orientPlate(geomTop, D - tTop + TOP_PLATE_GAP_M);
+      const meshTop = new THREE.Mesh(geomTop, matTop);
+      meshTop.name = "top";
+      meshTop.renderOrder = 1;
+      meshTopRef = meshTop;
+      bodyGroup.add(meshTop);
 
       const box = new THREE.Box3().setFromObject(bodyGroup);
       const center = box.getCenter(new THREE.Vector3());
@@ -1029,7 +1098,7 @@
         const hi = num(pair[1], fallback[1]);
         el.min = lo;
         el.max = hi;
-        const cur = num(state[key], lo);
+        const cur = num(el.value, num(state[key], lo));
         el.value = clamp(cur, lo, hi);
         state[key] = num(el.value, lo);
       };
@@ -1037,19 +1106,21 @@
       setRange("width", "width", [0.2, 0.45]);
       setRange("depth", "depth", [0.08, 0.15]);
       const tt = state.top_thickness_bounds || [0.003, 0.006];
-      const hr = state.hole_radius_bounds || [0.035, 0.055];
+      const hrB = state.hole_radius_bounds || [0.035, 0.055];
       const tEl = document.getElementById("topThickness");
       if (tEl) {
         tEl.min = num(tt[0], 0.003);
         tEl.max = num(tt[1], 0.006);
-        tEl.value = num(state.top_thickness, tEl.min);
+        const cur = num(tEl.value, num(state.top_thickness, tEl.min));
+        tEl.value = clamp(cur, tEl.min, tEl.max);
         state.top_thickness = num(tEl.value, 0.0045);
       }
       const hEl = document.getElementById("holeRadius");
       if (hEl) {
-        hEl.min = num(hr[0], 0.035);
-        hEl.max = num(hr[1], 0.055);
-        hEl.value = num(state.hole_radius, hEl.min);
+        hEl.min = num(hrB[0], 0.035);
+        hEl.max = num(hrB[1], 0.055);
+        const cur = num(hEl.value, num(state.hole_radius, hEl.min));
+        hEl.value = clamp(cur, hEl.min, hEl.max);
         state.hole_radius = num(hEl.value, 0.045);
       }
     }
@@ -1124,6 +1195,16 @@
 
     function notifyParamChange() {
       readSliders();
+      lastOutboundRom = {
+        shape_type: state.shape_type,
+        length: num(state.length, 0.49),
+        width: num(state.width, 0.37),
+        depth: num(state.depth, 0.095),
+        top_thickness: num(state.top_thickness, 0.0045),
+        hole_radius: num(state.hole_radius, 0.045),
+        top_wood_id: state.top_wood_id,
+        back_wood_id: state.back_wood_id,
+      };
       setComponentValue(payload("param_change"));
     }
 
@@ -1151,36 +1232,43 @@
   }
 
     function applyArgs(rawArgs) {
-      const data = filterIncomingRom(normalizeArgs(rawArgs));
+      const data = normalizeArgs(rawArgs);
       const hadTemplates = Boolean(data.templates && Object.keys(data.templates).length);
       const prevRomFp = lastRomFp;
-      mergeRomState(data);
+      mergeRomStateDelta(data);
       if (!state.bounds && state.bounds_by_shape && state.bounds_by_shape[state.shape_type]) {
         state.bounds = state.bounds_by_shape[state.shape_type];
       }
-      const shapeEl = document.getElementById("shapeSelect");
-      if (shapeEl && shapeEl.value !== state.shape_type) shapeEl.value = state.shape_type;
+      if (hasOwnPayloadKey(data, "shape_type") && !localSliderDrag) {
+        const shapeEl = document.getElementById("shapeSelect");
+        if (shapeEl && shapeEl.value !== state.shape_type) shapeEl.value = state.shape_type;
+      }
       fillWoodSelects();
       applySliderBounds();
-      const ids = [
-        ["length", state.length],
-        ["width", state.width],
-        ["depth", state.depth],
-        ["topThickness", state.top_thickness],
-        ["holeRadius", state.hole_radius],
-      ];
-      ids.forEach(([id, val]) => {
+      const sliderMap = {
+        length: "length",
+        width: "width",
+        depth: "depth",
+        top_thickness: "topThickness",
+        hole_radius: "holeRadius",
+      };
+      Object.keys(sliderMap).forEach((key) => {
         if (localSliderDrag) return;
-        const el = document.getElementById(id);
+        if (!hasOwnPayloadKey(data, key)) return;
+        const el = document.getElementById(sliderMap[key]);
         if (!el) return;
         const cur = parseFloat(el.value);
-        const next = num(val, cur);
+        const next = num(state[key], cur);
         if (!Number.isFinite(cur) || Math.abs(cur - next) > 1e-9) el.value = next;
       });
       const tw = document.getElementById("topWood");
       const bw = document.getElementById("backWood");
-      if (tw && tw.value !== state.top_wood_id) tw.value = state.top_wood_id;
-      if (bw && bw.value !== state.back_wood_id) bw.value = state.back_wood_id;
+      if (!localSliderDrag && hasOwnPayloadKey(data, "top_wood_id") && tw && tw.value !== state.top_wood_id) {
+        tw.value = state.top_wood_id;
+      }
+      if (!localSliderDrag && hasOwnPayloadKey(data, "back_wood_id") && bw && bw.value !== state.back_wood_id) {
+        bw.value = state.back_wood_id;
+      }
       updateLabels();
       updateModeUi();
       const romFp = romFingerprint();

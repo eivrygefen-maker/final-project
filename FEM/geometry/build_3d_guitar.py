@@ -322,10 +322,10 @@ def create_guitar_mesh():
         hole_x = 0.5 * L - hole_from_neck_ratio * L
     hole_y = 0.0
 
-    # Engineering: high-density shell (6 mm) + 1 mm thickness edges.
-    # Preview sketch: uniform wood_surface_lc (6 mm) on solid volume — no size gradients. Display: 4 mm.
-    wood_surface_size = 0.006   # 6 mm engineering baseline (user target lc)
-    wood_thickness_size = 0.001  # 1 mm on short ~through-thickness edges (>=2–3 elements across ~3 mm wood)
+    # Engineering: dense shell for smooth waist / soundhole (ROM path is lightweight).
+    # Preview sketch: uniform wood_surface_lc on solid volume. Display: uniform fine shell.
+    wood_surface_size = 0.002   # 2 mm global wood surface lc (was 6 mm)
+    wood_thickness_size = 0.0004  # 0.4 mm on through-thickness edges (was 1 mm)
     thickness_curve_len_max = 0.005  # curves shorter than this (m) are treated as thickness direction
     # Thickness-edge Threshold: smooth 1 mm → 6.5 mm over ~8 mm band from short edges
     thickness_threshold_dist_min = 0.0005
@@ -333,14 +333,14 @@ def create_guitar_mesh():
     # Air Threshold field (distance from wood shell): near-field at soundhole band, coarser far cap for ~500 Hz
     air_threshold_dist_min = 0.015
     air_threshold_dist_max = 0.25
-    air_threshold_size_min = 0.008   # 8 mm near wood (Helmholtz / hole region; bridges 6.5 mm shell)
-    air_threshold_size_max = 0.080   # 80 mm far field
+    air_threshold_size_min = 0.003   # 3 mm near wood / soundhole band (was 8 mm)
+    air_threshold_size_max = 0.050   # 50 mm far field cap (was 80 mm)
 
-    # Sketch: coarse. Display: uniform 4 mm shell (no adaptive fields). FOM: full graded FSI mesh.
+    # Sketch: fine uniform shell. Display: uniform 2 mm shell. FOM: full graded FSI mesh.
     if is_display:
-        mesh_size = 0.004
-        mesh_size_min = 0.004
-        mesh_size_max = 0.004
+        mesh_size = 0.002
+        mesh_size_min = 0.002
+        mesh_size_max = 0.002
     elif is_preview:
         # Real-time sketch: uniform 6 mm skin (zero gradient — avoids spline-cap skew / core dump).
         mesh_size = wood_surface_size
@@ -352,8 +352,8 @@ def create_guitar_mesh():
         mesh_size_max = air_threshold_size_max
 
     print(
-        "DEBUG: Golden mesh — wood: 6.5 mm faces / 1 mm thickness edges; "
-        "air: 8 mm near wood → 80 mm far (Dist 1.5–25 cm)."
+        "DEBUG: Golden mesh — wood: 2 mm faces / 0.4 mm thickness edges; "
+        "air: 3 mm near wood → 50 mm far (Dist 1.5–25 cm)."
     )
     print(
         f"Building geometry with Thickness: {t*1000:.1f}mm (inner_depth={inner_depth*1000:.1f}mm), "
@@ -1153,10 +1153,10 @@ def create_guitar_mesh():
     
     if shell_only:
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
-        gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", 8 if is_display else 12)
+        gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", 24 if is_display else 12)
     else:
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
-        gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", 36)
+        gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", 48)
     
     gmsh.model.mesh.setOrder(1)
     mesh_resolution_factor = 1.0
@@ -1278,7 +1278,7 @@ def create_guitar_mesh():
             if thick_thresh is not None:
                 combine_list.append(thick_thresh)
             # Soundhole annulus: extra refinement (engineering only) for circular opening.
-            hole_lc_target = max(wood_thickness_size, min(0.002, hr / 6.0))
+            hole_lc_target = max(wood_thickness_size, min(0.001, hr / 12.0))
             if soundhole_surfs:
                 for s in soundhole_surfs:
                     try:
