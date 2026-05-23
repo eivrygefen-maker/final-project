@@ -297,6 +297,7 @@
     let lastRomFp = "";
     let lastGeomFp = "";
     let lastRenderArgsFp = "";
+    let localSliderDrag = false;
     let animating = true;
     const STUDIO_W = 1200;
     const STUDIO_H = 950;
@@ -369,7 +370,7 @@
         window.__threeReady &&
         window.THREE &&
         typeof window.THREE.Scene === "function" &&
-        typeof window.THREE.OrbitControls === "function"
+        typeof window.THREE.ArcballControls === "function"
       );
     }
 
@@ -625,14 +626,19 @@
       ];
     }
 
-    function updateBodyMaterials() {
+    function updateTopMaterial() {
       if (!bodyGroup) return;
-      const backCol = woodColorHex(state.back_wood_id);
       const topCol = woodColorHex(state.top_wood_id);
       bodyGroup.traverse((obj) => {
-        if (!obj.isMesh || !obj.material) return;
-        if (obj.name === "top") obj.material.color.copy(topCol);
-        else if (obj.name === "back") obj.material.color.copy(backCol);
+        if (obj.isMesh && obj.name === "top" && obj.material) obj.material.color.copy(topCol);
+      });
+    }
+
+    function updateBackMaterial() {
+      if (!bodyGroup) return;
+      const backCol = woodColorHex(state.back_wood_id);
+      bodyGroup.traverse((obj) => {
+        if (obj.isMesh && obj.name === "back" && obj.material) obj.material.color.copy(backCol);
       });
     }
 
@@ -838,7 +844,7 @@
         checkpoint = 2;
         console.log("CHECKPOINT 2: Camera setup");
         camera = new THREE.PerspectiveCamera(42, w / h, 0.01, 10);
-        camera.position.set(0.35, 0.28, 0.55);
+        camera.position.set(0.42, 0.30, 0.44);
 
         checkpoint = 1;
         console.log("CHECKPOINT 1: Renderer setup");
@@ -847,22 +853,17 @@
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         renderer.shadowMap.enabled = true;
 
-        if (typeof THREE.OrbitControls === "function") {
-          controls = new THREE.OrbitControls(camera, renderer.domElement);
-          controls.enableDamping = true;
-          controls.dampingFactor = 0.08;
+        if (typeof THREE.ArcballControls === "function") {
+          controls = new THREE.ArcballControls(camera, renderer.domElement, scene);
+          controls.enableGizmos = false;
+          controls.setGizmosVisible(false);
+          controls.enableAnimations = true;
+          controls.dampingFactor = 25;
+          controls.enablePan = true;
           controls.enableRotate = true;
-          controls.rotateSpeed = 0.85;
-          controls.screenSpacePanning = true;
+          controls.enableZoom = true;
           controls.target.set(0, 0, 0);
-          /* Match PyVista/Gmsh trackball: object follows the drag direction. */
-          if (typeof controls.rotateLeft === "function" && typeof controls.rotateUp === "function") {
-            const orbitLeft = controls.rotateLeft.bind(controls);
-            const orbitUp = controls.rotateUp.bind(controls);
-            controls.rotateLeft = function (angle) { orbitLeft(-angle); };
-            controls.rotateUp = function (angle) { orbitUp(-angle); };
-          }
-          controls.update();
+          controls.saveState();
         }
 
         setupStudioLighting();
@@ -1020,7 +1021,6 @@
         }
         const gfp = geometryFingerprint();
         if (gfp === lastGeomFp) {
-          updateBodyMaterials();
           renderFrame();
           return;
         }
@@ -1031,18 +1031,15 @@
       }
     }
 
-    function refresh3d() {
+    function preview3dFromSliders() {
+      readSliders();
+      updateLabels();
       sync3dFromState();
-      notifyParamChange();
     }
 
-    let paramNotifyTimer = null;
     function notifyParamChange() {
-      if (paramNotifyTimer) clearTimeout(paramNotifyTimer);
-      paramNotifyTimer = setTimeout(function () {
-        readSliders();
-        setComponentValue(payload("param_change"));
-      }, 350);
+      readSliders();
+      setComponentValue(payload("param_change"));
     }
 
   function fillWoodSelects() {
@@ -1087,6 +1084,7 @@
         ["holeRadius", state.hole_radius],
       ];
       ids.forEach(([id, val]) => {
+        if (localSliderDrag) return;
         const el = document.getElementById(id);
         if (!el) return;
         const cur = parseFloat(el.value);
@@ -1096,7 +1094,7 @@
       const tw = document.getElementById("topWood");
       const bw = document.getElementById("backWood");
       if (tw && tw.value !== state.top_wood_id) tw.value = state.top_wood_id;
-      if (bw && bw.value !== state.back_wood_id) bw.value = state.back_wood_id;
+      if (bw && bw.value =!= state.back_wood_id) bw.value = state.back_wood_id;
       updateLabels();
       updateModeUi();
       const romFp = romFingerprint();
@@ -1107,24 +1105,45 @@
         sync3dFromState();
       } else if (romFp !== lastRomFp) {
         lastRomFp = romFp;
-        updateBodyMaterials();
+        updateTopMaterial();
+        updateBackMaterial();
         renderFrame();
       }
     }
 
     ["length", "width", "depth", "topThickness", "holeRadius"].forEach((id) => {
       const el = document.getElementById(id);
-      if (el) el.addEventListener("input", refresh3d);
+      if (!el) return;
+      el.addEventListener("pointerdown", function () { localSliderDrag = true; });
+      el.addEventListener("input", preview3dFromSliders);
+      el.addEventListener("change", function () {
+        localSliderDrag = false;
+        notifyParamChange();
+      });
+      el.addEventListener("pointerup", function () { localSliderDrag = false; });
     });
     document.getElementById("shapeSelect").addEventListener("change", () => {
       state.shape_type = document.getElementById("shapeSelect").value || "Classical";
       const byShape = state.bounds_by_shape || {};
       if (byShape[state.shape_type]) state.bounds = byShape[state.shape_type];
       applySliderBounds();
-      refresh3d();
+      preview3dFromSliders();
+      notifyParamChange();
     });
-    document.getElementById("topWood").addEventListener("change", refresh3d);
-    document.getElementById("backWood").addEventListener("change", refresh3d);
+    document.getElementById("topWood").addEventListener("change", function () {
+      state.top_wood_id = document.getElementById("topWood").value || "spruce";
+      lastRomFp = romFingerprint();
+      updateTopMaterial();
+      renderFrame();
+      notifyParamChange();
+    });
+    document.getElementById("backWood").addEventListener("change", function () {
+      state.back_wood_id = document.getElementById("backWood").value || "rosewood";
+      lastRomFp = romFingerprint();
+      updateBackMaterial();
+      renderFrame();
+      notifyParamChange();
+    });
 
     document.getElementById("btnSave").addEventListener("click", () => {
       readSliders();

@@ -15,7 +15,7 @@ _BRIDGE_JS = os.path.join(_COMPONENT_DIR, "streamlit_bridge.js")
 _LIB_FILES = (
     "lib/load-three.mjs",
     "lib/three.module.js",
-    "lib/OrbitControls.js",
+    "lib/ArcballControls.js",
     "lib/GLTFLoader.js",
     "lib/utils/BufferGeometryUtils.js",
 )

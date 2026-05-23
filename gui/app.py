@@ -83,9 +83,12 @@ FIXTURE_PRESETS = (
     "Laying Flat (Top View)",
     "Laying on Side (Profile)",
 )
+DEFAULT_FIXTURE_PRESET = "Standing Upright (Front)"
+DEFAULT_CLAMP_RIBS = True
+DEFAULT_PIN_NECK_FIX = True
 CAMERA_BY_FIXTURE: Dict[str, Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]] = {
     "Standing Angled (3D)": ((0.0, -0.45, 1.05), (0.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
-    "Standing Upright (Front)": ((0.0, 0.0, 1.2), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+    "Standing Upright (Front)": ((0.22, 0.0, 1.12), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
     "Laying Flat (Top View)": ((0.0, 0.0, 1.2), (0.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
     "Laying on Side (Profile)": ((0.0, -1.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
 }
@@ -119,9 +122,9 @@ def _init_session() -> None:
         "developer_fom_mode": False,
         "show_display_mesh": False,
         "fixture_fp": "",
-        "_clamp_ribs": False,
-        "_pin_neck_fix": True,
-        "_fixture_preset": "Standing Angled (3D)",
+        "_clamp_ribs": DEFAULT_CLAMP_RIBS,
+        "_pin_neck_fix": DEFAULT_PIN_NECK_FIX,
+        "_fixture_preset": DEFAULT_FIXTURE_PRESET,
         "_rom_mesh_fp": "",
         "_pending_fom_run": False,
         "_fast_preview_geom": None,
@@ -868,7 +871,7 @@ def render_guitar(
         )
     else:
         plotter.add_text("Preview unavailable", position="upper_left", font_size=12)
-    plotter.camera_position = CAMERA_BY_FIXTURE.get(fixture_preset, CAMERA_BY_FIXTURE["Standing Angled (3D)"])
+    plotter.camera_position = CAMERA_BY_FIXTURE.get(fixture_preset, CAMERA_BY_FIXTURE[DEFAULT_FIXTURE_PRESET])
     plotter.enable_anti_aliasing("ssaa")
     stpyvista(plotter, key=plot_key)
     plotter.close()
@@ -1162,9 +1165,12 @@ def _render_main_studio(
     saved_fixture: str,
 ) -> None:
     """Minimal layout: Design Studio iframe always mounted; Gmsh overlay on save only."""
-    clamp_ribs = bool(st.session_state.get("_clamp_ribs", saved_solver.get("clamp_ribs", False)))
-    pin_neck = bool(st.session_state.get("_pin_neck_fix", saved_solver.get("eps_pin_fix_tag5", True)))
-    fixture_preset = str(st.session_state.get("_fixture_preset", saved_fixture))
+    clamp_ribs = DEFAULT_CLAMP_RIBS
+    pin_neck = DEFAULT_PIN_NECK_FIX
+    fixture_preset = DEFAULT_FIXTURE_PRESET
+    st.session_state["_clamp_ribs"] = clamp_ribs
+    st.session_state["_pin_neck_fix"] = pin_neck
+    st.session_state["_fixture_preset"] = fixture_preset
 
     fp_seed = studio_initial_from_saved(
         saved, saved_shape, developer_fom_mode=st.session_state.developer_fom_mode
@@ -1188,16 +1194,6 @@ def _render_main_studio(
             help="Mirrors Design Studio actions; Admin enables Run Full FEM in the studio.",
         )
         st.session_state.developer_fom_mode = mode.startswith("Admin")
-
-        st.subheader("Fixtures")
-        fixture_preset = st.selectbox(
-            "Orientation", FIXTURE_PRESETS, index=FIXTURE_PRESETS.index(fixture_preset)
-        )
-        st.session_state["_fixture_preset"] = fixture_preset
-        clamp_ribs = st.checkbox("Clamp ribs (tag 4)", value=clamp_ribs)
-        pin_neck = st.checkbox("Pin neck (tag 5)", value=pin_neck)
-        st.session_state["_clamp_ribs"] = clamp_ribs
-        st.session_state["_pin_neck_fix"] = pin_neck
 
         st.subheader("Actions")
         regen_mesh = st.button("Regenerate Gmsh mesh", use_container_width=True, key="btn_regen_mesh")
@@ -1323,9 +1319,9 @@ def main() -> None:
     saved_shape = str(saved.get("shape_type", "Classical"))
     if saved_shape not in SHAPE_OPTIONS:
         saved_shape = "Classical"
-    saved_fixture = str(saved.get("fixture_preset", "Standing Angled (3D)"))
+    saved_fixture = str(saved.get("fixture_preset", DEFAULT_FIXTURE_PRESET))
     if saved_fixture not in FIXTURE_PRESETS:
-        saved_fixture = "Standing Angled (3D)"
+        saved_fixture = DEFAULT_FIXTURE_PRESET
     st.title("GUITAR SIMULATOR")
     st.caption(
         "Design Studio: live Three.js preview. **Save & Sync** shows the Gmsh mesh on top; "
