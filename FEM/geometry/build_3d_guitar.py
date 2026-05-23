@@ -1158,9 +1158,45 @@ def create_guitar_mesh():
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
         gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", 48)
     
-    gmsh.model.mesh.setOrder(1)
+    gmsh.model.mesh.setOrder(2 if shell_only else 1)
     mesh_resolution_factor = 1.0
-    print(f"[diag] mesh_resolution_factor={mesh_resolution_factor}")
+    print(
+        f"[diag] mesh_resolution_factor={mesh_resolution_factor}, "
+        f"element_order={2 if shell_only else 1}"
+    )
+
+    SOUNDHOLE_LC_FINE_M = 0.0005  # 0.5 mm on soundhole rim (visual + engineering)
+
+    def _soundhole_boundary_curve_tags():
+        curve_tags: set = set()
+        for st in soundhole_surfs:
+            try:
+                bnd = gmsh.model.getBoundary([(2, int(st))], oriented=False, recursive=False)
+            except Exception:
+                continue
+            for bdim, btag in bnd:
+                if int(bdim) == 1:
+                    curve_tags.add(int(btag))
+        return sorted(curve_tags)
+
+    def _apply_soundhole_fine_mesh(lc_fine: float = SOUNDHOLE_LC_FINE_M) -> None:
+        """Sub-mm lc on soundhole boundary curves and annulus faces."""
+        if not soundhole_surfs:
+            return
+        for ctag in _soundhole_boundary_curve_tags():
+            try:
+                gmsh.model.mesh.setSize(1, int(ctag), float(lc_fine))
+            except Exception:
+                pass
+        for st in soundhole_surfs:
+            try:
+                gmsh.model.mesh.setSize(2, int(st), float(lc_fine))
+            except Exception:
+                pass
+        print(
+            f"[diag] soundhole fine mesh: lc={lc_fine * 1000:.2f}mm on "
+            f"{len(_soundhole_boundary_curve_tags())} curves, {len(soundhole_surfs)} faces"
+        )
 
     if is_display:
         shell_surf_tags = sorted(
@@ -1178,6 +1214,7 @@ def create_guitar_mesh():
             f"[diag] display shell sizing: uniform_lc={mesh_size*1000:.1f}mm, "
             f"n_surfaces={len(shell_surf_tags)} (no FSI fields)"
         )
+        _apply_soundhole_fine_mesh(SOUNDHOLE_LC_FINE_M)
     elif is_preview:
         gmsh.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 0)
         gmsh.option.setNumber("Mesh.CharacteristicLengthExtendFromBoundary", 0)
@@ -1197,6 +1234,7 @@ def create_guitar_mesh():
             f"min=max={wood_surface_size*1000:.1f}mm, n_surfaces={len(shell_surf_tags)} "
             "(no curvature gradient — solid sketch volume)"
         )
+        _apply_soundhole_fine_mesh(SOUNDHOLE_LC_FINE_M)
 
     # Deep-probe overrides (display/FOM): uniform shell sizing must not fight background fields.
     if not is_preview:
@@ -1278,7 +1316,7 @@ def create_guitar_mesh():
             if thick_thresh is not None:
                 combine_list.append(thick_thresh)
             # Soundhole annulus: extra refinement (engineering only) for circular opening.
-            hole_lc_target = max(wood_thickness_size, min(0.001, hr / 12.0))
+            hole_lc_target = SOUNDHOLE_LC_FINE_M
             if soundhole_surfs:
                 for s in soundhole_surfs:
                     try:
@@ -1315,6 +1353,9 @@ def create_guitar_mesh():
                 gmsh.model.mesh.field.setAsBackgroundMesh(min_field)
             except Exception as exc:
                 raise RuntimeError(f"Failed to set triple-tier Min background field: {exc}")
+
+    if soundhole_surfs:
+        _apply_soundhole_fine_mesh(SOUNDHOLE_LC_FINE_M)
 
     try:
         print(

@@ -297,7 +297,7 @@
     let lastRomFp = "";
     let lastGeomFp = "";
     let lastRenderArgsFp = "";
-    let localSliderDrag = false;
+    let isUserDragging = false;
     let animating = true;
     const STUDIO_W = 1200;
     const STUDIO_H = 950;
@@ -588,7 +588,7 @@
     function acceptIncomingRomKey(key, incoming, domVal) {
       if (!hasOwnPayloadKey(incoming, key)) return false;
       const next = incoming[key];
-      if (localSliderDrag && ROM_GEOM_KEYS.indexOf(key) >= 0) {
+      if (isUserDragging && ROM_GEOM_KEYS.indexOf(key) >= 0) {
         if (Math.abs(num(next) - num(domVal)) > 1e-6) return false;
       }
       if (lastOutboundRom && ROM_KEYS.indexOf(key) >= 0) {
@@ -1015,13 +1015,6 @@
 
         setupStudioLighting();
 
-        const testGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
-        const testMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-        const testBox = new THREE.Mesh(testGeo, testMat);
-        testBox.position.set(0, 0, 0);
-        scene.add(testBox);
-        console.log("DIAGNOSTIC: Red test box added to scene at (0,0,0)");
-
         checkpoint = 4;
         console.log("CHECKPOINT 4: Loading geometry...");
         setTimeout(function () {
@@ -1087,41 +1080,73 @@
       return num(v, 0).toFixed(dec);
     }
 
+    function normalizeSliderBounds(pair, fallback, minSpan) {
+      const fb = fallback || [0, 1];
+      const spanMin = Math.max(num(minSpan, 0), 1e-4);
+      let lo = num(pair && pair[0], fb[0]);
+      let hi = num(pair && pair[1], fb[1]);
+      if (!Number.isFinite(lo)) lo = fb[0];
+      if (!Number.isFinite(hi)) hi = fb[1];
+      if (lo > hi) {
+        const t = lo;
+        lo = hi;
+        hi = t;
+      }
+      if (hi - lo < spanMin) {
+        const mid = 0.5 * (lo + hi);
+        lo = mid - 0.5 * spanMin;
+        hi = mid + 0.5 * spanMin;
+      }
+      return [lo, hi];
+    }
+
     function applySliderBounds() {
       const b = state.bounds || {};
       const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
       const setRange = (id, key, fallback) => {
         const el = document.getElementById(id);
         if (!el) return;
-        const pair = b[key] || fallback;
-        const lo = num(pair[0], fallback[0]);
-        const hi = num(pair[1], fallback[1]);
-        el.min = lo;
-        el.max = hi;
+        const pair = normalizeSliderBounds(b[key] || fallback, fallback, 0.001);
+        const lo = pair[0];
+        const hi = pair[1];
+        el.min = String(lo);
+        el.max = String(hi);
         const cur = num(el.value, num(state[key], lo));
-        el.value = clamp(cur, lo, hi);
+        el.value = String(clamp(cur, lo, hi));
         state[key] = num(el.value, lo);
       };
       setRange("length", "length", [0.35, 0.6]);
       setRange("width", "width", [0.2, 0.45]);
       setRange("depth", "depth", [0.08, 0.15]);
-      const tt = state.top_thickness_bounds || [0.003, 0.006];
-      const hrB = state.hole_radius_bounds || [0.035, 0.055];
+      const tt = normalizeSliderBounds(state.top_thickness_bounds, [0.003, 0.006], 0.0005);
       const tEl = document.getElementById("topThickness");
       if (tEl) {
-        tEl.min = num(tt[0], 0.003);
-        tEl.max = num(tt[1], 0.006);
-        const cur = num(tEl.value, num(state.top_thickness, tEl.min));
-        tEl.value = clamp(cur, tEl.min, tEl.max);
+        tEl.min = String(tt[0]);
+        tEl.max = String(tt[1]);
+        const cur = num(tEl.value, num(state.top_thickness, tt[0]));
+        tEl.value = String(clamp(cur, tt[0], tt[1]));
         state.top_thickness = num(tEl.value, 0.0045);
       }
       const hEl = document.getElementById("holeRadius");
       if (hEl) {
-        hEl.min = num(hrB[0], 0.035);
-        hEl.max = num(hrB[1], 0.055);
-        const cur = num(hEl.value, num(state.hole_radius, hEl.min));
-        hEl.value = clamp(cur, hEl.min, hEl.max);
-        state.hole_radius = num(hEl.value, 0.045);
+        const hrFallback = [0.035, 0.055];
+        const hrB = normalizeSliderBounds(state.hole_radius_bounds, hrFallback, 0.001);
+        let lo = hrB[0];
+        let hi = hrB[1];
+        const bodyCap = Math.min(num(state.width, 0.37), num(state.length, 0.49)) * 0.45;
+        if (Number.isFinite(bodyCap) && bodyCap > lo + 0.002) hi = Math.min(hi, bodyCap);
+        const cur = num(hEl.value, num(state.hole_radius, lo));
+        hi = Math.max(hi, cur + 0.0005);
+        if (Number.isFinite(bodyCap)) hi = Math.min(hi, bodyCap);
+        const pair = normalizeSliderBounds([lo, hi], hrFallback, 0.001);
+        lo = pair[0];
+        hi = pair[1];
+        hEl.min = String(lo);
+        hEl.max = String(hi);
+        hEl.step = "0.001";
+        const safe = clamp(cur, lo, hi);
+        hEl.value = String(safe);
+        state.hole_radius = num(hEl.value, safe);
       }
     }
 
@@ -1232,6 +1257,7 @@
   }
 
     function applyArgs(rawArgs) {
+      if (isUserDragging) return;
       const data = normalizeArgs(rawArgs);
       const hadTemplates = Boolean(data.templates && Object.keys(data.templates).length);
       const prevRomFp = lastRomFp;
@@ -1239,7 +1265,7 @@
       if (!state.bounds && state.bounds_by_shape && state.bounds_by_shape[state.shape_type]) {
         state.bounds = state.bounds_by_shape[state.shape_type];
       }
-      if (hasOwnPayloadKey(data, "shape_type") && !localSliderDrag) {
+      if (hasOwnPayloadKey(data, "shape_type")) {
         const shapeEl = document.getElementById("shapeSelect");
         if (shapeEl && shapeEl.value !== state.shape_type) shapeEl.value = state.shape_type;
       }
@@ -1253,7 +1279,6 @@
         hole_radius: "holeRadius",
       };
       Object.keys(sliderMap).forEach((key) => {
-        if (localSliderDrag) return;
         if (!hasOwnPayloadKey(data, key)) return;
         const el = document.getElementById(sliderMap[key]);
         if (!el) return;
@@ -1263,10 +1288,10 @@
       });
       const tw = document.getElementById("topWood");
       const bw = document.getElementById("backWood");
-      if (!localSliderDrag && hasOwnPayloadKey(data, "top_wood_id") && tw && tw.value !== state.top_wood_id) {
+      if (hasOwnPayloadKey(data, "top_wood_id") && tw && tw.value !== state.top_wood_id) {
         tw.value = state.top_wood_id;
       }
-      if (!localSliderDrag && hasOwnPayloadKey(data, "back_wood_id") && bw && bw.value !== state.back_wood_id) {
+      if (hasOwnPayloadKey(data, "back_wood_id") && bw && bw.value !== state.back_wood_id) {
         bw.value = state.back_wood_id;
       }
       updateLabels();
@@ -1274,10 +1299,6 @@
       const romFp = romFingerprint();
       const geomFp = geometryFingerprint();
       if (geomFp !== lastGeomFp || hadTemplates || !initialized3d) {
-        if (localSliderDrag) {
-          lastRomFp = romFp;
-          return;
-        }
         lastGeomFp = geomFp;
         lastRomFp = romFp;
         sync3dFromState();
@@ -1291,23 +1312,32 @@
       }
     }
 
-    let sliderReleaseTimer = null;
+    function beginSliderDrag() {
+      isUserDragging = true;
+    }
+
+    function endSliderDrag() {
+      if (!isUserDragging) return;
+      isUserDragging = false;
+      notifyParamChange();
+    }
+
     ["length", "width", "depth", "topThickness", "holeRadius"].forEach((id) => {
       const el = document.getElementById(id);
       if (!el) return;
-      el.addEventListener("pointerdown", function () { localSliderDrag = true; });
-      el.addEventListener("input", function () {
-        localSliderDrag = true;
-        preview3dFromSliders();
-      });
-      el.addEventListener("change", function () {
-        clearTimeout(sliderReleaseTimer);
-        sliderReleaseTimer = setTimeout(function () {
-          localSliderDrag = false;
-          notifyParamChange();
-        }, 80);
-      });
+      el.addEventListener("pointerdown", beginSliderDrag);
+      el.addEventListener("mousedown", beginSliderDrag);
+      el.addEventListener("touchstart", beginSliderDrag, { passive: true });
+      el.addEventListener("input", preview3dFromSliders);
+      el.addEventListener("pointerup", endSliderDrag);
+      el.addEventListener("mouseup", endSliderDrag);
+      el.addEventListener("touchend", endSliderDrag);
+      el.addEventListener("pointercancel", endSliderDrag);
     });
+    document.addEventListener("pointerup", endSliderDrag);
+    document.addEventListener("mouseup", endSliderDrag);
+    document.addEventListener("touchend", endSliderDrag);
+    document.addEventListener("pointercancel", endSliderDrag);
     document.getElementById("shapeSelect").addEventListener("change", () => {
       state.shape_type = document.getElementById("shapeSelect").value || "Classical";
       const byShape = state.bounds_by_shape || {};
