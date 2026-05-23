@@ -85,4 +85,4 @@ console.log("JS BRIDGE: Loaded successfully");
 
   /* Immediate mount — Streamlit drops messages without isStreamlitMessage. */
   Streamlit.setComponentReady();
-})();
+})(window);
