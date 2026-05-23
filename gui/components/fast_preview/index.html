@@ -7,13 +7,18 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
-    /* Streamlit parent + studio: never clip native / portal dropdowns */
+    /* Native OS dropdowns must paint above the WebGL viewport */
     .streamlit-container,
     .stCustomComponentV1,
-    .element-container {
+    .element-container,
+    .studio,
+    .studio-panel {
       overflow: visible !important;
     }
+    .panel.panel-controls,
     .studio-panel {
+      position: relative !important;
+      z-index: 9999 !important;
       overflow: visible !important;
     }
     select {
@@ -67,53 +72,8 @@
       padding: 12px 14px;
       color: var(--st-text);
     }
-    .panel.panel-controls,
-    .studio-panel {
-      position: relative;
-      z-index: 9999 !important;
-      overflow: visible !important;
+    .panel.panel-controls {
       padding-bottom: 32px;
-    }
-    .panel.panel-controls label {
-      position: relative;
-      z-index: 10000;
-    }
-    .select-portal-menu {
-      position: fixed;
-      z-index: 99999;
-      margin: 0;
-      padding: 4px 0;
-      list-style: none;
-      min-width: 160px;
-      max-height: min(280px, 60vh);
-      overflow-y: auto;
-      background: #ffffff;
-      color: #1a1c24;
-      border: 1px solid var(--st-border);
-      border-radius: var(--st-radius);
-      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
-    }
-    .select-portal-menu button {
-      display: block;
-      width: 100%;
-      text-align: left;
-      padding: 8px 12px;
-      border: none;
-      border-radius: 0;
-      background: transparent;
-      color: inherit;
-      font-size: 0.85rem;
-      cursor: pointer;
-    }
-    .select-portal-menu button:hover,
-    .select-portal-menu button.active {
-      background: rgba(255, 75, 75, 0.12);
-    }
-    @media (prefers-color-scheme: dark) {
-      .select-portal-menu {
-        background: #262730;
-        color: #fafafa;
-      }
     }
     .panel h3 {
       margin: 0 0 4px;
@@ -174,22 +134,20 @@
       height: 4px;
     }
     .view-wrap {
-      position: relative;
-      z-index: 1;
+      position: relative !important;
+      z-index: 1 !important;
+      overflow: visible !important;
       border-radius: var(--st-radius);
       border: 1px solid var(--st-border);
-      overflow: hidden;
       background: linear-gradient(165deg, #e8eaef 0%, #d4d8e0 45%, #c5cad4 100%);
       min-height: 580px;
-      pointer-events: auto;
     }
     #viewport {
-      position: relative;
-      z-index: 1;
       width: 100%;
       height: 100%;
       min-height: 580px;
       display: block;
+      border-radius: inherit;
     }
     .badge {
       position: absolute;
@@ -307,8 +265,6 @@
       <pre id="errorPanel" hidden aria-live="polite"></pre>
     </div>
   </div>
-  <div id="select-portal" hidden aria-hidden="true"></div>
-
   <!-- Local bridge + Three.js (lib/ — no external CDN; CSP-safe) -->
   <script src="./streamlit_bridge.js"></script>
   <script>
@@ -521,13 +477,13 @@
       bounds_by_shape: {},
     };
 
-    /* Matches FEM/scripts/wood_library.py WOOD_PLOT_COLORS */
+    /* Orthotropic plate surface colors (matches gui/app.py STUDIO_WOOD_HEX) */
     const WOOD_COLORS_BUILTIN = {
-      spruce: "#FFF8DC",
+      spruce: "#F4E7C1",
       cedar: "#A0522D",
       maple: "#FFDEAD",
-      mahogany: "#8B4513",
-      rosewood: "#3E1F12",
+      mahogany: "#704229",
+      rosewood: "#3F2A20",
     };
     state.wood_colors = Object.assign({}, WOOD_COLORS_BUILTIN, state.wood_colors);
 
@@ -686,8 +642,18 @@
       const tTop = num(state.top_thickness, 0.0045);
     const backCol = woodColorHex(state.back_wood_id);
     const topCol = woodColorHex(state.top_wood_id);
-    const matBack = new THREE.MeshPhongMaterial({ color: backCol, shininess: 28, flatShading: false });
-    const matTop = new THREE.MeshPhongMaterial({ color: topCol, shininess: 40, flatShading: false });
+    const matBack = new THREE.MeshPhongMaterial({
+      color: backCol,
+      shininess: 32,
+      specular: 0x222222,
+      flatShading: false,
+    });
+    const matTop = new THREE.MeshPhongMaterial({
+      color: topCol,
+      shininess: 48,
+      specular: 0x333333,
+      flatShading: false,
+    });
 
     if (state.shape_type === "Box") {
       const bodyGeom = new THREE.BoxGeometry(L, D, W);
@@ -763,9 +729,10 @@
 
       if (typeof THREE.OrbitControls === "function") {
         controls = new THREE.OrbitControls(camera, renderer.domElement);
-        controls.rotateSpeed = 0.8;
         controls.enableDamping = true;
         controls.dampingFactor = 0.05;
+        controls.rotateSpeed = 0.5;
+        controls.screenSpacePanning = true;
         controls.target.set(0, 0.05, 0);
         controls.update();
       }
@@ -925,85 +892,6 @@
     back.value = state.back_wood_id;
   }
 
-    let portalMenuEl = null;
-    let portalSelectEl = null;
-
-    function closePortalMenu() {
-      const root = document.getElementById("select-portal");
-      if (root) {
-        root.innerHTML = "";
-        root.hidden = true;
-      }
-      portalMenuEl = null;
-      portalSelectEl = null;
-    }
-
-    function openPortalMenu(selectEl) {
-      closePortalMenu();
-      const root = document.getElementById("select-portal");
-      if (!root || !selectEl || !selectEl.options.length) return;
-      const rect = selectEl.getBoundingClientRect();
-      const menu = document.createElement("div");
-      menu.className = "select-portal-menu";
-      menu.setAttribute("role", "listbox");
-      menu.style.position = "fixed";
-      menu.style.zIndex = "99999";
-      menu.style.left = rect.left + "px";
-      menu.style.minWidth = Math.max(rect.width, 160) + "px";
-      const rowH = 36;
-      const estH = selectEl.options.length * rowH + 8;
-      const spaceBelow = window.innerHeight - rect.bottom;
-      if (estH > spaceBelow && rect.top > spaceBelow) {
-        menu.style.top = Math.max(4, rect.top - estH - 4) + "px";
-      } else {
-        menu.style.top = rect.bottom + 4 + "px";
-      }
-      Array.from(selectEl.options).forEach((opt) => {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.textContent = opt.textContent;
-        btn.dataset.value = opt.value;
-        if (opt.value === selectEl.value) btn.classList.add("active");
-        btn.addEventListener("click", () => {
-          selectEl.value = opt.value;
-          selectEl.dispatchEvent(new Event("change", { bubbles: true }));
-          closePortalMenu();
-        });
-        menu.appendChild(btn);
-      });
-      root.appendChild(menu);
-      root.hidden = false;
-      portalMenuEl = menu;
-      portalSelectEl = selectEl;
-    }
-
-    function wirePortalSelects() {
-      document.querySelectorAll(".studio-panel select").forEach((sel) => {
-        if (sel.dataset.portalWired === "1") return;
-        sel.dataset.portalWired = "1";
-        sel.addEventListener("mousedown", (ev) => {
-          ev.preventDefault();
-          openPortalMenu(sel);
-        });
-        sel.addEventListener("keydown", (ev) => {
-          if (ev.key === "Enter" || ev.key === " ") {
-            ev.preventDefault();
-            openPortalMenu(sel);
-          }
-        });
-      });
-      if (!window.__portalSelectGlobalWired) {
-        window.__portalSelectGlobalWired = true;
-        document.addEventListener("click", (ev) => {
-          if (!portalMenuEl) return;
-          if (portalMenuEl.contains(ev.target) || (portalSelectEl && portalSelectEl.contains(ev.target))) return;
-          closePortalMenu();
-        });
-        window.addEventListener("resize", closePortalMenu);
-        window.addEventListener("scroll", closePortalMenu, true);
-      }
-    }
-
     function applyArgs(rawArgs) {
       const data = normalizeArgs(rawArgs);
       const hadTemplates = Boolean(data.templates && Object.keys(data.templates).length);
@@ -1014,7 +902,6 @@
       const shapeEl = document.getElementById("shapeSelect");
       if (shapeEl && shapeEl.value !== state.shape_type) shapeEl.value = state.shape_type;
       fillWoodSelects();
-      wirePortalSelects();
       applySliderBounds();
       const ids = [
         ["length", state.length],
@@ -1079,8 +966,6 @@
         renderFrame();
       }
     });
-
-    wirePortalSelects();
   </script>
 </body>
 </html>

@@ -131,6 +131,7 @@ def _init_session() -> None:
         "_studio_component_ready": False,
         "_studio_handshake_id": "",
         "_studio_iframe_payload_fp": "",
+        "_viewport_slot": None,
         "_rom_online_fp": "",
         "rom_frequencies_hz": [],
         "rom_mode_shapes": {},
@@ -328,9 +329,19 @@ def studio_initial_from_saved(
     return payload
 
 
+# Orthotropic plate surface colors (Design Studio / Three.js — tuned for realistic shading).
+STUDIO_WOOD_HEX: Dict[str, str] = {
+    "spruce": "#F4E7C1",
+    "cedar": "#A0522D",
+    "maple": "#FFDEAD",
+    "mahogany": "#704229",
+    "rosewood": "#3F2A20",
+}
+
+
 def wood_colors_for_studio() -> Dict[str, str]:
-    """Hex surface colors from ``wood_library.WOOD_PLOT_COLORS`` (FEM/PyVista parity)."""
-    return {wid: plot_color_for_wood(wid) for wid in ALL_WOOD_IDS}
+    """Hex surface colors passed to the Design Studio iframe (orthotropic palette)."""
+    return {wid: STUDIO_WOOD_HEX.get(wid, plot_color_for_wood(wid)) for wid in ALL_WOOD_IDS}
 
 
 def enter_fom_mesh_view(rom_fp: str) -> None:
@@ -413,88 +424,6 @@ def record_studio_handshake(event: Dict[str, Any]) -> None:
     st.session_state._studio_component_ready = True
 
 
-def inject_viewport_layout_css(*, studio_mode: bool) -> None:
-    """Force a single visible 3D surface — hide stale iframes, timeout shells, and the inactive backend."""
-    h = FAST_PREVIEW_HEIGHT
-    if studio_mode:
-        st.markdown(
-            f"""
-            <style>
-            h1 {{ letter-spacing: 0.06em; font-weight: 700; }}
-            section.main div[data-testid="stpyvista"] {{
-                display: none !important;
-                height: 0 !important;
-                min-height: 0 !important;
-                max-height: 0 !important;
-                margin: 0 !important;
-                padding: 0 !important;
-                overflow: hidden !important;
-                visibility: hidden !important;
-            }}
-            section.main div[data-testid="stCustomComponentV1"] {{
-                display: none !important;
-                height: 0 !important;
-                min-height: 0 !important;
-                max-height: 0 !important;
-                margin: 0 !important;
-                padding: 0 !important;
-                overflow: hidden !important;
-                visibility: hidden !important;
-                border: none !important;
-            }}
-            section.main div[data-testid="stCustomComponentV1"]:has(iframe[title*="fast_preview"]):last-of-type {{
-                display: block !important;
-                visibility: visible !important;
-                height: auto !important;
-                min-height: {h}px !important;
-                max-height: none !important;
-                overflow: visible !important;
-            }}
-            section.main div[data-testid="stCustomComponentV1"] iframe[title*="fast_preview"] {{
-                display: block !important;
-                width: 100% !important;
-                height: {h}px !important;
-                min-height: {h}px !important;
-                border: none !important;
-            }}
-            section.main div[data-testid="stCustomComponentV1"] [data-testid="stAlert"],
-            section.main div[data-testid="stCustomComponentV1"] .stAlert,
-            section.main div[data-testid="stCustomComponentV1"] [data-testid="stException"] {{
-                display: none !important;
-                height: 0 !important;
-                min-height: 0 !important;
-                overflow: hidden !important;
-            }}
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            """
-            <style>
-            h1 { letter-spacing: 0.06em; font-weight: 700; }
-            section.main div[data-testid="stCustomComponentV1"],
-            section.main iframe[title*="fast_preview"] {
-                display: none !important;
-                height: 0 !important;
-                min-height: 0 !important;
-                max-height: 0 !important;
-                margin: 0 !important;
-                padding: 0 !important;
-                overflow: hidden !important;
-                visibility: hidden !important;
-                border: none !important;
-            }
-            section.main div[data-testid="stpyvista"] canvas {
-                opacity: 1 !important;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-
-
 def render_fast_preview_studio(initial: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Mount the Design Studio iframe (single instance, fixed height)."""
     try:
@@ -511,9 +440,9 @@ def render_fast_preview_studio(initial: Dict[str, Any]) -> Optional[Dict[str, An
 
 
 def render_main_viewport(
+    viewport_slot: Any,
     fp_seed: Dict[str, Any],
     *,
-    saved_shape: str,
     geom: Dict[str, Any],
     top_wood: str,
     back_wood: str,
@@ -521,41 +450,38 @@ def render_main_viewport(
     fixture_preset: str,
 ) -> Optional[Dict[str, Any]]:
     """
-    Binary viewport: exactly one of Design Studio (Three.js) OR validation mesh (PyVista).
-    Never mounts both; never reserves empty iframe shells.
+    Hard binary viewport inside a single ``st.empty()`` slot — never both surfaces at once.
     """
-    studio_mode = not bool(st.session_state.show_fom_mesh)
-    inject_viewport_layout_css(studio_mode=studio_mode)
-
-    if st.session_state.show_fom_mesh:
-        mesh, _, _ = get_view_mesh(geom_fp)
-        if mesh is None and not DISPLAY_MESH_FILE.is_file():
-            st.info(
-                "Validation mesh is not built yet. Click **Regenerate Gmsh mesh** or "
-                "**Save & Sync** in the Design Studio, then return here."
+    with viewport_slot.container():
+        if st.session_state.show_fom_mesh:
+            mesh, _, _ = get_view_mesh(geom_fp)
+            if mesh is None and not DISPLAY_MESH_FILE.is_file():
+                st.info(
+                    "Validation mesh is not built yet. Click **Regenerate Gmsh mesh** or "
+                    "**Save & Sync** in the Design Studio, then return here."
+                )
+                return None
+            render_validation_mesh_viewport(
+                geom,
+                top_wood=top_wood,
+                back_wood=back_wood,
+                geom_fp=geom_fp,
+                fixture_preset=fixture_preset,
             )
             return None
-        render_validation_mesh_viewport(
-            geom,
-            top_wood=top_wood,
-            back_wood=back_wood,
-            geom_fp=geom_fp,
-            fixture_preset=fixture_preset,
-        )
-        return None
 
-    from components.fast_preview import component_dir  # noqa: WPS433
+        from components.fast_preview import component_dir  # noqa: WPS433
 
-    if not (Path(component_dir()) / "index.html").is_file():
-        st.info(
-            "Design Studio assets are missing on this machine. "
-            "Sync the full `gui/components/fast_preview/` directory (including `lib/`), then reload."
-        )
-        return None
+        if not (Path(component_dir()) / "index.html").is_file():
+            st.info(
+                "Design Studio assets are missing on this machine. "
+                "Sync the full `gui/components/fast_preview/` directory (including `lib/`), then reload."
+            )
+            return None
 
-    fp_for_component = studio_payload_for_iframe(fp_seed)
-    fp_for_component["wood_colors"] = wood_colors_for_studio()
-    return render_fast_preview_studio(fp_for_component)
+        fp_for_component = studio_payload_for_iframe(fp_seed)
+        fp_for_component["wood_colors"] = wood_colors_for_studio()
+        return render_fast_preview_studio(fp_for_component)
 
 
 def studio_event_id(event: Dict[str, Any]) -> str:
@@ -1295,9 +1221,12 @@ def _render_interactive_panel(
         if auto_revert_fom_if_params_changed(rom_fp):
             st.rerun()
 
+        if st.session_state._viewport_slot is None:
+            st.session_state._viewport_slot = st.empty()
+
         studio_event = render_main_viewport(
+            st.session_state._viewport_slot,
             fp_seed,
-            saved_shape=saved_shape,
             geom=geom,
             top_wood=top_wood,
             back_wood=back_wood,
@@ -1388,6 +1317,10 @@ def _render_interactive_panel(
 
 
 def main() -> None:
+    st.markdown(
+        "<style>h1 { letter-spacing: 0.06em; font-weight: 700; }</style>",
+        unsafe_allow_html=True,
+    )
     saved = _load_saved_config().get("geometry", {}) or {}
     saved_solver = _load_saved_config().get("solver", {}) or {}
     saved_shape = str(saved.get("shape_type", "Classical"))
