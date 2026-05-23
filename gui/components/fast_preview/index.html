@@ -297,6 +297,7 @@
     let lastRomFp = "";
     let lastGeomFp = "";
     let lastRenderArgsFp = "";
+    /** Owner-flag: while true, Streamlit payloads must not touch sliders or ROM state. */
     let isUserDragging = false;
     let animating = true;
     const STUDIO_W = 1200;
@@ -603,6 +604,18 @@
       return true;
     }
 
+    function activeWoodId(key) {
+      if (key === "top_wood_id") {
+        return String(document.getElementById("topWood")?.value || state.top_wood_id).toLowerCase();
+      }
+      return String(document.getElementById("backWood")?.value || state.back_wood_id).toLowerCase();
+    }
+
+    function incomingWoodDiffers(key, data) {
+      if (!hasOwnPayloadKey(data, key)) return false;
+      return String(data[key]).toLowerCase() !== activeWoodId(key);
+    }
+
     function mergeRomStateDelta(data) {
       if (isUserDragging) return;
       if (!data || typeof data !== "object") return;
@@ -624,6 +637,9 @@
         else if (k === "shape_type") domVal = dom.shape_type;
         else domVal = dom[k];
         if (isUserDragging && (k === "top_wood_id" || k === "back_wood_id")) return;
+        if (k === "top_wood_id" || k === "back_wood_id") {
+          if (!incomingWoodDiffers(k, data)) return;
+        }
         if (acceptIncomingRomKey(k, data, domVal)) state[k] = data[k];
       });
 
@@ -1303,11 +1319,15 @@
       });
       const tw = document.getElementById("topWood");
       const bw = document.getElementById("backWood");
-      if (hasOwnPayloadKey(data, "top_wood_id") && tw && tw.value !== state.top_wood_id) {
-        tw.value = state.top_wood_id;
+      const topWoodChanged = incomingWoodDiffers("top_wood_id", data);
+      const backWoodChanged = incomingWoodDiffers("back_wood_id", data);
+      if (topWoodChanged) {
+        state.top_wood_id = String(data.top_wood_id).toLowerCase();
+        if (tw) tw.value = state.top_wood_id;
       }
-      if (hasOwnPayloadKey(data, "back_wood_id") && bw && bw.value !== state.back_wood_id) {
-        bw.value = state.back_wood_id;
+      if (backWoodChanged) {
+        state.back_wood_id = String(data.back_wood_id).toLowerCase();
+        if (bw) bw.value = state.back_wood_id;
       }
       updateLabels();
       updateModeUi();
@@ -1317,13 +1337,13 @@
         lastGeomFp = geomFp;
         lastRomFp = romFp;
         sync3dFromState();
-      } else if (romFp !== lastRomFp) {
-        const prevParts = prevRomFp.split("|");
-        const newParts = romFp.split("|");
+        if (topWoodChanged) updateTopMaterial();
+        if (backWoodChanged) updateBackMaterial();
+      } else {
         lastRomFp = romFp;
-        if (prevParts[6] !== newParts[6]) updateTopMaterial();
-        if (prevParts[7] !== newParts[7]) updateBackMaterial();
-        renderFrame();
+        if (topWoodChanged) updateTopMaterial();
+        if (backWoodChanged) updateBackMaterial();
+        if (topWoodChanged || backWoodChanged) renderFrame();
       }
       if (!isUserDragging && hasOwnPayloadKey(data, "hole_radius")) {
         const hEl = document.getElementById("holeRadius");
@@ -1335,8 +1355,13 @@
       }
     }
 
-    function beginSliderDrag() {
+    function beginSliderDrag(ev) {
       isUserDragging = true;
+      if (ev && ev.target && typeof ev.target.setPointerCapture === "function" && ev.pointerId != null) {
+        try {
+          ev.target.setPointerCapture(ev.pointerId);
+        } catch (_captureErr) { /* ignore */ }
+      }
     }
 
     function endSliderDrag() {
@@ -1348,9 +1373,9 @@
     ["length", "width", "depth", "topThickness", "holeRadius"].forEach((id) => {
       const el = document.getElementById(id);
       if (!el) return;
-      el.addEventListener("pointerdown", beginSliderDrag);
-      el.addEventListener("mousedown", beginSliderDrag);
-      el.addEventListener("touchstart", beginSliderDrag, { passive: true });
+      el.addEventListener("pointerdown", beginSliderDrag, true);
+      el.addEventListener("mousedown", beginSliderDrag, true);
+      el.addEventListener("touchstart", beginSliderDrag, { passive: true, capture: true });
       el.addEventListener("input", preview3dFromSliders);
       el.addEventListener("pointerup", endSliderDrag);
       el.addEventListener("mouseup", endSliderDrag);

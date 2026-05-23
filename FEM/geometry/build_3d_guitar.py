@@ -324,10 +324,12 @@ def create_guitar_mesh():
         hole_x = 0.5 * L - hole_from_neck_ratio * L
     hole_y = 0.0
 
-    # Engineering: dense shell for smooth waist / soundhole (ROM path is lightweight).
-    # Preview sketch: uniform wood_surface_lc on solid volume. Display: uniform fine shell.
-    wood_surface_size = 0.002   # 2 mm global wood surface lc (was 6 mm)
-    wood_thickness_size = 0.0004  # 0.4 mm on through-thickness edges (was 1 mm)
+    # Display/preview: coarse global lc + local 0.5 mm at soundhole/plate edges (fast overlay).
+    # FOM engineering: graded wood/air fields (unchanged baseline).
+    DISPLAY_GLOBAL_LC_M = 0.012   # 12 mm coarse display shell
+    LOCAL_REFINE_LC_M = 0.0005    # 0.5 mm at soundhole rim and plate interfaces
+    wood_surface_size = 0.006 if is_fom else DISPLAY_GLOBAL_LC_M
+    wood_thickness_size = 0.0004  # 0.4 mm on through-thickness edges (FOM)
     thickness_curve_len_max = 0.005  # curves shorter than this (m) are treated as thickness direction
     # Thickness-edge Threshold: smooth 1 mm → 6.5 mm over ~8 mm band from short edges
     thickness_threshold_dist_min = 0.0005
@@ -338,24 +340,19 @@ def create_guitar_mesh():
     air_threshold_size_min = 0.003   # 3 mm near wood / soundhole band (was 8 mm)
     air_threshold_size_max = 0.050   # 50 mm far field cap (was 80 mm)
 
-    # Sketch: fine uniform shell. Display: uniform 2 mm shell. FOM: full graded FSI mesh.
-    if is_display:
-        mesh_size = 0.002
-        mesh_size_min = 0.002
-        mesh_size_max = 0.002
-    elif is_preview:
-        # Real-time sketch: uniform 6 mm skin (zero gradient — avoids spline-cap skew / core dump).
-        mesh_size = wood_surface_size
-        mesh_size_min = wood_surface_size
-        mesh_size_max = wood_surface_size
+    # Display/preview: coarse global + local refinement fields. FOM: full graded FSI mesh.
+    if is_display or is_preview:
+        mesh_size = DISPLAY_GLOBAL_LC_M
+        mesh_size_min = LOCAL_REFINE_LC_M
+        mesh_size_max = 0.015
     else:
         mesh_size = wood_surface_size
         mesh_size_min = wood_thickness_size
         mesh_size_max = air_threshold_size_max
 
     print(
-        "DEBUG: Golden mesh — wood: 2 mm faces / 0.4 mm thickness edges; "
-        "air: 3 mm near wood → 50 mm far (Dist 1.5–25 cm)."
+        "DEBUG: Display mesh — global lc=12 mm with 0.5 mm local zones at soundhole/plate edges; "
+        "FOM mesh uses graded wood/air fields."
     )
     print(
         f"Building geometry with Thickness: {t*1000:.1f}mm (inner_depth={inner_depth*1000:.1f}mm), "
@@ -1162,14 +1159,12 @@ def create_guitar_mesh():
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
         gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", 48)
     
-    gmsh.model.mesh.setOrder(2 if shell_only else 1)
+    gmsh.model.mesh.setOrder(1)
     mesh_resolution_factor = 1.0
     print(
         f"[diag] mesh_resolution_factor={mesh_resolution_factor}, "
-        f"element_order={2 if shell_only else 1}"
+        "element_order=1"
     )
-
-    SOUNDHOLE_LC_FINE_M = 0.0005  # 0.5 mm on soundhole rim (visual + engineering)
 
     def _soundhole_boundary_curve_tags():
         curve_tags: set = set()
@@ -1183,62 +1178,73 @@ def create_guitar_mesh():
                     curve_tags.add(int(btag))
         return sorted(curve_tags)
 
-    def _apply_soundhole_fine_mesh(lc_fine: float = SOUNDHOLE_LC_FINE_M) -> None:
-        """Sub-mm lc on soundhole boundary curves and annulus faces."""
-        if not soundhole_surfs:
-            return
-        for ctag in _soundhole_boundary_curve_tags():
+    def _plate_interface_curve_tags() -> List[int]:
+        """Curves on top/back plate perimeters (plate–side interfaces)."""
+        curve_tags: set = set()
+        for st in list(dict.fromkeys(top_plate_surfs + back_plate_surfs)):
             try:
-                gmsh.model.mesh.setSize(1, int(ctag), float(lc_fine))
+                bnd = gmsh.model.getBoundary([(2, int(st))], oriented=False, recursive=False)
             except Exception:
-                pass
-        for st in soundhole_surfs:
-            try:
-                gmsh.model.mesh.setSize(2, int(st), float(lc_fine))
-            except Exception:
-                pass
-        print(
-            f"[diag] soundhole fine mesh: lc={lc_fine * 1000:.2f}mm on "
-            f"{len(_soundhole_boundary_curve_tags())} curves, {len(soundhole_surfs)} faces"
-        )
+                continue
+            for bdim, btag in bnd:
+                if int(bdim) == 1:
+                    curve_tags.add(int(btag))
+        return sorted(curve_tags)
 
-    if is_display:
-        shell_surf_tags = sorted(
-            set(int(s) for s in top_plate_surfs + back_plate_surfs + rib_surfs + soundhole_surfs)
-        )
-        for s in shell_surf_tags:
-            try:
-                gmsh.model.mesh.setSize(2, int(s), mesh_size)
-            except Exception:
-                pass
+    def _apply_shell_coarse_global_local_fields(
+        global_lc: float,
+        fine_lc: float,
+    ) -> None:
+        """Coarse display shell with Distance/Threshold refinement at hole and plate edges only."""
+        field_ids: List[int] = []
+        coarse = gmsh.model.mesh.field.add("Constant")
+        gmsh.model.mesh.field.setNumber(coarse, "VIn", float(global_lc))
+        gmsh.model.mesh.field.setNumber(coarse, "VOut", float(global_lc))
+        field_ids.append(coarse)
+
+        if soundhole_surfs:
+            dist_hole = gmsh.model.mesh.field.add("Distance")
+            hole_faces = [int(s) for s in soundhole_surfs]
+            gmsh.model.mesh.field.setNumbers(dist_hole, "FacesList", hole_faces)
+            hole_curves = _soundhole_boundary_curve_tags()
+            if hole_curves:
+                gmsh.model.mesh.field.setNumbers(dist_hole, "CurvesList", hole_curves)
+            thresh_hole = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(thresh_hole, "InField", dist_hole)
+            gmsh.model.mesh.field.setNumber(thresh_hole, "DistMin", 0.0002)
+            gmsh.model.mesh.field.setNumber(thresh_hole, "DistMax", max(0.008, 2.0 * hr))
+            gmsh.model.mesh.field.setNumber(thresh_hole, "SizeMin", float(fine_lc))
+            gmsh.model.mesh.field.setNumber(thresh_hole, "SizeMax", float(global_lc))
+            field_ids.append(thresh_hole)
+
+        plate_curves = _plate_interface_curve_tags()
+        if plate_curves:
+            dist_plate = gmsh.model.mesh.field.add("Distance")
+            gmsh.model.mesh.field.setNumbers(dist_plate, "CurvesList", plate_curves)
+            thresh_plate = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(thresh_plate, "InField", dist_plate)
+            gmsh.model.mesh.field.setNumber(thresh_plate, "DistMin", 0.0002)
+            gmsh.model.mesh.field.setNumber(thresh_plate, "DistMax", 0.012)
+            gmsh.model.mesh.field.setNumber(thresh_plate, "SizeMin", float(fine_lc))
+            gmsh.model.mesh.field.setNumber(thresh_plate, "SizeMax", float(global_lc))
+            field_ids.append(thresh_plate)
+
+        min_field = gmsh.model.mesh.field.add("Min")
+        gmsh.model.mesh.field.setNumbers(min_field, "FieldsList", field_ids)
+        gmsh.model.mesh.field.setAsBackgroundMesh(min_field)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
-        print(
-            f"[diag] display shell sizing: uniform_lc={mesh_size*1000:.1f}mm, "
-            f"n_surfaces={len(shell_surf_tags)} (no FSI fields)"
-        )
-        _apply_soundhole_fine_mesh(SOUNDHOLE_LC_FINE_M)
-    elif is_preview:
         gmsh.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 0)
         gmsh.option.setNumber("Mesh.CharacteristicLengthExtendFromBoundary", 0)
-        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
-        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
-        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
-        shell_surf_tags = sorted(
-            set(int(s) for s in top_plate_surfs + back_plate_surfs + rib_surfs + soundhole_surfs)
-        )
-        for s in shell_surf_tags:
-            try:
-                gmsh.model.mesh.setSize(2, int(s), mesh_size)
-            except Exception:
-                pass
         print(
-            f"[diag] preview shell sizing: uniform_lc={mesh_size*1000:.1f}mm (wood_surface_lc), "
-            f"min=max={wood_surface_size*1000:.1f}mm, n_surfaces={len(shell_surf_tags)} "
-            "(no curvature gradient — solid sketch volume)"
+            f"[diag] shell mesh: global_lc={global_lc * 1000:.1f}mm, "
+            f"local_lc={fine_lc * 1000:.2f}mm at soundhole ({len(soundhole_surfs)} faces) "
+            f"and plate edges ({len(plate_curves)} curves)"
         )
-        _apply_soundhole_fine_mesh(SOUNDHOLE_LC_FINE_M)
+
+    if is_display or is_preview:
+        _apply_shell_coarse_global_local_fields(DISPLAY_GLOBAL_LC_M, LOCAL_REFINE_LC_M)
 
     # Deep-probe overrides (display/FOM): uniform shell sizing must not fight background fields.
     if not is_preview:
@@ -1320,7 +1326,7 @@ def create_guitar_mesh():
             if thick_thresh is not None:
                 combine_list.append(thick_thresh)
             # Soundhole annulus: extra refinement (engineering only) for circular opening.
-            hole_lc_target = SOUNDHOLE_LC_FINE_M
+            hole_lc_target = LOCAL_REFINE_LC_M
             if soundhole_surfs:
                 for s in soundhole_surfs:
                     try:
@@ -1357,9 +1363,6 @@ def create_guitar_mesh():
                 gmsh.model.mesh.field.setAsBackgroundMesh(min_field)
             except Exception as exc:
                 raise RuntimeError(f"Failed to set triple-tier Min background field: {exc}")
-
-    if soundhole_surfs:
-        _apply_soundhole_fine_mesh(SOUNDHOLE_LC_FINE_M)
 
     try:
         print(
