@@ -226,6 +226,28 @@
 
   <!-- Local bridge + Three.js (lib/ — no external CDN; CSP-safe) -->
   <script src="./streamlit_bridge.js"></script>
+  <!-- Signal Streamlit immediately — independent of Three.js / main app script -->
+  <script>
+    (function () {
+      var FRAME_H = 720;
+      function post(type, payload) {
+        window.parent.postMessage(Object.assign({ type: type }, payload || {}), "*");
+      }
+      function pingReady() {
+        if (window.Streamlit && typeof Streamlit.setComponentReady === "function") {
+          Streamlit.setComponentReady();
+          Streamlit.setFrameHeight(FRAME_H);
+        } else {
+          post("streamlit:componentReady", { isStreamlitComponent: true });
+          post("streamlit:setFrameHeight", { height: FRAME_H });
+        }
+      }
+      pingReady();
+      document.addEventListener("DOMContentLoaded", pingReady);
+      setTimeout(pingReady, 50);
+      setTimeout(pingReady, 250);
+    })();
+  </script>
   <script type="importmap">
     {
       "imports": {
