@@ -39,14 +39,13 @@
       color: var(--st-text);
       background: #1a1c24;
     }
-    #root {
+    .main-wrapper {
       width: 1000px !important;
       height: 850px !important;
       min-width: 1000px !important;
       min-height: 850px !important;
       display: block !important;
       overflow: hidden !important;
-      position: relative !important;
     }
     #viewport {
       display: block !important;
@@ -54,10 +53,6 @@
       height: 850px !important;
       min-width: 1000px !important;
       min-height: 850px !important;
-      position: absolute !important;
-      top: 0 !important;
-      left: 0 !important;
-      z-index: 9999 !important;
     }
     canvas#viewport {
       background: transparent !important;
@@ -283,29 +278,8 @@
   <!-- Local bridge + Three.js (lib/ — no external CDN; CSP-safe) -->
   <script src="./streamlit_bridge.js"></script>
   <script>
-    /* Streamlit handshake — once on DOMContentLoaded (no pings, no setComponentValue) */
-    (function () {
-      var handshakeDone = false;
-      function runStreamlitHandshake() {
-        if (handshakeDone) return;
-        handshakeDone = true;
-        var sl = window.Streamlit;
-        if (sl && typeof sl.setComponentReady === "function") {
-          sl.setComponentReady();
-          console.log("STARTUP: setComponentReady (DOMContentLoaded)");
-        }
-        if (sl && typeof sl.setFrameHeight === "function") {
-          sl.setFrameHeight(850);
-          console.log("STARTUP: setFrameHeight(850) (DOMContentLoaded)");
-        }
-        window.__studioHandshakeDone = true;
-      }
-      if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", runStreamlitHandshake, { once: true });
-      } else {
-        runStreamlitHandshake();
-      }
-    })();
+    /* Handshake runs in streamlit_bridge.js (sync). Flag for Three.js bootstrap only. */
+    window.__studioHandshakeDone = true;
   </script>
   <script type="importmap">
     {
@@ -333,10 +307,10 @@
       document.documentElement.style.height = STUDIO_H + "px";
       document.body.style.width = STUDIO_W + "px";
       document.body.style.height = STUDIO_H + "px";
-      const rootEl = document.getElementById("root");
-      if (rootEl) {
-        rootEl.style.width = STUDIO_W + "px";
-        rootEl.style.height = STUDIO_H + "px";
+      const wrapper = document.querySelector(".main-wrapper");
+      if (wrapper) {
+        wrapper.style.width = STUDIO_W + "px";
+        wrapper.style.height = STUDIO_H + "px";
       }
       const wrap = document.querySelector(".view-wrap");
       if (wrap) {
@@ -358,17 +332,16 @@
         forceViewportLayout();
         whenThreeReady(initThreeCore);
       }
-      if (document.readyState === "complete") {
-        setTimeout(runAfterLayoutPaint, 500);
-        return;
+      function afterDom() {
+        requestAnimationFrame(function () {
+          requestAnimationFrame(runAfterLayoutPaint);
+        });
       }
-      window.addEventListener(
-        "load",
-        function () {
-          setTimeout(runAfterLayoutPaint, 500);
-        },
-        { once: true }
-      );
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", afterDom, { once: true });
+      } else {
+        afterDom();
+      }
     }
 
     function logError(msg) {
@@ -768,21 +741,20 @@
         const canvas = document.getElementById("viewport");
         if (!canvas) throw new Error("viewport canvas not found");
         const wrap = canvas.parentElement;
-        const rootEl = document.getElementById("root");
-        console.log(
-          "DEBUG: Canvas parent display:",
-          wrap ? window.getComputedStyle(wrap).display : "no parent",
-          "| root:",
-          rootEl ? window.getComputedStyle(rootEl).display : "no #root"
-        );
+        const w = STUDIO_W;
+        const h = STUDIO_H;
+        canvas.width = w;
+        canvas.height = h;
+        canvas.style.width = w + "px";
+        canvas.style.height = h + "px";
         console.log(
           "DEBUG: #viewport size:",
           canvas.clientWidth + "x" + canvas.clientHeight,
+          "| buffer:",
+          canvas.width + "x" + canvas.height,
           "| wrap:",
           wrap ? wrap.clientWidth + "x" + wrap.clientHeight : "n/a"
         );
-        const w = STUDIO_W;
-        const h = STUDIO_H;
 
         checkpoint = 3;
         console.log("CHECKPOINT 3: Scene setup");
@@ -826,6 +798,9 @@
             animate();
             geoCheckpoint = 6;
             console.log("CHECKPOINT 6: Engine fully initialized");
+            if (window.Streamlit && typeof window.Streamlit.setFrameHeight === "function") {
+              window.Streamlit.setFrameHeight(850);
+            }
           } catch (geoErr) {
             console.error("DEBUG CRASH AT CHECKPOINT " + geoCheckpoint, geoErr);
             if (geoErr && geoErr.stack) console.error(geoErr.stack);

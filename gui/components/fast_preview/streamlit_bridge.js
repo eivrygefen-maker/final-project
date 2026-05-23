@@ -46,7 +46,8 @@ console.log("JS BRIDGE: Loaded successfully");
       console.log("JS BRIDGE: Attempting to notify parent...");
       try {
         post("streamlit:componentReady", { isStreamlitComponent: true });
-        console.log("JS BRIDGE: componentReady postMessage sent");
+        post("streamlit:setFrameHeight", { height: 850 });
+        console.log("JS BRIDGE: componentReady + setFrameHeight(850) sent");
       } catch (err) {
         componentReadySent = false;
         console.error("JS BRIDGE: setComponentReady failed", err);
@@ -54,7 +55,7 @@ console.log("JS BRIDGE: Loaded successfully");
       }
     },
     setFrameHeight: function (height) {
-      var h = Math.max(400, Number(height) || 700);
+      var h = Math.max(400, Number(height) || 850);
       post("streamlit:setFrameHeight", { height: h });
     },
     setComponentValue: function (value) {
@@ -71,4 +72,7 @@ console.log("JS BRIDGE: Loaded successfully");
   });
 
   global.Streamlit = Streamlit;
+
+  /* Immediate mount signal — do not wait for DOMContentLoaded (Streamlit timeout). */
+  Streamlit.setComponentReady();
 })(window);

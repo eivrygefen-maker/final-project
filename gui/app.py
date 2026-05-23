@@ -410,35 +410,42 @@ def record_studio_handshake(event: Dict[str, Any]) -> None:
 def inject_studio_viewport_css() -> None:
     """Force studio iframe visible; hide false-positive Streamlit component timeout banner."""
     h = FAST_PREVIEW_HEIGHT
-    w = FAST_PREVIEW_WIDTH
     st.markdown(
         f"""
         <style>
-        /* Force the container to take up space regardless of Streamlit's logic */
-        div[data-testid="stCustomComponentV1"] {{
-            height: {h}px !important;
-            width: {w}px !important;
-            display: block !important;
-            visibility: visible !important;
-            z-index: 10 !important;
-        }}
-        /* Ensure the iframe is visible and not collapsed */
-        div[data-testid="stCustomComponentV1"] iframe {{
-            height: {h}px !important;
-            width: {w}px !important;
-            display: block !important;
-            border: none !important;
-            visibility: visible !important;
-            opacity: 1 !important;
-        }}
-        /* Hide false-positive component timeout banner in the studio column only */
-        div[data-testid="column"]:has(div[data-testid="stCustomComponentV1"]) div[role="alert"] {{
-            display: none !important;
-        }}
-        /* Gmsh validation mesh overlay (Save & Sync) */
         div[data-testid="column"]:has(div[data-testid="stCustomComponentV1"]) {{
             position: relative !important;
             min-height: {h}px !important;
+            overflow: visible !important;
+        }}
+        div[data-testid="stCustomComponentV1"] {{
+            height: {h}px !important;
+            min-height: {h}px !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            display: block !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            z-index: 10 !important;
+            overflow: visible !important;
+        }}
+        div[data-testid="stCustomComponentV1"] iframe {{
+            height: {h}px !important;
+            min-height: {h}px !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            display: block !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            border: none !important;
+        }}
+        iframe[src*="fast_preview"] {{
+            height: {h}px !important;
+            min-height: {h}px !important;
+        }}
+        div[data-testid="column"]:has(div[data-testid="stCustomComponentV1"]) [data-testid="stAlert"],
+        div[data-testid="column"]:has(div[data-testid="stCustomComponentV1"]) div[role="alert"] {{
+            display: none !important;
         }}
         div[data-testid="stVerticalBlock"]:has(div[data-testid="stpyvista"]) {{
             position: absolute !important;
@@ -486,7 +493,6 @@ def mount_design_studio_iframe(initial: Dict[str, Any]) -> Optional[Dict[str, An
         initial=initial,
         key="fast_preview_geom",
         height=FAST_PREVIEW_HEIGHT,
-        width=FAST_PREVIEW_WIDTH,
     )
 
 
@@ -1204,7 +1210,6 @@ def _render_main_studio(
     iframe_initial = stable_studio_iframe_initial(fp_seed)
 
     with col_vis:
-        inject_studio_viewport_css()
         studio_event = mount_design_studio_iframe(iframe_initial)
 
     process_fast_preview_event(
@@ -1325,6 +1330,7 @@ def main() -> None:
         "Design Studio: live Three.js preview. **Save & Sync** shows the Gmsh mesh on top; "
         "change any slider to return to the studio."
     )
+    inject_studio_viewport_css()
 
     _rom_mgr, _rom_init_err = get_rom_manager()
     if _rom_init_err:
