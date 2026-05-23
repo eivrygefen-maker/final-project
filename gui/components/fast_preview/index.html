@@ -259,6 +259,39 @@
       return false;
     };
 
+    function threeLibsLoaded() {
+      return Boolean(
+        window.__threeReady &&
+        window.THREE &&
+        typeof window.THREE.Scene === "function" &&
+        typeof window.THREE.OrbitControls === "function"
+      );
+    }
+
+    /** Run callback once Three.js globals are injected (handles late subscribe + fast load). */
+    function whenThreeReady(callback) {
+      if (threeLibsLoaded()) {
+        callback();
+        return;
+      }
+      window.addEventListener(
+        "three-ready",
+        function () {
+          if (threeLibsLoaded()) callback();
+          else logError("three-ready fired but THREE globals are incomplete.");
+        },
+        { once: true }
+      );
+      window.addEventListener(
+        "three-error",
+        function (ev) {
+          const msg = (ev && ev.detail && ev.detail.message) || "Three.js module load failed.";
+          logError(msg);
+        },
+        { once: true }
+      );
+    }
+
     function postFrameHeight(height) {
       const h = Math.max(400, Number(height) || DEFAULT_FRAME_HEIGHT);
       if (window.Streamlit && typeof Streamlit.setFrameHeight === "function") {
@@ -547,55 +580,52 @@
       scene.add(bodyGroup);
     }
 
-    function initThree() {
+    function initThreeCore() {
       if (initialized3d) return;
-      if (typeof THREE === "undefined") {
-        window.addEventListener("three-ready", initThree, { once: true });
-        return;
-      }
-      if (typeof THREE.Scene !== "function") {
-        logError("Three.js failed to load from ./lib/. Check browser console (F12) and Network tab for lib/*.js.");
-        return;
-      }
       const canvas = document.getElementById("viewport");
-    const wrap = canvas.parentElement;
-    const w = Math.max(wrap.clientWidth, 400);
-    const h = Math.max(wrap.clientHeight, 560);
+      const wrap = canvas.parentElement;
+      const w = Math.max(wrap.clientWidth, 400);
+      const h = Math.max(wrap.clientHeight, 560);
 
-    scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xe8eaef);
-    camera = new THREE.PerspectiveCamera(42, w / h, 0.01, 10);
-    camera.position.set(0.35, 0.28, 0.55);
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0xe8eaef);
+      camera = new THREE.PerspectiveCamera(42, w / h, 0.01, 10);
+      camera.position.set(0.35, 0.28, 0.55);
 
-    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
-    renderer.setSize(w, h);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.shadowMap.enabled = true;
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+      renderer.setSize(w, h);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.shadowMap.enabled = true;
 
-    if (typeof THREE.OrbitControls === "function") {
-      controls = new THREE.OrbitControls(camera, renderer.domElement);
-      controls.enableDamping = true;
-      controls.dampingFactor = 0.06;
-      controls.target.set(0, 0.05, 0);
-      controls.update();
-    }
+      if (typeof THREE.OrbitControls === "function") {
+        controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.06;
+        controls.target.set(0, 0.05, 0);
+        controls.update();
+      }
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-    const key = new THREE.DirectionalLight(0xffffff, 0.85);
-    key.position.set(1.2, 1.5, 0.8);
-    key.castShadow = true;
-    scene.add(key);
-    const fill = new THREE.DirectionalLight(0xffffff, 0.35);
-    fill.position.set(-0.8, 0.4, -1);
-    scene.add(fill);
+      scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+      const key = new THREE.DirectionalLight(0xffffff, 0.85);
+      key.position.set(1.2, 1.5, 0.8);
+      key.castShadow = true;
+      scene.add(key);
+      const fill = new THREE.DirectionalLight(0xffffff, 0.35);
+      fill.position.set(-0.8, 0.4, -1);
+      scene.add(fill);
 
-    const grid = new THREE.GridHelper(1.2, 20, 0x999999, 0xcccccc);
-    grid.position.y = -0.02;
-    scene.add(grid);
+      const grid = new THREE.GridHelper(1.2, 20, 0x999999, 0xcccccc);
+      grid.position.y = -0.02;
+      scene.add(grid);
 
       initialized3d = true;
       buildBody();
       animate();
+    }
+
+    function initThree() {
+      if (initialized3d) return;
+      whenThreeReady(initThreeCore);
     }
 
     function animate() {
