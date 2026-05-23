@@ -109,6 +109,8 @@ def _init_session() -> None:
         "_rom_mesh_fp": "",
         "_pending_fom_run": False,
         "_fast_preview_geom": None,
+        "_studio_event_id": "",
+        "_studio_templates_sent": False,
     }.items():
         if key not in st.session_state:
             st.session_state[key] = val
@@ -330,6 +332,11 @@ def process_fast_preview_event(
     action = str(event.get("action") or "").strip().lower()
     if not action:
         return
+
+    eid = studio_event_id(event)
+    if eid == st.session_state.get("_studio_event_id"):
+        return
+    st.session_state._studio_event_id = eid
 
     clean = sanitize_studio_payload(event)
     geom, top_wood, back_wood = geom_from_studio_event(clean)
@@ -842,10 +849,11 @@ def main() -> None:
     if isinstance(fp_raw, dict) and fp_raw:
         fp_seed = sanitize_studio_payload({**fp_seed, **fp_raw}, saved_shape)
     fp_seed["gui_mode"] = "admin" if st.session_state.developer_fom_mode else "user"
+    fp_for_component = studio_payload_for_component(fp_seed)
 
     with col_vis:
         st.subheader("Design Studio")
-        studio_event = fast_preview(initial=fp_seed, key="fast_preview_geom", height=700)
+        studio_event = fast_preview(initial=fp_for_component, key="fast_preview_geom", height=700)
         process_fast_preview_event(
             studio_event,
             clamp_ribs=clamp_ribs,
