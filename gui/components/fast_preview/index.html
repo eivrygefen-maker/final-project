@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Guitar Design Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --st-font: "Source Sans 3", "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --st-primary: #ff4b4b;
+      --st-primary-hover: #ff2b2b;
+      --st-text: #31333f;
+      --st-muted: #6b7280;
+      --st-border: rgba(49, 51, 63, 0.2);
+      --st-panel: rgba(240, 242, 246, 0.85);
+      --st-radius: 0.5rem;
+      --st-accent-track: #ff4b4b;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --st-text: #fafafa;
+        --st-muted: #9ca3af;
+        --st-border: rgba(250, 250, 250, 0.15);
+        --st-panel: rgba(38, 39, 48, 0.9);
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      font-family: var(--st-font);
+      color: var(--st-text);
+      background: transparent;
+      overflow: hidden;
+    }
+    .studio {
+      display: grid;
+      grid-template-columns: minmax(220px, 280px) 1fr;
+      gap: 12px;
+      height: 100%;
+      min-height: 620px;
+      padding: 8px 10px 10px;
+    }
+    .panel {
+      background: var(--st-panel);
+      border: 1px solid var(--st-border);
+      border-radius: var(--st-radius);
+      padding: 12px 14px;
+      overflow-y: auto;
+      max-height: 100%;
+    }
+    .panel h3 {
+      margin: 0 0 4px;
+      font-size: 1.05rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+    .panel .sub {
+      margin: 0 0 12px;
+      font-size: 0.78rem;
+      color: var(--st-muted);
+      line-height: 1.35;
+    }
+    label {
+      display: block;
+      font-size: 0.78rem;
+      font-weight: 600;
+      margin: 10px 0 4px;
+    }
+    select, input[type="range"] {
+      width: 100%;
+    }
+    select {
+      padding: 6px 8px;
+      border-radius: var(--st-radius);
+      border: 1px solid var(--st-border);
+      background: transparent;
+      color: inherit;
+      font-family: inherit;
+      font-size: 0.85rem;
+    }
+    .val {
+      float: right;
+      font-weight: 500;
+      color: var(--st-muted);
+      font-size: 0.75rem;
+    }
+    input[type="range"] {
+      accent-color: var(--st-accent-track);
+      height: 4px;
+    }
+    .view-wrap {
+      position: relative;
+      border-radius: var(--st-radius);
+      border: 1px solid var(--st-border);
+      overflow: hidden;
+      background: linear-gradient(165deg, #e8eaef 0%, #d4d8e0 45%, #c5cad4 100%);
+      min-height: 580px;
+    }
+    #viewport {
+      width: 100%;
+      height: 100%;
+      min-height: 580px;
+      display: block;
+    }
+    .badge {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      background: rgba(0,0,0,0.45);
+      color: #fff;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      pointer-events: none;
+    }
+    .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--st-border);
+    }
+    button {
+      font-family: inherit;
+      font-size: 0.85rem;
+      font-weight: 600;
+      padding: 9px 12px;
+      border-radius: var(--st-radius);
+      border: 1px solid var(--st-border);
+      cursor: pointer;
+      background: transparent;
+      color: inherit;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    button.primary {
+      background: var(--st-primary);
+      border-color: var(--st-primary);
+      color: #fff;
+    }
+    button.primary:hover { background: var(--st-primary-hover); border-color: var(--st-primary-hover); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .mode-pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.72rem;
+      background: rgba(255,75,75,0.15);
+      color: var(--st-primary);
+      margin-bottom: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="studio">
+    <aside class="panel" id="controls">
+      <h3>Design Studio</h3>
+      <p class="sub">ROM/LHS parameters only — instant Three.js preview. Save &amp; Sync pushes to Gmsh/PyVista.</p>
+      <div class="mode-pill" id="modeLabel">User (ROM)</div>
+
+      <label for="shapeSelect">Shape</label>
+      <select id="shapeSelect">
+        <option value="Classical">Classical (Torres)</option>
+        <option value="Dreadnought">Dreadnought (Martin)</option>
+        <option value="Box">Box (debug)</option>
+      </select>
+
+      <label>Length L (m) <span class="val" id="lengthVal">—</span></label>
+      <input type="range" id="length" step="0.005" />
+
+      <label>Width W (m) <span class="val" id="widthVal">—</span></label>
+      <input type="range" id="width" step="0.005" />
+
+      <label>Depth D (m) <span class="val" id="depthVal">—</span></label>
+      <input type="range" id="depth" step="0.005" />
+
+      <label>Top thickness (m) <span class="val" id="topThicknessVal">—</span></label>
+      <input type="range" id="topThickness" step="0.0005" />
+
+      <label>Soundhole radius (m) <span class="val" id="holeVal">—</span></label>
+      <input type="range" id="holeRadius" step="0.001" />
+
+      <label for="topWood">Top wood</label>
+      <select id="topWood"></select>
+
+      <label for="backWood">Back &amp; sides wood</label>
+      <select id="backWood"></select>
+
+      <div class="actions">
+        <button type="button" class="primary" id="btnSave">Save &amp; Sync</button>
+        <button type="button" id="btnRom">Run ROM Prediction</button>
+        <button type="button" id="btnFem" style="display:none">Run Full FEM</button>
+      </div>
+    </aside>
+
+    <div class="view-wrap">
+      <div class="badge">Live 3D · Luthier blueprint</div>
+      <canvas id="viewport"></canvas>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/three@0.149.0/build/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.149.0/examples/js/controls/OrbitControls.js"></script>
+  <script>
+    /* ── Streamlit bridge ───────────────────────────────────────────── */
+    function sendMessage(type, data) {
+      window.parent.postMessage({ type: type, ...data }, "*");
+    }
+    function setFrameHeight(h) {
+      sendMessage("streamlit:setFrameHeight", { height: h });
+    }
+    function setComponentValue(value) {
+      sendMessage("streamlit:setComponentValue", { value: value });
+    }
+    function onRender(event) {
+      if (!event.data || event.data.type !== "streamlit:render") return;
+      applyArgs(event.data.args || {});
+    }
+    window.addEventListener("message", onRender);
+    sendMessage("streamlit:componentReady", { isStreamlitComponent: true });
+    setFrameHeight(700);
+
+    /* ── State ──────────────────────────────────────────────────────── */
+    const state = {
+      shape_type: "Classical",
+      length: 0.49,
+      width: 0.37,
+      depth: 0.095,
+      top_thickness: 0.0045,
+      hole_radius: 0.045,
+      top_wood_id: "spruce",
+      back_wood_id: "rosewood",
+      gui_mode: "user",
+      bounds: {},
+      top_thickness_bounds: [0.003, 0.006],
+      hole_radius_bounds: [0.035, 0.055],
+      wood_ids: ["spruce", "cedar", "mahogany", "rosewood", "maple"],
+      wood_colors: {},
+      templates: {},
+      soundhole_from_neck_ratio: 0.5,
+      bounds_by_shape: {},
+    };
+
+    let scene, camera, renderer, controls;
+    let bodyGroup, holeMesh;
+    let initialized3d = false;
+
+  function soundholeX(L) {
+    return 0.5 * L - state.soundhole_from_neck_ratio * L;
+  }
+
+  function scaleLoop(loop, L, W, nominalLength, nominalWidth) {
+    const sx = L / Math.max(nominalLength, 1e-9);
+    const sy = W / Math.max(nominalWidth, 1e-9);
+    return loop.map(([x, y]) => [x * sx, y * sy]);
+  }
+
+  function hexColor(hex) {
+    const h = String(hex || "#8B7355").replace("#", "");
+    if (h.length !== 6) return new THREE.Color(0.55, 0.45, 0.35);
+    return new THREE.Color(
+      parseInt(h.slice(0, 2), 16) / 255,
+      parseInt(h.slice(2, 4), 16) / 255,
+      parseInt(h.slice(4, 6), 16) / 255
+    );
+  }
+
+  function disposeGroup(g) {
+    if (!g) return;
+    g.traverse((obj) => {
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) {
+        if (Array.isArray(obj.material)) obj.material.forEach((m) => m.dispose());
+        else obj.material.dispose();
+      }
+    });
+    scene.remove(g);
+  }
+
+  function buildBody() {
+    disposeGroup(bodyGroup);
+    bodyGroup = new THREE.Group();
+    const L = state.length;
+    const W = state.width;
+    const D = state.depth;
+    const backCol = hexColor(state.wood_colors[state.back_wood_id] || "#5c4033");
+    const topCol = hexColor(state.wood_colors[state.top_wood_id] || "#FFF8DC");
+    const matBack = new THREE.MeshPhongMaterial({ color: backCol, shininess: 28, flatShading: false });
+    const matTop = new THREE.MeshPhongMaterial({ color: topCol, shininess: 40, flatShading: false });
+
+    if (state.shape_type === "Box") {
+      const geom = new THREE.BoxGeometry(L, D, W);
+      const mesh = new THREE.Mesh(geom, matBack);
+      mesh.position.set(0, D / 2, 0);
+      bodyGroup.add(mesh);
+    } else {
+      const tmpl = state.templates[state.shape_type] || state.templates.Classical;
+      if (!tmpl || !tmpl.loop || tmpl.loop.length < 3) {
+        const geom = new THREE.BoxGeometry(L, D, W * 0.5);
+        bodyGroup.add(new THREE.Mesh(geom, matBack));
+      } else {
+        const pts = scaleLoop(tmpl.loop, L, W, tmpl.nominal_length, tmpl.nominal_width);
+        const shape = new THREE.Shape();
+        shape.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i][0], pts[i][1]);
+        shape.closePath();
+        const extrudeSettings = { depth: D, bevelEnabled: false, curveSegments: 1 };
+        const geom = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+        geom.rotateX(-Math.PI / 2);
+        geom.translate(0, D, 0);
+        const mesh = new THREE.Mesh(geom, matBack);
+        bodyGroup.add(mesh);
+
+        const topGeom = new THREE.ExtrudeGeometry(shape, { depth: state.top_thickness, bevelEnabled: false });
+        topGeom.rotateX(-Math.PI / 2);
+        topGeom.translate(0, D, 0);
+        const topMesh = new THREE.Mesh(topGeom, matTop);
+        bodyGroup.add(topMesh);
+      }
+    }
+
+    const hx = soundholeX(L);
+    const hr = state.hole_radius;
+    if (hr > 0.005 && state.shape_type !== "Box") {
+      const holeGeom = new THREE.CylinderGeometry(hr, hr, state.top_thickness * 2.2, 32);
+      const holeMat = new THREE.MeshPhongMaterial({ color: 0x0a0a0a, shininess: 4 });
+      holeMesh = new THREE.Mesh(holeGeom, holeMat);
+      holeMesh.position.set(hx, D + state.top_thickness * 0.5, 0);
+      bodyGroup.add(holeMesh);
+    }
+
+    const box = new THREE.Box3().setFromObject(bodyGroup);
+    const center = box.getCenter(new THREE.Vector3());
+    bodyGroup.position.sub(center);
+    scene.add(bodyGroup);
+  }
+
+  function initThree() {
+    if (initialized3d) return;
+    const canvas = document.getElementById("viewport");
+    const wrap = canvas.parentElement;
+    const w = Math.max(wrap.clientWidth, 400);
+    const h = Math.max(wrap.clientHeight, 560);
+
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xe8eaef);
+    camera = new THREE.PerspectiveCamera(42, w / h, 0.01, 10);
+    camera.position.set(0.35, 0.28, 0.55);
+
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+    renderer.setSize(w, h);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.06;
+    controls.target.set(0, 0.05, 0);
+    controls.update();
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+    const key = new THREE.DirectionalLight(0xffffff, 0.85);
+    key.position.set(1.2, 1.5, 0.8);
+    key.castShadow = true;
+    scene.add(key);
+    const fill = new THREE.DirectionalLight(0xffffff, 0.35);
+    fill.position.set(-0.8, 0.4, -1);
+    scene.add(fill);
+
+    const grid = new THREE.GridHelper(1.2, 20, 0x999999, 0xcccccc);
+    grid.position.y = -0.02;
+    scene.add(grid);
+
+    initialized3d = true;
+    buildBody();
+    animate();
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+    if (controls) controls.update();
+    if (renderer && scene && camera) renderer.render(scene, camera);
+  }
+
+  function onResize() {
+    if (!renderer || !camera) return;
+    const wrap = document.getElementById("viewport").parentElement;
+    const w = wrap.clientWidth;
+    const h = wrap.clientHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+  }
+  window.addEventListener("resize", onResize);
+
+  function fmt(v, dec) {
+    return Number(v).toFixed(dec);
+  }
+
+  function applySliderBounds() {
+    const b = state.bounds || {};
+    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+    const setRange = (id, key, fallback) => {
+      const el = document.getElementById(id);
+      const pair = b[key] || fallback;
+      el.min = pair[0];
+      el.max = pair[1];
+      const cur = state[key] ?? pair[0];
+      el.value = clamp(cur, pair[0], pair[1]);
+      state[key] = parseFloat(el.value);
+    };
+    setRange("length", "length", [0.35, 0.6]);
+    setRange("width", "width", [0.2, 0.45]);
+    setRange("depth", "depth", [0.08, 0.15]);
+    const tt = state.top_thickness_bounds;
+    const hr = state.hole_radius_bounds;
+    const tEl = document.getElementById("topThickness");
+    tEl.min = tt[0]; tEl.max = tt[1]; tEl.value = state.top_thickness;
+    const hEl = document.getElementById("holeRadius");
+    hEl.min = hr[0]; hEl.max = hr[1]; hEl.value = state.hole_radius;
+  }
+
+  function readSliders() {
+    state.shape_type = document.getElementById("shapeSelect").value;
+    state.length = parseFloat(document.getElementById("length").value);
+    state.width = parseFloat(document.getElementById("width").value);
+    state.depth = parseFloat(document.getElementById("depth").value);
+    state.top_thickness = parseFloat(document.getElementById("topThickness").value);
+    state.hole_radius = parseFloat(document.getElementById("holeRadius").value);
+    state.top_wood_id = document.getElementById("topWood").value;
+    state.back_wood_id = document.getElementById("backWood").value;
+    updateLabels();
+  }
+
+  function updateLabels() {
+    document.getElementById("lengthVal").textContent = fmt(state.length, 3);
+    document.getElementById("widthVal").textContent = fmt(state.width, 3);
+    document.getElementById("depthVal").textContent = fmt(state.depth, 3);
+    document.getElementById("topThicknessVal").textContent = fmt(state.top_thickness, 4);
+    document.getElementById("holeVal").textContent = fmt(state.hole_radius, 3);
+  }
+
+  function updateModeUi() {
+    const admin = state.gui_mode === "admin";
+    document.getElementById("modeLabel").textContent = admin ? "Admin (FEM)" : "User (ROM)";
+    document.getElementById("btnRom").style.display = admin ? "none" : "block";
+    document.getElementById("btnFem").style.display = admin ? "block" : "none";
+  }
+
+  function payload(action) {
+    return {
+      action,
+      shape_type: state.shape_type,
+      length: state.length,
+      width: state.width,
+      depth: state.depth,
+      top_thickness: state.top_thickness,
+      hole_radius: state.hole_radius,
+      top_wood_id: state.top_wood_id,
+      back_wood_id: state.back_wood_id,
+      gui_mode: state.gui_mode,
+      soundhole_x: soundholeX(state.length),
+    };
+  }
+
+  function refresh3d() {
+    readSliders();
+    if (!initialized3d) initThree();
+    else buildBody();
+  }
+
+  function fillWoodSelects() {
+    const top = document.getElementById("topWood");
+    const back = document.getElementById("backWood");
+    top.innerHTML = "";
+    back.innerHTML = "";
+    (state.wood_ids || []).forEach((id) => {
+      const o1 = document.createElement("option");
+      o1.value = id;
+      o1.textContent = id.charAt(0).toUpperCase() + id.slice(1);
+      top.appendChild(o1);
+      const o2 = o1.cloneNode(true);
+      back.appendChild(o2);
+    });
+    top.value = state.top_wood_id;
+    back.value = state.back_wood_id;
+  }
+
+  function applyArgs(args) {
+    Object.assign(state, args);
+    if (args.bounds_by_shape) state.bounds_by_shape = args.bounds_by_shape;
+    if (args.gui_mode) state.gui_mode = args.gui_mode;
+    if (!state.bounds && state.bounds_by_shape && state.bounds_by_shape[state.shape_type]) {
+      state.bounds = state.bounds_by_shape[state.shape_type];
+    }
+    document.getElementById("shapeSelect").value = state.shape_type;
+    fillWoodSelects();
+    applySliderBounds();
+    document.getElementById("length").value = state.length;
+    document.getElementById("width").value = state.width;
+    document.getElementById("depth").value = state.depth;
+    document.getElementById("topThickness").value = state.top_thickness;
+    document.getElementById("holeRadius").value = state.hole_radius;
+    document.getElementById("topWood").value = state.top_wood_id;
+    document.getElementById("backWood").value = state.back_wood_id;
+    updateLabels();
+    updateModeUi();
+    refresh3d();
+  }
+
+  ["length", "width", "depth", "topThickness", "holeRadius"].forEach((id) => {
+    document.getElementById(id).addEventListener("input", refresh3d);
+  });
+  document.getElementById("shapeSelect").addEventListener("change", () => {
+    state.shape_type = document.getElementById("shapeSelect").value;
+    const byShape = state.bounds_by_shape || {};
+    if (byShape[state.shape_type]) {
+      state.bounds = byShape[state.shape_type];
+    }
+    applySliderBounds();
+    refresh3d();
+  });
+  document.getElementById("topWood").addEventListener("change", refresh3d);
+  document.getElementById("backWood").addEventListener("change", refresh3d);
+
+  document.getElementById("btnSave").addEventListener("click", () => {
+    readSliders();
+    setComponentValue(payload("save_sync"));
+  });
+  document.getElementById("btnRom").addEventListener("click", () => {
+    readSliders();
+    setComponentValue(payload("run_rom"));
+  });
+  document.getElementById("btnFem").addEventListener("click", () => {
+    readSliders();
+    setComponentValue(payload("run_fem"));
+  });
+  </script>
+</body>
+</html>

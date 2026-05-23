@@ -74,9 +74,13 @@ def _reference_shape_family(shape_type: str) -> str:
 
 def _reference_nominal_lateral(shape_type: str) -> Tuple[float, float, float]:
     """Nominal full widths (m) baked into STEP templates — classical vs acoustic differ."""
-    if _reference_shape_family(shape_type) == "acoustic":
-        return (0.34, 0.28, 0.42)  # shoulder, waist, lower (full width)
-    return (0.268, 0.18, 0.34)
+    try:
+        from FEM.geometry.generate_reference_models import REFERENCE_NOMINAL_WIDTHS
+    except ImportError:
+        from generate_reference_models import REFERENCE_NOMINAL_WIDTHS
+
+    key = _reference_shape_family(shape_type)
+    return REFERENCE_NOMINAL_WIDTHS[key]  # upper, waist, lower
 
 
 def _scale_reference_to_target(
@@ -124,7 +128,8 @@ def _scale_reference_to_target(
     sy_lower = tgt_lower / nom_lower
     sy_waist = tgt_waist / nom_waist
     sy_upper = tgt_upper / nom_shoulder
-    sy = 0.5 * sy_lower + 0.3 * sy_waist + 0.2 * sy_upper
+    # Min scale avoids lateral “ballooning” past any target bout.
+    sy = min(sy_lower, sy_waist, sy_upper)
 
     occ.dilate(dimtags, cx, cy, cz, sx, sy, sz)
     occ.synchronize()
@@ -276,10 +281,12 @@ def create_guitar_mesh():
         lower_bout = float(p.get("lower_bout", W))
         waist = float(p.get("waist", W * 0.65))
         hole_from_neck_ratio = float(p.get("soundhole_from_neck_ratio", 0.5))
+        soundhole_x_cfg = p.get("soundhole_x")
     else:
         L, W, D, t, hr, shape_type = 0.48, 0.37, 0.1, 0.003, 0.04, "Classical"
         upper_bout, lower_bout, waist = W * 0.75, W, W * 0.65
         hole_from_neck_ratio = 0.5
+        soundhole_x_cfg = None
 
     def _is_box_shape(st: str) -> bool:
         return str(st).strip().lower() == "box"
@@ -291,9 +298,28 @@ def create_guitar_mesh():
     mode = "display" if is_display else ("sketch" if is_preview else "fom")
     print(f"[diag] shape_type={shape_type!r} mesh_mode={mode}")
 
-    # Soundhole centre: measured from neck (+x) toward bridge; higher ratio → lower bout.
+    # Soundhole centre: luthier blueprint x (neck at +x) or legacy ratio from neck.
     hole_from_neck_ratio = float(max(0.05, min(0.95, hole_from_neck_ratio)))
-    hole_x = 0.5 * L - hole_from_neck_ratio * L
+    if soundhole_x_cfg is not None:
+        try:
+            from FEM.geometry.generate_reference_models import (
+                NOMINAL_LENGTH_ACOUSTIC,
+                NOMINAL_LENGTH_CLASSICAL,
+            )
+        except ImportError:
+            from generate_reference_models import (  # type: ignore
+                NOMINAL_LENGTH_ACOUSTIC,
+                NOMINAL_LENGTH_CLASSICAL,
+            )
+        fam = _reference_shape_family(shape_type)
+        nom_l = (
+            NOMINAL_LENGTH_ACOUSTIC
+            if fam == "acoustic"
+            else NOMINAL_LENGTH_CLASSICAL
+        )
+        hole_x = float(soundhole_x_cfg) * (float(L) / float(nom_l))
+    else:
+        hole_x = 0.5 * L - hole_from_neck_ratio * L
     hole_y = 0.0
 
     # Engineering: high-density shell (6 mm) + 1 mm thickness edges.

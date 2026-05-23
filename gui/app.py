@@ -1,12 +1,8 @@
 """
-3D Guitar Simulator — strict display vs physics decoupling.
+3D Guitar Simulator — ROM-aligned Streamlit UI.
 
-Pipelines
----------
-Sketch (sliders)  : preview_mesh.msh — coarse wireframe, instant feedback.
-Save Changes      : display_mesh.msh — uniform wood shell for PyVista ONLY.
-Acoustics ROM     : reduced_basis.npz + ROMManager.solve_online (no FOM Gmsh).
-Acoustics FOM     : guitar_3d.msh — full FSI volume mesh, FEM only (never PyVista).
+Sliders match the 7-parameter LHS basis (L, W, D, top thickness, hole radius, woods).
+PyVista shows ``display_mesh.msh`` from ``build_3d_guitar.py`` (same config as FEM/ROM).
 """
 from __future__ import annotations
 
@@ -48,6 +44,18 @@ SHAPE_OPTIONS = ("Classical", "Dreadnought", "Box")
 ROM_NAMESPACE = {"Classical": "classic", "Dreadnought": "dreadnought", "Box": "classic"}
 HOLE_RADIUS_MAX_M = 0.08
 SOUNDHOLE_FROM_NECK_RATIO = 0.5
+ROM_HOLE_RADIUS_BOUNDS = (0.035, 0.055)
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(BASE_DIR / "FEM" / "geometry"))
+from generate_reference_models import (  # noqa: E402
+    ACOUSTIC_LOOP,
+    CLASSICAL_LOOP,
+    NOMINAL_LENGTH_ACOUSTIC,
+    NOMINAL_LENGTH_CLASSICAL,
+    get_luthier_gui_defaults,
+)
+from components.fast_preview import fast_preview  # noqa: E402
 TOP_Z_BAND_FRAC = 0.10
 HOLE_VIS_COLOR = "#0c0c0c"
 SHELL_VIS_TAGS = frozenset({1, 2, 3, 4})
@@ -72,6 +80,8 @@ sys.path.insert(0, str(BASE_DIR / "FEM" / "rom"))
 import fem_main_3d  # noqa: E402
 from wood_library import (  # noqa: E402
     ALL_WOOD_IDS,
+    TOP_THICKNESS_MAX_M,
+    TOP_THICKNESS_MIN_M,
     material_block_for_id,
     plot_color_for_wood,
     wood_display_name,
@@ -96,6 +106,9 @@ def _init_session() -> None:
         "_clamp_ribs": False,
         "_pin_neck_fix": True,
         "_fixture_preset": "Standing Angled (3D)",
+        "_rom_mesh_fp": "",
+        "_pending_fom_run": False,
+        "_fast_preview_geom": None,
     }.items():
         if key not in st.session_state:
             st.session_state[key] = val
@@ -118,12 +131,27 @@ def soundhole_center_x(body_length: float) -> float:
     return 0.5 * float(body_length) - SOUNDHOLE_FROM_NECK_RATIO * float(body_length)
 
 
-def shape_limits(shape: str) -> Tuple[float, float, float, float, float, float, float, float, float]:
-    if shape == "Classical":
-        return 0.35, 0.60, 0.48, 0.20, 0.45, 0.37, 0.08, 0.15, 0.10
-    if shape == "Dreadnought":
-        return 0.45, 0.70, 0.51, 0.30, 0.55, 0.40, 0.10, 0.20, 0.12
-    return 0.10, 1.00, 0.40, 0.10, 0.80, 0.30, 0.01, 0.50, 0.10
+def rom_lwd_bounds(shape_type: str) -> Dict[str, Tuple[float, float]]:
+    """Match ``ROMManager._shape_length_width_depth_bounds`` (LHS training box)."""
+    stl = str(shape_type).strip().lower()
+    if "dreadnought" in stl or "acoustic" in stl:
+        return {"length": (0.45, 0.70), "width": (0.30, 0.55), "depth": (0.10, 0.20)}
+    if "box" in stl:
+        return {"length": (0.10, 1.00), "width": (0.10, 0.80), "depth": (0.01, 0.50)}
+    return {"length": (0.35, 0.60), "width": (0.20, 0.45), "depth": (0.08, 0.15)}
+
+
+def rom_defaults(shape_type: str) -> Dict[str, float]:
+    """Mid-range ROM defaults for a shape (slider starting points)."""
+    b = rom_lwd_bounds(shape_type)
+    defs = get_luthier_gui_defaults(shape_type)
+    return {
+        "length": 0.5 * (b["length"][0] + b["length"][1]),
+        "width": 0.5 * (b["width"][0] + b["width"][1]),
+        "depth": 0.5 * (b["depth"][0] + b["depth"][1]),
+        "top_thickness": 0.5 * (TOP_THICKNESS_MIN_M + TOP_THICKNESS_MAX_M),
+        "hole_radius": 0.5 * (ROM_HOLE_RADIUS_BOUNDS[0] + ROM_HOLE_RADIUS_BOUNDS[1]),
+    }
 
 
 def build_geometry_state(
@@ -132,25 +160,220 @@ def build_geometry_state(
     length: float,
     width: float,
     depth: float,
-    thickness: float,
+    top_thickness: float,
     hole_radius: float,
 ) -> Dict[str, Any]:
-    W = float(width)
+    """ROM-facing geometry; bout widths derived from W for STEP morphing only."""
+    defs = get_luthier_gui_defaults(shape_type)
+    w = float(width)
+    w_scale = w / float(defs["width"]) if float(defs["width"]) > 0.0 else 1.0
+    l_val = float(length)
     return {
         "shape_type": shape_type,
-        "length": float(length),
-        "width": W,
+        "length": l_val,
+        "width": w,
         "depth": float(depth),
-        "thickness": float(thickness),
-        "top_thickness": float(thickness),
+        "thickness": float(top_thickness),
+        "top_thickness": float(top_thickness),
         "hole_radius": min(float(hole_radius), HOLE_RADIUS_MAX_M),
-        "lower_bout": W,
-        "upper_bout": W * 0.75,
-        "waist": W * 0.65,
+        "lower_bout": w,
+        "upper_bout": float(defs["upper_bout"]) * w_scale,
+        "waist": float(defs["waist"]) * w_scale,
         "soundhole_y": 0.0,
-        "soundhole_x": soundhole_center_x(length),
+        "soundhole_x": soundhole_center_x(l_val),
+        "soundhole_from_neck_ratio": SOUNDHOLE_FROM_NECK_RATIO,
+        "bridge_x": float(defs["bridge_x"]),
+    }
+
+
+def _loop_to_xy(loop: Sequence[Tuple[float, float]]) -> List[List[float]]:
+    pts = [(float(x), float(y)) for x, y in loop]
+    if len(pts) > 1 and pts[0] == pts[-1]:
+        pts = pts[:-1]
+    return [[x, y] for x, y in pts]
+
+
+def export_luthier_templates() -> Dict[str, Dict[str, Any]]:
+    """Closed-loop control points for the Design Studio (matches Python STEP blueprints)."""
+    cdef = get_luthier_gui_defaults("Classical")
+    adef = get_luthier_gui_defaults("Dreadnought")
+    return {
+        "Classical": {
+            "loop": _loop_to_xy(CLASSICAL_LOOP),
+            "nominal_length": float(NOMINAL_LENGTH_CLASSICAL),
+            "nominal_width": float(cdef["width"]),
+        },
+        "Dreadnought": {
+            "loop": _loop_to_xy(ACOUSTIC_LOOP),
+            "nominal_length": float(NOMINAL_LENGTH_ACOUSTIC),
+            "nominal_width": float(adef["width"]),
+        },
+    }
+
+
+def studio_initial_from_saved(
+    saved_geom: Dict[str, Any],
+    shape_type: str,
+    *,
+    developer_fom_mode: bool,
+) -> Dict[str, Any]:
+    """Payload for the Three.js Design Studio component."""
+    rom_def = rom_defaults(shape_type)
+    cfg = _load_saved_config()
+    mats = cfg.get("materials") or {}
+    top_wood = str(saved_geom.get("top_wood_id") or (mats.get("top") or {}).get("wood_id", "spruce")).lower()
+    back_wood = str(saved_geom.get("back_wood_id") or (mats.get("back") or {}).get("wood_id", "rosewood")).lower()
+    if top_wood not in ALL_WOOD_IDS:
+        top_wood = "spruce"
+    if back_wood not in ALL_WOOD_IDS:
+        back_wood = "rosewood"
+    bounds = rom_lwd_bounds(shape_type)
+    return {
+        "shape_type": shape_type,
+        "length": float(saved_geom.get("length", rom_def["length"])),
+        "width": float(saved_geom.get("width", rom_def["width"])),
+        "depth": float(saved_geom.get("depth", rom_def["depth"])),
+        "top_thickness": float(
+            saved_geom.get("top_thickness", saved_geom.get("thickness", rom_def["top_thickness"]))
+        ),
+        "hole_radius": float(saved_geom.get("hole_radius", rom_def["hole_radius"])),
+        "top_wood_id": top_wood,
+        "back_wood_id": back_wood,
+        "gui_mode": "admin" if developer_fom_mode else "user",
+        "bounds": {
+            "length": list(bounds["length"]),
+            "width": list(bounds["width"]),
+            "depth": list(bounds["depth"]),
+        },
+        "bounds_by_shape": {s: {k: list(v) for k, v in rom_lwd_bounds(s).items()} for s in SHAPE_OPTIONS},
+        "top_thickness_bounds": [TOP_THICKNESS_MIN_M, TOP_THICKNESS_MAX_M],
+        "hole_radius_bounds": list(ROM_HOLE_RADIUS_BOUNDS),
+        "wood_ids": list(ALL_WOOD_IDS),
+        "wood_colors": {w: plot_color_for_wood(w) for w in ALL_WOOD_IDS},
+        "templates": export_luthier_templates(),
         "soundhole_from_neck_ratio": SOUNDHOLE_FROM_NECK_RATIO,
     }
+
+
+def geom_from_studio_event(event: Dict[str, Any]) -> Tuple[Dict[str, Any], str, str]:
+    """Parse component event into geometry dict and wood IDs."""
+    shape = str(event.get("shape_type", "Classical"))
+    if shape not in SHAPE_OPTIONS:
+        shape = "Classical"
+    top_wood = str(event.get("top_wood_id", "spruce")).lower()
+    back_wood = str(event.get("back_wood_id", "rosewood")).lower()
+    if top_wood not in ALL_WOOD_IDS:
+        top_wood = "spruce"
+    if back_wood not in ALL_WOOD_IDS:
+        back_wood = "rosewood"
+    geom = build_geometry_state(
+        shape_type=shape,
+        length=float(event["length"]),
+        width=float(event["width"]),
+        depth=float(event["depth"]),
+        top_thickness=float(event.get("top_thickness", event.get("thickness", rom_defaults(shape)["top_thickness"]))),
+        hole_radius=float(event.get("hole_radius", rom_defaults(shape)["hole_radius"])),
+    )
+    return geom, top_wood, back_wood
+
+
+def process_fast_preview_event(
+    event: Optional[Dict[str, Any]],
+    *,
+    clamp_ribs: bool,
+    pin_neck: bool,
+    fixture_preset: str,
+) -> None:
+    """Handle Save & Sync / Run ROM / Run FEM from the Design Studio."""
+    if not event or not isinstance(event, dict):
+        return
+    action = str(event.get("action") or "").strip().lower()
+    if not action:
+        return
+
+    geom, top_wood, back_wood = geom_from_studio_event(event)
+    st.session_state._fast_preview_geom = dict(event)
+    st.session_state._geom = geom
+    st.session_state._top_wood = top_wood
+    st.session_state._back_wood = back_wood
+
+    geom_fp = geometry_fingerprint(
+        geom,
+        top_wood,
+        back_wood,
+        clamp_ribs=clamp_ribs,
+        pin_neck_fix=pin_neck,
+        fixture_preset=fixture_preset,
+    )
+
+    if action in ("save_sync", "run_rom", "run_fem"):
+        regenerate_display_mesh(
+            geom,
+            top_wood=top_wood,
+            back_wood=back_wood,
+            clamp_ribs=clamp_ribs,
+            pin_neck_fix=pin_neck,
+            fixture_preset=fixture_preset,
+            geom_fp=geom_fp,
+        )
+        invalidate_physics_state()
+
+    if action == "run_rom":
+        st.session_state.developer_fom_mode = False
+        st.session_state.acoustics_pending = True
+    elif action == "run_fem":
+        st.session_state.developer_fom_mode = True
+        st.session_state._pending_fom_run = True
+
+    st.rerun()
+
+
+def rom_mesh_fingerprint(
+    geom: Dict[str, Any],
+    *,
+    top_wood: str,
+    back_wood: str,
+) -> str:
+    """Fingerprint of the 7 ROM/LHS parameters (triggers mesh rebuild when changed)."""
+    return json.dumps(
+        {
+            "shape_type": geom["shape_type"],
+            "length": geom["length"],
+            "width": geom["width"],
+            "depth": geom["depth"],
+            "top_thickness": geom["top_thickness"],
+            "hole_radius": geom["hole_radius"],
+            "top_wood_id": top_wood,
+            "back_wood_id": back_wood,
+        },
+        sort_keys=True,
+    )
+
+
+def regenerate_display_mesh(
+    geom: Dict[str, Any],
+    *,
+    top_wood: str,
+    back_wood: str,
+    clamp_ribs: bool,
+    pin_neck_fix: bool,
+    fixture_preset: str,
+    geom_fp: str,
+) -> None:
+    """Write ``guitar_3d.json``, run ``build_3d_guitar.py``, refresh PyVista mesh."""
+    save_config(
+        geom,
+        top_wood=top_wood,
+        back_wood=back_wood,
+        clamp_ribs=clamp_ribs,
+        pin_neck_fix=pin_neck_fix,
+        fixture_preset=fixture_preset,
+    )
+    run_gmsh_display()
+    st.session_state._rom_mesh_fp = rom_mesh_fingerprint(geom, top_wood=top_wood, back_wood=back_wood)
+    st.session_state.saved_geom_fp = geom_fp
+    st.session_state.show_display_mesh = True
+    st.session_state.live_preview_fp = ""
 
 
 def geometry_fingerprint(
@@ -174,17 +397,14 @@ def geometry_fingerprint(
 
 
 def lhs_params_from_ui(geom: Dict[str, Any], *, top_wood: str, back_wood: str) -> Dict[str, Any]:
+    """Seven-parameter dict consumed by ``ROMManager.solve_online`` / LHS pool."""
     return {
         "geometry.shape_type": geom["shape_type"],
         "geometry.length": geom["length"],
         "geometry.width": geom["width"],
         "geometry.depth": geom["depth"],
-        "geometry.thickness": geom["thickness"],
+        "geometry.top_thickness": geom["top_thickness"],
         "geometry.hole_radius": geom["hole_radius"],
-        "geometry.lower_bout": geom["lower_bout"],
-        "geometry.upper_bout": geom["upper_bout"],
-        "geometry.waist": geom["waist"],
-        "geometry.soundhole_y": geom["soundhole_y"],
         "materials.top.wood_id": top_wood,
         "materials.back.wood_id": back_wood,
     }
@@ -379,33 +599,26 @@ def display_mesh_active(geom_fp: str) -> bool:
 
 
 def get_view_mesh(geom_fp: str) -> Tuple[Optional[pv.PolyData], bool, str]:
-    """PyVista loads display_mesh.msh or sketch preview only — never guitar_3d.msh."""
+    """PyVista shows ``display_mesh.msh`` from ``build_3d_guitar.py`` (never FOM volume mesh)."""
     if display_mesh_active(geom_fp):
         mesh = load_surface_mesh(DISPLAY_MESH_FILE)
         if mesh is not None:
             return mesh, False, "display_mesh.msh"
-    if st.session_state.live_preview_fp == geom_fp and PREVIEW_MESH_FILE.is_file():
-        cached = load_surface_mesh(PREVIEW_MESH_FILE)
-        if cached is not None:
-            return cached, True, "preview_mesh.msh"
-    try:
-        with st.spinner("Building sketch preview (low-poly)…"):
-            run_gmsh_sketch()
-    except Exception as exc:
-        if PREVIEW_MESH_FILE.is_file():
-            PREVIEW_MESH_FILE.unlink()
-        raise RuntimeError(
-            f"Sketch mesh failed ({exc}). Try adjusting depth/thickness or shape, then move a slider again."
-        ) from exc
-    st.session_state.live_preview_fp = geom_fp
-    return load_surface_mesh(PREVIEW_MESH_FILE), True, "preview_mesh.msh"
+    mesh = load_surface_mesh(DISPLAY_MESH_FILE)
+    if mesh is not None:
+        return mesh, False, "display_mesh.msh"
+    return None, False, ""
 
 
-def invalidate_saved_state() -> None:
+def invalidate_physics_state() -> None:
+    """Clear ROM/FEM acoustics results when geometry or materials change."""
     st.session_state.physics_ready = False
     st.session_state.acoustics_pending = False
     st.session_state.stk_body_json = ""
-    st.session_state.show_display_mesh = False
+
+
+def invalidate_saved_state() -> None:
+    invalidate_physics_state()
 
 
 def try_import_rom():
@@ -528,17 +741,6 @@ def run_stk(*, body_json: Path, top_wood: str) -> None:
     append_silence_wav(WAV_OUTPUT, 0.3)
 
 
-def on_save_changes(geom_fp: str) -> None:
-    invalidate_saved_state()
-    st.session_state.live_preview_fp = ""
-    with st.spinner("Building display mesh (wood shell, uniform 4 mm)…"):
-        run_gmsh_display()
-    st.session_state.saved_geom_fp = geom_fp
-    st.session_state.show_display_mesh = True
-    st.session_state.acoustics_pending = True
-    st.rerun()
-
-
 def main() -> None:
     saved = _load_saved_config().get("geometry", {}) or {}
     saved_solver = _load_saved_config().get("solver", {}) or {}
@@ -548,7 +750,6 @@ def main() -> None:
     saved_fixture = str(saved.get("fixture_preset", "Standing Angled (3D)"))
     if saved_fixture not in FIXTURE_PRESETS:
         saved_fixture = "Standing Angled (3D)"
-
     st.markdown(
         """
         <style>
@@ -559,123 +760,110 @@ def main() -> None:
         unsafe_allow_html=True,
     )
     st.title("GUITAR SIMULATOR")
+    st.caption(
+        "Design Studio: instant Three.js preview (ROM sliders). "
+        "PyVista below: high-fidelity ``display_mesh.msh`` from ``build_3d_guitar.py`` after **Save & Sync**."
+    )
 
-    # Declare button row first so it renders directly under the title (filled after controls).
     row_btn = st.columns(2)
-    col_ctrl, col_vis = st.columns([0.22, 0.78], gap="large")
-
-    with col_ctrl:
-        st.subheader("Parameters")
-        shape = st.selectbox("Shape", SHAPE_OPTIONS, index=SHAPE_OPTIONS.index(saved_shape))
-        L_lo, L_hi, L_def, W_lo, W_hi, W_def, D_lo, D_hi, D_def = shape_limits(shape)
-
-        def _wood_idx(key: str, default: str) -> int:
-            wid = str(saved.get(key, default)).strip().lower()
-            return ALL_WOOD_IDS.index(wid) if wid in ALL_WOOD_IDS else 0
-
-        top_wood = st.selectbox(
-            "Top wood",
-            ALL_WOOD_IDS,
-            index=_wood_idx("top_wood_id", "spruce"),
-            format_func=lambda w: f"{w} — {wood_display_name(w)}",
-        )
-        back_wood = st.selectbox(
-            "Back & sides wood",
-            ALL_WOOD_IDS,
-            index=_wood_idx("back_wood_id", "rosewood"),
-            format_func=lambda w: f"{w} — {wood_display_name(w)}",
-        )
-        length = st.slider("Length (m)", L_lo, L_hi, float(saved.get("length", L_def)))
-        width = st.slider("Width (m)", W_lo, W_hi, float(saved.get("width", W_def)))
-        depth = st.slider("Depth (m)", D_lo, D_hi, float(saved.get("depth", D_def)))
-        thickness = st.slider("Top thickness (m)", 0.003, 0.006, float(saved.get("thickness", 0.003)), 0.0005)
-        hr_def = min(float(saved.get("hole_radius", 0.04)), HOLE_RADIUS_MAX_M)
-        hole_r = st.slider("Hole radius (m)", 0.02, HOLE_RADIUS_MAX_M, hr_def, 0.0005, format="%.4f")
-
-        with st.expander("Advanced"):
-            st.session_state.developer_fom_mode = st.checkbox(
-                "FOM developer mode (builds hidden FSI mesh + full FEM)",
-                value=bool(st.session_state.developer_fom_mode),
-            )
+    col_ctrl, col_vis = st.columns([0.18, 0.82], gap="large")
 
     clamp_ribs = bool(st.session_state.get("_clamp_ribs", saved_solver.get("clamp_ribs", False)))
     pin_neck = bool(st.session_state.get("_pin_neck_fix", saved_solver.get("eps_pin_fix_tag5", True)))
     fixture_preset = str(st.session_state.get("_fixture_preset", saved_fixture))
 
-    geom = build_geometry_state(
-        shape_type=shape,
-        length=length,
-        width=width,
-        depth=depth,
-        thickness=thickness,
-        hole_radius=hole_r,
-    )
-    geom_fp = geometry_fingerprint(
-        geom, top_wood, back_wood, clamp_ribs=clamp_ribs, pin_neck_fix=pin_neck, fixture_preset=fixture_preset
-    )
-    lhs_params = lhs_params_from_ui(geom, top_wood=top_wood, back_wood=back_wood)
+    with col_ctrl:
+        st.subheader("Session")
+        mode_ix = 1 if st.session_state.developer_fom_mode else 0
+        mode = st.radio(
+            "Mode",
+            ("User (ROM)", "Admin (FEM)"),
+            index=mode_ix,
+            horizontal=False,
+            help="Mirrors Design Studio actions; Admin enables Run Full FEM in the studio.",
+        )
+        st.session_state.developer_fom_mode = mode.startswith("Admin")
 
-    st.session_state["_geom"] = geom
-    st.session_state["_top_wood"] = top_wood
-    st.session_state["_back_wood"] = back_wood
-    st.session_state["_clamp_ribs"] = clamp_ribs
-    st.session_state["_pin_neck_fix"] = pin_neck
-    st.session_state["_fixture_preset"] = fixture_preset
-
-    with col_vis:
-        st.subheader("Guitar fixtures")
-        fixture_preset = st.selectbox("Orientation preset", FIXTURE_PRESETS, index=FIXTURE_PRESETS.index(fixture_preset))
+        st.subheader("Fixtures")
+        fixture_preset = st.selectbox(
+            "Orientation", FIXTURE_PRESETS, index=FIXTURE_PRESETS.index(fixture_preset)
+        )
         st.session_state["_fixture_preset"] = fixture_preset
-        bc1, bc2 = st.columns(2)
-        with bc1:
-            clamp_ribs = st.checkbox("Clamp ribs (tag 4)", value=clamp_ribs)
-        with bc2:
-            pin_neck = st.checkbox("Pin neck (tag 5)", value=pin_neck)
+        clamp_ribs = st.checkbox("Clamp ribs (tag 4)", value=clamp_ribs)
+        pin_neck = st.checkbox("Pin neck (tag 5)", value=pin_neck)
         st.session_state["_clamp_ribs"] = clamp_ribs
         st.session_state["_pin_neck_fix"] = pin_neck
 
-        new_fp = geometry_fingerprint(
-            geom, top_wood, back_wood, clamp_ribs=clamp_ribs, pin_neck_fix=pin_neck, fixture_preset=fixture_preset
+    fp_seed = st.session_state.get("_fast_preview_geom") or studio_initial_from_saved(
+        saved, saved_shape, developer_fom_mode=st.session_state.developer_fom_mode
+    )
+    fp_seed["gui_mode"] = "admin" if st.session_state.developer_fom_mode else "user"
+
+    with col_vis:
+        st.subheader("Design Studio")
+        studio_event = fast_preview(initial=fp_seed, key="fast_preview_geom", height=700)
+        process_fast_preview_event(
+            studio_event,
+            clamp_ribs=clamp_ribs,
+            pin_neck=pin_neck,
+            fixture_preset=fixture_preset,
         )
-        if new_fp != st.session_state.saved_geom_fp:
-            invalidate_saved_state()
-            st.session_state.live_preview_fp = ""
-        geom_fp = new_fp
 
-        st.subheader("PREVIEW")
-        show_display = display_mesh_active(geom_fp)
-        if show_display:
-            dm = load_surface_mesh(DISPLAY_MESH_FILE)
-            n = f" — {dm.n_cells:,} triangles" if dm is not None else ""
-            if st.session_state.physics_ready:
-                st.caption(f"Display mesh (`display_mesh.msh`, lc=4 mm){n} — ROM/FOM acoustics ready.")
-            elif st.session_state.acoustics_pending:
-                st.caption(f"Display mesh (`display_mesh.msh`){n} — computing acoustics…")
-            else:
-                st.caption(f"Display mesh (`display_mesh.msh`){n}.")
-        else:
-            st.caption("Sketch mode (`preview_mesh.msh`, uniform lc=20 mm) — Save Changes for display + acoustics.")
+        fp_live = st.session_state.get("_fast_preview_geom") or fp_seed
+        shape = str(fp_live.get("shape_type", saved_shape))
+        if shape not in SHAPE_OPTIONS:
+            shape = saved_shape
+        geom, top_wood, back_wood = geom_from_studio_event(fp_live)
+        lhs_params = lhs_params_from_ui(geom, top_wood=top_wood, back_wood=back_wood)
+        st.session_state["_geom"] = geom
+        st.session_state["_top_wood"] = top_wood
+        st.session_state["_back_wood"] = back_wood
 
+        geom_fp = geometry_fingerprint(
+            geom,
+            top_wood,
+            back_wood,
+            clamp_ribs=clamp_ribs,
+            pin_neck_fix=pin_neck,
+            fixture_preset=fixture_preset,
+        )
+
+        if st.session_state.get("_pending_fom_run") and display_mesh_active(geom_fp):
+            st.session_state._pending_fom_run = False
+            with st.spinner("Running full FEM…"):
+                try:
+                    stk_path = run_fom_acoustics()
+                    st.session_state.stk_body_json = str(stk_path)
+                    st.session_state.physics_ready = True
+                    st.success("Full FEM complete.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Full FEM failed: {exc}")
+
+        st.subheader("High-fidelity 3D (PyVista)")
         mesh, is_sketch, mesh_src = get_view_mesh(geom_fp)
-        try:
-            pv.set_jupyter_backend("static")
-            render_guitar(
-                mesh,
-                top_color=plot_color_for_wood(top_wood),
-                back_color=plot_color_for_wood(back_wood),
-                body_length=geom["length"],
-                hole_radius=geom["hole_radius"],
-                sketch_mode=is_sketch,
-                plot_key=f"{'sketch' if is_sketch else 'display'}_{mesh_src}_{geom_fp[:10]}",
-                fixture_preset=fixture_preset,
-            )
-        except Exception as exc:
-            st.warning(f"Render error: {exc}")
+        if mesh is None and not DISPLAY_MESH_FILE.is_file():
+            st.info("Click **Save & Sync** in the Design Studio to build `display_mesh.msh` via Gmsh.")
+        else:
+            dm = load_surface_mesh(DISPLAY_MESH_FILE)
+            n_cells = f"{dm.n_cells:,} triangles" if dm is not None else "—"
+            st.caption(f"`display_mesh.msh` (lc=4 mm) · {n_cells} · same config as ROM/FEM")
+            try:
+                pv.set_jupyter_backend("static")
+                render_guitar(
+                    mesh,
+                    top_color=plot_color_for_wood(top_wood),
+                    back_color=plot_color_for_wood(back_wood),
+                    body_length=geom["length"],
+                    hole_radius=geom["hole_radius"],
+                    sketch_mode=False,
+                    plot_key=f"display_{mesh_src}_{geom_fp[:12]}",
+                    fixture_preset=fixture_preset,
+                )
+            except Exception as exc:
+                st.warning(f"Render error: {exc}")
 
-        if (
-            st.session_state.acoustics_pending
-            and display_mesh_active(geom_fp)
-        ):
+        if st.session_state.acoustics_pending and display_mesh_active(geom_fp):
             with st.spinner("Computing acoustics…"):
                 try:
                     stk_path = run_acoustics(lhs_params, shape)
@@ -685,24 +873,33 @@ def main() -> None:
                     st.rerun()
                 except Exception as exc:
                     st.session_state.acoustics_pending = False
-                    invalidate_saved_state()
                     st.error(f"Acoustics failed: {exc}")
 
         if WAV_OUTPUT.is_file() and st.session_state.physics_ready:
             st.audio(WAV_OUTPUT.read_bytes(), format="audio/wav")
 
     with row_btn[0]:
-        if st.button("SAVE CHANGES", type="primary", use_container_width=True):
+        if st.button("Regenerate Gmsh mesh", use_container_width=True):
             try:
-                on_save_changes(geom_fp)
+                with st.spinner("Rebuilding display mesh…"):
+                    regenerate_display_mesh(
+                        geom,
+                        top_wood=top_wood,
+                        back_wood=back_wood,
+                        clamp_ribs=clamp_ribs,
+                        pin_neck_fix=pin_neck,
+                        fixture_preset=fixture_preset,
+                        geom_fp=geom_fp,
+                    )
+                invalidate_physics_state()
+                st.success("Mesh updated.")
+                st.rerun()
             except Exception as exc:
-                st.session_state.saved_geom_fp = ""
-                invalidate_saved_state()
-                st.error(f"Save failed: {exc}")
+                st.error(f"Rebuild failed: {exc}")
 
     with row_btn[1]:
         if st.button(
-            "GENERATE SOUND",
+            "Generate sound",
             use_container_width=True,
             disabled=not st.session_state.physics_ready,
         ):

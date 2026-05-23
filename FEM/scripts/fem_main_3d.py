@@ -3903,7 +3903,7 @@ def _slepc_shift_invert_batch(
         else:
             eps.setType(_ciss_eps_type)
     if not use_ciss:
-        eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
+    eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
     ks_restart = float(solver_cfg.get("krylov_schur_restart", 0.5))
     if ks_restart <= 0.0:
         ks_restart = 0.5
@@ -3928,7 +3928,7 @@ def _slepc_shift_invert_batch(
         _st_name = "sinvert"
         st_map_name = "sinvert"
     if not use_ciss:
-        st.setType(SLEPc.ST.Type.SINVERT)
+    st.setType(SLEPc.ST.Type.SINVERT)
         st.setShift(st_sigma)
         _st_name = "sinvert"
 
@@ -4065,7 +4065,7 @@ def _slepc_shift_invert_batch(
     )
     _fs_note = " block_is=ok" if block_is is not None else " block_is=missing"
     if use_ciss:
-        _emit(
+    _emit(
             f"[solver] EPS spectrum batch (target={target_hz:.2f} Hz, strategy={strategy_label}): "
             f"band=[{f_window_lo:.2f}, {f_window_hi:.2f}] Hz "
             f"(λ=[{lam_lo:.6e}, {lam_hi:.6e}]), min_hz={min_hz:.2f}, "
@@ -4075,9 +4075,9 @@ def _slepc_shift_invert_batch(
             f"ST-KSP={st_ksp_type}, ST-PC={st_pc_label}{_fs_note}, factor={_st_factor}, "
             f"MUMPS ICNTL4={mumps_icntl_4} ICNTL6={mumps_icntl_6} ICNTL7={mumps_icntl_7} "
             f"ICNTL12={mumps_icntl_12} ICNTL14={mumps_icntl_14} ICNTL24={mumps_icntl_24}, "
-            f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}",
-            status_callback=status_callback,
-        )
+        f"diag_shift={diag_shift:.2e}, A_diag_min={diag_min:.6e}, A_diag_max={diag_max:.6e}",
+        status_callback=status_callback,
+    )
     else:
         _emit(
             f"[solver] EPS spectrum batch (target={target_hz:.2f} Hz, strategy={strategy_label}): "
@@ -4216,7 +4216,7 @@ def _slepc_shift_invert_batch(
     _debug_rank("Entering EPS Solve")
     _slepc_eps_ensure_operators(eps, A_solve, M_solve)
     try:
-        eps.solve()
+    eps.solve()
     except Exception as exc:
         _emit(
             f"[solver][warn] EPS solve() raised (will still harvest nconv>0 if any): {exc}",
@@ -4320,7 +4320,7 @@ def _slepc_shift_invert_batch(
     raw_eig_samples: List[float] = []
     for i in range(int(harvest_slots)):
         try:
-            eig = eps.getEigenpair(i, rvec)
+        eig = eps.getEigenpair(i, rvec)
         except Exception:
             skipped_unavailable += 1
             if i < nconv_marked:
@@ -4704,8 +4704,8 @@ def _solve_structural_only_evp(
 
     # Structural diagnostic: free–free; no displacement BC on tags 1/3/4/5 (see coupled clamp_ribs).
     bcs_u: List = []
-    if msh.comm.rank == ROOT_RANK:
-        print(
+        if msh.comm.rank == ROOT_RANK:
+            print(
             "[DIAG] structural-only: free–free (no displacement DirichletBC; "
             f"tag-{tag_top} top / tag-{tag_back} back / tag-{RIBS_SURFACE_TAG} ribs unconstrained)."
         )
@@ -5706,7 +5706,7 @@ def _solve_coupled_evp(
                 "[bc] ribs clamp DISABLED (clamp_ribs=false); top/back free, tag-4 u unconstrained.",
                 status_callback=status_callback,
             )
-        else:
+            else:
             _emit(
                 f"[bc][warn] no facets on tag {RIBS_SURFACE_TAG}; ribs not clamped.",
                 status_callback=status_callback,

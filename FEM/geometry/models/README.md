@@ -6,8 +6,8 @@ The mesh builder loads **closed B-rep solids** from this folder instead of proce
 
 | File | `shape_type` in config | Nominal size (m) | Notes |
 |------|------------------------|------------------|-------|
-| `classic.step` | `Classical` (default) | 0.50 × 0.36 × 0.10 (L×W×D) | Torres / classical body |
-| `acoustic.step` | `Dreadnought`, `Acoustic` | 0.50 × 0.40 × 0.10 | Broader shoulders |
+| `classic.step` | `Classical` (default) | 0.50 × 0.36 × 0.10 (L×lower bout×D) | upper 0.28 · waist 0.24 m |
+| `acoustic.step` | `Dreadnought`, `Acoustic` | 0.50 × 0.42 × 0.10 | upper 0.32 · waist 0.26 m |
 | `box.step` | `Box` | 0.48 × 0.37 × 0.10 | Rectangular debug body |
 
 **Frame convention (mandatory):**
@@ -29,7 +29,7 @@ python3 FEM/geometry/generate_reference_models.py
 
 This writes `classic.step`, `acoustic.step`, and `box.step` into this directory:
 
-- **classic** / **acoustic**: fixed point templates (flat neck, **5-point tail arc**, distinct waist/shoulder). Classical: waist 0.09 m half, tail bulge x=−0.28. Acoustic: waist 0.14 m half, shoulders 0.17 m, lower 0.21 m, tail x=−0.27. `build_3d_guitar` scales length/depth and bout-driven **sy** (not global `width`/bbox).
+- **classic** / **acoustic**: Torres / Martin D-28 luthier blueprints (`CLASSICAL_TOP_HALF`, `ACOUSTIC_TOP_HALF` + tail tip). Closed profile via single `occ.addBSpline`. GUI defaults in `get_luthier_gui_defaults()`.
 - **box**: simple rectangular solid for debug.
 
 Replace with external CAD later if you need higher-fidelity bracing or arching.

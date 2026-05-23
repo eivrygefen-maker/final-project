@@ -2,8 +2,8 @@
 """
 Write STEP reference bodies into FEM/geometry/models/.
 
-Fixed Torres / dreadnought point templates (half-widths in metres, L = 0.50 m).
-Five-point tail arcs for a smooth semi-circular endpin region.
+Torres (classical) and Martin D-28 (acoustic) luthier blueprints: closed
+``occ.addBSpline`` through explicit control points (C2-smooth outline).
 
     python3 FEM/geometry/generate_reference_models.py
 """
@@ -11,125 +11,156 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import List, Sequence, Tuple
-
-import gmsh
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 MODELS_DIR = Path(__file__).resolve().parent / "models"
 
 Point2 = Tuple[float, float]
 
-# --- Classical (Torres): pinched waist 0.09 half, lower 0.17, deep tail bulge x = -0.28 ---
-CLASSICAL_NECK_TOP: Point2 = (0.25, 0.05)
-CLASSICAL_NECK_BOTTOM: Point2 = (0.25, -0.05)
-CLASSICAL_WAIST: Point2 = (0.0, 0.09)
-CLASSICAL_LOWER_HALF: float = 0.17
-CLASSICAL_SHOULDER_HALF: float = 0.134
+# ---------------------------------------------------------------------------
+# Luthier blueprints — edit control points only (half-profile + tail tip).
+# ---------------------------------------------------------------------------
 
-CLASSICAL_TAIL_ARC: Tuple[Point2, ...] = (
-    (-0.25, CLASSICAL_LOWER_HALF),
-    (-0.265, CLASSICAL_LOWER_HALF * 0.94),
-    (-0.28, 0.0),
-    (-0.265, -CLASSICAL_LOWER_HALF * 0.94),
-    (-0.25, -CLASSICAL_LOWER_HALF),
+CLASSICAL_TOP_HALF: Tuple[Point2, ...] = (
+    (0.22, 0.045),  # neck junction
+    (0.18, 0.110),  # upper shoulder
+    (0.12, 0.140),  # upper bout max
+    (0.06, 0.130),  # curve to waist
+    (0.00, 0.115),  # waist (narrow)
+    (-0.06, 0.135),  # curve to lower bout
+    (-0.12, 0.175),  # lower bout swell
+    (-0.18, 0.185),  # lower bout max
+    (-0.24, 0.140),  # tail curve start
+    (-0.26, 0.070),  # tail corner restriction
 )
+CLASSICAL_TAIL_TIP: Point2 = (-0.27, 0.0)
 
-CLASSICAL_UPPER_BODY: Tuple[Point2, ...] = (
-    (0.23, 0.080),
-    (0.20, 0.102),
-    (0.17, 0.122),
-    (0.14, CLASSICAL_SHOULDER_HALF),
-    (0.11, 0.128),
-    (0.08, 0.118),
-    (0.05, 0.108),
-    (0.02, 0.098),
-    CLASSICAL_WAIST,
-    (-0.02, 0.100),
-    (-0.05, 0.112),
-    (-0.08, 0.128),
-    (-0.11, 0.148),
-    (-0.14, 0.162),
-    (-0.17, 0.168),
-    (-0.20, 0.169),
-    (-0.23, 0.169),
+ACOUSTIC_TOP_HALF: Tuple[Point2, ...] = (
+    (0.22, 0.050),  # neck junction
+    (0.18, 0.135),  # broad shoulder
+    (0.12, 0.155),  # upper bout max
+    (0.06, 0.148),  # curve to waist
+    (0.00, 0.140),  # waist (wide)
+    (-0.06, 0.165),  # curve to lower bout
+    (-0.12, 0.195),  # lower bout swell
+    (-0.19, 0.205),  # lower bout max
+    (-0.25, 0.160),  # tail curve start
+    (-0.27, 0.080),  # tail corner restriction
 )
+ACOUSTIC_TAIL_TIP: Point2 = (-0.275, 0.0)
 
-# --- Dreadnought: shallow waist 0.14 half, lower 0.21, broad shoulders 0.17, tail x = -0.27 ---
-ACOUSTIC_NECK_TOP: Point2 = (0.25, 0.052)
-ACOUSTIC_NECK_BOTTOM: Point2 = (0.25, -0.052)
-ACOUSTIC_WAIST: Point2 = (0.0, 0.14)
-ACOUSTIC_LOWER_HALF: float = 0.21
-ACOUSTIC_SHOULDER_HALF: float = 0.17
+# Nominal span / widths derived from blueprints (build_3d_guitar morphing).
+NOMINAL_LENGTH_CLASSICAL: float = 0.49
+NOMINAL_LENGTH_ACOUSTIC: float = 0.495
 
-ACOUSTIC_TAIL_ARC: Tuple[Point2, ...] = (
-    (-0.25, ACOUSTIC_LOWER_HALF),
-    (-0.262, ACOUSTIC_LOWER_HALF * 0.95),
-    (-0.27, 0.0),
-    (-0.262, -ACOUSTIC_LOWER_HALF * 0.95),
-    (-0.25, -ACOUSTIC_LOWER_HALF),
-)
+REFERENCE_NOMINAL_WIDTHS: dict[str, Tuple[float, float, float]] = {
+    "classical": (0.28, 0.23, 0.37),  # upper, waist, lower (full width)
+    "acoustic": (0.31, 0.28, 0.41),
+}
 
-ACOUSTIC_UPPER_BODY: Tuple[Point2, ...] = (
-    (0.23, 0.108),
-    (0.20, 0.138),
-    (0.17, 0.158),
-    (0.14, ACOUSTIC_SHOULDER_HALF),
-    (0.11, 0.168),
-    (0.08, 0.162),
-    (0.05, 0.152),
-    (0.02, 0.146),
-    ACOUSTIC_WAIST,
-    (-0.02, 0.148),
-    (-0.05, 0.158),
-    (-0.08, 0.172),
-    (-0.11, 0.188),
-    (-0.14, 0.202),
-    (-0.17, 0.208),
-    (-0.20, 0.209),
-    (-0.23, 0.209),
-)
+# GUI / config defaults when user picks a shape (blueprint frame, +x = neck).
+LUTHIER_GUI_DEFAULTS: Dict[str, Dict[str, float]] = {
+    "Classical": {
+        "length": 0.49,
+        "width": 0.37,
+        "depth": 0.095,
+        "soundhole_x": 0.09,
+        "soundhole_radius": 0.042,
+        "bridge_x": -0.12,
+        "upper_bout": 0.28,
+        "waist": 0.23,
+        "lower_bout": 0.37,
+    },
+    "Dreadnought": {
+        "length": 0.495,
+        "width": 0.41,
+        "depth": 0.115,
+        "soundhole_x": 0.075,
+        "soundhole_radius": 0.050,
+        "bridge_x": -0.10,
+        "upper_bout": 0.31,
+        "waist": 0.28,
+        "lower_bout": 0.41,
+    },
+    "Acoustic": {
+        "length": 0.495,
+        "width": 0.41,
+        "depth": 0.115,
+        "soundhole_x": 0.075,
+        "soundhole_radius": 0.050,
+        "bridge_x": -0.10,
+        "upper_bout": 0.31,
+        "waist": 0.28,
+        "lower_bout": 0.41,
+    },
+    "Box": {
+        "length": 0.48,
+        "width": 0.37,
+        "depth": 0.10,
+        "soundhole_x": 0.08,
+        "soundhole_radius": 0.04,
+        "bridge_x": -0.12,
+        "upper_bout": 0.28,
+        "waist": 0.24,
+        "lower_bout": 0.37,
+    },
+}
 
 
-def classical_guitar_perimeter(length: float = 0.50) -> List[Point2]:
-    return _closed_template_perimeter(
-        length,
-        neck_top=CLASSICAL_NECK_TOP,
-        neck_bottom=CLASSICAL_NECK_BOTTOM,
-        upper_body=CLASSICAL_UPPER_BODY,
-        tail_arc=CLASSICAL_TAIL_ARC,
-    )
+def get_luthier_gui_defaults(shape_type: str) -> Dict[str, float]:
+    """Return blueprint-derived defaults for Streamlit sliders / JSON config."""
+    st = str(shape_type).strip()
+    if st in LUTHIER_GUI_DEFAULTS:
+        return dict(LUTHIER_GUI_DEFAULTS[st])
+    if "dread" in st.lower() or "acoustic" in st.lower() or "martin" in st.lower():
+        return dict(LUTHIER_GUI_DEFAULTS["Dreadnought"])
+    if "box" in st.lower() or "rect" in st.lower():
+        return dict(LUTHIER_GUI_DEFAULTS["Box"])
+    return dict(LUTHIER_GUI_DEFAULTS["Classical"])
 
 
-def dreadnought_guitar_perimeter(length: float = 0.50) -> List[Point2]:
-    return _closed_template_perimeter(
-        length,
-        neck_top=ACOUSTIC_NECK_TOP,
-        neck_bottom=ACOUSTIC_NECK_BOTTOM,
-        upper_body=ACOUSTIC_UPPER_BODY,
-        tail_arc=ACOUSTIC_TAIL_ARC,
-    )
+def luthier_closed_loop(
+    top_half: Sequence[Point2],
+    tail_tip: Point2,
+) -> Tuple[Point2, ...]:
+    """
+    Build a closed CCW control polygon: top half → tail tip → mirrored bottom → neck close.
+
+    The last point duplicates the first so ``addBSpline`` forms a periodic closed curve.
+    """
+    half = [(float(x), float(y)) for x, y in top_half]
+    tip = (float(tail_tip[0]), float(tail_tip[1]))
+    bottom = [(float(x), -float(y)) for x, y in reversed(half)]
+    loop: List[Point2] = half + [tip] + bottom
+    if loop[0] != loop[-1]:
+        loop.append(loop[0])
+    return tuple(loop)
 
 
-def _closed_template_perimeter(
-    length: float,
-    *,
-    neck_top: Point2,
-    neck_bottom: Point2,
-    upper_body: Sequence[Point2],
-    tail_arc: Sequence[Point2],
-) -> List[Point2]:
-    """Scale only length (x); preserve authored half-widths (y) for distinct silhouettes."""
-    sx = float(length) / 0.50
+CLASSICAL_LOOP = luthier_closed_loop(CLASSICAL_TOP_HALF, CLASSICAL_TAIL_TIP)
+ACOUSTIC_LOOP = luthier_closed_loop(ACOUSTIC_TOP_HALF, ACOUSTIC_TAIL_TIP)
 
-    def _s(pt: Point2) -> Point2:
-        return (float(pt[0]) * sx, float(pt[1]))
 
-    upper = [_s(neck_top)] + [_s(p) for p in upper_body]
-    tail = [_s(p) for p in tail_arc]
-    lower_return = [
-        (px, -py) for x, y in reversed(upper_body) for px, py in [_s((x, y))]
-    ]
-    return upper + tail + lower_return + [_s(neck_bottom)]
+def _nominal_length_for_loop(loop: Sequence[Point2]) -> float:
+    xs = [float(x) for x, _ in loop]
+    return max(xs) - min(xs)
+
+
+NOMINAL_LENGTH: float = _nominal_length_for_loop(CLASSICAL_LOOP)
+
+
+def _scale_loop(loop: Sequence[Point2], length: float) -> List[Point2]:
+    ref = _nominal_length_for_loop(loop)
+    sx = float(length) / max(ref, 1.0e-9)
+    return [(float(x) * sx, float(y) * sx) for x, y in loop]
+
+
+def classical_guitar_perimeter(length: float = NOMINAL_LENGTH_CLASSICAL) -> List[Point2]:
+    return _scale_loop(CLASSICAL_LOOP, length)
+
+
+def dreadnought_guitar_perimeter(length: float = NOMINAL_LENGTH_ACOUSTIC) -> List[Point2]:
+    return _scale_loop(ACOUSTIC_LOOP, length)
 
 
 def _volume_tags_from_extrude(out) -> List[int]:
@@ -151,70 +182,40 @@ def _volume_tags_from_extrude(out) -> List[int]:
     return tags
 
 
-def _build_closed_bspline_solid(
+def _occ_closed_bspline_loop(occ, loop: Sequence[Point2], lc: float) -> int:
+    """Single closed ``addBSpline`` wire → curve loop tag."""
+    verts = [(float(x), float(y)) for x, y in loop]
+    if len(verts) < 4:
+        raise ValueError("B-spline loop needs at least 4 control points")
+    # Drop duplicate closing vertex; repeat first tag for periodic spline.
+    if verts[-1] == verts[0]:
+        verts = verts[:-1]
+    pt_tags = [int(occ.addPoint(x, y, 0.0, lc)) for x, y in verts]
+    curve_tag = int(occ.addBSpline(pt_tags + [pt_tags[0]]))
+    return int(occ.addCurveLoop([curve_tag]))
+
+
+def _build_profile_solid(
     occ,
-    perimeter: Sequence[Point2],
+    loop: Sequence[Point2],
     *,
     depth: float,
-    n_upper_body: int,
-    n_tail_arc: int,
+    label: str,
 ) -> None:
-    """Single closed polyline: neck → body → 5-point tail → return → neck."""
-    ring = list(perimeter)
-    expected = 2 + 2 * int(n_upper_body) + int(n_tail_arc)
-    if len(ring) != expected:
-        raise RuntimeError(
-            f"Perimeter length {len(ring)} != expected {expected} for template."
-        )
+    max_extent = max(max(abs(float(x)), abs(float(y))) for x, y in loop)
+    lc = max(max_extent, float(depth), 0.1) / 50.0
 
-    neck = (float(ring[0][0]), float(ring[0][1]))
-    if ring[-1] != ring[0]:
-        ring.append(ring[0])
-    ring[-1] = ring[0]
-    verts = ring[:-1]
-
-    lc = max(
-        max(abs(p[0]) for p in verts),
-        max(abs(p[1]) for p in verts),
-        float(depth),
-    ) / 60.0
-
-    p_tags = [int(occ.addPoint(float(x), float(y), 0.0, lc)) for x, y in verts]
-    n_pts = len(p_tags)
-
-    loop_tag: int
-    add_polygon = getattr(occ, "addPolygon", None)
-    if add_polygon is not None:
-        try:
-            loop_tag = int(add_polygon(p_tags))
-            occ.synchronize()
-            print(f"[diag] profile loop via addPolygon ({n_pts} pts)")
-        except Exception:
-            loop_tag = 0
-    else:
-        loop_tag = 0
-
-    if not loop_tag:
-        for i in range(n_pts):
-            occ.addLine(p_tags[i], p_tags[(i + 1) % n_pts])
-        occ.synchronize()
-        try:
-            occ.removeAllDuplicates()
-        except Exception:
-            pass
-        occ.synchronize()
-        curve_tags = [int(t) for dim, t in occ.getEntities(1) if int(dim) == 1]
-        if len(curve_tags) < 3:
-            raise RuntimeError(
-                f"OCC found {len(curve_tags)} curves after perimeter lines (need >= 3)."
-            )
-        loop_tag = int(occ.addCurveLoop(curve_tags))
-        print(
-            f"[diag] profile loop: {len(curve_tags)} segments, "
-            f"{n_pts} pts, closure={neck}"
-        )
-
+    loop_tag = _occ_closed_bspline_loop(occ, loop, lc)
     surf_tag = int(occ.addPlaneSurface([loop_tag]))
+
+    xs = [float(x) for x, _ in loop]
+    neck_x = max(xs)
+    tip_x = min(xs)
+    print(
+        f"[diag] {label}: luthier B-spline, {len(loop)} control pts, "
+        f"neck_x={neck_x:.3f} tip_x={tip_x:.3f} span≈{neck_x - tip_x:.3f}m"
+    )
+
     try:
         ext = occ.extrude([(2, surf_tag)], 0, 0, float(depth), [3])
     except (TypeError, ValueError):
@@ -226,6 +227,8 @@ def _build_closed_bspline_solid(
 
 
 def _write_step(name: str, builder) -> None:
+    import gmsh
+
     gmsh.model.add(name)
     builder(gmsh.model.occ)
     gmsh.model.occ.synchronize()
@@ -236,43 +239,26 @@ def _write_step(name: str, builder) -> None:
 
 
 def _classic(occ) -> None:
-    ring = classical_guitar_perimeter(0.50)
-    print(
-        f"[diag] classical: n={len(ring)} waist={CLASSICAL_WAIST[1]} "
-        f"lower={CLASSICAL_LOWER_HALF} shoulder={CLASSICAL_SHOULDER_HALF} "
-        f"tail_x={CLASSICAL_TAIL_ARC[2][0]}"
-    )
-    _build_closed_bspline_solid(
-        occ,
-        ring,
-        depth=0.10,
-        n_upper_body=len(CLASSICAL_UPPER_BODY),
-        n_tail_arc=len(CLASSICAL_TAIL_ARC),
+    _build_profile_solid(
+        occ, CLASSICAL_LOOP, depth=0.095, label="classical (Torres)"
     )
 
 
 def _acoustic(occ) -> None:
-    ring = dreadnought_guitar_perimeter(0.50)
-    print(
-        f"[diag] acoustic: n={len(ring)} waist={ACOUSTIC_WAIST[1]} "
-        f"lower={ACOUSTIC_LOWER_HALF} shoulder={ACOUSTIC_SHOULDER_HALF} "
-        f"tail_x={ACOUSTIC_TAIL_ARC[2][0]}"
-    )
-    _build_closed_bspline_solid(
-        occ,
-        ring,
-        depth=0.10,
-        n_upper_body=len(ACOUSTIC_UPPER_BODY),
-        n_tail_arc=len(ACOUSTIC_TAIL_ARC),
+    _build_profile_solid(
+        occ, ACOUSTIC_LOOP, depth=0.115, label="acoustic (Martin D-28)"
     )
 
 
 def _box(occ) -> None:
-    lx, ly, lz = 0.48, 0.37, 0.10
+    d = get_luthier_gui_defaults("Box")
+    lx, ly, lz = float(d["length"]), float(d["width"]), float(d["depth"])
     occ.addBox(-lx / 2.0, -ly / 2.0, -lz / 2.0, lx, ly, lz)
 
 
 def main() -> int:
+    import gmsh
+
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     gmsh.initialize([sys.argv[0], "-nopopup"])
     gmsh.option.setNumber("Geometry.Tolerance", 1.0e-4)
