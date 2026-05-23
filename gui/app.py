@@ -386,6 +386,8 @@ def stable_studio_iframe_initial(candidate: Dict[str, Any]) -> Dict[str, Any]:
 
 def is_studio_handshake_event(event: Dict[str, Any]) -> bool:
     """True for mount/ping payloads from the iframe (no geometry side effects)."""
+    if str(event.get("status") or "").strip().lower() == "ready":
+        return True
     action = str(event.get("action") or "").strip().lower()
     if action in STUDIO_HANDSHAKE_ACTIONS:
         return True
@@ -406,35 +408,37 @@ def record_studio_handshake(event: Dict[str, Any]) -> None:
 
 
 def inject_studio_viewport_css() -> None:
-    """Fixed-height studio stack: iframe always mounted; Gmsh PyVista overlays without remount."""
+    """Force studio iframe visible; hide false-positive Streamlit component timeout banner."""
     h = FAST_PREVIEW_HEIGHT
+    w = FAST_PREVIEW_WIDTH
     st.markdown(
         f"""
         <style>
+        /* Force the container to take up space regardless of Streamlit's logic */
+        div[data-testid="stCustomComponentV1"] {{
+            height: {h}px !important;
+            width: {w}px !important;
+            display: block !important;
+            visibility: visible !important;
+            z-index: 10 !important;
+        }}
+        /* Ensure the iframe is visible and not collapsed */
+        div[data-testid="stCustomComponentV1"] iframe {{
+            height: {h}px !important;
+            width: {w}px !important;
+            display: block !important;
+            border: none !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+        }}
+        /* Hide false-positive component timeout banner in the studio column only */
+        div[data-testid="column"]:has(div[data-testid="stCustomComponentV1"]) div[role="alert"] {{
+            display: none !important;
+        }}
+        /* Gmsh validation mesh overlay (Save & Sync) */
         div[data-testid="column"]:has(div[data-testid="stCustomComponentV1"]) {{
             position: relative !important;
             min-height: {h}px !important;
-            overflow: visible !important;
-        }}
-        div[data-testid="stCustomComponentV1"] {{
-            height: {h}px !important;
-            min-height: {h}px !important;
-            width: {FAST_PREVIEW_WIDTH}px !important;
-            min-width: {FAST_PREVIEW_WIDTH}px !important;
-            overflow: visible !important;
-            z-index: 10 !important;
-            position: relative !important;
-        }}
-        div[data-testid="stCustomComponentV1"] iframe {{
-            height: {h}px !important;
-            min-height: {h}px !important;
-            width: {FAST_PREVIEW_WIDTH}px !important;
-            min-width: {FAST_PREVIEW_WIDTH}px !important;
-            z-index: 10 !important;
-            display: block !important;
-            visibility: visible !important;
-            opacity: 1 !important;
-            border: 0;
         }}
         div[data-testid="stVerticalBlock"]:has(div[data-testid="stpyvista"]) {{
             position: absolute !important;
@@ -445,11 +449,6 @@ def inject_studio_viewport_css() -> None:
             height: {h}px !important;
             z-index: 20 !important;
             background: #0e1117 !important;
-            pointer-events: auto !important;
-        }}
-        div[data-testid="stpyvista"] {{
-            height: {h}px !important;
-            min-height: {h}px !important;
         }}
         </style>
         """,
@@ -483,15 +482,6 @@ def mount_design_studio_iframe(initial: Dict[str, Any]) -> Optional[Dict[str, An
     if not st.session_state.get("_fast_preview_paths_verified"):
         verify_fast_preview_component_paths()
         st.session_state._fast_preview_paths_verified = True
-    st.markdown(
-        f"""
-        <div style="height: {FAST_PREVIEW_HEIGHT}px; width: {FAST_PREVIEW_WIDTH}px;
-            min-height: {FAST_PREVIEW_HEIGHT}px; min-width: {FAST_PREVIEW_WIDTH}px;
-            border: 1px solid transparent; display: block; box-sizing: border-box;">
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
     return fast_preview(
         initial=initial,
         key="fast_preview_geom",

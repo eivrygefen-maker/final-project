@@ -54,6 +54,10 @@
       height: 850px !important;
       min-width: 1000px !important;
       min-height: 850px !important;
+      position: absolute !important;
+      top: 0 !important;
+      left: 0 !important;
+      z-index: 9999 !important;
     }
     canvas#viewport {
       background: transparent !important;
@@ -279,15 +283,28 @@
   <!-- Local bridge + Three.js (lib/ — no external CDN; CSP-safe) -->
   <script src="./streamlit_bridge.js"></script>
   <script>
-    /* Streamlit handshake — sync, before Three.js; height fixed by parent CSS only */
-    (function runStreamlitHandshake() {
-      window.__studioHandshakeDone = false;
-      var sl = window.Streamlit;
-      if (sl && typeof sl.setComponentReady === "function") {
-        sl.setComponentReady();
-        console.log("STARTUP: setComponentReady (sync handshake)");
+    /* Streamlit handshake — once on DOMContentLoaded (no pings, no setComponentValue) */
+    (function () {
+      var handshakeDone = false;
+      function runStreamlitHandshake() {
+        if (handshakeDone) return;
+        handshakeDone = true;
+        var sl = window.Streamlit;
+        if (sl && typeof sl.setComponentReady === "function") {
+          sl.setComponentReady();
+          console.log("STARTUP: setComponentReady (DOMContentLoaded)");
+        }
+        if (sl && typeof sl.setFrameHeight === "function") {
+          sl.setFrameHeight(850);
+          console.log("STARTUP: setFrameHeight(850) (DOMContentLoaded)");
+        }
+        window.__studioHandshakeDone = true;
       }
-      window.__studioHandshakeDone = true;
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", runStreamlitHandshake, { once: true });
+      } else {
+        runStreamlitHandshake();
+      }
     })();
   </script>
   <script type="importmap">
