@@ -443,11 +443,7 @@
     }
 
     try {
-      if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", wireStreamlitEvents);
-      } else {
-        wireStreamlitEvents();
-      }
+      wireStreamlitEvents();
     } catch (err) {
       console.error("[Design Studio] bridge wiring failed:", err);
       if (err && err.stack) console.error(err.stack);
@@ -798,9 +794,6 @@
             animate();
             geoCheckpoint = 6;
             console.log("CHECKPOINT 6: Engine fully initialized");
-            if (window.Streamlit && typeof window.Streamlit.setFrameHeight === "function") {
-              window.Streamlit.setFrameHeight(850);
-            }
           } catch (geoErr) {
             console.error("DEBUG CRASH AT CHECKPOINT " + geoCheckpoint, geoErr);
             if (geoErr && geoErr.stack) console.error(geoErr.stack);

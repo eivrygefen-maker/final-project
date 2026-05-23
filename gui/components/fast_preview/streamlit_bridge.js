@@ -1,19 +1,25 @@
 console.log("JS BRIDGE: Loaded successfully");
 
 /**
- * Minimal Streamlit custom-component bridge for static HTML (production / _RELEASE).
- * Served from the same directory as index.html — no dev server on port 3001.
+ * Minimal Streamlit custom-component bridge (v1 protocol).
+ * Messages MUST include isStreamlitMessage: true or Streamlit ignores them.
  */
 (function (global) {
   "use strict";
 
   var RENDER_EVENT = "streamlit:render";
+  var API_VERSION = 1;
+  var DEFAULT_FRAME_HEIGHT = 850;
 
   var handlers = {};
   var componentReadySent = false;
+  var frameHeightSent = false;
 
   function post(type, payload) {
-    global.parent.postMessage(Object.assign({ type: type }, payload || {}), "*");
+    global.parent.postMessage(
+      Object.assign({ type: type, isStreamlitMessage: true }, payload || {}),
+      "*"
+    );
   }
 
   var Streamlit = {
@@ -45,9 +51,9 @@ console.log("JS BRIDGE: Loaded successfully");
       componentReadySent = true;
       console.log("JS BRIDGE: Attempting to notify parent...");
       try {
-        post("streamlit:componentReady", { isStreamlitComponent: true });
-        post("streamlit:setFrameHeight", { height: 850 });
-        console.log("JS BRIDGE: componentReady + setFrameHeight(850) sent");
+        post("streamlit:componentReady", { apiVersion: API_VERSION });
+        console.log("JS BRIDGE: componentReady apiVersion=" + API_VERSION);
+        Streamlit.setFrameHeight(DEFAULT_FRAME_HEIGHT);
       } catch (err) {
         componentReadySent = false;
         console.error("JS BRIDGE: setComponentReady failed", err);
@@ -55,11 +61,15 @@ console.log("JS BRIDGE: Loaded successfully");
       }
     },
     setFrameHeight: function (height) {
-      var h = Math.max(400, Number(height) || 850);
+      var h = Math.max(400, Number(height) || DEFAULT_FRAME_HEIGHT);
       post("streamlit:setFrameHeight", { height: h });
+      frameHeightSent = true;
     },
-    setComponentValue: function (value) {
-      post("streamlit:setComponentValue", { value: value });
+    setComponentValue: function (value, dataType) {
+      post("streamlit:setComponentValue", {
+        value: value,
+        dataType: dataType || "json",
+      });
     },
   };
 
@@ -73,6 +83,6 @@ console.log("JS BRIDGE: Loaded successfully");
 
   global.Streamlit = Streamlit;
 
-  /* Immediate mount signal — do not wait for DOMContentLoaded (Streamlit timeout). */
+  /* Immediate mount — Streamlit drops messages without isStreamlitMessage. */
   Streamlit.setComponentReady();
-})(window);
+})();
