@@ -65,6 +65,20 @@ def _bbox_dimtags(dimtags: Sequence[Tuple[int, int]]) -> Tuple[float, float, flo
     return xmin, ymin, zmin, xmax, ymax, zmax
 
 
+def _reference_shape_family(shape_type: str) -> str:
+    st = str(shape_type).strip().lower()
+    if "dread" in st or "acoustic" in st or "martin" in st:
+        return "acoustic"
+    return "classical"
+
+
+def _reference_nominal_lateral(shape_type: str) -> Tuple[float, float, float]:
+    """Nominal full widths (m) baked into STEP templates — classical vs acoustic differ."""
+    if _reference_shape_family(shape_type) == "acoustic":
+        return (0.34, 0.28, 0.42)  # shoulder, waist, lower (full width)
+    return (0.268, 0.18, 0.34)
+
+
 def _scale_reference_to_target(
     vol_dimtags: Sequence[Tuple[int, int]],
     *,
@@ -74,11 +88,14 @@ def _scale_reference_to_target(
     upper_bout: float,
     waist: float,
     lower_bout: float,
+    shape_type: str,
 ) -> None:
     """
-    Parametric morph: uniform scale to target L/W/D, then align neck at x = +L/2.
+    Morph reference STEP to simulator size without erasing classical vs dreadnought ratios.
 
-    Lateral bout scalars tweak ``sy`` relative to ``width`` (simulator flexibility).
+    - ``sx`` from target length only (not from global ``width``).
+    - ``sy`` from bout parameters vs shape-specific STEP nominals (never ``W / ly``).
+    - ``sz`` from target depth.
     """
     occ = gmsh.model.occ
     dimtags = [(int(d), int(t)) for d, t in vol_dimtags]
@@ -87,13 +104,27 @@ def _scale_reference_to_target(
     cy = 0.5 * (ymin + ymax)
     cz = 0.5 * (zmin + zmax)
     lx = max(float(xmax - xmin), 1.0e-9)
-    ly = max(float(ymax - ymin), 1.0e-9)
     lz = max(float(zmax - zmin), 1.0e-9)
 
-    L, W, D = float(length), float(width), float(depth)
+    L, D = float(length), float(depth)
+    nom_shoulder, nom_waist, nom_lower = _reference_nominal_lateral(shape_type)
+
+    def _full_width(val: float, nominal: float) -> float:
+        v = float(val)
+        if v <= 0.0:
+            return nominal
+        return v if v > 0.22 else 2.0 * v
+
+    tgt_lower = _full_width(lower_bout, nom_lower)
+    tgt_waist = _full_width(waist, nom_waist)
+    tgt_upper = _full_width(upper_bout, nom_shoulder)
+
     sx = L / lx
-    sy = W / ly
     sz = D / lz
+    sy_lower = tgt_lower / nom_lower
+    sy_waist = tgt_waist / nom_waist
+    sy_upper = tgt_upper / nom_shoulder
+    sy = 0.5 * sy_lower + 0.3 * sy_waist + 0.2 * sy_upper
 
     occ.dilate(dimtags, cx, cy, cz, sx, sy, sz)
     occ.synchronize()
@@ -110,9 +141,10 @@ def _scale_reference_to_target(
     occ.translate(dimtags, dx, 0.0, 0.0)
     occ.synchronize()
     print(
-        f"[diag] reference morph: L={L:.4f} W={W:.4f} D={D:.4f} "
-        f"scale=({sx:.4f},{sy:.4f},{sz:.4f}) neck_x=+{0.5*L:.4f} "
-        f"bouts(upper/waist/lower)={upper_bout:.4f}/{waist:.4f}/{lower_bout:.4f}"
+        f"[diag] reference morph ({_reference_shape_family(shape_type)}): "
+        f"L={L:.4f} D={D:.4f} scale=({sx:.4f},{sy:.4f},{sz:.4f}) "
+        f"(sy from bouts, not W={width:.4f}) neck_x=+{0.5*L:.4f} "
+        f"targets lower/waist/upper={tgt_lower:.3f}/{tgt_waist:.3f}/{tgt_upper:.3f}"
     )
 
 
@@ -490,6 +522,7 @@ def create_guitar_mesh():
         upper_bout=upper_bout,
         waist=waist,
         lower_bout=lower_bout,
+        shape_type=shape_type,
     )
     vol_tags = [int(t) for d, t in vol_dimtags if int(d) == 3]
     if not vol_tags:

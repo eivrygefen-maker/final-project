@@ -29,7 +29,7 @@ python3 FEM/geometry/generate_reference_models.py
 
 This writes `classic.step`, `acoustic.step`, and `box.step` into this directory:
 
-- **classic** / **acoustic**: fixed point templates (flat neck, **rounded 3-point tail arc**, B-spline bouts). Classical: waist 0.11 m, lower bout 0.17 m. Acoustic: waist 0.13 m, lower bout 0.20 m, wider shoulders.
+- **classic** / **acoustic**: fixed point templates (flat neck, **5-point tail arc**, distinct waist/shoulder). Classical: waist 0.09 m half, tail bulge x=−0.28. Acoustic: waist 0.14 m half, shoulders 0.17 m, lower 0.21 m, tail x=−0.27. `build_3d_guitar` scales length/depth and bout-driven **sy** (not global `width`/bbox).
 - **box**: simple rectangular solid for debug.
 
 Replace with external CAD later if you need higher-fidelity bracing or arching.
