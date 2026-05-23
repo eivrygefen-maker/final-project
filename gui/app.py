@@ -281,13 +281,19 @@ def sanitize_studio_payload(data: Optional[Dict[str, Any]], shape_type: str = "C
     if back_wood not in ALL_WOOD_IDS:
         back_wood = "rosewood"
     bounds = rom_lwd_bounds(shape)
+    length_v = _round_studio_dim(src.get("length", rom_def["length"]))
+    width_v = _round_studio_dim(width)
+    hole_v = _round_studio_dim(hole)
+    hole_cap = 0.4 * min(float(length_v), float(width_v))
+    if hole_cap > 1e-5:
+        hole_v = min(float(hole_v), hole_cap - 1e-5)
     out: Dict[str, Any] = {
         "shape_type": shape,
-        "length": _round_studio_dim(src.get("length", rom_def["length"])),
-        "width": _round_studio_dim(width),
+        "length": length_v,
+        "width": width_v,
         "depth": _round_studio_dim(src.get("depth", rom_def["depth"])),
         "top_thickness": _round_studio_dim(top_t),
-        "hole_radius": _round_studio_dim(hole),
+        "hole_radius": _round_studio_dim(hole_v),
         "top_wood_id": top_wood,
         "back_wood_id": back_wood,
         "gui_mode": str(src.get("gui_mode", "user")),
@@ -345,10 +351,10 @@ def studio_initial_from_saved(
 
 # Orthotropic plate surface colors (Design Studio / Three.js — tuned for realistic shading).
 STUDIO_WOOD_HEX: Dict[str, str] = {
-    "spruce": "#F4E7C1",
-    "cedar": "#A0522D",
-    "maple": "#FFDEAD",
-    "mahogany": "#704229",
+    "spruce": "#F5F5DC",
+    "cedar": "#5D4037",
+    "maple": "#FFF8E1",
+    "mahogany": "#795548",
     "rosewood": "#3F2A20",
 }
 
@@ -656,15 +662,22 @@ def regenerate_display_mesh(
     geom_fp: str,
 ) -> None:
     """Write ``guitar_3d.json``, run ``build_3d_guitar.py``, refresh PyVista mesh."""
-    save_config(
-        geom,
-        top_wood=top_wood,
-        back_wood=back_wood,
-        clamp_ribs=clamp_ribs,
-        pin_neck_fix=pin_neck_fix,
-        fixture_preset=fixture_preset,
-    )
-    run_gmsh_display()
+    with st.status("Initializing Gmsh…", expanded=True) as gmsh_status:
+        gmsh_status.update(label="Writing guitar configuration…", state="running")
+        save_config(
+            geom,
+            top_wood=top_wood,
+            back_wood=back_wood,
+            clamp_ribs=clamp_ribs,
+            pin_neck_fix=pin_neck_fix,
+            fixture_preset=fixture_preset,
+        )
+        gmsh_status.update(
+            label="Generating display mesh (may take several minutes)…",
+            state="running",
+        )
+        run_gmsh_display()
+        gmsh_status.update(label="Gmsh display mesh complete.", state="complete")
     st.session_state._rom_mesh_fp = rom_mesh_fingerprint(geom, top_wood=top_wood, back_wood=back_wood)
     st.session_state.saved_geom_fp = geom_fp
     st.session_state.show_display_mesh = True
@@ -828,19 +841,14 @@ def apply_spatial_colormap(
     hole_radius: float,
 ) -> pv.PolyData:
     centers = mesh.cell_centers().points
-    z, x, y = centers[:, 2], centers[:, 0], centers[:, 1]
+    z = centers[:, 2]
     zmax, zmin = float(np.max(z)), float(np.min(z))
     top_z = zmax - TOP_Z_BAND_FRAC * max(zmax - zmin, 1e-9)
-    hole_x = soundhole_center_x(body_length)
-    hr2 = float(hole_radius) ** 2
     top_rgb = np.array(hex_to_rgb01(top_color), dtype=np.float32)
     back_rgb = np.array(hex_to_rgb01(back_color), dtype=np.float32)
-    hole_rgb = np.array(hex_to_rgb01(HOLE_VIS_COLOR), dtype=np.float32)
     is_top = z >= top_z
-    in_hole = is_top & ((x - hole_x) ** 2 + y**2 <= hr2 * 1.05)
     colors = np.tile(back_rgb, (mesh.n_cells, 1))
-    colors[is_top & ~in_hole] = top_rgb
-    colors[in_hole] = hole_rgb
+    colors[is_top] = top_rgb
     out = mesh.copy(deep=True)
     out.cell_data["rgb"] = colors
     return out
@@ -874,7 +882,7 @@ def render_guitar(
             preference="cell",
             show_edges=sketch_mode,
             edge_color="#3d2817" if sketch_mode else "#5c4033",
-            line_width=0.8 if sketch_mode else 0.35,
+            line_width=0.8 if sketch_mode else 0.0,
             smooth_shading=not sketch_mode,
         )
     else:
@@ -1268,16 +1276,15 @@ def _render_main_studio(
     with col_ctrl:
         if regen_mesh:
             try:
-                with st.spinner("Rebuilding display mesh…"):
-                    regenerate_display_mesh(
-                        geom,
-                        top_wood=top_wood,
-                        back_wood=back_wood,
-                        clamp_ribs=clamp_ribs,
-                        pin_neck_fix=pin_neck,
-                        fixture_preset=fixture_preset,
-                        geom_fp=geom_fp,
-                    )
+                regenerate_display_mesh(
+                    geom,
+                    top_wood=top_wood,
+                    back_wood=back_wood,
+                    clamp_ribs=clamp_ribs,
+                    pin_neck_fix=pin_neck,
+                    fixture_preset=fixture_preset,
+                    geom_fp=geom_fp,
+                )
                 invalidate_physics_state()
                 st.session_state.show_mesh_overlay = True
                 st.session_state._mesh_overlay_rom_fp = rom_fp

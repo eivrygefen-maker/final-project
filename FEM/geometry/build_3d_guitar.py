@@ -275,7 +275,9 @@ def create_guitar_mesh():
         L, W, D = p["length"], p["width"], p["depth"]
         # CAD wall offset uses top-plate thickness (back is thicker in FEM shell forms only).
         t = float(p.get("top_thickness", p.get("thickness", 0.003)))
-        hr = min(float(p["hole_radius"]), 0.08)
+        hr_raw = float(p["hole_radius"])
+        hr_cap = 0.4 * min(float(L), float(W))
+        hr = min(hr_raw, hr_cap, 0.08)
         shape_type = str(p.get("shape_type", "Classical")).strip()
         upper_bout = float(p.get("upper_bout", W * 0.75))
         lower_bout = float(p.get("lower_bout", W))
@@ -617,9 +619,9 @@ def create_guitar_mesh():
                 removeTool=True,
             )
             wood_dimtags = [dt for dt in as_dimtags(wood_shell) if dt[0] == 3]
-        if is_display:
+        if is_display or is_preview:
             wood_hole_cut = _audit_boolean(
-                "display_soundhole_cut",
+                "display_soundhole_cut" if is_display else "preview_soundhole_cut",
                 occ.cut,
                 wood_dimtags,
                 [(3, hole_cyl)],
@@ -627,8 +629,10 @@ def create_guitar_mesh():
                 removeTool=True,
             )
             wood_dimtags = [dt for dt in as_dimtags(wood_hole_cut) if dt[0] == 3]
-        else:
-            print("[diag] preview CAD: soundhole OCC cut skipped (GUI paints hole)")
+            print(
+                f"[diag] {mode} CAD: soundhole OCC cut applied "
+                f"(cylinder r={hr:.4f} m, cap=0.4*min(L,W)={0.4 * min(float(L), float(W)):.4f})"
+            )
         try:
             occ.removeAllDuplicates()
         except Exception:

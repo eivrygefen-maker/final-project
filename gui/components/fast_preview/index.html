@@ -458,6 +458,7 @@
     }
 
     function onRender(event) {
+      if (isUserDragging) return;
       let args = {};
       if (event && event.detail && event.detail.args) {
         args = event.detail.args;
@@ -522,12 +523,12 @@
       bounds_by_shape: {},
     };
 
-    /* Orthotropic plate surface colors (matches gui/app.py STUDIO_WOOD_HEX) */
+    /* Realistic tonewoods (matches gui/app.py STUDIO_WOOD_HEX) */
     const WOOD_COLORS_BUILTIN = {
-      spruce: "#F4E7C1",
-      cedar: "#A0522D",
-      maple: "#FFDEAD",
-      mahogany: "#704229",
+      spruce: "#F5F5DC",
+      cedar: "#5D4037",
+      maple: "#FFF8E1",
+      mahogany: "#795548",
       rosewood: "#3F2A20",
     };
     state.wood_colors = Object.assign({}, WOOD_COLORS_BUILTIN, state.wood_colors);
@@ -603,6 +604,7 @@
     }
 
     function mergeRomStateDelta(data) {
+      if (isUserDragging) return;
       if (!data || typeof data !== "object") return;
       const dom = readDomSliderValues();
       const domTopWood = document.getElementById("topWood")?.value || state.top_wood_id;
@@ -621,6 +623,7 @@
         else if (k === "back_wood_id") domVal = domBackWood;
         else if (k === "shape_type") domVal = dom.shape_type;
         else domVal = dom[k];
+        if (isUserDragging && (k === "top_wood_id" || k === "back_wood_id")) return;
         if (acceptIncomingRomKey(k, data, domVal)) state[k] = data[k];
       });
 
@@ -717,16 +720,34 @@
       ];
     }
 
+    function createWoodMaterial(woodId) {
+      return new THREE.MeshStandardMaterial({
+        color: woodColorHex(woodId),
+        roughness: 0.74,
+        metalness: 0.05,
+        flatShading: false,
+      });
+    }
+
+    function applyWoodMaterial(mesh, woodId) {
+      if (!mesh || !mesh.material) return;
+      mesh.material.color.copy(woodColorHex(woodId));
+    }
+
     function updateTopMaterial() {
-      if (!meshTopRef || !meshTopRef.material) return;
-      meshTopRef.material.color.copy(woodColorHex(state.top_wood_id));
+      if (!meshTopRef) return;
+      applyWoodMaterial(meshTopRef, state.top_wood_id);
     }
 
     function updateBackMaterial() {
-      const col = woodColorHex(state.back_wood_id);
-      [meshBackRef, meshSidesRef].forEach((mesh) => {
-        if (mesh && mesh.material) mesh.material.color.copy(col);
-      });
+      applyWoodMaterial(meshBackRef, state.back_wood_id);
+      applyWoodMaterial(meshSidesRef, state.back_wood_id);
+    }
+
+    function effectiveHoleRadius(L, W, hr) {
+      const cap = Math.min(num(L, 0.49), num(W, 0.37)) * 0.4;
+      const safeCap = Math.max(cap, 0.01);
+      return Math.min(num(hr, 0.045), safeCap - 1e-5);
     }
 
     function insetLoop(pts, frac) {
@@ -857,25 +878,15 @@
       const W = num(state.width, 0.37);
       const D = num(state.depth, 0.095);
       const tTop = Math.min(num(state.top_thickness, 0.0045), D * 0.45);
-      const hr = num(state.hole_radius, 0.045);
+      const hr = effectiveHoleRadius(L, W, state.hole_radius);
+      state.hole_radius = hr;
       const outlinePts = resolveOutlinePts(L, W);
       const holeXY = soundholeShapeXY(outlinePts);
       const rimInset = Math.max(0.82, Math.min(0.97, 1 - (2.2 * tTop) / Math.max(W, L, 1e-6)));
       const sideDepth = Math.max(D - 2 * tTop, tTop * 0.5);
-      const backCol = woodColorHex(state.back_wood_id);
-      const topCol = woodColorHex(state.top_wood_id);
-      const matBack = new THREE.MeshPhongMaterial({
-        color: backCol,
-        shininess: 18,
-        specular: 0x111111,
-        flatShading: false,
-      });
-      const matTop = new THREE.MeshPhongMaterial({
-        color: topCol,
-        shininess: 22,
-        specular: 0x151515,
-        flatShading: false,
-      });
+      const matBack = createWoodMaterial(state.back_wood_id);
+      const matSides = createWoodMaterial(state.back_wood_id);
+      const matTop = createWoodMaterial(state.top_wood_id);
       const extrudePlate = {
         depth: tTop,
         bevelEnabled: false,
@@ -904,7 +915,7 @@
       const shapeSides = makeSidesShape(outlinePts, rimInset);
       const geomSides = new THREE.ExtrudeGeometry(shapeSides, extrudeSides);
       orientPlate(geomSides, tTop);
-      const meshSides = new THREE.Mesh(geomSides, matBack);
+      const meshSides = new THREE.Mesh(geomSides, matSides);
       meshSides.name = "sides";
       meshSides.renderOrder = 0;
       meshSidesRef = meshSides;
@@ -1133,7 +1144,7 @@
         const hrB = normalizeSliderBounds(state.hole_radius_bounds, hrFallback, 0.001);
         let lo = hrB[0];
         let hi = hrB[1];
-        const bodyCap = Math.min(num(state.width, 0.37), num(state.length, 0.49)) * 0.45;
+        const bodyCap = Math.min(num(state.width, 0.37), num(state.length, 0.49)) * 0.4;
         if (Number.isFinite(bodyCap) && bodyCap > lo + 0.002) hi = Math.min(hi, bodyCap);
         const cur = num(hEl.value, num(state.hole_radius, lo));
         hi = Math.max(hi, cur + 0.0005);
@@ -1156,7 +1167,11 @@
       state.width = num(document.getElementById("width").value, state.width);
       state.depth = num(document.getElementById("depth").value, state.depth);
       state.top_thickness = num(document.getElementById("topThickness").value, state.top_thickness);
-      state.hole_radius = num(document.getElementById("holeRadius").value, state.hole_radius);
+      state.hole_radius = effectiveHoleRadius(
+        state.length,
+        state.width,
+        document.getElementById("holeRadius").value
+      );
       state.top_wood_id = document.getElementById("topWood").value || "spruce";
       state.back_wood_id = document.getElementById("backWood").value || "rosewood";
       updateLabels();
@@ -1309,6 +1324,14 @@
         if (prevParts[6] !== newParts[6]) updateTopMaterial();
         if (prevParts[7] !== newParts[7]) updateBackMaterial();
         renderFrame();
+      }
+      if (!isUserDragging && hasOwnPayloadKey(data, "hole_radius")) {
+        const hEl = document.getElementById("holeRadius");
+        if (hEl) {
+          const capped = effectiveHoleRadius(state.length, state.width, state.hole_radius);
+          if (Math.abs(num(hEl.value) - capped) > 1e-9) hEl.value = String(capped);
+          state.hole_radius = capped;
+        }
       }
     }
 
