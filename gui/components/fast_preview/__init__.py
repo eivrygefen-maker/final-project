@@ -52,13 +52,22 @@ def fast_preview(
     initial: Optional[Dict[str, Any]] = None,
     key: Optional[str] = None,
     height: int = 720,
+    width: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     3D Design Studio — instant Three.js preview; returns a dict on user actions.
 
     Actions: ``save_sync``, ``run_rom``, ``run_fem`` (see ``index.html``).
     """
-    return _fast_preview(initial=initial or {}, key=key, default=None, height=height)
+    kwargs: Dict[str, Any] = {
+        "initial": initial or {},
+        "key": key,
+        "default": None,
+        "height": height,
+    }
+    if width is not None:
+        kwargs["width"] = width
+    return _fast_preview(**kwargs)
 
 
 def component_dir() -> str:

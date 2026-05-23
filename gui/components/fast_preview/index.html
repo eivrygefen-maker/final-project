@@ -7,20 +7,11 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
-    .main-wrapper { overflow: visible !important; min-height: 850px !important; }
-    select { pointer-events: auto !important; }
-    /* Native OS dropdowns above the WebGL viewport */
-    html, body, .main-wrapper, .studio, .studio-panel, .panel, .panel.panel-controls {
-      overflow: visible !important;
-    }
-    .panel.panel-controls,
-    .studio-panel {
-      position: relative !important;
-      z-index: 9999 !important;
-    }
-    select {
-      position: relative !important;
-      z-index: 99999 !important;
+    html, body {
+      width: 100vw;
+      height: 100vh;
+      margin: 0;
+      padding: 0;
     }
     :root {
       --st-font: "Source Sans 3", "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -43,14 +34,9 @@
     }
     * { box-sizing: border-box; }
     html, body {
-      margin: 0;
-      padding: 0;
       font-family: var(--st-font);
       color: var(--st-text);
       background: #1a1c24;
-      overflow: visible;
-      min-height: 850px;
-      height: 850px;
     }
     .studio {
       display: grid;
@@ -59,7 +45,6 @@
       height: 850px;
       min-height: 850px;
       padding: 8px 10px 10px;
-      overflow: visible;
       position: relative;
     }
     .panel {
@@ -131,9 +116,7 @@
       height: 4px;
     }
     .view-wrap {
-      position: relative !important;
-      z-index: 1 !important;
-      overflow: visible !important;
+      position: relative;
       border-radius: var(--st-radius);
       border: 1px solid var(--st-border);
       background: linear-gradient(165deg, #e8eaef 0%, #d4d8e0 45%, #c5cad4 100%);
@@ -267,19 +250,11 @@
   <!-- Local bridge + Three.js (lib/ — no external CDN; CSP-safe) -->
   <script src="./streamlit_bridge.js"></script>
   <script>
-    (function () {
-      var FRAME_H = 850;
-      function post(type, payload) {
-        window.parent.postMessage(Object.assign({ type: type }, payload || {}), "*");
-      }
-      if (window.Streamlit && typeof Streamlit.setComponentReady === "function") {
-        Streamlit.setComponentReady();
-        Streamlit.setFrameHeight(FRAME_H);
-      } else {
-        post("streamlit:componentReady", { isStreamlitComponent: true });
-        post("streamlit:setFrameHeight", { height: FRAME_H });
-      }
-    })();
+    const { Streamlit } = window;
+    Streamlit.setComponentReady();
+    window.addEventListener("load", () => {
+      Streamlit.setComponentReady();
+    });
   </script>
   <script type="importmap">
     {
@@ -292,7 +267,6 @@
   <script>
     /* ── Streamlit bridge (./streamlit_bridge.js → Streamlit.* API) ─── */
     const DEFAULT_FRAME_HEIGHT = 850;
-    let bridgeReady = false;
     let lastFrameHeight = 0;
     let eventsWired = false;
     let lastRomFp = "";
@@ -369,20 +343,6 @@
       }
     }
 
-    function signalComponentReady(frameHeight) {
-      if (bridgeReady) return;
-      bridgeReady = true;
-      if (window.Streamlit && typeof Streamlit.setComponentReady === "function") {
-        Streamlit.setComponentReady();
-      } else {
-        window.parent.postMessage(
-          { type: "streamlit:componentReady", isStreamlitComponent: true },
-          "*"
-        );
-      }
-      setFrameHeight(frameHeight, true);
-    }
-
   /** Streamlit passes kwargs as args; ROM payload lives under args.initial */
   function normalizeArgs(raw) {
     if (!raw || typeof raw !== "object") return {};
@@ -434,15 +394,15 @@
       }
     }
 
-    function bootStreamlitBridge() {
-      wireStreamlitEvents();
-      signalComponentReady(DEFAULT_FRAME_HEIGHT);
-    }
-
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", bootStreamlitBridge);
-    } else {
-      bootStreamlitBridge();
+    try {
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", wireStreamlitEvents);
+      } else {
+        wireStreamlitEvents();
+      }
+    } catch (err) {
+      console.error("[Design Studio] bridge wiring failed:", err);
+      if (err && err.stack) console.error(err.stack);
     }
 
     const ROM_KEYS = [
@@ -710,6 +670,7 @@
     }
 
     function initThreeCore() {
+      console.log("THREE.JS: Initializing...");
       if (initialized3d) return;
       const canvas = document.getElementById("viewport");
       const wrap = canvas.parentElement;
@@ -963,18 +924,27 @@
       setComponentValue(payload("run_fem"));
     });
 
-    /* UI defaults; kick off 3D once Streamlit args arrive (also on first render event) */
-    applySliderBounds();
-    updateLabels();
-    updateModeUi();
-    whenThreeReady(function bootstrapStudio3d() {
-      if (!initialized3d) {
-        initThreeCore();
-      } else {
-        buildBody();
-        renderFrame();
-      }
-    });
+    try {
+      applySliderBounds();
+      updateLabels();
+      updateModeUi();
+      whenThreeReady(function bootstrapStudio3d() {
+        try {
+          if (!initialized3d) {
+            initThreeCore();
+          } else {
+            buildBody();
+            renderFrame();
+          }
+        } catch (err) {
+          console.error("[Design Studio] Three.js bootstrap failed:", err);
+          if (err && err.stack) console.error(err.stack);
+        }
+      });
+    } catch (err) {
+      console.error("[Design Studio] initialization failed:", err);
+      if (err && err.stack) console.error(err.stack);
+    }
   </script>
 </body>
 </html>

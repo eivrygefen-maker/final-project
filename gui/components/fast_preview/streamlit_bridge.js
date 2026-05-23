@@ -1,3 +1,5 @@
+console.log("JS BRIDGE: Loaded successfully");
+
 /**
  * Minimal Streamlit custom-component bridge for static HTML (production / _RELEASE).
  * Served from the same directory as index.html — no dev server on port 3001.
@@ -38,7 +40,14 @@
       },
     },
     setComponentReady: function () {
-      post("streamlit:componentReady", { isStreamlitComponent: true });
+      console.log("JS BRIDGE: Attempting to notify parent...");
+      try {
+        post("streamlit:componentReady", { isStreamlitComponent: true });
+        console.log("JS BRIDGE: componentReady postMessage sent");
+      } catch (err) {
+        console.error("JS BRIDGE: setComponentReady failed", err);
+        if (err && err.stack) console.error(err.stack);
+      }
     },
     setFrameHeight: function (height) {
       var h = Math.max(400, Number(height) || 700);

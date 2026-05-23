@@ -390,10 +390,17 @@ def record_studio_handshake(event: Dict[str, Any]) -> None:
 
 def mount_design_studio_iframe(initial: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Single direct mount — no wrappers, no visibility gates."""
+    from components.fast_preview import component_dir
+
+    index_path = os.path.join(component_dir(), "index.html")
+    abs_path = os.path.abspath(index_path)
+    print(f"DEBUG: Component path is: {abs_path}", flush=True)
+    print(f"DEBUG: index.html exists: {os.path.isfile(abs_path)}", flush=True)
     return fast_preview(
         initial=initial,
         key="fast_preview_geom",
-        height=FAST_PREVIEW_HEIGHT,
+        height=850,
+        width=1000,
     )
 
 
@@ -1109,25 +1116,6 @@ def _render_main_studio(
 
     with col_vis:
         studio_event = mount_design_studio_iframe(fp_for_component)
-        if st.session_state.get("show_mesh_overlay"):
-            st.markdown(
-                """
-                <style>
-                div[data-testid="stVerticalBlock"]:has(iframe[title*="fast_preview"]) {
-                    position: relative !important;
-                    z-index: 1 !important;
-                }
-                div[data-testid="stpyvista"] {
-                    position: relative !important;
-                    z-index: 2 !important;
-                    margin-top: -852px !important;
-                    min-height: 850px !important;
-                    background: #0e1117;
-                }
-                </style>
-                """,
-                unsafe_allow_html=True,
-            )
 
     process_fast_preview_event(
         studio_event,
@@ -1234,10 +1222,6 @@ def _render_main_studio(
 
 
 def main() -> None:
-    st.markdown(
-        "<style>h1 { letter-spacing: 0.06em; font-weight: 700; }</style>",
-        unsafe_allow_html=True,
-    )
     saved = _load_saved_config().get("geometry", {}) or {}
     saved_solver = _load_saved_config().get("solver", {}) or {}
     saved_shape = str(saved.get("shape_type", "Classical"))
