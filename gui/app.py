@@ -302,6 +302,37 @@ def studio_initial_from_saved(
     return payload
 
 
+def studio_payload_for_component(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Omit heavy template geometry after first iframe load (cached client-side)."""
+    out = dict(payload)
+    if st.session_state.get("_studio_templates_sent"):
+        out.pop("templates", None)
+    else:
+        st.session_state._studio_templates_sent = True
+    return out
+
+
+def studio_event_id(event: Dict[str, Any]) -> str:
+    """Unique id for a component button event (dedupes stale return values across reruns)."""
+    clean = sanitize_studio_payload(event)
+    return json.dumps(
+        {
+            "action": str(event.get("action", "")).strip().lower(),
+            "_ts": event.get("_ts"),
+            "shape_type": clean.get("shape_type"),
+            "length": clean.get("length"),
+            "width": clean.get("width"),
+            "depth": clean.get("depth"),
+            "top_thickness": clean.get("top_thickness"),
+            "hole_radius": clean.get("hole_radius"),
+            "top_wood_id": clean.get("top_wood_id"),
+            "back_wood_id": clean.get("back_wood_id"),
+        },
+        sort_keys=True,
+        default=str,
+    )
+
+
 def geom_from_studio_event(event: Dict[str, Any]) -> Tuple[Dict[str, Any], str, str]:
     """Parse component event into geometry dict and wood IDs (7D ROM only)."""
     clean = sanitize_studio_payload(event)
