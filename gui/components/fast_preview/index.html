@@ -205,38 +205,80 @@
     </div>
   </div>
 
+  <!-- Local bridge (same folder as index.html — served in _RELEASE mode) -->
+  <script src="./streamlit_bridge.js"></script>
   <script src="https://unpkg.com/three@0.149.0/build/three.min.js"></script>
   <script src="https://unpkg.com/three@0.149.0/examples/js/controls/OrbitControls.js"></script>
   <script>
-    /* ── Streamlit bridge ───────────────────────────────────────────── */
-    function sendMessage(type, data) {
-      window.parent.postMessage({ type: type, ...data }, "*");
-    }
+    /* ── Streamlit bridge (./streamlit_bridge.js → Streamlit.* API) ─── */
+    const DEFAULT_FRAME_HEIGHT = 700;
+    let bridgeReady = false;
+
     function setFrameHeight(h) {
-      sendMessage("streamlit:setFrameHeight", { height: h });
-    }
-    function setComponentValue(value) {
-      sendMessage("streamlit:setComponentValue", { value: value });
-    }
-
-    /** Streamlit passes kwargs as args; ROM payload lives under args.initial */
-    function normalizeArgs(raw) {
-      if (!raw || typeof raw !== "object") return {};
-      if (raw.initial && typeof raw.initial === "object") return raw.initial;
-      return raw;
-    }
-
-    function onRender(event) {
-      if (!event.data || event.data.type !== "streamlit:render") return;
-      try {
-        applyArgs(event.data.args || {});
-      } catch (err) {
-        console.error("[Design Studio] applyArgs failed:", err);
+      const height = Math.max(400, Number(h) || DEFAULT_FRAME_HEIGHT);
+      if (window.Streamlit && typeof Streamlit.setFrameHeight === "function") {
+        Streamlit.setFrameHeight(height);
       }
     }
-    window.addEventListener("message", onRender);
-    sendMessage("streamlit:componentReady", { isStreamlitComponent: true });
-    setFrameHeight(700);
+
+    function setComponentValue(value) {
+      if (window.Streamlit && typeof Streamlit.setComponentValue === "function") {
+        Streamlit.setComponentValue(value);
+      }
+    }
+
+    function signalComponentReady(frameHeight) {
+      if (bridgeReady) return;
+      bridgeReady = true;
+      if (window.Streamlit && typeof Streamlit.setComponentReady === "function") {
+        Streamlit.setComponentReady();
+      }
+      setFrameHeight(frameHeight);
+    }
+
+  /** Streamlit passes kwargs as args; ROM payload lives under args.initial */
+  function normalizeArgs(raw) {
+    if (!raw || typeof raw !== "object") return {};
+    if (raw.initial && typeof raw.initial === "object") return raw.initial;
+    return raw;
+  }
+
+  function frameHeightFromArgs(args) {
+    if (args && args.height != null) return Number(args.height) || DEFAULT_FRAME_HEIGHT;
+    return DEFAULT_FRAME_HEIGHT;
+  }
+
+  function onRender(event) {
+    let args = {};
+    if (event && event.detail && event.detail.args) {
+      args = event.detail.args;
+    } else if (event && event.data && event.data.type === "streamlit:render") {
+      args = event.data.args || {};
+    }
+    setFrameHeight(frameHeightFromArgs(args));
+    try {
+      applyArgs(args);
+    } catch (err) {
+      console.error("[Design Studio] applyArgs failed:", err);
+    }
+  }
+
+    function wireStreamlitEvents() {
+      if (window.Streamlit && Streamlit.events) {
+        Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, onRender);
+      }
+    }
+
+    function bootStreamlitBridge() {
+      wireStreamlitEvents();
+      signalComponentReady(DEFAULT_FRAME_HEIGHT);
+    }
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", bootStreamlitBridge);
+    } else {
+      bootStreamlitBridge();
+    }
 
     const ROM_KEYS = [
       "shape_type", "length", "width", "depth",
@@ -620,15 +662,10 @@
       setComponentValue(payload("run_fem"));
     });
 
-    /* Boot with safe defaults before first Streamlit render */
+    /* UI defaults; Three.js starts on first Streamlit render */
     applySliderBounds();
     updateLabels();
     updateModeUi();
-    window.addEventListener("load", () => {
-      setTimeout(() => {
-        if (!initialized3d) refresh3d();
-      }, 100);
-    });
   </script>
 </body>
 </html>

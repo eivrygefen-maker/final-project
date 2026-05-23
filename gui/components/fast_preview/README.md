@@ -4,8 +4,9 @@ Instant **Three.js** guitar body from luthier blueprints (Classical / Dreadnough
 
 ## Files
 
-- `index.html` — Design Studio UI + Three.js extrusion + Streamlit bridge
-- `__init__.py` — `declare_component("fast_preview", ...)`
+- `index.html` — Design Studio UI + Three.js extrusion
+- `streamlit_bridge.js` — local `Streamlit.setComponentReady()` / frame-height bridge (production)
+- `__init__.py` — `declare_component("fast_preview", path=<this dir>)` with `_RELEASE = True`
 
 ## ROM parameters (component output)
 
