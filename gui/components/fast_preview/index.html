@@ -7,8 +7,10 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
-    /* Safe mode: no overflow clipping — native OS dropdowns above the canvas */
-    html, body, .studio, .studio-panel, .panel, .panel.panel-controls {
+    .main-wrapper { overflow: visible !important; min-height: 850px !important; }
+    select { pointer-events: auto !important; }
+    /* Native OS dropdowns above the WebGL viewport */
+    html, body, .main-wrapper, .studio, .studio-panel, .panel, .panel.panel-controls {
       overflow: visible !important;
     }
     .panel.panel-controls,
@@ -213,6 +215,7 @@
   </style>
 </head>
 <body>
+  <div class="main-wrapper">
   <div class="studio">
     <aside class="panel panel-controls studio-panel" id="controls">
       <h3>Design Studio</h3>
@@ -258,6 +261,7 @@
       <div class="badge">Live 3D · Luthier blueprint</div>
       <canvas id="viewport"></canvas>
       <pre id="errorPanel" hidden aria-live="polite"></pre>
+    </div>
     </div>
   </div>
   <!-- Local bridge + Three.js (lib/ — no external CDN; CSP-safe) -->
@@ -865,9 +869,19 @@
           buildBody();
           renderFrame();
         }
+        notifyParamChange();
       } catch (err) {
         console.error("[Design Studio] refresh3d:", err);
       }
+    }
+
+    let paramNotifyTimer = null;
+    function notifyParamChange() {
+      if (paramNotifyTimer) clearTimeout(paramNotifyTimer);
+      paramNotifyTimer = setTimeout(function () {
+        readSliders();
+        setComponentValue(payload("param_change"));
+      }, 350);
     }
 
   function fillWoodSelects() {

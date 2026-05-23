@@ -48,9 +48,6 @@ ROM_HOLE_RADIUS_BOUNDS = (0.035, 0.055)
 
 FAST_PREVIEW_HEIGHT = 850
 ROM_ONLINE_MODES = 15
-GUI_PAGE_STUDIO = "Design Studio"
-GUI_PAGE_MESH = "Gmsh validation mesh"
-GUI_PAGES = (GUI_PAGE_STUDIO, GUI_PAGE_MESH)
 STUDIO_HANDSHAKE_ACTIONS = frozenset({"ready", "_handshake", "handshake", "_ready_ping"})
 STUDIO_ROM_PAYLOAD_KEYS = (
     "shape_type",
@@ -132,7 +129,8 @@ def _init_session() -> None:
         "_studio_component_ready": False,
         "_studio_handshake_id": "",
         "_studio_iframe_payload_fp": "",
-        "gui_page": GUI_PAGE_STUDIO,
+        "show_mesh_overlay": False,
+        "_mesh_overlay_rom_fp": "",
         "_rom_online_fp": "",
         "rom_frequencies_hz": [],
         "rom_mode_shapes": {},
@@ -391,33 +389,12 @@ def record_studio_handshake(event: Dict[str, Any]) -> None:
 
 
 def mount_design_studio_iframe(initial: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """
-    Mount ``fast_preview()`` in its dedicated host — the only custom component on this page.
-    """
-    from components.fast_preview import component_dir  # noqa: WPS433
-
-    index_path = Path(component_dir()) / "index.html"
-    if not index_path.is_file():
-        st.error(
-            "Design Studio assets are missing. Sync `gui/components/fast_preview/` "
-            "(including `index.html` and `lib/`) to this machine, then reload."
-        )
-        return None
-    try:
-        return fast_preview(
-            initial=initial,
-            key="fast_preview_geom",
-            height=FAST_PREVIEW_HEIGHT,
-        )
-    except FileNotFoundError:
-        st.error(
-            "Design Studio component files not found. "
-            "Sync `gui/components/fast_preview/` to this machine."
-        )
-        return None
-    except Exception as exc:
-        st.error(f"Design Studio failed to mount: {exc}")
-        return None
+    """Single direct mount — no wrappers, no visibility gates."""
+    return fast_preview(
+        initial=initial,
+        key="fast_preview_geom",
+        height=FAST_PREVIEW_HEIGHT,
+    )
 
 
 def studio_event_id(event: Dict[str, Any]) -> str:
@@ -491,6 +468,11 @@ def process_fast_preview_event(
     st.session_state._top_wood = top_wood
     st.session_state._back_wood = back_wood
 
+    if action == "param_change":
+        st.session_state.show_mesh_overlay = False
+        st.session_state._mesh_overlay_rom_fp = ""
+        return
+
     geom_fp = geometry_fingerprint(
         geom,
         top_wood,
@@ -511,6 +493,10 @@ def process_fast_preview_event(
             geom_fp=geom_fp,
         )
         invalidate_physics_state()
+        st.session_state.show_mesh_overlay = True
+        st.session_state._mesh_overlay_rom_fp = rom_mesh_fingerprint(
+            geom, top_wood=top_wood, back_wood=back_wood
+        )
 
     if action == "run_rom":
         st.session_state.developer_fom_mode = False
@@ -1065,43 +1051,13 @@ def run_stk(*, body_json: Path, top_wood: str) -> None:
     append_silence_wav(WAV_OUTPUT, 0.3)
 
 
-def _render_mesh_validation_tab(
-    saved_shape: str,
-    *,
-    clamp_ribs: bool,
-    pin_neck: bool,
-    fixture_preset: str,
-) -> None:
-    """Isolated Gmsh/PyVista viewer (separate Streamlit tab — no shared slot with Design Studio)."""
-    seed = st.session_state.get("_fast_preview_geom")
-    if not isinstance(seed, dict) or not seed:
-        seed = _load_saved_config().get("geometry") or {}
-    fp_live = sanitize_studio_payload(seed, saved_shape)
-    geom, top_wood, back_wood = geom_from_studio_event(fp_live)
-    geom_fp = geometry_fingerprint(
-        geom,
-        top_wood,
-        back_wood,
-        clamp_ribs=clamp_ribs,
-        pin_neck_fix=pin_neck,
-        fixture_preset=fixture_preset,
-    )
-    render_validation_mesh_viewport(
-        geom,
-        top_wood=top_wood,
-        back_wood=back_wood,
-        geom_fp=geom_fp,
-        fixture_preset=fixture_preset,
-    )
-
-
-def _render_design_studio_tab(
+def _render_main_studio(
     saved: Dict[str, Any],
     saved_solver: Dict[str, Any],
     saved_shape: str,
     saved_fixture: str,
 ) -> None:
-    """Tab 1 — sidebar controls + dedicated Three.js iframe host (no PyVista)."""
+    """Minimal layout: Design Studio iframe always mounted; Gmsh overlay on save only."""
     clamp_ribs = bool(st.session_state.get("_clamp_ribs", saved_solver.get("clamp_ribs", False)))
     pin_neck = bool(st.session_state.get("_pin_neck_fix", saved_solver.get("eps_pin_fix_tag5", True)))
     fixture_preset = str(st.session_state.get("_fixture_preset", saved_fixture))
@@ -1115,15 +1071,9 @@ def _render_design_studio_tab(
 
     fp_seed["gui_mode"] = "admin" if st.session_state.developer_fom_mode else "user"
 
-    col_side, col_studio = st.columns([0.22, 0.78], gap="medium")
+    col_ctrl, col_vis = st.columns([0.2, 0.8], gap="large")
 
-    studio_event: Optional[Dict[str, Any]] = None
-    with col_studio:
-        with st.container(border=True):
-            fp_for_component = studio_payload_for_iframe(fp_seed)
-            studio_event = mount_design_studio_iframe(fp_for_component)
-
-    with col_side:
+    with col_ctrl:
         st.subheader("Session")
         mode_ix = 1 if st.session_state.developer_fom_mode else 0
         mode = st.radio(
@@ -1154,6 +1104,31 @@ def _render_design_studio_tab(
             key="btn_gen_sound",
         )
 
+    fp_for_component = studio_payload_for_iframe(fp_seed)
+    fp_for_component["wood_colors"] = wood_colors_for_studio()
+
+    with col_vis:
+        studio_event = mount_design_studio_iframe(fp_for_component)
+        if st.session_state.get("show_mesh_overlay"):
+            st.markdown(
+                """
+                <style>
+                div[data-testid="stVerticalBlock"]:has(iframe[title*="fast_preview"]) {
+                    position: relative !important;
+                    z-index: 1 !important;
+                }
+                div[data-testid="stpyvista"] {
+                    position: relative !important;
+                    z-index: 2 !important;
+                    margin-top: -852px !important;
+                    min-height: 850px !important;
+                    background: #0e1117;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+
     process_fast_preview_event(
         studio_event,
         clamp_ribs=clamp_ribs,
@@ -1168,6 +1143,7 @@ def _render_design_studio_tab(
     shape = str(fp_live.get("shape_type", saved_shape))
     if shape not in SHAPE_OPTIONS:
         shape = saved_shape
+    rom_fp = rom_mesh_fingerprint(geom, top_wood=top_wood, back_wood=back_wood)
     geom_fp = geometry_fingerprint(
         geom,
         top_wood,
@@ -1177,15 +1153,31 @@ def _render_design_studio_tab(
         fixture_preset=fixture_preset,
     )
 
+    if st.session_state.get("show_mesh_overlay"):
+        pinned = str(st.session_state.get("_mesh_overlay_rom_fp", ""))
+        if pinned and rom_fp != pinned:
+            st.session_state.show_mesh_overlay = False
+
     lhs_params = lhs_params_from_ui(geom, top_wood=top_wood, back_wood=back_wood)
     st.session_state["_geom"] = geom
     st.session_state["_top_wood"] = top_wood
     st.session_state["_back_wood"] = back_wood
 
     update_rom_online_prediction(geom, top_wood=top_wood, back_wood=back_wood, shape_type=shape)
-    with col_side:
+    with col_ctrl:
         render_rom_metrics_dashboard(shape)
 
+    if st.session_state.get("show_mesh_overlay"):
+        with col_vis:
+            render_validation_mesh_viewport(
+                geom,
+                top_wood=top_wood,
+                back_wood=back_wood,
+                geom_fp=geom_fp,
+                fixture_preset=fixture_preset,
+            )
+
+    with col_ctrl:
         if regen_mesh:
             try:
                 with st.spinner("Rebuilding display mesh…"):
@@ -1199,8 +1191,9 @@ def _render_design_studio_tab(
                         geom_fp=geom_fp,
                     )
                 invalidate_physics_state()
-                st.session_state.gui_page = GUI_PAGE_MESH
-                st.success("Mesh updated. Switch to **Gmsh validation mesh** to view it.")
+                st.session_state.show_mesh_overlay = True
+                st.session_state._mesh_overlay_rom_fp = rom_fp
+                st.success("Mesh updated — validation view shown over the studio.")
                 st.rerun()
             except Exception as exc:
                 st.error(f"Rebuild failed: {exc}")
@@ -1255,41 +1248,15 @@ def main() -> None:
         saved_fixture = "Standing Angled (3D)"
     st.title("GUITAR SIMULATOR")
     st.caption(
-        "One view at a time: **Design Studio** (Three.js) or **Gmsh validation mesh** (PyVista). "
-        "They never share the same container."
+        "Design Studio: live Three.js preview. **Save & Sync** shows the Gmsh mesh on top; "
+        "change any slider to return to the studio."
     )
 
     _rom_mgr, _rom_init_err = get_rom_manager()
     if _rom_init_err:
         st.sidebar.warning(f"ROM engine offline: {_rom_init_err}")
 
-    page_ix = (
-        GUI_PAGES.index(st.session_state.gui_page)
-        if st.session_state.gui_page in GUI_PAGES
-        else 0
-    )
-    page = st.radio(
-        "Section",
-        GUI_PAGES,
-        index=page_ix,
-        horizontal=True,
-        label_visibility="collapsed",
-        key="gui_page_radio",
-    )
-    st.session_state.gui_page = page
-
-    if page == GUI_PAGE_STUDIO:
-        _render_design_studio_tab(saved, saved_solver, saved_shape, saved_fixture)
-    else:
-        with st.container(border=True):
-            _render_mesh_validation_tab(
-                saved_shape,
-                clamp_ribs=bool(st.session_state.get("_clamp_ribs", False)),
-                pin_neck=bool(st.session_state.get("_pin_neck_fix", True)),
-                fixture_preset=str(
-                    st.session_state.get("_fixture_preset", saved_fixture)
-                ),
-            )
+    _render_main_studio(saved, saved_solver, saved_shape, saved_fixture)
 
 
 main()
