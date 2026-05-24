@@ -8,8 +8,10 @@
   <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
     :root {
-      --studio-w: 1440px;
+      --studio-w: 1680px;
       --studio-h: 1080px;
+      --panel-w: 400px;
+      --viewport-w: calc(var(--studio-w) - var(--panel-w));
       --st-font: "Source Sans 3", "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       --st-primary: #ff4b4b;
       --st-primary-hover: #ff2b2b;
@@ -51,17 +53,19 @@
     }
     #viewport {
       display: block !important;
-      width: var(--studio-w) !important;
-      height: var(--studio-h) !important;
-      min-width: var(--studio-w) !important;
-      min-height: var(--studio-h) !important;
+      width: 100% !important;
+      height: 100% !important;
+      min-width: 0 !important;
+      min-height: 0 !important;
     }
     canvas#viewport {
       background: transparent !important;
     }
     * { box-sizing: border-box; }
     .studio {
-      position: relative;
+      display: flex;
+      flex-direction: row;
+      align-items: stretch;
       width: var(--studio-w);
       height: var(--studio-h);
       min-width: var(--studio-w);
@@ -69,15 +73,20 @@
       overflow: hidden;
     }
     .panel.panel-controls {
-      position: absolute;
-      left: 8px;
-      top: 8px;
-      width: 300px;
-      max-height: calc(var(--studio-h) - 16px);
+      flex: 0 0 var(--panel-w);
+      order: 2;
+      position: relative;
+      width: var(--panel-w);
+      max-width: var(--panel-w);
+      height: var(--studio-h);
+      max-height: var(--studio-h);
       overflow-y: auto;
-      overflow-x: visible;
+      overflow-x: hidden;
       z-index: 20;
-      padding-bottom: 40px;
+      padding: 16px 18px 40px;
+      margin: 0;
+      border-left: 1px solid var(--st-border);
+      border-radius: 0;
     }
     .panel {
       background: var(--st-panel);
@@ -171,16 +180,17 @@
       background: rgba(49, 51, 63, 0.15);
     }
     .view-wrap {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: var(--studio-w) !important;
-      height: var(--studio-h) !important;
-      min-width: var(--studio-w) !important;
-      min-height: var(--studio-h) !important;
+      flex: 1 1 var(--viewport-w);
+      order: 1;
+      position: relative;
+      width: var(--viewport-w);
+      min-width: var(--viewport-w);
+      height: var(--studio-h);
+      min-height: var(--studio-h);
       display: block !important;
-      border-radius: var(--st-radius);
+      border-radius: var(--st-radius) 0 0 var(--st-radius);
       border: 1px solid var(--st-border);
+      border-right: none;
       background: linear-gradient(165deg, #e8eaef 0%, #d4d8e0 45%, #c5cad4 100%);
       overflow: hidden;
       z-index: 1;
@@ -256,6 +266,11 @@
 <body>
   <div class="main-wrapper">
   <div class="studio">
+    <div class="view-wrap">
+      <div class="badge">Live 3D · Luthier blueprint</div>
+      <canvas id="viewport"></canvas>
+      <pre id="errorPanel" hidden aria-live="polite"></pre>
+    </div>
     <aside class="panel panel-controls studio-panel" id="controls">
       <h3>Design Studio</h3>
       <p class="sub">ROM/LHS parameters only — instant Three.js preview. Save &amp; Sync pushes to Gmsh/PyVista.</p>
@@ -295,12 +310,6 @@
         <button type="button" id="btnFem" style="display:none">Run Full FEM</button>
       </div>
     </aside>
-
-    <div class="view-wrap">
-      <div class="badge">Live 3D · Luthier blueprint</div>
-      <canvas id="viewport"></canvas>
-      <pre id="errorPanel" hidden aria-live="polite"></pre>
-    </div>
     </div>
   </div>
   <!-- Local bridge + Three.js (lib/ — no external CDN; CSP-safe) -->
@@ -328,8 +337,12 @@
     /** When true, applyArgs updates wood materials only (no buildBody / viewport reset). */
     let isMaterialChangeOnly = false;
     let animating = true;
-    const STUDIO_W = 1440;
+    const STUDIO_W = 1680;
     const STUDIO_H = 1080;
+    const PANEL_W = 400;
+    const VIEWPORT_W = STUDIO_W - PANEL_W;
+    /** Shift framed model left inside the viewport (controls panel on the right). */
+    const MODEL_FRAME_OFFSET_X = -0.12;
     const EXTRUDE_CURVE_SEGMENTS = 32;
     const EXTRUDE_TOP_CURVE_SEGMENTS = 64;
     const HOLE_CIRCLE_SEGMENTS = 128;
@@ -353,9 +366,14 @@
         wrap.style.height = STUDIO_H + "px";
       }
       const viewport = document.getElementById("viewport");
+      const viewWrap = document.querySelector(".view-wrap");
+      if (viewWrap) {
+        viewWrap.style.width = VIEWPORT_W + "px";
+        viewWrap.style.height = STUDIO_H + "px";
+      }
       if (viewport) {
-        viewport.style.width = STUDIO_W + "px";
-        viewport.style.height = STUDIO_H + "px";
+        viewport.style.width = "100%";
+        viewport.style.height = "100%";
       }
       window.dispatchEvent(new Event("resize"));
     }
@@ -415,7 +433,7 @@
         controls.enablePan = true;
         controls.enableRotate = true;
         controls.enableZoom = true;
-        controls.target.set(0, 0, 0);
+        controls.target.set(MODEL_FRAME_OFFSET_X * 0.55, 0, 0);
         if (typeof controls.saveState === "function") controls.saveState();
         console.log("STARTUP: Using ArcballControls (GMSH-style)");
       } else if (typeof window.THREE.OrbitControls === "function") {
@@ -425,7 +443,7 @@
         controls.enableRotate = true;
         controls.rotateSpeed = 0.85;
         controls.screenSpacePanning = true;
-        controls.target.set(0, 0, 0);
+        controls.target.set(MODEL_FRAME_OFFSET_X * 0.55, 0, 0);
         if (typeof controls.rotateLeft === "function" && typeof controls.rotateUp === "function") {
           const orbitLeft = controls.rotateLeft.bind(controls);
           const orbitUp = controls.rotateUp.bind(controls);
@@ -530,20 +548,35 @@
       return Number.isFinite(n) ? n : fallback;
     }
 
-    /* ── State (7D ROM + metadata only) ─────────────────────────────── */
-    const state = {
+    /** Classical guitar ROM baseline (meters); 480×370×100 mm, 3 mm top, 45 mm hole. */
+    const CLASSICAL_TEMPLATE = {
       shape_type: "Classical",
-      length: 0.49,
-      width: 0.37,
-      depth: 0.095,
-      top_thickness: 0.0045,
+      length: 0.480,
+      width: 0.370,
+      depth: 0.100,
+      top_thickness: 0.003,
       hole_radius: 0.045,
       top_wood_id: "spruce",
-      back_wood_id: "rosewood",
-      gui_mode: "user",
-      bounds: { length: [0.35, 0.6], width: [0.2, 0.45], depth: [0.08, 0.15] },
+      back_wood_id: "mahogany",
+      bounds: { length: [0.35, 0.60], width: [0.20, 0.45], depth: [0.08, 0.15] },
       top_thickness_bounds: [0.003, 0.006],
       hole_radius_bounds: [0.035, 0.055],
+    };
+
+    /* ── State (7D ROM + metadata only) ─────────────────────────────── */
+    const state = {
+      shape_type: CLASSICAL_TEMPLATE.shape_type,
+      length: CLASSICAL_TEMPLATE.length,
+      width: CLASSICAL_TEMPLATE.width,
+      depth: CLASSICAL_TEMPLATE.depth,
+      top_thickness: CLASSICAL_TEMPLATE.top_thickness,
+      hole_radius: CLASSICAL_TEMPLATE.hole_radius,
+      top_wood_id: CLASSICAL_TEMPLATE.top_wood_id,
+      back_wood_id: CLASSICAL_TEMPLATE.back_wood_id,
+      gui_mode: "user",
+      bounds: Object.assign({}, CLASSICAL_TEMPLATE.bounds),
+      top_thickness_bounds: CLASSICAL_TEMPLATE.top_thickness_bounds.slice(),
+      hole_radius_bounds: CLASSICAL_TEMPLATE.hole_radius_bounds.slice(),
       wood_ids: ["spruce", "cedar", "mahogany", "rosewood", "maple"],
       wood_colors: {},
       templates: {},
@@ -564,7 +597,7 @@
     /* Built-in luthier loops (used if Python omits templates on later reruns) */
     const TEMPLATES_BUILTIN = {
       Classical: {
-        nominal_length: 0.49,
+        nominal_length: 0.48,
         nominal_width: 0.37,
         loop: [
           [0.22,0.045],[0.18,0.11],[0.12,0.14],[0.06,0.13],[0,0.115],
@@ -795,19 +828,42 @@
       });
     }
 
-    function applyWoodMaterial(mesh, woodId) {
-      if (!mesh || !mesh.material) return;
-      mesh.material.color.copy(woodColorHex(woodId));
+    function materialsForExtrudeGeometry(geom, woodId) {
+      const base = createWoodMaterial(woodId);
+      const groupCount = geom && geom.groups && geom.groups.length > 0 ? geom.groups.length : 1;
+      if (groupCount <= 1) return base;
+      return Array.from({ length: groupCount }, () => base.clone());
+    }
+
+    function applyWoodMaterialToMesh(mesh, woodId) {
+      if (!mesh) return;
+      const color = woodColorHex(woodId);
+      const applyOne = function (mat) {
+        if (!mat) return;
+        mat.color.copy(color);
+        mat.roughness = 0.85;
+        mat.metalness = 0.0;
+        if (mat.emissive) mat.emissive.set(0, 0, 0);
+        mat.needsUpdate = true;
+      };
+      if (Array.isArray(mesh.material)) {
+        mesh.material.forEach(applyOne);
+      } else if (mesh.material) {
+        applyOne(mesh.material);
+      } else {
+        mesh.material = materialsForExtrudeGeometry(mesh.geometry, woodId);
+      }
     }
 
     function updateTopMaterial() {
       if (!meshTopRef) return;
-      applyWoodMaterial(meshTopRef, state.top_wood_id);
+      applyWoodMaterialToMesh(meshTopRef, state.top_wood_id);
     }
 
     function updateBackMaterial() {
-      applyWoodMaterial(meshBackRef, state.back_wood_id);
-      applyWoodMaterial(meshSidesRef, state.back_wood_id);
+      const woodId = String(state.back_wood_id || "mahogany").toLowerCase();
+      applyWoodMaterialToMesh(meshBackRef, woodId);
+      applyWoodMaterialToMesh(meshSidesRef, woodId);
     }
 
     function effectiveHoleRadius(L, W, hr) {
@@ -950,9 +1006,6 @@
       const holeXY = soundholeShapeXY(outlinePts);
       const rimInset = Math.max(0.82, Math.min(0.97, 1 - (2.2 * tTop) / Math.max(W, L, 1e-6)));
       const sideDepth = Math.max(D - 2 * tTop, tTop * 0.5);
-      const matBack = createWoodMaterial(state.back_wood_id);
-      const matSides = createWoodMaterial(state.back_wood_id);
-      const matTop = createWoodMaterial(state.top_wood_id);
       const extrudePlate = {
         depth: tTop,
         bevelEnabled: false,
@@ -972,7 +1025,7 @@
       const shapeBack = makeOutlineShape(outlinePts, hr, false, null);
       const geomBack = new THREE.ExtrudeGeometry(shapeBack, extrudePlate);
       orientPlate(geomBack, 0);
-      const meshBack = new THREE.Mesh(geomBack, matBack);
+      const meshBack = new THREE.Mesh(geomBack, materialsForExtrudeGeometry(geomBack, state.back_wood_id));
       meshBack.name = "back";
       meshBack.renderOrder = 0;
       meshBackRef = meshBack;
@@ -981,7 +1034,7 @@
       const shapeSides = makeSidesShape(outlinePts, rimInset);
       const geomSides = new THREE.ExtrudeGeometry(shapeSides, extrudeSides);
       orientPlate(geomSides, tTop);
-      const meshSides = new THREE.Mesh(geomSides, matSides);
+      const meshSides = new THREE.Mesh(geomSides, materialsForExtrudeGeometry(geomSides, state.back_wood_id));
       meshSides.name = "sides";
       meshSides.renderOrder = 0;
       meshSidesRef = meshSides;
@@ -990,7 +1043,7 @@
       const shapeTop = makeOutlineShape(outlinePts, hr, true, holeXY);
       const geomTop = new THREE.ExtrudeGeometry(shapeTop, extrudePlate);
       orientPlate(geomTop, D - tTop + TOP_PLATE_GAP_M);
-      const meshTop = new THREE.Mesh(geomTop, matTop);
+      const meshTop = new THREE.Mesh(geomTop, materialsForExtrudeGeometry(geomTop, state.top_wood_id));
       meshTop.name = "top";
       meshTop.renderOrder = 1;
       meshTopRef = meshTop;
@@ -999,6 +1052,7 @@
       const box = new THREE.Box3().setFromObject(bodyGroup);
       const center = box.getCenter(new THREE.Vector3());
       bodyGroup.position.sub(center);
+      bodyGroup.position.x += MODEL_FRAME_OFFSET_X;
       scene.add(bodyGroup);
       console.log(
         "DIAGNOSTIC: bodyGroup mesh count =",
@@ -1008,7 +1062,10 @@
         center.y.toFixed(4),
         center.z.toFixed(4)
       );
-      if (controls && controls.target) controls.target.set(0, 0, 0);
+      if (controls && controls.target) {
+        controls.target.set(MODEL_FRAME_OFFSET_X * 0.55, 0, 0);
+        if (typeof controls.update === "function") controls.update();
+      }
       renderFrame();
     }
 
@@ -1056,12 +1113,12 @@
         const canvas = document.getElementById("viewport");
         if (!canvas) throw new Error("viewport canvas not found");
         const wrap = canvas.parentElement;
-        const w = STUDIO_W;
+        const w = VIEWPORT_W;
         const h = STUDIO_H;
         canvas.width = w;
         canvas.height = h;
-        canvas.style.width = w + "px";
-        canvas.style.height = h + "px";
+        canvas.style.width = "100%";
+        canvas.style.height = "100%";
         console.log(
           "DEBUG: #viewport size:",
           canvas.clientWidth + "x" + canvas.clientHeight,
@@ -1079,7 +1136,7 @@
         checkpoint = 2;
         console.log("CHECKPOINT 2: Camera setup");
         camera = new THREE.PerspectiveCamera(42, w / h, 0.01, 10);
-        camera.position.set(0.42, 0.30, 0.44);
+        camera.position.set(0.36, 0.28, 0.46);
 
         checkpoint = 1;
         console.log("CHECKPOINT 1: Renderer setup");
@@ -1145,7 +1202,7 @@
 
     function onResize() {
       if (!renderer || !camera) return;
-      const w = STUDIO_W;
+      const w = VIEWPORT_W;
       const h = STUDIO_H;
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
@@ -1175,6 +1232,40 @@
         hi = mid + 0.5 * spanMin;
       }
       return [lo, hi];
+    }
+
+    function applyClassicalBaselineToDom() {
+      const shapeEl = document.getElementById("shapeSelect");
+      if (shapeEl) shapeEl.value = CLASSICAL_TEMPLATE.shape_type;
+      Object.assign(state, {
+        shape_type: CLASSICAL_TEMPLATE.shape_type,
+        length: CLASSICAL_TEMPLATE.length,
+        width: CLASSICAL_TEMPLATE.width,
+        depth: CLASSICAL_TEMPLATE.depth,
+        top_thickness: CLASSICAL_TEMPLATE.top_thickness,
+        top_wood_id: CLASSICAL_TEMPLATE.top_wood_id,
+        back_wood_id: CLASSICAL_TEMPLATE.back_wood_id,
+        bounds: Object.assign({}, CLASSICAL_TEMPLATE.bounds),
+        top_thickness_bounds: CLASSICAL_TEMPLATE.top_thickness_bounds.slice(),
+        hole_radius_bounds: CLASSICAL_TEMPLATE.hole_radius_bounds.slice(),
+      });
+      state.hole_radius = effectiveHoleRadius(
+        state.length,
+        state.width,
+        CLASSICAL_TEMPLATE.hole_radius
+      );
+      applySliderBounds();
+      const setVal = function (id, val) {
+        const el = document.getElementById(id);
+        if (el) el.value = String(val);
+      };
+      setVal("length", state.length);
+      setVal("width", state.width);
+      setVal("depth", state.depth);
+      setVal("topThickness", state.top_thickness);
+      setVal("holeRadius", state.hole_radius);
+      fillWoodSelects();
+      updateLabels();
     }
 
     function applySliderBounds() {
@@ -1239,7 +1330,7 @@
         document.getElementById("holeRadius").value
       );
       state.top_wood_id = document.getElementById("topWood").value || "spruce";
-      state.back_wood_id = document.getElementById("backWood").value || "rosewood";
+      state.back_wood_id = document.getElementById("backWood").value || "mahogany";
       updateLabels();
     }
 
@@ -1417,7 +1508,7 @@
       renderFrame();
     });
     document.getElementById("backWood").addEventListener("change", function () {
-      state.back_wood_id = document.getElementById("backWood").value || "rosewood";
+      state.back_wood_id = document.getElementById("backWood").value || "mahogany";
       updateBackMaterial();
       renderFrame();
     });
@@ -1435,8 +1526,7 @@
       setComponentValue(payload("run_fem"));
     });
 
-    applySliderBounds();
-    updateLabels();
+    applyClassicalBaselineToDom();
     updateModeUi();
     scheduleInitThreeCore();
 

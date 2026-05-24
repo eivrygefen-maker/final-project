@@ -10,6 +10,7 @@ console.log("JS BRIDGE: Loaded successfully");
   var RENDER_EVENT = "streamlit:render";
   var API_VERSION = 1;
   var DEFAULT_FRAME_HEIGHT = 1080;
+  var DEFAULT_FRAME_WIDTH = 1680;
 
   var handlers = {};
   var componentReadySent = false;

@@ -47,7 +47,7 @@ SOUNDHOLE_FROM_NECK_RATIO = 0.5
 ROM_HOLE_RADIUS_BOUNDS = (0.035, 0.055)
 
 FAST_PREVIEW_HEIGHT = 1080
-FAST_PREVIEW_WIDTH = 1440
+FAST_PREVIEW_WIDTH = 1680
 ROM_ONLINE_MODES = 15
 STUDIO_HANDSHAKE_ACTIONS = frozenset({"ready", "_handshake", "handshake", "_ready_ping"})
 STUDIO_ROM_PAYLOAD_KEYS = (
@@ -856,6 +856,7 @@ def render_guitar(
     sketch_mode: bool,
     plot_key: str,
     fixture_preset: str,
+    show_mesh_edges: bool = False,
 ) -> None:
     plotter = pv.Plotter(window_size=[1100, 620], lighting="three lights")
     plotter.background_color = "#f4f4f9"
@@ -867,14 +868,15 @@ def render_guitar(
             body_length=body_length,
             hole_radius=hole_radius,
         )
+        edges_on = sketch_mode or show_mesh_edges
         plotter.add_mesh(
             colored,
             scalars="rgb",
             rgb=True,
             preference="cell",
-            show_edges=sketch_mode,
-            edge_color="#3d2817" if sketch_mode else "#5c4033",
-            line_width=0.8 if sketch_mode else 0.0,
+            show_edges=edges_on,
+            edge_color="#3d2817" if sketch_mode else "#2c3e50",
+            line_width=0.8 if sketch_mode else 1.0,
             smooth_shading=not sketch_mode,
         )
     else:
@@ -916,6 +918,7 @@ def render_validation_mesh_viewport(
             sketch_mode=False,
             plot_key=f"display_{mesh_src}_{geom_fp[:12]}",
             fixture_preset=fixture_preset,
+            show_mesh_edges=True,
         )
     except Exception as exc:
         st.warning(f"Render error: {exc}")
