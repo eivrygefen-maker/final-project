@@ -478,17 +478,20 @@ def create_guitar_mesh():
     DISPLAY_SEAM_LC_M = 0.002     # 2 mm nodes at top/back plate perimeters only
     DISPLAY_SEAM_BAND_M = 0.001   # 1 mm Distance band (node alignment at plate seams)
     PREVIEW_GLOBAL_LC_M = 0.012   # 12 mm coarse preview shell
-    LOCAL_REFINE_LC_M = 0.001     # 1.0 mm local zones (preview / FOM only)
-    wood_surface_size = 0.006 if is_fom else (DISPLAY_GLOBAL_LC_M if is_display else PREVIEW_GLOBAL_LC_M)
-    wood_thickness_size = 0.0004  # 0.4 mm on through-thickness edges (FOM)
+    LOCAL_REFINE_LC_M = 0.001     # 1.0 mm local zones (preview only)
+    wood_surface_size = 0.007 if is_fom else (DISPLAY_GLOBAL_LC_M if is_display else PREVIEW_GLOBAL_LC_M)
+    wood_thickness_size = 0.001 if is_fom else LOCAL_REFINE_LC_M  # FOM: ~3 elems in 3 mm plate
     thickness_curve_len_max = 0.005  # curves shorter than this (m) are treated as thickness direction
-    # Thickness-edge Threshold: smooth 1 mm → 6.5 mm over ~8 mm band from short edges
+    # Thickness-edge Threshold: smooth through-thickness lc → wood surface lc over ~8 mm band
     thickness_threshold_dist_min = 0.0005
     thickness_threshold_dist_max = 0.008
-    # Air Threshold field (distance from wood shell): near-field at soundhole band, coarser far cap for ~500 Hz
+    # Soundhole gradual transition (FOM): local band only — not 2.5*hr (would refine ~100+ mm)
+    soundhole_threshold_dist_min = thickness_threshold_dist_min
+    soundhole_threshold_dist_max = 0.012  # 12 mm band from soundhole faces
+    # Air Threshold field (distance from wood shell): near-field at shell, coarser far cap for ~500 Hz
     air_threshold_dist_min = 0.015
     air_threshold_dist_max = 0.25
-    air_threshold_size_min = 0.003   # 3 mm near wood / soundhole band (was 8 mm)
+    air_threshold_size_min = 0.004 if is_fom else 0.003   # FOM: 4 mm min near wood
     air_threshold_size_max = 0.050   # 50 mm far field cap (was 80 mm)
 
     # Display: uniform 12 mm (visualization only). Preview/FOM: graded fields unchanged.
@@ -1594,9 +1597,11 @@ def create_guitar_mesh():
             combine_list = [air_grad, fine_restrict]
             if thick_thresh is not None:
                 combine_list.append(thick_thresh)
-            # Soundhole annulus: extra refinement (engineering only) for circular opening.
-            hole_lc_target = LOCAL_REFINE_LC_M
+            # Soundhole: gradual Threshold (thickness lc → wood surface lc) over a short band only.
+            hole_lc_target = wood_thickness_size
+            soundhole_gradual_refine = False
             if soundhole_surfs:
+                soundhole_gradual_refine = True
                 for s in soundhole_surfs:
                     try:
                         gmsh.model.mesh.setSize(2, int(s), hole_lc_target)
@@ -1606,18 +1611,28 @@ def create_guitar_mesh():
                 gmsh.model.mesh.field.setNumbers(dist_hole, "FacesList", [int(s) for s in soundhole_surfs])
                 hole_thresh = gmsh.model.mesh.field.add("Threshold")
                 gmsh.model.mesh.field.setNumber(hole_thresh, "InField", dist_hole)
-                gmsh.model.mesh.field.setNumber(hole_thresh, "DistMin", 0.0005)
-                gmsh.model.mesh.field.setNumber(hole_thresh, "DistMax", max(0.015, 2.5 * hr))
+                gmsh.model.mesh.field.setNumber(hole_thresh, "DistMin", soundhole_threshold_dist_min)
+                gmsh.model.mesh.field.setNumber(hole_thresh, "DistMax", soundhole_threshold_dist_max)
                 gmsh.model.mesh.field.setNumber(hole_thresh, "SizeMin", hole_lc_target)
-                gmsh.model.mesh.field.setNumber(hole_thresh, "SizeMax", air_threshold_size_min)
+                gmsh.model.mesh.field.setNumber(hole_thresh, "SizeMax", wood_surface_size)
                 combine_list.append(hole_thresh)
-                print(
-                    f"[diag] engineering soundhole refine: lc={hole_lc_target*1000:.2f}mm "
-                    f"over d=0.5–{max(0.015, 2.5 * hr)*1000:.1f}mm, n_faces={len(soundhole_surfs)}"
-                )
 
             min_field = gmsh.model.mesh.field.add("Min")
             gmsh.model.mesh.field.setNumbers(min_field, "FieldsList", combine_list)
+            print("[diag] FOM mesh targets:")
+            print(f"  wood_surface_lc={wood_surface_size * 1000:.2f} mm")
+            print(f"  wood_through_thickness_lc={wood_thickness_size * 1000:.2f} mm")
+            print(f"  air_min_lc={air_threshold_size_min * 1000:.2f} mm")
+            if soundhole_surfs:
+                print(
+                    f"  soundhole_local_lc={hole_lc_target * 1000:.2f} mm "
+                    f"(gradual Threshold {hole_lc_target * 1000:.1f}–{wood_surface_size * 1000:.1f} mm "
+                    f"over d={soundhole_threshold_dist_min * 1000:.1f}–{soundhole_threshold_dist_max * 1000:.1f} mm, "
+                    f"n_faces={len(soundhole_surfs)})"
+                )
+            else:
+                print("  soundhole_local_lc=inactive (no soundhole surfaces tagged)")
+            print(f"  soundhole_gradual_refine_active={soundhole_gradual_refine}")
             print(
                 "[diag] Golden mesh fields: "
                 f"wood restrict lc={wood_surface_size*1000:.1f}mm; "
@@ -1701,6 +1716,17 @@ def create_guitar_mesh():
                 )
 
         _audit_soundhole_boundary_mesh()
+
+        if is_fom and not shell_only:
+            node_tags, _, _ = gmsh.model.mesh.getNodes()
+            n_nodes = int(len(node_tags))
+            n_tets = 0
+            for _dim, vol_tag in gmsh.model.getEntities(3):
+                etypes, elem_tags, _ = gmsh.model.mesh.getElements(3, int(vol_tag))
+                for etype, tags in zip(etypes, elem_tags):
+                    if int(etype) in (4, 11):
+                        n_tets += int(len(tags))
+            print(f"[diag] FOM mesh size: nodes={n_nodes}, tetrahedra={n_tets}")
 
         def _count_mesh_elements_for_physical(dim: int, phys_tag: int) -> int:
             n_elem = 0
