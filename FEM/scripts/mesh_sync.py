@@ -10,6 +10,7 @@ from pathlib import Path
 from paths import REPO_ROOT
 
 REQUIRED_FACET_TAGS = (1, 3, 4)
+MERGED_CONFIG_DIR = REPO_ROOT / "FEM" / "SORTING" / "pipeline_merged_configs"
 
 
 def _mesh_sidecar_paths(mesh_out: Path) -> list[Path]:
@@ -119,6 +120,52 @@ def build_mesh_for_config(config_path: Path, repo_root: Path | None = None) -> P
     return mesh_out
 
 
+def write_merged_sample_config(
+    sample_id: str,
+    *,
+    base_config: Path | None = None,
+    pool_path: Path | None = None,
+    repo_root: Path | None = None,
+) -> Path:
+    """Merge LHS pool entry into base FEM JSON; write ``pipeline_merged_configs/sample_XXX.json``."""
+    import copy
+    import json
+
+    from run_pipeline import (
+        _atomic_write_json,
+        _default_pool_path,
+        _find_pool_entry,
+        _parse_sample_index,
+        _pool_sample_id,
+        _resolve_sample_parameters,
+    )
+    from wood_library import apply_lhs_parameters_to_config, finalize_plate_thickness_geometry
+
+    root = Path(repo_root).resolve() if repo_root is not None else REPO_ROOT
+    n = _parse_sample_index(sample_id)
+    sample_key = _pool_sample_id(n)
+    pool = pool_path.resolve() if pool_path is not None else _default_pool_path()
+    base = (base_config or (root / "FEM" / "configs" / "guitar_3d.json")).resolve()
+    if not base.is_file():
+        raise FileNotFoundError(f"Base FEM config not found: {base}")
+    if not pool.is_file():
+        raise FileNotFoundError(f"LHS pool not found: {pool}")
+
+    pool_entry = _find_pool_entry(pool, sample_key)
+    parameters = _resolve_sample_parameters(sample_key, pool_entry, None)
+    merged = copy.deepcopy(json.loads(base.read_text(encoding="utf-8")))
+    if parameters:
+        apply_lhs_parameters_to_config(merged, parameters)
+    geom = merged.get("geometry")
+    if isinstance(geom, dict):
+        finalize_plate_thickness_geometry(geom)
+    out = MERGED_CONFIG_DIR / f"{sample_key}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(out, merged)
+    print(f"[mesh_sync] Wrote merged config -> {out}")
+    return out
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -126,8 +173,34 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config",
         type=Path,
-        default=REPO_ROOT / "FEM" / "configs" / "guitar_3d.json",
+        default=None,
         help="FEM case JSON passed to build_3d_guitar.py (default: FEM/configs/guitar_3d.json)",
     )
+    parser.add_argument(
+        "--sample-id",
+        type=str,
+        default=None,
+        help='LHS sample (e.g. "0" or "sample_000"): merge pool into base config, then mesh.',
+    )
+    parser.add_argument(
+        "--pool",
+        type=Path,
+        default=None,
+        help="lhs_pool.json (default: FEM/configs/lhs_pool.json or ROM/classic/lhs_pool.json)",
+    )
+    parser.add_argument(
+        "--base-config",
+        type=Path,
+        default=REPO_ROOT / "FEM" / "configs" / "guitar_3d.json",
+        help="Base FEM JSON when using --sample-id",
+    )
     args = parser.parse_args()
-    build_mesh_for_config(Path(args.config).resolve(), REPO_ROOT)
+    if args.sample_id is not None:
+        cfg = write_merged_sample_config(
+            args.sample_id,
+            base_config=args.base_config,
+            pool_path=args.pool,
+        )
+    else:
+        cfg = (args.config or args.base_config).resolve()
+    build_mesh_for_config(cfg, REPO_ROOT)
