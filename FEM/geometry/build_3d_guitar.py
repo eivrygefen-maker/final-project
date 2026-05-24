@@ -407,11 +407,12 @@ def create_guitar_mesh():
         hole_x = 0.5 * L - hole_from_neck_ratio * L
     hole_y = 0.0
 
-    # Display/preview: coarse global lc + local 0.2 mm at soundhole/plate edges (fast overlay).
-    # FOM engineering: graded wood/air fields (unchanged baseline).
-    DISPLAY_GLOBAL_LC_M = 0.012   # 12 mm coarse display shell
-    LOCAL_REFINE_LC_M = 0.001     # 1.0 mm at soundhole rim and plate–rib interfaces (display speed)
-    wood_surface_size = 0.006 if is_fom else DISPLAY_GLOBAL_LC_M
+    # Display validation shell: uniform aesthetic lc only (decoupled from FOM refinement).
+    # Preview sketch: coarse global + local zones. FOM: graded wood/air fields.
+    DISPLAY_GLOBAL_LC_M = 0.0035  # 3.5 mm uniform display shell (PyVista validation)
+    PREVIEW_GLOBAL_LC_M = 0.012   # 12 mm coarse preview shell
+    LOCAL_REFINE_LC_M = 0.001     # 1.0 mm local zones (preview / FOM only)
+    wood_surface_size = 0.006 if is_fom else (DISPLAY_GLOBAL_LC_M if is_display else PREVIEW_GLOBAL_LC_M)
     wood_thickness_size = 0.0004  # 0.4 mm on through-thickness edges (FOM)
     thickness_curve_len_max = 0.005  # curves shorter than this (m) are treated as thickness direction
     # Thickness-edge Threshold: smooth 1 mm → 6.5 mm over ~8 mm band from short edges
@@ -423,9 +424,13 @@ def create_guitar_mesh():
     air_threshold_size_min = 0.003   # 3 mm near wood / soundhole band (was 8 mm)
     air_threshold_size_max = 0.050   # 50 mm far field cap (was 80 mm)
 
-    # Display/preview: coarse global + local refinement fields. FOM: full graded FSI mesh.
-    if is_display or is_preview:
+    # Display: uniform 3.5 mm. Preview: coarse + local refinement. FOM: full graded FSI mesh.
+    if is_display:
         mesh_size = DISPLAY_GLOBAL_LC_M
+        mesh_size_min = DISPLAY_GLOBAL_LC_M
+        mesh_size_max = DISPLAY_GLOBAL_LC_M
+    elif is_preview:
+        mesh_size = PREVIEW_GLOBAL_LC_M
         mesh_size_min = LOCAL_REFINE_LC_M
         mesh_size_max = 0.015
     else:
@@ -434,7 +439,7 @@ def create_guitar_mesh():
         mesh_size_max = air_threshold_size_max
 
     print(
-        "DEBUG: Display mesh — global lc=12 mm with 1.0 mm local zones at soundhole/plate edges; "
+        "DEBUG: Display mesh — uniform 3.5 mm shell; preview uses local zones; "
         "FOM mesh uses graded wood/air fields."
     )
     print(
@@ -1303,11 +1308,27 @@ def create_guitar_mesh():
                     curve_tags.add(ctag)
         return sorted(curve_tags)
 
+    def _apply_display_uniform_shell_mesh(uniform_lc: float) -> None:
+        """Validation display shell: single uniform characteristic length (no local fields)."""
+        uniform_field = gmsh.model.mesh.field.add("Constant")
+        gmsh.model.mesh.field.setNumber(uniform_field, "VIn", float(uniform_lc))
+        gmsh.model.mesh.field.setNumber(uniform_field, "VOut", float(uniform_lc))
+        gmsh.model.mesh.field.setAsBackgroundMesh(uniform_field)
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+        gmsh.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 0)
+        gmsh.option.setNumber("Mesh.CharacteristicLengthExtendFromBoundary", 0)
+        print(
+            f"[diag] display shell: uniform lc={uniform_lc * 1000:.2f}mm "
+            "(no Distance/Threshold refinement)"
+        )
+
     def _apply_shell_coarse_global_local_fields(
         global_lc: float,
         fine_lc: float,
     ) -> None:
-        """Coarse display shell with Distance/Threshold refinement at hole and plate edges only."""
+        """Preview shell with Distance/Threshold refinement at hole and plate edges only."""
         field_ids: List[int] = []
         coarse = gmsh.model.mesh.field.add("Constant")
         gmsh.model.mesh.field.setNumber(coarse, "VIn", float(global_lc))
@@ -1355,8 +1376,10 @@ def create_guitar_mesh():
             f"and interface refinement zone ({len(interface_curves)} curves)"
         )
 
-    if is_display or is_preview:
-        _apply_shell_coarse_global_local_fields(DISPLAY_GLOBAL_LC_M, LOCAL_REFINE_LC_M)
+    if is_display:
+        _apply_display_uniform_shell_mesh(DISPLAY_GLOBAL_LC_M)
+    elif is_preview:
+        _apply_shell_coarse_global_local_fields(PREVIEW_GLOBAL_LC_M, LOCAL_REFINE_LC_M)
 
     # Deep-probe overrides (display/FOM): uniform shell sizing must not fight background fields.
     if not is_preview:

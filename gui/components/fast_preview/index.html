@@ -10,8 +10,7 @@
     :root {
       --studio-w: 1680px;
       --studio-h: 1080px;
-      --panel-w: 400px;
-      --viewport-w: calc(var(--studio-w) - var(--panel-w));
+      --panel-w: 360px;
       --st-font: "Source Sans 3", "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       --st-primary: #ff4b4b;
       --st-primary-hover: #ff2b2b;
@@ -74,7 +73,7 @@
     }
     .panel.panel-controls {
       flex: 0 0 var(--panel-w);
-      order: 2;
+      order: 1;
       position: relative;
       width: var(--panel-w);
       max-width: var(--panel-w);
@@ -85,7 +84,7 @@
       z-index: 20;
       padding: 16px 18px 40px;
       margin: 0;
-      border-left: 1px solid var(--st-border);
+      border-right: 1px solid var(--st-border);
       border-radius: 0;
     }
     .panel {
@@ -180,17 +179,17 @@
       background: rgba(49, 51, 63, 0.15);
     }
     .view-wrap {
-      flex: 1 1 var(--viewport-w);
-      order: 1;
+      flex: 1 1 auto;
+      order: 2;
       position: relative;
-      width: var(--viewport-w);
-      min-width: var(--viewport-w);
+      width: auto;
+      min-width: 0;
       height: var(--studio-h);
       min-height: var(--studio-h);
       display: block !important;
-      border-radius: var(--st-radius) 0 0 var(--st-radius);
+      border-radius: 0 var(--st-radius) var(--st-radius) 0;
       border: 1px solid var(--st-border);
-      border-right: none;
+      border-left: none;
       background: linear-gradient(165deg, #e8eaef 0%, #d4d8e0 45%, #c5cad4 100%);
       overflow: hidden;
       z-index: 1;
@@ -266,11 +265,6 @@
 <body>
   <div class="main-wrapper">
   <div class="studio">
-    <div class="view-wrap">
-      <div class="badge">Live 3D · Luthier blueprint</div>
-      <canvas id="viewport"></canvas>
-      <pre id="errorPanel" hidden aria-live="polite"></pre>
-    </div>
     <aside class="panel panel-controls studio-panel" id="controls">
       <h3>Design Studio</h3>
       <p class="sub">ROM/LHS parameters only — instant Three.js preview. Save &amp; Sync pushes to Gmsh/PyVista.</p>
@@ -310,6 +304,11 @@
         <button type="button" id="btnFem" style="display:none">Run Full FEM</button>
       </div>
     </aside>
+    <div class="view-wrap">
+      <div class="badge">Live 3D · Luthier blueprint</div>
+      <canvas id="viewport"></canvas>
+      <pre id="errorPanel" hidden aria-live="polite"></pre>
+    </div>
     </div>
   </div>
   <!-- Local bridge + Three.js (lib/ — no external CDN; CSP-safe) -->
@@ -339,10 +338,7 @@
     let animating = true;
     const STUDIO_W = 1680;
     const STUDIO_H = 1080;
-    const PANEL_W = 400;
-    const VIEWPORT_W = STUDIO_W - PANEL_W;
-    /** Shift framed model left inside the viewport (controls panel on the right). */
-    const MODEL_FRAME_OFFSET_X = -0.12;
+    const PANEL_W = 360;
     const EXTRUDE_CURVE_SEGMENTS = 32;
     const EXTRUDE_TOP_CURVE_SEGMENTS = 64;
     const HOLE_CIRCLE_SEGMENTS = 128;
@@ -368,7 +364,7 @@
       const viewport = document.getElementById("viewport");
       const viewWrap = document.querySelector(".view-wrap");
       if (viewWrap) {
-        viewWrap.style.width = VIEWPORT_W + "px";
+        viewWrap.style.flex = "1 1 auto";
         viewWrap.style.height = STUDIO_H + "px";
       }
       if (viewport) {
@@ -433,7 +429,7 @@
         controls.enablePan = true;
         controls.enableRotate = true;
         controls.enableZoom = true;
-        controls.target.set(MODEL_FRAME_OFFSET_X * 0.55, 0, 0);
+        controls.target.set(0, 0, 0);
         if (typeof controls.saveState === "function") controls.saveState();
         console.log("STARTUP: Using ArcballControls (GMSH-style)");
       } else if (typeof window.THREE.OrbitControls === "function") {
@@ -443,7 +439,7 @@
         controls.enableRotate = true;
         controls.rotateSpeed = 0.85;
         controls.screenSpacePanning = true;
-        controls.target.set(MODEL_FRAME_OFFSET_X * 0.55, 0, 0);
+        controls.target.set(0, 0, 0);
         if (typeof controls.rotateLeft === "function" && typeof controls.rotateUp === "function") {
           const orbitLeft = controls.rotateLeft.bind(controls);
           const orbitUp = controls.rotateUp.bind(controls);
@@ -586,9 +582,9 @@
 
     /* Realistic tonewoods (matches gui/app.py STUDIO_WOOD_HEX) */
     const WOOD_COLORS_BUILTIN = {
-      spruce: "#E6C280",
+      spruce: "#D2B48C",
       cedar: "#5D4037",
-      maple: "#F5D6A7",
+      maple: "#DEB887",
       mahogany: "#795548",
       rosewood: "#3F2A20",
     };
@@ -1052,8 +1048,8 @@
       const box = new THREE.Box3().setFromObject(bodyGroup);
       const center = box.getCenter(new THREE.Vector3());
       bodyGroup.position.sub(center);
-      bodyGroup.position.x += MODEL_FRAME_OFFSET_X;
       scene.add(bodyGroup);
+      frameOrbitTargetOnBody();
       console.log(
         "DIAGNOSTIC: bodyGroup mesh count =",
         bodyGroup.children.length,
@@ -1062,11 +1058,16 @@
         center.y.toFixed(4),
         center.z.toFixed(4)
       );
-      if (controls && controls.target) {
-        controls.target.set(MODEL_FRAME_OFFSET_X * 0.55, 0, 0);
-        if (typeof controls.update === "function") controls.update();
-      }
       renderFrame();
+    }
+
+    function frameOrbitTargetOnBody() {
+      if (!bodyGroup || !controls || !controls.target) return;
+      bodyGroup.updateMatrixWorld(true);
+      const pivotBox = new THREE.Box3().setFromObject(bodyGroup);
+      const pivot = pivotBox.getCenter(new THREE.Vector3());
+      controls.target.copy(pivot);
+      if (typeof controls.update === "function") controls.update();
     }
 
     function renderFrame() {
@@ -1113,7 +1114,8 @@
         const canvas = document.getElementById("viewport");
         if (!canvas) throw new Error("viewport canvas not found");
         const wrap = canvas.parentElement;
-        const w = VIEWPORT_W;
+        const viewWrapEl = document.querySelector(".view-wrap");
+        const w = viewWrapEl && viewWrapEl.clientWidth > 0 ? viewWrapEl.clientWidth : (STUDIO_W - PANEL_W);
         const h = STUDIO_H;
         canvas.width = w;
         canvas.height = h;
@@ -1202,7 +1204,8 @@
 
     function onResize() {
       if (!renderer || !camera) return;
-      const w = VIEWPORT_W;
+      const viewWrapEl = document.querySelector(".view-wrap");
+      const w = viewWrapEl && viewWrapEl.clientWidth > 0 ? viewWrapEl.clientWidth : (STUDIO_W - PANEL_W);
       const h = STUDIO_H;
       camera.aspect = w / h;
       camera.updateProjectionMatrix();

@@ -352,9 +352,9 @@ def studio_initial_from_saved(
 
 # Orthotropic plate surface colors (Design Studio / Three.js — tuned for realistic shading).
 STUDIO_WOOD_HEX: Dict[str, str] = {
-    "spruce": "#E6C280",
+    "spruce": "#D2B48C",
     "cedar": "#5D4037",
-    "maple": "#F5D6A7",
+    "maple": "#DEB887",
     "mahogany": "#795548",
     "rosewood": "#3F2A20",
 }
@@ -896,32 +896,59 @@ def render_validation_mesh_viewport(
     fixture_preset: str,
 ) -> None:
     """Gmsh ``display_mesh.msh`` — rendered below the Design Studio iframe when in sync."""
-    st.caption(
-        "Compiled ``display_mesh.msh`` (lc=4 mm) from **Save & Sync** or **Regenerate Gmsh mesh**. "
-        "Same configuration as ROM/FEM; independent of the Three.js studio."
+    st.markdown(
+        """
+        <style>
+        div.gmsh-validation-block {
+            max-width: 1120px;
+            margin: 1.25rem auto 2rem auto;
+            padding: 0 0.5rem;
+            width: 100%;
+        }
+        div.gmsh-validation-block [data-testid="stCaptionContainer"] {
+            text-align: center;
+        }
+        div.gmsh-validation-block div[data-testid="stpyvista"] {
+            margin-left: auto !important;
+            margin-right: auto !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
-    mesh, _, mesh_src = get_view_mesh(geom_fp)
-    if mesh is None and not DISPLAY_MESH_FILE.is_file():
-        st.info("Mesh file missing. Click **Regenerate Gmsh mesh** or **Save & Sync** in the Design Studio.")
-        return
-    dm = load_surface_mesh(DISPLAY_MESH_FILE)
-    n_cells = f"{dm.n_cells:,} triangles" if dm is not None else "—"
-    st.caption(f"`display_mesh.msh` · {n_cells} · source: {mesh_src or 'display_mesh.msh'}")
-    try:
-        pv.set_jupyter_backend("static")
-        render_guitar(
-            mesh,
-            top_color=plot_color_for_wood(top_wood),
-            back_color=plot_color_for_wood(back_wood),
-            body_length=geom["length"],
-            hole_radius=geom["hole_radius"],
-            sketch_mode=False,
-            plot_key=f"display_{mesh_src}_{geom_fp[:12]}",
-            fixture_preset=fixture_preset,
-            show_mesh_edges=True,
+    with st.container():
+        st.markdown('<div class="gmsh-validation-block">', unsafe_allow_html=True)
+        st.caption(
+            "Compiled ``display_mesh.msh`` (uniform 3.5 mm display shell) from **Save & Sync** "
+            "or **Regenerate Gmsh mesh**. Engineering FOM mesh uses separate local refinement."
         )
-    except Exception as exc:
-        st.warning(f"Render error: {exc}")
+        mesh, _, mesh_src = get_view_mesh(geom_fp)
+        if mesh is None and not DISPLAY_MESH_FILE.is_file():
+            st.info(
+                "Mesh file missing. Click **Regenerate Gmsh mesh** or **Save & Sync** "
+                "in the Design Studio."
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
+        dm = load_surface_mesh(DISPLAY_MESH_FILE)
+        n_cells = f"{dm.n_cells:,} triangles" if dm is not None else "—"
+        st.caption(f"`display_mesh.msh` · {n_cells} · source: {mesh_src or 'display_mesh.msh'}")
+        try:
+            pv.set_jupyter_backend("static")
+            render_guitar(
+                mesh,
+                top_color=plot_color_for_wood(top_wood),
+                back_color=plot_color_for_wood(back_wood),
+                body_length=geom["length"],
+                hole_radius=geom["hole_radius"],
+                sketch_mode=False,
+                plot_key=f"display_{mesh_src}_{geom_fp[:12]}",
+                fixture_preset=fixture_preset,
+                show_mesh_edges=True,
+            )
+        except Exception as exc:
+            st.warning(f"Render error: {exc}")
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 def display_mesh_active(geom_fp: str) -> bool:
