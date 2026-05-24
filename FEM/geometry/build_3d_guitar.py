@@ -206,12 +206,46 @@ def _remove_occ_volumes(vol_tags: Sequence[int], occ) -> None:
 
 
 def _fragment_display_shell_seams(occ, wood_dimtags: list) -> list:
-    """Fragment assembled wood volume so plate–rib interfaces are topologically shared."""
+    """Fragment wood shell so plate–rib interfaces share edges (faces + seam curves imprinted)."""
     vols = [(3, int(tag)) for dim, tag in wood_dimtags if int(dim) == 3]
     if not vols:
         return wood_dimtags
     try:
-        frags, _ = occ.fragment(vols, [], removeObject=False, removeTool=False)
+        occ.synchronize()
+        iface_surfs: list = []
+        iface_curves: list = []
+        for _dim, vtag in vols:
+            try:
+                bnd = gmsh.model.getBoundary(
+                    [(3, int(vtag))], oriented=False, recursive=False
+                )
+            except Exception:
+                continue
+            for bdim, stag in bnd:
+                if int(bdim) != 2:
+                    continue
+                stag = int(stag)
+                iface_surfs.append((2, stag))
+                try:
+                    cbnd = gmsh.model.getBoundary(
+                        [(2, stag)], oriented=False, recursive=False
+                    )
+                except Exception:
+                    continue
+                for cdim, ctag in cbnd:
+                    if int(cdim) == 1:
+                        iface_curves.append((1, int(ctag)))
+        iface_surfs = sorted(set(iface_surfs), key=lambda x: x[1])
+        iface_curves = sorted(set(iface_curves), key=lambda x: x[1])
+        imprint_tags = list(vols) + iface_surfs + iface_curves
+        if len(imprint_tags) > len(vols):
+            try:
+                occ.imprint(imprint_tags)
+                occ.synchronize()
+            except Exception as exc:
+                print(f"[diag] display shell seam imprint skipped: {exc}")
+
+        frags, _ = occ.fragment(vols, [], removeObject=True, removeTool=False)
         occ.synchronize()
         try:
             occ.removeAllDuplicates()
@@ -223,7 +257,8 @@ def _fragment_display_shell_seams(occ, wood_dimtags: list) -> list:
         if unified:
             print(
                 f"[diag] display shell seam fragment: {len(vols)} volume(s) → "
-                f"{len(unified)} (topologically connected interfaces)"
+                f"{len(unified)} (imprinted {len(iface_surfs)} faces, "
+                f"{len(iface_curves)} curves; shared interface edges)"
             )
             return [(3, int(v)) for v in unified]
     except Exception as exc:
@@ -385,7 +420,7 @@ def create_guitar_mesh():
         # CAD wall offset uses top-plate thickness (back is thicker in FEM shell forms only).
         t = float(p.get("top_thickness", p.get("thickness", 0.003)))
         hr_raw = float(p["hole_radius"])
-        hr_cap = 0.30 * min(float(L), float(W))
+        hr_cap = 0.25 * min(float(L), float(W))
         hr = min(hr_raw, hr_cap, 0.08)
         shape_type = str(p.get("shape_type", "Classical")).strip()
         upper_bout = float(p.get("upper_bout", W * 0.75))
@@ -436,8 +471,8 @@ def create_guitar_mesh():
     # Display validation shell: uniform aesthetic lc only (decoupled from FOM refinement).
     # Preview sketch: coarse global + local zones. FOM: graded wood/air fields.
     DISPLAY_GLOBAL_LC_M = 0.012   # 12 mm coarse display shell (PyVista validation only)
-    DISPLAY_SEAM_LC_M = 0.003     # 3 mm narrow band at plate–rib seam curves only
-    DISPLAY_SEAM_BAND_M = 0.002   # 2 mm wide refinement band at seams
+    DISPLAY_SEAM_LC_M = 0.002     # 2 mm nodes at top/back plate perimeters only
+    DISPLAY_SEAM_BAND_M = 0.001   # 1 mm Distance band (node alignment at plate seams)
     PREVIEW_GLOBAL_LC_M = 0.012   # 12 mm coarse preview shell
     LOCAL_REFINE_LC_M = 0.001     # 1.0 mm local zones (preview / FOM only)
     wood_surface_size = 0.006 if is_fom else (DISPLAY_GLOBAL_LC_M if is_display else PREVIEW_GLOBAL_LC_M)
@@ -744,7 +779,7 @@ def create_guitar_mesh():
             wood_dimtags = [dt for dt in as_dimtags(wood_hole_cut) if dt[0] == 3]
             print(
                 f"[diag] {mode} CAD: soundhole OCC cut applied "
-                f"(cylinder r={hr:.4f} m, cap=0.30*min(L,W)={0.30 * min(float(L), float(W)):.4f})"
+                f"(cylinder r={hr:.4f} m, cap=0.25*min(L,W)={0.25 * min(float(L), float(W)):.4f})"
             )
         try:
             occ.removeAllDuplicates()
@@ -1343,17 +1378,18 @@ def create_guitar_mesh():
         seam_lc: float,
         seam_band_m: float,
     ) -> None:
-        """Display: 12 mm global shell + 3 mm band (2 mm wide) on plate–rib perimeter curves only."""
+        """Display: 12 mm global + narrow Distance band on top/back plate perimeters only."""
         field_ids: List[int] = []
         coarse = gmsh.model.mesh.field.add("Constant")
         gmsh.model.mesh.field.setNumber(coarse, "VIn", float(global_lc))
         gmsh.model.mesh.field.setNumber(coarse, "VOut", float(global_lc))
         field_ids.append(coarse)
 
-        interface_curves = _interface_refinement_curve_tags()
-        if interface_curves:
+        plate_seam_curves = _plate_interface_curve_tags()
+        if plate_seam_curves:
             dist_iface = gmsh.model.mesh.field.add("Distance")
-            gmsh.model.mesh.field.setNumbers(dist_iface, "CurvesList", interface_curves)
+            gmsh.model.mesh.field.setNumbers(dist_iface, "CurvesList", plate_seam_curves)
+            gmsh.model.mesh.field.setNumber(dist_iface, "Sampling", 100)
             thresh_iface = gmsh.model.mesh.field.add("Threshold")
             gmsh.model.mesh.field.setNumber(thresh_iface, "InField", dist_iface)
             gmsh.model.mesh.field.setNumber(thresh_iface, "DistMin", 0.0)
@@ -1374,8 +1410,8 @@ def create_guitar_mesh():
         gmsh.option.setNumber("Mesh.CharacteristicLengthExtendFromBoundary", 0)
         print(
             f"[diag] display shell: global_lc={global_lc * 1000:.1f}mm, "
-            f"seam_lc={seam_lc * 1000:.1f}mm in {seam_band_m * 1000:.1f}mm band "
-            f"({len(interface_curves)} plate–rib curves)"
+            f"seam_lc={seam_lc * 1000:.1f}mm in {seam_band_m * 1000:.1f}mm DistMax band "
+            f"({len(plate_seam_curves)} top/back plate seam curves)"
         )
 
     def _apply_shell_coarse_global_local_fields(

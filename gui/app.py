@@ -285,7 +285,7 @@ def sanitize_studio_payload(data: Optional[Dict[str, Any]], shape_type: str = "C
     length_v = _round_studio_dim(src.get("length", rom_def["length"]))
     width_v = _round_studio_dim(width)
     hole_v = _round_studio_dim(hole)
-    hole_cap = 0.30 * min(float(length_v), float(width_v))
+    hole_cap = 0.25 * min(float(length_v), float(width_v))
     if hole_cap > 1e-5:
         hole_v = min(float(hole_v), hole_cap - 1e-5)
     out: Dict[str, Any] = {
@@ -352,9 +352,9 @@ def studio_initial_from_saved(
 
 # Orthotropic plate surface colors (Design Studio / Three.js — tuned for realistic shading).
 STUDIO_WOOD_HEX: Dict[str, str] = {
-    "spruce": "#D2B48C",
+    "spruce": "#C19A6B",
     "cedar": "#5D4037",
-    "maple": "#C4A484",
+    "maple": "#E1C699",
     "mahogany": "#795548",
     "rosewood": "#3F2A20",
 }

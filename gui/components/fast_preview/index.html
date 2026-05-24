@@ -339,8 +339,8 @@
     const STUDIO_W = 1680;
     const STUDIO_H = 1080;
     const PANEL_W = 360;
-    /** Soft max soundhole radius vs body span (proportional scaling, not hard clamp). */
-    const HOLE_RADIUS_MAX_BODY_FRAC = 0.30;
+    /** Max soundhole radius vs min(body length, width); hole is independent unless clipped. */
+    const HOLE_RADIUS_MAX_BODY_FRAC = 0.25;
     const EXTRUDE_CURVE_SEGMENTS = 32;
     const EXTRUDE_TOP_CURVE_SEGMENTS = 64;
     const HOLE_CIRCLE_SEGMENTS = 128;
@@ -625,11 +625,15 @@
 
     /* Realistic tonewoods (matches gui/app.py STUDIO_WOOD_HEX) */
     const WOOD_COLORS_BUILTIN = {
-      spruce: "#D2B48C",
+      spruce: "#C19A6B",
       cedar: "#5D4037",
-      maple: "#C4A484",
+      maple: "#E1C699",
       mahogany: "#795548",
       rosewood: "#3F2A20",
+    };
+    const WOOD_MATERIAL_OPTS = {
+      spruce: { color: "#C19A6B", roughness: 1.0, metalness: 0.0 },
+      maple: { color: "#E1C699", roughness: 1.0, metalness: 0.0 },
     };
     state.wood_colors = Object.assign({}, WOOD_COLORS_BUILTIN, state.wood_colors);
 
@@ -861,11 +865,17 @@
       ];
     }
 
+    function woodMaterialOpts(woodId) {
+      const key = String(woodId || "").toLowerCase();
+      return WOOD_MATERIAL_OPTS[key] || null;
+    }
+
     function createWoodMaterial(woodId) {
+      const opts = woodMaterialOpts(woodId);
       return new THREE.MeshStandardMaterial({
-        color: woodColorHex(woodId),
-        roughness: 0.9,
-        metalness: 0.0,
+        color: opts ? hexColor(opts.color) : woodColorHex(woodId),
+        roughness: opts ? opts.roughness : 1.0,
+        metalness: opts ? opts.metalness : 0.0,
         flatShading: false,
       });
     }
@@ -879,12 +889,13 @@
 
     function applyWoodMaterialToMesh(mesh, woodId) {
       if (!mesh) return;
-      const color = woodColorHex(woodId);
+      const opts = woodMaterialOpts(woodId);
+      const color = opts ? hexColor(opts.color) : woodColorHex(woodId);
       const applyOne = function (mat) {
         if (!mat) return;
         mat.color.copy(color);
-        mat.roughness = 0.9;
-        mat.metalness = 0.0;
+        mat.roughness = opts ? opts.roughness : 1.0;
+        mat.metalness = opts ? opts.metalness : 0.0;
         if (mat.emissive) mat.emissive.set(0, 0, 0);
         mat.needsUpdate = true;
       };
@@ -918,13 +929,12 @@
       return Math.min(num(hr, 0.045), cap - 1e-5);
     }
 
-    function scaleHoleWithBodyChange(prevL, prevW, newL, newW, prevHr) {
-      const oldSpan = Math.min(num(prevL, 0.49), num(prevW, 0.37));
-      const newSpan = Math.min(num(newL, 0.49), num(newW, 0.37));
-      const cap = holeRadiusCap(newL, newW);
-      if (oldSpan <= 1e-9) return softLimitHoleRadius(newL, newW, prevHr);
-      const scaled = num(prevHr, 0.045) * (newSpan / oldSpan);
-      return Math.min(scaled, cap - 1e-5);
+    /** Clip hole only when body shrinks below current radius (independent control otherwise). */
+    function clipHoleRadiusIfExceedsMax(L, W, hr) {
+      const cap = holeRadiusCap(L, W);
+      const v = num(hr, 0.045);
+      if (v > cap - 1e-5) return cap - 1e-5;
+      return v;
     }
 
     function assignRangeAtomic(el, min, max, value) {
@@ -938,17 +948,16 @@
       return v;
     }
 
-    function syncHoleSliderAtomic(requestedHr) {
+    function syncHoleSliderAtomic(requestedHr, opts) {
       const hEl = document.getElementById("holeRadius");
       const hrFallback = [0.035, 0.055];
       const hrB = normalizeSliderBounds(state.hole_radius_bounds, hrFallback, 0.001);
       let lo = hrB[0];
       let hi = Math.min(hrB[1], holeRadiusCap(state.length, state.width));
-      const clipped = softLimitHoleRadius(
-        state.length,
-        state.width,
-        requestedHr != null ? requestedHr : state.hole_radius
-      );
+      const hrIn = requestedHr != null ? requestedHr : state.hole_radius;
+      const clipped = opts && opts.clipOnly
+        ? clipHoleRadiusIfExceedsMax(state.length, state.width, hrIn)
+        : softLimitHoleRadius(state.length, state.width, hrIn);
       if (!hEl) {
         state.hole_radius = clipped;
         return clipped;
@@ -958,7 +967,7 @@
       return state.hole_radius;
     }
 
-    function syncRomSlidersAtomically() {
+    function syncRomSlidersAtomically(opts) {
       const b = state.bounds || {};
       const lenEl = document.getElementById("length");
       const wEl = document.getElementById("width");
@@ -972,7 +981,12 @@
       state.width = assignRangeAtomic(wEl, wPair[0], wPair[1], state.width);
       state.depth = assignRangeAtomic(dEl, dPair[0], dPair[1], state.depth);
       state.top_thickness = assignRangeAtomic(tEl, tt[0], tt[1], state.top_thickness);
-      state.hole_radius = syncHoleSliderAtomic(state.hole_radius);
+      if (opts && opts.skipHole) return;
+      if (opts && opts.holeClipOnly) {
+        state.hole_radius = syncHoleSliderAtomic(state.hole_radius, { clipOnly: true });
+      } else {
+        state.hole_radius = syncHoleSliderAtomic(state.hole_radius);
+      }
     }
 
     function insetLoop(pts, frac) {
@@ -1359,8 +1373,6 @@
         ? shapeType
         : "Classical";
       const tmpl = SHAPE_TEMPLATE_DEFAULTS[key];
-      const shapeEl = document.getElementById("shapeSelect");
-      if (shapeEl) shapeEl.value = key;
       state.shape_type = key;
       state.length = tmpl.length;
       state.width = tmpl.width;
@@ -1376,24 +1388,33 @@
         state.width,
         tmpl.hole_radius
       );
+      if (key === "Classical") {
+        state.top_wood_id = CLASSICAL_TEMPLATE.top_wood_id;
+        state.back_wood_id = CLASSICAL_TEMPLATE.back_wood_id;
+      } else if (key === "Dreadnought") {
+        state.top_wood_id = ACOUSTIC_TEMPLATE.top_wood_id;
+        state.back_wood_id = ACOUSTIC_TEMPLATE.back_wood_id;
+      }
+      const shapeEl = document.getElementById("shapeSelect");
+      if (shapeEl) shapeEl.value = key;
       syncRomSlidersAtomically();
+      const top = document.getElementById("topWood");
+      const back = document.getElementById("backWood");
+      if (top) top.value = state.top_wood_id;
+      if (back) back.value = state.back_wood_id;
       updateLabels();
       lastGeomFp = "";
       if (initialized3d) {
-        sync3dFromState();
+        updateTopMaterial();
+        updateBackMaterial();
+        sync3dFromState(true);
+        frameOrbitTargetOnBody();
       }
-      frameOrbitTargetOnBody();
     }
 
     function applyClassicalBaselineToDom() {
-      applyShapeTemplateToDom("Classical");
       fillWoodSelects();
-      const top = document.getElementById("topWood");
-      const back = document.getElementById("backWood");
-      if (top) top.value = CLASSICAL_TEMPLATE.top_wood_id;
-      if (back) back.value = CLASSICAL_TEMPLATE.back_wood_id;
-      state.top_wood_id = CLASSICAL_TEMPLATE.top_wood_id;
-      state.back_wood_id = CLASSICAL_TEMPLATE.back_wood_id;
+      applyShapeTemplateToDom("Classical");
     }
 
     function applySliderBounds() {
@@ -1401,21 +1422,17 @@
     }
 
     function readRomStateFromDom(opts) {
-      const prevL = opts && opts.prevL != null ? num(opts.prevL, state.length) : num(state.length, 0);
-      const prevW = opts && opts.prevW != null ? num(opts.prevW, state.width) : num(state.width, 0);
       const prevHr = num(state.hole_radius, 0.045);
       const newL = num(document.getElementById("length").value, state.length);
       const newW = num(document.getElementById("width").value, state.width);
-      const lwChanged =
-        Math.abs(newL - prevL) > 1e-9 || Math.abs(newW - prevW) > 1e-9;
-      const scaleWithBody = Boolean(opts && opts.scaleHoleWithBody && lwChanged);
+      const preserveHole = Boolean(opts && opts.preserveHoleRadius);
       state.shape_type = document.getElementById("shapeSelect").value || "Classical";
       state.length = newL;
       state.width = newW;
       state.depth = num(document.getElementById("depth").value, state.depth);
       state.top_thickness = num(document.getElementById("topThickness").value, state.top_thickness);
-      if (scaleWithBody) {
-        state.hole_radius = scaleHoleWithBodyChange(prevL, prevW, newL, newW, prevHr);
+      if (preserveHole) {
+        state.hole_radius = clipHoleRadiusIfExceedsMax(newL, newW, prevHr);
       } else {
         state.hole_radius = softLimitHoleRadius(
           newL,
@@ -1484,18 +1501,19 @@
     }
 
     function preview3dFromSliders() {
-      const prevL = num(state.length, 0);
-      const prevW = num(state.width, 0);
-      const activeId = document.activeElement && document.activeElement.id;
-      const resizingBody = activeId === "length" || activeId === "width";
-      readRomStateFromDom({
-        prevL: prevL,
-        prevW: prevW,
-        scaleHoleWithBody: resizingBody || (romRangeDragging && lastRomRangeDragId !== "holeRadius"),
-      });
+      const dragId = romRangeDragging
+        ? lastRomRangeDragId
+        : (document.activeElement && document.activeElement.id);
+      const bodyDrag = dragId === "length" || dragId === "width";
+      readRomStateFromDom({ preserveHoleRadius: bodyDrag });
       if (romRangeDragging) {
-        const hEl = document.getElementById("holeRadius");
-        if (hEl) hEl.value = String(state.hole_radius);
+        if (bodyDrag) {
+          syncRomSlidersAtomically({ holeClipOnly: true });
+        } else if (dragId === "holeRadius") {
+          syncRomSlidersAtomically();
+        } else {
+          syncRomSlidersAtomically({ skipHole: true });
+        }
       } else {
         syncRomSlidersAtomically();
       }
