@@ -97,7 +97,13 @@ def build_mesh_for_config(config_path: Path, repo_root: Path | None = None) -> P
     _remove_stale_mesh_artifacts(mesh_out)
 
     cmd = [sys.executable, str(script), "-nopopup", "--config", str(cfg)]
-    env = {**os.environ, "FEM_ALLOW_FOM": "1"}
+    # Exclusive mesh mode (same as gui/app.py _run_gmsh): leaked FEM_ALLOW_PREVIEW breaks FOM.
+    clean = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("FEM_ALLOW_PREVIEW", "FEM_ALLOW_DISPLAY", "FEM_ALLOW_FOM")
+    }
+    env = {**clean, "FEM_ALLOW_FOM": "1"}
     proc = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True, env=env)
     if proc.stdout:
         print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")

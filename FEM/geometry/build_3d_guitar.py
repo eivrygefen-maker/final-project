@@ -382,8 +382,12 @@ def create_guitar_mesh():
     #   FEM_ALLOW_FOM=1     → full FSI volume mesh for FEM (never shown in PyVista)
     preview_cli, _nopopup = _script_flags()
     is_display = os.environ.get("FEM_ALLOW_DISPLAY", "0") == "1"
-    is_preview = (os.environ.get("FEM_ALLOW_PREVIEW", "0") == "1" or preview_cli) and not is_display
     is_fom = os.environ.get("FEM_ALLOW_FOM", "0") == "1"
+    is_preview = (
+        (os.environ.get("FEM_ALLOW_PREVIEW", "0") == "1" or preview_cli)
+        and not is_display
+        and not is_fom
+    )
     shell_only = is_preview or is_display
 
     if is_display:

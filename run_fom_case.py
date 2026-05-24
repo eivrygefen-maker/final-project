@@ -83,6 +83,7 @@ def build_guitar_config() -> Dict[str, Any]:
     geom = cfg.get("geometry")
     if isinstance(geom, dict):
         _finalize_geometry_bouts(geom)
+        geom["mesh_mode"] = "fom"
 
     solver = cfg.setdefault("solver", {})
     solver["mesh_file"] = "FEM/mesh/guitar_3d.msh"
