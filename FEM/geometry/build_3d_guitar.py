@@ -409,7 +409,7 @@ def create_guitar_mesh():
 
     # Display validation shell: uniform aesthetic lc only (decoupled from FOM refinement).
     # Preview sketch: coarse global + local zones. FOM: graded wood/air fields.
-    DISPLAY_GLOBAL_LC_M = 0.0035  # 3.5 mm uniform display shell (PyVista validation)
+    DISPLAY_GLOBAL_LC_M = 0.0045  # 4.5 mm uniform display shell (PyVista validation)
     PREVIEW_GLOBAL_LC_M = 0.012   # 12 mm coarse preview shell
     LOCAL_REFINE_LC_M = 0.001     # 1.0 mm local zones (preview / FOM only)
     wood_surface_size = 0.006 if is_fom else (DISPLAY_GLOBAL_LC_M if is_display else PREVIEW_GLOBAL_LC_M)
@@ -424,7 +424,7 @@ def create_guitar_mesh():
     air_threshold_size_min = 0.003   # 3 mm near wood / soundhole band (was 8 mm)
     air_threshold_size_max = 0.050   # 50 mm far field cap (was 80 mm)
 
-    # Display: uniform 3.5 mm. Preview: coarse + local refinement. FOM: full graded FSI mesh.
+    # Display: uniform 4.5 mm. Preview: coarse + local refinement. FOM: full graded FSI mesh.
     if is_display:
         mesh_size = DISPLAY_GLOBAL_LC_M
         mesh_size_min = DISPLAY_GLOBAL_LC_M
@@ -439,7 +439,7 @@ def create_guitar_mesh():
         mesh_size_max = air_threshold_size_max
 
     print(
-        "DEBUG: Display mesh — uniform 3.5 mm shell; preview uses local zones; "
+        "DEBUG: Display mesh — uniform 4.5 mm shell; preview uses local zones; "
         "FOM mesh uses graded wood/air fields."
     )
     print(
@@ -1320,7 +1320,7 @@ def create_guitar_mesh():
         gmsh.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 0)
         gmsh.option.setNumber("Mesh.CharacteristicLengthExtendFromBoundary", 0)
         print(
-            f"[diag] display shell: uniform lc={uniform_lc * 1000:.2f}mm "
+            f"[diag] display shell: uniform lc={uniform_lc * 1000:.1f}mm "
             "(no Distance/Threshold refinement)"
         )
 

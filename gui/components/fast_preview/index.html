@@ -273,7 +273,7 @@
       <label for="shapeSelect">Shape</label>
       <select id="shapeSelect">
         <option value="Classical">Classical (Torres)</option>
-        <option value="Dreadnought">Dreadnought (Martin)</option>
+        <option value="Dreadnought">Dreadnought / Acoustic</option>
         <option value="Box">Box (debug)</option>
       </select>
 
@@ -544,20 +544,41 @@
       return Number.isFinite(n) ? n : fallback;
     }
 
-    /** Classical guitar ROM baseline (meters); 480×370×100 mm, 3 mm top, 45 mm hole. */
-    const CLASSICAL_TEMPLATE = {
-      shape_type: "Classical",
-      length: 0.480,
-      width: 0.370,
-      depth: 0.100,
-      top_thickness: 0.003,
-      hole_radius: 0.045,
-      top_wood_id: "spruce",
-      back_wood_id: "mahogany",
-      bounds: { length: [0.35, 0.60], width: [0.20, 0.45], depth: [0.08, 0.15] },
-      top_thickness_bounds: [0.003, 0.006],
-      hole_radius_bounds: [0.035, 0.055],
+  /** Per-shape ROM baselines (meters). Classic / Dreadnought (acoustic) / Box debug. */
+    const SHAPE_TEMPLATE_DEFAULTS = {
+      Classical: {
+        length: 0.480,
+        width: 0.370,
+        depth: 0.100,
+        top_thickness: 0.003,
+        hole_radius: 0.045,
+        bounds: { length: [0.35, 0.60], width: [0.20, 0.45], depth: [0.08, 0.15] },
+      },
+      Dreadnought: {
+        length: 0.505,
+        width: 0.395,
+        depth: 0.115,
+        top_thickness: 0.003,
+        hole_radius: 0.050,
+        bounds: { length: [0.45, 0.70], width: [0.30, 0.55], depth: [0.10, 0.20] },
+      },
+      Box: {
+        length: 0.450,
+        width: 0.350,
+        depth: 0.090,
+        top_thickness: 0.003,
+        hole_radius: null,
+        bounds: { length: [0.10, 1.00], width: [0.10, 0.80], depth: [0.01, 0.50] },
+      },
     };
+    const CLASSICAL_TEMPLATE = Object.assign(
+      { shape_type: "Classical", top_wood_id: "spruce", back_wood_id: "mahogany" },
+      SHAPE_TEMPLATE_DEFAULTS.Classical,
+      {
+        top_thickness_bounds: [0.003, 0.006],
+        hole_radius_bounds: [0.035, 0.055],
+      }
+    );
 
     /* ── State (7D ROM + metadata only) ─────────────────────────────── */
     const state = {
@@ -582,7 +603,7 @@
 
     /* Realistic tonewoods (matches gui/app.py STUDIO_WOOD_HEX) */
     const WOOD_COLORS_BUILTIN = {
-      spruce: "#D2B48C",
+      spruce: "#C69C6D",
       cedar: "#5D4037",
       maple: "#DEB887",
       mahogany: "#795548",
@@ -603,8 +624,8 @@
         ],
       },
       Dreadnought: {
-        nominal_length: 0.495,
-        nominal_width: 0.41,
+        nominal_length: 0.505,
+        nominal_width: 0.395,
         loop: [
           [0.22,0.05],[0.18,0.135],[0.12,0.155],[0.06,0.148],[0,0.14],
           [-0.06,0.165],[-0.12,0.195],[-0.19,0.205],[-0.25,0.16],[-0.27,0.08],
@@ -1237,38 +1258,71 @@
       return [lo, hi];
     }
 
-    function applyClassicalBaselineToDom() {
+    function templateHoleRadiusForShape(shapeKey, length, width, templateHole) {
+      const L = num(length, 0.48);
+      const W = num(width, 0.37);
+      if (shapeKey === "Box") {
+        const ratioHole = 0.225 * W;
+        return effectiveHoleRadius(L, W, ratioHole);
+      }
+      return effectiveHoleRadius(L, W, num(templateHole, 0.045));
+    }
+
+    function setSliderDomValue(id, val) {
+      const el = document.getElementById(id);
+      if (el) el.value = String(val);
+    }
+
+    function applyShapeTemplateToDom(shapeType) {
+      const key = SHAPE_TEMPLATE_DEFAULTS[shapeType]
+        ? shapeType
+        : "Classical";
+      const tmpl = SHAPE_TEMPLATE_DEFAULTS[key];
       const shapeEl = document.getElementById("shapeSelect");
-      if (shapeEl) shapeEl.value = CLASSICAL_TEMPLATE.shape_type;
-      Object.assign(state, {
-        shape_type: CLASSICAL_TEMPLATE.shape_type,
-        length: CLASSICAL_TEMPLATE.length,
-        width: CLASSICAL_TEMPLATE.width,
-        depth: CLASSICAL_TEMPLATE.depth,
-        top_thickness: CLASSICAL_TEMPLATE.top_thickness,
-        top_wood_id: CLASSICAL_TEMPLATE.top_wood_id,
-        back_wood_id: CLASSICAL_TEMPLATE.back_wood_id,
-        bounds: Object.assign({}, CLASSICAL_TEMPLATE.bounds),
-        top_thickness_bounds: CLASSICAL_TEMPLATE.top_thickness_bounds.slice(),
-        hole_radius_bounds: CLASSICAL_TEMPLATE.hole_radius_bounds.slice(),
-      });
+      if (shapeEl) shapeEl.value = key;
+      state.shape_type = key;
+      state.length = tmpl.length;
+      state.width = tmpl.width;
+      state.depth = tmpl.depth;
+      state.top_thickness = tmpl.top_thickness;
+      const byShape = state.bounds_by_shape || {};
+      state.bounds = byShape[key]
+        ? Object.assign({}, byShape[key])
+        : Object.assign({}, tmpl.bounds);
+      state.hole_radius = templateHoleRadiusForShape(
+        key,
+        state.length,
+        state.width,
+        tmpl.hole_radius
+      );
+      applySliderBounds();
+      setSliderDomValue("length", state.length);
+      setSliderDomValue("width", state.width);
+      setSliderDomValue("depth", state.depth);
+      setSliderDomValue("topThickness", state.top_thickness);
       state.hole_radius = effectiveHoleRadius(
         state.length,
         state.width,
-        CLASSICAL_TEMPLATE.hole_radius
+        state.hole_radius
       );
-      applySliderBounds();
-      const setVal = function (id, val) {
-        const el = document.getElementById(id);
-        if (el) el.value = String(val);
-      };
-      setVal("length", state.length);
-      setVal("width", state.width);
-      setVal("depth", state.depth);
-      setVal("topThickness", state.top_thickness);
-      setVal("holeRadius", state.hole_radius);
-      fillWoodSelects();
+      setSliderDomValue("holeRadius", state.hole_radius);
       updateLabels();
+      if (initialized3d) {
+        lastGeomFp = "";
+        sync3dFromState();
+        frameOrbitTargetOnBody();
+      }
+    }
+
+    function applyClassicalBaselineToDom() {
+      applyShapeTemplateToDom("Classical");
+      fillWoodSelects();
+      const top = document.getElementById("topWood");
+      const back = document.getElementById("backWood");
+      if (top) top.value = CLASSICAL_TEMPLATE.top_wood_id;
+      if (back) back.value = CLASSICAL_TEMPLATE.back_wood_id;
+      state.top_wood_id = CLASSICAL_TEMPLATE.top_wood_id;
+      state.back_wood_id = CLASSICAL_TEMPLATE.back_wood_id;
     }
 
     function applySliderBounds() {
@@ -1498,11 +1552,8 @@
       el.addEventListener("input", preview3dFromSliders);
     });
     document.getElementById("shapeSelect").addEventListener("change", () => {
-      state.shape_type = document.getElementById("shapeSelect").value || "Classical";
-      const byShape = state.bounds_by_shape || {};
-      if (byShape[state.shape_type]) state.bounds = byShape[state.shape_type];
-      applySliderBounds();
-      preview3dFromSliders();
+      const shapeType = document.getElementById("shapeSelect").value || "Classical";
+      applyShapeTemplateToDom(shapeType);
     });
 
     document.getElementById("topWood").addEventListener("change", function () {
