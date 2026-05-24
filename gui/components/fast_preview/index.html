@@ -339,8 +339,8 @@
     const STUDIO_W = 1680;
     const STUDIO_H = 1080;
     const PANEL_W = 360;
-    /** Max soundhole radius vs body span (constraint-based clipping). */
-    const HOLE_RADIUS_MAX_BODY_FRAC = 0.25;
+    /** Soft max soundhole radius vs body span (proportional scaling, not hard clamp). */
+    const HOLE_RADIUS_MAX_BODY_FRAC = 0.30;
     const EXTRUDE_CURVE_SEGMENTS = 32;
     const EXTRUDE_TOP_CURVE_SEGMENTS = 64;
     const HOLE_CIRCLE_SEGMENTS = 128;
@@ -627,7 +627,7 @@
     const WOOD_COLORS_BUILTIN = {
       spruce: "#D2B48C",
       cedar: "#5D4037",
-      maple: "#E2C69C",
+      maple: "#C4A484",
       mahogany: "#795548",
       rosewood: "#3F2A20",
     };
@@ -666,6 +666,7 @@
     let initialized3d = false;
     /** True while a ROM range input is held — defers min/max DOM writes until release. */
     let romRangeDragging = false;
+    let lastRomRangeDragId = null;
     function readDomSliderValues() {
       return {
         shape_type: document.getElementById("shapeSelect")?.value || state.shape_type,
@@ -863,7 +864,7 @@
     function createWoodMaterial(woodId) {
       return new THREE.MeshStandardMaterial({
         color: woodColorHex(woodId),
-        roughness: 0.85,
+        roughness: 0.9,
         metalness: 0.0,
         flatShading: false,
       });
@@ -882,7 +883,7 @@
       const applyOne = function (mat) {
         if (!mat) return;
         mat.color.copy(color);
-        mat.roughness = 0.85;
+        mat.roughness = 0.9;
         mat.metalness = 0.0;
         if (mat.emissive) mat.emissive.set(0, 0, 0);
         mat.needsUpdate = true;
@@ -912,9 +913,18 @@
       return Math.max(span * HOLE_RADIUS_MAX_BODY_FRAC, 0.01);
     }
 
-    function effectiveHoleRadius(L, W, hr) {
+    function softLimitHoleRadius(L, W, hr) {
       const cap = holeRadiusCap(L, W);
       return Math.min(num(hr, 0.045), cap - 1e-5);
+    }
+
+    function scaleHoleWithBodyChange(prevL, prevW, newL, newW, prevHr) {
+      const oldSpan = Math.min(num(prevL, 0.49), num(prevW, 0.37));
+      const newSpan = Math.min(num(newL, 0.49), num(newW, 0.37));
+      const cap = holeRadiusCap(newL, newW);
+      if (oldSpan <= 1e-9) return softLimitHoleRadius(newL, newW, prevHr);
+      const scaled = num(prevHr, 0.045) * (newSpan / oldSpan);
+      return Math.min(scaled, cap - 1e-5);
     }
 
     function assignRangeAtomic(el, min, max, value) {
@@ -934,7 +944,7 @@
       const hrB = normalizeSliderBounds(state.hole_radius_bounds, hrFallback, 0.001);
       let lo = hrB[0];
       let hi = Math.min(hrB[1], holeRadiusCap(state.length, state.width));
-      const clipped = effectiveHoleRadius(
+      const clipped = softLimitHoleRadius(
         state.length,
         state.width,
         requestedHr != null ? requestedHr : state.hole_radius
@@ -1093,7 +1103,7 @@
       const W = num(state.width, 0.37);
       const D = num(state.depth, 0.095);
       const tTop = Math.min(num(state.top_thickness, 0.0045), D * 0.45);
-      const hr = effectiveHoleRadius(L, W, state.hole_radius);
+      const hr = softLimitHoleRadius(L, W, state.hole_radius);
       state.hole_radius = hr;
       const outlinePts = resolveOutlinePts(L, W);
       const holeXY = soundholeShapeXY(outlinePts);
@@ -1339,9 +1349,9 @@
       const W = num(width, 0.37);
       if (shapeKey === "Box") {
         const ratioHole = HOLE_RADIUS_MAX_BODY_FRAC * W;
-        return effectiveHoleRadius(L, W, ratioHole);
+        return softLimitHoleRadius(L, W, ratioHole);
       }
-      return effectiveHoleRadius(L, W, num(templateHole, 0.045));
+      return softLimitHoleRadius(L, W, num(templateHole, 0.045));
     }
 
     function applyShapeTemplateToDom(shapeType) {
@@ -1390,17 +1400,29 @@
       syncRomSlidersAtomically();
     }
 
-    function readRomStateFromDom() {
+    function readRomStateFromDom(opts) {
+      const prevL = opts && opts.prevL != null ? num(opts.prevL, state.length) : num(state.length, 0);
+      const prevW = opts && opts.prevW != null ? num(opts.prevW, state.width) : num(state.width, 0);
+      const prevHr = num(state.hole_radius, 0.045);
+      const newL = num(document.getElementById("length").value, state.length);
+      const newW = num(document.getElementById("width").value, state.width);
+      const lwChanged =
+        Math.abs(newL - prevL) > 1e-9 || Math.abs(newW - prevW) > 1e-9;
+      const scaleWithBody = Boolean(opts && opts.scaleHoleWithBody && lwChanged);
       state.shape_type = document.getElementById("shapeSelect").value || "Classical";
-      state.length = num(document.getElementById("length").value, state.length);
-      state.width = num(document.getElementById("width").value, state.width);
+      state.length = newL;
+      state.width = newW;
       state.depth = num(document.getElementById("depth").value, state.depth);
       state.top_thickness = num(document.getElementById("topThickness").value, state.top_thickness);
-      state.hole_radius = effectiveHoleRadius(
-        state.length,
-        state.width,
-        document.getElementById("holeRadius").value
-      );
+      if (scaleWithBody) {
+        state.hole_radius = scaleHoleWithBodyChange(prevL, prevW, newL, newW, prevHr);
+      } else {
+        state.hole_radius = softLimitHoleRadius(
+          newL,
+          newW,
+          document.getElementById("holeRadius").value
+        );
+      }
       state.top_wood_id = document.getElementById("topWood").value || "spruce";
       state.back_wood_id = document.getElementById("backWood").value || "mahogany";
     }
@@ -1464,14 +1486,16 @@
     function preview3dFromSliders() {
       const prevL = num(state.length, 0);
       const prevW = num(state.width, 0);
-      readRomStateFromDom();
-      const lwChanged =
-        Math.abs(state.length - prevL) > 1e-9 || Math.abs(state.width - prevW) > 1e-9;
+      const activeId = document.activeElement && document.activeElement.id;
+      const resizingBody = activeId === "length" || activeId === "width";
+      readRomStateFromDom({
+        prevL: prevL,
+        prevW: prevW,
+        scaleHoleWithBody: resizingBody || (romRangeDragging && lastRomRangeDragId !== "holeRadius"),
+      });
       if (romRangeDragging) {
         const hEl = document.getElementById("holeRadius");
-        if (hEl && (lwChanged || document.activeElement === hEl)) {
-          hEl.value = String(state.hole_radius);
-        }
+        if (hEl) hEl.value = String(state.hole_radius);
       } else {
         syncRomSlidersAtomically();
       }
@@ -1481,9 +1505,14 @@
 
     function endRomRangeDrag() {
       if (!romRangeDragging) return;
+      const releasedId = lastRomRangeDragId;
       romRangeDragging = false;
+      lastRomRangeDragId = null;
       readSliders();
       sync3dFromState(true);
+      if (releasedId === "length" || releasedId === "width") {
+        frameOrbitTargetOnBody();
+      }
     }
 
   function fillWoodSelects() {
@@ -1534,7 +1563,7 @@
       ROM_GEOM_KEYS.forEach((key) => {
         if (hasOwnPayloadKey(data, key)) state[key] = data[key];
       });
-      state.hole_radius = effectiveHoleRadius(
+      state.hole_radius = softLimitHoleRadius(
         state.length,
         state.width,
         state.hole_radius
@@ -1578,6 +1607,7 @@
       if (!el) return;
       el.addEventListener("pointerdown", function () {
         romRangeDragging = true;
+        lastRomRangeDragId = id;
       });
       el.addEventListener("input", preview3dFromSliders);
     });

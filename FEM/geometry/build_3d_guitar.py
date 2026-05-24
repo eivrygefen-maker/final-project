@@ -205,6 +205,32 @@ def _remove_occ_volumes(vol_tags: Sequence[int], occ) -> None:
             pass
 
 
+def _fragment_display_shell_seams(occ, wood_dimtags: list) -> list:
+    """Fragment assembled wood volume so plate–rib interfaces are topologically shared."""
+    vols = [(3, int(tag)) for dim, tag in wood_dimtags if int(dim) == 3]
+    if not vols:
+        return wood_dimtags
+    try:
+        frags, _ = occ.fragment(vols, [], removeObject=False, removeTool=False)
+        occ.synchronize()
+        try:
+            occ.removeAllDuplicates()
+            gmsh.model.occ.healShapes()
+            occ.synchronize()
+        except Exception:
+            pass
+        unified = sorted([int(tag) for dim, tag in frags if dim == 3])
+        if unified:
+            print(
+                f"[diag] display shell seam fragment: {len(vols)} volume(s) → "
+                f"{len(unified)} (topologically connected interfaces)"
+            )
+            return [(3, int(v)) for v in unified]
+    except Exception as exc:
+        print(f"[diag] display shell seam fragment skipped: {exc}")
+    return wood_dimtags
+
+
 def _heal_display_shell_cad(occ, wood_dimtags: list) -> list:
     """Merge duplicate B-rep faces after booleans (reduces PyVista seam ripple / z-fight)."""
     try:
@@ -359,7 +385,7 @@ def create_guitar_mesh():
         # CAD wall offset uses top-plate thickness (back is thicker in FEM shell forms only).
         t = float(p.get("top_thickness", p.get("thickness", 0.003)))
         hr_raw = float(p["hole_radius"])
-        hr_cap = 0.25 * min(float(L), float(W))
+        hr_cap = 0.30 * min(float(L), float(W))
         hr = min(hr_raw, hr_cap, 0.08)
         shape_type = str(p.get("shape_type", "Classical")).strip()
         upper_bout = float(p.get("upper_bout", W * 0.75))
@@ -409,7 +435,9 @@ def create_guitar_mesh():
 
     # Display validation shell: uniform aesthetic lc only (decoupled from FOM refinement).
     # Preview sketch: coarse global + local zones. FOM: graded wood/air fields.
-    DISPLAY_GLOBAL_LC_M = 0.012   # 12 mm uniform display shell (PyVista validation only)
+    DISPLAY_GLOBAL_LC_M = 0.012   # 12 mm coarse display shell (PyVista validation only)
+    DISPLAY_SEAM_LC_M = 0.003     # 3 mm narrow band at plate–rib seam curves only
+    DISPLAY_SEAM_BAND_M = 0.002   # 2 mm wide refinement band at seams
     PREVIEW_GLOBAL_LC_M = 0.012   # 12 mm coarse preview shell
     LOCAL_REFINE_LC_M = 0.001     # 1.0 mm local zones (preview / FOM only)
     wood_surface_size = 0.006 if is_fom else (DISPLAY_GLOBAL_LC_M if is_display else PREVIEW_GLOBAL_LC_M)
@@ -439,7 +467,7 @@ def create_guitar_mesh():
         mesh_size_max = air_threshold_size_max
 
     print(
-        "DEBUG: Display mesh — uniform 12 mm shell; preview uses local zones; "
+        "DEBUG: Display mesh — 12 mm shell + 3 mm seam band; preview uses local zones; "
         "FOM mesh uses graded wood/air fields."
     )
     print(
@@ -716,7 +744,7 @@ def create_guitar_mesh():
             wood_dimtags = [dt for dt in as_dimtags(wood_hole_cut) if dt[0] == 3]
             print(
                 f"[diag] {mode} CAD: soundhole OCC cut applied "
-                f"(cylinder r={hr:.4f} m, cap=0.25*min(L,W)={0.25 * min(float(L), float(W)):.4f})"
+                f"(cylinder r={hr:.4f} m, cap=0.30*min(L,W)={0.30 * min(float(L), float(W)):.4f})"
             )
         try:
             occ.removeAllDuplicates()
@@ -725,6 +753,8 @@ def create_guitar_mesh():
         occ.synchronize()
         if is_display or is_preview:
             wood_dimtags = _heal_display_shell_cad(occ, wood_dimtags)
+        if is_display:
+            wood_dimtags = _fragment_display_shell_seams(occ, wood_dimtags)
         wood_vols = [int(tag) for _, tag in wood_dimtags]
         if not solid_sketch and not (is_display or is_preview):
             wood_vols = _split_and_fragment_wood_shell_for_conforming_interfaces(
@@ -1308,18 +1338,44 @@ def create_guitar_mesh():
                     curve_tags.add(ctag)
         return sorted(curve_tags)
 
-    def _apply_display_uniform_shell_mesh(uniform_lc: float) -> None:
-        """Validation display: strictly uniform lc — no Distance/Threshold background fields."""
-        gmsh.option.setNumber("Mesh.CharacteristicLengthMin", float(uniform_lc))
-        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", float(uniform_lc))
+    def _apply_display_shell_coarse_with_seam_band(
+        global_lc: float,
+        seam_lc: float,
+        seam_band_m: float,
+    ) -> None:
+        """Display: 12 mm global shell + 3 mm band (2 mm wide) on plate–rib perimeter curves only."""
+        field_ids: List[int] = []
+        coarse = gmsh.model.mesh.field.add("Constant")
+        gmsh.model.mesh.field.setNumber(coarse, "VIn", float(global_lc))
+        gmsh.model.mesh.field.setNumber(coarse, "VOut", float(global_lc))
+        field_ids.append(coarse)
+
+        interface_curves = _interface_refinement_curve_tags()
+        if interface_curves:
+            dist_iface = gmsh.model.mesh.field.add("Distance")
+            gmsh.model.mesh.field.setNumbers(dist_iface, "CurvesList", interface_curves)
+            thresh_iface = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(thresh_iface, "InField", dist_iface)
+            gmsh.model.mesh.field.setNumber(thresh_iface, "DistMin", 0.0)
+            gmsh.model.mesh.field.setNumber(thresh_iface, "DistMax", float(seam_band_m))
+            gmsh.model.mesh.field.setNumber(thresh_iface, "SizeMin", float(seam_lc))
+            gmsh.model.mesh.field.setNumber(thresh_iface, "SizeMax", float(global_lc))
+            field_ids.append(thresh_iface)
+
+        min_field = gmsh.model.mesh.field.add("Min")
+        gmsh.model.mesh.field.setNumbers(min_field, "FieldsList", field_ids)
+        gmsh.model.mesh.field.setAsBackgroundMesh(min_field)
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMin", float(global_lc))
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", float(global_lc))
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
         gmsh.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 0)
         gmsh.option.setNumber("Mesh.CharacteristicLengthExtendFromBoundary", 0)
         print(
-            f"[diag] display shell: uniform lc={uniform_lc * 1000:.1f}mm "
-            "(CharacteristicLengthMin/Max only; no mesh fields)"
+            f"[diag] display shell: global_lc={global_lc * 1000:.1f}mm, "
+            f"seam_lc={seam_lc * 1000:.1f}mm in {seam_band_m * 1000:.1f}mm band "
+            f"({len(interface_curves)} plate–rib curves)"
         )
 
     def _apply_shell_coarse_global_local_fields(
@@ -1375,7 +1431,9 @@ def create_guitar_mesh():
         )
 
     if is_display:
-        _apply_display_uniform_shell_mesh(DISPLAY_GLOBAL_LC_M)
+        _apply_display_shell_coarse_with_seam_band(
+            DISPLAY_GLOBAL_LC_M, DISPLAY_SEAM_LC_M, DISPLAY_SEAM_BAND_M
+        )
     elif is_preview:
         _apply_shell_coarse_global_local_fields(PREVIEW_GLOBAL_LC_M, LOCAL_REFINE_LC_M)
 

@@ -285,7 +285,7 @@ def sanitize_studio_payload(data: Optional[Dict[str, Any]], shape_type: str = "C
     length_v = _round_studio_dim(src.get("length", rom_def["length"]))
     width_v = _round_studio_dim(width)
     hole_v = _round_studio_dim(hole)
-    hole_cap = 0.25 * min(float(length_v), float(width_v))
+    hole_cap = 0.30 * min(float(length_v), float(width_v))
     if hole_cap > 1e-5:
         hole_v = min(float(hole_v), hole_cap - 1e-5)
     out: Dict[str, Any] = {
@@ -354,7 +354,7 @@ def studio_initial_from_saved(
 STUDIO_WOOD_HEX: Dict[str, str] = {
     "spruce": "#D2B48C",
     "cedar": "#5D4037",
-    "maple": "#E2C69C",
+    "maple": "#C4A484",
     "mahogany": "#795548",
     "rosewood": "#3F2A20",
 }
@@ -919,7 +919,7 @@ def render_validation_mesh_viewport(
     with st.container():
         st.markdown('<div class="gmsh-validation-block">', unsafe_allow_html=True)
         st.caption(
-            "Compiled ``display_mesh.msh`` (uniform 12 mm display shell) from **Save & Sync** "
+            "Compiled ``display_mesh.msh`` (12 mm shell, 3 mm seam band) from **Save & Sync** "
             "or **Regenerate Gmsh mesh**. Engineering FOM mesh uses separate local refinement."
         )
         mesh, _, mesh_src = get_view_mesh(geom_fp)
