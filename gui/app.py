@@ -352,9 +352,9 @@ def studio_initial_from_saved(
 
 # Orthotropic plate surface colors (Design Studio / Three.js — tuned for realistic shading).
 STUDIO_WOOD_HEX: Dict[str, str] = {
-    "spruce": "#C69C6D",
+    "spruce": "#D2B48C",
     "cedar": "#5D4037",
-    "maple": "#DEB887",
+    "maple": "#E2C69C",
     "mahogany": "#795548",
     "rosewood": "#3F2A20",
 }
@@ -919,7 +919,7 @@ def render_validation_mesh_viewport(
     with st.container():
         st.markdown('<div class="gmsh-validation-block">', unsafe_allow_html=True)
         st.caption(
-            "Compiled ``display_mesh.msh`` (15 mm shell, 3 mm soundhole band) from **Save & Sync** "
+            "Compiled ``display_mesh.msh`` (uniform 12 mm display shell) from **Save & Sync** "
             "or **Regenerate Gmsh mesh**. Engineering FOM mesh uses separate local refinement."
         )
         mesh, _, mesh_src = get_view_mesh(geom_fp)
