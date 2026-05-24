@@ -376,10 +376,10 @@ def create_guitar_mesh():
         hole_x = 0.5 * L - hole_from_neck_ratio * L
     hole_y = 0.0
 
-    # Display/preview: coarse global lc + local 0.5 mm at soundhole/plate edges (fast overlay).
+    # Display/preview: coarse global lc + local 0.2 mm at soundhole/plate edges (fast overlay).
     # FOM engineering: graded wood/air fields (unchanged baseline).
     DISPLAY_GLOBAL_LC_M = 0.012   # 12 mm coarse display shell
-    LOCAL_REFINE_LC_M = 0.0005    # 0.5 mm at soundhole rim and plate interfaces
+    LOCAL_REFINE_LC_M = 0.0002    # 0.2 mm at soundhole rim and plate–rib interfaces
     wood_surface_size = 0.006 if is_fom else DISPLAY_GLOBAL_LC_M
     wood_thickness_size = 0.0004  # 0.4 mm on through-thickness edges (FOM)
     thickness_curve_len_max = 0.005  # curves shorter than this (m) are treated as thickness direction
@@ -403,7 +403,7 @@ def create_guitar_mesh():
         mesh_size_max = air_threshold_size_max
 
     print(
-        "DEBUG: Display mesh — global lc=12 mm with 0.5 mm local zones at soundhole/plate edges; "
+        "DEBUG: Display mesh — global lc=12 mm with 0.2 mm local zones at soundhole/plate edges; "
         "FOM mesh uses graded wood/air fields."
     )
     print(
@@ -1303,7 +1303,7 @@ def create_guitar_mesh():
             thresh_iface = gmsh.model.mesh.field.add("Threshold")
             gmsh.model.mesh.field.setNumber(thresh_iface, "InField", dist_iface)
             gmsh.model.mesh.field.setNumber(thresh_iface, "DistMin", 0.0002)
-            gmsh.model.mesh.field.setNumber(thresh_iface, "DistMax", 0.012)
+            gmsh.model.mesh.field.setNumber(thresh_iface, "DistMax", 0.002)
             gmsh.model.mesh.field.setNumber(thresh_iface, "SizeMin", float(fine_lc))
             gmsh.model.mesh.field.setNumber(thresh_iface, "SizeMax", float(global_lc))
             field_ids.append(thresh_iface)

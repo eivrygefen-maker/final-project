@@ -325,6 +325,9 @@
     let lastRenderArgsFp = "";
     /** Owner-flag: while true, Streamlit payloads must not touch sliders or ROM state. */
     let isUserDragging = false;
+    /** While true, ignore Python echoes on wood selects (prevents snap-back after user change). */
+    let isWoodChangeLocked = false;
+    let woodChangeLockTimer = null;
     /** When true, applyArgs updates wood materials only (no buildBody / viewport reset). */
     let isMaterialChangeOnly = false;
     let animating = true;
@@ -554,9 +557,9 @@
 
     /* Realistic tonewoods (matches gui/app.py STUDIO_WOOD_HEX) */
     const WOOD_COLORS_BUILTIN = {
-      spruce: "#F5F5DC",
+      spruce: "#E6C280",
       cedar: "#5D4037",
-      maple: "#FFF8E1",
+      maple: "#F5D6A7",
       mahogany: "#795548",
       rosewood: "#3F2A20",
     };
@@ -682,6 +685,7 @@
     }
 
     function applyMaterialOnlyUpdate(data) {
+      if (isWoodChangeLocked) return;
       const tw = document.getElementById("topWood");
       const bw = document.getElementById("backWood");
       if (incomingWoodDiffers("top_wood_id", data)) {
@@ -720,6 +724,7 @@
         else domVal = dom[k];
         if (isUserDragging && (k === "top_wood_id" || k === "back_wood_id")) return;
         if (k === "top_wood_id" || k === "back_wood_id") {
+          if (isWoodChangeLocked) return;
           if (!incomingWoodDiffers(k, data)) return;
         }
         if (acceptIncomingRomKey(k, data, domVal)) state[k] = data[k];
@@ -818,11 +823,20 @@
       ];
     }
 
+    function lockWoodSelects() {
+      isWoodChangeLocked = true;
+      if (woodChangeLockTimer) clearTimeout(woodChangeLockTimer);
+      woodChangeLockTimer = setTimeout(function () {
+        isWoodChangeLocked = false;
+        woodChangeLockTimer = null;
+      }, 600);
+    }
+
     function createWoodMaterial(woodId) {
       return new THREE.MeshStandardMaterial({
         color: woodColorHex(woodId),
-        roughness: 0.74,
-        metalness: 0.05,
+        roughness: 0.85,
+        metalness: 0.0,
         flatShading: false,
       });
     }
@@ -1351,8 +1365,10 @@
     const back = document.getElementById("backWood");
     const ids = state.wood_ids || [];
     if (top.options.length === ids.length && ids.length > 0) {
-      if (top.value !== state.top_wood_id) top.value = state.top_wood_id;
-      if (back.value !== state.back_wood_id) back.value = state.back_wood_id;
+      if (!isWoodChangeLocked) {
+        if (top.value !== state.top_wood_id) top.value = state.top_wood_id;
+        if (back.value !== state.back_wood_id) back.value = state.back_wood_id;
+      }
       return;
     }
     top.innerHTML = "";
@@ -1365,8 +1381,10 @@
       const o2 = o1.cloneNode(true);
       back.appendChild(o2);
     });
-    top.value = state.top_wood_id;
-    back.value = state.back_wood_id;
+    if (!isWoodChangeLocked) {
+      top.value = state.top_wood_id;
+      back.value = state.back_wood_id;
+    }
   }
 
     function applyArgs(rawArgs) {
@@ -1410,8 +1428,8 @@
       });
       const tw = document.getElementById("topWood");
       const bw = document.getElementById("backWood");
-      const topWoodChanged = incomingWoodDiffers("top_wood_id", data);
-      const backWoodChanged = incomingWoodDiffers("back_wood_id", data);
+      const topWoodChanged = !isWoodChangeLocked && incomingWoodDiffers("top_wood_id", data);
+      const backWoodChanged = !isWoodChangeLocked && incomingWoodDiffers("back_wood_id", data);
       if (topWoodChanged) {
         state.top_wood_id = String(data.top_wood_id).toLowerCase();
         if (tw) tw.value = state.top_wood_id;
@@ -1502,12 +1520,14 @@
 
     document.getElementById("topWood").addEventListener("change", function () {
       state.top_wood_id = document.getElementById("topWood").value || "spruce";
+      lockWoodSelects();
       updateTopMaterial();
       renderFrame();
       notifyWoodOnlyChange();
     });
     document.getElementById("backWood").addEventListener("change", function () {
       state.back_wood_id = document.getElementById("backWood").value || "rosewood";
+      lockWoodSelects();
       updateBackMaterial();
       renderFrame();
       notifyWoodOnlyChange();

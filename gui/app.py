@@ -352,9 +352,9 @@ def studio_initial_from_saved(
 
 # Orthotropic plate surface colors (Design Studio / Three.js — tuned for realistic shading).
 STUDIO_WOOD_HEX: Dict[str, str] = {
-    "spruce": "#F5F5DC",
+    "spruce": "#E6C280",
     "cedar": "#5D4037",
-    "maple": "#FFF8E1",
+    "maple": "#F5D6A7",
     "mahogany": "#795548",
     "rosewood": "#3F2A20",
 }
@@ -1225,7 +1225,38 @@ def _render_main_studio(
 
     iframe_initial = stable_studio_iframe_initial(fp_seed)
 
+    fp_mesh_seed = sanitize_studio_payload(
+        st.session_state.get("_fast_preview_geom") or fp_seed,
+        saved_shape,
+    )
+    geom_mesh, top_mesh, back_mesh = geom_from_studio_event(fp_mesh_seed)
+    geom_fp_mesh = geometry_fingerprint(
+        geom_mesh,
+        top_mesh,
+        back_mesh,
+        clamp_ribs=clamp_ribs,
+        pin_neck_fix=pin_neck,
+        fixture_preset=fixture_preset,
+    )
+
     with col_vis:
+        if st.session_state.get("show_mesh_overlay") and not st.session_state.get(
+            "mesh_is_dirty", True
+        ):
+            render_validation_mesh_viewport(
+                geom_mesh,
+                top_wood=top_mesh,
+                back_wood=back_mesh,
+                geom_fp=geom_fp_mesh,
+                fixture_preset=fixture_preset,
+            )
+        elif st.session_state.get("mesh_is_dirty") and not st.session_state.get(
+            "show_mesh_overlay"
+        ):
+            st.caption(
+                "Gmsh validation mesh hidden while you edit — click **Save & Sync** "
+                "or **Regenerate Gmsh mesh** to update and show the compiled mesh."
+            )
         studio_event = mount_design_studio_iframe(iframe_initial)
 
     process_fast_preview_event(
@@ -1267,22 +1298,6 @@ def _render_main_studio(
     update_rom_online_prediction(geom, top_wood=top_wood, back_wood=back_wood, shape_type=shape)
     with col_ctrl:
         render_rom_metrics_dashboard(shape)
-
-    if st.session_state.get("show_mesh_overlay") and not st.session_state.get("mesh_is_dirty", True):
-        with col_vis:
-            render_validation_mesh_viewport(
-                geom,
-                top_wood=top_wood,
-                back_wood=back_wood,
-                geom_fp=geom_fp,
-                fixture_preset=fixture_preset,
-            )
-    elif st.session_state.get("mesh_is_dirty") and not st.session_state.get("show_mesh_overlay"):
-        with col_vis:
-            st.caption(
-                "Gmsh validation mesh hidden while you edit — click **Save & Sync** "
-                "or **Regenerate Gmsh mesh** to update and show the compiled mesh."
-            )
 
     with col_ctrl:
         if regen_mesh:
