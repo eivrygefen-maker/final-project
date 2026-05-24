@@ -339,6 +339,8 @@
     const STUDIO_W = 1680;
     const STUDIO_H = 1080;
     const PANEL_W = 360;
+    /** Max soundhole radius vs body span (constraint-based clipping). */
+    const HOLE_RADIUS_MAX_BODY_FRAC = 0.25;
     const EXTRUDE_CURVE_SEGMENTS = 32;
     const EXTRUDE_TOP_CURVE_SEGMENTS = 64;
     const HOLE_CIRCLE_SEGMENTS = 128;
@@ -579,6 +581,26 @@
         hole_radius_bounds: [0.035, 0.055],
       }
     );
+    const ACOUSTIC_TEMPLATE = Object.assign(
+      { shape_type: "Dreadnought", top_wood_id: "spruce", back_wood_id: "mahogany" },
+      SHAPE_TEMPLATE_DEFAULTS.Dreadnought,
+      {
+        top_thickness_bounds: [0.003, 0.006],
+        hole_radius_bounds: [0.035, 0.060],
+      }
+    );
+
+    function resolveTemplateHoleRadii() {
+      ["Classical", "Dreadnought"].forEach((key) => {
+        const t = SHAPE_TEMPLATE_DEFAULTS[key];
+        const preferred = t.hole_radius;
+        t.hole_radius = templateHoleRadiusForShape(key, t.length, t.width, preferred);
+      });
+      const box = SHAPE_TEMPLATE_DEFAULTS.Box;
+      box.hole_radius = templateHoleRadiusForShape("Box", box.length, box.width, null);
+      CLASSICAL_TEMPLATE.hole_radius = SHAPE_TEMPLATE_DEFAULTS.Classical.hole_radius;
+      ACOUSTIC_TEMPLATE.hole_radius = SHAPE_TEMPLATE_DEFAULTS.Dreadnought.hole_radius;
+    }
 
     /* ── State (7D ROM + metadata only) ─────────────────────────────── */
     const state = {
@@ -883,10 +905,26 @@
       applyWoodMaterialToMesh(meshSidesRef, woodId);
     }
 
+    function holeRadiusCap(L, W) {
+      const span = Math.min(num(L, 0.49), num(W, 0.37));
+      return Math.max(span * HOLE_RADIUS_MAX_BODY_FRAC, 0.01);
+    }
+
     function effectiveHoleRadius(L, W, hr) {
-      const cap = Math.min(num(L, 0.49), num(W, 0.37)) * 0.4;
-      const safeCap = Math.max(cap, 0.01);
-      return Math.min(num(hr, 0.045), safeCap - 1e-5);
+      const cap = holeRadiusCap(L, W);
+      return Math.min(num(hr, 0.045), cap - 1e-5);
+    }
+
+    function clipHoleRadiusForCurrentBody(requestedHr) {
+      const clipped = effectiveHoleRadius(state.length, state.width, requestedHr);
+      state.hole_radius = clipped;
+      const hEl = document.getElementById("holeRadius");
+      if (hEl) {
+        const cap = holeRadiusCap(state.length, state.width);
+        if (num(hEl.max, cap) > cap + 1e-6) hEl.max = String(cap);
+        if (Math.abs(num(hEl.value) - clipped) > 1e-9) hEl.value = String(clipped);
+      }
+      return clipped;
     }
 
     function insetLoop(pts, frac) {
@@ -1262,7 +1300,7 @@
       const L = num(length, 0.48);
       const W = num(width, 0.37);
       if (shapeKey === "Box") {
-        const ratioHole = 0.225 * W;
+        const ratioHole = HOLE_RADIUS_MAX_BODY_FRAC * W;
         return effectiveHoleRadius(L, W, ratioHole);
       }
       return effectiveHoleRadius(L, W, num(templateHole, 0.045));
@@ -1300,18 +1338,14 @@
       setSliderDomValue("width", state.width);
       setSliderDomValue("depth", state.depth);
       setSliderDomValue("topThickness", state.top_thickness);
-      state.hole_radius = effectiveHoleRadius(
-        state.length,
-        state.width,
-        state.hole_radius
-      );
+      clipHoleRadiusForCurrentBody(state.hole_radius);
       setSliderDomValue("holeRadius", state.hole_radius);
       updateLabels();
+      lastGeomFp = "";
       if (initialized3d) {
-        lastGeomFp = "";
         sync3dFromState();
-        frameOrbitTargetOnBody();
       }
+      frameOrbitTargetOnBody();
     }
 
     function applyClassicalBaselineToDom() {
@@ -1358,7 +1392,7 @@
         const hrB = normalizeSliderBounds(state.hole_radius_bounds, hrFallback, 0.001);
         let lo = hrB[0];
         let hi = hrB[1];
-        const bodyCap = Math.min(num(state.width, 0.37), num(state.length, 0.49)) * 0.4;
+        const bodyCap = holeRadiusCap(state.length, state.width);
         if (Number.isFinite(bodyCap) && bodyCap > lo + 0.002) hi = Math.min(hi, bodyCap);
         const cur = num(hEl.value, num(state.hole_radius, lo));
         hi = Math.max(hi, cur + 0.0005);
@@ -1370,8 +1404,9 @@
         hEl.max = String(hi);
         hEl.step = "0.001";
         const safe = clamp(cur, lo, hi);
-        hEl.value = String(safe);
-        state.hole_radius = num(hEl.value, safe);
+        const clipped = effectiveHoleRadius(state.length, state.width, safe);
+        hEl.value = String(clipped);
+        state.hole_radius = clipped;
       }
     }
 
@@ -1381,11 +1416,7 @@
       state.width = num(document.getElementById("width").value, state.width);
       state.depth = num(document.getElementById("depth").value, state.depth);
       state.top_thickness = num(document.getElementById("topThickness").value, state.top_thickness);
-      state.hole_radius = effectiveHoleRadius(
-        state.length,
-        state.width,
-        document.getElementById("holeRadius").value
-      );
+      clipHoleRadiusForCurrentBody(document.getElementById("holeRadius").value);
       state.top_wood_id = document.getElementById("topWood").value || "spruce";
       state.back_wood_id = document.getElementById("backWood").value || "mahogany";
       updateLabels();
@@ -1443,6 +1474,7 @@
 
     function preview3dFromSliders() {
       readSliders();
+      clipHoleRadiusForCurrentBody(state.hole_radius);
       updateLabels();
       sync3dFromState();
     }
@@ -1580,6 +1612,7 @@
       setComponentValue(payload("run_fem"));
     });
 
+    resolveTemplateHoleRadii();
     applyClassicalBaselineToDom();
     updateModeUi();
     scheduleInitThreeCore();

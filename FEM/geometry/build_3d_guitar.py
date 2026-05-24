@@ -359,7 +359,7 @@ def create_guitar_mesh():
         # CAD wall offset uses top-plate thickness (back is thicker in FEM shell forms only).
         t = float(p.get("top_thickness", p.get("thickness", 0.003)))
         hr_raw = float(p["hole_radius"])
-        hr_cap = 0.4 * min(float(L), float(W))
+        hr_cap = 0.25 * min(float(L), float(W))
         hr = min(hr_raw, hr_cap, 0.08)
         shape_type = str(p.get("shape_type", "Classical")).strip()
         upper_bout = float(p.get("upper_bout", W * 0.75))
@@ -409,7 +409,8 @@ def create_guitar_mesh():
 
     # Display validation shell: uniform aesthetic lc only (decoupled from FOM refinement).
     # Preview sketch: coarse global + local zones. FOM: graded wood/air fields.
-    DISPLAY_GLOBAL_LC_M = 0.0045  # 4.5 mm uniform display shell (PyVista validation)
+    DISPLAY_GLOBAL_LC_M = 0.015   # 15 mm coarse display shell (PyVista validation)
+    DISPLAY_HOLE_LC_M = 0.003     # 3 mm localized soundhole band (display only)
     PREVIEW_GLOBAL_LC_M = 0.012   # 12 mm coarse preview shell
     LOCAL_REFINE_LC_M = 0.001     # 1.0 mm local zones (preview / FOM only)
     wood_surface_size = 0.006 if is_fom else (DISPLAY_GLOBAL_LC_M if is_display else PREVIEW_GLOBAL_LC_M)
@@ -424,10 +425,10 @@ def create_guitar_mesh():
     air_threshold_size_min = 0.003   # 3 mm near wood / soundhole band (was 8 mm)
     air_threshold_size_max = 0.050   # 50 mm far field cap (was 80 mm)
 
-    # Display: uniform 4.5 mm. Preview: coarse + local refinement. FOM: full graded FSI mesh.
+    # Display: 15 mm shell + 3 mm soundhole band. Preview/FOM: graded fields unchanged.
     if is_display:
         mesh_size = DISPLAY_GLOBAL_LC_M
-        mesh_size_min = DISPLAY_GLOBAL_LC_M
+        mesh_size_min = DISPLAY_HOLE_LC_M
         mesh_size_max = DISPLAY_GLOBAL_LC_M
     elif is_preview:
         mesh_size = PREVIEW_GLOBAL_LC_M
@@ -439,7 +440,7 @@ def create_guitar_mesh():
         mesh_size_max = air_threshold_size_max
 
     print(
-        "DEBUG: Display mesh — uniform 4.5 mm shell; preview uses local zones; "
+        "DEBUG: Display mesh — 15 mm shell + 3 mm soundhole band; preview uses local zones; "
         "FOM mesh uses graded wood/air fields."
     )
     print(
@@ -716,7 +717,7 @@ def create_guitar_mesh():
             wood_dimtags = [dt for dt in as_dimtags(wood_hole_cut) if dt[0] == 3]
             print(
                 f"[diag] {mode} CAD: soundhole OCC cut applied "
-                f"(cylinder r={hr:.4f} m, cap=0.4*min(L,W)={0.4 * min(float(L), float(W)):.4f})"
+                f"(cylinder r={hr:.4f} m, cap=0.25*min(L,W)={0.25 * min(float(L), float(W)):.4f})"
             )
         try:
             occ.removeAllDuplicates()
@@ -1308,20 +1309,43 @@ def create_guitar_mesh():
                     curve_tags.add(ctag)
         return sorted(curve_tags)
 
-    def _apply_display_uniform_shell_mesh(uniform_lc: float) -> None:
-        """Validation display shell: single uniform characteristic length (no local fields)."""
-        uniform_field = gmsh.model.mesh.field.add("Constant")
-        gmsh.model.mesh.field.setNumber(uniform_field, "VIn", float(uniform_lc))
-        gmsh.model.mesh.field.setNumber(uniform_field, "VOut", float(uniform_lc))
-        gmsh.model.mesh.field.setAsBackgroundMesh(uniform_field)
+    def _apply_display_coarse_shell_with_hole_refinement(
+        global_lc: float,
+        hole_lc: float,
+    ) -> None:
+        """Validation display: coarse shell lc dominant; 3 mm band at soundhole rim only."""
+        field_ids: List[int] = []
+        coarse = gmsh.model.mesh.field.add("Constant")
+        gmsh.model.mesh.field.setNumber(coarse, "VIn", float(global_lc))
+        gmsh.model.mesh.field.setNumber(coarse, "VOut", float(global_lc))
+        field_ids.append(coarse)
+
+        if soundhole_surfs:
+            dist_hole = gmsh.model.mesh.field.add("Distance")
+            hole_faces = [int(s) for s in soundhole_surfs]
+            gmsh.model.mesh.field.setNumbers(dist_hole, "FacesList", hole_faces)
+            hole_curves = _soundhole_boundary_curve_tags()
+            if hole_curves:
+                gmsh.model.mesh.field.setNumbers(dist_hole, "CurvesList", hole_curves)
+            thresh_hole = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(thresh_hole, "InField", dist_hole)
+            gmsh.model.mesh.field.setNumber(thresh_hole, "DistMin", 0.0005)
+            gmsh.model.mesh.field.setNumber(thresh_hole, "DistMax", max(0.012, 2.0 * hr))
+            gmsh.model.mesh.field.setNumber(thresh_hole, "SizeMin", float(hole_lc))
+            gmsh.model.mesh.field.setNumber(thresh_hole, "SizeMax", float(global_lc))
+            field_ids.append(thresh_hole)
+
+        min_field = gmsh.model.mesh.field.add("Min")
+        gmsh.model.mesh.field.setNumbers(min_field, "FieldsList", field_ids)
+        gmsh.model.mesh.field.setAsBackgroundMesh(min_field)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
         gmsh.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 0)
         gmsh.option.setNumber("Mesh.CharacteristicLengthExtendFromBoundary", 0)
         print(
-            f"[diag] display shell: uniform lc={uniform_lc * 1000:.1f}mm "
-            "(no Distance/Threshold refinement)"
+            f"[diag] display shell: global_lc={global_lc * 1000:.1f}mm, "
+            f"soundhole_lc={hole_lc * 1000:.1f}mm ({len(soundhole_surfs)} faces)"
         )
 
     def _apply_shell_coarse_global_local_fields(
@@ -1377,7 +1401,9 @@ def create_guitar_mesh():
         )
 
     if is_display:
-        _apply_display_uniform_shell_mesh(DISPLAY_GLOBAL_LC_M)
+        _apply_display_coarse_shell_with_hole_refinement(
+            DISPLAY_GLOBAL_LC_M, DISPLAY_HOLE_LC_M
+        )
     elif is_preview:
         _apply_shell_coarse_global_local_fields(PREVIEW_GLOBAL_LC_M, LOCAL_REFINE_LC_M)
 
