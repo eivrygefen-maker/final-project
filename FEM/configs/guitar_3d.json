@@ -99,7 +99,7 @@
         "min_wood_participation_high_band": 0.08,
         "max_acoustic_only_modes": 3,
         "eigenpair_batch_size": 100,
-        "pressure_gauge": "soundhole",
+        "pressure_gauge": "air_interior",
         "min_valid_mode_hz": 60.0,
         "max_valid_mode_hz": 550.0,
         "spectral_bands": {

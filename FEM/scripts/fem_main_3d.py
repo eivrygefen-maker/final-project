@@ -5552,6 +5552,14 @@ def _solve_coupled_evp(
     # the resolvent) via PETSc ``zeroRows``. Blockwise ``assemble_matrix`` uses ``bcs=[]``.
     soundhole_facets = np.array(facet_tags.find(2), dtype=np.int32)
     pressure_gauge = str(config.get("solver", {}).get("pressure_gauge", "soundhole")).lower()
+    if pressure_gauge == "soundhole" and soundhole_facets.size == 0:
+        _emit(
+            "[bc] facet tag 2 (Soundhole) empty — using air_interior pressure gauge "
+            "instead of corner anchor.",
+            status_callback=status_callback,
+            level="warning",
+        )
+        pressure_gauge = "air_interior"
     bcs: List[fem.DirichletBC] = []
     bcs_u_only: List[fem.DirichletBC] = []
     bcs_p_only: List[fem.DirichletBC] = []

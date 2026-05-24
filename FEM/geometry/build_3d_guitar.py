@@ -1092,6 +1092,35 @@ def create_guitar_mesh():
         scored.sort(key=lambda row: -row[1])
         return [row[0] for row in scored]
 
+    def _select_soundhole_disk_centroid_fallback(
+        shell_tags, z_plane, z_tol, hx, hy, hole_r
+    ):
+        """
+        FOM fallback when edge-bite booleans leave no dedicated hole rim surfaces.
+
+        Tag facets whose centroid lies in the soundhole disk near the top opening
+        (air inner lid + top annulus), rejecting whole-plate-sized patches.
+        """
+        r_lim = float(hole_r) * 1.45
+        z_slack = max(float(z_tol) * 4.0, 2.0e-3)
+        max_span = max(8.0 * float(hole_r), 0.12)
+        out: list = []
+        for s in shell_tags:
+            try:
+                cx, cy, cz = get_surface_center(s)
+            except Exception:
+                continue
+            if abs(float(cz) - float(z_plane)) > z_slack:
+                continue
+            if math.hypot(float(cx) - float(hx), float(cy) - float(hy)) > r_lim:
+                continue
+            xmin, ymin, _zmin, xmax, ymax, _zmax = gmsh.model.getBoundingBox(2, int(s))
+            span_xy = max(float(xmax) - float(xmin), float(ymax) - float(ymin))
+            if span_xy > max_span:
+                continue
+            out.append(int(s))
+        return sorted(set(out))
+
     # Soundhole: z = D/2 plane + hole disk on exterior shell.
     z_top_outer = D / 2.0
     z_tol = max(1.0e-4, t, 0.25 * hr)
@@ -1106,6 +1135,15 @@ def create_guitar_mesh():
         soundhole_surfs = _select_soundhole_surfaces(
             sorted(air_boundary_surfs), z_top_outer, z_tol, hole_x, hole_y, hr
         )
+    if not soundhole_surfs and is_fom:
+        disk_pool = sorted(set(air_boundary_surfs) | set(int(s) for s in top_plate_surfs))
+        soundhole_surfs = _select_soundhole_disk_centroid_fallback(
+            disk_pool, z_top_outer, z_tol, hole_x, hole_y, hr
+        )
+        if soundhole_surfs:
+            print(
+                f"[diag] soundhole tag 2 FOM disk-centroid fallback: {len(soundhole_surfs)} facets"
+            )
     # Do not assign whole top plate or raw air shell to tag 2 (causes jumps / wrong BCs).
 
     # Do not double-tag hole annulus; keep top / back / ribs disjoint.
