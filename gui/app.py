@@ -46,8 +46,8 @@ HOLE_RADIUS_MAX_M = 0.08
 SOUNDHOLE_FROM_NECK_RATIO = 0.5
 ROM_HOLE_RADIUS_BOUNDS = (0.035, 0.055)
 
-FAST_PREVIEW_HEIGHT = 950
-FAST_PREVIEW_WIDTH = 1200
+FAST_PREVIEW_HEIGHT = 1080
+FAST_PREVIEW_WIDTH = 1440
 ROM_ONLINE_MODES = 15
 STUDIO_HANDSHAKE_ACTIONS = frozenset({"ready", "_handshake", "handshake", "_ready_ping"})
 STUDIO_ROM_PAYLOAD_KEYS = (
@@ -465,16 +465,6 @@ def inject_studio_viewport_css() -> None:
         div[data-testid="column"]:has(div[data-testid="stCustomComponentV1"]) div[role="alert"] {{
             display: none !important;
         }}
-        div[data-testid="stVerticalBlock"]:has(div[data-testid="stpyvista"]) {{
-            position: absolute !important;
-            top: 0 !important;
-            left: 0 !important;
-            right: 0 !important;
-            width: 100% !important;
-            height: {h}px !important;
-            z-index: 20 !important;
-            background: #0e1117 !important;
-        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -587,10 +577,6 @@ def process_fast_preview_event(
     st.session_state._back_wood = back_wood
 
     if action == "param_change":
-        param_fp = studio_iframe_payload_fp(clean)
-        if param_fp == st.session_state.get("_studio_param_change_fp", ""):
-            return
-        st.session_state._studio_param_change_fp = param_fp
         st.session_state.mesh_is_dirty = True
         st.session_state.show_mesh_overlay = False
         st.session_state._mesh_overlay_rom_fp = ""
@@ -606,6 +592,8 @@ def process_fast_preview_event(
     )
 
     if action in ("save_sync", "run_rom", "run_fem"):
+        st.session_state.mesh_is_dirty = True
+        st.session_state.show_mesh_overlay = False
         regenerate_display_mesh(
             geom,
             top_wood=top_wood,
@@ -823,14 +811,15 @@ def load_surface_mesh(msh_path: Path) -> Optional[pv.PolyData]:
         faces = np.hstack([np.full((tri.shape[0], 1), 3, dtype=np.int64), tri]).ravel()
         poly = pv.PolyData(points, faces)
         poly.compute_normals(
-        cell_normals=False, 
-        point_normals=True, 
-        feature_angle=30, 
-        split_vertices=True, 
-        inplace=True, 
+            cell_normals=False,
+            point_normals=True,
+            feature_angle=30,
+            split_vertices=True,
+            inplace=True,
             auto_orient_normals=True,
         )
-        return poly
+        cleaned = poly.clean(tolerance=1e-8, absolute=True)
+        return cleaned
     except Exception:
         return None
 
@@ -904,7 +893,7 @@ def render_validation_mesh_viewport(
     geom_fp: str,
     fixture_preset: str,
 ) -> None:
-    """Gmsh ``display_mesh.msh`` — absolute overlay; Design Studio iframe stays mounted."""
+    """Gmsh ``display_mesh.msh`` — rendered below the Design Studio iframe when in sync."""
     st.caption(
         "Compiled ``display_mesh.msh`` (lc=4 mm) from **Save & Sync** or **Regenerate Gmsh mesh**. "
         "Same configuration as ROM/FEM; independent of the Three.js studio."
@@ -1225,38 +1214,7 @@ def _render_main_studio(
 
     iframe_initial = stable_studio_iframe_initial(fp_seed)
 
-    fp_mesh_seed = sanitize_studio_payload(
-        st.session_state.get("_fast_preview_geom") or fp_seed,
-        saved_shape,
-    )
-    geom_mesh, top_mesh, back_mesh = geom_from_studio_event(fp_mesh_seed)
-    geom_fp_mesh = geometry_fingerprint(
-        geom_mesh,
-        top_mesh,
-        back_mesh,
-        clamp_ribs=clamp_ribs,
-        pin_neck_fix=pin_neck,
-        fixture_preset=fixture_preset,
-    )
-
     with col_vis:
-        if st.session_state.get("show_mesh_overlay") and not st.session_state.get(
-            "mesh_is_dirty", True
-        ):
-            render_validation_mesh_viewport(
-                geom_mesh,
-                top_wood=top_mesh,
-                back_wood=back_mesh,
-                geom_fp=geom_fp_mesh,
-                fixture_preset=fixture_preset,
-            )
-        elif st.session_state.get("mesh_is_dirty") and not st.session_state.get(
-            "show_mesh_overlay"
-        ):
-            st.caption(
-                "Gmsh validation mesh hidden while you edit — click **Save & Sync** "
-                "or **Regenerate Gmsh mesh** to update and show the compiled mesh."
-            )
         studio_event = mount_design_studio_iframe(iframe_initial)
 
     process_fast_preview_event(
@@ -1299,8 +1257,27 @@ def _render_main_studio(
     with col_ctrl:
         render_rom_metrics_dashboard(shape)
 
+    with col_vis:
+        if st.session_state.get("show_mesh_overlay") and not st.session_state.get(
+            "mesh_is_dirty", True
+        ):
+            render_validation_mesh_viewport(
+                geom,
+                top_wood=top_wood,
+                back_wood=back_wood,
+                geom_fp=geom_fp,
+                fixture_preset=fixture_preset,
+            )
+        elif st.session_state.get("mesh_is_dirty"):
+            st.caption(
+                "Gmsh validation mesh hidden while you edit — click **Save & Sync** "
+                "in the Design Studio or **Regenerate Gmsh mesh** to compile and show the mesh."
+            )
+
     with col_ctrl:
         if regen_mesh:
+            st.session_state.mesh_is_dirty = True
+            st.session_state.show_mesh_overlay = False
             try:
                 regenerate_display_mesh(
                     geom,

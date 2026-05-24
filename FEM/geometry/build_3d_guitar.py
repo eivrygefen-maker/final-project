@@ -205,6 +205,37 @@ def _remove_occ_volumes(vol_tags: Sequence[int], occ) -> None:
             pass
 
 
+def _heal_display_shell_cad(occ, wood_dimtags: list) -> list:
+    """Merge duplicate B-rep faces after booleans (reduces PyVista seam ripple / z-fight)."""
+    try:
+        occ.removeAllDuplicates()
+        occ.synchronize()
+    except Exception:
+        pass
+    try:
+        gmsh.model.occ.healShapes()
+        occ.synchronize()
+    except Exception as exc:
+        print(f"[diag] occ.healShapes skipped: {exc}")
+    vol_tags = [int(tag) for dim, tag in wood_dimtags if int(dim) == 3]
+    if len(vol_tags) > 1:
+        frags, _ = occ.fragment(
+            [(3, int(v)) for v in vol_tags],
+            [],
+            removeObject=True,
+            removeTool=False,
+        )
+        occ.synchronize()
+        unified = sorted([int(tag) for dim, tag in frags if dim == 3])
+        if unified:
+            print(
+                f"[diag] healed shell fragment: {len(vol_tags)} volumes → "
+                f"{len(unified)} (shared interface nodes)"
+            )
+            return [(3, int(v)) for v in unified]
+    return wood_dimtags
+
+
 def _split_and_fragment_wood_shell_for_conforming_interfaces(
     wood_vols: List[int],
     t: float,
@@ -379,7 +410,7 @@ def create_guitar_mesh():
     # Display/preview: coarse global lc + local 0.2 mm at soundhole/plate edges (fast overlay).
     # FOM engineering: graded wood/air fields (unchanged baseline).
     DISPLAY_GLOBAL_LC_M = 0.012   # 12 mm coarse display shell
-    LOCAL_REFINE_LC_M = 0.0002    # 0.2 mm at soundhole rim and plate–rib interfaces
+    LOCAL_REFINE_LC_M = 0.001     # 1.0 mm at soundhole rim and plate–rib interfaces (display speed)
     wood_surface_size = 0.006 if is_fom else DISPLAY_GLOBAL_LC_M
     wood_thickness_size = 0.0004  # 0.4 mm on through-thickness edges (FOM)
     thickness_curve_len_max = 0.005  # curves shorter than this (m) are treated as thickness direction
@@ -403,7 +434,7 @@ def create_guitar_mesh():
         mesh_size_max = air_threshold_size_max
 
     print(
-        "DEBUG: Display mesh — global lc=12 mm with 0.2 mm local zones at soundhole/plate edges; "
+        "DEBUG: Display mesh — global lc=12 mm with 1.0 mm local zones at soundhole/plate edges; "
         "FOM mesh uses graded wood/air fields."
     )
     print(
@@ -687,8 +718,10 @@ def create_guitar_mesh():
         except Exception:
             pass
         occ.synchronize()
+        if is_display or is_preview:
+            wood_dimtags = _heal_display_shell_cad(occ, wood_dimtags)
         wood_vols = [int(tag) for _, tag in wood_dimtags]
-        if not solid_sketch:
+        if not solid_sketch and not (is_display or is_preview):
             wood_vols = _split_and_fragment_wood_shell_for_conforming_interfaces(
                 wood_vols, t, occ
             )
@@ -1302,8 +1335,8 @@ def create_guitar_mesh():
             gmsh.model.mesh.field.setNumbers(dist_iface, "CurvesList", interface_curves)
             thresh_iface = gmsh.model.mesh.field.add("Threshold")
             gmsh.model.mesh.field.setNumber(thresh_iface, "InField", dist_iface)
-            gmsh.model.mesh.field.setNumber(thresh_iface, "DistMin", 0.0002)
-            gmsh.model.mesh.field.setNumber(thresh_iface, "DistMax", 0.002)
+            gmsh.model.mesh.field.setNumber(thresh_iface, "DistMin", 0.001)
+            gmsh.model.mesh.field.setNumber(thresh_iface, "DistMax", 0.008)
             gmsh.model.mesh.field.setNumber(thresh_iface, "SizeMin", float(fine_lc))
             gmsh.model.mesh.field.setNumber(thresh_iface, "SizeMax", float(global_lc))
             field_ids.append(thresh_iface)

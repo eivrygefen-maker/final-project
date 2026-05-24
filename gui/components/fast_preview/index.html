@@ -8,6 +8,8 @@
   <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
     :root {
+      --studio-w: 1440px;
+      --studio-h: 1080px;
       --st-font: "Source Sans 3", "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       --st-primary: #ff4b4b;
       --st-primary-hover: #ff2b2b;
@@ -27,8 +29,8 @@
       }
     }
     html, body {
-      width: 1200px !important;
-      height: 950px !important;
+      width: var(--studio-w) !important;
+      height: var(--studio-h) !important;
       overflow: hidden !important;
       margin: 0 !important;
       padding: 0 !important;
@@ -40,19 +42,19 @@
       background: #1a1c24;
     }
     .main-wrapper {
-      width: 1200px !important;
-      height: 950px !important;
-      min-width: 1200px !important;
-      min-height: 950px !important;
+      width: var(--studio-w) !important;
+      height: var(--studio-h) !important;
+      min-width: var(--studio-w) !important;
+      min-height: var(--studio-h) !important;
       display: block !important;
       overflow: hidden !important;
     }
     #viewport {
       display: block !important;
-      width: 1200px !important;
-      height: 950px !important;
-      min-width: 1200px !important;
-      min-height: 950px !important;
+      width: var(--studio-w) !important;
+      height: var(--studio-h) !important;
+      min-width: var(--studio-w) !important;
+      min-height: var(--studio-h) !important;
     }
     canvas#viewport {
       background: transparent !important;
@@ -60,10 +62,10 @@
     * { box-sizing: border-box; }
     .studio {
       position: relative;
-      width: 1200px;
-      height: 950px;
-      min-width: 1200px;
-      min-height: 950px;
+      width: var(--studio-w);
+      height: var(--studio-h);
+      min-width: var(--studio-w);
+      min-height: var(--studio-h);
       overflow: hidden;
     }
     .panel.panel-controls {
@@ -71,7 +73,7 @@
       left: 8px;
       top: 8px;
       width: 300px;
-      max-height: 934px;
+      max-height: calc(var(--studio-h) - 16px);
       overflow-y: auto;
       overflow-x: visible;
       z-index: 20;
@@ -172,10 +174,10 @@
       position: absolute;
       top: 0;
       left: 0;
-      width: 1200px !important;
-      height: 950px !important;
-      min-width: 1200px !important;
-      min-height: 950px !important;
+      width: var(--studio-w) !important;
+      height: var(--studio-h) !important;
+      min-width: var(--studio-w) !important;
+      min-height: var(--studio-h) !important;
       display: block !important;
       border-radius: var(--st-radius);
       border: 1px solid var(--st-border);
@@ -323,16 +325,11 @@
     let lastRomFp = "";
     let lastGeomFp = "";
     let lastRenderArgsFp = "";
-    /** Owner-flag: while true, Streamlit payloads must not touch sliders or ROM state. */
-    let isUserDragging = false;
-    /** While true, ignore Python echoes on wood selects (prevents snap-back after user change). */
-    let isWoodChangeLocked = false;
-    let woodChangeLockTimer = null;
     /** When true, applyArgs updates wood materials only (no buildBody / viewport reset). */
     let isMaterialChangeOnly = false;
     let animating = true;
-    const STUDIO_W = 1200;
-    const STUDIO_H = 950;
+    const STUDIO_W = 1440;
+    const STUDIO_H = 1080;
     const EXTRUDE_CURVE_SEGMENTS = 32;
     const EXTRUDE_TOP_CURVE_SEGMENTS = 64;
     const HOLE_CIRCLE_SEGMENTS = 128;
@@ -490,7 +487,6 @@
     }
 
     function onRender(event) {
-      if (isUserDragging) return;
       let args = {};
       if (event && event.detail && event.detail.args) {
         args = event.detail.args;
@@ -596,8 +592,6 @@
     let meshBackRef = null;
     let meshSidesRef = null;
     let initialized3d = false;
-    let lastOutboundRom = null;
-
     function readDomSliderValues() {
       return {
         shape_type: document.getElementById("shapeSelect")?.value || state.shape_type,
@@ -617,21 +611,8 @@
       return Object.prototype.hasOwnProperty.call(obj, key) && obj[key] !== undefined && obj[key] !== null;
     }
 
-    /** Accept Python value only when it is a deliberate delta (not a stale full-payload echo). */
     function acceptIncomingRomKey(key, incoming, domVal) {
       if (!hasOwnPayloadKey(incoming, key)) return false;
-      const next = incoming[key];
-      if (isUserDragging && ROM_GEOM_KEYS.indexOf(key) >= 0) {
-        if (Math.abs(num(next) - num(domVal)) > 1e-6) return false;
-      }
-      if (lastOutboundRom && ROM_KEYS.indexOf(key) >= 0) {
-        if (hasOwnPayloadKey(lastOutboundRom, key)) {
-          const sent = lastOutboundRom[key];
-          if (Math.abs(num(next) - num(sent)) > 1e-6 && Math.abs(num(domVal) - num(sent)) <= 1e-6) {
-            return false;
-          }
-        }
-      }
       return true;
     }
 
@@ -663,29 +644,14 @@
     }
 
     function detectMaterialChangeOnly(data, hadTemplates) {
-      if (!initialized3d || hadTemplates || isUserDragging) return false;
+      if (!initialized3d || hadTemplates) return false;
       if (payloadTouchesGeometry(data)) return false;
       const topWoodChanged = incomingWoodDiffers("top_wood_id", data);
       const backWoodChanged = incomingWoodDiffers("back_wood_id", data);
-      if (!topWoodChanged && !backWoodChanged) return false;
-      if (lastOutboundRom) {
-        const sentTop = String(lastOutboundRom.top_wood_id || "").toLowerCase();
-        const sentBack = String(lastOutboundRom.back_wood_id || "").toLowerCase();
-        const inTop = hasOwnPayloadKey(data, "top_wood_id")
-          ? String(data.top_wood_id).toLowerCase()
-          : sentTop;
-        const inBack = hasOwnPayloadKey(data, "back_wood_id")
-          ? String(data.back_wood_id).toLowerCase()
-          : sentBack;
-        if (inTop === activeWoodId("top_wood_id") && inBack === activeWoodId("back_wood_id")) {
-          return true;
-        }
-      }
       return topWoodChanged || backWoodChanged;
     }
 
     function applyMaterialOnlyUpdate(data) {
-      if (isWoodChangeLocked) return;
       const tw = document.getElementById("topWood");
       const bw = document.getElementById("backWood");
       if (incomingWoodDiffers("top_wood_id", data)) {
@@ -703,7 +669,6 @@
     }
 
     function mergeRomStateDelta(data) {
-      if (isUserDragging) return;
       if (!data || typeof data !== "object") return;
       const dom = readDomSliderValues();
       const domTopWood = document.getElementById("topWood")?.value || state.top_wood_id;
@@ -722,9 +687,7 @@
         else if (k === "back_wood_id") domVal = domBackWood;
         else if (k === "shape_type") domVal = dom.shape_type;
         else domVal = dom[k];
-        if (isUserDragging && (k === "top_wood_id" || k === "back_wood_id")) return;
         if (k === "top_wood_id" || k === "back_wood_id") {
-          if (isWoodChangeLocked) return;
           if (!incomingWoodDiffers(k, data)) return;
         }
         if (acceptIncomingRomKey(k, data, domVal)) state[k] = data[k];
@@ -821,15 +784,6 @@
       return [
         [-halfL, -halfW], [halfL, -halfW], [halfL, halfW], [-halfL, halfW],
       ];
-    }
-
-    function lockWoodSelects() {
-      isWoodChangeLocked = true;
-      if (woodChangeLockTimer) clearTimeout(woodChangeLockTimer);
-      woodChangeLockTimer = setTimeout(function () {
-        isWoodChangeLocked = false;
-        woodChangeLockTimer = null;
-      }, 600);
     }
 
     function createWoodMaterial(woodId) {
@@ -1197,7 +1151,7 @@
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
     }
-    /* Resize listener disabled — fixed 1200×950 layout; avoids zero-height collapse */
+    /* Resize listener disabled — fixed studio layout; avoids zero-height collapse */
 
     function fmt(v, dec) {
       return num(v, 0).toFixed(dec);
@@ -1345,30 +1299,13 @@
       sync3dFromState();
     }
 
-    function notifyParamChange() {
-      readSliders();
-      lastOutboundRom = {
-        shape_type: state.shape_type,
-        length: num(state.length, 0.49),
-        width: num(state.width, 0.37),
-        depth: num(state.depth, 0.095),
-        top_thickness: num(state.top_thickness, 0.0045),
-        hole_radius: num(state.hole_radius, 0.045),
-        top_wood_id: state.top_wood_id,
-        back_wood_id: state.back_wood_id,
-      };
-      setComponentValue(payload("param_change"));
-    }
-
   function fillWoodSelects() {
     const top = document.getElementById("topWood");
     const back = document.getElementById("backWood");
     const ids = state.wood_ids || [];
     if (top.options.length === ids.length && ids.length > 0) {
-      if (!isWoodChangeLocked) {
-        if (top.value !== state.top_wood_id) top.value = state.top_wood_id;
-        if (back.value !== state.back_wood_id) back.value = state.back_wood_id;
-      }
+      if (top.value !== state.top_wood_id) top.value = state.top_wood_id;
+      if (back.value !== state.back_wood_id) back.value = state.back_wood_id;
       return;
     }
     top.innerHTML = "";
@@ -1381,14 +1318,11 @@
       const o2 = o1.cloneNode(true);
       back.appendChild(o2);
     });
-    if (!isWoodChangeLocked) {
-      top.value = state.top_wood_id;
-      back.value = state.back_wood_id;
-    }
+    top.value = state.top_wood_id;
+    back.value = state.back_wood_id;
   }
 
     function applyArgs(rawArgs) {
-      if (isUserDragging) return;
       const data = normalizeArgs(rawArgs);
       const hadTemplates = Boolean(data.templates && Object.keys(data.templates).length);
       isMaterialChangeOnly = detectMaterialChangeOnly(data, hadTemplates);
@@ -1428,8 +1362,8 @@
       });
       const tw = document.getElementById("topWood");
       const bw = document.getElementById("backWood");
-      const topWoodChanged = !isWoodChangeLocked && incomingWoodDiffers("top_wood_id", data);
-      const backWoodChanged = !isWoodChangeLocked && incomingWoodDiffers("back_wood_id", data);
+      const topWoodChanged = incomingWoodDiffers("top_wood_id", data);
+      const backWoodChanged = incomingWoodDiffers("back_wood_id", data);
       if (topWoodChanged) {
         state.top_wood_id = String(data.top_wood_id).toLowerCase();
         if (tw) tw.value = state.top_wood_id;
@@ -1454,7 +1388,7 @@
         if (backWoodChanged) updateBackMaterial();
         if (topWoodChanged || backWoodChanged) renderFrame();
       }
-      if (!isUserDragging && hasOwnPayloadKey(data, "hole_radius")) {
+      if (hasOwnPayloadKey(data, "hole_radius")) {
         const hEl = document.getElementById("holeRadius");
         if (hEl) {
           const capped = effectiveHoleRadius(state.length, state.width, state.hole_radius);
@@ -1464,73 +1398,28 @@
       }
     }
 
-    function beginSliderDrag(ev) {
-      isUserDragging = true;
-      if (ev && ev.target && typeof ev.target.setPointerCapture === "function" && ev.pointerId != null) {
-        try {
-          ev.target.setPointerCapture(ev.pointerId);
-        } catch (_captureErr) { /* ignore */ }
-      }
-    }
-
-    function endSliderDrag() {
-      if (!isUserDragging) return;
-      isUserDragging = false;
-      notifyParamChange();
-    }
-
     ["length", "width", "depth", "topThickness", "holeRadius"].forEach((id) => {
       const el = document.getElementById(id);
       if (!el) return;
-      el.addEventListener("pointerdown", beginSliderDrag, true);
-      el.addEventListener("mousedown", beginSliderDrag, true);
-      el.addEventListener("touchstart", beginSliderDrag, { passive: true, capture: true });
       el.addEventListener("input", preview3dFromSliders);
-      el.addEventListener("pointerup", endSliderDrag);
-      el.addEventListener("mouseup", endSliderDrag);
-      el.addEventListener("touchend", endSliderDrag);
-      el.addEventListener("pointercancel", endSliderDrag);
     });
-    document.addEventListener("pointerup", endSliderDrag);
-    document.addEventListener("mouseup", endSliderDrag);
-    document.addEventListener("touchend", endSliderDrag);
-    document.addEventListener("pointercancel", endSliderDrag);
     document.getElementById("shapeSelect").addEventListener("change", () => {
       state.shape_type = document.getElementById("shapeSelect").value || "Classical";
       const byShape = state.bounds_by_shape || {};
       if (byShape[state.shape_type]) state.bounds = byShape[state.shape_type];
       applySliderBounds();
       preview3dFromSliders();
-      notifyParamChange();
     });
-    function notifyWoodOnlyChange() {
-      lastOutboundRom = {
-        shape_type: state.shape_type,
-        length: num(state.length, 0.49),
-        width: num(state.width, 0.37),
-        depth: num(state.depth, 0.095),
-        top_thickness: num(state.top_thickness, 0.0045),
-        hole_radius: num(state.hole_radius, 0.045),
-        top_wood_id: state.top_wood_id,
-        back_wood_id: state.back_wood_id,
-      };
-      lastRomFp = romFingerprint();
-      setComponentValue(payload("param_change"));
-    }
 
     document.getElementById("topWood").addEventListener("change", function () {
       state.top_wood_id = document.getElementById("topWood").value || "spruce";
-      lockWoodSelects();
       updateTopMaterial();
       renderFrame();
-      notifyWoodOnlyChange();
     });
     document.getElementById("backWood").addEventListener("change", function () {
       state.back_wood_id = document.getElementById("backWood").value || "rosewood";
-      lockWoodSelects();
       updateBackMaterial();
       renderFrame();
-      notifyWoodOnlyChange();
     });
 
     document.getElementById("btnSave").addEventListener("click", () => {
