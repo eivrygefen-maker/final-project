@@ -137,6 +137,7 @@ def _init_session() -> None:
         "_studio_param_change_fp": "",
         "_fast_preview_paths_verified": False,
         "show_mesh_overlay": False,
+        "mesh_is_dirty": True,
         "_mesh_overlay_rom_fp": "",
         "_rom_online_fp": "",
         "rom_frequencies_hz": [],
@@ -590,6 +591,7 @@ def process_fast_preview_event(
         if param_fp == st.session_state.get("_studio_param_change_fp", ""):
             return
         st.session_state._studio_param_change_fp = param_fp
+        st.session_state.mesh_is_dirty = True
         st.session_state.show_mesh_overlay = False
         st.session_state._mesh_overlay_rom_fp = ""
         return
@@ -614,6 +616,7 @@ def process_fast_preview_event(
             geom_fp=geom_fp,
         )
         invalidate_physics_state()
+        st.session_state.mesh_is_dirty = False
         st.session_state.show_mesh_overlay = True
         st.session_state._mesh_overlay_rom_fp = rom_mesh_fingerprint(
             geom, top_wood=top_wood, back_wood=back_wood
@@ -1249,10 +1252,12 @@ def _render_main_studio(
         fixture_preset=fixture_preset,
     )
 
-    if st.session_state.get("show_mesh_overlay"):
-        pinned = str(st.session_state.get("_mesh_overlay_rom_fp", ""))
-        if pinned and rom_fp != pinned:
-            st.session_state.show_mesh_overlay = False
+    pinned_mesh_fp = str(st.session_state.get("_mesh_overlay_rom_fp", ""))
+    if pinned_mesh_fp and rom_fp != pinned_mesh_fp:
+        st.session_state.mesh_is_dirty = True
+        st.session_state.show_mesh_overlay = False
+    elif not pinned_mesh_fp:
+        st.session_state.mesh_is_dirty = True
 
     lhs_params = lhs_params_from_ui(geom, top_wood=top_wood, back_wood=back_wood)
     st.session_state["_geom"] = geom
@@ -1263,7 +1268,7 @@ def _render_main_studio(
     with col_ctrl:
         render_rom_metrics_dashboard(shape)
 
-    if st.session_state.get("show_mesh_overlay"):
+    if st.session_state.get("show_mesh_overlay") and not st.session_state.get("mesh_is_dirty", True):
         with col_vis:
             render_validation_mesh_viewport(
                 geom,
@@ -1271,6 +1276,12 @@ def _render_main_studio(
                 back_wood=back_wood,
                 geom_fp=geom_fp,
                 fixture_preset=fixture_preset,
+            )
+    elif st.session_state.get("mesh_is_dirty") and not st.session_state.get("show_mesh_overlay"):
+        with col_vis:
+            st.caption(
+                "Gmsh validation mesh hidden while you edit — click **Save & Sync** "
+                "or **Regenerate Gmsh mesh** to update and show the compiled mesh."
             )
 
     with col_ctrl:
@@ -1286,6 +1297,7 @@ def _render_main_studio(
                     geom_fp=geom_fp,
                 )
                 invalidate_physics_state()
+                st.session_state.mesh_is_dirty = False
                 st.session_state.show_mesh_overlay = True
                 st.session_state._mesh_overlay_rom_fp = rom_fp
                 st.success("Mesh updated — validation view shown over the studio.")

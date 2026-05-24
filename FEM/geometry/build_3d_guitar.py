@@ -196,89 +196,47 @@ def _vol_center_z(vol_tag: int) -> float:
         return 0.5 * (float(bb[2]) + float(bb[5]))
 
 
+def _remove_occ_volumes(vol_tags: Sequence[int], occ) -> None:
+    """Delete auxiliary OCC volumes (e.g. Boolean tool slabs) from the model."""
+    for tg in vol_tags:
+        try:
+            occ.remove([(3, int(tg))], recursive=True)
+        except Exception:
+            pass
+
+
 def _split_and_fragment_wood_shell_for_conforming_interfaces(
     wood_vols: List[int],
     t: float,
     occ,
 ) -> List[int]:
     """
-    Split hollow display shell into plate/side volumes, then ``occ.fragment`` so
-    plate–rim interfaces share identical mesh nodes (conforming boundary).
+    Keep monolithic hollow shell for display/preview.
+
+    Box-based ``occ.fragment`` plate splitting left rectangular tool slabs in the
+    model (blocky overlay hiding the soundhole). Interface conformity is handled
+    via mesh Distance/Threshold fields on plate–rim curves instead.
     """
-    if len(wood_vols) != 1:
-        if len(wood_vols) > 1:
-            frags, _ = occ.fragment(
-                [(3, int(v)) for v in wood_vols],
-                [],
-                removeObject=True,
-                removeTool=False,
-            )
-            gmsh.model.occ.synchronize()
-            unified = sorted([int(tag) for dim, tag in frags if dim == 3])
-            print(
-                f"[diag] conforming fragment: {len(wood_vols)} volumes → "
-                f"{len(unified)} fragmented (shared interface nodes)"
-            )
-            return unified if unified else wood_vols
-        return wood_vols
+    if len(wood_vols) > 1:
+        frags, _ = occ.fragment(
+            [(3, int(v)) for v in wood_vols],
+            [],
+            removeObject=True,
+            removeTool=False,
+        )
+        gmsh.model.occ.synchronize()
+        unified = sorted([int(tag) for dim, tag in frags if dim == 3])
+        print(
+            f"[diag] conforming fragment: {len(wood_vols)} volumes → "
+            f"{len(unified)} fragmented (shared interface nodes)"
+        )
+        return unified if unified else wood_vols
 
-    v = int(wood_vols[0])
-    xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(3, v)
-    margin = 0.02 * max(float(xmax - xmin), float(ymax - ymin), float(zmax - zmin), 1e-3)
-    dx = (float(xmax) - float(xmin)) + 2.0 * margin
-    dy = (float(ymax) - float(ymin)) + 2.0 * margin
-    t_plate = max(float(t), 1.0e-4)
-    z_top_lo = float(zmax) - t_plate
-    b_bot = occ.addBox(
-        float(xmin) - margin,
-        float(ymin) - margin,
-        float(zmin) - margin,
-        dx,
-        dy,
-        t_plate + margin,
-    )
-    b_top = occ.addBox(
-        float(xmin) - margin,
-        float(ymin) - margin,
-        z_top_lo,
-        dx,
-        dy,
-        t_plate + margin,
-    )
-    gmsh.model.occ.synchronize()
-    split_out, _ = occ.fragment(
-        [(3, v)],
-        [(3, int(b_bot)), (3, int(b_top))],
-        removeObject=True,
-        removeTool=True,
-    )
-    gmsh.model.occ.synchronize()
-    pieces = sorted([int(tag) for dim, tag in split_out if dim == 3])
-    if len(pieces) < 2:
-        print("[diag][warn] plate/side split produced <2 volumes; keeping monolithic shell")
-        return wood_vols
-
-    pieces.sort(key=_vol_center_z)
-    back_v = pieces[0]
-    top_v = pieces[-1]
-    side_vs = pieces[1:-1] if len(pieces) > 2 else []
-    vol_tags = [back_v] + side_vs + [top_v]
-    if len(vol_tags) < 2:
-        return wood_vols
-
-    frags, _ = occ.fragment(
-        [(3, int(tg)) for tg in vol_tags],
-        [],
-        removeObject=True,
-        removeTool=False,
-    )
-    gmsh.model.occ.synchronize()
-    unified = sorted([int(tag) for dim, tag in frags if dim == 3])
     print(
-        f"[diag] conforming shell: 1 vol → {len(pieces)} pieces → "
-        f"fragment {len(unified)} vols (plate/rim nodes matched)"
+        "[diag] display shell: skipping box-split fragment (avoids OCC tool slabs); "
+        "using monolithic hollow shell + soundhole cut + interface mesh fields"
     )
-    return unified if unified else wood_vols
+    return wood_vols
 
 
 def audit_enabled() -> bool:
