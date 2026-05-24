@@ -15,6 +15,7 @@
         "exploded_view": false,
         "top_thickness": 0.003,
         "back_thickness": 0.0033000000000000004,
+        "mesh_mode": "fom",
         "soundhole_x": 0.0,
         "soundhole_from_neck_ratio": 0.5,
         "bridge_x": -0.12

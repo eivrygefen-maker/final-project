@@ -37,6 +37,7 @@ FOM_CASE: Dict[str, Any] = {
     "geometry.depth": 0.10,
     "geometry.top_thickness": 0.003,
     "geometry.hole_radius": 0.047,
+    "geometry.mesh_mode": "fom",
     "materials.top.wood_id": "spruce",
     "materials.back.wood_id": "rosewood",
 }
