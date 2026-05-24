@@ -5577,7 +5577,6 @@ def _solve_coupled_evp(
         mins = np.min(coords, axis=0)
         maxs = np.max(coords, axis=0)
         diag = float(np.linalg.norm(maxs - mins))
-        tol_p = max(1.0e-9, 1.0e-5 * max(1.0, diag))
 
         if pressure_gauge == "soundhole":
             p_gauge_facets = soundhole_facets
@@ -5604,27 +5603,26 @@ def _solve_coupled_evp(
         else:
             air_cell_idx = cell_tags.find(AIR_VOLUME_TAG)
             if air_cell_idx.size > 0:
-                msh.topology.create_connectivity(tdim, 0)
-                c_to_v = msh.topology.connectivity(tdim, 0)
-                mid_cell = int(air_cell_idx[air_cell_idx.size // 2])
-                vidx = c_to_v.links(mid_cell)
-                p_anchor = np.mean(coords[vidx], axis=0)
-
-                def _p_air_anchor(x):
-                    d = np.linalg.norm(x.T - p_anchor, axis=1)
-                    return d < tol_p
-
+                anchor_cell = int(air_cell_idx[air_cell_idx.size // 2])
                 p_gauge_dofs_v = np.asarray(
-                    fem.locate_dofs_geometrical(V_p, _p_air_anchor),
+                    fem.locate_dofs_topological(
+                        V_p, tdim, np.asarray([anchor_cell], dtype=np.int32)
+                    ),
                     dtype=np.int32,
                 ).ravel()
                 if p_gauge_dofs_v.size > 1:
                     p_gauge_dofs_v = p_gauge_dofs_v[:1].copy()
-                _emit(
-                    f"[bc] pressure gauge: single interior air anchor (tag {AIR_VOLUME_TAG}) "
-                    f"near {p_anchor.tolist()} (solver.pressure_gauge=air_interior).",
-                    status_callback=status_callback,
-                )
+                if p_gauge_dofs_v.size > 0:
+                    msh.topology.create_connectivity(tdim, 0)
+                    c_to_v = msh.topology.connectivity(tdim, 0)
+                    vidx = c_to_v.links(anchor_cell)
+                    p_anchor = np.mean(coords[vidx], axis=0)
+                    _emit(
+                        f"[bc] pressure gauge: single interior air anchor (tag {AIR_VOLUME_TAG}) "
+                        f"near {p_anchor.tolist()} (cell={anchor_cell}, "
+                        f"solver.pressure_gauge=air_interior, n_dof={p_gauge_dofs_v.size}).",
+                        status_callback=status_callback,
+                    )
             if p_gauge_dofs_v.size == 0:
                 p_gauge_dofs_v = np.asarray(
                     fem.locate_dofs_topological(
