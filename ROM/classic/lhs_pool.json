@@ -7,6 +7,22 @@
   "mpi_world_size": 0,
   "entries": [
     {
+      "id": "sample_000",
+      "parameters": {
+        "top_wood_id": "spruce",
+        "back_wood_id": "rosewood",
+        "geometry.length": 0.48,
+        "geometry.width": 0.325,
+        "geometry.depth": 0.1,
+        "geometry.top_thickness": 0.003,
+        "geometry.hole_radius": 0.047,
+        "geometry.back_thickness": 0.0033
+      },
+      "status": "pending",
+      "snapshot_file": null,
+      "error": null
+    },
+    {
       "id": "sample_001",
       "parameters": {
         "back_wood_id": "mahogany",
