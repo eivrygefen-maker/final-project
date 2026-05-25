@@ -842,8 +842,9 @@ def create_guitar_mesh():
         # FSI engineering mesh: internal air cavity + shared interface with wood.
         if use_air_opening_geom and hole_cyl is None:
             bb_in = gmsh.model.getBoundingBox(3, int(vol_in_id))
-            z_hole_lo = float(bb_in[2]) - 0.002
-            z_hole_hi = float(bb_in[5]) + 0.002
+            z_top_in = float(bb_in[5])
+            z_hole_lo = z_top_in - 0.006
+            z_hole_hi = z_top_in + 0.001
             hole_cyl = int(
                 occ.addCylinder(
                     hole_x,
@@ -856,9 +857,9 @@ def create_guitar_mesh():
                 )
             )
             print(
-                "[diag] validation air-opening CAD: full-height soundhole cutter "
+                "[diag] validation air-opening CAD: top-lid soundhole cutter "
                 f"z=[{z_hole_lo:.4f},{z_hole_hi:.4f}] r={hr:.4f} m "
-                "(inner air pocket pierced before fragment)"
+                "(pierces inner air lid only; no full-height throat)"
             )
         elif hole_cyl is None:
             z_hole_lo = (D / 2.0) - t - 0.001
@@ -1433,46 +1434,148 @@ def create_guitar_mesh():
             print(ln, flush=True)
         return json_path
 
-    def _select_soundhole_air_cavity_opening_surfaces(
+    def _imprint_validation_soundhole_aperture_disk(
+        air_vol_tag: int,
+        *,
+        hx: float,
+        hy: float,
+        hole_r: float,
+    ) -> Tuple[float, int]:
+        """
+        Imprint a planar disk on the air volume top boundary so the soundhole mouth is a
+        dedicated CAD surface (validation / opt-in only).
+        """
+        bb = gmsh.model.getBoundingBox(3, int(air_vol_tag))
+        z_plane = float(bb[5]) - 5.0e-6
+        disk_tag = int(occ.addDisk(float(hx), float(hy), z_plane, float(hole_r)))
+        occ.synchronize()
+        out, _map = _audit_boolean(
+            "validation_soundhole_aperture_imprint",
+            occ.fragment,
+            [(3, int(air_vol_tag))],
+            [(2, disk_tag)],
+            removeObject=False,
+            removeTool=True,
+        )
+        occ.synchronize()
+        air_out = int(air_vol_tag)
+        for dim, tag in out:
+            if int(dim) == 3:
+                air_out = int(tag)
+                break
+        print(
+            "[diag] validation soundhole aperture disk imprint: "
+            f"z_plane={z_plane:.6f} r={hole_r:.4f} air_vol={air_out}"
+        )
+        return z_plane, air_out
+
+    def _select_validation_soundhole_aperture_surfaces(
         air_boundary_surfs: list,
         *,
         hx: float,
         hy: float,
         hole_r: float,
-        air_vol_tag: Optional[int] = None,
-        depth_m: float = 0.0,
-        shell_t: float = 0.0,
+        z_plane: float,
     ) -> list:
         """
-        Facets on the **air volume** exterior boundary that form the soundhole opening.
+        Select only the circular external air-side aperture (not cavity walls or lids).
 
-        Used for FEM_VALIDATION_MESH (and opt-in ``FEM_SOUNDHOLE_TAG_AIR_OPENING=1``) so
-        tag 2 lies on the cavity mouth (adjacent to air tag 10), not on exterior wood top
-        plate facets selected by upward normal in the hole disk.
+        Requires prior disk imprint; matches area, span, centroid, +Z normal, and z band.
         """
         if not air_boundary_surfs:
             return []
-        if air_vol_tag is not None:
-            bb = gmsh.model.getBoundingBox(3, int(air_vol_tag))
-            z_lo = float(bb[2]) - 0.001
-            z_hi = float(bb[5]) + 0.001
-        else:
-            z_top_outer = float(depth_m) / 2.0
-            z_lo = z_top_outer - float(shell_t) - 0.004
-            z_hi = z_top_outer + 0.003
-        r_cap = float(hole_r) * 1.5
-        out: list = []
+        expected = math.pi * float(hole_r) * float(hole_r)
+        a_lo = 0.85 * expected
+        a_hi = 1.15 * expected
+        z_tol = 0.008
+        r_cent_max = 1.05 * float(hole_r)
+        span_max = 2.05 * float(hole_r)
+        scored: list = []
         for s in sorted(int(x) for x in air_boundary_surfs):
-            try:
-                cx, cy, cz = get_surface_center(s)
-            except Exception:
+            area = _surface_area_m(int(s))
+            if not (a_lo <= area <= a_hi):
                 continue
-            if float(cz) < z_lo or float(cz) > z_hi:
+            cx, cy, cz = get_surface_center(int(s))
+            if math.hypot(float(cx) - float(hx), float(cy) - float(hy)) > r_cent_max:
                 continue
-            if math.hypot(float(cx) - float(hx), float(cy) - float(hy)) > r_cap:
+            if abs(float(cz) - float(z_plane)) > z_tol:
                 continue
-            out.append(int(s))
-        return sorted(set(out))
+            xmin, ymin, _zmin, xmax, ymax, _zmax = gmsh.model.getBoundingBox(2, int(s))
+            span_xy = max(float(xmax) - float(xmin), float(ymax) - float(ymin))
+            if span_xy > span_max:
+                continue
+            nz = get_surface_normal_signed_z(int(s))
+            if nz is None or float(nz) < 0.85:
+                continue
+            scored.append((int(s), float(area), abs(float(area) - expected)))
+        if not scored:
+            return []
+        scored.sort(key=lambda row: row[2])
+        best_area = scored[0][1]
+        return sorted(
+            {
+                row[0]
+                for row in scored
+                if abs(row[1] - best_area) <= 0.05 * expected
+            }
+        )
+
+    def _validate_validation_soundhole_aperture_cad(
+        soundhole_surfs: list,
+        *,
+        hx: float,
+        hy: float,
+        hole_r: float,
+        z_plane: float,
+    ) -> dict:
+        """Pre-mesh CAD acceptance for validation soundhole tag 2."""
+        expected = math.pi * float(hole_r) * float(hole_r)
+        if not soundhole_surfs:
+            raise RuntimeError(
+                "FEM_VALIDATION_MESH: no dedicated soundhole aperture surface after "
+                "disk imprint (tag 2 would be empty)."
+            )
+        total_area = sum(_surface_area_m(int(s)) for s in soundhole_surfs)
+        if not (0.85 * expected <= total_area <= 1.15 * expected):
+            raise RuntimeError(
+                "FEM_VALIDATION_MESH: soundhole aperture CAD area "
+                f"{total_area:.8f} m² outside ±15% of πr²={expected:.8f} m² "
+                f"(surfaces={soundhole_surfs})."
+            )
+        r_max = 0.0
+        z_vals: list = []
+        horiz_ok = 0
+        for s in soundhole_surfs:
+            cx, cy, cz = get_surface_center(int(s))
+            r_max = max(r_max, math.hypot(float(cx) - float(hx), float(cy) - float(hy)))
+            z_vals.append(float(cz))
+            nz = get_surface_normal_signed_z(int(s))
+            if nz is not None and float(nz) >= 0.85:
+                horiz_ok += 1
+        if r_max > 0.050:
+            raise RuntimeError(
+                f"FEM_VALIDATION_MESH: soundhole aperture radial extent {r_max:.6f} m "
+                f"> 0.050 m (r={hole_r:.4f} m)."
+            )
+        z_span = max(z_vals) - min(z_vals) if z_vals else float("inf")
+        if z_span > 0.012:
+            raise RuntimeError(
+                f"FEM_VALIDATION_MESH: soundhole aperture z-span {z_span:.6f} m "
+                "(expected planar disk near external opening)."
+            )
+        if horiz_ok < len(soundhole_surfs):
+            raise RuntimeError(
+                "FEM_VALIDATION_MESH: soundhole aperture surface(s) not horizontal (+Z)."
+            )
+        return {
+            "cad_surface_tags": [int(s) for s in soundhole_surfs],
+            "total_area_m2": float(total_area),
+            "expected_area_m2": float(expected),
+            "radial_max_m": float(r_max),
+            "z_plane_m": float(z_plane),
+            "z_span_m": float(z_span),
+            "n_surfaces": len(soundhole_surfs),
+        }
 
     def _select_soundhole_disk_centroid_fallback(
         shell_tags, z_plane, z_tol, hx, hy, hole_r
@@ -1533,24 +1636,41 @@ def create_guitar_mesh():
             hole_x=float(hole_x),
             hole_y=float(hole_y),
         )
-        soundhole_surfs = _select_soundhole_air_cavity_opening_surfaces(
+        z_aperture_plane, air_vol_tag = _imprint_validation_soundhole_aperture_disk(
+            int(air_vols[0]),
+            hx=float(hole_x),
+            hy=float(hole_y),
+            hole_r=float(hr),
+        )
+        air_vols[0] = int(air_vol_tag)
+        air_boundary_surfs = get_boundary_tags([(3, int(air_vols[0]))], 2)
+        soundhole_surfs = _select_validation_soundhole_aperture_surfaces(
             sorted(air_boundary_surfs),
             hx=float(hole_x),
             hy=float(hole_y),
             hole_r=float(hr),
-            air_vol_tag=int(air_vols[0]) if air_vols else None,
-            depth_m=float(D),
-            shell_t=float(t),
+            z_plane=float(z_aperture_plane),
+        )
+        cad_gate = _validate_validation_soundhole_aperture_cad(
+            soundhole_surfs,
+            hx=float(hole_x),
+            hy=float(hole_y),
+            hole_r=float(hr),
+            z_plane=float(z_aperture_plane),
         )
         print(
-            f"[diag] soundhole tag 2: air-cavity opening selection n={len(soundhole_surfs)} "
-            f"(validation/opt-in; adjacent to air vol 10 only)"
+            f"[diag] soundhole tag 2: validation aperture surfaces n={len(soundhole_surfs)} "
+            f"CAD tags={cad_gate['cad_surface_tags']} area={cad_gate['total_area_m2']:.6f} m² "
+            f"(disk imprint; not broad air-boundary picker)"
         )
+        if is_validation:
+            gate_path = out_file.parent / "soundhole_aperture_cad_gate.json"
+            gate_path.write_text(json.dumps(cad_gate, indent=2), encoding="utf-8")
+            print(f"[diag] wrote validation CAD aperture gate: {gate_path}")
         if not soundhole_surfs:
             raise RuntimeError(
-                "FEM_VALIDATION_MESH: air-cavity soundhole picker returned 0 surfaces. "
-                "Legacy wood-top / disk-centroid tagging is disabled for validation "
-                "(proven acoustically invalid: tag-2 facets not adjacent to air tag 10). "
+                "FEM_VALIDATION_MESH: dedicated soundhole aperture surface not found after "
+                "disk imprint. Legacy wood-top / broad air-boundary tagging is disabled. "
                 f"Inspect CAD audit: {audit_json} and {audit_stem.with_suffix('.md')}"
             )
     elif not shell_only:
@@ -2143,6 +2263,122 @@ def create_guitar_mesh():
                 )
 
         _audit_soundhole_boundary_mesh()
+
+        def _validation_gate_soundhole_aperture_post_mesh() -> None:
+            """Fail validation mesh build if tag-2 is not a single circular aperture."""
+            if not (is_validation and use_air_opening_tag and not shell_only):
+                return
+            expected = math.pi * float(hr) * float(hr)
+            a_lo, a_hi = 0.85 * expected, 1.15 * expected
+            try:
+                entities = gmsh.model.getEntitiesForPhysicalGroup(2, 2)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"FEM_VALIDATION_MESH post-mesh gate: soundhole group 2 missing: {exc}"
+                ) from exc
+            surf_tags: list = []
+            cad_area = 0.0
+            r_max = 0.0
+            z_vals: list = []
+            horiz = 0
+            for ent in entities:
+                if isinstance(ent, (list, tuple)) and len(ent) >= 2:
+                    dim_e, tag_e = int(ent[0]), int(ent[1])
+                else:
+                    dim_e, tag_e = 2, int(ent)
+                if dim_e != 2:
+                    continue
+                surf_tags.append(int(tag_e))
+                cad_area += _surface_area_m(int(tag_e))
+                cx, cy, cz = get_surface_center(int(tag_e))
+                r_max = max(
+                    r_max,
+                    math.hypot(float(cx) - float(hole_x), float(cy) - float(hole_y)),
+                )
+                z_vals.append(float(cz))
+                nz = get_surface_normal_signed_z(int(tag_e))
+                if nz is not None and float(nz) >= 0.85:
+                    horiz += 1
+            def _triangle_area_m(c0, c1, c2):
+                ax, ay, az = (
+                    float(c1[0]) - float(c0[0]),
+                    float(c1[1]) - float(c0[1]),
+                    float(c1[2]) - float(c0[2]),
+                )
+                bx, by, bz = (
+                    float(c2[0]) - float(c0[0]),
+                    float(c2[1]) - float(c0[1]),
+                    float(c2[2]) - float(c0[2]),
+                )
+                cx = ay * bz - az * by
+                cy = az * bx - ax * bz
+                cz = ax * by - ay * bx
+                return 0.5 * math.sqrt(cx * cx + cy * cy + cz * cz)
+
+            mesh_area = 0.0
+            for tag_e in surf_tags:
+                _types, elem_tags, node_tags = gmsh.model.mesh.getElements(2, int(tag_e))
+                for etype, et_arr, nt_arr in zip(_types, elem_tags, node_tags):
+                    if int(etype) != 2:
+                        continue
+                    nodes = [int(n) for n in nt_arr]
+                    for i in range(0, len(nodes), 3):
+                        coords = [
+                            gmsh.model.mesh.getNode(int(nodes[i + k]))[1] for k in range(3)
+                        ]
+                        mesh_area += _triangle_area_m(coords[0], coords[1], coords[2])
+                        for c in coords:
+                            r_max = max(
+                                r_max,
+                                math.hypot(
+                                    float(c[0]) - float(hole_x),
+                                    float(c[1]) - float(hole_y),
+                                ),
+                            )
+                            z_vals.append(float(c[2]))
+            z_span = max(z_vals) - min(z_vals) if z_vals else float("inf")
+            failures: list = []
+            if not surf_tags:
+                failures.append("physical group 2 has no surfaces")
+            if not (a_lo <= cad_area <= a_hi):
+                failures.append(
+                    f"CAD area {cad_area:.8f} m² not in [{a_lo:.8f},{a_hi:.8f}]"
+                )
+            if mesh_area > 0.0 and not (a_lo <= mesh_area <= a_hi):
+                failures.append(
+                    f"mesh triangle area {mesh_area:.8f} m² not in [{a_lo:.8f},{a_hi:.8f}]"
+                )
+            if r_max > 0.050:
+                failures.append(f"radial max {r_max:.6f} m > 0.050 m")
+            if z_span > 0.012:
+                failures.append(f"z-span {z_span:.6f} m > 0.012 m (not planar)")
+            if surf_tags and horiz < len(surf_tags):
+                failures.append("not all aperture surfaces horizontal (+Z)")
+            if failures:
+                raise RuntimeError(
+                    "FEM_VALIDATION_MESH post-mesh soundhole aperture gate FAILED: "
+                    + "; ".join(failures)
+                    + f" (surfaces={surf_tags}, n_cad={len(surf_tags)})."
+                )
+            gate = {
+                "cad_surface_tags": surf_tags,
+                "cad_area_m2": float(cad_area),
+                "mesh_triangle_area_m2": float(mesh_area),
+                "expected_area_m2": float(expected),
+                "radial_max_m": float(r_max),
+                "z_span_m": float(z_span),
+                "gate_pass": True,
+            }
+            gate_path = out_file.parent / "soundhole_aperture_mesh_gate.json"
+            gate_path.write_text(json.dumps(gate, indent=2), encoding="utf-8")
+            print(
+                "[diag] VALIDATION soundhole aperture post-mesh gate PASS: "
+                f"cad_area={cad_area:.8f} m² mesh_area={mesh_area:.8f} m² "
+                f"r_max={r_max:.6f} m z_span={z_span:.6f} m surfaces={surf_tags}"
+            )
+
+        if is_validation and use_air_opening_tag and not shell_only:
+            _validation_gate_soundhole_aperture_post_mesh()
 
         if is_fom and not shell_only:
             node_tags, _, _ = gmsh.model.mesh.getNodes()
