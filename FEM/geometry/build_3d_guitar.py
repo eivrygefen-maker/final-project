@@ -1271,29 +1271,85 @@ def create_guitar_mesh():
         _validation_assert_live_solids(stage)
         print(f"[diag] validation OCC dedupe-only ({stage})", flush=True)
 
-    def _validation_fragment_map_volume_descendants(
+    def _validation_fragment_map_entries_to_volume_ids(mapped: list) -> list:
+        out: list = []
+        if not mapped:
+            return out
+        for ent in mapped:
+            if isinstance(ent, (list, tuple)) and len(ent) >= 2:
+                dim_e, tag_e = int(ent[0]), int(ent[1])
+            else:
+                continue
+            if dim_e == 3:
+                out.append(int(tag_e))
+        return sorted(set(out))
+
+    def _validation_fragment_lineage_by_input(
         frag_map: list,
-        input_dimtags: list,
-    ) -> list:
-        """Volume tags descended from one or more fragment input (dim,tag) entities."""
-        if not frag_map or not input_dimtags:
-            return []
-        out: set = set()
-        n_inputs = len(input_dimtags)
-        for i, dt_in in enumerate(input_dimtags):
-            if i >= len(frag_map):
-                continue
-            mapped = frag_map[i]
-            if not mapped:
-                continue
-            for ent in mapped:
-                if isinstance(ent, (list, tuple)) and len(ent) >= 2:
-                    dim_e, tag_e = int(ent[0]), int(ent[1])
-                else:
-                    continue
-                if dim_e == 3:
-                    out.add(int(tag_e))
-        return sorted(out)
+        *,
+        wood_input_dimtags: list,
+        air_input_dimtags: list,
+        stage: str,
+    ) -> Tuple[dict, dict, set, set]:
+        """
+        Parse Gmsh occ.fragment(objectDimTags, toolDimTags) outDimTagsMap.
+
+        Map index i aligns with object inputs first, then tool inputs:
+          i in [0, n_object) → objectDimTags[i]
+          i in [n_object, n_object+n_tool) → toolDimTags[i - n_object]
+        """
+        wood_inputs = [(int(d), int(t)) for d, t in wood_input_dimtags if int(d) == 3]
+        air_inputs = [(int(d), int(t)) for d, t in air_input_dimtags if int(d) == 3]
+        n_object = len(wood_inputs)
+
+        wood_by_input: dict = {}
+        air_by_input: dict = {}
+        wood_from_map: set = set()
+        air_from_map: set = set()
+
+        print(
+            f"[diag] validation fragment map ({stage}): "
+            f"n_map={len(frag_map)} n_object={n_object} n_tool={len(air_inputs)}",
+            flush=True,
+        )
+        for i, dt_in in enumerate(wood_inputs):
+            mapped = frag_map[i] if i < len(frag_map) else []
+            vols = _validation_fragment_map_entries_to_volume_ids(mapped)
+            wood_by_input[f"object_{i}"] = {
+                "map_index": int(i),
+                "input_dimtag": [int(dt_in[0]), int(dt_in[1])],
+                "descendant_volume_ids": vols,
+                "raw_map_entry": [[int(a), int(b)] for a, b in mapped]
+                if mapped
+                else [],
+            }
+            wood_from_map.update(vols)
+            print(
+                f"[diag] validation fragment map ({stage}): "
+                f"wood object input [{dt_in[0]},{dt_in[1]}] idx={i} → volumes {vols}",
+                flush=True,
+            )
+
+        for j, dt_in in enumerate(air_inputs):
+            idx = n_object + j
+            mapped = frag_map[idx] if idx < len(frag_map) else []
+            vols = _validation_fragment_map_entries_to_volume_ids(mapped)
+            air_by_input[f"tool_{j}"] = {
+                "map_index": int(idx),
+                "input_dimtag": [int(dt_in[0]), int(dt_in[1])],
+                "descendant_volume_ids": vols,
+                "raw_map_entry": [[int(a), int(b)] for a, b in mapped]
+                if mapped
+                else [],
+            }
+            air_from_map.update(vols)
+            print(
+                f"[diag] validation fragment map ({stage}): "
+                f"air tool input [{dt_in[0]},{dt_in[1]}] idx={idx} → volumes {vols}",
+                flush=True,
+            )
+
+        return wood_by_input, air_by_input, wood_from_map, air_from_map
 
     def _validation_air_witness_points(
         *,
@@ -1339,10 +1395,10 @@ def create_guitar_mesh():
         stage: str,
     ) -> Tuple[list, list, dict]:
         """
-        Classify fragment outputs: all air-input descendants + witness-confirmed volumes.
+        Classify fragment outputs using correct object/tool map indices + air witnesses.
 
-        Conformal fragment can split fused cavity+channel into multiple air volumes;
-        tag 10 may include several conformal descendants that together span the air path.
+        Air = tool-input descendants that register at least one air witness probe.
+        Wood = remaining fragment volumes (typically object-input descendants).
         """
         vols = sorted({int(v) for v in fragment_vol_tags})
         if not vols:
@@ -1350,16 +1406,15 @@ def create_guitar_mesh():
                 f"FEM_VALIDATION_MESH: fragment at '{stage}' produced no 3D volumes."
             )
 
-        wood_inputs = [(int(d), int(t)) for d, t in wood_input_dimtags if int(d) == 3]
-        air_inputs = [(int(d), int(t)) for d, t in air_input_dimtags if int(d) == 3]
-        air_input_ids = [int(t) for _d, t in air_inputs]
-
-        wood_from_map = set(
-            _validation_fragment_map_volume_descendants(frag_map, wood_inputs)
-        )
-        air_from_map = set(
-            _validation_fragment_map_volume_descendants(
-                frag_map, air_inputs
+        air_input_ids = [
+            int(t) for d, t in air_input_dimtags if int(d) == 3
+        ]
+        wood_by_input, air_by_input, wood_from_map, air_from_map = (
+            _validation_fragment_lineage_by_input(
+                frag_map,
+                wood_input_dimtags=wood_input_dimtags,
+                air_input_dimtags=air_input_dimtags,
+                stage=stage,
             )
         )
 
@@ -1388,22 +1443,21 @@ def create_guitar_mesh():
             for vid in inside_ids:
                 witness_by_vol[int(vid)].append(label)
 
-        opening_labels = {"below_top_lid_at_hole", "near_soundhole_opening"}
-        air_witness = {
-            int(v)
-            for v in vols
-            if opening_labels.intersection(witness_by_vol.get(int(v), []))
+        air_witness_hits = {
+            int(v) for v in vols if witness_by_vol.get(int(v))
         }
-        cavity_witness = {
-            int(v)
-            for v in vols
-            if witness_by_vol.get(int(v))
-        }
-
-        air_vols_out = sorted(air_from_map | air_witness)
-        if not air_vols_out and cavity_witness:
-            air_vols_out = sorted(cavity_witness)
+        # Air: tool lineage only, each volume must pass at least one witness probe.
+        air_vols_out = sorted(
+            int(v) for v in air_from_map if witness_by_vol.get(int(v))
+        )
         if not air_vols_out:
+            # Witness-only fallback: non-wood-map volumes with probes (map may be empty).
+            air_vols_out = sorted(
+                int(v)
+                for v in air_witness_hits
+                if int(v) not in wood_from_map
+            )
+        if not air_vols_out and air_input_ids:
             air_ref = _entity_center_of_mass(3, int(air_input_ids[0]))
             air_vols_out = [
                 min(
@@ -1420,7 +1474,11 @@ def create_guitar_mesh():
             )
 
         air_set = set(air_vols_out)
-        wood_vols_out = sorted(int(v) for v in vols if int(v) not in air_set)
+        wood_vols_out = sorted(
+            int(v)
+            for v in (wood_from_map | {int(x) for x in vols if int(x) not in air_set})
+            if int(v) not in air_set
+        )
 
         air_bb = [
             float("inf"),
@@ -1442,12 +1500,18 @@ def create_guitar_mesh():
 
         lineage = {
             "stage": str(stage),
+            "fragment_map_layout": "object_inputs_first_then_tool_inputs",
             "air_input_volume_ids": air_input_ids,
-            "wood_input_volume_ids": [int(t) for _d, t in wood_inputs],
+            "wood_input_volume_ids": [
+                int(row["input_dimtag"][1]) for row in wood_by_input.values()
+            ],
             "fragment_output_volume_ids": vols,
-            "air_descendants_from_fragment_map": sorted(air_from_map),
-            "wood_descendants_from_fragment_map": sorted(wood_from_map),
-            "air_volumes_from_opening_witnesses": sorted(air_witness),
+            "wood_lineage_by_input": wood_by_input,
+            "air_lineage_by_input": air_by_input,
+            "air_descendants_from_tool_map": sorted(air_from_map),
+            "wood_descendants_from_object_map": sorted(wood_from_map),
+            "air_volumes_with_witness_hits": sorted(air_witness_hits),
+            "air_descendants_confirmed_by_witness": air_vols_out,
             "witness_point_table": witness_table,
             "classified_air_volume_ids": air_vols_out,
             "classified_wood_volume_ids": wood_vols_out,
@@ -1455,8 +1519,9 @@ def create_guitar_mesh():
         }
         print(
             f"[diag] validation air lineage ({stage}): "
-            f"air_input={air_input_ids} map_descendants={sorted(air_from_map)} "
-            f"witness_add={sorted(air_witness)} final_air={air_vols_out} "
+            f"air_input={air_input_ids} tool_map_descendants={sorted(air_from_map)} "
+            f"witness_hits={sorted(air_witness_hits)} confirmed_air={air_vols_out} "
+            f"wood_map_descendants={sorted(wood_from_map)} final_wood={wood_vols_out} "
             f"air_z_span={air_z_span:.4f} m",
             flush=True,
         )
