@@ -2893,8 +2893,8 @@ def _coupled_am_assembly_block_lists(
     interface ``meshtags_ds(tag 20)`` Nitsche penalties are UFL-summed into one form.
     Assemble each block on mixed ``W`` and sum with PETSc ``axpy`` instead.
 
-    When ``allow_empty_coupling`` is True (decoupled-union diagnostic), omit absent
-    coupling/Nitsche blocks instead of calling ``_ufl_add_terms`` on an empty list.
+    When ``allow_empty_coupling`` is True (decoupled-union or v2 coupling_disabled),
+    omit absent coupling/Nitsche blocks instead of calling ``_ufl_add_terms`` on an empty list.
     """
     a11 = _ufl_add_terms(a_pp, reg_p)
     a_couple_terms = [t for t in (a_up, a_pu) if t is not None]
@@ -2905,7 +2905,7 @@ def _coupled_am_assembly_block_lists(
         if not allow_empty_coupling:
             raise RuntimeError(
                 "coupled assembly: both A_up and A_pu are missing "
-                "(unexpected outside coupled_decoupled_union_diagnosis)."
+                "(unexpected outside decoupled_union or core_v2 coupling_disabled)."
             )
     A_blocks: List[Tuple[str, Any, List[fem.DirichletBC]]] = [
         ("uu", a_uu, []),
@@ -2930,7 +2930,7 @@ def _coupled_am_assembly_block_lists(
     elif not allow_empty_coupling:
         raise RuntimeError(
             "coupled assembly: M_pu mass coupling block is missing "
-            "(unexpected outside coupled_decoupled_union_diagnosis)."
+            "(unexpected outside decoupled_union or core_v2 coupling_disabled)."
         )
     if nit_pu_m is not None:
         M_blocks.append(("nit_pu", nit_pu_m, []))
@@ -2953,6 +2953,7 @@ def _assemble_coupled_AM_operators(
     nit_pu_m,
     status_callback=None,
     allow_empty_coupling: bool = False,
+    empty_coupling_label: str = "",
 ) -> Tuple[PETSc.Mat, PETSc.Mat]:
     """
     Assemble coupled (A, M) with correct mixed off-diagonal layout.
@@ -3015,11 +3016,19 @@ def _assemble_coupled_AM_operators(
     if allow_empty_coupling and MPI.COMM_WORLD.rank == ROOT_RANK:
         a_names = [n for n, _f, _b in A_blocks]
         m_names = [n for n, _f, _b in M_blocks]
-        print(
-            "[physics_integrity][decoupled_union] assembled blocks: "
-            f"A={a_names} M={m_names}; excluded coupling/nitsche blocks confirmed absent",
-            flush=True,
-        )
+        if empty_coupling_label == "core_v2_coupling_disabled":
+            print(
+                "[physics_integrity][coupled_physical_core_v2] "
+                f"coupling_disabled assembled blocks: A={a_names} M={m_names}; "
+                "reduced active air-pressure restriction enabled",
+                flush=True,
+            )
+        else:
+            print(
+                "[physics_integrity][decoupled_union] assembled blocks: "
+                f"A={a_names} M={m_names}; excluded coupling/nitsche blocks confirmed absent",
+                flush=True,
+            )
     if has_nitsche and MPI.COMM_WORLD.rank == ROOT_RANK:
         nit_labels = [n for n, _f, _b in A_blocks if n.startswith("nit_")]
         nit_m = [n for n, _f, _b in M_blocks if n.startswith("nit_")]
@@ -6903,6 +6912,7 @@ def _solve_coupled_evp(
         sys.stdout.flush()
     use_blockwise = _solver_bool(solver_cfg, "coupled_blockwise_assembly", default=True)
     reg_p_block = reg_p if diag_shift > 0.0 else None
+    v2_coupling_disabled = core_v2_diag and not coupling_v2_diag
     if use_blockwise:
         A, M = _assemble_coupled_AM_operators(
             a_uu=a_uu,
@@ -6918,8 +6928,20 @@ def _solve_coupled_evp(
             nit_pu_a=nit_pu_a,
             nit_pu_m=nit_pu_m,
             status_callback=status_callback,
-            allow_empty_coupling=decoupled_union
-            or (fsi_continuation and abs(alpha_fsi) <= 1.0e-15),
+            allow_empty_coupling=(
+                decoupled_union
+                or (fsi_continuation and abs(alpha_fsi) <= 1.0e-15)
+                or v2_coupling_disabled
+            ),
+            empty_coupling_label=(
+                "core_v2_coupling_disabled"
+                if v2_coupling_disabled
+                else (
+                    "decoupled_union"
+                    if decoupled_union
+                    else "fsi_continuation_alpha0"
+                )
+            ),
         )
     else:
         A = _assemble_coupled_matrix_safe(a_form, [], label="coupled_stiffness_A")
@@ -6950,14 +6972,22 @@ def _solve_coupled_evp(
         probe_spec["wood_u_parent_n"] = int(wood_u_parent.size)
     zero_fsi_continuation = (
         fsi_continuation and abs(alpha_fsi) <= 1.0e-15
-    ) or (core_v2_diag and not coupling_v2_diag)
+    ) or v2_coupling_disabled
     if zero_fsi_continuation:
         if MPI.COMM_WORLD.rank == ROOT_RANK:
-            print(
-                "[physics_integrity][physical_fsi_continuation] "
-                "alpha_fsi=0: zero coupling expected; nonzero-coupling layout audit skipped",
-                flush=True,
-            )
+            if v2_coupling_disabled:
+                print(
+                    "[physics_integrity][coupled_physical_core_v2] "
+                    "coupling_disabled: zero physical coupling expected; "
+                    "nonzero-coupling audits skipped",
+                    flush=True,
+                )
+            else:
+                print(
+                    "[physics_integrity][physical_fsi_continuation] "
+                    "alpha_fsi=0: zero coupling expected; nonzero-coupling layout audit skipped",
+                    flush=True,
+                )
         matvec_diag: Dict[str, float] = {}
         assembly_matvec_diag: Dict[str, float] = {}
     else:
