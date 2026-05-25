@@ -2024,6 +2024,349 @@ def create_guitar_mesh():
             print(ln, flush=True)
         return json_path
 
+    def _near_disk_air_boundary_surfaces(
+        air_boundary_surfs: list,
+        *,
+        hx: float,
+        hy: float,
+        hole_r: float,
+        depth_m: float,
+        shell_t: float,
+    ) -> list:
+        """Air-boundary facets in the relaxed soundhole disk (matches CAD-AUDIT near_disk)."""
+        z_top_outer = float(depth_m) / 2.0
+        z_near_lo = z_top_outer - float(shell_t) - 0.015
+        z_near_hi = z_top_outer + 0.008
+        r_cap = float(hole_r) * 1.5
+        out: list = []
+        for s in sorted(int(x) for x in air_boundary_surfs):
+            cx, cy, cz = get_surface_center(int(s))
+            if math.hypot(float(cx) - float(hx), float(cy) - float(hy)) > r_cap:
+                continue
+            if float(cz) < z_near_lo or float(cz) > z_near_hi:
+                continue
+            out.append(int(s))
+        return out
+
+    def _evaluate_validation_aperture_surface(
+        surf_tag: int,
+        *,
+        hx: float,
+        hy: float,
+        hole_r: float,
+        z_aperture_plane: float,
+    ) -> dict:
+        """Strict aperture metrics for one air-boundary surface (validation tag 2)."""
+        expected = math.pi * float(hole_r) * float(hole_r)
+        a_lo = 0.85 * expected
+        a_hi = 1.15 * expected
+        span_xy_target = 2.0 * float(hole_r)
+        span_xy_lo = 0.85 * span_xy_target
+        span_xy_hi = 1.15 * span_xy_target
+        z_tol = 0.010
+        z_span_max = 0.012
+        r_max_limit = 0.050
+
+        area = float(_surface_area_m(int(surf_tag)))
+        cx, cy, cz = get_surface_center(int(surf_tag))
+        xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(2, int(surf_tag))
+        span_x = float(xmax - xmin)
+        span_y = float(ymax - ymin)
+        span_xy = max(span_x, span_y)
+        span_z = float(zmax - zmin)
+        nz = get_surface_normal_signed_z(int(surf_tag))
+        horiz_frac = abs(float(nz)) if nz is not None else 0.0
+        r_cent = math.hypot(float(cx) - float(hx), float(cy) - float(hy))
+        r_corners = 0.0
+        for x in (float(xmin), float(xmax)):
+            for y in (float(ymin), float(ymax)):
+                r_corners = max(
+                    r_corners, math.hypot(float(x) - float(hx), float(y) - float(hy))
+                )
+        r_max = max(r_cent, r_corners)
+
+        checks = {
+            "area_in_pi_r2_band": bool(a_lo <= area <= a_hi),
+            "xy_span_near_94mm": bool(span_xy_lo <= span_xy <= span_xy_hi),
+            "z_span_small": bool(span_z <= z_span_max),
+            "horizontal_plus_z": bool(nz is not None and float(nz) >= 0.85),
+            "at_aperture_plane": bool(abs(float(cz) - float(z_aperture_plane)) <= z_tol),
+            "radial_max_le_50mm": bool(r_max <= r_max_limit),
+        }
+        passes_strict = all(checks.values())
+        return {
+            "surface_id": int(surf_tag),
+            "area_m2": area,
+            "expected_area_m2": float(expected),
+            "bbox_m": [float(xmin), float(ymin), float(zmin), float(xmax), float(ymax), float(zmax)],
+            "span_x_m": span_x,
+            "span_y_m": span_y,
+            "span_xy_m": float(span_xy),
+            "span_z_m": float(span_z),
+            "center_m": [float(cx), float(cy), float(cz)],
+            "normal_signed_z": float(nz) if nz is not None else None,
+            "horizontal_area_fraction": float(horiz_frac),
+            "radial_centroid_m": float(r_cent),
+            "radial_max_m": float(r_max),
+            "z_aperture_plane_m": float(z_aperture_plane),
+            "z_offset_from_aperture_plane_m": float(cz) - float(z_aperture_plane),
+            "strict_checks": checks,
+            "passes_strict_aperture": bool(passes_strict),
+        }
+
+    def _write_validation_aperture_candidate_audit(
+        *,
+        audit_stem: Path,
+        candidates: list,
+        z_aperture_plane: float,
+        hole_r: float,
+        selection: dict,
+    ) -> Path:
+        audit_stem.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "z_aperture_plane_m": float(z_aperture_plane),
+            "expected_aperture_area_m2": math.pi * float(hole_r) ** 2,
+            "n_candidates": len(candidates),
+            "candidates": candidates,
+            "selection": selection,
+        }
+        json_path = audit_stem.with_suffix(".json")
+        md_path = audit_stem.with_suffix(".md")
+        json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        lines = [
+            "# Validation soundhole aperture candidate audit",
+            "",
+            f"- Aperture plane z: **{z_aperture_plane:.6f}** m",
+            f"- Expected area πr²: **{payload['expected_aperture_area_m2']:.8f}** m²",
+            f"- Candidates (near-disk air boundary): **{len(candidates)}**",
+            f"- Selection: `{selection.get('method')}` → surfaces `{selection.get('surface_ids')}`",
+            "",
+            "| id | area m² | span_xy | span_z | nz | r_max | strict |",
+            "|---:|---:|---:|---:|---:|---:|:---:|",
+        ]
+        for c in candidates:
+            lines.append(
+                f"| {c['surface_id']} | {c['area_m2']:.6f} | {c['span_xy_m']:.4f} | "
+                f"{c['span_z_m']:.4f} | {c.get('normal_signed_z')} | {c['radial_max_m']:.4f} | "
+                f"{c['passes_strict_aperture']} |"
+            )
+        md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"[CAD-APERTURE] wrote {json_path}", flush=True)
+        print(f"[CAD-APERTURE] wrote {md_path}", flush=True)
+        return json_path
+
+    def _select_existing_validation_aperture_surfaces(
+        candidate_records: list,
+        *,
+        hole_r: float,
+    ) -> Tuple[list, dict]:
+        """Pick tag-2 surfaces from pre-imprint air-boundary candidates."""
+        expected = math.pi * float(hole_r) * float(hole_r)
+        strict = [c for c in candidate_records if c.get("passes_strict_aperture")]
+        if strict:
+            strict.sort(key=lambda c: abs(float(c["area_m2"]) - expected))
+            best_area = float(strict[0]["area_m2"])
+            surfs = sorted(
+                {
+                    int(c["surface_id"])
+                    for c in strict
+                    if abs(float(c["area_m2"]) - best_area) <= 0.05 * expected
+                }
+            )
+            return surfs, {
+                "method": "existing_air_boundary_strict",
+                "reason": "single_or_matching_patch_passes_strict_criteria",
+                "surface_ids": surfs,
+            }
+
+        # Fragmented opening: several +Z patches whose total area matches πr².
+        partial = [
+            c
+            for c in candidate_records
+            if c["strict_checks"].get("horizontal_plus_z")
+            and c["strict_checks"].get("z_span_small")
+            and c["strict_checks"].get("at_aperture_plane")
+            and c["strict_checks"].get("radial_max_le_50mm")
+        ]
+        if partial:
+            total = sum(float(c["area_m2"]) for c in partial)
+            if 0.85 * expected <= total <= 1.15 * expected:
+                surfs = sorted(int(c["surface_id"]) for c in partial)
+                return surfs, {
+                    "method": "existing_air_boundary_combined",
+                    "reason": "combined_near_disk_patches_sum_to_pi_r2",
+                    "surface_ids": surfs,
+                    "combined_area_m2": float(total),
+                }
+        return [], {"method": "none", "reason": "no_existing_surface_passes_strict_criteria"}
+
+    def _diagnose_validation_disk_imprint(
+        air_vol_tag: int,
+        air_boundary_before: list,
+        *,
+        hx: float,
+        hy: float,
+        hole_r: float,
+        z_plane: float,
+    ) -> dict:
+        """Report why disk imprint may fail to yield a selectable aperture surface."""
+        probe = [float(hx), float(hy), float(z_plane)]
+        inside_air = _classify_point_in_volume(int(air_vol_tag), *probe)
+        air_bb = list(gmsh.model.getBoundingBox(3, int(air_vol_tag)))
+        before_set = {int(s) for s in air_boundary_before}
+        after_boundary = sorted(get_boundary_tags([(3, int(air_vol_tag))], 2))
+        new_surfs = sorted(set(after_boundary) - before_set)
+        lost_surfs = sorted(before_set - set(after_boundary))
+        causes: list = []
+        if not inside_air.get("inside"):
+            causes.append("disk_plane_point_outside_air_solid")
+        if not new_surfs:
+            causes.append(
+                "occ_fragment_did_not_create_new_boundary_faces "
+                "(disk likely coincident with existing top aperture face)"
+            )
+        if inside_air.get("inside") and float(z_plane) > float(air_bb[5]) + 1.0e-6:
+            causes.append("disk_plane_above_air_bbox_z_max")
+        return {
+            "z_plane_m": float(z_plane),
+            "probe_on_aperture_plane_m": probe,
+            "probe_inside_air_volume": inside_air,
+            "air_bbox_z_m": [float(x) for x in air_bb],
+            "n_air_boundary_before": len(before_set),
+            "n_air_boundary_after": len(after_boundary),
+            "new_surface_ids_after_imprint": new_surfs,
+            "removed_surface_ids_after_imprint": lost_surfs,
+            "likely_causes": causes,
+        }
+
+    def _resolve_validation_soundhole_aperture_surfaces(
+        *,
+        air_vol_tag: int,
+        air_boundary_surfs: list,
+        inner_tool_bb: Optional[list],
+        hx: float,
+        hy: float,
+        hole_r: float,
+        depth_m: float,
+        shell_t: float,
+        audit_dir: Path,
+    ) -> Tuple[list, float, int, dict]:
+        """
+        Validation-only: prefer existing near-disk air aperture surfaces; else disk imprint.
+        """
+        air_bb = list(gmsh.model.getBoundingBox(3, int(air_vol_tag)))
+        z_aperture_plane = (
+            float(inner_tool_bb[5])
+            if inner_tool_bb is not None
+            else float(air_bb[5]) - float(shell_t)
+        )
+        near_air = _near_disk_air_boundary_surfaces(
+            air_boundary_surfs,
+            hx=float(hx),
+            hy=float(hy),
+            hole_r=float(hole_r),
+            depth_m=float(depth_m),
+            shell_t=float(shell_t),
+        )
+        candidate_records = [
+            _evaluate_validation_aperture_surface(
+                int(s),
+                hx=float(hx),
+                hy=float(hy),
+                hole_r=float(hole_r),
+                z_aperture_plane=float(z_aperture_plane),
+            )
+            for s in near_air
+        ]
+        soundhole_surfs, sel = _select_existing_validation_aperture_surfaces(
+            candidate_records, hole_r=float(hole_r)
+        )
+        selection_meta = dict(sel)
+        selection_meta["z_aperture_plane_m"] = float(z_aperture_plane)
+        selection_meta["near_disk_air_surface_ids"] = [int(s) for s in near_air]
+
+        _write_validation_aperture_candidate_audit(
+            audit_stem=audit_dir / "soundhole_aperture_candidate_audit",
+            candidates=candidate_records,
+            z_aperture_plane=float(z_aperture_plane),
+            hole_r=float(hole_r),
+            selection=selection_meta,
+        )
+
+        if soundhole_surfs:
+            print(
+                f"[diag] soundhole tag 2: use existing air-boundary aperture "
+                f"({selection_meta.get('method')}) n={len(soundhole_surfs)} "
+                f"surfaces={soundhole_surfs} z_plane={z_aperture_plane:.6f} m"
+            )
+            return (
+                soundhole_surfs,
+                float(z_aperture_plane),
+                int(air_vol_tag),
+                selection_meta,
+            )
+
+        boundary_before = list(air_boundary_surfs)
+        print(
+            "[diag] no existing air-boundary surface passes strict aperture criteria; "
+            "attempting disk imprint diagnostic"
+        )
+        z_disk, air_out = _imprint_validation_soundhole_aperture_disk(
+            int(air_vol_tag),
+            hx=float(hx),
+            hy=float(hy),
+            hole_r=float(hole_r),
+        )
+        imprint_diag = _diagnose_validation_disk_imprint(
+            int(air_out),
+            boundary_before,
+            hx=float(hx),
+            hy=float(hy),
+            hole_r=float(hole_r),
+            z_plane=float(z_disk),
+        )
+        imprint_diag["filter_note"] = (
+            "post-imprint selector uses disk z_plane; existing openings often "
+            "lie at inner_top z — prefer pre-imprint existing surfaces when strict checks pass"
+        )
+        diag_path = audit_dir / "soundhole_disk_imprint_diagnostic.json"
+        diag_path.write_text(json.dumps(imprint_diag, indent=2), encoding="utf-8")
+        print(f"[diag] wrote disk imprint diagnostic: {diag_path}")
+
+        air_boundary_after = sorted(
+            get_boundary_tags([(3, int(air_out))], 2)
+        )
+        post_records = [
+            _evaluate_validation_aperture_surface(
+                int(s),
+                hx=float(hx),
+                hy=float(hy),
+                hole_r=float(hole_r),
+                z_aperture_plane=float(z_disk),
+            )
+            for s in air_boundary_after
+        ]
+        soundhole_surfs, post_sel = _select_existing_validation_aperture_surfaces(
+            post_records, hole_r=float(hole_r)
+        )
+        selection_meta = {
+            **post_sel,
+            "method": post_sel.get("method", "disk_imprint"),
+            "disk_imprint_diagnostic": imprint_diag,
+            "z_disk_plane_m": float(z_disk),
+        }
+        if soundhole_surfs:
+            print(
+                f"[diag] soundhole tag 2: disk imprint produced selectable aperture "
+                f"n={len(soundhole_surfs)} surfaces={soundhole_surfs}"
+            )
+        return (
+            soundhole_surfs,
+            float(z_disk),
+            int(air_out),
+            selection_meta,
+        )
+
     def _imprint_validation_soundhole_aperture_disk(
         air_vol_tag: int,
         *,
@@ -2228,21 +2571,33 @@ def create_guitar_mesh():
             hole_x=float(hole_x),
             hole_y=float(hole_y),
         )
-        z_aperture_plane, air_vol_tag = _imprint_validation_soundhole_aperture_disk(
-            int(air_vols[0]),
-            hx=float(hole_x),
-            hy=float(hole_y),
-            hole_r=float(hr),
+        aperture_audit_dir = out_file.parent if is_validation else mesh_dir
+        soundhole_surfs, z_aperture_plane, air_vol_tag, aperture_sel = (
+            _resolve_validation_soundhole_aperture_surfaces(
+                air_vol_tag=int(air_vols[0]),
+                air_boundary_surfs=air_boundary_surfs,
+                inner_tool_bb=inner_tool_bb,
+                hx=float(hole_x),
+                hy=float(hole_y),
+                hole_r=float(hr),
+                depth_m=float(D),
+                shell_t=float(t),
+                audit_dir=aperture_audit_dir,
+            )
         )
         air_vols[0] = int(air_vol_tag)
-        air_boundary_surfs = get_boundary_tags([(3, int(air_vols[0]))], 2)
-        soundhole_surfs = _select_validation_soundhole_aperture_surfaces(
-            sorted(air_boundary_surfs),
-            hx=float(hole_x),
-            hy=float(hole_y),
-            hole_r=float(hr),
-            z_plane=float(z_aperture_plane),
-        )
+        if not soundhole_surfs:
+            fallback = _select_validation_soundhole_aperture_surfaces(
+                sorted(get_boundary_tags([(3, int(air_vols[0]))], 2)),
+                hx=float(hole_x),
+                hy=float(hole_y),
+                hole_r=float(hr),
+                z_plane=float(z_aperture_plane),
+            )
+            if fallback:
+                soundhole_surfs = fallback
+                aperture_sel["method"] = "post_imprint_area_selector"
+                aperture_sel["surface_ids"] = [int(s) for s in soundhole_surfs]
         cad_gate = _validate_validation_soundhole_aperture_cad(
             soundhole_surfs,
             hx=float(hole_x),
@@ -2250,20 +2605,24 @@ def create_guitar_mesh():
             hole_r=float(hr),
             z_plane=float(z_aperture_plane),
         )
+        cad_gate["aperture_selection"] = aperture_sel
+        tag_method = str(aperture_sel.get("method", "unknown"))
         print(
             f"[diag] soundhole tag 2: validation aperture surfaces n={len(soundhole_surfs)} "
             f"CAD tags={cad_gate['cad_surface_tags']} area={cad_gate['total_area_m2']:.6f} m² "
-            f"(disk imprint; not broad air-boundary picker)"
+            f"(method={tag_method}; pre-imprint audit before disk)"
         )
         if is_validation:
             gate_path = out_file.parent / "soundhole_aperture_cad_gate.json"
             gate_path.write_text(json.dumps(cad_gate, indent=2), encoding="utf-8")
             print(f"[diag] wrote validation CAD aperture gate: {gate_path}")
         if not soundhole_surfs:
+            cand = aperture_audit_dir / "soundhole_aperture_candidate_audit.json"
+            disk_diag = aperture_audit_dir / "soundhole_disk_imprint_diagnostic.json"
             raise RuntimeError(
-                "FEM_VALIDATION_MESH: dedicated soundhole aperture surface not found after "
-                "disk imprint. Legacy wood-top / broad air-boundary tagging is disabled. "
-                f"Inspect CAD audit: {audit_json} and {audit_stem.with_suffix('.md')}"
+                "FEM_VALIDATION_MESH: no dedicated soundhole aperture surface after "
+                "candidate audit and optional disk imprint. "
+                f"Inspect {cand}, {disk_diag}, {audit_json}"
             )
     elif not shell_only:
         if is_preview:
