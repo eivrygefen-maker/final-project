@@ -4190,6 +4190,122 @@ def create_guitar_mesh():
 
         _audit_soundhole_boundary_mesh()
 
+        def _validation_mesh_node_xyz_map() -> dict:
+            """Map mesh node tag -> (x, y, z) from a single getNodes() call."""
+            node_tags, coord_flat, _param = gmsh.model.mesh.getNodes()
+            n_nodes = _gmsh_seq_len(node_tags)
+            n_coord = _gmsh_seq_len(coord_flat)
+            if n_nodes == 0 or n_coord < 3 * n_nodes:
+                raise RuntimeError(
+                    "FEM_VALIDATION_MESH post-mesh gate: gmsh.model.mesh.getNodes() "
+                    f"returned n_tags={n_nodes} n_coord_values={n_coord} "
+                    f"(expected at least {3 * n_nodes})."
+                )
+            out: dict = {}
+            for i in range(n_nodes):
+                ntag = int(node_tags[i])
+                b = 3 * i
+                out[ntag] = (
+                    float(coord_flat[b]),
+                    float(coord_flat[b + 1]),
+                    float(coord_flat[b + 2]),
+                )
+            return out
+
+        def _validation_triangle_area_m_3pts(
+            p0: Tuple[float, float, float],
+            p1: Tuple[float, float, float],
+            p2: Tuple[float, float, float],
+        ) -> float:
+            ax, ay, az = (
+                p1[0] - p0[0],
+                p1[1] - p0[1],
+                p1[2] - p0[2],
+            )
+            bx, by, bz = (
+                p2[0] - p0[0],
+                p2[1] - p0[1],
+                p2[2] - p0[2],
+            )
+            cx = ay * bz - az * by
+            cy = az * bx - ax * bz
+            cz = ax * by - ay * bx
+            return 0.5 * math.sqrt(cx * cx + cy * cy + cz * cz)
+
+        def _validation_soundhole_mesh_triangle_metrics(
+            surf_tags: list,
+            node_xyz: dict,
+            *,
+            hole_x: float,
+            hole_y: float,
+        ) -> Tuple[float, float, list, int]:
+            """
+            Sum triangle areas and radial/z extents on tag-2 surfaces from mesh nodes.
+
+            Uses getElements + getElementProperties (corner nodes for high-order 2D).
+            """
+            mesh_area = 0.0
+            r_max_mesh = 0.0
+            z_vals: list = []
+            n_triangles = 0
+            for surface_tag in surf_tags:
+                elem_types, elem_tags_blocks, node_tags_blocks = (
+                    gmsh.model.mesh.getElements(2, int(surface_tag))
+                )
+                for etype, _elem_tags, nt_block in zip(
+                    elem_types, elem_tags_blocks, node_tags_blocks
+                ):
+                    et = int(etype)
+                    try:
+                        _prop = gmsh.model.mesh.getElementProperties(et)
+                        _ename = str(_prop[1])
+                        dim = int(_prop[2])
+                        num_nodes = int(_prop[4])
+                    except Exception as exc:
+                        raise RuntimeError(
+                            "FEM_VALIDATION_MESH post-mesh gate: "
+                            f"getElementProperties({et}) failed on surface "
+                            f"{surface_tag}: {exc}"
+                        ) from exc
+                    if dim != 2 or num_nodes < 3:
+                        continue
+                    flat = [int(n) for n in nt_block]
+                    if not flat:
+                        continue
+                    if len(flat) % num_nodes != 0:
+                        raise RuntimeError(
+                            "FEM_VALIDATION_MESH post-mesh gate: nodeTags length "
+                            f"{len(flat)} is not a multiple of num_nodes={num_nodes} "
+                            f"for surface_id={surface_tag} element_type={et} "
+                            f"({_ename})."
+                        )
+                    n_elem = len(flat) // num_nodes
+                    for ei in range(n_elem):
+                        base = ei * num_nodes
+                        corner_tags = [flat[base + k] for k in range(3)]
+                        missing = [t for t in corner_tags if t not in node_xyz]
+                        if missing:
+                            raise RuntimeError(
+                                "FEM_VALIDATION_MESH post-mesh gate: missing node "
+                                f"coordinates for surface_id={surface_tag} "
+                                f"element_type={et} ({_ename}) element_index={ei} "
+                                f"corner_node_tags={corner_tags} "
+                                f"missing_node_tags={missing} "
+                                f"node_map_size={len(node_xyz)}"
+                            )
+                        p0 = node_xyz[corner_tags[0]]
+                        p1 = node_xyz[corner_tags[1]]
+                        p2 = node_xyz[corner_tags[2]]
+                        mesh_area += _validation_triangle_area_m_3pts(p0, p1, p2)
+                        n_triangles += 1
+                        for p in (p0, p1, p2):
+                            r_max_mesh = max(
+                                r_max_mesh,
+                                math.hypot(p[0] - float(hole_x), p[1] - float(hole_y)),
+                            )
+                            z_vals.append(float(p[2]))
+            return mesh_area, r_max_mesh, z_vals, n_triangles
+
         def _validation_gate_soundhole_aperture_post_mesh() -> None:
             """Fail validation mesh build if tag-2 is not a single circular aperture."""
             if not (is_validation and use_air_opening_tag and not shell_only):
@@ -4233,48 +4349,21 @@ def create_guitar_mesh():
                         f"surface {tag_e}: {exc_eval}",
                         flush=True,
                     )
-            def _triangle_area_m(c0, c1, c2):
-                ax, ay, az = (
-                    float(c1[0]) - float(c0[0]),
-                    float(c1[1]) - float(c0[1]),
-                    float(c1[2]) - float(c0[2]),
-                )
-                bx, by, bz = (
-                    float(c2[0]) - float(c0[0]),
-                    float(c2[1]) - float(c0[1]),
-                    float(c2[2]) - float(c0[2]),
-                )
-                cx = ay * bz - az * by
-                cy = az * bx - ax * bz
-                cz = ax * by - ay * bx
-                return 0.5 * math.sqrt(cx * cx + cy * cy + cz * cz)
 
-            mesh_area = 0.0
-            for tag_e in surf_tags:
-                _types, elem_tags, node_tags = gmsh.model.mesh.getElements(2, int(tag_e))
-                for etype, _et_arr, nt_arr in zip(_types, elem_tags, node_tags):
-                    if int(etype) != 2:
-                        continue
-                    if _gmsh_seq_len(nt_arr) < 3:
-                        continue
-                    nodes = [int(n) for n in nt_arr]
-                    for i in range(0, len(nodes), 3):
-                        if i + 2 >= len(nodes):
-                            break
-                        coords = [
-                            gmsh.model.mesh.getNode(int(nodes[i + k]))[1]
-                            for k in range(3)
-                        ]
-                        mesh_area += _triangle_area_m(coords[0], coords[1], coords[2])
-                        for c in coords:
-                            r_max_mesh = max(
-                                r_max_mesh,
-                                math.hypot(
-                                    float(c[0]) - float(hole_x),
-                                    float(c[1]) - float(hole_y),
-                                ),
-                            )
-                            z_vals.append(float(c[2]))
+            node_xyz = _validation_mesh_node_xyz_map()
+            mesh_area, r_max_mesh, z_vals, n_mesh_tris = (
+                _validation_soundhole_mesh_triangle_metrics(
+                    surf_tags,
+                    node_xyz,
+                    hole_x=float(hole_x),
+                    hole_y=float(hole_y),
+                )
+            )
+            if n_mesh_tris == 0:
+                raise RuntimeError(
+                    "FEM_VALIDATION_MESH post-mesh gate: physical group 2 surfaces "
+                    f"{surf_tags} have no 2D triangle elements in the mesh."
+                )
             z_span = max(z_vals) - min(z_vals) if z_vals else float("inf")
             planar_by_mesh_z = bool(z_span <= 0.012)
             failures: list = []
@@ -4308,9 +4397,11 @@ def create_guitar_mesh():
                 "cad_surface_tags": surf_tags,
                 "cad_area_m2": float(cad_area),
                 "mesh_triangle_area_m2": float(mesh_area),
+                "mesh_triangle_count": int(n_mesh_tris),
+                "mesh_node_map_size": int(len(node_xyz)),
                 "expected_area_m2": float(expected),
                 "radial_max_m": float(r_max_mesh),
-                "radial_max_source": "mesh_triangle_nodes",
+                "radial_max_source": "mesh_triangle_nodes_via_getNodes",
                 "z_span_m": float(z_span),
                 "n_planar_by_z_span": int(planar_ok),
                 "normal_unavailable_accepted": bool(planar_ok > 0),
