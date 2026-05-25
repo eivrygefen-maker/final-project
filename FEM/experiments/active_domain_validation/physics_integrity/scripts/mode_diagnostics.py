@@ -242,6 +242,162 @@ def diagnose_structural_mode(
     }
 
 
+P_FRAC_PRODUCTION_DEFINITION = (
+    "Production/harvest p_frac: L2 ratio ||p||_2 / (||u||_2 + ||p||_2) on the mixed W global "
+    "eigenvector returned by SLEPc, using collapse maps u_to_W and p_to_W. The vector lives in the "
+    "assembled GNHEP basis after block Frobenius scaling (u,p blocks scaled by 1/s_uu, 1/s_pp) and "
+    "with pressure_dof_scale baked into the p–p and u–p forms (algebraic pressure DOFs). It is NOT "
+    "an energy participation metric and does not undo pressure_dof_scale."
+)
+
+P_FRAC_PHYS_GNHEP_DEFINITION = (
+    "Experiment p_frac_phys_gnhep: same L2 norm ratio after multiplying u coefficients by s_uu and "
+    "p coefficients by s_pp (undo block Frobenius form scaling only). pressure_dof_scale is unchanged."
+)
+
+P_FRAC_FULLY_UNSCALED_DEFINITION = (
+    "Experiment p_frac_fully_unscaled: L2 ratio after u*=s_uu and p*=s_pp/p_scale (undo GNHEP block "
+    "scaling and pressure_dof similarity so pressure coefficients map to physical pressure amplitude)."
+)
+
+
+def unscale_mixed_mode_vector(
+    arr: np.ndarray,
+    *,
+    u_to_W: np.ndarray,
+    p_to_W: np.ndarray,
+    gnhep: Dict[str, float],
+    undo_pressure_dof_scale: bool = True,
+) -> np.ndarray:
+    """Return a copy with GNHEP (and optionally pressure_dof_scale) undone on u/p blocks."""
+    s_u = max(float(gnhep.get("s_uu", 1.0)), 1.0e-30)
+    s_p = max(float(gnhep.get("s_pp", 1.0)), 1.0e-30)
+    p_scale = max(float(gnhep.get("pressure_dof_scale", 30.0)), 1.0e-30)
+    out = np.asarray(arr, dtype=np.float64).copy()
+    u_idx = np.asarray(u_to_W, dtype=np.int32).ravel()
+    p_idx = np.asarray(p_to_W, dtype=np.int32).ravel()
+    if u_idx.size:
+        out[u_idx] *= s_u
+    if p_idx.size:
+        out[p_idx] *= s_p
+        if undo_pressure_dof_scale:
+            out[p_idx] /= p_scale
+    return out
+
+
+def block_l2_p_fraction(
+    arr: np.ndarray,
+    *,
+    u_to_W: np.ndarray,
+    p_to_W: np.ndarray,
+) -> Tuple[float, float, float]:
+    """Return (p_frac, u_norm, p_norm) from block L2 norms."""
+    u_n, p_n = fem3d._mixed_eigenvector_block_norms(
+        arr, u_to_W=u_to_W, p_to_W=p_to_W
+    )
+    p_frac = p_n / max(u_n + p_n, 1.0e-30)
+    return float(p_frac), float(u_n), float(p_n)
+
+
+def compute_mass_energy_participation(
+    arr: np.ndarray,
+    M: Any,
+    A: Any,
+    *,
+    u_to_W: np.ndarray,
+    p_to_W: np.ndarray,
+    gnhep: Dict[str, float],
+) -> Dict[str, float]:
+    """
+    Quadratic energy splits using assembled GNHEP-scaled M (same basis as SLEPc modes).
+
+    Physical energies apply block undo factors consistent with M_phys ≈ S M_gnhep S,
+    S = diag(1/s_uu on u, 1/s_pp on p); pressure_dof_scale is already in m_pp/m_pu forms.
+    """
+    from petsc4py import PETSc
+
+    s_u = max(float(gnhep.get("s_uu", 1.0)), 1.0e-30)
+    s_p = max(float(gnhep.get("s_pp", 1.0)), 1.0e-30)
+    s_c = max(float(gnhep.get("s_couple", math.sqrt(s_u * s_p)), 1.0e-30), 1.0e-30)
+
+    u_idx = np.asarray(u_to_W, dtype=np.int32).ravel()
+    p_idx = np.asarray(p_to_W, dtype=np.int32).ravel()
+    x = np.asarray(arr, dtype=np.float64).ravel()
+
+    x_vec = M.createVecRight()
+    y_vec = M.createVecRight()
+    ay_vec = A.createVecRight()
+    try:
+        x_vec.setArray(x.copy())
+        try:
+            x_vec.ghostUpdate(
+                addv=PETSc.InsertMode.INSERT_VALUES,
+                mode=PETSc.ScatterMode.FORWARD,
+            )
+        except Exception:
+            pass
+        M.mult(x_vec, y_vec)
+        A.mult(x_vec, ay_vec)
+        try:
+            y_vec.ghostUpdate(
+                addv=PETSc.InsertMode.INSERT_VALUES,
+                mode=PETSc.ScatterMode.FORWARD,
+            )
+            ay_vec.ghostUpdate(
+                addv=PETSc.InsertMode.INSERT_VALUES,
+                mode=PETSc.ScatterMode.FORWARD,
+            )
+        except Exception:
+            pass
+        y = np.asarray(y_vec.getArray(readonly=True), dtype=np.float64).copy()
+        ay = np.asarray(ay_vec.getArray(readonly=True), dtype=np.float64).copy()
+    finally:
+        x_vec.destroy()
+        y_vec.destroy()
+        ay_vec.destroy()
+
+    u_v = x[u_idx] if u_idx.size else np.zeros(0, dtype=np.float64)
+    p_v = x[p_idx] if p_idx.size else np.zeros(0, dtype=np.float64)
+    mu_u = y[u_idx] if u_idx.size else np.zeros(0, dtype=np.float64)
+    mp_p = y[p_idx] if p_idx.size else np.zeros(0, dtype=np.float64)
+
+    e_struct_gnhep = 0.5 * float(np.dot(u_v, mu_u))
+    e_air_gnhep = 0.5 * float(np.dot(p_v, mp_p))
+    # u-row / p-row matvec includes block-diagonal plus FSI mass coupling.
+    cross_u_from_p = float(np.dot(u_v, mu_u) - 2.0 * e_struct_gnhep)
+    cross_p_from_u = float(np.dot(p_v, mp_p) - 2.0 * e_air_gnhep)
+    cross_mass = 0.5 * (abs(cross_u_from_p) + abs(cross_p_from_u))
+
+    e_struct_phys = s_u * e_struct_gnhep
+    e_air_phys = s_p * e_air_gnhep
+    cross_phys = s_c * cross_mass
+
+    denom = e_struct_phys + e_air_phys + cross_phys
+    p_frac_energy = e_air_phys / max(denom, 1.0e-30)
+
+    stiff_u_load = float(np.linalg.norm(ay[u_idx])) if u_idx.size else 0.0
+    stiff_p_load = float(np.linalg.norm(ay[p_idx])) if p_idx.size else 0.0
+    stiff_cross = float(np.dot(u_v, ay[u_idx])) if u_idx.size else 0.0
+
+    return {
+        "structural_modal_energy_gnhep": e_struct_gnhep,
+        "acoustic_modal_energy_gnhep": e_air_gnhep,
+        "mass_cross_u_from_p_gnhep": cross_u_from_p,
+        "mass_cross_p_from_u_gnhep": cross_p_from_u,
+        "mass_cross_term_gnhep": cross_mass,
+        "structural_modal_energy_phys": e_struct_phys,
+        "acoustic_modal_energy_phys": e_air_phys,
+        "mass_cross_term_phys": cross_phys,
+        "p_frac_energy_phys": float(p_frac_energy),
+        "stiffness_u_row_load_norm": stiff_u_load,
+        "stiffness_p_row_load_norm": stiff_p_load,
+        "stiffness_cross_u_dot_Ax_u": stiff_cross,
+        "gnhep_s_uu": s_u,
+        "gnhep_s_pp": s_p,
+        "gnhep_s_couple": s_c,
+    }
+
+
 def load_mode_vector(path: Path, n_expected: int) -> np.ndarray:
     if path.suffix == ".npz" and path.name.endswith(MODE_VECTOR_FILE_SUFFIX):
         return load_mode_column_any(path)

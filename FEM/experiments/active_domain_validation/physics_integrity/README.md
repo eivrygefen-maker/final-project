@@ -55,6 +55,18 @@ bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_coup
 - Band: 220–265 Hz, 16 modes, `pressure_release` + `pressure_gauge=none`
 - Post-run summary: `coupled_near_acoustic/diagnostics/coupled_near_acoustic_summary.json`
 
+## Participation / scaling audit (post-TEST-5)
+
+Replays saved modes against assembled `A`/`M` (no SLEPc). Compares production `p_frac`,
+GNHEP-undone and fully-unscaled L2 ratios, and mass-matrix acoustic energy participation.
+Does not reject modes by `p_frac`.
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_coupled_participation_audit.sh
+```
+
+Outputs: `coupled_near_acoustic/diagnostics/coupled_participation_scaling_audit.{json,md}`
+
 ## Scaling audit
 
 `p_frac_raw` matches production (eigenvector in GNHEP block-scaled assembled basis).
