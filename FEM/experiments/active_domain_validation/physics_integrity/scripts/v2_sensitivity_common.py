@@ -17,6 +17,12 @@ SENS_ROOT = PHYSICS_ROOT / "v2_sensitivity_validation"
 DIAG_DIR = SENS_ROOT / "diagnostics"
 V2_ROOT = PHYSICS_ROOT / "coupled_physical_core_v2"
 V2_CONFIG = PHYSICS_ROOT / "configs" / "coupled_physical_core_v2.json"
+BASELINE_STRUCTURAL_MAC_REF_JSON = (
+    V2_ROOT / "physical_coupling_enabled" / "diagnostics" / "baseline_structural_mac_reference.json"
+)
+STRUCTURAL_MAC_BAND_LO = 220.0
+STRUCTURAL_MAC_BAND_HI = 300.0
+STRUCTURAL_MAC_MATCH_TOL_HZ = 8.0
 MANIFEST_PATH = PHYSICS_ROOT / "configs" / "v2_sensitivity_manifest.json"
 PRODUCTION_MANIFEST_PATH = PHYSICS_ROOT / "configs" / "v2_production_parameter_manifest.json"
 PRODUCTION_SUMMARY_JSON = DIAG_DIR / "v2_production_validation_summary.json"
@@ -264,6 +270,9 @@ def run_acoustic_locator(
     payload = json.loads(out_json.read_text(encoding="utf-8"))
     payload["locator_log"] = str(log_path)
     payload["locator_exit_code"] = int(proc.returncode)
+    if "locator_status" not in payload:
+        loc_hz = float(payload.get("locator_frequency_hz", float("nan")))
+        payload["locator_status"] = "ok" if math.isfinite(loc_hz) else "failed"
     return int(proc.returncode), payload
 
 
@@ -296,16 +305,24 @@ def capture_branch_with_locator_then_coupled(
     loc_rc, locator = run_acoustic_locator(sample, mesh_path, policy=policy, log_path=loc_log)
     locator_hz = float(locator.get("locator_frequency_hz", float("nan")))
     attempts_log: List[Dict[str, Any]] = []
+    locator_status = str(locator.get("locator_status", "ok" if math.isfinite(locator_hz) else "failed"))
     locator_meta = {
+        "locator_status": locator_status,
         "locator_frequency_hz": locator_hz,
         "locator_selection_method": locator.get("locator_selection_method"),
         "locator_band_hz": locator.get("locator_band_hz"),
         "locator_exit_code": loc_rc,
         "locator_log": locator.get("locator_log"),
+        "locator_error": locator.get("error"),
     }
-    if not math.isfinite(locator_hz):
+    if locator_status != "ok" or not math.isfinite(locator_hz):
+        locator_meta["locator_status"] = "failed"
         return (
-            {"v2_converged": False, "error": "acoustic locator failed", **locator_meta},
+            {
+                "v2_converged": False,
+                "error": locator.get("error", "acoustic locator failed"),
+                **locator_meta,
+            },
             attempts_log,
             locator_meta,
         )
@@ -560,6 +577,39 @@ def load_phase2_reusable_rows(phase2_ids: List[str]) -> Dict[str, Dict[str, Any]
     return reusable
 
 
+def _material_acoustic_stable(row: Dict[str, Any]) -> bool:
+    if row.get("status") != "ok":
+        return False
+    p_frac = float(row.get("p_frac_energy_phys", 0.0))
+    return p_frac >= ENERGY_ACOUSTIC_THRESHOLD
+
+
+def _phase2_staged_promotion(
+    results: Dict[str, Dict[str, Any]],
+    phase2_ids: List[str],
+) -> Dict[str, Any]:
+    material_ids = [s for s in phase2_ids if str(s).startswith("material_")]
+    geometry_ids = [s for s in phase2_ids if str(s).startswith(("length_", "width_"))]
+    material_acoustic_pass = bool(material_ids) and all(
+        _material_acoustic_stable(results.get(sid) or {}) for sid in material_ids
+    )
+    material_struct_pass = bool(material_ids) and all(
+        (results.get(sid) or {}).get("structural_mac_status") == "ok" for sid in material_ids
+    )
+    geometry_pass = bool(geometry_ids) and all(
+        (results.get(sid) or {}).get("status") == "ok" for sid in geometry_ids
+    )
+    return {
+        "acoustic_geometric_validation_pass": True,
+        "phase2_geometry_parameter_validation_pass": "PASS" if geometry_pass else "Pending",
+        "material_acoustic_branch_stability_pass": material_acoustic_pass,
+        "material_structural_branch_validation_pass": "PASS" if material_struct_pass else "Pending",
+        "production_parameter_coverage_pass": "PASS" if geometry_pass else "Pending",
+        "mesh_convergence_pass": "Pending",
+        "lhs_promotion_blocked": True,
+    }
+
+
 def write_phase2_incremental(
     results: Dict[str, Dict[str, Any]],
     manifest: Dict[str, Any],
@@ -567,6 +617,7 @@ def write_phase2_incremental(
     phase2_ids: List[str],
 ) -> None:
     phase1_ids = list(manifest.get("preserve_phase1_sample_ids") or [])
+    promotion = _phase2_staged_promotion(results, phase2_ids)
     summary = {
         "suite": manifest.get("suite"),
         "phase": manifest.get("phase"),
@@ -576,6 +627,7 @@ def write_phase2_incremental(
         "phase2_sample_ids": phase2_ids,
         "samples": {k: v for k, v in results.items() if not str(k).startswith("_")},
         "incremental": True,
+        **promotion,
     }
     write_json(DIAG_DIR / "v2_production_validation_summary.partial.json", summary)
     write_json(PRODUCTION_SUMMARY_JSON, summary)
@@ -586,80 +638,93 @@ def write_phase2_incremental(
     )
 
 
-def load_baseline_structural_reference() -> Dict[str, Any]:
-    """Structural-dominated reference mode from frozen baseline coupled v2 artifacts."""
+def load_baseline_structural_mac_catalog() -> Dict[str, Any]:
+    """Cached baseline structural reference modes + u_to_W for same-mesh MAC."""
+    if BASELINE_STRUCTURAL_MAC_REF_JSON.is_file():
+        cat = json.loads(BASELINE_STRUCTURAL_MAC_REF_JSON.read_text(encoding="utf-8"))
+        if cat.get("ready"):
+            return cat
+    return {"ready": False, "reason": "baseline_structural_mac_reference.json missing or not ready"}
+
+
+def _resolve_u_to_W_for_same_mesh(solve: Dict[str, Any]) -> Optional["np.ndarray"]:
     import numpy as np
 
-    case_dir = V2_ROOT / "physical_coupling_enabled"
-    result_path = case_dir / "results" / f"result_{hz_result_tag(COUPLED_BASELINE_F_HZ)}.json"
-    if not result_path.is_file():
-        for p in sorted((case_dir / "results").glob("result_*.json"), reverse=True):
-            result_path = p
-            break
-    if not result_path.is_file():
-        return {}
-    result = json.loads(result_path.read_text(encoding="utf-8"))
-    u_to_W = result.get("u_to_W")
-    in_band = list(result.get("in_band_modes") or [])
-    struct = [
-        m
-        for m in in_band
-        if str(m.get("mode_class_physical_energy")) == "structural_dominated"
-        or float(m.get("p_frac_energy_phys", 1.0)) <= 0.15
-    ]
-    if not struct:
-        return {}
-    ref = max(struct, key=lambda m: float(m.get("structural_modal_energy_phys", 0.0)))
-    mode_path = case_dir / str(ref.get("vector_path", ""))
-    if not mode_path.is_file():
-        modes = sorted(case_dir.glob("modes/mode_*"))
-        if not modes:
-            return {"reference_frequency_hz": float(ref["frequency_hz"]), "vector_path": None}
-        mode_path = modes[0]
-    n_W = int(result.get("n_reduced_W", N_REDUCED_W_VALIDATION))
-    try:
-        ref_vec = load_v2_mode_vector_dense(mode_path, n_W)
-    except Exception as exc:
-        return {"unavailable_reason": f"baseline reference mode load failed: {exc}"}
-    u_to_W = np.asarray(u_to_W, dtype=np.int32) if u_to_W is not None else None
-    out = {
-        "reference_frequency_hz": float(ref["frequency_hz"]),
-        "reference_mode_index": int(ref.get("mode_index", -1)),
-        "vector_path": str(mode_path),
-        "p_frac_energy_phys": float(ref.get("p_frac_energy_phys", float("nan"))),
-        "n_reduced_W": n_W,
-    }
-    if u_to_W is not None:
-        out["u_to_W"] = u_to_W
-        out["reference_vec"] = ref_vec
-    return out
+    cat = load_baseline_structural_mac_catalog()
+    if cat.get("ready") and cat.get("u_to_W"):
+        return np.asarray(cat["u_to_W"], dtype=np.int32)
+    u_map = solve.get("u_to_W")
+    if u_map is not None:
+        return np.asarray(u_map, dtype=np.int32)
+    for sid in (
+        "material_top_cedar",
+        "material_top_maple",
+        "material_back_cedar",
+        "material_back_maple",
+    ):
+        result_path = best_sample_result_json(sid)
+        if not result_path:
+            continue
+        prior = json.loads(result_path.read_text(encoding="utf-8"))
+        if prior.get("u_to_W"):
+            return np.asarray(prior["u_to_W"], dtype=np.int32)
+    base_result = V2_ROOT / "physical_coupling_enabled" / "results" / f"result_{hz_result_tag(244.39)}.json"
+    if base_result.is_file():
+        prior = json.loads(base_result.read_text(encoding="utf-8"))
+        if prior.get("u_to_W"):
+            return np.asarray(prior["u_to_W"], dtype=np.int32)
+    return None
+
+
+def load_baseline_structural_reference() -> Dict[str, Any]:
+    """Legacy alias: first entry from baseline structural MAC catalog."""
+    cat = load_baseline_structural_mac_catalog()
+    if not cat.get("ready"):
+        return {"unavailable_reason": cat.get("reason", "catalog not ready")}
+    modes = cat.get("structural_reference_modes") or []
+    if not modes:
+        return {"unavailable_reason": "no structural reference modes in catalog"}
+    return {"catalog": cat, "primary_mode": modes[0]}
+
+
+def _material_structural_modes_in_band(solve: Dict[str, Any]) -> List[Dict[str, Any]]:
+    rows = []
+    for m in solve.get("in_band_modes") or []:
+        f_hz = float(m.get("frequency_hz", float("nan")))
+        if not math.isfinite(f_hz) or f_hz < STRUCTURAL_MAC_BAND_LO or f_hz > STRUCTURAL_MAC_BAND_HI:
+            continue
+        if is_acoustic_branch(m):
+            continue
+        rows.append(m)
+    return rows
 
 
 def structural_mac_against_baseline(
     solve: Dict[str, Any],
     sample_id: str,
     *,
-    match_tol_hz: float = 8.0,
+    sample: Optional[Dict[str, Any]] = None,
+    match_tol_hz: float = STRUCTURAL_MAC_MATCH_TOL_HZ,
 ) -> Dict[str, Any]:
     import numpy as np
 
-    ref = load_baseline_structural_reference()
-    if ref.get("unavailable_reason"):
+    cat = load_baseline_structural_mac_catalog()
+    if not cat.get("ready"):
         return {
             "status": "structural_mac_unavailable",
-            "reason": str(ref["unavailable_reason"]),
-            "matches": [],
+            "reason": cat.get(
+                "reason",
+                "run capture_baseline_structural_mac_reference.py on VM first",
+            ),
+            "matched_structural_pairs": [],
         }
-    if ref.get("reference_vec") is None or ref.get("u_to_W") is None:
+    u_to_W = _resolve_u_to_W_for_same_mesh(solve)
+    if u_to_W is None:
         return {
             "status": "structural_mac_unavailable",
-            "reason": "baseline structural reference mode or u_to_W map missing",
-            "matches": [],
+            "reason": "u_to_W map unavailable for same-mesh MAC",
+            "matched_structural_pairs": [],
         }
-    u_to_W = np.asarray(ref["u_to_W"], dtype=np.int32)
-    ref_vec = ref["reference_vec"]
-    ref_f = float(ref["reference_frequency_hz"])
-    n_W = int(solve.get("n_reduced_W", ref.get("n_reduced_W", N_REDUCED_W_VALIDATION)))
     u_map = solve.get("u_to_W")
     if u_map is not None:
         cand_u = np.asarray(u_map, dtype=np.int32)
@@ -667,55 +732,130 @@ def structural_mac_against_baseline(
             return {
                 "status": "structural_mac_unavailable",
                 "reason": "sample u_to_W map differs from baseline (not same-mesh comparable)",
-                "matches": [],
+                "matched_structural_pairs": [],
             }
-    case_dir = SENS_ROOT / "samples" / sample_id
-    rows: List[Dict[str, Any]] = []
-    for m in solve.get("in_band_modes") or []:
-        if is_acoustic_branch(m):
-            continue
-        f_hz = float(m["frequency_hz"])
-        if abs(f_hz - ref_f) > match_tol_hz:
-            continue
-        rel = str(m.get("vector_path", ""))
-        mode_path = case_dir / rel if rel else None
-        if mode_path is None or not mode_path.is_file():
+    n_W = int(solve.get("n_reduced_W", cat.get("n_reduced_W", N_REDUCED_W_VALIDATION)))
+    case_dir = V2_ROOT / "physical_coupling_enabled"
+    sample_case = SENS_ROOT / "samples" / sample_id
+    mats = (sample or {}).get("materials") or {}
+    material_assignment = {
+        "top_wood_id": mats.get("top_wood_id"),
+        "back_wood_id": mats.get("back_wood_id"),
+    }
+    baseline_refs = list(cat.get("structural_reference_modes") or [])
+    mat_struct = _material_structural_modes_in_band(solve)
+    used_mat: set = set()
+    pairs: List[Dict[str, Any]] = []
+
+    for bref in baseline_refs:
+        b_f = float(bref["frequency_hz"])
+        rel_b = str(bref.get("vector_path") or "")
+        b_path = case_dir / rel_b if rel_b else Path(str(bref.get("vector_absolute_path", "")))
+        if not b_path.is_file():
             continue
         try:
-            vec = load_v2_mode_vector_dense(mode_path, n_W)
-            mac = displacement_subspace_mac(ref_vec, vec, u_to_W)
+            b_vec = load_v2_mode_vector_dense(b_path, n_W)
         except Exception as exc:
-            rows.append(
+            pairs.append(
                 {
-                    "frequency_hz": f_hz,
+                    "material_assignment": material_assignment,
+                    "baseline_structural_frequency_hz": b_f,
+                    "status": "structural_mac_unavailable",
+                    "reason": f"baseline vector load: {exc}",
+                }
+            )
+            continue
+        best_j = None
+        best_df = float("inf")
+        for j, m in enumerate(mat_struct):
+            if j in used_mat:
+                continue
+            f_m = float(m["frequency_hz"])
+            df = abs(f_m - b_f)
+            if df <= match_tol_hz and df < best_df:
+                best_df = df
+                best_j = j
+        if best_j is None:
+            continue
+        used_mat.add(best_j)
+        m = mat_struct[best_j]
+        m_f = float(m["frequency_hz"])
+        rel_m = str(m.get("vector_path", ""))
+        m_path = sample_case / rel_m if rel_m else None
+        if m_path is None or not m_path.is_file():
+            continue
+        try:
+            m_vec = load_v2_mode_vector_dense(m_path, n_W)
+            mac = displacement_subspace_mac(b_vec, m_vec, u_to_W)
+        except Exception as exc:
+            pairs.append(
+                {
+                    "material_assignment": material_assignment,
+                    "baseline_structural_frequency_hz": b_f,
+                    "material_structural_frequency_hz": m_f,
                     "status": "structural_mac_unavailable",
                     "reason": str(exc),
                 }
             )
             continue
-        rows.append(
+        b_e = float(bref.get("structural_modal_energy_phys", float("nan")))
+        m_e = float(m.get("structural_modal_energy_phys", float("nan")))
+        pairs.append(
             {
-                "frequency_hz": f_hz,
-                "delta_f_hz_from_baseline_structural": f_hz - ref_f,
-                "displacement_mac_vs_baseline_structural": mac,
-                "p_frac_energy_phys": float(m.get("p_frac_energy_phys", float("nan"))),
-                "structural_modal_energy_phys": float(
-                    m.get("structural_modal_energy_phys", float("nan"))
-                ),
+                "material_assignment": material_assignment,
+                "baseline_structural_frequency_hz": b_f,
+                "material_structural_frequency_hz": m_f,
+                "delta_f_hz": m_f - b_f,
+                "structural_MAC": mac,
+                "E_struct_baseline": b_e,
+                "E_struct_material": m_e,
+                "p_frac_energy_phys_material": float(m.get("p_frac_energy_phys", float("nan"))),
+                "mode_class_physical_energy_material": m.get("mode_class_physical_energy"),
+                "high_confidence_match": mac >= 0.85 and best_df <= match_tol_hz,
             }
         )
-    if not rows:
-        return {
-            "status": "structural_mac_unavailable",
-            "reason": "no structural in-band modes matched baseline frequency window",
-            "matches": [],
-        }
-    ok_rows = [r for r in rows if "displacement_mac_vs_baseline_structural" in r]
+
+    ok_pairs = [p for p in pairs if "structural_MAC" in p]
+    mixed = [
+        m
+        for m in mat_struct
+        if str(m.get("mode_class_physical_energy")) == "mixed"
+        or (
+            0.15 < float(m.get("p_frac_energy_phys", 0.0)) < ENERGY_ACOUSTIC_THRESHOLD
+        )
+    ]
     return {
-        "status": "ok" if ok_rows else "structural_mac_unavailable",
-        "reason": None if ok_rows else "structural modes found but MAC could not be computed",
-        "matches": rows,
+        "status": "ok" if ok_pairs else "structural_mac_unavailable",
+        "reason": None if ok_pairs else (cat.get("reason") or "no matched structural MAC pairs"),
+        "matched_structural_pairs": pairs,
+        "n_baseline_structural_reference_modes": len(baseline_refs),
+        "n_material_structural_candidates": len(mat_struct),
+        "n_mixed_or_coupled_candidates_in_band": len(mixed),
+        "mixed_mode_frequencies_hz": [float(m["frequency_hz"]) for m in mixed[:6]],
     }
+
+
+def attach_geometry_report_fields(
+    row: Dict[str, Any],
+    *,
+    locator_meta: Optional[Dict[str, Any]] = None,
+    branch: Optional[Dict[str, Any]] = None,
+    attempts_log: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    loc = locator_meta or {}
+    br = branch or row.get("nearest_acoustic_branch") or {}
+    row["locator_status"] = loc.get("locator_status")
+    row["locator_frequency_hz"] = loc.get("locator_frequency_hz")
+    row["coupled_target_hz"] = loc.get("coupled_target_hz")
+    row["harvest_band_hz"] = loc.get("harvest_band_hz") or row.get("harvest_band_hz")
+    row["branch_captured"] = bool(row.get("branch_captured", row.get("status") == "ok"))
+    attempts = attempts_log or row.get("branch_capture_attempts") or []
+    row["targeted_retry_required"] = any(
+        bool(a.get("targeted_retry_required")) for a in attempts if isinstance(a, dict)
+    )
+    if br:
+        row["acoustic_frequency_hz"] = float(br.get("frequency_hz", float("nan")))
+        row["p_frac_energy_phys"] = float(br.get("p_frac_energy_phys", row.get("p_frac_energy_phys")))
 
 
 def row_from_existing_solve_artifacts(
@@ -855,16 +995,26 @@ def row_from_solve(
         row["mode_class_physical_energy"] = branch.get("mode_class_physical_energy")
     if sample.get("materials") and not sample.get("requires_remesh"):
         try:
-            mac_payload = structural_mac_against_baseline(solve, str(sample["id"]))
+            mac_payload = structural_mac_against_baseline(
+                solve, str(sample["id"]), sample=sample
+            )
         except Exception as exc:
             mac_payload = {
                 "status": "structural_mac_unavailable",
                 "reason": f"{type(exc).__name__}: {exc}",
-                "matches": [],
+                "matched_structural_pairs": [],
             }
         row["structural_mac_status"] = mac_payload.get("status", "structural_mac_unavailable")
         row["structural_mac_reason"] = mac_payload.get("reason")
-        row["structural_displacement_mac"] = mac_payload.get("matches", [])
+        row["structural_displacement_mac"] = mac_payload.get("matched_structural_pairs", [])
+        row["material_structural_mac_report"] = mac_payload
+    if locator_meta is not None or sample.get("requires_remesh"):
+        attach_geometry_report_fields(
+            row,
+            locator_meta=locator_meta,
+            branch=branch,
+            attempts_log=attempts_log,
+        )
     if status == "solve_failed":
         row["error"] = solve.get("error", "mpi solve failed")
     elif status == "acoustic_branch_not_captured":
@@ -923,10 +1073,20 @@ def write_validation_status(
     ) and bool(
         (phase1_results.get("_radius_trend_evaluation") or {}).get("pilot_radius_trend_pass")
     )
+    material_acoustic_pass = bool(material_ids) and all(
+        _material_acoustic_stable(phase2_results.get(sid) or {}) for sid in material_ids
+    )
+    material_struct_pass = bool(material_ids) and all(
+        (phase2_results.get(sid) or {}).get("structural_mac_status") == "ok"
+        for sid in material_ids
+    )
     status = {
         "coupled_physical_core_v2_baseline_validation": "PASS",
-        "acoustic_geometric_validation_pass": acoustic_geo_pass,
-        "material_species_validation_pass": "PASS" if material_pass else "Pending",
+        "acoustic_geometric_validation_pass": bool(acoustic_geo_pass),
+        "phase2_geometry_parameter_validation_pass": "PASS" if geometry_pass else "Pending",
+        "material_acoustic_branch_stability_pass": material_acoustic_pass,
+        "material_structural_branch_validation_pass": "PASS" if material_struct_pass else "Pending",
+        "material_species_validation_pass": "PASS" if (material_acoustic_pass and material_struct_pass) else "Pending",
         "production_parameter_coverage_pass": "PASS" if geometry_pass else "Pending",
         "mesh_convergence_pass": "Pending",
         "lhs_promotion_blocked": True,
