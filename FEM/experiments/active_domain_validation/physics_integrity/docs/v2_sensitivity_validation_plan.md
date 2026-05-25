@@ -48,12 +48,36 @@ Nominal baseline metrics are **ingested** from `coupled_physical_core_v2/` (no r
 
 Failed direction checks **do not** auto-fail the pilot; they are logged in `expected_direction_evaluation` for human review.
 
+## Radius pilot (passed — recorded)
+
+First parametric validation of frozen `coupled_physical_core_v2`:
+
+```text
+224.718 < 244.394 < 265.305 Hz  (hole_radius 0.041 / 0.047 / 0.053 m)
+pilot_radius_trend_pass = True
+```
+
+Artifacts preserved under `v2_sensitivity_validation/samples/hole_radius_{small,large}/`.
+
+## Controlled suite (depth, top thickness, E_L)
+
+After radius pilot passes:
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_sensitivity_controlled_suite.sh
+```
+
+- Does **not** re-solve hole-radius samples
+- Branch selection: physical energy (`p_frac_energy_phys` ≥ 0.85), not nearest frequency
+- Auto widen-band retry if acoustic branch missing in 220–265 Hz
+- Structural-property samples also report `structural_branches_in_band`
+
 ## LHS promotion gate
 
 Do **not** promote to full LHS until:
 
-- Pilot: all mesh gates pass, v2 converges on both hole-radius samples, monotonic trend recorded
-- Full suite: all samples pass gates + v2 convergence
+- Pilot: passed (recorded in manifest `pilot_radius_trend_passed`)
+- Controlled suite: all six samples pass gates + v2 convergence + acoustic branch captured where required
 
 ## Artifacts
 

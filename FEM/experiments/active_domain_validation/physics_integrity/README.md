@@ -203,11 +203,13 @@ Small controlled perturbations around the frozen v2 baseline. Plan:
 bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_sensitivity_pilot.sh
 ```
 
-Full suite (after pilot passes):
+**Radius pilot passed** (224.7 &lt; 244.4 &lt; 265.3 Hz). Controlled suite (depth, top thickness, E_L):
 
 ```bash
-bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_sensitivity_validation.sh
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_sensitivity_controlled_suite.sh
 ```
+
+Preserves radius-pilot artifacts; does not re-solve `hole_radius_*` samples.
 
 Summary: `v2_sensitivity_validation/diagnostics/v2_sensitivity_validation_summary.{json,md}`
 

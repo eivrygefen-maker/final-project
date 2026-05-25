@@ -13,6 +13,42 @@
     "hole_radius_large_capture_target_hz": 275.0
   },
   "pilot_sample_ids": ["hole_radius_small", "hole_radius_large"],
+  "pilot_radius_trend_passed": true,
+  "pilot_radius_trend_hz": {
+    "hole_radius_small": 224.718256060695,
+    "coupled_baseline": 244.394153389752,
+    "hole_radius_large": 265.304715
+  },
+  "controlled_sample_ids": [
+    "depth_small",
+    "depth_large",
+    "top_thickness_small",
+    "top_thickness_large",
+    "top_stiffness_soft",
+    "top_stiffness_stiff"
+  ],
+  "default_branch_capture": {
+    "initial_harvest_lo_hz": 220.0,
+    "initial_harvest_hi_hz": 265.0,
+    "initial_target_hz": 244.39,
+    "initial_num_modes": 12,
+    "widen_attempts": [
+      {
+        "label": "widen_low",
+        "harvest_lo_hz": 200.0,
+        "harvest_hi_hz": 280.0,
+        "target_hz": 244.39,
+        "num_modes": 14
+      },
+      {
+        "label": "widen_high",
+        "harvest_lo_hz": 255.0,
+        "harvest_hi_hz": 300.0,
+        "target_hz": 275.0,
+        "num_modes": 16
+      }
+    ]
+  },
   "promotion_requires": [
     "all_pilot_mesh_gates_pass",
     "all_pilot_v2_converged",
@@ -83,6 +119,7 @@
         "top_thickness": 0.003
       },
       "materials_override": {},
+      "acoustic_geometry_test": true,
       "expected_direction": {
         "parameter": "depth",
         "perturbation": "decrease",
@@ -101,6 +138,7 @@
         "top_thickness": 0.003
       },
       "materials_override": {},
+      "acoustic_geometry_test": true,
       "expected_direction": {
         "parameter": "depth",
         "perturbation": "increase",
@@ -119,6 +157,11 @@
         "top_thickness": 0.0027
       },
       "materials_override": {},
+      "branch_capture": {
+        "widen_attempts": [
+          {"label": "widen_low", "harvest_lo_hz": 200.0, "harvest_hi_hz": 270.0, "target_hz": 244.39, "num_modes": 14}
+        ]
+      },
       "expected_direction": {
         "parameter": "top_thickness",
         "perturbation": "decrease",
@@ -137,6 +180,11 @@
         "top_thickness": 0.0033
       },
       "materials_override": {},
+      "branch_capture": {
+        "widen_attempts": [
+          {"label": "widen_low", "harvest_lo_hz": 200.0, "harvest_hi_hz": 270.0, "target_hz": 244.39, "num_modes": 14}
+        ]
+      },
       "expected_direction": {
         "parameter": "top_thickness",
         "perturbation": "increase",
@@ -149,6 +197,7 @@
       "pilot": false,
       "ingest_only": false,
       "requires_remesh": false,
+      "reuse_baseline_mesh": true,
       "geometry": {
         "hole_radius": 0.047,
         "depth": 0.1,
@@ -156,6 +205,9 @@
       },
       "materials_override": {
         "top": {"E_L_scale": 0.9}
+      },
+      "branch_capture": {
+        "widen_attempts": []
       },
       "expected_direction": {
         "parameter": "top_plate_stiffness",
@@ -169,6 +221,7 @@
       "pilot": false,
       "ingest_only": false,
       "requires_remesh": false,
+      "reuse_baseline_mesh": true,
       "geometry": {
         "hole_radius": 0.047,
         "depth": 0.1,
@@ -176,6 +229,9 @@
       },
       "materials_override": {
         "top": {"E_L_scale": 1.1}
+      },
+      "branch_capture": {
+        "widen_attempts": []
       },
       "expected_direction": {
         "parameter": "top_plate_stiffness",
