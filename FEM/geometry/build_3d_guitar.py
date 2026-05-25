@@ -720,12 +720,27 @@ def create_guitar_mesh():
         depth_m: float,
         shell_t: float,
         inner_tool_bb: Optional[list],
-        vol_out_id: int,
     ) -> dict:
         """Pre-mesh validation audit: wood/air volume classification and cavity probes."""
         air_set = {int(v) for v in air_vols}
         wood_set = {int(v) for v in wood_vols}
         all_vol_tags = sorted(int(t) for d, t in gmsh.model.getEntities(3) if int(d) == 3)
+
+        def _union_bbox_live_volumes(vol_tags: list) -> list:
+            """Union bbox of live OCC volumes (imported ids are invalid after Booleans)."""
+            if not vol_tags:
+                return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            xmin = ymin = zmin = float("inf")
+            xmax = ymax = zmax = float("-inf")
+            for v in vol_tags:
+                vx0, vy0, vz0, vx1, vy1, vz1 = gmsh.model.getBoundingBox(3, int(v))
+                xmin = min(xmin, float(vx0))
+                ymin = min(ymin, float(vy0))
+                zmin = min(zmin, float(vz0))
+                xmax = max(xmax, float(vx1))
+                ymax = max(ymax, float(vy1))
+                zmax = max(zmax, float(vz1))
+            return [xmin, ymin, zmin, xmax, ymax, zmax]
         vol_records: list = []
         for v in all_vol_tags:
             xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(3, int(v))
@@ -755,7 +770,7 @@ def create_guitar_mesh():
                 }
             )
 
-        outer_bb = list(gmsh.model.getBoundingBox(3, int(vol_out_id)))
+        outer_bb = _union_bbox_live_volumes(all_vol_tags)
         ox0 = 0.5 * (float(outer_bb[0]) + float(outer_bb[3]))
         oy0 = 0.5 * (float(outer_bb[1]) + float(outer_bb[4]))
         oz0 = 0.5 * (float(outer_bb[2]) + float(outer_bb[5]))
@@ -918,7 +933,9 @@ def create_guitar_mesh():
                 "hole_radius_m": float(hole_r),
                 "hole_center_xy_m": [float(hole_x), float(hole_y)],
             },
+            "live_volume_ids": [int(v) for v in all_vol_tags],
             "outer_body_bbox_m": [float(x) for x in outer_bb],
+            "outer_body_bbox_source": "union_of_gmsh.model.getEntities(3)_after_sync",
             "inner_tool_bbox_m": [float(x) for x in inner_tool_bb]
             if inner_tool_bb is not None
             else None,
@@ -1353,7 +1370,6 @@ def create_guitar_mesh():
             depth_m=float(D),
             shell_t=float(t),
             inner_tool_bb=inner_tool_bb,
-            vol_out_id=int(vol_out_id),
         )
         if not vol_audit.get("cavity_verification_pass"):
             diag = vol_audit.get("diagnosis", {})
