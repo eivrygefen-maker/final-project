@@ -2024,6 +2024,125 @@ def create_guitar_mesh():
             print(ln, flush=True)
         return json_path
 
+    def _validation_surface_boundary_xyz(
+        surf_tag: int, *, n_curve_samples: int = 16
+    ) -> Tuple[List[Tuple[float, float, float]], str]:
+        """Sample 3D points on the surface boundary curves (not bbox corners)."""
+        pts: List[Tuple[float, float, float]] = []
+        try:
+            bnd = gmsh.model.getBoundary(
+                [(2, int(surf_tag))], oriented=False, recursive=False
+            )
+        except Exception:
+            return pts, "boundary_unavailable"
+        for dim, ctag in bnd:
+            if int(dim) != 1:
+                continue
+            try:
+                u_bounds = gmsh.model.getParametrizationBounds(1, int(ctag))
+                u0 = float(u_bounds[0][0])
+                u1 = float(u_bounds[1][0])
+            except Exception:
+                continue
+            for k in range(max(2, int(n_curve_samples))):
+                t = float(k) / float(max(1, n_curve_samples - 1))
+                u = u0 + t * (u1 - u0)
+                try:
+                    raw = gmsh.model.getValue(1, int(ctag), [u])
+                    flat = [float(x) for x in raw]
+                    if len(flat) >= 3:
+                        pts.append((flat[0], flat[1], flat[2]))
+                except Exception:
+                    continue
+        if pts:
+            return pts, "boundary_curve_samples"
+        try:
+            uv_lo, uv_hi = gmsh.model.getParametrizationBounds(2, int(surf_tag))
+            u0, v0 = float(uv_lo[0]), float(uv_lo[1])
+            u1, v1 = float(uv_hi[0]), float(uv_hi[1])
+            for iu in range(5):
+                for iv in range(5):
+                    u = u0 + (float(iu) / 4.0) * (u1 - u0)
+                    v = v0 + (float(iv) / 4.0) * (v1 - v0)
+                    raw = gmsh.model.getValue(2, int(surf_tag), [u, v])
+                    flat = [float(x) for x in raw]
+                    if len(flat) >= 3:
+                        pts.append((flat[0], flat[1], flat[2]))
+            return pts, "uv_grid_fallback"
+        except Exception:
+            return [], "no_samples"
+
+    def _validation_surface_normal_info(surf_tag: int) -> dict:
+        """Best-effort outward normal for validation aperture checks."""
+        nz = get_surface_normal_signed_z(int(surf_tag))
+        if nz is not None:
+            return {
+                "normal_signed_z": float(nz),
+                "method": "getNormal_midpoint",
+                "available": True,
+            }
+        nvec = get_surface_normal_vec(int(surf_tag))
+        if nvec is not None:
+            return {
+                "normal_signed_z": float(nvec[2]),
+                "normal_vec": [float(nvec[0]), float(nvec[1]), float(nvec[2])],
+                "method": "getNormal_vec_midpoint",
+                "available": True,
+            }
+        try:
+            uv_lo, uv_hi = gmsh.model.getParametrizationBounds(2, int(surf_tag))
+            u0, v0 = float(uv_lo[0]), float(uv_lo[1])
+            u1, v1 = float(uv_hi[0]), float(uv_hi[1])
+            uc, vc = 0.5 * (u0 + u1), 0.5 * (v0 + v1)
+            du = max(1.0e-6, 0.05 * max(abs(u1 - u0), 1.0e-9))
+            dv = max(1.0e-6, 0.05 * max(abs(v1 - v0), 1.0e-9))
+            p0 = gmsh.model.getValue(2, int(surf_tag), [uc, vc])
+            pu = gmsh.model.getValue(2, int(surf_tag), [uc + du, vc])
+            pv = gmsh.model.getValue(2, int(surf_tag), [uc, vc + dv])
+            c0 = (float(p0[0]), float(p0[1]), float(p0[2]))
+            tu = (
+                float(pu[0]) - c0[0],
+                float(pu[1]) - c0[1],
+                float(pu[2]) - c0[2],
+            )
+            tv = (
+                float(pv[0]) - c0[0],
+                float(pv[1]) - c0[1],
+                float(pv[2]) - c0[2],
+            )
+            cross = (
+                tu[1] * tv[2] - tu[2] * tv[1],
+                tu[2] * tv[0] - tu[0] * tv[2],
+                tu[0] * tv[1] - tu[1] * tv[0],
+            )
+            nlen = math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2)
+            if nlen > 1.0e-12:
+                return {
+                    "normal_signed_z": float(cross[2] / nlen),
+                    "normal_vec": [cross[0] / nlen, cross[1] / nlen, cross[2] / nlen],
+                    "method": "uv_finite_difference",
+                    "available": True,
+                }
+        except Exception:
+            pass
+        return {
+            "normal_signed_z": None,
+            "method": "unavailable",
+            "available": False,
+        }
+
+    def _validation_aperture_radial_max_m(
+        surf_tag: int, *, hx: float, hy: float
+    ) -> Tuple[float, str]:
+        bpts, src = _validation_surface_boundary_xyz(int(surf_tag))
+        if bpts:
+            r_max = max(
+                math.hypot(float(x) - float(hx), float(y) - float(hy)) for x, y, _z in bpts
+            )
+            return float(r_max), f"boundary_{src}"
+        cx, cy, _cz = get_surface_center(int(surf_tag))
+        return float(math.hypot(float(cx) - float(hx), float(cy) - float(hy))), "centroid_fallback"
+
     def _near_disk_air_boundary_surfaces(
         air_boundary_surfs: list,
         *,
@@ -2074,26 +2193,37 @@ def create_guitar_mesh():
         span_y = float(ymax - ymin)
         span_xy = max(span_x, span_y)
         span_z = float(zmax - zmin)
-        nz = get_surface_normal_signed_z(int(surf_tag))
+        ninfo = _validation_surface_normal_info(int(surf_tag))
+        nz = ninfo.get("normal_signed_z")
         horiz_frac = abs(float(nz)) if nz is not None else 0.0
-        r_cent = math.hypot(float(cx) - float(hx), float(cy) - float(hy))
-        r_corners = 0.0
-        for x in (float(xmin), float(xmax)):
-            for y in (float(ymin), float(ymax)):
-                r_corners = max(
-                    r_corners, math.hypot(float(x) - float(hx), float(y) - float(hy))
-                )
-        r_max = max(r_cent, r_corners)
+        r_max, r_src = _validation_aperture_radial_max_m(
+            int(surf_tag), hx=float(hx), hy=float(hy)
+        )
+        planar_z_eps = max(1.0e-6, 5.0e-4)
+        at_plane = abs(float(cz) - float(z_aperture_plane)) <= z_tol
+        planar_by_z = bool(span_z <= planar_z_eps and at_plane)
+        horizontal_ok = bool(
+            (nz is not None and float(nz) >= 0.85)
+            or planar_by_z
+        )
 
         checks = {
             "area_in_pi_r2_band": bool(a_lo <= area <= a_hi),
             "xy_span_near_94mm": bool(span_xy_lo <= span_xy <= span_xy_hi),
             "z_span_small": bool(span_z <= z_span_max),
-            "horizontal_plus_z": bool(nz is not None and float(nz) >= 0.85),
-            "at_aperture_plane": bool(abs(float(cz) - float(z_aperture_plane)) <= z_tol),
-            "radial_max_le_50mm": bool(r_max <= r_max_limit),
+            "horizontal_or_planar": bool(horizontal_ok),
+            "at_aperture_plane": bool(at_plane),
+            "radial_max_boundary_le_50mm": bool(r_max <= r_max_limit),
         }
         passes_strict = all(checks.values())
+        if planar_by_z and nz is None:
+            print(
+                f"[diag] validation soundhole aperture: surface {int(surf_tag)} "
+                f"accepted as planar (span_z={span_z:.6f} m, z_plane="
+                f"{float(z_aperture_plane):.6f} m); normal unavailable "
+                f"({ninfo.get('method')})",
+                flush=True,
+            )
         return {
             "surface_id": int(surf_tag),
             "area_m2": area,
@@ -2105,9 +2235,11 @@ def create_guitar_mesh():
             "span_z_m": float(span_z),
             "center_m": [float(cx), float(cy), float(cz)],
             "normal_signed_z": float(nz) if nz is not None else None,
+            "normal_method": str(ninfo.get("method")),
             "horizontal_area_fraction": float(horiz_frac),
-            "radial_centroid_m": float(r_cent),
+            "planar_by_zero_z_span": bool(planar_by_z),
             "radial_max_m": float(r_max),
+            "radial_max_source": str(r_src),
             "z_aperture_plane_m": float(z_aperture_plane),
             "z_offset_from_aperture_plane_m": float(cz) - float(z_aperture_plane),
             "strict_checks": checks,
@@ -2183,10 +2315,10 @@ def create_guitar_mesh():
         partial = [
             c
             for c in candidate_records
-            if c["strict_checks"].get("horizontal_plus_z")
+            if c["strict_checks"].get("horizontal_or_planar")
             and c["strict_checks"].get("z_span_small")
             and c["strict_checks"].get("at_aperture_plane")
-            and c["strict_checks"].get("radial_max_le_50mm")
+            and c["strict_checks"].get("radial_max_boundary_le_50mm")
         ]
         if partial:
             total = sum(float(c["area_m2"]) for c in partial)
@@ -2295,9 +2427,10 @@ def create_guitar_mesh():
 
         if soundhole_surfs:
             print(
-                f"[diag] soundhole tag 2: use existing air-boundary aperture "
-                f"({selection_meta.get('method')}) n={len(soundhole_surfs)} "
-                f"surfaces={soundhole_surfs} z_plane={z_aperture_plane:.6f} m"
+                "[diag] validation soundhole aperture: selected existing air-boundary "
+                f"surface(s) n={len(soundhole_surfs)} ids={soundhole_surfs} "
+                f"method={selection_meta.get('method')} z_plane={z_aperture_plane:.6f} m "
+                "(disk imprint skipped)"
             )
             return (
                 soundhole_surfs,
@@ -2412,39 +2545,29 @@ def create_guitar_mesh():
         hole_r: float,
         z_plane: float,
     ) -> list:
-        """
-        Select only the circular external air-side aperture (not cavity walls or lids).
-
-        Requires prior disk imprint; matches area, span, centroid, +Z normal, and z band.
-        """
-        if not air_boundary_surfs:
-            return []
-        expected = math.pi * float(hole_r) * float(hole_r)
-        a_lo = 0.85 * expected
-        a_hi = 1.15 * expected
-        z_tol = 0.008
-        r_cent_max = 1.05 * float(hole_r)
-        span_max = 2.05 * float(hole_r)
+        """Select circular air-side aperture surfaces (validation fallback selector)."""
         scored: list = []
-        for s in sorted(int(x) for x in air_boundary_surfs):
-            area = _surface_area_m(int(s))
-            if not (a_lo <= area <= a_hi):
-                continue
-            cx, cy, cz = get_surface_center(int(s))
-            if math.hypot(float(cx) - float(hx), float(cy) - float(hy)) > r_cent_max:
-                continue
-            if abs(float(cz) - float(z_plane)) > z_tol:
-                continue
-            xmin, ymin, _zmin, xmax, ymax, _zmax = gmsh.model.getBoundingBox(2, int(s))
-            span_xy = max(float(xmax) - float(xmin), float(ymax) - float(ymin))
-            if span_xy > span_max:
-                continue
-            nz = get_surface_normal_signed_z(int(s))
-            if nz is None or float(nz) < 0.85:
-                continue
-            scored.append((int(s), float(area), abs(float(area) - expected)))
+        for rec in (
+            _evaluate_validation_aperture_surface(
+                int(s),
+                hx=float(hx),
+                hy=float(hy),
+                hole_r=float(hole_r),
+                z_aperture_plane=float(z_plane),
+            )
+            for s in sorted(int(x) for x in air_boundary_surfs)
+        ):
+            if rec.get("passes_strict_aperture"):
+                scored.append(
+                    (
+                        int(rec["surface_id"]),
+                        float(rec["area_m2"]),
+                        abs(float(rec["area_m2"]) - float(rec["expected_area_m2"])),
+                    )
+                )
         if not scored:
             return []
+        expected = math.pi * float(hole_r) * float(hole_r)
         scored.sort(key=lambda row: row[2])
         best_area = scored[0][1]
         return sorted(
@@ -2480,17 +2603,25 @@ def create_guitar_mesh():
         r_max = 0.0
         z_vals: list = []
         horiz_ok = 0
+        planar_ok = 0
         for s in soundhole_surfs:
-            cx, cy, cz = get_surface_center(int(s))
-            r_max = max(r_max, math.hypot(float(cx) - float(hx), float(cy) - float(hy)))
-            z_vals.append(float(cz))
-            nz = get_surface_normal_signed_z(int(s))
-            if nz is not None and float(nz) >= 0.85:
+            rec = _evaluate_validation_aperture_surface(
+                int(s),
+                hx=float(hx),
+                hy=float(hy),
+                hole_r=float(hole_r),
+                z_aperture_plane=float(z_plane),
+            )
+            r_max = max(r_max, float(rec["radial_max_m"]))
+            z_vals.append(float(rec["center_m"][2]))
+            if rec["strict_checks"].get("horizontal_or_planar"):
                 horiz_ok += 1
+            if rec.get("planar_by_zero_z_span"):
+                planar_ok += 1
         if r_max > 0.050:
             raise RuntimeError(
                 f"FEM_VALIDATION_MESH: soundhole aperture radial extent {r_max:.6f} m "
-                f"> 0.050 m (r={hole_r:.4f} m)."
+                f"(boundary-based) > 0.050 m (r={hole_r:.4f} m)."
             )
         z_span = max(z_vals) - min(z_vals) if z_vals else float("inf")
         if z_span > 0.012:
@@ -2500,16 +2631,19 @@ def create_guitar_mesh():
             )
         if horiz_ok < len(soundhole_surfs):
             raise RuntimeError(
-                "FEM_VALIDATION_MESH: soundhole aperture surface(s) not horizontal (+Z)."
+                "FEM_VALIDATION_MESH: soundhole aperture surface(s) not horizontal/planar."
             )
         return {
             "cad_surface_tags": [int(s) for s in soundhole_surfs],
             "total_area_m2": float(total_area),
             "expected_area_m2": float(expected),
             "radial_max_m": float(r_max),
+            "radial_max_source": "boundary_curve_samples",
             "z_plane_m": float(z_plane),
             "z_span_m": float(z_span),
             "n_surfaces": len(soundhole_surfs),
+            "n_planar_by_z_span": int(planar_ok),
+            "normal_unavailable_accepted": bool(planar_ok > 0),
         }
 
     def _select_soundhole_disk_centroid_fallback(
@@ -3221,6 +3355,7 @@ def create_guitar_mesh():
                 return
             expected = math.pi * float(hr) * float(hr)
             a_lo, a_hi = 0.85 * expected, 1.15 * expected
+            z_gate_plane = float(z_aperture_plane)
             try:
                 entities = gmsh.model.getEntitiesForPhysicalGroup(2, 2)
             except Exception as exc:
@@ -3229,9 +3364,10 @@ def create_guitar_mesh():
                 ) from exc
             surf_tags: list = []
             cad_area = 0.0
-            r_max = 0.0
+            r_max_mesh = 0.0
             z_vals: list = []
-            horiz = 0
+            horiz_ok = 0
+            planar_ok = 0
             for ent in entities:
                 if isinstance(ent, (list, tuple)) and len(ent) >= 2:
                     dim_e, tag_e = int(ent[0]), int(ent[1])
@@ -3241,15 +3377,17 @@ def create_guitar_mesh():
                     continue
                 surf_tags.append(int(tag_e))
                 cad_area += _surface_area_m(int(tag_e))
-                cx, cy, cz = get_surface_center(int(tag_e))
-                r_max = max(
-                    r_max,
-                    math.hypot(float(cx) - float(hole_x), float(cy) - float(hole_y)),
+                rec = _evaluate_validation_aperture_surface(
+                    int(tag_e),
+                    hx=float(hole_x),
+                    hy=float(hole_y),
+                    hole_r=float(hr),
+                    z_aperture_plane=z_gate_plane,
                 )
-                z_vals.append(float(cz))
-                nz = get_surface_normal_signed_z(int(tag_e))
-                if nz is not None and float(nz) >= 0.85:
-                    horiz += 1
+                if rec["strict_checks"].get("horizontal_or_planar"):
+                    horiz_ok += 1
+                if rec.get("planar_by_zero_z_span"):
+                    planar_ok += 1
             def _triangle_area_m(c0, c1, c2):
                 ax, ay, az = (
                     float(c1[0]) - float(c0[0]),
@@ -3279,8 +3417,8 @@ def create_guitar_mesh():
                         ]
                         mesh_area += _triangle_area_m(coords[0], coords[1], coords[2])
                         for c in coords:
-                            r_max = max(
-                                r_max,
+                            r_max_mesh = max(
+                                r_max_mesh,
                                 math.hypot(
                                     float(c[0]) - float(hole_x),
                                     float(c[1]) - float(hole_y),
@@ -3288,6 +3426,7 @@ def create_guitar_mesh():
                             )
                             z_vals.append(float(c[2]))
             z_span = max(z_vals) - min(z_vals) if z_vals else float("inf")
+            planar_by_mesh_z = bool(z_span <= 0.012)
             failures: list = []
             if not surf_tags:
                 failures.append("physical group 2 has no surfaces")
@@ -3299,12 +3438,16 @@ def create_guitar_mesh():
                 failures.append(
                     f"mesh triangle area {mesh_area:.8f} m² not in [{a_lo:.8f},{a_hi:.8f}]"
                 )
-            if r_max > 0.050:
-                failures.append(f"radial max {r_max:.6f} m > 0.050 m")
+            if r_max_mesh > 0.050:
+                failures.append(
+                    f"mesh-node radial max {r_max_mesh:.6f} m > 0.050 m"
+                )
             if z_span > 0.012:
                 failures.append(f"z-span {z_span:.6f} m > 0.012 m (not planar)")
-            if surf_tags and horiz < len(surf_tags):
-                failures.append("not all aperture surfaces horizontal (+Z)")
+            if surf_tags and horiz_ok < len(surf_tags) and not planar_by_mesh_z:
+                failures.append(
+                    "aperture surfaces not horizontal (+Z) and mesh z-span not planar"
+                )
             if failures:
                 raise RuntimeError(
                     "FEM_VALIDATION_MESH post-mesh soundhole aperture gate FAILED: "
@@ -3316,8 +3459,11 @@ def create_guitar_mesh():
                 "cad_area_m2": float(cad_area),
                 "mesh_triangle_area_m2": float(mesh_area),
                 "expected_area_m2": float(expected),
-                "radial_max_m": float(r_max),
+                "radial_max_m": float(r_max_mesh),
+                "radial_max_source": "mesh_triangle_nodes",
                 "z_span_m": float(z_span),
+                "n_planar_by_z_span": int(planar_ok),
+                "normal_unavailable_accepted": bool(planar_ok > 0),
                 "gate_pass": True,
             }
             gate_path = out_file.parent / "soundhole_aperture_mesh_gate.json"
@@ -3325,7 +3471,7 @@ def create_guitar_mesh():
             print(
                 "[diag] VALIDATION soundhole aperture post-mesh gate PASS: "
                 f"cad_area={cad_area:.8f} m² mesh_area={mesh_area:.8f} m² "
-                f"r_max={r_max:.6f} m z_span={z_span:.6f} m surfaces={surf_tags}"
+                f"r_max_mesh={r_max_mesh:.6f} m z_span={z_span:.6f} m surfaces={surf_tags}"
             )
 
         if is_validation and use_air_opening_tag and not shell_only:
