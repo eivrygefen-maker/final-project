@@ -89,6 +89,18 @@ bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_coup
 
 Then rerun `run_coupled_participation_audit.sh` on `coupled_near_acoustic_air_p/` if needed.
 
+## Decoupled-union diagnostic (block-diagonal, reduced domain)
+
+Zeros all FSI/interface blocks (`A_up`, `A_pu`, `M_pu`, Nitsche) on the same
+`n_u=102102`, `n_p_air=9998` operator. Harvest does not rank by wood. Verdict:
+`DECOUPLED_UNION_PASS` if an acoustic-dominated mode appears within ±1 Hz of 244.39 Hz.
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_coupled_decoupled_union.sh
+```
+
+Outputs: `coupled_decoupled_union/diagnostics/decoupled_union_summary.json`
+
 ## Scaling audit
 
 `p_frac_raw` matches production (eigenvector in GNHEP block-scaled assembled basis).

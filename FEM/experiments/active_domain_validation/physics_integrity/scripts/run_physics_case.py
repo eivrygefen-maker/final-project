@@ -44,7 +44,11 @@ CASES = (
     "coupled_low_frequency",
     "coupled_near_acoustic",
     "coupled_near_acoustic_air_p",
+    "coupled_decoupled_union",
 )
+
+SIGMA_SUSPECT_HZ = 273.7168
+SIGMA_SUSPECT_TOL_HZ = 0.05
 
 
 def _resolve_mesh_path(cfg: dict, config_path: Path) -> Path:
@@ -216,6 +220,139 @@ def _write_coupled_near_acoustic_report(
     )
 
 
+def _write_decoupled_union_report(
+    case_dir: Path,
+    cfg: dict,
+    *,
+    target_hz: float,
+    harvest_lo: float,
+    harvest_hi: float,
+    mode_rows: List[Dict[str, Any]],
+    restr: Dict[str, Any],
+    n_u_col: int,
+    n_p_col: int,
+    n_W: int,
+    elapsed: float,
+) -> None:
+    ref_hz = _load_acoustic_reference_hz(cfg.get("solver", {}))
+    acoustic_tol_hz = float(cfg.get("solver", {}).get("decoupled_union_acoustic_tol_hz", 1.0))
+    union_meta = cfg.get("_coupled_decoupled_union_diagnosis") or {}
+
+    struct_path = PHYSICS_ROOT / "structural_only" / "results" / "result_structural.json"
+    struct_freqs: List[float] = []
+    if struct_path.is_file():
+        struct_freqs = [
+            float(f)
+            for f in json.loads(struct_path.read_text(encoding="utf-8")).get(
+                "frequencies_hz", []
+            )
+            if harvest_lo <= float(f) <= harvest_hi
+        ]
+
+    modes_all = list(mode_rows)
+    for m in modes_all:
+        f_hz = float(m.get("frequency_hz", 0.0))
+        m["in_search_band"] = harvest_lo <= f_hz <= harvest_hi
+        m["sigma_mapped_suspect"] = abs(f_hz - SIGMA_SUSPECT_HZ) <= SIGMA_SUSPECT_TOL_HZ
+        m["delta_from_acoustic_ref_hz"] = f_hz - ref_hz
+
+    in_band = [m for m in modes_all if m.get("in_search_band")]
+    sigma_bucket = [m for m in in_band if m.get("sigma_mapped_suspect")]
+    rank_by_freq = sorted(in_band, key=lambda m: abs(float(m["delta_from_acoustic_ref_hz"])))
+    rank_by_acoustic = sorted(
+        in_band,
+        key=lambda m: (-float(m.get("p_frac_phys_gnhep", 0.0)), abs(float(m["delta_from_acoustic_ref_hz"]))),
+    )
+
+    acoustic_candidates = [
+        m
+        for m in in_band
+        if abs(float(m["frequency_hz"]) - ref_hz) <= acoustic_tol_hz
+        and (
+            m.get("mode_class") == "acoustic_dominated"
+            or float(m.get("p_frac_phys_gnhep", 0.0)) >= 0.35
+        )
+    ]
+    acoustic_recovered = len(acoustic_candidates) > 0
+    verdict = "DECOUPLED_UNION_PASS" if acoustic_recovered else "DECOUPLED_UNION_FAIL"
+    fail_reason = ""
+    if not acoustic_recovered:
+        nearest = min(in_band, key=lambda m: abs(float(m["delta_from_acoustic_ref_hz"])), default=None)
+        if nearest is None:
+            fail_reason = "no modes in search band"
+        else:
+            fail_reason = (
+                f"no acoustic-dominated mode within ±{acoustic_tol_hz:.1f} Hz of {ref_hz:.2f} Hz; "
+                f"nearest f={float(nearest['frequency_hz']):.4f} Hz "
+                f"p_frac_phys={float(nearest.get('p_frac_phys_gnhep', 0)):.3e} "
+                f"class={nearest.get('mode_class')}"
+            )
+
+    summary = {
+        "experiment": "coupled_decoupled_union_diagnosis",
+        "verdict": verdict,
+        "verdict_note": fail_reason if not acoustic_recovered else (
+            f"acoustic branch recovered within ±{acoustic_tol_hz:.1f} Hz of {ref_hz:.2f} Hz"
+        ),
+        "acoustic_reference_hz": ref_hz,
+        "acoustic_tolerance_hz": acoustic_tol_hz,
+        "search_band_hz": [harvest_lo, harvest_hi],
+        "reduced_domain": restr,
+        "zeroed_coupling_blocks_F_norm": union_meta.get("zeroed_blocks_F_norm"),
+        "structural_reference_freqs_in_band_hz": struct_freqs,
+        "modes_all": modes_all,
+        "modes_in_band": in_band,
+        "ranking_by_proximity_to_acoustic_ref": [
+            {k: m[k] for k in ("mode_index", "frequency_hz", "p_frac_phys_gnhep", "mode_class", "delta_from_acoustic_ref_hz")}
+            for m in rank_by_freq
+        ],
+        "ranking_by_acoustic_participation": [
+            {k: m[k] for k in ("mode_index", "frequency_hz", "p_frac_phys_gnhep", "wood_participation", "mode_class")}
+            for m in rank_by_acoustic
+        ],
+        "sigma_mapped_suspect_cluster": sigma_bucket,
+        "acoustic_recovered_modes": acoustic_candidates,
+        "elapsed_s": elapsed,
+        "n_u": n_u_col,
+        "n_p": n_p_col,
+        "n_reduced_W": n_W,
+    }
+    diag = case_dir / "diagnostics"
+    diag.mkdir(parents=True, exist_ok=True)
+    _write_json(diag / "decoupled_union_summary.json", summary)
+
+    if MPI.COMM_WORLD.rank != 0:
+        return
+
+    print(f"[physics_integrity] decoupled_union verdict: {verdict}")
+    print(
+        f"[physics_integrity] reduced DOFs: n_u_active={restr.get('n_u_active')} "
+        f"n_p_active={restr.get('n_p_active')} n_reduced_W={restr.get('n_reduced_W')} "
+        f"dropped_inactive_p={restr.get('dropped_inactive_p')}"
+    )
+    if union_meta.get("zeroed_blocks_F_norm"):
+        print(f"[physics_integrity] zeroed coupling block ||·||_F: {union_meta['zeroed_blocks_F_norm']}")
+    print(f"[physics_integrity] modes in band [{harvest_lo}, {harvest_hi}] Hz: {len(in_band)}")
+    for m in rank_by_freq:
+        print(
+            f"  f={float(m['frequency_hz']):8.4f} Hz  p_frac_phys={float(m.get('p_frac_phys_gnhep', 0)):.4e}  "
+            f"class={m.get('mode_class')}  Δref={float(m['delta_from_acoustic_ref_hz']):+.4f}"
+        )
+    if acoustic_recovered:
+        best = acoustic_candidates[0]
+        print(
+            f"[physics_integrity] acoustic branch: f={float(best['frequency_hz']):.4f} Hz "
+            f"Δref={float(best['delta_from_acoustic_ref_hz']):+.4f} Hz"
+        )
+    else:
+        print(f"[physics_integrity] acoustic branch NOT recovered: {fail_reason}")
+    if sigma_bucket:
+        print(
+            f"[physics_integrity] sigma-mapped suspects at {SIGMA_SUSPECT_HZ} Hz: "
+            f"{len(sigma_bucket)} mode(s) (audit ST mapping separately)"
+        )
+
+
 def _save_physics_audit(cfg: dict, case_dir: Path) -> None:
     audit = cfg.get("_physics_integrity") or cfg.get("solver", {}).get("_physics_integrity")
     if not audit:
@@ -237,6 +374,7 @@ def _run_coupled_like(
     eps_broad: float,
     case_label: str = "coupled",
     emit_near_acoustic_report: bool = False,
+    emit_decoupled_union_report: bool = False,
 ) -> int:
     sorting_root = case_dir / "sorting"
     temp_modes = sorting_root / "temp_modes"
@@ -258,6 +396,9 @@ def _run_coupled_like(
     cfg["solver"]["eps_reject_target_locked"] = False
     cfg["solver"]["eps_reject_decoupled_u_only"] = False
     cfg["solver"]["eps_harvest_allow_weak_coupling"] = True
+    if emit_decoupled_union_report:
+        cfg["solver"]["eps_harvest_rank_by_wood"] = False
+        cfg["solver"]["eps_harvest_rank_by_p_frac"] = False
     cfg["solver"]["eps_broad_search_hz"] = float(eps_broad)
     cfg["solver"]["_worker_harvest_lo_hz"] = float(harvest_lo)
     cfg["solver"]["_worker_harvest_hi_hz"] = float(harvest_hi)
@@ -344,6 +485,7 @@ def _run_coupled_like(
     }
     _write_json(case_dir / "results" / f"result_{hz_tag}.json", result)
     _write_json(case_dir / "timing" / "run_summary.json", result)
+    restr = cfg.get("_coupled_air_pressure_restriction") or {}
     if emit_near_acoustic_report:
         _write_coupled_near_acoustic_report(
             case_dir,
@@ -353,6 +495,20 @@ def _run_coupled_like(
             harvest_hi=harvest_hi,
             mode_rows=mode_rows,
             freqs_hz=[float(f) for f in freqs_hz],
+            n_u_col=n_u_col,
+            n_p_col=n_p_col,
+            n_W=n_W,
+            elapsed=elapsed,
+        )
+    if emit_decoupled_union_report:
+        _write_decoupled_union_report(
+            case_dir,
+            cfg,
+            target_hz=target_hz,
+            harvest_lo=harvest_lo,
+            harvest_hi=harvest_hi,
+            mode_rows=mode_rows,
+            restr=restr,
             n_u_col=n_u_col,
             n_p_col=n_p_col,
             n_W=n_W,
@@ -522,6 +678,7 @@ def main() -> int:
         "coupled_low_frequency",
         "coupled_near_acoustic",
         "coupled_near_acoustic_air_p",
+        "coupled_decoupled_union",
     ):
         sc = cfg["solver"]
         defaults = {
@@ -529,9 +686,11 @@ def main() -> int:
             "coupled_low_frequency": (120.0, 60.0, 200.0, 80.0, 8),
             "coupled_near_acoustic": (244.39, 220.0, 265.0, 45.0, 16),
             "coupled_near_acoustic_air_p": (244.39, 220.0, 265.0, 45.0, 48),
+            "coupled_decoupled_union": (244.39, 220.0, 265.0, 45.0, 48),
         }
         t_def, lo_def, hi_def, broad_def, nm_def = defaults[args.case]
         near_report = args.case in ("coupled_near_acoustic", "coupled_near_acoustic_air_p")
+        union_report = args.case == "coupled_decoupled_union"
         return _run_coupled_like(
             cfg,
             config_path,
@@ -543,6 +702,7 @@ def main() -> int:
             eps_broad=float(sc.get("eps_broad_search_hz", broad_def)),
             case_label=args.case,
             emit_near_acoustic_report=near_report,
+            emit_decoupled_union_report=union_report,
         )
     if args.case == "structural_only":
         return _run_structural(cfg, config_path, case_dir)

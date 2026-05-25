@@ -1,0 +1,83 @@
+{
+  "geometry": {
+    "design_mode": "Basic (Geometric)",
+    "shape_type": "Classical",
+    "length": 0.48,
+    "width": 0.325,
+    "depth": 0.1,
+    "thickness": 0.003,
+    "hole_radius": 0.047,
+    "lower_bout": 0.325,
+    "upper_bout": 0.245945945945946,
+    "waist": 0.20202702702702705,
+    "soundhole_y": 0.0,
+    "vis_mode": "Mesh + Solid",
+    "exploded_view": false,
+    "top_thickness": 0.003,
+    "back_thickness": 0.0033,
+    "mesh_mode": "fom",
+    "soundhole_x": 0.0,
+    "soundhole_from_neck_ratio": 0.5,
+    "bridge_x": -0.12
+  },
+  "materials": {
+    "top": {
+      "name": "Sitka Spruce",
+      "density": 450.0,
+      "E_L": 11000000000.0,
+      "E_T": 1000000000.0,
+      "E_R": 700000000.0,
+      "nu_LT": 0.37,
+      "nu_LR": 0.37,
+      "nu_TR": 0.4,
+      "G_LT": 750000000.0,
+      "G_LR": 750000000.0,
+      "G_TR": 50000000.0,
+      "q_min": 60,
+      "q_max": 80,
+      "color": "#FFF8DC"
+    },
+    "back": {
+      "name": "Indian Rosewood",
+      "density": 830.0,
+      "E_L": 11500000000.0,
+      "E_T": 1300000000.0,
+      "E_R": 700000000.0,
+      "nu_LT": 0.33,
+      "nu_LR": 0.33,
+      "nu_TR": 0.4,
+      "G_LT": 950000000.0,
+      "G_LR": 950000000.0,
+      "G_TR": 50000000.0,
+      "q_min": 90,
+      "q_max": 100,
+      "color": "#3E1F12"
+    },
+    "air": {
+      "density": 1.21,
+      "speed_of_sound": 343.0
+    }
+  },
+  "solver": {
+    "num_modes": 48,
+    "mesh_file": "../mesh/validation_tiny_guitar_3d.msh",
+    "shift_invert_target_hz": 244.39,
+    "couple_fluid": true,
+    "soundhole_bc": "pressure_release",
+    "pressure_gauge": "none",
+    "physics_integrity_capture": true,
+    "coupled_air_pressure_restriction_diagnosis": true,
+    "coupled_decoupled_union_diagnosis": true,
+    "eps_broad_search_hz": 45.0,
+    "eps_reject_decoupled_u_only": false,
+    "eps_harvest_allow_weak_coupling": true,
+    "eps_harvest_rank_by_wood": false,
+    "eps_harvest_rank_by_p_frac": false,
+    "decoupled_union_acoustic_tol_hz": 1.0,
+    "_worker_target_hz": 244.39,
+    "_worker_harvest_lo_hz": 220.0,
+    "_worker_harvest_hi_hz": 265.0,
+    "acoustic_reference_hz": 244.39,
+    "physics_integrity_branch": "coupled-decoupled-union-244hz"
+  }
+}

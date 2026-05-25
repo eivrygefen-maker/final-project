@@ -6359,6 +6359,62 @@ def _solve_coupled_evp(
         np.array(facet_tags.find(tag_back), dtype=np.int32),
     )
 
+    decoupled_union = _solver_bool(
+        solver_cfg, "coupled_decoupled_union_diagnosis", default=False
+    )
+    if decoupled_union:
+        solver_cfg["coupled_air_pressure_restriction_diagnosis"] = True
+        zeroed_block_norms: Dict[str, float] = {}
+        for label, blk in (
+            ("A_up", a_up),
+            ("A_pu", a_pu),
+            ("M_pu", m_pu),
+            ("nit_uu", nit_uu_a),
+            ("nit_up", nit_up_a),
+            ("nit_pu_A", nit_pu_a),
+            ("nit_pu_M", nit_pu_m),
+        ):
+            if blk is None:
+                zeroed_block_norms[label] = 0.0
+                continue
+            try:
+                zeroed_block_norms[label] = float(
+                    _mat_frobenius_norm(blk, label=f"decoupled_union_{label}")
+                )
+            except Exception:
+                zeroed_block_norms[label] = float("nan")
+        a_up = None
+        a_pu = None
+        m_pu = None
+        nit_uu_a = None
+        nit_up_a = None
+        nit_pu_a = None
+        nit_pu_m = None
+        union_payload = {
+            "zeroed_blocks_F_norm": zeroed_block_norms,
+            "blocks_excluded_from_assembly": [
+                "A_up",
+                "A_pu",
+                "M_pu",
+                "nit_uu",
+                "nit_up",
+                "nit_pu",
+            ],
+            "pressure_dof_scale_reported": float(p_scale),
+            "fsi_coupling_gain_reported": float(fsi_gain),
+        }
+        config["_coupled_decoupled_union_diagnosis"] = union_payload
+        solver_cfg["_coupled_decoupled_union_diagnosis"] = union_payload
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            parts = ", ".join(
+                f"{k}={v:.3e}" for k, v in sorted(zeroed_block_norms.items())
+            )
+            print(
+                "[physics_integrity][decoupled_union] block-diagonal diagnostic: "
+                f"excluding FSI/interface blocks from A/M ({parts})",
+                flush=True,
+            )
+
     _phase_sync(2002, "coupled before matrix assembly", status_callback=status_callback)
     _debug_rank("Entering Matrix Assembly")
     if MPI.COMM_WORLD.rank == ROOT_RANK:
@@ -6428,6 +6484,7 @@ def _solve_coupled_evp(
         and p_unit < 1.0e-20 * max(float(A.norm()), 1.0)
         and _solver_bool(solver_cfg, "coupled_monolithic_fallback", default=True)
         and not nitsche_active
+        and not decoupled_union
     ):
         _emit(
             "[assembly][warn] block assembly produced zero A_pu matvec on u parent indices; "
