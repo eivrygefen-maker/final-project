@@ -1175,44 +1175,63 @@ def create_guitar_mesh():
         air_dimtags: list = []
     else:
         # FSI engineering mesh: internal air cavity + shared interface with wood.
-        if use_air_opening_geom and hole_cyl is None:
-            bb_in = gmsh.model.getBoundingBox(3, int(vol_in_id))
-            z_top_in = float(bb_in[5])
-            z_hole_lo = z_top_in - 0.006
-            z_hole_hi = z_top_in + 0.001
+        if use_air_opening_geom:
+            # Validation: fuse full cavity with a through-plate soundhole air channel (r=hr).
+            bb_in = (
+                list(inner_tool_bb)
+                if inner_tool_bb is not None
+                else list(gmsh.model.getBoundingBox(3, int(vol_in_id)))
+            )
+            z_ch_lo = float(bb_in[2]) + 0.001
+            z_ch_hi = float(bb_in[5]) + float(t) + 0.002
             hole_cyl = int(
                 occ.addCylinder(
                     hole_x,
                     hole_y,
-                    z_hole_lo,
+                    z_ch_lo,
                     0,
                     0,
-                    z_hole_hi - z_hole_lo,
+                    z_ch_hi - z_ch_lo,
                     hr,
                 )
             )
+            occ.synchronize()
             print(
-                "[diag] validation air-opening CAD: top-lid soundhole cutter "
-                f"z=[{z_hole_lo:.4f},{z_hole_hi:.4f}] r={hr:.4f} m "
-                "(pierces inner air lid only; no full-height throat)"
+                "[diag] validation soundhole air-channel: fuse cavity+channel "
+                f"z=[{z_ch_lo:.4f},{z_ch_hi:.4f}] r={hr:.4f} m "
+                "(inner cavity through top plate to exterior)"
             )
-        elif hole_cyl is None:
-            z_hole_lo = (D / 2.0) - t - 0.001
-            z_hole_hi = (D / 2.0) + 0.001
-            hole_cyl = int(
-                occ.addCylinder(
-                    hole_x, hole_y, z_hole_lo, 0, 0, z_hole_hi - z_hole_lo, hr
+            air_fused = _audit_boolean(
+                "validation_air_cavity_channel_fuse",
+                occ.fuse,
+                [(3, int(vol_in_id))],
+                [(3, int(hole_cyl))],
+                removeObject=True,
+                removeTool=False,
+            )
+            air_dimtags = [dt for dt in as_dimtags(air_fused) if dt[0] == 3]
+            if not air_dimtags:
+                raise RuntimeError(
+                    "validation air cavity+channel fuse produced no volume"
                 )
+        else:
+            if hole_cyl is None:
+                z_hole_lo = (D / 2.0) - t - 0.001
+                z_hole_hi = (D / 2.0) + 0.001
+                hole_cyl = int(
+                    occ.addCylinder(
+                        hole_x, hole_y, z_hole_lo, 0, 0, z_hole_hi - z_hole_lo, hr
+                    )
+                )
+            air_cut = _audit_boolean(
+                "engineering_air_hole",
+                occ.cut,
+                [(3, vol_in_id)],
+                [(3, hole_cyl)],
+                removeObject=True,
+                removeTool=False,
             )
-        air_cut = _audit_boolean(
-            "engineering_air_hole",
-            occ.cut,
-            [(3, vol_in_id)],
-            [(3, hole_cyl)],
-            removeObject=True,
-            removeTool=False,
-        )
-        air_dimtags = [dt for dt in as_dimtags(air_cut) if dt[0] == 3]
+            air_dimtags = [dt for dt in as_dimtags(air_cut) if dt[0] == 3]
 
         wood_cut = _audit_boolean(
             "engineering_wood_hollow",
