@@ -2846,6 +2846,7 @@ def _coupled_am_assembly_block_lists(
     nit_up_a,
     nit_pu_a,
     nit_pu_m,
+    allow_empty_coupling: bool = False,
 ) -> Tuple[
     List[Tuple[str, Any, List[fem.DirichletBC]]],
     List[Tuple[str, Any, List[fem.DirichletBC]]],
@@ -2856,9 +2857,21 @@ def _coupled_am_assembly_block_lists(
     FFC/ffcx often raises bare ``AssertionError`` when shell ``ds(tag 1/3/4)`` and FSI
     interface ``meshtags_ds(tag 20)`` Nitsche penalties are UFL-summed into one form.
     Assemble each block on mixed ``W`` and sum with PETSc ``axpy`` instead.
+
+    When ``allow_empty_coupling`` is True (decoupled-union diagnostic), omit absent
+    coupling/Nitsche blocks instead of calling ``_ufl_add_terms`` on an empty list.
     """
     a11 = _ufl_add_terms(a_pp, reg_p)
-    a_couple = _ufl_add_terms(a_up, a_pu)
+    a_couple_terms = [t for t in (a_up, a_pu) if t is not None]
+    if a_couple_terms:
+        a_couple = _ufl_add_terms(*a_couple_terms)
+    else:
+        a_couple = None
+        if not allow_empty_coupling:
+            raise RuntimeError(
+                "coupled assembly: both A_up and A_pu are missing "
+                "(unexpected outside coupled_decoupled_union_diagnosis)."
+            )
     A_blocks: List[Tuple[str, Any, List[fem.DirichletBC]]] = [
         ("uu", a_uu, []),
         ("pp", a11, []),
@@ -2879,6 +2892,11 @@ def _coupled_am_assembly_block_lists(
     ]
     if m_pu is not None:
         M_blocks.append(("coupling", m_pu, []))
+    elif not allow_empty_coupling:
+        raise RuntimeError(
+            "coupled assembly: M_pu mass coupling block is missing "
+            "(unexpected outside coupled_decoupled_union_diagnosis)."
+        )
     if nit_pu_m is not None:
         M_blocks.append(("nit_pu", nit_pu_m, []))
     return A_blocks, M_blocks
@@ -2899,6 +2917,7 @@ def _assemble_coupled_AM_operators(
     nit_pu_a,
     nit_pu_m,
     status_callback=None,
+    allow_empty_coupling: bool = False,
 ) -> Tuple[PETSc.Mat, PETSc.Mat]:
     """
     Assemble coupled (A, M) with correct mixed off-diagonal layout.
@@ -2912,7 +2931,11 @@ def _assemble_coupled_AM_operators(
     )
     a11 = _ufl_add_terms(a_pp, reg_p)
 
-    if _assemble_matrix_block is not None and not has_nitsche:
+    if (
+        _assemble_matrix_block is not None
+        and not has_nitsche
+        and not allow_empty_coupling
+    ):
         try:
             A = _assemble_matrix_block(
                 fem.form([[a_uu, a_up], [a_pu, a11]]),
@@ -2952,7 +2975,16 @@ def _assemble_coupled_AM_operators(
         nit_up_a=nit_up_a,
         nit_pu_a=nit_pu_a,
         nit_pu_m=nit_pu_m,
+        allow_empty_coupling=allow_empty_coupling,
     )
+    if allow_empty_coupling and MPI.COMM_WORLD.rank == ROOT_RANK:
+        a_names = [n for n, _f, _b in A_blocks]
+        m_names = [n for n, _f, _b in M_blocks]
+        print(
+            "[physics_integrity][decoupled_union] assembled blocks: "
+            f"A={a_names} M={m_names}; excluded coupling/nitsche blocks confirmed absent",
+            flush=True,
+        )
     if has_nitsche and MPI.COMM_WORLD.rank == ROOT_RANK:
         nit_labels = [n for n, _f, _b in A_blocks if n.startswith("nit_")]
         nit_m = [n for n, _f, _b in M_blocks if n.startswith("nit_")]
@@ -6437,6 +6469,7 @@ def _solve_coupled_evp(
             nit_pu_a=nit_pu_a,
             nit_pu_m=nit_pu_m,
             status_callback=status_callback,
+            allow_empty_coupling=decoupled_union,
         )
     else:
         A = _assemble_coupled_matrix_safe(a_form, [], label="coupled_stiffness_A")
