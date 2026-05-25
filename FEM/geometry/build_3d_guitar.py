@@ -4258,17 +4258,31 @@ def create_guitar_mesh():
                     et = int(etype)
                     try:
                         _prop = gmsh.model.mesh.getElementProperties(et)
-                        _ename = str(_prop[1])
-                        dim = int(_prop[2])
-                        num_nodes = int(_prop[4])
+                        # (elementName, dim, order, numNodes, localNodeCoord, numPrimaryNodes)
+                        _ename = str(_prop[0])
+                        dim = int(_prop[1])
+                        num_nodes = int(_prop[3])
+                        num_primary_nodes = int(_prop[5])
                     except Exception as exc:
                         raise RuntimeError(
                             "FEM_VALIDATION_MESH post-mesh gate: "
                             f"getElementProperties({et}) failed on surface "
                             f"{surface_tag}: {exc}"
                         ) from exc
-                    if dim != 2 or num_nodes < 3:
-                        continue
+                    if int(dim) != 2:
+                        raise RuntimeError(
+                            "FEM_VALIDATION_MESH post-mesh gate: non-surface element "
+                            f"on soundhole surface_id={surface_tag} element_type={et} "
+                            f"({_ename}) dim={dim} (expected 2)."
+                        )
+                    if num_primary_nodes < 3 or num_nodes < 3:
+                        raise RuntimeError(
+                            "FEM_VALIDATION_MESH post-mesh gate: element on "
+                            f"surface_id={surface_tag} type={et} ({_ename}) has "
+                            f"num_nodes={num_nodes} num_primary_nodes={num_primary_nodes} "
+                            "(expected triangular with >= 3 corner nodes)."
+                        )
+                    n_corner = 3
                     flat = [int(n) for n in nt_block]
                     if not flat:
                         continue
@@ -4282,7 +4296,7 @@ def create_guitar_mesh():
                     n_elem = len(flat) // num_nodes
                     for ei in range(n_elem):
                         base = ei * num_nodes
-                        corner_tags = [flat[base + k] for k in range(3)]
+                        corner_tags = [flat[base + k] for k in range(n_corner)]
                         missing = [t for t in corner_tags if t not in node_xyz]
                         if missing:
                             raise RuntimeError(
