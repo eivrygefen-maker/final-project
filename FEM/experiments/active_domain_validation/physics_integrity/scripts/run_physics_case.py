@@ -553,6 +553,65 @@ def _write_physical_fsi_only_report(
         print(f"[physics_integrity] acoustic branch NOT recovered: {fail_reason}")
 
 
+def _prepare_continuation_pilot_seed(cfg: dict, *, local_modes: int = 6) -> None:
+    """Load alpha=0 decoupled acoustic vector as EPS initial space for continuation pilot."""
+    from coupled_participation_audit import (
+        _load_coupled_mode_dense_vector,
+        _load_modes,
+    )
+    from physical_fsi_participation_audit import _catalog_saved_modes
+    from physical_fsi_continuation_post import (
+        ALPHA0_HZ,
+        DECOUPLED_CASE,
+        _select_reference_mode,
+    )
+
+    sc = cfg.setdefault("solver", {})
+    target_hz = float(sc.get("_worker_target_hz", 244.39))
+    alpha = float(sc.get("physical_fsi_alpha", 0.01))
+    local_modes = int(sc.get("continuation_local_num_modes", local_modes))
+    sc["num_modes"] = local_modes
+    sc["eps_rigid_mode_buffer"] = int(sc.get("eps_rigid_mode_buffer", 0))
+    meta, files = _load_modes(DECOUPLED_CASE, target_hz)
+    catalog = _catalog_saved_modes(DECOUPLED_CASE, meta, files, target_hz=target_hz)
+    ref_entry = _select_reference_mode(
+        catalog, target_hz=ALPHA0_HZ, prefer_acoustic=True
+    )
+    if ref_entry is None:
+        raise RuntimeError(
+            "continuation pilot: no decoupled-union acoustic mode found for seed"
+        )
+    n_W = int(sc.get("continuation_seed_vector_length", 112100))
+    vec, _ = _load_coupled_mode_dense_vector(
+        ref_entry["path"],
+        n_coupled_W=n_W,
+        mode_index=int(ref_entry["mode_index"]),
+    )
+    sc["_continuation_eps_seed_vector"] = vec
+    seed_meta = {
+        "continuation_seed_source": "alpha0_decoupled_acoustic",
+        "seed_f_hz": float(ref_entry["frequency_hz"]),
+        "seed_vector_path": ref_entry["vector_path"],
+        "seed_mode_index": int(ref_entry["mode_index"]),
+        "seed_vector_length": int(vec.size),
+        "physical_fsi_alpha": alpha,
+        "requested_local_modes": local_modes,
+    }
+    sc["_continuation_eps_seed_metadata"] = seed_meta
+    cfg["_continuation_eps_seed_metadata"] = seed_meta
+    if MPI.COMM_WORLD.rank == 0:
+        print(
+            "[physics_integrity][physical_fsi_continuation] "
+            f"continuation_seed_source={seed_meta['continuation_seed_source']} "
+            f"seed_f_hz={seed_meta['seed_f_hz']:.6f} "
+            f"seed_vector_length={seed_meta['seed_vector_length']} "
+            f"alpha_fsi={alpha:.6g} "
+            f"requested_local_modes={local_modes} "
+            f"seed_file={seed_meta['seed_vector_path']}",
+            flush=True,
+        )
+
+
 def _save_physics_audit(cfg: dict, case_dir: Path) -> None:
     audit = cfg.get("_physics_integrity") or cfg.get("solver", {}).get("_physics_integrity")
     if not audit:
@@ -670,6 +729,7 @@ def _run_coupled_like(
 
     write_mode_diagnostics_json(case_dir, mode_rows, case_label=case_label, scaling=gnhep)
 
+    eps_diag = cfg.get("_eps_batch_diagnostics") or cfg.get("solver", {}).get("_eps_batch_diagnostics")
     result = {
         "case": case_dir.name,
         "target_hz": target_hz,
@@ -682,6 +742,8 @@ def _run_coupled_like(
         "n_p_collapsed": n_p_col,
         "n_coupled_W_dofs": n_W,
         "physics_integrity": cfg.get("_physics_integrity"),
+        "continuation_eps_seed": cfg.get("_continuation_eps_seed_metadata"),
+        "eps_batch_diagnostics": eps_diag,
         "mode_diagnostics": str((case_dir / "diagnostics" / "mode_physics_diagnostics.json").relative_to(case_dir)),
     }
     _write_json(case_dir / "results" / f"result_{hz_tag}.json", result)
@@ -903,6 +965,7 @@ def main() -> int:
     ):
         sc = cfg["solver"]
         _fsi_near = (244.39, 220.0, 265.0, 45.0, 48)
+        _fsi_cont_pilot = (244.39, 220.0, 265.0, 45.0, 6)
         defaults = {
             "coupled_nominal": (202.0, 156.0, 248.0, 46.0, 8),
             "coupled_low_frequency": (120.0, 60.0, 200.0, 80.0, 8),
@@ -914,7 +977,7 @@ def main() -> int:
             "coupled_physical_fsi_nit_up": _fsi_near,
             "coupled_physical_fsi_nit_pu": _fsi_near,
             "coupled_physical_fsi_nit_up_pu": _fsi_near,
-            "coupled_physical_fsi_alpha_pilot": _fsi_near,
+            "coupled_physical_fsi_alpha_pilot": _fsi_cont_pilot,
         }
         t_def, lo_def, hi_def, broad_def, nm_def = defaults[args.case]
         near_report = args.case in ("coupled_near_acoustic", "coupled_near_acoustic_air_p")
@@ -925,6 +988,9 @@ def main() -> int:
         if nit_iso_case or cont_case:
             cfg["solver"]["eps_harvest_rank_by_wood"] = False
             cfg["solver"]["eps_harvest_rank_by_p_frac"] = False
+        if cont_case:
+            _prepare_continuation_pilot_seed(cfg)
+            nm_def = int(cfg["solver"].get("num_modes", nm_def))
         return _run_coupled_like(
             cfg,
             config_path,

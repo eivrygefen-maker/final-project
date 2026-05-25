@@ -237,6 +237,12 @@ def main() -> None:
             "coupled_physical_fsi_continuation_diagnosis": True,
             "physical_fsi_alpha": 0.01,
             "physics_integrity_branch": "coupled-physical-fsi-continuation-alpha-0.01",
+            "num_modes": 6,
+            "continuation_local_num_modes": 6,
+            "continuation_seed_vector_length": 112100,
+            "eps_rigid_mode_buffer": 0,
+            "eps_harvest_rank_by_wood": False,
+            "eps_harvest_rank_by_p_frac": False,
         }
     )
     (CONFIG_DIR / "coupled_physical_fsi_alpha_pilot.json").write_text(

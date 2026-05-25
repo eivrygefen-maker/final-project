@@ -27,12 +27,12 @@ from fem_worker_single import hz_result_tag
 
 from coupled_participation_audit import (
     _acoustic_reference_hz,
-    _catalog_saved_modes,
     _load_coupled_mode_dense_vector,
     _load_modes,
     _resolve_mesh,
     _write_json,
 )
+from physical_fsi_participation_audit import _catalog_saved_modes
 from mode_diagnostics import (
     block_l2_p_fraction,
     compute_mass_energy_participation,
@@ -90,6 +90,16 @@ def _select_reference_mode(
     if hits:
         return min(hits, key=lambda e: abs(float(e["frequency_hz"]) - target_hz))
     return min(pool, key=lambda e: abs(float(e["frequency_hz"]) - target_hz), default=None)
+
+
+def _local_candidates_in_band(catalog: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """All saved local modes in the pilot harvest band (for MAC vs alpha=0 seed)."""
+    rows = [
+        e
+        for e in catalog
+        if BAND_LO <= float(e["frequency_hz"]) <= BAND_HI
+    ]
+    return sorted(rows, key=lambda r: float(r["frequency_hz"]))
 
 
 def _pressure_dominated_in_band(catalog: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -212,11 +222,7 @@ def _analyze_alpha_step(
             "mode_class": entry.get("mode_class"),
         }
         competitor_rows.append(row)
-        mac_track = float(
-            mac_prev.get("mac_gnhep_undo_s_pp", -1.0)
-            if prev_selected
-            else mac_ref0.get("mac_gnhep_undo_s_pp", -1.0)
-        )
+        mac_track = float(mac_ref0.get("mac_gnhep_undo_s_pp", -1.0))
         if mac_track > best_mac_prev:
             best_mac_prev = mac_track
             best_row = {**row, "vector": vec}
@@ -235,26 +241,62 @@ def _analyze_alpha_step(
         "selected_mode": {
             k: v for k, v in selected.items() if k != "vector"
         },
-        "competing_pressure_dominated_modes": competitor_rows,
-        "selection_rule": (
-            "maximize mac_gnhep_undo_s_pp vs previous selected mode"
-            if prev_selected
-            else "maximize mac_gnhep_undo_s_pp vs alpha=0 reference at first step"
-        ),
+        "local_mode_mac_candidates": competitor_rows,
+        "selection_rule": "maximize mac_gnhep_undo_s_pp vs alpha=0 decoupled acoustic seed",
     }
 
 
-def _pilot_verdict(steps: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _load_pilot_solve_summary(target_hz: float) -> Dict[str, Any]:
+    tag = hz_result_tag(target_hz)
+    path = PILOT_CASE / "results" / f"result_{tag}.json"
+    if not path.is_file():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    eps = data.get("eps_batch_diagnostics") or {}
+    return {
+        "result_path": str(path.relative_to(PHYSICS_ROOT)).replace("\\", "/"),
+        "nconv_marked": int(eps.get("nconv_marked", -1)),
+        "nev_request": int(eps.get("nev_request", -1)),
+        "ncv": int(eps.get("ncv", -1)),
+        "eps_iterations": int(eps.get("eps_iterations", -1)),
+        "converged_reason": int(eps.get("converged_reason", 0)),
+        "continuation_seed_applied": bool(eps.get("continuation_seed_applied", False)),
+        "continuation_eps_seed": data.get("continuation_eps_seed"),
+        "num_modes_saved": int(data.get("num_modes", 0)),
+    }
+
+
+def _pilot_verdict(
+    steps: List[Dict[str, Any]],
+    *,
+    pilot_solve: Dict[str, Any],
+) -> Dict[str, Any]:
     by_alpha = {float(s["alpha_fsi"]): s for s in steps}
     s001 = by_alpha.get(0.01)
-    s000 = by_alpha.get(0.0)
     if not s001 or s001.get("error"):
         return {"outcome": "PILOT_INCOMPLETE", "note": "alpha=0.01 step missing"}
 
+    nconv = int(pilot_solve.get("nconv_marked", -1))
+    if nconv == 0:
+        return {
+            "outcome": "CONTINUATION_SOLVER_NOT_CONVERGED_AT_ALPHA=0.01",
+            "alpha_fsi": 0.01,
+            "nconv_marked": 0,
+            "note": (
+                "Seeded alpha=0.01 EPS returned nconv=0; not a physics branch-break verdict"
+            ),
+        }
+
     sel = s001.get("selected_mode") or {}
-    mac_prev = (sel.get("mac_to_previous_selected") or {}).get("mac_gnhep_undo_s_pp")
     mac_ref0 = (sel.get("mac_to_alpha0_reference") or {}).get("mac_gnhep_undo_s_pp")
+    mac_prev = (sel.get("mac_to_previous_selected") or {}).get("mac_gnhep_undo_s_pp")
     f_hz = float(sel.get("frequency_hz", float("nan")))
+    candidates = s001.get("local_mode_mac_candidates") or []
+    macs_ref0 = [
+        float((c.get("mac_to_alpha0_reference") or {}).get("mac_gnhep_undo_s_pp", -1.0))
+        for c in candidates
+    ]
+    all_low_mac = bool(macs_ref0) and max(macs_ref0) < MAC_HIGH_THRESHOLD
 
     if mac_prev is not None and float(mac_prev) < 0.15 and abs(f_hz - ALPHA0_HZ) > 2.0:
         return {
@@ -264,18 +306,31 @@ def _pilot_verdict(steps: List[Dict[str, Any]]) -> Dict[str, Any]:
             "mac_to_alpha0": mac_ref0,
             "note": "MAC collapsed at alpha=0.01 with large frequency jump",
         }
-    if mac_prev is not None and float(mac_prev) >= MAC_HIGH_THRESHOLD:
+    if mac_ref0 is not None and float(mac_ref0) >= MAC_HIGH_THRESHOLD:
         return {
             "outcome": "PHYSICAL_FSI_BRANCH_CONTINUOUS",
-            "note": f"Pilot: consecutive MAC(0→0.01)={mac_prev:.4f} >= {MAC_HIGH_THRESHOLD}",
+            "note": (
+                f"Pilot: max MAC to alpha=0 seed at alpha=0.01 is "
+                f"{float(mac_ref0):.4f} >= {MAC_HIGH_THRESHOLD}"
+            ),
         }
-    if mac_prev is not None:
+    if all_low_mac:
         return {
             "outcome": "PHYSICAL_FSI_BRANCH_BREAKS_AT_ALPHA",
             "alpha_fsi": 0.01,
-            "mac_to_previous": mac_prev,
-            "mac_to_alpha0": mac_ref0,
-            "note": "Branch shape not continuous from decoupled acoustic at alpha=0.01",
+            "mac_to_alpha0_selected": mac_ref0,
+            "mac_to_alpha0_max_over_candidates": max(macs_ref0),
+            "note": (
+                "Seeded solve converged but all local alpha=0.01 candidates have "
+                f"MAC to alpha=0 seed < {MAC_HIGH_THRESHOLD}"
+            ),
+        }
+    if mac_ref0 is not None:
+        return {
+            "outcome": "PHYSICAL_FSI_BRANCH_AMBIGUOUS_AT_ALPHA",
+            "alpha_fsi": 0.01,
+            "mac_to_alpha0_selected": mac_ref0,
+            "note": "Converged candidates disagree; inspect local_mode_mac_candidates",
         }
     return {"outcome": "PILOT_INCONCLUSIVE", "note": "MAC metrics unavailable"}
 
@@ -292,10 +347,10 @@ def main() -> int:
         return 2
 
     alphas = list(PILOT_ALPHA_SEQUENCE if args.pilot else FULL_ALPHA_SEQUENCE)
-    ref_hz = _acoustic_reference_hz(
-        json.loads(PILOT_CONFIG.read_text(encoding="utf-8")).get("solver", {})
-    )
-    target_hz = 244.39
+    pilot_cfg = json.loads(PILOT_CONFIG.read_text(encoding="utf-8"))
+    ref_hz = _acoustic_reference_hz(pilot_cfg.get("solver", {}))
+    target_hz = float(pilot_cfg.get("solver", {}).get("_worker_target_hz", 244.39))
+    pilot_solve = _load_pilot_solve_summary(target_hz) if args.pilot else {}
 
     p_to_W: Optional[np.ndarray] = None
     u_to_W: Optional[np.ndarray] = None
@@ -389,6 +444,12 @@ def main() -> int:
         if p_to_W is None:
             steps.append({"alpha_fsi": alpha, "error": "p_to_W map unavailable"})
             continue
+        use_op_energy = (
+            not args.skip_am_replay
+            and abs(alpha - 0.01) <= 1.0e-9
+            and M is not None
+            and A is not None
+        )
         step = _analyze_alpha_step(
             alpha=alpha,
             case_dir=case_dir,
@@ -404,6 +465,7 @@ def main() -> int:
             A=A,
             u_to_W=u_to_W,
             energy_from_operator=use_op_energy,
+            mac_all_local_in_band=args.pilot and abs(alpha - 0.01) <= 1.0e-9,
         )
         step["reused_endpoint"] = abs(alpha - 1.0) <= 1.0e-15
         sel = step.get("selected_mode")
@@ -415,7 +477,7 @@ def main() -> int:
             }
         steps.append(step)
 
-    verdict = _pilot_verdict(steps) if args.pilot else {
+    verdict = _pilot_verdict(steps, pilot_solve=pilot_solve) if args.pilot else {
         "outcome": "FULL_SWEEP_NOT_RUN",
         "note": "Prepare interpretation from per-alpha steps; run full sweep after pilot approval.",
     }
@@ -428,6 +490,7 @@ def main() -> int:
         "alpha0_reference_hz": ALPHA0_HZ,
         "band_hz": [BAND_LO, BAND_HI],
         "mac_high_threshold": MAC_HIGH_THRESHOLD,
+        "pilot_solve_summary": pilot_solve,
         "continuation_steps": steps,
         "diagnostic_outcome": verdict,
         "next_actions": {

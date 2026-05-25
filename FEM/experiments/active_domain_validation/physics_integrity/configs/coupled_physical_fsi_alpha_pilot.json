@@ -39,7 +39,10 @@
     "air": {"density": 1.21, "speed_of_sound": 343.0}
   },
   "solver": {
-    "num_modes": 48,
+    "num_modes": 6,
+    "continuation_local_num_modes": 6,
+    "continuation_seed_vector_length": 112100,
+    "eps_rigid_mode_buffer": 0,
     "mesh_file": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/mesh/validation_tiny_guitar_3d.msh",
     "shift_invert_target_hz": 244.39,
     "couple_fluid": true,

@@ -4038,6 +4038,53 @@ def _slepc_configure_ciss_region(
             pass
 
 
+def _slepc_eps_apply_continuation_seed(
+    eps: Any,
+    A: PETSc.Mat,
+    seed_vector: np.ndarray,
+    *,
+    status_callback=None,
+) -> Dict[str, Any]:
+    """
+    Experiment-only: supply one vector as EPS initial space (branch-tracking continuation).
+    """
+    seed = np.asarray(seed_vector, dtype=np.float64).ravel()
+    n_rows = int(A.getSize()[0])
+    if int(seed.size) != n_rows:
+        raise ValueError(
+            f"continuation seed length {seed.size} != operator rows {n_rows}"
+        )
+    v0 = A.createVecRight()
+    meta: Dict[str, Any] = {
+        "seed_vector_length": int(seed.size),
+        "initial_space_n_vectors": 1,
+    }
+    try:
+        v0.setArray(seed.copy())
+        try:
+            v0.ghostUpdate(
+                addv=PETSc.InsertMode.INSERT_VALUES,
+                mode=PETSc.ScatterMode.FORWARD,
+            )
+        except Exception:
+            pass
+        eps.setInitialSpace(1, [v0])
+        meta["slepc_setInitialSpace"] = True
+    except AttributeError as exc:
+        raise RuntimeError(
+            "SLEPc EPS.setInitialSpace unavailable; cannot run continuation seed pilot."
+        ) from exc
+    finally:
+        v0.destroy()
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        _emit(
+            "[physics_integrity][physical_fsi_continuation] EPS initial space: "
+            f"1 vector, length={meta['seed_vector_length']}",
+            status_callback=status_callback,
+        )
+    return meta
+
+
 def _slepc_shift_invert_batch(
     A: PETSc.Mat,
     M: PETSc.Mat,
@@ -4460,6 +4507,26 @@ def _slepc_shift_invert_batch(
     sys.stdout.flush()
     _debug_rank("Entering EPS Solve")
     _slepc_eps_ensure_operators(eps, A_solve, M_solve)
+    seed_vec = solver_cfg.pop("_continuation_eps_seed_vector", None)
+    seed_applied = seed_vec is not None
+    seed_meta = solver_cfg.get("_continuation_eps_seed_metadata") or {}
+    if seed_applied:
+        if MPI.COMM_WORLD.rank == ROOT_RANK and seed_meta:
+            print(
+                "[physics_integrity][physical_fsi_continuation] "
+                f"continuation_seed_source={seed_meta.get('continuation_seed_source', 'alpha0_decoupled_acoustic')} "
+                f"seed_f_hz={float(seed_meta.get('seed_f_hz', float('nan'))):.6f} "
+                f"seed_vector_length={int(seed_meta.get('seed_vector_length', len(np.asarray(seed_vec).ravel())))} "
+                f"alpha_fsi={float(seed_meta.get('physical_fsi_alpha', float('nan'))):.6g} "
+                f"requested_local_modes={int(seed_meta.get('requested_local_modes', nev_request))}",
+                flush=True,
+            )
+        _slepc_eps_apply_continuation_seed(
+            eps,
+            A_solve,
+            np.asarray(seed_vec, dtype=np.float64),
+            status_callback=status_callback,
+        )
     try:
         eps.solve()
     except Exception as exc:
@@ -4479,6 +4546,14 @@ def _slepc_shift_invert_batch(
     its = eps.getIterationNumber()
     nconv_marked = int(eps.getConverged())
     reason = eps.getConvergedReason()
+    solver_cfg["_eps_batch_diagnostics"] = {
+        "nconv_marked": int(nconv_marked),
+        "nev_request": int(nev_request),
+        "ncv": int(ncv),
+        "eps_iterations": int(its),
+        "converged_reason": int(reason),
+        "continuation_seed_applied": bool(seed_applied),
+    }
     force_partial = _solver_bool(solver_cfg, "eps_force_harvest_partial", True)
     harvest_slots = nconv_marked
     if harvest_slots == 0 and force_partial:
@@ -7179,6 +7254,8 @@ def _solve_coupled_evp(
             f"[worker] shift @ {float(_worker_hz):.4f} Hz: nconv={nconv}, usable_rows={len(rows)}",
             status_callback=status_callback,
         )
+        config["_eps_batch_diagnostics"] = dict(solver_cfg.get("_eps_batch_diagnostics") or {})
+        config["_eps_batch_diagnostics"]["usable_rows_harvested"] = int(len(rows))
         _phase_sync(2100, "worker single-shift after batch", status_callback=status_callback)
         row_meta: List[Tuple[float, np.ndarray, float, float, float]] = []
         for f_hz, vec, rt, rb, p_frac, p_block_max in rows:
