@@ -278,11 +278,19 @@ def _run_coupled_like(
     elapsed = time.perf_counter() - t0
     _save_physics_audit(cfg, case_dir)
 
-    V_u, u_to_W = W.sub(0).collapse()
-    V_p, p_to_W = W.sub(1).collapse()
-    n_u_col = int(V_u.dofmap.index_map.size_global * V_u.dofmap.index_map_bs)
-    n_p_col = int(V_p.dofmap.index_map.size_global * V_p.dofmap.index_map_bs)
-    n_W = int(W.dofmap.index_map.size_global * W.dofmap.index_map_bs)
+    restr = cfg.get("_coupled_air_pressure_restriction") or {}
+    if restr and cfg.get("_coupled_air_u_to_W_map") is not None:
+        u_to_W = np.asarray(cfg["_coupled_air_u_to_W_map"], dtype=np.int32).ravel()
+        p_to_W = np.asarray(cfg["_coupled_air_p_to_W_map"], dtype=np.int32).ravel()
+        n_u_col = int(restr.get("n_u_active", u_to_W.size))
+        n_p_col = int(restr.get("n_p_active", p_to_W.size))
+        n_W = int(restr.get("n_reduced_W", n_u_col + n_p_col))
+    else:
+        V_u, u_to_W = W.sub(0).collapse()
+        V_p, p_to_W = W.sub(1).collapse()
+        n_u_col = int(V_u.dofmap.index_map.size_global * V_u.dofmap.index_map_bs)
+        n_p_col = int(V_p.dofmap.index_map.size_global * V_p.dofmap.index_map_bs)
+        n_W = int(W.dofmap.index_map.size_global * W.dofmap.index_map_bs)
 
     gnhep = merge_scaling_metadata(case_dir)
     pi = cfg.get("_physics_integrity") or {}

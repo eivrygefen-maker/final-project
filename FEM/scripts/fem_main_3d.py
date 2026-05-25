@@ -6528,35 +6528,96 @@ def _solve_coupled_evp(
         )
 
         V_p_restrict, _ = W.sub(1).collapse()
-        p_air_v = _locate_air_volume_pressure_dofs(V_p_restrict, msh, cell_tags)
+        p_air_v = np.unique(
+            np.asarray(
+                _locate_air_volume_pressure_dofs(V_p_restrict, msh, cell_tags),
+                dtype=np.int32,
+            ).ravel()
+        )
         if p_air_v.size == 0:
             raise RuntimeError(
                 f"coupled_air_pressure_restriction: no pressure DOFs on air tag {AIR_VOLUME_TAG}."
             )
-        p_air_W = np.unique(p_to_W_map[np.asarray(p_air_v, dtype=np.int32)])
+        p_to_W_active_parent = np.asarray(p_to_W_map[p_air_v], dtype=np.int32)
+
+        p_sh_full = np.asarray(p_soundhole_bc_dofs_v, dtype=np.int32).ravel()
+        p_sh_active_v = np.intersect1d(p_sh_full, p_air_v)
+        if p_sh_full.size > 0 and p_sh_active_v.size != p_sh_full.size:
+            raise RuntimeError(
+                "coupled_air_pressure_restriction: "
+                f"{int(p_sh_full.size - p_sh_active_v.size)} soundhole pressure DOF(s) "
+                "are outside the air-supported pressure subgraph."
+            )
+        p_sh_active_W = (
+            np.unique(p_to_W_active_parent[np.isin(p_air_v, p_sh_active_v)])
+            if p_sh_active_v.size > 0
+            else np.array([], dtype=np.int32)
+        )
+
+        p_air_W = np.unique(p_to_W_active_parent)
         active_W = np.unique(
-            np.concatenate([u_to_W_map, p_air_W]).astype(np.int32, copy=False)
+            np.concatenate(
+                [np.asarray(u_to_W_map, dtype=np.int32).ravel(), p_air_W]
+            ).astype(np.int32, copy=False)
         )
         n_full_w = int(A.getSize()[0])
         A, M, restr_meta = restrict_operators_to_active_set(A, M, active_W)
         parent_to_local = build_parent_to_local_map(active_W, n_full_w)
-        u_to_W_map = remap_parent_indices_to_reduced(u_to_W_map, parent_to_local)
-        p_to_W_map = remap_parent_indices_to_reduced(p_to_W_map, parent_to_local)
+        u_to_W_map = remap_parent_indices_to_reduced(
+            np.asarray(u_to_W_map, dtype=np.int32).ravel(), parent_to_local
+        )
+        p_to_W_map = remap_parent_indices_to_reduced(p_to_W_active_parent, parent_to_local)
         if coupled_dirichlet_rows.size > 0:
             coupled_dirichlet_rows = remap_parent_indices_to_reduced(
-                coupled_dirichlet_rows, parent_to_local
+                np.asarray(coupled_dirichlet_rows, dtype=np.int32), parent_to_local
             )
         if p_bc_rows_w.size > 0:
-            p_bc_rows_w = remap_parent_indices_to_reduced(p_bc_rows_w, parent_to_local)
-        n_p_inactive = int(n_p_collapsed) - int(p_air_v.size)
+            p_bc_rows_w = remap_parent_indices_to_reduced(
+                np.asarray(p_bc_rows_w, dtype=np.int32), parent_to_local
+            )
+
+        n_u_active = int(u_to_W_map.size)
+        n_p_active = int(p_air_v.size)
+        n_reduced_w = int(A.getSize()[0])
+        n_p_inactive = int(n_p_collapsed) - n_p_active
+        if n_reduced_w != n_u_active + n_p_active:
+            raise RuntimeError(
+                "coupled_air_pressure_restriction: reduced operator size "
+                f"{n_reduced_w} != n_u_active + n_p_active = {n_u_active + n_p_active}"
+            )
+
+        if p_sh_active_W.size > 0:
+            p_sh_active_reduced = remap_parent_indices_to_reduced(
+                p_sh_active_W, parent_to_local
+            )
+            if p_sh_active_reduced.size != p_sh_active_v.size:
+                raise RuntimeError(
+                    "coupled_air_pressure_restriction: soundhole pressure DOFs failed "
+                    "to map into the reduced active-pressure layout."
+                )
+        else:
+            p_sh_active_reduced = np.array([], dtype=np.int32)
+
+        config["_coupled_air_p_air_collapsed_indices"] = np.asarray(
+            p_air_v, dtype=np.int32
+        ).copy()
+        config["_coupled_air_p_to_W_map"] = np.asarray(p_to_W_map, dtype=np.int32).copy()
+        config["_coupled_air_u_to_W_map"] = np.asarray(u_to_W_map, dtype=np.int32).copy()
+        config["_coupled_air_active_W_indices"] = np.asarray(active_W, dtype=np.int32).copy()
+        config["_coupled_air_p_to_W_layout"] = "reduced_active_W_per_air_collapsed_dof"
+
         restr_payload = {
             "method": "algebraic_air_volume_dofs_on_coupled_W",
             "n_coupled_W_full": n_full_w,
-            "n_reduced": int(A.getSize()[0]),
-            "n_u_active": int(u_to_W_map.size),
+            "n_reduced_W": n_reduced_w,
+            "n_u_active": n_u_active,
+            "n_p_active": n_p_active,
             "n_p_full_collapsed": int(n_p_collapsed),
-            "n_p_air_supported": int(p_air_v.size),
+            "n_p_air_supported": n_p_active,
             "n_p_wood_only_or_inactive_dropped": n_p_inactive,
+            "dropped_inactive_p": n_p_inactive,
+            "soundhole_p_active": int(p_sh_active_v.size),
+            "soundhole_p_active_reduced_W": int(p_sh_active_reduced.size),
             "matches_acoustic_only_active_p": True,
             **restr_meta,
         }
@@ -6565,10 +6626,10 @@ def _solve_coupled_evp(
         if MPI.COMM_WORLD.rank == ROOT_RANK:
             print(
                 "[physics_integrity][coupled_air_p_restrict] pressure space restricted: "
-                f"full_W={n_full_w} reduced={int(A.getSize()[0])} "
-                f"n_u={int(u_to_W_map.size)} n_p_air={int(p_air_v.size)} "
-                f"dropped_inactive_p={n_p_inactive} "
-                f"(same air-volume DOF set as acoustic-only diagnosis)",
+                f"n_u_active={n_u_active} n_p_active={n_p_active} "
+                f"n_reduced_W={n_reduced_w} dropped_inactive_p={n_p_inactive} "
+                f"soundhole_p_active={int(p_sh_active_v.size)} "
+                f"(air-volume collapsed pressure set matches acoustic-only diagnosis)",
                 flush=True,
             )
 
@@ -6735,6 +6796,18 @@ def _solve_coupled_evp(
     n_dofs = int(W.dofmap.index_map.size_global * W.dofmap.index_map_bs)
     n_u_fe = int(W.sub(0).dofmap.index_map.size_global * W.sub(0).dofmap.index_map_bs)
     n_p_fe = int(W.sub(1).dofmap.index_map.size_global * W.sub(1).dofmap.index_map_bs)
+    _air_p_restr = config.get("_coupled_air_pressure_restriction") or {}
+    if _air_p_restr:
+        print(
+            f"[DIAG] coupled_air_pressure_restriction: "
+            f"n_u_active={_air_p_restr.get('n_u_active')} "
+            f"n_p_active={_air_p_restr.get('n_p_active')} "
+            f"n_reduced_W={_air_p_restr.get('n_reduced_W')} "
+            f"dropped_inactive_p={_air_p_restr.get('dropped_inactive_p')} "
+            f"soundhole_p_active={_air_p_restr.get('soundhole_p_active')} "
+            f"(full mesh W still has u={n_u_fe} p={n_p_fe} DOFs; SLEPc uses reduced operator)",
+            flush=True,
+        )
     print(
         f"[DIAG] Final u_dofs={n_u_fe} p_dofs={n_p_fe} "
         f"(free–free structure; soundhole_bc={soundhole_bc!r}, "
@@ -6853,8 +6926,13 @@ def _solve_coupled_evp(
         if M_back is not None:
             M_back.destroy()
 
-        n_u = int(W.sub(0).dofmap.index_map.size_local * W.sub(0).dofmap.index_map_bs)
-        n_p = int(W.sub(1).dofmap.index_map.size_local * W.sub(1).dofmap.index_map_bs)
+        _restr = config.get("_coupled_air_pressure_restriction") or {}
+        if _restr:
+            n_u = int(_restr.get("n_u_active", u_to_W_map.size))
+            n_p = int(_restr.get("n_p_active", p_to_W_map.size))
+        else:
+            n_u = int(W.sub(0).dofmap.index_map.size_local * W.sub(0).dofmap.index_map_bs)
+            n_p = int(W.sub(1).dofmap.index_map.size_local * W.sub(1).dofmap.index_map_bs)
         try:
             work.destroy()
         except Exception:
@@ -7277,8 +7355,13 @@ def _solve_coupled_evp(
         eigvecs = eigvecs[:, keep_idx]
 
     # Extract split dof counts for output compatibility.
-    n_u = W.sub(0).dofmap.index_map.size_local * W.sub(0).dofmap.index_map_bs
-    n_p = W.sub(1).dofmap.index_map.size_local * W.sub(1).dofmap.index_map_bs
+    _restr = config.get("_coupled_air_pressure_restriction") or {}
+    if _restr:
+        n_u = int(_restr.get("n_u_active", u_to_W_map.size))
+        n_p = int(_restr.get("n_p_active", p_to_W_map.size))
+    else:
+        n_u = W.sub(0).dofmap.index_map.size_local * W.sub(0).dofmap.index_map_bs
+        n_p = W.sub(1).dofmap.index_map.size_local * W.sub(1).dofmap.index_map_bs
     if "_fom_sifter_stats" not in config:
         config["_fom_sifter_stats"] = {}
     if "_fom_uniqueness_scores" not in config:
