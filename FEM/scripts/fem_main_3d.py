@@ -741,8 +741,8 @@ def _find_air_exterior_pressure_facets(
     interface_facets: np.ndarray,
 ) -> np.ndarray:
     """
-    Air-boundary facets for ``p = 0`` (exterior of the cavity), excluding the FSI interface
-    and soundhole (tag 2, already in the pressure gauge).
+    Air-boundary facets for optional exterior ``p = 0``, excluding the FSI interface
+    and soundhole (tag 2; physical BC via ``solver.soundhole_bc`` when pressure_release).
     """
     tdim = msh.topology.dim
     fdim = tdim - 1
@@ -765,6 +765,151 @@ def _find_air_exterior_pressure_facets(
             if int(cell_tags.values[int(nbrs[0])]) == AIR_VOLUME_TAG:
                 out.append(fi)
     return np.unique(np.asarray(out, dtype=np.int32))
+
+
+SOUNDHOLE_BC_SEALED = "sealed"
+SOUNDHOLE_BC_PRESSURE_RELEASE = "pressure_release"
+
+
+def _normalize_soundhole_bc(raw: Any) -> str:
+    """Physical acoustic BC on facet tag 2 (not a numerical gauge)."""
+    v = str(raw).strip().lower().replace("-", "_")
+    if v in (SOUNDHOLE_BC_PRESSURE_RELEASE, "open", "p_zero", "dirichlet", "pressure_release"):
+        return SOUNDHOLE_BC_PRESSURE_RELEASE
+    if v in (SOUNDHOLE_BC_SEALED, "closed", "neumann", "none", "sealed"):
+        return SOUNDHOLE_BC_SEALED
+    raise ValueError(
+        f"Unknown solver.soundhole_bc={raw!r}; use "
+        f"'{SOUNDHOLE_BC_PRESSURE_RELEASE}' or '{SOUNDHOLE_BC_SEALED}'."
+    )
+
+
+def _resolve_coupled_pressure_bc_policy(
+    solver_cfg: Dict,
+    *,
+    soundhole_facets_count: int,
+    status_callback=None,
+) -> Tuple[str, str, bool, bool]:
+    """
+    Separate numerical pressure gauge from physical soundhole BC.
+
+    Returns
+    -------
+    soundhole_bc, pressure_gauge_mode, legacy_pressure_gauge_soundhole, skip_interior_gauge
+    """
+    pg_raw = str(solver_cfg.get("pressure_gauge", "soundhole")).strip().lower()
+    sh_cfg = solver_cfg.get("soundhole_bc")
+    legacy_pg_soundhole = False
+    skip_interior_gauge = False
+
+    if sh_cfg is None or not str(sh_cfg).strip():
+        if pg_raw == "soundhole":
+            soundhole_bc = SOUNDHOLE_BC_PRESSURE_RELEASE
+            pressure_gauge_mode = "none"
+            legacy_pg_soundhole = True
+        elif pg_raw == "air_interior":
+            soundhole_bc = SOUNDHOLE_BC_SEALED
+            pressure_gauge_mode = "air_interior"
+        elif pg_raw in ("none", "off", "disabled"):
+            soundhole_bc = SOUNDHOLE_BC_SEALED
+            pressure_gauge_mode = "none"
+        else:
+            soundhole_bc = SOUNDHOLE_BC_SEALED
+            pressure_gauge_mode = "air_interior"
+    else:
+        soundhole_bc = _normalize_soundhole_bc(sh_cfg)
+        if pg_raw == "soundhole":
+            pressure_gauge_mode = "none"
+            legacy_pg_soundhole = True
+        elif pg_raw in ("none", "off", "disabled"):
+            pressure_gauge_mode = "none"
+        elif pg_raw == "air_interior":
+            pressure_gauge_mode = "air_interior"
+        else:
+            pressure_gauge_mode = "air_interior"
+
+    if legacy_pg_soundhole:
+        _emit(
+            "[bc][warn] solver.pressure_gauge='soundhole' is deprecated: use "
+            "soundhole_bc='pressure_release' and pressure_gauge='none'.",
+            status_callback=status_callback,
+            level="warning",
+        )
+
+    if soundhole_bc == SOUNDHOLE_BC_PRESSURE_RELEASE:
+        if soundhole_facets_count == 0:
+            _emit(
+                "[bc][warn] soundhole_bc=pressure_release but facet tag 2 is empty; "
+                "reverting to sealed cavity + air_interior gauge.",
+                status_callback=status_callback,
+                level="warning",
+            )
+            soundhole_bc = SOUNDHOLE_BC_SEALED
+            if pressure_gauge_mode == "none":
+                pressure_gauge_mode = "air_interior"
+        elif pressure_gauge_mode == "air_interior":
+            pressure_gauge_mode = "none"
+            skip_interior_gauge = True
+
+    if soundhole_bc == SOUNDHOLE_BC_SEALED and pressure_gauge_mode == "none":
+        _emit(
+            "[bc][warn] sealed soundhole_bc with pressure_gauge=none: enabling air_interior "
+            "gauge to remove the constant-pressure null space.",
+            status_callback=status_callback,
+            level="warning",
+        )
+        pressure_gauge_mode = "air_interior"
+
+    return soundhole_bc, pressure_gauge_mode, legacy_pg_soundhole, skip_interior_gauge
+
+
+def _locate_soundhole_pressure_release_dofs(
+    V_p,
+    soundhole_facets: np.ndarray,
+) -> np.ndarray:
+    """Dirichlet p=0 on soundhole facet tag 2 (physical open-hole approximation)."""
+    if soundhole_facets.size == 0:
+        return np.array([], dtype=np.int32)
+    return np.asarray(
+        fem.locate_dofs_topological(
+            V_p, V_p.mesh.topology.dim - 1, np.asarray(soundhole_facets, dtype=np.int32)
+        ),
+        dtype=np.int32,
+    ).ravel()
+
+
+def _locate_air_interior_pressure_gauge_dof(
+    msh: mesh.Mesh,
+    V_p,
+    cell_tags,
+    *,
+    status_callback=None,
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """
+    Single interior pressure anchor (numerical null-space removal only).
+
+    Returns (gauge_dofs_v, anchor_xyz or None).
+    """
+    tdim = msh.topology.dim
+    air_cell_idx = cell_tags.find(AIR_VOLUME_TAG)
+    if air_cell_idx.size == 0:
+        return np.array([], dtype=np.int32), None
+    anchor_cell = int(air_cell_idx[air_cell_idx.size // 2])
+    gauge_dofs = np.asarray(
+        fem.locate_dofs_topological(
+            V_p, tdim, np.asarray([anchor_cell], dtype=np.int32)
+        ),
+        dtype=np.int32,
+    ).ravel()
+    if gauge_dofs.size > 1:
+        gauge_dofs = gauge_dofs[:1].copy()
+    if gauge_dofs.size == 0:
+        return gauge_dofs, None
+    msh.topology.create_connectivity(tdim, 0)
+    c_to_v = msh.topology.connectivity(tdim, 0)
+    vidx = c_to_v.links(anchor_cell)
+    anchor = np.mean(msh.geometry.x[vidx], axis=0)
+    return gauge_dofs, anchor
 
 
 def _meshtags_on_facets(msh: mesh.Mesh, facet_indices: np.ndarray, tag_value: int):
@@ -5551,19 +5696,19 @@ def _solve_coupled_evp(
     # after ``collapse()`` maps exist; enforce on assembled ``A`` / ``M`` (and ``K`` / ``b`` for
     # the resolvent) via PETSc ``zeroRows``. Blockwise ``assemble_matrix`` uses ``bcs=[]``.
     soundhole_facets = np.array(facet_tags.find(2), dtype=np.int32)
-    pressure_gauge = str(config.get("solver", {}).get("pressure_gauge", "soundhole")).lower()
-    if pressure_gauge == "soundhole" and soundhole_facets.size == 0:
-        _emit(
-            "[bc] facet tag 2 (Soundhole) empty — using air_interior pressure gauge "
-            "instead of corner anchor.",
+    soundhole_bc, pressure_gauge_mode, _legacy_pg, skip_interior_gauge = (
+        _resolve_coupled_pressure_bc_policy(
+            solver_cfg,
+            soundhole_facets_count=int(soundhole_facets.size),
             status_callback=status_callback,
-            level="warning",
         )
-        pressure_gauge = "air_interior"
+    )
     bcs: List[fem.DirichletBC] = []
     bcs_u_only: List[fem.DirichletBC] = []
     bcs_p_only: List[fem.DirichletBC] = []
     bc_p = None
+    p_soundhole_bc_dofs_v = np.array([], dtype=np.int32)
+    p_interior_gauge_dofs_v = np.array([], dtype=np.int32)
     p_gauge_dofs_v = np.array([], dtype=np.int32)
     u_dofs_fix_bc = np.array([], dtype=np.int32)
     clamp_ribs = _solver_bool(solver_cfg, "clamp_ribs", default=True)
@@ -5578,65 +5723,53 @@ def _solve_coupled_evp(
         maxs = np.max(coords, axis=0)
         diag = float(np.linalg.norm(maxs - mins))
 
-        if pressure_gauge == "soundhole":
-            p_gauge_facets = soundhole_facets
-            if air_ext_p_facets.size > 0:
-                p_gauge_facets = np.unique(
-                    np.concatenate([soundhole_facets, air_ext_p_facets]).astype(np.int32)
-                )
-            p_gauge_dofs_v = np.asarray(
-                fem.locate_dofs_topological(
-                    V_p, fdim, np.asarray(p_gauge_facets, dtype=np.int32)
-                ),
-                dtype=np.int32,
-            ).ravel()
+        if soundhole_bc == SOUNDHOLE_BC_PRESSURE_RELEASE:
+            p_soundhole_bc_dofs_v = _locate_soundhole_pressure_release_dofs(
+                V_p, soundhole_facets
+            )
             _emit(
-                f"[bc] pressure gauge: P=0 on soundhole ({soundhole_facets.size} facets)"
-                + (
-                    f" + air exterior ({air_ext_p_facets.size} facets, iface excluded)"
-                    if air_ext_p_facets.size > 0
-                    else ""
-                )
-                + f" → {p_gauge_dofs_v.size} pressure DOFs (algebraic on mixed rows).",
+                f"[bc] soundhole acoustic BC: pressure_release (p=0 on tag 2, "
+                f"{soundhole_facets.size} facets) → {p_soundhole_bc_dofs_v.size} pressure DOFs "
+                "(physical open-hole approximation; exterior radiation not modeled).",
                 status_callback=status_callback,
             )
-        else:
-            air_cell_idx = cell_tags.find(AIR_VOLUME_TAG)
-            if air_cell_idx.size > 0:
+
+        if pressure_gauge_mode == "air_interior":
+            p_interior_gauge_dofs_v, p_anchor_xyz = _locate_air_interior_pressure_gauge_dof(
+                msh, V_p, cell_tags, status_callback=status_callback
+            )
+            if p_interior_gauge_dofs_v.size > 0 and p_anchor_xyz is not None:
+                air_cell_idx = cell_tags.find(AIR_VOLUME_TAG)
                 anchor_cell = int(air_cell_idx[air_cell_idx.size // 2])
-                p_gauge_dofs_v = np.asarray(
-                    fem.locate_dofs_topological(
-                        V_p, tdim, np.asarray([anchor_cell], dtype=np.int32)
-                    ),
-                    dtype=np.int32,
-                ).ravel()
-                if p_gauge_dofs_v.size > 1:
-                    p_gauge_dofs_v = p_gauge_dofs_v[:1].copy()
-                if p_gauge_dofs_v.size > 0:
-                    msh.topology.create_connectivity(tdim, 0)
-                    c_to_v = msh.topology.connectivity(tdim, 0)
-                    vidx = c_to_v.links(anchor_cell)
-                    p_anchor = np.mean(coords[vidx], axis=0)
-                    _emit(
-                        f"[bc] pressure gauge: single interior air anchor (tag {AIR_VOLUME_TAG}) "
-                        f"near {p_anchor.tolist()} (cell={anchor_cell}, "
-                        f"solver.pressure_gauge=air_interior, n_dof={p_gauge_dofs_v.size}).",
-                        status_callback=status_callback,
-                    )
-            if p_gauge_dofs_v.size == 0:
-                p_gauge_dofs_v = np.asarray(
-                    fem.locate_dofs_topological(
-                        V_p, fdim, np.asarray(soundhole_facets, dtype=np.int32)
-                    ),
-                    dtype=np.int32,
-                ).ravel()
                 _emit(
-                    "[bc][warn] air-interior pressure anchor failed; falling back to soundhole facets.",
+                    f"[bc] pressure gauge (numerical): single interior air anchor "
+                    f"(tag {AIR_VOLUME_TAG}) near {p_anchor_xyz.tolist()} "
+                    f"(cell={anchor_cell}, n_dof={p_interior_gauge_dofs_v.size}).",
+                    status_callback=status_callback,
+                )
+            if p_interior_gauge_dofs_v.size == 0:
+                p_interior_gauge_dofs_v = _locate_soundhole_pressure_release_dofs(
+                    V_p, soundhole_facets
+                )
+                _emit(
+                    "[bc][warn] air_interior gauge locate failed; falling back to soundhole "
+                    f"pressure_release DOFs (n_dof={p_interior_gauge_dofs_v.size}).",
                     status_callback=status_callback,
                     level="warning",
                 )
+        elif skip_interior_gauge:
+            _emit(
+                "[bc] pressure gauge (numerical): skipped — soundhole pressure_release "
+                "already removes the constant-pressure null space.",
+                status_callback=status_callback,
+            )
+        else:
+            _emit(
+                "[bc] pressure gauge (numerical): none (sealed soundhole_bc).",
+                status_callback=status_callback,
+            )
 
-        if p_gauge_dofs_v.size == 0:
+        if p_interior_gauge_dofs_v.size == 0 and p_soundhole_bc_dofs_v.size == 0:
             p_anchor = coords[np.argmin(np.linalg.norm(coords - mins, axis=1))]
             tol = max(1.0e-12, 1.0e-8 * max(1.0, diag))
 
@@ -5647,21 +5780,48 @@ def _solve_coupled_evp(
                     & np.isclose(x[2], p_anchor[2], atol=tol)
                 )
 
-            p_gauge_dofs_v = np.asarray(
+            p_interior_gauge_dofs_v = np.asarray(
                 fem.locate_dofs_geometrical(V_p, _p_anchor_marker),
                 dtype=np.int32,
             ).ravel()
             _emit(
-                f"[bc][warn] pressure gauge empty; using corner anchor at {p_anchor.tolist()} "
-                f"(count={p_gauge_dofs_v.size})",
+                f"[bc][warn] no soundhole or interior pressure constraint; corner anchor at "
+                f"{p_anchor.tolist()} (n_dof={p_interior_gauge_dofs_v.size}).",
                 status_callback=status_callback,
                 level="warning",
             )
 
-        if p_gauge_dofs_v.size == 0:
-            raise RuntimeError("Failed to create pressure grounding dofs (p_gauge_dofs_v is empty).")
+        if p_interior_gauge_dofs_v.size == 0 and p_soundhole_bc_dofs_v.size == 0:
+            raise RuntimeError(
+                "Failed to create pressure constraints (no soundhole BC and no gauge DOFs)."
+            )
 
+        p_dirichlet_parts: List[np.ndarray] = []
+        if p_soundhole_bc_dofs_v.size > 0:
+            p_dirichlet_parts.append(np.asarray(p_soundhole_bc_dofs_v, dtype=np.int32).ravel())
+        if p_interior_gauge_dofs_v.size > 0:
+            p_dirichlet_parts.append(np.asarray(p_interior_gauge_dofs_v, dtype=np.int32).ravel())
+        p_gauge_dofs_v = (
+            np.unique(np.concatenate(p_dirichlet_parts).astype(np.int32, copy=False))
+            if p_dirichlet_parts
+            else np.array([], dtype=np.int32)
+        )
         p_dofs = np.asarray(p_gauge_dofs_v, dtype=np.int32).copy()
+        gauge_status = (
+            "required"
+            if pressure_gauge_mode == "air_interior"
+            else ("skipped" if skip_interior_gauge else "none")
+        )
+        _emit(
+            "[bc][diag] coupled pressure constraints: "
+            f"soundhole_bc={soundhole_bc!r}, "
+            f"soundhole_pressure_dofs={int(p_soundhole_bc_dofs_v.size)}, "
+            f"interior_gauge_dofs={int(p_interior_gauge_dofs_v.size)}, "
+            f"total_pressure_dirichlet_dofs={p_dofs.size}, "
+            f"n_p_collapsed={n_p_collapsed}, "
+            f"additional_gauge={gauge_status}",
+            status_callback=status_callback,
+        )
 
         V_u = V_u_collapsed
         _audit_u_subspace_global(
@@ -5692,10 +5852,12 @@ def _solve_coupled_evp(
             status_callback=status_callback,
         )
         _emit(
-            "[bc][diag] pressure gauge + optional ribs clamp (tag 4 only). "
-            f"pressure BC dof count={p_gauge_dofs_v.size} (full pressure FE unknowns=n_p_collapsed={n_p_collapsed}), "
+            "[bc][diag] ribs clamp (tag 4 only) + pressure rows. "
+            f"total_pressure_dirichlet_dofs={p_gauge_dofs_v.size} "
+            f"(soundhole_bc={int(p_soundhole_bc_dofs_v.size)}, gauge={int(p_interior_gauge_dofs_v.size)}, "
+            f"n_p_collapsed={n_p_collapsed}), "
             f"ribs facets={facets_ribs.size}, ribs u_dof count={u_dofs_ribs.size}, "
-            f"soundhole_facets.shape={soundhole_facets.shape}",
+            f"soundhole_facets={soundhole_facets.size}",
             status_callback=status_callback,
         )
 
@@ -5734,12 +5896,12 @@ def _solve_coupled_evp(
                     if probe_spec is not None
                     else "[bc][eps]"
                 )
-        _emit(
+                _emit(
                     f"{_bc_label} pin u=0 on tag-{WOOD_FIX_SURFACE_TAG} fix facets "
                     f"({facets_fix.size} facets, {u_dofs_fix_bc.size} displacement DOFs) "
                     "(algebraic on mixed rows; removes rigid-body null space for ST LU).",
-            status_callback=status_callback,
-        )
+                    status_callback=status_callback,
+                )
         _audit_shell_facet_dof_coverage(
             msh,
             facet_tags,
@@ -6062,7 +6224,9 @@ def _solve_coupled_evp(
     n_p_fe = int(W.sub(1).dofmap.index_map.size_global * W.sub(1).dofmap.index_map_bs)
     print(
         f"[DIAG] Final u_dofs={n_u_fe} p_dofs={n_p_fe} "
-        f"(free–free structure; pressure gauge p_bc={p_dofs.size})"
+        f"(free–free structure; soundhole_bc={soundhole_bc!r}, "
+        f"soundhole_p_dof={int(p_soundhole_bc_dofs_v.size)}, "
+        f"gauge_p_dof={int(p_interior_gauge_dofs_v.size)}, total_p_bc={p_dofs.size})"
     )
     sys.stdout.flush()
     print(f"Starting solver with {n_dofs} DOFs and proactive memory cleanup...")
