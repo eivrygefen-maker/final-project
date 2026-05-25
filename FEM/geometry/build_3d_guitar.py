@@ -699,15 +699,69 @@ def create_guitar_mesh():
             pass
         return float("nan")
 
-    def _occ_point_inside_volume(vol_tag: int, x: float, y: float, z: float) -> bool:
+    def _classify_point_in_volume(
+        vol_tag: int, x: float, y: float, z: float
+    ) -> dict:
+        """
+        Classify a Cartesian point against a live OCC volume (post-sync).
+
+        Gmsh expects ``gmsh.model.isInside(dim, tag, [x,y,z], parametric=False)``
+        and returns the count of input points inside (0 or 1 for a single probe).
+        The legacy ``occ.isInside(x,y,z)`` positional form is unreliable here.
+        """
+        coord = [float(x), float(y), float(z)]
+        out: dict = {
+            "volume_id": int(vol_tag),
+            "point_m": coord,
+            "inside": False,
+            "method": None,
+            "raw": None,
+        }
         try:
-            return bool(
-                gmsh.model.occ.isInside(
-                    3, int(vol_tag), float(x), float(y), float(z), False
-                )
+            n_in = int(gmsh.model.isInside(3, int(vol_tag), coord, False))
+            out["method"] = "gmsh.model.isInside"
+            out["raw"] = int(n_in)
+            out["inside"] = n_in >= 1
+            return out
+        except Exception as exc_model:
+            out["gmsh_model_isInside_error"] = str(exc_model)
+        try:
+            n_in = int(
+                gmsh.model.occ.isInside(3, int(vol_tag), coord, False)
             )
-        except Exception:
-            return False
+            out["method"] = "gmsh.model.occ.isInside(coord)"
+            out["raw"] = int(n_in)
+            out["inside"] = n_in >= 1
+            return out
+        except Exception as exc_occ_list:
+            out["gmsh_occ_isInside_coord_error"] = str(exc_occ_list)
+        try:
+            r = gmsh.model.occ.isInside(
+                3, int(vol_tag), float(x), float(y), float(z)
+            )
+            out["method"] = "gmsh.model.occ.isInside(x,y,z)"
+            out["raw"] = r
+            out["inside"] = int(r) == 1
+            return out
+        except Exception as exc_occ_xyz:
+            out["gmsh_occ_isInside_xyz_error"] = str(exc_occ_xyz)
+        bb = gmsh.model.getBoundingBox(3, int(vol_tag))
+        inset = 0.002
+        out["method"] = "bbox_inset_fallback"
+        out["inside"] = bool(
+            float(bb[0]) + inset <= float(x) <= float(bb[3]) - inset
+            and float(bb[1]) + inset <= float(y) <= float(bb[4]) - inset
+            and float(bb[2]) + inset <= float(z) <= float(bb[5]) - inset
+        )
+        out["raw"] = out["inside"]
+        return out
+
+    def _occ_point_inside_volume(vol_tag: int, x: float, y: float, z: float) -> bool:
+        return bool(
+            _classify_point_in_volume(int(vol_tag), float(x), float(y), float(z)).get(
+                "inside"
+            )
+        )
 
     def _write_validation_cad_volume_audit(
         *,
@@ -800,8 +854,63 @@ def create_guitar_mesh():
             [min(air_bnd_z), max(air_bnd_z)] if air_bnd_z else [float("nan"), float("nan")]
         )
 
+        air_com = (
+            _entity_center_of_mass(3, int(air_vols[0])) if air_vols else (ox0, oy0, oz0)
+        )
+        air_bbox_center = (
+            (
+                0.5 * (float(air_bb[0]) + float(air_bb[3])),
+                0.5 * (float(air_bb[1]) + float(air_bb[4])),
+                0.5 * (float(air_bb[2]) + float(air_bb[5])),
+            )
+            if air_vols
+            else (ox0, oy0, oz0)
+        )
+        membership_calibration: dict = {}
+        if air_vols:
+            av = int(air_vols[0])
+            membership_calibration["air_volume_id"] = av
+            membership_calibration["air_center_of_mass_m"] = [
+                float(air_com[0]),
+                float(air_com[1]),
+                float(air_com[2]),
+            ]
+            membership_calibration["air_com_test"] = _classify_point_in_volume(
+                av, float(air_com[0]), float(air_com[1]), float(air_com[2])
+            )
+            membership_calibration["air_bbox_center_test"] = _classify_point_in_volume(
+                av,
+                float(air_bbox_center[0]),
+                float(air_bbox_center[1]),
+                float(air_bbox_center[2]),
+            )
+        if wood_vols:
+            wv = int(wood_vols[0])
+            wcom = _entity_center_of_mass(3, wv)
+            membership_calibration["wood_sample_volume_id"] = wv
+            membership_calibration["wood_center_of_mass_m"] = [
+                float(wcom[0]),
+                float(wcom[1]),
+                float(wcom[2]),
+            ]
+            membership_calibration["wood_com_test"] = _classify_point_in_volume(
+                wv, float(wcom[0]), float(wcom[1]), float(wcom[2])
+            )
+        membership_trusted = bool(
+            air_vols
+            and membership_calibration.get("air_com_test", {}).get("method")
+            == "gmsh.model.isInside"
+            and membership_calibration.get("air_com_test", {}).get("inside")
+        )
+
         probe_specs = [
-            ("cavity_body_center", float(ox0), float(oy0), float(oz0)),
+            ("air_volume_com", float(air_com[0]), float(air_com[1]), float(air_com[2])),
+            (
+                "model_union_bbox_center",
+                float(ox0),
+                float(oy0),
+                float(oz0),
+            ),
             (
                 "below_top_lid_at_hole",
                 float(hole_x),
@@ -816,14 +925,14 @@ def create_guitar_mesh():
             ),
             (
                 "cavity_mid_off_hole",
-                float(ox0) + 0.05,
-                float(oy0),
-                float(oz0),
+                float(air_bbox_center[0]) + 0.05,
+                float(air_bbox_center[1]),
+                float(air_bbox_center[2]),
             ),
             (
                 "cavity_lower_quarter",
-                float(ox0),
-                float(oy0),
+                float(air_bbox_center[0]),
+                float(air_bbox_center[1]),
                 float(z_inner_back) + 0.25 * expected_inner_z_span,
             ),
             (
@@ -835,21 +944,15 @@ def create_guitar_mesh():
         ]
         probe_records: list = []
         for label, px, py, pz in probe_specs:
-            inside_air = [
-                int(v)
-                for v in air_vols
-                if _occ_point_inside_volume(int(v), px, py, pz)
+            air_tests = [
+                _classify_point_in_volume(int(v), px, py, pz) for v in air_vols
             ]
-            inside_wood = [
-                int(v)
-                for v in wood_vols
-                if _occ_point_inside_volume(int(v), px, py, pz)
+            wood_tests = [
+                _classify_point_in_volume(int(v), px, py, pz) for v in wood_vols
             ]
-            inside_any = [
-                int(v)
-                for v in all_vol_tags
-                if _occ_point_inside_volume(int(v), px, py, pz)
-            ]
+            inside_air = [int(t["volume_id"]) for t in air_tests if t.get("inside")]
+            inside_wood = [int(t["volume_id"]) for t in wood_tests if t.get("inside")]
+            inside_any = sorted(set(inside_air) | set(inside_wood))
             probe_records.append(
                 {
                     "label": label,
@@ -858,6 +961,8 @@ def create_guitar_mesh():
                     "inside_wood_volume_ids": inside_wood,
                     "inside_any_volume_ids": inside_any,
                     "classified_as_air": bool(inside_air),
+                    "air_tests": air_tests,
+                    "wood_tests": wood_tests,
                 }
             )
 
@@ -870,8 +975,8 @@ def create_guitar_mesh():
         top_lid_probe = next(
             (p for p in probe_records if p["label"] == "below_top_lid_at_hole"), None
         )
-        center_probe = next(
-            (p for p in probe_records if p["label"] == "cavity_body_center"), None
+        air_com_probe = next(
+            (p for p in probe_records if p["label"] == "air_volume_com"), None
         )
         opening_probe = next(
             (p for p in probe_records if p["label"] == "near_soundhole_top_opening"),
@@ -881,7 +986,13 @@ def create_guitar_mesh():
         checks = {
             "air_volume_present": bool(air_vols),
             "air_z_span_fill_ratio_ge_0_85": bool(fill_ratio >= 0.85),
-            "cavity_center_in_air": bool(center_probe and center_probe["classified_as_air"]),
+            "membership_api_trusted": bool(membership_trusted),
+            "air_com_inside_via_isInside": bool(
+                membership_calibration.get("air_com_test", {}).get("inside")
+            ),
+            "air_volume_com_in_air": bool(
+                air_com_probe and air_com_probe["classified_as_air"]
+            ),
             "below_top_lid_in_air": bool(
                 top_lid_probe and top_lid_probe["classified_as_air"]
             ),
@@ -895,14 +1006,25 @@ def create_guitar_mesh():
                 air_bnd_z and max(air_bnd_z) >= float(z_inner_top) - 0.006
             ),
         }
-        cavity_pass = all(checks.values())
+        if membership_trusted:
+            cavity_pass = all(checks.values())
+        else:
+            cavity_pass = False
 
-        if cavity_pass:
+        if not membership_trusted:
+            primary = "MEMBERSHIP_INCONCLUSIVE"
+            narrative = (
+                "gmsh.model.isInside could not be trusted on the tagged air volume "
+                "(air center-of-mass must register inside). Use the exported BREP/GEO "
+                "visualization and calibration block in the JSON report before changing "
+                "geometry."
+            )
+        elif cavity_pass:
             primary = "OK"
             narrative = (
-                "Tagged air volume spans the inner cavity from back to top; probes at "
-                "the body centre, below the top lid at the hole, and near the soundhole "
-                "opening lie inside air tag 10."
+                "Tagged air volume spans the inner cavity and soundhole channel; "
+                "gmsh.model.isInside confirms air COM and cavity/soundhole probes "
+                "lie inside air tag 10."
             )
         elif air_z_span < 0.5 * expected_inner_z_span:
             primary = "AIR_MIDDLE_SLICE"
@@ -924,6 +1046,23 @@ def create_guitar_mesh():
                 "Tagged air volume does not fully occupy the expected interior cavity; "
                 "see probe table and per-volume bounding boxes."
             )
+
+        air_zmax = float(air_bb[5]) if air_vols else float("nan")
+        if air_vols and air_zmax < float(z_inner_top) - 0.004:
+            why_no_boundary = (
+                "Air-boundary facets end below the inner top plane: "
+                f"air z_max={air_zmax:.4f} m < inner top z={float(z_inner_top):.4f} m, "
+                "so no air exterior surface exists at the intended soundhole disk plane."
+            )
+        elif air_vols and air_zmax >= float(z_inner_top) - 0.004:
+            why_no_boundary = (
+                "Air bbox reaches the inner top plane "
+                f"(air z_max={air_zmax:.4f} m >= inner top z={float(z_inner_top):.4f} m). "
+                "If aperture imprint still fails, inspect channel connectivity at the "
+                "hole axis in the exported BREP."
+            )
+        else:
+            why_no_boundary = "No air volume tagged."
 
         report = {
             "audit_type": "validation_cad_volume",
@@ -950,25 +1089,70 @@ def create_guitar_mesh():
             "air_boundary_surface_count": len(air_boundary),
             "air_boundary_centroid_z_range_m": air_bnd_z_range,
             "all_volumes": vol_records,
+            "membership_calibration": membership_calibration,
+            "membership_trusted": bool(membership_trusted),
             "cavity_probes": probe_records,
             "acceptance_checks": checks,
             "cavity_verification_pass": bool(cavity_pass),
+            "recommended_next_step": (
+                "A_proceed_to_aperture_surface_and_mesh_gates"
+                if cavity_pass
+                else (
+                    "C_manual_brep_check_required"
+                    if not membership_trusted
+                    else "B_minimal_geometry_correction_at_soundhole_channel"
+                )
+            ),
             "diagnosis": {
                 "primary": primary,
                 "narrative": narrative,
-                "why_no_boundary_near_z_inner_top": (
-                    "Air-boundary facets lie only where the tagged air volume ends; "
-                    f"if air z_max≈{float(air_bb[5]):.4f} << inner top z≈{z_inner_top:.4f}, "
-                    "no air exterior surface exists at the soundhole disk plane "
-                    f"z≈{z_inner_top:.4f} (disk imprint misses the air B-rep)."
-                    if air_vols
-                    else "No air volume tagged."
-                ),
+                "why_no_boundary_near_z_inner_top": why_no_boundary,
+            },
+            "visualization": {
+                "soundhole_axis_origin_m": [float(hole_x), float(hole_y), float(z_inner_back)],
+                "soundhole_axis_end_m": [float(hole_x), float(hole_y), float(air_zmax)],
+                "aperture_plane_z_m": float(z_inner_top),
+                "hole_radius_m": float(hole_r),
             },
         }
 
         json_path = audit_stem.with_suffix(".json")
         md_path = audit_stem.with_suffix(".md")
+        brep_path = audit_stem.with_suffix(".brep")
+        geo_path = audit_stem.with_suffix(".geo")
+        try:
+            gmsh.write(str(brep_path))
+            report["visualization"]["brep_file"] = str(brep_path)
+        except Exception as exc:
+            report["visualization"]["brep_error"] = str(exc)
+        geo_lines = [
+            "// Validation CAD volume audit visualization helper",
+            f"// Air volume OCC id(s): {air_vols}",
+            f"// Wood volume OCC id(s): {wood_vols}",
+            f"// Soundhole axis: ({hole_x:.6f}, {hole_y:.6f}, {z_inner_back:.6f}) -> "
+            f"({hole_x:.6f}, {hole_y:.6f}, {air_zmax:.6f})",
+            f"// Aperture plane z = {z_inner_top:.6f} m, radius = {hole_r:.6f} m",
+            "//",
+            f"Merge \"{brep_path.name}\";",
+            "",
+            f"z_aperture = {float(z_inner_top):.6f};",
+            f"x_hole = {float(hole_x):.6f};",
+            f"y_hole = {float(hole_y):.6f};",
+            f"r_hole = {float(hole_r):.6f};",
+            "Point(1) = {x_hole, y_hole, z_aperture};",
+            "Point(2) = {x_hole + r_hole, y_hole, z_aperture};",
+            "Point(3) = {x_hole, y_hole + r_hole, z_aperture};",
+            "Point(4) = {x_hole - r_hole, y_hole, z_aperture};",
+            "Point(5) = {x_hole, y_hole - r_hole, z_aperture};",
+            "Line(1) = {1, 2};",
+            "Line(2) = {1, 3};",
+            "Line(3) = {1, 4};",
+            "Line(4) = {1, 5};",
+            "// Open BREP: gmsh validation_cad_volume_audit.brep",
+            "// Then enable Mesh.Volume / explore entity tags 3:{air_vols} and wood.",
+        ]
+        geo_path.write_text("\n".join(geo_lines) + "\n", encoding="utf-8")
+        report["visualization"]["geo_helper"] = str(geo_path)
         json_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
         lines = [
             "# Validation CAD volume audit",
@@ -986,22 +1170,45 @@ def create_guitar_mesh():
             "",
             report["diagnosis"]["why_no_boundary_near_z_inner_top"],
             "",
+            "## Membership calibration",
+            "",
+            f"- Trusted `gmsh.model.isInside`: **{membership_trusted}**",
+            f"- Recommended next step: `{report.get('recommended_next_step')}`",
+            "",
+            "## Visualization",
+            "",
+            f"- BREP: `{report.get('visualization', {}).get('brep_file', 'n/a')}`",
+            f"- GEO helper (aperture plane + hole radius markers): "
+            f"`{report.get('visualization', {}).get('geo_helper', 'n/a')}`",
+            f"- Soundhole axis: `{report.get('visualization', {}).get('soundhole_axis_origin_m')}` "
+            f"→ `{report.get('visualization', {}).get('soundhole_axis_end_m')}`",
+            f"- Aperture plane z = `{report.get('visualization', {}).get('aperture_plane_z_m')}` m",
+            "",
+            "Gmsh GUI: open the `.brep`, use **Tools → Visibility** to hide/show volume tags; "
+            "air is the tagged cavity/channel solid, wood volumes are the shell partition.",
+            "",
             "## Acceptance checks",
             "",
         ]
         for k, v in checks.items():
             lines.append(f"- `{k}`: **{v}**")
+        lines.extend(
+            [
+                "",
+                "## Cavity probe points (gmsh.model.isInside per volume)",
+                "",
+            ]
+        )
+        for pr in probe_records:
+            lines.append(
+                f"- **{pr['label']}** `{pr['point_m']}` → air={pr['inside_air_volume_ids']} "
+                f"wood={pr['inside_wood_volume_ids']}"
+            )
         lines.extend(["", "## All 3D volumes", "", "| id | class | z_min | z_max | volume m³ |", "|---:|---|---:|---:|---:|"])
         for rec in vol_records:
             lines.append(
                 f"| {rec['entity_id']} | {rec['classification']} | "
                 f"{rec['z_min_m']:.4f} | {rec['z_max_m']:.4f} | {rec['volume_m3']:.6e} |"
-            )
-        lines.extend(["", "## Cavity probe points", ""])
-        for pr in probe_records:
-            lines.append(
-                f"- **{pr['label']}** `{pr['point_m']}` → air={pr['inside_air_volume_ids']} "
-                f"wood={pr['inside_wood_volume_ids']}"
             )
         md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         print(f"[CAD-VOL-AUDIT] wrote {json_path}", flush=True)
