@@ -60,7 +60,7 @@
   },
   "solver": {
     "num_modes": 8,
-    "mesh_file": "../mesh/validation_tiny_guitar_3d.msh",
+    "mesh_file": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/mesh/validation_tiny_guitar_3d.msh",
     "shift_invert_target_hz": 202.0,
     "structural_shift_target_hz": 60.0,
     "couple_fluid": true,
