@@ -2480,17 +2480,28 @@ def create_guitar_mesh():
             "",
         ]
         for rec in focus_records:
-            lines.append(
-                f"### Surface {rec['surface_id']}",
-                "",
-                f"- wood boundary: **{rec['in_wood_boundary']}** | air boundary: **{rec['in_air_boundary']}**",
-                f"- area: **{rec['area_m2']:.8f}** m² | COM: `{rec['center_of_mass_m']}`",
-                f"- bbox: `{rec['bbox_m']}`",
-                f"- adjacent volumes: wood `{rec['adjacent_wood_volume_ids']}` air `{rec['adjacent_air_volume_ids']}`",
-                f"- physical groups: `{rec['physical_surface_groups']}`",
-                f"- boundary curves ({len(rec['boundary_curve_ids'])}): `{rec['boundary_curve_ids'][:24]}`"
-                + (" …" if len(rec["boundary_curve_ids"]) > 24 else ""),
-                "",
+            lines.extend(
+                [
+                    f"### Surface {rec['surface_id']}",
+                    "",
+                    (
+                        f"- wood boundary: **{rec['in_wood_boundary']}** | "
+                        f"air boundary: **{rec['in_air_boundary']}**"
+                    ),
+                    f"- area: **{rec['area_m2']:.8f}** m² | COM: `{rec['center_of_mass_m']}`",
+                    f"- bbox: `{rec['bbox_m']}`",
+                    (
+                        f"- adjacent volumes: wood `{rec['adjacent_wood_volume_ids']}` "
+                        f"air `{rec['adjacent_air_volume_ids']}`"
+                    ),
+                    f"- physical groups: `{rec['physical_surface_groups']}`",
+                    (
+                        f"- boundary curves ({len(rec['boundary_curve_ids'])}): "
+                        f"`{rec['boundary_curve_ids'][:24]}`"
+                        + (" …" if len(rec["boundary_curve_ids"]) > 24 else "")
+                    ),
+                    "",
+                ]
             )
         if focus_pairs:
             lines.append("## Focus pair classification")
@@ -3474,7 +3485,8 @@ def create_guitar_mesh():
                 audit_dir=aperture_audit_dir,
             )
         )
-        air_vols[0] = int(air_vol_tag)
+        if not (is_validation and use_air_opening_tag and not shell_only):
+            air_vols[0] = int(air_vol_tag)
         if not soundhole_surfs:
             fallback = _select_validation_soundhole_aperture_surfaces(
                 sorted(get_boundary_tags([(3, int(air_vols[0]))], 2)),
@@ -3696,7 +3708,10 @@ def create_guitar_mesh():
         print("[diag][warn] Physical Volume 3 (Ribs_Sides_Volume) is empty.")
 
     if is_fom:
-        pg_air = gmsh.model.addPhysicalGroup(3, air_vols, tag=10)
+        air_vols_tag10 = sorted({int(v) for v in air_vols})
+        if is_validation and use_air_opening_tag and not shell_only:
+            air_vols = air_vols_tag10
+        pg_air = gmsh.model.addPhysicalGroup(3, air_vols_tag10, tag=10)
         gmsh.model.setPhysicalName(3, pg_air, "Air_Internal")
 
     print(
