@@ -318,7 +318,7 @@ def compute_mass_energy_participation(
 
     s_u = max(float(gnhep.get("s_uu", 1.0)), 1.0e-30)
     s_p = max(float(gnhep.get("s_pp", 1.0)), 1.0e-30)
-    s_c = max(float(gnhep.get("s_couple", math.sqrt(s_u * s_p)), 1.0e-30), 1.0e-30)
+    s_c = max(float(gnhep.get("s_couple", math.sqrt(s_u * s_p))), 1.0e-30)
 
     u_idx = np.asarray(u_to_W, dtype=np.int32).ravel()
     p_idx = np.asarray(p_to_W, dtype=np.int32).ravel()
