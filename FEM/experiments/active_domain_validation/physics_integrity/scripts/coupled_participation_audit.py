@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+from scipy import sparse
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 PHYSICS_ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +26,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import fem_main_3d as fem3d
-from dolfinx import fem
+from fem_mode_array_utils import MODE_VECTOR_FILE_SUFFIX, load_mode_column_any
 from fem_worker_single import hz_result_tag
 from mpi4py import MPI
 
@@ -36,7 +37,6 @@ from mode_diagnostics import (
     block_l2_p_fraction,
     compute_mass_energy_participation,
     diagnose_mixed_mode,
-    load_mode_vector,
     merge_scaling_metadata,
     unscale_mixed_mode_vector,
 )
@@ -60,6 +60,110 @@ def _resolve_mesh(cfg: dict, config_path: Path) -> Path:
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _load_mode_artifact_raw(mode_path: Path) -> Any:
+    """Load saved mode file without assuming dense layout."""
+    if mode_path.name.endswith(MODE_VECTOR_FILE_SUFFIX):
+        return load_mode_column_any(mode_path)
+    if mode_path.suffix.lower() == ".npy":
+        return np.load(str(mode_path))
+    if mode_path.suffix.lower() == ".npz":
+        data = np.load(str(mode_path))
+        if "eigvec" in data:
+            return data["eigvec"]
+        if "arr" in data:
+            return data["arr"]
+        raise ValueError(f"{mode_path}: NPZ missing 'eigvec' or 'arr' keys")
+    raise ValueError(f"Unsupported mode artifact: {mode_path}")
+
+
+def _sparse_nnz(obj: Any) -> Optional[int]:
+    if sparse.issparse(obj):
+        return int(obj.nnz)
+    return None
+
+
+def _load_coupled_mode_dense_vector(
+    mode_path: Path,
+    *,
+    n_coupled_W: int,
+    mode_index: int,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """
+    Convert a saved TEST 5 mode artifact to a dense 1-D float64 vector on W global ordering.
+
+    Raises ValueError with file-specific diagnostics when the artifact is not a single mode.
+    """
+    loaded = _load_mode_artifact_raw(mode_path)
+    meta: Dict[str, Any] = {
+        "file": mode_path.name,
+        "loaded_type": type(loaded).__name__,
+        "is_sparse": bool(sparse.issparse(loaded)),
+        "original_shape": list(np.asarray(loaded).shape) if not sparse.issparse(loaded) else list(loaded.shape),
+        "nnz": _sparse_nnz(loaded),
+    }
+
+    if sparse.issparse(loaded):
+        sp = loaded.tocsr()
+        nrows, ncols = int(sp.shape[0]), int(sp.shape[1])
+        meta["sparse_format"] = "csr"
+        meta["sparse_shape"] = [nrows, ncols]
+        if ncols != 1:
+            raise ValueError(
+                f"{mode_path.name}: expected a single mode column (shape (N, 1)), "
+                f"got sparse shape ({nrows}, {ncols}); refusing to flatten a multi-mode matrix."
+            )
+        if nrows != int(n_coupled_W):
+            raise ValueError(
+                f"{mode_path.name}: sparse row count {nrows} != n_coupled_W={n_coupled_W}"
+            )
+        vec = np.asarray(sp.toarray(), dtype=np.float64).reshape(-1)
+    else:
+        arr = np.asarray(loaded)
+        if arr.ndim == 2:
+            if arr.shape[1] == 1:
+                vec = np.asarray(arr[:, 0], dtype=np.float64).reshape(-1)
+            elif arr.shape[0] == 1:
+                vec = np.asarray(arr[0, :], dtype=np.float64).reshape(-1)
+            else:
+                raise ValueError(
+                    f"{mode_path.name}: dense array shape {arr.shape} is not a single column/row vector; "
+                    "refusing to flatten a multi-mode matrix."
+                )
+        elif arr.ndim == 1:
+            vec = np.asarray(arr, dtype=np.float64).reshape(-1)
+        else:
+            raise ValueError(
+                f"{mode_path.name}: unsupported ndarray rank {arr.ndim} (shape {arr.shape})"
+            )
+
+    meta["converted_length"] = int(vec.size)
+    if vec.size != int(n_coupled_W):
+        raise ValueError(
+            f"{mode_path.name}: converted vector length {vec.size} != n_coupled_W={n_coupled_W}"
+        )
+    if not np.all(np.isfinite(vec)):
+        n_bad = int(np.size(vec) - np.count_nonzero(np.isfinite(vec)))
+        raise ValueError(
+            f"{mode_path.name}: converted vector has {n_bad} non-finite entries"
+        )
+    amax = float(np.max(np.abs(vec))) if vec.size else 0.0
+    if amax <= 0.0:
+        raise ValueError(f"{mode_path.name}: converted vector is all zeros")
+    meta["max_abs"] = amax
+    meta["mode_index"] = int(mode_index)
+
+    if MPI.COMM_WORLD.rank == 0:
+        print(
+            f"[coupled_participation_audit] mode load: file={meta['file']} "
+            f"type={meta['loaded_type']} sparse={meta['is_sparse']} "
+            f"shape={meta['original_shape']} nnz={meta['nnz']} "
+            f"len={meta['converted_length']}",
+            flush=True,
+        )
+
+    return vec, meta
 
 
 def _load_modes(case_dir: Path, target_hz: float) -> Tuple[List[Dict[str, Any]], List[Path]]:
@@ -195,23 +299,36 @@ def main() -> int:
     freqs_from_result = [float(f) for f in result.get("frequencies_hz") or []]
     audited: List[Dict[str, Any]] = []
     sigma_bucket: List[Dict[str, Any]] = []
+    load_log: List[Dict[str, Any]] = []
+
+    if MPI.COMM_WORLD.rank == 0:
+        print(
+            f"[coupled_participation_audit] n_coupled_W={n_W} (expect 136136 on validation mesh); "
+            f"replaying {len(mode_files)} mode file(s)",
+            flush=True,
+        )
 
     for j, mode_path in enumerate(mode_files):
         try:
             mode_index = int(mode_path.stem.split("_")[-1])
         except ValueError:
             mode_index = j
-        meta = next((m for m in modes_meta if int(m.get("mode_index", -1)) == mode_index), {})
-        f_hz = float(meta.get("frequency_hz", freqs_from_result[j] if j < len(freqs_from_result) else float("nan")))
-        vec = load_mode_vector(mode_path, n_W)
+        mode_meta = next((m for m in modes_meta if int(m.get("mode_index", -1)) == mode_index), {})
+        f_hz = float(
+            mode_meta.get("frequency_hz", freqs_from_result[j] if j < len(freqs_from_result) else float("nan"))
+        )
+        vec, load_meta = _load_coupled_mode_dense_vector(
+            mode_path, n_coupled_W=n_W, mode_index=mode_index
+        )
+        load_log.append(load_meta)
 
         diag = diagnose_mixed_mode(
             vec,
             u_to_W=u_idx,
             p_to_W=p_idx,
             gnhep=gnhep,
-            wood_top=float(meta.get("top_plate_frac", 0.0)),
-            wood_back=float(meta.get("back_plate_frac", 0.0)),
+            wood_top=float(mode_meta.get("top_plate_frac", 0.0)),
+            wood_back=float(mode_meta.get("back_plate_frac", 0.0)),
             frequency_hz=f_hz,
         )
         p_prod, _, _ = block_l2_p_fraction(vec, u_to_W=u_idx, p_to_W=p_idx)
@@ -230,7 +347,10 @@ def main() -> int:
             "in_search_band": band_lo <= f_hz <= band_hi,
             "sigma_mapped_suspect": sigma_suspect,
             "sigma_cluster_hz": SIGMA_SUSPECT_HZ if sigma_suspect else None,
-            "p_frac_production": float(meta.get("p_frac_production", meta.get("p_frac_raw", p_prod))),
+            "p_frac_production": float(
+                mode_meta.get("p_frac_production", mode_meta.get("p_frac_raw", p_prod))
+            ),
+            "mode_load": load_meta,
             "p_frac_raw_audit": float(p_prod),
             "p_frac_phys_gnhep": float(diag["p_frac_phys_gnhep"]),
             "p_frac_fully_unscaled": float(p_full),
@@ -322,6 +442,7 @@ def main() -> int:
         "n_p": n_p,
         "n_coupled_W_dofs": n_W,
         "search_band_hz": [band_lo, band_hi],
+        "mode_vector_load_log": load_log,
         "modes_audited": audited,
         "modes_in_band": in_band_all,
         "ranking_by_proximity_to_acoustic_ref_hz": [
