@@ -2294,6 +2294,10 @@ def _is_structural_only_run(config: Dict, solve_evp: bool) -> bool:
     if not solve_evp:
         return False
     solver = config.get("solver", {})
+    # Experiment-only acoustic cavity EVP also sets couple_fluid=False; must not
+    # be classified as structural-only (production never sets acoustic_cavity_only_diagnosis).
+    if _solver_bool(solver, "acoustic_cavity_only_diagnosis", default=False):
+        return False
     if not _solver_bool(solver, "couple_fluid", default=True):
         return True
     return _solver_bool(solver, "structural_only_diagnosis", default=False)
@@ -5433,7 +5437,7 @@ def _solve_coupled_evp(
         f"(effective={_solver_bool(solver_cfg, 'adaptive_mode_sifter', True)}), "
         f"shift_invert_target_hz={_sihz!r}, solve_evp={solve_evp}, "
         f"couple_fluid={_solver_bool(solver_cfg, 'couple_fluid', True)}, "
-        f"structural_only={_struct_only}"
+        f"structural_only={_struct_only}, acoustic_cavity_only={_acoustic_only}"
     )
     sys.stdout.flush()
 
@@ -5442,19 +5446,14 @@ def _solve_coupled_evp(
     _mesh_interface_diagnostic(msh, cell_tags, facet_tags, status_callback=status_callback)
     _phase_sync(2001, "coupled after mesh load", status_callback=status_callback)
     if MPI.COMM_WORLD.rank == ROOT_RANK:
-        print(
-            f"[diag] branch: {'structural-only shell (tags {STRUCTURAL_DIAG_SURFACE_TAGS})' if _struct_only else 'full coupled (mixed u,p)'}"
-        )
+        if _acoustic_only:
+            branch = "acoustic-cavity-only (pressure on air tag 10)"
+        elif _struct_only:
+            branch = f"structural-only shell (tags {STRUCTURAL_DIAG_SURFACE_TAGS})"
+        else:
+            branch = "full coupled (mixed u,p)"
+        print(f"[diag] branch: {branch}")
         sys.stdout.flush()
-    if _struct_only:
-        return _solve_structural_only_evp(
-            msh=msh,
-            cell_tags=cell_tags,
-            facet_tags=facet_tags,
-            config=config,
-            num_modes=max(1, int(config.get("solver", {}).get("structural_only_num_modes", 30))),
-            status_callback=status_callback,
-        )
     if _acoustic_only:
         return _solve_acoustic_cavity_only_evp(
             msh=msh,
@@ -5462,6 +5461,15 @@ def _solve_coupled_evp(
             facet_tags=facet_tags,
             config=config,
             num_modes=max(1, int(config.get("solver", {}).get("acoustic_cavity_num_modes", 20))),
+            status_callback=status_callback,
+        )
+    if _struct_only:
+        return _solve_structural_only_evp(
+            msh=msh,
+            cell_tags=cell_tags,
+            facet_tags=facet_tags,
+            config=config,
+            num_modes=max(1, int(config.get("solver", {}).get("structural_only_num_modes", 30))),
             status_callback=status_callback,
         )
     coords = msh.geometry.x

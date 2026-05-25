@@ -248,16 +248,28 @@ def _run_acoustic(cfg: dict, config_path: Path, case_dir: Path) -> int:
     cfg.setdefault("solver", {})["physics_integrity_capture"] = True
     cfg["solver"]["acoustic_cavity_only_diagnosis"] = True
     cfg["solver"]["couple_fluid"] = False
-    cfg["solver"].pop("structural_only_diagnosis", None)
+    cfg["solver"]["structural_only_diagnosis"] = False
     nm = int(cfg["solver"].get("acoustic_cavity_num_modes", 20))
     mesh_file = _resolve_mesh_path(cfg, config_path)
     t0 = time.perf_counter()
-    msh, V_p, freqs_hz, eigvecs, _, n_p = fem3d._solve_coupled_evp(
+    msh, V_space, freqs_hz, eigvecs, n_u_reported, n_p_reported = fem3d._solve_coupled_evp(
         mesh_file=mesh_file,
         config=cfg,
         num_modes=nm,
     )
     elapsed = time.perf_counter() - t0
+    if int(n_u_reported) > 0 and int(n_p_reported) == 0:
+        raise RuntimeError(
+            "acoustic_only case was dispatched to the structural-only shell solver "
+            f"(n_u={n_u_reported}, n_p={n_p_reported}). Check acoustic_cavity_only_diagnosis "
+            "and solver branch order."
+        )
+    if int(n_p_reported) <= 0:
+        raise RuntimeError(
+            f"acoustic_only case returned no pressure DOFs (n_u={n_u_reported}, n_p={n_p_reported})."
+        )
+    V_p = V_space
+    n_p = int(n_p_reported)
     _save_physics_audit(cfg, case_dir)
 
     gnhep = merge_scaling_metadata(case_dir)
@@ -281,6 +293,9 @@ def _run_acoustic(cfg: dict, config_path: Path, case_dir: Path) -> int:
     write_mode_diagnostics_json(case_dir, mode_rows, case_label="acoustic_only", scaling=gnhep)
     result = {
         "case": "acoustic_only",
+        "solver_branch": "acoustic_cavity_only_diagnosis",
+        "n_u_dofs": int(n_u_reported),
+        "n_p_dofs": n_p,
         "frequencies_hz": [float(f) for f in freqs_hz],
         "num_modes": n_modes,
         "elapsed_s": elapsed,
@@ -288,7 +303,10 @@ def _run_acoustic(cfg: dict, config_path: Path, case_dir: Path) -> int:
     }
     _write_json(case_dir / "results" / "result_acoustic.json", result)
     if MPI.COMM_WORLD.rank == 0:
-        print(f"[physics_integrity] acoustic_only modes={n_modes} freqs={[round(f, 2) for f in freqs_hz[:5]]}")
+        print(
+            f"[physics_integrity] acoustic_only (pressure cavity) modes={n_modes} "
+            f"n_p={n_p} freqs={[round(f, 2) for f in freqs_hz[:5]]}"
+        )
     return 0
 
 

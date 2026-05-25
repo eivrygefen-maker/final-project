@@ -123,6 +123,7 @@ def main() -> None:
     acoustic["solver"].update(
         {
             "acoustic_cavity_only_diagnosis": True,
+            "structural_only_diagnosis": False,
             "couple_fluid": False,
             "acoustic_cavity_num_modes": 24,
             "acoustic_shift_target_hz": 120.0,
