@@ -218,15 +218,31 @@ def _run_subcase(
             sorting_am.mkdir(parents=True, exist_ok=True)
             fem3d.set_sorting_root(sorting_am.resolve())
             cfg_am = copy.deepcopy(cfg)
+            cfg_am.setdefault("solver", {})[
+                "coupled_air_pressure_restriction_replay_audit"
+            ] = True
             _m2, _W2, A, M = fem3d._solve_coupled_evp(
                 mesh_file=mesh_file,
                 config=cfg_am,
                 num_modes=0,
                 solve_evp=False,
             )
-            reciprocity = _reciprocity_check(
-                A, eigvecs[:, 0], u_idx=u_to_W, p_idx=p_to_W
-            )
+            n_op = int(A.getSize()[0])
+            probe = np.asarray(eigvecs[:, 0], dtype=np.float64).ravel()
+            if int(probe.size) != n_op:
+                reciprocity = {
+                    "error": (
+                        f"mode vector length {probe.size} != reduced operator rows {n_op}; "
+                        "use physical_core_v2_post.py for reduced reciprocity replay"
+                    ),
+                    "representation": "solve_export_mismatch",
+                }
+            else:
+                reciprocity = _reciprocity_check(
+                    A, probe, u_idx=u_to_W, p_idx=p_to_W
+                )
+                reciprocity["operator_rows"] = n_op
+                reciprocity["representation"] = "reduced_W_post_gnhep"
             A.destroy()
             M.destroy()
             fem3d.set_sorting_root(sorting.resolve())
