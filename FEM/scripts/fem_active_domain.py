@@ -188,6 +188,20 @@ def _active_indices_graph_closure(
     return MPI.COMM_WORLD.bcast(active_arr, root=ROOT_RANK)
 
 
+def _create_submatrix_compat(mat: PETSc.Mat, is_row: PETSc.IS, is_col: PETSc.IS) -> PETSc.Mat:
+    """
+    ``Mat.createSubMatrix`` without ``Mat.Structure.SUBMATRIX`` (not in all petsc4py builds).
+
+    Two-index form returns a standalone submatrix on current PETSc 3.x / petsc4py.
+    """
+    try:
+        sub = mat.createSubMatrix(is_row, is_col)
+    except TypeError:
+        sub = mat.createSubMatrix(is_row, is_col, None)
+    sub.assemble()
+    return sub
+
+
 def restrict_operators_to_active_set(
     A: PETSc.Mat,
     M: PETSc.Mat,
@@ -201,10 +215,8 @@ def restrict_operators_to_active_set(
         is_red.setType(PETSc.IS.Type.GENERAL)
     except Exception:
         pass
-    A_red = A.createSubMatrix(is_red, is_red, PETSc.Mat.Structure.SUBMATRIX)
-    M_red = M.createSubMatrix(is_red, is_red, PETSc.Mat.Structure.SUBMATRIX)
-    A_red.assemble()
-    M_red.assemble()
+    A_red = _create_submatrix_compat(A, is_red, is_red)
+    M_red = _create_submatrix_compat(M, is_red, is_red)
     is_red.destroy()
     meta = {
         "method": "algebraic_restriction",
