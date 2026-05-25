@@ -6517,6 +6517,61 @@ def _solve_coupled_evp(
             f"(||A||_F={float(A.norm()):.6e}, ||M||_F={float(M.norm()):.6e})"
         )
         sys.stdout.flush()
+
+    if solve_evp and _solver_bool(
+        solver_cfg, "coupled_air_pressure_restriction_diagnosis", default=False
+    ):
+        from fem_active_domain import (
+            build_parent_to_local_map,
+            remap_parent_indices_to_reduced,
+            restrict_operators_to_active_set,
+        )
+
+        V_p_restrict, _ = W.sub(1).collapse()
+        p_air_v = _locate_air_volume_pressure_dofs(V_p_restrict, msh, cell_tags)
+        if p_air_v.size == 0:
+            raise RuntimeError(
+                f"coupled_air_pressure_restriction: no pressure DOFs on air tag {AIR_VOLUME_TAG}."
+            )
+        p_air_W = np.unique(p_to_W_map[np.asarray(p_air_v, dtype=np.int32)])
+        active_W = np.unique(
+            np.concatenate([u_to_W_map, p_air_W]).astype(np.int32, copy=False)
+        )
+        n_full_w = int(A.getSize()[0])
+        A, M, restr_meta = restrict_operators_to_active_set(A, M, active_W)
+        parent_to_local = build_parent_to_local_map(active_W, n_full_w)
+        u_to_W_map = remap_parent_indices_to_reduced(u_to_W_map, parent_to_local)
+        p_to_W_map = remap_parent_indices_to_reduced(p_to_W_map, parent_to_local)
+        if coupled_dirichlet_rows.size > 0:
+            coupled_dirichlet_rows = remap_parent_indices_to_reduced(
+                coupled_dirichlet_rows, parent_to_local
+            )
+        if p_bc_rows_w.size > 0:
+            p_bc_rows_w = remap_parent_indices_to_reduced(p_bc_rows_w, parent_to_local)
+        n_p_inactive = int(n_p_collapsed) - int(p_air_v.size)
+        restr_payload = {
+            "method": "algebraic_air_volume_dofs_on_coupled_W",
+            "n_coupled_W_full": n_full_w,
+            "n_reduced": int(A.getSize()[0]),
+            "n_u_active": int(u_to_W_map.size),
+            "n_p_full_collapsed": int(n_p_collapsed),
+            "n_p_air_supported": int(p_air_v.size),
+            "n_p_wood_only_or_inactive_dropped": n_p_inactive,
+            "matches_acoustic_only_active_p": True,
+            **restr_meta,
+        }
+        config["_coupled_air_pressure_restriction"] = restr_payload
+        solver_cfg["_coupled_air_pressure_restriction"] = restr_payload
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                "[physics_integrity][coupled_air_p_restrict] pressure space restricted: "
+                f"full_W={n_full_w} reduced={int(A.getSize()[0])} "
+                f"n_u={int(u_to_W_map.size)} n_p_air={int(p_air_v.size)} "
+                f"dropped_inactive_p={n_p_inactive} "
+                f"(same air-volume DOF set as acoustic-only diagnosis)",
+                flush=True,
+            )
+
     apply_bc_on_am = coupled_dirichlet_rows.size > 0 and (
         probe_spec is None
         or _solver_bool(solver_cfg, "resolvent_algebraic_bc_on_am", default=False)

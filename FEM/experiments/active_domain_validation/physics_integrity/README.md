@@ -67,6 +67,28 @@ bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_coup
 
 Outputs: `coupled_near_acoustic/diagnostics/coupled_participation_scaling_audit.{json,md}`
 
+## Coupled pressure-domain audit (pre-restricted solve)
+
+Audits whether coupled operators retain full-mesh pressure DOFs vs acoustic-only
+`active_p=9998`, and whether algebraic restriction to air-supported pressure is feasible.
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_coupled_pressure_domain_audit.sh
+```
+
+Outputs: `diagnostics/coupled_pressure_domain/coupled_pressure_domain_audit.{json,md}`
+
+## Diagnostic coupled solve — air-supported pressure only
+
+After the domain audit, optional solve with `coupled_air_pressure_restriction_diagnosis`
+(same weak forms; drops wood-only pressure DOFs algebraically):
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_coupled_near_acoustic_air_p_restricted.sh
+```
+
+Then rerun `run_coupled_participation_audit.sh` on `coupled_near_acoustic_air_p/` if needed.
+
 ## Scaling audit
 
 `p_frac_raw` matches production (eigenvector in GNHEP block-scaled assembled basis).

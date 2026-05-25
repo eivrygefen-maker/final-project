@@ -43,6 +43,7 @@ CASES = (
     "acoustic_only",
     "coupled_low_frequency",
     "coupled_near_acoustic",
+    "coupled_near_acoustic_air_p",
 )
 
 
@@ -508,14 +509,21 @@ def main() -> int:
     if args.ingest_baseline and args.case == "coupled_nominal":
         return _ingest_baseline(case_dir, cfg)
 
-    if args.case in ("coupled_nominal", "coupled_low_frequency", "coupled_near_acoustic"):
+    if args.case in (
+        "coupled_nominal",
+        "coupled_low_frequency",
+        "coupled_near_acoustic",
+        "coupled_near_acoustic_air_p",
+    ):
         sc = cfg["solver"]
         defaults = {
             "coupled_nominal": (202.0, 156.0, 248.0, 46.0, 8),
             "coupled_low_frequency": (120.0, 60.0, 200.0, 80.0, 8),
             "coupled_near_acoustic": (244.39, 220.0, 265.0, 45.0, 16),
+            "coupled_near_acoustic_air_p": (244.39, 220.0, 265.0, 45.0, 48),
         }
         t_def, lo_def, hi_def, broad_def, nm_def = defaults[args.case]
+        near_report = args.case in ("coupled_near_acoustic", "coupled_near_acoustic_air_p")
         return _run_coupled_like(
             cfg,
             config_path,
@@ -526,7 +534,7 @@ def main() -> int:
             harvest_hi=float(sc.get("_worker_harvest_hi_hz", hi_def)),
             eps_broad=float(sc.get("eps_broad_search_hz", broad_def)),
             case_label=args.case,
-            emit_near_acoustic_report=(args.case == "coupled_near_acoustic"),
+            emit_near_acoustic_report=near_report,
         )
     if args.case == "structural_only":
         return _run_structural(cfg, config_path, case_dir)
