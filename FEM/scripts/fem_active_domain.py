@@ -154,19 +154,18 @@ def _mat_row_neighbors(A: PETSc.Mat, row: int) -> np.ndarray:
 def _active_indices_graph_closure(
     A: PETSc.Mat,
     seed_indices: np.ndarray,
-    *,
-    comm: MPI.Intracomm,
 ) -> np.ndarray:
     """
     Undirected graph closure of ``|A|`` from seed rows/columns via ``Mat.getRow``.
 
     Uses the same connectivity as assembled operators; compatible with PETSc builds
     that lack ``Mat.getCSRSubMatrix``. Extraction still uses ``Mat.createSubMatrix``.
+    Rank 0 builds the index set; ``mpi4py.MPI.COMM_WORLD.bcast`` shares it (not PETSc.Comm).
     """
     if seed_indices.size == 0:
         raise RuntimeError("active_domain: empty seed index set")
     n_global = int(A.getSize()[0])
-    if comm.rank == ROOT_RANK:
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
         seeds = set(int(i) for i in np.asarray(seed_indices, dtype=np.int32).ravel())
         active: Set[int] = set(seeds)
         frontier = list(seeds)
@@ -185,8 +184,8 @@ def _active_indices_graph_closure(
             frontier = nxt
         active_arr = np.array(sorted(active), dtype=np.int32)
     else:
-        active_arr = np.array([], dtype=np.int32)
-    return comm.bcast(active_arr, root=ROOT_RANK)
+        active_arr = None
+    return MPI.COMM_WORLD.bcast(active_arr, root=ROOT_RANK)
 
 
 def restrict_operators_to_active_set(
@@ -305,7 +304,7 @@ def apply_active_domain_reduction(
             )
         )
 
-    active_W = _active_indices_graph_closure(A, seed_w, comm=A.getComm())
+    active_W = _active_indices_graph_closure(A, seed_w)
     if MPI.COMM_WORLD.rank == ROOT_RANK and active_W.size == 0:
         raise RuntimeError("active_domain: graph closure produced zero active indices")
 
