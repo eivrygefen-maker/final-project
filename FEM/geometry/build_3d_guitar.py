@@ -688,6 +688,314 @@ def create_guitar_mesh():
             pass
         return None
 
+    def _occ_volume_mass_m3(vol_tag: int) -> float:
+        try:
+            mass = gmsh.model.occ.getMass(3, int(vol_tag))
+            if isinstance(mass, (int, float)):
+                return float(mass)
+            if isinstance(mass, (list, tuple)) and len(mass) >= 1:
+                return float(mass[0])
+        except Exception:
+            pass
+        return float("nan")
+
+    def _occ_point_inside_volume(vol_tag: int, x: float, y: float, z: float) -> bool:
+        try:
+            return bool(
+                gmsh.model.occ.isInside(
+                    3, int(vol_tag), float(x), float(y), float(z), False
+                )
+            )
+        except Exception:
+            return False
+
+    def _write_validation_cad_volume_audit(
+        *,
+        audit_stem: Path,
+        air_vols: list,
+        wood_vols: list,
+        hole_x: float,
+        hole_y: float,
+        hole_r: float,
+        depth_m: float,
+        shell_t: float,
+        inner_tool_bb: Optional[list],
+        vol_out_id: int,
+    ) -> dict:
+        """Pre-mesh validation audit: wood/air volume classification and cavity probes."""
+        air_set = {int(v) for v in air_vols}
+        wood_set = {int(v) for v in wood_vols}
+        all_vol_tags = sorted(int(t) for d, t in gmsh.model.getEntities(3) if int(d) == 3)
+        vol_records: list = []
+        for v in all_vol_tags:
+            xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(3, int(v))
+            cx, cy, cz = _entity_center_of_mass(3, int(v))
+            if int(v) in air_set:
+                classification = "air"
+            elif int(v) in wood_set:
+                classification = "wood"
+            else:
+                classification = "unassigned"
+            vol_records.append(
+                {
+                    "entity_id": int(v),
+                    "classification": classification,
+                    "bbox_m": [
+                        float(xmin),
+                        float(ymin),
+                        float(zmin),
+                        float(xmax),
+                        float(ymax),
+                        float(zmax),
+                    ],
+                    "center_of_mass_m": [float(cx), float(cy), float(cz)],
+                    "volume_m3": float(_occ_volume_mass_m3(int(v))),
+                    "z_min_m": float(zmin),
+                    "z_max_m": float(zmax),
+                }
+            )
+
+        outer_bb = list(gmsh.model.getBoundingBox(3, int(vol_out_id)))
+        ox0 = 0.5 * (float(outer_bb[0]) + float(outer_bb[3]))
+        oy0 = 0.5 * (float(outer_bb[1]) + float(outer_bb[4]))
+        oz0 = 0.5 * (float(outer_bb[2]) + float(outer_bb[5]))
+        z_outer_min = float(outer_bb[2])
+        z_outer_max = float(outer_bb[5])
+        z_inner_top = (
+            float(inner_tool_bb[5]) if inner_tool_bb is not None else z_outer_max - shell_t
+        )
+        z_inner_back = (
+            float(inner_tool_bb[2]) if inner_tool_bb is not None else z_outer_min + shell_t
+        )
+        expected_inner_z_span = max(1.0e-6, z_inner_top - z_inner_back)
+
+        air_bb = (
+            list(gmsh.model.getBoundingBox(3, int(air_vols[0])))
+            if air_vols
+            else [0.0] * 6
+        )
+        air_boundary = (
+            sorted(get_boundary_tags([(3, int(air_vols[0]))], 2)) if air_vols else []
+        )
+        air_bnd_z = []
+        for s in air_boundary:
+            _cx, _cy, cz = get_surface_center(int(s))
+            air_bnd_z.append(float(cz))
+        air_bnd_z_range = (
+            [min(air_bnd_z), max(air_bnd_z)] if air_bnd_z else [float("nan"), float("nan")]
+        )
+
+        probe_specs = [
+            ("cavity_body_center", float(ox0), float(oy0), float(oz0)),
+            (
+                "below_top_lid_at_hole",
+                float(hole_x),
+                float(hole_y),
+                float(z_inner_top) - 0.002,
+            ),
+            (
+                "above_back_inner",
+                float(ox0),
+                float(oy0),
+                float(z_inner_back) + 0.002,
+            ),
+            (
+                "cavity_mid_off_hole",
+                float(ox0) + 0.05,
+                float(oy0),
+                float(oz0),
+            ),
+            (
+                "cavity_lower_quarter",
+                float(ox0),
+                float(oy0),
+                float(z_inner_back) + 0.25 * expected_inner_z_span,
+            ),
+            (
+                "near_soundhole_top_opening",
+                float(hole_x),
+                float(hole_y),
+                float(z_inner_top) - 0.0005,
+            ),
+        ]
+        probe_records: list = []
+        for label, px, py, pz in probe_specs:
+            inside_air = [
+                int(v)
+                for v in air_vols
+                if _occ_point_inside_volume(int(v), px, py, pz)
+            ]
+            inside_wood = [
+                int(v)
+                for v in wood_vols
+                if _occ_point_inside_volume(int(v), px, py, pz)
+            ]
+            inside_any = [
+                int(v)
+                for v in all_vol_tags
+                if _occ_point_inside_volume(int(v), px, py, pz)
+            ]
+            probe_records.append(
+                {
+                    "label": label,
+                    "point_m": [float(px), float(py), float(pz)],
+                    "inside_air_volume_ids": inside_air,
+                    "inside_wood_volume_ids": inside_wood,
+                    "inside_any_volume_ids": inside_any,
+                    "classified_as_air": bool(inside_air),
+                }
+            )
+
+        air_z_span = float(air_bb[5]) - float(air_bb[2]) if air_vols else 0.0
+        fill_ratio = (
+            float(air_z_span / expected_inner_z_span)
+            if expected_inner_z_span > 0.0
+            else 0.0
+        )
+        top_lid_probe = next(
+            (p for p in probe_records if p["label"] == "below_top_lid_at_hole"), None
+        )
+        center_probe = next(
+            (p for p in probe_records if p["label"] == "cavity_body_center"), None
+        )
+        opening_probe = next(
+            (p for p in probe_records if p["label"] == "near_soundhole_top_opening"),
+            None,
+        )
+
+        checks = {
+            "air_volume_present": bool(air_vols),
+            "air_z_span_fill_ratio_ge_0_85": bool(fill_ratio >= 0.85),
+            "cavity_center_in_air": bool(center_probe and center_probe["classified_as_air"]),
+            "below_top_lid_in_air": bool(
+                top_lid_probe and top_lid_probe["classified_as_air"]
+            ),
+            "soundhole_top_opening_in_air": bool(
+                opening_probe and opening_probe["classified_as_air"]
+            ),
+            "air_bbox_reaches_inner_top": bool(
+                air_vols and float(air_bb[5]) >= float(z_inner_top) - 0.004
+            ),
+            "air_boundary_near_inner_top": bool(
+                air_bnd_z and max(air_bnd_z) >= float(z_inner_top) - 0.006
+            ),
+        }
+        cavity_pass = all(checks.values())
+
+        if cavity_pass:
+            primary = "OK"
+            narrative = (
+                "Tagged air volume spans the inner cavity from back to top; probes at "
+                "the body centre, below the top lid at the hole, and near the soundhole "
+                "opening lie inside air tag 10."
+            )
+        elif air_z_span < 0.5 * expected_inner_z_span:
+            primary = "AIR_MIDDLE_SLICE"
+            narrative = (
+                "Tagged air volume Z extent is much smaller than the inner tool / shell "
+                "cavity height — likely only a central Z-slab is classified as air (e.g. "
+                "after wood Z-partition + final wood/air re-fragment). A disk imprint at "
+                f"z≈{z_inner_top:.4f} cannot create an aperture on that surface family."
+            )
+        elif not checks["below_top_lid_in_air"]:
+            primary = "AIR_MISSING_TOP"
+            narrative = (
+                "Points below the inner top lid / soundhole are not inside the tagged air "
+                "volume; the cavity mouth region is wood or void."
+            )
+        else:
+            primary = "AIR_INCOMPLETE"
+            narrative = (
+                "Tagged air volume does not fully occupy the expected interior cavity; "
+                "see probe table and per-volume bounding boxes."
+            )
+
+        report = {
+            "audit_type": "validation_cad_volume",
+            "geometry": {
+                "depth_m": float(depth_m),
+                "shell_t_m": float(shell_t),
+                "hole_radius_m": float(hole_r),
+                "hole_center_xy_m": [float(hole_x), float(hole_y)],
+            },
+            "outer_body_bbox_m": [float(x) for x in outer_bb],
+            "inner_tool_bbox_m": [float(x) for x in inner_tool_bb]
+            if inner_tool_bb is not None
+            else None,
+            "expected_inner_z_span_m": float(expected_inner_z_span),
+            "z_inner_back_m": float(z_inner_back),
+            "z_inner_top_m": float(z_inner_top),
+            "tagged_air_volume_ids": [int(v) for v in air_vols],
+            "tagged_wood_volume_ids": [int(v) for v in wood_vols],
+            "tagged_air_bbox_m": [float(x) for x in air_bb],
+            "tagged_air_z_span_m": float(air_z_span),
+            "inner_cavity_fill_ratio": float(fill_ratio),
+            "air_boundary_surface_count": len(air_boundary),
+            "air_boundary_centroid_z_range_m": air_bnd_z_range,
+            "all_volumes": vol_records,
+            "cavity_probes": probe_records,
+            "acceptance_checks": checks,
+            "cavity_verification_pass": bool(cavity_pass),
+            "diagnosis": {
+                "primary": primary,
+                "narrative": narrative,
+                "why_no_boundary_near_z_inner_top": (
+                    "Air-boundary facets lie only where the tagged air volume ends; "
+                    f"if air z_max≈{float(air_bb[5]):.4f} << inner top z≈{z_inner_top:.4f}, "
+                    "no air exterior surface exists at the soundhole disk plane "
+                    f"z≈{z_inner_top:.4f} (disk imprint misses the air B-rep)."
+                    if air_vols
+                    else "No air volume tagged."
+                ),
+            },
+        }
+
+        json_path = audit_stem.with_suffix(".json")
+        md_path = audit_stem.with_suffix(".md")
+        json_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        lines = [
+            "# Validation CAD volume audit",
+            "",
+            f"**Primary:** `{primary}` — {narrative}",
+            "",
+            "## Tagged air (physical vol 10 precursor)",
+            "",
+            f"- Air volume ids: `{air_vols}`",
+            f"- Air bbox z: `[{air_bb[2]:.4f}, {air_bb[5]:.4f}]` span={air_z_span:.4f} m",
+            f"- Inner tool z: `[{z_inner_back:.4f}, {z_inner_top:.4f}]` "
+            f"expected span={expected_inner_z_span:.4f} m",
+            f"- Fill ratio (air span / inner tool span): **{fill_ratio:.3f}**",
+            f"- Air-boundary centroid z range: `{air_bnd_z_range}`",
+            "",
+            report["diagnosis"]["why_no_boundary_near_z_inner_top"],
+            "",
+            "## Acceptance checks",
+            "",
+        ]
+        for k, v in checks.items():
+            lines.append(f"- `{k}`: **{v}**")
+        lines.extend(["", "## All 3D volumes", "", "| id | class | z_min | z_max | volume m³ |", "|---:|---|---:|---:|---:|"])
+        for rec in vol_records:
+            lines.append(
+                f"| {rec['entity_id']} | {rec['classification']} | "
+                f"{rec['z_min_m']:.4f} | {rec['z_max_m']:.4f} | {rec['volume_m3']:.6e} |"
+            )
+        lines.extend(["", "## Cavity probe points", ""])
+        for pr in probe_records:
+            lines.append(
+                f"- **{pr['label']}** `{pr['point_m']}` → air={pr['inside_air_volume_ids']} "
+                f"wood={pr['inside_wood_volume_ids']}"
+            )
+        md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"[CAD-VOL-AUDIT] wrote {json_path}", flush=True)
+        print(f"[CAD-VOL-AUDIT] wrote {md_path}", flush=True)
+        print(
+            f"[CAD-VOL-AUDIT] air_z_span={air_z_span:.4f} fill_ratio={fill_ratio:.3f} "
+            f"pass={cavity_pass} primary={primary}",
+            flush=True,
+        )
+        return report
+
     def _is_exterior_boundary_facet(surf_tag: int, vol_tag: int) -> bool:
         """Keep outer mould faces; drop interior cavity lining from hollow-shell boundary."""
         c = get_surface_center(surf_tag)
@@ -1215,314 +1523,6 @@ def create_guitar_mesh():
             )
         except Exception:
             return float("nan")
-
-    def _occ_volume_mass_m3(vol_tag: int) -> float:
-        try:
-            mass = gmsh.model.occ.getMass(3, int(vol_tag))
-            if isinstance(mass, (int, float)):
-                return float(mass)
-            if isinstance(mass, (list, tuple)) and len(mass) >= 1:
-                return float(mass[0])
-        except Exception:
-            pass
-        return float("nan")
-
-    def _occ_point_inside_volume(vol_tag: int, x: float, y: float, z: float) -> bool:
-        try:
-            return bool(
-                gmsh.model.occ.isInside(
-                    3, int(vol_tag), float(x), float(y), float(z), False
-                )
-            )
-        except Exception:
-            return False
-
-    def _write_validation_cad_volume_audit(
-        *,
-        audit_stem: Path,
-        air_vols: list,
-        wood_vols: list,
-        hole_x: float,
-        hole_y: float,
-        hole_r: float,
-        depth_m: float,
-        shell_t: float,
-        inner_tool_bb: Optional[list],
-        vol_out_id: int,
-    ) -> dict:
-        """Pre-mesh validation audit: wood/air volume classification and cavity probes."""
-        air_set = {int(v) for v in air_vols}
-        wood_set = {int(v) for v in wood_vols}
-        all_vol_tags = sorted(int(t) for d, t in gmsh.model.getEntities(3) if int(d) == 3)
-        vol_records: list = []
-        for v in all_vol_tags:
-            xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(3, int(v))
-            cx, cy, cz = _entity_center_of_mass(3, int(v))
-            if int(v) in air_set:
-                classification = "air"
-            elif int(v) in wood_set:
-                classification = "wood"
-            else:
-                classification = "unassigned"
-            vol_records.append(
-                {
-                    "entity_id": int(v),
-                    "classification": classification,
-                    "bbox_m": [
-                        float(xmin),
-                        float(ymin),
-                        float(zmin),
-                        float(xmax),
-                        float(ymax),
-                        float(zmax),
-                    ],
-                    "center_of_mass_m": [float(cx), float(cy), float(cz)],
-                    "volume_m3": float(_occ_volume_mass_m3(int(v))),
-                    "z_min_m": float(zmin),
-                    "z_max_m": float(zmax),
-                }
-            )
-
-        outer_bb = list(gmsh.model.getBoundingBox(3, int(vol_out_id)))
-        ox0 = 0.5 * (float(outer_bb[0]) + float(outer_bb[3]))
-        oy0 = 0.5 * (float(outer_bb[1]) + float(outer_bb[4]))
-        oz0 = 0.5 * (float(outer_bb[2]) + float(outer_bb[5]))
-        z_outer_min = float(outer_bb[2])
-        z_outer_max = float(outer_bb[5])
-        z_inner_top = (
-            float(inner_tool_bb[5]) if inner_tool_bb is not None else z_outer_max - shell_t
-        )
-        z_inner_back = (
-            float(inner_tool_bb[2]) if inner_tool_bb is not None else z_outer_min + shell_t
-        )
-        expected_inner_z_span = max(1.0e-6, z_inner_top - z_inner_back)
-
-        air_bb = (
-            list(gmsh.model.getBoundingBox(3, int(air_vols[0])))
-            if air_vols
-            else [0.0] * 6
-        )
-        air_boundary = (
-            sorted(get_boundary_tags([(3, int(air_vols[0]))], 2)) if air_vols else []
-        )
-        air_bnd_z = []
-        for s in air_boundary:
-            _cx, _cy, cz = get_surface_center(int(s))
-            air_bnd_z.append(float(cz))
-        air_bnd_z_range = (
-            [min(air_bnd_z), max(air_bnd_z)] if air_bnd_z else [float("nan"), float("nan")]
-        )
-
-        probe_specs = [
-            ("cavity_body_center", float(ox0), float(oy0), float(oz0)),
-            (
-                "below_top_lid_at_hole",
-                float(hole_x),
-                float(hole_y),
-                float(z_inner_top) - 0.002,
-            ),
-            (
-                "above_back_inner",
-                float(ox0),
-                float(oy0),
-                float(z_inner_back) + 0.002,
-            ),
-            (
-                "cavity_mid_off_hole",
-                float(ox0) + 0.05,
-                float(oy0),
-                float(oz0),
-            ),
-            (
-                "cavity_lower_quarter",
-                float(ox0),
-                float(oy0),
-                float(z_inner_back) + 0.25 * expected_inner_z_span,
-            ),
-            (
-                "near_soundhole_top_opening",
-                float(hole_x),
-                float(hole_y),
-                float(z_inner_top) - 0.0005,
-            ),
-        ]
-        probe_records: list = []
-        for label, px, py, pz in probe_specs:
-            inside_air = [
-                int(v)
-                for v in air_vols
-                if _occ_point_inside_volume(int(v), px, py, pz)
-            ]
-            inside_wood = [
-                int(v)
-                for v in wood_vols
-                if _occ_point_inside_volume(int(v), px, py, pz)
-            ]
-            inside_any = [
-                int(v)
-                for v in all_vol_tags
-                if _occ_point_inside_volume(int(v), px, py, pz)
-            ]
-            probe_records.append(
-                {
-                    "label": label,
-                    "point_m": [float(px), float(py), float(pz)],
-                    "inside_air_volume_ids": inside_air,
-                    "inside_wood_volume_ids": inside_wood,
-                    "inside_any_volume_ids": inside_any,
-                    "classified_as_air": bool(inside_air),
-                }
-            )
-
-        air_z_span = float(air_bb[5]) - float(air_bb[2]) if air_vols else 0.0
-        fill_ratio = (
-            float(air_z_span / expected_inner_z_span)
-            if expected_inner_z_span > 0.0
-            else 0.0
-        )
-        top_lid_probe = next(
-            (p for p in probe_records if p["label"] == "below_top_lid_at_hole"), None
-        )
-        center_probe = next(
-            (p for p in probe_records if p["label"] == "cavity_body_center"), None
-        )
-        opening_probe = next(
-            (p for p in probe_records if p["label"] == "near_soundhole_top_opening"),
-            None,
-        )
-
-        checks = {
-            "air_volume_present": bool(air_vols),
-            "air_z_span_fill_ratio_ge_0_85": bool(fill_ratio >= 0.85),
-            "cavity_center_in_air": bool(center_probe and center_probe["classified_as_air"]),
-            "below_top_lid_in_air": bool(
-                top_lid_probe and top_lid_probe["classified_as_air"]
-            ),
-            "soundhole_top_opening_in_air": bool(
-                opening_probe and opening_probe["classified_as_air"]
-            ),
-            "air_bbox_reaches_inner_top": bool(
-                air_vols and float(air_bb[5]) >= float(z_inner_top) - 0.004
-            ),
-            "air_boundary_near_inner_top": bool(
-                air_bnd_z and max(air_bnd_z) >= float(z_inner_top) - 0.006
-            ),
-        }
-        cavity_pass = all(checks.values())
-
-        if cavity_pass:
-            primary = "OK"
-            narrative = (
-                "Tagged air volume spans the inner cavity from back to top; probes at "
-                "the body centre, below the top lid at the hole, and near the soundhole "
-                "opening lie inside air tag 10."
-            )
-        elif air_z_span < 0.5 * expected_inner_z_span:
-            primary = "AIR_MIDDLE_SLICE"
-            narrative = (
-                "Tagged air volume Z extent is much smaller than the inner tool / shell "
-                "cavity height — likely only a central Z-slab is classified as air (e.g. "
-                "after wood Z-partition + final wood/air re-fragment). A disk imprint at "
-                f"z≈{z_inner_top:.4f} cannot create an aperture on that surface family."
-            )
-        elif not checks["below_top_lid_in_air"]:
-            primary = "AIR_MISSING_TOP"
-            narrative = (
-                "Points below the inner top lid / soundhole are not inside the tagged air "
-                "volume; the cavity mouth region is wood or void."
-            )
-        else:
-            primary = "AIR_INCOMPLETE"
-            narrative = (
-                "Tagged air volume does not fully occupy the expected interior cavity; "
-                "see probe table and per-volume bounding boxes."
-            )
-
-        report = {
-            "audit_type": "validation_cad_volume",
-            "geometry": {
-                "depth_m": float(depth_m),
-                "shell_t_m": float(shell_t),
-                "hole_radius_m": float(hole_r),
-                "hole_center_xy_m": [float(hole_x), float(hole_y)],
-            },
-            "outer_body_bbox_m": [float(x) for x in outer_bb],
-            "inner_tool_bbox_m": [float(x) for x in inner_tool_bb]
-            if inner_tool_bb is not None
-            else None,
-            "expected_inner_z_span_m": float(expected_inner_z_span),
-            "z_inner_back_m": float(z_inner_back),
-            "z_inner_top_m": float(z_inner_top),
-            "tagged_air_volume_ids": [int(v) for v in air_vols],
-            "tagged_wood_volume_ids": [int(v) for v in wood_vols],
-            "tagged_air_bbox_m": [float(x) for x in air_bb],
-            "tagged_air_z_span_m": float(air_z_span),
-            "inner_cavity_fill_ratio": float(fill_ratio),
-            "air_boundary_surface_count": len(air_boundary),
-            "air_boundary_centroid_z_range_m": air_bnd_z_range,
-            "all_volumes": vol_records,
-            "cavity_probes": probe_records,
-            "acceptance_checks": checks,
-            "cavity_verification_pass": bool(cavity_pass),
-            "diagnosis": {
-                "primary": primary,
-                "narrative": narrative,
-                "why_no_boundary_near_z_inner_top": (
-                    "Air-boundary facets lie only where the tagged air volume ends; "
-                    f"if air z_max≈{float(air_bb[5]):.4f} << inner top z≈{z_inner_top:.4f}, "
-                    "no air exterior surface exists at the soundhole disk plane "
-                    f"z≈{z_inner_top:.4f} (disk imprint misses the air B-rep)."
-                    if air_vols
-                    else "No air volume tagged."
-                ),
-            },
-        }
-
-        json_path = audit_stem.with_suffix(".json")
-        md_path = audit_stem.with_suffix(".md")
-        json_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-        lines = [
-            "# Validation CAD volume audit",
-            "",
-            f"**Primary:** `{primary}` — {narrative}",
-            "",
-            "## Tagged air (physical vol 10 precursor)",
-            "",
-            f"- Air volume ids: `{air_vols}`",
-            f"- Air bbox z: `[{air_bb[2]:.4f}, {air_bb[5]:.4f}]` span={air_z_span:.4f} m",
-            f"- Inner tool z: `[{z_inner_back:.4f}, {z_inner_top:.4f}]` "
-            f"expected span={expected_inner_z_span:.4f} m",
-            f"- Fill ratio (air span / inner tool span): **{fill_ratio:.3f}**",
-            f"- Air-boundary centroid z range: `{air_bnd_z_range}`",
-            "",
-            report["diagnosis"]["why_no_boundary_near_z_inner_top"],
-            "",
-            "## Acceptance checks",
-            "",
-        ]
-        for k, v in checks.items():
-            lines.append(f"- `{k}`: **{v}**")
-        lines.extend(["", "## All 3D volumes", "", "| id | class | z_min | z_max | volume m³ |", "|---:|---|---:|---:|---:|"])
-        for rec in vol_records:
-            lines.append(
-                f"| {rec['entity_id']} | {rec['classification']} | "
-                f"{rec['z_min_m']:.4f} | {rec['z_max_m']:.4f} | {rec['volume_m3']:.6e} |"
-            )
-        lines.extend(["", "## Cavity probe points", ""])
-        for pr in probe_records:
-            lines.append(
-                f"- **{pr['label']}** `{pr['point_m']}` → air={pr['inside_air_volume_ids']} "
-                f"wood={pr['inside_wood_volume_ids']}"
-            )
-        md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        print(f"[CAD-VOL-AUDIT] wrote {json_path}", flush=True)
-        print(f"[CAD-VOL-AUDIT] wrote {md_path}", flush=True)
-        print(
-            f"[CAD-VOL-AUDIT] air_z_span={air_z_span:.4f} fill_ratio={fill_ratio:.3f} "
-            f"pass={cavity_pass} primary={primary}",
-            flush=True,
-        )
-        return report
 
     def _cad_surface_record(
         surf_tag: int,
