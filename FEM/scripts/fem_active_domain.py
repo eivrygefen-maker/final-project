@@ -46,14 +46,6 @@ def _locate_facet_displacement_dofs(V_u, msh: mesh.Mesh, facet_indices: np.ndarr
         dtype=np.int32,
     ).ravel()
 
-try:
-    from scipy.sparse import csr_matrix
-    from scipy.sparse.csgraph import connected_components
-except ImportError:
-    csr_matrix = None  # type: ignore
-    connected_components = None  # type: ignore
-
-
 def active_domain_experiment_enabled(solver_cfg: Dict[str, Any]) -> bool:
     block = solver_cfg.get("active_domain_experiment")
     if not isinstance(block, dict):
@@ -150,6 +142,15 @@ def _seed_active_parent_indices(
     )
 
 
+def _mat_row_neighbors(A: PETSc.Mat, row: int) -> np.ndarray:
+    """Global column indices with nonzero entries in ``row`` (PETSc ``Mat.getRow``)."""
+    try:
+        cols, _vals = A.getRow(int(row))
+    except TypeError:
+        cols = A.getRow(int(row))[0]
+    return np.asarray(cols, dtype=np.int32).ravel()
+
+
 def _active_indices_graph_closure(
     A: PETSc.Mat,
     seed_indices: np.ndarray,
@@ -157,80 +158,35 @@ def _active_indices_graph_closure(
     comm: MPI.Intracomm,
 ) -> np.ndarray:
     """
-    Connected components of the undirected graph of |A| entries, keeping the component
-    that contains all seeds (preserves FSI coupling paths).
+    Undirected graph closure of ``|A|`` from seed rows/columns via ``Mat.getRow``.
+
+    Uses the same connectivity as assembled operators; compatible with PETSc builds
+    that lack ``Mat.getCSRSubMatrix``. Extraction still uses ``Mat.createSubMatrix``.
     """
     if seed_indices.size == 0:
         raise RuntimeError("active_domain: empty seed index set")
     n_global = int(A.getSize()[0])
-    if csr_matrix is None or connected_components is None:
-        return _active_indices_bfs_fallback(A, seed_indices, n_global=n_global)
-
-    owned = A.getOwnershipRange()
-    r0, r1 = int(owned[0]), int(owned[1])
-    local_n = r1 - r0
-    if local_n <= 0:
-        if comm.rank == ROOT_RANK:
-            return np.unique(seed_indices.astype(np.int32, copy=False))
-        return np.array([], dtype=np.int32)
-
-    indptr, indices, _ = A.getCSRSubMatrix()
-    indptr = np.asarray(indptr, dtype=np.int64)
-    indices = np.asarray(indices, dtype=np.int64)
-    data = np.ones(indices.shape[0], dtype=np.uint8)
-    local_csr = csr_matrix((data, indices, indptr), shape=(local_n, n_global))
-    sym = local_csr + local_csr.T
-    sym.data[:] = 1
-
-    n_comp, labels = connected_components(sym, directed=False, return_labels=True)
-    seed_local = seed_indices[(seed_indices >= r0) & (seed_indices < r1)] - r0
-    seed_labels = set(int(labels[int(i - r0)]) for i in seed_local if r0 <= i < r1)
-    if not seed_labels:
-        gathered = comm.gather(np.array(list(seed_labels), dtype=np.int32), root=ROOT_RANK)
-        if comm.rank == ROOT_RANK:
-            for part in gathered:
-                seed_labels.update(int(x) for x in np.asarray(part).ravel())
-        seed_labels_arr = np.array(sorted(seed_labels), dtype=np.int32)
-        seed_labels_broadcast = comm.bcast(seed_labels_arr, root=ROOT_RANK)
-        seed_labels = set(int(x) for x in np.asarray(seed_labels_broadcast).ravel())
-
-    active_local = np.where(np.isin(labels, list(seed_labels)))[0] + r0
-    active_local = np.unique(active_local.astype(np.int32, copy=False))
-    all_active = comm.gather(active_local, root=ROOT_RANK)
-    if comm.rank != ROOT_RANK:
-        return np.array([], dtype=np.int32)
-    out: Set[int] = set(int(x) for x in seed_indices.ravel())
-    for part in all_active:
-        out.update(int(x) for x in np.asarray(part, dtype=np.int32).ravel())
-    return np.array(sorted(out), dtype=np.int32)
-
-
-def _active_indices_bfs_fallback(
-    A: PETSc.Mat,
-    seed_indices: np.ndarray,
-    *,
-    n_global: int,
-) -> np.ndarray:
-    """Rank-0 BFS on matrix rows (fine for validation mesh sizes)."""
-    if MPI.COMM_WORLD.rank != ROOT_RANK:
-        return np.array([], dtype=np.int32)
-    seeds = set(int(i) for i in np.asarray(seed_indices, dtype=np.int32).ravel())
-    active: Set[int] = set(seeds)
-    frontier = list(seeds)
-    while frontier:
-        nxt: List[int] = []
-        for i in frontier:
-            try:
-                cols, _ = A.getRow(i)
-            except Exception:
-                continue
-            for j in np.asarray(cols, dtype=np.int32).ravel():
-                jj = int(j)
-                if 0 <= jj < n_global and jj not in active:
-                    active.add(jj)
-                    nxt.append(jj)
-        frontier = nxt
-    return np.array(sorted(active), dtype=np.int32)
+    if comm.rank == ROOT_RANK:
+        seeds = set(int(i) for i in np.asarray(seed_indices, dtype=np.int32).ravel())
+        active: Set[int] = set(seeds)
+        frontier = list(seeds)
+        while frontier:
+            nxt: List[int] = []
+            for i in frontier:
+                try:
+                    cols = _mat_row_neighbors(A, i)
+                except Exception:
+                    continue
+                for jj in cols:
+                    j = int(jj)
+                    if 0 <= j < n_global and j not in active:
+                        active.add(j)
+                        nxt.append(j)
+            frontier = nxt
+        active_arr = np.array(sorted(active), dtype=np.int32)
+    else:
+        active_arr = np.array([], dtype=np.int32)
+    return comm.bcast(active_arr, root=ROOT_RANK)
 
 
 def restrict_operators_to_active_set(
@@ -353,10 +309,11 @@ def apply_active_domain_reduction(
     if MPI.COMM_WORLD.rank == ROOT_RANK and active_W.size == 0:
         raise RuntimeError("active_domain: graph closure produced zero active indices")
 
+    n_full = int(A.getSize()[0])
     A_red, M_red, meta = restrict_operators_to_active_set(A, M, active_W)
+    n_red = int(A_red.getSize()[0])
     n_u_col = _u_global_dof_count(V_u)
     n_p_col = int(V_p.dofmap.index_map.size_global * V_p.dofmap.index_map_bs)
-    n_full = int(A.getSize()[0])
     u_map = np.asarray(u_to_W_map, dtype=np.int32).ravel()
     p_map = np.asarray(p_to_W_map, dtype=np.int32).ravel()
     active_set = set(int(i) for i in active_W)
@@ -381,13 +338,21 @@ def apply_active_domain_reduction(
     except Exception:
         pass
 
+    retained_pct = 100.0 * float(n_red) / max(float(n_full), 1.0)
+    meta["n_reduced"] = n_red
+    meta["retained_dof_fraction"] = float(n_red) / max(float(n_full), 1.0)
+    meta["retained_dof_percent"] = retained_pct
     if MPI.COMM_WORLD.rank == ROOT_RANK:
         print(
-            "[active_domain] algebraic restriction: "
-            f"n_active={meta['n_active']}/{meta['n_full']} "
-            f"(u_active={meta['n_u_active']}/{n_u_col}, "
-            f"p_active={meta['n_p_active']}/{n_p_col}, "
-            f"seeds={seed_counts})",
+            "[active_domain] operator restriction: "
+            f"full_mat_n={n_full} reduced_mat_n={n_red} "
+            f"retained_dofs={n_red} ({retained_pct:.2f}% of full mixed operator)",
+            flush=True,
+        )
+        print(
+            "[active_domain] algebraic restriction detail: "
+            f"u_active={meta['n_u_active']}/{n_u_col} "
+            f"p_active={meta['n_p_active']}/{n_p_col} seeds={seed_counts}",
             flush=True,
         )
 
