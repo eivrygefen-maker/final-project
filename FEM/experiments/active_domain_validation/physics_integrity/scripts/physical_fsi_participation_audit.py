@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
+import zlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -40,7 +42,6 @@ from mode_diagnostics import (
     block_l2_p_fraction,
     compute_mass_energy_participation,
     diagnose_mixed_mode,
-    evaluate_physical_fsi_acoustic_survival,
     merge_scaling_metadata,
     pressure_subspace_mac,
     unscale_mixed_mode_vector,
@@ -62,9 +63,21 @@ WOOD_PARTICIPATION_NOTE = (
 
 MAC_SCALING_NOTE = (
     "Pressure MAC uses only active air-supported pressure DOFs (n_p_active collapse indices mapped "
-    "to reduced W). Three scalings are reported: (1) raw — SLEPc/GNHEP-assembled coefficients; "
-    "(2) gnhep_undo — multiply p by s_pp (undo block Frobenius only); (3) fully_unscaled — "
-    "multiply p by s_pp/pressure_dof_scale. Phase alignment uses |dot| so sign flips are ignored."
+    "to reduced W). Inner product is np.vdot (complex-conjugate on the first vector); for real "
+    "SLEPc coefficients this is a standard dot product. Uniform positive scalings (raw, s_pp, "
+    "s_pp/p_scale) cancel in MAC = |<a,b>|/(||a|| ||b||). Three scalings are reported for "
+    "documentation; MAC values should agree within numerical tolerance when both vectors use the "
+    "same p_to_W ordering."
+)
+
+ENERGY_PARTICIPATION_THRESHOLD = 0.35
+MAC_BRANCH_MATCH_THRESHOLD = 0.85
+BAND_LO_HZ = 220.0
+BAND_HI_HZ = 265.0
+PRESSURE_DOMINATED_BAND_HZ = (
+    222.096964,
+    245.299844,
+    256.474653,
 )
 
 
@@ -275,28 +288,144 @@ def _audit_candidate_mode(
     }
 
 
+def _p_index_map_fingerprint(p_to_W: np.ndarray) -> Dict[str, Any]:
+    idx = np.asarray(p_to_W, dtype=np.int32).ravel()
+    return {
+        "length": int(idx.size),
+        "crc32": int(zlib.crc32(idx.tobytes()) & 0xFFFFFFFF),
+        "first_indices": idx[:10].tolist(),
+        "last_indices": idx[-10:].tolist() if idx.size > 10 else idx.tolist(),
+        "sample_indices": idx[idx.size // 2 : idx.size // 2 + 5].tolist() if idx.size >= 5 else [],
+    }
+
+
+def _replay_reduced_maps(
+    config_path: Path,
+    case_dir: Path,
+    *,
+    sorting_subdir: str,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+    cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    solver_cfg = cfg.setdefault("solver", {})
+    sorting = case_dir / sorting_subdir
+    sorting.mkdir(parents=True, exist_ok=True)
+    fem3d.set_sorting_root(sorting.resolve())
+    solver_cfg["physics_integrity_capture"] = True
+    solver_cfg["active_domain_experiment"] = {"enabled": False}
+    solver_cfg["coupled_air_pressure_restriction_replay_audit"] = True
+    mesh_file = _resolve_mesh(cfg, config_path)
+    _msh, _W, A, M = fem3d._solve_coupled_evp(
+        mesh_file=mesh_file,
+        config=cfg,
+        num_modes=0,
+        solve_evp=False,
+    )
+    try:
+        A.destroy()
+        M.destroy()
+    except Exception:
+        pass
+    u_map = np.asarray(cfg["_coupled_air_u_to_W_map"], dtype=np.int32).ravel()
+    p_map = np.asarray(cfg["_coupled_air_p_to_W_map"], dtype=np.int32).ravel()
+    restr = cfg.get("_coupled_air_pressure_restriction") or {}
+    return u_map, p_map, restr
+
+
 def _pressure_mac_report(
     vec_ref: np.ndarray,
     vec_cand: np.ndarray,
     p_to_W: np.ndarray,
     gnhep: Dict[str, float],
+    *,
+    p_to_W_ref: Optional[np.ndarray] = None,
+    map_validation: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     s_p = max(float(gnhep.get("s_pp", 1.0)), 1.0e-30)
     p_scale = max(float(gnhep.get("pressure_dof_scale", 30.0)), 1.0e-30)
+    p_idx = np.asarray(p_to_W, dtype=np.int32).ravel()
+    p_ref_idx = np.asarray(p_to_W_ref if p_to_W_ref is not None else p_to_W, dtype=np.int32).ravel()
+
+    pa_raw = np.asarray(vec_ref[p_ref_idx], dtype=np.complex128).ravel()
+    pb_raw = np.asarray(vec_cand[p_idx], dtype=np.complex128).ravel()
+    pa_spp = pa_raw * s_p
+    pb_spp = pb_raw * s_p
+    scale_un = s_p / p_scale
+    pa_un = pa_raw * scale_un
+    pb_un = pb_raw * scale_un
+
+    def _mac(pa: np.ndarray, pb: np.ndarray) -> float:
+        na = float(np.linalg.norm(pa))
+        nb = float(np.linalg.norm(pb))
+        if na <= 0.0 or nb <= 0.0:
+            return float("nan")
+        return float(abs(np.vdot(pa, pb)) / (na * nb))
+
+    mac_raw = _mac(pa_raw, pb_raw)
+    mac_spp = _mac(pa_spp, pb_spp)
+    mac_un = _mac(pa_un, pb_un)
+
     return {
-        "mac_pressure_raw": pressure_subspace_mac(vec_ref, vec_cand, p_to_W),
-        "mac_pressure_gnhep_undo_s_pp": pressure_subspace_mac(
-            vec_ref, vec_cand, p_to_W, scale_p_a=s_p, scale_p_b=s_p
+        "mac_pressure_raw": mac_raw,
+        "mac_pressure_gnhep_undo_s_pp": mac_spp,
+        "mac_pressure_fully_unscaled": mac_un,
+        "mac_invariance_abs_diff_raw_vs_s_pp": abs(mac_raw - mac_spp),
+        "mac_invariance_abs_diff_raw_vs_unscaled": abs(mac_raw - mac_un),
+        "uniform_scaling_should_not_change_mac": True,
+        "inner_product": "np.vdot (complex-conjugate on first argument)",
+        "vector_norms": {
+            "reference_p_raw": float(np.linalg.norm(pa_raw)),
+            "candidate_p_raw": float(np.linalg.norm(pb_raw)),
+            "reference_p_gnhep_undo_s_pp": float(np.linalg.norm(pa_spp)),
+            "candidate_p_gnhep_undo_s_pp": float(np.linalg.norm(pb_spp)),
+            "reference_p_fully_unscaled": float(np.linalg.norm(pa_un)),
+            "candidate_p_fully_unscaled": float(np.linalg.norm(pb_un)),
+        },
+        "p_index_map_candidate": _p_index_map_fingerprint(p_to_W),
+        "p_index_map_reference": _p_index_map_fingerprint(
+            p_to_W_ref if p_to_W_ref is not None else p_to_W
         ),
-        "mac_pressure_fully_unscaled": pressure_subspace_mac(
-            vec_ref,
-            vec_cand,
-            p_to_W,
-            scale_p_a=s_p / p_scale,
-            scale_p_b=s_p / p_scale,
-        ),
+        "p_index_maps_identical": bool(np.array_equal(p_ref_idx, p_idx)),
+        "map_validation": map_validation or {},
         "scaling_documentation": MAC_SCALING_NOTE,
-        "n_p_active_dofs": int(np.asarray(p_to_W, dtype=np.int32).size),
+        "n_p_active_dofs": int(p_idx.size),
+    }
+
+
+def _is_pressure_dominated(row: Dict[str, Any], energy: Dict[str, Any]) -> bool:
+    return (
+        float(energy.get("p_frac_energy_phys", 0.0)) >= ENERGY_PARTICIPATION_THRESHOLD
+        or float(row.get("p_frac_production", 0.0)) >= ENERGY_PARTICIPATION_THRESHOLD
+        or float(row.get("p_frac_phys_gnhep", 0.0)) >= ENERGY_PARTICIPATION_THRESHOLD
+    )
+
+
+def _split_audit_conclusions(
+    *,
+    cand_f: float,
+    ref_hz: float,
+    freq_tol_hz: float,
+    p_frac_energy_phys: float,
+    mac_spp: float,
+    mac_threshold: float,
+) -> Dict[str, Any]:
+    freq_near_ref = abs(cand_f - ref_hz) <= freq_tol_hz
+    pressure_energy = (
+        freq_near_ref and float(p_frac_energy_phys) >= ENERGY_PARTICIPATION_THRESHOLD
+    )
+    mac_confirmed = math.isfinite(mac_spp) and float(mac_spp) >= mac_threshold
+    return {
+        "PRESSURE_ENERGY_MODE_NEAR_REFERENCE_EXISTS": pressure_energy,
+        "DECOUPLED_ACOUSTIC_BRANCH_MATCH_CONFIRMED": bool(mac_confirmed),
+        "frequency_within_branch_survival_hz": freq_near_ref,
+        "p_frac_energy_phys": float(p_frac_energy_phys),
+        "mac_pressure_gnhep_undo_s_pp": float(mac_spp),
+        "mac_threshold": float(mac_threshold),
+        "energy_threshold": ENERGY_PARTICIPATION_THRESHOLD,
+        "interpretation": (
+            "A pressure-energy-dominated mode near the reference does not imply the same "
+            "acoustic eigenvector shape; DECOUPLED_ACOUSTIC_BRANCH_MATCH_CONFIRMED requires "
+            f"validated pressure MAC >= {mac_threshold:.2f}."
+        ),
     }
 
 
@@ -307,16 +436,17 @@ def _refresh_physical_fsi_summary(
     freq_tol_hz: float,
 ) -> None:
     cand = audit["physical_fsi_candidate"]
-    mac = float(cand["pressure_overlap"]["mac_pressure_gnhep_undo_s_pp"])
-    verdict, survives, note, detail = evaluate_physical_fsi_acoustic_survival(
-        frequency_hz=float(cand["frequency_hz"]),
+    overlap = audit.get("pressure_overlap") or cand.get("pressure_overlap_vs_decoupled_acoustic") or {}
+    mac = float(overlap.get("mac_pressure_gnhep_undo_s_pp", float("nan")))
+    conclusions = audit.get("audit_conclusions") or _split_audit_conclusions(
+        cand_f=float(cand["frequency_hz"]),
         ref_hz=ref_hz,
         freq_tol_hz=freq_tol_hz,
-        p_frac_production=float(cand["p_frac_production"]),
-        p_frac_phys_gnhep=float(cand["p_frac_phys_gnhep"]),
-        p_frac_fully_unscaled=float(cand["p_frac_fully_unscaled"]),
         p_frac_energy_phys=float(cand["p_frac_energy_phys"]),
-        pressure_mac_gnhep_undo=mac,
+        mac_spp=mac,
+        mac_threshold=float(
+            (audit.get("mode_selection") or {}).get("mac_threshold", MAC_BRANCH_MATCH_THRESHOLD)
+        ),
     )
     summary_path = PHYSICAL_CASE / "diagnostics" / "physical_fsi_only_summary.json"
     summary: Dict[str, Any] = {}
@@ -324,12 +454,12 @@ def _refresh_physical_fsi_summary(
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
     summary.update(
         {
-            "verdict": verdict,
-            "acoustic_branch_survives": survives,
-            "verdict_note": note,
-            "verdict_criteria": detail,
             "post_audit_refreshed": True,
             "participation_audit_json": "physical_fsi_participation_audit.json",
+            "pressure_overlap": overlap,
+            "audit_conclusions": conclusions,
+            "verdict_note": audit.get("verdict_note"),
+            "branch_shift_hz": (audit.get("mode_selection") or {}).get("branch_shift_hz"),
         }
     )
     _write_json(summary_path, summary)
@@ -337,15 +467,19 @@ def _refresh_physical_fsi_summary(
     md.write_text(
         "\n".join(
             [
-                "# Physical-FSI-only isolation (Nitsche disabled)",
+                "# Physical-FSI-only isolation (post participation audit)",
                 "",
-                f"**Verdict (post-audit):** `{verdict}`",
+                f"- PRESSURE_ENERGY_MODE_NEAR_REFERENCE_EXISTS="
+                f"**{conclusions['PRESSURE_ENERGY_MODE_NEAR_REFERENCE_EXISTS']}**",
+                f"- DECOUPLED_ACOUSTIC_BRANCH_MATCH_CONFIRMED="
+                f"**{conclusions['DECOUPLED_ACOUSTIC_BRANCH_MATCH_CONFIRMED']}**",
                 "",
-                f"Note: {note}",
+                f"Candidate f={float(cand['frequency_hz']):.6f} Hz | "
+                f"p_frac_energy={float(cand['p_frac_energy_phys']):.4e} | "
+                f"MAC raw={overlap.get('mac_pressure_raw', float('nan')):.4f} | "
+                f"MAC s_pp={mac:.4f} | MAC unscaled={overlap.get('mac_pressure_fully_unscaled', float('nan')):.4f}",
                 "",
-                f"Candidate: f={cand['frequency_hz']:.4f} Hz, "
-                f"MAC(s_pp)={mac:.4f}, p_frac_production={cand['p_frac_production']:.4e}, "
-                f"p_frac_energy_phys={cand['p_frac_energy_phys']:.4e}",
+                conclusions.get("interpretation", ""),
                 "",
             ]
         )
@@ -353,8 +487,14 @@ def _refresh_physical_fsi_summary(
         encoding="utf-8",
     )
     if MPI.COMM_WORLD.rank == 0:
-        print(f"[physical_fsi_participation_audit] refreshed summary verdict: {verdict}")
-        print(f"[physical_fsi_participation_audit] {note}")
+        print(
+            "[physical_fsi_participation_audit] refreshed summary: "
+            f"PRESSURE_ENERGY_MODE_NEAR_REFERENCE_EXISTS="
+            f"{conclusions['PRESSURE_ENERGY_MODE_NEAR_REFERENCE_EXISTS']} "
+            f"DECOUPLED_ACOUSTIC_BRANCH_MATCH_CONFIRMED="
+            f"{conclusions['DECOUPLED_ACOUSTIC_BRANCH_MATCH_CONFIRMED']}"
+        )
+        print(f"  pressure_overlap={overlap}")
 
 
 def main() -> int:
@@ -603,23 +743,100 @@ def main() -> int:
         mode_meta=ref_meta or {},
         frequency_hz=ref_f,
     )
-    mac_report = _pressure_mac_report(vec_ref, vec_cand, p_to_W, gnhep)
+    if MPI.COMM_WORLD.rank == 0:
+        print(
+            "[physical_fsi_participation_audit] replaying decoupled-union maps for MAC validation...",
+            flush=True,
+        )
+    _du, p_map_dec, dec_restr = _replay_reduced_maps(
+        DECOUPLED_CONFIG,
+        DECOUPLED_CASE,
+        sorting_subdir="sorting_mac_map_replay_decoupled",
+    )
+    map_validation = {
+        "physical_fsi_p_map": _p_index_map_fingerprint(p_to_W),
+        "decoupled_union_p_map": _p_index_map_fingerprint(p_map_dec),
+        "p_maps_byte_identical": bool(np.array_equal(p_to_W, p_map_dec)),
+        "physical_fsi_n_p_active": int(p_to_W.size),
+        "decoupled_union_n_p_active": int(p_map_dec.size),
+        "physical_fsi_restriction": restr,
+        "decoupled_union_restriction": dec_restr,
+    }
+    if MPI.COMM_WORLD.rank == 0:
+        print(
+            f"[physical_fsi_participation_audit] p_to_W map check: "
+            f"len={p_to_W.size} identical={map_validation['p_maps_byte_identical']} "
+            f"crc_phys={map_validation['physical_fsi_p_map']['crc32']} "
+            f"crc_dec={map_validation['decoupled_union_p_map']['crc32']}",
+            flush=True,
+        )
+
+    mac_report = _pressure_mac_report(
+        vec_ref,
+        vec_cand,
+        p_to_W,
+        gnhep,
+        p_to_W_ref=p_map_dec,
+        map_validation=map_validation,
+    )
     cand_audit["pressure_overlap_vs_decoupled_acoustic"] = mac_report
     cand_audit["delta_from_decoupled_mode_hz"] = float(branch_shift_hz)
     cand_audit["mode_load"] = cand_load
     ref_audit["mode_load"] = ref_load
     ref_audit["role"] = "decoupled_union_acoustic_reference"
 
-    verdict, survives, note, detail = evaluate_physical_fsi_acoustic_survival(
-        frequency_hz=cand_f,
+    band_lo = float(solver_cfg.get("_worker_harvest_lo_hz", BAND_LO_HZ))
+    band_hi = float(solver_cfg.get("_worker_harvest_hi_hz", BAND_HI_HZ))
+    band_mac_rows: List[Dict[str, Any]] = []
+    target_band_hz = set(PRESSURE_DOMINATED_BAND_HZ)
+    for entry in phys_catalog:
+        f_hz = float(entry["frequency_hz"])
+        in_band = band_lo <= f_hz <= band_hi
+        near_listed = any(abs(f_hz - t) <= self_tol for t in target_band_hz)
+        if not in_band and not near_listed:
+            continue
+        vec_band, _ = _load_coupled_mode_dense_vector(
+            entry["path"], n_coupled_W=n_W, mode_index=int(entry["mode_index"])
+        )
+        energy_band = compute_mass_energy_participation(
+            vec_band, M, A, u_to_W=u_to_W, p_to_W=p_to_W, gnhep=gnhep
+        )
+        if not _is_pressure_dominated(entry, energy_band) and not near_listed:
+            continue
+        mac_band = _pressure_mac_report(
+            vec_ref, vec_band, p_to_W, gnhep, p_to_W_ref=p_map_dec, map_validation=map_validation
+        )
+        band_mac_rows.append(
+            {
+                "frequency_hz": f_hz,
+                "vector_path": entry["vector_path"],
+                "mode_index": entry["mode_index"],
+                "p_frac_production": float(entry.get("p_frac_production", 0.0)),
+                "p_frac_energy_phys": float(energy_band["p_frac_energy_phys"]),
+                "delta_from_decoupled_acoustic_hz": f_hz - ref_f,
+                "delta_from_acoustic_reference_hz": f_hz - ref_hz,
+                "pressure_overlap": mac_band,
+            }
+        )
+    band_mac_rows.sort(key=lambda r: float(r["frequency_hz"]))
+
+    mac_threshold = float(args.mac_threshold)
+    conclusions = _split_audit_conclusions(
+        cand_f=cand_f,
         ref_hz=ref_hz,
         freq_tol_hz=freq_tol,
-        p_frac_production=float(cand_audit["p_frac_production"]),
-        p_frac_phys_gnhep=float(cand_audit["p_frac_phys_gnhep"]),
-        p_frac_fully_unscaled=float(cand_audit["p_frac_fully_unscaled"]),
         p_frac_energy_phys=float(cand_audit["p_frac_energy_phys"]),
-        pressure_mac_gnhep_undo=float(mac_report["mac_pressure_gnhep_undo_s_pp"]),
-        mac_threshold=float(args.mac_threshold),
+        mac_spp=float(mac_report["mac_pressure_gnhep_undo_s_pp"]),
+        mac_threshold=mac_threshold,
+    )
+    verdict_note = (
+        f"branch_shift_hz={branch_shift_hz:+.6f}; "
+        f"PRESSURE_ENERGY_MODE_NEAR_REFERENCE_EXISTS="
+        f"{conclusions['PRESSURE_ENERGY_MODE_NEAR_REFERENCE_EXISTS']}; "
+        f"DECOUPLED_ACOUSTIC_BRANCH_MATCH_CONFIRMED="
+        f"{conclusions['DECOUPLED_ACOUSTIC_BRANCH_MATCH_CONFIRMED']}; "
+        f"MAC(s_pp)={mac_report['mac_pressure_gnhep_undo_s_pp']:.4f} "
+        "(do not proceed to Nitsche isolation until MAC mapping validated)."
     )
 
     report: Dict[str, Any] = {
@@ -638,7 +855,12 @@ def main() -> int:
             "physical_fsi_modes_considered": phys_considered,
             "selected_decoupled_vector": ref_entry["vector_path"],
             "selected_physical_fsi_vector": cand_entry["vector_path"],
+            "mac_threshold": mac_threshold,
         },
+        "p_index_map_validation": map_validation,
+        "pressure_dominated_modes_in_band_mac": band_mac_rows,
+        "audit_conclusions": conclusions,
+        "verdict_note": verdict_note,
         "decoupled_union_reference_mode": {
             "frequency_hz": ref_f,
             "vector_path": str(ref_path.relative_to(DECOUPLED_CASE)).replace("\\", "/"),
@@ -662,10 +884,9 @@ def main() -> int:
         },
         "scaling_metadata": gnhep,
         "reduced_domain": restr,
-        "verdict_recommended": verdict,
-        "acoustic_branch_survives_recommended": survives,
-        "verdict_note": note,
-        "verdict_criteria": detail,
+        "legacy_combined_verdict_suppressed": (
+            "Do not use frequency+energy alone; see audit_conclusions."
+        ),
         "metric_conflict_explanation": (
             "p_frac_phys_gnhep divides GNHEP-undone ||p|| by (||u||_gnhep_undo + ||p||_gnhep_undo). "
             "When ||u|| is tiny in solver coordinates but FSI coupling inflates the u-block after "
@@ -684,9 +905,12 @@ def main() -> int:
         lines = [
             "# Physical-FSI participation / overlap audit",
             "",
-            f"**Recommended verdict:** `{verdict}`",
+            f"- **PRESSURE_ENERGY_MODE_NEAR_REFERENCE_EXISTS="
+            f"{conclusions['PRESSURE_ENERGY_MODE_NEAR_REFERENCE_EXISTS']}**",
+            f"- **DECOUPLED_ACOUSTIC_BRANCH_MATCH_CONFIRMED="
+            f"{conclusions['DECOUPLED_ACOUSTIC_BRANCH_MATCH_CONFIRMED']}**",
             "",
-            f"{note}",
+            verdict_note,
             "",
             "## Candidate mode (physical FSI only)",
             "",
@@ -707,18 +931,45 @@ def main() -> int:
             f"- MAC raw = {mac_report['mac_pressure_raw']:.6f}",
             f"- MAC gnhep_undo (s_pp) = {mac_report['mac_pressure_gnhep_undo_s_pp']:.6f}",
             f"- MAC fully unscaled = {mac_report['mac_pressure_fully_unscaled']:.6f}",
+            f"- MAC invariance |raw-s_pp| = {mac_report['mac_invariance_abs_diff_raw_vs_s_pp']:.3e}",
+            f"- ||p_ref|| raw = {mac_report['vector_norms']['reference_p_raw']:.6e} "
+            f"||p_cand|| raw = {mac_report['vector_norms']['candidate_p_raw']:.6e}",
             "",
             MAC_SCALING_NOTE,
             "",
-            "## Wood participation",
+            "## p-index map validation",
             "",
-            WOOD_PARTICIPATION_NOTE,
+            f"- n_p_active = {mac_report['n_p_active_dofs']} | maps identical = "
+            f"{map_validation['p_maps_byte_identical']}",
+            f"- physical crc32 = {map_validation['physical_fsi_p_map']['crc32']} | "
+            f"decoupled crc32 = {map_validation['decoupled_union_p_map']['crc32']}",
             "",
-            "## Metric conflict",
+            "## Pressure-dominated physical-FSI modes in band (MAC vs decoupled 244.3916 Hz)",
             "",
-            report["metric_conflict_explanation"],
-            "",
+            "| f (Hz) | MAC raw | MAC s_pp | MAC unscaled | p_frac energy | file |",
+            "|--------|---------|----------|--------------|---------------|------|",
         ]
+        for row in band_mac_rows:
+            ov = row["pressure_overlap"]
+            lines.append(
+                f"| {row['frequency_hz']:.6f} | {ov['mac_pressure_raw']:.4f} | "
+                f"{ov['mac_pressure_gnhep_undo_s_pp']:.4f} | "
+                f"{ov['mac_pressure_fully_unscaled']:.4f} | "
+                f"{row['p_frac_energy_phys']:.4e} | {row['vector_path']} |"
+            )
+        lines.extend(
+            [
+                "",
+                "## Wood participation",
+                "",
+                WOOD_PARTICIPATION_NOTE,
+                "",
+                "## Metric conflict",
+                "",
+                report["metric_conflict_explanation"],
+                "",
+            ]
+        )
         out_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
         print(f"[physical_fsi_participation_audit] candidate f={cand_f:.6f} Hz")
         print(
@@ -726,10 +977,14 @@ def main() -> int:
             f"gnhep_undo={cand_audit['p_frac_phys_gnhep']:.4e} "
             f"energy={cand_audit['p_frac_energy_phys']:.4e}"
         )
-        print(
-            f"  MAC(s_pp)={mac_report['mac_pressure_gnhep_undo_s_pp']:.4f} "
-            f"recommended={verdict}"
-        )
+        print(f"  pressure_overlap={mac_report}")
+        print(f"  conclusions={conclusions}")
+        for row in band_mac_rows:
+            ov = row["pressure_overlap"]
+            print(
+                f"  band f={row['frequency_hz']:.6f} Hz MAC_s_pp="
+                f"{ov['mac_pressure_gnhep_undo_s_pp']:.4f} file={row['vector_path']}"
+            )
         print(f"[physical_fsi_participation_audit] wrote {out_json} and {out_md}")
 
     try:

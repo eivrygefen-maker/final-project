@@ -405,18 +405,31 @@ def pressure_subspace_mac(
     *,
     scale_p_a: float = 1.0,
     scale_p_b: float = 1.0,
+    p_to_W_b: Optional[np.ndarray] = None,
 ) -> float:
-    """MAC = |p_a^T p_b| / (||p_a|| ||p_b||) on active pressure rows in W layout."""
-    p_idx = np.asarray(p_to_W, dtype=np.int32).ravel()
-    if p_idx.size == 0:
+    """
+    Modal assurance on active pressure DOFs: |<p_a, p_b>| / (||p_a|| ||p_b||)
+    with complex-conjugate inner product (np.vdot). For real coefficients this matches
+    abs(dot); uniform positive scalings cancel in the ratio.
+    """
+    p_idx_a = np.asarray(p_to_W, dtype=np.int32).ravel()
+    p_idx_b = (
+        np.asarray(p_to_W_b, dtype=np.int32).ravel()
+        if p_to_W_b is not None
+        else p_idx_a
+    )
+    if p_idx_a.size == 0 or p_idx_b.size == 0:
         return float("nan")
-    pa = np.asarray(vec_a[p_idx], dtype=np.float64).ravel() * float(scale_p_a)
-    pb = np.asarray(vec_b[p_idx], dtype=np.float64).ravel() * float(scale_p_b)
+    if p_idx_a.size != p_idx_b.size:
+        return float("nan")
+    pa = np.asarray(vec_a[p_idx_a], dtype=np.complex128).ravel() * float(scale_p_a)
+    pb = np.asarray(vec_b[p_idx_b], dtype=np.complex128).ravel() * float(scale_p_b)
     na = float(np.linalg.norm(pa))
     nb = float(np.linalg.norm(pb))
     if na <= 0.0 or nb <= 0.0:
         return float("nan")
-    return float(abs(np.dot(pa, pb)) / (na * nb))
+    inner = np.vdot(pa, pb)
+    return float(abs(inner) / (na * nb))
 
 
 def evaluate_physical_fsi_acoustic_survival(
