@@ -838,13 +838,13 @@ def create_guitar_mesh():
         )
         expected_inner_z_span = max(1.0e-6, z_inner_top - z_inner_back)
 
-        air_bb = (
-            list(gmsh.model.getBoundingBox(3, int(air_vols[0])))
-            if air_vols
-            else [0.0] * 6
-        )
-        air_boundary = (
-            sorted(get_boundary_tags([(3, int(air_vols[0]))], 2)) if air_vols else []
+        air_bb = _union_bbox_live_volumes(air_vols)
+        air_boundary = sorted(
+            {
+                int(s)
+                for v in air_vols
+                for s in get_boundary_tags([(3, int(v))], 2)
+            }
         )
         air_bnd_z = []
         for s in air_boundary:
@@ -855,9 +855,6 @@ def create_guitar_mesh():
         )
 
         air_com = (
-            _entity_center_of_mass(3, int(air_vols[0])) if air_vols else (ox0, oy0, oz0)
-        )
-        air_bbox_center = (
             (
                 0.5 * (float(air_bb[0]) + float(air_bb[3])),
                 0.5 * (float(air_bb[1]) + float(air_bb[4])),
@@ -866,24 +863,34 @@ def create_guitar_mesh():
             if air_vols
             else (ox0, oy0, oz0)
         )
+        air_bbox_center = air_com
+
+        def _air_volumes_containing_point(px: float, py: float, pz: float) -> list:
+            return [
+                int(v)
+                for v in air_vols
+                if _classify_point_in_volume(int(v), px, py, pz).get("inside")
+            ]
+
         membership_calibration: dict = {}
         if air_vols:
-            av = int(air_vols[0])
-            membership_calibration["air_volume_id"] = av
-            membership_calibration["air_center_of_mass_m"] = [
+            membership_calibration["air_volume_ids"] = [int(v) for v in air_vols]
+            membership_calibration["air_union_bbox_m"] = [float(x) for x in air_bb]
+            membership_calibration["air_union_center_m"] = [
                 float(air_com[0]),
                 float(air_com[1]),
                 float(air_com[2]),
             ]
-            membership_calibration["air_com_test"] = _classify_point_in_volume(
-                av, float(air_com[0]), float(air_com[1]), float(air_com[2])
-            )
-            membership_calibration["air_bbox_center_test"] = _classify_point_in_volume(
-                av,
-                float(air_bbox_center[0]),
-                float(air_bbox_center[1]),
-                float(air_bbox_center[2]),
-            )
+            membership_calibration["air_com_test"] = {
+                "inside": bool(_air_volumes_containing_point(*air_com)),
+                "method": "gmsh.model.isInside_any_air_volume",
+                "volume_ids": _air_volumes_containing_point(*air_com),
+            }
+            membership_calibration["air_bbox_center_test"] = {
+                "inside": bool(_air_volumes_containing_point(*air_bbox_center)),
+                "method": "gmsh.model.isInside_any_air_volume",
+                "volume_ids": _air_volumes_containing_point(*air_bbox_center),
+            }
         if wood_vols:
             wv = int(wood_vols[0])
             wcom = _entity_center_of_mass(3, wv)
@@ -897,10 +904,7 @@ def create_guitar_mesh():
                 wv, float(wcom[0]), float(wcom[1]), float(wcom[2])
             )
         membership_trusted = bool(
-            air_vols
-            and membership_calibration.get("air_com_test", {}).get("method")
-            == "gmsh.model.isInside"
-            and membership_calibration.get("air_com_test", {}).get("inside")
+            air_vols and membership_calibration.get("air_com_test", {}).get("inside")
         )
 
         probe_specs = [
@@ -1267,36 +1271,225 @@ def create_guitar_mesh():
         _validation_assert_live_solids(stage)
         print(f"[diag] validation OCC dedupe-only ({stage})", flush=True)
 
-    def _validation_pick_air_wood_from_fragment_vols(
-        fragment_vol_tags: list,
+    def _validation_fragment_map_volume_descendants(
+        frag_map: list,
+        input_dimtags: list,
+    ) -> list:
+        """Volume tags descended from one or more fragment input (dim,tag) entities."""
+        if not frag_map or not input_dimtags:
+            return []
+        out: set = set()
+        n_inputs = len(input_dimtags)
+        for i, dt_in in enumerate(input_dimtags):
+            if i >= len(frag_map):
+                continue
+            mapped = frag_map[i]
+            if not mapped:
+                continue
+            for ent in mapped:
+                if isinstance(ent, (list, tuple)) and len(ent) >= 2:
+                    dim_e, tag_e = int(ent[0]), int(ent[1])
+                else:
+                    continue
+                if dim_e == 3:
+                    out.add(int(tag_e))
+        return sorted(out)
+
+    def _validation_air_witness_points(
         *,
-        air_ref_com: Tuple[float, float, float],
+        hole_x: float,
+        hole_y: float,
+        inner_tool_bb: Optional[list],
+        shell_t: float,
+        depth_m: float,
+    ) -> list:
+        if inner_tool_bb is not None:
+            z_inner_top = float(inner_tool_bb[5])
+            z_inner_back = float(inner_tool_bb[2])
+            ox = 0.5 * (float(inner_tool_bb[0]) + float(inner_tool_bb[3]))
+            oy = 0.5 * (float(inner_tool_bb[1]) + float(inner_tool_bb[4]))
+        else:
+            z_inner_top = float(depth_m) / 2.0 - float(shell_t)
+            z_inner_back = -float(depth_m) / 2.0 + float(shell_t)
+            ox, oy = float(hole_x), 0.0
+        z_span = max(1.0e-6, z_inner_top - z_inner_back)
+        return [
+            ("cavity_body_centre", float(ox), float(oy), 0.5 * (z_inner_top + z_inner_back)),
+            ("below_top_lid_at_hole", float(hole_x), float(hole_y), z_inner_top - 0.002),
+            ("near_soundhole_opening", float(hole_x), float(hole_y), z_inner_top - 0.0005),
+            (
+                "lower_cavity",
+                float(ox),
+                float(oy),
+                float(z_inner_back) + 0.25 * z_span,
+            ),
+        ]
+
+    def _validation_classify_fragment_volumes(
+        fragment_vol_tags: list,
+        frag_map: list,
+        *,
+        wood_input_dimtags: list,
+        air_input_dimtags: list,
+        hole_x: float,
+        hole_y: float,
+        inner_tool_bb: Optional[list],
+        shell_t: float,
+        depth_m: float,
         stage: str,
-    ) -> Tuple[list, list]:
-        """Classify fragment output volumes by proximity to pre-fragment air COM."""
+    ) -> Tuple[list, list, dict]:
+        """
+        Classify fragment outputs: all air-input descendants + witness-confirmed volumes.
+
+        Conformal fragment can split fused cavity+channel into multiple air volumes;
+        tag 10 may include several conformal descendants that together span the air path.
+        """
         vols = sorted({int(v) for v in fragment_vol_tags})
         if not vols:
             raise RuntimeError(
                 f"FEM_VALIDATION_MESH: fragment at '{stage}' produced no 3D volumes."
             )
 
-        def _dist2(vtag: int) -> float:
-            cx, cy, cz = _entity_center_of_mass(3, int(vtag))
-            return (
-                (cx - air_ref_com[0]) ** 2
-                + (cy - air_ref_com[1]) ** 2
-                + (cz - air_ref_com[2]) ** 2
+        wood_inputs = [(int(d), int(t)) for d, t in wood_input_dimtags if int(d) == 3]
+        air_inputs = [(int(d), int(t)) for d, t in air_input_dimtags if int(d) == 3]
+        air_input_ids = [int(t) for _d, t in air_inputs]
+
+        wood_from_map = set(
+            _validation_fragment_map_volume_descendants(frag_map, wood_inputs)
+        )
+        air_from_map = set(
+            _validation_fragment_map_volume_descendants(
+                frag_map, air_inputs
+            )
+        )
+
+        witnesses = _validation_air_witness_points(
+            hole_x=float(hole_x),
+            hole_y=float(hole_y),
+            inner_tool_bb=inner_tool_bb,
+            shell_t=float(shell_t),
+            depth_m=float(depth_m),
+        )
+        witness_by_vol: dict = {int(v): [] for v in vols}
+        witness_table: list = []
+        for label, px, py, pz in witnesses:
+            inside_ids = [
+                int(v)
+                for v in vols
+                if _classify_point_in_volume(int(v), px, py, pz).get("inside")
+            ]
+            witness_table.append(
+                {
+                    "label": label,
+                    "point_m": [float(px), float(py), float(pz)],
+                    "inside_volume_ids": inside_ids,
+                }
+            )
+            for vid in inside_ids:
+                witness_by_vol[int(vid)].append(label)
+
+        opening_labels = {"below_top_lid_at_hole", "near_soundhole_opening"}
+        air_witness = {
+            int(v)
+            for v in vols
+            if opening_labels.intersection(witness_by_vol.get(int(v), []))
+        }
+        cavity_witness = {
+            int(v)
+            for v in vols
+            if witness_by_vol.get(int(v))
+        }
+
+        air_vols_out = sorted(air_from_map | air_witness)
+        if not air_vols_out and cavity_witness:
+            air_vols_out = sorted(cavity_witness)
+        if not air_vols_out:
+            air_ref = _entity_center_of_mass(3, int(air_input_ids[0]))
+            air_vols_out = [
+                min(
+                    vols,
+                    key=lambda v: math.dist(
+                        _entity_center_of_mass(3, int(v)), air_ref
+                    ),
+                )
+            ]
+            print(
+                f"[diag][warn] validation air lineage empty at '{stage}'; "
+                f"COM fallback air={[air_vols_out[0]]}",
+                flush=True,
             )
 
-        air_pick = min(vols, key=_dist2)
-        air_vols_out = [int(air_pick)]
-        wood_vols_out = [int(v) for v in vols if int(v) != int(air_pick)]
+        air_set = set(air_vols_out)
+        wood_vols_out = sorted(int(v) for v in vols if int(v) not in air_set)
+
+        air_bb = [
+            float("inf"),
+            float("inf"),
+            float("inf"),
+            float("-inf"),
+            float("-inf"),
+            float("-inf"),
+        ]
+        for v in air_vols_out:
+            xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(3, int(v))
+            air_bb[0] = min(air_bb[0], float(xmin))
+            air_bb[1] = min(air_bb[1], float(ymin))
+            air_bb[2] = min(air_bb[2], float(zmin))
+            air_bb[3] = max(air_bb[3], float(xmax))
+            air_bb[4] = max(air_bb[4], float(ymax))
+            air_bb[5] = max(air_bb[5], float(zmax))
+        air_z_span = float(air_bb[5] - air_bb[2]) if air_vols_out else 0.0
+
+        lineage = {
+            "stage": str(stage),
+            "air_input_volume_ids": air_input_ids,
+            "wood_input_volume_ids": [int(t) for _d, t in wood_inputs],
+            "fragment_output_volume_ids": vols,
+            "air_descendants_from_fragment_map": sorted(air_from_map),
+            "wood_descendants_from_fragment_map": sorted(wood_from_map),
+            "air_volumes_from_opening_witnesses": sorted(air_witness),
+            "witness_point_table": witness_table,
+            "classified_air_volume_ids": air_vols_out,
+            "classified_wood_volume_ids": wood_vols_out,
+            "air_union_z_span_m": float(air_z_span),
+        }
+        print(
+            f"[diag] validation air lineage ({stage}): "
+            f"air_input={air_input_ids} map_descendants={sorted(air_from_map)} "
+            f"witness_add={sorted(air_witness)} final_air={air_vols_out} "
+            f"air_z_span={air_z_span:.4f} m",
+            flush=True,
+        )
+        for row in witness_table:
+            print(
+                f"[diag] validation air witness ({stage}): {row['label']} "
+                f"→ volumes {row['inside_volume_ids']}",
+                flush=True,
+            )
         print(
             f"[diag] validation volume classify ({stage}): air={air_vols_out} "
             f"wood={wood_vols_out}",
             flush=True,
         )
-        return wood_vols_out, air_vols_out
+        return wood_vols_out, air_vols_out, lineage
+
+    def _validation_primary_air_volume(
+        air_vols: list,
+        *,
+        hole_x: float,
+        hole_y: float,
+        z_opening: float,
+    ) -> int:
+        """Volume tag for aperture resolve: prefer descendant containing the opening."""
+        for v in air_vols:
+            if _classify_point_in_volume(
+                int(v),
+                float(hole_x),
+                float(hole_y),
+                float(z_opening) - 0.0005,
+            ).get("inside"):
+                return int(v)
+        return int(air_vols[0])
 
     def _validation_conformal_refragment_wood_air(
         wood_vols_in: list,
@@ -1307,16 +1500,16 @@ def create_guitar_mesh():
         """
         Re-fragment wood+air once for conformal FSI interfaces (validation only).
 
-        Preserves the air volume by proximity to the pre-fragment air center of mass
-        (avoids the production final re-fragment path that was skipped for validation).
+        Preserves all air-input fragment descendants (cavity + soundhole channel pieces).
         """
         if not is_validation or shell_only or not air_vols_in or not wood_vols_in:
             return list(wood_vols_in), list(air_vols_in)
-        air_ref = _entity_center_of_mass(3, int(air_vols_in[0]))
+        wood_inputs = [(3, int(v)) for v in wood_vols_in]
+        air_inputs = [(3, int(v)) for v in air_vols_in]
         try:
-            all_split, _ = occ.fragment(
-                [(3, int(v)) for v in wood_vols_in],
-                [(3, int(v)) for v in air_vols_in],
+            all_split, frag_map = occ.fragment(
+                wood_inputs,
+                air_inputs,
                 removeObject=True,
                 removeTool=True,
             )
@@ -1327,17 +1520,24 @@ def create_guitar_mesh():
                 return list(wood_vols_in), list(air_vols_in)
             _validation_safe_dedupe_only(stage=f"{stage}_post_fragment")
             live = set(_validation_live_volume_tags())
-            final_vols = [v for v in final_vols if v in live]
-            if not final_vols:
-                final_vols = _validation_live_volume_tags()
-            new_wood, new_air = _validation_pick_air_wood_from_fragment_vols(
+            final_vols = [v for v in final_vols if v in live] or list(live)
+            new_wood, new_air, lineage = _validation_classify_fragment_volumes(
                 final_vols,
-                air_ref_com=air_ref,
+                frag_map,
+                wood_input_dimtags=wood_inputs,
+                air_input_dimtags=air_inputs,
+                hole_x=float(hole_x),
+                hole_y=float(hole_y),
+                inner_tool_bb=inner_tool_bb,
+                shell_t=float(t),
+                depth_m=float(D),
                 stage=stage,
             )
+            lineage_path = out_file.parent / f"validation_air_lineage_{stage}.json"
+            lineage_path.write_text(json.dumps(lineage, indent=2), encoding="utf-8")
             print(
                 f"[diag] validation conformal wood+air re-fragment ({stage}): "
-                f"wood={new_wood} air={new_air}",
+                f"wood={new_wood} air={new_air} (lineage {lineage_path})",
                 flush=True,
             )
             return new_wood, new_air
@@ -1609,10 +1809,9 @@ def create_guitar_mesh():
                 f"FSI fragment skipped: wood_vols={len(wood_dimtags)} air_vols={len(air_dimtags)} "
                 "(boolean hollow/soundhole may have failed)."
             )
-        air_ref_before_fragment = _entity_center_of_mass(
-            3, int(air_dimtags[0][1])
+        frags, frag_map = occ.fragment(
+            wood_dimtags, air_dimtags, removeObject=True, removeTool=True
         )
-        frags, _ = occ.fragment(wood_dimtags, air_dimtags, removeObject=True, removeTool=True)
         occ.synchronize()
         resulting_vols = [int(tag) for dim, tag in frags if dim == 3]
         if is_validation:
@@ -1620,11 +1819,22 @@ def create_guitar_mesh():
             _validation_safe_dedupe_only(stage="post_wood_air_fragment")
             live = set(_validation_live_volume_tags())
             resulting_vols = [v for v in resulting_vols if v in live] or list(live)
-            wood_vols, air_vols = _validation_pick_air_wood_from_fragment_vols(
+            wood_vols, air_vols, lineage = _validation_classify_fragment_volumes(
                 resulting_vols,
-                air_ref_com=air_ref_before_fragment,
+                frag_map,
+                wood_input_dimtags=wood_dimtags,
+                air_input_dimtags=air_dimtags,
+                hole_x=float(hole_x),
+                hole_y=float(hole_y),
+                inner_tool_bb=inner_tool_bb,
+                shell_t=float(t),
+                depth_m=float(D),
                 stage="post_wood_air_fragment",
             )
+            lineage_path = (
+                out_file.parent / "validation_air_lineage_post_wood_air_fragment.json"
+            )
+            lineage_path.write_text(json.dumps(lineage, indent=2), encoding="utf-8")
         else:
             try:
                 occ.removeAllDuplicates()
@@ -1635,7 +1845,13 @@ def create_guitar_mesh():
             air_vols = [tag for tag in resulting_vols if tag in air_candidate_set]
             wood_vols = [tag for tag in resulting_vols if tag not in air_candidate_set]
 
-        if len(air_vols) != 1:
+        if is_validation:
+            if len(air_vols) < 1:
+                raise RuntimeError(
+                    f"FEM_VALIDATION_MESH: no air volume descendants after fragment "
+                    f"(found {len(air_vols)})."
+                )
+        elif len(air_vols) != 1:
             raise RuntimeError(f"Expected exactly 1 internal air volume, found {len(air_vols)}")
 
     if not wood_vols:
@@ -3174,9 +3390,15 @@ def create_guitar_mesh():
             hole_y=float(hole_y),
         )
         aperture_audit_dir = out_file.parent if is_validation else mesh_dir
+        _primary_air = _validation_primary_air_volume(
+            air_vols,
+            hole_x=float(hole_x),
+            hole_y=float(hole_y),
+            z_opening=float(inner_tool_bb[5]) if inner_tool_bb is not None else z_top_outer,
+        )
         soundhole_surfs, z_aperture_plane, air_vol_tag, aperture_sel = (
             _resolve_validation_soundhole_aperture_surfaces(
-                air_vol_tag=int(air_vols[0]),
+                air_vol_tag=int(_primary_air),
                 air_boundary_surfs=air_boundary_surfs,
                 inner_tool_bb=inner_tool_bb,
                 hx=float(hole_x),
