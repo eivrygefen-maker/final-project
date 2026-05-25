@@ -2986,7 +2986,8 @@ def create_guitar_mesh():
         span_xy_hi = 1.15 * span_xy_target
         z_tol = 0.010
         z_span_max = 0.012
-        r_max_limit = 0.050
+        # Allow tessellation extent up to ~8% above nominal r (fixed 50 mm cap was too tight for r>50 mm).
+        r_max_limit = max(0.050, float(hole_r) * 1.08 + 1.0e-4)
 
         area = float(_surface_area_m(int(surf_tag)))
         cx, cy, cz = get_surface_center(int(surf_tag))
@@ -3271,33 +3272,99 @@ def create_guitar_mesh():
         air_boundary_after = sorted(
             get_boundary_tags([(3, int(air_out))], 2)
         )
-        post_records = [
-            _evaluate_validation_aperture_surface(
-                int(s),
+        new_surfs = [int(s) for s in imprint_diag.get("new_surface_ids_after_imprint") or []]
+        z_try_list: list = []
+        for z in (float(z_disk), float(z_aperture_plane)):
+            if z not in z_try_list:
+                z_try_list.append(z)
+
+        soundhole_surfs = []
+        post_sel: dict = {"method": "none"}
+        if new_surfs:
+            for z_try in z_try_list:
+                picked = _select_validation_soundhole_aperture_surfaces(
+                    new_surfs,
+                    hx=float(hx),
+                    hy=float(hy),
+                    hole_r=float(hole_r),
+                    z_plane=float(z_try),
+                )
+                if picked:
+                    soundhole_surfs = picked
+                    post_sel = {
+                        "method": "disk_imprint_new_surfaces",
+                        "reason": "strict_match_on_new_boundary_faces",
+                        "surface_ids": picked,
+                        "z_selection_plane_m": float(z_try),
+                    }
+                    break
+
+        if not soundhole_surfs:
+            merged_post: dict = {}
+            for z_try in z_try_list:
+                for s in air_boundary_after:
+                    rec = _evaluate_validation_aperture_surface(
+                        int(s),
+                        hx=float(hx),
+                        hy=float(hy),
+                        hole_r=float(hole_r),
+                        z_aperture_plane=float(z_try),
+                    )
+                    rec["evaluation_z_plane_m"] = float(z_try)
+                    sid = int(rec["surface_id"])
+                    if rec.get("passes_strict_aperture") or sid not in merged_post:
+                        merged_post[sid] = rec
+            soundhole_surfs, post_sel = _select_existing_validation_aperture_surfaces(
+                list(merged_post.values()), hole_r=float(hole_r)
+            )
+            if soundhole_surfs:
+                post_sel["method"] = post_sel.get("method", "disk_imprint_multi_z")
+
+        if not soundhole_surfs:
+            near_after = _near_disk_air_boundary_surfaces(
+                air_boundary_after,
                 hx=float(hx),
                 hy=float(hy),
                 hole_r=float(hole_r),
-                z_aperture_plane=float(z_disk),
+                depth_m=float(depth_m),
+                shell_t=float(shell_t),
             )
-            for s in air_boundary_after
-        ]
-        soundhole_surfs, post_sel = _select_existing_validation_aperture_surfaces(
-            post_records, hole_r=float(hole_r)
-        )
+            merged_near: dict = {}
+            for z_try in z_try_list:
+                for s in near_after:
+                    rec = _evaluate_validation_aperture_surface(
+                        int(s),
+                        hx=float(hx),
+                        hy=float(hy),
+                        hole_r=float(hole_r),
+                        z_aperture_plane=float(z_try),
+                    )
+                    sid = int(rec["surface_id"])
+                    if rec.get("passes_strict_aperture") or sid not in merged_near:
+                        merged_near[sid] = rec
+            soundhole_surfs, post_sel = _select_existing_validation_aperture_surfaces(
+                list(merged_near.values()), hole_r=float(hole_r)
+            )
+            if soundhole_surfs:
+                post_sel["method"] = post_sel.get("method", "disk_imprint_near_disk_multi_z")
+
         selection_meta = {
             **post_sel,
-            "method": post_sel.get("method", "disk_imprint"),
             "disk_imprint_diagnostic": imprint_diag,
             "z_disk_plane_m": float(z_disk),
+            "z_aperture_plane_inner_m": float(z_aperture_plane),
+            "z_evaluation_planes_m": z_try_list,
+            "new_surface_ids_after_imprint": new_surfs,
         }
         if soundhole_surfs:
             print(
                 f"[diag] soundhole tag 2: disk imprint produced selectable aperture "
-                f"n={len(soundhole_surfs)} surfaces={soundhole_surfs}"
+                f"n={len(soundhole_surfs)} surfaces={soundhole_surfs} "
+                f"method={selection_meta.get('method')}"
             )
         return (
             soundhole_surfs,
-            float(z_disk),
+            float(z_aperture_plane if soundhole_surfs else z_disk),
             int(air_out),
             selection_meta,
         )
@@ -3420,10 +3487,11 @@ def create_guitar_mesh():
                 horiz_ok += 1
             if rec.get("planar_by_zero_z_span"):
                 planar_ok += 1
-        if r_max > 0.050:
+        r_lim_cad = max(0.050, float(hole_r) * 1.08 + 1.0e-4)
+        if r_max > r_lim_cad:
             raise RuntimeError(
                 f"FEM_VALIDATION_MESH: soundhole aperture radial extent {r_max:.6f} m "
-                f"(boundary-based) > 0.050 m (r={hole_r:.4f} m)."
+                f"(boundary-based) > limit {r_lim_cad:.6f} m (r={hole_r:.4f} m)."
             )
         z_span = max(z_vals) - min(z_vals) if z_vals else float("inf")
         if z_span > 0.012:
@@ -4391,9 +4459,10 @@ def create_guitar_mesh():
                 failures.append(
                     f"mesh triangle area {mesh_area:.8f} m² not in [{a_lo:.8f},{a_hi:.8f}]"
                 )
-            if r_max_mesh > 0.050:
+            r_lim_mesh = max(0.050, float(hr) * 1.08 + 1.0e-4)
+            if r_max_mesh > r_lim_mesh:
                 failures.append(
-                    f"mesh-node radial max {r_max_mesh:.6f} m > 0.050 m"
+                    f"mesh-node radial max {r_max_mesh:.6f} m > limit {r_lim_mesh:.6f} m"
                 )
             if z_span > 0.012:
                 failures.append(f"z-span {z_span:.6f} m > 0.012 m (not planar)")

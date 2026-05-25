@@ -22,7 +22,9 @@ PHYSICS_ROOT = Path(__file__).resolve().parents[1]
 HOLE_R_M = 0.047
 EXPECTED_AREA_M2 = math.pi * HOLE_R_M * HOLE_R_M
 AREA_REL_TOL = 0.15
-RADIAL_MAX_M = 0.050
+def _radial_max_limit_m(hole_radius_m: float) -> float:
+    """Match build_3d_guitar validation aperture radial extent (parameterized by r)."""
+    return max(0.050, float(hole_radius_m) * 1.08 + 1.0e-4)
 Z_SPAN_MAX_M = 0.012
 HORIZONTAL_NZ_MIN = 0.85
 HORIZONTAL_FRAC_MIN = 0.90
@@ -52,6 +54,7 @@ def _triangle_area_and_normal(
 
 def _audit_meshio(mesh_path: Path, *, hole_radius_m: float = HOLE_R_M) -> Dict[str, Any]:
     expected_area = math.pi * float(hole_radius_m) ** 2
+    radial_max_limit = _radial_max_limit_m(hole_radius_m)
     import meshio
 
     hx, hy = _expected_hole_center_xy()
@@ -102,7 +105,7 @@ def _audit_meshio(mesh_path: Path, *, hole_radius_m: float = HOLE_R_M) -> Dict[s
             <= total_area
             <= (1.0 + AREA_REL_TOL) * expected_area
         ),
-        "radial_max_le_50mm": bool(r_max <= RADIAL_MAX_M),
+        "radial_max_within_limit": bool(r_max <= radial_max_limit),
         "z_span_planar": bool(z_span <= Z_SPAN_MAX_M),
         "horizontal_fraction_ok": bool(horiz_frac >= HORIZONTAL_FRAC_MIN),
     }
@@ -112,6 +115,7 @@ def _audit_meshio(mesh_path: Path, *, hole_radius_m: float = HOLE_R_M) -> Dict[s
         "mesh_file": str(mesh_path.resolve()),
         "expected_hole_radius_m": float(hole_radius_m),
         "expected_aperture_area_m2": float(expected_area),
+        "radial_max_limit_m": float(radial_max_limit),
         "expected_hole_center_xy_m": [hx, hy],
         "tag2_triangle_count": int(mask.sum()),
         "tag2_total_area_m2": float(total_area),

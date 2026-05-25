@@ -7,43 +7,53 @@ Pilot: soundhole radius small/large only. Full suite: manifest samples (after pi
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import math
+import subprocess
 import sys
-import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from mpi4py import MPI
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 PHYSICS_ROOT = Path(__file__).resolve().parents[1]
 EXPERIMENT_ROOT = Path(__file__).resolve().parents[2]
-SCRIPT_DIR = REPO_ROOT / "FEM" / "scripts"
+SCRIPT_DIR = PHYSICS_ROOT / "scripts"
+if str(REPO_ROOT / "FEM" / "scripts") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "FEM" / "scripts"))
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
-if str(PHYSICS_ROOT / "scripts") not in sys.path:
-    sys.path.insert(0, str(PHYSICS_ROOT / "scripts"))
 
-import fem_main_3d as fem3d
-from coupled_participation_audit import _load_coupled_mode_dense_vector, _load_modes
-from fem_mode_array_utils import MODE_VECTOR_FILE_SUFFIX, dense_to_csr_f32_column, save_mode_csr
-from fem_worker_single import _apply_master_worker_solver_profile, hz_result_tag
-from mode_diagnostics import (
-    compute_mass_energy_participation,
-    diagnose_mixed_mode,
-    merge_scaling_metadata,
-    pressure_subspace_mac,
-)
+from fem_mode_array_utils import load_mode_column_any
 from v2_sensitivity_gates import run_mesh_gates
-from v2_sensitivity_mesh import (
-    NOMINAL_GEOMETRY,
-    build_sample_mesh,
-    sample_geometry,
-    sample_mesh_path,
-)
+from v2_sensitivity_mesh import build_sample_mesh, sample_geometry, sample_mesh_path
+
+SOLVE_SCRIPT = SCRIPT_DIR / "v2_sensitivity_solve.py"
+
+
+def _hz_result_tag(hz: float) -> int:
+    return int(round(float(hz) * 1000))
+
+
+def _pressure_subspace_mac(
+    vec_a: np.ndarray,
+    vec_b: np.ndarray,
+    p_to_W: np.ndarray,
+    *,
+    scale_p_a: float = 1.0,
+    scale_p_b: float = 1.0,
+) -> float:
+    p_idx = np.asarray(p_to_W, dtype=np.int32).ravel()
+    if p_idx.size == 0:
+        return float("nan")
+    pa = np.asarray(vec_a[p_idx], dtype=np.complex128).ravel() * float(scale_p_a)
+    pb = np.asarray(vec_b[p_idx], dtype=np.complex128).ravel() * float(scale_p_b)
+    na = float(np.linalg.norm(pa))
+    nb = float(np.linalg.norm(pb))
+    if na <= 0.0 or nb <= 0.0:
+        return float("nan")
+    return float(abs(np.vdot(pa, pb)) / (na * nb))
 
 V2_ROOT = PHYSICS_ROOT / "coupled_physical_core_v2"
 V2_CONFIG = PHYSICS_ROOT / "configs" / "coupled_physical_core_v2.json"
@@ -84,151 +94,62 @@ def _resolve_mesh_path(sample: Dict[str, Any]) -> Path:
     return VALIDATION_MESH
 
 
-def _apply_material_overrides(cfg: dict, sample: Dict[str, Any]) -> None:
-    overrides = sample.get("materials_override") or {}
-    top = overrides.get("top") or {}
-    scale = float(top.get("E_L_scale", 1.0))
-    if abs(scale - 1.0) > 1.0e-12:
-        mat = cfg.setdefault("materials", {}).setdefault("top", {})
-        mat["E_L"] = float(mat.get("E_L", 0.0)) * scale
+def _load_mode_dense(path: Path, n_coupled_W: int) -> np.ndarray:
+    col = load_mode_column_any(path)
+    dense = np.asarray(col.toarray(), dtype=np.float64).ravel()
+    if dense.size != int(n_coupled_W):
+        raise ValueError(f"mode length {dense.size} != n_coupled_W {n_coupled_W} in {path}")
+    return dense
 
 
-def _solve_v2_sample(
-    cfg_base: dict,
+def _run_mpi_v2_solve(
+    sample: Dict[str, Any],
     mesh_path: Path,
     *,
-    sample_id: str,
     target_hz: float,
-) -> Dict[str, Any]:
+    log_path: Path,
+) -> Tuple[int, Dict[str, Any]]:
+    """Launch v2 solve under mpiexec -n 1 (single MPI child per sample)."""
+    sample_id = str(sample["id"])
     case_dir = SENS_ROOT / "samples" / sample_id
-    sorting = case_dir / "sorting"
-    for d in (sorting, case_dir / "logs", case_dir / "modes", case_dir / "diagnostics"):
-        d.mkdir(parents=True, exist_ok=True)
-    fem3d.set_sorting_root(sorting.resolve())
-
-    cfg = copy.deepcopy(cfg_base)
-    sc = cfg.setdefault("solver", {})
-    sc["mesh_file"] = str(mesh_path.resolve())
-    sc["coupled_physical_core_v2_diagnosis"] = True
-    sc["coupled_physical_core_v2_coupling_enabled"] = True
-    sc["fsi_coupling_gain"] = 1.0
-    sc["fsi_nitsche_enable"] = False
-    sc["physics_integrity_capture"] = True
-    sc["coupled_air_pressure_restriction_diagnosis"] = True
-    sc["physics_integrity_branch"] = f"v2-sensitivity-{sample_id}"
-    sc["_worker_target_hz"] = target_hz
-    sc["_worker_harvest_lo_hz"] = BAND_LO
-    sc["_worker_harvest_hi_hz"] = BAND_HI
-
-    eps_band_solver = str(sc.get("eps_band_solver", "shift_invert")).strip() or "shift_invert"
-    nm = _apply_master_worker_solver_profile(
-        cfg,
-        num_modes=int(sc.get("num_modes", 12)),
-        structural_only=False,
-        eps_band_solver=eps_band_solver,
-    )
-    lam_t = (2.0 * math.pi * target_hz) ** 2
-    sc["_worker_eps_target_lambda"] = lam_t
-    cfg["_worker_target_hz"] = target_hz
-    cfg["_worker_num_modes"] = nm
-    cfg["geometry"] = sample_geometry(sample)
-
-    t0 = time.perf_counter()
-    _msh, _W, freqs_hz, eigvecs, _nu, _np = fem3d._solve_coupled_evp(
-        mesh_file=mesh_path,
-        config=cfg,
-        num_modes=nm,
-    )
-    elapsed = time.perf_counter() - t0
-
-    restr = cfg.get("_coupled_air_pressure_restriction") or {}
-    u_to_W = np.asarray(cfg["_coupled_air_u_to_W_map"], dtype=np.int32).ravel()
-    p_to_W = np.asarray(cfg["_coupled_air_p_to_W_map"], dtype=np.int32).ravel()
-    gnhep = merge_scaling_metadata(case_dir)
-    pi = cfg.get("_physics_integrity") or {}
-    if isinstance(pi, dict) and pi.get("gnhep_scales"):
-        gnhep.update({k: float(v) for k, v in pi["gnhep_scales"].items()})
-
-    # Replay A/M for physical energy (no second eigensolve).
-    cfg_am = copy.deepcopy(cfg)
-    cfg_am.setdefault("solver", {})["coupled_air_pressure_restriction_replay_audit"] = True
-    sorting_am = case_dir / "sorting_energy"
-    sorting_am.mkdir(parents=True, exist_ok=True)
-    fem3d.set_sorting_root(sorting_am.resolve())
-    _m2, _W2, A, M = fem3d._solve_coupled_evp(
-        mesh_file=mesh_path,
-        config=cfg_am,
-        num_modes=0,
-        solve_evp=False,
-    )
-    fem3d.set_sorting_root(sorting.resolve())
-
-    hz_tag = hz_result_tag(target_hz)
-    mode_rows: List[Dict[str, Any]] = []
-    in_band: List[Dict[str, Any]] = []
-    n_modes = int(eigvecs.shape[1]) if eigvecs.ndim == 2 else 0
-    for j in range(n_modes):
-        vec = eigvecs[:, j]
-        mode_path = case_dir / "modes" / f"mode_{hz_tag}_{j:03d}{MODE_VECTOR_FILE_SUFFIX}"
-        save_mode_csr(mode_path, dense_to_csr_f32_column(vec))
-        diag = diagnose_mixed_mode(
-            vec, u_to_W=u_to_W, p_to_W=p_to_W, gnhep=gnhep, frequency_hz=float(freqs_hz[j])
-        )
-        energy = compute_mass_energy_participation(
-            vec, M, A, u_to_W=u_to_W, p_to_W=p_to_W, gnhep=gnhep
-        )
-        row = {
-            **diag,
-            **{k: energy[k] for k in energy if k.endswith("_phys") or k == "p_frac_energy_phys"},
-            "mode_index": j,
-            "frequency_hz": float(freqs_hz[j]),
-            "vector_path": str(mode_path.relative_to(case_dir)).replace("\\", "/"),
-            "mode_class_physical_energy": _classify_phys_energy(
-                float(energy["p_frac_energy_phys"])
-            ),
-        }
-        mode_rows.append(row)
-        if BAND_LO <= float(freqs_hz[j]) <= BAND_HI:
-            in_band.append(row)
-
-    try:
-        A.destroy()
-        M.destroy()
-    except Exception:
-        pass
-
-    eps_diag = cfg.get("_eps_batch_diagnostics") or sc.get("_eps_batch_diagnostics") or {}
-    ref_hz = BASELINE_F_HZ
-    acoustic_pool = [
-        m
-        for m in in_band
-        if m["mode_class_physical_energy"] == "acoustic_dominated"
-        or float(m["p_frac_energy_phys"]) >= 0.35
+    case_dir.mkdir(parents=True, exist_ok=True)
+    sample_json = case_dir / "sample_spec.json"
+    sample_json.write_text(json.dumps(sample, indent=2), encoding="utf-8")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "mpiexec",
+        "-n",
+        "1",
+        sys.executable,
+        str(SOLVE_SCRIPT),
+        "--sample-id",
+        sample_id,
+        "--mesh",
+        str(mesh_path.resolve()),
+        "--sample-json",
+        str(sample_json.resolve()),
+        "--target-hz",
+        str(float(target_hz)),
     ]
-    pool = acoustic_pool if acoustic_pool else in_band
-    nearest = (
-        min(pool, key=lambda m: abs(float(m["frequency_hz"]) - ref_hz)) if pool else None
-    )
-
-    result = {
-        "sample_id": sample_id,
-        "elapsed_s": elapsed,
-        "mesh_file": str(mesh_path),
-        "n_reduced_W": int(restr.get("n_reduced_W", -1)),
-        "n_u_active": int(restr.get("n_u_active", u_to_W.size)),
-        "n_p_active": int(restr.get("n_p_active", p_to_W.size)),
-        "p_to_W": p_to_W.tolist(),
-        "eps_batch_diagnostics": eps_diag,
-        "nconv_marked": int(eps_diag.get("nconv_marked", -1)),
-        "v2_converged": int(eps_diag.get("nconv_marked", -1)) > 0,
-        "in_band_modes": in_band,
-        "nearest_acoustic_branch": nearest,
-        "num_modes_saved": n_modes,
-        "gnhep_scales": {k: float(gnhep.get(k, 1.0)) for k in ("s_uu", "s_pp", "s_couple")},
-    }
-    _write_json(case_dir / "results" / f"result_{hz_tag}.json", result)
-    _write_json(case_dir / "diagnostics" / "mode_energy_summary.json", {"modes": mode_rows})
-    return result
+    with open(log_path, "w", encoding="utf-8") as logf:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(REPO_ROOT),
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+    result_path = case_dir / "results" / f"result_{_hz_result_tag(target_hz)}.json"
+    if not result_path.is_file():
+        return int(proc.returncode), {
+            "error": f"solve worker exit {proc.returncode}; missing {result_path}",
+            "solve_log": str(log_path),
+            "mpi_command": " ".join(cmd),
+        }
+    solve = json.loads(result_path.read_text(encoding="utf-8"))
+    solve["solve_exit_code"] = int(proc.returncode)
+    solve["solve_log"] = str(log_path)
+    return int(proc.returncode), solve
 
 
 def _ingest_baseline(manifest: Dict[str, Any]) -> Dict[str, Any]:
@@ -241,7 +162,7 @@ def _ingest_baseline(manifest: Dict[str, Any]) -> Dict[str, Any]:
         .get("_worker_target_hz", 244.39)
     )
     prior = json.loads(
-        (case_dir / "results" / f"result_{hz_result_tag(target_hz)}.json").read_text(
+        (case_dir / "results" / f"result_{_hz_result_tag(target_hz)}.json").read_text(
             encoding="utf-8"
         )
     )
@@ -268,9 +189,16 @@ def _load_baseline_pressure_reference(
     frozen = manifest["frozen_baseline"]
     ref_hz = float(frozen["acoustic_reference_f_hz"])
     case_dir = V2_ROOT / str(frozen["subcase_reference"])
-    meta, mode_files = _load_modes(case_dir, target_hz)
+    hz_tag = _hz_result_tag(target_hz)
+    mode_files = sorted((case_dir / "modes").glob(f"mode_{hz_tag}_*.smx.npz"))
+    if not mode_files:
+        mode_files = sorted((case_dir / "modes").glob("mode_*.smx.npz"))
     if not mode_files:
         return None
+    diag_path = case_dir / "diagnostics" / "mode_physics_diagnostics.json"
+    meta: List[Dict[str, Any]] = []
+    if diag_path.is_file():
+        meta = list(json.loads(diag_path.read_text(encoding="utf-8")).get("modes") or [])
     row = next(
         (m for m in meta if abs(float(m.get("frequency_hz", 0)) - ref_hz) < 0.05),
         None,
@@ -278,25 +206,20 @@ def _load_baseline_pressure_reference(
     if row and row.get("vector_path"):
         ref_path = (case_dir / str(row["vector_path"])).resolve()
     else:
-        ref_path = sorted((case_dir / "modes").glob("mode_*.smx.npz"))[0]
-        row = meta[0] if meta else {}
-    prior_path = V2_ROOT / str(frozen["subcase_reference"]) / "results" / f"result_{hz_result_tag(target_hz)}.json"
+        ref_path = mode_files[0]
+        row = row or {}
+    prior_path = case_dir / "results" / f"result_{hz_tag}.json"
     prior = json.loads(prior_path.read_text(encoding="utf-8")) if prior_path.is_file() else {}
     n_W = int(prior.get("n_reduced_W", 112100))
-    vec, _ = _load_coupled_mode_dense_vector(
-        ref_path, n_coupled_W=n_W, mode_index=int(row.get("mode_index", 0))
-    )
+    vec = _load_mode_dense(ref_path, n_W)
     p_to_W = np.asarray(prior.get("p_to_W") or [], dtype=np.int32).ravel()
     if p_to_W.size == 0:
-        coupled_prior = json.loads(
-            (
-                V2_ROOT
-                / str(frozen["subcase_coupled"])
-                / "results"
-                / f"result_{hz_result_tag(target_hz)}.json"
-            ).read_text(encoding="utf-8")
+        coupled_prior_path = (
+            V2_ROOT / str(frozen["subcase_coupled"]) / "results" / f"result_{hz_tag}.json"
         )
-        p_to_W = np.asarray(coupled_prior.get("p_to_W") or [], dtype=np.int32).ravel()
+        if coupled_prior_path.is_file():
+            coupled_prior = json.loads(coupled_prior_path.read_text(encoding="utf-8"))
+            p_to_W = np.asarray(coupled_prior.get("p_to_W") or [], dtype=np.int32).ravel()
     return {
         "frequency_hz": float(row.get("frequency_hz", ref_hz)),
         "vector": vec,
@@ -341,7 +264,7 @@ def _mac_to_baseline(
             "reason": "p_to_W index map differs from baseline (remeshed geometry)",
         }
     s_p = max(float(gnhep.get("s_pp", 1.0)), 1.0e-30)
-    mac = pressure_subspace_mac(
+    mac = _pressure_subspace_mac(
         ref_vec, cand_vec, cand_p_to_W, scale_p_a=s_p, scale_p_b=s_p
     )
     return {
@@ -419,9 +342,14 @@ def _process_sample(
         "materials_override": sample.get("materials_override") or {},
     }
 
-    if sample.get("requires_remesh") and not skip_solve:
-        mesh_path = build_sample_mesh(sample)
-        row["mesh_built"] = True
+    if sample.get("requires_remesh"):
+        try:
+            mesh_path = build_sample_mesh(sample)
+            row["mesh_built"] = True
+        except Exception as exc:
+            row["status"] = "mesh_build_failed"
+            row["error"] = f"{type(exc).__name__}: {exc}"
+            return row
     row["mesh_file"] = str(mesh_path)
 
     if not mesh_path.is_file():
@@ -437,24 +365,27 @@ def _process_sample(
     row["mesh_gates"] = gates
     if not gates.get("combined_mesh_gate_pass"):
         row["status"] = "mesh_gate_failed"
+        row["error"] = (
+            "combined_mesh_gate_pass=False "
+            f"(aperture_exit={gates.get('aperture_audit_exit')} "
+            f"adjacency_exit={gates.get('adjacency_audit_exit')})"
+        )
         return row
 
     if skip_solve:
         row["status"] = "gates_only"
         return row
 
-    cfg = copy.deepcopy(cfg_base)
-    cfg["geometry"] = geom
-    _apply_material_overrides(cfg, sample)
-    try:
-        solve = _solve_v2_sample(cfg, mesh_path, sample_id=sample_id, target_hz=target_hz)
-    except Exception as exc:
+    log_path = case_dir / "logs" / "v2_solve.log"
+    rc, solve = _run_mpi_v2_solve(sample, mesh_path, target_hz=target_hz, log_path=log_path)
+    if rc != 0 or not solve.get("v2_converged"):
+        row.update(solve)
         row["status"] = "solve_failed"
-        row["error"] = f"{type(exc).__name__}: {exc}"
+        row["error"] = solve.get("error") or f"mpi solve exit {rc}"
         return row
 
     row.update(solve)
-    row["status"] = "ok" if solve.get("v2_converged") else "v2_not_converged"
+    row["status"] = "ok"
     nearest = solve.get("nearest_acoustic_branch") or {}
     if nearest:
         row["nearest_acoustic_f_hz"] = float(nearest["frequency_hz"])
@@ -472,14 +403,8 @@ def _process_sample(
     if baseline_ref and nearest.get("vector_path"):
         cand_path = (case_dir / str(nearest["vector_path"])).resolve()
         n_W = int(solve.get("n_reduced_W", 112100))
-        cand_vec, _ = _load_coupled_mode_dense_vector(
-            cand_path,
-            n_coupled_W=n_W,
-            mode_index=int(nearest.get("mode_index", 0)),
-        )
-        gnhep = dict(solve.get("gnhep_scales") or {})
-        gnhep_full = merge_scaling_metadata(case_dir)
-        gnhep_full.update(gnhep)
+        cand_vec = _load_mode_dense(cand_path, n_W)
+        gnhep_full = dict(solve.get("gnhep_scales") or {})
         p_map = np.asarray(solve.get("p_to_W") or [], dtype=np.int32).ravel()
         row["pressure_mac_to_baseline"] = _mac_to_baseline(
             cand_vec,
@@ -499,14 +424,12 @@ def main() -> int:
     parser.add_argument("--gates-only", action="store_true", help="Build mesh + gates, skip solve")
     args = parser.parse_args()
 
-    if MPI.COMM_WORLD.size != 1:
-        if MPI.COMM_WORLD.rank == 0:
-            print("[v2_sensitivity] Requires mpiexec -n 1", file=sys.stderr)
-        return 2
-
     manifest = _load_manifest()
-    cfg_base = json.loads(V2_CONFIG.read_text(encoding="utf-8"))
-    target_hz = float(cfg_base.get("solver", {}).get("_worker_target_hz", 244.39))
+    target_hz = float(
+        json.loads(V2_CONFIG.read_text(encoding="utf-8"))
+        .get("solver", {})
+        .get("_worker_target_hz", 244.39)
+    )
 
     pilot_ids = set(manifest.get("pilot_sample_ids") or [])
     samples = list(manifest.get("samples") or [])
@@ -526,17 +449,17 @@ def main() -> int:
         if sample.get("ingest_only"):
             results[sid] = results.get(sid) or _ingest_baseline(manifest)
             continue
-        if MPI.COMM_WORLD.rank == 0:
-            print(f"[v2_sensitivity] sample={sid}", flush=True)
+        print(f"[v2_sensitivity] sample={sid}", flush=True)
         row = _process_sample(
             sample,
-            cfg_base,
+            {},
             manifest,
             baseline_ref,
             target_hz=target_hz,
             skip_solve=args.gates_only,
         )
         results[sid] = row
+        _write_json(DIAG_DIR / "v2_sensitivity_validation_summary.partial.json", {"samples": results})
 
     for sid, row in list(results.items()):
         sample = next((s for s in manifest["samples"] if s["id"] == sid), None)
@@ -569,35 +492,41 @@ def main() -> int:
     }
     _write_json(DIAG_DIR / "v2_sensitivity_validation_summary.json", summary)
 
-    if MPI.COMM_WORLD.rank == 0:
-        md = [
-            "# v2 sensitivity validation summary",
-            "",
-            f"Pilot mode: `{args.pilot}`",
-            "",
-            "| sample | gates | v2 | f_acoustic Hz | Δf | p_frac_energy | MAC |",
-            "|--------|-------|----|--------------:|---:|--------------:|----:|",
-        ]
-        for sid, row in results.items():
-            gates = "—" if row.get("mesh_gates_skipped") else (
-                "pass" if (row.get("mesh_gates") or {}).get("combined_mesh_gate_pass") else "FAIL"
-            )
-            v2 = "—" if row.get("ingest_only") else ("ok" if row.get("v2_converged") else "no")
-            f_a = row.get("nearest_acoustic_f_hz", row.get("nearest_acoustic_branch", {}).get("frequency_hz", float("nan")))
-            mac = (row.get("pressure_mac_to_baseline") or {}).get("mac_pressure_gnhep_undo_s_pp")
-            mac_s = f"{mac:.4f}" if mac is not None and math.isfinite(float(mac)) else "n/a"
-            md.append(
-                f"| {sid} | {gates} | {v2} | {float(f_a):.6f} | "
-                f"{row.get('delta_f_hz_from_baseline', float('nan')):+.6f} | "
-                f"{row.get('p_frac_energy_phys', float('nan')):.4f} | {mac_s} |"
-            )
-        (DIAG_DIR / "v2_sensitivity_validation_summary.md").write_text(
-            "\n".join(md) + "\n",
-            encoding="utf-8",
+    md = [
+        "# v2 sensitivity validation summary",
+        "",
+        f"Pilot mode: `{args.pilot}`",
+        "",
+        "| sample | gates | v2 | f_acoustic Hz | Δf | p_frac_energy | MAC |",
+        "|--------|-------|----|--------------:|---:|--------------:|----:|",
+    ]
+    for sid, row in results.items():
+        gates = "—" if row.get("mesh_gates_skipped") else (
+            "pass" if (row.get("mesh_gates") or {}).get("combined_mesh_gate_pass") else "FAIL"
         )
-        print(f"[v2_sensitivity] wrote {DIAG_DIR / 'v2_sensitivity_validation_summary.json'}")
-
-    return 0
+        v2 = "—" if row.get("ingest_only") else ("ok" if row.get("v2_converged") else "no")
+        f_a = row.get(
+            "nearest_acoustic_f_hz",
+            (row.get("nearest_acoustic_branch") or {}).get("frequency_hz", float("nan")),
+        )
+        mac = (row.get("pressure_mac_to_baseline") or {}).get("mac_pressure_gnhep_undo_s_pp")
+        mac_s = f"{mac:.4f}" if mac is not None and math.isfinite(float(mac)) else "n/a"
+        md.append(
+            f"| {sid} | {gates} | {v2} | {float(f_a):.6f} | "
+            f"{row.get('delta_f_hz_from_baseline', float('nan')):+.6f} | "
+            f"{row.get('p_frac_energy_phys', float('nan')):.4f} | {mac_s} |"
+        )
+    (DIAG_DIR / "v2_sensitivity_validation_summary.md").write_text(
+        "\n".join(md) + "\n",
+        encoding="utf-8",
+    )
+    print(f"[v2_sensitivity] wrote {DIAG_DIR / 'v2_sensitivity_validation_summary.json'}")
+    failed = [
+        sid
+        for sid, r in results.items()
+        if not r.get("ingest_only") and r.get("status") != "ok"
+    ]
+    return 0 if not failed else 4
 
 
 if __name__ == "__main__":

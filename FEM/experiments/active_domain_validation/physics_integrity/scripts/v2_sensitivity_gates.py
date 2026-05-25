@@ -42,6 +42,9 @@ def run_mesh_gates(
     ).returncode
     adjacency_rc = subprocess.run(
         [
+            "mpiexec",
+            "-n",
+            "1",
             py,
             str(SCRIPT_DIR / "audit_soundhole_air_adjacency.py"),
             "--mesh",
