@@ -76,6 +76,27 @@ def _pressure_to_structure_forcing(
     }
 
 
+def _scipy_cg_compatible(
+    Kop: LinearOperator,
+    rhs: np.ndarray,
+    *,
+    rtol: float = 1.0e-8,
+    atol: float = 0.0,
+    maxiter: int = 1200,
+) -> Tuple[np.ndarray, int, str]:
+    """SciPy-version-tolerant CG: ``rtol`` (newer) then ``tol`` (older) on TypeError."""
+    base_kw = {"atol": atol, "maxiter": maxiter}
+    try:
+        delta_u, info = cg(Kop, rhs, rtol=rtol, **base_kw)
+        return np.asarray(delta_u, dtype=np.float64).ravel(), int(info), "rtol"
+    except TypeError as exc:
+        msg = str(exc).lower()
+        if "rtol" not in msg and "unexpected keyword" not in msg:
+            raise
+        delta_u, info = cg(Kop, rhs, tol=rtol, **base_kw)
+        return np.asarray(delta_u, dtype=np.float64).ravel(), int(info), "tol"
+
+
 def _solve_uu_structural_correction(
     A: Any,
     M: Any,
@@ -114,23 +135,54 @@ def _solve_uu_structural_correction(
         return {
             "converged": True,
             "cg_info": 0,
+            "cg_api": "skipped",
             "delta_u_norm": 0.0,
             "rhs_u_norm": rhs_norm,
             "note": "zero structural RHS; correction skipped",
         }
 
-    delta_u, info = cg(Kop, rhs, rtol=1.0e-8, atol=0.0, maxiter=1200)
+    try:
+        delta_u, info, cg_api = _scipy_cg_compatible(
+            Kop, rhs, rtol=1.0e-8, atol=0.0, maxiter=1200
+        )
+    except Exception as exc:
+        return {
+            "converged": False,
+            "cg_info": -1,
+            "cg_api": "failed",
+            "delta_u_norm": float("nan"),
+            "rhs_u_norm": rhs_norm,
+            "ksp_relative_residual": float("nan"),
+            "failure_reason": f"{type(exc).__name__}: {exc}",
+            "note": "uu-balance CG raised before convergence check",
+        }
+
     converged = int(info) == 0
     rel_ksp_res = float("nan")
     if converged and rhs_norm > 0:
         Ku = matvec_u(delta_u)
         rel_ksp_res = float(np.linalg.norm(Ku - rhs) / rhs_norm)
+    elif not converged:
+        return {
+            "converged": False,
+            "cg_info": int(info),
+            "cg_api": cg_api,
+            "delta_u_norm": float(np.linalg.norm(delta_u)),
+            "rhs_u_norm": rhs_norm,
+            "ksp_relative_residual": rel_ksp_res,
+            "failure_reason": (
+                f"CG did not converge (info={int(info)}); operator may be singular, "
+                "indefinite, or poorly conditioned"
+            ),
+            "note": "uu-balance correction withheld",
+        }
 
     x_corr = np.asarray(x0, dtype=np.float64).ravel().copy()
     x_corr[u_idx] = x_corr[u_idx] + delta_u
     return {
         "converged": converged,
         "cg_info": int(info),
+        "cg_api": cg_api,
         "delta_u_norm": float(np.linalg.norm(delta_u)),
         "rhs_u_norm": rhs_norm,
         "ksp_relative_residual": rel_ksp_res,
@@ -216,13 +268,19 @@ def _structural_response_audit(
     alpha_audit: float,
     baseline_rel: float,
 ) -> Dict[str, Any]:
-    A, M, _cfg, u_map, p_map, _restr = _assemble_reduced_continuation_operator(
-        cfg_base,
-        config_path,
-        alpha_fsi=alpha_audit,
-        sorting_subdir="sorting_aup_structural_response",
-    )
+    base: Dict[str, Any] = {
+        "alpha_fsi": float(alpha_audit),
+        "baseline_alpha0_relative_residual": float(baseline_rel),
+        "status": "ok",
+    }
+    A = M = None
     try:
+        A, M, _cfg, u_map, p_map, _restr = _assemble_reduced_continuation_operator(
+            cfg_base,
+            config_path,
+            alpha_fsi=alpha_audit,
+            sorting_subdir="sorting_aup_structural_response",
+        )
         forcing = _pressure_to_structure_forcing(
             A, M, x0, lam0=lam0, u_idx=u_map, p_idx=p_map
         )
@@ -249,35 +307,64 @@ def _structural_response_audit(
             p_idx=p_map,
             rhs_u=rhs_u,
         )
-        x_corr = solve.pop("x_corrected")
-        after = _block_residual_contributions(
-            A, M, x_corr, lam0=lam0, u_idx=u_map, p_idx=p_map
+        rel_before = float(before["relative_residual"])
+        base.update(
+            {
+                "pressure_to_structure_forcing": forcing,
+                "relative_residual_before_correction": rel_before,
+                "uu_balance_solve": solve,
+                "block_A_up_fraction_before": float(
+                    before["block_residual_contributions"]["A_up"][
+                        "fraction_of_total_residual_norm"
+                    ]
+                ),
+            }
         )
+        if solve.get("converged") and "x_corrected" in solve:
+            x_corr = solve.pop("x_corrected")
+            after = _block_residual_contributions(
+                A, M, x_corr, lam0=lam0, u_idx=u_map, p_idx=p_map
+            )
+            rel_after = float(after["relative_residual"])
+            base.update(
+                {
+                    "relative_residual_after_correction": rel_after,
+                    "residual_reduction_factor": rel_before / max(rel_after, 1.0e-30),
+                    "block_A_up_fraction_after": float(
+                        after["block_residual_contributions"]["A_up"][
+                            "fraction_of_total_residual_norm"
+                        ]
+                    ),
+                }
+            )
+        else:
+            base["status"] = "uu_balance_not_converged"
+            base["relative_residual_after_correction"] = float("nan")
+            base["residual_reduction_factor"] = float("nan")
+            base["correction_note"] = solve.get(
+                "failure_reason",
+                solve.get("note", "uu-balance CG did not converge"),
+            )
+        return base
+    except Exception as exc:
+        return {
+            **base,
+            "status": "failed",
+            "error": f"{type(exc).__name__}: {exc}",
+            "uu_balance_solve": {"converged": False, "cg_api": "failed"},
+            "correction_note": "structural-response stage failed; alpha sweep retained",
+        }
     finally:
-        try:
-            A.destroy()
-            M.destroy()
-        except Exception:
-            pass
-
-    rel_before = float(before["relative_residual"])
-    rel_after = float(after["relative_residual"])
-    reduction = rel_before / max(rel_after, 1.0e-30)
-    return {
-        "alpha_fsi": float(alpha_audit),
-        "pressure_to_structure_forcing": forcing,
-        "relative_residual_before_correction": rel_before,
-        "relative_residual_after_correction": rel_after,
-        "residual_reduction_factor": reduction,
-        "baseline_alpha0_relative_residual": float(baseline_rel),
-        "uu_balance_solve": solve,
-        "block_A_up_fraction_before": float(
-            before["block_residual_contributions"]["A_up"]["fraction_of_total_residual_norm"]
-        ),
-        "block_A_up_fraction_after": float(
-            after["block_residual_contributions"]["A_up"]["fraction_of_total_residual_norm"]
-        ),
-    }
+        if A is not None:
+            try:
+                A.destroy()
+            except Exception:
+                pass
+        if M is not None:
+            try:
+                M.destroy()
+            except Exception:
+                pass
 
 
 def _diagnostic_verdict(
@@ -312,10 +399,12 @@ def _diagnostic_verdict(
         and rel_after <= max(3.0 * baseline_rel, 2.0e-2)
     ):
         outcomes.append("STRUCTURAL_RESPONSE_BALANCES_PRESSURE_FORCE_PLAUSIBLY")
-    elif not solve.get("converged"):
-        structural["correction_note"] = (
-            "uu-balance CG did not converge; structural-balance verdict withheld"
-        )
+    elif structural.get("status") != "ok" or not solve.get("converged"):
+        if not structural.get("correction_note"):
+            structural["correction_note"] = (
+                "uu-balance CG did not converge or structural stage failed; "
+                "structural-balance verdict withheld"
+            )
 
     note_parts = [
         f"A_up linear-in-alpha fit max rel err={max_fit_err:.3f}, CV(r_up/alpha)={cv_ratio:.3f}",
@@ -434,14 +523,29 @@ def main() -> int:
     baseline_rel = float(baseline_row["relative_residual"])
     scaling = _analyze_alpha_scaling(sweep_rows, baseline_uu_pp_norm=baseline_uu)
 
-    structural = _structural_response_audit(
-        cfg_base,
-        config_path,
-        x0,
-        lam0=lam0,
-        alpha_audit=STRUCTURAL_CORRECTION_ALPHA,
-        baseline_rel=baseline_rel,
-    )
+    try:
+        structural = _structural_response_audit(
+            cfg_base,
+            config_path,
+            x0,
+            lam0=lam0,
+            alpha_audit=STRUCTURAL_CORRECTION_ALPHA,
+            baseline_rel=baseline_rel,
+        )
+    except Exception as exc:
+        structural = {
+            "status": "failed",
+            "error": f"{type(exc).__name__}: {exc}",
+            "alpha_fsi": float(STRUCTURAL_CORRECTION_ALPHA),
+            "uu_balance_solve": {"converged": False, "cg_api": "failed"},
+            "correction_note": "structural-response stage failed; alpha sweep retained",
+        }
+        if MPI.COMM_WORLD.rank == 0:
+            print(
+                "[physical_fsi_aup_coupling_audit][warn] structural stage failed: "
+                f"{structural['error']}",
+                flush=True,
+            )
 
     verdict = _diagnostic_verdict(scaling, structural, baseline_rel=baseline_rel)
 
@@ -503,13 +607,28 @@ def main() -> int:
                 f"{scaling['alpha_at_which_A_up_residual_norm_equals_baseline_uu_pp']:.4e}",
                 "",
                 "## Structural response",
-                f"- ||f_u|| (A_up p) @ alpha={STRUCTURAL_CORRECTION_ALPHA}: "
-                f"{structural['pressure_to_structure_forcing']['A_up_force_u_norm']:.4e}",
-                f"- rel. residual before/after uu correction: "
-                f"{structural['relative_residual_before_correction']:.4e} / "
-                f"{structural['relative_residual_after_correction']:.4e}",
             ]
         )
+        if structural.get("status") == "ok" and structural.get("pressure_to_structure_forcing"):
+            forcing = structural["pressure_to_structure_forcing"]
+            md.append(
+                f"- ||f_u|| (A_up p) @ alpha={STRUCTURAL_CORRECTION_ALPHA}: "
+                f"{forcing['A_up_force_u_norm']:.4e}"
+            )
+            solve = structural.get("uu_balance_solve") or {}
+            if solve.get("cg_api"):
+                md.append(f"- CG API path: `{solve['cg_api']}`")
+            md.append(
+                f"- rel. residual before/after uu correction: "
+                f"{structural.get('relative_residual_before_correction', float('nan')):.4e} / "
+                f"{structural.get('relative_residual_after_correction', float('nan')):.4e}"
+            )
+        else:
+            md.append(
+                f"- structural stage: `{structural.get('status', 'unknown')}` "
+                f"({structural.get('correction_note', structural.get('error', ''))})"
+            )
+        md.append("")
         (out_dir / "physical_fsi_aup_coupling_audit.md").write_text(
             "\n".join(md) + "\n", encoding="utf-8"
         )
