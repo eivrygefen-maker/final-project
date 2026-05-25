@@ -4068,20 +4068,27 @@ def _slepc_eps_apply_continuation_seed(
             )
         except Exception:
             pass
-        eps.setInitialSpace(1, [v0])
+        try:
+            eps.setInitialSpace([v0])
+        except AttributeError as exc:
+            raise RuntimeError(
+                "continuation pilot: SLEPc EPS.setInitialSpace unavailable "
+                "(cannot run seeded branch-tracking pilot)."
+            ) from exc
+        except Exception as exc:
+            raise RuntimeError(
+                "continuation pilot: EPS.setInitialSpace failed "
+                f"({type(exc).__name__}: {exc})"
+            ) from exc
         meta["slepc_setInitialSpace"] = True
-    except AttributeError as exc:
-        raise RuntimeError(
-            "SLEPc EPS.setInitialSpace unavailable; cannot run continuation seed pilot."
-        ) from exc
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            _emit(
+                "[physics_integrity][physical_fsi_continuation] "
+                f"continuation_seed_applied=True seed_length={meta['seed_vector_length']}",
+                status_callback=status_callback,
+            )
     finally:
         v0.destroy()
-    if MPI.COMM_WORLD.rank == ROOT_RANK:
-        _emit(
-            "[physics_integrity][physical_fsi_continuation] EPS initial space: "
-            f"1 vector, length={meta['seed_vector_length']}",
-            status_callback=status_callback,
-        )
     return meta
 
 
