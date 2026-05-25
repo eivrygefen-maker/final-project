@@ -73,6 +73,14 @@ physics_integrity/v2_sensitivity_validation/
 bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_sensitivity_pilot.sh
 ```
 
+**Large-radius acoustic branch capture** (if 220–265 Hz harvest missed the shifted branch):
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_sensitivity_pilot_large_capture.sh
+```
+
+Uses existing `hole_radius_large.msh` and gates; solves 255–300 Hz with energy-based branch selection only.
+
 **Full suite (after pilot passes):**
 
 ```bash

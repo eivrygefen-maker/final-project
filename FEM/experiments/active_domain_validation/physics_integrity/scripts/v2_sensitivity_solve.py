@@ -9,7 +9,7 @@ import math
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from mpi4py import MPI
@@ -34,15 +34,48 @@ from v2_sensitivity_mesh import sample_geometry
 
 SENS_ROOT = PHYSICS_ROOT / "v2_sensitivity_validation"
 V2_CONFIG = PHYSICS_ROOT / "configs" / "coupled_physical_core_v2.json"
-BAND_LO = 220.0
-BAND_HI = 265.0
-BASELINE_F_HZ = 244.39159990162557
+DEFAULT_BAND_LO = 220.0
+DEFAULT_BAND_HI = 265.0
 ENERGY_ACOUSTIC_THRESHOLD = 0.85
 
 
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _pick_acoustic_branch(
+    in_band: List[Dict[str, Any]],
+    *,
+    select_by_energy: bool,
+    reference_f_hz: float,
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Return (branch_row, selection_method)."""
+    if not in_band:
+        return None, "none"
+    if select_by_energy:
+        acoustic = [
+            m
+            for m in in_band
+            if m.get("mode_class_physical_energy") == "acoustic_dominated"
+            or float(m.get("p_frac_energy_phys", 0.0)) >= ENERGY_ACOUSTIC_THRESHOLD
+        ]
+        if acoustic:
+            best = max(acoustic, key=lambda m: float(m["p_frac_energy_phys"]))
+            return best, "max_p_frac_energy_phys_acoustic_dominated"
+        ranked = sorted(in_band, key=lambda m: float(m["p_frac_energy_phys"]), reverse=True)
+        if ranked and float(ranked[0]["p_frac_energy_phys"]) >= 0.35:
+            return ranked[0], "max_p_frac_energy_phys_relaxed"
+        return None, "no_acoustic_candidate_in_band"
+    pool = [
+        m
+        for m in in_band
+        if m.get("mode_class_physical_energy") == "acoustic_dominated"
+        or float(m.get("p_frac_energy_phys", 0.0)) >= 0.35
+    ]
+    use = pool if pool else in_band
+    best = min(use, key=lambda m: abs(float(m["frequency_hz"]) - reference_f_hz))
+    return best, "nearest_frequency_to_reference"
 
 
 def _classify_phys_energy(p_frac: float) -> str:
@@ -59,6 +92,20 @@ def main() -> int:
     parser.add_argument("--mesh", type=Path, required=True)
     parser.add_argument("--sample-json", type=Path, required=True)
     parser.add_argument("--target-hz", type=float, default=244.39)
+    parser.add_argument("--harvest-lo-hz", type=float, default=None)
+    parser.add_argument("--harvest-hi-hz", type=float, default=None)
+    parser.add_argument(
+        "--select-by-energy",
+        action="store_true",
+        help="Pick acoustic branch by max p_frac_energy_phys (not nearest f to reference)",
+    )
+    parser.add_argument(
+        "--reference-f-hz",
+        type=float,
+        default=244.394153389752,
+        help="Reference frequency for nearest-f selection (ignored if --select-by-energy)",
+    )
+    parser.add_argument("--num-modes", type=int, default=0, help="Override num_modes (0=cfg default)")
     args = parser.parse_args()
 
     if MPI.COMM_WORLD.size != 1:
@@ -71,6 +118,9 @@ def main() -> int:
     mesh_path = args.mesh.resolve()
     sample_id = str(args.sample_id)
     target_hz = float(args.target_hz)
+    band_lo = float(args.harvest_lo_hz if args.harvest_lo_hz is not None else DEFAULT_BAND_LO)
+    band_hi = float(args.harvest_hi_hz if args.harvest_hi_hz is not None else DEFAULT_BAND_HI)
+    reference_f_hz = float(args.reference_f_hz)
     case_dir = SENS_ROOT / "samples" / sample_id
     sorting = case_dir / "sorting"
     for d in (sorting, case_dir / "logs", case_dir / "modes", case_dir / "diagnostics"):
@@ -88,8 +138,9 @@ def main() -> int:
     sc["coupled_air_pressure_restriction_diagnosis"] = True
     sc["physics_integrity_branch"] = f"v2-sensitivity-{sample_id}"
     sc["_worker_target_hz"] = target_hz
-    sc["_worker_harvest_lo_hz"] = BAND_LO
-    sc["_worker_harvest_hi_hz"] = BAND_HI
+    sc["_worker_harvest_lo_hz"] = band_lo
+    sc["_worker_harvest_hi_hz"] = band_hi
+    sc["shift_invert_target_hz"] = target_hz
     cfg["geometry"] = sample_geometry(sample)
     mo = sample.get("materials_override") or {}
     top = mo.get("top") or {}
@@ -99,9 +150,10 @@ def main() -> int:
         mat["E_L"] = float(mat.get("E_L", 0.0)) * scale
 
     eps_band_solver = str(sc.get("eps_band_solver", "shift_invert")).strip() or "shift_invert"
+    nm_req = int(args.num_modes) if int(args.num_modes) > 0 else int(sc.get("num_modes", 12))
     nm = _apply_master_worker_solver_profile(
         cfg,
-        num_modes=int(sc.get("num_modes", 12)),
+        num_modes=nm_req,
         structural_only=False,
         eps_band_solver=eps_band_solver,
     )
@@ -164,7 +216,7 @@ def main() -> int:
             ),
         }
         mode_rows.append(row)
-        if BAND_LO <= float(freqs_hz[j]) <= BAND_HI:
+        if band_lo <= float(freqs_hz[j]) <= band_hi:
             in_band.append(row)
 
     try:
@@ -174,15 +226,10 @@ def main() -> int:
         pass
 
     eps_diag = cfg.get("_eps_batch_diagnostics") or sc.get("_eps_batch_diagnostics") or {}
-    acoustic_pool = [
-        m
-        for m in in_band
-        if m["mode_class_physical_energy"] == "acoustic_dominated"
-        or float(m["p_frac_energy_phys"]) >= 0.35
-    ]
-    pool = acoustic_pool if acoustic_pool else in_band
-    nearest = (
-        min(pool, key=lambda m: abs(float(m["frequency_hz"]) - BASELINE_F_HZ)) if pool else None
+    branch, sel_method = _pick_acoustic_branch(
+        in_band,
+        select_by_energy=bool(args.select_by_energy),
+        reference_f_hz=reference_f_hz,
     )
 
     result = {
@@ -196,16 +243,28 @@ def main() -> int:
         "eps_batch_diagnostics": eps_diag,
         "nconv_marked": int(eps_diag.get("nconv_marked", -1)),
         "v2_converged": int(eps_diag.get("nconv_marked", -1)) > 0,
+        "harvest_band_hz": [band_lo, band_hi],
+        "shift_invert_target_hz": target_hz,
+        "acoustic_branch_selection": sel_method,
         "in_band_modes": in_band,
-        "nearest_acoustic_branch": nearest,
+        "acoustic_branch_by_energy": branch if args.select_by_energy else None,
+        "nearest_acoustic_branch": branch,
         "num_modes_saved": n_modes,
         "gnhep_scales": {k: float(gnhep.get(k, 1.0)) for k in ("s_uu", "s_pp", "s_couple")},
     }
     _write_json(case_dir / "results" / f"result_{hz_tag}.json", result)
     _write_json(case_dir / "diagnostics" / "mode_energy_summary.json", {"modes": mode_rows})
     if MPI.COMM_WORLD.rank == 0:
-        print(f"[v2_sensitivity_solve] sample={sample_id} v2_converged={result['v2_converged']}")
-    return 0 if result["v2_converged"] else 3
+        f_br = float((branch or {}).get("frequency_hz", float("nan")))
+        p_br = float((branch or {}).get("p_frac_energy_phys", float("nan")))
+        print(
+            f"[v2_sensitivity_solve] sample={sample_id} v2_converged={result['v2_converged']} "
+            f"band=[{band_lo},{band_hi}] target={target_hz} selection={sel_method} "
+            f"f_branch={f_br:.6f} p_frac_energy={p_br:.4f}",
+            flush=True,
+        )
+    ok = bool(result["v2_converged"] and branch is not None)
+    return 0 if ok else 3
 
 
 if __name__ == "__main__":

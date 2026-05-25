@@ -7,7 +7,10 @@
     "validation_mesh": "mesh/validation_tiny_guitar_3d.msh",
     "acoustic_reference_f_hz": 244.39159990162557,
     "coupled_acoustic_match_f_hz": 244.394153389752,
-    "pressure_mac_baseline_to_enabled": 1.0
+    "coupled_acoustic_p_frac_energy_phys": 0.9998,
+    "pressure_mac_baseline_to_enabled": 1.0,
+    "hole_radius_large_capture_band_hz": [255.0, 300.0],
+    "hole_radius_large_capture_target_hz": 275.0
   },
   "pilot_sample_ids": ["hole_radius_small", "hole_radius_large"],
   "promotion_requires": [

@@ -65,6 +65,8 @@ VALIDATION_MESH = (EXPERIMENT_ROOT / "mesh" / "validation_tiny_guitar_3d.msh").r
 BAND_LO = 220.0
 BAND_HI = 265.0
 BASELINE_F_HZ = 244.39159990162557
+COUPLED_BASELINE_F_HZ = 244.394153389752
+COUPLED_BASELINE_P_FRAC = 0.9998
 FREQ_NOISE_HZ = 0.01
 ENERGY_ACOUSTIC_THRESHOLD = 0.85
 
@@ -130,6 +132,8 @@ def _run_mpi_v2_solve(
         str(sample_json.resolve()),
         "--target-hz",
         str(float(target_hz)),
+        "--reference-f-hz",
+        str(COUPLED_BASELINE_F_HZ),
     ]
     with open(log_path, "w", encoding="utf-8") as logf:
         proc = subprocess.run(
@@ -168,17 +172,27 @@ def _ingest_baseline(manifest: Dict[str, Any]) -> Dict[str, Any]:
     )
     nearest = prior.get("nearest_acoustic_mode") or {}
     in_band = prior.get("in_band_modes") or []
+    p_frac = float(frozen.get("coupled_acoustic_p_frac_energy_phys", COUPLED_BASELINE_P_FRAC))
+    f_coupled = float(frozen.get("coupled_acoustic_match_f_hz", COUPLED_BASELINE_F_HZ))
+    branch = nearest or {
+        "frequency_hz": f_coupled,
+        "p_frac_energy_phys": p_frac,
+        "mode_class_physical_energy": "acoustic_dominated",
+    }
     return {
         "sample_id": "baseline_nominal",
         "ingest_only": True,
         "mesh_file": str(VALIDATION_MESH),
         "mesh_gates_skipped": True,
         "v2_converged": True,
-        "n_p_active": int(prior.get("n_p_active", -1)),
-        "nearest_acoustic_branch": nearest,
+        "nearest_acoustic_f_hz": f_coupled,
+        "p_frac_energy_phys": p_frac,
+        "mode_class_physical_energy": "acoustic_dominated",
+        "nearest_acoustic_branch": branch,
         "in_band_modes": in_band,
         "source": str(case_dir),
-        "frozen_baseline_f_hz": float(frozen["acoustic_reference_f_hz"]),
+        "coupled_baseline_f_hz": f_coupled,
+        "disabled_acoustic_reference_f_hz": float(frozen["acoustic_reference_f_hz"]),
     }
 
 
@@ -389,7 +403,10 @@ def _process_sample(
     nearest = solve.get("nearest_acoustic_branch") or {}
     if nearest:
         row["nearest_acoustic_f_hz"] = float(nearest["frequency_hz"])
-        row["delta_f_hz_from_baseline"] = float(nearest["frequency_hz"]) - BASELINE_F_HZ
+        row["delta_f_hz_from_coupled_baseline"] = (
+            float(nearest["frequency_hz"]) - COUPLED_BASELINE_F_HZ
+        )
+        row["delta_f_hz_from_baseline"] = row["delta_f_hz_from_coupled_baseline"]
         row["p_frac_energy_phys"] = float(nearest.get("p_frac_energy_phys", float("nan")))
         row["structural_modal_energy_phys"] = float(
             nearest.get("structural_modal_energy_phys", float("nan"))
