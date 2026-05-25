@@ -627,6 +627,41 @@ def create_guitar_mesh():
     def get_volume_center_z(vol_tag):
         return _entity_center_of_mass(3, vol_tag)[2]
 
+    def _gmsh_seq_len(obj) -> int:
+        try:
+            return int(len(obj))
+        except TypeError:
+            return 0
+
+    def _gmsh_entity_dim_tag(ent, *, default_dim: int) -> Tuple[int, int]:
+        """Parse getEntitiesForPhysicalGroup entry (list/tuple or numpy row)."""
+        if isinstance(ent, (list, tuple)) and len(ent) >= 2:
+            return int(ent[0]), int(ent[1])
+        try:
+            flat = getattr(ent, "flat", None)
+            if callable(flat):
+                arr = flat()
+                if arr.size >= 2:
+                    return int(arr[0]), int(arr[1])
+        except Exception:
+            pass
+        return int(default_dim), int(ent)
+
+    def _gmsh_surface_uv_midpoint(surf_tag: int) -> Optional[Tuple[float, float]]:
+        try:
+            uv_lo, uv_hi = gmsh.model.getParametrizationBounds(2, int(surf_tag))
+            if _gmsh_seq_len(uv_lo) < 1 or _gmsh_seq_len(uv_hi) < 1:
+                return None
+            if _gmsh_seq_len(uv_lo) >= 2 and _gmsh_seq_len(uv_hi) >= 2:
+                return (
+                    0.5 * (float(uv_lo[0]) + float(uv_hi[0])),
+                    0.5 * (float(uv_lo[1]) + float(uv_hi[1])),
+                )
+            u0, u1 = float(uv_lo[0]), float(uv_hi[0])
+            return 0.5 * (u0 + u1), 0.0
+        except Exception:
+            return None
+
     def _curve_length_m(ctag):
         """Physical length (m) of OCC curve tag."""
         try:
@@ -661,11 +696,11 @@ def create_guitar_mesh():
     def get_surface_normal_signed_z(surf_tag):
         """Signed nz at surface midpoint (+Z = outward top). None if unavailable."""
         try:
-            uv_min, uv_max = gmsh.model.getParametrizationBounds(2, surf_tag)
-            u_mid = 0.5 * (uv_min[0] + uv_max[0])
-            v_mid = 0.5 * (uv_min[1] + uv_max[1])
-            n = gmsh.model.getNormal(surf_tag, [u_mid, v_mid])
-            if n and len(n) >= 3:
+            uv = _gmsh_surface_uv_midpoint(int(surf_tag))
+            if uv is None:
+                return None
+            n = gmsh.model.getNormal(int(surf_tag), [float(uv[0]), float(uv[1])])
+            if n is not None and _gmsh_seq_len(n) >= 3:
                 return float(n[2])
         except Exception:
             return None
@@ -678,11 +713,11 @@ def create_guitar_mesh():
 
     def get_surface_normal_vec(surf_tag):
         try:
-            uv_min, uv_max = gmsh.model.getParametrizationBounds(2, int(surf_tag))
-            u_mid = 0.5 * (uv_min[0] + uv_max[0])
-            v_mid = 0.5 * (uv_min[1] + uv_max[1])
-            n = gmsh.model.getNormal(int(surf_tag), [u_mid, v_mid])
-            if n and len(n) >= 3:
+            uv = _gmsh_surface_uv_midpoint(int(surf_tag))
+            if uv is None:
+                return None
+            n = gmsh.model.getNormal(int(surf_tag), [float(uv[0]), float(uv[1])])
+            if n is not None and _gmsh_seq_len(n) >= 3:
                 return (float(n[0]), float(n[1]), float(n[2]))
         except Exception:
             pass
@@ -2800,6 +2835,8 @@ def create_guitar_mesh():
                 continue
             try:
                 u_bounds = gmsh.model.getParametrizationBounds(1, int(ctag))
+                if _gmsh_seq_len(u_bounds) < 2:
+                    continue
                 u0 = float(u_bounds[0][0])
                 u1 = float(u_bounds[1][0])
             except Exception:
@@ -2818,8 +2855,10 @@ def create_guitar_mesh():
             return pts, "boundary_curve_samples"
         try:
             uv_lo, uv_hi = gmsh.model.getParametrizationBounds(2, int(surf_tag))
-            u0, v0 = float(uv_lo[0]), float(uv_lo[1])
-            u1, v1 = float(uv_hi[0]), float(uv_hi[1])
+            if _gmsh_seq_len(uv_lo) < 1 or _gmsh_seq_len(uv_hi) < 1:
+                return pts, "no_samples"
+            u0, v0 = float(uv_lo[0]), float(uv_lo[1]) if _gmsh_seq_len(uv_lo) >= 2 else 0.0
+            u1, v1 = float(uv_hi[0]), float(uv_hi[1]) if _gmsh_seq_len(uv_hi) >= 2 else 0.0
             for iu in range(5):
                 for iv in range(5):
                     u = u0 + (float(iu) / 4.0) * (u1 - u0)
@@ -2850,10 +2889,13 @@ def create_guitar_mesh():
                 "available": True,
             }
         try:
+            uv_mid = _gmsh_surface_uv_midpoint(int(surf_tag))
+            if uv_mid is None:
+                raise ValueError("empty surface parametrization bounds")
+            uc, vc = float(uv_mid[0]), float(uv_mid[1])
             uv_lo, uv_hi = gmsh.model.getParametrizationBounds(2, int(surf_tag))
-            u0, v0 = float(uv_lo[0]), float(uv_lo[1])
-            u1, v1 = float(uv_hi[0]), float(uv_hi[1])
-            uc, vc = 0.5 * (u0 + u1), 0.5 * (v0 + v1)
+            u0, v0 = float(uv_lo[0]), float(uv_lo[1]) if _gmsh_seq_len(uv_lo) >= 2 else 0.0
+            u1, v1 = float(uv_hi[0]), float(uv_hi[1]) if _gmsh_seq_len(uv_hi) >= 2 else 0.0
             du = max(1.0e-6, 0.05 * max(abs(u1 - u0), 1.0e-9))
             dv = max(1.0e-6, 0.05 * max(abs(v1 - v0), 1.0e-9))
             p0 = gmsh.model.getValue(2, int(surf_tag), [uc, vc])
@@ -4106,8 +4148,7 @@ def create_guitar_mesh():
                 return
             curve_tags: set = set()
             for ent in sh_entities:
-                dim_e = int(ent[0]) if isinstance(ent, (list, tuple)) else 2
-                tag_e = int(ent[1]) if isinstance(ent, (list, tuple)) else int(ent)
+                dim_e, tag_e = _gmsh_entity_dim_tag(ent, default_dim=2)
                 bnd = gmsh.model.getBoundary([(dim_e, tag_e)], oriented=False, recursive=True)
                 for bdim, btag in bnd:
                     if int(bdim) == 1:
@@ -4124,7 +4165,7 @@ def create_guitar_mesh():
                 except Exception:
                     continue
                 for et, e_arr, n_arr in zip(etypes, etags, node_tags):
-                    if et != 1:
+                    if int(et) != 1 or _gmsh_seq_len(n_arr) < 2:
                         continue
                     coords = gmsh.model.mesh.getNode(int(n_arr[0]))[1]
                     coords2 = gmsh.model.mesh.getNode(int(n_arr[1]))[1]
@@ -4169,25 +4210,29 @@ def create_guitar_mesh():
             horiz_ok = 0
             planar_ok = 0
             for ent in entities:
-                if isinstance(ent, (list, tuple)) and len(ent) >= 2:
-                    dim_e, tag_e = int(ent[0]), int(ent[1])
-                else:
-                    dim_e, tag_e = 2, int(ent)
+                dim_e, tag_e = _gmsh_entity_dim_tag(ent, default_dim=2)
                 if dim_e != 2:
                     continue
                 surf_tags.append(int(tag_e))
                 cad_area += _surface_area_m(int(tag_e))
-                rec = _evaluate_validation_aperture_surface(
-                    int(tag_e),
-                    hx=float(hole_x),
-                    hy=float(hole_y),
-                    hole_r=float(hr),
-                    z_aperture_plane=z_gate_plane,
-                )
-                if rec["strict_checks"].get("horizontal_or_planar"):
-                    horiz_ok += 1
-                if rec.get("planar_by_zero_z_span"):
-                    planar_ok += 1
+                try:
+                    rec = _evaluate_validation_aperture_surface(
+                        int(tag_e),
+                        hx=float(hole_x),
+                        hy=float(hole_y),
+                        hole_r=float(hr),
+                        z_aperture_plane=z_gate_plane,
+                    )
+                    if rec["strict_checks"].get("horizontal_or_planar"):
+                        horiz_ok += 1
+                    if rec.get("planar_by_zero_z_span"):
+                        planar_ok += 1
+                except Exception as exc_eval:
+                    print(
+                        f"[diag][warn] post-mesh aperture CAD eval skipped for "
+                        f"surface {tag_e}: {exc_eval}",
+                        flush=True,
+                    )
             def _triangle_area_m(c0, c1, c2):
                 ax, ay, az = (
                     float(c1[0]) - float(c0[0]),
@@ -4207,13 +4252,18 @@ def create_guitar_mesh():
             mesh_area = 0.0
             for tag_e in surf_tags:
                 _types, elem_tags, node_tags = gmsh.model.mesh.getElements(2, int(tag_e))
-                for etype, et_arr, nt_arr in zip(_types, elem_tags, node_tags):
+                for etype, _et_arr, nt_arr in zip(_types, elem_tags, node_tags):
                     if int(etype) != 2:
+                        continue
+                    if _gmsh_seq_len(nt_arr) < 3:
                         continue
                     nodes = [int(n) for n in nt_arr]
                     for i in range(0, len(nodes), 3):
+                        if i + 2 >= len(nodes):
+                            break
                         coords = [
-                            gmsh.model.mesh.getNode(int(nodes[i + k]))[1] for k in range(3)
+                            gmsh.model.mesh.getNode(int(nodes[i + k]))[1]
+                            for k in range(3)
                         ]
                         mesh_area += _triangle_area_m(coords[0], coords[1], coords[2])
                         for c in coords:
@@ -4295,10 +4345,7 @@ def create_guitar_mesh():
             except Exception:
                 return 0
             for ent in entities:
-                if isinstance(ent, (list, tuple)) and len(ent) >= 2:
-                    dim_e, tag_e = int(ent[0]), int(ent[1])
-                else:
-                    dim_e, tag_e = dim, int(ent)
+                dim_e, tag_e = _gmsh_entity_dim_tag(ent, default_dim=int(dim))
                 _types, elem_tags, _nodes = gmsh.model.mesh.getElements(dim_e, tag_e)
                 for arr in elem_tags:
                     n_elem += int(len(arr))
@@ -4332,20 +4379,30 @@ def create_guitar_mesh():
         # Count mesh facets (2D elements) on Soundhole physical surfaces for downstream BC sanity.
         n_soundhole_mesh_facets = 0
         try:
-            for ent in gmsh.model.getEntitiesForPhysicalGroup(2, 2):
-                if isinstance(ent, (list, tuple)) and len(ent) >= 2:
-                    dim_e, tag_e = int(ent[0]), int(ent[1])
-                else:
-                    dim_e, tag_e = 2, int(ent)
+            sh_pg_entities = gmsh.model.getEntitiesForPhysicalGroup(2, 2)
+            if not sh_pg_entities:
+                raise RuntimeError(
+                    "FEM_VALIDATION_MESH: physical group 2 (Soundhole) has no entities "
+                    "after mesh generation (aperture surface may not be meshed)."
+                )
+            for ent in sh_pg_entities:
+                dim_e, tag_e = _gmsh_entity_dim_tag(ent, default_dim=2)
                 _types, elem_tags, _nodes = gmsh.model.mesh.getElements(dim_e, tag_e)
                 for arr in elem_tags:
                     n_soundhole_mesh_facets += int(len(arr))
         except Exception as _exc:
             print(f"[diag][warn] Soundhole mesh facet count failed: {_exc}")
+            if is_validation and use_air_opening_tag and not shell_only:
+                raise RuntimeError(
+                    f"FEM_VALIDATION_MESH: cannot count soundhole tag-2 mesh facets: {_exc}"
+                ) from _exc
         print(f"PRINT: Found {n_soundhole_mesh_facets} facets for Soundhole")
         gmsh.write(str(out_file))
         print(f"SUCCESS: Optimized mesh saved to {out_file}")
     except Exception as e:
+        import traceback
+
+        traceback.print_exc(file=sys.stderr)
         print(f"Mesh generation failed: {e}", file=sys.stderr)
         gmsh.finalize()
         raise SystemExit(1) from e
