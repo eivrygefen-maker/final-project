@@ -1001,6 +1001,41 @@ def _fsi_coupling_interface_forms(
     return traction_up, traction_pu, mass_pu, None, None, None, None
 
 
+def _fsi_coupling_interface_forms_v2(
+    msh: mesh.Mesh,
+    u,
+    v,
+    p,
+    q,
+    iface_measure,
+    *,
+    rho_air: float,
+    use_interior_pm: bool,
+):
+    """
+    Experiment-only physical FSI core v2: interface weak forms without empirical
+    ``fsi_coupling_gain`` or ``pressure_dof_scale`` on coupling blocks.
+
+    Signs match v1 meshtags exterior convention (outward ``FacetNormal`` on the
+    air–wood seam). Diagonal ``a_pp`` / ``m_pp`` still use solver similarity scaling.
+    """
+    n = ufl.FacetNormal(msh)
+    if use_interior_pm:
+        n_plus = n("+")
+        u_jump_n = ufl.inner(ufl.jump(u), n_plus)
+        v_jump_n = ufl.inner(ufl.jump(v), n_plus)
+        p_avg = ufl.avg(p)
+        q_avg = ufl.avg(q)
+        traction_up = -p_avg * v_jump_n * iface_measure
+        traction_pu = u_jump_n * q_avg * iface_measure
+        mass_pu = rho_air * u_jump_n * q_avg * iface_measure
+        return traction_up, traction_pu, mass_pu, u_jump_n, p_avg, v_jump_n, q_avg
+    traction_up = -p * ufl.dot(n, v) * iface_measure
+    traction_pu = ufl.dot(u, n) * q * iface_measure
+    mass_pu = rho_air * ufl.dot(u, n) * q * iface_measure
+    return traction_up, traction_pu, mass_pu, None, None, None, None
+
+
 def _fsi_nitsche_interface_forms(
     msh: mesh.Mesh,
     gamma_n: float,
@@ -5879,31 +5914,62 @@ def _solve_coupled_evp(
         norm_uu_ref=norm_uu_for_nitsche,
         h_char=h_char,
     )
+    core_v2 = _solver_bool(
+        solver_cfg, "coupled_physical_core_v2_diagnosis", default=False
+    )
+    coupling_v2_enabled = (
+        _solver_bool(solver_cfg, "coupled_physical_core_v2_coupling_enabled", default=True)
+        if core_v2
+        else False
+    )
     use_nitsche = _solver_bool(solver_cfg, "fsi_nitsche_enable", default=True)
+    if core_v2:
+        use_nitsche = False
+        fsi_gain = 1.0
     # Traction / mass-like interface pair (mixed GNHEP blocks):
     #   A_up (u rows, p cols): ∫_Γ p (n·v) dS  — pressure traction on the shell test v
     #   A_pu (p rows, u cols): ∫_Γ (u·n) q dS  — REQUIRED for static A x=F to excite pressure
     # Interior ``dS`` on topology air↔wood facets uses jump/avg across the seam.
-    (
-        traction_up,
-        traction_pu,
-        mass_pu,
-        _u_n_both,
-        _p_avg,
-        _v_n_both,
-        _q_avg,
-    ) = _fsi_coupling_interface_forms(
-        msh,
-        u,
-        v,
-        p,
-        q,
-        iface_measure,
-        p_scale=p_scale,
-        fsi_gain=fsi_gain,
-        rho_air=rho_air,
-        use_interior_pm=use_dS_interior_pm,
-    )
+    if core_v2:
+        (
+            traction_up,
+            traction_pu,
+            mass_pu,
+            _u_n_both,
+            _p_avg,
+            _v_n_both,
+            _q_avg,
+        ) = _fsi_coupling_interface_forms_v2(
+            msh,
+            u,
+            v,
+            p,
+            q,
+            iface_measure,
+            rho_air=rho_air,
+            use_interior_pm=use_dS_interior_pm,
+        )
+    else:
+        (
+            traction_up,
+            traction_pu,
+            mass_pu,
+            _u_n_both,
+            _p_avg,
+            _v_n_both,
+            _q_avg,
+        ) = _fsi_coupling_interface_forms(
+            msh,
+            u,
+            v,
+            p,
+            q,
+            iface_measure,
+            p_scale=p_scale,
+            fsi_gain=fsi_gain,
+            rho_air=rho_air,
+            use_interior_pm=use_dS_interior_pm,
+        )
     n_up_fsi, n_pu_fsi, n_mp_fsi = _audit_fsi_traction_pair_norms(
         traction_up=traction_up,
         traction_pu=traction_pu,
@@ -5938,17 +6004,30 @@ def _solve_coupled_evp(
             _p_avg,
             _v_n_both,
             _q_avg,
-        ) = _fsi_coupling_interface_forms(
-            msh,
-            u,
-            v,
-            p,
-            q,
-            iface_measure,
-            p_scale=p_scale,
-            fsi_gain=fsi_gain,
-            rho_air=rho_air,
-            use_interior_pm=False,
+        ) = (
+            _fsi_coupling_interface_forms_v2(
+                msh,
+                u,
+                v,
+                p,
+                q,
+                iface_measure,
+                rho_air=rho_air,
+                use_interior_pm=False,
+            )
+            if core_v2
+            else _fsi_coupling_interface_forms(
+                msh,
+                u,
+                v,
+                p,
+                q,
+                iface_measure,
+                p_scale=p_scale,
+                fsi_gain=fsi_gain,
+                rho_air=rho_air,
+                use_interior_pm=False,
+            )
         )
         n_up_fsi, n_pu_fsi, n_mp_fsi = _audit_fsi_traction_pair_norms(
             traction_up=traction_up,
@@ -6473,6 +6552,14 @@ def _solve_coupled_evp(
         np.array(facet_tags.find(tag_back), dtype=np.int32),
     )
 
+    core_v2_diag = _solver_bool(
+        solver_cfg, "coupled_physical_core_v2_diagnosis", default=False
+    )
+    coupling_v2_diag = (
+        _solver_bool(solver_cfg, "coupled_physical_core_v2_coupling_enabled", default=True)
+        if core_v2_diag
+        else False
+    )
     decoupled_union = _solver_bool(
         solver_cfg, "coupled_decoupled_union_diagnosis", default=False
     )
@@ -6490,6 +6577,16 @@ def _solve_coupled_evp(
     nitsche_isolation = str(
         solver_cfg.get("coupled_physical_fsi_nitsche_isolation_diagnosis", "") or ""
     ).strip()
+    if core_v2_diag and (
+        decoupled_union
+        or physical_fsi_only
+        or fsi_continuation
+        or nitsche_isolation
+    ):
+        raise RuntimeError(
+            "coupled_physical_core_v2_diagnosis is mutually exclusive with "
+            "v1 coupled-decoupled / physical-FSI / continuation / Nitsche-isolation flags."
+        )
     if decoupled_union and (physical_fsi_only or fsi_continuation or nitsche_isolation):
         raise RuntimeError(
             "coupled_decoupled_union_diagnosis is mutually exclusive with "
@@ -6505,6 +6602,61 @@ def _solve_coupled_evp(
             "coupled_physical_fsi_continuation_diagnosis and "
             "coupled_physical_fsi_nitsche_isolation_diagnosis are mutually exclusive."
         )
+    if core_v2_diag:
+        solver_cfg["coupled_air_pressure_restriction_diagnosis"] = True
+        nit_uu_a = None
+        nit_up_a = None
+        nit_pu_a = None
+        nit_pu_m = None
+        fsi_norms: Dict[str, float] = {}
+        for label, blk in (("A_up", a_up), ("A_pu", a_pu), ("M_pu", m_pu)):
+            if blk is None:
+                fsi_norms[label] = 0.0
+                continue
+            try:
+                fsi_norms[label] = float(
+                    _mat_frobenius_norm(blk, label=f"core_v2_{label}")
+                )
+            except Exception:
+                fsi_norms[label] = float("nan")
+        if not coupling_v2_diag:
+            a_up = None
+            a_pu = None
+            m_pu = None
+            fsi_norms = {k: 0.0 for k in ("A_up", "A_pu", "M_pu")}
+        v2_payload = {
+            "formulation": "coupled_physical_core_v2",
+            "coupling_enabled": bool(coupling_v2_diag),
+            "subcase": (
+                "physical_coupling_enabled"
+                if coupling_v2_diag
+                else "coupling_disabled"
+            ),
+            "fsi_blocks_F_norm": fsi_norms,
+            "blocks_excluded_from_assembly": (
+                [] if coupling_v2_diag else ["A_up", "A_pu", "M_pu"]
+            ),
+            "nitsche_disabled": True,
+            "fsi_coupling_gain_physical": 1.0,
+            "pressure_dof_scale_numerical_only": float(p_scale),
+            "empirical_v1_mechanisms_disabled": [
+                "fsi_coupling_gain!=1",
+                "physical_fsi_alpha",
+                "nitsche",
+                "auto_balance_penalty",
+            ],
+        }
+        config["_coupled_physical_core_v2"] = v2_payload
+        solver_cfg["_coupled_physical_core_v2"] = v2_payload
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                "[physics_integrity][coupled_physical_core_v2] "
+                f"subcase={v2_payload['subcase']} coupling_blocks={fsi_norms} "
+                f"pressure_dof_scale(numerical)={p_scale:.4g} "
+                "fsi_coupling_gain(physical)=1",
+                flush=True,
+            )
+
     if decoupled_union:
         solver_cfg["coupled_air_pressure_restriction_diagnosis"] = True
         zeroed_block_norms: Dict[str, float] = {}
@@ -6796,7 +6948,9 @@ def _solve_coupled_evp(
     if probe_spec is not None:
         probe_spec["iface_u_parent_n"] = int(iface_u_parent.size)
         probe_spec["wood_u_parent_n"] = int(wood_u_parent.size)
-    zero_fsi_continuation = fsi_continuation and abs(alpha_fsi) <= 1.0e-15
+    zero_fsi_continuation = (
+        fsi_continuation and abs(alpha_fsi) <= 1.0e-15
+    ) or (core_v2_diag and not coupling_v2_diag)
     if zero_fsi_continuation:
         if MPI.COMM_WORLD.rank == ROOT_RANK:
             print(

@@ -27,6 +27,7 @@ CASE_NAMES = (
     "coupled_physical_fsi_nit_pu",
     "coupled_physical_fsi_nit_up_pu",
     "coupled_physical_fsi_alpha_pilot",
+    "coupled_physical_core_v2",
 )
 CASE_SUBDIRS = ("logs", "results", "modes", "diagnostics", "timing", "sorting")
 
@@ -44,6 +45,7 @@ CONFIG_FILES = (
     "coupled_physical_fsi_nit_pu.json",
     "coupled_physical_fsi_nit_up_pu.json",
     "coupled_physical_fsi_alpha_pilot.json",
+    "coupled_physical_core_v2.json",
     "operator_audit.json",
 )
 
@@ -247,6 +249,31 @@ def main() -> None:
     )
     (CONFIG_DIR / "coupled_physical_fsi_alpha_pilot.json").write_text(
         json.dumps(alpha_pilot, indent=2), encoding="utf-8"
+    )
+
+    core_v2 = json.loads(json.dumps(air_p))
+    core_v2["solver"].update(
+        {
+            "coupled_physical_core_v2_diagnosis": True,
+            "coupled_physical_core_v2_coupling_enabled": True,
+            "fsi_coupling_gain": 1.0,
+            "fsi_nitsche_enable": False,
+            "physics_integrity_branch": "coupled-physical-core-v2-244hz",
+            "num_modes": 12,
+            "eps_harvest_rank_by_wood": False,
+            "eps_harvest_rank_by_p_frac": False,
+            "eps_reject_decoupled_u_only": False,
+        }
+    )
+    for v1_flag in (
+        "coupled_decoupled_union_diagnosis",
+        "coupled_physical_fsi_only_diagnosis",
+        "coupled_physical_fsi_continuation_diagnosis",
+        "coupled_physical_fsi_nitsche_isolation_diagnosis",
+    ):
+        core_v2["solver"].pop(v1_flag, None)
+    (CONFIG_DIR / "coupled_physical_core_v2.json").write_text(
+        json.dumps(core_v2, indent=2), encoding="utf-8"
     )
 
     for nit_label in ("nit_uu", "nit_up", "nit_pu", "nit_up_pu"):
