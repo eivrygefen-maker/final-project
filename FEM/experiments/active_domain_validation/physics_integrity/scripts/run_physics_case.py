@@ -51,6 +51,7 @@ CASES = (
     "coupled_physical_fsi_nit_up",
     "coupled_physical_fsi_nit_pu",
     "coupled_physical_fsi_nit_up_pu",
+    "coupled_physical_fsi_alpha_pilot",
 )
 
 SIGMA_SUSPECT_HZ = 273.7168
@@ -898,6 +899,7 @@ def main() -> int:
         "coupled_physical_fsi_nit_up",
         "coupled_physical_fsi_nit_pu",
         "coupled_physical_fsi_nit_up_pu",
+        "coupled_physical_fsi_alpha_pilot",
     ):
         sc = cfg["solver"]
         _fsi_near = (244.39, 220.0, 265.0, 45.0, 48)
@@ -912,13 +914,15 @@ def main() -> int:
             "coupled_physical_fsi_nit_up": _fsi_near,
             "coupled_physical_fsi_nit_pu": _fsi_near,
             "coupled_physical_fsi_nit_up_pu": _fsi_near,
+            "coupled_physical_fsi_alpha_pilot": _fsi_near,
         }
         t_def, lo_def, hi_def, broad_def, nm_def = defaults[args.case]
         near_report = args.case in ("coupled_near_acoustic", "coupled_near_acoustic_air_p")
         union_report = args.case == "coupled_decoupled_union"
         physical_fsi_report = args.case == "coupled_physical_fsi_only"
         nit_iso_case = args.case.startswith("coupled_physical_fsi_nit_")
-        if nit_iso_case:
+        cont_case = args.case == "coupled_physical_fsi_alpha_pilot"
+        if nit_iso_case or cont_case:
             cfg["solver"]["eps_harvest_rank_by_wood"] = False
             cfg["solver"]["eps_harvest_rank_by_p_frac"] = False
         return _run_coupled_like(

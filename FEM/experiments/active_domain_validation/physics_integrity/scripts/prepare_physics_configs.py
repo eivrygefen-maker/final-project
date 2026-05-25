@@ -26,6 +26,7 @@ CASE_NAMES = (
     "coupled_physical_fsi_nit_up",
     "coupled_physical_fsi_nit_pu",
     "coupled_physical_fsi_nit_up_pu",
+    "coupled_physical_fsi_alpha_pilot",
 )
 CASE_SUBDIRS = ("logs", "results", "modes", "diagnostics", "timing", "sorting")
 
@@ -42,6 +43,7 @@ CONFIG_FILES = (
     "coupled_physical_fsi_nit_up.json",
     "coupled_physical_fsi_nit_pu.json",
     "coupled_physical_fsi_nit_up_pu.json",
+    "coupled_physical_fsi_alpha_pilot.json",
     "operator_audit.json",
 )
 
@@ -226,6 +228,19 @@ def main() -> None:
     physical_fsi["solver"].pop("coupled_decoupled_union_diagnosis", None)
     (CONFIG_DIR / "coupled_physical_fsi_only.json").write_text(
         json.dumps(physical_fsi, indent=2), encoding="utf-8"
+    )
+
+    alpha_pilot = json.loads(json.dumps(physical_fsi))
+    alpha_pilot["solver"].pop("coupled_physical_fsi_only_diagnosis", None)
+    alpha_pilot["solver"].update(
+        {
+            "coupled_physical_fsi_continuation_diagnosis": True,
+            "physical_fsi_alpha": 0.01,
+            "physics_integrity_branch": "coupled-physical-fsi-continuation-alpha-0.01",
+        }
+    )
+    (CONFIG_DIR / "coupled_physical_fsi_alpha_pilot.json").write_text(
+        json.dumps(alpha_pilot, indent=2), encoding="utf-8"
     )
 
     for nit_label in ("nit_uu", "nit_up", "nit_pu", "nit_up_pu"):

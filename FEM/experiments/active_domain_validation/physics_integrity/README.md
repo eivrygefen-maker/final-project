@@ -138,6 +138,28 @@ Reduced domain + physical FSI + one Nitsche group per case:
 
 Run only after physical-FSI participation audit confirms branch survival.
 
+## Physical-FSI continuation pilot (alpha_fsi on A_up/A_pu/M_pu only)
+
+Low MAC at `alpha=1` shows branch mixing is already physical-FSI-driven, not Nitsche.
+Pilot reuses saved endpoints:
+
+| alpha | Source case |
+|-------|-------------|
+| 0.00 | `coupled_decoupled_union` (244.3916 Hz acoustic) |
+| 0.01 | **new solve** `coupled_physical_fsi_alpha_pilot` |
+| 1.00 | `coupled_physical_fsi_only` (245.2998 Hz) |
+
+Full sweep sequence prepared (not auto-run): `0, 0.01, 0.05, 0.10, 0.25, 0.50, 1.00`.
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_physical_fsi_continuation_pilot.sh
+```
+
+Report: `coupled_physical_fsi_alpha_pilot/diagnostics/physical_fsi_continuation_report.json`
+
+Outcomes: `PHYSICAL_FSI_BRANCH_CONTINUOUS`, `PHYSICAL_FSI_BRANCH_BREAKS_AT_ALPHA`, or
+`PHYSICAL_FSI_ASSEMBLY_SUSPECT_AT_SMALL_ALPHA`. Do not run Nitsche isolation until pilot is interpreted.
+
 ## Scaling audit
 
 `p_frac_raw` matches production (eigenvector in GNHEP block-scaled assembled basis).

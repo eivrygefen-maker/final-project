@@ -6397,17 +6397,30 @@ def _solve_coupled_evp(
     physical_fsi_only = _solver_bool(
         solver_cfg, "coupled_physical_fsi_only_diagnosis", default=False
     )
+    fsi_continuation = _solver_bool(
+        solver_cfg, "coupled_physical_fsi_continuation_diagnosis", default=False
+    )
+    alpha_fsi = (
+        float(solver_cfg.get("physical_fsi_alpha", 1.0))
+        if fsi_continuation
+        else 1.0
+    )
     nitsche_isolation = str(
         solver_cfg.get("coupled_physical_fsi_nitsche_isolation_diagnosis", "") or ""
     ).strip()
-    if decoupled_union and (physical_fsi_only or nitsche_isolation):
+    if decoupled_union and (physical_fsi_only or fsi_continuation or nitsche_isolation):
         raise RuntimeError(
             "coupled_decoupled_union_diagnosis is mutually exclusive with "
             "physical-FSI / Nitsche-isolation experiment flags."
         )
-    if physical_fsi_only and nitsche_isolation:
+    if physical_fsi_only and (nitsche_isolation or fsi_continuation):
         raise RuntimeError(
-            "coupled_physical_fsi_only_diagnosis and "
+            "coupled_physical_fsi_only_diagnosis is mutually exclusive with "
+            "continuation and Nitsche-isolation experiment flags."
+        )
+    if fsi_continuation and nitsche_isolation:
+        raise RuntimeError(
+            "coupled_physical_fsi_continuation_diagnosis and "
             "coupled_physical_fsi_nitsche_isolation_diagnosis are mutually exclusive."
         )
     if decoupled_union:
@@ -6520,6 +6533,65 @@ def _solve_coupled_evp(
                 flush=True,
             )
 
+    if fsi_continuation:
+        solver_cfg["coupled_air_pressure_restriction_diagnosis"] = True
+        nit_uu_a = None
+        nit_up_a = None
+        nit_pu_a = None
+        nit_pu_m = None
+        fsi_norms_pre: Dict[str, float] = {}
+        for label, blk in (("A_up", a_up), ("A_pu", a_pu), ("M_pu", m_pu)):
+            if blk is None:
+                fsi_norms_pre[label] = 0.0
+                continue
+            try:
+                fsi_norms_pre[label] = float(
+                    _mat_frobenius_norm(blk, label=f"fsi_cont_pre_{label}")
+                )
+            except Exception:
+                fsi_norms_pre[label] = float("nan")
+        if abs(alpha_fsi) <= 1.0e-15:
+            a_up = None
+            a_pu = None
+            m_pu = None
+        else:
+            if a_up is not None:
+                a_up = float(alpha_fsi) * a_up
+            if a_pu is not None:
+                a_pu = float(alpha_fsi) * a_pu
+            if m_pu is not None:
+                m_pu = float(alpha_fsi) * m_pu
+        fsi_norms_post: Dict[str, float] = {}
+        for label, blk in (("A_up", a_up), ("A_pu", a_pu), ("M_pu", m_pu)):
+            if blk is None:
+                fsi_norms_post[label] = 0.0
+                continue
+            try:
+                fsi_norms_post[label] = float(
+                    _mat_frobenius_norm(blk, label=f"fsi_cont_post_{label}")
+                )
+            except Exception:
+                fsi_norms_post[label] = float("nan")
+        cont_payload = {
+            "physical_fsi_alpha": float(alpha_fsi),
+            "retained_fsi_blocks": ["A_up", "A_pu", "M_pu"],
+            "blocks_excluded_from_assembly": ["nit_uu", "nit_up", "nit_pu"],
+            "fsi_blocks_F_norm_before_alpha": fsi_norms_pre,
+            "fsi_blocks_F_norm_after_alpha": fsi_norms_post,
+            "pressure_dof_scale_reported": float(p_scale),
+            "fsi_coupling_gain_reported": float(fsi_gain),
+            "alpha_applies_to": ["A_up", "A_pu", "M_pu"],
+        }
+        config["_coupled_physical_fsi_continuation_diagnosis"] = cont_payload
+        solver_cfg["_coupled_physical_fsi_continuation_diagnosis"] = cont_payload
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                "[physics_integrity][physical_fsi_continuation] "
+                f"alpha_fsi={alpha_fsi:.6g} on A_up/A_pu/M_pu only; Nitsche disabled; "
+                f"pre-alpha ||·||_F={fsi_norms_pre} post-alpha={fsi_norms_post}",
+                flush=True,
+            )
+
     if nitsche_isolation:
         solver_cfg["coupled_air_pressure_restriction_diagnosis"] = True
         allowed_nit = {
@@ -6612,7 +6684,8 @@ def _solve_coupled_evp(
             nit_pu_a=nit_pu_a,
             nit_pu_m=nit_pu_m,
             status_callback=status_callback,
-            allow_empty_coupling=decoupled_union,
+            allow_empty_coupling=decoupled_union
+            or (fsi_continuation and abs(alpha_fsi) <= 1.0e-15),
         )
     else:
         A = _assemble_coupled_matrix_safe(a_form, [], label="coupled_stiffness_A")
@@ -6662,6 +6735,7 @@ def _solve_coupled_evp(
         and not nitsche_active
         and not decoupled_union
         and not physical_fsi_only
+        and not (fsi_continuation and abs(alpha_fsi) > 1.0e-15)
     ):
         _emit(
             "[assembly][warn] block assembly produced zero A_pu matvec on u parent indices; "

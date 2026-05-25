@@ -1,0 +1,71 @@
+{
+  "geometry": {
+    "shape_type": "Classical",
+    "length": 0.48,
+    "width": 0.325,
+    "depth": 0.1,
+    "top_thickness": 0.003,
+    "back_thickness": 0.0033,
+    "hole_radius": 0.047,
+    "mesh_mode": "fom"
+  },
+  "materials": {
+    "top": {
+      "name": "Sitka Spruce",
+      "density": 450.0,
+      "E_L": 11000000000.0,
+      "E_T": 1000000000.0,
+      "E_R": 700000000.0,
+      "nu_LT": 0.37,
+      "nu_LR": 0.37,
+      "nu_TR": 0.4,
+      "G_LT": 750000000.0,
+      "G_LR": 750000000.0,
+      "G_TR": 50000000.0
+    },
+    "back": {
+      "name": "Indian Rosewood",
+      "density": 830.0,
+      "E_L": 11500000000.0,
+      "E_T": 1300000000.0,
+      "E_R": 700000000.0,
+      "nu_LT": 0.33,
+      "nu_LR": 0.33,
+      "nu_TR": 0.4,
+      "G_LT": 950000000.0,
+      "G_LR": 950000000.0,
+      "G_TR": 50000000.0
+    },
+    "air": {"density": 1.21, "speed_of_sound": 343.0}
+  },
+  "solver": {
+    "num_modes": 48,
+    "mesh_file": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/mesh/validation_tiny_guitar_3d.msh",
+    "shift_invert_target_hz": 244.39,
+    "couple_fluid": true,
+    "soundhole_bc": "pressure_release",
+    "pressure_gauge": "none",
+    "eps_band_solver": "shift_invert",
+    "eps_broad_search_hz": 45.0,
+    "pressure_dof_scale": 30.0,
+    "fsi_coupling_gain": 1000000.0,
+    "eps_harvest_allow_weak_coupling": true,
+    "eps_harvest_rank_by_wood": false,
+    "eps_harvest_rank_by_p_frac": false,
+    "eps_reject_decoupled_u_only": false,
+    "eps_reject_sigma_spurious": false,
+    "gnhep_block_frobenius_normalize": true,
+    "eigs_maxiter": 3000,
+    "coupled_blockwise_assembly": true,
+    "fsi_nitsche_enable": true,
+    "physics_integrity_capture": true,
+    "_worker_harvest_lo_hz": 220.0,
+    "_worker_harvest_hi_hz": 265.0,
+    "_worker_target_hz": 244.39,
+    "acoustic_reference_hz": 244.39,
+    "coupled_air_pressure_restriction_diagnosis": true,
+    "coupled_physical_fsi_continuation_diagnosis": true,
+    "physical_fsi_alpha": 0.01,
+    "physics_integrity_branch": "coupled-physical-fsi-continuation-alpha-0.01"
+  }
+}
