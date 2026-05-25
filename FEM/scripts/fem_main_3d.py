@@ -6394,6 +6394,14 @@ def _solve_coupled_evp(
     decoupled_union = _solver_bool(
         solver_cfg, "coupled_decoupled_union_diagnosis", default=False
     )
+    physical_fsi_only = _solver_bool(
+        solver_cfg, "coupled_physical_fsi_only_diagnosis", default=False
+    )
+    if decoupled_union and physical_fsi_only:
+        raise RuntimeError(
+            "coupled_decoupled_union_diagnosis and coupled_physical_fsi_only_diagnosis "
+            "are mutually exclusive experiment flags."
+        )
     if decoupled_union:
         solver_cfg["coupled_air_pressure_restriction_diagnosis"] = True
         zeroed_block_norms: Dict[str, float] = {}
@@ -6444,6 +6452,63 @@ def _solve_coupled_evp(
             print(
                 "[physics_integrity][decoupled_union] block-diagonal diagnostic: "
                 f"excluding FSI/interface blocks from A/M ({parts})",
+                flush=True,
+            )
+
+    if physical_fsi_only:
+        solver_cfg["coupled_air_pressure_restriction_diagnosis"] = True
+        excluded_nit_norms: Dict[str, float] = {}
+        retained_fsi_norms: Dict[str, float] = {}
+        for label, blk in (
+            ("nit_uu", nit_uu_a),
+            ("nit_up", nit_up_a),
+            ("nit_pu_A", nit_pu_a),
+            ("nit_pu_M", nit_pu_m),
+        ):
+            if blk is None:
+                excluded_nit_norms[label] = 0.0
+                continue
+            try:
+                excluded_nit_norms[label] = float(
+                    _mat_frobenius_norm(blk, label=f"physical_fsi_only_{label}")
+                )
+            except Exception:
+                excluded_nit_norms[label] = float("nan")
+        for label, blk in (("A_up", a_up), ("A_pu", a_pu), ("M_pu", m_pu)):
+            if blk is None:
+                retained_fsi_norms[label] = 0.0
+                continue
+            try:
+                retained_fsi_norms[label] = float(
+                    _mat_frobenius_norm(blk, label=f"physical_fsi_only_{label}")
+                )
+            except Exception:
+                retained_fsi_norms[label] = float("nan")
+        nit_uu_a = None
+        nit_up_a = None
+        nit_pu_a = None
+        nit_pu_m = None
+        iso_payload = {
+            "excluded_nitsche_blocks_F_norm": excluded_nit_norms,
+            "retained_fsi_blocks_F_norm": retained_fsi_norms,
+            "retained_fsi_blocks": ["A_up", "A_pu", "M_pu"],
+            "blocks_excluded_from_assembly": ["nit_uu", "nit_up", "nit_pu"],
+            "pressure_dof_scale_reported": float(p_scale),
+            "fsi_coupling_gain_reported": float(fsi_gain),
+        }
+        config["_coupled_physical_fsi_only_diagnosis"] = iso_payload
+        solver_cfg["_coupled_physical_fsi_only_diagnosis"] = iso_payload
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            nit_parts = ", ".join(
+                f"{k}={v:.3e}" for k, v in sorted(excluded_nit_norms.items())
+            )
+            fsi_parts = ", ".join(
+                f"{k}={v:.3e}" for k, v in sorted(retained_fsi_norms.items())
+            )
+            print(
+                "[physics_integrity][physical_fsi_only] Nitsche-disabled isolation: "
+                f"retaining physical FSI blocks ({fsi_parts}); "
+                f"excluding Nitsche from A/M ({nit_parts})",
                 flush=True,
             )
 
@@ -6518,6 +6583,7 @@ def _solve_coupled_evp(
         and _solver_bool(solver_cfg, "coupled_monolithic_fallback", default=True)
         and not nitsche_active
         and not decoupled_union
+        and not physical_fsi_only
     ):
         _emit(
             "[assembly][warn] block assembly produced zero A_pu matvec on u parent indices; "

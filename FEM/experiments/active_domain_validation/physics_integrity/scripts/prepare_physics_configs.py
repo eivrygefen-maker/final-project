@@ -21,6 +21,7 @@ CASE_NAMES = (
     "coupled_near_acoustic",
     "coupled_near_acoustic_air_p",
     "coupled_decoupled_union",
+    "coupled_physical_fsi_only",
 )
 CASE_SUBDIRS = ("logs", "results", "modes", "diagnostics", "timing", "sorting")
 
@@ -32,6 +33,7 @@ CONFIG_FILES = (
     "coupled_near_acoustic_244hz.json",
     "coupled_near_acoustic_air_p_restricted.json",
     "coupled_decoupled_union.json",
+    "coupled_physical_fsi_only.json",
     "operator_audit.json",
 )
 
@@ -201,6 +203,21 @@ def main() -> None:
     )
     (CONFIG_DIR / "coupled_decoupled_union.json").write_text(
         json.dumps(decoupled, indent=2), encoding="utf-8"
+    )
+
+    physical_fsi = json.loads(json.dumps(air_p))
+    physical_fsi["solver"].update(
+        {
+            "coupled_physical_fsi_only_diagnosis": True,
+            "physics_integrity_branch": "coupled-physical-fsi-only-244hz",
+            "eps_harvest_rank_by_wood": False,
+            "eps_harvest_rank_by_p_frac": False,
+            "physical_fsi_acoustic_tol_hz": 1.0,
+        }
+    )
+    physical_fsi["solver"].pop("coupled_decoupled_union_diagnosis", None)
+    (CONFIG_DIR / "coupled_physical_fsi_only.json").write_text(
+        json.dumps(physical_fsi, indent=2), encoding="utf-8"
     )
 
     audit = json.loads(json.dumps(nominal))

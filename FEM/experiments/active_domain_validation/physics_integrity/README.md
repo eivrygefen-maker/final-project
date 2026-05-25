@@ -101,6 +101,21 @@ bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_coup
 
 Outputs: `coupled_decoupled_union/diagnostics/decoupled_union_summary.json`
 
+## Physical-FSI-only isolation (Nitsche disabled, reduced domain)
+
+Same reduced operator (`n_u=102102`, `n_p_air=9998`, `n_reduced_W=112100`) with
+physical cross-blocks `A_up`, `A_pu`, `M_pu` retained and all Nitsche blocks omitted.
+Harvest does not rank by wood or p_frac. Verdict in summary JSON:
+`PHYSICAL_FSI_ACOUSTIC_SURVIVES` if an acoustic-dominated mode is within ±1 Hz of 244.39 Hz.
+
+Run **after** a clean decoupled-union PASS (report-only rerun is fine if solve already completed):
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_coupled_physical_fsi_only.sh
+```
+
+Outputs: `coupled_physical_fsi_only/diagnostics/physical_fsi_only_summary.json`
+
 ## Scaling audit
 
 `p_frac_raw` matches production (eigenvector in GNHEP block-scaled assembled basis).
