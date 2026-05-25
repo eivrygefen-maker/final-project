@@ -396,6 +396,9 @@ def create_guitar_mesh():
         and not is_fom
     )
     shell_only = is_preview or is_display
+    use_air_opening_geom = is_validation or os.environ.get(
+        "FEM_SOUNDHOLE_TAG_AIR_OPENING", "0"
+    ) == "1"
 
     if is_display:
         out_file = mesh_dir / "display_mesh.msh"
@@ -755,8 +758,10 @@ def create_guitar_mesh():
             f"[diag] reference shell tools: outer={vol_out_id} inner={vol_in_id}"
         )
 
+    # Soundhole cutter: short band at outer top (production / display). Validation FSI uses a
+    # full-height cylinder through the inner air pocket (created after vol_in_id is known).
     hole_cyl: Optional[int] = None
-    if not solid_sketch:
+    if not solid_sketch and (shell_only or not use_air_opening_geom):
         if _is_box_shape(shape_type):
             hole_x, hole_y = 0.0, 0.0
         z_hole_lo = (D / 2.0) - t - 0.001
@@ -835,6 +840,34 @@ def create_guitar_mesh():
         air_dimtags: list = []
     else:
         # FSI engineering mesh: internal air cavity + shared interface with wood.
+        if use_air_opening_geom and hole_cyl is None:
+            bb_in = gmsh.model.getBoundingBox(3, int(vol_in_id))
+            z_hole_lo = float(bb_in[2]) - 0.002
+            z_hole_hi = float(bb_in[5]) + 0.002
+            hole_cyl = int(
+                occ.addCylinder(
+                    hole_x,
+                    hole_y,
+                    z_hole_lo,
+                    0,
+                    0,
+                    z_hole_hi - z_hole_lo,
+                    hr,
+                )
+            )
+            print(
+                "[diag] validation air-opening CAD: full-height soundhole cutter "
+                f"z=[{z_hole_lo:.4f},{z_hole_hi:.4f}] r={hr:.4f} m "
+                "(inner air pocket pierced before fragment)"
+            )
+        elif hole_cyl is None:
+            z_hole_lo = (D / 2.0) - t - 0.001
+            z_hole_hi = (D / 2.0) + 0.001
+            hole_cyl = int(
+                occ.addCylinder(
+                    hole_x, hole_y, z_hole_lo, 0, 0, z_hole_hi - z_hole_lo, hr
+                )
+            )
         air_cut = _audit_boolean(
             "engineering_air_hole",
             occ.cut,
@@ -1406,8 +1439,9 @@ def create_guitar_mesh():
         hx: float,
         hy: float,
         hole_r: float,
-        depth_m: float,
-        shell_t: float,
+        air_vol_tag: Optional[int] = None,
+        depth_m: float = 0.0,
+        shell_t: float = 0.0,
     ) -> list:
         """
         Facets on the **air volume** exterior boundary that form the soundhole opening.
@@ -1418,9 +1452,14 @@ def create_guitar_mesh():
         """
         if not air_boundary_surfs:
             return []
-        z_top_outer = float(depth_m) / 2.0
-        z_lo = z_top_outer - float(shell_t) - 0.004
-        z_hi = z_top_outer + 0.003
+        if air_vol_tag is not None:
+            bb = gmsh.model.getBoundingBox(3, int(air_vol_tag))
+            z_lo = float(bb[2]) - 0.001
+            z_hi = float(bb[5]) + 0.001
+        else:
+            z_top_outer = float(depth_m) / 2.0
+            z_lo = z_top_outer - float(shell_t) - 0.004
+            z_hi = z_top_outer + 0.003
         r_cap = float(hole_r) * 1.5
         out: list = []
         for s in sorted(int(x) for x in air_boundary_surfs):
@@ -1499,6 +1538,7 @@ def create_guitar_mesh():
             hx=float(hole_x),
             hy=float(hole_y),
             hole_r=float(hr),
+            air_vol_tag=int(air_vols[0]) if air_vols else None,
             depth_m=float(D),
             shell_t=float(t),
         )
@@ -1601,11 +1641,11 @@ def create_guitar_mesh():
     # This ensures structural-only volume assembly can target wood cells (1/2/3).
     if not top_plate_surfs and wood_boundary_surfs:
         top_plate_surfs = [max(list(wood_boundary_surfs), key=lambda s: get_surface_center_z(s))]
-    if not soundhole_surfs:
+    if not soundhole_surfs and not (use_air_opening_tag and not shell_only):
         soundhole_surfs = _select_soundhole_surfaces(
             all_shell_surfs, z_top_outer, z_tol * 2.5, hole_x, hole_y, hr
         )
-    if not soundhole_surfs:
+    if not soundhole_surfs and not (use_air_opening_tag and not shell_only):
         print(
             "[diag][warn] Soundhole tag 2 empty after boolean clip — "
             "edge-bite hole may share top-plate facets only (FEM uses top opening)."
