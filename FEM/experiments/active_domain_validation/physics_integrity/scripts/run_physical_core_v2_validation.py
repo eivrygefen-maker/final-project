@@ -138,8 +138,12 @@ def _run_subcase(
     sc["eps_reject_decoupled_u_only"] = False
     sc["physics_integrity_branch"] = f"coupled-physical-core-v2-{subcase}"
 
+    eps_band_solver = str(sc.get("eps_band_solver", "shift_invert")).strip() or "shift_invert"
     nm = _apply_master_worker_solver_profile(
-        cfg, num_modes=int(sc.get("num_modes", 12)), structural_only=False
+        cfg,
+        num_modes=int(sc.get("num_modes", 12)),
+        structural_only=False,
+        eps_band_solver=eps_band_solver,
     )
     harvest_lo = float(sc.get("_worker_harvest_lo_hz", BAND_LO))
     harvest_hi = float(sc.get("_worker_harvest_hi_hz", BAND_HI))
@@ -148,14 +152,18 @@ def _run_subcase(
     sc["_worker_eps_target_lambda"] = lam_t
     sc["_worker_harvest_lo_hz"] = harvest_lo
     sc["_worker_harvest_hi_hz"] = harvest_hi
+    sc["eps_broad_search_hz"] = float(sc.get("eps_broad_search_hz", 45.0))
     cfg["_worker_target_hz"] = target_hz
     cfg["_worker_num_modes"] = nm
 
     mesh_file = _resolve_mesh(cfg, config_path)
     if MPI.COMM_WORLD.rank == 0:
         print(
-            f"[physical_core_v2] subcase={subcase} coupling_enabled={coupling_enabled} "
-            f"num_modes={nm}",
+            "[physics_integrity][physical_core_v2] "
+            f"subcase={subcase} "
+            f"eps_band_solver={sc.get('eps_band_solver', eps_band_solver)} "
+            f"num_modes={nm} "
+            f"target_hz={target_hz:.6f}",
             flush=True,
         )
     t0 = time.perf_counter()
