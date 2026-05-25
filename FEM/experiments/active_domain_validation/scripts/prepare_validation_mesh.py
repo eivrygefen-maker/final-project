@@ -110,7 +110,13 @@ def _build_mesh() -> None:
             check=False,
         )
     if proc.returncode != 0:
-        raise RuntimeError(f"Mesh build failed (exit {proc.returncode}); see {log_path}")
+        audit_json = MESH_DIR / "soundhole_cad_air_boundary_audit.json"
+        hint = (
+            f" CAD audit may exist: {audit_json}" if audit_json.is_file() else ""
+        )
+        raise RuntimeError(
+            f"Mesh build failed (exit {proc.returncode}); see {log_path}.{hint}"
+        )
     if not MESH_PATH.is_file():
         raise FileNotFoundError(f"Expected mesh not written: {MESH_PATH}")
 
@@ -159,6 +165,8 @@ def main() -> int:
     )
     if proc.returncode != 0:
         print(f"[prepare][warn] mesh size audit exit {proc.returncode}", file=sys.stderr)
+    if os.environ.get("FEM_SKIP_POST_MESH_AUDIT", "0") == "1":
+        return 0 if proc.returncode in (0, 3) else 1
     sh_proc = _run_soundhole_air_audit()
     if sh_proc != 0:
         print(f"[prepare][warn] soundhole-air audit exit {sh_proc}", file=sys.stderr)

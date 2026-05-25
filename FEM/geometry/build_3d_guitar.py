@@ -1124,6 +1124,282 @@ def create_guitar_mesh():
         scored.sort(key=lambda row: -row[1])
         return [row[0] for row in scored]
 
+    def _surface_area_m(surf_tag: int) -> float:
+        try:
+            mass = gmsh.model.occ.getMass(2, int(surf_tag))
+            if isinstance(mass, (int, float)):
+                return float(mass)
+            if isinstance(mass, (list, tuple)) and len(mass) >= 1:
+                return float(mass[0])
+        except Exception:
+            pass
+        try:
+            xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(2, int(surf_tag))
+            return float(
+                max(xmax - xmin, 1.0e-30)
+                * max(ymax - ymin, 1.0e-30)
+            )
+        except Exception:
+            return float("nan")
+
+    def _cad_surface_record(
+        surf_tag: int,
+        *,
+        hx: float,
+        hy: float,
+        hole_r: float,
+        z_top_outer: float,
+        z_inner_lid: float,
+        picker_z_lo: float,
+        picker_z_hi: float,
+        picker_r_cap: float,
+    ) -> dict:
+        cx, cy, cz = get_surface_center(surf_tag)
+        xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(2, int(surf_tag))
+        rxy = math.hypot(float(cx) - float(hx), float(cy) - float(hy))
+        in_disk_relaxed = rxy <= float(hole_r) * 1.5
+        in_disk_picker = rxy <= float(picker_r_cap)
+        z_ok_picker = float(picker_z_lo) <= float(cz) <= float(picker_z_hi)
+        nz = get_surface_normal_signed_z(surf_tag)
+        return {
+            "surface_id": int(surf_tag),
+            "bbox_m": [float(xmin), float(ymin), float(zmin), float(xmax), float(ymax), float(zmax)],
+            "center_m": [float(cx), float(cy), float(cz)],
+            "area_m2": float(_surface_area_m(surf_tag)),
+            "dist_xy_from_hole_center_m": float(rxy),
+            "z_top_outer_m": float(z_top_outer),
+            "z_inner_lid_m": float(z_inner_lid),
+            "z_minus_top_outer_m": float(cz) - float(z_top_outer),
+            "z_minus_inner_lid_m": float(cz) - float(z_inner_lid),
+            "in_soundhole_disk_relaxed": bool(in_disk_relaxed),
+            "in_soundhole_disk_picker_r": bool(in_disk_picker),
+            "in_picker_z_band": bool(z_ok_picker),
+            "picker_would_select": bool(in_disk_picker and z_ok_picker),
+            "normal_signed_z": float(nz) if nz is not None else None,
+        }
+
+    def _diagnose_cad_soundhole_audit(
+        air_records: list,
+        near_disk_records: list,
+    ) -> dict:
+        n_air = len(air_records)
+        n_air_disk = sum(1 for r in air_records if r.get("in_soundhole_disk_relaxed"))
+        n_air_picker = sum(1 for r in air_records if r.get("picker_would_select"))
+        n_wood_near = sum(
+            1
+            for r in near_disk_records
+            if r.get("membership") == "wood_boundary_only"
+        )
+        n_air_near = sum(
+            1 for r in near_disk_records if r.get("membership") == "air_boundary_only"
+        )
+        codes: List[str] = []
+        if n_air == 0:
+            codes.append("C")
+        if n_air_disk == 0 and n_wood_near > 0:
+            codes.append("C")
+        if n_air_disk > 0 and n_air_picker == 0:
+            codes.append("A")
+        if n_air_disk > 0 and n_air_picker > 0:
+            codes.append("OK")
+        if n_air_disk > 0 and n_air_near > 10 and n_air_picker == 0:
+            codes.append("B")
+        if not codes:
+            codes.append("D")
+        primary = codes[0]
+        if "OK" in codes:
+            primary = "OK"
+        elif "A" in codes and "C" not in codes:
+            primary = "A"
+        elif "C" in codes:
+            primary = "C"
+        elif "B" in codes:
+            primary = "B"
+        narratives = {
+            "A": (
+                "Air-boundary surfaces exist near the soundhole disk but current z/r "
+                "picker bands exclude them (tolerance/plane mismatch)."
+            ),
+            "B": (
+                "Air-boundary opening geometry is fragmented into many small surfaces; "
+                "picker or grouping may not match assumed single opening patch."
+            ),
+            "C": (
+                "No air-boundary surface lies in the expected soundhole disk/opening; "
+                "cavity may be sealed at the hole or opening exists only on wood exterior."
+            ),
+            "D": "Ambiguous CAD topology; inspect full air_boundary enumeration.",
+            "OK": "Air-boundary opening surfaces found in picker band.",
+        }
+        z_vals = [r["center_m"][2] for r in air_records if r.get("center_m")]
+        return {
+            "primary_hypothesis": primary,
+            "hypothesis_codes": codes,
+            "narrative": narratives.get(primary, ""),
+            "counts": {
+                "n_air_boundary_total": n_air,
+                "n_air_in_disk_relaxed": n_air_disk,
+                "n_air_picker_would_select": n_air_picker,
+                "n_near_disk_air_only": n_air_near,
+                "n_near_disk_wood_only": n_wood_near,
+            },
+            "air_boundary_z_range_m": (
+                [min(z_vals), max(z_vals)] if z_vals else None
+            ),
+        }
+
+    def _write_cad_soundhole_air_boundary_audit(
+        *,
+        audit_stem: Path,
+        air_boundary_surfs: list,
+        wood_boundary_surfs: list,
+        hx: float,
+        hy: float,
+        hole_r: float,
+        depth_m: float,
+        shell_t: float,
+        hole_x: float,
+        hole_y: float,
+    ) -> Path:
+        """Pre-mesh CAD audit (validation / FEM_SOUNDHOLE_TAG_AIR_OPENING only)."""
+        z_top_outer = float(depth_m) / 2.0
+        z_inner_lid = z_top_outer - float(shell_t)
+        z_tol = max(1.0e-4, float(shell_t), 0.25 * float(hole_r))
+        picker_z_lo = z_top_outer - float(shell_t) - 0.004
+        picker_z_hi = z_top_outer + 0.003
+        picker_r_cap = float(hole_r) * 1.5
+        z_near_lo = z_top_outer - float(shell_t) - 0.015
+        z_near_hi = z_top_outer + 0.008
+
+        air_set = {int(s) for s in air_boundary_surfs}
+        wood_set = {int(s) for s in wood_boundary_surfs}
+        all_boundary = sorted(air_set | wood_set)
+
+        air_records = [
+            _cad_surface_record(
+                int(s),
+                hx=hx,
+                hy=hy,
+                hole_r=hole_r,
+                z_top_outer=z_top_outer,
+                z_inner_lid=z_inner_lid,
+                picker_z_lo=picker_z_lo,
+                picker_z_hi=picker_z_hi,
+                picker_r_cap=picker_r_cap,
+            )
+            for s in sorted(air_set)
+        ]
+
+        near_disk_records: List[dict] = []
+        for s in all_boundary:
+            rec = _cad_surface_record(
+                int(s),
+                hx=hx,
+                hy=hy,
+                hole_r=hole_r,
+                z_top_outer=z_top_outer,
+                z_inner_lid=z_inner_lid,
+                picker_z_lo=picker_z_lo,
+                picker_z_hi=picker_z_hi,
+                picker_r_cap=picker_r_cap,
+            )
+            cz = rec["center_m"][2]
+            if not rec["in_soundhole_disk_relaxed"]:
+                continue
+            if float(cz) < z_near_lo or float(cz) > z_near_hi:
+                continue
+            in_air = int(s) in air_set
+            in_wood = int(s) in wood_set
+            if in_air and in_wood:
+                membership = "air_and_wood_boundary"
+            elif in_air:
+                membership = "air_boundary_only"
+            elif in_wood:
+                membership = "wood_boundary_only"
+            else:
+                membership = "neither"
+            near_disk_records.append({**rec, "membership": membership})
+
+        diagnosis = _diagnose_cad_soundhole_audit(air_records, near_disk_records)
+        payload = {
+            "expected_soundhole": {
+                "center_m": [float(hole_x), float(hole_y), float(z_top_outer)],
+                "radius_m": float(hole_r),
+                "depth_m": float(depth_m),
+                "shell_t_m": float(shell_t),
+                "z_top_outer_m": z_top_outer,
+                "z_inner_lid_m": z_inner_lid,
+                "picker_z_band_m": [picker_z_lo, picker_z_hi],
+                "picker_r_cap_m": picker_r_cap,
+            },
+            "air_boundary_surfaces": air_records,
+            "near_soundhole_disk_surfaces": near_disk_records,
+            "diagnosis": diagnosis,
+        }
+
+        audit_stem.parent.mkdir(parents=True, exist_ok=True)
+        json_path = audit_stem.with_suffix(".json")
+        md_path = audit_stem.with_suffix(".md")
+        log_path = audit_stem.with_suffix(".log")
+        json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+        lines = [
+            "# CAD soundhole ↔ air-boundary audit (pre-mesh)",
+            "",
+            f"Expected hole centre (x,y,z_outer): `{hole_x:.4f}, {hole_y:.4f}, {z_top_outer:.4f}` m",
+            f"Hole radius: `{hole_r:.4f}` m | shell t: `{shell_t:.4f}` m",
+            "",
+            "## Summary",
+            "",
+            f"- Air boundary surfaces (total): **{len(air_records)}**",
+            f"- Air in soundhole disk (relaxed r): **{diagnosis['counts']['n_air_in_disk_relaxed']}**",
+            f"- Air passing current picker z/r: **{diagnosis['counts']['n_air_picker_would_select']}**",
+            f"- Near disk, wood-only: **{diagnosis['counts']['n_near_disk_wood_only']}**",
+            f"- Near disk, air-only: **{diagnosis['counts']['n_near_disk_air_only']}**",
+            f"- Air boundary z range (centroids): `{diagnosis.get('air_boundary_z_range_m')}`",
+            "",
+            f"**Primary hypothesis: {diagnosis['primary_hypothesis']}** — {diagnosis['narrative']}",
+            "",
+            f"Full JSON: `{json_path}`",
+            "",
+            "## Air boundary surfaces (all)",
+            "",
+            "| id | area | cx | cy | cz | r_xy | z−z_outer | z−z_inner | in_disk | picker_ok |",
+            "|----|------|----|----|-----|------|-----------|-----------|---------|-----------|",
+        ]
+        for r in air_records:
+            c = r["center_m"]
+            lines.append(
+                f"| {r['surface_id']} | {r['area_m2']:.4e} | {c[0]:.4f} | {c[1]:.4f} | {c[2]:.4f} | "
+                f"{r['dist_xy_from_hole_center_m']:.4f} | {r['z_minus_top_outer_m']:.4f} | "
+                f"{r['z_minus_inner_lid_m']:.4f} | {r['in_soundhole_disk_relaxed']} | "
+                f"{r['picker_would_select']} |"
+            )
+        lines.append("")
+        lines.append("## Surfaces near soundhole disk (wood ∪ air boundaries)")
+        lines.append("")
+        for r in near_disk_records[:40]:
+            c = r["center_m"]
+            lines.append(
+                f"- id={r['surface_id']} membership={r['membership']} "
+                f"r_xy={r['dist_xy_from_hole_center_m']:.4f} z={c[2]:.4f} area={r['area_m2']:.4e}"
+            )
+        if len(near_disk_records) > 40:
+            lines.append(f"- ... ({len(near_disk_records) - 40} more in JSON)")
+        md_path.write_text("\n".join(lines), encoding="utf-8")
+
+        log_lines = [
+            "[CAD-AUDIT] soundhole air-boundary enumeration (pre-mesh)",
+            f"[CAD-AUDIT] n_air_boundary={len(air_records)} n_near_disk={len(near_disk_records)}",
+            f"[CAD-AUDIT] diagnosis={diagnosis['primary_hypothesis']}: {diagnosis['narrative']}",
+            f"[CAD-AUDIT] wrote {json_path}",
+            f"[CAD-AUDIT] wrote {md_path}",
+        ]
+        log_path.write_text("\n".join(log_lines) + "\n", encoding="utf-8")
+        for ln in log_lines:
+            print(ln, flush=True)
+        return json_path
+
     def _select_soundhole_air_cavity_opening_surfaces(
         air_boundary_surfs: list,
         *,
@@ -1188,12 +1464,36 @@ def create_guitar_mesh():
             out.append(int(s))
         return sorted(set(out))
 
-    # Soundhole: z = D/2 plane + hole disk on exterior shell (legacy), or air-cavity mouth (validation).
+    # Soundhole: air-cavity mouth (validation/opt-in) or legacy exterior-shell picker (production FOM).
     z_top_outer = D / 2.0
     z_tol = max(1.0e-4, t, 0.25 * hr)
-    use_air_opening_tag = (is_validation or os.environ.get("FEM_SOUNDHOLE_TAG_AIR_OPENING", "0") == "1")
+    use_air_opening_tag = (
+        is_validation or os.environ.get("FEM_SOUNDHOLE_TAG_AIR_OPENING", "0") == "1"
+    )
     soundhole_surfs: list = []
-    if use_air_opening_tag and air_boundary_surfs and not shell_only:
+    if use_air_opening_tag and not shell_only:
+        if not air_boundary_surfs:
+            raise RuntimeError(
+                "FEM_VALIDATION_MESH / FEM_SOUNDHOLE_TAG_AIR_OPENING: no air volume "
+                "boundary surfaces after fragment — cannot define acoustic soundhole tag 2."
+            )
+        audit_stem = (
+            out_file.parent / "soundhole_cad_air_boundary_audit"
+            if is_validation
+            else mesh_dir / "soundhole_cad_air_boundary_audit"
+        )
+        audit_json = _write_cad_soundhole_air_boundary_audit(
+            audit_stem=audit_stem,
+            air_boundary_surfs=air_boundary_surfs,
+            wood_boundary_surfs=wood_boundary_surfs,
+            hx=float(hole_x),
+            hy=float(hole_y),
+            hole_r=float(hr),
+            depth_m=float(D),
+            shell_t=float(t),
+            hole_x=float(hole_x),
+            hole_y=float(hole_y),
+        )
         soundhole_surfs = _select_soundhole_air_cavity_opening_surfaces(
             sorted(air_boundary_surfs),
             hx=float(hole_x),
@@ -1204,34 +1504,36 @@ def create_guitar_mesh():
         )
         print(
             f"[diag] soundhole tag 2: air-cavity opening selection n={len(soundhole_surfs)} "
-            f"(FEM_VALIDATION_MESH or FEM_SOUNDHOLE_TAG_AIR_OPENING=1; adjacent to air vol 10)"
+            f"(validation/opt-in; adjacent to air vol 10 only)"
         )
         if not soundhole_surfs:
-            print(
-                "[diag][warn] air-cavity opening selection empty — falling back to legacy "
-                "shell soundhole picker (may tag exterior wood only)."
+            raise RuntimeError(
+                "FEM_VALIDATION_MESH: air-cavity soundhole picker returned 0 surfaces. "
+                "Legacy wood-top / disk-centroid tagging is disabled for validation "
+                "(proven acoustically invalid: tag-2 facets not adjacent to air tag 10). "
+                f"Inspect CAD audit: {audit_json} and {audit_stem.with_suffix('.md')}"
             )
-    if is_preview:
-        all_shell_surfs = sorted(wood_boundary_surfs)
-    else:
-        all_shell_surfs = sorted(set(wood_boundary_surfs) | set(air_boundary_surfs))
-    if not soundhole_surfs:
+    elif not shell_only:
+        if is_preview:
+            all_shell_surfs = sorted(wood_boundary_surfs)
+        else:
+            all_shell_surfs = sorted(set(wood_boundary_surfs) | set(air_boundary_surfs))
         soundhole_surfs = _select_soundhole_surfaces(
             all_shell_surfs, z_top_outer, z_tol, hole_x, hole_y, hr
         )
-    if not soundhole_surfs and air_boundary_surfs:
-        soundhole_surfs = _select_soundhole_surfaces(
-            sorted(air_boundary_surfs), z_top_outer, z_tol, hole_x, hole_y, hr
-        )
-    if not soundhole_surfs and is_fom:
-        disk_pool = sorted(set(air_boundary_surfs) | set(int(s) for s in top_plate_surfs))
-        soundhole_surfs = _select_soundhole_disk_centroid_fallback(
-            disk_pool, z_top_outer, z_tol, hole_x, hole_y, hr
-        )
-        if soundhole_surfs:
-            print(
-                f"[diag] soundhole tag 2 FOM disk-centroid fallback: {len(soundhole_surfs)} facets"
+        if not soundhole_surfs and air_boundary_surfs:
+            soundhole_surfs = _select_soundhole_surfaces(
+                sorted(air_boundary_surfs), z_top_outer, z_tol, hole_x, hole_y, hr
             )
+        if not soundhole_surfs and is_fom:
+            disk_pool = sorted(set(air_boundary_surfs) | set(int(s) for s in top_plate_surfs))
+            soundhole_surfs = _select_soundhole_disk_centroid_fallback(
+                disk_pool, z_top_outer, z_tol, hole_x, hole_y, hr
+            )
+            if soundhole_surfs:
+                print(
+                    f"[diag] soundhole tag 2 FOM disk-centroid fallback: {len(soundhole_surfs)} facets"
+                )
     # Do not assign whole top plate or raw air shell to tag 2 (causes jumps / wrong BCs).
 
     # Do not double-tag hole annulus; keep top / back / ribs disjoint.
