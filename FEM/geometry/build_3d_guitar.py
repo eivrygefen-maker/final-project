@@ -1220,20 +1220,83 @@ def create_guitar_mesh():
         )
         return report
 
-    def _validation_occ_heal_and_dedupe(*, stage: str) -> None:
-        """Validation-only OCC duplicate merge + heal (no mesh tolerance changes)."""
+    def _validation_live_volume_tags() -> list:
+        occ.synchronize()
+        return sorted(int(t) for d, t in occ.getEntities(3))
+
+    def _validation_assert_live_solids(stage: str) -> list:
+        """Log live 3D OCC tags; fail fast if heal/boolean left no solids."""
+        tags = _validation_live_volume_tags()
+        print(f"[diag] validation live 3D entities ({stage}): {tags}", flush=True)
+        if not tags:
+            raise RuntimeError(
+                f"FEM_VALIDATION_MESH: no 3D solids remain after validation CAD step "
+                f"'{stage}' (healShapes or stale volume tags may have destroyed B-reps)."
+            )
+        return tags
+
+    def _validation_refresh_dimtags_from_live(
+        dimtags: list, *, stage: str
+    ) -> list:
+        """Keep only (dim,tag) pairs that still exist in the OCC model."""
+        live = set(_validation_live_volume_tags())
+        kept = [(int(d), int(t)) for d, t in dimtags if int(d) == 3 and int(t) in live]
+        dropped = [int(t) for d, t in dimtags if int(d) == 3 and int(t) not in live]
+        if dropped:
+            print(
+                f"[diag][warn] validation dropped stale volume tag(s) after {stage}: "
+                f"{dropped} (live={sorted(live)})",
+                flush=True,
+            )
+        return kept
+
+    def _validation_safe_dedupe_only(*, stage: str) -> None:
+        """
+        Validation-only duplicate-face merge (no healShapes).
+
+        healShapes on fused cavity/channel solids often reports 'Could not make solid'
+        and invalidates live volume tags (e.g. outer tag 1) before wood hollow cut.
+        """
         if not is_validation:
             return
         try:
             occ.removeAllDuplicates()
         except Exception as exc:
             print(f"[diag][warn] validation removeAllDuplicates ({stage}): {exc}")
-        try:
-            gmsh.model.occ.healShapes()
-        except Exception as exc:
-            print(f"[diag][warn] validation healShapes ({stage}): {exc}")
         occ.synchronize()
-        print(f"[diag] validation OCC heal+dedupe ({stage})", flush=True)
+        _validation_assert_live_solids(stage)
+        print(f"[diag] validation OCC dedupe-only ({stage})", flush=True)
+
+    def _validation_pick_air_wood_from_fragment_vols(
+        fragment_vol_tags: list,
+        *,
+        air_ref_com: Tuple[float, float, float],
+        stage: str,
+    ) -> Tuple[list, list]:
+        """Classify fragment output volumes by proximity to pre-fragment air COM."""
+        vols = sorted({int(v) for v in fragment_vol_tags})
+        if not vols:
+            raise RuntimeError(
+                f"FEM_VALIDATION_MESH: fragment at '{stage}' produced no 3D volumes."
+            )
+
+        def _dist2(vtag: int) -> float:
+            cx, cy, cz = _entity_center_of_mass(3, int(vtag))
+            return (
+                (cx - air_ref_com[0]) ** 2
+                + (cy - air_ref_com[1]) ** 2
+                + (cz - air_ref_com[2]) ** 2
+            )
+
+        air_pick = min(vols, key=_dist2)
+        air_vols_out = [int(air_pick)]
+        wood_vols_out = [int(v) for v in vols if int(v) != int(air_pick)]
+        print(
+            f"[diag] validation volume classify ({stage}): air={air_vols_out} "
+            f"wood={wood_vols_out}",
+            flush=True,
+        )
+        return wood_vols_out, air_vols_out
 
     def _validation_conformal_refragment_wood_air(
         wood_vols_in: list,
@@ -1257,22 +1320,21 @@ def create_guitar_mesh():
                 removeObject=True,
                 removeTool=True,
             )
-            _validation_occ_heal_and_dedupe(stage=f"{stage}_post_fragment")
+            occ.synchronize()
             final_vols = sorted([int(tag) for dim, tag in all_split if dim == 3])
+            _validation_assert_live_solids(f"{stage}_post_fragment")
             if not final_vols:
                 return list(wood_vols_in), list(air_vols_in)
-
-            def _dist2_to_air_ref(vtag: int) -> float:
-                cx, cy, cz = _entity_center_of_mass(3, int(vtag))
-                return (
-                    (cx - air_ref[0]) ** 2
-                    + (cy - air_ref[1]) ** 2
-                    + (cz - air_ref[2]) ** 2
-                )
-
-            air_pick = min(final_vols, key=_dist2_to_air_ref)
-            new_air = [int(air_pick)]
-            new_wood = [int(v) for v in final_vols if int(v) != int(air_pick)]
+            _validation_safe_dedupe_only(stage=f"{stage}_post_fragment")
+            live = set(_validation_live_volume_tags())
+            final_vols = [v for v in final_vols if v in live]
+            if not final_vols:
+                final_vols = _validation_live_volume_tags()
+            new_wood, new_air = _validation_pick_air_wood_from_fragment_vols(
+                final_vols,
+                air_ref_com=air_ref,
+                stage=stage,
+            )
             print(
                 f"[diag] validation conformal wood+air re-fragment ({stage}): "
                 f"wood={new_wood} air={new_air}",
@@ -1487,7 +1549,15 @@ def create_guitar_mesh():
                 raise RuntimeError(
                     "validation air cavity+channel fuse produced no volume"
                 )
-            _validation_occ_heal_and_dedupe(stage="post_air_cavity_channel_fuse")
+            _validation_assert_live_solids("post_air_cavity_channel_fuse")
+            air_dimtags = _validation_refresh_dimtags_from_live(
+                air_dimtags, stage="post_air_cavity_channel_fuse"
+            )
+            if not air_dimtags:
+                raise RuntimeError(
+                    "FEM_VALIDATION_MESH: fused air volume tag(s) invalid after fuse "
+                    "(no live 3D entity — do not run healShapes on cavity/channel fuse)."
+                )
         else:
             if hole_cyl is None:
                 z_hole_lo = (D / 2.0) - t - 0.001
@@ -1506,6 +1576,14 @@ def create_guitar_mesh():
                 removeTool=False,
             )
             air_dimtags = [dt for dt in as_dimtags(air_cut) if dt[0] == 3]
+
+        if is_validation:
+            live_pre_wood = _validation_assert_live_solids("pre_wood_hollow_cut")
+            if int(vol_out_id) not in live_pre_wood:
+                raise RuntimeError(
+                    f"FEM_VALIDATION_MESH: outer wood volume tag {vol_out_id} not in live "
+                    f"solids {live_pre_wood} before hollow cut."
+                )
 
         wood_cut = _audit_boolean(
             "engineering_wood_hollow",
@@ -1531,19 +1609,31 @@ def create_guitar_mesh():
                 f"FSI fragment skipped: wood_vols={len(wood_dimtags)} air_vols={len(air_dimtags)} "
                 "(boolean hollow/soundhole may have failed)."
             )
+        air_ref_before_fragment = _entity_center_of_mass(
+            3, int(air_dimtags[0][1])
+        )
         frags, _ = occ.fragment(wood_dimtags, air_dimtags, removeObject=True, removeTool=True)
-        try:
-            occ.removeAllDuplicates()
-        except Exception:
-            pass
         occ.synchronize()
+        resulting_vols = [int(tag) for dim, tag in frags if dim == 3]
         if is_validation:
-            _validation_occ_heal_and_dedupe(stage="post_wood_air_fragment")
-
-        resulting_vols = [dt for dt in frags if dt[0] == 3]
-        air_candidate_set = set(tag for _, tag in air_dimtags)
-        air_vols = [tag for _, tag in resulting_vols if tag in air_candidate_set]
-        wood_vols = [tag for _, tag in resulting_vols if tag not in air_candidate_set]
+            _validation_assert_live_solids("post_wood_air_fragment")
+            _validation_safe_dedupe_only(stage="post_wood_air_fragment")
+            live = set(_validation_live_volume_tags())
+            resulting_vols = [v for v in resulting_vols if v in live] or list(live)
+            wood_vols, air_vols = _validation_pick_air_wood_from_fragment_vols(
+                resulting_vols,
+                air_ref_com=air_ref_before_fragment,
+                stage="post_wood_air_fragment",
+            )
+        else:
+            try:
+                occ.removeAllDuplicates()
+            except Exception:
+                pass
+            occ.synchronize()
+            air_candidate_set = set(tag for _, tag in air_dimtags)
+            air_vols = [tag for tag in resulting_vols if tag in air_candidate_set]
+            wood_vols = [tag for tag in resulting_vols if tag not in air_candidate_set]
 
         if len(air_vols) != 1:
             raise RuntimeError(f"Expected exactly 1 internal air volume, found {len(air_vols)}")
@@ -3670,9 +3760,9 @@ def create_guitar_mesh():
             air_vols=air_vols,
             soundhole_surfs=soundhole_surfs,
             cleanup_stages=[
-                "post_air_cavity_channel_fuse",
-                "post_wood_air_fragment",
-                "after_z_partition_conformal_refragment",
+                "post_air_cavity_channel_fuse_assert_live",
+                "post_wood_air_fragment_dedupe_only",
+                "after_z_partition_conformal_refragment_dedupe_only",
             ],
         )
         _blocking_pairs = _overlap_audit.get("blocking_coincident_pairs") or []
