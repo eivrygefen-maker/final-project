@@ -291,11 +291,15 @@ def _run_acoustic(cfg: dict, config_path: Path, case_dir: Path) -> int:
         mode_rows.append(diag)
 
     write_mode_diagnostics_json(case_dir, mode_rows, case_label="acoustic_only", scaling=gnhep)
+    restr = (cfg.get("_physics_integrity") or {}).get("acoustic_pressure_restriction") or {}
     result = {
         "case": "acoustic_only",
         "solver_branch": "acoustic_cavity_only_diagnosis",
         "n_u_dofs": int(n_u_reported),
         "n_p_dofs": n_p,
+        "n_p_full": int(restr.get("n_p_full", n_p)),
+        "n_p_active": int(restr.get("n_p_active", n_p)),
+        "soundhole_p_dof_active": int(restr.get("soundhole_p_dof_active", 0)),
         "frequencies_hz": [float(f) for f in freqs_hz],
         "num_modes": n_modes,
         "elapsed_s": elapsed,

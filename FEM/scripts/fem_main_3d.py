@@ -863,6 +863,24 @@ def _resolve_coupled_pressure_bc_policy(
     return soundhole_bc, pressure_gauge_mode, legacy_pg_soundhole, skip_interior_gauge
 
 
+def _locate_air_volume_pressure_dofs(
+    V_p: fem.FunctionSpace,
+    msh: mesh.Mesh,
+    cell_tags,
+) -> np.ndarray:
+    """Collapsed/global pressure DOFs with topological support on air volume tag 10."""
+    tdim = msh.topology.dim
+    air_cells = np.asarray(cell_tags.find(AIR_VOLUME_TAG), dtype=np.int32)
+    if air_cells.size == 0:
+        return np.array([], dtype=np.int32)
+    return np.unique(
+        np.asarray(
+            fem.locate_dofs_topological(V_p, tdim, air_cells),
+            dtype=np.int32,
+        ).ravel()
+    )
+
+
 def _locate_soundhole_pressure_release_dofs(
     V_p,
     soundhole_facets: np.ndarray,
@@ -5281,50 +5299,119 @@ def _solve_acoustic_cavity_only_evp(
         soundhole_facets_count=int(soundhole_facets.size),
         status_callback=status_callback,
     )
-    bcs_p: List[fem.DirichletBC] = []
+    if pressure_gauge_mode not in ("none", "", None) and MPI.COMM_WORLD.rank == ROOT_RANK:
+        _emit(
+            f"[bc][warn] acoustic-cavity: pressure_gauge={pressure_gauge_mode!r} ignored "
+            "(pressure_release soundhole is the physical BC).",
+            status_callback=status_callback,
+            level="warning",
+        )
+
+    n_p_full = int(V_p.dofmap.index_map.size_global * V_p.dofmap.index_map_bs)
+    p_air_v = _locate_air_volume_pressure_dofs(V_p, msh, cell_tags)
+    if p_air_v.size == 0:
+        raise RuntimeError(
+            f"acoustic-cavity: no pressure DOFs on air volume tag {AIR_VOLUME_TAG}."
+        )
+
     p_soundhole_bc_dofs_v = np.array([], dtype=np.int32)
     if soundhole_bc == SOUNDHOLE_BC_PRESSURE_RELEASE:
         p_soundhole_bc_dofs_v = _locate_soundhole_pressure_release_dofs(
             V_p, soundhole_facets
         )
-        if p_soundhole_bc_dofs_v.size > 0:
-            bcs_p.append(
-                fem.dirichletbc(
-                    PETSc.ScalarType(0.0),
-                    p_soundhole_bc_dofs_v,
-                    V_p,
-                )
-            )
+    p_soundhole_active_v = np.intersect1d(
+        p_soundhole_bc_dofs_v, p_air_v
+    ).astype(np.int32, copy=False)
+    if (
+        MPI.COMM_WORLD.rank == ROOT_RANK
+        and p_soundhole_bc_dofs_v.size > p_soundhole_active_v.size
+    ):
+        _emit(
+            f"[bc][warn] acoustic-cavity: {p_soundhole_bc_dofs_v.size - p_soundhole_active_v.size} "
+            "soundhole pressure DOFs lie outside the air-supported subgraph (omitted from "
+            "reduced operator).",
+            status_callback=status_callback,
+            level="warning",
+        )
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
         _emit(
             f"[bc] acoustic-cavity soundhole: pressure_release → "
-            f"{p_soundhole_bc_dofs_v.size} pressure DOFs on {soundhole_facets.size} facets",
+            f"{p_soundhole_active_v.size} active / {p_soundhole_bc_dofs_v.size} full "
+            f"pressure DOFs on {soundhole_facets.size} facets",
             status_callback=status_callback,
         )
 
     a_form = fem.form(a_pp)
     m_form = fem.form(m_pp)
-    A = assemble_matrix(a_form, bcs=bcs_p)
-    A.assemble()
-    M = assemble_matrix(m_form, bcs=bcs_p)
-    M.assemble()
+    A_full = assemble_matrix(a_form, bcs=[])
+    A_full.assemble()
+    M_full = assemble_matrix(m_form, bcs=[])
+    M_full.assemble()
+
+    from fem_active_domain import restrict_operators_to_active_set
+
+    A, M, restrict_meta = restrict_operators_to_active_set(A_full, M_full, p_air_v)
+    try:
+        A_full.destroy()
+        M_full.destroy()
+    except Exception:
+        pass
+
+    n_p_active = int(restrict_meta.get("n_active", p_air_v.size))
+    parent_to_local = np.full(n_p_full, -1, dtype=np.int32)
+    parent_to_local[p_air_v] = np.arange(n_p_active, dtype=np.int32)
+    if p_soundhole_active_v.size > 0:
+        sh_local = parent_to_local[p_soundhole_active_v]
+        zero_cols = _solver_bool(
+            solver_cfg, "eps_algebraic_bc_zero_columns", default=True
+        )
+        _petsc_mat_zero_dirichlet_rows(
+            A, sh_local, diag=1.0, zero_columns=zero_cols
+        )
+        _petsc_mat_zero_dirichlet_rows(
+            M, sh_local, diag=1.0, zero_columns=zero_cols
+        )
+
     gnhep_global = _normalize_assembled_gnhep(A, M, solver_cfg)
+    n_mat = int(A.getSize()[0])
+
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        print(
+            "[physics_integrity][acoustic_only] pressure space restricted to air domain: "
+            f"full_p={n_p_full} active_p={n_p_active} "
+            f"soundhole_full={int(p_soundhole_bc_dofs_v.size)} "
+            f"soundhole_active={int(p_soundhole_active_v.size)} "
+            f"slepc_matrix_n={n_mat}",
+            flush=True,
+        )
+        print(
+            f"[DIAG] acoustic-cavity matrices (air-restricted): ||A||_F={float(A.norm()):.6e} "
+            f"||M||_F={float(M.norm()):.6e}",
+            flush=True,
+        )
+
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        audit_extra = dict(config.get("_physics_integrity") or {})
+        audit_extra["acoustic_pressure_restriction"] = {
+            "method": "algebraic_air_volume_dofs",
+            "n_p_full": n_p_full,
+            "n_p_active": n_p_active,
+            "soundhole_p_dof_full": int(p_soundhole_bc_dofs_v.size),
+            "soundhole_p_dof_active": int(p_soundhole_active_v.size),
+            "slepc_matrix_n": n_mat,
+        }
+        config["_physics_integrity"] = audit_extra
+        solver_cfg["_physics_integrity"] = audit_extra
 
     _store_physics_integrity_audit(
         config,
         solver_cfg=solver_cfg,
         gnhep_scales={"s_uu": 1.0, "s_pp": float(s_pp), "s_couple": 1.0, "gnhep_global": gnhep_global},
-        soundhole_p_dof=int(p_soundhole_bc_dofs_v.size),
+        soundhole_p_dof=int(p_soundhole_active_v.size),
         p_scale=p_scale,
         fsi_gain=0.0,
         iface_mode="acoustic_cavity_only",
     )
-
-    if MPI.COMM_WORLD.rank == ROOT_RANK:
-        print(
-            f"[DIAG] acoustic-cavity matrices: ||A||_F={float(A.norm()):.6e} "
-            f"||M||_F={float(M.norm()):.6e} n_p={int(V_p.dofmap.index_map.size_global)}",
-            flush=True,
-        )
 
     shift_hz = float(
         solver_cfg.get(
@@ -5370,7 +5457,7 @@ def _solve_acoustic_cavity_only_evp(
 
     rvec = A.createVecRight()
     freqs_hz: List[float] = []
-    vectors: List[np.ndarray] = []
+    vectors_red: List[np.ndarray] = []
     for i in range(min(nev, nconv)):
         eig = eps.getEigenpair(i, rvec)
         eig_r = float(np.real(eig))
@@ -5380,7 +5467,7 @@ def _solve_acoustic_cavity_only_evp(
         if f_hz < min_hz or f_hz > max_hz:
             continue
         freqs_hz.append(f_hz)
-        vectors.append(rvec.array.copy())
+        vectors_red.append(np.asarray(rvec.array, dtype=np.float64).copy())
     try:
         rvec.destroy()
     except Exception:
@@ -5399,15 +5486,20 @@ def _solve_acoustic_cavity_only_evp(
     order = np.argsort(np.array(freqs_hz))
     order_list = [int(i) for i in order][:nev_target]
     freqs_hz = [freqs_hz[i] for i in order_list]
-    eigvecs = np.stack([vectors[i] for i in order_list], axis=1)
-    n_p = int(V_p.dofmap.index_map.size_global * V_p.dofmap.index_map_bs)
+    vectors_ordered = [vectors_red[i] for i in order_list]
+    full_cols: List[np.ndarray] = []
+    for v_red in vectors_ordered:
+        v_full = np.zeros(n_p_full, dtype=np.float64)
+        v_full[p_air_v] = v_red
+        full_cols.append(v_full)
+    eigvecs = np.stack(full_cols, axis=1) if full_cols else np.zeros((n_p_full, 0))
     if MPI.COMM_WORLD.rank == ROOT_RANK:
         print(
-            f"[DIAG] acoustic-cavity modes (shift={shift_hz:.2f} Hz): "
+            f"[DIAG] acoustic-cavity modes (shift={shift_hz:.2f} Hz, active_p={n_p_active}): "
             f"{[round(f, 3) for f in freqs_hz]}",
             flush=True,
         )
-    return msh, V_p, freqs_hz, eigvecs, 0, n_p
+    return msh, V_p, freqs_hz, eigvecs, 0, n_p_active
 
 
 def _solve_coupled_evp(
