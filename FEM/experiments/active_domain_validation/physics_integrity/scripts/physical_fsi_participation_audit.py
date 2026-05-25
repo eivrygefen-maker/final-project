@@ -68,33 +68,165 @@ MAC_SCALING_NOTE = (
 )
 
 
-def _find_mode_near(
+def _load_result_frequencies(case_dir: Path, target_hz: float) -> List[float]:
+    """Frequencies from case result/timing JSON (not mode filename tags)."""
+    hz_tag = hz_result_tag(target_hz)
+    freqs: List[float] = []
+    for rel in (
+        f"results/result_{hz_tag}.json",
+        f"timing/run_summary.json",
+    ):
+        path = case_dir / rel
+        if not path.is_file():
+            continue
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        for f in payload.get("frequencies_hz") or []:
+            freqs.append(float(f))
+        if freqs:
+            break
+    return freqs
+
+
+def _summary_hint_frequency(
+    case_dir: Path,
+    summary_name: str,
+    *,
+    prefer_hz: Optional[float] = None,
+    prefer_keys: Optional[Tuple[str, ...]] = None,
+) -> Optional[float]:
+    path = case_dir / "diagnostics" / summary_name
+    if not path.is_file():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    keys = prefer_keys or (
+        "acoustic_recovered_modes",
+        "acoustic_candidate_modes",
+        "ranking_by_proximity_to_acoustic_ref",
+        "modes_in_band",
+        "modes_all",
+    )
+    for key in keys:
+        modes = payload.get(key) or []
+        if not modes:
+            continue
+        if prefer_hz is not None:
+            best = min(
+                modes,
+                key=lambda m: abs(float(m.get("frequency_hz", float("nan"))) - prefer_hz),
+            )
+        else:
+            best = min(
+                modes,
+                key=lambda m: abs(float(m.get("delta_from_acoustic_ref_hz", 0.0))),
+            )
+        f_hz = float(best.get("frequency_hz", float("nan")))
+        if np.isfinite(f_hz):
+            return f_hz
+    return None
+
+
+def _catalog_saved_modes(
+    case_dir: Path,
     modes_meta: List[Dict[str, Any]],
     mode_files: List[Path],
     *,
     target_hz: float,
-    tol_hz: float,
-) -> Tuple[Optional[Dict[str, Any]], Optional[Path], float]:
-    best_meta: Optional[Dict[str, Any]] = None
-    best_path: Optional[Path] = None
-    best_f = float("nan")
-    best_d = tol_hz
+) -> List[Dict[str, Any]]:
+    """One entry per saved mode file with frequency from diagnostics or result list."""
+    result_freqs = _load_result_frequencies(case_dir, target_hz)
+    catalog: List[Dict[str, Any]] = []
     for path in mode_files:
         try:
             mode_index = int(path.stem.split("_")[-1])
         except ValueError:
-            continue
-        meta = next((m for m in modes_meta if int(m.get("mode_index", -1)) == mode_index), {})
+            mode_index = len(catalog)
+        meta = next(
+            (m for m in modes_meta if int(m.get("mode_index", -1)) == mode_index),
+            {},
+        )
         f_hz = float(meta.get("frequency_hz", float("nan")))
+        if not np.isfinite(f_hz) and mode_index < len(result_freqs):
+            f_hz = float(result_freqs[mode_index])
         if not np.isfinite(f_hz):
             continue
-        d = abs(f_hz - target_hz)
-        if d <= best_d:
-            best_d = d
-            best_f = f_hz
-            best_meta = meta
-            best_path = path
-    return best_meta, best_path, best_f
+        catalog.append(
+            {
+                "mode_index": int(mode_index),
+                "frequency_hz": f_hz,
+                "vector_path": path.name,
+                "mode_class": meta.get("mode_class"),
+                "p_frac_phys_gnhep": float(meta.get("p_frac_phys_gnhep", 0.0)),
+                "p_frac_production": float(
+                    meta.get("p_frac_production", meta.get("p_frac_raw", 0.0))
+                ),
+                "wood_participation": float(meta.get("wood_participation", 0.0)),
+                "meta": meta,
+                "path": path,
+            }
+        )
+    return catalog
+
+
+def _select_mode_from_catalog(
+    catalog: List[Dict[str, Any]],
+    *,
+    primary_target_hz: float,
+    primary_tol_hz: float,
+    fallback_target_hz: Optional[float] = None,
+    fallback_tol_hz: Optional[float] = None,
+    prefer_acoustic: bool = False,
+) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Pick nearest mode to primary_target within primary_tol; else nearest to fallback within
+    fallback_tol (e.g. branch-survival ±1 Hz from acoustic reference).
+    """
+    if not catalog:
+        return None, []
+
+    def _dist(entry: Dict[str, Any], target: float) -> float:
+        return abs(float(entry["frequency_hz"]) - target)
+
+    considered = sorted(
+        [
+            {
+                "mode_index": e["mode_index"],
+                "frequency_hz": e["frequency_hz"],
+                "vector_path": e["vector_path"],
+                "mode_class": e.get("mode_class"),
+                "p_frac_phys_gnhep": e.get("p_frac_phys_gnhep"),
+                "p_frac_production": e.get("p_frac_production"),
+            }
+            for e in catalog
+        ],
+        key=lambda e: e["frequency_hz"],
+    )
+
+    pool = list(catalog)
+    if prefer_acoustic:
+        acoustic_pool = [
+            e
+            for e in catalog
+            if e.get("mode_class") == "acoustic_dominated"
+            or float(e.get("p_frac_phys_gnhep", 0.0)) >= 0.35
+            or float(e.get("p_frac_production", 0.0)) >= 0.35
+        ]
+        if acoustic_pool:
+            pool = acoustic_pool
+
+    primary_hits = [e for e in pool if _dist(e, primary_target_hz) <= primary_tol_hz]
+    if primary_hits:
+        chosen = min(primary_hits, key=lambda e: _dist(e, primary_target_hz))
+        return chosen, considered
+
+    if fallback_target_hz is not None and fallback_tol_hz is not None:
+        fallback_hits = [
+            e for e in catalog if _dist(e, fallback_target_hz) <= fallback_tol_hz
+        ]
+        if fallback_hits:
+            chosen = min(fallback_hits, key=lambda e: _dist(e, fallback_target_hz))
+            return chosen, considered
+
+    return None, considered
 
 
 def _audit_candidate_mode(
@@ -227,9 +359,30 @@ def _refresh_physical_fsi_summary(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Physical-FSI participation / overlap audit")
-    parser.add_argument("--physical-freq-hz", type=float, default=245.299844)
-    parser.add_argument("--decoupled-freq-hz", type=float, default=244.3916)
-    parser.add_argument("--freq-match-tol-hz", type=float, default=0.15)
+    parser.add_argument(
+        "--physical-freq-hz",
+        type=float,
+        default=None,
+        help="Override physical-FSI target (default: physical_fsi_only_summary hint or 245.299844)",
+    )
+    parser.add_argument(
+        "--decoupled-freq-hz",
+        type=float,
+        default=None,
+        help="Override decoupled target (default: decoupled_union_summary hint or 244.3916)",
+    )
+    parser.add_argument(
+        "--self-case-match-tol-hz",
+        type=float,
+        default=0.15,
+        help="Max |f - case target| when matching within one case.",
+    )
+    parser.add_argument(
+        "--branch-survival-tol-hz",
+        type=float,
+        default=None,
+        help="Physical-FSI fallback: nearest mode to acoustic ref within this Hz (default: config 1.0).",
+    )
     parser.add_argument("--mac-threshold", type=float, default=0.85)
     parser.add_argument("--skip-summary-refresh", action="store_true")
     args = parser.parse_args()
@@ -282,32 +435,152 @@ def main() -> int:
     if isinstance(pi, dict) and pi.get("gnhep_scales"):
         gnhep.update({k: float(v) for k, v in pi["gnhep_scales"].items()})
 
-    hz_tag = hz_result_tag(target_hz)
+    self_tol = float(args.self_case_match_tol_hz)
+    branch_tol = float(
+        args.branch_survival_tol_hz
+        if args.branch_survival_tol_hz is not None
+        else freq_tol
+    )
+    dec_target = float(
+        args.decoupled_freq_hz
+        if args.decoupled_freq_hz is not None
+        else _summary_hint_frequency(
+            DECOUPLED_CASE,
+            "decoupled_union_summary.json",
+            prefer_hz=ref_hz,
+            prefer_keys=(
+                "acoustic_recovered_modes",
+                "ranking_by_acoustic_participation",
+                "modes_in_band",
+            ),
+        )
+        or 244.3916
+    )
+    phys_target = float(
+        args.physical_freq_hz
+        if args.physical_freq_hz is not None
+        else _summary_hint_frequency(
+            PHYSICAL_CASE,
+            "physical_fsi_only_summary.json",
+            prefer_hz=245.299844,
+            prefer_keys=(
+                "acoustic_candidate_modes",
+                "ranking_by_proximity_to_acoustic_ref",
+                "modes_in_band",
+            ),
+        )
+        or 245.299844
+    )
+
     phys_meta, phys_files = _load_modes(PHYSICAL_CASE, target_hz)
     dec_meta, dec_files = _load_modes(DECOUPLED_CASE, target_hz)
     if not phys_files or not dec_files:
         print("[physical_fsi_participation_audit] Missing saved mode files", file=sys.stderr)
         return 1
 
-    cand_meta, cand_path, cand_f = _find_mode_near(
-        phys_meta, phys_files, target_hz=args.physical_freq_hz, tol_hz=args.freq_match_tol_hz
+    phys_catalog = _catalog_saved_modes(
+        PHYSICAL_CASE, phys_meta, phys_files, target_hz=target_hz
     )
-    ref_meta, ref_path, ref_f = _find_mode_near(
-        dec_meta, dec_files, target_hz=args.decoupled_freq_hz, tol_hz=args.freq_match_tol_hz
+    dec_catalog = _catalog_saved_modes(
+        DECOUPLED_CASE, dec_meta, dec_files, target_hz=target_hz
     )
-    if cand_path is None or ref_path is None:
+    if not phys_catalog or not dec_catalog:
         print(
-            "[physical_fsi_participation_audit] Could not match modes within "
-            f"±{args.freq_match_tol_hz} Hz",
+            "[physical_fsi_participation_audit] No modes with finite frequencies in catalogs",
             file=sys.stderr,
         )
         return 1
 
+    ref_entry, dec_considered = _select_mode_from_catalog(
+        dec_catalog,
+        primary_target_hz=dec_target,
+        primary_tol_hz=self_tol,
+        fallback_target_hz=ref_hz,
+        fallback_tol_hz=self_tol,
+        prefer_acoustic=True,
+    )
+    cand_entry, phys_considered = _select_mode_from_catalog(
+        phys_catalog,
+        primary_target_hz=phys_target,
+        primary_tol_hz=self_tol,
+        fallback_target_hz=ref_hz,
+        fallback_tol_hz=branch_tol,
+        prefer_acoustic=False,
+    )
+
+    if MPI.COMM_WORLD.rank == 0:
+        print(
+            f"[physical_fsi_participation_audit] decoupled catalog: {len(dec_considered)} mode(s), "
+            f"target={dec_target:.6f} Hz (self ±{self_tol:.2f})",
+            flush=True,
+        )
+        for row in dec_considered[:16]:
+            print(
+                f"  decoupled candidate: {row['vector_path']} f={row['frequency_hz']:.6f} Hz "
+                f"class={row.get('mode_class')}",
+                flush=True,
+            )
+        print(
+            f"[physical_fsi_participation_audit] physical-FSI catalog: {len(phys_considered)} mode(s), "
+            f"target={phys_target:.6f} Hz (self ±{self_tol:.2f}, branch fallback ±{branch_tol:.2f} "
+            f"from ref {ref_hz:.4f} Hz)",
+            flush=True,
+        )
+        for row in phys_considered[:16]:
+            print(
+                f"  physical-FSI candidate: {row['vector_path']} f={row['frequency_hz']:.6f} Hz "
+                f"class={row.get('mode_class')}",
+                flush=True,
+            )
+
+    if ref_entry is None or cand_entry is None:
+        missing = []
+        if ref_entry is None:
+            missing.append(
+                f"decoupled (need mode within ±{self_tol:.2f} Hz of {dec_target:.4f} or {ref_hz:.4f})"
+            )
+        if cand_entry is None:
+            missing.append(
+                f"physical-FSI (need mode within ±{self_tol:.2f} Hz of {phys_target:.4f} "
+                f"or ±{branch_tol:.2f} Hz of acoustic ref {ref_hz:.4f})"
+            )
+        print(
+            "[physical_fsi_participation_audit] Could not select saved modes: "
+            + "; ".join(missing),
+            file=sys.stderr,
+        )
+        return 1
+
+    ref_path = ref_entry["path"]
+    cand_path = cand_entry["path"]
+    ref_meta = ref_entry.get("meta") or {}
+    cand_meta = cand_entry.get("meta") or {}
+    ref_f = float(ref_entry["frequency_hz"])
+    cand_f = float(cand_entry["frequency_hz"])
+    branch_shift_hz = cand_f - ref_f
+
+    if MPI.COMM_WORLD.rank == 0:
+        print(
+            f"[physical_fsi_participation_audit] selected decoupled: {ref_entry['vector_path']} "
+            f"decoupled_f_hz={ref_f:.6f}",
+            flush=True,
+        )
+        print(
+            f"[physical_fsi_participation_audit] selected physical-FSI: {cand_entry['vector_path']} "
+            f"physical_fsi_f_hz={cand_f:.6f}",
+            flush=True,
+        )
+        print(
+            f"[physical_fsi_participation_audit] branch_shift_hz={branch_shift_hz:+.6f} "
+            f"(Δ acoustic ref {cand_f - ref_hz:+.6f} Hz)",
+            flush=True,
+        )
+
     vec_cand, cand_load = _load_coupled_mode_dense_vector(
-        cand_path, n_coupled_W=n_W, mode_index=int(cand_meta.get("mode_index", 0))
+        cand_path, n_coupled_W=n_W, mode_index=int(cand_entry["mode_index"])
     )
     vec_ref, ref_load = _load_coupled_mode_dense_vector(
-        ref_path, n_coupled_W=n_W, mode_index=int(ref_meta.get("mode_index", 0))
+        ref_path, n_coupled_W=n_W, mode_index=int(ref_entry["mode_index"])
     )
 
     cand_audit = _audit_candidate_mode(
@@ -332,7 +605,7 @@ def main() -> int:
     )
     mac_report = _pressure_mac_report(vec_ref, vec_cand, p_to_W, gnhep)
     cand_audit["pressure_overlap_vs_decoupled_acoustic"] = mac_report
-    cand_audit["delta_from_decoupled_mode_hz"] = float(cand_f - ref_f)
+    cand_audit["delta_from_decoupled_mode_hz"] = float(branch_shift_hz)
     cand_audit["mode_load"] = cand_load
     ref_audit["mode_load"] = ref_load
     ref_audit["role"] = "decoupled_union_acoustic_reference"
@@ -353,6 +626,19 @@ def main() -> int:
         "experiment": "physical_fsi_participation_overlap_audit",
         "no_eigensolve": True,
         "acoustic_reference_hz": ref_hz,
+        "mode_selection": {
+            "decoupled_primary_target_hz": dec_target,
+            "physical_fsi_primary_target_hz": phys_target,
+            "self_case_match_tol_hz": self_tol,
+            "branch_survival_tol_hz": branch_tol,
+            "decoupled_f_hz": ref_f,
+            "physical_fsi_f_hz": cand_f,
+            "branch_shift_hz": float(branch_shift_hz),
+            "decoupled_modes_considered": dec_considered,
+            "physical_fsi_modes_considered": phys_considered,
+            "selected_decoupled_vector": ref_entry["vector_path"],
+            "selected_physical_fsi_vector": cand_entry["vector_path"],
+        },
         "decoupled_union_reference_mode": {
             "frequency_hz": ref_f,
             "vector_path": str(ref_path.relative_to(DECOUPLED_CASE)).replace("\\", "/"),
@@ -404,8 +690,8 @@ def main() -> int:
             "",
             "## Candidate mode (physical FSI only)",
             "",
-            f"- f = **{cand_f:.6f} Hz** (Δ decoupled mode = {cand_f - ref_f:+.4f} Hz, "
-            f"Δ acoustic ref = {cand_f - ref_hz:+.4f} Hz)",
+            f"- decoupled_f_hz = **{ref_f:.6f}** | physical_fsi_f_hz = **{cand_f:.6f}**",
+            f"- branch_shift_hz = **{branch_shift_hz:+.6f}** (Δ acoustic ref = {cand_f - ref_hz:+.6f} Hz)",
             f"- p_frac production = {cand_audit['p_frac_production']:.6e}",
             f"- p_frac GNHEP undo = {cand_audit['p_frac_phys_gnhep']:.6e}",
             f"- p_frac fully unscaled = {cand_audit['p_frac_fully_unscaled']:.6e}",
