@@ -13,6 +13,7 @@ import copy
 import json
 import math
 import sys
+import zlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -52,6 +53,126 @@ DELTA_HZ_GOOD_MAX = 8.0
 REL_PERTURB_MIN = 0.25
 DELTA_HZ_PERTURB_MIN = 15.0
 BASELINE_REL_EXPECT_MAX = 0.05
+N_U_ACTIVE_EXPECT = 102102
+N_P_ACTIVE_EXPECT = 9998
+N_REDUCED_W_EXPECT = 112100
+
+
+def _map_crc32(arr: np.ndarray) -> int:
+    return int(zlib.crc32(np.asarray(arr, dtype=np.int32).tobytes()) & 0xFFFFFFFF)
+
+
+def _map_fingerprint(u_to_W: np.ndarray, p_to_W: np.ndarray) -> Dict[str, Any]:
+    u = np.asarray(u_to_W, dtype=np.int32).ravel()
+    p = np.asarray(p_to_W, dtype=np.int32).ravel()
+    return {
+        "len_u_to_W": int(u.size),
+        "len_p_to_W": int(p.size),
+        "crc32_u_to_W": _map_crc32(u),
+        "crc32_p_to_W": _map_crc32(p),
+    }
+
+
+def _validate_reduced_layout(
+    A: PETSc.Mat,
+    u_to_W: np.ndarray,
+    p_to_W: np.ndarray,
+    restr: Dict[str, Any],
+    *,
+    seed_length: int,
+    alpha_fsi: float,
+) -> Dict[str, Any]:
+    n_op = int(A.getSize()[0])
+    n_u = int(np.asarray(u_to_W).size)
+    n_p = int(np.asarray(p_to_W).size)
+    n_W = int(restr.get("n_reduced_W", n_u + n_p))
+    checks = {
+        "operator_size": n_op,
+        "len_u_to_W": n_u,
+        "len_p_to_W": n_p,
+        "seed_length": int(seed_length),
+        "n_reduced_W_metadata": n_W,
+    }
+    expected = {
+        "operator_size": N_REDUCED_W_EXPECT,
+        "len_u_to_W": N_U_ACTIVE_EXPECT,
+        "len_p_to_W": N_P_ACTIVE_EXPECT,
+        "seed_length": N_REDUCED_W_EXPECT,
+    }
+    failures = [
+        f"{k}: got {checks[k]} expected {expected[k]}"
+        for k in expected
+        if checks[k] != expected[k]
+    ]
+    if failures:
+        raise RuntimeError(
+            "physical_fsi_seed_residual_audit: reduced active-pressure layout check failed "
+            f"at alpha_fsi={alpha_fsi}: " + "; ".join(failures)
+        )
+    if not restr:
+        raise RuntimeError(
+            f"physical_fsi_seed_residual_audit: missing _coupled_air_pressure_restriction "
+            f"at alpha_fsi={alpha_fsi} (replay audit did not reduce the operator)"
+        )
+    return {
+        **checks,
+        "dropped_inactive_p": int(restr.get("dropped_inactive_p", -1)),
+        "soundhole_p_active": int(restr.get("soundhole_p_active", -1)),
+        "layout_ok": True,
+    }
+
+
+def _assemble_reduced_continuation_operator(
+    cfg_base: dict,
+    config_path: Path,
+    *,
+    alpha_fsi: float,
+    sorting_subdir: str,
+) -> Tuple[PETSc.Mat, PETSc.Mat, dict, np.ndarray, np.ndarray, Dict[str, Any]]:
+    """
+    No-solve replay: same reduced active-pressure GNHEP as continuation pilot.
+    Returns (A, M, cfg, u_to_W, p_to_W, restriction_metadata).
+    """
+    cfg = copy.deepcopy(cfg_base)
+    sc = cfg.setdefault("solver", {})
+    sc["coupled_physical_fsi_continuation_diagnosis"] = True
+    sc["coupled_physical_fsi_only_diagnosis"] = False
+    sc["coupled_decoupled_union_diagnosis"] = False
+    sc["physical_fsi_alpha"] = float(alpha_fsi)
+    sc["physics_integrity_capture"] = True
+    sc["coupled_air_pressure_restriction_diagnosis"] = True
+    sc["coupled_air_pressure_restriction_replay_audit"] = True
+
+    sorting = PILOT_CASE / sorting_subdir
+    sorting.mkdir(parents=True, exist_ok=True)
+    fem3d.set_sorting_root(sorting.resolve())
+
+    mesh_file = _resolve_mesh(cfg, config_path)
+    if MPI.COMM_WORLD.rank == 0:
+        print(
+            "[physical_fsi_seed_residual_audit] "
+            f"Assembling A/M at alpha_fsi={alpha_fsi:.6g} "
+            "(reduced replay, no SLEPc solve)...",
+            flush=True,
+        )
+    _msh, _W, A, M = fem3d._solve_coupled_evp(
+        mesh_file=mesh_file,
+        config=cfg,
+        num_modes=0,
+        solve_evp=False,
+    )
+
+    if "_coupled_air_u_to_W_map" not in cfg or "_coupled_air_p_to_W_map" not in cfg:
+        raise RuntimeError(
+            "physical_fsi_seed_residual_audit: reduced maps missing on config after "
+            f"assembly at alpha_fsi={alpha_fsi}; ensure "
+            "coupled_air_pressure_restriction_replay_audit=True"
+        )
+
+    u_to_W = np.asarray(cfg["_coupled_air_u_to_W_map"], dtype=np.int32).ravel()
+    p_to_W = np.asarray(cfg["_coupled_air_p_to_W_map"], dtype=np.int32).ravel()
+    restr = dict(cfg.get("_coupled_air_pressure_restriction") or {})
+    return A, M, cfg, u_to_W, p_to_W, restr
 
 
 def _petsc_vec_from_array(mat: PETSc.Mat, arr: np.ndarray) -> PETSc.Vec:
@@ -218,42 +339,23 @@ def _evaluate_at_alpha(
     lam0: float,
     seed_f_hz: float,
     sorting_subdir: str,
-) -> Dict[str, Any]:
-    cfg = copy.deepcopy(cfg_base)
-    sc = cfg.setdefault("solver", {})
-    sc["coupled_physical_fsi_continuation_diagnosis"] = True
-    sc["coupled_physical_fsi_only_diagnosis"] = False
-    sc["coupled_decoupled_union_diagnosis"] = False
-    sc["physical_fsi_alpha"] = float(alpha_fsi)
-    sc["physics_integrity_capture"] = True
-
-    sorting = PILOT_CASE / sorting_subdir
-    sorting.mkdir(parents=True, exist_ok=True)
-    fem3d.set_sorting_root(sorting.resolve())
-
-    mesh_file = _resolve_mesh(cfg, config_path)
-    if MPI.COMM_WORLD.rank == 0:
-        print(
-            "[physical_fsi_seed_residual_audit] "
-            f"Assembling A/M at alpha_fsi={alpha_fsi:.6g} (no SLEPc solve)...",
-            flush=True,
-        )
-    _msh, _W, A, M = fem3d._solve_coupled_evp(
-        mesh_file=mesh_file,
-        config=cfg,
-        num_modes=0,
-        solve_evp=False,
+) -> Tuple[Dict[str, Any], Dict[str, Any], np.ndarray, np.ndarray]:
+    """Assemble reduced operator, validate layout, return metrics + map fingerprints."""
+    A, M, cfg, u_to_W, p_to_W, restr = _assemble_reduced_continuation_operator(
+        cfg_base,
+        config_path,
+        alpha_fsi=alpha_fsi,
+        sorting_subdir=sorting_subdir,
     )
-
-    restr = cfg.get("_coupled_air_pressure_restriction") or {}
-    u_to_W = np.asarray(cfg["_coupled_air_u_to_W_map"], dtype=np.int32).ravel()
-    p_to_W = np.asarray(cfg["_coupled_air_p_to_W_map"], dtype=np.int32).ravel()
-    n_u = int(restr.get("n_u_active", u_to_W.size))
-    n_p = int(restr.get("n_p_active", p_to_W.size))
-    n_W = int(restr.get("n_reduced_W", n_u + n_p))
-
-    if int(x0.size) != n_W:
-        raise ValueError(f"seed length {x0.size} != assembled n_reduced_W {n_W}")
+    layout = _validate_reduced_layout(
+        A,
+        u_to_W,
+        p_to_W,
+        restr,
+        seed_length=int(x0.size),
+        alpha_fsi=alpha_fsi,
+    )
+    maps_fp = _map_fingerprint(u_to_W, p_to_W)
 
     residual = _block_residual_contributions(
         A, M, x0, lam0=lam0, u_idx=u_to_W, p_idx=p_to_W
@@ -263,12 +365,15 @@ def _evaluate_at_alpha(
 
     out = {
         "alpha_fsi": float(alpha_fsi),
-        "n_u_active": n_u,
-        "n_p_active": n_p,
-        "n_reduced_W": n_W,
-        "dropped_inactive_p": int(restr.get("dropped_inactive_p", -1)),
-        "soundhole_p_active": int(restr.get("soundhole_p_active", -1)),
+        "n_u_active": layout["len_u_to_W"],
+        "n_p_active": layout["len_p_to_W"],
+        "n_reduced_W": layout["operator_size"],
+        "dropped_inactive_p": layout["dropped_inactive_p"],
+        "soundhole_p_active": layout["soundhole_p_active"],
         "nitsche_disabled": True,
+        "pressure_restriction_replay": True,
+        "reduced_layout": layout,
+        "map_fingerprint": maps_fp,
         "continuation_diagnosis": cont,
         **residual,
         **rayleigh,
@@ -278,7 +383,7 @@ def _evaluate_at_alpha(
         M.destroy()
     except Exception:
         pass
-    return out
+    return out, maps_fp, u_to_W, p_to_W
 
 
 def _load_alpha0_seed(target_hz: float, n_W: int) -> Tuple[np.ndarray, Dict[str, Any]]:
@@ -432,7 +537,7 @@ def main() -> int:
             flush=True,
         )
 
-    baseline = _evaluate_at_alpha(
+    baseline, maps0, u0, p0 = _evaluate_at_alpha(
         cfg_base,
         config_path,
         alpha_fsi=0.0,
@@ -441,7 +546,7 @@ def main() -> int:
         seed_f_hz=SEED_F_HZ,
         sorting_subdir="sorting_seed_residual_alpha0",
     )
-    alpha_eval = _evaluate_at_alpha(
+    alpha_eval, maps1, u1, p1 = _evaluate_at_alpha(
         cfg_base,
         config_path,
         alpha_fsi=ALPHA_PILOT,
@@ -450,6 +555,20 @@ def main() -> int:
         seed_f_hz=SEED_F_HZ,
         sorting_subdir="sorting_seed_residual_alpha0p01",
     )
+    maps_identical = bool(np.array_equal(u0, u1) and np.array_equal(p0, p1))
+    map_compare = {
+        "maps_identical": maps_identical,
+        "alpha_0": maps0,
+        "alpha_0p01": maps1,
+        "crc32_match_u": maps0["crc32_u_to_W"] == maps1["crc32_u_to_W"],
+        "crc32_match_p": maps0["crc32_p_to_W"] == maps1["crc32_p_to_W"],
+    }
+    if not maps_identical and MPI.COMM_WORLD.rank == 0:
+        print(
+            "[physical_fsi_seed_residual_audit][warn] u_to_W/p_to_W differ between "
+            "alpha=0 and alpha=0.01 assemblies",
+            flush=True,
+        )
 
     diag_verdict = _verdict(baseline, alpha_eval)
     prepared_sigma: Optional[Dict[str, Any]] = None
@@ -468,6 +587,7 @@ def main() -> int:
         "lambda0_rad2_s2": lam0,
         "lambda0_from_seed_f_hz": SEED_F_HZ,
         "alpha_pilot": ALPHA_PILOT,
+        "reduced_map_comparison": map_compare,
         "evaluations": {
             "alpha_0_baseline": baseline,
             "alpha_0p01": alpha_eval,
@@ -520,6 +640,11 @@ def main() -> int:
             "",
             f"- Seed: `{seed_meta['seed_vector_path']}` @ {seed_meta['seed_f_hz']:.6f} Hz",
             f"- lambda0 = (2*pi*{SEED_F_HZ})^2 = {lam0:.6e}",
+            "",
+            "## Reduced map ordering (alpha=0 vs alpha=0.01)",
+            f"- maps_identical = {map_compare['maps_identical']}",
+            f"- crc32 u_to_W match = {map_compare['crc32_match_u']}",
+            f"- crc32 p_to_W match = {map_compare['crc32_match_p']}",
             "",
             "## alpha=0 baseline (decoupled continuation assembly)",
             f"- relative_residual = {baseline['relative_residual']:.6e}",

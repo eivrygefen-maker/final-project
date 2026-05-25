@@ -6796,16 +6796,27 @@ def _solve_coupled_evp(
     if probe_spec is not None:
         probe_spec["iface_u_parent_n"] = int(iface_u_parent.size)
         probe_spec["wood_u_parent_n"] = int(wood_u_parent.size)
-    matvec_diag = _audit_mixed_coupling_matvec_alignment(
-        A,
-        W,
-        u_to_W_map,
-        p_to_W_map,
-        iface_u_parent=iface_u_parent,
-        wood_u_parent=wood_u_parent,
-        status_callback=status_callback,
-    )
-    assembly_matvec_diag = dict(matvec_diag)
+    zero_fsi_continuation = fsi_continuation and abs(alpha_fsi) <= 1.0e-15
+    if zero_fsi_continuation:
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                "[physics_integrity][physical_fsi_continuation] "
+                "alpha_fsi=0: zero coupling expected; nonzero-coupling layout audit skipped",
+                flush=True,
+            )
+        matvec_diag: Dict[str, float] = {}
+        assembly_matvec_diag: Dict[str, float] = {}
+    else:
+        matvec_diag = _audit_mixed_coupling_matvec_alignment(
+            A,
+            W,
+            u_to_W_map,
+            p_to_W_map,
+            iface_u_parent=iface_u_parent,
+            wood_u_parent=wood_u_parent,
+            status_callback=status_callback,
+        )
+        assembly_matvec_diag = dict(matvec_diag)
     p_unit = float(matvec_diag.get("p_load_unit_u", 0.0))
     nitsche_active = any(
         x is not None for x in (nit_uu_a, nit_up_a, nit_pu_a, nit_pu_m)
@@ -6818,6 +6829,7 @@ def _solve_coupled_evp(
         and not decoupled_union
         and not physical_fsi_only
         and not (fsi_continuation and abs(alpha_fsi) > 1.0e-15)
+        and not zero_fsi_continuation
     ):
         _emit(
             "[assembly][warn] block assembly produced zero A_pu matvec on u parent indices; "
@@ -6882,6 +6894,8 @@ def _solve_coupled_evp(
         "resolvent_skip_coupling_reaudit",
         default=False,
     )
+    if zero_fsi_continuation:
+        skip_reaudit = True
     if not skip_reaudit:
         _audit_assembled_mixed_coupling(
             W, a_up, m_pu, [], status_callback=status_callback
