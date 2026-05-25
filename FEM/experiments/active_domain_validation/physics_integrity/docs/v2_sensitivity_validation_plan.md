@@ -17,7 +17,9 @@ v1 scaled/Nitsche paths remain archived diagnostic history only.
 | Phase | Samples | Remesh? |
 |-------|---------|---------|
 | **Pilot** | `hole_radius_small` (0.041 m), `hole_radius_large` (0.053 m) | Yes |
-| **Full** | + `depth_small/large`, `top_thickness_small/large`, `top_stiffness_soft/stiff` | Mixed |
+| **Phase-1 controlled** | + `depth_small/large`, `top_thickness_small/large` | Mixed |
+| **Exploratory** | `top_stiffness_soft/stiff` (`E_L×0.9/×1.1`) — **not** production material gate | No remesh |
+| **Phase-2 production** | `length_*`, `width_*`, wood species subset | See `v2_production_parameter_manifest.json` |
 
 Nominal baseline metrics are **ingested** from `coupled_physical_core_v2/` (no re-solve).
 
@@ -44,7 +46,9 @@ Nominal baseline metrics are **ingested** from `coupled_physical_core_v2/` (no r
 | **hole_radius** ↑ / ↓ | Interpretable monotonic trend of tracked acoustic frequency vs radius; \|Δf\| between small/large > ~0.01 Hz noise |
 | **depth** ↑ / ↓ | Cavity volume change shifts acoustic branch (inner_depth = depth − 2×top_thickness) |
 | **top_thickness** ↑ / ↓ | Structural branch / coupling participation change; v2 still converges |
-| **top E_L** ×0.9 / ×1.1 | Structural branches move; acoustic branch may shift slightly; convergence retained |
+| **top E_L** ×0.9 / ×1.1 | Exploratory only — not production wood validation |
+| **length / width** | LHS scalars; locator-guided coupled branch capture |
+| **top_wood_id / back_wood_id** | Full `wood_library` records; 25 combos deferred |
 
 Failed direction checks **do not** auto-fail the pilot; they are logged in `expected_direction_evaluation` for human review.
 
@@ -82,13 +86,26 @@ bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_s
 
 Reads `structural_branches_in_band` from saved `samples/*/results/*.json`, evaluates thickness/stiffness structural trends via frequency matching (±8 Hz), fills baseline/large-radius energy fields from v2 artifacts, and writes separate validation flags.
 
-## LHS promotion gate
+## Staged promotion gates
 
-Do **not** promote to full LHS until:
+Do **not** promote to full LHS until all of:
 
-- Pilot: passed (recorded in manifest `pilot_radius_trend_passed`)
-- Controlled suite: acoustic + structural validation flags pass (see `validation_flags` in summary JSON)
-- Mesh-convergence study: not started
+- `acoustic_geometric_validation_pass` = True (phase-1 radius/depth/thickness)
+- `material_species_validation_pass` = PASS (phase-2 wood subset on baseline mesh)
+- `production_parameter_coverage_pass` = PASS (phase-2 length/width)
+- `mesh_convergence_pass` = PASS (not started)
+
+`top_stiffness_soft/stiff` are **exploratory** (`E_L` scaling only); they are not the production wood-material gate.
+See `docs/v2_validation_status_and_roadmap.md` and `diagnostics/v2_validation_status.json`.
+
+## Phase-2 production parameters (prepared)
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_sensitivity_production_stage.sh
+```
+
+Runs only: `length_small`, `length_large`, `width_small`, `width_large`, material species subset.
+Does **not** rerun phase-1 radius/depth samples. Geometry samples use acoustic locator → targeted coupled harvest.
 
 ## Artifacts
 

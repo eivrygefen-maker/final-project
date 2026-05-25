@@ -1,0 +1,131 @@
+{
+  "source": "FEM/scripts/regenerate_lhs_pool.py, FEM/rom/rom_manager.py, FEM/scripts/wood_library.py, FEM/geometry/build_3d_guitar.py",
+  "shape_type_validation": "Classical",
+  "lhs_continuous_geometry_parameters": {
+    "geometry.length": {
+      "validation_baseline_m": 0.48,
+      "classical_lhs_bounds_m": {"min": 0.35, "max": 0.60},
+      "varies_in_production_lhs": true,
+      "note": "Body length along neck–tail axis; scales CAD template in sx."
+    },
+    "geometry.width": {
+      "validation_baseline_m": 0.325,
+      "classical_lhs_bounds_m": {"min": 0.20, "max": 0.45},
+      "varies_in_production_lhs": true,
+      "note": "Scalar lateral width; Classical CAD derives upper_bout/waist/lower_bout from width unless overridden."
+    },
+    "geometry.depth": {
+      "validation_baseline_m": 0.1,
+      "classical_lhs_bounds_m": {"min": 0.08, "max": 0.15},
+      "varies_in_production_lhs": true,
+      "validated_v2_sensitivity": true
+    },
+    "geometry.top_thickness": {
+      "validation_baseline_m": 0.003,
+      "classical_lhs_bounds_m": {"min": 0.0025, "max": 0.0035},
+      "varies_in_production_lhs": true,
+      "validated_v2_sensitivity": true
+    },
+    "geometry.hole_radius": {
+      "validation_baseline_m": 0.047,
+      "classical_lhs_bounds_m": {"min": 0.035, "max": 0.055},
+      "varies_in_production_lhs": true,
+      "validated_v2_sensitivity": true
+    }
+  },
+  "lhs_optional_explicit_bout_parameters": {
+    "geometry.upper_bout": "Optional; defaults to width*0.75 at validation baseline.",
+    "geometry.lower_bout": "Optional; defaults to width.",
+    "geometry.waist": "Optional; defaults to width*0.65.",
+    "note": "Production LHS pool for Classical uses length/width/depth scalars, not separate bout IDs."
+  },
+  "lhs_discrete_material_parameters": {
+    "top_wood_id": {
+      "options": ["spruce", "cedar", "mahogany", "rosewood", "maple"],
+      "validation_baseline": "spruce",
+      "legal_for_top_plate": true,
+      "legal_for_back_plate": true
+    },
+    "back_wood_id": {
+      "options": ["spruce", "cedar", "mahogany", "rosewood", "maple"],
+      "validation_baseline": "rosewood",
+      "legal_for_top_plate": true,
+      "legal_for_back_plate": true
+    },
+    "valid_top_back_combinations": 25,
+    "wood_assignment_policy": "unrestricted_5x5_any_species_on_either_plate"
+  },
+  "wood_records_consumed_by_solver": {
+    "fields_per_plate": [
+      "name",
+      "density",
+      "E_L",
+      "E_T",
+      "E_R",
+      "nu_LT",
+      "nu_LR",
+      "nu_TR",
+      "G_LT",
+      "G_LR",
+      "G_TR"
+    ],
+    "optional_gui_fields": ["q_min", "q_max", "color"],
+    "resolution": "wood_library.apply_wood_ids_to_config / apply_lhs_parameters_to_config"
+  },
+  "wood_species_summary": [
+    {
+      "wood_id": "spruce",
+      "name": "Sitka Spruce",
+      "density": 450.0,
+      "E_L": 1.1e10,
+      "E_T": 1.0e9,
+      "E_L_over_rho": 24444444.4,
+      "validation_role": "baseline_top_plate"
+    },
+    {
+      "wood_id": "cedar",
+      "name": "Western Red Cedar",
+      "density": 390.0,
+      "E_L": 9.0e9,
+      "E_T": 8.5e8,
+      "E_L_over_rho": 23076923.1,
+      "validation_role": "lightest_species"
+    },
+    {
+      "wood_id": "mahogany",
+      "name": "Honduran Mahogany",
+      "density": 540.0,
+      "E_L": 1.05e10,
+      "E_T": 1.2e9,
+      "E_L_over_rho": 19444444.4
+    },
+    {
+      "wood_id": "rosewood",
+      "name": "Indian Rosewood",
+      "density": 830.0,
+      "E_L": 1.15e10,
+      "E_T": 1.3e9,
+      "E_L_over_rho": 13855421.7,
+      "validation_role": "baseline_back_plate"
+    },
+    {
+      "wood_id": "maple",
+      "name": "Maple",
+      "density": 650.0,
+      "E_L": 1.1e10,
+      "E_T": 1.1e9,
+      "E_L_over_rho": 16923076.9,
+      "validation_role": "stiffest_E_L_top_candidate"
+    }
+  ],
+  "material_extreme_selection_rationale": {
+    "top_plate_replacement_extremes": ["cedar", "maple"],
+    "back_plate_replacement_extremes": ["cedar", "maple"],
+    "note": "Extremes use full orthotropic records (rho, E_T, G_*, nu_*), not E_L scaling alone."
+  },
+  "pending_future_stages": {
+    "full_25_material_combination_coverage": "deferred until controlled species validation + mesh convergence pass",
+    "mesh_convergence_study": "not_started",
+    "lhs_sampling": "blocked"
+  }
+}

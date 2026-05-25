@@ -31,6 +31,7 @@ from mode_diagnostics import (
     merge_scaling_metadata,
 )
 from v2_sensitivity_mesh import sample_geometry
+from wood_library import apply_wood_ids_to_config
 
 SENS_ROOT = PHYSICS_ROOT / "v2_sensitivity_validation"
 V2_CONFIG = PHYSICS_ROOT / "configs" / "coupled_physical_core_v2.json"
@@ -142,6 +143,13 @@ def main() -> int:
     sc["_worker_harvest_hi_hz"] = band_hi
     sc["shift_invert_target_hz"] = target_hz
     cfg["geometry"] = sample_geometry(sample)
+    mats = sample.get("materials") or {}
+    if mats.get("top_wood_id") or mats.get("back_wood_id"):
+        apply_wood_ids_to_config(
+            cfg,
+            top_wood_id=mats.get("top_wood_id"),
+            back_wood_id=mats.get("back_wood_id"),
+        )
     mo = sample.get("materials_override") or {}
     top = mo.get("top") or {}
     scale = float(top.get("E_L_scale", 1.0))
@@ -240,6 +248,7 @@ def main() -> int:
         "n_u_active": int(restr.get("n_u_active", u_to_W.size)),
         "n_p_active": int(restr.get("n_p_active", p_to_W.size)),
         "p_to_W": p_to_W.tolist(),
+        "u_to_W": u_to_W.tolist(),
         "eps_batch_diagnostics": eps_diag,
         "nconv_marked": int(eps_diag.get("nconv_marked", -1)),
         "v2_converged": int(eps_diag.get("nconv_marked", -1)) > 0,

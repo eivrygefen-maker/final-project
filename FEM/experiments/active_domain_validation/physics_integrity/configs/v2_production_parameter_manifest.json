@@ -1,0 +1,180 @@
+{
+  "suite": "v2_production_parameter_validation",
+  "phase": 2,
+  "frozen_formulation": "coupled_physical_core_v2",
+  "coupled_baseline": {
+    "f_acoustic_hz": 244.394153389752,
+    "p_frac_energy_phys": 0.9998,
+    "top_wood_id": "spruce",
+    "back_wood_id": "rosewood"
+  },
+  "preserve_phase1_sample_ids": [
+    "baseline_coupled_v2",
+    "hole_radius_small",
+    "hole_radius_large",
+    "depth_small",
+    "depth_large",
+    "top_thickness_small",
+    "top_thickness_large"
+  ],
+  "exploratory_not_production_gate": [
+    "top_stiffness_soft",
+    "top_stiffness_stiff"
+  ],
+  "phase2_sample_ids": [
+    "length_small",
+    "length_large",
+    "width_small",
+    "width_large",
+    "material_top_cedar",
+    "material_top_maple",
+    "material_back_cedar",
+    "material_back_maple",
+    "material_pair_cedar_top_maple_back"
+  ],
+  "default_branch_capture": {
+    "initial_harvest_lo_hz": 220.0,
+    "initial_harvest_hi_hz": 265.0,
+    "initial_target_hz": 244.39,
+    "initial_num_modes": 12,
+    "widen_attempts": [
+      {
+        "label": "widen_low",
+        "harvest_lo_hz": 200.0,
+        "harvest_hi_hz": 280.0,
+        "target_hz": 244.39,
+        "num_modes": 14
+      },
+      {
+        "label": "widen_high",
+        "harvest_lo_hz": 255.0,
+        "harvest_hi_hz": 300.0,
+        "target_hz": 275.0,
+        "num_modes": 16
+      }
+    ]
+  },
+  "locator_policy": {
+    "method": "acoustic_cavity_only_evp_before_coupled_v2",
+    "locator_harvest_lo_hz": 150.0,
+    "locator_harvest_hi_hz": 350.0,
+    "coupled_harvest_half_width_hz": 18.0,
+    "coupled_harvest_half_width_min_hz": 12.0,
+    "coupled_harvest_half_width_max_hz": 25.0
+  },
+  "structural_mac_reference": {
+    "sample_id": "baseline_coupled_v2",
+    "source": "coupled_physical_core_v2/physical_coupling_enabled on validation mesh"
+  },
+  "samples": [
+    {
+      "id": "length_small",
+      "phase": 2,
+      "requires_remesh": true,
+      "acoustic_geometry_test": true,
+      "geometry": {"length": 0.44, "width": 0.325, "depth": 0.1, "hole_radius": 0.047, "top_thickness": 0.003},
+      "materials": {"top_wood_id": "spruce", "back_wood_id": "rosewood"},
+      "expected_direction": {
+        "parameter": "geometry.length",
+        "interpretation": "Length perturbation may shift acoustic/structural branches; use locator-guided coupled harvest."
+      }
+    },
+    {
+      "id": "length_large",
+      "phase": 2,
+      "requires_remesh": true,
+      "acoustic_geometry_test": true,
+      "geometry": {"length": 0.52, "width": 0.325, "depth": 0.1, "hole_radius": 0.047, "top_thickness": 0.003},
+      "materials": {"top_wood_id": "spruce", "back_wood_id": "rosewood"},
+      "expected_direction": {
+        "parameter": "geometry.length",
+        "interpretation": "Longer body; expect cavity/branch shift vs baseline."
+      }
+    },
+    {
+      "id": "width_small",
+      "phase": 2,
+      "requires_remesh": true,
+      "acoustic_geometry_test": true,
+      "geometry": {"length": 0.48, "width": 0.30, "depth": 0.1, "hole_radius": 0.047, "top_thickness": 0.003},
+      "materials": {"top_wood_id": "spruce", "back_wood_id": "rosewood"},
+      "expected_direction": {
+        "parameter": "geometry.width",
+        "interpretation": "Narrower bout envelope via scalar width."
+      }
+    },
+    {
+      "id": "width_large",
+      "phase": 2,
+      "requires_remesh": true,
+      "acoustic_geometry_test": true,
+      "geometry": {"length": 0.48, "width": 0.35, "depth": 0.1, "hole_radius": 0.047, "top_thickness": 0.003},
+      "materials": {"top_wood_id": "spruce", "back_wood_id": "rosewood"},
+      "expected_direction": {
+        "parameter": "geometry.width",
+        "interpretation": "Wider bout envelope via scalar width."
+      }
+    },
+    {
+      "id": "material_top_cedar",
+      "phase": 2,
+      "requires_remesh": false,
+      "reuse_baseline_mesh": true,
+      "materials": {"top_wood_id": "cedar", "back_wood_id": "rosewood"},
+      "geometry": {"length": 0.48, "width": 0.325, "depth": 0.1, "hole_radius": 0.047, "top_thickness": 0.003},
+      "expected_direction": {
+        "parameter": "top_plate_material",
+        "interpretation": "Full cedar orthotropic record on top; back fixed at baseline rosewood."
+      }
+    },
+    {
+      "id": "material_top_maple",
+      "phase": 2,
+      "requires_remesh": false,
+      "reuse_baseline_mesh": true,
+      "materials": {"top_wood_id": "maple", "back_wood_id": "rosewood"},
+      "geometry": {"length": 0.48, "width": 0.325, "depth": 0.1, "hole_radius": 0.047, "top_thickness": 0.003},
+      "expected_direction": {
+        "parameter": "top_plate_material",
+        "interpretation": "Full maple orthotropic record on top; expect structural branch shifts."
+      }
+    },
+    {
+      "id": "material_back_cedar",
+      "phase": 2,
+      "requires_remesh": false,
+      "reuse_baseline_mesh": true,
+      "materials": {"top_wood_id": "spruce", "back_wood_id": "cedar"},
+      "geometry": {"length": 0.48, "width": 0.325, "depth": 0.1, "hole_radius": 0.047, "top_thickness": 0.003},
+      "expected_direction": {
+        "parameter": "back_plate_material",
+        "interpretation": "Lightest species on back; top fixed at baseline spruce."
+      }
+    },
+    {
+      "id": "material_back_maple",
+      "phase": 2,
+      "requires_remesh": false,
+      "reuse_baseline_mesh": true,
+      "materials": {"top_wood_id": "spruce", "back_wood_id": "maple"},
+      "geometry": {"length": 0.48, "width": 0.325, "depth": 0.1, "hole_radius": 0.047, "top_thickness": 0.003},
+      "expected_direction": {
+        "parameter": "back_plate_material",
+        "interpretation": "Stiffer/lighter back than rosewood; top fixed at baseline spruce."
+      }
+    },
+    {
+      "id": "material_pair_cedar_top_maple_back",
+      "phase": 2,
+      "requires_remesh": false,
+      "reuse_baseline_mesh": true,
+      "optional": true,
+      "materials": {"top_wood_id": "cedar", "back_wood_id": "maple"},
+      "geometry": {"length": 0.48, "width": 0.325, "depth": 0.1, "hole_radius": 0.047, "top_thickness": 0.003},
+      "expected_direction": {
+        "parameter": "combined_material_pairing",
+        "interpretation": "Single justified extreme pairing (light top + stiff back); not a full 25-combo sweep."
+      }
+    }
+  ]
+}

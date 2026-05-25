@@ -23,14 +23,19 @@ from v2_sensitivity_common import (
     COUPLED_BASELINE_P_FRAC,
     DIAG_DIR,
     ENERGY_ACOUSTIC_THRESHOLD,
+    PRODUCTION_MANIFEST_PATH,
+    PRODUCTION_SUMMARY_JSON,
     SENS_ROOT,
     SUMMARY_JSON,
     V2_ROOT,
+    VALIDATION_STATUS_JSON,
     hz_result_tag,
     is_acoustic_branch,
     load_manifest,
+    load_production_manifest,
     structural_branches_summary,
     write_json,
+    write_validation_status,
 )
 
 ACOUSTIC_STABLE_DELTA_HZ = 2.0
@@ -310,6 +315,7 @@ def _write_report_md(
     samples: Dict[str, Dict[str, Any]],
     flags: Dict[str, Any],
     manifest: Dict[str, Any],
+    promotion: Dict[str, Any],
 ) -> None:
     sa = flags["structural_analysis"]["top_thickness"]
     sb = flags["structural_analysis"]["top_stiffness"]
@@ -398,9 +404,15 @@ def _write_report_md(
             f"(matched pairs {sb['n_pairs_with_f_b_gt_f_a']}/{sb['n_matched_pairs']}, "
             f"median {sb['median_f_a_hz']:.2f} → {sb['median_f_b_hz']:.2f} Hz)",
             "",
-            "## Promotion",
+            "## Promotion (staged)",
             "",
-            "`lhs_promotion_blocked_until_suite_pass=true` until structural trends and mesh-convergence study pass.",
+            f"- `acoustic_geometric_validation_pass` = `{promotion.get('acoustic_geometric_validation_pass')}`",
+            f"- `material_species_validation_pass` = `{promotion.get('material_species_validation_pass')}`",
+            f"- `production_parameter_coverage_pass` = `{promotion.get('production_parameter_coverage_pass')}`",
+            f"- `mesh_convergence_pass` = `{promotion.get('mesh_convergence_pass')}`",
+            f"- `lhs_promotion_blocked` = `{promotion.get('lhs_promotion_blocked')}`",
+            "",
+            "Exploratory only (not production material gate): `top_stiffness_soft`, `top_stiffness_stiff`.",
         ]
     )
     (DIAG_DIR / "v2_sensitivity_validation_report.md").write_text(
@@ -467,20 +479,58 @@ def main() -> int:
         for k in ("top_thickness", "top_stiffness")
     )
 
-    promotion = dict(summary.get("promotion") or {})
-    promotion["lhs_promotion_blocked_until_suite_pass"] = True
-    promotion["lhs_blocked"] = True
-    promotion["mesh_convergence_blocked"] = True
-    promotion.update(flags)
-    promotion["full_nonrandom_suite_pass"] = all(
+    acoustic_geometric_pass = all(
         flags[k]
         for k in (
             "radius_acoustic_trend_pass",
             "depth_acoustic_trend_pass",
             "thickness_acoustic_branch_stable",
-            "stiffness_acoustic_branch_stable",
         )
-    ) and flags["thickness_structural_trend_pass"] and flags["stiffness_structural_trend_pass"]
+    )
+    production_manifest = (
+        load_production_manifest() if PRODUCTION_MANIFEST_PATH.is_file() else {}
+    )
+    phase2_ids = list(production_manifest.get("phase2_sample_ids") or [])
+    phase2_results: Dict[str, Dict[str, Any]] = {}
+    if PRODUCTION_SUMMARY_JSON.is_file():
+        prod = _load_json(PRODUCTION_SUMMARY_JSON) or {}
+        phase2_results = {
+            sid: prod.get("samples", {}).get(sid, {})
+            for sid in phase2_ids
+            if sid in (prod.get("samples") or {})
+        }
+    material_pass = (
+        bool(phase2_ids)
+        and all((phase2_results.get(sid) or {}).get("status") == "ok" for sid in phase2_ids)
+    )
+    production_coverage_pass = material_pass and all(
+        (phase2_results.get(sid) or {}).get("status") == "ok"
+        for sid in phase2_ids
+        if sid.startswith(("length_", "width_"))
+    )
+
+    promotion = dict(summary.get("promotion") or {})
+    promotion["lhs_promotion_blocked_until_suite_pass"] = True
+    promotion["lhs_blocked"] = True
+    promotion["lhs_promotion_blocked"] = True
+    promotion["mesh_convergence_blocked"] = True
+    promotion.update(flags)
+    promotion["acoustic_geometric_validation_pass"] = acoustic_geometric_pass
+    promotion["material_species_validation_pass"] = "PASS" if material_pass else "Pending"
+    promotion["production_parameter_coverage_pass"] = (
+        "PASS" if production_coverage_pass else "Pending"
+    )
+    promotion["mesh_convergence_pass"] = "Pending"
+    promotion["exploratory_not_production_gate"] = list(
+        production_manifest.get("exploratory_not_production_gate")
+        or ["top_stiffness_soft", "top_stiffness_stiff"]
+    )
+    promotion["full_nonrandom_suite_pass"] = acoustic_geometric_pass
+    promotion["note_stiffness_samples"] = (
+        "top_stiffness_soft/stiff are exploratory E_L scaling only; "
+        "not the production wood-material validation gate."
+    )
+    write_validation_status(samples, phase2_results, production_manifest=production_manifest)
 
     out = {
         **summary,
@@ -497,7 +547,7 @@ def main() -> int:
     }
     write_json(SUMMARY_JSON, out)
     write_json(DIAG_DIR / "v2_sensitivity_validation_report.json", out)
-    _write_report_md(samples, flags, manifest)
+    _write_report_md(samples, flags, manifest, promotion)
 
     print(f"[report_post] wrote {SUMMARY_JSON}")
     print(f"[report_post] wrote {DIAG_DIR / 'v2_sensitivity_validation_report.md'}")
