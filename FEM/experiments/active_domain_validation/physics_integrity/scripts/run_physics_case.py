@@ -42,6 +42,7 @@ CASES = (
     "structural_only",
     "acoustic_only",
     "coupled_low_frequency",
+    "coupled_near_acoustic",
 )
 
 
@@ -59,6 +60,159 @@ def _resolve_mesh_path(cfg: dict, config_path: Path) -> Path:
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _load_acoustic_reference_hz(solver_cfg: Dict[str, Any]) -> Tuple[float, Optional[Dict[str, Any]]]:
+    """Prefer completed acoustic_only result; fall back to config reference."""
+    ref_hz = float(solver_cfg.get("acoustic_reference_hz", 244.39))
+    acoustic_result = PHYSICS_ROOT / "acoustic_only" / "results" / "result_acoustic.json"
+    acoustic_payload: Optional[Dict[str, Any]] = None
+    if acoustic_result.is_file():
+        acoustic_payload = json.loads(acoustic_result.read_text(encoding="utf-8"))
+        freqs = [float(f) for f in acoustic_payload.get("frequencies_hz") or []]
+        if freqs:
+            ref_hz = float(freqs[0])
+    return ref_hz, acoustic_payload
+
+
+def _write_coupled_near_acoustic_report(
+    case_dir: Path,
+    cfg: dict,
+    *,
+    target_hz: float,
+    harvest_lo: float,
+    harvest_hi: float,
+    mode_rows: List[Dict[str, Any]],
+    freqs_hz: List[float],
+    n_u_col: int,
+    n_p_col: int,
+    n_W: int,
+    elapsed: float,
+) -> None:
+    solver_cfg = cfg.get("solver", {})
+    branch = str(solver_cfg.get("physics_integrity_branch", "coupled-near-acoustic-244hz"))
+    ref_hz, acoustic_payload = _load_acoustic_reference_hz(solver_cfg)
+    ref_tol = float(solver_cfg.get("acoustic_reference_tolerance_hz", 8.0))
+    min_p_frac = float(solver_cfg.get("coupled_near_acoustic_min_p_frac", 0.05))
+
+    pi = cfg.get("_physics_integrity") or {}
+    soundhole_p = int(pi.get("soundhole_pressure_dof_count", 0))
+    acoustic_restr = (acoustic_payload or {}).get("soundhole_p_dof_active")
+    if acoustic_restr is None and acoustic_payload:
+        acoustic_restr = acoustic_payload.get("soundhole_p_dof_active")
+
+    in_band = [
+        m
+        for m in mode_rows
+        if harvest_lo <= float(m.get("frequency_hz", -1.0)) <= harvest_hi
+    ]
+    in_band.sort(key=lambda m: float(m.get("frequency_hz", 0.0)))
+
+    def _nearest_to_ref(modes: List[Dict[str, Any]], target: float) -> Optional[Dict[str, Any]]:
+        best = None
+        best_d = ref_tol
+        for m in modes:
+            d = abs(float(m.get("frequency_hz", 0.0)) - target)
+            if d < best_d:
+                best_d = d
+                best = m
+        return best
+
+    nearest_ref = _nearest_to_ref(in_band, ref_hz)
+    pressure_near_ref = [
+        m
+        for m in in_band
+        if abs(float(m.get("frequency_hz", 0.0)) - ref_hz) <= ref_tol
+        and float(m.get("p_frac_phys_gnhep", 0.0)) >= min_p_frac
+    ]
+    has_pressure_coupled_near_ref = len(pressure_near_ref) > 0
+
+    mode_table = [
+        {
+            "frequency_hz": float(m.get("frequency_hz", 0.0)),
+            "p_frac_raw": float(m.get("p_frac_raw", 0.0)),
+            "p_frac_phys_gnhep": float(m.get("p_frac_phys_gnhep", 0.0)),
+            "wood_participation": float(m.get("wood_participation", 0.0)),
+            "mode_class": m.get("mode_class"),
+            "delta_from_acoustic_ref_hz": float(m.get("frequency_hz", 0.0)) - ref_hz,
+        }
+        for m in in_band
+    ]
+
+    summary = {
+        "branch": branch,
+        "solver_branch": "coupled_fsi_evp",
+        "soundhole_bc": pi.get("soundhole_bc", solver_cfg.get("soundhole_bc")),
+        "pressure_gauge": pi.get("pressure_gauge", solver_cfg.get("pressure_gauge")),
+        "soundhole_pressure_dof_count": soundhole_p,
+        "acoustic_only_soundhole_p_dof_active": acoustic_restr,
+        "n_u_collapsed": n_u_col,
+        "n_p_collapsed": n_p_col,
+        "n_coupled_W_dofs": n_W,
+        "search_band_hz": [harvest_lo, harvest_hi],
+        "target_hz": target_hz,
+        "acoustic_reference_hz": ref_hz,
+        "acoustic_reference_tolerance_hz": ref_tol,
+        "coupled_frequencies_in_band_hz": [float(m["frequency_hz"]) for m in mode_table],
+        "modes_in_band": mode_table,
+        "nearest_mode_to_acoustic_ref": nearest_ref,
+        "pressure_participating_modes_near_ref": pressure_near_ref,
+        "pressure_coupled_mode_near_acoustic_ref": has_pressure_coupled_near_ref,
+        "elapsed_s": elapsed,
+        "acoustic_only_result_path": str(
+            (PHYSICS_ROOT / "acoustic_only" / "results" / "result_acoustic.json").relative_to(
+                REPO_ROOT
+            )
+        )
+        if acoustic_payload
+        else None,
+    }
+    diag = case_dir / "diagnostics"
+    diag.mkdir(parents=True, exist_ok=True)
+    _write_json(diag / "coupled_near_acoustic_summary.json", summary)
+
+    if MPI.COMM_WORLD.rank != 0:
+        return
+
+    print(f"[physics_integrity] branch: {branch}")
+    print(
+        f"[physics_integrity] soundhole: {summary['soundhole_bc']!r} "
+        f"pressure_gauge={summary['pressure_gauge']!r} "
+        f"active_soundhole_p_dof={soundhole_p}"
+    )
+    if acoustic_restr is not None:
+        print(
+            f"[physics_integrity] acoustic_only reference soundhole_p_dof_active={acoustic_restr}"
+        )
+    print(
+        f"[physics_integrity] DOFs: n_u={n_u_col} n_p={n_p_col} "
+        f"n_coupled_W={n_W} (collapsed subspaces)"
+    )
+    print(
+        f"[physics_integrity] search band [{harvest_lo:.1f}, {harvest_hi:.1f}] Hz "
+        f"target={target_hz:.2f} Hz → {len(in_band)} modes"
+    )
+    print(f"[physics_integrity] acoustic-only reference: {ref_hz:.2f} Hz (tol ±{ref_tol:.1f} Hz)")
+    for row in mode_table:
+        print(
+            f"  f={row['frequency_hz']:8.3f} Hz  "
+            f"p_frac={row['p_frac_phys_gnhep']:.4f}  "
+            f"wood={row['wood_participation']:.4f}  "
+            f"class={row['mode_class']}  "
+            f"Δref={row['delta_from_acoustic_ref_hz']:+.3f} Hz"
+        )
+    if nearest_ref:
+        print(
+            f"[physics_integrity] nearest in-band mode to acoustic ref: "
+            f"f={float(nearest_ref['frequency_hz']):.3f} Hz "
+            f"p_frac={float(nearest_ref.get('p_frac_phys_gnhep', 0.0)):.4f} "
+            f"class={nearest_ref.get('mode_class')}"
+        )
+    print(
+        f"[physics_integrity] pressure-participating coupled mode near "
+        f"{ref_hz:.2f} Hz: {'YES' if has_pressure_coupled_near_ref else 'NO'} "
+        f"({len(pressure_near_ref)} mode(s) with p_frac>={min_p_frac})"
+    )
 
 
 def _save_physics_audit(cfg: dict, case_dir: Path) -> None:
@@ -80,6 +234,8 @@ def _run_coupled_like(
     harvest_lo: float,
     harvest_hi: float,
     eps_broad: float,
+    case_label: str = "coupled",
+    emit_near_acoustic_report: bool = False,
 ) -> int:
     sorting_root = case_dir / "sorting"
     temp_modes = sorting_root / "temp_modes"
@@ -125,6 +281,7 @@ def _run_coupled_like(
     V_p, p_to_W = W.sub(1).collapse()
     n_u_col = int(V_u.dofmap.index_map.size_global * V_u.dofmap.index_map_bs)
     n_p_col = int(V_p.dofmap.index_map.size_global * V_p.dofmap.index_map_bs)
+    n_W = int(W.dofmap.index_map.size_global * W.dofmap.index_map_bs)
 
     gnhep = merge_scaling_metadata(case_dir)
     pi = cfg.get("_physics_integrity") or {}
@@ -160,7 +317,7 @@ def _run_coupled_like(
         diag["vector_path"] = str(mode_path.relative_to(case_dir)).replace("\\", "/")
         mode_rows.append(diag)
 
-    write_mode_diagnostics_json(case_dir, mode_rows, case_label="coupled", scaling=gnhep)
+    write_mode_diagnostics_json(case_dir, mode_rows, case_label=case_label, scaling=gnhep)
 
     result = {
         "case": case_dir.name,
@@ -172,11 +329,26 @@ def _run_coupled_like(
         "elapsed_s": elapsed,
         "n_u_collapsed": n_u_col,
         "n_p_collapsed": n_p_col,
+        "n_coupled_W_dofs": n_W,
         "physics_integrity": cfg.get("_physics_integrity"),
         "mode_diagnostics": str((case_dir / "diagnostics" / "mode_physics_diagnostics.json").relative_to(case_dir)),
     }
     _write_json(case_dir / "results" / f"result_{hz_tag}.json", result)
     _write_json(case_dir / "timing" / "run_summary.json", result)
+    if emit_near_acoustic_report:
+        _write_coupled_near_acoustic_report(
+            case_dir,
+            cfg,
+            target_hz=target_hz,
+            harvest_lo=harvest_lo,
+            harvest_hi=harvest_hi,
+            mode_rows=mode_rows,
+            freqs_hz=[float(f) for f in freqs_hz],
+            n_u_col=n_u_col,
+            n_p_col=n_p_col,
+            n_W=n_W,
+            elapsed=elapsed,
+        )
     if MPI.COMM_WORLD.rank == 0:
         print(f"[physics_integrity] {case_dir.name} done modes={n_modes} elapsed={elapsed:.1f}s")
     return 0
@@ -336,16 +508,25 @@ def main() -> int:
     if args.ingest_baseline and args.case == "coupled_nominal":
         return _ingest_baseline(case_dir, cfg)
 
-    if args.case in ("coupled_nominal", "coupled_low_frequency"):
+    if args.case in ("coupled_nominal", "coupled_low_frequency", "coupled_near_acoustic"):
+        sc = cfg["solver"]
+        defaults = {
+            "coupled_nominal": (202.0, 156.0, 248.0, 46.0, 8),
+            "coupled_low_frequency": (120.0, 60.0, 200.0, 80.0, 8),
+            "coupled_near_acoustic": (244.39, 220.0, 265.0, 45.0, 16),
+        }
+        t_def, lo_def, hi_def, broad_def, nm_def = defaults[args.case]
         return _run_coupled_like(
             cfg,
             config_path,
             case_dir,
-            target_hz=float(cfg["solver"].get("_worker_target_hz", cfg["solver"].get("shift_invert_target_hz", 202.0))),
-            num_modes=int(cfg["solver"].get("num_modes", 8)),
-            harvest_lo=float(cfg["solver"].get("_worker_harvest_lo_hz", 156.0)),
-            harvest_hi=float(cfg["solver"].get("_worker_harvest_hi_hz", 248.0)),
-            eps_broad=float(cfg["solver"].get("eps_broad_search_hz", 46.0)),
+            target_hz=float(sc.get("_worker_target_hz", sc.get("shift_invert_target_hz", t_def))),
+            num_modes=int(sc.get("num_modes", nm_def)),
+            harvest_lo=float(sc.get("_worker_harvest_lo_hz", lo_def)),
+            harvest_hi=float(sc.get("_worker_harvest_hi_hz", hi_def)),
+            eps_broad=float(sc.get("eps_broad_search_hz", broad_def)),
+            case_label=args.case,
+            emit_near_acoustic_report=(args.case == "coupled_near_acoustic"),
         )
     if args.case == "structural_only":
         return _run_structural(cfg, config_path, case_dir)

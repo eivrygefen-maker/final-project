@@ -13,6 +13,7 @@ physics_integrity/
   structural_only/   TEST 2 — shell EVP, no air/FSI
   acoustic_only/     TEST 3 — pressure-only cavity EVP (60–250 Hz)
   coupled_low_frequency/  TEST 4 — coupled near first air mode (default 120 Hz)
+  coupled_near_acoustic/  TEST 5 — coupled near validated acoustic mode (~244 Hz)
   comparison/        report, CSVs, coupling_audit.json
 ```
 
@@ -40,6 +41,19 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/analyz
 ```
 
 Otherwise run a full coupled solve into `coupled_nominal/`.
+
+## TEST 5 — coupled near acoustic reference (244.39 Hz)
+
+After **TEST 3** (acoustic-only) and **TEST 2** (structural-only) pass on the repaired validation mesh,
+run a narrow-band coupled harvest to check FSI energy exchange near the cavity mode:
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_coupled_near_acoustic.sh
+```
+
+- Config: `configs/coupled_near_acoustic_244hz.json`
+- Band: 220–265 Hz, 16 modes, `pressure_release` + `pressure_gauge=none`
+- Post-run summary: `coupled_near_acoustic/diagnostics/coupled_near_acoustic_summary.json`
 
 ## Scaling audit
 

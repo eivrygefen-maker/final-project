@@ -18,6 +18,7 @@ CASE_NAMES = (
     "structural_only",
     "acoustic_only",
     "coupled_low_frequency",
+    "coupled_near_acoustic",
 )
 CASE_SUBDIRS = ("logs", "results", "modes", "diagnostics", "timing", "sorting")
 
@@ -26,6 +27,7 @@ CONFIG_FILES = (
     "structural_only.json",
     "acoustic_only.json",
     "coupled_low_frequency.json",
+    "coupled_near_acoustic_244hz.json",
     "operator_audit.json",
 )
 
@@ -147,6 +149,25 @@ def main() -> None:
     )
     (CONFIG_DIR / "coupled_low_frequency.json").write_text(
         json.dumps(low, indent=2), encoding="utf-8"
+    )
+
+    near_acoustic = json.loads(json.dumps(nominal))
+    near_acoustic["solver"].update(
+        {
+            "num_modes": 16,
+            "shift_invert_target_hz": 244.39,
+            "eps_broad_search_hz": 45.0,
+            "_worker_harvest_lo_hz": 220.0,
+            "_worker_harvest_hi_hz": 265.0,
+            "_worker_target_hz": 244.39,
+            "acoustic_reference_hz": 244.39,
+            "acoustic_reference_tolerance_hz": 8.0,
+            "coupled_search_band_hz": [220.0, 265.0],
+            "physics_integrity_branch": "coupled-near-acoustic-244hz",
+        }
+    )
+    (CONFIG_DIR / "coupled_near_acoustic_244hz.json").write_text(
+        json.dumps(near_acoustic, indent=2), encoding="utf-8"
     )
 
     audit = json.loads(json.dumps(nominal))
