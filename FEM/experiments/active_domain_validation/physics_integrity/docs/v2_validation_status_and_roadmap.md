@@ -79,7 +79,13 @@ Manifest: `configs/v2_production_parameter_manifest.json`
 From repo root on the validation VM:
 
 ```bash
-bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_sensitivity_production_stage.sh
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_sensitivity_production_stage.sh --resume
+```
+
+If all phase-2 solves already exist and only row/MAC reporting failed:
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_sensitivity_production_stage.sh --resume --report-only
 ```
 
 Runs **only** phase-2 samples: `length_small`, `length_large`, `width_small`, `width_large`, `material_top_cedar`, `material_top_maple`, `material_back_cedar`, `material_back_maple`, `material_pair_cedar_top_maple_back`. Does **not** rerun radius, depth, or thickness phase-1 cases.

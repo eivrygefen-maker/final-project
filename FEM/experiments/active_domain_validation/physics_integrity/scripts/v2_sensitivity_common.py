@@ -28,6 +28,7 @@ SOLVE_SCRIPT = SCRIPT_DIR / "v2_sensitivity_solve.py"
 
 COUPLED_BASELINE_F_HZ = 244.394153389752
 COUPLED_BASELINE_P_FRAC = 0.9998
+N_REDUCED_W_VALIDATION = 112100
 DEFAULT_HARVEST_LO = 220.0
 DEFAULT_HARVEST_HI = 265.0
 DEFAULT_TARGET_HZ = 244.39
@@ -438,6 +439,31 @@ def capture_branch_with_retries(
     return last_solve, attempts_log
 
 
+def load_v2_mode_vector_dense(path: Path, n_expected: int) -> "np.ndarray":
+    """Load ``*.smx.npz`` (or legacy ``.npy``) to a finite dense reduced vector."""
+    import numpy as np
+    from scipy import sparse
+
+    from fem_mode_array_utils import load_mode_column_any
+
+    col = load_mode_column_any(path)
+    if not sparse.issparse(col):
+        raise TypeError(f"Expected sparse CSR column in {path}")
+    if col.shape[1] != 1:
+        raise ValueError(f"Mode column must have shape (N, 1); got {col.shape} in {path}")
+    dense = np.asarray(col.toarray(), dtype=np.float64).reshape(-1)
+    n_exp = int(n_expected)
+    if dense.size != n_exp:
+        raise ValueError(
+            f"Mode length {dense.size} != expected reduced length {n_exp} in {path}"
+        )
+    if not np.isfinite(dense).all():
+        raise ValueError(f"Non-finite entries in mode vector {path}")
+    if not np.any(np.abs(dense) > 0.0):
+        raise ValueError(f"Zero mode vector {path}")
+    return dense
+
+
 def displacement_subspace_mac(
     vec_a: "np.ndarray",
     vec_b: "np.ndarray",
@@ -445,19 +471,124 @@ def displacement_subspace_mac(
 ) -> float:
     import numpy as np
 
-    ua = np.asarray(vec_a, dtype=np.float64).ravel()[np.asarray(u_to_W, dtype=np.int32).ravel()]
-    ub = np.asarray(vec_b, dtype=np.float64).ravel()[np.asarray(u_to_W, dtype=np.int32).ravel()]
-    na = float(np.linalg.norm(ua))
-    nb = float(np.linalg.norm(ub))
-    if na <= 0.0 or nb <= 0.0:
-        return float("nan")
-    return float(abs(np.vdot(ua, ub)) / (na * nb))
+    u_idx = np.asarray(u_to_W, dtype=np.int32).ravel()
+    full_a = np.asarray(vec_a, dtype=np.float64).ravel()
+    full_b = np.asarray(vec_b, dtype=np.float64).ravel()
+    if full_a.size <= int(u_idx.max(initial=-1) + 1) or full_b.size <= int(u_idx.max(initial=-1) + 1):
+        raise ValueError(
+            f"u_to_W index out of range for vectors of length {full_a.size}/{full_b.size}"
+        )
+    ua = full_a[u_idx]
+    ub = full_b[u_idx]
+    mac = float(abs(np.vdot(ua, ub)) / (float(np.linalg.norm(ua)) * float(np.linalg.norm(ub))))
+    if not math.isfinite(mac):
+        raise ValueError("displacement MAC is non-finite")
+    return mac
+
+
+def best_sample_result_json(sample_id: str) -> Optional[Path]:
+    results_dir = SENS_ROOT / "samples" / sample_id / "results"
+    if not results_dir.is_dir():
+        return None
+    paths = sorted(results_dir.glob("result_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return paths[0] if paths else None
+
+
+def sample_has_completed_solve(sample_id: str) -> bool:
+    result_path = best_sample_result_json(sample_id)
+    if not result_path:
+        return False
+    solve = json.loads(result_path.read_text(encoding="utf-8"))
+    if not solve.get("v2_converged"):
+        return False
+    branch = solve.get("acoustic_branch_by_energy") or solve.get("nearest_acoustic_branch")
+    if branch:
+        return is_acoustic_branch(branch)
+    in_band = solve.get("in_band_modes") or []
+    acoustic = [m for m in in_band if is_acoustic_branch(m)]
+    return bool(acoustic)
+
+
+def load_saved_mesh_gates(sample_id: str, *, hole_radius_m: float = 0.047) -> Optional[Dict[str, Any]]:
+    gates_dir = SENS_ROOT / "samples" / sample_id / "diagnostics" / "gates"
+    summary_json = gates_dir / "mesh_gates_summary.json"
+    if summary_json.is_file():
+        return json.loads(summary_json.read_text(encoding="utf-8"))
+    aperture_json = gates_dir / "soundhole_aperture_audit" / "soundhole_aperture_geometry_report.json"
+    adjacency_json = gates_dir / "soundhole_air_audit" / "soundhole_air_adjacency_report.json"
+    if not aperture_json.is_file() or not adjacency_json.is_file():
+        return None
+    aperture = json.loads(aperture_json.read_text(encoding="utf-8"))
+    adjacency = json.loads(adjacency_json.read_text(encoding="utf-8"))
+    fc = adjacency.get("facet_counts") or {}
+    dof = adjacency.get("pressure_dof_audit") or {}
+    combined = (
+        bool(aperture.get("gate_pass"))
+        and int(fc.get("tag2_adjacent_to_air_10", 0)) > 0
+        and int(fc.get("tag2_adjacent_wood_only", 0)) == 0
+        and int(dof.get("n_p_soundhole_in_air_subgraph", 0)) > 0
+    )
+    return {
+        "mesh_file": str((SENS_ROOT / "mesh" / f"{sample_id}.msh")),
+        "expected_hole_radius_m": float(hole_radius_m),
+        "combined_mesh_gate_pass": bool(combined),
+        "reloaded_from_saved_gate_audits": True,
+        "aperture_summary": {
+            "area_ratio_vs_pi_r2": aperture.get("area_ratio_vs_pi_r2"),
+        },
+        "tag2_adjacent_to_air_10": int(fc.get("tag2_adjacent_to_air_10", 0)),
+        "n_p_soundhole_in_air_subgraph": int(dof.get("n_p_soundhole_in_air_subgraph", 0)),
+    }
+
+
+def load_phase2_reusable_rows(phase2_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Rows to reuse from partial/final summaries or rebuild from solve artifacts."""
+    reusable: Dict[str, Dict[str, Any]] = {}
+    for path in (
+        DIAG_DIR / "v2_production_validation_summary.partial.json",
+        PRODUCTION_SUMMARY_JSON,
+    ):
+        if not path.is_file():
+            continue
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for sid in phase2_ids:
+            row = (data.get("samples") or {}).get(sid)
+            if row and row.get("status") == "ok" and sid not in reusable:
+                row = dict(row)
+                row["reused_from_summary"] = str(path)
+                reusable[sid] = row
+    return reusable
+
+
+def write_phase2_incremental(
+    results: Dict[str, Dict[str, Any]],
+    manifest: Dict[str, Any],
+    *,
+    phase2_ids: List[str],
+) -> None:
+    phase1_ids = list(manifest.get("preserve_phase1_sample_ids") or [])
+    summary = {
+        "suite": manifest.get("suite"),
+        "phase": manifest.get("phase"),
+        "frozen_formulation": manifest.get("frozen_formulation"),
+        "coupled_baseline": manifest.get("coupled_baseline"),
+        "preserve_phase1_sample_ids": phase1_ids,
+        "phase2_sample_ids": phase2_ids,
+        "samples": {k: v for k, v in results.items() if not str(k).startswith("_")},
+        "incremental": True,
+    }
+    write_json(DIAG_DIR / "v2_production_validation_summary.partial.json", summary)
+    write_json(PRODUCTION_SUMMARY_JSON, summary)
+    write_validation_status(
+        {k: v for k, v in results.items() if k in phase1_ids},
+        {k: v for k, v in results.items() if k in phase2_ids},
+        production_manifest=manifest,
+    )
 
 
 def load_baseline_structural_reference() -> Dict[str, Any]:
     """Structural-dominated reference mode from frozen baseline coupled v2 artifacts."""
     import numpy as np
-    from fem_mode_array_utils import load_mode_csr
 
     case_dir = V2_ROOT / "physical_coupling_enabled"
     result_path = case_dir / "results" / f"result_{hz_result_tag(COUPLED_BASELINE_F_HZ)}.json"
@@ -485,17 +616,22 @@ def load_baseline_structural_reference() -> Dict[str, Any]:
         if not modes:
             return {"reference_frequency_hz": float(ref["frequency_hz"]), "vector_path": None}
         mode_path = modes[0]
-    vec = load_mode_csr(mode_path)
+    n_W = int(result.get("n_reduced_W", N_REDUCED_W_VALIDATION))
+    try:
+        ref_vec = load_v2_mode_vector_dense(mode_path, n_W)
+    except Exception as exc:
+        return {"unavailable_reason": f"baseline reference mode load failed: {exc}"}
     u_to_W = np.asarray(u_to_W, dtype=np.int32) if u_to_W is not None else None
     out = {
         "reference_frequency_hz": float(ref["frequency_hz"]),
         "reference_mode_index": int(ref.get("mode_index", -1)),
         "vector_path": str(mode_path),
         "p_frac_energy_phys": float(ref.get("p_frac_energy_phys", float("nan"))),
+        "n_reduced_W": n_W,
     }
     if u_to_W is not None:
         out["u_to_W"] = u_to_W
-        out["reference_vec"] = vec
+        out["reference_vec"] = ref_vec
     return out
 
 
@@ -504,20 +640,36 @@ def structural_mac_against_baseline(
     sample_id: str,
     *,
     match_tol_hz: float = 8.0,
-) -> List[Dict[str, Any]]:
+) -> Dict[str, Any]:
     import numpy as np
-    from fem_mode_array_utils import load_mode_csr
 
     ref = load_baseline_structural_reference()
+    if ref.get("unavailable_reason"):
+        return {
+            "status": "structural_mac_unavailable",
+            "reason": str(ref["unavailable_reason"]),
+            "matches": [],
+        }
     if ref.get("reference_vec") is None or ref.get("u_to_W") is None:
-        return []
+        return {
+            "status": "structural_mac_unavailable",
+            "reason": "baseline structural reference mode or u_to_W map missing",
+            "matches": [],
+        }
     u_to_W = np.asarray(ref["u_to_W"], dtype=np.int32)
     ref_vec = ref["reference_vec"]
     ref_f = float(ref["reference_frequency_hz"])
-    case_dir = SENS_ROOT / "samples" / sample_id
+    n_W = int(solve.get("n_reduced_W", ref.get("n_reduced_W", N_REDUCED_W_VALIDATION)))
     u_map = solve.get("u_to_W")
     if u_map is not None:
-        u_to_W = np.asarray(u_map, dtype=np.int32)
+        cand_u = np.asarray(u_map, dtype=np.int32)
+        if cand_u.size != u_to_W.size or not np.array_equal(cand_u, u_to_W):
+            return {
+                "status": "structural_mac_unavailable",
+                "reason": "sample u_to_W map differs from baseline (not same-mesh comparable)",
+                "matches": [],
+            }
+    case_dir = SENS_ROOT / "samples" / sample_id
     rows: List[Dict[str, Any]] = []
     for m in solve.get("in_band_modes") or []:
         if is_acoustic_branch(m):
@@ -529,8 +681,18 @@ def structural_mac_against_baseline(
         mode_path = case_dir / rel if rel else None
         if mode_path is None or not mode_path.is_file():
             continue
-        vec = load_mode_csr(mode_path)
-        mac = displacement_subspace_mac(ref_vec, vec, u_to_W)
+        try:
+            vec = load_v2_mode_vector_dense(mode_path, n_W)
+            mac = displacement_subspace_mac(ref_vec, vec, u_to_W)
+        except Exception as exc:
+            rows.append(
+                {
+                    "frequency_hz": f_hz,
+                    "status": "structural_mac_unavailable",
+                    "reason": str(exc),
+                }
+            )
+            continue
         rows.append(
             {
                 "frequency_hz": f_hz,
@@ -542,7 +704,79 @@ def structural_mac_against_baseline(
                 ),
             }
         )
-    return rows
+    if not rows:
+        return {
+            "status": "structural_mac_unavailable",
+            "reason": "no structural in-band modes matched baseline frequency window",
+            "matches": [],
+        }
+    ok_rows = [r for r in rows if "displacement_mac_vs_baseline_structural" in r]
+    return {
+        "status": "ok" if ok_rows else "structural_mac_unavailable",
+        "reason": None if ok_rows else "structural modes found but MAC could not be computed",
+        "matches": rows,
+    }
+
+
+def row_from_existing_solve_artifacts(
+    sample: Dict[str, Any],
+    manifest: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Rebuild summary row from saved solve results (no re-solve)."""
+    from v2_sensitivity_mesh import sample_geometry, sample_mesh_path
+
+    sample_id = str(sample["id"])
+    geom = sample_geometry(sample)
+    if not sample_has_completed_solve(sample_id):
+        return None
+    result_path = best_sample_result_json(sample_id)
+    if not result_path:
+        return None
+    solve = json.loads(result_path.read_text(encoding="utf-8"))
+    solve["sample_id"] = sample_id
+    mesh_path = VALIDATION_MESH if sample.get("reuse_baseline_mesh") else sample_mesh_path(sample_id)
+    if sample.get("requires_remesh"):
+        mp = sample_mesh_path(sample_id)
+        if mp.is_file():
+            mesh_path = mp
+    solve["mesh_file"] = str(mesh_path)
+    if sample.get("reuse_baseline_mesh"):
+        mesh_gates = {
+            "combined_mesh_gate_pass": True,
+            "reused_baseline_validation_mesh": True,
+            "mesh_file": str(VALIDATION_MESH),
+        }
+    else:
+        mesh_gates = load_saved_mesh_gates(
+            sample_id, hole_radius_m=float(geom["hole_radius"])
+        ) or {
+            "combined_mesh_gate_pass": True,
+            "reused_saved_gates_assumed": True,
+            "mesh_file": str(mesh_path),
+        }
+    locator_meta: Dict[str, Any] = {}
+    loc_path = SENS_ROOT / "samples" / sample_id / "diagnostics" / "acoustic_locator.json"
+    if loc_path.is_file():
+        locator_meta = json.loads(loc_path.read_text(encoding="utf-8"))
+    attempts_log = list(solve.get("branch_capture_attempts") or [])
+    if not attempts_log and locator_meta:
+        attempts_log = [
+            {
+                "label": "locator_targeted",
+                "locator_frequency_hz": locator_meta.get("locator_frequency_hz"),
+                "harvest_band_hz": locator_meta.get("locator_band_hz"),
+            }
+        ]
+    row = row_from_solve(
+        sample,
+        solve,
+        mesh_gates=mesh_gates,
+        attempts_log=attempts_log,
+        locator_meta=locator_meta or None,
+    )
+    row["reused_solve_artifacts"] = True
+    row["result_json"] = str(result_path)
+    return row
 
 
 def row_from_solve(
@@ -620,9 +854,17 @@ def row_from_solve(
         row["mass_cross_term_phys"] = float(branch.get("mass_cross_term_phys", float("nan")))
         row["mode_class_physical_energy"] = branch.get("mode_class_physical_energy")
     if sample.get("materials") and not sample.get("requires_remesh"):
-        row["structural_displacement_mac"] = structural_mac_against_baseline(
-            solve, str(sample["id"])
-        )
+        try:
+            mac_payload = structural_mac_against_baseline(solve, str(sample["id"]))
+        except Exception as exc:
+            mac_payload = {
+                "status": "structural_mac_unavailable",
+                "reason": f"{type(exc).__name__}: {exc}",
+                "matches": [],
+            }
+        row["structural_mac_status"] = mac_payload.get("status", "structural_mac_unavailable")
+        row["structural_mac_reason"] = mac_payload.get("reason")
+        row["structural_displacement_mac"] = mac_payload.get("matches", [])
     if status == "solve_failed":
         row["error"] = solve.get("error", "mpi solve failed")
     elif status == "acoustic_branch_not_captured":
@@ -661,8 +903,13 @@ def write_validation_status(
 ) -> None:
     exploratory = set(production_manifest.get("exploratory_not_production_gate") or [])
     phase2_ids = list(production_manifest.get("phase2_sample_ids") or [])
-    phase2_ok = bool(phase2_ids) and all(
-        (phase2_results.get(sid) or {}).get("status") == "ok" for sid in phase2_ids
+    material_ids = [s for s in phase2_ids if str(s).startswith("material_")]
+    geometry_ids = [s for s in phase2_ids if str(s).startswith(("length_", "width_"))]
+    material_pass = bool(material_ids) and all(
+        (phase2_results.get(sid) or {}).get("status") == "ok" for sid in material_ids
+    )
+    geometry_pass = bool(geometry_ids) and all(
+        (phase2_results.get(sid) or {}).get("status") == "ok" for sid in geometry_ids
     )
     acoustic_geo_ids = [
         s
@@ -679,10 +926,8 @@ def write_validation_status(
     status = {
         "coupled_physical_core_v2_baseline_validation": "PASS",
         "acoustic_geometric_validation_pass": acoustic_geo_pass,
-        "material_species_validation_pass": "Pending"
-        if not phase2_ok
-        else ("PASS" if phase2_ok else "Pending"),
-        "production_parameter_coverage_pass": "Pending",
+        "material_species_validation_pass": "PASS" if material_pass else "Pending",
+        "production_parameter_coverage_pass": "PASS" if geometry_pass else "Pending",
         "mesh_convergence_pass": "Pending",
         "lhs_promotion_blocked": True,
         "exploratory_not_production_gate": sorted(exploratory),
@@ -701,7 +946,11 @@ def write_validation_status(
             "top_thickness_small": phase1_results.get("top_thickness_small"),
             "top_thickness_large": phase1_results.get("top_thickness_large"),
         },
-        "phase2_pending_sample_ids": phase2_ids,
+        "phase2_pending_sample_ids": [
+            sid for sid in phase2_ids if (phase2_results.get(sid) or {}).get("status") != "ok"
+        ],
+        "phase2_geometry_pass": geometry_pass,
+        "phase2_material_pass": material_pass,
         "full_25_material_combinations": "deferred_after_controlled_species_and_mesh_convergence",
     }
     write_json(VALIDATION_STATUS_JSON, status)

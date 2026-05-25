@@ -499,14 +499,13 @@ def main() -> int:
             for sid in phase2_ids
             if sid in (prod.get("samples") or {})
         }
-    material_pass = (
-        bool(phase2_ids)
-        and all((phase2_results.get(sid) or {}).get("status") == "ok" for sid in phase2_ids)
+    material_ids = [s for s in phase2_ids if str(s).startswith("material_")]
+    geometry_ids = [s for s in phase2_ids if str(s).startswith(("length_", "width_"))]
+    material_pass = bool(material_ids) and all(
+        (phase2_results.get(sid) or {}).get("status") == "ok" for sid in material_ids
     )
-    production_coverage_pass = material_pass and all(
-        (phase2_results.get(sid) or {}).get("status") == "ok"
-        for sid in phase2_ids
-        if sid.startswith(("length_", "width_"))
+    production_coverage_pass = bool(geometry_ids) and all(
+        (phase2_results.get(sid) or {}).get("status") == "ok" for sid in geometry_ids
     )
 
     promotion = dict(summary.get("promotion") or {})
