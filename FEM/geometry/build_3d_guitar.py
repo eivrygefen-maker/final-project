@@ -1447,7 +1447,9 @@ def create_guitar_mesh():
         """
         bb = gmsh.model.getBoundingBox(3, int(air_vol_tag))
         z_plane = float(bb[5]) - 5.0e-6
-        disk_tag = int(occ.addDisk(float(hx), float(hy), z_plane, float(hole_r)))
+        disk_tag = int(
+            occ.addDisk(float(hx), float(hy), z_plane, float(hole_r), float(hole_r))
+        )
         occ.synchronize()
         out, _map = _audit_boolean(
             "validation_soundhole_aperture_imprint",
