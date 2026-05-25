@@ -1220,6 +1220,72 @@ def create_guitar_mesh():
         )
         return report
 
+    def _validation_occ_heal_and_dedupe(*, stage: str) -> None:
+        """Validation-only OCC duplicate merge + heal (no mesh tolerance changes)."""
+        if not is_validation:
+            return
+        try:
+            occ.removeAllDuplicates()
+        except Exception as exc:
+            print(f"[diag][warn] validation removeAllDuplicates ({stage}): {exc}")
+        try:
+            gmsh.model.occ.healShapes()
+        except Exception as exc:
+            print(f"[diag][warn] validation healShapes ({stage}): {exc}")
+        occ.synchronize()
+        print(f"[diag] validation OCC heal+dedupe ({stage})", flush=True)
+
+    def _validation_conformal_refragment_wood_air(
+        wood_vols_in: list,
+        air_vols_in: list,
+        *,
+        stage: str,
+    ) -> Tuple[list, list]:
+        """
+        Re-fragment wood+air once for conformal FSI interfaces (validation only).
+
+        Preserves the air volume by proximity to the pre-fragment air center of mass
+        (avoids the production final re-fragment path that was skipped for validation).
+        """
+        if not is_validation or shell_only or not air_vols_in or not wood_vols_in:
+            return list(wood_vols_in), list(air_vols_in)
+        air_ref = _entity_center_of_mass(3, int(air_vols_in[0]))
+        try:
+            all_split, _ = occ.fragment(
+                [(3, int(v)) for v in wood_vols_in],
+                [(3, int(v)) for v in air_vols_in],
+                removeObject=True,
+                removeTool=True,
+            )
+            _validation_occ_heal_and_dedupe(stage=f"{stage}_post_fragment")
+            final_vols = sorted([int(tag) for dim, tag in all_split if dim == 3])
+            if not final_vols:
+                return list(wood_vols_in), list(air_vols_in)
+
+            def _dist2_to_air_ref(vtag: int) -> float:
+                cx, cy, cz = _entity_center_of_mass(3, int(vtag))
+                return (
+                    (cx - air_ref[0]) ** 2
+                    + (cy - air_ref[1]) ** 2
+                    + (cz - air_ref[2]) ** 2
+                )
+
+            air_pick = min(final_vols, key=_dist2_to_air_ref)
+            new_air = [int(air_pick)]
+            new_wood = [int(v) for v in final_vols if int(v) != int(air_pick)]
+            print(
+                f"[diag] validation conformal wood+air re-fragment ({stage}): "
+                f"wood={new_wood} air={new_air}",
+                flush=True,
+            )
+            return new_wood, new_air
+        except Exception as exc:
+            print(
+                f"[diag][warn] validation conformal re-fragment ({stage}) skipped: {exc}",
+                flush=True,
+            )
+            return list(wood_vols_in), list(air_vols_in)
+
     def _is_exterior_boundary_facet(surf_tag: int, vol_tag: int) -> bool:
         """Keep outer mould faces; drop interior cavity lining from hollow-shell boundary."""
         c = get_surface_center(surf_tag)
@@ -1421,6 +1487,7 @@ def create_guitar_mesh():
                 raise RuntimeError(
                     "validation air cavity+channel fuse produced no volume"
                 )
+            _validation_occ_heal_and_dedupe(stage="post_air_cavity_channel_fuse")
         else:
             if hole_cyl is None:
                 z_hole_lo = (D / 2.0) - t - 0.001
@@ -1470,6 +1537,8 @@ def create_guitar_mesh():
         except Exception:
             pass
         occ.synchronize()
+        if is_validation:
+            _validation_occ_heal_and_dedupe(stage="post_wood_air_fragment")
 
         resulting_vols = [dt for dt in frags if dt[0] == 3]
         air_candidate_set = set(tag for _, tag in air_dimtags)
@@ -1519,6 +1588,13 @@ def create_guitar_mesh():
         if not wood_vols:
             raise RuntimeError("Wood partitioning produced no volumes.")
         print(f"[diag] Wood volumes after Z-partition: {wood_vols}")
+
+    if is_validation and not shell_only and air_vols and wood_vols:
+        wood_vols, air_vols = _validation_conformal_refragment_wood_air(
+            wood_vols,
+            air_vols,
+            stage="after_z_partition",
+        )
 
     if is_fom and not is_validation:
         # Final geometry unification: re-fragment wood+air for shared FSI interfaces.
@@ -1765,6 +1841,308 @@ def create_guitar_mesh():
             )
         except Exception:
             return float("nan")
+
+    def _validation_surface_boundary_curves(surf_tag: int) -> list:
+        try:
+            bnd = gmsh.model.getBoundary(
+                [(2, int(surf_tag))], oriented=False, recursive=False
+            )
+        except Exception:
+            return []
+        return sorted({int(t) for d, t in bnd if int(d) == 1})
+
+    def _validation_surface_adjacent_volumes(surf_tag: int) -> list:
+        out: set = set()
+        try:
+            up, down = gmsh.model.getAdjacencies(2, int(surf_tag))
+            for lst in (up, down):
+                for dim, etag in lst:
+                    if int(dim) == 3:
+                        out.add(int(etag))
+        except Exception:
+            pass
+        return sorted(out)
+
+    def _validation_surface_physical_groups(surf_tag: int) -> list:
+        groups: list = []
+        try:
+            for _dim, ptag in gmsh.model.getPhysicalGroups(2):
+                ents = gmsh.model.getEntitiesForPhysicalGroup(2, int(ptag))
+                for ent in ents:
+                    etag = int(ent[1]) if isinstance(ent, (list, tuple)) else int(ent)
+                    if etag == int(surf_tag):
+                        try:
+                            name = gmsh.model.getPhysicalName(2, int(ptag))
+                        except Exception:
+                            name = ""
+                        groups.append({"tag": int(ptag), "name": str(name)})
+        except Exception:
+            pass
+        return groups
+
+    def _validation_bbox_overlap_volume(bb_a: Sequence[float], bb_b: Sequence[float]) -> float:
+        ix0 = max(float(bb_a[0]), float(bb_b[0]))
+        iy0 = max(float(bb_a[1]), float(bb_b[1]))
+        iz0 = max(float(bb_a[2]), float(bb_b[2]))
+        ix1 = min(float(bb_a[3]), float(bb_b[3]))
+        iy1 = min(float(bb_a[4]), float(bb_b[4]))
+        iz1 = min(float(bb_a[5]), float(bb_b[5]))
+        if ix1 <= ix0 or iy1 <= iy0 or iz1 <= iz0:
+            return 0.0
+        return float((ix1 - ix0) * (iy1 - iy0) * (iz1 - iz0))
+
+    def _validation_surface_detail_record(
+        surf_tag: int,
+        *,
+        wood_boundary_set: set,
+        air_boundary_set: set,
+        wood_vol_set: set,
+        air_vol_set: set,
+    ) -> dict:
+        sid = int(surf_tag)
+        bb = list(gmsh.model.getBoundingBox(2, sid))
+        com = _entity_center_of_mass(2, sid)
+        adj = _validation_surface_adjacent_volumes(sid)
+        return {
+            "surface_id": sid,
+            "in_wood_boundary": bool(sid in wood_boundary_set),
+            "in_air_boundary": bool(sid in air_boundary_set),
+            "adjacent_volume_ids": adj,
+            "adjacent_wood_volume_ids": [v for v in adj if v in wood_vol_set],
+            "adjacent_air_volume_ids": [v for v in adj if v in air_vol_set],
+            "physical_surface_groups": _validation_surface_physical_groups(sid),
+            "bbox_m": [float(x) for x in bb],
+            "area_m2": float(_surface_area_m(sid)),
+            "center_of_mass_m": [float(com[0]), float(com[1]), float(com[2])],
+            "boundary_curve_ids": _validation_surface_boundary_curves(sid),
+        }
+
+    def _validation_classify_surface_pair(
+        rec_a: dict,
+        rec_b: dict,
+        *,
+        shared_curves: list,
+        com_dist_m: float,
+        bbox_overlap_m3: float,
+    ) -> dict:
+        area_a = float(rec_a["area_m2"])
+        area_b = float(rec_b["area_m2"])
+        area_min = max(1.0e-12, min(area_a, area_b))
+        wood_a = set(rec_a["adjacent_wood_volume_ids"])
+        wood_b = set(rec_b["adjacent_wood_volume_ids"])
+        air_a = set(rec_a["adjacent_air_volume_ids"])
+        air_b = set(rec_b["adjacent_air_volume_ids"])
+        hypotheses: list = []
+        if (
+            com_dist_m <= 5.0e-4
+            and shared_curves
+            and bbox_overlap_m3 >= 0.85 * area_min
+        ):
+            if wood_a == wood_b and air_a == air_b:
+                hypotheses.append("A_duplicate_coincident_interface_faces")
+            elif (wood_a and air_b and not air_a and not wood_b) or (
+                air_a and wood_b and not air_b and not wood_a
+            ):
+                hypotheses.append(
+                    "B_overlapping_wood_air_boundaries_not_conformally_fragmented"
+                )
+            else:
+                hypotheses.append("A_duplicate_coincident_or_internal_faces")
+        if area_min < 1.0e-8 or max(rec_a["bbox_m"][5] - rec_a["bbox_m"][2], rec_b["bbox_m"][5] - rec_b["bbox_m"][2]) < 1.0e-5:
+            hypotheses.append("C_thin_sliver_surface")
+        if not hypotheses and com_dist_m > 5.0e-3:
+            hypotheses.append("D_unlikely_CAD_coincidence_mesher_tolerance_only")
+        if not hypotheses:
+            hypotheses.append("B_possible_partial_overlap_or_nonconformal_interface")
+        return {
+            "primary": hypotheses[0],
+            "all": hypotheses,
+            "com_distance_m": float(com_dist_m),
+            "bbox_overlap_volume_m3": float(bbox_overlap_m3),
+            "bbox_overlap_over_min_area": float(bbox_overlap_m3 / area_min),
+            "shared_boundary_curve_ids": [int(c) for c in shared_curves],
+            "n_shared_curves": len(shared_curves),
+        }
+
+    def _validation_find_coincident_surface_pairs(
+        records: dict,
+        *,
+        com_tol_m: float = 5.0e-4,
+        min_shared_curves: int = 1,
+    ) -> list:
+        pairs: list = []
+        ids = sorted(int(k) for k in records.keys())
+        for i, sa in enumerate(ids):
+            for sb in ids[i + 1 :]:
+                ca = records[sa]["center_of_mass_m"]
+                cb = records[sb]["center_of_mass_m"]
+                com_dist = math.dist(ca, cb)
+                if com_dist > com_tol_m:
+                    continue
+                shared = sorted(
+                    set(records[sa]["boundary_curve_ids"])
+                    & set(records[sb]["boundary_curve_ids"])
+                )
+                if len(shared) < min_shared_curves:
+                    continue
+                ov = _validation_bbox_overlap_volume(
+                    records[sa]["bbox_m"], records[sb]["bbox_m"]
+                )
+                pairs.append(
+                    {
+                        "surface_a": int(sa),
+                        "surface_b": int(sb),
+                        "classification": _validation_classify_surface_pair(
+                            records[sa],
+                            records[sb],
+                            shared_curves=shared,
+                            com_dist_m=com_dist,
+                            bbox_overlap_m3=ov,
+                        ),
+                    }
+                )
+        return pairs
+
+    def _write_validation_surface_overlap_audit(
+        *,
+        audit_stem: Path,
+        focus_surface_ids: list,
+        wood_boundary_surfs: list,
+        air_boundary_surfs: list,
+        wood_vols: list,
+        air_vols: list,
+        soundhole_surfs: list,
+        cleanup_stages: list,
+    ) -> dict:
+        """Pre-mesh diagnostic for nearly coincident CAD surfaces (e.g. mesh overlap 10/29)."""
+        audit_stem.parent.mkdir(parents=True, exist_ok=True)
+        wood_set = {int(s) for s in wood_boundary_surfs}
+        air_set = {int(s) for s in air_boundary_surfs}
+        wood_vol_set = {int(v) for v in wood_vols}
+        air_vol_set = {int(v) for v in air_vols}
+        all_surfs = sorted(wood_set | air_set)
+
+        records = {
+            int(s): _validation_surface_detail_record(
+                int(s),
+                wood_boundary_set=wood_set,
+                air_boundary_set=air_set,
+                wood_vol_set=wood_vol_set,
+                air_vol_set=air_vol_set,
+            )
+            for s in all_surfs
+        }
+
+        focus = [int(s) for s in focus_surface_ids if int(s) in records]
+        focus_records = [records[s] for s in focus]
+        focus_pairs: list = []
+        if len(focus) >= 2:
+            for i, sa in enumerate(focus):
+                for sb in focus[i + 1 :]:
+                    ra, rb = records[sa], records[sb]
+                    shared = sorted(
+                        set(ra["boundary_curve_ids"]) & set(rb["boundary_curve_ids"])
+                    )
+                    com_dist = math.dist(ra["center_of_mass_m"], rb["center_of_mass_m"])
+                    ov = _validation_bbox_overlap_volume(ra["bbox_m"], rb["bbox_m"])
+                    focus_pairs.append(
+                        {
+                            "surface_a": int(sa),
+                            "surface_b": int(sb),
+                            "classification": _validation_classify_surface_pair(
+                                ra,
+                                rb,
+                                shared_curves=shared,
+                                com_dist_m=com_dist,
+                                bbox_overlap_m3=ov,
+                            ),
+                        }
+                    )
+
+        global_pairs = _validation_find_coincident_surface_pairs(records)
+        blocking = [
+            p
+            for p in global_pairs
+            if p["classification"]["primary"]
+            in (
+                "A_duplicate_coincident_interface_faces",
+                "A_duplicate_coincident_or_internal_faces",
+                "B_overlapping_wood_air_boundaries_not_conformally_fragmented",
+                "B_possible_partial_overlap_or_nonconformal_interface",
+            )
+            and p["classification"]["n_shared_curves"] >= 1
+            and p["classification"]["com_distance_m"] <= 5.0e-4
+        ]
+
+        payload = {
+            "audit_type": "validation_surface_overlap_pre_mesh",
+            "focus_surface_ids": focus,
+            "focus_surface_records": focus_records,
+            "focus_pair_analysis": focus_pairs,
+            "cleanup_stages_applied": list(cleanup_stages),
+            "n_all_boundary_surfaces": len(all_surfs),
+            "n_coincident_pairs_global": len(global_pairs),
+            "coincident_pairs_global": global_pairs[:80],
+            "blocking_coincident_pairs": blocking,
+            "soundhole_aperture_surface_ids": [int(s) for s in soundhole_surfs],
+            "mesh_overlap_evidence": (
+                "Gmsh 'nearly self-intersecting facets' on two surfaces sharing "
+                "boundary nodes with different third vertices indicates coincident "
+                "duplicate B-rep faces (CAD topology), not a mesh-size tolerance issue."
+                if blocking
+                else "No coincident surface pairs detected at CAD level after cleanup."
+            ),
+        }
+        json_path = audit_stem.with_suffix(".json")
+        md_path = audit_stem.with_suffix(".md")
+        json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+        lines = [
+            "# Validation surface overlap audit (pre-mesh)",
+            "",
+            f"- Focus surfaces: `{focus}`",
+            f"- Cleanup stages: `{cleanup_stages}`",
+            f"- Global coincident pairs (com≤0.5mm, shared curves): **{len(global_pairs)}**",
+            f"- Blocking pairs after cleanup: **{len(blocking)}**",
+            "",
+            "## Focus surface records",
+            "",
+        ]
+        for rec in focus_records:
+            lines.append(
+                f"### Surface {rec['surface_id']}",
+                "",
+                f"- wood boundary: **{rec['in_wood_boundary']}** | air boundary: **{rec['in_air_boundary']}**",
+                f"- area: **{rec['area_m2']:.8f}** m² | COM: `{rec['center_of_mass_m']}`",
+                f"- bbox: `{rec['bbox_m']}`",
+                f"- adjacent volumes: wood `{rec['adjacent_wood_volume_ids']}` air `{rec['adjacent_air_volume_ids']}`",
+                f"- physical groups: `{rec['physical_surface_groups']}`",
+                f"- boundary curves ({len(rec['boundary_curve_ids'])}): `{rec['boundary_curve_ids'][:24]}`"
+                + (" …" if len(rec["boundary_curve_ids"]) > 24 else ""),
+                "",
+            )
+        if focus_pairs:
+            lines.append("## Focus pair classification")
+            lines.append("")
+            for fp in focus_pairs:
+                cl = fp["classification"]
+                lines.append(
+                    f"- **{fp['surface_a']} ↔ {fp['surface_b']}**: `{cl['primary']}` "
+                    f"(com_dist={cl['com_distance_m']:.6e} m, "
+                    f"shared_curves={cl['n_shared_curves']}, "
+                    f"bbox_overlap/area_min={cl['bbox_overlap_over_min_area']:.4f})"
+                )
+        lines.append("")
+        lines.append(f"## Evidence note\n\n{payload['mesh_overlap_evidence']}")
+        md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"[CAD-OVERLAP] wrote {json_path}", flush=True)
+        print(f"[CAD-OVERLAP] wrote {md_path}", flush=True)
+        print(
+            f"[CAD-OVERLAP] focus={focus} global_coincident_pairs={len(global_pairs)} "
+            f"blocking={len(blocking)}",
+            flush=True,
+        )
+        return payload
 
     def _cad_surface_record(
         surf_tag: int,
@@ -3279,6 +3657,36 @@ def create_guitar_mesh():
                 gmsh.model.mesh.field.setAsBackgroundMesh(min_field)
             except Exception as exc:
                 raise RuntimeError(f"Failed to set triple-tier Min background field: {exc}")
+
+    if is_validation and not shell_only:
+        _focus_raw = os.environ.get("FEM_VALIDATION_OVERLAP_SURFACES", "10,29")
+        _focus_ids = [int(x.strip()) for x in _focus_raw.split(",") if x.strip()]
+        _overlap_audit = _write_validation_surface_overlap_audit(
+            audit_stem=out_file.parent / "validation_surface_overlap_audit",
+            focus_surface_ids=_focus_ids,
+            wood_boundary_surfs=wood_boundary_surfs,
+            air_boundary_surfs=air_boundary_surfs,
+            wood_vols=wood_vols,
+            air_vols=air_vols,
+            soundhole_surfs=soundhole_surfs,
+            cleanup_stages=[
+                "post_air_cavity_channel_fuse",
+                "post_wood_air_fragment",
+                "after_z_partition_conformal_refragment",
+            ],
+        )
+        _blocking_pairs = _overlap_audit.get("blocking_coincident_pairs") or []
+        if _blocking_pairs:
+            _pair_summary = ", ".join(
+                f"{p['surface_a']}/{p['surface_b']}:{p['classification']['primary']}"
+                for p in _blocking_pairs[:6]
+            )
+            raise RuntimeError(
+                "FEM_VALIDATION_MESH: coincident or overlapping CAD boundary surfaces "
+                f"remain after validation topology cleanup (n={len(_blocking_pairs)}). "
+                f"Pairs: {_pair_summary}. "
+                f"Inspect {out_file.parent / 'validation_surface_overlap_audit.json'}"
+            )
 
     try:
         print(
