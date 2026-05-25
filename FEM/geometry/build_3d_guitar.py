@@ -1124,6 +1124,41 @@ def create_guitar_mesh():
         scored.sort(key=lambda row: -row[1])
         return [row[0] for row in scored]
 
+    def _select_soundhole_air_cavity_opening_surfaces(
+        air_boundary_surfs: list,
+        *,
+        hx: float,
+        hy: float,
+        hole_r: float,
+        depth_m: float,
+        shell_t: float,
+    ) -> list:
+        """
+        Facets on the **air volume** exterior boundary that form the soundhole opening.
+
+        Used for FEM_VALIDATION_MESH (and opt-in ``FEM_SOUNDHOLE_TAG_AIR_OPENING=1``) so
+        tag 2 lies on the cavity mouth (adjacent to air tag 10), not on exterior wood top
+        plate facets selected by upward normal in the hole disk.
+        """
+        if not air_boundary_surfs:
+            return []
+        z_top_outer = float(depth_m) / 2.0
+        z_lo = z_top_outer - float(shell_t) - 0.004
+        z_hi = z_top_outer + 0.003
+        r_cap = float(hole_r) * 1.5
+        out: list = []
+        for s in sorted(int(x) for x in air_boundary_surfs):
+            try:
+                cx, cy, cz = get_surface_center(s)
+            except Exception:
+                continue
+            if float(cz) < z_lo or float(cz) > z_hi:
+                continue
+            if math.hypot(float(cx) - float(hx), float(cy) - float(hy)) > r_cap:
+                continue
+            out.append(int(s))
+        return sorted(set(out))
+
     def _select_soundhole_disk_centroid_fallback(
         shell_tags, z_plane, z_tol, hx, hy, hole_r
     ):
@@ -1153,16 +1188,37 @@ def create_guitar_mesh():
             out.append(int(s))
         return sorted(set(out))
 
-    # Soundhole: z = D/2 plane + hole disk on exterior shell.
+    # Soundhole: z = D/2 plane + hole disk on exterior shell (legacy), or air-cavity mouth (validation).
     z_top_outer = D / 2.0
     z_tol = max(1.0e-4, t, 0.25 * hr)
+    use_air_opening_tag = (is_validation or os.environ.get("FEM_SOUNDHOLE_TAG_AIR_OPENING", "0") == "1")
+    soundhole_surfs: list = []
+    if use_air_opening_tag and air_boundary_surfs and not shell_only:
+        soundhole_surfs = _select_soundhole_air_cavity_opening_surfaces(
+            sorted(air_boundary_surfs),
+            hx=float(hole_x),
+            hy=float(hole_y),
+            hole_r=float(hr),
+            depth_m=float(D),
+            shell_t=float(t),
+        )
+        print(
+            f"[diag] soundhole tag 2: air-cavity opening selection n={len(soundhole_surfs)} "
+            f"(FEM_VALIDATION_MESH or FEM_SOUNDHOLE_TAG_AIR_OPENING=1; adjacent to air vol 10)"
+        )
+        if not soundhole_surfs:
+            print(
+                "[diag][warn] air-cavity opening selection empty — falling back to legacy "
+                "shell soundhole picker (may tag exterior wood only)."
+            )
     if is_preview:
         all_shell_surfs = sorted(wood_boundary_surfs)
     else:
         all_shell_surfs = sorted(set(wood_boundary_surfs) | set(air_boundary_surfs))
-    soundhole_surfs = _select_soundhole_surfaces(
-        all_shell_surfs, z_top_outer, z_tol, hole_x, hole_y, hr
-    )
+    if not soundhole_surfs:
+        soundhole_surfs = _select_soundhole_surfaces(
+            all_shell_surfs, z_top_outer, z_tol, hole_x, hole_y, hr
+        )
     if not soundhole_surfs and air_boundary_surfs:
         soundhole_surfs = _select_soundhole_surfaces(
             sorted(air_boundary_surfs), z_top_outer, z_tol, hole_x, hole_y, hr

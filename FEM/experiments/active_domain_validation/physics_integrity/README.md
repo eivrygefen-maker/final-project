@@ -49,15 +49,18 @@ block Frobenius form scaling. `pressure_dof_scale` remains part of the physical 
 
 Parse scales from logs if capture JSON is missing: `GNHEP block Frobenius scales:` line.
 
-## Soundhole ↔ air adjacency audit (blocking)
+## Soundhole ↔ air adjacency audit
 
-Before rerunning acoustic-only after `soundhole_active=0`:
+Validation mesh rebuild uses **air-cavity opening** tag-2 selection (`FEM_VALIDATION_MESH=1`
+in `build_3d_guitar.py`). Production FOM mesh is unchanged unless `FEM_SOUNDHOLE_TAG_AIR_OPENING=1`.
+
+Rebuild mesh + audit (no eigen solve):
 
 ```bash
-bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_soundhole_air_audit.sh
+bash FEM/experiments/active_domain_validation/scripts/rebuild_validation_mesh_and_audit.sh
 ```
 
-Reports under `diagnostics/soundhole_air_audit/` (JSON, Markdown, XDMF, CSV). No solve.
+Reports under `diagnostics/soundhole_air_audit/` (JSON, Markdown, XDMF, CSV).
 
 ## Decision outputs
 

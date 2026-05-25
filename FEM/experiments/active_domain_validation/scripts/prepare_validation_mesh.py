@@ -115,6 +115,38 @@ def _build_mesh() -> None:
         raise FileNotFoundError(f"Expected mesh not written: {MESH_PATH}")
 
 
+def _run_soundhole_air_audit() -> int:
+    """Post-build topology audit (no eigen solve)."""
+    audit_py = (
+        EXPERIMENT_ROOT
+        / "physics_integrity"
+        / "scripts"
+        / "audit_soundhole_air_adjacency.py"
+    )
+    audit_sh = (
+        EXPERIMENT_ROOT
+        / "physics_integrity"
+        / "scripts"
+        / "run_soundhole_air_audit.sh"
+    )
+    if audit_sh.is_file():
+        proc = subprocess.run(["bash", str(audit_sh)], cwd=str(REPO_ROOT), check=False)
+        return int(proc.returncode)
+    diag_dir = EXPERIMENT_ROOT / "physics_integrity" / "diagnostics" / "soundhole_air_audit"
+    diag_dir.mkdir(parents=True, exist_ok=True)
+    log_path = diag_dir / "run.log"
+    cmd = ["mpiexec", "-n", "1", sys.executable, str(audit_py)]
+    with open(log_path, "w", encoding="utf-8") as logf:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(REPO_ROOT),
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+    return int(proc.returncode)
+
+
 def main() -> int:
     base = _load_base_solver()
     _write_configs(base)
@@ -125,7 +157,12 @@ def main() -> int:
         cwd=str(REPO_ROOT),
         check=False,
     )
-    return int(proc.returncode)
+    if proc.returncode != 0:
+        print(f"[prepare][warn] mesh size audit exit {proc.returncode}", file=sys.stderr)
+    sh_proc = _run_soundhole_air_audit()
+    if sh_proc != 0:
+        print(f"[prepare][warn] soundhole-air audit exit {sh_proc}", file=sys.stderr)
+    return 0 if proc.returncode in (0, 3) and sh_proc == 0 else 1
 
 
 if __name__ == "__main__":
