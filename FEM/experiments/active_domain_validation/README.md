@@ -5,6 +5,7 @@ on a shared coarse validation mesh. Safe to delete this entire folder when finis
 
 ## Layout
 
+- `physics_integrity/` — **current priority**: coupled-physics integrity gate (scaling audit, structural/acoustic references, comparison report). See `physics_integrity/README.md`.
 - `configs/` — experiment JSON only (not production `FEM/SORTING`)
 - `mesh/` — shared `validation_tiny_guitar_3d.msh` + `mesh_audit.json`
 - `baseline/` — full-volume run outputs

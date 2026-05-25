@@ -2299,6 +2299,53 @@ def _is_structural_only_run(config: Dict, solve_evp: bool) -> bool:
     return _solver_bool(solver, "structural_only_diagnosis", default=False)
 
 
+def _is_acoustic_cavity_only_run(config: Dict, solve_evp: bool) -> bool:
+    """True → pressure-only cavity EVP (experiment diagnosis; no structural DOFs)."""
+    if not solve_evp:
+        return False
+    return _solver_bool(
+        config.get("solver", {}), "acoustic_cavity_only_diagnosis", default=False
+    )
+
+
+def _physics_integrity_capture_enabled(solver_cfg: Dict) -> bool:
+    return _solver_bool(solver_cfg, "physics_integrity_capture", default=False)
+
+
+def _store_physics_integrity_audit(
+    config: Dict,
+    *,
+    solver_cfg: Dict,
+    assembly_matvec_diag: Optional[Dict[str, float]] = None,
+    gnhep_scales: Optional[Dict[str, float]] = None,
+    fsi_iface_facets: Optional[np.ndarray] = None,
+    soundhole_p_dof: int = 0,
+    p_scale: float = 1.0,
+    fsi_gain: float = 1.0,
+    iface_mode: str = "",
+) -> None:
+    """Experiment-only audit payload (default off; never set in production configs)."""
+    if not _physics_integrity_capture_enabled(solver_cfg):
+        return
+    if MPI.COMM_WORLD.rank != ROOT_RANK:
+        return
+    payload: Dict[str, Any] = dict(config.get("_physics_integrity") or {})
+    if gnhep_scales:
+        payload["gnhep_scales"] = dict(gnhep_scales)
+    if assembly_matvec_diag:
+        payload["assembly_matvec_diag"] = dict(assembly_matvec_diag)
+    payload["pressure_dof_scale"] = float(p_scale)
+    payload["fsi_coupling_gain"] = float(fsi_gain)
+    payload["soundhole_bc"] = str(solver_cfg.get("soundhole_bc", ""))
+    payload["pressure_gauge"] = str(solver_cfg.get("pressure_gauge", ""))
+    payload["fsi_iface_mode"] = str(iface_mode)
+    if fsi_iface_facets is not None:
+        payload["fsi_iface_facet_count"] = int(np.asarray(fsi_iface_facets).size)
+    payload["soundhole_pressure_dof_count"] = int(soundhole_p_dof)
+    config["_physics_integrity"] = payload
+    solver_cfg["_physics_integrity"] = payload
+
+
 def _structural_diag_facet_tags(solver_cfg: Dict) -> Tuple[int, ...]:
     raw = solver_cfg.get("structural_shell_facet_tags", STRUCTURAL_DIAG_SURFACE_TAGS)
     if isinstance(raw, (list, tuple)):
@@ -5163,6 +5210,202 @@ def _solve_structural_only_evp(
     return msh, V_u, freqs_hz, eigvecs, n_u, 0
 
 
+def _solve_acoustic_cavity_only_evp(
+    msh: mesh.Mesh,
+    cell_tags,
+    facet_tags,
+    config: Dict,
+    num_modes: int,
+    status_callback=None,
+) -> Tuple[mesh.Mesh, fem.FunctionSpace, List[float], np.ndarray, int, int]:
+    """
+    Pressure-only cavity EVP on the internal air volume (experiment diagnosis).
+
+    Uses the same ``a_pp`` / ``m_pp`` forms and soundhole ``pressure_release`` BC as the
+    coupled model, but no structural DOFs or FSI blocks.
+    """
+    _phase_sync(2150, "acoustic-cavity enter", status_callback=status_callback)
+    solver_cfg = config.get("solver", {})
+    _emit(
+        "[diag] acoustic-cavity-only diagnosis: scalar pressure EVP on air tag "
+        f"{AIR_VOLUME_TAG} (no shell/FSI DOFs).",
+        status_callback=status_callback,
+    )
+    tdim = msh.topology.dim
+    fdim = tdim - 1
+    msh.topology.create_connectivity(fdim, tdim)
+    msh.topology.create_connectivity(tdim, fdim)
+
+    air_mat = config["materials"]["air"]
+    rho_air = float(air_mat["density"])
+    c_air = float(air_mat["speed_of_sound"])
+    p_scale = _coupled_pressure_dof_scale(solver_cfg)
+    p2 = p_scale * p_scale
+
+    _p_deg = 1
+    p_el = element("Lagrange", msh.basix_cell(), _p_deg)
+    V_p = fem.functionspace(msh, p_el)
+    p = ufl.TrialFunction(V_p)
+    q = ufl.TestFunction(V_p)
+    xdmf_dx = ufl.Measure("dx", domain=msh, subdomain_data=cell_tags)
+
+    a_pp = p2 * (1.0 / rho_air) * ufl.inner(ufl.grad(p), ufl.grad(q)) * xdmf_dx(AIR_VOLUME_TAG)
+    m_pp = p2 * (1.0 / (rho_air * c_air * c_air)) * p * q * xdmf_dx(AIR_VOLUME_TAG)
+
+    diag_shift = float(solver_cfg.get("eps_mass_reg_frac", 0.0))
+    if diag_shift > 0.0:
+        norm_pp_ref = _mat_frobenius_norm(a_pp, label="a_pp_acoustic_ref")
+        mass_reg_scale = diag_shift * max(float(norm_pp_ref), 1.0e-30)
+        m_pp = m_pp + mass_reg_scale * p * q * xdmf_dx(AIR_VOLUME_TAG)
+
+    s_pp = 1.0
+    if _solver_bool(solver_cfg, "gnhep_block_frobenius_normalize", default=True):
+        s_pp = max(_mat_frobenius_norm(a_pp, label="a_pp_acoustic_scale"), 1.0e-30)
+        inv_p = 1.0 / s_pp
+        a_pp = inv_p * a_pp
+        m_pp = inv_p * m_pp
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                f"[form] acoustic-cavity GNHEP scale: s_pp={s_pp:.6e} "
+                f"(pressure_dof_scale={p_scale:.4g})",
+                flush=True,
+            )
+
+    soundhole_facets = np.array(facet_tags.find(2), dtype=np.int32)
+    soundhole_bc, pressure_gauge_mode, _, _ = _resolve_coupled_pressure_bc_policy(
+        solver_cfg,
+        soundhole_facets_count=int(soundhole_facets.size),
+        status_callback=status_callback,
+    )
+    bcs_p: List[fem.DirichletBC] = []
+    p_soundhole_bc_dofs_v = np.array([], dtype=np.int32)
+    if soundhole_bc == SOUNDHOLE_BC_PRESSURE_RELEASE:
+        p_soundhole_bc_dofs_v = _locate_soundhole_pressure_release_dofs(
+            V_p, soundhole_facets
+        )
+        if p_soundhole_bc_dofs_v.size > 0:
+            bcs_p.append(
+                fem.dirichletbc(
+                    PETSc.ScalarType(0.0),
+                    p_soundhole_bc_dofs_v,
+                    V_p,
+                )
+            )
+        _emit(
+            f"[bc] acoustic-cavity soundhole: pressure_release → "
+            f"{p_soundhole_bc_dofs_v.size} pressure DOFs on {soundhole_facets.size} facets",
+            status_callback=status_callback,
+        )
+
+    a_form = fem.form(a_pp)
+    m_form = fem.form(m_pp)
+    A = assemble_matrix(a_form, bcs=bcs_p)
+    A.assemble()
+    M = assemble_matrix(m_form, bcs=bcs_p)
+    M.assemble()
+    gnhep_global = _normalize_assembled_gnhep(A, M, solver_cfg)
+
+    _store_physics_integrity_audit(
+        config,
+        solver_cfg=solver_cfg,
+        gnhep_scales={"s_uu": 1.0, "s_pp": float(s_pp), "s_couple": 1.0, "gnhep_global": gnhep_global},
+        soundhole_p_dof=int(p_soundhole_bc_dofs_v.size),
+        p_scale=p_scale,
+        fsi_gain=0.0,
+        iface_mode="acoustic_cavity_only",
+    )
+
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        print(
+            f"[DIAG] acoustic-cavity matrices: ||A||_F={float(A.norm()):.6e} "
+            f"||M||_F={float(M.norm()):.6e} n_p={int(V_p.dofmap.index_map.size_global)}",
+            flush=True,
+        )
+
+    shift_hz = float(
+        solver_cfg.get(
+            "acoustic_shift_target_hz",
+            solver_cfg.get("shift_invert_target_hz", 120.0),
+        )
+    )
+    target_lambda = (2.0 * math.pi * shift_hz) ** 2
+    min_hz = float(solver_cfg.get("acoustic_min_mode_hz", 40.0))
+    max_hz = float(solver_cfg.get("acoustic_max_mode_hz", 280.0))
+
+    eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
+    eps.setOperators(A, M)
+    eps.setProblemType(SLEPc.EPS.ProblemType.GHEP)
+    eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
+    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
+    eps.setTarget(target_lambda)
+    st = eps.getST()
+    st.setType(SLEPc.ST.Type.SINVERT)
+    try:
+        ksp = st.getKSP()
+        ksp.setType(str(solver_cfg.get("st_ksp_type", "cg")))
+        pc = ksp.getPC()
+        pc.setType(str(solver_cfg.get("st_pc_type", "lu")))
+        if str(solver_cfg.get("st_pc_type", "lu")).lower() == "lu":
+            try:
+                pc.setFactorSolverType(
+                    str(solver_cfg.get("st_factor_solver_type", "mumps"))
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+    nev_target = int(max(1, num_modes))
+    nev = int(max(nev_target + 8, nev_target))
+    eps.setDimensions(nev, int(max(40, 4 * nev)))
+    eps.setTolerances(1e-6, int(solver_cfg.get("eigs_maxiter", 2000)))
+    eps.setFromOptions()
+    eps.solve()
+    nconv = eps.getConverged()
+    if nconv <= 0:
+        raise RuntimeError("Acoustic-cavity diagnosis: no converged eigenpairs.")
+
+    rvec = A.createVecRight()
+    freqs_hz: List[float] = []
+    vectors: List[np.ndarray] = []
+    for i in range(min(nev, nconv)):
+        eig = eps.getEigenpair(i, rvec)
+        eig_r = float(np.real(eig))
+        if eig_r <= 0.0:
+            continue
+        f_hz = math.sqrt(eig_r) / (2.0 * math.pi)
+        if f_hz < min_hz or f_hz > max_hz:
+            continue
+        freqs_hz.append(f_hz)
+        vectors.append(rvec.array.copy())
+    try:
+        rvec.destroy()
+    except Exception:
+        pass
+    eps.destroy()
+    try:
+        A.destroy()
+        M.destroy()
+    except Exception:
+        pass
+
+    if not freqs_hz:
+        raise RuntimeError(
+            f"Acoustic-cavity diagnosis: no modes in [{min_hz:.1f}, {max_hz:.1f}] Hz."
+        )
+    order = np.argsort(np.array(freqs_hz))
+    order_list = [int(i) for i in order][:nev_target]
+    freqs_hz = [freqs_hz[i] for i in order_list]
+    eigvecs = np.stack([vectors[i] for i in order_list], axis=1)
+    n_p = int(V_p.dofmap.index_map.size_global * V_p.dofmap.index_map_bs)
+    if MPI.COMM_WORLD.rank == ROOT_RANK:
+        print(
+            f"[DIAG] acoustic-cavity modes (shift={shift_hz:.2f} Hz): "
+            f"{[round(f, 3) for f in freqs_hz]}",
+            flush=True,
+        )
+    return msh, V_p, freqs_hz, eigvecs, 0, n_p
+
+
 def _solve_coupled_evp(
     mesh_file: Path,
     config: Dict,
@@ -5174,9 +5417,12 @@ def _solve_coupled_evp(
     _phase_sync(2000, "coupled enter", status_callback=status_callback)
     solver_cfg = config.get("solver", {})
     _struct_only = _is_structural_only_run(config, solve_evp)
+    _acoustic_only = _is_acoustic_cavity_only_run(config, solve_evp)
     if MPI.COMM_WORLD.rank == ROOT_RANK:
         if _struct_only:
             print("🟢 STRUCTURAL-ONLY SHELL DIAGNOSTIC (couple_fluid=False, facet tags 1+3, no FSI)")
+        elif _acoustic_only:
+            print("🔵 ACOUSTIC-CAVITY-ONLY DIAGNOSTIC (pressure on air tag 10, no FSI)")
         else:
             print("🔴 FULL COUPLED ACOUSTIC–STRUCTURAL MODEL (mixed u,p + FSI)")
         sys.stdout.flush()
@@ -5207,6 +5453,15 @@ def _solve_coupled_evp(
             facet_tags=facet_tags,
             config=config,
             num_modes=max(1, int(config.get("solver", {}).get("structural_only_num_modes", 30))),
+            status_callback=status_callback,
+        )
+    if _acoustic_only:
+        return _solve_acoustic_cavity_only_evp(
+            msh=msh,
+            cell_tags=cell_tags,
+            facet_tags=facet_tags,
+            config=config,
+            num_modes=max(1, int(config.get("solver", {}).get("acoustic_cavity_num_modes", 20))),
             status_callback=status_callback,
         )
     coords = msh.geometry.x
@@ -6194,7 +6449,37 @@ def _solve_coupled_evp(
             "to KSP operator copies (skip zeroRows on assembled A/M).",
             flush=True,
         )
-            sys.stdout.flush()
+        sys.stdout.flush()
+
+    s_couple = math.sqrt(max(float(s_uu) * float(s_pp), 1.0e-30))
+    _store_physics_integrity_audit(
+        config,
+        solver_cfg=solver_cfg,
+        assembly_matvec_diag=assembly_matvec_diag,
+        gnhep_scales={
+            "s_uu": float(s_uu),
+            "s_pp": float(s_pp),
+            "s_couple": float(s_couple),
+            "gnhep_global": float(gnhep_scale),
+        },
+        fsi_iface_facets=fsi_iface_facets,
+        soundhole_p_dof=int(p_soundhole_bc_dofs_v.size),
+        p_scale=float(p_scale),
+        fsi_gain=float(fsi_gain),
+        iface_mode=str(iface_mode),
+    )
+    if MPI.COMM_WORLD.rank == ROOT_RANK and _physics_integrity_capture_enabled(solver_cfg):
+        try:
+            audit = config.get("_physics_integrity") or {}
+            audit["operator_norms_post_bc"] = {
+                "A_F": float(A.norm()),
+                "M_F": float(M.norm()),
+            }
+            config["_physics_integrity"] = audit
+            solver_cfg["_physics_integrity"] = audit
+        except Exception:
+            pass
+
     active_domain_meta: Optional[Dict[str, Any]] = None
     ad_block = solver_cfg.get("active_domain_experiment")
     if (
