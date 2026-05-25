@@ -50,7 +50,8 @@ def _triangle_area_and_normal(
     return area, n
 
 
-def _audit_meshio(mesh_path: Path) -> Dict[str, Any]:
+def _audit_meshio(mesh_path: Path, *, hole_radius_m: float = HOLE_R_M) -> Dict[str, Any]:
+    expected_area = math.pi * float(hole_radius_m) ** 2
     import meshio
 
     hx, hy = _expected_hole_center_xy()
@@ -89,7 +90,7 @@ def _audit_meshio(mesh_path: Path) -> Dict[str, Any]:
     centroids_arr = np.vstack(centroids)
     z_span = float(max(z_vals) - min(z_vals)) if z_vals else float("inf")
     horiz_frac = float(horiz_area / total_area) if total_area > 0.0 else 0.0
-    area_ratio = float(total_area / EXPECTED_AREA_M2) if EXPECTED_AREA_M2 > 0 else 0.0
+    area_ratio = float(total_area / expected_area) if expected_area > 0 else 0.0
 
     xmin, xmax = float(centroids_arr[:, 0].min()), float(centroids_arr[:, 0].max())
     ymin, ymax = float(centroids_arr[:, 1].min()), float(centroids_arr[:, 1].max())
@@ -97,9 +98,9 @@ def _audit_meshio(mesh_path: Path) -> Dict[str, Any]:
 
     checks = {
         "area_within_15pct": bool(
-            (1.0 - AREA_REL_TOL) * EXPECTED_AREA_M2
+            (1.0 - AREA_REL_TOL) * expected_area
             <= total_area
-            <= (1.0 + AREA_REL_TOL) * EXPECTED_AREA_M2
+            <= (1.0 + AREA_REL_TOL) * expected_area
         ),
         "radial_max_le_50mm": bool(r_max <= RADIAL_MAX_M),
         "z_span_planar": bool(z_span <= Z_SPAN_MAX_M),
@@ -109,8 +110,8 @@ def _audit_meshio(mesh_path: Path) -> Dict[str, Any]:
 
     return {
         "mesh_file": str(mesh_path.resolve()),
-        "expected_hole_radius_m": HOLE_R_M,
-        "expected_aperture_area_m2": EXPECTED_AREA_M2,
+        "expected_hole_radius_m": float(hole_radius_m),
+        "expected_aperture_area_m2": float(expected_area),
         "expected_hole_center_xy_m": [hx, hy],
         "tag2_triangle_count": int(mask.sum()),
         "tag2_total_area_m2": float(total_area),
@@ -141,6 +142,12 @@ def main() -> int:
         type=Path,
         default=PHYSICS_ROOT / "diagnostics" / "soundhole_aperture_audit",
     )
+    parser.add_argument(
+        "--hole-radius",
+        type=float,
+        default=HOLE_R_M,
+        help="Expected soundhole radius (m) for pi*r^2 area gate",
+    )
     args = parser.parse_args()
     mesh_path = args.mesh.resolve()
     if not mesh_path.is_file():
@@ -149,7 +156,7 @@ def main() -> int:
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     try:
-        summary = _audit_meshio(mesh_path)
+        summary = _audit_meshio(mesh_path, hole_radius_m=float(args.hole_radius))
     except Exception as exc:
         print(f"[aperture_audit] failed: {exc}", file=sys.stderr)
         return 2

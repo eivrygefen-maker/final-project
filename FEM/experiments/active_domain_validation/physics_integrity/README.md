@@ -181,6 +181,36 @@ bash FEM/experiments/active_domain_validation/scripts/rebuild_validation_mesh_an
 
 Reports under `diagnostics/soundhole_air_audit/` (JSON, Markdown, XDMF, CSV).
 
+## coupled_physical_core_v2 — frozen baseline
+
+v2 is the trusted coupled baseline on the repaired validation guitar (physical coupling,
+`fsi_coupling_gain=1`, no Nitsche). v1 scaled/Nitsche paths are diagnostic history only.
+
+Post-process validation (no eigensolve):
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_physical_core_v2_post.sh
+```
+
+## v2 sensitivity validation (experiment-only, pre-LHS)
+
+Small controlled perturbations around the frozen v2 baseline. Plan:
+`docs/v2_sensitivity_validation_plan.md`, manifest: `configs/v2_sensitivity_manifest.json`.
+
+**Pilot (soundhole radius only — run this first):**
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_sensitivity_pilot.sh
+```
+
+Full suite (after pilot passes):
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_sensitivity_validation.sh
+```
+
+Summary: `v2_sensitivity_validation/diagnostics/v2_sensitivity_validation_summary.{json,md}`
+
 ## Decision outputs
 
 `comparison/physics_integrity_report.md` ends with one of:

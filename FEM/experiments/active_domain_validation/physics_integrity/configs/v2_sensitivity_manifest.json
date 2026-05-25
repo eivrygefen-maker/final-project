@@ -1,0 +1,185 @@
+{
+  "suite": "v2_sensitivity_validation",
+  "frozen_baseline": {
+    "experiment": "coupled_physical_core_v2",
+    "subcase_reference": "coupling_disabled",
+    "subcase_coupled": "physical_coupling_enabled",
+    "validation_mesh": "mesh/validation_tiny_guitar_3d.msh",
+    "acoustic_reference_f_hz": 244.39159990162557,
+    "coupled_acoustic_match_f_hz": 244.394153389752,
+    "pressure_mac_baseline_to_enabled": 1.0
+  },
+  "pilot_sample_ids": ["hole_radius_small", "hole_radius_large"],
+  "promotion_requires": [
+    "all_pilot_mesh_gates_pass",
+    "all_pilot_v2_converged",
+    "hole_radius_monotonic_trend_recorded"
+  ],
+  "lhs_promotion_blocked_until_suite_pass": true,
+  "samples": [
+    {
+      "id": "baseline_nominal",
+      "pilot": false,
+      "ingest_only": true,
+      "requires_remesh": false,
+      "geometry": {
+        "hole_radius": 0.047,
+        "depth": 0.1,
+        "top_thickness": 0.003
+      },
+      "materials_override": {},
+      "expected_direction": {
+        "parameter": "none",
+        "note": "Frozen v2 milestone on validation mesh; no re-solve in sensitivity suite."
+      }
+    },
+    {
+      "id": "hole_radius_small",
+      "pilot": true,
+      "ingest_only": false,
+      "requires_remesh": true,
+      "geometry": {
+        "hole_radius": 0.041,
+        "depth": 0.1,
+        "top_thickness": 0.003
+      },
+      "materials_override": {},
+      "expected_direction": {
+        "parameter": "hole_radius",
+        "perturbation": "decrease",
+        "expect": "monotonic_acoustic_frequency_trend_vs_radius",
+        "interpretation": "Record f_acoustic vs radius; |f_small - f_large| should exceed numerical noise (~0.01 Hz)."
+      }
+    },
+    {
+      "id": "hole_radius_large",
+      "pilot": true,
+      "ingest_only": false,
+      "requires_remesh": true,
+      "geometry": {
+        "hole_radius": 0.053,
+        "depth": 0.1,
+        "top_thickness": 0.003
+      },
+      "materials_override": {},
+      "expected_direction": {
+        "parameter": "hole_radius",
+        "perturbation": "increase",
+        "expect": "monotonic_acoustic_frequency_trend_vs_radius",
+        "interpretation": "Larger aperture area should shift the tracked acoustic branch relative to baseline (sign recorded, not hard-failed in pilot)."
+      }
+    },
+    {
+      "id": "depth_small",
+      "pilot": false,
+      "ingest_only": false,
+      "requires_remesh": true,
+      "geometry": {
+        "hole_radius": 0.047,
+        "depth": 0.092,
+        "top_thickness": 0.003
+      },
+      "materials_override": {},
+      "expected_direction": {
+        "parameter": "depth",
+        "perturbation": "decrease",
+        "expect": "cavity_volume_decrease_shifts_acoustic_branch",
+        "interpretation": "Smaller body depth reduces inner air volume (inner_depth = depth - 2*top_thickness)."
+      }
+    },
+    {
+      "id": "depth_large",
+      "pilot": false,
+      "ingest_only": false,
+      "requires_remesh": true,
+      "geometry": {
+        "hole_radius": 0.047,
+        "depth": 0.108,
+        "top_thickness": 0.003
+      },
+      "materials_override": {},
+      "expected_direction": {
+        "parameter": "depth",
+        "perturbation": "increase",
+        "expect": "cavity_volume_increase_shifts_acoustic_branch",
+        "interpretation": "Larger depth increases cavity volume; expect interpretable acoustic frequency shift."
+      }
+    },
+    {
+      "id": "top_thickness_small",
+      "pilot": false,
+      "ingest_only": false,
+      "requires_remesh": true,
+      "geometry": {
+        "hole_radius": 0.047,
+        "depth": 0.1,
+        "top_thickness": 0.0027
+      },
+      "materials_override": {},
+      "expected_direction": {
+        "parameter": "top_thickness",
+        "perturbation": "decrease",
+        "expect": "structural_stiffness_mass_change_and_possible_coupling_participation_shift",
+        "interpretation": "Thinner top plate lowers bending stiffness; structural branches and FSI participation may change without breaking v2 convergence."
+      }
+    },
+    {
+      "id": "top_thickness_large",
+      "pilot": false,
+      "ingest_only": false,
+      "requires_remesh": true,
+      "geometry": {
+        "hole_radius": 0.047,
+        "depth": 0.1,
+        "top_thickness": 0.0033
+      },
+      "materials_override": {},
+      "expected_direction": {
+        "parameter": "top_thickness",
+        "perturbation": "increase",
+        "expect": "structural_stiffness_mass_change_and_possible_coupling_participation_shift",
+        "interpretation": "Thicker top increases shell stiffness; expect structural branch movement."
+      }
+    },
+    {
+      "id": "top_stiffness_soft",
+      "pilot": false,
+      "ingest_only": false,
+      "requires_remesh": false,
+      "geometry": {
+        "hole_radius": 0.047,
+        "depth": 0.1,
+        "top_thickness": 0.003
+      },
+      "materials_override": {
+        "top": {"E_L_scale": 0.9}
+      },
+      "expected_direction": {
+        "parameter": "top_plate_stiffness",
+        "perturbation": "decrease_E_L",
+        "expect": "structural_branches_lower_and_coupling_participation_may_change",
+        "interpretation": "Same mesh as baseline; only materials.top.E_L scaled (no Nitsche, no gain)."
+      }
+    },
+    {
+      "id": "top_stiffness_stiff",
+      "pilot": false,
+      "ingest_only": false,
+      "requires_remesh": false,
+      "geometry": {
+        "hole_radius": 0.047,
+        "depth": 0.1,
+        "top_thickness": 0.003
+      },
+      "materials_override": {
+        "top": {"E_L_scale": 1.1}
+      },
+      "expected_direction": {
+        "parameter": "top_plate_stiffness",
+        "perturbation": "increase_E_L",
+        "expect": "structural_branches_raise_and_coupling_participation_may_change",
+        "interpretation": "Same mesh as baseline; only materials.top.E_L scaled."
+      }
+    }
+  ]
+}
