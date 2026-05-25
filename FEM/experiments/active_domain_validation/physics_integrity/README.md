@@ -211,7 +211,13 @@ bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_s
 
 Preserves radius-pilot artifacts; does not re-solve `hole_radius_*` samples.
 
-Summary: `v2_sensitivity_validation/diagnostics/v2_sensitivity_validation_summary.{json,md}`
+Summary: `v2_sensitivity_validation/diagnostics/v2_sensitivity_validation_summary.json`
+
+Report completion (structural trends, validation flags — no solves):
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_sensitivity_report_post.sh
+```
 
 ## Decision outputs
 

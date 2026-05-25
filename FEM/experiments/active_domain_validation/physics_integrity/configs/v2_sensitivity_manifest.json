@@ -19,6 +19,15 @@
     "coupled_baseline": 244.394153389752,
     "hole_radius_large": 265.304715
   },
+  "controlled_suite_completed": true,
+  "acoustic_results_recorded": {
+    "depth_small_hz": 255.156,
+    "depth_large_hz": 236.726,
+    "top_thickness_small_hz": 245.189,
+    "top_thickness_large_hz": 245.654,
+    "top_stiffness_soft_hz": 244.396,
+    "top_stiffness_stiff_hz": 244.394
+  },
   "controlled_sample_ids": [
     "depth_small",
     "depth_large",

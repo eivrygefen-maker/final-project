@@ -72,12 +72,23 @@ bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_s
 - Auto widen-band retry if acoustic branch missing in 220–265 Hz
 - Structural-property samples also report `structural_branches_in_band`
 
+## Report completion (no solves)
+
+After controlled suite artifacts exist on the VM:
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_sensitivity_report_post.sh
+```
+
+Reads `structural_branches_in_band` from saved `samples/*/results/*.json`, evaluates thickness/stiffness structural trends via frequency matching (±8 Hz), fills baseline/large-radius energy fields from v2 artifacts, and writes separate validation flags.
+
 ## LHS promotion gate
 
 Do **not** promote to full LHS until:
 
 - Pilot: passed (recorded in manifest `pilot_radius_trend_passed`)
-- Controlled suite: all six samples pass gates + v2 convergence + acoustic branch captured where required
+- Controlled suite: acoustic + structural validation flags pass (see `validation_flags` in summary JSON)
+- Mesh-convergence study: not started
 
 ## Artifacts
 
