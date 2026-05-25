@@ -61,20 +61,14 @@ def _load_acoustic_only_reference() -> Dict[str, Any]:
 
 
 def _petsc_row_l2_norm(mat: PETSc.Mat, row: int) -> float:
-    cols, vals = mat.getRow(int(row))
-    try:
-        v = np.asarray(vals, dtype=np.float64).ravel()
-        return float(np.linalg.norm(v)) if v.size else 0.0
-    finally:
-        mat.restoreRow(int(row))
+    _cols, vals = mat.getRow(int(row))
+    v = np.asarray(vals, dtype=np.float64).ravel()
+    return float(np.linalg.norm(v)) if v.size else 0.0
 
 
 def _petsc_row_nnz(mat: PETSc.Mat, row: int) -> int:
     cols, vals = mat.getRow(int(row))
-    try:
-        return int(len(cols))
-    finally:
-        mat.restoreRow(int(row))
+    return int(len(np.asarray(cols).ravel()))
 
 
 def _summarize_row_norms(
@@ -116,27 +110,24 @@ def _row_column_support_split(
     p_inactive_W: np.ndarray,
 ) -> Dict[str, int]:
     cols, vals = mat.getRow(int(row))
-    try:
-        c = np.asarray(cols, dtype=np.int32).ravel()
-        v = np.asarray(vals, dtype=np.float64).ravel()
-        mask = np.abs(v) > 0.0
-        c = c[mask]
-        u_set = set(int(x) for x in u_W)
-        pa_set = set(int(x) for x in p_air_W)
-        pi_set = set(int(x) for x in p_inactive_W)
-        n_u = sum(1 for j in c if int(j) in u_set)
-        n_pa = sum(1 for j in c if int(j) in pa_set)
-        n_pi = sum(1 for j in c if int(j) in pi_set)
-        n_other = int(c.size) - n_u - n_pa - n_pi
-        return {
-            "nnz": int(c.size),
-            "cols_on_u": n_u,
-            "cols_on_p_air": n_pa,
-            "cols_on_p_inactive": n_pi,
-            "cols_other": n_other,
-        }
-    finally:
-        mat.restoreRow(int(row))
+    c = np.asarray(cols, dtype=np.int32).ravel()
+    v = np.asarray(vals, dtype=np.float64).ravel()
+    mask = np.abs(v) > 0.0
+    c = c[mask]
+    u_set = set(int(x) for x in u_W)
+    pa_set = set(int(x) for x in p_air_W)
+    pi_set = set(int(x) for x in p_inactive_W)
+    n_u = sum(1 for j in c if int(j) in u_set)
+    n_pa = sum(1 for j in c if int(j) in pa_set)
+    n_pi = sum(1 for j in c if int(j) in pi_set)
+    n_other = int(c.size) - n_u - n_pa - n_pi
+    return {
+        "nnz": int(c.size),
+        "cols_on_u": n_u,
+        "cols_on_p_air": n_pa,
+        "cols_on_p_inactive": n_pi,
+        "cols_other": n_other,
+    }
 
 
 def _assemble_pressure_only_app_mpp(
