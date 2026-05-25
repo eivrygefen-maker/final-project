@@ -4485,9 +4485,39 @@ def _slepc_shift_invert_batch(
             continue
         omega = math.sqrt(max(lam_phys, 0.0))
         f_hz = omega / (2.0 * math.pi)
+        arr_red = rvec.array.copy()
+        ad_meta = solver_cfg.get("_active_domain")
+        u_norm_map = u_to_W
+        p_norm_map = p_to_W
+        u_plate_map = u_to_W if u_to_W is not None else u_parent_indices
+        if isinstance(ad_meta, dict) and ad_meta.get("active_W_indices"):
+            from fem_active_domain import prolongate_to_full_mixed_vector
+
+            n_full_ad = int(ad_meta.get("n_full", 0))
+            arr = prolongate_to_full_mixed_vector(
+                arr_red,
+                np.asarray(ad_meta["active_W_indices"], dtype=np.int32),
+                n_full_ad,
+            )
+            u_norm_map = solver_cfg.get("_active_domain_full_u_to_W", u_to_W)
+            p_norm_map = solver_cfg.get("_active_domain_full_p_to_W", p_to_W)
+            u_plate_map = u_norm_map
+        else:
+            arr = arr_red
         rt = 0.0
         rb = 0.0
-        if work is not None and (M_top is not None or M_back is not None):
+        if (
+            dofs_top is not None
+            and dofs_back is not None
+            and u_plate_map is not None
+        ):
+            u_collapsed = _collapsed_u_from_mixed_vec(arr, u_plate_map)
+            rt, rb = _plate_facet_dof_energy_ratios(
+                u_collapsed,
+                np.asarray(dofs_top, dtype=np.int32),
+                np.asarray(dofs_back, dtype=np.int32),
+            )
+        elif work is not None and (M_top is not None or M_back is not None):
             rt, rb = _plate_modal_energy_ratios(
                 rvec,
                 M_top,
@@ -4498,17 +4528,16 @@ def _slepc_shift_invert_batch(
                 u_parent_indices=u_parent_indices,
                 phi_u=phi_u,
                 work_u=work_u,
-                u_to_W=u_to_W if u_to_W is not None else u_parent_indices,
+                u_to_W=u_plate_map,
                 dofs_top=dofs_top,
                 dofs_back=dofs_back,
             )
         wood = float(rt) + float(rb)
-        arr = rvec.array.copy()
         u_n, p_n = _mixed_eigenvector_block_norms(
-            arr, n_u_global, u_to_W=u_to_W, p_to_W=p_to_W
+            arr, n_u_global, u_to_W=u_norm_map, p_to_W=p_norm_map
         )
         p_frac = p_n / max(u_n + p_n, 1.0e-30)
-        p_block_max = _max_pressure_block_abs(arr, p_to_W)
+        p_block_max = _max_pressure_block_abs(arr, p_norm_map)
         if MPI.COMM_WORLD.rank == ROOT_RANK:
             print(
                 f"[eps-p-diag] converged slot={i} raw_eig={eig_r:.6e} "
@@ -6165,7 +6194,51 @@ def _solve_coupled_evp(
             "to KSP operator copies (skip zeroRows on assembled A/M).",
             flush=True,
         )
-        sys.stdout.flush()
+            sys.stdout.flush()
+    active_domain_meta: Optional[Dict[str, Any]] = None
+    ad_block = solver_cfg.get("active_domain_experiment")
+    if (
+        solve_evp
+        and isinstance(ad_block, dict)
+        and _solver_bool(ad_block, "enabled", default=False)
+    ):
+        from fem_active_domain import apply_active_domain_reduction, active_domain_experiment_enabled
+
+        if active_domain_experiment_enabled(solver_cfg):
+            config["_active_domain_full_u_to_W"] = np.asarray(u_to_W_map, dtype=np.int32).copy()
+            config["_active_domain_full_p_to_W"] = np.asarray(p_to_W_map, dtype=np.int32).copy()
+            timing_dir_raw = ad_block.get("timing_dir")
+            timing_dir = Path(str(timing_dir_raw)).resolve() if timing_dir_raw else None
+            A, M, active_domain_meta = apply_active_domain_reduction(
+                A,
+                M,
+                W,
+                msh,
+                cell_tags,
+                facet_tags,
+                u_to_W_map=u_to_W_map,
+                p_to_W_map=p_to_W_map,
+                coupled_dirichlet_rows=coupled_dirichlet_rows,
+                fsi_iface_facets=fsi_iface_facets,
+                p_gauge_dofs_v=p_gauge_dofs_v,
+                solver_cfg=solver_cfg,
+                timing_dir=timing_dir,
+            )
+            solver_cfg["_active_domain"] = active_domain_meta
+            config["_active_domain"] = active_domain_meta
+            solver_cfg["_active_domain_full_u_to_W"] = config["_active_domain_full_u_to_W"]
+            solver_cfg["_active_domain_full_p_to_W"] = config["_active_domain_full_p_to_W"]
+            parent_to_local = np.asarray(
+                active_domain_meta["parent_to_local"], dtype=np.int32
+            )
+            from fem_active_domain import remap_parent_indices_to_reduced
+
+            u_to_W_map = remap_parent_indices_to_reduced(u_to_W_map, parent_to_local)
+            p_to_W_map = remap_parent_indices_to_reduced(p_to_W_map, parent_to_local)
+            if coupled_dirichlet_rows.size > 0:
+                coupled_dirichlet_rows = remap_parent_indices_to_reduced(
+                    coupled_dirichlet_rows, parent_to_local
+                )
     use_sifter = _solver_bool(solver_cfg, "adaptive_mode_sifter", default=True)
     M_top: Optional[PETSc.Mat] = None
     M_back: Optional[PETSc.Mat] = None
@@ -6284,10 +6357,11 @@ def _solve_coupled_evp(
         for f_hz, vec, rt, rb, p_frac, p_block_max in rows:
             if rt is None or rb is None:
                 continue
+            arr = np.asarray(vec, dtype=np.float64)
             row_meta.append(
                 (
                     float(f_hz),
-                    np.asarray(vec, dtype=np.float64),
+                    arr,
                     float(rt),
                     float(rb),
                     float(p_frac),

@@ -87,8 +87,16 @@ def _apply_master_worker_solver_profile(
     s["gnhep_block_frobenius_normalize"] = True
     s.setdefault("eps_pin_fix_tag5", True)
     s.setdefault("eps_algebraic_bc_zero_columns", True)
+    ad = s.get("active_domain_experiment")
+    bypass_cap = (
+        isinstance(ad, dict)
+        and bool(ad.get("enabled"))
+        and bool(ad.get("bypass_worker_mode_cap", False))
+    )
     cap = int(s.get("eps_worker_num_modes_cap", _DEFAULT_WORKER_NUM_MODES_CAP) or _DEFAULT_WORKER_NUM_MODES_CAP)
     cap = max(1, min(cap, 48))
+    if bypass_cap:
+        cap = max(cap, int(num_modes))
     nm = min(max(1, int(num_modes)), cap)
     rigid_buf = int(s.get("eps_rigid_mode_buffer", 5) or 5)
     # SLEPc requires ncv >= nev+1 with nev ~= num_modes + rigid_buf.

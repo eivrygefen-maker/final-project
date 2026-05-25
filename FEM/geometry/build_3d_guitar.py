@@ -359,6 +359,12 @@ def _gmsh_initialize_argv() -> list[str]:
 
 def _resolve_config_path(fem_dir: Path) -> Path:
     """CLI ``--config PATH`` overrides default ``configs/guitar_3d.json``."""
+    env_cfg = os.environ.get("FEM_MESH_CONFIG", "").strip()
+    if env_cfg:
+        p = Path(env_cfg).expanduser()
+        if not p.is_absolute():
+            p = (Path.cwd() / p).resolve()
+        return p
     for i, arg in enumerate(sys.argv):
         if arg == "--config" and i + 1 < len(sys.argv):
             p = Path(sys.argv[i + 1]).expanduser()
@@ -382,7 +388,8 @@ def create_guitar_mesh():
     #   FEM_ALLOW_FOM=1     → full FSI volume mesh for FEM (never shown in PyVista)
     preview_cli, _nopopup = _script_flags()
     is_display = os.environ.get("FEM_ALLOW_DISPLAY", "0") == "1"
-    is_fom = os.environ.get("FEM_ALLOW_FOM", "0") == "1"
+    is_validation = os.environ.get("FEM_VALIDATION_MESH", "0") == "1"
+    is_fom = os.environ.get("FEM_ALLOW_FOM", "0") == "1" or is_validation
     is_preview = (
         (os.environ.get("FEM_ALLOW_PREVIEW", "0") == "1" or preview_cli)
         and not is_display
@@ -394,11 +401,19 @@ def create_guitar_mesh():
         out_file = mesh_dir / "display_mesh.msh"
     elif is_preview:
         out_file = mesh_dir / "preview_mesh.msh"
+    elif is_validation:
+        out_env = os.environ.get("FEM_MESH_OUT", "").strip()
+        if not out_env:
+            raise RuntimeError("FEM_VALIDATION_MESH=1 requires FEM_MESH_OUT=<path to .msh>")
+        out_file = Path(out_env)
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        print(f"[diag] validation mesh output: {out_file}")
     elif is_fom:
         out_file = mesh_dir / "guitar_3d.msh"
     else:
         raise RuntimeError(
-            "Set exactly one mesh mode env var: FEM_ALLOW_PREVIEW, FEM_ALLOW_DISPLAY, or FEM_ALLOW_FOM."
+            "Set exactly one mesh mode env var: FEM_ALLOW_PREVIEW, FEM_ALLOW_DISPLAY, "
+            "FEM_ALLOW_FOM, or FEM_VALIDATION_MESH."
         )
     # -------------------------------------------
 
@@ -479,20 +494,34 @@ def create_guitar_mesh():
     DISPLAY_SEAM_BAND_M = 0.001   # 1 mm Distance band (node alignment at plate seams)
     PREVIEW_GLOBAL_LC_M = 0.012   # 12 mm coarse preview shell
     LOCAL_REFINE_LC_M = 0.001     # 1.0 mm local zones (preview only)
-    wood_surface_size = 0.007 if is_fom else (DISPLAY_GLOBAL_LC_M if is_display else PREVIEW_GLOBAL_LC_M)
-    wood_thickness_size = 0.001 if is_fom else LOCAL_REFINE_LC_M  # FOM: ~3 elems in 3 mm plate
+    wood_surface_size = (
+        0.014
+        if is_validation
+        else (0.007 if is_fom else (DISPLAY_GLOBAL_LC_M if is_display else PREVIEW_GLOBAL_LC_M))
+    )
+    wood_thickness_size = (
+        0.003 if is_validation else (0.001 if is_fom else LOCAL_REFINE_LC_M)
+    )
     thickness_curve_len_max = 0.005  # curves shorter than this (m) are treated as thickness direction
-    # Thickness-edge Threshold: smooth through-thickness lc → wood surface lc over ~8 mm band
     thickness_threshold_dist_min = 0.0005
     thickness_threshold_dist_max = 0.008
-    # Soundhole gradual transition (FOM): local band only — not 2.5*hr (would refine ~100+ mm)
     soundhole_threshold_dist_min = thickness_threshold_dist_min
     soundhole_threshold_dist_max = 0.012  # 12 mm band from soundhole faces
-    # Air Threshold field (distance from wood shell): near-field at shell, coarser far cap for ~500 Hz
-    air_threshold_dist_min = 0.015
-    air_threshold_dist_max = 0.25
-    air_threshold_size_min = 0.004 if is_fom else 0.003   # FOM: 4 mm min near wood
-    air_threshold_size_max = 0.050   # 50 mm far field cap (was 80 mm)
+    if is_validation:
+        air_threshold_dist_min = 0.010
+        air_threshold_dist_max = 0.12
+        air_threshold_size_min = 0.009
+        air_threshold_size_max = 0.040
+        print(
+            "[diag] FEM_VALIDATION_MESH profile: wood_surface=14mm, air_min=9mm, "
+            "air_max=40mm, soundhole band=12mm",
+            flush=True,
+        )
+    else:
+        air_threshold_dist_min = 0.015
+        air_threshold_dist_max = 0.25
+        air_threshold_size_min = 0.004 if is_fom else 0.003
+        air_threshold_size_max = 0.050
 
     # Display: uniform 12 mm (visualization only). Preview/FOM: graded fields unchanged.
     if is_display:
