@@ -22,6 +22,10 @@ CASE_NAMES = (
     "coupled_near_acoustic_air_p",
     "coupled_decoupled_union",
     "coupled_physical_fsi_only",
+    "coupled_physical_fsi_nit_uu",
+    "coupled_physical_fsi_nit_up",
+    "coupled_physical_fsi_nit_pu",
+    "coupled_physical_fsi_nit_up_pu",
 )
 CASE_SUBDIRS = ("logs", "results", "modes", "diagnostics", "timing", "sorting")
 
@@ -34,6 +38,10 @@ CONFIG_FILES = (
     "coupled_near_acoustic_air_p_restricted.json",
     "coupled_decoupled_union.json",
     "coupled_physical_fsi_only.json",
+    "coupled_physical_fsi_nit_uu.json",
+    "coupled_physical_fsi_nit_up.json",
+    "coupled_physical_fsi_nit_pu.json",
+    "coupled_physical_fsi_nit_up_pu.json",
     "operator_audit.json",
 )
 
@@ -219,6 +227,19 @@ def main() -> None:
     (CONFIG_DIR / "coupled_physical_fsi_only.json").write_text(
         json.dumps(physical_fsi, indent=2), encoding="utf-8"
     )
+
+    for nit_label in ("nit_uu", "nit_up", "nit_pu", "nit_up_pu"):
+        nit_cfg = json.loads(json.dumps(physical_fsi))
+        nit_cfg["solver"].pop("coupled_physical_fsi_only_diagnosis", None)
+        nit_cfg["solver"].update(
+            {
+                "coupled_physical_fsi_nitsche_isolation_diagnosis": nit_label,
+                "physics_integrity_branch": f"coupled-physical-fsi-{nit_label}-244hz",
+            }
+        )
+        (CONFIG_DIR / f"coupled_physical_fsi_{nit_label}.json").write_text(
+            json.dumps(nit_cfg, indent=2), encoding="utf-8"
+        )
 
     audit = json.loads(json.dumps(nominal))
     audit["solver"]["num_modes"] = 0

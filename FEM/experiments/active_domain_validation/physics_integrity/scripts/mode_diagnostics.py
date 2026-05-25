@@ -398,6 +398,101 @@ def compute_mass_energy_participation(
     }
 
 
+def pressure_subspace_mac(
+    vec_a: np.ndarray,
+    vec_b: np.ndarray,
+    p_to_W: np.ndarray,
+    *,
+    scale_p_a: float = 1.0,
+    scale_p_b: float = 1.0,
+) -> float:
+    """MAC = |p_a^T p_b| / (||p_a|| ||p_b||) on active pressure rows in W layout."""
+    p_idx = np.asarray(p_to_W, dtype=np.int32).ravel()
+    if p_idx.size == 0:
+        return float("nan")
+    pa = np.asarray(vec_a[p_idx], dtype=np.float64).ravel() * float(scale_p_a)
+    pb = np.asarray(vec_b[p_idx], dtype=np.float64).ravel() * float(scale_p_b)
+    na = float(np.linalg.norm(pa))
+    nb = float(np.linalg.norm(pb))
+    if na <= 0.0 or nb <= 0.0:
+        return float("nan")
+    return float(abs(np.dot(pa, pb)) / (na * nb))
+
+
+def evaluate_physical_fsi_acoustic_survival(
+    *,
+    frequency_hz: float,
+    ref_hz: float,
+    freq_tol_hz: float,
+    p_frac_production: float,
+    p_frac_phys_gnhep: float,
+    p_frac_fully_unscaled: float,
+    p_frac_energy_phys: float,
+    pressure_mac_gnhep_undo: float,
+    mac_threshold: float = 0.85,
+    production_p_threshold: float = 0.35,
+    energy_p_threshold: float = 0.02,
+    unscaled_p_threshold: float = 0.35,
+) -> Tuple[str, bool, str, Dict[str, Any]]:
+    """
+    Experiment-only verdict for physical-FSI isolation.
+
+    Frequency proximity alone is insufficient; require demonstrable pressure dominance
+    (production L2, energy participation, and/or pressure-subspace MAC vs decoupled reference).
+    """
+    delta_hz = float(frequency_hz) - float(ref_hz)
+    freq_ok = abs(delta_hz) <= float(freq_tol_hz)
+    mac_ok = (
+        math.isfinite(pressure_mac_gnhep_undo)
+        and float(pressure_mac_gnhep_undo) >= float(mac_threshold)
+    )
+    prod_ok = float(p_frac_production) >= float(production_p_threshold)
+    energy_ok = float(p_frac_energy_phys) >= float(energy_p_threshold)
+    unscaled_ok = float(p_frac_fully_unscaled) >= float(unscaled_p_threshold)
+    gnhep_class_ok = float(p_frac_phys_gnhep) >= float(production_p_threshold)
+    participation_ok = prod_ok or energy_ok or unscaled_ok or gnhep_class_ok
+    survives = bool(freq_ok and (mac_ok or participation_ok))
+    verdict = "PHYSICAL_FSI_ACOUSTIC_SURVIVES" if survives else "PHYSICAL_FSI_ACOUSTIC_LOST"
+    reasons: List[str] = []
+    if not freq_ok:
+        reasons.append(
+            f"frequency {frequency_hz:.4f} Hz outside ±{freq_tol_hz:.1f} Hz of {ref_hz:.2f} Hz"
+        )
+    elif not (mac_ok or participation_ok):
+        reasons.append(
+            "within frequency tolerance but no MAC≥{:.2f} and production/energy/unscaled "
+            "participation all below thresholds".format(mac_threshold)
+        )
+    else:
+        parts = []
+        if mac_ok:
+            parts.append(f"MAC={pressure_mac_gnhep_undo:.4f}")
+        if prod_ok:
+            parts.append(f"p_frac_production={p_frac_production:.4e}")
+        if energy_ok:
+            parts.append(f"p_frac_energy_phys={p_frac_energy_phys:.4e}")
+        if unscaled_ok:
+            parts.append(f"p_frac_fully_unscaled={p_frac_fully_unscaled:.4e}")
+        reasons.append(
+            f"acoustic branch plausible at {frequency_hz:.4f} Hz (Δref={delta_hz:+.4f} Hz): "
+            + ", ".join(parts)
+        )
+    detail = {
+        "frequency_hz": float(frequency_hz),
+        "delta_from_acoustic_ref_hz": delta_hz,
+        "freq_within_tolerance": freq_ok,
+        "pressure_mac_gnhep_undo": float(pressure_mac_gnhep_undo),
+        "mac_threshold": float(mac_threshold),
+        "mac_pass": mac_ok,
+        "p_frac_production": float(p_frac_production),
+        "p_frac_phys_gnhep": float(p_frac_phys_gnhep),
+        "p_frac_fully_unscaled": float(p_frac_fully_unscaled),
+        "p_frac_energy_phys": float(p_frac_energy_phys),
+        "participation_pass": participation_ok,
+    }
+    return verdict, survives, "; ".join(reasons), detail
+
+
 def load_mode_vector(path: Path, n_expected: int) -> np.ndarray:
     if path.suffix == ".npz" and path.name.endswith(MODE_VECTOR_FILE_SUFFIX):
         return load_mode_column_any(path)

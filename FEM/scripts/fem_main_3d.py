@@ -6397,10 +6397,18 @@ def _solve_coupled_evp(
     physical_fsi_only = _solver_bool(
         solver_cfg, "coupled_physical_fsi_only_diagnosis", default=False
     )
-    if decoupled_union and physical_fsi_only:
+    nitsche_isolation = str(
+        solver_cfg.get("coupled_physical_fsi_nitsche_isolation_diagnosis", "") or ""
+    ).strip()
+    if decoupled_union and (physical_fsi_only or nitsche_isolation):
         raise RuntimeError(
-            "coupled_decoupled_union_diagnosis and coupled_physical_fsi_only_diagnosis "
-            "are mutually exclusive experiment flags."
+            "coupled_decoupled_union_diagnosis is mutually exclusive with "
+            "physical-FSI / Nitsche-isolation experiment flags."
+        )
+    if physical_fsi_only and nitsche_isolation:
+        raise RuntimeError(
+            "coupled_physical_fsi_only_diagnosis and "
+            "coupled_physical_fsi_nitsche_isolation_diagnosis are mutually exclusive."
         )
     if decoupled_union:
         solver_cfg["coupled_air_pressure_restriction_diagnosis"] = True
@@ -6509,6 +6517,76 @@ def _solve_coupled_evp(
                 "[physics_integrity][physical_fsi_only] Nitsche-disabled isolation: "
                 f"retaining physical FSI blocks ({fsi_parts}); "
                 f"excluding Nitsche from A/M ({nit_parts})",
+                flush=True,
+            )
+
+    if nitsche_isolation:
+        solver_cfg["coupled_air_pressure_restriction_diagnosis"] = True
+        allowed_nit = {
+            "nit_uu": {"nit_uu"},
+            "nit_up": {"nit_up"},
+            "nit_pu": {"nit_pu"},
+            "nit_up_pu": {"nit_up", "nit_pu"},
+        }.get(nitsche_isolation)
+        if allowed_nit is None:
+            raise RuntimeError(
+                "coupled_physical_fsi_nitsche_isolation_diagnosis must be one of "
+                "'nit_uu', 'nit_up', 'nit_pu', 'nit_up_pu'."
+            )
+        excluded: Dict[str, float] = {}
+        retained_nit: Dict[str, float] = {}
+        for label, blk, key in (
+            ("nit_uu", nit_uu_a, "nit_uu"),
+            ("nit_up", nit_up_a, "nit_up"),
+            ("nit_pu_A", nit_pu_a, "nit_pu"),
+            ("nit_pu_M", nit_pu_m, "nit_pu"),
+        ):
+            keep = key in allowed_nit
+            if blk is None:
+                (retained_nit if keep else excluded)[label] = 0.0
+                continue
+            try:
+                norm = float(_mat_frobenius_norm(blk, label=f"nit_iso_{label}"))
+            except Exception:
+                norm = float("nan")
+            if keep:
+                retained_nit[label] = norm
+            else:
+                excluded[label] = norm
+        if "nit_uu" not in allowed_nit:
+            nit_uu_a = None
+        if "nit_up" not in allowed_nit:
+            nit_up_a = None
+        if "nit_pu" not in allowed_nit:
+            nit_pu_a = None
+            nit_pu_m = None
+        fsi_retained: Dict[str, float] = {}
+        for label, blk in (("A_up", a_up), ("A_pu", a_pu), ("M_pu", m_pu)):
+            if blk is None:
+                fsi_retained[label] = 0.0
+                continue
+            try:
+                fsi_retained[label] = float(
+                    _mat_frobenius_norm(blk, label=f"nit_iso_{label}")
+                )
+            except Exception:
+                fsi_retained[label] = float("nan")
+        iso_nit_payload = {
+            "nitsche_isolation": nitsche_isolation,
+            "retained_nitsche_blocks_F_norm": retained_nit,
+            "excluded_nitsche_blocks_F_norm": excluded,
+            "retained_fsi_blocks_F_norm": fsi_retained,
+            "retained_fsi_blocks": ["A_up", "A_pu", "M_pu"],
+            "pressure_dof_scale_reported": float(p_scale),
+            "fsi_coupling_gain_reported": float(fsi_gain),
+        }
+        config["_coupled_physical_fsi_nitsche_isolation"] = iso_nit_payload
+        solver_cfg["_coupled_physical_fsi_nitsche_isolation"] = iso_nit_payload
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                "[physics_integrity][physical_fsi_nitsche_iso] "
+                f"isolation={nitsche_isolation!r}: retaining FSI + Nitsche {sorted(allowed_nit)}; "
+                f"excluding Nitsche blocks {sorted(excluded)}",
                 flush=True,
             )
 
@@ -6674,9 +6752,15 @@ def _solve_coupled_evp(
         )
         sys.stdout.flush()
 
-    if solve_evp and _solver_bool(
+    _apply_air_p_restrict = _solver_bool(
         solver_cfg, "coupled_air_pressure_restriction_diagnosis", default=False
-    ):
+    ) and (
+        solve_evp
+        or _solver_bool(
+            solver_cfg, "coupled_air_pressure_restriction_replay_audit", default=False
+        )
+    )
+    if _apply_air_p_restrict:
         from fem_active_domain import (
             build_parent_to_local_map,
             remap_parent_indices_to_reduced,

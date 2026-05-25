@@ -32,6 +32,7 @@ from mode_diagnostics import (
     diagnose_mixed_mode,
     diagnose_pressure_only_mode,
     diagnose_structural_mode,
+    evaluate_physical_fsi_acoustic_survival,
     merge_scaling_metadata,
     write_mode_diagnostics_json,
 )
@@ -46,6 +47,10 @@ CASES = (
     "coupled_near_acoustic_air_p",
     "coupled_decoupled_union",
     "coupled_physical_fsi_only",
+    "coupled_physical_fsi_nit_uu",
+    "coupled_physical_fsi_nit_up",
+    "coupled_physical_fsi_nit_pu",
+    "coupled_physical_fsi_nit_up_pu",
 )
 
 SIGMA_SUSPECT_HZ = 273.7168
@@ -412,29 +417,54 @@ def _write_physical_fsi_only_report(
     in_band = [m for m in modes_all if m.get("in_search_band")]
     rank_by_freq = sorted(in_band, key=lambda m: abs(float(m["delta_from_acoustic_ref_hz"])))
 
-    acoustic_candidates = [
-        m
-        for m in in_band
-        if abs(float(m["frequency_hz"]) - ref_hz) <= acoustic_tol_hz
-        and (
-            m.get("mode_class") == "acoustic_dominated"
-            or float(m.get("p_frac_phys_gnhep", 0.0)) >= 0.35
-        )
-    ]
-    branch_survives = len(acoustic_candidates) > 0
-    verdict = "PHYSICAL_FSI_ACOUSTIC_SURVIVES" if branch_survives else "PHYSICAL_FSI_ACOUSTIC_LOST"
-    fail_reason = ""
-    if not branch_survives:
-        nearest = min(in_band, key=lambda m: abs(float(m["delta_from_acoustic_ref_hz"])), default=None)
-        if nearest is None:
-            fail_reason = "no modes in search band"
-        else:
-            fail_reason = (
-                f"no acoustic-dominated mode within ±{acoustic_tol_hz:.1f} Hz of {ref_hz:.2f} Hz; "
-                f"nearest f={float(nearest['frequency_hz']):.4f} Hz "
-                f"p_frac_phys={float(nearest.get('p_frac_phys_gnhep', 0)):.3e} "
-                f"class={nearest.get('mode_class')}"
+    audit_path = case_dir / "diagnostics" / "physical_fsi_participation_audit.json"
+    audit_payload: Optional[Dict[str, Any]] = None
+    if audit_path.is_file():
+        audit_payload = json.loads(audit_path.read_text(encoding="utf-8"))
+
+    nearest_freq = min(
+        in_band,
+        key=lambda m: abs(float(m["delta_from_acoustic_ref_hz"])),
+        default=None,
+    )
+    candidate_row = nearest_freq
+    mac_for_verdict = float("nan")
+    if audit_payload and audit_payload.get("physical_fsi_candidate"):
+        candidate_row = audit_payload["physical_fsi_candidate"]
+        mac_for_verdict = float(
+            (audit_payload.get("pressure_overlap") or {}).get(
+                "mac_pressure_gnhep_undo_s_pp", float("nan")
             )
+        )
+    elif nearest_freq is None:
+        candidate_row = None
+
+    verdict = "PHYSICAL_FSI_ACOUSTIC_LOST"
+    branch_survives = False
+    fail_reason = "no modes in search band"
+    verdict_detail: Dict[str, Any] = {}
+    if candidate_row is not None:
+        verdict, branch_survives, fail_reason, verdict_detail = evaluate_physical_fsi_acoustic_survival(
+            frequency_hz=float(candidate_row.get("frequency_hz", 0.0)),
+            ref_hz=ref_hz,
+            freq_tol_hz=acoustic_tol_hz,
+            p_frac_production=float(
+                candidate_row.get(
+                    "p_frac_production",
+                    candidate_row.get("p_frac_raw", candidate_row.get("p_frac_raw_audit", 0.0)),
+                )
+            ),
+            p_frac_phys_gnhep=float(candidate_row.get("p_frac_phys_gnhep", 0.0)),
+            p_frac_fully_unscaled=float(candidate_row.get("p_frac_fully_unscaled", 0.0)),
+            p_frac_energy_phys=float(candidate_row.get("p_frac_energy_phys", 0.0)),
+            pressure_mac_gnhep_undo=mac_for_verdict,
+        )
+
+    acoustic_candidates = (
+        [candidate_row]
+        if branch_survives and candidate_row is not None
+        else []
+    )
 
     summary = {
         "experiment": "coupled_physical_fsi_only_diagnosis",
@@ -474,6 +504,8 @@ def _write_physical_fsi_only_report(
             for m in rank_by_freq
         ],
         "acoustic_candidate_modes": acoustic_candidates,
+        "verdict_criteria": verdict_detail,
+        "participation_audit_available": audit_payload is not None,
         "elapsed_s": elapsed,
         "n_u": n_u_col,
         "n_p": n_p_col,
@@ -862,20 +894,33 @@ def main() -> int:
         "coupled_near_acoustic_air_p",
         "coupled_decoupled_union",
         "coupled_physical_fsi_only",
+        "coupled_physical_fsi_nit_uu",
+        "coupled_physical_fsi_nit_up",
+        "coupled_physical_fsi_nit_pu",
+        "coupled_physical_fsi_nit_up_pu",
     ):
         sc = cfg["solver"]
+        _fsi_near = (244.39, 220.0, 265.0, 45.0, 48)
         defaults = {
             "coupled_nominal": (202.0, 156.0, 248.0, 46.0, 8),
             "coupled_low_frequency": (120.0, 60.0, 200.0, 80.0, 8),
             "coupled_near_acoustic": (244.39, 220.0, 265.0, 45.0, 16),
             "coupled_near_acoustic_air_p": (244.39, 220.0, 265.0, 45.0, 48),
-            "coupled_decoupled_union": (244.39, 220.0, 265.0, 45.0, 48),
-            "coupled_physical_fsi_only": (244.39, 220.0, 265.0, 45.0, 48),
+            "coupled_decoupled_union": _fsi_near,
+            "coupled_physical_fsi_only": _fsi_near,
+            "coupled_physical_fsi_nit_uu": _fsi_near,
+            "coupled_physical_fsi_nit_up": _fsi_near,
+            "coupled_physical_fsi_nit_pu": _fsi_near,
+            "coupled_physical_fsi_nit_up_pu": _fsi_near,
         }
         t_def, lo_def, hi_def, broad_def, nm_def = defaults[args.case]
         near_report = args.case in ("coupled_near_acoustic", "coupled_near_acoustic_air_p")
         union_report = args.case == "coupled_decoupled_union"
         physical_fsi_report = args.case == "coupled_physical_fsi_only"
+        nit_iso_case = args.case.startswith("coupled_physical_fsi_nit_")
+        if nit_iso_case:
+            cfg["solver"]["eps_harvest_rank_by_wood"] = False
+            cfg["solver"]["eps_harvest_rank_by_p_frac"] = False
         return _run_coupled_like(
             cfg,
             config_path,

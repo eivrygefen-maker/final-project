@@ -116,6 +116,28 @@ bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_coup
 
 Outputs: `coupled_physical_fsi_only/diagnostics/physical_fsi_only_summary.json`
 
+Post-solve participation / pressure-overlap audit (no eigen solve; refreshes verdict):
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_physical_fsi_participation_audit.sh
+```
+
+Outputs: `physical_fsi_participation_audit.json` / `.md`; updates `physical_fsi_only_summary.json`
+when MAC and energy metrics support branch survival.
+
+### Next Nitsche isolation cases (prepared, not auto-run)
+
+Reduced domain + physical FSI + one Nitsche group per case:
+
+| Case | Script (manual) | Config flag |
+|------|-----------------|-------------|
+| `nit_uu` only | `run_coupled_physical_fsi_nit_uu.sh` | `coupled_physical_fsi_nitsche_isolation_diagnosis: nit_uu` |
+| `nit_up` only | `run_coupled_physical_fsi_nit_up.sh` | `nit_up` |
+| `nit_pu` only | `run_coupled_physical_fsi_nit_pu.sh` | `nit_pu` |
+| `nit_up` + `nit_pu` | `run_coupled_physical_fsi_nit_up_pu.sh` | `nit_up_pu` |
+
+Run only after physical-FSI participation audit confirms branch survival.
+
 ## Scaling audit
 
 `p_frac_raw` matches production (eigenvector in GNHEP block-scaled assembled basis).
