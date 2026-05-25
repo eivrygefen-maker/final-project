@@ -37,6 +37,7 @@ def ensure_physics_integrity_output_dirs() -> None:
             (PHYSICS_ROOT / case / sub).mkdir(parents=True, exist_ok=True)
     (PHYSICS_ROOT / "comparison").mkdir(parents=True, exist_ok=True)
     (PHYSICS_ROOT / "comparison" / "plots").mkdir(parents=True, exist_ok=True)
+    (PHYSICS_ROOT / "diagnostics" / "soundhole_air_audit").mkdir(parents=True, exist_ok=True)
 
 
 def _base() -> dict:

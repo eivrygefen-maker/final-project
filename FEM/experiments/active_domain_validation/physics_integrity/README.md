@@ -49,6 +49,16 @@ block Frobenius form scaling. `pressure_dof_scale` remains part of the physical 
 
 Parse scales from logs if capture JSON is missing: `GNHEP block Frobenius scales:` line.
 
+## Soundhole ↔ air adjacency audit (blocking)
+
+Before rerunning acoustic-only after `soundhole_active=0`:
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_soundhole_air_audit.sh
+```
+
+Reports under `diagnostics/soundhole_air_audit/` (JSON, Markdown, XDMF, CSV). No solve.
+
 ## Decision outputs
 
 `comparison/physics_integrity_report.md` ends with one of:
