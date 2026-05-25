@@ -3,17 +3,50 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 EXPERIMENT_ROOT = Path(__file__).resolve().parents[2]
 PHYSICS_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = PHYSICS_ROOT / "configs"
-MESH_REL = "../mesh/validation_tiny_guitar_3d.msh"
+VALIDATION_MESH = (EXPERIMENT_ROOT / "mesh" / "validation_tiny_guitar_3d.msh").resolve()
 SOURCE = REPO_ROOT / "FEM" / "configs" / "guitar_3d.json"
+
+CASE_NAMES = (
+    "coupled_nominal",
+    "structural_only",
+    "acoustic_only",
+    "coupled_low_frequency",
+)
+CASE_SUBDIRS = ("logs", "results", "modes", "diagnostics", "timing", "sorting")
+
+CONFIG_FILES = (
+    "coupled_nominal_202hz.json",
+    "structural_only.json",
+    "acoustic_only.json",
+    "coupled_low_frequency.json",
+    "operator_audit.json",
+)
+
+
+def ensure_physics_integrity_output_dirs() -> None:
+    """Create all case and comparison output trees before shell runners use tee."""
+    for case in CASE_NAMES:
+        for sub in CASE_SUBDIRS:
+            (PHYSICS_ROOT / case / sub).mkdir(parents=True, exist_ok=True)
+    (PHYSICS_ROOT / "comparison").mkdir(parents=True, exist_ok=True)
+    (PHYSICS_ROOT / "comparison" / "plots").mkdir(parents=True, exist_ok=True)
 
 
 def _base() -> dict:
+    if not VALIDATION_MESH.is_file():
+        print(
+            f"[prepare_physics_configs] ERROR: validation mesh not found: {VALIDATION_MESH}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     cfg = json.loads(SOURCE.read_text(encoding="utf-8"))
     geom = dict(cfg.get("geometry", {}))
     geom.update(
@@ -31,7 +64,7 @@ def _base() -> dict:
     solver = dict(cfg.get("solver", {}))
     solver.update(
         {
-            "mesh_file": MESH_REL,
+            "mesh_file": str(VALIDATION_MESH),
             "soundhole_bc": "pressure_release",
             "pressure_gauge": "none",
             "couple_fluid": True,
@@ -55,6 +88,7 @@ def _base() -> dict:
 
 
 def main() -> None:
+    ensure_physics_integrity_output_dirs()
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     base = _base()
 
@@ -118,6 +152,12 @@ def main() -> None:
     (CONFIG_DIR / "operator_audit.json").write_text(json.dumps(audit, indent=2), encoding="utf-8")
 
     print(f"[prepare_physics_configs] Wrote configs under {CONFIG_DIR}")
+    print(f"[prepare_physics_configs] validation_mesh={VALIDATION_MESH}")
+    for name in CONFIG_FILES:
+        path = CONFIG_DIR / name
+        mesh = json.loads(path.read_text(encoding="utf-8"))["solver"]["mesh_file"]
+        ok = Path(mesh).resolve() == VALIDATION_MESH and Path(mesh).is_file()
+        print(f"  {name}: mesh_file={mesh} exists={ok}")
 
 
 if __name__ == "__main__":
