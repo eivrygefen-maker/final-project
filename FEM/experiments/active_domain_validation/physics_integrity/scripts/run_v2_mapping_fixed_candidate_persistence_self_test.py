@@ -10,6 +10,7 @@ import json
 import math
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -50,48 +51,32 @@ def _pressure_mac(a: np.ndarray, b: np.ndarray) -> float:
     return float(abs(np.vdot(a, b)) / (na * nb))
 
 
-def _acquire_runtime_p_to_W(case: Dict[str, Any], mesh_file: Path) -> Dict[str, Any]:
+def _acquire_runtime_p_to_W(cfg_map: Dict[str, Any]) -> Dict[str, Any]:
     lookup_locations_checked: List[str] = []
-    fallback_attempted = False
-    fallback_source = None
-    fallback_length = 0
     source = None
     p_to_W = np.asarray([], dtype=np.int32)
-    try:
-        from v2_build_coupled_acoustic_seed import _assemble_reduced_coupled_replay
-
-        sample = sample_spec_from_case(case)
-        A_map, M_map, cfg_map = _assemble_reduced_coupled_replay(
-            mesh_file, sample, coupling_enabled=True
-        )
-        try:
-            lookup_locations_checked.extend(
-                [
-                    "cfg._coupled_air_p_to_W_map",
-                    "cfg.solver._coupled_air_p_to_W_map",
-                    "cfg._coupled_air_pressure_restriction.n_p_active",
-                ]
-            )
-            cand = cfg_map.get("_coupled_air_p_to_W_map")
-            if cand is None:
-                cand = (cfg_map.get("solver") or {}).get("_coupled_air_p_to_W_map")
-                if cand is not None:
-                    source = "assembled_replay_cfg.solver._coupled_air_p_to_W_map"
-            else:
-                source = "assembled_replay_cfg._coupled_air_p_to_W_map"
-            p_to_W = np.asarray(cand or [], dtype=np.int32).ravel()
-            n_p_active = int(
-                ((cfg_map.get("_coupled_air_pressure_restriction") or {}).get("n_p_active", 0))
-                or 0
-            )
-        finally:
-            A_map.destroy()
-            M_map.destroy()
-    except Exception as exc:
-        fallback_attempted = True
-        fallback_source = f"assembled_replay_failed:{type(exc).__name__}"
-        fallback_length = 0
-        n_p_active = 0
+    lookup_locations_checked.extend(
+        [
+            "cfg._coupled_air_p_to_W_map",
+            "cfg.solver._coupled_air_p_to_W_map",
+            "cfg._coupled_air_pressure_restriction.n_p_active",
+        ]
+    )
+    cand = cfg_map.get("_coupled_air_p_to_W_map")
+    if cand is None:
+        cand = (cfg_map.get("solver") or {}).get("_coupled_air_p_to_W_map")
+        if cand is not None:
+            source = "assembled_replay_cfg.solver._coupled_air_p_to_W_map"
+    else:
+        source = "assembled_replay_cfg._coupled_air_p_to_W_map"
+    if cand is None:
+        p_to_W = np.asarray([], dtype=np.int32)
+    else:
+        p_to_W = np.asarray(cand, dtype=np.int32).ravel()
+    n_p_active = int(
+        ((cfg_map.get("_coupled_air_pressure_restriction") or {}).get("n_p_active", 0))
+        or 0
+    )
 
     runtime_found = bool(source is not None and p_to_W.size > 0)
     return {
@@ -103,9 +88,9 @@ def _acquire_runtime_p_to_W(case: Dict[str, Any], mesh_file: Path) -> Dict[str, 
         "runtime_p_to_W": p_to_W,
         "runtime_n_p_active_from_restriction": int(n_p_active),
         "runtime_p_to_W_length_expected": int(EXPECTED_P_TO_W_LENGTH),
-        "fallback_attempted": fallback_attempted,
-        "fallback_source": fallback_source,
-        "fallback_length": int(fallback_length),
+        "fallback_attempted": False,
+        "fallback_source": None,
+        "fallback_length": 0,
     }
 
 
@@ -214,7 +199,50 @@ def main() -> int:
                 norm_ok = abs(reload_norm - seed_norm) / max(seed_norm, 1.0e-30) <= 1.0e-5
             reload_ok = length_ok and norm_ok
 
-            map_diag = _acquire_runtime_p_to_W(case, mesh_file)
+            from v2_build_coupled_acoustic_seed import _assemble_reduced_coupled_replay
+            from physical_fsi_seed_residual_audit import _rayleigh_metrics
+
+            sample = sample_spec_from_case(case)
+            assembled_diag: Dict[str, Any] = {
+                "assembled_replay_attempted": True,
+                "assembled_replay_function_or_wrapper_called": "_assemble_reduced_coupled_replay",
+                "assembled_replay_return_contract_expected": "(A, M, cfg) with cfg['_coupled_air_p_to_W_map']",
+                "assembled_replay_exception_type": None,
+                "assembled_replay_exception_message": None,
+                "assembled_replay_exception_traceback_tail": None,
+            }
+            A = M = None
+            cfg = None
+            try:
+                A, M, cfg = _assemble_reduced_coupled_replay(
+                    mesh_file, sample, coupling_enabled=True
+                )
+            except Exception as exc:
+                tb_tail = traceback.format_exc().strip().splitlines()[-8:]
+                assembled_diag.update(
+                    {
+                        "assembled_replay_exception_type": type(exc).__name__,
+                        "assembled_replay_exception_message": str(exc),
+                        "assembled_replay_exception_traceback_tail": "\n".join(tb_tail),
+                    }
+                )
+
+            if cfg is not None:
+                map_diag = _acquire_runtime_p_to_W(cfg)
+            else:
+                map_diag = {
+                    "runtime_p_to_W_lookup_attempted": True,
+                    "runtime_p_to_W_lookup_locations_checked": [],
+                    "runtime_p_to_W_found": False,
+                    "runtime_p_to_W_source": None,
+                    "runtime_p_to_W_length": 0,
+                    "runtime_p_to_W": np.asarray([], dtype=np.int32),
+                    "runtime_n_p_active_from_restriction": 0,
+                    "runtime_p_to_W_length_expected": int(EXPECTED_P_TO_W_LENGTH),
+                    "fallback_attempted": True,
+                    "fallback_source": f"assembled_replay_failed:{assembled_diag['assembled_replay_exception_type']}",
+                    "fallback_length": 0,
+                }
             p_to_W = np.asarray(map_diag.pop("runtime_p_to_W"), dtype=np.int32).ravel()
             p_to_W_source = str(map_diag.get("runtime_p_to_W_source") or "runtime_map_missing")
             map_diag["runtime_p_to_W_crc32"] = int(
@@ -238,6 +266,7 @@ def main() -> int:
                     "runtime_p_to_W_lookup_locations_checked": list(
                         map_diag.get("runtime_p_to_W_lookup_locations_checked") or []
                     ),
+                    **assembled_diag,
                 }
             )
             if not bool(
@@ -288,13 +317,8 @@ def main() -> int:
                     passed = False
 
             try:
-                from v2_build_coupled_acoustic_seed import _assemble_reduced_coupled_replay
-                from physical_fsi_seed_residual_audit import _rayleigh_metrics
-
-                sample = sample_spec_from_case(case)
-                A, M, cfg = _assemble_reduced_coupled_replay(
-                    mesh_file, sample, coupling_enabled=True
-                )
+                if A is None or M is None:
+                    raise RuntimeError("replay_assembly_unavailable_for_rayleigh")
                 try:
                     for vec_label, vec in (("seed", seed), ("reloaded", reloaded)):
                         ray = _rayleigh_metrics(A, M, vec, seed_f_hz=seed_f)
@@ -386,6 +410,25 @@ def main() -> int:
     ]
     for c in checks:
         lines.append(f"- {c.get('check')}: pass={c.get('pass')}")
+    rt = report.get("runtime_pressure_map_lookup") or {}
+    if rt:
+        lines.extend(
+            [
+                "",
+                "## Runtime pressure map lookup",
+                "",
+                f"- runtime_p_to_W_found: {rt.get('runtime_p_to_W_found')}",
+                f"- runtime_p_to_W_source: {rt.get('runtime_p_to_W_source')}",
+                f"- runtime_p_to_W_length: {rt.get('runtime_p_to_W_length')}",
+                f"- runtime_n_p_active_from_restriction: {rt.get('runtime_n_p_active_from_restriction')}",
+                f"- runtime_p_to_W_crc32: {rt.get('runtime_p_to_W_crc32')}",
+                f"- fallback_attempted: {rt.get('fallback_attempted')}",
+                f"- fallback_source: {rt.get('fallback_source')}",
+                f"- assembled_replay_exception_type: {rt.get('assembled_replay_exception_type')}",
+                f"- assembled_replay_exception_message: {rt.get('assembled_replay_exception_message')}",
+                "",
+            ]
+        )
     OUT_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"[persistence_self_test] pass={passed} wrote {OUT_JSON}", flush=True)
     return 0 if passed else 1
