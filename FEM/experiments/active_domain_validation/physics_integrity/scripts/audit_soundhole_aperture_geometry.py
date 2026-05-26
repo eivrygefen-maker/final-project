@@ -120,6 +120,7 @@ def _audit_meshio(mesh_path: Path, *, hole_radius_m: float = HOLE_R_M) -> Dict[s
         "tag2_triangle_count": int(mask.sum()),
         "tag2_total_area_m2": float(total_area),
         "area_ratio_vs_pi_r2": float(area_ratio),
+        "area_ratio": float(area_ratio),
         "radial_max_m": float(r_max),
         "z_extent_m": [zmin, zmax],
         "z_span_m": float(z_span),

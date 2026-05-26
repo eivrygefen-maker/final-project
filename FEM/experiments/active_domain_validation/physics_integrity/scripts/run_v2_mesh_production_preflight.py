@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 import time
@@ -119,22 +120,29 @@ def _run_gates(mesh_path: Path, case: Dict[str, Any], out_dir: Path) -> Dict[str
     p_air = int(dof.get("n_p_soundhole_in_air_subgraph", 0))
 
     aperture_ok = bool(aperture.get("gate_pass"))
-    area_ratio = float(aperture.get("area_ratio", float("nan")))
+    area_ratio = float(
+        aperture.get("area_ratio", aperture.get("area_ratio_vs_pi_r2", float("nan")))
+    )
     z_span = float(aperture.get("z_span_m", float("inf")))
     horiz_frac = float(aperture.get("horizontal_area_fraction", 0.0))
+    area_ratio_ok = math.isfinite(area_ratio) and (1.0 - 0.15) <= area_ratio <= (1.0 + 0.15)
     adjacency_ok = (
         tag2 > 0
         and air_adj == tag2
         and wood_only == 0
         and p_air > 0
     )
+    aperture_pass = aperture_ok and area_ratio_ok
 
     return {
         "combined_mesh_gate_pass": bool(gates.get("combined_mesh_gate_pass")),
-        "aperture_gate_pass": aperture_ok,
+        "aperture_gate_pass": aperture_pass,
+        "area_ratio": area_ratio,
+        "area_ratio_finite": math.isfinite(area_ratio),
+        "area_ratio_pass": area_ratio_ok,
         "air_adjacency_ok": adjacency_ok,
         "all_preflight_pass": bool(
-            gates.get("combined_mesh_gate_pass") and aperture_ok and adjacency_ok
+            gates.get("combined_mesh_gate_pass") and aperture_pass and adjacency_ok
         ),
         "aperture_report": aperture,
         "adjacency_report": {

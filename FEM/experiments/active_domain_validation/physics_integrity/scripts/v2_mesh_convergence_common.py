@@ -64,13 +64,35 @@ def solve_result_path(level_id: str, case_id: str, target_hz: float) -> Path:
     return solve_case_dir(level_id, case_id) / "results" / f"result_{hz_result_tag(target_hz)}.json"
 
 
+def _acoustic_branch_ok(data: Dict[str, Any]) -> bool:
+    import math
+
+    branch = data.get("acoustic_branch_by_energy") or data.get("nearest_acoustic_branch")
+    if not branch:
+        return False
+    f_hz = float(branch.get("frequency_hz", float("nan")))
+    p_frac = float(branch.get("p_frac_energy_phys", float("nan")))
+    if not math.isfinite(f_hz) or not math.isfinite(p_frac):
+        return False
+    cls = str(branch.get("mode_class_physical_energy", ""))
+    if cls == "acoustic_dominated":
+        return True
+    return p_frac >= 0.85
+
+
 def solve_done(level_id: str, case: Dict[str, Any]) -> bool:
     p = solve_result_path(level_id, str(case["id"]), float(case["target_hz"]))
     if not p.is_file():
         return False
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        return bool(data.get("v2_converged"))
+        if not bool(data.get("v2_converged")):
+            return False
+        if str(case.get("case_type")) == "acoustic":
+            return _acoustic_branch_ok(data)
+        if bool(case.get("structural_spectrum_harvest")):
+            return True
+        return True
     except Exception:
         return False
 
@@ -87,6 +109,7 @@ def run_mpi_case_solve(
     case_dir: Path,
     select_by_energy: bool = False,
     structural_spectrum_harvest: bool = False,
+    reference_f_hz: Optional[float] = None,
 ) -> Tuple[int, Dict[str, Any]]:
     from v2_sensitivity_common import hz_result_tag
 
@@ -122,6 +145,8 @@ def run_mpi_case_solve(
         cmd.append("--select-by-energy")
     if structural_spectrum_harvest:
         cmd.append("--structural-spectrum-harvest")
+    if reference_f_hz is not None:
+        cmd.extend(["--reference-f-hz", str(float(reference_f_hz))])
     with open(log_path, "w", encoding="utf-8") as logf:
         proc = subprocess.run(
             cmd,

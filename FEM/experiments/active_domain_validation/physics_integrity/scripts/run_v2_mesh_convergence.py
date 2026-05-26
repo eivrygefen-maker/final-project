@@ -23,8 +23,10 @@ from v2_mesh_convergence_common import (
     CONV_ROOT,
     INCREMENTAL_JSON,
     VALIDATION_MESH,
+    _acoustic_branch_ok,
     load_manifest,
     mesh_audit_path,
+    mesh_path,
     run_mpi_case_solve,
     sample_spec_from_case,
     solve_case_dir,
@@ -32,6 +34,8 @@ from v2_mesh_convergence_common import (
     solve_result_path,
     write_json,
 )
+
+L_PROD_READY_JSON = CONV_DIAG / "l_prod_repair_ready.json"
 from v2_mesh_convergence_mesh import build_level_mesh
 from v2_sensitivity_gates import run_mesh_gates
 from v2_sensitivity_mesh import sample_mesh_path
@@ -163,6 +167,7 @@ def _run_one(
     sample = sample_spec_from_case(case)
     log_path = case_dir / "logs" / "mesh_convergence_solve.log"
     t0 = time.perf_counter()
+    ref_f = case.get("reference_f_hz")
     rc, solve = run_mpi_case_solve(
         sample,
         mesh_file,
@@ -174,6 +179,7 @@ def _run_one(
         case_dir=case_dir,
         select_by_energy=bool(case.get("select_by_energy")),
         structural_spectrum_harvest=bool(case.get("structural_spectrum_harvest")),
+        reference_f_hz=float(ref_f) if ref_f is not None else None,
     )
     elapsed = time.perf_counter() - t0
     solve["mesh_level"] = level_id
@@ -183,7 +189,13 @@ def _run_one(
     rp = solve_result_path(level_id, cid, target_hz)
     write_json(rp, solve)
 
-    status = "ok" if rc == 0 and solve.get("v2_converged") else "solve_failed"
+    if str(case.get("case_type")) == "acoustic":
+        ok_solve = rc == 0 and _acoustic_branch_ok(solve)
+    elif bool(case.get("structural_spectrum_harvest")):
+        ok_solve = rc == 0 and bool(solve.get("v2_converged"))
+    else:
+        ok_solve = rc == 0 and bool(solve.get("v2_converged"))
+    status = "ok" if ok_solve else "solve_failed"
     if status != "ok" and level_id == "L_check" and level_def.get("skip_on_resource_failure"):
         state["L_check_skipped"] = f"solve failed {key} rc={rc}"
         state.setdefault("failures", []).append({key: f"rc={rc}"})
@@ -224,6 +236,17 @@ def main() -> int:
     levels_order = list(manifest.get("level_run_order") or ["L0", "L_mid", "L_prod", "L_check"])
     if args.skip_L_check:
         levels_order = [x for x in levels_order if x != "L_check"]
+
+    if not args.skip_solve and L_PROD_READY_JSON.is_file():
+        ready = json.loads(L_PROD_READY_JSON.read_text(encoding="utf-8"))
+        print(
+            f"[mesh_conv] using repaired L_prod meshes: {ready.get('installed_cases')}",
+            flush=True,
+        )
+        for cid in ready.get("installed_cases") or []:
+            src = mesh_path("L_prod", str(cid))
+            if not src.is_file():
+                print(f"[mesh_conv] WARNING: repaired L_prod mesh missing: {src}", flush=True)
 
     if not args.skip_solve:
         for level_id in levels_order:
