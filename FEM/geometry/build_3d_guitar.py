@@ -400,9 +400,14 @@ def create_guitar_mesh():
         and not is_fom
     )
     shell_only = is_preview or is_display
-    use_air_opening_geom = is_validation or os.environ.get(
-        "FEM_SOUNDHOLE_TAG_AIR_OPENING", "0"
-    ) == "1"
+    # FSI engineering meshes (validation + production FOM): fuse cavity with a through-plate
+    # air channel and tag the air-side aperture as facet group 2. Legacy short-cylinder +
+    # exterior-shell picker leaves tag 2 on wood rim facets disconnected from air tag 10.
+    _sh_open_env = os.environ.get("FEM_SOUNDHOLE_TAG_AIR_OPENING", "").strip()
+    if _sh_open_env == "0":
+        use_air_opening_geom = False
+    else:
+        use_air_opening_geom = (is_fom and not shell_only) or _sh_open_env == "1"
 
     if is_display:
         out_file = mesh_dir / "display_mesh.msh"
@@ -1620,11 +1625,11 @@ def create_guitar_mesh():
         stage: str,
     ) -> Tuple[list, list]:
         """
-        Re-fragment wood+air once for conformal FSI interfaces (validation only).
+        Re-fragment wood+air once for conformal FSI interfaces (validation + FOM air-opening).
 
         Preserves all air-input fragment descendants (cavity + soundhole channel pieces).
         """
-        if not is_validation or shell_only or not air_vols_in or not wood_vols_in:
+        if shell_only or not air_vols_in or not wood_vols_in or not use_air_opening_geom:
             return list(wood_vols_in), list(air_vols_in)
         wood_inputs = [(3, int(v)) for v in wood_vols_in]
         air_inputs = [(3, int(v)) for v in air_vols_in]
@@ -1936,7 +1941,7 @@ def create_guitar_mesh():
         )
         occ.synchronize()
         resulting_vols = [int(tag) for dim, tag in frags if dim == 3]
-        if is_validation:
+        if use_air_opening_geom:
             _validation_assert_live_solids("post_wood_air_fragment")
             _validation_safe_dedupe_only(stage="post_wood_air_fragment")
             live = set(_validation_live_volume_tags())
@@ -2017,14 +2022,14 @@ def create_guitar_mesh():
             raise RuntimeError("Wood partitioning produced no volumes.")
         print(f"[diag] Wood volumes after Z-partition: {wood_vols}")
 
-    if is_validation and not shell_only and air_vols and wood_vols:
+    if use_air_opening_geom and not shell_only and air_vols and wood_vols:
         wood_vols, air_vols = _validation_conformal_refragment_wood_air(
             wood_vols,
             air_vols,
             stage="after_z_partition",
         )
 
-    if is_fom and not is_validation:
+    if is_fom and not is_validation and not use_air_opening_geom:
         # Final geometry unification: re-fragment wood+air for shared FSI interfaces.
         try:
             air_ref_com = (
@@ -3570,9 +3575,7 @@ def create_guitar_mesh():
     # Soundhole: air-cavity mouth (validation/opt-in) or legacy exterior-shell picker (production FOM).
     z_top_outer = D / 2.0
     z_tol = max(1.0e-4, t, 0.25 * hr)
-    use_air_opening_tag = (
-        is_validation or os.environ.get("FEM_SOUNDHOLE_TAG_AIR_OPENING", "0") == "1"
-    )
+    use_air_opening_tag = use_air_opening_geom
     soundhole_surfs: list = []
     if use_air_opening_tag and not shell_only:
         if not air_boundary_surfs:
@@ -3617,7 +3620,7 @@ def create_guitar_mesh():
                 audit_dir=aperture_audit_dir,
             )
         )
-        if not (is_validation and use_air_opening_tag and not shell_only):
+        if use_air_opening_tag and not shell_only:
             air_vols[0] = int(air_vol_tag)
         if not soundhole_surfs:
             fallback = _select_validation_soundhole_aperture_surfaces(
@@ -3841,7 +3844,7 @@ def create_guitar_mesh():
 
     if is_fom:
         air_vols_tag10 = sorted({int(v) for v in air_vols})
-        if is_validation and use_air_opening_tag and not shell_only:
+        if use_air_opening_tag and not shell_only:
             air_vols = air_vols_tag10
         pg_air = gmsh.model.addPhysicalGroup(3, air_vols_tag10, tag=10)
         gmsh.model.setPhysicalName(3, pg_air, "Air_Internal")
@@ -4412,7 +4415,7 @@ def create_guitar_mesh():
 
         def _validation_gate_soundhole_aperture_post_mesh() -> None:
             """Fail validation mesh build if tag-2 is not a single circular aperture."""
-            if not (is_validation and use_air_opening_tag and not shell_only):
+            if not (use_air_opening_tag and not shell_only):
                 return
             expected = math.pi * float(hr) * float(hr)
             a_lo, a_hi = 0.85 * expected, 1.15 * expected
@@ -4520,7 +4523,7 @@ def create_guitar_mesh():
                 f"r_max_mesh={r_max_mesh:.6f} m z_span={z_span:.6f} m surfaces={surf_tags}"
             )
 
-        if is_validation and use_air_opening_tag and not shell_only:
+        if use_air_opening_tag and not shell_only:
             _validation_gate_soundhole_aperture_post_mesh()
 
         if is_fom and not shell_only:
@@ -4588,9 +4591,10 @@ def create_guitar_mesh():
                     n_soundhole_mesh_facets += int(len(arr))
         except Exception as _exc:
             print(f"[diag][warn] Soundhole mesh facet count failed: {_exc}")
-            if is_validation and use_air_opening_tag and not shell_only:
+            if use_air_opening_tag and not shell_only:
                 raise RuntimeError(
-                    f"FEM_VALIDATION_MESH: cannot count soundhole tag-2 mesh facets: {_exc}"
+                    "FSI air-opening mesh: cannot count soundhole tag-2 mesh facets: "
+                    f"{_exc}"
                 ) from _exc
         print(f"PRINT: Found {n_soundhole_mesh_facets} facets for Soundhole")
         gmsh.write(str(out_file))
