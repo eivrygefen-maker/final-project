@@ -1,0 +1,82 @@
+{
+  "suite": "v2_material_structural_harvest_extension",
+  "frozen_formulation": "coupled_physical_core_v2",
+  "purpose": "Uniform expanded structural-spectrum harvest on validation mesh for comparable baseline/material MAC and subspace analysis.",
+  "do_not_rerun": [
+    "hole_radius_small",
+    "hole_radius_large",
+    "depth_small",
+    "depth_large",
+    "top_thickness_small",
+    "top_thickness_large",
+    "length_small",
+    "length_large",
+    "width_small",
+    "width_large"
+  ],
+  "harvest_policy": {
+    "harvest_lo_hz": 200.0,
+    "harvest_hi_hz": 320.0,
+    "shift_invert_target_hz": 260.0,
+    "num_modes": 30,
+    "num_modes_rationale": "120 Hz band / ~4 Hz spacing target; 30 modes reduces edge truncation risk for shifted structural families.",
+    "uniform_across_all_cases": true,
+    "structural_spectrum_harvest": true,
+    "preserve_acoustic_classification": true,
+    "mesh": "validation_tiny_guitar_3d.msh"
+  },
+  "validation_criterion_after_post": {
+    "adequate_spectrum_coverage_min_structural_modes": 8,
+    "high_confidence_mac_threshold": 0.85,
+    "subspace_min_cosine_pass": 0.75,
+    "subspace_mean_cosine_pass": 0.85,
+    "large_frequency_shift_hz_note": "Matched pair with MAC >= threshold and |delta_f| > 15 Hz is reported as shape-preserved branch shift, not failure."
+  },
+  "sample_ids": [
+    "baseline_coupled_v2_material_reference",
+    "material_top_cedar",
+    "material_top_maple",
+    "material_back_cedar",
+    "material_back_maple",
+    "material_pair_cedar_top_maple_back"
+  ],
+  "samples": [
+    {
+      "id": "baseline_coupled_v2_material_reference",
+      "reuse_baseline_mesh": true,
+      "materials": {"top_wood_id": "spruce", "back_wood_id": "rosewood"},
+      "geometry": {"length": 0.48, "width": 0.325, "depth": 0.1, "hole_radius": 0.047, "top_thickness": 0.003},
+      "note": "Spruce/rosewood reference on validation mesh for expanded structural spectrum."
+    },
+    {
+      "id": "material_top_cedar",
+      "reuse_baseline_mesh": true,
+      "materials": {"top_wood_id": "cedar", "back_wood_id": "rosewood"},
+      "geometry": {"length": 0.48, "width": 0.325, "depth": 0.1, "hole_radius": 0.047, "top_thickness": 0.003}
+    },
+    {
+      "id": "material_top_maple",
+      "reuse_baseline_mesh": true,
+      "materials": {"top_wood_id": "maple", "back_wood_id": "rosewood"},
+      "geometry": {"length": 0.48, "width": 0.325, "depth": 0.1, "hole_radius": 0.047, "top_thickness": 0.003}
+    },
+    {
+      "id": "material_back_cedar",
+      "reuse_baseline_mesh": true,
+      "materials": {"top_wood_id": "spruce", "back_wood_id": "cedar"},
+      "geometry": {"length": 0.48, "width": 0.325, "depth": 0.1, "hole_radius": 0.047, "top_thickness": 0.003}
+    },
+    {
+      "id": "material_back_maple",
+      "reuse_baseline_mesh": true,
+      "materials": {"top_wood_id": "spruce", "back_wood_id": "maple"},
+      "geometry": {"length": 0.48, "width": 0.325, "depth": 0.1, "hole_radius": 0.047, "top_thickness": 0.003}
+    },
+    {
+      "id": "material_pair_cedar_top_maple_back",
+      "reuse_baseline_mesh": true,
+      "materials": {"top_wood_id": "cedar", "back_wood_id": "maple"},
+      "geometry": {"length": 0.48, "width": 0.325, "depth": 0.1, "hole_radius": 0.047, "top_thickness": 0.003}
+    }
+  ]
+}

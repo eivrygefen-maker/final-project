@@ -26,6 +26,14 @@ STRUCTURAL_MAC_BAND_HI = 300.0
 STRUCTURAL_MAC_MATCH_TOL_HZ = 8.0
 MANIFEST_PATH = PHYSICS_ROOT / "configs" / "v2_sensitivity_manifest.json"
 PRODUCTION_MANIFEST_PATH = PHYSICS_ROOT / "configs" / "v2_production_parameter_manifest.json"
+HARVEST_EXT_MANIFEST_PATH = PHYSICS_ROOT / "configs" / "v2_material_structural_harvest_extension_manifest.json"
+HARVEST_EXT_ROOT = SENS_ROOT / "material_structural_harvest_extension"
+HARVEST_EXT_DIAG = HARVEST_EXT_ROOT / "diagnostics"
+HARVEST_EXT_SAMPLES = HARVEST_EXT_ROOT / "samples"
+STRUCTURAL_HARVEST_LO = 200.0
+STRUCTURAL_HARVEST_HI = 320.0
+STRUCTURAL_HARVEST_NUM_MODES = 30
+STRUCTURAL_HARVEST_TARGET_HZ = 260.0
 PRODUCTION_SUMMARY_JSON = DIAG_DIR / "v2_production_validation_summary.json"
 VALIDATION_STATUS_JSON = DIAG_DIR / "v2_validation_status.json"
 SUMMARY_JSON = DIAG_DIR / "v2_sensitivity_validation_summary.json"
@@ -62,6 +70,82 @@ def load_manifest() -> Dict[str, Any]:
 
 def load_production_manifest() -> Dict[str, Any]:
     return json.loads(PRODUCTION_MANIFEST_PATH.read_text(encoding="utf-8"))
+
+
+def load_harvest_extension_manifest() -> Dict[str, Any]:
+    return json.loads(HARVEST_EXT_MANIFEST_PATH.read_text(encoding="utf-8"))
+
+
+def harvest_ext_case_dir(sample_id: str) -> Path:
+    return HARVEST_EXT_SAMPLES / str(sample_id)
+
+
+def harvest_ext_result_json(sample_id: str) -> Optional[Path]:
+    d = harvest_ext_case_dir(sample_id) / "results"
+    if not d.is_dir():
+        return None
+    files = sorted(d.glob("result_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return files[0] if files else None
+
+
+def run_mpi_harvest_solve(
+    sample: Dict[str, Any],
+    mesh_path: Path,
+    *,
+    target_hz: float,
+    harvest_lo_hz: float,
+    harvest_hi_hz: float,
+    num_modes: int,
+    log_path: Path,
+    case_root: Path,
+) -> Tuple[int, Dict[str, Any]]:
+    """Coupled v2 solve for expanded structural harvest (no acoustic-branch exit requirement)."""
+    sample_id = str(sample["id"])
+    case_dir = case_root / sample_id
+    case_dir.mkdir(parents=True, exist_ok=True)
+    sample_json = case_dir / "sample_spec.json"
+    sample_json.write_text(json.dumps(sample, indent=2), encoding="utf-8")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "mpiexec",
+        "-n",
+        "1",
+        sys.executable,
+        str(SOLVE_SCRIPT),
+        "--sample-id",
+        sample_id,
+        "--mesh",
+        str(mesh_path.resolve()),
+        "--sample-json",
+        str(sample_json.resolve()),
+        "--target-hz",
+        str(float(target_hz)),
+        "--harvest-lo-hz",
+        str(float(harvest_lo_hz)),
+        "--harvest-hi-hz",
+        str(float(harvest_hi_hz)),
+        "--reference-f-hz",
+        str(COUPLED_BASELINE_F_HZ),
+        "--num-modes",
+        str(int(num_modes)),
+        "--case-root",
+        str(case_root.resolve()),
+        "--structural-spectrum-harvest",
+    ]
+    with open(log_path, "w", encoding="utf-8") as logf:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(REPO_ROOT),
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+    hz_tag = hz_result_tag(target_hz)
+    result_path = case_dir / "results" / f"result_{hz_tag}.json"
+    result: Dict[str, Any] = {}
+    if result_path.is_file():
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+    return proc.returncode, result
 
 
 def production_sample_by_id(manifest: Dict[str, Any], sample_id: str) -> Dict[str, Any]:

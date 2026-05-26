@@ -93,3 +93,28 @@ Runs **only** phase-2 samples: `length_small`, `length_large`, `width_small`, `w
 Optional single sample: append `--sample-id length_small`. Skip optional pair: `--skip-optional`.
 
 After solves: refresh status flags with `run_v2_sensitivity_report_post.sh` (reads preserved phase-1 + new phase-2 artifacts).
+
+## Material structural harvest extension (experiment-only)
+
+**Purpose:** Uniform expanded structural spectrum on the **same validation mesh** and frozen `coupled_physical_core_v2` so baseline/material MAC and subspace comparisons use comparable in-band structural mode sets. Does **not** rerun geometry samples or acoustic-only material stability logic.
+
+| Item | Value |
+|------|--------|
+| Suite | `v2_material_structural_harvest_extension` |
+| Cases | `baseline_coupled_v2_material_reference` + five phase-2 wood samples |
+| Harvest band | **200–320 Hz** (identical all cases) |
+| `num_modes` | **30** (shift-invert target **260 Hz**) |
+| Outputs | `v2_sensitivity_validation/material_structural_harvest_extension/` |
+| Manifest | `configs/v2_material_structural_harvest_extension_manifest.json` |
+
+**Validation criterion (post-solve, not per-mode MAC≥0.85 for every mode):** adequate structural coverage (≥8 modes per bank), ≥2 high-confidence Hungarian-assigned pairs (MAC≥0.85) and/or subspace preservation (min cosine≥0.75 or mean≥0.85), no solver failure. Large Δf with high MAC is documented as shape-preserved branch shift.
+
+**Gates until explicit `--apply-promotion`:** `material_structural_branch_validation_pass` = **Pending**; `lhs_promotion_blocked` = **True**.
+
+### VM command (six solves + report)
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_material_structural_harvest_extension.sh
+```
+
+Post-only (artifacts already present): `bash …/run_v2_material_structural_harvest_extension.sh --skip-solve`

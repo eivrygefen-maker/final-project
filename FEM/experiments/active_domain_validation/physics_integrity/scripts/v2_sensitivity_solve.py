@@ -107,6 +107,17 @@ def main() -> int:
         help="Reference frequency for nearest-f selection (ignored if --select-by-energy)",
     )
     parser.add_argument("--num-modes", type=int, default=0, help="Override num_modes (0=cfg default)")
+    parser.add_argument(
+        "--structural-spectrum-harvest",
+        action="store_true",
+        help="Structural validation harvest: success if v2_converged even without acoustic branch in band",
+    )
+    parser.add_argument(
+        "--case-root",
+        type=Path,
+        default=None,
+        help="Parent directory for sample case folders (default: v2_sensitivity_validation/samples)",
+    )
     args = parser.parse_args()
 
     if MPI.COMM_WORLD.size != 1:
@@ -122,7 +133,12 @@ def main() -> int:
     band_lo = float(args.harvest_lo_hz if args.harvest_lo_hz is not None else DEFAULT_BAND_LO)
     band_hi = float(args.harvest_hi_hz if args.harvest_hi_hz is not None else DEFAULT_BAND_HI)
     reference_f_hz = float(args.reference_f_hz)
-    case_dir = SENS_ROOT / "samples" / sample_id
+    case_parent = (
+        args.case_root.resolve()
+        if args.case_root is not None
+        else SENS_ROOT / "samples"
+    )
+    case_dir = case_parent / sample_id
     sorting = case_dir / "sorting"
     for d in (sorting, case_dir / "logs", case_dir / "modes", case_dir / "diagnostics"):
         d.mkdir(parents=True, exist_ok=True)
@@ -272,7 +288,7 @@ def main() -> int:
             f"f_branch={f_br:.6f} p_frac_energy={p_br:.4f}",
             flush=True,
         )
-    ok = bool(result["v2_converged"] and branch is not None)
+    ok = bool(result["v2_converged"] and (branch is not None or args.structural_spectrum_harvest))
     return 0 if ok else 3
 
 
