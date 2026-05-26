@@ -119,6 +119,12 @@ def main() -> int:
         help="Parent directory for sample case folders (default: v2_sensitivity_validation/samples)",
     )
     parser.add_argument(
+        "--case-dir",
+        type=Path,
+        default=None,
+        help="Explicit case output directory (overrides --case-root / sample-id layout).",
+    )
+    parser.add_argument(
         "--eps-seed-npy",
         type=Path,
         default=None,
@@ -139,12 +145,15 @@ def main() -> int:
     band_lo = float(args.harvest_lo_hz if args.harvest_lo_hz is not None else DEFAULT_BAND_LO)
     band_hi = float(args.harvest_hi_hz if args.harvest_hi_hz is not None else DEFAULT_BAND_HI)
     reference_f_hz = float(args.reference_f_hz)
-    case_parent = (
-        args.case_root.resolve()
-        if args.case_root is not None
-        else SENS_ROOT / "samples"
-    )
-    case_dir = case_parent / sample_id
+    if args.case_dir is not None:
+        case_dir = args.case_dir.resolve()
+    else:
+        case_parent = (
+            args.case_root.resolve()
+            if args.case_root is not None
+            else SENS_ROOT / "samples"
+        )
+        case_dir = case_parent / sample_id
     sorting = case_dir / "sorting"
     for d in (sorting, case_dir / "logs", case_dir / "modes", case_dir / "diagnostics"):
         d.mkdir(parents=True, exist_ok=True)
@@ -191,14 +200,29 @@ def main() -> int:
     sc["_worker_eps_target_lambda"] = lam_t
     cfg["_worker_target_hz"] = target_hz
     cfg["_worker_num_modes"] = nm
+    eps_seed_info: Dict[str, Any] = {
+        "seed_file_used": None,
+        "seed_vector_length": None,
+        "seed_layout_valid": None,
+        "eps_initial_space_set": False,
+        "eps_initial_space_norm": None,
+    }
     if args.eps_seed_npy is not None and args.eps_seed_npy.is_file():
-        seed = np.load(str(args.eps_seed_npy.resolve()))
-        sc["_continuation_eps_seed_vector"] = np.asarray(seed, dtype=np.float64).ravel()
+        seed = np.asarray(np.load(str(args.eps_seed_npy.resolve())), dtype=np.float64).ravel()
+        seed_norm = float(np.linalg.norm(seed))
+        sc["_continuation_eps_seed_vector"] = seed
         sc["_continuation_eps_seed_metadata"] = {
             "continuation_seed_source": "acoustic_locator_coupled_embedding",
             "seed_f_hz": target_hz,
-            "seed_vector_length": int(np.asarray(seed).size),
+            "seed_vector_length": int(seed.size),
             "seed_npy": str(args.eps_seed_npy.resolve()),
+        }
+        eps_seed_info = {
+            "seed_file_used": str(args.eps_seed_npy.resolve()),
+            "seed_vector_length": int(seed.size),
+            "seed_layout_valid": bool(seed.size > 0 and math.isfinite(seed_norm) and seed_norm > 0),
+            "eps_initial_space_set": True,
+            "eps_initial_space_norm": seed_norm,
         }
 
     t0 = time.perf_counter()
@@ -281,6 +305,9 @@ def main() -> int:
         "p_to_W": p_to_W.tolist(),
         "u_to_W": u_to_W.tolist(),
         "eps_batch_diagnostics": eps_diag,
+        "eps_seed": eps_seed_info,
+        "target_hz": float(target_hz),
+        "nconv": int(eps_diag.get("nconv_marked", -1)),
         "nconv_marked": int(eps_diag.get("nconv_marked", -1)),
         "v2_converged": int(eps_diag.get("nconv_marked", -1)) > 0,
         "harvest_band_hz": [band_lo, band_hi],
