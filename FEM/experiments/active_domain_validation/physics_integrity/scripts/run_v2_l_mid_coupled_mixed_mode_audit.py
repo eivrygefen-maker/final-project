@@ -7,6 +7,7 @@ No new coupled (or acoustic) eigen solves.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import sys
@@ -51,10 +52,24 @@ STATUS_JSON = (
 )
 
 ACOUSTIC_CASES = ("baseline_coupled_v2", "hole_radius_large")
+ACOUSTIC_REFERENCE_SOURCE = "acoustic_only_locator_eigenvector"
 CLUSTER_BAND_HALF_WIDTH_HZ = 40.0
 MAC_SINGLE_MIXED = 0.85
 MAC_CLUSTER = 0.70
 SUBSPACE_OVERLAP_PASS = 0.75
+REPLAY_RESIDUAL_SUSPECT = 0.90
+REPLAY_RAYLEIGH_DELTA_SUSPECT_HZ = 50.0
+
+
+def _true_ref_paths(case_dir: Path) -> Dict[str, Path]:
+    d = case_dir / "diagnostics" / "l_mid_true_ref"
+    return {
+        "pressure_npy": d / "acoustic_locator_pressure.npy",
+        "pressure_meta": d / "acoustic_locator_pressure_meta.json",
+        "seed_npy": case_dir / "diagnostics" / "acoustic_coupled_seed.npy",
+        "seed_meta": case_dir / "diagnostics" / "acoustic_coupled_seed_meta.json",
+        "build_log": case_dir / "logs" / "build_acoustic_seed.log",
+    }
 
 
 def _write_md(path: Path, lines: List[str]) -> None:
@@ -74,18 +89,24 @@ def _clamp_unit_interval(value: float) -> float:
 
 
 def _seed_truth_fields(seed_info: Dict[str, Any], seed_source: str) -> Dict[str, Any]:
-    is_acoustic_seed = seed_source == "acoustic_coupled_seed.npy" and bool(
-        seed_info.get("seed_build_success")
+    is_true = (
+        seed_source == ACOUSTIC_REFERENCE_SOURCE
+        and bool(seed_info.get("seed_build_success"))
+        and bool(seed_info.get("seed_layout_valid"))
+        and bool(seed_info.get("acoustic_locator_vector_saved"))
     )
     return {
         "seed_build_success": bool(seed_info.get("seed_build_success")),
         "seed_vector_length": seed_info.get("seed_vector_length"),
+        "seed_layout_valid": bool(seed_info.get("seed_layout_valid")),
+        "acoustic_locator_vector_saved": bool(seed_info.get("acoustic_locator_vector_saved")),
         "eps_seed_applied": bool(seed_info.get("eps_seed_applied")),
+        "eps_seed_available_for_later_retry": bool(seed_info.get("eps_seed_available_for_later_retry")),
         "seed_failure_reason": seed_info.get("seed_failure_reason"),
         "locator_pressure_reference_source": seed_source,
-        "locator_pressure_reference_is_acoustic_seed": is_acoustic_seed,
-        "proxy_reference_diagnostic_only": not is_acoustic_seed,
-        "proxy_may_not_justify_mesh_convergence_resume": not is_acoustic_seed,
+        "locator_pressure_reference_is_true_acoustic": is_true,
+        "proxy_reference_diagnostic_only": not is_true,
+        "proxy_may_not_justify_mesh_convergence_resume": True,
     }
 
 
@@ -133,48 +154,72 @@ def _read_text(path: Path) -> str:
 
 
 def _verify_seed_path(case_dir: Path) -> Dict[str, Any]:
-    seed_npy = case_dir / "diagnostics" / "acoustic_coupled_seed.npy"
-    seed_meta = case_dir / "diagnostics" / "acoustic_coupled_seed_meta.json"
-    build_log = case_dir / "logs" / "build_acoustic_seed.log"
+    paths = _true_ref_paths(case_dir)
     rescue_logs = list((case_dir / "logs").glob("mesh_convergence*.log"))
 
     out: Dict[str, Any] = {
-        "seed_npy_path": str(seed_npy),
-        "seed_meta_path": str(seed_meta),
+        "seed_npy_path": str(paths["seed_npy"]),
+        "seed_meta_path": str(paths["seed_meta"]),
+        "pressure_npy_path": str(paths["pressure_npy"]),
         "seed_build_success": False,
         "seed_vector_length": None,
+        "seed_layout_valid": False,
+        "acoustic_locator_vector_saved": False,
         "eps_seed_applied": False,
+        "eps_seed_available_for_later_retry": False,
         "seed_failure_reason": None,
-        "seed_build_log_error": None,
+        "historical_build_log_error": None,
     }
 
-    bl = _read_text(build_log)
+    bl = _read_text(paths["build_log"])
     if "ValueError: not enough values to unpack" in bl or "expected 6, got 4" in bl:
-        out["seed_build_log_error"] = "v2_build_coupled_acoustic_seed API mismatch (solve_evp=False returns 4 values)"
-        out["seed_failure_reason"] = out["seed_build_log_error"]
+        out["historical_build_log_error"] = (
+            "prior failed seed build (API mismatch); superseded if fresh meta validates"
+        )
 
-    if seed_npy.is_file():
+    if paths["pressure_npy"].is_file() and paths["pressure_meta"].is_file():
         try:
-            arr = np.load(str(seed_npy))
+            pm = json.loads(paths["pressure_meta"].read_text(encoding="utf-8"))
+            out["acoustic_locator_vector_saved"] = (
+                pm.get("locator_pressure_reference_source") == ACOUSTIC_REFERENCE_SOURCE
+            )
+        except Exception:
+            pass
+
+    if paths["seed_npy"].is_file():
+        try:
+            arr = np.load(str(paths["seed_npy"]))
             out["seed_vector_length"] = int(arr.size)
             out["seed_build_success"] = int(arr.size) > 0 and math.isfinite(float(np.linalg.norm(arr)))
-            if not out["seed_build_success"]:
-                out["seed_failure_reason"] = "seed file empty or zero norm"
         except Exception as exc:
             out["seed_failure_reason"] = f"failed to load seed npy: {exc}"
-    elif not out["seed_failure_reason"]:
-        out["seed_failure_reason"] = "acoustic_coupled_seed.npy missing"
 
-    if seed_meta.is_file():
+    if paths["seed_meta"].is_file():
         try:
-            meta = json.loads(seed_meta.read_text(encoding="utf-8"))
+            meta = json.loads(paths["seed_meta"].read_text(encoding="utf-8"))
             out["seed_meta"] = meta
-            if int(meta.get("n_reduced_W", 0)) > 0 and out["seed_vector_length"]:
-                out["seed_build_success"] = out["seed_build_success"] and (
-                    int(meta["n_reduced_W"]) == int(out["seed_vector_length"])
-                )
+            out["seed_layout_valid"] = bool(meta.get("seed_layout_valid"))
+            out["acoustic_locator_vector_saved"] = bool(
+                meta.get("acoustic_locator_vector_saved")
+            ) or out["acoustic_locator_vector_saved"]
+            if meta.get("locator_pressure_reference_source") == ACOUSTIC_REFERENCE_SOURCE:
+                n_w = int(meta.get("n_reduced_W", meta.get("seed_vector_length", 0)))
+                if (
+                    out["seed_build_success"]
+                    and n_w > 0
+                    and int(out["seed_vector_length"] or 0) == n_w
+                    and out["seed_layout_valid"]
+                ):
+                    out["seed_failure_reason"] = None
+                    out["eps_seed_available_for_later_retry"] = True
+                else:
+                    out["seed_failure_reason"] = "true acoustic seed meta present but layout invalid"
+            elif not out.get("seed_failure_reason"):
+                out["seed_failure_reason"] = "seed meta not tagged as acoustic_only_locator_eigenvector"
         except Exception as exc:
             out["seed_meta_read_error"] = str(exc)
+    elif not out.get("seed_failure_reason"):
+        out["seed_failure_reason"] = "acoustic_coupled_seed_meta.json missing"
 
     for lp in rescue_logs:
         txt = _read_text(lp)
@@ -182,12 +227,6 @@ def _verify_seed_path(case_dir: Path) -> Dict[str, Any]:
             out["eps_seed_applied"] = True
             out["eps_seed_log"] = str(lp)
             break
-    if out["eps_seed_applied"] and not out["seed_build_success"]:
-        out["seed_application_not_verified"] = True
-        out["seed_failure_reason"] = (
-            (out.get("seed_failure_reason") or "")
-            + "; labeled seeded retry but seed vector not valid"
-        ).strip("; ")
 
     return out
 
@@ -234,21 +273,40 @@ def _assemble_l_mid_v2(
     return A, M, u_to_W, p_to_W, restr
 
 
-def _load_seed_vector(
+def _load_true_acoustic_reference(
+    case_dir: Path,
+    *,
+    n_reduced_W: int,
+    seed_info: Dict[str, Any],
+) -> Tuple[Optional[np.ndarray], str, bool]:
+    paths = _true_ref_paths(case_dir)
+    n_W = int(n_reduced_W)
+    if not (
+        bool(seed_info.get("seed_build_success"))
+        and bool(seed_info.get("seed_layout_valid"))
+        and paths["seed_npy"].is_file()
+    ):
+        return None, "unavailable", False
+    if paths["seed_meta"].is_file():
+        meta = json.loads(paths["seed_meta"].read_text(encoding="utf-8"))
+        if meta.get("locator_pressure_reference_source") != ACOUSTIC_REFERENCE_SOURCE:
+            return None, "unavailable", False
+    seed = np.asarray(np.load(str(paths["seed_npy"])), dtype=np.float64).ravel()
+    if int(seed.size) != n_W:
+        return None, "unavailable", False
+    return seed, ACOUSTIC_REFERENCE_SOURCE, True
+
+
+def _load_proxy_reference_historical(
     case_dir: Path,
     p_to_W: np.ndarray,
     *,
     n_reduced_W: int,
     locator_hz: float,
     saved_modes: List[Dict[str, Any]],
-) -> Tuple[np.ndarray, str]:
-    seed_npy = case_dir / "diagnostics" / "acoustic_coupled_seed.npy"
+) -> Tuple[Optional[np.ndarray], str]:
+    """Historical circular proxy — never used for physical verdicts."""
     n_W = int(n_reduced_W)
-    if seed_npy.is_file():
-        seed = np.asarray(np.load(str(seed_npy)), dtype=np.float64).ravel()
-        if seed.size == n_W:
-            return seed, "acoustic_coupled_seed.npy"
-    # Proxy: pressure block of saved coupled mode nearest locator frequency (no acoustic vector stored)
     if saved_modes:
         nearest = min(saved_modes, key=lambda m: abs(float(m["frequency_hz"]) - locator_hz))
         vec = _load_mode_vec(case_dir, nearest)
@@ -258,13 +316,9 @@ def _load_seed_vector(
         if nrm > 0:
             seed /= nrm
         return seed, (
-            f"proxy_pressure_from_nearest_saved_coupled_mode_f={nearest['frequency_hz']:.4f} "
-            "(acoustic eigenvector not archived; not a true locator mode)"
+            f"proxy_pressure_from_nearest_saved_coupled_mode_f={nearest['frequency_hz']:.4f}"
         )
-    seed = np.zeros(n_W, dtype=np.float64)
-    if p_to_W.size:
-        seed[p_to_W] = 1.0 / math.sqrt(float(p_to_W.size))
-    return seed, "unit_pressure_template_on_p_to_W"
+    return None, "proxy_unavailable"
 
 
 def _load_mode_vec(case_dir: Path, meta: Dict[str, Any]) -> np.ndarray:
@@ -391,9 +445,70 @@ def _pressure_reference_to_cluster_projection_overlap(
     }
 
 
+def _coupled_candidate_replay_representation_check(
+    mesh_file: Path,
+    sample: Dict[str, Any],
+    case_dir: Path,
+    candidate: Dict[str, Any],
+    *,
+    u_to_W: np.ndarray,
+    p_to_W: np.ndarray,
+) -> Dict[str, Any]:
+    f_hz = float(candidate.get("frequency_hz", float("nan")))
+    if not math.isfinite(f_hz):
+        return {"coupled_candidate_replay_representation_suspect": True, "note": "invalid frequency"}
+    try:
+        vec = _load_mode_vec(case_dir, candidate)
+    except Exception as exc:
+        return {
+            "coupled_candidate_replay_representation_suspect": True,
+            "note": f"failed to load candidate vector: {exc}",
+        }
+    lam0 = (2.0 * math.pi * f_hz) ** 2
+    A, M, u_idx, p_idx, _ = _assemble_l_mid_v2(
+        mesh_file,
+        sample,
+        coupling_enabled=True,
+        sorting_tag=f"replay_f{int(f_hz)}",
+    )
+    try:
+        residual = _block_residual_contributions(
+            A, M, vec, lam0=lam0, u_idx=u_idx, p_idx=p_idx
+        )
+        rayleigh = _rayleigh_metrics(A, M, vec, seed_f_hz=f_hz)
+    finally:
+        try:
+            A.destroy()
+            M.destroy()
+        except Exception:
+            pass
+    rel = float(residual["relative_residual"])
+    f_ray = float(rayleigh["rayleigh_f_hz"])
+    d_f = abs(f_ray - f_hz) if math.isfinite(f_ray) else float("inf")
+    suspect = rel >= REPLAY_RESIDUAL_SUSPECT or d_f >= REPLAY_RAYLEIGH_DELTA_SUSPECT_HZ
+    return {
+        "coupled_candidate_replay_representation_suspect": bool(suspect),
+        "candidate_frequency_hz": f_hz,
+        "replay_relative_residual": rel,
+        "replay_rayleigh_f_hz": f_ray,
+        "replay_delta_rayleigh_hz": f_ray - f_hz if math.isfinite(f_ray) else float("nan"),
+        "suspect_thresholds": {
+            "relative_residual": REPLAY_RESIDUAL_SUSPECT,
+            "delta_rayleigh_hz": REPLAY_RAYLEIGH_DELTA_SUSPECT_HZ,
+        },
+        "note": (
+            "Saved coupled eigenvector replayed against physical-coupling-enabled operator; "
+            "high residual or implausible Rayleigh frequency suggests representation mismatch."
+        ),
+    }
+
+
 def _mixed_mode_analysis(
     case_dir: Path,
+    mesh_file: Path,
+    sample: Dict[str, Any],
     p_to_W: np.ndarray,
+    u_to_W: np.ndarray,
     locator_hz: float,
     seed: np.ndarray,
     seed_source: str,
@@ -438,6 +553,10 @@ def _mixed_mode_analysis(
     overlap = _pressure_reference_to_cluster_projection_overlap(p_to_W, ref_p, top3_vecs)
     p_fracs = [float(c["p_frac_energy_phys"]) for c in candidates if math.isfinite(float(c["p_frac_energy_phys"]))]
 
+    replay_check = _coupled_candidate_replay_representation_check(
+        mesh_file, sample, case_dir, best, u_to_W=u_to_W, p_to_W=p_to_W
+    )
+
     cluster_metrics = {
         "n_candidates_in_band": len(candidates),
         "band_hz": [lo, hi],
@@ -448,10 +567,12 @@ def _mixed_mode_analysis(
         "max_p_frac_in_cluster": float(max(p_fracs)) if p_fracs else float("nan"),
         "locator_pressure_reference_source": seed_source,
         **overlap,
+        "best_candidate_representation_replay": replay_check,
     }
     return {
         "candidates": candidates,
         "cluster_metrics": cluster_metrics,
+        "representation_replay": replay_check,
         "verdict": None,
     }
 
@@ -460,18 +581,24 @@ def _assign_verdict(
     seed_info: Dict[str, Any],
     rayleigh: Dict[str, Any],
     mixed: Dict[str, Any],
+    *,
+    reference_source: str,
 ) -> str:
+    if reference_source != ACOUSTIC_REFERENCE_SOURCE:
+        return "L_MID_PROXY_REFERENCE_ONLY_NO_PHYSICAL_VERDICT"
+
     cm = mixed.get("cluster_metrics") or {}
+    replay = mixed.get("representation_replay") or cm.get("best_candidate_representation_replay") or {}
+    if replay.get("coupled_candidate_replay_representation_suspect"):
+        return "L_MID_CANDIDATE_REPLAY_REPRESENTATION_SUSPECT"
+
     max_mac = float(cm.get("max_pressure_MAC", float("nan")))
     proj_overlap = float(
         cm.get("pressure_reference_to_cluster_projection_overlap", float("nan"))
     )
-    best = cm.get("best_matching_mode") or {}
-    best_p = float(best.get("p_frac_energy_phys", float("nan")))
 
     rel_dis = float((rayleigh.get("coupling_disabled") or {}).get("relative_residual", float("nan")))
     rel_en = float((rayleigh.get("physical_coupling_enabled") or {}).get("relative_residual", float("nan")))
-    d_ray_en = float((rayleigh.get("physical_coupling_enabled") or {}).get("delta_rayleigh_from_locator_hz", float("nan")))
 
     if seed_info.get("eps_seed_applied") and not seed_info.get("seed_build_success"):
         return "L_MID_SEED_APPLICATION_NOT_VERIFIED"
@@ -557,13 +684,25 @@ def _process_case(
         pass
 
     saved_modes = _load_saved_modes(case_dir)
-    seed, seed_source = _load_seed_vector(
-        case_dir,
-        p0,
-        n_reduced_W=n_W,
-        locator_hz=loc_hz,
-        saved_modes=saved_modes,
+    seed, seed_source, has_true = _load_true_acoustic_reference(
+        case_dir, n_reduced_W=n_W, seed_info=seed_info
     )
+    row.update(_seed_truth_fields(seed_info, seed_source if has_true else "unavailable"))
+
+    if not has_true or seed is None:
+        proxy, proxy_src = _load_proxy_reference_historical(
+            case_dir, p0, n_reduced_W=n_W, locator_hz=loc_hz, saved_modes=saved_modes
+        )
+        row["historical_proxy_reference"] = {
+            "locator_pressure_reference_source": proxy_src,
+            "note": "Circular proxy retained for history only; no physical verdict.",
+        }
+        row["diagnostic_verdict"] = "L_MID_TRUE_ACOUSTIC_REFERENCE_UNAVAILABLE"
+        row["physical_verdict_suppressed"] = True
+        cases_out[case_id] = row
+        _checkpoint_report(report, cases_out, stage=f"{case_id}:no_true_reference")
+        return row
+
     row.update(_seed_truth_fields(seed_info, seed_source))
     cases_out[case_id] = row
     _checkpoint_report(report, cases_out, stage=f"{case_id}:pressure_reference")
@@ -572,9 +711,16 @@ def _process_case(
     cases_out[case_id] = row
     _checkpoint_report(report, cases_out, stage=f"{case_id}:rayleigh_residual")
 
-    mixed = _mixed_mode_analysis(case_dir, p0, loc_hz, seed, seed_source)
+    mixed = _mixed_mode_analysis(
+        case_dir, mesh_file, sample, p0, u0, loc_hz, seed, seed_source
+    )
     row["mixed_mode_continuation"] = mixed
-    row["diagnostic_verdict"] = _assign_verdict(seed_info, row["rayleigh_residual_audit"], mixed)
+    row["diagnostic_verdict"] = _assign_verdict(
+        seed_info,
+        row["rayleigh_residual_audit"],
+        mixed,
+        reference_source=seed_source,
+    )
     cases_out[case_id] = row
     _checkpoint_report(report, cases_out, stage=f"{case_id}:mixed_mode_complete")
     return row
@@ -616,7 +762,13 @@ def _report_to_md_lines(report: Dict[str, Any]) -> List[str]:
         )
         lines.append(f"- Pressure reference: `{row.get('locator_pressure_reference_source')}`")
         if row.get("proxy_reference_diagnostic_only"):
-            lines.append("- **Proxy reference — diagnostic only; does not justify mesh resume**")
+            lines.append("- **Not a true acoustic reference — no physical verdict / no mesh resume**")
+        replay = (row.get("mixed_mode_continuation") or {}).get("representation_replay") or {}
+        if replay.get("coupled_candidate_replay_representation_suspect"):
+            lines.append(
+                f"- **Replay representation suspect** (rel={replay.get('replay_relative_residual')}, "
+                f"f_ray={replay.get('replay_rayleigh_f_hz')})"
+            )
         verdict = row.get("diagnostic_verdict")
         if verdict:
             lines.append(f"- **Verdict:** `{verdict}`")
@@ -660,6 +812,14 @@ def _report_to_md_lines(report: Dict[str, Any]) -> List[str]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="L_mid no-eigensolve mixed-mode audit")
+    parser.add_argument(
+        "--require-true-acoustic-reference",
+        action="store_true",
+        help="Require acoustic_only_locator_eigenvector seed; suppress proxy physical verdicts.",
+    )
+    args = parser.parse_args()
+
     if MPI.COMM_WORLD.size != 1:
         if MPI.COMM_WORLD.rank == 0:
             print("[l_mid_audit] Requires mpiexec -n 1 for operator assembly", file=sys.stderr)
@@ -669,6 +829,8 @@ def main() -> int:
     CONV_DIAG.mkdir(parents=True, exist_ok=True)
 
     report = _base_report(audit_in_progress=True)
+    report["require_true_acoustic_reference"] = bool(args.require_true_acoustic_reference)
+    report["acoustic_reference_source_required"] = ACOUSTIC_REFERENCE_SOURCE
     cases_out: Dict[str, Any] = {}
     _checkpoint_report(report, cases_out, stage="audit_start")
 
@@ -693,10 +855,17 @@ def main() -> int:
         "L_MID_ACOUSTIC_BRANCH_CONTINUES_AS_MIXED_CLUSTER",
     }
     acoustic_refs_ok = all(
-        bool((cases_out.get(c) or {}).get("locator_pressure_reference_is_acoustic_seed"))
+        bool((cases_out.get(c) or {}).get("locator_pressure_reference_is_true_acoustic"))
         for c in ACOUSTIC_CASES
     )
-    continuation_ok = acoustic_refs_ok and all(v in positive for v in verdicts)
+    continuation_ok = (
+        acoustic_refs_ok
+        and all(v in positive for v in verdicts)
+        and not any(
+            str((cases_out.get(c) or {}).get("diagnostic_verdict", "")).startswith("L_MID_PROXY")
+            for c in ACOUSTIC_CASES
+        )
+    )
     report["continuation_criterion_met"] = continuation_ok
     report["continuation_requires_acoustic_seed_reference"] = True
     _checkpoint_report(report, cases_out, stage="audit_complete")

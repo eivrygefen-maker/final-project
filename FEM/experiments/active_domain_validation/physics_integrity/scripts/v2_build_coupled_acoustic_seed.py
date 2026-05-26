@@ -38,6 +38,12 @@ def main() -> int:
     parser.add_argument("--num-modes", type=int, default=24)
     parser.add_argument("--out-npy", type=Path, required=True)
     parser.add_argument("--out-meta-json", type=Path, required=True)
+    parser.add_argument(
+        "--out-pressure-npy",
+        type=Path,
+        default=None,
+        help="Optional archive of acoustic-cavity pressure eigenvector (n_p).",
+    )
     args = parser.parse_args()
 
     if MPI.COMM_WORLD.size != 1:
@@ -128,6 +134,15 @@ def main() -> int:
 
     args.out_npy.parent.mkdir(parents=True, exist_ok=True)
     np.save(str(args.out_npy.resolve()), seed)
+    p_norm = float(np.linalg.norm(p_mode))
+    if p_norm > 0.0:
+        p_arch = np.asarray(p_mode, dtype=np.float64).ravel() / p_norm
+    else:
+        p_arch = np.asarray(p_mode, dtype=np.float64).ravel()
+    if args.out_pressure_npy is not None:
+        args.out_pressure_npy.parent.mkdir(parents=True, exist_ok=True)
+        np.save(str(args.out_pressure_npy.resolve()), p_arch)
+    seed_layout_valid = int(seed.size) == int(n_W) and float(np.linalg.norm(seed)) > 0.0
     meta = {
         "locator_frequency_hz": float(loc_hz),
         "picked_mode_index": j,
@@ -137,11 +152,18 @@ def main() -> int:
         "n_p_coupled_active": int(p_to_W.size),
         "n_u_active": int(u_to_W.size),
         "seed_norm": float(np.linalg.norm(seed)),
+        "acoustic_locator_vector_saved": True,
+        "locator_pressure_reference_source": "acoustic_only_locator_eigenvector",
+        "seed_build_success": True,
+        "seed_layout_valid": bool(seed_layout_valid),
+        "seed_vector_length": int(seed.size),
         "mapping_note": (
             "Pressure-only acoustic cavity mode embedded on coupled p_to_W indices; "
             "u block zero. Experiment-only EPS initial space — no v2 assembly change."
         ),
     }
+    if args.out_pressure_npy is not None:
+        meta["acoustic_locator_pressure_npy"] = str(args.out_pressure_npy)
     args.out_meta_json.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     print(
         f"[seed] wrote {args.out_npy} f_mode={freqs_hz[j]:.4f} loc_hz={loc_hz:.4f} n_W={n_W}",

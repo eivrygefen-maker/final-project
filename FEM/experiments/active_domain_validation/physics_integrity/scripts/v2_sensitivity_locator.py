@@ -7,6 +7,8 @@ import json
 import math
 import sys
 from pathlib import Path
+
+import numpy as np
 from typing import Any, Dict, List, Tuple
 
 from mpi4py import MPI
@@ -49,6 +51,18 @@ def main() -> int:
     parser.add_argument("--reference-hz", type=float, default=244.394153389752)
     parser.add_argument("--num-modes", type=int, default=8)
     parser.add_argument("--out-json", type=Path, required=True)
+    parser.add_argument(
+        "--out-pressure-mode-npy",
+        type=Path,
+        default=None,
+        help="Save selected acoustic-cavity pressure eigenvector (n_p_active).",
+    )
+    parser.add_argument(
+        "--out-pressure-mode-meta-json",
+        type=Path,
+        default=None,
+        help="Metadata for archived pressure eigenvector.",
+    )
     args = parser.parse_args()
 
     if MPI.COMM_WORLD.size != 1:
@@ -73,7 +87,7 @@ def main() -> int:
     cfg["geometry"] = sample_geometry(sample)
     nm = max(4, int(args.num_modes))
 
-    _msh, _V_space, freqs_hz, _eig, n_u_reported, n_p_reported = fem3d._solve_coupled_evp(
+    _msh, _V_space, freqs_hz, eig_ac, n_u_reported, n_p_reported = fem3d._solve_coupled_evp(
         mesh_file=args.mesh.resolve(),
         config=cfg,
         num_modes=nm,
@@ -105,17 +119,52 @@ def main() -> int:
         band_hi=float(args.locator_hi_hz),
         reference_hz=float(args.reference_hz),
     )
+    j = int(np.argmin([abs(float(f) - loc_hz) for f in freqs_hz])) if freqs_hz else -1
     payload = {
         "locator_status": "ok" if math.isfinite(loc_hz) else "failed",
         "locator_frequency_hz": loc_hz,
         "locator_selection_method": method,
         "locator_band_hz": [float(args.locator_lo_hz), float(args.locator_hi_hz)],
         "all_locator_frequencies_hz": [float(f) for f in freqs_hz],
+        "picked_mode_index": int(j),
+        "picked_mode_frequency_hz": float(freqs_hz[j]) if j >= 0 else float("nan"),
         "reference_hz": float(args.reference_hz),
         "sample_id": str(sample.get("id", "")),
         "solver_branch": "acoustic_cavity_only_diagnosis_via_solve_coupled_evp",
         "n_p_reported": int(n_p_reported),
+        "acoustic_locator_vector_saved": False,
     }
+    if (
+        math.isfinite(loc_hz)
+        and j >= 0
+        and eig_ac is not None
+        and getattr(eig_ac, "size", 0) > 0
+        and args.out_pressure_mode_npy is not None
+    ):
+        p_mode = np.asarray(eig_ac[:, j], dtype=np.float64).ravel()
+        nrm = float(np.linalg.norm(p_mode))
+        if nrm > 0.0:
+            p_mode = p_mode / nrm
+        args.out_pressure_mode_npy.parent.mkdir(parents=True, exist_ok=True)
+        np.save(str(args.out_pressure_mode_npy.resolve()), p_mode)
+        payload["acoustic_locator_vector_saved"] = True
+        payload["acoustic_locator_pressure_npy"] = str(args.out_pressure_mode_npy)
+        payload["n_p_active_locator_vector"] = int(p_mode.size)
+        if args.out_pressure_mode_meta_json is not None:
+            pmeta = {
+                "locator_frequency_hz": float(loc_hz),
+                "picked_mode_index": int(j),
+                "picked_mode_frequency_hz": float(freqs_hz[j]),
+                "n_p_active": int(p_mode.size),
+                "vector_norm": float(np.linalg.norm(p_mode)),
+                "locator_pressure_reference_source": "acoustic_only_locator_eigenvector",
+                "solver_branch": payload["solver_branch"],
+            }
+            args.out_pressure_mode_meta_json.parent.mkdir(parents=True, exist_ok=True)
+            args.out_pressure_mode_meta_json.write_text(
+                json.dumps(pmeta, indent=2), encoding="utf-8"
+            )
+            payload["acoustic_locator_pressure_meta_json"] = str(args.out_pressure_mode_meta_json)
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
     args.out_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     if MPI.COMM_WORLD.rank == 0:
