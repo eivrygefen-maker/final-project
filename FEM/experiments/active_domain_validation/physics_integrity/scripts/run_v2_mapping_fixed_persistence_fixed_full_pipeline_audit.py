@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sys
 import time
 import traceback
@@ -16,8 +17,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from mpi4py import MPI
-from scipy import sparse
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 FEM_SCRIPTS = Path(__file__).resolve().parents[4] / "scripts"
 for _p in (SCRIPT_DIR, FEM_SCRIPTS):
@@ -31,12 +30,10 @@ from v2_mapping_fixed_baseline_evaluator import (
     VERDICT_NO_BRANCH,
     mapping_fixed_branch_recovery_from_row,
 )
-from v2_mapping_fixed_candidate_persistence import (
-    candidate_slot_path,
-    pressure_block_mapping_metadata,
-)
+from v2_mapping_fixed_candidate_persistence import pressure_block_mapping_metadata
 from v2_mesh_convergence_common import (
     CONV_DIAG,
+    case_by_id,
     load_manifest,
     mesh_path,
     sample_spec_from_case,
@@ -62,6 +59,9 @@ VERDICT_REPLAY_EVAL_FAILURE = "MAPPING_FIXED_UNREGULARIZED_BASELINE_REPLAY_EVALU
 VERDICT_PERSISTED_CONTENT_UNRESOLVED = (
     "MAPPING_FIXED_UNREGULARIZED_BASELINE_PERSISTED_VECTOR_CONTENT_UNRESOLVED"
 )
+
+# candidate_eps_slot_0000.smx.npz — stem includes ".smx"; parse from path.name only.
+_CANDIDATE_EPS_SLOT_RE = re.compile(r"^candidate_eps_slot_(\d+)\.smx\.npz$", re.IGNORECASE)
 
 
 def _static_pipeline_control_flow() -> List[Dict[str, Any]]:
@@ -173,6 +173,71 @@ def _as_list(value: Any) -> List[Any]:
     if isinstance(value, list):
         return value
     return list(value)
+
+
+def _safe_int(value: Any, *, default: Optional[int] = None) -> Optional[int]:
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value: Any, *, default: float = float("nan")) -> float:
+    if value is None:
+        return default
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(out):
+        return default
+    return out
+
+
+def _parse_candidate_eps_slot(path: Path) -> Tuple[Optional[int], Optional[str]]:
+    """Parse EPS slot from candidate_eps_slot_XXXX.smx.npz filename."""
+    m = _CANDIDATE_EPS_SLOT_RE.match(path.name)
+    if not m:
+        return None, f"filename_does_not_match_contract:{path.name}"
+    return int(m.group(1)), None
+
+
+def _build_modes_meta(summary: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
+    out: Dict[int, Dict[str, Any]] = {}
+    for m in _as_list(summary.get("modes")):
+        if not isinstance(m, dict):
+            continue
+        slot = _safe_int(m.get("eps_slot_index", m.get("candidate_index")))
+        if slot is None or slot < 0:
+            continue
+        out[int(slot)] = m
+    return out
+
+
+def _sanitize_for_json(value: Any) -> Any:
+    """Replace non-JSON floats (NaN/inf) for strict report serialization."""
+    if isinstance(value, dict):
+        return {str(k): _sanitize_for_json(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_for_json(v) for v in value]
+    if isinstance(value, float):
+        if math.isnan(value):
+            return None
+        if math.isinf(value):
+            return None
+        return value
+    if isinstance(value, np.floating):
+        f = float(value)
+        if not math.isfinite(f):
+            return None
+        return f
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.bool_):
+        return bool(value)
+    return value
 
 
 def _index_map_from_cfg(cfg_map: Dict[str, Any], key: str) -> Tuple[np.ndarray, Optional[str]]:
@@ -350,7 +415,10 @@ def _evaluate_candidate_physics(
 ) -> Dict[str, Any]:
     from physical_fsi_seed_residual_audit import _block_residual_contributions, _rayleigh_metrics
 
-    reported_f = float(meta.get("frequency_hz", meta.get("reported_frequency_hz", float("nan"))))
+    reported_f = _safe_float(
+        meta.get("frequency_hz", meta.get("reported_frequency_hz")),
+        default=float("nan"),
+    )
     out: Dict[str, Any] = {
         "slot_index": int(slot),
         "reported_frequency_hz": reported_f,
@@ -500,9 +568,16 @@ def _assign_audit_verdict(
     file_rows: List[Dict[str, Any]],
     eval_rows: List[Dict[str, Any]],
     persistence_closed: bool,
+    slot_parse_failures: int,
 ) -> Tuple[str, str, Dict[str, Any]]:
     if not persistence_closed:
         return VERDICT_INCONSISTENT, "persistence_not_closed", {}
+    if slot_parse_failures > 0:
+        return VERDICT_REPLAY_EVAL_FAILURE, "candidate_filename_slot_parse_failure", {
+            "slot_parse_failures": slot_parse_failures,
+        }
+    if not file_rows:
+        return VERDICT_REPLAY_EVAL_FAILURE, "no_candidate_files_found", {}
     loads_ok = all(r.get("vector_load_success") for r in file_rows)
     if not loads_ok:
         return VERDICT_REPLAY_EVAL_FAILURE, "not_all_vectors_loaded", {}
@@ -552,14 +627,14 @@ def _write_md(report: Dict[str, Any]) -> None:
         "## Persistence status",
         "",
         f"- self_test_pass (VM evidence design): replacement persistence 56/56 closed",
-        f"- candidates on disk: {report.get('candidate_file_audit', {}).get('file_count')}",
-        f"- nnz summary: {json.dumps(report.get('candidate_file_audit', {}).get('nnz_summary', {}))}",
+        f"- candidates on disk: {_as_dict(report.get('candidate_file_audit')).get('file_count')}",
+        f"- nnz summary: {json.dumps(_sanitize_for_json(_as_dict(report.get('candidate_file_audit')).get('nnz_summary', {})))}",
         "",
         "## Root-cause category",
         "",
-        f"`{report.get('root_cause_analysis', {}).get('primary_category')}`",
+        f"`{_as_dict(report.get('root_cause_analysis')).get('primary_category')}`",
         "",
-        report.get("root_cause_analysis", {}).get("mechanism", ""),
+        str(_as_dict(report.get("root_cause_analysis")).get("mechanism", "")),
         "",
         "## Operator policy (from artifacts)",
         "",
@@ -644,7 +719,7 @@ def main() -> int:
         return 2
 
     manifest = load_manifest()
-    case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
+    case = case_by_id(manifest, CASE_ID)
     case_dir = solve_case_dir("L_mid", CASE_ID)
     out_dir = case_dir / OUT_SUBDIR_PERSISTENCE_FIXED
     mesh_file = mesh_path("L_mid", CASE_ID)
@@ -652,7 +727,9 @@ def main() -> int:
     seed_meta_path = case_dir / "diagnostics" / "acoustic_coupled_seed_meta.json"
     seed_meta = _load_json(seed_meta_path)
     sample = sample_spec_from_case(case)
-    target_hz = float(seed_meta.get("locator_frequency_hz", SEED_F_HZ))
+    target_hz = _safe_float(seed_meta.get("locator_frequency_hz"), default=SEED_F_HZ)
+    if not math.isfinite(target_hz):
+        target_hz = SEED_F_HZ
 
     bank_path = out_dir / "diagnostics" / "eps_candidate_bank.json"
     summary_path = out_dir / "diagnostics" / "mode_energy_summary.json"
@@ -665,10 +742,7 @@ def main() -> int:
         if results:
             solve_result = _load_json(results[-1])
 
-    modes_meta = {
-        int(m.get("eps_slot_index", m.get("candidate_index", -1))): m
-        for m in _as_list(summary.get("modes"))
-    }
+    modes_meta = _build_modes_meta(summary)
     p_to_W, p_source, _p_info = _resolve_p_to_W(solve_result, bank, mesh_file, sample)
     u_to_W, u_source = _acquire_u_to_W(solve_result, mesh_file, sample)
     map_contract = _build_map_contract(
@@ -680,9 +754,9 @@ def main() -> int:
 
     eps_diag = _as_dict(solve_result.get("eps_batch_diagnostics"))
     st_fields = {
-        "actual_sigma_hz": float(eps_diag.get("st_sigma_hz_used", float("nan"))),
-        "actual_st_a_shift_frac": float(eps_diag.get("st_a_shift_frac_used", 0.0)),
-        "actual_st_mass_reg_frac": float(eps_diag.get("st_mass_reg_frac_used", 0.0)),
+        "actual_sigma_hz": _safe_float(eps_diag.get("st_sigma_hz_used"), default=float("nan")),
+        "actual_st_a_shift_frac": _safe_float(eps_diag.get("st_a_shift_frac_used"), default=0.0),
+        "actual_st_mass_reg_frac": _safe_float(eps_diag.get("st_mass_reg_frac_used"), default=0.0),
         "diagnostic_operator_consistent_with_replay": bool(
             eps_diag.get("diagnostic_operator_consistent_with_replay")
         ),
@@ -723,11 +797,29 @@ def main() -> int:
     )
 
     file_rows: List[Dict[str, Any]] = []
+    slot_parse_failures = 0
     modes_dir = out_dir / "modes"
+    if not modes_dir.is_dir():
+        raise FileNotFoundError(f"modes directory missing: {modes_dir}")
     for path in sorted(modes_dir.glob("candidate_eps_slot_*.smx.npz")):
-        slot = int(path.stem.split("_")[-1]) if "_" in path.stem else -1
+        slot, slot_err = _parse_candidate_eps_slot(path)
+        if slot is None:
+            slot_parse_failures += 1
+            file_rows.append(
+                {
+                    "file_path": str(path),
+                    "file_exists": path.is_file(),
+                    "slot_index": None,
+                    "slot_parse_status": "failed",
+                    "slot_parse_failure_reason": slot_err,
+                    "vector_load_success": False,
+                    "vector_load_status": "slot_parse_failure",
+                }
+            )
+            continue
         row = _inspect_npz_file(path, u_to_W=u_to_W, p_to_W=p_to_W)
-        row["slot_index"] = slot
+        row["slot_index"] = int(slot)
+        row["slot_parse_status"] = "ok"
         file_rows.append(row)
 
     eval_rows: List[Dict[str, Any]] = []
@@ -735,7 +827,9 @@ def main() -> int:
     if not map_contract["map_contract_pass"]:
         physics_eval_skipped = True
         for fr in file_rows:
-            slot = int(fr["slot_index"])
+            slot = _safe_int(fr.get("slot_index"))
+            if slot is None:
+                continue
             eval_rows.append(
                 {
                     "slot_index": slot,
@@ -744,13 +838,19 @@ def main() -> int:
                 }
             )
     else:
+        if not seed_npy.is_file():
+            raise FileNotFoundError(f"true seed missing: {seed_npy}")
         seed = np.asarray(np.load(str(seed_npy)), dtype=np.float64).ravel()
+        if int(seed.size) != N_REDUCED_W:
+            raise ValueError(f"seed length {int(seed.size)} != {N_REDUCED_W}")
         from v2_unreg_offset_report_evaluator import assemble_replay_operators
 
         A, M, _asm_meta = assemble_replay_operators(mesh_file, sample, out_dir=out_dir)
         try:
             for fr in file_rows:
-                slot = int(fr["slot_index"])
+                slot = _safe_int(fr.get("slot_index"))
+                if slot is None:
+                    continue
                 meta = modes_meta.get(slot, {})
                 dense = fr.pop("dense_vector", None)
                 if dense is None:
@@ -797,6 +897,7 @@ def main() -> int:
             file_rows=file_rows,
             eval_rows=eval_rows,
             persistence_closed=persistence_closed,
+            slot_parse_failures=slot_parse_failures,
         )
     rca = {
         "primary_category": rca_extra.get("primary_hypothesis", reason),
@@ -832,6 +933,8 @@ def main() -> int:
         },
         "candidate_file_audit": {
             "file_count": len(file_rows),
+            "slot_parse_failures": int(slot_parse_failures),
+            "expected_num_vectors_saved": int(bank.get("num_vectors_saved", 0)),
             "nnz_summary": nnz_summary,
             "files": [
                 {k: v for k, v in r.items() if k not in ("dense_vector",)}
@@ -869,7 +972,7 @@ def main() -> int:
         "mesh_convergence_may_resume": False,
     }
     try:
-        write_json(OUT_JSON, report)
+        write_json(OUT_JSON, _sanitize_for_json(report))
         _write_md(report)
         _refresh_status_reports(report)
     except Exception:
