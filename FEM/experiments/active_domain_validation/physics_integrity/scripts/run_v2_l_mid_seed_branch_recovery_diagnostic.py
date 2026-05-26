@@ -49,6 +49,11 @@ CASE_ID = "baseline_coupled_v2"
 FREQ_TOL_FRAC = 0.01
 MAC_TOL = 0.85
 REPLAY_RESIDUAL_OK = 0.05
+LAMBDA_ONE_TOL = 1.0e-3
+VERDICT_SPURIOUS_SELECTED = (
+    "DIAGNOSTIC_SELECTED_SIGMA_OR_BC_SPURIOUS_MODE_"
+    "TRUE_ACOUSTIC_SEED_REMAINS_VALID_BRANCH_NOT_YET_RECOVERED"
+)
 NUM_MODES = 48
 
 
@@ -292,22 +297,25 @@ def _evaluate(
     if best.get("vector_path"):
         vec = _load_mode_vec(out_dir, str(best["vector_path"]))
         f_hz = float(best["frequency_hz"])
-        lam0 = (2.0 * math.pi * f_hz) ** 2
         A, M, u_idx, p_idx = _assemble_operators(mesh_file, sample, f"replay_{int(f_hz)}")
         try:
-            residual = _block_residual_contributions(
-                A, M, vec, lam0=lam0, u_idx=u_idx, p_idx=p_idx
-            )
             rayleigh = _rayleigh_metrics(A, M, vec, seed_f_hz=f_hz)
+            lam_r = float(rayleigh["rayleigh_lambda"])
+            residual = _block_residual_contributions(
+                A, M, vec, lam0=lam_r, u_idx=u_idx, p_idx=p_idx
+            )
         finally:
             try:
                 A.destroy()
                 M.destroy()
             except Exception:
                 pass
+        lam_r = float(rayleigh["rayleigh_lambda"])
         replay = {
             "replay_relative_residual_of_recovered_mode": float(residual["relative_residual"]),
             "replay_rayleigh_f_hz": float(rayleigh["rayleigh_f_hz"]),
+            "replay_rayleigh_eigenvalue": lam_r,
+            "algebraic_lambda_one_suspect": bool(abs(lam_r - 1.0) <= LAMBDA_ONE_TOL),
         }
         if best:
             best = {**best, **replay}
@@ -315,6 +323,7 @@ def _evaluate(
     mac = float(best.get("pressure_MAC_to_seed_p_block", float("nan")))
     d_frac = float(best.get("frequency_delta_fraction", float("inf")))
     rel_res = float(replay.get("replay_relative_residual_of_recovered_mode", float("nan")))
+    lam_one = bool(replay.get("algebraic_lambda_one_suspect", False))
     continuation = bool(
         solve_result.get("continuation_seed_applied")
         or (solve_result.get("eps_seed") or {}).get("eps_initial_space_set")
@@ -343,19 +352,20 @@ def _evaluate(
         and math.isfinite(p_frac)
         and p_frac >= 0.5
     )
+    spurious_selected = bool(
+        freq_class_ok
+        and (
+            lam_one
+            or (math.isfinite(rel_res) and rel_res > REPLAY_RESIDUAL_OK)
+            or (math.isfinite(mac) and mac < MAC_TOL)
+        )
+    )
     if not continuation:
         verdict = "DIAGNOSTIC_SOLVER_NOT_APPLIED"
     elif recovery_ok:
         verdict = "SEED_BRANCH_RECOVERED_IN_DIAGNOSTIC_MODE"
-    elif freq_class_ok and (
-        (math.isfinite(mac) and mac < MAC_TOL)
-        or not math.isfinite(rel_res)
-        or rel_res > REPLAY_RESIDUAL_OK
-    ):
-        verdict = (
-            "DIAGNOSTIC_BRANCH_FREQUENCY_AND_ACOUSTIC_CLASS_RECOVERED_BUT_"
-            "MAC_OR_REPLAY_MAPPING_INCONSISTENT"
-        )
+    elif spurious_selected:
+        verdict = VERDICT_SPURIOUS_SELECTED
     else:
         verdict = "SEED_BRANCH_NOT_RECOVERED_EVEN_IN_DIAGNOSTIC_MODE"
 
