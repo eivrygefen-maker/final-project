@@ -3516,22 +3516,29 @@ def _slepc_try_eps_st_setup(
     _slepc_eps_ensure_operators(eps, A, M)
     st = eps.getST()
     last_exc: Optional[BaseException] = None
-    reg_ladder = _slepc_st_mass_reg_ladder(solver_cfg)
-    stiff_ladder_raw = solver_cfg.get(
-        "eps_st_a_diagonal_shift_frac_ladder",
-        (1.0e-3, 0.0, 5.0e-3, 2.0e-2),
-    )
-    stiff_ladder: List[float] = []
-    if isinstance(stiff_ladder_raw, (list, tuple)):
-        for x in stiff_ladder_raw:
-            try:
-                v = float(x)
-            except (TypeError, ValueError):
-                continue
-            if v not in stiff_ladder:
-                stiff_ladder.append(v)
-    if not stiff_ladder:
-        stiff_ladder = [1.0e-3, 0.0]
+    require_unreg_st = _solver_bool(
+        solver_cfg, "diagnostic_requires_unregularized_ST", default=False
+    ) or _solver_bool(solver_cfg, "eps_st_unregularized_only", default=False)
+    if require_unreg_st:
+        reg_ladder = [0.0]
+        stiff_ladder = [0.0]
+    else:
+        reg_ladder = _slepc_st_mass_reg_ladder(solver_cfg)
+        stiff_ladder_raw = solver_cfg.get(
+            "eps_st_a_diagonal_shift_frac_ladder",
+            (1.0e-3, 0.0, 5.0e-3, 2.0e-2),
+        )
+        stiff_ladder = []
+        if isinstance(stiff_ladder_raw, (list, tuple)):
+            for x in stiff_ladder_raw:
+                try:
+                    v = float(x)
+                except (TypeError, ValueError):
+                    continue
+                if v not in stiff_ladder:
+                    stiff_ladder.append(v)
+        if not stiff_ladder:
+            stiff_ladder = [1.0e-3, 0.0]
     use_stiff_copy = any(v > 0.0 for v in stiff_ladder)
     for stiff_frac in stiff_ladder:
         A_work = A
@@ -4607,6 +4614,10 @@ def _slepc_shift_invert_batch(
     its = eps.getIterationNumber()
     nconv_marked = int(eps.getConverged())
     reason = eps.getConvergedReason()
+    _st_a_used = float(solver_cfg.get("_eps_st_a_shift_frac", 0.0) or 0.0)
+    _st_m_used = float(solver_cfg.get("_batch_st_mass_reg_frac", 0.0) or 0.0)
+    _st_sigma_used_hz = float(solver_cfg.get("_batch_st_sigma_hz", float("nan")))
+    _op_consistent = bool(abs(_st_a_used) <= 1.0e-15 and abs(_st_m_used) <= 1.0e-15)
     solver_cfg["_eps_batch_diagnostics"] = {
         "nconv_marked": int(nconv_marked),
         "nev_request": int(nev_request),
@@ -4614,6 +4625,13 @@ def _slepc_shift_invert_batch(
         "eps_iterations": int(its),
         "converged_reason": int(reason),
         "continuation_seed_applied": bool(seed_applied),
+        "st_sigma_hz_used": _st_sigma_used_hz,
+        "st_a_shift_frac_used": _st_a_used,
+        "st_mass_reg_frac_used": _st_m_used,
+        "diagnostic_requires_unregularized_ST": bool(
+            _solver_bool(solver_cfg, "diagnostic_requires_unregularized_ST", default=False)
+        ),
+        "diagnostic_operator_consistent_with_replay": _op_consistent,
     }
     force_partial = _solver_bool(solver_cfg, "eps_force_harvest_partial", True)
     harvest_slots = nconv_marked

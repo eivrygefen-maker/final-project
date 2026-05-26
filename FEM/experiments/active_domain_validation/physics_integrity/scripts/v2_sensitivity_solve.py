@@ -50,6 +50,8 @@ SEED_BRANCH_DIAG_SIGMA_RETRY_OFFSETS_HZ = (
     15.0,
     -15.0,
 )
+# In-band nonzero-offset ladder for unregularized diagnostic rerun (never σ = seed f).
+SEED_BRANCH_UNREG_OFFSET_SIGMA_HZ = (0.5, -0.5, 1.0, -1.0, 2.0, -2.0)
 
 
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
@@ -141,12 +143,64 @@ def _seed_branch_diag_meta(
     }
 
 
+def _apply_seed_branch_unregularized_offset_diagnostic_solver_cfg(
+    sc: Dict[str, Any], target_hz: float
+) -> Dict[str, Any]:
+    """
+    Experiment-only: in-band sigma ladder with nonzero offsets only; ST must remain
+    unregularized (no A-shift / mass-reg ST copies). Fail-closed vs replay operator.
+    """
+    f0 = float(target_hz)
+    local_half = max(0.5, f0 * 0.01)
+    local_band = [f0 - local_half, f0 + local_half]
+    sc["seeded_branch_recovery_diagnostic"] = True
+    sc["diagnostic_requires_unregularized_ST"] = True
+    sc["eps_st_unregularized_only"] = True
+    sc["shift_invert_target_hz"] = f0
+    sc["_worker_target_hz"] = f0
+    sc["eps_st_sigma_try_target_first"] = False
+    sc["eps_st_sigma_include_target_in_ladder"] = False
+    sc["eps_st_sigma_primary_offset_hz"] = float(SEED_BRANCH_UNREG_OFFSET_SIGMA_HZ[0])
+    sc["eps_st_sigma_min_offset_hz"] = 0.0
+    sc["eps_st_sigma_frac_offset"] = 0.0
+    sc["eps_st_sigma_retry_offsets_hz"] = list(SEED_BRANCH_UNREG_OFFSET_SIGMA_HZ)
+    sc["eps_st_sigma_ladder_max"] = max(8, len(SEED_BRANCH_UNREG_OFFSET_SIGMA_HZ) + 2)
+    sc["eps_st_a_diagonal_shift_frac_ladder"] = (0.0,)
+    sc["eps_st_mass_reg_frac_ladder"] = (0.0,)
+    sc["eps_st_mass_reg_frac"] = 0.0
+    sc["eps_broad_search_hz"] = 0.0
+    sc["eps_harvest_sigma_margin_hz"] = 3.0
+    sc["eps_interval_half_width_hz"] = max(local_half, 8.0)
+    harvest_half = max(12.0, local_half * 4.0)
+    sc["_worker_harvest_lo_hz"] = f0 - harvest_half
+    sc["_worker_harvest_hi_hz"] = f0 + harvest_half
+    sc["eps_reject_sigma_spurious"] = True
+    sc["eps_reject_target_locked"] = True
+    ladder = fem3d._slepc_st_sigma_hz_candidates(sc, f0)
+    meta = _seed_branch_diag_meta(f0, ladder, local_band, harvest_half)
+    meta.update(
+        {
+            "solver_mode": "seed_branch_recovery_diagnostic_unregularized_offset",
+            "diagnostic_requires_unregularized_ST": True,
+            "diagnostic_sigma_offset_ladder_hz": [float(x) for x in ladder],
+            "diagnostic_sigma_offset_from_seed_hz": [
+                float(x) - f0 for x in ladder
+            ],
+            "never_sigma_at_seed_rayleigh_frequency": True,
+            "eps_st_unregularized_only": True,
+            "post_evaluate_physical_filter": True,
+        }
+    )
+    return meta
+
+
 def _apply_seed_branch_filtered_diagnostic_solver_cfg(
     sc: Dict[str, Any], target_hz: float
 ) -> Dict[str, Any]:
     """
-    Filtered diagnostic rerun: same sigma ladder as seed-branch diagnostic, but enable
-    harvest-time sigma-spurious rejection. Post-evaluate physical filter still required.
+    Legacy filtered diagnostic (superseded): targeted exact seed sigma with optional ST
+    regularization retry. Retained for log compatibility; new reruns should use
+    unregularized-offset diagnostic instead.
     """
     meta = _apply_seed_branch_recovery_diagnostic_solver_cfg(sc, target_hz)
     sc["eps_reject_sigma_spurious"] = True
@@ -155,6 +209,7 @@ def _apply_seed_branch_filtered_diagnostic_solver_cfg(
     meta["eps_reject_target_locked_enabled"] = True
     meta["filtered_diagnostic_rerun"] = True
     meta["post_evaluate_physical_filter"] = True
+    meta["superseded_by"] = "seed_branch_recovery_diagnostic_unregularized_offset"
     return meta
 
 
@@ -221,8 +276,16 @@ def main() -> int:
         "--seed-branch-filtered-diagnostic",
         action="store_true",
         help=(
-            "With --seed-branch-recovery-diagnostic: enable harvest-time sigma-spurious "
-            "rejection (diagnostic rerun only; production policy unchanged)."
+            "Legacy filtered diagnostic (superseded). Prefer "
+            "--seed-branch-unregularized-offset-diagnostic."
+        ),
+    )
+    parser.add_argument(
+        "--seed-branch-unregularized-offset-diagnostic",
+        action="store_true",
+        help=(
+            "Experiment-only: in-band nonzero-offset sigma ladder; ST must stay "
+            "unregularized; fail-closed if ST regularization would be required."
         ),
     )
     args = parser.parse_args()
@@ -272,7 +335,11 @@ def main() -> int:
     sc["_worker_harvest_hi_hz"] = band_hi
     sc["shift_invert_target_hz"] = target_hz
     if args.seed_branch_recovery_diagnostic:
-        if args.seed_branch_filtered_diagnostic:
+        if args.seed_branch_unregularized_offset_diagnostic:
+            seed_branch_diag_meta = _apply_seed_branch_unregularized_offset_diagnostic_solver_cfg(
+                sc, target_hz
+            )
+        elif args.seed_branch_filtered_diagnostic:
             seed_branch_diag_meta = _apply_seed_branch_filtered_diagnostic_solver_cfg(
                 sc, target_hz
             )
@@ -399,8 +466,16 @@ def main() -> int:
     except Exception:
         pass
 
-    eps_diag = cfg.get("_eps_batch_diagnostics") or sc.get("_eps_batch_diagnostics") or {}
+    eps_diag = dict(cfg.get("_eps_batch_diagnostics") or sc.get("_eps_batch_diagnostics") or {})
     continuation_seed_applied = bool(eps_diag.get("continuation_seed_applied"))
+    st_a_used = float(eps_diag.get("st_a_shift_frac_used", 0.0) or 0.0)
+    st_m_used = float(eps_diag.get("st_mass_reg_frac_used", 0.0) or 0.0)
+    op_consistent = bool(
+        eps_diag.get(
+            "diagnostic_operator_consistent_with_replay",
+            abs(st_a_used) <= 1.0e-15 and abs(st_m_used) <= 1.0e-15,
+        )
+    )
     if eps_seed_info.get("eps_initial_space_set"):
         continuation_seed_applied = True
 
@@ -437,18 +512,42 @@ def main() -> int:
         "num_modes_saved": n_modes,
         "gnhep_scales": {k: float(gnhep.get(k, 1.0)) for k in ("s_uu", "s_pp", "s_couple")},
         "continuation_seed_applied": continuation_seed_applied,
-        "st_sigma_hz_used": float(cfg.get("_worker_st_sigma_hz", float("nan"))),
+        "st_sigma_hz_used": float(
+            eps_diag.get("st_sigma_hz_used", cfg.get("_worker_st_sigma_hz", float("nan")))
+        ),
+        "actual_st_a_shift_frac": st_a_used,
+        "actual_st_mass_reg_frac": st_m_used,
+        "diagnostic_operator_consistent_with_replay": op_consistent,
     }
     if seed_branch_diag_meta is not None:
+        requires_unreg = bool(
+            seed_branch_diag_meta.get("diagnostic_requires_unregularized_ST")
+            or args.seed_branch_unregularized_offset_diagnostic
+        )
+        diag_verdict: Optional[str] = None
+        if requires_unreg and not op_consistent:
+            diag_verdict = (
+                "DIAGNOSTIC_ST_REGULARIZATION_REQUIRED_NO_PHYSICAL_VERDICT"
+            )
         result["seed_branch_recovery_diagnostic"] = {
             **seed_branch_diag_meta,
+            "diagnostic_requires_unregularized_ST": requires_unreg,
             "continuation_seed_applied": continuation_seed_applied,
             "seed_file_used": eps_seed_info.get("seed_file_used"),
             "seed_layout_valid": eps_seed_info.get("seed_layout_valid"),
             "seed_vector_length": eps_seed_info.get("seed_vector_length"),
             "eps_initial_space_set": eps_seed_info.get("eps_initial_space_set"),
             "eps_initial_space_norm": eps_seed_info.get("eps_initial_space_norm"),
+            "actual_sigma_hz": float(
+                eps_diag.get("st_sigma_hz_used", result["st_sigma_hz_used"])
+            ),
+            "actual_st_a_shift_frac": st_a_used,
+            "actual_st_mass_reg_frac": st_m_used,
+            "diagnostic_operator_consistent_with_replay": op_consistent,
+            "diagnostic_verdict": diag_verdict,
         }
+        if diag_verdict is not None:
+            result["diagnostic_verdict"] = diag_verdict
         result["solver_mode"] = seed_branch_diag_meta["solver_mode"]
     else:
         result["solver_mode"] = "standard_v2_sensitivity"

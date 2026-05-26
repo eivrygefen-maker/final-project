@@ -37,6 +37,65 @@ VERDICT_SPURIOUS_SELECTED = (
     "DIAGNOSTIC_SELECTED_SIGMA_OR_BC_SPURIOUS_MODE_"
     "TRUE_ACOUSTIC_SEED_REMAINS_VALID_BRANCH_NOT_YET_RECOVERED"
 )
+VERDICT_ST_REGULARIZATION_REQUIRED = (
+    "DIAGNOSTIC_ST_REGULARIZATION_REQUIRED_NO_PHYSICAL_VERDICT"
+)
+ST_REG_TOL = 1.0e-15
+
+
+def st_operator_consistent_with_replay(
+    *,
+    st_a_shift_frac: float,
+    st_mass_reg_frac: float,
+) -> bool:
+    return bool(
+        abs(float(st_a_shift_frac)) <= ST_REG_TOL and abs(float(st_mass_reg_frac)) <= ST_REG_TOL
+    )
+
+
+def extract_st_operator_fields(solve_result: Dict[str, Any]) -> Dict[str, Any]:
+    eps = solve_result.get("eps_batch_diagnostics") or {}
+    diag = solve_result.get("seed_branch_recovery_diagnostic") or {}
+    a_shift = float(
+        diag.get(
+            "actual_st_a_shift_frac",
+            eps.get("st_a_shift_frac_used", solve_result.get("actual_st_a_shift_frac", 0.0)),
+        )
+        or 0.0
+    )
+    mass = float(
+        diag.get(
+            "actual_st_mass_reg_frac",
+            eps.get("st_mass_reg_frac_used", solve_result.get("actual_st_mass_reg_frac", 0.0)),
+        )
+        or 0.0
+    )
+    sigma = float(
+        diag.get(
+            "actual_sigma_hz",
+            eps.get("st_sigma_hz_used", solve_result.get("st_sigma_hz_used", float("nan"))),
+        )
+    )
+    consistent = bool(
+        diag.get(
+            "diagnostic_operator_consistent_with_replay",
+            solve_result.get("diagnostic_operator_consistent_with_replay"),
+        )
+    )
+    if consistent is None:
+        consistent = st_operator_consistent_with_replay(
+            st_a_shift_frac=a_shift, st_mass_reg_frac=mass
+        )
+    return {
+        "diagnostic_requires_unregularized_ST": bool(
+            diag.get("diagnostic_requires_unregularized_ST")
+            or eps.get("diagnostic_requires_unregularized_ST")
+        ),
+        "actual_sigma_hz": sigma,
+        "actual_st_a_shift_frac": a_shift,
+        "actual_st_mass_reg_frac": mass,
+        "diagnostic_operator_consistent_with_replay": bool(consistent),
+    }
 
 
 def algebraic_lambda_one_suspect(lam_r: float, *, tol: Optional[float] = None) -> bool:
@@ -151,6 +210,20 @@ def assess_physical_eligibility(
 
 
 def branch_recovery_from_row(row: Dict[str, Any]) -> bool:
+    """Strict branch-recovery acceptance (diagnostic-only)."""
+    if not bool(row.get("continuation_seed_applied", True)):
+        return False
+    st_ok = st_operator_consistent_with_replay(
+        st_a_shift_frac=float(row.get("actual_st_a_shift_frac", 0.0) or 0.0),
+        st_mass_reg_frac=float(row.get("actual_st_mass_reg_frac", 0.0) or 0.0),
+    )
+    op_ok = bool(row.get("diagnostic_operator_consistent_with_replay", st_ok)) and st_ok
+    if not op_ok:
+        return False
+    if bool(row.get("algebraic_lambda_one_suspect", False)):
+        return False
+    if not bool(row.get("reported_vs_replay_frequency_consistent", False)):
+        return False
     return bool(
         row.get("branch_recovery_pass")
         or (

@@ -29,7 +29,9 @@ for _p in (SCRIPT_DIR, FEM_SCRIPTS):
 from v2_seed_branch_candidate_filter import (
     FILTER_POLICY,
     VERDICT_SPURIOUS_SELECTED,
+    VERDICT_ST_REGULARIZATION_REQUIRED,
     assess_physical_eligibility,
+    extract_st_operator_fields,
     replay_candidate_metrics,
 )
 from v2_mesh_convergence_common import (
@@ -243,6 +245,8 @@ def _evaluate(
 ) -> Dict[str, Any]:
     seed_f = float(seed_meta.get("locator_frequency_hz", solve_result.get("target_hz", float("nan"))))
     diag_block = solve_result.get("seed_branch_recovery_diagnostic") or {}
+    st_fields = extract_st_operator_fields(solve_result)
+    op_ok = bool(st_fields["diagnostic_operator_consistent_with_replay"])
     summary_path = out_dir / "diagnostics" / "mode_energy_summary.json"
     modes: List[Dict[str, Any]] = []
     if summary_path.is_file():
@@ -287,25 +291,32 @@ def _evaluate(
                 require_mac=True,
                 require_seed_frequency_match=True,
             )
-            ranked.append(
-                {
-                    **m,
-                    "pressure_MAC_to_seed_p_block": mac_block,
-                    "pressure_MAC_to_true_acoustic_reference": mac_block,
-                    "frequency_delta_from_seed_rayleigh_hz": f_hz - seed_f,
-                    "frequency_delta_fraction": float(d_frac),
-                    "replay_rayleigh_eigenvalue": replay["replay_rayleigh_lambda"],
-                    "replay_rayleigh_f_hz": replay["replay_rayleigh_frequency_hz"],
-                    "replay_relative_residual_of_recovered_mode": replay["replay_relative_residual"],
-                    "algebraic_lambda_one_suspect": replay["algebraic_lambda_one_suspect"],
-                    "reported_vs_replay_frequency_consistent": replay[
-                        "reported_vs_replay_frequency_consistent"
-                    ],
-                    "physically_eligible_after_filter": elig["physically_eligible_after_filter"],
-                    "rejection_reasons": elig["rejection_reasons"],
-                    "recovers_true_seed_branch": elig["recovers_true_seed_branch"],
-                }
+            continuation_row = bool(
+                solve_result.get("continuation_seed_applied")
+                or (solve_result.get("eps_seed") or {}).get("eps_initial_space_set")
             )
+            row = {
+                **m,
+                "continuation_seed_applied": continuation_row,
+                "pressure_MAC_to_seed_p_block": mac_block,
+                "pressure_MAC_to_true_acoustic_reference": mac_block,
+                "frequency_delta_from_seed_rayleigh_hz": f_hz - seed_f,
+                "frequency_delta_fraction": float(d_frac),
+                "replay_rayleigh_eigenvalue": replay["replay_rayleigh_lambda"],
+                "replay_rayleigh_f_hz": replay["replay_rayleigh_frequency_hz"],
+                "replay_relative_residual_of_recovered_mode": replay["replay_relative_residual"],
+                "algebraic_lambda_one_suspect": replay["algebraic_lambda_one_suspect"],
+                "reported_vs_replay_frequency_consistent": replay[
+                    "reported_vs_replay_frequency_consistent"
+                ],
+                "physically_eligible_after_filter": elig["physically_eligible_after_filter"],
+                "rejection_reasons": list(elig["rejection_reasons"]),
+                "recovers_true_seed_branch": elig["recovers_true_seed_branch"],
+                **st_fields,
+            }
+            if not op_ok:
+                row["rejection_reasons"].append("st_regularization_used_eps_not_replay_consistent")
+            ranked.append(row)
     finally:
         try:
             A.destroy()
@@ -314,7 +325,11 @@ def _evaluate(
             pass
 
     eligible = [r for r in ranked if r.get("physically_eligible_after_filter")]
-    branch_pool = [r for r in eligible if r.get("recovers_true_seed_branch")]
+    branch_pool = [
+        r
+        for r in eligible
+        if r.get("recovers_true_seed_branch") and op_ok
+    ]
     best = (
         max(branch_pool, key=lambda r: float(r["pressure_MAC_to_seed_p_block"]))
         if branch_pool
@@ -351,6 +366,8 @@ def _evaluate(
     any_ineligible_near_seed = len(prior_false) > 0
     if not continuation:
         verdict = "DIAGNOSTIC_SOLVER_NOT_APPLIED"
+    elif not op_ok:
+        verdict = VERDICT_ST_REGULARIZATION_REQUIRED
     elif recovery_ok:
         verdict = "SEED_BRANCH_RECOVERED_IN_DIAGNOSTIC_MODE"
     elif any_ineligible_near_seed or (ranked and not eligible):
@@ -361,6 +378,7 @@ def _evaluate(
     return {
         "seed_rayleigh_f_hz": seed_f,
         "physical_filter_policy": FILTER_POLICY,
+        "st_operator_fields": st_fields,
         "solver_mode": diag_block.get("solver_mode", "seeded_branch_recovery_diagnostic"),
         "standard_harvest_sigma_policy_unchanged": True,
         "standard_policy_not_used_for_this_diagnostic": True,
