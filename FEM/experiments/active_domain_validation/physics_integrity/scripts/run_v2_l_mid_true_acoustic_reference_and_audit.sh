@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# True acoustic locator vector recovery + no-eigensolve mixed-mode audit (no coupled EPS).
+# Build coupled-W seeds from archived true acoustic locator vectors + no-eigensolve audit.
+# Does not rerun acoustic locators or coupled EPS.
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)"
 cd "${REPO_ROOT}"
