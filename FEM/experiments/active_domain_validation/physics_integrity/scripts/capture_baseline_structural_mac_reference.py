@@ -26,6 +26,8 @@ from v2_sensitivity_common import (
     V2_CONFIG,
     V2_ROOT,
     is_acoustic_branch,
+    u_to_W_map_crc32,
+    validate_reduced_u_to_W_map,
     write_json,
 )
 
@@ -97,8 +99,10 @@ def capture_from_replay() -> Dict[str, Any]:
             }
         )
 
+    u_arr = np.asarray(u_to_W, dtype=np.int32).ravel()
+    u_val = validate_reduced_u_to_W_map(u_arr, vector_length=n_W, n_u_active=int(restr.get("n_u_active", len(u_list))))
     return {
-        "ready": bool(out_modes) and bool(u_list),
+        "ready": bool(out_modes) and bool(u_list) and bool(u_val.get("valid")),
         "capture_method": "physical_core_v2_post_replay_no_eigensolve",
         "subcase": subcase,
         "target_hz": TARGET_HZ,
@@ -106,6 +110,8 @@ def capture_from_replay() -> Dict[str, Any]:
         "harvest_band_hz": [BAND_LO, BAND_HI],
         "n_reduced_W": n_W,
         "u_to_W": u_list,
+        "u_to_W_reduced_validation": u_val,
+        "crc32_u_to_W_reduced": u_to_W_map_crc32(u_arr),
         "p_to_W": p_list,
         "n_u_active": int(restr.get("n_u_active", len(u_list))),
         "n_p_active": int(restr.get("n_p_active", len(p_list))),

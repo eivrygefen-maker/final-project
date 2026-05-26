@@ -6,6 +6,7 @@ import json
 import math
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -35,6 +36,9 @@ SOLVE_SCRIPT = SCRIPT_DIR / "v2_sensitivity_solve.py"
 COUPLED_BASELINE_F_HZ = 244.394153389752
 COUPLED_BASELINE_P_FRAC = 0.9998
 N_REDUCED_W_VALIDATION = 112100
+N_U_ACTIVE_VALIDATION = 102102
+N_P_ACTIVE_VALIDATION = 9998
+STRUCTURAL_MAC_CONFIDENCE_THRESHOLD = 0.85
 DEFAULT_HARVEST_LO = 220.0
 DEFAULT_HARVEST_HI = 265.0
 DEFAULT_TARGET_HZ = 244.39
@@ -481,6 +485,119 @@ def load_v2_mode_vector_dense(path: Path, n_expected: int) -> "np.ndarray":
     return dense
 
 
+def u_to_W_map_crc32(u_to_W: "np.ndarray") -> int:
+    import numpy as np
+
+    u = np.asarray(u_to_W, dtype=np.int32).ravel()
+    return int(zlib.crc32(u.tobytes()) & 0xFFFFFFFF)
+
+
+def validate_reduced_u_to_W_map(
+    u_to_W: "np.ndarray",
+    *,
+    vector_length: int = N_REDUCED_W_VALIDATION,
+    n_u_active: int = N_U_ACTIVE_VALIDATION,
+) -> Dict[str, Any]:
+    """Validate reduced-layout structural u indices for mode vectors of length n_reduced_W."""
+    import numpy as np
+
+    u_idx = np.asarray(u_to_W, dtype=np.int32).ravel()
+    n_w = int(vector_length)
+    n_u = int(n_u_active)
+    if u_idx.size == 0:
+        return {
+            "valid": False,
+            "vector_length": n_w,
+            "len_u_to_W_reduced": 0,
+            "n_u_active_expected": n_u,
+            "reason": "empty u_to_W map",
+        }
+    u_min = int(u_idx.min())
+    u_max = int(u_idx.max())
+    valid = (
+        int(u_idx.size) == n_u
+        and u_min >= 0
+        and u_max < n_w
+    )
+    return {
+        "valid": bool(valid),
+        "vector_length": n_w,
+        "len_u_to_W_reduced": int(u_idx.size),
+        "n_u_active_expected": n_u,
+        "min_u_to_W_reduced": u_min,
+        "max_u_to_W_reduced": u_max,
+        "crc32_u_to_W_reduced": u_to_W_map_crc32(u_idx),
+        "map_representation": "reduced_W_active_u_indices"
+        if valid
+        else "invalid_or_inconsistent_with_reduced_mode_vectors",
+    }
+
+
+def assemble_validation_mesh_reduced_u_map() -> Tuple["np.ndarray", Dict[str, Any]]:
+    """Operator assembly only (solve_evp=False) on validation mesh — no eigen solve."""
+    import numpy as np
+    from physical_core_v2_post import _assemble_reduced_v2_operator
+
+    cfg_base = json.loads(V2_CONFIG.read_text(encoding="utf-8"))
+    cfg_base.setdefault("solver", {})["mesh_file"] = str(VALIDATION_MESH.resolve())
+    _A, _M, _cfg, u_to_W, p_to_W, restr = _assemble_reduced_v2_operator(
+        cfg_base,
+        V2_CONFIG,
+        subcase="mac_map_validation_mesh",
+        coupling_enabled=True,
+        apply_gnhep_normalize=True,
+    )
+    try:
+        _A.destroy()
+        _M.destroy()
+    except Exception:
+        pass
+    n_w = int(restr.get("n_reduced_W", N_REDUCED_W_VALIDATION))
+    meta = {
+        "n_reduced_W": n_w,
+        "n_u_active": int(restr.get("n_u_active", u_to_W.size)),
+        "n_p_active": int(restr.get("n_p_active", p_to_W.size)),
+        "source": "assemble_validation_mesh_solve_evp_false",
+    }
+    meta["u_to_W_validation"] = validate_reduced_u_to_W_map(
+        u_to_W, vector_length=n_w, n_u_active=meta["n_u_active"]
+    )
+    return np.asarray(u_to_W, dtype=np.int32).ravel(), meta
+
+
+def get_validated_reduced_u_to_W_map(
+    *,
+    refresh_catalog: bool = False,
+) -> Tuple[Optional["np.ndarray"], Dict[str, Any]]:
+    """Canonical reduced u_to_W for same-mesh MAC (length 112100 mode vectors)."""
+    import numpy as np
+
+    n_w = N_REDUCED_W_VALIDATION
+    n_u = N_U_ACTIVE_VALIDATION
+    catalog_meta: Dict[str, Any] = {}
+
+    if BASELINE_STRUCTURAL_MAC_REF_JSON.is_file() and not refresh_catalog:
+        cat = json.loads(BASELINE_STRUCTURAL_MAC_REF_JSON.read_text(encoding="utf-8"))
+        n_w = int(cat.get("n_reduced_W", n_w))
+        n_u = int(cat.get("n_u_active", n_u))
+        if cat.get("u_to_W"):
+            u_cat = np.asarray(cat["u_to_W"], dtype=np.int32).ravel()
+            val = validate_reduced_u_to_W_map(u_cat, vector_length=n_w, n_u_active=n_u)
+            catalog_meta = {"catalog_validation": val, "catalog_source": str(BASELINE_STRUCTURAL_MAC_REF_JSON)}
+            if val.get("valid"):
+                return u_cat, {
+                    **val,
+                    "source": "baseline_structural_mac_reference.json",
+                    **catalog_meta,
+                }
+
+    u_asm, asm_meta = assemble_validation_mesh_reduced_u_map()
+    n_w = int(asm_meta.get("n_reduced_W", n_w))
+    n_u = int(asm_meta.get("n_u_active", n_u))
+    val = validate_reduced_u_to_W_map(u_asm, vector_length=n_w, n_u_active=n_u)
+    return u_asm, {**val, **asm_meta, "source": "assemble_validation_mesh"}
+
+
 def displacement_subspace_mac(
     vec_a: "np.ndarray",
     vec_b: "np.ndarray",
@@ -491,13 +608,24 @@ def displacement_subspace_mac(
     u_idx = np.asarray(u_to_W, dtype=np.int32).ravel()
     full_a = np.asarray(vec_a, dtype=np.float64).ravel()
     full_b = np.asarray(vec_b, dtype=np.float64).ravel()
-    if full_a.size <= int(u_idx.max(initial=-1) + 1) or full_b.size <= int(u_idx.max(initial=-1) + 1):
+    if full_a.size != full_b.size:
+        raise ValueError(f"mode vector length mismatch {full_a.size} vs {full_b.size}")
+    if u_idx.size == 0:
+        raise ValueError("empty u_to_W map")
+    u_max = int(u_idx.max())
+    u_min = int(u_idx.min())
+    if u_min < 0 or u_max >= full_a.size:
         raise ValueError(
-            f"u_to_W index out of range for vectors of length {full_a.size}/{full_b.size}"
+            f"u_to_W index out of range for vectors of length {full_a.size}: "
+            f"min={u_min} max={u_max} len(u_to_W)={u_idx.size}"
         )
     ua = full_a[u_idx]
     ub = full_b[u_idx]
-    mac = float(abs(np.vdot(ua, ub)) / (float(np.linalg.norm(ua)) * float(np.linalg.norm(ub))))
+    na = float(np.linalg.norm(ua))
+    nb = float(np.linalg.norm(ub))
+    if na <= 0.0 or nb <= 0.0:
+        raise ValueError("zero structural displacement norm in MAC subspace")
+    mac = float(abs(np.vdot(ua, ub)) / (na * nb))
     if not math.isfinite(mac):
         raise ValueError("displacement MAC is non-finite")
     return mac
@@ -584,6 +712,19 @@ def _material_acoustic_stable(row: Dict[str, Any]) -> bool:
     return p_frac >= ENERGY_ACOUSTIC_THRESHOLD
 
 
+def _material_has_high_confidence_structural_mac(row: Dict[str, Any]) -> bool:
+    if row.get("structural_mac_status") != "ok":
+        return False
+    report = row.get("material_structural_mac_report") or {}
+    pairs = report.get("matched_structural_pairs") or row.get("structural_displacement_mac") or []
+    return any(
+        bool(p.get("high_confidence_match"))
+        or float(p.get("structural_MAC", 0.0)) >= STRUCTURAL_MAC_CONFIDENCE_THRESHOLD
+        for p in pairs
+        if "structural_MAC" in p
+    )
+
+
 def _phase2_staged_promotion(
     results: Dict[str, Dict[str, Any]],
     phase2_ids: List[str],
@@ -594,17 +735,26 @@ def _phase2_staged_promotion(
         _material_acoustic_stable(results.get(sid) or {}) for sid in material_ids
     )
     material_struct_pass = bool(material_ids) and all(
-        (results.get(sid) or {}).get("structural_mac_status") == "ok" for sid in material_ids
+        _material_has_high_confidence_structural_mac(results.get(sid) or {})
+        for sid in material_ids
     )
     geometry_pass = bool(geometry_ids) and all(
         (results.get(sid) or {}).get("status") == "ok" for sid in geometry_ids
     )
+    execution_coverage = geometry_pass and material_acoustic_pass
+    validation_pass = geometry_pass and material_acoustic_pass and material_struct_pass
     return {
         "acoustic_geometric_validation_pass": True,
         "phase2_geometry_parameter_validation_pass": "PASS" if geometry_pass else "Pending",
         "material_acoustic_branch_stability_pass": material_acoustic_pass,
         "material_structural_branch_validation_pass": "PASS" if material_struct_pass else "Pending",
-        "production_parameter_coverage_pass": "PASS" if geometry_pass else "Pending",
+        "production_parameter_execution_coverage_pass": execution_coverage,
+        "production_parameter_validation_pass": "PASS" if validation_pass else "Pending",
+        "production_parameter_coverage_pass": "Pending" if not validation_pass else "PASS",
+        "production_parameter_coverage_note": (
+            "execution_coverage_pass means geometry coupled runs and material acoustic "
+            "branches succeeded; validation_pass additionally requires structural MAC."
+        ),
         "mesh_convergence_pass": "Pending",
         "lhs_promotion_blocked": True,
     }
@@ -645,35 +795,6 @@ def load_baseline_structural_mac_catalog() -> Dict[str, Any]:
         if cat.get("ready"):
             return cat
     return {"ready": False, "reason": "baseline_structural_mac_reference.json missing or not ready"}
-
-
-def _resolve_u_to_W_for_same_mesh(solve: Dict[str, Any]) -> Optional["np.ndarray"]:
-    import numpy as np
-
-    cat = load_baseline_structural_mac_catalog()
-    if cat.get("ready") and cat.get("u_to_W"):
-        return np.asarray(cat["u_to_W"], dtype=np.int32)
-    u_map = solve.get("u_to_W")
-    if u_map is not None:
-        return np.asarray(u_map, dtype=np.int32)
-    for sid in (
-        "material_top_cedar",
-        "material_top_maple",
-        "material_back_cedar",
-        "material_back_maple",
-    ):
-        result_path = best_sample_result_json(sid)
-        if not result_path:
-            continue
-        prior = json.loads(result_path.read_text(encoding="utf-8"))
-        if prior.get("u_to_W"):
-            return np.asarray(prior["u_to_W"], dtype=np.int32)
-    base_result = V2_ROOT / "physical_coupling_enabled" / "results" / f"result_{hz_result_tag(244.39)}.json"
-    if base_result.is_file():
-        prior = json.loads(base_result.read_text(encoding="utf-8"))
-        if prior.get("u_to_W"):
-            return np.asarray(prior["u_to_W"], dtype=np.int32)
-    return None
 
 
 def load_baseline_structural_reference() -> Dict[str, Any]:
@@ -718,23 +839,35 @@ def structural_mac_against_baseline(
             ),
             "matched_structural_pairs": [],
         }
-    u_to_W = _resolve_u_to_W_for_same_mesh(solve)
-    if u_to_W is None:
+    u_to_W, map_meta = get_validated_reduced_u_to_W_map()
+    if u_to_W is None or not map_meta.get("valid"):
         return {
             "status": "structural_mac_unavailable",
-            "reason": "u_to_W map unavailable for same-mesh MAC",
+            "reason": map_meta.get("reason", "validated reduced u_to_W map unavailable"),
+            "map_validation": map_meta,
             "matched_structural_pairs": [],
         }
-    u_map = solve.get("u_to_W")
-    if u_map is not None:
-        cand_u = np.asarray(u_map, dtype=np.int32)
-        if cand_u.size != u_to_W.size or not np.array_equal(cand_u, u_to_W):
-            return {
-                "status": "structural_mac_unavailable",
-                "reason": "sample u_to_W map differs from baseline (not same-mesh comparable)",
-                "matched_structural_pairs": [],
-            }
-    n_W = int(solve.get("n_reduced_W", cat.get("n_reduced_W", N_REDUCED_W_VALIDATION)))
+    n_W = int(
+        map_meta.get("vector_length", solve.get("n_reduced_W", cat.get("n_reduced_W", N_REDUCED_W_VALIDATION)))
+    )
+    sample_map_val = None
+    u_sample = solve.get("u_to_W")
+    if u_sample is not None:
+        sample_map_val = validate_reduced_u_to_W_map(
+            np.asarray(u_sample, dtype=np.int32),
+            vector_length=n_W,
+            n_u_active=int(map_meta.get("n_u_active_expected", N_U_ACTIVE_VALIDATION)),
+        )
+    map_compare = {
+        "validated_map": map_meta,
+        "stored_sample_map": sample_map_val,
+        "baseline_material_maps_identical": (
+            bool(sample_map_val and sample_map_val.get("valid"))
+            and int(sample_map_val.get("crc32_u_to_W_reduced", -1))
+            == int(map_meta.get("crc32_u_to_W_reduced", -2))
+        ),
+        "mac_uses_validated_reduced_map_only": True,
+    }
     case_dir = V2_ROOT / "physical_coupling_enabled"
     sample_case = SENS_ROOT / "samples" / sample_id
     mats = (sample or {}).get("materials") or {}
@@ -811,11 +944,15 @@ def structural_mac_against_baseline(
                 "E_struct_material": m_e,
                 "p_frac_energy_phys_material": float(m.get("p_frac_energy_phys", float("nan"))),
                 "mode_class_physical_energy_material": m.get("mode_class_physical_energy"),
-                "high_confidence_match": mac >= 0.85 and best_df <= match_tol_hz,
+                "high_confidence_match": (
+                    mac >= STRUCTURAL_MAC_CONFIDENCE_THRESHOLD and best_df <= match_tol_hz
+                ),
+                "mac_confidence_threshold": STRUCTURAL_MAC_CONFIDENCE_THRESHOLD,
             }
         )
 
     ok_pairs = [p for p in pairs if "structural_MAC" in p]
+    hi_pairs = [p for p in ok_pairs if p.get("high_confidence_match")]
     mixed = [
         m
         for m in mat_struct
@@ -825,9 +962,18 @@ def structural_mac_against_baseline(
         )
     ]
     return {
-        "status": "ok" if ok_pairs else "structural_mac_unavailable",
-        "reason": None if ok_pairs else (cat.get("reason") or "no matched structural MAC pairs"),
+        "status": "ok" if hi_pairs else ("structural_mac_unavailable" if not ok_pairs else "low_mac_confidence"),
+        "reason": None
+        if hi_pairs
+        else (
+            "frequency matches found but no MAC >= "
+            f"{STRUCTURAL_MAC_CONFIDENCE_THRESHOLD}; do not confirm branches by delta_f alone"
+            if ok_pairs
+            else (cat.get("reason") or "no matched structural MAC pairs")
+        ),
         "matched_structural_pairs": pairs,
+        "n_high_confidence_pairs": len(hi_pairs),
+        "map_validation": map_compare,
         "n_baseline_structural_reference_modes": len(baseline_refs),
         "n_material_structural_candidates": len(mat_struct),
         "n_mixed_or_coupled_candidates_in_band": len(mixed),
@@ -1055,9 +1201,6 @@ def write_validation_status(
     phase2_ids = list(production_manifest.get("phase2_sample_ids") or [])
     material_ids = [s for s in phase2_ids if str(s).startswith("material_")]
     geometry_ids = [s for s in phase2_ids if str(s).startswith(("length_", "width_"))]
-    material_pass = bool(material_ids) and all(
-        (phase2_results.get(sid) or {}).get("status") == "ok" for sid in material_ids
-    )
     geometry_pass = bool(geometry_ids) and all(
         (phase2_results.get(sid) or {}).get("status") == "ok" for sid in geometry_ids
     )
@@ -1077,9 +1220,11 @@ def write_validation_status(
         _material_acoustic_stable(phase2_results.get(sid) or {}) for sid in material_ids
     )
     material_struct_pass = bool(material_ids) and all(
-        (phase2_results.get(sid) or {}).get("structural_mac_status") == "ok"
+        _material_has_high_confidence_structural_mac(phase2_results.get(sid) or {})
         for sid in material_ids
     )
+    execution_coverage = geometry_pass and material_acoustic_pass
+    validation_pass = geometry_pass and material_acoustic_pass and material_struct_pass
     status = {
         "coupled_physical_core_v2_baseline_validation": "PASS",
         "acoustic_geometric_validation_pass": bool(acoustic_geo_pass),
@@ -1087,7 +1232,9 @@ def write_validation_status(
         "material_acoustic_branch_stability_pass": material_acoustic_pass,
         "material_structural_branch_validation_pass": "PASS" if material_struct_pass else "Pending",
         "material_species_validation_pass": "PASS" if (material_acoustic_pass and material_struct_pass) else "Pending",
-        "production_parameter_coverage_pass": "PASS" if geometry_pass else "Pending",
+        "production_parameter_execution_coverage_pass": execution_coverage,
+        "production_parameter_validation_pass": "PASS" if validation_pass else "Pending",
+        "production_parameter_coverage_pass": "Pending" if not validation_pass else "PASS",
         "mesh_convergence_pass": "Pending",
         "lhs_promotion_blocked": True,
         "exploratory_not_production_gate": sorted(exploratory),
@@ -1114,6 +1261,98 @@ def write_validation_status(
         "full_25_material_combinations": "deferred_after_controlled_species_and_mesh_convergence",
     }
     write_json(VALIDATION_STATUS_JSON, status)
+
+
+def write_phase2_markdown_summary(
+    summary: Dict[str, Any],
+    *,
+    out_path: Optional[Path] = None,
+) -> Path:
+    """Human-readable Phase-2 report (no new solves)."""
+    out = out_path or (DIAG_DIR / "v2_production_validation_summary.md")
+    samples = summary.get("samples") or {}
+    lines = [
+        "# Phase-2 production-parameter validation summary",
+        "",
+        "## Staged promotion",
+        "",
+        f"- `acoustic_geometric_validation_pass` = `{summary.get('acoustic_geometric_validation_pass')}`",
+        f"- `phase2_geometry_parameter_validation_pass` = `{summary.get('phase2_geometry_parameter_validation_pass')}`",
+        f"- `material_acoustic_branch_stability_pass` = `{summary.get('material_acoustic_branch_stability_pass')}`",
+        f"- `material_structural_branch_validation_pass` = `{summary.get('material_structural_branch_validation_pass')}`",
+        f"- `production_parameter_execution_coverage_pass` = `{summary.get('production_parameter_execution_coverage_pass')}`",
+        f"- `production_parameter_validation_pass` = `{summary.get('production_parameter_validation_pass')}`",
+        f"- `production_parameter_coverage_pass` = `{summary.get('production_parameter_coverage_pass')}`",
+        f"- `mesh_convergence_pass` = `{summary.get('mesh_convergence_pass')}`",
+        f"- `lhs_promotion_blocked` = `{summary.get('lhs_promotion_blocked')}`",
+        "",
+        "Acoustic branches near 244.39 Hz with `p_frac_energy_phys` ≈ 0.995–0.999 under full wood "
+        "record substitution are **physically plausible** small shifts (stiffness/density/anisotropy); "
+        "they are not evidence of “no material effect.” Structural validation uses displacement MAC "
+        f"≥ `{STRUCTURAL_MAC_CONFIDENCE_THRESHOLD}` on shared reduced structural-u DOFs.",
+        "",
+        "## Geometry samples (length / width)",
+        "",
+        "| sample | status | locator | f_acoustic | Δf | p_frac |",
+        "|--------|--------|---------|----------:|---:|-------:|",
+    ]
+    for sid in ("length_small", "length_large", "width_small", "width_large"):
+        row = samples.get(sid) or {}
+        f_a = float(row.get("acoustic_frequency_hz", row.get("nearest_acoustic_f_hz", float("nan"))))
+        d_f = f_a - COUPLED_BASELINE_F_HZ if math.isfinite(f_a) else float("nan")
+        lines.append(
+            f"| {sid} | {row.get('status', '—')} | {row.get('locator_status', '—')} | "
+            f"{f_a:.3f} | {d_f:+.3f} | {float(row.get('p_frac_energy_phys', float('nan'))):.4f} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Material samples (acoustic stability + structural MAC)",
+            "",
+            "| sample | top | back | f_acoustic | p_frac | MAC status | hi-conf pairs |",
+            "|--------|-----|------|----------:|-------:|------------|-------------|",
+        ]
+    )
+    for sid in sorted(k for k in samples if str(k).startswith("material_")):
+        row = samples.get(sid) or {}
+        mats = row.get("material_assignment") or {}
+        rep = row.get("material_structural_mac_report") or {}
+        lines.append(
+            f"| {sid} | {mats.get('top_wood_id', '—')} | {mats.get('back_wood_id', '—')} | "
+            f"{float(row.get('nearest_acoustic_f_hz', float('nan'))):.3f} | "
+            f"{float(row.get('p_frac_energy_phys', float('nan'))):.4f} | "
+            f"{row.get('structural_mac_status', '—')} | {rep.get('n_high_confidence_pairs', 0)} |"
+        )
+    lines.extend(["", "### Structural MAC pairs (high confidence)", ""])
+    for sid in sorted(k for k in samples if str(k).startswith("material_")):
+        row = samples.get(sid) or {}
+        rep = row.get("material_structural_mac_report") or {}
+        pairs = [
+            p
+            for p in (rep.get("matched_structural_pairs") or [])
+            if p.get("high_confidence_match")
+        ]
+        lines.append(f"#### {sid}")
+        if not pairs:
+            lines.append("_No high-confidence structural MAC pairs._")
+            lines.append("")
+            continue
+        lines.append(
+            "| f_base | f_mat | Δf | MAC | E_struct_base | E_struct_mat | class |"
+        )
+        lines.append("|-------:|------:|---:|----:|--------------:|-------------:|:------|")
+        for p in pairs:
+            lines.append(
+                f"| {float(p['baseline_structural_frequency_hz']):.3f} | "
+                f"{float(p['material_structural_frequency_hz']):.3f} | "
+                f"{float(p['delta_f_hz']):+.3f} | {float(p['structural_MAC']):.4f} | "
+                f"{float(p.get('E_struct_baseline', float('nan'))):.2e} | "
+                f"{float(p.get('E_struct_material', float('nan'))):.2e} | "
+                f"{p.get('mode_class_physical_energy_material', '—')} |"
+            )
+        lines.append("")
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out
 
 
 def load_pilot_preserved_results(manifest: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
