@@ -34,6 +34,10 @@ OUT_JSON = CONV_DIAG / "v2_mapping_fixed_candidate_persistence_self_test.json"
 OUT_MD = CONV_DIAG / "v2_mapping_fixed_candidate_persistence_self_test.md"
 CASE_ID = "baseline_coupled_v2"
 SCRATCH_SUBDIR = "_persistence_self_test_scratch"
+EXPECTED_P_TO_W_LENGTH = 24039
+VERDICT_RUNTIME_MAP_NOT_PROPAGATED = (
+    "PERSISTENCE_SELF_TEST_RUNTIME_PRESSURE_MAP_NOT_PROPAGATED"
+)
 
 
 def _pressure_mac(a: np.ndarray, b: np.ndarray) -> float:
@@ -44,6 +48,65 @@ def _pressure_mac(a: np.ndarray, b: np.ndarray) -> float:
     if na <= 0 or nb <= 0:
         return float("nan")
     return float(abs(np.vdot(a, b)) / (na * nb))
+
+
+def _acquire_runtime_p_to_W(case: Dict[str, Any], mesh_file: Path) -> Dict[str, Any]:
+    lookup_locations_checked: List[str] = []
+    fallback_attempted = False
+    fallback_source = None
+    fallback_length = 0
+    source = None
+    p_to_W = np.asarray([], dtype=np.int32)
+    try:
+        from v2_build_coupled_acoustic_seed import _assemble_reduced_coupled_replay
+
+        sample = sample_spec_from_case(case)
+        A_map, M_map, cfg_map = _assemble_reduced_coupled_replay(
+            mesh_file, sample, coupling_enabled=True
+        )
+        try:
+            lookup_locations_checked.extend(
+                [
+                    "cfg._coupled_air_p_to_W_map",
+                    "cfg.solver._coupled_air_p_to_W_map",
+                    "cfg._coupled_air_pressure_restriction.n_p_active",
+                ]
+            )
+            cand = cfg_map.get("_coupled_air_p_to_W_map")
+            if cand is None:
+                cand = (cfg_map.get("solver") or {}).get("_coupled_air_p_to_W_map")
+                if cand is not None:
+                    source = "assembled_replay_cfg.solver._coupled_air_p_to_W_map"
+            else:
+                source = "assembled_replay_cfg._coupled_air_p_to_W_map"
+            p_to_W = np.asarray(cand or [], dtype=np.int32).ravel()
+            n_p_active = int(
+                ((cfg_map.get("_coupled_air_pressure_restriction") or {}).get("n_p_active", 0))
+                or 0
+            )
+        finally:
+            A_map.destroy()
+            M_map.destroy()
+    except Exception as exc:
+        fallback_attempted = True
+        fallback_source = f"assembled_replay_failed:{type(exc).__name__}"
+        fallback_length = 0
+        n_p_active = 0
+
+    runtime_found = bool(source is not None and p_to_W.size > 0)
+    return {
+        "runtime_p_to_W_lookup_attempted": True,
+        "runtime_p_to_W_lookup_locations_checked": lookup_locations_checked,
+        "runtime_p_to_W_found": runtime_found,
+        "runtime_p_to_W_source": source,
+        "runtime_p_to_W_length": int(p_to_W.size),
+        "runtime_p_to_W": p_to_W,
+        "runtime_n_p_active_from_restriction": int(n_p_active),
+        "runtime_p_to_W_length_expected": int(EXPECTED_P_TO_W_LENGTH),
+        "fallback_attempted": fallback_attempted,
+        "fallback_source": fallback_source,
+        "fallback_length": int(fallback_length),
+    }
 
 
 def main() -> int:
@@ -151,24 +214,37 @@ def main() -> int:
                 norm_ok = abs(reload_norm - seed_norm) / max(seed_norm, 1.0e-30) <= 1.0e-5
             reload_ok = length_ok and norm_ok
 
-            p_to_W = np.asarray([], dtype=np.int32)
-            p_to_W_source = "unset"
-            try:
-                from v2_build_coupled_acoustic_seed import _assemble_reduced_coupled_replay
-
-                sample = sample_spec_from_case(case)
-                _A_map, _M_map, cfg_map = _assemble_reduced_coupled_replay(
-                    mesh_file, sample, coupling_enabled=True
-                )
-                try:
-                    p_to_W = np.asarray(cfg_map.get("_coupled_air_p_to_W_map") or [], dtype=np.int32).ravel()
-                    p_to_W_source = "assembled_replay_cfg._coupled_air_p_to_W_map"
-                finally:
-                    _A_map.destroy()
-                    _M_map.destroy()
-            except Exception:
-                p_to_W = np.asarray(seed_meta.get("p_to_W") or [], dtype=np.int32).ravel()
-                p_to_W_source = "seed_meta.p_to_W_fallback"
+            map_diag = _acquire_runtime_p_to_W(case, mesh_file)
+            p_to_W = np.asarray(map_diag.pop("runtime_p_to_W"), dtype=np.int32).ravel()
+            p_to_W_source = str(map_diag.get("runtime_p_to_W_source") or "runtime_map_missing")
+            map_diag["runtime_p_to_W_crc32"] = int(
+                pressure_block_mapping_metadata(
+                    p_to_W=p_to_W,
+                    source=p_to_W_source,
+                ).get("p_to_W_crc32", 0)
+            )
+            checks.append(
+                {
+                    "check": "runtime_pressure_map_lookup",
+                    "pass": bool(
+                        map_diag["runtime_p_to_W_found"]
+                        and int(map_diag["runtime_p_to_W_length"]) == int(EXPECTED_P_TO_W_LENGTH)
+                    ),
+                    **{
+                        k: v
+                        for k, v in map_diag.items()
+                        if k != "runtime_p_to_W_lookup_locations_checked"
+                    },
+                    "runtime_p_to_W_lookup_locations_checked": list(
+                        map_diag.get("runtime_p_to_W_lookup_locations_checked") or []
+                    ),
+                }
+            )
+            if not bool(
+                map_diag["runtime_p_to_W_found"]
+                and int(map_diag["runtime_p_to_W_length"]) == int(EXPECTED_P_TO_W_LENGTH)
+            ):
+                passed = False
 
             write_eps_candidate_bank_json(
                 scratch,
@@ -189,7 +265,13 @@ def main() -> int:
                 ),
             )
             if p_to_W.size == 0:
-                checks.append({"check": "pressure_mac", "pass": False, "reason": "p_to_W_missing_in_meta"})
+                checks.append(
+                    {
+                        "check": "pressure_mac",
+                        "pass": False,
+                        "reason": VERDICT_RUNTIME_MAP_NOT_PROPAGATED,
+                    }
+                )
                 passed = False
             else:
                 mac = _pressure_mac(seed[p_to_W], reloaded[p_to_W])
@@ -275,6 +357,18 @@ def main() -> int:
         "self_test_pass": bool(passed),
         "authorizes_replacement_baseline_eigensolve": bool(passed),
     }
+    runtime_lookup = next(
+        (c for c in checks if c.get("check") == "runtime_pressure_map_lookup"),
+        None,
+    )
+    if runtime_lookup is not None:
+        report["runtime_pressure_map_lookup"] = {
+            k: v for k, v in runtime_lookup.items() if k != "check"
+        }
+        if not bool(runtime_lookup.get("pass")):
+            report["infrastructure_verdict"] = VERDICT_RUNTIME_MAP_NOT_PROPAGATED
+    if "infrastructure_verdict" not in report and not bool(passed):
+        report["infrastructure_verdict"] = "PERSISTENCE_SELF_TEST_FAILED"
     write_json(OUT_JSON, report)
 
     lines = [
@@ -285,6 +379,7 @@ def main() -> int:
         f"**self_test_pass:** `{report['self_test_pass']}`",
         "",
         f"**authorizes_replacement_baseline_eigensolve:** `{report['authorizes_replacement_baseline_eigensolve']}`",
+        f"**infrastructure_verdict:** `{report.get('infrastructure_verdict')}`",
         "",
         "## Checks",
         "",
