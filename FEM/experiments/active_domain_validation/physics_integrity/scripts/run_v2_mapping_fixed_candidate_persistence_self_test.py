@@ -23,7 +23,12 @@ for _p in (SCRIPT_DIR, FEM_SCRIPTS):
         sys.path.insert(0, str(_p))
 
 from v2_mesh_convergence_common import CONV_DIAG, load_manifest, mesh_path, sample_spec_from_case, solve_case_dir, write_json
-from v2_mapping_fixed_candidate_persistence import candidate_slot_path, persist_candidate_bank
+from v2_mapping_fixed_candidate_persistence import (
+    candidate_slot_path,
+    persist_candidate_bank,
+    pressure_block_mapping_metadata,
+    write_eps_candidate_bank_json,
+)
 
 OUT_JSON = CONV_DIAG / "v2_mapping_fixed_candidate_persistence_self_test.json"
 OUT_MD = CONV_DIAG / "v2_mapping_fixed_candidate_persistence_self_test.md"
@@ -146,7 +151,43 @@ def main() -> int:
                 norm_ok = abs(reload_norm - seed_norm) / max(seed_norm, 1.0e-30) <= 1.0e-5
             reload_ok = length_ok and norm_ok
 
-            p_to_W = np.asarray(seed_meta.get("p_to_W") or [], dtype=np.int32).ravel()
+            p_to_W = np.asarray([], dtype=np.int32)
+            p_to_W_source = "unset"
+            try:
+                from v2_build_coupled_acoustic_seed import _assemble_reduced_coupled_replay
+
+                sample = sample_spec_from_case(case)
+                _A_map, _M_map, cfg_map = _assemble_reduced_coupled_replay(
+                    mesh_file, sample, coupling_enabled=True
+                )
+                try:
+                    p_to_W = np.asarray(cfg_map.get("_coupled_air_p_to_W_map") or [], dtype=np.int32).ravel()
+                    p_to_W_source = "assembled_replay_cfg._coupled_air_p_to_W_map"
+                finally:
+                    _A_map.destroy()
+                    _M_map.destroy()
+            except Exception:
+                p_to_W = np.asarray(seed_meta.get("p_to_W") or [], dtype=np.int32).ravel()
+                p_to_W_source = "seed_meta.p_to_W_fallback"
+
+            write_eps_candidate_bank_json(
+                scratch,
+                bank_records=bank_rec,
+                saved_rows=[
+                    {
+                        "candidate_index": 0,
+                        "eps_slot_index": 0,
+                        "vector_file": str(slot_path.relative_to(scratch)).replace("\\", "/"),
+                        "persistence_status": "saved",
+                    }
+                ],
+                nconv_marked=1,
+                save_errors=save_errors,
+                pressure_block_mapping=pressure_block_mapping_metadata(
+                    p_to_W=p_to_W,
+                    source=p_to_W_source,
+                ),
+            )
             if p_to_W.size == 0:
                 checks.append({"check": "pressure_mac", "pass": False, "reason": "p_to_W_missing_in_meta"})
                 passed = False

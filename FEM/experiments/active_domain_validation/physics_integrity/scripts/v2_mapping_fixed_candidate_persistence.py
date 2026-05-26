@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import zlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -114,6 +115,20 @@ def persist_candidate_bank(
     return len(saved_rows), saved_rows, errors
 
 
+def pressure_block_mapping_metadata(
+    *,
+    p_to_W: Optional[np.ndarray],
+    source: str,
+) -> Dict[str, Any]:
+    p = np.asarray(p_to_W if p_to_W is not None else [], dtype=np.int32).ravel()
+    return {
+        "source": str(source),
+        "p_to_W": p.tolist(),
+        "p_to_W_length": int(p.size),
+        "p_to_W_crc32": int(zlib.crc32(p.tobytes()) & 0xFFFFFFFF) if p.size else 0,
+    }
+
+
 def write_eps_candidate_bank_json(
     case_dir: Path,
     *,
@@ -121,6 +136,7 @@ def write_eps_candidate_bank_json(
     saved_rows: List[Dict[str, Any]],
     nconv_marked: int,
     save_errors: List[str],
+    pressure_block_mapping: Optional[Dict[str, Any]] = None,
 ) -> Path:
     path = case_dir / "diagnostics" / "eps_candidate_bank.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -135,6 +151,7 @@ def write_eps_candidate_bank_json(
         "eps_diagnostic_candidate_bank_count": len(bank_records),
         "num_vectors_saved": len(saved_rows),
         "save_errors": list(save_errors),
+        "pressure_block_mapping": dict(pressure_block_mapping or {}),
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return path

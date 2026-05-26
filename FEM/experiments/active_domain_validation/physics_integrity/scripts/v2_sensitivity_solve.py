@@ -36,6 +36,7 @@ from v2_mapping_fixed_candidate_persistence import (
     check_persistence_gate,
     load_preserve_all_bank_from_config,
     persist_candidate_bank,
+    pressure_block_mapping_metadata,
     write_eps_candidate_bank_json,
 )
 from v2_sensitivity_mesh import sample_geometry
@@ -552,6 +553,10 @@ def main() -> int:
             saved_rows=mode_rows,
             nconv_marked=int(eps_diag_pre.get("nconv_marked", nconv_bank)),
             save_errors=save_errors,
+            pressure_block_mapping=pressure_block_mapping_metadata(
+                p_to_W=p_to_W,
+                source="v2_sensitivity_solve_result_p_to_W",
+            ),
         )
         for row in mode_rows:
             f_hz = float(row.get("frequency_hz", float("nan")))
