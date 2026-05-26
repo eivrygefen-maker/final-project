@@ -141,6 +141,7 @@ def assess_physical_eligibility(
         "physically_eligible_after_filter": physically_eligible,
         "rejection_reasons": reasons,
         "recovers_true_seed_branch": recovers_branch,
+        "branch_recovery_pass": recovers_branch,
         "replay_rayleigh_lambda": lam_r,
         "replay_rayleigh_frequency_hz": replay_f,
         "replay_relative_residual": rel_res,
@@ -151,6 +152,31 @@ def assess_physical_eligibility(
 
 def branch_recovery_from_row(row: Dict[str, Any]) -> bool:
     return bool(
-        row.get("physically_eligible_after_filter")
-        and row.get("recovers_true_seed_branch")
+        row.get("branch_recovery_pass")
+        or (
+            row.get("physically_eligible_after_filter")
+            and row.get("recovers_true_seed_branch")
+        )
     )
+
+
+VERDICT_FILTERED_BRANCH_RECOVERED = "FILTERED_DIAGNOSTIC_BRANCH_RECOVERED"
+VERDICT_FILTERED_NO_BRANCH = "FILTERED_DIAGNOSTIC_NO_PHYSICAL_BRANCH_RECOVERED"
+VERDICT_FILTERED_INCONSISTENT = "FILTERED_DIAGNOSTIC_OUTPUT_OR_REPLAY_INCONSISTENT"
+
+
+def assign_filtered_evaluation_verdict(
+    candidates: list[Dict[str, Any]],
+    *,
+    artifacts_ok: bool,
+    expected_mode_count: Optional[int] = None,
+) -> str:
+    if not artifacts_ok:
+        return VERDICT_FILTERED_INCONSISTENT
+    if expected_mode_count is not None and len(candidates) != int(expected_mode_count):
+        return VERDICT_FILTERED_INCONSISTENT
+    if any(branch_recovery_from_row(c) for c in candidates):
+        return VERDICT_FILTERED_BRANCH_RECOVERED
+    if candidates:
+        return VERDICT_FILTERED_NO_BRANCH
+    return VERDICT_FILTERED_INCONSISTENT
