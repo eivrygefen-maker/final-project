@@ -781,11 +781,17 @@ def write_phase2_incremental(
     }
     write_json(DIAG_DIR / "v2_production_validation_summary.partial.json", summary)
     write_json(PRODUCTION_SUMMARY_JSON, summary)
-    write_validation_status(
-        {k: v for k, v in results.items() if k in phase1_ids},
-        {k: v for k, v in results.items() if k in phase2_ids},
-        production_manifest=manifest,
-    )
+    try:
+        write_validation_status(
+            {k: v for k, v in results.items() if k in phase1_ids},
+            {k: v for k, v in results.items() if k in phase2_ids},
+            production_manifest=manifest,
+        )
+    except Exception as exc:
+        summary["validation_status_write_error"] = f"{type(exc).__name__}: {exc}"
+        write_json(DIAG_DIR / "v2_production_validation_summary.partial.json", summary)
+        write_json(PRODUCTION_SUMMARY_JSON, summary)
+        raise
 
 
 def load_baseline_structural_mac_catalog() -> Dict[str, Any]:
@@ -1257,10 +1263,52 @@ def write_validation_status(
             sid for sid in phase2_ids if (phase2_results.get(sid) or {}).get("status") != "ok"
         ],
         "phase2_geometry_pass": geometry_pass,
-        "phase2_material_pass": material_pass,
+        "phase2_material_acoustic_pass": material_acoustic_pass,
+        "phase2_material_structural_pass": material_struct_pass,
         "full_25_material_combinations": "deferred_after_controlled_species_and_mesh_convergence",
     }
     write_json(VALIDATION_STATUS_JSON, status)
+    return status
+
+
+def write_phase2_reports(
+    results: Dict[str, Dict[str, Any]],
+    manifest: Dict[str, Any],
+    *,
+    phase2_ids: List[str],
+    prior_meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Write JSON summary, validation status, and Markdown (report-only safe)."""
+    phase1_ids = list(manifest.get("preserve_phase1_sample_ids") or [])
+    promotion = _phase2_staged_promotion(results, phase2_ids)
+    summary: Dict[str, Any] = {
+        **(prior_meta or {}),
+        "suite": manifest.get("suite"),
+        "phase": manifest.get("phase"),
+        "frozen_formulation": manifest.get("frozen_formulation"),
+        "coupled_baseline": manifest.get("coupled_baseline"),
+        "preserve_phase1_sample_ids": phase1_ids,
+        "phase2_sample_ids": phase2_ids,
+        "samples": {k: v for k, v in results.items() if not str(k).startswith("_")},
+        **promotion,
+    }
+    write_json(DIAG_DIR / "v2_production_validation_summary.partial.json", summary)
+    write_json(PRODUCTION_SUMMARY_JSON, summary)
+    try:
+        val_status = write_validation_status(
+            {k: v for k, v in results.items() if k in phase1_ids},
+            {k: v for k, v in results.items() if k in phase2_ids},
+            production_manifest=manifest,
+        )
+        summary["validation_status"] = val_status
+    except Exception as exc:
+        summary["validation_status_write_error"] = f"{type(exc).__name__}: {exc}"
+        write_json(PRODUCTION_SUMMARY_JSON, summary)
+        raise
+    md_path = write_phase2_markdown_summary(summary)
+    summary["markdown_report"] = str(md_path)
+    write_json(PRODUCTION_SUMMARY_JSON, summary)
+    return summary
 
 
 def write_phase2_markdown_summary(
