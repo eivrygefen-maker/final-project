@@ -63,6 +63,25 @@ VERDICT_PERSISTED_CONTENT_UNRESOLVED = (
 # candidate_eps_slot_0000.smx.npz — stem includes ".smx"; parse from path.name only.
 _CANDIDATE_EPS_SLOT_RE = re.compile(r"^candidate_eps_slot_(\d+)\.smx\.npz$", re.IGNORECASE)
 
+# Canonical contract: v2_unreg_offset_report_evaluator.assemble_replay_operators -> (A, M, u_to_W, p_to_W, meta)
+REPLAY_ASSEMBLY_CONTRACT: Dict[str, Any] = {
+    "definition": (
+        "FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+        "v2_unreg_offset_report_evaluator.py::assemble_replay_operators"
+    ),
+    "return_arity": 5,
+    "return_fields": ["A", "M", "u_to_W", "p_to_W", "meta"],
+    "working_callers": [
+        "v2_mapping_fixed_baseline_evaluator (A, M, u_asm, p_asm, asm_meta)",
+        "v2_unreg_offset_report_evaluator.evaluate_unreg_offset_report",
+        "run_v2_st_singular_mass_preflight.py",
+        "run_v2_l_mid_unregularized_saved_vector_mass_norm_audit.py",
+    ],
+    "maps_resolution": (
+        "solve_result/bank JSON when present; else maps from single assemble_replay_operators call"
+    ),
+}
+
 
 def _static_pipeline_control_flow() -> List[Dict[str, Any]]:
     """Code-path documentation from local source (no VM artifacts)."""
@@ -240,20 +259,6 @@ def _sanitize_for_json(value: Any) -> Any:
     return value
 
 
-def _index_map_from_cfg(cfg_map: Dict[str, Any], key: str) -> Tuple[np.ndarray, Optional[str]]:
-    cand = cfg_map.get(key)
-    source = f"assembled_replay_cfg.{key}" if cand is not None else None
-    if cand is None:
-        solver = cfg_map.get("solver")
-        if isinstance(solver, dict):
-            cand = solver.get(key)
-            if cand is not None:
-                source = f"assembled_replay_cfg.solver.{key}"
-    if cand is None:
-        return np.asarray([], dtype=np.int32), None
-    return _as_int32_index_map(cand), source
-
-
 def _index_map_crc32(arr: np.ndarray) -> int:
     if arr.size == 0:
         return 0
@@ -317,30 +322,29 @@ def _build_map_contract(
     }
 
 
-def _resolve_p_to_W(
+def _resolve_u_to_W_from_sources(
+    solve_result: Dict[str, Any],
+    u_asm: np.ndarray,
+) -> Tuple[np.ndarray, str]:
+    u_res = _as_int32_index_map(solve_result.get("u_to_W"))
+    if u_res.size > 0:
+        return u_res, "solve_result.u_to_W"
+    return u_asm, "assemble_replay_operators._coupled_air_u_to_W_map"
+
+
+def _resolve_p_to_W_from_sources(
     solve_result: Dict[str, Any],
     bank: Dict[str, Any],
-    mesh_file: Path,
-    sample: Dict[str, Any],
-) -> Tuple[np.ndarray, str, Dict[str, Any]]:
+    p_asm: np.ndarray,
+) -> Tuple[np.ndarray, str]:
     p_res = _as_int32_index_map(solve_result.get("p_to_W"))
     if p_res.size > 0:
-        return p_res, "solve_result.p_to_W", {"source": "solve_result"}
+        return p_res, "solve_result.p_to_W"
     pbm = _as_dict(bank.get("pressure_block_mapping"))
     p_bank = _as_int32_index_map(pbm.get("p_to_W"))
     if p_bank.size > 0:
-        return p_bank, str(pbm.get("source", "eps_candidate_bank.pressure_block_mapping")), {
-            "source": "eps_candidate_bank"
-        }
-    from v2_build_coupled_acoustic_seed import _assemble_reduced_coupled_replay
-
-    A, M, cfg = _assemble_reduced_coupled_replay(mesh_file, sample, coupling_enabled=True)
-    try:
-        p_asm, p_src = _index_map_from_cfg(cfg, "_coupled_air_p_to_W_map")
-    finally:
-        A.destroy()
-        M.destroy()
-    return p_asm, p_src or "fresh_assembly._coupled_air_p_to_W_map", {"source": "fresh_assembly"}
+        return p_bank, str(pbm.get("source", "eps_candidate_bank.pressure_block_mapping"))
+    return p_asm, "assemble_replay_operators._coupled_air_p_to_W_map"
 
 
 def _inspect_npz_file(path: Path, *, u_to_W: np.ndarray, p_to_W: np.ndarray) -> Dict[str, Any]:
@@ -462,7 +466,7 @@ def _evaluate_candidate_physics(
                 residual = _block_residual_contributions(
                     A, M, dense, lam0=lam, u_idx=u_to_W, p_idx=p_to_W
                 )
-                rel_res = float(residual["relative_residual"])
+                rel_res = _safe_float(residual.get("relative_residual"))
                 out["relative_residual"] = rel_res
                 out["residual_evaluation_status"] = "ok"
             except Exception as exc:
@@ -518,8 +522,10 @@ def _evaluate_candidate_physics(
                 require_mac=True,
                 require_seed_frequency_match=True,
             )
-            out["physically_eligible_after_filter"] = elig["physically_eligible_after_filter"]
-            out["rejection_reasons"] = list(elig["rejection_reasons"])
+            out["physically_eligible_after_filter"] = bool(
+                elig.get("physically_eligible_after_filter", False)
+            )
+            out["rejection_reasons"] = list(elig.get("rejection_reasons") or [])
             out["continuation_seed_applied"] = True
             out["diagnostic_operator_consistent_with_replay"] = st_fields.get(
                 "diagnostic_operator_consistent_with_replay"
@@ -694,24 +700,6 @@ def _refresh_status_reports(audit: Dict[str, Any]) -> None:
         write_json(repl_path, repl)
 
 
-def _acquire_u_to_W(
-    solve_result: Dict[str, Any],
-    mesh_file: Path,
-    sample: Dict[str, Any],
-) -> Tuple[np.ndarray, Optional[str]]:
-    u_res = _as_int32_index_map(solve_result.get("u_to_W"))
-    if u_res.size > 0:
-        return u_res, "solve_result.u_to_W"
-    from v2_build_coupled_acoustic_seed import _assemble_reduced_coupled_replay
-
-    A0, M0, cfg0 = _assemble_reduced_coupled_replay(mesh_file, sample, coupling_enabled=True)
-    try:
-        return _index_map_from_cfg(cfg0, "_coupled_air_u_to_W_map")
-    finally:
-        A0.destroy()
-        M0.destroy()
-
-
 def main() -> int:
     if MPI.COMM_WORLD.size != 1:
         if MPI.COMM_WORLD.rank == 0:
@@ -743,14 +731,26 @@ def main() -> int:
             solve_result = _load_json(results[-1])
 
     modes_meta = _build_modes_meta(summary)
-    p_to_W, p_source, _p_info = _resolve_p_to_W(solve_result, bank, mesh_file, sample)
-    u_to_W, u_source = _acquire_u_to_W(solve_result, mesh_file, sample)
+
+    from v2_unreg_offset_report_evaluator import assemble_replay_operators
+
+    A, M, u_asm, p_asm, asm_meta = assemble_replay_operators(mesh_file, sample, out_dir=out_dir)
+    u_to_W, u_source = _resolve_u_to_W_from_sources(solve_result, u_asm)
+    p_to_W, p_source = _resolve_p_to_W_from_sources(solve_result, bank, p_asm)
     map_contract = _build_map_contract(
         u_to_W=u_to_W,
         p_to_W=p_to_W,
         u_source=u_source,
         p_source=p_source,
     )
+    replay_assembly_record = {
+        **REPLAY_ASSEMBLY_CONTRACT,
+        "asm_meta": {k: v for k, v in asm_meta.items() if k != "pressure_restriction"},
+        "u_to_W_from_assembly_length": int(u_asm.size),
+        "p_to_W_from_assembly_length": int(p_asm.size),
+        "maps_u_source": u_source,
+        "maps_p_source": p_source,
+    }
 
     eps_diag = _as_dict(solve_result.get("eps_batch_diagnostics"))
     st_fields = {
@@ -798,55 +798,52 @@ def main() -> int:
 
     file_rows: List[Dict[str, Any]] = []
     slot_parse_failures = 0
-    modes_dir = out_dir / "modes"
-    if not modes_dir.is_dir():
-        raise FileNotFoundError(f"modes directory missing: {modes_dir}")
-    for path in sorted(modes_dir.glob("candidate_eps_slot_*.smx.npz")):
-        slot, slot_err = _parse_candidate_eps_slot(path)
-        if slot is None:
-            slot_parse_failures += 1
-            file_rows.append(
-                {
-                    "file_path": str(path),
-                    "file_exists": path.is_file(),
-                    "slot_index": None,
-                    "slot_parse_status": "failed",
-                    "slot_parse_failure_reason": slot_err,
-                    "vector_load_success": False,
-                    "vector_load_status": "slot_parse_failure",
-                }
-            )
-            continue
-        row = _inspect_npz_file(path, u_to_W=u_to_W, p_to_W=p_to_W)
-        row["slot_index"] = int(slot)
-        row["slot_parse_status"] = "ok"
-        file_rows.append(row)
-
     eval_rows: List[Dict[str, Any]] = []
     physics_eval_skipped = False
-    if not map_contract["map_contract_pass"]:
-        physics_eval_skipped = True
-        for fr in file_rows:
-            slot = _safe_int(fr.get("slot_index"))
+    try:
+        modes_dir = out_dir / "modes"
+        if not modes_dir.is_dir():
+            raise FileNotFoundError(f"modes directory missing: {modes_dir}")
+        for path in sorted(modes_dir.glob("candidate_eps_slot_*.smx.npz")):
+            slot, slot_err = _parse_candidate_eps_slot(path)
             if slot is None:
+                slot_parse_failures += 1
+                file_rows.append(
+                    {
+                        "file_path": str(path),
+                        "file_exists": path.is_file(),
+                        "slot_index": None,
+                        "slot_parse_status": "failed",
+                        "slot_parse_failure_reason": slot_err,
+                        "vector_load_success": False,
+                        "vector_load_status": "slot_parse_failure",
+                    }
+                )
                 continue
-            eval_rows.append(
-                {
-                    "slot_index": slot,
-                    "rayleigh_evaluation_status": "skipped_map_contract_failure",
-                    "nonfinite_reason": map_contract.get("map_contract_failure_reason"),
-                }
-            )
-    else:
-        if not seed_npy.is_file():
-            raise FileNotFoundError(f"true seed missing: {seed_npy}")
-        seed = np.asarray(np.load(str(seed_npy)), dtype=np.float64).ravel()
-        if int(seed.size) != N_REDUCED_W:
-            raise ValueError(f"seed length {int(seed.size)} != {N_REDUCED_W}")
-        from v2_unreg_offset_report_evaluator import assemble_replay_operators
+            row = _inspect_npz_file(path, u_to_W=u_to_W, p_to_W=p_to_W)
+            row["slot_index"] = int(slot)
+            row["slot_parse_status"] = "ok"
+            file_rows.append(row)
 
-        A, M, _asm_meta = assemble_replay_operators(mesh_file, sample, out_dir=out_dir)
-        try:
+        if not map_contract["map_contract_pass"]:
+            physics_eval_skipped = True
+            for fr in file_rows:
+                slot = _safe_int(fr.get("slot_index"))
+                if slot is None:
+                    continue
+                eval_rows.append(
+                    {
+                        "slot_index": slot,
+                        "rayleigh_evaluation_status": "skipped_map_contract_failure",
+                        "nonfinite_reason": map_contract.get("map_contract_failure_reason"),
+                    }
+                )
+        else:
+            if not seed_npy.is_file():
+                raise FileNotFoundError(f"true seed missing: {seed_npy}")
+            seed = np.asarray(np.load(str(seed_npy)), dtype=np.float64).ravel()
+            if int(seed.size) != N_REDUCED_W:
+                raise ValueError(f"seed length {int(seed.size)} != {N_REDUCED_W}")
             for fr in file_rows:
                 slot = _safe_int(fr.get("slot_index"))
                 if slot is None:
@@ -875,15 +872,14 @@ def main() -> int:
                     st_fields=st_fields,
                 )
                 eval_rows.append(er)
-        finally:
-            try:
-                A.destroy()
-                M.destroy()
-            except Exception:
-                pass
-
-    for fr in file_rows:
-        fr.pop("dense_vector", None)
+    finally:
+        for fr in file_rows:
+            fr.pop("dense_vector", None)
+        try:
+            A.destroy()
+            M.destroy()
+        except Exception:
+            pass
 
     if not map_contract["map_contract_pass"]:
         verdict = VERDICT_REPLAY_EVAL_FAILURE
@@ -914,6 +910,7 @@ def main() -> int:
         "evidence_scope": "report_only_VM_artifact_audit",
         "output_tree": str(out_dir),
         "persistence_closed": persistence_closed,
+        "replay_assembly": replay_assembly_record,
         "map_contract": map_contract,
         "physics_eval_skipped": physics_eval_skipped,
         "operator_policy": operator_policy,
