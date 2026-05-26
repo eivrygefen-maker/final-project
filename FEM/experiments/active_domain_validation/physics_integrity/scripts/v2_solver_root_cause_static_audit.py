@@ -108,11 +108,14 @@ def build_st_retry_control_flow_audit() -> Dict[str, Any]:
         "frequency_mapping_after_regularized_solve": {
             "function": "fem_main_3d._slepc_physical_lambda",
             "file": _fref(fem),
-            "snippet": _read_snippet(fem, "lam_shift = mu + sigma", context=2),
-            "issue": (
-                "Mapping assumes unregularized shift-invert semantics. Algebraic mu≈1 modes of "
-                "regularized ST can map to lam≈sigma, yielding reported f≈sigma_hz while replay "
-                "on physical GNHEP shows lambda≈1."
+            "snippet": _read_snippet(fem, "eps_eigenvalue_semantics", context=4),
+            "issue_pre_fix": (
+                "Legacy sinvert fallback sigma+1/mu could pin reported f≈sigma when mu≈1; "
+                "shift ST used mu+sigma."
+            ),
+            "fix_implemented": (
+                "lam_phys=mu when eps_eigenvalue_semantics=slepc_backtransformed; "
+                "legacy remaps require explicit manual_* semantics."
             ),
         },
     }
@@ -391,7 +394,7 @@ def build_evidence_summary(
         "confirmed_from_local_code": [
             "Default ST retry tries st_a_shift_frac=1e-3 before 0.0.",
             "ST A-shift modifies only ST factorization copy; replay uses unregularized GNHEP.",
-            "lam_shift=mu+sigma mapping has no inverse for ST regularization.",
+            "Legacy sigma+1/mu and mu+sigma remaps disabled for native STSINVERT; lam_phys=mu.",
             "diagnostic_requires_unregularized_ST forces unregularized ST only on offset diagnostic.",
             "Invalid ST-equivalence via solve_evp=False flags cannot reproduce EPS ST operator.",
             "Earlier regularized diagnostic runs superseded for branch-recovery judgment.",
@@ -400,10 +403,12 @@ def build_evidence_summary(
         "requires_VM_runtime_artifact_evaluation": requires_vm,
         "not_yet_verified": not_yet,
         "single_permitted_next_action": (
-            "bash .../run_v2_l_mid_unregularized_saved_vector_mass_norm_audit.sh"
+            "bash .../run_v2_st_mapping_and_preflight_bundle.sh"
             if mass_pending
             else None
         ),
+        "eigenvalue_mapping_fix_implemented": True,
+        "additional_baseline_eigensolve": "blocked_pending_preflight_review",
         "prior_regularized_diagnostics_superseded_for_branch_verdict": True,
         "unregularized_offset_solve_completed": True,
         "unregularized_offset_evaluation_verdict": unreg_verdict,
@@ -433,8 +438,8 @@ def build_finite_closure_plan(
 
     if mass_pending:
         next_action = (
-            "Run final report-only saved-vector persistence/mass-norm audit on existing "
-            "unregularized-offset artifacts (no eigensolve)."
+            "Run report-only mapping impact inventory, PASS replay recertification, and "
+            "ST singular-mass preflight (no eigensolve); review before authorizing Stage-1."
         )
     elif mass_verdict == VERDICT_PERSISTENCE_BUG:
         next_action = (

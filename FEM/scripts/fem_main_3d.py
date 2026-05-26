@@ -2088,6 +2088,28 @@ def _slepc_target_lambda(solver_cfg: Optional[Dict]) -> float:
     return 0.0
 
 
+def _slepc_eigenvalue_semantics(solver_cfg: Optional[Dict]) -> str:
+    """How ``eps.getEigenpair`` μ must be interpreted (fail-closed for mixed paths)."""
+    sc = solver_cfg or {}
+    sem = str(
+        sc.get(
+            "eps_eigenvalue_semantics",
+            "slepc_backtransformed",
+        )
+    ).strip().lower()
+    allowed = (
+        "slepc_backtransformed",
+        "manual_sinvert_theta",
+        "manual_st_shift",
+    )
+    if sem not in allowed:
+        raise ValueError(
+            f"eps_eigenvalue_semantics={sem!r} not in {allowed}; "
+            "declare semantics explicitly for non-native EPS/ST paths."
+        )
+    return sem
+
+
 def _slepc_physical_lambda(
     eig_r: float,
     st_sigma: float,
@@ -2097,19 +2119,18 @@ def _slepc_physical_lambda(
     """
     Map EPS/ST Ritz value μ to physical GNHEP eigenvalue λ = ω² (rad/s)².
 
-    Returns ``(λ, tag)`` with ``tag`` in
-    ``raw|raw_target|shift|invert|reject``. Non-finite λ means discard the Ritz pair.
+    Returns ``(λ, tag)``. Non-finite λ means discard the Ritz pair.
 
-    SLEPc builds differ: μ may already be physical λ, or λ-σ (shift ST), or
-  1/(λ-σ) (sinvert). Never apply σ+1/μ when |μ| is astronomical — that pins all
-    modes to the shift. For sinvert+TARGET_MAGNITUDE many builds return physical λ
-    directly when μ ≈ σ (ω² scale).
+  Native production path: ``st_type=sinvert`` via SLEPc ``EPS`` + ``ST.SINVERT``.
+    SLEPc back-transforms converged eigenvalues before ``eps.getEigenpair``; μ is
+    already physical λ. Do **not** apply ``μ+σ`` or ``σ+1/μ`` unless
+    ``eps_eigenvalue_semantics`` selects a manual pencil interpretation.
     """
     sigma = float(st_sigma)
     mu = float(np.real(eig_r))
     name = str(st_name).strip().lower()
+    semantics = _slepc_eigenvalue_semantics(solver_cfg)
     lam_lo, lam_hi = _slepc_lambda_hz_bounds(solver_cfg)
-    # |1/(λ-σ)| for sinvert; |λ-σ| for shift — both are modest for band modes.
     mu_invert_max = float(
         solver_cfg.get("eps_map_invert_mu_max", 1.0e8) if solver_cfg else 1.0e8
     )
@@ -2125,33 +2146,52 @@ def _slepc_physical_lambda(
         return float("nan"), "reject"
 
     if name in ("ciss", "ciss_contour"):
+        if semantics != "slepc_backtransformed":
+            raise ValueError(
+                "CISS contour eigenvalues require eps_eigenvalue_semantics="
+                "'slepc_backtransformed' (got {!r})".format(semantics)
+            )
         if _ok(mu):
-            return mu, "raw"
+            return mu, "eps_backtransformed"
         return float("nan"), "reject"
 
     if name in ("sinvert", "shift_invert"):
         if mu <= 0.0:
             return float("nan"), "reject"
-        # Many SLEPc builds return physical λ = ω² directly (especially TARGET_MAGNITUDE).
+        if semantics == "slepc_backtransformed":
+            if _ok(mu):
+                return mu, "eps_backtransformed"
+            return float("nan"), "reject"
+        if semantics == "manual_sinvert_theta":
+            if _ok(mu):
+                return mu, "raw_manual_theta_as_lambda"
+            if mu > 0.0 and abs(mu) <= mu_invert_max:
+                lam_inv = sigma + (1.0 / mu)
+                if _ok(lam_inv):
+                    return lam_inv, "invert_manual_theta"
+            return float("nan"), "reject"
+        raise ValueError(
+            f"sinvert ST with eps_eigenvalue_semantics={semantics!r} is unsupported; "
+            "use slepc_backtransformed or manual_sinvert_theta."
+        )
+
+    if semantics == "manual_st_shift":
+        lam_shift = mu + sigma
+        if _ok(lam_shift):
+            return lam_shift, "shift_manual_st"
         if _ok(mu):
-            return mu, "raw"
-        # sinvert Ritz θ ≈ 1/(λ-σ); map when |θ| is moderate (θ not on ω² scale).
-        if mu > 0.0 and abs(mu) <= mu_invert_max:
-            lam_inv = sigma + (1.0 / mu)
-            if _ok(lam_inv):
-                return lam_inv, "invert"
+            return mu, "raw_fallback"
         return float("nan"), "reject"
 
-    lam_shift = mu + sigma
-    if _ok(lam_shift):
-        return lam_shift, "shift"
-    if _ok(mu):
-        return mu, "raw"
-    if mu > 0.0 and abs(mu) <= mu_invert_max:
-        lam_inv = sigma + (1.0 / mu)
-        if _ok(lam_inv) and abs(lam_inv - sigma) >= min_dlam:
-            return lam_inv, "invert"
-    return float("nan"), "reject"
+    if semantics == "slepc_backtransformed":
+        if _ok(mu):
+            return mu, "eps_backtransformed"
+        return float("nan"), "reject"
+
+    raise ValueError(
+        f"st_name={name!r} with eps_eigenvalue_semantics={semantics!r}: "
+        "no mapping branch (legacy μ+σ disabled unless manual_st_shift)."
+    )
 
 
 def _slepc_eps_strategy(
@@ -4291,6 +4331,25 @@ def _slepc_shift_invert_batch(
         st.setType(SLEPc.ST.Type.SINVERT)
         st.setShift(st_sigma)
         _st_name = "sinvert"
+        solver_cfg.setdefault("eps_eigenvalue_semantics", "slepc_backtransformed")
+        solver_cfg["legacy_double_shift_mapping_disabled"] = True
+        solver_cfg["_eps_eigenvalue_mapping"] = {
+            "st_type": "sinvert",
+            "sigma_hz": float(st_sigma_hz),
+            "eigenvalue_source": "eps_getEigenpair_backtransformed",
+            "legacy_double_shift_mapping_disabled": True,
+            "eps_eigenvalue_semantics": str(
+                solver_cfg.get("eps_eigenvalue_semantics", "slepc_backtransformed")
+            ),
+        }
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            print(
+                "[solver][eps_mapping] native STSINVERT: eigenvalue_source="
+                "eps_getEigenpair_backtransformed; lam_phys=mu; "
+                "legacy mu+sigma and sigma+1/mu remaps disabled unless "
+                "eps_eigenvalue_semantics overrides.",
+                flush=True,
+            )
 
     ksp = st.getKSP()
     pc = ksp.getPC()

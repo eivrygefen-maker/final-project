@@ -36,6 +36,10 @@ UNREG_OFFSET_REPORT_JSON = (
     CONV_DIAG / "v2_l_mid_seed_branch_unregularized_offset_diagnostic.json"
 )
 MASS_NORM_AUDIT_JSON = CONV_DIAG / "v2_l_mid_unregularized_saved_vector_mass_norm_audit.json"
+MAPPING_INV_JSON = CONV_DIAG / "v2_eps_mapping_impact_inventory.json"
+REPLAY_RECERT_JSON = CONV_DIAG / "v2_existing_pass_replay_recertification.json"
+ST_PREFLIGHT_JSON = CONV_DIAG / "v2_st_singular_mass_preflight.json"
+REHAB_PLAN_JSON = CONV_DIAG / "v2_st_singular_mass_rehabilitation_plan.json"
 
 
 def _load_json(path: Path) -> Optional[Dict[str, Any]]:
@@ -213,6 +217,10 @@ def main() -> int:
     filtered_eval = _load_json(FILTERED_EVAL_JSON)
     unreg_eval = _load_json(UNREG_OFFSET_REPORT_JSON)
     mass_norm_audit = _load_json(MASS_NORM_AUDIT_JSON)
+    mapping_inv = _load_json(MAPPING_INV_JSON)
+    replay_recert = _load_json(REPLAY_RECERT_JSON)
+    st_preflight = _load_json(ST_PREFLIGHT_JSON)
+    rehab_plan = _load_json(REHAB_PLAN_JSON)
     root_cause_status = determine_root_cause_status(
         filtered_eval=filtered_eval, unreg_eval=unreg_eval
     )
@@ -252,11 +260,30 @@ def main() -> int:
             "report_json": str(MASS_NORM_AUDIT_JSON),
             "loaded": mass_norm_audit is not None,
             "classification_verdict": mass_verdict,
-            "recommended_vm_command": (
-                "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
-                "run_v2_l_mid_unregularized_saved_vector_mass_norm_audit.sh"
+        },
+        "eps_mapping_impact_inventory": {
+            "report_json": str(MAPPING_INV_JSON),
+            "loaded": mapping_inv is not None,
+        },
+        "existing_pass_replay_recertification": {
+            "report_json": str(REPLAY_RECERT_JSON),
+            "loaded": replay_recert is not None,
+        },
+        "st_singular_mass_preflight": {
+            "report_json": str(ST_PREFLIGHT_JSON),
+            "loaded": st_preflight is not None,
+            "PGNHEP_purification_applicability": (st_preflight or {}).get(
+                "PGNHEP_purification_applicability"
             ),
         },
+        "st_singular_mass_rehabilitation_plan": {
+            "report_json": str(REHAB_PLAN_JSON),
+            "loaded": rehab_plan is not None,
+        },
+        "recommended_vm_command_report_only": (
+            "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+            "run_v2_st_mapping_and_preflight_bundle.sh"
+        ),
         "evidence_summary": build_evidence_summary(
             filtered_eval=filtered_eval,
             unreg_eval=unreg_eval,
@@ -281,12 +308,11 @@ def main() -> int:
         "diagnostic_exposure_conclusion": {
             "status": "confirmed_from_local_code_with_VM_operator_evidence",
             "summary": (
-                "Prior ST-regularized diagnostic runs are superseded. The unregularized-offset "
-                "baseline solve completed successfully with operator consistency confirmed. "
-                "All seven saved candidates are currently unevaluable (xH_Mx=0 in report-only "
-                "replay). No additional baseline eigensolve is authorized. hole_radius_large and "
-                "mesh convergence remain blocked. Next action is determined solely by the "
-                "saved-vector persistence/mass-null audit."
+                "Prior ST-regularized runs superseded. Unregularized-offset baseline solve "
+                "completed with operator consistency; all seven candidates unevaluable (xH_Mx=0). "
+                "Eigenvalue mapping fix implemented (lam_phys=mu for native STSINVERT). "
+                "No baseline eigensolve until mapping impact + ST preflight reports are reviewed. "
+                "hole_radius_large and mesh convergence remain blocked."
             ),
             "replay_only_validations_protected": True,
             "eps_default_st_ladder_potentially_exposed": True,
