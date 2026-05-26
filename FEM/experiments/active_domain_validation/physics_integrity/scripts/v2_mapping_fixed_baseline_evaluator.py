@@ -25,8 +25,14 @@ FORBIDDEN_INPUT_SUBDIRS = (
 VERDICT_BRANCH_RECOVERED = "MAPPING_FIXED_UNREGULARIZED_BASELINE_BRANCH_RECOVERED"
 VERDICT_NO_BRANCH = "MAPPING_FIXED_UNREGULARIZED_BASELINE_NO_PHYSICAL_BRANCH_RECOVERED"
 VERDICT_INCONSISTENT = "MAPPING_FIXED_UNREGULARIZED_BASELINE_OUTPUT_OR_REPLAY_INCONSISTENT"
+VERDICT_PERSISTENCE_FAILURE = (
+    "MAPPING_FIXED_UNREGULARIZED_BASELINE_CANDIDATE_PERSISTENCE_FAILURE"
+)
 
 OUT_SUBDIR = "seed_branch_recovery_diagnostic_mapping_fixed_unregularized"
+OUT_SUBDIR_PERSISTENCE_FIXED = (
+    "seed_branch_recovery_diagnostic_mapping_fixed_unregularized_persistence_fixed"
+)
 
 
 def _path_under(base: Path, child: Path) -> bool:
@@ -52,6 +58,43 @@ def mapping_fixed_branch_recovery_from_row(row: Dict[str, Any]) -> bool:
     return bool(branch_recovery_from_row(row))
 
 
+def persistence_failure_from_artifacts(
+    *,
+    solve_result: Dict[str, Any],
+    bank_summary: Dict[str, Any],
+    num_saved: int,
+) -> Optional[Dict[str, Any]]:
+    from v2_mapping_fixed_candidate_persistence import check_persistence_gate
+
+    eps_diag = solve_result.get("eps_batch_diagnostics") or {}
+    nconv = int(eps_diag.get("nconv_marked", solve_result.get("nconv_marked", 0)) or 0)
+    bank_count = int(
+        bank_summary.get("eps_diagnostic_candidate_bank_count")
+        or bank_summary.get("nconv_marked")
+        or eps_diag.get("eps_diagnostic_candidate_bank_count", 0)
+        or 0
+    )
+    save_errors = list(bank_summary.get("save_errors") or [])
+    pf = solve_result.get("diagnostic_verdict")
+    if pf == VERDICT_PERSISTENCE_FAILURE:
+        return solve_result.get("seed_branch_recovery_diagnostic", {}).get(
+            "persistence_failure"
+        ) or {
+            "diagnostic_verdict": VERDICT_PERSISTENCE_FAILURE,
+            "verdict_reason": "recorded_at_solve_time",
+            "nconv_marked": nconv,
+            "eps_diagnostic_candidate_bank_count": bank_count,
+            "num_vectors_saved": num_saved,
+            "save_errors": save_errors,
+        }
+    return check_persistence_gate(
+        nconv_marked=nconv,
+        bank_count=bank_count,
+        num_vectors_saved=num_saved,
+        save_errors=save_errors,
+    )
+
+
 def assign_mapping_fixed_verdict(
     *,
     continuation: bool,
@@ -61,13 +104,18 @@ def assign_mapping_fixed_verdict(
     artifacts_ok: bool,
     nconv_marked: Optional[int],
     num_saved: int,
+    persistence_failure: Optional[Dict[str, Any]] = None,
 ) -> str:
+    if persistence_failure is not None:
+        return VERDICT_PERSISTENCE_FAILURE
     if not artifacts_ok or not candidates:
+        if nconv_marked is not None and int(nconv_marked) > 0 and int(num_saved) == 0:
+            return VERDICT_PERSISTENCE_FAILURE
         return VERDICT_INCONSISTENT
     if not continuation or not op_ok or not semantics_ok:
         return VERDICT_INCONSISTENT
     if nconv_marked is not None and int(nconv_marked) > 0 and num_saved < int(nconv_marked):
-        return VERDICT_INCONSISTENT
+        return VERDICT_PERSISTENCE_FAILURE
     statuses = [str(c.get("metrics_computation_status", "")) for c in candidates]
     if not all(s == "ok" for s in statuses):
         return VERDICT_INCONSISTENT
@@ -151,6 +199,51 @@ def evaluate_mapping_fixed_baseline_artifacts(
 
     summary_path = out_dir / "diagnostics" / "mode_energy_summary.json"
     bank_path = out_dir / "diagnostics" / "eps_candidate_bank.json"
+    bank_summary: Dict[str, Any] = {}
+    if bank_path.is_file():
+        try:
+            bank_summary = json.loads(bank_path.read_text(encoding="utf-8"))
+        except Exception:
+            bank_summary = {"load_status": "failed"}
+    num_saved = int(
+        bank_summary.get("num_vectors_saved", solve_result.get("num_modes_saved", 0)) or 0
+    )
+    nconv = eps_diag.get("nconv_marked")
+    persistence_failure = persistence_failure_from_artifacts(
+        solve_result=solve_result,
+        bank_summary=bank_summary,
+        num_saved=num_saved,
+    )
+    if persistence_failure is not None:
+        persistence_failure.setdefault("candidate_output_dir", str(out_dir.resolve()))
+        return {
+            "evidence_scope": "VM_runtime_artifact_evaluation",
+            "input_paths": input_paths,
+            "diagnostic_verdict": VERDICT_PERSISTENCE_FAILURE,
+            "verdict_reason": persistence_failure.get("verdict_reason"),
+            "interpretation": (
+                "Corrected unregularized EPS produced converged candidates in memory, but "
+                "diagnostic preserve-all vectors were not persisted for replay. No physical "
+                "branch verdict is possible from this run."
+            ),
+            "persistence_failure": persistence_failure,
+            "st_operator_fields": st_fields,
+            "continuation_seed_applied": continuation,
+            "eps_nconv_marked": nconv,
+            "eps_candidate_bank_summary": {
+                "path": str(bank_path),
+                "loaded": bank_path.is_file(),
+                **{k: bank_summary.get(k) for k in (
+                    "num_vectors_saved",
+                    "nconv_marked",
+                    "eps_diagnostic_candidate_bank_count",
+                    "save_errors",
+                )},
+            },
+            "not_evidence_for_st_failure": True,
+            "not_evidence_for_stage_2": True,
+        }
+
     modes: List[Dict[str, Any]] = []
     if summary_path.is_file():
         modes = json.loads(summary_path.read_text(encoding="utf-8")).get("modes") or []
@@ -213,7 +306,6 @@ def evaluate_mapping_fixed_baseline_artifacts(
         if branch_pool
         else {}
     )
-    nconv = eps_diag.get("nconv_marked")
     artifacts_ok = bool(candidates) and summary_path.is_file()
     verdict = assign_mapping_fixed_verdict(
         continuation=continuation,
@@ -222,16 +314,10 @@ def evaluate_mapping_fixed_baseline_artifacts(
         candidates=candidates,
         artifacts_ok=artifacts_ok,
         nconv_marked=int(nconv) if nconv is not None else None,
-        num_saved=len(candidates),
+        num_saved=num_saved,
+        persistence_failure=None,
     )
     metrics_ok_count = sum(1 for c in candidates if c.get("metrics_computation_status") == "ok")
-
-    bank_summary: Dict[str, Any] = {}
-    if bank_path.is_file():
-        try:
-            bank_summary = json.loads(bank_path.read_text(encoding="utf-8"))
-        except Exception:
-            bank_summary = {"load_status": "failed"}
 
     return {
         "evidence_scope": "VM_runtime_artifact_evaluation",

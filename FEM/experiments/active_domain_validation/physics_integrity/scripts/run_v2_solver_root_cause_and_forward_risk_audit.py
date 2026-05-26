@@ -298,7 +298,7 @@ def main() -> int:
         "recommended_vm_command_report_only": None,
         "recommended_vm_command_baseline_solve": (
             "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
-            "run_v2_l_mid_mapping_fixed_unregularized_baseline_diagnostic.sh"
+            "run_v2_mapping_fixed_persistence_fixed_baseline_vm.sh"
         ),
         "evidence_summary": build_evidence_summary(
             filtered_eval=filtered_eval,

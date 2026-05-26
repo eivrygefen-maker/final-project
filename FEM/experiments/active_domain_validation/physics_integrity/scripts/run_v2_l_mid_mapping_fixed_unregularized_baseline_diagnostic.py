@@ -40,6 +40,7 @@ from v2_mapping_fixed_baseline_evaluator import (
     OUT_SUBDIR,
     VERDICT_BRANCH_RECOVERED,
     VERDICT_INCONSISTENT,
+    VERDICT_PERSISTENCE_FAILURE,
     evaluate_mapping_fixed_baseline_artifacts,
 )
 from v2_sensitivity_common import REPO_ROOT, hz_result_tag
@@ -265,6 +266,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--evaluate-only", action="store_true")
+    parser.add_argument(
+        "--record-vm-persistence-failure",
+        action="store_true",
+        help="Write operator VM persistence-failure evidence into report (no EPS).",
+    )
     args = parser.parse_args()
 
     manifest = load_manifest()
@@ -321,6 +327,30 @@ def main() -> int:
     pre = _validate_prelaunch(mesh_file, seed_npy, seed_meta)
     report["prelaunch"] = pre
 
+    if args.record_vm_persistence_failure:
+        report["vm_operator_persistence_failure"] = {
+            "nconv_marked": 56,
+            "eps_diagnostic_candidate_bank_count": 56,
+            "num_vectors_saved": 0,
+            "preserve_all_nconv_kept": 56,
+            "worker_usable_rows": 56,
+            "worker_rows_after_filter": 0,
+            "root_cause": "bank_not_on_config_and_worker_filtered_rt_rb_none",
+        }
+        report["evaluation"] = {
+            "diagnostic_verdict": VERDICT_PERSISTENCE_FAILURE,
+            "interpretation": (
+                "Corrected unregularized EPS produced 56 converged candidates in memory, but "
+                "diagnostic preserve-all vectors were not persisted. No physical branch verdict."
+            ),
+            "not_evidence_for_st_failure": True,
+            "not_evidence_for_stage_2": True,
+        }
+        write_json(REPORT_JSON, report)
+        _write_md(report)
+        _refresh_static_reports()
+        return 0
+
     if args.prepare_only:
         report["prepare_only"] = True
         report["evaluation"] = {
@@ -362,7 +392,7 @@ def main() -> int:
         print(f"[mapping_fixed_baseline_eval] verdict={verdict}", flush=True)
         if verdict == VERDICT_BRANCH_RECOVERED:
             return 0
-        if verdict == VERDICT_INCONSISTENT:
+        if verdict in (VERDICT_INCONSISTENT, VERDICT_PERSISTENCE_FAILURE):
             return 2
         return 1
 

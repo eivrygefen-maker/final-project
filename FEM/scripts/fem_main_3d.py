@@ -7642,22 +7642,66 @@ def _solve_coupled_evp(
         )
         config["_eps_batch_diagnostics"] = dict(solver_cfg.get("_eps_batch_diagnostics") or {})
         config["_eps_batch_diagnostics"]["usable_rows_harvested"] = int(len(rows))
-        _phase_sync(2100, "worker single-shift after batch", status_callback=status_callback)
-        row_meta: List[Tuple[float, np.ndarray, float, float, float]] = []
-        for f_hz, vec, rt, rb, p_frac, p_block_max in rows:
-            if rt is None or rb is None:
-                continue
-            arr = np.asarray(vec, dtype=np.float64)
-            row_meta.append(
-                (
-                    float(f_hz),
-                    arr,
-                    float(rt),
-                    float(rb),
-                    float(p_frac),
-                    float(p_block_max),
-                )
+        preserve_all_worker = _solver_bool(
+            solver_cfg, "eps_diagnostic_preserve_all_nconv_candidates", default=False
+        )
+        diag_bank_worker = list(
+            solver_cfg.get("_eps_diagnostic_candidate_bank_records") or []
+        )
+        if preserve_all_worker:
+            config["_eps_diagnostic_candidate_bank_records"] = diag_bank_worker
+            config["_eps_batch_diagnostics"]["eps_diagnostic_candidate_bank_count"] = int(
+                len(diag_bank_worker)
             )
+        _phase_sync(2100, "worker single-shift after batch", status_callback=status_callback)
+        row_meta: List[Tuple[float, np.ndarray, float, float, float, float]] = []
+        if preserve_all_worker and diag_bank_worker:
+            for rec in diag_bank_worker:
+                vec = rec.get("vector")
+                if vec is None:
+                    continue
+                f_keep = rec.get("reported_frequency_hz")
+                if f_keep is None or not math.isfinite(float(f_keep)):
+                    f_keep = float("nan")
+                arr = np.asarray(vec, dtype=np.float64)
+                row_meta.append(
+                    (
+                        float(f_keep),
+                        arr,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                    )
+                )
+        elif preserve_all_worker and rows:
+            for f_hz, vec, _rt, _rb, p_frac, p_block_max in rows:
+                f_keep = float(f_hz) if math.isfinite(float(f_hz)) else float("nan")
+                row_meta.append(
+                    (
+                        f_keep,
+                        np.asarray(vec, dtype=np.float64),
+                        0.0,
+                        0.0,
+                        float(p_frac or 0.0),
+                        float(p_block_max or 0.0),
+                    )
+                )
+        else:
+            for f_hz, vec, rt, rb, p_frac, p_block_max in rows:
+                if rt is None or rb is None:
+                    continue
+                arr = np.asarray(vec, dtype=np.float64)
+                row_meta.append(
+                    (
+                        float(f_hz),
+                        arr,
+                        float(rt),
+                        float(rb),
+                        float(p_frac),
+                        float(p_block_max),
+                    )
+                )
         if not row_meta:
             _emit(
                 f"[worker][warn] No usable modes at {float(_worker_hz):.4f} Hz "

@@ -30,6 +30,14 @@ from mode_diagnostics import (
     diagnose_mixed_mode,
     merge_scaling_metadata,
 )
+from v2_mapping_fixed_candidate_persistence import (
+    VERDICT_PERSISTENCE_FAILURE,
+    bank_records_from_eigvecs,
+    check_persistence_gate,
+    load_preserve_all_bank_from_config,
+    persist_candidate_bank,
+    write_eps_candidate_bank_json,
+)
 from v2_sensitivity_mesh import sample_geometry
 from wood_library import apply_wood_ids_to_config
 
@@ -480,32 +488,33 @@ def main() -> int:
     hz_tag = hz_result_tag(target_hz)
     mode_rows: List[Dict[str, Any]] = []
     in_band: List[Dict[str, Any]] = []
-    eps_bank_meta: List[Dict[str, Any]] = []
-    bank_records = list(cfg.get("_eps_diagnostic_candidate_bank_records") or [])
+    save_errors: List[str] = []
+    eps_diag_pre = dict(cfg.get("_eps_batch_diagnostics") or {})
     preserve_all_bank = bool(
         (seed_branch_diag_meta or {}).get("eps_diagnostic_preserve_all_nconv_candidates")
         or sc.get("eps_diagnostic_preserve_all_nconv_candidates")
     )
-
-    def _save_candidate_vector(
-        vec: np.ndarray,
-        *,
-        slot_index: int,
-        frequency_hz: float,
-        bank_fields: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        mode_path = (
-            case_dir
-            / "modes"
-            / f"candidate_eps_slot_{int(slot_index):04d}{MODE_VECTOR_FILE_SUFFIX}"
+    bank_records = load_preserve_all_bank_from_config(cfg)
+    if preserve_all_bank and not bank_records:
+        bank_records = bank_records_from_eigvecs(
+            list(freqs_hz),
+            eigvecs,
+            eps_diag=eps_diag_pre,
         )
+        if bank_records:
+            save_errors.append("bank_loaded_from_eigvec_fallback")
+
+    def _save_one(vec: np.ndarray, mode_path: Path, rec: Dict[str, Any]) -> Dict[str, Any]:
         save_mode_csr(mode_path, dense_to_csr_f32_column(vec))
+        f_hz = rec.get("reported_frequency_hz")
+        if f_hz is None or not math.isfinite(float(f_hz)):
+            f_hz = float("nan")
         diag = diagnose_mixed_mode(
             vec,
             u_to_W=u_to_W,
             p_to_W=p_to_W,
             gnhep=gnhep,
-            frequency_hz=float(frequency_hz),
+            frequency_hz=float(f_hz),
         )
         energy = compute_mass_energy_participation(
             vec, M, A, u_to_W=u_to_W, p_to_W=p_to_W, gnhep=gnhep
@@ -517,79 +526,60 @@ def main() -> int:
                 for k in energy
                 if k.endswith("_phys") or k == "p_frac_energy_phys"
             },
-            "candidate_index": int(slot_index),
-            "eps_slot_index": int(slot_index),
-            "mode_index": int(slot_index),
-            "frequency_hz": float(frequency_hz),
-            "vector_path": str(mode_path.relative_to(case_dir)).replace("\\", "/"),
-            "vector_file": str(mode_path.relative_to(case_dir)).replace("\\", "/"),
+            "frequency_hz": float(f_hz),
             "mode_class_physical_energy": _classify_phys_energy(
                 float(energy["p_frac_energy_phys"])
             ),
         }
-        if bank_fields:
-            row.update(bank_fields)
         return row
 
     if preserve_all_bank and bank_records:
-        for rec in bank_records:
-            vec = np.asarray(rec.get("vector"), dtype=np.float64).ravel()
-            slot = int(rec.get("eps_slot_index", rec.get("candidate_index", len(mode_rows))))
-            f_hz = rec.get("reported_frequency_hz")
-            if f_hz is None or not math.isfinite(float(f_hz)):
-                f_hz = float("nan")
-            bank_fields = {
-                k: rec.get(k)
-                for k in (
-                    "mu_raw",
-                    "lam_phys",
-                    "lam_map_tag",
-                    "sigma_used_hz",
-                    "st_type",
-                    "eps_eigenvalue_semantics",
-                    "legacy_double_shift_mapping_disabled",
-                )
-                if k in rec
-            }
-            row = _save_candidate_vector(
-                vec,
-                slot_index=slot,
-                frequency_hz=float(f_hz),
-                bank_fields=bank_fields,
+        n_saved, mode_rows, save_errors_persist = persist_candidate_bank(
+            case_dir,
+            bank_records,
+            save_vector_fn=_save_one,
+        )
+        save_errors.extend(save_errors_persist)
+        nconv_bank = int(
+            eps_diag_pre.get(
+                "eps_diagnostic_candidate_bank_count",
+                len(bank_records),
             )
-            mode_rows.append(row)
-            eps_bank_meta.append({**bank_fields, **row, "vector_file": row["vector_file"]})
-            if math.isfinite(float(f_hz)) and band_lo <= float(f_hz) <= band_hi:
+        )
+        write_eps_candidate_bank_json(
+            case_dir,
+            bank_records=bank_records,
+            saved_rows=mode_rows,
+            nconv_marked=int(eps_diag_pre.get("nconv_marked", nconv_bank)),
+            save_errors=save_errors,
+        )
+        for row in mode_rows:
+            f_hz = float(row.get("frequency_hz", float("nan")))
+            if math.isfinite(f_hz) and band_lo <= f_hz <= band_hi:
                 in_band.append(row)
     else:
-        n_modes = int(eigvecs.shape[1]) if eigvecs.ndim == 2 else 0
-        for j in range(n_modes):
+        n_col = int(eigvecs.shape[1]) if eigvecs.ndim == 2 else 0
+        for j in range(n_col):
             vec = eigvecs[:, j]
-            row = _save_candidate_vector(
-                vec,
-                slot_index=j,
-                frequency_hz=float(freqs_hz[j]),
+            mode_path = (
+                case_dir
+                / "modes"
+                / f"candidate_eps_slot_{j:04d}{MODE_VECTOR_FILE_SUFFIX}"
             )
+            row = _save_one(
+                vec,
+                mode_path,
+                {"reported_frequency_hz": float(freqs_hz[j])},
+            )
+            row["candidate_index"] = j
+            row["mode_index"] = j
+            row["vector_file"] = str(mode_path.relative_to(case_dir)).replace("\\", "/")
+            row["vector_path"] = row["vector_file"]
             mode_rows.append(row)
             if band_lo <= float(freqs_hz[j]) <= band_hi:
                 in_band.append(row)
 
     n_modes = len(mode_rows)
-    if preserve_all_bank:
-        bank_payload = {
-            "candidates": [
-                {
-                    k: v
-                    for k, v in rec.items()
-                    if k != "vector"
-                }
-                for rec in bank_records
-            ],
-            "saved_mode_rows": eps_bank_meta,
-            "nconv_marked": int((cfg.get("_eps_batch_diagnostics") or {}).get("nconv_marked", -1)),
-            "num_vectors_saved": int(n_modes),
-        }
-        _write_json(case_dir / "diagnostics" / "eps_candidate_bank.json", bank_payload)
 
     try:
         A.destroy()
@@ -598,6 +588,18 @@ def main() -> int:
         pass
 
     eps_diag = dict(cfg.get("_eps_batch_diagnostics") or sc.get("_eps_batch_diagnostics") or {})
+    persistence_failure: Optional[Dict[str, Any]] = None
+    if preserve_all_bank and args.seed_branch_mapping_fixed_unregularized_diagnostic:
+        persistence_failure = check_persistence_gate(
+            nconv_marked=int(eps_diag.get("nconv_marked", 0)),
+            bank_count=int(
+                eps_diag.get("eps_diagnostic_candidate_bank_count", len(bank_records))
+            ),
+            num_vectors_saved=int(n_modes),
+            save_errors=save_errors,
+        )
+        if persistence_failure is not None:
+            persistence_failure["candidate_output_dir"] = str(case_dir)
     continuation_seed_applied = bool(eps_diag.get("continuation_seed_applied"))
     st_a_used = float(eps_diag.get("st_a_shift_frac_used", 0.0) or 0.0)
     st_m_used = float(eps_diag.get("st_mass_reg_frac_used", 0.0) or 0.0)
@@ -657,7 +659,9 @@ def main() -> int:
             or args.seed_branch_mapping_fixed_unregularized_diagnostic
         )
         diag_verdict: Optional[str] = None
-        if requires_unreg and not op_consistent:
+        if persistence_failure is not None:
+            diag_verdict = str(persistence_failure["diagnostic_verdict"])
+        elif requires_unreg and not op_consistent:
             diag_verdict = (
                 "DIAGNOSTIC_ST_REGULARIZATION_REQUIRED_NO_PHYSICAL_VERDICT"
             )
@@ -678,6 +682,11 @@ def main() -> int:
             "diagnostic_operator_consistent_with_replay": op_consistent,
             "diagnostic_verdict": diag_verdict,
         }
+        if persistence_failure is not None:
+            result["seed_branch_recovery_diagnostic"]["persistence_failure"] = (
+                persistence_failure
+            )
+            result["num_modes_saved"] = int(n_modes)
         if diag_verdict is not None:
             result["diagnostic_verdict"] = diag_verdict
         result["solver_mode"] = seed_branch_diag_meta["solver_mode"]

@@ -13,6 +13,10 @@ from typing import Any, Dict, List, Optional
 REPO_ROOT = Path(__file__).resolve().parents[5]
 SCRIPT_DIR = Path(__file__).resolve().parent
 FEM_SCRIPTS = REPO_ROOT / "FEM" / "scripts"
+CONV_DIAG = (
+    REPO_ROOT
+    / "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics"
+)
 
 ROOT_CAUSE_CONFIRMED_ST = "ROOT_CAUSE_CONFIRMED_ST_REGULARIZATION_OR_MAPPING_FIX_READY_FOR_ONE_BASELINE_RERUN"
 VERDICT_PERSISTENCE_BUG = "SAVED_MODE_VECTOR_PERSISTENCE_OR_LAYOUT_BUG_CONFIRMED"
@@ -366,6 +370,10 @@ def build_evidence_summary(
         "True acoustic seed valid at ~243.075 Hz under unregularized physical v2 replay.",
         "Pre-mapping-fix unregularized-offset solve (7 harvested modes, all xH_Mx=0) is not a "
         "valid test of corrected lam_phys=mu mapping; prior seven-mode harvest is not failure evidence.",
+        "Mapping-corrected baseline on VM: nconv_marked=56, preserve_all kept=56, but "
+        "num_vectors_saved=0 (worker rt/rb filter dropped rows; bank not bridged to config).",
+        "Verdict: MAPPING_FIXED_UNREGULARIZED_BASELINE_CANDIDATE_PERSISTENCE_FAILURE — inconclusive, "
+        "not ST failure, not Stage-2 trigger.",
         "PGNHEP/purification: not_justified_use_nullspace_reduction_plan in current VM environment.",
         "PASS replay recertification: some_modes_valid_physics_wrong_frequency_labels_only.",
     ]
@@ -377,10 +385,14 @@ def build_evidence_summary(
         reported_vm.append(f"Mapping-corrected baseline verdict: {mf_verdict}.")
 
     requires_vm: List[str] = []
-    if mf_verdict in (None, "PENDING_VM_SOLVE_AND_EVALUATION"):
+    if mf_verdict in (
+        None,
+        "PENDING_VM_SOLVE_AND_EVALUATION",
+        "MAPPING_FIXED_UNREGULARIZED_BASELINE_CANDIDATE_PERSISTENCE_FAILURE",
+    ):
         requires_vm.append(
-            "Exactly one mapping-corrected unregularized baseline ST diagnostic with full "
-            "nconv candidate preservation + immediate replay evaluation."
+            "No-EVP persistence self-test, then exactly one replacement mapping-corrected "
+            "baseline with persisted candidate_eps_slot_*.smx.npz vectors."
         )
 
     not_yet: List[str] = [
@@ -400,18 +412,28 @@ def build_evidence_summary(
         "requires_VM_runtime_artifact_evaluation": requires_vm,
         "not_yet_verified": not_yet,
         "single_permitted_next_action": (
-            "bash .../run_v2_l_mid_mapping_fixed_unregularized_baseline_diagnostic.sh"
-            if mf_verdict in (None, "PENDING_VM_SOLVE_AND_EVALUATION")
+            "bash .../run_v2_mapping_fixed_persistence_fixed_baseline_vm.sh"
+            if mf_verdict
+            in (
+                None,
+                "PENDING_VM_SOLVE_AND_EVALUATION",
+                "MAPPING_FIXED_UNREGULARIZED_BASELINE_CANDIDATE_PERSISTENCE_FAILURE",
+            )
             else None
         ),
         "eigenvalue_mapping_fix_implemented": True,
         "additional_baseline_eigensolve": (
-            "one_mapping_corrected_unregularized_baseline_authorized"
-            if mf_verdict in (None, "PENDING_VM_SOLVE_AND_EVALUATION")
+            "one_replacement_run_after_persistence_self_test_pass"
+            if mf_verdict
+            in (
+                None,
+                "PENDING_VM_SOLVE_AND_EVALUATION",
+                "MAPPING_FIXED_UNREGULARIZED_BASELINE_CANDIDATE_PERSISTENCE_FAILURE",
+            )
             else "blocked_pending_baseline_review"
         ),
         "PGNHEP_purification": "ruled_out_in_current_VM_environment",
-        "stage_2": "mandatory_only_if_mapping_corrected_baseline_fails",
+        "stage_2": "not_triggered_until_persisted_candidate_baseline_evaluated",
         "prior_pass_handling": {
             "mesh_topology_gates_preserved": True,
             "true_seed_replay_findings_preserved": True,
@@ -444,12 +466,30 @@ def build_finite_closure_plan(
 ) -> Dict[str, Any]:
     mass_verdict = (mass_norm_audit or {}).get("classification_verdict")
     mf_verdict = (mapping_fixed_eval or {}).get("evaluation", {}).get("diagnostic_verdict")
+    pf_verdict = "MAPPING_FIXED_UNREGULARIZED_BASELINE_CANDIDATE_PERSISTENCE_FAILURE"
+    self_test_json = CONV_DIAG / "v2_mapping_fixed_candidate_persistence_self_test.json"
+    self_test_pass = False
+    if self_test_json.is_file():
+        try:
+            import json
+            from pathlib import Path
+
+            self_test_pass = bool(
+                json.loads(Path(self_test_json).read_text(encoding="utf-8")).get("self_test_pass")
+            )
+        except Exception:
+            self_test_pass = False
     vm_shell = (
         "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
-        "run_v2_l_mid_mapping_fixed_unregularized_baseline_diagnostic.sh"
+        "run_v2_mapping_fixed_persistence_fixed_baseline_vm.sh"
     )
 
-    if mf_verdict == "MAPPING_FIXED_UNREGULARIZED_BASELINE_BRANCH_RECOVERED":
+    if mf_verdict == pf_verdict:
+        next_action = (
+            "Prior mapping-corrected baseline inconclusive (candidate persistence failure); "
+            f"run persistence self-test then replacement baseline: {vm_shell}"
+        )
+    elif mf_verdict == "MAPPING_FIXED_UNREGULARIZED_BASELINE_BRANCH_RECOVERED":
         next_action = (
             "Branch recovered under corrected mapping; review before hole_radius_large or "
             "mesh_convergence resume. Regenerate report-only corrected frequency tables for prior PASS."
@@ -463,10 +503,15 @@ def build_finite_closure_plan(
         next_action = (
             "Resolve output/replay inconsistency before Stage-2; do not authorize alternate ST tuning."
         )
-    elif mf_verdict in (None, "PENDING_VM_SOLVE_AND_EVALUATION"):
-        next_action = (
-            f"Run exactly one mapping-corrected unregularized baseline ST diagnostic: {vm_shell}"
-        )
+    elif mf_verdict in (None, "PENDING_VM_SOLVE_AND_EVALUATION", "PENDING_SELF_TEST_AND_REPLACEMENT_BASELINE"):
+        if self_test_pass:
+            next_action = (
+                f"Persistence self-test passed; run replacement baseline: {vm_shell}"
+            )
+        else:
+            next_action = (
+                f"Run no-EVP persistence self-test, then replacement baseline if pass: {vm_shell}"
+            )
     else:
         next_action = f"Review mapping-corrected baseline verdict: {mf_verdict}"
 
@@ -482,22 +527,28 @@ def build_finite_closure_plan(
         "another_filter_only_EPS_rerun",
         "another_ST_mapping_variant",
     ]
-    if mf_verdict in (None, "PENDING_VM_SOLVE_AND_EVALUATION"):
-        blocked.append("stage_2_nullspace_reduction_before_mapping_baseline")
+    if mf_verdict in (
+        pf_verdict,
+        None,
+        "PENDING_VM_SOLVE_AND_EVALUATION",
+        "PENDING_SELF_TEST_AND_REPLACEMENT_BASELINE",
+    ):
+        blocked.append("stage_2_nullspace_reduction_before_persisted_candidate_evaluation")
     if mf_verdict != "MAPPING_FIXED_UNREGULARIZED_BASELINE_NO_PHYSICAL_BRANCH_RECOVERED":
         blocked.append("stage_2_nullspace_reduction")
 
     return {
         "root_cause_status": root_cause_status,
         "next_allowed_action": (
-            "one mapping-corrected unregularized baseline ST diagnostic"
-            if mf_verdict in (None, "PENDING_VM_SOLVE_AND_EVALUATION")
+            "persistence_self_test_then_one_replacement_mapping_corrected_baseline"
+            if mf_verdict in (pf_verdict, None, "PENDING_VM_SOLVE_AND_EVALUATION", "PENDING_SELF_TEST_AND_REPLACEMENT_BASELINE")
             else next_action
         ),
         "PGNHEP_purification": "ruled_out_in_current_VM_environment",
+        "mapping_corrected_first_run_inconclusive_persistence_failure": mf_verdict == pf_verdict,
         "stage_2": (
-            "mandatory_only_if_mapping_corrected_baseline_fails"
-            if mf_verdict in (None, "PENDING_VM_SOLVE_AND_EVALUATION")
+            "not_triggered_persistence_failure_or_pending_replacement_baseline"
+            if mf_verdict in (pf_verdict, None, "PENDING_VM_SOLVE_AND_EVALUATION", "PENDING_SELF_TEST_AND_REPLACEMENT_BASELINE")
             else (
                 "authorize_nullspace_reduction_design"
                 if mf_verdict
@@ -518,7 +569,10 @@ def build_finite_closure_plan(
         },
         "next_allowed_action_after_VM_report": next_action,
         "recommended_vm_command": (
-            vm_shell if mf_verdict in (None, "PENDING_VM_SOLVE_AND_EVALUATION") else None
+            vm_shell
+            if mf_verdict
+            in (pf_verdict, None, "PENDING_VM_SOLVE_AND_EVALUATION", "PENDING_SELF_TEST_AND_REPLACEMENT_BASELINE")
+            else None
         ),
         "blocked_actions": blocked,
         "maximum_additional_baseline_solves_before_escalation": 1,
@@ -530,8 +584,9 @@ def build_finite_closure_plan(
         "mapping_corrected_baseline_verdict": mf_verdict,
         "saved_vector_mass_norm_classification": mass_verdict,
         "baseline_eigensolve_budget": (
-            "one_mapping_corrected_run_remaining"
-            if mf_verdict in (None, "PENDING_VM_SOLVE_AND_EVALUATION")
+            "one_replacement_run_after_self_test_pass"
+            if mf_verdict
+            in (pf_verdict, None, "PENDING_VM_SOLVE_AND_EVALUATION", "PENDING_SELF_TEST_AND_REPLACEMENT_BASELINE")
             else "exhausted_pending_review"
         ),
     }

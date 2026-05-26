@@ -23,9 +23,15 @@ MAPPING_JSON = CONV_DIAG / "v2_eps_mapping_impact_inventory.json"
 MAPPING_FIXED_DIAG_JSON = (
     CONV_DIAG / "v2_l_mid_mapping_fixed_unregularized_baseline_diagnostic.json"
 )
+PERSISTENCE_FIXED_DIAG_JSON = (
+    CONV_DIAG
+    / "v2_l_mid_mapping_fixed_unregularized_persistence_fixed_baseline_diagnostic.json"
+)
+SELF_TEST_JSON = CONV_DIAG / "v2_mapping_fixed_candidate_persistence_self_test.json"
+PF_VERDICT = "MAPPING_FIXED_UNREGULARIZED_BASELINE_CANDIDATE_PERSISTENCE_FAILURE"
 VM_BASELINE_SHELL = (
     "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
-    "run_v2_l_mid_mapping_fixed_unregularized_baseline_diagnostic.sh"
+    "run_v2_mapping_fixed_persistence_fixed_baseline_vm.sh"
 )
 
 
@@ -41,6 +47,14 @@ def main() -> int:
         if MAPPING_FIXED_DIAG_JSON.is_file()
         else {}
     )
+    persistence_fixed = (
+        json.loads(PERSISTENCE_FIXED_DIAG_JSON.read_text(encoding="utf-8"))
+        if PERSISTENCE_FIXED_DIAG_JSON.is_file()
+        else {}
+    )
+    self_test = (
+        json.loads(SELF_TEST_JSON.read_text(encoding="utf-8")) if SELF_TEST_JSON.is_file() else {}
+    )
 
     applicability = (preflight or {}).get("PGNHEP_purification_applicability")
     if applicability is None:
@@ -48,31 +62,53 @@ def main() -> int:
     pgnhep_ruled_out = applicability == "not_justified_use_nullspace_reduction_plan"
     mapping_fixed_ev = (mapping_fixed or {}).get("evaluation") or {}
     mapping_fixed_verdict = mapping_fixed_ev.get("diagnostic_verdict")
-    baseline_pending = mapping_fixed_verdict in (
-        None,
-        "PENDING_VM_SOLVE_AND_EVALUATION",
+    pf_ev = (persistence_fixed or {}).get("evaluation") or {}
+    pf_verdict = pf_ev.get("diagnostic_verdict")
+    self_test_pass = bool(self_test.get("self_test_pass"))
+    first_run_persistence_failure = mapping_fixed_verdict == PF_VERDICT or bool(
+        mapping_fixed.get("vm_operator_persistence_failure")
     )
+    replacement_pending = pf_verdict in (
+        None,
+        "PENDING_SELF_TEST_AND_REPLACEMENT_BASELINE",
+    ) or (self_test_pass and pf_verdict is None)
+    baseline_pending = first_run_persistence_failure or replacement_pending
 
     report: Dict[str, Any] = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "strategy": "finite_solver_rehabilitation_mapping_corrected_baseline_then_stage2",
+        "strategy": "finite_solver_rehabilitation_persistence_fix_then_mapping_baseline",
         "next_allowed_action": (
-            "one mapping-corrected unregularized baseline ST diagnostic"
+            "persistence_self_test_then_one_replacement_mapping_corrected_baseline"
             if baseline_pending
             else "review_mapping_corrected_baseline_verdict"
         ),
         "recommended_vm_command": VM_BASELINE_SHELL if baseline_pending else None,
         "PGNHEP_purification": "ruled_out_in_current_VM_environment",
         "purification": "ruled_out_in_current_VM_environment",
+        "first_mapping_corrected_run": {
+            "inconclusive_persistence_failure": first_run_persistence_failure,
+            "verdict": mapping_fixed_verdict or PF_VERDICT,
+            "nconv_marked_vm": 56,
+            "num_vectors_saved_vm": 0,
+            "not_evidence_for_st_failure": True,
+            "not_evidence_for_stage_2": True,
+        },
+        "persistence_self_test": {
+            "report_json": str(SELF_TEST_JSON),
+            "self_test_pass": self_test_pass,
+            "required_before_replacement_eigensolve": True,
+        },
         "stage_2": {
             "description": "Explicit physical null-space reduction",
             "mandatory_only_if": (
-                "mapping-corrected unregularized baseline diagnostic fails to recover "
-                "physical branch"
+                "replacement mapping-corrected baseline fails after all candidates persisted "
+                "and evaluated"
             ),
+            "not_triggered_by_persistence_failure": True,
             "authorized_now": False,
             "blocked_until": [
-                "mapping_corrected_baseline_diagnostic_completed_and_reviewed",
+                "persistence_self_test_pass",
+                "replacement_baseline_with_persisted_candidates_evaluated",
             ],
             "plan_outline": [
                 "Identify mass-null subspace from pressure restriction / algebraic constraints",
@@ -102,12 +138,16 @@ def main() -> int:
         "stage_0_mapping_fix": MAPPING_FIX_SUMMARY,
         "mapping_corrected_baseline_diagnostic": {
             "authorized": baseline_pending,
+            "replacement_output_subdir": (
+                "seed_branch_recovery_diagnostic_mapping_fixed_unregularized_persistence_fixed"
+            ),
             "preserve_all_nconv_candidates": True,
             "physical_eligibility_after_save": True,
             "verdicts": [
                 "MAPPING_FIXED_UNREGULARIZED_BASELINE_BRANCH_RECOVERED",
                 "MAPPING_FIXED_UNREGULARIZED_BASELINE_NO_PHYSICAL_BRANCH_RECOVERED",
                 "MAPPING_FIXED_UNREGULARIZED_BASELINE_OUTPUT_OR_REPLAY_INCONSISTENT",
+                PF_VERDICT,
             ],
             "acceptance_gates": [
                 "continuation_seed_applied=True",
@@ -137,7 +177,7 @@ def main() -> int:
         },
         "mesh_convergence_may_resume": False,
         "additional_baseline_eigensolve": (
-            "one_mapping_corrected_unregularized_baseline_authorized"
+            "one_replacement_run_after_persistence_self_test_pass"
             if baseline_pending
             else "blocked_pending_baseline_review"
         ),
@@ -164,15 +204,21 @@ def main() -> int:
         "",
         f"- {MAPPING_FIX_SUMMARY['new_behavior']}",
         "",
-        "## Mapping-corrected baseline (authorized once)",
+        "## First mapping-corrected run (VM)",
         "",
-        f"- **Authorized:** `{report['mapping_corrected_baseline_diagnostic']['authorized']}`",
-        f"- **Current verdict:** `{mapping_fixed_verdict}`",
+        f"- **Persistence failure (inconclusive):** `{first_run_persistence_failure}`",
+        f"- **Not ST failure / not Stage-2:** True",
+        "",
+        "## Replacement baseline",
+        "",
+        f"- **Authorized after self-test:** `{baseline_pending}`",
+        f"- **Self-test pass:** `{self_test_pass}`",
+        f"- **VM command:** `{VM_BASELINE_SHELL}`",
         "",
         "## Stage 2",
         "",
-        "Mandatory **only if** the mapping-corrected unregularized baseline diagnostic fails "
-        "to recover a physical branch. Not authorized before that run completes.",
+        "Not triggered by persistence failure. Mandatory only if replacement baseline "
+        "persists and evaluates all candidates yet no physical branch is recovered.",
         "",
     ]
     OUT_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
