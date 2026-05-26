@@ -97,9 +97,14 @@ def main() -> int:
             back_wood_id=mats.get("back_wood_id"),
         )
 
-    _m2, _W2, _f2, _e2, _nu2, _np2 = fem3d._solve_coupled_evp(
+    _m2, _W2, A_replay, M_replay = fem3d._solve_coupled_evp(
         mesh_file=mesh_path, config=cfg_c, num_modes=0, solve_evp=False
     )
+    try:
+        A_replay.destroy()
+        M_replay.destroy()
+    except Exception:
+        pass
     u_to_W = np.asarray(cfg_c["_coupled_air_u_to_W_map"], dtype=np.int32).ravel()
     p_to_W = np.asarray(cfg_c["_coupled_air_p_to_W_map"], dtype=np.int32).ravel()
     n_W = int((cfg_c.get("_coupled_air_pressure_restriction") or {}).get("n_reduced_W", 0))
