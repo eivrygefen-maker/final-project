@@ -7,9 +7,12 @@ No locator rerun, no remesh, no L_prod/L_check.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import math
+import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -46,6 +49,9 @@ from v2_sensitivity_common import REPO_ROOT, hz_result_tag
 
 REPORT_JSON = CONV_DIAG / "v2_l_mid_seeded_coupled_retrieval_validation.json"
 REPORT_MD = CONV_DIAG / "v2_l_mid_seeded_coupled_retrieval_validation.md"
+LAUNCH_DIAG_JSON = CONV_DIAG / "v2_l_mid_seeded_retrieval_launch_diagnosis.json"
+LAUNCH_DIAG_MD = CONV_DIAG / "v2_l_mid_seeded_retrieval_launch_diagnosis.md"
+SOLVE_SCRIPT = SCRIPT_DIR / "v2_sensitivity_solve.py"
 
 ACOUSTIC_CASES = ("baseline_coupled_v2", "hole_radius_large")
 ACOUSTIC_REFERENCE_SOURCE = "acoustic_only_locator_eigenvector"
@@ -80,7 +86,89 @@ def _load_seed(case_dir: Path) -> Tuple[np.ndarray, Dict[str, Any]]:
     return seed, meta
 
 
-def _run_seeded_solve(
+def _solve_script_cli_flags() -> Dict[str, bool]:
+    """Confirm worker script exposes required flags (--help, no MPI run)."""
+    out = {"--case-dir": False, "--eps-seed-npy": False, "help_exit_code": None, "help_stderr": ""}
+    if not SOLVE_SCRIPT.is_file():
+        return out
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(SOLVE_SCRIPT), "--help"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            timeout=120,
+        )
+        out["help_exit_code"] = int(proc.returncode)
+        text = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        out["--case-dir"] = "--case-dir" in text
+        out["--eps-seed-npy"] = "--eps-seed-npy" in text
+        if proc.returncode != 0:
+            out["help_stderr"] = (proc.stderr or "")[:2000]
+    except Exception as exc:
+        out["help_error"] = repr(exc)
+    return out
+
+
+def _validate_prelaunch(
+    *,
+    mesh_file: Path,
+    seed_npy: Path,
+    seed_meta: Dict[str, Any],
+    sample_json: Path,
+    retrieval_dir: Path,
+) -> Dict[str, Any]:
+    errors: List[str] = []
+    seed_exists = seed_npy.is_file()
+    meta_valid = bool(
+        seed_meta.get("seed_layout_valid")
+        and seed_meta.get("seed_build_success")
+        and seed_meta.get("locator_pressure_reference_source") == ACOUSTIC_REFERENCE_SOURCE
+    )
+    n_w_expected = int(seed_meta.get("n_reduced_W", seed_meta.get("seed_vector_length", 0)))
+    seed_len: Optional[int] = None
+    if seed_exists:
+        try:
+            seed_len = int(np.load(str(seed_npy)).size)
+            if n_w_expected > 0 and seed_len != n_w_expected:
+                errors.append(
+                    f"seed length {seed_len} != meta n_reduced_W {n_w_expected}"
+                )
+        except Exception as exc:
+            errors.append(f"failed to load seed npy: {exc}")
+    else:
+        errors.append(f"seed file missing: {seed_npy}")
+
+    if not mesh_file.is_file():
+        errors.append(f"mesh missing: {mesh_file}")
+    if not sample_json.is_file():
+        errors.append(f"sample_spec missing: {sample_json}")
+
+    cli = _solve_script_cli_flags()
+    if not SOLVE_SCRIPT.is_file():
+        errors.append(f"worker script missing: {SOLVE_SCRIPT}")
+    else:
+        if not cli.get("--case-dir"):
+            errors.append("v2_sensitivity_solve.py --help does not list --case-dir")
+        if not cli.get("--eps-seed-npy"):
+            errors.append("v2_sensitivity_solve.py --help does not list --eps-seed-npy")
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "seed_file_exists": seed_exists,
+        "seed_vector_length": seed_len,
+        "seed_meta_valid": meta_valid,
+        "n_reduced_W_expected": n_w_expected,
+        "mesh_exists": mesh_file.is_file(),
+        "sample_spec_exists": sample_json.is_file(),
+        "solve_script_exists": SOLVE_SCRIPT.is_file(),
+        "solve_script_cli": cli,
+    }
+
+
+def _build_worker_commands(
     sample: Dict[str, Any],
     mesh_file: Path,
     *,
@@ -88,19 +176,12 @@ def _run_seeded_solve(
     harvest_lo: float,
     harvest_hi: float,
     seed_npy: Path,
+    sample_json: Path,
     retrieval_dir: Path,
-) -> Tuple[int, Path, Dict[str, Any]]:
-    retrieval_dir.mkdir(parents=True, exist_ok=True)
-    sample_json = retrieval_dir / "sample_spec.json"
-    sample_json.write_text(json.dumps(sample, indent=2), encoding="utf-8")
-    log_path = retrieval_dir / "logs" / "seeded_coupled_retrieval.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "mpiexec",
-        "-n",
-        "1",
-        sys.executable,
-        str(SCRIPT_DIR / "v2_sensitivity_solve.py"),
+) -> Tuple[List[str], List[str]]:
+    common_tail = [
+        "-u",
+        str(SOLVE_SCRIPT.resolve()),
         "--sample-id",
         str(sample["id"]),
         "--mesh",
@@ -123,13 +204,221 @@ def _run_seeded_solve(
         "--eps-seed-npy",
         str(seed_npy.resolve()),
     ]
-    with open(log_path, "w", encoding="utf-8") as logf:
-        rc = subprocess.run(cmd, cwd=str(REPO_ROOT), stdout=logf, stderr=subprocess.STDOUT).returncode
+    mpi_cmd = ["mpiexec", "-n", "1", sys.executable, *common_tail]
+    direct_cmd = [sys.executable, *common_tail]
+    return mpi_cmd, direct_cmd
+
+
+def _write_log_bundle(
+    log_path: Path,
+    *,
+    label: str,
+    command_argv: List[str],
+    working_directory: str,
+    completed: Optional[subprocess.CompletedProcess],
+    exception: Optional[BaseException] = None,
+) -> int:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        f"# seeded coupled retrieval worker log ({label})",
+        f"working_directory={working_directory}",
+        f"exact_command_argv={json.dumps(command_argv)}",
+        f"shell_command={shlex.join(command_argv)}",
+        "",
+    ]
+    if exception is not None:
+        lines.extend(
+            [
+                "=== orchestration exception ===",
+                repr(exception),
+                "",
+            ]
+        )
+        log_path.write_text("\n".join(lines), encoding="utf-8")
+        return -1
+
+    assert completed is not None
+    lines.extend(
+        [
+            f"=== return_code={completed.returncode} ===",
+            "",
+            "=== stdout ===",
+            completed.stdout or "",
+            "",
+            "=== stderr ===",
+            completed.stderr or "",
+            "",
+        ]
+    )
+    log_path.write_text("\n".join(lines), encoding="utf-8")
+    return int(completed.returncode)
+
+
+def _log_nonempty(log_path: Path) -> bool:
+    return log_path.is_file() and log_path.stat().st_size > 64
+
+
+def _run_worker_subprocess(
+    command_argv: List[str],
+    *,
+    log_path: Path,
+    label: str,
+) -> Dict[str, Any]:
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    cwd = str(REPO_ROOT.resolve())
+    record: Dict[str, Any] = {
+        "launch_label": label,
+        "return_code": None,
+        "exception_if_any": None,
+        "stdout_capture_if_any": None,
+        "stderr_capture_if_any": None,
+        "log_path": str(log_path),
+        "log_bytes_after_run": 0,
+    }
+    try:
+        completed = subprocess.run(
+            command_argv,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        record["return_code"] = int(completed.returncode)
+        record["stdout_capture_if_any"] = (completed.stdout or "")[:8000]
+        record["stderr_capture_if_any"] = (completed.stderr or "")[:8000]
+        _write_log_bundle(
+            log_path,
+            label=label,
+            command_argv=command_argv,
+            working_directory=cwd,
+            completed=completed,
+        )
+    except Exception as exc:
+        record["exception_if_any"] = repr(exc)
+        _write_log_bundle(
+            log_path,
+            label=label,
+            command_argv=command_argv,
+            working_directory=cwd,
+            completed=None,
+            exception=exc,
+        )
+        record["return_code"] = -1
+    record["log_bytes_after_run"] = int(log_path.stat().st_size) if log_path.is_file() else 0
+    return record
+
+
+def _run_seeded_solve(
+    sample: Dict[str, Any],
+    mesh_file: Path,
+    *,
+    target_hz: float,
+    harvest_lo: float,
+    harvest_hi: float,
+    seed_npy: Path,
+    seed_meta: Dict[str, Any],
+    retrieval_dir: Path,
+) -> Tuple[int, Path, Dict[str, Any], Dict[str, Any]]:
+    retrieval_dir.mkdir(parents=True, exist_ok=True)
+    sample_json = retrieval_dir / "sample_spec.json"
+    sample_json.write_text(json.dumps(sample, indent=2), encoding="utf-8")
+    log_path = retrieval_dir / "logs" / "seeded_coupled_retrieval.log"
+    launch_record_path = retrieval_dir / "launch_record.json"
+
+    paths = _seed_paths(retrieval_dir.parent)
+    mpi_cmd, direct_cmd = _build_worker_commands(
+        sample,
+        mesh_file,
+        target_hz=target_hz,
+        harvest_lo=harvest_lo,
+        harvest_hi=harvest_hi,
+        seed_npy=seed_npy,
+        sample_json=sample_json,
+        retrieval_dir=retrieval_dir,
+    )
+
+    launch_record: Dict[str, Any] = {
+        "written_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "working_directory": str(REPO_ROOT.resolve()),
+        "mesh_path": str(mesh_file.resolve()),
+        "seed_file_path": str(seed_npy.resolve()),
+        "seed_file_exists": bool(seed_npy.is_file()),
+        "seed_meta_path": str(paths["seed_meta"].resolve()),
+        "seed_meta_valid": bool(
+            seed_meta.get("seed_layout_valid") and seed_meta.get("seed_build_success")
+        ),
+        "sample_spec_path": str(sample_json.resolve()),
+        "output_case_dir": str(retrieval_dir.resolve()),
+        "log_path": str(log_path.resolve()),
+        "exact_command_argv": mpi_cmd,
+        "exact_command_argv_mpiexec": mpi_cmd,
+        "exact_command_argv_python_direct": direct_cmd,
+        "shell_command_mpiexec": shlex.join(mpi_cmd),
+        "prelaunch": _validate_prelaunch(
+            mesh_file=mesh_file,
+            seed_npy=seed_npy,
+            seed_meta=seed_meta,
+            sample_json=sample_json,
+            retrieval_dir=retrieval_dir,
+        ),
+    }
+    write_json(launch_record_path, launch_record)
+
+    if not launch_record["prelaunch"]["valid"]:
+        launch_record["orchestration_failure"] = True
+        launch_record["orchestration_failure_reason"] = "prelaunch_validation_failed"
+        launch_record["diagnostic_verdict"] = "SEEDED_RETRIEVAL_PRELAUNCH_VALIDATION_FAILED"
+        write_json(launch_record_path, launch_record)
+        return 1, log_path, {}, launch_record
+
+    run_mpi = _run_worker_subprocess(mpi_cmd, log_path=log_path, label="mpiexec")
+    launch_record["mpiexec_run"] = run_mpi
+    rc = int(run_mpi.get("return_code", 1))
+
+    if rc != 0 and not _log_nonempty(log_path):
+        run_direct = _run_worker_subprocess(
+            direct_cmd,
+            log_path=log_path.with_name("seeded_coupled_retrieval_python_direct.log"),
+            label="python_direct",
+        )
+        launch_record["python_direct_fallback_run"] = run_direct
+        if int(run_direct.get("return_code", 1)) == 0 or _log_nonempty(
+            log_path.with_name("seeded_coupled_retrieval_python_direct.log")
+        ):
+            rc = int(run_direct.get("return_code", rc))
+            launch_record["used_python_direct_fallback"] = True
+
     result_path = retrieval_dir / "results" / f"result_{hz_result_tag(target_hz)}.json"
     result: Dict[str, Any] = {}
     if result_path.is_file():
         result = json.loads(result_path.read_text(encoding="utf-8"))
-    return int(rc), log_path, result
+
+    launch_record["result_json_path"] = str(result_path)
+    launch_record["result_json_exists"] = result_path.is_file()
+    launch_record["modes_dir_exists"] = (retrieval_dir / "modes").is_dir()
+    launch_record["final_return_code"] = rc
+    launch_record["orchestration_failure"] = bool(
+        rc != 0
+        or not result_path.is_file()
+        or not _log_nonempty(log_path)
+    )
+    if launch_record["orchestration_failure"]:
+        launch_record["orchestration_failure_reason"] = (
+            "worker_nonzero_or_empty_log_or_missing_result_json"
+        )
+        launch_record["diagnostic_verdict"] = "SEEDED_RETRIEVAL_ORCHESTRATION_FAILURE"
+        launch_record["orchestration_failure_detail"] = {
+            "return_code": rc,
+            "exception_if_any": run_mpi.get("exception_if_any"),
+            "stderr_capture_if_any": run_mpi.get("stderr_capture_if_any"),
+            "stdout_capture_if_any": run_mpi.get("stdout_capture_if_any"),
+            "command_argv": mpi_cmd,
+            "log_bytes": launch_record.get("mpiexec_run", {}).get("log_bytes_after_run"),
+        }
+    write_json(launch_record_path, launch_record)
+    return int(rc), log_path, result, launch_record
 
 
 def _parse_eps_log(log_path: Path) -> Dict[str, Any]:
@@ -427,30 +716,47 @@ def _process_case(manifest: Dict[str, Any], case_id: str) -> Dict[str, Any]:
     except FileNotFoundError as exc:
         row["status"] = "failed"
         row["error"] = str(exc)
-        row["diagnostic_verdict"] = "EPS_INITIAL_SPACE_NOT_VERIFIED"
+        row["diagnostic_verdict"] = "SEEDED_RETRIEVAL_PRELAUNCH_VALIDATION_FAILED"
         return row
 
     if seed_meta.get("locator_pressure_reference_source") != ACOUSTIC_REFERENCE_SOURCE:
         row["status"] = "failed"
         row["error"] = "seed meta not tagged as acoustic_only_locator_eigenvector"
-        row["diagnostic_verdict"] = "EPS_INITIAL_SPACE_NOT_VERIFIED"
+        row["diagnostic_verdict"] = "SEEDED_RETRIEVAL_PRELAUNCH_VALIDATION_FAILED"
         return row
 
     target_hz = float(seed_meta.get("locator_frequency_hz", float("nan")))
     harvest_lo = target_hz - HARVEST_HALF_WIDTH_HZ
     harvest_hi = target_hz + HARVEST_HALF_WIDTH_HZ
 
-    rc, log_path, solve_result = _run_seeded_solve(
+    rc, log_path, solve_result, launch_record = _run_seeded_solve(
         sample,
         mesh_file,
         target_hz=target_hz,
         harvest_lo=harvest_lo,
         harvest_hi=harvest_hi,
         seed_npy=_seed_paths(case_dir)["seed_npy"],
+        seed_meta=seed_meta,
         retrieval_dir=retrieval_dir,
     )
     row["solve_exit_code"] = rc
     row["retrieval_output_dir"] = str(retrieval_dir)
+    row["launch"] = launch_record
+    row["launch_record_path"] = str(retrieval_dir / "launch_record.json")
+    row["log_path"] = str(log_path)
+
+    if launch_record.get("orchestration_failure"):
+        row["diagnostic_verdict"] = launch_record.get(
+            "diagnostic_verdict", "SEEDED_RETRIEVAL_ORCHESTRATION_FAILURE"
+        )
+        row["status"] = "orchestration_failure"
+        row["evaluation"] = {
+            "diagnostic_verdict": row["diagnostic_verdict"],
+            "note": "Worker did not produce usable output; see launch_record and log.",
+            "orchestration_failure_detail": launch_record.get("orchestration_failure_detail"),
+        }
+        return row
+
     row["evaluation"] = _evaluate_recovery(
         retrieval_dir, mesh_file, sample, seed, seed_meta, solve_result, log_path
     )
@@ -472,7 +778,7 @@ def _write_md(report: Dict[str, Any]) -> None:
         f"**mesh_convergence_may_resume:** `{report.get('mesh_convergence_may_resume')}`",
         "",
     ]
-    for cid in ACOUSTIC_CASES:
+    for cid in report.get("cases_run") or list((report.get("cases") or {}).keys()):
         row = (report.get("cases") or {}).get(cid) or {}
         ev = row.get("evaluation") or {}
         eps = ev.get("eps_solve") or {}
@@ -501,23 +807,63 @@ def _write_md(report: Dict[str, Any]) -> None:
     REPORT_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _write_launch_diagnosis_md(launch_report: Dict[str, Any]) -> None:
+    lines = [
+        "# L_mid seeded retrieval launch diagnosis",
+        "",
+        f"Generated: {launch_report.get('generated_utc')}",
+        "",
+        f"**mesh_convergence_may_resume:** `{launch_report.get('mesh_convergence_may_resume')}`",
+        "",
+    ]
+    for cid, row in (launch_report.get("cases") or {}).items():
+        launch = row.get("launch") or {}
+        lines.append(f"## {cid}")
+        lines.append("")
+        lines.append(f"- Verdict: `{row.get('diagnostic_verdict')}`")
+        lines.append(f"- Log: `{row.get('log_path')}`")
+        lines.append(f"- Command: `{shlex.join(launch.get('exact_command_argv') or [])}`")
+        lines.append(f"- Return code: {launch.get('final_return_code')}")
+        if launch.get("orchestration_failure_detail"):
+            det = launch["orchestration_failure_detail"]
+            lines.append("")
+            lines.append("```text")
+            lines.append(str(det.get("stderr_capture_if_any", ""))[:3000])
+            lines.append("```")
+        lines.append("")
+    LAUNCH_DIAG_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description="L_mid seeded coupled retrieval validation")
+    parser.add_argument(
+        "--baseline-only",
+        action="store_true",
+        help="Run diagnostic seeded EPS for baseline_coupled_v2 only.",
+    )
+    args = parser.parse_args()
+
     manifest = load_manifest()
     CONV_DIAG.mkdir(parents=True, exist_ok=True)
 
+    cases_to_run = ("baseline_coupled_v2",) if args.baseline_only else ACOUSTIC_CASES
     cases: Dict[str, Any] = {}
-    for cid in ACOUSTIC_CASES:
+    for cid in cases_to_run:
         print(f"[seeded_retrieval] {cid}", flush=True)
         cases[cid] = _process_case(manifest, cid)
+        if args.baseline_only and cases[cid].get("launch", {}).get("orchestration_failure"):
+            print("[seeded_retrieval] baseline orchestration failure — stopping", flush=True)
+            break
 
     ok_verdicts = {
         "SEEDED_COUPLED_BRANCH_RECOVERED",
         "SEEDED_BRANCH_RECOVERED_BUT_ENERGY_CLASSIFICATION_SUSPECT",
     }
-    both_recovered = all(
+    ran = list(cases.keys())
+    both_recovered = len(ran) == 2 and all(
         str((cases.get(c) or {}).get("diagnostic_verdict")) in ok_verdicts for c in ACOUSTIC_CASES
     )
-    both_mac = all(
+    both_mac = len(ran) == 2 and all(
         float(
             ((cases.get(c) or {}).get("evaluation") or {})
             .get("recovered_mode", {})
@@ -527,35 +873,53 @@ def main() -> int:
         for c in ACOUSTIC_CASES
     )
 
-    report = {
+    staged = {
+        "mesh_convergence_pass": "Pending",
+        "v2_production_promotion_ready": False,
+        "lhs_promotion_blocked": True,
+    }
+    launch_report = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "baseline_only": bool(args.baseline_only),
+        "cases_run": ran,
+        "cases": cases,
+        "mesh_convergence_may_resume": False,
+        "staged_status": staged,
+    }
+    write_json(LAUNCH_DIAG_JSON, launch_report)
+    _write_launch_diagnosis_md(launch_report)
+
+    report = {
+        "generated_utc": launch_report["generated_utc"],
+        "baseline_only": bool(args.baseline_only),
+        "cases_run": ran,
         "interpretation": (
             "True acoustic seed remains valid under physical coupling on L_mid. "
-            "This stage tests whether EPS can retrieve the branch when seeded; "
-            "p_frac-based labels on prior saves may be unreliable."
+            "This stage tests whether EPS can retrieve the branch when seeded."
         ),
         "cases": cases,
+        "launch_diagnosis_json": str(LAUNCH_DIAG_JSON),
         "recovery_criteria": {
             "frequency_tolerance_fraction": FREQ_TOL_FRAC,
             "pressure_MAC_minimum": MAC_TOL,
             "replay_relative_residual_maximum": REPLAY_RESIDUAL_OK,
         },
         "mesh_convergence_may_resume": bool(both_recovered and both_mac),
-        "staged_status": {
-            "mesh_convergence_pass": "Pending",
-            "v2_production_promotion_ready": False,
-            "lhs_promotion_blocked": True,
-        },
-        "supersedes_proxy_verdict": (
-            "L_MID_ACOUSTIC_BRANCH_CONTINUES_AS_SINGLE_MIXED_MODE from proxy audit is not "
-            "the operative diagnosis; prefer "
-            "L_MID_ACOUSTIC_SEED_REMAINS_VALID_UNDER_PHYSICAL_COUPLING_BUT_EPS_HARVEST_OR_ENERGY_CLASSIFICATION_FAILED "
-            "when seeded retrieval fails."
-        ),
+        "staged_status": staged,
     }
     write_json(REPORT_JSON, report)
     _write_md(report)
+    print(f"[seeded_retrieval] wrote {LAUNCH_DIAG_JSON}", flush=True)
     print(f"[seeded_retrieval] wrote {REPORT_JSON}", flush=True)
+
+    if args.baseline_only:
+        row = cases.get("baseline_coupled_v2") or {}
+        if row.get("launch", {}).get("orchestration_failure"):
+            return 1
+        if row.get("diagnostic_verdict") in ok_verdicts:
+            return 0
+        return 1 if row else 2
+
     return 0 if both_recovered and both_mac else 1
 
 
