@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 import sys
 import time
 from pathlib import Path
@@ -45,6 +44,8 @@ from v2_mesh_convergence_common import (
 
 REPORT_JSON = CONV_DIAG / "v2_l_mid_coupled_mixed_mode_audit.json"
 REPORT_MD = CONV_DIAG / "v2_l_mid_coupled_mixed_mode_audit.md"
+INCREMENTAL_JSON = CONV_DIAG / "v2_l_mid_coupled_mixed_mode_audit.incremental.json"
+OVERLAP_NUM_TOL = 1.0e-12
 STATUS_JSON = (
     PHYSICS_ROOT / "v2_sensitivity_validation" / "diagnostics" / "v2_validation_status.json"
 )
@@ -59,6 +60,63 @@ SUBSPACE_OVERLAP_PASS = 0.75
 def _write_md(path: Path, lines: List[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _clamp_unit_interval(value: float) -> float:
+    if not math.isfinite(value):
+        return float("nan")
+    x = float(value)
+    if x < 0.0 and x > -OVERLAP_NUM_TOL:
+        x = 0.0
+    if x > 1.0 and x < 1.0 + OVERLAP_NUM_TOL:
+        x = 1.0
+    return float(min(1.0, max(0.0, x)))
+
+
+def _seed_truth_fields(seed_info: Dict[str, Any], seed_source: str) -> Dict[str, Any]:
+    is_acoustic_seed = seed_source == "acoustic_coupled_seed.npy" and bool(
+        seed_info.get("seed_build_success")
+    )
+    return {
+        "seed_build_success": bool(seed_info.get("seed_build_success")),
+        "seed_vector_length": seed_info.get("seed_vector_length"),
+        "eps_seed_applied": bool(seed_info.get("eps_seed_applied")),
+        "seed_failure_reason": seed_info.get("seed_failure_reason"),
+        "locator_pressure_reference_source": seed_source,
+        "locator_pressure_reference_is_acoustic_seed": is_acoustic_seed,
+        "proxy_reference_diagnostic_only": not is_acoustic_seed,
+        "proxy_may_not_justify_mesh_convergence_resume": not is_acoustic_seed,
+    }
+
+
+def _base_report(*, audit_in_progress: bool) -> Dict[str, Any]:
+    return {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "audit_in_progress": audit_in_progress,
+        "interpretation_note": (
+            "Mesh refinement may yield mixed air-structure modes; continuation is judged by "
+            "pressure MAC and pressure_reference_to_cluster_projection_overlap to the locator "
+            "pressure reference, not by p_frac>=0.85 alone. Proxy pressure references are "
+            "diagnostic only and do not justify mesh_convergence_may_resume."
+        ),
+        "cases": {},
+        "mesh_convergence_may_resume": False,
+        "staged_status": {
+            "mesh_convergence_pass": "Pending",
+            "v2_production_promotion_ready": False,
+            "lhs_promotion_blocked": True,
+        },
+        "continuation_criterion_met": False,
+    }
+
+
+def _checkpoint_report(report: Dict[str, Any], cases_out: Dict[str, Any], *, stage: str) -> None:
+    report["cases"] = dict(cases_out)
+    report["last_checkpoint_stage"] = stage
+    report["last_checkpoint_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    write_json(INCREMENTAL_JSON, report)
+    write_json(REPORT_JSON, report)
+    _write_md(REPORT_MD, _report_to_md_lines(report))
 
 
 def _case_from_manifest(manifest: Dict[str, Any], case_id: str) -> Dict[str, Any]:
@@ -278,28 +336,58 @@ def _rayleigh_audit(
     return out
 
 
-def _subspace_overlap_pressure(
+def _pressure_reference_to_cluster_projection_overlap(
     p_to_W: np.ndarray,
     ref_p: np.ndarray,
     mode_vecs: List[np.ndarray],
-) -> Dict[str, float]:
+) -> Dict[str, Any]:
+    """
+    One normalized locator pressure reference q_reference vs orthonormal cluster Q_cluster
+    on active pressure DOFs: projection_overlap = || Q_cluster^H q_reference ||.
+    """
     p_idx = np.asarray(p_to_W, dtype=np.int32).ravel()
-    ref = np.asarray(ref_p[p_idx], dtype=np.complex128).ravel()
-    ref_n = float(np.linalg.norm(ref))
-    if ref_n <= 0 or not mode_vecs:
-        return {"subspace_overlap_min_cosine": float("nan"), "subspace_overlap_mean_cosine": float("nan")}
-    cols = []
+    q_reference = np.asarray(ref_p[p_idx], dtype=np.complex128).ravel()
+    ref_n = float(np.linalg.norm(q_reference))
+    n_in = len(mode_vecs)
+    if ref_n <= OVERLAP_NUM_TOL or n_in == 0:
+        return {
+            "pressure_reference_to_cluster_projection_overlap": float("nan"),
+            "n_cluster_vectors": n_in,
+            "n_pressure_dofs": int(p_idx.size),
+            "metric_type": "single_reference_to_orthonormal_pressure_cluster",
+            "note": "||Q_cluster^H q_reference||; not a multi-reference principal-angle SVD.",
+        }
+
+    q_reference = q_reference / ref_n
+    cols: List[np.ndarray] = []
     for v in mode_vecs:
-        cols.append(np.asarray(v[p_idx], dtype=np.complex128).ravel())
+        p = np.asarray(v[p_idx], dtype=np.complex128).ravel()
+        pn = float(np.linalg.norm(p))
+        cols.append(p / pn if pn > OVERLAP_NUM_TOL else p)
     P = np.column_stack(cols)
-    q, _ = np.linalg.qr(P, mode="reduced")
-    coeff = q.conj().T @ ref
-    s = np.linalg.svd(coeff, compute_uv=False)
-    s = np.clip(s, 0.0, 1.0)
+    if P.ndim != 2 or P.shape[1] == 0:
+        return {
+            "pressure_reference_to_cluster_projection_overlap": float("nan"),
+            "n_cluster_vectors": 0,
+            "n_pressure_dofs": int(p_idx.size),
+            "metric_type": "single_reference_to_orthonormal_pressure_cluster",
+            "note": "empty candidate pressure cluster",
+        }
+
+    Q_cluster, _ = np.linalg.qr(P, mode="reduced")
+    coeff = Q_cluster.conj().T @ q_reference
+    coeff = np.atleast_1d(np.asarray(coeff, dtype=np.complex128).ravel())
+    projection_overlap = _clamp_unit_interval(float(np.linalg.norm(coeff)))
+
     return {
-        "subspace_overlap_min_cosine": float(np.min(s)),
-        "subspace_overlap_mean_cosine": float(np.mean(s)),
-        "principal_angle_cosines": [float(x) for x in s[: min(12, s.size)]],
+        "pressure_reference_to_cluster_projection_overlap": projection_overlap,
+        "n_cluster_vectors": int(Q_cluster.shape[1]),
+        "n_pressure_dofs": int(p_idx.size),
+        "metric_type": "single_reference_to_orthonormal_pressure_cluster",
+        "note": (
+            "projection_overlap = ||Q_cluster^H q_reference|| with complex-conjugate "
+            "transpose; single-reference metric (not multi-angle subspace SVD)."
+        ),
     }
 
 
@@ -347,7 +435,7 @@ def _mixed_mode_analysis(
     top3 = sorted(candidates, key=lambda c: -float(c["pressure_MAC_to_locator_mode"]))[:3]
     top3_vecs = [_load_mode_vec(case_dir, c) for c in top3]
 
-    overlap = _subspace_overlap_pressure(p_to_W, ref_p, top3_vecs)
+    overlap = _pressure_reference_to_cluster_projection_overlap(p_to_W, ref_p, top3_vecs)
     p_fracs = [float(c["p_frac_energy_phys"]) for c in candidates if math.isfinite(float(c["p_frac_energy_phys"]))]
 
     cluster_metrics = {
@@ -375,7 +463,9 @@ def _assign_verdict(
 ) -> str:
     cm = mixed.get("cluster_metrics") or {}
     max_mac = float(cm.get("max_pressure_MAC", float("nan")))
-    overlap_min = float(cm.get("subspace_overlap_min_cosine", float("nan")))
+    proj_overlap = float(
+        cm.get("pressure_reference_to_cluster_projection_overlap", float("nan"))
+    )
     best = cm.get("best_matching_mode") or {}
     best_p = float(best.get("p_frac_energy_phys", float("nan")))
 
@@ -396,7 +486,7 @@ def _assign_verdict(
         return "L_MID_ACOUSTIC_BRANCH_CONTINUES_AS_SINGLE_MIXED_MODE"
 
     if math.isfinite(max_mac) and max_mac >= MAC_CLUSTER and (
-        (math.isfinite(overlap_min) and overlap_min >= SUBSPACE_OVERLAP_PASS)
+        (math.isfinite(proj_overlap) and proj_overlap >= SUBSPACE_OVERLAP_PASS)
         or max_mac >= 0.80
     ):
         return "L_MID_ACOUSTIC_BRANCH_CONTINUES_AS_MIXED_CLUSTER"
@@ -410,7 +500,13 @@ def _assign_verdict(
     return "L_MID_SEED_REMAINS_GOOD_BUT_RETRIEVAL_FAILED"
 
 
-def _process_case(manifest: Dict[str, Any], case_id: str) -> Dict[str, Any]:
+def _process_case(
+    manifest: Dict[str, Any],
+    case_id: str,
+    *,
+    report: Dict[str, Any],
+    cases_out: Dict[str, Any],
+) -> Dict[str, Any]:
     case = _case_from_manifest(manifest, case_id)
     case_dir = solve_case_dir("L_mid", case_id)
     mesh_file = mesh_path("L_mid", case_id)
@@ -440,9 +536,13 @@ def _process_case(manifest: Dict[str, Any], case_id: str) -> Dict[str, Any]:
         ),
         "seed_verification": seed_info,
     }
+    cases_out[case_id] = row
+    _checkpoint_report(report, cases_out, stage=f"{case_id}:locator_and_seed")
 
     if not math.isfinite(loc_hz):
         row["diagnostic_verdict"] = "L_MID_ENERGY_CLASSIFICATION_OR_LAYOUT_SUSPECT"
+        cases_out[case_id] = row
+        _checkpoint_report(report, cases_out, stage=f"{case_id}:verdict_no_locator")
         return row
 
     sample = sample_spec_from_case(case)
@@ -464,13 +564,99 @@ def _process_case(manifest: Dict[str, Any], case_id: str) -> Dict[str, Any]:
         locator_hz=loc_hz,
         saved_modes=saved_modes,
     )
-    row["locator_pressure_reference_source"] = seed_source
+    row.update(_seed_truth_fields(seed_info, seed_source))
+    cases_out[case_id] = row
+    _checkpoint_report(report, cases_out, stage=f"{case_id}:pressure_reference")
 
     row["rayleigh_residual_audit"] = _rayleigh_audit(mesh_file, sample, seed, loc_hz)
+    cases_out[case_id] = row
+    _checkpoint_report(report, cases_out, stage=f"{case_id}:rayleigh_residual")
+
     mixed = _mixed_mode_analysis(case_dir, p0, loc_hz, seed, seed_source)
     row["mixed_mode_continuation"] = mixed
     row["diagnostic_verdict"] = _assign_verdict(seed_info, row["rayleigh_residual_audit"], mixed)
+    cases_out[case_id] = row
+    _checkpoint_report(report, cases_out, stage=f"{case_id}:mixed_mode_complete")
     return row
+
+
+def _report_to_md_lines(report: Dict[str, Any]) -> List[str]:
+    lines = [
+        "# L_mid coupled mixed-mode continuation audit (no eigensolve)",
+        "",
+        f"Generated: {report.get('generated_utc')}",
+        f"Audit in progress: {report.get('audit_in_progress')}",
+        f"Last checkpoint: {report.get('last_checkpoint_stage')} @ {report.get('last_checkpoint_utc')}",
+        "",
+        str(report.get("interpretation_note", "")),
+        "",
+        "**mesh_convergence_may_resume:** `False` (until valid acoustic-reference verdict review)",
+        "",
+    ]
+    for cid in ACOUSTIC_CASES:
+        row = (report.get("cases") or {}).get(cid)
+        if not row:
+            lines.append(f"## {cid}")
+            lines.append("")
+            lines.append("_pending_")
+            lines.append("")
+            continue
+        lines.append(f"## {cid}")
+        lines.append("")
+        d_l0 = row.get("locator_shift_from_L0_hz")
+        d_l0_s = f"{float(d_l0):+.4f}" if d_l0 is not None and math.isfinite(float(d_l0)) else "n/a"
+        lines.append(
+            f"- Locator f: **{row.get('locator_acoustic_frequency_hz')}** Hz (Δ L0: {d_l0_s})"
+        )
+        lines.append(
+            f"- Seed: build_success={row.get('seed_build_success')} "
+            f"length={row.get('seed_vector_length')} "
+            f"eps_seed_applied={row.get('eps_seed_applied')} "
+            f"reason={row.get('seed_failure_reason')}"
+        )
+        lines.append(f"- Pressure reference: `{row.get('locator_pressure_reference_source')}`")
+        if row.get("proxy_reference_diagnostic_only"):
+            lines.append("- **Proxy reference — diagnostic only; does not justify mesh resume**")
+        verdict = row.get("diagnostic_verdict")
+        if verdict:
+            lines.append(f"- **Verdict:** `{verdict}`")
+        lines.append("")
+        rra = row.get("rayleigh_residual_audit") or {}
+        if rra:
+            for k in ("coupling_disabled", "physical_coupling_enabled"):
+                blk = rra.get(k) or {}
+                lines.append(
+                    f"### Rayleigh / residual ({k}): "
+                    f"rel_res={blk.get('relative_residual')} "
+                    f"f_ray={blk.get('rayleigh_f_hz')} "
+                    f"Δf_loc={blk.get('delta_rayleigh_from_locator_hz')}"
+                )
+            lines.append(
+                f"- Flattened: rel_dis={rra.get('relative_residual_disabled')} "
+                f"rel_en={rra.get('relative_residual_enabled')} "
+                f"f_dis={rra.get('rayleigh_f_disabled_hz')} f_en={rra.get('rayleigh_f_enabled_hz')}"
+            )
+            lines.append("")
+        mm = row.get("mixed_mode_continuation") or {}
+        cm = mm.get("cluster_metrics") or {}
+        if cm:
+            lines.append(
+                f"### Cluster: n={cm.get('n_candidates_in_band')} "
+                f"max_MAC={cm.get('max_pressure_MAC')} "
+                f"projection_overlap={cm.get('pressure_reference_to_cluster_projection_overlap')}"
+            )
+            lines.append("")
+            lines.append("| f (Hz) | p_frac | MAC to ref | class |")
+            lines.append("|--------|--------|------------|-------|")
+            for c in mm.get("candidates") or []:
+                pfrac = float(c.get("p_frac_energy_phys", float("nan")))
+                lines.append(
+                    f"| {float(c['frequency_hz']):.3f} | {pfrac:.4f} | "
+                    f"{float(c['pressure_MAC_to_locator_mode']):.4f} | "
+                    f"{c.get('mode_class_physical_energy')} |"
+                )
+            lines.append("")
+    return lines
 
 
 def main() -> int:
@@ -482,94 +668,46 @@ def main() -> int:
     manifest = load_manifest()
     CONV_DIAG.mkdir(parents=True, exist_ok=True)
 
+    report = _base_report(audit_in_progress=True)
     cases_out: Dict[str, Any] = {}
+    _checkpoint_report(report, cases_out, stage="audit_start")
+
     for cid in ACOUSTIC_CASES:
         print(f"[l_mid_audit] {cid}", flush=True)
-        cases_out[cid] = _process_case(manifest, cid)
+        try:
+            _process_case(manifest, cid, report=report, cases_out=cases_out)
+        except Exception as exc:
+            row = cases_out.get(cid) or {"sample_id": cid}
+            row["audit_error"] = repr(exc)
+            row["diagnostic_verdict"] = None
+            cases_out[cid] = row
+            _checkpoint_report(report, cases_out, stage=f"{cid}:error")
+            raise
+
+    report["audit_in_progress"] = False
+    report["generated_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     verdicts = [str((cases_out.get(c) or {}).get("diagnostic_verdict", "")) for c in ACOUSTIC_CASES]
     positive = {
         "L_MID_ACOUSTIC_BRANCH_CONTINUES_AS_SINGLE_MIXED_MODE",
         "L_MID_ACOUSTIC_BRANCH_CONTINUES_AS_MIXED_CLUSTER",
     }
-    continuation_ok = all(v in positive for v in verdicts)
-
-    report = {
-        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "interpretation_note": (
-            "Mesh refinement may yield mixed air-structure modes; continuation is judged by "
-            "pressure MAC and cluster subspace overlap to the locator pressure reference, "
-            "not by p_frac>=0.85 alone."
-        ),
-        "cases": cases_out,
-        "mesh_convergence_may_resume": False,
-        "staged_status": {
-            "mesh_convergence_pass": "Pending",
-            "v2_production_promotion_ready": False,
-            "lhs_promotion_blocked": True,
-        },
-        "continuation_criterion_met": continuation_ok,
-    }
-    write_json(REPORT_JSON, report)
-
-    lines = [
-        "# L_mid coupled mixed-mode continuation audit (no eigensolve)",
-        "",
-        f"Generated: {report['generated_utc']}",
-        "",
-        report["interpretation_note"],
-        "",
-        "**mesh_convergence_may_resume:** `False` (by design until human review)",
-        "",
-    ]
-    for cid, row in cases_out.items():
-        lines.append(f"## {cid}")
-        lines.append("")
-        lines.append(f"- Locator f: **{row.get('locator_acoustic_frequency_hz')}** Hz (Δ L0: {row.get('locator_shift_from_L0_hz'):+.4f})")
-        sv = row.get("seed_verification") or {}
-        lines.append(
-            f"- Seed: build_success={sv.get('seed_build_success')} "
-            f"length={sv.get('seed_vector_length')} "
-            f"eps_seed_applied={sv.get('eps_seed_applied')} "
-            f"reason={sv.get('seed_failure_reason')}"
-        )
-        lines.append(f"- **Verdict:** `{row.get('diagnostic_verdict')}`")
-        lines.append(f"- Pressure reference: `{row.get('locator_pressure_reference_source')}`")
-        lines.append("")
-        rra = row.get("rayleigh_residual_audit") or {}
-        for k in ("coupling_disabled", "physical_coupling_enabled"):
-            blk = rra.get(k) or {}
-            lines.append(
-                f"### Rayleigh / residual ({k}): "
-                f"rel_res={blk.get('relative_residual')} "
-                f"f_ray={blk.get('rayleigh_f_hz')} Δf_loc={blk.get('delta_rayleigh_from_locator_hz')}"
-            )
-        lines.append("")
-        mm = row.get("mixed_mode_continuation") or {}
-        cm = mm.get("cluster_metrics") or {}
-        lines.append(
-            f"### Cluster: n={cm.get('n_candidates_in_band')} "
-            f"max_MAC={cm.get('max_pressure_MAC')} "
-            f"overlap_min={cm.get('subspace_overlap_min_cosine')}"
-        )
-        lines.append("")
-        lines.append("| f (Hz) | p_frac | MAC to ref | class |")
-        lines.append("|--------|--------|------------|-------|")
-        for c in mm.get("candidates") or []:
-            pfrac = float(c.get("p_frac_energy_phys", float("nan")))
-            lines.append(
-                f"| {float(c['frequency_hz']):.3f} | {pfrac:.4f} | "
-                f"{float(c['pressure_MAC_to_locator_mode']):.4f} | {c.get('mode_class_physical_energy')} |"
-            )
-        lines.append("")
-
-    _write_md(REPORT_MD, lines)
+    acoustic_refs_ok = all(
+        bool((cases_out.get(c) or {}).get("locator_pressure_reference_is_acoustic_seed"))
+        for c in ACOUSTIC_CASES
+    )
+    continuation_ok = acoustic_refs_ok and all(v in positive for v in verdicts)
+    report["continuation_criterion_met"] = continuation_ok
+    report["continuation_requires_acoustic_seed_reference"] = True
+    _checkpoint_report(report, cases_out, stage="audit_complete")
 
     if STATUS_JSON.is_file():
         st = json.loads(STATUS_JSON.read_text(encoding="utf-8"))
         st["l_mid_coupled_mixed_mode_audit"] = {
             "report_json": str(REPORT_JSON),
+            "incremental_json": str(INCREMENTAL_JSON),
             "continuation_criterion_met": continuation_ok,
+            "acoustic_reference_required_for_resume": True,
             "mesh_convergence_may_resume": False,
         }
         write_json(STATUS_JSON, st)
