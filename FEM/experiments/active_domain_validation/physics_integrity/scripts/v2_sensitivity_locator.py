@@ -67,6 +67,9 @@ def main() -> int:
     sc["coupled_physical_core_v2_coupling_enabled"] = False
     sc["physics_integrity_capture"] = False
     sc["acoustic_cavity_num_modes"] = max(4, int(args.num_modes))
+    sc["acoustic_min_mode_hz"] = float(args.locator_lo_hz)
+    sc["acoustic_max_mode_hz"] = float(args.locator_hi_hz)
+    sc["acoustic_shift_target_hz"] = float(args.reference_hz)
     cfg["geometry"] = sample_geometry(sample)
     nm = max(4, int(args.num_modes))
 

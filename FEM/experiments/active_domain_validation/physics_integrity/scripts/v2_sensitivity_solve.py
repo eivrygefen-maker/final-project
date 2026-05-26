@@ -118,6 +118,12 @@ def main() -> int:
         default=None,
         help="Parent directory for sample case folders (default: v2_sensitivity_validation/samples)",
     )
+    parser.add_argument(
+        "--eps-seed-npy",
+        type=Path,
+        default=None,
+        help="Experiment-only: full W-space vector for EPS initial space (branch-tracking)",
+    )
     args = parser.parse_args()
 
     if MPI.COMM_WORLD.size != 1:
@@ -185,6 +191,15 @@ def main() -> int:
     sc["_worker_eps_target_lambda"] = lam_t
     cfg["_worker_target_hz"] = target_hz
     cfg["_worker_num_modes"] = nm
+    if args.eps_seed_npy is not None and args.eps_seed_npy.is_file():
+        seed = np.load(str(args.eps_seed_npy.resolve()))
+        sc["_continuation_eps_seed_vector"] = np.asarray(seed, dtype=np.float64).ravel()
+        sc["_continuation_eps_seed_metadata"] = {
+            "continuation_seed_source": "acoustic_locator_coupled_embedding",
+            "seed_f_hz": target_hz,
+            "seed_vector_length": int(np.asarray(seed).size),
+            "seed_npy": str(args.eps_seed_npy.resolve()),
+        }
 
     t0 = time.perf_counter()
     _msh, _W, freqs_hz, eigvecs, _nu, _np = fem3d._solve_coupled_evp(

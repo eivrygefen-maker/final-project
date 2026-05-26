@@ -110,6 +110,7 @@ def run_mpi_case_solve(
     select_by_energy: bool = False,
     structural_spectrum_harvest: bool = False,
     reference_f_hz: Optional[float] = None,
+    eps_seed_npy: Optional[Path] = None,
 ) -> Tuple[int, Dict[str, Any]]:
     from v2_sensitivity_common import hz_result_tag
 
@@ -147,6 +148,8 @@ def run_mpi_case_solve(
         cmd.append("--structural-spectrum-harvest")
     if reference_f_hz is not None:
         cmd.extend(["--reference-f-hz", str(float(reference_f_hz))])
+    if eps_seed_npy is not None and eps_seed_npy.is_file():
+        cmd.extend(["--eps-seed-npy", str(eps_seed_npy.resolve())])
     with open(log_path, "w", encoding="utf-8") as logf:
         proc = subprocess.run(
             cmd,

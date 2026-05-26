@@ -259,10 +259,26 @@ def main() -> int:
         action="store_true",
         help="Only run baseline_coupled_v2 preflight",
     )
+    parser.add_argument(
+        "--gates-only-revalidate",
+        action="store_true",
+        help="Re-run gates on existing preflight/L_prod/*.msh (no remesh)",
+    )
     args = parser.parse_args()
 
     manifest = load_manifest()
     PREFLIGHT_DIAG.mkdir(parents=True, exist_ok=True)
+
+    if args.gates_only_revalidate:
+        from run_v2_mesh_preresume_repair import revalidate_l_prod_gates
+
+        gate_results = revalidate_l_prod_gates(manifest, rebuild=False)
+        all_pass = bool(
+            all((gate_results.get(c) or {}).get("all_preflight_pass") for c in gate_results)
+        )
+        write_json(REPORT_JSON, {"L_prod_gate_revalidation": gate_results})
+        print(f"[preflight] gates-only all_preflight_pass={all_pass}", flush=True)
+        return 0 if all_pass else 1
 
     repair_note = (
         "Production FOM now uses the same air-opening geometry + aperture tagging as "

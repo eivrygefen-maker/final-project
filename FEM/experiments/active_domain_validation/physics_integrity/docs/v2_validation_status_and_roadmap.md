@@ -142,3 +142,14 @@ bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_m
 ```
 
 Skip optional fine level if needed: `…/run_v2_mesh_convergence.sh --skip-L-check`
+
+### Pre-convergence prerequisites (before `--resume`)
+
+1. **L_prod finite-area gates** (repaired `preflight/L_prod/*.msh`, no remesh): fail-closed `area_ratio` from `audit_soundhole_aperture_geometry.py` (`area_ratio` / `area_ratio_vs_pi_r2`).
+2. **L_mid acoustic locator rescue** (existing `mesh/L_mid/*.msh` only): broad acoustic-cavity locator 150–350 Hz → targeted coupled harvest at locator f → optional EPS seed from acoustic mode if spectral crowding.
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_mesh_preconvergence_prereq.sh
+```
+
+Report: `v2_mesh_convergence/diagnostics/v2_l_mid_acoustic_locator_rescue_report.md`
