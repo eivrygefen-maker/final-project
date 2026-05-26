@@ -1,0 +1,151 @@
+{
+  "suite": "v2_mesh_convergence",
+  "frozen_formulation": "coupled_physical_core_v2",
+  "purpose": "Qualify production FOM mesh (L_prod) against validation baseline (L0) and optional L_check; frozen v2 physics only.",
+  "l_prod_source": {
+    "mesher": "FEM/geometry/build_3d_guitar.py",
+    "env": "FEM_ALLOW_FOM=1",
+    "default_output": "FEM/mesh/guitar_3d.msh",
+    "controls": {
+      "wood_surface_size_m": 0.007,
+      "wood_thickness_size_m": 0.001,
+      "air_threshold_size_min_m": 0.004,
+      "air_threshold_size_max_m": 0.05,
+      "air_threshold_dist_min_m": 0.015,
+      "air_threshold_dist_max_m": 0.25
+    },
+    "note": "Production/high-fidelity FOM profile used by mesh_sync.py and guitar_3d.json."
+  },
+  "l0_source": {
+    "mesher": "FEM/geometry/build_3d_guitar.py",
+    "env": "FEM_VALIDATION_MESH=1",
+    "reference_mesh": "FEM/experiments/active_domain_validation/mesh/validation_tiny_guitar_3d.msh",
+    "controls": {
+      "wood_surface_size_m": 0.014,
+      "wood_thickness_size_m": 0.003,
+      "air_threshold_size_min_m": 0.009,
+      "air_threshold_size_max_m": 0.04,
+      "air_threshold_dist_min_m": 0.01,
+      "air_threshold_dist_max_m": 0.12
+    },
+    "node_target": "20000-80000 nodes (inspect_mesh_and_tags within_node_target_20k_80k)"
+  },
+  "mesh_levels": {
+    "L0": {
+      "label": "validation profile (v2 verification mesh)",
+      "build_env": {"FEM_VALIDATION_MESH": "1"},
+      "lc_scale": 1.0,
+      "run_gates_on_build": false
+    },
+    "L_mid": {
+      "label": "intermediate refinement on validation CAD pipeline",
+      "build_env": {"FEM_VALIDATION_MESH": "1"},
+      "lc_scale": 0.7071067811865476,
+      "run_gates_on_build": true,
+      "lc_scale_rationale": "sqrt(2) refinement of validation characteristic lengths (~2x elements)"
+    },
+    "L_prod": {
+      "label": "production FOM mesh profile (FEM_ALLOW_FOM)",
+      "build_env": {"FEM_ALLOW_FOM": "1"},
+      "lc_scale": 1.0,
+      "run_gates_on_build": true
+    },
+    "L_check": {
+      "label": "optional finer-than-L_prod confirmation",
+      "build_env": {"FEM_ALLOW_FOM": "1"},
+      "lc_scale": 0.7071067811865476,
+      "optional": true,
+      "skip_on_resource_failure": true,
+      "run_gates_on_build": true
+    }
+  },
+  "level_run_order": ["L0", "L_mid", "L_prod", "L_check"],
+  "convergence_criterion": {
+    "relative_frequency_tolerance": 0.01,
+    "description": "|f_coarse - f_fine| / f_fine <= 1% for tracked acoustic branch and representative structural branch families.",
+    "primary_production_pair": ["L_prod", "L_check"],
+    "fallback_note": "L0→L_prod alone does not prove L_prod; L_check infeasibility leaves mesh_convergence_pass Pending."
+  },
+  "cases": [
+    {
+      "id": "baseline_coupled_v2",
+      "case_type": "acoustic",
+      "geometry": {
+        "length": 0.48,
+        "width": 0.325,
+        "depth": 0.1,
+        "hole_radius": 0.047,
+        "top_thickness": 0.003
+      },
+      "materials": {"top_wood_id": "spruce", "back_wood_id": "rosewood"},
+      "reference_f_hz": 244.394153389752,
+      "harvest_lo_hz": 220.0,
+      "harvest_hi_hz": 265.0,
+      "target_hz": 244.39,
+      "num_modes": 14,
+      "select_by_energy": true,
+      "l0_reuse": {
+        "enabled": true,
+        "mesh_level": "L0",
+        "artifact_dir": "v2_sensitivity_validation/samples/baseline_coupled_v2",
+        "note": "Identical validation mesh and acoustic harvest window as phase-1/2 v2 work."
+      }
+    },
+    {
+      "id": "hole_radius_large",
+      "case_type": "acoustic",
+      "geometry": {
+        "length": 0.48,
+        "width": 0.325,
+        "depth": 0.1,
+        "hole_radius": 0.053,
+        "top_thickness": 0.003
+      },
+      "materials": {"top_wood_id": "spruce", "back_wood_id": "rosewood"},
+      "reference_f_hz": 265.304715,
+      "harvest_lo_hz": 255.0,
+      "harvest_hi_hz": 300.0,
+      "target_hz": 275.0,
+      "num_modes": 16,
+      "select_by_energy": true,
+      "requires_remesh_all_levels": true,
+      "l0_reuse": {
+        "enabled": true,
+        "mesh_level": "L0",
+        "artifact_dir": "v2_sensitivity_validation/samples/hole_radius_large",
+        "note": "Validated acoustic stress case; harvest 255–300 Hz (not 244 Hz search)."
+      }
+    },
+    {
+      "id": "material_back_cedar",
+      "case_type": "structural",
+      "geometry": {
+        "length": 0.48,
+        "width": 0.325,
+        "depth": 0.1,
+        "hole_radius": 0.047,
+        "top_thickness": 0.003
+      },
+      "materials": {"top_wood_id": "spruce", "back_wood_id": "cedar"},
+      "harvest_lo_hz": 200.0,
+      "harvest_hi_hz": 350.0,
+      "target_hz": 275.0,
+      "num_modes": 36,
+      "structural_spectrum_harvest": true,
+      "stress_case_note": "Structural/material stress case; prior harvest showed high-MAC branches shifted toward ~318 Hz.",
+      "l0_reuse": {
+        "enabled": false,
+        "reason": "Harvest band widened to 200–350 Hz vs prior 200–320 extension artifacts."
+      },
+      "branch_tracking": {
+        "method": "nearest_structural_frequency",
+        "note": "Cross-mesh MAC unavailable (different DOF layouts); track structural branch frequencies and energies."
+      }
+    }
+  ],
+  "staged_status_defaults": {
+    "mesh_convergence_pass": "Pending",
+    "v2_production_promotion_ready": false,
+    "lhs_promotion_blocked": true
+  }
+}

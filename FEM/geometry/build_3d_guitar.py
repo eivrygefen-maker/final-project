@@ -416,7 +416,13 @@ def create_guitar_mesh():
         out_file.parent.mkdir(parents=True, exist_ok=True)
         print(f"[diag] validation mesh output: {out_file}")
     elif is_fom:
-        out_file = mesh_dir / "guitar_3d.msh"
+        out_env = os.environ.get("FEM_MESH_OUT", "").strip()
+        if out_env:
+            out_file = Path(out_env)
+            out_file.parent.mkdir(parents=True, exist_ok=True)
+            print(f"[diag] FOM mesh output override: {out_file}")
+        else:
+            out_file = mesh_dir / "guitar_3d.msh"
     else:
         raise RuntimeError(
             "Set exactly one mesh mode env var: FEM_ALLOW_PREVIEW, FEM_ALLOW_DISPLAY, "
@@ -529,6 +535,22 @@ def create_guitar_mesh():
         air_threshold_dist_max = 0.25
         air_threshold_size_min = 0.004 if is_fom else 0.003
         air_threshold_size_max = 0.050
+
+    lc_scale = float(os.environ.get("FEM_MESH_LC_SCALE", "1.0") or "1.0")
+    if lc_scale <= 0.0 or not math.isfinite(lc_scale):
+        raise ValueError(f"FEM_MESH_LC_SCALE must be positive finite, got {lc_scale!r}")
+    if abs(lc_scale - 1.0) > 1.0e-12:
+        wood_surface_size *= lc_scale
+        wood_thickness_size *= lc_scale
+        air_threshold_size_min *= lc_scale
+        air_threshold_size_max *= lc_scale
+        thickness_threshold_dist_max *= lc_scale
+        soundhole_threshold_dist_max *= lc_scale
+        print(
+            f"[diag] FEM_MESH_LC_SCALE={lc_scale}: scaled characteristic lengths "
+            f"(wood_surface={wood_surface_size*1000:.3f}mm)",
+            flush=True,
+        )
 
     # Display: uniform 12 mm (visualization only). Preview/FOM: graded fields unchanged.
     if is_display:

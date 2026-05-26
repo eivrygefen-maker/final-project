@@ -8,7 +8,8 @@ Frozen formulation: **`coupled_physical_core_v2`** (no Nitsche, `fsi_coupling_ga
 |-------|--------|
 | `coupled_physical_core_v2_baseline_validation` | **PASS** |
 | `acoustic_geometric_validation_pass` | **True** (phase-1 controlled samples) |
-| `material_species_validation_pass` | **Pending** (phase-2 wood subset) |
+| `material_structural_branch_validation_pass` | **PASS** (harvest extension) |
+| `material_species_validation_pass` | **PASS** (acoustic + structural subset) |
 | `production_parameter_coverage_pass` | **Pending** (length/width + remaining LHS axes) |
 | `mesh_convergence_pass` | **Pending** |
 | `lhs_promotion_blocked` | **True** |
@@ -118,3 +119,26 @@ bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_m
 ```
 
 Post-only (artifacts already present): `bash …/run_v2_material_structural_harvest_extension.sh --skip-solve`
+
+## Mesh convergence (`v2_mesh_convergence`)
+
+**Purpose:** Qualify **L_prod** (production FOM mesh from `FEM_ALLOW_FOM` in `build_3d_guitar.py`, default `FEM/mesh/guitar_3d.msh`) against **L0** validation mesh and optional **L_check**, without changing v2 physics or starting LHS.
+
+| Level | Source | Characteristic controls (before `FEM_MESH_LC_SCALE`) |
+|-------|--------|------------------------------------------------------|
+| **L0** | `FEM_VALIDATION_MESH=1` | wood_surface 14 mm, air 9–40 mm |
+| **L_mid** | validation + `FEM_MESH_LC_SCALE≈0.707` | ~2× refinement vs L0 |
+| **L_prod** | `FEM_ALLOW_FOM=1` | wood_surface 7 mm, air 4–50 mm |
+| **L_check** | FOM + `FEM_MESH_LC_SCALE≈0.707` | optional; skip on resource failure |
+
+**Cases:** `baseline_coupled_v2` (acoustic ~244 Hz), `hole_radius_large` (acoustic ~265 Hz, 255–300 Hz harvest), `material_back_cedar` (structural 200–350 Hz).
+
+**Criterion:** \|Δf\|/f ≤ 1% for tracked branches; **L_prod vs L_check** required to prove production mesh (L0→L_prod alone is insufficient).
+
+### VM command (resumable, ~1 h unattended)
+
+```bash
+bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_mesh_convergence.sh
+```
+
+Skip optional fine level if needed: `…/run_v2_mesh_convergence.sh --skip-L-check`
