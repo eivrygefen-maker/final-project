@@ -357,6 +357,8 @@ def build_evidence_summary(
     unreg_eval: Optional[Dict[str, Any]],
     mass_norm_audit: Optional[Dict[str, Any]],
     mapping_fixed_eval: Optional[Dict[str, Any]],
+    persistence_fixed_eval: Optional[Dict[str, Any]] = None,
+    pipeline_audit: Optional[Dict[str, Any]] = None,
     static_audit: Dict[str, Any],
 ) -> Dict[str, Any]:
     unreg_ev = (unreg_eval or {}).get("evaluation") or {}
@@ -383,20 +385,28 @@ def build_evidence_summary(
         reported_vm.append(f"Saved-vector mass-norm audit classification: {mass_verdict}.")
     if mf_verdict:
         reported_vm.append(f"Mapping-corrected baseline verdict: {mf_verdict}.")
+    pf_ev = (persistence_fixed_eval or {}).get("evaluation") or {}
+    if persistence_fixed_eval:
+        reported_vm.append(
+            "Replacement persistence-fixed baseline EPS already ran on VM; 56/56 candidates persisted."
+        )
+        reported_vm.append(
+            f"Replacement evaluator headline: {pf_ev.get('diagnostic_verdict')}."
+        )
+    if pipeline_audit:
+        reported_vm.append(
+            f"Full pipeline audit verdict: {pipeline_audit.get('audit_verdict')} "
+            f"({pipeline_audit.get('verdict_reason')})."
+        )
 
     requires_vm: List[str] = []
-    if mf_verdict in (
-        None,
-        "PENDING_VM_SOLVE_AND_EVALUATION",
-        "MAPPING_FIXED_UNREGULARIZED_BASELINE_CANDIDATE_PERSISTENCE_FAILURE",
-    ):
+    if not pipeline_audit and persistence_fixed_eval:
         requires_vm.append(
-            "No-EVP persistence self-test, then exactly one replacement mapping-corrected "
-            "baseline with persisted candidate_eps_slot_*.smx.npz vectors."
+            "Report-only full pipeline audit over existing replacement baseline artifacts."
         )
 
     not_yet: List[str] = [
-        "Final branch recovery under corrected mapping (pending mapping-corrected baseline run).",
+        "ST viability conclusion pending resolved replay on all 56 persisted candidates.",
         "Report-only corrected frequency/Δf/MAC tables for prior PASS cases after baseline closes.",
     ]
 
@@ -412,28 +422,29 @@ def build_evidence_summary(
         "requires_VM_runtime_artifact_evaluation": requires_vm,
         "not_yet_verified": not_yet,
         "single_permitted_next_action": (
-            "bash .../run_v2_mapping_fixed_persistence_fixed_baseline_vm.sh"
-            if mf_verdict
-            in (
-                None,
-                "PENDING_VM_SOLVE_AND_EVALUATION",
-                "MAPPING_FIXED_UNREGULARIZED_BASELINE_CANDIDATE_PERSISTENCE_FAILURE",
-            )
+            "bash .../run_v2_mapping_fixed_persistence_fixed_full_pipeline_audit.sh"
+            if persistence_fixed_eval and not pipeline_audit
             else None
         ),
         "eigenvalue_mapping_fix_implemented": True,
         "additional_baseline_eigensolve": (
-            "one_replacement_run_after_persistence_self_test_pass"
-            if mf_verdict
-            in (
-                None,
-                "PENDING_VM_SOLVE_AND_EVALUATION",
-                "MAPPING_FIXED_UNREGULARIZED_BASELINE_CANDIDATE_PERSISTENCE_FAILURE",
+            "none_authorized_report_only_pipeline_audit"
+            if persistence_fixed_eval
+            else (
+                "one_replacement_run_after_persistence_self_test_pass"
+                if mf_verdict
+                in (
+                    None,
+                    "PENDING_VM_SOLVE_AND_EVALUATION",
+                    "MAPPING_FIXED_UNREGULARIZED_BASELINE_CANDIDATE_PERSISTENCE_FAILURE",
+                )
+                else "blocked_pending_baseline_review"
             )
-            else "blocked_pending_baseline_review"
         ),
         "PGNHEP_purification": "ruled_out_in_current_VM_environment",
-        "stage_2": "not_triggered_until_persisted_candidate_baseline_evaluated",
+        "stage_2": "not_triggered_until_pipeline_audit_closes_finite_branch_verdict",
+        "replacement_baseline_already_ran": bool(persistence_fixed_eval),
+        "pipeline_audit_verdict": (pipeline_audit or {}).get("audit_verdict"),
         "prior_pass_handling": {
             "mesh_topology_gates_preserved": True,
             "true_seed_replay_findings_preserved": True,
@@ -462,10 +473,13 @@ def build_finite_closure_plan(
     unreg_eval: Optional[Dict[str, Any]],
     mass_norm_audit: Optional[Dict[str, Any]],
     mapping_fixed_eval: Optional[Dict[str, Any]],
+    persistence_fixed_eval: Optional[Dict[str, Any]] = None,
+    pipeline_audit: Optional[Dict[str, Any]] = None,
     root_cause_status: str,
 ) -> Dict[str, Any]:
     mass_verdict = (mass_norm_audit or {}).get("classification_verdict")
     mf_verdict = (mapping_fixed_eval or {}).get("evaluation", {}).get("diagnostic_verdict")
+    pa_verdict = (pipeline_audit or {}).get("audit_verdict")
     pf_verdict = "MAPPING_FIXED_UNREGULARIZED_BASELINE_CANDIDATE_PERSISTENCE_FAILURE"
     self_test_json = CONV_DIAG / "v2_mapping_fixed_candidate_persistence_self_test.json"
     self_test_pass = False
@@ -479,12 +493,26 @@ def build_finite_closure_plan(
             )
         except Exception:
             self_test_pass = False
+    vm_audit_shell = (
+        "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+        "run_v2_mapping_fixed_persistence_fixed_full_pipeline_audit.sh"
+    )
     vm_shell = (
         "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
         "run_v2_mapping_fixed_persistence_fixed_baseline_vm.sh"
     )
 
-    if mf_verdict == pf_verdict:
+    if persistence_fixed_eval and not pipeline_audit:
+        next_action = f"Run report-only full pipeline audit: {vm_audit_shell}"
+    elif pa_verdict == "MAPPING_FIXED_UNREGULARIZED_BASELINE_BRANCH_RECOVERED":
+        next_action = (
+            "Branch recovered under corrected mapping; review promotion gates only after audit review."
+        )
+    elif pa_verdict == "MAPPING_FIXED_UNREGULARIZED_BASELINE_NO_PHYSICAL_BRANCH_RECOVERED":
+        next_action = (
+            "All persisted candidates evaluated with finite rejection; proceed to Stage-2 design."
+        )
+    elif mf_verdict == pf_verdict:
         next_action = (
             "Prior mapping-corrected baseline inconclusive (candidate persistence failure); "
             f"run persistence self-test then replacement baseline: {vm_shell}"

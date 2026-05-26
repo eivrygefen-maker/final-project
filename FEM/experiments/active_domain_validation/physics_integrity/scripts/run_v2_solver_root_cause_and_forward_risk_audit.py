@@ -43,6 +43,13 @@ REHAB_PLAN_JSON = CONV_DIAG / "v2_st_singular_mass_rehabilitation_plan.json"
 MAPPING_FIXED_DIAG_JSON = (
     CONV_DIAG / "v2_l_mid_mapping_fixed_unregularized_baseline_diagnostic.json"
 )
+PERSISTENCE_FIXED_DIAG_JSON = (
+    CONV_DIAG
+    / "v2_l_mid_mapping_fixed_unregularized_persistence_fixed_baseline_diagnostic.json"
+)
+PIPELINE_AUDIT_JSON = (
+    CONV_DIAG / "v2_mapping_fixed_persistence_fixed_full_pipeline_audit.json"
+)
 
 
 def _load_json(path: Path) -> Optional[Dict[str, Any]]:
@@ -225,6 +232,8 @@ def main() -> int:
     st_preflight = _load_json(ST_PREFLIGHT_JSON)
     rehab_plan = _load_json(REHAB_PLAN_JSON)
     mapping_fixed_eval = _load_json(MAPPING_FIXED_DIAG_JSON)
+    persistence_fixed_eval = _load_json(PERSISTENCE_FIXED_DIAG_JSON)
+    pipeline_audit = _load_json(PIPELINE_AUDIT_JSON)
     root_cause_status = determine_root_cause_status(
         filtered_eval=filtered_eval, unreg_eval=unreg_eval
     )
@@ -305,6 +314,8 @@ def main() -> int:
             unreg_eval=unreg_eval,
             mass_norm_audit=mass_norm_audit,
             mapping_fixed_eval=mapping_fixed_eval,
+            persistence_fixed_eval=persistence_fixed_eval,
+            pipeline_audit=pipeline_audit,
             static_audit=static,
         ),
         "forward_risk_register": build_forward_risk_register(
@@ -315,6 +326,8 @@ def main() -> int:
             unreg_eval=unreg_eval,
             mass_norm_audit=mass_norm_audit,
             mapping_fixed_eval=mapping_fixed_eval,
+            persistence_fixed_eval=persistence_fixed_eval,
+            pipeline_audit=pipeline_audit,
             root_cause_status=root_cause_status,
         ),
         "mesh_convergence_may_resume": False,
@@ -323,14 +336,23 @@ def main() -> int:
             "v2_production_promotion_ready": False,
             "lhs_promotion_blocked": True,
         },
+        "persistence_fixed_baseline_diagnostic": {
+            "report_json": str(PERSISTENCE_FIXED_DIAG_JSON),
+            "loaded": persistence_fixed_eval is not None,
+        },
+        "full_pipeline_audit": {
+            "report_json": str(PIPELINE_AUDIT_JSON),
+            "loaded": pipeline_audit is not None,
+            "audit_verdict": (pipeline_audit or {}).get("audit_verdict"),
+        },
         "diagnostic_exposure_conclusion": {
             "status": "confirmed_from_local_code_with_VM_operator_evidence",
             "summary": (
-                "Eigenvalue mapping fix implemented (lam_phys=mu, slepc_backtransformed). "
-                "PGNHEP/purification ruled out on VM. Pre-mapping seven-mode harvest is not "
-                "evidence against corrected mapping. Exactly one mapping-corrected unregularized "
-                "baseline ST diagnostic authorized (preserve all nconv candidates). Stage-2 only "
-                "if that run fails. hole_radius_large and mesh convergence remain blocked."
+                "Persistence self-test passed. Replacement baseline EPS already ran; 56/56 "
+                "candidates persisted. Current blocker is replay evaluation / persisted vector "
+                "content interpretation until report-only pipeline audit closes. ST viability "
+                "inconclusive. No additional EPS authorized by audit task. hole_radius_large and "
+                "mesh convergence remain blocked."
             ),
             "replay_only_validations_protected": True,
             "eps_default_st_ladder_potentially_exposed": True,

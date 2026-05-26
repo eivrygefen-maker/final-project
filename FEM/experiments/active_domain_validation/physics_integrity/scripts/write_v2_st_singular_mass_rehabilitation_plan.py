@@ -28,10 +28,13 @@ PERSISTENCE_FIXED_DIAG_JSON = (
     / "v2_l_mid_mapping_fixed_unregularized_persistence_fixed_baseline_diagnostic.json"
 )
 SELF_TEST_JSON = CONV_DIAG / "v2_mapping_fixed_candidate_persistence_self_test.json"
+PIPELINE_AUDIT_JSON = (
+    CONV_DIAG / "v2_mapping_fixed_persistence_fixed_full_pipeline_audit.json"
+)
 PF_VERDICT = "MAPPING_FIXED_UNREGULARIZED_BASELINE_CANDIDATE_PERSISTENCE_FAILURE"
-VM_BASELINE_SHELL = (
+VM_PIPELINE_AUDIT_SHELL = (
     "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
-    "run_v2_mapping_fixed_persistence_fixed_baseline_vm.sh"
+    "run_v2_mapping_fixed_persistence_fixed_full_pipeline_audit.sh"
 )
 
 
@@ -55,6 +58,11 @@ def main() -> int:
     self_test = (
         json.loads(SELF_TEST_JSON.read_text(encoding="utf-8")) if SELF_TEST_JSON.is_file() else {}
     )
+    pipeline_audit = (
+        json.loads(PIPELINE_AUDIT_JSON.read_text(encoding="utf-8"))
+        if PIPELINE_AUDIT_JSON.is_file()
+        else {}
+    )
 
     applicability = (preflight or {}).get("PGNHEP_purification_applicability")
     if applicability is None:
@@ -68,21 +76,38 @@ def main() -> int:
     first_run_persistence_failure = mapping_fixed_verdict == PF_VERDICT or bool(
         mapping_fixed.get("vm_operator_persistence_failure")
     )
-    replacement_pending = pf_verdict in (
-        None,
-        "PENDING_SELF_TEST_AND_REPLACEMENT_BASELINE",
-    ) or (self_test_pass and pf_verdict is None)
+    pf_bank = (persistence_fixed.get("evaluation") or {}).get("eps_candidate_bank_summary") or {}
+    replacement_ran = int(pf_bank.get("num_vectors_saved", 0) or 0) >= 56 or bool(
+        persistence_fixed.get("solve_return_code") == 0
+        and persistence_fixed.get("persistence_self_test_pass")
+    )
+    pipeline_verdict = pipeline_audit.get("audit_verdict")
+    replacement_pending = (
+        not replacement_ran
+        and pf_verdict
+        in (
+            None,
+            "PENDING_SELF_TEST_AND_REPLACEMENT_BASELINE",
+        )
+    ) or (self_test_pass and not replacement_ran and pf_verdict is None)
     baseline_pending = first_run_persistence_failure or replacement_pending
+    audit_only = replacement_ran and not pipeline_verdict
 
     report: Dict[str, Any] = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "strategy": "finite_solver_rehabilitation_persistence_fix_then_mapping_baseline",
         "next_allowed_action": (
-            "persistence_self_test_then_one_replacement_mapping_corrected_baseline"
-            if baseline_pending
-            else "review_mapping_corrected_baseline_verdict"
+            "report_only_full_pipeline_audit_over_existing_replacement_artifacts"
+            if audit_only
+            else (
+                "persistence_self_test_then_one_replacement_mapping_corrected_baseline"
+                if baseline_pending
+                else "review_mapping_corrected_baseline_and_pipeline_audit_verdict"
+            )
         ),
-        "recommended_vm_command": VM_BASELINE_SHELL if baseline_pending else None,
+        "recommended_vm_command": (
+            VM_PIPELINE_AUDIT_SHELL if audit_only or replacement_ran else None
+        ),
         "PGNHEP_purification": "ruled_out_in_current_VM_environment",
         "purification": "ruled_out_in_current_VM_environment",
         "first_mapping_corrected_run": {
@@ -97,6 +122,24 @@ def main() -> int:
             "report_json": str(SELF_TEST_JSON),
             "self_test_pass": self_test_pass,
             "required_before_replacement_eigensolve": True,
+        },
+        "replacement_baseline": {
+            "already_ran": replacement_ran,
+            "persistence_56_of_56_closed": bool(
+                persistence_fixed.get("evaluation", {})
+                .get("eps_candidate_bank_summary", {})
+                .get("num_vectors_saved")
+                == 56
+            )
+            if persistence_fixed
+            else None,
+            "current_blocker": (
+                "replay_evaluation_or_persisted_vector_content"
+                if replacement_ran
+                else None
+            ),
+            "pipeline_audit_verdict": pipeline_verdict,
+            "pipeline_audit_json": str(PIPELINE_AUDIT_JSON),
         },
         "stage_2": {
             "description": "Explicit physical null-space reduction",
@@ -177,9 +220,13 @@ def main() -> int:
         },
         "mesh_convergence_may_resume": False,
         "additional_baseline_eigensolve": (
-            "one_replacement_run_after_persistence_self_test_pass"
-            if baseline_pending
-            else "blocked_pending_baseline_review"
+            "none_authorized_report_only_pipeline_audit"
+            if replacement_ran
+            else (
+                "one_replacement_run_after_persistence_self_test_pass"
+                if baseline_pending
+                else "blocked_pending_baseline_review"
+            )
         ),
         "hole_radius_large": "blocked",
         "production_policy_unchanged": True,
