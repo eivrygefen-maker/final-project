@@ -318,6 +318,24 @@ def build_forward_risk_register(
     return rows
 
 
+def _unreg_evaluation_pending(unreg_eval: Optional[Dict[str, Any]]) -> bool:
+    unreg_ev = (unreg_eval or {}).get("evaluation") or {}
+    verdict = unreg_ev.get("diagnostic_verdict")
+    if verdict in (None, "PENDING_VM_RUN", "PENDING_VM_EVALUATION"):
+        return True
+    summary = unreg_ev.get("summary") or {}
+    n_cand = int(summary.get("num_candidates_evaluated", 0))
+    n_ok = int(summary.get("num_metrics_computation_ok", 0))
+    # Invalid prior eval: all candidates had non-finite replay/MAC (tooling bug, not physics).
+    if (
+        verdict == "UNREGULARIZED_OFFSET_OUTPUT_OR_REPLAY_INCONSISTENT"
+        and n_cand > 0
+        and n_ok == 0
+    ):
+        return True
+    return False
+
+
 def build_evidence_summary(
     *,
     filtered_eval: Optional[Dict[str, Any]],
@@ -326,7 +344,7 @@ def build_evidence_summary(
 ) -> Dict[str, Any]:
     unreg_ev = (unreg_eval or {}).get("evaluation") or {}
     unreg_verdict = unreg_ev.get("diagnostic_verdict")
-    unreg_pending = unreg_verdict in (None, "PENDING_VM_RUN", "PENDING_VM_EVALUATION")
+    unreg_pending = _unreg_evaluation_pending(unreg_eval)
 
     reported_vm = [
         "Prior regularized filtered diagnostic: FILTERED_DIAGNOSTIC_NO_PHYSICAL_BRANCH_RECOVERED; "
@@ -336,7 +354,8 @@ def build_evidence_summary(
         "Unregularized-offset baseline solve completed: continuation_seed_applied=true, "
         "nconv_marked=56, st_a_shift_frac=0, st_mass_reg_frac=0, "
         "diagnostic_operator_consistent_with_replay=true; 7 modes saved.",
-        "Post-solve evaluation crashed with UnboundLocalError(continuation); fixed report-only path.",
+        "Post-solve evaluation first pass: UnboundLocalError(continuation), then all-NaN MAC/replay "
+        "(evaluator used wrong assembly tree); report-only evaluator corrected.",
     ]
     if unreg_verdict and not unreg_pending:
         reported_vm.append(f"Report-only evaluation verdict: {unreg_verdict}.")
@@ -392,7 +411,7 @@ def build_finite_closure_plan(
 ) -> Dict[str, Any]:
     unreg_ev = (unreg_eval or {}).get("evaluation") or {}
     unreg_verdict = unreg_ev.get("diagnostic_verdict")
-    unreg_pending = unreg_verdict in (None, "PENDING_VM_RUN", "PENDING_VM_EVALUATION")
+    unreg_pending = _unreg_evaluation_pending(unreg_eval)
 
     if unreg_pending:
         next_action = (

@@ -240,8 +240,18 @@ def main() -> int:
             "solve_completed_on_vm": True,
             "operator_consistency_confirmed": True,
             "evaluation_verdict": unreg_ev.get("diagnostic_verdict"),
-            "evaluation_pending": unreg_ev.get("diagnostic_verdict")
-            in (None, "PENDING_VM_RUN", "PENDING_VM_EVALUATION"),
+            "evaluation_pending": (
+                unreg_ev.get("diagnostic_verdict")
+                in (None, "PENDING_VM_RUN", "PENDING_VM_EVALUATION")
+                or (
+                    unreg_ev.get("diagnostic_verdict")
+                    == "UNREGULARIZED_OFFSET_OUTPUT_OR_REPLAY_INCONSISTENT"
+                    and int((unreg_ev.get("summary") or {}).get("num_metrics_computation_ok", 0))
+                    == 0
+                    and int((unreg_ev.get("summary") or {}).get("num_candidates_evaluated", 0))
+                    > 0
+                )
+            ),
             "prior_regularized_diagnostics_superseded": True,
             "recommended_vm_command": (
                 "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
