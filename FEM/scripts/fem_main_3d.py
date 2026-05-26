@@ -4212,6 +4212,16 @@ def _slepc_shift_invert_batch(
         st_sigma = _slepc_hz_to_lambda(st_sigma_hz)
         sigma_hz_candidates = _slepc_st_sigma_hz_candidates(solver_cfg, target_hz)
     solver_cfg["_batch_st_sigma_hz"] = float(st_sigma_hz)
+    if _solver_bool(solver_cfg, "seeded_branch_recovery_diagnostic", default=False) and (
+        MPI.COMM_WORLD.rank == ROOT_RANK
+    ):
+        print(
+            "[solver][seeded_branch_recovery_diagnostic] "
+            f"target_hz={target_hz:.6f} primary_sigma_hz={st_sigma_hz:.6f} "
+            f"sigma_ladder_hz={[round(float(x), 4) for x in sigma_hz_candidates[:8]]} "
+            "(production offset-above-band sigma policy not used)",
+            flush=True,
+        )
 
     block_is = _slepc_build_mixed_block_is(u_to_W, p_to_W, A.getComm())
     if not use_ciss:

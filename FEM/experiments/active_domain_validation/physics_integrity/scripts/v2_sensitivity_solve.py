@@ -38,6 +38,18 @@ V2_CONFIG = PHYSICS_ROOT / "configs" / "coupled_physical_core_v2.json"
 DEFAULT_BAND_LO = 220.0
 DEFAULT_BAND_HI = 265.0
 ENERGY_ACOUSTIC_THRESHOLD = 0.85
+SEED_BRANCH_DIAG_SIGMA_RETRY_OFFSETS_HZ = (
+    2.0,
+    -2.0,
+    5.0,
+    -5.0,
+    8.0,
+    -8.0,
+    12.0,
+    -12.0,
+    15.0,
+    -15.0,
+)
 
 
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
@@ -77,6 +89,47 @@ def _pick_acoustic_branch(
     use = pool if pool else in_band
     best = min(use, key=lambda m: abs(float(m["frequency_hz"]) - reference_f_hz))
     return best, "nearest_frequency_to_reference"
+
+
+def _apply_seed_branch_recovery_diagnostic_solver_cfg(
+    sc: Dict[str, Any], target_hz: float
+) -> Dict[str, Any]:
+    """
+    Experiment-only: ST sigma ladder centered on seed Rayleigh frequency.
+    Does not use production offset-above-harvest-window sigma policy.
+    """
+    f0 = float(target_hz)
+    local_half = max(0.5, f0 * 0.01)
+    local_band = [f0 - local_half, f0 + local_half]
+    sc["seeded_branch_recovery_diagnostic"] = True
+    sc["shift_invert_target_hz"] = f0
+    sc["_worker_target_hz"] = f0
+    sc["eps_st_sigma_try_target_first"] = True
+    sc["eps_st_sigma_include_target_in_ladder"] = False
+    sc["eps_st_sigma_primary_offset_hz"] = 0.0
+    sc["eps_st_sigma_min_offset_hz"] = 0.0
+    sc["eps_st_sigma_frac_offset"] = 0.0
+    sc["eps_st_sigma_retry_offsets_hz"] = list(SEED_BRANCH_DIAG_SIGMA_RETRY_OFFSETS_HZ)
+    sc["eps_st_sigma_ladder_max"] = 12
+    sc["eps_broad_search_hz"] = 0.0
+    sc["eps_harvest_sigma_margin_hz"] = 3.0
+    sc["eps_interval_half_width_hz"] = max(local_half, 8.0)
+    harvest_half = max(12.0, local_half * 4.0)
+    sc["_worker_harvest_lo_hz"] = f0 - harvest_half
+    sc["_worker_harvest_hi_hz"] = f0 + harvest_half
+    sc["eps_reject_sigma_spurious"] = False
+    sc["eps_reject_target_locked"] = False
+    ladder = fem3d._slepc_st_sigma_hz_candidates(sc, f0)
+    return {
+        "solver_mode": "seeded_branch_recovery_diagnostic",
+        "standard_harvest_sigma_policy_unchanged": True,
+        "standard_policy_not_used_for_this_diagnostic": True,
+        "seed_rayleigh_f_hz": f0,
+        "diagnostic_sigma_hz": float(ladder[0]) if ladder else f0,
+        "diagnostic_sigma_retry_ladder_hz": [float(x) for x in ladder],
+        "diagnostic_local_band_hz": local_band,
+        "diagnostic_harvest_window_hz": [f0 - harvest_half, f0 + harvest_half],
+    }
 
 
 def _classify_phys_energy(p_frac: float) -> str:
@@ -130,6 +183,14 @@ def main() -> int:
         default=None,
         help="Experiment-only: full W-space vector for EPS initial space (branch-tracking)",
     )
+    parser.add_argument(
+        "--seed-branch-recovery-diagnostic",
+        action="store_true",
+        help=(
+            "Experiment-only: center ST sigma on seed/target Hz for known-branch recovery; "
+            "does not use production above-window sigma/harvest policy."
+        ),
+    )
     args = parser.parse_args()
 
     if MPI.COMM_WORLD.size != 1:
@@ -142,9 +203,12 @@ def main() -> int:
     mesh_path = args.mesh.resolve()
     sample_id = str(args.sample_id)
     target_hz = float(args.target_hz)
+    reference_f_hz = float(args.reference_f_hz)
+    seed_branch_diag_meta: Optional[Dict[str, Any]] = None
+    if args.seed_branch_recovery_diagnostic:
+        target_hz = reference_f_hz
     band_lo = float(args.harvest_lo_hz if args.harvest_lo_hz is not None else DEFAULT_BAND_LO)
     band_hi = float(args.harvest_hi_hz if args.harvest_hi_hz is not None else DEFAULT_BAND_HI)
-    reference_f_hz = float(args.reference_f_hz)
     if args.case_dir is not None:
         case_dir = args.case_dir.resolve()
     else:
@@ -173,6 +237,12 @@ def main() -> int:
     sc["_worker_harvest_lo_hz"] = band_lo
     sc["_worker_harvest_hi_hz"] = band_hi
     sc["shift_invert_target_hz"] = target_hz
+    if args.seed_branch_recovery_diagnostic:
+        seed_branch_diag_meta = _apply_seed_branch_recovery_diagnostic_solver_cfg(sc, target_hz)
+        band_lo = float(seed_branch_diag_meta["diagnostic_local_band_hz"][0])
+        band_hi = float(seed_branch_diag_meta["diagnostic_local_band_hz"][1])
+        sc["_worker_harvest_lo_hz"] = float(seed_branch_diag_meta["diagnostic_harvest_window_hz"][0])
+        sc["_worker_harvest_hi_hz"] = float(seed_branch_diag_meta["diagnostic_harvest_window_hz"][1])
     cfg["geometry"] = sample_geometry(sample)
     mats = sample.get("materials") or {}
     if mats.get("top_wood_id") or mats.get("back_wood_id"):
@@ -289,11 +359,18 @@ def main() -> int:
         pass
 
     eps_diag = cfg.get("_eps_batch_diagnostics") or sc.get("_eps_batch_diagnostics") or {}
-    branch, sel_method = _pick_acoustic_branch(
-        in_band,
-        select_by_energy=bool(args.select_by_energy),
-        reference_f_hz=reference_f_hz,
-    )
+    continuation_seed_applied = bool(eps_diag.get("continuation_seed_applied"))
+    if eps_seed_info.get("eps_initial_space_set"):
+        continuation_seed_applied = True
+
+    if args.seed_branch_recovery_diagnostic:
+        branch, sel_method = None, "seed_branch_recovery_diagnostic_all_modes"
+    else:
+        branch, sel_method = _pick_acoustic_branch(
+            in_band,
+            select_by_energy=bool(args.select_by_energy),
+            reference_f_hz=reference_f_hz,
+        )
 
     result = {
         "sample_id": sample_id,
@@ -318,7 +395,22 @@ def main() -> int:
         "nearest_acoustic_branch": branch,
         "num_modes_saved": n_modes,
         "gnhep_scales": {k: float(gnhep.get(k, 1.0)) for k in ("s_uu", "s_pp", "s_couple")},
+        "continuation_seed_applied": continuation_seed_applied,
+        "st_sigma_hz_used": float(cfg.get("_worker_st_sigma_hz", float("nan"))),
     }
+    if seed_branch_diag_meta is not None:
+        result["seed_branch_recovery_diagnostic"] = {
+            **seed_branch_diag_meta,
+            "continuation_seed_applied": continuation_seed_applied,
+            "seed_file_used": eps_seed_info.get("seed_file_used"),
+            "seed_layout_valid": eps_seed_info.get("seed_layout_valid"),
+            "seed_vector_length": eps_seed_info.get("seed_vector_length"),
+            "eps_initial_space_set": eps_seed_info.get("eps_initial_space_set"),
+            "eps_initial_space_norm": eps_seed_info.get("eps_initial_space_norm"),
+        }
+        result["solver_mode"] = seed_branch_diag_meta["solver_mode"]
+    else:
+        result["solver_mode"] = "standard_v2_sensitivity"
     _write_json(case_dir / "results" / f"result_{hz_tag}.json", result)
     _write_json(case_dir / "diagnostics" / "mode_energy_summary.json", {"modes": mode_rows})
     if MPI.COMM_WORLD.rank == 0:
@@ -330,7 +422,13 @@ def main() -> int:
             f"f_branch={f_br:.6f} p_frac_energy={p_br:.4f}",
             flush=True,
         )
-    ok = bool(result["v2_converged"] and (branch is not None or args.structural_spectrum_harvest))
+    if args.seed_branch_recovery_diagnostic:
+        ok = bool(result["v2_converged"] and continuation_seed_applied)
+    else:
+        ok = bool(
+            result["v2_converged"]
+            and (branch is not None or args.structural_spectrum_harvest)
+        )
     return 0 if ok else 3
 
 
