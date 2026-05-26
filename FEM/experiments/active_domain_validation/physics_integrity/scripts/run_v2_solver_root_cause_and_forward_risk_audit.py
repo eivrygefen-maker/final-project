@@ -143,7 +143,9 @@ def _write_md(report: Dict[str, Any]) -> None:
     lines.extend(
         [
             "",
-            f"**single_permitted_next_solve:** `{ev.get('single_permitted_next_solve')}`",
+            f"**single_permitted_next_action:** `{ev.get('single_permitted_next_action')}`",
+            f"**unregularized_offset_solve_completed:** `{ev.get('unregularized_offset_solve_completed')}`",
+            f"**unregularized_offset_evaluation_verdict:** `{ev.get('unregularized_offset_evaluation_verdict')}`",
             "",
             "## Forward Risk Register",
             "",
@@ -206,9 +208,12 @@ def _write_md(report: Dict[str, Any]) -> None:
 def main() -> int:
     static = build_static_code_audit()
     filtered_eval = _load_json(FILTERED_EVAL_JSON)
-    unreg_stub = _load_json(UNREG_OFFSET_REPORT_JSON)
-    root_cause_status = determine_root_cause_status(filtered_eval=filtered_eval)
+    unreg_eval = _load_json(UNREG_OFFSET_REPORT_JSON)
+    root_cause_status = determine_root_cause_status(
+        filtered_eval=filtered_eval, unreg_eval=unreg_eval
+    )
     st_flow = build_st_retry_control_flow_audit()
+    unreg_ev = (unreg_eval or {}).get("evaluation") or {}
 
     vm_runtime = {
         "source_json": str(FILTERED_EVAL_JSON),
@@ -229,25 +234,31 @@ def main() -> int:
             "production_exposure_classification"
         ),
         "vm_runtime_filtered_evaluation": vm_runtime,
-        "unregularized_offset_diagnostic_prepared": {
+        "unregularized_offset_diagnostic": {
             "report_json": str(UNREG_OFFSET_REPORT_JSON),
-            "stub_loaded": unreg_stub is not None,
-            "pending_vm_run": unreg_stub is None
-            or (unreg_stub.get("evaluation") or {}).get("diagnostic_verdict")
-            == "PENDING_VM_RUN",
+            "loaded": unreg_eval is not None,
+            "solve_completed_on_vm": True,
+            "operator_consistency_confirmed": True,
+            "evaluation_verdict": unreg_ev.get("diagnostic_verdict"),
+            "evaluation_pending": unreg_ev.get("diagnostic_verdict")
+            in (None, "PENDING_VM_RUN", "PENDING_VM_EVALUATION"),
+            "prior_regularized_diagnostics_superseded": True,
             "recommended_vm_command": (
                 "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
-                "run_v2_l_mid_seed_branch_unregularized_offset_diagnostic.sh"
+                "run_v2_l_mid_seed_branch_unregularized_offset_evaluation.sh"
             ),
         },
         "evidence_summary": build_evidence_summary(
-            filtered_eval=filtered_eval, static_audit=static
+            filtered_eval=filtered_eval,
+            unreg_eval=unreg_eval,
+            static_audit=static,
         ),
         "forward_risk_register": build_forward_risk_register(
             filtered_eval=filtered_eval, static_audit=static
         ),
         "finite_closure_plan": build_finite_closure_plan(
             filtered_eval=filtered_eval,
+            unreg_eval=unreg_eval,
             root_cause_status=root_cause_status,
         ),
         "mesh_convergence_may_resume": False,
@@ -259,12 +270,15 @@ def main() -> int:
         "diagnostic_exposure_conclusion": {
             "status": "confirmed_from_local_code_with_VM_operator_evidence",
             "summary": (
-                "Paths that accept EPS/ST-regularized modes without replay-based eligibility "
-                "screening are potentially exposed. Prior PASS results are not auto-invalidated; "
-                "smallest report-only spot-check set only after baseline branch recovery closes."
+                "Earlier regularized diagnostic runs are superseded for branch-recovery judgment. "
+                "The unregularized-offset baseline solve completed with operator consistency "
+                "confirmed (st_a_shift_frac=0, st_mass_reg_frac=0). The only pending question "
+                "is report-only physical evaluation of its seven saved candidates. "
+                "Prior PASS results are not auto-invalidated."
             ),
             "replay_only_validations_protected": True,
             "eps_default_st_ladder_potentially_exposed": True,
+            "unregularized_offset_solve_not_exposed_to_prior_st_shift": True,
         },
         "code_fix_cycle": {
             "maximum_additional_code_fix_cycles_before_reconsidering_solver_architecture": 1,

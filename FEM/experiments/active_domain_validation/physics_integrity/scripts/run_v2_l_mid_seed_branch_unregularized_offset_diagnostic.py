@@ -2,8 +2,10 @@
 """
 L_mid baseline: unregularized-offset seed-branch recovery diagnostic (experiment-only).
 
-Prepared for exactly one permitted baseline EPS rerun on the VM. Does not run unless
-invoked explicitly (no automatic execution in CI/local dev).
+Modes:
+  --evaluate-only   Report-only replay/MAC evaluation of existing VM solve artifacts (no EPS).
+  (default)         Run mpiexec solve then evaluate (not authorized after baseline solve completed).
+  --prepare-only    Write launch stub only.
 """
 from __future__ import annotations
 
@@ -15,7 +17,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -39,14 +41,58 @@ CASE_ID = "baseline_coupled_v2"
 NUM_MODES = 48
 SOLVE_SCRIPT = SCRIPT_DIR / "v2_sensitivity_solve.py"
 SIGMA_OFFSETS_HZ = (0.5, -0.5, 1.0, -1.0, 2.0, -2.0)
+SEED_F_HZ = 243.0754171175576
 
 REPORT_JSON = CONV_DIAG / "v2_l_mid_seed_branch_unregularized_offset_diagnostic.json"
 REPORT_MD = CONV_DIAG / "v2_l_mid_seed_branch_unregularized_offset_diagnostic.md"
 OUT_SUBDIR = "seed_branch_recovery_diagnostic_unregularized_offset"
 
+VERDICT_BRANCH_RECOVERED = "UNREGULARIZED_OFFSET_BASELINE_BRANCH_RECOVERED"
+VERDICT_NO_BRANCH = "UNREGULARIZED_OFFSET_BASELINE_NO_PHYSICAL_BRANCH_RECOVERED"
+VERDICT_INCONSISTENT = "UNREGULARIZED_OFFSET_OUTPUT_OR_REPLAY_INCONSISTENT"
+
 
 def _out_dir(case_dir: Path) -> Path:
     return case_dir / OUT_SUBDIR
+
+
+def _continuation_from_solve_result(solve_result: Dict[str, Any]) -> bool:
+    eps = solve_result.get("eps_batch_diagnostics") or {}
+    diag = solve_result.get("seed_branch_recovery_diagnostic") or {}
+    eps_seed = solve_result.get("eps_seed") or {}
+    return bool(
+        solve_result.get("continuation_seed_applied")
+        or eps.get("continuation_seed_applied")
+        or diag.get("continuation_seed_applied")
+        or eps_seed.get("eps_initial_space_set")
+    )
+
+
+def _load_solve_result(out_dir: Path, target_hz: float) -> Dict[str, Any]:
+    result_path = out_dir / "results" / f"result_{hz_result_tag(target_hz)}.json"
+    if not result_path.is_file():
+        results = sorted((out_dir / "results").glob("result_*.json"))
+        if not results:
+            return {}
+        result_path = results[-1]
+    return json.loads(result_path.read_text(encoding="utf-8"))
+
+
+def _artifact_status(out_dir: Path, seed_npy: Path) -> Dict[str, Any]:
+    summary = out_dir / "diagnostics" / "mode_energy_summary.json"
+    modes_dir = out_dir / "modes"
+    result_glob = list((out_dir / "results").glob("result_*.json"))
+    return {
+        "output_dir": str(out_dir),
+        "output_dir_exists": out_dir.is_dir(),
+        "mode_energy_summary_exists": summary.is_file(),
+        "modes_dir_exists": modes_dir.is_dir(),
+        "result_json_count": len(result_glob),
+        "seed_npy_exists": seed_npy.is_file(),
+        "artifacts_ok": bool(
+            out_dir.is_dir() and summary.is_file() and seed_npy.is_file() and modes_dir.is_dir()
+        ),
+    }
 
 
 def _run_solve(
@@ -123,17 +169,13 @@ def _run_solve(
     launch_record["return_code"] = int(completed.returncode)
     write_json(out_dir / "launch_record.json", launch_record)
 
-    result_path = out_dir / "results" / f"result_{hz_result_tag(target_hz)}.json"
-    result: Dict[str, Any] = {}
-    if result_path.is_file():
-        result = json.loads(result_path.read_text(encoding="utf-8"))
+    result = _load_solve_result(out_dir, target_hz)
     return int(completed.returncode), result, str(log_path)
 
 
 def _filter_imports():
     from v2_seed_branch_candidate_filter import (
         FILTER_POLICY,
-        VERDICT_ST_REGULARIZATION_REQUIRED,
         assess_physical_eligibility,
         branch_recovery_from_row,
         extract_st_operator_fields,
@@ -147,7 +189,6 @@ def _filter_imports():
 
     return {
         "FILTER_POLICY": FILTER_POLICY,
-        "VERDICT_ST_REGULARIZATION_REQUIRED": VERDICT_ST_REGULARIZATION_REQUIRED,
         "assess_physical_eligibility": assess_physical_eligibility,
         "branch_recovery_from_row": branch_recovery_from_row,
         "extract_st_operator_fields": extract_st_operator_fields,
@@ -156,6 +197,25 @@ def _filter_imports():
         "_load_mode_vec": _load_mode_vec,
         "_validate_prelaunch": _validate_prelaunch,
     }
+
+
+def _assign_verdict(
+    *,
+    continuation: bool,
+    op_ok: bool,
+    candidates: List[Dict[str, Any]],
+    branch_pool: List[Dict[str, Any]],
+    artifacts_ok: bool,
+) -> str:
+    if not artifacts_ok or not candidates:
+        return VERDICT_INCONSISTENT
+    if not continuation:
+        return VERDICT_INCONSISTENT
+    if not op_ok:
+        return VERDICT_INCONSISTENT
+    if branch_pool:
+        return VERDICT_BRANCH_RECOVERED
+    return VERDICT_NO_BRANCH
 
 
 def _evaluate(
@@ -171,12 +231,14 @@ def _evaluate(
     assess_physical_eligibility = flt["assess_physical_eligibility"]
     replay_candidate_metrics = flt["replay_candidate_metrics"]
     branch_recovery_from_row = flt["branch_recovery_from_row"]
-    VERDICT_ST_REGULARIZATION_REQUIRED = flt["VERDICT_ST_REGULARIZATION_REQUIRED"]
     FILTER_POLICY = flt["FILTER_POLICY"]
     _assemble_operators = flt["_assemble_operators"]
     _load_mode_vec = flt["_load_mode_vec"]
 
-    seed_f = float(seed_meta.get("locator_frequency_hz", solve_result.get("target_hz", float("nan"))))
+    seed_f = float(
+        seed_meta.get("locator_frequency_hz", solve_result.get("target_hz", SEED_F_HZ))
+    )
+    continuation = _continuation_from_solve_result(solve_result)
     st_fields = extract_st_operator_fields(solve_result)
     op_ok = bool(st_fields["diagnostic_operator_consistent_with_replay"])
 
@@ -223,7 +285,7 @@ def _evaluate(
                 require_mac=True,
                 require_seed_frequency_match=True,
             )
-            row = {
+            row: Dict[str, Any] = {
                 "continuation_seed_applied": continuation,
                 "candidate_index": m.get("mode_index"),
                 "vector_file": str(out_dir / str(m["vector_path"])),
@@ -239,14 +301,14 @@ def _evaluate(
                     "reported_vs_replay_frequency_consistent"
                 ],
                 "physically_eligible_after_filter": elig["physically_eligible_after_filter"],
-                "branch_recovery_pass": bool(
-                    elig["branch_recovery_pass"] and op_ok
-                ),
                 "rejection_reasons": list(elig["rejection_reasons"]),
                 **st_fields,
             }
             if not op_ok:
-                row["rejection_reasons"].append("st_regularization_used_eps_not_replay_consistent")
+                row["rejection_reasons"].append(
+                    "st_regularization_used_eps_not_replay_consistent"
+                )
+            row["branch_recovery_pass"] = branch_recovery_from_row(row)
             candidates.append(row)
     finally:
         try:
@@ -255,41 +317,41 @@ def _evaluate(
         except Exception:
             pass
 
-    branch_pool = [c for c in candidates if branch_recovery_from_row(c)]
+    candidates.sort(key=lambda r: int(r.get("candidate_index") or 0))
+    branch_pool = [c for c in candidates if c.get("branch_recovery_pass")]
     best = (
         max(branch_pool, key=lambda r: float(r["pressure_MAC_to_true_acoustic_seed"]))
         if branch_pool
         else {}
     )
-
-    continuation = bool(
-        solve_result.get("continuation_seed_applied")
-        or (solve_result.get("eps_seed") or {}).get("eps_initial_space_set")
-        or (solve_result.get("seed_branch_recovery_diagnostic") or {}).get(
-            "continuation_seed_applied"
-        )
+    artifacts_ok = bool(candidates)
+    verdict = _assign_verdict(
+        continuation=continuation,
+        op_ok=op_ok,
+        candidates=candidates,
+        branch_pool=branch_pool,
+        artifacts_ok=artifacts_ok,
     )
 
-    if not continuation:
-        verdict = "DIAGNOSTIC_SOLVER_NOT_APPLIED"
-    elif not op_ok:
-        verdict = VERDICT_ST_REGULARIZATION_REQUIRED
-    elif best:
-        verdict = "SEED_BRANCH_RECOVERED_IN_DIAGNOSTIC_MODE"
-    elif candidates:
-        verdict = "FILTERED_DIAGNOSTIC_NO_PHYSICAL_BRANCH_RECOVERED"
-    else:
-        verdict = "DIAGNOSTIC_OUTPUT_OR_REPLAY_INCONSISTENT"
-
+    eps_diag = solve_result.get("eps_batch_diagnostics") or {}
     return {
-        "seed_rayleigh_f_hz": seed_f,
+        "evidence_scope": "VM_runtime_artifact_evaluation",
+        "seed_frequency_hz": seed_f,
         "filter_policy": FILTER_POLICY,
         "st_operator_fields": st_fields,
+        "continuation_seed_applied": continuation,
+        "eps_nconv_marked": eps_diag.get("nconv_marked"),
         "candidates": candidates,
         "recovered_mode": best,
         "any_branch_recovery_pass": bool(branch_pool),
+        "summary": {
+            "num_candidates_evaluated": len(candidates),
+            "num_branch_recovery_pass": len(branch_pool),
+            "num_physically_eligible": sum(
+                1 for c in candidates if c.get("physically_eligible_after_filter")
+            ),
+        },
         "diagnostic_verdict": verdict,
-        "continuation_seed_applied": continuation,
     }
 
 
@@ -303,6 +365,8 @@ def _write_md(report: Dict[str, Any]) -> None:
         "",
         f"**Verdict:** `{ev.get('diagnostic_verdict')}`",
         "",
+        f"- continuation_seed_applied: {ev.get('continuation_seed_applied')}",
+        f"- eps_nconv_marked: {ev.get('eps_nconv_marked')}",
         f"- diagnostic_operator_consistent_with_replay: {st.get('diagnostic_operator_consistent_with_replay')}",
         f"- actual_sigma_hz: {st.get('actual_sigma_hz')}",
         f"- actual_st_a_shift_frac: {st.get('actual_st_a_shift_frac')}",
@@ -311,7 +375,57 @@ def _write_md(report: Dict[str, Any]) -> None:
         f"**mesh_convergence_may_resume:** `{report.get('mesh_convergence_may_resume')}`",
         "",
     ]
+    summary = ev.get("summary") or {}
+    if summary:
+        lines.extend(
+            [
+                "## Summary",
+                "",
+                f"- candidates evaluated: {summary.get('num_candidates_evaluated')}",
+                f"- branch_recovery_pass: {summary.get('num_branch_recovery_pass')}",
+                f"- physically_eligible: {summary.get('num_physically_eligible')}",
+                "",
+            ]
+        )
+    lines.append("## Candidates")
+    lines.append("")
+    for c in ev.get("candidates") or []:
+        lines.append(
+            f"- idx={c.get('candidate_index')} f={c.get('reported_frequency_hz'):.4f} Hz "
+            f"MAC={c.get('pressure_MAC_to_true_acoustic_seed'):.4f} "
+            f"replay_f={c.get('replay_rayleigh_frequency_hz')} "
+            f"branch_pass={c.get('branch_recovery_pass')} "
+            f"reject={c.get('rejection_reasons')}"
+        )
+    lines.append("")
     REPORT_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _evaluate_only(
+    *,
+    case_dir: Path,
+    mesh_file: Path,
+    sample: Dict[str, Any],
+    seed_npy: Path,
+    seed_meta: Dict[str, Any],
+    target_hz: float,
+    out_dir: Path,
+) -> Dict[str, Any]:
+    status = _artifact_status(out_dir, seed_npy)
+    solve_result = _load_solve_result(out_dir, target_hz)
+    if not status["artifacts_ok"] or not solve_result:
+        return {
+            "evidence_scope": "VM_runtime_artifact_evaluation",
+            "artifact_status": status,
+            "diagnostic_verdict": VERDICT_INCONSISTENT,
+            "verdict_reason": "Solve artifacts or result JSON missing at expected paths.",
+        }
+    seed = np.load(str(seed_npy))
+    evaluation = _evaluate(out_dir, mesh_file, sample, seed, seed_meta, solve_result)
+    evaluation["artifact_status"] = status
+    evaluation["solve_result_loaded"] = True
+    evaluation["output_dir"] = str(out_dir)
+    return evaluation
 
 
 def main() -> int:
@@ -320,6 +434,11 @@ def main() -> int:
         "--prepare-only",
         action="store_true",
         help="Write launch_record and report stub without running mpiexec.",
+    )
+    parser.add_argument(
+        "--evaluate-only",
+        action="store_true",
+        help="Report-only: evaluate existing solve artifacts (no EPS, no overwrite).",
     )
     args = parser.parse_args()
 
@@ -333,20 +452,30 @@ def main() -> int:
     seed_meta = (
         json.loads(seed_meta_path.read_text(encoding="utf-8")) if seed_meta_path.is_file() else {}
     )
-    target_hz = float(seed_meta.get("locator_frequency_hz", 243.0754171175576))
+    target_hz = float(seed_meta.get("locator_frequency_hz", SEED_F_HZ))
 
     report: Dict[str, Any] = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "case_id": CASE_ID,
         "output_subdir": OUT_SUBDIR,
+        "seed_frequency_hz": target_hz,
         "mesh_convergence_may_resume": False,
         "staged_status": {
             "mesh_convergence_pass": "Pending",
             "v2_production_promotion_ready": False,
             "lhs_promotion_blocked": True,
         },
-        "maximum_additional_baseline_solves_before_escalation": 1,
-        "maximum_additional_code_fix_cycles_before_reconsidering_solver_architecture": 1,
+        "prior_regularized_diagnostics_superseded_for_branch_verdict": True,
+        "vm_operator_solve_evidence": {
+            "solve_completed": True,
+            "continuation_seed_applied": True,
+            "eps_nconv_marked": 56,
+            "st_a_shift_frac_used": 0.0,
+            "st_mass_reg_frac_used": 0.0,
+            "diagnostic_operator_consistent_with_replay": True,
+            "saved_candidates": 7,
+            "source": "reported_from_VM_operator_evidence",
+        },
     }
 
     if args.prepare_only:
@@ -355,7 +484,7 @@ def main() -> int:
         report["prepare_only"] = True
         report["recommended_vm_command"] = (
             "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
-            "run_v2_l_mid_seed_branch_unregularized_offset_diagnostic.sh"
+            "run_v2_l_mid_seed_branch_unregularized_offset_evaluation.sh"
         )
         report["sigma_ladder_policy"] = {
             "seed_rayleigh_f_hz": target_hz,
@@ -368,25 +497,50 @@ def main() -> int:
             "st_mass_reg_frac_must_be_zero_for_verdict": True,
         }
         report["evaluation"] = {
-            "diagnostic_verdict": "PENDING_VM_RUN",
+            "diagnostic_verdict": "PENDING_VM_EVALUATION",
             "diagnostic_requires_unregularized_ST": True,
-            "note": "Run recommended_vm_command on VM after code sync (one permitted baseline solve).",
+            "note": "Solve completed on VM; run recommended_vm_command for report-only evaluation.",
         }
         write_json(REPORT_JSON, report)
         _write_md(report)
         return 0
 
+    sample = sample_spec_from_case(case)
+
+    if args.evaluate_only:
+        report["evaluate_only"] = True
+        report["recommended_vm_command"] = (
+            "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+            "run_v2_l_mid_seed_branch_unregularized_offset_evaluation.sh"
+        )
+        evaluation = _evaluate_only(
+            case_dir=case_dir,
+            mesh_file=mesh_file,
+            sample=sample,
+            seed_npy=seed_npy,
+            seed_meta=seed_meta,
+            target_hz=target_hz,
+            out_dir=out_dir,
+        )
+        report["evaluation"] = evaluation
+        write_json(REPORT_JSON, report)
+        _write_md(report)
+        verdict = evaluation.get("diagnostic_verdict", VERDICT_INCONSISTENT)
+        print(f"[unreg_offset_eval] verdict={verdict}", flush=True)
+        return 0 if verdict == VERDICT_BRANCH_RECOVERED else 1
+
     flt = _filter_imports()
-    _validate_prelaunch = flt["_validate_prelaunch"]
-    pre = _validate_prelaunch(mesh_file, seed_npy, seed_meta)
+    pre = flt["_validate_prelaunch"](mesh_file, seed_npy, seed_meta)
     if not pre["valid"]:
-        report["evaluation"] = {"diagnostic_verdict": "DIAGNOSTIC_SOLVER_NOT_APPLIED", "prelaunch": pre}
+        report["evaluation"] = {
+            "diagnostic_verdict": VERDICT_INCONSISTENT,
+            "prelaunch": pre,
+        }
         write_json(REPORT_JSON, report)
         _write_md(report)
         return 1
 
     seed = np.load(str(seed_npy))
-    sample = sample_spec_from_case(case)
     rc, solve_result, log_path = _run_solve(
         sample, mesh_file, target_hz=target_hz, seed_npy=seed_npy, out_dir=out_dir
     )
@@ -397,8 +551,9 @@ def main() -> int:
     report["output_dir"] = str(out_dir)
     write_json(REPORT_JSON, report)
     _write_md(report)
-    print(f"[unreg_offset_diag] verdict={evaluation['diagnostic_verdict']}", flush=True)
-    return 0 if evaluation["diagnostic_verdict"] == "SEED_BRANCH_RECOVERED_IN_DIAGNOSTIC_MODE" else 1
+    verdict = evaluation["diagnostic_verdict"]
+    print(f"[unreg_offset_diag] verdict={verdict}", flush=True)
+    return 0 if verdict == VERDICT_BRANCH_RECOVERED else 1
 
 
 if __name__ == "__main__":

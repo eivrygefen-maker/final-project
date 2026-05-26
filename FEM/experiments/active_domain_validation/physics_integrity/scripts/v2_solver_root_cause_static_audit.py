@@ -321,53 +321,100 @@ def build_forward_risk_register(
 def build_evidence_summary(
     *,
     filtered_eval: Optional[Dict[str, Any]],
+    unreg_eval: Optional[Dict[str, Any]],
     static_audit: Dict[str, Any],
 ) -> Dict[str, Any]:
+    unreg_ev = (unreg_eval or {}).get("evaluation") or {}
+    unreg_verdict = unreg_ev.get("diagnostic_verdict")
+    unreg_pending = unreg_verdict in (None, "PENDING_VM_RUN", "PENDING_VM_EVALUATION")
+
+    reported_vm = [
+        "Prior regularized filtered diagnostic: FILTERED_DIAGNOSTIC_NO_PHYSICAL_BRANCH_RECOVERED; "
+        "7 candidates, 0 branch_recovery_pass; 5× lambda≈1 artifacts at reported f≈243 Hz.",
+        "Prior filtered run used st_a_shift_frac=0.001 at sigma≈seed (superseded for branch verdict).",
+        "True acoustic seed valid at ~243.075 Hz under unregularized physical v2 replay.",
+        "Unregularized-offset baseline solve completed: continuation_seed_applied=true, "
+        "nconv_marked=56, st_a_shift_frac=0, st_mass_reg_frac=0, "
+        "diagnostic_operator_consistent_with_replay=true; 7 modes saved.",
+        "Post-solve evaluation crashed with UnboundLocalError(continuation); fixed report-only path.",
+    ]
+    if unreg_verdict and not unreg_pending:
+        reported_vm.append(f"Report-only evaluation verdict: {unreg_verdict}.")
+
+    requires_vm: List[str] = []
+    if unreg_pending:
+        requires_vm.append(
+            "Report-only physical evaluation of seven saved unregularized-offset candidates."
+        )
+
+    not_yet: List[str] = [
+        "Whether any prior PASS harvest modes fail replay filter spot-check.",
+    ]
+    if unreg_pending:
+        not_yet.insert(0, "Whether unregularized-offset baseline recovers physical branch.")
+
     return {
         "confirmed_from_local_code": [
             "Default ST retry tries st_a_shift_frac=1e-3 before 0.0.",
             "ST A-shift modifies only ST factorization copy; replay uses unregularized GNHEP.",
             "lam_shift=mu+sigma mapping has no inverse for ST regularization.",
-            "New diagnostic_requires_unregularized_ST forces unregularized ST only.",
+            "diagnostic_requires_unregularized_ST forces unregularized ST only on offset diagnostic.",
             "Invalid ST-equivalence via solve_evp=False flags cannot reproduce EPS ST operator.",
+            "Earlier regularized diagnostic runs superseded for branch-recovery judgment.",
         ],
-        "reported_from_VM_operator_evidence": [
-            "FILTERED_DIAGNOSTIC_NO_PHYSICAL_BRANCH_RECOVERED; 7 candidates, 0 branch_recovery_pass.",
-            "5 candidates: reported f≈243 Hz, replay lambda≈1, f≈0.159 Hz.",
-            "Filtered run: ST LU succeeded after retry with st_a_shift_frac=0.001 at sigma≈243.08 Hz.",
-            "True seed valid at ~243.075 Hz with small replay residual under physical coupling.",
-        ],
-        "requires_VM_runtime_artifact_evaluation": [
-            "Outcome of one unregularized-offset diagnostic rerun (prepared, not executed in this step).",
-        ],
-        "not_yet_verified": [
-            "Whether offset-sigma unregularized rerun recovers physical branch.",
-            "Whether any prior PASS harvest modes fail replay filter spot-check.",
-        ],
-        "single_permitted_next_solve": (
-            "bash .../run_v2_l_mid_seed_branch_unregularized_offset_diagnostic.sh"
+        "reported_from_VM_operator_evidence": reported_vm,
+        "requires_VM_runtime_artifact_evaluation": requires_vm,
+        "not_yet_verified": not_yet,
+        "single_permitted_next_action": (
+            "bash .../run_v2_l_mid_seed_branch_unregularized_offset_evaluation.sh"
+            if unreg_pending
+            else None
         ),
+        "prior_regularized_diagnostics_superseded_for_branch_verdict": True,
+        "unregularized_offset_solve_completed": True,
+        "unregularized_offset_evaluation_verdict": unreg_verdict,
     }
 
 
 def determine_root_cause_status(
     *,
     filtered_eval: Optional[Dict[str, Any]],
+    unreg_eval: Optional[Dict[str, Any]],
 ) -> str:
-    # Code fix for ST/mapping/selection is implemented; one controlled rerun authorized.
     return ROOT_CAUSE_CONFIRMED_ST
 
 
 def build_finite_closure_plan(
     *,
     filtered_eval: Optional[Dict[str, Any]],
+    unreg_eval: Optional[Dict[str, Any]],
     root_cause_status: str,
 ) -> Dict[str, Any]:
-    if root_cause_status == ROOT_CAUSE_CONFIRMED_ST:
+    unreg_ev = (unreg_eval or {}).get("evaluation") or {}
+    unreg_verdict = unreg_ev.get("diagnostic_verdict")
+    unreg_pending = unreg_verdict in (None, "PENDING_VM_RUN", "PENDING_VM_EVALUATION")
+
+    if unreg_pending:
         next_action = (
-            "Exactly one baseline L_mid diagnostic rerun: unregularized-offset sigma ladder, "
-            "ST must remain unregularized; accept verdict only if diagnostic_operator_consistent_with_replay."
+            "Report-only evaluation of completed unregularized-offset baseline solve "
+            "(seven saved candidates; no further baseline eigensolve)."
         )
+    elif unreg_verdict == "UNREGULARIZED_OFFSET_BASELINE_BRANCH_RECOVERED":
+        next_action = (
+            "Baseline branch recovery closed under unregularized-offset diagnostic. "
+            "hole_radius_large remains a later explicit step; mesh_convergence_may_resume stays False."
+        )
+    elif unreg_verdict == "UNREGULARIZED_OFFSET_BASELINE_NO_PHYSICAL_BRANCH_RECOVERED":
+        next_action = (
+            "Stop patching: EPS/ST diagnostic architecture inadequate for branch recovery "
+            "even with unregularized offset sigma ladder."
+        )
+    else:
+        next_action = (
+            "Resolve UNREGULARIZED_OFFSET_OUTPUT_OR_REPLAY_INCONSISTENT before any mesh step."
+        )
+
+    if root_cause_status == ROOT_CAUSE_CONFIRMED_ST:
         blocked = [
             "hole_radius_large",
             "mesh_convergence_resume",
@@ -375,7 +422,7 @@ def build_finite_closure_plan(
             "L_check",
             "LHS",
             "v2_production_promotion",
-            "second_baseline_solve_without_escalation",
+            "baseline_diagnostic_eigensolve_rerun",
         ]
     else:
         next_action = "ROOT_CAUSE_NOT_YET_CONFIRMED — no further solve authorized."
@@ -407,4 +454,7 @@ def build_finite_closure_plan(
         "maximum_additional_baseline_solves_before_escalation": 1,
         "maximum_additional_code_fix_cycles_before_reconsidering_solver_architecture": 1,
         "filtered_eval_verdict": None if not filtered_eval else filtered_eval.get("verdict"),
+        "unregularized_offset_eval_verdict": unreg_verdict,
+        "unregularized_offset_eval_pending": unreg_pending,
+        "baseline_eigensolve_budget_exhausted": True,
     }
