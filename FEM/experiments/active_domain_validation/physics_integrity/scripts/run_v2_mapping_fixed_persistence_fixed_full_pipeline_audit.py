@@ -49,6 +49,7 @@ from v2_sensitivity_common import hz_result_tag
 CASE_ID = "baseline_coupled_v2"
 SEED_F_HZ = 243.0754171175576
 N_REDUCED_W = 277626
+EXPECTED_P_TO_W_LENGTH = 24039
 MODE_VECTOR_RELATIVE_EPS = 1.0e-7
 
 OUT_JSON = CONV_DIAG / "v2_mapping_fixed_persistence_fixed_full_pipeline_audit.json"
@@ -153,17 +154,115 @@ def _load_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _as_int32_index_map(value: Any) -> np.ndarray:
+    """Coerce index map without NumPy truth-value tests (never use `value or []`)."""
+    if value is None:
+        return np.asarray([], dtype=np.int32)
+    return np.asarray(value, dtype=np.int32).ravel()
+
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    if value is None or not isinstance(value, dict):
+        return {}
+    return value
+
+
+def _as_list(value: Any) -> List[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return list(value)
+
+
+def _index_map_from_cfg(cfg_map: Dict[str, Any], key: str) -> Tuple[np.ndarray, Optional[str]]:
+    cand = cfg_map.get(key)
+    source = f"assembled_replay_cfg.{key}" if cand is not None else None
+    if cand is None:
+        solver = cfg_map.get("solver")
+        if isinstance(solver, dict):
+            cand = solver.get(key)
+            if cand is not None:
+                source = f"assembled_replay_cfg.solver.{key}"
+    if cand is None:
+        return np.asarray([], dtype=np.int32), None
+    return _as_int32_index_map(cand), source
+
+
+def _index_map_crc32(arr: np.ndarray) -> int:
+    if arr.size == 0:
+        return 0
+    return int(pressure_block_mapping_metadata(p_to_W=arr, source="audit").get("p_to_W_crc32", 0))
+
+
+def _validate_index_map_for_reduced_W(arr: np.ndarray, *, name: str, n_w: int) -> List[str]:
+    failures: List[str] = []
+    if arr.size == 0:
+        failures.append(f"{name}_empty")
+        return failures
+    if not np.issubdtype(arr.dtype, np.integer):
+        failures.append(f"{name}_not_integer_dtype")
+    arr64 = arr.astype(np.int64, copy=False)
+    if np.any(arr64 < 0):
+        failures.append(f"{name}_has_negative_indices")
+    if np.any(arr64 >= n_w):
+        failures.append(f"{name}_index_out_of_range_reduced_W")
+    return failures
+
+
+def _build_map_contract(
+    *,
+    u_to_W: np.ndarray,
+    p_to_W: np.ndarray,
+    u_source: Optional[str],
+    p_source: str,
+) -> Dict[str, Any]:
+    failures: List[str] = []
+    failures.extend(_validate_index_map_for_reduced_W(u_to_W, name="u_to_W", n_w=N_REDUCED_W))
+    failures.extend(_validate_index_map_for_reduced_W(p_to_W, name="p_to_W", n_w=N_REDUCED_W))
+
+    u_found = int(u_to_W.size) > 0
+    p_found = int(p_to_W.size) > 0
+    if p_found and int(p_to_W.size) != EXPECTED_P_TO_W_LENGTH:
+        failures.append(
+            f"p_to_W_length_{int(p_to_W.size)}_!=_expected_{EXPECTED_P_TO_W_LENGTH}"
+        )
+
+    u_set = set(int(x) for x in u_to_W.tolist()) if u_found else set()
+    p_set = set(int(x) for x in p_to_W.tolist()) if p_found else set()
+    overlap = len(u_set & p_set)
+    union = len(u_set | p_set)
+
+    return {
+        "u_to_W_found": u_found,
+        "u_to_W_length": int(u_to_W.size),
+        "u_to_W_crc32": _index_map_crc32(u_to_W),
+        "u_to_W_source": u_source,
+        "p_to_W_found": p_found,
+        "p_to_W_length": int(p_to_W.size),
+        "p_to_W_crc32": _index_map_crc32(p_to_W),
+        "p_to_W_source": p_source,
+        "n_reduced_W_expected": N_REDUCED_W,
+        "p_to_W_length_expected": EXPECTED_P_TO_W_LENGTH,
+        "u_p_map_overlap_count": int(overlap),
+        "u_p_map_union_size": int(union),
+        "map_contract_pass": len(failures) == 0 and u_found and p_found,
+        "map_contract_failure_reason": "; ".join(failures) if failures else None,
+        "map_contract_failures": failures,
+    }
+
+
 def _resolve_p_to_W(
     solve_result: Dict[str, Any],
     bank: Dict[str, Any],
     mesh_file: Path,
     sample: Dict[str, Any],
 ) -> Tuple[np.ndarray, str, Dict[str, Any]]:
-    p_res = np.asarray(solve_result.get("p_to_W") or [], dtype=np.int32).ravel()
+    p_res = _as_int32_index_map(solve_result.get("p_to_W"))
     if p_res.size > 0:
         return p_res, "solve_result.p_to_W", {"source": "solve_result"}
-    pbm = bank.get("pressure_block_mapping") or {}
-    p_bank = np.asarray(pbm.get("p_to_W") or [], dtype=np.int32).ravel()
+    pbm = _as_dict(bank.get("pressure_block_mapping"))
+    p_bank = _as_int32_index_map(pbm.get("p_to_W"))
     if p_bank.size > 0:
         return p_bank, str(pbm.get("source", "eps_candidate_bank.pressure_block_mapping")), {
             "source": "eps_candidate_bank"
@@ -172,11 +271,11 @@ def _resolve_p_to_W(
 
     A, M, cfg = _assemble_reduced_coupled_replay(mesh_file, sample, coupling_enabled=True)
     try:
-        p_asm = np.asarray(cfg.get("_coupled_air_p_to_W_map") or [], dtype=np.int32).ravel()
+        p_asm, p_src = _index_map_from_cfg(cfg, "_coupled_air_p_to_W_map")
     finally:
         A.destroy()
         M.destroy()
-    return p_asm, "fresh_assembly._coupled_air_p_to_W_map", {"source": "fresh_assembly"}
+    return p_asm, p_src or "fresh_assembly._coupled_air_p_to_W_map", {"source": "fresh_assembly"}
 
 
 def _inspect_npz_file(path: Path, *, u_to_W: np.ndarray, p_to_W: np.ndarray) -> Dict[str, Any]:
@@ -218,10 +317,11 @@ def _inspect_npz_file(path: Path, *, u_to_W: np.ndarray, p_to_W: np.ndarray) -> 
             row["support_index_min"] = None
             row["support_index_max"] = None
         if u_to_W.size:
-            u_sup = set(int(i) for i in csr.indices if int(i) < int(u_to_W.max()) + 1)
-            row["support_overlap_u_block_indices"] = len(u_sup)
+            u_set = set(int(x) for x in u_to_W.tolist())
+            u_hit = sum(1 for i in csr.indices if int(i) in u_set)
+            row["support_overlap_u_block_indices"] = int(u_hit)
         if p_to_W.size:
-            p_set = set(int(x) for x in p_to_W)
+            p_set = set(int(x) for x in p_to_W.tolist())
             p_hit = sum(1 for i in csr.indices if int(i) in p_set)
             row["support_overlap_pressure_block"] = int(p_hit)
             row["pressure_block_fraction_of_nnz"] = (
@@ -464,22 +564,41 @@ def _write_md(report: Dict[str, Any]) -> None:
         "## Operator policy (from artifacts)",
         "",
     ]
-    op = report.get("operator_policy") or {}
+    mc = _as_dict(report.get("map_contract"))
+    lines.append("## Map contract")
+    lines.append("")
+    for k in (
+        "u_to_W_found",
+        "u_to_W_length",
+        "u_to_W_crc32",
+        "p_to_W_found",
+        "p_to_W_length",
+        "p_to_W_crc32",
+        "n_reduced_W_expected",
+        "u_p_map_overlap_count",
+        "u_p_map_union_size",
+        "map_contract_pass",
+        "map_contract_failure_reason",
+    ):
+        lines.append(f"- {k}: {mc.get(k)}")
+    lines.append("")
+    op = _as_dict(report.get("operator_policy"))
     for k, v in op.items():
         lines.append(f"- {k}: {v}")
     lines.append("")
     lines.append("## Evaluation summary")
-    es = report.get("evaluation_summary") or {}
+    es = _as_dict(report.get("evaluation_summary"))
     for k, v in es.items():
         lines.append(f"- {k}: {v}")
     lines.append("")
     lines.append("## Pipeline control flow (code-derived)")
-    for step in report.get("pipeline_control_flow") or []:
+    for step in _as_list(report.get("pipeline_control_flow")):
         lines.append(f"- **{step.get('step')}** @ `{step.get('location')}`")
     OUT_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _refresh_status_reports(audit: Dict[str, Any]) -> None:
+    """Only call after audit JSON/MD written successfully."""
     from run_v2_solver_root_cause_and_forward_risk_audit import main as audit_main
     from write_v2_st_singular_mass_rehabilitation_plan import main as rehab_main
 
@@ -493,10 +612,29 @@ def _refresh_status_reports(audit: Dict[str, Any]) -> None:
             "audit_verdict": audit.get("audit_verdict"),
             "generated_utc": audit.get("generated_utc"),
         }
-        repl["evaluation"] = repl.get("evaluation") or {}
-        repl["evaluation"]["diagnostic_verdict"] = audit.get("audit_verdict")
-        repl["evaluation"]["audit_verdict_reason"] = audit.get("verdict_reason")
+        evaluation = _as_dict(repl.get("evaluation"))
+        evaluation["diagnostic_verdict"] = audit.get("audit_verdict")
+        evaluation["audit_verdict_reason"] = audit.get("verdict_reason")
+        repl["evaluation"] = evaluation
         write_json(repl_path, repl)
+
+
+def _acquire_u_to_W(
+    solve_result: Dict[str, Any],
+    mesh_file: Path,
+    sample: Dict[str, Any],
+) -> Tuple[np.ndarray, Optional[str]]:
+    u_res = _as_int32_index_map(solve_result.get("u_to_W"))
+    if u_res.size > 0:
+        return u_res, "solve_result.u_to_W"
+    from v2_build_coupled_acoustic_seed import _assemble_reduced_coupled_replay
+
+    A0, M0, cfg0 = _assemble_reduced_coupled_replay(mesh_file, sample, coupling_enabled=True)
+    try:
+        return _index_map_from_cfg(cfg0, "_coupled_air_u_to_W_map")
+    finally:
+        A0.destroy()
+        M0.destroy()
 
 
 def main() -> int:
@@ -527,20 +665,20 @@ def main() -> int:
         if results:
             solve_result = _load_json(results[-1])
 
-    modes_meta = {int(m.get("eps_slot_index", m.get("candidate_index", -1))): m for m in (summary.get("modes") or [])}
-    p_to_W, p_source, p_info = _resolve_p_to_W(solve_result, bank, mesh_file, sample)
-    u_to_W = np.asarray(solve_result.get("u_to_W") or [], dtype=np.int32).ravel()
-    if u_to_W.size == 0:
-        from v2_build_coupled_acoustic_seed import _assemble_reduced_coupled_replay
+    modes_meta = {
+        int(m.get("eps_slot_index", m.get("candidate_index", -1))): m
+        for m in _as_list(summary.get("modes"))
+    }
+    p_to_W, p_source, _p_info = _resolve_p_to_W(solve_result, bank, mesh_file, sample)
+    u_to_W, u_source = _acquire_u_to_W(solve_result, mesh_file, sample)
+    map_contract = _build_map_contract(
+        u_to_W=u_to_W,
+        p_to_W=p_to_W,
+        u_source=u_source,
+        p_source=p_source,
+    )
 
-        A0, M0, cfg0 = _assemble_reduced_coupled_replay(mesh_file, sample, coupling_enabled=True)
-        try:
-            u_to_W = np.asarray(cfg0.get("_coupled_air_u_to_W_map") or [], dtype=np.int32).ravel()
-        finally:
-            A0.destroy()
-            M0.destroy()
-
-    eps_diag = solve_result.get("eps_batch_diagnostics") or {}
+    eps_diag = _as_dict(solve_result.get("eps_batch_diagnostics"))
     st_fields = {
         "actual_sigma_hz": float(eps_diag.get("st_sigma_hz_used", float("nan"))),
         "actual_st_a_shift_frac": float(eps_diag.get("st_a_shift_frac_used", 0.0)),
@@ -569,7 +707,7 @@ def main() -> int:
         "preserve_all_enabled": True,
         "candidate_bank_count": int(bank.get("eps_diagnostic_candidate_bank_count", 0)),
         "num_vectors_saved": int(bank.get("num_vectors_saved", 0)),
-        "save_errors": list(bank.get("save_errors") or []),
+        "save_errors": _as_list(bank.get("save_errors")),
         "p_to_W_source": p_source,
         "p_to_W_length": int(p_to_W.size),
         "p_to_W_crc32": pressure_block_mapping_metadata(p_to_W=p_to_W, source=p_source).get(
@@ -577,10 +715,11 @@ def main() -> int:
         ),
     }
 
+    save_errors = _as_list(bank.get("save_errors"))
     persistence_closed = (
         int(bank.get("num_vectors_saved", 0)) == int(bank.get("nconv_marked", 0))
         and int(bank.get("nconv_marked", 0)) > 0
-        and not (bank.get("save_errors") or [])
+        and len(save_errors) == 0
     )
 
     file_rows: List[Dict[str, Any]] = []
@@ -591,53 +730,74 @@ def main() -> int:
         row["slot_index"] = slot
         file_rows.append(row)
 
-    seed = np.asarray(np.load(str(seed_npy)), dtype=np.float64).ravel()
-    from v2_unreg_offset_report_evaluator import assemble_replay_operators
-
-    A, M, asm_meta = assemble_replay_operators(mesh_file, sample, out_dir=out_dir)
     eval_rows: List[Dict[str, Any]] = []
-    try:
+    physics_eval_skipped = False
+    if not map_contract["map_contract_pass"]:
+        physics_eval_skipped = True
         for fr in file_rows:
             slot = int(fr["slot_index"])
-            meta = modes_meta.get(slot, {})
-            dense = fr.pop("dense_vector", None)
-            if dense is None:
-                eval_rows.append(
-                    {
-                        "slot_index": slot,
-                        "rayleigh_evaluation_status": "sparse_load_failure",
-                        "nonfinite_reason": fr.get("vector_load_status"),
-                    }
-                )
-                continue
-            er = _evaluate_candidate_physics(
-                slot=slot,
-                dense=dense,
-                meta=meta,
-                A=A,
-                M=M,
-                seed=seed,
-                seed_f_hz=target_hz,
-                p_to_W=p_to_W,
-                u_to_W=u_to_W,
-                st_fields=st_fields,
+            eval_rows.append(
+                {
+                    "slot_index": slot,
+                    "rayleigh_evaluation_status": "skipped_map_contract_failure",
+                    "nonfinite_reason": map_contract.get("map_contract_failure_reason"),
+                }
             )
-            eval_rows.append(er)
-    finally:
+    else:
+        seed = np.asarray(np.load(str(seed_npy)), dtype=np.float64).ravel()
+        from v2_unreg_offset_report_evaluator import assemble_replay_operators
+
+        A, M, _asm_meta = assemble_replay_operators(mesh_file, sample, out_dir=out_dir)
         try:
-            A.destroy()
-            M.destroy()
-        except Exception:
-            pass
+            for fr in file_rows:
+                slot = int(fr["slot_index"])
+                meta = modes_meta.get(slot, {})
+                dense = fr.pop("dense_vector", None)
+                if dense is None:
+                    eval_rows.append(
+                        {
+                            "slot_index": slot,
+                            "rayleigh_evaluation_status": "sparse_load_failure",
+                            "nonfinite_reason": fr.get("vector_load_status"),
+                        }
+                    )
+                    continue
+                er = _evaluate_candidate_physics(
+                    slot=slot,
+                    dense=dense,
+                    meta=meta,
+                    A=A,
+                    M=M,
+                    seed=seed,
+                    seed_f_hz=target_hz,
+                    p_to_W=p_to_W,
+                    u_to_W=u_to_W,
+                    st_fields=st_fields,
+                )
+                eval_rows.append(er)
+        finally:
+            try:
+                A.destroy()
+                M.destroy()
+            except Exception:
+                pass
 
     for fr in file_rows:
         fr.pop("dense_vector", None)
 
-    verdict, reason, rca_extra = _assign_audit_verdict(
-        file_rows=file_rows,
-        eval_rows=eval_rows,
-        persistence_closed=persistence_closed,
-    )
+    if not map_contract["map_contract_pass"]:
+        verdict = VERDICT_REPLAY_EVAL_FAILURE
+        reason = "map_contract_failure"
+        rca_extra: Dict[str, Any] = {
+            "primary_hypothesis": "REPLAY_LAYOUT_OR_METADATA_MISMATCH",
+            "map_contract": map_contract,
+        }
+    else:
+        verdict, reason, rca_extra = _assign_audit_verdict(
+            file_rows=file_rows,
+            eval_rows=eval_rows,
+            persistence_closed=persistence_closed,
+        )
     rca = {
         "primary_category": rca_extra.get("primary_hypothesis", reason),
         "mechanism": rca_extra.get(
@@ -653,6 +813,8 @@ def main() -> int:
         "evidence_scope": "report_only_VM_artifact_audit",
         "output_tree": str(out_dir),
         "persistence_closed": persistence_closed,
+        "map_contract": map_contract,
+        "physics_eval_skipped": physics_eval_skipped,
         "operator_policy": operator_policy,
         "pipeline_control_flow": _static_pipeline_control_flow(),
         "capture_vs_persist_contract": {
@@ -679,6 +841,7 @@ def main() -> int:
         "candidates": eval_rows,
         "evaluation_summary": {
             "num_candidates": len(eval_rows),
+            "physics_eval_skipped": physics_eval_skipped,
             "num_rayleigh_ok": sum(1 for r in eval_rows if r.get("rayleigh_evaluation_status") == "ok"),
             "num_mass_null": sum(
                 1
@@ -705,12 +868,23 @@ def main() -> int:
         "no_additional_eigensolve_authorized": True,
         "mesh_convergence_may_resume": False,
     }
-    write_json(OUT_JSON, report)
-    _write_md(report)
-    _refresh_status_reports(report)
+    try:
+        write_json(OUT_JSON, report)
+        _write_md(report)
+        _refresh_status_reports(report)
+    except Exception:
+        print(
+            "[pipeline_audit] FAILED before completing report write; "
+            "status reports were not refreshed.",
+            file=sys.stderr,
+            flush=True,
+        )
+        traceback.print_exc()
+        return 2
 
     print(
         f"[pipeline_audit] verdict={verdict} reason={reason} "
+        f"map_contract_pass={map_contract.get('map_contract_pass')} "
         f"files={len(file_rows)} branch_pass={report['evaluation_summary']['num_branch_recovery_pass']} "
         f"median_nnz={nnz_summary.get('median_nnz')}",
         flush=True,
@@ -723,4 +897,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception:
+        print(
+            "[pipeline_audit] FAILED; no audit report or status refresh written.",
+            file=sys.stderr,
+            flush=True,
+        )
+        traceback.print_exc()
+        raise SystemExit(2)
