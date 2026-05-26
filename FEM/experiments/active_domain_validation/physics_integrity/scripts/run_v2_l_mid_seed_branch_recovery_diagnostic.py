@@ -252,6 +252,7 @@ def _evaluate(
         except Exception:
             pass
 
+    p_seed_block = np.asarray(seed[p_to_W], dtype=np.float64).ravel()
     ranked: List[Dict[str, Any]] = []
     for m in modes:
         try:
@@ -259,21 +260,33 @@ def _evaluate(
         except Exception:
             continue
         f_hz = float(m["frequency_hz"])
-        mac = pressure_subspace_mac(seed, vec, p_to_W)
+        p_mode_block = np.asarray(vec[p_to_W], dtype=np.float64).ravel()
+        mac_block = float(
+            abs(np.vdot(p_seed_block, p_mode_block))
+            / (float(np.linalg.norm(p_seed_block)) * float(np.linalg.norm(p_mode_block)))
+            if float(np.linalg.norm(p_seed_block)) > 0 and float(np.linalg.norm(p_mode_block)) > 0
+            else float("nan")
+        )
+        mac_subspace = pressure_subspace_mac(seed, vec, p_to_W)
         d_frac = abs(f_hz - seed_f) / seed_f if seed_f > 0 else float("inf")
         ranked.append(
             {
                 **m,
-                "pressure_MAC_to_true_acoustic_reference": float(mac),
+                "pressure_MAC_to_seed_p_block": mac_block,
+                "pressure_MAC_to_true_acoustic_reference": mac_block,
+                "pressure_MAC_subspace_W_layout": float(mac_subspace),
                 "frequency_delta_from_seed_rayleigh_hz": f_hz - seed_f,
                 "frequency_delta_fraction": float(d_frac),
             }
         )
-    ranked.sort(key=lambda r: -float(r["pressure_MAC_to_true_acoustic_reference"]))
 
     in_freq = [r for r in ranked if float(r["frequency_delta_fraction"]) <= FREQ_TOL_FRAC]
     pool = in_freq if in_freq else ranked
-    best = pool[0] if pool else {}
+    best = (
+        max(pool, key=lambda r: float(r["pressure_MAC_to_seed_p_block"]))
+        if pool
+        else {}
+    )
 
     replay: Dict[str, Any] = {}
     if best.get("vector_path"):
@@ -296,8 +309,10 @@ def _evaluate(
             "replay_relative_residual_of_recovered_mode": float(residual["relative_residual"]),
             "replay_rayleigh_f_hz": float(rayleigh["rayleigh_f_hz"]),
         }
+        if best:
+            best = {**best, **replay}
 
-    mac = float(best.get("pressure_MAC_to_true_acoustic_reference", float("nan")))
+    mac = float(best.get("pressure_MAC_to_seed_p_block", float("nan")))
     d_frac = float(best.get("frequency_delta_fraction", float("inf")))
     rel_res = float(replay.get("replay_relative_residual_of_recovered_mode", float("nan")))
     continuation = bool(
@@ -321,10 +336,26 @@ def _evaluate(
     if recovery_ok and p_frac < 0.05:
         energy_note = "branch recovered by true-reference metrics; p_frac classification reported separately"
 
+    freq_class_ok = bool(
+        best
+        and math.isfinite(d_frac)
+        and d_frac <= FREQ_TOL_FRAC
+        and math.isfinite(p_frac)
+        and p_frac >= 0.5
+    )
     if not continuation:
         verdict = "DIAGNOSTIC_SOLVER_NOT_APPLIED"
     elif recovery_ok:
         verdict = "SEED_BRANCH_RECOVERED_IN_DIAGNOSTIC_MODE"
+    elif freq_class_ok and (
+        (math.isfinite(mac) and mac < MAC_TOL)
+        or not math.isfinite(rel_res)
+        or rel_res > REPLAY_RESIDUAL_OK
+    ):
+        verdict = (
+            "DIAGNOSTIC_BRANCH_FREQUENCY_AND_ACOUSTIC_CLASS_RECOVERED_BUT_"
+            "MAC_OR_REPLAY_MAPPING_INCONSISTENT"
+        )
     else:
         verdict = "SEED_BRANCH_NOT_RECOVERED_EVEN_IN_DIAGNOSTIC_MODE"
 
