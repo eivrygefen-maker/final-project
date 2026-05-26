@@ -26,10 +26,11 @@ for _p in (SCRIPT_DIR, FEM_SCRIPTS):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from mode_diagnostics import pressure_subspace_mac
-from physical_fsi_seed_residual_audit import (
-    _block_residual_contributions,
-    _rayleigh_metrics,
+from v2_seed_branch_candidate_filter import (
+    FILTER_POLICY,
+    VERDICT_SPURIOUS_SELECTED,
+    assess_physical_eligibility,
+    replay_candidate_metrics,
 )
 from v2_mesh_convergence_common import (
     CONV_DIAG,
@@ -46,18 +47,15 @@ REPORT_MD = CONV_DIAG / "v2_l_mid_seed_branch_recovery_diagnostic.md"
 SOLVE_SCRIPT = SCRIPT_DIR / "v2_sensitivity_solve.py"
 
 CASE_ID = "baseline_coupled_v2"
-FREQ_TOL_FRAC = 0.01
-MAC_TOL = 0.85
-REPLAY_RESIDUAL_OK = 0.05
-LAMBDA_ONE_TOL = 1.0e-3
-VERDICT_SPURIOUS_SELECTED = (
-    "DIAGNOSTIC_SELECTED_SIGMA_OR_BC_SPURIOUS_MODE_"
-    "TRUE_ACOUSTIC_SEED_REMAINS_VALID_BRANCH_NOT_YET_RECOVERED"
-)
+FREQ_TOL_FRAC = float(FILTER_POLICY["seed_frequency_match_max_relative"])
+MAC_TOL = float(FILTER_POLICY["pressure_mac_to_true_seed_min"])
+REPLAY_RESIDUAL_OK = float(FILTER_POLICY["replay_relative_residual_max"])
 NUM_MODES = 48
 
 
-def _diag_output_dir(case_dir: Path) -> Path:
+def _diag_output_dir(case_dir: Path, *, filtered: bool = False) -> Path:
+    if filtered:
+        return case_dir / "seed_branch_recovery_diagnostic_filtered"
     return case_dir / "seed_branch_recovery_diagnostic"
 
 
@@ -140,6 +138,7 @@ def _run_diagnostic_solve(
     target_hz: float,
     seed_npy: Path,
     out_dir: Path,
+    filtered_harvest: bool = False,
 ) -> Tuple[int, Dict[str, Any], str]:
     out_dir.mkdir(parents=True, exist_ok=True)
     sample_json = out_dir / "sample_spec.json"
@@ -172,6 +171,8 @@ def _run_diagnostic_solve(
         str(seed_npy.resolve()),
         "--seed-branch-recovery-diagnostic",
     ]
+    if filtered_harvest:
+        cmd.append("--seed-branch-filtered-diagnostic")
     launch_record = {
         "exact_command_argv": cmd,
         "shell_command": shlex.join(cmd),
@@ -258,119 +259,108 @@ def _evaluate(
             pass
 
     p_seed_block = np.asarray(seed[p_to_W], dtype=np.float64).ravel()
+    A, M, u_idx, p_idx = _assemble_operators(mesh_file, sample, "evaluate_all")
     ranked: List[Dict[str, Any]] = []
-    for m in modes:
+    try:
+        for m in modes:
+            try:
+                vec = _load_mode_vec(out_dir, str(m["vector_path"]))
+            except Exception:
+                continue
+            f_hz = float(m["frequency_hz"])
+            p_mode_block = np.asarray(vec[p_to_W], dtype=np.float64).ravel()
+            mac_block = float(
+                abs(np.vdot(p_seed_block, p_mode_block))
+                / (float(np.linalg.norm(p_seed_block)) * float(np.linalg.norm(p_mode_block)))
+                if float(np.linalg.norm(p_seed_block)) > 0 and float(np.linalg.norm(p_mode_block)) > 0
+                else float("nan")
+            )
+            d_frac = abs(f_hz - seed_f) / seed_f if seed_f > 0 else float("inf")
+            replay = replay_candidate_metrics(
+                A, M, vec, u_to_W=u_idx, p_to_W=p_idx, reported_f_hz=f_hz
+            )
+            elig = assess_physical_eligibility(
+                reported_f_hz=f_hz,
+                replay_metrics=replay,
+                pressure_mac_to_true_seed=mac_block,
+                seed_f_hz=seed_f,
+                require_mac=True,
+                require_seed_frequency_match=True,
+            )
+            ranked.append(
+                {
+                    **m,
+                    "pressure_MAC_to_seed_p_block": mac_block,
+                    "pressure_MAC_to_true_acoustic_reference": mac_block,
+                    "frequency_delta_from_seed_rayleigh_hz": f_hz - seed_f,
+                    "frequency_delta_fraction": float(d_frac),
+                    "replay_rayleigh_eigenvalue": replay["replay_rayleigh_lambda"],
+                    "replay_rayleigh_f_hz": replay["replay_rayleigh_frequency_hz"],
+                    "replay_relative_residual_of_recovered_mode": replay["replay_relative_residual"],
+                    "algebraic_lambda_one_suspect": replay["algebraic_lambda_one_suspect"],
+                    "reported_vs_replay_frequency_consistent": replay[
+                        "reported_vs_replay_frequency_consistent"
+                    ],
+                    "physically_eligible_after_filter": elig["physically_eligible_after_filter"],
+                    "rejection_reasons": elig["rejection_reasons"],
+                    "recovers_true_seed_branch": elig["recovers_true_seed_branch"],
+                }
+            )
+    finally:
         try:
-            vec = _load_mode_vec(out_dir, str(m["vector_path"]))
+            A.destroy()
+            M.destroy()
         except Exception:
-            continue
-        f_hz = float(m["frequency_hz"])
-        p_mode_block = np.asarray(vec[p_to_W], dtype=np.float64).ravel()
-        mac_block = float(
-            abs(np.vdot(p_seed_block, p_mode_block))
-            / (float(np.linalg.norm(p_seed_block)) * float(np.linalg.norm(p_mode_block)))
-            if float(np.linalg.norm(p_seed_block)) > 0 and float(np.linalg.norm(p_mode_block)) > 0
-            else float("nan")
-        )
-        mac_subspace = pressure_subspace_mac(seed, vec, p_to_W)
-        d_frac = abs(f_hz - seed_f) / seed_f if seed_f > 0 else float("inf")
-        ranked.append(
-            {
-                **m,
-                "pressure_MAC_to_seed_p_block": mac_block,
-                "pressure_MAC_to_true_acoustic_reference": mac_block,
-                "pressure_MAC_subspace_W_layout": float(mac_subspace),
-                "frequency_delta_from_seed_rayleigh_hz": f_hz - seed_f,
-                "frequency_delta_fraction": float(d_frac),
-            }
-        )
+            pass
 
-    in_freq = [r for r in ranked if float(r["frequency_delta_fraction"]) <= FREQ_TOL_FRAC]
-    pool = in_freq if in_freq else ranked
+    eligible = [r for r in ranked if r.get("physically_eligible_after_filter")]
+    branch_pool = [r for r in eligible if r.get("recovers_true_seed_branch")]
     best = (
-        max(pool, key=lambda r: float(r["pressure_MAC_to_seed_p_block"]))
-        if pool
-        else {}
+        max(branch_pool, key=lambda r: float(r["pressure_MAC_to_seed_p_block"]))
+        if branch_pool
+        else (
+            max(eligible, key=lambda r: float(r["pressure_MAC_to_seed_p_block"]))
+            if eligible
+            else {}
+        )
     )
 
-    replay: Dict[str, Any] = {}
-    if best.get("vector_path"):
-        vec = _load_mode_vec(out_dir, str(best["vector_path"]))
-        f_hz = float(best["frequency_hz"])
-        A, M, u_idx, p_idx = _assemble_operators(mesh_file, sample, f"replay_{int(f_hz)}")
-        try:
-            rayleigh = _rayleigh_metrics(A, M, vec, seed_f_hz=f_hz)
-            lam_r = float(rayleigh["rayleigh_lambda"])
-            residual = _block_residual_contributions(
-                A, M, vec, lam0=lam_r, u_idx=u_idx, p_idx=p_idx
-            )
-        finally:
-            try:
-                A.destroy()
-                M.destroy()
-            except Exception:
-                pass
-        lam_r = float(rayleigh["rayleigh_lambda"])
-        replay = {
-            "replay_relative_residual_of_recovered_mode": float(residual["relative_residual"]),
-            "replay_rayleigh_f_hz": float(rayleigh["rayleigh_f_hz"]),
-            "replay_rayleigh_eigenvalue": lam_r,
-            "algebraic_lambda_one_suspect": bool(abs(lam_r - 1.0) <= LAMBDA_ONE_TOL),
-        }
-        if best:
-            best = {**best, **replay}
+    prior_false = [
+        r
+        for r in ranked
+        if float(r.get("frequency_delta_fraction", float("inf"))) <= FREQ_TOL_FRAC
+        and not r.get("physically_eligible_after_filter")
+    ]
 
     mac = float(best.get("pressure_MAC_to_seed_p_block", float("nan")))
     d_frac = float(best.get("frequency_delta_fraction", float("inf")))
-    rel_res = float(replay.get("replay_relative_residual_of_recovered_mode", float("nan")))
-    lam_one = bool(replay.get("algebraic_lambda_one_suspect", False))
+    rel_res = float(best.get("replay_relative_residual_of_recovered_mode", float("nan")))
+    lam_one = bool(best.get("algebraic_lambda_one_suspect", False))
     continuation = bool(
         solve_result.get("continuation_seed_applied")
         or (solve_result.get("eps_seed") or {}).get("eps_initial_space_set")
         or diag_block.get("continuation_seed_applied")
     )
-    recovery_ok = (
-        best
-        and continuation
-        and math.isfinite(mac)
-        and mac >= MAC_TOL
-        and math.isfinite(d_frac)
-        and d_frac <= FREQ_TOL_FRAC
-        and math.isfinite(rel_res)
-        and rel_res <= REPLAY_RESIDUAL_OK
-    )
+    recovery_ok = bool(best and best.get("recovers_true_seed_branch") and continuation)
 
     p_frac = float(best.get("p_frac_energy_phys", float("nan")))
     energy_note = None
     if recovery_ok and p_frac < 0.05:
         energy_note = "branch recovered by true-reference metrics; p_frac classification reported separately"
 
-    freq_class_ok = bool(
-        best
-        and math.isfinite(d_frac)
-        and d_frac <= FREQ_TOL_FRAC
-        and math.isfinite(p_frac)
-        and p_frac >= 0.5
-    )
-    spurious_selected = bool(
-        freq_class_ok
-        and (
-            lam_one
-            or (math.isfinite(rel_res) and rel_res > REPLAY_RESIDUAL_OK)
-            or (math.isfinite(mac) and mac < MAC_TOL)
-        )
-    )
+    any_ineligible_near_seed = len(prior_false) > 0
     if not continuation:
         verdict = "DIAGNOSTIC_SOLVER_NOT_APPLIED"
     elif recovery_ok:
         verdict = "SEED_BRANCH_RECOVERED_IN_DIAGNOSTIC_MODE"
-    elif spurious_selected:
+    elif any_ineligible_near_seed or (ranked and not eligible):
         verdict = VERDICT_SPURIOUS_SELECTED
     else:
         verdict = "SEED_BRANCH_NOT_RECOVERED_EVEN_IN_DIAGNOSTIC_MODE"
 
     return {
         "seed_rayleigh_f_hz": seed_f,
+        "physical_filter_policy": FILTER_POLICY,
         "solver_mode": diag_block.get("solver_mode", "seeded_branch_recovery_diagnostic"),
         "standard_harvest_sigma_policy_unchanged": True,
         "standard_policy_not_used_for_this_diagnostic": True,
@@ -385,7 +375,10 @@ def _evaluate(
         "nconv": solve_result.get("nconv"),
         "num_modes_saved": solve_result.get("num_modes_saved"),
         "recovered_mode": best,
-        "all_candidates_ranked_by_MAC": ranked,
+        "all_candidates_with_physical_filter": ranked,
+        "physically_eligible_candidates": eligible,
+        "prior_reported_near_seed_but_ineligible": prior_false,
+        "any_existing_saved_candidate_recovers_true_seed_branch": bool(branch_pool),
         "recovery_success": recovery_ok,
         "energy_classification_note": energy_note,
         "diagnostic_verdict": verdict,
@@ -432,13 +425,18 @@ def _write_md(report: Dict[str, Any]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--baseline-only", action="store_true", default=True)
+    parser.add_argument(
+        "--filtered-harvest",
+        action="store_true",
+        help="Run filtered diagnostic EPS (sigma-spurious reject on); separate output dir.",
+    )
     args = parser.parse_args()
 
     manifest = load_manifest()
     case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
     case_dir = solve_case_dir("L_mid", CASE_ID)
     mesh_file = mesh_path("L_mid", CASE_ID)
-    out_dir = _diag_output_dir(case_dir)
+    out_dir = _diag_output_dir(case_dir, filtered=bool(args.filtered_harvest))
     seed_npy = case_dir / "diagnostics" / "acoustic_coupled_seed.npy"
     seed_meta_path = case_dir / "diagnostics" / "acoustic_coupled_seed_meta.json"
     seed_meta = json.loads(seed_meta_path.read_text(encoding="utf-8")) if seed_meta_path.is_file() else {}
@@ -469,7 +467,12 @@ def main() -> int:
     seed = np.load(str(seed_npy))
     sample = sample_spec_from_case(case)
     rc, solve_result, _log = _run_diagnostic_solve(
-        sample, mesh_file, target_hz=target_hz, seed_npy=seed_npy, out_dir=out_dir
+        sample,
+        mesh_file,
+        target_hz=target_hz,
+        seed_npy=seed_npy,
+        out_dir=out_dir,
+        filtered_harvest=bool(args.filtered_harvest),
     )
     evaluation = _evaluate(out_dir, mesh_file, sample, seed, seed_meta, solve_result)
     report["baseline_coupled_v2"] = {

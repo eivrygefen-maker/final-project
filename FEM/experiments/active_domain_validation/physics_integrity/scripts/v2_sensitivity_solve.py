@@ -120,6 +120,15 @@ def _apply_seed_branch_recovery_diagnostic_solver_cfg(
     sc["eps_reject_sigma_spurious"] = False
     sc["eps_reject_target_locked"] = False
     ladder = fem3d._slepc_st_sigma_hz_candidates(sc, f0)
+    return _seed_branch_diag_meta(f0, ladder, local_band, harvest_half)
+
+
+def _seed_branch_diag_meta(
+    f0: float,
+    ladder: List[float],
+    local_band: List[float],
+    harvest_half: float,
+) -> Dict[str, Any]:
     return {
         "solver_mode": "seeded_branch_recovery_diagnostic",
         "standard_harvest_sigma_policy_unchanged": True,
@@ -130,6 +139,23 @@ def _apply_seed_branch_recovery_diagnostic_solver_cfg(
         "diagnostic_local_band_hz": local_band,
         "diagnostic_harvest_window_hz": [f0 - harvest_half, f0 + harvest_half],
     }
+
+
+def _apply_seed_branch_filtered_diagnostic_solver_cfg(
+    sc: Dict[str, Any], target_hz: float
+) -> Dict[str, Any]:
+    """
+    Filtered diagnostic rerun: same sigma ladder as seed-branch diagnostic, but enable
+    harvest-time sigma-spurious rejection. Post-evaluate physical filter still required.
+    """
+    meta = _apply_seed_branch_recovery_diagnostic_solver_cfg(sc, target_hz)
+    sc["eps_reject_sigma_spurious"] = True
+    sc["eps_reject_target_locked"] = True
+    meta["eps_reject_sigma_spurious_enabled"] = True
+    meta["eps_reject_target_locked_enabled"] = True
+    meta["filtered_diagnostic_rerun"] = True
+    meta["post_evaluate_physical_filter"] = True
+    return meta
 
 
 def _classify_phys_energy(p_frac: float) -> str:
@@ -191,6 +217,14 @@ def main() -> int:
             "does not use production above-window sigma/harvest policy."
         ),
     )
+    parser.add_argument(
+        "--seed-branch-filtered-diagnostic",
+        action="store_true",
+        help=(
+            "With --seed-branch-recovery-diagnostic: enable harvest-time sigma-spurious "
+            "rejection (diagnostic rerun only; production policy unchanged)."
+        ),
+    )
     args = parser.parse_args()
 
     if MPI.COMM_WORLD.size != 1:
@@ -238,7 +272,14 @@ def main() -> int:
     sc["_worker_harvest_hi_hz"] = band_hi
     sc["shift_invert_target_hz"] = target_hz
     if args.seed_branch_recovery_diagnostic:
-        seed_branch_diag_meta = _apply_seed_branch_recovery_diagnostic_solver_cfg(sc, target_hz)
+        if args.seed_branch_filtered_diagnostic:
+            seed_branch_diag_meta = _apply_seed_branch_filtered_diagnostic_solver_cfg(
+                sc, target_hz
+            )
+        else:
+            seed_branch_diag_meta = _apply_seed_branch_recovery_diagnostic_solver_cfg(
+                sc, target_hz
+            )
         band_lo = float(seed_branch_diag_meta["diagnostic_local_band_hz"][0])
         band_hi = float(seed_branch_diag_meta["diagnostic_local_band_hz"][1])
         sc["_worker_harvest_lo_hz"] = float(seed_branch_diag_meta["diagnostic_harvest_window_hz"][0])
