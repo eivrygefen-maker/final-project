@@ -20,6 +20,13 @@ OUT_JSON = CONV_DIAG / "v2_st_singular_mass_rehabilitation_plan.json"
 OUT_MD = CONV_DIAG / "v2_st_singular_mass_rehabilitation_plan.md"
 PREFLIGHT_JSON = CONV_DIAG / "v2_st_singular_mass_preflight.json"
 MAPPING_JSON = CONV_DIAG / "v2_eps_mapping_impact_inventory.json"
+MAPPING_FIXED_DIAG_JSON = (
+    CONV_DIAG / "v2_l_mid_mapping_fixed_unregularized_baseline_diagnostic.json"
+)
+VM_BASELINE_SHELL = (
+    "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+    "run_v2_l_mid_mapping_fixed_unregularized_baseline_diagnostic.sh"
+)
 
 
 def main() -> int:
@@ -29,41 +36,83 @@ def main() -> int:
     mapping_inv = (
         json.loads(MAPPING_JSON.read_text(encoding="utf-8")) if MAPPING_JSON.is_file() else {}
     )
+    mapping_fixed = (
+        json.loads(MAPPING_FIXED_DIAG_JSON.read_text(encoding="utf-8"))
+        if MAPPING_FIXED_DIAG_JSON.is_file()
+        else {}
+    )
 
-    applicability = (preflight or {}).get("PGNHEP_purification_applicability", "unresolved")
-    stage1_authorized = False
-    stage2_only = False
-    if applicability == "supported_for_stage1_test_pending_vm_confirmation":
-        stage1_authorized = False  # still blocked until human review
-    elif applicability == "not_justified_use_nullspace_reduction_plan":
-        stage2_only = True
+    applicability = (preflight or {}).get("PGNHEP_purification_applicability")
+    if applicability is None:
+        applicability = "not_justified_use_nullspace_reduction_plan"
+    pgnhep_ruled_out = applicability == "not_justified_use_nullspace_reduction_plan"
+    mapping_fixed_ev = (mapping_fixed or {}).get("evaluation") or {}
+    mapping_fixed_verdict = mapping_fixed_ev.get("diagnostic_verdict")
+    baseline_pending = mapping_fixed_verdict in (
+        None,
+        "PENDING_VM_SOLVE_AND_EVALUATION",
+    )
 
     report: Dict[str, Any] = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "strategy": "finite_solver_rehabilitation_two_stages",
+        "strategy": "finite_solver_rehabilitation_mapping_corrected_baseline_then_stage2",
+        "next_allowed_action": (
+            "one mapping-corrected unregularized baseline ST diagnostic"
+            if baseline_pending
+            else "review_mapping_corrected_baseline_verdict"
+        ),
+        "recommended_vm_command": VM_BASELINE_SHELL if baseline_pending else None,
+        "PGNHEP_purification": "ruled_out_in_current_VM_environment",
+        "purification": "ruled_out_in_current_VM_environment",
+        "stage_2": {
+            "description": "Explicit physical null-space reduction",
+            "mandatory_only_if": (
+                "mapping-corrected unregularized baseline diagnostic fails to recover "
+                "physical branch"
+            ),
+            "authorized_now": False,
+            "blocked_until": [
+                "mapping_corrected_baseline_diagnostic_completed_and_reviewed",
+            ],
+            "plan_outline": [
+                "Identify mass-null subspace from pressure restriction / algebraic constraints",
+                "Build physical pencil on complement of null space",
+                "Map seed and saved modes between W and reduced basis",
+                "Preserve three-worker overlapping-frequency architecture",
+                "Re-evaluate save/load/replay/MAC without changing production defaults",
+            ],
+        },
+        "not_authorized": [
+            "PGNHEP/purification in current VM environment",
+            "another sigma adjustment",
+            "another filter-only EPS rerun",
+            "another ST mapping variant",
+            "immediate Stage-2 before mapping-corrected baseline completes",
+        ],
         "confirmed_vm_evidence": {
             "seed_xH_Mx_finite_nonzero": True,
-            "unregularized_offset_solve_operator_consistent": True,
-            "all_saved_candidates_xH_Mx_zero": True,
-            "classification": "EPS_RETURNED_ONLY_MASS_NULL_CANDIDATES_IN_UNREGULARIZED_SOLVE",
+            "pre_mapping_fix_unregularized_offset_solve_not_valid_mapping_test": True,
+            "seven_saved_candidates_mass_null_not_evidence_against_corrected_mapping": True,
+            "PGNHEP_purification_applicability": applicability,
+            "has_EPS_ProblemType_PGNHEP": (preflight or {}).get("has_EPS_ProblemType_PGNHEP"),
+            "can_set_PGNHEP_without_solve": (preflight or {}).get("can_set_PGNHEP_without_solve"),
+            "can_set_purify_without_solve": (preflight or {}).get("can_set_purify_without_solve"),
+            "some_modes_valid_physics_wrong_frequency_labels_only": True,
         },
         "stage_0_mapping_fix": MAPPING_FIX_SUMMARY,
-        "stage_1": {
-            "description": "SLEPc-native singular-mass handling on unregularized ST",
-            "blocked_until": [
-                "mapping_impact_inventory reviewed",
-                "existing_pass_replay_recertification reviewed",
-                "v2_st_singular_mass_preflight reviewed",
+        "mapping_corrected_baseline_diagnostic": {
+            "authorized": baseline_pending,
+            "preserve_all_nconv_candidates": True,
+            "physical_eligibility_after_save": True,
+            "verdicts": [
+                "MAPPING_FIXED_UNREGULARIZED_BASELINE_BRANCH_RECOVERED",
+                "MAPPING_FIXED_UNREGULARIZED_BASELINE_NO_PHYSICAL_BRANCH_RECOVERED",
+                "MAPPING_FIXED_UNREGULARIZED_BASELINE_OUTPUT_OR_REPLAY_INCONSISTENT",
             ],
-            "authorized": stage1_authorized,
-            "prepared_command_after_review": (
-                "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
-                "run_v2_l_mid_st_purified_baseline_diagnostic.sh"
-                if not stage2_only
-                else None
-            ),
             "acceptance_gates": [
                 "continuation_seed_applied=True",
+                "eps_eigenvalue_semantics=slepc_backtransformed",
+                "legacy_double_shift_mapping_disabled=True",
                 "diagnostic_operator_consistent_with_replay=True",
                 "actual_st_a_shift_frac=0",
                 "actual_st_mass_reg_frac=0",
@@ -73,36 +122,27 @@ def main() -> int:
                 "frequency within 1% of seed",
                 "pressure MAC >= 0.85",
             ],
-            "production_policy_unchanged": True,
+            "report_json": str(MAPPING_FIXED_DIAG_JSON),
+            "current_verdict": mapping_fixed_verdict,
         },
-        "stage_2": {
-            "description": "Explicit physical null-space reduction (design only unless Stage 1 ruled out)",
-            "implement_in_this_step": stage2_only,
-            "plan_outline": [
-                "Identify mass-null subspace from pressure restriction / algebraic constraints",
-                "Build physical pencil on complement of null space",
-                "Map seed and saved modes between W and reduced basis",
-                "Preserve three-worker overlapping-frequency architecture",
-                "Re-evaluate save/load/replay/MAC without changing production defaults",
-            ],
-            "trigger": "PGNHEP/purification not justified OR single Stage-1 test fails after mapping fix",
-        },
-        "fallback_if_both_stages_fail": {
-            "leading_candidate": "JD/GD on physically cleaned pencil",
-            "constraints": [
-                "preserve three-worker architecture",
-                "benchmark wall time vs valid ST baseline",
-                "accept only if physical modes and <=50% runtime increase",
-            ],
-            "not_first_choice": ["CISS", "new formulation without justification"],
+        "prior_pass_handling": {
+            "mesh_topology_gates_preserved": True,
+            "true_seed_replay_findings_preserved": True,
+            "eps_frequency_labels_pending_recertification": True,
+            "prior_PASS_auto_invalidated": mapping_inv.get("prior_PASS_auto_invalidated", False),
         },
         "preflight_summary": preflight,
         "mapping_inventory_summary": {
             "prior_PASS_auto_invalidated": mapping_inv.get("prior_PASS_auto_invalidated", False),
         },
         "mesh_convergence_may_resume": False,
-        "additional_baseline_eigensolve": "blocked_pending_preflight_review",
+        "additional_baseline_eigensolve": (
+            "one_mapping_corrected_unregularized_baseline_authorized"
+            if baseline_pending
+            else "blocked_pending_baseline_review"
+        ),
         "hole_radius_large": "blocked",
+        "production_policy_unchanged": True,
     }
     write_json(OUT_JSON, report)
 
@@ -111,19 +151,28 @@ def main() -> int:
         "",
         f"Generated: {report['generated_utc']}",
         "",
+        "## Next allowed action",
+        "",
+        f"- **next_allowed_action:** `{report['next_allowed_action']}`",
+        f"- **VM command:** `{report.get('recommended_vm_command')}`",
+        "",
+        "## PGNHEP / purification",
+        "",
+        f"- **Status:** `{report['PGNHEP_purification']}`",
+        "",
         "## Stage 0 (implemented): eigenvalue mapping",
         "",
         f"- {MAPPING_FIX_SUMMARY['new_behavior']}",
         "",
-        "## Stage 1",
+        "## Mapping-corrected baseline (authorized once)",
         "",
-        f"- **Authorized:** `{stage1_authorized}` (blocked until report review)",
-        f"- **PGNHEP applicability (preflight):** `{applicability}`",
+        f"- **Authorized:** `{report['mapping_corrected_baseline_diagnostic']['authorized']}`",
+        f"- **Current verdict:** `{mapping_fixed_verdict}`",
         "",
-        "## Stage 2 trigger",
+        "## Stage 2",
         "",
-        "Move to Stage 2 null-space reduction design if PGNHEP/purification is not justified "
-        "or the single permitted Stage-1 baseline test fails after mapping fix.",
+        "Mandatory **only if** the mapping-corrected unregularized baseline diagnostic fails "
+        "to recover a physical branch. Not authorized before that run completes.",
         "",
     ]
     OUT_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -4759,6 +4759,12 @@ def _slepc_shift_invert_batch(
     sigma_spurious_hz = float(solver_cfg.get("eps_sigma_spurious_tol_hz", 0.35))
     sigma_p_frac_max = float(solver_cfg.get("eps_sigma_spurious_max_p_frac", 1.0e-3))
     reject_target_locked = _solver_bool(solver_cfg, "eps_reject_target_locked", default=True)
+    preserve_all_nconv = _solver_bool(
+        solver_cfg, "eps_diagnostic_preserve_all_nconv_candidates", default=False
+    )
+    diag_bank: List[Dict[str, Any]] = []
+    if preserve_all_nconv:
+        solver_cfg["_eps_diagnostic_candidate_bank_records"] = diag_bank
 
     candidates: List[Tuple[float, float, np.ndarray, float, float, float, float, float]] = []
     rvec = A.createVecRight()
@@ -4791,6 +4797,46 @@ def _slepc_shift_invert_batch(
         map_tag_counts[lam_map_tag] = map_tag_counts.get(lam_map_tag, 0) + 1
         if len(raw_eig_samples) < 5:
             raw_eig_samples.append(eig_r)
+        arr_red = rvec.array.copy()
+        if preserve_all_nconv:
+            ad_meta_p = solver_cfg.get("_active_domain")
+            if isinstance(ad_meta_p, dict) and ad_meta_p.get("active_W_indices"):
+                from fem_active_domain import prolongate_to_full_mixed_vector
+
+                n_full_ad_p = int(ad_meta_p.get("n_full", 0))
+                arr_p = prolongate_to_full_mixed_vector(
+                    arr_red,
+                    np.asarray(ad_meta_p["active_W_indices"], dtype=np.int32),
+                    n_full_ad_p,
+                )
+            else:
+                arr_p = arr_red
+            f_pres = float("nan")
+            if math.isfinite(lam_phys) and lam_phys > rigid_tol:
+                f_pres = math.sqrt(max(lam_phys, 0.0)) / (2.0 * math.pi)
+            diag_bank.append(
+                {
+                    "eps_slot_index": int(i),
+                    "candidate_index": int(i),
+                    "mu_raw": float(eig_r),
+                    "lam_phys": float(lam_phys) if math.isfinite(lam_phys) else None,
+                    "lam_map_tag": lam_map_tag,
+                    "reported_frequency_hz": float(f_pres)
+                    if math.isfinite(f_pres)
+                    else None,
+                    "sigma_used_hz": float(
+                        solver_cfg.get("_batch_st_sigma_hz", st_sigma_hz)
+                    ),
+                    "st_type": str(st_map_name),
+                    "eps_eigenvalue_semantics": str(
+                        solver_cfg.get("eps_eigenvalue_semantics", "slepc_backtransformed")
+                    ),
+                    "legacy_double_shift_mapping_disabled": bool(
+                        solver_cfg.get("legacy_double_shift_mapping_disabled", True)
+                    ),
+                    "vector": np.asarray(arr_p, dtype=np.float64),
+                }
+            )
         if not math.isfinite(lam_phys):
             skipped_unmap += 1
             continue
@@ -4799,7 +4845,6 @@ def _slepc_shift_invert_batch(
             continue
         omega = math.sqrt(max(lam_phys, 0.0))
         f_hz = omega / (2.0 * math.pi)
-        arr_red = rvec.array.copy()
         ad_meta = solver_cfg.get("_active_domain")
         u_norm_map = u_to_W
         p_norm_map = p_to_W
@@ -4902,11 +4947,30 @@ def _slepc_shift_invert_batch(
         ordered = candidates
 
     out: List[Tuple[float, np.ndarray, Optional[float], Optional[float], float, float]] = []
-    for _score, f_hz, arr, rt, rb, u_n, p_n, p_block_max in ordered:
-        p_frac = p_n / max(u_n + p_n, 1.0e-30)
-        out.append((f_hz, arr, rt, rb, float(p_frac), float(p_block_max)))
-        if len(out) >= int(batch):
-            break
+    if preserve_all_nconv:
+        for rec in diag_bank:
+            vec = rec.get("vector")
+            if vec is None:
+                continue
+            f_keep = rec.get("reported_frequency_hz")
+            if f_keep is None or not math.isfinite(float(f_keep)):
+                f_keep = float("nan")
+            out.append(
+                (
+                    float(f_keep),
+                    np.asarray(vec, dtype=np.float64),
+                    None,
+                    None,
+                    0.0,
+                    0.0,
+                )
+            )
+    else:
+        for _score, f_hz, arr, rt, rb, u_n, p_n, p_block_max in ordered:
+            p_frac = p_n / max(u_n + p_n, 1.0e-30)
+            out.append((f_hz, arr, rt, rb, float(p_frac), float(p_block_max)))
+            if len(out) >= int(batch):
+                break
 
     if MPI.COMM_WORLD.rank == ROOT_RANK:
         n_woodish = sum(1 for c in candidates if (c[3] + c[4]) >= min_wood_harvest)
@@ -4920,14 +4984,24 @@ def _slepc_shift_invert_batch(
                 f"or widen eps_broad_search_hz (now {broad_hz:.2f}).",
                 flush=True,
             )
-        print(
-            f"[solver] EPS harvest: kept={len(out)}/{batch} from nconv_marked={nconv_marked} "
-            f"(skip unmap={skipped_unmap}, rigid={skipped_rigid}, f<{min_hz:.1f}Hz={skipped_below_min}, "
-            f"outside_window={skipped_window}, unavail={skipped_unavailable}, "
-            f"skip_decoupled={skipped_decoupled}, skip_sigma={skipped_sigma}, "
-            f"allow_weak_coupling={allow_weak}, rank_by_wood={rank_by_wood}, "
-            f"reject_decoupled={reject_decoupled}, reject_sigma_spurious={reject_sigma_spurious})"
-        )
+        if preserve_all_nconv:
+            print(
+                f"[solver] EPS harvest: preserve_all_nconv kept={len(out)} "
+                f"(production-filter candidates={len(candidates)}) from nconv_marked={nconv_marked} "
+                f"(skip unmap={skipped_unmap}, rigid={skipped_rigid}, f<{min_hz:.1f}Hz={skipped_below_min}, "
+                f"outside_window={skipped_window}, unavail={skipped_unavailable}, "
+                f"skip_decoupled={skipped_decoupled}, skip_sigma={skipped_sigma})",
+                flush=True,
+            )
+        else:
+            print(
+                f"[solver] EPS harvest: kept={len(out)}/{batch} from nconv_marked={nconv_marked} "
+                f"(skip unmap={skipped_unmap}, rigid={skipped_rigid}, f<{min_hz:.1f}Hz={skipped_below_min}, "
+                f"outside_window={skipped_window}, unavail={skipped_unavailable}, "
+                f"skip_decoupled={skipped_decoupled}, skip_sigma={skipped_sigma}, "
+                f"allow_weak_coupling={allow_weak}, rank_by_wood={rank_by_wood}, "
+                f"reject_decoupled={reject_decoupled}, reject_sigma_spurious={reject_sigma_spurious})"
+            )
         _sigma_lbl = (
             f"band=[{f_window_lo:.2f},{f_window_hi:.2f}] Hz"
             if use_ciss and f_window_lo is not None and f_window_hi is not None
@@ -4990,7 +5064,27 @@ def _slepc_shift_invert_batch(
             except Exception:
                 pass
 
-    if len(out) < int(batch) and MPI.COMM_WORLD.rank == ROOT_RANK:
+    _eps_diag = solver_cfg.setdefault("_eps_batch_diagnostics", {})
+    _eps_diag.update(
+        {
+            "eps_eigenvalue_semantics": str(
+                solver_cfg.get("eps_eigenvalue_semantics", "slepc_backtransformed")
+            ),
+            "legacy_double_shift_mapping_disabled": bool(
+                solver_cfg.get("legacy_double_shift_mapping_disabled", True)
+            ),
+            "eps_diagnostic_preserve_all_nconv_candidates": bool(preserve_all_nconv),
+            "eps_diagnostic_candidate_bank_count": int(len(diag_bank)),
+            "usable_rows_harvested": int(len(out)),
+            "production_harvest_candidate_count": int(len(candidates)),
+        }
+    )
+
+    if (
+        len(out) < int(batch)
+        and not preserve_all_nconv
+        and MPI.COMM_WORLD.rank == ROOT_RANK
+    ):
         _emit(
             f"[solver][warn] EPS harvested {len(out)}/{batch} modes with f>={min_hz:.1f} Hz "
             f"(nconv_marked={nconv_marked}); increase eigs_maxiter (now {eps_max_it}) or target_ncv (now {ncv}).",

@@ -352,68 +352,77 @@ def build_evidence_summary(
     filtered_eval: Optional[Dict[str, Any]],
     unreg_eval: Optional[Dict[str, Any]],
     mass_norm_audit: Optional[Dict[str, Any]],
+    mapping_fixed_eval: Optional[Dict[str, Any]],
     static_audit: Dict[str, Any],
 ) -> Dict[str, Any]:
     unreg_ev = (unreg_eval or {}).get("evaluation") or {}
     unreg_verdict = unreg_ev.get("diagnostic_verdict")
+    mf_ev = (mapping_fixed_eval or {}).get("evaluation") or {}
+    mf_verdict = mf_ev.get("diagnostic_verdict")
     mass_verdict = (mass_norm_audit or {}).get("classification_verdict")
-    mass_pending = _mass_norm_audit_pending(mass_norm_audit)
 
     reported_vm = [
-        "Prior regularized filtered diagnostic: FILTERED_DIAGNOSTIC_NO_PHYSICAL_BRANCH_RECOVERED; "
-        "7 candidates, 0 branch_recovery_pass; 5× lambda≈1 artifacts at reported f≈243 Hz.",
-        "Prior filtered run used st_a_shift_frac=0.001 at sigma≈seed (superseded for branch verdict).",
+        "Prior regularized filtered diagnostic superseded for branch verdict.",
         "True acoustic seed valid at ~243.075 Hz under unregularized physical v2 replay.",
-        "Unregularized-offset baseline solve completed: continuation_seed_applied=true, "
-        "nconv_marked=56, st_a_shift_frac=0, st_mass_reg_frac=0, "
-        "diagnostic_operator_consistent_with_replay=true; 7 modes saved.",
-        "Post-solve report-only eval: UNREGULARIZED_OFFSET_OUTPUT_OR_REPLAY_INCONSISTENT with "
-        "metrics_computation_ok=0; every candidate xH_Mx=0 (mass-null on replay GNHEP).",
+        "Pre-mapping-fix unregularized-offset solve (7 harvested modes, all xH_Mx=0) is not a "
+        "valid test of corrected lam_phys=mu mapping; prior seven-mode harvest is not failure evidence.",
+        "PGNHEP/purification: not_justified_use_nullspace_reduction_plan in current VM environment.",
+        "PASS replay recertification: some_modes_valid_physics_wrong_frequency_labels_only.",
     ]
     if unreg_verdict:
-        reported_vm.append(f"Unregularized-offset evaluation verdict: {unreg_verdict}.")
+        reported_vm.append(f"Pre-mapping unregularized-offset verdict (historical): {unreg_verdict}.")
     if mass_verdict:
         reported_vm.append(f"Saved-vector mass-norm audit classification: {mass_verdict}.")
+    if mf_verdict:
+        reported_vm.append(f"Mapping-corrected baseline verdict: {mf_verdict}.")
 
     requires_vm: List[str] = []
-    if mass_pending:
+    if mf_verdict in (None, "PENDING_VM_SOLVE_AND_EVALUATION"):
         requires_vm.append(
-            "Final saved-vector persistence/mass-norm audit on existing unregularized-offset tree."
+            "Exactly one mapping-corrected unregularized baseline ST diagnostic with full "
+            "nconv candidate preservation + immediate replay evaluation."
         )
 
     not_yet: List[str] = [
-        "Whether any prior PASS harvest modes fail replay filter spot-check.",
+        "Final branch recovery under corrected mapping (pending mapping-corrected baseline run).",
+        "Report-only corrected frequency/Δf/MAC tables for prior PASS cases after baseline closes.",
     ]
-    if mass_pending:
-        not_yet.insert(
-            0,
-            "Definitive classification: replay control vs persistence bug vs EPS M-null candidates.",
-        )
 
     return {
         "confirmed_from_local_code": [
-            "Default ST retry tries st_a_shift_frac=1e-3 before 0.0.",
+            "Native STSINVERT: lam_phys=mu, eps_eigenvalue_semantics=slepc_backtransformed.",
+            "legacy_double_shift_mapping_disabled=True for native sinvert harvest.",
+            "eps_diagnostic_preserve_all_nconv_candidates saves every converged vector before filters.",
             "ST A-shift modifies only ST factorization copy; replay uses unregularized GNHEP.",
-            "Legacy sigma+1/mu and mu+sigma remaps disabled for native STSINVERT; lam_phys=mu.",
-            "diagnostic_requires_unregularized_ST forces unregularized ST only on offset diagnostic.",
-            "Invalid ST-equivalence via solve_evp=False flags cannot reproduce EPS ST operator.",
-            "Earlier regularized diagnostic runs superseded for branch-recovery judgment.",
+            "PGNHEP/purification ruled out when has_EPS_ProblemType_PGNHEP=False on VM.",
         ],
         "reported_from_VM_operator_evidence": reported_vm,
         "requires_VM_runtime_artifact_evaluation": requires_vm,
         "not_yet_verified": not_yet,
         "single_permitted_next_action": (
-            "bash .../run_v2_st_mapping_and_preflight_bundle.sh"
-            if mass_pending
+            "bash .../run_v2_l_mid_mapping_fixed_unregularized_baseline_diagnostic.sh"
+            if mf_verdict in (None, "PENDING_VM_SOLVE_AND_EVALUATION")
             else None
         ),
         "eigenvalue_mapping_fix_implemented": True,
-        "additional_baseline_eigensolve": "blocked_pending_preflight_review",
+        "additional_baseline_eigensolve": (
+            "one_mapping_corrected_unregularized_baseline_authorized"
+            if mf_verdict in (None, "PENDING_VM_SOLVE_AND_EVALUATION")
+            else "blocked_pending_baseline_review"
+        ),
+        "PGNHEP_purification": "ruled_out_in_current_VM_environment",
+        "stage_2": "mandatory_only_if_mapping_corrected_baseline_fails",
+        "prior_pass_handling": {
+            "mesh_topology_gates_preserved": True,
+            "true_seed_replay_findings_preserved": True,
+            "eps_frequency_labels_pending_recertification": True,
+        },
         "prior_regularized_diagnostics_superseded_for_branch_verdict": True,
-        "unregularized_offset_solve_completed": True,
-        "unregularized_offset_evaluation_verdict": unreg_verdict,
+        "pre_mapping_unregularized_offset_solve_completed": True,
+        "pre_mapping_unregularized_offset_evaluation_verdict": unreg_verdict,
+        "mapping_corrected_baseline_verdict": mf_verdict,
         "saved_vector_mass_norm_classification": mass_verdict,
-        "candidates_currently_unevaluable_xH_Mx_zero": True,
+        "seven_mode_harvest_not_evidence_against_corrected_mapping": True,
     }
 
 
@@ -430,82 +439,99 @@ def build_finite_closure_plan(
     filtered_eval: Optional[Dict[str, Any]],
     unreg_eval: Optional[Dict[str, Any]],
     mass_norm_audit: Optional[Dict[str, Any]],
+    mapping_fixed_eval: Optional[Dict[str, Any]],
     root_cause_status: str,
 ) -> Dict[str, Any]:
     mass_verdict = (mass_norm_audit or {}).get("classification_verdict")
-    mass_pending = _mass_norm_audit_pending(mass_norm_audit)
-    closure = (mass_norm_audit or {}).get("closure") or {}
+    mf_verdict = (mapping_fixed_eval or {}).get("evaluation", {}).get("diagnostic_verdict")
+    vm_shell = (
+        "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+        "run_v2_l_mid_mapping_fixed_unregularized_baseline_diagnostic.sh"
+    )
 
-    if mass_pending:
+    if mf_verdict == "MAPPING_FIXED_UNREGULARIZED_BASELINE_BRANCH_RECOVERED":
         next_action = (
-            "Run report-only mapping impact inventory, PASS replay recertification, and "
-            "ST singular-mass preflight (no eigensolve); review before authorizing Stage-1."
+            "Branch recovered under corrected mapping; review before hole_radius_large or "
+            "mesh_convergence resume. Regenerate report-only corrected frequency tables for prior PASS."
         )
-    elif mass_verdict == VERDICT_PERSISTENCE_BUG:
+    elif mf_verdict == "MAPPING_FIXED_UNREGULARIZED_BASELINE_NO_PHYSICAL_BRANCH_RECOVERED":
         next_action = (
-            "Confirmed save/load or layout bug. Only permitted follow-up: report-only "
-            "re-evaluation if correct vectors recoverable from existing artifacts; "
-            "otherwise artifacts insufficient."
+            "Stop ST-only tuning; proceed to Stage-2 null-space reduction design. "
+            "No further sigma/filter/mapping/PGNHEP attempts."
         )
-    elif mass_verdict in (
-        VERDICT_EPS_MASS_NULL,
-        VERDICT_REPLAY_INVALID,
-        VERDICT_NOT_LOCALIZED,
-    ):
+    elif mf_verdict == "MAPPING_FIXED_UNREGULARIZED_BASELINE_OUTPUT_OR_REPLAY_INCONSISTENT":
         next_action = (
-            "Stop patching and reconsider EPS/ST branch-tracking architecture before any "
-            "further solve. hole_radius_large and mesh_convergence remain blocked."
+            "Resolve output/replay inconsistency before Stage-2; do not authorize alternate ST tuning."
+        )
+    elif mf_verdict in (None, "PENDING_VM_SOLVE_AND_EVALUATION"):
+        next_action = (
+            f"Run exactly one mapping-corrected unregularized baseline ST diagnostic: {vm_shell}"
         )
     else:
-        next_action = "Review mass-norm audit classification output."
+        next_action = f"Review mapping-corrected baseline verdict: {mf_verdict}"
 
-    if root_cause_status == ROOT_CAUSE_CONFIRMED_ST:
-        blocked = [
-            "hole_radius_large",
-            "mesh_convergence_resume",
-            "L_prod",
-            "L_check",
-            "LHS",
-            "v2_production_promotion",
-            "baseline_diagnostic_eigensolve_rerun",
-        ]
-    else:
-        next_action = "ROOT_CAUSE_NOT_YET_CONFIRMED — no further solve authorized."
-        blocked = [
-            "hole_radius_large",
-            "mesh_convergence_resume",
-            "L_prod",
-            "L_check",
-            "LHS",
-            "v2_production_promotion",
-            "baseline_diagnostic_rerun",
-        ]
+    blocked = [
+        "hole_radius_large",
+        "mesh_convergence_resume",
+        "L_prod",
+        "L_check",
+        "LHS",
+        "v2_production_promotion",
+        "PGNHEP_purification_in_current_VM",
+        "another_sigma_adjustment",
+        "another_filter_only_EPS_rerun",
+        "another_ST_mapping_variant",
+    ]
+    if mf_verdict in (None, "PENDING_VM_SOLVE_AND_EVALUATION"):
+        blocked.append("stage_2_nullspace_reduction_before_mapping_baseline")
+    if mf_verdict != "MAPPING_FIXED_UNREGULARIZED_BASELINE_NO_PHYSICAL_BRANCH_RECOVERED":
+        blocked.append("stage_2_nullspace_reduction")
 
     return {
         "root_cause_status": root_cause_status,
+        "next_allowed_action": (
+            "one mapping-corrected unregularized baseline ST diagnostic"
+            if mf_verdict in (None, "PENDING_VM_SOLVE_AND_EVALUATION")
+            else next_action
+        ),
+        "PGNHEP_purification": "ruled_out_in_current_VM_environment",
+        "stage_2": (
+            "mandatory_only_if_mapping_corrected_baseline_fails"
+            if mf_verdict in (None, "PENDING_VM_SOLVE_AND_EVALUATION")
+            else (
+                "authorize_nullspace_reduction_design"
+                if mf_verdict
+                == "MAPPING_FIXED_UNREGULARIZED_BASELINE_NO_PHYSICAL_BRANCH_RECOVERED"
+                else "blocked_pending_output_consistency"
+            )
+        ),
         "decision_tree": {
-            "if_unreg_offset_rerun_recovers_branch": (
-                "Allow exactly one next solve: hole_radius_large under same filtered diagnostic path."
+            "if_mapping_corrected_baseline_recovers_branch": (
+                "Review promotion gates; report-only PASS frequency label recertification."
             ),
-            "if_unreg_offset_rerun_fails_without_ST_reg": (
-                "Stop patching; report EPS/ST diagnostic architecture inadequate for branch recovery."
+            "if_mapping_corrected_baseline_fails": (
+                "Proceed directly to Stage-2 null-space reduction; no more ST-only tuning."
             ),
             "prior_PASS": (
-                "Not auto-invalidated; smallest report-only spot-check set after baseline closed."
+                "Mesh/topology gates preserved; EPS frequency labels pending recertification."
             ),
         },
         "next_allowed_action_after_VM_report": next_action,
+        "recommended_vm_command": (
+            vm_shell if mf_verdict in (None, "PENDING_VM_SOLVE_AND_EVALUATION") else None
+        ),
         "blocked_actions": blocked,
         "maximum_additional_baseline_solves_before_escalation": 1,
-        "maximum_additional_code_fix_cycles_before_reconsidering_solver_architecture": 1,
+        "maximum_additional_code_fix_cycles_before_reconsidering_solver_architecture": 0,
         "filtered_eval_verdict": None if not filtered_eval else filtered_eval.get("verdict"),
-        "unregularized_offset_eval_verdict": (unreg_eval or {}).get("evaluation", {}).get(
-            "diagnostic_verdict"
-        ),
+        "pre_mapping_unregularized_offset_eval_verdict": (unreg_eval or {})
+        .get("evaluation", {})
+        .get("diagnostic_verdict"),
+        "mapping_corrected_baseline_verdict": mf_verdict,
         "saved_vector_mass_norm_classification": mass_verdict,
-        "mass_norm_audit_pending": mass_pending,
-        "baseline_eigensolve_budget_exhausted": True,
-        "architecture_reconsideration_required": bool(
-            closure.get("architecture_reconsideration_required")
+        "baseline_eigensolve_budget": (
+            "one_mapping_corrected_run_remaining"
+            if mf_verdict in (None, "PENDING_VM_SOLVE_AND_EVALUATION")
+            else "exhausted_pending_review"
         ),
     }

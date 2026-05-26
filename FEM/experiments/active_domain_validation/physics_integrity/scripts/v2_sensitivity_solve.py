@@ -143,6 +143,37 @@ def _seed_branch_diag_meta(
     }
 
 
+def _apply_mapping_fixed_unregularized_baseline_diagnostic_solver_cfg(
+    sc: Dict[str, Any], target_hz: float
+) -> Dict[str, Any]:
+    """
+    Experiment-only: mapping-corrected (lam_phys=mu) unregularized ST baseline.
+    Preserves every converged EPS candidate before post-save physical replay.
+    """
+    meta = _apply_seed_branch_unregularized_offset_diagnostic_solver_cfg(sc, target_hz)
+    sc["eps_eigenvalue_semantics"] = "slepc_backtransformed"
+    sc["legacy_double_shift_mapping_disabled"] = True
+    sc["eps_diagnostic_preserve_all_nconv_candidates"] = True
+    sc["eigenpair_batch_size"] = max(int(sc.get("eigenpair_batch_size", 100)), 128)
+    sc["eps_reject_sigma_spurious"] = False
+    sc["eps_reject_target_locked"] = False
+    sc["eps_reject_decoupled_u_only"] = False
+    sc["eps_harvest_allow_weak_coupling"] = True
+    meta.update(
+        {
+            "solver_mode": "seed_branch_recovery_diagnostic_mapping_fixed_unregularized",
+            "mapping_corrected_baseline_diagnostic": True,
+            "eps_eigenvalue_semantics": "slepc_backtransformed",
+            "legacy_double_shift_mapping_disabled": True,
+            "eps_diagnostic_preserve_all_nconv_candidates": True,
+            "save_all_converged_candidates_before_physical_filter": True,
+            "prior_seven_mode_harvest_not_evidence_of_mapping_failure": True,
+            "supersedes_pre_mapping_fix_unregularized_offset_solve": True,
+        }
+    )
+    return meta
+
+
 def _apply_seed_branch_unregularized_offset_diagnostic_solver_cfg(
     sc: Dict[str, Any], target_hz: float
 ) -> Dict[str, Any]:
@@ -288,6 +319,14 @@ def main() -> int:
             "unregularized; fail-closed if ST regularization would be required."
         ),
     )
+    parser.add_argument(
+        "--seed-branch-mapping-fixed-unregularized-diagnostic",
+        action="store_true",
+        help=(
+            "Experiment-only: mapping-corrected unregularized ST baseline; save all "
+            "converged EPS candidates before physical replay eligibility."
+        ),
+    )
     args = parser.parse_args()
 
     if MPI.COMM_WORLD.size != 1:
@@ -335,7 +374,13 @@ def main() -> int:
     sc["_worker_harvest_hi_hz"] = band_hi
     sc["shift_invert_target_hz"] = target_hz
     if args.seed_branch_recovery_diagnostic:
-        if args.seed_branch_unregularized_offset_diagnostic:
+        if args.seed_branch_mapping_fixed_unregularized_diagnostic:
+            seed_branch_diag_meta = (
+                _apply_mapping_fixed_unregularized_baseline_diagnostic_solver_cfg(
+                    sc, target_hz
+                )
+            )
+        elif args.seed_branch_unregularized_offset_diagnostic:
             seed_branch_diag_meta = _apply_seed_branch_unregularized_offset_diagnostic_solver_cfg(
                 sc, target_hz
             )
@@ -435,30 +480,116 @@ def main() -> int:
     hz_tag = hz_result_tag(target_hz)
     mode_rows: List[Dict[str, Any]] = []
     in_band: List[Dict[str, Any]] = []
-    n_modes = int(eigvecs.shape[1]) if eigvecs.ndim == 2 else 0
-    for j in range(n_modes):
-        vec = eigvecs[:, j]
-        mode_path = case_dir / "modes" / f"mode_{hz_tag}_{j:03d}{MODE_VECTOR_FILE_SUFFIX}"
+    eps_bank_meta: List[Dict[str, Any]] = []
+    bank_records = list(cfg.get("_eps_diagnostic_candidate_bank_records") or [])
+    preserve_all_bank = bool(
+        (seed_branch_diag_meta or {}).get("eps_diagnostic_preserve_all_nconv_candidates")
+        or sc.get("eps_diagnostic_preserve_all_nconv_candidates")
+    )
+
+    def _save_candidate_vector(
+        vec: np.ndarray,
+        *,
+        slot_index: int,
+        frequency_hz: float,
+        bank_fields: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        mode_path = (
+            case_dir
+            / "modes"
+            / f"candidate_eps_slot_{int(slot_index):04d}{MODE_VECTOR_FILE_SUFFIX}"
+        )
         save_mode_csr(mode_path, dense_to_csr_f32_column(vec))
         diag = diagnose_mixed_mode(
-            vec, u_to_W=u_to_W, p_to_W=p_to_W, gnhep=gnhep, frequency_hz=float(freqs_hz[j])
+            vec,
+            u_to_W=u_to_W,
+            p_to_W=p_to_W,
+            gnhep=gnhep,
+            frequency_hz=float(frequency_hz),
         )
         energy = compute_mass_energy_participation(
             vec, M, A, u_to_W=u_to_W, p_to_W=p_to_W, gnhep=gnhep
         )
         row = {
             **diag,
-            **{k: energy[k] for k in energy if k.endswith("_phys") or k == "p_frac_energy_phys"},
-            "mode_index": j,
-            "frequency_hz": float(freqs_hz[j]),
+            **{
+                k: energy[k]
+                for k in energy
+                if k.endswith("_phys") or k == "p_frac_energy_phys"
+            },
+            "candidate_index": int(slot_index),
+            "eps_slot_index": int(slot_index),
+            "mode_index": int(slot_index),
+            "frequency_hz": float(frequency_hz),
             "vector_path": str(mode_path.relative_to(case_dir)).replace("\\", "/"),
+            "vector_file": str(mode_path.relative_to(case_dir)).replace("\\", "/"),
             "mode_class_physical_energy": _classify_phys_energy(
                 float(energy["p_frac_energy_phys"])
             ),
         }
-        mode_rows.append(row)
-        if band_lo <= float(freqs_hz[j]) <= band_hi:
-            in_band.append(row)
+        if bank_fields:
+            row.update(bank_fields)
+        return row
+
+    if preserve_all_bank and bank_records:
+        for rec in bank_records:
+            vec = np.asarray(rec.get("vector"), dtype=np.float64).ravel()
+            slot = int(rec.get("eps_slot_index", rec.get("candidate_index", len(mode_rows))))
+            f_hz = rec.get("reported_frequency_hz")
+            if f_hz is None or not math.isfinite(float(f_hz)):
+                f_hz = float("nan")
+            bank_fields = {
+                k: rec.get(k)
+                for k in (
+                    "mu_raw",
+                    "lam_phys",
+                    "lam_map_tag",
+                    "sigma_used_hz",
+                    "st_type",
+                    "eps_eigenvalue_semantics",
+                    "legacy_double_shift_mapping_disabled",
+                )
+                if k in rec
+            }
+            row = _save_candidate_vector(
+                vec,
+                slot_index=slot,
+                frequency_hz=float(f_hz),
+                bank_fields=bank_fields,
+            )
+            mode_rows.append(row)
+            eps_bank_meta.append({**bank_fields, **row, "vector_file": row["vector_file"]})
+            if math.isfinite(float(f_hz)) and band_lo <= float(f_hz) <= band_hi:
+                in_band.append(row)
+    else:
+        n_modes = int(eigvecs.shape[1]) if eigvecs.ndim == 2 else 0
+        for j in range(n_modes):
+            vec = eigvecs[:, j]
+            row = _save_candidate_vector(
+                vec,
+                slot_index=j,
+                frequency_hz=float(freqs_hz[j]),
+            )
+            mode_rows.append(row)
+            if band_lo <= float(freqs_hz[j]) <= band_hi:
+                in_band.append(row)
+
+    n_modes = len(mode_rows)
+    if preserve_all_bank:
+        bank_payload = {
+            "candidates": [
+                {
+                    k: v
+                    for k, v in rec.items()
+                    if k != "vector"
+                }
+                for rec in bank_records
+            ],
+            "saved_mode_rows": eps_bank_meta,
+            "nconv_marked": int((cfg.get("_eps_batch_diagnostics") or {}).get("nconv_marked", -1)),
+            "num_vectors_saved": int(n_modes),
+        }
+        _write_json(case_dir / "diagnostics" / "eps_candidate_bank.json", bank_payload)
 
     try:
         A.destroy()
@@ -523,6 +654,7 @@ def main() -> int:
         requires_unreg = bool(
             seed_branch_diag_meta.get("diagnostic_requires_unregularized_ST")
             or args.seed_branch_unregularized_offset_diagnostic
+            or args.seed_branch_mapping_fixed_unregularized_diagnostic
         )
         diag_verdict: Optional[str] = None
         if requires_unreg and not op_consistent:

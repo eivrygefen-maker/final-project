@@ -40,6 +40,9 @@ MAPPING_INV_JSON = CONV_DIAG / "v2_eps_mapping_impact_inventory.json"
 REPLAY_RECERT_JSON = CONV_DIAG / "v2_existing_pass_replay_recertification.json"
 ST_PREFLIGHT_JSON = CONV_DIAG / "v2_st_singular_mass_preflight.json"
 REHAB_PLAN_JSON = CONV_DIAG / "v2_st_singular_mass_rehabilitation_plan.json"
+MAPPING_FIXED_DIAG_JSON = (
+    CONV_DIAG / "v2_l_mid_mapping_fixed_unregularized_baseline_diagnostic.json"
+)
 
 
 def _load_json(path: Path) -> Optional[Dict[str, Any]]:
@@ -221,6 +224,7 @@ def main() -> int:
     replay_recert = _load_json(REPLAY_RECERT_JSON)
     st_preflight = _load_json(ST_PREFLIGHT_JSON)
     rehab_plan = _load_json(REHAB_PLAN_JSON)
+    mapping_fixed_eval = _load_json(MAPPING_FIXED_DIAG_JSON)
     root_cause_status = determine_root_cause_status(
         filtered_eval=filtered_eval, unreg_eval=unreg_eval
     )
@@ -280,14 +284,27 @@ def main() -> int:
             "report_json": str(REHAB_PLAN_JSON),
             "loaded": rehab_plan is not None,
         },
-        "recommended_vm_command_report_only": (
+        "mapping_corrected_baseline_diagnostic": {
+            "report_json": str(MAPPING_FIXED_DIAG_JSON),
+            "loaded": mapping_fixed_eval is not None,
+            "evaluation_verdict": (mapping_fixed_eval or {})
+            .get("evaluation", {})
+            .get("diagnostic_verdict"),
+            "recommended_vm_command": (
+                "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+                "run_v2_l_mid_mapping_fixed_unregularized_baseline_diagnostic.sh"
+            ),
+        },
+        "recommended_vm_command_report_only": None,
+        "recommended_vm_command_baseline_solve": (
             "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
-            "run_v2_st_mapping_and_preflight_bundle.sh"
+            "run_v2_l_mid_mapping_fixed_unregularized_baseline_diagnostic.sh"
         ),
         "evidence_summary": build_evidence_summary(
             filtered_eval=filtered_eval,
             unreg_eval=unreg_eval,
             mass_norm_audit=mass_norm_audit,
+            mapping_fixed_eval=mapping_fixed_eval,
             static_audit=static,
         ),
         "forward_risk_register": build_forward_risk_register(
@@ -297,6 +314,7 @@ def main() -> int:
             filtered_eval=filtered_eval,
             unreg_eval=unreg_eval,
             mass_norm_audit=mass_norm_audit,
+            mapping_fixed_eval=mapping_fixed_eval,
             root_cause_status=root_cause_status,
         ),
         "mesh_convergence_may_resume": False,
@@ -308,11 +326,11 @@ def main() -> int:
         "diagnostic_exposure_conclusion": {
             "status": "confirmed_from_local_code_with_VM_operator_evidence",
             "summary": (
-                "Prior ST-regularized runs superseded. Unregularized-offset baseline solve "
-                "completed with operator consistency; all seven candidates unevaluable (xH_Mx=0). "
-                "Eigenvalue mapping fix implemented (lam_phys=mu for native STSINVERT). "
-                "No baseline eigensolve until mapping impact + ST preflight reports are reviewed. "
-                "hole_radius_large and mesh convergence remain blocked."
+                "Eigenvalue mapping fix implemented (lam_phys=mu, slepc_backtransformed). "
+                "PGNHEP/purification ruled out on VM. Pre-mapping seven-mode harvest is not "
+                "evidence against corrected mapping. Exactly one mapping-corrected unregularized "
+                "baseline ST diagnostic authorized (preserve all nconv candidates). Stage-2 only "
+                "if that run fails. hole_radius_large and mesh convergence remain blocked."
             ),
             "replay_only_validations_protected": True,
             "eps_default_st_ladder_potentially_exposed": True,
