@@ -15,6 +15,10 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 FEM_SCRIPTS = REPO_ROOT / "FEM" / "scripts"
 
 ROOT_CAUSE_CONFIRMED_ST = "ROOT_CAUSE_CONFIRMED_ST_REGULARIZATION_OR_MAPPING_FIX_READY_FOR_ONE_BASELINE_RERUN"
+VERDICT_PERSISTENCE_BUG = "SAVED_MODE_VECTOR_PERSISTENCE_OR_LAYOUT_BUG_CONFIRMED"
+VERDICT_EPS_MASS_NULL = "EPS_RETURNED_ONLY_MASS_NULL_CANDIDATES_IN_UNREGULARIZED_SOLVE"
+VERDICT_REPLAY_INVALID = "REPLAY_CONTROL_INVALID_SEED_XHMX_NONFINITE"
+VERDICT_NOT_LOCALIZED = "VECTOR_MASS_NULL_ROOT_CAUSE_NOT_LOCALIZED_STOP_FOR_ARCHITECTURE_REVIEW"
 ROOT_CAUSE_CONFIRMED_OTHER = "ROOT_CAUSE_CONFIRMED_OTHER_FIX_READY_FOR_ONE_BASELINE_RERUN"
 ROOT_CAUSE_NOT_CONFIRMED = "ROOT_CAUSE_NOT_YET_CONFIRMED_NO_FURTHER_SOLVE_AUTHORIZED"
 
@@ -318,6 +322,10 @@ def build_forward_risk_register(
     return rows
 
 
+def _mass_norm_audit_pending(mass_norm_audit: Optional[Dict[str, Any]]) -> bool:
+    return mass_norm_audit is None or not mass_norm_audit.get("classification_verdict")
+
+
 def _unreg_evaluation_pending(unreg_eval: Optional[Dict[str, Any]]) -> bool:
     unreg_ev = (unreg_eval or {}).get("evaluation") or {}
     verdict = unreg_ev.get("diagnostic_verdict")
@@ -340,11 +348,13 @@ def build_evidence_summary(
     *,
     filtered_eval: Optional[Dict[str, Any]],
     unreg_eval: Optional[Dict[str, Any]],
+    mass_norm_audit: Optional[Dict[str, Any]],
     static_audit: Dict[str, Any],
 ) -> Dict[str, Any]:
     unreg_ev = (unreg_eval or {}).get("evaluation") or {}
     unreg_verdict = unreg_ev.get("diagnostic_verdict")
-    unreg_pending = _unreg_evaluation_pending(unreg_eval)
+    mass_verdict = (mass_norm_audit or {}).get("classification_verdict")
+    mass_pending = _mass_norm_audit_pending(mass_norm_audit)
 
     reported_vm = [
         "Prior regularized filtered diagnostic: FILTERED_DIAGNOSTIC_NO_PHYSICAL_BRANCH_RECOVERED; "
@@ -354,23 +364,28 @@ def build_evidence_summary(
         "Unregularized-offset baseline solve completed: continuation_seed_applied=true, "
         "nconv_marked=56, st_a_shift_frac=0, st_mass_reg_frac=0, "
         "diagnostic_operator_consistent_with_replay=true; 7 modes saved.",
-        "Post-solve evaluation first pass: UnboundLocalError(continuation), then all-NaN MAC/replay "
-        "(evaluator used wrong assembly tree); report-only evaluator corrected.",
+        "Post-solve report-only eval: UNREGULARIZED_OFFSET_OUTPUT_OR_REPLAY_INCONSISTENT with "
+        "metrics_computation_ok=0; every candidate xH_Mx=0 (mass-null on replay GNHEP).",
     ]
-    if unreg_verdict and not unreg_pending:
-        reported_vm.append(f"Report-only evaluation verdict: {unreg_verdict}.")
+    if unreg_verdict:
+        reported_vm.append(f"Unregularized-offset evaluation verdict: {unreg_verdict}.")
+    if mass_verdict:
+        reported_vm.append(f"Saved-vector mass-norm audit classification: {mass_verdict}.")
 
     requires_vm: List[str] = []
-    if unreg_pending:
+    if mass_pending:
         requires_vm.append(
-            "Report-only physical evaluation of seven saved unregularized-offset candidates."
+            "Final saved-vector persistence/mass-norm audit on existing unregularized-offset tree."
         )
 
     not_yet: List[str] = [
         "Whether any prior PASS harvest modes fail replay filter spot-check.",
     ]
-    if unreg_pending:
-        not_yet.insert(0, "Whether unregularized-offset baseline recovers physical branch.")
+    if mass_pending:
+        not_yet.insert(
+            0,
+            "Definitive classification: replay control vs persistence bug vs EPS M-null candidates.",
+        )
 
     return {
         "confirmed_from_local_code": [
@@ -385,13 +400,15 @@ def build_evidence_summary(
         "requires_VM_runtime_artifact_evaluation": requires_vm,
         "not_yet_verified": not_yet,
         "single_permitted_next_action": (
-            "bash .../run_v2_l_mid_seed_branch_unregularized_offset_evaluation.sh"
-            if unreg_pending
+            "bash .../run_v2_l_mid_unregularized_saved_vector_mass_norm_audit.sh"
+            if mass_pending
             else None
         ),
         "prior_regularized_diagnostics_superseded_for_branch_verdict": True,
         "unregularized_offset_solve_completed": True,
         "unregularized_offset_evaluation_verdict": unreg_verdict,
+        "saved_vector_mass_norm_classification": mass_verdict,
+        "candidates_currently_unevaluable_xH_Mx_zero": True,
     }
 
 
@@ -407,31 +424,35 @@ def build_finite_closure_plan(
     *,
     filtered_eval: Optional[Dict[str, Any]],
     unreg_eval: Optional[Dict[str, Any]],
+    mass_norm_audit: Optional[Dict[str, Any]],
     root_cause_status: str,
 ) -> Dict[str, Any]:
-    unreg_ev = (unreg_eval or {}).get("evaluation") or {}
-    unreg_verdict = unreg_ev.get("diagnostic_verdict")
-    unreg_pending = _unreg_evaluation_pending(unreg_eval)
+    mass_verdict = (mass_norm_audit or {}).get("classification_verdict")
+    mass_pending = _mass_norm_audit_pending(mass_norm_audit)
+    closure = (mass_norm_audit or {}).get("closure") or {}
 
-    if unreg_pending:
+    if mass_pending:
         next_action = (
-            "Report-only evaluation of completed unregularized-offset baseline solve "
-            "(seven saved candidates; no further baseline eigensolve)."
+            "Run final report-only saved-vector persistence/mass-norm audit on existing "
+            "unregularized-offset artifacts (no eigensolve)."
         )
-    elif unreg_verdict == "UNREGULARIZED_OFFSET_BASELINE_BRANCH_RECOVERED":
+    elif mass_verdict == VERDICT_PERSISTENCE_BUG:
         next_action = (
-            "Baseline branch recovery closed under unregularized-offset diagnostic. "
-            "hole_radius_large remains a later explicit step; mesh_convergence_may_resume stays False."
+            "Confirmed save/load or layout bug. Only permitted follow-up: report-only "
+            "re-evaluation if correct vectors recoverable from existing artifacts; "
+            "otherwise artifacts insufficient."
         )
-    elif unreg_verdict == "UNREGULARIZED_OFFSET_BASELINE_NO_PHYSICAL_BRANCH_RECOVERED":
+    elif mass_verdict in (
+        VERDICT_EPS_MASS_NULL,
+        VERDICT_REPLAY_INVALID,
+        VERDICT_NOT_LOCALIZED,
+    ):
         next_action = (
-            "Stop patching: EPS/ST diagnostic architecture inadequate for branch recovery "
-            "even with unregularized offset sigma ladder."
+            "Stop patching and reconsider EPS/ST branch-tracking architecture before any "
+            "further solve. hole_radius_large and mesh_convergence remain blocked."
         )
     else:
-        next_action = (
-            "Resolve UNREGULARIZED_OFFSET_OUTPUT_OR_REPLAY_INCONSISTENT before any mesh step."
-        )
+        next_action = "Review mass-norm audit classification output."
 
     if root_cause_status == ROOT_CAUSE_CONFIRMED_ST:
         blocked = [
@@ -473,7 +494,13 @@ def build_finite_closure_plan(
         "maximum_additional_baseline_solves_before_escalation": 1,
         "maximum_additional_code_fix_cycles_before_reconsidering_solver_architecture": 1,
         "filtered_eval_verdict": None if not filtered_eval else filtered_eval.get("verdict"),
-        "unregularized_offset_eval_verdict": unreg_verdict,
-        "unregularized_offset_eval_pending": unreg_pending,
+        "unregularized_offset_eval_verdict": (unreg_eval or {}).get("evaluation", {}).get(
+            "diagnostic_verdict"
+        ),
+        "saved_vector_mass_norm_classification": mass_verdict,
+        "mass_norm_audit_pending": mass_pending,
         "baseline_eigensolve_budget_exhausted": True,
+        "architecture_reconsideration_required": bool(
+            closure.get("architecture_reconsideration_required")
+        ),
     }

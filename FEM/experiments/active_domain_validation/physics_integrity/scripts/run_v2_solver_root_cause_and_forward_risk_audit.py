@@ -35,6 +35,7 @@ FILTERED_EVAL_JSON = CONV_DIAG / "v2_l_mid_seed_branch_recovery_filtered_evaluat
 UNREG_OFFSET_REPORT_JSON = (
     CONV_DIAG / "v2_l_mid_seed_branch_unregularized_offset_diagnostic.json"
 )
+MASS_NORM_AUDIT_JSON = CONV_DIAG / "v2_l_mid_unregularized_saved_vector_mass_norm_audit.json"
 
 
 def _load_json(path: Path) -> Optional[Dict[str, Any]]:
@@ -140,12 +141,14 @@ def _write_md(report: Dict[str, Any]) -> None:
     )
     for b in closure.get("blocked_actions") or []:
         lines.append(f"- {b}")
+    mass = report.get("saved_vector_mass_norm_audit") or {}
     lines.extend(
         [
             "",
             f"**single_permitted_next_action:** `{ev.get('single_permitted_next_action')}`",
             f"**unregularized_offset_solve_completed:** `{ev.get('unregularized_offset_solve_completed')}`",
             f"**unregularized_offset_evaluation_verdict:** `{ev.get('unregularized_offset_evaluation_verdict')}`",
+            f"**saved_vector_mass_norm_classification:** `{mass.get('classification_verdict')}`",
             "",
             "## Forward Risk Register",
             "",
@@ -209,11 +212,13 @@ def main() -> int:
     static = build_static_code_audit()
     filtered_eval = _load_json(FILTERED_EVAL_JSON)
     unreg_eval = _load_json(UNREG_OFFSET_REPORT_JSON)
+    mass_norm_audit = _load_json(MASS_NORM_AUDIT_JSON)
     root_cause_status = determine_root_cause_status(
         filtered_eval=filtered_eval, unreg_eval=unreg_eval
     )
     st_flow = build_st_retry_control_flow_audit()
     unreg_ev = (unreg_eval or {}).get("evaluation") or {}
+    mass_verdict = (mass_norm_audit or {}).get("classification_verdict")
 
     vm_runtime = {
         "source_json": str(FILTERED_EVAL_JSON),
@@ -240,27 +245,22 @@ def main() -> int:
             "solve_completed_on_vm": True,
             "operator_consistency_confirmed": True,
             "evaluation_verdict": unreg_ev.get("diagnostic_verdict"),
-            "evaluation_pending": (
-                unreg_ev.get("diagnostic_verdict")
-                in (None, "PENDING_VM_RUN", "PENDING_VM_EVALUATION")
-                or (
-                    unreg_ev.get("diagnostic_verdict")
-                    == "UNREGULARIZED_OFFSET_OUTPUT_OR_REPLAY_INCONSISTENT"
-                    and int((unreg_ev.get("summary") or {}).get("num_metrics_computation_ok", 0))
-                    == 0
-                    and int((unreg_ev.get("summary") or {}).get("num_candidates_evaluated", 0))
-                    > 0
-                )
-            ),
+            "candidates_unevaluable_all_xH_Mx_zero": True,
             "prior_regularized_diagnostics_superseded": True,
+        },
+        "saved_vector_mass_norm_audit": {
+            "report_json": str(MASS_NORM_AUDIT_JSON),
+            "loaded": mass_norm_audit is not None,
+            "classification_verdict": mass_verdict,
             "recommended_vm_command": (
                 "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
-                "run_v2_l_mid_seed_branch_unregularized_offset_evaluation.sh"
+                "run_v2_l_mid_unregularized_saved_vector_mass_norm_audit.sh"
             ),
         },
         "evidence_summary": build_evidence_summary(
             filtered_eval=filtered_eval,
             unreg_eval=unreg_eval,
+            mass_norm_audit=mass_norm_audit,
             static_audit=static,
         ),
         "forward_risk_register": build_forward_risk_register(
@@ -269,6 +269,7 @@ def main() -> int:
         "finite_closure_plan": build_finite_closure_plan(
             filtered_eval=filtered_eval,
             unreg_eval=unreg_eval,
+            mass_norm_audit=mass_norm_audit,
             root_cause_status=root_cause_status,
         ),
         "mesh_convergence_may_resume": False,
@@ -280,11 +281,12 @@ def main() -> int:
         "diagnostic_exposure_conclusion": {
             "status": "confirmed_from_local_code_with_VM_operator_evidence",
             "summary": (
-                "Earlier regularized diagnostic runs are superseded for branch-recovery judgment. "
-                "The unregularized-offset baseline solve completed with operator consistency "
-                "confirmed (st_a_shift_frac=0, st_mass_reg_frac=0). The only pending question "
-                "is report-only physical evaluation of its seven saved candidates. "
-                "Prior PASS results are not auto-invalidated."
+                "Prior ST-regularized diagnostic runs are superseded. The unregularized-offset "
+                "baseline solve completed successfully with operator consistency confirmed. "
+                "All seven saved candidates are currently unevaluable (xH_Mx=0 in report-only "
+                "replay). No additional baseline eigensolve is authorized. hole_radius_large and "
+                "mesh convergence remain blocked. Next action is determined solely by the "
+                "saved-vector persistence/mass-null audit."
             ),
             "replay_only_validations_protected": True,
             "eps_default_st_ladder_potentially_exposed": True,

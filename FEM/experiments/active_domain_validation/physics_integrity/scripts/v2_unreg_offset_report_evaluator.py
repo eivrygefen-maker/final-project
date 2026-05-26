@@ -55,12 +55,14 @@ def assemble_replay_operators(
     A, M, cfg = _assemble_reduced_coupled_replay(mesh_file, sample, coupling_enabled=True)
     u_to_W = np.asarray(cfg["_coupled_air_u_to_W_map"], dtype=np.int32).ravel()
     p_to_W = np.asarray(cfg["_coupled_air_p_to_W_map"], dtype=np.int32).ravel()
+    restr = dict(cfg.get("_coupled_air_pressure_restriction") or {})
     meta = {
         "sorting_root": str(sort_dir),
         "operator_size": int(A.getSize()[0]),
         "n_u_active": int(u_to_W.size),
         "n_p_active": int(p_to_W.size),
         "replay_assembly_status": "ok",
+        "pressure_restriction": restr,
     }
     return A, M, u_to_W, p_to_W, meta
 
