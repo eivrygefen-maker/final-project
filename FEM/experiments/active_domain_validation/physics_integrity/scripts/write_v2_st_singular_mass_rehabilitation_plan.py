@@ -35,6 +35,10 @@ LOSSLESS_POSTMORTEM_JSON = CONV_DIAG / "v2_lossless_adjudication_v1_mass_null_po
 LOSSLESS_U_MASS_RANK_AUDIT_JSON = (
     CONV_DIAG / "v2_lossless_adjudication_v1_u_mass_rank_and_disjoint_partition_audit.json"
 )
+LOSSLESS_NULL_BASIS_PREFLIGHT_JSON = (
+    CONV_DIAG
+    / "v2_lossless_adjudication_v1_Muu_null_basis_certification_and_projection_preflight.json"
+)
 LOSSLESS_DIAG_JSON = (
     CONV_DIAG / "v2_l_mid_mapping_fixed_unregularized_lossless_adjudication_v1_diagnostic.json"
 )
@@ -96,6 +100,11 @@ def main() -> int:
         if LOSSLESS_U_MASS_RANK_AUDIT_JSON.is_file()
         else {}
     )
+    lossless_null_basis = (
+        json.loads(LOSSLESS_NULL_BASIS_PREFLIGHT_JSON.read_text(encoding="utf-8"))
+        if LOSSLESS_NULL_BASIS_PREFLIGHT_JSON.is_file()
+        else {}
+    )
 
     applicability = (preflight or {}).get("PGNHEP_purification_applicability")
     if applicability is None:
@@ -135,6 +144,14 @@ def main() -> int:
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "strategy": "finite_solver_rehabilitation_persistence_fix_then_mapping_baseline",
         "next_allowed_action": (
+            "review_null_basis_projection_preflight_no_eps"
+            if lossless_null_basis
+            else (
+            "report_only_Muu_null_basis_certification_and_projection_preflight_no_eps"
+            if lossless_diag.get("eps_run_count_for_this_lane") == 1
+            and lossless_u_mass_rank
+            and not lossless_null_basis
+            else (
             "report_only_u_mass_rank_disjoint_partition_audit_no_eps"
             if lossless_diag.get("eps_run_count_for_this_lane") == 1 and not lossless_u_mass_rank
             else (
@@ -154,8 +171,19 @@ def main() -> int:
                     )
                 )
             )
+            )
+            )
         ),
         "recommended_vm_command": (
+            None
+            if lossless_null_basis
+            else (
+            "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+            "run_v2_lossless_adjudication_v1_Muu_null_basis_projection_preflight_vm.sh"
+            if lossless_diag.get("eps_run_count_for_this_lane") == 1
+            and lossless_u_mass_rank
+            and not lossless_null_basis
+            else (
             "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
             "run_v2_lossless_adjudication_v1_u_mass_rank_disjoint_partition_audit_vm.sh"
             if lossless_diag.get("eps_run_count_for_this_lane") == 1 and not lossless_u_mass_rank
@@ -168,6 +196,8 @@ def main() -> int:
                     if pipeline_unresolved
                     else None
                 )
+            )
+            )
             )
         ),
         "PGNHEP_purification": "ruled_out_in_current_VM_environment",
@@ -338,10 +368,16 @@ def main() -> int:
             "u_mass_rank_disjoint_partition_audit_json": str(LOSSLESS_U_MASS_RANK_AUDIT_JSON),
             "serialization_ruled_out_as_active_cause": bool(lossless_postmortem),
             "current_blocker": (
+                "LOSSLESS_ST_RETURNED_U_SHELL_MASS_MATRIX_KERNEL_MODES"
+                if lossless_u_mass_rank.get("classification_subtype")
+                == "U_NULLSPACE_SHELL_MASS_MATRIX_KERNEL"
+                else (
                 "u_active_null_M_attribution_unresolved"
                 if lossless_diag.get("eps_run_count_for_this_lane") == 1
                 else None
+                )
             ),
+            "null_basis_projection_preflight_json": str(LOSSLESS_NULL_BASIS_PREFLIGHT_JSON),
         },
         "current_state_summary": {
             "persistence_self_test": "PASS" if self_test_pass else "pending_or_failed",
@@ -354,13 +390,18 @@ def main() -> int:
             ),
             "additional_eps_solve": "not_authorized",
             "lossless_adjudication_v1": (
-                "completed_one_eps_mass_null_u_attribution_pending"
-                if lossless_diag.get("eps_run_count_for_this_lane") == 1 and not lossless_u_mass_rank
+                "completed_one_eps_shell_mass_kernel_null_basis_preflight="
+                + str(lossless_null_basis.get("recommended_future_strategy", "pending"))
+                if lossless_null_basis
                 else (
                     "completed_one_eps_mass_null_u_mass_rank_audit="
-                    + str(lossless_u_mass_rank.get("classification_subtype", "done"))
-                    if lossless_diag.get("eps_run_count_for_this_lane") == 1
-                    else "not_run"
+                    + str(lossless_u_mass_rank.get("classification_subtype", "pending"))
+                    if lossless_diag.get("eps_run_count_for_this_lane") == 1 and lossless_u_mass_rank
+                    else (
+                        "completed_one_eps_mass_null_u_attribution_pending"
+                        if lossless_diag.get("eps_run_count_for_this_lane") == 1
+                        else "not_run"
+                    )
                 )
             ),
             "serialization_ruled_out": bool(lossless_postmortem),

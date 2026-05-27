@@ -28,6 +28,7 @@ VERDICT_REPLAY_INVALID = "REPLAY_CONTROL_INVALID_SEED_XHMX_NONFINITE"
 VERDICT_NOT_LOCALIZED = "VECTOR_MASS_NULL_ROOT_CAUSE_NOT_LOCALIZED_STOP_FOR_ARCHITECTURE_REVIEW"
 ROOT_CAUSE_CONFIRMED_OTHER = "ROOT_CAUSE_CONFIRMED_OTHER_FIX_READY_FOR_ONE_BASELINE_RERUN"
 ROOT_CAUSE_NOT_CONFIRMED = "ROOT_CAUSE_NOT_YET_CONFIRMED_NO_FURTHER_SOLVE_AUTHORIZED"
+ROOT_CAUSE_LOSSLESS_SHELL_MASS_KERNEL = "LOSSLESS_ST_RETURNED_U_SHELL_MASS_MATRIX_KERNEL_MODES"
 
 VERDICT_SPURIOUS = (
     "DIAGNOSTIC_SELECTED_SIGMA_OR_BC_SPURIOUS_MODE_"
@@ -469,6 +470,26 @@ def determine_root_cause_status(
     persistence_fixed_eval: Optional[Dict[str, Any]] = None,
     pipeline_audit: Optional[Dict[str, Any]] = None,
 ) -> str:
+    null_basis_json = (
+        CONV_DIAG
+        / "v2_lossless_adjudication_v1_Muu_null_basis_certification_and_projection_preflight.json"
+    )
+    mass_rank_json = CONV_DIAG / "v2_lossless_adjudication_v1_u_mass_rank_and_disjoint_partition_audit.json"
+    if null_basis_json.is_file():
+        try:
+            nb = json.loads(null_basis_json.read_text(encoding="utf-8"))
+            blocker = nb.get("primary_blocker")
+            if blocker:
+                return str(blocker)
+        except Exception:
+            pass
+    if mass_rank_json.is_file():
+        try:
+            mr = json.loads(mass_rank_json.read_text(encoding="utf-8"))
+            if mr.get("classification_subtype") == "U_NULLSPACE_SHELL_MASS_MATRIX_KERNEL":
+                return ROOT_CAUSE_LOSSLESS_SHELL_MASS_KERNEL
+        except Exception:
+            pass
     pa_verdict = (pipeline_audit or {}).get("audit_verdict")
     if pa_verdict:
         return f"PIPELINE_AUDIT_VERDICT_{pa_verdict}"
