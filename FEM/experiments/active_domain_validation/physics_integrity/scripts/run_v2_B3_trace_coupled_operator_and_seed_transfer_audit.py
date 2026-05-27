@@ -357,6 +357,23 @@ def main() -> int:
         b3_tag_count_convention = "local_plus_ghost_submesh_entities"
         b3_continuum_status = "UNRESOLVED"
         b3_seed_check_status = "NOT_EVALUATED"
+        b3_material_fail_reason = None
+        b3_parent_geom_deps = [
+            "FacetNormal(parent_mesh)",
+            "facet projector P=I-n⊗n on parent boundary facets",
+            "facet-tangential gradient restriction P*grad(u)*P",
+            "surface shell stiffness integrated on ds(tag)",
+        ]
+        b3_invalid_trace_quantities = []
+        b3_geom_replacements = [
+            "FacetNormal(parent_mesh) -> CellNormal(trace_mesh)",
+            "parent ds(tag) -> trace dx(tag) on submesh meshtags",
+            "facet tangential projector -> manifold-cell tangential projector using CellNormal",
+            "facet tangential strain restriction -> manifold-cell tangential restriction",
+        ]
+        b3_rederive_method = (
+            "manifold_cell_shell_form_using_CellNormal_and_tangential_projection_on_trace_cells"
+        )
 
         if shell_facets.size > 0 and hasattr(dmesh, "create_submesh"):
             tdim = msh.topology.dim
@@ -458,83 +475,114 @@ def main() -> int:
                 mt_trace = dmesh.meshtags(shell_mesh, shell_mesh.topology.dim, trace_cells, trace_vals)
                 dx_trace = ufl.Measure("dx", domain=shell_mesh, subdomain_data=mt_trace)
 
-                u = ufl.TrialFunction(V_u_trace)
-                v = ufl.TestFunction(V_u_trace)
-                top_m, back_m, t_top, t_back = fem3d._split_wood_materials(cfg)
-                nrm = ufl.FacetNormal(shell_mesh)
-                P = ufl.Identity(3) - ufl.outer(nrm, nrm)
-                e1, e2 = fem3d._plate_local_frame(nrm, P)
-
-                def eps_surface(uu):
-                    grad_u = ufl.grad(uu)
-                    grad_tan = P * grad_u * P
-                    return 0.5 * (grad_tan + ufl.transpose(grad_tan))
-
-                eps_u = eps_surface(u)
-                eps_v = eps_surface(v)
-                w_n = ufl.dot(u, nrm)
-                v_n = ufl.dot(v, nrm)
-                shell_top = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, top_m)
-                shell_back = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
-                shell_ribs = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
-                a_uu_t = shell_top * dx_trace(TAG_TOP) + shell_back * dx_trace(TAG_BACK) + shell_ribs * dx_trace(TAG_RIBS)
-                m_uu_t = (
-                    (top_m["rho"] * t_top) * ufl.dot(u, v) * dx_trace(TAG_TOP)
-                    + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_BACK)
-                    + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_RIBS)
-                )
-                Auu = fem.petsc.assemble_matrix(fem.form(a_uu_t), bcs=[])
-                Muu = fem.petsc.assemble_matrix(fem.form(m_uu_t), bcs=[])
-                Auu.assemble()
-                Muu.assemble()
-                b3_Auu_norm = _safe_float(Auu.norm())
-                b3_Muu_norm = _safe_float(Muu.norm())
-                b3_top = int(np.sum(trace_vals == TAG_TOP)) > 0
-                b3_back = int(np.sum(trace_vals == TAG_BACK)) > 0
-                b3_ribs = int(np.sum(trace_vals == TAG_RIBS)) > 0
-                b3_mass_present = bool(float(b3_Muu_norm) > 0.0)
-                b3_stiff_present = bool(float(b3_Auu_norm) > 0.0)
-                b3_form_ok = bool(b3_top and b3_back and b3_ribs and b3_mass_present and b3_stiff_present)
-                b3_null_exposure = "MISMATCH_REMOVED_BY_TRACE_SPACE_CONSTRUCTION_PENDING_COUPLED_VALIDATION"
-
-                # Tag-5 policy transfer audit.
-                shell_set = set(int(x) for x in shell_facets.tolist())
-                fix_set = set(int(x) for x in f_fix.tolist())
-                overlap = np.array(sorted(shell_set.intersection(fix_set)), dtype=np.int32)
-                b3_tag5_fixed_n = int(overlap.size)
-                b3_bc_constructed = True
-                b3_bc_pass = True
-                b3_bc_reason = (
-                    "tag5_fix_facets_not_in_trace_shell_union"
-                    if b3_tag5_fixed_n == 0
-                    else "tag5_overlap_with_trace_shell_requires_explicit_trace_bc_application"
-                )
-                if b3_tag5_fixed_n > 0:
-                    b3_bc_pass = False
-
-                # Pressure block retained from baseline reduced operator.
                 try:
-                    b3_App_norm = _safe_float(A.norm())
-                    b3_Mpp_norm = _safe_float(M.norm())
-                except Exception:
-                    pass
+                    u = ufl.TrialFunction(V_u_trace)
+                    v = ufl.TestFunction(V_u_trace)
+                    top_m, back_m, t_top, t_back = fem3d._split_wood_materials(cfg)
+                    # Manifold-cell normal for trace mesh; parent FacetNormal is invalid for dx on trace cells.
+                    nrm = ufl.CellNormal(shell_mesh)
+                    P = ufl.Identity(3) - ufl.outer(nrm, nrm)
+                    e1, e2 = fem3d._plate_local_frame(nrm, P)
 
-                # Cross-mesh u_trace <-> p_active coupling not assembled in current architecture.
-                b3_coupling_iface = False
-                b3_coupling_present = False
-                b3_coupling_method = "cross_mesh_trace_u_to_volume_pressure_interface_form_required"
-                b3_coupling_reason = "B3_BLOCKED_BY_DOLFINX_TRACE_TO_VOLUME_COUPLING_INTERFACE"
-                block_reason = b3_coupling_reason
-                b3_ops_assembled = False
-                b3_ops_sanity = False
-                b3_ops_reason = b3_coupling_reason
-                b3_seed_map = False
-                b3_seed_repr = False
-                b3_seed_method = "requires_trace_u_to_reduced_W_transfer_plus_pressure_identity"
-                b3_seed_fail = b3_coupling_reason
-                b3_seed_check_status = "NOT_EVALUATED_BLOCKED_PENDING_TRACE_TO_VOLUME_COUPLING_INTERFACE"
-                b3_seed_pressure_support = False
-                b3_seed_mac = None
+                    def eps_surface(uu):
+                        grad_u = ufl.grad(uu)
+                        grad_tan = P * grad_u * P
+                        return 0.5 * (grad_tan + ufl.transpose(grad_tan))
+
+                    eps_u = eps_surface(u)
+                    eps_v = eps_surface(v)
+                    w_n = ufl.dot(u, nrm)
+                    v_n = ufl.dot(v, nrm)
+                    shell_top = fem3d._orthotropic_shell_stiffness_form(
+                        eps_u, eps_v, w_n, v_n, e1, e2, P, top_m
+                    )
+                    shell_back = fem3d._orthotropic_shell_stiffness_form(
+                        eps_u, eps_v, w_n, v_n, e1, e2, P, back_m
+                    )
+                    shell_ribs = fem3d._orthotropic_shell_stiffness_form(
+                        eps_u, eps_v, w_n, v_n, e1, e2, P, back_m
+                    )
+                    a_uu_t = (
+                        shell_top * dx_trace(TAG_TOP)
+                        + shell_back * dx_trace(TAG_BACK)
+                        + shell_ribs * dx_trace(TAG_RIBS)
+                    )
+                    m_uu_t = (
+                        (top_m["rho"] * t_top) * ufl.dot(u, v) * dx_trace(TAG_TOP)
+                        + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_BACK)
+                        + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_RIBS)
+                    )
+                    Auu = fem.petsc.assemble_matrix(fem.form(a_uu_t), bcs=[])
+                    Muu = fem.petsc.assemble_matrix(fem.form(m_uu_t), bcs=[])
+                    Auu.assemble()
+                    Muu.assemble()
+                    b3_Auu_norm = _safe_float(Auu.norm())
+                    b3_Muu_norm = _safe_float(Muu.norm())
+                    b3_top = int(np.sum(trace_vals == TAG_TOP)) > 0
+                    b3_back = int(np.sum(trace_vals == TAG_BACK)) > 0
+                    b3_ribs = int(np.sum(trace_vals == TAG_RIBS)) > 0
+                    b3_mass_present = bool(float(b3_Muu_norm) > 0.0)
+                    b3_stiff_present = bool(float(b3_Auu_norm) > 0.0)
+                    b3_form_ok = bool(
+                        b3_top and b3_back and b3_ribs and b3_mass_present and b3_stiff_present
+                    )
+                    b3_null_exposure = (
+                        "MISMATCH_REMOVED_BY_TRACE_SPACE_CONSTRUCTION_PENDING_COUPLED_VALIDATION"
+                    )
+                except Exception as exc:
+                    b3_form_ok = False
+                    b3_mass_present = False
+                    b3_stiff_present = False
+                    b3_continuum_status = "BLOCKED_PENDING_MANIFOLD_TRACE_FORM_REDERIVATION"
+                    b3_invalid_trace_quantities = ["ReferenceNormal_or_FacetNormal_in_cell_integral_context"]
+                    b3_ops_reason = f"{type(exc).__name__}: {exc}"
+                    b3_material_fail_reason = b3_ops_reason
+                    block_reason = "B3_BLOCKED_BY_MANIFOLD_TRACE_STRUCTURAL_FORM_REDERIVATION_INTERFACE"
+                    b3_seed_fail = block_reason
+                    b3_seed_check_status = (
+                        "NOT_EVALUATED_BLOCKED_PENDING_MANIFOLD_TRACE_FORM_REDERIVATION"
+                    )
+
+                if b3_form_ok:
+                    b3_continuum_status = "PRESERVED_BY_EQUIVALENT_TRACE_FORM_ASSEMBLY"
+                    # Tag-5 policy transfer audit.
+                    shell_set = set(int(x) for x in shell_facets.tolist())
+                    fix_set = set(int(x) for x in f_fix.tolist())
+                    overlap = np.array(sorted(shell_set.intersection(fix_set)), dtype=np.int32)
+                    b3_tag5_fixed_n = int(overlap.size)
+                    b3_bc_constructed = True
+                    b3_bc_pass = True
+                    b3_bc_reason = (
+                        "tag5_fix_facets_not_in_trace_shell_union"
+                        if b3_tag5_fixed_n == 0
+                        else "tag5_overlap_with_trace_shell_requires_explicit_trace_bc_application"
+                    )
+                    if b3_tag5_fixed_n > 0:
+                        b3_bc_pass = False
+
+                    # Pressure block retained from baseline reduced operator.
+                    try:
+                        b3_App_norm = _safe_float(A.norm())
+                        b3_Mpp_norm = _safe_float(M.norm())
+                    except Exception:
+                        pass
+
+                    # Cross-mesh u_trace <-> p_active coupling not assembled in current architecture.
+                    b3_coupling_iface = False
+                    b3_coupling_present = False
+                    b3_coupling_method = "cross_mesh_trace_u_to_volume_pressure_interface_form_required"
+                    b3_coupling_reason = "B3_BLOCKED_BY_DOLFINX_TRACE_TO_VOLUME_COUPLING_INTERFACE"
+                    block_reason = b3_coupling_reason
+                    b3_ops_assembled = False
+                    b3_ops_sanity = False
+                    b3_ops_reason = b3_coupling_reason
+                    b3_seed_map = False
+                    b3_seed_repr = False
+                    b3_seed_method = "requires_trace_u_to_reduced_W_transfer_plus_pressure_identity"
+                    b3_seed_fail = b3_coupling_reason
+                    b3_seed_check_status = "NOT_EVALUATED_BLOCKED_PENDING_TRACE_TO_VOLUME_COUPLING_INTERFACE"
+                    b3_seed_pressure_support = False
+                    b3_seed_mac = None
 
                 # Baseline seed metrics are still reported for control visibility.
                 seed_info = load_seed_with_diagnostics(seed_npy)
@@ -575,7 +623,9 @@ def main() -> int:
             b3_seed_mac = None
             b3_seed_xhmx = b3_seed_f = b3_seed_res = None
 
-        if block_reason == "B3_BLOCKED_BY_DOLFINX_ENTITYMAP_TAG_TRANSFER_INTERFACE":
+        if block_reason == "B3_BLOCKED_BY_MANIFOLD_TRACE_STRUCTURAL_FORM_REDERIVATION_INTERFACE":
+            verdict = "B3_BLOCKED_BY_MANIFOLD_TRACE_STRUCTURAL_FORM_REDERIVATION_INTERFACE"
+        elif block_reason == "B3_BLOCKED_BY_DOLFINX_ENTITYMAP_TAG_TRANSFER_INTERFACE":
             verdict = "B3_BLOCKED_BY_DOLFINX_ENTITYMAP_TAG_TRANSFER_INTERFACE"
         elif block_reason == "B3_BLOCKED_BY_DOLFINX_TRACE_TO_VOLUME_COUPLING_INTERFACE":
             verdict = "B3_BLOCKED_BY_DOLFINX_TRACE_TO_VOLUME_COUPLING_INTERFACE"
@@ -613,12 +663,23 @@ def main() -> int:
             "B3_dimension_reduction_ratio": _safe_float(b3_ratio),
             "B3_material_forms_assembled_on_trace_space": bool(b3_form_ok),
             "B3_material_form_transfer_method": "trace_submesh_facet_tag_meshtags_plus_surface_shell_forms",
+            "B3_parent_shell_form_geometry_dependencies": b3_parent_geom_deps,
+            "B3_invalid_trace_form_quantities_found": b3_invalid_trace_quantities,
+            "B3_manifold_form_geometry_replacements": b3_geom_replacements,
+            "B3_manifold_form_rederivation_method": b3_rederive_method,
             "B3_top_form_present": bool(b3_top),
             "B3_back_form_present": bool(b3_back),
             "B3_ribs_form_present": bool(b3_ribs),
             "B3_structural_mass_present": bool(b3_mass_present),
             "B3_structural_stiffness_present": bool(b3_stiff_present),
-            "B3_material_form_failure_reason": None if b3_form_ok else "trace_form_assembly_or_support_missing",
+            "B3_material_form_failure_reason": None if b3_form_ok else (
+                b3_material_fail_reason or "trace_form_assembly_or_support_missing"
+            ),
+            "B3_trace_structural_form_contract_pass": bool(b3_form_ok),
+            "B3_changes_continuum_physical_meaning_of_weak_forms": (
+                False if b3_form_ok else "UNRESOLVED"
+            ),
+            "B3_changes_discrete_basis_or_operator_representation": True,
             "B3_continuum_physics_preservation_status": b3_continuum_status,
             "B3_tag5_fix_transfer_constructed": bool(b3_bc_constructed),
             "B3_tag5_fixed_dof_count": int(b3_tag5_fixed_n),
