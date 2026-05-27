@@ -26,8 +26,8 @@ for _p in (SCRIPT_DIR, REPO_ROOT / "FEM" / "scripts"):
 
 import fem_main_3d as fem3d
 import ufl
+from basix.ufl import element
 from dolfinx import fem, mesh as dmesh
-from dolfinx.fem import element
 from physical_fsi_seed_residual_audit import _block_residual_contributions, _rayleigh_metrics
 from v2_build_coupled_acoustic_seed import (
     _assemble_reduced_coupled_replay,
@@ -255,12 +255,16 @@ def _build_b3_scaled_restricted_operators_in_memory(
     facet_tags: Any,
     comm: Any,
     mats_to_destroy: List[Any],
+    report_meta: Dict[str, Any] | None = None,
 ) -> tuple[Any, Any, np.ndarray, np.ndarray, Dict[str, Any]]:
+    meta: Dict[str, Any] = report_meta if report_meta is not None else {}
     p_air_collapsed = np.unique(np.asarray(p_air_collapsed, dtype=np.int32).ravel())
     n_u = int(n_u_b3)
     n_p_full = int(raw_App.getSize()[0])
     n_p_active = int(p_air_collapsed.size)
-    meta: Dict[str, Any] = {
+    meta.update(
+        {
+        "B3_seed_operator_build_stage": "blockwise_pressure_restriction_entered",
         "B3_pressure_restriction_application_stage": (
             "SPARSE_BLOCKWISE_BEFORE_FINAL_MATNEST_CONSTRUCTION"
         ),
@@ -275,7 +279,8 @@ def _build_b3_scaled_restricted_operators_in_memory(
         "B3_final_operator_dimension_contract_pass": False,
         "B3_algebraic_BC_applied_after_blockwise_pressure_restriction": False,
         "B3_scaled_restricted_BC_operator_contract_pass": False,
-    }
+        }
+    )
     inv_u = 1.0 / max(float(s_uu), 1.0e-30)
     inv_p = 1.0 / max(float(s_pp), 1.0e-30)
     inv_c = 1.0 / max(float(s_c), 1.0e-30)
@@ -287,6 +292,7 @@ def _build_b3_scaled_restricted_operators_in_memory(
     a_pu_full = _petsc_duplicate_scaled(raw_Apu_B3, inv_c)
     m_pu_full = _petsc_duplicate_scaled(raw_Mpu_B3, inv_c)
     mats_to_destroy.extend([a_pp_full, m_pp_full, a_up_full, a_pu_full, m_pu_full])
+    meta["B3_seed_operator_build_stage"] = "gnhep_block_scaling_complete"
 
     is_u = PETSc.IS().createGeneral(np.arange(n_u, dtype=np.int32), comm=comm)
     is_p_active = PETSc.IS().createGeneral(p_air_collapsed.astype(np.int32), comm=comm)
@@ -318,6 +324,7 @@ def _build_b3_scaled_restricted_operators_in_memory(
             "restricted_block_shapes_mismatch"
         )
         raise RuntimeError(meta["B3_sparse_blockwise_pressure_restriction_failure_reason"])
+    meta["B3_seed_operator_build_stage"] = "sparse_blockwise_pressure_restriction_complete"
 
     mats_to_destroy.extend([a_uu, m_uu, a_up_act, a_pu_act, m_pu_act, a_pp_act, m_pp_act])
     a_b3, m_b3, m_up = _b3_nest_coupled_operators(
@@ -332,10 +339,13 @@ def _build_b3_scaled_restricted_operators_in_memory(
     )
     if not meta["B3_final_operator_dimension_contract_pass"]:
         raise RuntimeError("B3_final_operator_dimension_contract_failed")
+    meta["B3_seed_operator_build_stage"] = "final_matnest_constructed"
 
+    meta["B3_seed_operator_build_stage"] = "pre_pressure_release_row_locate"
     p_release = _b3_pressure_release_rows_retained(
         msh, facet_tags, n_u_b3=n_u, p_air_collapsed=p_air_collapsed
     )
+    meta["B3_seed_operator_build_stage"] = "post_pressure_release_row_locate"
     bc_rows = np.unique(
         np.concatenate(
             [
@@ -2015,6 +2025,7 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
             payload["B3_seed_operator_build_failure_reason"] = "B3_operator_composition_gates_failed"
             return 2
 
+        op_meta: Dict[str, Any] = {}
         try:
             A_b3, M_b3, u_idx, p_idx, op_meta = _build_b3_scaled_restricted_operators_in_memory(
                 raw_Auu=raw_Auu,
@@ -2034,12 +2045,19 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
                 facet_tags=facet_tags,
                 comm=PETSc.COMM_WORLD,
                 mats_to_destroy=mats_to_destroy,
+                report_meta=op_meta,
             )
             payload.update(op_meta)
             payload["B3_seed_operator_build_pass"] = True
             payload["B3_seed_operator_build_failure_reason"] = None
         except Exception as exc:
+            payload.update(op_meta)
             payload["B3_seed_operator_build_failure_reason"] = f"{type(exc).__name__}:{exc}"
+            payload["B3_seed_operator_failure_stage"] = op_meta.get(
+                "B3_seed_operator_build_stage", "operator_build_entered"
+            )
+            payload["B3_seed_operator_failure_exception_type"] = type(exc).__name__
+            payload["B3_seed_operator_failure_exception_message"] = str(exc)
             return 2
 
         payload["B3_raw_sparse_coupling_projection_constructed"] = True
