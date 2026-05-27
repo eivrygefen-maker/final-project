@@ -2764,20 +2764,42 @@ def _coupled_algebraic_dirichlet_rows(
     p_gauge_dofs_v: np.ndarray,
     u_ribs_dofs_v: np.ndarray,
     u_fix_dofs_v: np.ndarray,
+    u_block_size: int = 1,
 ) -> np.ndarray:
     """Map collapsed pressure / displacement BC dofs to global mixed-space row indices."""
+    def _expand_u_blocks_to_mixed_rows(
+        u_block_dofs_v: np.ndarray,
+    ) -> np.ndarray:
+        dofs = np.asarray(u_block_dofs_v, dtype=np.int32).ravel()
+        if dofs.size == 0 or u_map.size == 0:
+            return np.array([], dtype=np.int32)
+        if u_block_size <= 1:
+            valid = dofs[(dofs >= 0) & (dofs < u_map.size)]
+            return np.asarray(u_map[valid], dtype=np.int32).ravel() if valid.size else np.array([], dtype=np.int32)
+        # Collapsed vector spaces expose block indices; expand each block to all scalar components.
+        scalar_rows: List[np.ndarray] = []
+        valid_blocks = dofs[dofs >= 0]
+        for c in range(int(u_block_size)):
+            scalar_idx = valid_blocks.astype(np.int64) * int(u_block_size) + int(c)
+            keep = scalar_idx[(scalar_idx >= 0) & (scalar_idx < u_map.size)].astype(np.int32)
+            if keep.size > 0:
+                scalar_rows.append(np.asarray(u_map[keep], dtype=np.int32).ravel())
+        if not scalar_rows:
+            return np.array([], dtype=np.int32)
+        return np.concatenate(scalar_rows).astype(np.int32, copy=False)
+
     chunks: List[np.ndarray] = []
     u_map = np.asarray(u_map, dtype=np.int32).ravel()
     p_map = np.asarray(p_map, dtype=np.int32).ravel()
     pv = np.asarray(p_gauge_dofs_v, dtype=np.int32).ravel()
     if pv.size and p_map.size and np.min(pv) >= 0 and np.max(pv) < p_map.size:
         chunks.append(p_map[pv])
-    ur = np.asarray(u_ribs_dofs_v, dtype=np.int32).ravel()
-    if ur.size and u_map.size and np.min(ur) >= 0 and np.max(ur) < u_map.size:
-        chunks.append(u_map[ur])
-    uf = np.asarray(u_fix_dofs_v, dtype=np.int32).ravel()
-    if uf.size and u_map.size and np.min(uf) >= 0 and np.max(uf) < u_map.size:
-        chunks.append(u_map[uf])
+    ur_rows = _expand_u_blocks_to_mixed_rows(u_ribs_dofs_v)
+    if ur_rows.size > 0:
+        chunks.append(ur_rows)
+    uf_rows = _expand_u_blocks_to_mixed_rows(u_fix_dofs_v)
+    if uf_rows.size > 0:
+        chunks.append(uf_rows)
     if not chunks:
         return np.array([], dtype=np.int32)
     return np.unique(np.concatenate(chunks).astype(np.int32, copy=False))
@@ -6867,12 +6889,14 @@ def _solve_coupled_evp(
         if clamp_ribs and u_dofs_ribs.size > 0
         else np.array([], dtype=np.int32)
     )
+    u_block_size = int(getattr(V_u.dofmap, "index_map_bs", 1))
     coupled_dirichlet_rows = _coupled_algebraic_dirichlet_rows(
         u_to_W_map,
         p_to_W_map,
         p_gauge_dofs_v=p_gauge_dofs_v,
         u_ribs_dofs_v=u_ribs_alg,
         u_fix_dofs_v=u_dofs_fix_bc,
+        u_block_size=u_block_size,
     )
     pv = np.asarray(p_gauge_dofs_v, dtype=np.int32).ravel()
     pmap = np.asarray(p_to_W_map, dtype=np.int32).ravel()
@@ -6880,6 +6904,25 @@ def _solve_coupled_evp(
         p_bc_rows_w = np.unique(pmap[pv])
     else:
         p_bc_rows_w = np.array([], dtype=np.int32)
+    fix_blocks = np.asarray(u_dofs_fix_bc, dtype=np.int32).ravel()
+    fix_expected_scalar = int(fix_blocks.size * max(u_block_size, 1))
+    fix_scalar_idx_rows: List[np.ndarray] = []
+    if u_block_size > 1 and fix_blocks.size > 0:
+        valid_fix = fix_blocks[fix_blocks >= 0]
+        for c in range(u_block_size):
+            scalar_idx = valid_fix.astype(np.int64) * u_block_size + c
+            keep = scalar_idx[(scalar_idx >= 0) & (scalar_idx < u_to_W_map.size)].astype(np.int32)
+            if keep.size > 0:
+                fix_scalar_idx_rows.append(np.asarray(u_to_W_map[keep], dtype=np.int32).ravel())
+    elif fix_blocks.size > 0:
+        keep = fix_blocks[(fix_blocks >= 0) & (fix_blocks < u_to_W_map.size)]
+        if keep.size > 0:
+            fix_scalar_idx_rows.append(np.asarray(u_to_W_map[keep], dtype=np.int32).ravel())
+    fix_rows_w = (
+        np.unique(np.concatenate(fix_scalar_idx_rows).astype(np.int32, copy=False))
+        if fix_scalar_idx_rows
+        else np.array([], dtype=np.int32)
+    )
     _u_alg_parts: List[np.ndarray] = []
     if clamp_ribs and u_dofs_ribs.size > 0:
         _u_alg_parts.append(np.asarray(u_dofs_ribs, dtype=np.int32).ravel())
@@ -6890,6 +6933,21 @@ def _solve_coupled_evp(
         if _u_alg_parts
         else np.array([], dtype=np.int32)
     )
+    vec_bc_contract = {
+        "V2_tag5_vector_block_size": int(u_block_size),
+        "V2_tag5_fix_block_dof_count": int(fix_blocks.size),
+        "V2_tag5_expected_scalar_component_row_count": int(fix_expected_scalar),
+        "V2_tag5_actual_scalar_component_row_count_after_fix": int(fix_rows_w.size),
+        "V2_tag5_actual_algebraic_mixed_row_count_after_fix": int(fix_rows_w.size),
+        "V2_pressure_dirichlet_row_count": int(p_bc_rows_w.size),
+        "V2_total_algebraic_dirichlet_row_count_after_fix": int(coupled_dirichlet_rows.size),
+        "V2_tag5_vector_BC_contract_pass": bool(fix_rows_w.size == fix_expected_scalar),
+        "V2_tag5_vector_BC_failure_reason": (
+            None if fix_rows_w.size == fix_expected_scalar else "tag5_block_to_scalar_expansion_incomplete"
+        ),
+    }
+    config["_V2_vector_BC_contract"] = dict(vec_bc_contract)
+    solver_cfg["_V2_vector_BC_contract"] = dict(vec_bc_contract)
     shell_dofs_top = _locate_facet_displacement_dofs(
         V_u_collapsed,
         msh,

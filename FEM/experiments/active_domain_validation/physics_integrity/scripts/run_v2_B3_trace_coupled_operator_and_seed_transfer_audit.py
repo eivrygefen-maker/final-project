@@ -42,6 +42,7 @@ REPORT_SIZE_TARGET_BYTES = 1048576
 C2_TRANSFER_CONTRACT_ONLY_ARG = "--C2-transfer-contract-only"
 C2_SPARSE_COUPLING_ONLY_ARG = "--C2-sparse-coupling-only"
 B3_RAW_COMPOSITION_CONTRACT_ONLY_ARG = "--B3-raw-composition-contract-only"
+V2_VECTOR_BC_CONTRACT_ONLY_ARG = "--V2-vector-BC-contract-only"
 
 TAG_TOP = 1
 TAG_BACK = 3
@@ -1016,6 +1017,10 @@ def _is_b3_raw_composition_contract_only_mode(argv: List[str]) -> bool:
     return B3_RAW_COMPOSITION_CONTRACT_ONLY_ARG in argv
 
 
+def _is_v2_vector_bc_contract_only_mode(argv: List[str]) -> bool:
+    return V2_VECTOR_BC_CONTRACT_ONLY_ARG in argv
+
+
 def _mat_global_nnz(mat: Any) -> int:
     info = mat.getInfo(PETSc.Mat.InfoType.GLOBAL_SUM)
     return int(info.get("nz_used", 0))
@@ -1446,10 +1451,77 @@ def _run_b3_raw_composition_contract_only(pre: Dict[str, Any]) -> int:
     return 2
 
 
+def _run_v2_vector_bc_contract_only(pre: Dict[str, Any]) -> int:
+    if not pre["preassembly_contract_pass"]:
+        print("[V2_BC] V2_tag5_vector_BC_contract_pass=False", flush=True)
+        print("[V2_BC] V2_tag5_vector_BC_failure_reason=preassembly_contract_failed", flush=True)
+        print("[V2_BC] no_new_eigensolve_executed=True", flush=True)
+        print("[V2_BC] additional_eps=NOT_AUTHORIZED", flush=True)
+        return 2
+    if MPI.COMM_WORLD.size != 1:
+        if MPI.COMM_WORLD.rank == 0:
+            print("[V2_BC] V2_tag5_vector_BC_contract_pass=False", flush=True)
+            print("[V2_BC] V2_tag5_vector_BC_failure_reason=requires_mpiexec_n_1", flush=True)
+            print("[V2_BC] no_new_eigensolve_executed=True", flush=True)
+            print("[V2_BC] additional_eps=NOT_AUTHORIZED", flush=True)
+        return 2
+
+    manifest = load_manifest()
+    case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
+    sample = sample_spec_from_case(case)
+    mesh_file = mesh_path("L_mid", CASE_ID)
+    _A, _M, cfg = _assemble_reduced_coupled_replay(mesh_file, sample, coupling_enabled=True)
+    bc = dict(cfg.get("_V2_vector_BC_contract") or {})
+
+    block_size = bc.get("V2_tag5_vector_block_size")
+    fix_blocks = bc.get("V2_tag5_fix_block_dof_count")
+    expected_rows = bc.get("V2_tag5_expected_scalar_component_row_count")
+    actual_scalar = bc.get("V2_tag5_actual_scalar_component_row_count_after_fix")
+    pressure_rows = bc.get("V2_pressure_dirichlet_row_count")
+    total_rows = bc.get("V2_total_algebraic_dirichlet_row_count_after_fix")
+    pass_flag = bool(bc.get("V2_tag5_vector_BC_contract_pass", False))
+    fail_reason = bc.get("V2_tag5_vector_BC_failure_reason")
+
+    print(f"[V2_BC] V2_tag5_vector_block_size={block_size}", flush=True)
+    print(f"[V2_BC] V2_tag5_fix_block_dof_count={fix_blocks}", flush=True)
+    print(f"[V2_BC] V2_tag5_expected_scalar_component_row_count={expected_rows}", flush=True)
+    print(f"[V2_BC] V2_tag5_actual_scalar_component_row_count_after_fix={actual_scalar}", flush=True)
+    print(f"[V2_BC] V2_pressure_dirichlet_row_count={pressure_rows}", flush=True)
+    print(f"[V2_BC] V2_total_algebraic_dirichlet_row_count_after_fix={total_rows}", flush=True)
+    print(f"[V2_BC] V2_tag5_vector_BC_contract_pass={pass_flag}", flush=True)
+    print(f"[V2_BC] V2_tag5_vector_BC_failure_reason={fail_reason}", flush=True)
+    print(
+        "[V2_BC] current_physical_model_status="
+        "V2_INTENDED_PHYSICS_NOT_INVALIDATED_IMPLEMENTATION_BC_BUG_CONFIRMED",
+        flush=True,
+    )
+    print(
+        "[V2_BC] current_solver_status="
+        "ST_SINVERT_FAILURE_EVIDENCE_CONFOUNDED_BY_INCOMPLETE_TAG5_VECTOR_BC",
+        flush=True,
+    )
+    print("[V2_BC] mesh_convergence_resume=BLOCKED", flush=True)
+    print("[V2_BC] production_promotion=BLOCKED", flush=True)
+    print("[V2_BC] no_new_eigensolve_executed=True", flush=True)
+    print("[V2_BC] additional_eps=NOT_AUTHORIZED", flush=True)
+    print("[V2_BC] jd_wiring_authorized=False", flush=True)
+    print("[V2_BC] artifact_storage_policy_applied=True", flush=True)
+    print(
+        "[V2_BC] raw_capture_requirement="
+        "B3 raw composition still requires one pre-normalization/pre-restriction/pre-BC "
+        "raw-block capture interface in fem_main_3d.py",
+        flush=True,
+    )
+    return 0 if pass_flag else 2
+
+
 def main() -> int:
     import sys
 
     pre = _precheck()
+
+    if _is_v2_vector_bc_contract_only_mode(sys.argv):
+        return _run_v2_vector_bc_contract_only(pre)
 
     if _is_b3_raw_composition_contract_only_mode(sys.argv):
         return _run_b3_raw_composition_contract_only(pre)
