@@ -182,31 +182,35 @@ def _destroy_mats_deduped(mats: List[Any]) -> tuple[int, int, bool]:
 
 def _petsc_quadratic_form(mat: Any, x_arr: np.ndarray) -> float:
     x_arr = np.asarray(x_arr, dtype=np.float64).ravel()
-    vx = _petsc_vec_from_array(mat, x_arr)
+    vx = my = None
     try:
+        vx = _petsc_vec_from_array(mat, x_arr)
         Mx, my = _petsc_matvec(mat, vx)
         q = float(np.real(np.vdot(x_arr, Mx)))
     finally:
-        vx.destroy()
-        my.destroy()
+        for obj in (my, vx):
+            if obj is not None:
+                obj.destroy()
     return q
 
 
 def _petsc_cross_quadratic_form(mat: Any, x_col: np.ndarray, y_row: np.ndarray) -> float:
     x_col = np.asarray(x_col, dtype=np.float64).ravel()
     y_row = np.asarray(y_row, dtype=np.float64).ravel()
-    vx = mat.createVecRight()
-    vx.setArray(x_col.copy())
+    vx = my = None
     try:
-        vx.assemble()
-    except Exception:
-        pass
-    try:
+        vx = mat.createVecRight()
+        vx.setArray(x_col.copy())
+        try:
+            vx.assemble()
+        except Exception:
+            pass
         Mx, my = _petsc_matvec(mat, vx)
         q = float(np.real(np.vdot(y_row, Mx)))
     finally:
-        vx.destroy()
-        my.destroy()
+        for obj in (my, vx):
+            if obj is not None:
+                obj.destroy()
     return q
 
 
@@ -929,6 +933,7 @@ def _audit_b3_seed_bc_conditioning(
     tag5_rows: np.ndarray,
     p_release_rows: np.ndarray,
     operator_bc_row_crc32: int | None,
+    skip_rayleigh_replay: bool = False,
 ) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "B3_seed_conditioning_method": "ZERO_FINAL_B3_DIRICHLET_ROWS_ON_MAPPED_HISTORICAL_SEED",
@@ -953,17 +958,22 @@ def _audit_b3_seed_bc_conditioning(
     pre = _b3_seed_dirichlet_subvector_metrics(
         b3_seed, dirichlet_rows=bc_rows, tag5_rows=tag5_rows, p_release_rows=p_release_rows
     )
-    pre_replay = _rayleigh_residual_like(A_b3, M_b3, b3_seed, u_idx=u_idx, p_idx=p_idx)
-    pre_f = _safe_float(pre_replay.get("replay_frequency_hz"))
     out["B3_seed_preconditioning_total_norm"] = _safe_float(pre["total_norm"])
     out["B3_seed_preconditioning_dirichlet_norm"] = _safe_float(pre["dirichlet_norm"])
     out["B3_seed_preconditioning_dirichlet_norm_fraction"] = _safe_float(pre["dirichlet_norm_fraction"])
     out["B3_seed_preconditioning_nonzero_dirichlet_entry_count"] = int(pre["nonzero_dirichlet_entry_count"])
     out["B3_seed_preconditioning_tag5_norm"] = _safe_float(pre["tag5_norm"])
     out["B3_seed_preconditioning_pressure_release_norm"] = _safe_float(pre["pressure_release_norm"])
-    out["B3_seed_preconditioning_rayleigh_frequency_hz"] = pre_f
-    out["B3_seed_preconditioning_lambda_near_unity_signature"] = _b3_lambda_near_unity_signature(pre_f)
-    out["B3_seed_rayleigh_frequency_hz"] = pre_f
+    if not skip_rayleigh_replay:
+        pre_replay = _rayleigh_residual_like(A_b3, M_b3, b3_seed, u_idx=u_idx, p_idx=p_idx)
+        pre_f = _safe_float(pre_replay.get("replay_frequency_hz"))
+        out["B3_seed_preconditioning_rayleigh_frequency_hz"] = pre_f
+        out["B3_seed_preconditioning_lambda_near_unity_signature"] = _b3_lambda_near_unity_signature(pre_f)
+        out["B3_seed_rayleigh_frequency_hz"] = pre_f
+    else:
+        out["B3_seed_preconditioning_rayleigh_frequency_hz"] = None
+        out["B3_seed_preconditioning_lambda_near_unity_signature"] = None
+        out["B3_seed_rayleigh_frequency_hz"] = None
 
     b3_conditioned = np.asarray(b3_seed, dtype=np.float64).copy()
     b3_conditioned[bc_rows] = 0.0
@@ -986,10 +996,6 @@ def _audit_b3_seed_bc_conditioning(
         out["B3_seed_conditioning_failure_reason"] = "conditioned_seed_vanished"
         return out
 
-    cond_replay = _rayleigh_residual_like(A_b3, M_b3, b3_conditioned, u_idx=u_idx, p_idx=p_idx)
-    out["B3_seed_conditioned_xH_Mx"] = _safe_float(cond_replay.get("xH_Mx"))
-    out["B3_seed_conditioned_rayleigh_frequency_hz"] = _safe_float(cond_replay.get("replay_frequency_hz"))
-    out["B3_seed_conditioned_relative_residual"] = _safe_float(cond_replay.get("replay_relative_residual"))
     p_block = b3_conditioned[p_idx]
     p_norm = float(np.linalg.norm(p_block))
     total_norm = float(np.linalg.norm(b3_conditioned))
@@ -998,6 +1004,15 @@ def _audit_b3_seed_bc_conditioning(
     )
     out["B3_seed_conditioned_u_norm"] = _safe_float(float(np.linalg.norm(b3_conditioned[u_idx])))
     out["B3_seed_conditioned_p_norm"] = _safe_float(p_norm)
+    if not skip_rayleigh_replay:
+        cond_replay = _rayleigh_residual_like(A_b3, M_b3, b3_conditioned, u_idx=u_idx, p_idx=p_idx)
+        out["B3_seed_conditioned_xH_Mx"] = _safe_float(cond_replay.get("xH_Mx"))
+        out["B3_seed_conditioned_rayleigh_frequency_hz"] = _safe_float(cond_replay.get("replay_frequency_hz"))
+        out["B3_seed_conditioned_relative_residual"] = _safe_float(cond_replay.get("replay_relative_residual"))
+    else:
+        out["B3_seed_conditioned_xH_Mx"] = None
+        out["B3_seed_conditioned_rayleigh_frequency_hz"] = None
+        out["B3_seed_conditioned_relative_residual"] = None
     return out
 
 
@@ -1091,10 +1106,6 @@ def _audit_b3_conditioned_seed_mass_decomposition(
             ),
         }
     )
-    helper = _rayleigh_metrics(m_final, m_final, x, seed_f_hz=float("nan"))
-    out["B3_conditioned_mass_helper_xH_Mx"] = _safe_float(helper.get("xH_Mx"))
-    out["B3_conditioned_mass_helper_rayleigh_lambda"] = _safe_float(helper.get("rayleigh_lambda"))
-
     free_u = np.setdiff1d(np.arange(n_u, dtype=np.int32), bc_rows[bc_rows < n_u], assume_unique=True)
     x_u_free = x_u[free_u] if free_u.size > 0 else np.asarray([], dtype=np.float64)
     out["B3_conditioned_mass_q_uu_on_free_u_support"] = _safe_float(q_uu)
@@ -2868,6 +2879,8 @@ def _run_b3_seed_replay_audit_only(
             return 2
 
         if conditioned_mass_decomposition_only:
+            payload["B3_mass_audit_started"] = False
+            payload["B3_mass_audit_precheck_stage"] = "before_bc_conditioning"
             cond_meta = _audit_b3_seed_bc_conditioning(
                 A_b3=A_b3,
                 M_b3=M_b3,
@@ -2878,6 +2891,7 @@ def _run_b3_seed_replay_audit_only(
                 tag5_rows=tag5_rows,
                 p_release_rows=p_release_rows,
                 operator_bc_row_crc32=payload.get("B3_operator_bc_row_crc32"),
+                skip_rayleigh_replay=True,
             )
             payload.update(cond_meta)
             if not bool(cond_meta.get("B3_seed_conditioned_vector_constructed")):
@@ -2885,6 +2899,8 @@ def _run_b3_seed_replay_audit_only(
                 return 2
             b3_conditioned = np.asarray(b3_seed, dtype=np.float64).copy()
             b3_conditioned[bc_rows] = 0.0
+            payload["B3_mass_audit_precheck_stage"] = "before_mass_decomposition"
+            payload["B3_mass_audit_started"] = True
             mass_meta = _audit_b3_conditioned_seed_mass_decomposition(
                 m_uu_pre_bc=m_uu_b3,
                 m_pu_pre_bc=m_pu_b3,
@@ -2899,6 +2915,31 @@ def _run_b3_seed_replay_audit_only(
                 destroy_seen=mat_destroy_seen,
             )
             payload.update(mass_meta)
+            payload["B3_mass_audit_precheck_stage"] = "after_mass_decomposition"
+            payload["B3_mass_audit_precheck_stage"] = "before_conditioned_replay_helper"
+            try:
+                cond_replay = _rayleigh_residual_like(
+                    A_b3, M_b3, b3_conditioned, u_idx=u_idx, p_idx=p_idx
+                )
+                payload["B3_mass_audit_precheck_stage"] = "after_conditioned_replay_helper"
+                payload["B3_seed_conditioned_xH_Mx"] = _safe_float(cond_replay.get("xH_Mx"))
+                payload["B3_seed_conditioned_rayleigh_frequency_hz"] = _safe_float(
+                    cond_replay.get("replay_frequency_hz")
+                )
+                payload["B3_seed_conditioned_relative_residual"] = _safe_float(
+                    cond_replay.get("replay_relative_residual")
+                )
+                payload["B3_mass_audit_optional_replay_helper_pass"] = True
+                payload["B3_mass_audit_optional_replay_helper_failure_reason"] = None
+            except Exception as replay_exc:
+                payload["B3_mass_audit_precheck_stage"] = "conditioned_replay_helper_failed_after_mass_decomposition"
+                payload["B3_mass_audit_optional_replay_helper_pass"] = False
+                payload["B3_mass_audit_optional_replay_helper_failure_exception_type"] = type(
+                    replay_exc
+                ).__name__
+                payload["B3_mass_audit_optional_replay_helper_failure_reason"] = (
+                    f"{type(replay_exc).__name__}:{replay_exc}"
+                )
             verdict = str(
                 mass_meta.get(
                     "B3_conditioned_seed_mass_diagnostic_classification",
@@ -2983,7 +3024,47 @@ def _run_b3_seed_replay_audit_only(
             verdict = "B3_SEED_REPLAY_DIAGNOSTIC_PASS_READY_FOR_FIRST_JD_DESIGN_REVIEW"
         return 0 if verdict.startswith("B3_SEED_REPLAY_DIAGNOSTIC_PASS") else 2
     except Exception as exc:
-        if bool(payload.get("B3_seed_operator_build_pass")):
+        if conditioned_mass_decomposition_only:
+            exc_type = type(exc).__name__
+            exc_reason = f"{exc_type}:{exc}"
+            if bool(payload.get("B3_mass_audit_started")):
+                payload["B3_mass_audit_failure_stage"] = "mass_decomposition"
+                payload["B3_mass_audit_failure_exception_type"] = exc_type
+                payload["B3_mass_audit_failure_reason"] = exc_reason
+                verdict = str(
+                    payload.get("B3_conditioned_seed_mass_diagnostic_classification")
+                    or "B3_CONDITIONED_SEED_MASS_AUDIT_BLOCKED_BY_MASS_DECOMPOSITION_INTERFACE"
+                )
+            elif bool(payload.get("B3_seed_conditioned_vector_constructed")):
+                payload["B3_mass_audit_failure_stage"] = (
+                    "conditioned_replay_helper_before_mass_decomposition"
+                )
+                payload["B3_mass_audit_failure_exception_type"] = exc_type
+                payload["B3_mass_audit_failure_reason"] = exc_reason
+                verdict = (
+                    "B3_CONDITIONED_SEED_MASS_AUDIT_BLOCKED_BY_PREAUDIT_REPLAY_HELPER_INTERFACE"
+                )
+            elif bool(payload.get("B3_seed_mapped_vector_constructed")):
+                payload["B3_mass_audit_failure_stage"] = "bc_conditioning_before_mass_decomposition"
+                payload["B3_mass_audit_failure_exception_type"] = exc_type
+                payload["B3_mass_audit_failure_reason"] = exc_reason
+                verdict = "B3_SEED_REPLAY_BLOCKED_BY_BC_CONDITIONING_INTERFACE"
+            elif bool(payload.get("B3_seed_operator_build_pass")):
+                payload["B3_mass_audit_failure_stage"] = "seed_mapping_after_operator_build"
+                payload["B3_mass_audit_failure_exception_type"] = exc_type
+                payload["B3_mass_audit_failure_reason"] = exc_reason
+                verdict = "B3_SEED_REPLAY_BLOCKED_BY_SEED_MAPPING_INTERFACE"
+            else:
+                payload["B3_mass_audit_failure_stage"] = "operator_build"
+                payload["B3_mass_audit_failure_exception_type"] = exc_type
+                payload["B3_mass_audit_failure_reason"] = exc_reason
+                verdict = "B3_SEED_REPLAY_BLOCKED_BY_OPERATOR_RESTRICTION_INTERFACE"
+        elif bool(payload.get("B3_seed_operator_build_pass")) and not bool(
+            payload.get("B3_seed_mapped_vector_constructed")
+        ):
+            payload["B3_seed_mapping_failure_reason"] = f"{type(exc).__name__}:{exc}"
+            verdict = "B3_SEED_REPLAY_BLOCKED_BY_SEED_MAPPING_INTERFACE"
+        elif bool(payload.get("B3_seed_mapped_vector_constructed")):
             payload["B3_seed_mapping_failure_reason"] = f"{type(exc).__name__}:{exc}"
             verdict = "B3_SEED_REPLAY_BLOCKED_BY_SEED_MAPPING_INTERFACE"
         else:

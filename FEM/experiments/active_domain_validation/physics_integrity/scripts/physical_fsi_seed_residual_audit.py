@@ -224,19 +224,23 @@ def _block_residual_contributions(
     x_u = _mask_on_indices(n, x, u_idx)
     x_p = _mask_on_indices(n, x, p_idx)
 
-    vx = _petsc_vec_from_array(A, x)
-    vx_u = _petsc_vec_from_array(A, x_u)
-    vx_p = _petsc_vec_from_array(A, x_p)
+    vx = vx_u = vx_p = None
+    ay = ay_u = ay_p = None
+    my = my_u = my_p = None
     try:
-        Ax, _ = _petsc_matvec(A, vx)
-        Ax_u, _ = _petsc_matvec(A, vx_u)
-        Ax_p, _ = _petsc_matvec(A, vx_p)
-        Mx, _ = _petsc_matvec(M, vx)
-        Mx_u, _ = _petsc_matvec(M, vx_u)
-        Mx_p, _ = _petsc_matvec(M, vx_p)
+        vx = _petsc_vec_from_array(A, x)
+        vx_u = _petsc_vec_from_array(A, x_u)
+        vx_p = _petsc_vec_from_array(A, x_p)
+        Ax, ay = _petsc_matvec(A, vx)
+        Ax_u, ay_u = _petsc_matvec(A, vx_u)
+        Ax_p, ay_p = _petsc_matvec(A, vx_p)
+        Mx, my = _petsc_matvec(M, vx)
+        Mx_u, my_u = _petsc_matvec(M, vx_u)
+        Mx_p, my_p = _petsc_matvec(M, vx_p)
     finally:
-        for vec in (vx, vx_u, vx_p):
-            vec.destroy()
+        for obj in (my_p, my_u, my, ay_p, ay_u, ay, vx_p, vx_u, vx):
+            if obj is not None:
+                obj.destroy()
 
     r_total = Ax - float(lam0) * Mx
     r_uu = np.zeros(n, dtype=np.float64)
@@ -304,14 +308,15 @@ def _rayleigh_metrics(
     *,
     seed_f_hz: float,
 ) -> Dict[str, float]:
-    vx = _petsc_vec_from_array(A, x0)
+    vx = ay = my = None
     try:
+        vx = _petsc_vec_from_array(A, x0)
         Ax, ay = _petsc_matvec(A, vx)
         Mx, my = _petsc_matvec(M, vx)
     finally:
-        vx.destroy()
-        ay.destroy()
-        my.destroy()
+        for obj in (my, ay, vx):
+            if obj is not None:
+                obj.destroy()
     x = np.asarray(x0, dtype=np.float64).ravel()
     num = np.vdot(x, Ax)
     den = np.vdot(x, Mx)
