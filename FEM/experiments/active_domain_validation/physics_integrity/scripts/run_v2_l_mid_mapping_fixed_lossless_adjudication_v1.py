@@ -19,6 +19,7 @@ for _p in (SCRIPT_DIR,):
         sys.path.insert(0, str(_p))
 
 from v2_clean_adjudication_lane import OUT_SUBDIR_LOSSLESS_ADJUDICATION_V1, planned_clean_lane_policy
+from v2_clean_lane_preflight_gate import validate_gate_contract_for_eps_authorization
 from v2_mesh_convergence_common import (
     CONV_DIAG,
     case_by_id,
@@ -41,15 +42,26 @@ def main() -> int:
     parser.add_argument(
         "--run-eps",
         action="store_true",
-        help="NOT AUTHORIZED in current validation step; fails closed.",
+        help="Deprecated; use run_v2_lossless_adjudication_v1_gated_runner.py --authorize-single-eps-run.",
+    )
+    parser.add_argument(
+        "--authorize-single-eps-run",
+        action="store_true",
+        help="NOT AUTHORIZED in current step; requires gate contract pass.",
     )
     args = parser.parse_args()
 
-    if args.run_eps:
+    if args.run_eps or args.authorize_single_eps_run:
+        preflight = {}
+        if PREFLIGHT_JSON.is_file():
+            preflight = json.loads(PREFLIGHT_JSON.read_text(encoding="utf-8"))
+        ok, issues = validate_gate_contract_for_eps_authorization(preflight)
         print(
-            "[lossless_adjudication_v1] EPS run not authorized; use preflight bundle first.",
+            "[lossless_adjudication_v1] EPS blocked: use gated runner after VM gate confirmation.",
             file=sys.stderr,
         )
+        if not ok:
+            print(f"[lossless_adjudication_v1] gate_issues={issues}", file=sys.stderr)
         return 2
 
     manifest = load_manifest()

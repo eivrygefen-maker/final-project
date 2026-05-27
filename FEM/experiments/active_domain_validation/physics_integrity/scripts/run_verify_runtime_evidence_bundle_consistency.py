@@ -28,6 +28,11 @@ EXPECTED_POLICY = {
     **PROVENANCE_APPROVED_DEFAULTS,
     "sigma_used_hz": 243.5754171175576,
     "st_type": "missing_in_prior_artifacts",
+    "prior_authoritative_persisted_st_type": "missing",
+    "st_type_value": "sinvert",
+    "st_type_provenance": "inferred_from_evaluation_rows_not_authoritative_prior_policy",
+    "st_type_persisted_in_prior_authoritative_artifacts": False,
+    "future_adjudication_required_persisted_st_type": "sinvert",
 }
 
 EXPECTED_GAP = {

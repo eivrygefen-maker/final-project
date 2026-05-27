@@ -73,11 +73,8 @@ def build_operator_policy_from_artifacts(
             solve_result.get("seed_frequency_hz") or solve_result.get("target_hz") or target_hz
         ),
         "actual_sigma_hz": sigma,
-        "st_type": (
-            st_fields.get("st_type")
-            or eps_diag.get("st_type")
-            or st_op.get("st_type")
-        ),
+        # Authoritative st_type only from persisted policy roots (not evaluation rows).
+        "st_type": eps_diag.get("st_type") or solve_result.get("st_type"),
         "sigma_used_hz": sigma,
         "eps_eigenvalue_semantics": st_fields.get("eps_eigenvalue_semantics")
         or eps_diag.get("eps_eigenvalue_semantics", "slepc_backtransformed"),
@@ -171,11 +168,11 @@ def merge_operator_policy_from_provenance_inventory(
             policy[k] = v
     if policy.get("sigma_used_hz") is None and policy.get("actual_sigma_hz") is not None:
         policy["sigma_used_hz"] = policy["actual_sigma_hz"]
-    if policy.get("st_type") in (None, "missing", ""):
-        policy["st_type"] = "missing_in_prior_artifacts"
-        policy["st_type_inferred_from_evaluation_rows"] = APPROVED_ST_TYPE_INFERRED
-        if "st_type" not in gap_fields:
-            gap_fields.append("st_type")
+    from v2_clean_lane_preflight_gate import apply_st_type_provenance_fields
+
+    apply_st_type_provenance_fields(
+        policy, gap_fields=gap_fields, inferred_value=APPROVED_ST_TYPE_INFERRED
+    )
     meta = {
         "operator_policy_provenance_gap": len(gap_fields) > 0,
         "operator_policy_provenance_gap_fields": gap_fields,
