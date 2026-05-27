@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import ast
 import inspect
 import json
 import math
@@ -79,36 +80,108 @@ def _compact_indices(idx: np.ndarray) -> Dict[str, Any]:
 
 
 def _preassembly_contract_check() -> Dict[str, Any]:
+    checks: Dict[str, bool] = {
+        "preassembly_helper_import_pass": False,
+        "preassembly_rayleigh_signature_pass": False,
+        "preassembly_residual_signature_pass": False,
+        "preassembly_writer_available_pass": False,
+        "preassembly_no_eigensolve_call_pass": False,
+    }
+    reasons: List[Dict[str, str]] = []
+    guard_method = "ast_call_scan_for_attr_solve_on_names_eps_or_EPS"
+    helper_semantics = True
+    helper_source = (
+        "physical_fsi_seed_residual_audit._block_residual_contributions + "
+        "physical_fsi_seed_residual_audit._rayleigh_metrics"
+    )
+
     try:
-        sig_ray = inspect.signature(_rayleigh_metrics)
-        sig_blk = inspect.signature(_block_residual_contributions)
-        ray_ok = "seed_f_hz" in sig_ray.parameters
-        blk_ok = all(k in sig_blk.parameters for k in ("lam0", "u_idx", "p_idx"))
-        writer_ok = callable(_write_json_atomic)
-        src = Path(__file__).read_text(encoding="utf-8")
-        no_eps_ref = "eps.solve(" not in src and ".solve()" not in src.replace("raise SystemExit(main())", "")
-        ok = bool(ray_ok and blk_ok and writer_ok and no_eps_ref)
-        reason = None if ok else (
-            "helper_signature_mismatch_or_writer_missing_or_eps_reference_detected"
+        checks["preassembly_helper_import_pass"] = callable(_rayleigh_metrics) and callable(
+            _block_residual_contributions
         )
-        return {
-            "preassembly_contract_pass": ok,
-            "failure_reason": reason,
-            "residual_helper_source": (
-                "physical_fsi_seed_residual_audit._block_residual_contributions + "
-                "physical_fsi_seed_residual_audit._rayleigh_metrics"
-            ),
-            "residual_helper_semantics_matches_validated_replay": True,
-            "invalid_import_removed": True,
-        }
+        if not checks["preassembly_helper_import_pass"]:
+            reasons.append(
+                {
+                    "check": "preassembly_helper_import_pass",
+                    "reason": "expected callable imported helpers; got non-callable",
+                }
+            )
+
+        sig_ray = inspect.signature(_rayleigh_metrics)
+        checks["preassembly_rayleigh_signature_pass"] = "seed_f_hz" in sig_ray.parameters
+        if not checks["preassembly_rayleigh_signature_pass"]:
+            reasons.append(
+                {
+                    "check": "preassembly_rayleigh_signature_pass",
+                    "reason": (
+                        "expected parameter 'seed_f_hz' in _rayleigh_metrics signature; "
+                        f"got {list(sig_ray.parameters.keys())}"
+                    ),
+                }
+            )
+
+        sig_blk = inspect.signature(_block_residual_contributions)
+        blk_needed = ("lam0", "u_idx", "p_idx")
+        checks["preassembly_residual_signature_pass"] = all(
+            k in sig_blk.parameters for k in blk_needed
+        )
+        if not checks["preassembly_residual_signature_pass"]:
+            reasons.append(
+                {
+                    "check": "preassembly_residual_signature_pass",
+                    "reason": (
+                        "expected parameters lam0/u_idx/p_idx in _block_residual_contributions; "
+                        f"got {list(sig_blk.parameters.keys())}"
+                    ),
+                }
+            )
+
+        checks["preassembly_writer_available_pass"] = callable(_write_json_atomic)
+        if not checks["preassembly_writer_available_pass"]:
+            reasons.append(
+                {
+                    "check": "preassembly_writer_available_pass",
+                    "reason": "_write_json_atomic is not callable",
+                }
+            )
+
+        src = Path(__file__).read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        bad_calls: List[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr == "solve" and isinstance(node.func.value, ast.Name):
+                    if node.func.value.id in {"eps", "EPS"}:
+                        bad_calls.append(f"{node.func.value.id}.solve")
+        checks["preassembly_no_eigensolve_call_pass"] = len(bad_calls) == 0
+        if not checks["preassembly_no_eigensolve_call_pass"]:
+            reasons.append(
+                {
+                    "check": "preassembly_no_eigensolve_call_pass",
+                    "reason": f"detected forbidden eigensolve calls: {bad_calls}",
+                }
+            )
     except Exception as exc:
-        return {
-            "preassembly_contract_pass": False,
-            "failure_reason": f"{type(exc).__name__}: {exc}",
-            "residual_helper_source": "UNAVAILABLE",
-            "residual_helper_semantics_matches_validated_replay": False,
-            "invalid_import_removed": True,
-        }
+        reasons.append(
+            {
+                "check": "preassembly_contract_check_runtime",
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+        )
+
+    contract_pass = all(checks.values()) and len(reasons) == 0
+    if not checks["preassembly_helper_import_pass"]:
+        helper_source = "UNAVAILABLE"
+        helper_semantics = False
+    return {
+        **checks,
+        "preassembly_no_eigensolve_call_guard_method": guard_method,
+        "preassembly_contract_pass": contract_pass,
+        "preassembly_failure_reasons": reasons,
+        "residual_helper_source": helper_source,
+        "residual_helper_semantics_matches_validated_replay": helper_semantics,
+        "invalid_import_removed": True,
+    }
 
 
 def _replay_like_metrics(
@@ -138,12 +211,41 @@ def main() -> int:
         return 2
 
     pre = _preassembly_contract_check()
+    print(
+        f"[B3_preflight] preassembly_helper_import_pass={pre['preassembly_helper_import_pass']}",
+        flush=True,
+    )
+    print(
+        f"[B3_preflight] preassembly_rayleigh_signature_pass={pre['preassembly_rayleigh_signature_pass']}",
+        flush=True,
+    )
+    print(
+        f"[B3_preflight] preassembly_residual_signature_pass={pre['preassembly_residual_signature_pass']}",
+        flush=True,
+    )
+    print(
+        f"[B3_preflight] preassembly_writer_available_pass={pre['preassembly_writer_available_pass']}",
+        flush=True,
+    )
+    print(
+        f"[B3_preflight] preassembly_no_eigensolve_call_pass={pre['preassembly_no_eigensolve_call_pass']}",
+        flush=True,
+    )
+    print(
+        f"[B3_preflight] preassembly_no_eigensolve_call_guard_method={pre['preassembly_no_eigensolve_call_guard_method']}",
+        flush=True,
+    )
+    print(
+        f"[B3_preflight] preassembly_contract_pass={pre['preassembly_contract_pass']}",
+        flush=True,
+    )
     if not bool(pre["preassembly_contract_pass"]):
-        print("[B3_preflight] preassembly_contract_pass=False", flush=True)
-        print(f"[B3_preflight] failure_reason={pre['failure_reason']}", flush=True)
+        print(
+            f"[B3_preflight] preassembly_failure_reasons={json.dumps(pre['preassembly_failure_reasons'])}",
+            flush=True,
+        )
         print("[B3_preflight] no_new_eigensolve_executed=True", flush=True)
         return 2
-    print("[B3_preflight] preassembly_contract_pass=True", flush=True)
     import sys
 
     if "--precheck-only" in sys.argv:
@@ -292,6 +394,16 @@ def main() -> int:
             "residual_helper_semantics_matches_validated_replay"
         ],
         "invalid_import_removed": pre["invalid_import_removed"],
+        "preassembly_helper_import_pass": pre["preassembly_helper_import_pass"],
+        "preassembly_rayleigh_signature_pass": pre["preassembly_rayleigh_signature_pass"],
+        "preassembly_residual_signature_pass": pre["preassembly_residual_signature_pass"],
+        "preassembly_writer_available_pass": pre["preassembly_writer_available_pass"],
+        "preassembly_no_eigensolve_call_guard_method": pre[
+            "preassembly_no_eigensolve_call_guard_method"
+        ],
+        "preassembly_no_eigensolve_call_pass": pre["preassembly_no_eigensolve_call_pass"],
+        "preassembly_contract_pass": pre["preassembly_contract_pass"],
+        "preassembly_failure_reasons": pre["preassembly_failure_reasons"],
         "selected_cleaned_formulation_route": "B3",
         "B3_construction_implemented": bool(b3_constructed),
         "B3_shell_trace_space_constructed": bool(b3_constructed),
