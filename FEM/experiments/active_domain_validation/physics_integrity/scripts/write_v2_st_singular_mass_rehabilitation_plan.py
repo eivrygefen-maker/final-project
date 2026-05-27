@@ -31,6 +31,10 @@ SELF_TEST_JSON = CONV_DIAG / "v2_mapping_fixed_candidate_persistence_self_test.j
 PIPELINE_AUDIT_JSON = (
     CONV_DIAG / "v2_mapping_fixed_persistence_fixed_full_pipeline_audit.json"
 )
+LOSSLESS_POSTMORTEM_JSON = CONV_DIAG / "v2_lossless_adjudication_v1_mass_null_postmortem.json"
+LOSSLESS_DIAG_JSON = (
+    CONV_DIAG / "v2_l_mid_mapping_fixed_unregularized_lossless_adjudication_v1_diagnostic.json"
+)
 PF_VERDICT = "MAPPING_FIXED_UNREGULARIZED_BASELINE_CANDIDATE_PERSISTENCE_FAILURE"
 VM_PIPELINE_AUDIT_SHELL = (
     "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
@@ -72,6 +76,16 @@ def main() -> int:
     pipeline_audit = (
         json.loads(PIPELINE_AUDIT_JSON.read_text(encoding="utf-8"))
         if PIPELINE_AUDIT_JSON.is_file()
+        else {}
+    )
+    lossless_postmortem = (
+        json.loads(LOSSLESS_POSTMORTEM_JSON.read_text(encoding="utf-8"))
+        if LOSSLESS_POSTMORTEM_JSON.is_file()
+        else {}
+    )
+    lossless_diag = (
+        json.loads(LOSSLESS_DIAG_JSON.read_text(encoding="utf-8"))
+        if LOSSLESS_DIAG_JSON.is_file()
         else {}
     )
 
@@ -264,13 +278,32 @@ def main() -> int:
             "output_subdir": (
                 "seed_branch_recovery_diagnostic_mapping_fixed_unregularized_lossless_adjudication_v1"
             ),
-            "status": "prepare_only_not_authorized_for_eps",
+            "status": (
+                "single_eps_completed_mass_null_postmortem_pending"
+                if lossless_diag.get("eps_run_count_for_this_lane") == 1
+                and not lossless_postmortem
+                else (
+                    "single_eps_completed_"
+                    + str(lossless_postmortem.get("classification", "postmortem_complete"))
+                    if lossless_diag.get("eps_run_count_for_this_lane") == 1
+                    else "prepare_only_not_authorized_for_eps"
+                )
+            ),
+            "lossless_eps_completed": bool(
+                lossless_diag.get("eps_run_count_for_this_lane") == 1
+            ),
+            "lossless_replay_verdict": (lossless_diag.get("evaluation") or {}).get(
+                "diagnostic_verdict"
+            ),
+            "mass_null_classification": lossless_postmortem.get("classification"),
+            "additional_eps": "NOT_AUTHORIZED",
             "filter_classification_json": str(
                 CONV_DIAG / "v2_clean_adjudication_filter_and_policy_classification.json"
             ),
             "policy_equivalence_preflight_json": str(
                 CONV_DIAG / "v2_lossless_adjudication_v1_policy_equivalence_preflight.json"
             ),
+            "postmortem_json": str(LOSSLESS_POSTMORTEM_JSON),
         },
         "current_state_summary": {
             "persistence_self_test": "PASS" if self_test_pass else "pending_or_failed",
@@ -282,6 +315,11 @@ def main() -> int:
                 "completed" if pipeline_verdict else "report_only_required"
             ),
             "additional_eps_solve": "not_authorized",
+            "lossless_adjudication_v1": (
+                "completed_one_eps_mass_null"
+                if lossless_diag.get("eps_run_count_for_this_lane") == 1
+                else "not_run"
+            ),
         },
     }
 

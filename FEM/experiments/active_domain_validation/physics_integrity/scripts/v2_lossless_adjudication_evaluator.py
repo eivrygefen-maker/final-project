@@ -244,6 +244,10 @@ def evaluate_lossless_adjudication_artifacts(
                 branch_recovery_from_row=mapping_fixed_branch_recovery_from_row,
                 replay_candidate_metrics=replay_candidate_metrics,
             )
+            row["candidate_index"] = m.get(
+                "candidate_index", m.get("eps_slot_index", m.get("mode_index"))
+            )
+            row["eps_slot_index"] = m.get("eps_slot_index", row.get("candidate_index"))
             row["vector_authoritative"] = "lossless_dense"
             row["lossless_vector_path"] = lossless_rel
             row["legacy_sparse_comparison_path"] = m.get("legacy_sparse_comparison_path")

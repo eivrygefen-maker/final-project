@@ -153,7 +153,10 @@ def _evaluate_one_candidate(
     rel = str(mode_row.get("vector_path", ""))
     vec_path = (out_dir / rel).resolve()
     row: Dict[str, Any] = {
-        "candidate_index": mode_row.get("mode_index"),
+        "candidate_index": mode_row.get(
+            "candidate_index", mode_row.get("eps_slot_index", mode_row.get("mode_index"))
+        ),
+        "eps_slot_index": mode_row.get("eps_slot_index", mode_row.get("candidate_index")),
         "vector_file": str(vec_path),
         "vector_file_exists": vec_path.is_file(),
         "vector_load_status": "pending",

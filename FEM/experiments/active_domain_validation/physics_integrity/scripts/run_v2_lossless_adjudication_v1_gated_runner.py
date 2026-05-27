@@ -105,6 +105,21 @@ def main() -> int:
         )
         return 0
 
+    auth_record = CONV_DIAG / "v2_lossless_adjudication_v1_eps_authorization_record.json"
+    if auth_record.is_file():
+        try:
+            rec = json.loads(auth_record.read_text(encoding="utf-8"))
+            if int(rec.get("eps_run_count_for_this_lane", 0)) >= 1:
+                print(
+                    "[gated_runner] ABORT: isolated lossless EPS already consumed "
+                    "(eps_run_count_for_this_lane>=1). Use report-only postmortem only.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return 2
+        except Exception:
+            pass
+
     rc = _run(
         [
             sys.executable,
