@@ -164,13 +164,43 @@ def _b3_nest_coupled_operators(
     return a_nest, m_nest, m_up
 
 
+def _b3_matnest_to_sparse_aij(mat_nest: Any, *, comm: Any) -> tuple[Any, str, bool]:
+    """Convert MatNest to monolithic sparse AIJ. Returns (aij_mat, petsc_type_used, destroy_nest)."""
+    errors: List[str] = []
+    for typ in ("aij", "mpiaij"):
+        try:
+            out = mat_nest.convert(typ)
+            mat_out = mat_nest if out is None else out
+            type_name = str(mat_out.getType()).lower()
+            if "nest" in type_name:
+                errors.append(f"{typ}:still_nest_after_convert")
+                continue
+            return mat_out, typ, bool(out is not None)
+        except Exception as exc:
+            errors.append(f"{typ}:{type(exc).__name__}:{exc}")
+    out_mat = PETSc.Mat().create(comm=comm)
+    try:
+        mat_nest.convert("aij", out=out_mat)
+        out_mat.assemble()
+        type_name = str(out_mat.getType()).lower()
+        if "nest" in type_name:
+            raise RuntimeError("convert_out_still_nest")
+        return out_mat, "aij", True
+    except Exception as exc:
+        _destroy_mat(out_mat)
+        raise RuntimeError(
+            "B3_matnest_to_aij_conversion_failed:"
+            + ";".join(errors + [f"out:{type(exc).__name__}:{exc}"])
+        ) from exc
+
+
 def _b3_pressure_release_rows_retained(
     msh: Any,
     facet_tags: Any,
     *,
     n_u_b3: int,
     p_air_collapsed: np.ndarray,
-) -> np.ndarray:
+) -> tuple[np.ndarray, Dict[str, Any]]:
     p_air_collapsed = np.asarray(p_air_collapsed, dtype=np.int32).ravel()
     p_el = element("Lagrange", msh.basix_cell(), 1)
     v_p = fem.functionspace(msh, p_el)
@@ -185,7 +215,14 @@ def _b3_pressure_release_rows_retained(
         j = inv.get(int(d))
         if j is not None:
             rows.append(int(n_u_b3) + int(j))
-    return np.unique(np.asarray(rows, dtype=np.int32))
+    rows_arr = np.unique(np.asarray(rows, dtype=np.int32))
+    pr_meta = {
+        "B3_pressure_release_row_count": int(rows_arr.size),
+        "B3_pressure_release_BC_mapped_to_retained_p_layout": bool(
+            p_sh.size == 0 or all(inv.get(int(d)) is not None for d in p_sh.tolist())
+        ),
+    }
+    return rows_arr, pr_meta
 
 
 def _map_parent_seed_to_b3(
@@ -272,13 +309,26 @@ def _build_b3_scaled_restricted_operators_in_memory(
         "B3_retained_pressure_dimension": n_p_active,
         "B3_pressure_active_index_set_constructed": bool(n_p_active > 0),
         "B3_MatNest_arbitrary_submatrix_path_removed": True,
+        "B3_MatNest_zero_rows_columns_path_removed": True,
+        "B3_sparse_AIJ_used_for_zero_rows_columns": False,
         "B3_sparse_blockwise_pressure_restriction_pass": False,
         "B3_sparse_blockwise_pressure_restriction_failure_reason": None,
         "B3_final_MatNest_constructed_after_blockwise_restriction": False,
+        "B3_final_MatNest_conversion_to_sparse_AIJ_attempted": False,
+        "B3_final_sparse_AIJ_operator_constructed": False,
+        "B3_final_sparse_AIJ_conversion_method": None,
+        "B3_final_sparse_AIJ_A_shape": None,
+        "B3_final_sparse_AIJ_M_shape": None,
+        "B3_final_sparse_AIJ_operator_dimension_contract_pass": False,
+        "B3_final_sparse_AIJ_conversion_failure_reason": None,
         "B3_final_operator_shape": None,
         "B3_final_operator_dimension_contract_pass": False,
+        "B3_algebraic_BC_application_matrix_type": None,
+        "B3_pressure_release_BC_mapped_to_retained_p_layout": False,
+        "B3_pressure_release_row_count": 0,
         "B3_algebraic_BC_applied_after_blockwise_pressure_restriction": False,
         "B3_scaled_restricted_BC_operator_contract_pass": False,
+        "B3_BC_application_failure_reason": None,
         }
     )
     inv_u = 1.0 / max(float(s_uu), 1.0e-30)
@@ -327,24 +377,60 @@ def _build_b3_scaled_restricted_operators_in_memory(
     meta["B3_seed_operator_build_stage"] = "sparse_blockwise_pressure_restriction_complete"
 
     mats_to_destroy.extend([a_uu, m_uu, a_up_act, a_pu_act, m_pu_act, a_pp_act, m_pp_act])
-    a_b3, m_b3, m_up = _b3_nest_coupled_operators(
+    a_nest, m_nest, m_up = _b3_nest_coupled_operators(
         a_uu, a_up_act, a_pu_act, a_pp_act, m_uu, m_pu_act, m_pp_act, comm=comm
     )
-    mats_to_destroy.extend([a_b3, m_b3, m_up])
+    mats_to_destroy.append(m_up)
     n_w = int(n_u + n_p_active)
     meta["B3_final_MatNest_constructed_after_blockwise_restriction"] = True
     meta["B3_final_operator_shape"] = [n_w, n_w]
     meta["B3_final_operator_dimension_contract_pass"] = bool(
-        a_b3.getSize() == (n_w, n_w) and m_b3.getSize() == (n_w, n_w)
+        a_nest.getSize() == (n_w, n_w) and m_nest.getSize() == (n_w, n_w)
     )
     if not meta["B3_final_operator_dimension_contract_pass"]:
         raise RuntimeError("B3_final_operator_dimension_contract_failed")
     meta["B3_seed_operator_build_stage"] = "final_matnest_constructed"
 
+    meta["B3_final_MatNest_conversion_to_sparse_AIJ_attempted"] = True
+    meta["B3_seed_operator_build_stage"] = "pre_matnest_to_aij_conversion"
+    meta["B3_final_sparse_AIJ_conversion_method"] = (
+        "PETSc_MatNest_convert_to_AIJ_before_algebraic_BC_application"
+    )
+    try:
+        a_b3, _a_typ, destroy_a_nest = _b3_matnest_to_sparse_aij(a_nest, comm=comm)
+        m_b3, _m_typ, destroy_m_nest = _b3_matnest_to_sparse_aij(m_nest, comm=comm)
+    except Exception as exc:
+        meta["B3_final_sparse_AIJ_operator_constructed"] = False
+        meta["B3_final_sparse_AIJ_conversion_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        meta["B3_seed_operator_build_stage"] = "matnest_to_aij_conversion_failed"
+        raise
+    if destroy_a_nest:
+        _destroy_mat(a_nest)
+    if destroy_m_nest:
+        _destroy_mat(m_nest)
+    meta["B3_seed_operator_build_stage"] = "post_matnest_to_aij_conversion"
+    meta["B3_final_sparse_AIJ_operator_constructed"] = True
+    meta["B3_final_sparse_AIJ_A_shape"] = _mat_shape(a_b3)
+    meta["B3_final_sparse_AIJ_M_shape"] = _mat_shape(m_b3)
+    aij_dim_ok = bool(
+        a_b3.getSize() == (n_w, n_w)
+        and m_b3.getSize() == (n_w, n_w)
+        and "nest" not in str(a_b3.getType()).lower()
+        and "nest" not in str(m_b3.getType()).lower()
+    )
+    meta["B3_final_sparse_AIJ_operator_dimension_contract_pass"] = aij_dim_ok
+    if not aij_dim_ok:
+        meta["B3_final_sparse_AIJ_conversion_failure_reason"] = "aij_dimension_or_type_contract_failed"
+        meta["B3_seed_operator_build_stage"] = "matnest_to_aij_conversion_failed"
+        raise RuntimeError(meta["B3_final_sparse_AIJ_conversion_failure_reason"])
+    meta["B3_sparse_AIJ_used_for_zero_rows_columns"] = True
+    mats_to_destroy.extend([a_b3, m_b3])
+
     meta["B3_seed_operator_build_stage"] = "pre_pressure_release_row_locate"
-    p_release = _b3_pressure_release_rows_retained(
+    p_release, pr_meta = _b3_pressure_release_rows_retained(
         msh, facet_tags, n_u_b3=n_u, p_air_collapsed=p_air_collapsed
     )
+    meta.update(pr_meta)
     meta["B3_seed_operator_build_stage"] = "post_pressure_release_row_locate"
     bc_rows = np.unique(
         np.concatenate(
@@ -354,14 +440,40 @@ def _build_b3_scaled_restricted_operators_in_memory(
             ]
         ).astype(np.int32, copy=False)
     )
-    bc_applied = bool(bc_rows.size > 0)
-    if bc_applied:
-        fem3d._petsc_mat_zero_dirichlet_rows(a_b3, bc_rows, diag=1.0, zero_columns=True)
-        fem3d._petsc_mat_zero_dirichlet_rows(m_b3, bc_rows, diag=1.0, zero_columns=True)
+    tag5_ok = bool(
+        b3_fix_u_rows.size > 0
+        and int(np.unique(np.asarray(b3_fix_u_rows, dtype=np.int32).ravel() // 3).size * 3)
+        == int(b3_fix_u_rows.size)
+    )
+    meta["B3_tag5_vector_BC_contract_pass"] = tag5_ok
+    meta["B3_algebraic_BC_application_matrix_type"] = "AIJ"
+    bc_applied = False
+    meta["B3_seed_operator_build_stage"] = "pre_algebraic_BC_application"
+    if bc_rows.size > 0:
+        if "nest" in str(a_b3.getType()).lower() or "nest" in str(m_b3.getType()).lower():
+            meta["B3_BC_application_failure_reason"] = "refusing_MatZeroRowsColumns_on_MatNest"
+            raise RuntimeError(meta["B3_BC_application_failure_reason"])
+        try:
+            fem3d._petsc_mat_zero_dirichlet_rows(a_b3, bc_rows, diag=1.0, zero_columns=True)
+            fem3d._petsc_mat_zero_dirichlet_rows(m_b3, bc_rows, diag=1.0, zero_columns=True)
+            bc_applied = True
+        except Exception as exc:
+            meta["B3_BC_application_failure_reason"] = f"{type(exc).__name__}:{exc}"
+            meta["B3_seed_operator_build_stage"] = "algebraic_BC_application_failed"
+            raise
+    meta["B3_seed_operator_build_stage"] = "post_algebraic_BC_application"
     meta["B3_algebraic_BC_applied_after_blockwise_pressure_restriction"] = bc_applied
     meta["B3_scaled_restricted_BC_operator_contract_pass"] = bool(
-        meta["B3_final_operator_dimension_contract_pass"] and bc_applied
+        aij_dim_ok
+        and bc_applied
+        and tag5_ok
+        and meta["B3_pressure_release_BC_mapped_to_retained_p_layout"]
     )
+    if not meta["B3_scaled_restricted_BC_operator_contract_pass"]:
+        meta["B3_BC_application_failure_reason"] = (
+            meta.get("B3_BC_application_failure_reason") or "B3_scaled_restricted_BC_operator_contract_failed"
+        )
+        raise RuntimeError(meta["B3_BC_application_failure_reason"])
 
     u_idx = np.arange(n_u, dtype=np.int32)
     p_idx = np.arange(n_u, n_u + n_p_active, dtype=np.int32)
@@ -2058,6 +2170,16 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
             )
             payload["B3_seed_operator_failure_exception_type"] = type(exc).__name__
             payload["B3_seed_operator_failure_exception_message"] = str(exc)
+            if op_meta.get("B3_final_MatNest_conversion_to_sparse_AIJ_attempted"):
+                verdict = "B3_SEED_REPLAY_BLOCKED_BY_OPERATOR_BC_APPLICATION_INTERFACE"
+            return 2
+
+        if not bool(payload.get("B3_scaled_restricted_BC_operator_contract_pass")):
+            payload["B3_seed_operator_build_failure_reason"] = (
+                payload.get("B3_BC_application_failure_reason")
+                or "B3_scaled_restricted_BC_operator_contract_failed"
+            )
+            verdict = "B3_SEED_REPLAY_BLOCKED_BY_OPERATOR_BC_APPLICATION_INTERFACE"
             return 2
 
         payload["B3_raw_sparse_coupling_projection_constructed"] = True
@@ -2178,7 +2300,10 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
             verdict = "B3_SEED_REPLAY_BLOCKED_BY_SEED_MAPPING_INTERFACE"
         else:
             payload["B3_seed_operator_build_failure_reason"] = f"{type(exc).__name__}:{exc}"
-            verdict = "B3_SEED_REPLAY_BLOCKED_BY_OPERATOR_RESTRICTION_INTERFACE"
+            if payload.get("B3_final_MatNest_conversion_to_sparse_AIJ_attempted"):
+                verdict = "B3_SEED_REPLAY_BLOCKED_BY_OPERATOR_BC_APPLICATION_INTERFACE"
+            else:
+                verdict = "B3_SEED_REPLAY_BLOCKED_BY_OPERATOR_RESTRICTION_INTERFACE"
         return 2
     finally:
         payload["next_step_verdict"] = verdict
