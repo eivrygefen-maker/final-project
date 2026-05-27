@@ -93,51 +93,40 @@ def _extract_submesh_to_parent_entity_indices(
             "reason": None,
         }
 
-    # EntityMap / object compatibility paths.
-    method_candidates = [
-        ("sub_topology_to_topology", (False,)),
-        ("sub_topology_to_topology", (True,)),
-        ("sub_topology_to_topology", (entity_dim,)),
-        ("sub_to_parent", ()),
-        ("to_parent", ()),
-        ("array", ()),
-        ("indices", ()),
-        ("values", ()),
-    ]
-    for name, args in method_candidates:
-        fn = getattr(raw_map, name, None)
-        if fn is None:
-            continue
+    # Documented EntityMap path:
+    # entity_map.sub_topology_to_topology(submesh_entity_indices, inverse=False)
+    if hasattr(raw_map, "sub_topology_to_topology"):
         try:
-            val = fn(*args) if callable(fn) else fn
-            if val is None:
-                continue
-            arr = np.asarray(val, dtype=np.int32).ravel()
-            if arr.size == 0:
-                continue
+            dim_attr = getattr(raw_map, "dim")
+            dim = int(dim_attr() if callable(dim_attr) else dim_attr)
+            sub_topology_attr = getattr(raw_map, "sub_topology")
+            sub_topology = sub_topology_attr() if callable(sub_topology_attr) else sub_topology_attr
+            index_map = sub_topology.index_map(dim)
+            n = int(index_map.size_local + index_map.num_ghosts)
+            sub_entities = np.arange(n, dtype=np.int32)
+            parent_entities = raw_map.sub_topology_to_topology(sub_entities, inverse=False)
+            arr = np.asarray(parent_entities, dtype=np.int32).ravel()
             return {
                 "ok": True,
                 "indices": arr,
                 "map_type": map_type,
-                "method": f"{name}{args}",
+                "method": (
+                    "EntityMap.sub_topology_to_topology_all_local_and_ghost_entities_inverse_false"
+                ),
                 "reason": None,
+                "sub_entity_dim": dim,
+                "local_plus_ghost_count": n,
             }
-        except Exception:
-            continue
-
-    # Last resort: iterable conversion.
-    try:
-        arr = np.asarray(list(raw_map), dtype=np.int32).ravel()
-        if arr.size > 0:
+        except Exception as exc:
             return {
-                "ok": True,
-                "indices": arr,
+                "ok": False,
+                "indices": np.asarray([], dtype=np.int32),
                 "map_type": map_type,
-                "method": "iterable_fallback",
-                "reason": None,
+                "method": "EntityMap.sub_topology_to_topology_all_local_and_ghost_entities_inverse_false",
+                "reason": f"{type(exc).__name__}: {exc}",
+                "sub_entity_dim": None,
+                "local_plus_ghost_count": None,
             }
-    except Exception:
-        pass
 
     return {
         "ok": False,
@@ -365,6 +354,9 @@ def main() -> int:
         b3_parent_facet_max = None
         b3_transferred_counts = {"tag1": 0, "tag3": 0, "tag4": 0}
         b3_transferred_contract = False
+        b3_tag_count_convention = "local_plus_ghost_submesh_entities"
+        b3_continuum_status = "UNRESOLVED"
+        b3_seed_check_status = "NOT_EVALUATED"
 
         if shell_facets.size > 0 and hasattr(dmesh, "create_submesh"):
             tdim = msh.topology.dim
@@ -399,6 +391,8 @@ def main() -> int:
                 block_reason = b3_coupling_reason
                 b3_ops_reason = b3_coupling_reason
                 b3_seed_fail = b3_coupling_reason
+                b3_continuum_status = "BLOCKED_PENDING_ENTITYMAP_TAG_TRANSFER"
+                b3_seed_check_status = "NOT_EVALUATED_BLOCKED_PENDING_ENTITYMAP_TAG_TRANSFER"
                 b3_form_ok = False
                 b3_mass_present = False
                 b3_stiff_present = False
@@ -437,6 +431,8 @@ def main() -> int:
                     block_reason = b3_coupling_reason
                     b3_ops_reason = b3_coupling_reason
                     b3_seed_fail = b3_coupling_reason
+                    b3_continuum_status = "BLOCKED_PENDING_ENTITYMAP_TAG_TRANSFER"
+                    b3_seed_check_status = "NOT_EVALUATED_BLOCKED_PENDING_ENTITYMAP_TAG_TRANSFER"
 
             if block_reason == "B3_BLOCKED_BY_DOLFINX_ENTITYMAP_TAG_TRANSFER_INTERFACE":
                 b3_form_ok = False
@@ -536,6 +532,7 @@ def main() -> int:
                 b3_seed_repr = False
                 b3_seed_method = "requires_trace_u_to_reduced_W_transfer_plus_pressure_identity"
                 b3_seed_fail = b3_coupling_reason
+                b3_seed_check_status = "NOT_EVALUATED_BLOCKED_PENDING_TRACE_TO_VOLUME_COUPLING_INTERFACE"
                 b3_seed_pressure_support = False
                 b3_seed_mac = None
 
@@ -573,6 +570,7 @@ def main() -> int:
             b3_seed_pass = False
             b3_seed_method = "UNAVAILABLE"
             b3_seed_fail = b3_coupling_reason
+            b3_seed_check_status = "NOT_EVALUATED_BLOCKED_PENDING_TRACE_SPACE_CONSTRUCTION"
             b3_seed_pressure_support = False
             b3_seed_mac = None
             b3_seed_xhmx = b3_seed_f = b3_seed_res = None
@@ -606,6 +604,7 @@ def main() -> int:
             "B3_parent_facet_index_min": b3_parent_facet_min,
             "B3_parent_facet_index_max": b3_parent_facet_max,
             "B3_transferred_tag_counts": b3_transferred_counts,
+            "B3_transferred_tag_count_convention": b3_tag_count_convention,
             "B3_transferred_tags_contract_pass": bool(b3_transferred_contract),
             "B3_original_structural_u_dimension": n_u,
             "B3_new_structural_u_dimension": b3_u_new,
@@ -620,9 +619,7 @@ def main() -> int:
             "B3_structural_mass_present": bool(b3_mass_present),
             "B3_structural_stiffness_present": bool(b3_stiff_present),
             "B3_material_form_failure_reason": None if b3_form_ok else "trace_form_assembly_or_support_missing",
-            "B3_continuum_physics_preservation_status": (
-                "UNRESOLVED" if b3_form_ok else "REJECTED"
-            ),
+            "B3_continuum_physics_preservation_status": b3_continuum_status,
             "B3_tag5_fix_transfer_constructed": bool(b3_bc_constructed),
             "B3_tag5_fixed_dof_count": int(b3_tag5_fixed_n),
             "B3_BC_contract_pass": bool(b3_bc_pass),
@@ -656,6 +653,7 @@ def main() -> int:
             "B3_seed_replay_frequency_B3": b3_seed_f,
             "B3_seed_residual_original": seed_res_o,
             "B3_seed_residual_B3": b3_seed_res,
+            "B3_seed_preservation_check_status": b3_seed_check_status,
             "B3_seed_preservation_pass": bool(b3_seed_pass),
             "B3_seed_preservation_failure_reason": None if b3_seed_pass else b3_seed_fail,
             "B3_scalability_gate_pass": bool(b3_scalable),
