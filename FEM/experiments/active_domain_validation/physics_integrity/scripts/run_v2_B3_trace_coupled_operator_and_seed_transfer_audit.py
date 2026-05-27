@@ -194,24 +194,85 @@ def _petsc_quadratic_form(mat: Any, x_arr: np.ndarray) -> float:
     return q
 
 
-def _petsc_cross_quadratic_form(mat: Any, x_col: np.ndarray, y_row: np.ndarray) -> float:
-    x_col = np.asarray(x_col, dtype=np.float64).ravel()
-    y_row = np.asarray(y_row, dtype=np.float64).ravel()
-    vx = my = None
+class _B3MassCrossQuadraticMpuError(RuntimeError):
+    """Raised when rectangular Mpu cross-quadratic evaluation fails in mass audit."""
+
+
+def _petsc_cross_quadratic_layout_contract(
+    mat: Any,
+    right_vec: np.ndarray,
+    left_vec: np.ndarray,
+) -> Dict[str, Any]:
+    """Contract for left_vec^H · (mat · right_vec) with mat [nrow, ncol]."""
+    nrow, ncol = (int(mat.getSize()[0]), int(mat.getSize()[1]))
+    right_len = int(np.asarray(right_vec, dtype=np.float64).ravel().size)
+    left_len = int(np.asarray(left_vec, dtype=np.float64).ravel().size)
+    x_right = y_left = None
+    layout_ok = False
+    petsc_right_len = None
+    petsc_left_len = None
     try:
-        vx = mat.createVecRight()
-        vx.setArray(x_col.copy())
-        try:
-            vx.assemble()
-        except Exception:
-            pass
-        Mx, my = _petsc_matvec(mat, vx)
-        q = float(np.real(np.vdot(y_row, Mx)))
+        x_right = mat.createVecRight()
+        y_left = mat.createVecLeft()
+        petsc_right_len = int(x_right.getSize())
+        petsc_left_len = int(y_left.getSize())
+        layout_ok = bool(
+            petsc_right_len == ncol
+            and petsc_left_len == nrow
+            and right_len == ncol
+            and left_len == nrow
+        )
     finally:
-        for obj in (my, vx):
+        for obj in (y_left, x_right):
             if obj is not None:
                 obj.destroy()
-    return q
+    return {
+        "B3_mass_cross_quadratic_matrix_shape": [nrow, ncol],
+        "B3_mass_cross_quadratic_left_vector_length": left_len,
+        "B3_mass_cross_quadratic_right_vector_length": right_len,
+        "B3_mass_cross_quadratic_rectangular_layout_contract_pass": layout_ok,
+        "B3_mass_cross_quadratic_rectangular_layout_contract_failure_reason": (
+            None
+            if layout_ok
+            else (
+                f"mat_shape=[{nrow},{ncol}] "
+                f"petsc_right={petsc_right_len} petsc_left={petsc_left_len} "
+                f"numpy_right={right_len} numpy_left={left_len}"
+            )
+        ),
+    }
+
+
+def _petsc_cross_quadratic_form(mat: Any, right_vec: np.ndarray, left_vec: np.ndarray) -> float:
+    """Compute left_vec^H · (mat · right_vec) for rectangular or square mat."""
+    right_vec = np.asarray(right_vec, dtype=np.float64).ravel()
+    left_vec = np.asarray(left_vec, dtype=np.float64).ravel()
+    nrow, ncol = (int(mat.getSize()[0]), int(mat.getSize()[1]))
+    if right_vec.size != ncol or left_vec.size != nrow:
+        raise ValueError(
+            "cross_quadratic_dimension_mismatch: "
+            f"mat=[{nrow},{ncol}] right_len={right_vec.size} left_len={left_vec.size}"
+        )
+    x_right = y_left = None
+    try:
+        x_right = mat.createVecRight()
+        y_left = mat.createVecLeft()
+        x_right.setArray(right_vec.copy())
+        try:
+            x_right.assemble()
+        except Exception:
+            pass
+        mat.mult(x_right, y_left)
+        try:
+            y_left.assemble()
+        except Exception:
+            pass
+        y_arr = np.asarray(y_left.getArray(readonly=True), dtype=np.float64).copy()
+        return float(np.real(np.vdot(left_vec, y_arr)))
+    finally:
+        for obj in (y_left, x_right):
+            if obj is not None:
+                obj.destroy()
 
 
 def _petsc_duplicate_scaled(mat: Any, scale: float) -> Any:
@@ -1085,9 +1146,23 @@ def _audit_b3_conditioned_seed_mass_decomposition(
             (_mat_norm_or_none(m_pu) or 0.0) > 1.0e-30
         ),
     }
+    cross_contract = _petsc_cross_quadratic_layout_contract(m_pu, x_u, x_p)
+    out.update(cross_contract)
     q_uu = _petsc_quadratic_form(m_uu, x_u)
     q_up = 0.0
-    q_pu = _petsc_cross_quadratic_form(m_pu, x_u, x_p)
+    try:
+        if not bool(cross_contract.get("B3_mass_cross_quadratic_rectangular_layout_contract_pass")):
+            raise RuntimeError(
+                cross_contract.get(
+                    "B3_mass_cross_quadratic_rectangular_layout_contract_failure_reason"
+                )
+                or "B3_mass_cross_quadratic_rectangular_layout_contract_failed"
+            )
+        q_pu = _petsc_cross_quadratic_form(m_pu, x_u, x_p)
+    except Exception as exc:
+        raise _B3MassCrossQuadraticMpuError(
+            f"mass_decomposition_cross_quadratic_Mpu:{type(exc).__name__}:{exc}"
+        ) from exc
     q_pp = _petsc_quadratic_form(m_pp, x_p)
     q_blocks = float(q_uu + q_up + q_pu + q_pp)
     q_final = _petsc_quadratic_form(m_final, x)
@@ -3028,12 +3103,16 @@ def _run_b3_seed_replay_audit_only(
             exc_type = type(exc).__name__
             exc_reason = f"{exc_type}:{exc}"
             if bool(payload.get("B3_mass_audit_started")):
-                payload["B3_mass_audit_failure_stage"] = "mass_decomposition"
+                if isinstance(exc, _B3MassCrossQuadraticMpuError):
+                    payload["B3_mass_audit_failure_stage"] = (
+                        "mass_decomposition_cross_quadratic_Mpu"
+                    )
+                else:
+                    payload["B3_mass_audit_failure_stage"] = "mass_decomposition"
                 payload["B3_mass_audit_failure_exception_type"] = exc_type
                 payload["B3_mass_audit_failure_reason"] = exc_reason
-                verdict = str(
-                    payload.get("B3_conditioned_seed_mass_diagnostic_classification")
-                    or "B3_CONDITIONED_SEED_MASS_AUDIT_BLOCKED_BY_MASS_DECOMPOSITION_INTERFACE"
+                verdict = (
+                    "B3_CONDITIONED_SEED_MASS_AUDIT_BLOCKED_BY_MASS_DECOMPOSITION_INTERFACE"
                 )
             elif bool(payload.get("B3_seed_conditioned_vector_constructed")):
                 payload["B3_mass_audit_failure_stage"] = (
