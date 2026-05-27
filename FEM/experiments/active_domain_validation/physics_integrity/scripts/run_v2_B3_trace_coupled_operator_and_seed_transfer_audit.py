@@ -149,21 +149,21 @@ def _register_mat_for_destroy(mats: List[Any], mat: Any, *, seen: set[int] | Non
     mats.append(mat)
 
 
-def _destroy_mats_deduped(mats: List[Any]) -> tuple[int, bool]:
+def _destroy_mats_deduped(mats: List[Any]) -> tuple[int, int, bool]:
     seen: set[int] = set()
     destroyed = 0
-    double_guard_pass = True
+    duplicate_attempts = 0
     for m_ in mats:
         if m_ is None:
             continue
         mid = id(m_)
         if mid in seen:
-            double_guard_pass = False
+            duplicate_attempts += 1
             continue
         seen.add(mid)
         _destroy_mat(m_)
         destroyed += 1
-    return destroyed, double_guard_pass
+    return destroyed, duplicate_attempts, duplicate_attempts == 0
 
 
 def _petsc_duplicate_scaled(mat: Any, scale: float) -> Any:
@@ -426,8 +426,10 @@ def _build_b3_scaled_restricted_operators_in_memory(
     comm: Any,
     mats_to_destroy: List[Any],
     report_meta: Dict[str, Any] | None = None,
+    destroy_seen: set[int] | None = None,
 ) -> tuple[Any, Any, np.ndarray, np.ndarray, Dict[str, Any]]:
     meta: Dict[str, Any] = report_meta if report_meta is not None else {}
+    mat_seen: set[int] = destroy_seen if destroy_seen is not None else set()
     p_air_collapsed = np.unique(np.asarray(p_air_collapsed, dtype=np.int32).ravel())
     n_u = int(n_u_b3)
     n_p_full = int(raw_App.getSize()[0])
@@ -476,7 +478,6 @@ def _build_b3_scaled_restricted_operators_in_memory(
         ),
         }
     )
-    mat_seen: set[int] = set()
     inv_u = 1.0 / max(float(s_uu), 1.0e-30)
     inv_p = 1.0 / max(float(s_pp), 1.0e-30)
     inv_c = 1.0 / max(float(s_c), 1.0e-30)
@@ -2139,6 +2140,8 @@ def _run_b3_seed_replay_audit_only(
         "B3_seed_mapping_failure_reason": None,
         "B3_MatNest_arbitrary_submatrix_path_removed": True,
         "B3_native_double_destroy_guard_pass": None,
+        "B3_native_destroyed_unique_object_count": None,
+        "B3_native_duplicate_destroy_attempt_count": None,
     }
     if operator_aij_bc_contract_only:
         verdict = "B3_OPERATOR_NATIVE_LIFECYCLE_BLOCKED"
@@ -2360,6 +2363,7 @@ def _run_b3_seed_replay_audit_only(
                 comm=PETSc.COMM_WORLD,
                 mats_to_destroy=mats_to_destroy,
                 report_meta=op_meta,
+                destroy_seen=mat_destroy_seen,
             )
             payload.update(op_meta)
             payload["B3_seed_operator_build_pass"] = True
@@ -2572,11 +2576,14 @@ def _run_b3_seed_replay_audit_only(
         _register_mat_for_destroy(mats_to_destroy, M_parent, seen=mat_destroy_seen)
         _register_mat_for_destroy(mats_to_destroy, A_b3, seen=mat_destroy_seen)
         _register_mat_for_destroy(mats_to_destroy, M_b3, seen=mat_destroy_seen)
-        _destroyed, guard_pass = _destroy_mats_deduped(mats_to_destroy)
+        _destroyed, _dup_destroy, guard_pass = _destroy_mats_deduped(mats_to_destroy)
+        payload["B3_native_destroyed_unique_object_count"] = int(_destroyed)
+        payload["B3_native_duplicate_destroy_attempt_count"] = int(_dup_destroy)
         payload["B3_native_double_destroy_guard_pass"] = bool(guard_pass)
         print(
             f"[B3_seed] B3_native_double_destroy_guard_pass={payload.get('B3_native_double_destroy_guard_pass')} "
-            f"destroyed_count={_destroyed}",
+            f"B3_native_destroyed_unique_object_count={payload.get('B3_native_destroyed_unique_object_count')} "
+            f"B3_native_duplicate_destroy_attempt_count={payload.get('B3_native_duplicate_destroy_attempt_count')}",
             flush=True,
         )
 
