@@ -50,7 +50,10 @@ C2_TRANSFER_CONTRACT_ONLY_ARG = "--C2-transfer-contract-only"
 C2_SPARSE_COUPLING_ONLY_ARG = "--C2-sparse-coupling-only"
 B3_RAW_COMPOSITION_CONTRACT_ONLY_ARG = "--B3-raw-composition-contract-only"
 B3_SEED_REPLAY_AUDIT_ONLY_ARG = "--B3-seed-replay-audit-only"
+B3_OPERATOR_AIJ_BC_CONTRACT_ONLY_ARG = "--B3-operator-AIJ-BC-contract-only"
 V2_VECTOR_BC_CONTRACT_ONLY_ARG = "--V2-vector-BC-contract-only"
+OUT_JSON_B3_OPERATOR_AIJ_BC = CONV_DIAG / "v2_B3_operator_aij_BC_contract_only.json"
+OUT_MD_B3_OPERATOR_AIJ_BC = CONV_DIAG / "v2_B3_operator_aij_BC_contract_only.md"
 
 TAG_TOP = 1
 TAG_BACK = 3
@@ -120,6 +123,49 @@ def _destroy_mat(mat: Any) -> None:
         pass
 
 
+def _native_stage(stage: str) -> None:
+    print(f"[B3_native] stage={stage}", flush=True)
+
+
+def _native_mat_info(label: str, mat: Any) -> None:
+    try:
+        shp = mat.getSize()
+        print(
+            f"[B3_native] {label}_type={mat.getType()} shape=[{int(shp[0])},{int(shp[1])}]",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"[B3_native] {label}_type=unavailable err={type(exc).__name__}:{exc}", flush=True)
+
+
+def _register_mat_for_destroy(mats: List[Any], mat: Any, *, seen: set[int] | None = None) -> None:
+    if mat is None:
+        return
+    mid = id(mat)
+    if seen is not None:
+        if mid in seen:
+            return
+        seen.add(mid)
+    mats.append(mat)
+
+
+def _destroy_mats_deduped(mats: List[Any]) -> tuple[int, bool]:
+    seen: set[int] = set()
+    destroyed = 0
+    double_guard_pass = True
+    for m_ in mats:
+        if m_ is None:
+            continue
+        mid = id(m_)
+        if mid in seen:
+            double_guard_pass = False
+            continue
+        seen.add(mid)
+        _destroy_mat(m_)
+        destroyed += 1
+    return destroyed, double_guard_pass
+
+
 def _petsc_duplicate_scaled(mat: Any, scale: float) -> Any:
     out = mat.duplicate()
     out.copy(mat)
@@ -164,34 +210,36 @@ def _b3_nest_coupled_operators(
     return a_nest, m_nest, m_up
 
 
-def _b3_matnest_to_sparse_aij(mat_nest: Any, *, comm: Any) -> tuple[Any, str, bool]:
-    """Convert MatNest to monolithic sparse AIJ. Returns (aij_mat, petsc_type_used, destroy_nest)."""
+def _b3_matnest_to_sparse_aij(mat_nest: Any, *, comm: Any) -> tuple[Any, str]:
+    """Copy MatNest into a new monolithic sparse AIJ Mat; never destroy the nest here."""
     errors: List[str] = []
+    for typ in ("aij", "mpiaij"):
+        out_mat = PETSc.Mat().create(comm=comm)
+        try:
+            mat_nest.convert(typ, out=out_mat)
+            out_mat.assemble()
+            type_name = str(out_mat.getType()).lower()
+            if "nest" in type_name:
+                errors.append(f"{typ}:out_still_nest")
+                _destroy_mat(out_mat)
+                continue
+            return out_mat, typ
+        except Exception as exc:
+            _destroy_mat(out_mat)
+            errors.append(f"{typ}:out:{type(exc).__name__}:{exc}")
     for typ in ("aij", "mpiaij"):
         try:
             out = mat_nest.convert(typ)
-            mat_out = mat_nest if out is None else out
-            type_name = str(mat_out.getType()).lower()
-            if "nest" in type_name:
-                errors.append(f"{typ}:still_nest_after_convert")
-                continue
-            return mat_out, typ, bool(out is not None)
+            if out is not None and out is not mat_nest:
+                type_name = str(out.getType()).lower()
+                if "nest" not in type_name:
+                    return out, typ
+            errors.append(f"{typ}:inplace_or_shared_handle")
         except Exception as exc:
-            errors.append(f"{typ}:{type(exc).__name__}:{exc}")
-    out_mat = PETSc.Mat().create(comm=comm)
-    try:
-        mat_nest.convert("aij", out=out_mat)
-        out_mat.assemble()
-        type_name = str(out_mat.getType()).lower()
-        if "nest" in type_name:
-            raise RuntimeError("convert_out_still_nest")
-        return out_mat, "aij", True
-    except Exception as exc:
-        _destroy_mat(out_mat)
-        raise RuntimeError(
-            "B3_matnest_to_aij_conversion_failed:"
-            + ";".join(errors + [f"out:{type(exc).__name__}:{exc}"])
-        ) from exc
+            errors.append(f"{typ}:convert:{type(exc).__name__}:{exc}")
+    raise RuntimeError(
+        "B3_matnest_to_aij_conversion_failed:" + ";".join(errors)
+    )
 
 
 def _b3_pressure_release_rows_retained(
@@ -329,8 +377,12 @@ def _build_b3_scaled_restricted_operators_in_memory(
         "B3_algebraic_BC_applied_after_blockwise_pressure_restriction": False,
         "B3_scaled_restricted_BC_operator_contract_pass": False,
         "B3_BC_application_failure_reason": None,
+        "B3_native_object_lifecycle_policy": (
+            "defer_all_PETSc_matrix_destroy_to_single_outer_cleanup"
+        ),
         }
     )
+    mat_seen: set[int] = set()
     inv_u = 1.0 / max(float(s_uu), 1.0e-30)
     inv_p = 1.0 / max(float(s_pp), 1.0e-30)
     inv_c = 1.0 / max(float(s_c), 1.0e-30)
@@ -341,7 +393,8 @@ def _build_b3_scaled_restricted_operators_in_memory(
     a_up_full = _petsc_duplicate_scaled(raw_Aup_B3, inv_c)
     a_pu_full = _petsc_duplicate_scaled(raw_Apu_B3, inv_c)
     m_pu_full = _petsc_duplicate_scaled(raw_Mpu_B3, inv_c)
-    mats_to_destroy.extend([a_pp_full, m_pp_full, a_up_full, a_pu_full, m_pu_full])
+    for m_ in (a_pp_full, m_pp_full, a_up_full, a_pu_full, m_pu_full):
+        _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_seen)
     meta["B3_seed_operator_build_stage"] = "gnhep_block_scaling_complete"
 
     is_u = PETSc.IS().createGeneral(np.arange(n_u, dtype=np.int32), comm=comm)
@@ -376,11 +429,15 @@ def _build_b3_scaled_restricted_operators_in_memory(
         raise RuntimeError(meta["B3_sparse_blockwise_pressure_restriction_failure_reason"])
     meta["B3_seed_operator_build_stage"] = "sparse_blockwise_pressure_restriction_complete"
 
-    mats_to_destroy.extend([a_uu, m_uu, a_up_act, a_pu_act, m_pu_act, a_pp_act, m_pp_act])
+    for m_ in (a_uu, m_uu, a_up_act, a_pu_act, m_pu_act, a_pp_act, m_pp_act):
+        _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_seen)
+    _native_stage("before_final_matnest_construct")
     a_nest, m_nest, m_up = _b3_nest_coupled_operators(
         a_uu, a_up_act, a_pu_act, a_pp_act, m_uu, m_pu_act, m_pp_act, comm=comm
     )
-    mats_to_destroy.append(m_up)
+    _native_stage("after_final_matnest_construct")
+    for m_ in (a_nest, m_nest, m_up):
+        _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_seen)
     n_w = int(n_u + n_p_active)
     meta["B3_final_MatNest_constructed_after_blockwise_restriction"] = True
     meta["B3_final_operator_shape"] = [n_w, n_w]
@@ -397,17 +454,21 @@ def _build_b3_scaled_restricted_operators_in_memory(
         "PETSc_MatNest_convert_to_AIJ_before_algebraic_BC_application"
     )
     try:
-        a_b3, _a_typ, destroy_a_nest = _b3_matnest_to_sparse_aij(a_nest, comm=comm)
-        m_b3, _m_typ, destroy_m_nest = _b3_matnest_to_sparse_aij(m_nest, comm=comm)
+        _native_stage("before_A_matnest_to_aij")
+        a_b3, _a_typ = _b3_matnest_to_sparse_aij(a_nest, comm=comm)
+        _native_stage("after_A_matnest_to_aij")
+        _native_mat_info("A_converted", a_b3)
+        _native_stage("before_M_matnest_to_aij")
+        m_b3, _m_typ = _b3_matnest_to_sparse_aij(m_nest, comm=comm)
+        _native_stage("after_M_matnest_to_aij")
+        _native_mat_info("M_converted", m_b3)
     except Exception as exc:
         meta["B3_final_sparse_AIJ_operator_constructed"] = False
         meta["B3_final_sparse_AIJ_conversion_failure_reason"] = f"{type(exc).__name__}:{exc}"
         meta["B3_seed_operator_build_stage"] = "matnest_to_aij_conversion_failed"
         raise
-    if destroy_a_nest:
-        _destroy_mat(a_nest)
-    if destroy_m_nest:
-        _destroy_mat(m_nest)
+    _register_mat_for_destroy(mats_to_destroy, a_b3, seen=mat_seen)
+    _register_mat_for_destroy(mats_to_destroy, m_b3, seen=mat_seen)
     meta["B3_seed_operator_build_stage"] = "post_matnest_to_aij_conversion"
     meta["B3_final_sparse_AIJ_operator_constructed"] = True
     meta["B3_final_sparse_AIJ_A_shape"] = _mat_shape(a_b3)
@@ -424,14 +485,15 @@ def _build_b3_scaled_restricted_operators_in_memory(
         meta["B3_seed_operator_build_stage"] = "matnest_to_aij_conversion_failed"
         raise RuntimeError(meta["B3_final_sparse_AIJ_conversion_failure_reason"])
     meta["B3_sparse_AIJ_used_for_zero_rows_columns"] = True
-    mats_to_destroy.extend([a_b3, m_b3])
 
+    _native_stage("before_BC_row_locate")
     meta["B3_seed_operator_build_stage"] = "pre_pressure_release_row_locate"
     p_release, pr_meta = _b3_pressure_release_rows_retained(
         msh, facet_tags, n_u_b3=n_u, p_air_collapsed=p_air_collapsed
     )
     meta.update(pr_meta)
     meta["B3_seed_operator_build_stage"] = "post_pressure_release_row_locate"
+    _native_stage("after_BC_row_locate")
     bc_rows = np.unique(
         np.concatenate(
             [
@@ -454,8 +516,12 @@ def _build_b3_scaled_restricted_operators_in_memory(
             meta["B3_BC_application_failure_reason"] = "refusing_MatZeroRowsColumns_on_MatNest"
             raise RuntimeError(meta["B3_BC_application_failure_reason"])
         try:
+            _native_stage("before_A_zero_rows_columns")
             fem3d._petsc_mat_zero_dirichlet_rows(a_b3, bc_rows, diag=1.0, zero_columns=True)
+            _native_stage("after_A_zero_rows_columns")
+            _native_stage("before_M_zero_rows_columns")
             fem3d._petsc_mat_zero_dirichlet_rows(m_b3, bc_rows, diag=1.0, zero_columns=True)
+            _native_stage("after_M_zero_rows_columns")
             bc_applied = True
         except Exception as exc:
             meta["B3_BC_application_failure_reason"] = f"{type(exc).__name__}:{exc}"
@@ -477,6 +543,7 @@ def _build_b3_scaled_restricted_operators_in_memory(
 
     u_idx = np.arange(n_u, dtype=np.int32)
     p_idx = np.arange(n_u, n_u + n_p_active, dtype=np.int32)
+    _native_stage("operator_build_return")
     return a_b3, m_b3, u_idx, p_idx, meta
 
 
@@ -1417,6 +1484,10 @@ def _is_b3_seed_replay_audit_only_mode(argv: List[str]) -> bool:
     return B3_SEED_REPLAY_AUDIT_ONLY_ARG in argv
 
 
+def _is_b3_operator_aij_bc_contract_only_mode(argv: List[str]) -> bool:
+    return B3_OPERATOR_AIJ_BC_CONTRACT_ONLY_ARG in argv
+
+
 def _is_v2_vector_bc_contract_only_mode(argv: List[str]) -> bool:
     return V2_VECTOR_BC_CONTRACT_ONLY_ARG in argv
 
@@ -1936,10 +2007,22 @@ def _run_b3_raw_composition_contract_only(pre: Dict[str, Any]) -> int:
         _destroy_mat(M)
 
 
-def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
+def _run_b3_seed_replay_audit_only(
+    pre: Dict[str, Any],
+    *,
+    operator_aij_bc_contract_only: bool = False,
+) -> int:
+    out_json = OUT_JSON_B3_OPERATOR_AIJ_BC if operator_aij_bc_contract_only else OUT_JSON_B3_SEED_REPLAY
+    out_md = OUT_MD_B3_OPERATOR_AIJ_BC if operator_aij_bc_contract_only else OUT_MD_B3_SEED_REPLAY
+    mode_label = (
+        "B3_operator_AIJ_BC_contract_only"
+        if operator_aij_bc_contract_only
+        else "B3_seed_replay_audit_only"
+    )
     payload: Dict[str, Any] = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "mode": "B3_seed_replay_audit_only",
+        "mode": mode_label,
+        "B3_seed_replay_executed": not operator_aij_bc_contract_only,
         "no_new_eigensolve_executed": True,
         "additional_eps": "NOT_AUTHORIZED",
         "jd_wiring_authorized": False,
@@ -1957,11 +2040,17 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
         "B3_seed_operator_build_failure_reason": None,
         "B3_seed_mapping_failure_reason": None,
         "B3_MatNest_arbitrary_submatrix_path_removed": True,
+        "B3_native_double_destroy_guard_pass": None,
     }
-    verdict = "B3_SEED_REPLAY_BLOCKED_BY_OPERATOR_RESTRICTION_INTERFACE"
+    if operator_aij_bc_contract_only:
+        verdict = "B3_OPERATOR_NATIVE_LIFECYCLE_BLOCKED"
+    else:
+        verdict = "B3_SEED_REPLAY_BLOCKED_BY_OPERATOR_RESTRICTION_INTERFACE"
     A_parent = M_parent = A_b3 = M_b3 = None
     mats_to_destroy: List[Any] = []
+    mat_destroy_seen: set[int] = set()
     try:
+        print(f"[B3_seed] mode={mode_label}", flush=True)
         if not pre["preassembly_contract_pass"]:
             payload["B3_seed_operator_build_failure_reason"] = "preassembly_contract_failed"
             return 2
@@ -1992,9 +2081,11 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
         payload["B3_raw_T_rebuilt_in_memory"] = bool(tmeta.get("ok", False))
         payload["B3_raw_tmeta_parent_idx_present"] = _tmeta_parent_map is not None
 
+        print("[B3_seed] stage=before_parent_replay_assembly", flush=True)
         A_parent, M_parent, cfg = _assemble_reduced_coupled_replay(
             mesh_file, sample, coupling_enabled=True, capture_parent_raw_blocks=True
         )
+        print("[B3_seed] stage=after_parent_replay_assembly", flush=True)
         maps = _extract_layout_maps(cfg, A_parent)
         u_to_W_parent = np.asarray(maps["u_to_W"], dtype=np.int32).ravel()
         p_to_W_parent = np.asarray(maps["p_to_W"], dtype=np.int32).ravel()
@@ -2019,7 +2110,7 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
         raw_Mpu = raw_cap.get("raw_Mpu")
         for m_ in (raw_App, raw_Mpp, raw_Aup, raw_Apu, raw_Mpu):
             if m_ is not None:
-                mats_to_destroy.append(m_)
+                _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
         if not all(m is not None for m in (raw_App, raw_Mpp, raw_Aup, raw_Apu, raw_Mpu)):
             payload["B3_seed_operator_build_failure_reason"] = "missing_parent_raw_blocks"
             return 2
@@ -2076,7 +2167,8 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
         )
         raw_Auu.assemble()
         raw_Muu.assemble()
-        mats_to_destroy.extend([raw_Auu, raw_Muu])
+        for m_ in (raw_Auu, raw_Muu):
+            _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
 
         parent_idx = np.asarray(_tmeta_parent_map, dtype=np.int32).ravel()
         n_parent_collapsed = int(payload.get("parent_raw_u_dimension", 0) or 0)
@@ -2098,7 +2190,8 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
         raw_Aup_B3 = raw_Aup.createSubMatrix(is_parent_u, is_p)
         raw_Apu_B3 = raw_Apu.createSubMatrix(is_p, is_parent_u)
         raw_Mpu_B3 = raw_Mpu.createSubMatrix(is_p, is_parent_u)
-        mats_to_destroy.extend([raw_Aup_B3, raw_Apu_B3, raw_Mpu_B3])
+        for m_ in (raw_Aup_B3, raw_Apu_B3, raw_Mpu_B3):
+            _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
         is_parent_u.destroy()
         is_p.destroy()
 
@@ -2137,6 +2230,7 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
             payload["B3_seed_operator_build_failure_reason"] = "B3_operator_composition_gates_failed"
             return 2
 
+        print("[B3_seed] stage=before_b3_operator_build", flush=True)
         op_meta: Dict[str, Any] = {}
         try:
             A_b3, M_b3, u_idx, p_idx, op_meta = _build_b3_scaled_restricted_operators_in_memory(
@@ -2171,7 +2265,13 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
             payload["B3_seed_operator_failure_exception_type"] = type(exc).__name__
             payload["B3_seed_operator_failure_exception_message"] = str(exc)
             if op_meta.get("B3_final_MatNest_conversion_to_sparse_AIJ_attempted"):
-                verdict = "B3_SEED_REPLAY_BLOCKED_BY_OPERATOR_BC_APPLICATION_INTERFACE"
+                verdict = (
+                    "B3_OPERATOR_BC_APPLICATION_INTERFACE_BLOCKED"
+                    if operator_aij_bc_contract_only
+                    else "B3_SEED_REPLAY_BLOCKED_BY_OPERATOR_BC_APPLICATION_INTERFACE"
+                )
+            elif operator_aij_bc_contract_only:
+                verdict = "B3_OPERATOR_NATIVE_LIFECYCLE_BLOCKED"
             return 2
 
         if not bool(payload.get("B3_scaled_restricted_BC_operator_contract_pass")):
@@ -2179,8 +2279,24 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
                 payload.get("B3_BC_application_failure_reason")
                 or "B3_scaled_restricted_BC_operator_contract_failed"
             )
-            verdict = "B3_SEED_REPLAY_BLOCKED_BY_OPERATOR_BC_APPLICATION_INTERFACE"
+            verdict = (
+                "B3_OPERATOR_BC_APPLICATION_INTERFACE_BLOCKED"
+                if operator_aij_bc_contract_only
+                else "B3_SEED_REPLAY_BLOCKED_BY_OPERATOR_BC_APPLICATION_INTERFACE"
+            )
             return 2
+
+        print("[B3_seed] stage=after_b3_operator_build", flush=True)
+        if operator_aij_bc_contract_only:
+            payload["B3_raw_composition_contract_pass"] = bool(
+                payload.get("B3_composition_parent_raw_capture_constructed")
+                and payload.get("parent_raw_collapsed_layout_dimensions_pass")
+                and payload.get("B3_raw_tmeta_parent_idx_bounds_pass")
+                and payload.get("B3_tag5_vector_BC_contract_pass")
+                and payload.get("B3_pressure_restriction_policy_reused")
+            )
+            verdict = "B3_SPARSE_AIJ_BC_OPERATOR_READY_FOR_SEED_REPLAY_RERUN"
+            return 0
 
         payload["B3_raw_sparse_coupling_projection_constructed"] = True
         payload["B3_gnhep_normalization_recomputed_from_B3_blocks"] = True
@@ -2301,17 +2417,23 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
         else:
             payload["B3_seed_operator_build_failure_reason"] = f"{type(exc).__name__}:{exc}"
             if payload.get("B3_final_MatNest_conversion_to_sparse_AIJ_attempted"):
-                verdict = "B3_SEED_REPLAY_BLOCKED_BY_OPERATOR_BC_APPLICATION_INTERFACE"
+                verdict = (
+                    "B3_OPERATOR_BC_APPLICATION_INTERFACE_BLOCKED"
+                    if operator_aij_bc_contract_only
+                    else "B3_SEED_REPLAY_BLOCKED_BY_OPERATOR_BC_APPLICATION_INTERFACE"
+                )
+            elif operator_aij_bc_contract_only:
+                verdict = "B3_OPERATOR_NATIVE_LIFECYCLE_BLOCKED"
             else:
                 verdict = "B3_SEED_REPLAY_BLOCKED_BY_OPERATOR_RESTRICTION_INTERFACE"
         return 2
     finally:
         payload["next_step_verdict"] = verdict
-        _write_json_atomic(OUT_JSON_B3_SEED_REPLAY, payload)
-        payload["report_size_bytes"] = OUT_JSON_B3_SEED_REPLAY.stat().st_size
-        _write_json_atomic(OUT_JSON_B3_SEED_REPLAY, payload)
+        _write_json_atomic(out_json, payload)
+        payload["report_size_bytes"] = out_json.stat().st_size
+        _write_json_atomic(out_json, payload)
         md_lines = [
-            "# B3 seed replay audit (report-only)",
+            f"# B3 audit ({mode_label}, report-only)",
             "",
             f"- verdict: `{verdict}`",
             f"- B3_seed_source_status: {payload.get('B3_seed_source_status')}",
@@ -2323,9 +2445,9 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
             "",
             "no_new_eigensolve_executed=True",
         ]
-        OUT_MD_B3_SEED_REPLAY.parent.mkdir(parents=True, exist_ok=True)
-        OUT_MD_B3_SEED_REPLAY.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
-        print("[B3_seed] mode=B3_seed_replay_audit_only", flush=True)
+        out_md.parent.mkdir(parents=True, exist_ok=True)
+        out_md.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+        print(f"[B3_seed] mode={mode_label}", flush=True)
         print(f"[B3_seed] B3_raw_composition_contract_pass={payload.get('B3_raw_composition_contract_pass')}", flush=True)
         print(f"[B3_seed] B3_seed_operator_build_pass={payload.get('B3_seed_operator_build_pass')}", flush=True)
         print(f"[B3_seed] B3_sparse_blockwise_pressure_restriction_pass={payload.get('B3_sparse_blockwise_pressure_restriction_pass')}", flush=True)
@@ -2334,12 +2456,17 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
         print(f"[B3_seed] next_step_verdict={verdict}", flush=True)
         print("[B3_seed] no_new_eigensolve_executed=True", flush=True)
         print("[B3_seed] additional_eps=NOT_AUTHORIZED", flush=True)
-        for m_ in mats_to_destroy:
-            _destroy_mat(m_)
-        _destroy_mat(A_parent)
-        _destroy_mat(M_parent)
-        _destroy_mat(A_b3)
-        _destroy_mat(M_b3)
+        _register_mat_for_destroy(mats_to_destroy, A_parent, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, M_parent, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, A_b3, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, M_b3, seen=mat_destroy_seen)
+        _destroyed, guard_pass = _destroy_mats_deduped(mats_to_destroy)
+        payload["B3_native_double_destroy_guard_pass"] = bool(guard_pass)
+        print(
+            f"[B3_seed] B3_native_double_destroy_guard_pass={payload.get('B3_native_double_destroy_guard_pass')} "
+            f"destroyed_count={_destroyed}",
+            flush=True,
+        )
 
 
 def _run_v2_vector_bc_contract_only(pre: Dict[str, Any]) -> int:
@@ -2416,6 +2543,9 @@ def main() -> int:
 
     if _is_b3_raw_composition_contract_only_mode(sys.argv):
         return _run_b3_raw_composition_contract_only(pre)
+
+    if _is_b3_operator_aij_bc_contract_only_mode(sys.argv):
+        return _run_b3_seed_replay_audit_only(pre, operator_aij_bc_contract_only=True)
 
     if _is_b3_seed_replay_audit_only_mode(sys.argv):
         return _run_b3_seed_replay_audit_only(pre)
