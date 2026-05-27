@@ -235,7 +235,10 @@ def main() -> int:
     persistence_fixed_eval = _load_json(PERSISTENCE_FIXED_DIAG_JSON)
     pipeline_audit = _load_json(PIPELINE_AUDIT_JSON)
     root_cause_status = determine_root_cause_status(
-        filtered_eval=filtered_eval, unreg_eval=unreg_eval
+        filtered_eval=filtered_eval,
+        unreg_eval=unreg_eval,
+        persistence_fixed_eval=persistence_fixed_eval,
+        pipeline_audit=pipeline_audit,
     )
     st_flow = build_st_retry_control_flow_audit()
     unreg_ev = (unreg_eval or {}).get("evaluation") or {}

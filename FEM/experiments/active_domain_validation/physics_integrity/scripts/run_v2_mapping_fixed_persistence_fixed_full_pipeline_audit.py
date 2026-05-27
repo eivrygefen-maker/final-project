@@ -40,6 +40,12 @@ from v2_mesh_convergence_common import (
     solve_case_dir,
     write_json,
 )
+from v2_conservative_audit_policy import (
+    SERIALIZER_FUNCTION,
+    SERIALIZER_THRESHOLD,
+    apply_conservative_authoritative_verdict,
+    build_operator_policy_from_artifacts,
+)
 from v2_seed_branch_candidate_filter import FILTER_POLICY, assess_physical_eligibility
 from v2_sensitivity_common import hz_result_tag
 
@@ -621,33 +627,53 @@ def _assign_audit_verdict(
     return VERDICT_REPLAY_EVAL_FAILURE, "replay_metrics_not_fully_evaluated", {}
 
 
-def _write_md(report: Dict[str, Any]) -> None:
-    lines = [
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _write_primary_audit_reports(report: Dict[str, Any]) -> None:
+    """Write authoritative pipeline audit JSON/MD atomically."""
+    payload = _sanitize_for_json(report)
+    _atomic_write_text(OUT_JSON, json.dumps(payload, indent=2))
+    md_lines = [
         "# Mapping-fixed persistence-fixed full pipeline audit",
         "",
         f"Generated: {report['generated_utc']}",
         "",
         f"**audit_verdict:** `{report.get('audit_verdict')}`",
         f"**verdict_reason:** `{report.get('verdict_reason')}`",
+        f"**operator_policy_provenance_mismatch:** `{report.get('operator_policy_provenance_mismatch')}`",
         "",
-        "## Persistence status",
-        "",
-        f"- self_test_pass (VM evidence design): replacement persistence 56/56 closed",
-        f"- candidates on disk: {_as_dict(report.get('candidate_file_audit')).get('file_count')}",
-        f"- nnz summary: {json.dumps(_sanitize_for_json(_as_dict(report.get('candidate_file_audit')).get('nnz_summary', {})))}",
-        "",
-        "## Root-cause category",
-        "",
-        f"`{_as_dict(report.get('root_cause_analysis')).get('primary_category')}`",
-        "",
-        str(_as_dict(report.get("root_cause_analysis")).get("mechanism", "")),
-        "",
-        "## Operator policy (from artifacts)",
+        "## Conservative policy",
         "",
     ]
+    for stmt in _as_list(report.get("conservative_policy_statements")):
+        md_lines.append(f"- {stmt}")
+    md_lines.extend(
+        [
+            "",
+            "## Persistence status",
+            "",
+            f"- self_test_pass (VM evidence design): replacement persistence 56/56 closed",
+            f"- candidates on disk: {_as_dict(report.get('candidate_file_audit')).get('file_count')}",
+            f"- nnz summary: {json.dumps(_sanitize_for_json(_as_dict(report.get('candidate_file_audit')).get('nnz_summary', {})))}",
+            "",
+            "## Root-cause category",
+            "",
+            f"`{_as_dict(report.get('root_cause_analysis')).get('primary_category')}`",
+            "",
+            str(_as_dict(report.get("root_cause_analysis")).get("mechanism", "")),
+            "",
+            "## Operator policy (from artifacts)",
+            "",
+        ]
+    )
     mc = _as_dict(report.get("map_contract"))
-    lines.append("## Map contract")
-    lines.append("")
+    md_lines.append("## Map contract")
+    md_lines.append("")
     for k in (
         "u_to_W_found",
         "u_to_W_length",
@@ -661,43 +687,75 @@ def _write_md(report: Dict[str, Any]) -> None:
         "map_contract_pass",
         "map_contract_failure_reason",
     ):
-        lines.append(f"- {k}: {mc.get(k)}")
-    lines.append("")
+        md_lines.append(f"- {k}: {mc.get(k)}")
+    md_lines.append("")
     op = _as_dict(report.get("operator_policy"))
     for k, v in op.items():
-        lines.append(f"- {k}: {v}")
-    lines.append("")
-    lines.append("## Evaluation summary")
+        md_lines.append(f"- {k}: {v}")
+    md_lines.append("")
+    md_lines.append("## Evaluation summary")
     es = _as_dict(report.get("evaluation_summary"))
     for k, v in es.items():
-        lines.append(f"- {k}: {v}")
-    lines.append("")
-    lines.append("## Pipeline control flow (code-derived)")
+        md_lines.append(f"- {k}: {v}")
+    md_lines.append("")
+    md_lines.append("## Pipeline control flow (code-derived)")
     for step in _as_list(report.get("pipeline_control_flow")):
-        lines.append(f"- **{step.get('step')}** @ `{step.get('location')}`")
-    OUT_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        md_lines.append(f"- **{step.get('step')}** @ `{step.get('location')}`")
+    _atomic_write_text(OUT_MD, "\n".join(md_lines) + "\n")
 
 
-def _refresh_status_reports(audit: Dict[str, Any]) -> None:
-    """Only call after audit JSON/MD written successfully."""
+def _refresh_status_reports(audit: Dict[str, Any]) -> Dict[str, Any]:
+    """Optional ancillary refresh after primary audit is on disk. Never raises."""
     from run_v2_solver_root_cause_and_forward_risk_audit import main as audit_main
     from write_v2_st_singular_mass_rehabilitation_plan import main as rehab_main
 
-    rehab_main()
-    audit_main()
-    repl_path = REPLACEMENT_REPORT_JSON
-    if repl_path.is_file():
-        repl = _load_json(repl_path)
-        repl["full_pipeline_audit"] = {
-            "report_json": str(OUT_JSON),
-            "audit_verdict": audit.get("audit_verdict"),
-            "generated_utc": audit.get("generated_utc"),
-        }
-        evaluation = _as_dict(repl.get("evaluation"))
-        evaluation["diagnostic_verdict"] = audit.get("audit_verdict")
-        evaluation["audit_verdict_reason"] = audit.get("verdict_reason")
-        repl["evaluation"] = evaluation
-        write_json(repl_path, repl)
+    result: Dict[str, Any] = {
+        "status_refresh_pass": True,
+        "steps": {},
+        "status_refresh_failure": None,
+        "artifacts_stale_if_failed": [
+            str(CONV_DIAG / "v2_st_singular_mass_rehabilitation_plan.json"),
+            str(CONV_DIAG / "v2_st_singular_mass_rehabilitation_plan.md"),
+            str(CONV_DIAG / "v2_solver_root_cause_and_forward_risk_audit.json"),
+            str(CONV_DIAG / "v2_solver_root_cause_and_forward_risk_audit.md"),
+            str(REPLACEMENT_REPORT_JSON),
+        ],
+    }
+    failures: List[str] = []
+    try:
+        rehab_main()
+        result["steps"]["rehab_plan"] = "ok"
+    except Exception as exc:
+        failures.append(f"rehab_plan:{type(exc).__name__}:{exc}")
+        result["steps"]["rehab_plan"] = "failed"
+    try:
+        audit_main()
+        result["steps"]["root_cause_audit"] = "ok"
+    except Exception as exc:
+        failures.append(f"root_cause_audit:{type(exc).__name__}:{exc}")
+        result["steps"]["root_cause_audit"] = "failed"
+    try:
+        repl_path = REPLACEMENT_REPORT_JSON
+        if repl_path.is_file():
+            repl = _load_json(repl_path)
+            repl["full_pipeline_audit"] = {
+                "report_json": str(OUT_JSON),
+                "audit_verdict": audit.get("audit_verdict"),
+                "generated_utc": audit.get("generated_utc"),
+            }
+            evaluation = _as_dict(repl.get("evaluation"))
+            evaluation["diagnostic_verdict"] = audit.get("audit_verdict")
+            evaluation["audit_verdict_reason"] = audit.get("verdict_reason")
+            repl["evaluation"] = evaluation
+            write_json(repl_path, repl)
+        result["steps"]["replacement_diagnostic_patch"] = "ok"
+    except Exception as exc:
+        failures.append(f"replacement_diagnostic_patch:{type(exc).__name__}:{exc}")
+        result["steps"]["replacement_diagnostic_patch"] = "failed"
+    if failures:
+        result["status_refresh_pass"] = False
+        result["status_refresh_failure"] = "; ".join(failures)
+    return result
 
 
 def main() -> int:
@@ -752,40 +810,25 @@ def main() -> int:
         "maps_p_source": p_source,
     }
 
-    eps_diag = _as_dict(solve_result.get("eps_batch_diagnostics"))
+    operator_policy, operator_provenance = build_operator_policy_from_artifacts(
+        solve_result, bank, target_hz=target_hz
+    )
+    operator_policy["save_errors"] = _as_list(bank.get("save_errors"))
+    operator_policy["p_to_W_source"] = p_source
+    operator_policy["p_to_W_length"] = int(p_to_W.size)
+    operator_policy["p_to_W_crc32"] = pressure_block_mapping_metadata(
+        p_to_W=p_to_W, source=p_source
+    ).get("p_to_W_crc32")
     st_fields = {
-        "actual_sigma_hz": _safe_float(eps_diag.get("st_sigma_hz_used"), default=float("nan")),
-        "actual_st_a_shift_frac": _safe_float(eps_diag.get("st_a_shift_frac_used"), default=0.0),
-        "actual_st_mass_reg_frac": _safe_float(eps_diag.get("st_mass_reg_frac_used"), default=0.0),
-        "diagnostic_operator_consistent_with_replay": bool(
-            eps_diag.get("diagnostic_operator_consistent_with_replay")
-        ),
-        "eps_eigenvalue_semantics": str(eps_diag.get("eps_eigenvalue_semantics", "slepc_backtransformed")),
-        "legacy_double_shift_mapping_disabled": bool(
-            eps_diag.get("legacy_double_shift_mapping_disabled", True)
-        ),
-    }
-
-    operator_policy = {
-        "continuation_seed_applied": bool(solve_result.get("continuation_seed_applied")),
-        "seed_frequency_hz": target_hz,
-        "actual_sigma_hz": st_fields["actual_sigma_hz"],
-        "eps_eigenvalue_semantics": st_fields["eps_eigenvalue_semantics"],
-        "legacy_double_shift_mapping_disabled": st_fields["legacy_double_shift_mapping_disabled"],
-        "diagnostic_operator_consistent_with_replay": st_fields[
+        "actual_sigma_hz": operator_policy.get("actual_sigma_hz"),
+        "actual_st_a_shift_frac": operator_policy.get("actual_st_a_shift_frac", 0.0),
+        "actual_st_mass_reg_frac": operator_policy.get("actual_st_mass_reg_frac", 0.0),
+        "diagnostic_operator_consistent_with_replay": operator_policy.get(
             "diagnostic_operator_consistent_with_replay"
-        ],
-        "actual_st_a_shift_frac": st_fields["actual_st_a_shift_frac"],
-        "actual_st_mass_reg_frac": st_fields["actual_st_mass_reg_frac"],
-        "nconv_marked": int(bank.get("nconv_marked", eps_diag.get("nconv_marked", 0))),
-        "preserve_all_enabled": True,
-        "candidate_bank_count": int(bank.get("eps_diagnostic_candidate_bank_count", 0)),
-        "num_vectors_saved": int(bank.get("num_vectors_saved", 0)),
-        "save_errors": _as_list(bank.get("save_errors")),
-        "p_to_W_source": p_source,
-        "p_to_W_length": int(p_to_W.size),
-        "p_to_W_crc32": pressure_block_mapping_metadata(p_to_W=p_to_W, source=p_source).get(
-            "p_to_W_crc32"
+        ),
+        "eps_eigenvalue_semantics": operator_policy.get("eps_eigenvalue_semantics"),
+        "legacy_double_shift_mapping_disabled": operator_policy.get(
+            "legacy_double_shift_mapping_disabled"
         ),
     }
 
@@ -915,10 +958,17 @@ def main() -> int:
         "physics_eval_skipped": physics_eval_skipped,
         "operator_policy": operator_policy,
         "pipeline_control_flow": _static_pipeline_control_flow(),
+        "operator_policy_provenance": operator_provenance,
+        "replacement_baseline_artifacts": replacement_report,
         "capture_vs_persist_contract": {
             "in_memory_capture": "dense numpy from PETSc rvec.array in diag_bank",
-            "persist_function": "save_mode_csr(dense_to_csr_f32_column(vec))",
+            "persist_function": SERIALIZER_FUNCTION,
+            "serializer_function": SERIALIZER_FUNCTION,
+            "serializer_threshold": SERIALIZER_THRESHOLD,
             "sparsify_relative_eps": MODE_VECTOR_RELATIVE_EPS,
+            "serialization_may_change_physical_replay_metrics": True,
+            "lossless_pre_sparsify_eps_vectors_available_in_current_run": False,
+            "current_saved_vectors_sufficient_for_st_verdict": False,
             "seed_self_test_same_writer": True,
             "seed_self_test_same_source_object_type": "dense normalized seed numpy",
             "eps_candidate_source_object_type": "dense numpy from EPS harvest (pre-sparsify)",
@@ -968,13 +1018,16 @@ def main() -> int:
         "no_additional_eigensolve_authorized": True,
         "mesh_convergence_may_resume": False,
     }
+    apply_conservative_authoritative_verdict(report)
+    primary_audit_written = False
+    status_refresh_pass = False
+    status_refresh_failure: Optional[str] = None
     try:
-        write_json(OUT_JSON, _sanitize_for_json(report))
-        _write_md(report)
-        _refresh_status_reports(report)
+        _write_primary_audit_reports(report)
+        primary_audit_written = True
     except Exception:
         print(
-            "[pipeline_audit] FAILED before completing report write; "
+            "[pipeline_audit] FAILED before writing primary audit reports; "
             "status reports were not refreshed.",
             file=sys.stderr,
             flush=True,
@@ -982,13 +1035,24 @@ def main() -> int:
         traceback.print_exc()
         return 2
 
+    refresh_result = _refresh_status_reports(report)
+    status_refresh_pass = bool(refresh_result.get("status_refresh_pass"))
+    status_refresh_failure = refresh_result.get("status_refresh_failure")
+
     print(
         f"[pipeline_audit] verdict={verdict} reason={reason} "
         f"map_contract_pass={map_contract.get('map_contract_pass')} "
         f"files={len(file_rows)} branch_pass={report['evaluation_summary']['num_branch_recovery_pass']} "
-        f"median_nnz={nnz_summary.get('median_nnz')}",
+        f"median_nnz={nnz_summary.get('median_nnz')} "
+        f"primary_audit_written={primary_audit_written} status_refresh_pass={status_refresh_pass}",
         flush=True,
     )
+    if status_refresh_failure:
+        print(
+            f"[pipeline_audit] status_refresh_failure={status_refresh_failure}",
+            file=sys.stderr,
+            flush=True,
+        )
     if verdict == VERDICT_BRANCH_RECOVERED:
         return 0
     if verdict == VERDICT_NO_BRANCH:

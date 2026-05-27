@@ -19,6 +19,9 @@ CONV_DIAG = (
 )
 
 ROOT_CAUSE_CONFIRMED_ST = "ROOT_CAUSE_CONFIRMED_ST_REGULARIZATION_OR_MAPPING_FIX_READY_FOR_ONE_BASELINE_RERUN"
+ROOT_CAUSE_REPLACEMENT_BASELINE_AWAITING_PIPELINE_AUDIT = (
+    "REPLACEMENT_BASELINE_EPS_COMPLETED_AWAITING_REPORT_ONLY_PIPELINE_AUDIT"
+)
 VERDICT_PERSISTENCE_BUG = "SAVED_MODE_VECTOR_PERSISTENCE_OR_LAYOUT_BUG_CONFIRMED"
 VERDICT_EPS_MASS_NULL = "EPS_RETURNED_ONLY_MASS_NULL_CANDIDATES_IN_UNREGULARIZED_SOLVE"
 VERDICT_REPLAY_INVALID = "REPLAY_CONTROL_INVALID_SEED_XHMX_NONFINITE"
@@ -463,8 +466,22 @@ def determine_root_cause_status(
     *,
     filtered_eval: Optional[Dict[str, Any]],
     unreg_eval: Optional[Dict[str, Any]],
+    persistence_fixed_eval: Optional[Dict[str, Any]] = None,
+    pipeline_audit: Optional[Dict[str, Any]] = None,
 ) -> str:
-    return ROOT_CAUSE_CONFIRMED_ST
+    pa_verdict = (pipeline_audit or {}).get("audit_verdict")
+    if pa_verdict:
+        return f"PIPELINE_AUDIT_VERDICT_{pa_verdict}"
+    pf_bank = (
+        (persistence_fixed_eval or {}).get("evaluation") or {}
+    ).get("eps_candidate_bank_summary") or {}
+    replacement_ran = int(pf_bank.get("num_vectors_saved", 0) or 0) >= 56 or bool(
+        (persistence_fixed_eval or {}).get("solve_return_code") == 0
+        and (persistence_fixed_eval or {}).get("persistence_self_test_pass")
+    )
+    if replacement_ran:
+        return ROOT_CAUSE_REPLACEMENT_BASELINE_AWAITING_PIPELINE_AUDIT
+    return ROOT_CAUSE_NOT_CONFIRMED
 
 
 def build_finite_closure_plan(
@@ -480,6 +497,10 @@ def build_finite_closure_plan(
     mass_verdict = (mass_norm_audit or {}).get("classification_verdict")
     mf_verdict = (mapping_fixed_eval or {}).get("evaluation", {}).get("diagnostic_verdict")
     pa_verdict = (pipeline_audit or {}).get("audit_verdict")
+    pa_unresolved = pa_verdict in (
+        "MAPPING_FIXED_UNREGULARIZED_BASELINE_PERSISTED_VECTOR_CONTENT_UNRESOLVED",
+        "MAPPING_FIXED_UNREGULARIZED_BASELINE_REPLAY_EVALUATION_FAILURE",
+    )
     pf_verdict = "MAPPING_FIXED_UNREGULARIZED_BASELINE_CANDIDATE_PERSISTENCE_FAILURE"
     self_test_json = CONV_DIAG / "v2_mapping_fixed_candidate_persistence_self_test.json"
     self_test_pass = False
@@ -504,6 +525,12 @@ def build_finite_closure_plan(
 
     if persistence_fixed_eval and not pipeline_audit:
         next_action = f"Run report-only full pipeline audit: {vm_audit_shell}"
+    elif pa_unresolved:
+        next_action = (
+            "Persisted sparse vectors mass-null; dense pre-sparsify not preserved. "
+            "Review architecture audit and lossless persistence preflight; "
+            "no ST failure verdict. No additional EPS until lossless path approved."
+        )
     elif pa_verdict == "MAPPING_FIXED_UNREGULARIZED_BASELINE_BRANCH_RECOVERED":
         next_action = (
             "Branch recovered under corrected mapping; review promotion gates only after audit review."

@@ -13,6 +13,8 @@ MODE_VECTOR_RELATIVE_EPS = 1e-7
 
 # Worker / merge artifact: one CSR matrix per file (scipy.sparse.save_npz format).
 MODE_VECTOR_FILE_SUFFIX = ".smx.npz"
+# Diagnostic-only lossless dense column (float64); not used by production merge paths.
+MODE_VECTOR_DENSE_LOSSLESS_SUFFIX = ".smx.dense.npy"
 
 
 def sparsify_relative_then_float32(vec: np.ndarray) -> np.ndarray:
@@ -83,3 +85,18 @@ def save_mode_csr(path: Union[str, Path], mat: sparse.csr_matrix) -> None:
     m = mat.tocsr().astype(np.float32, copy=False)
     m.eliminate_zeros()
     sparse.save_npz(str(path), m, compressed=True)
+
+
+def save_mode_dense_f64_lossless(path: Union[str, Path], vec: np.ndarray) -> None:
+    """Diagnostic-only: lossless float64 dense column for replay (no relative sparsification)."""
+    arr = np.asarray(vec, dtype=np.float64).reshape(-1)
+    np.save(str(path), arr)
+
+
+def load_mode_dense_f64_lossless(path: Union[str, Path]) -> np.ndarray:
+    """Load diagnostic lossless dense vector."""
+    return np.asarray(np.load(str(path)), dtype=np.float64).ravel()
+
+
+def is_lossless_dense_mode_path(path: Union[str, Path]) -> bool:
+    return str(path).endswith(MODE_VECTOR_DENSE_LOSSLESS_SUFFIX)

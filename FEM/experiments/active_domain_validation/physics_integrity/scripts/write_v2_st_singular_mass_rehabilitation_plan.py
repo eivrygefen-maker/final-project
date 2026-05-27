@@ -14,7 +14,7 @@ for _p in (SCRIPT_DIR,):
         sys.path.insert(0, str(_p))
 
 from v2_eps_mapping_audit_lib import MAPPING_FIX_SUMMARY
-from v2_mesh_convergence_common import CONV_DIAG, write_json
+from v2_mesh_convergence_common import CONV_DIAG
 
 OUT_JSON = CONV_DIAG / "v2_st_singular_mass_rehabilitation_plan.json"
 OUT_MD = CONV_DIAG / "v2_st_singular_mass_rehabilitation_plan.md"
@@ -36,6 +36,17 @@ VM_PIPELINE_AUDIT_SHELL = (
     "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
     "run_v2_mapping_fixed_persistence_fixed_full_pipeline_audit.sh"
 )
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
+    _atomic_write_text(path, json.dumps(payload, indent=2))
 
 
 def main() -> int:
@@ -82,6 +93,10 @@ def main() -> int:
         and persistence_fixed.get("persistence_self_test_pass")
     )
     pipeline_verdict = pipeline_audit.get("audit_verdict")
+    pipeline_unresolved = pipeline_verdict in (
+        "MAPPING_FIXED_UNREGULARIZED_BASELINE_PERSISTED_VECTOR_CONTENT_UNRESOLVED",
+        None,
+    ) and replacement_ran
     replacement_pending = (
         not replacement_ran
         and pf_verdict
@@ -97,6 +112,9 @@ def main() -> int:
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "strategy": "finite_solver_rehabilitation_persistence_fix_then_mapping_baseline",
         "next_allowed_action": (
+            "review_persisted_vector_content_unresolved_lossless_preflight_no_eps"
+            if pipeline_unresolved
+            else (
             "report_only_full_pipeline_audit_over_existing_replacement_artifacts"
             if audit_only
             else (
@@ -104,9 +122,15 @@ def main() -> int:
                 if baseline_pending
                 else "review_mapping_corrected_baseline_and_pipeline_audit_verdict"
             )
+            )
         ),
         "recommended_vm_command": (
-            VM_PIPELINE_AUDIT_SHELL if audit_only or replacement_ran else None
+            VM_PIPELINE_AUDIT_SHELL if (audit_only or replacement_ran) and not pipeline_unresolved else (
+                "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+                "run_v2_coupled_physical_core_report_only_bundle.sh"
+                if pipeline_unresolved
+                else None
+            )
         ),
         "PGNHEP_purification": "ruled_out_in_current_VM_environment",
         "purification": "ruled_out_in_current_VM_environment",
@@ -230,8 +254,18 @@ def main() -> int:
         ),
         "hole_radius_large": "blocked",
         "production_policy_unchanged": True,
+        "current_state_summary": {
+            "persistence_self_test": "PASS" if self_test_pass else "pending_or_failed",
+            "replacement_baseline_eps": "completed_once" if replacement_ran else "not_completed",
+            "candidate_persistence": (
+                "56_of_56_closed" if replacement_ran else "not_closed"
+            ),
+            "full_pipeline_audit": (
+                "completed" if pipeline_verdict else "report_only_required"
+            ),
+            "additional_eps_solve": "not_authorized",
+        },
     }
-    write_json(OUT_JSON, report)
 
     lines = [
         "# ST singular-mass rehabilitation plan",
@@ -251,16 +285,19 @@ def main() -> int:
         "",
         f"- {MAPPING_FIX_SUMMARY['new_behavior']}",
         "",
-        "## First mapping-corrected run (VM)",
+        "## Current state (replacement baseline already executed)",
         "",
-        f"- **Persistence failure (inconclusive):** `{first_run_persistence_failure}`",
+        f"- **Persistence self-test:** `{'PASS' if self_test_pass else 'pending_or_failed'}`",
+        f"- **Replacement baseline EPS:** `{'completed_once' if replacement_ran else 'not_completed'}`",
+        f"- **Candidate persistence:** `{'56/56 closed' if replacement_ran else 'not closed'}`",
+        f"- **Full pipeline audit:** `{'completed: ' + str(pipeline_verdict) if pipeline_verdict else 'report-only required'}`",
+        f"- **Additional EPS solve:** `not authorized`",
+        f"- **Report-only VM command:** `{VM_PIPELINE_AUDIT_SHELL}`",
+        "",
+        "## Historical: first mapping-corrected run",
+        "",
+        f"- **First-run persistence failure (inconclusive):** `{first_run_persistence_failure}`",
         f"- **Not ST failure / not Stage-2:** True",
-        "",
-        "## Replacement baseline",
-        "",
-        f"- **Authorized after self-test:** `{baseline_pending}`",
-        f"- **Self-test pass:** `{self_test_pass}`",
-        f"- **VM command:** `{VM_BASELINE_SHELL}`",
         "",
         "## Stage 2",
         "",
@@ -268,8 +305,10 @@ def main() -> int:
         "persists and evaluates all candidates yet no physical branch is recovered.",
         "",
     ]
-    OUT_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"[rehab_plan] wrote {OUT_JSON}", flush=True)
+    md_text = "\n".join(lines) + "\n"
+    _atomic_write_json(OUT_JSON, report)
+    _atomic_write_text(OUT_MD, md_text)
+    print(f"[rehab_plan] wrote {OUT_JSON} and {OUT_MD}", flush=True)
     return 0
 
 

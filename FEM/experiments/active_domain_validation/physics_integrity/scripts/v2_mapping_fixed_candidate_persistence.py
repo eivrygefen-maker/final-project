@@ -9,7 +9,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from fem_mode_array_utils import MODE_VECTOR_FILE_SUFFIX, dense_to_csr_f32_column, save_mode_csr
+from fem_mode_array_utils import (
+    MODE_VECTOR_DENSE_LOSSLESS_SUFFIX,
+    MODE_VECTOR_FILE_SUFFIX,
+    dense_to_csr_f32_column,
+    save_mode_csr,
+    save_mode_dense_f64_lossless,
+)
 
 VERDICT_PERSISTENCE_FAILURE = (
     "MAPPING_FIXED_UNREGULARIZED_BASELINE_CANDIDATE_PERSISTENCE_FAILURE"
@@ -20,6 +26,69 @@ CANDIDATE_FILENAME_TEMPLATE = "candidate_eps_slot_{index:04d}"
 
 def candidate_slot_path(modes_dir: Path, slot_index: int) -> Path:
     return modes_dir / f"{CANDIDATE_FILENAME_TEMPLATE.format(index=int(slot_index))}{MODE_VECTOR_FILE_SUFFIX}"
+
+
+def candidate_slot_dense_lossless_path(modes_dir: Path, slot_index: int) -> Path:
+    """Diagnostic-only lossless dense path (isolated future output tree)."""
+    return (
+        modes_dir
+        / f"{CANDIDATE_FILENAME_TEMPLATE.format(index=int(slot_index))}{MODE_VECTOR_DENSE_LOSSLESS_SUFFIX}"
+    )
+
+
+def persist_candidate_bank_with_optional_lossless(
+    case_dir: Path,
+    bank_records: List[Dict[str, Any]],
+    *,
+    save_vector_fn,
+    write_lossless_dense: bool = False,
+) -> Tuple[int, List[Dict[str, Any]], List[str]]:
+    """
+    Like persist_candidate_bank; when write_lossless_dense, also save .smx.dense.npy
+    before sparsification (authoritative for future diagnostic replay).
+    """
+    modes_dir = case_dir / "modes"
+    modes_dir.mkdir(parents=True, exist_ok=True)
+    saved_rows: List[Dict[str, Any]] = []
+    errors: List[str] = []
+    for rec in bank_records:
+        slot = int(rec.get("eps_slot_index", rec.get("candidate_index", len(saved_rows))))
+        vec = rec.get("vector")
+        if vec is None:
+            errors.append(f"slot_{slot}:missing_vector_in_bank_record")
+            continue
+        vec_dense = np.asarray(vec, dtype=np.float64).ravel()
+        mode_path = candidate_slot_path(modes_dir, slot)
+        try:
+            if write_lossless_dense:
+                lossless_path = candidate_slot_dense_lossless_path(modes_dir, slot)
+                save_mode_dense_f64_lossless(lossless_path, vec_dense)
+            row = save_vector_fn(vec_dense, mode_path, rec)
+            row["candidate_index"] = slot
+            row["eps_slot_index"] = slot
+            row["vector_file"] = str(mode_path.relative_to(case_dir)).replace("\\", "/")
+            row["vector_path"] = row["vector_file"]
+            row["persistence_status"] = "saved"
+            if write_lossless_dense:
+                lp = candidate_slot_dense_lossless_path(modes_dir, slot)
+                row["vector_file_lossless"] = str(lp.relative_to(case_dir)).replace("\\", "/")
+                row["lossless_persistence"] = True
+            for key in (
+                "mu_raw",
+                "lam_phys",
+                "lam_map_tag",
+                "reported_frequency_hz",
+                "sigma_used_hz",
+                "st_type",
+                "eps_eigenvalue_semantics",
+                "legacy_double_shift_mapping_disabled",
+            ):
+                if key in rec and key not in row:
+                    row[key] = rec.get(key)
+            saved_rows.append(row)
+        except Exception as exc:
+            errors.append(f"slot_{slot}:{type(exc).__name__}:{exc}")
+    return len(saved_rows), saved_rows, errors
 
 
 def load_preserve_all_bank_from_config(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
