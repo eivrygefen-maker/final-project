@@ -29,6 +29,11 @@ VERDICT_NOT_LOCALIZED = "VECTOR_MASS_NULL_ROOT_CAUSE_NOT_LOCALIZED_STOP_FOR_ARCH
 ROOT_CAUSE_CONFIRMED_OTHER = "ROOT_CAUSE_CONFIRMED_OTHER_FIX_READY_FOR_ONE_BASELINE_RERUN"
 ROOT_CAUSE_NOT_CONFIRMED = "ROOT_CAUSE_NOT_YET_CONFIRMED_NO_FURTHER_SOLVE_AUTHORIZED"
 ROOT_CAUSE_LOSSLESS_SHELL_MASS_KERNEL = "LOSSLESS_ST_RETURNED_U_SHELL_MASS_MATRIX_KERNEL_MODES"
+ROOT_CAUSE_ST_RETIRED_AFTER_DEFLATION = (
+    "V2_ST_SINVERT_FORMULATION_BLOCKED_AFTER_CERTIFIED_NULL_DEFLATION"
+)
+PHYSICAL_MODEL_STATUS_V2_NOT_INVALIDATED = "V2_NOT_INVALIDATED"
+SOLVER_STATUS_ST_RETIRED = "ST_SINVERT_RETIRED_FOR_CURRENT_V2_SPECTRAL_FORMULATION"
 
 VERDICT_SPURIOUS = (
     "DIAGNOSTIC_SELECTED_SIGMA_OR_BC_SPURIOUS_MODE_"
@@ -470,6 +475,29 @@ def determine_root_cause_status(
     persistence_fixed_eval: Optional[Dict[str, Any]] = None,
     pipeline_audit: Optional[Dict[str, Any]] = None,
 ) -> str:
+    alternatives_plan_json = CONV_DIAG / "v2_alternative_spectral_formulation_after_st_retirement_plan.json"
+    if alternatives_plan_json.is_file():
+        try:
+            ap = json.loads(alternatives_plan_json.read_text(encoding="utf-8"))
+            auth = ap.get("authoritative_status") or {}
+            if auth.get("root_cause_status"):
+                return str(auth["root_cause_status"])
+        except Exception:
+            pass
+    projected_diag_json = (
+        CONV_DIAG
+        / "v2_l_mid_mapping_fixed_unregularized_lossless_nullspace_projected_adjudication_v1_diagnostic.json"
+    )
+    if projected_diag_json.is_file():
+        try:
+            pd = json.loads(projected_diag_json.read_text(encoding="utf-8"))
+            ev = pd.get("evaluation") or {}
+            if str(ev.get("final_projected_adjudication_verdict", "")).endswith("ST_FORMULATION_BLOCKER"):
+                return ROOT_CAUSE_ST_RETIRED_AFTER_DEFLATION
+            if int(pd.get("eps_run_count_for_projected_lane", 0) or 0) >= 1:
+                return ROOT_CAUSE_ST_RETIRED_AFTER_DEFLATION
+        except Exception:
+            pass
     null_basis_json = (
         CONV_DIAG
         / "v2_lossless_adjudication_v1_Muu_null_basis_certification_and_projection_preflight.json"
@@ -613,7 +641,7 @@ def build_finite_closure_plan(
     if mf_verdict != "MAPPING_FIXED_UNREGULARIZED_BASELINE_NO_PHYSICAL_BRANCH_RECOVERED":
         blocked.append("stage_2_nullspace_reduction")
 
-    return {
+    closure: Dict[str, Any] = {
         "root_cause_status": root_cause_status,
         "next_allowed_action": (
             "persistence_self_test_then_one_replacement_mapping_corrected_baseline"
@@ -666,3 +694,28 @@ def build_finite_closure_plan(
             else "exhausted_pending_review"
         ),
     }
+    if root_cause_status == ROOT_CAUSE_ST_RETIRED_AFTER_DEFLATION:
+        closure.update(
+            {
+                "current_physical_model_status": PHYSICAL_MODEL_STATUS_V2_NOT_INVALIDATED,
+                "current_solver_status": SOLVER_STATUS_ST_RETIRED,
+                "additional_eps": "NOT_AUTHORIZED",
+                "mesh_convergence_resume": "BLOCKED",
+                "production_promotion": "BLOCKED",
+                "next_allowed_action": "phase_0_alternative_spectral_formulation_plan_and_api_preflight_no_eps",
+                "recommended_vm_command": (
+                    "python FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+                    "write_v2_alternative_spectral_formulation_after_st_retirement_plan.py"
+                ),
+                "maximum_additional_baseline_solves_before_escalation": 0,
+                "stage_2": "not_authorized_immediate_workaround_st_path_retired",
+                "blocked_actions": blocked
+                + [
+                    "another_empirical_st_deflation",
+                    "st_sinvert_as_primary_solver",
+                    "sigma_tweak",
+                    "persistence_remapping_only",
+                ],
+            }
+        )
+    return closure

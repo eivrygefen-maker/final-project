@@ -15,6 +15,11 @@ for _p in (SCRIPT_DIR,):
 
 from v2_eps_mapping_audit_lib import MAPPING_FIX_SUMMARY
 from v2_mesh_convergence_common import CONV_DIAG
+from v2_solver_root_cause_static_audit import (
+    PHYSICAL_MODEL_STATUS_V2_NOT_INVALIDATED,
+    ROOT_CAUSE_ST_RETIRED_AFTER_DEFLATION,
+    SOLVER_STATUS_ST_RETIRED,
+)
 
 OUT_JSON = CONV_DIAG / "v2_st_singular_mass_rehabilitation_plan.json"
 OUT_MD = CONV_DIAG / "v2_st_singular_mass_rehabilitation_plan.md"
@@ -41,6 +46,13 @@ LOSSLESS_NULL_BASIS_PREFLIGHT_JSON = (
 )
 LOSSLESS_DIAG_JSON = (
     CONV_DIAG / "v2_l_mid_mapping_fixed_unregularized_lossless_adjudication_v1_diagnostic.json"
+)
+PROJECTED_DIAG_JSON = (
+    CONV_DIAG
+    / "v2_l_mid_mapping_fixed_unregularized_lossless_nullspace_projected_adjudication_v1_diagnostic.json"
+)
+ALTERNATIVES_PLAN_JSON = (
+    CONV_DIAG / "v2_alternative_spectral_formulation_after_st_retirement_plan.json"
 )
 PF_VERDICT = "MAPPING_FIXED_UNREGULARIZED_BASELINE_CANDIDATE_PERSISTENCE_FAILURE"
 VM_PIPELINE_AUDIT_SHELL = (
@@ -105,6 +117,14 @@ def main() -> int:
         if LOSSLESS_NULL_BASIS_PREFLIGHT_JSON.is_file()
         else {}
     )
+    projected_diag = (
+        json.loads(PROJECTED_DIAG_JSON.read_text(encoding="utf-8"))
+        if PROJECTED_DIAG_JSON.is_file()
+        else {}
+    )
+    projected_ev = projected_diag.get("evaluation") or {}
+    projected_lane_consumed = int(projected_diag.get("eps_run_count_for_projected_lane", 0) or 0) >= 1
+    st_path_retired = bool(projected_lane_consumed)
 
     applicability = (preflight or {}).get("PGNHEP_purification_applicability")
     if applicability is None:
@@ -142,8 +162,25 @@ def main() -> int:
 
     report: Dict[str, Any] = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "strategy": "finite_solver_rehabilitation_persistence_fix_then_mapping_baseline",
+        "strategy": (
+            "st_sinvert_retired_select_alternative_spectral_formulation"
+            if st_path_retired
+            else "finite_solver_rehabilitation_persistence_fix_then_mapping_baseline"
+        ),
+        "authoritative_status": {
+            "root_cause_status": ROOT_CAUSE_ST_RETIRED_AFTER_DEFLATION
+            if st_path_retired
+            else None,
+            "current_physical_model_status": PHYSICAL_MODEL_STATUS_V2_NOT_INVALIDATED,
+            "current_solver_status": SOLVER_STATUS_ST_RETIRED if st_path_retired else None,
+            "additional_eps": "NOT_AUTHORIZED",
+            "mesh_convergence_resume": "BLOCKED",
+            "production_promotion": "BLOCKED",
+        },
         "next_allowed_action": (
+            "phase_0_alternative_spectral_formulation_plan_and_api_preflight_no_eps"
+            if st_path_retired
+            else (
             "review_null_basis_projection_preflight_no_eps"
             if lossless_null_basis
             else (
@@ -173,8 +210,13 @@ def main() -> int:
             )
             )
             )
+            )
         ),
         "recommended_vm_command": (
+            "python FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+            "write_v2_alternative_spectral_formulation_after_st_retirement_plan.py"
+            if st_path_retired
+            else (
             None
             if lossless_null_basis
             else (
@@ -196,6 +238,7 @@ def main() -> int:
                     if pipeline_unresolved
                     else None
                 )
+            )
             )
             )
             )
@@ -379,6 +422,19 @@ def main() -> int:
             ),
             "null_basis_projection_preflight_json": str(LOSSLESS_NULL_BASIS_PREFLIGHT_JSON),
         },
+        "projected_adjudication_lane": {
+            "output_subdir": (
+                "seed_branch_recovery_diagnostic_mapping_fixed_unregularized_lossless_nullspace_projected_adjudication_v1"
+            ),
+            "eps_consumed": projected_lane_consumed,
+            "final_verdict": projected_ev.get("final_projected_adjudication_verdict"),
+            "deflation_applied_in_eps": (projected_ev.get("projection_runtime") or {}).get(
+                "deflation_applied"
+            ),
+            "report_json": str(PROJECTED_DIAG_JSON),
+            "st_path_retired": st_path_retired,
+            "alternatives_plan_json": str(ALTERNATIVES_PLAN_JSON),
+        },
         "current_state_summary": {
             "persistence_self_test": "PASS" if self_test_pass else "pending_or_failed",
             "replacement_baseline_eps": "completed_once" if replacement_ran else "not_completed",
@@ -390,22 +446,22 @@ def main() -> int:
             ),
             "additional_eps_solve": "not_authorized",
             "lossless_adjudication_v1": (
-                "completed_one_eps_shell_mass_kernel_null_basis_preflight="
-                + str(lossless_null_basis.get("recommended_future_strategy", "pending"))
-                + (
-                    " (authorization_gates_pass)"
-                    if lossless_null_basis.get("authorization_gates_pass")
-                    else ""
-                )
-                if lossless_null_basis
+                "projected_eps_consumed_st_retired="
+                + str(projected_ev.get("final_projected_adjudication_verdict", "n/a"))
+                if projected_lane_consumed
                 else (
-                    "completed_one_eps_mass_null_u_mass_rank_audit="
-                    + str(lossless_u_mass_rank.get("classification_subtype", "pending"))
-                    if lossless_diag.get("eps_run_count_for_this_lane") == 1 and lossless_u_mass_rank
+                    "completed_one_eps_shell_mass_kernel_null_basis_preflight="
+                    + str(lossless_null_basis.get("recommended_future_strategy", "pending"))
+                    if lossless_null_basis
                     else (
-                        "completed_one_eps_mass_null_u_attribution_pending"
-                        if lossless_diag.get("eps_run_count_for_this_lane") == 1
-                        else "not_run"
+                        "completed_one_eps_mass_null_u_mass_rank_audit="
+                        + str(lossless_u_mass_rank.get("classification_subtype", "pending"))
+                        if lossless_diag.get("eps_run_count_for_this_lane") == 1 and lossless_u_mass_rank
+                        else (
+                            "completed_one_eps_mass_null_u_attribution_pending"
+                            if lossless_diag.get("eps_run_count_for_this_lane") == 1
+                            else "not_run"
+                        )
                     )
                 )
             ),
