@@ -307,18 +307,23 @@ def _build_c2_trace_to_parent_transfer(
     tag_back: int,
     tag_ribs: int,
 ) -> Dict[str, Any]:
-    """Construct sparse transfer T: u_trace -> parent_u via submesh vertex map + component expansion."""
+    """Construct sparse transfer T: u_trace -> parent_u using block DOF map then component expansion."""
     u_el_parent = fem3d._displacement_element(msh, 1)
     V_u_parent = fem.functionspace(msh, u_el_parent)
     n_u_parent = int(V_u_parent.dofmap.index_map.size_global * V_u_parent.dofmap.index_map_bs)
+    n_parent_blocks = int(V_u_parent.dofmap.index_map.size_global)
 
     if shell_facets.size == 0 or not hasattr(dmesh, "create_submesh"):
         return {
             "ok": False,
             "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
             "failure_detail": "shell_facets_missing_or_create_submesh_unavailable",
+            "failure_stage": "SUBMESH_PRECONDITION",
             "domain_dim": None,
             "codomain_dim": n_u_parent,
+            "C2_dense_coupling_allocation_prohibited": True,
+            "C2_dense_coupling_allocation_removed": True,
+            "C2_projected_coupling_representation": "NOT_YET_SAFE",
         }
 
     tdim = msh.topology.dim
@@ -331,6 +336,7 @@ def _build_c2_trace_to_parent_transfer(
     shell_tdim_to_0_created = False
     parent_0_to_tdim_created = False
     parent_tdim_to_0_created = False
+
     try:
         shell_mesh.topology.create_connectivity(0, shell_tdim)
         shell_0_to_tdim_created = True
@@ -360,12 +366,6 @@ def _build_c2_trace_to_parent_transfer(
             "C2_T_shell_vertex_entity_map_type": type(shell_vertex_to_parent).__name__,
             "C2_T_shell_vertex_map_extracted": False,
             "C2_T_shell_vertex_map_extraction_method": None,
-            "C2_T_shell_topological_dimension": None,
-            "C2_T_parent_topological_dimension": None,
-            "C2_T_shell_connectivity_0_to_tdim_created": False,
-            "C2_T_shell_connectivity_tdim_to_0_created": False,
-            "C2_T_parent_connectivity_0_to_tdim_created": False,
-            "C2_T_parent_connectivity_tdim_to_0_created": False,
             "C2_dense_coupling_allocation_prohibited": True,
             "C2_dense_coupling_allocation_removed": True,
             "C2_projected_coupling_representation": "NOT_YET_SAFE",
@@ -373,189 +373,11 @@ def _build_c2_trace_to_parent_transfer(
 
     cell_map_meta = _extract_submesh_to_parent_entity_indices(shell_to_parent, entity_dim=tdim - 1)
     vertex_map_meta = _extract_submesh_to_parent_entity_indices(shell_vertex_to_parent, entity_dim=0)
-    if not cell_map_meta["ok"]:
-        return {
-            "ok": False,
-            "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
-            "failure_detail": "entitymap_to_parent_facet_extraction_failed",
-            "failure_stage": "CELL_ENTITYMAP_EXTRACTION",
-            "domain_dim": None,
-            "codomain_dim": n_u_parent,
-            "map_meta": cell_map_meta,
-            "vertex_map_meta": vertex_map_meta,
-            "C2_T_shell_topological_dimension": shell_tdim,
-            "C2_T_parent_topological_dimension": parent_tdim,
-            "C2_T_shell_connectivity_0_to_tdim_created": shell_0_to_tdim_created,
-            "C2_T_shell_connectivity_tdim_to_0_created": shell_tdim_to_0_created,
-            "C2_T_parent_connectivity_0_to_tdim_created": parent_0_to_tdim_created,
-            "C2_T_parent_connectivity_tdim_to_0_created": parent_tdim_to_0_created,
-        }
-    if not vertex_map_meta["ok"]:
-        return {
-            "ok": False,
-            "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
-            "failure_detail": "entitymap_to_parent_vertex_extraction_failed",
-            "failure_stage": "VERTEX_ENTITYMAP_EXTRACTION",
-            "domain_dim": None,
-            "codomain_dim": n_u_parent,
-            "map_meta": cell_map_meta,
-            "vertex_map_meta": vertex_map_meta,
-            "C2_T_shell_topological_dimension": shell_tdim,
-            "C2_T_parent_topological_dimension": parent_tdim,
-            "C2_T_shell_connectivity_0_to_tdim_created": shell_0_to_tdim_created,
-            "C2_T_shell_connectivity_tdim_to_0_created": shell_tdim_to_0_created,
-            "C2_T_parent_connectivity_0_to_tdim_created": parent_0_to_tdim_created,
-            "C2_T_parent_connectivity_tdim_to_0_created": parent_tdim_to_0_created,
-        }
-
-    parent_f = np.asarray(cell_map_meta["indices"], dtype=np.int32).ravel()
-    parent_tag_map = {
-        int(i): int(v) for i, v in zip(np.asarray(facet_tags.indices), np.asarray(facet_tags.values))
-    }
-    trace_vals = np.array([parent_tag_map.get(int(pf), -1) for pf in parent_f], dtype=np.int32)
-    transferred_counts = {
-        "tag1": int(np.sum(trace_vals == tag_top)),
-        "tag3": int(np.sum(trace_vals == tag_back)),
-        "tag4": int(np.sum(trace_vals == tag_ribs)),
-    }
-
-    V_u_trace = fem.functionspace(shell_mesh, fem3d._displacement_element(shell_mesh, 1))
-    n_u_trace = int(V_u_trace.dofmap.index_map.size_global * V_u_trace.dofmap.index_map_bs)
-    bs_trace = int(V_u_trace.dofmap.index_map_bs)
-    bs_parent = int(V_u_parent.dofmap.index_map_bs)
-    shell_parent_dofs = np.asarray(
-        fem3d._locate_facet_displacement_dofs(V_u_parent, msh, shell_facets), dtype=np.int32
-    ).ravel()
-    if bs_trace != bs_parent:
-        return {
-            "ok": False,
-            "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
-            "failure_detail": "trace_parent_vector_block_size_mismatch",
-            "failure_stage": "VECTOR_BLOCK_SIZE_VALIDATION",
-            "domain_dim": n_u_trace,
-            "codomain_dim": n_u_parent,
-            "map_meta": cell_map_meta,
-            "vertex_map_meta": vertex_map_meta,
-            "transferred_counts": transferred_counts,
-            "C2_T_shell_topological_dimension": shell_tdim,
-            "C2_T_parent_topological_dimension": parent_tdim,
-            "C2_T_shell_connectivity_0_to_tdim_created": shell_0_to_tdim_created,
-            "C2_T_shell_connectivity_tdim_to_0_created": shell_tdim_to_0_created,
-            "C2_T_parent_connectivity_0_to_tdim_created": parent_0_to_tdim_created,
-            "C2_T_parent_connectivity_tdim_to_0_created": parent_tdim_to_0_created,
-        }
-
-    parent_idx = np.full(n_u_trace, -1, dtype=np.int32)
-    sub_v_map = np.asarray(vertex_map_meta["indices"], dtype=np.int32).ravel()
+    parent_f = np.asarray(cell_map_meta.get("indices", np.asarray([], dtype=np.int32)), dtype=np.int32).ravel()
+    sub_v_map = np.asarray(vertex_map_meta.get("indices", np.asarray([], dtype=np.int32)), dtype=np.int32).ravel()
     vmap_size = int(shell_mesh.topology.index_map(0).size_local + shell_mesh.topology.index_map(0).num_ghosts)
-    if sub_v_map.size < vmap_size:
-        return {
-            "ok": False,
-            "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
-            "failure_detail": "submesh_vertex_map_size_mismatch",
-            "failure_stage": "VERTEX_ENTITYMAP_EXTRACTION",
-            "domain_dim": n_u_trace,
-            "codomain_dim": n_u_parent,
-            "map_meta": cell_map_meta,
-            "vertex_map_meta": vertex_map_meta,
-            "transferred_counts": transferred_counts,
-            "C2_T_shell_topological_dimension": shell_tdim,
-            "C2_T_parent_topological_dimension": parent_tdim,
-            "C2_T_shell_connectivity_0_to_tdim_created": shell_0_to_tdim_created,
-            "C2_T_shell_connectivity_tdim_to_0_created": shell_tdim_to_0_created,
-            "C2_T_parent_connectivity_0_to_tdim_created": parent_0_to_tdim_created,
-            "C2_T_parent_connectivity_tdim_to_0_created": parent_tdim_to_0_created,
-        }
 
-    trace_vertex_block_dim = 0
-    parent_vertex_block_dim = 0
-    component_mismatch_count = 0
-    for sv in range(vmap_size):
-        pv = int(sub_v_map[sv])
-        if pv < 0:
-            continue
-        trace_vertex_block_dim += 1
-        parent_vertex_block_dim += 1
-        trace_dofs = np.asarray(
-            fem.locate_dofs_topological(V_u_trace, 0, np.asarray([sv], dtype=np.int32)), dtype=np.int32
-        ).ravel()
-        parent_dofs = np.asarray(
-            fem.locate_dofs_topological(V_u_parent, 0, np.asarray([pv], dtype=np.int32)), dtype=np.int32
-        ).ravel()
-        if trace_dofs.size != bs_trace or parent_dofs.size != bs_parent:
-            component_mismatch_count += 1
-            continue
-        td = np.sort(trace_dofs)
-        pd = np.sort(parent_dofs)
-        for j in range(bs_trace):
-            t_dof = int(td[j])
-            p_dof = int(pd[j])
-            if 0 <= t_dof < n_u_trace and 0 <= p_dof < n_u_parent:
-                parent_idx[t_dof] = p_dof
-
-    missing = int(np.sum(parent_idx < 0))
-    if missing > 0:
-        return {
-            "ok": False,
-            "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
-            "failure_detail": f"unmatched_trace_dofs={missing}",
-            "failure_stage": "VERTEX_COMPONENT_EXPANSION",
-            "domain_dim": n_u_trace,
-            "codomain_dim": n_u_parent,
-            "map_meta": cell_map_meta,
-            "vertex_map_meta": vertex_map_meta,
-            "transferred_counts": transferred_counts,
-            "C2_T_shell_topological_dimension": shell_tdim,
-            "C2_T_parent_topological_dimension": parent_tdim,
-            "C2_T_shell_connectivity_0_to_tdim_created": shell_0_to_tdim_created,
-            "C2_T_shell_connectivity_tdim_to_0_created": shell_tdim_to_0_created,
-            "C2_T_parent_connectivity_0_to_tdim_created": parent_0_to_tdim_created,
-            "C2_T_parent_connectivity_tdim_to_0_created": parent_tdim_to_0_created,
-        }
-
-    row_counts = np.bincount(parent_idx, minlength=n_u_parent)
-    nnz = int(parent_idx.size)
-    density = float(nnz / max(n_u_parent * n_u_trace, 1))
-    vals = np.ones(nnz, dtype=np.float64)
-    checksum = _crc32_i32(parent_idx)
-
-    # Lightweight transfer contract checks.
-    geom_pass = bool(np.all((parent_idx >= 0) & (parent_idx < n_u_parent)))
-    tag_support_pass = bool(all(v > 0 for v in transferred_counts.values()))
-    support_pass = bool(np.all(np.isin(parent_idx, shell_parent_dofs)))
-    ones_trace = np.ones(n_u_trace, dtype=np.float64)
-    y = np.zeros(n_u_parent, dtype=np.float64)
-    np.add.at(y, parent_idx, ones_trace)
-    const_pass = bool(np.all(y[parent_idx] >= 1.0 - 1.0e-12))
-    trace_coords = np.asarray(V_u_trace.tabulate_dof_coordinates(), dtype=np.float64)
-    parent_coords = np.asarray(V_u_parent.tabulate_dof_coordinates(), dtype=np.float64)
-    coord_pass = bool(np.allclose(trace_coords, parent_coords[parent_idx], rtol=0.0, atol=1.0e-12))
-    entity_corr_pass = bool(vertex_map_meta["ok"] and missing == 0)
-    component_pass = bool(bs_trace == 3 and bs_parent == 3 and component_mismatch_count == 0)
-
-    exact_pass = bool(
-        geom_pass and tag_support_pass and support_pass and const_pass and coord_pass and entity_corr_pass and component_pass
-    )
-    return {
-        "ok": exact_pass,
-        "reason": None if exact_pass else "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
-        "failure_detail": None if exact_pass else "C2_transfer_contract_failed",
-        "failure_stage": None if exact_pass else "TRANSFER_CONTRACT_VALIDATION",
-        "domain_dim": n_u_trace,
-        "codomain_dim": n_u_parent,
-        "shape": [n_u_parent, n_u_trace],
-        "nnz": nnz,
-        "density": density,
-        "column_nnz_min": 1 if nnz > 0 else 0,
-        "column_nnz_max": 1 if nnz > 0 else 0,
-        "row_nnz_min": int(row_counts.min()) if row_counts.size else 0,
-        "row_nnz_max": int(row_counts.max()) if row_counts.size else 0,
-        "mapping_checksum": int(checksum),
-        "storage_bytes": int(parent_idx.nbytes + vals.nbytes),
-        "parent_index_per_trace_dof": parent_idx,
-        "map_meta": cell_map_meta,
-        "vertex_map_meta": vertex_map_meta,
-        "transferred_counts": transferred_counts,
+    common_meta: Dict[str, Any] = {
         "C2_T_shell_cell_entity_map_type": cell_map_meta.get("map_type"),
         "C2_T_shell_vertex_entity_map_type": vertex_map_meta.get("map_type"),
         "C2_T_shell_cell_map_extraction_method": cell_map_meta.get("method"),
@@ -572,10 +394,267 @@ def _build_c2_trace_to_parent_transfer(
         "C2_T_parent_connectivity_tdim_to_0_created": parent_tdim_to_0_created,
         "C2_T_matching_key": "ENTITY_VERTEX_PLUS_VECTOR_COMPONENT",
         "C2_T_coordinate_match_used_as": "VALIDATION_ONLY",
-        "C2_T_trace_block_dimension": int(trace_vertex_block_dim),
-        "C2_T_parent_block_dimension": int(parent_vertex_block_dim),
-        "C2_T_vector_block_size_trace": int(bs_trace),
-        "C2_T_vector_block_size_parent": int(bs_parent),
+        "C2_T_coordinate_validation_level": "BLOCK_VERTEX_DOF",
+        "C2_dense_coupling_allocation_prohibited": True,
+        "C2_dense_coupling_allocation_removed": True,
+        "C2_projected_coupling_representation": "NOT_YET_SAFE",
+    }
+
+    if not cell_map_meta["ok"]:
+        return {
+            "ok": False,
+            "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
+            "failure_detail": "entitymap_to_parent_facet_extraction_failed",
+            "failure_stage": "CELL_ENTITYMAP_EXTRACTION",
+            "domain_dim": None,
+            "codomain_dim": n_u_parent,
+            "map_meta": cell_map_meta,
+            "vertex_map_meta": vertex_map_meta,
+            **common_meta,
+        }
+    if not vertex_map_meta["ok"]:
+        return {
+            "ok": False,
+            "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
+            "failure_detail": "entitymap_to_parent_vertex_extraction_failed",
+            "failure_stage": "VERTEX_ENTITYMAP_EXTRACTION",
+            "domain_dim": None,
+            "codomain_dim": n_u_parent,
+            "map_meta": cell_map_meta,
+            "vertex_map_meta": vertex_map_meta,
+            **common_meta,
+        }
+    if sub_v_map.size < vmap_size:
+        return {
+            "ok": False,
+            "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
+            "failure_detail": "submesh_vertex_map_size_mismatch",
+            "failure_stage": "VERTEX_ENTITYMAP_EXTRACTION",
+            "domain_dim": None,
+            "codomain_dim": n_u_parent,
+            "map_meta": cell_map_meta,
+            "vertex_map_meta": vertex_map_meta,
+            **common_meta,
+        }
+
+    parent_tag_map = {
+        int(i): int(v) for i, v in zip(np.asarray(facet_tags.indices), np.asarray(facet_tags.values))
+    }
+    trace_vals = np.array([parent_tag_map.get(int(pf), -1) for pf in parent_f], dtype=np.int32)
+    transferred_counts = {
+        "tag1": int(np.sum(trace_vals == tag_top)),
+        "tag3": int(np.sum(trace_vals == tag_back)),
+        "tag4": int(np.sum(trace_vals == tag_ribs)),
+    }
+
+    V_u_trace = fem.functionspace(shell_mesh, fem3d._displacement_element(shell_mesh, 1))
+    n_u_trace = int(V_u_trace.dofmap.index_map.size_global * V_u_trace.dofmap.index_map_bs)
+    n_trace_blocks = int(V_u_trace.dofmap.index_map.size_global)
+    bs_trace = int(V_u_trace.dofmap.index_map_bs)
+    bs_parent = int(V_u_parent.dofmap.index_map_bs)
+    if bs_trace != bs_parent:
+        return {
+            "ok": False,
+            "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
+            "failure_detail": "trace_parent_vector_block_size_mismatch",
+            "failure_stage": "VECTOR_BLOCK_SIZE_VALIDATION",
+            "domain_dim": n_u_trace,
+            "codomain_dim": n_u_parent,
+            "map_meta": cell_map_meta,
+            "vertex_map_meta": vertex_map_meta,
+            "transferred_counts": transferred_counts,
+            **common_meta,
+        }
+
+    trace_block_to_parent_block = np.full(n_trace_blocks, -1, dtype=np.int32)
+    block_cardinality_mismatch = 0
+    for sv in range(vmap_size):
+        pv = int(sub_v_map[sv])
+        if pv < 0:
+            continue
+        trace_block = np.asarray(
+            fem.locate_dofs_topological(V_u_trace, 0, np.asarray([sv], dtype=np.int32)), dtype=np.int32
+        ).ravel()
+        parent_block = np.asarray(
+            fem.locate_dofs_topological(V_u_parent, 0, np.asarray([pv], dtype=np.int32)), dtype=np.int32
+        ).ravel()
+        if trace_block.size != 1 or parent_block.size != 1:
+            block_cardinality_mismatch += 1
+            continue
+        tb = int(trace_block[0])
+        pb = int(parent_block[0])
+        if 0 <= tb < n_trace_blocks and 0 <= pb < n_parent_blocks:
+            trace_block_to_parent_block[tb] = pb
+
+    mapped_trace_block_count = int(np.sum(trace_block_to_parent_block >= 0))
+    unmatched_trace_block_count = int(np.sum(trace_block_to_parent_block < 0))
+    mapped_parent_blocks = trace_block_to_parent_block[trace_block_to_parent_block >= 0]
+    duplicate_parent_block_count = int(mapped_parent_blocks.size - np.unique(mapped_parent_blocks).size)
+    block_map_injective_pass = bool(
+        unmatched_trace_block_count == 0 and duplicate_parent_block_count == 0 and block_cardinality_mismatch == 0
+    )
+    if not block_map_injective_pass:
+        return {
+            "ok": False,
+            "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
+            "failure_detail": "block_vertex_map_not_injective_or_incomplete",
+            "failure_stage": "VERTEX_COMPONENT_EXPANSION",
+            "domain_dim": n_u_trace,
+            "codomain_dim": n_u_parent,
+            "map_meta": cell_map_meta,
+            "vertex_map_meta": vertex_map_meta,
+            "transferred_counts": transferred_counts,
+            "C2_T_trace_block_dimension": n_trace_blocks,
+            "C2_T_parent_block_dimension": n_parent_blocks,
+            "C2_T_mapped_trace_block_count": mapped_trace_block_count,
+            "C2_T_unmatched_trace_block_count": unmatched_trace_block_count,
+            "C2_T_duplicate_parent_block_count": duplicate_parent_block_count,
+            "C2_T_block_map_injective_pass": block_map_injective_pass,
+            "C2_T_vector_block_size_trace": bs_trace,
+            "C2_T_vector_block_size_parent": bs_parent,
+            "C2_T_component_expansion_method": "BLOCK_DOF_TIMES_INDEX_MAP_BS_PLUS_COMPONENT",
+            "C2_T_component_aware_mapping_pass": False,
+            **common_meta,
+        }
+
+    parent_idx = np.full(n_u_trace, -1, dtype=np.int32)
+    if bs_trace != 3 or bs_parent != 3:
+        return {
+            "ok": False,
+            "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
+            "failure_detail": "blocked_vector_ordering_convention_not_verified",
+            "failure_stage": "VECTOR_COMPONENT_EXPANSION_ORDERING",
+            "domain_dim": n_u_trace,
+            "codomain_dim": n_u_parent,
+            "map_meta": cell_map_meta,
+            "vertex_map_meta": vertex_map_meta,
+            "transferred_counts": transferred_counts,
+            "C2_T_trace_block_dimension": n_trace_blocks,
+            "C2_T_parent_block_dimension": n_parent_blocks,
+            "C2_T_mapped_trace_block_count": mapped_trace_block_count,
+            "C2_T_unmatched_trace_block_count": unmatched_trace_block_count,
+            "C2_T_duplicate_parent_block_count": duplicate_parent_block_count,
+            "C2_T_block_map_injective_pass": block_map_injective_pass,
+            "C2_T_vector_block_size_trace": bs_trace,
+            "C2_T_vector_block_size_parent": bs_parent,
+            "C2_T_component_expansion_method": "BLOCK_DOF_TIMES_INDEX_MAP_BS_PLUS_COMPONENT",
+            "C2_T_component_aware_mapping_pass": False,
+            **common_meta,
+        }
+
+    for tb in range(n_trace_blocks):
+        pb = int(trace_block_to_parent_block[tb])
+        if pb < 0:
+            continue
+        for c in range(bs_trace):
+            t_scalar = bs_trace * tb + c
+            p_scalar = bs_parent * pb + c
+            if 0 <= t_scalar < n_u_trace and 0 <= p_scalar < n_u_parent:
+                parent_idx[t_scalar] = p_scalar
+
+    missing_scalar = int(np.sum(parent_idx < 0))
+    if missing_scalar > 0:
+        return {
+            "ok": False,
+            "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
+            "failure_detail": f"unmatched_trace_scalar_dofs={missing_scalar}",
+            "failure_stage": "VERTEX_COMPONENT_EXPANSION",
+            "domain_dim": n_u_trace,
+            "codomain_dim": n_u_parent,
+            "map_meta": cell_map_meta,
+            "vertex_map_meta": vertex_map_meta,
+            "transferred_counts": transferred_counts,
+            "C2_T_trace_block_dimension": n_trace_blocks,
+            "C2_T_parent_block_dimension": n_parent_blocks,
+            "C2_T_mapped_trace_block_count": mapped_trace_block_count,
+            "C2_T_unmatched_trace_block_count": unmatched_trace_block_count,
+            "C2_T_duplicate_parent_block_count": duplicate_parent_block_count,
+            "C2_T_block_map_injective_pass": block_map_injective_pass,
+            "C2_T_vector_block_size_trace": bs_trace,
+            "C2_T_vector_block_size_parent": bs_parent,
+            "C2_T_component_expansion_method": "BLOCK_DOF_TIMES_INDEX_MAP_BS_PLUS_COMPONENT",
+            "C2_T_component_aware_mapping_pass": False,
+            **common_meta,
+        }
+
+    shell_parent_block_support = np.asarray(
+        fem3d._locate_facet_displacement_dofs(V_u_parent, msh, shell_facets), dtype=np.int32
+    ).ravel()
+    shell_parent_scalar_support = np.concatenate(
+        [bs_parent * shell_parent_block_support + c for c in range(bs_parent)]
+    ).astype(np.int32, copy=False)
+
+    row_counts = np.bincount(parent_idx, minlength=n_u_parent)
+    nnz = int(parent_idx.size)
+    density = float(nnz / max(n_u_parent * n_u_trace, 1))
+    checksum = _crc32_i32(parent_idx)
+    unique_parent_scalar = np.unique(parent_idx)
+    duplicate_parent_scalar_count = int(parent_idx.size - unique_parent_scalar.size)
+
+    geom_pass = bool(np.all((parent_idx >= 0) & (parent_idx < n_u_parent)))
+    tag_support_pass = bool(all(v > 0 for v in transferred_counts.values()))
+    support_pass = bool(np.all(np.isin(parent_idx, shell_parent_scalar_support)))
+    ones_trace = np.ones(n_u_trace, dtype=np.float64)
+    y = np.zeros(n_u_parent, dtype=np.float64)
+    np.add.at(y, parent_idx, ones_trace)
+    const_pass = bool(np.allclose(y[parent_idx], 1.0, rtol=0.0, atol=1.0e-12))
+    component_pass = bool(duplicate_parent_scalar_count == 0 and bs_trace == 3 and bs_parent == 3)
+    entity_corr_pass = bool(block_map_injective_pass)
+
+    trace_coords_block = np.asarray(V_u_trace.tabulate_dof_coordinates(), dtype=np.float64)
+    parent_coords_block = np.asarray(V_u_parent.tabulate_dof_coordinates(), dtype=np.float64)
+    coord_pass = False
+    if trace_coords_block.shape[0] >= n_trace_blocks and parent_coords_block.shape[0] >= n_parent_blocks:
+        coord_pass = bool(
+            np.allclose(
+                trace_coords_block[:n_trace_blocks],
+                parent_coords_block[trace_block_to_parent_block],
+                rtol=0.0,
+                atol=1.0e-12,
+            )
+        )
+
+    exact_pass = bool(
+        geom_pass
+        and tag_support_pass
+        and support_pass
+        and const_pass
+        and coord_pass
+        and entity_corr_pass
+        and component_pass
+    )
+
+    return {
+        "ok": exact_pass,
+        "reason": None if exact_pass else "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
+        "failure_detail": None if exact_pass else "C2_transfer_contract_failed",
+        "failure_stage": None if exact_pass else "TRANSFER_CONTRACT_VALIDATION",
+        "domain_dim": n_u_trace,
+        "codomain_dim": n_u_parent,
+        "shape": [n_u_parent, n_u_trace],
+        "nnz": nnz,
+        "density": density,
+        "column_nnz_min": 1,
+        "column_nnz_max": 1,
+        "row_nnz_min": int(row_counts.min()) if row_counts.size else 0,
+        "row_nnz_max": int(row_counts.max()) if row_counts.size else 0,
+        "mapping_checksum": int(checksum),
+        "storage_bytes": int(parent_idx.nbytes + np.ones(nnz, dtype=np.float64).nbytes),
+        "parent_index_per_trace_dof": parent_idx,
+        "map_meta": cell_map_meta,
+        "vertex_map_meta": vertex_map_meta,
+        "transferred_counts": transferred_counts,
+        "C2_T_trace_block_dimension": n_trace_blocks,
+        "C2_T_parent_block_dimension": n_parent_blocks,
+        "C2_T_mapped_trace_block_count": mapped_trace_block_count,
+        "C2_T_unmatched_trace_block_count": unmatched_trace_block_count,
+        "C2_T_duplicate_parent_block_count": duplicate_parent_block_count,
+        "C2_T_block_map_injective_pass": block_map_injective_pass,
+        "C2_T_mapped_parent_scalar_dofs_unique": int(unique_parent_scalar.size),
+        "C2_T_duplicate_parent_scalar_dof_count": duplicate_parent_scalar_count,
+        "C2_T_vector_block_size_trace": bs_trace,
+        "C2_T_vector_block_size_parent": bs_parent,
+        "C2_T_component_expansion_method": "BLOCK_DOF_TIMES_INDEX_MAP_BS_PLUS_COMPONENT",
         "C2_T_entity_correspondence_pass": entity_corr_pass,
         "C2_T_component_aware_mapping_pass": component_pass,
         "C2_T_coordinate_validation_pass": coord_pass,
@@ -583,9 +662,7 @@ def _build_c2_trace_to_parent_transfer(
         "C2_T_constant_field_transfer_pass": const_pass,
         "C2_T_trace_support_transfer_pass": support_pass,
         "C2_T_tag_support_transfer_pass": tag_support_pass,
-        "C2_dense_coupling_allocation_prohibited": True,
-        "C2_dense_coupling_allocation_removed": True,
-        "C2_projected_coupling_representation": "PETSc_sparse_submatrix_or_sparse_mat_product",
+        **common_meta,
         "C2_T_validation_failure_reason": None if exact_pass else "one_or_more_transfer_contract_checks_failed",
     }
 
@@ -604,7 +681,7 @@ def _print_c2_transfer_contract_summary(
     dense_removed = bool(tmeta.get("C2_dense_coupling_allocation_removed", False))
     method = "EntityMap_plus_exact_dof_coordinate_match_on_P1_trace_and_parent"
     verdict = (
-        "B3_C2_TRANSFER_READY_FOR_COUPLED_OPERATOR_AUDIT"
+        "B3_C2_TRANSFER_READY_FOR_SPARSE_COUPLING_IMPLEMENTATION_REVIEW"
         if (exact and dense_removed)
         else "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE"
     )
@@ -661,8 +738,21 @@ def _print_c2_transfer_contract_summary(
     print(f"[B3_C2] C2_T_coordinate_match_used_as={tmeta.get('C2_T_coordinate_match_used_as')}", flush=True)
     print(f"[B3_C2] C2_T_trace_block_dimension={tmeta.get('C2_T_trace_block_dimension')}", flush=True)
     print(f"[B3_C2] C2_T_parent_block_dimension={tmeta.get('C2_T_parent_block_dimension')}", flush=True)
+    print(f"[B3_C2] C2_T_mapped_trace_block_count={tmeta.get('C2_T_mapped_trace_block_count')}", flush=True)
+    print(f"[B3_C2] C2_T_unmatched_trace_block_count={tmeta.get('C2_T_unmatched_trace_block_count')}", flush=True)
+    print(f"[B3_C2] C2_T_duplicate_parent_block_count={tmeta.get('C2_T_duplicate_parent_block_count')}", flush=True)
+    print(f"[B3_C2] C2_T_block_map_injective_pass={tmeta.get('C2_T_block_map_injective_pass')}", flush=True)
     print(f"[B3_C2] C2_T_vector_block_size_trace={tmeta.get('C2_T_vector_block_size_trace')}", flush=True)
     print(f"[B3_C2] C2_T_vector_block_size_parent={tmeta.get('C2_T_vector_block_size_parent')}", flush=True)
+    print(f"[B3_C2] C2_T_component_expansion_method={tmeta.get('C2_T_component_expansion_method')}", flush=True)
+    print(
+        f"[B3_C2] C2_T_mapped_parent_scalar_dofs_unique={tmeta.get('C2_T_mapped_parent_scalar_dofs_unique')}",
+        flush=True,
+    )
+    print(
+        f"[B3_C2] C2_T_duplicate_parent_scalar_dof_count={tmeta.get('C2_T_duplicate_parent_scalar_dof_count')}",
+        flush=True,
+    )
     print(f"[B3_C2] C2_T_entity_correspondence_pass={tmeta.get('C2_T_entity_correspondence_pass')}", flush=True)
     print(f"[B3_C2] C2_T_component_aware_mapping_pass={tmeta.get('C2_T_component_aware_mapping_pass')}", flush=True)
     print(f"[B3_C2] C2_T_coordinate_validation_pass={tmeta.get('C2_T_coordinate_validation_pass')}", flush=True)
@@ -804,10 +894,10 @@ def _run_c2_transfer_contract_only(pre: Dict[str, Any]) -> int:
             "C2_projected_coupling_representation": "NOT_YET_SAFE",
         }
 
-    dense_removed = bool(tmeta.get("C2_dense_coupling_allocation_removed", True))
+    dense_removed = bool(tmeta.get("C2_dense_coupling_allocation_removed", False))
     exact_pass = bool(tmeta.get("ok", False))
     next_step_verdict = (
-        "B3_C2_TRANSFER_READY_FOR_COUPLED_OPERATOR_AUDIT"
+        "B3_C2_TRANSFER_READY_FOR_SPARSE_COUPLING_IMPLEMENTATION_REVIEW"
         if (exact_pass and dense_removed)
         else "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE"
     )
@@ -864,8 +954,15 @@ def _run_c2_transfer_contract_only(pre: Dict[str, Any]) -> int:
         "C2_T_coordinate_match_used_as": tmeta.get("C2_T_coordinate_match_used_as"),
         "C2_T_trace_block_dimension": tmeta.get("C2_T_trace_block_dimension"),
         "C2_T_parent_block_dimension": tmeta.get("C2_T_parent_block_dimension"),
+        "C2_T_mapped_trace_block_count": tmeta.get("C2_T_mapped_trace_block_count"),
+        "C2_T_unmatched_trace_block_count": tmeta.get("C2_T_unmatched_trace_block_count"),
+        "C2_T_duplicate_parent_block_count": tmeta.get("C2_T_duplicate_parent_block_count"),
+        "C2_T_block_map_injective_pass": tmeta.get("C2_T_block_map_injective_pass"),
         "C2_T_vector_block_size_trace": tmeta.get("C2_T_vector_block_size_trace"),
         "C2_T_vector_block_size_parent": tmeta.get("C2_T_vector_block_size_parent"),
+        "C2_T_component_expansion_method": tmeta.get("C2_T_component_expansion_method"),
+        "C2_T_mapped_parent_scalar_dofs_unique": tmeta.get("C2_T_mapped_parent_scalar_dofs_unique"),
+        "C2_T_duplicate_parent_scalar_dof_count": tmeta.get("C2_T_duplicate_parent_scalar_dof_count"),
         "C2_T_entity_correspondence_pass": tmeta.get("C2_T_entity_correspondence_pass"),
         "C2_T_component_aware_mapping_pass": tmeta.get("C2_T_component_aware_mapping_pass"),
         "C2_T_coordinate_validation_pass": tmeta.get("C2_T_coordinate_validation_pass"),
