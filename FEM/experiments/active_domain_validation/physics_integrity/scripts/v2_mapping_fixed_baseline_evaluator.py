@@ -33,6 +33,9 @@ OUT_SUBDIR = "seed_branch_recovery_diagnostic_mapping_fixed_unregularized"
 OUT_SUBDIR_PERSISTENCE_FIXED = (
     "seed_branch_recovery_diagnostic_mapping_fixed_unregularized_persistence_fixed"
 )
+OUT_SUBDIR_LOSSLESS_ADJUDICATION_V1 = (
+    "seed_branch_recovery_diagnostic_mapping_fixed_unregularized_lossless_adjudication_v1"
+)
 
 
 def _path_under(base: Path, child: Path) -> bool:

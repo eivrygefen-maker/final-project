@@ -106,8 +106,11 @@ def _values_for_field(field: str, loaded: Dict[str, Optional[Dict[str, Any]]]) -
             if isinstance(obj, dict) and obj.get("target_hz") is not None:
                 out[src] = obj.get("target_hz")
     elif field == "st_type":
+        # Gap semantics: only eps_batch_diagnostics / result top-level count as persisted policy.
         if eps.get("st_type") is not None:
             out["eps_diag"] = eps.get("st_type")
+        elif isinstance(res, dict) and res.get("st_type") is not None:
+            out["result"] = res.get("st_type")
     elif field == "eps_eigenvalue_semantics":
         for src, obj in (("eps_diag", eps), ("result", res)):
             if isinstance(obj, dict) and obj.get("eps_eigenvalue_semantics") is not None:

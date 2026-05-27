@@ -93,10 +93,11 @@ def main() -> int:
         and persistence_fixed.get("persistence_self_test_pass")
     )
     pipeline_verdict = pipeline_audit.get("audit_verdict")
-    pipeline_unresolved = pipeline_verdict in (
-        "MAPPING_FIXED_UNREGULARIZED_BASELINE_PERSISTED_VECTOR_CONTENT_UNRESOLVED",
-        None,
-    ) and replacement_ran
+    pipeline_unresolved = (
+        pipeline_verdict
+        == "MAPPING_FIXED_UNREGULARIZED_BASELINE_PERSISTED_VECTOR_CONTENT_UNRESOLVED"
+        and replacement_ran
+    )
     replacement_pending = (
         not replacement_ran
         and pf_verdict
@@ -254,6 +255,23 @@ def main() -> int:
         ),
         "hole_radius_large": "blocked",
         "production_policy_unchanged": True,
+        "production_vector_fidelity_exposure": "OPEN",
+        "v2_production_promotion": "BLOCKED",
+        "prior_production_like_saved_vectors": (
+            "not_automatically_invalidated; require report-only fidelity recertification"
+        ),
+        "clean_adjudication_lane": {
+            "output_subdir": (
+                "seed_branch_recovery_diagnostic_mapping_fixed_unregularized_lossless_adjudication_v1"
+            ),
+            "status": "prepare_only_not_authorized_for_eps",
+            "filter_classification_json": str(
+                CONV_DIAG / "v2_clean_adjudication_filter_and_policy_classification.json"
+            ),
+            "policy_equivalence_preflight_json": str(
+                CONV_DIAG / "v2_lossless_adjudication_v1_policy_equivalence_preflight.json"
+            ),
+        },
         "current_state_summary": {
             "persistence_self_test": "PASS" if self_test_pass else "pending_or_failed",
             "replacement_baseline_eps": "completed_once" if replacement_ran else "not_completed",

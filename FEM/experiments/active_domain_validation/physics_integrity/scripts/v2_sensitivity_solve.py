@@ -36,6 +36,7 @@ from v2_mapping_fixed_candidate_persistence import (
     check_persistence_gate,
     load_preserve_all_bank_from_config,
     persist_candidate_bank,
+    persist_candidate_bank_with_optional_lossless,
     pressure_block_mapping_metadata,
     write_eps_candidate_bank_json,
 )
@@ -336,6 +337,14 @@ def main() -> int:
             "converged EPS candidates before physical replay eligibility."
         ),
     )
+    parser.add_argument(
+        "--seed-branch-lossless-adjudication-v1",
+        action="store_true",
+        help=(
+            "Clean adjudication lane v1: identical mapping-fixed unregularized policy; "
+            "lossless dense capture before sparse serialization (isolated output tree)."
+        ),
+    )
     args = parser.parse_args()
 
     if MPI.COMM_WORLD.size != 1:
@@ -383,7 +392,18 @@ def main() -> int:
     sc["_worker_harvest_hi_hz"] = band_hi
     sc["shift_invert_target_hz"] = target_hz
     if args.seed_branch_recovery_diagnostic:
-        if args.seed_branch_mapping_fixed_unregularized_diagnostic:
+        if args.seed_branch_lossless_adjudication_v1:
+            seed_branch_diag_meta = (
+                _apply_mapping_fixed_unregularized_baseline_diagnostic_solver_cfg(
+                    sc, target_hz
+                )
+            )
+            seed_branch_diag_meta["solver_mode"] = (
+                "seed_branch_recovery_diagnostic_mapping_fixed_lossless_adjudication_v1"
+            )
+            seed_branch_diag_meta["lossless_persistence_enabled"] = True
+            seed_branch_diag_meta["lossless_replay_authoritative"] = True
+        elif args.seed_branch_mapping_fixed_unregularized_diagnostic:
             seed_branch_diag_meta = (
                 _apply_mapping_fixed_unregularized_baseline_diagnostic_solver_cfg(
                     sc, target_hz
@@ -535,11 +555,19 @@ def main() -> int:
         return row
 
     if preserve_all_bank and bank_records:
-        n_saved, mode_rows, save_errors_persist = persist_candidate_bank(
-            case_dir,
-            bank_records,
-            save_vector_fn=_save_one,
-        )
+        if args.seed_branch_lossless_adjudication_v1:
+            n_saved, mode_rows, save_errors_persist = persist_candidate_bank_with_optional_lossless(
+                case_dir,
+                bank_records,
+                save_vector_fn=_save_one,
+                write_lossless_dense=True,
+            )
+        else:
+            n_saved, mode_rows, save_errors_persist = persist_candidate_bank(
+                case_dir,
+                bank_records,
+                save_vector_fn=_save_one,
+            )
         save_errors.extend(save_errors_persist)
         nconv_bank = int(
             eps_diag_pre.get(
@@ -593,8 +621,13 @@ def main() -> int:
         pass
 
     eps_diag = dict(cfg.get("_eps_batch_diagnostics") or sc.get("_eps_batch_diagnostics") or {})
+    if not eps_diag.get("st_type"):
+        eps_diag["st_type"] = str(sc.get("st_type", "sinvert"))
     persistence_failure: Optional[Dict[str, Any]] = None
-    if preserve_all_bank and args.seed_branch_mapping_fixed_unregularized_diagnostic:
+    if preserve_all_bank and (
+        args.seed_branch_mapping_fixed_unregularized_diagnostic
+        or args.seed_branch_lossless_adjudication_v1
+    ):
         persistence_failure = check_persistence_gate(
             nconv_marked=int(eps_diag.get("nconv_marked", 0)),
             bank_count=int(

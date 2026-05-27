@@ -86,6 +86,9 @@ def extract_st_operator_fields(solve_result: Dict[str, Any]) -> Dict[str, Any]:
         consistent = st_operator_consistent_with_replay(
             st_a_shift_frac=a_shift, st_mass_reg_frac=mass
         )
+    st_type = eps.get("st_type") or solve_result.get("st_type") or diag.get("st_type")
+    if not st_type:
+        st_type = "sinvert"
     return {
         "diagnostic_requires_unregularized_ST": bool(
             diag.get("diagnostic_requires_unregularized_ST")
@@ -95,6 +98,13 @@ def extract_st_operator_fields(solve_result: Dict[str, Any]) -> Dict[str, Any]:
         "actual_st_a_shift_frac": a_shift,
         "actual_st_mass_reg_frac": mass,
         "diagnostic_operator_consistent_with_replay": bool(consistent),
+        "st_type": str(st_type),
+        "eps_eigenvalue_semantics": str(
+            eps.get("eps_eigenvalue_semantics", "slepc_backtransformed")
+        ),
+        "legacy_double_shift_mapping_disabled": bool(
+            eps.get("legacy_double_shift_mapping_disabled", True)
+        ),
     }
 
 

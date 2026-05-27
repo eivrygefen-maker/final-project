@@ -45,6 +45,7 @@ from v2_conservative_audit_policy import (
     SERIALIZER_THRESHOLD,
     apply_conservative_authoritative_verdict,
     build_operator_policy_from_artifacts,
+    merge_operator_policy_from_provenance_inventory,
 )
 from v2_seed_branch_candidate_filter import FILTER_POLICY, assess_physical_eligibility
 from v2_sensitivity_common import hz_result_tag
@@ -59,6 +60,9 @@ OUT_JSON = CONV_DIAG / "v2_mapping_fixed_persistence_fixed_full_pipeline_audit.j
 OUT_MD = CONV_DIAG / "v2_mapping_fixed_persistence_fixed_full_pipeline_audit.md"
 REPLACEMENT_REPORT_JSON = (
     CONV_DIAG / "v2_l_mid_mapping_fixed_unregularized_persistence_fixed_baseline_diagnostic.json"
+)
+PROVENANCE_INVENTORY_JSON = (
+    CONV_DIAG / "v2_mapping_fixed_replacement_runtime_provenance_inventory.json"
 )
 
 VERDICT_REPLAY_EVAL_FAILURE = "MAPPING_FIXED_UNREGULARIZED_BASELINE_REPLAY_EVALUATION_FAILURE"
@@ -813,6 +817,11 @@ def main() -> int:
     operator_policy, operator_provenance = build_operator_policy_from_artifacts(
         solve_result, bank, target_hz=target_hz
     )
+    prov_inventory = _load_json(PROVENANCE_INVENTORY_JSON)
+    operator_policy, prov_meta = merge_operator_policy_from_provenance_inventory(
+        operator_policy, prov_inventory
+    )
+    operator_provenance = {**operator_provenance, **prov_meta}
     operator_policy["save_errors"] = _as_list(bank.get("save_errors"))
     operator_policy["p_to_W_source"] = p_source
     operator_policy["p_to_W_length"] = int(p_to_W.size)
@@ -959,6 +968,7 @@ def main() -> int:
         "operator_policy": operator_policy,
         "pipeline_control_flow": _static_pipeline_control_flow(),
         "operator_policy_provenance": operator_provenance,
+        "operator_policy_provenance_meta": prov_meta,
         "replacement_baseline_artifacts": replacement_report,
         "capture_vs_persist_contract": {
             "in_memory_capture": "dense numpy from PETSc rvec.array in diag_bank",
@@ -1018,6 +1028,7 @@ def main() -> int:
         "no_additional_eigensolve_authorized": True,
         "mesh_convergence_may_resume": False,
     }
+    report["operator_policy_provenance_meta"] = prov_meta
     apply_conservative_authoritative_verdict(report)
     primary_audit_written = False
     status_refresh_pass = False
