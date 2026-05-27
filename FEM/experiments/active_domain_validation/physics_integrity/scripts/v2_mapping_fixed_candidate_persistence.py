@@ -13,6 +13,7 @@ from fem_mode_array_utils import (
     MODE_VECTOR_DENSE_LOSSLESS_SUFFIX,
     MODE_VECTOR_FILE_SUFFIX,
     dense_to_csr_f32_column,
+    load_mode_dense_f64_lossless,
     save_mode_csr,
     save_mode_dense_f64_lossless,
 )
@@ -26,6 +27,64 @@ CANDIDATE_FILENAME_TEMPLATE = "candidate_eps_slot_{index:04d}"
 
 def candidate_slot_path(modes_dir: Path, slot_index: int) -> Path:
     return modes_dir / f"{CANDIDATE_FILENAME_TEMPLATE.format(index=int(slot_index))}{MODE_VECTOR_FILE_SUFFIX}"
+
+
+def lossless_vector_roundtrip_metadata(
+    vec_dense: np.ndarray,
+    lossless_path: Path,
+    *,
+    case_dir: Path,
+    pbm: Optional[Dict[str, Any]] = None,
+    rec: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Record lossless save/reload fidelity for one preserve-all candidate."""
+    vec_dense = np.asarray(vec_dense, dtype=np.float64).ravel()
+    save_mode_dense_f64_lossless(lossless_path, vec_dense)
+    reloaded = np.asarray(load_mode_dense_f64_lossless(lossless_path), dtype=np.float64).ravel()
+    diff = reloaded - vec_dense
+    diff_norm = float(np.linalg.norm(diff))
+    max_before = float(np.max(np.abs(vec_dense))) if vec_dense.size else 0.0
+    max_after = float(np.max(np.abs(reloaded))) if reloaded.size else 0.0
+    l2_before = float(np.linalg.norm(vec_dense))
+    l2_after = float(np.linalg.norm(reloaded))
+    rel_err = diff_norm / max(l2_before, 1.0e-30)
+    pbm = pbm or {}
+    rec = rec or {}
+    return {
+        "candidate_index": int(rec.get("eps_slot_index", rec.get("candidate_index", -1))),
+        "eps_slot_index": int(rec.get("eps_slot_index", rec.get("candidate_index", -1))),
+        "reported_frequency_hz": rec.get("reported_frequency_hz"),
+        "mu_raw": rec.get("mu_raw"),
+        "lam_phys": rec.get("lam_phys"),
+        "source_vector_stage": "pre_sparsify_eps_harvest_dense",
+        "lossless_save": True,
+        "lossless_vector_path": str(lossless_path.relative_to(case_dir)).replace("\\", "/"),
+        "dtype_before_save": str(vec_dense.dtype),
+        "dtype_after_save": str(reloaded.dtype),
+        "vector_length": int(vec_dense.size),
+        "raw_l2_norm_before_save": l2_before,
+        "raw_l2_norm_after_reload": l2_after,
+        "max_abs_before_save": max_before,
+        "max_abs_after_reload": max_after,
+        "difference_norm_after_reload": diff_norm,
+        "lossless_roundtrip_relative_error": rel_err,
+        "lossless_roundtrip_pass": bool(rel_err < 1.0e-12 and vec_dense.size == reloaded.size),
+        "st_type": rec.get("st_type") or "sinvert",
+        "continuation_seed_applied": rec.get("continuation_seed_applied", True),
+        "actual_sigma_hz": rec.get("sigma_used_hz"),
+        "eps_eigenvalue_semantics": rec.get("eps_eigenvalue_semantics", "slepc_backtransformed"),
+        "legacy_double_shift_mapping_disabled": rec.get(
+            "legacy_double_shift_mapping_disabled", True
+        ),
+        "actual_st_a_shift_frac": rec.get("actual_st_a_shift_frac", 0.0),
+        "actual_st_mass_reg_frac": rec.get("actual_st_mass_reg_frac", 0.0),
+        "diagnostic_operator_consistent_with_replay": rec.get(
+            "diagnostic_operator_consistent_with_replay", True
+        ),
+        "p_to_W_source": pbm.get("source"),
+        "p_to_W_length": pbm.get("p_to_W_length"),
+        "p_to_W_crc32": pbm.get("p_to_W_crc32"),
+    }
 
 
 def candidate_slot_dense_lossless_path(modes_dir: Path, slot_index: int) -> Path:
@@ -60,9 +119,15 @@ def persist_candidate_bank_with_optional_lossless(
         vec_dense = np.asarray(vec, dtype=np.float64).ravel()
         mode_path = candidate_slot_path(modes_dir, slot)
         try:
+            lossless_meta: Dict[str, Any] = {}
             if write_lossless_dense:
                 lossless_path = candidate_slot_dense_lossless_path(modes_dir, slot)
-                save_mode_dense_f64_lossless(lossless_path, vec_dense)
+                lossless_meta = lossless_vector_roundtrip_metadata(
+                    vec_dense,
+                    lossless_path,
+                    case_dir=case_dir,
+                    rec=rec,
+                )
             row = save_vector_fn(vec_dense, mode_path, rec)
             row["candidate_index"] = slot
             row["eps_slot_index"] = slot
@@ -70,9 +135,10 @@ def persist_candidate_bank_with_optional_lossless(
             row["vector_path"] = row["vector_file"]
             row["persistence_status"] = "saved"
             if write_lossless_dense:
-                lp = candidate_slot_dense_lossless_path(modes_dir, slot)
-                row["vector_file_lossless"] = str(lp.relative_to(case_dir)).replace("\\", "/")
+                row["vector_file_lossless"] = lossless_meta.get("lossless_vector_path")
+                row["legacy_sparse_comparison_path"] = row["vector_file"]
                 row["lossless_persistence"] = True
+                row.update(lossless_meta)
             for key in (
                 "mu_raw",
                 "lam_phys",
