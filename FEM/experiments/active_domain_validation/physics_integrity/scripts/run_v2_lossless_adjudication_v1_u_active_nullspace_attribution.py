@@ -72,6 +72,33 @@ ACTION_PROBE_ABS_TOL = 1e-15
 SIGNIFICANT_SUPPORT_ABS_TOL = 1e-15
 
 
+def _np_int32_1d(raw: Any) -> np.ndarray:
+    """
+    Convert a nullable/sequence/ndarray to a 1D int32 numpy array without ever
+    evaluating `raw` in a boolean context (raw may itself be a numpy array).
+    """
+    if raw is None:
+        return np.asarray([], dtype=np.int32)
+    # Some petsc/dolfinx objects expose `.array`; accept but never truth-test.
+    if hasattr(raw, "array") and not isinstance(raw, (list, tuple, np.ndarray)):
+        try:
+            raw = raw.array
+        except Exception:
+            pass
+    return np.asarray(raw, dtype=np.int32).ravel()
+
+
+def _coalesce_list(*candidates: Any) -> list:
+    """
+    Return the first candidate that is a python list; else return [].
+    Avoids `a or b` on numpy arrays.
+    """
+    for c in candidates:
+        if isinstance(c, list):
+            return c
+    return []
+
+
 def _atomic_load_json(path: Path) -> Dict[str, Any]:
     if not path.is_file():
         return {}
@@ -241,10 +268,11 @@ def _build_tag_subsets_in_reduced_u(
     A, M, cfg = _assemble_reduced_coupled_replay(mesh_file, sample, coupling_enabled=coupling_enabled)
     try:
         maps = _extract_layout_maps(cfg, A)
-        u_to_W_local = np.asarray(maps["u_to_W"], dtype=np.int32).ravel()
-        p_to_W_local = np.asarray(maps["p_to_W"], dtype=np.int32).ravel()
+        u_to_W_local = _np_int32_1d(maps.get("u_to_W"))
+        p_to_W_local = _np_int32_1d(maps.get("p_to_W"))
         restr = maps["restr"]
-        active_W_parent = np.asarray(cfg.get("_coupled_air_active_W_indices") or [], dtype=np.int32).ravel()
+        raw_active = cfg.get("_coupled_air_active_W_indices")
+        active_W_parent = _np_int32_1d(raw_active)
         n_full_w = int(restr.get("n_coupled_W_full", -1))
         if active_W_parent.size == 0 or n_full_w <= 0:
             raise RuntimeError("cannot reconstruct parent_to_local: missing active_W_parent or n_coupled_W_full in cfg")
@@ -382,9 +410,10 @@ def main() -> int:
         # Load candidate vectors (lossless dense) and associated metadata.
         modes_path = out_dir / LOSSLESS_SUMMARY_PATH
         bank_path = out_dir / LOSSLESS_BANK_PATH
-        modes = _atomic_load_json(modes_path).get("modes") or []
+        loaded_modes = _atomic_load_json(modes_path).get("modes")
+        modes = loaded_modes if isinstance(loaded_modes, list) else []
         bank = _atomic_load_json(bank_path)
-        saved_mode_rows = bank.get("saved_mode_rows") or bank.get("candidates") or []
+        saved_mode_rows = _coalesce_list(bank.get("saved_mode_rows"), bank.get("candidates"))
 
         bank_by_slot: Dict[int, Dict[str, Any]] = {}
         if isinstance(saved_mode_rows, list):
