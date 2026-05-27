@@ -34,7 +34,6 @@ from v2_build_coupled_acoustic_seed import (
     _extract_layout_maps,
     _extract_parent_raw_block_capture,
 )
-from fem_active_domain import restrict_operators_to_active_set
 from v2_mesh_convergence_common import CONV_DIAG, load_manifest, mesh_path, sample_spec_from_case, solve_case_dir
 from v2_unreg_offset_report_evaluator import load_seed_with_diagnostics
 
@@ -165,19 +164,6 @@ def _b3_nest_coupled_operators(
     return a_nest, m_nest, m_up
 
 
-def _b3_retained_pressure_active_indices(
-    p_air_collapsed: np.ndarray,
-    n_u_b3: int,
-) -> np.ndarray:
-    p_air_collapsed = np.asarray(p_air_collapsed, dtype=np.int32).ravel()
-    return np.concatenate(
-        [
-            np.arange(int(n_u_b3), dtype=np.int32),
-            (int(n_u_b3) + p_air_collapsed).astype(np.int32, copy=False),
-        ]
-    ).astype(np.int32, copy=False)
-
-
 def _b3_pressure_release_rows_retained(
     msh: Any,
     facet_tags: Any,
@@ -269,26 +255,86 @@ def _build_b3_scaled_restricted_operators_in_memory(
     facet_tags: Any,
     comm: Any,
     mats_to_destroy: List[Any],
-) -> tuple[Any, Any, np.ndarray, np.ndarray]:
+) -> tuple[Any, Any, np.ndarray, np.ndarray, Dict[str, Any]]:
+    p_air_collapsed = np.unique(np.asarray(p_air_collapsed, dtype=np.int32).ravel())
+    n_u = int(n_u_b3)
+    n_p_full = int(raw_App.getSize()[0])
+    n_p_active = int(p_air_collapsed.size)
+    meta: Dict[str, Any] = {
+        "B3_pressure_restriction_application_stage": (
+            "SPARSE_BLOCKWISE_BEFORE_FINAL_MATNEST_CONSTRUCTION"
+        ),
+        "B3_full_pressure_dimension": n_p_full,
+        "B3_retained_pressure_dimension": n_p_active,
+        "B3_pressure_active_index_set_constructed": bool(n_p_active > 0),
+        "B3_MatNest_arbitrary_submatrix_path_removed": True,
+        "B3_sparse_blockwise_pressure_restriction_pass": False,
+        "B3_sparse_blockwise_pressure_restriction_failure_reason": None,
+        "B3_final_MatNest_constructed_after_blockwise_restriction": False,
+        "B3_final_operator_shape": None,
+        "B3_final_operator_dimension_contract_pass": False,
+        "B3_algebraic_BC_applied_after_blockwise_pressure_restriction": False,
+        "B3_scaled_restricted_BC_operator_contract_pass": False,
+    }
     inv_u = 1.0 / max(float(s_uu), 1.0e-30)
     inv_p = 1.0 / max(float(s_pp), 1.0e-30)
     inv_c = 1.0 / max(float(s_c), 1.0e-30)
     a_uu = _petsc_duplicate_scaled(raw_Auu, inv_u)
     m_uu = _petsc_duplicate_scaled(raw_Muu, inv_u)
-    a_pp = _petsc_duplicate_scaled(raw_App, inv_p)
-    m_pp = _petsc_duplicate_scaled(raw_Mpp, inv_p)
-    a_up = _petsc_duplicate_scaled(raw_Aup_B3, inv_c)
-    a_pu = _petsc_duplicate_scaled(raw_Apu_B3, inv_c)
-    m_pu = _petsc_duplicate_scaled(raw_Mpu_B3, inv_c)
-    mats_to_destroy.extend([a_uu, m_uu, a_pp, m_pp, a_up, a_pu, m_pu])
-    a_full, m_full, m_up = _b3_nest_coupled_operators(
-        a_uu, a_up, a_pu, a_pp, m_uu, m_pu, m_pp, comm=comm
+    a_pp_full = _petsc_duplicate_scaled(raw_App, inv_p)
+    m_pp_full = _petsc_duplicate_scaled(raw_Mpp, inv_p)
+    a_up_full = _petsc_duplicate_scaled(raw_Aup_B3, inv_c)
+    a_pu_full = _petsc_duplicate_scaled(raw_Apu_B3, inv_c)
+    m_pu_full = _petsc_duplicate_scaled(raw_Mpu_B3, inv_c)
+    mats_to_destroy.extend([a_pp_full, m_pp_full, a_up_full, a_pu_full, m_pu_full])
+
+    is_u = PETSc.IS().createGeneral(np.arange(n_u, dtype=np.int32), comm=comm)
+    is_p_active = PETSc.IS().createGeneral(p_air_collapsed.astype(np.int32), comm=comm)
+    try:
+        a_up_act = a_up_full.createSubMatrix(is_u, is_p_active)
+        a_pu_act = a_pu_full.createSubMatrix(is_p_active, is_u)
+        m_pu_act = m_pu_full.createSubMatrix(is_p_active, is_u)
+        a_pp_act = a_pp_full.createSubMatrix(is_p_active, is_p_active)
+        m_pp_act = m_pp_full.createSubMatrix(is_p_active, is_p_active)
+    finally:
+        is_u.destroy()
+        is_p_active.destroy()
+
+    meta["B3_restricted_Aup_shape"] = _mat_shape(a_up_act)
+    meta["B3_restricted_Apu_shape"] = _mat_shape(a_pu_act)
+    meta["B3_restricted_Mpu_shape"] = _mat_shape(m_pu_act)
+    meta["B3_restricted_App_shape"] = _mat_shape(a_pp_act)
+    meta["B3_restricted_Mpp_shape"] = _mat_shape(m_pp_act)
+    dims_ok = bool(
+        a_up_act.getSize() == (n_u, n_p_active)
+        and a_pu_act.getSize() == (n_p_active, n_u)
+        and m_pu_act.getSize() == (n_p_active, n_u)
+        and a_pp_act.getSize() == (n_p_active, n_p_active)
+        and m_pp_act.getSize() == (n_p_active, n_p_active)
     )
-    mats_to_destroy.extend([a_full, m_full, m_up])
-    active_w = _b3_retained_pressure_active_indices(p_air_collapsed, n_u_b3)
-    a_b3, m_b3, _restr_meta = restrict_operators_to_active_set(a_full, m_full, active_w)
+    meta["B3_sparse_blockwise_pressure_restriction_pass"] = dims_ok
+    if not dims_ok:
+        meta["B3_sparse_blockwise_pressure_restriction_failure_reason"] = (
+            "restricted_block_shapes_mismatch"
+        )
+        raise RuntimeError(meta["B3_sparse_blockwise_pressure_restriction_failure_reason"])
+
+    mats_to_destroy.extend([a_uu, m_uu, a_up_act, a_pu_act, m_pu_act, a_pp_act, m_pp_act])
+    a_b3, m_b3, m_up = _b3_nest_coupled_operators(
+        a_uu, a_up_act, a_pu_act, a_pp_act, m_uu, m_pu_act, m_pp_act, comm=comm
+    )
+    mats_to_destroy.extend([a_b3, m_b3, m_up])
+    n_w = int(n_u + n_p_active)
+    meta["B3_final_MatNest_constructed_after_blockwise_restriction"] = True
+    meta["B3_final_operator_shape"] = [n_w, n_w]
+    meta["B3_final_operator_dimension_contract_pass"] = bool(
+        a_b3.getSize() == (n_w, n_w) and m_b3.getSize() == (n_w, n_w)
+    )
+    if not meta["B3_final_operator_dimension_contract_pass"]:
+        raise RuntimeError("B3_final_operator_dimension_contract_failed")
+
     p_release = _b3_pressure_release_rows_retained(
-        msh, facet_tags, n_u_b3=n_u_b3, p_air_collapsed=p_air_collapsed
+        msh, facet_tags, n_u_b3=n_u, p_air_collapsed=p_air_collapsed
     )
     bc_rows = np.unique(
         np.concatenate(
@@ -298,13 +344,18 @@ def _build_b3_scaled_restricted_operators_in_memory(
             ]
         ).astype(np.int32, copy=False)
     )
-    if bc_rows.size > 0:
+    bc_applied = bool(bc_rows.size > 0)
+    if bc_applied:
         fem3d._petsc_mat_zero_dirichlet_rows(a_b3, bc_rows, diag=1.0, zero_columns=True)
         fem3d._petsc_mat_zero_dirichlet_rows(m_b3, bc_rows, diag=1.0, zero_columns=True)
-    n_p_retained = int(p_air_collapsed.size)
-    u_idx = np.arange(int(n_u_b3), dtype=np.int32)
-    p_idx = np.arange(int(n_u_b3), int(n_u_b3 + n_p_retained), dtype=np.int32)
-    return a_b3, m_b3, u_idx, p_idx
+    meta["B3_algebraic_BC_applied_after_blockwise_pressure_restriction"] = bc_applied
+    meta["B3_scaled_restricted_BC_operator_contract_pass"] = bool(
+        meta["B3_final_operator_dimension_contract_pass"] and bc_applied
+    )
+
+    u_idx = np.arange(n_u, dtype=np.int32)
+    p_idx = np.arange(n_u, n_u + n_p_active, dtype=np.int32)
+    return a_b3, m_b3, u_idx, p_idx, meta
 
 
 def _extract_submesh_to_parent_entity_indices(
@@ -1780,16 +1831,20 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
         "B3_seed_source_status": (
             "HISTORICAL_PARENT_V2_SEED_FROM_PRE_BC_FIX_CONTINUITY_DIAGNOSTIC_ONLY"
         ),
+        "B3_seed_operator_build_pass": False,
+        "B3_seed_operator_build_failure_reason": None,
+        "B3_seed_mapping_failure_reason": None,
+        "B3_MatNest_arbitrary_submatrix_path_removed": True,
     }
-    verdict = "B3_SEED_REPLAY_BLOCKED_BY_SEED_MAPPING_INTERFACE"
+    verdict = "B3_SEED_REPLAY_BLOCKED_BY_OPERATOR_RESTRICTION_INTERFACE"
     A_parent = M_parent = A_b3 = M_b3 = None
     mats_to_destroy: List[Any] = []
     try:
         if not pre["preassembly_contract_pass"]:
-            payload["B3_seed_mapping_failure_reason"] = "preassembly_contract_failed"
+            payload["B3_seed_operator_build_failure_reason"] = "preassembly_contract_failed"
             return 2
         if MPI.COMM_WORLD.size != 1:
-            payload["B3_seed_mapping_failure_reason"] = "requires_mpiexec_n_1"
+            payload["B3_seed_operator_build_failure_reason"] = "requires_mpiexec_n_1"
             return 2
 
         manifest = load_manifest()
@@ -1844,13 +1899,13 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
             if m_ is not None:
                 mats_to_destroy.append(m_)
         if not all(m is not None for m in (raw_App, raw_Mpp, raw_Aup, raw_Apu, raw_Mpu)):
-            payload["B3_seed_mapping_failure_reason"] = "missing_parent_raw_blocks"
+            payload["B3_seed_operator_build_failure_reason"] = "missing_parent_raw_blocks"
             return 2
         if not bool(payload.get("parent_raw_collapsed_layout_dimensions_pass", False)):
-            payload["B3_seed_mapping_failure_reason"] = "parent_raw_collapsed_layout_not_passing"
+            payload["B3_seed_operator_build_failure_reason"] = "parent_raw_collapsed_layout_not_passing"
             return 2
         if _tmeta_parent_map is None:
-            payload["B3_seed_mapping_failure_reason"] = "parent_index_per_trace_dof_missing_from_tmeta"
+            payload["B3_seed_operator_build_failure_reason"] = "parent_index_per_trace_dof_missing_from_tmeta"
             return 2
 
         shell_mesh, shell_to_parent, _, _ = dmesh.create_submesh(msh, msh.topology.dim - 1, shell_facets)
@@ -1911,7 +1966,7 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
         )
         payload["B3_raw_tmeta_parent_idx_unique_pass"] = bool(np.unique(parent_idx).size == parent_idx.size)
         if not payload["B3_raw_tmeta_parent_idx_bounds_pass"] or not payload["B3_raw_tmeta_parent_idx_unique_pass"]:
-            payload["B3_seed_mapping_failure_reason"] = "parent_index_per_trace_dof_contract_failed"
+            payload["B3_seed_operator_build_failure_reason"] = "parent_index_per_trace_dof_contract_failed"
             return 2
 
         is_parent_u = PETSc.IS().createGeneral(parent_idx.astype(np.int32), comm=PETSc.COMM_WORLD)
@@ -1957,35 +2012,43 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
             and payload["B3_pressure_restriction_policy_reused"]
         )
         if not payload["B3_raw_composition_contract_pass"]:
-            payload["B3_seed_mapping_failure_reason"] = "B3_operator_composition_gates_failed"
+            payload["B3_seed_operator_build_failure_reason"] = "B3_operator_composition_gates_failed"
             return 2
 
-        A_b3, M_b3, u_idx, p_idx = _build_b3_scaled_restricted_operators_in_memory(
-            raw_Auu=raw_Auu,
-            raw_Muu=raw_Muu,
-            raw_App=raw_App,
-            raw_Mpp=raw_Mpp,
-            raw_Aup_B3=raw_Aup_B3,
-            raw_Apu_B3=raw_Apu_B3,
-            raw_Mpu_B3=raw_Mpu_B3,
-            s_uu=s_uu,
-            s_pp=s_pp,
-            s_c=s_c,
-            n_u_b3=n_u_b3,
-            p_air_collapsed=p_air_collapsed,
-            b3_fix_u_rows=b3_fix_scalar,
-            msh=msh,
-            facet_tags=facet_tags,
-            comm=PETSc.COMM_WORLD,
-            mats_to_destroy=mats_to_destroy,
-        )
+        try:
+            A_b3, M_b3, u_idx, p_idx, op_meta = _build_b3_scaled_restricted_operators_in_memory(
+                raw_Auu=raw_Auu,
+                raw_Muu=raw_Muu,
+                raw_App=raw_App,
+                raw_Mpp=raw_Mpp,
+                raw_Aup_B3=raw_Aup_B3,
+                raw_Apu_B3=raw_Apu_B3,
+                raw_Mpu_B3=raw_Mpu_B3,
+                s_uu=s_uu,
+                s_pp=s_pp,
+                s_c=s_c,
+                n_u_b3=n_u_b3,
+                p_air_collapsed=p_air_collapsed,
+                b3_fix_u_rows=b3_fix_scalar,
+                msh=msh,
+                facet_tags=facet_tags,
+                comm=PETSc.COMM_WORLD,
+                mats_to_destroy=mats_to_destroy,
+            )
+            payload.update(op_meta)
+            payload["B3_seed_operator_build_pass"] = True
+            payload["B3_seed_operator_build_failure_reason"] = None
+        except Exception as exc:
+            payload["B3_seed_operator_build_failure_reason"] = f"{type(exc).__name__}:{exc}"
+            return 2
+
         payload["B3_raw_sparse_coupling_projection_constructed"] = True
         payload["B3_gnhep_normalization_recomputed_from_B3_blocks"] = True
-        payload["B3_scaled_restricted_BC_operator_contract_pass"] = True
 
         if not bool(seed_info.get("seed_file_exists")) or seed_info.get("seed_array") is None:
             payload["B3_seed_mapped_vector_constructed"] = False
             payload["B3_seed_mapping_failure_reason"] = seed_info.get("seed_load_status")
+            verdict = "B3_SEED_REPLAY_BLOCKED_BY_SEED_MAPPING_INTERFACE"
             return 2
 
         parent_seed = np.asarray(seed_info["seed_array"], dtype=np.float64).ravel()
@@ -1996,6 +2059,7 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
             payload["B3_seed_mapping_failure_reason"] = (
                 f"parent_seed_length_{parent_seed.size}_!=_expected_restricted_u_plus_p_{expected_parent_len}"
             )
+            verdict = "B3_SEED_REPLAY_BLOCKED_BY_SEED_MAPPING_INTERFACE"
             return 2
         if int(A_parent.getSize()[0]) != expected_parent_len:
             payload["B3_seed_parent_operator_dimension_mismatch"] = (
@@ -2091,8 +2155,12 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
             verdict = "B3_SEED_REPLAY_DIAGNOSTIC_PASS_READY_FOR_FIRST_JD_DESIGN_REVIEW"
         return 0 if verdict.startswith("B3_SEED_REPLAY_DIAGNOSTIC_PASS") else 2
     except Exception as exc:
-        payload["B3_seed_mapping_failure_reason"] = f"{type(exc).__name__}:{exc}"
-        verdict = "B3_SEED_REPLAY_BLOCKED_BY_SEED_MAPPING_INTERFACE"
+        if bool(payload.get("B3_seed_operator_build_pass")):
+            payload["B3_seed_mapping_failure_reason"] = f"{type(exc).__name__}:{exc}"
+            verdict = "B3_SEED_REPLAY_BLOCKED_BY_SEED_MAPPING_INTERFACE"
+        else:
+            payload["B3_seed_operator_build_failure_reason"] = f"{type(exc).__name__}:{exc}"
+            verdict = "B3_SEED_REPLAY_BLOCKED_BY_OPERATOR_RESTRICTION_INTERFACE"
         return 2
     finally:
         payload["next_step_verdict"] = verdict
@@ -2116,6 +2184,8 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
         OUT_MD_B3_SEED_REPLAY.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
         print("[B3_seed] mode=B3_seed_replay_audit_only", flush=True)
         print(f"[B3_seed] B3_raw_composition_contract_pass={payload.get('B3_raw_composition_contract_pass')}", flush=True)
+        print(f"[B3_seed] B3_seed_operator_build_pass={payload.get('B3_seed_operator_build_pass')}", flush=True)
+        print(f"[B3_seed] B3_sparse_blockwise_pressure_restriction_pass={payload.get('B3_sparse_blockwise_pressure_restriction_pass')}", flush=True)
         print(f"[B3_seed] B3_seed_mapped_vector_constructed={payload.get('B3_seed_mapped_vector_constructed')}", flush=True)
         print(f"[B3_seed] B3_seed_rayleigh_frequency_hz={payload.get('B3_seed_rayleigh_frequency_hz')}", flush=True)
         print(f"[B3_seed] next_step_verdict={verdict}", flush=True)
