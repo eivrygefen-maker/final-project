@@ -1340,6 +1340,10 @@ def _run_b3_raw_composition_contract_only(pre: Dict[str, Any]) -> int:
         )
         payload["C2_T_exact_transfer_contract_pass"] = bool(tmeta.get("ok", False))
         payload["C2_dense_coupling_allocation_removed"] = bool(tmeta.get("C2_dense_coupling_allocation_removed", False))
+        _tmeta_parent_map = tmeta.get("parent_index_per_trace_dof")
+        payload["B3_raw_T_rebuilt_in_memory"] = bool(tmeta.get("ok", False))
+        payload["B3_raw_tmeta_parent_idx_present"] = _tmeta_parent_map is not None
+        payload["B3_raw_tmeta_available_keys"] = sorted(str(k) for k in tmeta.keys())
 
         A, M, cfg = _assemble_reduced_coupled_replay(
             mesh_file, sample, coupling_enabled=True, capture_parent_raw_blocks=True
@@ -1427,7 +1431,30 @@ def _run_b3_raw_composition_contract_only(pre: Dict[str, Any]) -> int:
         raw_Muu.assemble()
         mats_to_destroy.extend([raw_Auu, raw_Muu])
 
-        parent_idx = np.asarray(tmeta.get("parent_idx"), dtype=np.int32).ravel()
+        if _tmeta_parent_map is None:
+            payload["B3_raw_tmeta_parent_idx_length"] = None
+            payload["B3_raw_tmeta_parent_idx_bounds_pass"] = False
+            payload["B3_raw_tmeta_parent_idx_unique_pass"] = False
+            payload["B3_raw_sparse_coupling_projection_constructed"] = False
+            payload["B3_raw_sparse_coupling_failure_reason"] = "parent_index_per_trace_dof_missing_from_tmeta"
+            verdict = "B3_COUPLED_COMPOSITION_BLOCKED_BY_B3_NORMALIZATION_OR_LAYOUT_INTERFACE"
+            return 2
+        parent_idx = np.asarray(_tmeta_parent_map, dtype=np.int32).ravel()
+        n_parent_collapsed = int(payload.get("parent_raw_u_dimension", 0) or 0)
+        payload["B3_raw_tmeta_parent_idx_length"] = int(parent_idx.size)
+        payload["B3_raw_tmeta_parent_idx_bounds_pass"] = bool(
+            parent_idx.size > 0
+            and int(np.min(parent_idx)) >= 0
+            and int(np.max(parent_idx)) < n_parent_collapsed
+        )
+        payload["B3_raw_tmeta_parent_idx_unique_pass"] = bool(
+            np.unique(parent_idx).size == parent_idx.size
+        )
+        if not payload["B3_raw_tmeta_parent_idx_bounds_pass"] or not payload["B3_raw_tmeta_parent_idx_unique_pass"]:
+            payload["B3_raw_sparse_coupling_projection_constructed"] = False
+            payload["B3_raw_sparse_coupling_failure_reason"] = "parent_index_per_trace_dof_contract_failed"
+            verdict = "B3_COUPLED_COMPOSITION_BLOCKED_BY_B3_NORMALIZATION_OR_LAYOUT_INTERFACE"
+            return 2
         is_b3 = PETSc.IS().createGeneral(np.arange(parent_idx.size, dtype=np.int32), comm=PETSc.COMM_WORLD)
         is_parent_u = PETSc.IS().createGeneral(parent_idx.astype(np.int32), comm=PETSc.COMM_WORLD)
         is_p = PETSc.IS().createGeneral(np.arange(raw_App.getSize()[0], dtype=np.int32), comm=PETSc.COMM_WORLD)
