@@ -7,7 +7,6 @@ Reads existing lossless vectors + reassembled replay operators only. Does not ca
 from __future__ import annotations
 
 import json
-import math
 import sys
 import time
 from pathlib import Path
@@ -50,12 +49,17 @@ MASS_RANK_AUDIT_JSON = (
 
 RANK_PROBE_TOL = 1e-10
 SVD_RCOND = 1e-10
-MASS_NULL_REL_TOL = 1e-12
+CERTIFIED_NULL_REL_TOL = 1e-12
 SEED_PRESERVE_REL_TOL = 1e-10
-FAMILY_REMOVED_FRAC_TOL = 0.99
+SUPPRESSION_REMOVED_MEDIAN_TOL = 0.99
+SUPPRESSION_REMOVED_MIN_TOL = 0.90
+SUPPRESSION_FRACTION_ABOVE_0_99 = 0.90
 DUPLICATE_COSINE_TOL = 0.999
 
 PRIMARY_BLOCKER = "LOSSLESS_ST_RETURNED_U_SHELL_MASS_MATRIX_KERNEL_MODES"
+STRATEGY_PROJECTED_V1 = "MAPPING_FIXED_UNREGULARIZED_LOSSLESS_NULLSPACE_PROJECTED_ADJUDICATION_V1"
+STRATEGY_INSUFFICIENT = "CERTIFIED_NULL_SUBSPACE_INSUFFICIENT_TO_REMOVE_RETURNED_FAMILY"
+STRATEGY_NOT_AUTHORIZED = "NOT_AUTHORIZED_PENDING_PREFLIGHT_GATES"
 
 
 def _coalesce_list(*candidates: Any) -> list:
@@ -99,38 +103,6 @@ def _petsc_matvec_u(op: Any, x_u: np.ndarray, u_idx: np.ndarray) -> np.ndarray:
     return y_arr[np.asarray(u_idx, dtype=np.int32)]
 
 
-def _matvec_norms(A: Any, M: Any, x: np.ndarray, u_idx: np.ndarray, p_idx: np.ndarray) -> Dict[str, Any]:
-    from physical_fsi_seed_residual_audit import _petsc_matvec, _petsc_vec_from_array, _rayleigh_metrics
-
-    x_arr = np.asarray(x, dtype=np.float64).ravel()
-    vx = _petsc_vec_from_array(A, x_arr)
-    ay = my = None
-    try:
-        Ax, ay = _petsc_matvec(A, vx)
-        Mx, my = _petsc_matvec(M, vx)
-    finally:
-        vx.destroy()
-        if ay is not None:
-            ay.destroy()
-        if my is not None:
-            my.destroy()
-    Ax_arr = np.asarray(Ax, dtype=np.float64).ravel()
-    Mx_arr = np.asarray(Mx, dtype=np.float64).ravel()
-    ray = _rayleigh_metrics(A, M, x_arr, seed_f_hz=float("nan"))
-    return {
-        "l2_norm_x": float(np.linalg.norm(x_arr)),
-        "l2_norm_Mx": float(np.linalg.norm(Mx_arr)),
-        "xH_Mx": float(ray.get("xH_Mx", float("nan"))),
-        "xH_Ax": float(ray.get("xH_Ax", float("nan"))),
-        "rayleigh_lambda": float(ray.get("rayleigh_lambda", float("nan"))),
-        "rayleigh_frequency_hz": float(ray.get("rayleigh_f_hz", float("nan"))),
-        "Mx_on_u_l2": float(np.linalg.norm(Mx_arr[u_idx])) if u_idx.size else 0.0,
-        "Mx_on_p_l2": float(np.linalg.norm(Mx_arr[p_idx])) if p_idx.size else 0.0,
-        "x_on_u_l2": float(np.linalg.norm(x_arr[u_idx])) if u_idx.size else 0.0,
-        "x_on_p_l2": float(np.linalg.norm(x_arr[p_idx])) if p_idx.size else 0.0,
-    }
-
-
 def _project_u(x_u: np.ndarray, Q: np.ndarray) -> np.ndarray:
     if Q.size == 0:
         return np.asarray(x_u, dtype=np.float64).ravel()
@@ -141,6 +113,39 @@ def _project_full(vec: np.ndarray, Q: np.ndarray, u_idx: np.ndarray) -> np.ndarr
     out = np.asarray(vec, dtype=np.float64).ravel().copy()
     out[u_idx] = _project_u(out[u_idx], Q)
     return out
+
+
+def _orthonormalize_columns(Q_raw: np.ndarray) -> np.ndarray:
+    if Q_raw.size == 0:
+        return np.zeros((Q_raw.shape[0], 0), dtype=np.float64)
+    Q_orth, _ = np.linalg.qr(np.asarray(Q_raw, dtype=np.float64), mode="reduced")
+    return Q_orth.astype(np.float64, copy=False)
+
+
+def _resolve_eps_slot(mode_row: Dict[str, Any], bank_by_lossless_rel: Dict[str, Dict[str, Any]]) -> int:
+    for key in ("eps_slot_index", "candidate_index", "mode_index"):
+        val = mode_row.get(key)
+        if val is not None:
+            try:
+                slot = int(val)
+                if slot >= 0:
+                    return slot
+            except (TypeError, ValueError):
+                pass
+    rel = mode_row.get("vector_file_lossless")
+    if rel:
+        bank_row = bank_by_lossless_rel.get(str(rel).replace("\\", "/"))
+        if bank_row:
+            for key in ("eps_slot_index", "candidate_index"):
+                val = bank_row.get(key)
+                if val is not None:
+                    try:
+                        slot = int(val)
+                        if slot >= 0:
+                            return slot
+                    except (TypeError, ValueError):
+                        pass
+    return -1
 
 
 def _audit_random_probe_interpretation(mass_rank: Dict[str, Any]) -> Dict[str, Any]:
@@ -155,29 +160,16 @@ def _audit_random_probe_interpretation(mass_rank: Dict[str, Any]) -> Dict[str, A
             "then ||M_uu z|| recorded (same backend as mass-rank audit)."
         ),
         "probe_dimension": int(probe.get("probe_dim", 0)),
-        "probe_distribution": "i.i.d. N(0,1) per coordinate, unit-normalized",
         "probe_tolerance": RANK_PROBE_TOL,
-        "probe_subspace_sampled": "Full u_active coefficient space (unstructured random combinations)",
-        "probe_median_norm_Muu_z": float(probe.get("median_probe_norm_Muu_x", 0.0)),
-        "probe_max_norm_Muu_z": float(probe.get("max_probe_norm_Muu_x", 0.0)),
-        "can_detect_kernel_aligned_with_eps_vectors": False,
-        "can_detect_kernel_explanation": (
-            "A generic random probe measures typical range action, not the span of 56 "
-            "EPS-returned modes. A kernel can have large measure-zero complement so "
-            "median ||M_uu z|| stays O(1) while specific directions have ||M_uu x||~0."
-        ),
-        "nullity_ub_equals_zero_means": (
-            "No random probe landed in the numerical kernel at tolerance "
-            f"{RANK_PROBE_TOL:g}; this does NOT certify global nullity(M_uu)=0."
-        ),
         "random_probe_detected_null_vectors": bool(null_ub > 0),
         "empirical_eps_null_vectors_detected": True,
         "global_Muu_nullity_not_certified": True,
+        "nullity_ub_equals_zero_means": (
+            f"No random probe landed in kernel at {RANK_PROBE_TOL:g}; "
+            "does NOT certify global nullity(M_uu)=0."
+        ),
         "M_uu_nonzero_row_count": activity.get("M_uu_nonzero_row_count"),
         "M_uu_nonzero_column_count": activity.get("M_uu_nonzero_column_count"),
-        "prior_nullity_ub_field_deprecated_wording": (
-            "Do not interpret estimated_nullity_dimension_upper_bound=0 as excluding a kernel."
-        ),
     }
 
 
@@ -219,6 +211,66 @@ def _shell_fractions(x_u: np.ndarray, shell_pos: np.ndarray, non_shell_pos: np.n
     shell = float(np.linalg.norm(x_u[shell_pos])) if shell_pos.size else 0.0
     nons = float(np.linalg.norm(x_u[non_shell_pos])) if non_shell_pos.size else 0.0
     return {"shell_l2_fraction": shell / n, "non_shell_l2_fraction": nons / n}
+
+
+def _candidate_projection_stats(
+    *,
+    modes: List[Dict[str, Any]],
+    lossless_path_fn,
+    load_vec_fn,
+    u_to_W: np.ndarray,
+    Q: np.ndarray,
+    bank_by_lossless_rel: Dict[str, Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    per_slot: List[Dict[str, Any]] = []
+    removed_fracs: List[float] = []
+    residual_fracs: List[float] = []
+    for m in modes:
+        lp = lossless_path_fn(m)
+        if lp is None:
+            continue
+        vec = np.asarray(load_vec_fn(lp), dtype=np.float64).ravel()
+        x_u = vec[u_to_W]
+        xn = float(np.linalg.norm(x_u))
+        if xn <= 0:
+            continue
+        x_u_proj = _project_u(x_u, Q)
+        rn = float(np.linalg.norm(x_u_proj))
+        removed = float(np.linalg.norm(x_u - x_u_proj) / xn)
+        residual_frac = float(rn / xn)
+        removed_fracs.append(removed)
+        residual_fracs.append(residual_frac)
+        slot = _resolve_eps_slot(m, bank_by_lossless_rel)
+        per_slot.append(
+            {
+                "eps_slot_index": slot,
+                "vector_file_lossless": str(m.get("vector_file_lossless", "")).replace("\\", "/"),
+                "removed_norm_fraction": removed,
+                "residual_norm_fraction_after_projection": residual_frac,
+                "residual_norm_after_projection": rn,
+            }
+        )
+
+    def _counts(thr: float) -> int:
+        return int(sum(1 for r in removed_fracs if r >= thr))
+
+    summary = {
+        "count": len(per_slot),
+        "removed_norm_fraction": {
+            "min": float(np.min(removed_fracs)) if removed_fracs else 0.0,
+            "median": float(np.median(removed_fracs)) if removed_fracs else 0.0,
+            "max": float(np.max(removed_fracs)) if removed_fracs else 0.0,
+        },
+        "residual_norm_fraction_after_projection": {
+            "min": float(np.min(residual_fracs)) if residual_fracs else 0.0,
+            "median": float(np.median(residual_fracs)) if residual_fracs else 0.0,
+            "max": float(np.max(residual_fracs)) if residual_fracs else 0.0,
+        },
+        "count_candidates_removed_above_0_99": _counts(0.99),
+        "count_candidates_removed_above_0_999": _counts(0.999),
+        "count_candidates_removed_above_0_999999": _counts(0.999999),
+    }
+    return per_slot, summary
 
 
 def main() -> int:
@@ -272,6 +324,15 @@ def main() -> int:
         )
 
         modes = _coalesce_list(_atomic_load_json(out_dir / "diagnostics/mode_energy_summary.json").get("modes"))
+        bank = _atomic_load_json(out_dir / "diagnostics/eps_candidate_bank.json")
+        bank_rows = _coalesce_list(bank.get("saved_mode_rows"), bank.get("candidates"))
+        bank_by_lossless_rel: Dict[str, Dict[str, Any]] = {}
+        for row in bank_rows:
+            if not isinstance(row, dict):
+                continue
+            rel = row.get("vector_file_lossless")
+            if rel:
+                bank_by_lossless_rel[str(rel).replace("\\", "/")] = row
 
         def lossless_path(mode_row: Dict[str, Any]) -> Optional[Path]:
             rel = mode_row.get("vector_file_lossless")
@@ -281,7 +342,6 @@ def main() -> int:
             return p if p.is_file() else None
 
         columns: List[np.ndarray] = []
-        slots: List[int] = []
         for m in modes:
             lp = lossless_path(m)
             if lp is None:
@@ -292,7 +352,6 @@ def main() -> int:
             if xn <= 0:
                 continue
             columns.append((x_u / xn).astype(np.float64, copy=False))
-            slots.append(int(m.get("eps_slot_index", m.get("candidate_index", len(slots))) or 0))
 
         n_u = int(u_to_W.size)
         n_cand = len(columns)
@@ -300,108 +359,130 @@ def main() -> int:
             raise RuntimeError("no lossless candidate u_active vectors loaded")
 
         X = np.column_stack(columns)
-        gram = X.T @ X
-        gram_sv = np.linalg.svd(gram, compute_uv=False)
+        gram_sv = np.linalg.svd(X.T @ X, compute_uv=False)
         X_svd_u, s_vals, _ = np.linalg.svd(X, full_matrices=False)
-        if s_vals.size == 0:
-            rank = 0
-        else:
-            rank = int(np.sum(s_vals > SVD_RCOND * float(s_vals[0])))
-        Q = X_svd_u[:, :rank].astype(np.float64, copy=False)
-
-        dup = _duplicate_clusters(X)
+        rank_full = int(np.sum(s_vals > SVD_RCOND * float(s_vals[0]))) if s_vals.size else 0
+        Q_full = X_svd_u[:, :rank_full].astype(np.float64, copy=False)
 
         independent_directions: List[Dict[str, Any]] = []
-        for i in range(rank):
-            q = Q[:, i]
+        certified_indices: List[int] = []
+        for i in range(rank_full):
+            q = Q_full[:, i]
             qn = float(np.linalg.norm(q))
             Mq = _petsc_matvec_u(M, q, u_to_W)
             Aq = _petsc_matvec_u(A, q, u_to_W)
-            xhm = float(np.vdot(q, Mq).real)
-            xha = float(np.vdot(q, Aq).real)
             rel_m = float(np.linalg.norm(Mq) / max(qn, 1e-300))
+            is_null = bool(rel_m < CERTIFIED_NULL_REL_TOL)
+            if is_null:
+                certified_indices.append(i)
             fr = _shell_fractions(q, shell_pos, non_shell_pos)
             independent_directions.append(
                 {
                     "basis_index": i,
                     "singular_value": float(s_vals[i]),
-                    "l2_norm": qn,
-                    "l2_norm_Muu_q": float(np.linalg.norm(Mq)),
-                    "l2_norm_Auu_q": float(np.linalg.norm(Aq)),
-                    "qH_Muu_q": xhm,
-                    "qH_Auu_q": xha,
                     "relative_mass_action": rel_m,
-                    "mass_null_direction": bool(rel_m < MASS_NULL_REL_TOL),
+                    "mass_null_direction": is_null,
+                    "l2_norm_Muu_q": float(np.linalg.norm(Mq)),
+                    "qH_Muu_q": float(np.vdot(q, Mq).real),
                     **fr,
                 }
             )
 
-        all_dirs_mass_null = bool(independent_directions) and all(
-            d["mass_null_direction"] for d in independent_directions
+        Q_certified_raw = Q_full[:, certified_indices] if certified_indices else np.zeros((n_u, 0))
+        Q_certified_null = _orthonormalize_columns(Q_certified_raw)
+        certified_dim = int(Q_certified_null.shape[1])
+        certified_null_basis_certified = bool(
+            certified_dim > 0
+            and all(independent_directions[i]["mass_null_direction"] for i in certified_indices)
         )
-        empirical_dim = rank
-        empirical_certified = bool(empirical_dim > 0 and all_dirs_mass_null)
 
         probe_audit = _audit_random_probe_interpretation(mass_rank)
 
         seed_info = load_seed_with_diagnostics(seed_npy)
         seed_vec = np.asarray(seed_info["seed_array"], dtype=np.float64).ravel()
         seed_before = _full_matvec_norms(A, M, seed_vec, u_idx=u_to_W, p_idx=p_to_W)
-        seed_proj = _project_full(seed_vec, Q, u_to_W)
-        seed_after = _full_matvec_norms(A, M, seed_proj, u_idx=u_to_W, p_idx=p_to_W)
-        seed_rel_change = float(
-            np.linalg.norm(seed_proj - seed_vec) / max(float(np.linalg.norm(seed_vec)), 1e-300)
+
+        seed_proj_cert = _project_full(seed_vec, Q_certified_null, u_to_W)
+        seed_after_cert = _full_matvec_norms(A, M, seed_proj_cert, u_idx=u_to_W, p_idx=p_to_W)
+        seed_rel_change_cert = float(
+            np.linalg.norm(seed_proj_cert - seed_vec) / max(float(np.linalg.norm(seed_vec)), 1e-300)
         )
-        seed_preservation_pass = bool(seed_rel_change <= SEED_PRESERVE_REL_TOL)
+        seed_preservation_cert = bool(seed_rel_change_cert <= SEED_PRESERVE_REL_TOL)
 
-        candidate_projection: List[Dict[str, Any]] = []
-        removed_fracs: List[float] = []
-        for m in modes:
-            lp = lossless_path(m)
-            if lp is None:
-                continue
-            vec = np.asarray(load_mode_dense_f64_lossless(lp), dtype=np.float64).ravel()
-            x_u = vec[u_to_W]
-            xn = float(np.linalg.norm(x_u))
-            if xn <= 0:
-                continue
-            x_u_proj = _project_u(x_u, Q)
-            removed = float(np.linalg.norm(x_u - x_u_proj) / xn)
-            removed_fracs.append(removed)
-            candidate_projection.append(
-                {
-                    "eps_slot_index": int(m.get("eps_slot_index", m.get("candidate_index", -1)) or -1),
-                    "removed_norm_fraction": removed,
-                    "residual_norm_after_projection": float(np.linalg.norm(x_u_proj)),
-                    "relative_mass_action_after_projection": float(
-                        np.linalg.norm(_petsc_matvec_u(M, x_u_proj, u_to_W))
-                        / max(float(np.linalg.norm(x_u_proj)), 1e-300)
-                    ),
-                }
-            )
-
-        family_removed = bool(
-            removed_fracs
-            and float(np.median(removed_fracs)) >= FAMILY_REMOVED_FRAC_TOL
-            and float(np.min(removed_fracs)) >= FAMILY_REMOVED_FRAC_TOL * 0.95
+        seed_proj_full = _project_full(seed_vec, Q_full, u_to_W)
+        seed_rel_change_full = float(
+            np.linalg.norm(seed_proj_full - seed_vec) / max(float(np.linalg.norm(seed_vec)), 1e-300)
         )
 
-        future_authorized = bool(
-            empirical_certified and seed_preservation_pass and family_removed
+        cand_cert, cand_cert_summary = _candidate_projection_stats(
+            modes=modes,
+            lossless_path_fn=lossless_path,
+            load_vec_fn=load_mode_dense_f64_lossless,
+            u_to_W=u_to_W,
+            Q=Q_certified_null,
+            bank_by_lossless_rel=bank_by_lossless_rel,
         )
-        future_strategy = (
-            "MAPPING_FIXED_UNREGULARIZED_LOSSLESS_NULLSPACE_PROJECTED_ADJUDICATION_V1"
-            if future_authorized
-            else "NOT_AUTHORIZED_PENDING_PREFLIGHT_GATES"
+        cand_full, cand_full_summary = _candidate_projection_stats(
+            modes=modes,
+            lossless_path_fn=lossless_path,
+            load_vec_fn=load_mode_dense_f64_lossless,
+            u_to_W=u_to_W,
+            Q=Q_full,
+            bank_by_lossless_rel=bank_by_lossless_rel,
         )
+
+        removed_med_cert = float(cand_cert_summary["removed_norm_fraction"]["median"])
+        removed_min_cert = float(cand_cert_summary["removed_norm_fraction"]["min"])
+        n_cand_proj = int(cand_cert_summary["count"])
+        frac_above_099 = (
+            float(cand_cert_summary["count_candidates_removed_above_0_99"]) / max(n_cand_proj, 1)
+        )
+
+        family_suppressed_cert = bool(
+            n_cand_proj > 0
+            and removed_med_cert >= SUPPRESSION_REMOVED_MEDIAN_TOL
+            and removed_min_cert >= SUPPRESSION_REMOVED_MIN_TOL
+            and frac_above_099 >= SUPPRESSION_FRACTION_ABOVE_0_99
+        )
+
+        authorization_gates_pass = bool(
+            certified_null_basis_certified
+            and seed_preservation_cert
+            and family_suppressed_cert
+        )
+
+        if authorization_gates_pass:
+            recommended_future_strategy = STRATEGY_PROJECTED_V1
+        elif certified_null_basis_certified and seed_preservation_cert and not family_suppressed_cert:
+            recommended_future_strategy = STRATEGY_INSUFFICIENT
+        else:
+            recommended_future_strategy = STRATEGY_NOT_AUTHORIZED
 
         report: Dict[str, Any] = {
             "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "evidence_scope": "report_only_no_eps",
             "primary_blocker": PRIMARY_BLOCKER,
-            "classification_subtype_from_mass_rank_audit": mass_rank.get("classification_subtype"),
             "no_new_eigensolve_executed": True,
             "additional_eps_authorized": False,
+            "certified_empirical_null_basis_dimension": certified_dim,
+            "certified_null_basis_indices": certified_indices,
+            "certified_null_basis_threshold": CERTIFIED_NULL_REL_TOL,
+            "certified_null_basis_certified": certified_null_basis_certified,
+            "numerical_rank_Q_full_dimension": rank_full,
+            "empirical_null_basis_dimension_in_returned_set": rank_full,
+            "empirical_null_basis_certified": False,
+            "seed_projection_preservation_pass_certified_null": seed_preservation_cert,
+            "seed_relative_change_norm_ratio_certified_null": seed_rel_change_cert,
+            "candidate_removed_norm_fraction_certified_null": cand_cert_summary["removed_norm_fraction"],
+            "candidate_residual_norm_fraction_after_certified_null_projection": cand_cert_summary[
+                "residual_norm_fraction_after_projection"
+            ],
+            "count_candidates_removed_above_0_99": cand_cert_summary["count_candidates_removed_above_0_99"],
+            "count_candidates_removed_above_0_999": cand_cert_summary["count_candidates_removed_above_0_999"],
+            "count_candidates_removed_above_0_999999": cand_cert_summary["count_candidates_removed_above_0_999999"],
+            "projected_existing_mass_null_family_sufficiently_suppressed_by_certified_null_basis": family_suppressed_cert,
+            "recommended_future_strategy": recommended_future_strategy,
+            "authorization_gates_pass": authorization_gates_pass,
             "single_run_guard_audit": {
                 "eps_run_count_for_this_lane": eps_run_count,
                 "no_additional_eps_run_authorized": True,
@@ -411,39 +492,57 @@ def main() -> int:
             "empirical_null_basis": {
                 "candidate_vector_count": n_cand,
                 "n_u_active": n_u,
-                "gram_matrix_shape": [n_cand, n_cand],
                 "gram_singular_values": gram_sv.tolist(),
                 "candidate_matrix_singular_values": s_vals.tolist(),
-                "numerical_rank_X": rank,
-                "rank_method": f"numpy.linalg.svd with cutoff {SVD_RCOND:g} * sigma_max",
-                "duplicate_cluster_audit": dup,
-                "empirical_null_basis_dimension_in_returned_set": empirical_dim,
-                "empirical_null_basis_certified": empirical_certified,
+                "numerical_rank_X": rank_full,
+                "duplicate_cluster_audit": _duplicate_clusters(X),
                 "independent_direction_diagnostics": independent_directions,
             },
-            "projection_preflight": {
-                "projector_form": "P = I - Q Q^H on u_active coefficients; p_active unchanged",
-                "Q_shape": [n_u, rank],
-                "seed_projection_preservation_pass": seed_preservation_pass,
-                "seed_before_projection": seed_before,
-                "seed_after_projection": seed_after,
-                "seed_relative_change_norm_ratio": seed_rel_change,
-                "projected_existing_mass_null_family_removed": family_removed,
-                "candidate_projection_summary": {
-                    "count": len(candidate_projection),
-                    "median_removed_norm_fraction": float(np.median(removed_fracs)) if removed_fracs else 0.0,
-                    "min_removed_norm_fraction": float(np.min(removed_fracs)) if removed_fracs else 0.0,
-                    "max_removed_norm_fraction": float(np.max(removed_fracs)) if removed_fracs else 0.0,
+            "projectors": {
+                "Q_full": {
+                    "purpose": "diagnostic_comparison_only_never_authorizing",
+                    "dimension": rank_full,
+                    "Q_shape": [n_u, rank_full],
+                    "seed_relative_change_norm_ratio": seed_rel_change_full,
+                    "candidate_projection_summary": cand_full_summary,
+                    "projected_existing_mass_null_family_removed": bool(
+                        cand_full_summary["removed_norm_fraction"]["median"] >= SUPPRESSION_REMOVED_MEDIAN_TOL
+                    ),
+                    "authorization_eligible": False,
                 },
-                "candidate_per_slot": candidate_projection,
+                "Q_certified_null": {
+                    "purpose": "only_projector_eligible_for_future_eps_authorization",
+                    "dimension": certified_dim,
+                    "Q_shape": [n_u, certified_dim],
+                    "certified_null_basis_indices": certified_indices,
+                    "certified_null_basis_threshold": CERTIFIED_NULL_REL_TOL,
+                    "seed_before_projection": seed_before,
+                    "seed_after_projection": seed_after_cert,
+                    "seed_projection_preservation_pass": seed_preservation_cert,
+                    "seed_relative_change_norm_ratio": seed_rel_change_cert,
+                    "candidate_per_slot": cand_cert,
+                    "candidate_projection_summary": cand_cert_summary,
+                    "suppression_threshold_justification": {
+                        "median_removed_norm_fraction_min": SUPPRESSION_REMOVED_MEDIAN_TOL,
+                        "min_removed_norm_fraction_min": SUPPRESSION_REMOVED_MIN_TOL,
+                        "fraction_of_candidates_removed_above_0_99_min": SUPPRESSION_FRACTION_ABOVE_0_99,
+                        "rationale": (
+                            "Returned EPS modes are u_active-dominated mass-null vectors. "
+                            "Certified-null projection must remove the dominant offending component "
+                            "from most of the returned family without using non-certified directions "
+                            "that have measurable ||M_uu q||."
+                        ),
+                    },
+                    "projected_existing_mass_null_family_sufficiently_suppressed": family_suppressed_cert,
+                    "authorization_eligible": authorization_gates_pass,
+                },
             },
             "future_diagnostic_strategy_design": {
-                "strategy_name": "MAPPING_FIXED_UNREGULARIZED_LOSSLESS_NULLSPACE_PROJECTED_ADJUDICATION_V1",
+                "strategy_name": STRATEGY_PROJECTED_V1,
                 "authorized_to_execute": False,
-                "preflight_gates_pass": future_authorized,
-                "conceptual_change_only": (
-                    "Deflate/project certified empirical u_active mass-null basis from EPS search space before solve."
-                ),
+                "preflight_gates_pass": authorization_gates_pass,
+                "use_projector": "Q_certified_null_only",
+                "do_not_use_projector": "Q_full",
                 "must_remain_identical": [
                     "V2 physics / forms / BCs / scaling",
                     "true seed",
@@ -454,17 +553,18 @@ def main() -> int:
                     "lossless authoritative persistence",
                     "physical replay gates",
                 ],
-                "do_not": ["Execute EPS until explicitly re-authorized after this preflight"],
             },
-            "recommended_future_strategy": future_strategy,
             "root_cause_status_refresh": {
                 "primary_blocker": PRIMARY_BLOCKER,
                 "serialization_ruled_out_as_active_cause": True,
                 "single_lossless_eps_run_consumed": True,
                 "v2_physical_model_invalidated": False,
-                "st_viability": "unresolved_pending_nullspace_projection_experiment",
+                "st_viability": (
+                    "projected_eps_ready_for_authorization_review"
+                    if authorization_gates_pass
+                    else "unresolved_pending_certified_null_projection_preflight"
+                ),
                 "additional_eps": "NOT_AUTHORIZED",
-                "production_mesh_convergence_stage2_blocked": True,
             },
         }
 
@@ -476,16 +576,15 @@ def main() -> int:
             f"Generated: {report['generated_utc']}",
             "",
             f"**primary_blocker:** `{PRIMARY_BLOCKER}`",
-            f"empirical_null_basis_dimension_in_returned_set={empirical_dim}",
-            f"empirical_null_basis_certified={empirical_certified}",
-            f"seed_projection_preservation_pass={seed_preservation_pass}",
-            f"projected_existing_mass_null_family_removed={family_removed}",
-            f"recommended_future_strategy={future_strategy}",
+            f"certified_empirical_null_basis_dimension={certified_dim}",
+            f"certified_null_basis_certified={certified_null_basis_certified}",
+            f"seed_projection_preservation_pass_certified_null={seed_preservation_cert}",
+            f"candidate_removed_norm_fraction_certified_null_median={removed_med_cert}",
+            f"projected_existing_mass_null_family_sufficiently_suppressed_by_certified_null_basis={family_suppressed_cert}",
+            f"recommended_future_strategy={recommended_future_strategy}",
             "",
-            "## Random probe vs empirical null basis",
-            f"- random_probe_detected_null_vectors={probe_audit['random_probe_detected_null_vectors']}",
-            f"- empirical_eps_null_vectors_detected={probe_audit['empirical_eps_null_vectors_detected']}",
-            f"- global_Muu_nullity_not_certified={probe_audit['global_Muu_nullity_not_certified']}",
+            f"Q_full (diagnostic only, dim={rank_full}): median_removed="
+            f"{cand_full_summary['removed_norm_fraction']['median']}",
             "",
         ]
         OUT_MD.write_text("\n".join(md) + "\n", encoding="utf-8")
@@ -499,11 +598,22 @@ def main() -> int:
         except Exception as exc:
             print(f"[null_basis_preflight] status_refresh_warning={type(exc).__name__}:{exc}", flush=True)
 
-        print(f"[null_basis_preflight] empirical_null_basis_dimension_in_returned_set={empirical_dim}", flush=True)
-        print(f"[null_basis_preflight] empirical_null_basis_certified={empirical_certified}", flush=True)
-        print(f"[null_basis_preflight] seed_projection_preservation_pass={seed_preservation_pass}", flush=True)
-        print(f"[null_basis_preflight] projected_existing_mass_null_family_removed={family_removed}", flush=True)
-        print(f"[null_basis_preflight] recommended_future_strategy={future_strategy}", flush=True)
+        print(f"[null_basis_preflight] certified_empirical_null_basis_dimension={certified_dim}", flush=True)
+        print(f"[null_basis_preflight] certified_null_basis_certified={certified_null_basis_certified}", flush=True)
+        print(
+            f"[null_basis_preflight] seed_projection_preservation_pass_certified_null={seed_preservation_cert}",
+            flush=True,
+        )
+        print(
+            f"[null_basis_preflight] candidate_removed_norm_fraction_certified_null_median={removed_med_cert}",
+            flush=True,
+        )
+        print(
+            "[null_basis_preflight] "
+            f"projected_existing_mass_null_family_sufficiently_suppressed_by_certified_null_basis={family_suppressed_cert}",
+            flush=True,
+        )
+        print(f"[null_basis_preflight] recommended_future_strategy={recommended_future_strategy}", flush=True)
         print("[null_basis_preflight] no_new_eigensolve_executed=True", flush=True)
         print("[null_basis_preflight] additional_eps=NOT_AUTHORIZED", flush=True)
         return 0

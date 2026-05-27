@@ -392,6 +392,11 @@ def main() -> int:
             "lossless_adjudication_v1": (
                 "completed_one_eps_shell_mass_kernel_null_basis_preflight="
                 + str(lossless_null_basis.get("recommended_future_strategy", "pending"))
+                + (
+                    " (authorization_gates_pass)"
+                    if lossless_null_basis.get("authorization_gates_pass")
+                    else ""
+                )
                 if lossless_null_basis
                 else (
                     "completed_one_eps_mass_null_u_mass_rank_audit="
