@@ -27,12 +27,14 @@ for _p in (SCRIPT_DIR, REPO_ROOT / "FEM" / "scripts"):
 import fem_main_3d as fem3d
 import ufl
 from dolfinx import fem, mesh as dmesh
+from dolfinx.fem import element
 from physical_fsi_seed_residual_audit import _block_residual_contributions, _rayleigh_metrics
 from v2_build_coupled_acoustic_seed import (
     _assemble_reduced_coupled_replay,
     _extract_layout_maps,
     _extract_parent_raw_block_capture,
 )
+from fem_active_domain import restrict_operators_to_active_set
 from v2_mesh_convergence_common import CONV_DIAG, load_manifest, mesh_path, sample_spec_from_case, solve_case_dir
 from v2_unreg_offset_report_evaluator import load_seed_with_diagnostics
 
@@ -42,10 +44,13 @@ OUT_MD = CONV_DIAG / "v2_B3_trace_coupled_operator_and_seed_transfer_audit.md"
 OUT_JSON_C2_CONTRACT = CONV_DIAG / "v2_B3_C2_transfer_contract_only.json"
 OUT_JSON_C2_SPARSE_COUPLING = CONV_DIAG / "v2_B3_C2_sparse_coupling_only.json"
 OUT_JSON_B3_RAW_COMPOSITION = CONV_DIAG / "v2_B3_raw_composition_contract_only.json"
+OUT_JSON_B3_SEED_REPLAY = CONV_DIAG / "v2_B3_seed_replay_audit_only.json"
+OUT_MD_B3_SEED_REPLAY = CONV_DIAG / "v2_B3_seed_replay_audit_only.md"
 REPORT_SIZE_TARGET_BYTES = 1048576
 C2_TRANSFER_CONTRACT_ONLY_ARG = "--C2-transfer-contract-only"
 C2_SPARSE_COUPLING_ONLY_ARG = "--C2-sparse-coupling-only"
 B3_RAW_COMPOSITION_CONTRACT_ONLY_ARG = "--B3-raw-composition-contract-only"
+B3_SEED_REPLAY_AUDIT_ONLY_ARG = "--B3-seed-replay-audit-only"
 V2_VECTOR_BC_CONTRACT_ONLY_ARG = "--V2-vector-BC-contract-only"
 
 TAG_TOP = 1
@@ -114,6 +119,179 @@ def _destroy_mat(mat: Any) -> None:
         mat.destroy()
     except Exception:
         pass
+
+
+def _petsc_duplicate_scaled(mat: Any, scale: float) -> Any:
+    out = mat.duplicate()
+    out.copy(mat)
+    if abs(float(scale) - 1.0) > 1.0e-15:
+        out.scale(float(scale))
+    out.assemble()
+    return out
+
+
+def _petsc_zero_mat(nrow: int, ncol: int, comm: Any) -> Any:
+    z = PETSc.Mat().create(comm=comm)
+    z.setSizes([[int(nrow), int(ncol)]])
+    z.setType("aij")
+    z.setUp()
+    z.assemble()
+    return z
+
+
+def _b3_nest_coupled_operators(
+    Auu: Any,
+    Aup: Any,
+    Apu: Any,
+    App: Any,
+    Muu: Any,
+    Mpu: Any,
+    Mpp: Any,
+    *,
+    comm: Any,
+) -> tuple[Any, Any, Any]:
+    n_u = int(Auu.getSize()[0])
+    n_p = int(App.getSize()[0])
+    m_up = _petsc_zero_mat(n_u, n_p, comm)
+    try:
+        a_nest = PETSc.Mat().createNest([[Auu, Aup], [Apu, App]], comm=comm)
+        m_nest = PETSc.Mat().createNest([[Muu, m_up], [Mpu, Mpp]], comm=comm)
+    except TypeError:
+        sizes = [[n_u, n_p], [n_u, n_p]]
+        a_nest = PETSc.Mat().createNest(sizes, [[Auu, Aup], [Apu, App]], comm=comm)
+        m_nest = PETSc.Mat().createNest(sizes, [[Muu, m_up], [Mpu, Mpp]], comm=comm)
+    a_nest.assemble()
+    m_nest.assemble()
+    return a_nest, m_nest, m_up
+
+
+def _b3_retained_pressure_active_indices(
+    p_air_collapsed: np.ndarray,
+    n_u_b3: int,
+) -> np.ndarray:
+    p_air_collapsed = np.asarray(p_air_collapsed, dtype=np.int32).ravel()
+    return np.concatenate(
+        [
+            np.arange(int(n_u_b3), dtype=np.int32),
+            (int(n_u_b3) + p_air_collapsed).astype(np.int32, copy=False),
+        ]
+    ).astype(np.int32, copy=False)
+
+
+def _b3_pressure_release_rows_retained(
+    msh: Any,
+    facet_tags: Any,
+    *,
+    n_u_b3: int,
+    p_air_collapsed: np.ndarray,
+) -> np.ndarray:
+    p_air_collapsed = np.asarray(p_air_collapsed, dtype=np.int32).ravel()
+    p_el = element("Lagrange", msh.basix_cell(), 1)
+    v_p = fem.functionspace(msh, p_el)
+    soundhole_facets = np.asarray(facet_tags.find(2), dtype=np.int32)
+    p_sh = np.asarray(
+        fem3d._locate_soundhole_pressure_release_dofs(v_p, soundhole_facets),
+        dtype=np.int32,
+    ).ravel()
+    inv = {int(d): j for j, d in enumerate(p_air_collapsed.tolist())}
+    rows: List[int] = []
+    for d in p_sh.tolist():
+        j = inv.get(int(d))
+        if j is not None:
+            rows.append(int(n_u_b3) + int(j))
+    return np.unique(np.asarray(rows, dtype=np.int32))
+
+
+def _map_parent_seed_to_b3(
+    parent_seed: np.ndarray,
+    *,
+    parent_idx: np.ndarray,
+    u_to_W_parent: np.ndarray,
+    p_to_W_parent: np.ndarray,
+    n_u_b3: int,
+    n_p_retained: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    parent_seed = np.asarray(parent_seed, dtype=np.float64).ravel()
+    parent_idx = np.asarray(parent_idx, dtype=np.int32).ravel()
+    u_to_W_parent = np.asarray(u_to_W_parent, dtype=np.int32).ravel()
+    p_to_W_parent = np.asarray(p_to_W_parent, dtype=np.int32).ravel()
+    n_w = int(n_u_b3 + n_p_retained)
+    b3 = np.zeros(n_w, dtype=np.float64)
+    u_parent_rows = u_to_W_parent[parent_idx]
+    if u_parent_rows.size != int(n_u_b3):
+        raise ValueError(
+            f"parent_idx length {u_parent_rows.size} != B3 u dimension {n_u_b3}"
+        )
+    if np.any(u_parent_rows < 0) or np.any(u_parent_rows >= parent_seed.size):
+        raise ValueError("parent_idx pullback rows out of parent seed bounds")
+    b3[: int(n_u_b3)] = parent_seed[u_parent_rows]
+    if p_to_W_parent.size != int(n_p_retained):
+        raise ValueError(
+            f"len(p_to_W)={p_to_W_parent.size} != retained pressure dimension {n_p_retained}"
+        )
+    if np.any(p_to_W_parent < 0) or np.any(p_to_W_parent >= parent_seed.size):
+        raise ValueError("p_to_W rows out of parent seed bounds")
+    b3[int(n_u_b3) :] = parent_seed[p_to_W_parent]
+    u_idx = np.arange(int(n_u_b3), dtype=np.int32)
+    p_idx = np.arange(int(n_u_b3), int(n_u_b3 + n_p_retained), dtype=np.int32)
+    return b3, u_idx, p_idx
+
+
+def _build_b3_scaled_restricted_operators_in_memory(
+    *,
+    raw_Auu: Any,
+    raw_Muu: Any,
+    raw_App: Any,
+    raw_Mpp: Any,
+    raw_Aup_B3: Any,
+    raw_Apu_B3: Any,
+    raw_Mpu_B3: Any,
+    s_uu: float,
+    s_pp: float,
+    s_c: float,
+    n_u_b3: int,
+    p_air_collapsed: np.ndarray,
+    b3_fix_u_rows: np.ndarray,
+    msh: Any,
+    facet_tags: Any,
+    comm: Any,
+    mats_to_destroy: List[Any],
+) -> tuple[Any, Any, np.ndarray, np.ndarray]:
+    inv_u = 1.0 / max(float(s_uu), 1.0e-30)
+    inv_p = 1.0 / max(float(s_pp), 1.0e-30)
+    inv_c = 1.0 / max(float(s_c), 1.0e-30)
+    a_uu = _petsc_duplicate_scaled(raw_Auu, inv_u)
+    m_uu = _petsc_duplicate_scaled(raw_Muu, inv_u)
+    a_pp = _petsc_duplicate_scaled(raw_App, inv_p)
+    m_pp = _petsc_duplicate_scaled(raw_Mpp, inv_p)
+    a_up = _petsc_duplicate_scaled(raw_Aup_B3, inv_c)
+    a_pu = _petsc_duplicate_scaled(raw_Apu_B3, inv_c)
+    m_pu = _petsc_duplicate_scaled(raw_Mpu_B3, inv_c)
+    mats_to_destroy.extend([a_uu, m_uu, a_pp, m_pp, a_up, a_pu, m_pu])
+    a_full, m_full, m_up = _b3_nest_coupled_operators(
+        a_uu, a_up, a_pu, a_pp, m_uu, m_pu, m_pp, comm=comm
+    )
+    mats_to_destroy.extend([a_full, m_full, m_up])
+    active_w = _b3_retained_pressure_active_indices(p_air_collapsed, n_u_b3)
+    a_b3, m_b3, _restr_meta = restrict_operators_to_active_set(a_full, m_full, active_w)
+    p_release = _b3_pressure_release_rows_retained(
+        msh, facet_tags, n_u_b3=n_u_b3, p_air_collapsed=p_air_collapsed
+    )
+    bc_rows = np.unique(
+        np.concatenate(
+            [
+                np.asarray(b3_fix_u_rows, dtype=np.int32).ravel(),
+                np.asarray(p_release, dtype=np.int32).ravel(),
+            ]
+        ).astype(np.int32, copy=False)
+    )
+    if bc_rows.size > 0:
+        fem3d._petsc_mat_zero_dirichlet_rows(a_b3, bc_rows, diag=1.0, zero_columns=True)
+        fem3d._petsc_mat_zero_dirichlet_rows(m_b3, bc_rows, diag=1.0, zero_columns=True)
+    n_p_retained = int(p_air_collapsed.size)
+    u_idx = np.arange(int(n_u_b3), dtype=np.int32)
+    p_idx = np.arange(int(n_u_b3), int(n_u_b3 + n_p_retained), dtype=np.int32)
+    return a_b3, m_b3, u_idx, p_idx
 
 
 def _extract_submesh_to_parent_entity_indices(
@@ -1049,6 +1227,10 @@ def _is_b3_raw_composition_contract_only_mode(argv: List[str]) -> bool:
     return B3_RAW_COMPOSITION_CONTRACT_ONLY_ARG in argv
 
 
+def _is_b3_seed_replay_audit_only_mode(argv: List[str]) -> bool:
+    return B3_SEED_REPLAY_AUDIT_ONLY_ARG in argv
+
+
 def _is_v2_vector_bc_contract_only_mode(argv: List[str]) -> bool:
     return V2_VECTOR_BC_CONTRACT_ONLY_ARG in argv
 
@@ -1568,6 +1750,363 @@ def _run_b3_raw_composition_contract_only(pre: Dict[str, Any]) -> int:
         _destroy_mat(M)
 
 
+def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
+    payload: Dict[str, Any] = {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "B3_seed_replay_audit_only",
+        "no_new_eigensolve_executed": True,
+        "additional_eps": "NOT_AUTHORIZED",
+        "jd_wiring_authorized": False,
+        "operator_matrices_persisted": False,
+        "transfer_matrices_persisted": False,
+        "coupling_matrices_persisted": False,
+        "mapped_seed_persisted": False,
+        "vector_banks_persisted": False,
+        "solve_trees_created": False,
+        "artifact_storage_policy_applied": True,
+        "B3_seed_source_status": (
+            "HISTORICAL_PARENT_V2_SEED_FROM_PRE_BC_FIX_CONTINUITY_DIAGNOSTIC_ONLY"
+        ),
+    }
+    verdict = "B3_SEED_REPLAY_BLOCKED_BY_SEED_MAPPING_INTERFACE"
+    A_parent = M_parent = A_b3 = M_b3 = None
+    mats_to_destroy: List[Any] = []
+    try:
+        if not pre["preassembly_contract_pass"]:
+            payload["B3_seed_mapping_failure_reason"] = "preassembly_contract_failed"
+            return 2
+        if MPI.COMM_WORLD.size != 1:
+            payload["B3_seed_mapping_failure_reason"] = "requires_mpiexec_n_1"
+            return 2
+
+        manifest = load_manifest()
+        case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
+        sample = sample_spec_from_case(case)
+        mesh_file = mesh_path("L_mid", CASE_ID)
+        case_dir = solve_case_dir("L_mid", CASE_ID)
+        seed_npy = case_dir / "diagnostics" / "acoustic_coupled_seed.npy"
+        seed_info = load_seed_with_diagnostics(seed_npy)
+        payload["B3_seed_file_exists"] = bool(seed_info.get("seed_file_exists"))
+        payload["B3_seed_parent_vector_length"] = seed_info.get("seed_vector_length")
+
+        msh, _cell_tags, facet_tags = fem3d._load_mesh_and_tags(mesh_file)
+        f_top = np.asarray(facet_tags.find(TAG_TOP), dtype=np.int32)
+        f_back = np.asarray(facet_tags.find(TAG_BACK), dtype=np.int32)
+        f_ribs = np.asarray(facet_tags.find(TAG_RIBS), dtype=np.int32)
+        f_fix = np.asarray(facet_tags.find(TAG_FIX), dtype=np.int32)
+        shell_facets = np.unique(np.concatenate([f_top, f_back, f_ribs]).astype(np.int32, copy=False))
+        tmeta = _build_c2_trace_to_parent_transfer(
+            msh, facet_tags, shell_facets=shell_facets, tag_top=TAG_TOP, tag_back=TAG_BACK, tag_ribs=TAG_RIBS
+        )
+        _tmeta_parent_map = tmeta.get("parent_index_per_trace_dof")
+        payload["B3_raw_T_rebuilt_in_memory"] = bool(tmeta.get("ok", False))
+        payload["B3_raw_tmeta_parent_idx_present"] = _tmeta_parent_map is not None
+
+        A_parent, M_parent, cfg = _assemble_reduced_coupled_replay(
+            mesh_file, sample, coupling_enabled=True, capture_parent_raw_blocks=True
+        )
+        maps = _extract_layout_maps(cfg, A_parent)
+        u_to_W_parent = np.asarray(maps["u_to_W"], dtype=np.int32).ravel()
+        p_to_W_parent = np.asarray(maps["p_to_W"], dtype=np.int32).ravel()
+        p_air_collapsed = np.asarray(
+            cfg.get("_coupled_air_p_air_collapsed_indices", np.asarray([], dtype=np.int32)),
+            dtype=np.int32,
+        ).ravel()
+        restr = dict(maps.get("restr") or {})
+        raw_cap = _extract_parent_raw_block_capture()
+        for k in (
+            "B3_composition_parent_raw_capture_constructed",
+            "parent_raw_collapsed_layout_constructed",
+            "parent_raw_collapsed_layout_dimensions_pass",
+            "parent_raw_u_dimension",
+            "parent_raw_p_dimension",
+        ):
+            payload[k] = raw_cap.get(k)
+        raw_App = raw_cap.get("raw_App")
+        raw_Mpp = raw_cap.get("raw_Mpp")
+        raw_Aup = raw_cap.get("raw_Aup")
+        raw_Apu = raw_cap.get("raw_Apu")
+        raw_Mpu = raw_cap.get("raw_Mpu")
+        for m_ in (raw_App, raw_Mpp, raw_Aup, raw_Apu, raw_Mpu):
+            if m_ is not None:
+                mats_to_destroy.append(m_)
+        if not all(m is not None for m in (raw_App, raw_Mpp, raw_Aup, raw_Apu, raw_Mpu)):
+            payload["B3_seed_mapping_failure_reason"] = "missing_parent_raw_blocks"
+            return 2
+        if not bool(payload.get("parent_raw_collapsed_layout_dimensions_pass", False)):
+            payload["B3_seed_mapping_failure_reason"] = "parent_raw_collapsed_layout_not_passing"
+            return 2
+        if _tmeta_parent_map is None:
+            payload["B3_seed_mapping_failure_reason"] = "parent_index_per_trace_dof_missing_from_tmeta"
+            return 2
+
+        shell_mesh, shell_to_parent, _, _ = dmesh.create_submesh(msh, msh.topology.dim - 1, shell_facets)
+        V_u_trace = fem.functionspace(shell_mesh, fem3d._displacement_element(shell_mesh, 1))
+        trace_cells = np.arange(
+            int(shell_mesh.topology.index_map(shell_mesh.topology.dim).size_local), dtype=np.int32
+        )
+        map_meta = _extract_submesh_to_parent_entity_indices(shell_to_parent, entity_dim=msh.topology.dim - 1)
+        parent_tag_map = {
+            int(i): int(v) for i, v in zip(np.asarray(facet_tags.indices), np.asarray(facet_tags.values))
+        }
+        parent_f = np.asarray(map_meta.get("indices"), dtype=np.int32).ravel()
+        trace_vals = np.array([parent_tag_map.get(int(pf), -1) for pf in parent_f], dtype=np.int32)
+        mt_trace = dmesh.meshtags(shell_mesh, shell_mesh.topology.dim, trace_cells, trace_vals)
+        dx_trace = ufl.Measure("dx", domain=shell_mesh, subdomain_data=mt_trace)
+        u = ufl.TrialFunction(V_u_trace)
+        v = ufl.TestFunction(V_u_trace)
+        top_m, back_m, t_top, t_back = fem3d._split_wood_materials(cfg)
+        nrm = ufl.CellNormal(shell_mesh)
+        P = ufl.Identity(3) - ufl.outer(nrm, nrm)
+        e1, e2 = fem3d._plate_local_frame(nrm, P)
+        grad_u = ufl.grad(u)
+        grad_v = ufl.grad(v)
+        eps_u = 0.5 * (P * grad_u * P + ufl.transpose(P * grad_u * P))
+        eps_v = 0.5 * (P * grad_v * P + ufl.transpose(P * grad_v * P))
+        w_n = ufl.dot(u, nrm)
+        v_n = ufl.dot(v, nrm)
+        shell_top = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, top_m)
+        shell_back = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
+        shell_ribs = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
+        raw_Auu = fem.petsc.assemble_matrix(
+            fem.form(
+                shell_top * dx_trace(TAG_TOP)
+                + shell_back * dx_trace(TAG_BACK)
+                + shell_ribs * dx_trace(TAG_RIBS)
+            ),
+            bcs=[],
+        )
+        raw_Muu = fem.petsc.assemble_matrix(
+            fem.form(
+                (top_m["rho"] * t_top) * ufl.dot(u, v) * dx_trace(TAG_TOP)
+                + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_BACK)
+                + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_RIBS)
+            ),
+            bcs=[],
+        )
+        raw_Auu.assemble()
+        raw_Muu.assemble()
+        mats_to_destroy.extend([raw_Auu, raw_Muu])
+
+        parent_idx = np.asarray(_tmeta_parent_map, dtype=np.int32).ravel()
+        n_parent_collapsed = int(payload.get("parent_raw_u_dimension", 0) or 0)
+        payload["B3_raw_tmeta_parent_idx_length"] = int(parent_idx.size)
+        payload["B3_raw_tmeta_parent_idx_bounds_pass"] = bool(
+            parent_idx.size > 0
+            and int(np.min(parent_idx)) >= 0
+            and int(np.max(parent_idx)) < n_parent_collapsed
+        )
+        payload["B3_raw_tmeta_parent_idx_unique_pass"] = bool(np.unique(parent_idx).size == parent_idx.size)
+        if not payload["B3_raw_tmeta_parent_idx_bounds_pass"] or not payload["B3_raw_tmeta_parent_idx_unique_pass"]:
+            payload["B3_seed_mapping_failure_reason"] = "parent_index_per_trace_dof_contract_failed"
+            return 2
+
+        is_parent_u = PETSc.IS().createGeneral(parent_idx.astype(np.int32), comm=PETSc.COMM_WORLD)
+        is_p = PETSc.IS().createGeneral(
+            np.arange(raw_App.getSize()[0], dtype=np.int32), comm=PETSc.COMM_WORLD
+        )
+        raw_Aup_B3 = raw_Aup.createSubMatrix(is_parent_u, is_p)
+        raw_Apu_B3 = raw_Apu.createSubMatrix(is_p, is_parent_u)
+        raw_Mpu_B3 = raw_Mpu.createSubMatrix(is_p, is_parent_u)
+        mats_to_destroy.extend([raw_Aup_B3, raw_Apu_B3, raw_Mpu_B3])
+        is_parent_u.destroy()
+        is_p.destroy()
+
+        n_u_b3 = int(raw_Auu.getSize()[0])
+        n_p_retained = int(p_to_W_parent.size)
+        s_uu = max(float(_mat_norm_or_none(raw_Auu) or 0.0), 1.0e-30)
+        s_pp = max(float(_mat_norm_or_none(raw_App) or 0.0), 1.0e-30)
+        s_c = math.sqrt(s_uu * s_pp)
+
+        parent_fix_blocks = fem3d._locate_facet_displacement_dofs(
+            fem.functionspace(msh, fem3d._displacement_element(msh, 1)), msh, f_fix
+        )
+        fix_scalar_parent = set(
+            int(b) * 3 + c
+            for b in np.asarray(parent_fix_blocks, dtype=np.int32).ravel()
+            for c in range(3)
+        )
+        b3_fix_scalar = np.asarray(
+            [k for k, pi in enumerate(parent_idx.tolist()) if int(pi) in fix_scalar_parent],
+            dtype=np.int32,
+        )
+        payload["B3_tag5_vector_BC_contract_pass"] = bool(
+            b3_fix_scalar.size == int(np.unique(b3_fix_scalar // 3).size * 3)
+        )
+        payload["B3_retained_pressure_dimension"] = n_p_retained
+        payload["B3_new_reduced_W_dimension"] = int(n_u_b3 + n_p_retained)
+        payload["B3_pressure_restriction_policy_reused"] = bool(cfg.get("_coupled_air_pressure_restriction"))
+        payload["B3_raw_composition_contract_pass"] = bool(
+            payload.get("B3_composition_parent_raw_capture_constructed")
+            and payload.get("parent_raw_collapsed_layout_dimensions_pass")
+            and payload["B3_raw_tmeta_parent_idx_bounds_pass"]
+            and payload["B3_tag5_vector_BC_contract_pass"]
+            and payload["B3_pressure_restriction_policy_reused"]
+        )
+        if not payload["B3_raw_composition_contract_pass"]:
+            payload["B3_seed_mapping_failure_reason"] = "B3_operator_composition_gates_failed"
+            return 2
+
+        A_b3, M_b3, u_idx, p_idx = _build_b3_scaled_restricted_operators_in_memory(
+            raw_Auu=raw_Auu,
+            raw_Muu=raw_Muu,
+            raw_App=raw_App,
+            raw_Mpp=raw_Mpp,
+            raw_Aup_B3=raw_Aup_B3,
+            raw_Apu_B3=raw_Apu_B3,
+            raw_Mpu_B3=raw_Mpu_B3,
+            s_uu=s_uu,
+            s_pp=s_pp,
+            s_c=s_c,
+            n_u_b3=n_u_b3,
+            p_air_collapsed=p_air_collapsed,
+            b3_fix_u_rows=b3_fix_scalar,
+            msh=msh,
+            facet_tags=facet_tags,
+            comm=PETSc.COMM_WORLD,
+            mats_to_destroy=mats_to_destroy,
+        )
+        payload["B3_raw_sparse_coupling_projection_constructed"] = True
+        payload["B3_gnhep_normalization_recomputed_from_B3_blocks"] = True
+        payload["B3_scaled_restricted_BC_operator_contract_pass"] = True
+
+        if not bool(seed_info.get("seed_file_exists")) or seed_info.get("seed_array") is None:
+            payload["B3_seed_mapped_vector_constructed"] = False
+            payload["B3_seed_mapping_failure_reason"] = seed_info.get("seed_load_status")
+            return 2
+
+        parent_seed = np.asarray(seed_info["seed_array"], dtype=np.float64).ravel()
+        if int(parent_seed.size) != int(A_parent.getSize()[0]):
+            payload["B3_seed_mapped_vector_constructed"] = False
+            payload["B3_seed_mapping_failure_reason"] = (
+                f"parent_seed_length_{parent_seed.size}_!=_parent_operator_dim_{A_parent.getSize()[0]}"
+            )
+            return 2
+
+        b3_seed, u_idx, p_idx = _map_parent_seed_to_b3(
+            parent_seed,
+            parent_idx=parent_idx,
+            u_to_W_parent=u_to_W_parent,
+            p_to_W_parent=p_to_W_parent,
+            n_u_b3=n_u_b3,
+            n_p_retained=n_p_retained,
+        )
+        payload["B3_seed_mapped_vector_constructed"] = True
+        payload["B3_seed_mapping_method"] = "exact_T_pullback_for_u_plus_retained_pressure_mapping"
+        payload["B3_seed_mapped_u_dimension"] = int(n_u_b3)
+        payload["B3_seed_mapped_p_dimension"] = int(n_p_retained)
+        payload["B3_seed_mapped_total_dimension"] = int(b3_seed.size)
+        payload["B3_seed_mapping_failure_reason"] = None
+
+        parent_replay = _rayleigh_residual_like(A_parent, M_parent, parent_seed, u_idx=u_to_W_parent, p_idx=p_to_W_parent)
+        hist_f = _safe_float(parent_replay.get("replay_frequency_hz"))
+        payload["historical_parent_seed_frequency_hz_if_available"] = hist_f
+
+        b3_replay = _rayleigh_residual_like(A_b3, M_b3, b3_seed, u_idx=u_idx, p_idx=p_idx)
+        payload["B3_seed_xH_Mx"] = _safe_float(b3_replay.get("xH_Mx"))
+        payload["B3_seed_rayleigh_frequency_hz"] = _safe_float(b3_replay.get("replay_frequency_hz"))
+        payload["B3_seed_relative_residual"] = _safe_float(b3_replay.get("replay_relative_residual"))
+        p_block = b3_seed[p_idx]
+        p_norm = float(np.linalg.norm(p_block))
+        total_norm = float(np.linalg.norm(b3_seed))
+        payload["B3_seed_pressure_support_metric"] = _safe_float(
+            p_norm / max(total_norm, 1.0e-30) if total_norm > 0 else float("nan")
+        )
+        payload["B3_seed_u_norm"] = _safe_float(float(np.linalg.norm(b3_seed[u_idx])))
+        payload["B3_seed_p_norm"] = _safe_float(p_norm)
+
+        shift_hz = None
+        shift_frac = None
+        if hist_f is not None and payload["B3_seed_rayleigh_frequency_hz"] is not None:
+            try:
+                shift_hz = float(payload["B3_seed_rayleigh_frequency_hz"]) - float(hist_f)
+                shift_frac = shift_hz / max(abs(float(hist_f)), 1.0e-30)
+            except Exception:
+                pass
+        payload["B3_vs_historical_seed_frequency_shift_hz"] = _safe_float(shift_hz)
+        payload["B3_vs_historical_seed_frequency_shift_fraction"] = _safe_float(shift_frac)
+
+        def _finite_pos(x: Any) -> bool:
+            if x is None or isinstance(x, str):
+                return False
+            try:
+                v = float(x)
+                return math.isfinite(v) and v > 0.0
+            except Exception:
+                return False
+
+        def _finite_scalar(x: Any) -> bool:
+            if x is None or isinstance(x, str):
+                return False
+            try:
+                return math.isfinite(float(x))
+            except Exception:
+                return False
+
+        gates_ok = bool(
+            payload["B3_seed_mapped_vector_constructed"]
+            and _finite_pos(payload["B3_seed_xH_Mx"])
+            and _finite_pos(payload["B3_seed_rayleigh_frequency_hz"])
+            and _finite_scalar(payload["B3_seed_relative_residual"])
+            and _finite_scalar(payload["B3_seed_pressure_support_metric"])
+            and float(payload["B3_seed_pressure_support_metric"]) > 1.0e-12
+        )
+        rel_res = float(payload["B3_seed_relative_residual"])
+        large_shift = bool(
+            shift_frac is not None
+            and not isinstance(shift_frac, str)
+            and math.isfinite(float(shift_frac))
+            and (abs(float(shift_frac)) > 0.25 or rel_res > 0.5)
+        )
+        payload["B3_seed_replay_large_shift_warning"] = large_shift
+        if not gates_ok:
+            verdict = "B3_SEED_REPLAY_BLOCKED_BY_SEED_MAPPING_INTERFACE"
+            payload["B3_seed_mapping_failure_reason"] = "B3_replay_metrics_degenerate_or_nonfinite"
+            return 2
+        if large_shift:
+            verdict = "B3_SEED_REPLAY_DIAGNOSTIC_INCONCLUSIVE_DUE_TO_PRE_BC_FIX_SEED"
+        else:
+            verdict = "B3_SEED_REPLAY_DIAGNOSTIC_PASS_READY_FOR_FIRST_JD_DESIGN_REVIEW"
+        return 0 if verdict.startswith("B3_SEED_REPLAY_DIAGNOSTIC_PASS") else 2
+    except Exception as exc:
+        payload["B3_seed_mapping_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        verdict = "B3_SEED_REPLAY_BLOCKED_BY_SEED_MAPPING_INTERFACE"
+        return 2
+    finally:
+        payload["next_step_verdict"] = verdict
+        _write_json_atomic(OUT_JSON_B3_SEED_REPLAY, payload)
+        payload["report_size_bytes"] = OUT_JSON_B3_SEED_REPLAY.stat().st_size
+        _write_json_atomic(OUT_JSON_B3_SEED_REPLAY, payload)
+        md_lines = [
+            "# B3 seed replay audit (report-only)",
+            "",
+            f"- verdict: `{verdict}`",
+            f"- B3_seed_source_status: {payload.get('B3_seed_source_status')}",
+            f"- B3_raw_composition_contract_pass: {payload.get('B3_raw_composition_contract_pass')}",
+            f"- B3_seed_rayleigh_frequency_hz: {payload.get('B3_seed_rayleigh_frequency_hz')}",
+            f"- B3_seed_relative_residual: {payload.get('B3_seed_relative_residual')}",
+            f"- historical_parent_seed_frequency_hz: {payload.get('historical_parent_seed_frequency_hz_if_available')}",
+            f"- B3_vs_historical_seed_frequency_shift_fraction: {payload.get('B3_vs_historical_seed_frequency_shift_fraction')}",
+            "",
+            "no_new_eigensolve_executed=True",
+        ]
+        OUT_MD_B3_SEED_REPLAY.parent.mkdir(parents=True, exist_ok=True)
+        OUT_MD_B3_SEED_REPLAY.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+        print("[B3_seed] mode=B3_seed_replay_audit_only", flush=True)
+        print(f"[B3_seed] B3_raw_composition_contract_pass={payload.get('B3_raw_composition_contract_pass')}", flush=True)
+        print(f"[B3_seed] B3_seed_mapped_vector_constructed={payload.get('B3_seed_mapped_vector_constructed')}", flush=True)
+        print(f"[B3_seed] B3_seed_rayleigh_frequency_hz={payload.get('B3_seed_rayleigh_frequency_hz')}", flush=True)
+        print(f"[B3_seed] next_step_verdict={verdict}", flush=True)
+        print("[B3_seed] no_new_eigensolve_executed=True", flush=True)
+        print("[B3_seed] additional_eps=NOT_AUTHORIZED", flush=True)
+        for m_ in mats_to_destroy:
+            _destroy_mat(m_)
+        _destroy_mat(A_parent)
+        _destroy_mat(M_parent)
+        _destroy_mat(A_b3)
+        _destroy_mat(M_b3)
+
+
 def _run_v2_vector_bc_contract_only(pre: Dict[str, Any]) -> int:
     if not pre["preassembly_contract_pass"]:
         print("[V2_BC] V2_tag5_vector_BC_contract_pass=False", flush=True)
@@ -1642,6 +2181,9 @@ def main() -> int:
 
     if _is_b3_raw_composition_contract_only_mode(sys.argv):
         return _run_b3_raw_composition_contract_only(pre)
+
+    if _is_b3_seed_replay_audit_only_mode(sys.argv):
+        return _run_b3_seed_replay_audit_only(pre)
 
     if _is_c2_sparse_coupling_only_mode(sys.argv):
         return _run_c2_sparse_coupling_only(pre)
