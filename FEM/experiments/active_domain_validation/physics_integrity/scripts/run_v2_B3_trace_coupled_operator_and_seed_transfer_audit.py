@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 
 import numpy as np
 from mpi4py import MPI
+from petsc4py import PETSc
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[4]
@@ -35,8 +36,10 @@ CASE_ID = "baseline_coupled_v2"
 OUT_JSON = CONV_DIAG / "v2_B3_trace_coupled_operator_and_seed_transfer_audit.json"
 OUT_MD = CONV_DIAG / "v2_B3_trace_coupled_operator_and_seed_transfer_audit.md"
 OUT_JSON_C2_CONTRACT = CONV_DIAG / "v2_B3_C2_transfer_contract_only.json"
+OUT_JSON_C2_SPARSE_COUPLING = CONV_DIAG / "v2_B3_C2_sparse_coupling_only.json"
 REPORT_SIZE_TARGET_BYTES = 1048576
 C2_TRANSFER_CONTRACT_ONLY_ARG = "--C2-transfer-contract-only"
+C2_SPARSE_COUPLING_ONLY_ARG = "--C2-sparse-coupling-only"
 
 TAG_TOP = 1
 TAG_BACK = 3
@@ -1003,10 +1006,264 @@ def _run_c2_transfer_contract_only(pre: Dict[str, Any]) -> int:
     )
 
 
+def _is_c2_sparse_coupling_only_mode(argv: List[str]) -> bool:
+    return C2_SPARSE_COUPLING_ONLY_ARG in argv
+
+
+def _mat_global_nnz(mat: Any) -> int:
+    info = mat.getInfo(PETSc.Mat.InfoType.GLOBAL_SUM)
+    return int(info.get("nz_used", 0))
+
+
+def _run_c2_sparse_coupling_only(pre: Dict[str, Any]) -> int:
+    if not pre["preassembly_contract_pass"]:
+        print("[B3_C2] mode=C2_sparse_coupling_only", flush=True)
+        print("[B3_C2] C2_sparse_coupling_projection_constructed=False", flush=True)
+        print(
+            "[B3_C2] C2_sparse_coupling_failure_reason=preassembly_contract_failed",
+            flush=True,
+        )
+        print(
+            "[B3_C2] next_step_verdict=B3_BLOCKED_BY_ONE_NAMED_SPARSE_COUPLING_PROJECTION_INTERFACE",
+            flush=True,
+        )
+        print("[B3_C2] no_new_eigensolve_executed=True", flush=True)
+        print("[B3_C2] additional_eps=NOT_AUTHORIZED", flush=True)
+        return 2
+
+    if MPI.COMM_WORLD.size != 1:
+        if MPI.COMM_WORLD.rank == 0:
+            print("[B3_C2] mode=C2_sparse_coupling_only", flush=True)
+            print("[B3_C2] C2_sparse_coupling_projection_constructed=False", flush=True)
+            print(
+                "[B3_C2] C2_sparse_coupling_failure_reason=requires_mpiexec_n_1",
+                flush=True,
+            )
+            print(
+                "[B3_C2] next_step_verdict=B3_BLOCKED_BY_ONE_NAMED_SPARSE_COUPLING_PROJECTION_INTERFACE",
+                flush=True,
+            )
+            print("[B3_C2] no_new_eigensolve_executed=True", flush=True)
+            print("[B3_C2] additional_eps=NOT_AUTHORIZED", flush=True)
+        return 2
+
+    manifest = load_manifest()
+    case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
+    sample = sample_spec_from_case(case)
+    mesh_file = mesh_path("L_mid", CASE_ID)
+    msh, _cell_tags, facet_tags = fem3d._load_mesh_and_tags(mesh_file)
+    f_top = np.asarray(facet_tags.find(TAG_TOP), dtype=np.int32)
+    f_back = np.asarray(facet_tags.find(TAG_BACK), dtype=np.int32)
+    f_ribs = np.asarray(facet_tags.find(TAG_RIBS), dtype=np.int32)
+    shell_facets = np.unique(np.concatenate([f_top, f_back, f_ribs]).astype(np.int32, copy=False))
+
+    tmeta = _build_c2_trace_to_parent_transfer(
+        msh,
+        facet_tags,
+        shell_facets=shell_facets,
+        tag_top=TAG_TOP,
+        tag_back=TAG_BACK,
+        tag_ribs=TAG_RIBS,
+    )
+    t_pass = bool(tmeta.get("ok", False))
+    dense_removed = bool(tmeta.get("C2_dense_coupling_allocation_removed", False))
+    parent_idx = np.asarray(tmeta.get("parent_index_per_trace_dof", np.asarray([], dtype=np.int32))).ravel()
+    n_parent_u = int(tmeta.get("codomain_dim", 0) or 0)
+    n_trace_u = int(tmeta.get("domain_dim", 0) or 0)
+
+    A = M = None
+    c2_sparse_constructed = False
+    c2_sparse_method = "PETSc_IS_sparse_submatrix_extraction_from_reduced_parent_A_M"
+    c2_failure_reason = None
+    c2_dims_pass = False
+    c2_nz_pass = False
+    c2_transpose_pass = False
+    c2_sparse_runtime = False
+    c2_representation = "NOT_YET_SAFE"
+    c2_Aup_shape = c2_Apu_shape = c2_Mpu_shape = None
+    c2_Aup_nnz = c2_Apu_nnz = c2_Mpu_nnz = None
+    c2_Aup_norm = c2_Apu_norm = c2_Mpu_norm = None
+    c2_selected_u_bounds = False
+    c2_selected_u_unique = False
+    c2_selected_p_bounds = False
+    c2_parent_bounds = False
+    c2_selected_u_checksum = None
+    c2_selected_p_checksum = None
+    c2_n_p = 0
+
+    try:
+        A, M, cfg = _assemble_reduced_coupled_replay(mesh_file, sample, coupling_enabled=True)
+        maps = _extract_layout_maps(cfg, A)
+        u_to_W = np.asarray(maps["u_to_W"], dtype=np.int32).ravel()
+        p_to_W = np.asarray(maps["p_to_W"], dtype=np.int32).ravel()
+        c2_n_p = int(p_to_W.size)
+
+        c2_parent_bounds = bool(
+            parent_idx.size == n_trace_u
+            and n_parent_u == int(u_to_W.size)
+            and np.all((parent_idx >= 0) & (parent_idx < u_to_W.size))
+        )
+        if c2_parent_bounds:
+            selected_W_u = np.asarray(u_to_W[parent_idx], dtype=np.int32).ravel()
+            selected_W_p = p_to_W
+            c2_selected_u_bounds = bool(np.all((selected_W_u >= 0) & (selected_W_u < int(A.getSize()[0]))))
+            c2_selected_p_bounds = bool(np.all((selected_W_p >= 0) & (selected_W_p < int(A.getSize()[0]))))
+            c2_selected_u_unique = bool(np.unique(selected_W_u).size == selected_W_u.size)
+            c2_selected_u_checksum = _crc32_i32(selected_W_u)
+            c2_selected_p_checksum = _crc32_i32(selected_W_p)
+        else:
+            selected_W_u = np.asarray([], dtype=np.int32)
+            selected_W_p = np.asarray([], dtype=np.int32)
+
+        layout_pass = bool(
+            t_pass
+            and c2_parent_bounds
+            and c2_selected_u_bounds
+            and c2_selected_u_unique
+            and c2_selected_p_bounds
+        )
+        if not layout_pass:
+            c2_failure_reason = "layout_or_T_contract_failed_before_sparse_projection"
+        else:
+            is_u = PETSc.IS().createGeneral(selected_W_u.astype(np.int32), comm=PETSc.COMM_WORLD)
+            is_p = PETSc.IS().createGeneral(selected_W_p.astype(np.int32), comm=PETSc.COMM_WORLD)
+            A_up_B3 = A.createSubMatrix(is_u, is_p)
+            A_pu_B3 = A.createSubMatrix(is_p, is_u)
+            M_pu_B3 = M.createSubMatrix(is_p, is_u)
+            c2_sparse_runtime = True
+            c2_sparse_constructed = True
+            c2_representation = c2_sparse_method
+
+            c2_Aup_shape = list(A_up_B3.getSize())
+            c2_Apu_shape = list(A_pu_B3.getSize())
+            c2_Mpu_shape = list(M_pu_B3.getSize())
+            c2_Aup_nnz = _mat_global_nnz(A_up_B3)
+            c2_Apu_nnz = _mat_global_nnz(A_pu_B3)
+            c2_Mpu_nnz = _mat_global_nnz(M_pu_B3)
+            c2_Aup_norm = _safe_float(A_up_B3.norm())
+            c2_Apu_norm = _safe_float(A_pu_B3.norm())
+            c2_Mpu_norm = _safe_float(M_pu_B3.norm())
+            c2_dims_pass = bool(
+                c2_Aup_shape == [n_trace_u, c2_n_p]
+                and c2_Apu_shape == [c2_n_p, n_trace_u]
+                and c2_Mpu_shape == [c2_n_p, n_trace_u]
+            )
+            c2_nz_pass = bool(
+                int(c2_Aup_nnz) > 0 and int(c2_Apu_nnz) > 0 and int(c2_Mpu_nnz) > 0
+            )
+            c2_transpose_pass = bool(c2_Apu_shape == [c2_Aup_shape[1], c2_Aup_shape[0]])
+            if not (c2_dims_pass and c2_nz_pass and c2_transpose_pass):
+                c2_failure_reason = "sparse_projection_dimension_or_nonzero_or_convention_check_failed"
+
+    except Exception as exc:
+        c2_failure_reason = f"{type(exc).__name__}:{exc}"
+        c2_sparse_constructed = False
+
+    prohibited_shapes = {
+        "Aup": [n_parent_u, c2_n_p],
+        "Apu": [c2_n_p, n_parent_u],
+        "Mpu": [c2_n_p, n_parent_u],
+    }
+    dense_bytes_avoided = int(
+        8
+        * (
+            prohibited_shapes["Aup"][0] * prohibited_shapes["Aup"][1]
+            + prohibited_shapes["Apu"][0] * prohibited_shapes["Apu"][1]
+            + prohibited_shapes["Mpu"][0] * prohibited_shapes["Mpu"][1]
+        )
+    )
+
+    verdict = (
+        "B3_C2_SPARSE_COUPLING_READY_FOR_COUPLED_OPERATOR_AND_SEED_AUDIT"
+        if (
+            t_pass
+            and dense_removed
+            and c2_sparse_constructed
+            and c2_dims_pass
+            and c2_nz_pass
+        )
+        else "B3_BLOCKED_BY_ONE_NAMED_SPARSE_COUPLING_PROJECTION_INTERFACE"
+    )
+
+    payload = {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "C2_sparse_coupling_only",
+        "selected_B3_coupling_route": "C2",
+        "C2_T_exact_transfer_contract_pass": t_pass,
+        "C2_dense_coupling_allocation_prohibited": True,
+        "C2_dense_coupling_allocation_removed": dense_removed,
+        "C2_sparse_only_runtime_path_executed": c2_sparse_runtime,
+        "C2_projected_coupling_representation": c2_representation,
+        "C2_parent_u_dimension": n_parent_u,
+        "C2_B3_trace_u_dimension": n_trace_u,
+        "C2_retained_pressure_dimension": c2_n_p,
+        "C2_parent_index_per_trace_dof_bounds_pass": c2_parent_bounds,
+        "C2_selected_W_u_bounds_pass": c2_selected_u_bounds,
+        "C2_selected_W_u_unique_pass": c2_selected_u_unique,
+        "C2_selected_W_p_bounds_pass": c2_selected_p_bounds,
+        "C2_selected_W_u_checksum": c2_selected_u_checksum,
+        "C2_selected_W_p_checksum": c2_selected_p_checksum,
+        "C2_sparse_coupling_projection_constructed": c2_sparse_constructed,
+        "C2_sparse_coupling_projection_method": c2_sparse_method,
+        "C2_A_up_B3_shape": c2_Aup_shape,
+        "C2_A_pu_B3_shape": c2_Apu_shape,
+        "C2_M_pu_B3_shape": c2_Mpu_shape,
+        "C2_A_up_B3_nnz": c2_Aup_nnz,
+        "C2_A_pu_B3_nnz": c2_Apu_nnz,
+        "C2_M_pu_B3_nnz": c2_Mpu_nnz,
+        "C2_A_up_B3_norm": c2_Aup_norm,
+        "C2_A_pu_B3_norm": c2_Apu_norm,
+        "C2_M_pu_B3_norm": c2_Mpu_norm,
+        "C2_sparse_coupling_dimensions_pass": c2_dims_pass,
+        "C2_sparse_coupling_nonzero_pass": c2_nz_pass,
+        "C2_sparse_coupling_transpose_consistency_pass": c2_transpose_pass,
+        "C2_sparse_coupling_failure_reason": c2_failure_reason,
+        "C2_prohibited_dense_shape_Aup": prohibited_shapes["Aup"],
+        "C2_prohibited_dense_shape_Apu": prohibited_shapes["Apu"],
+        "C2_prohibited_dense_shape_Mpu": prohibited_shapes["Mpu"],
+        "C2_estimated_prohibited_dense_bytes_avoided": dense_bytes_avoided,
+        "artifact_storage_policy_applied": True,
+        "report_size_target_bytes": REPORT_SIZE_TARGET_BYTES,
+        "new_large_artifacts_created": [],
+        "large_artifact_generation_authorized": False,
+        "operator_matrices_persisted": False,
+        "transfer_matrices_persisted": False,
+        "coupling_matrices_persisted": False,
+        "vector_banks_persisted": False,
+        "solve_trees_created": False,
+        "cleanup_required_before_production": True,
+        "no_new_eigensolve_executed": True,
+        "additional_eps": "NOT_AUTHORIZED",
+        "jd_wiring_authorized": False,
+        "next_step_verdict": verdict,
+    }
+    _write_json_atomic(OUT_JSON_C2_SPARSE_COUPLING, payload)
+    payload["report_size_bytes"] = OUT_JSON_C2_SPARSE_COUPLING.stat().st_size
+    _write_json_atomic(OUT_JSON_C2_SPARSE_COUPLING, payload)
+
+    print("[B3_C2] mode=C2_sparse_coupling_only", flush=True)
+    print(f"[B3_C2] C2_T_exact_transfer_contract_pass={payload['C2_T_exact_transfer_contract_pass']}", flush=True)
+    print(f"[B3_C2] C2_dense_coupling_allocation_removed={payload['C2_dense_coupling_allocation_removed']}", flush=True)
+    print(
+        f"[B3_C2] C2_sparse_coupling_projection_constructed={payload['C2_sparse_coupling_projection_constructed']}",
+        flush=True,
+    )
+    print(f"[B3_C2] C2_sparse_coupling_dimensions_pass={payload['C2_sparse_coupling_dimensions_pass']}", flush=True)
+    print(f"[B3_C2] C2_sparse_coupling_nonzero_pass={payload['C2_sparse_coupling_nonzero_pass']}", flush=True)
+    print(f"[B3_C2] C2_sparse_coupling_failure_reason={payload['C2_sparse_coupling_failure_reason']}", flush=True)
+    print(f"[B3_C2] next_step_verdict={payload['next_step_verdict']}", flush=True)
+    print("[B3_C2] no_new_eigensolve_executed=True", flush=True)
+    print("[B3_C2] additional_eps=NOT_AUTHORIZED", flush=True)
+    return 0 if verdict == "B3_C2_SPARSE_COUPLING_READY_FOR_COUPLED_OPERATOR_AND_SEED_AUDIT" else 2
+
+
 def main() -> int:
     import sys
 
     pre = _precheck()
+
+    if _is_c2_sparse_coupling_only_mode(sys.argv):
+        return _run_c2_sparse_coupling_only(pre)
 
     if _is_c2_transfer_contract_only_mode(sys.argv):
         return _run_c2_transfer_contract_only(pre)
