@@ -864,11 +864,27 @@ def main() -> int:
             "eps_run_count_for_this_lane": eps_run_count,
         }
 
+        dominant_support = None
+        try:
+            dom = agg.get("subset_fraction_summary") or {}
+            if dom:
+                dominant_support = max(dom.keys(), key=lambda k: dom[k].get("median_l2_fraction", 0.0))
+        except Exception:
+            dominant_support = None
+
         report: Dict[str, Any] = {
             "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "evidence_scope": "report_only_no_eps",
             "output_subdir": OUT_SUBDIR_LOSSLESS_ADJUDICATION_V1,
+            "classification": refined_classification,
+            "classification_subtype": refined_subtype,
+            "classification_reason": (
+                "Overlapping tag fractions and M-active column probes are insufficient for elimination; "
+                "see mass-rank/disjoint-partition audit."
+            ),
+            "dominant_support_category": dominant_support or "u_non_shell_displacement_complement",
             "no_new_eigensolve_executed": True,
+            "additional_eps_authorized": False,
             "single_run_guard_audit": status_refresh,
             "u_active_layout": {
                 "operator_size": int(operator_size),
@@ -974,14 +990,6 @@ def main() -> int:
             lines.append(f"- Implementation risk: {opt.get('implementation_risk')}")
             lines.append("")
         OUT_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-        dominant_support = None
-        try:
-            dom = agg.get("subset_fraction_summary") or {}
-            if dom:
-                dominant_support = max(dom.keys(), key=lambda k: dom[k].get("median_l2_fraction", 0.0))
-        except Exception:
-            dominant_support = None
 
         mass_null_count = 0
         try:

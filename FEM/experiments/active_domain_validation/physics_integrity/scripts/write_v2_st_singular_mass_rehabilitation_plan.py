@@ -32,6 +32,9 @@ PIPELINE_AUDIT_JSON = (
     CONV_DIAG / "v2_mapping_fixed_persistence_fixed_full_pipeline_audit.json"
 )
 LOSSLESS_POSTMORTEM_JSON = CONV_DIAG / "v2_lossless_adjudication_v1_mass_null_postmortem.json"
+LOSSLESS_U_MASS_RANK_AUDIT_JSON = (
+    CONV_DIAG / "v2_lossless_adjudication_v1_u_mass_rank_and_disjoint_partition_audit.json"
+)
 LOSSLESS_DIAG_JSON = (
     CONV_DIAG / "v2_l_mid_mapping_fixed_unregularized_lossless_adjudication_v1_diagnostic.json"
 )
@@ -88,6 +91,11 @@ def main() -> int:
         if LOSSLESS_DIAG_JSON.is_file()
         else {}
     )
+    lossless_u_mass_rank = (
+        json.loads(LOSSLESS_U_MASS_RANK_AUDIT_JSON.read_text(encoding="utf-8"))
+        if LOSSLESS_U_MASS_RANK_AUDIT_JSON.is_file()
+        else {}
+    )
 
     applicability = (preflight or {}).get("PGNHEP_purification_applicability")
     if applicability is None:
@@ -127,24 +135,39 @@ def main() -> int:
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "strategy": "finite_solver_rehabilitation_persistence_fix_then_mapping_baseline",
         "next_allowed_action": (
-            "review_persisted_vector_content_unresolved_lossless_preflight_no_eps"
-            if pipeline_unresolved
+            "report_only_u_mass_rank_disjoint_partition_audit_no_eps"
+            if lossless_diag.get("eps_run_count_for_this_lane") == 1 and not lossless_u_mass_rank
             else (
-            "report_only_full_pipeline_audit_over_existing_replacement_artifacts"
-            if audit_only
-            else (
-                "persistence_self_test_then_one_replacement_mapping_corrected_baseline"
-                if baseline_pending
-                else "review_mapping_corrected_baseline_and_pipeline_audit_verdict"
-            )
+                "review_u_active_nullspace_attribution_and_mass_rank_audit_no_eps"
+                if lossless_u_mass_rank
+                else (
+                    "review_persisted_vector_content_unresolved_lossless_preflight_no_eps"
+                    if pipeline_unresolved
+                    else (
+                        "report_only_full_pipeline_audit_over_existing_replacement_artifacts"
+                        if audit_only
+                        else (
+                            "persistence_self_test_then_one_replacement_mapping_corrected_baseline"
+                            if baseline_pending
+                            else "review_mapping_corrected_baseline_and_pipeline_audit_verdict"
+                        )
+                    )
+                )
             )
         ),
         "recommended_vm_command": (
-            VM_PIPELINE_AUDIT_SHELL if (audit_only or replacement_ran) and not pipeline_unresolved else (
-                "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
-                "run_v2_coupled_physical_core_report_only_bundle.sh"
-                if pipeline_unresolved
-                else None
+            "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+            "run_v2_lossless_adjudication_v1_u_mass_rank_disjoint_partition_audit_vm.sh"
+            if lossless_diag.get("eps_run_count_for_this_lane") == 1 and not lossless_u_mass_rank
+            else (
+                VM_PIPELINE_AUDIT_SHELL
+                if (audit_only or replacement_ran) and not pipeline_unresolved
+                else (
+                    "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+                    "run_v2_coupled_physical_core_report_only_bundle.sh"
+                    if pipeline_unresolved
+                    else None
+                )
             )
         ),
         "PGNHEP_purification": "ruled_out_in_current_VM_environment",
@@ -173,9 +196,13 @@ def main() -> int:
             if persistence_fixed
             else None,
             "current_blocker": (
+                "u_active_null_M_attribution_unresolved"
+                if lossless_diag.get("eps_run_count_for_this_lane") == 1
+                else (
                 "replay_evaluation_or_persisted_vector_content"
                 if replacement_ran
                 else None
+                )
             ),
             "pipeline_audit_verdict": pipeline_verdict,
             "pipeline_audit_json": str(PIPELINE_AUDIT_JSON),
@@ -279,12 +306,16 @@ def main() -> int:
                 "seed_branch_recovery_diagnostic_mapping_fixed_unregularized_lossless_adjudication_v1"
             ),
             "status": (
-                "single_eps_completed_mass_null_postmortem_pending"
+                "single_eps_completed_u_mass_rank_audit_pending"
                 if lossless_diag.get("eps_run_count_for_this_lane") == 1
-                and not lossless_postmortem
+                and lossless_postmortem
+                and not lossless_u_mass_rank
                 else (
                     "single_eps_completed_"
-                    + str(lossless_postmortem.get("classification", "postmortem_complete"))
+                    + str(
+                        lossless_u_mass_rank.get("classification_subtype")
+                        or lossless_postmortem.get("classification", "postmortem_complete")
+                    )
                     if lossless_diag.get("eps_run_count_for_this_lane") == 1
                     else "prepare_only_not_authorized_for_eps"
                 )
@@ -304,6 +335,13 @@ def main() -> int:
                 CONV_DIAG / "v2_lossless_adjudication_v1_policy_equivalence_preflight.json"
             ),
             "postmortem_json": str(LOSSLESS_POSTMORTEM_JSON),
+            "u_mass_rank_disjoint_partition_audit_json": str(LOSSLESS_U_MASS_RANK_AUDIT_JSON),
+            "serialization_ruled_out_as_active_cause": bool(lossless_postmortem),
+            "current_blocker": (
+                "u_active_null_M_attribution_unresolved"
+                if lossless_diag.get("eps_run_count_for_this_lane") == 1
+                else None
+            ),
         },
         "current_state_summary": {
             "persistence_self_test": "PASS" if self_test_pass else "pending_or_failed",
@@ -316,10 +354,17 @@ def main() -> int:
             ),
             "additional_eps_solve": "not_authorized",
             "lossless_adjudication_v1": (
-                "completed_one_eps_mass_null"
-                if lossless_diag.get("eps_run_count_for_this_lane") == 1
-                else "not_run"
+                "completed_one_eps_mass_null_u_attribution_pending"
+                if lossless_diag.get("eps_run_count_for_this_lane") == 1 and not lossless_u_mass_rank
+                else (
+                    "completed_one_eps_mass_null_u_mass_rank_audit="
+                    + str(lossless_u_mass_rank.get("classification_subtype", "done"))
+                    if lossless_diag.get("eps_run_count_for_this_lane") == 1
+                    else "not_run"
+                )
             ),
+            "serialization_ruled_out": bool(lossless_postmortem),
+            "v2_physical_model_invalidated": False,
         },
     }
 
