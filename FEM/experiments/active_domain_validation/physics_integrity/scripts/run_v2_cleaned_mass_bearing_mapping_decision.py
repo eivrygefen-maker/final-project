@@ -13,19 +13,214 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import sys
 import time
+import zlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
-from mpi4py import MPI
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[4]
 for _p in (SCRIPT_DIR, REPO_ROOT / "FEM" / "scripts"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
+
+# Arrays with more elements are compacted to metadata (no full index lists in JSON).
+JSON_SMALL_ARRAY_MAX_ELEMENTS = 64
+JSON_ARRAY_PREVIEW_MAX = 8
+
+_FORCE_COMPACT_KEYS = frozenset(
+    {
+        "proposed_retained_u_indices",
+        "shell_trace_reduced_u",
+        "mass_bearing_row_indices",
+        "mass_bearing_col_indices",
+    }
+)
+
+
+def _safe_float(x: Any) -> Any:
+    if isinstance(x, (np.floating, float)):
+        v = float(x)
+        if not math.isfinite(v):
+            return "nan" if math.isnan(v) else ("inf" if v > 0 else "-inf")
+        return v
+    if isinstance(x, (np.integer, int)):
+        return int(x)
+    if isinstance(x, (np.bool_, bool)):
+        return bool(x)
+    return x
+
+
+def _array_crc32(arr: np.ndarray) -> int:
+    a = np.ascontiguousarray(arr)
+    return int(zlib.crc32(a.tobytes()) & 0xFFFFFFFF)
+
+
+def _force_compact_array_key(key: Optional[str]) -> bool:
+    if not key:
+        return False
+    if key in _FORCE_COMPACT_KEYS:
+        return True
+    return key.endswith("_indices") or key.endswith("_index_map")
+
+
+def _compact_array_metadata(arr: np.ndarray, *, force_compact: bool) -> Dict[str, Any]:
+    a = np.asarray(arr)
+    flat = a.ravel()
+    n = int(flat.size)
+    compact = bool(force_compact or n > JSON_SMALL_ARRAY_MAX_ELEMENTS)
+    meta: Dict[str, Any] = {
+        "serialization": "compact_array_metadata",
+        "dtype": str(a.dtype),
+        "shape": [int(s) for s in a.shape],
+        "size": n,
+        "crc32": _array_crc32(a),
+    }
+    if n == 0:
+        meta.update(min=None, max=None, nnz=0, preview_first=[], preview_last=[])
+        if not compact:
+            meta["values"] = []
+        return meta
+    if np.issubdtype(a.dtype, np.number):
+        finite = flat[np.isfinite(flat)] if flat.size else flat
+        if finite.size:
+            vmin = finite.min()
+            vmax = finite.max()
+            if np.issubdtype(a.dtype, np.integer):
+                meta["min"] = int(vmin)
+                meta["max"] = int(vmax)
+            else:
+                meta["min"] = _safe_float(vmin)
+                meta["max"] = _safe_float(vmax)
+        else:
+            meta["min"] = meta["max"] = None
+        if np.issubdtype(a.dtype, np.integer):
+            meta["nnz"] = int(np.count_nonzero(flat))
+    k = min(JSON_ARRAY_PREVIEW_MAX, n)
+    meta["preview_first"] = [_safe_float(x) for x in flat[:k].tolist()]
+    meta["preview_last"] = (
+        [_safe_float(x) for x in flat[-k:].tolist()] if n > k else []
+    )
+    if compact:
+        return meta
+    meta["values"] = [_safe_float(x) for x in flat.tolist()]
+    return meta
+
+
+def _sanitize_for_json(
+    obj: Any,
+    *,
+    key: Optional[str] = None,
+    large_compaction_applied: Optional[List[bool]] = None,
+) -> Any:
+    if large_compaction_applied is None:
+        large_compaction_applied = []
+
+    if isinstance(obj, np.ndarray):
+        force = _force_compact_array_key(key)
+        compact = force or obj.size > JSON_SMALL_ARRAY_MAX_ELEMENTS
+        if compact:
+            large_compaction_applied.append(True)
+        return _compact_array_metadata(obj, force_compact=force or compact)
+
+    if isinstance(obj, (np.integer, int)):
+        return int(obj)
+    if isinstance(obj, (np.floating, float)):
+        return _safe_float(obj)
+    if isinstance(obj, (np.bool_, bool)):
+        return bool(obj)
+
+    if isinstance(obj, dict):
+        return {
+            str(k): _sanitize_for_json(
+                v, key=str(k), large_compaction_applied=large_compaction_applied
+            )
+            for k, v in obj.items()
+        }
+    if isinstance(obj, (list, tuple)):
+        out: List[Any] = []
+        for i, v in enumerate(obj):
+            if isinstance(v, np.ndarray):
+                force = _force_compact_array_key(key)
+                compact = force or v.size > JSON_SMALL_ARRAY_MAX_ELEMENTS
+                if compact:
+                    large_compaction_applied.append(True)
+                out.append(_compact_array_metadata(v, force_compact=force or compact))
+            else:
+                out.append(
+                    _sanitize_for_json(
+                        v, key=f"{key}[{i}]" if key else f"[{i}]",
+                        large_compaction_applied=large_compaction_applied,
+                    )
+                )
+        return out
+
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        if isinstance(obj, float) and not math.isfinite(obj):
+            return _safe_float(obj)
+        return obj
+
+    return str(obj)
+
+
+def _find_ndarray_key_paths(obj: Any, prefix: str = "") -> List[str]:
+    paths: List[str] = []
+    if isinstance(obj, np.ndarray):
+        return [prefix or "<root>"]
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            p = f"{prefix}.{k}" if prefix else str(k)
+            paths.extend(_find_ndarray_key_paths(v, p))
+    elif isinstance(obj, (list, tuple)):
+        for i, v in enumerate(obj):
+            p = f"{prefix}[{i}]"
+            paths.extend(_find_ndarray_key_paths(v, p))
+    return paths
+
+
+def _write_json_atomic(path: Path, payload: Dict[str, Any]) -> int:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, indent=2)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+    return len(text.encode("utf-8"))
+
+
+def _smoke_test_json_sanitizer() -> None:
+    small = np.array([1, 2, 3], dtype=np.int32)
+    large = np.arange(10_000, dtype=np.int32)
+    nested = {
+        "scalar_f": np.float64("nan"),
+        "scalar_i": np.int64(7),
+        "scalar_b": np.bool_(True),
+        "small": small,
+        "candidate_B1_existing_trace_map": {
+            "proposed_retained_u_indices": large,
+        },
+        "mass_bearing_row_indices": large,
+    }
+    paths = _find_ndarray_key_paths(nested)
+    assert "candidate_B1_existing_trace_map.proposed_retained_u_indices" in paths
+    flags: List[bool] = []
+    safe = _sanitize_for_json(nested, large_compaction_applied=flags)
+    json.dumps(safe)
+    assert "values" in safe["small"]
+    b1 = safe["candidate_B1_existing_trace_map"]["proposed_retained_u_indices"]
+    assert b1["serialization"] == "compact_array_metadata"
+    assert b1["size"] == 10_000
+    assert "values" not in b1 or len(b1.get("values", [])) <= JSON_SMALL_ARRAY_MAX_ELEMENTS
+    assert flags, "expected large array compaction"
+    print("[cleaned_mapping_decision] json_sanitizer_smoke_test=PASS", flush=True)
+
+
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--test-json-sanitizer":
+    _smoke_test_json_sanitizer()
+    raise SystemExit(0)
 
 import fem_main_3d as fem3d
 from v2_build_coupled_acoustic_seed import MAP_KEYS, _extract_layout_maps
@@ -34,7 +229,6 @@ from v2_mesh_convergence_common import (
     load_manifest,
     mesh_path,
     sample_spec_from_case,
-    write_json,
 )
 from v2_sensitivity_mesh import sample_geometry
 from wood_library import apply_wood_ids_to_config
@@ -52,7 +246,6 @@ PHYSICAL_MODEL_STATUS = "V2_NOT_INVALIDATED"
 SOLVER_STATUS = "ST_SINVERT_RETIRED_FOR_CURRENT_V2_SPECTRAL_FORMULATION"
 REPORT_SIZE_TARGET_BYTES = 1048576
 
-# Single missing interface when B2 is the selected scalable path but cannot be wired end-to-end.
 B2_BLOCKER_INTERFACE = (
     "petsc_muu_mass_bearing_submatrix_nullspace_or_range_basis_to_coupled_reduced_operator_wiring"
 )
@@ -232,7 +425,7 @@ def _shell_trace_reduced_u(
     u_to_W: np.ndarray,
     p_to_W: np.ndarray,
     operator_size: int,
-) -> Dict[str, Any]:
+) -> Tuple[np.ndarray, Dict[str, Any]]:
     from run_v2_lossless_adjudication_v1_u_active_nullspace_attribution import (
         _build_tag_subsets_in_reduced_u,
     )
@@ -259,8 +452,8 @@ def _shell_trace_reduced_u(
         if shell.size
         else np.array([], dtype=np.int32)
     )
-    return {
-        "shell_trace_reduced_u": shell_phys,
+    info = {
+        "shell_trace_reduced_u": _compact_array_metadata(shell_phys, force_compact=True),
         "tag_subset_counts": {
             k: int(np.asarray(v, dtype=np.int32).size) for k, v in tag_map["subsets"].items()
         },
@@ -269,6 +462,7 @@ def _shell_trace_reduced_u(
             "mapped to reduced W u rows via existing attribution helper"
         ),
     }
+    return shell_phys, info
 
 
 def _b1_evaluation(
@@ -279,7 +473,7 @@ def _b1_evaluation(
 ) -> Dict[str, Any]:
     u_all = np.unique(np.asarray(u_to_W, dtype=np.int32).ravel())
     mass_rows = np.asarray(activity["mass_bearing_row_indices"], dtype=np.int32)
-    shell_set = set(int(x) for x in shell_trace.tolist())
+    shell_set = set(int(x) for x in np.asarray(shell_trace, dtype=np.int32).ravel().tolist())
     mass_set = set(int(x) for x in mass_rows.tolist())
     shell_in_mass = len(shell_set & mass_set)
     shell_only = len(shell_set - mass_set)
@@ -317,7 +511,9 @@ def _b1_evaluation(
             "High: shell trace restriction zeros volumetric/wood volume u coordinates "
             "that still participate in stiffness and FSI coupling."
         ),
-        "proposed_retained_u_indices": retained,
+        "proposed_retained_u_indices": _compact_array_metadata(
+            retained, force_compact=True
+        ),
         "proposed_removed_u_indices_count": int(removed.size),
     }
 
@@ -444,6 +640,8 @@ def _flat_report(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def main() -> int:
+    from mpi4py import MPI
+
     if MPI.COMM_WORLD.size != 1:
         if MPI.COMM_WORLD.rank == 0:
             print("[cleaned_mapping_decision] Requires mpiexec -n 1", file=sys.stderr)
@@ -469,8 +667,8 @@ def main() -> int:
         activity = _muu_activity(M, u_to_W)
         sym = _muu_symmetry_sample(M, u_to_W)
         psd = _muu_psd_probe(M, u_to_W)
-        shell_info = _shell_trace_reduced_u(mesh_file, sample, u_to_W, p_to_W, n_W)
-        b1 = _b1_evaluation(u_to_W, activity, shell_info["shell_trace_reduced_u"], prior_null)
+        shell_phys, shell_info = _shell_trace_reduced_u(mesh_file, sample, u_to_W, p_to_W, n_W)
+        b1 = _b1_evaluation(u_to_W, activity, shell_phys, prior_null)
         b2 = _b2_specification(activity)
         b2_probe = _attempt_b2_inertia(M, activity["mass_bearing_row_indices"])
 
@@ -630,11 +828,22 @@ def main() -> int:
         except Exception:
             pass
 
-    payload = _flat_report(payload)
-    write_json(OUT_JSON, payload)
-    report_size = OUT_JSON.stat().st_size if OUT_JSON.is_file() else 0
-    payload["report_size_bytes"] = int(report_size)
-    write_json(OUT_JSON, payload)
+    offending_paths = _find_ndarray_key_paths(payload)
+    compaction_flags: List[bool] = []
+    safe_payload = _sanitize_for_json(payload, large_compaction_applied=compaction_flags)
+    safe_payload = _flat_report(safe_payload)
+    safe_payload["serialization_audit"] = {
+        "offending_payload_key_paths": offending_paths,
+        "serialization_fix_applied": True,
+        "large_array_compaction_applied": bool(compaction_flags),
+    }
+    json.dumps(safe_payload)  # fail fast before any disk write
+    preview_text = json.dumps(safe_payload, indent=2)
+    safe_payload["report_size_bytes"] = len(preview_text.encode("utf-8"))
+    json.dumps(safe_payload)
+    report_size = _write_json_atomic(OUT_JSON, safe_payload)
+    safe_payload["report_size_bytes"] = int(report_size)
+    payload = safe_payload
 
     md = [
         "# Cleaned mass-bearing mapping decision",
