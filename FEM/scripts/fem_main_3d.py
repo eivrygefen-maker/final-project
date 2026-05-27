@@ -6565,8 +6565,16 @@ def _solve_coupled_evp(
         "parent_raw_u_dimension": int(W.sub(0).dofmap.index_map.size_global * W.sub(0).dofmap.index_map_bs),
         "parent_raw_p_dimension": int(W.sub(1).dofmap.index_map.size_global * W.sub(1).dofmap.index_map_bs),
         "parent_raw_block_representation": (
-            "collapsed_parent_u_and_collapsed_parent_p_pre_restriction"
+            "collapsed_parent_u_and_collapsed_parent_p_pre_restriction_pre_gnhep_pre_BC"
         ),
+        "parent_raw_padded_capture_detected": False,
+        "parent_raw_padded_u_dimension": None,
+        "parent_raw_padded_p_dimension": None,
+        "parent_raw_collapse_map_u_length": None,
+        "parent_raw_collapse_map_p_length": None,
+        "parent_raw_collapsed_layout_constructed": False,
+        "parent_raw_collapsed_layout_dimensions_pass": False,
+        "parent_raw_collapsed_layout_failure_reason": None,
         "parent_raw_Aup_shape": None,
         "parent_raw_Apu_shape": None,
         "parent_raw_Mpu_shape": None,
@@ -6576,19 +6584,43 @@ def _solve_coupled_evp(
     }
     if _raw_capture_enabled:
         try:
-            raw_App = fem.petsc.assemble_matrix(fem.form(a_pp), bcs=[])
-            raw_Mpp = fem.petsc.assemble_matrix(fem.form(m_pp), bcs=[])
-            raw_Aup = fem.petsc.assemble_matrix(fem.form(a_up), bcs=[])
-            raw_Apu = fem.petsc.assemble_matrix(fem.form(a_pu), bcs=[])
-            raw_Mpu = fem.petsc.assemble_matrix(fem.form(m_pu), bcs=[])
-            raw_App.assemble()
-            raw_Mpp.assemble()
-            raw_Aup.assemble()
-            raw_Apu.assemble()
-            raw_Mpu.assemble()
+            raw_App_padded = fem.petsc.assemble_matrix(fem.form(a_pp), bcs=[])
+            raw_Mpp_padded = fem.petsc.assemble_matrix(fem.form(m_pp), bcs=[])
+            raw_Aup_padded = fem.petsc.assemble_matrix(fem.form(a_up), bcs=[])
+            raw_Apu_padded = fem.petsc.assemble_matrix(fem.form(a_pu), bcs=[])
+            raw_Mpu_padded = fem.petsc.assemble_matrix(fem.form(m_pu), bcs=[])
+            raw_App_padded.assemble()
+            raw_Mpp_padded.assemble()
+            raw_Aup_padded.assemble()
+            raw_Apu_padded.assemble()
+            raw_Mpu_padded.assemble()
+
+            u_to_block_raw = np.asarray(u_parent_indices, dtype=np.int32).ravel()
+            _, p_to_block_raw = W.sub(1).collapse()
+            p_to_block_raw = np.asarray(p_to_block_raw, dtype=np.int32).ravel()
+            is_u = PETSc.IS().createGeneral(u_to_block_raw.astype(np.int32), comm=PETSc.COMM_WORLD)
+            is_p = PETSc.IS().createGeneral(p_to_block_raw.astype(np.int32), comm=PETSc.COMM_WORLD)
+
+            raw_Aup = raw_Aup_padded.createSubMatrix(is_u, is_p)
+            raw_Apu = raw_Apu_padded.createSubMatrix(is_p, is_u)
+            raw_Mpu = raw_Mpu_padded.createSubMatrix(is_p, is_u)
+            raw_App = raw_App_padded.createSubMatrix(is_p, is_p)
+            raw_Mpp = raw_Mpp_padded.createSubMatrix(is_p, is_p)
+
+            padded_u_dim = int(raw_Aup_padded.getSize()[0])
+            padded_p_dim = int(raw_App_padded.getSize()[0])
+            n_u_collapsed = int(u_to_block_raw.size)
+            n_p_collapsed = int(p_to_block_raw.size)
+            collapsed_dims_pass = bool(
+                raw_Aup.getSize() == (n_u_collapsed, n_p_collapsed)
+                and raw_Apu.getSize() == (n_p_collapsed, n_u_collapsed)
+                and raw_Mpu.getSize() == (n_p_collapsed, n_u_collapsed)
+                and raw_App.getSize() == (n_p_collapsed, n_p_collapsed)
+                and raw_Mpp.getSize() == (n_p_collapsed, n_p_collapsed)
+            )
             _LAST_COUPLED_RAW_BLOCK_CAPTURE = {
                 **raw_capture_payload,
-                "B3_composition_parent_raw_capture_constructed": True,
+                "B3_composition_parent_raw_capture_constructed": bool(collapsed_dims_pass),
                 "parent_raw_App_available": bool(raw_App is not None),
                 "parent_raw_Mpp_available": bool(raw_Mpp is not None),
                 "parent_raw_Aup_available": bool(raw_Aup is not None),
@@ -6597,6 +6629,18 @@ def _solve_coupled_evp(
                 "parent_raw_blocks_before_gnhep_normalization": True,
                 "parent_raw_blocks_before_pressure_restriction": True,
                 "parent_raw_blocks_before_algebraic_BC": True,
+                "parent_raw_u_dimension": n_u_collapsed,
+                "parent_raw_p_dimension": n_p_collapsed,
+                "parent_raw_padded_capture_detected": True,
+                "parent_raw_padded_u_dimension": padded_u_dim,
+                "parent_raw_padded_p_dimension": padded_p_dim,
+                "parent_raw_collapse_map_u_length": n_u_collapsed,
+                "parent_raw_collapse_map_p_length": n_p_collapsed,
+                "parent_raw_collapsed_layout_constructed": True,
+                "parent_raw_collapsed_layout_dimensions_pass": bool(collapsed_dims_pass),
+                "parent_raw_collapsed_layout_failure_reason": (
+                    None if collapsed_dims_pass else "collapsed_submatrix_shapes_mismatch"
+                ),
                 "parent_raw_Aup_shape": [int(raw_Aup.getSize()[0]), int(raw_Aup.getSize()[1])],
                 "parent_raw_Apu_shape": [int(raw_Apu.getSize()[0]), int(raw_Apu.getSize()[1])],
                 "parent_raw_Mpu_shape": [int(raw_Mpu.getSize()[0]), int(raw_Mpu.getSize()[1])],
@@ -6608,10 +6652,18 @@ def _solve_coupled_evp(
                 "raw_Apu": raw_Apu,
                 "raw_Mpu": raw_Mpu,
             }
+            raw_App_padded.destroy()
+            raw_Mpp_padded.destroy()
+            raw_Aup_padded.destroy()
+            raw_Apu_padded.destroy()
+            raw_Mpu_padded.destroy()
+            is_u.destroy()
+            is_p.destroy()
         except Exception as exc:
             _LAST_COUPLED_RAW_BLOCK_CAPTURE = {
                 **raw_capture_payload,
                 "B3_raw_capture_failure_reason": f"{type(exc).__name__}:{exc}",
+                "parent_raw_collapsed_layout_failure_reason": f"{type(exc).__name__}:{exc}",
             }
     block_solver_cfg = (
         _resolvent_probe_block_solver_cfg(solver_cfg)

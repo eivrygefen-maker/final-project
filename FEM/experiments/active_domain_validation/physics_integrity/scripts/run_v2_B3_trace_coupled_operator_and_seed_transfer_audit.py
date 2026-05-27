@@ -1367,6 +1367,14 @@ def _run_b3_raw_composition_contract_only(pre: Dict[str, Any]) -> int:
             "parent_raw_Mpu_shape",
             "parent_raw_App_shape",
             "parent_raw_Mpp_shape",
+            "parent_raw_padded_capture_detected",
+            "parent_raw_padded_u_dimension",
+            "parent_raw_padded_p_dimension",
+            "parent_raw_collapse_map_u_length",
+            "parent_raw_collapse_map_p_length",
+            "parent_raw_collapsed_layout_constructed",
+            "parent_raw_collapsed_layout_dimensions_pass",
+            "parent_raw_collapsed_layout_failure_reason",
             "B3_raw_capture_failure_reason",
             "parent_previous_s_uu_if_available",
         )})
@@ -1380,6 +1388,13 @@ def _run_b3_raw_composition_contract_only(pre: Dict[str, Any]) -> int:
                 mats_to_destroy.append(m_)
         if not all(m is not None for m in (raw_App, raw_Mpp, raw_Aup, raw_Apu, raw_Mpu)):
             payload["B3_raw_capture_failure_reason"] = payload.get("B3_raw_capture_failure_reason") or "missing_parent_raw_blocks"
+            return 2
+        if not bool(payload.get("parent_raw_collapsed_layout_constructed", False)) or not bool(
+            payload.get("parent_raw_collapsed_layout_dimensions_pass", False)
+        ):
+            payload["B3_raw_sparse_coupling_projection_constructed"] = False
+            payload["B3_raw_sparse_coupling_failure_reason"] = "parent_raw_blocks_not_in_collapsed_u_p_layout"
+            verdict = "B3_COUPLED_COMPOSITION_BLOCKED_BY_B3_NORMALIZATION_OR_LAYOUT_INTERFACE"
             return 2
 
         shell_mesh, shell_to_parent, _, _ = dmesh.create_submesh(msh, msh.topology.dim - 1, shell_facets)
