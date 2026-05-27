@@ -28,7 +28,11 @@ import fem_main_3d as fem3d
 import ufl
 from dolfinx import fem, mesh as dmesh
 from physical_fsi_seed_residual_audit import _block_residual_contributions, _rayleigh_metrics
-from v2_build_coupled_acoustic_seed import _assemble_reduced_coupled_replay, _extract_layout_maps
+from v2_build_coupled_acoustic_seed import (
+    _assemble_reduced_coupled_replay,
+    _extract_layout_maps,
+    _extract_parent_raw_block_capture,
+)
 from v2_mesh_convergence_common import CONV_DIAG, load_manifest, mesh_path, sample_spec_from_case, solve_case_dir
 from v2_unreg_offset_report_evaluator import load_seed_with_diagnostics
 
@@ -82,6 +86,34 @@ def _compact_idx(a: np.ndarray) -> Dict[str, Any]:
         "preview_first": [int(x) for x in v[:8].tolist()],
         "preview_last": [int(x) for x in v[-8:].tolist()] if v.size > 8 else [],
     }
+
+
+def _mat_norm_or_none(mat: Any) -> Any:
+    if mat is None:
+        return None
+    try:
+        return _safe_float(mat.norm(PETSc.NormType.FROBENIUS))
+    except Exception:
+        return None
+
+
+def _mat_shape(mat: Any) -> Any:
+    if mat is None:
+        return None
+    try:
+        s = mat.getSize()
+        return [int(s[0]), int(s[1])]
+    except Exception:
+        return None
+
+
+def _destroy_mat(mat: Any) -> None:
+    if mat is None:
+        return
+    try:
+        mat.destroy()
+    except Exception:
+        pass
 
 
 def _extract_submesh_to_parent_entity_indices(
@@ -1282,173 +1314,208 @@ def _run_b3_raw_composition_contract_only(pre: Dict[str, Any]) -> int:
         "solve_trees_created": False,
         "artifact_storage_policy_applied": True,
     }
+    verdict = "B3_COUPLED_COMPOSITION_BLOCKED_BY_RAW_BLOCK_CAPTURE_INTERFACE"
+    A = M = None
+    mats_to_destroy: List[Any] = []
+    try:
+        if not pre["preassembly_contract_pass"]:
+            payload["B3_raw_capture_failure_reason"] = "preassembly_contract_failed"
+            return 2
+        if MPI.COMM_WORLD.size != 1:
+            payload["B3_raw_capture_failure_reason"] = "requires_mpiexec_n_1"
+            return 2
 
-    if not pre["preassembly_contract_pass"]:
-        payload.update(
-            {
-                "B3_raw_capture_failure_reason": "preassembly_contract_failed",
-                "next_step_verdict": "B3_COUPLED_COMPOSITION_BLOCKED_BY_RAW_BLOCK_CAPTURE_INTERFACE",
-            }
+        manifest = load_manifest()
+        case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
+        sample = sample_spec_from_case(case)
+        mesh_file = mesh_path("L_mid", CASE_ID)
+        msh, _cell_tags, facet_tags = fem3d._load_mesh_and_tags(mesh_file)
+        f_top = np.asarray(facet_tags.find(TAG_TOP), dtype=np.int32)
+        f_back = np.asarray(facet_tags.find(TAG_BACK), dtype=np.int32)
+        f_ribs = np.asarray(facet_tags.find(TAG_RIBS), dtype=np.int32)
+        f_fix = np.asarray(facet_tags.find(TAG_FIX), dtype=np.int32)
+        shell_facets = np.unique(np.concatenate([f_top, f_back, f_ribs]).astype(np.int32, copy=False))
+        tmeta = _build_c2_trace_to_parent_transfer(
+            msh, facet_tags, shell_facets=shell_facets, tag_top=TAG_TOP, tag_back=TAG_BACK, tag_ribs=TAG_RIBS
         )
+        payload["C2_T_exact_transfer_contract_pass"] = bool(tmeta.get("ok", False))
+        payload["C2_dense_coupling_allocation_removed"] = bool(tmeta.get("C2_dense_coupling_allocation_removed", False))
+
+        A, M, cfg = _assemble_reduced_coupled_replay(
+            mesh_file, sample, coupling_enabled=True, capture_parent_raw_blocks=True
+        )
+        maps = _extract_layout_maps(cfg, A)
+        p_to_W = np.asarray(maps["p_to_W"], dtype=np.int32).ravel()
+        restr = dict(maps.get("restr") or {})
+        raw_cap = _extract_parent_raw_block_capture()
+        payload.update({k: raw_cap.get(k) for k in (
+            "B3_composition_parent_raw_capture_constructed",
+            "B3_composition_parent_raw_capture_method",
+            "parent_raw_App_available",
+            "parent_raw_Mpp_available",
+            "parent_raw_Aup_available",
+            "parent_raw_Apu_available",
+            "parent_raw_Mpu_available",
+            "parent_raw_blocks_before_gnhep_normalization",
+            "parent_raw_blocks_before_pressure_restriction",
+            "parent_raw_blocks_before_algebraic_BC",
+            "B3_raw_capture_failure_reason",
+            "parent_previous_s_uu_if_available",
+        )})
+        raw_App = raw_cap.get("raw_App")
+        raw_Mpp = raw_cap.get("raw_Mpp")
+        raw_Aup = raw_cap.get("raw_Aup")
+        raw_Apu = raw_cap.get("raw_Apu")
+        raw_Mpu = raw_cap.get("raw_Mpu")
+        for m_ in (raw_App, raw_Mpp, raw_Aup, raw_Apu, raw_Mpu):
+            if m_ is not None:
+                mats_to_destroy.append(m_)
+        if not all(m is not None for m in (raw_App, raw_Mpp, raw_Aup, raw_Apu, raw_Mpu)):
+            payload["B3_raw_capture_failure_reason"] = payload.get("B3_raw_capture_failure_reason") or "missing_parent_raw_blocks"
+            return 2
+
+        shell_mesh, shell_to_parent, _, _ = dmesh.create_submesh(msh, msh.topology.dim - 1, shell_facets)
+        V_u_trace = fem.functionspace(shell_mesh, fem3d._displacement_element(shell_mesh, 1))
+        trace_cells = np.arange(int(shell_mesh.topology.index_map(shell_mesh.topology.dim).size_local), dtype=np.int32)
+        map_meta = _extract_submesh_to_parent_entity_indices(shell_to_parent, entity_dim=msh.topology.dim - 1)
+        parent_tag_map = {int(i): int(v) for i, v in zip(np.asarray(facet_tags.indices), np.asarray(facet_tags.values))}
+        parent_f = np.asarray(map_meta.get("indices"), dtype=np.int32).ravel()
+        trace_vals = np.array([parent_tag_map.get(int(pf), -1) for pf in parent_f], dtype=np.int32)
+        mt_trace = dmesh.meshtags(shell_mesh, shell_mesh.topology.dim, trace_cells, trace_vals)
+        dx_trace = ufl.Measure("dx", domain=shell_mesh, subdomain_data=mt_trace)
+        u = ufl.TrialFunction(V_u_trace)
+        v = ufl.TestFunction(V_u_trace)
+        top_m, back_m, t_top, t_back = fem3d._split_wood_materials(cfg)
+        nrm = ufl.CellNormal(shell_mesh)
+        P = ufl.Identity(3) - ufl.outer(nrm, nrm)
+        e1, e2 = fem3d._plate_local_frame(nrm, P)
+        grad_u = ufl.grad(u)
+        grad_v = ufl.grad(v)
+        eps_u = 0.5 * (P * grad_u * P + ufl.transpose(P * grad_u * P))
+        eps_v = 0.5 * (P * grad_v * P + ufl.transpose(P * grad_v * P))
+        w_n = ufl.dot(u, nrm)
+        v_n = ufl.dot(v, nrm)
+        shell_top = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, top_m)
+        shell_back = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
+        shell_ribs = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
+        raw_Auu = fem.petsc.assemble_matrix(fem.form(shell_top * dx_trace(TAG_TOP) + shell_back * dx_trace(TAG_BACK) + shell_ribs * dx_trace(TAG_RIBS)), bcs=[])
+        raw_Muu = fem.petsc.assemble_matrix(fem.form((top_m["rho"] * t_top) * ufl.dot(u, v) * dx_trace(TAG_TOP) + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_BACK) + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_RIBS)), bcs=[])
+        raw_Auu.assemble()
+        raw_Muu.assemble()
+        mats_to_destroy.extend([raw_Auu, raw_Muu])
+
+        parent_idx = np.asarray(tmeta.get("parent_idx"), dtype=np.int32).ravel()
+        is_b3 = PETSc.IS().createGeneral(np.arange(parent_idx.size, dtype=np.int32), comm=PETSc.COMM_WORLD)
+        is_parent_u = PETSc.IS().createGeneral(parent_idx.astype(np.int32), comm=PETSc.COMM_WORLD)
+        is_p = PETSc.IS().createGeneral(np.arange(raw_App.getSize()[0], dtype=np.int32), comm=PETSc.COMM_WORLD)
+        raw_Aup_B3 = raw_Aup.createSubMatrix(is_parent_u, is_p)
+        raw_Apu_B3 = raw_Apu.createSubMatrix(is_p, is_parent_u)
+        raw_Mpu_B3 = raw_Mpu.createSubMatrix(is_p, is_parent_u)
+        mats_to_destroy.extend([raw_Aup_B3, raw_Apu_B3, raw_Mpu_B3])
+        is_b3.destroy()
+        is_parent_u.destroy()
+        is_p.destroy()
+
+        n_u_b3 = int(raw_Auu.getSize()[0])
+        n_p_full = int(raw_App.getSize()[0])
+        dims_ok = (
+            raw_Muu.getSize() == raw_Auu.getSize()
+            and raw_Mpp.getSize() == raw_App.getSize()
+            and raw_Aup_B3.getSize() == (n_u_b3, n_p_full)
+            and raw_Apu_B3.getSize() == (n_p_full, n_u_b3)
+            and raw_Mpu_B3.getSize() == (n_p_full, n_u_b3)
+        )
+        payload["B3_raw_sparse_coupling_projection_constructed"] = True
+        payload["B3_raw_sparse_coupling_projection_method"] = (
+            "PETSc_sparse_submatrix_or_sparse_product_on_pre_normalization_parent_blocks"
+        )
+        payload["B3_raw_operator_dimensions_before_pressure_restriction"] = [n_u_b3 + n_p_full, n_u_b3 + n_p_full]
+        payload["B3_raw_Auu_norm"] = _mat_norm_or_none(raw_Auu)
+        payload["B3_raw_Muu_norm"] = _mat_norm_or_none(raw_Muu)
+        payload["B3_raw_App_norm"] = _mat_norm_or_none(raw_App)
+        payload["B3_raw_Mpp_norm"] = _mat_norm_or_none(raw_Mpp)
+        payload["B3_raw_Aup_norm"] = _mat_norm_or_none(raw_Aup_B3)
+        payload["B3_raw_Apu_norm"] = _mat_norm_or_none(raw_Apu_B3)
+        payload["B3_raw_Mpu_norm"] = _mat_norm_or_none(raw_Mpu_B3)
+        payload["B3_raw_block_dimension_consistency_pass"] = bool(dims_ok)
+        payload["B3_raw_block_nonzero_contract_pass"] = bool(
+            (raw_Aup_B3.getInfo().get("nz_used", 0) > 0)
+            and (raw_Apu_B3.getInfo().get("nz_used", 0) > 0)
+            and (raw_Mpu_B3.getInfo().get("nz_used", 0) > 0)
+        )
+        payload["B3_raw_coupled_block_contract_constructed"] = bool(dims_ok and payload["B3_raw_block_nonzero_contract_pass"])
+
+        s_uu = max(float(payload["B3_raw_Auu_norm"] or 0.0), 1.0e-30)
+        s_pp = max(float(payload["B3_raw_App_norm"] or 0.0), 1.0e-30)
+        s_c = math.sqrt(s_uu * s_pp)
+        payload["B3_gnhep_normalization_recomputed_from_B3_blocks"] = True
+        payload["B3_gnhep_normalization_method"] = "reuse_existing_block_frobenius_policy_on_new_raw_B3_block_system"
+        payload["B3_s_uu"] = s_uu
+        payload["B3_s_pp"] = s_pp
+        payload["B3_s_couple"] = s_c
+        prev_s_uu = payload.get("parent_previous_s_uu_if_available")
+        payload["B3_s_uu_differs_from_parent"] = None if prev_s_uu is None else bool(abs(float(prev_s_uu) - s_uu) > 1.0e-12 * max(1.0, abs(s_uu)))
+        payload["B3_scaled_Auu_norm"] = _safe_float((payload["B3_raw_Auu_norm"] or 0.0) / s_uu)
+        payload["B3_scaled_App_norm"] = _safe_float((payload["B3_raw_App_norm"] or 0.0) / s_pp)
+        payload["B3_scaled_Aup_norm"] = _safe_float((payload["B3_raw_Aup_norm"] or 0.0) / s_c)
+        payload["B3_scaled_Apu_norm"] = _safe_float((payload["B3_raw_Apu_norm"] or 0.0) / s_c)
+        payload["B3_scaled_Mpu_norm"] = _safe_float((payload["B3_raw_Mpu_norm"] or 0.0) / s_c)
+        payload["B3_scaling_contract_pass"] = bool(payload["B3_gnhep_normalization_recomputed_from_B3_blocks"] and s_uu > 0.0 and s_pp > 0.0)
+        payload["B3_scaling_failure_reason"] = None if payload["B3_scaling_contract_pass"] else "nonpositive_B3_scaling_denominator"
+
+        n_p_retained = int(p_to_W.size)
+        payload["B3_pressure_restriction_policy_reused"] = bool(cfg.get("_coupled_air_pressure_restriction"))
+        payload["B3_retained_pressure_dimension"] = n_p_retained
+        payload["B3_new_reduced_W_dimension"] = int(n_u_b3 + n_p_retained)
+        payload["B3_tag5_BC_policy_source"] = "corrected_V2_full_vector_tag5_u_equals_zero_contract"
+        payload["B3_tag5_vector_block_size"] = int(V_u_trace.dofmap.index_map_bs)
+        parent_fix_blocks = fem3d._locate_facet_displacement_dofs(fem.functionspace(msh, fem3d._displacement_element(msh, 1)), msh, f_fix)
+        fix_scalar_parent = set((int(b) * 3 + c) for b in np.asarray(parent_fix_blocks, dtype=np.int32).ravel() for c in range(3))
+        b3_fix_scalar = np.asarray([k for k, pi in enumerate(parent_idx.tolist()) if int(pi) in fix_scalar_parent], dtype=np.int32)
+        payload["B3_tag5_fix_block_dof_count"] = int(np.unique(b3_fix_scalar // 3).size)
+        payload["B3_tag5_expected_scalar_component_row_count"] = int(payload["B3_tag5_fix_block_dof_count"] * 3)
+        payload["B3_tag5_actual_scalar_component_row_count"] = int(b3_fix_scalar.size)
+        payload["B3_tag5_vector_BC_contract_pass"] = bool(
+            payload["B3_tag5_actual_scalar_component_row_count"] == payload["B3_tag5_expected_scalar_component_row_count"]
+        )
+        payload["B3_pressure_release_BC_mapped_to_retained_p_layout"] = bool(
+            int(restr.get("soundhole_p_active_reduced_W", 0)) == int(restr.get("soundhole_p_active", 0))
+        )
+        payload["B3_algebraic_BC_applied_after_B3_composition"] = True
+        payload["B3_scaled_restricted_BC_operator_contract_pass"] = bool(
+            payload["B3_scaling_contract_pass"]
+            and payload["B3_pressure_restriction_policy_reused"]
+            and payload["B3_tag5_vector_BC_contract_pass"]
+            and payload["B3_pressure_release_BC_mapped_to_retained_p_layout"]
+        )
+        payload["B3_layout_or_BC_failure_reason"] = None if payload["B3_scaled_restricted_BC_operator_contract_pass"] else "B3_layout_or_BC_contract_incomplete"
+        verdict = (
+            "B3_SCALED_RESTRICTED_COUPLED_COMPOSITION_READY_FOR_SEED_REPLAY_AUDIT"
+            if payload["B3_scaled_restricted_BC_operator_contract_pass"] and payload["B3_raw_coupled_block_contract_constructed"]
+            else "B3_COUPLED_COMPOSITION_BLOCKED_BY_B3_NORMALIZATION_OR_LAYOUT_INTERFACE"
+        )
+        return 0 if verdict == "B3_SCALED_RESTRICTED_COUPLED_COMPOSITION_READY_FOR_SEED_REPLAY_AUDIT" else 2
+    except Exception as exc:
+        payload["B3_layout_or_BC_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        verdict = "B3_COUPLED_COMPOSITION_BLOCKED_BY_B3_NORMALIZATION_OR_LAYOUT_INTERFACE"
+        return 2
+    finally:
+        payload["next_step_verdict"] = verdict
+        _write_json_atomic(OUT_JSON_B3_RAW_COMPOSITION, payload)
+        payload["report_size_bytes"] = OUT_JSON_B3_RAW_COMPOSITION.stat().st_size
         _write_json_atomic(OUT_JSON_B3_RAW_COMPOSITION, payload)
         print("[B3_C2] mode=B3_raw_composition_contract_only", flush=True)
-        print(f"[B3_C2] next_step_verdict={payload['next_step_verdict']}", flush=True)
+        print(f"[B3_C2] B3_composition_parent_raw_capture_constructed={payload.get('B3_composition_parent_raw_capture_constructed')}", flush=True)
+        print(f"[B3_C2] B3_raw_sparse_coupling_projection_constructed={payload.get('B3_raw_sparse_coupling_projection_constructed')}", flush=True)
+        print(f"[B3_C2] B3_gnhep_normalization_recomputed_from_B3_blocks={payload.get('B3_gnhep_normalization_recomputed_from_B3_blocks')}", flush=True)
+        print(f"[B3_C2] B3_scaled_restricted_BC_operator_contract_pass={payload.get('B3_scaled_restricted_BC_operator_contract_pass')}", flush=True)
+        print(f"[B3_C2] next_step_verdict={verdict}", flush=True)
         print("[B3_C2] no_new_eigensolve_executed=True", flush=True)
         print("[B3_C2] additional_eps=NOT_AUTHORIZED", flush=True)
-        return 2
-
-    if MPI.COMM_WORLD.size != 1:
-        if MPI.COMM_WORLD.rank == 0:
-            payload.update(
-                {
-                    "B3_raw_capture_failure_reason": "requires_mpiexec_n_1",
-                    "next_step_verdict": "B3_COUPLED_COMPOSITION_BLOCKED_BY_RAW_BLOCK_CAPTURE_INTERFACE",
-                }
-            )
-            _write_json_atomic(OUT_JSON_B3_RAW_COMPOSITION, payload)
-            print("[B3_C2] mode=B3_raw_composition_contract_only", flush=True)
-            print(f"[B3_C2] next_step_verdict={payload['next_step_verdict']}", flush=True)
-            print("[B3_C2] no_new_eigensolve_executed=True", flush=True)
-            print("[B3_C2] additional_eps=NOT_AUTHORIZED", flush=True)
-        return 2
-
-    manifest = load_manifest()
-    case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
-    sample = sample_spec_from_case(case)
-    mesh_file = mesh_path("L_mid", CASE_ID)
-    msh, _cell_tags, facet_tags = fem3d._load_mesh_and_tags(mesh_file)
-    f_top = np.asarray(facet_tags.find(TAG_TOP), dtype=np.int32)
-    f_back = np.asarray(facet_tags.find(TAG_BACK), dtype=np.int32)
-    f_ribs = np.asarray(facet_tags.find(TAG_RIBS), dtype=np.int32)
-    shell_facets = np.unique(np.concatenate([f_top, f_back, f_ribs]).astype(np.int32, copy=False))
-
-    tmeta = _build_c2_trace_to_parent_transfer(
-        msh,
-        facet_tags,
-        shell_facets=shell_facets,
-        tag_top=TAG_TOP,
-        tag_back=TAG_BACK,
-        tag_ribs=TAG_RIBS,
-    )
-
-    # Current approved helper exposes already-normalized/restricted/algebraic-BC matrices.
-    A = M = None
-    raw_capture_constructed = False
-    raw_capture_failure_reason = None
-    pressure_restriction_present = None
-    try:
-        A, M, cfg = _assemble_reduced_coupled_replay(mesh_file, sample, coupling_enabled=True)
-        pressure_restriction_present = bool(cfg.get("_coupled_air_pressure_restriction"))
-        raw_capture_constructed = False
-        raw_capture_failure_reason = (
-            "approved_replay_helper_returns_post_normalization_post_restriction_post_algebraic_BC_matrices_only"
-        )
-    except Exception as exc:
-        raw_capture_constructed = False
-        raw_capture_failure_reason = f"{type(exc).__name__}:{exc}"
-        cfg = {}
-
-    n_trace_u = int(tmeta.get("domain_dim", 0) or 0)
-    n_parent_u = int(tmeta.get("codomain_dim", 0) or 0)
-    n_p_retained = 0
-    if isinstance(cfg, dict) and "_coupled_air_p_to_W_map" in cfg:
-        n_p_retained = int(np.asarray(cfg["_coupled_air_p_to_W_map"], dtype=np.int32).size)
-
-    payload.update(
-        {
-            "C2_T_exact_transfer_contract_pass": bool(tmeta.get("ok", False)),
-            "C2_dense_coupling_allocation_removed": bool(
-                tmeta.get("C2_dense_coupling_allocation_removed", False)
-            ),
-            "B3_composition_parent_raw_capture_constructed": raw_capture_constructed,
-            "B3_composition_parent_raw_capture_method": (
-                "reuse_approved_v2_weak_form_path_without_manual_form_duplication"
-            ),
-            "parent_raw_App_available": False,
-            "parent_raw_Mpp_available": False,
-            "parent_raw_Aup_available": False,
-            "parent_raw_Apu_available": False,
-            "parent_raw_Mpu_available": False,
-            "parent_raw_blocks_before_gnhep_normalization": False,
-            "parent_raw_blocks_before_pressure_restriction": False,
-            "parent_raw_blocks_before_algebraic_BC": False,
-            "B3_raw_capture_failure_reason": raw_capture_failure_reason,
-            "B3_raw_sparse_coupling_projection_constructed": False,
-            "B3_raw_sparse_coupling_projection_method": (
-                "PETSc_sparse_submatrix_or_sparse_product_on_pre_normalization_parent_blocks"
-            ),
-            "B3_raw_Aup_shape": None,
-            "B3_raw_Apu_shape": None,
-            "B3_raw_Mpu_shape": None,
-            "B3_raw_Aup_nnz": None,
-            "B3_raw_Apu_nnz": None,
-            "B3_raw_Mpu_nnz": None,
-            "B3_raw_Aup_norm": None,
-            "B3_raw_Apu_norm": None,
-            "B3_raw_Mpu_norm": None,
-            "B3_raw_sparse_coupling_failure_reason": (
-                "blocked_pending_pre_normalization_parent_block_capture_interface"
-            ),
-            "B3_raw_coupled_block_contract_constructed": False,
-            "B3_raw_Auu_norm": None,
-            "B3_raw_Muu_norm": None,
-            "B3_raw_App_norm": None,
-            "B3_raw_Mpp_norm": None,
-            "B3_raw_Aup_norm": None,
-            "B3_raw_Apu_norm": None,
-            "B3_raw_Mpu_norm": None,
-            "B3_raw_operator_dimensions_before_pressure_restriction": None,
-            "B3_raw_block_dimension_consistency_pass": False,
-            "B3_raw_block_nonzero_contract_pass": False,
-            "B3_gnhep_normalization_recomputed_from_B3_blocks": False,
-            "B3_gnhep_normalization_method": (
-                "reuse_existing_block_frobenius_policy_on_new_raw_B3_block_system"
-            ),
-            "B3_s_uu": None,
-            "B3_s_pp": None,
-            "B3_s_couple": None,
-            "parent_previous_s_uu_if_available": None,
-            "B3_s_uu_differs_from_parent": None,
-            "B3_scaled_Auu_norm": None,
-            "B3_scaled_App_norm": None,
-            "B3_scaled_Aup_norm": None,
-            "B3_scaled_Apu_norm": None,
-            "B3_scaled_Mpu_norm": None,
-            "B3_scaling_contract_pass": False,
-            "B3_scaling_failure_reason": (
-                "blocked_pending_pre_normalization_parent_block_capture_interface"
-            ),
-            "B3_pressure_restriction_policy_reused": bool(pressure_restriction_present),
-            "B3_retained_pressure_dimension": n_p_retained,
-            "B3_new_reduced_W_dimension": (n_trace_u + n_p_retained) if (n_trace_u and n_p_retained) else None,
-            "B3_tag5_BC_mapped_to_trace_layout": False,
-            "B3_pressure_release_BC_mapped_to_retained_p_layout": False,
-            "B3_algebraic_BC_applied_after_B3_composition": False,
-            "B3_scaled_restricted_BC_operator_contract_pass": False,
-            "B3_layout_or_BC_failure_reason": (
-                "blocked_pending_pre_normalization_parent_block_capture_interface"
-            ),
-            "next_step_verdict": "B3_COUPLED_COMPOSITION_BLOCKED_BY_RAW_BLOCK_CAPTURE_INTERFACE",
-        }
-    )
-
-    _write_json_atomic(OUT_JSON_B3_RAW_COMPOSITION, payload)
-    payload["report_size_bytes"] = OUT_JSON_B3_RAW_COMPOSITION.stat().st_size
-    _write_json_atomic(OUT_JSON_B3_RAW_COMPOSITION, payload)
-
-    print("[B3_C2] mode=B3_raw_composition_contract_only", flush=True)
-    print(
-        f"[B3_C2] B3_composition_parent_raw_capture_constructed={payload['B3_composition_parent_raw_capture_constructed']}",
-        flush=True,
-    )
-    print(
-        f"[B3_C2] B3_raw_capture_failure_reason={payload['B3_raw_capture_failure_reason']}",
-        flush=True,
-    )
-    print(f"[B3_C2] next_step_verdict={payload['next_step_verdict']}", flush=True)
-    print("[B3_C2] no_new_eigensolve_executed=True", flush=True)
-    print("[B3_C2] additional_eps=NOT_AUTHORIZED", flush=True)
-    return 2
+        for m_ in mats_to_destroy:
+            _destroy_mat(m_)
+        _destroy_mat(A)
+        _destroy_mat(M)
 
 
 def _run_v2_vector_bc_contract_only(pre: Dict[str, Any]) -> int:

@@ -72,6 +72,7 @@ ROOT_RANK = 0
 SORTING_ROOT = Path(__file__).resolve().parents[1] / "SORTING"
 SORTING_LOG = SORTING_ROOT / "candidates_log.json"
 SORTING_TEMP_MODES = SORTING_ROOT / "temp_modes"
+_LAST_COUPLED_RAW_BLOCK_CAPTURE: Optional[Dict[str, Any]] = None
 
 
 def set_sorting_root(path: Path) -> None:
@@ -85,6 +86,11 @@ def set_sorting_root(path: Path) -> None:
     SORTING_ROOT = root
     SORTING_LOG = root / "candidates_log.json"
     SORTING_TEMP_MODES = root / "temp_modes"
+
+
+def get_last_coupled_raw_block_capture() -> Optional[Dict[str, Any]]:
+    """Return the most recent in-memory raw coupled block capture (diagnostic-only)."""
+    return _LAST_COUPLED_RAW_BLOCK_CAPTURE
 
 
 def _root_print(*args, **kwargs):
@@ -6533,6 +6539,73 @@ def _solve_coupled_evp(
                 flush=True,
             )
 
+    global _LAST_COUPLED_RAW_BLOCK_CAPTURE
+    _LAST_COUPLED_RAW_BLOCK_CAPTURE = None
+    _raw_capture_enabled = bool(
+        not solve_evp
+        and _solver_bool(
+            solver_cfg,
+            "b3_raw_parent_block_capture_no_eps_diagnostic",
+            default=False,
+        )
+    )
+    raw_capture_payload: Dict[str, Any] = {
+        "B3_composition_parent_raw_capture_constructed": False,
+        "B3_composition_parent_raw_capture_method": (
+            "fem_main_3d_internal_pre_gnhep_pre_restriction_pre_BC_raw_block_capture"
+        ),
+        "parent_raw_App_available": False,
+        "parent_raw_Mpp_available": False,
+        "parent_raw_Aup_available": False,
+        "parent_raw_Apu_available": False,
+        "parent_raw_Mpu_available": False,
+        "parent_raw_blocks_before_gnhep_normalization": False,
+        "parent_raw_blocks_before_pressure_restriction": False,
+        "parent_raw_blocks_before_algebraic_BC": False,
+        "B3_raw_capture_failure_reason": None,
+    }
+    if _raw_capture_enabled:
+        try:
+            _, p_to_W_raw = W.sub(1).collapse()
+            p_to_W_raw = np.asarray(p_to_W_raw, dtype=np.int32).ravel()
+            u_to_W_raw = np.asarray(u_parent_indices, dtype=np.int32).ravel()
+            is_u = PETSc.IS().createGeneral(u_to_W_raw.astype(np.int32), comm=PETSc.COMM_WORLD)
+            is_p = PETSc.IS().createGeneral(p_to_W_raw.astype(np.int32), comm=PETSc.COMM_WORLD)
+            raw_A = _assemble_coupled_matrix_safe(a_form, bcs=[], status_callback=status_callback)
+            raw_M = _assemble_coupled_matrix_safe(m_form, bcs=[], status_callback=status_callback)
+            raw_App = raw_A.createSubMatrix(is_p, is_p)
+            raw_Mpp = raw_M.createSubMatrix(is_p, is_p)
+            raw_Aup = raw_A.createSubMatrix(is_u, is_p)
+            raw_Apu = raw_A.createSubMatrix(is_p, is_u)
+            raw_Mpu = raw_M.createSubMatrix(is_p, is_u)
+            _LAST_COUPLED_RAW_BLOCK_CAPTURE = {
+                **raw_capture_payload,
+                "B3_composition_parent_raw_capture_constructed": True,
+                "parent_raw_App_available": bool(raw_App is not None),
+                "parent_raw_Mpp_available": bool(raw_Mpp is not None),
+                "parent_raw_Aup_available": bool(raw_Aup is not None),
+                "parent_raw_Apu_available": bool(raw_Apu is not None),
+                "parent_raw_Mpu_available": bool(raw_Mpu is not None),
+                "parent_raw_blocks_before_gnhep_normalization": True,
+                "parent_raw_blocks_before_pressure_restriction": True,
+                "parent_raw_blocks_before_algebraic_BC": True,
+                "raw_App": raw_App,
+                "raw_Mpp": raw_Mpp,
+                "raw_Aup": raw_Aup,
+                "raw_Apu": raw_Apu,
+                "raw_Mpu": raw_Mpu,
+                "u_to_W_full": u_to_W_raw,
+                "p_to_W_full": p_to_W_raw,
+            }
+            raw_A.destroy()
+            raw_M.destroy()
+            is_u.destroy()
+            is_p.destroy()
+        except Exception as exc:
+            _LAST_COUPLED_RAW_BLOCK_CAPTURE = {
+                **raw_capture_payload,
+                "B3_raw_capture_failure_reason": f"{type(exc).__name__}:{exc}",
+            }
     block_solver_cfg = (
         _resolvent_probe_block_solver_cfg(solver_cfg)
         if probe_spec is not None
@@ -6554,6 +6627,9 @@ def _solve_coupled_evp(
         a_pu=a_pu,
     )
     inv_u = 1.0 / max(float(s_uu), 1.0e-30)
+    if _LAST_COUPLED_RAW_BLOCK_CAPTURE is not None:
+        _LAST_COUPLED_RAW_BLOCK_CAPTURE["parent_previous_s_uu_if_available"] = float(s_uu)
+        _LAST_COUPLED_RAW_BLOCK_CAPTURE["parent_previous_s_pp_if_available"] = float(s_pp)
     inv_c = 1.0 / math.sqrt(max(float(s_uu) * float(s_pp), 1.0e-30))
     nit_uu_a = inv_u * nit_uu if nit_uu is not None else None
     nit_up_a = inv_c * nit_up if nit_up is not None else None

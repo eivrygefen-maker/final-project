@@ -68,6 +68,7 @@ def _assemble_reduced_coupled_replay(
     sample: Dict[str, Any],
     *,
     coupling_enabled: bool = True,
+    capture_parent_raw_blocks: bool = False,
 ) -> Tuple[Any, Any, dict]:
     """Proven v2 post replay: solve_evp=False + pressure-restriction replay audit."""
     cfg = copy.deepcopy(json.loads(V2_CONFIG.read_text(encoding="utf-8")))
@@ -81,6 +82,7 @@ def _assemble_reduced_coupled_replay(
     sc["coupled_air_pressure_restriction_diagnosis"] = True
     sc["coupled_air_pressure_restriction_replay_audit"] = True
     sc["gnhep_block_frobenius_normalize"] = True
+    sc["b3_raw_parent_block_capture_no_eps_diagnostic"] = bool(capture_parent_raw_blocks)
     cfg["geometry"] = sample_geometry(sample)
     mats = sample.get("materials") or {}
     if mats.get("top_wood_id") or mats.get("back_wood_id"):
@@ -110,6 +112,11 @@ def _assemble_reduced_coupled_replay(
             "coupled_air_pressure_restriction_diagnosis=True with solve_evp=False."
         )
     return A, M, cfg
+
+
+def _extract_parent_raw_block_capture() -> Dict[str, Any]:
+    cap = fem3d.get_last_coupled_raw_block_capture()
+    return dict(cap) if isinstance(cap, dict) else {}
 
 
 def _extract_layout_maps(cfg: dict, A: Any) -> Dict[str, Any]:
