@@ -252,6 +252,50 @@ def _rayleigh_residual_like(
     }
 
 
+def _coupling_contract_precheck() -> Dict[str, Any]:
+    c1_supported = False
+    c1_api = "dolfinx.fem.form(entity_maps=...) cross-mesh mixed-domain assembly"
+    c1_blocker = "dolfinx_direct_cross_mesh_mixed_domain_form_api_unproven_for_trace_u_to_parent_p"
+    try:
+        sig_form = inspect.signature(fem.form)
+        if "entity_maps" in sig_form.parameters:
+            # API parameter exists; still not enough to prove viable route in this stack.
+            c1_supported = False
+            c1_blocker = (
+                "entity_maps_parameter_present_but_no_validated_trace_u_parent_p_form_contract_in_current_code"
+            )
+    except Exception as exc:
+        c1_blocker = f"inspect_fem_form_failed:{type(exc).__name__}:{exc}"
+
+    c2_constructible = True
+    c2_blocker = None
+    if not hasattr(dmesh, "create_submesh"):
+        c2_constructible = False
+        c2_blocker = "dolfinx_create_submesh_unavailable"
+    c2_transfer_repr = "sparse_trace_u_to_parent_interface_u_transfer_operator_T"
+
+    selected = "C2" if c2_constructible else "NONE"
+    selected_reason = (
+        "C2 preferred for compact sparse transfer and reuse of validated parent coupling blocks"
+        if selected == "C2"
+        else "No viable coupling route precheck passed"
+    )
+    return {
+        "C1_supported_by_installed_dolfinx": c1_supported,
+        "C1_required_api": c1_api,
+        "C1_preserves_existing_interface_integral_meaning": "UNPROVEN",
+        "C1_implementation_blocker": c1_blocker,
+        "C2_sparse_trace_to_parent_transfer_constructible": c2_constructible,
+        "C2_transfer_representation": c2_transfer_repr,
+        "C2_transfer_storage_bytes": 0 if c2_constructible else None,
+        "C2_reuses_validated_parent_coupling_contract": True,
+        "C2_preserves_output_reconstruction_path": "UNPROVEN",
+        "C2_implementation_blocker": c2_blocker,
+        "selected_B3_coupling_route": selected,
+        "selected_B3_coupling_route_reason": selected_reason,
+    }
+
+
 def main() -> int:
     import sys
 
@@ -276,6 +320,21 @@ def main() -> int:
     print(f"[B3_coupled] preassembly_contract_pass={pre['preassembly_contract_pass']}", flush=True)
     if "--precheck-only" in sys.argv:
         print("[B3_coupled] no_new_eigensolve_executed=True", flush=True)
+        return 0 if pre["preassembly_contract_pass"] else 2
+    if "--coupling-contract-only" in sys.argv:
+        cpre = _coupling_contract_precheck()
+        print(
+            f"[B3_coupled] selected_B3_coupling_route={cpre['selected_B3_coupling_route']}",
+            flush=True,
+        )
+        print(
+            f"[B3_coupled] selected_B3_coupling_route_reason={cpre['selected_B3_coupling_route_reason']}",
+            flush=True,
+        )
+        print(
+            "[B3_coupled] no_new_eigensolve_executed=True",
+            flush=True,
+        )
         return 0 if pre["preassembly_contract_pass"] else 2
 
     if MPI.COMM_WORLD.size != 1:
@@ -346,6 +405,9 @@ def main() -> int:
         b3_seed_mac = None
         b3_seed_xhmx = b3_seed_f = b3_seed_res = None
         b3_scalable = True
+        cpre = _coupling_contract_precheck()
+        selected_route = cpre["selected_B3_coupling_route"]
+        coupling_stage_outcome = None
         b3_submesh_map_type = None
         b3_submesh_map_method = None
         b3_submesh_map_ok = False
@@ -567,12 +629,36 @@ def main() -> int:
                     except Exception:
                         pass
 
-                    # Cross-mesh u_trace <-> p_active coupling not assembled in current architecture.
-                    b3_coupling_iface = False
-                    b3_coupling_present = False
-                    b3_coupling_method = "cross_mesh_trace_u_to_volume_pressure_interface_form_required"
-                    b3_coupling_reason = "B3_BLOCKED_BY_DOLFINX_TRACE_TO_VOLUME_COUPLING_INTERFACE"
-                    block_reason = b3_coupling_reason
+                    # Coupling route selection.
+                    if selected_route == "C1":
+                        b3_coupling_iface = False
+                        b3_coupling_present = False
+                        b3_coupling_method = "direct_cross_mesh_entity_map_assembly"
+                        b3_coupling_reason = (
+                            "B3_BLOCKED_BY_ONE_NAMED_DIRECT_MIXED_DOMAIN_API"
+                        )
+                        coupling_stage_outcome = b3_coupling_reason
+                        block_reason = "B3_BLOCKED_BY_DOLFINX_TRACE_TO_VOLUME_COUPLING_INTERFACE"
+                    elif selected_route == "C2":
+                        # Requires explicit trace-DOF -> parent-interface-u sparse transfer map T.
+                        b3_coupling_iface = False
+                        b3_coupling_present = False
+                        b3_coupling_method = "sparse_transfer_T_then_parent_coupling_block_projection"
+                        b3_coupling_reason = (
+                            "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE"
+                        )
+                        coupling_stage_outcome = b3_coupling_reason
+                        block_reason = "B3_BLOCKED_BY_DOLFINX_TRACE_TO_VOLUME_COUPLING_INTERFACE"
+                    else:
+                        b3_coupling_iface = False
+                        b3_coupling_present = False
+                        b3_coupling_method = "none"
+                        b3_coupling_reason = (
+                            "B3_BLOCKED_BY_DOLFINX_TRACE_TO_VOLUME_COUPLING_INTERFACE"
+                        )
+                        coupling_stage_outcome = b3_coupling_reason
+                        block_reason = b3_coupling_reason
+
                     b3_ops_assembled = False
                     b3_ops_sanity = False
                     b3_ops_reason = b3_coupling_reason
@@ -639,6 +725,7 @@ def main() -> int:
         payload: Dict[str, Any] = {
             "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "selected_cleaned_formulation_route": "B3",
+            **cpre,
             **pre,
             "B3_shell_trace_space_constructed": bool(b3_space_ok),
             "B3_shell_trace_space_type": (
@@ -689,8 +776,16 @@ def main() -> int:
             "B3_pressure_block_contract_pass": bool(n_p == 24039),
             "B3_trace_to_pressure_coupling_interface_constructed": bool(b3_coupling_iface),
             "B3_coupling_assembly_method": b3_coupling_method,
+            "B3_coupling_transfer_or_entity_map_metadata": {
+                "selected_route": selected_route,
+                "C1_required_api": cpre["C1_required_api"],
+                "C1_implementation_blocker": cpre["C1_implementation_blocker"],
+                "C2_transfer_representation": cpre["C2_transfer_representation"],
+                "C2_implementation_blocker": cpre["C2_implementation_blocker"],
+            },
             "B3_coupling_present": bool(b3_coupling_present),
             "B3_coupling_failure_reason": None if b3_coupling_iface else b3_coupling_reason,
+            "B3_coupling_stage_outcome": coupling_stage_outcome,
             "B3_A_and_M_assembled_without_EPS": bool(b3_ops_assembled),
             "B3_operator_dimensions": [b3_total_w, b3_total_w] if b3_total_w is not None else None,
             "B3_Auu_norm": b3_Auu_norm,
