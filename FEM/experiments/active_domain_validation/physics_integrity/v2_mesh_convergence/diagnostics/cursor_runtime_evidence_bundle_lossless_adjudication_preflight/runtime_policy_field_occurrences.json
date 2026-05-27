@@ -1,0 +1,3059 @@
+{
+  "generated_utc": "2026-05-27T07:19:24.650438+00:00",
+  "policy_keys_searched": [
+    "actual_sigma_hz",
+    "actual_st_a_shift_frac",
+    "actual_st_mass_reg_frac",
+    "audit_verdict",
+    "continuation_seed_applied",
+    "diagnostic_operator_consistent_with_replay",
+    "diagnostic_verdict",
+    "eps_diagnostic_candidate_bank_count",
+    "eps_diagnostic_preserve_all_nconv_candidates",
+    "eps_eigenvalue_semantics",
+    "legacy_double_shift_mapping_disabled",
+    "nconv_marked",
+    "num_vectors_saved",
+    "p_to_W_crc32",
+    "p_to_W_length",
+    "p_to_W_source",
+    "preserve_all_enabled",
+    "seed_frequency_hz",
+    "serializer_function",
+    "serializer_threshold",
+    "sigma_used_hz",
+    "st_sigma_hz",
+    "st_type",
+    "verdict_reason"
+  ],
+  "sources": {
+    "result_243075": {
+      "source_path_on_vm": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/solves/L_mid/baseline_coupled_v2/seed_branch_recovery_diagnostic_mapping_fixed_unregularized_persistence_fixed/results/result_243075.json",
+      "source_size_bytes": 3309106,
+      "top_level_keys": [
+        "acoustic_branch_by_energy",
+        "acoustic_branch_selection",
+        "actual_st_a_shift_frac",
+        "actual_st_mass_reg_frac",
+        "continuation_seed_applied",
+        "diagnostic_operator_consistent_with_replay",
+        "elapsed_s",
+        "eps_batch_diagnostics",
+        "eps_seed",
+        "gnhep_scales",
+        "harvest_band_hz",
+        "in_band_modes",
+        "mesh_file",
+        "n_p_active",
+        "n_reduced_W",
+        "n_u_active",
+        "nconv",
+        "nconv_marked",
+        "nearest_acoustic_branch",
+        "num_modes_saved",
+        "p_to_W",
+        "sample_id",
+        "seed_branch_recovery_diagnostic",
+        "shift_invert_target_hz",
+        "solver_mode",
+        "st_sigma_hz_used",
+        "target_hz",
+        "u_to_W",
+        "v2_converged"
+      ],
+      "occurrences": [
+        {
+          "json_path": "p_to_W",
+          "note": "list truncated for scan display: scanned first 20 of 24039 items"
+        },
+        {
+          "json_path": "u_to_W",
+          "note": "list truncated for scan display: scanned first 20 of 253587 items"
+        },
+        {
+          "json_path": "eps_batch_diagnostics.nconv_marked",
+          "value": 56
+        },
+        {
+          "json_path": "eps_batch_diagnostics.continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "eps_batch_diagnostics.diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "eps_batch_diagnostics.eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "eps_batch_diagnostics.legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "eps_batch_diagnostics.eps_diagnostic_preserve_all_nconv_candidates",
+          "value": true
+        },
+        {
+          "json_path": "eps_batch_diagnostics.eps_diagnostic_candidate_bank_count",
+          "value": 56
+        },
+        {
+          "json_path": "nconv_marked",
+          "value": 56
+        },
+        {
+          "json_path": "in_band_modes[0].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[0].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[0].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[0].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes[1].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[1].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[1].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[1].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes[2].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[2].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[2].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[2].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes[3].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[3].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[3].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[3].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes[4].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[4].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[4].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[4].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes[5].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[5].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[5].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[5].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes[6].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[6].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[6].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[6].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes[7].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[7].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[7].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[7].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes[8].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[8].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[8].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[8].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes[9].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[9].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[9].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[9].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes[10].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[10].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[10].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[10].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes[11].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[11].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[11].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[11].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes[12].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[12].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[12].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[12].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes[13].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[13].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[13].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[13].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes[14].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[14].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[14].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[14].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes[15].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[15].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[15].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[15].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes[16].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[16].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[16].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[16].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes[17].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[17].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[17].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[17].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes[18].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[18].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[18].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[18].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes[19].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "in_band_modes[19].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "in_band_modes[19].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "in_band_modes[19].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "in_band_modes",
+          "note": "list truncated for scan display: scanned first 20 of 54 items"
+        },
+        {
+          "json_path": "continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "seed_branch_recovery_diagnostic.eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "seed_branch_recovery_diagnostic.legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "seed_branch_recovery_diagnostic.eps_diagnostic_preserve_all_nconv_candidates",
+          "value": true
+        },
+        {
+          "json_path": "seed_branch_recovery_diagnostic.continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "seed_branch_recovery_diagnostic.actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "seed_branch_recovery_diagnostic.actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "seed_branch_recovery_diagnostic.actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "seed_branch_recovery_diagnostic.diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "seed_branch_recovery_diagnostic.diagnostic_verdict",
+          "value": null
+        }
+      ]
+    },
+    "candidate_bank": {
+      "source_path_on_vm": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/solves/L_mid/baseline_coupled_v2/seed_branch_recovery_diagnostic_mapping_fixed_unregularized_persistence_fixed/diagnostics/eps_candidate_bank.json",
+      "source_size_bytes": 440261,
+      "top_level_keys": [
+        "candidates",
+        "eps_diagnostic_candidate_bank_count",
+        "nconv_marked",
+        "num_vectors_saved",
+        "pressure_block_mapping",
+        "save_errors",
+        "saved_mode_rows"
+      ],
+      "occurrences": [
+        {
+          "json_path": "candidates[0].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[0].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[0].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[0].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates[1].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[1].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[1].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[1].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates[2].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[2].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[2].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[2].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates[3].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[3].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[3].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[3].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates[4].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[4].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[4].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[4].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates[5].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[5].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[5].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[5].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates[6].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[6].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[6].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[6].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates[7].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[7].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[7].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[7].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates[8].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[8].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[8].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[8].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates[9].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[9].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[9].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[9].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates[10].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[10].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[10].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[10].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates[11].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[11].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[11].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[11].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates[12].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[12].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[12].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[12].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates[13].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[13].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[13].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[13].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates[14].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[14].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[14].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[14].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates[15].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[15].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[15].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[15].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates[16].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[16].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[16].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[16].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates[17].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[17].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[17].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[17].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates[18].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[18].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[18].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[18].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates[19].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "candidates[19].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "candidates[19].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "candidates[19].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "candidates",
+          "note": "list truncated for scan display: scanned first 20 of 56 items"
+        },
+        {
+          "json_path": "saved_mode_rows[0].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[0].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[0].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[0].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows[1].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[1].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[1].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[1].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows[2].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[2].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[2].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[2].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows[3].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[3].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[3].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[3].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows[4].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[4].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[4].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[4].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows[5].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[5].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[5].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[5].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows[6].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[6].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[6].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[6].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows[7].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[7].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[7].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[7].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows[8].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[8].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[8].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[8].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows[9].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[9].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[9].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[9].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows[10].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[10].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[10].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[10].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows[11].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[11].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[11].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[11].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows[12].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[12].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[12].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[12].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows[13].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[13].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[13].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[13].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows[14].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[14].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[14].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[14].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows[15].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[15].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[15].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[15].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows[16].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[16].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[16].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[16].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows[17].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[17].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[17].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[17].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows[18].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[18].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[18].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[18].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows[19].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "saved_mode_rows[19].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "saved_mode_rows[19].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "saved_mode_rows[19].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "saved_mode_rows",
+          "note": "list truncated for scan display: scanned first 20 of 56 items"
+        },
+        {
+          "json_path": "nconv_marked",
+          "value": 56
+        },
+        {
+          "json_path": "eps_diagnostic_candidate_bank_count",
+          "value": 56
+        },
+        {
+          "json_path": "num_vectors_saved",
+          "value": 56
+        },
+        {
+          "json_path": "pressure_block_mapping.p_to_W",
+          "note": "list truncated for scan display: scanned first 20 of 24039 items"
+        },
+        {
+          "json_path": "pressure_block_mapping.p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "pressure_block_mapping.p_to_W_crc32",
+          "value": 2027087254
+        }
+      ]
+    },
+    "replacement_diagnostic": {
+      "source_path_on_vm": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/v2_l_mid_mapping_fixed_unregularized_persistence_fixed_baseline_diagnostic.json",
+      "source_size_bytes": 5068514,
+      "top_level_keys": [
+        "case_id",
+        "evaluation",
+        "full_pipeline_audit",
+        "generated_utc",
+        "mesh_convergence_may_resume",
+        "output_subdir",
+        "persistence_self_test",
+        "persistence_self_test_pass",
+        "prior_run_inconclusive",
+        "recommended_vm_command",
+        "solve_return_code"
+      ],
+      "occurrences": [
+        {
+          "json_path": "prior_run_inconclusive.nconv_marked",
+          "value": 56
+        },
+        {
+          "json_path": "prior_run_inconclusive.num_vectors_saved",
+          "value": 0
+        },
+        {
+          "json_path": "evaluation.replay_assembly.pressure_restriction.active_W_indices",
+          "note": "list truncated for scan display: scanned first 20 of 277626 items"
+        },
+        {
+          "json_path": "evaluation.seed_frequency_hz",
+          "value": 243.0754171175576
+        },
+        {
+          "json_path": "evaluation.st_operator_fields.actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.st_operator_fields.actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.st_operator_fields.actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.st_operator_fields.diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.st_operator_fields.eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.st_operator_fields.legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.eps_candidate_bank_summary.num_vectors_saved",
+          "value": 56
+        },
+        {
+          "json_path": "evaluation.eps_candidate_bank_summary.nconv_marked",
+          "value": 56
+        },
+        {
+          "json_path": "evaluation.candidates[0].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[0].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[0].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[0].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[0].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[0].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[0].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[0].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[0].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[0].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates[1].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[1].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[1].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[1].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[1].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[1].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[1].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[1].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[1].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[1].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates[2].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[2].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[2].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[2].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[2].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[2].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[2].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[2].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[2].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[2].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates[3].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[3].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[3].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[3].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[3].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[3].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[3].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[3].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[3].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[3].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates[4].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[4].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[4].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[4].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[4].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[4].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[4].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[4].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[4].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[4].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates[5].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[5].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[5].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[5].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[5].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[5].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[5].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[5].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[5].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[5].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates[6].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[6].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[6].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[6].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[6].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[6].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[6].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[6].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[6].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[6].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates[7].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[7].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[7].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[7].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[7].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[7].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[7].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[7].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[7].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[7].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates[8].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[8].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[8].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[8].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[8].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[8].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[8].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[8].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[8].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[8].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates[9].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[9].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[9].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[9].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[9].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[9].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[9].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[9].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[9].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[9].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates[10].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[10].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[10].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[10].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[10].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[10].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[10].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[10].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[10].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[10].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates[11].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[11].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[11].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[11].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[11].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[11].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[11].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[11].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[11].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[11].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates[12].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[12].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[12].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[12].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[12].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[12].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[12].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[12].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[12].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[12].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates[13].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[13].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[13].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[13].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[13].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[13].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[13].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[13].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[13].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[13].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates[14].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[14].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[14].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[14].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[14].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[14].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[14].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[14].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[14].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[14].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates[15].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[15].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[15].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[15].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[15].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[15].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[15].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[15].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[15].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[15].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates[16].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[16].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[16].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[16].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[16].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[16].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[16].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[16].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[16].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[16].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates[17].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[17].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[17].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[17].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[17].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[17].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[17].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[17].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[17].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[17].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates[18].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[18].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[18].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[18].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[18].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[18].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[18].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[18].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[18].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[18].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates[19].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "evaluation.candidates[19].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[19].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[19].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[19].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "evaluation.candidates[19].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[19].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "evaluation.candidates[19].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "evaluation.candidates[19].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "evaluation.candidates[19].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "evaluation.candidates",
+          "note": "list truncated for scan display: scanned first 20 of 56 items"
+        },
+        {
+          "json_path": "evaluation.diagnostic_verdict",
+          "value": "MAPPING_FIXED_UNREGULARIZED_BASELINE_PERSISTED_VECTOR_CONTENT_UNRESOLVED"
+        },
+        {
+          "json_path": "full_pipeline_audit.audit_verdict",
+          "value": "MAPPING_FIXED_UNREGULARIZED_BASELINE_PERSISTED_VECTOR_CONTENT_UNRESOLVED"
+        }
+      ]
+    },
+    "pipeline_audit": {
+      "source_path_on_vm": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/v2_mapping_fixed_persistence_fixed_full_pipeline_audit.json",
+      "source_size_bytes": 5737759,
+      "top_level_keys": [
+        "audit_verdict",
+        "candidate_file_audit",
+        "candidates",
+        "capture_vs_persist_contract",
+        "conservative_policy_statements",
+        "current_saved_vectors_sufficient_for_st_verdict",
+        "evaluation_summary",
+        "evidence_scope",
+        "generated_utc",
+        "lossless_pre_sparsify_eps_vectors_available_in_current_run",
+        "map_contract",
+        "mesh_convergence_may_resume",
+        "no_additional_eigensolve_authorized",
+        "operator_policy",
+        "operator_policy_provenance",
+        "operator_policy_provenance_mismatch",
+        "operator_policy_provenance_mismatch_reasons",
+        "output_tree",
+        "persistence_closed",
+        "physics_eval_skipped",
+        "pipeline_control_flow",
+        "prior_audit_verdict_before_conservative_policy",
+        "replacement_baseline_artifacts",
+        "replay_assembly",
+        "root_cause_analysis",
+        "serialization_may_change_physical_replay_metrics",
+        "st_viability_conclusion",
+        "stage_2_authorized",
+        "verdict_reason"
+      ],
+      "occurrences": [
+        {
+          "json_path": "map_contract.p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "map_contract.p_to_W_crc32",
+          "value": 2027087254
+        },
+        {
+          "json_path": "map_contract.p_to_W_source",
+          "value": "v2_sensitivity_solve_result_p_to_W"
+        },
+        {
+          "json_path": "operator_policy.continuation_seed_applied",
+          "value": false
+        },
+        {
+          "json_path": "operator_policy.seed_frequency_hz",
+          "value": 243.0754171175576
+        },
+        {
+          "json_path": "operator_policy.actual_sigma_hz",
+          "value": 243.0754171175576
+        },
+        {
+          "json_path": "operator_policy.st_type",
+          "value": null
+        },
+        {
+          "json_path": "operator_policy.eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "operator_policy.legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "operator_policy.diagnostic_operator_consistent_with_replay",
+          "value": false
+        },
+        {
+          "json_path": "operator_policy.actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "operator_policy.actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "operator_policy.preserve_all_enabled",
+          "value": true
+        },
+        {
+          "json_path": "operator_policy.nconv_marked",
+          "value": 56
+        },
+        {
+          "json_path": "operator_policy.num_vectors_saved",
+          "value": 56
+        },
+        {
+          "json_path": "operator_policy.serializer_function",
+          "value": "fem_mode_array_utils.save_mode_csr(dense_to_csr_f32_column(vec))"
+        },
+        {
+          "json_path": "operator_policy.serializer_threshold",
+          "value": "MODE_VECTOR_RELATIVE_EPS=1e-7 relative to max(|vector|)"
+        },
+        {
+          "json_path": "operator_policy.p_to_W_source",
+          "value": "v2_sensitivity_solve_result_p_to_W"
+        },
+        {
+          "json_path": "operator_policy.p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "operator_policy.p_to_W_crc32",
+          "value": 2027087254
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.prior_run_inconclusive.nconv_marked",
+          "value": 56
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.prior_run_inconclusive.num_vectors_saved",
+          "value": 0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.replay_assembly.pressure_restriction.active_W_indices",
+          "note": "list truncated for scan display: scanned first 20 of 277626 items"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.seed_frequency_hz",
+          "value": 243.0754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.st_operator_fields.actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.st_operator_fields.actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.st_operator_fields.actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.st_operator_fields.diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.st_operator_fields.eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.st_operator_fields.legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.eps_candidate_bank_summary.num_vectors_saved",
+          "value": 56
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.eps_candidate_bank_summary.nconv_marked",
+          "value": 56
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[0].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[0].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[0].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[0].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[0].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[0].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[0].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[0].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[0].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[0].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[1].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[1].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[1].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[1].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[1].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[1].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[1].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[1].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[1].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[1].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[2].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[2].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[2].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[2].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[2].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[2].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[2].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[2].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[2].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[2].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[3].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[3].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[3].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[3].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[3].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[3].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[3].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[3].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[3].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[3].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[4].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[4].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[4].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[4].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[4].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[4].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[4].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[4].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[4].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[4].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[5].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[5].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[5].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[5].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[5].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[5].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[5].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[5].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[5].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[5].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[6].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[6].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[6].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[6].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[6].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[6].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[6].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[6].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[6].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[6].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[7].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[7].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[7].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[7].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[7].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[7].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[7].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[7].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[7].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[7].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[8].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[8].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[8].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[8].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[8].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[8].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[8].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[8].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[8].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[8].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[9].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[9].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[9].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[9].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[9].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[9].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[9].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[9].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[9].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[9].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[10].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[10].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[10].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[10].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[10].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[10].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[10].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[10].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[10].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[10].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[11].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[11].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[11].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[11].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[11].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[11].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[11].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[11].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[11].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[11].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[12].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[12].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[12].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[12].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[12].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[12].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[12].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[12].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[12].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[12].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[13].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[13].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[13].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[13].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[13].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[13].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[13].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[13].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[13].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[13].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[14].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[14].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[14].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[14].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[14].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[14].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[14].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[14].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[14].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[14].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[15].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[15].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[15].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[15].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[15].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[15].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[15].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[15].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[15].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[15].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[16].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[16].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[16].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[16].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[16].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[16].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[16].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[16].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[16].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[16].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[17].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[17].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[17].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[17].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[17].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[17].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[17].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[17].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[17].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[17].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[18].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[18].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[18].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[18].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[18].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[18].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[18].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[18].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[18].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[18].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[19].p_to_W_length",
+          "value": 24039
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[19].continuation_seed_applied",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[19].actual_sigma_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[19].actual_st_a_shift_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[19].actual_st_mass_reg_frac",
+          "value": 0.0
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[19].diagnostic_operator_consistent_with_replay",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[19].eps_eigenvalue_semantics",
+          "value": "slepc_backtransformed"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[19].legacy_double_shift_mapping_disabled",
+          "value": true
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[19].sigma_used_hz",
+          "value": 243.5754171175576
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates[19].st_type",
+          "value": "sinvert"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.candidates",
+          "note": "list truncated for scan display: scanned first 20 of 56 items"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.evaluation.diagnostic_verdict",
+          "value": "MAPPING_FIXED_UNREGULARIZED_BASELINE_PERSISTED_VECTOR_CONTENT_UNRESOLVED"
+        },
+        {
+          "json_path": "replacement_baseline_artifacts.full_pipeline_audit.audit_verdict",
+          "value": "MAPPING_FIXED_UNREGULARIZED_BASELINE_PERSISTED_VECTOR_CONTENT_UNRESOLVED"
+        },
+        {
+          "json_path": "capture_vs_persist_contract.serializer_function",
+          "value": "fem_mode_array_utils.save_mode_csr(dense_to_csr_f32_column(vec))"
+        },
+        {
+          "json_path": "capture_vs_persist_contract.serializer_threshold",
+          "value": "MODE_VECTOR_RELATIVE_EPS=1e-7 relative to max(|vector|)"
+        },
+        {
+          "json_path": "candidate_file_audit.files",
+          "note": "list truncated for scan display: scanned first 20 of 56 items"
+        },
+        {
+          "json_path": "candidates",
+          "note": "list truncated for scan display: scanned first 20 of 56 items"
+        },
+        {
+          "json_path": "audit_verdict",
+          "value": "MAPPING_FIXED_UNREGULARIZED_BASELINE_PERSISTED_VECTOR_CONTENT_UNRESOLVED"
+        },
+        {
+          "json_path": "verdict_reason",
+          "value": "all_persisted_sparse_mass_null_pre_sparsify_dense_not_preserved"
+        }
+      ]
+    }
+  }
+}

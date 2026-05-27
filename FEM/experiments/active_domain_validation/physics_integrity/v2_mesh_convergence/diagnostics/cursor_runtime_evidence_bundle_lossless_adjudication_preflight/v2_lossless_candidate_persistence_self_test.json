@@ -1,0 +1,20 @@
+{
+  "generated_utc": "2026-05-27T07:04:45Z",
+  "self_test_pass": true,
+  "checks": {
+    "seed_lossless_round_trip_norm_relative_error": 0.0,
+    "seed_lossless_round_trip_pass": true,
+    "seed_xH_Mx_original": 5.18357532956158e-13,
+    "seed_xH_Mx_lossless_reload": 5.18357532956158e-13,
+    "seed_rayleigh_pass": true,
+    "synthetic_lossless_equals_dense": true,
+    "synthetic_sparse_alters_vector": true,
+    "synthetic_sparse_nnz": 1,
+    "synthetic_xH_Mx_dense": 2.1371980616880938e-15,
+    "synthetic_xH_Mx_lossless": 2.1371980616880938e-15,
+    "synthetic_xH_Mx_sparse": 2.137198014341095e-15,
+    "synthetic_sparse_mass_null_expected": false
+  },
+  "MODE_VECTOR_RELATIVE_EPS": 1e-07,
+  "no_eigensolve_executed": true
+}

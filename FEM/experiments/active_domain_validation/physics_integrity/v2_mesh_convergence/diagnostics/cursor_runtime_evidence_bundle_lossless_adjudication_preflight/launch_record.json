@@ -1,0 +1,31 @@
+{
+  "exact_command_argv": [
+    "mpiexec",
+    "-n",
+    "1",
+    "/home/vboxuser/final-project/.venv/bin/python",
+    "-u",
+    "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_sensitivity_solve.py",
+    "--sample-id",
+    "baseline_coupled_v2",
+    "--mesh",
+    "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_mid/baseline_coupled_v2.msh",
+    "--sample-json",
+    "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/solves/L_mid/baseline_coupled_v2/seed_branch_recovery_diagnostic_mapping_fixed_unregularized_persistence_fixed/sample_spec.json",
+    "--case-dir",
+    "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/solves/L_mid/baseline_coupled_v2/seed_branch_recovery_diagnostic_mapping_fixed_unregularized_persistence_fixed",
+    "--target-hz",
+    "243.0754171175576",
+    "--reference-f-hz",
+    "243.0754171175576",
+    "--num-modes",
+    "64",
+    "--eps-seed-npy",
+    "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/solves/L_mid/baseline_coupled_v2/diagnostics/acoustic_coupled_seed.npy",
+    "--seed-branch-recovery-diagnostic",
+    "--seed-branch-mapping-fixed-unregularized-diagnostic"
+  ],
+  "shell_command": "mpiexec -n 1 /home/vboxuser/final-project/.venv/bin/python -u /home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_sensitivity_solve.py --sample-id baseline_coupled_v2 --mesh /home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_mid/baseline_coupled_v2.msh --sample-json /home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/solves/L_mid/baseline_coupled_v2/seed_branch_recovery_diagnostic_mapping_fixed_unregularized_persistence_fixed/sample_spec.json --case-dir /home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/solves/L_mid/baseline_coupled_v2/seed_branch_recovery_diagnostic_mapping_fixed_unregularized_persistence_fixed --target-hz 243.0754171175576 --reference-f-hz 243.0754171175576 --num-modes 64 --eps-seed-npy /home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/solves/L_mid/baseline_coupled_v2/diagnostics/acoustic_coupled_seed.npy --seed-branch-recovery-diagnostic --seed-branch-mapping-fixed-unregularized-diagnostic",
+  "output_case_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/solves/L_mid/baseline_coupled_v2/seed_branch_recovery_diagnostic_mapping_fixed_unregularized_persistence_fixed",
+  "persistence_self_test_json": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/v2_mapping_fixed_candidate_persistence_self_test.json"
+}

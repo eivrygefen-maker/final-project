@@ -1,0 +1,336 @@
+{
+  "generated_utc": "2026-05-27T07:04:18Z",
+  "evidence_scope": "VM_runtime_artifacts_report_only",
+  "output_tree": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/solves/L_mid/baseline_coupled_v2/seed_branch_recovery_diagnostic_mapping_fixed_unregularized_persistence_fixed",
+  "sources": {
+    "replacement_diagnostic_json": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/v2_l_mid_mapping_fixed_unregularized_persistence_fixed_baseline_diagnostic.json",
+    "eps_candidate_bank": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/solves/L_mid/baseline_coupled_v2/seed_branch_recovery_diagnostic_mapping_fixed_unregularized_persistence_fixed/diagnostics/eps_candidate_bank.json",
+    "mode_energy_summary": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/solves/L_mid/baseline_coupled_v2/seed_branch_recovery_diagnostic_mapping_fixed_unregularized_persistence_fixed/diagnostics/mode_energy_summary.json",
+    "latest_result_json": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/solves/L_mid/baseline_coupled_v2/seed_branch_recovery_diagnostic_mapping_fixed_unregularized_persistence_fixed/results/result_243075.json"
+  },
+  "fields": [
+    {
+      "field_name": "continuation_seed_applied",
+      "sources_checked": [
+        "replacement",
+        "result",
+        "eps_diag"
+      ],
+      "values_found_by_source": {
+        "replacement": true,
+        "result": true,
+        "eps_diag": true
+      },
+      "field_missing_in_sources": false,
+      "conflicting_values": false,
+      "selected_value_if_any": true,
+      "selection_basis": "eps_batch_diagnostics",
+      "provenance_confidence": "high",
+      "match_status": "found",
+      "impact_on_verdict": "ok"
+    },
+    {
+      "field_name": "seed_frequency_hz",
+      "sources_checked": [
+        "result"
+      ],
+      "values_found_by_source": {
+        "result": 243.0754171175576
+      },
+      "field_missing_in_sources": false,
+      "conflicting_values": false,
+      "selected_value_if_any": 243.0754171175576,
+      "selection_basis": "result",
+      "provenance_confidence": "high",
+      "match_status": "found",
+      "impact_on_verdict": "ok"
+    },
+    {
+      "field_name": "actual_sigma_hz",
+      "sources_checked": [
+        "eps_diag",
+        "result"
+      ],
+      "values_found_by_source": {
+        "eps_diag": 243.5754171175576,
+        "result": 243.5754171175576
+      },
+      "field_missing_in_sources": false,
+      "conflicting_values": false,
+      "selected_value_if_any": 243.5754171175576,
+      "selection_basis": "eps_batch_diagnostics",
+      "provenance_confidence": "high",
+      "match_status": "found",
+      "impact_on_verdict": "ok"
+    },
+    {
+      "field_name": "sigma_used_hz",
+      "sources_checked": [
+        "eps_diag",
+        "result"
+      ],
+      "values_found_by_source": {
+        "eps_diag": 243.5754171175576,
+        "result": 243.5754171175576
+      },
+      "field_missing_in_sources": false,
+      "conflicting_values": false,
+      "selected_value_if_any": 243.5754171175576,
+      "selection_basis": "eps_batch_diagnostics",
+      "provenance_confidence": "high",
+      "match_status": "found",
+      "impact_on_verdict": "ok"
+    },
+    {
+      "field_name": "st_type",
+      "sources_checked": [],
+      "values_found_by_source": {},
+      "field_missing_in_sources": true,
+      "conflicting_values": false,
+      "selected_value_if_any": null,
+      "selection_basis": null,
+      "provenance_confidence": "missing",
+      "match_status": "missing",
+      "impact_on_verdict": "operator_policy_provenance_mismatch_likely_reporting_gap"
+    },
+    {
+      "field_name": "eps_eigenvalue_semantics",
+      "sources_checked": [
+        "eps_diag"
+      ],
+      "values_found_by_source": {
+        "eps_diag": "slepc_backtransformed"
+      },
+      "field_missing_in_sources": false,
+      "conflicting_values": false,
+      "selected_value_if_any": "slepc_backtransformed",
+      "selection_basis": "eps_batch_diagnostics",
+      "provenance_confidence": "high",
+      "match_status": "found",
+      "impact_on_verdict": "ok"
+    },
+    {
+      "field_name": "legacy_double_shift_mapping_disabled",
+      "sources_checked": [
+        "eps_diag"
+      ],
+      "values_found_by_source": {
+        "eps_diag": true
+      },
+      "field_missing_in_sources": false,
+      "conflicting_values": false,
+      "selected_value_if_any": true,
+      "selection_basis": "eps_batch_diagnostics",
+      "provenance_confidence": "high",
+      "match_status": "found",
+      "impact_on_verdict": "ok"
+    },
+    {
+      "field_name": "diagnostic_operator_consistent_with_replay",
+      "sources_checked": [
+        "eps_diag",
+        "result"
+      ],
+      "values_found_by_source": {
+        "eps_diag": true,
+        "result": true
+      },
+      "field_missing_in_sources": false,
+      "conflicting_values": false,
+      "selected_value_if_any": true,
+      "selection_basis": "eps_batch_diagnostics",
+      "provenance_confidence": "high",
+      "match_status": "found",
+      "impact_on_verdict": "ok"
+    },
+    {
+      "field_name": "actual_st_a_shift_frac",
+      "sources_checked": [
+        "eps_diag"
+      ],
+      "values_found_by_source": {
+        "eps_diag": 0.0
+      },
+      "field_missing_in_sources": false,
+      "conflicting_values": false,
+      "selected_value_if_any": 0.0,
+      "selection_basis": "eps_batch_diagnostics",
+      "provenance_confidence": "high",
+      "match_status": "found",
+      "impact_on_verdict": "ok"
+    },
+    {
+      "field_name": "actual_st_mass_reg_frac",
+      "sources_checked": [
+        "eps_diag"
+      ],
+      "values_found_by_source": {
+        "eps_diag": 0.0
+      },
+      "field_missing_in_sources": false,
+      "conflicting_values": false,
+      "selected_value_if_any": 0.0,
+      "selection_basis": "eps_batch_diagnostics",
+      "provenance_confidence": "high",
+      "match_status": "found",
+      "impact_on_verdict": "ok"
+    },
+    {
+      "field_name": "preserve_all_enabled",
+      "sources_checked": [
+        "eps_diag"
+      ],
+      "values_found_by_source": {
+        "eps_diag": true
+      },
+      "field_missing_in_sources": false,
+      "conflicting_values": false,
+      "selected_value_if_any": true,
+      "selection_basis": "eps_batch_diagnostics",
+      "provenance_confidence": "high",
+      "match_status": "found",
+      "impact_on_verdict": "ok"
+    },
+    {
+      "field_name": "nconv_marked",
+      "sources_checked": [
+        "bank",
+        "eps_diag",
+        "result"
+      ],
+      "values_found_by_source": {
+        "bank": 56,
+        "eps_diag": 56,
+        "result": 56
+      },
+      "field_missing_in_sources": false,
+      "conflicting_values": false,
+      "selected_value_if_any": 56,
+      "selection_basis": "eps_candidate_bank",
+      "provenance_confidence": "high",
+      "match_status": "found",
+      "impact_on_verdict": "ok"
+    },
+    {
+      "field_name": "candidate_bank_count",
+      "sources_checked": [
+        "bank"
+      ],
+      "values_found_by_source": {
+        "bank": 56
+      },
+      "field_missing_in_sources": false,
+      "conflicting_values": false,
+      "selected_value_if_any": 56,
+      "selection_basis": "eps_candidate_bank",
+      "provenance_confidence": "high",
+      "match_status": "found",
+      "impact_on_verdict": "ok"
+    },
+    {
+      "field_name": "num_vectors_saved",
+      "sources_checked": [
+        "bank",
+        "replacement"
+      ],
+      "values_found_by_source": {
+        "bank": 56,
+        "replacement": 56
+      },
+      "field_missing_in_sources": false,
+      "conflicting_values": false,
+      "selected_value_if_any": 56,
+      "selection_basis": "eps_candidate_bank",
+      "provenance_confidence": "high",
+      "match_status": "found",
+      "impact_on_verdict": "ok"
+    },
+    {
+      "field_name": "serializer_function",
+      "sources_checked": [
+        "code_contract"
+      ],
+      "values_found_by_source": {
+        "code_contract": "fem_mode_array_utils.save_mode_csr(dense_to_csr_f32_column(vec))"
+      },
+      "field_missing_in_sources": false,
+      "conflicting_values": false,
+      "selected_value_if_any": "fem_mode_array_utils.save_mode_csr(dense_to_csr_f32_column(vec))",
+      "selection_basis": "code_contract",
+      "provenance_confidence": "high",
+      "match_status": "found",
+      "impact_on_verdict": "ok"
+    },
+    {
+      "field_name": "serializer_threshold",
+      "sources_checked": [
+        "code_contract"
+      ],
+      "values_found_by_source": {
+        "code_contract": "MODE_VECTOR_RELATIVE_EPS=1e-7 relative to max(|vector|)"
+      },
+      "field_missing_in_sources": false,
+      "conflicting_values": false,
+      "selected_value_if_any": "MODE_VECTOR_RELATIVE_EPS=1e-7 relative to max(|vector|)",
+      "selection_basis": "code_contract",
+      "provenance_confidence": "high",
+      "match_status": "found",
+      "impact_on_verdict": "ok"
+    },
+    {
+      "field_name": "p_to_W_source",
+      "sources_checked": [
+        "bank_pressure_block_mapping"
+      ],
+      "values_found_by_source": {
+        "bank_pressure_block_mapping": "v2_sensitivity_solve_result_p_to_W"
+      },
+      "field_missing_in_sources": false,
+      "conflicting_values": false,
+      "selected_value_if_any": "v2_sensitivity_solve_result_p_to_W",
+      "selection_basis": "bank_pressure_block_mapping",
+      "provenance_confidence": "high",
+      "match_status": "found",
+      "impact_on_verdict": "ok"
+    },
+    {
+      "field_name": "p_to_W_length",
+      "sources_checked": [
+        "bank"
+      ],
+      "values_found_by_source": {
+        "bank": 24039
+      },
+      "field_missing_in_sources": false,
+      "conflicting_values": false,
+      "selected_value_if_any": 24039,
+      "selection_basis": "eps_candidate_bank",
+      "provenance_confidence": "high",
+      "match_status": "found",
+      "impact_on_verdict": "ok"
+    },
+    {
+      "field_name": "p_to_W_crc32",
+      "sources_checked": [
+        "bank"
+      ],
+      "values_found_by_source": {
+        "bank": 2027087254
+      },
+      "field_missing_in_sources": false,
+      "conflicting_values": false,
+      "selected_value_if_any": 2027087254,
+      "selection_basis": "eps_candidate_bank",
+      "provenance_confidence": "high",
+      "match_status": "found",
+      "impact_on_verdict": "ok"
+    }
+  ],
+  "summary": {
+    "num_fields": 19,
+    "num_conflicts": 0,
+    "num_missing": 1,
+    "operator_policy_provenance_mismatch_likely": false
+  },
+  "no_eigensolve_executed": true
+}
