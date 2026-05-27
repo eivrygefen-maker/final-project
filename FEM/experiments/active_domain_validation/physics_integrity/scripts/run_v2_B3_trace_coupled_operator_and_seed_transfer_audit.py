@@ -67,7 +67,30 @@ OUT_MD_B3_CONDITIONED_MASS = CONV_DIAG / "v2_B3_conditioned_seed_mass_decomposit
 B3_SEED_BC_CONDITIONED_MASS_DECOMPOSITION_AUDIT_ONLY_ARG = (
     "--B3-conditioned-seed-mass-decomposition-audit-only"
 )
+B3_JD_DESIGN_READINESS_CONTRACT_ONLY_ARG = "--B3-JD-design-readiness-contract-only"
+OUT_JSON_B3_JD_DESIGN = CONV_DIAG / "v2_B3_JD_design_readiness_contract_only.json"
+OUT_MD_B3_JD_DESIGN = CONV_DIAG / "v2_B3_JD_design_readiness_contract_only.md"
+B3_JD_DEFAULT_TARGET_HZ = 244.39
+B3_JD_DEFAULT_HARVEST_LO_HZ = 220.0
+B3_JD_DEFAULT_HARVEST_HI_HZ = 265.0
+B3_JD_FIRST_RUN_INITIAL_MODE_COUNT = 2
+B3_JD_FIRST_RUN_NCV = 6
 B3_ARTIFICIAL_LAMBDA_UNITY_FREQUENCY_HZ = 1.0 / (2.0 * math.pi)
+
+_MASS_DECOMPOSITION_EVIDENCE_KEYS = (
+    "B3_mass_Muu_norm",
+    "B3_mass_Mpu_norm",
+    "B3_mass_Mpp_norm",
+    "B3_conditioned_mass_q_uu",
+    "B3_conditioned_mass_q_up",
+    "B3_conditioned_mass_q_pu",
+    "B3_conditioned_mass_q_pp",
+    "B3_conditioned_mass_q_total_from_blocks",
+    "B3_conditioned_mass_q_total_from_final_AIJ",
+    "B3_conditioned_mass_block_vs_final_consistency_pass",
+    "B3_conditioned_seed_mass_diagnostic_classification",
+    "B3_seed_BC_contamination_confirmed",
+)
 
 TAG_TOP = 1
 TAG_BACK = 3
@@ -1986,6 +2009,318 @@ def _is_b3_conditioned_seed_mass_decomposition_audit_only_mode(argv: List[str]) 
     return B3_SEED_BC_CONDITIONED_MASS_DECOMPOSITION_AUDIT_ONLY_ARG in argv
 
 
+def _is_b3_jd_design_readiness_contract_only_mode(argv: List[str]) -> bool:
+    return B3_JD_DESIGN_READINESS_CONTRACT_ONLY_ARG in argv
+
+
+def _load_mass_decomposition_evidence() -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "B3_mass_decomposition_json_path": str(OUT_JSON_B3_CONDITIONED_MASS),
+        "B3_mass_decomposition_json_present": OUT_JSON_B3_CONDITIONED_MASS.is_file(),
+    }
+    if not OUT_JSON_B3_CONDITIONED_MASS.is_file():
+        out["B3_mass_decomposition_evidence_load_status"] = "missing_json"
+        return out
+    try:
+        data = json.loads(OUT_JSON_B3_CONDITIONED_MASS.read_text(encoding="utf-8"))
+    except Exception as exc:
+        out["B3_mass_decomposition_evidence_load_status"] = f"json_load_failed:{type(exc).__name__}:{exc}"
+        return out
+    out["B3_mass_decomposition_evidence_load_status"] = "loaded"
+    out["B3_mass_decomposition_prior_verdict"] = data.get("next_step_verdict")
+    for key in _MASS_DECOMPOSITION_EVIDENCE_KEYS:
+        out[key] = data.get(key)
+    out["B3_mass_decomposition_operator_contract_pass"] = bool(
+        data.get("B3_seed_operator_build_pass")
+        and data.get("B3_scaled_restricted_BC_operator_contract_pass")
+        and data.get("B3_seed_mapped_vector_constructed")
+        and data.get("B3_seed_conditioned_vector_constructed")
+    )
+    out["B3_mass_decomposition_classification_pass"] = (
+        str(data.get("next_step_verdict"))
+        == "B3_CONDITIONED_SEED_ZERO_MASS_DUE_TO_BLOCK_CANCELLATION_OR_GNHEP_METRIC_SEMANTICS"
+    )
+    return out
+
+
+def _b3_jd_design_inspection_static() -> Dict[str, Any]:
+    """Repository inspection anchors for JD wiring (no EPS execution)."""
+    return {
+        "slepc_harvest_entrypoint": {
+            "file": "FEM/scripts/fem_main_3d.py",
+            "function": "_slepc_shift_invert_batch",
+            "approx_line": 4325,
+            "notes": (
+                "Primary coupled GNHEP band harvest: eps.setOperators(A,M); "
+                "eps.setProblemType(GNHEP); KRYLOVSCHUR+STSINVERT or CISS."
+            ),
+        },
+        "slepc_eps_strategy": {
+            "file": "FEM/scripts/fem_main_3d.py",
+            "function": "_slepc_eps_strategy",
+            "approx_line": 2203,
+        },
+        "slepc_physical_lambda": {
+            "file": "FEM/scripts/fem_main_3d.py",
+            "function": "_slepc_physical_lambda",
+            "approx_line": 2119,
+        },
+        "slepc_operators_rebind": {
+            "file": "FEM/scripts/fem_main_3d.py",
+            "function": "_slepc_eps_ensure_operators",
+            "approx_line": 3534,
+        },
+        "direct_aij_b3_assembly": {
+            "file": (
+                "FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+                "run_v2_B3_trace_coupled_operator_and_seed_transfer_audit.py"
+            ),
+            "function": "_b3_direct_sparse_aij_from_restricted_blocks",
+            "approx_line": 279,
+        },
+        "replay_helpers": {
+            "file": (
+                "FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+                "physical_fsi_seed_residual_audit.py"
+            ),
+            "functions": ["_rayleigh_metrics", "_block_residual_contributions"],
+            "approx_lines": [300, 213],
+        },
+        "slepc_api_probe_lib": {
+            "file": (
+                "FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+                "v2_slepc_api_preflight_lib.py"
+            ),
+            "function": "slepc_eps_api_probe",
+            "approx_line": 18,
+        },
+        "jd_dispatch_status": "NOT_WIRED_IN_fem_main_3d_eps_band_solver_dispatch",
+        "historical_st_configuration": (
+            "eps_band_solver=shift_invert → EPS.Type.KRYLOVSCHUR + ST.Type.SINVERT + "
+            "MUMPS LU inner solve; TARGET_MAGNITUDE at band σ."
+        ),
+        "historical_st_limitation": (
+            "STSINVERT/MUMPS path is historical production harvest only; "
+            "not authorized as first B3 JD validation fallback."
+        ),
+        "ciss_alternative": (
+            "eps_band_solver=ciss → EPS.Type.CISS + RG interval on real λ axis "
+            "(already wired for nonsymmetric GNHEP bands)."
+        ),
+    }
+
+
+def _b3_jd_slepc_api_static_inspection() -> Dict[str, Any]:
+    """Code-path inspection only; no SLEPc.EPS() construction in this mode."""
+    return {
+        "B3_JD_API_VM_probe_status": "NOT_RUN_PENDING_SEPARATE_AUTHORIZATION",
+        "B3_JD_design_mode_calls_slepc_eps_api_probe": False,
+        "B3_JD_design_mode_creates_EPS_object": False,
+        "jd_api_probe_script": (
+            "FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+            "v2_slepc_api_preflight_lib.py:slepc_eps_api_probe"
+        ),
+        "jd_api_probe_note": (
+            "Separate authorization required before any EPS().create/setType probe "
+            "or eps.solve on VM."
+        ),
+        "jd_eps_setType_from_code_inspection": "jd",
+        "jd_eps_type_enum_from_code_inspection": "SLEPc.EPS.Type.JD (when slepc4py importable)",
+    }
+
+
+def _b3_jd_future_run_contract(
+    *,
+    mass_evidence: Dict[str, Any],
+    target_hz: float,
+) -> Dict[str, Any]:
+    target_lambda = (2.0 * math.pi * float(target_hz)) ** 2
+    operator_ok = bool(mass_evidence.get("B3_mass_decomposition_operator_contract_pass"))
+    classification_ok = bool(mass_evidence.get("B3_mass_decomposition_classification_pass"))
+    return {
+        "B3_JD_operator_contract_pass": bool(operator_ok and classification_ok),
+        "B3_JD_operator_source": (
+            "validated_B3_direct_sparse_AIJ_scaled_restricted_corrected_BC"
+        ),
+        "B3_JD_operator_dimension": 148074,
+        "B3_JD_conditioned_seed_role": (
+            "optional_initial_space_or_branch_hint_not_Rayleigh_certification"
+        ),
+        "B3_JD_simple_Rayleigh_gate_retired_reason": (
+            "nonsymmetric_GNHEP_mass_block_cancellation_confirmed"
+        ),
+        "B3_JD_problem_type_required": "GNHEP",
+        "B3_JD_solver_type_requested": "JD",
+        "B3_JD_slepc_eps_setType_name": "jd",
+        "B3_JD_slepc_enum_SLEPc_EPS_Type_JD_exposed": None,
+        "B3_JD_slepc_api_available_on_probe": None,
+        "B3_JD_initial_mode_count": int(B3_JD_FIRST_RUN_INITIAL_MODE_COUNT),
+        "B3_JD_ncv": int(B3_JD_FIRST_RUN_NCV),
+        "B3_JD_target_frequency_hz": float(target_hz),
+        "B3_JD_target_lambda_rad2_s2": _safe_float(target_lambda),
+        "B3_JD_target_selection_source": (
+            "v2_mesh_convergence_manifest baseline_coupled_v2 L_mid target_hz "
+            f"({target_hz} Hz); harvest window [{B3_JD_DEFAULT_HARVEST_LO_HZ}, "
+            f"{B3_JD_DEFAULT_HARVEST_HI_HZ}] Hz diagnostic-only"
+        ),
+        "B3_JD_eps_which_recommended": "TARGET_MAGNITUDE",
+        "B3_JD_eps_target_setter": "eps.setTarget((2*pi*f_target)^2)",
+        "B3_JD_st_shift_invert_fallback_authorized": False,
+        "B3_JD_operator_handoff_contract": (
+            "In-memory PETSc AIJ A_b3/M_b3 from B3 audit build; "
+            "eps.setOperators(A_b3, M_b3); eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP); "
+            "no MatNest/convert; no matrix persistence."
+        ),
+        "B3_JD_runtime_guard_policy": (
+            "mpiexec -n 1 only; single bounded EPS call; nev="
+            f"{B3_JD_FIRST_RUN_INITIAL_MODE_COUNT}; narrow target band; "
+            "max iteration/time caps in solver cfg; abort on ST/SINVERT auto-fallback."
+        ),
+        "B3_JD_artifact_storage_policy": (
+            "compact_report_only_no_vector_bank_until_validated"
+        ),
+        "B3_JD_execution_authorized": False,
+        "B3_JD_wiring_required_before_execution": [
+            "new eps_band_solver=jd branch in fem_main_3d._slepc_shift_invert_batch "
+            "or dedicated B3-only EPS runner",
+            "eps.setType(JD); GNHEP; TARGET_MAGNITUDE at target λ",
+            "post-solve generalized residual audit on converged pairs",
+            "explicit prohibition of STSINVERT/MUMPS unless separately authorized",
+        ],
+    }
+
+
+def _b3_jd_future_run_acceptance_diagnostics() -> Dict[str, Any]:
+    return {
+        "required_after_first_bounded_JD": [
+            "eps_converged_reason_and_converged_mode_count",
+            "finite_eigenvalue_and_converted_frequency_hz",
+            "generalized_residual_norm_Ax_minus_lambda_Mx",
+            "dirichlet_row_zero_compliance_of_eigenvector",
+            "nontrivial_structural_and_pressure_component_norms",
+            "pressure_support_within_retained_acoustic_space",
+            "target_region_comparison_diagnostic_only_not_auto_reject",
+        ],
+        "explicitly_retired_gates": [
+            "conditioned_seed_xH_Mx_positive",
+            "conditioned_scalar_Rayleigh_quotient_certification",
+        ],
+        "outcome_guidance": {
+            "justify_another_bounded_JD_validation_run": (
+                "At least one mode converges with finite λ, acceptable ||Ax-λMx||, "
+                "Dirichlet compliance, and nontrivial u/p support; frequency within "
+                "harvest diagnostic window but mismatch alone is not rejection."
+            ),
+            "reject_only_solver_setup": (
+                "EPS fails to set up/solve with JD on GNHEP, API missing, "
+                "non-finite eigenvalues, or residual/BC compliance failure on all modes."
+            ),
+            "reopen_B3_physics_only_if": (
+                "JD-converged mode shows operator/BC inconsistency, block assembly "
+                "mismatch vs audit, or systematic violation of Dirichlet contract — "
+                "not because scalar x^H M x cancels on the historical conditioned seed."
+            ),
+        },
+    }
+
+
+def _run_b3_jd_design_readiness_contract_only(pre: Dict[str, Any]) -> int:
+    mass_evidence = _load_mass_decomposition_evidence()
+    slepc_static = _b3_jd_slepc_api_static_inspection()
+    manifest = load_manifest()
+    case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
+    target_hz = float(case.get("target_hz", B3_JD_DEFAULT_TARGET_HZ))
+    jd_contract = _b3_jd_future_run_contract(
+        mass_evidence=mass_evidence,
+        target_hz=target_hz,
+    )
+    payload: Dict[str, Any] = {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "B3_JD_design_readiness_contract_only",
+        "no_new_eigensolve_executed": True,
+        "additional_eps": "NOT_AUTHORIZED",
+        "jd_wiring_authorized": False,
+        "B3_JD_execution_authorized": False,
+        "B3_JD_design_mode_creates_EPS_object": False,
+        "B3_JD_design_mode_calls_slepc_eps_api_probe": False,
+        "B3_JD_API_VM_probe_status": "NOT_RUN_PENDING_SEPARATE_AUTHORIZATION",
+        "operator_matrices_persisted": False,
+        "transfer_matrices_persisted": False,
+        "coupling_matrices_persisted": False,
+        "mapped_seed_persisted": False,
+        "conditioned_seed_persisted": False,
+        "vector_banks_persisted": False,
+        "solve_trees_created": False,
+        "artifact_storage_policy_applied": True,
+        "preassembly_contract_pass": pre.get("preassembly_contract_pass"),
+        "B3_mass_decomposition_evidence": mass_evidence,
+        "B3_JD_repository_inspection": _b3_jd_design_inspection_static(),
+        "B3_JD_slepc_api_static_inspection": slepc_static,
+        "B3_JD_future_run_acceptance_diagnostics": _b3_jd_future_run_acceptance_diagnostics(),
+    }
+    for key in _MASS_DECOMPOSITION_EVIDENCE_KEYS:
+        if key in mass_evidence:
+            payload[key] = mass_evidence[key]
+    payload.update(jd_contract)
+    evidence_complete = all(
+        mass_evidence.get(k) is not None for k in _MASS_DECOMPOSITION_EVIDENCE_KEYS[:10]
+    )
+    payload["B3_mass_decomposition_evidence_complete"] = bool(evidence_complete)
+    payload["B3_JD_design_readiness_contract_pass"] = bool(
+        jd_contract.get("B3_JD_operator_contract_pass") and evidence_complete
+    )
+    if payload["B3_JD_design_readiness_contract_pass"]:
+        verdict = "B3_JD_DESIGN_READINESS_CONTRACT_PASS_EXECUTION_NOT_AUTHORIZED"
+        exit_code = 0
+    else:
+        verdict = "B3_JD_DESIGN_READINESS_CONTRACT_INCOMPLETE"
+        exit_code = 2
+    payload["next_step_verdict"] = verdict
+    _write_json_atomic(OUT_JSON_B3_JD_DESIGN, payload)
+    md_lines = [
+        "# B3 JD design-readiness contract (report-only, no EPS)",
+        "",
+        f"- verdict: `{verdict}`",
+        f"- B3_JD_operator_contract_pass: {payload.get('B3_JD_operator_contract_pass')}",
+        f"- B3_JD_execution_authorized: {payload.get('B3_JD_execution_authorized')}",
+        "",
+        "## Mass-decomposition evidence (retires conditioned Rayleigh gate)",
+        "",
+        f"- classification: `{mass_evidence.get('B3_conditioned_seed_mass_diagnostic_classification')}`",
+        f"- q_uu: {mass_evidence.get('B3_conditioned_mass_q_uu')}",
+        f"- q_pu: {mass_evidence.get('B3_conditioned_mass_q_pu')}",
+        f"- q_pp: {mass_evidence.get('B3_conditioned_mass_q_pp')}",
+        f"- q_total_blocks: {mass_evidence.get('B3_conditioned_mass_q_total_from_blocks')}",
+        f"- q_total_final_AIJ: {mass_evidence.get('B3_conditioned_mass_q_total_from_final_AIJ')}",
+        f"- block_vs_final_consistency: {mass_evidence.get('B3_conditioned_mass_block_vs_final_consistency_pass')}",
+        "",
+        "## First bounded JD run (not executed)",
+        "",
+        f"- problem type: {payload.get('B3_JD_problem_type_required')}",
+        f"- solver: {payload.get('B3_JD_solver_type_requested')} "
+        f"(VM API probe: {payload.get('B3_JD_API_VM_probe_status')})",
+        f"- target: {payload.get('B3_JD_target_frequency_hz')} Hz",
+        f"- nev/ncv: {payload.get('B3_JD_initial_mode_count')}/{payload.get('B3_JD_ncv')}",
+        "",
+        "no_new_eigensolve_executed=True",
+    ]
+    OUT_MD_B3_JD_DESIGN.parent.mkdir(parents=True, exist_ok=True)
+    OUT_MD_B3_JD_DESIGN.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+    print(f"[B3_JD] mode=B3_JD_design_readiness_contract_only", flush=True)
+    print(f"[B3_JD] B3_JD_design_readiness_contract_pass={payload.get('B3_JD_design_readiness_contract_pass')}", flush=True)
+    print(f"[B3_JD] B3_JD_execution_authorized={payload.get('B3_JD_execution_authorized')}", flush=True)
+    print(
+        f"[B3_JD] B3_JD_design_mode_creates_EPS_object={payload.get('B3_JD_design_mode_creates_EPS_object')} "
+        f"B3_JD_design_mode_calls_slepc_eps_api_probe={payload.get('B3_JD_design_mode_calls_slepc_eps_api_probe')}",
+        flush=True,
+    )
+    print(f"[B3_JD] B3_JD_API_VM_probe_status={payload.get('B3_JD_API_VM_probe_status')}", flush=True)
+    print(f"[B3_JD] next_step_verdict={verdict}", flush=True)
+    print("[B3_JD] no_new_eigensolve_executed=True", flush=True)
+    print("[B3_JD] additional_eps=NOT_AUTHORIZED", flush=True)
+    return exit_code
+
+
 def _b3_seed_bc_conditioning_verdict(payload: Dict[str, Any]) -> str:
     if not bool(payload.get("B3_seed_final_dirichlet_rows_constructed")):
         return "B3_SEED_REPLAY_BLOCKED_BY_BC_CONDITIONING_INTERFACE"
@@ -3289,6 +3624,9 @@ def main() -> int:
 
     if _is_b3_conditioned_seed_mass_decomposition_audit_only_mode(sys.argv):
         return _run_b3_seed_replay_audit_only(pre, conditioned_mass_decomposition_only=True)
+
+    if _is_b3_jd_design_readiness_contract_only_mode(sys.argv):
+        return _run_b3_jd_design_readiness_contract_only(pre)
 
     if _is_b3_seed_replay_audit_only_mode(sys.argv):
         return _run_b3_seed_replay_audit_only(pre)
