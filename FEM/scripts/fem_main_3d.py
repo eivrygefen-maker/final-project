@@ -6552,7 +6552,7 @@ def _solve_coupled_evp(
     raw_capture_payload: Dict[str, Any] = {
         "B3_composition_parent_raw_capture_constructed": False,
         "B3_composition_parent_raw_capture_method": (
-            "fem_main_3d_internal_pre_gnhep_pre_restriction_pre_BC_raw_block_capture"
+            "fem_main_3d_direct_raw_block_assembly_pre_gnhep_pre_restriction_pre_BC"
         ),
         "parent_raw_App_available": False,
         "parent_raw_Mpp_available": False,
@@ -6562,22 +6562,30 @@ def _solve_coupled_evp(
         "parent_raw_blocks_before_gnhep_normalization": False,
         "parent_raw_blocks_before_pressure_restriction": False,
         "parent_raw_blocks_before_algebraic_BC": False,
+        "parent_raw_u_dimension": int(W.sub(0).dofmap.index_map.size_global * W.sub(0).dofmap.index_map_bs),
+        "parent_raw_p_dimension": int(W.sub(1).dofmap.index_map.size_global * W.sub(1).dofmap.index_map_bs),
+        "parent_raw_block_representation": (
+            "collapsed_parent_u_and_collapsed_parent_p_pre_restriction"
+        ),
+        "parent_raw_Aup_shape": None,
+        "parent_raw_Apu_shape": None,
+        "parent_raw_Mpu_shape": None,
+        "parent_raw_App_shape": None,
+        "parent_raw_Mpp_shape": None,
         "B3_raw_capture_failure_reason": None,
     }
     if _raw_capture_enabled:
         try:
-            _, p_to_W_raw = W.sub(1).collapse()
-            p_to_W_raw = np.asarray(p_to_W_raw, dtype=np.int32).ravel()
-            u_to_W_raw = np.asarray(u_parent_indices, dtype=np.int32).ravel()
-            is_u = PETSc.IS().createGeneral(u_to_W_raw.astype(np.int32), comm=PETSc.COMM_WORLD)
-            is_p = PETSc.IS().createGeneral(p_to_W_raw.astype(np.int32), comm=PETSc.COMM_WORLD)
-            raw_A = _assemble_coupled_matrix_safe(a_form, bcs=[], status_callback=status_callback)
-            raw_M = _assemble_coupled_matrix_safe(m_form, bcs=[], status_callback=status_callback)
-            raw_App = raw_A.createSubMatrix(is_p, is_p)
-            raw_Mpp = raw_M.createSubMatrix(is_p, is_p)
-            raw_Aup = raw_A.createSubMatrix(is_u, is_p)
-            raw_Apu = raw_A.createSubMatrix(is_p, is_u)
-            raw_Mpu = raw_M.createSubMatrix(is_p, is_u)
+            raw_App = fem.petsc.assemble_matrix(fem.form(a_pp), bcs=[])
+            raw_Mpp = fem.petsc.assemble_matrix(fem.form(m_pp), bcs=[])
+            raw_Aup = fem.petsc.assemble_matrix(fem.form(a_up), bcs=[])
+            raw_Apu = fem.petsc.assemble_matrix(fem.form(a_pu), bcs=[])
+            raw_Mpu = fem.petsc.assemble_matrix(fem.form(m_pu), bcs=[])
+            raw_App.assemble()
+            raw_Mpp.assemble()
+            raw_Aup.assemble()
+            raw_Apu.assemble()
+            raw_Mpu.assemble()
             _LAST_COUPLED_RAW_BLOCK_CAPTURE = {
                 **raw_capture_payload,
                 "B3_composition_parent_raw_capture_constructed": True,
@@ -6589,18 +6597,17 @@ def _solve_coupled_evp(
                 "parent_raw_blocks_before_gnhep_normalization": True,
                 "parent_raw_blocks_before_pressure_restriction": True,
                 "parent_raw_blocks_before_algebraic_BC": True,
+                "parent_raw_Aup_shape": [int(raw_Aup.getSize()[0]), int(raw_Aup.getSize()[1])],
+                "parent_raw_Apu_shape": [int(raw_Apu.getSize()[0]), int(raw_Apu.getSize()[1])],
+                "parent_raw_Mpu_shape": [int(raw_Mpu.getSize()[0]), int(raw_Mpu.getSize()[1])],
+                "parent_raw_App_shape": [int(raw_App.getSize()[0]), int(raw_App.getSize()[1])],
+                "parent_raw_Mpp_shape": [int(raw_Mpp.getSize()[0]), int(raw_Mpp.getSize()[1])],
                 "raw_App": raw_App,
                 "raw_Mpp": raw_Mpp,
                 "raw_Aup": raw_Aup,
                 "raw_Apu": raw_Apu,
                 "raw_Mpu": raw_Mpu,
-                "u_to_W_full": u_to_W_raw,
-                "p_to_W_full": p_to_W_raw,
             }
-            raw_A.destroy()
-            raw_M.destroy()
-            is_u.destroy()
-            is_p.destroy()
         except Exception as exc:
             _LAST_COUPLED_RAW_BLOCK_CAPTURE = {
                 **raw_capture_payload,
