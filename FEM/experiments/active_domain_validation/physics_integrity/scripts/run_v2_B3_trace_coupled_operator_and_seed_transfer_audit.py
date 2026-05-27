@@ -51,9 +51,13 @@ C2_SPARSE_COUPLING_ONLY_ARG = "--C2-sparse-coupling-only"
 B3_RAW_COMPOSITION_CONTRACT_ONLY_ARG = "--B3-raw-composition-contract-only"
 B3_SEED_REPLAY_AUDIT_ONLY_ARG = "--B3-seed-replay-audit-only"
 B3_OPERATOR_AIJ_BC_CONTRACT_ONLY_ARG = "--B3-operator-AIJ-BC-contract-only"
+B3_SEED_BC_CONDITIONED_REPLAY_AUDIT_ONLY_ARG = "--B3-seed-BC-conditioned-replay-audit-only"
 V2_VECTOR_BC_CONTRACT_ONLY_ARG = "--V2-vector-BC-contract-only"
 OUT_JSON_B3_OPERATOR_AIJ_BC = CONV_DIAG / "v2_B3_operator_aij_BC_contract_only.json"
 OUT_MD_B3_OPERATOR_AIJ_BC = CONV_DIAG / "v2_B3_operator_aij_BC_contract_only.md"
+OUT_JSON_B3_SEED_BC_CONDITIONED = CONV_DIAG / "v2_B3_seed_BC_conditioned_replay_audit_only.json"
+OUT_MD_B3_SEED_BC_CONDITIONED = CONV_DIAG / "v2_B3_seed_BC_conditioned_replay_audit_only.md"
+B3_ARTIFICIAL_LAMBDA_UNITY_FREQUENCY_HZ = 1.0 / (2.0 * math.pi)
 
 TAG_TOP = 1
 TAG_BACK = 3
@@ -427,7 +431,7 @@ def _build_b3_scaled_restricted_operators_in_memory(
     mats_to_destroy: List[Any],
     report_meta: Dict[str, Any] | None = None,
     destroy_seen: set[int] | None = None,
-) -> tuple[Any, Any, np.ndarray, np.ndarray, Dict[str, Any]]:
+) -> tuple[Any, Any, np.ndarray, np.ndarray, Dict[str, Any], np.ndarray, np.ndarray, np.ndarray]:
     meta: Dict[str, Any] = report_meta if report_meta is not None else {}
     mat_seen: set[int] = destroy_seen if destroy_seen is not None else set()
     p_air_collapsed = np.unique(np.asarray(p_air_collapsed, dtype=np.int32).ravel())
@@ -593,14 +597,16 @@ def _build_b3_scaled_restricted_operators_in_memory(
     meta.update(pr_meta)
     meta["B3_seed_operator_build_stage"] = "post_pressure_release_row_locate"
     _native_stage("after_BC_row_locate")
+    tag5_rows = np.unique(np.asarray(b3_fix_u_rows, dtype=np.int32).ravel())
+    p_release_rows = np.unique(np.asarray(p_release, dtype=np.int32).ravel())
     bc_rows = np.unique(
-        np.concatenate(
-            [
-                np.asarray(b3_fix_u_rows, dtype=np.int32).ravel(),
-                np.asarray(p_release, dtype=np.int32).ravel(),
-            ]
-        ).astype(np.int32, copy=False)
+        np.concatenate([tag5_rows, p_release_rows]).astype(np.int32, copy=False)
     )
+    meta["B3_seed_final_dirichlet_rows_constructed"] = True
+    meta["B3_seed_tag5_dirichlet_row_count"] = int(tag5_rows.size)
+    meta["B3_seed_pressure_release_dirichlet_row_count"] = int(p_release_rows.size)
+    meta["B3_seed_total_dirichlet_row_count"] = int(bc_rows.size)
+    meta["B3_operator_bc_row_crc32"] = _crc32_i32(bc_rows)
     tag5_ok = bool(
         b3_fix_u_rows.size > 0
         and int(np.unique(np.asarray(b3_fix_u_rows, dtype=np.int32).ravel() // 3).size * 3)
@@ -642,8 +648,9 @@ def _build_b3_scaled_restricted_operators_in_memory(
 
     u_idx = np.arange(n_u, dtype=np.int32)
     p_idx = np.arange(n_u, n_u + n_p_active, dtype=np.int32)
+    meta["B3_seed_dirichlet_row_contract_matches_operator_BC"] = True
     _native_stage("operator_build_return")
-    return a_b3, m_b3, u_idx, p_idx, meta
+    return a_b3, m_b3, u_idx, p_idx, meta, bc_rows, tag5_rows, p_release_rows
 
 
 def _extract_submesh_to_parent_entity_indices(
@@ -819,7 +826,139 @@ def _rayleigh_residual_like(
         "xH_Mx": float(ray.get("xH_Mx", float("nan"))),
         "replay_frequency_hz": float(ray.get("rayleigh_f_hz", float("nan"))),
         "replay_relative_residual": float(residual.get("relative_residual", float("nan"))),
+        "rayleigh_lambda": lam,
     }
+
+
+def _b3_lambda_near_unity_signature(f_hz: Any, *, rtol: float = 1.0e-6) -> bool:
+    """True when Rayleigh frequency implies λ ≈ 1 (f ≈ 1/(2π) Hz)."""
+    if f_hz is None or isinstance(f_hz, str):
+        return False
+    try:
+        f_v = float(f_hz)
+    except Exception:
+        return False
+    if not math.isfinite(f_v):
+        return False
+    lam = (2.0 * math.pi * f_v) ** 2
+    if not math.isfinite(lam):
+        return False
+    return abs(lam - 1.0) <= float(rtol) * max(1.0, abs(lam))
+
+
+def _b3_seed_dirichlet_subvector_metrics(
+    seed: np.ndarray,
+    *,
+    dirichlet_rows: np.ndarray,
+    tag5_rows: np.ndarray,
+    p_release_rows: np.ndarray,
+) -> Dict[str, Any]:
+    seed = np.asarray(seed, dtype=np.float64).ravel()
+    d_rows = np.unique(np.asarray(dirichlet_rows, dtype=np.int32).ravel())
+    tag5 = np.unique(np.asarray(tag5_rows, dtype=np.int32).ravel())
+    p_rel = np.unique(np.asarray(p_release_rows, dtype=np.int32).ravel())
+    total_norm = float(np.linalg.norm(seed))
+    if d_rows.size > 0 and int(np.max(d_rows)) < seed.size:
+        d_block = seed[d_rows]
+        dirichlet_norm = float(np.linalg.norm(d_block))
+        nonzero_d = int(np.count_nonzero(np.abs(d_block) > 0.0))
+    else:
+        dirichlet_norm = 0.0
+        nonzero_d = 0
+    tag5_norm = float(np.linalg.norm(seed[tag5])) if tag5.size > 0 and int(np.max(tag5)) < seed.size else 0.0
+    p_rel_norm = float(np.linalg.norm(seed[p_rel])) if p_rel.size > 0 and int(np.max(p_rel)) < seed.size else 0.0
+    frac = dirichlet_norm / max(total_norm, 1.0e-30) if total_norm > 0.0 else float("nan")
+    return {
+        "total_norm": total_norm,
+        "dirichlet_norm": dirichlet_norm,
+        "dirichlet_norm_fraction": frac,
+        "nonzero_dirichlet_entry_count": nonzero_d,
+        "tag5_norm": tag5_norm,
+        "pressure_release_norm": p_rel_norm,
+    }
+
+
+def _audit_b3_seed_bc_conditioning(
+    *,
+    A_b3: Any,
+    M_b3: Any,
+    b3_seed: np.ndarray,
+    u_idx: np.ndarray,
+    p_idx: np.ndarray,
+    bc_rows: np.ndarray,
+    tag5_rows: np.ndarray,
+    p_release_rows: np.ndarray,
+    operator_bc_row_crc32: int | None,
+) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "B3_seed_conditioning_method": "ZERO_FINAL_B3_DIRICHLET_ROWS_ON_MAPPED_HISTORICAL_SEED",
+        "conditioned_seed_persisted": False,
+    }
+    bc_rows = np.unique(np.asarray(bc_rows, dtype=np.int32).ravel())
+    tag5_rows = np.unique(np.asarray(tag5_rows, dtype=np.int32).ravel())
+    p_release_rows = np.unique(np.asarray(p_release_rows, dtype=np.int32).ravel())
+    n_w = int(b3_seed.size)
+    out["B3_seed_final_dirichlet_rows_constructed"] = bool(bc_rows.size > 0)
+    out["B3_seed_tag5_dirichlet_row_count"] = int(tag5_rows.size)
+    out["B3_seed_pressure_release_dirichlet_row_count"] = int(p_release_rows.size)
+    out["B3_seed_total_dirichlet_row_count"] = int(bc_rows.size)
+    out["B3_seed_dirichlet_row_contract_matches_operator_BC"] = bool(
+        operator_bc_row_crc32 is not None and _crc32_i32(bc_rows) == int(operator_bc_row_crc32)
+    )
+    if bc_rows.size == 0 or int(np.max(bc_rows)) >= n_w or int(np.min(bc_rows)) < 0:
+        out["B3_seed_conditioning_failure_reason"] = "invalid_final_dirichlet_row_set"
+        out["B3_seed_conditioned_vector_constructed"] = False
+        return out
+
+    pre = _b3_seed_dirichlet_subvector_metrics(
+        b3_seed, dirichlet_rows=bc_rows, tag5_rows=tag5_rows, p_release_rows=p_release_rows
+    )
+    pre_replay = _rayleigh_residual_like(A_b3, M_b3, b3_seed, u_idx=u_idx, p_idx=p_idx)
+    pre_f = _safe_float(pre_replay.get("replay_frequency_hz"))
+    out["B3_seed_preconditioning_total_norm"] = _safe_float(pre["total_norm"])
+    out["B3_seed_preconditioning_dirichlet_norm"] = _safe_float(pre["dirichlet_norm"])
+    out["B3_seed_preconditioning_dirichlet_norm_fraction"] = _safe_float(pre["dirichlet_norm_fraction"])
+    out["B3_seed_preconditioning_nonzero_dirichlet_entry_count"] = int(pre["nonzero_dirichlet_entry_count"])
+    out["B3_seed_preconditioning_tag5_norm"] = _safe_float(pre["tag5_norm"])
+    out["B3_seed_preconditioning_pressure_release_norm"] = _safe_float(pre["pressure_release_norm"])
+    out["B3_seed_preconditioning_rayleigh_frequency_hz"] = pre_f
+    out["B3_seed_preconditioning_lambda_near_unity_signature"] = _b3_lambda_near_unity_signature(pre_f)
+    out["B3_seed_rayleigh_frequency_hz"] = pre_f
+
+    b3_conditioned = np.asarray(b3_seed, dtype=np.float64).copy()
+    b3_conditioned[bc_rows] = 0.0
+    post = _b3_seed_dirichlet_subvector_metrics(
+        b3_conditioned,
+        dirichlet_rows=bc_rows,
+        tag5_rows=tag5_rows,
+        p_release_rows=p_release_rows,
+    )
+    out["B3_seed_conditioned_vector_constructed"] = True
+    out["B3_seed_conditioned_dirichlet_norm"] = _safe_float(post["dirichlet_norm"])
+    out["B3_seed_conditioned_dirichlet_zero_pass"] = bool(
+        math.isfinite(float(post["dirichlet_norm"])) and float(post["dirichlet_norm"]) <= 1.0e-30
+    )
+    out["B3_seed_conditioned_total_norm"] = _safe_float(post["total_norm"])
+    out["B3_seed_conditioned_nonzero_pass"] = bool(
+        math.isfinite(float(post["total_norm"])) and float(post["total_norm"]) > 1.0e-30
+    )
+    if not out["B3_seed_conditioned_nonzero_pass"]:
+        out["B3_seed_conditioning_failure_reason"] = "conditioned_seed_vanished"
+        return out
+
+    cond_replay = _rayleigh_residual_like(A_b3, M_b3, b3_conditioned, u_idx=u_idx, p_idx=p_idx)
+    out["B3_seed_conditioned_xH_Mx"] = _safe_float(cond_replay.get("xH_Mx"))
+    out["B3_seed_conditioned_rayleigh_frequency_hz"] = _safe_float(cond_replay.get("replay_frequency_hz"))
+    out["B3_seed_conditioned_relative_residual"] = _safe_float(cond_replay.get("replay_relative_residual"))
+    p_block = b3_conditioned[p_idx]
+    p_norm = float(np.linalg.norm(p_block))
+    total_norm = float(np.linalg.norm(b3_conditioned))
+    out["B3_seed_conditioned_pressure_support_metric"] = _safe_float(
+        p_norm / max(total_norm, 1.0e-30) if total_norm > 0 else float("nan")
+    )
+    out["B3_seed_conditioned_u_norm"] = _safe_float(float(np.linalg.norm(b3_conditioned[u_idx])))
+    out["B3_seed_conditioned_p_norm"] = _safe_float(p_norm)
+    return out
 
 
 def _coupling_contract_precheck() -> Dict[str, Any]:
@@ -1587,6 +1726,59 @@ def _is_b3_operator_aij_bc_contract_only_mode(argv: List[str]) -> bool:
     return B3_OPERATOR_AIJ_BC_CONTRACT_ONLY_ARG in argv
 
 
+def _is_b3_seed_bc_conditioned_replay_audit_only_mode(argv: List[str]) -> bool:
+    return B3_SEED_BC_CONDITIONED_REPLAY_AUDIT_ONLY_ARG in argv
+
+
+def _b3_seed_bc_conditioning_verdict(payload: Dict[str, Any]) -> str:
+    if not bool(payload.get("B3_seed_final_dirichlet_rows_constructed")):
+        return "B3_SEED_REPLAY_BLOCKED_BY_BC_CONDITIONING_INTERFACE"
+    if not bool(payload.get("B3_seed_conditioned_vector_constructed")):
+        return "B3_SEED_REPLAY_BLOCKED_BY_BC_CONDITIONING_INTERFACE"
+    contamination = bool(
+        int(payload.get("B3_seed_preconditioning_nonzero_dirichlet_entry_count", 0) or 0) > 0
+        and (
+            bool(payload.get("B3_seed_preconditioning_lambda_near_unity_signature"))
+            or float(payload.get("B3_seed_preconditioning_dirichlet_norm_fraction") or 0.0) > 1.0e-12
+        )
+    )
+    conditioned_ok = bool(
+        payload.get("B3_seed_conditioned_dirichlet_zero_pass")
+        and payload.get("B3_seed_conditioned_nonzero_pass")
+    )
+
+    def _finite_pos(x: Any) -> bool:
+        if x is None or isinstance(x, str):
+            return False
+        try:
+            v = float(x)
+            return math.isfinite(v) and v > 0.0
+        except Exception:
+            return False
+
+    def _finite_scalar(x: Any) -> bool:
+        if x is None or isinstance(x, str):
+            return False
+        try:
+            return math.isfinite(float(x))
+        except Exception:
+            return False
+
+    replay_ok = bool(
+        _finite_pos(payload.get("B3_seed_conditioned_xH_Mx"))
+        and _finite_pos(payload.get("B3_seed_conditioned_rayleigh_frequency_hz"))
+        and _finite_scalar(payload.get("B3_seed_conditioned_relative_residual"))
+        and _finite_scalar(payload.get("B3_seed_conditioned_pressure_support_metric"))
+        and float(payload.get("B3_seed_conditioned_pressure_support_metric")) > 1.0e-12
+        and not _b3_lambda_near_unity_signature(payload.get("B3_seed_conditioned_rayleigh_frequency_hz"))
+    )
+    if contamination and conditioned_ok and replay_ok:
+        return "B3_SEED_BC_CONTAMINATION_CONFIRMED_CONDITIONED_REPLAY_VALID_FOR_JD_DESIGN_REVIEW"
+    if contamination and conditioned_ok:
+        return "B3_SEED_BC_CONTAMINATION_CONFIRMED_BUT_CONDITIONED_REPLAY_INCONCLUSIVE"
+    return "B3_SEED_REPLAY_BLOCKED_BY_BC_CONDITIONING_INTERFACE"
+
+
 def _is_v2_vector_bc_contract_only_mode(argv: List[str]) -> bool:
     return V2_VECTOR_BC_CONTRACT_ONLY_ARG in argv
 
@@ -2110,18 +2302,24 @@ def _run_b3_seed_replay_audit_only(
     pre: Dict[str, Any],
     *,
     operator_aij_bc_contract_only: bool = False,
+    bc_conditioned_replay_only: bool = False,
 ) -> int:
-    out_json = OUT_JSON_B3_OPERATOR_AIJ_BC if operator_aij_bc_contract_only else OUT_JSON_B3_SEED_REPLAY
-    out_md = OUT_MD_B3_OPERATOR_AIJ_BC if operator_aij_bc_contract_only else OUT_MD_B3_SEED_REPLAY
-    mode_label = (
-        "B3_operator_AIJ_BC_contract_only"
-        if operator_aij_bc_contract_only
-        else "B3_seed_replay_audit_only"
-    )
+    if bc_conditioned_replay_only:
+        out_json = OUT_JSON_B3_SEED_BC_CONDITIONED
+        out_md = OUT_MD_B3_SEED_BC_CONDITIONED
+        mode_label = "B3_seed_BC_conditioned_replay_audit_only"
+    elif operator_aij_bc_contract_only:
+        out_json = OUT_JSON_B3_OPERATOR_AIJ_BC
+        out_md = OUT_MD_B3_OPERATOR_AIJ_BC
+        mode_label = "B3_operator_AIJ_BC_contract_only"
+    else:
+        out_json = OUT_JSON_B3_SEED_REPLAY
+        out_md = OUT_MD_B3_SEED_REPLAY
+        mode_label = "B3_seed_replay_audit_only"
     payload: Dict[str, Any] = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "mode": mode_label,
-        "B3_seed_replay_executed": not operator_aij_bc_contract_only,
+        "B3_seed_replay_executed": not operator_aij_bc_contract_only and not bc_conditioned_replay_only,
         "no_new_eigensolve_executed": True,
         "additional_eps": "NOT_AUTHORIZED",
         "jd_wiring_authorized": False,
@@ -2129,6 +2327,7 @@ def _run_b3_seed_replay_audit_only(
         "transfer_matrices_persisted": False,
         "coupling_matrices_persisted": False,
         "mapped_seed_persisted": False,
+        "conditioned_seed_persisted": False,
         "vector_banks_persisted": False,
         "solve_trees_created": False,
         "artifact_storage_policy_applied": True,
@@ -2143,7 +2342,9 @@ def _run_b3_seed_replay_audit_only(
         "B3_native_destroyed_unique_object_count": None,
         "B3_native_duplicate_destroy_attempt_count": None,
     }
-    if operator_aij_bc_contract_only:
+    if bc_conditioned_replay_only:
+        verdict = "B3_SEED_REPLAY_BLOCKED_BY_BC_CONDITIONING_INTERFACE"
+    elif operator_aij_bc_contract_only:
         verdict = "B3_OPERATOR_NATIVE_LIFECYCLE_BLOCKED"
     else:
         verdict = "B3_SEED_REPLAY_BLOCKED_BY_OPERATOR_RESTRICTION_INTERFACE"
@@ -2344,7 +2545,8 @@ def _run_b3_seed_replay_audit_only(
         print("[B3_seed] stage=before_b3_operator_build", flush=True)
         op_meta: Dict[str, Any] = {}
         try:
-            A_b3, M_b3, u_idx, p_idx, op_meta = _build_b3_scaled_restricted_operators_in_memory(
+            A_b3, M_b3, u_idx, p_idx, op_meta, bc_rows, tag5_rows, p_release_rows = (
+                _build_b3_scaled_restricted_operators_in_memory(
                 raw_Auu=raw_Auu,
                 raw_Muu=raw_Muu,
                 raw_App=raw_App,
@@ -2364,6 +2566,7 @@ def _run_b3_seed_replay_audit_only(
                 mats_to_destroy=mats_to_destroy,
                 report_meta=op_meta,
                 destroy_seen=mat_destroy_seen,
+                )
             )
             payload.update(op_meta)
             payload["B3_seed_operator_build_pass"] = True
@@ -2453,6 +2656,25 @@ def _run_b3_seed_replay_audit_only(
         payload["B3_seed_mapped_p_dimension"] = int(n_p_retained)
         payload["B3_seed_mapped_total_dimension"] = int(b3_seed.size)
         payload["B3_seed_mapping_failure_reason"] = None
+
+        if bc_conditioned_replay_only:
+            cond_meta = _audit_b3_seed_bc_conditioning(
+                A_b3=A_b3,
+                M_b3=M_b3,
+                b3_seed=b3_seed,
+                u_idx=u_idx,
+                p_idx=p_idx,
+                bc_rows=bc_rows,
+                tag5_rows=tag5_rows,
+                p_release_rows=p_release_rows,
+                operator_bc_row_crc32=payload.get("B3_operator_bc_row_crc32"),
+            )
+            payload.update(cond_meta)
+            payload["B3_seed_dirichlet_row_contract_matches_operator_BC"] = bool(
+                cond_meta.get("B3_seed_dirichlet_row_contract_matches_operator_BC")
+            )
+            verdict = _b3_seed_bc_conditioning_verdict(payload)
+            return 0 if verdict.endswith("VALID_FOR_JD_DESIGN_REVIEW") else 2
 
         parent_replay = _rayleigh_residual_like(A_parent, M_parent, parent_seed, u_idx=u_to_W_parent, p_idx=p_to_W_parent)
         hist_f = _safe_float(parent_replay.get("replay_frequency_hz"))
@@ -2665,6 +2887,9 @@ def main() -> int:
 
     if _is_b3_operator_aij_bc_contract_only_mode(sys.argv):
         return _run_b3_seed_replay_audit_only(pre, operator_aij_bc_contract_only=True)
+
+    if _is_b3_seed_bc_conditioned_replay_audit_only_mode(sys.argv):
+        return _run_b3_seed_replay_audit_only(pre, bc_conditioned_replay_only=True)
 
     if _is_b3_seed_replay_audit_only_mode(sys.argv):
         return _run_b3_seed_replay_audit_only(pre)
