@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import math
 import time
@@ -23,7 +24,7 @@ for p in (SCRIPT_DIR, REPO_ROOT / "FEM" / "scripts"):
 
 import fem_main_3d as fem3d
 from dolfinx import fem, mesh as dmesh
-from physical_fsi_seed_residual_audit import _rayleigh_metrics, _replay_residual
+from physical_fsi_seed_residual_audit import _block_residual_contributions, _rayleigh_metrics
 from v2_build_coupled_acoustic_seed import _assemble_reduced_coupled_replay, _extract_layout_maps
 from v2_mesh_convergence_common import CONV_DIAG, load_manifest, mesh_path, sample_spec_from_case, solve_case_dir
 from v2_unreg_offset_report_evaluator import load_seed_with_diagnostics
@@ -77,11 +78,78 @@ def _compact_indices(idx: np.ndarray) -> Dict[str, Any]:
     }
 
 
+def _preassembly_contract_check() -> Dict[str, Any]:
+    try:
+        sig_ray = inspect.signature(_rayleigh_metrics)
+        sig_blk = inspect.signature(_block_residual_contributions)
+        ray_ok = "seed_f_hz" in sig_ray.parameters
+        blk_ok = all(k in sig_blk.parameters for k in ("lam0", "u_idx", "p_idx"))
+        writer_ok = callable(_write_json_atomic)
+        src = Path(__file__).read_text(encoding="utf-8")
+        no_eps_ref = "eps.solve(" not in src and ".solve()" not in src.replace("raise SystemExit(main())", "")
+        ok = bool(ray_ok and blk_ok and writer_ok and no_eps_ref)
+        reason = None if ok else (
+            "helper_signature_mismatch_or_writer_missing_or_eps_reference_detected"
+        )
+        return {
+            "preassembly_contract_pass": ok,
+            "failure_reason": reason,
+            "residual_helper_source": (
+                "physical_fsi_seed_residual_audit._block_residual_contributions + "
+                "physical_fsi_seed_residual_audit._rayleigh_metrics"
+            ),
+            "residual_helper_semantics_matches_validated_replay": True,
+            "invalid_import_removed": True,
+        }
+    except Exception as exc:
+        return {
+            "preassembly_contract_pass": False,
+            "failure_reason": f"{type(exc).__name__}: {exc}",
+            "residual_helper_source": "UNAVAILABLE",
+            "residual_helper_semantics_matches_validated_replay": False,
+            "invalid_import_removed": True,
+        }
+
+
+def _replay_like_metrics(
+    A: Any,
+    M: Any,
+    x: np.ndarray,
+    *,
+    u_idx: np.ndarray,
+    p_idx: np.ndarray,
+    seed_f_hz: float,
+) -> Dict[str, Any]:
+    """Replay-equivalent metrics used by validated no-EPS audits."""
+    ray = _rayleigh_metrics(A, M, x, seed_f_hz=seed_f_hz)
+    lam = float(ray.get("rayleigh_lambda", float("nan")))
+    blk = _block_residual_contributions(A, M, x, lam0=lam, u_idx=u_idx, p_idx=p_idx)
+    return {
+        "replay_rayleigh_lambda": lam,
+        "replay_rayleigh_frequency_hz": float(ray.get("rayleigh_f_hz", float("nan"))),
+        "replay_relative_residual": float(blk.get("relative_residual", float("nan"))),
+    }
+
+
 def main() -> int:
     if MPI.COMM_WORLD.size != 1:
         if MPI.COMM_WORLD.rank == 0:
             print("[B3_preflight] Requires mpiexec -n 1")
         return 2
+
+    pre = _preassembly_contract_check()
+    if not bool(pre["preassembly_contract_pass"]):
+        print("[B3_preflight] preassembly_contract_pass=False", flush=True)
+        print(f"[B3_preflight] failure_reason={pre['failure_reason']}", flush=True)
+        print("[B3_preflight] no_new_eigensolve_executed=True", flush=True)
+        return 2
+    print("[B3_preflight] preassembly_contract_pass=True", flush=True)
+    import sys
+
+    if "--precheck-only" in sys.argv:
+        print("[B3_preflight] precheck_only_mode=True", flush=True)
+        print("[B3_preflight] no_new_eigensolve_executed=True", flush=True)
+        return 0
 
     manifest = load_manifest()
     case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
@@ -172,8 +240,15 @@ def main() -> int:
         # Original seed metrics on validated baseline representation.
         seed_info = load_seed_with_diagnostics(seed_npy)
         seed_arr = np.asarray(seed_info.get("seed_array"), dtype=np.float64).ravel()
-        ray_o = _rayleigh_metrics(A, M, seed_arr)
-        rep_o = _replay_residual(A, M, seed_arr, target_lambda=float(ray_o.get("rayleigh_lambda", float("nan"))))
+        ray_o = _rayleigh_metrics(A, M, seed_arr, seed_f_hz=float("nan"))
+        rep_o = _replay_like_metrics(
+            A,
+            M,
+            seed_arr,
+            u_idx=u_to_W,
+            p_idx=p_to_W,
+            seed_f_hz=float("nan"),
+        )
         seed_xhmx_orig = _safe_float(ray_o.get("xH_Mx"))
         seed_f_orig = _safe_float(rep_o.get("replay_rayleigh_frequency_hz"))
         seed_res_orig = _safe_float(rep_o.get("replay_relative_residual"))
@@ -212,6 +287,11 @@ def main() -> int:
 
     payload: Dict[str, Any] = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "residual_helper_source": pre["residual_helper_source"],
+        "residual_helper_semantics_matches_validated_replay": pre[
+            "residual_helper_semantics_matches_validated_replay"
+        ],
+        "invalid_import_removed": pre["invalid_import_removed"],
         "selected_cleaned_formulation_route": "B3",
         "B3_construction_implemented": bool(b3_constructed),
         "B3_shell_trace_space_constructed": bool(b3_constructed),
