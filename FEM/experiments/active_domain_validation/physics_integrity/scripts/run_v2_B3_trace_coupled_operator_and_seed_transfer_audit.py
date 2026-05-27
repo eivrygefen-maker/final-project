@@ -34,7 +34,9 @@ from v2_unreg_offset_report_evaluator import load_seed_with_diagnostics
 CASE_ID = "baseline_coupled_v2"
 OUT_JSON = CONV_DIAG / "v2_B3_trace_coupled_operator_and_seed_transfer_audit.json"
 OUT_MD = CONV_DIAG / "v2_B3_trace_coupled_operator_and_seed_transfer_audit.md"
+OUT_JSON_C2_CONTRACT = CONV_DIAG / "v2_B3_C2_transfer_contract_only.json"
 REPORT_SIZE_TARGET_BYTES = 1048576
+C2_TRANSFER_CONTRACT_ONLY_ARG = "--C2-transfer-contract-only"
 
 TAG_TOP = 1
 TAG_BACK = 3
@@ -433,10 +435,181 @@ def _build_c2_trace_to_parent_transfer(
     }
 
 
+def _is_c2_transfer_contract_only_mode(argv: List[str]) -> bool:
+    return C2_TRANSFER_CONTRACT_ONLY_ARG in argv
+
+
+def _print_c2_transfer_contract_summary(
+    tmeta: Dict[str, Any],
+    *,
+    pre: Dict[str, Any],
+    codomain_note: str,
+) -> int:
+    exact = bool(tmeta.get("ok", False))
+    method = "EntityMap_plus_exact_dof_coordinate_match_on_P1_trace_and_parent"
+    verdict = (
+        "B3_COUPLING_CONSTRUCTED_CONTINUE_TO_OPERATOR_AND_SEED_AUDIT"
+        if exact
+        else "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE"
+    )
+    blocker = None if exact else (tmeta.get("reason") or tmeta.get("failure_detail"))
+
+    print("[B3_C2] mode=C2_transfer_contract_only", flush=True)
+    print(f"[B3_C2] preassembly_contract_pass={pre['preassembly_contract_pass']}", flush=True)
+    print(f"[B3_C2] codomain_space_note={codomain_note}", flush=True)
+    print(f"[B3_C2] C2_T_construction_method={method}", flush=True)
+    print(f"[B3_C2] C2_T_domain_dimension={tmeta.get('domain_dim')}", flush=True)
+    print(f"[B3_C2] C2_T_codomain_dimension={tmeta.get('codomain_dim')}", flush=True)
+    print(f"[B3_C2] C2_T_shape={tmeta.get('shape')}", flush=True)
+    print(f"[B3_C2] C2_T_constructed={exact}", flush=True)
+    print(f"[B3_C2] C2_T_nnz={tmeta.get('nnz')}", flush=True)
+    print(f"[B3_C2] C2_T_density={tmeta.get('density')}", flush=True)
+    print(f"[B3_C2] C2_T_row_nnz_min={tmeta.get('row_nnz_min')}", flush=True)
+    print(f"[B3_C2] C2_T_row_nnz_max={tmeta.get('row_nnz_max')}", flush=True)
+    print(f"[B3_C2] C2_T_mapping_checksum={tmeta.get('mapping_checksum')}", flush=True)
+    print(
+        f"[B3_C2] C2_T_geometry_map_contract_pass={tmeta.get('C2_T_geometry_map_contract_pass')}",
+        flush=True,
+    )
+    print(
+        f"[B3_C2] C2_T_constant_field_transfer_pass={tmeta.get('C2_T_constant_field_transfer_pass')}",
+        flush=True,
+    )
+    print(
+        f"[B3_C2] C2_T_trace_support_transfer_pass={tmeta.get('C2_T_trace_support_transfer_pass')}",
+        flush=True,
+    )
+    print(
+        f"[B3_C2] C2_T_tag_support_transfer_pass={tmeta.get('C2_T_tag_support_transfer_pass')}",
+        flush=True,
+    )
+    print(f"[B3_C2] C2_T_persisted_to_disk=False", flush=True)
+    print(f"[B3_C2] C2_T_exact_transfer_contract_pass={exact}", flush=True)
+    print(f"[B3_C2] C2_T_construction_blocker={blocker}", flush=True)
+    print(f"[B3_C2] next_step_verdict={verdict}", flush=True)
+    print("[B3_C2] no_new_eigensolve_executed=True", flush=True)
+    print("[B3_C2] additional_eps=NOT_AUTHORIZED", flush=True)
+    return 0 if exact else 2
+
+
+def _run_c2_transfer_contract_only(pre: Dict[str, Any]) -> int:
+    """Lightweight path: mesh/submesh/EntityMap + exact T only; no baseline A/M or seed replay."""
+    if not pre["preassembly_contract_pass"]:
+        empty = {
+            "ok": False,
+            "domain_dim": None,
+            "codomain_dim": None,
+            "shape": None,
+            "nnz": None,
+            "density": None,
+            "row_nnz_min": None,
+            "row_nnz_max": None,
+            "mapping_checksum": None,
+            "reason": "preassembly_contract_failed",
+            "failure_detail": json.dumps(pre.get("preassembly_failure_reasons", [])),
+        }
+        return _print_c2_transfer_contract_summary(
+            empty,
+            pre=pre,
+            codomain_note="not_loaded_preassembly_failed",
+        )
+
+    if MPI.COMM_WORLD.size != 1:
+        if MPI.COMM_WORLD.rank == 0:
+            print("[B3_C2] mode=C2_transfer_contract_only", flush=True)
+            print("[B3_C2] C2_T_constructed=False", flush=True)
+            print("[B3_C2] C2_T_construction_blocker=requires_mpiexec_n_1", flush=True)
+            print(
+                "[B3_C2] next_step_verdict=B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
+                flush=True,
+            )
+            print("[B3_C2] no_new_eigensolve_executed=True", flush=True)
+            print("[B3_C2] additional_eps=NOT_AUTHORIZED", flush=True)
+        return 2
+
+    manifest = load_manifest()
+    case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
+    mesh_file = mesh_path("L_mid", CASE_ID)
+    msh, _cell_tags, facet_tags = fem3d._load_mesh_and_tags(mesh_file)
+    f_top = np.asarray(facet_tags.find(TAG_TOP), dtype=np.int32)
+    f_back = np.asarray(facet_tags.find(TAG_BACK), dtype=np.int32)
+    f_ribs = np.asarray(facet_tags.find(TAG_RIBS), dtype=np.int32)
+    shell_facets = np.unique(np.concatenate([f_top, f_back, f_ribs]).astype(np.int32, copy=False))
+
+    tmeta = _build_c2_trace_to_parent_transfer(
+        msh,
+        facet_tags,
+        shell_facets=shell_facets,
+        tag_top=TAG_TOP,
+        tag_back=TAG_BACK,
+        tag_ribs=TAG_RIBS,
+    )
+
+    payload = {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "C2_transfer_contract_only",
+        "selected_B3_coupling_route": "C2",
+        "preassembly_contract_pass": pre["preassembly_contract_pass"],
+        "codomain_space_note": (
+            "parent_mesh_P1_displacement_global_dof_indices_shell_support_subset_not_reduced_W"
+        ),
+        "C2_T_domain_space": "B3_trace_u_submesh_P1_vector",
+        "C2_T_codomain_space": "parent_mesh_P1_displacement_dof",
+        "C2_T_transfer_direction": "B3_trace_to_parent_interface_u",
+        "C2_T_construction_method": (
+            "EntityMap_plus_exact_dof_coordinate_match_on_P1_trace_and_parent"
+        ),
+        "C2_T_constructed": bool(tmeta.get("ok", False)),
+        "C2_T_construction_blocker": tmeta.get("reason") if not tmeta.get("ok", False) else None,
+        "C2_T_shape": tmeta.get("shape"),
+        "C2_T_nnz": tmeta.get("nnz"),
+        "C2_T_density": tmeta.get("density"),
+        "C2_T_row_nnz_min": tmeta.get("row_nnz_min"),
+        "C2_T_row_nnz_max": tmeta.get("row_nnz_max"),
+        "C2_T_mapping_checksum": tmeta.get("mapping_checksum"),
+        "C2_transfer_storage_bytes": tmeta.get("storage_bytes"),
+        "C2_T_persisted_to_disk": False,
+        "C2_T_geometry_map_contract_pass": tmeta.get("C2_T_geometry_map_contract_pass"),
+        "C2_T_constant_field_transfer_pass": tmeta.get("C2_T_constant_field_transfer_pass"),
+        "C2_T_trace_support_transfer_pass": tmeta.get("C2_T_trace_support_transfer_pass"),
+        "C2_T_tag_support_transfer_pass": tmeta.get("C2_T_tag_support_transfer_pass"),
+        "C2_T_exact_transfer_contract_pass": bool(tmeta.get("ok", False)),
+        "C2_T_validation_failure_reason": tmeta.get("C2_T_validation_failure_reason"),
+        "B3_submesh_entity_map_extraction_method": tmeta.get("map_meta", {}).get("method"),
+        "B3_transferred_tag_counts": tmeta.get("transferred_counts"),
+        "artifact_storage_policy_applied": True,
+        "operator_matrices_persisted": False,
+        "transfer_matrices_persisted": False,
+        "vector_banks_persisted": False,
+        "solve_trees_created": False,
+        "no_new_eigensolve_executed": True,
+        "additional_eps": "NOT_AUTHORIZED",
+        "jd_wiring_authorized": False,
+        "next_step_verdict": (
+            "B3_COUPLING_CONSTRUCTED_CONTINUE_TO_OPERATOR_AND_SEED_AUDIT"
+            if tmeta.get("ok", False)
+            else "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE"
+        ),
+    }
+    _write_json_atomic(OUT_JSON_C2_CONTRACT, payload)
+    payload["report_size_bytes"] = OUT_JSON_C2_CONTRACT.stat().st_size
+    _write_json_atomic(OUT_JSON_C2_CONTRACT, payload)
+
+    return _print_c2_transfer_contract_summary(
+        tmeta,
+        pre=pre,
+        codomain_note=payload["codomain_space_note"],
+    )
+
+
 def main() -> int:
     import sys
 
     pre = _precheck()
+
+    if _is_c2_transfer_contract_only_mode(sys.argv):
+        return _run_c2_transfer_contract_only(pre)
+
     print(f"[B3_coupled] preassembly_helper_import_pass={pre['preassembly_helper_import_pass']}", flush=True)
     print(
         f"[B3_coupled] preassembly_rayleigh_signature_pass={pre['preassembly_rayleigh_signature_pass']}",
@@ -458,45 +631,6 @@ def main() -> int:
     if "--precheck-only" in sys.argv:
         print("[B3_coupled] no_new_eigensolve_executed=True", flush=True)
         return 0 if pre["preassembly_contract_pass"] else 2
-    if "--coupling-contract-only" in sys.argv:
-        cpre = _coupling_contract_precheck()
-        if not pre["preassembly_contract_pass"]:
-            print("[B3_C2] C2_T_constructible=False", flush=True)
-            print("[B3_C2] next_step_verdict=B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE", flush=True)
-            print("[B3_C2] no_new_eigensolve_executed=True", flush=True)
-            return 2
-        manifest = load_manifest()
-        case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
-        mesh_file = mesh_path("L_mid", CASE_ID)
-        msh, _cell_tags, facet_tags = fem3d._load_mesh_and_tags(mesh_file)
-        f_top = np.asarray(facet_tags.find(TAG_TOP), dtype=np.int32)
-        f_back = np.asarray(facet_tags.find(TAG_BACK), dtype=np.int32)
-        f_ribs = np.asarray(facet_tags.find(TAG_RIBS), dtype=np.int32)
-        shell_facets = np.unique(np.concatenate([f_top, f_back, f_ribs]).astype(np.int32, copy=False))
-        tmeta = _build_c2_trace_to_parent_transfer(
-            msh,
-            facet_tags,
-            shell_facets=shell_facets,
-            tag_top=TAG_TOP,
-            tag_back=TAG_BACK,
-            tag_ribs=TAG_RIBS,
-        )
-        print("[B3_C2] C2_T_construction_method=EntityMap_plus_exact_dof_coordinate_match_on_P1_trace_and_parent", flush=True)
-        print(f"[B3_C2] C2_T_constructible={tmeta['ok']}", flush=True)
-        print(f"[B3_C2] C2_T_shape={tmeta.get('shape')}", flush=True)
-        print(f"[B3_C2] C2_T_estimated_nnz={tmeta.get('nnz')}", flush=True)
-        print(
-            f"[B3_C2] C2_T_exact_transfer_contract_pass={bool(tmeta.get('ok', False))}",
-            flush=True,
-        )
-        verdict = (
-            "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE"
-            if not tmeta.get("ok", False)
-            else "B3_COUPLING_CONSTRUCTED_CONTINUE_TO_OPERATOR_AND_SEED_AUDIT"
-        )
-        print(f"[B3_C2] next_step_verdict={verdict}", flush=True)
-        print("[B3_C2] no_new_eigensolve_executed=True", flush=True)
-        return 0 if tmeta.get("ok", False) else 2
 
     if MPI.COMM_WORLD.size != 1:
         if MPI.COMM_WORLD.rank == 0:
