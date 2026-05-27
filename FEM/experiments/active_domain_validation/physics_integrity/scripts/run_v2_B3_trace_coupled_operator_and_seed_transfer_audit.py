@@ -325,6 +325,52 @@ def _build_c2_trace_to_parent_transfer(
     shell_mesh, shell_to_parent, shell_vertex_to_parent, _ = dmesh.create_submesh(
         msh, tdim - 1, shell_facets
     )
+    shell_tdim = int(shell_mesh.topology.dim)
+    parent_tdim = int(msh.topology.dim)
+    shell_0_to_tdim_created = False
+    shell_tdim_to_0_created = False
+    parent_0_to_tdim_created = False
+    parent_tdim_to_0_created = False
+    try:
+        shell_mesh.topology.create_connectivity(0, shell_tdim)
+        shell_0_to_tdim_created = True
+        shell_mesh.topology.create_connectivity(shell_tdim, 0)
+        shell_tdim_to_0_created = True
+        msh.topology.create_connectivity(0, parent_tdim)
+        parent_0_to_tdim_created = True
+        msh.topology.create_connectivity(parent_tdim, 0)
+        parent_tdim_to_0_created = True
+    except Exception as exc:
+        return {
+            "ok": False,
+            "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
+            "failure_detail": "topology_connectivity_construction_failed",
+            "failure_stage": "TOPOLOGY_CONNECTIVITY_CONSTRUCTION",
+            "failure_exception_type": type(exc).__name__,
+            "failure_exception_message": str(exc),
+            "domain_dim": None,
+            "codomain_dim": n_u_parent,
+            "C2_T_shell_topological_dimension": shell_tdim,
+            "C2_T_parent_topological_dimension": parent_tdim,
+            "C2_T_shell_connectivity_0_to_tdim_created": shell_0_to_tdim_created,
+            "C2_T_shell_connectivity_tdim_to_0_created": shell_tdim_to_0_created,
+            "C2_T_parent_connectivity_0_to_tdim_created": parent_0_to_tdim_created,
+            "C2_T_parent_connectivity_tdim_to_0_created": parent_tdim_to_0_created,
+            "C2_T_shell_cell_entity_map_type": type(shell_to_parent).__name__,
+            "C2_T_shell_vertex_entity_map_type": type(shell_vertex_to_parent).__name__,
+            "C2_T_shell_vertex_map_extracted": False,
+            "C2_T_shell_vertex_map_extraction_method": None,
+            "C2_T_shell_topological_dimension": None,
+            "C2_T_parent_topological_dimension": None,
+            "C2_T_shell_connectivity_0_to_tdim_created": False,
+            "C2_T_shell_connectivity_tdim_to_0_created": False,
+            "C2_T_parent_connectivity_0_to_tdim_created": False,
+            "C2_T_parent_connectivity_tdim_to_0_created": False,
+            "C2_dense_coupling_allocation_prohibited": True,
+            "C2_dense_coupling_allocation_removed": True,
+            "C2_projected_coupling_representation": "NOT_YET_SAFE",
+        }
+
     cell_map_meta = _extract_submesh_to_parent_entity_indices(shell_to_parent, entity_dim=tdim - 1)
     vertex_map_meta = _extract_submesh_to_parent_entity_indices(shell_vertex_to_parent, entity_dim=0)
     if not cell_map_meta["ok"]:
@@ -337,6 +383,12 @@ def _build_c2_trace_to_parent_transfer(
             "codomain_dim": n_u_parent,
             "map_meta": cell_map_meta,
             "vertex_map_meta": vertex_map_meta,
+            "C2_T_shell_topological_dimension": shell_tdim,
+            "C2_T_parent_topological_dimension": parent_tdim,
+            "C2_T_shell_connectivity_0_to_tdim_created": shell_0_to_tdim_created,
+            "C2_T_shell_connectivity_tdim_to_0_created": shell_tdim_to_0_created,
+            "C2_T_parent_connectivity_0_to_tdim_created": parent_0_to_tdim_created,
+            "C2_T_parent_connectivity_tdim_to_0_created": parent_tdim_to_0_created,
         }
     if not vertex_map_meta["ok"]:
         return {
@@ -348,6 +400,12 @@ def _build_c2_trace_to_parent_transfer(
             "codomain_dim": n_u_parent,
             "map_meta": cell_map_meta,
             "vertex_map_meta": vertex_map_meta,
+            "C2_T_shell_topological_dimension": shell_tdim,
+            "C2_T_parent_topological_dimension": parent_tdim,
+            "C2_T_shell_connectivity_0_to_tdim_created": shell_0_to_tdim_created,
+            "C2_T_shell_connectivity_tdim_to_0_created": shell_tdim_to_0_created,
+            "C2_T_parent_connectivity_0_to_tdim_created": parent_0_to_tdim_created,
+            "C2_T_parent_connectivity_tdim_to_0_created": parent_tdim_to_0_created,
         }
 
     parent_f = np.asarray(cell_map_meta["indices"], dtype=np.int32).ravel()
@@ -379,6 +437,12 @@ def _build_c2_trace_to_parent_transfer(
             "map_meta": cell_map_meta,
             "vertex_map_meta": vertex_map_meta,
             "transferred_counts": transferred_counts,
+            "C2_T_shell_topological_dimension": shell_tdim,
+            "C2_T_parent_topological_dimension": parent_tdim,
+            "C2_T_shell_connectivity_0_to_tdim_created": shell_0_to_tdim_created,
+            "C2_T_shell_connectivity_tdim_to_0_created": shell_tdim_to_0_created,
+            "C2_T_parent_connectivity_0_to_tdim_created": parent_0_to_tdim_created,
+            "C2_T_parent_connectivity_tdim_to_0_created": parent_tdim_to_0_created,
         }
 
     parent_idx = np.full(n_u_trace, -1, dtype=np.int32)
@@ -395,6 +459,12 @@ def _build_c2_trace_to_parent_transfer(
             "map_meta": cell_map_meta,
             "vertex_map_meta": vertex_map_meta,
             "transferred_counts": transferred_counts,
+            "C2_T_shell_topological_dimension": shell_tdim,
+            "C2_T_parent_topological_dimension": parent_tdim,
+            "C2_T_shell_connectivity_0_to_tdim_created": shell_0_to_tdim_created,
+            "C2_T_shell_connectivity_tdim_to_0_created": shell_tdim_to_0_created,
+            "C2_T_parent_connectivity_0_to_tdim_created": parent_0_to_tdim_created,
+            "C2_T_parent_connectivity_tdim_to_0_created": parent_tdim_to_0_created,
         }
 
     trace_vertex_block_dim = 0
@@ -435,6 +505,12 @@ def _build_c2_trace_to_parent_transfer(
             "map_meta": cell_map_meta,
             "vertex_map_meta": vertex_map_meta,
             "transferred_counts": transferred_counts,
+            "C2_T_shell_topological_dimension": shell_tdim,
+            "C2_T_parent_topological_dimension": parent_tdim,
+            "C2_T_shell_connectivity_0_to_tdim_created": shell_0_to_tdim_created,
+            "C2_T_shell_connectivity_tdim_to_0_created": shell_tdim_to_0_created,
+            "C2_T_parent_connectivity_0_to_tdim_created": parent_0_to_tdim_created,
+            "C2_T_parent_connectivity_tdim_to_0_created": parent_tdim_to_0_created,
         }
 
     row_counts = np.bincount(parent_idx, minlength=n_u_parent)
@@ -488,6 +564,12 @@ def _build_c2_trace_to_parent_transfer(
         "C2_T_shell_vertex_count": int(sub_v_map.size),
         "C2_T_parent_vertex_index_min": int(sub_v_map.min()) if sub_v_map.size else None,
         "C2_T_parent_vertex_index_max": int(sub_v_map.max()) if sub_v_map.size else None,
+        "C2_T_shell_topological_dimension": shell_tdim,
+        "C2_T_parent_topological_dimension": parent_tdim,
+        "C2_T_shell_connectivity_0_to_tdim_created": shell_0_to_tdim_created,
+        "C2_T_shell_connectivity_tdim_to_0_created": shell_tdim_to_0_created,
+        "C2_T_parent_connectivity_0_to_tdim_created": parent_0_to_tdim_created,
+        "C2_T_parent_connectivity_tdim_to_0_created": parent_tdim_to_0_created,
         "C2_T_matching_key": "ENTITY_VERTEX_PLUS_VECTOR_COMPONENT",
         "C2_T_coordinate_match_used_as": "VALIDATION_ONLY",
         "C2_T_trace_block_dimension": int(trace_vertex_block_dim),
@@ -557,6 +639,24 @@ def _print_c2_transfer_contract_summary(
     print(f"[B3_C2] C2_T_shell_vertex_count={tmeta.get('C2_T_shell_vertex_count')}", flush=True)
     print(f"[B3_C2] C2_T_parent_vertex_index_min={tmeta.get('C2_T_parent_vertex_index_min')}", flush=True)
     print(f"[B3_C2] C2_T_parent_vertex_index_max={tmeta.get('C2_T_parent_vertex_index_max')}", flush=True)
+    print(f"[B3_C2] C2_T_shell_topological_dimension={tmeta.get('C2_T_shell_topological_dimension')}", flush=True)
+    print(f"[B3_C2] C2_T_parent_topological_dimension={tmeta.get('C2_T_parent_topological_dimension')}", flush=True)
+    print(
+        f"[B3_C2] C2_T_shell_connectivity_0_to_tdim_created={tmeta.get('C2_T_shell_connectivity_0_to_tdim_created')}",
+        flush=True,
+    )
+    print(
+        f"[B3_C2] C2_T_shell_connectivity_tdim_to_0_created={tmeta.get('C2_T_shell_connectivity_tdim_to_0_created')}",
+        flush=True,
+    )
+    print(
+        f"[B3_C2] C2_T_parent_connectivity_0_to_tdim_created={tmeta.get('C2_T_parent_connectivity_0_to_tdim_created')}",
+        flush=True,
+    )
+    print(
+        f"[B3_C2] C2_T_parent_connectivity_tdim_to_0_created={tmeta.get('C2_T_parent_connectivity_tdim_to_0_created')}",
+        flush=True,
+    )
     print(f"[B3_C2] C2_T_matching_key={tmeta.get('C2_T_matching_key')}", flush=True)
     print(f"[B3_C2] C2_T_coordinate_match_used_as={tmeta.get('C2_T_coordinate_match_used_as')}", flush=True)
     print(f"[B3_C2] C2_T_trace_block_dimension={tmeta.get('C2_T_trace_block_dimension')}", flush=True)
@@ -746,6 +846,20 @@ def _run_c2_transfer_contract_only(pre: Dict[str, Any]) -> int:
         "C2_T_shell_vertex_count": tmeta.get("C2_T_shell_vertex_count"),
         "C2_T_parent_vertex_index_min": tmeta.get("C2_T_parent_vertex_index_min"),
         "C2_T_parent_vertex_index_max": tmeta.get("C2_T_parent_vertex_index_max"),
+        "C2_T_shell_topological_dimension": tmeta.get("C2_T_shell_topological_dimension"),
+        "C2_T_parent_topological_dimension": tmeta.get("C2_T_parent_topological_dimension"),
+        "C2_T_shell_connectivity_0_to_tdim_created": tmeta.get(
+            "C2_T_shell_connectivity_0_to_tdim_created"
+        ),
+        "C2_T_shell_connectivity_tdim_to_0_created": tmeta.get(
+            "C2_T_shell_connectivity_tdim_to_0_created"
+        ),
+        "C2_T_parent_connectivity_0_to_tdim_created": tmeta.get(
+            "C2_T_parent_connectivity_0_to_tdim_created"
+        ),
+        "C2_T_parent_connectivity_tdim_to_0_created": tmeta.get(
+            "C2_T_parent_connectivity_tdim_to_0_created"
+        ),
         "C2_T_matching_key": tmeta.get("C2_T_matching_key"),
         "C2_T_coordinate_match_used_as": tmeta.get("C2_T_coordinate_match_used_as"),
         "C2_T_trace_block_dimension": tmeta.get("C2_T_trace_block_dimension"),
