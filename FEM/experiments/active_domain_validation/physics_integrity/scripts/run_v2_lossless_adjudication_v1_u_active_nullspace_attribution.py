@@ -517,7 +517,7 @@ def main() -> int:
         # Low-cost duplicate probe intentionally omitted here (kept in the mass-null postmortem already).
 
         # Seed operators for threshold audit.
-        seed_ops = _matvec_norms(A, M, seed_vec, u_to_W=u_to_W, p_to_W=p_to_W)
+        seed_ops = _matvec_norms(A, M, seed_vec, u_idx=u_to_W, p_idx=p_to_W)
         seed_xh_mx = float(seed_ops.get("xH_Mx", float("nan")))
         seed_mx_norm = float(seed_ops.get("l2_norm_Mx", float("nan")))
 
