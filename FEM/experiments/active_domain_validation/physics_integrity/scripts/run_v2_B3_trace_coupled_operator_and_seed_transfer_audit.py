@@ -76,6 +76,78 @@ def _compact_idx(a: np.ndarray) -> Dict[str, Any]:
     }
 
 
+def _extract_submesh_to_parent_entity_indices(
+    raw_map: Any,
+    *,
+    entity_dim: int,
+) -> Dict[str, Any]:
+    map_type = type(raw_map).__name__
+    # Fast path: array/list-like.
+    if isinstance(raw_map, (list, tuple, np.ndarray)):
+        arr = np.asarray(raw_map, dtype=np.int32).ravel()
+        return {
+            "ok": True,
+            "indices": arr,
+            "map_type": map_type,
+            "method": "direct_array_like",
+            "reason": None,
+        }
+
+    # EntityMap / object compatibility paths.
+    method_candidates = [
+        ("sub_topology_to_topology", (False,)),
+        ("sub_topology_to_topology", (True,)),
+        ("sub_topology_to_topology", (entity_dim,)),
+        ("sub_to_parent", ()),
+        ("to_parent", ()),
+        ("array", ()),
+        ("indices", ()),
+        ("values", ()),
+    ]
+    for name, args in method_candidates:
+        fn = getattr(raw_map, name, None)
+        if fn is None:
+            continue
+        try:
+            val = fn(*args) if callable(fn) else fn
+            if val is None:
+                continue
+            arr = np.asarray(val, dtype=np.int32).ravel()
+            if arr.size == 0:
+                continue
+            return {
+                "ok": True,
+                "indices": arr,
+                "map_type": map_type,
+                "method": f"{name}{args}",
+                "reason": None,
+            }
+        except Exception:
+            continue
+
+    # Last resort: iterable conversion.
+    try:
+        arr = np.asarray(list(raw_map), dtype=np.int32).ravel()
+        if arr.size > 0:
+            return {
+                "ok": True,
+                "indices": arr,
+                "map_type": map_type,
+                "method": "iterable_fallback",
+                "reason": None,
+            }
+    except Exception:
+        pass
+
+    return {
+        "ok": False,
+        "indices": np.asarray([], dtype=np.int32),
+        "map_type": map_type,
+        "method": "unresolved",
+        "reason": "unable_to_extract_submesh_to_parent_indices_from_entity_map",
+    }
+
+
 def _precheck() -> Dict[str, Any]:
     checks: Dict[str, bool] = {
         "preassembly_helper_import_pass": False,
@@ -285,6 +357,14 @@ def main() -> int:
         b3_seed_mac = None
         b3_seed_xhmx = b3_seed_f = b3_seed_res = None
         b3_scalable = True
+        b3_submesh_map_type = None
+        b3_submesh_map_method = None
+        b3_submesh_map_ok = False
+        b3_submesh_n = 0
+        b3_parent_facet_min = None
+        b3_parent_facet_max = None
+        b3_transferred_counts = {"tag1": 0, "tag3": 0, "tag4": 0}
+        b3_transferred_contract = False
 
         if shell_facets.size > 0 and hasattr(dmesh, "create_submesh"):
             tdim = msh.topology.dim
@@ -300,98 +380,172 @@ def main() -> int:
             parent_tag_map = {
                 int(i): int(v) for i, v in zip(np.asarray(facet_tags.indices), np.asarray(facet_tags.values))
             }
-            trace_cells = np.arange(int(shell_mesh.topology.index_map(shell_mesh.topology.dim).size_local), dtype=np.int32)
-            trace_vals = np.array(
-                [parent_tag_map.get(int(pf), -1) for pf in np.asarray(shell_to_parent, dtype=np.int32)],
-                dtype=np.int32,
+            trace_cells = np.arange(
+                int(shell_mesh.topology.index_map(shell_mesh.topology.dim).size_local), dtype=np.int32
             )
-            mt_trace = dmesh.meshtags(shell_mesh, shell_mesh.topology.dim, trace_cells, trace_vals)
-            dx_trace = ufl.Measure("dx", domain=shell_mesh, subdomain_data=mt_trace)
-
-            u = ufl.TrialFunction(V_u_trace)
-            v = ufl.TestFunction(V_u_trace)
-            top_m, back_m, t_top, t_back = fem3d._split_wood_materials(cfg)
-            nrm = ufl.FacetNormal(shell_mesh)
-            P = ufl.Identity(3) - ufl.outer(nrm, nrm)
-            e1, e2 = fem3d._plate_local_frame(nrm, P)
-
-            def eps_surface(uu):
-                grad_u = ufl.grad(uu)
-                grad_tan = P * grad_u * P
-                return 0.5 * (grad_tan + ufl.transpose(grad_tan))
-
-            eps_u = eps_surface(u)
-            eps_v = eps_surface(v)
-            w_n = ufl.dot(u, nrm)
-            v_n = ufl.dot(v, nrm)
-            shell_top = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, top_m)
-            shell_back = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
-            shell_ribs = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
-            a_uu_t = shell_top * dx_trace(TAG_TOP) + shell_back * dx_trace(TAG_BACK) + shell_ribs * dx_trace(TAG_RIBS)
-            m_uu_t = (
-                (top_m["rho"] * t_top) * ufl.dot(u, v) * dx_trace(TAG_TOP)
-                + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_BACK)
-                + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_RIBS)
+            map_meta = _extract_submesh_to_parent_entity_indices(shell_to_parent, entity_dim=tdim - 1)
+            b3_submesh_map_type = map_meta["map_type"]
+            b3_submesh_map_method = map_meta["method"]
+            b3_submesh_map_ok = bool(map_meta["ok"])
+            print(f"[B3_coupled] B3_submesh_entity_map_type={b3_submesh_map_type}", flush=True)
+            print(
+                f"[B3_coupled] B3_submesh_entity_map_extraction_method={b3_submesh_map_method}",
+                flush=True,
             )
-            Auu = fem.petsc.assemble_matrix(fem.form(a_uu_t), bcs=[])
-            Muu = fem.petsc.assemble_matrix(fem.form(m_uu_t), bcs=[])
-            Auu.assemble()
-            Muu.assemble()
-            b3_Auu_norm = _safe_float(Auu.norm())
-            b3_Muu_norm = _safe_float(Muu.norm())
-            b3_top = int(np.sum(trace_vals == TAG_TOP)) > 0
-            b3_back = int(np.sum(trace_vals == TAG_BACK)) > 0
-            b3_ribs = int(np.sum(trace_vals == TAG_RIBS)) > 0
-            b3_mass_present = bool(float(b3_Muu_norm) > 0.0)
-            b3_stiff_present = bool(float(b3_Auu_norm) > 0.0)
-            b3_form_ok = bool(b3_top and b3_back and b3_ribs and b3_mass_present and b3_stiff_present)
-            b3_null_exposure = "MISMATCH_REMOVED_BY_TRACE_SPACE_CONSTRUCTION_PENDING_COUPLED_VALIDATION"
+            if not b3_submesh_map_ok:
+                b3_transferred_contract = False
+                print("[B3_coupled] B3_transferred_tags_contract_pass=False", flush=True)
+                b3_coupling_reason = "B3_BLOCKED_BY_DOLFINX_ENTITYMAP_TAG_TRANSFER_INTERFACE"
+                block_reason = b3_coupling_reason
+                b3_ops_reason = b3_coupling_reason
+                b3_seed_fail = b3_coupling_reason
+                b3_form_ok = False
+                b3_mass_present = False
+                b3_stiff_present = False
+                b3_coupling_iface = False
+                b3_coupling_present = False
+                b3_ops_assembled = False
+                b3_ops_sanity = False
+                b3_seed_map = False
+                b3_seed_repr = False
+                b3_seed_pass = False
+                seed_info = load_seed_with_diagnostics(seed_npy)
+                seed_arr = np.asarray(seed_info.get("seed_array"), dtype=np.float64).ravel()
+                base_seed = _rayleigh_residual_like(A, M, seed_arr, u_idx=u_to_W, p_idx=p_to_W)
+                seed_xhmx_o = _safe_float(base_seed["xH_Mx"])
+                seed_f_o = _safe_float(base_seed["replay_frequency_hz"])
+                seed_res_o = _safe_float(base_seed["replay_relative_residual"])
+                trace_vals = np.full(trace_cells.shape, -1, dtype=np.int32)
+            else:
+                parent_f = np.asarray(map_meta["indices"], dtype=np.int32).ravel()
+                b3_submesh_n = int(parent_f.size)
+                b3_parent_facet_min = int(parent_f.min()) if parent_f.size else None
+                b3_parent_facet_max = int(parent_f.max()) if parent_f.size else None
+                trace_vals = np.array([parent_tag_map.get(int(pf), -1) for pf in parent_f], dtype=np.int32)
+                b3_transferred_counts = {
+                    "tag1": int(np.sum(trace_vals == TAG_TOP)),
+                    "tag3": int(np.sum(trace_vals == TAG_BACK)),
+                    "tag4": int(np.sum(trace_vals == TAG_RIBS)),
+                }
+                b3_transferred_contract = all(v > 0 for v in b3_transferred_counts.values())
+                print(
+                    f"[B3_coupled] B3_transferred_tags_contract_pass={b3_transferred_contract}",
+                    flush=True,
+                )
+                if not b3_transferred_contract:
+                    b3_coupling_reason = "B3_BLOCKED_BY_DOLFINX_ENTITYMAP_TAG_TRANSFER_INTERFACE"
+                    block_reason = b3_coupling_reason
+                    b3_ops_reason = b3_coupling_reason
+                    b3_seed_fail = b3_coupling_reason
 
-            # Tag-5 policy transfer audit.
-            shell_set = set(int(x) for x in shell_facets.tolist())
-            fix_set = set(int(x) for x in f_fix.tolist())
-            overlap = np.array(sorted(shell_set.intersection(fix_set)), dtype=np.int32)
-            b3_tag5_fixed_n = int(overlap.size)
-            b3_bc_constructed = True
-            b3_bc_pass = True
-            b3_bc_reason = (
-                "tag5_fix_facets_not_in_trace_shell_union"
-                if b3_tag5_fixed_n == 0
-                else "tag5_overlap_with_trace_shell_requires_explicit_trace_bc_application"
-            )
-            if b3_tag5_fixed_n > 0:
-                b3_bc_pass = False
+            if block_reason == "B3_BLOCKED_BY_DOLFINX_ENTITYMAP_TAG_TRANSFER_INTERFACE":
+                b3_form_ok = False
+                b3_mass_present = False
+                b3_stiff_present = False
+                b3_coupling_iface = False
+                b3_coupling_present = False
+                b3_ops_assembled = False
+                b3_ops_sanity = False
+                b3_seed_map = False
+                b3_seed_repr = False
+                b3_seed_pass = False
+                b3_coupling_method = "entitymap_tag_transfer_failed_before_trace_form_assembly"
+                # Baseline seed metrics for audit continuity.
+                if "seed_xhmx_o" not in locals():
+                    seed_info = load_seed_with_diagnostics(seed_npy)
+                    seed_arr = np.asarray(seed_info.get("seed_array"), dtype=np.float64).ravel()
+                    base_seed = _rayleigh_residual_like(A, M, seed_arr, u_idx=u_to_W, p_idx=p_to_W)
+                    seed_xhmx_o = _safe_float(base_seed["xH_Mx"])
+                    seed_f_o = _safe_float(base_seed["replay_frequency_hz"])
+                    seed_res_o = _safe_float(base_seed["replay_relative_residual"])
+            else:
+                mt_trace = dmesh.meshtags(shell_mesh, shell_mesh.topology.dim, trace_cells, trace_vals)
+                dx_trace = ufl.Measure("dx", domain=shell_mesh, subdomain_data=mt_trace)
 
-            # Pressure block retained from baseline reduced operator.
-            try:
-                b3_App_norm = _safe_float(A.norm())
-                b3_Mpp_norm = _safe_float(M.norm())
-            except Exception:
-                pass
+                u = ufl.TrialFunction(V_u_trace)
+                v = ufl.TestFunction(V_u_trace)
+                top_m, back_m, t_top, t_back = fem3d._split_wood_materials(cfg)
+                nrm = ufl.FacetNormal(shell_mesh)
+                P = ufl.Identity(3) - ufl.outer(nrm, nrm)
+                e1, e2 = fem3d._plate_local_frame(nrm, P)
 
-            # Cross-mesh u_trace <-> p_active coupling not assembled in current architecture.
-            b3_coupling_iface = False
-            b3_coupling_present = False
-            b3_coupling_method = "cross_mesh_trace_u_to_volume_pressure_interface_form_required"
-            b3_coupling_reason = "B3_BLOCKED_BY_DOLFINX_TRACE_TO_VOLUME_COUPLING_INTERFACE"
-            block_reason = b3_coupling_reason
-            b3_ops_assembled = False
-            b3_ops_sanity = False
-            b3_ops_reason = b3_coupling_reason
-            b3_seed_map = False
-            b3_seed_repr = False
-            b3_seed_method = "requires_trace_u_to_reduced_W_transfer_plus_pressure_identity"
-            b3_seed_fail = b3_coupling_reason
-            b3_seed_pressure_support = False
-            b3_seed_mac = None
+                def eps_surface(uu):
+                    grad_u = ufl.grad(uu)
+                    grad_tan = P * grad_u * P
+                    return 0.5 * (grad_tan + ufl.transpose(grad_tan))
 
-            # Baseline seed metrics are still reported for control visibility.
-            seed_info = load_seed_with_diagnostics(seed_npy)
-            seed_arr = np.asarray(seed_info.get("seed_array"), dtype=np.float64).ravel()
-            base_seed = _rayleigh_residual_like(A, M, seed_arr, u_idx=u_to_W, p_idx=p_to_W)
-            seed_xhmx_o = _safe_float(base_seed["xH_Mx"])
-            seed_f_o = _safe_float(base_seed["replay_frequency_hz"])
-            seed_res_o = _safe_float(base_seed["replay_relative_residual"])
+                eps_u = eps_surface(u)
+                eps_v = eps_surface(v)
+                w_n = ufl.dot(u, nrm)
+                v_n = ufl.dot(v, nrm)
+                shell_top = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, top_m)
+                shell_back = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
+                shell_ribs = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
+                a_uu_t = shell_top * dx_trace(TAG_TOP) + shell_back * dx_trace(TAG_BACK) + shell_ribs * dx_trace(TAG_RIBS)
+                m_uu_t = (
+                    (top_m["rho"] * t_top) * ufl.dot(u, v) * dx_trace(TAG_TOP)
+                    + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_BACK)
+                    + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_RIBS)
+                )
+                Auu = fem.petsc.assemble_matrix(fem.form(a_uu_t), bcs=[])
+                Muu = fem.petsc.assemble_matrix(fem.form(m_uu_t), bcs=[])
+                Auu.assemble()
+                Muu.assemble()
+                b3_Auu_norm = _safe_float(Auu.norm())
+                b3_Muu_norm = _safe_float(Muu.norm())
+                b3_top = int(np.sum(trace_vals == TAG_TOP)) > 0
+                b3_back = int(np.sum(trace_vals == TAG_BACK)) > 0
+                b3_ribs = int(np.sum(trace_vals == TAG_RIBS)) > 0
+                b3_mass_present = bool(float(b3_Muu_norm) > 0.0)
+                b3_stiff_present = bool(float(b3_Auu_norm) > 0.0)
+                b3_form_ok = bool(b3_top and b3_back and b3_ribs and b3_mass_present and b3_stiff_present)
+                b3_null_exposure = "MISMATCH_REMOVED_BY_TRACE_SPACE_CONSTRUCTION_PENDING_COUPLED_VALIDATION"
+
+                # Tag-5 policy transfer audit.
+                shell_set = set(int(x) for x in shell_facets.tolist())
+                fix_set = set(int(x) for x in f_fix.tolist())
+                overlap = np.array(sorted(shell_set.intersection(fix_set)), dtype=np.int32)
+                b3_tag5_fixed_n = int(overlap.size)
+                b3_bc_constructed = True
+                b3_bc_pass = True
+                b3_bc_reason = (
+                    "tag5_fix_facets_not_in_trace_shell_union"
+                    if b3_tag5_fixed_n == 0
+                    else "tag5_overlap_with_trace_shell_requires_explicit_trace_bc_application"
+                )
+                if b3_tag5_fixed_n > 0:
+                    b3_bc_pass = False
+
+                # Pressure block retained from baseline reduced operator.
+                try:
+                    b3_App_norm = _safe_float(A.norm())
+                    b3_Mpp_norm = _safe_float(M.norm())
+                except Exception:
+                    pass
+
+                # Cross-mesh u_trace <-> p_active coupling not assembled in current architecture.
+                b3_coupling_iface = False
+                b3_coupling_present = False
+                b3_coupling_method = "cross_mesh_trace_u_to_volume_pressure_interface_form_required"
+                b3_coupling_reason = "B3_BLOCKED_BY_DOLFINX_TRACE_TO_VOLUME_COUPLING_INTERFACE"
+                block_reason = b3_coupling_reason
+                b3_ops_assembled = False
+                b3_ops_sanity = False
+                b3_ops_reason = b3_coupling_reason
+                b3_seed_map = False
+                b3_seed_repr = False
+                b3_seed_method = "requires_trace_u_to_reduced_W_transfer_plus_pressure_identity"
+                b3_seed_fail = b3_coupling_reason
+                b3_seed_pressure_support = False
+                b3_seed_mac = None
+
+                # Baseline seed metrics are still reported for control visibility.
+                seed_info = load_seed_with_diagnostics(seed_npy)
+                seed_arr = np.asarray(seed_info.get("seed_array"), dtype=np.float64).ravel()
+                base_seed = _rayleigh_residual_like(A, M, seed_arr, u_idx=u_to_W, p_idx=p_to_W)
+                seed_xhmx_o = _safe_float(base_seed["xH_Mx"])
+                seed_f_o = _safe_float(base_seed["replay_frequency_hz"])
+                seed_res_o = _safe_float(base_seed["replay_relative_residual"])
         else:
             seed_xhmx_o = seed_f_o = seed_res_o = None
             b3_space_ok = False
@@ -423,7 +577,9 @@ def main() -> int:
             b3_seed_mac = None
             b3_seed_xhmx = b3_seed_f = b3_seed_res = None
 
-        if block_reason == "B3_BLOCKED_BY_DOLFINX_TRACE_TO_VOLUME_COUPLING_INTERFACE":
+        if block_reason == "B3_BLOCKED_BY_DOLFINX_ENTITYMAP_TAG_TRANSFER_INTERFACE":
+            verdict = "B3_BLOCKED_BY_DOLFINX_ENTITYMAP_TAG_TRANSFER_INTERFACE"
+        elif block_reason == "B3_BLOCKED_BY_DOLFINX_TRACE_TO_VOLUME_COUPLING_INTERFACE":
             verdict = "B3_BLOCKED_BY_DOLFINX_TRACE_TO_VOLUME_COUPLING_INTERFACE"
         elif b3_ops_assembled and not b3_seed_map:
             verdict = "B3_BLOCKED_BY_SEED_TRANSFER_INTERFACE"
@@ -443,6 +599,14 @@ def main() -> int:
             "B3_shell_trace_mesh_or_submesh_source": (
                 "dolfinx.mesh.create_submesh(facet_union_tags_1_3_4)" if b3_space_ok else "UNAVAILABLE"
             ),
+            "B3_submesh_entity_map_type": b3_submesh_map_type,
+            "B3_submesh_entity_map_extraction_method": b3_submesh_map_method,
+            "B3_submesh_to_parent_facet_map_extracted": bool(b3_submesh_map_ok),
+            "B3_submesh_facet_count": int(b3_submesh_n),
+            "B3_parent_facet_index_min": b3_parent_facet_min,
+            "B3_parent_facet_index_max": b3_parent_facet_max,
+            "B3_transferred_tag_counts": b3_transferred_counts,
+            "B3_transferred_tags_contract_pass": bool(b3_transferred_contract),
             "B3_original_structural_u_dimension": n_u,
             "B3_new_structural_u_dimension": b3_u_new,
             "B3_pressure_dimension_retained": n_p,
