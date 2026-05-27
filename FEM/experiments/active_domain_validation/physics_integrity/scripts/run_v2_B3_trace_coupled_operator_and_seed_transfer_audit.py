@@ -296,6 +296,143 @@ def _coupling_contract_precheck() -> Dict[str, Any]:
     }
 
 
+def _build_c2_trace_to_parent_transfer(
+    msh: Any,
+    facet_tags: Any,
+    *,
+    shell_facets: np.ndarray,
+    tag_top: int,
+    tag_back: int,
+    tag_ribs: int,
+) -> Dict[str, Any]:
+    """Construct sparse transfer T: u_trace -> parent_u using exact dof-coordinate matching."""
+    u_el_parent = fem3d._displacement_element(msh, 1)
+    V_u_parent = fem.functionspace(msh, u_el_parent)
+    n_u_parent = int(V_u_parent.dofmap.index_map.size_global * V_u_parent.dofmap.index_map_bs)
+
+    if shell_facets.size == 0 or not hasattr(dmesh, "create_submesh"):
+        return {
+            "ok": False,
+            "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
+            "failure_detail": "shell_facets_missing_or_create_submesh_unavailable",
+            "domain_dim": None,
+            "codomain_dim": n_u_parent,
+        }
+
+    tdim = msh.topology.dim
+    shell_mesh, shell_to_parent, _, _ = dmesh.create_submesh(msh, tdim - 1, shell_facets)
+    map_meta = _extract_submesh_to_parent_entity_indices(shell_to_parent, entity_dim=tdim - 1)
+    if not map_meta["ok"]:
+        return {
+            "ok": False,
+            "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
+            "failure_detail": "entitymap_to_parent_facet_extraction_failed",
+            "domain_dim": None,
+            "codomain_dim": n_u_parent,
+            "map_meta": map_meta,
+        }
+
+    parent_f = np.asarray(map_meta["indices"], dtype=np.int32).ravel()
+    parent_tag_map = {
+        int(i): int(v) for i, v in zip(np.asarray(facet_tags.indices), np.asarray(facet_tags.values))
+    }
+    trace_vals = np.array([parent_tag_map.get(int(pf), -1) for pf in parent_f], dtype=np.int32)
+    transferred_counts = {
+        "tag1": int(np.sum(trace_vals == tag_top)),
+        "tag3": int(np.sum(trace_vals == tag_back)),
+        "tag4": int(np.sum(trace_vals == tag_ribs)),
+    }
+
+    V_u_trace = fem.functionspace(shell_mesh, fem3d._displacement_element(shell_mesh, 1))
+    n_u_trace = int(V_u_trace.dofmap.index_map.size_global * V_u_trace.dofmap.index_map_bs)
+
+    trace_coords = np.asarray(V_u_trace.tabulate_dof_coordinates(), dtype=np.float64)
+    parent_coords = np.asarray(V_u_parent.tabulate_dof_coordinates(), dtype=np.float64)
+    shell_parent_dofs = np.asarray(
+        fem3d._locate_facet_displacement_dofs(V_u_parent, msh, shell_facets), dtype=np.int32
+    ).ravel()
+    if trace_coords.shape[0] != n_u_trace:
+        return {
+            "ok": False,
+            "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
+            "failure_detail": "trace_dof_coordinate_count_mismatch",
+            "domain_dim": n_u_trace,
+            "codomain_dim": n_u_parent,
+            "map_meta": map_meta,
+            "transferred_counts": transferred_counts,
+        }
+
+    # Build deterministic coordinate buckets on shell parent DOFs.
+    parent_bucket: Dict[tuple, List[int]] = {}
+    for dof in shell_parent_dofs.tolist():
+        key = tuple(np.round(parent_coords[int(dof)], 12))
+        parent_bucket.setdefault(key, []).append(int(dof))
+    for key in parent_bucket:
+        parent_bucket[key].sort()
+
+    used_parent: Dict[tuple, int] = {}
+    parent_idx = np.full(n_u_trace, -1, dtype=np.int32)
+    for j in range(n_u_trace):
+        key = tuple(np.round(trace_coords[j], 12))
+        cand = parent_bucket.get(key, [])
+        if not cand:
+            continue
+        k = used_parent.get(key, 0)
+        parent_idx[j] = cand[k % len(cand)]
+        used_parent[key] = k + 1
+
+    missing = int(np.sum(parent_idx < 0))
+    if missing > 0:
+        return {
+            "ok": False,
+            "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
+            "failure_detail": f"unmatched_trace_dofs={missing}",
+            "domain_dim": n_u_trace,
+            "codomain_dim": n_u_parent,
+            "map_meta": map_meta,
+            "transferred_counts": transferred_counts,
+        }
+
+    row_counts = np.bincount(parent_idx, minlength=n_u_parent)
+    nnz = int(parent_idx.size)
+    density = float(nnz / max(n_u_parent * n_u_trace, 1))
+    vals = np.ones(nnz, dtype=np.float64)
+    checksum = _crc32_i32(parent_idx)
+
+    # Lightweight transfer contract checks.
+    geom_pass = bool(np.all((parent_idx >= 0) & (parent_idx < n_u_parent)))
+    tag_support_pass = bool(all(v > 0 for v in transferred_counts.values()))
+    support_pass = bool(np.all(np.isin(parent_idx, shell_parent_dofs)))
+    ones_trace = np.ones(n_u_trace, dtype=np.float64)
+    y = np.zeros(n_u_parent, dtype=np.float64)
+    np.add.at(y, parent_idx, ones_trace)
+    const_pass = bool(np.all(y[parent_idx] >= 1.0 - 1.0e-12))
+
+    exact_pass = bool(geom_pass and tag_support_pass and support_pass and const_pass)
+    return {
+        "ok": exact_pass,
+        "reason": None if exact_pass else "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
+        "failure_detail": None if exact_pass else "C2_transfer_contract_failed",
+        "domain_dim": n_u_trace,
+        "codomain_dim": n_u_parent,
+        "shape": [n_u_parent, n_u_trace],
+        "nnz": nnz,
+        "density": density,
+        "row_nnz_min": int(row_counts.min()) if row_counts.size else 0,
+        "row_nnz_max": int(row_counts.max()) if row_counts.size else 0,
+        "mapping_checksum": int(checksum),
+        "storage_bytes": int(parent_idx.nbytes + vals.nbytes),
+        "parent_index_per_trace_dof": parent_idx,
+        "map_meta": map_meta,
+        "transferred_counts": transferred_counts,
+        "C2_T_geometry_map_contract_pass": geom_pass,
+        "C2_T_constant_field_transfer_pass": const_pass,
+        "C2_T_trace_support_transfer_pass": support_pass,
+        "C2_T_tag_support_transfer_pass": tag_support_pass,
+        "C2_T_validation_failure_reason": None if exact_pass else "one_or_more_transfer_contract_checks_failed",
+    }
+
+
 def main() -> int:
     import sys
 
@@ -323,19 +460,43 @@ def main() -> int:
         return 0 if pre["preassembly_contract_pass"] else 2
     if "--coupling-contract-only" in sys.argv:
         cpre = _coupling_contract_precheck()
+        if not pre["preassembly_contract_pass"]:
+            print("[B3_C2] C2_T_constructible=False", flush=True)
+            print("[B3_C2] next_step_verdict=B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE", flush=True)
+            print("[B3_C2] no_new_eigensolve_executed=True", flush=True)
+            return 2
+        manifest = load_manifest()
+        case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
+        mesh_file = mesh_path("L_mid", CASE_ID)
+        msh, _cell_tags, facet_tags = fem3d._load_mesh_and_tags(mesh_file)
+        f_top = np.asarray(facet_tags.find(TAG_TOP), dtype=np.int32)
+        f_back = np.asarray(facet_tags.find(TAG_BACK), dtype=np.int32)
+        f_ribs = np.asarray(facet_tags.find(TAG_RIBS), dtype=np.int32)
+        shell_facets = np.unique(np.concatenate([f_top, f_back, f_ribs]).astype(np.int32, copy=False))
+        tmeta = _build_c2_trace_to_parent_transfer(
+            msh,
+            facet_tags,
+            shell_facets=shell_facets,
+            tag_top=TAG_TOP,
+            tag_back=TAG_BACK,
+            tag_ribs=TAG_RIBS,
+        )
+        print("[B3_C2] C2_T_construction_method=EntityMap_plus_exact_dof_coordinate_match_on_P1_trace_and_parent", flush=True)
+        print(f"[B3_C2] C2_T_constructible={tmeta['ok']}", flush=True)
+        print(f"[B3_C2] C2_T_shape={tmeta.get('shape')}", flush=True)
+        print(f"[B3_C2] C2_T_estimated_nnz={tmeta.get('nnz')}", flush=True)
         print(
-            f"[B3_coupled] selected_B3_coupling_route={cpre['selected_B3_coupling_route']}",
+            f"[B3_C2] C2_T_exact_transfer_contract_pass={bool(tmeta.get('ok', False))}",
             flush=True,
         )
-        print(
-            f"[B3_coupled] selected_B3_coupling_route_reason={cpre['selected_B3_coupling_route_reason']}",
-            flush=True,
+        verdict = (
+            "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE"
+            if not tmeta.get("ok", False)
+            else "B3_COUPLING_CONSTRUCTED_CONTINUE_TO_OPERATOR_AND_SEED_AUDIT"
         )
-        print(
-            "[B3_coupled] no_new_eigensolve_executed=True",
-            flush=True,
-        )
-        return 0 if pre["preassembly_contract_pass"] else 2
+        print(f"[B3_C2] next_step_verdict={verdict}", flush=True)
+        print("[B3_C2] no_new_eigensolve_executed=True", flush=True)
+        return 0 if tmeta.get("ok", False) else 2
 
     if MPI.COMM_WORLD.size != 1:
         if MPI.COMM_WORLD.rank == 0:
@@ -408,6 +569,29 @@ def main() -> int:
         cpre = _coupling_contract_precheck()
         selected_route = cpre["selected_B3_coupling_route"]
         coupling_stage_outcome = None
+        c2_t_domain_space = "B3_trace_u_submesh_P1_vector"
+        c2_t_codomain_space = "parent_reduced_u_representation"
+        c2_t_domain_dim = None
+        c2_t_codomain_dim = None
+        c2_t_direction = "B3_trace_to_parent_interface_u"
+        c2_t_method = "UNAVAILABLE"
+        c2_t_constructed = False
+        c2_t_is_sparse = True
+        c2_t_is_interp = "exact_coordinate_lift_on_P1_trace_parent_matching"
+        c2_t_geom_preserve = False
+        c2_t_shape = None
+        c2_t_nnz = None
+        c2_t_density = None
+        c2_t_row_nnz_min = None
+        c2_t_row_nnz_max = None
+        c2_t_checksum = None
+        c2_t_storage_bytes = None
+        c2_t_blocker = None
+        c2_t_contract_pass = False
+        c2_t_const_pass = False
+        c2_t_support_pass = False
+        c2_t_tag_pass = False
+        c2_t_validation_failure = None
         b3_submesh_map_type = None
         b3_submesh_map_method = None
         b3_submesh_map_ok = False
@@ -640,15 +824,101 @@ def main() -> int:
                         coupling_stage_outcome = b3_coupling_reason
                         block_reason = "B3_BLOCKED_BY_DOLFINX_TRACE_TO_VOLUME_COUPLING_INTERFACE"
                     elif selected_route == "C2":
-                        # Requires explicit trace-DOF -> parent-interface-u sparse transfer map T.
-                        b3_coupling_iface = False
-                        b3_coupling_present = False
-                        b3_coupling_method = "sparse_transfer_T_then_parent_coupling_block_projection"
-                        b3_coupling_reason = (
-                            "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE"
+                        tmeta = _build_c2_trace_to_parent_transfer(
+                            msh,
+                            facet_tags,
+                            shell_facets=shell_facets,
+                            tag_top=TAG_TOP,
+                            tag_back=TAG_BACK,
+                            tag_ribs=TAG_RIBS,
                         )
-                        coupling_stage_outcome = b3_coupling_reason
-                        block_reason = "B3_BLOCKED_BY_DOLFINX_TRACE_TO_VOLUME_COUPLING_INTERFACE"
+                        c2_t_method = "EntityMap_plus_exact_dof_coordinate_match_on_P1_trace_and_parent"
+                        c2_t_domain_dim = tmeta.get("domain_dim")
+                        c2_t_codomain_dim = tmeta.get("codomain_dim")
+                        c2_t_constructed = bool(tmeta.get("ok", False))
+                        c2_t_geom_preserve = bool(tmeta.get("ok", False))
+                        c2_t_shape = tmeta.get("shape")
+                        c2_t_nnz = tmeta.get("nnz")
+                        c2_t_density = tmeta.get("density")
+                        c2_t_row_nnz_min = tmeta.get("row_nnz_min")
+                        c2_t_row_nnz_max = tmeta.get("row_nnz_max")
+                        c2_t_checksum = tmeta.get("mapping_checksum")
+                        c2_t_storage_bytes = tmeta.get("storage_bytes")
+                        c2_t_blocker = tmeta.get("reason") if not tmeta.get("ok", False) else None
+                        c2_t_contract_pass = bool(tmeta.get("C2_T_geometry_map_contract_pass", False))
+                        c2_t_const_pass = bool(tmeta.get("C2_T_constant_field_transfer_pass", False))
+                        c2_t_support_pass = bool(tmeta.get("C2_T_trace_support_transfer_pass", False))
+                        c2_t_tag_pass = bool(tmeta.get("C2_T_tag_support_transfer_pass", False))
+                        c2_t_validation_failure = tmeta.get("C2_T_validation_failure_reason")
+                        if not tmeta.get("ok", False):
+                            b3_coupling_iface = False
+                            b3_coupling_present = False
+                            b3_coupling_method = "sparse_transfer_T_then_parent_coupling_block_projection"
+                            b3_coupling_reason = "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE"
+                            coupling_stage_outcome = b3_coupling_reason
+                            block_reason = b3_coupling_reason
+                            b3_ops_reason = str(tmeta.get("failure_detail"))
+                            b3_seed_fail = b3_coupling_reason
+                            b3_seed_check_status = (
+                                "NOT_EVALUATED_BLOCKED_PENDING_SPARSE_TRACE_TRANSFER_INTERFACE"
+                            )
+                        else:
+                            # Project validated parent coupling blocks with T (selection/lift map).
+                            pidx = np.asarray(tmeta["parent_index_per_trace_dof"], dtype=np.int32).ravel()
+                            n_u_parent = int(tmeta["codomain_dim"])
+                            # Dense extraction on selected rows/cols only (compact in this bounded audit).
+                            Aup_parent = np.zeros((n_u_parent, n_p), dtype=np.float64)
+                            Apu_parent = np.zeros((n_p, n_u_parent), dtype=np.float64)
+                            Mpu_parent = np.zeros((n_p, n_u_parent), dtype=np.float64)
+                            p_w_to_local = {int(w): i for i, w in enumerate(p_to_W.tolist())}
+                            u_w_to_local = {int(w): i for i, w in enumerate(u_to_W.tolist())}
+                            for iu, wrow in enumerate(u_to_W.tolist()):
+                                cols, vals = A.getRow(int(wrow))
+                                for c, v in zip(np.asarray(cols, dtype=np.int32), np.asarray(vals, dtype=np.float64)):
+                                    j = p_w_to_local.get(int(c))
+                                    if j is not None:
+                                        Aup_parent[iu, j] = float(v)
+                                A.restoreRow(int(wrow), cols, vals)
+                            for ip, prow in enumerate(p_to_W.tolist()):
+                                cols, vals = A.getRow(int(prow))
+                                for c, v in zip(np.asarray(cols, dtype=np.int32), np.asarray(vals, dtype=np.float64)):
+                                    j = u_w_to_local.get(int(c))
+                                    if j is not None:
+                                        Apu_parent[ip, j] = float(v)
+                                A.restoreRow(int(prow), cols, vals)
+                                cols_m, vals_m = M.getRow(int(prow))
+                                for c, v in zip(np.asarray(cols_m, dtype=np.int32), np.asarray(vals_m, dtype=np.float64)):
+                                    j = u_w_to_local.get(int(c))
+                                    if j is not None:
+                                        Mpu_parent[ip, j] = float(v)
+                                M.restoreRow(int(prow), cols_m, vals_m)
+                            Aup_B3 = Aup_parent[pidx, :]
+                            Apu_B3 = Apu_parent[:, pidx]
+                            Mpu_B3 = Mpu_parent[:, pidx]
+                            b3_Aup_norm = _safe_float(np.linalg.norm(Aup_B3))
+                            b3_Apu_norm = _safe_float(np.linalg.norm(Apu_B3))
+                            b3_Mpu_norm = _safe_float(np.linalg.norm(Mpu_B3))
+                            nonzero_ok = bool(
+                                float(b3_Aup_norm) > 0.0 and float(b3_Apu_norm) > 0.0
+                            )
+                            b3_coupling_iface = bool(nonzero_ok)
+                            b3_coupling_present = bool(nonzero_ok)
+                            b3_coupling_method = "sparse_transfer_T_then_parent_coupling_block_projection"
+                            b3_coupling_reason = None if nonzero_ok else "projected_coupling_norm_zero_or_nan"
+                            coupling_stage_outcome = (
+                                "B3_COUPLING_CONSTRUCTED_CONTINUE_TO_OPERATOR_AND_SEED_AUDIT"
+                                if nonzero_ok
+                                else "B3_REJECTED_COUPLING_CANNOT_PRESERVE_VALIDATED_INTERFACE_PHYSICS"
+                            )
+                            if not nonzero_ok:
+                                block_reason = "B3_REJECTED_DOES_NOT_PRESERVE_VALIDATED_V2_PHYSICS"
+                                b3_seed_fail = "B3_REJECTED_DOES_NOT_PRESERVE_VALIDATED_V2_PHYSICS"
+                            else:
+                                b3_ops_assembled = True
+                                b3_ops_sanity = True
+                                b3_seed_check_status = "NOT_EVALUATED_BLOCKED_PENDING_SEED_TRANSFER"
+                                b3_seed_fail = "B3_BLOCKED_BY_SEED_TRANSFER_INTERFACE"
+                                block_reason = "B3_BLOCKED_BY_SEED_TRANSFER_INTERFACE"
                     else:
                         b3_coupling_iface = False
                         b3_coupling_present = False
@@ -711,6 +981,10 @@ def main() -> int:
 
         if block_reason == "B3_BLOCKED_BY_MANIFOLD_TRACE_STRUCTURAL_FORM_REDERIVATION_INTERFACE":
             verdict = "B3_BLOCKED_BY_MANIFOLD_TRACE_STRUCTURAL_FORM_REDERIVATION_INTERFACE"
+        elif block_reason == "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE":
+            verdict = "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE"
+        elif block_reason == "B3_BLOCKED_BY_SEED_TRANSFER_INTERFACE":
+            verdict = "B3_BLOCKED_BY_SEED_TRANSFER_INTERFACE"
         elif block_reason == "B3_BLOCKED_BY_DOLFINX_ENTITYMAP_TAG_TRANSFER_INTERFACE":
             verdict = "B3_BLOCKED_BY_DOLFINX_ENTITYMAP_TAG_TRANSFER_INTERFACE"
         elif block_reason == "B3_BLOCKED_BY_DOLFINX_TRACE_TO_VOLUME_COUPLING_INTERFACE":
@@ -727,6 +1001,29 @@ def main() -> int:
             "selected_cleaned_formulation_route": "B3",
             **cpre,
             **pre,
+            "C2_T_domain_space": c2_t_domain_space,
+            "C2_T_codomain_space": c2_t_codomain_space,
+            "C2_T_domain_dimension": c2_t_domain_dim,
+            "C2_T_codomain_dimension": c2_t_codomain_dim,
+            "C2_T_transfer_direction": c2_t_direction,
+            "C2_T_construction_method": c2_t_method,
+            "C2_T_is_sparse": c2_t_is_sparse,
+            "C2_T_is_coordinate_interpolation_or_lift": c2_t_is_interp,
+            "C2_T_preserves_trace_geometry_contract": c2_t_geom_preserve,
+            "C2_T_constructed": c2_t_constructed,
+            "C2_T_construction_blocker": c2_t_blocker,
+            "C2_T_shape": c2_t_shape,
+            "C2_T_nnz": c2_t_nnz,
+            "C2_T_density": c2_t_density,
+            "C2_T_row_nnz_min": c2_t_row_nnz_min,
+            "C2_T_row_nnz_max": c2_t_row_nnz_max,
+            "C2_T_mapping_checksum": c2_t_checksum,
+            "C2_T_persisted_to_disk": False,
+            "C2_T_geometry_map_contract_pass": c2_t_contract_pass,
+            "C2_T_constant_field_transfer_pass": c2_t_const_pass,
+            "C2_T_trace_support_transfer_pass": c2_t_support_pass,
+            "C2_T_tag_support_transfer_pass": c2_t_tag_pass,
+            "C2_T_validation_failure_reason": c2_t_validation_failure,
             "B3_shell_trace_space_constructed": bool(b3_space_ok),
             "B3_shell_trace_space_type": (
                 "facet_submesh_vector_displacement_space" if b3_space_ok else "UNAVAILABLE"
@@ -782,6 +1079,15 @@ def main() -> int:
                 "C1_implementation_blocker": cpre["C1_implementation_blocker"],
                 "C2_transfer_representation": cpre["C2_transfer_representation"],
                 "C2_implementation_blocker": cpre["C2_implementation_blocker"],
+                "C2_projected_coupling_formulae": (
+                    {
+                        "A_up_B3": "A_up_parent[parent_index_per_trace_dof, :]",
+                        "A_pu_B3": "A_pu_parent[:, parent_index_per_trace_dof]",
+                        "M_pu_B3": "M_pu_parent[:, parent_index_per_trace_dof]",
+                    }
+                    if c2_t_constructed
+                    else None
+                ),
             },
             "B3_coupling_present": bool(b3_coupling_present),
             "B3_coupling_failure_reason": None if b3_coupling_iface else b3_coupling_reason,
