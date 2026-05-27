@@ -132,7 +132,7 @@ def _petsc_duplicate_scaled(mat: Any, scale: float) -> Any:
 
 def _petsc_zero_mat(nrow: int, ncol: int, comm: Any) -> Any:
     z = PETSc.Mat().create(comm=comm)
-    z.setSizes([[int(nrow), int(ncol)]])
+    z.setSizes([int(nrow), int(ncol)])
     z.setType("aij")
     z.setUp()
     z.assemble()
@@ -206,35 +206,48 @@ def _map_parent_seed_to_b3(
     parent_seed: np.ndarray,
     *,
     parent_idx: np.ndarray,
-    u_to_W_parent: np.ndarray,
-    p_to_W_parent: np.ndarray,
-    n_u_b3: int,
+    n_u_parent: int,
     n_p_retained: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    n_u_b3: int,
+    p_to_W_parent: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
+    """Map historical parent reduced seed [u_active | p_active] into B3 [u_trace | p_active]."""
     parent_seed = np.asarray(parent_seed, dtype=np.float64).ravel()
     parent_idx = np.asarray(parent_idx, dtype=np.int32).ravel()
-    u_to_W_parent = np.asarray(u_to_W_parent, dtype=np.int32).ravel()
-    p_to_W_parent = np.asarray(p_to_W_parent, dtype=np.int32).ravel()
+    n_u_parent = int(n_u_parent)
+    n_p_retained = int(n_p_retained)
+    n_u_b3 = int(n_u_b3)
     n_w = int(n_u_b3 + n_p_retained)
+    expected_parent = int(n_u_parent + n_p_retained)
+    meta: Dict[str, Any] = {
+        "B3_seed_parent_layout": "parent_restricted_concatenated_u_then_active_p",
+        "B3_seed_parent_u_dimension": n_u_parent,
+        "B3_seed_parent_p_dimension": n_p_retained,
+        "B3_seed_u_mapping_method": "parent_restricted_u_selected_by_parent_index_per_trace_dof",
+        "B3_seed_p_mapping_method": "retained_pressure_entries_reused_without_second_restriction",
+    }
+    if int(parent_seed.size) != expected_parent:
+        raise ValueError(
+            f"parent_seed_length_{parent_seed.size}_!=_expected_{expected_parent}"
+        )
+    if parent_idx.size != n_u_b3:
+        raise ValueError(f"parent_idx_length_{parent_idx.size}_!=_B3_u_{n_u_b3}")
+    if np.any(parent_idx < 0) or np.any(parent_idx >= n_u_parent):
+        raise ValueError("parent_index_per_trace_dof_out_of_parent_restricted_u_block")
+    parent_u = parent_seed[:n_u_parent]
+    parent_p = parent_seed[n_u_parent : n_u_parent + n_p_retained]
+    if p_to_W_parent is not None:
+        p_rows = np.asarray(p_to_W_parent, dtype=np.int32).ravel()
+        expected_p_rows = np.arange(n_u_parent, n_u_parent + n_p_retained, dtype=np.int32)
+        meta["B3_seed_parent_p_to_W_contiguous_block_pass"] = bool(
+            p_rows.size == n_p_retained and np.array_equal(p_rows, expected_p_rows)
+        )
     b3 = np.zeros(n_w, dtype=np.float64)
-    u_parent_rows = u_to_W_parent[parent_idx]
-    if u_parent_rows.size != int(n_u_b3):
-        raise ValueError(
-            f"parent_idx length {u_parent_rows.size} != B3 u dimension {n_u_b3}"
-        )
-    if np.any(u_parent_rows < 0) or np.any(u_parent_rows >= parent_seed.size):
-        raise ValueError("parent_idx pullback rows out of parent seed bounds")
-    b3[: int(n_u_b3)] = parent_seed[u_parent_rows]
-    if p_to_W_parent.size != int(n_p_retained):
-        raise ValueError(
-            f"len(p_to_W)={p_to_W_parent.size} != retained pressure dimension {n_p_retained}"
-        )
-    if np.any(p_to_W_parent < 0) or np.any(p_to_W_parent >= parent_seed.size):
-        raise ValueError("p_to_W rows out of parent seed bounds")
-    b3[int(n_u_b3) :] = parent_seed[p_to_W_parent]
-    u_idx = np.arange(int(n_u_b3), dtype=np.int32)
-    p_idx = np.arange(int(n_u_b3), int(n_u_b3 + n_p_retained), dtype=np.int32)
-    return b3, u_idx, p_idx
+    b3[:n_u_b3] = parent_u[parent_idx]
+    b3[n_u_b3:] = parent_p
+    u_idx = np.arange(n_u_b3, dtype=np.int32)
+    p_idx = np.arange(n_u_b3, n_u_b3 + n_p_retained, dtype=np.int32)
+    return b3, u_idx, p_idx, meta
 
 
 def _build_b3_scaled_restricted_operators_in_memory(
@@ -1976,23 +1989,32 @@ def _run_b3_seed_replay_audit_only(pre: Dict[str, Any]) -> int:
             return 2
 
         parent_seed = np.asarray(seed_info["seed_array"], dtype=np.float64).ravel()
-        if int(parent_seed.size) != int(A_parent.getSize()[0]):
+        n_u_parent = int(u_to_W_parent.size)
+        expected_parent_len = int(n_u_parent + n_p_retained)
+        if int(parent_seed.size) != expected_parent_len:
             payload["B3_seed_mapped_vector_constructed"] = False
             payload["B3_seed_mapping_failure_reason"] = (
-                f"parent_seed_length_{parent_seed.size}_!=_parent_operator_dim_{A_parent.getSize()[0]}"
+                f"parent_seed_length_{parent_seed.size}_!=_expected_restricted_u_plus_p_{expected_parent_len}"
             )
             return 2
+        if int(A_parent.getSize()[0]) != expected_parent_len:
+            payload["B3_seed_parent_operator_dimension_mismatch"] = (
+                f"A_parent_dim_{A_parent.getSize()[0]}_!=_expected_{expected_parent_len}"
+            )
 
-        b3_seed, u_idx, p_idx = _map_parent_seed_to_b3(
+        b3_seed, u_idx, p_idx, seed_map_meta = _map_parent_seed_to_b3(
             parent_seed,
             parent_idx=parent_idx,
-            u_to_W_parent=u_to_W_parent,
-            p_to_W_parent=p_to_W_parent,
-            n_u_b3=n_u_b3,
+            n_u_parent=n_u_parent,
             n_p_retained=n_p_retained,
+            n_u_b3=n_u_b3,
+            p_to_W_parent=p_to_W_parent,
         )
+        payload.update(seed_map_meta)
         payload["B3_seed_mapped_vector_constructed"] = True
-        payload["B3_seed_mapping_method"] = "exact_T_pullback_for_u_plus_retained_pressure_mapping"
+        payload["B3_seed_mapping_method"] = (
+            "parent_restricted_concatenated_u_then_p_with_T_pullback_on_u_block"
+        )
         payload["B3_seed_mapped_u_dimension"] = int(n_u_b3)
         payload["B3_seed_mapped_p_dimension"] = int(n_p_retained)
         payload["B3_seed_mapped_total_dimension"] = int(b3_seed.size)
