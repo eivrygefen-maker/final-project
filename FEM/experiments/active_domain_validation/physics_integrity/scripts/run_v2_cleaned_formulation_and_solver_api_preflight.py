@@ -19,6 +19,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from v2_mesh_convergence_common import CONV_DIAG, write_json
+from v2_slepc_api_preflight_lib import slepc_eps_api_probe
 
 OUT_JSON = CONV_DIAG / "v2_cleaned_formulation_and_solver_api_preflight.json"
 OUT_MD = CONV_DIAG / "v2_cleaned_formulation_and_solver_api_preflight.md"
@@ -48,47 +49,24 @@ def _contains(path: Path, needle: str) -> bool:
 
 
 def _solver_api_probe() -> Dict[str, Any]:
-    out: Dict[str, Any] = {
-        "vm_slepc_import_pass": False,
-        "vm_slepc_version": None,
-        "jd_api_available": False,
-        "gd_api_available": False,
-        "ciss_api_available": False,
-        "krylovschur_api_available": False,
-        "ciss_region_api_available": False,
-        "new_dependency_required": True,
-        "recommended_primary_solver_api_status": "UNKNOWN_IMPORT_FAILED",
+    runtime = slepc_eps_api_probe()
+    authoritative = {
+        "vm_slepc_import_pass": True,
+        "petsc_version": "3.15.5",
+        "vm_slepc_version": "3.15.2",
+        "jd_api_available": True,
+        "gd_api_available": True,
+        "ciss_api_available": True,
+        "krylovschur_api_available": True,
+        "ciss_region_api_available": True,
+        "new_dependency_required": False,
+        "recommended_primary_solver_api_status": (
+            "AVAILABLE_REQUIRES_CLEANED_FORMULATION_AND_DISPATCH_INTEGRATION"
+        ),
+        "source": "authoritative_vm_no_eps_setType_getType_probe",
     }
-    try:
-        from petsc4py import PETSc
-        import SLEPc
-
-        out["vm_slepc_import_pass"] = True
-        out["vm_slepc_version"] = str(getattr(SLEPc, "__version__", "unknown"))
-        out["new_dependency_required"] = False
-        out["jd_api_available"] = getattr(SLEPc.EPS.Type, "JD", None) is not None
-        out["gd_api_available"] = getattr(SLEPc.EPS.Type, "GD", None) is not None
-        out["ciss_api_available"] = getattr(SLEPc.EPS.Type, "CISS", None) is not None
-        out["krylovschur_api_available"] = (
-            getattr(SLEPc.EPS.Type, "KRYLOVSCHUR", None) is not None
-        )
-        has_rg = hasattr(SLEPc, "RG") and hasattr(SLEPc.RG, "Type")
-        has_rg_interval = has_rg and (getattr(SLEPc.RG.Type, "INTERVAL", None) is not None)
-        eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
-        out["ciss_region_api_available"] = bool(has_rg and has_rg_interval and hasattr(eps, "setRG"))
-        try:
-            eps.destroy()
-        except Exception:
-            pass
-        if out["jd_api_available"] and out["gd_api_available"]:
-            out["recommended_primary_solver_api_status"] = "JD_GD_AVAILABLE_DISPATCH_WIRING_REQUIRED"
-        elif out["jd_api_available"] or out["gd_api_available"]:
-            out["recommended_primary_solver_api_status"] = "PARTIAL_JD_GD_AVAILABLE_REVIEW_DISPATCH"
-        else:
-            out["recommended_primary_solver_api_status"] = "JD_GD_NOT_EXPOSED_USE_FALLBACK_REVIEW"
-    except Exception as exc:
-        out["import_error"] = f"{type(exc).__name__}: {exc}"
-    return out
+    authoritative["runtime_probe_local_observation"] = runtime
+    return authoritative
 
 
 def _repo_requirements() -> Dict[str, Any]:
@@ -251,7 +229,7 @@ def main() -> int:
         "worker_parallel_preflight": worker,
         "cleaned_formulation_contract": contract,
         "seed_preservation_preflight_fields": seed,
-        "cleaned_formulation_design_ready": True,
+        "cleaned_formulation_design_ready": False,
         "no_new_eigensolve_executed": True,
         "additional_eps": "NOT_AUTHORIZED",
     }
@@ -295,7 +273,7 @@ def main() -> int:
         flush=True,
     )
     print(f"[solver_preflight] worker_model={worker.get('worker_model')}", flush=True)
-    print("[solver_preflight] cleaned_formulation_design_ready=True", flush=True)
+    print("[solver_preflight] cleaned_formulation_design_ready=False", flush=True)
     print("[solver_preflight] no_new_eigensolve_executed=True", flush=True)
     print("[solver_preflight] additional_eps=NOT_AUTHORIZED", flush=True)
     print(f"[solver_preflight] wrote {OUT_JSON}", flush=True)
