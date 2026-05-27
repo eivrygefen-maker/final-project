@@ -345,6 +345,14 @@ def main() -> int:
             "lossless dense capture before sparse serialization (isolated output tree)."
         ),
     )
+    parser.add_argument(
+        "--seed-branch-lossless-nullspace-projected-adjudication-v1",
+        action="store_true",
+        help=(
+            "Nullspace-projected lossless adjudication v1: certified-null deflation only; "
+            "isolated output tree; requires certified_null_Q_u.npy in case diagnostics."
+        ),
+    )
     args = parser.parse_args()
 
     if MPI.COMM_WORLD.size != 1:
@@ -392,7 +400,35 @@ def main() -> int:
     sc["_worker_harvest_hi_hz"] = band_hi
     sc["shift_invert_target_hz"] = target_hz
     if args.seed_branch_recovery_diagnostic:
-        if args.seed_branch_lossless_adjudication_v1:
+        if args.seed_branch_lossless_nullspace_projected_adjudication_v1:
+            seed_branch_diag_meta = (
+                _apply_mapping_fixed_unregularized_baseline_diagnostic_solver_cfg(
+                    sc, target_hz
+                )
+            )
+            seed_branch_diag_meta["solver_mode"] = (
+                "seed_branch_recovery_diagnostic_mapping_fixed_lossless_nullspace_projected_adjudication_v1"
+            )
+            seed_branch_diag_meta["lossless_persistence_enabled"] = True
+            seed_branch_diag_meta["lossless_replay_authoritative"] = True
+            q_npy = case_dir / "diagnostics" / "certified_null_Q_u.npy"
+            sc["eps_certified_null_projection_enabled"] = True
+            sc["eps_certified_null_Q_u_npy"] = str(q_npy.resolve())
+            seed_branch_diag_meta["eps_certified_null_projection_enabled"] = True
+            seed_branch_diag_meta["projection_enabled"] = True
+            seed_branch_diag_meta["projection_strategy"] = (
+                "certified_empirical_Muu_null_basis_deflation"
+            )
+            seed_branch_diag_meta["Q_full_used_for_solver"] = False
+            if not q_npy.is_file():
+                if MPI.COMM_WORLD.rank == 0:
+                    print(
+                        f"[v2_sensitivity_solve] missing certified null basis: {q_npy}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                return 2
+        elif args.seed_branch_lossless_adjudication_v1:
             seed_branch_diag_meta = (
                 _apply_mapping_fixed_unregularized_baseline_diagnostic_solver_cfg(
                     sc, target_hz
@@ -555,7 +591,10 @@ def main() -> int:
         return row
 
     if preserve_all_bank and bank_records:
-        if args.seed_branch_lossless_adjudication_v1:
+        if (
+            args.seed_branch_lossless_adjudication_v1
+            or args.seed_branch_lossless_nullspace_projected_adjudication_v1
+        ):
             n_saved, mode_rows, save_errors_persist = persist_candidate_bank_with_optional_lossless(
                 case_dir,
                 bank_records,
@@ -627,6 +666,7 @@ def main() -> int:
     if preserve_all_bank and (
         args.seed_branch_mapping_fixed_unregularized_diagnostic
         or args.seed_branch_lossless_adjudication_v1
+        or args.seed_branch_lossless_nullspace_projected_adjudication_v1
     ):
         persistence_failure = check_persistence_gate(
             nconv_marked=int(eps_diag.get("nconv_marked", 0)),

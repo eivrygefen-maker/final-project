@@ -4129,6 +4129,110 @@ def _slepc_configure_ciss_region(
             pass
 
 
+def _slepc_eps_apply_certified_null_deflation(
+    eps: Any,
+    A: PETSc.Mat,
+    solver_cfg: Dict,
+    u_to_W: Optional[np.ndarray],
+    *,
+    status_callback=None,
+) -> Dict[str, Any]:
+    """
+    Exclude certified empirical M_uu null directions from EPS search via deflation space.
+    Q_full (numerical rank of all returned vectors) must never be used here.
+    """
+    if not _solver_bool(solver_cfg, "eps_certified_null_projection_enabled", default=False):
+        return {}
+    q_path = solver_cfg.get("eps_certified_null_Q_u_npy")
+    if not q_path or u_to_W is None:
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            _emit(
+                "[solver][certified_null_projection] enabled but Q path or u_to_W missing; "
+                "deflation not applied.",
+                status_callback=status_callback,
+                level="error",
+            )
+        return {"deflation_applied": False, "reason": "missing_Q_or_u_to_W"}
+    u_idx = np.asarray(u_to_W, dtype=np.int32).ravel()
+    try:
+        Q_u = np.load(str(q_path))
+    except Exception as exc:
+        return {"deflation_applied": False, "reason": f"Q_load_failed:{type(exc).__name__}"}
+    Q_u = np.asarray(Q_u, dtype=np.float64)
+    if Q_u.ndim != 2 or Q_u.shape[0] != int(u_idx.size):
+        return {
+            "deflation_applied": False,
+            "reason": f"Q_u_shape_mismatch:{list(Q_u.shape)}_vs_n_u={int(u_idx.size)}",
+        }
+    n_rows = int(A.getSize()[0])
+    k = int(Q_u.shape[1])
+    Q_embed = np.zeros((n_rows, k), dtype=np.float64)
+    if k > 0:
+        Q_embed[u_idx, :] = Q_u
+    deflation_vecs: List[Any] = []
+    try:
+        for j in range(k):
+            v = A.createVecRight()
+            col = Q_embed[:, j].copy()
+            v.setArray(col)
+            try:
+                v.ghostUpdate(
+                    addv=PETSc.InsertMode.INSERT_VALUES,
+                    mode=PETSc.ScatterMode.FORWARD,
+                )
+            except Exception:
+                pass
+            deflation_vecs.append(v)
+        deflation_applied = False
+        if deflation_vecs and hasattr(eps, "setDeflationSpace"):
+            eps.setDeflationSpace(deflation_vecs)
+            deflation_applied = True
+        elif MPI.COMM_WORLD.rank == ROOT_RANK:
+            _emit(
+                "[solver][certified_null_projection] SLEPc setDeflationSpace unavailable; "
+                "projection relies on projected continuation seed only.",
+                status_callback=status_callback,
+                level="warning",
+            )
+        meta = {
+            "deflation_applied": bool(deflation_applied),
+            "projection_enabled": True,
+            "projection_strategy": "certified_empirical_Muu_null_basis_deflation",
+            "projection_basis_dimension": k,
+            "projection_basis_source": "prior_lossless_adjudication_v1_authoritative_vectors",
+            "projection_basis_certified": True,
+            "Q_full_used_for_solver": False,
+            "Q_embedded_in_W_shape": [n_rows, k],
+            "eps_certified_null_Q_u_npy": str(q_path),
+        }
+        if MPI.COMM_WORLD.rank == ROOT_RANK:
+            _emit(
+                "[solver][certified_null_projection] "
+                f"deflation_applied={deflation_applied} basis_dim={k}",
+                status_callback=status_callback,
+            )
+        meta["Q_embedded_in_W"] = Q_embed
+        return meta
+    finally:
+        for v in deflation_vecs:
+            try:
+                v.destroy()
+            except Exception:
+                pass
+
+
+def _project_out_certified_null_subspace(
+    vec: np.ndarray, Q_embed: np.ndarray, u_to_W: np.ndarray
+) -> np.ndarray:
+    out = np.asarray(vec, dtype=np.float64).ravel().copy()
+    u_idx = np.asarray(u_to_W, dtype=np.int32).ravel()
+    if Q_embed.size == 0 or u_idx.size == 0:
+        return out
+    Q_u = Q_embed[u_idx, :]
+    out[u_idx] = out[u_idx] - Q_u @ (Q_u.T @ out[u_idx])
+    return out
+
+
 def _slepc_eps_apply_continuation_seed(
     eps: Any,
     A: PETSc.Mat,
@@ -4634,10 +4738,50 @@ def _slepc_shift_invert_batch(
     sys.stdout.flush()
     _debug_rank("Entering EPS Solve")
     _slepc_eps_ensure_operators(eps, A_solve, M_solve)
+    null_proj_meta = _slepc_eps_apply_certified_null_deflation(
+        eps,
+        A_solve,
+        solver_cfg,
+        u_to_W,
+        status_callback=status_callback,
+    )
+    if null_proj_meta:
+        solver_cfg.setdefault("_eps_certified_null_projection_runtime", null_proj_meta)
+        batch_diag = solver_cfg.setdefault("_eps_batch_diagnostics", {})
+        if isinstance(batch_diag, dict):
+            batch_diag.update(
+                {
+                    k: null_proj_meta[k]
+                    for k in (
+                        "projection_enabled",
+                        "projection_strategy",
+                        "projection_basis_dimension",
+                        "projection_basis_source",
+                        "projection_basis_certified",
+                        "Q_full_used_for_solver",
+                        "deflation_applied",
+                    )
+                    if k in null_proj_meta
+                }
+            )
     seed_vec = solver_cfg.pop("_continuation_eps_seed_vector", None)
     seed_applied = seed_vec is not None
     seed_meta = solver_cfg.get("_continuation_eps_seed_metadata") or {}
     if seed_applied:
+        seed_arr = np.asarray(seed_vec, dtype=np.float64).ravel()
+        Q_embed = (null_proj_meta or {}).get("Q_embedded_in_W")
+        if Q_embed is not None and u_to_W is not None:
+            seed_before_norm = float(np.linalg.norm(seed_arr))
+            seed_arr = _project_out_certified_null_subspace(seed_arr, np.asarray(Q_embed), u_to_W)
+            seed_rel_change = float(
+                np.linalg.norm(seed_arr - np.asarray(seed_vec).ravel())
+                / max(seed_before_norm, 1e-300)
+            )
+            if isinstance(null_proj_meta, dict):
+                null_proj_meta["seed_projection_relative_change_norm_ratio"] = seed_rel_change
+                null_proj_meta["seed_projection_preservation_pass"] = bool(
+                    seed_rel_change <= 1e-10
+                )
         if MPI.COMM_WORLD.rank == ROOT_RANK and seed_meta:
             print(
                 "[physics_integrity][physical_fsi_continuation] "
@@ -4651,7 +4795,7 @@ def _slepc_shift_invert_batch(
         _slepc_eps_apply_continuation_seed(
             eps,
             A_solve,
-            np.asarray(seed_vec, dtype=np.float64),
+            seed_arr,
             status_callback=status_callback,
         )
     try:
@@ -4677,7 +4821,7 @@ def _slepc_shift_invert_batch(
     _st_m_used = float(solver_cfg.get("_batch_st_mass_reg_frac", 0.0) or 0.0)
     _st_sigma_used_hz = float(solver_cfg.get("_batch_st_sigma_hz", float("nan")))
     _op_consistent = bool(abs(_st_a_used) <= 1.0e-15 and abs(_st_m_used) <= 1.0e-15)
-    solver_cfg["_eps_batch_diagnostics"] = {
+    _batch_diag_out: Dict[str, Any] = {
         "nconv_marked": int(nconv_marked),
         "nev_request": int(nev_request),
         "ncv": int(ncv),
@@ -4692,6 +4836,21 @@ def _slepc_shift_invert_batch(
         ),
         "diagnostic_operator_consistent_with_replay": _op_consistent,
     }
+    if null_proj_meta:
+        for k in (
+            "projection_enabled",
+            "projection_strategy",
+            "projection_basis_dimension",
+            "projection_basis_source",
+            "projection_basis_certified",
+            "Q_full_used_for_solver",
+            "deflation_applied",
+            "seed_projection_preservation_pass",
+            "seed_projection_relative_change_norm_ratio",
+        ):
+            if k in null_proj_meta:
+                _batch_diag_out[k] = null_proj_meta[k]
+    solver_cfg["_eps_batch_diagnostics"] = _batch_diag_out
     force_partial = _solver_bool(solver_cfg, "eps_force_harvest_partial", True)
     harvest_slots = nconv_marked
     if harvest_slots == 0 and force_partial:

@@ -8,6 +8,9 @@ from typing import Any, Dict, List
 OUT_SUBDIR_LOSSLESS_ADJUDICATION_V1 = (
     "seed_branch_recovery_diagnostic_mapping_fixed_unregularized_lossless_adjudication_v1"
 )
+OUT_SUBDIR_LOSSLESS_NULLSPACE_PROJECTED_ADJUDICATION_V1 = (
+    "seed_branch_recovery_diagnostic_mapping_fixed_unregularized_lossless_nullspace_projected_adjudication_v1"
+)
 
 CASE_ID = "baseline_coupled_v2"
 SEED_F_HZ = 243.0754171175576
