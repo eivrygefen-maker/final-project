@@ -184,61 +184,146 @@ def _petsc_zero_mat(nrow: int, ncol: int, comm: Any) -> Any:
     return z
 
 
-def _b3_nest_coupled_operators(
-    Auu: Any,
-    Aup: Any,
-    Apu: Any,
-    App: Any,
-    Muu: Any,
-    Mpu: Any,
-    Mpp: Any,
-    *,
-    comm: Any,
-) -> tuple[Any, Any, Any]:
-    n_u = int(Auu.getSize()[0])
-    n_p = int(App.getSize()[0])
-    m_up = _petsc_zero_mat(n_u, n_p, comm)
+def _petsc_mat_global_nnz_used(mat: Any) -> int:
     try:
-        a_nest = PETSc.Mat().createNest([[Auu, Aup], [Apu, App]], comm=comm)
-        m_nest = PETSc.Mat().createNest([[Muu, m_up], [Mpu, Mpp]], comm=comm)
-    except TypeError:
-        sizes = [[n_u, n_p], [n_u, n_p]]
-        a_nest = PETSc.Mat().createNest(sizes, [[Auu, Aup], [Apu, App]], comm=comm)
-        m_nest = PETSc.Mat().createNest(sizes, [[Muu, m_up], [Mpu, Mpp]], comm=comm)
-    a_nest.assemble()
-    m_nest.assemble()
-    return a_nest, m_nest, m_up
+        info = mat.getInfo()
+        for key in ("nz_used", "nz_allocated", "nz"):
+            if key in info:
+                return int(info[key])
+    except Exception:
+        pass
+    return 0
 
 
-def _b3_matnest_to_sparse_aij(mat_nest: Any, *, comm: Any) -> tuple[Any, str]:
-    """Copy MatNest into a new monolithic sparse AIJ Mat; never destroy the nest here."""
-    errors: List[str] = []
-    for typ in ("aij", "mpiaij"):
-        out_mat = PETSc.Mat().create(comm=comm)
+def _petsc_insert_block_into_monolithic(
+    dest: Any,
+    src: Any,
+    *,
+    row_offset: int,
+    col_offset: int,
+) -> None:
+    """Insert sparse block ``src`` into ``dest`` at global row/col offsets (mpiexec -n 1)."""
+    nrow, _ncol = src.getSize()
+    for r in range(int(nrow)):
         try:
-            mat_nest.convert(typ, out=out_mat)
-            out_mat.assemble()
-            type_name = str(out_mat.getType()).lower()
-            if "nest" in type_name:
-                errors.append(f"{typ}:out_still_nest")
-                _destroy_mat(out_mat)
-                continue
-            return out_mat, typ
-        except Exception as exc:
-            _destroy_mat(out_mat)
-            errors.append(f"{typ}:out:{type(exc).__name__}:{exc}")
-    for typ in ("aij", "mpiaij"):
+            cols, vals = src.getRow(r)
+        except TypeError:
+            rowdat = src.getRow(r)
+            cols, vals = rowdat[0], rowdat[1]
+        cols_g = (np.asarray(cols, dtype=np.int32) + int(col_offset)).tolist()
+        vals_g = np.asarray(vals, dtype=np.float64).tolist()
         try:
-            out = mat_nest.convert(typ)
-            if out is not None and out is not mat_nest:
-                type_name = str(out.getType()).lower()
-                if "nest" not in type_name:
-                    return out, typ
-            errors.append(f"{typ}:inplace_or_shared_handle")
-        except Exception as exc:
-            errors.append(f"{typ}:convert:{type(exc).__name__}:{exc}")
-    raise RuntimeError(
-        "B3_matnest_to_aij_conversion_failed:" + ";".join(errors)
+            dest.setValues(
+                [int(r + row_offset)],
+                cols_g,
+                vals_g,
+                addv=PETSc.InsertMode.INSERT_VALUES,
+            )
+        except Exception:
+            dest.setValues(
+                [int(r + row_offset)],
+                cols_g,
+                vals_g,
+                addv=PETSc.InsertMode.INSERT,
+            )
+        try:
+            src.restoreRow(r)
+        except Exception:
+            pass
+
+
+def _b3_direct_sparse_aij_from_restricted_blocks(
+    *,
+    a_uu: Any,
+    a_up: Any,
+    a_pu: Any,
+    a_pp: Any,
+    m_uu: Any,
+    m_pu: Any,
+    m_pp: Any,
+    n_u: int,
+    n_p: int,
+    comm: Any,
+) -> tuple[Any, Any]:
+    """Assemble [u|p] monolithic AIJ from restricted blocks; no MatNest or convert()."""
+    n_w = int(n_u + n_p)
+    nnz_est = int(
+        _petsc_mat_global_nnz_used(a_uu)
+        + _petsc_mat_global_nnz_used(a_up)
+        + _petsc_mat_global_nnz_used(a_pu)
+        + _petsc_mat_global_nnz_used(a_pp)
+    )
+    mm_nnz_est = int(
+        _petsc_mat_global_nnz_used(m_uu)
+        + _petsc_mat_global_nnz_used(m_pu)
+        + _petsc_mat_global_nnz_used(m_pp)
+    )
+    row_nnz = max(1, int(math.ceil(max(nnz_est, mm_nnz_est) / max(1, n_w))))
+    a_out = PETSc.Mat().create(comm=comm)
+    a_out.setSizes([n_w, n_w])
+    a_out.setType("aij")
+    try:
+        a_out.setPreallocationNNZ(row_nnz, row_nnz)
+    except Exception:
+        pass
+    a_out.setUp()
+    try:
+        a_out.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
+    except Exception:
+        pass
+    m_out = PETSc.Mat().create(comm=comm)
+    m_out.setSizes([n_w, n_w])
+    m_out.setType("aij")
+    try:
+        m_out.setPreallocationNNZ(row_nnz, row_nnz)
+    except Exception:
+        pass
+    m_out.setUp()
+    try:
+        m_out.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
+    except Exception:
+        pass
+    _petsc_insert_block_into_monolithic(a_out, a_uu, row_offset=0, col_offset=0)
+    _petsc_insert_block_into_monolithic(a_out, a_up, row_offset=0, col_offset=int(n_u))
+    _petsc_insert_block_into_monolithic(a_out, a_pu, row_offset=int(n_u), col_offset=0)
+    _petsc_insert_block_into_monolithic(a_out, a_pp, row_offset=int(n_u), col_offset=int(n_u))
+    _petsc_insert_block_into_monolithic(m_out, m_uu, row_offset=0, col_offset=0)
+    _petsc_insert_block_into_monolithic(m_out, m_pu, row_offset=int(n_u), col_offset=0)
+    _petsc_insert_block_into_monolithic(m_out, m_pp, row_offset=int(n_u), col_offset=int(n_u))
+    a_out.assemble()
+    m_out.assemble()
+    return a_out, m_out
+
+
+def _native_log_restricted_block_types(
+    *,
+    a_uu: Any,
+    a_up: Any,
+    a_pu: Any,
+    a_pp: Any,
+    m_uu: Any,
+    m_pu: Any,
+    m_pp: Any,
+) -> None:
+    print(
+        "[B3_native] A_child_types="
+        f"uu={a_uu.getType()},up={a_up.getType()},pu={a_pu.getType()},pp={a_pp.getType()}",
+        flush=True,
+    )
+    print(
+        "[B3_native] M_child_types="
+        f"uu={m_uu.getType()},pu={m_pu.getType()},pp={m_pp.getType()}",
+        flush=True,
+    )
+    print(
+        "[B3_native] A_child_shapes="
+        f"uu={_mat_shape(a_uu)},up={_mat_shape(a_up)},pu={_mat_shape(a_pu)},pp={_mat_shape(a_pp)}",
+        flush=True,
+    )
+    print(
+        "[B3_native] M_child_shapes="
+        f"uu={_mat_shape(m_uu)},pu={_mat_shape(m_pu)},pp={_mat_shape(m_pp)}",
+        flush=True,
     )
 
 
@@ -358,9 +443,13 @@ def _build_b3_scaled_restricted_operators_in_memory(
         "B3_pressure_active_index_set_constructed": bool(n_p_active > 0),
         "B3_MatNest_arbitrary_submatrix_path_removed": True,
         "B3_MatNest_zero_rows_columns_path_removed": True,
+        "B3_MatNest_to_AIJ_conversion_path_disabled": True,
         "B3_sparse_AIJ_used_for_zero_rows_columns": False,
         "B3_sparse_blockwise_pressure_restriction_pass": False,
         "B3_sparse_blockwise_pressure_restriction_failure_reason": None,
+        "B3_final_operator_construction_method": (
+            "DIRECT_SPARSE_MONOLITHIC_AIJ_FROM_RESTRICTED_BLOCKS"
+        ),
         "B3_final_MatNest_constructed_after_blockwise_restriction": False,
         "B3_final_MatNest_conversion_to_sparse_AIJ_attempted": False,
         "B3_final_sparse_AIJ_operator_constructed": False,
@@ -369,6 +458,11 @@ def _build_b3_scaled_restricted_operators_in_memory(
         "B3_final_sparse_AIJ_M_shape": None,
         "B3_final_sparse_AIJ_operator_dimension_contract_pass": False,
         "B3_final_sparse_AIJ_conversion_failure_reason": None,
+        "B3_direct_sparse_AIJ_operator_constructed": False,
+        "B3_direct_sparse_AIJ_A_shape": None,
+        "B3_direct_sparse_AIJ_M_shape": None,
+        "B3_direct_sparse_AIJ_dimension_contract_pass": False,
+        "B3_direct_sparse_AIJ_construction_failure_reason": None,
         "B3_final_operator_shape": None,
         "B3_final_operator_dimension_contract_pass": False,
         "B3_algebraic_BC_application_matrix_type": None,
@@ -431,59 +525,63 @@ def _build_b3_scaled_restricted_operators_in_memory(
 
     for m_ in (a_uu, m_uu, a_up_act, a_pu_act, m_pu_act, a_pp_act, m_pp_act):
         _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_seen)
-    _native_stage("before_final_matnest_construct")
-    a_nest, m_nest, m_up = _b3_nest_coupled_operators(
-        a_uu, a_up_act, a_pu_act, a_pp_act, m_uu, m_pu_act, m_pp_act, comm=comm
-    )
-    _native_stage("after_final_matnest_construct")
-    for m_ in (a_nest, m_nest, m_up):
-        _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_seen)
     n_w = int(n_u + n_p_active)
-    meta["B3_final_MatNest_constructed_after_blockwise_restriction"] = True
-    meta["B3_final_operator_shape"] = [n_w, n_w]
-    meta["B3_final_operator_dimension_contract_pass"] = bool(
-        a_nest.getSize() == (n_w, n_w) and m_nest.getSize() == (n_w, n_w)
+    _native_log_restricted_block_types(
+        a_uu=a_uu,
+        a_up=a_up_act,
+        a_pu=a_pu_act,
+        a_pp=a_pp_act,
+        m_uu=m_uu,
+        m_pu=m_pu_act,
+        m_pp=m_pp_act,
     )
-    if not meta["B3_final_operator_dimension_contract_pass"]:
-        raise RuntimeError("B3_final_operator_dimension_contract_failed")
-    meta["B3_seed_operator_build_stage"] = "final_matnest_constructed"
-
-    meta["B3_final_MatNest_conversion_to_sparse_AIJ_attempted"] = True
-    meta["B3_seed_operator_build_stage"] = "pre_matnest_to_aij_conversion"
-    meta["B3_final_sparse_AIJ_conversion_method"] = (
-        "PETSc_MatNest_convert_to_AIJ_before_algebraic_BC_application"
-    )
+    meta["B3_seed_operator_build_stage"] = "pre_direct_sparse_aij_assembly"
+    _native_stage("before_direct_sparse_aij_assembly")
     try:
-        _native_stage("before_A_matnest_to_aij")
-        a_b3, _a_typ = _b3_matnest_to_sparse_aij(a_nest, comm=comm)
-        _native_stage("after_A_matnest_to_aij")
-        _native_mat_info("A_converted", a_b3)
-        _native_stage("before_M_matnest_to_aij")
-        m_b3, _m_typ = _b3_matnest_to_sparse_aij(m_nest, comm=comm)
-        _native_stage("after_M_matnest_to_aij")
-        _native_mat_info("M_converted", m_b3)
+        a_b3, m_b3 = _b3_direct_sparse_aij_from_restricted_blocks(
+            a_uu=a_uu,
+            a_up=a_up_act,
+            a_pu=a_pu_act,
+            a_pp=a_pp_act,
+            m_uu=m_uu,
+            m_pu=m_pu_act,
+            m_pp=m_pp_act,
+            n_u=n_u,
+            n_p=n_p_active,
+            comm=comm,
+        )
     except Exception as exc:
-        meta["B3_final_sparse_AIJ_operator_constructed"] = False
-        meta["B3_final_sparse_AIJ_conversion_failure_reason"] = f"{type(exc).__name__}:{exc}"
-        meta["B3_seed_operator_build_stage"] = "matnest_to_aij_conversion_failed"
+        meta["B3_direct_sparse_AIJ_construction_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        meta["B3_seed_operator_build_stage"] = "direct_sparse_aij_assembly_failed"
         raise
+    _native_stage("after_direct_sparse_aij_assembly")
+    _native_mat_info("A_converted", a_b3)
+    _native_mat_info("M_converted", m_b3)
     _register_mat_for_destroy(mats_to_destroy, a_b3, seen=mat_seen)
     _register_mat_for_destroy(mats_to_destroy, m_b3, seen=mat_seen)
-    meta["B3_seed_operator_build_stage"] = "post_matnest_to_aij_conversion"
+    meta["B3_seed_operator_build_stage"] = "post_direct_sparse_aij_assembly"
+    meta["B3_direct_sparse_AIJ_operator_constructed"] = True
+    meta["B3_direct_sparse_AIJ_A_shape"] = _mat_shape(a_b3)
+    meta["B3_direct_sparse_AIJ_M_shape"] = _mat_shape(m_b3)
     meta["B3_final_sparse_AIJ_operator_constructed"] = True
-    meta["B3_final_sparse_AIJ_A_shape"] = _mat_shape(a_b3)
-    meta["B3_final_sparse_AIJ_M_shape"] = _mat_shape(m_b3)
+    meta["B3_final_sparse_AIJ_A_shape"] = meta["B3_direct_sparse_AIJ_A_shape"]
+    meta["B3_final_sparse_AIJ_M_shape"] = meta["B3_direct_sparse_AIJ_M_shape"]
+    meta["B3_final_operator_shape"] = [n_w, n_w]
     aij_dim_ok = bool(
         a_b3.getSize() == (n_w, n_w)
         and m_b3.getSize() == (n_w, n_w)
         and "nest" not in str(a_b3.getType()).lower()
         and "nest" not in str(m_b3.getType()).lower()
     )
+    meta["B3_direct_sparse_AIJ_dimension_contract_pass"] = aij_dim_ok
     meta["B3_final_sparse_AIJ_operator_dimension_contract_pass"] = aij_dim_ok
+    meta["B3_final_operator_dimension_contract_pass"] = aij_dim_ok
     if not aij_dim_ok:
-        meta["B3_final_sparse_AIJ_conversion_failure_reason"] = "aij_dimension_or_type_contract_failed"
-        meta["B3_seed_operator_build_stage"] = "matnest_to_aij_conversion_failed"
-        raise RuntimeError(meta["B3_final_sparse_AIJ_conversion_failure_reason"])
+        meta["B3_direct_sparse_AIJ_construction_failure_reason"] = (
+            "direct_aij_dimension_or_type_contract_failed"
+        )
+        meta["B3_seed_operator_build_stage"] = "direct_sparse_aij_assembly_failed"
+        raise RuntimeError(meta["B3_direct_sparse_AIJ_construction_failure_reason"])
     meta["B3_sparse_AIJ_used_for_zero_rows_columns"] = True
 
     _native_stage("before_BC_row_locate")
@@ -2062,11 +2160,21 @@ def _run_b3_seed_replay_audit_only(
         case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
         sample = sample_spec_from_case(case)
         mesh_file = mesh_path("L_mid", CASE_ID)
-        case_dir = solve_case_dir("L_mid", CASE_ID)
-        seed_npy = case_dir / "diagnostics" / "acoustic_coupled_seed.npy"
-        seed_info = load_seed_with_diagnostics(seed_npy)
-        payload["B3_seed_file_exists"] = bool(seed_info.get("seed_file_exists"))
-        payload["B3_seed_parent_vector_length"] = seed_info.get("seed_vector_length")
+        if not operator_aij_bc_contract_only:
+            case_dir = solve_case_dir("L_mid", CASE_ID)
+            seed_npy = case_dir / "diagnostics" / "acoustic_coupled_seed.npy"
+            seed_info = load_seed_with_diagnostics(seed_npy)
+            payload["B3_seed_file_exists"] = bool(seed_info.get("seed_file_exists"))
+            payload["B3_seed_parent_vector_length"] = seed_info.get("seed_vector_length")
+        else:
+            seed_info = {
+                "seed_file_exists": False,
+                "seed_load_status": "skipped_in_B3_operator_AIJ_BC_contract_only",
+                "seed_array": None,
+                "seed_vector_length": None,
+            }
+            payload["B3_seed_file_exists"] = False
+            payload["B3_seed_parent_vector_length"] = None
 
         msh, _cell_tags, facet_tags = fem3d._load_mesh_and_tags(mesh_file)
         f_top = np.asarray(facet_tags.find(TAG_TOP), dtype=np.int32)
@@ -2264,7 +2372,9 @@ def _run_b3_seed_replay_audit_only(
             )
             payload["B3_seed_operator_failure_exception_type"] = type(exc).__name__
             payload["B3_seed_operator_failure_exception_message"] = str(exc)
-            if op_meta.get("B3_final_MatNest_conversion_to_sparse_AIJ_attempted"):
+            if op_meta.get("B3_direct_sparse_AIJ_operator_constructed") or op_meta.get(
+                "B3_final_MatNest_conversion_to_sparse_AIJ_attempted"
+            ):
                 verdict = (
                     "B3_OPERATOR_BC_APPLICATION_INTERFACE_BLOCKED"
                     if operator_aij_bc_contract_only
@@ -2416,7 +2526,9 @@ def _run_b3_seed_replay_audit_only(
             verdict = "B3_SEED_REPLAY_BLOCKED_BY_SEED_MAPPING_INTERFACE"
         else:
             payload["B3_seed_operator_build_failure_reason"] = f"{type(exc).__name__}:{exc}"
-            if payload.get("B3_final_MatNest_conversion_to_sparse_AIJ_attempted"):
+            if payload.get("B3_direct_sparse_AIJ_operator_constructed") or payload.get(
+                "B3_final_MatNest_conversion_to_sparse_AIJ_attempted"
+            ):
                 verdict = (
                     "B3_OPERATOR_BC_APPLICATION_INTERFACE_BLOCKED"
                     if operator_aij_bc_contract_only
