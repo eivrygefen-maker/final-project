@@ -37,9 +37,11 @@ OUT_JSON = CONV_DIAG / "v2_B3_trace_coupled_operator_and_seed_transfer_audit.jso
 OUT_MD = CONV_DIAG / "v2_B3_trace_coupled_operator_and_seed_transfer_audit.md"
 OUT_JSON_C2_CONTRACT = CONV_DIAG / "v2_B3_C2_transfer_contract_only.json"
 OUT_JSON_C2_SPARSE_COUPLING = CONV_DIAG / "v2_B3_C2_sparse_coupling_only.json"
+OUT_JSON_B3_RAW_COMPOSITION = CONV_DIAG / "v2_B3_raw_composition_contract_only.json"
 REPORT_SIZE_TARGET_BYTES = 1048576
 C2_TRANSFER_CONTRACT_ONLY_ARG = "--C2-transfer-contract-only"
 C2_SPARSE_COUPLING_ONLY_ARG = "--C2-sparse-coupling-only"
+B3_RAW_COMPOSITION_CONTRACT_ONLY_ARG = "--B3-raw-composition-contract-only"
 
 TAG_TOP = 1
 TAG_BACK = 3
@@ -1010,6 +1012,10 @@ def _is_c2_sparse_coupling_only_mode(argv: List[str]) -> bool:
     return C2_SPARSE_COUPLING_ONLY_ARG in argv
 
 
+def _is_b3_raw_composition_contract_only_mode(argv: List[str]) -> bool:
+    return B3_RAW_COMPOSITION_CONTRACT_ONLY_ARG in argv
+
+
 def _mat_global_nnz(mat: Any) -> int:
     info = mat.getInfo(PETSc.Mat.InfoType.GLOBAL_SUM)
     return int(info.get("nz_used", 0))
@@ -1257,10 +1263,196 @@ def _run_c2_sparse_coupling_only(pre: Dict[str, Any]) -> int:
     return 0 if verdict == "B3_C2_SPARSE_COUPLING_READY_FOR_COUPLED_OPERATOR_AND_SEED_AUDIT" else 2
 
 
+def _run_b3_raw_composition_contract_only(pre: Dict[str, Any]) -> int:
+    payload: Dict[str, Any] = {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "B3_raw_composition_contract_only",
+        "no_new_eigensolve_executed": True,
+        "additional_eps": "NOT_AUTHORIZED",
+        "jd_wiring_authorized": False,
+        "operator_matrices_persisted": False,
+        "transfer_matrices_persisted": False,
+        "coupling_matrices_persisted": False,
+        "vector_banks_persisted": False,
+        "solve_trees_created": False,
+        "artifact_storage_policy_applied": True,
+    }
+
+    if not pre["preassembly_contract_pass"]:
+        payload.update(
+            {
+                "B3_raw_capture_failure_reason": "preassembly_contract_failed",
+                "next_step_verdict": "B3_COUPLED_COMPOSITION_BLOCKED_BY_RAW_BLOCK_CAPTURE_INTERFACE",
+            }
+        )
+        _write_json_atomic(OUT_JSON_B3_RAW_COMPOSITION, payload)
+        print("[B3_C2] mode=B3_raw_composition_contract_only", flush=True)
+        print(f"[B3_C2] next_step_verdict={payload['next_step_verdict']}", flush=True)
+        print("[B3_C2] no_new_eigensolve_executed=True", flush=True)
+        print("[B3_C2] additional_eps=NOT_AUTHORIZED", flush=True)
+        return 2
+
+    if MPI.COMM_WORLD.size != 1:
+        if MPI.COMM_WORLD.rank == 0:
+            payload.update(
+                {
+                    "B3_raw_capture_failure_reason": "requires_mpiexec_n_1",
+                    "next_step_verdict": "B3_COUPLED_COMPOSITION_BLOCKED_BY_RAW_BLOCK_CAPTURE_INTERFACE",
+                }
+            )
+            _write_json_atomic(OUT_JSON_B3_RAW_COMPOSITION, payload)
+            print("[B3_C2] mode=B3_raw_composition_contract_only", flush=True)
+            print(f"[B3_C2] next_step_verdict={payload['next_step_verdict']}", flush=True)
+            print("[B3_C2] no_new_eigensolve_executed=True", flush=True)
+            print("[B3_C2] additional_eps=NOT_AUTHORIZED", flush=True)
+        return 2
+
+    manifest = load_manifest()
+    case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
+    sample = sample_spec_from_case(case)
+    mesh_file = mesh_path("L_mid", CASE_ID)
+    msh, _cell_tags, facet_tags = fem3d._load_mesh_and_tags(mesh_file)
+    f_top = np.asarray(facet_tags.find(TAG_TOP), dtype=np.int32)
+    f_back = np.asarray(facet_tags.find(TAG_BACK), dtype=np.int32)
+    f_ribs = np.asarray(facet_tags.find(TAG_RIBS), dtype=np.int32)
+    shell_facets = np.unique(np.concatenate([f_top, f_back, f_ribs]).astype(np.int32, copy=False))
+
+    tmeta = _build_c2_trace_to_parent_transfer(
+        msh,
+        facet_tags,
+        shell_facets=shell_facets,
+        tag_top=TAG_TOP,
+        tag_back=TAG_BACK,
+        tag_ribs=TAG_RIBS,
+    )
+
+    # Current approved helper exposes already-normalized/restricted/algebraic-BC matrices.
+    A = M = None
+    raw_capture_constructed = False
+    raw_capture_failure_reason = None
+    pressure_restriction_present = None
+    try:
+        A, M, cfg = _assemble_reduced_coupled_replay(mesh_file, sample, coupling_enabled=True)
+        pressure_restriction_present = bool(cfg.get("_coupled_air_pressure_restriction"))
+        raw_capture_constructed = False
+        raw_capture_failure_reason = (
+            "approved_replay_helper_returns_post_normalization_post_restriction_post_algebraic_BC_matrices_only"
+        )
+    except Exception as exc:
+        raw_capture_constructed = False
+        raw_capture_failure_reason = f"{type(exc).__name__}:{exc}"
+        cfg = {}
+
+    n_trace_u = int(tmeta.get("domain_dim", 0) or 0)
+    n_parent_u = int(tmeta.get("codomain_dim", 0) or 0)
+    n_p_retained = 0
+    if isinstance(cfg, dict) and "_coupled_air_p_to_W_map" in cfg:
+        n_p_retained = int(np.asarray(cfg["_coupled_air_p_to_W_map"], dtype=np.int32).size)
+
+    payload.update(
+        {
+            "C2_T_exact_transfer_contract_pass": bool(tmeta.get("ok", False)),
+            "C2_dense_coupling_allocation_removed": bool(
+                tmeta.get("C2_dense_coupling_allocation_removed", False)
+            ),
+            "B3_composition_parent_raw_capture_constructed": raw_capture_constructed,
+            "B3_composition_parent_raw_capture_method": (
+                "reuse_approved_v2_weak_form_path_without_manual_form_duplication"
+            ),
+            "parent_raw_App_available": False,
+            "parent_raw_Mpp_available": False,
+            "parent_raw_Aup_available": False,
+            "parent_raw_Apu_available": False,
+            "parent_raw_Mpu_available": False,
+            "parent_raw_blocks_before_gnhep_normalization": False,
+            "parent_raw_blocks_before_pressure_restriction": False,
+            "parent_raw_blocks_before_algebraic_BC": False,
+            "B3_raw_capture_failure_reason": raw_capture_failure_reason,
+            "B3_raw_sparse_coupling_projection_constructed": False,
+            "B3_raw_sparse_coupling_projection_method": (
+                "PETSc_sparse_submatrix_or_sparse_product_on_pre_normalization_parent_blocks"
+            ),
+            "B3_raw_Aup_shape": None,
+            "B3_raw_Apu_shape": None,
+            "B3_raw_Mpu_shape": None,
+            "B3_raw_Aup_nnz": None,
+            "B3_raw_Apu_nnz": None,
+            "B3_raw_Mpu_nnz": None,
+            "B3_raw_Aup_norm": None,
+            "B3_raw_Apu_norm": None,
+            "B3_raw_Mpu_norm": None,
+            "B3_raw_sparse_coupling_failure_reason": (
+                "blocked_pending_pre_normalization_parent_block_capture_interface"
+            ),
+            "B3_raw_coupled_block_contract_constructed": False,
+            "B3_raw_Auu_norm": None,
+            "B3_raw_Muu_norm": None,
+            "B3_raw_App_norm": None,
+            "B3_raw_Mpp_norm": None,
+            "B3_raw_Aup_norm": None,
+            "B3_raw_Apu_norm": None,
+            "B3_raw_Mpu_norm": None,
+            "B3_raw_operator_dimensions_before_pressure_restriction": None,
+            "B3_raw_block_dimension_consistency_pass": False,
+            "B3_raw_block_nonzero_contract_pass": False,
+            "B3_gnhep_normalization_recomputed_from_B3_blocks": False,
+            "B3_gnhep_normalization_method": (
+                "reuse_existing_block_frobenius_policy_on_new_raw_B3_block_system"
+            ),
+            "B3_s_uu": None,
+            "B3_s_pp": None,
+            "B3_s_couple": None,
+            "parent_previous_s_uu_if_available": None,
+            "B3_s_uu_differs_from_parent": None,
+            "B3_scaled_Auu_norm": None,
+            "B3_scaled_App_norm": None,
+            "B3_scaled_Aup_norm": None,
+            "B3_scaled_Apu_norm": None,
+            "B3_scaled_Mpu_norm": None,
+            "B3_scaling_contract_pass": False,
+            "B3_scaling_failure_reason": (
+                "blocked_pending_pre_normalization_parent_block_capture_interface"
+            ),
+            "B3_pressure_restriction_policy_reused": bool(pressure_restriction_present),
+            "B3_retained_pressure_dimension": n_p_retained,
+            "B3_new_reduced_W_dimension": (n_trace_u + n_p_retained) if (n_trace_u and n_p_retained) else None,
+            "B3_tag5_BC_mapped_to_trace_layout": False,
+            "B3_pressure_release_BC_mapped_to_retained_p_layout": False,
+            "B3_algebraic_BC_applied_after_B3_composition": False,
+            "B3_scaled_restricted_BC_operator_contract_pass": False,
+            "B3_layout_or_BC_failure_reason": (
+                "blocked_pending_pre_normalization_parent_block_capture_interface"
+            ),
+            "next_step_verdict": "B3_COUPLED_COMPOSITION_BLOCKED_BY_RAW_BLOCK_CAPTURE_INTERFACE",
+        }
+    )
+
+    _write_json_atomic(OUT_JSON_B3_RAW_COMPOSITION, payload)
+    payload["report_size_bytes"] = OUT_JSON_B3_RAW_COMPOSITION.stat().st_size
+    _write_json_atomic(OUT_JSON_B3_RAW_COMPOSITION, payload)
+
+    print("[B3_C2] mode=B3_raw_composition_contract_only", flush=True)
+    print(
+        f"[B3_C2] B3_composition_parent_raw_capture_constructed={payload['B3_composition_parent_raw_capture_constructed']}",
+        flush=True,
+    )
+    print(
+        f"[B3_C2] B3_raw_capture_failure_reason={payload['B3_raw_capture_failure_reason']}",
+        flush=True,
+    )
+    print(f"[B3_C2] next_step_verdict={payload['next_step_verdict']}", flush=True)
+    print("[B3_C2] no_new_eigensolve_executed=True", flush=True)
+    print("[B3_C2] additional_eps=NOT_AUTHORIZED", flush=True)
+    return 2
+
+
 def main() -> int:
     import sys
 
     pre = _precheck()
+
+    if _is_b3_raw_composition_contract_only_mode(sys.argv):
+        return _run_b3_raw_composition_contract_only(pre)
 
     if _is_c2_sparse_coupling_only_mode(sys.argv):
         return _run_c2_sparse_coupling_only(pre)
