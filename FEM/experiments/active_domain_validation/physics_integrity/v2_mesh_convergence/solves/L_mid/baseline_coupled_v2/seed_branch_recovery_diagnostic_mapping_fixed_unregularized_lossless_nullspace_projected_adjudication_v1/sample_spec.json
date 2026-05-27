@@ -1,0 +1,14 @@
+{
+  "id": "baseline_coupled_v2",
+  "geometry": {
+    "length": 0.48,
+    "width": 0.325,
+    "depth": 0.1,
+    "hole_radius": 0.047,
+    "top_thickness": 0.003
+  },
+  "materials": {
+    "top_wood_id": "spruce",
+    "back_wood_id": "rosewood"
+  }
+}

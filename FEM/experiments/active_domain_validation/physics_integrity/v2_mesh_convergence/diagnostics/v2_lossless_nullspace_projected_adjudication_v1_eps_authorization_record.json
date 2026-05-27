@@ -1,0 +1,7 @@
+{
+  "generated_utc": "2026-05-27T09:47:42Z",
+  "eps_run_count_for_projected_lane": 1,
+  "no_additional_eps_run_authorized": true,
+  "output_subdir": "seed_branch_recovery_diagnostic_mapping_fixed_unregularized_lossless_nullspace_projected_adjudication_v1",
+  "final_projected_adjudication_verdict": "MAPPING_FIXED_UNREGULARIZED_PROJECTED_BASELINE_ST_FORMULATION_BLOCKER"
+}

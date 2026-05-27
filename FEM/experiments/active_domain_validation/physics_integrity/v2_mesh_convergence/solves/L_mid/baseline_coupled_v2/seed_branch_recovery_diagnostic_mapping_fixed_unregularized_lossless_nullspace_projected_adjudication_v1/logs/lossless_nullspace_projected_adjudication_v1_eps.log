@@ -1,0 +1,447 @@
+return_code=0
+command=mpiexec -n 1 /home/vboxuser/final-project/.venv/bin/python -u /home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_sensitivity_solve.py --sample-id baseline_coupled_v2 --mesh /home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_mid/baseline_coupled_v2.msh --sample-json /home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/solves/L_mid/baseline_coupled_v2/seed_branch_recovery_diagnostic_mapping_fixed_unregularized_lossless_nullspace_projected_adjudication_v1/sample_spec.json --case-dir /home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/solves/L_mid/baseline_coupled_v2/seed_branch_recovery_diagnostic_mapping_fixed_unregularized_lossless_nullspace_projected_adjudication_v1 --target-hz 243.0754171175576 --reference-f-hz 243.0754171175576 --num-modes 64 --eps-seed-npy /home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/solves/L_mid/baseline_coupled_v2/diagnostics/acoustic_coupled_seed.npy --seed-branch-recovery-diagnostic --seed-branch-lossless-nullspace-projected-adjudication-v1
+
+[PHASE] 2000 coupled enter checksum=2000/2000
+[PHASE] 2000 coupled enter checksum=2000/2000
+🔴 FULL COUPLED ACOUSTIC–STRUCTURAL MODEL (mixed u,p + FSI)
+[DEBUG] Sifter status: adaptive_mode_sifter=False (effective=False), shift_invert_target_hz=243.0754171175576, solve_evp=True, couple_fluid=True, structural_only=False, acoustic_cavity_only=False
+Step 1/5: Loading mesh and physical tags...
+[mesh] loading via dolfinx.io.gmsh.model_to_mesh: /home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_mid/baseline_coupled_v2.msh
+Info    : Reading '/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_mid/baseline_coupled_v2.msh'...
+Info    : 84529 nodes
+Info    : 548896 elements
+Info    : [  0%] Reading elements                                                                                
+Info    : [ 10%] Reading elements                                                                                
+Info    : [ 20%] Reading elements                                                                                
+Info    : [ 30%] Reading elements                                                                                
+Info    : [ 40%] Reading elements                                                                                
+Info    : [ 50%] Reading elements                                                                                
+Info    : [ 60%] Reading elements                                                                                
+Info    : [ 70%] Reading elements                                                                                
+Info    : [ 80%] Reading elements                                                                                
+Info    : [ 90%] Reading elements                                                                                
+                                                                                
+Info    : Done reading '/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_mid/baseline_coupled_v2.msh'
+[mesh] gmsh file opened successfully on rank 0.
+[PHASE] 1100 before model_to_mesh checksum=1100/1100
+[PHASE] 1100 before model_to_mesh checksum=1100/1100
+[PHASE] 1101 after model_to_mesh checksum=1101/1101
+[PHASE] 1101 after model_to_mesh checksum=1101/1101
+[PHASE] 1102 after connectivity sync checksum=1102/1102
+[PHASE] 1102 after connectivity sync checksum=1102/1102
+[diag] mesh loaded: num_air_cells=113352, num_wood_facets=82942
+[diag] unique volume tags=[1, 2, 3, 10], unique facet tags=[1, 2, 3, 4, 5]
+[diag] facet_tags map check: dim=2, n_local_facets=942759, tagged_facets=86885, in_local_range=86885, find1=30997, find2=2255, find3=29722, find4=22223, find5=1688
+[diag] volume tag counts: {1: 122452, 2: 117022, 3: 109185, 10: 113352}
+[diag] facet tag counts: {1: 30997, 2: 2255, 3: 29722, 4: 22223, 5: 1688, 10: 0}
+[DIAG] Mesh Bounds - X: -0.2669818362625088 to 0.2641419922029765
+[DIAG] Mesh Bounds - Y: -0.18519120460877 to 0.18519120460877, Z: -0.07414199220297661 to 0.074141992210563
+[DIAG] Mesh Span (m): dx=0.531124, dy=0.370382, dz=0.148284
+[DIAG][IFACE] volume nodes: wood_only=60490, air_only=13106, shared=10933
+[DIAG][IFACE] boundary nodes: wood_surface=41345, air_inner=10933, shared_boundary=9867
+[PHASE] 2001 coupled after mesh load checksum=2001/2001
+[PHASE] 2001 coupled after mesh load checksum=2001/2001
+[diag] branch: full coupled (mixed u,p)
+[diag] topology check: dim=3, num_cells_global=462011, cell_tags=True, facet_tags=True
+Step 2/5: Building mixed spaces and weak forms...
+[COUPLED-SPACE] dofmap.list lengths (informational): len(W.sub(0).dofmap.list)=5544132, len(V_u_standalone.dofmap.list)=1848044, len(V_u_collapsed.dofmap.list)=1848044
+[COUPLED-SPACE] note: W.sub(0).dofmap.list length differs from collapsed V_u — expected for mixed subspaces; do not compare these list lengths.
+[COUPLED-SPACE] global DOFs: V_u_standalone=253587, V_u_collapsed=253587, W.sub(0) index_map reports=338116 (may include mixed layout), W.sub(1) p=338116, W total=338116
+[COUPLED-SPACE] W.sub(0) is V_u_standalone object? False (expected False; coupled BCs use V_u_collapsed + collapse map)
+[COUPLED-SPACE] OK: standalone V_u matches collapsed subspace (n_u=253587, collapse_map_len=253587, W_total=338116).
+DEBUG: Degree for u is 1 and for p is 1 (u_el.degree()/p_el.degree() unavailable)
+DEBUG: mesh geometry nodes=84529, global u DOFs=338116, global p DOFs=338116, mixed W global=676232
+[form] mixed P1+P1: global u DOFs n_u=338116, p DOFs n_p=338116 (acoustic forms use dx on air cells only, tag=10).
+[FSI-DOF] mixed W: global=338116, W.sub(0) index_map=338116, W.sub(1) index_map=338116, collapsed u=253587, collapsed p=84529
+[form] measures: dx(domain, subdomain_data=cell_tags) for air tag 10; ds(domain, subdomain_data=facet_tags) for wood shell tags (1, 3, 4).
+[FSI-IFACE] measure=meshtags_ds topology_facets=21862 (wood tagged shell facets=82942, ribs excluded); air exterior p=0 facets=0, h_char=6.6428e-01 m
+[diag] material sanity (tag1 top / tag3 back, orthotropic KL): top D11=2.506191e+01 E_L=1.100000e+10 rho=4.500000e+02 | back D11=3.486888e+01 E_L=1.150000e+10 rho=8.300000e+02 | rho_air=1.210000e+00 t_top=3.000000e-03 m t_back=3.300000e-03 m | 'Sitka Spruce' / 'Indian Rosewood'
+[form] structural shell integration on tagged facets: tag1=30997 (top), tag3=29722 (back), tag4=22223 (ribs/sides)
+[DEBUG] Shell ds measures: ds_top → facet tag 1 (n_local_facets=30997), ds_back → facet tag 3 (n_local_facets=29722)
+[DEBUG] Matrix norm of a_uu: 1.677075e+10
+[DEBUG] Matrix norm of shell_top*ds(tag1): 9.225839e+09
+[DEBUG] Matrix norm of shell_back*ds(tag3): 1.059367e+10
+[form] coupled pressure_dof_scale=3.0000e+01 (similarity on all p-blocks)
+[FSI-IFACE] traction blocks (meshtags_ds): ||A_up||_F=1.754395e-03, ||A_pu||_F=1.754395e-03, ||M_pu||_F=2.122818e-03
+[FSI-IFACE][warn] ||A_up||_F=1.754395e-03 on meshtags_ds below audit floor 1.000e+03.
+[COUPLED-SPACE] block Frobenius norms (pressure_dof_scale=30, fsi_coupling_gain=1): ||A_uu||=1.677075e+10 (tag1 facets=30997), ||A_pp||=5.301438e+03, ||A_up||=1.754395e-03
+[COUPLED-SPACE] ||A_pp||/||A_uu||=3.161121e-07, ||A_up||/||A_uu||=1.046104e-13 (A_uu independent of pressure_dof_scale; coupling scales ∝ s·gain and s²·gain)
+[COUPLED-SPACE] probe s=5: estimated ||A_up||≈2.923992e-04, ||A_pp||≈1.472622e+02 vs ||A_uu||=1.677075e+10
+[COUPLED-SPACE] probe s=30: estimated ||A_up||≈1.754395e-03, ||A_pp||≈5.301438e+03 vs ||A_uu||=1.677075e+10
+[GNHEP-raw] before any GNHEP scaling: ||A_up||_F=1.754395e-03, ||A_pu||_F=1.754395e-03, ||M_pu||_F=2.122818e-03 (A_pu is the static pressure-row coupling; M_pu is ω² mass)
+[form] GNHEP block Frobenius scales: s_uu=1.677075e+10, s_pp=5.301438e+03, s_couple=9.429162e+06 (||M_uu||_F=9.206170e-13, ||M_pp||_F=4.529924e-11 after block scaling)
+[DIAG] Total wood mass (integral rho*thickness per tags 1/3/4 shell ds; Top+Back+Ribs facet tags (1/3/4)): 3.182474e+00 kg | mass_top=7.218596e-01 kg mass_back=2.460615e+00 kg
+[DIAG] Total air mass (integral rho_air over air volume tag 10): 1.225081e-02 kg
+[DIAG] Air mass / wood mass ratio: 3.849e-03
+[bc] soundhole acoustic BC: pressure_release (p=0 on tag 2, 2255 facets) → 1191 pressure DOFs (physical open-hole approximation; exterior radiation not modeled).
+[bc] pressure gauge (numerical): none (sealed soundhole_bc).
+[bc][diag] coupled pressure constraints: soundhole_bc='pressure_release', soundhole_pressure_dofs=1191, interior_gauge_dofs=0, total_pressure_dirichlet_dofs=1191, n_p_collapsed=84529, additional_gauge=none
+coupled W.sub(0): collapse() n_u=253587 vs subspace index_map n_u=338116 (expected for mixed W.sub(0) (use collapsed V_u for BCs)).
+[DIAG] coupled W.sub(0): global u DOFs (direct)=338116, collapsed=253587
+[COUPLED-SPACE] BC/displacement map uses V_u_collapsed; global n_u=253587, collapse_map_len=253587, standalone n_u=253587
+[DIAG] coupled V_u (collapsed) shell facet coverage: tag1 facets=30997 len(dofs_top)=15562, tag3 facets=29722 len(dofs_back)=14931, tag4 facets=22223 len(dofs_ribs)=11385, tag5(fix) facets=1688 len(dofs_fix)=920
+[bc][diag] ribs clamp (tag 4 only) + pressure rows. total_pressure_dirichlet_dofs=1191 (soundhole_bc=1191, gauge=0, n_p_collapsed=84529), ribs facets=22223, ribs u_dof count=11385, soundhole_facets=2255
+[bc] ribs clamp DISABLED (clamp_ribs=false); top/back free, tag-4 u unconstrained.
+[bc][eps] pin u=0 on tag-5 fix facets (1688 facets, 920 displacement DOFs) (algebraic on mixed rows; removes rigid-body null space for ST LU).
+[DIAG] coupled V_u (with BC overlap check) shell facet coverage: tag1 facets=30997 len(dofs_top)=15562, tag3 facets=29722 len(dofs_back)=14931, tag4 facets=22223 len(dofs_ribs)=11385, tag5(fix) facets=1688 len(dofs_fix)=920
+[bc] verified: no displacement BC overlap on tag-1 top (len(dofs_top)=15562, constrained u dofs=0).
+[physics_integrity][coupled_physical_core_v2] subcase=physical_coupling_enabled coupling_blocks={'A_up': 1.8606055702779907e-10, 'A_pu': 1.860605570277991e-10, 'M_pu': 2.2513327400363726e-10} pressure_dof_scale(numerical)=30 fsi_coupling_gain(physical)=1
+[PHASE] 2002 coupled before matrix assembly checksum=2002/2002
+[PHASE] 2002 coupled before matrix assembly checksum=2002/2002
+[DEBUG] Rank 0: Entering Matrix Assembly
+PRINT: ENTERING FULL COUPLED ACOUSTIC-STRUCTURAL SOLVE
+[assembly] A blockwise: ||A||_F=1.414214e+00 (uu=1.000e+00, pp=1.000e+00, coupling=2.631e-10)
+[assembly] M blockwise: ||M||_F=2.296473e-10 (uu=9.206e-13, pp=4.530e-11, coupling=2.251e-10)
+[FSI-MATVEC] collapse maps: u=[0,338114] p=[12,338115] blocked_layout=False overlap=0 ||(A·e_u)_p||=3.414571e-10 ||(A·e_u_iface)_p||=4.560030e-11 ||(A·e_u_wood)_p||=1.645983e-10 ||(A·x)_p||=nan ||(A·x_iface)_p||=nan ||u||_iface=nan ||u||_wood=nan ||p||_petsc=nan
+[FSI-AUDIT] assembled coupling on mixed W: ||A_up||_F=1.860606e-10, ||M_pu||_F=2.251333e-10, A_up PETSc size=(338116, 338116), ownership_range=(0, 338116), W.sub(0) dofs=338116, W.sub(1) dofs=338116
+[FSI-IFACE] traction blocks (post_blockwise_A): ||A_up||_F=1.860606e-10, ||A_pu||_F=1.860606e-10, ||M_pu||_F=2.251333e-10
+[FSI-IFACE][warn] ||A_up||_F=1.860606e-10 on post_blockwise_A below audit floor 5.000e-01 (post-GNHEP block scaling: ||A_up|| is O(1) — expected; not a wrong iface measure).
+[physics_integrity][coupled_air_p_restrict] pressure space restricted: n_u_active=253587 n_p_active=24039 n_reduced_W=277626 dropped_inactive_p=60490 soundhole_p_active=1191 (air-volume collapsed pressure set matches acoustic-only diagnosis)
+[bc] algebraic Dirichlet on A/M: 2111 mixed rows (zero_columns=True, ||A||_F=4.596730e+01, ||M||_F=4.594562e+01, A_diag_min=-8.673617e-19, A_diag_max=1.000000e+00)
+Step 3/5: Solving generalized EVP with SLEPc...
+[DIAG] coupled_air_pressure_restriction: n_u_active=253587 n_p_active=24039 n_reduced_W=277626 dropped_inactive_p=60490 soundhole_p_active=1191 (full mesh W still has u=338116 p=338116 DOFs; SLEPc uses reduced operator)
+[DIAG] Final u_dofs=338116 p_dofs=338116 (free–free structure; soundhole_bc='pressure_release', soundhole_p_dof=1191, gauge_p_dof=0, total_p_bc=1191)
+Starting solver with 338116 DOFs and proactive memory cleanup...
+🚀 Starting Production Run: Silent MUMPS, 450Hz Sweep, 100 Mode Quota.
+[PHASE] 2099 worker single-shift before batch checksum=2099/2099
+[PHASE] 2099 worker single-shift before batch checksum=2099/2099
+[solver][seeded_branch_recovery_diagnostic] target_hz=243.075417 primary_sigma_hz=243.575417 sigma_ladder_hz=[243.5754, 242.5754, 244.0754, 242.0754, 245.0754, 241.0754] (production offset-above-band sigma policy not used)
+[solver][eps_mapping] native STSINVERT: eigenvalue_source=eps_getEigenpair_backtransformed; lam_phys=mu; legacy mu+sigma and sigma+1/mu remaps disabled unless eps_eigenvalue_semantics overrides.
+[DEBUG] Rank 0: Entering KSP Setup
+[solver][warn] EPS ncv capped 200 -> 56 (eps_ncv_max=56; nev=50, ncv>=nev+1 enforced).
+[solver] EPS spectrum batch (target=243.08 Hz, strategy=shift_invert): target_lambda=2.332608e+06, min_hz=60.00, ST=sinvert sigma=243.58 Hz (jitter=2.00), which=TARGET_MAGNITUDE, window=[235.08, 251.08] Hz, conv=REL, ks_restart=0.500, ks_pert=1.00e-08, nev_request=50 (batch=40+rigid_buf=10), ncv=56, eps_tol=1.0e-03, eps_max_it=3000, ST-KSP=preonly, ST-PC=lu block_is=ok, factor=mumps, MUMPS ICNTL4=0 ICNTL6=7 ICNTL7=0 ICNTL12=1 ICNTL14=500 ICNTL24=1, diag_shift=0.00e+00, A_diag_min=-8.673617e-19, A_diag_max=1.000000e+00
+[DEBUG] Rank 0: A comm rank=0 size=1
+[DEBUG] Rank 0: M comm rank=0 size=1
+[DEBUG] Rank 0: EPS comm rank=0 size=1
+[solver] ST-PC re-applied after setFromOptions: preonly, lu block_is=ok
+[solver] ST σ retry ladder: 6 shifts (243.58…241.08 Hz), mass-reg levels=[0.0]
+[HEARTBEAT] Rank 0 reached EPS Solve
+[DEBUG] Rank 0: Entering EPS Solve
+[solver][certified_null_projection] deflation_applied=True basis_dim=23
+[physics_integrity][physical_fsi_continuation] continuation_seed_source=acoustic_locator_coupled_embedding seed_f_hz=243.075417 seed_vector_length=277626 alpha_fsi=nan requested_local_modes=50
+[physics_integrity][physical_fsi_continuation] continuation_seed_applied=True seed_length=277626
+ Linear eigensolve converged (56 eigenpairs) due to CONVERGED_TOL; iterations 1
+[solver] EPS sweep (scheduler=243.1 Hz): iterations=1, nconv_marked=56, harvest_slots=56, requested=50, min_hz=60.00, reason=1
+[solver] EPS harvest window (post-ST): [231.08, 255.08] Hz (target=243.08, ST_sigma=243.58, margin=3.0)
+[eps-p-diag] converged slot=0 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=1.299002e-57 p_frac=1.596e-55 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.596e-55 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=1 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=6.458323e-52 p_frac=7.936e-50 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=7.936e-50 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=2 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=2.509541e-52 p_frac=4.998e-50 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=4.998e-50 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=3 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=2.509541e-52 p_frac=4.998e-50 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=4.998e-50 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=4 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=9.252565e-52 p_frac=1.395e-49 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.395e-49 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=5 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=9.252565e-52 p_frac=1.395e-49 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.395e-49 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=6 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=6.680845e-49 p_frac=8.209e-47 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=8.209e-47 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=7 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=6.626779e-47 p_frac=9.512e-45 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=9.512e-45 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=8 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=6.626779e-47 p_frac=9.512e-45 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=9.512e-45 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=9 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=4.767078e-42 p_frac=5.858e-40 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=5.858e-40 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=10 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=9.522223e-44 p_frac=1.277e-41 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.277e-41 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=11 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=9.522223e-44 p_frac=1.277e-41 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.277e-41 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=12 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=6.846123e-36 p_frac=8.412e-34 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=8.412e-34 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=13 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=3.912745e-11 p_frac=4.808e-09 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=4.808e-09 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=14 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=1.785766e-28 p_frac=2.194e-26 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=2.194e-26 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=15 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=1.190589e-28 p_frac=1.463e-26 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.463e-26 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=16 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=2.639267e-27 p_frac=3.243e-25 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=3.243e-25 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=17 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=2.108183e-27 p_frac=3.739e-25 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=3.739e-25 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=18 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=2.108183e-27 p_frac=3.739e-25 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=3.739e-25 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=19 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=7.169471e-27 p_frac=8.810e-25 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=8.810e-25 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=20 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=7.257891e-22 p_frac=8.918e-20 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=8.918e-20 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=21 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=3.912745e-11 p_frac=4.808e-09 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=4.808e-09 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=22 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=3.951496e-22 p_frac=4.856e-20 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=4.856e-20 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=23 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=4.248883e-22 p_frac=5.221e-20 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=5.221e-20 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=24 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=2.177801e-22 p_frac=2.676e-20 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=2.676e-20 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=25 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=7.187271e-23 p_frac=1.433e-20 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.433e-20 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=26 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=7.187271e-23 p_frac=1.433e-20 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.433e-20 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=27 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=4.200826e-23 p_frac=5.162e-21 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=5.162e-21 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=28 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=1.894347e-23 p_frac=2.887e-21 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=2.887e-21 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=29 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=1.894347e-23 p_frac=2.887e-21 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=2.887e-21 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=30 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=1.235232e-22 p_frac=3.115e-20 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=3.115e-20 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=31 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=1.235232e-22 p_frac=3.115e-20 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=3.115e-20 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=32 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=7.121605e-23 p_frac=1.435e-20 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.435e-20 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=33 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=7.121605e-23 p_frac=1.435e-20 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.435e-20 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=34 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=4.807721e-23 p_frac=5.908e-21 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=5.908e-21 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=35 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=1.095298e-22 p_frac=1.350e-20 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.350e-20 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=36 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=1.095298e-22 p_frac=1.350e-20 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.350e-20 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=37 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=1.615862e-22 p_frac=1.986e-20 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.986e-20 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=38 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=9.583961e-23 p_frac=1.309e-20 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.309e-20 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=39 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=9.583961e-23 p_frac=1.309e-20 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.309e-20 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=40 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=7.982052e-24 p_frac=1.129e-21 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.129e-21 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=41 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=7.982052e-24 p_frac=1.129e-21 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.129e-21 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=42 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=1.058290e-23 p_frac=1.361e-21 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.361e-21 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=43 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=1.058290e-23 p_frac=1.361e-21 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.361e-21 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=44 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=7.185378e-23 p_frac=8.829e-21 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=8.829e-21 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=45 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=6.227462e-23 p_frac=7.959e-21 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=7.959e-21 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=46 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=6.227462e-23 p_frac=7.959e-21 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=7.959e-21 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=47 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=4.205347e-23 p_frac=5.167e-21 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=5.167e-21 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=48 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=2.195280e-24 p_frac=1.064e-21 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.064e-21 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=49 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=2.195280e-24 p_frac=1.064e-21 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.064e-21 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=50 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=2.178903e-24 p_frac=2.677e-22 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=2.677e-22 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=51 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=6.950385e-24 p_frac=8.624e-22 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=8.624e-22 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=52 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=6.950385e-24 p_frac=8.624e-22 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=8.624e-22 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=53 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=2.426733e-24 p_frac=3.081e-22 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=3.081e-22 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=54 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=2.426733e-24 p_frac=3.081e-22 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=3.081e-22 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[eps-p-diag] converged slot=55 raw_eig=2.342214e+06 lam_phys=2.342214e+06 map=eps_backtransformed f=243.575417 Hz max|p|=1.283856e-23 p_frac=1.578e-21 wood=1.0000
+[FSI-AUDIT][warn] Mode f=243.58 Hz: p_frac=1.578e-21 — coupling effectively absent (||p|| negligible vs ||u||); check fsi_coupling_gain / pressure_dof_scale.
+[solver][warn] EPS harvest: f_span=0.000000 Hz at ST_sigma=243.58 Hz (56 candidates) — σ-cluster; check spurious Ritz / rigid null-space or widen eps_broad_search_hz (now 0.00).
+[solver] EPS harvest: preserve_all_nconv kept=56 (production-filter candidates=56) from nconv_marked=56 (skip unmap=0, rigid=0, f<60.0Hz=0, outside_window=0, unavail=0, skip_decoupled=0, skip_sigma=0)
+[solver] EPS wood scan: slots=56, wood>=0.010: 56, max_wood=1.0000, f_span=0.000 Hz, ST_sigma=243.58 Hz
+[solver]   wood-rank 1: f=243.58 Hz wood=1.0000 tag1=0.2792 tag3=0.7208 ||u||=1.000e+00 ||p||=4.808e-09 max|p|=3.913e-11 p_frac=4.808e-09
+[solver]   wood-rank 2: f=243.58 Hz wood=1.0000 tag1=0.2792 tag3=0.7208 ||u||=1.000e+00 ||p||=4.808e-09 max|p|=3.913e-11 p_frac=4.808e-09
+[solver]   wood-rank 3: f=243.58 Hz wood=1.0000 tag1=0.2874 tag3=0.7126 ||u||=1.000e+00 ||p||=1.596e-55 max|p|=1.299e-57 p_frac=1.596e-55
+[solver]   wood-rank 4: f=243.58 Hz wood=1.0000 tag1=0.2789 tag3=0.7211 ||u||=1.000e+00 ||p||=7.936e-50 max|p|=6.458e-52 p_frac=7.936e-50
+[solver]   wood-rank 5: f=243.58 Hz wood=1.0000 tag1=0.2724 tag3=0.7276 ||u||=6.170e-01 ||p||=3.084e-50 max|p|=2.510e-52 p_frac=4.998e-50
+[worker] shift @ 243.0754 Hz: nconv=56, usable_rows=56
+[PHASE] 2100 worker single-shift after batch checksum=2100/2100
+[PHASE] 2100 worker single-shift after batch checksum=2100/2100
+[PHASE] 2000 coupled enter checksum=2000/2000
+[PHASE] 2000 coupled enter checksum=2000/2000
+🔴 FULL COUPLED ACOUSTIC–STRUCTURAL MODEL (mixed u,p + FSI)
+[DEBUG] Sifter status: adaptive_mode_sifter=False (effective=False), shift_invert_target_hz=243.0754171175576, solve_evp=False, couple_fluid=True, structural_only=False, acoustic_cavity_only=False
+Step 1/5: Loading mesh and physical tags...
+[mesh] loading via dolfinx.io.gmsh.model_to_mesh: /home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_mid/baseline_coupled_v2.msh
+Info    : Reading '/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_mid/baseline_coupled_v2.msh'...
+Info    : 84529 nodes
+Info    : 548896 elements
+Info    : [  0%] Reading elements                                                                                
+Info    : [ 10%] Reading elements                                                                                
+Info    : [ 20%] Reading elements                                                                                
+Info    : [ 30%] Reading elements                                                                                
+Info    : [ 40%] Reading elements                                                                                
+Info    : [ 50%] Reading elements                                                                                
+Info    : [ 60%] Reading elements                                                                                
+Info    : [ 70%] Reading elements                                                                                
+Info    : [ 80%] Reading elements                                                                                
+Info    : [ 90%] Reading elements                                                                                
+                                                                                
+Info    : Done reading '/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_mid/baseline_coupled_v2.msh'
+[mesh] gmsh file opened successfully on rank 0.
+[PHASE] 1100 before model_to_mesh checksum=1100/1100
+[PHASE] 1100 before model_to_mesh checksum=1100/1100
+[PHASE] 1101 after model_to_mesh checksum=1101/1101
+[PHASE] 1101 after model_to_mesh checksum=1101/1101
+[PHASE] 1102 after connectivity sync checksum=1102/1102
+[PHASE] 1102 after connectivity sync checksum=1102/1102
+[diag] mesh loaded: num_air_cells=113352, num_wood_facets=82942
+[diag] unique volume tags=[1, 2, 3, 10], unique facet tags=[1, 2, 3, 4, 5]
+[diag] facet_tags map check: dim=2, n_local_facets=942759, tagged_facets=86885, in_local_range=86885, find1=30997, find2=2255, find3=29722, find4=22223, find5=1688
+[diag] volume tag counts: {1: 122452, 2: 117022, 3: 109185, 10: 113352}
+[diag] facet tag counts: {1: 30997, 2: 2255, 3: 29722, 4: 22223, 5: 1688, 10: 0}
+[DIAG] Mesh Bounds - X: -0.2669818362625088 to 0.2641419922029765
+[DIAG] Mesh Bounds - Y: -0.18519120460877 to 0.18519120460877, Z: -0.07414199220297661 to 0.074141992210563
+[DIAG] Mesh Span (m): dx=0.531124, dy=0.370382, dz=0.148284
+[DIAG][IFACE] volume nodes: wood_only=60490, air_only=13106, shared=10933
+[DIAG][IFACE] boundary nodes: wood_surface=41345, air_inner=10933, shared_boundary=9867
+[PHASE] 2001 coupled after mesh load checksum=2001/2001
+[PHASE] 2001 coupled after mesh load checksum=2001/2001
+[diag] branch: full coupled (mixed u,p)
+[diag] topology check: dim=3, num_cells_global=462011, cell_tags=True, facet_tags=True
+Step 2/5: Building mixed spaces and weak forms...
+[COUPLED-SPACE] dofmap.list lengths (informational): len(W.sub(0).dofmap.list)=5544132, len(V_u_standalone.dofmap.list)=1848044, len(V_u_collapsed.dofmap.list)=1848044
+[COUPLED-SPACE] note: W.sub(0).dofmap.list length differs from collapsed V_u — expected for mixed subspaces; do not compare these list lengths.
+[COUPLED-SPACE] global DOFs: V_u_standalone=253587, V_u_collapsed=253587, W.sub(0) index_map reports=338116 (may include mixed layout), W.sub(1) p=338116, W total=338116
+[COUPLED-SPACE] W.sub(0) is V_u_standalone object? False (expected False; coupled BCs use V_u_collapsed + collapse map)
+[COUPLED-SPACE] OK: standalone V_u matches collapsed subspace (n_u=253587, collapse_map_len=253587, W_total=338116).
+DEBUG: Degree for u is 1 and for p is 1 (u_el.degree()/p_el.degree() unavailable)
+DEBUG: mesh geometry nodes=84529, global u DOFs=338116, global p DOFs=338116, mixed W global=676232
+[form] mixed P1+P1: global u DOFs n_u=338116, p DOFs n_p=338116 (acoustic forms use dx on air cells only, tag=10).
+[FSI-DOF] mixed W: global=338116, W.sub(0) index_map=338116, W.sub(1) index_map=338116, collapsed u=253587, collapsed p=84529
+[form] measures: dx(domain, subdomain_data=cell_tags) for air tag 10; ds(domain, subdomain_data=facet_tags) for wood shell tags (1, 3, 4).
+[FSI-IFACE] measure=meshtags_ds topology_facets=21862 (wood tagged shell facets=82942, ribs excluded); air exterior p=0 facets=0, h_char=6.6428e-01 m
+[diag] material sanity (tag1 top / tag3 back, orthotropic KL): top D11=2.506191e+01 E_L=1.100000e+10 rho=4.500000e+02 | back D11=3.486888e+01 E_L=1.150000e+10 rho=8.300000e+02 | rho_air=1.210000e+00 t_top=3.000000e-03 m t_back=3.300000e-03 m | 'Sitka Spruce' / 'Indian Rosewood'
+[form] structural shell integration on tagged facets: tag1=30997 (top), tag3=29722 (back), tag4=22223 (ribs/sides)
+[DEBUG] Shell ds measures: ds_top → facet tag 1 (n_local_facets=30997), ds_back → facet tag 3 (n_local_facets=29722)
+[DEBUG] Matrix norm of a_uu: 1.677075e+10
+[DEBUG] Matrix norm of shell_top*ds(tag1): 9.225839e+09
+[DEBUG] Matrix norm of shell_back*ds(tag3): 1.059367e+10
+[form] coupled pressure_dof_scale=3.0000e+01 (similarity on all p-blocks)
+[FSI-IFACE] traction blocks (meshtags_ds): ||A_up||_F=1.754395e-03, ||A_pu||_F=1.754395e-03, ||M_pu||_F=2.122818e-03
+[FSI-IFACE][warn] ||A_up||_F=1.754395e-03 on meshtags_ds below audit floor 1.000e+03.
+[COUPLED-SPACE] block Frobenius norms (pressure_dof_scale=30, fsi_coupling_gain=1): ||A_uu||=1.677075e+10 (tag1 facets=30997), ||A_pp||=5.301438e+03, ||A_up||=1.754395e-03
+[COUPLED-SPACE] ||A_pp||/||A_uu||=3.161121e-07, ||A_up||/||A_uu||=1.046104e-13 (A_uu independent of pressure_dof_scale; coupling scales ∝ s·gain and s²·gain)
+[COUPLED-SPACE] probe s=5: estimated ||A_up||≈2.923992e-04, ||A_pp||≈1.472622e+02 vs ||A_uu||=1.677075e+10
+[COUPLED-SPACE] probe s=30: estimated ||A_up||≈1.754395e-03, ||A_pp||≈5.301438e+03 vs ||A_uu||=1.677075e+10
+[GNHEP-raw] before any GNHEP scaling: ||A_up||_F=1.754395e-03, ||A_pu||_F=1.754395e-03, ||M_pu||_F=2.122818e-03 (A_pu is the static pressure-row coupling; M_pu is ω² mass)
+[form] GNHEP block Frobenius scales: s_uu=1.677075e+10, s_pp=5.301438e+03, s_couple=9.429162e+06 (||M_uu||_F=9.206170e-13, ||M_pp||_F=4.529924e-11 after block scaling)
+[DIAG] Total wood mass (integral rho*thickness per tags 1/3/4 shell ds; Top+Back+Ribs facet tags (1/3/4)): 3.182474e+00 kg | mass_top=7.218596e-01 kg mass_back=2.460615e+00 kg
+[DIAG] Total air mass (integral rho_air over air volume tag 10): 1.225081e-02 kg
+[DIAG] Air mass / wood mass ratio: 3.849e-03
+[bc] soundhole acoustic BC: pressure_release (p=0 on tag 2, 2255 facets) → 1191 pressure DOFs (physical open-hole approximation; exterior radiation not modeled).
+[bc] pressure gauge (numerical): none (sealed soundhole_bc).
+[bc][diag] coupled pressure constraints: soundhole_bc='pressure_release', soundhole_pressure_dofs=1191, interior_gauge_dofs=0, total_pressure_dirichlet_dofs=1191, n_p_collapsed=84529, additional_gauge=none
+coupled W.sub(0): collapse() n_u=253587 vs subspace index_map n_u=338116 (expected for mixed W.sub(0) (use collapsed V_u for BCs)).
+[DIAG] coupled W.sub(0): global u DOFs (direct)=338116, collapsed=253587
+[COUPLED-SPACE] BC/displacement map uses V_u_collapsed; global n_u=253587, collapse_map_len=253587, standalone n_u=253587
+[DIAG] coupled V_u (collapsed) shell facet coverage: tag1 facets=30997 len(dofs_top)=15562, tag3 facets=29722 len(dofs_back)=14931, tag4 facets=22223 len(dofs_ribs)=11385, tag5(fix) facets=1688 len(dofs_fix)=920
+[bc][diag] ribs clamp (tag 4 only) + pressure rows. total_pressure_dirichlet_dofs=1191 (soundhole_bc=1191, gauge=0, n_p_collapsed=84529), ribs facets=22223, ribs u_dof count=11385, soundhole_facets=2255
+[bc] ribs clamp DISABLED (clamp_ribs=false); top/back free, tag-4 u unconstrained.
+[bc][eps] pin u=0 on tag-5 fix facets (1688 facets, 920 displacement DOFs) (algebraic on mixed rows; removes rigid-body null space for ST LU).
+[DIAG] coupled V_u (with BC overlap check) shell facet coverage: tag1 facets=30997 len(dofs_top)=15562, tag3 facets=29722 len(dofs_back)=14931, tag4 facets=22223 len(dofs_ribs)=11385, tag5(fix) facets=1688 len(dofs_fix)=920
+[bc] verified: no displacement BC overlap on tag-1 top (len(dofs_top)=15562, constrained u dofs=0).
+[physics_integrity][coupled_physical_core_v2] subcase=physical_coupling_enabled coupling_blocks={'A_up': 1.8606055702779907e-10, 'A_pu': 1.860605570277991e-10, 'M_pu': 2.2513327400363726e-10} pressure_dof_scale(numerical)=30 fsi_coupling_gain(physical)=1
+[PHASE] 2002 coupled before matrix assembly checksum=2002/2002
+[PHASE] 2002 coupled before matrix assembly checksum=2002/2002
+[DEBUG] Rank 0: Entering Matrix Assembly
+PRINT: ENTERING FULL COUPLED ACOUSTIC-STRUCTURAL SOLVE
+[assembly] A blockwise: ||A||_F=1.414214e+00 (uu=1.000e+00, pp=1.000e+00, coupling=2.631e-10)
+[assembly] M blockwise: ||M||_F=2.296473e-10 (uu=9.206e-13, pp=4.530e-11, coupling=2.251e-10)
+[FSI-MATVEC] collapse maps: u=[0,338114] p=[12,338115] blocked_layout=False overlap=0 ||(A·e_u)_p||=3.414571e-10 ||(A·e_u_iface)_p||=4.560030e-11 ||(A·e_u_wood)_p||=1.645983e-10 ||(A·x)_p||=nan ||(A·x_iface)_p||=nan ||u||_iface=nan ||u||_wood=nan ||p||_petsc=nan
+[FSI-AUDIT] assembled coupling on mixed W: ||A_up||_F=1.860606e-10, ||M_pu||_F=2.251333e-10, A_up PETSc size=(338116, 338116), ownership_range=(0, 338116), W.sub(0) dofs=338116, W.sub(1) dofs=338116
+[FSI-IFACE] traction blocks (post_blockwise_A): ||A_up||_F=1.860606e-10, ||A_pu||_F=1.860606e-10, ||M_pu||_F=2.251333e-10
+[FSI-IFACE][warn] ||A_up||_F=1.860606e-10 on post_blockwise_A below audit floor 5.000e-01 (post-GNHEP block scaling: ||A_up|| is O(1) — expected; not a wrong iface measure).
+[physics_integrity][coupled_air_p_restrict] pressure space restricted: n_u_active=253587 n_p_active=24039 n_reduced_W=277626 dropped_inactive_p=60490 soundhole_p_active=1191 (air-volume collapsed pressure set matches acoustic-only diagnosis)
+[bc] algebraic Dirichlet on A/M: 2111 mixed rows (zero_columns=True, ||A||_F=4.596730e+01, ||M||_F=4.594562e+01, A_diag_min=-8.673617e-19, A_diag_max=1.000000e+00)
+[v2_sensitivity_solve] sample=baseline_coupled_v2 v2_converged=True band=[240.64466294638203,245.50617128873319] target=243.0754171175576 selection=seed_branch_recovery_diagnostic_all_modes f_branch=nan p_frac_energy=nan
+
+
+/usr/lib/python3/dist-packages/scipy/__init__.py:146: UserWarning: A NumPy version >=1.17.3 and <1.25.0 is required for this version of SciPy (detected version 1.26.4
+  warnings.warn(f"A NumPy version >={np_minversion} and <{np_maxversion}"
+[MPI-TRACE] Rank 0 ENTERING phase 2000 (coupled enter)
+[MPI-TRACE] Rank 0 EXITING phase 2000 (coupled enter)
+[INFO] [PHASE] 2000 coupled enter checksum=2000/2000
+[INFO] Step 1/5: Loading mesh and physical tags...
+[INFO] [mesh] loading via dolfinx.io.gmsh.model_to_mesh: /home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_mid/baseline_coupled_v2.msh
+[INFO] [mesh] gmsh file opened successfully on rank 0.
+[MPI-TRACE] Rank 0 ENTERING phase 1100 (before model_to_mesh)
+[MPI-TRACE] Rank 0 EXITING phase 1100 (before model_to_mesh)
+[INFO] [PHASE] 1100 before model_to_mesh checksum=1100/1100
+[MPI-TRACE] Rank 0 ENTERING phase 1101 (after model_to_mesh)
+[MPI-TRACE] Rank 0 EXITING phase 1101 (after model_to_mesh)
+[INFO] [PHASE] 1101 after model_to_mesh checksum=1101/1101
+[MPI-TRACE] Rank 0 ENTERING phase 1102 (after connectivity sync)
+[MPI-TRACE] Rank 0 EXITING phase 1102 (after connectivity sync)
+[INFO] [PHASE] 1102 after connectivity sync checksum=1102/1102
+[INFO] [diag] mesh loaded: num_air_cells=113352, num_wood_facets=82942
+[INFO] [diag] unique volume tags=[1, 2, 3, 10], unique facet tags=[1, 2, 3, 4, 5]
+[INFO] [diag] facet_tags map check: dim=2, n_local_facets=942759, tagged_facets=86885, in_local_range=86885, find1=30997, find2=2255, find3=29722, find4=22223, find5=1688
+[INFO] [diag] volume tag counts: {1: 122452, 2: 117022, 3: 109185, 10: 113352}
+[INFO] [diag] facet tag counts: {1: 30997, 2: 2255, 3: 29722, 4: 22223, 5: 1688, 10: 0}
+[MPI-TRACE] Rank 0 ENTERING phase 2001 (coupled after mesh load)
+[MPI-TRACE] Rank 0 EXITING phase 2001 (coupled after mesh load)
+[INFO] [PHASE] 2001 coupled after mesh load checksum=2001/2001
+[INFO] [diag] topology check: dim=3, num_cells_global=462011, cell_tags=True, facet_tags=True
+[INFO] Step 2/5: Building mixed spaces and weak forms...
+[INFO] [COUPLED-SPACE] OK: standalone V_u matches collapsed subspace (n_u=253587, collapse_map_len=253587, W_total=338116).
+[INFO] [form] mixed P1+P1: global u DOFs n_u=338116, p DOFs n_p=338116 (acoustic forms use dx on air cells only, tag=10).
+[INFO] [form] measures: dx(domain, subdomain_data=cell_tags) for air tag 10; ds(domain, subdomain_data=facet_tags) for wood shell tags (1, 3, 4).
+[INFO] [diag] material sanity (tag1 top / tag3 back, orthotropic KL): top D11=2.506191e+01 E_L=1.100000e+10 rho=4.500000e+02 | back D11=3.486888e+01 E_L=1.150000e+10 rho=8.300000e+02 | rho_air=1.210000e+00 t_top=3.000000e-03 m t_back=3.300000e-03 m | 'Sitka Spruce' / 'Indian Rosewood'
+[INFO] [form] structural shell integration on tagged facets: tag1=30997 (top), tag3=29722 (back), tag4=22223 (ribs/sides)
+[INFO] [bc] soundhole acoustic BC: pressure_release (p=0 on tag 2, 2255 facets) → 1191 pressure DOFs (physical open-hole approximation; exterior radiation not modeled).
+[INFO] [bc] pressure gauge (numerical): none (sealed soundhole_bc).
+[INFO] [bc][diag] coupled pressure constraints: soundhole_bc='pressure_release', soundhole_pressure_dofs=1191, interior_gauge_dofs=0, total_pressure_dirichlet_dofs=1191, n_p_collapsed=84529, additional_gauge=none
+[INFO] coupled W.sub(0): collapse() n_u=253587 vs subspace index_map n_u=338116 (expected for mixed W.sub(0) (use collapsed V_u for BCs)).
+[INFO] [DIAG] coupled W.sub(0): global u DOFs (direct)=338116, collapsed=253587
+[INFO] [bc][diag] ribs clamp (tag 4 only) + pressure rows. total_pressure_dirichlet_dofs=1191 (soundhole_bc=1191, gauge=0, n_p_collapsed=84529), ribs facets=22223, ribs u_dof count=11385, soundhole_facets=2255
+[INFO] [bc] ribs clamp DISABLED (clamp_ribs=false); top/back free, tag-4 u unconstrained.
+[INFO] [bc][eps] pin u=0 on tag-5 fix facets (1688 facets, 920 displacement DOFs) (algebraic on mixed rows; removes rigid-body null space for ST LU).
+[INFO] [bc] verified: no displacement BC overlap on tag-1 top (len(dofs_top)=15562, constrained u dofs=0).
+[MPI-TRACE] Rank 0 ENTERING phase 2002 (coupled before matrix assembly)
+[MPI-TRACE] Rank 0 EXITING phase 2002 (coupled before matrix assembly)
+[INFO] [PHASE] 2002 coupled before matrix assembly checksum=2002/2002
+[INFO] Step 3/5: Solving generalized EVP with SLEPc...
+[MPI-TRACE] Rank 0 ENTERING phase 2099 (worker single-shift before batch)
+[MPI-TRACE] Rank 0 EXITING phase 2099 (worker single-shift before batch)
+[INFO] [PHASE] 2099 worker single-shift before batch checksum=2099/2099
+[INFO] [solver] EPS spectrum batch (target=243.08 Hz, strategy=shift_invert): target_lambda=2.332608e+06, min_hz=60.00, ST=sinvert sigma=243.58 Hz (jitter=2.00), which=TARGET_MAGNITUDE, window=[235.08, 251.08] Hz, conv=REL, ks_restart=0.500, ks_pert=1.00e-08, nev_request=50 (batch=40+rigid_buf=10), ncv=56, eps_tol=1.0e-03, eps_max_it=3000, ST-KSP=preonly, ST-PC=lu block_is=ok, factor=mumps, MUMPS ICNTL4=0 ICNTL6=7 ICNTL7=0 ICNTL12=1 ICNTL14=500 ICNTL24=1, diag_shift=0.00e+00, A_diag_min=-8.673617e-19, A_diag_max=1.000000e+00
+[INFO] [solver] ST σ retry ladder: 6 shifts (243.58…241.08 Hz), mass-reg levels=[0.0]
+[INFO] [solver][certified_null_projection] deflation_applied=True basis_dim=23
+[INFO] [physics_integrity][physical_fsi_continuation] continuation_seed_applied=True seed_length=277626
+[INFO] [solver] EPS sweep (scheduler=243.1 Hz): iterations=1, nconv_marked=56, harvest_slots=56, requested=50, min_hz=60.00, reason=1
+[INFO] [worker] shift @ 243.0754 Hz: nconv=56, usable_rows=56
+[MPI-TRACE] Rank 0 ENTERING phase 2100 (worker single-shift after batch)
+[MPI-TRACE] Rank 0 EXITING phase 2100 (worker single-shift after batch)
+[INFO] [PHASE] 2100 worker single-shift after batch checksum=2100/2100
+[MPI-TRACE] Rank 0 ENTERING phase 2000 (coupled enter)
+[MPI-TRACE] Rank 0 EXITING phase 2000 (coupled enter)
+[INFO] [PHASE] 2000 coupled enter checksum=2000/2000
+[INFO] Step 1/5: Loading mesh and physical tags...
+[INFO] [mesh] loading via dolfinx.io.gmsh.model_to_mesh: /home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_mid/baseline_coupled_v2.msh
+[INFO] [mesh] gmsh file opened successfully on rank 0.
+[MPI-TRACE] Rank 0 ENTERING phase 1100 (before model_to_mesh)
+[MPI-TRACE] Rank 0 EXITING phase 1100 (before model_to_mesh)
+[INFO] [PHASE] 1100 before model_to_mesh checksum=1100/1100
+[MPI-TRACE] Rank 0 ENTERING phase 1101 (after model_to_mesh)
+[MPI-TRACE] Rank 0 EXITING phase 1101 (after model_to_mesh)
+[INFO] [PHASE] 1101 after model_to_mesh checksum=1101/1101
+[MPI-TRACE] Rank 0 ENTERING phase 1102 (after connectivity sync)
+[MPI-TRACE] Rank 0 EXITING phase 1102 (after connectivity sync)
+[INFO] [PHASE] 1102 after connectivity sync checksum=1102/1102
+[INFO] [diag] mesh loaded: num_air_cells=113352, num_wood_facets=82942
+[INFO] [diag] unique volume tags=[1, 2, 3, 10], unique facet tags=[1, 2, 3, 4, 5]
+[INFO] [diag] facet_tags map check: dim=2, n_local_facets=942759, tagged_facets=86885, in_local_range=86885, find1=30997, find2=2255, find3=29722, find4=22223, find5=1688
+[INFO] [diag] volume tag counts: {1: 122452, 2: 117022, 3: 109185, 10: 113352}
+[INFO] [diag] facet tag counts: {1: 30997, 2: 2255, 3: 29722, 4: 22223, 5: 1688, 10: 0}
+[MPI-TRACE] Rank 0 ENTERING phase 2001 (coupled after mesh load)
+[MPI-TRACE] Rank 0 EXITING phase 2001 (coupled after mesh load)
+[INFO] [PHASE] 2001 coupled after mesh load checksum=2001/2001
+[INFO] [diag] topology check: dim=3, num_cells_global=462011, cell_tags=True, facet_tags=True
+[INFO] Step 2/5: Building mixed spaces and weak forms...
+[INFO] [COUPLED-SPACE] OK: standalone V_u matches collapsed subspace (n_u=253587, collapse_map_len=253587, W_total=338116).
+[INFO] [form] mixed P1+P1: global u DOFs n_u=338116, p DOFs n_p=338116 (acoustic forms use dx on air cells only, tag=10).
+[INFO] [form] measures: dx(domain, subdomain_data=cell_tags) for air tag 10; ds(domain, subdomain_data=facet_tags) for wood shell tags (1, 3, 4).
+[INFO] [diag] material sanity (tag1 top / tag3 back, orthotropic KL): top D11=2.506191e+01 E_L=1.100000e+10 rho=4.500000e+02 | back D11=3.486888e+01 E_L=1.150000e+10 rho=8.300000e+02 | rho_air=1.210000e+00 t_top=3.000000e-03 m t_back=3.300000e-03 m | 'Sitka Spruce' / 'Indian Rosewood'
+[INFO] [form] structural shell integration on tagged facets: tag1=30997 (top), tag3=29722 (back), tag4=22223 (ribs/sides)
+[INFO] [bc] soundhole acoustic BC: pressure_release (p=0 on tag 2, 2255 facets) → 1191 pressure DOFs (physical open-hole approximation; exterior radiation not modeled).
+[INFO] [bc] pressure gauge (numerical): none (sealed soundhole_bc).
+[INFO] [bc][diag] coupled pressure constraints: soundhole_bc='pressure_release', soundhole_pressure_dofs=1191, interior_gauge_dofs=0, total_pressure_dirichlet_dofs=1191, n_p_collapsed=84529, additional_gauge=none
+[INFO] coupled W.sub(0): collapse() n_u=253587 vs subspace index_map n_u=338116 (expected for mixed W.sub(0) (use collapsed V_u for BCs)).
+[INFO] [DIAG] coupled W.sub(0): global u DOFs (direct)=338116, collapsed=253587
+[INFO] [bc][diag] ribs clamp (tag 4 only) + pressure rows. total_pressure_dirichlet_dofs=1191 (soundhole_bc=1191, gauge=0, n_p_collapsed=84529), ribs facets=22223, ribs u_dof count=11385, soundhole_facets=2255
+[INFO] [bc] ribs clamp DISABLED (clamp_ribs=false); top/back free, tag-4 u unconstrained.
+[INFO] [bc][eps] pin u=0 on tag-5 fix facets (1688 facets, 920 displacement DOFs) (algebraic on mixed rows; removes rigid-body null space for ST LU).
+[INFO] [bc] verified: no displacement BC overlap on tag-1 top (len(dofs_top)=15562, constrained u dofs=0).
+[MPI-TRACE] Rank 0 ENTERING phase 2002 (coupled before matrix assembly)
+[MPI-TRACE] Rank 0 EXITING phase 2002 (coupled before matrix assembly)
+[INFO] [PHASE] 2002 coupled before matrix assembly checksum=2002/2002

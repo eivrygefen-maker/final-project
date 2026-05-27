@@ -1,0 +1,451 @@
+{
+  "generated_utc": "2026-05-27T09:33:37Z",
+  "root_cause_status": "LOSSLESS_ST_RETURNED_U_SHELL_MASS_MATRIX_KERNEL_MODES",
+  "static_code_audit": {
+    "evidence_scope": "confirmed_from_local_code",
+    "leading_confirmed_diagnosis": {
+      "evidence_source": "confirmed_from_local_code_and_VM_operator_evidence",
+      "summary": [
+        "True acoustic seed remains valid under unregularized physical v2 replay.",
+        "Prior filtered diagnostic EPS succeeded only after ST A-shift regularization at sigma\u2248seed.",
+        "Returned Ritz vectors are not operator-consistent with replay; lambda\u22481 artifacts dominate.",
+        "Baseline branch recovery has not succeeded; failure is EPS ST/mapping/selection, not loss of v2 coupling."
+      ]
+    },
+    "st_retry_control_flow": {
+      "evidence_source": "confirmed_from_local_code",
+      "sigma_ladder_construction": {
+        "function": "fem_main_3d._slepc_st_sigma_hz_candidates",
+        "file": "FEM/scripts/fem_main_3d.py",
+        "snippet": "3433:        return M, None\n3434:    reg = min(max(reg, 0.0), 0.45)\n3435:    M_st = M.copy()\n3436:    M_st.assemble()\n3437:    M_st.scale(1.0 - reg)\n3438:    return M_st, M_st\n3439:\n3440:\n3441:def _slepc_st_sigma_hz_candidates(solver_cfg: Dict, target_hz: float) -> List[float]:\n3442:    \"\"\"\n3443:    ST shift frequencies (Hz) to try for shift-invert LU.\n3444:\n3445:    Avoids \u03c3 landing on a resonance (MUMPS INFOG=-10). First entry is the primary offset;\n3446:    later entries are retried only if factorization fails.\n3447:    \"\"\"\n3448:    target_hz = float(target_hz)\n3449:    frac = float(solver_cfg.get(\"eps_st_sigma_frac_offset\", 0.12))",
+        "prior_unfiltered_diagnostic_cfg": {
+          "file": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_sensitivity_solve.py",
+          "function": "_apply_seed_branch_recovery_diagnostic_solver_cfg",
+          "eps_st_sigma_try_target_first": true,
+          "eps_st_sigma_include_target_in_ladder": false,
+          "effect": "First sigma candidate is exact seed/target Hz (offset 0)."
+        },
+        "new_unregularized_offset_cfg": {
+          "file": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_sensitivity_solve.py",
+          "function": "_apply_seed_branch_unregularized_offset_diagnostic_solver_cfg",
+          "eps_st_sigma_try_target_first": false,
+          "eps_st_sigma_primary_offset_hz": 0.5,
+          "eps_st_sigma_retry_offsets_hz": [
+            0.5,
+            -0.5,
+            1.0,
+            -1.0,
+            2.0,
+            -2.0
+          ],
+          "effect": "Never places sigma exactly at seed Rayleigh frequency."
+        }
+      },
+      "st_retry_nested_loop_order": {
+        "function": "fem_main_3d._slepc_try_eps_st_setup",
+        "file": "FEM/scripts/fem_main_3d.py",
+        "snippet": "3577:                    continue\n3578:                if v not in stiff_ladder:\n3579:                    stiff_ladder.append(v)\n3580:        if not stiff_ladder:\n3581:            stiff_ladder = [1.0e-3, 0.0]\n3582:    use_stiff_copy = any(v > 0.0 for v in stiff_ladder)\n3583:    for stiff_frac in stiff_ladder:\n3584:        A_work = A\n3585:        A_owned: Optional[PETSc.Mat] = None\n3586:        if use_stiff_copy and stiff_frac > 0.0:\n3587:            A_work = A.copy()\n3588:            A_work.assemble()\n3589:            A_owned = A_work",
+        "default_production_order": [
+          "outer: stiff_frac in (1e-3, 0.0, 5e-3, 2e-2)  # A-shift tried BEFORE zero",
+          "middle: reg_frac in mass-reg ladder (0, 0.03, ...)",
+          "inner: try_hz in sigma_hz_list"
+        ],
+        "diagnostic_unregularized_order_when_flag_set": [
+          "stiff_frac in (0.0,) only",
+          "reg_frac in (0.0,) only",
+          "try_hz in offset sigma ladder only"
+        ],
+        "answers_key_question": "Yes for prior filtered/unfiltered diagnostic: solver sat on sigma\u2248seed, LU failed or struggled unregularized, then accepted st_a_shift_frac=0.001 before exhausting all unregularized offset sigmas. New config forbids that path."
+      },
+      "what_st_a_shift_frac_modifies": {
+        "function": "fem_main_3d._slepc_st_stiffness_stabilize",
+        "file": "FEM/scripts/fem_main_3d.py",
+        "docstring_excerpt": "ST-only diagonal stabilization on a copy of A (does not alter harvest operators).",
+        "applied_to": "A_st copy used inside SLEPc ST factorization only",
+        "not_applied_to": "Harvest/replay GNHEP (A, M) used for Rayleigh residual and MAC",
+        "perturbation_removed_on_mapping": false,
+        "replay_operator": "Unregularized physical v2 GNHEP from solve_evp=False assembly"
+      },
+      "frequency_mapping_after_regularized_solve": {
+        "function": "fem_main_3d._slepc_physical_lambda",
+        "file": "FEM/scripts/fem_main_3d.py",
+        "snippet": "2092:    \"\"\"How ``eps.getEigenpair`` \u03bc must be interpreted (fail-closed for mixed paths).\"\"\"\n2093:    sc = solver_cfg or {}\n2094:    sem = str(\n2095:        sc.get(\n2096:            \"eps_eigenvalue_semantics\",\n2097:            \"slepc_backtransformed\",\n2098:        )\n2099:    ).strip().lower()\n2100:    allowed = (",
+        "issue_pre_fix": "Legacy sinvert fallback sigma+1/mu could pin reported f\u2248sigma when mu\u22481; shift ST used mu+sigma.",
+        "fix_implemented": "lam_phys=mu when eps_eigenvalue_semantics=slepc_backtransformed; legacy remaps require explicit manual_* semantics."
+      }
+    },
+    "operator_context_comparison": [
+      {
+        "operator_context": "A_true_acoustic_seed_no_eigensolve_replay",
+        "A_matrix_modification": "Physical v2 GNHEP; algebraic BC rows on A/M",
+        "M_matrix_modification": "Physical v2 mass",
+        "BC_treatment": "Algebraic Dirichlet on coupled rows",
+        "pressure_restriction": "Active-air restriction on reduced W",
+        "GNHEP_block_scaling": "Frobenius normalize (v2 diagnosis)",
+        "ST_sigma": "N/A (no EPS)",
+        "ST_regularization": "None",
+        "used_for_seed_residual": true,
+        "used_for_candidate_replay": true,
+        "used_for_EPS": false,
+        "equivalent_to_physical_v2_operator": true
+      },
+      {
+        "operator_context": "B_filtered_diagnostic_EPS_before_ST_retry",
+        "A_matrix_modification": "Same GNHEP A as A",
+        "M_matrix_modification": "Same GNHEP M as A",
+        "BC_treatment": "Same",
+        "pressure_restriction": "Same",
+        "GNHEP_block_scaling": "Same",
+        "ST_sigma": "sigma\u2248243.075 Hz (target-first ladder)",
+        "ST_regularization": "Initially stiff_frac=0, reg_frac=0",
+        "used_for_seed_residual": false,
+        "used_for_candidate_replay": true,
+        "used_for_EPS": true,
+        "equivalent_to_physical_v2_operator": "GNHEP yes; EPS ST initially yes"
+      },
+      {
+        "operator_context": "C_filtered_diagnostic_EPS_after_st_a_shift_frac_0.001",
+        "A_matrix_modification": "Harvest A unchanged; ST uses A_st copy + diag shift",
+        "M_matrix_modification": "Harvest M unchanged; optional M_eff for ST only",
+        "BC_treatment": "Same",
+        "pressure_restriction": "Same",
+        "GNHEP_block_scaling": "Same",
+        "ST_sigma": "sigma\u2248243.075 Hz",
+        "ST_regularization": "st_a_shift_frac=0.001 (default ladder tries this first)",
+        "used_for_seed_residual": false,
+        "used_for_candidate_replay": true,
+        "used_for_EPS": true,
+        "equivalent_to_physical_v2_operator": false
+      }
+    ],
+    "invalid_audit_method_rejected": {
+      "method": "Setting st_a_shift_frac while solve_evp=False",
+      "reason": "ST regularization is applied only inside _slepc_try_eps_st_setup on ST copies. Replay assembly never constructs the regularized ST operator; such a script cannot test whether ST regularization caused EPS failure."
+    },
+    "code_fix_implemented": {
+      "diagnostic_requires_unregularized_ST": {
+        "file": "FEM/scripts/fem_main_3d.py",
+        "effect": "When set, stiff_ladder=(0.0,) and reg_ladder=(0.0,) only."
+      },
+      "fail_closed_verdict": "DIAGNOSTIC_ST_REGULARIZATION_REQUIRED_NO_PHYSICAL_VERDICT",
+      "unregularized_offset_sigma_ladder": {
+        "file": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_sensitivity_solve.py",
+        "offsets_hz": [
+          0.5,
+          -0.5,
+          1.0,
+          -1.0,
+          2.0,
+          -2.0
+        ],
+        "never_sigma_at_seed": true
+      },
+      "st_metadata_in_results": [
+        "st_a_shift_frac_used",
+        "st_mass_reg_frac_used",
+        "diagnostic_operator_consistent_with_replay"
+      ]
+    },
+    "production_exposure_classification": {
+      "replay_only_true_seed_audits": "proven protected (no EPS/ST)",
+      "paths_using_eps_with_default_st_ladder": "potentially exposed; report-only spot-check possible",
+      "prior_PASS_L0_material_mesh_convergence": "not invalidated automatically; smallest spot-check after baseline closed",
+      "standard_seeded_retrieval_with_st_a_shift_frac_0.001": "potentially exposed (VM operator evidence)"
+    }
+  },
+  "st_retry_control_flow": {
+    "evidence_source": "confirmed_from_local_code",
+    "sigma_ladder_construction": {
+      "function": "fem_main_3d._slepc_st_sigma_hz_candidates",
+      "file": "FEM/scripts/fem_main_3d.py",
+      "snippet": "3433:        return M, None\n3434:    reg = min(max(reg, 0.0), 0.45)\n3435:    M_st = M.copy()\n3436:    M_st.assemble()\n3437:    M_st.scale(1.0 - reg)\n3438:    return M_st, M_st\n3439:\n3440:\n3441:def _slepc_st_sigma_hz_candidates(solver_cfg: Dict, target_hz: float) -> List[float]:\n3442:    \"\"\"\n3443:    ST shift frequencies (Hz) to try for shift-invert LU.\n3444:\n3445:    Avoids \u03c3 landing on a resonance (MUMPS INFOG=-10). First entry is the primary offset;\n3446:    later entries are retried only if factorization fails.\n3447:    \"\"\"\n3448:    target_hz = float(target_hz)\n3449:    frac = float(solver_cfg.get(\"eps_st_sigma_frac_offset\", 0.12))",
+      "prior_unfiltered_diagnostic_cfg": {
+        "file": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_sensitivity_solve.py",
+        "function": "_apply_seed_branch_recovery_diagnostic_solver_cfg",
+        "eps_st_sigma_try_target_first": true,
+        "eps_st_sigma_include_target_in_ladder": false,
+        "effect": "First sigma candidate is exact seed/target Hz (offset 0)."
+      },
+      "new_unregularized_offset_cfg": {
+        "file": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_sensitivity_solve.py",
+        "function": "_apply_seed_branch_unregularized_offset_diagnostic_solver_cfg",
+        "eps_st_sigma_try_target_first": false,
+        "eps_st_sigma_primary_offset_hz": 0.5,
+        "eps_st_sigma_retry_offsets_hz": [
+          0.5,
+          -0.5,
+          1.0,
+          -1.0,
+          2.0,
+          -2.0
+        ],
+        "effect": "Never places sigma exactly at seed Rayleigh frequency."
+      }
+    },
+    "st_retry_nested_loop_order": {
+      "function": "fem_main_3d._slepc_try_eps_st_setup",
+      "file": "FEM/scripts/fem_main_3d.py",
+      "snippet": "3577:                    continue\n3578:                if v not in stiff_ladder:\n3579:                    stiff_ladder.append(v)\n3580:        if not stiff_ladder:\n3581:            stiff_ladder = [1.0e-3, 0.0]\n3582:    use_stiff_copy = any(v > 0.0 for v in stiff_ladder)\n3583:    for stiff_frac in stiff_ladder:\n3584:        A_work = A\n3585:        A_owned: Optional[PETSc.Mat] = None\n3586:        if use_stiff_copy and stiff_frac > 0.0:\n3587:            A_work = A.copy()\n3588:            A_work.assemble()\n3589:            A_owned = A_work",
+      "default_production_order": [
+        "outer: stiff_frac in (1e-3, 0.0, 5e-3, 2e-2)  # A-shift tried BEFORE zero",
+        "middle: reg_frac in mass-reg ladder (0, 0.03, ...)",
+        "inner: try_hz in sigma_hz_list"
+      ],
+      "diagnostic_unregularized_order_when_flag_set": [
+        "stiff_frac in (0.0,) only",
+        "reg_frac in (0.0,) only",
+        "try_hz in offset sigma ladder only"
+      ],
+      "answers_key_question": "Yes for prior filtered/unfiltered diagnostic: solver sat on sigma\u2248seed, LU failed or struggled unregularized, then accepted st_a_shift_frac=0.001 before exhausting all unregularized offset sigmas. New config forbids that path."
+    },
+    "what_st_a_shift_frac_modifies": {
+      "function": "fem_main_3d._slepc_st_stiffness_stabilize",
+      "file": "FEM/scripts/fem_main_3d.py",
+      "docstring_excerpt": "ST-only diagonal stabilization on a copy of A (does not alter harvest operators).",
+      "applied_to": "A_st copy used inside SLEPc ST factorization only",
+      "not_applied_to": "Harvest/replay GNHEP (A, M) used for Rayleigh residual and MAC",
+      "perturbation_removed_on_mapping": false,
+      "replay_operator": "Unregularized physical v2 GNHEP from solve_evp=False assembly"
+    },
+    "frequency_mapping_after_regularized_solve": {
+      "function": "fem_main_3d._slepc_physical_lambda",
+      "file": "FEM/scripts/fem_main_3d.py",
+      "snippet": "2092:    \"\"\"How ``eps.getEigenpair`` \u03bc must be interpreted (fail-closed for mixed paths).\"\"\"\n2093:    sc = solver_cfg or {}\n2094:    sem = str(\n2095:        sc.get(\n2096:            \"eps_eigenvalue_semantics\",\n2097:            \"slepc_backtransformed\",\n2098:        )\n2099:    ).strip().lower()\n2100:    allowed = (",
+      "issue_pre_fix": "Legacy sinvert fallback sigma+1/mu could pin reported f\u2248sigma when mu\u22481; shift ST used mu+sigma.",
+      "fix_implemented": "lam_phys=mu when eps_eigenvalue_semantics=slepc_backtransformed; legacy remaps require explicit manual_* semantics."
+    }
+  },
+  "production_exposure_classification": {
+    "replay_only_true_seed_audits": "proven protected (no EPS/ST)",
+    "paths_using_eps_with_default_st_ladder": "potentially exposed; report-only spot-check possible",
+    "prior_PASS_L0_material_mesh_convergence": "not invalidated automatically; smallest spot-check after baseline closed",
+    "standard_seeded_retrieval_with_st_a_shift_frac_0.001": "potentially exposed (VM operator evidence)"
+  },
+  "vm_runtime_filtered_evaluation": {
+    "source_json": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/v2_l_mid_seed_branch_recovery_filtered_evaluation.json",
+    "loaded": true,
+    "verdict": "FILTERED_DIAGNOSTIC_NO_PHYSICAL_BRANCH_RECOVERED",
+    "note": "Prior filtered diagnostic on VM; superseded for verdict by unregularized-offset diagnostic rerun."
+  },
+  "unregularized_offset_diagnostic": {
+    "report_json": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/v2_l_mid_seed_branch_unregularized_offset_diagnostic.json",
+    "loaded": true,
+    "solve_completed_on_vm": true,
+    "operator_consistency_confirmed": true,
+    "evaluation_verdict": "UNREGULARIZED_OFFSET_OUTPUT_OR_REPLAY_INCONSISTENT",
+    "candidates_unevaluable_all_xH_Mx_zero": true,
+    "prior_regularized_diagnostics_superseded": true
+  },
+  "saved_vector_mass_norm_audit": {
+    "report_json": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/v2_l_mid_unregularized_saved_vector_mass_norm_audit.json",
+    "loaded": true,
+    "classification_verdict": "EPS_RETURNED_ONLY_MASS_NULL_CANDIDATES_IN_UNREGULARIZED_SOLVE"
+  },
+  "eps_mapping_impact_inventory": {
+    "report_json": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/v2_eps_mapping_impact_inventory.json",
+    "loaded": true
+  },
+  "existing_pass_replay_recertification": {
+    "report_json": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/v2_existing_pass_replay_recertification.json",
+    "loaded": true
+  },
+  "st_singular_mass_preflight": {
+    "report_json": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/v2_st_singular_mass_preflight.json",
+    "loaded": true,
+    "PGNHEP_purification_applicability": "not_justified_use_nullspace_reduction_plan"
+  },
+  "st_singular_mass_rehabilitation_plan": {
+    "report_json": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/v2_st_singular_mass_rehabilitation_plan.json",
+    "loaded": true
+  },
+  "mapping_corrected_baseline_diagnostic": {
+    "report_json": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/v2_l_mid_mapping_fixed_unregularized_baseline_diagnostic.json",
+    "loaded": true,
+    "evaluation_verdict": "MAPPING_FIXED_UNREGULARIZED_BASELINE_OUTPUT_OR_REPLAY_INCONSISTENT",
+    "recommended_vm_command": "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_l_mid_mapping_fixed_unregularized_baseline_diagnostic.sh"
+  },
+  "recommended_vm_command_report_only": null,
+  "recommended_vm_command_baseline_solve": "bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_mapping_fixed_persistence_fixed_baseline_vm.sh",
+  "evidence_summary": {
+    "confirmed_from_local_code": [
+      "Native STSINVERT: lam_phys=mu, eps_eigenvalue_semantics=slepc_backtransformed.",
+      "legacy_double_shift_mapping_disabled=True for native sinvert harvest.",
+      "eps_diagnostic_preserve_all_nconv_candidates saves every converged vector before filters.",
+      "ST A-shift modifies only ST factorization copy; replay uses unregularized GNHEP.",
+      "PGNHEP/purification ruled out when has_EPS_ProblemType_PGNHEP=False on VM."
+    ],
+    "reported_from_VM_operator_evidence": [
+      "Prior regularized filtered diagnostic superseded for branch verdict.",
+      "True acoustic seed valid at ~243.075 Hz under unregularized physical v2 replay.",
+      "Pre-mapping-fix unregularized-offset solve (7 harvested modes, all xH_Mx=0) is not a valid test of corrected lam_phys=mu mapping; prior seven-mode harvest is not failure evidence.",
+      "Mapping-corrected baseline on VM: nconv_marked=56, preserve_all kept=56, but num_vectors_saved=0 (worker rt/rb filter dropped rows; bank not bridged to config).",
+      "Verdict: MAPPING_FIXED_UNREGULARIZED_BASELINE_CANDIDATE_PERSISTENCE_FAILURE \u2014 inconclusive, not ST failure, not Stage-2 trigger.",
+      "PGNHEP/purification: not_justified_use_nullspace_reduction_plan in current VM environment.",
+      "PASS replay recertification: some_modes_valid_physics_wrong_frequency_labels_only.",
+      "Pre-mapping unregularized-offset verdict (historical): UNREGULARIZED_OFFSET_OUTPUT_OR_REPLAY_INCONSISTENT.",
+      "Saved-vector mass-norm audit classification: EPS_RETURNED_ONLY_MASS_NULL_CANDIDATES_IN_UNREGULARIZED_SOLVE.",
+      "Mapping-corrected baseline verdict: MAPPING_FIXED_UNREGULARIZED_BASELINE_OUTPUT_OR_REPLAY_INCONSISTENT.",
+      "Replacement persistence-fixed baseline EPS already ran on VM; 56/56 candidates persisted.",
+      "Replacement evaluator headline: MAPPING_FIXED_UNREGULARIZED_BASELINE_PERSISTED_VECTOR_CONTENT_UNRESOLVED.",
+      "Full pipeline audit verdict: MAPPING_FIXED_UNREGULARIZED_BASELINE_PERSISTED_VECTOR_CONTENT_UNRESOLVED (all_persisted_sparse_mass_null_pre_sparsify_dense_not_preserved)."
+    ],
+    "requires_VM_runtime_artifact_evaluation": [],
+    "not_yet_verified": [
+      "ST viability conclusion pending resolved replay on all 56 persisted candidates.",
+      "Report-only corrected frequency/\u0394f/MAC tables for prior PASS cases after baseline closes."
+    ],
+    "single_permitted_next_action": null,
+    "eigenvalue_mapping_fix_implemented": true,
+    "additional_baseline_eigensolve": "none_authorized_report_only_pipeline_audit",
+    "PGNHEP_purification": "ruled_out_in_current_VM_environment",
+    "stage_2": "not_triggered_until_pipeline_audit_closes_finite_branch_verdict",
+    "replacement_baseline_already_ran": true,
+    "pipeline_audit_verdict": "MAPPING_FIXED_UNREGULARIZED_BASELINE_PERSISTED_VECTOR_CONTENT_UNRESOLVED",
+    "prior_pass_handling": {
+      "mesh_topology_gates_preserved": true,
+      "true_seed_replay_findings_preserved": true,
+      "eps_frequency_labels_pending_recertification": true
+    },
+    "prior_regularized_diagnostics_superseded_for_branch_verdict": true,
+    "pre_mapping_unregularized_offset_solve_completed": true,
+    "pre_mapping_unregularized_offset_evaluation_verdict": "UNREGULARIZED_OFFSET_OUTPUT_OR_REPLAY_INCONSISTENT",
+    "mapping_corrected_baseline_verdict": "MAPPING_FIXED_UNREGULARIZED_BASELINE_OUTPUT_OR_REPLAY_INCONSISTENT",
+    "saved_vector_mass_norm_classification": "EPS_RETURNED_ONLY_MASS_NULL_CANDIDATES_IN_UNREGULARIZED_SOLVE",
+    "seven_mode_harvest_not_evidence_against_corrected_mapping": true
+  },
+  "forward_risk_register": [
+    {
+      "risk_or_mismatch": "lambda\u22481 sigma/mapping artifacts from regularized ST at sigma\u2248seed",
+      "where_in_code": "fem_main_3d._slepc_try_eps_st_setup + _slepc_physical_lambda",
+      "evidence_source": "local_code|VM_operator_evidence",
+      "already_triggered_or_only_possible": "already_triggered (filtered diagnostic)",
+      "impact_if_unfixed": "False branch recovery; reported f\u2248sigma but replay lambda\u22481",
+      "how_to_detect_before_next_solve": "Replay Rayleigh lambda; reject abs(lambda-1)<=tol; require op-consistent ST",
+      "minimal_fix_required": "Unregularized-offset sigma ladder; forbid ST reg for diagnostic verdict",
+      "blocks_hole_radius_large": true,
+      "blocks_mesh_convergence_resume": true,
+      "blocks_v2_production_promotion": true
+    },
+    {
+      "risk_or_mismatch": "EPS ST-regularized solve not replay-consistent",
+      "where_in_code": "ST copy A_st vs harvest/replay GNHEP A",
+      "evidence_source": "confirmed_from_local_code",
+      "already_triggered_or_only_possible": "already_triggered",
+      "impact_if_unfixed": "Candidates are eigenvectors of perturbed ST, not physical GNHEP",
+      "how_to_detect_before_next_solve": "Require diagnostic_operator_consistent_with_replay and st_*_frac==0",
+      "minimal_fix_required": "diagnostic_requires_unregularized_ST fail-closed policy",
+      "blocks_hole_radius_large": true,
+      "blocks_mesh_convergence_resume": true,
+      "blocks_v2_production_promotion": true
+    },
+    {
+      "risk_or_mismatch": "reported frequency vs replay inconsistency",
+      "where_in_code": "Harvest f_hz vs replay Rayleigh f_hz",
+      "evidence_source": "VM_operator_evidence",
+      "already_triggered_or_only_possible": "already_triggered",
+      "impact_if_unfixed": "Accept spurious sigma-near modes",
+      "how_to_detect_before_next_solve": "reported_vs_replay_frequency_consistent gate",
+      "minimal_fix_required": "Post-harvest physical filter (already in v2_seed_branch_candidate_filter)",
+      "blocks_hole_radius_large": true,
+      "blocks_mesh_convergence_resume": true,
+      "blocks_v2_production_promotion": false
+    },
+    {
+      "risk_or_mismatch": "p_frac-only branch selection",
+      "where_in_code": "mode_diagnostics p_frac_energy_phys",
+      "evidence_source": "confirmed_from_local_code",
+      "already_triggered_or_only_possible": "already_triggered",
+      "impact_if_unfixed": "High p_frac on non-physical vectors",
+      "how_to_detect_before_next_solve": "MAC+replay+freq gates for branch verdict",
+      "minimal_fix_required": "Already enforced in diagnostic evaluate",
+      "blocks_hole_radius_large": true,
+      "blocks_mesh_convergence_resume": true,
+      "blocks_v2_production_promotion": false
+    },
+    {
+      "risk_or_mismatch": "production paths accepting ST-regularized modes without replay screen",
+      "where_in_code": "fem_main_3d default stiff_ladder",
+      "evidence_source": "confirmed_from_local_code",
+      "already_triggered_or_only_possible": "only_possible",
+      "impact_if_unfixed": "Prior PASS may include sigma artifacts",
+      "how_to_detect_before_next_solve": "Report-only replay filter on saved modes",
+      "minimal_fix_required": "Spot-check after baseline diagnostic closed",
+      "blocks_hole_radius_large": false,
+      "blocks_mesh_convergence_resume": true,
+      "blocks_v2_production_promotion": true
+    },
+    {
+      "risk_or_mismatch": "stale reports overriding newer evidence",
+      "where_in_code": "v2_mesh_convergence/diagnostics/*.json",
+      "evidence_source": "confirmed_from_local_code",
+      "already_triggered_or_only_possible": "only_possible",
+      "impact_if_unfixed": "Premature resume/promotion",
+      "how_to_detect_before_next_solve": "mesh_convergence_may_resume=False until unreg-offset verdict",
+      "minimal_fix_required": "Supersede prior diagnostic verdicts explicitly",
+      "blocks_hole_radius_large": true,
+      "blocks_mesh_convergence_resume": true,
+      "blocks_v2_production_promotion": true
+    }
+  ],
+  "finite_closure_plan": {
+    "root_cause_status": "LOSSLESS_ST_RETURNED_U_SHELL_MASS_MATRIX_KERNEL_MODES",
+    "next_allowed_action": "Persisted sparse vectors mass-null; dense pre-sparsify not preserved. Review architecture audit and lossless persistence preflight; no ST failure verdict. No additional EPS until lossless path approved.",
+    "PGNHEP_purification": "ruled_out_in_current_VM_environment",
+    "mapping_corrected_first_run_inconclusive_persistence_failure": false,
+    "stage_2": "blocked_pending_output_consistency",
+    "decision_tree": {
+      "if_mapping_corrected_baseline_recovers_branch": "Review promotion gates; report-only PASS frequency label recertification.",
+      "if_mapping_corrected_baseline_fails": "Proceed directly to Stage-2 null-space reduction; no more ST-only tuning.",
+      "prior_PASS": "Mesh/topology gates preserved; EPS frequency labels pending recertification."
+    },
+    "next_allowed_action_after_VM_report": "Persisted sparse vectors mass-null; dense pre-sparsify not preserved. Review architecture audit and lossless persistence preflight; no ST failure verdict. No additional EPS until lossless path approved.",
+    "recommended_vm_command": null,
+    "blocked_actions": [
+      "hole_radius_large",
+      "mesh_convergence_resume",
+      "L_prod",
+      "L_check",
+      "LHS",
+      "v2_production_promotion",
+      "PGNHEP_purification_in_current_VM",
+      "another_sigma_adjustment",
+      "another_filter_only_EPS_rerun",
+      "another_ST_mapping_variant",
+      "stage_2_nullspace_reduction"
+    ],
+    "maximum_additional_baseline_solves_before_escalation": 1,
+    "maximum_additional_code_fix_cycles_before_reconsidering_solver_architecture": 0,
+    "filtered_eval_verdict": "FILTERED_DIAGNOSTIC_NO_PHYSICAL_BRANCH_RECOVERED",
+    "pre_mapping_unregularized_offset_eval_verdict": "UNREGULARIZED_OFFSET_OUTPUT_OR_REPLAY_INCONSISTENT",
+    "mapping_corrected_baseline_verdict": "MAPPING_FIXED_UNREGULARIZED_BASELINE_OUTPUT_OR_REPLAY_INCONSISTENT",
+    "saved_vector_mass_norm_classification": "EPS_RETURNED_ONLY_MASS_NULL_CANDIDATES_IN_UNREGULARIZED_SOLVE",
+    "baseline_eigensolve_budget": "exhausted_pending_review"
+  },
+  "mesh_convergence_may_resume": false,
+  "staged_status": {
+    "mesh_convergence_pass": "Pending",
+    "v2_production_promotion_ready": false,
+    "lhs_promotion_blocked": true
+  },
+  "persistence_fixed_baseline_diagnostic": {
+    "report_json": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/v2_l_mid_mapping_fixed_unregularized_persistence_fixed_baseline_diagnostic.json",
+    "loaded": true
+  },
+  "full_pipeline_audit": {
+    "report_json": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/v2_mapping_fixed_persistence_fixed_full_pipeline_audit.json",
+    "loaded": true,
+    "audit_verdict": "MAPPING_FIXED_UNREGULARIZED_BASELINE_PERSISTED_VECTOR_CONTENT_UNRESOLVED"
+  },
+  "diagnostic_exposure_conclusion": {
+    "status": "confirmed_from_local_code_with_VM_operator_evidence",
+    "summary": "Persistence self-test passed. Replacement baseline EPS already ran; 56/56 candidates persisted. Current blocker is replay evaluation / persisted vector content interpretation until report-only pipeline audit closes. ST viability inconclusive. No additional EPS authorized by audit task. hole_radius_large and mesh convergence remain blocked.",
+    "replay_only_validations_protected": true,
+    "eps_default_st_ladder_potentially_exposed": true,
+    "unregularized_offset_solve_not_exposed_to_prior_st_shift": true
+  },
+  "code_fix_cycle": {
+    "maximum_additional_code_fix_cycles_before_reconsidering_solver_architecture": 1,
+    "this_implementation_counts_as": 1,
+    "remaining_code_fix_cycles": 0
+  }
+}
