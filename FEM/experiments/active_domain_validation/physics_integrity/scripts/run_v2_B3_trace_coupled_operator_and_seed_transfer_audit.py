@@ -307,7 +307,7 @@ def _build_c2_trace_to_parent_transfer(
     tag_back: int,
     tag_ribs: int,
 ) -> Dict[str, Any]:
-    """Construct sparse transfer T: u_trace -> parent_u using exact dof-coordinate matching."""
+    """Construct sparse transfer T: u_trace -> parent_u via submesh vertex map + component expansion."""
     u_el_parent = fem3d._displacement_element(msh, 1)
     V_u_parent = fem.functionspace(msh, u_el_parent)
     n_u_parent = int(V_u_parent.dofmap.index_map.size_global * V_u_parent.dofmap.index_map_bs)
@@ -322,7 +322,9 @@ def _build_c2_trace_to_parent_transfer(
         }
 
     tdim = msh.topology.dim
-    shell_mesh, shell_to_parent, _, _ = dmesh.create_submesh(msh, tdim - 1, shell_facets)
+    shell_mesh, shell_to_parent, shell_vertex_to_parent, _ = dmesh.create_submesh(
+        msh, tdim - 1, shell_facets
+    )
     map_meta = _extract_submesh_to_parent_entity_indices(shell_to_parent, entity_dim=tdim - 1)
     if not map_meta["ok"]:
         return {
@@ -347,41 +349,55 @@ def _build_c2_trace_to_parent_transfer(
 
     V_u_trace = fem.functionspace(shell_mesh, fem3d._displacement_element(shell_mesh, 1))
     n_u_trace = int(V_u_trace.dofmap.index_map.size_global * V_u_trace.dofmap.index_map_bs)
-
-    trace_coords = np.asarray(V_u_trace.tabulate_dof_coordinates(), dtype=np.float64)
-    parent_coords = np.asarray(V_u_parent.tabulate_dof_coordinates(), dtype=np.float64)
+    bs_trace = int(V_u_trace.dofmap.index_map_bs)
+    bs_parent = int(V_u_parent.dofmap.index_map_bs)
     shell_parent_dofs = np.asarray(
         fem3d._locate_facet_displacement_dofs(V_u_parent, msh, shell_facets), dtype=np.int32
     ).ravel()
-    if trace_coords.shape[0] != n_u_trace:
+    if bs_trace != bs_parent:
         return {
             "ok": False,
             "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
-            "failure_detail": "trace_dof_coordinate_count_mismatch",
+            "failure_detail": "trace_parent_vector_block_size_mismatch",
             "domain_dim": n_u_trace,
             "codomain_dim": n_u_parent,
             "map_meta": map_meta,
             "transferred_counts": transferred_counts,
         }
 
-    # Build deterministic coordinate buckets on shell parent DOFs.
-    parent_bucket: Dict[tuple, List[int]] = {}
-    for dof in shell_parent_dofs.tolist():
-        key = tuple(np.round(parent_coords[int(dof)], 12))
-        parent_bucket.setdefault(key, []).append(int(dof))
-    for key in parent_bucket:
-        parent_bucket[key].sort()
-
-    used_parent: Dict[tuple, int] = {}
     parent_idx = np.full(n_u_trace, -1, dtype=np.int32)
-    for j in range(n_u_trace):
-        key = tuple(np.round(trace_coords[j], 12))
-        cand = parent_bucket.get(key, [])
-        if not cand:
+    sub_v_map = np.asarray(shell_vertex_to_parent, dtype=np.int32).ravel()
+    vmap_size = int(shell_mesh.topology.index_map(0).size_local + shell_mesh.topology.index_map(0).num_ghosts)
+    if sub_v_map.size < vmap_size:
+        return {
+            "ok": False,
+            "reason": "B3_BLOCKED_BY_ONE_NAMED_SPARSE_TRACE_TRANSFER_INTERFACE",
+            "failure_detail": "submesh_vertex_map_size_mismatch",
+            "domain_dim": n_u_trace,
+            "codomain_dim": n_u_parent,
+            "map_meta": map_meta,
+            "transferred_counts": transferred_counts,
+        }
+
+    for sv in range(vmap_size):
+        pv = int(sub_v_map[sv])
+        if pv < 0:
             continue
-        k = used_parent.get(key, 0)
-        parent_idx[j] = cand[k % len(cand)]
-        used_parent[key] = k + 1
+        trace_dofs = np.asarray(
+            fem.locate_dofs_topological(V_u_trace, 0, np.asarray([sv], dtype=np.int32)), dtype=np.int32
+        ).ravel()
+        parent_dofs = np.asarray(
+            fem.locate_dofs_topological(V_u_parent, 0, np.asarray([pv], dtype=np.int32)), dtype=np.int32
+        ).ravel()
+        if trace_dofs.size != bs_trace or parent_dofs.size != bs_parent:
+            continue
+        td = np.sort(trace_dofs)
+        pd = np.sort(parent_dofs)
+        for j in range(bs_trace):
+            t_dof = int(td[j])
+            p_dof = int(pd[j])
+            if 0 <= t_dof < n_u_trace and 0 <= p_dof < n_u_parent:
+                parent_idx[t_dof] = p_dof
 
     missing = int(np.sum(parent_idx < 0))
     if missing > 0:
@@ -997,62 +1013,20 @@ def main() -> int:
                                 "NOT_EVALUATED_BLOCKED_PENDING_SPARSE_TRACE_TRANSFER_INTERFACE"
                             )
                         else:
-                            # Project validated parent coupling blocks with T (selection/lift map).
-                            pidx = np.asarray(tmeta["parent_index_per_trace_dof"], dtype=np.int32).ravel()
-                            n_u_parent = int(tmeta["codomain_dim"])
-                            # Dense extraction on selected rows/cols only (compact in this bounded audit).
-                            Aup_parent = np.zeros((n_u_parent, n_p), dtype=np.float64)
-                            Apu_parent = np.zeros((n_p, n_u_parent), dtype=np.float64)
-                            Mpu_parent = np.zeros((n_p, n_u_parent), dtype=np.float64)
-                            p_w_to_local = {int(w): i for i, w in enumerate(p_to_W.tolist())}
-                            u_w_to_local = {int(w): i for i, w in enumerate(u_to_W.tolist())}
-                            for iu, wrow in enumerate(u_to_W.tolist()):
-                                cols, vals = A.getRow(int(wrow))
-                                for c, v in zip(np.asarray(cols, dtype=np.int32), np.asarray(vals, dtype=np.float64)):
-                                    j = p_w_to_local.get(int(c))
-                                    if j is not None:
-                                        Aup_parent[iu, j] = float(v)
-                                A.restoreRow(int(wrow), cols, vals)
-                            for ip, prow in enumerate(p_to_W.tolist()):
-                                cols, vals = A.getRow(int(prow))
-                                for c, v in zip(np.asarray(cols, dtype=np.int32), np.asarray(vals, dtype=np.float64)):
-                                    j = u_w_to_local.get(int(c))
-                                    if j is not None:
-                                        Apu_parent[ip, j] = float(v)
-                                A.restoreRow(int(prow), cols, vals)
-                                cols_m, vals_m = M.getRow(int(prow))
-                                for c, v in zip(np.asarray(cols_m, dtype=np.int32), np.asarray(vals_m, dtype=np.float64)):
-                                    j = u_w_to_local.get(int(c))
-                                    if j is not None:
-                                        Mpu_parent[ip, j] = float(v)
-                                M.restoreRow(int(prow), cols_m, vals_m)
-                            Aup_B3 = Aup_parent[pidx, :]
-                            Apu_B3 = Apu_parent[:, pidx]
-                            Mpu_B3 = Mpu_parent[:, pidx]
-                            b3_Aup_norm = _safe_float(np.linalg.norm(Aup_B3))
-                            b3_Apu_norm = _safe_float(np.linalg.norm(Apu_B3))
-                            b3_Mpu_norm = _safe_float(np.linalg.norm(Mpu_B3))
-                            nonzero_ok = bool(
-                                float(b3_Aup_norm) > 0.0 and float(b3_Apu_norm) > 0.0
+                            b3_coupling_iface = False
+                            b3_coupling_present = False
+                            b3_coupling_method = (
+                                "sparse_transfer_T_constructed_dense_parent_projection_path_disabled"
                             )
-                            b3_coupling_iface = bool(nonzero_ok)
-                            b3_coupling_present = bool(nonzero_ok)
-                            b3_coupling_method = "sparse_transfer_T_then_parent_coupling_block_projection"
-                            b3_coupling_reason = None if nonzero_ok else "projected_coupling_norm_zero_or_nan"
-                            coupling_stage_outcome = (
-                                "B3_COUPLING_CONSTRUCTED_CONTINUE_TO_OPERATOR_AND_SEED_AUDIT"
-                                if nonzero_ok
-                                else "B3_REJECTED_COUPLING_CANNOT_PRESERVE_VALIDATED_INTERFACE_PHYSICS"
+                            b3_coupling_reason = (
+                                "B3_BLOCKED_BY_PROHIBITED_DENSE_PARENT_COUPLING_PROJECTION_PATH"
                             )
-                            if not nonzero_ok:
-                                block_reason = "B3_REJECTED_DOES_NOT_PRESERVE_VALIDATED_V2_PHYSICS"
-                                b3_seed_fail = "B3_REJECTED_DOES_NOT_PRESERVE_VALIDATED_V2_PHYSICS"
-                            else:
-                                b3_ops_assembled = True
-                                b3_ops_sanity = True
-                                b3_seed_check_status = "NOT_EVALUATED_BLOCKED_PENDING_SEED_TRANSFER"
-                                b3_seed_fail = "B3_BLOCKED_BY_SEED_TRANSFER_INTERFACE"
-                                block_reason = "B3_BLOCKED_BY_SEED_TRANSFER_INTERFACE"
+                            coupling_stage_outcome = b3_coupling_reason
+                            block_reason = b3_coupling_reason
+                            b3_seed_fail = b3_coupling_reason
+                            b3_seed_check_status = (
+                                "NOT_EVALUATED_BLOCKED_BY_PROHIBITED_DENSE_PARENT_COUPLING_PROJECTION_PATH"
+                            )
                     else:
                         b3_coupling_iface = False
                         b3_coupling_present = False
