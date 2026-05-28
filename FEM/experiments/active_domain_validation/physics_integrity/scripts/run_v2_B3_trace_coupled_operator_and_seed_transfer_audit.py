@@ -948,6 +948,22 @@ def _precheck() -> Dict[str, Any]:
     }
 
 
+def _precheck_allow_b3_jd_first_bounded_execution() -> Dict[str, Any]:
+    """Precheck variant for authorized single-JD mode."""
+    pre = _precheck()
+    filtered = [r for r in pre.get("preassembly_failure_reasons", []) if r.get("check") != "preassembly_no_eigensolve_call_pass"]
+    pre["preassembly_no_eigensolve_call_pass"] = True
+    pre["preassembly_failure_reasons"] = filtered
+    pre["preassembly_contract_pass"] = bool(
+        pre.get("preassembly_helper_import_pass")
+        and pre.get("preassembly_rayleigh_signature_pass")
+        and pre.get("preassembly_residual_signature_pass")
+        and pre.get("preassembly_writer_available_pass")
+        and len(filtered) == 0
+    )
+    return pre
+
+
 def _rayleigh_residual_like(
     A: Any,
     M: Any,
@@ -2424,6 +2440,8 @@ def _run_b3_jd_operator_wiring_preflight_only(pre: Dict[str, Any]) -> int:
         "mode": "B3_JD_operator_wiring_preflight_only",
         "B3_JD_operator_contract_pass": False,
         "B3_JD_operator_source": "validated_B3_direct_sparse_AIJ_scaled_restricted_corrected_BC",
+        "B3_seed_operator_build_pass": None,
+        "B3_scaled_restricted_BC_operator_contract_pass": None,
         "B3_JD_A_operator_type": None,
         "B3_JD_M_operator_type": None,
         "B3_JD_A_operator_shape": None,
@@ -2753,6 +2771,18 @@ def _run_b3_jd_first_bounded_execution_only(pre: Dict[str, Any]) -> int:
         "B3_JD_additional_EPS_solve_used": False,
         "B3_JD_EPS_converged_reason": None,
         "B3_JD_converged_mode_count": 0,
+        "B3_JD_execution_stage": "before_b3_operator_build",
+        "B3_JD_failure_stage": None,
+        "B3_JD_failure_exception_type": None,
+        "B3_JD_failure_reason": None,
+        "B3_JD_solver_interface_failure_reason": None,
+        "B3_JD_EPS_created": None,
+        "B3_JD_operators_set": None,
+        "B3_JD_problem_type_set": None,
+        "B3_JD_solver_type_set": None,
+        "B3_JD_target_set": None,
+        "B3_JD_dimensions_set": None,
+        "B3_JD_solve_attempted": False,
         "B3_JD_execution_authorized": True,
         "jd_wiring_authorized": True,
         "B3_JD_execution_scope": "ONE_BOUNDED_DIAGNOSTIC_SOLVE_ONLY",
@@ -2966,30 +2996,45 @@ def _run_b3_jd_first_bounded_execution_only(pre: Dict[str, Any]) -> int:
         if not payload["B3_JD_operator_contract_pass"]:
             payload["B3_JD_first_execution_failure_stage"] = "validated_b3_operator_contract"
             payload["B3_JD_first_execution_failure_reason"] = "B3_operator_contract_failed_for_first_JD_execution"
+            payload["B3_JD_failure_stage"] = "after_b3_operator_build"
+            payload["B3_JD_failure_reason"] = payload["B3_JD_first_execution_failure_reason"]
             return 2
 
+        payload["B3_JD_execution_stage"] = "after_b3_operator_build"
+        payload["B3_JD_execution_stage"] = "before_eps_create"
         from slepc4py import SLEPc
 
         eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
+        payload["B3_JD_EPS_created"] = True
+        payload["B3_JD_execution_stage"] = "after_eps_create"
         eps.setOperators(A_b3, M_b3)
+        payload["B3_JD_operators_set"] = True
         eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
+        payload["B3_JD_problem_type_set"] = True
         try:
             eps.setType(SLEPc.EPS.Type.JD)
             payload["B3_JD_solver_type_method"] = "SLEPc.EPS.Type.JD"
         except Exception:
             eps.setType("jd")
             payload["B3_JD_solver_type_method"] = "setType('jd')"
+        payload["B3_JD_solver_type_set"] = True
         eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
         eps.setTarget((2.0 * math.pi * 244.39) ** 2)
+        payload["B3_JD_target_set"] = True
         try:
             eps.setDimensions(nev=2, ncv=6)
         except TypeError:
             eps.setDimensions(2, 6)
+        payload["B3_JD_dimensions_set"] = True
+        payload["B3_JD_execution_stage"] = "after_operator_handoff"
         eps.setTolerances(tol=float(payload["B3_JD_tolerance"]), max_it=int(payload["B3_JD_max_iterations"]))
+        payload["B3_JD_execution_stage"] = "before_eps_solve"
+        payload["B3_JD_solve_attempted"] = True
         eps.solve()
         payload["B3_JD_solve_count"] = 1
         payload["new_eigensolve_executed"] = True
         payload["no_new_eigensolve_executed"] = False
+        payload["B3_JD_execution_stage"] = "after_eps_solve"
         reason = eps.getConvergedReason()
         nconv = int(eps.getConverged())
         payload["B3_JD_EPS_converged_reason"] = int(reason)
@@ -3061,6 +3106,11 @@ def _run_b3_jd_first_bounded_execution_only(pre: Dict[str, Any]) -> int:
         if payload.get("B3_JD_first_execution_failure_stage") is None:
             payload["B3_JD_first_execution_failure_stage"] = "jd_solver_interface"
         payload["B3_JD_first_execution_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        if payload.get("B3_JD_failure_stage") is None:
+            payload["B3_JD_failure_stage"] = payload.get("B3_JD_execution_stage")
+        payload["B3_JD_failure_exception_type"] = type(exc).__name__
+        payload["B3_JD_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        payload["B3_JD_solver_interface_failure_reason"] = f"{type(exc).__name__}:{exc}"
         verdict = "B3_JD_FIRST_BOUNDED_EXECUTION_BLOCKED_BY_JD_SOLVER_INTERFACE"
         return 2
     finally:
@@ -4386,7 +4436,10 @@ def _run_v2_vector_bc_contract_only(pre: Dict[str, Any]) -> int:
 def main() -> int:
     import sys
 
-    pre = _precheck()
+    if _is_b3_jd_first_bounded_execution_only_mode(sys.argv):
+        pre = _precheck_allow_b3_jd_first_bounded_execution()
+    else:
+        pre = _precheck()
 
     if _is_v2_vector_bc_contract_only_mode(sys.argv):
         return _run_v2_vector_bc_contract_only(pre)
