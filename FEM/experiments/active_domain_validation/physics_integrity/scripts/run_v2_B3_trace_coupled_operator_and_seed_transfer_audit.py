@@ -323,6 +323,52 @@ def _petsc_sparse_owned_row_norms(mat: Any) -> np.ndarray:
     return norms
 
 
+def _petsc_sparse_owned_col_norms(mat: Any) -> np.ndarray:
+    """Frobenius norm of each owned column (mpiexec -n 1)."""
+    nrow, ncol = (int(mat.getSize()[0]), int(mat.getSize()[1]))
+    col_sq = np.zeros(ncol, dtype=np.float64)
+    for r in range(nrow):
+        try:
+            cols, vals = mat.getRow(r)
+        except TypeError:
+            rowdat = mat.getRow(r)
+            cols, vals = rowdat[0], rowdat[1]
+        cols_a = np.asarray(cols, dtype=np.int32).ravel()
+        vals_a = np.asarray(vals, dtype=np.float64).ravel()
+        for c, v in zip(cols_a.tolist(), vals_a.tolist()):
+            col_sq[int(c)] += float(v) * float(v)
+        try:
+            mat.restoreRow(r)
+        except Exception:
+            pass
+    return np.sqrt(col_sq, dtype=np.float64)
+
+
+def _parent_facet_scalar_dof_sets(
+    msh: Any,
+    *,
+    f_top: np.ndarray,
+    f_back: np.ndarray,
+    f_ribs: np.ndarray,
+    f_fix: np.ndarray,
+) -> Dict[str, set[int]]:
+    V_u_parent = fem.functionspace(msh, fem3d._displacement_element(msh, 1))
+
+    def _expand(blocks: np.ndarray) -> set[int]:
+        return set(
+            int(b) * 3 + c
+            for b in np.asarray(blocks, dtype=np.int32).ravel()
+            for c in range(3)
+        )
+
+    return {
+        "tag1_top": _expand(fem3d._locate_facet_displacement_dofs(V_u_parent, msh, f_top)),
+        "tag3_back": _expand(fem3d._locate_facet_displacement_dofs(V_u_parent, msh, f_back)),
+        "tag4_ribs": _expand(fem3d._locate_facet_displacement_dofs(V_u_parent, msh, f_ribs)),
+        "tag5_fixed": _expand(fem3d._locate_facet_displacement_dofs(V_u_parent, msh, f_fix)),
+    }
+
+
 def _b3_free_global_row_block_label(
     g_row: int,
     *,
@@ -349,6 +395,9 @@ def _b3_free_populate_A_zero_row_characterization(
     free_rows: np.ndarray,
     n_u_b3: int,
     p_release_rows: np.ndarray,
+    absolute_tol: float = 1.0e-12,
+    m_row_norm_max: float | None = None,
+    m_relative_tol: float = 1.0e-12,
     preview_limit: int = 24,
 ) -> None:
     """Exact A_free zero-row support audit mapped to B3 [u|p] layout."""
@@ -401,9 +450,22 @@ def _b3_free_populate_A_zero_row_characterization(
         payload["B3_free_A_zero_rows_corresponding_M_row_norm_max"] = None
         payload["B3_free_A_zero_rows_corresponding_M_row_norm_median"] = None
         payload["B3_free_A_zero_rows_with_nonzero_M_support_count"] = 0
-    payload["B3_free_A_zero_rows_with_nonzero_M_support_pass"] = bool(
-        int(payload.get("B3_free_A_zero_rows_with_nonzero_M_support_count") or 0) > 0
+
+    m_max = float(m_row_norm_max if m_row_norm_max is not None else (float(m_rn.max()) if m_rn.size else 0.0))
+    m_scaled_thr = float(m_max) * float(m_relative_tol)
+    if n_zero > 0:
+        m_on_a_zero = m_rn[exact_zero_local]
+        exact_m_nonzero = int(np.sum(m_on_a_zero > 0.0))
+        scale_m_nonzero = int(np.sum(m_on_a_zero > m_scaled_thr))
+    else:
+        exact_m_nonzero = 0
+        scale_m_nonzero = 0
+    payload["B3_free_A_zero_rows_with_exact_nonzero_M_support_count"] = int(exact_m_nonzero)
+    payload["B3_free_A_zero_rows_with_scale_aware_nonzero_M_support_count"] = int(scale_m_nonzero)
+    payload["B3_free_A_zero_rows_M_support_absolute_threshold_misleading"] = bool(
+        n_zero > 0 and exact_m_nonzero == 0 and scale_m_nonzero > 0
     )
+    payload["B3_free_A_zero_rows_with_nonzero_M_support_pass"] = bool(scale_m_nonzero > 0)
 
 
 def _b3_free_populate_A_block_zero_row_support_audit(
@@ -499,6 +561,257 @@ def _b3_free_populate_scale_aware_M_row_audit(
         scaled_class = "NO_EXACT_OR_SCALE_AWARE_NEAR_ZERO_ROWS"
     payload["B3_free_M_scaled_near_zero_classification"] = scaled_class
     payload["B3_free_M_near_zero_row_count_absolute"] = int(near_abs)
+
+
+def _b3_free_populate_A_column_audit(
+    payload: Dict[str, Any],
+    *,
+    A_free: Any,
+    exact_zero_row_local: np.ndarray,
+    absolute_tol: float = 1.0e-12,
+) -> None:
+    a_rn = _petsc_sparse_owned_row_norms(A_free)
+    a_cn = _petsc_sparse_owned_col_norms(A_free)
+    zero_cols = np.flatnonzero(a_cn == 0.0).astype(np.int32)
+    zero_rows = np.asarray(exact_zero_row_local, dtype=np.int32).ravel()
+    payload["B3_free_A_zero_column_count"] = int(zero_cols.size)
+    if zero_rows.size and zero_cols.size:
+        row_set = set(int(x) for x in zero_rows.tolist())
+        col_set = set(int(x) for x in zero_cols.tolist())
+        inter = row_set & col_set
+        payload["B3_free_A_zero_row_and_column_intersection_count"] = int(len(inter))
+        payload["B3_free_A_zero_rows_with_nonzero_column_count"] = int(
+            sum(1 for r in zero_rows.tolist() if a_cn[int(r)] > 0.0)
+        )
+        payload["B3_free_A_zero_columns_with_nonzero_row_count"] = int(
+            sum(1 for c in zero_cols.tolist() if a_rn[int(c)] > 0.0)
+        )
+        cols_on_zero_rows = a_cn[zero_rows]
+        payload["B3_free_A_zero_rows_corresponding_column_norm_min"] = _safe_float(float(cols_on_zero_rows.min()))
+        payload["B3_free_A_zero_rows_corresponding_column_norm_max"] = _safe_float(float(cols_on_zero_rows.max()))
+        payload["B3_free_A_zero_rows_corresponding_column_norm_median"] = _safe_float(
+            float(np.median(cols_on_zero_rows))
+        )
+    elif zero_rows.size:
+        cols_on_zero_rows = a_cn[zero_rows]
+        payload["B3_free_A_zero_row_and_column_intersection_count"] = int(np.sum(cols_on_zero_rows == 0.0))
+        payload["B3_free_A_zero_rows_with_nonzero_column_count"] = int(np.sum(cols_on_zero_rows > 0.0))
+        payload["B3_free_A_zero_columns_with_nonzero_row_count"] = 0
+        payload["B3_free_A_zero_rows_corresponding_column_norm_min"] = _safe_float(float(cols_on_zero_rows.min()))
+        payload["B3_free_A_zero_rows_corresponding_column_norm_max"] = _safe_float(float(cols_on_zero_rows.max()))
+        payload["B3_free_A_zero_rows_corresponding_column_norm_median"] = _safe_float(
+            float(np.median(cols_on_zero_rows))
+        )
+    else:
+        payload["B3_free_A_zero_row_and_column_intersection_count"] = 0
+        payload["B3_free_A_zero_rows_with_nonzero_column_count"] = 0
+        payload["B3_free_A_zero_columns_with_nonzero_row_count"] = int(zero_cols.size)
+        payload["B3_free_A_zero_rows_corresponding_column_norm_min"] = None
+        payload["B3_free_A_zero_rows_corresponding_column_norm_max"] = None
+        payload["B3_free_A_zero_rows_corresponding_column_norm_median"] = None
+
+    zr = int(payload.get("B3_free_A_zero_row_count") or 0)
+    zc = int(payload.get("B3_free_A_zero_column_count") or 0)
+    inter_n = int(payload.get("B3_free_A_zero_row_and_column_intersection_count") or 0)
+    nz_col_on_zero_rows = int(payload.get("B3_free_A_zero_rows_with_nonzero_column_count") or 0)
+    if zr == 0:
+        sym = "NO_EXACT_ZERO_ROWS"
+    elif inter_n == zr and nz_col_on_zero_rows == 0:
+        sym = "EXACT_ZERO_ROWS_AND_COLUMNS_MATCH"
+    elif nz_col_on_zero_rows > 0:
+        sym = "EXACT_ZERO_ROWS_WITH_NONZERO_COLUMNS"
+    elif zc == 0:
+        sym = "EXACT_ZERO_ROWS_NO_EXACT_ZERO_COLUMNS"
+    else:
+        sym = "EXACT_ZERO_ROWS_PARTIAL_COLUMN_ZEROS"
+    payload["B3_free_A_zero_row_column_symmetry_classification"] = sym
+
+
+def _b3_parent_scalar_tag_label(
+    parent_scalar: int,
+    *,
+    facet_sets: Dict[str, set[int]],
+) -> str:
+    p = int(parent_scalar)
+    if p in facet_sets["tag5_fixed"]:
+        return "tag5_fixed"
+    if p in facet_sets["tag1_top"]:
+        return "tag1_top"
+    if p in facet_sets["tag3_back"]:
+        return "tag3_back"
+    if p in facet_sets["tag4_ribs"]:
+        return "tag4_ribs"
+    supported = facet_sets["tag1_top"] | facet_sets["tag3_back"] | facet_sets["tag4_ribs"]
+    if p in supported:
+        return "supported_structural_other"
+    return "outside_supported_structural"
+
+
+def _b3_free_populate_structural_zero_row_origin_audit(
+    payload: Dict[str, Any],
+    *,
+    A_free: Any,
+    free_rows: np.ndarray,
+    n_u_b3: int,
+    parent_idx: np.ndarray,
+    raw_Auu: Any,
+    raw_Muu: Any,
+    msh: Any,
+    f_top: np.ndarray,
+    f_back: np.ndarray,
+    f_ribs: np.ndarray,
+    f_fix: np.ndarray,
+    absolute_tol: float = 1.0e-12,
+    m_relative_tol: float = 1.0e-12,
+    preview_limit: int = 24,
+) -> None:
+    free_rows = np.asarray(free_rows, dtype=np.int32).ravel()
+    parent_idx = np.asarray(parent_idx, dtype=np.int32).ravel()
+    a_rn = _petsc_sparse_owned_row_norms(A_free)
+    exact_zero_local = np.flatnonzero(a_rn == 0.0).astype(np.int32)
+    n_zero = int(exact_zero_local.size)
+    n_u = int(n_u_b3)
+
+    trace_indices = np.array([int(free_rows[int(loc)]) for loc in exact_zero_local.tolist()], dtype=np.int32)
+    parent_scalars = np.array([int(parent_idx[int(t)]) for t in trace_indices.tolist()], dtype=np.int32)
+
+    payload["B3_free_A_zero_rows_structural_trace_count"] = int(n_zero)
+    payload["B3_free_A_zero_rows_parent_u_mapped_count"] = int(parent_scalars.size)
+    payload["B3_free_A_zero_rows_parent_u_unique_count"] = int(np.unique(parent_scalars).size)
+    payload["B3_free_A_zero_rows_parent_u_mapping_pass"] = bool(
+        n_zero == 0
+        or (
+            np.all(parent_scalars >= 0)
+            and np.all(trace_indices >= 0)
+            and np.all(trace_indices < int(parent_idx.size))
+        )
+    )
+    payload["B3_free_A_zero_rows_parent_u_indices_preview"] = [
+        int(x) for x in np.unique(parent_scalars)[: int(preview_limit)].tolist()
+    ]
+    payload["B3_free_A_zero_rows_trace_indices_preview"] = [
+        int(x) for x in trace_indices[: int(preview_limit)].tolist()
+    ]
+
+    comp0 = comp1 = comp2 = comp_unk = 0
+    for p in parent_scalars.tolist():
+        if p < 0:
+            comp_unk += 1
+        else:
+            c = int(p) % 3
+            if c == 0:
+                comp0 += 1
+            elif c == 1:
+                comp1 += 1
+            elif c == 2:
+                comp2 += 1
+            else:
+                comp_unk += 1
+    payload["B3_free_A_zero_rows_component_0_count"] = int(comp0)
+    payload["B3_free_A_zero_rows_component_1_count"] = int(comp1)
+    payload["B3_free_A_zero_rows_component_2_count"] = int(comp2)
+    payload["B3_free_A_zero_rows_component_unknown_count"] = int(comp_unk)
+    payload["B3_free_A_zero_rows_component_classification_method"] = (
+        "PARENT_SCALAR_MOD3_FROM_parent_index_per_trace_dof"
+    )
+
+    facet_sets = _parent_facet_scalar_dof_sets(
+        msh, f_top=f_top, f_back=f_back, f_ribs=f_ribs, f_fix=f_fix
+    )
+    supported_union = facet_sets["tag1_top"] | facet_sets["tag3_back"] | facet_sets["tag4_ribs"]
+    tag_counts = {
+        "tag1_top": 0,
+        "tag3_back": 0,
+        "tag4_ribs": 0,
+        "tag5_fixed": 0,
+        "outside_supported_structural": 0,
+        "supported_structural_other": 0,
+    }
+    for p in parent_scalars.tolist():
+        lbl = _b3_parent_scalar_tag_label(int(p), facet_sets=facet_sets)
+        tag_counts[lbl] = int(tag_counts.get(lbl, 0) + 1)
+    payload["B3_free_A_zero_rows_on_tag1_top_count"] = int(tag_counts["tag1_top"])
+    payload["B3_free_A_zero_rows_on_tag3_back_count"] = int(tag_counts["tag3_back"])
+    payload["B3_free_A_zero_rows_on_tag4_ribs_count"] = int(tag_counts["tag4_ribs"])
+    payload["B3_free_A_zero_rows_on_tag5_fixed_count"] = int(tag_counts["tag5_fixed"])
+    payload["B3_free_A_zero_rows_on_supported_structural_tags_union_count"] = int(
+        tag_counts["tag1_top"] + tag_counts["tag3_back"] + tag_counts["tag4_ribs"] + tag_counts["supported_structural_other"]
+    )
+    payload["B3_free_A_zero_rows_outside_supported_structural_tags_count"] = int(
+        tag_counts["outside_supported_structural"]
+    )
+    if n_zero == 0:
+        geo = "NO_EXACT_ZERO_ROWS"
+    elif tag_counts["outside_supported_structural"] == n_zero:
+        geo = "ALL_ZERO_ROWS_OUTSIDE_TOP_BACK_RIBS_SHELL_INTEGRATION_SUPPORT"
+    elif tag_counts["outside_supported_structural"] > 0:
+        geo = "MIXED_ZERO_ROWS_INSIDE_AND_OUTSIDE_SHELL_INTEGRATION_SUPPORT"
+    else:
+        geo = "ZERO_ROWS_ON_SUPPORTED_SHELL_FACET_PARENT_DOFS_REQUIRES_RAW_AUU_ROW_AUDIT"
+    payload["B3_free_A_zero_rows_geometric_origin_classification"] = geo
+
+    raw_a_rn = _petsc_sparse_owned_row_norms(raw_Auu)
+    raw_m_rn = _petsc_sparse_owned_row_norms(raw_Muu)
+    raw_a_max = float(raw_a_rn.max()) if raw_a_rn.size else 0.0
+    raw_m_max = float(raw_m_rn.max()) if raw_m_rn.size else 0.0
+    raw_a_thr = raw_a_max * float(m_relative_tol)
+    raw_m_thr = raw_m_max * float(m_relative_tol)
+
+    a_exact_parent = 0
+    m_exact_parent = 0
+    a_scale_parent = 0
+    m_scale_parent = 0
+    for t in trace_indices.tolist():
+        if 0 <= int(t) < raw_a_rn.size:
+            if raw_a_rn[int(t)] == 0.0:
+                a_exact_parent += 1
+            elif raw_a_rn[int(t)] > raw_a_thr:
+                a_scale_parent += 1
+        if 0 <= int(t) < raw_m_rn.size:
+            if raw_m_rn[int(t)] == 0.0:
+                m_exact_parent += 1
+            elif raw_m_rn[int(t)] > raw_m_thr:
+                m_scale_parent += 1
+
+    payload["B3_zero_row_parent_raw_Auu_exact_zero_row_count"] = int(a_exact_parent)
+    payload["B3_zero_row_parent_raw_Muu_exact_zero_row_count"] = int(m_exact_parent)
+    payload["B3_zero_row_parent_raw_Auu_scale_aware_nonzero_count"] = int(a_scale_parent)
+    payload["B3_zero_row_parent_raw_Muu_scale_aware_nonzero_count"] = int(m_scale_parent)
+    payload["B3_zero_rows_already_zero_in_parent_Auu_pass"] = bool(n_zero == 0 or a_exact_parent == n_zero)
+    payload["B3_zero_rows_created_by_B3_reduction_or_restriction_pass"] = bool(
+        n_zero == 0 or a_scale_parent == 0
+    )
+
+    aup_preserve = int(payload.get("B3_free_structural_rows_zero_in_Auu_but_supported_by_Aup_count") or 0)
+    payload["B3_structural_active_set_must_preserve_Aup_supported_rows"] = True
+    if n_zero == 0:
+        payload["B3_structural_active_set_reduction_candidate"] = False
+        payload["B3_structural_active_set_reduction_candidate_reason"] = "no_exact_A_free_zero_rows"
+    elif a_exact_parent == n_zero and int(payload.get("B3_free_A_zero_rows_with_nonzero_column_count") or 0) == 0:
+        payload["B3_structural_active_set_reduction_candidate"] = True
+        payload["B3_structural_active_set_reduction_candidate_reason"] = (
+            "all_zero_rows_already_inactive_in_raw_Auu_with_no_nonzero_A_free_columns;"
+            f"must_preserve_{aup_preserve}_Aup_coupling_supported_rows_separately"
+        )
+    else:
+        payload["B3_structural_active_set_reduction_candidate"] = False
+        payload["B3_structural_active_set_reduction_candidate_reason"] = (
+            "zero_rows_not_fully_explained_as_pre_existing_parent_inactive_DOFs_or_have_nonzero_columns"
+        )
+
+
+def _b3_free_zero_row_origin_verdict(payload: Dict[str, Any]) -> str:
+    n_zero = int(payload.get("B3_free_A_zero_row_count") or 0)
+    if n_zero == 0:
+        return "B3_GNHEP_FREE_PENCIL_NONZERO_A_ZERO_ROWS_CLASSIFIED_READY_FOR_JD_SETUP_REVALIDATION"
+    a_exact = int(payload.get("B3_zero_row_parent_raw_Auu_exact_zero_row_count") or 0)
+    a_scale_nonzero = int(payload.get("B3_zero_row_parent_raw_Auu_scale_aware_nonzero_count") or 0)
+    nz_cols = int(payload.get("B3_free_A_zero_rows_with_nonzero_column_count") or 0)
+    if a_scale_nonzero > 0:
+        return "B3_GNHEP_FREE_PENCIL_A_ZERO_ROWS_INTRODUCED_BY_B3_REDUCTION_REQUIRES_B3_MAPPING_REVIEW"
+    if a_exact == n_zero and nz_cols == 0:
+        return "B3_GNHEP_FREE_PENCIL_A_ZERO_ROWS_CONFIRMED_INACTIVE_PARENT_STRUCTURAL_DOFS_READY_FOR_ACTIVE_SET_DESIGN"
+    return "B3_GNHEP_FREE_PENCIL_A_ZERO_ROWS_GEOMETRIC_OR_COLUMN_ROLE_UNRESOLVED"
 
 
 def _classify_free_mass_null_support(
@@ -6405,14 +6718,7 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
             payload[f"B3_free_{prefix}_zero_diagonal_count"] = block["zero_diagonal_count"]
             payload[f"B3_free_{prefix}_near_zero_diagonal_count"] = block["near_zero_diagonal_count"]
         payload["B3_free_M_zero_row_count"] = int(m_row["zero_row_count"])
-        _b3_free_populate_A_zero_row_characterization(
-            payload,
-            A_free=A_free_post,
-            M_free=M_free_post,
-            free_rows=free_rows,
-            n_u_b3=n_u_b3,
-            p_release_rows=p_release_rows_i32,
-        )
+        payload["B3_free_A_zero_row_count"] = int(a_row["zero_row_count"])
         try:
             _b3_free_populate_A_block_zero_row_support_audit(
                 payload,
@@ -6437,6 +6743,51 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
             absolute_tol=row_norm_tol,
             relative_tol=1.0e-12,
         )
+        _b3_free_populate_A_zero_row_characterization(
+            payload,
+            A_free=A_free_post,
+            M_free=M_free_post,
+            free_rows=free_rows,
+            n_u_b3=n_u_b3,
+            p_release_rows=p_release_rows_i32,
+            absolute_tol=row_norm_tol,
+            m_row_norm_max=float(_b3_loc_float_norm(payload.get("B3_free_M_row_norm_max")) or 0.0),
+            m_relative_tol=1.0e-12,
+        )
+        a_free_row_norms = _petsc_sparse_owned_row_norms(A_free_post)
+        exact_zero_row_local = np.flatnonzero(a_free_row_norms == 0.0).astype(np.int32)
+        try:
+            _b3_free_populate_A_column_audit(
+                payload,
+                A_free=A_free_post,
+                exact_zero_row_local=exact_zero_row_local,
+                absolute_tol=row_norm_tol,
+            )
+            _b3_free_populate_structural_zero_row_origin_audit(
+                payload,
+                A_free=A_free_post,
+                free_rows=free_rows,
+                n_u_b3=n_u_b3,
+                parent_idx=parent_idx,
+                raw_Auu=raw_Auu,
+                raw_Muu=raw_Muu,
+                msh=msh,
+                f_top=f_top,
+                f_back=f_back,
+                f_ribs=f_ribs,
+                f_fix=f_fix,
+                absolute_tol=row_norm_tol,
+                m_relative_tol=1.0e-12,
+            )
+        except Exception as exc:
+            _set_b3_free_pencil_audit_failure(
+                payload,
+                stage="structural_zero_row_origin_audit",
+                reason=f"{type(exc).__name__}:{exc}",
+                exception=exc,
+            )
+            verdict = "B3_GNHEP_FREE_PENCIL_REGULARITY_AUDIT_BLOCKED"
+            return 2
         payload["B3_free_M_zero_or_near_zero_row_indices_preview"] = m_row["zero_or_near_zero_row_local_indices_preview"]
         payload["B3_free_M_zero_or_near_zero_rows_original_B3_indices_preview"] = m_row[
             "zero_or_near_zero_rows_original_B3_indices_preview"
@@ -6538,22 +6889,17 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
         )
 
         payload["B3_prior_free_DOF_JD_result_status"] = "INVALIDATED_BY_PRE_SOLVE_ZERO_OPERATOR_COPY_BUG"
-        a_zero_n = int(payload.get("B3_free_A_zero_row_count") or 0)
-        a_explained = bool(payload.get("B3_free_A_zero_rows_origin_explained_pass"))
-        if a_zero_n > 0 and not a_explained:
-            payload["B3_corrected_free_operator_ready_for_JD"] = False
-            verdict = "B3_GNHEP_FREE_PENCIL_NONZERO_PASS_A_ZERO_ROWS_REQUIRE_REPRESENTATION_REVIEW"
-            return 0
-        if a_zero_n == 0 and a_explained:
-            payload["B3_corrected_free_operator_ready_for_JD"] = True
-            verdict = "B3_GNHEP_FREE_PENCIL_NONZERO_A_ZERO_ROWS_CLASSIFIED_READY_FOR_JD_SETUP_REVALIDATION"
-            return 0
-        if mechanism:
-            payload["B3_corrected_free_operator_ready_for_JD"] = False
-            verdict = "B3_GNHEP_FREE_PENCIL_NON_DIRICHLET_MASS_NULLSPACE_CONFIRMED_READY_FOR_REPRESENTATION_REVIEW"
-            return 0
-        payload["B3_corrected_free_operator_ready_for_JD"] = False
-        verdict = "B3_GNHEP_FREE_PENCIL_NONZERO_PASS_A_ZERO_ROWS_REQUIRE_REPRESENTATION_REVIEW"
+        verdict = _b3_free_zero_row_origin_verdict(payload)
+        payload["B3_corrected_free_operator_ready_for_JD"] = bool(
+            verdict == "B3_GNHEP_FREE_PENCIL_NONZERO_A_ZERO_ROWS_CLASSIFIED_READY_FOR_JD_SETUP_REVALIDATION"
+        )
+        payload["B3_free_A_zero_rows_origin_explained_pass"] = bool(
+            verdict
+            in (
+                "B3_GNHEP_FREE_PENCIL_NONZERO_A_ZERO_ROWS_CLASSIFIED_READY_FOR_JD_SETUP_REVALIDATION",
+                "B3_GNHEP_FREE_PENCIL_A_ZERO_ROWS_CONFIRMED_INACTIVE_PARENT_STRUCTURAL_DOFS_READY_FOR_ACTIVE_SET_DESIGN",
+            )
+        )
         return 0
     except Exception as exc:
         _set_b3_free_pencil_audit_failure(
@@ -6586,7 +6932,11 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
                     f"- prior_JD_status: `{payload.get('B3_prior_free_DOF_JD_result_status')}`",
                     f"- corrected_operator_ready_for_JD: {payload.get('B3_corrected_free_operator_ready_for_JD')}",
                     f"- A_zero_row_count: {payload.get('B3_free_A_zero_row_count')}",
-                    f"- A_zero_rows_origin: {payload.get('B3_free_A_zero_rows_origin_classification')}",
+                    f"- A_zero_rows_geometric_origin: {payload.get('B3_free_A_zero_rows_geometric_origin_classification')}",
+                    f"- A_zero_M_scale_aware_nonzero: "
+                    f"{payload.get('B3_free_A_zero_rows_with_scale_aware_nonzero_M_support_count')}",
+                    f"- raw_Auu_zero_of_zero_rows: {payload.get('B3_zero_row_parent_raw_Auu_exact_zero_row_count')}",
+                    f"- structural_active_set_candidate: {payload.get('B3_structural_active_set_reduction_candidate')}",
                     f"- operator_contract_pass: {payload.get('B3_free_operator_contract_pass')}",
                     f"- pre_post_BC_match_pass: {payload.get('B3_free_operator_matches_pre_BC_free_free_content_pass')}",
                     f"- M_exact_zero / M_scaled_near_zero: "
