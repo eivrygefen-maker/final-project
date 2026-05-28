@@ -3590,17 +3590,35 @@ def _run_b3_gnhep_bc_spectral_pollution_contract_only(pre: Dict[str, Any]) -> in
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "mode": "B3_GNHEP_BC_spectral_pollution_contract_only",
         "B3_seed_operator_build_pass": None,
+        "B3_GNHEP_BC_operator_build_pass": None,
         "B3_scaled_restricted_BC_operator_contract_pass": None,
         "B3_JD_operator_contract_pass": False,
+        "B3_GNHEP_BC_A_operator_type": None,
+        "B3_GNHEP_BC_M_operator_type": None,
+        "B3_GNHEP_BC_A_operator_shape": None,
+        "B3_GNHEP_BC_M_operator_shape": None,
+        "B3_GNHEP_BC_tag5_dirichlet_row_count": None,
+        "B3_GNHEP_BC_pressure_release_dirichlet_row_count": None,
+        "B3_GNHEP_BC_rows_match_operator_BC_contract": None,
         "B3_GNHEP_BC_current_A_dirichlet_diag": 1.0,
         "B3_GNHEP_BC_current_M_dirichlet_diag": 1.0,
         "B3_GNHEP_BC_current_zero_columns": True,
         "B3_GNHEP_BC_constrained_dofs_retained_in_operator": True,
         "B3_GNHEP_BC_total_dirichlet_row_count": 0,
+        "B3_GNHEP_BC_probe_constructed": None,
         "B3_GNHEP_BC_probe_row_count": 0,
+        "B3_GNHEP_BC_probe_row_indices_preview": None,
+        "B3_GNHEP_BC_probe_rows_match_operator_BC_contract": None,
+        "B3_GNHEP_BC_probe_Ae_norm_min": None,
+        "B3_GNHEP_BC_probe_Ae_norm_max": None,
+        "B3_GNHEP_BC_probe_Me_norm_min": None,
+        "B3_GNHEP_BC_probe_Me_norm_max": None,
+        "B3_GNHEP_BC_probe_Ae_minus_Me_norm_min": None,
         "B3_GNHEP_BC_probe_Ae_minus_Me_norm_max": None,
         "B3_GNHEP_BC_probe_lambda_one_exact_mode_pass": False,
         "B3_GNHEP_BC_JD_lambda_one_modes_explained_by_dirichlet_rows": False,
+        "B3_GNHEP_BC_probe_failure_stage": None,
+        "B3_GNHEP_BC_probe_failure_reason": None,
         "B3_GNHEP_BC_existing_eigensolve_safe_route_in_repo": "NOT_FOUND_FOR_GNHEP_A11_M00_DIRICHLET_DIAGONAL_POLICY",
         "B3_GNHEP_BC_preferred_spectral_pollution_fix": (
             "ZERO_M_DIRICHLET_DIAGONAL_AFTER_SAME_ROW_COLUMN_ELIMINATION"
@@ -3627,7 +3645,8 @@ def _run_b3_gnhep_bc_spectral_pollution_contract_only(pre: Dict[str, Any]) -> in
     verdict = "B3_GNHEP_BC_SPECTRAL_POLLUTION_CONTRACT_INCOMPLETE"
     try:
         if not pre["preassembly_contract_pass"]:
-            payload["B3_GNHEP_BC_contract_failure_reason"] = "preassembly_contract_failed"
+            payload["B3_GNHEP_BC_probe_failure_stage"] = "preassembly_contract"
+            payload["B3_GNHEP_BC_probe_failure_reason"] = "preassembly_contract_failed"
             return 2
         if MPI.COMM_WORLD.size != 1:
             payload["B3_GNHEP_BC_contract_failure_reason"] = "requires_mpiexec_n_1"
@@ -3781,16 +3800,38 @@ def _run_b3_gnhep_bc_spectral_pollution_contract_only(pre: Dict[str, Any]) -> in
             destroy_seen=mat_destroy_seen,
         )
         payload["B3_seed_operator_build_pass"] = True
+        payload["B3_GNHEP_BC_operator_build_pass"] = True
         payload["B3_scaled_restricted_BC_operator_contract_pass"] = bool(op_meta.get("B3_scaled_restricted_BC_operator_contract_pass"))
         payload["B3_JD_operator_contract_pass"] = bool(
             payload["B3_seed_operator_build_pass"] and payload["B3_scaled_restricted_BC_operator_contract_pass"]
         )
-        payload["B3_GNHEP_BC_total_dirichlet_row_count"] = int(np.asarray(bc_rows, dtype=np.int32).size)
+        payload["B3_GNHEP_BC_A_operator_type"] = str(A_b3.getType())
+        payload["B3_GNHEP_BC_M_operator_type"] = str(M_b3.getType())
+        payload["B3_GNHEP_BC_A_operator_shape"] = [int(A_b3.getSize()[0]), int(A_b3.getSize()[1])]
+        payload["B3_GNHEP_BC_M_operator_shape"] = [int(M_b3.getSize()[0]), int(M_b3.getSize()[1])]
+        payload["B3_GNHEP_BC_tag5_dirichlet_row_count"] = int(op_meta.get("B3_seed_tag5_dirichlet_row_count") or 0)
+        payload["B3_GNHEP_BC_pressure_release_dirichlet_row_count"] = int(
+            op_meta.get("B3_seed_pressure_release_dirichlet_row_count") or 0
+        )
+        payload["B3_GNHEP_BC_rows_match_operator_BC_contract"] = bool(
+            op_meta.get("B3_seed_dirichlet_row_contract_matches_operator_BC")
+        )
+        payload["B3_GNHEP_BC_total_dirichlet_row_count"] = int(op_meta.get("B3_seed_total_dirichlet_row_count") or 0)
         n_w = int(A_b3.getSize()[0])
         bc_rows_i32 = np.unique(np.asarray(bc_rows, dtype=np.int32).ravel())
         probe_rows = bc_rows_i32[: min(8, int(bc_rows_i32.size))]
+        payload["B3_GNHEP_BC_probe_constructed"] = True
         payload["B3_GNHEP_BC_probe_row_count"] = int(probe_rows.size)
+        payload["B3_GNHEP_BC_probe_row_indices_preview"] = [int(x) for x in probe_rows.tolist()]
+        payload["B3_GNHEP_BC_probe_rows_match_operator_BC_contract"] = bool(
+            payload["B3_GNHEP_BC_rows_match_operator_BC_contract"]
+        )
         max_norm = 0.0
+        min_norm = float("inf")
+        ae_min = float("inf")
+        ae_max = 0.0
+        me_min = float("inf")
+        me_max = 0.0
         exact_pass = True
         for r in probe_rows.tolist():
             e = np.zeros(n_w, dtype=np.float64)
@@ -3805,23 +3846,38 @@ def _run_b3_gnhep_bc_spectral_pollution_contract_only(pre: Dict[str, Any]) -> in
                 d = np.asarray(Ae, dtype=np.float64) - np.asarray(Me, dtype=np.float64)
                 dn = float(np.linalg.norm(d))
                 max_norm = max(max_norm, dn)
+                min_norm = min(min_norm, dn)
+                ae_n = float(np.linalg.norm(np.asarray(Ae, dtype=np.float64)))
+                me_n = float(np.linalg.norm(np.asarray(Me, dtype=np.float64)))
+                ae_min = min(ae_min, ae_n)
+                ae_max = max(ae_max, ae_n)
+                me_min = min(me_min, me_n)
+                me_max = max(me_max, me_n)
                 if dn > 1.0e-12:
                     exact_pass = False
             finally:
                 ay.destroy()
                 my.destroy()
         payload["B3_GNHEP_BC_probe_Ae_minus_Me_norm_max"] = _safe_float(max_norm)
+        payload["B3_GNHEP_BC_probe_Ae_minus_Me_norm_min"] = _safe_float(0.0 if min_norm == float("inf") else min_norm)
+        payload["B3_GNHEP_BC_probe_Ae_norm_min"] = _safe_float(0.0 if ae_min == float("inf") else ae_min)
+        payload["B3_GNHEP_BC_probe_Ae_norm_max"] = _safe_float(ae_max)
+        payload["B3_GNHEP_BC_probe_Me_norm_min"] = _safe_float(0.0 if me_min == float("inf") else me_min)
+        payload["B3_GNHEP_BC_probe_Me_norm_max"] = _safe_float(me_max)
         payload["B3_GNHEP_BC_probe_lambda_one_exact_mode_pass"] = bool(exact_pass and probe_rows.size > 0)
         payload["B3_GNHEP_BC_JD_lambda_one_modes_explained_by_dirichlet_rows"] = bool(
             payload["B3_GNHEP_BC_probe_lambda_one_exact_mode_pass"]
         )
         if payload["B3_GNHEP_BC_probe_lambda_one_exact_mode_pass"]:
-            verdict = "B3_GNHEP_BC_SPECTRAL_POLLUTION_CONTRACT_PASS_LAMBDA_ONE_DIRICHLET_MECHANISM_CONFIRMED"
+            verdict = "B3_GNHEP_BC_LAMBDA_ONE_SPECTRAL_POLLUTION_CONFIRMED_READY_FOR_NO_EPS_OPERATOR_FIX_CONTRACT"
             return 0
+        payload["B3_GNHEP_BC_probe_failure_stage"] = "canonical_dirichlet_basis_probe"
+        payload["B3_GNHEP_BC_probe_failure_reason"] = "Ae_minus_Me_not_zero_on_probed_dirichlet_rows"
         verdict = "B3_GNHEP_BC_SPECTRAL_POLLUTION_CONTRACT_INCOMPLETE"
         return 2
     except Exception as exc:
-        payload["B3_GNHEP_BC_contract_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        payload["B3_GNHEP_BC_probe_failure_stage"] = payload.get("B3_GNHEP_BC_probe_failure_stage") or "mode_runtime"
+        payload["B3_GNHEP_BC_probe_failure_reason"] = f"{type(exc).__name__}:{exc}"
         verdict = "B3_GNHEP_BC_SPECTRAL_POLLUTION_CONTRACT_INCOMPLETE"
         return 2
     finally:
@@ -5140,7 +5196,11 @@ def _run_v2_vector_bc_contract_only(pre: Dict[str, Any]) -> int:
 def main() -> int:
     import sys
 
-    if _is_b3_jd_first_bounded_execution_only_mode(sys.argv) or _is_b3_jd_dimension_setup_preflight_only_mode(sys.argv):
+    if (
+        _is_b3_jd_first_bounded_execution_only_mode(sys.argv)
+        or _is_b3_jd_dimension_setup_preflight_only_mode(sys.argv)
+        or _is_b3_gnhep_bc_spectral_pollution_contract_only_mode(sys.argv)
+    ):
         pre = _precheck_allow_b3_jd_first_bounded_execution()
     else:
         pre = _precheck()
