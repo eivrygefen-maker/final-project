@@ -89,6 +89,9 @@ B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_DIMENSION_SETUP_PREFLIGHT_ONLY_ARG = (
 B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_FIRST_VALID_BOUNDED_EXECUTION_ONLY_ARG = (
     "--B3-JD-structural-active-set-reduced-first-valid-bounded-execution-only"
 )
+B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_TARGETING_REVIEW_PREFLIGHT_ONLY_ARG = (
+    "--B3-JD-structural-active-set-reduced-targeting-review-preflight-only"
+)
 B3_GNHEP_FREE_PENCIL_REGULARITY_AUDIT_ONLY_ARG = "--B3-GNHEP-free-pencil-regularity-audit-only"
 B3_GNHEP_STRUCTURAL_ACTIVE_SET_REDUCED_OPERATOR_CONTRACT_ONLY_ARG = (
     "--B3-GNHEP-structural-active-set-reduced-operator-contract-only"
@@ -150,6 +153,12 @@ OUT_JSON_B3_JD_STRUCT_ACTIVE_FIRST_VALID_BOUNDED = (
 )
 OUT_MD_B3_JD_STRUCT_ACTIVE_FIRST_VALID_BOUNDED = (
     CONV_DIAG / "v2_B3_JD_structural_active_set_reduced_first_valid_bounded_execution_only.md"
+)
+OUT_JSON_B3_JD_STRUCT_ACTIVE_TARGETING_REVIEW = (
+    CONV_DIAG / "v2_B3_JD_structural_active_set_reduced_targeting_review_preflight_only.json"
+)
+OUT_MD_B3_JD_STRUCT_ACTIVE_TARGETING_REVIEW = (
+    CONV_DIAG / "v2_B3_JD_structural_active_set_reduced_targeting_review_preflight_only.md"
 )
 B3_JD_DEFAULT_TARGET_HZ = 244.39
 B3_JD_DEFAULT_HARVEST_LO_HZ = 220.0
@@ -3054,6 +3063,10 @@ def _is_b3_jd_structural_active_set_reduced_first_valid_bounded_execution_only_m
     return B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_FIRST_VALID_BOUNDED_EXECUTION_ONLY_ARG in argv
 
 
+def _is_b3_jd_structural_active_set_reduced_targeting_review_preflight_only_mode(argv: List[str]) -> bool:
+    return B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_TARGETING_REVIEW_PREFLIGHT_ONLY_ARG in argv
+
+
 def _is_b3_jd_free_dof_eliminated_third_bounded_execution_only_mode(argv: List[str]) -> bool:
     return B3_JD_FREE_DOF_ELIMINATED_THIRD_BOUNDED_EXECUTION_ONLY_ARG in argv
 
@@ -3427,6 +3440,177 @@ def _b3_jd_struct_active_record_active_operator_contract(
         and payload["B3_JD_struct_active_A_exact_zero_column_count"] == 0
         and payload["B3_JD_struct_active_operator_nonzero_contract_pass"]
     )
+
+
+def _b3_jd_struct_active_passed_setup_jd_cfg() -> Dict[str, Any]:
+    return {
+        "target_hz": 244.39,
+        "target_lambda": 2357906.6075988025,
+        "nev": 2,
+        "ncv": 20,
+        "mpd": 12,
+        "blocksize": 1,
+        "minv": 2,
+        "plusk": 1,
+        "initialsize": 4,
+        "tol": 1.0e-8,
+        "max_it": 120,
+    }
+
+
+def _b3_jd_struct_active_code_inspection_eps_wiring() -> Dict[str, Any]:
+    """Static wiring record for struct-active setup preflight and first-valid execution."""
+    return {
+        "inspected_modes": [
+            B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_DIMENSION_SETUP_PREFLIGHT_ONLY_ARG,
+            B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_FIRST_VALID_BOUNDED_EXECUTION_ONLY_ARG,
+        ],
+        "setup_preflight_function": (
+            "_run_b3_jd_structural_active_set_reduced_dimension_setup_preflight_only"
+        ),
+        "first_valid_execution_function": (
+            "_run_b3_jd_structural_active_set_reduced_first_valid_bounded_execution_only"
+        ),
+        "eps_setProblemType": "SLEPc.EPS.ProblemType.GNHEP",
+        "eps_setType": "SLEPc.EPS.Type.JD (fallback setType('jd'))",
+        "eps_setWhichEigenpairs": "SLEPc.EPS.Which.TARGET_MAGNITUDE",
+        "eps_setTarget": "float(jd_cfg['target_lambda'])",
+        "eps_setExtraction_called": False,
+        "eps_setFromOptions_called": False,
+        "eps_ST_KSP_PC_explicit_configuration": False,
+        "eps_setJDBlockSize": "jd_cfg['blocksize']",
+        "eps_setJDRestart": "minv/plusk from jd_cfg",
+        "eps_setJDInitialSize": "jd_cfg['initialsize']",
+        "eps_setDimensions": "nev/ncv/mpd from jd_cfg",
+        "eps_setTolerances": "tol=1e-8, max_it=120",
+        "setup_preflight_wiring_line_range": "6590-6613",
+        "first_valid_execution_wiring_line_range": "6989-7012",
+        "shared_helper_wiring_function": "_b3_jd_apply_struct_active_passed_eps_setup",
+    }
+
+
+def _b3_jd_apply_struct_active_passed_eps_setup(
+    eps: Any,
+    A_active: Any,
+    M_active: Any,
+    jd_cfg: Dict[str, Any],
+) -> None:
+    from slepc4py import SLEPc
+
+    eps.setOperators(A_active, M_active)
+    eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
+    try:
+        eps.setType(SLEPc.EPS.Type.JD)
+    except Exception:
+        eps.setType("jd")
+    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
+    eps.setTarget(float(jd_cfg["target_lambda"]))
+    try:
+        eps.setDimensions(nev=int(jd_cfg["nev"]), ncv=int(jd_cfg["ncv"]), mpd=int(jd_cfg["mpd"]))
+    except TypeError:
+        eps.setDimensions(int(jd_cfg["nev"]), int(jd_cfg["ncv"]), int(jd_cfg["mpd"]))
+    if hasattr(eps, "setJDBlockSize"):
+        eps.setJDBlockSize(int(jd_cfg["blocksize"]))
+    if hasattr(eps, "setJDRestart"):
+        try:
+            eps.setJDRestart(minv=int(jd_cfg["minv"]), plusk=int(jd_cfg["plusk"]))
+        except TypeError:
+            eps.setJDRestart(int(jd_cfg["minv"]), int(jd_cfg["plusk"]))
+    if hasattr(eps, "setJDInitialSize"):
+        eps.setJDInitialSize(int(jd_cfg["initialsize"]))
+    eps.setTolerances(tol=float(jd_cfg["tol"]), max_it=int(jd_cfg["max_it"]))
+
+
+def _b3_jd_petsc_options_database_eps_st_snippet() -> Dict[str, Any]:
+    present: List[str] = []
+    optdb = PETSc.Options()
+    for key in ("eps_extraction", "eps_type", "st_type", "eps_target", "eps_nev", "eps_which", "st_ksp_type", "st_pc_type"):
+        try:
+            if optdb.hasName(key):
+                try:
+                    present.append(f"{key}={optdb.getString(key)}")
+                except Exception:
+                    present.append(f"{key}=<set>")
+        except Exception:
+            pass
+    return {"petsc_options_database_hits": present}
+
+
+def _b3_jd_target_review_introspect_eps_after_setup(
+    eps: Any,
+    *,
+    jd_cfg: Dict[str, Any],
+    setfromoptions_called: bool,
+) -> Dict[str, Any]:
+    from slepc4py import SLEPc
+
+    out: Dict[str, Any] = {
+        "B3_JD_target_review_problem_type": "GNHEP",
+        "B3_JD_target_review_solver_type": "JD",
+        "B3_JD_target_review_which": "TARGET_MAGNITUDE",
+        "B3_JD_target_review_target_frequency_hz": float(jd_cfg["target_hz"]),
+        "B3_JD_target_review_target_lambda": float(jd_cfg["target_lambda"]),
+        "B3_JD_target_review_setFromOptions_called": bool(setfromoptions_called),
+    }
+    try:
+        out["B3_JD_target_review_problem_type_effective"] = str(eps.getProblemType())
+    except Exception:
+        out["B3_JD_target_review_problem_type_effective"] = None
+    try:
+        out["B3_JD_target_review_solver_type_effective"] = str(eps.getType())
+    except Exception:
+        out["B3_JD_target_review_solver_type_effective"] = None
+    try:
+        out["B3_JD_target_review_which_effective"] = str(eps.getWhichEigenpairs())
+    except Exception:
+        out["B3_JD_target_review_which_effective"] = None
+    try:
+        out["B3_JD_target_review_target_lambda_effective"] = _safe_float(float(eps.getTarget()))
+    except Exception:
+        out["B3_JD_target_review_target_lambda_effective"] = None
+    ext_name = "RITZ_default_not_set_via_setExtraction"
+    harmonic = False
+    try:
+        if hasattr(eps, "getExtractionType"):
+            ext_raw = eps.getExtractionType()
+            ext_name = str(ext_raw)
+            try:
+                harmonic = bool(ext_raw == SLEPc.EPS.Extraction.HARMONIC)
+            except Exception:
+                harmonic = "harmonic" in ext_name.lower()
+    except Exception:
+        pass
+    out["B3_JD_target_review_extraction_type_effective"] = ext_name
+    out["B3_JD_target_review_harmonic_extraction_enabled"] = bool(harmonic)
+    st_type = None
+    st_sinvert = False
+    try:
+        st = eps.getST()
+        st_type = str(st.getType())
+        st_sinvert = "sinvert" in st_type.lower()
+        try:
+            ksp = st.getKSP()
+            out["B3_JD_target_review_ST_KSP_type_effective"] = str(ksp.getType())
+            pc = ksp.getPC()
+            out["B3_JD_target_review_ST_PC_type_effective"] = str(pc.getType())
+        except Exception:
+            out["B3_JD_target_review_ST_KSP_type_effective"] = None
+            out["B3_JD_target_review_ST_PC_type_effective"] = None
+    except Exception:
+        st_type = None
+    out["B3_JD_target_review_ST_type_effective"] = st_type
+    out["B3_JD_target_review_STSINVERT_used"] = bool(st_sinvert)
+    opt_snip = _b3_jd_petsc_options_database_eps_st_snippet()
+    hits = list(opt_snip.get("petsc_options_database_hits") or [])
+    if setfromoptions_called:
+        risk = "MEDIUM_setFromOptions_called_options_may_override_script_wiring"
+    elif hits:
+        risk = f"MEDIUM_command_line_or_database_options_present:{';'.join(hits)}"
+    else:
+        risk = "LOW_script_wiring_only_setFromOptions_not_called_no_eps_st_options_in_database"
+    out["B3_JD_target_review_hidden_options_risk"] = risk
+    out["B3_JD_target_review_petsc_options_database_hits"] = hits
+    return out
 
 
 def _load_mass_decomposition_evidence() -> Dict[str, Any]:
@@ -6495,20 +6679,185 @@ def _run_b3_jd_structural_active_set_reduced_dimension_setup_preflight_only(pre:
         _destroy_mats_deduped(mats_to_destroy)
 
 
-def _run_b3_jd_structural_active_set_reduced_first_valid_bounded_execution_only(pre: Dict[str, Any]) -> int:
-    jd_cfg = {
-        "target_hz": 244.39,
-        "target_lambda": 2357906.6075988025,
-        "nev": 2,
-        "ncv": 20,
-        "mpd": 12,
-        "blocksize": 1,
-        "minv": 2,
-        "plusk": 1,
-        "initialsize": 4,
-        "tol": 1.0e-8,
-        "max_it": 120,
+def _run_b3_jd_structural_active_set_reduced_targeting_review_preflight_only(pre: Dict[str, Any]) -> int:
+    jd_cfg = _b3_jd_struct_active_passed_setup_jd_cfg()
+    payload: Dict[str, Any] = {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "B3_JD_structural_active_set_reduced_targeting_review_preflight_only",
+        "B3_JD_struct_active_operator_source": (
+            "validated_B3_direct_sparse_AIJ_scaled_pressure_restricted_Dirichlet_eliminated_"
+            "structural_active_set_reduced_copy_fixed"
+        ),
+        "B3_JD_struct_active_code_inspection": _b3_jd_struct_active_code_inspection_eps_wiring(),
+        "B3_JD_target_review_answer_A": (
+            "eps.setExtraction is not called; effective extraction after setUp is default Ritz "
+            "(not HARMONIC)"
+        ),
+        "B3_JD_target_review_answer_B": (
+            "TARGET_MAGNITUDE plus setTarget(lambda) is selection/sorting bias only in this wiring; "
+            "no harmonic extraction and no spectral transform (ST) override is configured"
+        ),
+        "B3_JD_target_review_answer_C": (
+            "setFromOptions is not called in struct-active modes; PETSc options-database hits are "
+            "reported; command-line -eps_* / -st_* could still alter behavior if present"
+        ),
+        "B3_JD_target_review_answer_D": (
+            "GNHEP JD may return genuinely complex Ritz pairs; modes 1/2 with large imaginary parts "
+            "are consistent with converged-but-non-physical approximations when harmonic extraction "
+            "is absent and manual active residual remains O(1e-2)"
+        ),
+        "B3_JD_target_review_answer_E": (
+            "eps.computeError requires a completed solve; first-valid execution mode now reports "
+            "eps_compute_error_relative after the single solve; this targeting review does not solve"
+        ),
+        "B3_JD_target_review_compute_error_requires_solve": True,
+        "B3_JD_target_review_prior_first_valid_execution_json": str(OUT_JSON_B3_JD_STRUCT_ACTIVE_FIRST_VALID_BOUNDED),
+        "B3_JD_target_review_prior_first_valid_execution_json_present": OUT_JSON_B3_JD_STRUCT_ACTIVE_FIRST_VALID_BOUNDED.is_file(),
+        "B3_JD_target_review_candidate_next_bounded_harmonic_configuration": {
+            "authorized_for_execution": False,
+            "execute_now": False,
+            "problem_type": "GNHEP",
+            "solver_type": "JD",
+            "which": "TARGET_MAGNITUDE",
+            "extraction": "HARMONIC",
+            "operator": "validated_B3_structural_active_set_reduced_A_active_M_active",
+            "target_frequency_hz": float(jd_cfg["target_hz"]),
+            "target_lambda": float(jd_cfg["target_lambda"]),
+            "nev": int(jd_cfg["nev"]),
+            "ncv": int(jd_cfg["ncv"]),
+            "mpd": int(jd_cfg["mpd"]),
+            "blocksize": int(jd_cfg["blocksize"]),
+            "minv": int(jd_cfg["minv"]),
+            "plusk": int(jd_cfg["plusk"]),
+            "initialsize": int(jd_cfg["initialsize"]),
+            "tolerance": float(jd_cfg["tol"]),
+            "max_iterations": int(jd_cfg["max_it"]),
+            "initial_space": "none",
+            "STSINVERT": False,
+            "MUMPS_LU": False,
+            "fallback": False,
+            "automatic_retry": False,
+            "scope": "ONE_BOUNDED_HARMONIC_EXTRACTION_SOLVE_AUTHORIZATION_NOT_GRANTED",
+        },
+        "B3_JD_execution_authorized": False,
+        "jd_wiring_authorized": False,
+        "no_new_eigensolve_executed": True,
+        "new_eigensolve_executed": False,
+        "additional_eps": "ONE_TEMPORARY_B3_JD_TARGETING_REVIEW_EPS_AUTHORIZED_NO_SOLVE",
+        "operator_matrices_persisted": False,
+        "transfer_matrices_persisted": False,
+        "coupling_matrices_persisted": False,
+        "eigenvectors_persisted": False,
+        "vector_banks_persisted": False,
+        "solve_trees_created": False,
+        "production_promotion": "BLOCKED",
+        "B3_JD_target_review_failure_stage": None,
+        "B3_JD_target_review_failure_reason": None,
     }
+    built: Dict[str, Any] | None = None
+    mats_to_destroy: List[Any] = []
+    mat_destroy_seen: set[int] = set()
+    eps = None
+    verdict = "B3_JD_CORRECTED_OPERATOR_TARGETING_REVIEW_BLOCKED_BY_OPERATOR_OR_SETUP_INTERFACE"
+    try:
+        if not pre["preassembly_contract_pass"]:
+            payload["B3_JD_target_review_failure_stage"] = "preassembly_contract"
+            payload["B3_JD_target_review_failure_reason"] = "preassembly_contract_failed"
+            return 2
+        if MPI.COMM_WORLD.size != 1:
+            payload["B3_JD_target_review_failure_stage"] = "runtime_mpi_contract"
+            payload["B3_JD_target_review_failure_reason"] = "requires_mpiexec_n_1"
+            return 2
+
+        built = _b3_build_corrected_structural_active_operators(
+            mats_to_destroy=mats_to_destroy,
+            mat_destroy_seen=mat_destroy_seen,
+        )
+        _b3_jd_struct_active_record_active_operator_contract(payload, built=built)
+        if int(payload.get("B3_JD_struct_active_final_dirichlet_count") or -1) != B3_STRUCT_ACTIVE_DIRICHLET_COUNT_EXPECTED:
+            payload["B3_JD_struct_active_operator_contract_pass"] = False
+        if not payload["B3_JD_struct_active_operator_contract_pass"]:
+            payload["B3_JD_target_review_failure_stage"] = "structural_active_operator_contract"
+            payload["B3_JD_target_review_failure_reason"] = "structural_active_operator_contract_failed"
+            return 2
+
+        from slepc4py import SLEPc
+
+        eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
+        _b3_jd_apply_struct_active_passed_eps_setup(eps, built["A_active"], built["M_active"], jd_cfg)
+        eps.setUp()
+        review = _b3_jd_target_review_introspect_eps_after_setup(
+            eps, jd_cfg=jd_cfg, setfromoptions_called=False
+        )
+        payload.update(review)
+        if payload.get("B3_JD_target_review_harmonic_extraction_enabled"):
+            verdict = (
+                "B3_JD_CORRECTED_OPERATOR_TARGETING_REVIEW_HARMONIC_ALREADY_ACTIVE_REQUIRES_"
+                "PRECONDITIONER_OR_SOLVER_POLICY_REVIEW"
+            )
+        else:
+            verdict = (
+                "B3_JD_CORRECTED_OPERATOR_TARGETING_REVIEW_CONFIRMS_HARMONIC_EXTRACTION_MISSING_"
+                "READY_FOR_HARMONIC_SETUP_PREFLIGHT_DESIGN"
+            )
+        return 0
+    except _B3StructActiveBuildError as exc:
+        payload["B3_JD_target_review_failure_stage"] = exc.stage
+        payload["B3_JD_target_review_failure_reason"] = exc.reason
+        return 2
+    except Exception as exc:
+        if payload["B3_JD_target_review_failure_stage"] is None:
+            payload["B3_JD_target_review_failure_stage"] = "eps_setup"
+        payload["B3_JD_target_review_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        return 2
+    finally:
+        if eps is not None:
+            try:
+                eps.destroy()
+            except Exception:
+                pass
+        payload["next_step_verdict"] = verdict
+        _write_json_atomic(OUT_JSON_B3_JD_STRUCT_ACTIVE_TARGETING_REVIEW, payload)
+        OUT_MD_B3_JD_STRUCT_ACTIVE_TARGETING_REVIEW.parent.mkdir(parents=True, exist_ok=True)
+        OUT_MD_B3_JD_STRUCT_ACTIVE_TARGETING_REVIEW.write_text(
+            "\n".join(
+                [
+                    "# B3 JD structural-active targeting review (no solve)",
+                    "",
+                    f"- verdict: `{verdict}`",
+                    f"- extraction_type_effective: {payload.get('B3_JD_target_review_extraction_type_effective')}",
+                    f"- harmonic_extraction_enabled: {payload.get('B3_JD_target_review_harmonic_extraction_enabled')}",
+                    f"- ST_type_effective: {payload.get('B3_JD_target_review_ST_type_effective')}",
+                    f"- hidden_options_risk: {payload.get('B3_JD_target_review_hidden_options_risk')}",
+                    "",
+                    "no_new_eigensolve_executed=True",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        print(
+            "[B3_JD] mode=B3_JD_structural_active_set_reduced_targeting_review_preflight_only",
+            flush=True,
+        )
+        print(
+            f"[B3_JD] B3_JD_target_review_harmonic_extraction_enabled="
+            f"{payload.get('B3_JD_target_review_harmonic_extraction_enabled')}",
+            flush=True,
+        )
+        print(f"[B3_JD] next_step_verdict={verdict}", flush=True)
+        print("[B3_JD] no_new_eigensolve_executed=True", flush=True)
+        print("[B3_JD] additional_eps=ONE_TEMPORARY_B3_JD_TARGETING_REVIEW_EPS_AUTHORIZED_NO_SOLVE", flush=True)
+        if built is not None:
+            for key in ("A_parent", "M_parent", "A_b3", "M_b3", "A_free", "M_free", "A_active", "M_active"):
+                m_ = built.get(key)
+                if m_ is not None:
+                    _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+        _destroy_mats_deduped(mats_to_destroy)
+
+
+def _run_b3_jd_structural_active_set_reduced_first_valid_bounded_execution_only(pre: Dict[str, Any]) -> int:
+    jd_cfg = _b3_jd_struct_active_passed_setup_jd_cfg()
     payload: Dict[str, Any] = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "mode": "B3_JD_structural_active_set_reduced_first_valid_bounded_execution_only",
@@ -6680,6 +7029,11 @@ def _run_b3_jd_structural_active_set_reduced_first_valid_bounded_execution_only(
                 lam_c = complex(lam)
                 lam_re = float(np.real(lam_c))
                 lam_im = float(np.imag(lam_c))
+                eps_err_rel = float("nan")
+                try:
+                    eps_err_rel = float(eps.computeError(i, SLEPc.EPS.ErrorType.RELATIVE))
+                except Exception:
+                    pass
                 f_hz = None
                 if math.isfinite(lam_re) and abs(lam_im) <= 1.0e-12 and lam_re > 0.0:
                     f_hz = math.sqrt(max(lam_re, 0.0)) / (2.0 * math.pi)
@@ -6775,6 +7129,7 @@ def _run_b3_jd_structural_active_set_reduced_first_valid_bounded_execution_only(
                 payload[f"B3_JD_struct_active_mode_{i}_eigenvalue_finite_pass"] = bool(eigenvalue_finite_pass)
                 payload[f"B3_JD_struct_active_mode_{i}_frequency_hz_if_real_positive"] = _safe_float(f_hz)
                 payload[f"B3_JD_struct_active_mode_{i}_relative_generalized_residual_active"] = _safe_float(rel_active)
+                payload[f"B3_JD_struct_active_mode_{i}_eps_compute_error_relative"] = _safe_float(eps_err_rel)
                 payload[f"B3_JD_struct_active_mode_{i}_target_distance_hz"] = _safe_float(target_dist)
                 payload[f"B3_JD_struct_active_mode_{i}_full_vector_reconstructed"] = bool(x_full_reconstructed)
                 payload[f"B3_JD_struct_active_mode_{i}_reconstruction_method"] = (
@@ -10344,6 +10699,7 @@ def main() -> int:
         or _is_b3_gnhep_structural_active_set_reduced_operator_contract_only_mode(sys.argv)
         or _is_b3_jd_structural_active_set_reduced_dimension_setup_preflight_only_mode(sys.argv)
         or _is_b3_jd_structural_active_set_reduced_first_valid_bounded_execution_only_mode(sys.argv)
+        or _is_b3_jd_structural_active_set_reduced_targeting_review_preflight_only_mode(sys.argv)
     ):
         pre = _precheck_allow_b3_jd_first_bounded_execution()
     else:
@@ -10411,6 +10767,9 @@ def main() -> int:
 
     if _is_b3_jd_structural_active_set_reduced_first_valid_bounded_execution_only_mode(sys.argv):
         return _run_b3_jd_structural_active_set_reduced_first_valid_bounded_execution_only(pre)
+
+    if _is_b3_jd_structural_active_set_reduced_targeting_review_preflight_only_mode(sys.argv):
+        return _run_b3_jd_structural_active_set_reduced_targeting_review_preflight_only(pre)
 
     if _is_b3_seed_replay_audit_only_mode(sys.argv):
         return _run_b3_seed_replay_audit_only(pre)
