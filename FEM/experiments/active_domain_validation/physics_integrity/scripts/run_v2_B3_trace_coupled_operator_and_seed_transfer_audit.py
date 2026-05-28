@@ -323,6 +323,37 @@ def _classify_free_mass_null_support(
     return "NO_OBVIOUS_ROW_NULLSPACE"
 
 
+def _set_b3_free_pencil_audit_failure(
+    payload: Dict[str, Any],
+    *,
+    stage: str,
+    reason: str,
+    exception: BaseException | None = None,
+) -> None:
+    payload["B3_free_regularity_audit_failure_stage"] = str(stage)
+    payload["B3_free_regularity_audit_failure_reason"] = str(reason)
+    payload["B3_free_audit_failure_stage"] = str(stage)
+    payload["B3_free_audit_failure_reason"] = str(reason)
+    payload["B3_GNHEP_free_pencil_regularity_failure_stage"] = str(stage)
+    payload["B3_GNHEP_free_pencil_regularity_failure_reason"] = str(reason)
+    if exception is not None:
+        payload["B3_free_audit_failure_exception_type"] = type(exception).__name__
+
+
+def _finalize_b3_free_pencil_audit_failure_reporting(payload: Dict[str, Any], *, verdict: str) -> None:
+    stage = payload.get("B3_free_regularity_audit_failure_stage") or payload.get("B3_free_audit_failure_stage")
+    reason = payload.get("B3_free_regularity_audit_failure_reason") or payload.get("B3_free_audit_failure_reason")
+    if stage and reason:
+        _set_b3_free_pencil_audit_failure(payload, stage=str(stage), reason=str(reason))
+        return
+    if str(verdict) == "B3_GNHEP_FREE_PENCIL_REGULARITY_AUDIT_BLOCKED":
+        _set_b3_free_pencil_audit_failure(
+            payload,
+            stage="blocked_without_recorded_failure_stage",
+            reason="audit_returned_blocked_verdict_without_failure_fields",
+        )
+
+
 def _load_prior_free_dof_jd_nonfinite_observed() -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "B3_free_prior_JD_nonfinite_eigenpair_observed": False,
@@ -5647,6 +5678,11 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
         "production_promotion": "BLOCKED",
         "B3_free_regularity_audit_failure_stage": None,
         "B3_free_regularity_audit_failure_reason": None,
+        "B3_free_audit_failure_stage": None,
+        "B3_free_audit_failure_reason": None,
+        "B3_free_audit_failure_exception_type": None,
+        "B3_GNHEP_free_pencil_regularity_failure_stage": None,
+        "B3_GNHEP_free_pencil_regularity_failure_reason": None,
     }
     payload.update(_load_prior_free_dof_jd_nonfinite_observed())
     A_parent = M_parent = A_b3 = M_b3 = A_pre = M_pre = None
@@ -5656,12 +5692,23 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
     verdict = "B3_GNHEP_FREE_PENCIL_REGULARITY_AUDIT_BLOCKED"
     try:
         if not pre["preassembly_contract_pass"]:
-            payload["B3_free_regularity_audit_failure_stage"] = "preassembly_contract"
-            payload["B3_free_regularity_audit_failure_reason"] = "preassembly_contract_failed"
+            fail_bits = [
+                f"{r.get('check')}:{r.get('detail')}"
+                for r in (pre.get("preassembly_failure_reasons") or [])
+            ]
+            _set_b3_free_pencil_audit_failure(
+                payload,
+                stage="preassembly_contract",
+                reason="preassembly_contract_failed"
+                + (f";{'|'.join(fail_bits)}" if fail_bits else ""),
+            )
             return 2
         if MPI.COMM_WORLD.size != 1:
-            payload["B3_free_regularity_audit_failure_stage"] = "runtime_mpi_contract"
-            payload["B3_free_regularity_audit_failure_reason"] = "requires_mpiexec_n_1"
+            _set_b3_free_pencil_audit_failure(
+                payload,
+                stage="runtime_mpi_contract",
+                reason="requires_mpiexec_n_1",
+            )
             return 2
 
         manifest = load_manifest()
@@ -5695,8 +5742,11 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
             if m_ is not None:
                 _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
         if not all(m is not None for m in (raw_App, raw_Mpp, raw_Aup, raw_Apu, raw_Mpu)) or _tmeta_parent_map is None:
-            payload["B3_free_regularity_audit_failure_stage"] = "validated_b3_inputs"
-            payload["B3_free_regularity_audit_failure_reason"] = "validated_b3_operator_inputs_missing"
+            _set_b3_free_pencil_audit_failure(
+                payload,
+                stage="validated_b3_inputs",
+                reason="validated_b3_operator_inputs_missing",
+            )
             return 2
 
         shell_mesh, shell_to_parent, _, _ = dmesh.create_submesh(msh, msh.topology.dim - 1, shell_facets)
@@ -5799,8 +5849,11 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
         A_pre = op_meta.get("B3_pre_dirichlet_monolithic_A")
         M_pre = op_meta.get("B3_pre_dirichlet_monolithic_M")
         if A_pre is None or M_pre is None:
-            payload["B3_free_regularity_audit_failure_stage"] = "pre_dirichlet_capture"
-            payload["B3_free_regularity_audit_failure_reason"] = "pre_dirichlet_monolithic_not_captured"
+            _set_b3_free_pencil_audit_failure(
+                payload,
+                stage="pre_dirichlet_capture",
+                reason="pre_dirichlet_monolithic_not_captured",
+            )
             return 2
 
         bc_rows_i32 = np.unique(np.asarray(bc_rows, dtype=np.int32).ravel())
@@ -5838,8 +5891,11 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
         payload["B3_GNHEP_BC_elim_finite_and_infinite_dirichlet_pollution_removed_contract_pass"] = bool(elim_pass)
         payload["B3_free_operator_contract_pass"] = bool(elim_pass)
         if not elim_pass:
-            payload["B3_free_regularity_audit_failure_stage"] = "free_operator_contract"
-            payload["B3_free_regularity_audit_failure_reason"] = "free_operator_contract_failed"
+            _set_b3_free_pencil_audit_failure(
+                payload,
+                stage="free_operator_contract",
+                reason="free_operator_contract_failed",
+            )
             return 2
 
         payload["B3_free_preBC_A_shape"] = _mat_shape(A_free_pre)
@@ -5855,8 +5911,11 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
             payload["B3_free_operator_matches_pre_BC_free_free_content_pass"]
         )
         if not payload["B3_free_operator_matches_pre_BC_free_free_content_pass"]:
-            payload["B3_free_regularity_audit_failure_stage"] = "pre_post_bc_free_free_equivalence"
-            payload["B3_free_regularity_audit_failure_reason"] = "free_free_submatrix_changed_by_full_BC_intermediary"
+            _set_b3_free_pencil_audit_failure(
+                payload,
+                stage="pre_post_bc_free_free_equivalence",
+                reason="free_free_submatrix_changed_by_full_BC_intermediary",
+            )
             return 2
 
         payload["B3_free_A_norm"] = _mat_norm_or_none(A_free_post)
@@ -5869,8 +5928,11 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
         payload["B3_free_M_has_nan_or_inf_value_count"] = int(m_fin["nan_or_inf_value_count"])
         payload["B3_free_matrix_finite_audit_method"] = a_fin["method"]
         if not (payload["B3_free_A_all_values_finite_pass"] and payload["B3_free_M_all_values_finite_pass"]):
-            payload["B3_free_regularity_audit_failure_stage"] = "matrix_finite_audit"
-            payload["B3_free_regularity_audit_failure_reason"] = "nan_or_inf_in_free_pencil_values"
+            _set_b3_free_pencil_audit_failure(
+                payload,
+                stage="matrix_finite_audit",
+                reason="nan_or_inf_in_free_pencil_values",
+            )
             return 2
 
         a_row = _petsc_sparse_row_diagonal_support_audit(
@@ -6002,11 +6064,15 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
         verdict = "B3_GNHEP_FREE_PENCIL_NO_OBVIOUS_ROW_NULLSPACE_READY_FOR_JD_NONFINITE_OUTPUT_REVIEW"
         return 0
     except Exception as exc:
-        if payload["B3_free_regularity_audit_failure_stage"] is None:
-            payload["B3_free_regularity_audit_failure_stage"] = "mode_runtime"
-        payload["B3_free_regularity_audit_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        _set_b3_free_pencil_audit_failure(
+            payload,
+            stage="mode_runtime",
+            reason=f"{type(exc).__name__}:{exc}",
+            exception=exc,
+        )
         return 2
     finally:
+        _finalize_b3_free_pencil_audit_failure_reporting(payload, verdict=verdict)
         payload["next_step_verdict"] = verdict
         _write_json_atomic(OUT_JSON_B3_GNHEP_FREE_PENCIL_REGULARITY, payload)
         OUT_MD_B3_GNHEP_FREE_PENCIL_REGULARITY.parent.mkdir(parents=True, exist_ok=True)
@@ -7994,6 +8060,7 @@ def main() -> int:
         or _is_b3_gnhep_bc_free_dof_eliminated_operator_contract_only_mode(sys.argv)
         or _is_b3_jd_free_dof_eliminated_dimension_setup_preflight_only_mode(sys.argv)
         or _is_b3_jd_free_dof_eliminated_third_bounded_execution_only_mode(sys.argv)
+        or _is_b3_gnhep_free_pencil_regularity_audit_only_mode(sys.argv)
     ):
         pre = _precheck_allow_b3_jd_first_bounded_execution()
     else:
