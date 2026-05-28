@@ -2748,6 +2748,19 @@ def _run_b3_jd_operator_wiring_preflight_only(pre: Dict[str, Any]) -> int:
 
 
 def _run_b3_jd_first_bounded_execution_only(pre: Dict[str, Any]) -> int:
+    jd_cfg = {
+        "target_hz": 244.39,
+        "target_lambda": 2357906.6075988025,
+        "nev": 2,
+        "ncv": 20,
+        "mpd": 12,
+        "blocksize": 1,
+        "minv": 2,
+        "plusk": 1,
+        "initialsize": 4,
+        "tol": 1.0e-8,
+        "max_it": 120,
+    }
     payload: Dict[str, Any] = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "mode": "B3_JD_first_bounded_execution_only",
@@ -2764,13 +2777,27 @@ def _run_b3_jd_first_bounded_execution_only(pre: Dict[str, Any]) -> int:
         "B3_JD_problem_type": "GNHEP",
         "B3_JD_solver_type": "JD",
         "B3_JD_which": "TARGET_MAGNITUDE",
-        "B3_JD_target_frequency_hz": 244.39,
-        "B3_JD_target_lambda": _safe_float((2.0 * math.pi * 244.39) ** 2),
-        "B3_JD_nev": 2,
-        "B3_JD_ncv": 6,
-        "B3_JD_tolerance": 1.0e-8,
-        "B3_JD_max_iterations": 120,
-        "B3_JD_runtime_guard_policy": "ONE_TARGETED_JD_GNHEP_SOLVE_NEV2_NCV6_NO_FALLBACK_NO_RETRY",
+        "B3_JD_target_frequency_hz": float(jd_cfg["target_hz"]),
+        "B3_JD_target_lambda": _safe_float(float(jd_cfg["target_lambda"])),
+        "B3_JD_nev": int(jd_cfg["nev"]),
+        "B3_JD_ncv": int(jd_cfg["ncv"]),
+        "B3_JD_tolerance": float(jd_cfg["tol"]),
+        "B3_JD_max_iterations": int(jd_cfg["max_it"]),
+        "B3_JD_runtime_guard_policy": "ONE_TARGETED_JD_GNHEP_SOLVE_EXPLICIT_SEARCH_SPACE_NO_FALLBACK_NO_RETRY",
+        "B3_JD_execution_reuses_passed_setup_configuration": True,
+        "B3_JD_execution_setup_configuration_source": (
+            "B3_JD_dimension_setup_preflight_passed_explicit_configuration"
+        ),
+        "B3_JD_execution_nev": int(jd_cfg["nev"]),
+        "B3_JD_execution_ncv": int(jd_cfg["ncv"]),
+        "B3_JD_execution_mpd": int(jd_cfg["mpd"]),
+        "B3_JD_execution_blocksize": int(jd_cfg["blocksize"]),
+        "B3_JD_execution_minv": int(jd_cfg["minv"]),
+        "B3_JD_execution_plusk": int(jd_cfg["plusk"]),
+        "B3_JD_execution_initialsize": int(jd_cfg["initialsize"]),
+        "B3_JD_execution_minv_blocksize_mpd_constraint_pass": bool(
+            int(jd_cfg["minv"]) + int(jd_cfg["blocksize"]) <= int(jd_cfg["mpd"])
+        ),
         "B3_JD_solve_count": 0,
         "B3_JD_STSINVERT_fallback_used": False,
         "B3_JD_MUMPS_LU_used": False,
@@ -2815,6 +2842,7 @@ def _run_b3_jd_first_bounded_execution_only(pre: Dict[str, Any]) -> int:
     eps = None
     verdict = "B3_JD_FIRST_BOUNDED_EXECUTION_BLOCKED_BY_JD_SOLVER_INTERFACE"
     try:
+        print("[B3_JD] stage=before_b3_operator_build", flush=True)
         if not pre["preassembly_contract_pass"]:
             payload["B3_JD_first_execution_failure_stage"] = "preassembly_contract"
             payload["B3_JD_first_execution_failure_reason"] = "preassembly_contract_failed"
@@ -3008,7 +3036,9 @@ def _run_b3_jd_first_bounded_execution_only(pre: Dict[str, Any]) -> int:
             return 2
 
         payload["B3_JD_execution_stage"] = "after_b3_operator_build"
+        print("[B3_JD] stage=after_b3_operator_build", flush=True)
         payload["B3_JD_execution_stage"] = "before_eps_create"
+        print("[B3_JD] stage=before_eps_create", flush=True)
         from slepc4py import SLEPc
 
         eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
@@ -3026,22 +3056,39 @@ def _run_b3_jd_first_bounded_execution_only(pre: Dict[str, Any]) -> int:
             payload["B3_JD_solver_type_method"] = "setType('jd')"
         payload["B3_JD_solver_type_set"] = True
         eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
-        eps.setTarget((2.0 * math.pi * 244.39) ** 2)
+        eps.setTarget(float(jd_cfg["target_lambda"]))
         payload["B3_JD_target_set"] = True
         try:
-            eps.setDimensions(nev=2, ncv=6)
+            eps.setDimensions(nev=int(jd_cfg["nev"]), ncv=int(jd_cfg["ncv"]), mpd=int(jd_cfg["mpd"]))
         except TypeError:
-            eps.setDimensions(2, 6)
+            eps.setDimensions(int(jd_cfg["nev"]), int(jd_cfg["ncv"]), int(jd_cfg["mpd"]))
+        if hasattr(eps, "setJDBlockSize"):
+            eps.setJDBlockSize(int(jd_cfg["blocksize"]))
+        if hasattr(eps, "setJDRestart"):
+            try:
+                eps.setJDRestart(minv=int(jd_cfg["minv"]), plusk=int(jd_cfg["plusk"]))
+            except TypeError:
+                eps.setJDRestart(int(jd_cfg["minv"]), int(jd_cfg["plusk"]))
+        if hasattr(eps, "setJDInitialSize"):
+            eps.setJDInitialSize(int(jd_cfg["initialsize"]))
         payload["B3_JD_dimensions_set"] = True
-        payload["B3_JD_execution_stage"] = "after_operator_handoff"
-        eps.setTolerances(tol=float(payload["B3_JD_tolerance"]), max_it=int(payload["B3_JD_max_iterations"]))
+        payload["B3_JD_execution_stage"] = "after_eps_configuration"
+        print("[B3_JD] stage=after_eps_configuration", flush=True)
+        eps.setTolerances(tol=float(jd_cfg["tol"]), max_it=int(jd_cfg["max_it"]))
+        payload["B3_JD_execution_stage"] = "before_eps_setup"
+        print("[B3_JD] stage=before_eps_setup", flush=True)
+        eps.setUp()
+        payload["B3_JD_execution_stage"] = "after_eps_setup"
+        print("[B3_JD] stage=after_eps_setup", flush=True)
         payload["B3_JD_execution_stage"] = "before_eps_solve"
+        print("[B3_JD] stage=before_eps_solve", flush=True)
         payload["B3_JD_solve_attempted"] = True
         eps.solve()
         payload["B3_JD_solve_count"] = 1
         payload["new_eigensolve_executed"] = True
         payload["no_new_eigensolve_executed"] = False
         payload["B3_JD_execution_stage"] = "after_eps_solve"
+        print("[B3_JD] stage=after_eps_solve", flush=True)
         reason = eps.getConvergedReason()
         nconv = int(eps.getConverged())
         payload["B3_JD_EPS_converged_reason"] = int(reason)
@@ -3157,6 +3204,19 @@ def _run_b3_jd_first_bounded_execution_only(pre: Dict[str, Any]) -> int:
 
 
 def _run_b3_jd_dimension_setup_preflight_only(pre: Dict[str, Any]) -> int:
+    jd_cfg = {
+        "target_hz": 244.39,
+        "target_lambda": 2357906.6075988025,
+        "nev": 2,
+        "ncv": 20,
+        "mpd": 12,
+        "blocksize": 1,
+        "minv": 2,
+        "plusk": 1,
+        "initialsize": 4,
+        "tol": 1.0e-8,
+        "max_it": 120,
+    }
     payload: Dict[str, Any] = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "mode": "B3_JD_dimension_setup_preflight_only",
@@ -3175,9 +3235,9 @@ def _run_b3_jd_dimension_setup_preflight_only(pre: Dict[str, Any]) -> int:
         "B3_JD_setup_preflight_sets_initial_space": False,
         "B3_JD_setup_preflight_problem_type": "GNHEP",
         "B3_JD_setup_preflight_solver_type": "JD",
-        "B3_JD_setup_preflight_target_frequency_hz": 244.39,
-        "B3_JD_setup_preflight_target_lambda": 2357906.6075988025,
-        "B3_JD_setup_preflight_nev": 2,
+        "B3_JD_setup_preflight_target_frequency_hz": float(jd_cfg["target_hz"]),
+        "B3_JD_setup_preflight_target_lambda": float(jd_cfg["target_lambda"]),
+        "B3_JD_setup_preflight_nev": int(jd_cfg["nev"]),
         "B3_JD_setup_preflight_ncv": None,
         "B3_JD_setup_preflight_mpd": None,
         "B3_JD_setup_preflight_blocksize": None,
@@ -3413,14 +3473,13 @@ def _run_b3_jd_dimension_setup_preflight_only(pre: Dict[str, Any]) -> int:
             payload["B3_JD_setup_preflight_solver_type_method"] = "setType('jd')"
         eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
         eps.setTarget(float(payload["B3_JD_setup_preflight_target_lambda"]))
-        # Explicit conservative JD search-space dimensions
-        nev = 2
-        ncv = 20
-        mpd = 12
-        blocksize = 1
-        minv = 2
-        plusk = 1
-        initialsize = 4
+        nev = int(jd_cfg["nev"])
+        ncv = int(jd_cfg["ncv"])
+        mpd = int(jd_cfg["mpd"])
+        blocksize = int(jd_cfg["blocksize"])
+        minv = int(jd_cfg["minv"])
+        plusk = int(jd_cfg["plusk"])
+        initialsize = int(jd_cfg["initialsize"])
         try:
             eps.setDimensions(nev=nev, ncv=ncv, mpd=mpd)
         except TypeError:
@@ -3473,7 +3532,7 @@ def _run_b3_jd_dimension_setup_preflight_only(pre: Dict[str, Any]) -> int:
             payload["B3_JD_setup_preflight_failure_stage"] = "jd_constraint_check_before_setup"
             payload["B3_JD_setup_preflight_failure_reason"] = "minv_plus_blocksize_gt_mpd"
             return 2
-        eps.setTolerances(tol=1.0e-8, max_it=120)
+        eps.setTolerances(tol=float(jd_cfg["tol"]), max_it=int(jd_cfg["max_it"]))
         eps.setUp()
         payload["B3_JD_setup_preflight_calls_setup"] = True
         payload["B3_JD_setup_preflight_pass"] = True
