@@ -202,7 +202,7 @@ def _mat_shape(mat: Any) -> Any:
 def _petsc_mat_frobenius_difference(a: Any, b: Any) -> float:
     diff = a.duplicate()
     try:
-        diff.copy(a)
+        a.copy(diff)
         diff.axpy(-1.0, b, structure=PETSc.Mat.Structure.SUBSET_NONZERO_PATTERN)
         diff.assemble()
         return float(diff.norm(PETSc.NormType.FROBENIUS))
@@ -542,8 +542,8 @@ def _petsc_cross_quadratic_form(mat: Any, right_vec: np.ndarray, left_vec: np.nd
 
 
 def _petsc_duplicate_scaled(mat: Any, scale: float) -> Any:
-    out = mat.duplicate()
-    out.copy(mat)
+    """Duplicate ``mat`` and scale. petsc4py ``Mat.copy(dest)`` writes *into* ``dest`` from ``self``."""
+    out = mat.copy()
     if abs(float(scale) - 1.0) > 1.0e-15:
         out.scale(float(scale))
     out.assemble()
@@ -635,6 +635,41 @@ def _b3_loc_record_child_blocks_in_meta(
             m_any = m_any or _b3_loc_nonzero_contract_pass(norm, nz)
     meta["B3_loc_child_A_any_nonzero_pass"] = bool(a_any)
     meta["B3_loc_child_M_any_nonzero_pass"] = bool(m_any)
+
+
+def _b3_loc_record_raw_source_in_payload(
+    payload: Dict[str, Any],
+    *,
+    raw_Auu: Any,
+    raw_Muu: Any,
+    raw_App: Any,
+    raw_Mpp: Any,
+    raw_Aup_B3: Any,
+    raw_Apu_B3: Any,
+    raw_Mpu_B3: Any,
+) -> None:
+    """Raw B3 source blocks immediately before duplicate/scale/restriction."""
+    a_any = False
+    m_any = False
+    for name, mat in (
+        ("Auu", raw_Auu),
+        ("Muu", raw_Muu),
+        ("App", raw_App),
+        ("Mpp", raw_Mpp),
+        ("Aup_B3", raw_Aup_B3),
+        ("Apu_B3", raw_Apu_B3),
+        ("Mpu_B3", raw_Mpu_B3),
+    ):
+        nz = int(_petsc_mat_global_nnz_used(mat))
+        norm = _mat_norm_or_none(mat)
+        payload[f"B3_loc_raw_{name}_norm"] = _safe_float(norm)
+        payload[f"B3_loc_raw_{name}_nz_used"] = nz
+        if name.startswith("A"):
+            a_any = a_any or _b3_loc_nonzero_contract_pass(norm, nz)
+        else:
+            m_any = m_any or _b3_loc_nonzero_contract_pass(norm, nz)
+    payload["B3_loc_raw_A_any_nonzero_pass"] = bool(a_any)
+    payload["B3_loc_raw_M_any_nonzero_pass"] = bool(m_any)
 
 
 def _b3_loc_full_monolithic_evidence(A: Any, M: Any, *, stage: str) -> Dict[str, Any]:
@@ -1134,8 +1169,8 @@ def _build_b3_scaled_restricted_operators_in_memory(
     if capture_pre_dirichlet_monolithic:
         a_pre = a_b3.duplicate()
         m_pre = m_b3.duplicate()
-        a_pre.copy(a_b3)
-        m_pre.copy(m_b3)
+        a_b3.copy(a_pre)
+        m_b3.copy(m_pre)
         a_pre.assemble()
         m_pre.assemble()
         meta["B3_pre_dirichlet_monolithic_A"] = a_pre
@@ -5962,6 +5997,16 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
         )
         b3_fix_scalar = np.asarray(
             [k for k, pi in enumerate(parent_idx.tolist()) if int(pi) in fix_scalar_parent], dtype=np.int32
+        )
+        _b3_loc_record_raw_source_in_payload(
+            payload,
+            raw_Auu=raw_Auu,
+            raw_Muu=raw_Muu,
+            raw_App=raw_App,
+            raw_Mpp=raw_Mpp,
+            raw_Aup_B3=raw_Aup_B3,
+            raw_Apu_B3=raw_Apu_B3,
+            raw_Mpu_B3=raw_Mpu_B3,
         )
         op_meta: Dict[str, Any] = {}
         (
