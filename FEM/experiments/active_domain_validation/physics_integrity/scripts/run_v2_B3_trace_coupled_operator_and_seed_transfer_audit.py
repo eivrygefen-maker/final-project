@@ -68,8 +68,11 @@ B3_SEED_BC_CONDITIONED_MASS_DECOMPOSITION_AUDIT_ONLY_ARG = (
     "--B3-conditioned-seed-mass-decomposition-audit-only"
 )
 B3_JD_DESIGN_READINESS_CONTRACT_ONLY_ARG = "--B3-JD-design-readiness-contract-only"
+B3_JD_API_PREFLIGHT_ONLY_ARG = "--B3-JD-api-preflight-only"
 OUT_JSON_B3_JD_DESIGN = CONV_DIAG / "v2_B3_JD_design_readiness_contract_only.json"
 OUT_MD_B3_JD_DESIGN = CONV_DIAG / "v2_B3_JD_design_readiness_contract_only.md"
+OUT_JSON_B3_JD_API_PREFLIGHT = CONV_DIAG / "v2_B3_JD_api_preflight_only.json"
+OUT_MD_B3_JD_API_PREFLIGHT = CONV_DIAG / "v2_B3_JD_api_preflight_only.md"
 B3_JD_DEFAULT_TARGET_HZ = 244.39
 B3_JD_DEFAULT_HARVEST_LO_HZ = 220.0
 B3_JD_DEFAULT_HARVEST_HI_HZ = 265.0
@@ -2013,6 +2016,10 @@ def _is_b3_jd_design_readiness_contract_only_mode(argv: List[str]) -> bool:
     return B3_JD_DESIGN_READINESS_CONTRACT_ONLY_ARG in argv
 
 
+def _is_b3_jd_api_preflight_only_mode(argv: List[str]) -> bool:
+    return B3_JD_API_PREFLIGHT_ONLY_ARG in argv
+
+
 def _load_mass_decomposition_evidence() -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "B3_mass_decomposition_json_path": str(OUT_JSON_B3_CONDITIONED_MASS),
@@ -2318,6 +2325,82 @@ def _run_b3_jd_design_readiness_contract_only(pre: Dict[str, Any]) -> int:
     print(f"[B3_JD] next_step_verdict={verdict}", flush=True)
     print("[B3_JD] no_new_eigensolve_executed=True", flush=True)
     print("[B3_JD] additional_eps=NOT_AUTHORIZED", flush=True)
+    return exit_code
+
+
+def _run_b3_jd_api_preflight_only(_pre: Dict[str, Any]) -> int:
+    payload: Dict[str, Any] = {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "B3_JD_api_preflight_only",
+        "B3_JD_api_preflight_creates_exactly_one_EPS_object": False,
+        "B3_JD_api_preflight_sets_operators": False,
+        "B3_JD_api_preflight_loads_seed": False,
+        "B3_JD_api_preflight_calls_solve": False,
+        "B3_JD_API_VM_probe_attempted": False,
+        "B3_JD_API_VM_probe_problem_type_requested": "GNHEP",
+        "B3_JD_API_VM_probe_solver_type_requested": "JD",
+        "B3_JD_API_VM_probe_solver_type_method": None,
+        "B3_JD_API_VM_probe_pass": False,
+        "B3_JD_API_VM_probe_failure_reason": None,
+        "B3_JD_execution_authorized": False,
+        "jd_wiring_authorized": False,
+        "no_new_eigensolve_executed": True,
+        "additional_eps": "ONE_TEMPORARY_API_PROBE_EPS_AUTHORIZED_NO_SOLVE",
+        "operator_matrices_persisted": False,
+        "mapped_seed_persisted": False,
+        "vector_banks_persisted": False,
+        "solve_trees_created": False,
+    }
+    eps = None
+    try:
+        payload["B3_JD_API_VM_probe_attempted"] = True
+        from slepc4py import SLEPc
+
+        eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
+        payload["B3_JD_api_preflight_creates_exactly_one_EPS_object"] = True
+        eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
+        try:
+            eps.setType(SLEPc.EPS.Type.JD)
+            payload["B3_JD_API_VM_probe_solver_type_method"] = "SLEPc.EPS.Type.JD"
+        except Exception:
+            eps.setType("jd")
+            payload["B3_JD_API_VM_probe_solver_type_method"] = "setType('jd')"
+        payload["B3_JD_API_VM_probe_pass"] = True
+        verdict = "B3_JD_API_PREFLIGHT_PASS_READY_FOR_NO_SOLVE_WIRING_CONTRACT_REVIEW"
+        exit_code = 0
+    except Exception as exc:
+        payload["B3_JD_API_VM_probe_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        verdict = "B3_JD_API_PREFLIGHT_BLOCKED_BY_INSTALLED_SLEPC_JD_INTERFACE"
+        exit_code = 2
+    finally:
+        if eps is not None:
+            try:
+                eps.destroy()
+            except Exception:
+                pass
+    payload["next_step_verdict"] = verdict
+    _write_json_atomic(OUT_JSON_B3_JD_API_PREFLIGHT, payload)
+    md_lines = [
+        "# B3 JD API preflight (no solve)",
+        "",
+        f"- verdict: `{verdict}`",
+        f"- B3_JD_API_VM_probe_pass: {payload.get('B3_JD_API_VM_probe_pass')}",
+        f"- B3_JD_API_VM_probe_solver_type_method: {payload.get('B3_JD_API_VM_probe_solver_type_method')}",
+        f"- B3_JD_API_VM_probe_failure_reason: {payload.get('B3_JD_API_VM_probe_failure_reason')}",
+        "",
+        "no_new_eigensolve_executed=True",
+    ]
+    OUT_MD_B3_JD_API_PREFLIGHT.parent.mkdir(parents=True, exist_ok=True)
+    OUT_MD_B3_JD_API_PREFLIGHT.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+    print("[B3_JD] mode=B3_JD_api_preflight_only", flush=True)
+    print(
+        f"[B3_JD] B3_JD_API_VM_probe_pass={payload.get('B3_JD_API_VM_probe_pass')} "
+        f"B3_JD_api_preflight_creates_exactly_one_EPS_object={payload.get('B3_JD_api_preflight_creates_exactly_one_EPS_object')}",
+        flush=True,
+    )
+    print(f"[B3_JD] next_step_verdict={verdict}", flush=True)
+    print("[B3_JD] no_new_eigensolve_executed=True", flush=True)
+    print("[B3_JD] additional_eps=ONE_TEMPORARY_API_PROBE_EPS_AUTHORIZED_NO_SOLVE", flush=True)
     return exit_code
 
 
@@ -3627,6 +3710,9 @@ def main() -> int:
 
     if _is_b3_jd_design_readiness_contract_only_mode(sys.argv):
         return _run_b3_jd_design_readiness_contract_only(pre)
+
+    if _is_b3_jd_api_preflight_only_mode(sys.argv):
+        return _run_b3_jd_api_preflight_only(pre)
 
     if _is_b3_seed_replay_audit_only_mode(sys.argv):
         return _run_b3_seed_replay_audit_only(pre)
