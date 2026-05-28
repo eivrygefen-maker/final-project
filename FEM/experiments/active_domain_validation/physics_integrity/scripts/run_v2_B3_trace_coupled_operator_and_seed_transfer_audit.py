@@ -75,6 +75,7 @@ B3_JD_DIMENSION_SETUP_PREFLIGHT_ONLY_ARG = "--B3-JD-dimension-setup-preflight-on
 B3_GNHEP_BC_SPECTRAL_POLLUTION_CONTRACT_ONLY_ARG = "--B3-GNHEP-BC-spectral-pollution-contract-only"
 B3_GNHEP_BC_NO_LAMBDA_ONE_OPERATOR_CONTRACT_ONLY_ARG = "--B3-GNHEP-BC-no-lambda-one-operator-contract-only"
 B3_JD_FIXED_BC_DIMENSION_SETUP_PREFLIGHT_ONLY_ARG = "--B3-JD-fixed-BC-dimension-setup-preflight-only"
+B3_JD_FIXED_BC_SECOND_BOUNDED_EXECUTION_ONLY_ARG = "--B3-JD-fixed-BC-second-bounded-execution-only"
 OUT_JSON_B3_JD_DESIGN = CONV_DIAG / "v2_B3_JD_design_readiness_contract_only.json"
 OUT_MD_B3_JD_DESIGN = CONV_DIAG / "v2_B3_JD_design_readiness_contract_only.md"
 OUT_JSON_B3_JD_API_PREFLIGHT = CONV_DIAG / "v2_B3_JD_api_preflight_only.json"
@@ -91,6 +92,8 @@ OUT_JSON_B3_GNHEP_BC_NO_LAMBDA_ONE = CONV_DIAG / "v2_B3_GNHEP_BC_no_lambda_one_o
 OUT_MD_B3_GNHEP_BC_NO_LAMBDA_ONE = CONV_DIAG / "v2_B3_GNHEP_BC_no_lambda_one_operator_contract_only.md"
 OUT_JSON_B3_JD_FIXED_BC_SETUP_PREFLIGHT = CONV_DIAG / "v2_B3_JD_fixed_BC_dimension_setup_preflight_only.json"
 OUT_MD_B3_JD_FIXED_BC_SETUP_PREFLIGHT = CONV_DIAG / "v2_B3_JD_fixed_BC_dimension_setup_preflight_only.md"
+OUT_JSON_B3_JD_FIXED_BC_SECOND_BOUNDED = CONV_DIAG / "v2_B3_JD_fixed_BC_second_bounded_execution_only.json"
+OUT_MD_B3_JD_FIXED_BC_SECOND_BOUNDED = CONV_DIAG / "v2_B3_JD_fixed_BC_second_bounded_execution_only.md"
 B3_JD_DEFAULT_TARGET_HZ = 244.39
 B3_JD_DEFAULT_HARVEST_LO_HZ = 220.0
 B3_JD_DEFAULT_HARVEST_HI_HZ = 265.0
@@ -2076,6 +2079,10 @@ def _is_b3_gnhep_bc_no_lambda_one_operator_contract_only_mode(argv: List[str]) -
 
 def _is_b3_jd_fixed_bc_dimension_setup_preflight_only_mode(argv: List[str]) -> bool:
     return B3_JD_FIXED_BC_DIMENSION_SETUP_PREFLIGHT_ONLY_ARG in argv
+
+
+def _is_b3_jd_fixed_bc_second_bounded_execution_only_mode(argv: List[str]) -> bool:
+    return B3_JD_FIXED_BC_SECOND_BOUNDED_EXECUTION_ONLY_ARG in argv
 
 
 def _load_mass_decomposition_evidence() -> Dict[str, Any]:
@@ -4570,6 +4577,378 @@ def _run_b3_jd_fixed_bc_dimension_setup_preflight_only(pre: Dict[str, Any]) -> i
         _destroy_mats_deduped(mats_to_destroy)
 
 
+def _run_b3_jd_fixed_bc_second_bounded_execution_only(pre: Dict[str, Any]) -> int:
+    jd_cfg = {
+        "target_hz": 244.39,
+        "target_lambda": 2357906.6075988025,
+        "nev": 2,
+        "ncv": 20,
+        "mpd": 12,
+        "blocksize": 1,
+        "minv": 2,
+        "plusk": 1,
+        "initialsize": 4,
+        "tol": 1.0e-8,
+        "max_it": 120,
+    }
+    payload: Dict[str, Any] = {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "B3_JD_fixed_BC_second_bounded_execution_only",
+        "B3_GNHEP_BC_lambda_one_pollution_removed_contract_pass": None,
+        "B3_JD_fixed_BC_operator_contract_pass": False,
+        "B3_JD_fixed_BC_A_operator_type": None,
+        "B3_JD_fixed_BC_M_operator_type": None,
+        "B3_JD_fixed_BC_A_operator_shape": None,
+        "B3_JD_fixed_BC_M_operator_shape": None,
+        "B3_JD_fixed_BC_tag5_dirichlet_row_count": None,
+        "B3_JD_fixed_BC_pressure_release_dirichlet_row_count": None,
+        "B3_JD_fixed_BC_total_dirichlet_row_count": None,
+        "B3_JD_fixed_BC_A_dirichlet_diag": 1.0,
+        "B3_JD_fixed_BC_M_dirichlet_diag": 0.0,
+        "B3_JD_fixed_BC_zero_columns": True,
+        "B3_JD_fixed_BC_execution_reuses_passed_setup_configuration": True,
+        "B3_JD_fixed_BC_execution_setup_configuration_source": "B3_JD_fixed_BC_dimension_setup_preflight_passed_configuration",
+        "B3_JD_fixed_BC_execution_nev": int(jd_cfg["nev"]),
+        "B3_JD_fixed_BC_execution_ncv": int(jd_cfg["ncv"]),
+        "B3_JD_fixed_BC_execution_mpd": int(jd_cfg["mpd"]),
+        "B3_JD_fixed_BC_execution_blocksize": int(jd_cfg["blocksize"]),
+        "B3_JD_fixed_BC_execution_minv": int(jd_cfg["minv"]),
+        "B3_JD_fixed_BC_execution_plusk": int(jd_cfg["plusk"]),
+        "B3_JD_fixed_BC_execution_initialsize": int(jd_cfg["initialsize"]),
+        "B3_JD_fixed_BC_execution_minv_blocksize_mpd_constraint_pass": True,
+        "B3_JD_fixed_BC_initial_space_attached": False,
+        "B3_JD_fixed_BC_initial_space_reason": "UNSEEDED_SOLVE_ON_CORRECTED_OPERATOR_AFTER_HISTORICAL_SEED_CONTAMINATION_AND_BC_SPECTRAL_POLLUTION",
+        "B3_JD_fixed_BC_problem_type": "GNHEP",
+        "B3_JD_fixed_BC_solver_type": "JD",
+        "B3_JD_fixed_BC_which": "TARGET_MAGNITUDE",
+        "B3_JD_fixed_BC_target_frequency_hz": float(jd_cfg["target_hz"]),
+        "B3_JD_fixed_BC_target_lambda": float(jd_cfg["target_lambda"]),
+        "B3_JD_fixed_BC_tolerance": float(jd_cfg["tol"]),
+        "B3_JD_fixed_BC_max_iterations": int(jd_cfg["max_it"]),
+        "B3_JD_fixed_BC_EPS_converged_reason": None,
+        "B3_JD_fixed_BC_converged_mode_count": 0,
+        "B3_JD_fixed_BC_execution_authorized": True,
+        "jd_wiring_authorized": True,
+        "B3_JD_fixed_BC_execution_scope": "ONE_BOUNDED_DIAGNOSTIC_SOLVE_ON_NO_LAMBDA_ONE_OPERATOR_ONLY",
+        "B3_JD_fixed_BC_solve_attempted": False,
+        "B3_JD_fixed_BC_solve_count": 0,
+        "new_eigensolve_executed": False,
+        "additional_eps": "ONE_BOUNDED_B3_JD_FIXED_BC_EXECUTION_EPS_AUTHORIZED",
+        "B3_JD_fixed_BC_STSINVERT_fallback_used": False,
+        "B3_JD_fixed_BC_MUMPS_LU_used": False,
+        "B3_JD_fixed_BC_automatic_retry_used": False,
+        "B3_JD_fixed_BC_additional_EPS_solve_used": False,
+        "operator_matrices_persisted": False,
+        "transfer_matrices_persisted": False,
+        "coupling_matrices_persisted": False,
+        "historical_seed_attached": False,
+        "mapped_seed_persisted": False,
+        "conditioned_seed_persisted": False,
+        "eigenvectors_persisted": False,
+        "vector_banks_persisted": False,
+        "solve_trees_created": False,
+        "production_promotion": "BLOCKED",
+        "B3_JD_fixed_BC_failure_stage": None,
+        "B3_JD_fixed_BC_failure_reason": None,
+    }
+    A_parent = M_parent = A_b3 = M_b3 = None
+    mats_to_destroy: List[Any] = []
+    mat_destroy_seen: set[int] = set()
+    eps = None
+    verdict = "B3_JD_FIXED_BC_SECOND_BOUNDED_EXECUTION_BLOCKED_BY_SOLVER_INTERFACE"
+    try:
+        rc = _run_b3_gnhep_bc_no_lambda_one_operator_contract_only(pre)
+        if rc != 0:
+            payload["B3_JD_fixed_BC_failure_stage"] = "fixed_bc_operator_contract"
+            payload["B3_JD_fixed_BC_failure_reason"] = "fixed_bc_operator_contract_mode_failed"
+            return 2
+        bc_contract = json.loads(OUT_JSON_B3_GNHEP_BC_NO_LAMBDA_ONE.read_text(encoding="utf-8"))
+        payload["B3_GNHEP_BC_lambda_one_pollution_removed_contract_pass"] = bool(
+            bc_contract.get("B3_GNHEP_BC_lambda_one_pollution_removed_contract_pass")
+        )
+        if not payload["B3_GNHEP_BC_lambda_one_pollution_removed_contract_pass"]:
+            payload["B3_JD_fixed_BC_failure_stage"] = "fixed_bc_contract_check"
+            payload["B3_JD_fixed_BC_failure_reason"] = "lambda_one_pollution_removed_contract_not_passed"
+            return 2
+
+        manifest = load_manifest()
+        case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
+        sample = sample_spec_from_case(case)
+        mesh_file = mesh_path("L_mid", CASE_ID)
+        msh, _cell_tags, facet_tags = fem3d._load_mesh_and_tags(mesh_file)
+        f_top = np.asarray(facet_tags.find(TAG_TOP), dtype=np.int32)
+        f_back = np.asarray(facet_tags.find(TAG_BACK), dtype=np.int32)
+        f_ribs = np.asarray(facet_tags.find(TAG_RIBS), dtype=np.int32)
+        f_fix = np.asarray(facet_tags.find(TAG_FIX), dtype=np.int32)
+        shell_facets = np.unique(np.concatenate([f_top, f_back, f_ribs]).astype(np.int32, copy=False))
+        tmeta = _build_c2_trace_to_parent_transfer(
+            msh, facet_tags, shell_facets=shell_facets, tag_top=TAG_TOP, tag_back=TAG_BACK, tag_ribs=TAG_RIBS
+        )
+        _tmeta_parent_map = tmeta.get("parent_index_per_trace_dof")
+        A_parent, M_parent, cfg = _assemble_reduced_coupled_replay(
+            mesh_file, sample, coupling_enabled=True, capture_parent_raw_blocks=True
+        )
+        maps = _extract_layout_maps(cfg, A_parent)
+        p_to_W_parent = np.asarray(maps["p_to_W"], dtype=np.int32).ravel()
+        p_air_collapsed = np.asarray(
+            cfg.get("_coupled_air_p_air_collapsed_indices", np.asarray([], dtype=np.int32)),
+            dtype=np.int32,
+        ).ravel()
+        raw_cap = _extract_parent_raw_block_capture()
+        raw_App = raw_cap.get("raw_App")
+        raw_Mpp = raw_cap.get("raw_Mpp")
+        raw_Aup = raw_cap.get("raw_Aup")
+        raw_Apu = raw_cap.get("raw_Apu")
+        raw_Mpu = raw_cap.get("raw_Mpu")
+        for m_ in (raw_App, raw_Mpp, raw_Aup, raw_Apu, raw_Mpu):
+            if m_ is not None:
+                _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+        if not all(m is not None for m in (raw_App, raw_Mpp, raw_Aup, raw_Apu, raw_Mpu)) or _tmeta_parent_map is None:
+            payload["B3_JD_fixed_BC_failure_stage"] = "validated_b3_inputs"
+            payload["B3_JD_fixed_BC_failure_reason"] = "validated_b3_operator_inputs_missing"
+            return 2
+
+        shell_mesh, shell_to_parent, _, _ = dmesh.create_submesh(msh, msh.topology.dim - 1, shell_facets)
+        V_u_trace = fem.functionspace(shell_mesh, fem3d._displacement_element(shell_mesh, 1))
+        trace_cells = np.arange(int(shell_mesh.topology.index_map(shell_mesh.topology.dim).size_local), dtype=np.int32)
+        map_meta = _extract_submesh_to_parent_entity_indices(shell_to_parent, entity_dim=msh.topology.dim - 1)
+        parent_tag_map = {int(i): int(v) for i, v in zip(np.asarray(facet_tags.indices), np.asarray(facet_tags.values))}
+        parent_f = np.asarray(map_meta.get("indices"), dtype=np.int32).ravel()
+        trace_vals = np.array([parent_tag_map.get(int(pf), -1) for pf in parent_f], dtype=np.int32)
+        mt_trace = dmesh.meshtags(shell_mesh, shell_mesh.topology.dim, trace_cells, trace_vals)
+        dx_trace = ufl.Measure("dx", domain=shell_mesh, subdomain_data=mt_trace)
+        u = ufl.TrialFunction(V_u_trace)
+        v = ufl.TestFunction(V_u_trace)
+        top_m, back_m, t_top, t_back = fem3d._split_wood_materials(cfg)
+        nrm = ufl.CellNormal(shell_mesh)
+        P = ufl.Identity(3) - ufl.outer(nrm, nrm)
+        e1, e2 = fem3d._plate_local_frame(nrm, P)
+        grad_u = ufl.grad(u)
+        grad_v = ufl.grad(v)
+        eps_u = 0.5 * (P * grad_u * P + ufl.transpose(P * grad_u * P))
+        eps_v = 0.5 * (P * grad_v * P + ufl.transpose(P * grad_v * P))
+        w_n = ufl.dot(u, nrm)
+        v_n = ufl.dot(v, nrm)
+        shell_top = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, top_m)
+        shell_back = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
+        shell_ribs = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
+        raw_Auu = fem.petsc.assemble_matrix(
+            fem.form(shell_top * dx_trace(TAG_TOP) + shell_back * dx_trace(TAG_BACK) + shell_ribs * dx_trace(TAG_RIBS)), bcs=[]
+        )
+        raw_Muu = fem.petsc.assemble_matrix(
+            fem.form(
+                (top_m["rho"] * t_top) * ufl.dot(u, v) * dx_trace(TAG_TOP)
+                + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_BACK)
+                + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_RIBS)
+            ),
+            bcs=[],
+        )
+        raw_Auu.assemble()
+        raw_Muu.assemble()
+        for m_ in (raw_Auu, raw_Muu):
+            _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+        parent_idx = np.asarray(_tmeta_parent_map, dtype=np.int32).ravel()
+        is_parent_u = PETSc.IS().createGeneral(parent_idx.astype(np.int32), comm=PETSc.COMM_WORLD)
+        is_p = PETSc.IS().createGeneral(np.arange(raw_App.getSize()[0], dtype=np.int32), comm=PETSc.COMM_WORLD)
+        raw_Aup_B3 = raw_Aup.createSubMatrix(is_parent_u, is_p)
+        raw_Apu_B3 = raw_Apu.createSubMatrix(is_p, is_parent_u)
+        raw_Mpu_B3 = raw_Mpu.createSubMatrix(is_p, is_parent_u)
+        for m_ in (raw_Aup_B3, raw_Apu_B3, raw_Mpu_B3):
+            _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+        is_parent_u.destroy()
+        is_p.destroy()
+        n_u_b3 = int(raw_Auu.getSize()[0])
+        s_uu = max(float(_mat_norm_or_none(raw_Auu) or 0.0), 1.0e-30)
+        s_pp = max(float(_mat_norm_or_none(raw_App) or 0.0), 1.0e-30)
+        s_c = math.sqrt(s_uu * s_pp)
+        parent_fix_blocks = fem3d._locate_facet_displacement_dofs(
+            fem.functionspace(msh, fem3d._displacement_element(msh, 1)), msh, f_fix
+        )
+        fix_scalar_parent = set(int(b) * 3 + c for b in np.asarray(parent_fix_blocks, dtype=np.int32).ravel() for c in range(3))
+        b3_fix_scalar = np.asarray([k for k, pi in enumerate(parent_idx.tolist()) if int(pi) in fix_scalar_parent], dtype=np.int32)
+        op_meta: Dict[str, Any] = {}
+        (
+            A_b3,
+            M_b3,
+            _u_idx,
+            _p_idx,
+            op_meta,
+            bc_rows,
+            _tag5_rows,
+            _p_release_rows,
+            _m_uu_b3,
+            _m_pu_b3,
+            _m_pp_b3,
+        ) = _build_b3_scaled_restricted_operators_in_memory(
+            raw_Auu=raw_Auu,
+            raw_Muu=raw_Muu,
+            raw_App=raw_App,
+            raw_Mpp=raw_Mpp,
+            raw_Aup_B3=raw_Aup_B3,
+            raw_Apu_B3=raw_Apu_B3,
+            raw_Mpu_B3=raw_Mpu_B3,
+            s_uu=s_uu,
+            s_pp=s_pp,
+            s_c=s_c,
+            n_u_b3=n_u_b3,
+            p_air_collapsed=p_air_collapsed,
+            b3_fix_u_rows=b3_fix_scalar,
+            msh=msh,
+            facet_tags=facet_tags,
+            comm=PETSc.COMM_WORLD,
+            mats_to_destroy=mats_to_destroy,
+            report_meta=op_meta,
+            destroy_seen=mat_destroy_seen,
+        )
+        bc_rows_i32 = np.unique(np.asarray(bc_rows, dtype=np.int32).ravel())
+        fem3d._petsc_mat_zero_dirichlet_rows(M_b3, bc_rows_i32, diag=0.0, zero_columns=True)
+        payload["B3_JD_fixed_BC_operator_contract_pass"] = bool(
+            bool(op_meta.get("B3_scaled_restricted_BC_operator_contract_pass"))
+            and A_b3.getSize() == (148074, 148074)
+            and M_b3.getSize() == (148074, 148074)
+        )
+        payload["B3_JD_fixed_BC_A_operator_type"] = str(A_b3.getType())
+        payload["B3_JD_fixed_BC_M_operator_type"] = str(M_b3.getType())
+        payload["B3_JD_fixed_BC_A_operator_shape"] = [int(A_b3.getSize()[0]), int(A_b3.getSize()[1])]
+        payload["B3_JD_fixed_BC_M_operator_shape"] = [int(M_b3.getSize()[0]), int(M_b3.getSize()[1])]
+        payload["B3_JD_fixed_BC_tag5_dirichlet_row_count"] = int(op_meta.get("B3_seed_tag5_dirichlet_row_count") or 0)
+        payload["B3_JD_fixed_BC_pressure_release_dirichlet_row_count"] = int(op_meta.get("B3_seed_pressure_release_dirichlet_row_count") or 0)
+        payload["B3_JD_fixed_BC_total_dirichlet_row_count"] = int(op_meta.get("B3_seed_total_dirichlet_row_count") or 0)
+        if not payload["B3_JD_fixed_BC_operator_contract_pass"]:
+            payload["B3_JD_fixed_BC_failure_stage"] = "fixed_bc_operator_contract"
+            payload["B3_JD_fixed_BC_failure_reason"] = "fixed_bc_operator_contract_failed"
+            return 2
+
+        from slepc4py import SLEPc
+        eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
+        eps.setOperators(A_b3, M_b3)
+        eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
+        try:
+            eps.setType(SLEPc.EPS.Type.JD)
+        except Exception:
+            eps.setType("jd")
+        eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
+        eps.setTarget(float(jd_cfg["target_lambda"]))
+        try:
+            eps.setDimensions(nev=int(jd_cfg["nev"]), ncv=int(jd_cfg["ncv"]), mpd=int(jd_cfg["mpd"]))
+        except TypeError:
+            eps.setDimensions(int(jd_cfg["nev"]), int(jd_cfg["ncv"]), int(jd_cfg["mpd"]))
+        if hasattr(eps, "setJDBlockSize"):
+            eps.setJDBlockSize(int(jd_cfg["blocksize"]))
+        if hasattr(eps, "setJDRestart"):
+            try:
+                eps.setJDRestart(minv=int(jd_cfg["minv"]), plusk=int(jd_cfg["plusk"]))
+            except TypeError:
+                eps.setJDRestart(int(jd_cfg["minv"]), int(jd_cfg["plusk"]))
+        if hasattr(eps, "setJDInitialSize"):
+            eps.setJDInitialSize(int(jd_cfg["initialsize"]))
+        eps.setTolerances(tol=float(jd_cfg["tol"]), max_it=int(jd_cfg["max_it"]))
+        eps.setUp()
+        payload["B3_JD_fixed_BC_solve_attempted"] = True
+        eps.solve()
+        payload["B3_JD_fixed_BC_solve_count"] = 1
+        payload["new_eigensolve_executed"] = True
+        payload["B3_JD_fixed_BC_EPS_converged_reason"] = int(eps.getConvergedReason())
+        nconv = int(eps.getConverged())
+        payload["B3_JD_fixed_BC_converged_mode_count"] = nconv
+        accepted_any = False
+        for i in range(nconv):
+            vr = A_b3.createVecRight()
+            vi = A_b3.createVecRight()
+            try:
+                lam = complex(eps.getEigenpair(i, vr, vi))
+                lam_re = float(np.real(lam))
+                lam_im = float(np.imag(lam))
+                f_hz = math.sqrt(max(lam_re, 0.0)) / (2.0 * math.pi) if lam_re > 0.0 and abs(lam_im) <= 1.0e-12 else None
+                err_rel = float(eps.computeError(i, SLEPc.EPS.ErrorType.RELATIVE))
+                x = np.abs(np.asarray(vr.getArray(readonly=True), dtype=np.float64))
+                d_norm = float(np.linalg.norm(x[bc_rows_i32])) if bc_rows_i32.size > 0 else 0.0
+                d_pass = bool(d_norm <= 1.0e-8 * max(1.0, float(np.linalg.norm(x))))
+                u_norm = float(np.linalg.norm(x[:n_u_b3]))
+                p_norm = float(np.linalg.norm(x[n_u_b3 : n_u_b3 + int(p_to_W_parent.size)]))
+                p_support = p_norm / max(float(np.linalg.norm(x)), 1.0e-30)
+                lambda_one = bool(abs(lam_re - 1.0) <= 1.0e-6 and abs(lam_im) <= 1.0e-9)
+                target_dist = abs(float(f_hz) - float(jd_cfg["target_hz"])) if f_hz is not None else None
+                finite_ok = bool(math.isfinite(lam_re) and math.isfinite(lam_im) and (f_hz is None or math.isfinite(float(f_hz))))
+                residual_ok = bool(math.isfinite(err_rel) and err_rel <= 1.0e-4)
+                support_ok = bool(u_norm > 1.0e-8 and (p_support > 1.0e-6 or p_norm <= 1.0e-8))
+                mode_ok = bool(finite_ok and residual_ok and d_pass and (not lambda_one) and support_ok)
+                if mode_ok:
+                    accepted_any = True
+                fail_reason = None
+                if not mode_ok:
+                    fail_parts = []
+                    if not finite_ok:
+                        fail_parts.append("non_finite_eigenvalue_or_frequency")
+                    if not residual_ok:
+                        fail_parts.append("residual_too_large")
+                    if not d_pass:
+                        fail_parts.append("dirichlet_nonzero")
+                    if lambda_one:
+                        fail_parts.append("lambda_one_pollution_signature")
+                    if not support_ok:
+                        fail_parts.append("insufficient_physical_support")
+                    fail_reason = "|".join(fail_parts)
+                payload[f"B3_JD_fixed_BC_mode_{i}_lambda_real"] = _safe_float(lam_re)
+                payload[f"B3_JD_fixed_BC_mode_{i}_lambda_imag"] = _safe_float(lam_im)
+                payload[f"B3_JD_fixed_BC_mode_{i}_frequency_hz_if_real_positive"] = _safe_float(f_hz)
+                payload[f"B3_JD_fixed_BC_mode_{i}_relative_generalized_residual"] = _safe_float(err_rel)
+                payload[f"B3_JD_fixed_BC_mode_{i}_dirichlet_norm"] = _safe_float(d_norm)
+                payload[f"B3_JD_fixed_BC_mode_{i}_dirichlet_zero_compliance_pass"] = bool(d_pass)
+                payload[f"B3_JD_fixed_BC_mode_{i}_u_norm"] = _safe_float(u_norm)
+                payload[f"B3_JD_fixed_BC_mode_{i}_p_norm"] = _safe_float(p_norm)
+                payload[f"B3_JD_fixed_BC_mode_{i}_pressure_support_metric"] = _safe_float(p_support)
+                payload[f"B3_JD_fixed_BC_mode_{i}_target_distance_hz"] = _safe_float(target_dist)
+                payload[f"B3_JD_fixed_BC_mode_{i}_lambda_one_pollution_signature"] = bool(lambda_one)
+                payload[f"B3_JD_fixed_BC_mode_{i}_acceptance_pass"] = bool(mode_ok)
+                payload[f"B3_JD_fixed_BC_mode_{i}_acceptance_failure_reason"] = fail_reason
+            finally:
+                vr.destroy()
+                vi.destroy()
+        if accepted_any:
+            verdict = "B3_JD_FIXED_BC_SECOND_BOUNDED_EXECUTION_PASS_READY_FOR_VALIDATION_RUN_DESIGN"
+            return 0
+        verdict = "B3_JD_FIXED_BC_SECOND_BOUNDED_EXECUTION_COMPLETED_BUT_NO_ACCEPTABLE_MODE"
+        return 2
+    except Exception as exc:
+        if payload["B3_JD_fixed_BC_failure_stage"] is None:
+            payload["B3_JD_fixed_BC_failure_stage"] = "solver_interface"
+        payload["B3_JD_fixed_BC_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        verdict = "B3_JD_FIXED_BC_SECOND_BOUNDED_EXECUTION_BLOCKED_BY_SOLVER_INTERFACE"
+        return 2
+    finally:
+        if eps is not None:
+            try:
+                eps.destroy()
+            except Exception:
+                pass
+        payload["next_step_verdict"] = verdict
+        _write_json_atomic(OUT_JSON_B3_JD_FIXED_BC_SECOND_BOUNDED, payload)
+        OUT_MD_B3_JD_FIXED_BC_SECOND_BOUNDED.parent.mkdir(parents=True, exist_ok=True)
+        OUT_MD_B3_JD_FIXED_BC_SECOND_BOUNDED.write_text(
+            "\n".join(
+                [
+                    "# B3 JD fixed-BC second bounded execution",
+                    "",
+                    f"- verdict: `{verdict}`",
+                    f"- converged: {payload.get('B3_JD_fixed_BC_converged_mode_count')}",
+                    f"- solve_count: {payload.get('B3_JD_fixed_BC_solve_count')}",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        print("[B3_JD] mode=B3_JD_fixed_BC_second_bounded_execution_only", flush=True)
+        print(f"[B3_JD] next_step_verdict={verdict}", flush=True)
+        print(f"[B3_JD] new_eigensolve_executed={payload.get('new_eigensolve_executed')}", flush=True)
+        print("[B3_JD] additional_eps=ONE_BOUNDED_B3_JD_FIXED_BC_EXECUTION_EPS_AUTHORIZED", flush=True)
+        _register_mat_for_destroy(mats_to_destroy, A_parent, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, M_parent, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, A_b3, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, M_b3, seen=mat_destroy_seen)
+        _destroy_mats_deduped(mats_to_destroy)
+
+
 def _b3_seed_bc_conditioning_verdict(payload: Dict[str, Any]) -> str:
     if not bool(payload.get("B3_seed_final_dirichlet_rows_constructed")):
         return "B3_SEED_REPLAY_BLOCKED_BY_BC_CONDITIONING_INTERFACE"
@@ -5863,6 +6242,7 @@ def main() -> int:
         or _is_b3_gnhep_bc_spectral_pollution_contract_only_mode(sys.argv)
         or _is_b3_gnhep_bc_no_lambda_one_operator_contract_only_mode(sys.argv)
         or _is_b3_jd_fixed_bc_dimension_setup_preflight_only_mode(sys.argv)
+        or _is_b3_jd_fixed_bc_second_bounded_execution_only_mode(sys.argv)
     ):
         pre = _precheck_allow_b3_jd_first_bounded_execution()
     else:
@@ -5906,6 +6286,9 @@ def main() -> int:
 
     if _is_b3_jd_fixed_bc_dimension_setup_preflight_only_mode(sys.argv):
         return _run_b3_jd_fixed_bc_dimension_setup_preflight_only(pre)
+
+    if _is_b3_jd_fixed_bc_second_bounded_execution_only_mode(sys.argv):
+        return _run_b3_jd_fixed_bc_second_bounded_execution_only(pre)
 
     if _is_b3_seed_replay_audit_only_mode(sys.argv):
         return _run_b3_seed_replay_audit_only(pre)
