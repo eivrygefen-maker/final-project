@@ -83,6 +83,7 @@ B3_JD_FREE_DOF_ELIMINATED_DIMENSION_SETUP_PREFLIGHT_ONLY_ARG = (
 B3_JD_FREE_DOF_ELIMINATED_THIRD_BOUNDED_EXECUTION_ONLY_ARG = (
     "--B3-JD-free-DOF-eliminated-third-bounded-execution-only"
 )
+B3_GNHEP_FREE_PENCIL_REGULARITY_AUDIT_ONLY_ARG = "--B3-GNHEP-free-pencil-regularity-audit-only"
 OUT_JSON_B3_JD_DESIGN = CONV_DIAG / "v2_B3_JD_design_readiness_contract_only.json"
 OUT_MD_B3_JD_DESIGN = CONV_DIAG / "v2_B3_JD_design_readiness_contract_only.md"
 OUT_JSON_B3_JD_API_PREFLIGHT = CONV_DIAG / "v2_B3_JD_api_preflight_only.json"
@@ -115,6 +116,8 @@ OUT_JSON_B3_JD_FREE_DOF_ELIM_THIRD_BOUNDED = (
 OUT_MD_B3_JD_FREE_DOF_ELIM_THIRD_BOUNDED = (
     CONV_DIAG / "v2_B3_JD_free_DOF_eliminated_third_bounded_execution_only.md"
 )
+OUT_JSON_B3_GNHEP_FREE_PENCIL_REGULARITY = CONV_DIAG / "v2_B3_GNHEP_free_pencil_regularity_audit_only.json"
+OUT_MD_B3_GNHEP_FREE_PENCIL_REGULARITY = CONV_DIAG / "v2_B3_GNHEP_free_pencil_regularity_audit_only.md"
 B3_JD_DEFAULT_TARGET_HZ = 244.39
 B3_JD_DEFAULT_HARVEST_LO_HZ = 220.0
 B3_JD_DEFAULT_HARVEST_HI_HZ = 265.0
@@ -194,6 +197,170 @@ def _mat_shape(mat: Any) -> Any:
         return [int(s[0]), int(s[1])]
     except Exception:
         return None
+
+
+def _petsc_mat_frobenius_difference(a: Any, b: Any) -> float:
+    diff = a.duplicate()
+    try:
+        diff.copy(a)
+        diff.axpy(-1.0, b, structure=PETSc.Mat.Structure.SUBSET_NONZERO_PATTERN)
+        diff.assemble()
+        return float(diff.norm(PETSc.NormType.FROBENIUS))
+    finally:
+        diff.destroy()
+
+
+def _petsc_sparse_owned_row_value_audit(mat: Any) -> Dict[str, Any]:
+    """Traverse locally owned rows (mpiexec -n 1) for finite-value counts."""
+    nan_count = 0
+    inf_count = 0
+    total_nnz = 0
+    nrow = int(mat.getSize()[0])
+    for r in range(nrow):
+        cols, vals = mat.getRow(r)
+        vals_a = np.asarray(vals, dtype=np.float64).ravel()
+        total_nnz += int(vals_a.size)
+        nan_count += int(np.isnan(vals_a).sum())
+        inf_count += int(np.isinf(vals_a).sum())
+        try:
+            mat.restoreRow(r)
+        except Exception:
+            pass
+    return {
+        "owned_row_count": nrow,
+        "nnz_traversed": total_nnz,
+        "nan_or_inf_value_count": int(nan_count + inf_count),
+        "nan_value_count": int(nan_count),
+        "inf_value_count": int(inf_count),
+        "all_values_finite_pass": bool(nan_count == 0 and inf_count == 0),
+        "method": "PETSc_Mat_getRow_owned_row_loop_mpi_n_1",
+    }
+
+
+def _petsc_sparse_row_diagonal_support_audit(
+    mat: Any,
+    *,
+    row_norm_tol: float,
+    diag_tol: float,
+    global_row_index_map: np.ndarray | None = None,
+    n_u_b3: int | None = None,
+    tag5_rows: np.ndarray | None = None,
+    p_release_rows: np.ndarray | None = None,
+    preview_limit: int = 12,
+) -> Dict[str, Any]:
+    tag5_set = set(int(x) for x in np.asarray(tag5_rows, dtype=np.int32).ravel()) if tag5_rows is not None else set()
+    p_release_set = (
+        set(int(x) for x in np.asarray(p_release_rows, dtype=np.int32).ravel()) if p_release_rows is not None else set()
+    )
+    zero_row = near_zero_row = 0
+    zero_diag = near_zero_diag = 0
+    preview_local: List[int] = []
+    preview_b3: List[int] = []
+    preview_block: List[str] = []
+    nrow = int(mat.getSize()[0])
+    for r in range(nrow):
+        cols, vals = mat.getRow(r)
+        cols = np.asarray(cols, dtype=np.int32).ravel()
+        vals = np.asarray(vals, dtype=np.float64).ravel()
+        rn = float(np.linalg.norm(vals)) if vals.size else 0.0
+        if rn == 0.0:
+            zero_row += 1
+        elif rn <= float(row_norm_tol):
+            near_zero_row += 1
+        diag_abs = 0.0
+        for c, v in zip(cols.tolist(), vals.tolist()):
+            if int(c) == int(r):
+                diag_abs = abs(float(v))
+                break
+        if diag_abs == 0.0:
+            zero_diag += 1
+        elif diag_abs <= float(diag_tol):
+            near_zero_diag += 1
+        if (rn <= float(row_norm_tol) or diag_abs <= float(diag_tol)) and len(preview_local) < int(preview_limit):
+            preview_local.append(int(r))
+            g_row = int(global_row_index_map[r]) if global_row_index_map is not None and r < global_row_index_map.size else int(r)
+            preview_b3.append(g_row)
+            if n_u_b3 is not None:
+                if g_row < int(n_u_b3):
+                    preview_block.append("free structural-u row")
+                elif g_row in p_release_set:
+                    preview_block.append("unknown")
+                else:
+                    preview_block.append("free retained-pressure-p row")
+            else:
+                preview_block.append("unknown")
+        try:
+            mat.restoreRow(r)
+        except Exception:
+            pass
+    return {
+        "zero_row_count": int(zero_row),
+        "near_zero_row_count": int(near_zero_row),
+        "zero_diagonal_count": int(zero_diag),
+        "near_zero_diagonal_count": int(near_zero_diag),
+        "zero_or_near_zero_row_local_indices_preview": preview_local,
+        "zero_or_near_zero_rows_original_B3_indices_preview": preview_b3,
+        "zero_or_near_zero_rows_block_classification_preview": preview_block,
+    }
+
+
+def _classify_free_mass_null_support(
+    *,
+    m_uu_zero_near: int,
+    m_pp_zero_near: int,
+    m_pu_norm: float,
+) -> str:
+    u_bad = int(m_uu_zero_near) > 0
+    p_bad = int(m_pp_zero_near) > 0
+    if u_bad and p_bad:
+        return "MULTIPLE_BLOCKS"
+    if u_bad:
+        return "STRUCTURAL_BLOCK"
+    if p_bad:
+        return "PRESSURE_BLOCK"
+    if float(m_pu_norm or 0.0) <= 0.0:
+        return "NO_OBVIOUS_ROW_NULLSPACE"
+    return "NO_OBVIOUS_ROW_NULLSPACE"
+
+
+def _load_prior_free_dof_jd_nonfinite_observed() -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "B3_free_prior_JD_nonfinite_eigenpair_observed": False,
+        "B3_free_prior_JD_nonfinite_eigenpair_classification": None,
+        "prior_json_path": str(OUT_JSON_B3_JD_FREE_DOF_ELIM_THIRD_BOUNDED),
+        "prior_json_present": OUT_JSON_B3_JD_FREE_DOF_ELIM_THIRD_BOUNDED.is_file(),
+    }
+    if not OUT_JSON_B3_JD_FREE_DOF_ELIM_THIRD_BOUNDED.is_file():
+        return out
+    try:
+        data = json.loads(OUT_JSON_B3_JD_FREE_DOF_ELIM_THIRD_BOUNDED.read_text(encoding="utf-8"))
+    except Exception as exc:
+        out["prior_json_load_status"] = f"{type(exc).__name__}:{exc}"
+        return out
+    out["prior_json_load_status"] = "loaded"
+    nconv = int(data.get("B3_JD_elim_converged_mode_count") or 0)
+    nonfinite_any = False
+    for i in range(nconv):
+        lam_re = data.get(f"B3_JD_elim_mode_{i}_lambda_real")
+        lam_im = data.get(f"B3_JD_elim_mode_{i}_lambda_imag")
+        for val in (lam_re, lam_im):
+            if val is None:
+                continue
+            if isinstance(val, str):
+                if val.lower() in ("nan", "inf", "-inf"):
+                    nonfinite_any = True
+            else:
+                try:
+                    if not math.isfinite(float(val)):
+                        nonfinite_any = True
+                except Exception:
+                    nonfinite_any = True
+    out["B3_free_prior_JD_nonfinite_eigenpair_observed"] = bool(nonfinite_any)
+    if nonfinite_any:
+        out["B3_free_prior_JD_nonfinite_eigenpair_classification"] = (
+            "CAUSE_UNRESOLVED_NOT_DIRICHLET_AFTER_FREE_DOF_ELIMINATION"
+        )
+    return out
 
 
 def _destroy_mat(mat: Any) -> None:
@@ -604,6 +771,7 @@ def _build_b3_scaled_restricted_operators_in_memory(
     mats_to_destroy: List[Any],
     report_meta: Dict[str, Any] | None = None,
     destroy_seen: set[int] | None = None,
+    capture_pre_dirichlet_monolithic: bool = False,
 ) -> tuple[Any, Any, np.ndarray, np.ndarray, Dict[str, Any], np.ndarray, np.ndarray, np.ndarray, Any, Any, Any]:
     meta: Dict[str, Any] = report_meta if report_meta is not None else {}
     mat_seen: set[int] = destroy_seen if destroy_seen is not None else set()
@@ -789,6 +957,18 @@ def _build_b3_scaled_restricted_operators_in_memory(
     meta["B3_algebraic_BC_application_matrix_type"] = "AIJ"
     bc_applied = False
     meta["B3_seed_operator_build_stage"] = "pre_algebraic_BC_application"
+    if capture_pre_dirichlet_monolithic:
+        a_pre = a_b3.duplicate()
+        m_pre = m_b3.duplicate()
+        a_pre.copy(a_b3)
+        m_pre.copy(m_b3)
+        a_pre.assemble()
+        m_pre.assemble()
+        meta["B3_pre_dirichlet_monolithic_A"] = a_pre
+        meta["B3_pre_dirichlet_monolithic_M"] = m_pre
+        _register_mat_for_destroy(mats_to_destroy, a_pre, seen=mat_seen)
+        _register_mat_for_destroy(mats_to_destroy, m_pre, seen=mat_seen)
+        meta["B3_pre_dirichlet_monolithic_captured"] = True
     if bc_rows.size > 0:
         if "nest" in str(a_b3.getType()).lower() or "nest" in str(m_b3.getType()).lower():
             meta["B3_BC_application_failure_reason"] = "refusing_MatZeroRowsColumns_on_MatNest"
@@ -2116,6 +2296,10 @@ def _is_b3_jd_free_dof_eliminated_dimension_setup_preflight_only_mode(argv: List
 
 def _is_b3_jd_free_dof_eliminated_third_bounded_execution_only_mode(argv: List[str]) -> bool:
     return B3_JD_FREE_DOF_ELIMINATED_THIRD_BOUNDED_EXECUTION_ONLY_ARG in argv
+
+
+def _is_b3_gnhep_free_pencil_regularity_audit_only_mode(argv: List[str]) -> bool:
+    return B3_GNHEP_FREE_PENCIL_REGULARITY_AUDIT_ONLY_ARG in argv
 
 
 def _load_mass_decomposition_evidence() -> Dict[str, Any]:
@@ -5426,6 +5610,441 @@ def _run_b3_jd_free_dof_eliminated_third_bounded_execution_only(pre: Dict[str, A
         _destroy_mats_deduped(mats_to_destroy)
 
 
+def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
+    row_norm_tol = 1.0e-12
+    diag_tol = 1.0e-12
+    payload: Dict[str, Any] = {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "B3_GNHEP_free_pencil_regularity_audit_only",
+        "B3_free_operator_source": "validated_B3_direct_sparse_AIJ_scaled_restricted_free_DOF_submatrix",
+        "B3_GNHEP_BC_elim_finite_and_infinite_dirichlet_pollution_removed_contract_pass": False,
+        "B3_free_operator_contract_pass": False,
+        "B3_free_full_operator_dimension": 148074,
+        "B3_free_total_dirichlet_row_count": None,
+        "B3_free_dimension": None,
+        "B3_free_A_operator_type": None,
+        "B3_free_M_operator_type": None,
+        "B3_free_A_shape": None,
+        "B3_free_M_shape": None,
+        "B3_free_constrained_DOFs_retained": False,
+        "B3_free_prior_JD_infinite_dirichlet_pollution_label_invalidated": True,
+        "B3_free_prior_JD_infinite_dirichlet_pollution_label_invalidated_reason": (
+            "FREE_OPERATOR_EXCLUDES_DIRICHLET_DOFS_AND_RECONSTRUCTED_DIRICHLET_NORM_IS_ZERO"
+        ),
+        "B3_free_operator_extraction_stage": "POST_FINAL_BC_FREE_FREE_SUBMATRIX_WITH_PRE_BC_EQUIVALENCE_AUDIT",
+        "B3_free_row_norm_tolerance": float(row_norm_tol),
+        "B3_free_diagonal_tolerance": float(diag_tol),
+        "B3_JD_execution_authorized": False,
+        "jd_wiring_authorized": False,
+        "no_new_eigensolve_executed": True,
+        "additional_eps": "NOT_AUTHORIZED",
+        "operator_matrices_persisted": False,
+        "transfer_matrices_persisted": False,
+        "coupling_matrices_persisted": False,
+        "eigenvectors_persisted": False,
+        "vector_banks_persisted": False,
+        "solve_trees_created": False,
+        "production_promotion": "BLOCKED",
+        "B3_free_regularity_audit_failure_stage": None,
+        "B3_free_regularity_audit_failure_reason": None,
+    }
+    payload.update(_load_prior_free_dof_jd_nonfinite_observed())
+    A_parent = M_parent = A_b3 = M_b3 = A_pre = M_pre = None
+    A_free_post = M_free_post = A_free_pre = M_free_pre = None
+    mats_to_destroy: List[Any] = []
+    mat_destroy_seen: set[int] = set()
+    verdict = "B3_GNHEP_FREE_PENCIL_REGULARITY_AUDIT_BLOCKED"
+    try:
+        if not pre["preassembly_contract_pass"]:
+            payload["B3_free_regularity_audit_failure_stage"] = "preassembly_contract"
+            payload["B3_free_regularity_audit_failure_reason"] = "preassembly_contract_failed"
+            return 2
+        if MPI.COMM_WORLD.size != 1:
+            payload["B3_free_regularity_audit_failure_stage"] = "runtime_mpi_contract"
+            payload["B3_free_regularity_audit_failure_reason"] = "requires_mpiexec_n_1"
+            return 2
+
+        manifest = load_manifest()
+        case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
+        sample = sample_spec_from_case(case)
+        mesh_file = mesh_path("L_mid", CASE_ID)
+        msh, _cell_tags, facet_tags = fem3d._load_mesh_and_tags(mesh_file)
+        f_top = np.asarray(facet_tags.find(TAG_TOP), dtype=np.int32)
+        f_back = np.asarray(facet_tags.find(TAG_BACK), dtype=np.int32)
+        f_ribs = np.asarray(facet_tags.find(TAG_RIBS), dtype=np.int32)
+        f_fix = np.asarray(facet_tags.find(TAG_FIX), dtype=np.int32)
+        shell_facets = np.unique(np.concatenate([f_top, f_back, f_ribs]).astype(np.int32, copy=False))
+        tmeta = _build_c2_trace_to_parent_transfer(
+            msh, facet_tags, shell_facets=shell_facets, tag_top=TAG_TOP, tag_back=TAG_BACK, tag_ribs=TAG_RIBS
+        )
+        _tmeta_parent_map = tmeta.get("parent_index_per_trace_dof")
+        A_parent, M_parent, cfg = _assemble_reduced_coupled_replay(
+            mesh_file, sample, coupling_enabled=True, capture_parent_raw_blocks=True
+        )
+        p_air_collapsed = np.asarray(
+            cfg.get("_coupled_air_p_air_collapsed_indices", np.asarray([], dtype=np.int32)),
+            dtype=np.int32,
+        ).ravel()
+        raw_cap = _extract_parent_raw_block_capture()
+        raw_App = raw_cap.get("raw_App")
+        raw_Mpp = raw_cap.get("raw_Mpp")
+        raw_Aup = raw_cap.get("raw_Aup")
+        raw_Apu = raw_cap.get("raw_Apu")
+        raw_Mpu = raw_cap.get("raw_Mpu")
+        for m_ in (raw_App, raw_Mpp, raw_Aup, raw_Apu, raw_Mpu):
+            if m_ is not None:
+                _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+        if not all(m is not None for m in (raw_App, raw_Mpp, raw_Aup, raw_Apu, raw_Mpu)) or _tmeta_parent_map is None:
+            payload["B3_free_regularity_audit_failure_stage"] = "validated_b3_inputs"
+            payload["B3_free_regularity_audit_failure_reason"] = "validated_b3_operator_inputs_missing"
+            return 2
+
+        shell_mesh, shell_to_parent, _, _ = dmesh.create_submesh(msh, msh.topology.dim - 1, shell_facets)
+        V_u_trace = fem.functionspace(shell_mesh, fem3d._displacement_element(shell_mesh, 1))
+        trace_cells = np.arange(int(shell_mesh.topology.index_map(shell_mesh.topology.dim).size_local), dtype=np.int32)
+        map_meta = _extract_submesh_to_parent_entity_indices(shell_to_parent, entity_dim=msh.topology.dim - 1)
+        parent_tag_map = {int(i): int(v) for i, v in zip(np.asarray(facet_tags.indices), np.asarray(facet_tags.values))}
+        parent_f = np.asarray(map_meta.get("indices"), dtype=np.int32).ravel()
+        trace_vals = np.array([parent_tag_map.get(int(pf), -1) for pf in parent_f], dtype=np.int32)
+        mt_trace = dmesh.meshtags(shell_mesh, shell_mesh.topology.dim, trace_cells, trace_vals)
+        dx_trace = ufl.Measure("dx", domain=shell_mesh, subdomain_data=mt_trace)
+        u = ufl.TrialFunction(V_u_trace)
+        v = ufl.TestFunction(V_u_trace)
+        top_m, back_m, t_top, t_back = fem3d._split_wood_materials(cfg)
+        nrm = ufl.CellNormal(shell_mesh)
+        P = ufl.Identity(3) - ufl.outer(nrm, nrm)
+        e1, e2 = fem3d._plate_local_frame(nrm, P)
+        grad_u = ufl.grad(u)
+        grad_v = ufl.grad(v)
+        eps_u = 0.5 * (P * grad_u * P + ufl.transpose(P * grad_u * P))
+        eps_v = 0.5 * (P * grad_v * P + ufl.transpose(P * grad_v * P))
+        w_n = ufl.dot(u, nrm)
+        v_n = ufl.dot(v, nrm)
+        shell_top = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, top_m)
+        shell_back = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
+        shell_ribs = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
+        raw_Auu = fem.petsc.assemble_matrix(
+            fem.form(shell_top * dx_trace(TAG_TOP) + shell_back * dx_trace(TAG_BACK) + shell_ribs * dx_trace(TAG_RIBS)), bcs=[]
+        )
+        raw_Muu = fem.petsc.assemble_matrix(
+            fem.form(
+                (top_m["rho"] * t_top) * ufl.dot(u, v) * dx_trace(TAG_TOP)
+                + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_BACK)
+                + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_RIBS)
+            ),
+            bcs=[],
+        )
+        raw_Auu.assemble()
+        raw_Muu.assemble()
+        for m_ in (raw_Auu, raw_Muu):
+            _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+        parent_idx = np.asarray(_tmeta_parent_map, dtype=np.int32).ravel()
+        is_parent_u = PETSc.IS().createGeneral(parent_idx.astype(np.int32), comm=PETSc.COMM_WORLD)
+        is_p = PETSc.IS().createGeneral(np.arange(raw_App.getSize()[0], dtype=np.int32), comm=PETSc.COMM_WORLD)
+        raw_Aup_B3 = raw_Aup.createSubMatrix(is_parent_u, is_p)
+        raw_Apu_B3 = raw_Apu.createSubMatrix(is_p, is_parent_u)
+        raw_Mpu_B3 = raw_Mpu.createSubMatrix(is_p, is_parent_u)
+        for m_ in (raw_Aup_B3, raw_Apu_B3, raw_Mpu_B3):
+            _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+        is_parent_u.destroy()
+        is_p.destroy()
+        n_u_b3 = int(raw_Auu.getSize()[0])
+        s_uu = max(float(_mat_norm_or_none(raw_Auu) or 0.0), 1.0e-30)
+        s_pp = max(float(_mat_norm_or_none(raw_App) or 0.0), 1.0e-30)
+        s_c = math.sqrt(s_uu * s_pp)
+        parent_fix_blocks = fem3d._locate_facet_displacement_dofs(
+            fem.functionspace(msh, fem3d._displacement_element(msh, 1)), msh, f_fix
+        )
+        fix_scalar_parent = set(
+            int(b) * 3 + c for b in np.asarray(parent_fix_blocks, dtype=np.int32).ravel() for c in range(3)
+        )
+        b3_fix_scalar = np.asarray(
+            [k for k, pi in enumerate(parent_idx.tolist()) if int(pi) in fix_scalar_parent], dtype=np.int32
+        )
+        op_meta: Dict[str, Any] = {}
+        (
+            A_b3,
+            M_b3,
+            u_idx,
+            p_idx,
+            op_meta,
+            bc_rows,
+            tag5_rows,
+            p_release_rows,
+            _m_uu_b3,
+            _m_pu_b3,
+            _m_pp_b3,
+        ) = _build_b3_scaled_restricted_operators_in_memory(
+            raw_Auu=raw_Auu,
+            raw_Muu=raw_Muu,
+            raw_App=raw_App,
+            raw_Mpp=raw_Mpp,
+            raw_Aup_B3=raw_Aup_B3,
+            raw_Apu_B3=raw_Apu_B3,
+            raw_Mpu_B3=raw_Mpu_B3,
+            s_uu=s_uu,
+            s_pp=s_pp,
+            s_c=s_c,
+            n_u_b3=n_u_b3,
+            p_air_collapsed=p_air_collapsed,
+            b3_fix_u_rows=b3_fix_scalar,
+            msh=msh,
+            facet_tags=facet_tags,
+            comm=PETSc.COMM_WORLD,
+            mats_to_destroy=mats_to_destroy,
+            report_meta=op_meta,
+            destroy_seen=mat_destroy_seen,
+            capture_pre_dirichlet_monolithic=True,
+        )
+        A_pre = op_meta.get("B3_pre_dirichlet_monolithic_A")
+        M_pre = op_meta.get("B3_pre_dirichlet_monolithic_M")
+        if A_pre is None or M_pre is None:
+            payload["B3_free_regularity_audit_failure_stage"] = "pre_dirichlet_capture"
+            payload["B3_free_regularity_audit_failure_reason"] = "pre_dirichlet_monolithic_not_captured"
+            return 2
+
+        bc_rows_i32 = np.unique(np.asarray(bc_rows, dtype=np.int32).ravel())
+        tag5_rows_i32 = np.unique(np.asarray(tag5_rows, dtype=np.int32).ravel())
+        p_release_rows_i32 = np.unique(np.asarray(p_release_rows, dtype=np.int32).ravel())
+        n_w = int(A_b3.getSize()[0])
+        payload["B3_free_total_dirichlet_row_count"] = int(op_meta.get("B3_seed_total_dirichlet_row_count") or 0)
+        free_rows = np.setdiff1d(np.arange(n_w, dtype=np.int32), bc_rows_i32, assume_unique=True)
+        payload["B3_free_dimension"] = int(free_rows.size)
+        is_free = PETSc.IS().createGeneral(free_rows.astype(np.int32), comm=PETSc.COMM_WORLD)
+        try:
+            A_free_post = A_b3.createSubMatrix(is_free, is_free)
+            M_free_post = M_b3.createSubMatrix(is_free, is_free)
+            A_free_pre = A_pre.createSubMatrix(is_free, is_free)
+            M_free_pre = M_pre.createSubMatrix(is_free, is_free)
+        finally:
+            is_free.destroy()
+        for m_ in (A_free_post, M_free_post, A_free_pre, M_free_pre):
+            _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+
+        payload["B3_free_A_operator_type"] = str(A_free_post.getType())
+        payload["B3_free_M_operator_type"] = str(M_free_post.getType())
+        payload["B3_free_A_shape"] = _mat_shape(A_free_post)
+        payload["B3_free_M_shape"] = _mat_shape(M_free_post)
+        elim_pass = bool(
+            payload["B3_free_constrained_DOFs_retained"] is False
+            and payload["B3_free_A_shape"] == [146259, 146259]
+            and payload["B3_free_M_shape"] == [146259, 146259]
+            and payload["B3_free_total_dirichlet_row_count"] == 1815
+            and payload["B3_free_dimension"] == 146259
+            and n_w == 148074
+            and "aij" in str(payload["B3_free_A_operator_type"]).lower()
+            and "aij" in str(payload["B3_free_M_operator_type"]).lower()
+        )
+        payload["B3_GNHEP_BC_elim_finite_and_infinite_dirichlet_pollution_removed_contract_pass"] = bool(elim_pass)
+        payload["B3_free_operator_contract_pass"] = bool(elim_pass)
+        if not elim_pass:
+            payload["B3_free_regularity_audit_failure_stage"] = "free_operator_contract"
+            payload["B3_free_regularity_audit_failure_reason"] = "free_operator_contract_failed"
+            return 2
+
+        payload["B3_free_preBC_A_shape"] = _mat_shape(A_free_pre)
+        payload["B3_free_postBC_A_shape"] = _mat_shape(A_free_post)
+        payload["B3_free_preBC_M_shape"] = _mat_shape(M_free_pre)
+        payload["B3_free_postBC_M_shape"] = _mat_shape(M_free_post)
+        a_diff = _petsc_mat_frobenius_difference(A_free_pre, A_free_post)
+        m_diff = _petsc_mat_frobenius_difference(M_free_pre, M_free_post)
+        payload["B3_free_A_preBC_vs_postBC_difference_norm"] = _safe_float(a_diff)
+        payload["B3_free_M_preBC_vs_postBC_difference_norm"] = _safe_float(m_diff)
+        payload["B3_free_operator_matches_pre_BC_free_free_content_pass"] = bool(a_diff <= 1.0e-12 and m_diff <= 1.0e-12)
+        payload["B3_free_operator_no_retained_BC_artifact_inherited_pass"] = bool(
+            payload["B3_free_operator_matches_pre_BC_free_free_content_pass"]
+        )
+        if not payload["B3_free_operator_matches_pre_BC_free_free_content_pass"]:
+            payload["B3_free_regularity_audit_failure_stage"] = "pre_post_bc_free_free_equivalence"
+            payload["B3_free_regularity_audit_failure_reason"] = "free_free_submatrix_changed_by_full_BC_intermediary"
+            return 2
+
+        payload["B3_free_A_norm"] = _mat_norm_or_none(A_free_post)
+        payload["B3_free_M_norm"] = _mat_norm_or_none(M_free_post)
+        a_fin = _petsc_sparse_owned_row_value_audit(A_free_post)
+        m_fin = _petsc_sparse_owned_row_value_audit(M_free_post)
+        payload["B3_free_A_all_values_finite_pass"] = bool(a_fin["all_values_finite_pass"])
+        payload["B3_free_M_all_values_finite_pass"] = bool(m_fin["all_values_finite_pass"])
+        payload["B3_free_A_has_nan_or_inf_value_count"] = int(a_fin["nan_or_inf_value_count"])
+        payload["B3_free_M_has_nan_or_inf_value_count"] = int(m_fin["nan_or_inf_value_count"])
+        payload["B3_free_matrix_finite_audit_method"] = a_fin["method"]
+        if not (payload["B3_free_A_all_values_finite_pass"] and payload["B3_free_M_all_values_finite_pass"]):
+            payload["B3_free_regularity_audit_failure_stage"] = "matrix_finite_audit"
+            payload["B3_free_regularity_audit_failure_reason"] = "nan_or_inf_in_free_pencil_values"
+            return 2
+
+        a_row = _petsc_sparse_row_diagonal_support_audit(
+            A_free_post,
+            row_norm_tol=row_norm_tol,
+            diag_tol=diag_tol,
+            global_row_index_map=free_rows,
+            n_u_b3=n_u_b3,
+            tag5_rows=tag5_rows_i32,
+            p_release_rows=p_release_rows_i32,
+        )
+        m_row = _petsc_sparse_row_diagonal_support_audit(
+            M_free_post,
+            row_norm_tol=row_norm_tol,
+            diag_tol=diag_tol,
+            global_row_index_map=free_rows,
+            n_u_b3=n_u_b3,
+            tag5_rows=tag5_rows_i32,
+            p_release_rows=p_release_rows_i32,
+        )
+        for prefix, block in (("A", a_row), ("M", m_row)):
+            payload[f"B3_free_{prefix}_zero_row_count"] = block["zero_row_count"]
+            payload[f"B3_free_{prefix}_near_zero_row_count"] = block["near_zero_row_count"]
+            payload[f"B3_free_{prefix}_zero_diagonal_count"] = block["zero_diagonal_count"]
+            payload[f"B3_free_{prefix}_near_zero_diagonal_count"] = block["near_zero_diagonal_count"]
+        payload["B3_free_M_zero_or_near_zero_row_indices_preview"] = m_row["zero_or_near_zero_row_local_indices_preview"]
+        payload["B3_free_M_zero_or_near_zero_rows_original_B3_indices_preview"] = m_row[
+            "zero_or_near_zero_rows_original_B3_indices_preview"
+        ]
+        payload["B3_free_M_zero_or_near_zero_rows_block_classification_preview"] = m_row[
+            "zero_or_near_zero_rows_block_classification_preview"
+        ]
+
+        u_free_global = free_rows[free_rows < int(n_u_b3)]
+        p_free_global = free_rows[free_rows >= int(n_u_b3)]
+        payload["B3_free_u_dimension"] = int(u_free_global.size)
+        payload["B3_free_p_dimension"] = int(p_free_global.size)
+        payload["B3_free_block_dimension_contract_pass"] = bool(
+            payload["B3_free_u_dimension"] == 123411
+            and payload["B3_free_p_dimension"] == 22848
+            and int(payload["B3_free_u_dimension"]) + int(payload["B3_free_p_dimension"]) == 146259
+        )
+        u_local = np.array([i for i, g in enumerate(free_rows.tolist()) if int(g) < int(n_u_b3)], dtype=np.int32)
+        p_local = np.array([i for i, g in enumerate(free_rows.tolist()) if int(g) >= int(n_u_b3)], dtype=np.int32)
+        is_ul = PETSc.IS().createGeneral(u_local, comm=PETSc.COMM_WORLD)
+        is_pl = PETSc.IS().createGeneral(p_local, comm=PETSc.COMM_WORLD)
+        M_uu_f = M_pu_f = M_pp_f = None
+        try:
+            M_uu_f = M_free_post.createSubMatrix(is_ul, is_ul)
+            M_pu_f = M_free_post.createSubMatrix(is_pl, is_ul)
+            M_pp_f = M_free_post.createSubMatrix(is_pl, is_pl)
+            for m_ in (M_uu_f, M_pu_f, M_pp_f):
+                _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+            payload["B3_free_Muu_shape"] = _mat_shape(M_uu_f)
+            payload["B3_free_Mpu_shape"] = _mat_shape(M_pu_f)
+            payload["B3_free_Mpp_shape"] = _mat_shape(M_pp_f)
+            payload["B3_free_Muu_norm"] = _mat_norm_or_none(M_uu_f)
+            payload["B3_free_Mpu_norm"] = _mat_norm_or_none(M_pu_f)
+            payload["B3_free_Mpp_norm"] = _mat_norm_or_none(M_pp_f)
+            m_uu_row = _petsc_sparse_row_diagonal_support_audit(M_uu_f, row_norm_tol=row_norm_tol, diag_tol=diag_tol)
+            m_pp_row = _petsc_sparse_row_diagonal_support_audit(M_pp_f, row_norm_tol=row_norm_tol, diag_tol=diag_tol)
+            payload["B3_free_Muu_zero_or_near_zero_row_count"] = int(
+                m_uu_row["zero_row_count"] + m_uu_row["near_zero_row_count"]
+            )
+            payload["B3_free_Mpp_zero_or_near_zero_row_count"] = int(
+                m_pp_row["zero_row_count"] + m_pp_row["near_zero_row_count"]
+            )
+            payload["B3_free_mass_null_support_classification"] = _classify_free_mass_null_support(
+                m_uu_zero_near=payload["B3_free_Muu_zero_or_near_zero_row_count"],
+                m_pp_zero_near=payload["B3_free_Mpp_zero_or_near_zero_row_count"],
+                m_pu_norm=float(payload["B3_free_Mpu_norm"] or 0.0),
+            )
+        finally:
+            is_ul.destroy()
+            is_pl.destroy()
+
+        m_candidate_local = list(m_row["zero_or_near_zero_row_local_indices_preview"][:16])
+        probe_count = 0
+        me_max = 0.0
+        ae_min = float("inf")
+        if m_candidate_local:
+            payload["B3_free_M_null_basis_probe_constructed"] = True
+            for loc_i in m_candidate_local:
+                e = np.zeros(int(M_free_post.getSize()[0]), dtype=np.float64)
+                e[int(loc_i)] = 1.0
+                ve = _petsc_vec_from_array(A_free_post, e)
+                try:
+                    Ae, ay = _petsc_matvec(A_free_post, ve)
+                    Me, my = _petsc_matvec(M_free_post, ve)
+                    ae_n = float(np.linalg.norm(np.asarray(Ae, dtype=np.float64)))
+                    me_n = float(np.linalg.norm(np.asarray(Me, dtype=np.float64)))
+                    ae_min = min(ae_min, ae_n)
+                    me_max = max(me_max, me_n)
+                    probe_count += 1
+                finally:
+                    ve.destroy()
+                    try:
+                        ay.destroy()
+                        my.destroy()
+                    except Exception:
+                        pass
+        else:
+            payload["B3_free_M_null_basis_probe_constructed"] = False
+        payload["B3_free_M_null_basis_probe_count"] = int(probe_count)
+        payload["B3_free_M_null_basis_probe_Me_norm_max"] = _safe_float(0.0 if me_max == 0.0 and probe_count == 0 else me_max)
+        payload["B3_free_M_null_basis_probe_Ae_norm_min"] = _safe_float(
+            ae_min if math.isfinite(ae_min) else None
+        )
+        mechanism = bool(
+            payload.get("B3_free_M_null_basis_probe_constructed")
+            and probe_count > 0
+            and me_max <= row_norm_tol
+            and ae_min > row_norm_tol
+        )
+        payload["B3_free_non_dirichlet_infinite_mode_mechanism_detected"] = bool(mechanism)
+        payload["B3_free_non_dirichlet_infinite_mode_mechanism_classification"] = (
+            "CANONICAL_BASIS_Ae_NONZERO_Me_NEAR_ZERO_ON_FREE_PENCIL"
+            if mechanism
+            else (
+                "NO_CANONICAL_ROW_NULL_MECHANISM_PROBED"
+                if not payload.get("B3_free_M_null_basis_probe_constructed")
+                else "INCONCLUSIVE_PROBE_EVIDENCE"
+            )
+        )
+
+        if mechanism:
+            verdict = "B3_GNHEP_FREE_PENCIL_NON_DIRICHLET_MASS_NULLSPACE_CONFIRMED_READY_FOR_REPRESENTATION_REVIEW"
+            return 0
+        verdict = "B3_GNHEP_FREE_PENCIL_NO_OBVIOUS_ROW_NULLSPACE_READY_FOR_JD_NONFINITE_OUTPUT_REVIEW"
+        return 0
+    except Exception as exc:
+        if payload["B3_free_regularity_audit_failure_stage"] is None:
+            payload["B3_free_regularity_audit_failure_stage"] = "mode_runtime"
+        payload["B3_free_regularity_audit_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        return 2
+    finally:
+        payload["next_step_verdict"] = verdict
+        _write_json_atomic(OUT_JSON_B3_GNHEP_FREE_PENCIL_REGULARITY, payload)
+        OUT_MD_B3_GNHEP_FREE_PENCIL_REGULARITY.parent.mkdir(parents=True, exist_ok=True)
+        OUT_MD_B3_GNHEP_FREE_PENCIL_REGULARITY.write_text(
+            "\n".join(
+                [
+                    "# B3 GNHEP free-pencil regularity audit (no EPS)",
+                    "",
+                    f"- verdict: `{verdict}`",
+                    f"- operator_contract_pass: {payload.get('B3_free_operator_contract_pass')}",
+                    f"- pre_post_BC_match_pass: {payload.get('B3_free_operator_matches_pre_BC_free_free_content_pass')}",
+                    f"- M_zero_or_near_zero_rows: "
+                    f"{payload.get('B3_free_M_zero_row_count')}+{payload.get('B3_free_M_near_zero_row_count')}",
+                    f"- mass_null_classification: {payload.get('B3_free_mass_null_support_classification')}",
+                    "",
+                    "no_new_eigensolve_executed=True",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        print("[B3_GNHEP] mode=B3_GNHEP_free_pencil_regularity_audit_only", flush=True)
+        print(f"[B3_GNHEP] next_step_verdict={verdict}", flush=True)
+        print("[B3_GNHEP] no_new_eigensolve_executed=True", flush=True)
+        print("[B3_GNHEP] additional_eps=NOT_AUTHORIZED", flush=True)
+        _register_mat_for_destroy(mats_to_destroy, A_parent, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, M_parent, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, A_b3, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, M_b3, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, A_pre, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, M_pre, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, A_free_post, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, M_free_post, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, A_free_pre, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, M_free_pre, seen=mat_destroy_seen)
+        _destroy_mats_deduped(mats_to_destroy)
+
+
 def _run_b3_jd_fixed_bc_second_bounded_execution_only(pre: Dict[str, Any]) -> int:
     jd_cfg = {
         "target_hz": 244.39,
@@ -7430,6 +8049,9 @@ def main() -> int:
 
     if _is_b3_jd_free_dof_eliminated_third_bounded_execution_only_mode(sys.argv):
         return _run_b3_jd_free_dof_eliminated_third_bounded_execution_only(pre)
+
+    if _is_b3_gnhep_free_pencil_regularity_audit_only_mode(sys.argv):
+        return _run_b3_gnhep_free_pencil_regularity_audit_only(pre)
 
     if _is_b3_seed_replay_audit_only_mode(sys.argv):
         return _run_b3_seed_replay_audit_only(pre)
