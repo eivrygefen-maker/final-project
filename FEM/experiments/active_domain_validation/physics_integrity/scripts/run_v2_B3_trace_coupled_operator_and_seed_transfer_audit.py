@@ -570,6 +570,136 @@ def _petsc_mat_global_nnz_used(mat: Any) -> int:
     return 0
 
 
+B3_LOC_OPERATOR_NONZERO_TOL = 1.0e-12
+
+
+def _b3_loc_float_norm(norm: Any) -> float:
+    if norm is None:
+        return 0.0
+    if isinstance(norm, str):
+        return 0.0
+    try:
+        v = float(norm)
+        return v if math.isfinite(v) else 0.0
+    except Exception:
+        return 0.0
+
+
+def _b3_loc_nonzero_contract_pass(norm: Any, nz_used: int, *, tol: float = B3_LOC_OPERATOR_NONZERO_TOL) -> bool:
+    return bool(_b3_loc_float_norm(norm) > float(tol) and int(nz_used or 0) > 0)
+
+
+def _b3_loc_operator_is_zero_or_empty(norm: Any, nz_used: int, *, tol: float = B3_LOC_OPERATOR_NONZERO_TOL) -> bool:
+    return bool(_b3_loc_float_norm(norm) <= float(tol) or int(nz_used or 0) <= 0)
+
+
+def _petsc_mat_try_assemble(mat: Any) -> bool:
+    try:
+        mat.assemble()
+        return True
+    except Exception:
+        return False
+
+
+def _b3_loc_record_child_blocks_in_meta(
+    meta: Dict[str, Any],
+    *,
+    a_uu: Any,
+    a_up: Any,
+    a_pu: Any,
+    a_pp: Any,
+    m_uu: Any,
+    m_pu: Any,
+    m_pp: Any,
+) -> None:
+    """Stage A: restricted scaled child blocks immediately before monolithic AIJ insertion."""
+    a_any = False
+    m_any = False
+    for name, mat in (
+        ("Auu", a_uu),
+        ("Aup", a_up),
+        ("Apu", a_pu),
+        ("App", a_pp),
+        ("Muu", m_uu),
+        ("Mpu", m_pu),
+        ("Mpp", m_pp),
+    ):
+        nz = int(_petsc_mat_global_nnz_used(mat))
+        norm = _mat_norm_or_none(mat)
+        meta[f"B3_loc_child_{name}_shape"] = _mat_shape(mat)
+        meta[f"B3_loc_child_{name}_norm"] = _safe_float(norm)
+        meta[f"B3_loc_child_{name}_nz_used"] = nz
+        if name.startswith("A"):
+            a_any = a_any or _b3_loc_nonzero_contract_pass(norm, nz)
+        else:
+            m_any = m_any or _b3_loc_nonzero_contract_pass(norm, nz)
+    meta["B3_loc_child_A_any_nonzero_pass"] = bool(a_any)
+    meta["B3_loc_child_M_any_nonzero_pass"] = bool(m_any)
+
+
+def _b3_loc_full_monolithic_evidence(A: Any, M: Any, *, stage: str) -> Dict[str, Any]:
+    """Stage B/C fields: stage is ``preBC_full`` or ``postBC_full``."""
+    out: Dict[str, Any] = {}
+    for sym, mat in (("A", A), ("M", M)):
+        stem = f"B3_loc_{stage}_{sym}"
+        norm = _mat_norm_or_none(mat)
+        nz = int(_petsc_mat_global_nnz_used(mat))
+        out[f"{stem}_shape"] = _mat_shape(mat)
+        out[f"{stem}_norm"] = _safe_float(norm)
+        out[f"{stem}_nz_used"] = nz
+        out[f"{stem}_nonzero_contract_pass"] = bool(_b3_loc_nonzero_contract_pass(norm, nz))
+    return out
+
+
+def _b3_loc_free_submatrix_evidence(A: Any, M: Any, *, stage: str) -> Dict[str, Any]:
+    """Stage D fields: stage is ``preBC_free`` or ``postBC_free``."""
+    out: Dict[str, Any] = {}
+    for sym, mat in (("A", A), ("M", M)):
+        stem = f"B3_loc_{stage}_{sym}"
+        norm = _mat_norm_or_none(mat)
+        nz = int(_petsc_mat_global_nnz_used(mat))
+        out[f"{stem}_norm"] = _safe_float(norm)
+        out[f"{stem}_nz_used"] = nz
+    a_norm = out[f"B3_loc_{stage}_A_norm"]
+    m_norm = out[f"B3_loc_{stage}_M_norm"]
+    a_nz = out[f"B3_loc_{stage}_A_nz_used"]
+    m_nz = out[f"B3_loc_{stage}_M_nz_used"]
+    out[f"B3_loc_{stage}_operator_nonzero_contract_pass"] = bool(
+        _b3_loc_nonzero_contract_pass(a_norm, a_nz) and _b3_loc_nonzero_contract_pass(m_norm, m_nz)
+    )
+    return out
+
+
+def _b3_loc_classify_first_zero_stage(payload: Dict[str, Any]) -> str:
+    child_ok = bool(
+        payload.get("B3_loc_child_A_any_nonzero_pass") or payload.get("B3_loc_child_M_any_nonzero_pass")
+    )
+    if not child_ok:
+        return "CHILD_BLOCKS_ALREADY_ZERO"
+    pre_ok = bool(
+        payload.get("B3_loc_preBC_full_A_nonzero_contract_pass")
+        and payload.get("B3_loc_preBC_full_M_nonzero_contract_pass")
+    )
+    if not pre_ok:
+        return "DIRECT_MONOLITHIC_INSERTION_OUTPUT_ZERO"
+    post_full_ok = bool(
+        payload.get("B3_loc_postBC_full_A_nonzero_contract_pass")
+        and payload.get("B3_loc_postBC_full_M_nonzero_contract_pass")
+    )
+    if not post_full_ok:
+        return "POST_BC_FULL_OPERATOR_ZEROED"
+    post_free_ok = bool(payload.get("B3_loc_postBC_free_operator_nonzero_contract_pass"))
+    if not post_free_ok:
+        return "FREE_SUBMATRIX_EXTRACTION_ZERO"
+    return "NO_ZERO_STAGE_DETECTED"
+
+
+def _b3_loc_merge_meta_keys(payload: Dict[str, Any], meta: Dict[str, Any]) -> None:
+    for key, val in meta.items():
+        if str(key).startswith("B3_loc_"):
+            payload[key] = val
+
+
 def _petsc_insert_block_into_monolithic(
     dest: Any,
     src: Any,
@@ -803,6 +933,7 @@ def _build_b3_scaled_restricted_operators_in_memory(
     report_meta: Dict[str, Any] | None = None,
     destroy_seen: set[int] | None = None,
     capture_pre_dirichlet_monolithic: bool = False,
+    emit_localization_evidence: bool = False,
 ) -> tuple[Any, Any, np.ndarray, np.ndarray, Dict[str, Any], np.ndarray, np.ndarray, np.ndarray, Any, Any, Any]:
     meta: Dict[str, Any] = report_meta if report_meta is not None else {}
     mat_seen: set[int] = destroy_seen if destroy_seen is not None else set()
@@ -899,6 +1030,18 @@ def _build_b3_scaled_restricted_operators_in_memory(
         )
         raise RuntimeError(meta["B3_sparse_blockwise_pressure_restriction_failure_reason"])
     meta["B3_seed_operator_build_stage"] = "sparse_blockwise_pressure_restriction_complete"
+
+    if emit_localization_evidence:
+        _b3_loc_record_child_blocks_in_meta(
+            meta,
+            a_uu=a_uu,
+            a_up=a_up_act,
+            a_pu=a_pu_act,
+            a_pp=a_pp_act,
+            m_uu=m_uu,
+            m_pu=m_pu_act,
+            m_pp=m_pp_act,
+        )
 
     for m_ in (a_uu, m_uu, a_up_act, a_pu_act, m_pu_act, a_pp_act, m_pp_act):
         _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_seen)
@@ -5683,6 +5826,15 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
         "B3_free_audit_failure_exception_type": None,
         "B3_GNHEP_free_pencil_regularity_failure_stage": None,
         "B3_GNHEP_free_pencil_regularity_failure_reason": None,
+        "B3_prior_free_DOF_JD_result_status": (
+            "POTENTIALLY_INVALID_PENDING_NONZERO_FREE_OPERATOR_CONTRACT"
+        ),
+        "B3_loc_first_zero_stage": None,
+        "B3_loc_free_submatrix_explicit_assemble_called": False,
+        "B3_free_zero_A_operator_detected": False,
+        "B3_free_zero_M_operator_detected": False,
+        "B3_free_zero_pencil_detected": False,
+        "B3_free_operator_nonzero_contract_pass": False,
     }
     payload.update(_load_prior_free_dof_jd_nonfinite_observed())
     A_parent = M_parent = A_b3 = M_b3 = A_pre = M_pre = None
@@ -5845,7 +5997,9 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
             report_meta=op_meta,
             destroy_seen=mat_destroy_seen,
             capture_pre_dirichlet_monolithic=True,
+            emit_localization_evidence=True,
         )
+        _b3_loc_merge_meta_keys(payload, op_meta)
         A_pre = op_meta.get("B3_pre_dirichlet_monolithic_A")
         M_pre = op_meta.get("B3_pre_dirichlet_monolithic_M")
         if A_pre is None or M_pre is None:
@@ -5855,6 +6009,8 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
                 reason="pre_dirichlet_monolithic_not_captured",
             )
             return 2
+        payload.update(_b3_loc_full_monolithic_evidence(A_pre, M_pre, stage="preBC_full"))
+        payload.update(_b3_loc_full_monolithic_evidence(A_b3, M_b3, stage="postBC_full"))
 
         bc_rows_i32 = np.unique(np.asarray(bc_rows, dtype=np.int32).ravel())
         tag5_rows_i32 = np.unique(np.asarray(tag5_rows, dtype=np.int32).ravel())
@@ -5873,6 +6029,54 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
             is_free.destroy()
         for m_ in (A_free_post, M_free_post, A_free_pre, M_free_pre):
             _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+
+        assemble_ok = all(
+            _petsc_mat_try_assemble(m_)
+            for m_ in (A_free_post, M_free_post, A_free_pre, M_free_pre)
+            if m_ is not None
+        )
+        payload["B3_loc_free_submatrix_explicit_assemble_called"] = bool(assemble_ok)
+        payload.update(_b3_loc_free_submatrix_evidence(A_free_pre, M_free_pre, stage="preBC_free"))
+        payload.update(_b3_loc_free_submatrix_evidence(A_free_post, M_free_post, stage="postBC_free"))
+        payload["B3_loc_free_preBC_vs_postBC_difference_A_norm"] = _safe_float(
+            _petsc_mat_frobenius_difference(A_free_pre, A_free_post)
+        )
+        payload["B3_loc_free_preBC_vs_postBC_difference_M_norm"] = _safe_float(
+            _petsc_mat_frobenius_difference(M_free_pre, M_free_post)
+        )
+        payload["B3_loc_first_zero_stage"] = _b3_loc_classify_first_zero_stage(payload)
+
+        post_a_norm = payload.get("B3_loc_postBC_free_A_norm")
+        post_m_norm = payload.get("B3_loc_postBC_free_M_norm")
+        post_a_nz = int(payload.get("B3_loc_postBC_free_A_nz_used") or 0)
+        post_m_nz = int(payload.get("B3_loc_postBC_free_M_nz_used") or 0)
+        payload["B3_free_zero_A_operator_detected"] = bool(
+            _b3_loc_operator_is_zero_or_empty(post_a_norm, post_a_nz)
+        )
+        payload["B3_free_zero_M_operator_detected"] = bool(
+            _b3_loc_operator_is_zero_or_empty(post_m_norm, post_m_nz)
+        )
+        payload["B3_free_zero_pencil_detected"] = bool(
+            payload["B3_free_zero_A_operator_detected"] or payload["B3_free_zero_M_operator_detected"]
+        )
+        payload["B3_free_operator_nonzero_contract_pass"] = bool(
+            payload.get("B3_loc_postBC_free_operator_nonzero_contract_pass")
+        )
+        if not payload["B3_free_operator_nonzero_contract_pass"]:
+            loc_stage = str(payload["B3_loc_first_zero_stage"])
+            loc_reason = (
+                f"postBC_free_operator_zero_or_empty;"
+                f"A_norm={post_a_norm};M_norm={post_m_norm};"
+                f"A_nz_used={post_a_nz};M_nz_used={post_m_nz};"
+                f"first_zero_stage={loc_stage}"
+            )
+            _set_b3_free_pencil_audit_failure(
+                payload,
+                stage=loc_stage,
+                reason=loc_reason,
+            )
+            verdict = "B3_GNHEP_FREE_PENCIL_AUDIT_BLOCKED_BY_ZERO_OR_EMPTY_OPERATOR_CAPTURE"
+            return 2
 
         payload["B3_free_A_operator_type"] = str(A_free_post.getType())
         payload["B3_free_M_operator_type"] = str(M_free_post.getType())
@@ -6072,6 +6276,11 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
         )
         return 2
     finally:
+        if payload.get("B3_loc_first_zero_stage") is None:
+            if payload.get("B3_loc_child_Auu_shape") is not None:
+                payload["B3_loc_first_zero_stage"] = _b3_loc_classify_first_zero_stage(payload)
+            else:
+                payload["B3_loc_first_zero_stage"] = "AUDIT_FAILED_BEFORE_LOCALIZATION"
         _finalize_b3_free_pencil_audit_failure_reporting(payload, verdict=verdict)
         payload["next_step_verdict"] = verdict
         _write_json_atomic(OUT_JSON_B3_GNHEP_FREE_PENCIL_REGULARITY, payload)
@@ -6082,6 +6291,11 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
                     "# B3 GNHEP free-pencil regularity audit (no EPS)",
                     "",
                     f"- verdict: `{verdict}`",
+                    f"- first_zero_stage: `{payload.get('B3_loc_first_zero_stage')}`",
+                    f"- postBC_free_nonzero_contract_pass: "
+                    f"{payload.get('B3_loc_postBC_free_operator_nonzero_contract_pass')}",
+                    f"- free_zero_pencil_detected: {payload.get('B3_free_zero_pencil_detected')}",
+                    f"- prior_JD_status: `{payload.get('B3_prior_free_DOF_JD_result_status')}`",
                     f"- operator_contract_pass: {payload.get('B3_free_operator_contract_pass')}",
                     f"- pre_post_BC_match_pass: {payload.get('B3_free_operator_matches_pre_BC_free_free_content_pass')}",
                     f"- M_zero_or_near_zero_rows: "
