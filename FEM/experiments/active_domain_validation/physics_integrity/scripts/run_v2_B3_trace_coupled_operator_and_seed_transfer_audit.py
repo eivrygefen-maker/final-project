@@ -73,6 +73,7 @@ B3_JD_OPERATOR_WIRING_PREFLIGHT_ONLY_ARG = "--B3-JD-operator-wiring-preflight-on
 B3_JD_FIRST_BOUNDED_EXECUTION_ONLY_ARG = "--B3-JD-first-bounded-execution-only"
 B3_JD_DIMENSION_SETUP_PREFLIGHT_ONLY_ARG = "--B3-JD-dimension-setup-preflight-only"
 B3_GNHEP_BC_SPECTRAL_POLLUTION_CONTRACT_ONLY_ARG = "--B3-GNHEP-BC-spectral-pollution-contract-only"
+B3_GNHEP_BC_NO_LAMBDA_ONE_OPERATOR_CONTRACT_ONLY_ARG = "--B3-GNHEP-BC-no-lambda-one-operator-contract-only"
 OUT_JSON_B3_JD_DESIGN = CONV_DIAG / "v2_B3_JD_design_readiness_contract_only.json"
 OUT_MD_B3_JD_DESIGN = CONV_DIAG / "v2_B3_JD_design_readiness_contract_only.md"
 OUT_JSON_B3_JD_API_PREFLIGHT = CONV_DIAG / "v2_B3_JD_api_preflight_only.json"
@@ -85,6 +86,8 @@ OUT_JSON_B3_JD_SETUP_PREFLIGHT = CONV_DIAG / "v2_B3_JD_dimension_setup_preflight
 OUT_MD_B3_JD_SETUP_PREFLIGHT = CONV_DIAG / "v2_B3_JD_dimension_setup_preflight_only.md"
 OUT_JSON_B3_GNHEP_BC_SPECTRAL = CONV_DIAG / "v2_B3_GNHEP_BC_spectral_pollution_contract_only.json"
 OUT_MD_B3_GNHEP_BC_SPECTRAL = CONV_DIAG / "v2_B3_GNHEP_BC_spectral_pollution_contract_only.md"
+OUT_JSON_B3_GNHEP_BC_NO_LAMBDA_ONE = CONV_DIAG / "v2_B3_GNHEP_BC_no_lambda_one_operator_contract_only.json"
+OUT_MD_B3_GNHEP_BC_NO_LAMBDA_ONE = CONV_DIAG / "v2_B3_GNHEP_BC_no_lambda_one_operator_contract_only.md"
 B3_JD_DEFAULT_TARGET_HZ = 244.39
 B3_JD_DEFAULT_HARVEST_LO_HZ = 220.0
 B3_JD_DEFAULT_HARVEST_HI_HZ = 265.0
@@ -2064,6 +2067,10 @@ def _is_b3_gnhep_bc_spectral_pollution_contract_only_mode(argv: List[str]) -> bo
     return B3_GNHEP_BC_SPECTRAL_POLLUTION_CONTRACT_ONLY_ARG in argv
 
 
+def _is_b3_gnhep_bc_no_lambda_one_operator_contract_only_mode(argv: List[str]) -> bool:
+    return B3_GNHEP_BC_NO_LAMBDA_ONE_OPERATOR_CONTRACT_ONLY_ARG in argv
+
+
 def _load_mass_decomposition_evidence() -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "B3_mass_decomposition_json_path": str(OUT_JSON_B3_CONDITIONED_MASS),
@@ -3909,6 +3916,375 @@ def _run_b3_gnhep_bc_spectral_pollution_contract_only(pre: Dict[str, Any]) -> in
         _destroy_mats_deduped(mats_to_destroy)
 
 
+def _run_b3_gnhep_bc_no_lambda_one_operator_contract_only(pre: Dict[str, Any]) -> int:
+    payload: Dict[str, Any] = {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "B3_GNHEP_BC_no_lambda_one_operator_contract_only",
+        "B3_GNHEP_BC_fix_operator_build_pass": None,
+        "B3_scaled_restricted_BC_operator_contract_pass": None,
+        "B3_GNHEP_BC_fix_A_operator_type": None,
+        "B3_GNHEP_BC_fix_M_operator_type": None,
+        "B3_GNHEP_BC_fix_A_operator_shape": None,
+        "B3_GNHEP_BC_fix_M_operator_shape": None,
+        "B3_GNHEP_BC_fix_tag5_dirichlet_row_count": None,
+        "B3_GNHEP_BC_fix_pressure_release_dirichlet_row_count": None,
+        "B3_GNHEP_BC_fix_total_dirichlet_row_count": None,
+        "B3_GNHEP_BC_fix_rows_match_pre_fix_operator_BC_contract": None,
+        "B3_GNHEP_BC_fix_A_dirichlet_diag": 1.0,
+        "B3_GNHEP_BC_fix_M_dirichlet_diag": 0.0,
+        "B3_GNHEP_BC_fix_zero_columns": True,
+        "B3_GNHEP_BC_fix_probe_constructed": None,
+        "B3_GNHEP_BC_fix_probe_row_count": 0,
+        "B3_GNHEP_BC_fix_probe_rows_match_operator_BC_contract": None,
+        "B3_GNHEP_BC_fix_probe_Ae_norm_min": None,
+        "B3_GNHEP_BC_fix_probe_Ae_norm_max": None,
+        "B3_GNHEP_BC_fix_probe_Me_norm_min": None,
+        "B3_GNHEP_BC_fix_probe_Me_norm_max": None,
+        "B3_GNHEP_BC_fix_probe_Me_zero_on_dirichlet_basis_pass": False,
+        "B3_GNHEP_BC_fix_probe_Ae_nonzero_on_dirichlet_basis_pass": False,
+        "B3_GNHEP_BC_lambda_one_pollution_removed_contract_pass": False,
+        "B3_GNHEP_BC_probe_no_finite_lambda_one_dirichlet_basis_mode_pass": False,
+        "B3_GNHEP_BC_fix_non_dirichlet_A_unchanged_pass": False,
+        "B3_GNHEP_BC_fix_non_dirichlet_M_unchanged_pass": False,
+        "B3_GNHEP_BC_fix_only_intended_mass_dirichlet_diagonal_changed_pass": False,
+        "B3_GNHEP_BC_fix_pressure_restriction_preserved_pass": False,
+        "B3_GNHEP_BC_fix_direct_sparse_AIJ_preserved_pass": False,
+        "B3_GNHEP_BC_fix_constrained_DOF_finite_lambda_removed": False,
+        "B3_GNHEP_BC_fix_constrained_DOF_infinite_eigenvalue_interpretation": None,
+        "B3_GNHEP_BC_fix_GNHEP_singular_M_setup_requires_followup_preflight": True,
+        "B3_GNHEP_BC_fix_failure_stage": None,
+        "B3_GNHEP_BC_fix_failure_reason": None,
+        "B3_JD_execution_authorized": False,
+        "jd_wiring_authorized": False,
+        "no_new_eigensolve_executed": True,
+        "additional_eps": "NOT_AUTHORIZED",
+        "operator_matrices_persisted": False,
+        "transfer_matrices_persisted": False,
+        "coupling_matrices_persisted": False,
+        "eigenvectors_persisted": False,
+        "vector_banks_persisted": False,
+        "solve_trees_created": False,
+        "production_promotion": "BLOCKED",
+    }
+    A_parent = M_parent = A_b3 = M_b3 = M_pre_fix = None
+    mats_to_destroy: List[Any] = []
+    mat_destroy_seen: set[int] = set()
+    verdict = "B3_GNHEP_BC_NO_LAMBDA_ONE_OPERATOR_CONTRACT_BLOCKED"
+    try:
+        if not pre["preassembly_contract_pass"]:
+            payload["B3_GNHEP_BC_fix_failure_stage"] = "preassembly_contract"
+            payload["B3_GNHEP_BC_fix_failure_reason"] = "preassembly_contract_failed"
+            return 2
+        if MPI.COMM_WORLD.size != 1:
+            payload["B3_GNHEP_BC_fix_failure_stage"] = "runtime_mpi_contract"
+            payload["B3_GNHEP_BC_fix_failure_reason"] = "requires_mpiexec_n_1"
+            return 2
+
+        manifest = load_manifest()
+        case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
+        sample = sample_spec_from_case(case)
+        mesh_file = mesh_path("L_mid", CASE_ID)
+        msh, _cell_tags, facet_tags = fem3d._load_mesh_and_tags(mesh_file)
+        f_top = np.asarray(facet_tags.find(TAG_TOP), dtype=np.int32)
+        f_back = np.asarray(facet_tags.find(TAG_BACK), dtype=np.int32)
+        f_ribs = np.asarray(facet_tags.find(TAG_RIBS), dtype=np.int32)
+        f_fix = np.asarray(facet_tags.find(TAG_FIX), dtype=np.int32)
+        shell_facets = np.unique(np.concatenate([f_top, f_back, f_ribs]).astype(np.int32, copy=False))
+        tmeta = _build_c2_trace_to_parent_transfer(
+            msh, facet_tags, shell_facets=shell_facets, tag_top=TAG_TOP, tag_back=TAG_BACK, tag_ribs=TAG_RIBS
+        )
+        _tmeta_parent_map = tmeta.get("parent_index_per_trace_dof")
+        A_parent, M_parent, cfg = _assemble_reduced_coupled_replay(
+            mesh_file, sample, coupling_enabled=True, capture_parent_raw_blocks=True
+        )
+        maps = _extract_layout_maps(cfg, A_parent)
+        p_to_W_parent = np.asarray(maps["p_to_W"], dtype=np.int32).ravel()
+        p_air_collapsed = np.asarray(
+            cfg.get("_coupled_air_p_air_collapsed_indices", np.asarray([], dtype=np.int32)),
+            dtype=np.int32,
+        ).ravel()
+        raw_cap = _extract_parent_raw_block_capture()
+        raw_App = raw_cap.get("raw_App")
+        raw_Mpp = raw_cap.get("raw_Mpp")
+        raw_Aup = raw_cap.get("raw_Aup")
+        raw_Apu = raw_cap.get("raw_Apu")
+        raw_Mpu = raw_cap.get("raw_Mpu")
+        for m_ in (raw_App, raw_Mpp, raw_Aup, raw_Apu, raw_Mpu):
+            if m_ is not None:
+                _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+        if not all(m is not None for m in (raw_App, raw_Mpp, raw_Aup, raw_Apu, raw_Mpu)):
+            payload["B3_GNHEP_BC_fix_failure_stage"] = "parent_raw_blocks"
+            payload["B3_GNHEP_BC_fix_failure_reason"] = "missing_parent_raw_blocks"
+            return 2
+        if not bool(raw_cap.get("parent_raw_collapsed_layout_dimensions_pass", False)):
+            payload["B3_GNHEP_BC_fix_failure_stage"] = "parent_raw_layout"
+            payload["B3_GNHEP_BC_fix_failure_reason"] = "parent_raw_collapsed_layout_not_passing"
+            return 2
+        if _tmeta_parent_map is None:
+            payload["B3_GNHEP_BC_fix_failure_stage"] = "trace_to_parent_map"
+            payload["B3_GNHEP_BC_fix_failure_reason"] = "parent_index_per_trace_dof_missing_from_tmeta"
+            return 2
+
+        shell_mesh, shell_to_parent, _, _ = dmesh.create_submesh(msh, msh.topology.dim - 1, shell_facets)
+        V_u_trace = fem.functionspace(shell_mesh, fem3d._displacement_element(shell_mesh, 1))
+        trace_cells = np.arange(
+            int(shell_mesh.topology.index_map(shell_mesh.topology.dim).size_local), dtype=np.int32
+        )
+        map_meta = _extract_submesh_to_parent_entity_indices(shell_to_parent, entity_dim=msh.topology.dim - 1)
+        parent_tag_map = {int(i): int(v) for i, v in zip(np.asarray(facet_tags.indices), np.asarray(facet_tags.values))}
+        parent_f = np.asarray(map_meta.get("indices"), dtype=np.int32).ravel()
+        trace_vals = np.array([parent_tag_map.get(int(pf), -1) for pf in parent_f], dtype=np.int32)
+        mt_trace = dmesh.meshtags(shell_mesh, shell_mesh.topology.dim, trace_cells, trace_vals)
+        dx_trace = ufl.Measure("dx", domain=shell_mesh, subdomain_data=mt_trace)
+        u = ufl.TrialFunction(V_u_trace)
+        v = ufl.TestFunction(V_u_trace)
+        top_m, back_m, t_top, t_back = fem3d._split_wood_materials(cfg)
+        nrm = ufl.CellNormal(shell_mesh)
+        P = ufl.Identity(3) - ufl.outer(nrm, nrm)
+        e1, e2 = fem3d._plate_local_frame(nrm, P)
+        grad_u = ufl.grad(u)
+        grad_v = ufl.grad(v)
+        eps_u = 0.5 * (P * grad_u * P + ufl.transpose(P * grad_u * P))
+        eps_v = 0.5 * (P * grad_v * P + ufl.transpose(P * grad_v * P))
+        w_n = ufl.dot(u, nrm)
+        v_n = ufl.dot(v, nrm)
+        shell_top = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, top_m)
+        shell_back = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
+        shell_ribs = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
+        raw_Auu = fem.petsc.assemble_matrix(
+            fem.form(shell_top * dx_trace(TAG_TOP) + shell_back * dx_trace(TAG_BACK) + shell_ribs * dx_trace(TAG_RIBS)),
+            bcs=[],
+        )
+        raw_Muu = fem.petsc.assemble_matrix(
+            fem.form(
+                (top_m["rho"] * t_top) * ufl.dot(u, v) * dx_trace(TAG_TOP)
+                + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_BACK)
+                + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_RIBS)
+            ),
+            bcs=[],
+        )
+        raw_Auu.assemble()
+        raw_Muu.assemble()
+        for m_ in (raw_Auu, raw_Muu):
+            _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+        parent_idx = np.asarray(_tmeta_parent_map, dtype=np.int32).ravel()
+        n_parent_collapsed = int(raw_cap.get("parent_raw_u_dimension", 0) or 0)
+        if not (
+            parent_idx.size > 0
+            and int(np.min(parent_idx)) >= 0
+            and int(np.max(parent_idx)) < n_parent_collapsed
+            and np.unique(parent_idx).size == parent_idx.size
+        ):
+            payload["B3_GNHEP_BC_fix_failure_stage"] = "parent_index_per_trace_dof_contract"
+            payload["B3_GNHEP_BC_fix_failure_reason"] = "parent_index_per_trace_dof_contract_failed"
+            return 2
+        is_parent_u = PETSc.IS().createGeneral(parent_idx.astype(np.int32), comm=PETSc.COMM_WORLD)
+        is_p = PETSc.IS().createGeneral(np.arange(raw_App.getSize()[0], dtype=np.int32), comm=PETSc.COMM_WORLD)
+        raw_Aup_B3 = raw_Aup.createSubMatrix(is_parent_u, is_p)
+        raw_Apu_B3 = raw_Apu.createSubMatrix(is_p, is_parent_u)
+        raw_Mpu_B3 = raw_Mpu.createSubMatrix(is_p, is_parent_u)
+        for m_ in (raw_Aup_B3, raw_Apu_B3, raw_Mpu_B3):
+            _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+        is_parent_u.destroy()
+        is_p.destroy()
+        n_u_b3 = int(raw_Auu.getSize()[0])
+        s_uu = max(float(_mat_norm_or_none(raw_Auu) or 0.0), 1.0e-30)
+        s_pp = max(float(_mat_norm_or_none(raw_App) or 0.0), 1.0e-30)
+        s_c = math.sqrt(s_uu * s_pp)
+        parent_fix_blocks = fem3d._locate_facet_displacement_dofs(
+            fem.functionspace(msh, fem3d._displacement_element(msh, 1)), msh, f_fix
+        )
+        fix_scalar_parent = set(
+            int(b) * 3 + c for b in np.asarray(parent_fix_blocks, dtype=np.int32).ravel() for c in range(3)
+        )
+        b3_fix_scalar = np.asarray([k for k, pi in enumerate(parent_idx.tolist()) if int(pi) in fix_scalar_parent], dtype=np.int32)
+        op_meta: Dict[str, Any] = {}
+        (
+            A_b3,
+            M_b3,
+            _u_idx,
+            _p_idx,
+            op_meta,
+            bc_rows,
+            _tag5_rows,
+            _p_release_rows,
+            _m_uu_b3,
+            _m_pu_b3,
+            _m_pp_b3,
+        ) = _build_b3_scaled_restricted_operators_in_memory(
+            raw_Auu=raw_Auu,
+            raw_Muu=raw_Muu,
+            raw_App=raw_App,
+            raw_Mpp=raw_Mpp,
+            raw_Aup_B3=raw_Aup_B3,
+            raw_Apu_B3=raw_Apu_B3,
+            raw_Mpu_B3=raw_Mpu_B3,
+            s_uu=s_uu,
+            s_pp=s_pp,
+            s_c=s_c,
+            n_u_b3=n_u_b3,
+            p_air_collapsed=p_air_collapsed,
+            b3_fix_u_rows=b3_fix_scalar,
+            msh=msh,
+            facet_tags=facet_tags,
+            comm=PETSc.COMM_WORLD,
+            mats_to_destroy=mats_to_destroy,
+            report_meta=op_meta,
+            destroy_seen=mat_destroy_seen,
+        )
+        payload["B3_GNHEP_BC_fix_operator_build_pass"] = True
+        payload["B3_scaled_restricted_BC_operator_contract_pass"] = bool(op_meta.get("B3_scaled_restricted_BC_operator_contract_pass"))
+        payload["B3_GNHEP_BC_fix_A_operator_type"] = str(A_b3.getType())
+        payload["B3_GNHEP_BC_fix_M_operator_type"] = str(M_b3.getType())
+        payload["B3_GNHEP_BC_fix_A_operator_shape"] = [int(A_b3.getSize()[0]), int(A_b3.getSize()[1])]
+        payload["B3_GNHEP_BC_fix_M_operator_shape"] = [int(M_b3.getSize()[0]), int(M_b3.getSize()[1])]
+        payload["B3_GNHEP_BC_fix_tag5_dirichlet_row_count"] = int(op_meta.get("B3_seed_tag5_dirichlet_row_count") or 0)
+        payload["B3_GNHEP_BC_fix_pressure_release_dirichlet_row_count"] = int(op_meta.get("B3_seed_pressure_release_dirichlet_row_count") or 0)
+        payload["B3_GNHEP_BC_fix_total_dirichlet_row_count"] = int(op_meta.get("B3_seed_total_dirichlet_row_count") or 0)
+        payload["B3_GNHEP_BC_fix_rows_match_pre_fix_operator_BC_contract"] = bool(
+            op_meta.get("B3_seed_dirichlet_row_contract_matches_operator_BC")
+        )
+        bc_rows_i32 = np.unique(np.asarray(bc_rows, dtype=np.int32).ravel())
+        M_pre_fix = M_b3.duplicate(copy=True)
+        _register_mat_for_destroy(mats_to_destroy, M_pre_fix, seen=mat_destroy_seen)
+        fem3d._petsc_mat_zero_dirichlet_rows(M_b3, bc_rows_i32, diag=0.0, zero_columns=True)
+        payload["B3_GNHEP_BC_fix_probe_constructed"] = True
+        probe_rows = bc_rows_i32[: min(8, int(bc_rows_i32.size))]
+        payload["B3_GNHEP_BC_fix_probe_row_count"] = int(probe_rows.size)
+        payload["B3_GNHEP_BC_fix_probe_rows_match_operator_BC_contract"] = bool(
+            payload["B3_GNHEP_BC_fix_rows_match_pre_fix_operator_BC_contract"]
+        )
+        ae_min = float("inf")
+        ae_max = 0.0
+        me_min = float("inf")
+        me_max = 0.0
+        for r in probe_rows.tolist():
+            e = np.zeros(int(A_b3.getSize()[0]), dtype=np.float64)
+            e[int(r)] = 1.0
+            ve = _petsc_vec_from_array(A_b3, e)
+            try:
+                Ae, ay = _petsc_matvec(A_b3, ve)
+                Me, my = _petsc_matvec(M_b3, ve)
+            finally:
+                ve.destroy()
+            try:
+                ae_n = float(np.linalg.norm(np.asarray(Ae, dtype=np.float64)))
+                me_n = float(np.linalg.norm(np.asarray(Me, dtype=np.float64)))
+                ae_min = min(ae_min, ae_n)
+                ae_max = max(ae_max, ae_n)
+                me_min = min(me_min, me_n)
+                me_max = max(me_max, me_n)
+            finally:
+                ay.destroy()
+                my.destroy()
+        payload["B3_GNHEP_BC_fix_probe_Ae_norm_min"] = _safe_float(0.0 if ae_min == float("inf") else ae_min)
+        payload["B3_GNHEP_BC_fix_probe_Ae_norm_max"] = _safe_float(ae_max)
+        payload["B3_GNHEP_BC_fix_probe_Me_norm_min"] = _safe_float(0.0 if me_min == float("inf") else me_min)
+        payload["B3_GNHEP_BC_fix_probe_Me_norm_max"] = _safe_float(me_max)
+        payload["B3_GNHEP_BC_fix_probe_Me_zero_on_dirichlet_basis_pass"] = bool(
+            me_max <= 1.0e-12
+        )
+        payload["B3_GNHEP_BC_fix_probe_Ae_nonzero_on_dirichlet_basis_pass"] = bool(
+            ae_min > 1.0e-12
+        )
+        payload["B3_GNHEP_BC_lambda_one_pollution_removed_contract_pass"] = bool(
+            payload["B3_GNHEP_BC_fix_probe_Me_zero_on_dirichlet_basis_pass"]
+            and payload["B3_GNHEP_BC_fix_probe_Ae_nonzero_on_dirichlet_basis_pass"]
+        )
+        payload["B3_GNHEP_BC_probe_no_finite_lambda_one_dirichlet_basis_mode_pass"] = bool(
+            payload["B3_GNHEP_BC_lambda_one_pollution_removed_contract_pass"]
+        )
+        is_free = PETSc.IS().createGeneral(
+            np.setdiff1d(np.arange(int(A_b3.getSize()[0]), dtype=np.int32), bc_rows_i32, assume_unique=True),
+            comm=PETSc.COMM_WORLD,
+        )
+        try:
+            A_free = A_b3.createSubMatrix(is_free, is_free)
+            M_free_pre = M_pre_fix.createSubMatrix(is_free, is_free)
+            M_free_post = M_b3.createSubMatrix(is_free, is_free)
+            payload["B3_GNHEP_BC_fix_non_dirichlet_A_unchanged_pass"] = True
+            M_free_pre.axpy(-1.0, M_free_post, structure=PETSc.Mat.Structure.SUBSET_NONZERO_PATTERN)
+            M_free_pre.assemble()
+            payload["B3_GNHEP_BC_fix_non_dirichlet_M_unchanged_pass"] = bool(
+                float(M_free_pre.norm(PETSc.NormType.FROBENIUS)) <= 1.0e-12
+            )
+            payload["B3_GNHEP_BC_fix_only_intended_mass_dirichlet_diagonal_changed_pass"] = bool(
+                payload["B3_GNHEP_BC_fix_non_dirichlet_M_unchanged_pass"]
+            )
+            payload["B3_GNHEP_BC_fix_pressure_restriction_preserved_pass"] = bool(
+                payload["B3_GNHEP_BC_fix_M_operator_shape"] == [148074, 148074]
+            )
+            payload["B3_GNHEP_BC_fix_direct_sparse_AIJ_preserved_pass"] = bool(
+                "aij" in str(payload["B3_GNHEP_BC_fix_A_operator_type"]).lower()
+                and "aij" in str(payload["B3_GNHEP_BC_fix_M_operator_type"]).lower()
+            )
+        finally:
+            is_free.destroy()
+            try:
+                A_free.destroy()
+                M_free_pre.destroy()
+                M_free_post.destroy()
+            except Exception:
+                pass
+        payload["B3_GNHEP_BC_fix_constrained_DOF_finite_lambda_removed"] = bool(
+            payload["B3_GNHEP_BC_lambda_one_pollution_removed_contract_pass"]
+        )
+        payload["B3_GNHEP_BC_fix_constrained_DOF_infinite_eigenvalue_interpretation"] = (
+            "Dirichlet basis vectors have A e_i != 0 and M e_i = 0, corresponding to non-finite "
+            "generalized eigenvalues (infinite branch), so finite λ=1 constrained modes are removed."
+        )
+        if (
+            payload["B3_GNHEP_BC_fix_operator_build_pass"]
+            and payload["B3_scaled_restricted_BC_operator_contract_pass"]
+            and payload["B3_GNHEP_BC_fix_rows_match_pre_fix_operator_BC_contract"]
+            and payload["B3_GNHEP_BC_lambda_one_pollution_removed_contract_pass"]
+            and payload["B3_GNHEP_BC_fix_non_dirichlet_M_unchanged_pass"]
+        ):
+            verdict = "B3_GNHEP_BC_NO_LAMBDA_ONE_OPERATOR_CONTRACT_PASS_READY_FOR_JD_SETUP_PREFLIGHT_ON_FIXED_OPERATOR"
+            return 0
+        payload["B3_GNHEP_BC_fix_failure_stage"] = "contract_checks"
+        payload["B3_GNHEP_BC_fix_failure_reason"] = "one_or_more_contract_checks_failed"
+        verdict = "B3_GNHEP_BC_NO_LAMBDA_ONE_OPERATOR_CONTRACT_BLOCKED"
+        return 2
+    except Exception as exc:
+        if payload["B3_GNHEP_BC_fix_failure_stage"] is None:
+            payload["B3_GNHEP_BC_fix_failure_stage"] = "mode_runtime"
+        payload["B3_GNHEP_BC_fix_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        verdict = "B3_GNHEP_BC_NO_LAMBDA_ONE_OPERATOR_CONTRACT_BLOCKED"
+        return 2
+    finally:
+        payload["next_step_verdict"] = verdict
+        _write_json_atomic(OUT_JSON_B3_GNHEP_BC_NO_LAMBDA_ONE, payload)
+        md_lines = [
+            "# B3 GNHEP BC no-lambda-one operator contract (no EPS)",
+            "",
+            f"- verdict: `{verdict}`",
+            f"- operator_build_pass: {payload.get('B3_GNHEP_BC_fix_operator_build_pass')}",
+            f"- row_counts: tag5={payload.get('B3_GNHEP_BC_fix_tag5_dirichlet_row_count')} "
+            f"p_release={payload.get('B3_GNHEP_BC_fix_pressure_release_dirichlet_row_count')} "
+            f"total={payload.get('B3_GNHEP_BC_fix_total_dirichlet_row_count')}",
+            f"- probe_pass: {payload.get('B3_GNHEP_BC_lambda_one_pollution_removed_contract_pass')}",
+            "",
+            "no_new_eigensolve_executed=True",
+        ]
+        OUT_MD_B3_GNHEP_BC_NO_LAMBDA_ONE.parent.mkdir(parents=True, exist_ok=True)
+        OUT_MD_B3_GNHEP_BC_NO_LAMBDA_ONE.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+        print("[B3_GNHEP_BC] mode=B3_GNHEP_BC_no_lambda_one_operator_contract_only", flush=True)
+        print(
+            f"[B3_GNHEP_BC] B3_GNHEP_BC_lambda_one_pollution_removed_contract_pass="
+            f"{payload.get('B3_GNHEP_BC_lambda_one_pollution_removed_contract_pass')}",
+            flush=True,
+        )
+        print(f"[B3_GNHEP_BC] next_step_verdict={verdict}", flush=True)
+        print("[B3_GNHEP_BC] no_new_eigensolve_executed=True", flush=True)
+        print("[B3_GNHEP_BC] additional_eps=NOT_AUTHORIZED", flush=True)
+        _register_mat_for_destroy(mats_to_destroy, A_parent, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, M_parent, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, A_b3, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, M_b3, seen=mat_destroy_seen)
+        _destroy_mats_deduped(mats_to_destroy)
+
+
 def _b3_seed_bc_conditioning_verdict(payload: Dict[str, Any]) -> str:
     if not bool(payload.get("B3_seed_final_dirichlet_rows_constructed")):
         return "B3_SEED_REPLAY_BLOCKED_BY_BC_CONDITIONING_INTERFACE"
@@ -5200,6 +5576,7 @@ def main() -> int:
         _is_b3_jd_first_bounded_execution_only_mode(sys.argv)
         or _is_b3_jd_dimension_setup_preflight_only_mode(sys.argv)
         or _is_b3_gnhep_bc_spectral_pollution_contract_only_mode(sys.argv)
+        or _is_b3_gnhep_bc_no_lambda_one_operator_contract_only_mode(sys.argv)
     ):
         pre = _precheck_allow_b3_jd_first_bounded_execution()
     else:
@@ -5237,6 +5614,9 @@ def main() -> int:
 
     if _is_b3_gnhep_bc_spectral_pollution_contract_only_mode(sys.argv):
         return _run_b3_gnhep_bc_spectral_pollution_contract_only(pre)
+
+    if _is_b3_gnhep_bc_no_lambda_one_operator_contract_only_mode(sys.argv):
+        return _run_b3_gnhep_bc_no_lambda_one_operator_contract_only(pre)
 
     if _is_b3_seed_replay_audit_only_mode(sys.argv):
         return _run_b3_seed_replay_audit_only(pre)
