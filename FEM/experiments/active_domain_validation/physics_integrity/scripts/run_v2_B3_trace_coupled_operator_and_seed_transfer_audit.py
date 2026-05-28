@@ -70,12 +70,15 @@ B3_SEED_BC_CONDITIONED_MASS_DECOMPOSITION_AUDIT_ONLY_ARG = (
 B3_JD_DESIGN_READINESS_CONTRACT_ONLY_ARG = "--B3-JD-design-readiness-contract-only"
 B3_JD_API_PREFLIGHT_ONLY_ARG = "--B3-JD-api-preflight-only"
 B3_JD_OPERATOR_WIRING_PREFLIGHT_ONLY_ARG = "--B3-JD-operator-wiring-preflight-only"
+B3_JD_FIRST_BOUNDED_EXECUTION_ONLY_ARG = "--B3-JD-first-bounded-execution-only"
 OUT_JSON_B3_JD_DESIGN = CONV_DIAG / "v2_B3_JD_design_readiness_contract_only.json"
 OUT_MD_B3_JD_DESIGN = CONV_DIAG / "v2_B3_JD_design_readiness_contract_only.md"
 OUT_JSON_B3_JD_API_PREFLIGHT = CONV_DIAG / "v2_B3_JD_api_preflight_only.json"
 OUT_MD_B3_JD_API_PREFLIGHT = CONV_DIAG / "v2_B3_JD_api_preflight_only.md"
 OUT_JSON_B3_JD_OPERATOR_WIRING_PREFLIGHT = CONV_DIAG / "v2_B3_JD_operator_wiring_preflight_only.json"
 OUT_MD_B3_JD_OPERATOR_WIRING_PREFLIGHT = CONV_DIAG / "v2_B3_JD_operator_wiring_preflight_only.md"
+OUT_JSON_B3_JD_FIRST_BOUNDED = CONV_DIAG / "v2_B3_JD_first_bounded_execution_only.json"
+OUT_MD_B3_JD_FIRST_BOUNDED = CONV_DIAG / "v2_B3_JD_first_bounded_execution_only.md"
 B3_JD_DEFAULT_TARGET_HZ = 244.39
 B3_JD_DEFAULT_HARVEST_LO_HZ = 220.0
 B3_JD_DEFAULT_HARVEST_HI_HZ = 265.0
@@ -2027,6 +2030,10 @@ def _is_b3_jd_operator_wiring_preflight_only_mode(argv: List[str]) -> bool:
     return B3_JD_OPERATOR_WIRING_PREFLIGHT_ONLY_ARG in argv
 
 
+def _is_b3_jd_first_bounded_execution_only_mode(argv: List[str]) -> bool:
+    return B3_JD_FIRST_BOUNDED_EXECUTION_ONLY_ARG in argv
+
+
 def _load_mass_decomposition_evidence() -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "B3_mass_decomposition_json_path": str(OUT_JSON_B3_CONDITIONED_MASS),
@@ -2708,6 +2715,383 @@ def _run_b3_jd_operator_wiring_preflight_only(pre: Dict[str, Any]) -> int:
             "[B3_JD] additional_eps=ONE_TEMPORARY_B3_OPERATOR_WIRING_EPS_AUTHORIZED_NO_SETUP_NO_SOLVE",
             flush=True,
         )
+        _register_mat_for_destroy(mats_to_destroy, A_parent, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, M_parent, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, A_b3, seen=mat_destroy_seen)
+        _register_mat_for_destroy(mats_to_destroy, M_b3, seen=mat_destroy_seen)
+        _destroy_mats_deduped(mats_to_destroy)
+
+
+def _run_b3_jd_first_bounded_execution_only(pre: Dict[str, Any]) -> int:
+    payload: Dict[str, Any] = {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "B3_JD_first_bounded_execution_only",
+        "B3_JD_operator_contract_pass": False,
+        "B3_JD_operator_source": "validated_B3_direct_sparse_AIJ_scaled_restricted_corrected_BC",
+        "B3_JD_A_operator_type": None,
+        "B3_JD_M_operator_type": None,
+        "B3_JD_A_operator_shape": None,
+        "B3_JD_M_operator_shape": None,
+        "B3_JD_initial_space_attached": False,
+        "B3_JD_initial_space_reason": (
+            "HISTORICAL_SEED_NOT_USED_IN_FIRST_SOLVE_DUE_TO_PRE_BC_FIX_CONTAMINATION_AND_RETIRED_RAYLEIGH_GATE"
+        ),
+        "B3_JD_problem_type": "GNHEP",
+        "B3_JD_solver_type": "JD",
+        "B3_JD_which": "TARGET_MAGNITUDE",
+        "B3_JD_target_frequency_hz": 244.39,
+        "B3_JD_target_lambda": _safe_float((2.0 * math.pi * 244.39) ** 2),
+        "B3_JD_nev": 2,
+        "B3_JD_ncv": 6,
+        "B3_JD_tolerance": 1.0e-8,
+        "B3_JD_max_iterations": 120,
+        "B3_JD_runtime_guard_policy": "ONE_TARGETED_JD_GNHEP_SOLVE_NEV2_NCV6_NO_FALLBACK_NO_RETRY",
+        "B3_JD_solve_count": 0,
+        "B3_JD_STSINVERT_fallback_used": False,
+        "B3_JD_MUMPS_LU_used": False,
+        "B3_JD_automatic_retry_used": False,
+        "B3_JD_additional_EPS_solve_used": False,
+        "B3_JD_EPS_converged_reason": None,
+        "B3_JD_converged_mode_count": 0,
+        "B3_JD_execution_authorized": True,
+        "jd_wiring_authorized": True,
+        "B3_JD_execution_scope": "ONE_BOUNDED_DIAGNOSTIC_SOLVE_ONLY",
+        "new_eigensolve_executed": False,
+        "no_new_eigensolve_executed": True,
+        "additional_eps": "ONE_BOUNDED_B3_JD_EXECUTION_EPS_AUTHORIZED",
+        "operator_matrices_persisted": False,
+        "transfer_matrices_persisted": False,
+        "coupling_matrices_persisted": False,
+        "historical_seed_attached": False,
+        "mapped_seed_persisted": False,
+        "conditioned_seed_persisted": False,
+        "eigenvectors_persisted": False,
+        "vector_banks_persisted": False,
+        "solve_trees_created": False,
+        "production_promotion": "BLOCKED",
+        "B3_JD_first_execution_failure_stage": None,
+        "B3_JD_first_execution_failure_reason": None,
+    }
+    A_parent = M_parent = A_b3 = M_b3 = None
+    mats_to_destroy: List[Any] = []
+    mat_destroy_seen: set[int] = set()
+    eps = None
+    verdict = "B3_JD_FIRST_BOUNDED_EXECUTION_BLOCKED_BY_JD_SOLVER_INTERFACE"
+    try:
+        if not pre["preassembly_contract_pass"]:
+            payload["B3_JD_first_execution_failure_stage"] = "preassembly_contract"
+            payload["B3_JD_first_execution_failure_reason"] = "preassembly_contract_failed"
+            return 2
+        if MPI.COMM_WORLD.size != 1:
+            payload["B3_JD_first_execution_failure_stage"] = "runtime_mpi_contract"
+            payload["B3_JD_first_execution_failure_reason"] = "requires_mpiexec_n_1"
+            return 2
+
+        manifest = load_manifest()
+        case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
+        sample = sample_spec_from_case(case)
+        mesh_file = mesh_path("L_mid", CASE_ID)
+        msh, _cell_tags, facet_tags = fem3d._load_mesh_and_tags(mesh_file)
+        f_top = np.asarray(facet_tags.find(TAG_TOP), dtype=np.int32)
+        f_back = np.asarray(facet_tags.find(TAG_BACK), dtype=np.int32)
+        f_ribs = np.asarray(facet_tags.find(TAG_RIBS), dtype=np.int32)
+        f_fix = np.asarray(facet_tags.find(TAG_FIX), dtype=np.int32)
+        shell_facets = np.unique(np.concatenate([f_top, f_back, f_ribs]).astype(np.int32, copy=False))
+        tmeta = _build_c2_trace_to_parent_transfer(
+            msh, facet_tags, shell_facets=shell_facets, tag_top=TAG_TOP, tag_back=TAG_BACK, tag_ribs=TAG_RIBS
+        )
+        _tmeta_parent_map = tmeta.get("parent_index_per_trace_dof")
+        A_parent, M_parent, cfg = _assemble_reduced_coupled_replay(
+            mesh_file, sample, coupling_enabled=True, capture_parent_raw_blocks=True
+        )
+        maps = _extract_layout_maps(cfg, A_parent)
+        p_to_W_parent = np.asarray(maps["p_to_W"], dtype=np.int32).ravel()
+        p_air_collapsed = np.asarray(
+            cfg.get("_coupled_air_p_air_collapsed_indices", np.asarray([], dtype=np.int32)),
+            dtype=np.int32,
+        ).ravel()
+        raw_cap = _extract_parent_raw_block_capture()
+        raw_App = raw_cap.get("raw_App")
+        raw_Mpp = raw_cap.get("raw_Mpp")
+        raw_Aup = raw_cap.get("raw_Aup")
+        raw_Apu = raw_cap.get("raw_Apu")
+        raw_Mpu = raw_cap.get("raw_Mpu")
+        for m_ in (raw_App, raw_Mpp, raw_Aup, raw_Apu, raw_Mpu):
+            if m_ is not None:
+                _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+        if not all(m is not None for m in (raw_App, raw_Mpp, raw_Aup, raw_Apu, raw_Mpu)):
+            payload["B3_JD_first_execution_failure_stage"] = "parent_raw_blocks"
+            payload["B3_JD_first_execution_failure_reason"] = "missing_parent_raw_blocks"
+            return 2
+        if not bool(raw_cap.get("parent_raw_collapsed_layout_dimensions_pass", False)):
+            payload["B3_JD_first_execution_failure_stage"] = "parent_raw_layout"
+            payload["B3_JD_first_execution_failure_reason"] = "parent_raw_collapsed_layout_not_passing"
+            return 2
+        if _tmeta_parent_map is None:
+            payload["B3_JD_first_execution_failure_stage"] = "trace_to_parent_map"
+            payload["B3_JD_first_execution_failure_reason"] = "parent_index_per_trace_dof_missing_from_tmeta"
+            return 2
+
+        shell_mesh, shell_to_parent, _, _ = dmesh.create_submesh(msh, msh.topology.dim - 1, shell_facets)
+        V_u_trace = fem.functionspace(shell_mesh, fem3d._displacement_element(shell_mesh, 1))
+        trace_cells = np.arange(
+            int(shell_mesh.topology.index_map(shell_mesh.topology.dim).size_local), dtype=np.int32
+        )
+        map_meta = _extract_submesh_to_parent_entity_indices(shell_to_parent, entity_dim=msh.topology.dim - 1)
+        parent_tag_map = {
+            int(i): int(v) for i, v in zip(np.asarray(facet_tags.indices), np.asarray(facet_tags.values))
+        }
+        parent_f = np.asarray(map_meta.get("indices"), dtype=np.int32).ravel()
+        trace_vals = np.array([parent_tag_map.get(int(pf), -1) for pf in parent_f], dtype=np.int32)
+        mt_trace = dmesh.meshtags(shell_mesh, shell_mesh.topology.dim, trace_cells, trace_vals)
+        dx_trace = ufl.Measure("dx", domain=shell_mesh, subdomain_data=mt_trace)
+        u = ufl.TrialFunction(V_u_trace)
+        v = ufl.TestFunction(V_u_trace)
+        top_m, back_m, t_top, t_back = fem3d._split_wood_materials(cfg)
+        nrm = ufl.CellNormal(shell_mesh)
+        P = ufl.Identity(3) - ufl.outer(nrm, nrm)
+        e1, e2 = fem3d._plate_local_frame(nrm, P)
+        grad_u = ufl.grad(u)
+        grad_v = ufl.grad(v)
+        eps_u = 0.5 * (P * grad_u * P + ufl.transpose(P * grad_u * P))
+        eps_v = 0.5 * (P * grad_v * P + ufl.transpose(P * grad_v * P))
+        w_n = ufl.dot(u, nrm)
+        v_n = ufl.dot(v, nrm)
+        shell_top = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, top_m)
+        shell_back = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
+        shell_ribs = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
+        raw_Auu = fem.petsc.assemble_matrix(
+            fem.form(shell_top * dx_trace(TAG_TOP) + shell_back * dx_trace(TAG_BACK) + shell_ribs * dx_trace(TAG_RIBS)),
+            bcs=[],
+        )
+        raw_Muu = fem.petsc.assemble_matrix(
+            fem.form(
+                (top_m["rho"] * t_top) * ufl.dot(u, v) * dx_trace(TAG_TOP)
+                + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_BACK)
+                + (back_m["rho"] * t_back) * ufl.dot(u, v) * dx_trace(TAG_RIBS)
+            ),
+            bcs=[],
+        )
+        raw_Auu.assemble()
+        raw_Muu.assemble()
+        for m_ in (raw_Auu, raw_Muu):
+            _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+
+        parent_idx = np.asarray(_tmeta_parent_map, dtype=np.int32).ravel()
+        n_parent_collapsed = int(raw_cap.get("parent_raw_u_dimension", 0) or 0)
+        if not (
+            parent_idx.size > 0
+            and int(np.min(parent_idx)) >= 0
+            and int(np.max(parent_idx)) < n_parent_collapsed
+            and np.unique(parent_idx).size == parent_idx.size
+        ):
+            payload["B3_JD_first_execution_failure_stage"] = "parent_index_per_trace_dof_contract"
+            payload["B3_JD_first_execution_failure_reason"] = "parent_index_per_trace_dof_contract_failed"
+            return 2
+
+        is_parent_u = PETSc.IS().createGeneral(parent_idx.astype(np.int32), comm=PETSc.COMM_WORLD)
+        is_p = PETSc.IS().createGeneral(np.arange(raw_App.getSize()[0], dtype=np.int32), comm=PETSc.COMM_WORLD)
+        raw_Aup_B3 = raw_Aup.createSubMatrix(is_parent_u, is_p)
+        raw_Apu_B3 = raw_Apu.createSubMatrix(is_p, is_parent_u)
+        raw_Mpu_B3 = raw_Mpu.createSubMatrix(is_p, is_parent_u)
+        for m_ in (raw_Aup_B3, raw_Apu_B3, raw_Mpu_B3):
+            _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+        is_parent_u.destroy()
+        is_p.destroy()
+
+        n_u_b3 = int(raw_Auu.getSize()[0])
+        n_p_retained = int(p_to_W_parent.size)
+        s_uu = max(float(_mat_norm_or_none(raw_Auu) or 0.0), 1.0e-30)
+        s_pp = max(float(_mat_norm_or_none(raw_App) or 0.0), 1.0e-30)
+        s_c = math.sqrt(s_uu * s_pp)
+        parent_fix_blocks = fem3d._locate_facet_displacement_dofs(
+            fem.functionspace(msh, fem3d._displacement_element(msh, 1)), msh, f_fix
+        )
+        fix_scalar_parent = set(
+            int(b) * 3 + c
+            for b in np.asarray(parent_fix_blocks, dtype=np.int32).ravel()
+            for c in range(3)
+        )
+        b3_fix_scalar = np.asarray([k for k, pi in enumerate(parent_idx.tolist()) if int(pi) in fix_scalar_parent], dtype=np.int32)
+        op_meta: Dict[str, Any] = {}
+        (
+            A_b3,
+            M_b3,
+            _u_idx,
+            _p_idx,
+            op_meta,
+            bc_rows,
+            _tag5_rows,
+            _p_release_rows,
+            _m_uu_b3,
+            _m_pu_b3,
+            _m_pp_b3,
+        ) = _build_b3_scaled_restricted_operators_in_memory(
+            raw_Auu=raw_Auu,
+            raw_Muu=raw_Muu,
+            raw_App=raw_App,
+            raw_Mpp=raw_Mpp,
+            raw_Aup_B3=raw_Aup_B3,
+            raw_Apu_B3=raw_Apu_B3,
+            raw_Mpu_B3=raw_Mpu_B3,
+            s_uu=s_uu,
+            s_pp=s_pp,
+            s_c=s_c,
+            n_u_b3=n_u_b3,
+            p_air_collapsed=p_air_collapsed,
+            b3_fix_u_rows=b3_fix_scalar,
+            msh=msh,
+            facet_tags=facet_tags,
+            comm=PETSc.COMM_WORLD,
+            mats_to_destroy=mats_to_destroy,
+            report_meta=op_meta,
+            destroy_seen=mat_destroy_seen,
+        )
+        payload["B3_seed_operator_build_pass"] = True
+        payload["B3_scaled_restricted_BC_operator_contract_pass"] = bool(
+            op_meta.get("B3_scaled_restricted_BC_operator_contract_pass")
+        )
+        payload["B3_JD_A_operator_type"] = str(A_b3.getType())
+        payload["B3_JD_M_operator_type"] = str(M_b3.getType())
+        payload["B3_JD_A_operator_shape"] = [int(A_b3.getSize()[0]), int(A_b3.getSize()[1])]
+        payload["B3_JD_M_operator_shape"] = [int(M_b3.getSize()[0]), int(M_b3.getSize()[1])]
+        payload["B3_JD_operator_contract_pass"] = bool(
+            payload["B3_seed_operator_build_pass"]
+            and payload["B3_scaled_restricted_BC_operator_contract_pass"]
+            and payload["B3_JD_A_operator_shape"] == [148074, 148074]
+            and payload["B3_JD_M_operator_shape"] == [148074, 148074]
+            and "aij" in str(payload["B3_JD_A_operator_type"]).lower()
+            and "aij" in str(payload["B3_JD_M_operator_type"]).lower()
+        )
+        if not payload["B3_JD_operator_contract_pass"]:
+            payload["B3_JD_first_execution_failure_stage"] = "validated_b3_operator_contract"
+            payload["B3_JD_first_execution_failure_reason"] = "B3_operator_contract_failed_for_first_JD_execution"
+            return 2
+
+        from slepc4py import SLEPc
+
+        eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
+        eps.setOperators(A_b3, M_b3)
+        eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
+        try:
+            eps.setType(SLEPc.EPS.Type.JD)
+            payload["B3_JD_solver_type_method"] = "SLEPc.EPS.Type.JD"
+        except Exception:
+            eps.setType("jd")
+            payload["B3_JD_solver_type_method"] = "setType('jd')"
+        eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
+        eps.setTarget((2.0 * math.pi * 244.39) ** 2)
+        try:
+            eps.setDimensions(nev=2, ncv=6)
+        except TypeError:
+            eps.setDimensions(2, 6)
+        eps.setTolerances(tol=float(payload["B3_JD_tolerance"]), max_it=int(payload["B3_JD_max_iterations"]))
+        eps.solve()
+        payload["B3_JD_solve_count"] = 1
+        payload["new_eigensolve_executed"] = True
+        payload["no_new_eigensolve_executed"] = False
+        reason = eps.getConvergedReason()
+        nconv = int(eps.getConverged())
+        payload["B3_JD_EPS_converged_reason"] = int(reason)
+        payload["B3_JD_converged_mode_count"] = nconv
+
+        accepted_any = False
+        bc_rows_i32 = np.unique(np.asarray(bc_rows, dtype=np.int32).ravel())
+        for i in range(nconv):
+            vr = A_b3.createVecRight()
+            vi = A_b3.createVecRight()
+            try:
+                lam = eps.getEigenpair(i, vr, vi)
+                lam_c = complex(lam)
+                lam_re = float(np.real(lam_c))
+                lam_im = float(np.imag(lam_c))
+                freq_hz = None
+                if math.isfinite(lam_re) and abs(lam_im) <= 1.0e-12 and lam_re > 0.0:
+                    freq_hz = math.sqrt(max(lam_re, 0.0)) / (2.0 * math.pi)
+                try:
+                    err_rel = float(eps.computeError(i, SLEPc.EPS.ErrorType.RELATIVE))
+                except Exception:
+                    err_rel = float("nan")
+                x = np.asarray(vr.getArray(readonly=True))
+                if np.iscomplexobj(x):
+                    x_arr = np.asarray(x, dtype=np.complex128)
+                    abs_x = np.abs(x_arr)
+                else:
+                    x_arr = np.asarray(x, dtype=np.float64)
+                    abs_x = np.abs(x_arr)
+                x_norm = float(np.linalg.norm(abs_x))
+                bc_norm = float(np.linalg.norm(abs_x[bc_rows_i32])) if bc_rows_i32.size > 0 else 0.0
+                bc_pass = bool(bc_norm <= 1.0e-8 * max(1.0, x_norm))
+                x_u = abs_x[:n_u_b3]
+                x_p = abs_x[n_u_b3 : n_u_b3 + n_p_retained]
+                u_norm = float(np.linalg.norm(x_u))
+                p_norm = float(np.linalg.norm(x_p))
+                p_support = p_norm / max(float(np.linalg.norm(abs_x)), 1.0e-30)
+                structural_dominant = bool(u_norm > 1.0e-8 and p_norm <= 1.0e-8)
+                support_ok = bool(u_norm > 1.0e-8 and (p_support > 1.0e-6 or structural_dominant))
+                finite_lambda = bool(math.isfinite(lam_re) and math.isfinite(lam_im))
+                residual_ok = bool(math.isfinite(err_rel) and err_rel <= 1.0e-4)
+                mode_pass = bool(finite_lambda and residual_ok and bc_pass and support_ok)
+                accepted_any = bool(accepted_any or mode_pass)
+                target_dist = abs(float(freq_hz) - 244.39) if freq_hz is not None and math.isfinite(float(freq_hz)) else None
+                payload[f"B3_JD_mode_{i}_lambda_real"] = _safe_float(lam_re)
+                payload[f"B3_JD_mode_{i}_lambda_imag"] = _safe_float(lam_im)
+                payload[f"B3_JD_mode_{i}_frequency_hz_if_real_positive"] = _safe_float(freq_hz)
+                payload[f"B3_JD_mode_{i}_relative_generalized_residual"] = _safe_float(err_rel)
+                payload[f"B3_JD_mode_{i}_dirichlet_zero_compliance_pass"] = bool(bc_pass)
+                payload[f"B3_JD_mode_{i}_u_norm"] = _safe_float(u_norm)
+                payload[f"B3_JD_mode_{i}_p_norm"] = _safe_float(p_norm)
+                payload[f"B3_JD_mode_{i}_pressure_support_metric"] = _safe_float(p_support)
+                payload[f"B3_JD_mode_{i}_target_distance_hz"] = _safe_float(target_dist)
+                payload[f"B3_JD_mode_{i}_support_classification"] = (
+                    "STRUCTURAL_DOMINANT" if structural_dominant else "COUPLED_OR_PRESSURE_SUPPORTED"
+                )
+                payload[f"B3_JD_mode_{i}_acceptance_pass"] = bool(mode_pass)
+            finally:
+                vr.destroy()
+                vi.destroy()
+
+        if accepted_any:
+            verdict = "B3_JD_FIRST_BOUNDED_EXECUTION_PASS_READY_FOR_SECOND_VALIDATION_RUN_DESIGN"
+            payload["B3_JD_operator_wiring_preflight_pass"] = True
+            return 0
+        verdict = "B3_JD_FIRST_BOUNDED_EXECUTION_COMPLETED_BUT_NO_ACCEPTABLE_MODE"
+        return 2
+    except Exception as exc:
+        if payload.get("B3_JD_first_execution_failure_stage") is None:
+            payload["B3_JD_first_execution_failure_stage"] = "jd_solver_interface"
+        payload["B3_JD_first_execution_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        verdict = "B3_JD_FIRST_BOUNDED_EXECUTION_BLOCKED_BY_JD_SOLVER_INTERFACE"
+        return 2
+    finally:
+        if eps is not None:
+            try:
+                eps.destroy()
+            except Exception:
+                pass
+        payload["next_step_verdict"] = verdict
+        _write_json_atomic(OUT_JSON_B3_JD_FIRST_BOUNDED, payload)
+        md_lines = [
+            "# B3 JD first bounded execution (single solve)",
+            "",
+            f"- verdict: `{verdict}`",
+            f"- B3_JD_operator_contract_pass: {payload.get('B3_JD_operator_contract_pass')}",
+            f"- converged_mode_count: {payload.get('B3_JD_converged_mode_count')}",
+            f"- EPS reason: {payload.get('B3_JD_EPS_converged_reason')}",
+            f"- solve_count: {payload.get('B3_JD_solve_count')}",
+            "",
+            f"- tolerance/max_it: {payload.get('B3_JD_tolerance')}/{payload.get('B3_JD_max_iterations')}",
+            f"- target_hz: {payload.get('B3_JD_target_frequency_hz')}",
+            "",
+            "new_eigensolve_executed=True" if payload.get("new_eigensolve_executed") else "new_eigensolve_executed=False",
+        ]
+        OUT_MD_B3_JD_FIRST_BOUNDED.parent.mkdir(parents=True, exist_ok=True)
+        OUT_MD_B3_JD_FIRST_BOUNDED.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+        print("[B3_JD] mode=B3_JD_first_bounded_execution_only", flush=True)
+        print(f"[B3_JD] B3_JD_converged_mode_count={payload.get('B3_JD_converged_mode_count')}", flush=True)
+        print(f"[B3_JD] next_step_verdict={verdict}", flush=True)
+        print(f"[B3_JD] new_eigensolve_executed={payload.get('new_eigensolve_executed')}", flush=True)
+        print("[B3_JD] additional_eps=ONE_BOUNDED_B3_JD_EXECUTION_EPS_AUTHORIZED", flush=True)
         _register_mat_for_destroy(mats_to_destroy, A_parent, seen=mat_destroy_seen)
         _register_mat_for_destroy(mats_to_destroy, M_parent, seen=mat_destroy_seen)
         _register_mat_for_destroy(mats_to_destroy, A_b3, seen=mat_destroy_seen)
@@ -4027,6 +4411,9 @@ def main() -> int:
 
     if _is_b3_jd_operator_wiring_preflight_only_mode(sys.argv):
         return _run_b3_jd_operator_wiring_preflight_only(pre)
+
+    if _is_b3_jd_first_bounded_execution_only_mode(sys.argv):
+        return _run_b3_jd_first_bounded_execution_only(pre)
 
     if _is_b3_seed_replay_audit_only_mode(sys.argv):
         return _run_b3_seed_replay_audit_only(pre)
