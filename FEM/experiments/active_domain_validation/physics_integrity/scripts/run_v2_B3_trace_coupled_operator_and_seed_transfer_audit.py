@@ -304,6 +304,203 @@ def _petsc_sparse_row_diagonal_support_audit(
     }
 
 
+def _petsc_sparse_owned_row_norms(mat: Any) -> np.ndarray:
+    """Frobenius norm of each owned row (mpiexec -n 1)."""
+    nrow = int(mat.getSize()[0])
+    norms = np.zeros(nrow, dtype=np.float64)
+    for r in range(nrow):
+        try:
+            _cols, vals = mat.getRow(r)
+        except TypeError:
+            rowdat = mat.getRow(r)
+            vals = rowdat[1]
+        vals_a = np.asarray(vals, dtype=np.float64).ravel()
+        norms[r] = float(np.linalg.norm(vals_a)) if vals_a.size else 0.0
+        try:
+            mat.restoreRow(r)
+        except Exception:
+            pass
+    return norms
+
+
+def _b3_free_global_row_block_label(
+    g_row: int,
+    *,
+    n_u_b3: int,
+    p_release_rows: np.ndarray | None = None,
+) -> str:
+    p_release_set = (
+        set(int(x) for x in np.asarray(p_release_rows, dtype=np.int32).ravel())
+        if p_release_rows is not None
+        else set()
+    )
+    if int(g_row) < int(n_u_b3):
+        return "structural_u"
+    if int(g_row) in p_release_set:
+        return "unknown"
+    return "pressure_p"
+
+
+def _b3_free_populate_A_zero_row_characterization(
+    payload: Dict[str, Any],
+    *,
+    A_free: Any,
+    M_free: Any,
+    free_rows: np.ndarray,
+    n_u_b3: int,
+    p_release_rows: np.ndarray,
+    preview_limit: int = 24,
+) -> None:
+    """Exact A_free zero-row support audit mapped to B3 [u|p] layout."""
+    free_rows = np.asarray(free_rows, dtype=np.int32).ravel()
+    n_free = int(A_free.getSize()[0])
+    a_rn = _petsc_sparse_owned_row_norms(A_free)
+    m_rn = _petsc_sparse_owned_row_norms(M_free)
+    exact_zero_local = np.flatnonzero(a_rn == 0.0).astype(np.int32)
+    n_zero = int(exact_zero_local.size)
+    payload["B3_free_A_zero_row_count"] = n_zero
+    payload["B3_free_A_zero_row_fraction"] = _safe_float(float(n_zero) / max(1, n_free))
+
+    preview_local = exact_zero_local[: int(preview_limit)].tolist()
+    preview_b3 = [int(free_rows[i]) for i in preview_local]
+    payload["B3_free_A_zero_row_indices_preview"] = preview_local
+    payload["B3_free_A_zero_rows_original_B3_indices_preview"] = preview_b3
+
+    n_u = int(n_u_b3)
+    u_cnt = p_cnt = unk_cnt = 0
+    for loc in exact_zero_local.tolist():
+        lbl = _b3_free_global_row_block_label(
+            int(free_rows[int(loc)]), n_u_b3=n_u, p_release_rows=p_release_rows
+        )
+        if lbl == "structural_u":
+            u_cnt += 1
+        elif lbl == "pressure_p":
+            p_cnt += 1
+        else:
+            unk_cnt += 1
+    payload["B3_free_A_zero_rows_structural_u_count"] = int(u_cnt)
+    payload["B3_free_A_zero_rows_pressure_p_count"] = int(p_cnt)
+    payload["B3_free_A_zero_rows_unknown_count"] = int(unk_cnt)
+    payload["B3_free_A_zero_rows_block_classification_pass"] = bool(unk_cnt == 0)
+
+    if n_zero > 0:
+        m_on_a_zero = m_rn[exact_zero_local]
+        m_zero_on_a_zero = int(np.sum(m_on_a_zero == 0.0))
+        m_near_on_a_zero = int(np.sum((m_on_a_zero > 0.0) & (m_on_a_zero <= 1.0e-12)))
+        m_nonzero_on_a_zero = int(np.sum(m_on_a_zero > 1.0e-12))
+        payload["B3_free_A_zero_rows_corresponding_M_zero_row_count"] = m_zero_on_a_zero
+        payload["B3_free_A_zero_rows_corresponding_M_near_zero_row_count"] = m_near_on_a_zero
+        payload["B3_free_A_zero_rows_corresponding_M_row_norm_min"] = _safe_float(float(m_on_a_zero.min()))
+        payload["B3_free_A_zero_rows_corresponding_M_row_norm_max"] = _safe_float(float(m_on_a_zero.max()))
+        payload["B3_free_A_zero_rows_corresponding_M_row_norm_median"] = _safe_float(float(np.median(m_on_a_zero)))
+        payload["B3_free_A_zero_rows_with_nonzero_M_support_count"] = int(m_nonzero_on_a_zero)
+    else:
+        payload["B3_free_A_zero_rows_corresponding_M_zero_row_count"] = 0
+        payload["B3_free_A_zero_rows_corresponding_M_near_zero_row_count"] = 0
+        payload["B3_free_A_zero_rows_corresponding_M_row_norm_min"] = None
+        payload["B3_free_A_zero_rows_corresponding_M_row_norm_max"] = None
+        payload["B3_free_A_zero_rows_corresponding_M_row_norm_median"] = None
+        payload["B3_free_A_zero_rows_with_nonzero_M_support_count"] = 0
+    payload["B3_free_A_zero_rows_with_nonzero_M_support_pass"] = bool(
+        int(payload.get("B3_free_A_zero_rows_with_nonzero_M_support_count") or 0) > 0
+    )
+
+
+def _b3_free_populate_A_block_zero_row_support_audit(
+    payload: Dict[str, Any],
+    *,
+    A_free: Any,
+    free_rows: np.ndarray,
+    n_u_b3: int,
+    mats_to_destroy: List[Any],
+    mat_destroy_seen: set[int],
+) -> None:
+    """Block-split A_free: local u/p index sets and coupling-vs-diagonal zero support."""
+    free_rows = np.asarray(free_rows, dtype=np.int32).ravel()
+    n_u = int(n_u_b3)
+    u_local = np.array([i for i, g in enumerate(free_rows.tolist()) if int(g) < n_u], dtype=np.int32)
+    p_local = np.array([i for i, g in enumerate(free_rows.tolist()) if int(g) >= n_u], dtype=np.int32)
+    is_ul = PETSc.IS().createGeneral(u_local, comm=PETSc.COMM_WORLD)
+    is_pl = PETSc.IS().createGeneral(p_local, comm=PETSc.COMM_WORLD)
+    A_uu_f = A_up_f = A_pu_f = A_pp_f = None
+    try:
+        A_uu_f = A_free.createSubMatrix(is_ul, is_ul)
+        A_up_f = A_free.createSubMatrix(is_ul, is_pl)
+        A_pu_f = A_free.createSubMatrix(is_pl, is_ul)
+        A_pp_f = A_free.createSubMatrix(is_pl, is_pl)
+        for m_ in (A_uu_f, A_up_f, A_pu_f, A_pp_f):
+            _petsc_mat_try_assemble(m_)
+            _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+        payload["B3_free_Auu_shape"] = _mat_shape(A_uu_f)
+        payload["B3_free_Aup_shape"] = _mat_shape(A_up_f)
+        payload["B3_free_Apu_shape"] = _mat_shape(A_pu_f)
+        payload["B3_free_App_shape"] = _mat_shape(A_pp_f)
+        payload["B3_free_Auu_norm"] = _mat_norm_or_none(A_uu_f)
+        payload["B3_free_Aup_norm"] = _mat_norm_or_none(A_up_f)
+        payload["B3_free_Apu_norm"] = _mat_norm_or_none(A_pu_f)
+        payload["B3_free_App_norm"] = _mat_norm_or_none(A_pp_f)
+
+        a_full_rn = _petsc_sparse_owned_row_norms(A_free)
+        a_uu_rn = _petsc_sparse_owned_row_norms(A_uu_f)
+        a_pp_rn = _petsc_sparse_owned_row_norms(A_pp_f)
+
+        payload["B3_free_Auu_zero_row_count"] = int(np.sum(a_uu_rn == 0.0))
+        payload["B3_free_App_zero_row_count"] = int(np.sum(a_pp_rn == 0.0))
+
+        struct_coupling_supported = 0
+        for ui, loc_u in enumerate(u_local.tolist()):
+            if a_uu_rn[int(ui)] == 0.0 and a_full_rn[int(loc_u)] > 0.0:
+                struct_coupling_supported += 1
+        press_coupling_supported = 0
+        for pi, loc_p in enumerate(p_local.tolist()):
+            if a_pp_rn[int(pi)] == 0.0 and a_full_rn[int(loc_p)] > 0.0:
+                press_coupling_supported += 1
+        payload["B3_free_structural_rows_zero_in_Auu_but_supported_by_Aup_count"] = int(struct_coupling_supported)
+        payload["B3_free_pressure_rows_zero_in_App_but_supported_by_Apu_count"] = int(press_coupling_supported)
+
+        exact_zero_full = int(np.sum(a_full_rn == 0.0))
+        payload["B3_free_A_exact_zero_rows_in_full_operator_count"] = exact_zero_full
+        payload["B3_free_A_zero_rows_origin_classification"] = (
+            "NO_EXACT_ZERO_ROWS_IN_FULL_A_FREE"
+            if exact_zero_full == 0
+            else "UNEXPLAINED_EXACT_ZERO_ROWS_IN_FULL_A_FREE_PENDING_REPRESENTATION_REVIEW"
+        )
+        payload["B3_free_A_zero_rows_origin_explained_pass"] = bool(exact_zero_full == 0)
+    finally:
+        is_ul.destroy()
+        is_pl.destroy()
+
+
+def _b3_free_populate_scale_aware_M_row_audit(
+    payload: Dict[str, Any],
+    *,
+    M_free: Any,
+    absolute_tol: float,
+    relative_tol: float = 1.0e-12,
+) -> None:
+    m_rn = _petsc_sparse_owned_row_norms(M_free)
+    m_max = float(m_rn.max()) if m_rn.size else 0.0
+    scaled_thr = float(m_max) * float(relative_tol)
+    exact_zero = int(np.sum(m_rn == 0.0))
+    near_abs = int(np.sum((m_rn > 0.0) & (m_rn <= float(absolute_tol))))
+    near_scaled = int(np.sum((m_rn > 0.0) & (m_rn <= scaled_thr)))
+    payload["B3_free_M_row_norm_max"] = _safe_float(m_max)
+    payload["B3_free_M_relative_row_tolerance"] = float(relative_tol)
+    payload["B3_free_M_scaled_row_threshold"] = _safe_float(scaled_thr)
+    payload["B3_free_M_zero_row_count_exact"] = exact_zero
+    payload["B3_free_M_near_zero_row_count_scaled"] = int(near_scaled)
+    if exact_zero > 0 and m_max <= absolute_tol:
+        scaled_class = "EXACT_AND_RELATIVE_NEAR_ZERO_ROWS_AT_MATRIX_SCALE"
+    elif exact_zero > 0:
+        scaled_class = "EXACT_ZERO_ROWS_WITH_FINITE_MATRIX_SCALE"
+    elif near_scaled > 0:
+        scaled_class = "SCALE_AWARE_NEAR_ZERO_ROWS_NO_EXACT_ZEROS"
+    else:
+        scaled_class = "NO_EXACT_OR_SCALE_AWARE_NEAR_ZERO_ROWS"
+    payload["B3_free_M_scaled_near_zero_classification"] = scaled_class
+    payload["B3_free_M_near_zero_row_count_absolute"] = int(near_abs)
+
+
 def _classify_free_mass_null_support(
     *,
     m_uu_zero_near: int,
@@ -5862,8 +6059,9 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
         "B3_GNHEP_free_pencil_regularity_failure_stage": None,
         "B3_GNHEP_free_pencil_regularity_failure_reason": None,
         "B3_prior_free_DOF_JD_result_status": (
-            "POTENTIALLY_INVALID_PENDING_NONZERO_FREE_OPERATOR_CONTRACT"
+            "INVALIDATED_BY_PRE_SOLVE_ZERO_OPERATOR_COPY_BUG"
         ),
+        "B3_corrected_free_operator_ready_for_JD": False,
         "B3_loc_first_zero_stage": None,
         "B3_loc_free_submatrix_explicit_assemble_called": False,
         "B3_free_zero_A_operator_detected": False,
@@ -6203,10 +6401,42 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
             p_release_rows=p_release_rows_i32,
         )
         for prefix, block in (("A", a_row), ("M", m_row)):
-            payload[f"B3_free_{prefix}_zero_row_count"] = block["zero_row_count"]
             payload[f"B3_free_{prefix}_near_zero_row_count"] = block["near_zero_row_count"]
             payload[f"B3_free_{prefix}_zero_diagonal_count"] = block["zero_diagonal_count"]
             payload[f"B3_free_{prefix}_near_zero_diagonal_count"] = block["near_zero_diagonal_count"]
+        payload["B3_free_M_zero_row_count"] = int(m_row["zero_row_count"])
+        _b3_free_populate_A_zero_row_characterization(
+            payload,
+            A_free=A_free_post,
+            M_free=M_free_post,
+            free_rows=free_rows,
+            n_u_b3=n_u_b3,
+            p_release_rows=p_release_rows_i32,
+        )
+        try:
+            _b3_free_populate_A_block_zero_row_support_audit(
+                payload,
+                A_free=A_free_post,
+                free_rows=free_rows,
+                n_u_b3=n_u_b3,
+                mats_to_destroy=mats_to_destroy,
+                mat_destroy_seen=mat_destroy_seen,
+            )
+        except Exception as exc:
+            _set_b3_free_pencil_audit_failure(
+                payload,
+                stage="A_free_block_zero_row_support_audit",
+                reason=f"{type(exc).__name__}:{exc}",
+                exception=exc,
+            )
+            verdict = "B3_GNHEP_FREE_PENCIL_REGULARITY_AUDIT_BLOCKED"
+            return 2
+        _b3_free_populate_scale_aware_M_row_audit(
+            payload,
+            M_free=M_free_post,
+            absolute_tol=row_norm_tol,
+            relative_tol=1.0e-12,
+        )
         payload["B3_free_M_zero_or_near_zero_row_indices_preview"] = m_row["zero_or_near_zero_row_local_indices_preview"]
         payload["B3_free_M_zero_or_near_zero_rows_original_B3_indices_preview"] = m_row[
             "zero_or_near_zero_rows_original_B3_indices_preview"
@@ -6307,10 +6537,23 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
             )
         )
 
+        payload["B3_prior_free_DOF_JD_result_status"] = "INVALIDATED_BY_PRE_SOLVE_ZERO_OPERATOR_COPY_BUG"
+        a_zero_n = int(payload.get("B3_free_A_zero_row_count") or 0)
+        a_explained = bool(payload.get("B3_free_A_zero_rows_origin_explained_pass"))
+        if a_zero_n > 0 and not a_explained:
+            payload["B3_corrected_free_operator_ready_for_JD"] = False
+            verdict = "B3_GNHEP_FREE_PENCIL_NONZERO_PASS_A_ZERO_ROWS_REQUIRE_REPRESENTATION_REVIEW"
+            return 0
+        if a_zero_n == 0 and a_explained:
+            payload["B3_corrected_free_operator_ready_for_JD"] = True
+            verdict = "B3_GNHEP_FREE_PENCIL_NONZERO_A_ZERO_ROWS_CLASSIFIED_READY_FOR_JD_SETUP_REVALIDATION"
+            return 0
         if mechanism:
+            payload["B3_corrected_free_operator_ready_for_JD"] = False
             verdict = "B3_GNHEP_FREE_PENCIL_NON_DIRICHLET_MASS_NULLSPACE_CONFIRMED_READY_FOR_REPRESENTATION_REVIEW"
             return 0
-        verdict = "B3_GNHEP_FREE_PENCIL_NO_OBVIOUS_ROW_NULLSPACE_READY_FOR_JD_NONFINITE_OUTPUT_REVIEW"
+        payload["B3_corrected_free_operator_ready_for_JD"] = False
+        verdict = "B3_GNHEP_FREE_PENCIL_NONZERO_PASS_A_ZERO_ROWS_REQUIRE_REPRESENTATION_REVIEW"
         return 0
     except Exception as exc:
         _set_b3_free_pencil_audit_failure(
@@ -6341,11 +6584,15 @@ def _run_b3_gnhep_free_pencil_regularity_audit_only(pre: Dict[str, Any]) -> int:
                     f"{payload.get('B3_loc_postBC_free_operator_nonzero_contract_pass')}",
                     f"- free_zero_pencil_detected: {payload.get('B3_free_zero_pencil_detected')}",
                     f"- prior_JD_status: `{payload.get('B3_prior_free_DOF_JD_result_status')}`",
+                    f"- corrected_operator_ready_for_JD: {payload.get('B3_corrected_free_operator_ready_for_JD')}",
+                    f"- A_zero_row_count: {payload.get('B3_free_A_zero_row_count')}",
+                    f"- A_zero_rows_origin: {payload.get('B3_free_A_zero_rows_origin_classification')}",
                     f"- operator_contract_pass: {payload.get('B3_free_operator_contract_pass')}",
                     f"- pre_post_BC_match_pass: {payload.get('B3_free_operator_matches_pre_BC_free_free_content_pass')}",
-                    f"- M_zero_or_near_zero_rows: "
-                    f"{payload.get('B3_free_M_zero_row_count')}+{payload.get('B3_free_M_near_zero_row_count')}",
-                    f"- mass_null_classification: {payload.get('B3_free_mass_null_support_classification')}",
+                    f"- M_exact_zero / M_scaled_near_zero: "
+                    f"{payload.get('B3_free_M_zero_row_count_exact')}/"
+                    f"{payload.get('B3_free_M_near_zero_row_count_scaled')}",
+                    f"- M_scaled_classification: {payload.get('B3_free_M_scaled_near_zero_classification')}",
                     "",
                     "no_new_eigensolve_executed=True",
                 ]
