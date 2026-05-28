@@ -86,6 +86,9 @@ B3_JD_FREE_DOF_ELIMINATED_THIRD_BOUNDED_EXECUTION_ONLY_ARG = (
 B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_DIMENSION_SETUP_PREFLIGHT_ONLY_ARG = (
     "--B3-JD-structural-active-set-reduced-dimension-setup-preflight-only"
 )
+B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_FIRST_VALID_BOUNDED_EXECUTION_ONLY_ARG = (
+    "--B3-JD-structural-active-set-reduced-first-valid-bounded-execution-only"
+)
 B3_GNHEP_FREE_PENCIL_REGULARITY_AUDIT_ONLY_ARG = "--B3-GNHEP-free-pencil-regularity-audit-only"
 B3_GNHEP_STRUCTURAL_ACTIVE_SET_REDUCED_OPERATOR_CONTRACT_ONLY_ARG = (
     "--B3-GNHEP-structural-active-set-reduced-operator-contract-only"
@@ -141,6 +144,12 @@ OUT_JSON_B3_JD_STRUCT_ACTIVE_SETUP = (
 )
 OUT_MD_B3_JD_STRUCT_ACTIVE_SETUP = (
     CONV_DIAG / "v2_B3_JD_structural_active_set_reduced_dimension_setup_preflight_only.md"
+)
+OUT_JSON_B3_JD_STRUCT_ACTIVE_FIRST_VALID_BOUNDED = (
+    CONV_DIAG / "v2_B3_JD_structural_active_set_reduced_first_valid_bounded_execution_only.json"
+)
+OUT_MD_B3_JD_STRUCT_ACTIVE_FIRST_VALID_BOUNDED = (
+    CONV_DIAG / "v2_B3_JD_structural_active_set_reduced_first_valid_bounded_execution_only.md"
 )
 B3_JD_DEFAULT_TARGET_HZ = 244.39
 B3_JD_DEFAULT_HARVEST_LO_HZ = 220.0
@@ -3041,6 +3050,10 @@ def _is_b3_jd_structural_active_set_reduced_dimension_setup_preflight_only_mode(
     return B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_DIMENSION_SETUP_PREFLIGHT_ONLY_ARG in argv
 
 
+def _is_b3_jd_structural_active_set_reduced_first_valid_bounded_execution_only_mode(argv: List[str]) -> bool:
+    return B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_FIRST_VALID_BOUNDED_EXECUTION_ONLY_ARG in argv
+
+
 def _is_b3_jd_free_dof_eliminated_third_bounded_execution_only_mode(argv: List[str]) -> bool:
     return B3_JD_FREE_DOF_ELIMINATED_THIRD_BOUNDED_EXECUTION_ONLY_ARG in argv
 
@@ -3247,8 +3260,8 @@ def _b3_build_corrected_structural_active_operators(
     (
         A_b3,
         M_b3,
-        _u_idx,
-        _p_idx,
+        u_idx,
+        p_idx,
         op_meta,
         bc_rows,
         _tag5_rows,
@@ -3347,6 +3360,8 @@ def _b3_build_corrected_structural_active_operators(
         "M_active": M_active,
         "free_rows": free_rows,
         "bc_rows": bc_rows,
+        "u_idx": u_idx,
+        "p_idx": p_idx,
         "n_w": n_w,
         "n_u_b3": n_u_b3,
         "op_meta": op_meta,
@@ -6470,6 +6485,377 @@ def _run_b3_jd_structural_active_set_reduced_dimension_setup_preflight_only(pre:
         print(
             "[B3_JD] additional_eps="
             "ONE_TEMPORARY_B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_SETUP_PREFLIGHT_EPS_AUTHORIZED_NO_SOLVE",
+            flush=True,
+        )
+        if built is not None:
+            for key in ("A_parent", "M_parent", "A_b3", "M_b3", "A_free", "M_free", "A_active", "M_active"):
+                m_ = built.get(key)
+                if m_ is not None:
+                    _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+        _destroy_mats_deduped(mats_to_destroy)
+
+
+def _run_b3_jd_structural_active_set_reduced_first_valid_bounded_execution_only(pre: Dict[str, Any]) -> int:
+    jd_cfg = {
+        "target_hz": 244.39,
+        "target_lambda": 2357906.6075988025,
+        "nev": 2,
+        "ncv": 20,
+        "mpd": 12,
+        "blocksize": 1,
+        "minv": 2,
+        "plusk": 1,
+        "initialsize": 4,
+        "tol": 1.0e-8,
+        "max_it": 120,
+    }
+    payload: Dict[str, Any] = {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "B3_JD_structural_active_set_reduced_first_valid_bounded_execution_only",
+        "B3_JD_struct_active_operator_source": (
+            "validated_B3_direct_sparse_AIJ_scaled_pressure_restricted_Dirichlet_eliminated_"
+            "structural_active_set_reduced_copy_fixed"
+        ),
+        "B3_JD_struct_active_operator_contract_pass": False,
+        "B3_JD_struct_active_full_B3_dimension": B3_STRUCT_ACTIVE_FULL_B3_DIM_EXPECTED,
+        "B3_JD_struct_active_final_dirichlet_count": None,
+        "B3_JD_struct_active_removed_inactive_structural_count": None,
+        "B3_JD_struct_active_final_active_dimension": None,
+        "B3_JD_struct_active_A_operator_type": None,
+        "B3_JD_struct_active_M_operator_type": None,
+        "B3_JD_struct_active_A_shape": None,
+        "B3_JD_struct_active_M_shape": None,
+        "B3_JD_struct_active_A_norm": None,
+        "B3_JD_struct_active_M_norm": None,
+        "B3_JD_struct_active_A_all_values_finite_pass": False,
+        "B3_JD_struct_active_M_all_values_finite_pass": False,
+        "B3_JD_struct_active_operator_nonzero_contract_pass": False,
+        "B3_JD_struct_active_A_exact_zero_row_count": None,
+        "B3_JD_struct_active_M_exact_zero_row_count": None,
+        "B3_JD_struct_active_A_exact_zero_column_count": None,
+        "B3_JD_struct_active_zero_row_column_cleanup_contract_pass": False,
+        "B3_JD_struct_active_execution_reuses_passed_setup_configuration": True,
+        "B3_JD_struct_active_execution_setup_configuration_source": (
+            "B3_JD_structural_active_set_reduced_dimension_setup_preflight_passed_configuration"
+        ),
+        "B3_JD_struct_active_execution_nev": int(jd_cfg["nev"]),
+        "B3_JD_struct_active_execution_ncv": int(jd_cfg["ncv"]),
+        "B3_JD_struct_active_execution_mpd": int(jd_cfg["mpd"]),
+        "B3_JD_struct_active_execution_blocksize": int(jd_cfg["blocksize"]),
+        "B3_JD_struct_active_execution_minv": int(jd_cfg["minv"]),
+        "B3_JD_struct_active_execution_plusk": int(jd_cfg["plusk"]),
+        "B3_JD_struct_active_execution_initialsize": int(jd_cfg["initialsize"]),
+        "B3_JD_struct_active_execution_minv_blocksize_mpd_constraint_pass": bool(
+            int(jd_cfg["minv"]) + int(jd_cfg["blocksize"]) <= int(jd_cfg["mpd"])
+        ),
+        "B3_JD_struct_active_initial_space_attached": False,
+        "B3_JD_struct_active_initial_space_reason": "FIRST_VALID_CORRECTED_B3_SOLVE_MUST_BE_UNSEEDED",
+        "B3_JD_struct_active_execution_authorized": True,
+        "B3_JD_struct_active_execution_scope": (
+            "ONE_BOUNDED_DIAGNOSTIC_SOLVE_ON_CORRECTED_STRUCTURAL_ACTIVE_OPERATOR_ONLY"
+        ),
+        "B3_JD_struct_active_EPS_created": False,
+        "B3_JD_struct_active_operators_set": False,
+        "B3_JD_struct_active_setup_calls_setup": False,
+        "B3_JD_struct_active_solve_attempted": False,
+        "B3_JD_struct_active_solve_count": 0,
+        "B3_JD_struct_active_EPS_converged_reason": None,
+        "B3_JD_struct_active_converged_mode_count": 0,
+        "B3_JD_struct_active_STSINVERT_used": False,
+        "B3_JD_struct_active_MUMPS_LU_used": False,
+        "B3_JD_struct_active_fallback_used": False,
+        "B3_JD_struct_active_automatic_retry_used": False,
+        "B3_JD_struct_active_additional_EPS_solve_used": False,
+        "B3_corrected_free_operator_ready_for_JD": False,
+        "B3_prior_free_DOF_JD_result_status": "INVALIDATED_BY_PRE_SOLVE_ZERO_OPERATOR_COPY_BUG",
+        "B3_JD_execution_authorized": True,
+        "jd_wiring_authorized": True,
+        "no_new_eigensolve_executed": True,
+        "new_eigensolve_executed": False,
+        "additional_eps": "ONE_BOUNDED_B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_EXECUTION_EPS_AUTHORIZED",
+        "operator_matrices_persisted": False,
+        "transfer_matrices_persisted": False,
+        "coupling_matrices_persisted": False,
+        "historical_seed_attached": False,
+        "mapped_seed_persisted": False,
+        "conditioned_seed_persisted": False,
+        "eigenvectors_persisted": False,
+        "vector_banks_persisted": False,
+        "solve_trees_created": False,
+        "production_promotion": "BLOCKED",
+        "B3_JD_struct_active_failure_stage": None,
+        "B3_JD_struct_active_failure_reason": None,
+    }
+    built: Dict[str, Any] | None = None
+    mats_to_destroy: List[Any] = []
+    mat_destroy_seen: set[int] = set()
+    eps = None
+    verdict = (
+        "B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_FIRST_VALID_BOUNDED_EXECUTION_BLOCKED_BY_OPERATOR_OR_SOLVER_INTERFACE"
+    )
+    try:
+        if not pre["preassembly_contract_pass"]:
+            payload["B3_JD_struct_active_failure_stage"] = "preassembly_contract"
+            payload["B3_JD_struct_active_failure_reason"] = "preassembly_contract_failed"
+            return 2
+        if MPI.COMM_WORLD.size != 1:
+            payload["B3_JD_struct_active_failure_stage"] = "runtime_mpi_contract"
+            payload["B3_JD_struct_active_failure_reason"] = "requires_mpiexec_n_1"
+            return 2
+        if not payload["B3_JD_struct_active_execution_minv_blocksize_mpd_constraint_pass"]:
+            payload["B3_JD_struct_active_failure_stage"] = "jd_constraint_check_before_setup"
+            payload["B3_JD_struct_active_failure_reason"] = "minv_plus_blocksize_gt_mpd"
+            return 2
+
+        built = _b3_build_corrected_structural_active_operators(
+            mats_to_destroy=mats_to_destroy,
+            mat_destroy_seen=mat_destroy_seen,
+        )
+        _b3_jd_struct_active_record_active_operator_contract(payload, built=built)
+        if int(payload.get("B3_JD_struct_active_final_dirichlet_count") or -1) != B3_STRUCT_ACTIVE_DIRICHLET_COUNT_EXPECTED:
+            payload["B3_JD_struct_active_operator_contract_pass"] = False
+        if not payload["B3_JD_struct_active_operator_contract_pass"]:
+            payload["B3_JD_struct_active_failure_stage"] = "structural_active_operator_contract"
+            payload["B3_JD_struct_active_failure_reason"] = "structural_active_operator_contract_failed"
+            return 2
+        if not payload["B3_JD_struct_active_zero_row_column_cleanup_contract_pass"]:
+            payload["B3_JD_struct_active_failure_stage"] = "structural_active_zero_row_column_cleanup"
+            payload["B3_JD_struct_active_failure_reason"] = "zero_row_or_column_cleanup_contract_failed"
+            return 2
+
+        A_active = built["A_active"]
+        M_active = built["M_active"]
+        free_rows = np.asarray(built["free_rows"], dtype=np.int32).ravel()
+        bc_rows_i32 = np.unique(np.asarray(built["bc_rows"], dtype=np.int32).ravel())
+        active_local = np.asarray(built["active_local"], dtype=np.int32).ravel()
+        inactive_local = np.asarray(built["inactive_local"], dtype=np.int32).ravel()
+        u_idx_i32 = np.asarray(built["u_idx"], dtype=np.int32).ravel()
+        p_idx_i32 = np.asarray(built["p_idx"], dtype=np.int32).ravel()
+        n_w = int(built["n_w"])
+        n_free = int(free_rows.size)
+
+        from slepc4py import SLEPc
+
+        eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
+        payload["B3_JD_struct_active_EPS_created"] = True
+        eps.setOperators(A_active, M_active)
+        payload["B3_JD_struct_active_operators_set"] = True
+        eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
+        try:
+            eps.setType(SLEPc.EPS.Type.JD)
+        except Exception:
+            eps.setType("jd")
+        eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
+        eps.setTarget(float(jd_cfg["target_lambda"]))
+        try:
+            eps.setDimensions(nev=int(jd_cfg["nev"]), ncv=int(jd_cfg["ncv"]), mpd=int(jd_cfg["mpd"]))
+        except TypeError:
+            eps.setDimensions(int(jd_cfg["nev"]), int(jd_cfg["ncv"]), int(jd_cfg["mpd"]))
+        if hasattr(eps, "setJDBlockSize"):
+            eps.setJDBlockSize(int(jd_cfg["blocksize"]))
+        if hasattr(eps, "setJDRestart"):
+            try:
+                eps.setJDRestart(minv=int(jd_cfg["minv"]), plusk=int(jd_cfg["plusk"]))
+            except TypeError:
+                eps.setJDRestart(int(jd_cfg["minv"]), int(jd_cfg["plusk"]))
+        if hasattr(eps, "setJDInitialSize"):
+            eps.setJDInitialSize(int(jd_cfg["initialsize"]))
+        eps.setTolerances(tol=float(jd_cfg["tol"]), max_it=int(jd_cfg["max_it"]))
+        eps.setUp()
+        payload["B3_JD_struct_active_setup_calls_setup"] = True
+        payload["B3_JD_struct_active_solve_attempted"] = True
+        eps.solve()
+        payload["B3_JD_struct_active_solve_count"] = 1
+        payload["new_eigensolve_executed"] = True
+        payload["no_new_eigensolve_executed"] = False
+        payload["B3_JD_struct_active_EPS_converged_reason"] = int(eps.getConvergedReason())
+        nconv = int(eps.getConverged())
+        payload["B3_JD_struct_active_converged_mode_count"] = nconv
+        accepted_any = False
+        for i in range(nconv):
+            vr = A_active.createVecRight()
+            vi = A_active.createVecRight()
+            try:
+                lam = eps.getEigenpair(i, vr, vi)
+                lam_c = complex(lam)
+                lam_re = float(np.real(lam_c))
+                lam_im = float(np.imag(lam_c))
+                f_hz = None
+                if math.isfinite(lam_re) and abs(lam_im) <= 1.0e-12 and lam_re > 0.0:
+                    f_hz = math.sqrt(max(lam_re, 0.0)) / (2.0 * math.pi)
+                x_active = np.asarray(vr.getArray(readonly=True), dtype=np.float64).ravel().copy()
+                ve = _petsc_vec_from_array(A_active, x_active)
+                try:
+                    Ax, ay = _petsc_matvec(A_active, ve)
+                    Mx, my = _petsc_matvec(M_active, ve)
+                    r_active = np.asarray(Ax, dtype=np.float64) - lam_re * np.asarray(Mx, dtype=np.float64)
+                    r_norm = float(np.linalg.norm(r_active))
+                    denom = max(
+                        float(np.linalg.norm(Ax)),
+                        abs(lam_re) * float(np.linalg.norm(Mx)),
+                        float(np.linalg.norm(x_active)),
+                        1.0,
+                    )
+                    rel_active = r_norm / denom
+                finally:
+                    ve.destroy()
+                    try:
+                        ay.destroy()
+                        my.destroy()
+                    except Exception:
+                        pass
+                x_free = np.zeros(n_free, dtype=np.float64)
+                x_free[active_local] = x_active
+                x_full = np.zeros(n_w, dtype=np.float64)
+                x_full[free_rows] = x_free
+                x_full_reconstructed = True
+                si_norm = (
+                    float(np.linalg.norm(x_free[inactive_local]))
+                    if inactive_local.size > 0
+                    else 0.0
+                )
+                d_norm = float(np.linalg.norm(x_full[bc_rows_i32])) if bc_rows_i32.size > 0 else 0.0
+                x_norm = float(np.linalg.norm(x_full))
+                si_pass = bool(si_norm <= 1.0e-8 * max(1.0, x_norm))
+                d_pass = bool(d_norm <= 1.0e-8 * max(1.0, x_norm))
+                x_abs = np.abs(x_full)
+                u_norm = float(np.linalg.norm(x_abs[u_idx_i32]))
+                p_norm = float(np.linalg.norm(x_abs[p_idx_i32]))
+                p_support = p_norm / max(x_norm, 1.0e-30)
+                structural_dominant = bool(u_norm > 1.0e-8 and p_norm <= 1.0e-8)
+                support_ok = bool(u_norm > 1.0e-8 and (p_support > 1.0e-6 or structural_dominant))
+                lambda_one = bool(
+                    _b3_lambda_near_unity_signature(f_hz)
+                    or (abs(lam_re - 1.0) <= 1.0e-6 and abs(lam_im) <= 1.0e-9)
+                )
+                nonfinite_sig = bool(
+                    not math.isfinite(lam_re)
+                    or not math.isfinite(lam_im)
+                    or math.isinf(lam_re)
+                    or math.isinf(lam_im)
+                )
+                finite_lambda = bool(math.isfinite(lam_re) and math.isfinite(lam_im))
+                eigenvalue_finite_pass = bool(finite_lambda)
+                positive_freq = bool(f_hz is not None and math.isfinite(float(f_hz)) and float(f_hz) > 0.0)
+                residual_ok = bool(math.isfinite(rel_active) and rel_active <= 1.0e-4)
+                target_dist = abs(float(f_hz) - float(jd_cfg["target_hz"])) if positive_freq else None
+                mode_pass = bool(
+                    finite_lambda
+                    and positive_freq
+                    and residual_ok
+                    and si_pass
+                    and d_pass
+                    and (not lambda_one)
+                    and (not nonfinite_sig)
+                    and support_ok
+                )
+                accepted_any = bool(accepted_any or mode_pass)
+                fail_reason = None
+                if not mode_pass:
+                    fail_parts: List[str] = []
+                    if not eigenvalue_finite_pass:
+                        fail_parts.append("non_finite_eigenvalue")
+                    if not positive_freq:
+                        fail_parts.append("non_positive_frequency")
+                    if not residual_ok:
+                        fail_parts.append("active_space_residual_too_large")
+                    if not si_pass:
+                        fail_parts.append("reconstructed_structural_inactive_nonzero")
+                    if not d_pass:
+                        fail_parts.append("reconstructed_dirichlet_nonzero")
+                    if lambda_one:
+                        fail_parts.append("lambda_one_pollution_signature")
+                    if nonfinite_sig:
+                        fail_parts.append("nonfinite_eigenpair_signature")
+                    if not support_ok:
+                        fail_parts.append("insufficient_physical_support")
+                    fail_reason = "|".join(fail_parts) if fail_parts else "acceptance_gate_failed"
+                payload[f"B3_JD_struct_active_mode_{i}_lambda_real"] = _safe_float(lam_re)
+                payload[f"B3_JD_struct_active_mode_{i}_lambda_imag"] = _safe_float(lam_im)
+                payload[f"B3_JD_struct_active_mode_{i}_eigenvalue_finite_pass"] = bool(eigenvalue_finite_pass)
+                payload[f"B3_JD_struct_active_mode_{i}_frequency_hz_if_real_positive"] = _safe_float(f_hz)
+                payload[f"B3_JD_struct_active_mode_{i}_relative_generalized_residual_active"] = _safe_float(rel_active)
+                payload[f"B3_JD_struct_active_mode_{i}_target_distance_hz"] = _safe_float(target_dist)
+                payload[f"B3_JD_struct_active_mode_{i}_full_vector_reconstructed"] = bool(x_full_reconstructed)
+                payload[f"B3_JD_struct_active_mode_{i}_reconstruction_method"] = (
+                    "INSERT_ACTIVE_VECTOR_ZERO_STRUCTURAL_INACTIVE_AND_FINAL_DIRICHLET_ROWS"
+                )
+                payload[f"B3_JD_struct_active_mode_{i}_structural_inactive_norm_after_reconstruction"] = _safe_float(
+                    si_norm
+                )
+                payload[f"B3_JD_struct_active_mode_{i}_structural_inactive_zero_pass"] = bool(si_pass)
+                payload[f"B3_JD_struct_active_mode_{i}_dirichlet_norm_after_reconstruction"] = _safe_float(d_norm)
+                payload[f"B3_JD_struct_active_mode_{i}_dirichlet_zero_pass"] = bool(d_pass)
+                payload[f"B3_JD_struct_active_mode_{i}_u_norm"] = _safe_float(u_norm)
+                payload[f"B3_JD_struct_active_mode_{i}_p_norm"] = _safe_float(p_norm)
+                payload[f"B3_JD_struct_active_mode_{i}_pressure_support_metric"] = _safe_float(p_support)
+                payload[f"B3_JD_struct_active_mode_{i}_lambda_one_pollution_signature"] = bool(lambda_one)
+                payload[f"B3_JD_struct_active_mode_{i}_nonfinite_eigenpair_signature"] = bool(nonfinite_sig)
+                payload[f"B3_JD_struct_active_mode_{i}_acceptance_pass"] = bool(mode_pass)
+                payload[f"B3_JD_struct_active_mode_{i}_acceptance_failure_reason"] = fail_reason
+            finally:
+                vr.destroy()
+                vi.destroy()
+
+        if accepted_any:
+            verdict = (
+                "B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_FIRST_VALID_BOUNDED_EXECUTION_PASS_READY_FOR_VALIDATION_RUN_DESIGN"
+            )
+            return 0
+        verdict = "B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_FIRST_VALID_BOUNDED_EXECUTION_COMPLETED_BUT_NO_ACCEPTABLE_MODE"
+        return 2
+    except _B3StructActiveBuildError as exc:
+        payload["B3_JD_struct_active_failure_stage"] = exc.stage
+        payload["B3_JD_struct_active_failure_reason"] = exc.reason
+        return 2
+    except Exception as exc:
+        if payload["B3_JD_struct_active_failure_stage"] is None:
+            payload["B3_JD_struct_active_failure_stage"] = "solver_interface"
+        payload["B3_JD_struct_active_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        return 2
+    finally:
+        if eps is not None:
+            try:
+                eps.destroy()
+            except Exception:
+                pass
+        payload["next_step_verdict"] = verdict
+        _write_json_atomic(OUT_JSON_B3_JD_STRUCT_ACTIVE_FIRST_VALID_BOUNDED, payload)
+        OUT_MD_B3_JD_STRUCT_ACTIVE_FIRST_VALID_BOUNDED.parent.mkdir(parents=True, exist_ok=True)
+        OUT_MD_B3_JD_STRUCT_ACTIVE_FIRST_VALID_BOUNDED.write_text(
+            "\n".join(
+                [
+                    "# B3 JD structural-active-set reduced first valid bounded execution",
+                    "",
+                    f"- verdict: `{verdict}`",
+                    f"- operator_contract_pass: {payload.get('B3_JD_struct_active_operator_contract_pass')}",
+                    f"- converged_mode_count: {payload.get('B3_JD_struct_active_converged_mode_count')}",
+                    f"- solve_count: {payload.get('B3_JD_struct_active_solve_count')}",
+                    f"- failure_stage: {payload.get('B3_JD_struct_active_failure_stage')}",
+                    f"- failure_reason: {payload.get('B3_JD_struct_active_failure_reason')}",
+                    "",
+                    (
+                        "new_eigensolve_executed=True"
+                        if payload.get("new_eigensolve_executed")
+                        else "new_eigensolve_executed=False"
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        print(
+            "[B3_JD] mode=B3_JD_structural_active_set_reduced_first_valid_bounded_execution_only",
+            flush=True,
+        )
+        print(
+            f"[B3_JD] B3_JD_struct_active_converged_mode_count={payload.get('B3_JD_struct_active_converged_mode_count')}",
+            flush=True,
+        )
+        print(f"[B3_JD] next_step_verdict={verdict}", flush=True)
+        print(f"[B3_JD] new_eigensolve_executed={payload.get('new_eigensolve_executed')}", flush=True)
+        print(
+            "[B3_JD] additional_eps=ONE_BOUNDED_B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_EXECUTION_EPS_AUTHORIZED",
             flush=True,
         )
         if built is not None:
@@ -9957,6 +10343,7 @@ def main() -> int:
         or _is_b3_gnhep_free_pencil_regularity_audit_only_mode(sys.argv)
         or _is_b3_gnhep_structural_active_set_reduced_operator_contract_only_mode(sys.argv)
         or _is_b3_jd_structural_active_set_reduced_dimension_setup_preflight_only_mode(sys.argv)
+        or _is_b3_jd_structural_active_set_reduced_first_valid_bounded_execution_only_mode(sys.argv)
     ):
         pre = _precheck_allow_b3_jd_first_bounded_execution()
     else:
@@ -10021,6 +10408,9 @@ def main() -> int:
 
     if _is_b3_jd_structural_active_set_reduced_dimension_setup_preflight_only_mode(sys.argv):
         return _run_b3_jd_structural_active_set_reduced_dimension_setup_preflight_only(pre)
+
+    if _is_b3_jd_structural_active_set_reduced_first_valid_bounded_execution_only_mode(sys.argv):
+        return _run_b3_jd_structural_active_set_reduced_first_valid_bounded_execution_only(pre)
 
     if _is_b3_seed_replay_audit_only_mode(sys.argv):
         return _run_b3_seed_replay_audit_only(pre)
