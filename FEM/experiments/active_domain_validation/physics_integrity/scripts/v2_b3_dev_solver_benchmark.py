@@ -295,6 +295,17 @@ def _run_dev_coarse_contract(pre: Dict[str, Any], mesh_variant: str) -> int:
     return rc
 
 
+def _dev_record_ciss_direct_stable_mirror(payload: Dict[str, Any]) -> None:
+    """Copy shared direct-stable introspection into B3_DEV_CISS_* report fields."""
+    payload["B3_DEV_CISS_ST_type_effective"] = payload.get("B3_CISS_direct_stable_ST_type_effective")
+    payload["B3_DEV_CISS_KSP_type_effective"] = payload.get("B3_CISS_direct_stable_KSP_type_effective")
+    payload["B3_DEV_CISS_PC_type_effective"] = payload.get("B3_CISS_direct_stable_PC_type_effective")
+    payload["B3_DEV_CISS_factor_solver_effective"] = payload.get("B3_CISS_direct_stable_factor_solver_effective")
+    payload["B3_DEV_CISS_factor_shift_verification_classification"] = payload.get(
+        "B3_CISS_direct_stable_factor_shift_verification_classification"
+    )
+
+
 def _run_dev_coarse_ciss_benchmark(pre: Dict[str, Any], mesh_variant: str) -> int:
     from slepc4py import SLEPc
 
@@ -346,6 +357,11 @@ def _run_dev_coarse_ciss_benchmark(pre: Dict[str, Any], mesh_variant: str) -> in
             payload["B3_DEV_failure_reason"] = "CISS_unavailable"
             return 2
         eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
+        payload["B3_DEV_CISS_EPS_created"] = True
+        payload["B3_DEV_CISS_setup_calls_setup"] = False
+        payload["B3_DEV_CISS_solve_attempted"] = False
+        payload["B3_DEV_CISS_solve_count"] = 0
+        payload["B3_DEV_CISS_converged_mode_count"] = 0
         A_active = built["A_active"]
         M_active = built["M_active"]
         eps.setOperators(A_active, M_active)
@@ -361,15 +377,23 @@ def _run_dev_coarse_ciss_benchmark(pre: Dict[str, Any], mesh_variant: str) -> in
 
         timer.mark("eps_setup_begin")
         eps.setUp()
+        payload["B3_DEV_CISS_setup_calls_setup"] = True
         timer.mark("eps_setup_end")
         payload.update(audit._b3_ciss_introspect_direct_stable_after_setup(eps))
         audit._b3_ciss_finalize_direct_stable_factor_shift_verification(eps, payload)
+        _dev_record_ciss_direct_stable_mirror(payload)
+        payload["B3_DEV_CISS_setup_elapsed_seconds"] = _safe_float(
+            float(payload.get("B3_DEV_timing_eps_setup_end_elapsed_seconds", 0))
+            - float(payload.get("B3_DEV_timing_eps_setup_begin_elapsed_seconds", 0))
+        )
         if not audit._b3_ciss_direct_stable_policy_effective_pass(payload):
             payload["B3_DEV_failure_reason"] = "direct_stable_setup_not_verified"
             return 2
 
         timer.mark("eps_solve_begin")
+        payload["B3_DEV_CISS_solve_attempted"] = True
         eps.solve()
+        payload["B3_DEV_CISS_solve_count"] = 1
         timer.mark("eps_solve_end")
         payload["new_eigensolve_executed"] = True
         payload["no_new_eigensolve_executed"] = False
@@ -382,14 +406,13 @@ def _run_dev_coarse_ciss_benchmark(pre: Dict[str, Any], mesh_variant: str) -> in
             freq_lo=float(audit.B3_CISS_VALIDATION_FREQ_LO_HZ),
             freq_hi=float(audit.B3_CISS_VALIDATION_FREQ_HI_HZ),
         )
-        payload["B3_DEV_setup_elapsed_seconds"] = _safe_float(
-            float(payload.get("B3_DEV_timing_eps_setup_end_elapsed_seconds", 0))
-            - float(payload.get("B3_DEV_timing_eps_setup_begin_elapsed_seconds", 0))
-        )
+        payload["B3_DEV_CISS_converged_mode_count"] = int(nconv)
+        payload["B3_DEV_setup_elapsed_seconds"] = payload.get("B3_DEV_CISS_setup_elapsed_seconds")
         payload["B3_DEV_solve_elapsed_seconds"] = _safe_float(
             float(payload.get("B3_DEV_timing_eps_solve_end_elapsed_seconds", 0))
             - float(payload.get("B3_DEV_timing_eps_solve_begin_elapsed_seconds", 0))
         )
+        payload["B3_DEV_CISS_solve_elapsed_seconds"] = payload["B3_DEV_solve_elapsed_seconds"]
         if accepted:
             verdict = "B3_DEV_COARSE_CISS_BENCHMARK_PASS"
             rc = 0
@@ -409,6 +432,9 @@ def _run_dev_coarse_ciss_benchmark(pre: Dict[str, Any], mesh_variant: str) -> in
             except Exception:
                 pass
         timer.finalize()
+        payload["B3_DEV_CISS_total_elapsed_seconds"] = _safe_float(
+            payload.get("B3_DEV_timing_total_wall_elapsed_seconds")
+        )
         payload["next_step_verdict"] = verdict
         audit._write_json_atomic(OUT_JSON_DEV_CISS, payload)
         audit._destroy_mats_deduped(mats)

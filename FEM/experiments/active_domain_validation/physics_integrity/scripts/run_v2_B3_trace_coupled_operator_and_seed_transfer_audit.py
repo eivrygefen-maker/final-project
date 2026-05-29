@@ -4207,10 +4207,11 @@ def _b3_ciss_factor_shift_getter_value(pc: Any) -> Optional[Dict[str, Any]]:
 
 
 def _b3_ciss_direct_stable_eps_setup_succeeded(payload: Dict[str, Any]) -> bool:
-    """True after eps.setUp() in either direct-stable preflight or bounded execution."""
+    """True after eps.setUp() in direct-stable preflight, bounded execution, or dev benchmark."""
     return bool(
         payload.get("B3_CISS_direct_stable_setup_calls_setup")
         or payload.get("B3_CISS_execution_setup_calls_setup")
+        or payload.get("B3_DEV_CISS_setup_calls_setup")
     )
 
 
