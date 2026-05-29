@@ -23,10 +23,11 @@ B3_DEV_COARSE_ST_TARGETING_PREFLIGHT_ARG = "--B3-dev-coarse-krylovschur-sinvert-
 B3_DEV_REFINED_ST_MULTI_TARGET_ARG = (
     "--B3-dev-refined-krylovschur-sinvert-multi-target-coverage-benchmark-only"
 )
+B3_DEV_DENSE_COVERAGE_COMPARE_ARG = "--B3-dev-dense-st-ciss-coverage-compare-only"
 B3_DEV_COMPARE_ARG = "--B3-dev-solver-benchmark-compare-only"
 
 B3_DEV_DEFAULT_MESH_VARIANT = "L_dev_coarse"
-B3_DEV_ALLOWED_MESH_VARIANTS = frozenset({"L_dev_coarse", "L_dev_refined"})
+B3_DEV_ALLOWED_MESH_VARIANTS = frozenset({"L_dev_coarse", "L_dev_refined", "L_dev_dense"})
 B3_DEV_COARSE_NEV = 12
 B3_DEV_COARSE_NCV = 24
 
@@ -34,12 +35,9 @@ _DEV_JSON_STEM_CONTRACT = "v2_B3_DEV_coarse_corrected_operator_contract_only"
 _DEV_JSON_STEM_CISS = "v2_B3_DEV_coarse_ciss_direct_stable_benchmark_only"
 _DEV_JSON_STEM_ST = "v2_B3_DEV_coarse_krylovschur_sinvert_benchmark_only"
 _DEV_JSON_STEM_ST_TARGETING = "v2_B3_DEV_coarse_krylovschur_sinvert_targeting_preflight_only"
-_DEV_JSON_STEM_ST_MULTI_TARGET = (
-    "v2_B3_DEV_refined_krylovschur_sinvert_multi_target_coverage_benchmark_only"
-)
+_DEV_JSON_STEM_ST_MULTI_TARGET = "v2_B3_DEV_krylovschur_sinvert_multi_target_coverage_benchmark_only"
 _DEV_JSON_STEM_SUMMARY = "v2_B3_DEV_coarse_solver_benchmark_summary"
 
-B3_DEV_ST_MULTI_TARGET_MESH_VARIANT = "L_dev_refined"
 B3_DEV_ST_MULTI_TARGET_FREQS_HZ = [224.0, 244.39, 262.5]
 B3_DEV_ST_MULTI_DEDUP_TOL_HZ = 1.0e-3
 B3_DEV_ST_MULTI_CISS_MATCH_TOL_HZ = 0.05
@@ -54,6 +52,38 @@ def _dev_out_json(stem: str, mesh_variant: str) -> Path:
 
 def _dev_out_md(stem: str, mesh_variant: str) -> Path:
     return _dev_out_json(stem, mesh_variant).with_suffix(".md")
+
+
+def _dev_mesh_active_dimension_targets(mesh_variant: str) -> Tuple[Optional[int], Optional[int]]:
+    from v2_mesh_convergence_common import load_manifest
+
+    level_def = (load_manifest().get("mesh_levels") or {}).get(mesh_variant) or {}
+    lo = level_def.get("target_active_dimension_min")
+    hi = level_def.get("target_active_dimension_max")
+    return (
+        int(lo) if lo is not None else None,
+        int(hi) if hi is not None else None,
+    )
+
+
+def _dev_active_dimension_in_target_range(mesh_variant: str, active_dim: int) -> bool:
+    lo, hi = _dev_mesh_active_dimension_targets(mesh_variant)
+    if lo is None or hi is None:
+        return True
+    return int(lo) <= int(active_dim) <= int(hi)
+
+
+def _dev_record_active_dimension_target_range(payload: Dict[str, Any], mesh_variant: str) -> Optional[str]:
+    active_dim = int(payload.get("B3_DEV_active_dimension") or 0)
+    dim_lo, dim_hi = _dev_mesh_active_dimension_targets(mesh_variant)
+    payload["B3_DEV_active_dimension_target_min"] = dim_lo
+    payload["B3_DEV_active_dimension_target_max"] = dim_hi
+    payload["B3_DEV_active_dimension_in_target_range_pass"] = _dev_active_dimension_in_target_range(
+        mesh_variant, active_dim
+    )
+    if not payload["B3_DEV_active_dimension_in_target_range_pass"]:
+        return f"active_dimension={active_dim}_outside_target_{dim_lo}_{dim_hi}"
+    return None
 
 
 class _B3DevTiming:
@@ -455,22 +485,15 @@ def _dev_compare_frequency_sets(
     return matches, missing, extra
 
 
-def _run_dev_refined_st_multi_target_coverage_benchmark(pre: Dict[str, Any], mesh_variant: str) -> int:
+def _run_dev_st_multi_target_coverage_benchmark(pre: Dict[str, Any], mesh_variant: str) -> int:
     from slepc4py import SLEPc
-
-    if mesh_variant != B3_DEV_ST_MULTI_TARGET_MESH_VARIANT:
-        print(
-            f"[B3_DEV] multi-target ST coverage requires mesh_variant={B3_DEV_ST_MULTI_TARGET_MESH_VARIANT}",
-            flush=True,
-        )
-        return 2
 
     freq_lo = float(audit.B3_CISS_VALIDATION_FREQ_LO_HZ)
     freq_hi = float(audit.B3_CISS_VALIDATION_FREQ_HI_HZ)
     targets_hz = list(B3_DEV_ST_MULTI_TARGET_FREQS_HZ)
     payload: Dict[str, Any] = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "mode": "B3_dev_refined_krylovschur_sinvert_multi_target_coverage_benchmark_only",
+        "mode": "B3_dev_krylovschur_sinvert_multi_target_coverage_benchmark_only",
         "B3_DEV_solver_name": "KRYLOVSCHUR-ST-SINVERT-MUMPS-MULTI-TARGET",
         **_dev_mesh_bootstrap_payload(mesh_variant),
         "B3_DEV_validation_frequency_interval_hz": [freq_lo, freq_hi],
@@ -488,28 +511,32 @@ def _run_dev_refined_st_multi_target_coverage_benchmark(pre: Dict[str, Any], mes
     timer = _B3DevTiming(payload)
     mats: List[Any] = []
     seen: set[int] = set()
-    verdict = "B3_DEV_REFINED_ST_MULTI_TARGET_COVERAGE_BLOCKED"
+    verdict = "B3_DEV_ST_MULTI_TARGET_COVERAGE_BLOCKED"
     rc = 2
     try:
         if not pre.get("preassembly_contract_pass") or MPI.COMM_WORLD.size != 1:
             return 2
 
+        ciss_path = _dev_out_json(_DEV_JSON_STEM_CISS, mesh_variant)
         ciss_loaded, ciss_ref_freqs, ciss_data = _dev_load_ciss_reference_accepted_frequencies(
             mesh_variant, freq_lo=freq_lo, freq_hi=freq_hi
         )
-        payload["B3_DEV_ST_multi_target_CISS_reference_loaded"] = bool(ciss_loaded)
-        payload["B3_DEV_ST_multi_target_CISS_reference_json_path"] = str(
-            _dev_out_json(_DEV_JSON_STEM_CISS, mesh_variant)
+        payload["B3_DEV_ST_multi_target_CISS_reference_json_path"] = str(ciss_path)
+        payload["B3_DEV_ST_multi_target_CISS_reference_loaded"] = bool(ciss_loaded and ciss_ref_freqs)
+        payload["B3_DEV_ST_multi_target_CISS_coverage_comparison_available"] = bool(
+            ciss_loaded and ciss_ref_freqs
         )
-        if not ciss_loaded:
-            payload["B3_DEV_failure_reason"] = "CISS_reference_json_missing"
-            return 2
-        payload["B3_DEV_ST_multi_target_CISS_reference_frequency_count"] = int(len(ciss_ref_freqs))
-        payload["B3_DEV_ST_multi_target_CISS_reference_frequencies"] = ciss_ref_freqs
-        payload["B3_DEV_ST_multi_target_CISS_refined_total_elapsed_seconds"] = _safe_float(
-            (ciss_data or {}).get("B3_DEV_CISS_total_elapsed_seconds")
-            or (ciss_data or {}).get("B3_DEV_timing_total_wall_elapsed_seconds")
-        )
+        if ciss_loaded and ciss_ref_freqs:
+            payload["B3_DEV_ST_multi_target_CISS_reference_frequency_count"] = int(len(ciss_ref_freqs))
+            payload["B3_DEV_ST_multi_target_CISS_reference_frequencies"] = ciss_ref_freqs
+            payload["B3_DEV_ST_multi_target_CISS_reference_total_elapsed_seconds"] = _safe_float(
+                (ciss_data or {}).get("B3_DEV_CISS_total_elapsed_seconds")
+                or (ciss_data or {}).get("B3_DEV_timing_total_wall_elapsed_seconds")
+            )
+        else:
+            payload["B3_DEV_ST_multi_target_CISS_reference_frequency_count"] = 0
+            payload["B3_DEV_ST_multi_target_CISS_reference_frequencies"] = []
+            payload["B3_DEV_ST_multi_target_CISS_reference_total_elapsed_seconds"] = None
 
         timer.mark("operator_build_begin")
         built = audit._b3_build_corrected_structural_active_operators(
@@ -522,6 +549,10 @@ def _run_dev_refined_st_multi_target_coverage_benchmark(pre: Dict[str, Any], mes
         _dev_record_operator_contract(payload, built=built)
         if not payload["B3_DEV_zero_row_column_cleanup_contract_pass"]:
             payload["B3_DEV_failure_reason"] = "operator_contract_failed"
+            return 2
+        dim_fail = _dev_record_active_dimension_target_range(payload, mesh_variant)
+        if dim_fail:
+            payload["B3_DEV_failure_reason"] = dim_fail
             return 2
         payload["B3_DEV_ST_multi_target_operator_built_once_pass"] = True
 
@@ -596,23 +627,29 @@ def _run_dev_refined_st_multi_target_coverage_benchmark(pre: Dict[str, Any], mes
         payload["B3_DEV_ST_multi_target_unique_accepted_frequency_count"] = int(len(union_freqs))
         payload["B3_DEV_ST_multi_target_unique_accepted_frequencies"] = union_freqs
 
-        matches, missing, extra = _dev_compare_frequency_sets(
-            union_freqs,
-            ciss_ref_freqs,
-            match_tol_hz=B3_DEV_ST_MULTI_CISS_MATCH_TOL_HZ,
-        )
-        payload["B3_DEV_ST_multi_target_matches_CISS_count"] = int(matches)
-        payload["B3_DEV_ST_multi_target_missing_CISS_frequencies"] = missing
-        payload["B3_DEV_ST_multi_target_extra_frequencies_in_interval"] = extra
-        payload["B3_DEV_ST_multi_target_full_interval_coverage_pass"] = bool(
-            len(missing) == 0 and matches == len(ciss_ref_freqs)
-        )
+        if payload["B3_DEV_ST_multi_target_CISS_coverage_comparison_available"]:
+            matches, missing, extra = _dev_compare_frequency_sets(
+                union_freqs,
+                ciss_ref_freqs,
+                match_tol_hz=B3_DEV_ST_MULTI_CISS_MATCH_TOL_HZ,
+            )
+            payload["B3_DEV_ST_multi_target_matches_CISS_count"] = int(matches)
+            payload["B3_DEV_ST_multi_target_missing_CISS_frequencies"] = missing
+            payload["B3_DEV_ST_multi_target_extra_frequencies_in_interval"] = extra
+            payload["B3_DEV_ST_multi_target_full_interval_coverage_pass"] = bool(
+                len(missing) == 0 and matches == len(ciss_ref_freqs)
+            )
+        else:
+            payload["B3_DEV_ST_multi_target_matches_CISS_count"] = None
+            payload["B3_DEV_ST_multi_target_missing_CISS_frequencies"] = None
+            payload["B3_DEV_ST_multi_target_extra_frequencies_in_interval"] = None
+            payload["B3_DEV_ST_multi_target_full_interval_coverage_pass"] = None
 
         timer.finalize()
         payload["B3_DEV_ST_multi_target_total_elapsed_seconds"] = _safe_float(
             payload.get("B3_DEV_timing_total_wall_elapsed_seconds")
         )
-        ciss_total = payload.get("B3_DEV_ST_multi_target_CISS_refined_total_elapsed_seconds")
+        ciss_total = payload.get("B3_DEV_ST_multi_target_CISS_reference_total_elapsed_seconds")
         st_total = payload.get("B3_DEV_ST_multi_target_total_elapsed_seconds")
         if (
             ciss_total is not None
@@ -623,16 +660,20 @@ def _run_dev_refined_st_multi_target_coverage_benchmark(pre: Dict[str, Any], mes
         ):
             payload["B3_DEV_ST_multi_target_speedup_vs_CISS"] = _safe_float(float(ciss_total) / float(st_total))
 
-        if payload["B3_DEV_ST_multi_target_full_interval_coverage_pass"]:
-            verdict = "B3_DEV_REFINED_ST_MULTI_TARGET_COVERAGE_PASS"
-            rc = 0
+        if payload["B3_DEV_ST_multi_target_CISS_coverage_comparison_available"]:
+            if payload["B3_DEV_ST_multi_target_full_interval_coverage_pass"]:
+                verdict = "B3_DEV_ST_MULTI_TARGET_COVERAGE_PASS"
+                rc = 0
+            else:
+                verdict = "B3_DEV_ST_MULTI_TARGET_COVERAGE_INCOMPLETE"
+                payload["B3_DEV_failure_reason"] = (
+                    f"missing_CISS={len(missing)};extra={len(extra)};"
+                    f"union={len(union_freqs)};ciss_ref={len(ciss_ref_freqs)}"
+                )
+                rc = 2
         else:
-            verdict = "B3_DEV_REFINED_ST_MULTI_TARGET_COVERAGE_INCOMPLETE"
-            payload["B3_DEV_failure_reason"] = (
-                f"missing_CISS={len(missing)};extra={len(extra)};"
-                f"union={len(union_freqs)};ciss_ref={len(ciss_ref_freqs)}"
-            )
-            rc = 2
+            verdict = "B3_DEV_ST_MULTI_TARGET_SOLVE_PASS_CISS_REFERENCE_PENDING"
+            rc = 0
     except Exception as exc:
         payload["B3_DEV_failure_reason"] = f"{type(exc).__name__}:{exc}"
         rc = 2
@@ -640,10 +681,10 @@ def _run_dev_refined_st_multi_target_coverage_benchmark(pre: Dict[str, Any], mes
         if "B3_DEV_timing_total_wall_elapsed_seconds" not in payload:
             timer.finalize()
         payload["next_step_verdict"] = verdict
-        out_json = audit.CONV_DIAG / f"{_DEV_JSON_STEM_ST_MULTI_TARGET}.json"
+        out_json = _dev_out_json(_DEV_JSON_STEM_ST_MULTI_TARGET, mesh_variant)
         audit._write_json_atomic(out_json, payload)
         out_json.with_suffix(".md").write_text(
-            "# B3 dev refined ST multi-target coverage\n\n"
+            f"# B3 dev ST multi-target coverage ({mesh_variant})\n\n"
             f"- verdict: `{verdict}`\n"
             f"- targets_hz: {targets_hz}\n"
             f"- union_accepted: {payload.get('B3_DEV_ST_multi_target_unique_accepted_frequency_count')}\n"
@@ -692,9 +733,15 @@ def _run_dev_coarse_contract(pre: Dict[str, Any], mesh_variant: str) -> int:
             "B3_DEV_timing_operator_build_end_elapsed_seconds"
         )
         _dev_record_operator_contract(payload, built=built)
+        dim_fail = _dev_record_active_dimension_target_range(payload, mesh_variant)
         if payload["B3_DEV_zero_row_column_cleanup_contract_pass"]:
-            verdict = "B3_DEV_COARSE_OPERATOR_CONTRACT_PASS"
-            rc = 0
+            if not dim_fail:
+                verdict = "B3_DEV_COARSE_OPERATOR_CONTRACT_PASS"
+                rc = 0
+            else:
+                verdict = "B3_DEV_OPERATOR_CONTRACT_ACTIVE_DIMENSION_OUT_OF_TARGET"
+                payload["B3_DEV_failure_reason"] = dim_fail
+                rc = 2
         else:
             rc = 2
     except audit._B3StructActiveBuildError as exc:
@@ -933,6 +980,10 @@ def _run_dev_coarse_ciss_benchmark(pre: Dict[str, Any], mesh_variant: str) -> in
         if not payload["B3_DEV_zero_row_column_cleanup_contract_pass"]:
             payload["B3_DEV_failure_reason"] = "operator_contract_failed"
             return 2
+        dim_fail = _dev_record_active_dimension_target_range(payload, mesh_variant)
+        if dim_fail:
+            payload["B3_DEV_failure_reason"] = dim_fail
+            return 2
 
         timer.mark("eps_configure_begin")
         ciss_type = getattr(SLEPc.EPS.Type, "CISS", None)
@@ -1156,6 +1207,10 @@ def _run_dev_coarse_st_benchmark(pre: Dict[str, Any], mesh_variant: str) -> int:
         if not payload["B3_DEV_zero_row_column_cleanup_contract_pass"]:
             payload["B3_DEV_failure_reason"] = "operator_contract_failed"
             return 2
+        dim_fail = _dev_record_active_dimension_target_range(payload, mesh_variant)
+        if dim_fail:
+            payload["B3_DEV_failure_reason"] = dim_fail
+            return 2
 
         timer.mark("eps_configure_begin")
         eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
@@ -1223,6 +1278,70 @@ def _run_dev_coarse_st_benchmark(pre: Dict[str, Any], mesh_variant: str) -> int:
     return rc
 
 
+def _run_dev_dense_st_ciss_coverage_compare(mesh_variant: str) -> int:
+    if mesh_variant != "L_dev_dense":
+        print("[B3_DEV] dense coverage compare requires --B3-dev-mesh-variant L_dev_dense", flush=True)
+        return 2
+    freq_lo = float(audit.B3_CISS_VALIDATION_FREQ_LO_HZ)
+    freq_hi = float(audit.B3_CISS_VALIDATION_FREQ_HI_HZ)
+    st_path = _dev_out_json(_DEV_JSON_STEM_ST_MULTI_TARGET, mesh_variant)
+    ciss_path = _dev_out_json(_DEV_JSON_STEM_CISS, mesh_variant)
+    if not st_path.is_file():
+        print(f"[B3_DEV] missing ST multi-target JSON: {st_path}", flush=True)
+        return 2
+    if not ciss_path.is_file():
+        print(f"[B3_DEV] missing CISS JSON: {ciss_path}", flush=True)
+        return 2
+    st_data = json.loads(st_path.read_text(encoding="utf-8"))
+    ciss_loaded, ciss_freqs, ciss_data = _dev_load_ciss_reference_accepted_frequencies(
+        mesh_variant, freq_lo=freq_lo, freq_hi=freq_hi
+    )
+    if not ciss_loaded or not ciss_freqs:
+        print("[B3_DEV] CISS reference frequencies unavailable", flush=True)
+        return 2
+    union_freqs = list(st_data.get("B3_DEV_ST_multi_target_unique_accepted_frequencies") or [])
+    matches, missing, extra = _dev_compare_frequency_sets(
+        union_freqs, ciss_freqs, match_tol_hz=B3_DEV_ST_MULTI_CISS_MATCH_TOL_HZ
+    )
+    coverage_pass = bool(len(missing) == 0 and matches == len(ciss_freqs))
+    ciss_total = (ciss_data or {}).get("B3_DEV_CISS_total_elapsed_seconds") or (
+        ciss_data or {}
+    ).get("B3_DEV_timing_total_wall_elapsed_seconds")
+    st_total = st_data.get("B3_DEV_ST_multi_target_total_elapsed_seconds")
+    speedup = None
+    if (
+        ciss_total is not None
+        and st_total is not None
+        and math.isfinite(float(ciss_total))
+        and math.isfinite(float(st_total))
+        and float(st_total) > 0.0
+    ):
+        speedup = float(ciss_total) / float(st_total)
+    summary = {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "B3_dev_dense_st_ciss_coverage_compare_only",
+        "B3_DEV_mesh_variant": mesh_variant,
+        "B3_DEV_ST_multi_target_unique_accepted_frequencies": union_freqs,
+        "B3_DEV_ST_multi_target_unique_accepted_frequency_count": len(union_freqs),
+        "B3_DEV_ST_multi_target_CISS_reference_frequencies": ciss_freqs,
+        "B3_DEV_ST_multi_target_CISS_reference_frequency_count": len(ciss_freqs),
+        "B3_DEV_ST_multi_target_matches_CISS_count": int(matches),
+        "B3_DEV_ST_multi_target_missing_CISS_frequencies": missing,
+        "B3_DEV_ST_multi_target_extra_frequencies_in_interval": extra,
+        "B3_DEV_ST_multi_target_full_interval_coverage_pass": coverage_pass,
+        "B3_DEV_ST_multi_target_CISS_reference_total_elapsed_seconds": _safe_float(ciss_total),
+        "B3_DEV_ST_multi_target_total_elapsed_seconds": _safe_float(st_total),
+        "B3_DEV_ST_multi_target_speedup_vs_CISS": _safe_float(speedup),
+        "next_step_verdict": (
+            "B3_DEV_DENSE_ST_CISS_COVERAGE_PASS" if coverage_pass else "B3_DEV_DENSE_ST_CISS_COVERAGE_INCOMPLETE"
+        ),
+    }
+    out_path = audit.CONV_DIAG / "v2_B3_DEV_dense_st_ciss_coverage_compare.json"
+    audit._write_json_atomic(out_path, summary)
+    print(f"[B3_DEV] dense_coverage_compare_written={out_path}", flush=True)
+    return 0 if coverage_pass else 2
+
+
 def _run_dev_compare_summary(mesh_variant: str) -> int:
     rows: List[Dict[str, Any]] = []
 
@@ -1266,6 +1385,26 @@ def _run_dev_compare_summary(mesh_variant: str) -> int:
         _load_row(_dev_out_json(_DEV_JSON_STEM_CONTRACT, variant), f"operator_contract:{variant}")
         _load_row(_dev_out_json(_DEV_JSON_STEM_CISS, variant), f"CISS-DIRECT-STABLE:{variant}")
         _load_row(_dev_out_json(_DEV_JSON_STEM_ST, variant), f"KRYLOVSCHUR-ST-SINVERT-MUMPS:{variant}")
+        st_mt = _dev_out_json(_DEV_JSON_STEM_ST_MULTI_TARGET, variant)
+        if st_mt.is_file():
+            data = json.loads(st_mt.read_text(encoding="utf-8"))
+            rows.append(
+                {
+                    "solver": "KRYLOVSCHUR-ST-MULTI-TARGET",
+                    "mesh_variant": data.get("B3_DEV_mesh_variant", variant),
+                    "active_dimension": data.get("B3_DEV_active_dimension"),
+                    "operator_build_time_s": data.get("B3_DEV_timing_A_active_M_active_ready_elapsed_seconds"),
+                    "setup_time_s": data.get("B3_DEV_ST_multi_target_total_setup_elapsed_seconds"),
+                    "solve_time_s": data.get("B3_DEV_ST_multi_target_total_solve_elapsed_seconds"),
+                    "total_time_s": data.get("B3_DEV_ST_multi_target_total_elapsed_seconds"),
+                    "returned_frequencies_hz": data.get("B3_DEV_ST_multi_target_unique_accepted_frequencies"),
+                    "closest_to_244_39_hz": None,
+                    "closest_distance_hz": None,
+                    "accepted_mode_count": data.get("B3_DEV_ST_multi_target_unique_accepted_frequency_count"),
+                    "peak_memory_rss_mb": data.get("B3_DEV_peak_memory_rss_mb"),
+                    "verdict": data.get("next_step_verdict"),
+                }
+            )
 
     summary = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -1302,6 +1441,7 @@ def is_b3_dev_mode(argv: List[str]) -> bool:
         B3_DEV_COARSE_ST_ARG,
         B3_DEV_COARSE_ST_TARGETING_PREFLIGHT_ARG,
         B3_DEV_REFINED_ST_MULTI_TARGET_ARG,
+        B3_DEV_DENSE_COVERAGE_COMPARE_ARG,
         B3_DEV_COMPARE_ARG,
     )
     return any(f in argv for f in dev_flags)
@@ -1325,7 +1465,9 @@ def run_b3_dev_mode(argv: List[str], pre: Dict[str, Any]) -> int:
     if B3_DEV_COARSE_ST_ARG in argv:
         return _run_dev_coarse_st_benchmark(pre, mesh_variant)
     if B3_DEV_REFINED_ST_MULTI_TARGET_ARG in argv:
-        return _run_dev_refined_st_multi_target_coverage_benchmark(pre, mesh_variant)
+        return _run_dev_st_multi_target_coverage_benchmark(pre, mesh_variant)
+    if B3_DEV_DENSE_COVERAGE_COMPARE_ARG in argv:
+        return _run_dev_dense_st_ciss_coverage_compare(mesh_variant)
     if B3_DEV_COMPARE_ARG in argv:
         return _run_dev_compare_summary(mesh_variant)
     print("[B3_DEV] no dev mode flag recognized", flush=True)
