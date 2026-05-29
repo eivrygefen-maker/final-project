@@ -99,6 +99,14 @@ B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_HARMONIC_FIRST_BOUNDED_EXECUTION_ONLY_ARG = 
     "--B3-JD-structural-active-set-reduced-harmonic-first-bounded-execution-only"
 )
 B3_JD_PRIOR_NON_HARMONIC_RITZ_CANDIDATE_FREQUENCY_HZ = 39290.54173534997
+B3_CISS_STRUCTURAL_ACTIVE_SET_REDUCED_INTERVAL_SETUP_PREFLIGHT_ONLY_ARG = (
+    "--B3-CISS-structural-active-set-reduced-interval-setup-preflight-only"
+)
+B3_CISS_VALIDATION_FREQ_LO_HZ = 220.0
+B3_CISS_VALIDATION_FREQ_HI_HZ = 265.0
+B3_CISS_VALIDATION_TARGET_HZ = 244.39
+B3_CISS_FUTURE_PRODUCT_FREQ_LO_HZ = 60.0
+B3_CISS_FUTURE_PRODUCT_FREQ_HI_HZ = 550.0
 B3_GNHEP_FREE_PENCIL_REGULARITY_AUDIT_ONLY_ARG = "--B3-GNHEP-free-pencil-regularity-audit-only"
 B3_GNHEP_STRUCTURAL_ACTIVE_SET_REDUCED_OPERATOR_CONTRACT_ONLY_ARG = (
     "--B3-GNHEP-structural-active-set-reduced-operator-contract-only"
@@ -178,6 +186,12 @@ OUT_JSON_B3_JD_STRUCT_ACTIVE_HARMONIC_FIRST_BOUNDED = (
 )
 OUT_MD_B3_JD_STRUCT_ACTIVE_HARMONIC_FIRST_BOUNDED = (
     CONV_DIAG / "v2_B3_JD_structural_active_set_reduced_harmonic_first_bounded_execution_only.md"
+)
+OUT_JSON_B3_CISS_STRUCT_ACTIVE_INTERVAL_SETUP = (
+    CONV_DIAG / "v2_B3_CISS_structural_active_set_reduced_interval_setup_preflight_only.json"
+)
+OUT_MD_B3_CISS_STRUCT_ACTIVE_INTERVAL_SETUP = (
+    CONV_DIAG / "v2_B3_CISS_structural_active_set_reduced_interval_setup_preflight_only.md"
 )
 B3_JD_DEFAULT_TARGET_HZ = 244.39
 B3_JD_DEFAULT_HARVEST_LO_HZ = 220.0
@@ -3094,6 +3108,10 @@ def _is_b3_jd_structural_active_set_reduced_harmonic_first_bounded_execution_onl
     return B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_HARMONIC_FIRST_BOUNDED_EXECUTION_ONLY_ARG in argv
 
 
+def _is_b3_ciss_structural_active_set_reduced_interval_setup_preflight_only_mode(argv: List[str]) -> bool:
+    return B3_CISS_STRUCTURAL_ACTIVE_SET_REDUCED_INTERVAL_SETUP_PREFLIGHT_ONLY_ARG in argv
+
+
 def _is_b3_jd_free_dof_eliminated_third_bounded_execution_only_mode(argv: List[str]) -> bool:
     return B3_JD_FREE_DOF_ELIMINATED_THIRD_BOUNDED_EXECUTION_ONLY_ARG in argv
 
@@ -3634,6 +3652,176 @@ def _b3_jd_harmonic_execution_record_operator_contract(
         and payload["B3_JD_harmonic_execution_A_exact_zero_column_count"] == 0
         and payload["B3_JD_harmonic_execution_operator_nonzero_contract_pass"]
     )
+
+
+def _b3_hz_to_lambda_sq(hz: float) -> float:
+    f = max(float(hz), 0.0)
+    return (2.0 * math.pi * f) ** 2
+
+
+def _b3_prior_harmonic_posthoc_reclassification(payload: Dict[str, Any]) -> None:
+    """Report-only reclassification from existing harmonic bounded JSON (no rewrite)."""
+    payload["B3_prior_harmonic_custom_residual_metric_formula"] = (
+        "NORM_Ax_MINUS_LAMBDA_Mx_OVER_MAX_NORM_Ax_LAMBDA_NORM_Mx_NORM_x_ONE"
+    )
+    payload["B3_prior_harmonic_custom_residual_metric_is_SLEPC_relative_error"] = False
+    payload["B3_prior_harmonic_acceptance_gate_residual_normalization_bug_confirmed"] = True
+    payload["B3_prior_harmonic_complex_mode_custom_residual_not_authoritative_pass"] = True
+    payload["B3_prior_harmonic_complex_mode_custom_residual_not_authoritative_reason"] = (
+        "CUSTOM_PATH_IGNORES_IMAGINARY_EIGENVECTOR_AND_EIGENVALUE_COMPONENTS"
+    )
+    payload["B3_prior_harmonic_result_loaded"] = False
+    payload["B3_prior_harmonic_mode_0_frequency_hz"] = None
+    payload["B3_prior_harmonic_mode_0_custom_residual_metric"] = None
+    payload["B3_prior_harmonic_mode_0_eps_compute_error_relative"] = None
+    payload["B3_prior_harmonic_mode_0_numerical_convergence_reclassified_pass"] = False
+    payload["B3_prior_harmonic_mode_0_target_region_pass"] = False
+    payload["B3_prior_harmonic_mode_0_reclassified_status"] = None
+    if not OUT_JSON_B3_JD_STRUCT_ACTIVE_HARMONIC_FIRST_BOUNDED.is_file():
+        return
+    try:
+        prior = json.loads(OUT_JSON_B3_JD_STRUCT_ACTIVE_HARMONIC_FIRST_BOUNDED.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    payload["B3_prior_harmonic_result_loaded"] = True
+    payload["B3_prior_harmonic_mode_0_frequency_hz"] = _safe_float(
+        prior.get("B3_JD_harmonic_mode_0_frequency_hz_if_real_positive")
+    )
+    payload["B3_prior_harmonic_mode_0_custom_residual_metric"] = _safe_float(
+        prior.get("B3_JD_harmonic_mode_0_relative_generalized_residual_active")
+    )
+    payload["B3_prior_harmonic_mode_0_eps_compute_error_relative"] = _safe_float(
+        prior.get("B3_JD_harmonic_mode_0_eps_compute_error_relative")
+    )
+    eps_err = prior.get("B3_JD_harmonic_mode_0_eps_compute_error_relative")
+    f0 = prior.get("B3_JD_harmonic_mode_0_frequency_hz_if_real_positive")
+    eps_ok = bool(math.isfinite(float(eps_err or float("nan"))) and float(eps_err) <= 1.0e-4)
+    f0_ok = bool(f0 is not None and math.isfinite(float(f0)) and float(f0) > 0.0)
+    payload["B3_prior_harmonic_mode_0_numerical_convergence_reclassified_pass"] = bool(eps_ok and f0_ok)
+    payload["B3_prior_harmonic_mode_0_target_region_pass"] = bool(
+        f0_ok
+        and float(B3_CISS_VALIDATION_FREQ_LO_HZ) <= float(f0) <= float(B3_CISS_VALIDATION_FREQ_HI_HZ)
+    )
+    if payload["B3_prior_harmonic_mode_0_numerical_convergence_reclassified_pass"]:
+        if payload["B3_prior_harmonic_mode_0_target_region_pass"]:
+            payload["B3_prior_harmonic_mode_0_reclassified_status"] = (
+                "NUMERICALLY_CONVERGED_TARGET_REGION_CANDIDATE"
+            )
+        else:
+            payload["B3_prior_harmonic_mode_0_reclassified_status"] = (
+                "NUMERICALLY_CONVERGED_HIGH_FREQUENCY_EIGENPAIR_NOT_TARGET_REGION_RESULT"
+            )
+    else:
+        payload["B3_prior_harmonic_mode_0_reclassified_status"] = "NOT_NUMERICALLY_CONVERGED_BY_EPS_RELATIVE_ERROR"
+
+
+def _b3_ciss_record_operator_contract(payload: Dict[str, Any], *, built: Dict[str, Any]) -> None:
+    A_active = built["A_active"]
+    M_active = built["M_active"]
+    cand = built["cand"]
+    act_a_norm = _mat_norm_or_none(A_active)
+    act_m_norm = _mat_norm_or_none(M_active)
+    act_a_fin = _petsc_sparse_owned_row_value_audit(A_active)
+    act_m_fin = _petsc_sparse_owned_row_value_audit(M_active)
+    a_active_rn = _petsc_sparse_owned_row_norms(A_active)
+    m_active_rn = _petsc_sparse_owned_row_norms(M_active)
+    a_active_cn = _petsc_sparse_owned_col_norms(A_active)
+    payload["B3_CISS_operator_contract_pass"] = bool(
+        _b3_loc_nonzero_contract_pass(act_a_norm, int(_petsc_mat_global_nnz_used(A_active)))
+        and _b3_loc_nonzero_contract_pass(act_m_norm, int(_petsc_mat_global_nnz_used(M_active)))
+        and act_a_fin["all_values_finite_pass"]
+        and act_m_fin["all_values_finite_pass"]
+        and int(cand["inactive_structural_count"]) == B3_STRUCT_ACTIVE_INACTIVE_STRUCTURAL_EXPECTED
+        and int(cand["aup_supported_count"]) == B3_STRUCT_ACTIVE_AUP_SUPPORTED_EXPECTED
+        and int(cand["inactive_aup_overlap_count"]) == 0
+        and int(built["active_local"].size) == B3_STRUCT_ACTIVE_ACTIVE_DIM_EXPECTED
+    )
+    payload["B3_CISS_final_active_dimension"] = int(built["active_local"].size)
+    payload["B3_CISS_A_shape"] = _mat_shape(A_active)
+    payload["B3_CISS_M_shape"] = _mat_shape(M_active)
+    payload["B3_CISS_A_all_values_finite_pass"] = bool(act_a_fin["all_values_finite_pass"])
+    payload["B3_CISS_M_all_values_finite_pass"] = bool(act_m_fin["all_values_finite_pass"])
+    payload["B3_CISS_operator_nonzero_contract_pass"] = bool(payload["B3_CISS_operator_contract_pass"])
+    payload["B3_CISS_A_exact_zero_row_count"] = int(np.sum(a_active_rn == 0.0))
+    payload["B3_CISS_M_exact_zero_row_count"] = int(np.sum(m_active_rn == 0.0))
+    payload["B3_CISS_A_exact_zero_column_count"] = int(np.sum(a_active_cn == 0.0))
+    payload["B3_CISS_zero_row_column_cleanup_contract_pass"] = bool(
+        payload["B3_CISS_A_exact_zero_row_count"] == 0
+        and payload["B3_CISS_M_exact_zero_row_count"] == 0
+        and payload["B3_CISS_A_exact_zero_column_count"] == 0
+        and payload["B3_CISS_operator_nonzero_contract_pass"]
+    )
+
+
+def _b3_ciss_configure_rg_interval(
+    eps: Any,
+    *,
+    lam_lo: float,
+    lam_hi: float,
+) -> str:
+    from slepc4py import SLEPc
+
+    rg = eps.getRG()
+    region_type = "interval"
+    try:
+        rg.setType(SLEPc.RG.Type.INTERVAL)
+        region_type = "SLEPc.RG.Type.INTERVAL"
+    except Exception:
+        rg.setType("interval")
+        region_type = "interval"
+    rg.setIntervalEndpoints(float(lam_lo), float(lam_hi), 0.0, 0.0)
+    return str(region_type)
+
+
+def _b3_ciss_introspect_st_ksp_pc_after_setup(eps: Any) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "B3_CISS_CISSUseST_effective": None,
+        "B3_CISS_ST_type_effective": None,
+        "B3_CISS_KSP_type_effective": None,
+        "B3_CISS_PC_type_effective": None,
+        "B3_CISS_STSINVERT_used": False,
+        "B3_CISS_MUMPS_LU_used": False,
+        "B3_CISS_region_type_effective": None,
+        "B3_CISS_region_lambda_interval_effective": None,
+    }
+    try:
+        if hasattr(eps, "getCISSUseST"):
+            out["B3_CISS_CISSUseST_effective"] = bool(eps.getCISSUseST())
+    except Exception:
+        pass
+    try:
+        rg = eps.getRG()
+        out["B3_CISS_region_type_effective"] = str(rg.getType())
+        try:
+            ep = rg.getIntervalEndpoints()
+            out["B3_CISS_region_lambda_interval_effective"] = [
+                _safe_float(float(ep[0])),
+                _safe_float(float(ep[1])),
+                _safe_float(float(ep[2])),
+                _safe_float(float(ep[3])),
+            ]
+        except Exception:
+            out["B3_CISS_region_lambda_interval_effective"] = None
+    except Exception:
+        pass
+    try:
+        st = eps.getST()
+        st_type = str(st.getType())
+        out["B3_CISS_ST_type_effective"] = st_type
+        out["B3_CISS_STSINVERT_used"] = bool("sinvert" in st_type.lower())
+        try:
+            ksp = st.getKSP()
+            ksp_type = str(ksp.getType())
+            out["B3_CISS_KSP_type_effective"] = ksp_type
+            pc = ksp.getPC()
+            pc_type = str(pc.getType()).lower()
+            out["B3_CISS_PC_type_effective"] = str(pc.getType())
+            out["B3_CISS_MUMPS_LU_used"] = bool("mumps" in pc_type)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return out
 
 
 def _b3_jd_eps_set_harmonic_extraction_and_report(eps: Any) -> Dict[str, Any]:
@@ -7740,6 +7928,219 @@ def _run_b3_jd_structural_active_set_reduced_harmonic_first_bounded_execution_on
         _destroy_mats_deduped(mats_to_destroy)
 
 
+def _run_b3_ciss_structural_active_set_reduced_interval_setup_preflight_only(pre: Dict[str, Any]) -> int:
+    lam_lo = _b3_hz_to_lambda_sq(B3_CISS_VALIDATION_FREQ_LO_HZ)
+    lam_hi = _b3_hz_to_lambda_sq(B3_CISS_VALIDATION_FREQ_HI_HZ)
+    payload: Dict[str, Any] = {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "B3_CISS_structural_active_set_reduced_interval_setup_preflight_only",
+        "B3_CISS_operator_source": (
+            "validated_B3_direct_sparse_AIJ_scaled_pressure_restricted_Dirichlet_eliminated_"
+            "structural_active_set_reduced_copy_fixed"
+        ),
+        "B3_CISS_operator_contract_pass": False,
+        "B3_CISS_final_active_dimension": None,
+        "B3_CISS_A_shape": None,
+        "B3_CISS_M_shape": None,
+        "B3_CISS_operator_nonzero_contract_pass": False,
+        "B3_CISS_A_all_values_finite_pass": False,
+        "B3_CISS_M_all_values_finite_pass": False,
+        "B3_CISS_A_exact_zero_row_count": None,
+        "B3_CISS_M_exact_zero_row_count": None,
+        "B3_CISS_A_exact_zero_column_count": None,
+        "B3_CISS_zero_row_column_cleanup_contract_pass": False,
+        "B3_CISS_validation_interval_source": "BASELINE_COUPLED_V2_HISTORICAL_HARVEST_WINDOW",
+        "B3_CISS_validation_frequency_interval_hz": [B3_CISS_VALIDATION_FREQ_LO_HZ, B3_CISS_VALIDATION_FREQ_HI_HZ],
+        "B3_CISS_validation_target_reference_hz": float(B3_CISS_VALIDATION_TARGET_HZ),
+        "B3_CISS_validation_lambda_interval": [_safe_float(lam_lo), _safe_float(lam_hi)],
+        "B3_CISS_future_product_frequency_interval_hz": [
+            B3_CISS_FUTURE_PRODUCT_FREQ_LO_HZ,
+            B3_CISS_FUTURE_PRODUCT_FREQ_HI_HZ,
+        ],
+        "B3_CISS_future_product_interval_execution_authorized": False,
+        "B3_CISS_EPS_created": False,
+        "B3_CISS_operators_set": False,
+        "B3_CISS_problem_type_GNHEP_set": False,
+        "B3_CISS_solver_type_set": False,
+        "B3_CISS_region_type_effective": None,
+        "B3_CISS_region_lambda_interval_effective": None,
+        "B3_CISS_setup_calls_setup": False,
+        "B3_CISS_setup_calls_solve": False,
+        "B3_CISS_setup_preflight_pass": False,
+        "B3_CISS_setup_failure_stage": None,
+        "B3_CISS_setup_failure_reason": None,
+        "B3_CISS_ST_type_effective": None,
+        "B3_CISS_CISSUseST_effective": None,
+        "B3_CISS_KSP_type_effective": None,
+        "B3_CISS_PC_type_effective": None,
+        "B3_CISS_STSINVERT_used": False,
+        "B3_CISS_MUMPS_LU_used": False,
+        "B3_CISS_explicit_linear_solver_policy_configured": False,
+        "B3_CISS_future_execution_requires_linear_solver_policy_review": True,
+        "B3_JD_preconditioned_execution_authorized": False,
+        "B3_JD_execution_authorized": False,
+        "B3_CISS_interval_execution_authorized": False,
+        "jd_wiring_authorized": False,
+        "no_new_eigensolve_executed": True,
+        "additional_eps": "ONE_TEMPORARY_B3_CISS_STRUCTURAL_ACTIVE_INTERVAL_SETUP_PREFLIGHT_EPS_AUTHORIZED_NO_SOLVE",
+        "operator_matrices_persisted": False,
+        "transfer_matrices_persisted": False,
+        "coupling_matrices_persisted": False,
+        "eigenvectors_persisted": False,
+        "vector_banks_persisted": False,
+        "solve_trees_created": False,
+        "production_promotion": "BLOCKED",
+    }
+    _b3_prior_harmonic_posthoc_reclassification(payload)
+    built: Dict[str, Any] | None = None
+    mats_to_destroy: List[Any] = []
+    mat_destroy_seen: set[int] = set()
+    eps = None
+    verdict = "B3_CISS_CORRECTED_STRUCTURAL_ACTIVE_INTERVAL_SETUP_PREFLIGHT_BLOCKED"
+    try:
+        if not pre["preassembly_contract_pass"]:
+            payload["B3_CISS_setup_failure_stage"] = "preassembly_contract"
+            payload["B3_CISS_setup_failure_reason"] = "preassembly_contract_failed"
+            return 2
+        if MPI.COMM_WORLD.size != 1:
+            payload["B3_CISS_setup_failure_stage"] = "runtime_mpi_contract"
+            payload["B3_CISS_setup_failure_reason"] = "requires_mpiexec_n_1"
+            return 2
+
+        built = _b3_build_corrected_structural_active_operators(
+            mats_to_destroy=mats_to_destroy,
+            mat_destroy_seen=mat_destroy_seen,
+        )
+        _b3_ciss_record_operator_contract(payload, built=built)
+        if not payload["B3_CISS_operator_contract_pass"]:
+            payload["B3_CISS_setup_failure_stage"] = "structural_active_operator_contract"
+            payload["B3_CISS_setup_failure_reason"] = "structural_active_operator_contract_failed"
+            return 2
+        if not payload["B3_CISS_zero_row_column_cleanup_contract_pass"]:
+            payload["B3_CISS_setup_failure_stage"] = "structural_active_zero_row_column_cleanup"
+            payload["B3_CISS_setup_failure_reason"] = "zero_row_or_column_cleanup_contract_failed"
+            return 2
+
+        from slepc4py import SLEPc
+
+        ciss_type = getattr(SLEPc.EPS.Type, "CISS", None)
+        if ciss_type is None:
+            payload["B3_CISS_setup_failure_stage"] = "ciss_binding"
+            payload["B3_CISS_setup_failure_reason"] = "SLEPc.EPS.Type.CISS_unavailable"
+            return 2
+
+        eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
+        payload["B3_CISS_EPS_created"] = True
+        A_active = built["A_active"]
+        M_active = built["M_active"]
+        eps.setOperators(A_active, M_active)
+        payload["B3_CISS_operators_set"] = True
+        eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
+        payload["B3_CISS_problem_type_GNHEP_set"] = True
+        eps.setType(ciss_type)
+        payload["B3_CISS_solver_type_set"] = True
+        region_type = _b3_ciss_configure_rg_interval(eps, lam_lo=lam_lo, lam_hi=lam_hi)
+        payload["B3_CISS_region_type_effective"] = region_type
+
+        n_active = int(A_active.getSize()[0])
+        ciss_ip = 16
+        ciss_bs = max(32, min(64, n_active // 4000))
+        ciss_ms = 8
+        try:
+            eps.setCISSSizes(ip=ciss_ip, bs=ciss_bs, ms=ciss_ms, realmats=True)
+        except TypeError:
+            try:
+                eps.setCISSSizes(ciss_ip, ciss_bs, ciss_ms)
+            except Exception as exc:
+                payload["B3_CISS_setup_failure_stage"] = "ciss_sizes"
+                payload["B3_CISS_setup_failure_reason"] = f"{type(exc).__name__}:{exc}"
+                return 2
+
+        eps.setUp()
+        payload["B3_CISS_setup_calls_setup"] = True
+        intro = _b3_ciss_introspect_st_ksp_pc_after_setup(eps)
+        payload.update(intro)
+
+        pc_eff = str(payload.get("B3_CISS_PC_type_effective") or "").lower()
+        auto_linear_solver = bool(
+            payload.get("B3_CISS_STSINVERT_used")
+            or payload.get("B3_CISS_MUMPS_LU_used")
+            or pc_eff == "lu"
+        )
+        if auto_linear_solver:
+            payload["B3_CISS_setup_failure_stage"] = "automatic_linear_solver_after_setup"
+            payload["B3_CISS_setup_failure_reason"] = (
+                f"ST={payload.get('B3_CISS_ST_type_effective')};"
+                f"KSP={payload.get('B3_CISS_KSP_type_effective')};"
+                f"PC={payload.get('B3_CISS_PC_type_effective')};"
+                f"CISSUseST={payload.get('B3_CISS_CISSUseST_effective')}"
+            )
+            return 2
+
+        payload["B3_CISS_setup_preflight_pass"] = True
+        verdict = (
+            "B3_CISS_CORRECTED_STRUCTURAL_ACTIVE_INTERVAL_SETUP_PREFLIGHT_PASS_READY_FOR_CISS_LINEAR_SOLVER_POLICY_REVIEW"
+        )
+        return 0
+    except _B3StructActiveBuildError as exc:
+        payload["B3_CISS_setup_failure_stage"] = exc.stage
+        payload["B3_CISS_setup_failure_reason"] = exc.reason
+        return 2
+    except Exception as exc:
+        if payload["B3_CISS_setup_failure_stage"] is None:
+            payload["B3_CISS_setup_failure_stage"] = "eps_setup"
+        payload["B3_CISS_setup_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        return 2
+    finally:
+        if eps is not None:
+            try:
+                eps.destroy()
+            except Exception:
+                pass
+        payload["next_step_verdict"] = verdict
+        _write_json_atomic(OUT_JSON_B3_CISS_STRUCT_ACTIVE_INTERVAL_SETUP, payload)
+        OUT_MD_B3_CISS_STRUCT_ACTIVE_INTERVAL_SETUP.parent.mkdir(parents=True, exist_ok=True)
+        OUT_MD_B3_CISS_STRUCT_ACTIVE_INTERVAL_SETUP.write_text(
+            "\n".join(
+                [
+                    "# B3 CISS structural-active interval setup preflight (no solve)",
+                    "",
+                    f"- verdict: `{verdict}`",
+                    f"- operator_contract_pass: {payload.get('B3_CISS_operator_contract_pass')}",
+                    f"- setup_preflight_pass: {payload.get('B3_CISS_setup_preflight_pass')}",
+                    f"- validation_interval_hz: {payload.get('B3_CISS_validation_frequency_interval_hz')}",
+                    f"- prior_harmonic_mode_0_reclassified_status: "
+                    f"{payload.get('B3_prior_harmonic_mode_0_reclassified_status')}",
+                    f"- failure_stage: {payload.get('B3_CISS_setup_failure_stage')}",
+                    f"- failure_reason: {payload.get('B3_CISS_setup_failure_reason')}",
+                    "",
+                    "no_new_eigensolve_executed=True",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        print("[B3_CISS] mode=B3_CISS_structural_active_set_reduced_interval_setup_preflight_only", flush=True)
+        print(f"[B3_CISS] B3_CISS_setup_preflight_pass={payload.get('B3_CISS_setup_preflight_pass')}", flush=True)
+        print(
+            f"[B3_CISS] B3_prior_harmonic_mode_0_reclassified_status="
+            f"{payload.get('B3_prior_harmonic_mode_0_reclassified_status')}",
+            flush=True,
+        )
+        print(f"[B3_CISS] next_step_verdict={verdict}", flush=True)
+        print("[B3_CISS] no_new_eigensolve_executed=True", flush=True)
+        print(
+            "[B3_CISS] additional_eps=ONE_TEMPORARY_B3_CISS_STRUCTURAL_ACTIVE_INTERVAL_SETUP_PREFLIGHT_EPS_AUTHORIZED_NO_SOLVE",
+            flush=True,
+        )
+        if built is not None:
+            for key in ("A_parent", "M_parent", "A_b3", "M_b3", "A_free", "M_free", "A_active", "M_active"):
+                m_ = built.get(key)
+                if m_ is not None:
+                    _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+        _destroy_mats_deduped(mats_to_destroy)
+
+
 def _run_b3_jd_structural_active_set_reduced_first_valid_bounded_execution_only(pre: Dict[str, Any]) -> int:
     jd_cfg = _b3_jd_struct_active_passed_setup_jd_cfg()
     payload: Dict[str, Any] = {
@@ -11586,6 +11987,7 @@ def main() -> int:
         or _is_b3_jd_structural_active_set_reduced_targeting_review_preflight_only_mode(sys.argv)
         or _is_b3_jd_structural_active_set_reduced_harmonic_dimension_setup_preflight_only_mode(sys.argv)
         or _is_b3_jd_structural_active_set_reduced_harmonic_first_bounded_execution_only_mode(sys.argv)
+        or _is_b3_ciss_structural_active_set_reduced_interval_setup_preflight_only_mode(sys.argv)
     ):
         pre = _precheck_allow_b3_jd_first_bounded_execution()
     else:
@@ -11662,6 +12064,9 @@ def main() -> int:
 
     if _is_b3_jd_structural_active_set_reduced_harmonic_first_bounded_execution_only_mode(sys.argv):
         return _run_b3_jd_structural_active_set_reduced_harmonic_first_bounded_execution_only(pre)
+
+    if _is_b3_ciss_structural_active_set_reduced_interval_setup_preflight_only_mode(sys.argv):
+        return _run_b3_ciss_structural_active_set_reduced_interval_setup_preflight_only(pre)
 
     if _is_b3_seed_replay_audit_only_mode(sys.argv):
         return _run_b3_seed_replay_audit_only(pre)
