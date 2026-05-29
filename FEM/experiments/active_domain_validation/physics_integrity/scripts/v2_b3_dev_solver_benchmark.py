@@ -338,6 +338,7 @@ def _dev_configure_coarse_krylovschur_sinvert_eps(
     payload["B3_DEV_ST_problem_type_requested"] = "GNHEP"
     payload["B3_DEV_ST_ST_type_requested"] = "SINVERT"
     payload["B3_DEV_ST_which_requested"] = "TARGET_MAGNITUDE"
+    payload["B3_DEV_ST_which_requested_raw"] = int(SLEPc.EPS.Which.TARGET_MAGNITUDE)
     payload["B3_DEV_ST_setFromOptions_called"] = False
 
     eps.setOperators(A_active, M_active)
@@ -374,6 +375,37 @@ def _dev_configure_coarse_krylovschur_sinvert_eps(
     audit._b3_ciss_apply_st_mumps_icntl_petsc_options()
 
 
+def _dev_eps_which_effective_fields(which_eff: Any) -> Dict[str, Any]:
+    from slepc4py import SLEPc
+
+    fields: Dict[str, Any] = {
+        "B3_DEV_ST_which_effective_raw": None,
+        "B3_DEV_ST_which_effective": None,
+        "B3_DEV_ST_which_effective_normalized": None,
+    }
+    which_raw: Optional[int] = None
+    if which_eff is not None:
+        try:
+            which_raw = int(which_eff)
+        except (TypeError, ValueError):
+            which_raw = None
+    if which_raw is not None:
+        fields["B3_DEV_ST_which_effective_raw"] = which_raw
+        fields["B3_DEV_ST_which_effective"] = which_raw
+        try:
+            if which_raw == int(SLEPc.EPS.Which.TARGET_MAGNITUDE):
+                fields["B3_DEV_ST_which_effective_normalized"] = "TARGET_MAGNITUDE"
+        except Exception:
+            pass
+    if fields["B3_DEV_ST_which_effective_normalized"] is None:
+        which_s = str(which_eff or "")
+        if "target" in which_s.lower() and "magnitude" in which_s.lower():
+            fields["B3_DEV_ST_which_effective_normalized"] = "TARGET_MAGNITUDE"
+        elif which_s:
+            fields["B3_DEV_ST_which_effective_normalized"] = which_s
+    return fields
+
+
 def _dev_introspect_st_targeting_after_setup(eps: Any) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     try:
@@ -381,9 +413,9 @@ def _dev_introspect_st_targeting_after_setup(eps: Any) -> Dict[str, Any]:
     except Exception:
         out["B3_DEV_ST_target_effective"] = None
     try:
-        out["B3_DEV_ST_which_effective"] = str(eps.getWhichEigenpairs())
+        out.update(_dev_eps_which_effective_fields(eps.getWhichEigenpairs()))
     except Exception:
-        out["B3_DEV_ST_which_effective"] = None
+        out.update(_dev_eps_which_effective_fields(None))
     try:
         out["B3_DEV_ST_solver_type_effective"] = str(eps.getType())
     except Exception:
@@ -405,17 +437,28 @@ def _dev_introspect_st_targeting_after_setup(eps: Any) -> Dict[str, Any]:
 
 
 def _dev_evaluate_st_targeting_pass(payload: Dict[str, Any], target_lambda: float) -> None:
-    which_eff = str(payload.get("B3_DEV_ST_which_effective") or "")
+    from slepc4py import SLEPc
+
     st_type_eff = str(payload.get("B3_DEV_ST_ST_type_effective") or "")
+    requested_which_value = int(SLEPc.EPS.Which.TARGET_MAGNITUDE)
+    which_raw = payload.get("B3_DEV_ST_which_effective_raw")
+    which_target_pass = False
+    if which_raw is not None:
+        try:
+            which_target_pass = int(which_raw) == requested_which_value
+        except (TypeError, ValueError):
+            which_target_pass = False
+    if not which_target_pass:
+        which_s = str(payload.get("B3_DEV_ST_which_effective_normalized") or payload.get("B3_DEV_ST_which_effective") or "")
+        which_target_pass = bool("target" in which_s.lower() and "magnitude" in which_s.lower())
     payload["B3_DEV_ST_target_matches_requested_pass"] = bool(
         _dev_lambda_close(payload.get("B3_DEV_ST_target_effective"), target_lambda)
     )
     payload["B3_DEV_ST_shift_matches_requested_pass"] = bool(
         _dev_lambda_close(payload.get("B3_DEV_ST_shift_effective"), target_lambda)
     )
-    payload["B3_DEV_ST_nearest_target_selection_effective_pass"] = bool(
-        "target" in which_eff.lower() and "magnitude" in which_eff.lower()
-    )
+    payload["B3_DEV_ST_which_matches_requested_pass"] = bool(which_target_pass)
+    payload["B3_DEV_ST_nearest_target_selection_effective_pass"] = bool(which_target_pass)
     payload["B3_DEV_ST_ST_sinvert_effective_pass"] = bool("sinvert" in st_type_eff.lower())
     payload["B3_DEV_ST_targeting_preflight_pass"] = bool(
         payload["B3_DEV_ST_target_matches_requested_pass"]
@@ -632,7 +675,7 @@ def _run_dev_coarse_st_targeting_preflight(pre: Dict[str, Any], mesh_variant: st
             payload["B3_DEV_failure_reason"] = (
                 f"target_match={payload.get('B3_DEV_ST_target_matches_requested_pass')};"
                 f"shift_match={payload.get('B3_DEV_ST_shift_matches_requested_pass')};"
-                f"which_target={payload.get('B3_DEV_ST_nearest_target_selection_effective_pass')};"
+                f"which_match={payload.get('B3_DEV_ST_which_matches_requested_pass')};"
                 f"st_sinvert={payload.get('B3_DEV_ST_ST_sinvert_effective_pass')}"
             )
             rc = 2
