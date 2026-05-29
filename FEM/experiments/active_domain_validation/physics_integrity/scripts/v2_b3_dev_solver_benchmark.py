@@ -23,6 +23,7 @@ B3_DEV_COARSE_ST_TARGETING_PREFLIGHT_ARG = "--B3-dev-coarse-krylovschur-sinvert-
 B3_DEV_REFINED_ST_MULTI_TARGET_ARG = (
     "--B3-dev-refined-krylovschur-sinvert-multi-target-coverage-benchmark-only"
 )
+B3_DEV_ST_MULTI_TARGETS_HZ_ARG = "--B3-dev-st-multi-targets-hz"
 B3_DEV_DENSE_COVERAGE_COMPARE_ARG = "--B3-dev-dense-st-ciss-coverage-compare-only"
 B3_DEV_COMPARE_ARG = "--B3-dev-solver-benchmark-compare-only"
 
@@ -52,6 +53,56 @@ def _dev_out_json(stem: str, mesh_variant: str) -> Path:
 
 def _dev_out_md(stem: str, mesh_variant: str) -> Path:
     return _dev_out_json(stem, mesh_variant).with_suffix(".md")
+
+
+def _dev_st_multi_targets_default() -> List[float]:
+    return list(B3_DEV_ST_MULTI_TARGET_FREQS_HZ)
+
+
+def _dev_st_multi_targets_equal(a: List[float], b: List[float], *, rtol: float = 1.0e-9) -> bool:
+    if len(a) != len(b):
+        return False
+    return all(abs(float(x) - float(y)) <= rtol * max(1.0, abs(float(y))) for x, y in zip(a, b))
+
+
+def _dev_st_multi_target_stem_suffix(targets_hz: List[float]) -> str:
+    """Distinct JSON stem suffix when targets differ from default three-target list."""
+    if _dev_st_multi_targets_equal(targets_hz, _dev_st_multi_targets_default()):
+        return ""
+    parts: List[str] = []
+    for f in targets_hz:
+        s = f"{float(f):g}".replace(".", "p")
+        parts.append(s)
+    return "_hz_" + "_".join(parts)
+
+
+def _dev_out_json_st_multi_target(mesh_variant: str, targets_hz: List[float]) -> Path:
+    stem = _DEV_JSON_STEM_ST_MULTI_TARGET + _dev_st_multi_target_stem_suffix(targets_hz)
+    return _dev_out_json(stem, mesh_variant)
+
+
+def _parse_hz_list(text: str) -> List[float]:
+    out: List[float] = []
+    for part in str(text).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        v = float(part)
+        if not math.isfinite(v) or v <= 0.0:
+            raise ValueError(f"invalid_target_frequency_hz:{part}")
+        out.append(v)
+    if not out:
+        raise ValueError("empty_target_frequency_list")
+    return out
+
+
+def _parse_dev_st_multi_targets_hz(argv: List[str]) -> List[float]:
+    for i, arg in enumerate(argv):
+        if arg == B3_DEV_ST_MULTI_TARGETS_HZ_ARG and i + 1 < len(argv):
+            return _parse_hz_list(argv[i + 1])
+        if arg.startswith(f"{B3_DEV_ST_MULTI_TARGETS_HZ_ARG}="):
+            return _parse_hz_list(arg.split("=", 1)[1])
+    return _dev_st_multi_targets_default()
 
 
 def _dev_mesh_active_dimension_targets(mesh_variant: str) -> Tuple[Optional[int], Optional[int]]:
@@ -485,12 +536,18 @@ def _dev_compare_frequency_sets(
     return matches, missing, extra
 
 
-def _run_dev_st_multi_target_coverage_benchmark(pre: Dict[str, Any], mesh_variant: str) -> int:
+def _run_dev_st_multi_target_coverage_benchmark(
+    pre: Dict[str, Any],
+    mesh_variant: str,
+    *,
+    targets_hz: Optional[List[float]] = None,
+) -> int:
     from slepc4py import SLEPc
 
     freq_lo = float(audit.B3_CISS_VALIDATION_FREQ_LO_HZ)
     freq_hi = float(audit.B3_CISS_VALIDATION_FREQ_HI_HZ)
-    targets_hz = list(B3_DEV_ST_MULTI_TARGET_FREQS_HZ)
+    targets_hz = list(targets_hz if targets_hz is not None else _dev_st_multi_targets_default())
+    out_json_path = _dev_out_json_st_multi_target(mesh_variant, targets_hz)
     payload: Dict[str, Any] = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "mode": "B3_dev_krylovschur_sinvert_multi_target_coverage_benchmark_only",
@@ -498,6 +555,7 @@ def _run_dev_st_multi_target_coverage_benchmark(pre: Dict[str, Any], mesh_varian
         **_dev_mesh_bootstrap_payload(mesh_variant),
         "B3_DEV_validation_frequency_interval_hz": [freq_lo, freq_hi],
         "B3_DEV_ST_multi_target_targets_hz": targets_hz,
+        "B3_DEV_ST_multi_target_output_json_path": str(out_json_path),
         "B3_DEV_ST_multi_target_operator_built_once_pass": False,
         "B3_DEV_ST_multi_target_solve_count": len(targets_hz),
         "B3_DEV_ST_multi_target_frequency_dedup_tol_hz": B3_DEV_ST_MULTI_DEDUP_TOL_HZ,
@@ -681,9 +739,8 @@ def _run_dev_st_multi_target_coverage_benchmark(pre: Dict[str, Any], mesh_varian
         if "B3_DEV_timing_total_wall_elapsed_seconds" not in payload:
             timer.finalize()
         payload["next_step_verdict"] = verdict
-        out_json = _dev_out_json(_DEV_JSON_STEM_ST_MULTI_TARGET, mesh_variant)
-        audit._write_json_atomic(out_json, payload)
-        out_json.with_suffix(".md").write_text(
+        audit._write_json_atomic(out_json_path, payload)
+        out_json_path.with_suffix(".md").write_text(
             f"# B3 dev ST multi-target coverage ({mesh_variant})\n\n"
             f"- verdict: `{verdict}`\n"
             f"- targets_hz: {targets_hz}\n"
@@ -1465,7 +1522,14 @@ def run_b3_dev_mode(argv: List[str], pre: Dict[str, Any]) -> int:
     if B3_DEV_COARSE_ST_ARG in argv:
         return _run_dev_coarse_st_benchmark(pre, mesh_variant)
     if B3_DEV_REFINED_ST_MULTI_TARGET_ARG in argv:
-        return _run_dev_st_multi_target_coverage_benchmark(pre, mesh_variant)
+        try:
+            st_targets_hz = _parse_dev_st_multi_targets_hz(argv)
+        except ValueError as exc:
+            print(f"[B3_DEV] {exc}", flush=True)
+            return 2
+        return _run_dev_st_multi_target_coverage_benchmark(
+            pre, mesh_variant, targets_hz=st_targets_hz
+        )
     if B3_DEV_DENSE_COVERAGE_COMPARE_ARG in argv:
         return _run_dev_dense_st_ciss_coverage_compare(mesh_variant)
     if B3_DEV_COMPARE_ARG in argv:
