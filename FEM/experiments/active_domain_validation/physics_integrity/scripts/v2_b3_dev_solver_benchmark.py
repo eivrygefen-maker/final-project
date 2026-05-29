@@ -19,6 +19,7 @@ B3_DEV_MESH_VARIANT_ARG = "--B3-dev-mesh-variant"
 B3_DEV_COARSE_CONTRACT_ARG = "--B3-dev-coarse-corrected-operator-contract-only"
 B3_DEV_COARSE_CISS_ARG = "--B3-dev-coarse-ciss-direct-stable-benchmark-only"
 B3_DEV_COARSE_ST_ARG = "--B3-dev-coarse-krylovschur-sinvert-benchmark-only"
+B3_DEV_COARSE_ST_TARGETING_PREFLIGHT_ARG = "--B3-dev-coarse-krylovschur-sinvert-targeting-preflight-only"
 B3_DEV_COMPARE_ARG = "--B3-dev-solver-benchmark-compare-only"
 
 B3_DEV_DEFAULT_MESH_VARIANT = "L_dev_coarse"
@@ -31,6 +32,12 @@ OUT_JSON_DEV_CISS = audit.CONV_DIAG / "v2_B3_DEV_coarse_ciss_direct_stable_bench
 OUT_MD_DEV_CISS = audit.CONV_DIAG / "v2_B3_DEV_coarse_ciss_direct_stable_benchmark_only.md"
 OUT_JSON_DEV_ST = audit.CONV_DIAG / "v2_B3_DEV_coarse_krylovschur_sinvert_benchmark_only.json"
 OUT_MD_DEV_ST = audit.CONV_DIAG / "v2_B3_DEV_coarse_krylovschur_sinvert_benchmark_only.md"
+OUT_JSON_DEV_ST_TARGETING = (
+    audit.CONV_DIAG / "v2_B3_DEV_coarse_krylovschur_sinvert_targeting_preflight_only.json"
+)
+OUT_MD_DEV_ST_TARGETING = (
+    audit.CONV_DIAG / "v2_B3_DEV_coarse_krylovschur_sinvert_targeting_preflight_only.md"
+)
 OUT_JSON_DEV_SUMMARY = audit.CONV_DIAG / "v2_B3_DEV_coarse_solver_benchmark_summary.json"
 OUT_MD_DEV_SUMMARY = audit.CONV_DIAG / "v2_B3_DEV_coarse_solver_benchmark_summary.md"
 
@@ -296,6 +303,128 @@ def _run_dev_coarse_contract(pre: Dict[str, Any], mesh_variant: str) -> int:
     return rc
 
 
+def _dev_lambda_close(value: Any, expected: float, *, rtol: float = 1.0e-9) -> bool:
+    if value is None:
+        return False
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(v):
+        return False
+    return abs(v - float(expected)) <= rtol * max(1.0, abs(float(expected)))
+
+
+def _dev_st_targeting_requested() -> Tuple[float, float]:
+    target_hz = float(audit.B3_CISS_VALIDATION_TARGET_HZ)
+    return target_hz, float(audit._b3_hz_to_lambda_sq(target_hz))
+
+
+def _dev_configure_coarse_krylovschur_sinvert_eps(
+    eps: Any,
+    A_active: Any,
+    M_active: Any,
+    *,
+    payload: Dict[str, Any],
+    target_lambda: float,
+    target_hz: float,
+) -> None:
+    """KRYLOVSCHUR + ST.SINVERT with EPS target and ST shift at reference lambda."""
+    from slepc4py import SLEPc
+
+    payload["B3_DEV_ST_targeting_requested_frequency_hz"] = target_hz
+    payload["B3_DEV_ST_targeting_requested_lambda"] = _safe_float(target_lambda)
+    payload["B3_DEV_ST_solver_type_requested"] = "KRYLOVSCHUR"
+    payload["B3_DEV_ST_problem_type_requested"] = "GNHEP"
+    payload["B3_DEV_ST_ST_type_requested"] = "SINVERT"
+    payload["B3_DEV_ST_which_requested"] = "TARGET_MAGNITUDE"
+    payload["B3_DEV_ST_setFromOptions_called"] = False
+
+    eps.setOperators(A_active, M_active)
+    eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
+    eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
+    eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)
+    eps.setTarget(float(target_lambda))
+    try:
+        eps.setDimensions(nev=B3_DEV_COARSE_NEV, ncv=B3_DEV_COARSE_NCV)
+    except TypeError:
+        eps.setDimensions(B3_DEV_COARSE_NEV, B3_DEV_COARSE_NCV)
+    st = eps.getST()
+    try:
+        st.setType(SLEPc.ST.Type.SINVERT)
+    except Exception:
+        st.setType("sinvert")
+    st.setShift(float(target_lambda))
+    ksp = st.getKSP()
+    pc = ksp.getPC()
+    ok, reason = audit._b3_ciss_require_mumps_factor_solver(pc)
+    if not ok:
+        raise RuntimeError(str(reason))
+    import fem_main_3d as fem3d
+
+    fem3d._slepc_configure_st_ksp_pc(
+        ksp,
+        pc,
+        audit._b3_ciss_direct_stable_solver_cfg(),
+        block_is=None,
+        opts_prefix="st_",
+        use_ciss=True,
+    )
+    audit._b3_ciss_record_direct_stable_factor_shift_request(pc, payload)
+    audit._b3_ciss_apply_st_mumps_icntl_petsc_options()
+
+
+def _dev_introspect_st_targeting_after_setup(eps: Any) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    try:
+        out["B3_DEV_ST_target_effective"] = _safe_float(float(eps.getTarget()))
+    except Exception:
+        out["B3_DEV_ST_target_effective"] = None
+    try:
+        out["B3_DEV_ST_which_effective"] = str(eps.getWhichEigenpairs())
+    except Exception:
+        out["B3_DEV_ST_which_effective"] = None
+    try:
+        out["B3_DEV_ST_solver_type_effective"] = str(eps.getType())
+    except Exception:
+        out["B3_DEV_ST_solver_type_effective"] = None
+    try:
+        st = eps.getST()
+        out["B3_DEV_ST_ST_type_effective"] = str(st.getType())
+        shift_eff = None
+        if hasattr(st, "getShift"):
+            try:
+                shift_eff = _safe_float(float(st.getShift()))
+            except Exception:
+                shift_eff = None
+        out["B3_DEV_ST_shift_effective"] = shift_eff
+    except Exception:
+        out["B3_DEV_ST_ST_type_effective"] = None
+        out["B3_DEV_ST_shift_effective"] = None
+    return out
+
+
+def _dev_evaluate_st_targeting_pass(payload: Dict[str, Any], target_lambda: float) -> None:
+    which_eff = str(payload.get("B3_DEV_ST_which_effective") or "")
+    st_type_eff = str(payload.get("B3_DEV_ST_ST_type_effective") or "")
+    payload["B3_DEV_ST_target_matches_requested_pass"] = bool(
+        _dev_lambda_close(payload.get("B3_DEV_ST_target_effective"), target_lambda)
+    )
+    payload["B3_DEV_ST_shift_matches_requested_pass"] = bool(
+        _dev_lambda_close(payload.get("B3_DEV_ST_shift_effective"), target_lambda)
+    )
+    payload["B3_DEV_ST_nearest_target_selection_effective_pass"] = bool(
+        "target" in which_eff.lower() and "magnitude" in which_eff.lower()
+    )
+    payload["B3_DEV_ST_ST_sinvert_effective_pass"] = bool("sinvert" in st_type_eff.lower())
+    payload["B3_DEV_ST_targeting_preflight_pass"] = bool(
+        payload["B3_DEV_ST_target_matches_requested_pass"]
+        and payload["B3_DEV_ST_shift_matches_requested_pass"]
+        and payload["B3_DEV_ST_nearest_target_selection_effective_pass"]
+        and payload["B3_DEV_ST_ST_sinvert_effective_pass"]
+    )
+
+
 def _dev_record_ciss_direct_stable_mirror(payload: Dict[str, Any]) -> None:
     """Copy shared direct-stable introspection into B3_DEV_CISS_* report fields."""
     payload["B3_DEV_CISS_ST_type_effective"] = payload.get("B3_CISS_direct_stable_ST_type_effective")
@@ -443,11 +572,100 @@ def _run_dev_coarse_ciss_benchmark(pre: Dict[str, Any], mesh_variant: str) -> in
     return rc
 
 
+def _run_dev_coarse_st_targeting_preflight(pre: Dict[str, Any], mesh_variant: str) -> int:
+    from slepc4py import SLEPc
+
+    target_hz, target_lambda = _dev_st_targeting_requested()
+    payload: Dict[str, Any] = {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "B3_dev_coarse_krylovschur_sinvert_targeting_preflight_only",
+        **_dev_mesh_bootstrap_payload(mesh_variant),
+        "B3_DEV_ST_targeting_preflight_calls_setup": False,
+        "B3_DEV_ST_targeting_preflight_calls_solve": False,
+        "no_new_eigensolve_executed": True,
+        "new_eigensolve_executed": False,
+        "production_promotion": "BLOCKED",
+    }
+    timer = _B3DevTiming(payload)
+    mats: List[Any] = []
+    seen: set[int] = set()
+    eps = None
+    verdict = "B3_DEV_COARSE_ST_TARGETING_PREFLIGHT_BLOCKED"
+    try:
+        if not pre.get("preassembly_contract_pass") or MPI.COMM_WORLD.size != 1:
+            return 2
+        timer.mark("operator_build_begin")
+        built = audit._b3_build_corrected_structural_active_operators(
+            mats_to_destroy=mats,
+            mat_destroy_seen=seen,
+            mesh_level=mesh_variant,
+            struct_active_count_policy="mesh_independent",
+        )
+        timer.mark("A_active_M_active_ready")
+        _dev_record_operator_contract(payload, built=built)
+        if not payload["B3_DEV_zero_row_column_cleanup_contract_pass"]:
+            payload["B3_DEV_failure_reason"] = "operator_contract_failed"
+            return 2
+
+        timer.mark("eps_configure_begin")
+        eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
+        _dev_configure_coarse_krylovschur_sinvert_eps(
+            eps,
+            built["A_active"],
+            built["M_active"],
+            payload=payload,
+            target_lambda=target_lambda,
+            target_hz=target_hz,
+        )
+        timer.mark("eps_configure_end")
+
+        timer.mark("eps_setup_begin")
+        eps.setUp()
+        payload["B3_DEV_ST_targeting_preflight_calls_setup"] = True
+        timer.mark("eps_setup_end")
+        payload.update(_dev_introspect_st_targeting_after_setup(eps))
+        _dev_evaluate_st_targeting_pass(payload, target_lambda)
+        if payload["B3_DEV_ST_targeting_preflight_pass"]:
+            verdict = "B3_DEV_COARSE_ST_TARGETING_PREFLIGHT_PASS"
+            rc = 0
+        else:
+            payload["B3_DEV_failure_reason"] = (
+                f"target_match={payload.get('B3_DEV_ST_target_matches_requested_pass')};"
+                f"shift_match={payload.get('B3_DEV_ST_shift_matches_requested_pass')};"
+                f"which_target={payload.get('B3_DEV_ST_nearest_target_selection_effective_pass')};"
+                f"st_sinvert={payload.get('B3_DEV_ST_ST_sinvert_effective_pass')}"
+            )
+            rc = 2
+    except Exception as exc:
+        payload["B3_DEV_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        rc = 2
+    finally:
+        if eps is not None:
+            try:
+                eps.destroy()
+            except Exception:
+                pass
+        timer.finalize()
+        payload["next_step_verdict"] = verdict
+        audit._write_json_atomic(OUT_JSON_DEV_ST_TARGETING, payload)
+        OUT_MD_DEV_ST_TARGETING.write_text(
+            "# B3 dev coarse ST targeting preflight (no solve)\n\n"
+            f"- verdict: `{verdict}`\n"
+            f"- requested_hz: {payload.get('B3_DEV_ST_targeting_requested_frequency_hz')}\n"
+            f"- target_effective: {payload.get('B3_DEV_ST_target_effective')}\n"
+            f"- shift_effective: {payload.get('B3_DEV_ST_shift_effective')}\n"
+            f"- which_effective: {payload.get('B3_DEV_ST_which_effective')}\n"
+            f"- preflight_pass: {payload.get('B3_DEV_ST_targeting_preflight_pass')}\n",
+            encoding="utf-8",
+        )
+        audit._destroy_mats_deduped(mats)
+    return rc
+
+
 def _run_dev_coarse_st_benchmark(pre: Dict[str, Any], mesh_variant: str) -> int:
     from slepc4py import SLEPc
 
-    target_hz = float(audit.B3_CISS_VALIDATION_TARGET_HZ)
-    target_lambda = audit._b3_hz_to_lambda_sq(target_hz)
+    target_hz, target_lambda = _dev_st_targeting_requested()
     lam_lo = audit._b3_hz_to_lambda_sq(audit.B3_CISS_VALIDATION_FREQ_LO_HZ)
     lam_hi = audit._b3_hz_to_lambda_sq(audit.B3_CISS_VALIDATION_FREQ_HI_HZ)
     payload: Dict[str, Any] = {
@@ -490,37 +708,14 @@ def _run_dev_coarse_st_benchmark(pre: Dict[str, Any], mesh_variant: str) -> int:
         eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
         A_active = built["A_active"]
         M_active = built["M_active"]
-        eps.setOperators(A_active, M_active)
-        eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
-        eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
-        try:
-            eps.setDimensions(nev=B3_DEV_COARSE_NEV, ncv=B3_DEV_COARSE_NCV)
-        except TypeError:
-            eps.setDimensions(B3_DEV_COARSE_NEV, B3_DEV_COARSE_NCV)
-        st = eps.getST()
-        try:
-            st.setType(SLEPc.ST.Type.SINVERT)
-        except Exception:
-            st.setType("sinvert")
-        st.setShift(float(target_lambda))
-        ksp = st.getKSP()
-        pc = ksp.getPC()
-        ok, reason = audit._b3_ciss_require_mumps_factor_solver(pc)
-        if not ok:
-            payload["B3_DEV_failure_reason"] = reason
-            return 2
-        import fem_main_3d as fem3d
-
-        fem3d._slepc_configure_st_ksp_pc(
-            ksp,
-            pc,
-            audit._b3_ciss_direct_stable_solver_cfg(),
-            block_is=None,
-            opts_prefix="st_",
-            use_ciss=True,
+        _dev_configure_coarse_krylovschur_sinvert_eps(
+            eps,
+            A_active,
+            M_active,
+            payload=payload,
+            target_lambda=target_lambda,
+            target_hz=target_hz,
         )
-        audit._b3_ciss_record_direct_stable_factor_shift_request(pc, payload)
-        audit._b3_ciss_apply_st_mumps_icntl_petsc_options()
         timer.mark("eps_configure_end")
 
         timer.mark("eps_setup_begin")
@@ -649,6 +844,7 @@ def is_b3_dev_mode(argv: List[str]) -> bool:
         B3_DEV_COARSE_CONTRACT_ARG,
         B3_DEV_COARSE_CISS_ARG,
         B3_DEV_COARSE_ST_ARG,
+        B3_DEV_COARSE_ST_TARGETING_PREFLIGHT_ARG,
         B3_DEV_COMPARE_ARG,
     )
     return any(f in argv for f in dev_flags)
@@ -663,6 +859,8 @@ def run_b3_dev_mode(argv: List[str], pre: Dict[str, Any]) -> int:
         return _run_dev_coarse_contract(pre, mesh_variant)
     if B3_DEV_COARSE_CISS_ARG in argv:
         return _run_dev_coarse_ciss_benchmark(pre, mesh_variant)
+    if B3_DEV_COARSE_ST_TARGETING_PREFLIGHT_ARG in argv:
+        return _run_dev_coarse_st_targeting_preflight(pre, mesh_variant)
     if B3_DEV_COARSE_ST_ARG in argv:
         return _run_dev_coarse_st_benchmark(pre, mesh_variant)
     if B3_DEV_COMPARE_ARG in argv:
