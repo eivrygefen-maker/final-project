@@ -10,7 +10,7 @@ import math
 import time
 import zlib
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 from mpi4py import MPI
@@ -102,6 +102,10 @@ B3_JD_PRIOR_NON_HARMONIC_RITZ_CANDIDATE_FREQUENCY_HZ = 39290.54173534997
 B3_CISS_STRUCTURAL_ACTIVE_SET_REDUCED_INTERVAL_SETUP_PREFLIGHT_ONLY_ARG = (
     "--B3-CISS-structural-active-set-reduced-interval-setup-preflight-only"
 )
+B3_CISS_STRUCTURAL_ACTIVE_SET_REDUCED_DIRECT_STABLE_SETUP_PREFLIGHT_ONLY_ARG = (
+    "--B3-CISS-structural-active-set-reduced-direct-stable-setup-preflight-only"
+)
+B3_CISS_DIRECT_STABLE_FACTOR_SHIFT_AMOUNT = 1.0e-8
 B3_CISS_VALIDATION_FREQ_LO_HZ = 220.0
 B3_CISS_VALIDATION_FREQ_HI_HZ = 265.0
 B3_CISS_VALIDATION_TARGET_HZ = 244.39
@@ -192,6 +196,12 @@ OUT_JSON_B3_CISS_STRUCT_ACTIVE_INTERVAL_SETUP = (
 )
 OUT_MD_B3_CISS_STRUCT_ACTIVE_INTERVAL_SETUP = (
     CONV_DIAG / "v2_B3_CISS_structural_active_set_reduced_interval_setup_preflight_only.md"
+)
+OUT_JSON_B3_CISS_STRUCT_ACTIVE_DIRECT_STABLE_SETUP = (
+    CONV_DIAG / "v2_B3_CISS_structural_active_set_reduced_direct_stable_setup_preflight_only.json"
+)
+OUT_MD_B3_CISS_STRUCT_ACTIVE_DIRECT_STABLE_SETUP = (
+    CONV_DIAG / "v2_B3_CISS_structural_active_set_reduced_direct_stable_setup_preflight_only.md"
 )
 B3_JD_DEFAULT_TARGET_HZ = 244.39
 B3_JD_DEFAULT_HARVEST_LO_HZ = 220.0
@@ -3112,6 +3122,10 @@ def _is_b3_ciss_structural_active_set_reduced_interval_setup_preflight_only_mode
     return B3_CISS_STRUCTURAL_ACTIVE_SET_REDUCED_INTERVAL_SETUP_PREFLIGHT_ONLY_ARG in argv
 
 
+def _is_b3_ciss_structural_active_set_reduced_direct_stable_setup_preflight_only_mode(argv: List[str]) -> bool:
+    return B3_CISS_STRUCTURAL_ACTIVE_SET_REDUCED_DIRECT_STABLE_SETUP_PREFLIGHT_ONLY_ARG in argv
+
+
 def _is_b3_jd_free_dof_eliminated_third_bounded_execution_only_mode(argv: List[str]) -> bool:
     return B3_JD_FREE_DOF_ELIMINATED_THIRD_BOUNDED_EXECUTION_ONLY_ARG in argv
 
@@ -3856,6 +3870,234 @@ def _b3_ciss_introspect_st_ksp_pc_after_setup(eps: Any) -> Dict[str, Any]:
     except Exception:
         pass
     return out
+
+
+def _b3_ciss_direct_stable_solver_cfg() -> Dict[str, Any]:
+    return {
+        "st_ksp_type": "preonly",
+        "st_pc_type": "lu",
+        "st_pc_factor_mat_solver_type": "mumps",
+        "st_factor_solver_type": "mumps",
+        "st_pc_factor_shift_type": "nonzero",
+        "st_pc_factor_shift_amount": float(B3_CISS_DIRECT_STABLE_FACTOR_SHIFT_AMOUNT),
+        "pc_factor_shift_type": "nonzero",
+        "pc_factor_shift_amount": float(B3_CISS_DIRECT_STABLE_FACTOR_SHIFT_AMOUNT),
+        "st_ciss_use_fieldsplit": False,
+    }
+
+
+def _b3_ciss_direct_stable_record_operator_contract(payload: Dict[str, Any], *, built: Dict[str, Any]) -> None:
+    A_active = built["A_active"]
+    M_active = built["M_active"]
+    cand = built["cand"]
+    act_a_norm = _mat_norm_or_none(A_active)
+    act_m_norm = _mat_norm_or_none(M_active)
+    act_a_fin = _petsc_sparse_owned_row_value_audit(A_active)
+    act_m_fin = _petsc_sparse_owned_row_value_audit(M_active)
+    a_active_rn = _petsc_sparse_owned_row_norms(A_active)
+    m_active_rn = _petsc_sparse_owned_row_norms(M_active)
+    a_active_cn = _petsc_sparse_owned_col_norms(A_active)
+    payload["B3_CISS_direct_stable_operator_contract_pass"] = bool(
+        _b3_loc_nonzero_contract_pass(act_a_norm, int(_petsc_mat_global_nnz_used(A_active)))
+        and _b3_loc_nonzero_contract_pass(act_m_norm, int(_petsc_mat_global_nnz_used(M_active)))
+        and act_a_fin["all_values_finite_pass"]
+        and act_m_fin["all_values_finite_pass"]
+        and int(cand["inactive_structural_count"]) == B3_STRUCT_ACTIVE_INACTIVE_STRUCTURAL_EXPECTED
+        and int(cand["aup_supported_count"]) == B3_STRUCT_ACTIVE_AUP_SUPPORTED_EXPECTED
+        and int(cand["inactive_aup_overlap_count"]) == 0
+        and int(built["active_local"].size) == B3_STRUCT_ACTIVE_ACTIVE_DIM_EXPECTED
+    )
+    payload["B3_CISS_direct_stable_final_active_dimension"] = int(built["active_local"].size)
+    payload["B3_CISS_direct_stable_A_shape"] = _mat_shape(A_active)
+    payload["B3_CISS_direct_stable_M_shape"] = _mat_shape(M_active)
+    payload["B3_CISS_direct_stable_operator_nonzero_contract_pass"] = bool(
+        payload["B3_CISS_direct_stable_operator_contract_pass"]
+    )
+    payload["B3_CISS_direct_stable_A_exact_zero_row_count"] = int(np.sum(a_active_rn == 0.0))
+    payload["B3_CISS_direct_stable_M_exact_zero_row_count"] = int(np.sum(m_active_rn == 0.0))
+    payload["B3_CISS_direct_stable_A_exact_zero_column_count"] = int(np.sum(a_active_cn == 0.0))
+    payload["B3_CISS_direct_stable_zero_row_column_cleanup_contract_pass"] = bool(
+        payload["B3_CISS_direct_stable_A_exact_zero_row_count"] == 0
+        and payload["B3_CISS_direct_stable_M_exact_zero_row_count"] == 0
+        and payload["B3_CISS_direct_stable_A_exact_zero_column_count"] == 0
+        and payload["B3_CISS_direct_stable_operator_nonzero_contract_pass"]
+    )
+
+
+def _b3_ciss_apply_st_mumps_icntl_petsc_options() -> None:
+    """Production-compatible ST MUMPS ICNTL keys (no solve path)."""
+    petsc_opts = PETSc.Options()
+    mumps_icntl_14 = 500
+    mumps_icntl_14_floor = 400
+    if mumps_icntl_14 < mumps_icntl_14_floor:
+        mumps_icntl_14 = mumps_icntl_14_floor
+    petsc_opts["st_mat_mumps_icntl_14"] = mumps_icntl_14
+    petsc_opts["st_mat_mumps_icntl_24"] = 0
+    petsc_opts["st_mat_mumps_icntl_6"] = 7
+    petsc_opts["st_mat_mumps_icntl_12"] = 1
+    petsc_opts["st_mat_mumps_icntl_7"] = 0
+    petsc_opts["st_mat_mumps_icntl_4"] = 0
+
+
+def _b3_ciss_pc_factor_solver_effective_label(pc: Any) -> Optional[str]:
+    try:
+        if hasattr(pc, "getFactorSolverType"):
+            return str(pc.getFactorSolverType())
+    except Exception:
+        pass
+    try:
+        opts = PETSc.Options()
+        val = opts.getString("st_pc_factor_mat_solver_type", "")
+        if val:
+            return str(val)
+    except Exception:
+        pass
+    return None
+
+
+def _b3_ciss_require_mumps_factor_solver(pc: Any) -> Tuple[bool, str]:
+    try:
+        pc.setType("lu")
+        pc.setFactorSolverType("mumps")
+    except Exception as exc:
+        return False, f"pc_setFactorSolverType_mumps_failed:{type(exc).__name__}:{exc}"
+    effective = _b3_ciss_pc_factor_solver_effective_label(pc)
+    if effective is None:
+        return False, "mumps_factor_solver_effective_unavailable"
+    if "mumps" not in str(effective).lower():
+        return False, f"mumps_not_effective_factor_solver={effective}"
+    return True, ""
+
+
+def _b3_ciss_apply_direct_stable_ciss_use_st(eps: Any, payload: Dict[str, Any]) -> None:
+    payload["B3_CISS_direct_stable_CISSUseST_requested"] = True
+    payload["B3_CISS_direct_stable_CISSUseST_api_available"] = bool(hasattr(eps, "setCISSUseST"))
+    payload["B3_CISS_direct_stable_CISSUseST_set_pass"] = False
+    if payload["B3_CISS_direct_stable_CISSUseST_api_available"]:
+        try:
+            eps.setCISSUseST(True)
+            payload["B3_CISS_direct_stable_CISSUseST_set_pass"] = True
+            return
+        except Exception:
+            pass
+    petsc_opts = PETSc.Options()
+    petsc_opts["eps_ciss_usest"] = 1
+    payload["B3_CISS_direct_stable_CISSUseST_set_pass"] = True
+
+
+def _b3_ciss_apply_direct_stable_st_ksp_pc_policy(
+    eps: Any,
+    payload: Dict[str, Any],
+) -> Tuple[bool, str]:
+    from slepc4py import SLEPc
+
+    solver_cfg = _b3_ciss_direct_stable_solver_cfg()
+    payload["B3_CISS_direct_stable_ST_policy_requested"] = "SINVERT_SHIFTED_SOLVES_FOR_CISS"
+    payload["B3_CISS_direct_stable_KSP_policy_requested"] = "PREONLY"
+    payload["B3_CISS_direct_stable_PC_policy_requested"] = "LU"
+    payload["B3_CISS_direct_stable_factor_solver_requested"] = "MUMPS"
+    payload["B3_CISS_direct_stable_factor_shift_type_requested"] = "NONZERO"
+    payload["B3_CISS_direct_stable_factor_shift_amount_requested"] = float(
+        B3_CISS_DIRECT_STABLE_FACTOR_SHIFT_AMOUNT
+    )
+    payload["B3_CISS_direct_stable_fieldsplit_disabled"] = True
+
+    _b3_ciss_apply_direct_stable_ciss_use_st(eps, payload)
+
+    st = eps.getST()
+    try:
+        st.setType(SLEPc.ST.Type.SINVERT)
+    except Exception:
+        try:
+            st.setType("sinvert")
+        except Exception as exc:
+            return False, f"st_setType_sinvert_failed:{type(exc).__name__}:{exc}"
+
+    ksp = st.getKSP()
+    pc = ksp.getPC()
+    mumps_ok, mumps_reason = _b3_ciss_require_mumps_factor_solver(pc)
+    if not mumps_ok:
+        return False, mumps_reason
+
+    fem3d._slepc_configure_st_ksp_pc(
+        ksp,
+        pc,
+        solver_cfg,
+        block_is=None,
+        opts_prefix="st_",
+        use_ciss=True,
+    )
+    _b3_ciss_apply_st_mumps_icntl_petsc_options()
+
+    mumps_ok, mumps_reason = _b3_ciss_require_mumps_factor_solver(pc)
+    if not mumps_ok:
+        return False, mumps_reason
+    if str(pc.getType()).lower() != "lu":
+        return False, f"pc_type_effective_not_lu={pc.getType()}"
+    if str(ksp.getType()).lower() != "preonly":
+        return False, f"ksp_type_effective_not_preonly={ksp.getType()}"
+    return True, ""
+
+
+def _b3_ciss_introspect_direct_stable_after_setup(eps: Any) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "B3_CISS_direct_stable_ST_type_effective": None,
+        "B3_CISS_direct_stable_KSP_type_effective": None,
+        "B3_CISS_direct_stable_PC_type_effective": None,
+        "B3_CISS_direct_stable_factor_solver_effective": None,
+        "B3_CISS_direct_stable_factor_shift_effective": None,
+        "B3_CISS_direct_stable_CISSUseST_effective": None,
+    }
+    try:
+        if hasattr(eps, "getCISSUseST"):
+            out["B3_CISS_direct_stable_CISSUseST_effective"] = bool(eps.getCISSUseST())
+    except Exception:
+        pass
+    try:
+        st = eps.getST()
+        out["B3_CISS_direct_stable_ST_type_effective"] = str(st.getType())
+        ksp = st.getKSP()
+        out["B3_CISS_direct_stable_KSP_type_effective"] = str(ksp.getType())
+        pc = ksp.getPC()
+        out["B3_CISS_direct_stable_PC_type_effective"] = str(pc.getType())
+        out["B3_CISS_direct_stable_factor_solver_effective"] = _b3_ciss_pc_factor_solver_effective_label(pc)
+        shift_type = None
+        shift_amt = None
+        if hasattr(pc, "getFactorShiftType"):
+            shift_type = str(pc.getFactorShiftType())
+        if hasattr(pc, "getFactorShiftAmount"):
+            shift_amt = _safe_float(float(pc.getFactorShiftAmount()))
+        if shift_type is not None or shift_amt is not None:
+            out["B3_CISS_direct_stable_factor_shift_effective"] = {
+                "shift_type": shift_type,
+                "shift_amount": shift_amt,
+            }
+    except Exception:
+        pass
+    return out
+
+
+def _b3_ciss_direct_stable_policy_effective_pass(payload: Dict[str, Any]) -> bool:
+    st_type = str(payload.get("B3_CISS_direct_stable_ST_type_effective") or "").lower()
+    ksp_type = str(payload.get("B3_CISS_direct_stable_KSP_type_effective") or "").lower()
+    pc_type = str(payload.get("B3_CISS_direct_stable_PC_type_effective") or "").lower()
+    factor_solver = str(payload.get("B3_CISS_direct_stable_factor_solver_effective") or "").lower()
+    shift_eff = payload.get("B3_CISS_direct_stable_factor_shift_effective") or {}
+    shift_type = str(shift_eff.get("shift_type") or "").lower()
+    shift_amt = shift_eff.get("shift_amount")
+    shift_amt_ok = (
+        shift_amt is not None
+        and math.isfinite(float(shift_amt))
+        and abs(float(shift_amt) - float(B3_CISS_DIRECT_STABLE_FACTOR_SHIFT_AMOUNT)) <= 1.0e-12
+    )
+    return bool(
+        "sinvert" in st_type
+        and ksp_type == "preonly"
+        and pc_type == "lu"
+        and "mumps" in factor_solver
+        and ("nonzero" in shift_type or shift_type in ("nonzeros", "positive_definite"))
+        and shift_amt_ok
+    )
 
 
 def _b3_jd_eps_set_harmonic_extraction_and_report(eps: Any) -> Dict[str, Any]:
@@ -8176,6 +8418,205 @@ def _run_b3_ciss_structural_active_set_reduced_interval_setup_preflight_only(pre
         _destroy_mats_deduped(mats_to_destroy)
 
 
+def _run_b3_ciss_structural_active_set_reduced_direct_stable_setup_preflight_only(pre: Dict[str, Any]) -> int:
+    lam_lo = _b3_hz_to_lambda_sq(B3_CISS_VALIDATION_FREQ_LO_HZ)
+    lam_hi = _b3_hz_to_lambda_sq(B3_CISS_VALIDATION_FREQ_HI_HZ)
+    payload: Dict[str, Any] = {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "B3_CISS_structural_active_set_reduced_direct_stable_setup_preflight_only",
+        "B3_CISS_direct_stable_operator_source": (
+            "validated_B3_direct_sparse_AIJ_scaled_pressure_restricted_Dirichlet_eliminated_"
+            "structural_active_set_reduced_copy_fixed"
+        ),
+        "B3_CISS_direct_stable_validation_frequency_interval_hz": [
+            B3_CISS_VALIDATION_FREQ_LO_HZ,
+            B3_CISS_VALIDATION_FREQ_HI_HZ,
+        ],
+        "B3_CISS_direct_stable_validation_lambda_interval": [_safe_float(lam_lo), _safe_float(lam_hi)],
+        "B3_CISS_direct_stable_operator_contract_pass": False,
+        "B3_CISS_direct_stable_final_active_dimension": None,
+        "B3_CISS_direct_stable_A_shape": None,
+        "B3_CISS_direct_stable_M_shape": None,
+        "B3_CISS_direct_stable_operator_nonzero_contract_pass": False,
+        "B3_CISS_direct_stable_zero_row_column_cleanup_contract_pass": False,
+        "B3_CISS_direct_stable_CISSUseST_requested": True,
+        "B3_CISS_direct_stable_CISSUseST_set_pass": False,
+        "B3_CISS_direct_stable_CISSUseST_api_available": False,
+        "B3_CISS_direct_stable_ST_policy_requested": "SINVERT_SHIFTED_SOLVES_FOR_CISS",
+        "B3_CISS_direct_stable_KSP_policy_requested": "PREONLY",
+        "B3_CISS_direct_stable_PC_policy_requested": "LU",
+        "B3_CISS_direct_stable_factor_solver_requested": "MUMPS",
+        "B3_CISS_direct_stable_factor_shift_type_requested": "NONZERO",
+        "B3_CISS_direct_stable_factor_shift_amount_requested": float(B3_CISS_DIRECT_STABLE_FACTOR_SHIFT_AMOUNT),
+        "B3_CISS_direct_stable_fieldsplit_disabled": True,
+        "B3_CISS_direct_stable_ST_type_effective": None,
+        "B3_CISS_direct_stable_KSP_type_effective": None,
+        "B3_CISS_direct_stable_PC_type_effective": None,
+        "B3_CISS_direct_stable_factor_solver_effective": None,
+        "B3_CISS_direct_stable_factor_shift_effective": None,
+        "B3_CISS_direct_stable_setup_calls_setup": False,
+        "B3_CISS_direct_stable_setup_calls_solve": False,
+        "B3_CISS_direct_stable_setup_preflight_pass": False,
+        "B3_CISS_direct_stable_setup_failure_stage": None,
+        "B3_CISS_direct_stable_setup_failure_reason": None,
+        "B3_CISS_direct_stable_explicit_linear_solver_policy_configured": True,
+        "B3_CISS_interval_execution_authorized": False,
+        "B3_JD_preconditioned_execution_authorized": False,
+        "B3_JD_execution_authorized": False,
+        "jd_wiring_authorized": False,
+        "no_new_eigensolve_executed": True,
+        "additional_eps": "ONE_TEMPORARY_B3_CISS_DIRECT_STABLE_SETUP_PREFLIGHT_EPS_AUTHORIZED_NO_SOLVE",
+        "operator_matrices_persisted": False,
+        "transfer_matrices_persisted": False,
+        "coupling_matrices_persisted": False,
+        "eigenvectors_persisted": False,
+        "vector_banks_persisted": False,
+        "solve_trees_created": False,
+        "production_promotion": "BLOCKED",
+    }
+    built: Dict[str, Any] | None = None
+    mats_to_destroy: List[Any] = []
+    mat_destroy_seen: set[int] = set()
+    eps = None
+    verdict = "B3_CISS_CORRECTED_STRUCTURAL_ACTIVE_DIRECT_STABLE_SETUP_PREFLIGHT_BLOCKED"
+    try:
+        if not pre["preassembly_contract_pass"]:
+            payload["B3_CISS_direct_stable_setup_failure_stage"] = "preassembly_contract"
+            payload["B3_CISS_direct_stable_setup_failure_reason"] = "preassembly_contract_failed"
+            return 2
+        if MPI.COMM_WORLD.size != 1:
+            payload["B3_CISS_direct_stable_setup_failure_stage"] = "runtime_mpi_contract"
+            payload["B3_CISS_direct_stable_setup_failure_reason"] = "requires_mpiexec_n_1"
+            return 2
+
+        built = _b3_build_corrected_structural_active_operators(
+            mats_to_destroy=mats_to_destroy,
+            mat_destroy_seen=mat_destroy_seen,
+        )
+        _b3_ciss_direct_stable_record_operator_contract(payload, built=built)
+        if not payload["B3_CISS_direct_stable_operator_contract_pass"]:
+            payload["B3_CISS_direct_stable_setup_failure_stage"] = "structural_active_operator_contract"
+            payload["B3_CISS_direct_stable_setup_failure_reason"] = "structural_active_operator_contract_failed"
+            return 2
+        if not payload["B3_CISS_direct_stable_zero_row_column_cleanup_contract_pass"]:
+            payload["B3_CISS_direct_stable_setup_failure_stage"] = "structural_active_zero_row_column_cleanup"
+            payload["B3_CISS_direct_stable_setup_failure_reason"] = "zero_row_or_column_cleanup_contract_failed"
+            return 2
+
+        from slepc4py import SLEPc
+
+        ciss_type = getattr(SLEPc.EPS.Type, "CISS", None)
+        if ciss_type is None:
+            payload["B3_CISS_direct_stable_setup_failure_stage"] = "ciss_binding"
+            payload["B3_CISS_direct_stable_setup_failure_reason"] = "SLEPc.EPS.Type.CISS_unavailable"
+            return 2
+
+        eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
+        A_active = built["A_active"]
+        M_active = built["M_active"]
+        eps.setOperators(A_active, M_active)
+        eps.setProblemType(SLEPc.EPS.ProblemType.GNHEP)
+        eps.setType(ciss_type)
+        _b3_ciss_configure_rg_interval(eps, lam_lo=lam_lo, lam_hi=lam_hi)
+        n_active = int(A_active.getSize()[0])
+        _b3_ciss_apply_optional_sizes(eps, payload, n_active=n_active)
+
+        st_policy_ok, st_policy_reason = _b3_ciss_apply_direct_stable_st_ksp_pc_policy(eps, payload)
+        if not st_policy_ok:
+            payload["B3_CISS_direct_stable_setup_failure_stage"] = "direct_stable_st_ksp_pc_policy"
+            payload["B3_CISS_direct_stable_setup_failure_reason"] = st_policy_reason
+            return 2
+
+        eps.setUp()
+        payload["B3_CISS_direct_stable_setup_calls_setup"] = True
+        payload.update(_b3_ciss_introspect_direct_stable_after_setup(eps))
+
+        if not _b3_ciss_direct_stable_policy_effective_pass(payload):
+            payload["B3_CISS_direct_stable_setup_failure_stage"] = "direct_stable_policy_not_effective_after_setup"
+            payload["B3_CISS_direct_stable_setup_failure_reason"] = (
+                f"ST={payload.get('B3_CISS_direct_stable_ST_type_effective')};"
+                f"KSP={payload.get('B3_CISS_direct_stable_KSP_type_effective')};"
+                f"PC={payload.get('B3_CISS_direct_stable_PC_type_effective')};"
+                f"factor_solver={payload.get('B3_CISS_direct_stable_factor_solver_effective')};"
+                f"shift={payload.get('B3_CISS_direct_stable_factor_shift_effective')}"
+            )
+            return 2
+
+        payload["B3_CISS_direct_stable_setup_preflight_pass"] = True
+        verdict = (
+            "B3_CISS_CORRECTED_STRUCTURAL_ACTIVE_DIRECT_STABLE_SETUP_PREFLIGHT_PASS_"
+            "READY_FOR_FIRST_CISS_INTERVAL_BOUNDED_EXECUTION_AUTHORIZATION_REVIEW"
+        )
+        return 0
+    except _B3StructActiveBuildError as exc:
+        payload["B3_CISS_direct_stable_setup_failure_stage"] = exc.stage
+        payload["B3_CISS_direct_stable_setup_failure_reason"] = exc.reason
+        return 2
+    except Exception as exc:
+        if payload.get("B3_CISS_direct_stable_setup_failure_stage") is None:
+            payload["B3_CISS_direct_stable_setup_failure_stage"] = "eps_setup"
+        payload["B3_CISS_direct_stable_setup_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        if eps is not None:
+            try:
+                payload.update(_b3_ciss_introspect_direct_stable_after_setup(eps))
+            except Exception:
+                pass
+        return 2
+    finally:
+        if eps is not None:
+            try:
+                eps.destroy()
+            except Exception:
+                pass
+        payload["next_step_verdict"] = verdict
+        _write_json_atomic(OUT_JSON_B3_CISS_STRUCT_ACTIVE_DIRECT_STABLE_SETUP, payload)
+        OUT_MD_B3_CISS_STRUCT_ACTIVE_DIRECT_STABLE_SETUP.parent.mkdir(parents=True, exist_ok=True)
+        OUT_MD_B3_CISS_STRUCT_ACTIVE_DIRECT_STABLE_SETUP.write_text(
+            "\n".join(
+                [
+                    "# B3 CISS direct-stable setup preflight (no solve)",
+                    "",
+                    f"- verdict: `{verdict}`",
+                    f"- operator_contract_pass: {payload.get('B3_CISS_direct_stable_operator_contract_pass')}",
+                    f"- setup_preflight_pass: {payload.get('B3_CISS_direct_stable_setup_preflight_pass')}",
+                    f"- factor_solver_effective: {payload.get('B3_CISS_direct_stable_factor_solver_effective')}",
+                    f"- failure_stage: {payload.get('B3_CISS_direct_stable_setup_failure_stage')}",
+                    f"- failure_reason: {payload.get('B3_CISS_direct_stable_setup_failure_reason')}",
+                    "",
+                    "no_new_eigensolve_executed=True",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        print(
+            "[B3_CISS] mode=B3_CISS_structural_active_set_reduced_direct_stable_setup_preflight_only",
+            flush=True,
+        )
+        print(
+            f"[B3_CISS] B3_CISS_direct_stable_setup_preflight_pass="
+            f"{payload.get('B3_CISS_direct_stable_setup_preflight_pass')}",
+            flush=True,
+        )
+        print(
+            f"[B3_CISS] B3_CISS_direct_stable_factor_solver_effective="
+            f"{payload.get('B3_CISS_direct_stable_factor_solver_effective')}",
+            flush=True,
+        )
+        print(f"[B3_CISS] next_step_verdict={verdict}", flush=True)
+        print("[B3_CISS] no_new_eigensolve_executed=True", flush=True)
+        print(
+            "[B3_CISS] additional_eps=ONE_TEMPORARY_B3_CISS_DIRECT_STABLE_SETUP_PREFLIGHT_EPS_AUTHORIZED_NO_SOLVE",
+            flush=True,
+        )
+        if built is not None:
+            for key in ("A_parent", "M_parent", "A_b3", "M_b3", "A_free", "M_free", "A_active", "M_active"):
+                m_ = built.get(key)
+                if m_ is not None:
+                    _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+        _destroy_mats_deduped(mats_to_destroy)
+
+
 def _run_b3_jd_structural_active_set_reduced_first_valid_bounded_execution_only(pre: Dict[str, Any]) -> int:
     jd_cfg = _b3_jd_struct_active_passed_setup_jd_cfg()
     payload: Dict[str, Any] = {
@@ -12023,6 +12464,7 @@ def main() -> int:
         or _is_b3_jd_structural_active_set_reduced_harmonic_dimension_setup_preflight_only_mode(sys.argv)
         or _is_b3_jd_structural_active_set_reduced_harmonic_first_bounded_execution_only_mode(sys.argv)
         or _is_b3_ciss_structural_active_set_reduced_interval_setup_preflight_only_mode(sys.argv)
+        or _is_b3_ciss_structural_active_set_reduced_direct_stable_setup_preflight_only_mode(sys.argv)
     ):
         pre = _precheck_allow_b3_jd_first_bounded_execution()
     else:
@@ -12102,6 +12544,9 @@ def main() -> int:
 
     if _is_b3_ciss_structural_active_set_reduced_interval_setup_preflight_only_mode(sys.argv):
         return _run_b3_ciss_structural_active_set_reduced_interval_setup_preflight_only(pre)
+
+    if _is_b3_ciss_structural_active_set_reduced_direct_stable_setup_preflight_only_mode(sys.argv):
+        return _run_b3_ciss_structural_active_set_reduced_direct_stable_setup_preflight_only(pre)
 
     if _is_b3_seed_replay_audit_only_mode(sys.argv):
         return _run_b3_seed_replay_audit_only(pre)
