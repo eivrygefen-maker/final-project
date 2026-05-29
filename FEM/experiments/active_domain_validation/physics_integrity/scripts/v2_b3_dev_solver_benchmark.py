@@ -23,23 +23,26 @@ B3_DEV_COARSE_ST_TARGETING_PREFLIGHT_ARG = "--B3-dev-coarse-krylovschur-sinvert-
 B3_DEV_COMPARE_ARG = "--B3-dev-solver-benchmark-compare-only"
 
 B3_DEV_DEFAULT_MESH_VARIANT = "L_dev_coarse"
+B3_DEV_ALLOWED_MESH_VARIANTS = frozenset({"L_dev_coarse", "L_dev_refined"})
 B3_DEV_COARSE_NEV = 12
 B3_DEV_COARSE_NCV = 24
 
-OUT_JSON_DEV_CONTRACT = audit.CONV_DIAG / "v2_B3_DEV_coarse_corrected_operator_contract_only.json"
-OUT_MD_DEV_CONTRACT = audit.CONV_DIAG / "v2_B3_DEV_coarse_corrected_operator_contract_only.md"
-OUT_JSON_DEV_CISS = audit.CONV_DIAG / "v2_B3_DEV_coarse_ciss_direct_stable_benchmark_only.json"
-OUT_MD_DEV_CISS = audit.CONV_DIAG / "v2_B3_DEV_coarse_ciss_direct_stable_benchmark_only.md"
-OUT_JSON_DEV_ST = audit.CONV_DIAG / "v2_B3_DEV_coarse_krylovschur_sinvert_benchmark_only.json"
-OUT_MD_DEV_ST = audit.CONV_DIAG / "v2_B3_DEV_coarse_krylovschur_sinvert_benchmark_only.md"
-OUT_JSON_DEV_ST_TARGETING = (
-    audit.CONV_DIAG / "v2_B3_DEV_coarse_krylovschur_sinvert_targeting_preflight_only.json"
-)
-OUT_MD_DEV_ST_TARGETING = (
-    audit.CONV_DIAG / "v2_B3_DEV_coarse_krylovschur_sinvert_targeting_preflight_only.md"
-)
-OUT_JSON_DEV_SUMMARY = audit.CONV_DIAG / "v2_B3_DEV_coarse_solver_benchmark_summary.json"
-OUT_MD_DEV_SUMMARY = audit.CONV_DIAG / "v2_B3_DEV_coarse_solver_benchmark_summary.md"
+_DEV_JSON_STEM_CONTRACT = "v2_B3_DEV_coarse_corrected_operator_contract_only"
+_DEV_JSON_STEM_CISS = "v2_B3_DEV_coarse_ciss_direct_stable_benchmark_only"
+_DEV_JSON_STEM_ST = "v2_B3_DEV_coarse_krylovschur_sinvert_benchmark_only"
+_DEV_JSON_STEM_ST_TARGETING = "v2_B3_DEV_coarse_krylovschur_sinvert_targeting_preflight_only"
+_DEV_JSON_STEM_SUMMARY = "v2_B3_DEV_coarse_solver_benchmark_summary"
+
+
+def _dev_out_json(stem: str, mesh_variant: str) -> Path:
+    """L_dev_coarse keeps legacy filenames; other variants get a mesh suffix."""
+    if mesh_variant == "L_dev_coarse":
+        return audit.CONV_DIAG / f"{stem}.json"
+    return audit.CONV_DIAG / f"{stem}_{mesh_variant}.json"
+
+
+def _dev_out_md(stem: str, mesh_variant: str) -> Path:
+    return _dev_out_json(stem, mesh_variant).with_suffix(".md")
 
 
 class _B3DevTiming:
@@ -74,16 +77,55 @@ def _parse_dev_mesh_variant(argv: List[str]) -> str:
     return B3_DEV_DEFAULT_MESH_VARIANT
 
 
+def _dev_tag_count(tag_map: Any, tag: int) -> int:
+    if not isinstance(tag_map, dict):
+        return 0
+    return int(tag_map.get(str(tag), tag_map.get(tag, 0)) or 0)
+
+
 def _dev_mesh_bootstrap_payload(mesh_variant: str) -> Dict[str, Any]:
+    from v2_mesh_convergence_common import load_manifest, mesh_audit_path
+
     mesh_file = audit.mesh_path(mesh_variant, audit.CASE_ID)
+    manifest = load_manifest()
+    level_def = (manifest.get("mesh_levels") or {}).get(mesh_variant) or {}
+    lc_scale = level_def.get("lc_scale")
     node_count = None
     element_count = None
-    audit_json = audit.CONV_DIAG.parent / "mesh" / mesh_variant / f"{audit.CASE_ID}_mesh_audit.json"
+    volume_tags_ok = None
+    facet_tags_ok = None
+    soundhole_facets_tag2 = None
+    audit_json = mesh_audit_path(mesh_variant, audit.CASE_ID)
     if audit_json.is_file():
         try:
             ad = json.loads(audit_json.read_text(encoding="utf-8"))
             node_count = ad.get("n_nodes")
             element_count = ad.get("n_tetrahedra")
+            if lc_scale is None:
+                lc_scale = ad.get("lc_scale")
+            vol = ad.get("volume_tag_counts") or {}
+            tri = ad.get("triangle_tag_counts") or {}
+            volume_tags_ok = all(_dev_tag_count(vol, t) > 0 for t in (1, 2, 3, 10))
+            facet_tags_ok = all(_dev_tag_count(tri, t) > 0 for t in (1, 2, 3, 4, 5))
+            soundhole_facets_tag2 = _dev_tag_count(tri, 2)
+        except Exception:
+            pass
+    build_summary = audit.CONV_DIAG.parent / "mesh" / mesh_variant / "baseline_coupled_v2_mesh_build_summary.json"
+    if build_summary.is_file():
+        try:
+            bs = json.loads(build_summary.read_text(encoding="utf-8"))
+            if volume_tags_ok is None:
+                volume_tags_ok = bs.get("volume_tags_ok")
+            if facet_tags_ok is None:
+                facet_tags_ok = bs.get("facet_tags_ok")
+            if soundhole_facets_tag2 is None:
+                soundhole_facets_tag2 = bs.get("soundhole_facets_tag2")
+            if lc_scale is None:
+                lc_scale = bs.get("B3_DEV_mesh_lc_scale") or bs.get("lc_scale")
+            if node_count is None:
+                node_count = bs.get("B3_DEV_mesh_node_count") or bs.get("n_nodes")
+            if element_count is None:
+                element_count = bs.get("B3_DEV_mesh_element_count") or bs.get("n_tetrahedra")
         except Exception:
             pass
     return {
@@ -91,8 +133,12 @@ def _dev_mesh_bootstrap_payload(mesh_variant: str) -> Dict[str, Any]:
         "B3_DEV_mesh_is_solver_smoke_test_only": True,
         "B3_DEV_mesh_not_authorized_for_final_physics_validation": True,
         "B3_DEV_mesh_path": str(mesh_file.resolve()),
+        "B3_DEV_mesh_lc_scale": _safe_float(lc_scale) if lc_scale is not None else None,
         "B3_DEV_mesh_node_count": node_count,
         "B3_DEV_mesh_element_count": element_count,
+        "volume_tags_ok": volume_tags_ok,
+        "facet_tags_ok": facet_tags_ok,
+        "soundhole_facets_tag2": soundhole_facets_tag2,
     }
 
 
@@ -298,7 +344,7 @@ def _run_dev_coarse_contract(pre: Dict[str, Any], mesh_variant: str) -> int:
         timer.mark("total_end")
         timer.finalize()
         payload["next_step_verdict"] = verdict
-        audit._write_json_atomic(OUT_JSON_DEV_CONTRACT, payload)
+        audit._write_json_atomic(_dev_out_json(_DEV_JSON_STEM_CONTRACT, mesh_variant), payload)
         audit._destroy_mats_deduped(mats)
     return rc
 
@@ -610,7 +656,7 @@ def _run_dev_coarse_ciss_benchmark(pre: Dict[str, Any], mesh_variant: str) -> in
             payload.get("B3_DEV_timing_total_wall_elapsed_seconds")
         )
         payload["next_step_verdict"] = verdict
-        audit._write_json_atomic(OUT_JSON_DEV_CISS, payload)
+        audit._write_json_atomic(_dev_out_json(_DEV_JSON_STEM_CISS, mesh_variant), payload)
         audit._destroy_mats_deduped(mats)
     return rc
 
@@ -690,8 +736,8 @@ def _run_dev_coarse_st_targeting_preflight(pre: Dict[str, Any], mesh_variant: st
                 pass
         timer.finalize()
         payload["next_step_verdict"] = verdict
-        audit._write_json_atomic(OUT_JSON_DEV_ST_TARGETING, payload)
-        OUT_MD_DEV_ST_TARGETING.write_text(
+        audit._write_json_atomic(_dev_out_json(_DEV_JSON_STEM_ST_TARGETING, mesh_variant), payload)
+        _dev_out_md(_DEV_JSON_STEM_ST_TARGETING, mesh_variant).write_text(
             "# B3 dev coarse ST targeting preflight (no solve)\n\n"
             f"- verdict: `{verdict}`\n"
             f"- requested_hz: {payload.get('B3_DEV_ST_targeting_requested_frequency_hz')}\n"
@@ -808,7 +854,7 @@ def _run_dev_coarse_st_benchmark(pre: Dict[str, Any], mesh_variant: str) -> int:
                 pass
         timer.finalize()
         payload["next_step_verdict"] = verdict
-        audit._write_json_atomic(OUT_JSON_DEV_ST, payload)
+        audit._write_json_atomic(_dev_out_json(_DEV_JSON_STEM_ST, mesh_variant), payload)
         audit._destroy_mats_deduped(mats)
     return rc
 
@@ -852,24 +898,27 @@ def _run_dev_compare_summary(mesh_variant: str) -> int:
             }
         )
 
-    _load_row(OUT_JSON_DEV_CONTRACT, "operator_contract")
-    _load_row(OUT_JSON_DEV_CISS, "CISS-DIRECT-STABLE")
-    _load_row(OUT_JSON_DEV_ST, "KRYLOVSCHUR-ST-SINVERT-MUMPS")
+    for variant in sorted(B3_DEV_ALLOWED_MESH_VARIANTS):
+        _load_row(_dev_out_json(_DEV_JSON_STEM_CONTRACT, variant), f"operator_contract:{variant}")
+        _load_row(_dev_out_json(_DEV_JSON_STEM_CISS, variant), f"CISS-DIRECT-STABLE:{variant}")
+        _load_row(_dev_out_json(_DEV_JSON_STEM_ST, variant), f"KRYLOVSCHUR-ST-SINVERT-MUMPS:{variant}")
 
     summary = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "mode": "B3_dev_solver_benchmark_compare_only",
-        "B3_DEV_mesh_variant": mesh_variant,
+        "B3_DEV_mesh_variants_compared": sorted(B3_DEV_ALLOWED_MESH_VARIANTS),
         "B3_DEV_mesh_is_solver_smoke_test_only": True,
         "B3_DEV_mesh_not_authorized_for_final_physics_validation": True,
         "comparison_rows": rows,
         "no_automatic_production_winner_selected": True,
     }
-    audit._write_json_atomic(OUT_JSON_DEV_SUMMARY, summary)
-    OUT_MD_DEV_SUMMARY.write_text(
-        "# B3 dev coarse solver benchmark summary\n\n"
+    summary_path = audit.CONV_DIAG / f"{_DEV_JSON_STEM_SUMMARY}.json"
+    summary_md = audit.CONV_DIAG / f"{_DEV_JSON_STEM_SUMMARY}.md"
+    audit._write_json_atomic(summary_path, summary)
+    summary_md.write_text(
+        "# B3 dev solver benchmark summary (coarse vs refined)\n\n"
         + "\n".join(
-            f"- **{r['solver']}**: active_dim={r.get('active_dimension')} "
+            f"- **{r['solver']}** [{r.get('mesh_variant')}]: active_dim={r.get('active_dimension')} "
             f"build={r.get('operator_build_time_s')}s setup={r.get('setup_time_s')}s "
             f"solve={r.get('solve_time_s')}s total={r.get('total_time_s')}s "
             f"accepted={r.get('accepted_mode_count')} verdict={r.get('verdict')}"
@@ -878,7 +927,7 @@ def _run_dev_compare_summary(mesh_variant: str) -> int:
         + "\n",
         encoding="utf-8",
     )
-    print(f"[B3_DEV] summary_written={OUT_JSON_DEV_SUMMARY}", flush=True)
+    print(f"[B3_DEV] summary_written={summary_path}", flush=True)
     return 0
 
 
@@ -895,8 +944,12 @@ def is_b3_dev_mode(argv: List[str]) -> bool:
 
 def run_b3_dev_mode(argv: List[str], pre: Dict[str, Any]) -> int:
     mesh_variant = _parse_dev_mesh_variant(argv)
-    if mesh_variant != B3_DEV_DEFAULT_MESH_VARIANT:
-        print(f"[B3_DEV] unsupported mesh_variant={mesh_variant}", flush=True)
+    if mesh_variant not in B3_DEV_ALLOWED_MESH_VARIANTS:
+        print(
+            f"[B3_DEV] unsupported mesh_variant={mesh_variant} "
+            f"allowed={sorted(B3_DEV_ALLOWED_MESH_VARIANTS)}",
+            flush=True,
+        )
         return 2
     if B3_DEV_COARSE_CONTRACT_ARG in argv:
         return _run_dev_coarse_contract(pre, mesh_variant)

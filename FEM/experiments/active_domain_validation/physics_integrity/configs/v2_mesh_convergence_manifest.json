@@ -53,6 +53,17 @@
       "solver_smoke_test_only": true,
       "not_authorized_for_final_physics_validation": true
     },
+    "L_dev_refined": {
+      "label": "intermediate refined development mesh for mesh-sensitivity and timing comparison (not final validation)",
+      "build_env": {"FEM_VALIDATION_MESH": "1"},
+      "lc_scale": 1.6,
+      "run_gates_on_build": true,
+      "lc_scale_rationale": "1.6x validation characteristic lengths; intermediate between L_dev_coarse (2.0) and L_mid (~0.707); target active dimension ~25000-45000",
+      "target_active_dimension_min": 25000,
+      "target_active_dimension_max": 45000,
+      "solver_smoke_test_only": true,
+      "not_authorized_for_final_physics_validation": true
+    },
     "L_prod": {
       "label": "production FOM mesh profile (FEM_ALLOW_FOM)",
       "build_env": {"FEM_ALLOW_FOM": "1"},

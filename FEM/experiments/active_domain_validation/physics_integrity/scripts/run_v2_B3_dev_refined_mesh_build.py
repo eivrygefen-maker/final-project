@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build isolated L_dev_coarse mesh for B3 dev solver smoke tests (does not touch L_mid)."""
+"""Build isolated L_dev_refined mesh for B3 dev solver comparison (does not touch L_mid)."""
 from __future__ import annotations
 
 import json
@@ -7,16 +7,19 @@ import sys
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[4]
 CONFIG_DIR = SCRIPT_DIR.parent / "configs" / "v2_mesh_convergence_build"
 
 from v2_mesh_convergence_common import CONV_MESH, case_by_id, load_manifest, mesh_path, write_json
 from v2_mesh_convergence_mesh import build_level_mesh
 
 CASE_ID = "baseline_coupled_v2"
-LEVEL_ID = "L_dev_coarse"
+LEVEL_ID = "L_dev_refined"
 REQUIRED_VOLUME_TAGS = [1, 2, 3, 10]
 REQUIRED_FACET_TAGS = [1, 2, 3, 4, 5]
+
+
+def _tag_count(tag_map: dict, tag: int) -> int:
+    return int(tag_map.get(str(tag), tag_map.get(tag, 0)) or 0)
 
 
 def main() -> int:
@@ -35,13 +38,10 @@ def main() -> int:
 
     vol = audit.get("volume_tag_counts") or {}
     tri = audit.get("triangle_tag_counts") or {}
-    def _tag_count(tag_map: dict, tag: int) -> int:
-        return int(tag_map.get(str(tag), tag_map.get(tag, 0)) or 0)
-
     vol_ok = all(_tag_count(vol, t) > 0 for t in REQUIRED_VOLUME_TAGS)
     facet_ok = all(_tag_count(tri, t) > 0 for t in REQUIRED_FACET_TAGS)
+    lc_scale = float(level_def.get("lc_scale", audit.get("lc_scale") or 1.6))
 
-    lc_scale = float(level_def.get("lc_scale", audit.get("lc_scale") or 2.0))
     summary = {
         "B3_DEV_mesh_variant": LEVEL_ID,
         "B3_DEV_mesh_is_solver_smoke_test_only": True,
@@ -53,18 +53,11 @@ def main() -> int:
         "volume_tags_ok": bool(vol_ok),
         "facet_tags_ok": bool(facet_ok),
         "soundhole_facets_tag2": _tag_count(tri, 2),
-        "mesh_variant": LEVEL_ID,
-        "mesh_path": str(out_msh.resolve()),
-        "n_nodes": audit.get("n_nodes"),
-        "n_tetrahedra": audit.get("n_tetrahedra"),
         "volume_tag_counts": vol,
         "triangle_tag_counts": tri,
-        "required_volume_tags_present": bool(vol_ok),
-        "required_facet_tags_present": bool(facet_ok),
-        "lc_scale": lc_scale,
+        "target_active_dimension_min": level_def.get("target_active_dimension_min"),
+        "target_active_dimension_max": level_def.get("target_active_dimension_max"),
         "effective_controls_m": audit.get("effective_controls_m"),
-        "solver_smoke_test_only": True,
-        "not_authorized_for_final_physics_validation": True,
     }
     write_json(CONV_MESH / LEVEL_ID / "baseline_coupled_v2_mesh_build_summary.json", summary)
 
