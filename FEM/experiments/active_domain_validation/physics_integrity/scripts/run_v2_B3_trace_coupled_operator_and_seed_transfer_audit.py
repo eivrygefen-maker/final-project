@@ -95,6 +95,10 @@ B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_TARGETING_REVIEW_PREFLIGHT_ONLY_ARG = (
 B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_HARMONIC_DIMENSION_SETUP_PREFLIGHT_ONLY_ARG = (
     "--B3-JD-structural-active-set-reduced-harmonic-dimension-setup-preflight-only"
 )
+B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_HARMONIC_FIRST_BOUNDED_EXECUTION_ONLY_ARG = (
+    "--B3-JD-structural-active-set-reduced-harmonic-first-bounded-execution-only"
+)
+B3_JD_PRIOR_NON_HARMONIC_RITZ_CANDIDATE_FREQUENCY_HZ = 39290.54173534997
 B3_GNHEP_FREE_PENCIL_REGULARITY_AUDIT_ONLY_ARG = "--B3-GNHEP-free-pencil-regularity-audit-only"
 B3_GNHEP_STRUCTURAL_ACTIVE_SET_REDUCED_OPERATOR_CONTRACT_ONLY_ARG = (
     "--B3-GNHEP-structural-active-set-reduced-operator-contract-only"
@@ -168,6 +172,12 @@ OUT_JSON_B3_JD_STRUCT_ACTIVE_HARMONIC_SETUP = (
 )
 OUT_MD_B3_JD_STRUCT_ACTIVE_HARMONIC_SETUP = (
     CONV_DIAG / "v2_B3_JD_structural_active_set_reduced_harmonic_dimension_setup_preflight_only.md"
+)
+OUT_JSON_B3_JD_STRUCT_ACTIVE_HARMONIC_FIRST_BOUNDED = (
+    CONV_DIAG / "v2_B3_JD_structural_active_set_reduced_harmonic_first_bounded_execution_only.json"
+)
+OUT_MD_B3_JD_STRUCT_ACTIVE_HARMONIC_FIRST_BOUNDED = (
+    CONV_DIAG / "v2_B3_JD_structural_active_set_reduced_harmonic_first_bounded_execution_only.md"
 )
 B3_JD_DEFAULT_TARGET_HZ = 244.39
 B3_JD_DEFAULT_HARVEST_LO_HZ = 220.0
@@ -3080,6 +3090,10 @@ def _is_b3_jd_structural_active_set_reduced_harmonic_dimension_setup_preflight_o
     return B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_HARMONIC_DIMENSION_SETUP_PREFLIGHT_ONLY_ARG in argv
 
 
+def _is_b3_jd_structural_active_set_reduced_harmonic_first_bounded_execution_only_mode(argv: List[str]) -> bool:
+    return B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_HARMONIC_FIRST_BOUNDED_EXECUTION_ONLY_ARG in argv
+
+
 def _is_b3_jd_free_dof_eliminated_third_bounded_execution_only_mode(argv: List[str]) -> bool:
     return B3_JD_FREE_DOF_ELIMINATED_THIRD_BOUNDED_EXECUTION_ONLY_ARG in argv
 
@@ -3575,6 +3589,50 @@ def _b3_jd_harmonic_struct_active_record_operator_contract(
         and payload["B3_JD_harmonic_struct_active_M_exact_zero_row_count"] == 0
         and payload["B3_JD_harmonic_struct_active_A_exact_zero_column_count"] == 0
         and payload["B3_JD_harmonic_struct_active_operator_nonzero_contract_pass"]
+    )
+
+
+def _b3_jd_harmonic_execution_record_operator_contract(
+    payload: Dict[str, Any],
+    *,
+    built: Dict[str, Any],
+) -> None:
+    A_active = built["A_active"]
+    M_active = built["M_active"]
+    cand = built["cand"]
+    act_a_norm = _mat_norm_or_none(A_active)
+    act_m_norm = _mat_norm_or_none(M_active)
+    act_a_fin = _petsc_sparse_owned_row_value_audit(A_active)
+    act_m_fin = _petsc_sparse_owned_row_value_audit(M_active)
+    a_active_rn = _petsc_sparse_owned_row_norms(A_active)
+    m_active_rn = _petsc_sparse_owned_row_norms(M_active)
+    a_active_cn = _petsc_sparse_owned_col_norms(A_active)
+    payload["B3_JD_harmonic_execution_operator_contract_pass"] = bool(
+        _b3_loc_nonzero_contract_pass(act_a_norm, int(_petsc_mat_global_nnz_used(A_active)))
+        and _b3_loc_nonzero_contract_pass(act_m_norm, int(_petsc_mat_global_nnz_used(M_active)))
+        and act_a_fin["all_values_finite_pass"]
+        and act_m_fin["all_values_finite_pass"]
+        and int(cand["inactive_structural_count"]) == B3_STRUCT_ACTIVE_INACTIVE_STRUCTURAL_EXPECTED
+        and int(cand["aup_supported_count"]) == B3_STRUCT_ACTIVE_AUP_SUPPORTED_EXPECTED
+        and int(cand["inactive_aup_overlap_count"]) == 0
+        and int(built["active_local"].size) == B3_STRUCT_ACTIVE_ACTIVE_DIM_EXPECTED
+    )
+    payload["B3_JD_harmonic_execution_final_active_dimension"] = int(built["active_local"].size)
+    payload["B3_JD_harmonic_execution_A_shape"] = _mat_shape(A_active)
+    payload["B3_JD_harmonic_execution_M_shape"] = _mat_shape(M_active)
+    payload["B3_JD_harmonic_execution_A_all_values_finite_pass"] = bool(act_a_fin["all_values_finite_pass"])
+    payload["B3_JD_harmonic_execution_M_all_values_finite_pass"] = bool(act_m_fin["all_values_finite_pass"])
+    payload["B3_JD_harmonic_execution_operator_nonzero_contract_pass"] = bool(
+        payload["B3_JD_harmonic_execution_operator_contract_pass"]
+    )
+    payload["B3_JD_harmonic_execution_A_exact_zero_row_count"] = int(np.sum(a_active_rn == 0.0))
+    payload["B3_JD_harmonic_execution_M_exact_zero_row_count"] = int(np.sum(m_active_rn == 0.0))
+    payload["B3_JD_harmonic_execution_A_exact_zero_column_count"] = int(np.sum(a_active_cn == 0.0))
+    payload["B3_JD_harmonic_execution_zero_row_column_cleanup_contract_pass"] = bool(
+        payload["B3_JD_harmonic_execution_A_exact_zero_row_count"] == 0
+        and payload["B3_JD_harmonic_execution_M_exact_zero_row_count"] == 0
+        and payload["B3_JD_harmonic_execution_A_exact_zero_column_count"] == 0
+        and payload["B3_JD_harmonic_execution_operator_nonzero_contract_pass"]
     )
 
 
@@ -7257,6 +7315,421 @@ def _run_b3_jd_structural_active_set_reduced_harmonic_dimension_setup_preflight_
         print(
             "[B3_JD] additional_eps="
             "ONE_TEMPORARY_B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_HARMONIC_SETUP_PREFLIGHT_EPS_AUTHORIZED_NO_SOLVE",
+            flush=True,
+        )
+        if built is not None:
+            for key in ("A_parent", "M_parent", "A_b3", "M_b3", "A_free", "M_free", "A_active", "M_active"):
+                m_ = built.get(key)
+                if m_ is not None:
+                    _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
+        _destroy_mats_deduped(mats_to_destroy)
+
+
+def _run_b3_jd_structural_active_set_reduced_harmonic_first_bounded_execution_only(pre: Dict[str, Any]) -> int:
+    jd_cfg = _b3_jd_struct_active_passed_setup_jd_cfg()
+    target_hz = float(jd_cfg["target_hz"])
+    prior_non_harmonic_hz = float(B3_JD_PRIOR_NON_HARMONIC_RITZ_CANDIDATE_FREQUENCY_HZ)
+    prior_non_harmonic_target_distance_hz = abs(prior_non_harmonic_hz - target_hz)
+    payload: Dict[str, Any] = {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "B3_JD_structural_active_set_reduced_harmonic_first_bounded_execution_only",
+        "B3_JD_harmonic_execution_operator_source": (
+            "validated_B3_direct_sparse_AIJ_scaled_pressure_restricted_Dirichlet_eliminated_"
+            "structural_active_set_reduced_copy_fixed"
+        ),
+        "B3_JD_harmonic_execution_operator_contract_pass": False,
+        "B3_JD_harmonic_execution_final_active_dimension": None,
+        "B3_JD_harmonic_execution_A_shape": None,
+        "B3_JD_harmonic_execution_M_shape": None,
+        "B3_JD_harmonic_execution_A_all_values_finite_pass": False,
+        "B3_JD_harmonic_execution_M_all_values_finite_pass": False,
+        "B3_JD_harmonic_execution_operator_nonzero_contract_pass": False,
+        "B3_JD_harmonic_execution_A_exact_zero_row_count": None,
+        "B3_JD_harmonic_execution_M_exact_zero_row_count": None,
+        "B3_JD_harmonic_execution_A_exact_zero_column_count": None,
+        "B3_JD_harmonic_execution_zero_row_column_cleanup_contract_pass": False,
+        "B3_JD_harmonic_execution_reuses_passed_harmonic_setup_configuration": True,
+        "B3_JD_harmonic_execution_extraction_requested": "HARMONIC",
+        "B3_JD_harmonic_execution_getExtraction_matches_HARMONIC_after_set": False,
+        "B3_JD_harmonic_execution_getExtraction_matches_HARMONIC_after_setup": False,
+        "B3_JD_harmonic_execution_harmonic_extraction_enabled": False,
+        "B3_JD_harmonic_execution_target_frequency_hz": target_hz,
+        "B3_JD_harmonic_execution_target_lambda": float(jd_cfg["target_lambda"]),
+        "B3_JD_harmonic_prior_non_harmonic_reference_frequency_hz": prior_non_harmonic_hz,
+        "B3_JD_harmonic_prior_non_harmonic_reference_target_distance_hz": _safe_float(
+            prior_non_harmonic_target_distance_hz
+        ),
+        "B3_JD_harmonic_targeting_improvement_pass": False,
+        "B3_JD_harmonic_best_candidate_target_distance_hz": None,
+        "B3_JD_harmonic_execution_initial_space_attached": False,
+        "B3_JD_harmonic_execution_initial_space_reason": (
+            "FIRST_HARMONIC_CORRECTED_B3_SOLVE_MUST_BE_UNSEEDED"
+        ),
+        "B3_JD_harmonic_execution_authorized": True,
+        "B3_JD_harmonic_execution_scope": (
+            "ONE_BOUNDED_DIAGNOSTIC_SOLVE_ON_CORRECTED_STRUCTURAL_ACTIVE_OPERATOR_WITH_HARMONIC_TARGETING_ONLY"
+        ),
+        "B3_JD_harmonic_execution_EPS_created": False,
+        "B3_JD_harmonic_execution_operators_set": False,
+        "B3_JD_harmonic_execution_setup_calls_setup": False,
+        "B3_JD_harmonic_execution_solve_attempted": False,
+        "B3_JD_harmonic_execution_solve_count": 0,
+        "B3_JD_harmonic_execution_EPS_converged_reason": None,
+        "B3_JD_harmonic_execution_converged_mode_count": 0,
+        "B3_JD_harmonic_execution_STSINVERT_used": False,
+        "B3_JD_harmonic_execution_MUMPS_LU_used": False,
+        "B3_JD_harmonic_execution_fallback_used": False,
+        "B3_JD_harmonic_execution_automatic_retry_used": False,
+        "B3_JD_harmonic_execution_additional_EPS_solve_used": False,
+        "B3_JD_execution_authorized": True,
+        "jd_wiring_authorized": True,
+        "no_new_eigensolve_executed": True,
+        "new_eigensolve_executed": False,
+        "additional_eps": "ONE_BOUNDED_B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_HARMONIC_EXECUTION_EPS_AUTHORIZED",
+        "operator_matrices_persisted": False,
+        "transfer_matrices_persisted": False,
+        "coupling_matrices_persisted": False,
+        "historical_seed_attached": False,
+        "mapped_seed_persisted": False,
+        "conditioned_seed_persisted": False,
+        "eigenvectors_persisted": False,
+        "vector_banks_persisted": False,
+        "solve_trees_created": False,
+        "production_promotion": "BLOCKED",
+        "B3_JD_harmonic_execution_failure_stage": None,
+        "B3_JD_harmonic_execution_failure_reason": None,
+    }
+    built: Dict[str, Any] | None = None
+    mats_to_destroy: List[Any] = []
+    mat_destroy_seen: set[int] = set()
+    eps = None
+    verdict = (
+        "B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_HARMONIC_FIRST_BOUNDED_EXECUTION_BLOCKED_BY_OPERATOR_OR_SOLVER_INTERFACE"
+    )
+    try:
+        if not pre["preassembly_contract_pass"]:
+            payload["B3_JD_harmonic_execution_failure_stage"] = "preassembly_contract"
+            payload["B3_JD_harmonic_execution_failure_reason"] = "preassembly_contract_failed"
+            return 2
+        if MPI.COMM_WORLD.size != 1:
+            payload["B3_JD_harmonic_execution_failure_stage"] = "runtime_mpi_contract"
+            payload["B3_JD_harmonic_execution_failure_reason"] = "requires_mpiexec_n_1"
+            return 2
+
+        built = _b3_build_corrected_structural_active_operators(
+            mats_to_destroy=mats_to_destroy,
+            mat_destroy_seen=mat_destroy_seen,
+        )
+        _b3_jd_harmonic_execution_record_operator_contract(payload, built=built)
+        if not payload["B3_JD_harmonic_execution_operator_contract_pass"]:
+            payload["B3_JD_harmonic_execution_failure_stage"] = "structural_active_operator_contract"
+            payload["B3_JD_harmonic_execution_failure_reason"] = "structural_active_operator_contract_failed"
+            return 2
+        if not payload["B3_JD_harmonic_execution_zero_row_column_cleanup_contract_pass"]:
+            payload["B3_JD_harmonic_execution_failure_stage"] = "structural_active_zero_row_column_cleanup"
+            payload["B3_JD_harmonic_execution_failure_reason"] = "zero_row_or_column_cleanup_contract_failed"
+            return 2
+
+        A_active = built["A_active"]
+        M_active = built["M_active"]
+        free_rows = np.asarray(built["free_rows"], dtype=np.int32).ravel()
+        bc_rows_i32 = np.unique(np.asarray(built["bc_rows"], dtype=np.int32).ravel())
+        active_local = np.asarray(built["active_local"], dtype=np.int32).ravel()
+        inactive_local = np.asarray(built["inactive_local"], dtype=np.int32).ravel()
+        u_idx_i32 = np.asarray(built["u_idx"], dtype=np.int32).ravel()
+        p_idx_i32 = np.asarray(built["p_idx"], dtype=np.int32).ravel()
+        n_w = int(built["n_w"])
+        n_free = int(free_rows.size)
+
+        from slepc4py import SLEPc
+
+        eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
+        payload["B3_JD_harmonic_execution_EPS_created"] = True
+        setup_meta = _b3_jd_apply_struct_active_harmonic_eps_setup(
+            eps, A_active, M_active, jd_cfg
+        )
+        payload.update(setup_meta)
+        payload["B3_JD_harmonic_execution_operators_set"] = bool(
+            setup_meta.get("B3_JD_harmonic_setup_sets_operators")
+        )
+        if not payload.get("B3_JD_harmonic_setup_extraction_set_pass"):
+            payload["B3_JD_harmonic_execution_failure_stage"] = "harmonic_extraction_set"
+            payload["B3_JD_harmonic_execution_failure_reason"] = "eps_setExtraction_harmonic_failed"
+            return 2
+
+        after_set = _b3_jd_harmonic_eps_query_get_extraction(eps)
+        eps.setUp()
+        payload["B3_JD_harmonic_execution_setup_calls_setup"] = True
+        after_setup = _b3_jd_harmonic_eps_query_get_extraction(eps)
+        payload["B3_JD_harmonic_execution_getExtraction_matches_HARMONIC_after_set"] = bool(
+            after_set.get("matches_harmonic")
+        )
+        payload["B3_JD_harmonic_execution_getExtraction_matches_HARMONIC_after_setup"] = bool(
+            after_setup.get("matches_harmonic")
+        )
+        payload["B3_JD_harmonic_execution_harmonic_extraction_enabled"] = bool(
+            after_setup.get("matches_harmonic")
+        )
+        st_meta = _b3_jd_harmonic_introspect_st_after_setup(eps)
+        payload["B3_JD_harmonic_execution_ST_type_effective"] = st_meta.get("B3_JD_harmonic_setup_ST_type_effective")
+        payload["B3_JD_harmonic_execution_STSINVERT_used"] = bool(
+            st_meta.get("B3_JD_harmonic_setup_STSINVERT_used")
+        )
+        payload["B3_JD_harmonic_execution_MUMPS_LU_used"] = bool(st_meta.get("B3_JD_harmonic_setup_MUMPS_LU_used"))
+
+        if not after_set.get("getExtraction_available") and not after_setup.get("getExtraction_available"):
+            payload["B3_JD_harmonic_execution_failure_stage"] = "harmonic_extraction_getter"
+            payload["B3_JD_harmonic_execution_failure_reason"] = "eps_getExtraction_not_available_in_binding"
+            return 2
+        if after_set.get("getter_error") or after_setup.get("getter_error"):
+            payload["B3_JD_harmonic_execution_failure_stage"] = "harmonic_extraction_getter"
+            payload["B3_JD_harmonic_execution_failure_reason"] = (
+                f"after_set={after_set.get('getter_error')};after_setup={after_setup.get('getter_error')}"
+            )
+            return 2
+        if not payload["B3_JD_harmonic_execution_getExtraction_matches_HARMONIC_after_set"] or not payload[
+            "B3_JD_harmonic_execution_getExtraction_matches_HARMONIC_after_setup"
+        ]:
+            payload["B3_JD_harmonic_execution_failure_stage"] = "harmonic_extraction_effective_after_setup"
+            payload["B3_JD_harmonic_execution_failure_reason"] = (
+                f"after_set={after_set.get('normalized')};after_setup={after_setup.get('normalized')}"
+            )
+            return 2
+        if payload["B3_JD_harmonic_execution_STSINVERT_used"] or payload["B3_JD_harmonic_execution_MUMPS_LU_used"]:
+            payload["B3_JD_harmonic_execution_failure_stage"] = "st_preconditioner_policy"
+            payload["B3_JD_harmonic_execution_failure_reason"] = "STSINVERT_or_MUMPS_LU_detected_after_setup"
+            return 2
+
+        payload["B3_JD_harmonic_execution_solve_attempted"] = True
+        eps.solve()
+        payload["B3_JD_harmonic_execution_solve_count"] = 1
+        payload["new_eigensolve_executed"] = True
+        payload["no_new_eigensolve_executed"] = False
+        payload["B3_JD_harmonic_execution_EPS_converged_reason"] = int(eps.getConvergedReason())
+        nconv = int(eps.getConverged())
+        payload["B3_JD_harmonic_execution_converged_mode_count"] = nconv
+        accepted_any = False
+        best_target_distance_hz: float | None = None
+        for i in range(nconv):
+            vr = A_active.createVecRight()
+            vi = A_active.createVecRight()
+            try:
+                lam = eps.getEigenpair(i, vr, vi)
+                lam_c = complex(lam)
+                lam_re = float(np.real(lam_c))
+                lam_im = float(np.imag(lam_c))
+                eps_err_rel = float("nan")
+                try:
+                    eps_err_rel = float(eps.computeError(i, SLEPc.EPS.ErrorType.RELATIVE))
+                except Exception:
+                    pass
+                f_hz = None
+                if math.isfinite(lam_re) and abs(lam_im) <= 1.0e-12 and lam_re > 0.0:
+                    f_hz = math.sqrt(max(lam_re, 0.0)) / (2.0 * math.pi)
+                x_active = np.asarray(vr.getArray(readonly=True), dtype=np.float64).ravel().copy()
+                ve = _petsc_vec_from_array(A_active, x_active)
+                try:
+                    Ax, ay = _petsc_matvec(A_active, ve)
+                    Mx, my = _petsc_matvec(M_active, ve)
+                    r_active = np.asarray(Ax, dtype=np.float64) - lam_re * np.asarray(Mx, dtype=np.float64)
+                    r_norm = float(np.linalg.norm(r_active))
+                    denom = max(
+                        float(np.linalg.norm(Ax)),
+                        abs(lam_re) * float(np.linalg.norm(Mx)),
+                        float(np.linalg.norm(x_active)),
+                        1.0,
+                    )
+                    rel_active = r_norm / denom
+                finally:
+                    ve.destroy()
+                    try:
+                        ay.destroy()
+                        my.destroy()
+                    except Exception:
+                        pass
+                x_free = np.zeros(n_free, dtype=np.float64)
+                x_free[active_local] = x_active
+                x_full = np.zeros(n_w, dtype=np.float64)
+                x_full[free_rows] = x_free
+                x_full_reconstructed = True
+                si_norm = (
+                    float(np.linalg.norm(x_free[inactive_local]))
+                    if inactive_local.size > 0
+                    else 0.0
+                )
+                d_norm = float(np.linalg.norm(x_full[bc_rows_i32])) if bc_rows_i32.size > 0 else 0.0
+                x_norm = float(np.linalg.norm(x_full))
+                si_pass = bool(si_norm <= 1.0e-8 * max(1.0, x_norm))
+                d_pass = bool(d_norm <= 1.0e-8 * max(1.0, x_norm))
+                x_abs = np.abs(x_full)
+                u_norm = float(np.linalg.norm(x_abs[u_idx_i32]))
+                p_norm = float(np.linalg.norm(x_abs[p_idx_i32]))
+                p_support = p_norm / max(x_norm, 1.0e-30)
+                structural_dominant = bool(u_norm > 1.0e-8 and p_norm <= 1.0e-8)
+                support_ok = bool(u_norm > 1.0e-8 and (p_support > 1.0e-6 or structural_dominant))
+                lambda_one = bool(
+                    _b3_lambda_near_unity_signature(f_hz)
+                    or (abs(lam_re - 1.0) <= 1.0e-6 and abs(lam_im) <= 1.0e-9)
+                )
+                nonfinite_sig = bool(
+                    not math.isfinite(lam_re)
+                    or not math.isfinite(lam_im)
+                    or math.isinf(lam_re)
+                    or math.isinf(lam_im)
+                )
+                finite_lambda = bool(math.isfinite(lam_re) and math.isfinite(lam_im))
+                eigenvalue_finite_pass = bool(finite_lambda)
+                positive_freq = bool(f_hz is not None and math.isfinite(float(f_hz)) and float(f_hz) > 0.0)
+                residual_ok = bool(math.isfinite(rel_active) and rel_active <= 1.0e-4)
+                if math.isfinite(eps_err_rel):
+                    eps_err_ok = bool(eps_err_rel <= 1.0e-4)
+                else:
+                    eps_err_ok = True
+                target_dist = abs(float(f_hz) - target_hz) if positive_freq else None
+                if target_dist is not None and math.isfinite(target_dist):
+                    if best_target_distance_hz is None or float(target_dist) < float(best_target_distance_hz):
+                        best_target_distance_hz = float(target_dist)
+                mode_pass = bool(
+                    finite_lambda
+                    and positive_freq
+                    and residual_ok
+                    and eps_err_ok
+                    and si_pass
+                    and d_pass
+                    and (not lambda_one)
+                    and (not nonfinite_sig)
+                    and support_ok
+                )
+                accepted_any = bool(accepted_any or mode_pass)
+                fail_reason = None
+                if not mode_pass:
+                    fail_parts: List[str] = []
+                    if not eigenvalue_finite_pass:
+                        fail_parts.append("non_finite_eigenvalue")
+                    if not positive_freq:
+                        fail_parts.append("non_positive_frequency")
+                    if not residual_ok:
+                        fail_parts.append("active_space_residual_too_large")
+                    if math.isfinite(eps_err_rel) and not eps_err_ok:
+                        fail_parts.append("eps_compute_error_too_large")
+                    if not si_pass:
+                        fail_parts.append("reconstructed_structural_inactive_nonzero")
+                    if not d_pass:
+                        fail_parts.append("reconstructed_dirichlet_nonzero")
+                    if lambda_one:
+                        fail_parts.append("lambda_one_pollution_signature")
+                    if nonfinite_sig:
+                        fail_parts.append("nonfinite_eigenpair_signature")
+                    if not support_ok:
+                        fail_parts.append("insufficient_physical_support")
+                    fail_reason = "|".join(fail_parts) if fail_parts else "acceptance_gate_failed"
+                payload[f"B3_JD_harmonic_mode_{i}_lambda_real"] = _safe_float(lam_re)
+                payload[f"B3_JD_harmonic_mode_{i}_lambda_imag"] = _safe_float(lam_im)
+                payload[f"B3_JD_harmonic_mode_{i}_eigenvalue_finite_pass"] = bool(eigenvalue_finite_pass)
+                payload[f"B3_JD_harmonic_mode_{i}_frequency_hz_if_real_positive"] = _safe_float(f_hz)
+                payload[f"B3_JD_harmonic_mode_{i}_relative_generalized_residual_active"] = _safe_float(rel_active)
+                payload[f"B3_JD_harmonic_mode_{i}_eps_compute_error_relative"] = _safe_float(eps_err_rel)
+                payload[f"B3_JD_harmonic_mode_{i}_target_distance_hz"] = _safe_float(target_dist)
+                payload[f"B3_JD_harmonic_mode_{i}_full_vector_reconstructed"] = bool(x_full_reconstructed)
+                payload[f"B3_JD_harmonic_mode_{i}_structural_inactive_norm_after_reconstruction"] = _safe_float(
+                    si_norm
+                )
+                payload[f"B3_JD_harmonic_mode_{i}_structural_inactive_zero_pass"] = bool(si_pass)
+                payload[f"B3_JD_harmonic_mode_{i}_dirichlet_norm_after_reconstruction"] = _safe_float(d_norm)
+                payload[f"B3_JD_harmonic_mode_{i}_dirichlet_zero_pass"] = bool(d_pass)
+                payload[f"B3_JD_harmonic_mode_{i}_u_norm"] = _safe_float(u_norm)
+                payload[f"B3_JD_harmonic_mode_{i}_p_norm"] = _safe_float(p_norm)
+                payload[f"B3_JD_harmonic_mode_{i}_pressure_support_metric"] = _safe_float(p_support)
+                payload[f"B3_JD_harmonic_mode_{i}_lambda_one_pollution_signature"] = bool(lambda_one)
+                payload[f"B3_JD_harmonic_mode_{i}_nonfinite_eigenpair_signature"] = bool(nonfinite_sig)
+                payload[f"B3_JD_harmonic_mode_{i}_acceptance_pass"] = bool(mode_pass)
+                payload[f"B3_JD_harmonic_mode_{i}_acceptance_failure_reason"] = fail_reason
+            finally:
+                vr.destroy()
+                vi.destroy()
+
+        payload["B3_JD_harmonic_best_candidate_target_distance_hz"] = _safe_float(best_target_distance_hz)
+        targeting_improvement_pass = bool(
+            best_target_distance_hz is not None
+            and math.isfinite(float(best_target_distance_hz))
+            and float(best_target_distance_hz) < float(prior_non_harmonic_target_distance_hz)
+        )
+        payload["B3_JD_harmonic_targeting_improvement_pass"] = bool(targeting_improvement_pass)
+
+        if accepted_any and targeting_improvement_pass:
+            verdict = (
+                "B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_HARMONIC_FIRST_BOUNDED_EXECUTION_PASS_READY_FOR_"
+                "TARGET_GRID_VALIDATION_DESIGN"
+            )
+            return 0
+        if targeting_improvement_pass:
+            verdict = (
+                "B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_HARMONIC_FIRST_BOUNDED_EXECUTION_TARGETING_IMPROVED_"
+                "BUT_NO_ACCEPTABLE_MODE"
+            )
+            return 2
+        verdict = (
+            "B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_HARMONIC_FIRST_BOUNDED_EXECUTION_COMPLETED_WITHOUT_TARGETING_IMPROVEMENT"
+        )
+        return 2
+    except _B3StructActiveBuildError as exc:
+        payload["B3_JD_harmonic_execution_failure_stage"] = exc.stage
+        payload["B3_JD_harmonic_execution_failure_reason"] = exc.reason
+        return 2
+    except Exception as exc:
+        if payload["B3_JD_harmonic_execution_failure_stage"] is None:
+            payload["B3_JD_harmonic_execution_failure_stage"] = "solver_interface"
+        payload["B3_JD_harmonic_execution_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        return 2
+    finally:
+        if eps is not None:
+            try:
+                eps.destroy()
+            except Exception:
+                pass
+        payload["next_step_verdict"] = verdict
+        _write_json_atomic(OUT_JSON_B3_JD_STRUCT_ACTIVE_HARMONIC_FIRST_BOUNDED, payload)
+        OUT_MD_B3_JD_STRUCT_ACTIVE_HARMONIC_FIRST_BOUNDED.parent.mkdir(parents=True, exist_ok=True)
+        OUT_MD_B3_JD_STRUCT_ACTIVE_HARMONIC_FIRST_BOUNDED.write_text(
+            "\n".join(
+                [
+                    "# B3 JD structural-active harmonic first bounded execution",
+                    "",
+                    f"- verdict: `{verdict}`",
+                    f"- operator_contract_pass: {payload.get('B3_JD_harmonic_execution_operator_contract_pass')}",
+                    f"- converged_mode_count: {payload.get('B3_JD_harmonic_execution_converged_mode_count')}",
+                    f"- targeting_improvement_pass: {payload.get('B3_JD_harmonic_targeting_improvement_pass')}",
+                    f"- best_candidate_target_distance_hz: {payload.get('B3_JD_harmonic_best_candidate_target_distance_hz')}",
+                    f"- failure_stage: {payload.get('B3_JD_harmonic_execution_failure_stage')}",
+                    f"- failure_reason: {payload.get('B3_JD_harmonic_execution_failure_reason')}",
+                    "",
+                    (
+                        "new_eigensolve_executed=True"
+                        if payload.get("new_eigensolve_executed")
+                        else "new_eigensolve_executed=False"
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        print(
+            "[B3_JD] mode=B3_JD_structural_active_set_reduced_harmonic_first_bounded_execution_only",
+            flush=True,
+        )
+        print(
+            f"[B3_JD] B3_JD_harmonic_execution_converged_mode_count="
+            f"{payload.get('B3_JD_harmonic_execution_converged_mode_count')}",
+            flush=True,
+        )
+        print(
+            f"[B3_JD] B3_JD_harmonic_targeting_improvement_pass={payload.get('B3_JD_harmonic_targeting_improvement_pass')}",
+            flush=True,
+        )
+        print(f"[B3_JD] next_step_verdict={verdict}", flush=True)
+        print(f"[B3_JD] new_eigensolve_executed={payload.get('new_eigensolve_executed')}", flush=True)
+        print(
+            "[B3_JD] additional_eps=ONE_BOUNDED_B3_JD_STRUCTURAL_ACTIVE_SET_REDUCED_HARMONIC_EXECUTION_EPS_AUTHORIZED",
             flush=True,
         )
         if built is not None:
@@ -11112,6 +11585,7 @@ def main() -> int:
         or _is_b3_jd_structural_active_set_reduced_first_valid_bounded_execution_only_mode(sys.argv)
         or _is_b3_jd_structural_active_set_reduced_targeting_review_preflight_only_mode(sys.argv)
         or _is_b3_jd_structural_active_set_reduced_harmonic_dimension_setup_preflight_only_mode(sys.argv)
+        or _is_b3_jd_structural_active_set_reduced_harmonic_first_bounded_execution_only_mode(sys.argv)
     ):
         pre = _precheck_allow_b3_jd_first_bounded_execution()
     else:
@@ -11185,6 +11659,9 @@ def main() -> int:
 
     if _is_b3_jd_structural_active_set_reduced_harmonic_dimension_setup_preflight_only_mode(sys.argv):
         return _run_b3_jd_structural_active_set_reduced_harmonic_dimension_setup_preflight_only(pre)
+
+    if _is_b3_jd_structural_active_set_reduced_harmonic_first_bounded_execution_only_mode(sys.argv):
+        return _run_b3_jd_structural_active_set_reduced_harmonic_first_bounded_execution_only(pre)
 
     if _is_b3_seed_replay_audit_only_mode(sys.argv):
         return _run_b3_seed_replay_audit_only(pre)
