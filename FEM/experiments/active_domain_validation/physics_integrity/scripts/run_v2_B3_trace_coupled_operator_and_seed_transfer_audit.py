@@ -3241,11 +3241,37 @@ class _B3StructActiveBuildError(Exception):
         self.reason = str(reason)
 
 
+def _b3_struct_active_candidate_origin_policy_pass(
+    cand: Dict[str, Any],
+    *,
+    policy: str = "L_mid_exact",
+) -> bool:
+    """Classify removable inactive structural rows; L_mid_exact pins historical counts."""
+    if policy == "mesh_independent":
+        inactive_struct = int(cand["inactive_structural_count"])
+        return bool(
+            inactive_struct > 0
+            and int(cand["inactive_pressure_count"]) == 0
+            and int(cand["inactive_aup_overlap_count"]) == 0
+            and int(cand["parent_raw_Auu_nonzero_count"]) == 0
+            and int(cand["parent_raw_Auu_exact_zero_count"]) == inactive_struct
+        )
+    return bool(
+        int(cand["inactive_structural_count"]) == B3_STRUCT_ACTIVE_INACTIVE_STRUCTURAL_EXPECTED
+        and int(cand["inactive_pressure_count"]) == 0
+        and int(cand["inactive_aup_overlap_count"]) == 0
+        and int(cand["aup_supported_count"]) == B3_STRUCT_ACTIVE_AUP_SUPPORTED_EXPECTED
+        and int(cand["parent_raw_Auu_exact_zero_count"]) == B3_STRUCT_ACTIVE_INACTIVE_STRUCTURAL_EXPECTED
+        and int(cand["parent_raw_Auu_nonzero_count"]) == 0
+    )
+
+
 def _b3_build_corrected_structural_active_operators(
     *,
     mats_to_destroy: List[Any],
     mat_destroy_seen: set[int],
     mesh_level: str = "L_mid",
+    struct_active_count_policy: str = "L_mid_exact",
 ) -> Dict[str, Any]:
     """Build copy-fixed B3 free pencil and structural active-set reduced A_active/M_active."""
     manifest = load_manifest()
@@ -3402,13 +3428,8 @@ def _b3_build_corrected_structural_active_operators(
         n_u_b3=n_u_b3,
         raw_Auu=raw_Auu,
     )
-    origin_pass = bool(
-        int(cand["inactive_structural_count"]) == B3_STRUCT_ACTIVE_INACTIVE_STRUCTURAL_EXPECTED
-        and int(cand["inactive_pressure_count"]) == 0
-        and int(cand["inactive_aup_overlap_count"]) == 0
-        and int(cand["aup_supported_count"]) == B3_STRUCT_ACTIVE_AUP_SUPPORTED_EXPECTED
-        and int(cand["parent_raw_Auu_exact_zero_count"]) == B3_STRUCT_ACTIVE_INACTIVE_STRUCTURAL_EXPECTED
-        and int(cand["parent_raw_Auu_nonzero_count"]) == 0
+    origin_pass = _b3_struct_active_candidate_origin_policy_pass(
+        cand, policy=str(struct_active_count_policy)
     )
     if not origin_pass:
         raise _B3StructActiveBuildError(
@@ -3417,17 +3438,24 @@ def _b3_build_corrected_structural_active_operators(
                 f"inactive={cand['inactive_structural_count']};pressure={cand['inactive_pressure_count']};"
                 f"aup_supported={cand['aup_supported_count']};overlap={cand['inactive_aup_overlap_count']};"
                 f"raw_Auu_zero={cand['parent_raw_Auu_exact_zero_count']};"
-                f"raw_Auu_nonzero={cand['parent_raw_Auu_nonzero_count']}"
+                f"raw_Auu_nonzero={cand['parent_raw_Auu_nonzero_count']};"
+                f"policy={struct_active_count_policy}"
             ),
         )
     inactive_local = np.asarray(cand["inactive_local"], dtype=np.int32)
     active_local = np.setdiff1d(
         np.arange(int(cand["n_free"]), dtype=np.int32), inactive_local, assume_unique=True
     )
-    if int(active_local.size) != B3_STRUCT_ACTIVE_ACTIVE_DIM_EXPECTED:
+    if struct_active_count_policy == "L_mid_exact":
+        if int(active_local.size) != B3_STRUCT_ACTIVE_ACTIVE_DIM_EXPECTED:
+            raise _B3StructActiveBuildError(
+                "active_dimension_contract",
+                f"active_dimension={active_local.size}_expected_{B3_STRUCT_ACTIVE_ACTIVE_DIM_EXPECTED}",
+            )
+    elif int(active_local.size) <= 0:
         raise _B3StructActiveBuildError(
             "active_dimension_contract",
-            f"active_dimension={active_local.size}_expected_{B3_STRUCT_ACTIVE_ACTIVE_DIM_EXPECTED}",
+            f"active_dimension={active_local.size}_nonpositive",
         )
     is_active = PETSc.IS().createGeneral(active_local.astype(np.int32), comm=PETSc.COMM_WORLD)
     try:

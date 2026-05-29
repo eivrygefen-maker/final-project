@@ -92,18 +92,29 @@ def _dev_mesh_bootstrap_payload(mesh_variant: str) -> Dict[str, Any]:
 def _dev_record_operator_contract(payload: Dict[str, Any], *, built: Dict[str, Any]) -> None:
     A_active = built["A_active"]
     M_active = built["M_active"]
+    cand = built.get("cand") or {}
     act_a_fin = audit._petsc_sparse_owned_row_value_audit(A_active)
     act_m_fin = audit._petsc_sparse_owned_row_value_audit(M_active)
     a_rn = audit._petsc_sparse_owned_row_norms(A_active)
     m_rn = audit._petsc_sparse_owned_row_norms(M_active)
     a_cn = audit._petsc_sparse_owned_col_norms(A_active)
-    payload["B3_DEV_operator_contract_pass"] = bool(
+    payload["B3_DEV_structural_inactive_removed_count"] = int(cand.get("inactive_structural_count", 0))
+    payload["B3_DEV_structural_inactive_origin_explained_pass"] = bool(
+        audit._b3_struct_active_candidate_origin_policy_pass(cand, policy="mesh_independent")
+    )
+    payload["B3_DEV_Aup_supported_rows_preserved_pass"] = bool(
+        int(cand.get("inactive_aup_overlap_count", 1)) == 0
+    )
+    payload["B3_DEV_operator_nonzero_contract_pass"] = bool(
         audit._b3_loc_nonzero_contract_pass(
             audit._mat_norm_or_none(A_active), int(audit._petsc_mat_global_nnz_used(A_active))
         )
         and audit._b3_loc_nonzero_contract_pass(
             audit._mat_norm_or_none(M_active), int(audit._petsc_mat_global_nnz_used(M_active))
         )
+    )
+    payload["B3_DEV_operator_contract_pass"] = bool(
+        payload["B3_DEV_operator_nonzero_contract_pass"]
         and act_a_fin["all_values_finite_pass"]
         and act_m_fin["all_values_finite_pass"]
     )
@@ -120,9 +131,9 @@ def _dev_record_operator_contract(payload: Dict[str, Any], *, built: Dict[str, A
         and payload["B3_DEV_M_exact_zero_row_count"] == 0
         and payload["B3_DEV_A_exact_zero_column_count"] == 0
         and payload["B3_DEV_operator_contract_pass"]
+        and payload["B3_DEV_structural_inactive_origin_explained_pass"]
+        and payload["B3_DEV_Aup_supported_rows_preserved_pass"]
     )
-    cand = built.get("cand") or {}
-    payload["B3_DEV_inactive_structural_count"] = int(cand.get("inactive_structural_count", 0))
     payload["B3_DEV_dirichlet_rows_removed"] = int(built.get("bc_rows", np.asarray([])).size)
 
 
@@ -253,7 +264,10 @@ def _run_dev_coarse_contract(pre: Dict[str, Any], mesh_variant: str) -> int:
             return 2
         timer.mark("operator_build_begin")
         built = audit._b3_build_corrected_structural_active_operators(
-            mats_to_destroy=mats, mat_destroy_seen=seen, mesh_level=mesh_variant
+            mats_to_destroy=mats,
+            mat_destroy_seen=seen,
+            mesh_level=mesh_variant,
+            struct_active_count_policy="mesh_independent",
         )
         timer.mark("operator_build_end")
         payload["B3_DEV_operator_build_elapsed_seconds"] = payload.get(
@@ -315,7 +329,10 @@ def _run_dev_coarse_ciss_benchmark(pre: Dict[str, Any], mesh_variant: str) -> in
             return 2
         timer.mark("operator_build_begin")
         built = audit._b3_build_corrected_structural_active_operators(
-            mats_to_destroy=mats, mat_destroy_seen=seen, mesh_level=mesh_variant
+            mats_to_destroy=mats,
+            mat_destroy_seen=seen,
+            mesh_level=mesh_variant,
+            struct_active_count_policy="mesh_independent",
         )
         timer.mark("A_active_M_active_ready")
         _dev_record_operator_contract(payload, built=built)
@@ -430,7 +447,10 @@ def _run_dev_coarse_st_benchmark(pre: Dict[str, Any], mesh_variant: str) -> int:
             return 2
         timer.mark("operator_build_begin")
         built = audit._b3_build_corrected_structural_active_operators(
-            mats_to_destroy=mats, mat_destroy_seen=seen, mesh_level=mesh_variant
+            mats_to_destroy=mats,
+            mat_destroy_seen=seen,
+            mesh_level=mesh_variant,
+            struct_active_count_policy="mesh_independent",
         )
         timer.mark("A_active_M_active_ready")
         _dev_record_operator_contract(payload, built=built)
