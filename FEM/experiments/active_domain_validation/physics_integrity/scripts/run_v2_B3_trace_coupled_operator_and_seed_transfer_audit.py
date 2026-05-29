@@ -4177,6 +4177,14 @@ def _b3_ciss_factor_shift_getter_value(pc: Any) -> Optional[Dict[str, Any]]:
     return {"shift_type": shift_type, "shift_amount": shift_amt}
 
 
+def _b3_ciss_direct_stable_eps_setup_succeeded(payload: Dict[str, Any]) -> bool:
+    """True after eps.setUp() in either direct-stable preflight or bounded execution."""
+    return bool(
+        payload.get("B3_CISS_direct_stable_setup_calls_setup")
+        or payload.get("B3_CISS_execution_setup_calls_setup")
+    )
+
+
 def _b3_ciss_factor_shift_getter_matches_requested(getter_value: Optional[Dict[str, Any]]) -> bool:
     if not getter_value:
         return False
@@ -4229,7 +4237,7 @@ def _b3_ciss_finalize_direct_stable_factor_shift_verification(eps: Any, payload:
         payload["B3_CISS_direct_stable_factor_shift_effective"] = getter_value
 
     request_ok = bool(payload.get("B3_CISS_direct_stable_factor_shift_set_pass"))
-    setup_ok = bool(payload.get("B3_CISS_direct_stable_setup_calls_setup"))
+    setup_ok = _b3_ciss_direct_stable_eps_setup_succeeded(payload)
     if getter_value is not None:
         if _b3_ciss_factor_shift_getter_matches_requested(getter_value):
             payload["B3_CISS_direct_stable_factor_shift_verification_classification"] = (
@@ -4290,7 +4298,7 @@ def _b3_ciss_direct_stable_policy_effective_pass(payload: Dict[str, Any]) -> boo
         and pc_type == "lu"
         and "mumps" in factor_solver
         and bool(payload.get("B3_CISS_direct_stable_factor_shift_set_pass"))
-        and bool(payload.get("B3_CISS_direct_stable_setup_calls_setup"))
+        and _b3_ciss_direct_stable_eps_setup_succeeded(payload)
     )
     if not base_ok:
         return False
