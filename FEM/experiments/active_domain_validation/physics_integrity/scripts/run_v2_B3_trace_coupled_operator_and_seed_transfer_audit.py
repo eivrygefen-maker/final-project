@@ -13053,6 +13053,11 @@ def main() -> int:
     import sys
 
     from v2_b3_dev_solver_benchmark import is_b3_dev_mode, run_b3_dev_mode
+    from v2_b3_lmid_overnight_validation import is_lmid_overnight_mode, run_lmid_overnight_validation
+
+    if is_lmid_overnight_mode(sys.argv):
+        pre = _precheck_allow_b3_jd_first_bounded_execution()
+        return run_lmid_overnight_validation(pre)
 
     if is_b3_dev_mode(sys.argv):
         pre = _precheck_allow_b3_jd_first_bounded_execution()
