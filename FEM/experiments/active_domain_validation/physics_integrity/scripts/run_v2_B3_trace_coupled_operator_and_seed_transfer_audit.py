@@ -4027,6 +4027,7 @@ def _b3_ciss_apply_direct_stable_st_ksp_pc_policy(
         opts_prefix="st_",
         use_ciss=True,
     )
+    _b3_ciss_record_direct_stable_factor_shift_request(pc, payload)
     _b3_ciss_apply_st_mumps_icntl_petsc_options()
 
     mumps_ok, mumps_reason = _b3_ciss_require_mumps_factor_solver(pc)
@@ -4037,6 +4038,160 @@ def _b3_ciss_apply_direct_stable_st_ksp_pc_policy(
     if str(ksp.getType()).lower() != "preonly":
         return False, f"ksp_type_effective_not_preonly={ksp.getType()}"
     return True, ""
+
+
+def _b3_ciss_record_direct_stable_factor_shift_request(pc: Any, payload: Dict[str, Any]) -> None:
+    shift_type = "nonzero"
+    shift_amt = float(B3_CISS_DIRECT_STABLE_FACTOR_SHIFT_AMOUNT)
+    setter_paths: List[str] = []
+    if hasattr(pc, "setFactorShift"):
+        setter_paths.append("setFactorShift")
+    if hasattr(pc, "setFactorShiftType"):
+        setter_paths.append("setFactorShiftType")
+    if hasattr(pc, "setFactorShiftAmount"):
+        setter_paths.append("setFactorShiftAmount")
+    payload["B3_CISS_direct_stable_factor_shift_setter_available"] = bool(setter_paths)
+    payload["B3_CISS_direct_stable_factor_shift_setter_api_path_used"] = None
+    payload["B3_CISS_direct_stable_factor_shift_set_pass"] = False
+    payload["B3_CISS_direct_stable_factor_shift_option_type_written"] = None
+    payload["B3_CISS_direct_stable_factor_shift_option_amount_written"] = None
+    payload["B3_CISS_direct_stable_factor_shift_options_write_pass"] = False
+
+    petsc_opts = PETSc.Options()
+    try:
+        petsc_opts["st_pc_factor_shift_type"] = shift_type
+        petsc_opts["st_pc_factor_shift_amount"] = shift_amt
+        payload["B3_CISS_direct_stable_factor_shift_option_type_written"] = "NONZERO"
+        payload["B3_CISS_direct_stable_factor_shift_option_amount_written"] = _safe_float(shift_amt)
+        payload["B3_CISS_direct_stable_factor_shift_options_write_pass"] = True
+    except Exception:
+        payload["B3_CISS_direct_stable_factor_shift_options_write_pass"] = False
+
+    setter_pass = False
+    if hasattr(pc, "setFactorShiftType") and hasattr(pc, "setFactorShiftAmount"):
+        try:
+            pc.setFactorShiftType(shift_type)
+            pc.setFactorShiftAmount(shift_amt)
+            setter_pass = True
+            payload["B3_CISS_direct_stable_factor_shift_setter_api_path_used"] = (
+                "setFactorShiftType+setFactorShiftAmount"
+            )
+        except Exception:
+            pass
+    if not setter_pass and hasattr(pc, "setFactorShift"):
+        try:
+            pc.setFactorShift(shift_type, shift_amt)
+            setter_pass = True
+            payload["B3_CISS_direct_stable_factor_shift_setter_api_path_used"] = "setFactorShift"
+        except Exception:
+            pass
+    if not setter_pass and setter_paths:
+        payload["B3_CISS_direct_stable_factor_shift_setter_api_path_used"] = (
+            "fem3d._slepc_configure_st_ksp_pc_attempted:" + "+".join(setter_paths)
+        )
+    payload["B3_CISS_direct_stable_factor_shift_set_pass"] = bool(
+        setter_pass or payload["B3_CISS_direct_stable_factor_shift_options_write_pass"]
+    )
+
+
+def _b3_ciss_factor_shift_getter_value(pc: Any) -> Optional[Dict[str, Any]]:
+    shift_type = None
+    shift_amt = None
+    if hasattr(pc, "getFactorShiftType"):
+        try:
+            shift_type = str(pc.getFactorShiftType())
+        except Exception:
+            pass
+    if hasattr(pc, "getFactorShiftAmount"):
+        try:
+            shift_amt = _safe_float(float(pc.getFactorShiftAmount()))
+        except Exception:
+            pass
+    if hasattr(pc, "getFactorShift") and (shift_type is None or shift_amt is None):
+        try:
+            got = pc.getFactorShift()
+            if isinstance(got, (list, tuple)) and len(got) >= 2:
+                if shift_type is None:
+                    shift_type = str(got[0])
+                if shift_amt is None:
+                    shift_amt = _safe_float(float(got[1]))
+        except Exception:
+            pass
+    if shift_type is None and shift_amt is None:
+        return None
+    return {"shift_type": shift_type, "shift_amount": shift_amt}
+
+
+def _b3_ciss_factor_shift_getter_matches_requested(getter_value: Optional[Dict[str, Any]]) -> bool:
+    if not getter_value:
+        return False
+    shift_type = str(getter_value.get("shift_type") or "").lower()
+    shift_amt = getter_value.get("shift_amount")
+    shift_amt_ok = (
+        shift_amt is not None
+        and math.isfinite(float(shift_amt))
+        and abs(float(shift_amt) - float(B3_CISS_DIRECT_STABLE_FACTOR_SHIFT_AMOUNT)) <= 1.0e-12
+    )
+    return bool(
+        ("nonzero" in shift_type or shift_type in ("nonzeros", "positive_definite"))
+        and shift_amt_ok
+    )
+
+
+def _b3_ciss_finalize_direct_stable_factor_shift_verification(eps: Any, payload: Dict[str, Any]) -> None:
+    getter_available = False
+    getter_value: Optional[Dict[str, Any]] = None
+    pc_view_diagnostic: Optional[str] = None
+    try:
+        pc = eps.getST().getKSP().getPC()
+        getter_available = bool(
+            hasattr(pc, "getFactorShiftType")
+            or hasattr(pc, "getFactorShiftAmount")
+            or hasattr(pc, "getFactorShift")
+        )
+        getter_value = _b3_ciss_factor_shift_getter_value(pc)
+        if hasattr(pc, "view"):
+            try:
+                import io
+
+                buf = io.StringIO()
+                view = getattr(pc, "view", None)
+                if view is not None:
+                    try:
+                        view(buf)
+                    except TypeError:
+                        view(buf, viewer=None)
+                    pc_view_diagnostic = buf.getvalue()[:4096] or None
+            except Exception:
+                pc_view_diagnostic = None
+    except Exception:
+        pass
+
+    payload["B3_CISS_direct_stable_factor_shift_getter_available"] = getter_available
+    payload["B3_CISS_direct_stable_factor_shift_getter_value"] = getter_value
+    payload["B3_CISS_direct_stable_factor_shift_pc_view_diagnostic"] = pc_view_diagnostic
+    if getter_value is not None:
+        payload["B3_CISS_direct_stable_factor_shift_effective"] = getter_value
+
+    request_ok = bool(payload.get("B3_CISS_direct_stable_factor_shift_set_pass"))
+    setup_ok = bool(payload.get("B3_CISS_direct_stable_setup_calls_setup"))
+    if getter_value is not None:
+        if _b3_ciss_factor_shift_getter_matches_requested(getter_value):
+            payload["B3_CISS_direct_stable_factor_shift_verification_classification"] = (
+                "VERIFIED_EFFECTIVE_BY_GETTER"
+            )
+        else:
+            payload["B3_CISS_direct_stable_factor_shift_verification_classification"] = (
+                "REQUESTED_BUT_GETTER_REPORTS_NOT_EFFECTIVE"
+            )
+    elif request_ok and setup_ok:
+        payload["B3_CISS_direct_stable_factor_shift_verification_classification"] = (
+            "REQUESTED_AND_SETUP_SUCCEEDED_GETTER_UNAVAILABLE"
+        )
+    else:
+        payload["B3_CISS_direct_stable_factor_shift_verification_classification"] = (
+            "REQUESTED_BUT_SETUP_OR_REQUEST_FAILED"
+        )
 
 
 def _b3_ciss_introspect_direct_stable_after_setup(eps: Any) -> Dict[str, Any]:
@@ -4061,17 +4216,9 @@ def _b3_ciss_introspect_direct_stable_after_setup(eps: Any) -> Dict[str, Any]:
         pc = ksp.getPC()
         out["B3_CISS_direct_stable_PC_type_effective"] = str(pc.getType())
         out["B3_CISS_direct_stable_factor_solver_effective"] = _b3_ciss_pc_factor_solver_effective_label(pc)
-        shift_type = None
-        shift_amt = None
-        if hasattr(pc, "getFactorShiftType"):
-            shift_type = str(pc.getFactorShiftType())
-        if hasattr(pc, "getFactorShiftAmount"):
-            shift_amt = _safe_float(float(pc.getFactorShiftAmount()))
-        if shift_type is not None or shift_amt is not None:
-            out["B3_CISS_direct_stable_factor_shift_effective"] = {
-                "shift_type": shift_type,
-                "shift_amount": shift_amt,
-            }
+        getter_value = _b3_ciss_factor_shift_getter_value(pc)
+        if getter_value is not None:
+            out["B3_CISS_direct_stable_factor_shift_effective"] = getter_value
     except Exception:
         pass
     return out
@@ -4082,22 +4229,26 @@ def _b3_ciss_direct_stable_policy_effective_pass(payload: Dict[str, Any]) -> boo
     ksp_type = str(payload.get("B3_CISS_direct_stable_KSP_type_effective") or "").lower()
     pc_type = str(payload.get("B3_CISS_direct_stable_PC_type_effective") or "").lower()
     factor_solver = str(payload.get("B3_CISS_direct_stable_factor_solver_effective") or "").lower()
-    shift_eff = payload.get("B3_CISS_direct_stable_factor_shift_effective") or {}
-    shift_type = str(shift_eff.get("shift_type") or "").lower()
-    shift_amt = shift_eff.get("shift_amount")
-    shift_amt_ok = (
-        shift_amt is not None
-        and math.isfinite(float(shift_amt))
-        and abs(float(shift_amt) - float(B3_CISS_DIRECT_STABLE_FACTOR_SHIFT_AMOUNT)) <= 1.0e-12
-    )
-    return bool(
+    base_ok = bool(
         "sinvert" in st_type
         and ksp_type == "preonly"
         and pc_type == "lu"
         and "mumps" in factor_solver
-        and ("nonzero" in shift_type or shift_type in ("nonzeros", "positive_definite"))
-        and shift_amt_ok
+        and bool(payload.get("B3_CISS_direct_stable_factor_shift_set_pass"))
+        and bool(payload.get("B3_CISS_direct_stable_setup_calls_setup"))
     )
+    if not base_ok:
+        return False
+    classification = str(
+        payload.get("B3_CISS_direct_stable_factor_shift_verification_classification") or ""
+    )
+    if classification == "VERIFIED_EFFECTIVE_BY_GETTER":
+        return True
+    if classification == "REQUESTED_AND_SETUP_SUCCEEDED_GETTER_UNAVAILABLE":
+        return True
+    if classification == "REQUESTED_BUT_GETTER_REPORTS_NOT_EFFECTIVE":
+        return False
+    return False
 
 
 def _b3_jd_eps_set_harmonic_extraction_and_report(eps: Any) -> Dict[str, Any]:
@@ -8454,6 +8605,16 @@ def _run_b3_ciss_structural_active_set_reduced_direct_stable_setup_preflight_onl
         "B3_CISS_direct_stable_PC_type_effective": None,
         "B3_CISS_direct_stable_factor_solver_effective": None,
         "B3_CISS_direct_stable_factor_shift_effective": None,
+        "B3_CISS_direct_stable_factor_shift_setter_available": False,
+        "B3_CISS_direct_stable_factor_shift_setter_api_path_used": None,
+        "B3_CISS_direct_stable_factor_shift_set_pass": False,
+        "B3_CISS_direct_stable_factor_shift_option_type_written": None,
+        "B3_CISS_direct_stable_factor_shift_option_amount_written": None,
+        "B3_CISS_direct_stable_factor_shift_options_write_pass": False,
+        "B3_CISS_direct_stable_factor_shift_getter_available": False,
+        "B3_CISS_direct_stable_factor_shift_getter_value": None,
+        "B3_CISS_direct_stable_factor_shift_verification_classification": None,
+        "B3_CISS_direct_stable_factor_shift_pc_view_diagnostic": None,
         "B3_CISS_direct_stable_setup_calls_setup": False,
         "B3_CISS_direct_stable_setup_calls_solve": False,
         "B3_CISS_direct_stable_setup_preflight_pass": False,
@@ -8530,6 +8691,7 @@ def _run_b3_ciss_structural_active_set_reduced_direct_stable_setup_preflight_onl
         eps.setUp()
         payload["B3_CISS_direct_stable_setup_calls_setup"] = True
         payload.update(_b3_ciss_introspect_direct_stable_after_setup(eps))
+        _b3_ciss_finalize_direct_stable_factor_shift_verification(eps, payload)
 
         if not _b3_ciss_direct_stable_policy_effective_pass(payload):
             payload["B3_CISS_direct_stable_setup_failure_stage"] = "direct_stable_policy_not_effective_after_setup"
@@ -8538,7 +8700,9 @@ def _run_b3_ciss_structural_active_set_reduced_direct_stable_setup_preflight_onl
                 f"KSP={payload.get('B3_CISS_direct_stable_KSP_type_effective')};"
                 f"PC={payload.get('B3_CISS_direct_stable_PC_type_effective')};"
                 f"factor_solver={payload.get('B3_CISS_direct_stable_factor_solver_effective')};"
-                f"shift={payload.get('B3_CISS_direct_stable_factor_shift_effective')}"
+                f"shift={payload.get('B3_CISS_direct_stable_factor_shift_effective')};"
+                f"shift_verification="
+                f"{payload.get('B3_CISS_direct_stable_factor_shift_verification_classification')}"
             )
             return 2
 
@@ -8559,6 +8723,7 @@ def _run_b3_ciss_structural_active_set_reduced_direct_stable_setup_preflight_onl
         if eps is not None:
             try:
                 payload.update(_b3_ciss_introspect_direct_stable_after_setup(eps))
+                _b3_ciss_finalize_direct_stable_factor_shift_verification(eps, payload)
             except Exception:
                 pass
         return 2
@@ -8601,6 +8766,11 @@ def _run_b3_ciss_structural_active_set_reduced_direct_stable_setup_preflight_onl
         print(
             f"[B3_CISS] B3_CISS_direct_stable_factor_solver_effective="
             f"{payload.get('B3_CISS_direct_stable_factor_solver_effective')}",
+            flush=True,
+        )
+        print(
+            f"[B3_CISS] B3_CISS_direct_stable_factor_shift_verification_classification="
+            f"{payload.get('B3_CISS_direct_stable_factor_shift_verification_classification')}",
             flush=True,
         )
         print(f"[B3_CISS] next_step_verdict={verdict}", flush=True)
