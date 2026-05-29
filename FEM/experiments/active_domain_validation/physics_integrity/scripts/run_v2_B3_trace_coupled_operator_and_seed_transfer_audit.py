@@ -3606,24 +3606,76 @@ def _b3_jd_eps_set_harmonic_extraction_and_report(eps: Any) -> Dict[str, Any]:
             return out
 
 
-def _b3_jd_harmonic_introspect_eps_extraction_and_st(eps: Any) -> Dict[str, Any]:
+def _b3_jd_harmonic_eps_query_get_extraction(eps: Any) -> Dict[str, Any]:
+    """Query EPS extraction via authoritative eps.getExtraction() (EPSGetExtraction)."""
     from slepc4py import SLEPc
 
-    out: Dict[str, Any] = {}
-    ext_name = "RITZ_default_not_set_via_setExtraction"
-    harmonic = False
+    snap: Dict[str, Any] = {
+        "getExtraction_available": bool(hasattr(eps, "getExtraction")),
+        "raw": None,
+        "normalized": None,
+        "matches_harmonic": False,
+        "getter_error": None,
+    }
+    if not snap["getExtraction_available"]:
+        return snap
     try:
-        if hasattr(eps, "getExtractionType"):
-            ext_raw = eps.getExtractionType()
-            ext_name = str(ext_raw)
+        raw = eps.getExtraction()
+        snap["raw"] = repr(raw)
+        harmonic_enum = SLEPc.EPS.Extraction.HARMONIC
+        try:
+            snap["matches_harmonic"] = bool(raw == harmonic_enum)
+        except Exception:
+            snap["matches_harmonic"] = "harmonic" in str(raw).lower()
+        if snap["matches_harmonic"]:
+            snap["normalized"] = "HARMONIC"
+        else:
             try:
-                harmonic = bool(ext_raw == SLEPc.EPS.Extraction.HARMONIC)
+                if raw == SLEPc.EPS.Extraction.RITZ:
+                    snap["normalized"] = "RITZ"
+                else:
+                    snap["normalized"] = str(raw)
             except Exception:
-                harmonic = "harmonic" in ext_name.lower()
-    except Exception:
-        pass
-    out["B3_JD_harmonic_setup_extraction_effective"] = ext_name
-    out["B3_JD_harmonic_setup_harmonic_extraction_enabled"] = bool(harmonic)
+                snap["normalized"] = str(raw)
+    except Exception as exc:
+        snap["getter_error"] = f"{type(exc).__name__}:{exc}"
+    return snap
+
+
+def _b3_jd_harmonic_record_get_extraction_verification(
+    payload: Dict[str, Any],
+    *,
+    after_set: Dict[str, Any],
+    after_setup: Dict[str, Any],
+) -> None:
+    payload["B3_JD_harmonic_setup_effective_verification_method"] = (
+        "EPS_GET_EXTRACTION_BEFORE_AND_AFTER_SETUP"
+    )
+    payload["B3_JD_harmonic_setup_getExtraction_available"] = bool(
+        after_set.get("getExtraction_available") or after_setup.get("getExtraction_available")
+    )
+    payload["B3_JD_harmonic_setup_extraction_raw_after_set"] = after_set.get("raw")
+    payload["B3_JD_harmonic_setup_extraction_normalized_after_set"] = after_set.get("normalized")
+    payload["B3_JD_harmonic_setup_extraction_raw_after_setup"] = after_setup.get("raw")
+    payload["B3_JD_harmonic_setup_extraction_normalized_after_setup"] = after_setup.get("normalized")
+    payload["B3_JD_harmonic_setup_getExtraction_matches_HARMONIC_after_set"] = bool(
+        after_set.get("matches_harmonic")
+    )
+    payload["B3_JD_harmonic_setup_getExtraction_matches_HARMONIC_after_setup"] = bool(
+        after_setup.get("matches_harmonic")
+    )
+    payload["B3_JD_harmonic_setup_extraction_effective"] = after_setup.get("normalized")
+    payload["B3_JD_harmonic_setup_harmonic_extraction_enabled"] = bool(
+        after_setup.get("matches_harmonic")
+    )
+    if after_set.get("getter_error"):
+        payload["B3_JD_harmonic_setup_getExtraction_after_set_error"] = after_set.get("getter_error")
+    if after_setup.get("getter_error"):
+        payload["B3_JD_harmonic_setup_getExtraction_after_setup_error"] = after_setup.get("getter_error")
+
+
+def _b3_jd_harmonic_introspect_st_after_setup(eps: Any) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
     st_type = None
     st_sinvert = False
     mumps_lu = False
@@ -7024,6 +7076,14 @@ def _run_b3_jd_structural_active_set_reduced_harmonic_dimension_setup_preflight_
         "B3_JD_harmonic_setup_extraction_effective": None,
         "B3_JD_harmonic_setup_harmonic_extraction_enabled": False,
         "B3_JD_harmonic_setup_extraction_api_path_used": None,
+        "B3_JD_harmonic_setup_effective_verification_method": None,
+        "B3_JD_harmonic_setup_getExtraction_available": False,
+        "B3_JD_harmonic_setup_extraction_raw_after_set": None,
+        "B3_JD_harmonic_setup_extraction_normalized_after_set": None,
+        "B3_JD_harmonic_setup_extraction_raw_after_setup": None,
+        "B3_JD_harmonic_setup_extraction_normalized_after_setup": None,
+        "B3_JD_harmonic_setup_getExtraction_matches_HARMONIC_after_set": False,
+        "B3_JD_harmonic_setup_getExtraction_matches_HARMONIC_after_setup": False,
         "B3_JD_harmonic_setup_creates_exactly_one_EPS_object": False,
         "B3_JD_harmonic_setup_sets_operators": False,
         "B3_JD_harmonic_setup_sets_problem_type_GNHEP": False,
@@ -7096,14 +7156,38 @@ def _run_b3_jd_structural_active_set_reduced_harmonic_dimension_setup_preflight_
             payload["B3_JD_harmonic_setup_failure_reason"] = "eps_setExtraction_harmonic_failed"
             return 2
 
+        after_set = _b3_jd_harmonic_eps_query_get_extraction(eps)
         eps.setUp()
         payload["B3_JD_harmonic_setup_calls_setup"] = True
-        post = _b3_jd_harmonic_introspect_eps_extraction_and_st(eps)
-        payload.update(post)
-        if not payload["B3_JD_harmonic_setup_harmonic_extraction_enabled"]:
-            payload["B3_JD_harmonic_setup_failure_stage"] = "harmonic_extraction_effective_after_setup"
+        after_setup = _b3_jd_harmonic_eps_query_get_extraction(eps)
+        _b3_jd_harmonic_record_get_extraction_verification(
+            payload, after_set=after_set, after_setup=after_setup
+        )
+        payload.update(_b3_jd_harmonic_introspect_st_after_setup(eps))
+
+        if not payload["B3_JD_harmonic_setup_getExtraction_available"]:
+            payload["B3_JD_harmonic_setup_failure_stage"] = "harmonic_extraction_getter"
+            payload["B3_JD_harmonic_setup_failure_reason"] = "eps_getExtraction_not_available_in_binding"
+            verdict = "B3_JD_HARMONIC_EFFECTIVE_EXTRACTION_VERIFICATION_BLOCKED_BY_BINDING_INTERFACE"
+            return 2
+        if after_set.get("getter_error") or after_setup.get("getter_error"):
+            payload["B3_JD_harmonic_setup_failure_stage"] = "harmonic_extraction_getter"
             payload["B3_JD_harmonic_setup_failure_reason"] = (
-                f"effective_extraction_not_harmonic:{payload.get('B3_JD_harmonic_setup_extraction_effective')}"
+                f"after_set={after_set.get('getter_error')};after_setup={after_setup.get('getter_error')}"
+            )
+            verdict = "B3_JD_HARMONIC_EFFECTIVE_EXTRACTION_VERIFICATION_BLOCKED_BY_BINDING_INTERFACE"
+            return 2
+
+        matches_after_set = bool(payload["B3_JD_harmonic_setup_getExtraction_matches_HARMONIC_after_set"])
+        matches_after_setup = bool(payload["B3_JD_harmonic_setup_getExtraction_matches_HARMONIC_after_setup"])
+        if not matches_after_set or not matches_after_setup:
+            payload["B3_JD_harmonic_setup_failure_stage"] = "harmonic_extraction_getExtraction_after_set_or_setup"
+            payload["B3_JD_harmonic_setup_failure_reason"] = (
+                f"after_set_normalized={payload.get('B3_JD_harmonic_setup_extraction_normalized_after_set')};"
+                f"after_setup_normalized={payload.get('B3_JD_harmonic_setup_extraction_normalized_after_setup')}"
+            )
+            verdict = (
+                "B3_JD_HARMONIC_EXTRACTION_REQUEST_ACCEPTED_BUT_NOT_EFFECTIVE_REQUIRES_SLEPC_CONFIGURATION_REVIEW"
             )
             return 2
         if payload["B3_JD_harmonic_setup_STSINVERT_used"] or payload["B3_JD_harmonic_setup_MUMPS_LU_used"]:
