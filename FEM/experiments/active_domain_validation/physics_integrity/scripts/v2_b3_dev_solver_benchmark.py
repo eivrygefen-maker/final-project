@@ -141,6 +141,7 @@ def _dev_extract_modes_ciss(
     eps: Any,
     A_active: Any,
     built: Dict[str, Any],
+    payload: Dict[str, Any],
     *,
     target_hz: float,
     freq_lo: float,
@@ -397,22 +398,23 @@ def _run_dev_coarse_ciss_benchmark(pre: Dict[str, Any], mesh_variant: str) -> in
         timer.mark("eps_solve_end")
         payload["new_eigensolve_executed"] = True
         payload["no_new_eigensolve_executed"] = False
+        payload["B3_DEV_solve_elapsed_seconds"] = _safe_float(
+            float(payload.get("B3_DEV_timing_eps_solve_end_elapsed_seconds", 0))
+            - float(payload.get("B3_DEV_timing_eps_solve_begin_elapsed_seconds", 0))
+        )
+        payload["B3_DEV_CISS_solve_elapsed_seconds"] = payload["B3_DEV_solve_elapsed_seconds"]
 
         nconv, accepted = _dev_extract_modes_ciss(
             eps,
             A_active,
             built,
+            payload,
             target_hz=target_hz,
             freq_lo=float(audit.B3_CISS_VALIDATION_FREQ_LO_HZ),
             freq_hi=float(audit.B3_CISS_VALIDATION_FREQ_HI_HZ),
         )
         payload["B3_DEV_CISS_converged_mode_count"] = int(nconv)
         payload["B3_DEV_setup_elapsed_seconds"] = payload.get("B3_DEV_CISS_setup_elapsed_seconds")
-        payload["B3_DEV_solve_elapsed_seconds"] = _safe_float(
-            float(payload.get("B3_DEV_timing_eps_solve_end_elapsed_seconds", 0))
-            - float(payload.get("B3_DEV_timing_eps_solve_begin_elapsed_seconds", 0))
-        )
-        payload["B3_DEV_CISS_solve_elapsed_seconds"] = payload["B3_DEV_solve_elapsed_seconds"]
         if accepted:
             verdict = "B3_DEV_COARSE_CISS_BENCHMARK_PASS"
             rc = 0
@@ -420,7 +422,7 @@ def _run_dev_coarse_ciss_benchmark(pre: Dict[str, Any], mesh_variant: str) -> in
             verdict = "B3_DEV_COARSE_CISS_BENCHMARK_COMPLETED_NO_ACCEPTABLE_MODE"
             rc = 2
         else:
-            verdict = "B3_DEV_COARSE_CISS_BENCHMARK_COMPLETED_ZERO_MODES"
+            verdict = "B3_DEV_COARSE_CISS_BENCHMARK_COMPLETED_NO_CONVERGED_MODE_IN_INTERVAL"
             rc = 2
     except Exception as exc:
         payload["B3_DEV_failure_reason"] = f"{type(exc).__name__}:{exc}"
@@ -535,6 +537,7 @@ def _run_dev_coarse_st_benchmark(pre: Dict[str, Any], mesh_variant: str) -> int:
             eps,
             A_active,
             built,
+            payload,
             target_hz=target_hz,
             freq_lo=float(audit.B3_CISS_VALIDATION_FREQ_LO_HZ),
             freq_hi=float(audit.B3_CISS_VALIDATION_FREQ_HI_HZ),
