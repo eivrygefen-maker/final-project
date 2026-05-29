@@ -20,6 +20,9 @@ B3_DEV_COARSE_CONTRACT_ARG = "--B3-dev-coarse-corrected-operator-contract-only"
 B3_DEV_COARSE_CISS_ARG = "--B3-dev-coarse-ciss-direct-stable-benchmark-only"
 B3_DEV_COARSE_ST_ARG = "--B3-dev-coarse-krylovschur-sinvert-benchmark-only"
 B3_DEV_COARSE_ST_TARGETING_PREFLIGHT_ARG = "--B3-dev-coarse-krylovschur-sinvert-targeting-preflight-only"
+B3_DEV_REFINED_ST_MULTI_TARGET_ARG = (
+    "--B3-dev-refined-krylovschur-sinvert-multi-target-coverage-benchmark-only"
+)
 B3_DEV_COMPARE_ARG = "--B3-dev-solver-benchmark-compare-only"
 
 B3_DEV_DEFAULT_MESH_VARIANT = "L_dev_coarse"
@@ -31,7 +34,15 @@ _DEV_JSON_STEM_CONTRACT = "v2_B3_DEV_coarse_corrected_operator_contract_only"
 _DEV_JSON_STEM_CISS = "v2_B3_DEV_coarse_ciss_direct_stable_benchmark_only"
 _DEV_JSON_STEM_ST = "v2_B3_DEV_coarse_krylovschur_sinvert_benchmark_only"
 _DEV_JSON_STEM_ST_TARGETING = "v2_B3_DEV_coarse_krylovschur_sinvert_targeting_preflight_only"
+_DEV_JSON_STEM_ST_MULTI_TARGET = (
+    "v2_B3_DEV_refined_krylovschur_sinvert_multi_target_coverage_benchmark_only"
+)
 _DEV_JSON_STEM_SUMMARY = "v2_B3_DEV_coarse_solver_benchmark_summary"
+
+B3_DEV_ST_MULTI_TARGET_MESH_VARIANT = "L_dev_refined"
+B3_DEV_ST_MULTI_TARGET_FREQS_HZ = [224.0, 244.39, 262.5]
+B3_DEV_ST_MULTI_DEDUP_TOL_HZ = 1.0e-3
+B3_DEV_ST_MULTI_CISS_MATCH_TOL_HZ = 0.05
 
 
 def _dev_out_json(stem: str, mesh_variant: str) -> Path:
@@ -291,6 +302,359 @@ def _dev_extract_modes_ciss(
         sum(1 for i in range(nconv) if payload.get(f"B3_DEV_mode_{i}_acceptance_pass"))
     )
     return nconv, accepted_any
+
+
+def _dev_collect_accepted_st_modes(
+    eps: Any,
+    A_active: Any,
+    built: Dict[str, Any],
+    *,
+    target_hz: float,
+    freq_lo: float,
+    freq_hi: float,
+) -> Tuple[int, List[Dict[str, Any]]]:
+    """Return converged count and accepted modes in [freq_lo, freq_hi] (no global payload keys)."""
+    from slepc4py import SLEPc
+
+    nconv = int(eps.getConverged())
+    accepted: List[Dict[str, Any]] = []
+    free_rows = np.asarray(built["free_rows"], dtype=np.int32).ravel()
+    bc_rows = np.unique(np.asarray(built["bc_rows"], dtype=np.int32).ravel())
+    active_local = np.asarray(built["active_local"], dtype=np.int32).ravel()
+    inactive_local = np.asarray(built["inactive_local"], dtype=np.int32).ravel()
+    u_idx = np.asarray(built["u_idx"], dtype=np.int32).ravel()
+    p_idx = np.asarray(built["p_idx"], dtype=np.int32).ravel()
+    n_w = int(built["n_w"])
+    n_free = int(free_rows.size)
+
+    for i in range(nconv):
+        vr = A_active.createVecRight()
+        vi = A_active.createVecRight()
+        try:
+            lam = eps.getEigenpair(i, vr, vi)
+            lam_re = float(np.real(complex(lam)))
+            lam_im = float(np.imag(complex(lam)))
+            finite = bool(math.isfinite(lam_re) and math.isfinite(lam_im))
+            f_hz = None
+            if finite and abs(lam_im) <= 1.0e-12 and lam_re > 0.0:
+                f_hz = math.sqrt(max(lam_re, 0.0)) / (2.0 * math.pi)
+            inside = bool(f_hz is not None and freq_lo <= float(f_hz) <= freq_hi)
+            eps_err = float("nan")
+            try:
+                eps_err = float(eps.computeError(i, SLEPc.EPS.ErrorType.RELATIVE))
+            except Exception:
+                pass
+            eps_ok = bool(math.isfinite(eps_err) and eps_err <= 1.0e-4)
+            x_active = np.asarray(vr.getArray(readonly=True), dtype=np.float64).ravel().copy()
+            x_free = np.zeros(n_free, dtype=np.float64)
+            x_free[active_local] = x_active
+            x_full = np.zeros(n_w, dtype=np.float64)
+            x_full[free_rows] = x_free
+            si_norm = float(np.linalg.norm(x_free[inactive_local])) if inactive_local.size else 0.0
+            d_norm = float(np.linalg.norm(x_full[bc_rows])) if bc_rows.size else 0.0
+            x_norm = float(np.linalg.norm(x_full))
+            si_pass = bool(si_norm <= 1.0e-8 * max(1.0, x_norm))
+            d_pass = bool(d_norm <= 1.0e-8 * max(1.0, x_norm))
+            u_norm = float(np.linalg.norm(np.abs(x_full[u_idx])))
+            p_norm = float(np.linalg.norm(np.abs(x_full[p_idx])))
+            p_support = p_norm / max(x_norm, 1.0e-30)
+            support_ok = bool(u_norm > 1.0e-8 and (p_support > 1.0e-6 or (u_norm > 1.0e-8 and p_norm <= 1.0e-8)))
+            lambda_one = bool(
+                audit._b3_lambda_near_unity_signature(f_hz)
+                or (abs(lam_re - 1.0) <= 1.0e-6 and abs(lam_im) <= 1.0e-9)
+            )
+            nonfinite = bool(not finite or math.isinf(lam_re) or math.isinf(lam_im))
+            mode_pass = bool(
+                finite
+                and f_hz is not None
+                and float(f_hz) > 0.0
+                and inside
+                and eps_ok
+                and si_pass
+                and d_pass
+                and not lambda_one
+                and not nonfinite
+                and support_ok
+            )
+            if mode_pass:
+                accepted.append(
+                    {
+                        "mode_index": i,
+                        "frequency_hz": float(f_hz),
+                        "lambda_real": lam_re,
+                        "lambda_imag": lam_im,
+                        "eps_compute_error_relative": eps_err,
+                        "st_shift_target_hz": float(target_hz),
+                    }
+                )
+        finally:
+            vr.destroy()
+            vi.destroy()
+    return nconv, accepted
+
+
+def _dev_deduplicate_frequencies_hz(freqs: List[float], *, tol_hz: float) -> List[float]:
+    if not freqs:
+        return []
+    sorted_f = sorted(float(f) for f in freqs)
+    out = [sorted_f[0]]
+    for f in sorted_f[1:]:
+        if abs(f - out[-1]) > tol_hz:
+            out.append(f)
+    return out
+
+
+def _dev_load_ciss_reference_accepted_frequencies(
+    mesh_variant: str,
+    *,
+    freq_lo: float,
+    freq_hi: float,
+) -> Tuple[bool, List[float], Optional[Dict[str, Any]]]:
+    path = _dev_out_json(_DEV_JSON_STEM_CISS, mesh_variant)
+    if not path.is_file():
+        return False, [], None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    freqs: List[float] = []
+    nconv = int(data.get("B3_DEV_converged_mode_count") or 0)
+    for i in range(nconv):
+        if not data.get(f"B3_DEV_mode_{i}_acceptance_pass"):
+            continue
+        f = data.get(f"B3_DEV_mode_{i}_frequency_hz_if_real_positive")
+        if f is None or not math.isfinite(float(f)):
+            continue
+        ff = float(f)
+        if freq_lo <= ff <= freq_hi:
+            freqs.append(ff)
+    return True, sorted(freqs), data
+
+
+def _dev_compare_frequency_sets(
+    st_freqs: List[float],
+    ciss_freqs: List[float],
+    *,
+    match_tol_hz: float,
+) -> Tuple[int, List[float], List[float]]:
+    """One-to-one greedy match: each CISS freq must have a distinct ST freq within tolerance."""
+    st_pool = list(st_freqs)
+    missing: List[float] = []
+    matches = 0
+    for f_ref in ciss_freqs:
+        best_j = None
+        best_d = None
+        for j, f_st in enumerate(st_pool):
+            d = abs(f_st - f_ref)
+            if d <= match_tol_hz and (best_d is None or d < best_d):
+                best_d = d
+                best_j = j
+        if best_j is None:
+            missing.append(float(f_ref))
+        else:
+            matches += 1
+            st_pool.pop(best_j)
+    extra = list(st_pool)
+    return matches, missing, extra
+
+
+def _run_dev_refined_st_multi_target_coverage_benchmark(pre: Dict[str, Any], mesh_variant: str) -> int:
+    from slepc4py import SLEPc
+
+    if mesh_variant != B3_DEV_ST_MULTI_TARGET_MESH_VARIANT:
+        print(
+            f"[B3_DEV] multi-target ST coverage requires mesh_variant={B3_DEV_ST_MULTI_TARGET_MESH_VARIANT}",
+            flush=True,
+        )
+        return 2
+
+    freq_lo = float(audit.B3_CISS_VALIDATION_FREQ_LO_HZ)
+    freq_hi = float(audit.B3_CISS_VALIDATION_FREQ_HI_HZ)
+    targets_hz = list(B3_DEV_ST_MULTI_TARGET_FREQS_HZ)
+    payload: Dict[str, Any] = {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "B3_dev_refined_krylovschur_sinvert_multi_target_coverage_benchmark_only",
+        "B3_DEV_solver_name": "KRYLOVSCHUR-ST-SINVERT-MUMPS-MULTI-TARGET",
+        **_dev_mesh_bootstrap_payload(mesh_variant),
+        "B3_DEV_validation_frequency_interval_hz": [freq_lo, freq_hi],
+        "B3_DEV_ST_multi_target_targets_hz": targets_hz,
+        "B3_DEV_ST_multi_target_operator_built_once_pass": False,
+        "B3_DEV_ST_multi_target_solve_count": len(targets_hz),
+        "B3_DEV_ST_multi_target_frequency_dedup_tol_hz": B3_DEV_ST_MULTI_DEDUP_TOL_HZ,
+        "B3_DEV_ST_multi_target_CISS_match_tol_hz": B3_DEV_ST_MULTI_CISS_MATCH_TOL_HZ,
+        "B3_DEV_execution_fallback_used": False,
+        "B3_DEV_execution_automatic_retry_used": False,
+        "no_new_eigensolve_executed": True,
+        "new_eigensolve_executed": False,
+        "production_promotion": "BLOCKED",
+    }
+    timer = _B3DevTiming(payload)
+    mats: List[Any] = []
+    seen: set[int] = set()
+    verdict = "B3_DEV_REFINED_ST_MULTI_TARGET_COVERAGE_BLOCKED"
+    rc = 2
+    try:
+        if not pre.get("preassembly_contract_pass") or MPI.COMM_WORLD.size != 1:
+            return 2
+
+        ciss_loaded, ciss_ref_freqs, ciss_data = _dev_load_ciss_reference_accepted_frequencies(
+            mesh_variant, freq_lo=freq_lo, freq_hi=freq_hi
+        )
+        payload["B3_DEV_ST_multi_target_CISS_reference_loaded"] = bool(ciss_loaded)
+        payload["B3_DEV_ST_multi_target_CISS_reference_json_path"] = str(
+            _dev_out_json(_DEV_JSON_STEM_CISS, mesh_variant)
+        )
+        if not ciss_loaded:
+            payload["B3_DEV_failure_reason"] = "CISS_reference_json_missing"
+            return 2
+        payload["B3_DEV_ST_multi_target_CISS_reference_frequency_count"] = int(len(ciss_ref_freqs))
+        payload["B3_DEV_ST_multi_target_CISS_reference_frequencies"] = ciss_ref_freqs
+        payload["B3_DEV_ST_multi_target_CISS_refined_total_elapsed_seconds"] = _safe_float(
+            (ciss_data or {}).get("B3_DEV_CISS_total_elapsed_seconds")
+            or (ciss_data or {}).get("B3_DEV_timing_total_wall_elapsed_seconds")
+        )
+
+        timer.mark("operator_build_begin")
+        built = audit._b3_build_corrected_structural_active_operators(
+            mats_to_destroy=mats,
+            mat_destroy_seen=seen,
+            mesh_level=mesh_variant,
+            struct_active_count_policy="mesh_independent",
+        )
+        timer.mark("A_active_M_active_ready")
+        _dev_record_operator_contract(payload, built=built)
+        if not payload["B3_DEV_zero_row_column_cleanup_contract_pass"]:
+            payload["B3_DEV_failure_reason"] = "operator_contract_failed"
+            return 2
+        payload["B3_DEV_ST_multi_target_operator_built_once_pass"] = True
+
+        A_active = built["A_active"]
+        M_active = built["M_active"]
+        all_accepted_modes: List[Dict[str, Any]] = []
+        total_setup_s = 0.0
+        total_solve_s = 0.0
+
+        for ti, target_hz in enumerate(targets_hz):
+            target_lambda = float(audit._b3_hz_to_lambda_sq(target_hz))
+            prefix = f"B3_DEV_ST_multi_target_target_{ti}_"
+            payload[f"{prefix}target_frequency_hz"] = float(target_hz)
+            payload[f"{prefix}target_lambda"] = _safe_float(target_lambda)
+
+            eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
+            try:
+                cfg_payload: Dict[str, Any] = {}
+                _dev_configure_coarse_krylovschur_sinvert_eps(
+                    eps,
+                    A_active,
+                    M_active,
+                    payload=cfg_payload,
+                    target_lambda=target_lambda,
+                    target_hz=float(target_hz),
+                )
+                t_setup0 = time.perf_counter()
+                eps.setUp()
+                setup_s = time.perf_counter() - t_setup0
+                intro = _dev_introspect_st_targeting_after_setup(eps)
+                payload[f"{prefix}effective_target"] = intro.get("B3_DEV_ST_target_effective")
+                payload[f"{prefix}effective_shift"] = intro.get("B3_DEV_ST_shift_effective")
+                payload[f"{prefix}effective_which"] = intro.get("B3_DEV_ST_which_effective_normalized")
+                payload[f"{prefix}ST_type_effective"] = intro.get("B3_DEV_ST_ST_type_effective")
+                payload[f"{prefix}setup_elapsed_seconds"] = _safe_float(setup_s)
+
+                t_solve0 = time.perf_counter()
+                eps.solve()
+                solve_s = time.perf_counter() - t_solve0
+                payload[f"{prefix}solve_elapsed_seconds"] = _safe_float(solve_s)
+                total_setup_s += setup_s
+                total_solve_s += solve_s
+
+                nconv, accepted = _dev_collect_accepted_st_modes(
+                    eps,
+                    A_active,
+                    built,
+                    target_hz=float(target_hz),
+                    freq_lo=freq_lo,
+                    freq_hi=freq_hi,
+                )
+                payload[f"{prefix}converged_mode_count"] = int(nconv)
+                payload[f"{prefix}accepted_mode_count_in_interval"] = int(len(accepted))
+                acc_freqs = [float(m["frequency_hz"]) for m in accepted]
+                payload[f"{prefix}accepted_frequencies"] = acc_freqs
+                payload[f"{prefix}accepted_eps_relative_errors"] = [
+                    _safe_float(m.get("eps_compute_error_relative")) for m in accepted
+                ]
+                all_accepted_modes.extend(accepted)
+            finally:
+                eps.destroy()
+
+        payload["new_eigensolve_executed"] = True
+        payload["no_new_eigensolve_executed"] = False
+        payload["B3_DEV_ST_multi_target_total_setup_elapsed_seconds"] = _safe_float(total_setup_s)
+        payload["B3_DEV_ST_multi_target_total_solve_elapsed_seconds"] = _safe_float(total_solve_s)
+
+        union_freqs_raw = [float(m["frequency_hz"]) for m in all_accepted_modes]
+        union_freqs = _dev_deduplicate_frequencies_hz(
+            union_freqs_raw, tol_hz=B3_DEV_ST_MULTI_DEDUP_TOL_HZ
+        )
+        payload["B3_DEV_ST_multi_target_unique_accepted_frequency_count"] = int(len(union_freqs))
+        payload["B3_DEV_ST_multi_target_unique_accepted_frequencies"] = union_freqs
+
+        matches, missing, extra = _dev_compare_frequency_sets(
+            union_freqs,
+            ciss_ref_freqs,
+            match_tol_hz=B3_DEV_ST_MULTI_CISS_MATCH_TOL_HZ,
+        )
+        payload["B3_DEV_ST_multi_target_matches_CISS_count"] = int(matches)
+        payload["B3_DEV_ST_multi_target_missing_CISS_frequencies"] = missing
+        payload["B3_DEV_ST_multi_target_extra_frequencies_in_interval"] = extra
+        payload["B3_DEV_ST_multi_target_full_interval_coverage_pass"] = bool(
+            len(missing) == 0 and matches == len(ciss_ref_freqs)
+        )
+
+        timer.finalize()
+        payload["B3_DEV_ST_multi_target_total_elapsed_seconds"] = _safe_float(
+            payload.get("B3_DEV_timing_total_wall_elapsed_seconds")
+        )
+        ciss_total = payload.get("B3_DEV_ST_multi_target_CISS_refined_total_elapsed_seconds")
+        st_total = payload.get("B3_DEV_ST_multi_target_total_elapsed_seconds")
+        if (
+            ciss_total is not None
+            and st_total is not None
+            and math.isfinite(float(ciss_total))
+            and math.isfinite(float(st_total))
+            and float(st_total) > 0.0
+        ):
+            payload["B3_DEV_ST_multi_target_speedup_vs_CISS"] = _safe_float(float(ciss_total) / float(st_total))
+
+        if payload["B3_DEV_ST_multi_target_full_interval_coverage_pass"]:
+            verdict = "B3_DEV_REFINED_ST_MULTI_TARGET_COVERAGE_PASS"
+            rc = 0
+        else:
+            verdict = "B3_DEV_REFINED_ST_MULTI_TARGET_COVERAGE_INCOMPLETE"
+            payload["B3_DEV_failure_reason"] = (
+                f"missing_CISS={len(missing)};extra={len(extra)};"
+                f"union={len(union_freqs)};ciss_ref={len(ciss_ref_freqs)}"
+            )
+            rc = 2
+    except Exception as exc:
+        payload["B3_DEV_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        rc = 2
+    finally:
+        if "B3_DEV_timing_total_wall_elapsed_seconds" not in payload:
+            timer.finalize()
+        payload["next_step_verdict"] = verdict
+        out_json = audit.CONV_DIAG / f"{_DEV_JSON_STEM_ST_MULTI_TARGET}.json"
+        audit._write_json_atomic(out_json, payload)
+        out_json.with_suffix(".md").write_text(
+            "# B3 dev refined ST multi-target coverage\n\n"
+            f"- verdict: `{verdict}`\n"
+            f"- targets_hz: {targets_hz}\n"
+            f"- union_accepted: {payload.get('B3_DEV_ST_multi_target_unique_accepted_frequency_count')}\n"
+            f"- CISS_ref: {payload.get('B3_DEV_ST_multi_target_CISS_reference_frequency_count')}\n"
+            f"- matches: {payload.get('B3_DEV_ST_multi_target_matches_CISS_count')}\n"
+            f"- missing: {payload.get('B3_DEV_ST_multi_target_missing_CISS_frequencies')}\n"
+            f"- coverage_pass: {payload.get('B3_DEV_ST_multi_target_full_interval_coverage_pass')}\n",
+            encoding="utf-8",
+        )
+        audit._destroy_mats_deduped(mats)
+    return rc
 
 
 def _run_dev_coarse_contract(pre: Dict[str, Any], mesh_variant: str) -> int:
@@ -937,6 +1301,7 @@ def is_b3_dev_mode(argv: List[str]) -> bool:
         B3_DEV_COARSE_CISS_ARG,
         B3_DEV_COARSE_ST_ARG,
         B3_DEV_COARSE_ST_TARGETING_PREFLIGHT_ARG,
+        B3_DEV_REFINED_ST_MULTI_TARGET_ARG,
         B3_DEV_COMPARE_ARG,
     )
     return any(f in argv for f in dev_flags)
@@ -959,6 +1324,8 @@ def run_b3_dev_mode(argv: List[str], pre: Dict[str, Any]) -> int:
         return _run_dev_coarse_st_targeting_preflight(pre, mesh_variant)
     if B3_DEV_COARSE_ST_ARG in argv:
         return _run_dev_coarse_st_benchmark(pre, mesh_variant)
+    if B3_DEV_REFINED_ST_MULTI_TARGET_ARG in argv:
+        return _run_dev_refined_st_multi_target_coverage_benchmark(pre, mesh_variant)
     if B3_DEV_COMPARE_ARG in argv:
         return _run_dev_compare_summary(mesh_variant)
     print("[B3_DEV] no dev mode flag recognized", flush=True)
