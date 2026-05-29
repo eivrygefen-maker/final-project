@@ -3773,6 +3773,31 @@ def _b3_ciss_configure_rg_interval(
     return str(region_type)
 
 
+def _b3_ciss_apply_optional_sizes(eps: Any, payload: Dict[str, Any], *, n_active: int) -> None:
+    """Optional slepc4py CISS size setter; preflight continues with SLEPc defaults when absent."""
+    payload["B3_CISS_default_sizes_accepted_for_setup_preflight_only"] = True
+    payload["B3_CISS_explicit_sizes_required_before_execution_review"] = True
+    payload["B3_CISS_setCISSSizes_available"] = bool(hasattr(eps, "setCISSSizes"))
+    payload["B3_CISS_setCISSSizes_called"] = False
+    payload["B3_CISS_setCISSSizes_failure_reason"] = None
+    if not payload["B3_CISS_setCISSSizes_available"]:
+        payload["B3_CISS_sizes_policy"] = "SLEPC_CISS_DEFAULT_SIZES_BINDING_SETTER_UNAVAILABLE"
+        return
+    ciss_ip = 16
+    ciss_bs = max(32, min(64, max(1, n_active) // 4000))
+    ciss_ms = 8
+    try:
+        try:
+            eps.setCISSSizes(ip=ciss_ip, bs=ciss_bs, ms=ciss_ms, realmats=True)
+        except TypeError:
+            eps.setCISSSizes(ciss_ip, ciss_bs, ciss_ms)
+        payload["B3_CISS_setCISSSizes_called"] = True
+        payload["B3_CISS_sizes_policy"] = "EXPLICIT_MINIMAL_CISS_SIZES_VIA_SLEPC4PY_API"
+    except Exception as exc:
+        payload["B3_CISS_setCISSSizes_failure_reason"] = f"{type(exc).__name__}:{exc}"
+        payload["B3_CISS_sizes_policy"] = "SLEPC_CISS_DEFAULT_SIZES_BINDING_SETTER_UNAVAILABLE"
+
+
 def _b3_ciss_introspect_st_ksp_pc_after_setup(eps: Any) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "B3_CISS_CISSUseST_effective": None,
@@ -3819,6 +3844,15 @@ def _b3_ciss_introspect_st_ksp_pc_after_setup(eps: Any) -> Dict[str, Any]:
             out["B3_CISS_MUMPS_LU_used"] = bool("mumps" in pc_type)
         except Exception:
             pass
+    except Exception:
+        pass
+    try:
+        if hasattr(eps, "getCISSSizes"):
+            sizes = eps.getCISSSizes()
+            if isinstance(sizes, (list, tuple)):
+                out["B3_CISS_getCISSSizes_effective"] = [_safe_float(float(v)) for v in sizes]
+            else:
+                out["B3_CISS_getCISSSizes_effective"] = sizes
     except Exception:
         pass
     return out
@@ -7977,6 +8011,13 @@ def _run_b3_ciss_structural_active_set_reduced_interval_setup_preflight_only(pre
         "B3_CISS_MUMPS_LU_used": False,
         "B3_CISS_explicit_linear_solver_policy_configured": False,
         "B3_CISS_future_execution_requires_linear_solver_policy_review": True,
+        "B3_CISS_setCISSSizes_available": False,
+        "B3_CISS_setCISSSizes_called": False,
+        "B3_CISS_setCISSSizes_failure_reason": None,
+        "B3_CISS_sizes_policy": None,
+        "B3_CISS_default_sizes_accepted_for_setup_preflight_only": True,
+        "B3_CISS_explicit_sizes_required_before_execution_review": True,
+        "B3_CISS_getCISSSizes_effective": None,
         "B3_JD_preconditioned_execution_authorized": False,
         "B3_JD_execution_authorized": False,
         "B3_CISS_interval_execution_authorized": False,
@@ -8043,18 +8084,7 @@ def _run_b3_ciss_structural_active_set_reduced_interval_setup_preflight_only(pre
         payload["B3_CISS_region_type_effective"] = region_type
 
         n_active = int(A_active.getSize()[0])
-        ciss_ip = 16
-        ciss_bs = max(32, min(64, n_active // 4000))
-        ciss_ms = 8
-        try:
-            eps.setCISSSizes(ip=ciss_ip, bs=ciss_bs, ms=ciss_ms, realmats=True)
-        except TypeError:
-            try:
-                eps.setCISSSizes(ciss_ip, ciss_bs, ciss_ms)
-            except Exception as exc:
-                payload["B3_CISS_setup_failure_stage"] = "ciss_sizes"
-                payload["B3_CISS_setup_failure_reason"] = f"{type(exc).__name__}:{exc}"
-                return 2
+        _b3_ciss_apply_optional_sizes(eps, payload, n_active=n_active)
 
         eps.setUp()
         payload["B3_CISS_setup_calls_setup"] = True
@@ -8122,6 +8152,11 @@ def _run_b3_ciss_structural_active_set_reduced_interval_setup_preflight_only(pre
         )
         print("[B3_CISS] mode=B3_CISS_structural_active_set_reduced_interval_setup_preflight_only", flush=True)
         print(f"[B3_CISS] B3_CISS_setup_preflight_pass={payload.get('B3_CISS_setup_preflight_pass')}", flush=True)
+        print(f"[B3_CISS] B3_CISS_sizes_policy={payload.get('B3_CISS_sizes_policy')}", flush=True)
+        print(
+            f"[B3_CISS] B3_CISS_setCISSSizes_available={payload.get('B3_CISS_setCISSSizes_available')}",
+            flush=True,
+        )
         print(
             f"[B3_CISS] B3_prior_harmonic_mode_0_reclassified_status="
             f"{payload.get('B3_prior_harmonic_mode_0_reclassified_status')}",
