@@ -3245,12 +3245,13 @@ def _b3_build_corrected_structural_active_operators(
     *,
     mats_to_destroy: List[Any],
     mat_destroy_seen: set[int],
+    mesh_level: str = "L_mid",
 ) -> Dict[str, Any]:
     """Build copy-fixed B3 free pencil and structural active-set reduced A_active/M_active."""
     manifest = load_manifest()
     case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
     sample = sample_spec_from_case(case)
-    mesh_file = mesh_path("L_mid", CASE_ID)
+    mesh_file = mesh_path(str(mesh_level), CASE_ID)
     msh, _cell_tags, facet_tags = fem3d._load_mesh_and_tags(mesh_file)
     f_top = np.asarray(facet_tags.find(TAG_TOP), dtype=np.int32)
     f_back = np.asarray(facet_tags.find(TAG_BACK), dtype=np.int32)
@@ -13021,6 +13022,12 @@ def _run_v2_vector_bc_contract_only(pre: Dict[str, Any]) -> int:
 
 def main() -> int:
     import sys
+
+    from v2_b3_dev_solver_benchmark import is_b3_dev_mode, run_b3_dev_mode
+
+    if is_b3_dev_mode(sys.argv):
+        pre = _precheck_allow_b3_jd_first_bounded_execution()
+        return run_b3_dev_mode(sys.argv, pre)
 
     if (
         _is_b3_jd_first_bounded_execution_only_mode(sys.argv)
