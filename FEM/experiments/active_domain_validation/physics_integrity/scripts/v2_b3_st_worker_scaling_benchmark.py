@@ -184,6 +184,28 @@ def _export_operators(checkpoint: Path, *, built: Dict[str, Any], mesh_level: st
     }
 
 
+def _verify_operator_export(checkpoint: Path) -> Tuple[bool, List[str], Dict[str, Any]]:
+    """True when PETSc binary operator export artifacts are present on disk."""
+    required = [
+        checkpoint / "A_active.petsc.bin",
+        checkpoint / "M_active.petsc.bin",
+        checkpoint / "built_metadata.json",
+    ]
+    missing = [p.name for p in required if not p.is_file()]
+    info_present = [
+        (checkpoint / "A_active.petsc.bin.info").is_file(),
+        (checkpoint / "M_active.petsc.bin.info").is_file(),
+    ]
+    export_pass = len(missing) == 0
+    detail = {
+        "checkpoint_dir": str(checkpoint.resolve()),
+        "required_files": [p.name for p in required],
+        "missing_files": missing,
+        "petsc_info_sidecars_present": all(info_present),
+    }
+    return export_pass, missing, detail
+
+
 def _load_operators(checkpoint: Path) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     meta_path = checkpoint / "built_metadata.json"
     if not meta_path.is_file():
@@ -370,25 +392,178 @@ def _compare_to_sequential_reference(
     return out
 
 
-def _spawn_worker_shard(job_path: Path) -> Tuple[int, str]:
+def _worker_artifact_paths(checkpoint: Path, worker_id: int) -> Dict[str, Path]:
+    return {
+        "job": checkpoint / f"worker_{worker_id}_job.json",
+        "shard": checkpoint / f"worker_{worker_id}_shard.json",
+        "failure": checkpoint / f"worker_{worker_id}_failure.json",
+        "log": checkpoint / f"worker_{worker_id}.log",
+    }
+
+
+def _write_worker_job_files(
+    checkpoint: Path,
+    *,
+    shards: List[List[Tuple[int, float]]],
+    worker_count: int,
+) -> List[Dict[str, Any]]:
+    """Write worker_{id}_job.json for every worker slot before any subprocess launch."""
+    specs: List[Dict[str, Any]] = []
+    for wi in range(worker_count):
+        entries = shards[wi] if wi < len(shards) else []
+        paths = _worker_artifact_paths(checkpoint, wi)
+        job = {
+            "worker_id": wi,
+            "worker_count": worker_count,
+            "checkpoint_dir": str(checkpoint.resolve()),
+            "target_entries": [[int(ti), float(hz)] for ti, hz in entries],
+            "target_indices": [int(ti) for ti, _ in entries],
+            "target_frequencies_hz": [float(hz) for _, hz in entries],
+            "shard_nonempty": bool(entries),
+            "output_shard_json": str(paths["shard"].resolve()),
+            "output_failure_json": str(paths["failure"].resolve()),
+            "log_path": str(paths["log"].resolve()),
+        }
+        paths["job"].write_text(json.dumps(job, indent=2), encoding="utf-8")
+        specs.append({"worker_id": wi, "entries": entries, "paths": paths, "job": job})
+    return specs
+
+
+def _spawn_worker_shard_plain_python(job_path: Path, log_path: Path) -> int:
+    """Launch worker without nested mpiexec (parent may already be under mpiexec -n 1)."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        "mpiexec",
-        "-n",
-        "1",
         sys.executable,
         str(_AUDIT_SCRIPT),
         B3_ST_WORKER_SHARD_EXECUTE_ARG,
         B3_ST_WORKER_SHARD_JOB_ARG,
         str(job_path.resolve()),
     ]
-    proc = subprocess.run(cmd, cwd=str(_AUDIT_SCRIPT.parent), capture_output=True, text=True)
-    log = (proc.stdout or "") + (proc.stderr or "")
-    return int(proc.returncode), log
+    with open(log_path, "w", encoding="utf-8") as logf:
+        logf.write(f"# command: {' '.join(cmd)}\n")
+        logf.flush()
+        proc = subprocess.run(
+            cmd,
+            cwd=str(_AUDIT_SCRIPT.parent),
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        logf.write(f"\n# exit_code: {proc.returncode}\n")
+    return int(proc.returncode)
+
+
+def _ensure_worker_failure_artifact(
+    paths: Dict[str, Path],
+    *,
+    worker_id: int,
+    worker_count: int,
+    return_code: int,
+    reason: str,
+) -> None:
+    if paths["shard"].is_file() or paths["failure"].is_file():
+        return
+    _write_worker_failure_json(
+        paths["failure"],
+        {
+            "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "mode": "B3_ST_worker_shard_parent_synthesized_failure",
+            "worker_id": worker_id,
+            "worker_count": worker_count,
+            "failure_reason": reason,
+            "worker_return_code": int(return_code),
+            "artifact": "worker_failure_json",
+            "next_step_verdict": "B3_ST_WORKER_SHARD_FAILED",
+        },
+    )
+
+
+def _collect_worker_process_status(
+    checkpoint: Path,
+    worker_specs: List[Dict[str, Any]],
+    *,
+    worker_return_codes: Optional[Dict[int, int]] = None,
+) -> Tuple[bool, Dict[str, Any]]:
+    """Validate logs and shard/failure JSON for each worker that had targets."""
+    missing_files: List[str] = []
+    worker_details: List[Dict[str, Any]] = []
+    all_pass = True
+    failure_reasons: List[str] = []
+
+    for spec in worker_specs:
+        wi = int(spec["worker_id"])
+        paths = spec["paths"]
+        entries = spec["entries"]
+        detail: Dict[str, Any] = {
+            "worker_id": wi,
+            "shard_nonempty": bool(entries),
+            "job_json": paths["job"].name,
+            "log_json": paths["log"].name,
+        }
+        if not paths["job"].is_file():
+            missing_files.append(paths["job"].name)
+            all_pass = False
+
+        if not entries:
+            detail["skipped"] = True
+            detail["skip_reason"] = "empty_target_shard"
+            worker_details.append(detail)
+            continue
+
+        if worker_return_codes is not None and wi in worker_return_codes:
+            detail["subprocess_return_code"] = int(worker_return_codes[wi])
+            if int(worker_return_codes[wi]) != 0:
+                all_pass = False
+                failure_reasons.append(f"worker_{wi}_subprocess_rc={worker_return_codes[wi]}")
+
+        if not paths["log"].is_file():
+            missing_files.append(paths["log"].name)
+            all_pass = False
+
+        has_shard = paths["shard"].is_file()
+        has_failure = paths["failure"].is_file()
+        detail["shard_json_present"] = has_shard
+        detail["failure_json_present"] = has_failure
+
+        if not has_shard and not has_failure:
+            missing_files.append(paths["shard"].name)
+            missing_files.append(paths["failure"].name)
+            all_pass = False
+            failure_reasons.append(f"worker_{wi}_missing_shard_and_failure_json")
+        elif has_failure and not has_shard:
+            try:
+                fail_body = json.loads(paths["failure"].read_text(encoding="utf-8"))
+                detail["failure_reason"] = fail_body.get("failure_reason")
+                detail["worker_return_code"] = fail_body.get("worker_return_code")
+            except Exception as exc:
+                detail["failure_reason"] = f"failure_json_unreadable:{exc}"
+            all_pass = False
+            failure_reasons.append(f"worker_{wi}_failed")
+        elif has_shard:
+            detail["worker_pass"] = True
+
+        worker_details.append(detail)
+
+    status = {
+        "worker_processes_pass": bool(all_pass),
+        "worker_processes_failure_reason": "; ".join(failure_reasons) if failure_reasons else None,
+        "worker_processes_missing_files": missing_files,
+        "worker_process_details": worker_details,
+    }
+    return all_pass, status
+
+
+def _write_worker_failure_json(path: Path, body: Dict[str, Any]) -> None:
+    audit._write_json_atomic(path, body)
 
 
 def run_st_worker_shard_execute(argv: Sequence[str]) -> int:
-    if MPI.COMM_WORLD.size != 1:
-        print("[B3_ST_scaling] worker shard requires mpiexec -n 1", flush=True)
+    if MPI.COMM_WORLD.size not in (1,):
+        print(
+            f"[B3_ST_scaling] worker shard requires single-rank MPI (size={MPI.COMM_WORLD.size}); "
+            "use plain python worker launch",
+            flush=True,
+        )
         return 2
     job_raw = _parse_arg_value(argv, B3_ST_WORKER_SHARD_JOB_ARG)
     if not job_raw:
@@ -401,10 +576,10 @@ def run_st_worker_shard_execute(argv: Sequence[str]) -> int:
     worker_count = int(job["worker_count"])
     target_entries = [(int(ti), float(hz)) for ti, hz in job["target_entries"]]
     out_shard = Path(str(job["output_shard_json"]))
+    out_failure = Path(str(job.get("output_failure_json") or checkpoint / f"worker_{worker_id}_failure.json"))
 
     mats: List[Any] = []
-    built: Optional[Dict[str, Any]] = None
-    payload: Dict[str, Any] = {
+    shard_payload: Dict[str, Any] = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "mode": "B3_ST_worker_shard_execute_only",
         "worker_id": worker_id,
@@ -412,32 +587,63 @@ def run_st_worker_shard_execute(argv: Sequence[str]) -> int:
         "checkpoint_dir": str(checkpoint.resolve()),
         "target_indices": [ti for ti, _ in target_entries],
         "target_frequencies_hz": [hz for _, hz in target_entries],
+        "worker_launch": "plain_python_subprocess",
         "production_promotion": "BLOCKED",
     }
     rc = 2
+    if not target_entries:
+        shard_payload["failure_reason"] = "empty_target_shard"
+        shard_payload["next_step_verdict"] = "B3_ST_WORKER_SHARD_SKIPPED_EMPTY"
+        _write_worker_failure_json(
+            out_failure,
+            {
+                **shard_payload,
+                "worker_return_code": 2,
+                "artifact": "worker_failure_json",
+            },
+        )
+        return 2
+
     try:
         built, meta = _load_operators(checkpoint)
         mats.extend([built["A_active"], built["M_active"]])
-        payload["loaded_active_dimension"] = int(meta.get("active_dimension", 0))
+        shard_payload["loaded_active_dimension"] = int(meta.get("active_dimension", 0))
         all_accepted, per_target, setup_s, solve_s = _run_st_targets_on_built(
             built,
             target_entries,
             payload_prefix="B3_ST_scaling",
         )
-        payload.update(per_target)
+        shard_payload.update(per_target)
         union_freqs, provenance = _aggregate_union_and_provenance(all_accepted)
-        payload["B3_ST_scaling_shard_accepted_mode_records"] = all_accepted
-        payload["B3_ST_scaling_shard_unique_accepted_frequencies"] = union_freqs
-        payload["B3_ST_scaling_shard_unique_accepted_frequency_count"] = len(union_freqs)
-        payload["B3_ST_scaling_shard_deduplicated_mode_provenance"] = provenance
-        payload["B3_ST_scaling_shard_total_setup_elapsed_seconds"] = dev_bench._safe_float(setup_s)
-        payload["B3_ST_scaling_shard_total_solve_elapsed_seconds"] = dev_bench._safe_float(solve_s)
-        payload["B3_ST_scaling_shard_peak_rss_mb"] = _peak_rss_mb()
-        payload["next_step_verdict"] = "B3_ST_WORKER_SHARD_PASS"
+        shard_payload["B3_ST_scaling_shard_accepted_mode_records"] = all_accepted
+        shard_payload["B3_ST_scaling_shard_unique_accepted_frequencies"] = union_freqs
+        shard_payload["B3_ST_scaling_shard_unique_accepted_frequency_count"] = len(union_freqs)
+        shard_payload["B3_ST_scaling_shard_deduplicated_mode_provenance"] = provenance
+        shard_payload["B3_ST_scaling_shard_total_setup_elapsed_seconds"] = dev_bench._safe_float(setup_s)
+        shard_payload["B3_ST_scaling_shard_total_solve_elapsed_seconds"] = dev_bench._safe_float(solve_s)
+        shard_payload["B3_ST_scaling_shard_peak_rss_mb"] = _peak_rss_mb()
+        shard_payload["next_step_verdict"] = "B3_ST_WORKER_SHARD_PASS"
+        audit._write_json_atomic(out_shard, shard_payload)
+        if out_failure.is_file():
+            try:
+                out_failure.unlink()
+            except OSError:
+                pass
         rc = 0
     except Exception as exc:
-        payload["failure_reason"] = f"{type(exc).__name__}:{exc}"
-        payload["next_step_verdict"] = "B3_ST_WORKER_SHARD_FAILED"
+        fail_body = {
+            **shard_payload,
+            "failure_reason": f"{type(exc).__name__}:{exc}",
+            "next_step_verdict": "B3_ST_WORKER_SHARD_FAILED",
+            "worker_return_code": 2,
+            "artifact": "worker_failure_json",
+        }
+        _write_worker_failure_json(out_failure, fail_body)
+        if out_shard.is_file():
+            try:
+                out_shard.unlink()
+            except OSError:
+                pass
         rc = 2
     finally:
         for m in mats:
@@ -445,7 +651,6 @@ def run_st_worker_shard_execute(argv: Sequence[str]) -> int:
                 m.destroy()
             except Exception:
                 pass
-        audit._write_json_atomic(out_shard, payload)
     return rc
 
 
@@ -526,6 +731,14 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
 
         export_meta = _export_operators(checkpoint, built=built, mesh_level=mesh_level)
         payload["B3_ST_scaling_operator_export"] = export_meta
+        export_pass, export_missing, export_detail = _verify_operator_export(checkpoint)
+        payload["export_matrices_pass"] = bool(export_pass)
+        payload["export_matrices_detail"] = export_detail
+        if not export_pass:
+            payload["failure_reason"] = f"operator_export_incomplete:{export_missing}"
+            verdict = "B3_ST_WORKER_SCALING_EXPORT_BLOCKED"
+            audit._write_json_atomic(out_json, payload)
+            return 2
 
         shards = _partition_target_shards(targets_hz, worker_count)
         payload["B3_ST_scaling_target_shards"] = [
@@ -539,11 +752,12 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
         total_setup_s = 0.0
         total_solve_s = 0.0
         worker_peak_rss: List[Optional[float]] = []
-        worker_rcs: List[int] = []
+        worker_rcs: List[Optional[int]] = []
 
         if worker_count == 1:
             entries = shards[0]
             payload["B3_ST_scaling_execution_path"] = "in_process_single_worker_parity"
+            payload["worker_processes_pass"] = True
             accepted, per_t, setup_s, solve_s = _run_st_targets_on_built(
                 built, entries, payload_prefix="B3_ST_scaling"
             )
@@ -554,40 +768,70 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
             worker_peak_rss.append(_peak_rss_mb())
             worker_rcs.append(0)
         else:
-            payload["B3_ST_scaling_execution_path"] = "subprocess_sharded_workers"
-            shard_paths: List[Path] = []
-            for wi, entries in enumerate(shards):
+            payload["B3_ST_scaling_execution_path"] = "plain_python_subprocess_sharded_workers"
+            payload["B3_ST_scaling_worker_launch"] = "plain_python_no_nested_mpiexec"
+            worker_specs = _write_worker_job_files(checkpoint, shards=shards, worker_count=worker_count)
+            payload["B3_ST_scaling_worker_job_files_written"] = [
+                spec["paths"]["job"].name for spec in worker_specs
+            ]
+
+            worker_return_code_map: Dict[int, int] = {}
+            for spec in worker_specs:
+                wi = int(spec["worker_id"])
+                entries = spec["entries"]
+                paths = spec["paths"]
                 if not entries:
-                    worker_rcs.append(0)
+                    worker_rcs.append(None)
                     worker_peak_rss.append(None)
+                    payload[f"B3_ST_scaling_worker_{wi}_skipped"] = True
                     continue
-                shard_json = checkpoint / f"worker_{wi}_shard.json"
-                job_json = checkpoint / f"worker_{wi}_job.json"
-                job = {
-                    "worker_id": wi,
-                    "worker_count": worker_count,
-                    "checkpoint_dir": str(checkpoint.resolve()),
-                    "target_entries": [[ti, hz] for ti, hz in entries],
-                    "output_shard_json": str(shard_json.resolve()),
-                }
-                job_json.write_text(json.dumps(job, indent=2), encoding="utf-8")
-                shard_paths.append(shard_json)
-                w_rc, w_log = _spawn_worker_shard(job_json)
-                worker_rcs.append(w_rc)
+                w_rc = _spawn_worker_shard_plain_python(paths["job"], paths["log"])
+                worker_return_code_map[wi] = int(w_rc)
+                worker_rcs.append(int(w_rc))
                 payload[f"B3_ST_scaling_worker_{wi}_return_code"] = int(w_rc)
-                if w_log.strip():
-                    payload[f"B3_ST_scaling_worker_{wi}_subprocess_log_tail"] = w_log.strip()[-4096:]
-                if w_rc != 0:
-                    payload["failure_reason"] = f"worker_{wi}_failed_rc={w_rc}"
-                    verdict = "B3_ST_WORKER_SCALING_WORKER_FAILED"
-                    audit._write_json_atomic(out_json, payload)
-                    return 2
-                if not shard_json.is_file():
-                    payload["failure_reason"] = f"worker_{wi}_missing_shard_json"
-                    verdict = "B3_ST_WORKER_SCALING_WORKER_FAILED"
-                    audit._write_json_atomic(out_json, payload)
-                    return 2
-                shard_data = json.loads(shard_json.read_text(encoding="utf-8"))
+                if int(w_rc) != 0:
+                    _ensure_worker_failure_artifact(
+                        paths,
+                        worker_id=wi,
+                        worker_count=worker_count,
+                        return_code=int(w_rc),
+                        reason=f"subprocess_exit_code_{w_rc}",
+                    )
+                if paths["log"].is_file():
+                    try:
+                        log_tail = paths["log"].read_text(encoding="utf-8", errors="replace").strip()[-4096:]
+                        if log_tail:
+                            payload[f"B3_ST_scaling_worker_{wi}_log_tail"] = log_tail
+                    except OSError:
+                        pass
+
+            processes_pass, process_status = _collect_worker_process_status(
+                checkpoint,
+                worker_specs,
+                worker_return_codes=worker_return_code_map,
+            )
+            payload.update(process_status)
+            if not processes_pass:
+                payload["failure_reason"] = (
+                    process_status.get("worker_processes_failure_reason")
+                    or f"worker_processes_missing:{process_status.get('worker_processes_missing_files')}"
+                )
+                verdict = "B3_ST_WORKER_SCALING_WORKER_FAILED"
+                timer.finalize()
+                payload["next_step_verdict"] = verdict
+                audit._write_json_atomic(out_json, payload)
+                return 2
+
+            for spec in worker_specs:
+                entries = spec["entries"]
+                if not entries:
+                    continue
+                wi = int(spec["worker_id"])
+                paths = spec["paths"]
+                shard_path = paths["shard"]
+                if not shard_path.is_file():
+                    continue
+                shard_data = json.loads(shard_path.read_text(encoding="utf-8"))
                 worker_peak_rss.append(shard_data.get("B3_ST_scaling_shard_peak_rss_mb"))
                 all_accepted.extend(shard_data.get("B3_ST_scaling_shard_accepted_mode_records") or [])
                 for k, v in shard_data.items():
