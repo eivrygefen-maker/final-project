@@ -111,19 +111,18 @@ def _audit_helpers() -> Any:
 def _create_nest_2x2(
     blocks: List[List[Any]],
     *,
-    n_u: int,
-    n_p: int,
     comm: Any,
 ) -> Any:
-    is_u = PETSc.IS().createStride(int(n_u), 0, 1, comm=comm)
-    is_p = PETSc.IS().createStride(int(n_p), 0, 1, comm=comm)
-    try:
-        nest = PETSc.Mat.createNest([is_u, is_p], [is_u, is_p], blocks, comm=comm)
-        nest.assemble()
-        return nest
-    finally:
-        is_u.destroy()
-        is_p.destroy()
+    """Build 2x2 PETSc MatNest; petsc4py API is createNest(mats, isrows=..., iscols=..., comm=...)."""
+    nest = PETSc.Mat.createNest(blocks, comm=comm)
+    nest.assemble()
+    return nest
+
+
+def _create_zero_aij_block(n_u: int, n_p: int, *, comm: Any) -> Any:
+    """Explicit zero AIJ block [n_u x n_p] for missing Mup in mass MatNest."""
+    audit = _audit_helpers()
+    return audit._petsc_zero_mat(int(n_u), int(n_p), comm)
 
 
 def _matnest_to_aij(nest: Any, *, stage: str) -> Any:
@@ -172,31 +171,52 @@ def _matnest_convert_aij_from_restricted_blocks(
     comm: Any,
     compose_meta: Dict[str, Any],
 ) -> Tuple[Any, Any]:
-    audit = _audit_helpers()
-    m_up_zero = audit._petsc_zero_mat(int(n_u), int(n_p), comm)
+    m_up_zero = _create_zero_aij_block(int(n_u), int(n_p), comm=comm)
     nest_a = None
     nest_m = None
+    compose_meta["B3_BLOCK_COMPOSE_matnest_create_A_pass"] = False
+    compose_meta["B3_BLOCK_COMPOSE_matnest_create_M_pass"] = False
+    compose_meta["B3_BLOCK_COMPOSE_matnest_A_type"] = None
+    compose_meta["B3_BLOCK_COMPOSE_matnest_M_type"] = None
     t_create0 = time.perf_counter()
     try:
-        nest_a = _create_nest_2x2(
-            [[a_uu, a_up], [a_pu, a_pp]],
-            n_u=int(n_u),
-            n_p=int(n_p),
-            comm=comm,
-        )
-        nest_m = _create_nest_2x2(
-            [[m_uu, m_up_zero], [m_pu, m_pp]],
-            n_u=int(n_u),
-            n_p=int(n_p),
-            comm=comm,
-        )
-    except Exception as exc:
-        raise B3BlockComposeBackendError(
-            "matnest_create",
-            f"{type(exc).__name__}:{exc}",
-            petsc_error=f"{type(exc).__name__}:{exc}",
-            recommendation=CSR_BULK_RECOMMENDATION,
-        ) from exc
+        try:
+            nest_a = _create_nest_2x2(
+                [[a_uu, a_up], [a_pu, a_pp]],
+                comm=comm,
+            )
+            compose_meta["B3_BLOCK_COMPOSE_matnest_create_A_pass"] = True
+            compose_meta["B3_BLOCK_COMPOSE_matnest_A_type"] = str(nest_a.getType())
+        except Exception as exc:
+            compose_meta["B3_BLOCK_COMPOSE_failure_stage"] = "matnest_create_A"
+            compose_meta["B3_BLOCK_COMPOSE_failure_reason"] = f"{type(exc).__name__}:{exc}"
+            raise B3BlockComposeBackendError(
+                "matnest_create_A",
+                f"{type(exc).__name__}:{exc}",
+                petsc_error=f"{type(exc).__name__}:{exc}",
+                recommendation=CSR_BULK_RECOMMENDATION,
+            ) from exc
+        try:
+            nest_m = _create_nest_2x2(
+                [[m_uu, m_up_zero], [m_pu, m_pp]],
+                comm=comm,
+            )
+            compose_meta["B3_BLOCK_COMPOSE_matnest_create_M_pass"] = True
+            compose_meta["B3_BLOCK_COMPOSE_matnest_M_type"] = str(nest_m.getType())
+        except Exception as exc:
+            compose_meta["B3_BLOCK_COMPOSE_failure_stage"] = "matnest_create_M"
+            compose_meta["B3_BLOCK_COMPOSE_failure_reason"] = f"{type(exc).__name__}:{exc}"
+            if nest_a is not None:
+                try:
+                    nest_a.destroy()
+                except Exception:
+                    pass
+            raise B3BlockComposeBackendError(
+                "matnest_create_M",
+                f"{type(exc).__name__}:{exc}",
+                petsc_error=f"{type(exc).__name__}:{exc}",
+                recommendation=CSR_BULK_RECOMMENDATION,
+            ) from exc
     finally:
         compose_meta["B3_BLOCK_COMPOSE_matnest_create_seconds"] = _safe_float(
             time.perf_counter() - t_create0
