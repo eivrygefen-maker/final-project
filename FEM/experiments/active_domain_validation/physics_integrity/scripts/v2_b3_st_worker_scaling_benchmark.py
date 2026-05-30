@@ -26,6 +26,7 @@ B3_ST_TARGETS_HZ_ARG = "--B3-ST-targets-hz"
 B3_ST_SCALING_MESH_ARG = "--B3-ST-scaling-mesh-level"
 B3_ST_WORKER_SHARD_EXECUTE_ARG = "--B3-ST-worker-shard-execute-only"
 B3_ST_WORKER_SHARD_JOB_ARG = "--B3-ST-worker-shard-job-json"
+B3_ST_REUSE_CHECKPOINT_ARG = "--B3-ST-reuse-checkpoint-dir"
 
 ALLOWED_MESH_LEVELS = frozenset({"L_mid", "L_dev_dense", "L_prod"})
 DEFAULT_MESH_LEVEL = "L_mid"
@@ -141,6 +142,13 @@ def _parse_mesh_level(argv: Sequence[str]) -> str:
     if level not in ALLOWED_MESH_LEVELS:
         raise ValueError(f"{B3_ST_SCALING_MESH_ARG} must be one of {sorted(ALLOWED_MESH_LEVELS)}")
     return level
+
+
+def _parse_reuse_checkpoint_dir(argv: Sequence[str]) -> Optional[Path]:
+    raw = _parse_arg_value(argv, B3_ST_REUSE_CHECKPOINT_ARG)
+    if not raw:
+        return None
+    return Path(raw).resolve()
 
 
 def _struct_active_count_policy(mesh_level: str) -> str:
@@ -333,13 +341,123 @@ def _partition_target_shards(
     return shards
 
 
+def _st_mumps_policy_spec(policy: str) -> Dict[str, Any]:
+    """Solver-only MUMPS/PETSc option sets (ST prefix); does not alter FEM operators."""
+    base = {
+        "st_mat_mumps_icntl_6": 7,
+        "st_mat_mumps_icntl_12": 1,
+        "st_mat_mumps_icntl_7": 0,
+        "st_mat_mumps_icntl_4": 0,
+    }
+    if policy == "default":
+        return {
+            **base,
+            "st_mat_mumps_icntl_14": 500,
+            "st_mat_mumps_icntl_24": 0,
+        }
+    if policy == "L_prod_relaxed":
+        return {
+            **base,
+            "st_mat_mumps_icntl_14": 800,
+            "st_mat_mumps_icntl_22": 1,
+            "st_mat_mumps_icntl_23": 8192,
+            "st_mat_mumps_icntl_24": 1,
+            "st_mat_mumps_icntl_7": 7,
+        }
+    if policy == "L_prod_maximum":
+        return {
+            **base,
+            "st_mat_mumps_icntl_14": 1200,
+            "st_mat_mumps_icntl_22": 1,
+            "st_mat_mumps_icntl_23": 16384,
+            "st_mat_mumps_icntl_24": 1,
+            "st_mat_mumps_icntl_7": 7,
+            "st_mat_mumps_icntl_3": 0,
+        }
+    raise ValueError(f"unknown_mumps_policy={policy}")
+
+
+def _apply_st_mumps_petsc_policy(policy: str) -> Dict[str, Any]:
+    spec = _st_mumps_policy_spec(policy)
+    petsc_opts = PETSc.Options()
+    for key, val in spec.items():
+        petsc_opts[key] = val
+    return {"mumps_policy_applied": policy, "petsc_options_written": dict(spec)}
+
+
+def _mumps_policy_chain(mesh_level: str) -> List[str]:
+    if mesh_level == "L_prod":
+        return ["default", "L_prod_relaxed", "L_prod_maximum"]
+    return ["default"]
+
+
+def _extract_st_failure_diagnostics(exc: BaseException) -> Dict[str, Any]:
+    """Classify PETSc/SLEPc/MUMPS setup failures for per-target reporting."""
+    msg = str(exc)
+    lower = msg.lower()
+    ierr = getattr(exc, "ierr", None)
+    out: Dict[str, Any] = {
+        "exception_type": type(exc).__name__,
+        "exception_message": msg[:4096],
+        "petsc_error_code": int(ierr) if ierr is not None else None,
+        "mumps_infog1": None,
+        "mumps_info2": None,
+        "failure_class": "ST_SETUP_OR_SOLVE_UNKNOWN",
+        "recommended_next_action": "inspect_worker_log_and_per_target_diagnostics",
+    }
+    if "infog(1)=-13" in lower or "infog[1]=-13" in lower:
+        out["mumps_infog1"] = -13
+        out["failure_class"] = "MUMPS_NUMERICAL_FACTORIZATION_OR_MEMORY"
+        out["recommended_next_action"] = (
+            "retry_with_L_prod_relaxed_or_maximum_mumps_policy;"
+            "ensure_sufficient_RAM_or_out_of_core;"
+            "consider_single_target_diagnostic_first"
+        )
+    if "error code 76" in lower or (ierr is not None and int(ierr) == 76):
+        out["failure_class"] = "PETSC_PC_FACTOR_SETUp_FAILED"
+        out["recommended_next_action"] = (
+            "MUMPS_LU_factorization_failed_at_eps_setUp;"
+            "try_relaxed_mumps_icntl_14_22_23"
+        )
+    if "sinvert" in lower and "setUp" in msg:
+        out.setdefault("failure_class", "ST_SINVERT_SETUP_FAILED")
+    if "memory" in lower or "alloc" in lower:
+        out["failure_class"] = "MEMORY_ALLOCATION_OR_MUMPS_WORKSPACE"
+        out["recommended_next_action"] = "reduce_concurrent_workers;use_mumps_out_of_core;increase_node_RAM"
+    return out
+
+
+def _configure_eps_st_sinvert(
+    eps: Any,
+    A_active: Any,
+    M_active: Any,
+    *,
+    target_hz: float,
+    target_lambda: float,
+    mumps_policy: str,
+) -> Dict[str, Any]:
+    cfg: Dict[str, Any] = {}
+    dev_bench._dev_configure_coarse_krylovschur_sinvert_eps(
+        eps,
+        A_active,
+        M_active,
+        payload=cfg,
+        target_lambda=float(target_lambda),
+        target_hz=float(target_hz),
+    )
+    mumps_written = _apply_st_mumps_petsc_policy(mumps_policy)
+    cfg.update(mumps_written)
+    return cfg
+
+
 def _run_st_targets_on_built(
     built: Dict[str, Any],
     target_entries: List[Tuple[int, float]],
     *,
+    mesh_level: str = "L_mid",
     payload_prefix: str = "B3_ST_scaling",
-) -> Tuple[List[Dict[str, Any]], Dict[str, Any], float, float]:
-    """Run ST multi-target slice; return accepted modes, per-target fields, setup/solve totals."""
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any], float, float, Dict[str, Any]]:
+    """Run ST multi-target slice; continue on per-target failure; optional L_prod MUMPS fallback."""
     from slepc4py import SLEPc
 
     freq_lo = float(audit.B3_CISS_VALIDATION_FREQ_LO_HZ)
@@ -350,37 +468,101 @@ def _run_st_targets_on_built(
     all_accepted: List[Dict[str, Any]] = []
     total_setup_s = 0.0
     total_solve_s = 0.0
+    policy_chain = _mumps_policy_chain(mesh_level)
+    summary: Dict[str, Any] = {
+        "B3_ST_scaling_solve_loop_entered_pass": True,
+        "B3_ST_scaling_targets_attempted_count": 0,
+        "B3_ST_scaling_targets_setup_succeeded_count": 0,
+        "B3_ST_scaling_targets_solve_attempted_count": 0,
+        "B3_ST_scaling_targets_solved_count": 0,
+        "B3_ST_scaling_mumps_policy_chain": policy_chain,
+        "B3_ST_scaling_skip_reason": None,
+    }
 
     for ti, target_hz in target_entries:
         key = f"{payload_prefix}_target_{ti}_"
+        target_lambda = float(audit._b3_hz_to_lambda_sq(float(target_hz)))
         per_target[f"{key}target_frequency_hz"] = float(target_hz)
-        per_target[f"{key}target_lambda"] = dev_bench._safe_float(audit._b3_hz_to_lambda_sq(float(target_hz)))
+        per_target[f"{key}target_lambda"] = dev_bench._safe_float(target_lambda)
+        per_target[f"{key}setup_attempted"] = True
+        per_target[f"{key}setup_succeeded"] = False
+        per_target[f"{key}solve_attempted"] = False
+        per_target[f"{key}solve_succeeded"] = False
+        summary["B3_ST_scaling_targets_attempted_count"] = int(summary["B3_ST_scaling_targets_attempted_count"]) + 1
+
         eps = None
+        setup_succeeded = False
+        last_setup_exc: Optional[BaseException] = None
+        policies_tried: List[str] = []
+        setup_meta: Dict[str, Any] = {}
+
+        for policy in policy_chain:
+            policies_tried.append(policy)
+            if eps is not None:
+                try:
+                    eps.destroy()
+                except Exception:
+                    pass
+                eps = None
+            try:
+                eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
+                setup_meta = _configure_eps_st_sinvert(
+                    eps,
+                    A_active,
+                    M_active,
+                    target_hz=float(target_hz),
+                    target_lambda=target_lambda,
+                    mumps_policy=policy,
+                )
+                t0 = time.perf_counter()
+                eps.setUp()
+                setup_s = time.perf_counter() - t0
+                setup_succeeded = True
+                per_target[f"{key}setup_succeeded"] = True
+                per_target[f"{key}setup_elapsed_seconds"] = dev_bench._safe_float(setup_s)
+                per_target[f"{key}mumps_policy_effective"] = policy
+                per_target[f"{key}mumps_petsc_options_effective"] = setup_meta.get("petsc_options_written")
+                per_target[f"{key}mumps_policies_tried"] = list(policies_tried)
+                intro = dev_bench._dev_introspect_st_targeting_after_setup(eps)
+                per_target[f"{key}effective_target"] = intro.get("B3_DEV_ST_target_effective")
+                per_target[f"{key}effective_shift"] = intro.get("B3_DEV_ST_shift_effective")
+                per_target[f"{key}effective_which"] = intro.get("B3_DEV_ST_which_effective_normalized")
+                total_setup_s += setup_s
+                summary["B3_ST_scaling_targets_setup_succeeded_count"] = int(
+                    summary["B3_ST_scaling_targets_setup_succeeded_count"]
+                ) + 1
+                break
+            except Exception as exc:
+                last_setup_exc = exc
+                diag = _extract_st_failure_diagnostics(exc)
+                per_target[f"{key}mumps_policies_tried"] = list(policies_tried)
+                per_target[f"{key}last_failed_mumps_policy"] = policy
+                per_target.update({f"{key}{k}": v for k, v in diag.items() if not k.startswith("exception_")})
+                per_target[f"{key}failure_reason"] = f"{type(exc).__name__}:{exc}"
+
+        if not setup_succeeded:
+            if last_setup_exc is not None:
+                diag = _extract_st_failure_diagnostics(last_setup_exc)
+                per_target.update({f"{key}{k}": v for k, v in diag.items() if not k.startswith("exception_")})
+            per_target[f"{key}solve_pass"] = False
+            if eps is not None:
+                try:
+                    eps.destroy()
+                except Exception:
+                    pass
+            continue
+
+        per_target[f"{key}solve_attempted"] = True
+        summary["B3_ST_scaling_targets_solve_attempted_count"] = int(
+            summary["B3_ST_scaling_targets_solve_attempted_count"]
+        ) + 1
         try:
-            eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
-            cfg: Dict[str, Any] = {}
-            dev_bench._dev_configure_coarse_krylovschur_sinvert_eps(
-                eps,
-                A_active,
-                M_active,
-                payload=cfg,
-                target_lambda=float(audit._b3_hz_to_lambda_sq(float(target_hz))),
-                target_hz=float(target_hz),
-            )
-            t0 = time.perf_counter()
-            eps.setUp()
-            setup_s = time.perf_counter() - t0
-            intro = dev_bench._dev_introspect_st_targeting_after_setup(eps)
-            per_target[f"{key}effective_target"] = intro.get("B3_DEV_ST_target_effective")
-            per_target[f"{key}effective_shift"] = intro.get("B3_DEV_ST_shift_effective")
-            per_target[f"{key}effective_which"] = intro.get("B3_DEV_ST_which_effective_normalized")
-            per_target[f"{key}setup_elapsed_seconds"] = dev_bench._safe_float(setup_s)
             t1 = time.perf_counter()
             eps.solve()
             solve_s = time.perf_counter() - t1
             per_target[f"{key}solve_elapsed_seconds"] = dev_bench._safe_float(solve_s)
+            per_target[f"{key}solve_succeeded"] = True
             per_target[f"{key}solve_pass"] = True
-            total_setup_s += setup_s
             total_solve_s += solve_s
             nconv, accepted = dev_bench._dev_collect_accepted_st_modes(
                 eps,
@@ -394,9 +576,14 @@ def _run_st_targets_on_built(
             per_target[f"{key}accepted_mode_count_in_interval"] = int(len(accepted))
             per_target[f"{key}accepted_frequencies"] = [float(m["frequency_hz"]) for m in accepted]
             all_accepted.extend(accepted)
+            summary["B3_ST_scaling_targets_solved_count"] = int(summary["B3_ST_scaling_targets_solved_count"]) + 1
         except Exception as exc:
+            diag = _extract_st_failure_diagnostics(exc)
             per_target[f"{key}solve_pass"] = False
+            per_target[f"{key}solve_succeeded"] = False
             per_target[f"{key}failure_reason"] = f"{type(exc).__name__}:{exc}"
+            per_target.update({f"{key}{k}": v for k, v in diag.items() if not k.startswith("exception_")})
+            per_target[f"{key}failure_class"] = diag.get("failure_class", "ST_SOLVE_FAILED")
         finally:
             if eps is not None:
                 try:
@@ -404,7 +591,94 @@ def _run_st_targets_on_built(
                 except Exception:
                     pass
 
-    return all_accepted, per_target, total_setup_s, total_solve_s
+    if int(summary["B3_ST_scaling_targets_attempted_count"]) == 0:
+        summary["B3_ST_scaling_skip_reason"] = "empty_target_list"
+    return all_accepted, per_target, total_setup_s, total_solve_s, summary
+
+
+def _derive_loop_summary_from_per_target(
+    per_target: Dict[str, Any],
+    targets_hz: List[float],
+    *,
+    payload_prefix: str = "B3_ST_scaling",
+) -> Dict[str, Any]:
+    attempted = setup_ok = solve_attempted = solved = 0
+    for ti in range(len(targets_hz)):
+        key = f"{payload_prefix}_target_{ti}_"
+        if per_target.get(f"{key}setup_attempted"):
+            attempted += 1
+        if per_target.get(f"{key}setup_succeeded"):
+            setup_ok += 1
+        if per_target.get(f"{key}solve_attempted"):
+            solve_attempted += 1
+        if per_target.get(f"{key}solve_succeeded"):
+            solved += 1
+    return {
+        "B3_ST_scaling_solve_loop_entered_pass": attempted > 0 or len(targets_hz) > 0,
+        "B3_ST_scaling_targets_attempted_count": attempted,
+        "B3_ST_scaling_targets_setup_succeeded_count": setup_ok,
+        "B3_ST_scaling_targets_solve_attempted_count": solve_attempted,
+        "B3_ST_scaling_targets_solved_count": solved,
+        "B3_ST_scaling_skip_reason": None if attempted > 0 else "no_per_target_setup_attempted",
+    }
+
+
+def _record_solve_loop_status(
+    payload: Dict[str, Any],
+    *,
+    loop_summary: Dict[str, Any],
+    targets_hz: List[float],
+) -> None:
+    payload.update(loop_summary)
+    attempted = int(payload.get("B3_ST_scaling_targets_attempted_count") or 0)
+    if attempted == 0:
+        payload["B3_ST_scaling_solve_loop_entered_pass"] = bool(
+            payload.get("B3_ST_scaling_solve_loop_entered_pass")
+        )
+        if not payload.get("B3_ST_scaling_skip_reason"):
+            payload["B3_ST_scaling_skip_reason"] = "no_targets_in_run_plan"
+
+
+def _finalize_scaling_verdict(
+    payload: Dict[str, Any],
+    *,
+    targets_hz: List[float],
+) -> Tuple[str, int]:
+    """Verdict from solve outcomes; reference JSON only affects parity fields."""
+    if not payload.get("B3_ST_scaling_solve_loop_entered_pass"):
+        payload["B3_ST_scaling_skip_reason"] = payload.get("B3_ST_scaling_skip_reason") or "solve_loop_never_entered"
+        return "B3_ST_WORKER_SCALING_SOLVE_LOOP_NEVER_ENTERED", 2
+
+    attempted = int(payload.get("B3_ST_scaling_targets_attempted_count") or 0)
+    if attempted == 0:
+        payload["B3_ST_scaling_skip_reason"] = payload.get("B3_ST_scaling_skip_reason") or "no_targets_attempted"
+        return "B3_ST_WORKER_SCALING_NO_TARGETS_ATTEMPTED", 2
+
+    setup_ok = int(payload.get("B3_ST_scaling_targets_setup_succeeded_count") or 0)
+    solved = int(payload.get("B3_ST_scaling_targets_solved_count") or 0)
+    n_unique = int(payload.get("B3_ST_scaling_unique_accepted_frequency_count") or 0)
+    mesh_level = str(payload.get("B3_ST_scaling_mesh_level") or "")
+
+    if setup_ok == 0 and attempted > 0:
+        if mesh_level == "L_prod":
+            return "B3_ST_WORKER_SCALING_L_PROD_ALL_TARGETS_SETUP_FACTORIZATION_FAILED", 2
+        return "B3_ST_WORKER_SCALING_ALL_TARGETS_SETUP_FACTORIZATION_FAILED", 2
+
+    if solved == 0 and attempted > 0:
+        return "B3_ST_WORKER_SCALING_ALL_TARGETS_SOLVE_FAILED", 2
+
+    parity = payload.get("frequency_parity_pass")
+    if parity is True:
+        return "B3_ST_WORKER_SCALING_PASS", 0
+    if parity is False:
+        return "B3_ST_WORKER_SCALING_FREQUENCY_MISMATCH", 2
+    if n_unique > 0:
+        if payload.get("sequential_comparison_skipped_reason"):
+            return "B3_ST_WORKER_SCALING_PARTIAL_PASS_COMPARISON_SKIPPED", 0
+        if payload.get("sequential_reference_missing"):
+            return "B3_ST_WORKER_SCALING_PARTIAL_PASS_NO_REFERENCE", 0
+        return "B3_ST_WORKER_SCALING_PARTIAL_PASS_NO_REFERENCE", 0
+    return "B3_ST_WORKER_SCALING_COMPLETED_ZERO_ACCEPTED_MODES", 2
 
 
 def _aggregate_union_and_provenance(
@@ -497,6 +771,7 @@ def _write_worker_job_files(
     *,
     shards: List[List[Tuple[int, float]]],
     worker_count: int,
+    mesh_level: str,
 ) -> List[Dict[str, Any]]:
     """Write worker_{id}_job.json for every worker slot before any subprocess launch."""
     specs: List[Dict[str, Any]] = []
@@ -506,6 +781,7 @@ def _write_worker_job_files(
         job = {
             "worker_id": wi,
             "worker_count": worker_count,
+            "mesh_level": mesh_level,
             "checkpoint_dir": str(checkpoint.resolve()),
             "target_entries": [[int(ti), float(hz)] for ti, hz in entries],
             "target_indices": [int(ti) for ti, _ in entries],
@@ -713,12 +989,15 @@ def run_st_worker_shard_execute(argv: Sequence[str]) -> int:
         built, meta = _load_operators(checkpoint)
         mats.extend([built["A_active"], built["M_active"]])
         shard_payload["loaded_active_dimension"] = int(meta.get("active_dimension", 0))
-        all_accepted, per_target, setup_s, solve_s = _run_st_targets_on_built(
+        mesh_level_job = str(job.get("mesh_level") or meta.get("mesh_level") or "L_mid")
+        all_accepted, per_target, setup_s, solve_s, loop_summary = _run_st_targets_on_built(
             built,
             target_entries,
+            mesh_level=mesh_level_job,
             payload_prefix="B3_ST_scaling",
         )
         shard_payload.update(per_target)
+        shard_payload.update(loop_summary)
         union_freqs, provenance = _aggregate_union_and_provenance(all_accepted)
         shard_payload["B3_ST_scaling_shard_accepted_mode_records"] = all_accepted
         shard_payload["B3_ST_scaling_shard_unique_accepted_frequencies"] = union_freqs
@@ -804,8 +1083,9 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
         print(f"[B3_ST_scaling] mesh_missing={mesh_file}", flush=True)
         return 2
 
+    reuse_ckpt = _parse_reuse_checkpoint_dir(argv)
     run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    checkpoint = _checkpoint_dir(mesh_level, run_id)
+    checkpoint = reuse_ckpt if reuse_ckpt is not None else _checkpoint_dir(mesh_level, run_id)
     out_json = _out_json_benchmark(mesh_level, worker_count, targets_hz)
     ref_json = _sequential_reference_json(mesh_level, targets_hz)
 
@@ -816,6 +1096,8 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
         "B3_ST_scaling_worker_count": worker_count,
         "B3_ST_scaling_targets_hz": list(targets_hz),
         "B3_ST_scaling_checkpoint_dir": str(checkpoint.resolve()),
+        "B3_ST_scaling_operator_reuse_checkpoint_dir": str(reuse_ckpt) if reuse_ckpt else None,
+        "B3_ST_scaling_operator_build_skipped": bool(reuse_ckpt is not None),
         "B3_ST_scaling_output_json": str(out_json.resolve()),
         "B3_ST_scaling_in_process_parity": bool(worker_count == 1),
         "B3_ST_scaling_solver_name": "KRYLOVSCHUR-ST-SINVERT-MUMPS-MULTI-TARGET-WORKER-SCALING",
@@ -833,39 +1115,64 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
     verdict = "B3_ST_WORKER_SCALING_BLOCKED"
     rc = 2
 
+    loop_summary: Dict[str, Any] = {}
     try:
-        timer.mark("operator_build_begin")
-        built = audit._b3_build_corrected_structural_active_operators(
-            mats_to_destroy=mats,
-            mat_destroy_seen=seen,
-            mesh_level=mesh_level,
-            struct_active_count_policy=_struct_active_count_policy(mesh_level),
-        )
-        timer.mark("operator_build_end")
-        payload["B3_ST_scaling_operator_build_elapsed_seconds"] = payload.get(
-            "B3_DEV_timing_operator_build_end_elapsed_seconds"
-        )
+        if reuse_ckpt is not None:
+            export_pass, export_missing, export_detail = _verify_operator_export(checkpoint)
+            payload["export_matrices_pass"] = bool(export_pass)
+            payload["export_matrices_detail"] = export_detail
+            if not export_pass:
+                payload["failure_reason"] = f"reuse_checkpoint_incomplete:{export_missing}"
+                verdict = "B3_ST_WORKER_SCALING_REUSE_CHECKPOINT_BLOCKED"
+                audit._write_json_atomic(out_json, payload)
+                return 2
+            built, meta = _load_operators(checkpoint)
+            mats.extend([built["A_active"], built["M_active"]])
+            payload["B3_ST_scaling_operator_build_elapsed_seconds"] = None
+            payload["B3_ST_scaling_reused_active_dimension"] = int(meta.get("active_dimension", 0))
+            op_payload: Dict[str, Any] = {}
+            contract_pass = _st_scaling_operator_contract_pass(op_payload, built=built, mesh_level=mesh_level)
+            payload.update(op_payload)
+            payload["B3_ST_scaling_operator_contract_pass"] = bool(contract_pass)
+            if not contract_pass:
+                payload["failure_reason"] = "operator_contract_failed_on_reused_checkpoint"
+                verdict = "B3_ST_WORKER_SCALING_OPERATOR_CONTRACT_BLOCKED"
+                audit._write_json_atomic(out_json, payload)
+                return 2
+            payload["B3_ST_scaling_operator_export"] = {"reused_checkpoint_dir": str(checkpoint.resolve())}
+        else:
+            timer.mark("operator_build_begin")
+            built = audit._b3_build_corrected_structural_active_operators(
+                mats_to_destroy=mats,
+                mat_destroy_seen=seen,
+                mesh_level=mesh_level,
+                struct_active_count_policy=_struct_active_count_policy(mesh_level),
+            )
+            timer.mark("operator_build_end")
+            payload["B3_ST_scaling_operator_build_elapsed_seconds"] = payload.get(
+                "B3_DEV_timing_operator_build_end_elapsed_seconds"
+            )
 
-        op_payload: Dict[str, Any] = {}
-        contract_pass = _st_scaling_operator_contract_pass(op_payload, built=built, mesh_level=mesh_level)
-        payload.update(op_payload)
-        payload["B3_ST_scaling_operator_contract_pass"] = bool(contract_pass)
-        if not contract_pass:
-            payload["failure_reason"] = "operator_contract_failed"
-            verdict = "B3_ST_WORKER_SCALING_OPERATOR_CONTRACT_BLOCKED"
-            audit._write_json_atomic(out_json, payload)
-            return 2
+            op_payload = {}
+            contract_pass = _st_scaling_operator_contract_pass(op_payload, built=built, mesh_level=mesh_level)
+            payload.update(op_payload)
+            payload["B3_ST_scaling_operator_contract_pass"] = bool(contract_pass)
+            if not contract_pass:
+                payload["failure_reason"] = "operator_contract_failed"
+                verdict = "B3_ST_WORKER_SCALING_OPERATOR_CONTRACT_BLOCKED"
+                audit._write_json_atomic(out_json, payload)
+                return 2
 
-        export_meta = _export_operators(checkpoint, built=built, mesh_level=mesh_level)
-        payload["B3_ST_scaling_operator_export"] = export_meta
-        export_pass, export_missing, export_detail = _verify_operator_export(checkpoint)
-        payload["export_matrices_pass"] = bool(export_pass)
-        payload["export_matrices_detail"] = export_detail
-        if not export_pass:
-            payload["failure_reason"] = f"operator_export_incomplete:{export_missing}"
-            verdict = "B3_ST_WORKER_SCALING_EXPORT_BLOCKED"
-            audit._write_json_atomic(out_json, payload)
-            return 2
+            export_meta = _export_operators(checkpoint, built=built, mesh_level=mesh_level)
+            payload["B3_ST_scaling_operator_export"] = export_meta
+            export_pass, export_missing, export_detail = _verify_operator_export(checkpoint)
+            payload["export_matrices_pass"] = bool(export_pass)
+            payload["export_matrices_detail"] = export_detail
+            if not export_pass:
+                payload["failure_reason"] = f"operator_export_incomplete:{export_missing}"
+                verdict = "B3_ST_WORKER_SCALING_EXPORT_BLOCKED"
+                audit._write_json_atomic(out_json, payload)
+                return 2
 
         shards = _partition_target_shards(targets_hz, worker_count)
         payload["B3_ST_scaling_target_shards"] = [
@@ -883,10 +1190,17 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
 
         if worker_count == 1:
             entries = shards[0]
-            payload["B3_ST_scaling_execution_path"] = "in_process_single_worker_parity"
+            payload["B3_ST_scaling_execution_path"] = (
+                "in_process_single_worker_with_reused_checkpoint"
+                if reuse_ckpt
+                else "in_process_single_worker_parity"
+            )
             payload["worker_processes_pass"] = True
-            accepted, per_t, setup_s, solve_s = _run_st_targets_on_built(
-                built, entries, payload_prefix="B3_ST_scaling"
+            accepted, per_t, setup_s, solve_s, loop_summary = _run_st_targets_on_built(
+                built,
+                entries,
+                mesh_level=mesh_level,
+                payload_prefix="B3_ST_scaling",
             )
             all_accepted.extend(accepted)
             per_target_merged.update(per_t)
@@ -897,7 +1211,9 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
         else:
             payload["B3_ST_scaling_execution_path"] = "plain_python_subprocess_sharded_workers"
             payload["B3_ST_scaling_worker_launch"] = "plain_python_no_nested_mpiexec"
-            worker_specs = _write_worker_job_files(checkpoint, shards=shards, worker_count=worker_count)
+            worker_specs = _write_worker_job_files(
+                checkpoint, shards=shards, worker_count=worker_count, mesh_level=mesh_level
+            )
             payload["B3_ST_scaling_worker_job_files_written"] = [
                 spec["paths"]["job"].name for spec in worker_specs
             ]
@@ -966,6 +1282,7 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
                         per_target_merged[k] = v
                 total_setup_s += float(shard_data.get("B3_ST_scaling_shard_total_setup_elapsed_seconds") or 0.0)
                 total_solve_s += float(shard_data.get("B3_ST_scaling_shard_total_solve_elapsed_seconds") or 0.0)
+            loop_summary = _derive_loop_summary_from_per_target(per_target_merged, targets_hz)
 
         wall_elapsed = time.perf_counter() - wall_t0
         payload["B3_ST_scaling_st_phase_wall_elapsed_seconds"] = dev_bench._safe_float(wall_elapsed)
@@ -987,23 +1304,12 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
         )
 
         payload.update(_compare_to_sequential_reference(union_freqs, ref_path=ref_json, targets_hz=targets_hz))
+        _record_solve_loop_status(payload, loop_summary=loop_summary, targets_hz=targets_hz)
 
         timer.finalize()
         payload["B3_ST_scaling_total_wall_elapsed_seconds"] = payload.get("B3_DEV_timing_total_wall_elapsed_seconds")
 
-        parity = payload.get("frequency_parity_pass")
-        if parity is True:
-            verdict = "B3_ST_WORKER_SCALING_PASS"
-            rc = 0
-        elif parity is False:
-            verdict = "B3_ST_WORKER_SCALING_FREQUENCY_MISMATCH"
-            rc = 2
-        elif payload.get("sequential_comparison_skipped_reason"):
-            verdict = "B3_ST_WORKER_SCALING_COMPLETED_COMPARISON_SKIPPED"
-            rc = 0 if union_freqs else 2
-        else:
-            verdict = "B3_ST_WORKER_SCALING_COMPLETED_NO_REFERENCE"
-            rc = 0 if union_freqs else 2
+        verdict, rc = _finalize_scaling_verdict(payload, targets_hz=targets_hz)
 
     except Exception as exc:
         payload["failure_reason"] = f"{type(exc).__name__}:{exc}"
@@ -1023,6 +1329,10 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
             f"- M_shape: `{payload.get('B3_ST_scaling_M_shape')}`\n"
             f"- operator_build_s: `{payload.get('B3_ST_scaling_operator_build_elapsed_seconds')}`\n"
             f"- unique_accepted_frequency_count: `{payload.get('B3_ST_scaling_unique_accepted_frequency_count')}`\n"
+            f"- targets_attempted: `{payload.get('B3_ST_scaling_targets_attempted_count')}`\n"
+            f"- targets_setup_succeeded: `{payload.get('B3_ST_scaling_targets_setup_succeeded_count')}`\n"
+            f"- targets_solved: `{payload.get('B3_ST_scaling_targets_solved_count')}`\n"
+            f"- solve_loop_entered: `{payload.get('B3_ST_scaling_solve_loop_entered_pass')}`\n"
             f"- workers: `{payload.get('B3_ST_scaling_worker_count')}`\n"
             f"- peak_rss_mb: `{payload.get('B3_ST_scaling_parent_peak_rss_mb')}`\n"
             f"- verdict: `{verdict}`\n"
