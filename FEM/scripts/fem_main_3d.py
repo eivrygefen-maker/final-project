@@ -73,6 +73,21 @@ SORTING_ROOT = Path(__file__).resolve().parents[1] / "SORTING"
 SORTING_LOG = SORTING_ROOT / "candidates_log.json"
 SORTING_TEMP_MODES = SORTING_ROOT / "temp_modes"
 _LAST_COUPLED_RAW_BLOCK_CAPTURE: Optional[Dict[str, Any]] = None
+_B3_operator_build_profiler: Any = None
+
+
+def _b3_operator_build_profile_phase(phase: str, action: str) -> None:
+    """Env-gated operator-build sub-phase hooks (B3_PROFILE_OPERATOR_BUILD=1)."""
+    prof = globals().get("_B3_operator_build_profiler")
+    if prof is None or not getattr(prof, "enabled", False):
+        return
+    if phase == "coupled_replay_mesh_load_if_any":
+        prof.hook_mesh_load(action)
+        return
+    if action == "begin":
+        prof.begin(phase)
+    elif action == "end":
+        prof.end(phase)
 
 
 def set_sorting_root(path: Path) -> None:
@@ -6059,7 +6074,9 @@ def _solve_coupled_evp(
     )
     sys.stdout.flush()
 
+    _b3_operator_build_profile_phase("coupled_replay_mesh_load_if_any", "begin")
     msh, cell_tags, facet_tags = _load_mesh_and_tags(mesh_file, status_callback=status_callback)
+    _b3_operator_build_profile_phase("coupled_replay_mesh_load_if_any", "end")
     _audit_and_scale_mesh_units(msh, config, status_callback=status_callback)
     _mesh_interface_diagnostic(msh, cell_tags, facet_tags, status_callback=status_callback)
     _phase_sync(2001, "coupled after mesh load", status_callback=status_callback)
@@ -6104,6 +6121,7 @@ def _solve_coupled_evp(
         raise RuntimeError("Mesh topology appears empty (num_cells_global <= 0). Check XDMF read/conversion.")
 
     _emit("Step 2/5: Building mixed spaces and weak forms...", status_callback=status_callback)
+    _b3_operator_build_profile_phase("function_space_creation", "begin")
     # Hard-coded P1+P1 (ignore any future config-based FE order): minimizes global DOFs on this mesh.
     _u_deg_coupled = 1
     _p_deg_coupled = 1
@@ -6141,6 +6159,8 @@ def _solve_coupled_evp(
         status_callback=status_callback,
     )
 
+    _b3_operator_build_profile_phase("function_space_creation", "end")
+    _b3_operator_build_profile_phase("weak_form_construction", "begin")
     # Single mixed TrialFunctions(W) — required so a_form = a_uu + a_pp + a_up assembles
     # as one PETSc matrix (separate W.sub(0)/W.sub(1) TrialFunctions break UFL extraction).
     u, p = ufl.TrialFunctions(W)
@@ -6539,6 +6559,7 @@ def _solve_coupled_evp(
                 flush=True,
             )
 
+    _b3_operator_build_profile_phase("weak_form_construction", "end")
     global _LAST_COUPLED_RAW_BLOCK_CAPTURE
     _LAST_COUPLED_RAW_BLOCK_CAPTURE = None
     _raw_capture_enabled = bool(
@@ -6583,6 +6604,7 @@ def _solve_coupled_evp(
         "B3_raw_capture_failure_reason": None,
     }
     if _raw_capture_enabled:
+        _b3_operator_build_profile_phase("raw_parent_block_capture", "begin")
         try:
             raw_App_padded = fem.petsc.assemble_matrix(fem.form(a_pp), bcs=[])
             raw_Mpp_padded = fem.petsc.assemble_matrix(fem.form(m_pp), bcs=[])
@@ -6665,6 +6687,8 @@ def _solve_coupled_evp(
                 "B3_raw_capture_failure_reason": f"{type(exc).__name__}:{exc}",
                 "parent_raw_collapsed_layout_failure_reason": f"{type(exc).__name__}:{exc}",
             }
+        finally:
+            _b3_operator_build_profile_phase("raw_parent_block_capture", "end")
     block_solver_cfg = (
         _resolvent_probe_block_solver_cfg(solver_cfg)
         if probe_spec is not None
@@ -7443,6 +7467,7 @@ def _solve_coupled_evp(
     if MPI.COMM_WORLD.rank == ROOT_RANK:
         print("PRINT: ENTERING FULL COUPLED ACOUSTIC-STRUCTURAL SOLVE")
         sys.stdout.flush()
+    _b3_operator_build_profile_phase("parent_matrix_assembly", "begin")
     use_blockwise = _solver_bool(solver_cfg, "coupled_blockwise_assembly", default=True)
     reg_p_block = reg_p if diag_shift > 0.0 else None
     v2_coupling_disabled = core_v2_diag and not coupling_v2_diag
@@ -7913,6 +7938,7 @@ def _solve_coupled_evp(
                 fsi_a_pu_frobenius=float(probe_spec.get("fsi_a_pu_frobenius", float("nan"))),
                 status_callback=status_callback,
             )
+        _b3_operator_build_profile_phase("parent_matrix_assembly", "end")
         return msh, W, A, M
 
     # Release form objects before eigensolve; matrices are already assembled.

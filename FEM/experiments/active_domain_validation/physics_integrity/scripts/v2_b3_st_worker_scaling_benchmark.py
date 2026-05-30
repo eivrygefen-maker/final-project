@@ -19,6 +19,7 @@ from petsc4py import PETSc
 import run_v2_B3_trace_coupled_operator_and_seed_transfer_audit as audit
 import v2_b3_dev_solver_benchmark as dev_bench
 import v2_b3_lmid_overnight_validation as lmid_overnight
+from v2_b3_operator_build_profiler import B3OperatorBuildProfiler
 
 B3_ST_WORKER_SCALING_ARG = "--B3-Lmid-ST-multi-target-worker-scaling-benchmark-only"
 B3_ST_WORKER_COUNT_ARG = "--B3-ST-worker-count"
@@ -370,6 +371,25 @@ def _built_from_metadata(
         else "checkpoint_metadata_schema_invalid",
     }
     return built, reuse_diag
+
+
+def _operator_build_profile_json(mesh_level: str) -> Path:
+    return audit.CONV_DIAG / f"v2_B3_{mesh_level}_operator_build_profile.json"
+
+
+def _finalize_operator_build_profile(
+    prof: Any,
+    *,
+    payload: Dict[str, Any],
+    mesh_level: str,
+) -> None:
+    if prof is None or not getattr(prof, "enabled", False):
+        return
+    prof.export_to_payload()
+    prof.print_table(mesh_level=mesh_level)
+    profile_json = _operator_build_profile_json(mesh_level)
+    prof.write_json(profile_json)
+    payload["B3_PROFILE_operator_build_json"] = str(profile_json.resolve())
 
 
 def _export_operators(checkpoint: Path, *, built: Dict[str, Any], mesh_level: str) -> Dict[str, Any]:
@@ -1232,6 +1252,7 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
     if inherited_launch_env:
         payload["B3_ST_scaling_parent_inherited_launch_env_keys_sample"] = inherited_launch_env[:32]
     timer = dev_bench._B3DevTiming(payload)
+    op_profile = B3OperatorBuildProfiler.maybe_from_env(payload)
     mats: List[Any] = []
     seen: set[int] = set()
     verdict = "B3_ST_WORKER_SCALING_BLOCKED"
@@ -1261,12 +1282,15 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
             payload["B3_ST_scaling_operator_build_elapsed_seconds"] = None
             payload["B3_ST_scaling_reused_active_dimension"] = int(meta.get("active_dimension", 0))
             op_payload: Dict[str, Any] = {}
+            op_profile.begin("operator_contract")
             contract_pass = _st_scaling_operator_contract_pass(op_payload, built=built, mesh_level=mesh_level)
+            op_profile.end("operator_contract")
             payload.update(op_payload)
             payload["B3_ST_scaling_operator_contract_pass"] = bool(contract_pass)
             if not contract_pass:
                 payload["failure_reason"] = "operator_contract_failed_on_reused_checkpoint"
                 verdict = "B3_ST_WORKER_SCALING_OPERATOR_CONTRACT_BLOCKED"
+                _finalize_operator_build_profile(op_profile, payload=payload, mesh_level=mesh_level)
                 audit._write_json_atomic(out_json, payload)
                 return 2
             payload["B3_ST_scaling_operator_export"] = {"reused_checkpoint_dir": str(checkpoint.resolve())}
@@ -1277,23 +1301,30 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
                 mat_destroy_seen=seen,
                 mesh_level=mesh_level,
                 struct_active_count_policy=_struct_active_count_policy(mesh_level),
+                operator_build_profile=op_profile,
             )
+            op_profile = built.get("operator_build_profile", op_profile)
             timer.mark("operator_build_end")
             payload["B3_ST_scaling_operator_build_elapsed_seconds"] = payload.get(
                 "B3_DEV_timing_operator_build_end_elapsed_seconds"
             )
 
             op_payload = {}
+            op_profile.begin("operator_contract")
             contract_pass = _st_scaling_operator_contract_pass(op_payload, built=built, mesh_level=mesh_level)
+            op_profile.end("operator_contract")
             payload.update(op_payload)
             payload["B3_ST_scaling_operator_contract_pass"] = bool(contract_pass)
             if not contract_pass:
                 payload["failure_reason"] = "operator_contract_failed"
                 verdict = "B3_ST_WORKER_SCALING_OPERATOR_CONTRACT_BLOCKED"
+                _finalize_operator_build_profile(op_profile, payload=payload, mesh_level=mesh_level)
                 audit._write_json_atomic(out_json, payload)
                 return 2
 
+            op_profile.begin("checkpoint_export")
             export_meta = _export_operators(checkpoint, built=built, mesh_level=mesh_level)
+            op_profile.end("checkpoint_export")
             payload["B3_ST_scaling_operator_export"] = export_meta
             export_pass, export_missing, export_detail = _verify_operator_export(checkpoint)
             payload["export_matrices_pass"] = bool(export_pass)
@@ -1301,8 +1332,10 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
             if not export_pass:
                 payload["failure_reason"] = f"operator_export_incomplete:{export_missing}"
                 verdict = "B3_ST_WORKER_SCALING_EXPORT_BLOCKED"
+                _finalize_operator_build_profile(op_profile, payload=payload, mesh_level=mesh_level)
                 audit._write_json_atomic(out_json, payload)
                 return 2
+            _finalize_operator_build_profile(op_profile, payload=payload, mesh_level=mesh_level)
 
         shards = _partition_target_shards(targets_hz, worker_count)
         payload["B3_ST_scaling_target_shards"] = [

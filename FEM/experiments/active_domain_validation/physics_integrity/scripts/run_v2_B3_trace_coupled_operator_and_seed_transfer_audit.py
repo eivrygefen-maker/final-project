@@ -39,6 +39,7 @@ from v2_build_coupled_acoustic_seed import (
     _extract_layout_maps,
     _extract_parent_raw_block_capture,
 )
+from v2_b3_operator_build_profiler import B3OperatorBuildProfiler
 from v2_mesh_convergence_common import CONV_DIAG, load_manifest, mesh_path, sample_spec_from_case, solve_case_dir
 from v2_unreg_offset_report_evaluator import load_seed_with_diagnostics
 
@@ -1575,7 +1576,11 @@ def _build_b3_scaled_restricted_operators_in_memory(
     destroy_seen: set[int] | None = None,
     capture_pre_dirichlet_monolithic: bool = False,
     emit_localization_evidence: bool = False,
+    operator_build_profile: Any = None,
 ) -> tuple[Any, Any, np.ndarray, np.ndarray, Dict[str, Any], np.ndarray, np.ndarray, np.ndarray, Any, Any, Any]:
+    prof = operator_build_profile
+    if prof is not None:
+        prof.begin("block_compose_direct_AIJ")
     meta: Dict[str, Any] = report_meta if report_meta is not None else {}
     mat_seen: set[int] = destroy_seen if destroy_seen is not None else set()
     p_air_collapsed = np.unique(np.asarray(p_air_collapsed, dtype=np.int32).ravel())
@@ -1745,6 +1750,9 @@ def _build_b3_scaled_restricted_operators_in_memory(
         raise RuntimeError(meta["B3_direct_sparse_AIJ_construction_failure_reason"])
     meta["B3_sparse_AIJ_used_for_zero_rows_columns"] = True
 
+    if prof is not None:
+        prof.end("block_compose_direct_AIJ")
+        prof.begin("boundary_cleanup")
     _native_stage("before_BC_row_locate")
     meta["B3_seed_operator_build_stage"] = "pre_pressure_release_row_locate"
     p_release, pr_meta = _b3_pressure_release_rows_retained(
@@ -1817,6 +1825,8 @@ def _build_b3_scaled_restricted_operators_in_memory(
     u_idx = np.arange(n_u, dtype=np.int32)
     p_idx = np.arange(n_u, n_u + n_p_active, dtype=np.int32)
     meta["B3_seed_dirichlet_row_contract_matches_operator_BC"] = True
+    if prof is not None:
+        prof.end("boundary_cleanup")
     _native_stage("operator_build_return")
     return a_b3, m_b3, u_idx, p_idx, meta, bc_rows, tag5_rows, p_release_rows, m_uu, m_pu_act, m_pp_act
 
@@ -3272,12 +3282,15 @@ def _b3_build_corrected_structural_active_operators(
     mat_destroy_seen: set[int],
     mesh_level: str = "L_mid",
     struct_active_count_policy: str = "L_mid_exact",
+    operator_build_profile: Any = None,
 ) -> Dict[str, Any]:
     """Build copy-fixed B3 free pencil and structural active-set reduced A_active/M_active."""
+    prof = operator_build_profile or B3OperatorBuildProfiler.maybe_from_env()
     manifest = load_manifest()
     case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
     sample = sample_spec_from_case(case)
     mesh_file = mesh_path(str(mesh_level), CASE_ID)
+    prof.begin("mesh_load_b3_path")
     msh, _cell_tags, facet_tags = fem3d._load_mesh_and_tags(mesh_file)
     f_top = np.asarray(facet_tags.find(TAG_TOP), dtype=np.int32)
     f_back = np.asarray(facet_tags.find(TAG_BACK), dtype=np.int32)
@@ -3287,11 +3300,16 @@ def _b3_build_corrected_structural_active_operators(
     tmeta = _build_c2_trace_to_parent_transfer(
         msh, facet_tags, shell_facets=shell_facets, tag_top=TAG_TOP, tag_back=TAG_BACK, tag_ribs=TAG_RIBS
     )
+    prof.end("mesh_load_b3_path")
     parent_map = tmeta.get("parent_index_per_trace_dof")
     if parent_map is None:
         raise _B3StructActiveBuildError("validated_b3_inputs", "parent_index_per_trace_dof_missing")
     A_parent, M_parent, cfg = _assemble_reduced_coupled_replay(
-        mesh_file, sample, coupling_enabled=True, capture_parent_raw_blocks=True
+        mesh_file,
+        sample,
+        coupling_enabled=True,
+        capture_parent_raw_blocks=True,
+        operator_build_profile=prof,
     )
     p_air_collapsed = np.asarray(
         cfg.get("_coupled_air_p_air_collapsed_indices", np.asarray([], dtype=np.int32)),
@@ -3309,6 +3327,7 @@ def _b3_build_corrected_structural_active_operators(
     if not all(m is not None for m in (raw_App, raw_Mpp, raw_Aup, raw_Apu, raw_Mpu)):
         raise _B3StructActiveBuildError("validated_b3_inputs", "validated_b3_operator_inputs_missing")
 
+    prof.begin("function_space_creation")
     shell_mesh, shell_to_parent, _, _ = dmesh.create_submesh(msh, msh.topology.dim - 1, shell_facets)
     V_u_trace = fem.functionspace(shell_mesh, fem3d._displacement_element(shell_mesh, 1))
     trace_cells = np.arange(int(shell_mesh.topology.index_map(shell_mesh.topology.dim).size_local), dtype=np.int32)
@@ -3318,6 +3337,8 @@ def _b3_build_corrected_structural_active_operators(
     trace_vals = np.array([parent_tag_map.get(int(pf), -1) for pf in parent_f], dtype=np.int32)
     mt_trace = dmesh.meshtags(shell_mesh, shell_mesh.topology.dim, trace_cells, trace_vals)
     dx_trace = ufl.Measure("dx", domain=shell_mesh, subdomain_data=mt_trace)
+    prof.end("function_space_creation")
+    prof.begin("weak_form_construction")
     u = ufl.TrialFunction(V_u_trace)
     v = ufl.TestFunction(V_u_trace)
     top_m, back_m, t_top, t_back = fem3d._split_wood_materials(cfg)
@@ -3333,6 +3354,8 @@ def _b3_build_corrected_structural_active_operators(
     shell_top = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, top_m)
     shell_back = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
     shell_ribs = fem3d._orthotropic_shell_stiffness_form(eps_u, eps_v, w_n, v_n, e1, e2, P, back_m)
+    prof.end("weak_form_construction")
+    prof.begin("shell_trace_assembly")
     raw_Auu = fem.petsc.assemble_matrix(
         fem.form(shell_top * dx_trace(TAG_TOP) + shell_back * dx_trace(TAG_BACK) + shell_ribs * dx_trace(TAG_RIBS)),
         bcs=[],
@@ -3347,6 +3370,7 @@ def _b3_build_corrected_structural_active_operators(
     )
     raw_Auu.assemble()
     raw_Muu.assemble()
+    prof.end("shell_trace_assembly")
     for m_ in (raw_Auu, raw_Muu):
         _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_destroy_seen)
     parent_idx = np.asarray(parent_map, dtype=np.int32).ravel()
@@ -3405,10 +3429,12 @@ def _b3_build_corrected_structural_active_operators(
         mats_to_destroy=mats_to_destroy,
         report_meta=op_meta,
         destroy_seen=mat_destroy_seen,
+        operator_build_profile=prof,
     )
     bc_rows_i32 = np.unique(np.asarray(bc_rows, dtype=np.int32).ravel())
     n_w = int(A_b3.getSize()[0])
     free_rows = np.setdiff1d(np.arange(n_w, dtype=np.int32), bc_rows_i32, assume_unique=True)
+    prof.begin("active_reduction")
     is_free = PETSc.IS().createGeneral(free_rows.astype(np.int32), comm=PETSc.COMM_WORLD)
     try:
         A_free = A_b3.createSubMatrix(is_free, is_free)
@@ -3422,12 +3448,14 @@ def _b3_build_corrected_structural_active_operators(
     _register_mat_for_destroy(mats_to_destroy, A_free, seen=mat_destroy_seen)
     _register_mat_for_destroy(mats_to_destroy, M_free, seen=mat_destroy_seen)
 
+    prof.begin("inactive_identification_row_norm_scans")
     cand = _b3_struct_active_identify_inactive_and_aup_supported(
         A_free=A_free,
         free_rows=free_rows,
         n_u_b3=n_u_b3,
         raw_Auu=raw_Auu,
     )
+    prof.end("inactive_identification_row_norm_scans")
     origin_pass = _b3_struct_active_candidate_origin_policy_pass(
         cand, policy=str(struct_active_count_policy)
     )
@@ -3467,6 +3495,7 @@ def _b3_build_corrected_structural_active_operators(
     _petsc_mat_try_assemble(M_active)
     _register_mat_for_destroy(mats_to_destroy, A_active, seen=mat_destroy_seen)
     _register_mat_for_destroy(mats_to_destroy, M_active, seen=mat_destroy_seen)
+    prof.end("active_reduction")
     return {
         "A_parent": A_parent,
         "M_parent": M_parent,
@@ -3486,6 +3515,7 @@ def _b3_build_corrected_structural_active_operators(
         "cand": cand,
         "active_local": active_local,
         "inactive_local": inactive_local,
+        "operator_build_profile": prof,
     }
 
 

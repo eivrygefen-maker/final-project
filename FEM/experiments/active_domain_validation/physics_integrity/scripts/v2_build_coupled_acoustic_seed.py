@@ -69,49 +69,59 @@ def _assemble_reduced_coupled_replay(
     *,
     coupling_enabled: bool = True,
     capture_parent_raw_blocks: bool = False,
+    operator_build_profile: Any = None,
 ) -> Tuple[Any, Any, dict]:
     """Proven v2 post replay: solve_evp=False + pressure-restriction replay audit."""
-    cfg = copy.deepcopy(json.loads(V2_CONFIG.read_text(encoding="utf-8")))
-    sc = cfg.setdefault("solver", {})
-    sc["mesh_file"] = str(mesh_path.resolve())
-    sc["coupled_physical_core_v2_diagnosis"] = True
-    sc["coupled_physical_core_v2_coupling_enabled"] = bool(coupling_enabled)
-    sc["fsi_coupling_gain"] = 1.0
-    sc["fsi_nitsche_enable"] = False
-    sc["physics_integrity_capture"] = True
-    sc["coupled_air_pressure_restriction_diagnosis"] = True
-    sc["coupled_air_pressure_restriction_replay_audit"] = True
-    sc["gnhep_block_frobenius_normalize"] = True
-    sc["b3_raw_parent_block_capture_no_eps_diagnostic"] = bool(capture_parent_raw_blocks)
-    cfg["geometry"] = sample_geometry(sample)
-    mats = sample.get("materials") or {}
-    if mats.get("top_wood_id") or mats.get("back_wood_id"):
-        apply_wood_ids_to_config(
-            cfg,
-            top_wood_id=mats.get("top_wood_id"),
-            back_wood_id=mats.get("back_wood_id"),
-        )
+    prof = operator_build_profile
+    if prof is not None:
+        prof.begin_replay()
+        prof.attach_fem3d()
+    try:
+        cfg = copy.deepcopy(json.loads(V2_CONFIG.read_text(encoding="utf-8")))
+        sc = cfg.setdefault("solver", {})
+        sc["mesh_file"] = str(mesh_path.resolve())
+        sc["coupled_physical_core_v2_diagnosis"] = True
+        sc["coupled_physical_core_v2_coupling_enabled"] = bool(coupling_enabled)
+        sc["fsi_coupling_gain"] = 1.0
+        sc["fsi_nitsche_enable"] = False
+        sc["physics_integrity_capture"] = True
+        sc["coupled_air_pressure_restriction_diagnosis"] = True
+        sc["coupled_air_pressure_restriction_replay_audit"] = True
+        sc["gnhep_block_frobenius_normalize"] = True
+        sc["b3_raw_parent_block_capture_no_eps_diagnostic"] = bool(capture_parent_raw_blocks)
+        cfg["geometry"] = sample_geometry(sample)
+        mats = sample.get("materials") or {}
+        if mats.get("top_wood_id") or mats.get("back_wood_id"):
+            apply_wood_ids_to_config(
+                cfg,
+                top_wood_id=mats.get("top_wood_id"),
+                back_wood_id=mats.get("back_wood_id"),
+            )
 
-    _msh, _W, A, M = fem3d._solve_coupled_evp(
-        mesh_file=mesh_path.resolve(),
-        config=cfg,
-        num_modes=0,
-        solve_evp=False,
-    )
-    missing = [k for k in MAP_KEYS if k not in cfg]
-    if missing:
-        try:
-            A.destroy()
-            M.destroy()
-        except Exception:
-            pass
-        raise RuntimeError(
-            "reduced replay assembly did not populate required maps. "
-            f"Missing config keys: {missing}. "
-            "Ensure coupled_air_pressure_restriction_replay_audit=True and "
-            "coupled_air_pressure_restriction_diagnosis=True with solve_evp=False."
+        _msh, _W, A, M = fem3d._solve_coupled_evp(
+            mesh_file=mesh_path.resolve(),
+            config=cfg,
+            num_modes=0,
+            solve_evp=False,
         )
-    return A, M, cfg
+        missing = [k for k in MAP_KEYS if k not in cfg]
+        if missing:
+            try:
+                A.destroy()
+                M.destroy()
+            except Exception:
+                pass
+            raise RuntimeError(
+                "reduced replay assembly did not populate required maps. "
+                f"Missing config keys: {missing}. "
+                "Ensure coupled_air_pressure_restriction_replay_audit=True and "
+                "coupled_air_pressure_restriction_diagnosis=True with solve_evp=False."
+            )
+        return A, M, cfg
+    finally:
+        if prof is not None:
+            prof.end_replay()
+            prof.detach_fem3d()
 
 
 def _extract_parent_raw_block_capture() -> Dict[str, Any]:
