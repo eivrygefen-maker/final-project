@@ -13054,6 +13054,12 @@ def main() -> int:
     import sys
 
     from v2_b3_dev_solver_benchmark import is_b3_dev_mode, run_b3_dev_mode
+    from v2_b3_st_worker_scaling_benchmark import (
+        is_st_worker_scaling_mode,
+        is_st_worker_shard_execute_mode,
+        run_st_worker_scaling_benchmark,
+        run_st_worker_shard_execute,
+    )
     from v2_b3_lmid_overnight_validation import (
         is_lmid_ciss_only_mode,
         is_lmid_overnight_mode,
@@ -13062,6 +13068,13 @@ def main() -> int:
         run_lmid_overnight_validation,
         run_lmid_st_ciss_comparison_only,
     )
+
+    if is_st_worker_shard_execute_mode(sys.argv):
+        return run_st_worker_shard_execute(sys.argv)
+
+    if is_st_worker_scaling_mode(sys.argv):
+        pre = _precheck_allow_b3_jd_first_bounded_execution()
+        return run_st_worker_scaling_benchmark(sys.argv, pre)
 
     if is_lmid_overnight_mode(sys.argv):
         if is_lmid_st_ciss_compare_only_mode(sys.argv):
