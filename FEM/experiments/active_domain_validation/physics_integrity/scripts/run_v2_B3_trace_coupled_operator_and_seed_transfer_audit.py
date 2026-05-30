@@ -4207,11 +4207,12 @@ def _b3_ciss_factor_shift_getter_value(pc: Any) -> Optional[Dict[str, Any]]:
 
 
 def _b3_ciss_direct_stable_eps_setup_succeeded(payload: Dict[str, Any]) -> bool:
-    """True after eps.setUp() in direct-stable preflight, bounded execution, or dev benchmark."""
+    """True after eps.setUp() in direct-stable preflight, bounded execution, dev, or L_mid benchmark."""
     return bool(
         payload.get("B3_CISS_direct_stable_setup_calls_setup")
         or payload.get("B3_CISS_execution_setup_calls_setup")
         or payload.get("B3_DEV_CISS_setup_calls_setup")
+        or payload.get("B3_Lmid_CISS_setup_calls_setup")
     )
 
 
@@ -13053,10 +13054,21 @@ def main() -> int:
     import sys
 
     from v2_b3_dev_solver_benchmark import is_b3_dev_mode, run_b3_dev_mode
-    from v2_b3_lmid_overnight_validation import is_lmid_overnight_mode, run_lmid_overnight_validation
+    from v2_b3_lmid_overnight_validation import (
+        is_lmid_ciss_only_mode,
+        is_lmid_overnight_mode,
+        is_lmid_st_ciss_compare_only_mode,
+        run_lmid_ciss_reference_only,
+        run_lmid_overnight_validation,
+        run_lmid_st_ciss_comparison_only,
+    )
 
     if is_lmid_overnight_mode(sys.argv):
+        if is_lmid_st_ciss_compare_only_mode(sys.argv):
+            return run_lmid_st_ciss_comparison_only()
         pre = _precheck_allow_b3_jd_first_bounded_execution()
+        if is_lmid_ciss_only_mode(sys.argv):
+            return run_lmid_ciss_reference_only(pre)
         return run_lmid_overnight_validation(pre)
 
     if is_b3_dev_mode(sys.argv):

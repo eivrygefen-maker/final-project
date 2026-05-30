@@ -16,6 +16,13 @@ import run_v2_B3_trace_coupled_operator_and_seed_transfer_audit as audit
 import v2_b3_dev_solver_benchmark as dev_bench
 
 B3_LMID_OVERNIGHT_ARG = "--B3-Lmid-overnight-CISS-ST-multi-target-validation-only"
+B3_LMID_CISS_ONLY_ARG = "--B3-Lmid-overnight-CISS-reference-only"
+B3_LMID_COMPARE_ONLY_ARG = "--B3-Lmid-overnight-ST-vs-CISS-comparison-only"
+B3_LMID_MODE_ARGS = (
+    B3_LMID_OVERNIGHT_ARG,
+    B3_LMID_CISS_ONLY_ARG,
+    B3_LMID_COMPARE_ONLY_ARG,
+)
 LMID_MESH_LEVEL = "L_mid"
 
 LMID_ST_TARGETS_HZ = [221.5, 227.0, 232.5, 238.0, 243.5, 249.0, 254.5, 260.0, 264.0]
@@ -37,7 +44,15 @@ CROSS_MESH_DRIFT_TOL_REL = 0.005
 
 
 def is_lmid_overnight_mode(argv: List[str]) -> bool:
-    return B3_LMID_OVERNIGHT_ARG in argv
+    return any(arg in argv for arg in B3_LMID_MODE_ARGS)
+
+
+def is_lmid_ciss_only_mode(argv: List[str]) -> bool:
+    return B3_LMID_CISS_ONLY_ARG in argv
+
+
+def is_lmid_st_ciss_compare_only_mode(argv: List[str]) -> bool:
+    return B3_LMID_COMPARE_ONLY_ARG in argv
 
 
 def _lmid_mesh_path() -> Path:
@@ -105,6 +120,20 @@ def _modal_facet_proxy_export_note() -> Dict[str, Any]:
         ),
         "B3_Lmid_modal_facet_proxies_do_not_affect_solver_acceptance": True,
     }
+
+
+def _lmid_record_ciss_direct_stable_mirror(payload: Dict[str, Any]) -> None:
+    """Copy shared direct-stable introspection into B3_Lmid_CISS_* report fields."""
+    payload["B3_Lmid_CISS_ST_type_effective"] = payload.get("B3_CISS_direct_stable_ST_type_effective")
+    payload["B3_Lmid_CISS_KSP_type_effective"] = payload.get("B3_CISS_direct_stable_KSP_type_effective")
+    payload["B3_Lmid_CISS_PC_type_effective"] = payload.get("B3_CISS_direct_stable_PC_type_effective")
+    payload["B3_Lmid_CISS_factor_solver_effective"] = payload.get("B3_CISS_direct_stable_factor_solver_effective")
+    payload["B3_Lmid_CISS_factor_shift_verification_classification"] = payload.get(
+        "B3_CISS_direct_stable_factor_shift_verification_classification"
+    )
+    payload["B3_Lmid_CISS_direct_stable_setup_verified_pass"] = audit._b3_ciss_direct_stable_policy_effective_pass(
+        payload
+    )
 
 
 def _st_deduplicated_provenance(
@@ -315,10 +344,12 @@ def _run_lmid_ciss_reference(
         timer_ciss.mark("eps_setup_begin")
         eps.setUp()
         payload["B3_Lmid_CISS_setup_calls_setup"] = True
+        payload["B3_CISS_direct_stable_setup_calls_setup"] = True
         timer_ciss.mark("eps_setup_end")
         payload.update(audit._b3_ciss_introspect_direct_stable_after_setup(eps))
         audit._b3_ciss_finalize_direct_stable_factor_shift_verification(eps, payload)
         dev_bench._dev_record_ciss_direct_stable_mirror(payload)
+        _lmid_record_ciss_direct_stable_mirror(payload)
         payload["B3_Lmid_CISS_setup_elapsed_seconds"] = dev_bench._safe_float(
             float(payload.get("B3_DEV_timing_eps_setup_end_elapsed_seconds", 0))
             - float(payload.get("B3_DEV_timing_eps_setup_begin_elapsed_seconds", 0))
@@ -360,6 +391,8 @@ def _run_lmid_ciss_reference(
         payload["B3_Lmid_CISS_total_elapsed_seconds"] = payload.get("B3_DEV_timing_total_wall_elapsed_seconds")
         ciss_ok = bool(accepted or nconv > 0)
         verdict = "B3_Lmid_OVERNIGHT_CISS_REFERENCE_PASS" if ciss_ok else "B3_Lmid_OVERNIGHT_CISS_REFERENCE_FAILED"
+        payload["CISS_reference_available"] = bool(ciss_ok)
+        payload["reference_available"] = bool(ciss_ok)
     except Exception as exc:
         payload["B3_Lmid_failure_reason"] = f"{type(exc).__name__}:{exc}"
         ciss_ok = False
@@ -504,6 +537,239 @@ def _run_lmid_st_multi_target(
     return payload, union_freqs, any_solve_ok
 
 
+def _load_json_if_exists(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _lmid_st_ciss_comparison_block(
+    *,
+    st_freqs: List[float],
+    st_payload: Dict[str, Any],
+    ciss_freqs: List[float],
+    ciss_ok: bool,
+    ciss_payload: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """ST-vs-CISS summary fields and checkpoint payload (no solver execution)."""
+    summary_fields: Dict[str, Any] = {
+        "B3_Lmid_CISS_reference_available": bool(ciss_ok),
+        "CISS_reference_available": bool(ciss_ok),
+        "B3_Lmid_CISS_accepted_frequency_count": len(ciss_freqs),
+        "B3_Lmid_CISS_accepted_frequencies_hz": ciss_freqs,
+        "B3_Lmid_CISS_setup_elapsed_seconds": ciss_payload.get("B3_Lmid_CISS_setup_elapsed_seconds"),
+        "B3_Lmid_CISS_solve_elapsed_seconds": ciss_payload.get("B3_Lmid_CISS_solve_elapsed_seconds"),
+        "B3_Lmid_CISS_total_elapsed_seconds": ciss_payload.get("B3_Lmid_CISS_total_elapsed_seconds"),
+        "ST_results_available": bool(st_freqs),
+        "B3_Lmid_ST_multi_target_unique_accepted_frequency_count": len(st_freqs),
+        "B3_Lmid_ST_multi_target_unique_accepted_frequencies": st_freqs,
+        "B3_Lmid_ST_multi_target_total_setup_elapsed_seconds": st_payload.get(
+            "B3_Lmid_ST_multi_target_total_setup_elapsed_seconds"
+        ),
+        "B3_Lmid_ST_multi_target_total_solve_elapsed_seconds": st_payload.get(
+            "B3_Lmid_ST_multi_target_total_solve_elapsed_seconds"
+        ),
+        "B3_Lmid_ST_multi_target_total_elapsed_seconds": st_payload.get(
+            "B3_Lmid_ST_multi_target_total_elapsed_seconds"
+        ),
+    }
+    st_ciss_ckpt: Dict[str, Any] = {
+        "mode": "B3_Lmid_overnight_ST_vs_CISS_comparison_checkpoint",
+        "B3_Lmid_ST_multi_target_unique_accepted_frequencies": st_freqs,
+        "B3_Lmid_ST_multi_target_deduplicated_mode_provenance": st_payload.get(
+            "B3_Lmid_ST_multi_target_deduplicated_mode_provenance"
+        ),
+    }
+    if ciss_ok and ciss_freqs:
+        matches, missing, extra = dev_bench._dev_compare_frequency_sets(
+            st_freqs,
+            ciss_freqs,
+            match_tol_hz=dev_bench.B3_DEV_ST_MULTI_CISS_MATCH_TOL_HZ,
+        )
+        summary_fields["B3_Lmid_ST_multi_target_CISS_reference_frequency_count"] = len(ciss_freqs)
+        summary_fields["B3_Lmid_ST_multi_target_matches_CISS_count"] = int(matches)
+        summary_fields["B3_Lmid_ST_multi_target_missing_CISS_frequencies"] = missing
+        summary_fields["B3_Lmid_ST_multi_target_extra_frequencies_in_interval"] = extra
+        summary_fields["B3_Lmid_ST_multi_target_full_interval_coverage_pass"] = bool(
+            len(missing) == 0 and matches == len(ciss_freqs)
+        )
+        summary_fields["coverage_comparison_unavailable_due_to_CISS_failure"] = False
+        st_ciss_ckpt.update(
+            {
+                "B3_Lmid_ST_multi_target_matches_CISS_count": int(matches),
+                "B3_Lmid_ST_multi_target_missing_CISS_frequencies": missing,
+                "B3_Lmid_ST_multi_target_extra_frequencies_in_interval": extra,
+                "B3_Lmid_ST_multi_target_full_interval_coverage_pass": summary_fields[
+                    "B3_Lmid_ST_multi_target_full_interval_coverage_pass"
+                ],
+            }
+        )
+        ciss_total = summary_fields.get("B3_Lmid_CISS_total_elapsed_seconds")
+        st_total = summary_fields.get("B3_Lmid_ST_multi_target_total_elapsed_seconds")
+        if (
+            ciss_total is not None
+            and st_total is not None
+            and math.isfinite(float(ciss_total))
+            and math.isfinite(float(st_total))
+            and float(st_total) > 0.0
+        ):
+            summary_fields["B3_Lmid_ST_multi_target_speedup_vs_CISS"] = dev_bench._safe_float(
+                float(ciss_total) / float(st_total)
+            )
+            st_ciss_ckpt["B3_Lmid_ST_multi_target_speedup_vs_CISS"] = summary_fields[
+                "B3_Lmid_ST_multi_target_speedup_vs_CISS"
+            ]
+    else:
+        summary_fields["B3_Lmid_ST_multi_target_CISS_reference_frequency_count"] = 0
+        summary_fields["B3_Lmid_ST_multi_target_matches_CISS_count"] = None
+        summary_fields["B3_Lmid_ST_multi_target_missing_CISS_frequencies"] = None
+        summary_fields["B3_Lmid_ST_multi_target_extra_frequencies_in_interval"] = None
+        summary_fields["B3_Lmid_ST_multi_target_full_interval_coverage_pass"] = None
+        summary_fields["coverage_comparison_unavailable_due_to_CISS_failure"] = True
+        st_ciss_ckpt["coverage_comparison_unavailable_due_to_CISS_failure"] = True
+    st_ciss_ckpt["next_step_verdict"] = (
+        "B3_Lmid_OVERNIGHT_ST_vs_CISS_COMPARISON_RECORDED"
+        if st_ciss_ckpt.get("B3_Lmid_ST_multi_target_full_interval_coverage_pass")
+        else "B3_Lmid_OVERNIGHT_ST_vs_CISS_COMPARISON_PENDING_OR_INCOMPLETE"
+    )
+    return summary_fields, st_ciss_ckpt
+
+
+def _lmid_finalize_st_ciss_summary_verdict(summary: Dict[str, Any], *, st_ok: bool, ciss_ok: bool) -> Tuple[str, int]:
+    if summary.get("B3_Lmid_operator_contract_pass") and st_ok:
+        if ciss_ok and summary.get("B3_Lmid_ST_multi_target_full_interval_coverage_pass"):
+            return "B3_Lmid_OVERNIGHT_CISS_ST_VALIDATION_PASS", 0
+        if ciss_ok and not summary.get("B3_Lmid_ST_multi_target_full_interval_coverage_pass"):
+            return "B3_Lmid_OVERNIGHT_ST_COVERAGE_INCOMPLETE", 2
+        if not ciss_ok and st_ok:
+            return "B3_Lmid_OVERNIGHT_ST_PASS_CISS_REFERENCE_FAILED", 2
+        return "B3_Lmid_OVERNIGHT_VALIDATION_PARTIAL", 2
+    if st_ok and ciss_ok and summary.get("B3_Lmid_ST_multi_target_full_interval_coverage_pass"):
+        return "B3_Lmid_OVERNIGHT_CISS_ST_VALIDATION_PASS", 0
+    if st_ok and ciss_ok:
+        return "B3_Lmid_OVERNIGHT_ST_COVERAGE_INCOMPLETE", 2
+    if st_ok and not ciss_ok:
+        return "B3_Lmid_OVERNIGHT_ST_PASS_CISS_REFERENCE_FAILED", 2
+    return "B3_Lmid_OVERNIGHT_VALIDATION_BLOCKED", 2
+
+
+def run_lmid_ciss_reference_only(pre: Dict[str, Any]) -> int:
+    """Build L_mid corrected operator once and run CISS reference on [220,265] Hz only."""
+    if not pre.get("preassembly_contract_pass") or MPI.COMM_WORLD.size != 1:
+        return 2
+    if not _lmid_mesh_path().is_file():
+        print(f"[B3_Lmid] mesh_missing={_lmid_mesh_path()}", flush=True)
+        return 2
+
+    mats: List[Any] = []
+    seen: set[int] = set()
+    rc = 2
+    try:
+        op_payload: Dict[str, Any] = {
+            "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "mode": "B3_Lmid_overnight_CISS_reference_only_operator_contract",
+        }
+        timer = dev_bench._B3DevTiming(op_payload)
+        timer.mark("operator_build_begin")
+        built = audit._b3_build_corrected_structural_active_operators(
+            mats_to_destroy=mats,
+            mat_destroy_seen=seen,
+            mesh_level=LMID_MESH_LEVEL,
+            struct_active_count_policy="L_mid_exact",
+        )
+        timer.mark("operator_build_end")
+        op_payload["B3_Lmid_operator_build_elapsed_seconds"] = op_payload.get(
+            "B3_DEV_timing_operator_build_end_elapsed_seconds"
+        )
+        if not _lmid_operator_contract_pass(op_payload, built=built):
+            op_payload["B3_Lmid_failure_reason"] = "operator_contract_failed"
+            op_payload["next_step_verdict"] = "B3_Lmid_OVERNIGHT_OPERATOR_CONTRACT_BLOCKED"
+            _write_checkpoint(OUT_JSON_LMID_CONTRACT_CKPT, op_payload)
+            return 2
+        _write_checkpoint(
+            OUT_JSON_LMID_CONTRACT_CKPT,
+            {
+                "mode": "B3_Lmid_overnight_operator_contract_checkpoint",
+                "next_step_verdict": "B3_Lmid_OVERNIGHT_OPERATOR_CONTRACT_PASS",
+                **op_payload,
+            },
+        )
+        _, ciss_ok, _ = _run_lmid_ciss_reference(built=built)
+        rc = 0 if ciss_ok else 2
+    finally:
+        audit._destroy_mats_deduped(mats)
+    return rc
+
+
+def run_lmid_st_ciss_comparison_only() -> int:
+    """Load existing L_mid ST + CISS JSON artifacts and emit ST-vs-CISS summary (no solver)."""
+    st_payload = _load_json_if_exists(OUT_JSON_LMID_ST)
+    ciss_payload = _load_json_if_exists(OUT_JSON_LMID_CISS)
+    if st_payload is None:
+        print(f"[B3_Lmid] missing_ST_json={OUT_JSON_LMID_ST}", flush=True)
+        return 2
+    if ciss_payload is None:
+        print(f"[B3_Lmid] missing_CISS_json={OUT_JSON_LMID_CISS}", flush=True)
+        return 2
+
+    st_freqs = list(st_payload.get("B3_Lmid_ST_multi_target_unique_accepted_frequencies") or [])
+    ciss_freqs = list(ciss_payload.get("B3_Lmid_CISS_accepted_frequencies_hz") or [])
+    if not ciss_freqs:
+        ciss_freqs = _accepted_frequencies_from_mode_payload(ciss_payload)
+    ciss_ok = bool(
+        ciss_payload.get("CISS_reference_available")
+        or ciss_payload.get("reference_available")
+        or str(ciss_payload.get("next_step_verdict") or "").endswith("_PASS")
+    )
+
+    summary: Dict[str, Any] = {
+        "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": "B3_Lmid_overnight_ST_vs_CISS_comparison_only_summary",
+        "B3_Lmid_mesh_level": LMID_MESH_LEVEL,
+        "B3_Lmid_mesh_path": str(_lmid_mesh_path().resolve()),
+        "B3_Lmid_ST_multi_target_targets_hz": list(LMID_ST_TARGETS_HZ),
+        "production_promotion": "BLOCKED",
+        "no_automatic_production_promotion": True,
+        "comparison_only_no_solver_execution": True,
+    }
+    existing = _load_json_if_exists(OUT_JSON_LMID_SUMMARY) or _load_json_if_exists(OUT_JSON_LMID_CONTRACT_CKPT)
+    if existing:
+        for key in (
+            "B3_Lmid_active_dimension",
+            "B3_Lmid_active_dimension_expected",
+            "B3_Lmid_active_dimension_contract_pass",
+            "B3_Lmid_A_shape",
+            "B3_Lmid_M_shape",
+            "B3_Lmid_operator_contract_pass",
+            "B3_Lmid_operator_build_elapsed_seconds",
+        ):
+            if key in existing:
+                summary[key] = existing[key]
+
+    comparison_fields, st_ciss_ckpt = _lmid_st_ciss_comparison_block(
+        st_freqs=st_freqs,
+        st_payload=st_payload,
+        ciss_freqs=ciss_freqs,
+        ciss_ok=ciss_ok,
+        ciss_payload=ciss_payload,
+    )
+    summary.update(comparison_fields)
+    summary["B3_Lmid_CISS_per_mode_diagnostics"] = ciss_payload.get("B3_Lmid_CISS_per_mode_diagnostics")
+    summary.update(_modal_facet_proxy_export_note())
+
+    st_ok = bool(st_freqs) or str(st_payload.get("next_step_verdict") or "").endswith("_PASS")
+    verdict, rc = _lmid_finalize_st_ciss_summary_verdict(summary, st_ok=st_ok, ciss_ok=ciss_ok)
+    summary["next_step_verdict"] = verdict
+    _write_checkpoint(OUT_JSON_LMID_ST_CISS_CKPT, st_ciss_ckpt)
+    _write_report(
+        OUT_JSON_LMID_SUMMARY,
+        OUT_MD_LMID_SUMMARY,
+        summary,
+        title="L_mid ST vs CISS comparison summary",
+    )
+    return rc
+
+
 def run_lmid_overnight_validation(pre: Dict[str, Any]) -> int:
     if not pre.get("preassembly_contract_pass") or MPI.COMM_WORLD.size != 1:
         return 2
@@ -557,85 +823,16 @@ def run_lmid_overnight_validation(pre: Dict[str, Any]) -> int:
         )
 
         ciss_payload, ciss_ok, ciss_freqs = _run_lmid_ciss_reference(built=built)
-        summary["B3_Lmid_CISS_reference_available"] = bool(ciss_ok)
-        summary["CISS_reference_available"] = bool(ciss_ok)
-        summary["B3_Lmid_CISS_accepted_frequency_count"] = len(ciss_freqs)
-        summary["B3_Lmid_CISS_accepted_frequencies_hz"] = ciss_freqs
-        summary["B3_Lmid_CISS_setup_elapsed_seconds"] = ciss_payload.get("B3_Lmid_CISS_setup_elapsed_seconds")
-        summary["B3_Lmid_CISS_solve_elapsed_seconds"] = ciss_payload.get("B3_Lmid_CISS_solve_elapsed_seconds")
-        summary["B3_Lmid_CISS_total_elapsed_seconds"] = ciss_payload.get("B3_Lmid_CISS_total_elapsed_seconds")
 
         st_payload, st_freqs, st_ok = _run_lmid_st_multi_target(built=built, targets_hz=LMID_ST_TARGETS_HZ)
-        summary["ST_results_available"] = bool(st_ok)
-        summary["B3_Lmid_ST_multi_target_unique_accepted_frequency_count"] = len(st_freqs)
-        summary["B3_Lmid_ST_multi_target_unique_accepted_frequencies"] = st_freqs
-        summary["B3_Lmid_ST_multi_target_total_setup_elapsed_seconds"] = st_payload.get(
-            "B3_Lmid_ST_multi_target_total_setup_elapsed_seconds"
+        comparison_fields, st_ciss_ckpt = _lmid_st_ciss_comparison_block(
+            st_freqs=st_freqs,
+            st_payload=st_payload,
+            ciss_freqs=ciss_freqs,
+            ciss_ok=ciss_ok,
+            ciss_payload=ciss_payload,
         )
-        summary["B3_Lmid_ST_multi_target_total_solve_elapsed_seconds"] = st_payload.get(
-            "B3_Lmid_ST_multi_target_total_solve_elapsed_seconds"
-        )
-        summary["B3_Lmid_ST_multi_target_total_elapsed_seconds"] = st_payload.get(
-            "B3_Lmid_ST_multi_target_total_elapsed_seconds"
-        )
-
-        st_ciss_ckpt: Dict[str, Any] = {
-            "mode": "B3_Lmid_overnight_ST_vs_CISS_comparison_checkpoint",
-            "B3_Lmid_ST_multi_target_unique_accepted_frequencies": st_freqs,
-            "B3_Lmid_ST_multi_target_deduplicated_mode_provenance": st_payload.get(
-                "B3_Lmid_ST_multi_target_deduplicated_mode_provenance"
-            ),
-        }
-        if ciss_ok and ciss_freqs:
-            matches, missing, extra = dev_bench._dev_compare_frequency_sets(
-                st_freqs,
-                ciss_freqs,
-                match_tol_hz=dev_bench.B3_DEV_ST_MULTI_CISS_MATCH_TOL_HZ,
-            )
-            summary["B3_Lmid_ST_multi_target_CISS_reference_frequency_count"] = len(ciss_freqs)
-            summary["B3_Lmid_ST_multi_target_matches_CISS_count"] = int(matches)
-            summary["B3_Lmid_ST_multi_target_missing_CISS_frequencies"] = missing
-            summary["B3_Lmid_ST_multi_target_extra_frequencies_in_interval"] = extra
-            summary["B3_Lmid_ST_multi_target_full_interval_coverage_pass"] = bool(
-                len(missing) == 0 and matches == len(ciss_freqs)
-            )
-            summary["coverage_comparison_unavailable_due_to_CISS_failure"] = False
-            st_ciss_ckpt.update(
-                {
-                    "B3_Lmid_ST_multi_target_matches_CISS_count": int(matches),
-                    "B3_Lmid_ST_multi_target_missing_CISS_frequencies": missing,
-                    "B3_Lmid_ST_multi_target_extra_frequencies_in_interval": extra,
-                    "B3_Lmid_ST_multi_target_full_interval_coverage_pass": summary[
-                        "B3_Lmid_ST_multi_target_full_interval_coverage_pass"
-                    ],
-                }
-            )
-            ciss_total = summary.get("B3_Lmid_CISS_total_elapsed_seconds")
-            st_total = summary.get("B3_Lmid_ST_multi_target_total_elapsed_seconds")
-            if (
-                ciss_total is not None
-                and st_total is not None
-                and math.isfinite(float(ciss_total))
-                and math.isfinite(float(st_total))
-                and float(st_total) > 0.0
-            ):
-                summary["B3_Lmid_ST_multi_target_speedup_vs_CISS"] = dev_bench._safe_float(
-                    float(ciss_total) / float(st_total)
-                )
-                st_ciss_ckpt["B3_Lmid_ST_multi_target_speedup_vs_CISS"] = summary["B3_Lmid_ST_multi_target_speedup_vs_CISS"]
-        else:
-            summary["B3_Lmid_ST_multi_target_CISS_reference_frequency_count"] = 0
-            summary["B3_Lmid_ST_multi_target_matches_CISS_count"] = None
-            summary["B3_Lmid_ST_multi_target_missing_CISS_frequencies"] = None
-            summary["B3_Lmid_ST_multi_target_extra_frequencies_in_interval"] = None
-            summary["B3_Lmid_ST_multi_target_full_interval_coverage_pass"] = None
-            summary["coverage_comparison_unavailable_due_to_CISS_failure"] = True
-            st_ciss_ckpt["coverage_comparison_unavailable_due_to_CISS_failure"] = True
-        st_ciss_ckpt["next_step_verdict"] = (
-            "B3_Lmid_OVERNIGHT_ST_vs_CISS_COMPARISON_RECORDED"
-            if st_ciss_ckpt.get("B3_Lmid_ST_multi_target_full_interval_coverage_pass")
-            else "B3_Lmid_OVERNIGHT_ST_vs_CISS_COMPARISON_PENDING_OR_INCOMPLETE"
-        )
+        summary.update(comparison_fields)
         _write_checkpoint(OUT_JSON_LMID_ST_CISS_CKPT, st_ciss_ckpt)
 
         dense_ciss, dense_st = _load_dense_reference_payloads()
