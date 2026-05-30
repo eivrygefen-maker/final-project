@@ -263,6 +263,285 @@ def _safe_frobenius_difference(
         return None
 
 
+def _monolithic_block_name(row: int, col: int, n_u: int) -> str:
+    nu = int(n_u)
+    r = int(row)
+    c = int(col)
+    if r < nu and c < nu:
+        return "uu"
+    if r < nu and c >= nu:
+        return "up"
+    if r >= nu and c < nu:
+        return "pu"
+    return "pp"
+
+
+def _mass_monolithic_block_name(row: int, col: int, n_u: int) -> str:
+    nu = int(n_u)
+    r = int(row)
+    c = int(col)
+    if r < nu and c < nu:
+        return "Muu"
+    if r < nu and c >= nu:
+        return "Mup_zero"
+    if r >= nu and c < nu:
+        return "Mpu"
+    return "Mpp"
+
+
+def _row_support_flags(mat: Any, row: int, *, value_tol: float = 1.0e-12) -> Dict[str, Any]:
+    flags: Dict[str, Any] = {
+        "nnz": 0,
+        "row_norm": 0.0,
+        "diag_value": 0.0,
+        "has_diag_entry": False,
+        "identity_like": False,
+        "zero_row_like": False,
+    }
+    try:
+        cols, vals = mat.getRow(int(row))
+    except TypeError:
+        rowdat = mat.getRow(int(row))
+        cols, vals = rowdat[0], rowdat[1]
+    cols_a = np.asarray(cols, dtype=np.int32).ravel()
+    vals_a = np.asarray(vals, dtype=np.float64).ravel()
+    flags["nnz"] = int(cols_a.size)
+    if vals_a.size:
+        flags["row_norm"] = float(np.linalg.norm(vals_a))
+    for c, v in zip(cols_a.tolist(), vals_a.tolist()):
+        if int(c) == int(row):
+            flags["has_diag_entry"] = True
+            flags["diag_value"] = float(v)
+            break
+    try:
+        mat.restoreRow(int(row))
+    except Exception:
+        pass
+    flags["zero_row_like"] = bool(flags["row_norm"] <= float(value_tol))
+    flags["identity_like"] = bool(
+        flags["nnz"] == 1
+        and flags["has_diag_entry"]
+        and abs(flags["diag_value"] - 1.0) <= float(value_tol)
+    )
+    return flags
+
+
+def _mat_sparsity_entry_map(mat: Any) -> Dict[Tuple[int, int], float]:
+    out: Dict[Tuple[int, int], float] = {}
+    nrow = int(mat.getSize()[0])
+    for r in range(nrow):
+        try:
+            cols, vals = mat.getRow(r)
+        except TypeError:
+            rowdat = mat.getRow(r)
+            cols, vals = rowdat[0], rowdat[1]
+        for c, v in zip(np.asarray(cols, dtype=np.int32).ravel(), np.asarray(vals, dtype=np.float64).ravel()):
+            out[(int(r), int(c))] = float(v)
+        try:
+            mat.restoreRow(r)
+        except Exception:
+            pass
+    return out
+
+
+def _extract_submatrix(
+    mat: Any,
+    *,
+    row_start: int,
+    row_end: int,
+    col_start: int,
+    col_end: int,
+    comm: Any,
+) -> Any:
+    n_rows = int(row_end) - int(row_start)
+    n_cols = int(col_end) - int(col_start)
+    if n_rows <= 0 or n_cols <= 0:
+        raise ValueError("empty submatrix range")
+    is_row = PETSc.IS().createStride(n_rows, int(row_start), 1, comm=comm)
+    is_col = PETSc.IS().createStride(n_cols, int(col_start), 1, comm=comm)
+    try:
+        sub = mat.createSubMatrix(is_row, is_col, PETSc.Mat.SubMatrixOption.EXTRACT)
+    except Exception:
+        sub = mat.createSubMatrix(is_row, is_col)
+    sub.assemble()
+    return sub
+
+
+def _safe_block_frobenius_difference(
+    old: Any,
+    new: Any,
+    *,
+    row_start: int,
+    row_end: int,
+    col_start: int,
+    col_end: int,
+    comm: Any,
+) -> Optional[float]:
+    audit = _audit_helpers()
+    sub_old = None
+    sub_new = None
+    try:
+        sub_old = _extract_submatrix(
+            old,
+            row_start=row_start,
+            row_end=row_end,
+            col_start=col_start,
+            col_end=col_end,
+            comm=comm,
+        )
+        sub_new = _extract_submatrix(
+            new,
+            row_start=row_start,
+            row_end=row_end,
+            col_start=col_start,
+            col_end=col_end,
+            comm=comm,
+        )
+        return float(audit._petsc_mat_frobenius_difference(sub_old, sub_new))
+    except Exception:
+        return None
+    finally:
+        for sub in (sub_old, sub_new):
+            if sub is not None:
+                try:
+                    sub.destroy()
+                except Exception:
+                    pass
+
+
+def _record_compose_matrix_diff_audit(
+    old: Any,
+    new: Any,
+    *,
+    label: str,
+    n_u: int,
+    n_p: int,
+    comm: Any,
+    compose_meta: Dict[str, Any],
+    block_name_fn: Any,
+    block_fro_specs: Sequence[Tuple[str, int, int, int, int]],
+) -> None:
+    prefix = f"B3_BLOCK_COMPOSE_compare_{label}_diff"
+    diff_mat = None
+    try:
+        old_map = _mat_sparsity_entry_map(old)
+        new_map = _mat_sparsity_entry_map(new)
+        keys = sorted(set(old_map.keys()) | set(new_map.keys()))
+        entries: List[Dict[str, Any]] = []
+        thresholds = (1.0e-12, 1.0e-9, 1.0e-6)
+        threshold_counts = {str(t): 0 for t in thresholds}
+        max_abs = 0.0
+        only_diagonal = True
+        only_identity_or_zero_rows = True
+        block_counts: Dict[str, int] = {}
+        for key in keys:
+            old_v = float(old_map.get(key, 0.0))
+            new_v = float(new_map.get(key, 0.0))
+            diff_v = old_v - new_v
+            abs_diff = abs(diff_v)
+            if abs_diff <= 1.0e-15:
+                continue
+            r, c = key
+            block = str(block_name_fn(r, c, n_u))
+            block_counts[block] = int(block_counts.get(block, 0)) + 1
+            if int(r) != int(c):
+                only_diagonal = False
+            row_old = _row_support_flags(old, r)
+            row_new = _row_support_flags(new, r)
+            row_bc_identity = bool(row_old["identity_like"] or row_new["identity_like"])
+            row_zero_bc = bool(row_old["zero_row_like"] and row_new["zero_row_like"])
+            if not (row_bc_identity or row_zero_bc):
+                only_identity_or_zero_rows = False
+            max_abs = max(max_abs, abs_diff)
+            for t in thresholds:
+                if abs_diff > float(t):
+                    threshold_counts[str(t)] += 1
+            entries.append(
+                {
+                    "row": int(r),
+                    "col": int(c),
+                    "block": block,
+                    "old": _safe_float(old_v),
+                    "new": _safe_float(new_v),
+                    "diff": _safe_float(diff_v),
+                    "abs_diff": _safe_float(abs_diff),
+                    "row_old_identity_like": bool(row_old["identity_like"]),
+                    "row_new_identity_like": bool(row_new["identity_like"]),
+                    "row_old_zero_like": bool(row_old["zero_row_like"]),
+                    "row_new_zero_like": bool(row_new["zero_row_like"]),
+                    "row_old_diag_value": _safe_float(row_old["diag_value"]),
+                    "row_new_diag_value": _safe_float(row_new["diag_value"]),
+                }
+            )
+        entries.sort(key=lambda item: float(item.get("abs_diff") or 0.0), reverse=True)
+        diff_mat = old.duplicate()
+        old.copy(diff_mat)
+        try:
+            diff_mat.axpy(-1.0, new, structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN)
+        except Exception:
+            diff_mat.axpy(-1.0, new)
+        diff_mat.assemble()
+        diff_nnz = int(_audit_helpers()._petsc_mat_global_nnz_used(diff_mat))
+        compose_meta[f"{prefix}_nnz"] = diff_nnz
+        compose_meta[f"{prefix}_entrywise_nnz"] = int(len(entries))
+        compose_meta[f"{prefix}_max_abs"] = _safe_float(max_abs)
+        compose_meta[f"{prefix}_count_gt_1e-12"] = int(threshold_counts["1e-12"])
+        compose_meta[f"{prefix}_count_gt_1e-9"] = int(threshold_counts["1e-9"])
+        compose_meta[f"{prefix}_count_gt_1e-6"] = int(threshold_counts["1e-6"])
+        compose_meta[f"{prefix}_only_on_diagonal"] = bool(only_diagonal and len(entries) > 0)
+        compose_meta[f"{prefix}_only_on_diagonal_vacuous"] = bool(len(entries) == 0)
+        compose_meta[f"{prefix}_only_bc_identity_or_zero_rows"] = bool(
+            only_identity_or_zero_rows and len(entries) > 0
+        )
+        compose_meta[f"{prefix}_block_counts"] = block_counts
+        compose_meta[f"{prefix}_top20"] = entries[:20]
+        if only_diagonal and only_identity_or_zero_rows and len(entries) > 0:
+            compose_meta[f"{prefix}_harmless_bc_identity_zero_row_candidate"] = True
+            compose_meta[f"{prefix}_mathematically_harmless_note"] = (
+                "All entrywise differences lie on diagonal rows classified as identity-like "
+                "or zero-row BC support in at least one backend; likely explicit BC/identity "
+                "storage mismatch rather than block ordering. compare_pass not auto-waived."
+            )
+        elif only_diagonal and len(entries) > 0:
+            compose_meta[f"{prefix}_harmless_bc_identity_zero_row_candidate"] = False
+            compose_meta[f"{prefix}_mathematically_harmless_note"] = (
+                "Differences are diagonal-only but not confined to identity/zero BC rows; "
+                "requires review before L_prod matnest_convert."
+            )
+        elif len(entries) > 0:
+            compose_meta[f"{prefix}_harmless_bc_identity_zero_row_candidate"] = False
+            compose_meta[f"{prefix}_mathematically_harmless_note"] = (
+                "Off-diagonal or mixed-block differences present; not a BC/identity-only artifact."
+            )
+        else:
+            compose_meta[f"{prefix}_harmless_bc_identity_zero_row_candidate"] = None
+            compose_meta[f"{prefix}_mathematically_harmless_note"] = "No entrywise differences above 1e-15."
+
+        nu = int(n_u)
+        np_ = int(n_p)
+        for block_label, r0, r1, c0, c1 in block_fro_specs:
+            fro = _safe_block_frobenius_difference(
+                old,
+                new,
+                row_start=r0,
+                row_end=r1,
+                col_start=c0,
+                col_end=c1,
+                comm=comm,
+            )
+            compose_meta[f"{prefix}_block_{block_label}_frobenius_diff"] = _safe_float(fro)
+        compose_meta[f"{prefix}_audit_pass"] = True
+    except Exception as exc:
+        compose_meta[f"{prefix}_audit_pass"] = False
+        compose_meta[f"{prefix}_audit_unavailable_reason"] = f"{type(exc).__name__}:{exc}"
+    finally:
+        if diff_mat is not None:
+            try:
+                diff_mat.destroy()
+            except Exception:
+                pass
+
+
 def _matnest_convert_aij_from_restricted_blocks(
     *,
     a_uu: Any,
@@ -600,6 +879,44 @@ def _compare_backends_dev(
                 compose_meta["B3_BLOCK_COMPOSE_compare_norm_tol_unavailable_reason"] = (
                     f"{type(exc).__name__}:{exc}"
                 )
+        _matnest_breadcrumb(compose_meta, "before_compare_diff_audit_A")
+        nu = int(n_u)
+        np_ = int(n_p)
+        _record_compose_matrix_diff_audit(
+            a_old,
+            a_new,
+            label="A",
+            n_u=nu,
+            n_p=np_,
+            comm=comm,
+            compose_meta=compose_meta,
+            block_name_fn=_monolithic_block_name,
+            block_fro_specs=(
+                ("Auu", 0, nu, 0, nu),
+                ("Aup", 0, nu, nu, nu + np_),
+                ("Apu", nu, nu + np_, 0, nu),
+                ("App", nu, nu + np_, nu, nu + np_),
+            ),
+        )
+        _matnest_breadcrumb(compose_meta, "after_compare_diff_audit_A")
+        _matnest_breadcrumb(compose_meta, "before_compare_diff_audit_M")
+        _record_compose_matrix_diff_audit(
+            m_old,
+            m_new,
+            label="M",
+            n_u=nu,
+            n_p=np_,
+            comm=comm,
+            compose_meta=compose_meta,
+            block_name_fn=_mass_monolithic_block_name,
+            block_fro_specs=(
+                ("Muu", 0, nu, 0, nu),
+                ("Mup_zero", 0, nu, nu, nu + np_),
+                ("Mpu", nu, nu + np_, 0, nu),
+                ("Mpp", nu, nu + np_, nu, nu + np_),
+            ),
+        )
+        _matnest_breadcrumb(compose_meta, "after_compare_diff_audit_M")
     else:
         compose_meta["B3_BLOCK_COMPOSE_compare_norm_skipped"] = True
         compose_meta["B3_BLOCK_COMPOSE_compare_norm_skipped_reason"] = "shape_or_nnz_mismatch"
