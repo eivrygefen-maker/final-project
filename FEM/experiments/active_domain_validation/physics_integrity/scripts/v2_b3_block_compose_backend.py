@@ -108,10 +108,66 @@ def _audit_helpers() -> Any:
     return audit
 
 
-def _create_matnest(blocks: List[List[Any]], *, comm: Any) -> Any:
-    """Build 2x2 PETSc MatNest via instance-style petsc4py API."""
+def _matnest_breadcrumb(compose_meta: Dict[str, Any], stage: str, **extra: Any) -> None:
+    compose_meta["B3_BLOCK_COMPOSE_matnest_last_breadcrumb"] = str(stage)
+    compose_meta[f"B3_BLOCK_COMPOSE_matnest_breadcrumb_{stage}"] = True
+    for key, val in extra.items():
+        compose_meta[f"B3_BLOCK_COMPOSE_matnest_{stage}_{key}"] = val
+    extra_s = " ".join(f"{k}={v!r}" for k, v in extra.items())
+    print(f"[B3_BLOCK_COMPOSE_matnest] {stage} {extra_s}".rstrip(), flush=True)
+
+
+def _matnest_child_diag(compose_meta: Dict[str, Any], prefix: str, mat: Any) -> None:
+    audit = _audit_helpers()
+    compose_meta[f"B3_BLOCK_COMPOSE_matnest_child_{prefix}_type"] = str(mat.getType())
+    compose_meta[f"B3_BLOCK_COMPOSE_matnest_child_{prefix}_shape"] = audit._mat_shape(mat)
+    compose_meta[f"B3_BLOCK_COMPOSE_matnest_child_{prefix}_nnz"] = int(
+        audit._petsc_mat_global_nnz_used(mat)
+    )
+
+
+def _ensure_assembled(mat: Any) -> None:
+    audit = _audit_helpers()
+    audit._petsc_mat_try_assemble(mat)
+
+
+def _owned_aij_copy(mat: Any) -> Any:
+    """Independent assembled AIJ duplicate for MatNest (avoid createSubMatrix view bugs)."""
+    audit = _audit_helpers()
+    owned = audit._petsc_duplicate_scaled(mat, 1.0)
+    _ensure_assembled(owned)
+    if "nest" in str(owned.getType()).lower():
+        raise B3BlockComposeBackendError(
+            "matnest_child_copy",
+            f"refusing MatNest child copy type={owned.getType()}",
+            recommendation=CSR_BULK_RECOMMENDATION,
+        )
+    return owned
+
+
+def _create_matnest_stepwise(
+    blocks: List[List[Any]],
+    *,
+    comm: Any,
+    compose_meta: Dict[str, Any],
+    nest_label: str,
+) -> Any:
+    """Build 2x2 PETSc MatNest via instance-style petsc4py API with stage breadcrumbs."""
+    _matnest_breadcrumb(compose_meta, f"before_create_{nest_label}_nest")
     nest = PETSc.Mat().createNest(blocks, comm=comm)
+    _matnest_breadcrumb(
+        compose_meta,
+        f"after_create_{nest_label}_nest",
+        nest_type=str(nest.getType()),
+        nest_shape=list(nest.getSize()),
+    )
+    _matnest_breadcrumb(compose_meta, f"before_assemble_{nest_label}_nest")
     nest.assemble()
+    _matnest_breadcrumb(
+        compose_meta,
+        f"after_assemble_{nest_label}_nest",
+        nest_type=str(nest.getType()),
+    )
     return nest
 
 
@@ -121,13 +177,20 @@ def _create_zero_aij_block(n_u: int, n_p: int, *, comm: Any) -> Any:
     return audit._petsc_zero_mat(int(n_u), int(n_p), comm)
 
 
-def _matnest_to_aij(nest: Any, *, stage: str) -> Any:
+def _matnest_to_aij(nest: Any, *, stage: str, compose_meta: Dict[str, Any], nest_label: str) -> Any:
+    _matnest_breadcrumb(compose_meta, f"before_convert_{nest_label}_nest", convert_stage=stage)
     petsc_err: Optional[str] = None
     try:
         out = nest.convert("aij")
         if out is not None:
             out.assemble()
             if "nest" not in str(out.getType()).lower():
+                _matnest_breadcrumb(
+                    compose_meta,
+                    f"after_convert_{nest_label}_nest",
+                    out_type=str(out.getType()),
+                    out_shape=list(out.getSize()),
+                )
                 return out
     except Exception as exc:
         petsc_err = f"{type(exc).__name__}:{exc}"
@@ -136,15 +199,25 @@ def _matnest_to_aij(nest: Any, *, stage: str) -> Any:
         nest.convert("aij", out)
         out.assemble()
         if "nest" not in str(out.getType()).lower():
+            _matnest_breadcrumb(
+                compose_meta,
+                f"after_convert_{nest_label}_nest",
+                out_type=str(out.getType()),
+                out_shape=list(out.getSize()),
+            )
             return out
     except Exception as exc:
         petsc_err = petsc_err or f"{type(exc).__name__}:{exc}"
+        compose_meta["B3_BLOCK_COMPOSE_failure_stage"] = stage
+        compose_meta["B3_BLOCK_COMPOSE_failure_reason"] = f"MatNest convert to AIJ failed: {petsc_err}"
         raise B3BlockComposeBackendError(
             stage,
             f"MatNest convert to AIJ failed: {petsc_err}",
             petsc_error=petsc_err,
             recommendation=CSR_BULK_RECOMMENDATION,
         ) from exc
+    compose_meta["B3_BLOCK_COMPOSE_failure_stage"] = stage
+    compose_meta["B3_BLOCK_COMPOSE_failure_reason"] = "MatNest convert returned AIJ type check failed"
     raise B3BlockComposeBackendError(
         stage,
         "MatNest convert returned AIJ type check failed",
@@ -167,19 +240,51 @@ def _matnest_convert_aij_from_restricted_blocks(
     comm: Any,
     compose_meta: Dict[str, Any],
 ) -> Tuple[Any, Any]:
+    nest_owned: List[Any] = []
+    child_refs: List[Any] = [a_uu, a_up, a_pu, a_pp, m_uu, m_pu, m_pp]
+    for label, mat in (
+        ("Auu", a_uu),
+        ("Aup", a_up),
+        ("Apu", a_pu),
+        ("App", a_pp),
+        ("Muu", m_uu),
+        ("Mpu", m_pu),
+        ("Mpp", m_pp),
+    ):
+        _ensure_assembled(mat)
+        _matnest_child_diag(compose_meta, label, mat)
+
     m_up_zero = _create_zero_aij_block(int(n_u), int(n_p), comm=comm)
+    _matnest_child_diag(compose_meta, "Mup_zero", m_up_zero)
+    child_refs.append(m_up_zero)
+
+    a_nest_blocks = [
+        [_owned_aij_copy(a_uu), _owned_aij_copy(a_up)],
+        [_owned_aij_copy(a_pu), _owned_aij_copy(a_pp)],
+    ]
+    m_nest_blocks = [
+        [_owned_aij_copy(m_uu), m_up_zero],
+        [_owned_aij_copy(m_pu), _owned_aij_copy(m_pp)],
+    ]
+    for row in a_nest_blocks + m_nest_blocks:
+        nest_owned.extend(row)
+    child_refs.extend(nest_owned)
+
     nest_a = None
     nest_m = None
     compose_meta["B3_BLOCK_COMPOSE_matnest_create_A_pass"] = False
     compose_meta["B3_BLOCK_COMPOSE_matnest_create_M_pass"] = False
     compose_meta["B3_BLOCK_COMPOSE_matnest_A_type"] = None
     compose_meta["B3_BLOCK_COMPOSE_matnest_M_type"] = None
+    compose_meta["B3_BLOCK_COMPOSE_matnest_child_blocks_use_owned_aij_copies"] = True
     t_create0 = time.perf_counter()
     try:
         try:
-            nest_a = _create_matnest(
-                [[a_uu, a_up], [a_pu, a_pp]],
+            nest_a = _create_matnest_stepwise(
+                a_nest_blocks,
                 comm=comm,
+                compose_meta=compose_meta,
+                nest_label="A",
             )
             compose_meta["B3_BLOCK_COMPOSE_matnest_create_A_pass"] = True
             compose_meta["B3_BLOCK_COMPOSE_matnest_A_type"] = str(nest_a.getType())
@@ -193,9 +298,11 @@ def _matnest_convert_aij_from_restricted_blocks(
                 recommendation=CSR_BULK_RECOMMENDATION,
             ) from exc
         try:
-            nest_m = _create_matnest(
-                [[m_uu, m_up_zero], [m_pu, m_pp]],
+            nest_m = _create_matnest_stepwise(
+                m_nest_blocks,
                 comm=comm,
+                compose_meta=compose_meta,
+                nest_label="M",
             )
             compose_meta["B3_BLOCK_COMPOSE_matnest_create_M_pass"] = True
             compose_meta["B3_BLOCK_COMPOSE_matnest_M_type"] = str(nest_m.getType())
@@ -220,7 +327,12 @@ def _matnest_convert_aij_from_restricted_blocks(
 
     t_conv_a0 = time.perf_counter()
     try:
-        a_out = _matnest_to_aij(nest_a, stage="matnest_convert_A")
+        a_out = _matnest_to_aij(
+            nest_a,
+            stage="matnest_convert_A",
+            compose_meta=compose_meta,
+            nest_label="A",
+        )
     finally:
         compose_meta["B3_BLOCK_COMPOSE_matnest_convert_A_seconds"] = _safe_float(
             time.perf_counter() - t_conv_a0
@@ -228,7 +340,12 @@ def _matnest_convert_aij_from_restricted_blocks(
 
     t_conv_m0 = time.perf_counter()
     try:
-        m_out = _matnest_to_aij(nest_m, stage="matnest_convert_M")
+        m_out = _matnest_to_aij(
+            nest_m,
+            stage="matnest_convert_M",
+            compose_meta=compose_meta,
+            nest_label="M",
+        )
     finally:
         compose_meta["B3_BLOCK_COMPOSE_matnest_convert_M_seconds"] = _safe_float(
             time.perf_counter() - t_conv_m0
@@ -242,10 +359,18 @@ def _matnest_convert_aij_from_restricted_blocks(
         nest_m.destroy()
     except Exception:
         pass
+    for owned in nest_owned:
+        if owned is m_up_zero:
+            continue
+        try:
+            owned.destroy()
+        except Exception:
+            pass
     try:
         m_up_zero.destroy()
     except Exception:
         pass
+    del child_refs
 
     compose_meta["B3_final_MatNest_constructed_after_blockwise_restriction"] = True
     compose_meta["B3_final_MatNest_conversion_to_sparse_AIJ_attempted"] = True
@@ -300,6 +425,7 @@ def _compare_backends_dev(
     operator_build_profile: Any = None,
 ) -> Tuple[Any, Any]:
     audit = _audit_helpers()
+    _matnest_breadcrumb(compose_meta, "before_direct_row_loop_compare_baseline")
     a_old, m_old = _direct_row_loop_compose(
         a_uu=a_uu,
         a_up=a_up,
@@ -313,6 +439,8 @@ def _compare_backends_dev(
         comm=comm,
         operator_build_profile=None,
     )
+    _matnest_breadcrumb(compose_meta, "after_direct_row_loop_compare_baseline")
+    _matnest_breadcrumb(compose_meta, "before_matnest_convert_compare")
     a_new, m_new = _matnest_convert_aij_from_restricted_blocks(
         a_uu=a_uu,
         a_up=a_up,
