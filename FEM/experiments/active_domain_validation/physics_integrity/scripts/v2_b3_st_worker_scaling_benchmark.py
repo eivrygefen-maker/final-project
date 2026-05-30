@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import resource
 import subprocess
 import sys
@@ -33,6 +34,28 @@ DENSE_DEFAULT_TARGETS = list(lmid_overnight.DENSE_ST_TARGETS_HZ)
 
 _AUDIT_SCRIPT = Path(__file__).resolve().parent / "run_v2_B3_trace_coupled_operator_and_seed_transfer_audit.py"
 
+# Strip from worker subprocess env so plain-python children do not inherit OpenMPI/PMIx RTE state
+# from a parent launched via mpiexec (causes ompi_rte_init / local rank failures).
+_SANITIZE_ENV_PREFIXES = (
+    "OMPI_",
+    "PMI_",
+    "PMIX_",
+    "OPAL_",
+    "ORTE_",
+    "MPI_",
+    "SLURM_",
+    "HYDRA_",
+    "I_MPI_",
+    "UCX_",
+)
+_SANITIZE_ENV_EXACT = frozenset(
+    {
+        "PMIX_SERVER_URI",
+        "PMIX_NAMESPACE",
+        "PMIX_RANK",
+    }
+)
+
 
 def is_st_worker_scaling_mode(argv: Sequence[str]) -> bool:
     return B3_ST_WORKER_SCALING_ARG in argv
@@ -40,6 +63,37 @@ def is_st_worker_scaling_mode(argv: Sequence[str]) -> bool:
 
 def is_st_worker_shard_execute_mode(argv: Sequence[str]) -> bool:
     return B3_ST_WORKER_SHARD_EXECUTE_ARG in argv
+
+
+def _detect_openmpi_or_pmix_launch_env() -> List[str]:
+    """Environment keys suggesting the process was started under mpiexec/Slurm PMI."""
+    found: List[str] = []
+    for key in os.environ:
+        if key in _SANITIZE_ENV_EXACT or any(key.startswith(p) for p in _SANITIZE_ENV_PREFIXES):
+            found.append(key)
+    return sorted(found)
+
+
+def _sanitized_subprocess_env() -> Dict[str, str]:
+    """Copy of os.environ with OpenMPI/PMIx/Slurm launcher keys removed for worker children."""
+    removed: List[str] = []
+    clean: Dict[str, str] = {}
+    for key, value in os.environ.items():
+        if key in _SANITIZE_ENV_EXACT or any(key.startswith(p) for p in _SANITIZE_ENV_PREFIXES):
+            removed.append(key)
+            continue
+        clean[key] = value
+    clean["B3_ST_WORKER_SUBPROCESS_SANITIZED_ENV"] = "1"
+    return clean
+
+
+def st_worker_scaling_mpi_world_ok() -> Tuple[bool, int]:
+    """Dev benchmark allows plain python (serial MPI) or mpiexec -n 1; rejects size > 1."""
+    try:
+        size = int(MPI.COMM_WORLD.size)
+    except Exception:
+        size = -1
+    return size == 1, size
 
 
 def _parse_arg_value(argv: Sequence[str], flag: str) -> Optional[str]:
@@ -430,7 +484,7 @@ def _write_worker_job_files(
 
 
 def _spawn_worker_shard_plain_python(job_path: Path, log_path: Path) -> int:
-    """Launch worker without nested mpiexec (parent may already be under mpiexec -n 1)."""
+    """Launch worker as plain python with sanitized env (no mpiexec, no inherited OpenMPI RTE)."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         sys.executable,
@@ -439,8 +493,21 @@ def _spawn_worker_shard_plain_python(job_path: Path, log_path: Path) -> int:
         B3_ST_WORKER_SHARD_JOB_ARG,
         str(job_path.resolve()),
     ]
+    child_env = _sanitized_subprocess_env()
+    removed_keys = sorted(
+        k
+        for k in os.environ
+        if k in _SANITIZE_ENV_EXACT or any(k.startswith(p) for p in _SANITIZE_ENV_PREFIXES)
+    )
     with open(log_path, "w", encoding="utf-8") as logf:
         logf.write(f"# command: {' '.join(cmd)}\n")
+        logf.write(f"# sanitized_env_removed_key_count: {len(removed_keys)}\n")
+        if removed_keys:
+            logf.write("# sanitized_env_removed_keys_sample:\n")
+            for key in removed_keys[:64]:
+                logf.write(f"#   {key}\n")
+            if len(removed_keys) > 64:
+                logf.write(f"#   ... and {len(removed_keys) - 64} more\n")
         logf.flush()
         proc = subprocess.run(
             cmd,
@@ -448,6 +515,7 @@ def _spawn_worker_shard_plain_python(job_path: Path, log_path: Path) -> int:
             stdout=logf,
             stderr=subprocess.STDOUT,
             text=True,
+            env=child_env,
         )
         logf.write(f"\n# exit_code: {proc.returncode}\n")
     return int(proc.returncode)
@@ -655,7 +723,16 @@ def run_st_worker_shard_execute(argv: Sequence[str]) -> int:
 
 
 def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) -> int:
-    if not pre.get("preassembly_contract_pass") or MPI.COMM_WORLD.size != 1:
+    mpi_ok, mpi_size = st_worker_scaling_mpi_world_ok()
+    if not pre.get("preassembly_contract_pass"):
+        print("[B3_ST_scaling] preassembly_contract_pass=False", flush=True)
+        return 2
+    if not mpi_ok:
+        print(
+            f"[B3_ST_scaling] requires MPI COMM_WORLD size 1 (got {mpi_size}); "
+            "use plain python or mpiexec -n 1",
+            flush=True,
+        )
         return 2
     try:
         mesh_level = _parse_mesh_level(argv)
@@ -664,6 +741,18 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
     except ValueError as exc:
         print(f"[B3_ST_scaling] {exc}", flush=True)
         return 2
+
+    inherited_launch_env = _detect_openmpi_or_pmix_launch_env()
+    if worker_count > 1 and inherited_launch_env:
+        print(
+            "[B3_ST_scaling] WARN: parent has OpenMPI/PMIx launcher environment variables. "
+            "Launch the benchmark with plain python (not mpiexec) so worker subprocesses "
+            "do not inherit RTE state. Example:\n"
+            "  python FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+            "run_v2_B3_trace_coupled_operator_and_seed_transfer_audit.py "
+            f"{B3_ST_WORKER_SCALING_ARG} ...",
+            flush=True,
+        )
 
     if mesh_level == "L_mid" and worker_count >= 3:
         print(
@@ -690,7 +779,12 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
         "B3_ST_scaling_solver_name": "KRYLOVSCHUR-ST-SINVERT-MUMPS-MULTI-TARGET-WORKER-SCALING",
         "production_promotion": "BLOCKED",
         "no_automatic_production_promotion": True,
+        "B3_ST_scaling_recommended_parent_launch": "plain_python_not_mpiexec",
+        "B3_ST_scaling_parent_mpi_world_size": int(mpi_size),
+        "B3_ST_scaling_parent_inherited_launch_env_key_count": len(inherited_launch_env),
     }
+    if inherited_launch_env:
+        payload["B3_ST_scaling_parent_inherited_launch_env_keys_sample"] = inherited_launch_env[:32]
     timer = dev_bench._B3DevTiming(payload)
     mats: List[Any] = []
     seen: set[int] = set()

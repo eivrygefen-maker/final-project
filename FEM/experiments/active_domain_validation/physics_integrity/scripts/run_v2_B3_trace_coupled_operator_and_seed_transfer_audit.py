@@ -13073,7 +13073,17 @@ def main() -> int:
         return run_st_worker_shard_execute(sys.argv)
 
     if is_st_worker_scaling_mode(sys.argv):
+        from v2_b3_st_worker_scaling_benchmark import st_worker_scaling_mpi_world_ok
+
         pre = _precheck_allow_b3_jd_first_bounded_execution()
+        mpi_ok, mpi_size = st_worker_scaling_mpi_world_ok()
+        if not mpi_ok:
+            print(
+                f"[B3_ST_scaling] blocked: MPI COMM_WORLD size must be 1 (got {mpi_size}). "
+                "Run with plain python (recommended) or mpiexec -n 1.",
+                flush=True,
+            )
+            return 2
         return run_st_worker_scaling_benchmark(sys.argv, pre)
 
     if is_lmid_overnight_mode(sys.argv):
