@@ -24,6 +24,18 @@ PHASES: List[str] = [
     "checkpoint_export",
 ]
 
+BLOCK_COMPOSE_MICRO_PHASES: List[str] = [
+    "scaling_blocks",
+    "pressure_restriction",
+    "row_column_mapping",
+    "nnz_counting",
+    "preallocation",
+    "value_insertion",
+    "assembly_begin_end",
+    "a_compose",
+    "m_compose",
+]
+
 
 class _NullOperatorBuildProfiler:
     enabled = False
@@ -58,6 +70,12 @@ class _NullOperatorBuildProfiler:
     def print_table(self, *, mesh_level: Optional[str] = None) -> None:
         return None
 
+    def begin_block_compose_micro(self, phase: str) -> None:
+        return None
+
+    def end_block_compose_micro(self, phase: str) -> None:
+        return None
+
 
 class B3OperatorBuildProfiler:
     ENV_VAR = "B3_PROFILE_OPERATOR_BUILD"
@@ -66,7 +84,9 @@ class B3OperatorBuildProfiler:
         self.enabled = os.environ.get(self.ENV_VAR, "").strip() == "1"
         self.payload = payload if payload is not None else {}
         self._intervals: Dict[str, float] = {p: 0.0 for p in PHASES}
+        self._block_compose_micro: Dict[str, float] = {p: 0.0 for p in BLOCK_COMPOSE_MICRO_PHASES}
         self._open: Dict[str, float] = {}
+        self._open_micro: Dict[str, float] = {}
         self._in_replay = False
         self._wall_t0 = time.perf_counter()
 
@@ -90,6 +110,57 @@ class B3OperatorBuildProfiler:
         if t0 is None:
             return
         self._intervals[phase] += time.perf_counter() - t0
+
+    def begin_block_compose_micro(self, phase: str) -> None:
+        if not self.enabled or phase not in self._block_compose_micro:
+            return
+        if phase in self._open_micro:
+            return
+        self._open_micro[phase] = time.perf_counter()
+
+    def end_block_compose_micro(self, phase: str) -> None:
+        if not self.enabled or phase not in self._block_compose_micro:
+            return
+        t0 = self._open_micro.pop(phase, None)
+        if t0 is None:
+            return
+        self._block_compose_micro[phase] += time.perf_counter() - t0
+
+    def block_compose_micro_rows(self) -> List[Dict[str, Any]]:
+        block_s = max(float(self._intervals.get("block_compose_direct_AIJ", 0.0)), 1.0e-30)
+        non_overlap = (
+            "scaling_blocks",
+            "pressure_restriction",
+            "row_column_mapping",
+            "nnz_counting",
+            "preallocation",
+            "value_insertion",
+            "assembly_begin_end",
+        )
+        micro_total = sum(float(self._block_compose_micro.get(p, 0.0)) for p in non_overlap)
+        micro_total = max(micro_total, 1.0e-30)
+        rows: List[Dict[str, Any]] = []
+        for phase in BLOCK_COMPOSE_MICRO_PHASES:
+            sec = float(self._block_compose_micro.get(phase, 0.0))
+            pct_micro = (
+                100.0 * sec / micro_total
+                if phase in non_overlap or phase in ("a_compose", "m_compose")
+                else 0.0
+            )
+            if phase in ("a_compose", "m_compose"):
+                pct_micro = 100.0 * sec / max(
+                    float(self._block_compose_micro.get("value_insertion", 0.0)), 1.0e-30
+                )
+            rows.append(
+                {
+                    "phase": phase,
+                    "seconds": round(sec, 3),
+                    "percent_of_block_compose": round(100.0 * sec / block_s, 2),
+                    "percent_of_micro_total": round(pct_micro, 2),
+                }
+            )
+        rows.sort(key=lambda r: float(r["seconds"]), reverse=True)
+        return rows
 
     def begin_replay(self) -> None:
         self._in_replay = True
@@ -144,6 +215,22 @@ class B3OperatorBuildProfiler:
         self.payload["B3_PROFILE_operator_build_phases_total_seconds"] = phase_total
         self.payload["B3_PROFILE_operator_build_wall_elapsed_seconds"] = wall
         self.payload["B3_PROFILE_operator_build_phase_rows"] = self.phase_rows()
+        micro = {p: round(float(self._block_compose_micro.get(p, 0.0)), 3) for p in BLOCK_COMPOSE_MICRO_PHASES}
+        non_overlap = (
+            "scaling_blocks",
+            "pressure_restriction",
+            "row_column_mapping",
+            "nnz_counting",
+            "preallocation",
+            "value_insertion",
+            "assembly_begin_end",
+        )
+        if any(v > 0.0 for v in micro.values()):
+            self.payload["B3_PROFILE_block_compose_micro_phases_seconds"] = micro
+            self.payload["B3_PROFILE_block_compose_micro_total_seconds"] = round(
+                sum(float(micro.get(p, 0.0)) for p in non_overlap), 3
+            )
+            self.payload["B3_PROFILE_block_compose_micro_phase_rows"] = self.block_compose_micro_rows()
 
     def write_json(self, path: Path) -> None:
         if not self.enabled:
@@ -162,6 +249,12 @@ class B3OperatorBuildProfiler:
                 "B3_PROFILE_operator_build_wall_elapsed_seconds"
             ),
             "B3_PROFILE_operator_build_phase_rows": self.payload.get("B3_PROFILE_operator_build_phase_rows", []),
+            "B3_PROFILE_block_compose_micro_phases_seconds": self.payload.get(
+                "B3_PROFILE_block_compose_micro_phases_seconds"
+            ),
+            "B3_PROFILE_block_compose_micro_phase_rows": self.payload.get(
+                "B3_PROFILE_block_compose_micro_phase_rows"
+            ),
         }
         path.write_text(json.dumps(out, indent=2), encoding="utf-8")
 
@@ -193,6 +286,21 @@ class B3OperatorBuildProfiler:
             f"{float(self.payload.get('B3_PROFILE_operator_build_wall_elapsed_seconds', 0.0)):10.3f}",
             flush=True,
         )
+        micro_rows = self.payload.get("B3_PROFILE_block_compose_micro_phase_rows") or []
+        if micro_rows:
+            block_s = float(self._intervals.get("block_compose_direct_AIJ", 0.0))
+            print(f"\n[block_compose_direct_AIJ micro-profile] parent={block_s:.3f}s", flush=True)
+            print(f"{'micro_phase':<42} {'seconds':>10} {'%compose':>10} {'%micro':>8}", flush=True)
+            print("-" * 72, flush=True)
+            for row in micro_rows:
+                if float(row.get("seconds", 0.0)) <= 0.0:
+                    continue
+                print(
+                    f"{row['phase']:<42} {float(row['seconds']):10.3f} "
+                    f"{float(row.get('percent_of_block_compose', 0.0)):9.2f}% "
+                    f"{float(row.get('percent_of_micro_total', 0.0)):7.2f}%",
+                    flush=True,
+                )
 
 
 def summarize_profile_json(path: Path) -> int:
@@ -209,10 +317,15 @@ def summarize_profile_json(path: Path) -> int:
     mesh_level = data.get("B3_ST_scaling_mesh_level") or data.get("mesh_level")
     prof = B3OperatorBuildProfiler(payload={})
     prof.enabled = True
+    micro = data.get("B3_PROFILE_block_compose_micro_phases_seconds") or {}
     if phases:
         for phase, sec in phases.items():
             if phase in prof._intervals:
                 prof._intervals[phase] = float(sec)
+    if micro:
+        for phase, sec in micro.items():
+            if phase in prof._block_compose_micro:
+                prof._block_compose_micro[phase] = float(sec)
     print(f"[B3 operator build profile summary] source={path}", flush=True)
     if mesh_level:
         print(f"mesh_level={mesh_level}", flush=True)

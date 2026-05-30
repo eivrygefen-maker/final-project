@@ -40,6 +40,7 @@ from v2_build_coupled_acoustic_seed import (
     _extract_parent_raw_block_capture,
 )
 from v2_b3_operator_build_profiler import B3OperatorBuildProfiler
+from v2_b3_block_compose_backend import B3BlockComposeBackendError, compose_restricted_blocks_to_monolithic_aij
 from v2_mesh_convergence_common import CONV_DIAG, load_manifest, mesh_path, sample_spec_from_case, solve_case_dir
 from v2_unreg_offset_report_evaluator import load_seed_with_diagnostics
 
@@ -1350,6 +1351,8 @@ def _petsc_insert_block_into_monolithic(
     col_offset: int,
 ) -> None:
     """Insert sparse block ``src`` into ``dest`` at global row/col offsets (mpiexec -n 1)."""
+    row_off = int(row_offset)
+    col_off = int(col_offset)
     nrow, _ncol = src.getSize()
     for r in range(int(nrow)):
         try:
@@ -1357,18 +1360,18 @@ def _petsc_insert_block_into_monolithic(
         except TypeError:
             rowdat = src.getRow(r)
             cols, vals = rowdat[0], rowdat[1]
-        cols_g = (np.asarray(cols, dtype=np.int32) + int(col_offset)).tolist()
+        cols_g = (np.asarray(cols, dtype=np.int32) + col_off).tolist()
         vals_g = np.asarray(vals, dtype=np.float64).tolist()
         try:
             dest.setValues(
-                [int(r + row_offset)],
+                [int(r + row_off)],
                 cols_g,
                 vals_g,
                 addv=PETSc.InsertMode.INSERT_VALUES,
             )
         except Exception:
             dest.setValues(
-                [int(r + row_offset)],
+                [int(r + row_off)],
                 cols_g,
                 vals_g,
                 addv=PETSc.InsertMode.INSERT,
@@ -1391,9 +1394,13 @@ def _b3_direct_sparse_aij_from_restricted_blocks(
     n_u: int,
     n_p: int,
     comm: Any,
+    operator_build_profile: Any = None,
 ) -> tuple[Any, Any]:
     """Assemble [u|p] monolithic AIJ from restricted blocks; no MatNest or convert()."""
+    prof = operator_build_profile
     n_w = int(n_u + n_p)
+    if prof is not None:
+        prof.begin_block_compose_micro("nnz_counting")
     nnz_est = int(
         _petsc_mat_global_nnz_used(a_uu)
         + _petsc_mat_global_nnz_used(a_up)
@@ -1405,6 +1412,9 @@ def _b3_direct_sparse_aij_from_restricted_blocks(
         + _petsc_mat_global_nnz_used(m_pu)
         + _petsc_mat_global_nnz_used(m_pp)
     )
+    if prof is not None:
+        prof.end_block_compose_micro("nnz_counting")
+        prof.begin_block_compose_micro("preallocation")
     row_nnz = max(1, int(math.ceil(max(nnz_est, mm_nnz_est) / max(1, n_w))))
     a_out = PETSc.Mat().create(comm=comm)
     a_out.setSizes([n_w, n_w])
@@ -1430,15 +1440,29 @@ def _b3_direct_sparse_aij_from_restricted_blocks(
         m_out.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
     except Exception:
         pass
+    if prof is not None:
+        prof.end_block_compose_micro("preallocation")
+        prof.begin_block_compose_micro("a_compose")
     _petsc_insert_block_into_monolithic(a_out, a_uu, row_offset=0, col_offset=0)
     _petsc_insert_block_into_monolithic(a_out, a_up, row_offset=0, col_offset=int(n_u))
     _petsc_insert_block_into_monolithic(a_out, a_pu, row_offset=int(n_u), col_offset=0)
     _petsc_insert_block_into_monolithic(a_out, a_pp, row_offset=int(n_u), col_offset=int(n_u))
+    if prof is not None:
+        prof.end_block_compose_micro("a_compose")
+        prof.begin_block_compose_micro("m_compose")
     _petsc_insert_block_into_monolithic(m_out, m_uu, row_offset=0, col_offset=0)
     _petsc_insert_block_into_monolithic(m_out, m_pu, row_offset=int(n_u), col_offset=0)
     _petsc_insert_block_into_monolithic(m_out, m_pp, row_offset=int(n_u), col_offset=int(n_u))
+    if prof is not None:
+        prof.end_block_compose_micro("m_compose")
+        a_ins = float(prof._block_compose_micro.get("a_compose", 0.0))
+        m_ins = float(prof._block_compose_micro.get("m_compose", 0.0))
+        prof._block_compose_micro["value_insertion"] = a_ins + m_ins
+        prof.begin_block_compose_micro("assembly_begin_end")
     a_out.assemble()
     m_out.assemble()
+    if prof is not None:
+        prof.end_block_compose_micro("assembly_begin_end")
     return a_out, m_out
 
 
@@ -1577,6 +1601,7 @@ def _build_b3_scaled_restricted_operators_in_memory(
     capture_pre_dirichlet_monolithic: bool = False,
     emit_localization_evidence: bool = False,
     operator_build_profile: Any = None,
+    mesh_level: str = "",
 ) -> tuple[Any, Any, np.ndarray, np.ndarray, Dict[str, Any], np.ndarray, np.ndarray, np.ndarray, Any, Any, Any]:
     prof = operator_build_profile
     if prof is not None:
@@ -1634,6 +1659,8 @@ def _build_b3_scaled_restricted_operators_in_memory(
     inv_u = 1.0 / max(float(s_uu), 1.0e-30)
     inv_p = 1.0 / max(float(s_pp), 1.0e-30)
     inv_c = 1.0 / max(float(s_c), 1.0e-30)
+    if prof is not None:
+        prof.begin_block_compose_micro("scaling_blocks")
     a_uu = _petsc_duplicate_scaled(raw_Auu, inv_u)
     m_uu = _petsc_duplicate_scaled(raw_Muu, inv_u)
     a_pp_full = _petsc_duplicate_scaled(raw_App, inv_p)
@@ -1641,12 +1668,16 @@ def _build_b3_scaled_restricted_operators_in_memory(
     a_up_full = _petsc_duplicate_scaled(raw_Aup_B3, inv_c)
     a_pu_full = _petsc_duplicate_scaled(raw_Apu_B3, inv_c)
     m_pu_full = _petsc_duplicate_scaled(raw_Mpu_B3, inv_c)
+    if prof is not None:
+        prof.end_block_compose_micro("scaling_blocks")
     for m_ in (a_pp_full, m_pp_full, a_up_full, a_pu_full, m_pu_full):
         _register_mat_for_destroy(mats_to_destroy, m_, seen=mat_seen)
     meta["B3_seed_operator_build_stage"] = "gnhep_block_scaling_complete"
 
     is_u = PETSc.IS().createGeneral(np.arange(n_u, dtype=np.int32), comm=comm)
     is_p_active = PETSc.IS().createGeneral(p_air_collapsed.astype(np.int32), comm=comm)
+    if prof is not None:
+        prof.begin_block_compose_micro("pressure_restriction")
     try:
         a_up_act = a_up_full.createSubMatrix(is_u, is_p_active)
         a_pu_act = a_pu_full.createSubMatrix(is_p_active, is_u)
@@ -1656,6 +1687,8 @@ def _build_b3_scaled_restricted_operators_in_memory(
     finally:
         is_u.destroy()
         is_p_active.destroy()
+    if prof is not None:
+        prof.end_block_compose_micro("pressure_restriction")
 
     meta["B3_restricted_Aup_shape"] = _mat_shape(a_up_act)
     meta["B3_restricted_Apu_shape"] = _mat_shape(a_pu_act)
@@ -1704,7 +1737,7 @@ def _build_b3_scaled_restricted_operators_in_memory(
     meta["B3_seed_operator_build_stage"] = "pre_direct_sparse_aij_assembly"
     _native_stage("before_direct_sparse_aij_assembly")
     try:
-        a_b3, m_b3 = _b3_direct_sparse_aij_from_restricted_blocks(
+        a_b3, m_b3 = compose_restricted_blocks_to_monolithic_aij(
             a_uu=a_uu,
             a_up=a_up_act,
             a_pu=a_pu_act,
@@ -1715,7 +1748,17 @@ def _build_b3_scaled_restricted_operators_in_memory(
             n_u=n_u,
             n_p=n_p_active,
             comm=comm,
+            report_meta=meta,
+            mesh_level=str(mesh_level),
+            operator_build_profile=prof,
         )
+    except B3BlockComposeBackendError as exc:
+        meta.update(exc.as_dict())
+        meta["B3_direct_sparse_AIJ_construction_failure_reason"] = (
+            f"{exc.stage}:{exc.message}"
+        )
+        meta["B3_seed_operator_build_stage"] = "direct_sparse_aij_assembly_failed"
+        raise
     except Exception as exc:
         meta["B3_direct_sparse_AIJ_construction_failure_reason"] = f"{type(exc).__name__}:{exc}"
         meta["B3_seed_operator_build_stage"] = "direct_sparse_aij_assembly_failed"
@@ -3430,6 +3473,7 @@ def _b3_build_corrected_structural_active_operators(
         report_meta=op_meta,
         destroy_seen=mat_destroy_seen,
         operator_build_profile=prof,
+        mesh_level=str(mesh_level),
     )
     bc_rows_i32 = np.unique(np.asarray(bc_rows, dtype=np.int32).ravel())
     n_w = int(A_b3.getSize()[0])

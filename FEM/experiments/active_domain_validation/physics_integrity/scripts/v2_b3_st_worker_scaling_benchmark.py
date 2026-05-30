@@ -20,6 +20,12 @@ import run_v2_B3_trace_coupled_operator_and_seed_transfer_audit as audit
 import v2_b3_dev_solver_benchmark as dev_bench
 import v2_b3_lmid_overnight_validation as lmid_overnight
 from v2_b3_operator_build_profiler import B3OperatorBuildProfiler
+from v2_b3_block_compose_backend import (
+    CLI_BACKEND_ARG,
+    B3BlockComposeBackendError,
+    BASELINE_L_PROD_COMPOSE_SECONDS,
+    apply_compose_backend_from_argv,
+)
 
 B3_ST_WORKER_SCALING_ARG = "--B3-Lmid-ST-multi-target-worker-scaling-benchmark-only"
 B3_ST_WORKER_COUNT_ARG = "--B3-ST-worker-count"
@@ -373,6 +379,12 @@ def _built_from_metadata(
     return built, reuse_diag
 
 
+def _merge_block_compose_meta(payload: Dict[str, Any], meta: Dict[str, Any]) -> None:
+    for key, val in meta.items():
+        if str(key).startswith("B3_BLOCK_COMPOSE_") or str(key).startswith("B3_final_MatNest_"):
+            payload[key] = val
+
+
 def _operator_build_profile_json(mesh_level: str) -> Path:
     return audit.CONV_DIAG / f"v2_B3_{mesh_level}_operator_build_profile.json"
 
@@ -386,6 +398,17 @@ def _finalize_operator_build_profile(
     if prof is None or not getattr(prof, "enabled", False):
         return
     prof.export_to_payload()
+    phases = payload.get("B3_PROFILE_operator_build_phases_seconds") or {}
+    block_s = phases.get("block_compose_direct_AIJ")
+    backend = str(payload.get("B3_BLOCK_COMPOSE_backend") or "")
+    if backend in ("matnest_convert", "matnest_compare") and block_s is not None:
+        payload["B3_BLOCK_COMPOSE_experimental_total_seconds"] = dev_bench._safe_float(block_s)
+        payload["B3_BLOCK_COMPOSE_baseline_reference_seconds"] = float(BASELINE_L_PROD_COMPOSE_SECONDS)
+        exp = float(block_s)
+        if exp > 0.0:
+            payload["B3_BLOCK_COMPOSE_speedup_vs_reference"] = dev_bench._safe_float(
+                float(BASELINE_L_PROD_COMPOSE_SECONDS) / exp
+            )
     prof.print_table(mesh_level=mesh_level)
     profile_json = _operator_build_profile_json(mesh_level)
     prof.write_json(profile_json)
@@ -1225,6 +1248,9 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
         print(f"[B3_ST_scaling] mesh_missing={mesh_file}", flush=True)
         return 2
 
+    compose_backend = apply_compose_backend_from_argv(argv, mesh_level=mesh_level)
+    print(f"[B3_ST_scaling] block_compose_backend={compose_backend}", flush=True)
+
     reuse_ckpt = _parse_reuse_checkpoint_dir(argv)
     run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     checkpoint = reuse_ckpt if reuse_ckpt is not None else _checkpoint_dir(mesh_level, run_id)
@@ -1248,6 +1274,8 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
         "B3_ST_scaling_recommended_parent_launch": "plain_python_not_mpiexec",
         "B3_ST_scaling_parent_mpi_world_size": int(mpi_size),
         "B3_ST_scaling_parent_inherited_launch_env_key_count": len(inherited_launch_env),
+        "B3_BLOCK_COMPOSE_backend": compose_backend,
+        "B3_BLOCK_COMPOSE_cli_arg": CLI_BACKEND_ARG,
     }
     if inherited_launch_env:
         payload["B3_ST_scaling_parent_inherited_launch_env_keys_sample"] = inherited_launch_env[:32]
@@ -1314,7 +1342,17 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
             contract_pass = _st_scaling_operator_contract_pass(op_payload, built=built, mesh_level=mesh_level)
             op_profile.end("operator_contract")
             payload.update(op_payload)
+            _merge_block_compose_meta(payload, dict(built.get("op_meta") or {}))
             payload["B3_ST_scaling_operator_contract_pass"] = bool(contract_pass)
+            payload["B3_BLOCK_COMPOSE_operator_contract_pass"] = bool(
+                payload.get("B3_ST_scaling_operator_contract_pass")
+            )
+            payload["B3_BLOCK_COMPOSE_zero_row_column_cleanup_contract_pass"] = bool(
+                payload.get("B3_DEV_zero_row_column_cleanup_contract_pass")
+            )
+            payload["B3_BLOCK_COMPOSE_compose_structure_contract_pass"] = bool(
+                (built.get("op_meta") or {}).get("B3_BLOCK_COMPOSE_structure_contract_pass")
+            )
             if not contract_pass:
                 payload["failure_reason"] = "operator_contract_failed"
                 verdict = "B3_ST_WORKER_SCALING_OPERATOR_CONTRACT_BLOCKED"
@@ -1474,6 +1512,11 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
 
         verdict, rc = _finalize_scaling_verdict(payload, targets_hz=targets_hz)
 
+    except B3BlockComposeBackendError as exc:
+        payload.update(exc.as_dict())
+        payload["failure_reason"] = f"{exc.stage}:{exc.message}"
+        verdict = "B3_BLOCK_COMPOSE_BACKEND_FAILED"
+        rc = 2
     except Exception as exc:
         payload["failure_reason"] = f"{type(exc).__name__}:{exc}"
         verdict = "B3_ST_WORKER_SCALING_FAILED"
@@ -1491,6 +1534,9 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
             f"- A_shape: `{payload.get('B3_ST_scaling_A_shape')}`\n"
             f"- M_shape: `{payload.get('B3_ST_scaling_M_shape')}`\n"
             f"- operator_build_s: `{payload.get('B3_ST_scaling_operator_build_elapsed_seconds')}`\n"
+            f"- block_compose_backend: `{payload.get('B3_BLOCK_COMPOSE_backend')}`\n"
+            f"- block_compose_experimental_s: `{payload.get('B3_BLOCK_COMPOSE_experimental_total_seconds')}`\n"
+            f"- block_compose_speedup_vs_reference: `{payload.get('B3_BLOCK_COMPOSE_speedup_vs_reference')}`\n"
             f"- unique_accepted_frequency_count: `{payload.get('B3_ST_scaling_unique_accepted_frequency_count')}`\n"
             f"- targets_attempted: `{payload.get('B3_ST_scaling_targets_attempted_count')}`\n"
             f"- targets_setup_succeeded: `{payload.get('B3_ST_scaling_targets_setup_succeeded_count')}`\n"
