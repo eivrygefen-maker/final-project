@@ -1514,6 +1514,8 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
 
     except B3BlockComposeBackendError as exc:
         payload.update(exc.as_dict())
+        if exc.compose_meta:
+            _merge_block_compose_meta(payload, exc.compose_meta)
         payload["failure_reason"] = f"{exc.stage}:{exc.message}"
         verdict = "B3_BLOCK_COMPOSE_BACKEND_FAILED"
         rc = 2

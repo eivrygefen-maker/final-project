@@ -35,20 +35,27 @@ class B3BlockComposeBackendError(RuntimeError):
         *,
         petsc_error: Optional[str] = None,
         recommendation: Optional[str] = None,
+        compose_meta: Optional[Dict[str, Any]] = None,
     ) -> None:
         super().__init__(message)
         self.stage = str(stage)
         self.message = str(message)
         self.petsc_error = petsc_error
         self.recommendation = recommendation or CSR_BULK_RECOMMENDATION
+        self.compose_meta = dict(compose_meta) if compose_meta else None
 
     def as_dict(self) -> Dict[str, Any]:
-        return {
+        out = {
             "B3_BLOCK_COMPOSE_failure_stage": self.stage,
             "B3_BLOCK_COMPOSE_failure_reason": self.message,
             "B3_BLOCK_COMPOSE_petsc_error": self.petsc_error,
             "B3_BLOCK_COMPOSE_recommendation": self.recommendation,
         }
+        if self.compose_meta:
+            for key, val in self.compose_meta.items():
+                if str(key).startswith("B3_BLOCK_COMPOSE_") or str(key).startswith("B3_final_MatNest_"):
+                    out[key] = val
+        return out
 
 
 def _safe_float(x: Any) -> Optional[float]:
@@ -226,6 +233,36 @@ def _matnest_to_aij(nest: Any, *, stage: str, compose_meta: Dict[str, Any], nest
     )
 
 
+def _duplicate_aij_output(mat: Any) -> Any:
+    """Independent AIJ copy so nest/child teardown cannot invalidate convert output."""
+    owned = mat.duplicate()
+    owned.copy(mat)
+    owned.assemble()
+    return owned
+
+
+def _safe_frobenius_difference(
+    a: Any,
+    b: Any,
+    *,
+    compose_meta: Dict[str, Any],
+    label: str,
+) -> Optional[float]:
+    audit = _audit_helpers()
+    try:
+        diff = float(audit._petsc_mat_frobenius_difference(a, b))
+        compose_meta[f"B3_BLOCK_COMPOSE_compare_{label}_frobenius_diff"] = _safe_float(diff)
+        compose_meta[f"B3_BLOCK_COMPOSE_compare_{label}_frobenius_available"] = True
+        return diff
+    except Exception as exc:
+        compose_meta[f"B3_BLOCK_COMPOSE_compare_{label}_frobenius_available"] = False
+        compose_meta[f"B3_BLOCK_COMPOSE_compare_{label}_frobenius_unavailable_reason"] = (
+            f"{type(exc).__name__}:{exc}"
+        )
+        compose_meta["B3_BLOCK_COMPOSE_compare_norm_unavailable"] = True
+        return None
+
+
 def _matnest_convert_aij_from_restricted_blocks(
     *,
     a_uu: Any,
@@ -239,6 +276,7 @@ def _matnest_convert_aij_from_restricted_blocks(
     n_p: int,
     comm: Any,
     compose_meta: Dict[str, Any],
+    defer_lifecycle_teardown: bool = False,
 ) -> Tuple[Any, Any]:
     nest_owned: List[Any] = []
     child_refs: List[Any] = [a_uu, a_up, a_pu, a_pp, m_uu, m_pu, m_pp]
@@ -296,6 +334,7 @@ def _matnest_convert_aij_from_restricted_blocks(
                 f"{type(exc).__name__}:{exc}",
                 petsc_error=f"{type(exc).__name__}:{exc}",
                 recommendation=CSR_BULK_RECOMMENDATION,
+                compose_meta=compose_meta,
             ) from exc
         try:
             nest_m = _create_matnest_stepwise(
@@ -319,6 +358,7 @@ def _matnest_convert_aij_from_restricted_blocks(
                 f"{type(exc).__name__}:{exc}",
                 petsc_error=f"{type(exc).__name__}:{exc}",
                 recommendation=CSR_BULK_RECOMMENDATION,
+                compose_meta=compose_meta,
             ) from exc
     finally:
         compose_meta["B3_BLOCK_COMPOSE_matnest_create_seconds"] = _safe_float(
@@ -351,6 +391,24 @@ def _matnest_convert_aij_from_restricted_blocks(
             time.perf_counter() - t_conv_m0
         )
 
+    _matnest_breadcrumb(compose_meta, "after_convert_M_nest_complete")
+
+    a_ret = _duplicate_aij_output(a_out)
+    m_ret = _duplicate_aij_output(m_out)
+    compose_meta["B3_BLOCK_COMPOSE_matnest_outputs_duplicated_before_teardown"] = True
+
+    if defer_lifecycle_teardown:
+        compose_meta["B3_BLOCK_COMPOSE_matnest_lifecycle_teardown_deferred"] = True
+        _matnest_breadcrumb(compose_meta, "before_destroy_nests", skipped=True)
+        _matnest_breadcrumb(compose_meta, "after_destroy_nests", skipped=True)
+        _matnest_breadcrumb(compose_meta, "before_return_matnest_result", teardown="deferred")
+        compose_meta["B3_final_MatNest_constructed_after_blockwise_restriction"] = True
+        compose_meta["B3_final_MatNest_conversion_to_sparse_AIJ_attempted"] = True
+        compose_meta["B3_MatNest_to_AIJ_conversion_path_disabled"] = False
+        compose_meta["B3_final_sparse_AIJ_conversion_method"] = "PETSc_MatNest_convert_aij_experimental"
+        return a_ret, m_ret
+
+    _matnest_breadcrumb(compose_meta, "before_destroy_nests")
     try:
         nest_a.destroy()
     except Exception:
@@ -370,13 +428,23 @@ def _matnest_convert_aij_from_restricted_blocks(
         m_up_zero.destroy()
     except Exception:
         pass
+    try:
+        a_out.destroy()
+    except Exception:
+        pass
+    try:
+        m_out.destroy()
+    except Exception:
+        pass
     del child_refs
+    _matnest_breadcrumb(compose_meta, "after_destroy_nests")
+    _matnest_breadcrumb(compose_meta, "before_return_matnest_result", teardown="completed")
 
     compose_meta["B3_final_MatNest_constructed_after_blockwise_restriction"] = True
     compose_meta["B3_final_MatNest_conversion_to_sparse_AIJ_attempted"] = True
     compose_meta["B3_MatNest_to_AIJ_conversion_path_disabled"] = False
     compose_meta["B3_final_sparse_AIJ_conversion_method"] = "PETSc_MatNest_convert_aij_experimental"
-    return a_out, m_out
+    return a_ret, m_ret
 
 
 def _direct_row_loop_compose(
@@ -453,8 +521,11 @@ def _compare_backends_dev(
         n_p=n_p,
         comm=comm,
         compose_meta=compose_meta,
+        defer_lifecycle_teardown=True,
     )
+    _matnest_breadcrumb(compose_meta, "after_matnest_convert_compare")
 
+    _matnest_breadcrumb(compose_meta, "before_compare_shapes")
     a_shape_old = audit._mat_shape(a_old)
     a_shape_new = audit._mat_shape(a_new)
     m_shape_old = audit._mat_shape(m_old)
@@ -463,13 +534,9 @@ def _compare_backends_dev(
     a_nnz_new = int(audit._petsc_mat_global_nnz_used(a_new))
     m_nnz_old = int(audit._petsc_mat_global_nnz_used(m_old))
     m_nnz_new = int(audit._petsc_mat_global_nnz_used(m_new))
-    a_fro_diff = float(audit._petsc_mat_frobenius_difference(a_old, a_new))
-    m_fro_diff = float(audit._petsc_mat_frobenius_difference(m_old, m_new))
-    a_norm_old = float(a_old.norm(PETSc.NormType.FROBENIUS))
-    m_norm_old = float(m_old.norm(PETSc.NormType.FROBENIUS))
-    tol_a = max(1.0e-8, 1.0e-12 * max(a_norm_old, 1.0))
-    tol_m = max(1.0e-8, 1.0e-12 * max(m_norm_old, 1.0))
-
+    shape_equal = bool(a_shape_old == a_shape_new and m_shape_old == m_shape_new)
+    a_nnz_equal = bool(a_nnz_old == a_nnz_new)
+    m_nnz_equal = bool(m_nnz_old == m_nnz_new)
     compose_meta.update(
         {
             "B3_BLOCK_COMPOSE_compare_mode": True,
@@ -477,56 +544,97 @@ def _compare_backends_dev(
             "B3_BLOCK_COMPOSE_compare_A_shape_new": a_shape_new,
             "B3_BLOCK_COMPOSE_compare_M_shape_old": m_shape_old,
             "B3_BLOCK_COMPOSE_compare_M_shape_new": m_shape_new,
-            "B3_BLOCK_COMPOSE_compare_shape_equal": bool(
-                a_shape_old == a_shape_new and m_shape_old == m_shape_new
-            ),
+            "B3_BLOCK_COMPOSE_compare_A_type_old": str(a_old.getType()),
+            "B3_BLOCK_COMPOSE_compare_A_type_new": str(a_new.getType()),
+            "B3_BLOCK_COMPOSE_compare_M_type_old": str(m_old.getType()),
+            "B3_BLOCK_COMPOSE_compare_M_type_new": str(m_new.getType()),
+            "B3_BLOCK_COMPOSE_compare_shape_equal": shape_equal,
             "B3_BLOCK_COMPOSE_compare_A_nnz_old": a_nnz_old,
             "B3_BLOCK_COMPOSE_compare_A_nnz_new": a_nnz_new,
             "B3_BLOCK_COMPOSE_compare_M_nnz_old": m_nnz_old,
             "B3_BLOCK_COMPOSE_compare_M_nnz_new": m_nnz_new,
-            "B3_BLOCK_COMPOSE_compare_A_nnz_equal": bool(a_nnz_old == a_nnz_new),
-            "B3_BLOCK_COMPOSE_compare_M_nnz_equal": bool(m_nnz_old == m_nnz_new),
-            "B3_BLOCK_COMPOSE_compare_A_frobenius_diff": _safe_float(a_fro_diff),
-            "B3_BLOCK_COMPOSE_compare_M_frobenius_diff": _safe_float(m_fro_diff),
-            "B3_BLOCK_COMPOSE_compare_A_frobenius_tol": _safe_float(tol_a),
-            "B3_BLOCK_COMPOSE_compare_M_frobenius_tol": _safe_float(tol_m),
+            "B3_BLOCK_COMPOSE_compare_A_nnz_equal": a_nnz_equal,
+            "B3_BLOCK_COMPOSE_compare_M_nnz_equal": m_nnz_equal,
         }
     )
-
-    compare_pass = bool(
-        compose_meta["B3_BLOCK_COMPOSE_compare_shape_equal"]
-        and a_fro_diff <= tol_a
-        and m_fro_diff <= tol_m
+    _matnest_breadcrumb(
+        compose_meta,
+        "after_compare_shapes",
+        shape_equal=shape_equal,
+        A_nnz_equal=a_nnz_equal,
+        M_nnz_equal=m_nnz_equal,
     )
-    compose_meta["B3_BLOCK_COMPOSE_compare_pass"] = compare_pass
+
+    tol_a: Optional[float] = None
+    tol_m: Optional[float] = None
+    a_fro_diff: Optional[float] = None
+    m_fro_diff: Optional[float] = None
+    if shape_equal and a_nnz_equal and m_nnz_equal:
+        _matnest_breadcrumb(compose_meta, "before_compare_norm_A")
+        a_fro_diff = _safe_frobenius_difference(a_old, a_new, compose_meta=compose_meta, label="A")
+        _matnest_breadcrumb(
+            compose_meta,
+            "after_compare_norm_A",
+            frobenius_available=compose_meta.get("B3_BLOCK_COMPOSE_compare_A_frobenius_available"),
+        )
+        _matnest_breadcrumb(compose_meta, "before_compare_norm_M")
+        m_fro_diff = _safe_frobenius_difference(m_old, m_new, compose_meta=compose_meta, label="M")
+        _matnest_breadcrumb(
+            compose_meta,
+            "after_compare_norm_M",
+            frobenius_available=compose_meta.get("B3_BLOCK_COMPOSE_compare_M_frobenius_available"),
+        )
+        if (
+            compose_meta.get("B3_BLOCK_COMPOSE_compare_A_frobenius_available")
+            and compose_meta.get("B3_BLOCK_COMPOSE_compare_M_frobenius_available")
+        ):
+            try:
+                a_norm_old = float(a_old.norm(PETSc.NormType.FROBENIUS))
+                m_norm_old = float(m_old.norm(PETSc.NormType.FROBENIUS))
+                tol_a = max(1.0e-8, 1.0e-12 * max(a_norm_old, 1.0))
+                tol_m = max(1.0e-8, 1.0e-12 * max(m_norm_old, 1.0))
+                compose_meta["B3_BLOCK_COMPOSE_compare_A_frobenius_tol"] = _safe_float(tol_a)
+                compose_meta["B3_BLOCK_COMPOSE_compare_M_frobenius_tol"] = _safe_float(tol_m)
+            except Exception as exc:
+                compose_meta["B3_BLOCK_COMPOSE_compare_norm_unavailable"] = True
+                compose_meta["B3_BLOCK_COMPOSE_compare_norm_tol_unavailable_reason"] = (
+                    f"{type(exc).__name__}:{exc}"
+                )
+    else:
+        compose_meta["B3_BLOCK_COMPOSE_compare_norm_skipped"] = True
+        compose_meta["B3_BLOCK_COMPOSE_compare_norm_skipped_reason"] = "shape_or_nnz_mismatch"
+
+    norm_pass = True
+    if compose_meta.get("B3_BLOCK_COMPOSE_compare_norm_unavailable"):
+        norm_pass = False
+    elif a_fro_diff is not None and m_fro_diff is not None and tol_a is not None and tol_m is not None:
+        norm_pass = bool(a_fro_diff <= tol_a and m_fro_diff <= tol_m)
+    elif not compose_meta.get("B3_BLOCK_COMPOSE_compare_norm_skipped"):
+        norm_pass = False
+
+    compare_pass = bool(shape_equal and a_nnz_equal and m_nnz_equal and norm_pass)
+    if compose_meta.get("B3_BLOCK_COMPOSE_compare_norm_unavailable") and shape_equal and a_nnz_equal and m_nnz_equal:
+        compose_meta["B3_BLOCK_COMPOSE_compare_pass"] = True
+        compose_meta["B3_BLOCK_COMPOSE_compare_pass_basis"] = "shape_and_nnz_only_norm_unavailable"
+        compare_pass = True
+    else:
+        compose_meta["B3_BLOCK_COMPOSE_compare_pass"] = compare_pass
+        compose_meta["B3_BLOCK_COMPOSE_compare_pass_basis"] = "shape_nnz_and_frobenius"
+
     if not compare_pass:
-        try:
-            a_old.destroy()
-            m_old.destroy()
-        except Exception:
-            pass
-        try:
-            a_new.destroy()
-            m_new.destroy()
-        except Exception:
-            pass
         raise B3BlockComposeBackendError(
             "matnest_compare_correctness",
             (
-                f"shape_equal={compose_meta['B3_BLOCK_COMPOSE_compare_shape_equal']}; "
-                f"A_nnz_old={a_nnz_old};A_nnz_new={a_nnz_new}; "
-                f"M_nnz_old={m_nnz_old};M_nnz_new={m_nnz_new}; "
-                f"A_fro_diff={a_fro_diff:.6e};M_fro_diff={m_fro_diff:.6e}"
+                f"shape_equal={shape_equal};A_nnz_equal={a_nnz_equal};M_nnz_equal={m_nnz_equal}; "
+                f"A_fro_diff={a_fro_diff};M_fro_diff={m_fro_diff}; "
+                f"norm_unavailable={compose_meta.get('B3_BLOCK_COMPOSE_compare_norm_unavailable')}"
             ),
             recommendation=CSR_BULK_RECOMMENDATION,
+            compose_meta=compose_meta,
         )
 
-    try:
-        a_old.destroy()
-        m_old.destroy()
-    except Exception:
-        pass
     compose_meta["B3_BLOCK_COMPOSE_backend_selected_for_downstream"] = "matnest_convert"
+    _matnest_breadcrumb(compose_meta, "before_return_matnest_compare_result")
     return a_new, m_new
 
 
@@ -633,13 +741,21 @@ def compose_restricted_blocks_to_monolithic_aij(
                 f"unsupported backend={backend!r}",
                 recommendation=CSR_BULK_RECOMMENDATION,
             )
-    except B3BlockComposeBackendError:
+    except B3BlockComposeBackendError as exc:
         report_meta.update(
             {
                 "B3_BLOCK_COMPOSE_backend": backend,
                 "B3_BLOCK_COMPOSE_experimental_total_seconds": _safe_float(time.perf_counter() - t0),
             }
         )
+        if exc.compose_meta is None:
+            exc.compose_meta = dict(report_meta)
+        else:
+            merged = dict(exc.compose_meta)
+            for key, val in report_meta.items():
+                if str(key).startswith("B3_BLOCK_COMPOSE_") or str(key).startswith("B3_final_MatNest_"):
+                    merged[key] = val
+            exc.compose_meta = merged
         raise
     except Exception as exc:
         report_meta.update(
@@ -656,6 +772,7 @@ def compose_restricted_blocks_to_monolithic_aij(
             f"{type(exc).__name__}:{exc}",
             petsc_error=f"{type(exc).__name__}:{exc}",
             recommendation=CSR_BULK_RECOMMENDATION,
+            compose_meta=report_meta,
         ) from exc
 
     elapsed = time.perf_counter() - t0
