@@ -27,10 +27,11 @@ B3_ST_SCALING_MESH_ARG = "--B3-ST-scaling-mesh-level"
 B3_ST_WORKER_SHARD_EXECUTE_ARG = "--B3-ST-worker-shard-execute-only"
 B3_ST_WORKER_SHARD_JOB_ARG = "--B3-ST-worker-shard-job-json"
 
-ALLOWED_MESH_LEVELS = frozenset({"L_mid", "L_dev_dense"})
+ALLOWED_MESH_LEVELS = frozenset({"L_mid", "L_dev_dense", "L_prod"})
 DEFAULT_MESH_LEVEL = "L_mid"
 LMID_FULL_TARGETS = list(lmid_overnight.LMID_ST_TARGETS_HZ)
 DENSE_DEFAULT_TARGETS = list(lmid_overnight.DENSE_ST_TARGETS_HZ)
+L_PROD_DEFAULT_TARGETS = list(LMID_FULL_TARGETS)
 
 _AUDIT_SCRIPT = Path(__file__).resolve().parent / "run_v2_B3_trace_coupled_operator_and_seed_transfer_audit.py"
 
@@ -143,7 +144,43 @@ def _parse_mesh_level(argv: Sequence[str]) -> str:
 
 
 def _struct_active_count_policy(mesh_level: str) -> str:
-    return "L_mid_exact" if mesh_level == "L_mid" else "mesh_independent"
+    if mesh_level == "L_mid":
+        return "L_mid_exact"
+    return "mesh_independent"
+
+
+def _scaling_mesh_path(mesh_level: str) -> Path:
+    return audit.mesh_path(mesh_level, audit.CASE_ID)
+
+
+def _st_scaling_operator_contract_pass(
+    payload: Dict[str, Any], *, built: Dict[str, Any], mesh_level: str
+) -> bool:
+    """Operator contract for ST worker-scaling (mesh_independent for dev/L_prod; L_mid exact)."""
+    dev_bench._dev_record_operator_contract(payload, built=built)
+    active_dim = int(np.asarray(built["active_local"]).size)
+    payload["B3_ST_scaling_active_dimension"] = active_dim
+    payload["B3_ST_scaling_A_shape"] = audit._mat_shape(built["A_active"])
+    payload["B3_ST_scaling_M_shape"] = audit._mat_shape(built["M_active"])
+    payload["B3_ST_scaling_mesh_level"] = mesh_level
+    payload["B3_ST_scaling_mesh_path"] = str(_scaling_mesh_path(mesh_level).resolve())
+
+    if mesh_level == "L_mid":
+        lmid_payload: Dict[str, Any] = {}
+        ok = bool(lmid_overnight._lmid_operator_contract_pass(lmid_payload, built=built))
+        payload.update(lmid_payload)
+        return ok
+
+    dim_fail = dev_bench._dev_record_active_dimension_target_range(payload, mesh_level)
+    ok = bool(
+        payload.get("B3_DEV_operator_contract_pass")
+        and payload.get("B3_DEV_zero_row_column_cleanup_contract_pass")
+        and not dim_fail
+    )
+    if mesh_level == "L_prod":
+        payload["B3_ST_scaling_L_prod_operator_contract_pass"] = ok
+        payload["B3_ST_scaling_L_prod_active_dimension"] = active_dim
+    return ok
 
 
 def _targets_stem_suffix(targets_hz: List[float]) -> str:
@@ -754,12 +791,17 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
             flush=True,
         )
 
-    if mesh_level == "L_mid" and worker_count >= 3:
+    if mesh_level in ("L_mid", "L_prod") and worker_count >= 3:
         print(
-            "[B3_ST_scaling] worker_count=3 is blocked on L_mid (RAM risk). "
-            "Use L_dev_dense for 3-worker smoke or worker_count<=2 on L_mid.",
+            f"[B3_ST_scaling] worker_count=3 is blocked on {mesh_level} (RAM risk). "
+            "Use L_dev_dense for 3-worker smoke or worker_count<=2.",
             flush=True,
         )
+        return 2
+
+    mesh_file = _scaling_mesh_path(mesh_level)
+    if not mesh_file.is_file():
+        print(f"[B3_ST_scaling] mesh_missing={mesh_file}", flush=True)
         return 2
 
     run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -805,16 +847,7 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
         )
 
         op_payload: Dict[str, Any] = {}
-        if mesh_level == "L_mid":
-            contract_pass = lmid_overnight._lmid_operator_contract_pass(op_payload, built=built)
-        else:
-            dev_bench._dev_record_operator_contract(op_payload, built=built)
-            dim_fail = dev_bench._dev_record_active_dimension_target_range(op_payload, mesh_level)
-            contract_pass = bool(
-                op_payload.get("B3_DEV_operator_contract_pass")
-                and op_payload.get("B3_DEV_zero_row_column_cleanup_contract_pass")
-                and not dim_fail
-            )
+        contract_pass = _st_scaling_operator_contract_pass(op_payload, built=built, mesh_level=mesh_level)
         payload.update(op_payload)
         payload["B3_ST_scaling_operator_contract_pass"] = bool(contract_pass)
         if not contract_pass:
@@ -982,9 +1015,16 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
         audit._write_json_atomic(out_json, payload)
         md_path = out_json.with_suffix(".md")
         md_path.write_text(
-            f"# ST worker scaling benchmark\n\n"
+            f"# ST worker scaling benchmark ({payload.get('B3_ST_scaling_mesh_level')})\n\n"
             f"- mesh: `{payload.get('B3_ST_scaling_mesh_level')}`\n"
+            f"- mesh_path: `{payload.get('B3_ST_scaling_mesh_path')}`\n"
+            f"- active_dimension: `{payload.get('B3_ST_scaling_active_dimension')}`\n"
+            f"- A_shape: `{payload.get('B3_ST_scaling_A_shape')}`\n"
+            f"- M_shape: `{payload.get('B3_ST_scaling_M_shape')}`\n"
+            f"- operator_build_s: `{payload.get('B3_ST_scaling_operator_build_elapsed_seconds')}`\n"
+            f"- unique_accepted_frequency_count: `{payload.get('B3_ST_scaling_unique_accepted_frequency_count')}`\n"
             f"- workers: `{payload.get('B3_ST_scaling_worker_count')}`\n"
+            f"- peak_rss_mb: `{payload.get('B3_ST_scaling_parent_peak_rss_mb')}`\n"
             f"- verdict: `{verdict}`\n"
             f"- json: `{out_json}`\n",
             encoding="utf-8",
