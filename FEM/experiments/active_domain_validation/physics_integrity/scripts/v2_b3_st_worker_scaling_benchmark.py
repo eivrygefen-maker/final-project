@@ -224,11 +224,35 @@ def _peak_rss_mb() -> Optional[float]:
         return None
 
 
+_CHECKPOINT_METADATA_REQUIRED_KEYS = (
+    "active_local",
+    "inactive_local",
+    "free_rows",
+    "bc_rows",
+    "u_idx",
+    "p_idx",
+    "n_w",
+    "n_u_b3",
+    "active_dimension",
+    "A_shape",
+    "M_shape",
+)
+
+_CHECKPOINT_METADATA_OPTIONAL_CAND_KEYS = (
+    "inactive_structural_count",
+    "inactive_pressure_count",
+    "inactive_aup_overlap_count",
+    "aup_supported_count",
+    "parent_raw_Auu_exact_zero_count",
+    "parent_raw_Auu_nonzero_count",
+)
+
+
 def _built_metadata_from_built(built: Dict[str, Any], *, mesh_level: str) -> Dict[str, Any]:
     def _arr(key: str) -> List[int]:
         return np.asarray(built[key], dtype=np.int32).ravel().tolist()
 
-    return {
+    meta: Dict[str, Any] = {
         "mesh_level": mesh_level,
         "struct_active_count_policy": _struct_active_count_policy(mesh_level),
         "active_dimension": int(np.asarray(built["active_local"]).size),
@@ -243,21 +267,109 @@ def _built_metadata_from_built(built: Dict[str, Any], *, mesh_level: str) -> Dic
         "A_shape": audit._mat_shape(built["A_active"]),
         "M_shape": audit._mat_shape(built["M_active"]),
     }
+    cand = built.get("cand") or {}
+    if cand:
+        meta["inactive_structural_count"] = int(cand.get("inactive_structural_count", 0))
+        meta["inactive_pressure_count"] = int(cand.get("inactive_pressure_count", 0))
+        meta["inactive_aup_overlap_count"] = int(cand.get("inactive_aup_overlap_count", 0))
+        meta["aup_supported_count"] = int(cand.get("aup_supported_count", 0))
+        meta["parent_raw_Auu_exact_zero_count"] = int(cand.get("parent_raw_Auu_exact_zero_count", 0))
+        meta["parent_raw_Auu_nonzero_count"] = int(cand.get("parent_raw_Auu_nonzero_count", 0))
+    else:
+        inactive_n = int(np.asarray(built["inactive_local"], dtype=np.int32).size)
+        meta["inactive_structural_count"] = inactive_n
+        meta["inactive_pressure_count"] = 0
+        meta["inactive_aup_overlap_count"] = 0
+        meta["parent_raw_Auu_exact_zero_count"] = inactive_n
+        meta["parent_raw_Auu_nonzero_count"] = 0
+    return meta
 
 
-def _built_from_metadata(meta: Dict[str, Any], *, A_active: Any, M_active: Any) -> Dict[str, Any]:
+def _normalize_checkpoint_metadata(meta: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str], bool]:
+    """Tolerate legacy checkpoints; derive cand counters from inactive_local when absent."""
+    missing_required = [k for k in _CHECKPOINT_METADATA_REQUIRED_KEYS if k not in meta]
+    if missing_required:
+        return dict(meta), missing_required, False
+
+    normalized: Dict[str, Any] = dict(meta)
+    missing_optional: List[str] = []
+    inactive_local = np.asarray(meta["inactive_local"], dtype=np.int32).ravel()
+    inactive_n = int(inactive_local.size)
+
+    if "inactive_structural_count" not in normalized:
+        missing_optional.append("inactive_structural_count")
+        normalized["inactive_structural_count"] = inactive_n
+    if "inactive_pressure_count" not in normalized:
+        missing_optional.append("inactive_pressure_count")
+        normalized["inactive_pressure_count"] = 0
+    if "inactive_aup_overlap_count" not in normalized:
+        missing_optional.append("inactive_aup_overlap_count")
+        normalized["inactive_aup_overlap_count"] = 0
+    if "aup_supported_count" not in normalized:
+        missing_optional.append("aup_supported_count")
+        normalized["aup_supported_count"] = 0
+    if "parent_raw_Auu_exact_zero_count" not in normalized:
+        missing_optional.append("parent_raw_Auu_exact_zero_count")
+        normalized["parent_raw_Auu_exact_zero_count"] = int(normalized["inactive_structural_count"])
+    if "parent_raw_Auu_nonzero_count" not in normalized:
+        missing_optional.append("parent_raw_Auu_nonzero_count")
+        normalized["parent_raw_Auu_nonzero_count"] = 0
+
+    active_dim = int(normalized.get("active_dimension", 0))
+    active_local = np.asarray(normalized["active_local"], dtype=np.int32).ravel()
+    schema_pass = bool(
+        active_dim > 0
+        and int(active_local.size) == active_dim
+        and inactive_n >= 0
+    )
+    return normalized, missing_optional, schema_pass
+
+
+def _cand_from_normalized_metadata(meta: Dict[str, Any], inactive_local: np.ndarray) -> Dict[str, Any]:
+    inactive_struct = int(meta.get("inactive_structural_count", int(inactive_local.size)))
     return {
+        "inactive_local": inactive_local,
+        "inactive_structural_count": inactive_struct,
+        "inactive_pressure_count": int(meta.get("inactive_pressure_count", 0)),
+        "inactive_aup_overlap_count": int(meta.get("inactive_aup_overlap_count", 0)),
+        "aup_supported_count": int(meta.get("aup_supported_count", 0)),
+        "parent_raw_Auu_exact_zero_count": int(
+            meta.get("parent_raw_Auu_exact_zero_count", inactive_struct)
+        ),
+        "parent_raw_Auu_nonzero_count": int(meta.get("parent_raw_Auu_nonzero_count", 0)),
+    }
+
+
+def _built_from_metadata(
+    meta: Dict[str, Any], *, A_active: Any, M_active: Any
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    normalized, missing_optional, schema_pass = _normalize_checkpoint_metadata(meta)
+    inactive_local = np.asarray(normalized["inactive_local"], dtype=np.int32).ravel()
+    cand = _cand_from_normalized_metadata(normalized, inactive_local)
+    built = {
         "A_active": A_active,
         "M_active": M_active,
-        "active_local": np.asarray(meta["active_local"], dtype=np.int32),
-        "inactive_local": np.asarray(meta["inactive_local"], dtype=np.int32),
-        "free_rows": np.asarray(meta["free_rows"], dtype=np.int32),
-        "bc_rows": np.asarray(meta["bc_rows"], dtype=np.int32),
-        "u_idx": np.asarray(meta["u_idx"], dtype=np.int32),
-        "p_idx": np.asarray(meta["p_idx"], dtype=np.int32),
-        "n_w": int(meta["n_w"]),
-        "n_u_b3": int(meta["n_u_b3"]),
+        "active_local": np.asarray(normalized["active_local"], dtype=np.int32).ravel(),
+        "inactive_local": inactive_local,
+        "free_rows": np.asarray(normalized["free_rows"], dtype=np.int32).ravel(),
+        "bc_rows": np.asarray(normalized["bc_rows"], dtype=np.int32).ravel(),
+        "u_idx": np.asarray(normalized["u_idx"], dtype=np.int32).ravel(),
+        "p_idx": np.asarray(normalized["p_idx"], dtype=np.int32).ravel(),
+        "n_w": int(normalized["n_w"]),
+        "n_u_b3": int(normalized["n_u_b3"]),
+        "cand": cand,
     }
+    reuse_diag = {
+        "B3_ST_scaling_reuse_checkpoint_metadata_schema_pass": bool(schema_pass),
+        "B3_ST_scaling_reuse_checkpoint_missing_optional_fields": list(missing_optional),
+        "B3_ST_scaling_reuse_checkpoint_derived_inactive_structural_count": int(
+            cand["inactive_structural_count"]
+        ),
+        "B3_ST_scaling_reuse_checkpoint_failure_reason": None
+        if schema_pass
+        else "checkpoint_metadata_schema_invalid",
+    }
+    return built, reuse_diag
 
 
 def _export_operators(checkpoint: Path, *, built: Dict[str, Any], mesh_level: str) -> Dict[str, Any]:
@@ -305,7 +417,7 @@ def _verify_operator_export(checkpoint: Path) -> Tuple[bool, List[str], Dict[str
     return export_pass, missing, detail
 
 
-def _load_operators(checkpoint: Path) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def _load_operators(checkpoint: Path) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     meta_path = checkpoint / "built_metadata.json"
     if not meta_path.is_file():
         raise FileNotFoundError(f"missing built metadata: {meta_path}")
@@ -327,8 +439,8 @@ def _load_operators(checkpoint: Path) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     A_active = _load_mat(a_path)
     M_active = _load_mat(m_path)
-    built = _built_from_metadata(meta, A_active=A_active, M_active=M_active)
-    return built, meta
+    built, reuse_diag = _built_from_metadata(meta, A_active=A_active, M_active=M_active)
+    return built, meta, reuse_diag
 
 
 def _partition_target_shards(
@@ -986,8 +1098,18 @@ def run_st_worker_shard_execute(argv: Sequence[str]) -> int:
         return 2
 
     try:
-        built, meta = _load_operators(checkpoint)
+        built, meta, reuse_diag = _load_operators(checkpoint)
         mats.extend([built["A_active"], built["M_active"]])
+        shard_payload.update(reuse_diag)
+        if not reuse_diag.get("B3_ST_scaling_reuse_checkpoint_metadata_schema_pass"):
+            shard_payload["failure_reason"] = reuse_diag.get(
+                "B3_ST_scaling_reuse_checkpoint_failure_reason"
+            )
+            _write_worker_failure_json(
+                out_failure,
+                {**shard_payload, "worker_return_code": 2, "artifact": "worker_failure_json"},
+            )
+            return 2
         shard_payload["loaded_active_dimension"] = int(meta.get("active_dimension", 0))
         mesh_level_job = str(job.get("mesh_level") or meta.get("mesh_level") or "L_mid")
         all_accepted, per_target, setup_s, solve_s, loop_summary = _run_st_targets_on_built(
@@ -1126,8 +1248,16 @@ def run_st_worker_scaling_benchmark(argv: Sequence[str], pre: Dict[str, Any]) ->
                 verdict = "B3_ST_WORKER_SCALING_REUSE_CHECKPOINT_BLOCKED"
                 audit._write_json_atomic(out_json, payload)
                 return 2
-            built, meta = _load_operators(checkpoint)
+            built, meta, reuse_diag = _load_operators(checkpoint)
             mats.extend([built["A_active"], built["M_active"]])
+            payload.update(reuse_diag)
+            if not reuse_diag.get("B3_ST_scaling_reuse_checkpoint_metadata_schema_pass"):
+                payload["failure_reason"] = reuse_diag.get(
+                    "B3_ST_scaling_reuse_checkpoint_failure_reason"
+                )
+                verdict = "B3_ST_WORKER_SCALING_REUSE_CHECKPOINT_METADATA_BLOCKED"
+                audit._write_json_atomic(out_json, payload)
+                return 2
             payload["B3_ST_scaling_operator_build_elapsed_seconds"] = None
             payload["B3_ST_scaling_reused_active_dimension"] = int(meta.get("active_dimension", 0))
             op_payload: Dict[str, Any] = {}
