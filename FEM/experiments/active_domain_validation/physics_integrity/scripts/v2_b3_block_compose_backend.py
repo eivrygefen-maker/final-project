@@ -108,13 +108,9 @@ def _audit_helpers() -> Any:
     return audit
 
 
-def _create_nest_2x2(
-    blocks: List[List[Any]],
-    *,
-    comm: Any,
-) -> Any:
-    """Build 2x2 PETSc MatNest; petsc4py API is createNest(mats, isrows=..., iscols=..., comm=...)."""
-    nest = PETSc.Mat.createNest(blocks, comm=comm)
+def _create_matnest(blocks: List[List[Any]], *, comm: Any) -> Any:
+    """Build 2x2 PETSc MatNest via instance-style petsc4py API."""
+    nest = PETSc.Mat().createNest(blocks, comm=comm)
     nest.assemble()
     return nest
 
@@ -181,7 +177,7 @@ def _matnest_convert_aij_from_restricted_blocks(
     t_create0 = time.perf_counter()
     try:
         try:
-            nest_a = _create_nest_2x2(
+            nest_a = _create_matnest(
                 [[a_uu, a_up], [a_pu, a_pp]],
                 comm=comm,
             )
@@ -197,7 +193,7 @@ def _matnest_convert_aij_from_restricted_blocks(
                 recommendation=CSR_BULK_RECOMMENDATION,
             ) from exc
         try:
-            nest_m = _create_nest_2x2(
+            nest_m = _create_matnest(
                 [[m_uu, m_up_zero], [m_pu, m_pp]],
                 comm=comm,
             )
