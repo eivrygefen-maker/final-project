@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""Production-stage operator checkpoint export (build + PETSc binary + CSR fallback)."""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import run_v2_B3_trace_coupled_operator_and_seed_transfer_audit as audit
+import v2_b3_dev_solver_benchmark as dev_bench
+from v2_b3_block_compose_backend import CLI_BACKEND_ARG, apply_compose_backend_from_argv
+from v2_b3_checkpoint_pipeline_lib import (
+    B3_EXPORT_RICH_MODAL_DATA_ARG,
+    PIPELINE_EXPORT_MANIFEST,
+    default_checkpoint_dir,
+    ensure_rich_modal_export_allowed,
+    fail_with_messages,
+    rich_modal_export_manifest_block,
+    verify_checkpoint_complete,
+    verify_checkpoint_matrices,
+    verify_production_stage_environment,
+    write_json,
+)
+from v2_b3_st_worker_scaling_benchmark import (
+    _export_operators,
+    _st_scaling_operator_contract_pass,
+    _struct_active_count_policy,
+)
+
+ALLOWED_MESH_LEVELS = frozenset({"L_mid", "L_dev_dense", "L_prod"})
+
+
+def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Production-stage checkpoint export (no ST/EPS solve).",
+    )
+    parser.add_argument("--mesh-level", choices=sorted(ALLOWED_MESH_LEVELS), default="L_prod")
+    parser.add_argument(
+        "--output-dir",
+        help="Checkpoint output directory. Default: v2_mesh_convergence/diagnostics/st_worker_scaling_<mesh>_<utc>",
+    )
+    parser.add_argument(
+        CLI_BACKEND_ARG,
+        dest="compose_backend",
+        default="csr_bulk",
+        help="Block compose backend for operator build (default: csr_bulk).",
+    )
+    parser.add_argument(
+        B3_EXPORT_RICH_MODAL_DATA_ARG,
+        dest="export_rich_modal_data",
+        action="store_true",
+        default=False,
+        help="Opt-in rich modal export (NOT implemented; disabled by default for benchmarks).",
+    )
+    if argv is None:
+        return parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
+    ok, messages = verify_production_stage_environment()
+    if not ok:
+        fail_with_messages("B3_checkpoint_export", messages)
+
+    args = _parse_args(argv)
+    rich_modal_requested = bool(args.export_rich_modal_data)
+    ensure_rich_modal_export_allowed(requested=rich_modal_requested, context="B3_checkpoint_export")
+    mesh_level = str(args.mesh_level)
+    run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    checkpoint = (
+        Path(args.output_dir).expanduser().resolve()
+        if args.output_dir
+        else default_checkpoint_dir(mesh_level, run_id=run_id)
+    )
+    checkpoint.mkdir(parents=True, exist_ok=True)
+
+    argv_for_backend = [f"{CLI_BACKEND_ARG}={args.compose_backend}"]
+    apply_compose_backend_from_argv(argv_for_backend, mesh_level=mesh_level)
+
+    pre = audit._precheck_allow_b3_jd_first_bounded_execution()
+    if not pre.get("preassembly_contract_pass"):
+        manifest = {
+            "stage": "production_checkpoint_export",
+            "status": "FAIL",
+            "failure_reason": "preassembly_contract_pass=False",
+            "checkpoint_dir": str(checkpoint),
+            "precheck": pre,
+        }
+        write_json(checkpoint / PIPELINE_EXPORT_MANIFEST, manifest)
+        print(f"[B3_checkpoint_export] FAIL precheck -> {checkpoint / PIPELINE_EXPORT_MANIFEST}", flush=True)
+        return 2
+
+    mats: List[Any] = []
+    seen: Set[int] = set()
+    t0 = time.perf_counter()
+    try:
+        built = audit._b3_build_corrected_structural_active_operators(
+            mats_to_destroy=mats,
+            mat_destroy_seen=seen,
+            mesh_level=mesh_level,
+            struct_active_count_policy=_struct_active_count_policy(mesh_level),
+            operator_build_profile=None,
+        )
+        op_payload: Dict[str, Any] = {}
+        contract_pass = _st_scaling_operator_contract_pass(op_payload, built=built, mesh_level=mesh_level)
+        if not contract_pass:
+            manifest = {
+                "stage": "production_checkpoint_export",
+                "status": "FAIL",
+                "failure_reason": f"operator_contract_failed:{op_payload.get('failure_reason')}",
+                "checkpoint_dir": str(checkpoint),
+                "operator_contract": op_payload,
+            }
+            write_json(checkpoint / PIPELINE_EXPORT_MANIFEST, manifest)
+            print(f"[B3_checkpoint_export] FAIL operator contract", flush=True)
+            return 2
+
+        export_meta = _export_operators(checkpoint, built=built, mesh_level=mesh_level)
+        export_pass, missing, export_detail = verify_checkpoint_complete(checkpoint)
+        mat_ok, mat_errors, mat_detail = verify_checkpoint_matrices(checkpoint)
+
+        built_meta = json.loads((checkpoint / "built_metadata.json").read_text(encoding="utf-8"))
+        elapsed = time.perf_counter() - t0
+        manifest: Dict[str, Any] = {
+            "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "stage": "production_checkpoint_export",
+            "status": "PASS" if export_pass and mat_ok else "FAIL",
+            "mesh_level": mesh_level,
+            "checkpoint_dir": str(checkpoint.resolve()),
+            "compose_backend": args.compose_backend,
+            "operator_build_elapsed_seconds": dev_bench._safe_float(elapsed),
+            "export_pass": bool(export_pass),
+            "export_missing_files": missing,
+            "export_detail": export_detail,
+            "matrix_verify_pass": bool(mat_ok),
+            "matrix_verify_errors": mat_errors,
+            "matrix_verify_detail": mat_detail,
+            "built_metadata_summary": {
+                "active_dimension": built_meta.get("active_dimension"),
+                "mesh_level": built_meta.get("mesh_level"),
+                "A_shape": built_meta.get("A_shape"),
+                "M_shape": built_meta.get("M_shape"),
+            },
+            "portable_csr_export": export_meta.get("portable_csr_export"),
+            "production_promotion": "BLOCKED",
+            "no_automatic_production_promotion": True,
+            "next_stage": "solver-mkl checkpoint solve",
+            "rich_modal_export": rich_modal_export_manifest_block(requested=rich_modal_requested),
+        }
+        write_json(checkpoint / PIPELINE_EXPORT_MANIFEST, manifest)
+        if manifest["status"] != "PASS":
+            print(f"[B3_checkpoint_export] FAIL export/matrix verify -> {checkpoint}", flush=True)
+            return 2
+        print(
+            f"[B3_checkpoint_export] PASS checkpoint={checkpoint} "
+            f"build_s={elapsed:.1f} active_dim={built_meta.get('active_dimension')}",
+            flush=True,
+        )
+        return 0
+    except Exception as exc:
+        manifest = {
+            "stage": "production_checkpoint_export",
+            "status": "FAIL",
+            "failure_reason": f"{type(exc).__name__}:{exc}",
+            "checkpoint_dir": str(checkpoint),
+        }
+        write_json(checkpoint / PIPELINE_EXPORT_MANIFEST, manifest)
+        print(f"[B3_checkpoint_export] FAIL {exc}", flush=True)
+        return 2
+    finally:
+        for mat in mats:
+            try:
+                mat.destroy()
+            except Exception:
+                pass
+
+
+def main() -> int:
+    return run_checkpoint_export()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

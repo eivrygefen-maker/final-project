@@ -15,6 +15,11 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from v2_b3_operator_checkpoint_portable import load_operators_with_portable_fallback  # noqa: E402
 from v2_b3_petsc_util import mat_shape, write_json_atomic  # noqa: E402
+from v2_b3_checkpoint_pipeline_lib import (  # noqa: E402
+    B3_EXPORT_RICH_MODAL_DATA_ARG,
+    ensure_rich_modal_export_allowed,
+    rich_modal_export_manifest_block,
+)
 from v2_b3_st_sinvert_solver_lib import (  # noqa: E402
     ACCEPTANCE_FREQ_HI_HZ,
     ACCEPTANCE_FREQ_LO_HZ,
@@ -46,6 +51,13 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--ncv", type=int, default=24)
     parser.add_argument("--output-dir", required=True, help="Directory for result.json/result.md.")
     parser.add_argument("--baseline-json", help="Optional baseline result.json for parity comparison.")
+    parser.add_argument(
+        B3_EXPORT_RICH_MODAL_DATA_ARG,
+        dest="export_rich_modal_data",
+        action="store_true",
+        default=False,
+        help="Opt-in rich modal export (NOT implemented; disabled by default for benchmarks).",
+    )
     if argv is None:
         return parser.parse_args()
     return parser.parse_args(argv)
@@ -83,6 +95,8 @@ def _write_result_md(path: Path, result: Dict[str, Any]) -> None:
 
 def run_checkpoint_solver_benchmark(argv: Optional[List[str]] = None) -> int:
     args = _parse_args(argv)
+    rich_modal_requested = bool(args.export_rich_modal_data)
+    ensure_rich_modal_export_allowed(requested=rich_modal_requested, context="B3_checkpoint_solver_bench")
     _validate_solver_semantics(args)
 
     checkpoint = Path(args.checkpoint_dir).expanduser().resolve()
@@ -123,6 +137,7 @@ def run_checkpoint_solver_benchmark(argv: Optional[List[str]] = None) -> int:
         "checkpoint_load": None,
         "matrix_contract": None,
         "baseline_comparison": None,
+        "rich_modal_export": rich_modal_export_manifest_block(requested=rich_modal_requested),
         "status": "FAIL",
         "failure_reason": None,
     }

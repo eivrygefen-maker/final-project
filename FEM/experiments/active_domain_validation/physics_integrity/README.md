@@ -197,6 +197,10 @@ bash FEM/experiments/active_domain_validation/physics_integrity/scripts/run_phys
 Small controlled perturbations around the frozen v2 baseline. Plan:
 `docs/v2_sensitivity_validation_plan.md`, manifest: `configs/v2_sensitivity_manifest.json`.
 
+**Before any expensive LHS or wide sweep for audio / STK / microphone synthesis**, verify rich modal
+export is available. See `docs/B3_RICH_MODAL_EXPORT_TODO.md`. Solver timing benchmarks must **not**
+enable `--B3-export-rich-modal-data` unless explicitly testing export itself.
+
 **Pilot (soundhole radius only — run this first):**
 
 ```bash
