@@ -329,19 +329,18 @@ def _finalize_top_entries(top: List[Any]) -> List[Dict[str, Any]]:
     return [dict(triple[2]) for triple in ordered]
 
 
-def _annotate_child_nest_top_entry(
+def _annotate_child_nest_pattern_entry(
     entry: Dict[str, Any], *, child: Any, nest_sub: Any
 ) -> Dict[str, Any]:
     r = int(entry["row_local"])
     row_child = _row_support_flags(child, r)
     row_nest = _row_support_flags(nest_sub, r)
     out = dict(entry)
+    out["on_diagonal"] = bool(int(entry["row_local"]) == int(entry["col_local"]))
     out["child_row_identity_like"] = bool(row_child["identity_like"])
     out["nest_row_identity_like"] = bool(row_nest["identity_like"])
     out["child_row_zero_like"] = bool(row_child["zero_row_like"])
     out["nest_row_zero_like"] = bool(row_nest["zero_row_like"])
-    out["child_row_diag_value"] = _safe_float(row_child["diag_value"])
-    out["nest_row_diag_value"] = _safe_float(row_nest["diag_value"])
     out["bc_identity_or_zero_row"] = bool(
         row_child["identity_like"]
         or row_nest["identity_like"]
@@ -362,30 +361,50 @@ def _record_child_vs_nest_block_pair_detail(
 ) -> Dict[str, Any]:
     """Targeted child-vs-nest diff localization for one diagonal block (Auu/App)."""
     detail_prefix = f"{prefix}_{block_label}_detail"
+    pattern_prefix = f"{prefix}_{block_label}_pattern"
     compose_meta[f"{detail_prefix}_top20"] = []
     compose_meta[f"{detail_prefix}_max_abs"] = 0.0
+    compose_meta[f"{pattern_prefix}_top20_child_only"] = []
+    compose_meta[f"{pattern_prefix}_top20_nest_only"] = []
     for key, _thr in DIFF_THRESHOLDS:
         compose_meta[f"{detail_prefix}_count_gt_{key}"] = 0
+        compose_meta[f"{pattern_prefix}_child_only_count_gt_{key}"] = 0
+        compose_meta[f"{pattern_prefix}_nest_only_count_gt_{key}"] = 0
     summary: Dict[str, Any] = {
         "block_label": str(block_label),
         "harmless_unit_diag_bc": False,
+        "pattern_harmless_unit_diag_bc": False,
         "unit_diagonal_diff_count": 0,
         "unit_diagonal_bc_identity_diff_count": 0,
+        "unit_diagonal_pattern_only_count": 0,
+        "unit_diagonal_bc_identity_pattern_only_count": 0,
         "shared_stored_diff_count": 0,
-        "only_on_diagonal": True,
-        "only_bc_identity_or_zero_rows": True,
+        "child_only_nnz": 0,
+        "nest_only_nnz": 0,
+        "only_on_diagonal_pattern": True,
+        "only_bc_identity_or_zero_rows_pattern": True,
         "max_abs": 0.0,
+        "max_abs_child_only": 0.0,
+        "max_abs_nest_only": 0.0,
     }
-    top_heap: List[Any] = []
-    threshold_counts = {key: 0 for key, _val in DIFF_THRESHOLDS}
+    top_shared_heap: List[Any] = []
+    top_child_only_heap: List[Any] = []
+    top_nest_only_heap: List[Any] = []
+    shared_threshold_counts = {key: 0 for key, _val in DIFF_THRESHOLDS}
+    child_only_threshold_counts = {key: 0 for key, _val in DIFF_THRESHOLDS}
+    nest_only_threshold_counts = {key: 0 for key, _val in DIFF_THRESHOLDS}
     try:
         nrow = int(child.getSize()[0])
         shared_stored_diff_count = 0
-        max_abs = 0.0
-        only_diagonal = True
-        only_bc_identity = True
-        unit_diagonal_diff_count = 0
-        unit_diagonal_bc_identity_diff_count = 0
+        max_abs_shared = 0.0
+        child_only_nnz = 0
+        nest_only_nnz = 0
+        max_abs_child_only = 0.0
+        max_abs_nest_only = 0.0
+        only_diagonal_pattern = True
+        only_bc_identity_pattern = True
+        unit_diagonal_pattern_count = 0
+        unit_diagonal_bc_identity_pattern_count = 0
         row_bc_cache: Dict[int, bool] = {}
 
         def _bc_identity_row(r: int) -> bool:
@@ -409,108 +428,198 @@ def _record_child_vs_nest_block_pair_detail(
             for c in all_cols:
                 in_child = c in child_row
                 in_nest = c in nest_row
-                child_v = float(child_row[c]) if in_child else 0.0
-                nest_v = float(nest_row[c]) if in_nest else 0.0
                 if in_child and in_nest:
+                    child_v = float(child_row[c])
+                    nest_v = float(nest_row[c])
                     diff_v = child_v - nest_v
-                    kind = "shared_stored"
-                elif in_child:
-                    diff_v = child_v
-                    kind = "child_only_stored"
-                else:
-                    diff_v = -nest_v
-                    kind = "nest_only_stored"
-                abs_diff = abs(float(diff_v))
-                if abs_diff <= VALUE_DIFF_MIN:
-                    continue
-                if in_child and in_nest:
+                    abs_diff = abs(float(diff_v))
+                    if abs_diff <= VALUE_DIFF_MIN:
+                        continue
                     shared_stored_diff_count += 1
-                max_abs = max(max_abs, abs_diff)
-                if int(r) != int(c):
-                    only_diagonal = False
+                    max_abs_shared = max(max_abs_shared, abs_diff)
+                    bc_row = _bc_identity_row(int(r))
+                    for key, thr in DIFF_THRESHOLDS:
+                        if abs_diff > thr:
+                            shared_threshold_counts[key] += 1
+                    _push_top_entry(
+                        top_shared_heap,
+                        {
+                            "row_local": int(r),
+                            "col_local": int(c),
+                            "row_global": int(r + row_offset),
+                            "col_global": int(c + col_offset),
+                            "block": str(block_label),
+                            "child": _safe_float(child_v),
+                            "nest": _safe_float(nest_v),
+                            "diff": _safe_float(diff_v),
+                            "abs_diff": _safe_float(abs_diff),
+                            "kind": "shared_stored_value_diff",
+                            "bc_identity_or_zero_row": bc_row,
+                        },
+                        limit=20,
+                    )
+                    continue
+
                 bc_row = _bc_identity_row(int(r))
-                if not bc_row:
-                    only_bc_identity = False
-                if int(r) == int(c) and abs(abs_diff - 1.0) <= 1.0e-8:
-                    unit_diagonal_diff_count += 1
-                    if bc_row:
-                        unit_diagonal_bc_identity_diff_count += 1
-                for key, thr in DIFF_THRESHOLDS:
-                    if abs_diff > thr:
-                        threshold_counts[key] += 1
-                _push_top_entry(
-                    top_heap,
-                    {
-                        "row_local": int(r),
-                        "col_local": int(c),
-                        "row_global": int(r + row_offset),
-                        "col_global": int(c + col_offset),
-                        "block": str(block_label),
-                        "child": _safe_float(child_v) if in_child else None,
-                        "nest": _safe_float(nest_v) if in_nest else None,
-                        "diff": _safe_float(diff_v),
-                        "abs_diff": _safe_float(abs_diff),
-                        "kind": kind,
-                        "bc_identity_or_zero_row": bc_row,
-                    },
-                    limit=20,
-                )
-        top20 = [
-            _annotate_child_nest_top_entry(item, child=child, nest_sub=nest_sub)
-            for item in _finalize_top_entries(top_heap)
+                on_diagonal = bool(int(r) == int(c))
+
+                if in_child and not in_nest:
+                    child_only_nnz += 1
+                    child_v = float(child_row[c])
+                    abs_val = abs(child_v)
+                    max_abs_child_only = max(max_abs_child_only, abs_val)
+                    if not on_diagonal:
+                        only_diagonal_pattern = False
+                    if not bc_row:
+                        only_bc_identity_pattern = False
+                    if on_diagonal and abs(abs_val - 1.0) <= 1.0e-8:
+                        unit_diagonal_pattern_count += 1
+                        if bc_row:
+                            unit_diagonal_bc_identity_pattern_count += 1
+                    for key, thr in DIFF_THRESHOLDS:
+                        if abs_val > thr:
+                            child_only_threshold_counts[key] += 1
+                    _push_top_entry(
+                        top_child_only_heap,
+                        {
+                            "row_local": int(r),
+                            "col_local": int(c),
+                            "row_global": int(r + row_offset),
+                            "col_global": int(c + col_offset),
+                            "block": str(block_label),
+                            "value": _safe_float(child_v),
+                            "abs_value": _safe_float(abs_val),
+                            "on_diagonal": on_diagonal,
+                            "kind": "child_only_stored",
+                            "bc_identity_or_zero_row": bc_row,
+                            "explicit_zero_stored": bool(abs_val <= EXPLICIT_ZERO_TOL),
+                        },
+                        limit=20,
+                    )
+                    continue
+
+                if in_nest and not in_child:
+                    nest_only_nnz += 1
+                    nest_v = float(nest_row[c])
+                    abs_val = abs(nest_v)
+                    max_abs_nest_only = max(max_abs_nest_only, abs_val)
+                    if not on_diagonal:
+                        only_diagonal_pattern = False
+                    if not bc_row:
+                        only_bc_identity_pattern = False
+                    if on_diagonal and abs(abs_val - 1.0) <= 1.0e-8:
+                        unit_diagonal_pattern_count += 1
+                        if bc_row:
+                            unit_diagonal_bc_identity_pattern_count += 1
+                    for key, thr in DIFF_THRESHOLDS:
+                        if abs_val > thr:
+                            nest_only_threshold_counts[key] += 1
+                    _push_top_entry(
+                        top_nest_only_heap,
+                        {
+                            "row_local": int(r),
+                            "col_local": int(c),
+                            "row_global": int(r + row_offset),
+                            "col_global": int(c + col_offset),
+                            "block": str(block_label),
+                            "value": _safe_float(nest_v),
+                            "abs_value": _safe_float(abs_val),
+                            "on_diagonal": on_diagonal,
+                            "kind": "nest_only_stored",
+                            "bc_identity_or_zero_row": bc_row,
+                            "explicit_zero_stored": bool(abs_val <= EXPLICIT_ZERO_TOL),
+                        },
+                        limit=20,
+                    )
+
+        top20_shared = [
+            _annotate_child_nest_pattern_entry(item, child=child, nest_sub=nest_sub)
+            for item in _finalize_top_entries(top_shared_heap)
         ]
-        harmless_unit_diag_bc = bool(
-            unit_diagonal_bc_identity_diff_count == 1
-            and unit_diagonal_diff_count == 1
-            and only_diagonal
-            and only_bc_identity
-            and abs(max_abs - 1.0) <= 1.0e-6
+        top20_child_only = [
+            _annotate_child_nest_pattern_entry(item, child=child, nest_sub=nest_sub)
+            for item in _finalize_top_entries(top_child_only_heap)
+        ]
+        top20_nest_only = [
+            _annotate_child_nest_pattern_entry(item, child=child, nest_sub=nest_sub)
+            for item in _finalize_top_entries(top_nest_only_heap)
+        ]
+
+        pattern_harmless_unit_diag_bc = bool(
+            shared_stored_diff_count == 0
+            and unit_diagonal_bc_identity_pattern_count == 1
+            and unit_diagonal_pattern_count == 1
+            and only_diagonal_pattern
+            and only_bc_identity_pattern
+            and max(max_abs_child_only, max_abs_nest_only) >= 1.0 - 1.0e-8
         )
+
         summary.update(
             {
-                "harmless_unit_diag_bc": harmless_unit_diag_bc,
-                "unit_diagonal_diff_count": int(unit_diagonal_diff_count),
-                "unit_diagonal_bc_identity_diff_count": int(unit_diagonal_bc_identity_diff_count),
+                "harmless_unit_diag_bc": pattern_harmless_unit_diag_bc,
+                "pattern_harmless_unit_diag_bc": pattern_harmless_unit_diag_bc,
+                "unit_diagonal_pattern_only_count": int(unit_diagonal_pattern_count),
+                "unit_diagonal_bc_identity_pattern_only_count": int(
+                    unit_diagonal_bc_identity_pattern_count
+                ),
                 "shared_stored_diff_count": int(shared_stored_diff_count),
-                "only_on_diagonal": bool(only_diagonal),
-                "only_bc_identity_or_zero_rows": bool(only_bc_identity),
-                "max_abs": float(max_abs),
+                "child_only_nnz": int(child_only_nnz),
+                "nest_only_nnz": int(nest_only_nnz),
+                "only_on_diagonal_pattern": bool(only_diagonal_pattern),
+                "only_bc_identity_or_zero_rows_pattern": bool(only_bc_identity_pattern),
+                "max_abs": float(max(max_abs_shared, max_abs_child_only, max_abs_nest_only)),
+                "max_abs_child_only": float(max_abs_child_only),
+                "max_abs_nest_only": float(max_abs_nest_only),
             }
         )
-        compose_meta[f"{detail_prefix}_top20"] = top20[:20]
-        compose_meta[f"{detail_prefix}_max_abs"] = _safe_float(max_abs)
+
+        compose_meta[f"{detail_prefix}_top20"] = top20_shared[:20]
+        compose_meta[f"{detail_prefix}_max_abs"] = _safe_float(max_abs_shared)
         compose_meta[f"{detail_prefix}_shared_stored_diff_count"] = int(shared_stored_diff_count)
-        compose_meta[f"{detail_prefix}_only_on_diagonal"] = bool(only_diagonal)
-        compose_meta[f"{detail_prefix}_only_bc_identity_or_zero_rows"] = bool(only_bc_identity)
-        compose_meta[f"{detail_prefix}_unit_diagonal_diff_count"] = int(unit_diagonal_diff_count)
-        compose_meta[f"{detail_prefix}_unit_diagonal_bc_identity_diff_count"] = int(
-            unit_diagonal_bc_identity_diff_count
+        for key, _thr in DIFF_THRESHOLDS:
+            compose_meta[f"{detail_prefix}_count_gt_{key}"] = int(shared_threshold_counts[key])
+
+        compose_meta[f"{pattern_prefix}_child_only_nnz"] = int(child_only_nnz)
+        compose_meta[f"{pattern_prefix}_nest_only_nnz"] = int(nest_only_nnz)
+        compose_meta[f"{pattern_prefix}_top20_child_only"] = top20_child_only[:20]
+        compose_meta[f"{pattern_prefix}_top20_nest_only"] = top20_nest_only[:20]
+        compose_meta[f"{pattern_prefix}_max_abs_child_only"] = _safe_float(max_abs_child_only)
+        compose_meta[f"{pattern_prefix}_max_abs_nest_only"] = _safe_float(max_abs_nest_only)
+        compose_meta[f"{pattern_prefix}_only_on_diagonal"] = bool(only_diagonal_pattern)
+        compose_meta[f"{pattern_prefix}_only_bc_identity_or_zero_rows"] = bool(only_bc_identity_pattern)
+        compose_meta[f"{pattern_prefix}_unit_diagonal_count"] = int(unit_diagonal_pattern_count)
+        compose_meta[f"{pattern_prefix}_unit_diagonal_bc_identity_count"] = int(
+            unit_diagonal_bc_identity_pattern_count
         )
         for key, _thr in DIFF_THRESHOLDS:
-            compose_meta[f"{detail_prefix}_count_gt_{key}"] = int(threshold_counts[key])
-        if harmless_unit_diag_bc:
-            compose_meta[f"{detail_prefix}_mathematically_harmless_note"] = (
-                f"{block_label}: exactly one diagonal unit difference on a BC/identity/zero row; "
-                "likely explicit BC storage mismatch in MatNest owned copy vs source child. "
-                "compare_pass not auto-waived."
+            compose_meta[f"{pattern_prefix}_child_only_count_gt_{key}"] = int(
+                child_only_threshold_counts[key]
             )
-        elif only_diagonal and unit_diagonal_diff_count > 0:
-            compose_meta[f"{detail_prefix}_mathematically_harmless_note"] = (
-                f"{block_label}: diagonal unit-like differences present but not confined to "
-                "BC/identity/zero rows; requires review."
+            compose_meta[f"{pattern_prefix}_nest_only_count_gt_{key}"] = int(
+                nest_only_threshold_counts[key]
             )
-        elif only_diagonal:
-            compose_meta[f"{detail_prefix}_mathematically_harmless_note"] = (
-                f"{block_label}: differences are diagonal-only; inspect top20 for localization."
+        compose_meta[f"{pattern_prefix}_harmless_unit_diag_bc"] = pattern_harmless_unit_diag_bc
+        if pattern_harmless_unit_diag_bc:
+            compose_meta[f"{pattern_prefix}_mathematically_harmless_note"] = (
+                f"{block_label}: exactly one pattern-only unit diagonal BC/identity/zero-row entry; "
+                "shared-stored values match. compare_pass not auto-waived."
+            )
+        elif shared_stored_diff_count == 0 and (child_only_nnz > 0 or nest_only_nnz > 0):
+            compose_meta[f"{pattern_prefix}_mathematically_harmless_note"] = (
+                f"{block_label}: pattern-only child/nest sparsity mismatch with no shared-stored "
+                "value diffs; inspect top20_child_only and top20_nest_only."
             )
         else:
-            compose_meta[f"{detail_prefix}_mathematically_harmless_note"] = (
-                f"{block_label}: off-diagonal child-vs-nest differences present; not BC/identity-only."
+            compose_meta[f"{pattern_prefix}_mathematically_harmless_note"] = (
+                f"{block_label}: see shared and pattern-only child-vs-nest diagnostics."
             )
         compose_meta[f"{detail_prefix}_audit_pass"] = True
+        compose_meta[f"{pattern_prefix}_audit_pass"] = True
     except Exception as exc:
         compose_meta[f"{detail_prefix}_audit_pass"] = False
+        compose_meta[f"{pattern_prefix}_audit_pass"] = False
         compose_meta[f"{detail_prefix}_audit_unavailable_reason"] = f"{type(exc).__name__}:{exc}"
+        compose_meta[f"{pattern_prefix}_audit_unavailable_reason"] = f"{type(exc).__name__}:{exc}"
     return summary
 
 
@@ -1031,23 +1140,34 @@ def _record_child_vs_nest_block_audit(
             compose_meta[f"{prefix}_Aup_Apu_transpose_swap_likely"] = bool(float(aup_swap) + 1.0e-12 < float(aup_direct))
     auu_summary = detail_summaries.get("Auu") or {}
     app_summary = detail_summaries.get("App") or {}
-    compose_meta[f"{prefix}_diff_harmless_bc_candidate"] = bool(
-        auu_summary.get("harmless_unit_diag_bc") and app_summary.get("harmless_unit_diag_bc")
+    pattern_harmless = bool(
+        auu_summary.get("pattern_harmless_unit_diag_bc")
+        and app_summary.get("pattern_harmless_unit_diag_bc")
     )
-    compose_meta[f"{prefix}_diff_harmless_bc_candidate_basis"] = (
-        "Auu_and_App_each_one_unit_diagonal_bc_identity_diff"
-        if compose_meta[f"{prefix}_diff_harmless_bc_candidate"]
-        else "not_both_Auu_App_unit_diagonal_bc_identity_only"
+    compose_meta["B3_BLOCK_COMPOSE_compare_A_child_vs_nest_pattern_harmless_bc_candidate"] = pattern_harmless
+    compose_meta[f"{prefix}_pattern_harmless_bc_candidate"] = pattern_harmless
+    compose_meta[f"{prefix}_pattern_harmless_bc_candidate_basis"] = (
+        "Auu_and_App_each_one_pattern_only_unit_diagonal_bc_identity"
+        if pattern_harmless
+        else "not_both_Auu_App_pattern_only_unit_diagonal_bc_identity"
     )
-    compose_meta[f"{prefix}_diff_harmless_bc_candidate_note"] = (
-        "Both Auu and App show exactly one diagonal unit diff on BC/identity/zero rows; "
-        "sqrt(2) total A Frobenius likely explained. compare_pass not auto-waived."
-        if compose_meta[f"{prefix}_diff_harmless_bc_candidate"]
+    compose_meta[f"{prefix}_pattern_harmless_bc_candidate_note"] = (
+        "MatNest numeric shared-stored values match source child blocks in Auu and App; "
+        "remaining sqrt(2) A Frobenius gap is pattern-only BC/identity artifact "
+        "(one unit diagonal entry stored on one side only in each block). compare_pass not auto-waived."
+        if pattern_harmless
         else (
-            "Auu/App child-vs-nest diffs are not both single diagonal unit BC/identity artifacts; "
-            "see Auu_detail and App_detail top20."
+            "Auu/App pattern-only child-vs-nest mismatches do not both reduce to a single "
+            "unit diagonal BC/identity entry; inspect Auu_pattern and App_pattern top20."
         )
     )
+    compose_meta[f"{prefix}_diff_harmless_bc_candidate"] = pattern_harmless
+    compose_meta[f"{prefix}_diff_harmless_bc_candidate_basis"] = compose_meta[
+        f"{prefix}_pattern_harmless_bc_candidate_basis"
+    ]
+    compose_meta[f"{prefix}_diff_harmless_bc_candidate_note"] = compose_meta[
+        f"{prefix}_pattern_harmless_bc_candidate_note"
+    ]
     compose_meta[f"{prefix}_audit_pass"] = True
 
 
