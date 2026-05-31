@@ -494,10 +494,31 @@ def threading_env_snapshot() -> Dict[str, Optional[str]]:
     return {k: os.environ.get(k) for k in keys}
 
 
-def version_snapshot() -> Dict[str, Any]:
-    from slepc4py import SLEPc
+def petsc_version_query() -> Any:
+    try:
+        return PETSc.Sys.getVersion()
+    except Exception:
+        return "unknown"
 
+
+def slepc_version_query() -> Any:
+    try:
+        from slepc4py import SLEPc
+    except Exception:
+        return "unknown"
+    try:
+        if hasattr(SLEPc, "GetVersion"):
+            return SLEPc.GetVersion()
+        sys_mod = getattr(SLEPc, "Sys", None)
+        if sys_mod is not None and hasattr(sys_mod, "getVersion"):
+            return sys_mod.getVersion()
+    except Exception:
+        pass
+    return "unknown"
+
+
+def version_snapshot() -> Dict[str, Any]:
     return {
-        "petsc_version": PETSc.Sys.getVersion(),
-        "slepc_version": SLEPc.GetVersion(),
+        "petsc_version": petsc_version_query(),
+        "slepc_version": slepc_version_query(),
     }
