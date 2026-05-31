@@ -329,6 +329,191 @@ def _finalize_top_entries(top: List[Any]) -> List[Dict[str, Any]]:
     return [dict(triple[2]) for triple in ordered]
 
 
+def _annotate_child_nest_top_entry(
+    entry: Dict[str, Any], *, child: Any, nest_sub: Any
+) -> Dict[str, Any]:
+    r = int(entry["row_local"])
+    row_child = _row_support_flags(child, r)
+    row_nest = _row_support_flags(nest_sub, r)
+    out = dict(entry)
+    out["child_row_identity_like"] = bool(row_child["identity_like"])
+    out["nest_row_identity_like"] = bool(row_nest["identity_like"])
+    out["child_row_zero_like"] = bool(row_child["zero_row_like"])
+    out["nest_row_zero_like"] = bool(row_nest["zero_row_like"])
+    out["child_row_diag_value"] = _safe_float(row_child["diag_value"])
+    out["nest_row_diag_value"] = _safe_float(row_nest["diag_value"])
+    out["bc_identity_or_zero_row"] = bool(
+        row_child["identity_like"]
+        or row_nest["identity_like"]
+        or (row_child["zero_row_like"] and row_nest["zero_row_like"])
+    )
+    return out
+
+
+def _record_child_vs_nest_block_pair_detail(
+    child: Any,
+    nest_sub: Any,
+    *,
+    block_label: str,
+    row_offset: int,
+    col_offset: int,
+    compose_meta: Dict[str, Any],
+    prefix: str,
+) -> Dict[str, Any]:
+    """Targeted child-vs-nest diff localization for one diagonal block (Auu/App)."""
+    detail_prefix = f"{prefix}_{block_label}_detail"
+    compose_meta[f"{detail_prefix}_top20"] = []
+    compose_meta[f"{detail_prefix}_max_abs"] = 0.0
+    for key, _thr in DIFF_THRESHOLDS:
+        compose_meta[f"{detail_prefix}_count_gt_{key}"] = 0
+    summary: Dict[str, Any] = {
+        "block_label": str(block_label),
+        "harmless_unit_diag_bc": False,
+        "unit_diagonal_diff_count": 0,
+        "unit_diagonal_bc_identity_diff_count": 0,
+        "shared_stored_diff_count": 0,
+        "only_on_diagonal": True,
+        "only_bc_identity_or_zero_rows": True,
+        "max_abs": 0.0,
+    }
+    top_heap: List[Any] = []
+    threshold_counts = {key: 0 for key, _val in DIFF_THRESHOLDS}
+    try:
+        nrow = int(child.getSize()[0])
+        shared_stored_diff_count = 0
+        max_abs = 0.0
+        only_diagonal = True
+        only_bc_identity = True
+        unit_diagonal_diff_count = 0
+        unit_diagonal_bc_identity_diff_count = 0
+        row_bc_cache: Dict[int, bool] = {}
+
+        def _bc_identity_row(r: int) -> bool:
+            cached = row_bc_cache.get(int(r))
+            if cached is not None:
+                return bool(cached)
+            row_child = _row_support_flags(child, r)
+            row_nest = _row_support_flags(nest_sub, r)
+            bc_row = bool(
+                row_child["identity_like"]
+                or row_nest["identity_like"]
+                or (row_child["zero_row_like"] and row_nest["zero_row_like"])
+            )
+            row_bc_cache[int(r)] = bc_row
+            return bc_row
+
+        for r in range(nrow):
+            child_row = _row_stored_dict(child, r)
+            nest_row = _row_stored_dict(nest_sub, r)
+            all_cols = set(child_row.keys()) | set(nest_row.keys())
+            for c in all_cols:
+                in_child = c in child_row
+                in_nest = c in nest_row
+                child_v = float(child_row[c]) if in_child else 0.0
+                nest_v = float(nest_row[c]) if in_nest else 0.0
+                if in_child and in_nest:
+                    diff_v = child_v - nest_v
+                    kind = "shared_stored"
+                elif in_child:
+                    diff_v = child_v
+                    kind = "child_only_stored"
+                else:
+                    diff_v = -nest_v
+                    kind = "nest_only_stored"
+                abs_diff = abs(float(diff_v))
+                if abs_diff <= VALUE_DIFF_MIN:
+                    continue
+                if in_child and in_nest:
+                    shared_stored_diff_count += 1
+                max_abs = max(max_abs, abs_diff)
+                if int(r) != int(c):
+                    only_diagonal = False
+                bc_row = _bc_identity_row(int(r))
+                if not bc_row:
+                    only_bc_identity = False
+                if int(r) == int(c) and abs(abs_diff - 1.0) <= 1.0e-8:
+                    unit_diagonal_diff_count += 1
+                    if bc_row:
+                        unit_diagonal_bc_identity_diff_count += 1
+                for key, thr in DIFF_THRESHOLDS:
+                    if abs_diff > thr:
+                        threshold_counts[key] += 1
+                _push_top_entry(
+                    top_heap,
+                    {
+                        "row_local": int(r),
+                        "col_local": int(c),
+                        "row_global": int(r + row_offset),
+                        "col_global": int(c + col_offset),
+                        "block": str(block_label),
+                        "child": _safe_float(child_v) if in_child else None,
+                        "nest": _safe_float(nest_v) if in_nest else None,
+                        "diff": _safe_float(diff_v),
+                        "abs_diff": _safe_float(abs_diff),
+                        "kind": kind,
+                        "bc_identity_or_zero_row": bc_row,
+                    },
+                    limit=20,
+                )
+        top20 = [
+            _annotate_child_nest_top_entry(item, child=child, nest_sub=nest_sub)
+            for item in _finalize_top_entries(top_heap)
+        ]
+        harmless_unit_diag_bc = bool(
+            unit_diagonal_bc_identity_diff_count == 1
+            and unit_diagonal_diff_count == 1
+            and only_diagonal
+            and only_bc_identity
+            and abs(max_abs - 1.0) <= 1.0e-6
+        )
+        summary.update(
+            {
+                "harmless_unit_diag_bc": harmless_unit_diag_bc,
+                "unit_diagonal_diff_count": int(unit_diagonal_diff_count),
+                "unit_diagonal_bc_identity_diff_count": int(unit_diagonal_bc_identity_diff_count),
+                "shared_stored_diff_count": int(shared_stored_diff_count),
+                "only_on_diagonal": bool(only_diagonal),
+                "only_bc_identity_or_zero_rows": bool(only_bc_identity),
+                "max_abs": float(max_abs),
+            }
+        )
+        compose_meta[f"{detail_prefix}_top20"] = top20[:20]
+        compose_meta[f"{detail_prefix}_max_abs"] = _safe_float(max_abs)
+        compose_meta[f"{detail_prefix}_shared_stored_diff_count"] = int(shared_stored_diff_count)
+        compose_meta[f"{detail_prefix}_only_on_diagonal"] = bool(only_diagonal)
+        compose_meta[f"{detail_prefix}_only_bc_identity_or_zero_rows"] = bool(only_bc_identity)
+        compose_meta[f"{detail_prefix}_unit_diagonal_diff_count"] = int(unit_diagonal_diff_count)
+        compose_meta[f"{detail_prefix}_unit_diagonal_bc_identity_diff_count"] = int(
+            unit_diagonal_bc_identity_diff_count
+        )
+        for key, _thr in DIFF_THRESHOLDS:
+            compose_meta[f"{detail_prefix}_count_gt_{key}"] = int(threshold_counts[key])
+        if harmless_unit_diag_bc:
+            compose_meta[f"{detail_prefix}_mathematically_harmless_note"] = (
+                f"{block_label}: exactly one diagonal unit difference on a BC/identity/zero row; "
+                "likely explicit BC storage mismatch in MatNest owned copy vs source child. "
+                "compare_pass not auto-waived."
+            )
+        elif only_diagonal and unit_diagonal_diff_count > 0:
+            compose_meta[f"{detail_prefix}_mathematically_harmless_note"] = (
+                f"{block_label}: diagonal unit-like differences present but not confined to "
+                "BC/identity/zero rows; requires review."
+            )
+        elif only_diagonal:
+            compose_meta[f"{detail_prefix}_mathematically_harmless_note"] = (
+                f"{block_label}: differences are diagonal-only; inspect top20 for localization."
+            )
+        else:
+            compose_meta[f"{detail_prefix}_mathematically_harmless_note"] = (
+                f"{block_label}: off-diagonal child-vs-nest differences present; not BC/identity-only."
+            )
+        compose_meta[f"{detail_prefix}_audit_pass"] = True
+    except Exception as exc:
+        compose_meta[f"{detail_prefix}_audit_pass"] = False
+        compose_meta[f"{detail_prefix}_audit_unavailable_reason"] = f"{type(exc).__name__}:{exc}"
+    return summary
+
+
 def _row_support_flags(mat: Any, row: int, *, value_tol: float = 1.0e-12) -> Dict[str, Any]:
     flags: Dict[str, Any] = {
         "nnz": 0,
@@ -530,6 +715,9 @@ def _streaming_compose_matrix_diff_audit(
     top_value_heap: List[Any] = []
     top_pattern_heap: List[Any] = []
     diff_mat = None
+    compose_meta[f"{prefix}_top20"] = []
+    compose_meta[f"{prefix}_top20_shared"] = []
+    compose_meta[f"{prefix}_top20_pattern_mismatch"] = []
     try:
         nrow = int(old.getSize()[0])
         stored_intersection = 0
@@ -676,8 +864,20 @@ def _streaming_compose_matrix_diff_audit(
             blk: _safe_float(stats["max_abs"]) for blk, stats in block_stats.items()
         }
         compose_meta[f"{prefix}_block_row_col_ranges"] = block_ranges
-        compose_meta[f"{prefix}_top20"] = top20_value[:20]
-        compose_meta[f"{prefix}_top20_pattern_mismatch"] = top20_pattern[:20]
+        top20_shared = top20_value[:20]
+        top20_pattern = top20_pattern[:20]
+        compose_meta[f"{prefix}_top20_shared"] = top20_shared
+        compose_meta[f"{prefix}_top20_pattern_mismatch"] = top20_pattern
+        compose_meta[f"{prefix}_top20"] = top20_shared
+        if not top20_shared:
+            compose_meta[f"{prefix}_top20_shared_empty_reason"] = (
+                "no shared-stored value diffs above 1e-15; inspect top20_pattern_mismatch "
+                "and child_vs_nest Auu/App detail audits"
+            )
+        if not top20_pattern:
+            compose_meta[f"{prefix}_top20_pattern_mismatch_empty_reason"] = (
+                "no nonzero pattern-only mismatches recorded above explicit-zero tolerance"
+            )
         compose_meta[f"{prefix}_explicit_zero_pattern_mismatch_dominates"] = bool(
             pattern_mismatch_count > 10 * max(1, shared_value_diff_count)
         )
@@ -714,6 +914,11 @@ def _streaming_compose_matrix_diff_audit(
     except Exception as exc:
         compose_meta[f"{prefix}_audit_pass"] = False
         compose_meta[f"{prefix}_audit_unavailable_reason"] = f"{type(exc).__name__}:{exc}"
+        compose_meta[f"{prefix}_top20_shared"] = compose_meta.get(f"{prefix}_top20_shared") or []
+        compose_meta[f"{prefix}_top20_pattern_mismatch"] = (
+            compose_meta.get(f"{prefix}_top20_pattern_mismatch") or []
+        )
+        compose_meta[f"{prefix}_top20"] = compose_meta.get(f"{prefix}_top20") or []
     finally:
         if diff_mat is not None:
             try:
@@ -735,6 +940,7 @@ def _record_child_vs_nest_block_audit(
     audit = _audit_helpers()
     compose_meta[f"{prefix}_audit_begin"] = True
     coupling_orientation: Dict[str, Any] = {}
+    detail_summaries: Dict[str, Dict[str, Any]] = {}
     for block_label, child, r0, r1, c0, c1 in child_blocks:
         nest_sub = None
         row_sub = None
@@ -763,6 +969,16 @@ def _record_child_vs_nest_block_audit(
                 "col_start": int(c0),
                 "col_end": int(c1),
             }
+            if block_label in ("Auu", "App"):
+                detail_summaries[block_label] = _record_child_vs_nest_block_pair_detail(
+                    child,
+                    nest_sub,
+                    block_label=block_label,
+                    row_offset=int(r0),
+                    col_offset=int(c0),
+                    compose_meta=compose_meta,
+                    prefix=prefix,
+                )
             if block_label in ("Aup", "Apu"):
                 mate_label = "Apu" if block_label == "Aup" else "Aup"
                 mate_spec = next((spec for spec in child_blocks if spec[0] == mate_label), None)
@@ -813,6 +1029,25 @@ def _record_child_vs_nest_block_audit(
         aup_swap = coupling_orientation.get("Aup_frobenius_vs_mate_nest_block_transpose")
         if aup_direct is not None and aup_swap is not None:
             compose_meta[f"{prefix}_Aup_Apu_transpose_swap_likely"] = bool(float(aup_swap) + 1.0e-12 < float(aup_direct))
+    auu_summary = detail_summaries.get("Auu") or {}
+    app_summary = detail_summaries.get("App") or {}
+    compose_meta[f"{prefix}_diff_harmless_bc_candidate"] = bool(
+        auu_summary.get("harmless_unit_diag_bc") and app_summary.get("harmless_unit_diag_bc")
+    )
+    compose_meta[f"{prefix}_diff_harmless_bc_candidate_basis"] = (
+        "Auu_and_App_each_one_unit_diagonal_bc_identity_diff"
+        if compose_meta[f"{prefix}_diff_harmless_bc_candidate"]
+        else "not_both_Auu_App_unit_diagonal_bc_identity_only"
+    )
+    compose_meta[f"{prefix}_diff_harmless_bc_candidate_note"] = (
+        "Both Auu and App show exactly one diagonal unit diff on BC/identity/zero rows; "
+        "sqrt(2) total A Frobenius likely explained. compare_pass not auto-waived."
+        if compose_meta[f"{prefix}_diff_harmless_bc_candidate"]
+        else (
+            "Auu/App child-vs-nest diffs are not both single diagonal unit BC/identity artifacts; "
+            "see Auu_detail and App_detail top20."
+        )
+    )
     compose_meta[f"{prefix}_audit_pass"] = True
 
 
@@ -1215,6 +1450,12 @@ def _compare_backends_dev(
                 ("App", nu, nu + np_, nu, nu + np_),
             ),
             mesh_level=mesh_level,
+        )
+        compose_meta["B3_BLOCK_COMPOSE_compare_A_DIFF_TOP20_SHARED"] = list(
+            compose_meta.get("B3_BLOCK_COMPOSE_compare_A_diff_top20_shared") or []
+        )
+        compose_meta["B3_BLOCK_COMPOSE_compare_A_DIFF_TOP20_PATTERN_MISMATCH"] = list(
+            compose_meta.get("B3_BLOCK_COMPOSE_compare_A_diff_top20_pattern_mismatch") or []
         )
         _matnest_breadcrumb(compose_meta, "after_compare_diff_audit_A")
         _matnest_breadcrumb(compose_meta, "before_compare_diff_audit_M")
