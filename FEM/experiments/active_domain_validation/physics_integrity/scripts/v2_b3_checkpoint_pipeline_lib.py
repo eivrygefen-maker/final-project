@@ -137,21 +137,35 @@ def verify_mumps_available() -> Tuple[bool, Optional[str]]:
         return False, f"{type(exc).__name__}:{exc}"
 
 
-def verify_checkpoint_complete(checkpoint: Path) -> Tuple[bool, List[str], Dict[str, Any]]:
+def verify_checkpoint_complete(
+    checkpoint: Path,
+    *,
+    require_csr: bool = False,
+) -> Tuple[bool, List[str], Dict[str, Any]]:
     from v2_b3_operator_checkpoint_portable import verify_portable_checkpoint_export
 
     checkpoint = checkpoint.expanduser().resolve()
     if not checkpoint.is_dir():
         return False, [f"checkpoint directory not found: {checkpoint}"], {"checkpoint_dir": str(checkpoint)}
 
-    export_pass, missing, detail = verify_portable_checkpoint_export(checkpoint)
+    export_pass, missing, detail = verify_portable_checkpoint_export(
+        checkpoint,
+        require_csr=require_csr,
+    )
     errors: List[str] = []
     if not export_pass:
-        errors.append(f"checkpoint incomplete; missing: {missing}")
+        if require_csr:
+            errors.append(f"checkpoint incomplete; missing: {missing}")
+        else:
+            errors.append(f"checkpoint missing required files: {missing}")
+    elif not require_csr and detail.get("warnings"):
+        for warn in detail["warnings"]:
+            print(f"[B3_checkpoint] WARN: {warn}", flush=True)
     if not (checkpoint / "built_metadata.json").is_file():
         errors.append("missing built_metadata.json")
     detail["checkpoint_dir"] = str(checkpoint)
     detail["export_pass"] = bool(export_pass)
+    detail["csr_required"] = bool(require_csr)
     return len(errors) == 0, errors, detail
 
 
@@ -183,8 +197,14 @@ def verify_checkpoint_matrices(checkpoint: Path) -> Tuple[bool, List[str], Dict[
             "M_shape": m_shape,
             "A_nnz_used": a_nnz,
             "M_nnz_used": m_nnz,
+            "load_path": load_diag.get("load_path_summary"),
             "load_path_summary": load_diag.get("load_path_summary"),
+            "load_path_by_matrix": load_diag.get("load_path_by_matrix"),
+            "csr_present": bool(load_diag.get("csr_metadata_present")),
+            "csr_required": False,
             "csr_verification_pass": load_diag.get("csr_verification_pass"),
+            "binary_load_errors": load_diag.get("binary_load_errors"),
+            "csr_load_error": load_diag.get("csr_load_error"),
         }
         return len(errors) == 0, errors, detail
     except Exception as exc:

@@ -123,7 +123,7 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
             return 2
 
         export_meta = _export_operators(checkpoint, built=built, mesh_level=mesh_level)
-        export_pass, missing, export_detail = verify_checkpoint_complete(checkpoint)
+        export_pass, missing, export_detail = verify_checkpoint_complete(checkpoint, require_csr=True)
         mat_ok, mat_errors, mat_detail = verify_checkpoint_matrices(checkpoint)
 
         built_meta = json.loads((checkpoint / "built_metadata.json").read_text(encoding="utf-8"))

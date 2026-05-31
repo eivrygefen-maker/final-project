@@ -354,26 +354,81 @@ def load_operators_with_portable_fallback(
     return mats["A_active"], mats["M_active"], diag
 
 
-def verify_portable_checkpoint_export(checkpoint: Path) -> Tuple[bool, List[str], Dict[str, Any]]:
-    required = [
+def verify_portable_checkpoint_export(
+    checkpoint: Path,
+    *,
+    require_csr: bool = True,
+) -> Tuple[bool, List[str], Dict[str, Any]]:
+    """Verify checkpoint files on disk.
+
+    When ``require_csr`` is True (Stage A export verification), CSR artifacts are mandatory.
+    When False (solver stage file precheck), CSR is optional fallback metadata only.
+    """
+    checkpoint = checkpoint.expanduser().resolve()
+    petsc_bins = [
         checkpoint / "A_active.petsc.bin",
         checkpoint / "M_active.petsc.bin",
-        checkpoint / "built_metadata.json",
+    ]
+    csr_files = [
         checkpoint / A_CSR_NPZ,
         checkpoint / M_CSR_NPZ,
         checkpoint / CSR_METADATA_JSON,
     ]
-    missing = [p.name for p in required if not p.is_file()]
-    detail = {
-        "checkpoint_dir": str(checkpoint.resolve()),
-        "required_files": [p.name for p in required],
+    built_meta = checkpoint / "built_metadata.json"
+    petsc_present = all(p.is_file() for p in petsc_bins)
+    csr_present = all(p.is_file() for p in csr_files)
+    missing_csr = [p.name for p in csr_files if not p.is_file()]
+    missing_petsc = [p.name for p in petsc_bins if not p.is_file()]
+    warnings: List[str] = []
+
+    if require_csr:
+        required = list(petsc_bins) + [built_meta] + csr_files
+        missing = [p.name for p in required if not p.is_file()]
+    else:
+        missing: List[str] = []
+        if not built_meta.is_file():
+            missing.append(built_meta.name)
+        if not petsc_present and not csr_present:
+            missing.extend(missing_petsc)
+            missing.extend(missing_csr)
+        elif petsc_present and not csr_present:
+            warnings.append(
+                "CSR fallback files missing (A_active_csr.npz, M_active_csr.npz, csr_metadata.json); "
+                "PETSc binary load is required"
+            )
+        elif not petsc_present and csr_present:
+            warnings.append(
+                "PETSc binary checkpoint files missing; load will rely on CSR fallback only"
+            )
+
+    detail: Dict[str, Any] = {
+        "checkpoint_dir": str(checkpoint),
+        "require_csr": bool(require_csr),
+        "csr_required": bool(require_csr),
+        "csr_present": bool(csr_present),
+        "petsc_binary_present": bool(petsc_present),
         "missing_files": missing,
+        "missing_csr_fallback_files": missing_csr if not csr_present else [],
+        "missing_petsc_binary_files": missing_petsc if not petsc_present else [],
+        "warnings": warnings,
         "petsc_info_sidecars_present": all(
             (checkpoint / f"{name}.info").is_file()
             for name in ("A_active.petsc.bin", "M_active.petsc.bin")
         ),
     }
-    return len(missing) == 0, missing, detail
+    if require_csr:
+        detail["required_files"] = [
+            p.name for p in (list(petsc_bins) + [built_meta] + csr_files)
+        ]
+    else:
+        detail["required_files"] = [
+            "built_metadata.json",
+            "A_active.petsc.bin",
+            "M_active.petsc.bin",
+            "(optional CSR fallback trio)",
+        ]
+    export_pass = len(missing) == 0
+    return export_pass, missing, detail
 
 
 def _create_probe_assembled_aij(*, n: int = 12, comm: Any = None) -> Any:

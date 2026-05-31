@@ -84,13 +84,15 @@ def run_checkpoint_solve(argv: Optional[List[str]] = None) -> int:
         if not mumps_ok:
             fail_with_messages("B3_checkpoint_solve", [f"mumps unavailable: {mumps_err}"])
 
-    ckpt_ok, ckpt_errors, ckpt_detail = verify_checkpoint_complete(checkpoint)
+    ckpt_ok, ckpt_errors, ckpt_detail = verify_checkpoint_complete(checkpoint, require_csr=False)
     if not ckpt_ok:
         fail_with_messages("B3_checkpoint_solve", ckpt_errors)
 
     mat_ok, mat_errors, mat_detail = verify_checkpoint_matrices(checkpoint)
     if not mat_ok:
         fail_with_messages("B3_checkpoint_solve", mat_errors)
+
+    checkpoint_warnings = list(ckpt_detail.get("warnings") or [])
 
     pre_manifest = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -100,6 +102,10 @@ def run_checkpoint_solve(argv: Optional[List[str]] = None) -> int:
         "output_dir": str(output_dir),
         "factor_solver": factor_solver,
         "target_set": str(args.target_set),
+        "csr_present": bool(ckpt_detail.get("csr_present")),
+        "csr_required": False,
+        "load_path": mat_detail.get("load_path") or mat_detail.get("load_path_summary"),
+        "warnings": checkpoint_warnings,
         "checkpoint_detail": ckpt_detail,
         "matrix_verify_detail": mat_detail,
         "versions": version_snapshot(),
