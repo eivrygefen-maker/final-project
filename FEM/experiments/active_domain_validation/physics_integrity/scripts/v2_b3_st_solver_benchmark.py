@@ -26,6 +26,10 @@ from v2_mesh_convergence_common import CONV_DIAG
 
 B3_ST_SOLVER_BENCHMARK_ARG = "--B3-ST-solver-benchmark-only"
 B3_ST_SOLVER_BENCHMARK_SUITE_ARG = "--B3-ST-solver-benchmark-suite"
+B3_ST_CASE_FILTER_ARG = "--B3-ST-solver-benchmark-cases"
+
+# Minimum EPSSetUp wall time (s) for a valid MUMPS baseline on L_prod-scale operators.
+BASELINE_MIN_SETUP_SECONDS = 60.0
 
 BENCHMARK_ROOT = CONV_DIAG / "solver_benchmarks"
 ALLOWED_SUITES = frozenset(
@@ -81,6 +85,90 @@ def _parse_suite(argv: Sequence[str]) -> str:
     if raw not in ALLOWED_SUITES:
         raise ValueError(f"{B3_ST_SOLVER_BENCHMARK_SUITE_ARG} must be one of {sorted(ALLOWED_SUITES)}")
     return raw
+
+
+def _parse_case_filter(argv: Sequence[str]) -> Optional[frozenset[str]]:
+    raw = _parse_arg_value(argv, B3_ST_CASE_FILTER_ARG)
+    if not raw:
+        return None
+    ids = frozenset(part.strip() for part in str(raw).split(",") if part.strip())
+    return ids if ids else None
+
+
+def _collect_benchmark_petsc_option_keys() -> Tuple[str, ...]:
+    keys: set[str] = set()
+    for policy_key in ("mumps_default", "mumps_relaxed", "mumps_maximum", "mumps_fast_incore"):
+        keys.update(_benchmark_mumps_policy_spec(policy_key).keys())
+    for policy in ("default", "L_prod_relaxed", "L_prod_maximum"):
+        keys.update(st_scaling._st_mumps_policy_spec(policy).keys())
+    keys.update(
+        {
+            "st_pc_factor_mat_solver_type",
+            "st_pc_factor_shift_type",
+            "st_pc_factor_shift_amount",
+            "st_ksp_type",
+            "st_pc_type",
+            "mat_mumps_icntl_3",
+            "mat_mumps_icntl_4",
+            "mat_mumps_icntl_6",
+            "mat_mumps_icntl_7",
+            "mat_mumps_icntl_11",
+            "mat_mumps_icntl_12",
+            "mat_mumps_icntl_14",
+            "mat_mumps_icntl_22",
+            "mat_mumps_icntl_23",
+            "mat_mumps_icntl_24",
+        }
+    )
+    return tuple(sorted(keys))
+
+
+def _reset_petsc_options_before_case(case_id: str) -> Dict[str, Any]:
+    """Clear ST/MUMPS PETSc options so prior benchmark cases cannot leak settings."""
+    opts = PETSc.Options()
+    cleared: List[str] = []
+    failed: List[str] = []
+    for key in _collect_benchmark_petsc_option_keys():
+        try:
+            if hasattr(opts, "delValue"):
+                opts.delValue(key)
+            else:
+                opts[key] = None
+            cleared.append(key)
+        except Exception as exc:
+            failed.append(f"{key}:{type(exc).__name__}")
+    return {
+        "case_id": str(case_id),
+        "petsc_options_reset_attempted": len(_collect_benchmark_petsc_option_keys()),
+        "petsc_options_cleared_count": len(cleared),
+        "petsc_options_clear_failures": failed[:16],
+    }
+
+
+def _verify_factor_solver_effective(pc: Any, *, requested: str, meta_out: Dict[str, Any]) -> None:
+    effective = audit._b3_ciss_pc_factor_solver_effective_label(pc)
+    meta_out["benchmark_factor_solver_requested"] = str(requested)
+    meta_out["benchmark_factor_solver_effective"] = effective
+    req = str(requested).strip().lower()
+    eff = str(effective or "").strip().lower()
+    ok = bool(eff and (req in eff or eff in req))
+    meta_out["factor_solver_verification_pass"] = bool(ok)
+    if not ok:
+        raise RuntimeError(
+            f"factor_solver_verification_failed:requested={requested!r} effective={effective!r}"
+        )
+
+
+def _baseline_case_is_valid(case: Optional[Dict[str, Any]]) -> bool:
+    if case is None or case.get("skipped"):
+        return False
+    if not case.get("setup_succeeded") or not case.get("solve_succeeded"):
+        return False
+    try:
+        setup_s = float(case.get("setup_elapsed_seconds") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return bool(setup_s >= BASELINE_MIN_SETUP_SECONDS)
 
 
 def _run_id() -> str:
@@ -278,6 +366,8 @@ def _apply_benchmark_mumps_petsc_options(
 
 def _mumps_policy_chain_for_variant(variant: Dict[str, Any], mesh_level: str) -> List[Optional[str]]:
     """Single policy for benchmark cases; retry chain only when explicitly requested."""
+    if variant.get("use_production_st_configure"):
+        return [str(variant.get("production_mumps_policy", "default"))]
     if variant.get("mumps_policy_key"):
         return [str(variant["mumps_policy_key"])]
     if variant.get("use_mumps_retry_chain"):
@@ -309,6 +399,30 @@ def configure_eps_st_benchmark(
     from slepc4py import SLEPc
 
     import fem_main_3d as fem3d
+
+    if variant.get("use_production_st_configure"):
+        policy = str(variant.get("production_mumps_policy", "default"))
+        meta_out["configure_path"] = "st_scaling_configure_eps_st_sinvert"
+        meta_out["production_mumps_policy"] = policy
+        meta_out["factor_solver_requested"] = "mumps"
+        cfg = st_scaling._configure_eps_st_sinvert(
+            eps,
+            A_active,
+            M_active,
+            target_hz=float(target_hz),
+            target_lambda=float(target_lambda),
+            mumps_policy=policy,
+        )
+        meta_out.update(cfg)
+        st = eps.getST()
+        ksp = st.getKSP()
+        pc = ksp.getPC()
+        meta_out["benchmark_KSP_type_effective"] = str(ksp.getType())
+        meta_out["benchmark_PC_type_effective"] = str(pc.getType())
+        meta_out["benchmark_ST_type_effective"] = str(st.getType())
+        _verify_factor_solver_effective(pc, requested="mumps", meta_out=meta_out)
+        meta_out["petsc_options_written"] = dict(cfg.get("petsc_options_written") or {})
+        return
 
     factor_solver = str(variant.get("factor_solver", BASELINE_FACTOR)).strip().lower()
     nev = int(variant.get("nev", BASELINE_NEV))
@@ -381,16 +495,6 @@ def configure_eps_st_benchmark(
     )
     if factor_solver == "mumps":
         audit._b3_ciss_record_direct_stable_factor_shift_request(pc, meta_out)
-    try:
-        effective = audit._b3_ciss_pc_factor_solver_effective_label(pc)
-        meta_out["benchmark_factor_solver_effective"] = effective
-        if effective is None or factor_solver not in str(effective).lower():
-            if factor_solver != "mumps":
-                meta_out["benchmark_factor_solver_effective_warning"] = (
-                    f"requested={factor_solver} effective={effective}"
-                )
-    except Exception:
-        pass
 
     if factor_solver == "mumps" or variant.get("mumps_policy_key"):
         policy_key = str(variant.get("mumps_policy_key", "mumps_default"))
@@ -400,6 +504,9 @@ def configure_eps_st_benchmark(
             extra_options=variant.get("mumps_petsc_options_extra"),
         )
         meta_out.update(mumps_written)
+
+    meta_out["configure_path"] = "benchmark_configure_eps_st_benchmark"
+    _verify_factor_solver_effective(pc, requested=factor_solver, meta_out=meta_out)
 
 
 def run_single_st_benchmark_case(
@@ -441,8 +548,13 @@ def run_single_st_benchmark_case(
         "failure_class": None,
         "mumps_policy_key": variant.get("mumps_policy_key"),
         "petsc_options_written": None,
+        "configure_path": None,
+        "factor_solver_verification_pass": None,
+        "petsc_options_reset": None,
         "variant": dict(variant),
     }
+
+    result["petsc_options_reset"] = _reset_petsc_options_before_case(case_id)
 
     if variant.get("skip") and variant.get("skip_reason"):
         result["skipped"] = True
@@ -470,8 +582,10 @@ def run_single_st_benchmark_case(
             try:
                 eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
                 variant_run = dict(variant)
-                if policy is not None:
+                if policy is not None and not variant.get("use_production_st_configure"):
                     variant_run["mumps_policy_key"] = str(policy)
+                elif variant.get("use_production_st_configure") and policy is not None:
+                    variant_run["production_mumps_policy"] = str(policy)
                 configure_eps_st_benchmark(
                     eps,
                     A_active,
@@ -490,6 +604,9 @@ def run_single_st_benchmark_case(
                 result["mumps_policy_effective"] = str(policy)
                 result["petsc_options_written"] = dict(setup_meta.get("petsc_options_written") or {})
                 result["configure_meta"] = setup_meta
+                result["configure_path"] = setup_meta.get("configure_path")
+                result["factor_solver_verification_pass"] = setup_meta.get("factor_solver_verification_pass")
+                result["benchmark_factor_solver_effective"] = setup_meta.get("benchmark_factor_solver_effective")
                 intro = dev_bench._dev_introspect_st_targeting_after_setup(eps)
                 result["effective_target"] = intro.get("B3_DEV_ST_target_effective")
                 result["effective_shift"] = intro.get("B3_DEV_ST_shift_effective")
@@ -506,6 +623,9 @@ def run_single_st_benchmark_case(
         if not result["setup_succeeded"]:
             if last_exc is not None:
                 result["failure_class"] = result.get("failure_class") or "ST_SETUP_FAILED"
+                result["failure_exception_type"] = type(last_exc).__name__
+            if not result.get("failure_reason") and last_exc is not None:
+                result["failure_reason"] = f"{type(last_exc).__name__}:{last_exc}"
             return result
 
         t1 = time.perf_counter()
@@ -617,6 +737,8 @@ def _summary_table_md(
             parity_s = "match"
         elif parity_ok is False:
             parity_s = "**DIFF**"
+        elif c.get("parity", {}).get("parity_skipped"):
+            parity_s = "n/a (baseline invalid)"
         else:
             parity_s = "n/a"
         lines.append(
@@ -665,7 +787,8 @@ def _factor_solver_variants(package_probe: Dict[str, Any]) -> List[Dict[str, Any
             "case_id": BASELINE_CASE_ID,
             "suite": "factor_solver",
             "factor_solver": BASELINE_FACTOR,
-            "mumps_policy_key": MUMPS_POLICY_CASE_BASELINE,
+            "use_production_st_configure": True,
+            "production_mumps_policy": "default",
             "nev": BASELINE_NEV,
             "ncv": BASELINE_NCV,
             "factor_solver_available": True,
@@ -908,6 +1031,9 @@ def _run_suite(
         baseline_in_suite = cases[0]
         suite_baseline_id = str(baseline_in_suite.get("case_id"))
 
+    baseline_valid = _baseline_case_is_valid(baseline_in_suite)
+    suite_status = "PASS" if baseline_valid else "FAILED_BASELINE"
+
     baseline_st = None
     baseline_setup = None
     baseline_solve = None
@@ -918,27 +1044,41 @@ def _run_suite(
 
     for c in cases:
         cid = str(c.get("case_id"))
-        if baseline_in_suite is not None and cid == suite_baseline_id:
+        if not baseline_valid:
+            c["parity"] = {
+                "parity_pass": None,
+                "parity_skipped": True,
+                "parity_skipped_reason": "baseline_failed_or_invalid",
+                "baseline_reference_case_id": suite_baseline_id,
+                "baseline_failure_reason": (baseline_in_suite or {}).get("failure_reason"),
+                "baseline_setup_succeeded": (baseline_in_suite or {}).get("setup_succeeded"),
+                "baseline_solve_succeeded": (baseline_in_suite or {}).get("solve_succeeded"),
+                "baseline_st_total_seconds": _safe_float(baseline_st),
+            }
+        elif cid == suite_baseline_id:
             c["parity"] = {
                 "parity_pass": True,
                 "parity_notes": ["in_suite_baseline_reference"],
                 "speedup_vs_baseline_st_total": 1.0,
                 "baseline_reference_case_id": suite_baseline_id,
             }
-        elif baseline_in_suite is not None:
+        else:
             c["parity"] = _parity_vs_baseline(c, baseline_in_suite)
             c["parity"]["baseline_reference_case_id"] = suite_baseline_id
             c["parity"]["baseline_st_total_seconds"] = _safe_float(baseline_st)
 
     suite_result = {
         "suite": suite_name,
+        "suite_status": suite_status,
         "mesh_level": mesh_level,
         "targets_hz": list(targets_hz),
         "baseline_reference_source": "in_suite_case",
+        "baseline_valid": bool(baseline_valid),
         "baseline_case_id": suite_baseline_id,
+        "baseline_failure_reason": (baseline_in_suite or {}).get("failure_reason"),
         "baseline_setup_elapsed_seconds": _safe_float(baseline_setup),
         "baseline_solve_elapsed_seconds": _safe_float(baseline_solve),
-        "baseline_st_total_seconds": _safe_float(baseline_st),
+        "baseline_st_total_seconds": _safe_float(baseline_st) if baseline_valid else None,
         "cases": cases,
         "summary_table_markdown": _summary_table_md(
             cases,
@@ -953,10 +1093,13 @@ def _run_suite(
         "",
         f"- Mesh: `{mesh_level}`",
         f"- Target Hz: `{target_hz}`",
+        f"- Suite status: `{suite_status}`",
         f"- Baseline case (in-suite): `{suite_baseline_id}`",
+        f"- Baseline valid: `{baseline_valid}`",
         f"- Baseline setup (s): `{baseline_setup}`",
         f"- Baseline solve (s): `{baseline_solve}`",
-        f"- Baseline ST total (s): `{baseline_st}`",
+        f"- Baseline ST total (s): `{suite_result.get('baseline_st_total_seconds')}`",
+        f"- Baseline failure: `{(baseline_in_suite or {}).get('failure_reason')}`",
         "",
         "## Summary",
         "",
@@ -1077,6 +1220,8 @@ def run_st_solver_benchmark(argv: Sequence[str], pre: Dict[str, Any]) -> int:
 
     suite_results: Dict[str, Any] = {}
 
+    case_filter = _parse_case_filter(argv)
+
     for suite_name in suites_to_run:
         if suite_name == "factor_solver":
             variants = _factor_solver_variants(package_probe)
@@ -1088,6 +1233,16 @@ def run_st_solver_benchmark(argv: Sequence[str], pre: Dict[str, Any]) -> int:
             variants = _eps_params_variants()
         else:
             variants = _interval_slicing_variants()
+
+        if case_filter is not None:
+            variants = [v for v in variants if str(v.get("case_id")) in case_filter]
+            if not variants:
+                print(
+                    f"[B3_ST_solver_bench] no variants match {B3_ST_CASE_FILTER_ARG}={sorted(case_filter)} "
+                    f"in suite={suite_name}",
+                    flush=True,
+                )
+                continue
 
         suite_results[suite_name] = _run_suite(
             suite_name,
@@ -1104,7 +1259,7 @@ def run_st_solver_benchmark(argv: Sequence[str], pre: Dict[str, Any]) -> int:
         suite_data = suite_results.get(preferred_suite) or {}
         baseline_id = str(suite_data.get("baseline_case_id") or MUMPS_POLICY_CASE_BASELINE)
         for case in suite_data.get("cases") or []:
-            if str(case.get("case_id")) == baseline_id and case.get("solve_succeeded"):
+            if str(case.get("case_id")) == baseline_id and _baseline_case_is_valid(case):
                 baseline_reference = case
                 break
         if baseline_reference is not None:
