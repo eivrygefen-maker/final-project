@@ -19,6 +19,7 @@ from v2_b3_operator_checkpoint_portable import load_operators_with_portable_fall
 from v2_b3_petsc_util import mat_shape, write_json_atomic  # noqa: E402
 from v2_b3_checkpoint_pipeline_lib import (  # noqa: E402
     B3_EXPORT_RICH_MODAL_DATA_ARG,
+    default_solve_output_dir,
     ensure_rich_modal_export_allowed,
     rich_modal_export_manifest_block,
 )
@@ -60,7 +61,10 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--nev", type=int, default=12)
     parser.add_argument("--ncv", type=int, default=24)
-    parser.add_argument("--output-dir", required=True)
+    parser.add_argument(
+        "--output-dir",
+        help="Default: solver_benchmarks/checkpoint_solve_<factor>_<set>_<utc>",
+    )
     parser.add_argument(
         "--baseline-json",
         help="Optional baseline result.json for accepted-frequency parity comparison.",
@@ -133,11 +137,15 @@ def run_checkpoint_solver_multi_benchmark(argv: Optional[List[str]] = None) -> i
     rich_modal_requested = bool(args.export_rich_modal_data)
     ensure_rich_modal_export_allowed(requested=rich_modal_requested, context="B3_checkpoint_solver_multi")
     checkpoint = Path(args.checkpoint_dir).expanduser().resolve()
-    output_dir = Path(args.output_dir).expanduser().resolve()
+    factor_solver = str(args.factor_solver).strip().lower()
+    output_dir = (
+        Path(args.output_dir).expanduser().resolve()
+        if args.output_dir
+        else default_solve_output_dir(factor_solver=factor_solver, target_set=str(args.target_set))
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     targets_hz = _resolve_targets(args)
-    factor_solver = str(args.factor_solver).strip().lower()
 
     meta_path = checkpoint / "built_metadata.json"
     if not meta_path.is_file():
@@ -290,9 +298,9 @@ def run_checkpoint_solver_multi_benchmark(argv: Optional[List[str]] = None) -> i
                 pass
 
 
-def main() -> int:
-    return run_checkpoint_solver_multi_benchmark()
+def main(argv: Optional[List[str]] = None) -> int:
+    return run_checkpoint_solver_multi_benchmark(argv)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

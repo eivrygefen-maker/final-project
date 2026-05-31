@@ -74,7 +74,17 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
   --target-set full9
 ```
 
-**Writes:** `$OUT/result.json`, `result.md`, `checkpoint_solve_manifest.json` with stable `summary` schema.
+**Writes:** auto-created directory under `v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_<factor>_<set>_<utc>/` containing `result.json`, `result.md`, and `checkpoint_solve_manifest.json` with stable `summary` schema.
+
+Optional explicit output directory:
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve.py \
+  --checkpoint-dir "$CKPT" \
+  --factor-solver mkl_pardiso \
+  --target-set full9 \
+  --output-dir "$OUT"
+```
 
 ### MUMPS fallback (solver-mkl env)
 

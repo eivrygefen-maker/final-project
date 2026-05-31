@@ -116,7 +116,6 @@ def run_checkpoint_solve(argv: Optional[List[str]] = None) -> int:
     write_json(output_dir / PIPELINE_SOLVE_MANIFEST, pre_manifest)
 
     bench_argv: List[str] = [
-        "v2_b3_checkpoint_solve.py",
         "--checkpoint-dir",
         str(checkpoint),
         "--factor-solver",
@@ -140,9 +139,9 @@ def run_checkpoint_solve(argv: Optional[List[str]] = None) -> int:
     return rc
 
 
-def main() -> int:
-    return run_checkpoint_solve()
+def main(argv: Optional[List[str]] = None) -> int:
+    return run_checkpoint_solve(argv)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))
