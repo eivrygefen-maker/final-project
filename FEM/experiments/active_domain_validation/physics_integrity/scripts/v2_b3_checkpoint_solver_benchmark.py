@@ -53,6 +53,8 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--nev", type=int, default=12)
     parser.add_argument("--ncv", type=int, default=24)
     parser.add_argument("--output-dir", required=True, help="Directory for result.json/result.md.")
+    if argv is None:
+        return parser.parse_args()
     return parser.parse_args(argv)
 
 
@@ -292,7 +294,7 @@ def run_checkpoint_solver_benchmark(argv: Optional[List[str]] = None) -> int:
 
 
 def main() -> int:
-    return run_checkpoint_solver_benchmark(sys.argv)
+    return run_checkpoint_solver_benchmark()
 
 
 if __name__ == "__main__":
