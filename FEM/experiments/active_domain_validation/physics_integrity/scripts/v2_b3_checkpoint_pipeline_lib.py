@@ -227,6 +227,11 @@ def default_solve_output_dir(*, factor_solver: str, target_set: str) -> Path:
     return SOLVER_BENCHMARKS_ROOT / f"checkpoint_solve_{factor_solver}_{target_set}_{rid}"
 
 
+def default_target_density_output_dir() -> Path:
+    rid = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    return SOLVER_BENCHMARKS_ROOT / f"target_density_experiment_{rid}"
+
+
 def write_json(path: Path, body: Dict[str, Any]) -> None:
     from v2_b3_petsc_util import write_json_atomic
 
