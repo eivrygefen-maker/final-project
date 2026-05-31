@@ -19,6 +19,7 @@ from v2_b3_st_sinvert_solver_lib import (  # noqa: E402
     ACCEPTANCE_FREQ_HI_HZ,
     ACCEPTANCE_FREQ_LO_HZ,
     built_from_checkpoint_metadata,
+    build_stable_summary,
     compare_checkpoint_results_to_baseline,
     mat_global_nnz_used,
     run_checkpoint_st_target,
@@ -169,6 +170,8 @@ def run_checkpoint_solver_benchmark(argv: Optional[List[str]] = None) -> int:
                 baseline=baseline,
             )
 
+        result["summary"] = build_stable_summary(result)
+
         write_json_atomic(output_dir / "result.json", result)
         _write_result_md(output_dir / "result.md", result)
         print(
@@ -184,6 +187,7 @@ def run_checkpoint_solver_benchmark(argv: Optional[List[str]] = None) -> int:
         result["failure_reason"] = f"{type(exc).__name__}:{exc}"
         result["failure_class"] = extract_st_failure_diagnostics(exc).get("failure_class")
         result["total_elapsed_seconds"] = safe_float(time.perf_counter() - t_total0)
+        result["summary"] = build_stable_summary(result)
         write_json_atomic(output_dir / "result.json", result)
         _write_result_md(output_dir / "result.md", result)
         print(f"[B3_checkpoint_solver_bench] FAIL {exc} -> {output_dir / 'result.json'}", flush=True)

@@ -748,3 +748,139 @@ def compare_checkpoint_results_to_baseline(
             and (not per_target or all(r.get("accepted_frequencies_match") for r in per_target))
         ),
     }
+
+
+CHECKPOINT_SOLVER_SUMMARY_SCHEMA = "checkpoint_solver_summary_v1"
+
+
+def _per_target_summary_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    rows = list(result.get("targets") or [])
+    if not rows and result.get("target_frequency_hz") is not None:
+        rows = [result]
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        out.append(
+            {
+                "target_hz": safe_float(row.get("target_frequency_hz")),
+                "setup_s": safe_float(row.get("setup_elapsed_seconds")),
+                "solve_s": safe_float(row.get("solve_elapsed_seconds")),
+                "st_total_s": safe_float(row.get("st_total_elapsed_seconds")),
+                "accepted_n": int(row.get("accepted_mode_count_in_interval") or 0),
+                "status": row.get("status"),
+            }
+        )
+    return out
+
+
+def build_stable_summary(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Stable top-level summary block for result.json consumers."""
+    agg = result.get("aggregate") or {}
+    per_target = _per_target_summary_rows(result)
+    targets_total = int(agg.get("targets_attempted") or len(per_target) or 0)
+    targets_succeeded = int(agg.get("targets_succeeded") or sum(1 for r in per_target if r.get("status") == "PASS"))
+
+    all_accepted: List[float] = []
+    if agg.get("unique_accepted_frequencies_hz"):
+        all_accepted = [float(x) for x in agg["unique_accepted_frequencies_hz"]]
+    elif result.get("accepted_frequencies_hz"):
+        all_accepted = [float(x) for x in result["accepted_frequencies_hz"]]
+    else:
+        for row in result.get("targets") or []:
+            all_accepted.extend(float(x) for x in (row.get("accepted_frequencies_hz") or []))
+    unique_accepted = deduplicate_frequencies_hz(all_accepted)
+
+    aggregate_wall_s = safe_float(agg.get("total_wall_seconds") or result.get("total_elapsed_seconds"))
+    total_st_s = safe_float(agg.get("total_st_seconds"))
+    total_setup_s = safe_float(agg.get("total_setup_seconds"))
+    total_solve_s = safe_float(agg.get("total_solve_seconds"))
+    if total_st_s is None and len(per_target) == 1:
+        total_st_s = per_target[0].get("st_total_s")
+        total_setup_s = per_target[0].get("setup_s")
+        total_solve_s = per_target[0].get("solve_s")
+    if total_st_s is None and per_target:
+        total_st_s = safe_float(sum(float(r.get("st_total_s") or 0.0) for r in per_target))
+        total_setup_s = safe_float(sum(float(r.get("setup_s") or 0.0) for r in per_target))
+        total_solve_s = safe_float(sum(float(r.get("solve_s") or 0.0) for r in per_target))
+
+    return {
+        "schema": CHECKPOINT_SOLVER_SUMMARY_SCHEMA,
+        "status": result.get("status"),
+        "factor_solver": result.get("factor_solver"),
+        "aggregate_wall_s": aggregate_wall_s,
+        "total_st_s": total_st_s,
+        "total_setup_s": total_setup_s,
+        "total_solve_s": total_solve_s,
+        "targets_succeeded": targets_succeeded,
+        "targets_total": targets_total,
+        "unique_accepted_hz": unique_accepted,
+        "per_target": per_target,
+    }
+
+
+def extract_summary_view(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Return stable summary; rebuild from legacy keys when absent."""
+    summary = result.get("summary")
+    if isinstance(summary, dict) and summary.get("schema") == CHECKPOINT_SOLVER_SUMMARY_SCHEMA:
+        return summary
+    return build_stable_summary(result)
+
+
+def compare_checkpoint_summaries(
+    *,
+    baseline: Dict[str, Any],
+    candidate: Dict[str, Any],
+    tol_hz: float = FREQ_PARITY_TOL_HZ,
+) -> Dict[str, Any]:
+    """Compare two benchmark result.json files using stable summary fields."""
+    base = extract_summary_view(baseline)
+    cand = extract_summary_view(candidate)
+
+    def _speedup(base_s: Any, cand_s: Any) -> Optional[float]:
+        try:
+            b = float(base_s)
+            c = float(cand_s)
+        except (TypeError, ValueError):
+            return None
+        if c <= 0.0:
+            return None
+        return b / c
+
+    base_freqs = list(base.get("unique_accepted_hz") or [])
+    cand_freqs = list(cand.get("unique_accepted_hz") or [])
+    timing = {
+        "aggregate_wall_speedup": _speedup(base.get("aggregate_wall_s"), cand.get("aggregate_wall_s")),
+        "total_st_speedup": _speedup(base.get("total_st_s"), cand.get("total_st_s")),
+        "total_setup_speedup": _speedup(base.get("total_setup_s"), cand.get("total_setup_s")),
+        "total_solve_speedup": _speedup(base.get("total_solve_s"), cand.get("total_solve_s")),
+    }
+    per_target_cmp: List[Dict[str, Any]] = []
+    base_by_hz = {float(r["target_hz"]): r for r in (base.get("per_target") or []) if r.get("target_hz") is not None}
+    cand_by_hz = {float(r["target_hz"]): r for r in (cand.get("per_target") or []) if r.get("target_hz") is not None}
+    for hz in sorted(set(base_by_hz) | set(cand_by_hz)):
+        b_row = base_by_hz.get(hz) or {}
+        c_row = cand_by_hz.get(hz) or {}
+        per_target_cmp.append(
+            {
+                "target_hz": hz,
+                "baseline_st_total_s": b_row.get("st_total_s"),
+                "candidate_st_total_s": c_row.get("st_total_s"),
+                "st_total_speedup": _speedup(b_row.get("st_total_s"), c_row.get("st_total_s")),
+            }
+        )
+
+    return {
+        "baseline_factor_solver": base.get("factor_solver"),
+        "candidate_factor_solver": cand.get("factor_solver"),
+        "baseline_status": base.get("status"),
+        "candidate_status": cand.get("status"),
+        "timing": timing,
+        "baseline_unique_accepted_hz": base_freqs,
+        "candidate_unique_accepted_hz": cand_freqs,
+        "accepted_frequencies_match": freq_lists_match(base_freqs, cand_freqs, tol_hz=tol_hz),
+        "per_target_timing": per_target_cmp,
+        "parity_pass": bool(
+            base.get("status") == "PASS"
+            and cand.get("status") == "PASS"
+            and freq_lists_match(base_freqs, cand_freqs, tol_hz=tol_hz)
+        ),
+    }

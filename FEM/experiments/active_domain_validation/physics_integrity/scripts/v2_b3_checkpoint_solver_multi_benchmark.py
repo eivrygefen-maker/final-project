@@ -23,6 +23,7 @@ from v2_b3_st_sinvert_solver_lib import (  # noqa: E402
     L_PROD_ST_FULL9_TARGETS_HZ,
     built_from_checkpoint_metadata,
     compare_checkpoint_results_to_baseline,
+    build_stable_summary,
     deduplicate_frequencies_hz,
     mat_global_nnz_used,
     parse_hz_list,
@@ -245,6 +246,8 @@ def run_checkpoint_solver_multi_benchmark(argv: Optional[List[str]] = None) -> i
         else:
             result["status"] = "FAIL"
 
+        result["summary"] = build_stable_summary(result)
+
         write_json_atomic(output_dir / "result.json", result)
         _write_result_md(output_dir / "result.md", result)
         print(
@@ -259,6 +262,7 @@ def run_checkpoint_solver_multi_benchmark(argv: Optional[List[str]] = None) -> i
         result["aggregate"] = {
             "total_wall_seconds": safe_float(time.perf_counter() - t_wall0),
         }
+        result["summary"] = build_stable_summary(result)
         write_json_atomic(output_dir / "result.json", result)
         _write_result_md(output_dir / "result.md", result)
         print(f"[B3_checkpoint_solver_multi] FAIL {exc}", flush=True)
