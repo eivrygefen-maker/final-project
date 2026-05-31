@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Dev-only experimental B3 monolithic AIJ compose backends (default: direct row-loop)."""
+"""Dev-only experimental B3 monolithic AIJ compose backends (default: direct row-loop).
+
+Backends:
+- direct_row_loop: production baseline (unchanged).
+- csr_bulk / csr_compare: dev CSR extract+remap+createAIJ path (preferred experimental).
+- matnest_convert / matnest_compare: experimental MatNest path (disabled by default; unreliable).
+"""
 from __future__ import annotations
 
 import heapq
@@ -23,6 +29,8 @@ ALLOWED_BACKENDS = frozenset(
         "direct_row_loop",
         "matnest_convert",
         "matnest_compare",
+        "csr_bulk",
+        "csr_compare",
     }
 )
 COMPARE_ALLOWED_MESH_LEVELS = frozenset({"L_dev_dense"})
@@ -99,13 +107,13 @@ def resolve_compose_backend(
             f"unsupported backend={backend!r}; allowed={sorted(ALLOWED_BACKENDS)}",
             recommendation=CSR_BULK_RECOMMENDATION,
         )
-    if backend == "matnest_compare":
+    if backend in ("matnest_compare", "csr_compare"):
         ml = str(mesh_level or "").strip()
         if ml not in COMPARE_ALLOWED_MESH_LEVELS:
             raise B3BlockComposeBackendError(
                 "backend_resolve",
-                f"matnest_compare is dev-only on {sorted(COMPARE_ALLOWED_MESH_LEVELS)}; got mesh_level={ml!r}",
-                recommendation="Use matnest_convert on L_prod or matnest_compare on L_dev_dense.",
+                f"{backend} is dev-only on {sorted(COMPARE_ALLOWED_MESH_LEVELS)}; got mesh_level={ml!r}",
+                recommendation="Use direct_row_loop or csr_bulk on L_prod; csr_compare on L_dev_dense.",
             )
     return backend
 
@@ -512,12 +520,21 @@ def _safe_frobenius_difference(
     *,
     compose_meta: Dict[str, Any],
     label: str,
+    ref_for_relative: Any = None,
 ) -> Optional[float]:
     audit = _audit_helpers()
     try:
         diff = float(audit._petsc_mat_frobenius_difference(a, b))
         compose_meta[f"B3_BLOCK_COMPOSE_compare_{label}_frobenius_diff"] = _safe_float(diff)
         compose_meta[f"B3_BLOCK_COMPOSE_compare_{label}_frobenius_available"] = True
+        ref = ref_for_relative if ref_for_relative is not None else a
+        try:
+            ref_norm = float(ref.norm(PETSc.NormType.FROBENIUS))
+            compose_meta[f"B3_BLOCK_COMPOSE_compare_{label}_relative_frobenius_diff"] = _safe_float(
+                diff / max(ref_norm, 1.0e-300)
+            )
+        except Exception:
+            compose_meta[f"B3_BLOCK_COMPOSE_compare_{label}_relative_frobenius_diff"] = None
         return diff
     except Exception as exc:
         compose_meta[f"B3_BLOCK_COMPOSE_compare_{label}_frobenius_available"] = False
@@ -2103,6 +2120,425 @@ def _matnest_convert_aij_from_restricted_blocks(
     return a_ret, m_ret
 
 
+def _extract_petsc_csr_arrays(mat: Any) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    mat.assemble()
+    indptr, indices, data = mat.getValuesCSR()
+    nrows, _ncol = mat.getSize()
+    return (
+        np.asarray(indptr, dtype=np.int32),
+        np.asarray(indices, dtype=np.int32),
+        np.asarray(data, dtype=np.float64),
+        int(nrows),
+    )
+
+
+def _build_monolithic_csr_from_block_specs(
+    block_specs: Sequence[Tuple[Any, int, int]],
+    n_w: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, float]]:
+    """Concatenate block CSR rows into monolithic [u|p] layout (same offsets as direct_row_loop)."""
+    timing: Dict[str, float] = {
+        "csr_extract_seconds": 0.0,
+        "csr_remap_seconds": 0.0,
+        "csr_build_seconds": 0.0,
+    }
+    t_extract = time.perf_counter()
+    extracted: List[Tuple[np.ndarray, np.ndarray, np.ndarray, int, int, int]] = []
+    for mat, row_off, col_off in block_specs:
+        indptr, indices, data, nrows = _extract_petsc_csr_arrays(mat)
+        extracted.append((indptr, indices, data, nrows, int(row_off), int(col_off)))
+    timing["csr_extract_seconds"] = time.perf_counter() - t_extract
+
+    t_remap = time.perf_counter()
+    row_nnz = np.zeros(int(n_w), dtype=np.int64)
+    for indptr, _indices, _data, nrows, row_off, _col_off in extracted:
+        for local_r in range(int(nrows)):
+            gr = int(row_off) + int(local_r)
+            row_nnz[gr] += int(indptr[local_r + 1]) - int(indptr[local_r])
+    total_nnz = int(row_nnz.sum())
+    timing["csr_remap_seconds"] = time.perf_counter() - t_remap
+
+    t_build = time.perf_counter()
+    indptr_out = np.zeros(int(n_w) + 1, dtype=np.int32)
+    if total_nnz > 0:
+        indptr_out[1:] = np.cumsum(row_nnz, dtype=np.int64).astype(np.int32)
+    indices_out = np.empty(total_nnz, dtype=np.int32)
+    data_out = np.empty(total_nnz, dtype=np.float64)
+    write_pos = indptr_out.astype(np.int64, copy=True)
+    for indptr, indices, data, nrows, row_off, col_off in extracted:
+        for local_r in range(int(nrows)):
+            gr = int(row_off) + int(local_r)
+            start, end = int(indptr[local_r]), int(indptr[local_r + 1])
+            nnz = end - start
+            if nnz <= 0:
+                continue
+            wp = int(write_pos[gr])
+            indices_out[wp : wp + nnz] = indices[start:end] + int(col_off)
+            data_out[wp : wp + nnz] = data[start:end]
+            write_pos[gr] += nnz
+    timing["csr_build_seconds"] = time.perf_counter() - t_build
+    return indptr_out, indices_out, data_out, timing
+
+
+def _petsc_aij_from_csr(
+    indptr: np.ndarray,
+    indices: np.ndarray,
+    data: np.ndarray,
+    *,
+    n_w: int,
+    comm: Any,
+) -> Tuple[Any, float]:
+    t_asm = time.perf_counter()
+    mat = None
+    last_exc: Optional[Exception] = None
+    for factory in (
+        lambda: PETSc.Mat().createAIJ(size=(int(n_w), int(n_w)), csr=(indptr, indices, data), comm=comm),
+        lambda: PETSc.Mat().createAIJ(
+            size=(int(n_w), int(n_w)),
+            csr=((indptr, indices, data), (indptr, indices, data)),
+            comm=comm,
+        ),
+    ):
+        try:
+            mat = factory()
+            break
+        except Exception as exc:
+            last_exc = exc
+    if mat is None:
+        mat = PETSc.Mat().create(comm=comm)
+        mat.setSizes([int(n_w), int(n_w)])
+        mat.setType("aij")
+        mat.setUp()
+        try:
+            mat.setValuesCSR(indptr, indices, data)
+        except Exception as exc_set:
+            raise B3BlockComposeBackendError(
+                "csr_assembly",
+                f"PETSc CSR assembly failed: {exc_set}; createAIJ={last_exc}",
+                recommendation=CSR_BULK_RECOMMENDATION,
+            ) from exc_set
+    mat.assemble()
+    return mat, time.perf_counter() - t_asm
+
+
+def _record_csr_timing_meta(compose_meta: Dict[str, Any], *, label: str, timing: Dict[str, float], assembly_s: float) -> None:
+    label_s = str(label).strip("_")
+    compose_meta[f"B3_BLOCK_COMPOSE_csr_{label_s}_extract_seconds"] = _safe_float(timing.get("csr_extract_seconds"))
+    compose_meta[f"B3_BLOCK_COMPOSE_csr_{label_s}_remap_seconds"] = _safe_float(timing.get("csr_remap_seconds"))
+    compose_meta[f"B3_BLOCK_COMPOSE_csr_{label_s}_build_seconds"] = _safe_float(timing.get("csr_build_seconds"))
+    compose_meta[f"B3_BLOCK_COMPOSE_csr_{label_s}_assembly_seconds"] = _safe_float(assembly_s)
+
+
+def _merge_csr_timing_totals(compose_meta: Dict[str, Any]) -> None:
+    keys = ("extract_seconds", "remap_seconds", "build_seconds", "assembly_seconds")
+    totals = {
+        key: float(compose_meta.get(f"B3_BLOCK_COMPOSE_csr_A_{key}") or 0.0)
+        + float(compose_meta.get(f"B3_BLOCK_COMPOSE_csr_M_{key}") or 0.0)
+        for key in keys
+    }
+    compose_meta["B3_BLOCK_COMPOSE_csr_extract_seconds"] = _safe_float(totals["extract_seconds"])
+    compose_meta["B3_BLOCK_COMPOSE_csr_remap_seconds"] = _safe_float(totals["remap_seconds"])
+    compose_meta["B3_BLOCK_COMPOSE_csr_build_seconds"] = _safe_float(totals["build_seconds"])
+    compose_meta["B3_BLOCK_COMPOSE_csr_assembly_seconds"] = _safe_float(totals["assembly_seconds"])
+    csr_total = float(sum(totals.values()))
+    compose_meta["B3_BLOCK_COMPOSE_csr_total_seconds"] = _safe_float(csr_total)
+    ref = float(BASELINE_L_PROD_COMPOSE_SECONDS)
+    compose_meta["B3_BLOCK_COMPOSE_baseline_reference_seconds"] = ref
+    if csr_total > 0.0:
+        compose_meta["B3_BLOCK_COMPOSE_speedup_vs_reference"] = _safe_float(ref / csr_total)
+    else:
+        compose_meta["B3_BLOCK_COMPOSE_speedup_vs_reference"] = None
+
+
+def _csr_bulk_compose_from_restricted_blocks(
+    *,
+    a_uu: Any,
+    a_up: Any,
+    a_pu: Any,
+    a_pp: Any,
+    m_uu: Any,
+    m_pu: Any,
+    m_pp: Any,
+    n_u: int,
+    n_p: int,
+    comm: Any,
+    compose_meta: Optional[Dict[str, Any]] = None,
+) -> Tuple[Any, Any]:
+    """Experimental CSR bulk compose: extract block CSR, remap offsets, create monolithic AIJ."""
+    meta = compose_meta if compose_meta is not None else {}
+    nu = int(n_u)
+    np_ = int(n_p)
+    n_w = nu + np_
+    t_total = time.perf_counter()
+
+    a_blocks: Tuple[Tuple[Any, int, int], ...] = (
+        (a_uu, 0, 0),
+        (a_up, 0, nu),
+        (a_pu, nu, 0),
+        (a_pp, nu, nu),
+    )
+    m_blocks: Tuple[Tuple[Any, int, int], ...] = (
+        (m_uu, 0, 0),
+        (m_pu, nu, 0),
+        (m_pp, nu, nu),
+    )
+
+    a_indptr, a_indices, a_data, a_timing = _build_monolithic_csr_from_block_specs(a_blocks, n_w)
+    m_indptr, m_indices, m_data, m_timing = _build_monolithic_csr_from_block_specs(m_blocks, n_w)
+
+    a_out, a_asm = _petsc_aij_from_csr(a_indptr, a_indices, a_data, n_w=n_w, comm=comm)
+    m_out, m_asm = _petsc_aij_from_csr(m_indptr, m_indices, m_data, n_w=n_w, comm=comm)
+
+    _record_csr_timing_meta(meta, label="A", timing=a_timing, assembly_s=a_asm)
+    _record_csr_timing_meta(meta, label="M", timing=m_timing, assembly_s=m_asm)
+    _merge_csr_timing_totals(meta)
+    meta["B3_BLOCK_COMPOSE_csr_total_seconds_including_overhead"] = _safe_float(time.perf_counter() - t_total)
+    meta["B3_BLOCK_COMPOSE_csr_method"] = "extract_remap_concat_createAIJ"
+    meta["B3_final_sparse_AIJ_conversion_method"] = "EXPERIMENTAL_CSR_BULK_FROM_RESTRICTED_BLOCKS"
+    meta["B3_final_MatNest_constructed_after_blockwise_restriction"] = False
+    meta["B3_final_MatNest_conversion_to_sparse_AIJ_attempted"] = False
+    meta["B3_MatNest_to_AIJ_conversion_path_disabled"] = True
+    print(
+        f"[B3_BLOCK_COMPOSE_csr] total={meta.get('B3_BLOCK_COMPOSE_csr_total_seconds')}s "
+        f"extract={meta.get('B3_BLOCK_COMPOSE_csr_extract_seconds')}s "
+        f"remap={meta.get('B3_BLOCK_COMPOSE_csr_remap_seconds')}s "
+        f"build={meta.get('B3_BLOCK_COMPOSE_csr_build_seconds')}s "
+        f"assembly={meta.get('B3_BLOCK_COMPOSE_csr_assembly_seconds')}s "
+        f"speedup_vs_ref={meta.get('B3_BLOCK_COMPOSE_speedup_vs_reference')}",
+        flush=True,
+    )
+    return a_out, m_out
+
+
+def _finalize_dev_compose_compare(
+    *,
+    a_old: Any,
+    m_old: Any,
+    a_new: Any,
+    m_new: Any,
+    n_u: int,
+    n_p: int,
+    comm: Any,
+    compose_meta: Dict[str, Any],
+    mesh_level: str,
+    candidate_backend: str,
+    failure_stage: str,
+    include_child_vs_nest_audit: bool = False,
+    child_blocks: Optional[Sequence[Tuple[str, Any, int, int, int, int]]] = None,
+) -> Tuple[Any, Any]:
+    audit = _audit_helpers()
+    a_shape_old = audit._mat_shape(a_old)
+    a_shape_new = audit._mat_shape(a_new)
+    m_shape_old = audit._mat_shape(m_old)
+    m_shape_new = audit._mat_shape(m_new)
+    a_nnz_old = int(audit._petsc_mat_global_nnz_used(a_old))
+    a_nnz_new = int(audit._petsc_mat_global_nnz_used(a_new))
+    m_nnz_old = int(audit._petsc_mat_global_nnz_used(m_old))
+    m_nnz_new = int(audit._petsc_mat_global_nnz_used(m_new))
+    shape_equal = bool(a_shape_old == a_shape_new and m_shape_old == m_shape_new)
+    a_nnz_equal = bool(a_nnz_old == a_nnz_new)
+    m_nnz_equal = bool(m_nnz_old == m_nnz_new)
+    compose_meta.update(
+        {
+            "B3_BLOCK_COMPOSE_compare_mode": True,
+            "B3_BLOCK_COMPOSE_compare_baseline_backend": "direct_row_loop",
+            "B3_BLOCK_COMPOSE_compare_candidate_backend": str(candidate_backend),
+            "B3_BLOCK_COMPOSE_compare_A_shape_old": a_shape_old,
+            "B3_BLOCK_COMPOSE_compare_A_shape_new": a_shape_new,
+            "B3_BLOCK_COMPOSE_compare_M_shape_old": m_shape_old,
+            "B3_BLOCK_COMPOSE_compare_M_shape_new": m_shape_new,
+            "B3_BLOCK_COMPOSE_compare_A_type_old": str(a_old.getType()),
+            "B3_BLOCK_COMPOSE_compare_A_type_new": str(a_new.getType()),
+            "B3_BLOCK_COMPOSE_compare_M_type_old": str(m_old.getType()),
+            "B3_BLOCK_COMPOSE_compare_M_type_new": str(m_new.getType()),
+            "B3_BLOCK_COMPOSE_compare_shape_equal": shape_equal,
+            "B3_BLOCK_COMPOSE_compare_A_nnz_old": a_nnz_old,
+            "B3_BLOCK_COMPOSE_compare_A_nnz_new": a_nnz_new,
+            "B3_BLOCK_COMPOSE_compare_M_nnz_old": m_nnz_old,
+            "B3_BLOCK_COMPOSE_compare_M_nnz_new": m_nnz_new,
+            "B3_BLOCK_COMPOSE_compare_A_nnz_equal": a_nnz_equal,
+            "B3_BLOCK_COMPOSE_compare_M_nnz_equal": m_nnz_equal,
+        }
+    )
+
+    tol_a: Optional[float] = None
+    tol_m: Optional[float] = None
+    a_fro_diff: Optional[float] = None
+    m_fro_diff: Optional[float] = None
+    nu = int(n_u)
+    np_ = int(n_p)
+    if shape_equal and a_nnz_equal and m_nnz_equal:
+        a_fro_diff = _safe_frobenius_difference(
+            a_old, a_new, compose_meta=compose_meta, label="A", ref_for_relative=a_old
+        )
+        m_fro_diff = _safe_frobenius_difference(
+            m_old, m_new, compose_meta=compose_meta, label="M", ref_for_relative=m_old
+        )
+        if (
+            compose_meta.get("B3_BLOCK_COMPOSE_compare_A_frobenius_available")
+            and compose_meta.get("B3_BLOCK_COMPOSE_compare_M_frobenius_available")
+        ):
+            try:
+                a_norm_old = float(a_old.norm(PETSc.NormType.FROBENIUS))
+                m_norm_old = float(m_old.norm(PETSc.NormType.FROBENIUS))
+                tol_a = max(1.0e-8, 1.0e-12 * max(a_norm_old, 1.0))
+                tol_m = max(1.0e-8, 1.0e-12 * max(m_norm_old, 1.0))
+                compose_meta["B3_BLOCK_COMPOSE_compare_A_frobenius_tol"] = _safe_float(tol_a)
+                compose_meta["B3_BLOCK_COMPOSE_compare_M_frobenius_tol"] = _safe_float(tol_m)
+            except Exception as exc:
+                compose_meta["B3_BLOCK_COMPOSE_compare_norm_unavailable"] = True
+                compose_meta["B3_BLOCK_COMPOSE_compare_norm_tol_unavailable_reason"] = (
+                    f"{type(exc).__name__}:{exc}"
+                )
+        if include_child_vs_nest_audit and child_blocks is not None:
+            _record_child_vs_nest_block_audit(
+                child_blocks=child_blocks,
+                nest_mono=a_new,
+                rowloop_mono=a_old,
+                comm=comm,
+                compose_meta=compose_meta,
+                mesh_level=mesh_level,
+            )
+        _record_compose_matrix_diff_audit(
+            a_old,
+            a_new,
+            label="A",
+            n_u=nu,
+            n_p=np_,
+            comm=comm,
+            compose_meta=compose_meta,
+            block_name_fn=_monolithic_block_name,
+            block_fro_specs=(
+                ("Auu", 0, nu, 0, nu),
+                ("Aup", 0, nu, nu, nu + np_),
+                ("Apu", nu, nu + np_, 0, nu),
+                ("App", nu, nu + np_, nu, nu + np_),
+            ),
+            mesh_level=mesh_level,
+        )
+        compose_meta["B3_BLOCK_COMPOSE_compare_A_DIFF_TOP20_SHARED"] = list(
+            compose_meta.get("B3_BLOCK_COMPOSE_compare_A_diff_top20_shared") or []
+        )
+        compose_meta["B3_BLOCK_COMPOSE_compare_A_DIFF_TOP20_PATTERN_MISMATCH"] = list(
+            compose_meta.get("B3_BLOCK_COMPOSE_compare_A_diff_top20_pattern_mismatch") or []
+        )
+        _record_compose_matrix_diff_audit(
+            m_old,
+            m_new,
+            label="M",
+            n_u=nu,
+            n_p=np_,
+            comm=comm,
+            compose_meta=compose_meta,
+            block_name_fn=_mass_monolithic_block_name,
+            block_fro_specs=(
+                ("Muu", 0, nu, 0, nu),
+                ("Mup_zero", 0, nu, nu, nu + np_),
+                ("Mpu", nu, nu + np_, 0, nu),
+                ("Mpp", nu, nu + np_, nu, nu + np_),
+            ),
+            mesh_level=mesh_level,
+        )
+    else:
+        compose_meta["B3_BLOCK_COMPOSE_compare_norm_skipped"] = True
+        compose_meta["B3_BLOCK_COMPOSE_compare_norm_skipped_reason"] = "shape_or_nnz_mismatch"
+
+    norm_pass = True
+    if compose_meta.get("B3_BLOCK_COMPOSE_compare_norm_unavailable"):
+        norm_pass = False
+    elif a_fro_diff is not None and m_fro_diff is not None and tol_a is not None and tol_m is not None:
+        norm_pass = bool(a_fro_diff <= tol_a and m_fro_diff <= tol_m)
+    elif not compose_meta.get("B3_BLOCK_COMPOSE_compare_norm_skipped"):
+        norm_pass = False
+
+    compare_pass = bool(shape_equal and a_nnz_equal and m_nnz_equal and norm_pass)
+    if compose_meta.get("B3_BLOCK_COMPOSE_compare_norm_unavailable") and shape_equal and a_nnz_equal and m_nnz_equal:
+        compose_meta["B3_BLOCK_COMPOSE_compare_pass"] = True
+        compose_meta["B3_BLOCK_COMPOSE_compare_pass_basis"] = "shape_and_nnz_only_norm_unavailable"
+        compare_pass = True
+    else:
+        compose_meta["B3_BLOCK_COMPOSE_compare_pass"] = compare_pass
+        compose_meta["B3_BLOCK_COMPOSE_compare_pass_basis"] = "shape_nnz_and_frobenius"
+
+    if not compare_pass:
+        raise B3BlockComposeBackendError(
+            failure_stage,
+            (
+                f"shape_equal={shape_equal};A_nnz_equal={a_nnz_equal};M_nnz_equal={m_nnz_equal}; "
+                f"A_fro_diff={a_fro_diff};M_fro_diff={m_fro_diff}; "
+                f"A_rel={compose_meta.get('B3_BLOCK_COMPOSE_compare_A_relative_frobenius_diff')}; "
+                f"M_rel={compose_meta.get('B3_BLOCK_COMPOSE_compare_M_relative_frobenius_diff')}; "
+                f"norm_unavailable={compose_meta.get('B3_BLOCK_COMPOSE_compare_norm_unavailable')}"
+            ),
+            recommendation=CSR_BULK_RECOMMENDATION,
+            compose_meta=compose_meta,
+        )
+
+    compose_meta["B3_BLOCK_COMPOSE_backend_selected_for_downstream"] = str(candidate_backend)
+    return a_new, m_new
+
+
+def _csr_compare_backends_dev(
+    *,
+    a_uu: Any,
+    a_up: Any,
+    a_pu: Any,
+    a_pp: Any,
+    m_uu: Any,
+    m_pu: Any,
+    m_pp: Any,
+    n_u: int,
+    n_p: int,
+    comm: Any,
+    compose_meta: Dict[str, Any],
+    mesh_level: str = "",
+) -> Tuple[Any, Any]:
+    t_baseline = time.perf_counter()
+    a_old, m_old = _direct_row_loop_compose(
+        a_uu=a_uu,
+        a_up=a_up,
+        a_pu=a_pu,
+        a_pp=a_pp,
+        m_uu=m_uu,
+        m_pu=m_pu,
+        m_pp=m_pp,
+        n_u=n_u,
+        n_p=n_p,
+        comm=comm,
+        operator_build_profile=None,
+    )
+    compose_meta["B3_BLOCK_COMPOSE_compare_baseline_direct_row_loop_seconds"] = _safe_float(
+        time.perf_counter() - t_baseline
+    )
+    a_new, m_new = _csr_bulk_compose_from_restricted_blocks(
+        a_uu=a_uu,
+        a_up=a_up,
+        a_pu=a_pu,
+        a_pp=a_pp,
+        m_uu=m_uu,
+        m_pu=m_pu,
+        m_pp=m_pp,
+        n_u=n_u,
+        n_p=n_p,
+        comm=comm,
+        compose_meta=compose_meta,
+    )
+    return _finalize_dev_compose_compare(
+        a_old=a_old,
+        m_old=m_old,
+        a_new=a_new,
+        m_new=m_new,
+        n_u=n_u,
+        n_p=n_p,
+        comm=comm,
+        compose_meta=compose_meta,
+        mesh_level=mesh_level,
+        candidate_backend="csr_bulk",
+        failure_stage="csr_compare_correctness",
+        include_child_vs_nest_audit=False,
+    )
+
+
 def _direct_row_loop_compose(
     *,
     a_uu: Any,
@@ -2377,10 +2813,14 @@ def _record_compose_structure_contract(meta: Dict[str, Any], *, a_out: Any, m_ou
 def _record_compose_timing(meta: Dict[str, Any], *, backend: str, elapsed_s: float, mesh_level: str) -> None:
     meta["B3_BLOCK_COMPOSE_backend"] = backend
     meta["B3_BLOCK_COMPOSE_experimental_total_seconds"] = _safe_float(elapsed_s)
-    if backend in ("matnest_convert", "matnest_compare"):
+    exp_backends = ("matnest_convert", "matnest_compare", "csr_bulk", "csr_compare")
+    if backend in exp_backends:
         ref = float(BASELINE_L_PROD_COMPOSE_SECONDS)
         meta["B3_BLOCK_COMPOSE_baseline_reference_seconds"] = ref
-        exp = float(elapsed_s)
+        if backend in ("csr_bulk", "csr_compare"):
+            exp = float(meta.get("B3_BLOCK_COMPOSE_csr_total_seconds") or elapsed_s)
+        else:
+            exp = float(elapsed_s)
         if exp > 0.0:
             meta["B3_BLOCK_COMPOSE_speedup_vs_reference"] = _safe_float(ref / exp)
         else:
@@ -2454,6 +2894,35 @@ def compose_restricted_blocks_to_monolithic_aij(
                 operator_build_profile=operator_build_profile,
                 mesh_level=mesh_level,
             )
+        elif backend == "csr_bulk":
+            a_out, m_out = _csr_bulk_compose_from_restricted_blocks(
+                a_uu=a_uu,
+                a_up=a_up,
+                a_pu=a_pu,
+                a_pp=a_pp,
+                m_uu=m_uu,
+                m_pu=m_pu,
+                m_pp=m_pp,
+                n_u=n_u,
+                n_p=n_p,
+                comm=comm,
+                compose_meta=report_meta,
+            )
+        elif backend == "csr_compare":
+            a_out, m_out = _csr_compare_backends_dev(
+                a_uu=a_uu,
+                a_up=a_up,
+                a_pu=a_pu,
+                a_pp=a_pp,
+                m_uu=m_uu,
+                m_pu=m_pu,
+                m_pp=m_pp,
+                n_u=n_u,
+                n_p=n_p,
+                comm=comm,
+                compose_meta=report_meta,
+                mesh_level=mesh_level,
+            )
         else:
             raise B3BlockComposeBackendError(
                 "backend_dispatch",
@@ -2501,6 +2970,10 @@ def compose_restricted_blocks_to_monolithic_aij(
     report_meta["B3_final_operator_construction_method"] = (
         "DIRECT_SPARSE_MONOLITHIC_AIJ_FROM_RESTRICTED_BLOCKS"
         if backend == "direct_row_loop"
-        else "EXPERIMENTAL_MATNEST_CONVERT_TO_AIJ_FROM_RESTRICTED_BLOCKS"
+        else (
+            "EXPERIMENTAL_CSR_BULK_FROM_RESTRICTED_BLOCKS"
+            if backend in ("csr_bulk", "csr_compare")
+            else "EXPERIMENTAL_MATNEST_CONVERT_TO_AIJ_FROM_RESTRICTED_BLOCKS"
+        )
     )
     return a_out, m_out

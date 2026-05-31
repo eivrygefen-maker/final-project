@@ -401,10 +401,14 @@ def _finalize_operator_build_profile(
     phases = payload.get("B3_PROFILE_operator_build_phases_seconds") or {}
     block_s = phases.get("block_compose_direct_AIJ")
     backend = str(payload.get("B3_BLOCK_COMPOSE_backend") or "")
-    if backend in ("matnest_convert", "matnest_compare") and block_s is not None:
+    if backend in ("matnest_convert", "matnest_compare", "csr_bulk", "csr_compare") and block_s is not None:
         payload["B3_BLOCK_COMPOSE_experimental_total_seconds"] = dev_bench._safe_float(block_s)
         payload["B3_BLOCK_COMPOSE_baseline_reference_seconds"] = float(BASELINE_L_PROD_COMPOSE_SECONDS)
         exp = float(block_s)
+        if backend in ("csr_bulk", "csr_compare"):
+            csr_s = payload.get("B3_BLOCK_COMPOSE_csr_total_seconds")
+            if csr_s is not None:
+                exp = float(csr_s)
         if exp > 0.0:
             payload["B3_BLOCK_COMPOSE_speedup_vs_reference"] = dev_bench._safe_float(
                 float(BASELINE_L_PROD_COMPOSE_SECONDS) / exp
