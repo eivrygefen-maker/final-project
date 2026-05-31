@@ -202,21 +202,236 @@ def _owned_aij_copy_for_matnest(
     return owned
 
 
+def _create_up_monolithic_index_sets(comm: Any, n_u: int, n_p: int) -> Tuple[List[Any], List[Any]]:
+    """Row/col IS matching direct row-loop layout: u=0..n_u-1, p=n_u..n_u+n_p-1."""
+    nu = int(n_u)
+    np_ = int(n_p)
+    is_u = PETSc.IS().createStride(nu, 0, 1, comm=comm)
+    is_p = PETSc.IS().createStride(np_, nu, 1, comm=comm)
+    return [is_u, is_p], [is_u, is_p]
+
+
+def _mat_fro_norm(mat: Any) -> Optional[float]:
+    try:
+        return float(mat.norm(PETSc.NormType.FROBENIUS))
+    except Exception:
+        return None
+
+
+def _matnest_get_subblock(nest: Any, row_idx: int, col_idx: int) -> Optional[Any]:
+    for getter in (
+        lambda: nest.getNestSubMat(int(row_idx), int(col_idx)),
+        lambda: nest.getNestSubMatrix(int(row_idx), int(col_idx)),
+    ):
+        try:
+            sub = getter()
+            if sub is not None:
+                sub.assemble()
+                return sub
+        except Exception:
+            pass
+    try:
+        sub = PETSc.Mat()
+        nest.getNestSubMat(int(row_idx), int(col_idx), sub)
+        sub.assemble()
+        return sub
+    except Exception:
+        return None
+
+
+def _top_stored_entries(mat: Any, *, limit: int = 20) -> List[Dict[str, Any]]:
+    heap: List[Any] = []
+    nrow = int(mat.getSize()[0])
+    for r in range(nrow):
+        row = _row_stored_dict(mat, r)
+        for c, v in row.items():
+            abs_v = abs(float(v))
+            if abs_v <= VALUE_DIFF_MIN:
+                continue
+            _push_top_entry(
+                heap,
+                {"row": int(r), "col": int(c), "value": _safe_float(v), "abs_value": _safe_float(abs_v)},
+                limit=int(limit),
+            )
+    return _finalize_top_entries(heap)[: int(limit)]
+
+
+def _record_mono_block_norms(
+    mat: Any,
+    *,
+    n_u: int,
+    n_p: int,
+    comm: Any,
+    prefix: str,
+    compose_meta: Dict[str, Any],
+) -> None:
+    nu = int(n_u)
+    np_ = int(n_p)
+    compose_meta[f"{prefix}_full_fro_norm"] = _safe_float(_mat_fro_norm(mat))
+    specs = (
+        ("Auu", 0, nu, 0, nu),
+        ("Aup", 0, nu, nu, nu + np_),
+        ("Apu", nu, nu + np_, 0, nu),
+        ("App", nu, nu + np_, nu, nu + np_),
+    )
+    for label, r0, r1, c0, c1 in specs:
+        sub = None
+        try:
+            sub = _extract_submatrix(
+                mat, row_start=r0, row_end=r1, col_start=c0, col_end=c1, comm=comm
+            )
+            compose_meta[f"{prefix}_block_{label}_petsc_extract_fro_norm"] = _safe_float(_mat_fro_norm(sub))
+        except Exception as exc:
+            compose_meta[f"{prefix}_block_{label}_petsc_extract_error"] = f"{type(exc).__name__}:{exc}"
+        finally:
+            if sub is not None:
+                try:
+                    sub.destroy()
+                except Exception:
+                    pass
+        try:
+            csr = _extract_submatrix_scipy_dev(mat, row_start=r0, row_end=r1, col_start=c0, col_end=c1)
+            data = np.asarray(csr.data, dtype=np.float64)
+            compose_meta[f"{prefix}_block_{label}_scipy_slice_fro_norm"] = (
+                _safe_float(float(np.linalg.norm(data))) if data.size else 0.0
+            )
+        except Exception as exc:
+            compose_meta[f"{prefix}_block_{label}_scipy_slice_error"] = f"{type(exc).__name__}:{exc}"
+
+
+def _record_nest_pre_convert_diag(
+    nest: Any,
+    nest_blocks: List[List[Any]],
+    *,
+    nest_label: str,
+    compose_meta: Dict[str, Any],
+) -> None:
+    prefix = f"B3_BLOCK_COMPOSE_matnest_{nest_label}_pre_convert"
+    compose_meta[f"{prefix}_nest_full_fro_norm"] = _safe_float(_mat_fro_norm(nest))
+    grid = (
+        ("00_Auu", 0, 0),
+        ("01_Aup", 0, 1),
+        ("10_Apu", 1, 0),
+        ("11_App", 1, 1),
+    )
+    for key, i, j in grid:
+        owned = nest_blocks[int(i)][int(j)]
+        compose_meta[f"{prefix}_owned_{key}_fro_norm"] = _safe_float(_mat_fro_norm(owned))
+        nest_sub = _matnest_get_subblock(nest, i, j)
+        if nest_sub is not None:
+            try:
+                compose_meta[f"{prefix}_nest_api_{key}_fro_norm"] = _safe_float(_mat_fro_norm(nest_sub))
+                audit = _audit_helpers()
+                fro = float(audit._petsc_mat_frobenius_difference(owned, nest_sub))
+                compose_meta[f"{prefix}_owned_vs_nest_api_{key}_fro_diff"] = _safe_float(fro)
+            finally:
+                try:
+                    nest_sub.destroy()
+                except Exception:
+                    pass
+        else:
+            compose_meta[f"{prefix}_nest_api_{key}_unavailable"] = True
+
+
+def _locate_source_entries_in_converted_a(
+    a_uu: Any,
+    a_pp: Any,
+    a_converted: Any,
+    *,
+    n_u: int,
+    n_p: int,
+    compose_meta: Dict[str, Any],
+) -> None:
+    prefix = "B3_BLOCK_COMPOSE_matnest_A_entry_locator"
+    nu = int(n_u)
+    np_ = int(n_p)
+    for block_label, src, row_off, col_off in (
+        ("Auu", a_uu, 0, 0),
+        ("App", a_pp, nu, nu),
+    ):
+        top_src = _top_stored_entries(src, limit=20)
+        compose_meta[f"{prefix}_{block_label}_source_top20"] = top_src
+        located: List[Dict[str, Any]] = []
+        for ent in top_src:
+            gr = int(ent["row"]) + int(row_off)
+            gc = int(ent["col"]) + int(col_off)
+            found_val = None
+            try:
+                row = _row_stored_dict(a_converted, gr)
+                if gc in row:
+                    found_val = float(row[gc])
+            except Exception:
+                pass
+            located.append(
+                {
+                    "source_row": int(ent["row"]),
+                    "source_col": int(ent["col"]),
+                    "global_row": gr,
+                    "global_col": gc,
+                    "source_value": ent.get("value"),
+                    "converted_value": _safe_float(found_val),
+                    "found_in_converted": found_val is not None,
+                }
+            )
+        compose_meta[f"{prefix}_{block_label}_source_top20_in_converted"] = located
+
+    unit_heap: List[Any] = []
+    nrow = int(a_converted.getSize()[0])
+    for r in range(nrow):
+        row = _row_stored_dict(a_converted, r)
+        for c, v in row.items():
+            abs_v = abs(float(v))
+            if abs(abs_v - 1.0) > 1.0e-8:
+                continue
+            block = _monolithic_block_name(int(r), int(c), nu)
+            _push_top_entry(
+                unit_heap,
+                {
+                    "row": int(r),
+                    "col": int(c),
+                    "value": _safe_float(v),
+                    "abs_value": _safe_float(abs_v),
+                    "block": block,
+                },
+                limit=20,
+            )
+    compose_meta[f"{prefix}_converted_unit_entry_top20"] = _finalize_top_entries(unit_heap)[:20]
+
+
 def _create_matnest_stepwise(
     blocks: List[List[Any]],
     *,
     comm: Any,
     compose_meta: Dict[str, Any],
     nest_label: str,
+    n_u: int = 0,
+    n_p: int = 0,
+    use_explicit_is: bool = True,
 ) -> Any:
-    """Build 2x2 PETSc MatNest via instance-style petsc4py API with stage breadcrumbs."""
+    """Build 2x2 PETSc MatNest with optional explicit [u|p] index sets."""
     _matnest_breadcrumb(compose_meta, f"before_create_{nest_label}_nest")
-    nest = PETSc.Mat().createNest(blocks, comm=comm)
+    isrows = None
+    iscols = None
+    if use_explicit_is and int(n_u) > 0 and int(n_p) >= 0:
+        isrows, iscols = _create_up_monolithic_index_sets(comm, int(n_u), int(n_p))
+        compose_meta["B3_BLOCK_COMPOSE_matnest_use_explicit_is"] = True
+        compose_meta["B3_BLOCK_COMPOSE_matnest_explicit_is_layout"] = "u_rows_0_nu_p_rows_nu_nw"
+    else:
+        compose_meta["B3_BLOCK_COMPOSE_matnest_use_explicit_is"] = False
+    try:
+        if isrows is not None and iscols is not None:
+            nest = PETSc.Mat().createNest(blocks, isrows=isrows, iscols=iscols, comm=comm)
+        else:
+            nest = PETSc.Mat().createNest(blocks, comm=comm)
+    except TypeError:
+        nest = PETSc.Mat().createNest(blocks, comm=comm)
+        compose_meta["B3_BLOCK_COMPOSE_matnest_explicit_is_fallback"] = "createNest_isrows_iscols_TypeError"
     _matnest_breadcrumb(
         compose_meta,
         f"after_create_{nest_label}_nest",
         nest_type=str(nest.getType()),
         nest_shape=list(nest.getSize()),
+        explicit_is=bool(isrows is not None),
     )
     _matnest_breadcrumb(compose_meta, f"before_assemble_{nest_label}_nest")
     nest.assemble()
@@ -1695,9 +1910,18 @@ def _matnest_convert_aij_from_restricted_blocks(
                 comm=comm,
                 compose_meta=compose_meta,
                 nest_label="A",
+                n_u=int(n_u),
+                n_p=int(n_p),
+                use_explicit_is=True,
             )
             compose_meta["B3_BLOCK_COMPOSE_matnest_create_A_pass"] = True
             compose_meta["B3_BLOCK_COMPOSE_matnest_A_type"] = str(nest_a.getType())
+            _record_nest_pre_convert_diag(
+                nest_a,
+                a_nest_blocks,
+                nest_label="A",
+                compose_meta=compose_meta,
+            )
         except Exception as exc:
             compose_meta["B3_BLOCK_COMPOSE_failure_stage"] = "matnest_create_A"
             compose_meta["B3_BLOCK_COMPOSE_failure_reason"] = f"{type(exc).__name__}:{exc}"
@@ -1714,9 +1938,18 @@ def _matnest_convert_aij_from_restricted_blocks(
                 comm=comm,
                 compose_meta=compose_meta,
                 nest_label="M",
+                n_u=int(n_u),
+                n_p=int(n_p),
+                use_explicit_is=True,
             )
             compose_meta["B3_BLOCK_COMPOSE_matnest_create_M_pass"] = True
             compose_meta["B3_BLOCK_COMPOSE_matnest_M_type"] = str(nest_m.getType())
+            _record_nest_pre_convert_diag(
+                nest_m,
+                m_nest_blocks,
+                nest_label="M",
+                compose_meta=compose_meta,
+            )
         except Exception as exc:
             compose_meta["B3_BLOCK_COMPOSE_failure_stage"] = "matnest_create_M"
             compose_meta["B3_BLOCK_COMPOSE_failure_reason"] = f"{type(exc).__name__}:{exc}"
@@ -1745,6 +1978,22 @@ def _matnest_convert_aij_from_restricted_blocks(
             compose_meta=compose_meta,
             nest_label="A",
         )
+        _record_mono_block_norms(
+            a_out,
+            n_u=int(n_u),
+            n_p=int(n_p),
+            comm=comm,
+            prefix="B3_BLOCK_COMPOSE_matnest_A_after_convert_raw",
+            compose_meta=compose_meta,
+        )
+        _locate_source_entries_in_converted_a(
+            a_uu,
+            a_pp,
+            a_out,
+            n_u=int(n_u),
+            n_p=int(n_p),
+            compose_meta=compose_meta,
+        )
     finally:
         compose_meta["B3_BLOCK_COMPOSE_matnest_convert_A_seconds"] = _safe_float(
             time.perf_counter() - t_conv_a0
@@ -1767,6 +2016,41 @@ def _matnest_convert_aij_from_restricted_blocks(
 
     a_ret = _duplicate_aij_output(a_out)
     m_ret = _duplicate_aij_output(m_out)
+    _record_mono_block_norms(
+        a_ret,
+        n_u=int(n_u),
+        n_p=int(n_p),
+        comm=comm,
+        prefix="B3_BLOCK_COMPOSE_matnest_A_after_duplicate_output",
+        compose_meta=compose_meta,
+    )
+    raw_auu = compose_meta.get("B3_BLOCK_COMPOSE_matnest_A_after_convert_raw_block_Auu_petsc_extract_fro_norm")
+    raw_app = compose_meta.get("B3_BLOCK_COMPOSE_matnest_A_after_convert_raw_block_App_petsc_extract_fro_norm")
+    raw_auu_csr = compose_meta.get("B3_BLOCK_COMPOSE_matnest_A_after_convert_raw_block_Auu_scipy_slice_fro_norm")
+    owned_auu = compose_meta.get("B3_BLOCK_COMPOSE_matnest_owned_copy_Auu_owned_copy_norm")
+    compose_meta["B3_BLOCK_COMPOSE_matnest_Auu_app_convert_preserves_block_pass"] = bool(
+        raw_auu is not None
+        and raw_app is not None
+        and owned_auu is not None
+        and float(raw_auu) + 1.0e-12 >= float(owned_auu) * (1.0 - 1.0e-9)
+        and float(raw_app) + 1.0e-12
+        >= float(compose_meta.get("B3_BLOCK_COMPOSE_matnest_owned_copy_App_owned_copy_norm") or 0.0)
+        * (1.0 - 1.0e-9)
+    )
+    if not compose_meta["B3_BLOCK_COMPOSE_matnest_Auu_app_convert_preserves_block_pass"]:
+        compose_meta["B3_BLOCK_COMPOSE_matnest_recommendation"] = (
+            "MatNest explicit-IS convert still loses Auu/App block content in monolithic AIJ; "
+            "next backend: CSR/bulk compose without MatNest."
+        )
+    if raw_auu is not None and raw_auu_csr is not None:
+        compose_meta["B3_BLOCK_COMPOSE_matnest_Auu_petsc_vs_scipy_extract_match"] = bool(
+            abs(float(raw_auu) - float(raw_auu_csr)) <= max(1.0e-12, 1.0e-9 * max(abs(float(raw_auu)), 1.0))
+        )
+    print(
+        f"[B3_BLOCK_COMPOSE_matnest] A_convert_raw Auu_petsc={raw_auu} Auu_scipy={raw_auu_csr} "
+        f"App_petsc={raw_app} explicit_is={compose_meta.get('B3_BLOCK_COMPOSE_matnest_use_explicit_is')}",
+        flush=True,
+    )
     compose_meta["B3_BLOCK_COMPOSE_matnest_outputs_duplicated_before_teardown"] = True
 
     if defer_lifecycle_teardown:
