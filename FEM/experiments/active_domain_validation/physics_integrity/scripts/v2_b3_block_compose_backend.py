@@ -147,16 +147,58 @@ def _ensure_assembled(mat: Any) -> None:
 
 
 def _owned_aij_copy(mat: Any) -> Any:
-    """Independent assembled AIJ duplicate for MatNest (avoid createSubMatrix view bugs)."""
-    audit = _audit_helpers()
-    owned = audit._petsc_duplicate_scaled(mat, 1.0)
-    _ensure_assembled(owned)
+    """Independent assembled AIJ duplicate for MatNest (value-preserving copy)."""
+    _ensure_assembled(mat)
+    owned = mat.duplicate()
+    mat.copy(owned)
+    owned.assemble()
     if "nest" in str(owned.getType()).lower():
         raise B3BlockComposeBackendError(
             "matnest_child_copy",
             f"refusing MatNest child copy type={owned.getType()}",
             recommendation=CSR_BULK_RECOMMENDATION,
         )
+    return owned
+
+
+def _record_matnest_owned_copy_diag(
+    original: Any,
+    owned: Any,
+    *,
+    label: str,
+    compose_meta: Dict[str, Any],
+) -> None:
+    audit = _audit_helpers()
+    prefix = f"B3_BLOCK_COMPOSE_matnest_owned_copy_{label}"
+    try:
+        orig_norm = float(original.norm(PETSc.NormType.FROBENIUS))
+        owned_norm = float(owned.norm(PETSc.NormType.FROBENIUS))
+        fro_diff = float(audit._petsc_mat_frobenius_difference(original, owned))
+        denom = max(orig_norm, owned_norm, 1.0e-300)
+        relative_diff = float(fro_diff / denom)
+        compose_meta[f"{prefix}_original_norm"] = _safe_float(orig_norm)
+        compose_meta[f"{prefix}_owned_copy_norm"] = _safe_float(owned_norm)
+        compose_meta[f"{prefix}_frobenius_diff"] = _safe_float(fro_diff)
+        compose_meta[f"{prefix}_relative_diff"] = _safe_float(relative_diff)
+        compose_meta[f"{prefix}_value_copy_pass"] = bool(fro_diff <= max(1.0e-12, 1.0e-12 * denom))
+        print(
+            f"[B3_BLOCK_COMPOSE_matnest_owned_copy] {label} "
+            f"original_norm={orig_norm:.16e} owned_norm={owned_norm:.16e} "
+            f"fro_diff={fro_diff:.16e} relative={relative_diff:.16e}",
+            flush=True,
+        )
+    except Exception as exc:
+        compose_meta[f"{prefix}_diag_unavailable_reason"] = f"{type(exc).__name__}:{exc}"
+
+
+def _owned_aij_copy_for_matnest(
+    mat: Any,
+    *,
+    label: str,
+    compose_meta: Dict[str, Any],
+) -> Any:
+    owned = _owned_aij_copy(mat)
+    _record_matnest_owned_copy_diag(original=mat, owned=owned, label=label, compose_meta=compose_meta)
     return owned
 
 
@@ -1616,13 +1658,23 @@ def _matnest_convert_aij_from_restricted_blocks(
     _matnest_child_diag(compose_meta, "Mup_zero", m_up_zero)
     child_refs.append(m_up_zero)
 
+    compose_meta["B3_BLOCK_COMPOSE_matnest_owned_copy_method"] = "PETSc_Mat_duplicate_then_copy"
     a_nest_blocks = [
-        [_owned_aij_copy(a_uu), _owned_aij_copy(a_up)],
-        [_owned_aij_copy(a_pu), _owned_aij_copy(a_pp)],
+        [
+            _owned_aij_copy_for_matnest(a_uu, label="Auu", compose_meta=compose_meta),
+            _owned_aij_copy_for_matnest(a_up, label="Aup", compose_meta=compose_meta),
+        ],
+        [
+            _owned_aij_copy_for_matnest(a_pu, label="Apu", compose_meta=compose_meta),
+            _owned_aij_copy_for_matnest(a_pp, label="App", compose_meta=compose_meta),
+        ],
     ]
     m_nest_blocks = [
-        [_owned_aij_copy(m_uu), m_up_zero],
-        [_owned_aij_copy(m_pu), _owned_aij_copy(m_pp)],
+        [_owned_aij_copy_for_matnest(m_uu, label="Muu", compose_meta=compose_meta), m_up_zero],
+        [
+            _owned_aij_copy_for_matnest(m_pu, label="Mpu", compose_meta=compose_meta),
+            _owned_aij_copy_for_matnest(m_pp, label="Mpp", compose_meta=compose_meta),
+        ],
     ]
     for row in a_nest_blocks + m_nest_blocks:
         nest_owned.extend(row)
