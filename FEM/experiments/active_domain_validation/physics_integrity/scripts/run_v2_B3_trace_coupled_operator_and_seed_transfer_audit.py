@@ -2,6 +2,19 @@
 """Report-only B3 trace-coupled operator and seed-transfer audit (no eigensolve)."""
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parents[4]
+
+if __name__ == "__main__" and "--B3-ST-checkpoint-portable-smoke-only" in sys.argv:
+    if str(SCRIPT_DIR) not in sys.path:
+        sys.path.insert(0, str(SCRIPT_DIR))
+    from v2_b3_checkpoint_portable_smoke import main as _checkpoint_portable_smoke_main
+
+    raise SystemExit(_checkpoint_portable_smoke_main(sys.argv))
+
 import ast
 import copy
 import inspect
@@ -16,11 +29,7 @@ import numpy as np
 from mpi4py import MPI
 from petsc4py import PETSc
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[4]
 for _p in (SCRIPT_DIR, REPO_ROOT / "FEM" / "scripts"):
-    import sys
-
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
@@ -13134,10 +13143,6 @@ def main() -> int:
         run_st_worker_scaling_benchmark,
         run_st_worker_shard_execute,
     )
-    from v2_b3_operator_checkpoint_portable import (
-        is_checkpoint_portable_smoke_mode,
-        run_checkpoint_portable_smoke,
-    )
     from v2_b3_st_solver_benchmark import is_st_solver_benchmark_mode, run_st_solver_benchmark
     from v2_b3_lmid_overnight_validation import (
         is_lmid_ciss_only_mode,
@@ -13150,18 +13155,6 @@ def main() -> int:
 
     if is_st_worker_shard_execute_mode(sys.argv):
         return run_st_worker_shard_execute(sys.argv)
-
-    if is_checkpoint_portable_smoke_mode(sys.argv):
-        from v2_b3_st_worker_scaling_benchmark import st_worker_scaling_mpi_world_ok
-
-        mpi_ok, mpi_size = st_worker_scaling_mpi_world_ok()
-        if not mpi_ok:
-            print(
-                f"[B3_checkpoint_portable_smoke] blocked: MPI COMM_WORLD size must be 1 (got {mpi_size}).",
-                flush=True,
-            )
-            return 2
-        return run_checkpoint_portable_smoke(sys.argv)
 
     if is_st_solver_benchmark_mode(sys.argv):
         from v2_b3_st_worker_scaling_benchmark import st_worker_scaling_mpi_world_ok

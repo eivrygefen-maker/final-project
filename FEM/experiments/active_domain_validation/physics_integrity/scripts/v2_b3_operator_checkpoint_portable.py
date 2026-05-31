@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 from petsc4py import PETSc
 
-import run_v2_B3_trace_coupled_operator_and_seed_transfer_audit as audit
+from v2_b3_petsc_util import mat_shape, petsc_mat_try_assemble, write_json_atomic
 
 A_CSR_NPZ = "A_active_csr.npz"
 M_CSR_NPZ = "M_active_csr.npz"
@@ -19,6 +19,7 @@ CSR_METADATA_JSON = "csr_metadata.json"
 
 B3_ST_CHECKPOINT_PORTABLE_SMOKE_ARG = "--B3-ST-checkpoint-portable-smoke-only"
 B3_ST_REUSE_CHECKPOINT_ARG = "--B3-ST-reuse-checkpoint-dir"
+CHECKPOINT_DIR_ARG = "--checkpoint-dir"
 
 _MATRIX_KEYS = ("A_active", "M_active")
 _CSR_NPZ_BY_KEY = {"A_active": A_CSR_NPZ, "M_active": M_CSR_NPZ}
@@ -30,6 +31,14 @@ def _parse_arg_value(argv: Sequence[str], flag: str) -> Optional[str]:
             return str(argv[i + 1])
         if arg.startswith(f"{flag}="):
             return str(arg.split("=", 1)[1])
+    return None
+
+
+def resolve_checkpoint_dir(argv: Sequence[str]) -> Optional[str]:
+    for flag in (CHECKPOINT_DIR_ARG, B3_ST_REUSE_CHECKPOINT_ARG):
+        raw = _parse_arg_value(argv, flag)
+        if raw:
+            return raw
     return None
 
 
@@ -82,14 +91,17 @@ def _mat_frobenius_norm(mat: Any) -> Optional[float]:
 
 
 def _extract_csr_arrays(mat: Any) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Tuple[int, int], int]:
-    audit._petsc_mat_try_assemble(mat)
+    petsc_mat_try_assemble(mat)
     indptr, indices, data = mat.getValuesCSR()
     indptr = np.asarray(indptr)
     indices = np.asarray(indices)
     data = np.asarray(data)
-    n_rows, n_cols = audit._mat_shape(mat)
+    shape_raw = mat_shape(mat)
+    if shape_raw is None:
+        raise RuntimeError("mat_shape_unavailable_for_csr_export")
+    shape = (int(shape_raw[0]), int(shape_raw[1]))
     nnz = int(data.size)
-    return indptr, indices, data, (int(n_rows), int(n_cols)), nnz
+    return indptr, indices, data, shape, nnz
 
 
 def _matrix_csr_entry(
@@ -203,7 +215,7 @@ def _petsc_aij_from_csr(
             raise RuntimeError(
                 f"CSR rebuild failed: setValuesCSR={exc_set}; createAIJ={last_exc}"
             ) from exc_set
-    audit._petsc_mat_try_assemble(mat)
+    petsc_mat_try_assemble(mat)
     return mat
 
 
@@ -212,7 +224,7 @@ def _load_mat_binary(path: Path) -> Any:
     try:
         mat = PETSc.Mat().create(comm=PETSc.COMM_WORLD)
         mat.load(viewer)
-        audit._petsc_mat_try_assemble(mat)
+        petsc_mat_try_assemble(mat)
         return mat
     finally:
         viewer.destroy()
@@ -241,7 +253,10 @@ def _verify_loaded_mat_against_csr_metadata(
     tol: float = 1.0e-6,
 ) -> Dict[str, Any]:
     entry = (csr_meta.get("matrices") or {}).get(key) or {}
-    shape = audit._mat_shape(mat)
+    shape_raw = mat_shape(mat)
+    if shape_raw is None:
+        raise RuntimeError(f"mat_shape_unavailable_for_verification:{key}")
+    shape = (int(shape_raw[0]), int(shape_raw[1]))
     indptr, indices, data, loaded_shape, nnz = _extract_csr_arrays(mat)
     expected_shape = tuple(int(x) for x in (entry.get("shape") or loaded_shape))
     expected_nnz = int(entry.get("nnz") or 0)
@@ -303,8 +318,11 @@ def load_operators_with_portable_fallback(
             diag["load_path_by_matrix"][key] = "csr_rebuild"
         except Exception as exc:
             diag["load_path_by_matrix"][key] = "failed"
-            diag["csr_load_error"] = diag.get("csr_load_error") or {}
-            diag["csr_load_error"][key] = f"{type(exc).__name__}:{exc}"
+            csr_load_error = diag.get("csr_load_error")
+            if not isinstance(csr_load_error, dict):
+                csr_load_error = {}
+                diag["csr_load_error"] = csr_load_error
+            csr_load_error[key] = f"{type(exc).__name__}:{exc}"
             raise RuntimeError(
                 f"checkpoint_load_failed:{key}: binary and CSR fallback both failed"
             ) from exc
@@ -358,17 +376,68 @@ def verify_portable_checkpoint_export(checkpoint: Path) -> Tuple[bool, List[str]
     return len(missing) == 0, missing, detail
 
 
-def _probe_mkl_pardiso_lu() -> Dict[str, Any]:
-    from v2_b3_st_solver_benchmark import _probe_pc_lu_factor_solver
+def _create_probe_assembled_aij(*, n: int = 12, comm: Any = None) -> Any:
+    mat_comm = comm if comm is not None else PETSc.COMM_WORLD
+    n_local = int(n)
+    mat = PETSc.Mat().create(comm=mat_comm)
+    mat.setSizes([n_local, n_local])
+    mat.setType("aij")
+    try:
+        mat.setPreallocationNNZ(max(4, n_local))
+    except Exception:
+        pass
+    mat.setUp()
+    for i in range(n_local):
+        mat.setValue(i, i, 2.0 + float(i))
+        if i > 0:
+            mat.setValue(i, i - 1, -0.05)
+        if i < n_local - 1:
+            mat.setValue(i, i + 1, -0.05)
+    mat.assemble()
+    return mat
 
-    return _probe_pc_lu_factor_solver("mkl_pardiso")
+
+def probe_pc_lu_factor_solver(pkg: str) -> Dict[str, Any]:
+    """Probe one LU factor solver on a small assembled AIJ matrix (no FEM imports)."""
+    entry: Dict[str, Any] = {"requested": pkg, "available": False, "matrix_assembled": True}
+    mat = None
+    pc = None
+    try:
+        mat = _create_probe_assembled_aij()
+        pc = PETSc.PC().create(comm=PETSc.COMM_WORLD)
+        pc.setOperators(mat)
+        pc.setType("lu")
+        pc.setFactorSolverType(str(pkg))
+        pc.setUp()
+        effective = None
+        try:
+            effective = str(pc.getFactorSolverType())
+        except Exception:
+            effective = None
+        entry["available"] = True
+        entry["effective_factor_solver"] = effective
+    except Exception as exc:
+        entry["error"] = f"{type(exc).__name__}:{exc}"
+    finally:
+        if pc is not None:
+            try:
+                pc.destroy()
+            except Exception:
+                pass
+        if mat is not None:
+            try:
+                mat.destroy()
+            except Exception:
+                pass
+    return entry
 
 
 def run_checkpoint_portable_smoke(argv: Sequence[str]) -> int:
-    ckpt_raw = _parse_arg_value(argv, B3_ST_REUSE_CHECKPOINT_ARG)
+    ckpt_raw = resolve_checkpoint_dir(argv)
     if not ckpt_raw:
         print(
-            f"[B3_checkpoint_portable_smoke] requires {B3_ST_REUSE_CHECKPOINT_ARG} <dir>",
+            f"[B3_checkpoint_portable_smoke] requires {CHECKPOINT_DIR_ARG} <dir> "
+            f"or {B3_ST_REUSE_CHECKPOINT_ARG} <dir>",
             flush=True,
         )
         return 2
@@ -390,14 +459,14 @@ def run_checkpoint_portable_smoke(argv: Sequence[str]) -> int:
         result["load"] = load_diag
         if load_diag.get("csr_verification_pass") is False:
             result["status"] = "FAIL_CSR_VERIFICATION"
-            audit._write_json_atomic(out_path, result)
+            write_json_atomic(out_path, result)
             print(f"[B3_checkpoint_portable_smoke] FAIL csr verification -> {out_path}", flush=True)
             return 2
 
-        probe = _probe_mkl_pardiso_lu()
+        probe = probe_pc_lu_factor_solver("mkl_pardiso")
         result["mkl_pardiso_probe"] = probe
         result["status"] = "PASS" if bool(probe.get("available")) else "PASS_LOAD_PROBE_UNAVAILABLE"
-        audit._write_json_atomic(out_path, result)
+        write_json_atomic(out_path, result)
         print(f"[B3_checkpoint_portable_smoke] {result['status']} -> {out_path}", flush=True)
         print(
             f"[B3_checkpoint_portable_smoke] load_path={load_diag.get('load_path_summary')} "
@@ -408,7 +477,7 @@ def run_checkpoint_portable_smoke(argv: Sequence[str]) -> int:
     except Exception as exc:
         result["status"] = "FAIL"
         result["error"] = f"{type(exc).__name__}:{exc}"
-        audit._write_json_atomic(out_path, result)
+        write_json_atomic(out_path, result)
         print(f"[B3_checkpoint_portable_smoke] FAIL {exc} -> {out_path}", flush=True)
         return 2
     finally:
