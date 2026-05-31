@@ -13134,6 +13134,7 @@ def main() -> int:
         run_st_worker_scaling_benchmark,
         run_st_worker_shard_execute,
     )
+    from v2_b3_st_solver_benchmark import is_st_solver_benchmark_mode, run_st_solver_benchmark
     from v2_b3_lmid_overnight_validation import (
         is_lmid_ciss_only_mode,
         is_lmid_overnight_mode,
@@ -13145,6 +13146,19 @@ def main() -> int:
 
     if is_st_worker_shard_execute_mode(sys.argv):
         return run_st_worker_shard_execute(sys.argv)
+
+    if is_st_solver_benchmark_mode(sys.argv):
+        from v2_b3_st_worker_scaling_benchmark import st_worker_scaling_mpi_world_ok
+
+        pre = _precheck_allow_b3_jd_first_bounded_execution()
+        mpi_ok, mpi_size = st_worker_scaling_mpi_world_ok()
+        if not mpi_ok:
+            print(
+                f"[B3_ST_solver_bench] blocked: MPI COMM_WORLD size must be 1 (got {mpi_size}).",
+                flush=True,
+            )
+            return 2
+        return run_st_solver_benchmark(sys.argv, pre)
 
     if is_st_worker_scaling_mode(sys.argv):
         from v2_b3_st_worker_scaling_benchmark import st_worker_scaling_mpi_world_ok
