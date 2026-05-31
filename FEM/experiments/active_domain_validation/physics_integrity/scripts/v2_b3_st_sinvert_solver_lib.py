@@ -18,6 +18,8 @@ from v2_b3_petsc_util import mat_shape, petsc_mat_try_assemble, write_json_atomi
 ACCEPTANCE_FREQ_LO_HZ = 220.0
 ACCEPTANCE_FREQ_HI_HZ = 265.0
 FACTOR_SHIFT_AMOUNT = 1.0e-8
+L_PROD_ST_FULL9_TARGETS_HZ = [221.5, 227.0, 232.5, 238.0, 243.5, 249.0, 254.5, 260.0, 264.0]
+FREQ_PARITY_TOL_HZ = 0.05
 
 _CHECKPOINT_METADATA_REQUIRED_KEYS = (
     "mesh_level",
@@ -521,4 +523,228 @@ def version_snapshot() -> Dict[str, Any]:
     return {
         "petsc_version": petsc_version_query(),
         "slepc_version": slepc_version_query(),
+    }
+
+
+def parse_hz_list(text: str) -> List[float]:
+    out: List[float] = []
+    for part in str(text).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        v = float(part)
+        if not math.isfinite(v) or v <= 0.0:
+            raise ValueError(f"invalid_target_frequency_hz:{part}")
+        out.append(v)
+    if not out:
+        raise ValueError("empty_target_frequency_list")
+    return out
+
+
+def deduplicate_frequencies_hz(freqs: List[float], *, tol_hz: float = FREQ_PARITY_TOL_HZ) -> List[float]:
+    if not freqs:
+        return []
+    sorted_f = sorted(float(f) for f in freqs)
+    out = [sorted_f[0]]
+    for f in sorted_f[1:]:
+        if abs(f - out[-1]) > tol_hz:
+            out.append(f)
+    return out
+
+
+def freq_lists_match(a: List[float], b: List[float], *, tol_hz: float = FREQ_PARITY_TOL_HZ) -> bool:
+    if len(a) != len(b):
+        return False
+    aa = sorted(float(x) for x in a)
+    bb = sorted(float(x) for x in b)
+    return all(abs(x - y) <= tol_hz for x, y in zip(aa, bb))
+
+
+def run_checkpoint_st_target(
+    *,
+    A_active: Any,
+    M_active: Any,
+    built: Dict[str, Any],
+    target_hz: float,
+    factor_solver: str,
+    mesh_level: Optional[str],
+    nev: int,
+    ncv: int,
+    target_index: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Run one EPSSetUp + EPSSolve for a loaded checkpoint (solver-only)."""
+    from slepc4py import SLEPc
+
+    target_lambda = float(hz_to_lambda_sq(float(target_hz)))
+    fs = str(factor_solver).strip().lower()
+    result: Dict[str, Any] = {
+        "target_index": target_index,
+        "target_frequency_hz": float(target_hz),
+        "target_lambda": safe_float(target_lambda),
+        "factor_solver": fs,
+        "nev": int(nev),
+        "ncv": int(ncv),
+        "setup_succeeded": False,
+        "solve_succeeded": False,
+        "setup_elapsed_seconds": None,
+        "solve_elapsed_seconds": None,
+        "st_total_elapsed_seconds": None,
+        "peak_rss_mb": None,
+        "converged_mode_count": None,
+        "converged_modes": [],
+        "accepted_mode_count_in_interval": None,
+        "accepted_frequencies_hz": [],
+        "accepted_modes": [],
+        "factor_solver_effective": None,
+        "mumps_policy_effective": None,
+        "mumps_policies_tried": [],
+        "petsc_options_written": None,
+        "configure_meta": None,
+        "status": "FAIL",
+        "failure_reason": None,
+        "failure_class": None,
+    }
+
+    if fs == "mumps":
+        policies = mumps_policy_chain(mesh_level=mesh_level)
+    else:
+        policies = [None]
+
+    eps = None
+    t_st0 = time.perf_counter()
+    setup_succeeded = False
+    last_setup_exc: Optional[BaseException] = None
+
+    try:
+        for policy in policies:
+            if eps is not None:
+                try:
+                    eps.destroy()
+                except Exception:
+                    pass
+                eps = None
+            if policy is not None:
+                result["mumps_policies_tried"].append(str(policy))
+            try:
+                eps = SLEPc.EPS().create(PETSc.COMM_WORLD)
+                configure_meta = configure_eps_krylovschur_sinvert(
+                    eps,
+                    A_active,
+                    M_active,
+                    target_hz=float(target_hz),
+                    target_lambda=target_lambda,
+                    factor_solver=fs,
+                    nev=int(nev),
+                    ncv=int(ncv),
+                    mumps_policy=policy,
+                )
+                t0 = time.perf_counter()
+                eps.setUp()
+                setup_s = time.perf_counter() - t0
+                result["setup_elapsed_seconds"] = safe_float(setup_s)
+                result["setup_succeeded"] = True
+                result["configure_meta"] = configure_meta
+                result["factor_solver_effective"] = configure_meta.get("factor_solver_effective")
+                result["mumps_policy_effective"] = configure_meta.get("mumps_policy_applied")
+                result["petsc_options_written"] = configure_meta.get("petsc_options_written")
+                setup_succeeded = True
+                break
+            except Exception as exc:
+                last_setup_exc = exc
+                diag = extract_st_failure_diagnostics(exc)
+                result["failure_class"] = diag.get("failure_class")
+                result["failure_reason"] = f"{type(exc).__name__}:{exc}"
+
+        if not setup_succeeded:
+            result["status"] = "FAIL_SETUP"
+            if last_setup_exc is not None:
+                result["failure_diagnostics"] = extract_st_failure_diagnostics(last_setup_exc)
+            result["st_total_elapsed_seconds"] = safe_float(time.perf_counter() - t_st0)
+            return result
+
+        t0 = time.perf_counter()
+        try:
+            eps.solve()
+            solve_s = time.perf_counter() - t0
+            result["solve_elapsed_seconds"] = safe_float(solve_s)
+            result["solve_succeeded"] = True
+        except Exception as exc:
+            result["failure_reason"] = f"{type(exc).__name__}:{exc}"
+            result["failure_class"] = extract_st_failure_diagnostics(exc).get("failure_class")
+            result["status"] = "FAIL_SOLVE"
+            result["st_total_elapsed_seconds"] = safe_float(time.perf_counter() - t_st0)
+            return result
+
+        nconv, converged_modes = collect_converged_modes(eps, A_active)
+        _nconv2, accepted_modes = collect_accepted_st_modes(
+            eps,
+            A_active,
+            built,
+            target_hz=float(target_hz),
+        )
+        accepted_freqs = sorted(float(m["frequency_hz"]) for m in accepted_modes)
+        result["converged_mode_count"] = int(nconv)
+        result["converged_modes"] = converged_modes
+        result["accepted_mode_count_in_interval"] = len(accepted_modes)
+        result["accepted_modes"] = accepted_modes
+        result["accepted_frequencies_hz"] = accepted_freqs
+        result["peak_rss_mb"] = peak_rss_mb()
+        result["st_total_elapsed_seconds"] = safe_float(time.perf_counter() - t_st0)
+        result["status"] = "PASS"
+        return result
+    finally:
+        if eps is not None:
+            try:
+                eps.destroy()
+            except Exception:
+                pass
+
+
+def compare_checkpoint_results_to_baseline(
+    *,
+    current: Dict[str, Any],
+    baseline: Dict[str, Any],
+    tol_hz: float = FREQ_PARITY_TOL_HZ,
+) -> Dict[str, Any]:
+    """Compare multi- or single-target accepted frequencies against a baseline JSON."""
+    def _aggregate_freqs(body: Dict[str, Any]) -> List[float]:
+        agg = body.get("aggregate") or {}
+        if agg.get("unique_accepted_frequencies_hz"):
+            return list(agg["unique_accepted_frequencies_hz"])
+        if body.get("accepted_frequencies_hz"):
+            return deduplicate_frequencies_hz(list(body["accepted_frequencies_hz"]), tol_hz=tol_hz)
+        freqs: List[float] = []
+        for row in body.get("targets") or []:
+            freqs.extend(list(row.get("accepted_frequencies_hz") or []))
+        return deduplicate_frequencies_hz(freqs, tol_hz=tol_hz)
+
+    cur_freqs = _aggregate_freqs(current)
+    base_freqs = _aggregate_freqs(baseline)
+    per_target: List[Dict[str, Any]] = []
+    cur_targets = {float(r.get("target_frequency_hz")): r for r in (current.get("targets") or [])}
+    base_targets = {float(r.get("target_frequency_hz")): r for r in (baseline.get("targets") or [])}
+    if cur_targets and base_targets:
+        for hz in sorted(set(cur_targets) | set(base_targets)):
+            c_row = cur_targets.get(hz) or {}
+            b_row = base_targets.get(hz) or {}
+            c_acc = list(c_row.get("accepted_frequencies_hz") or [])
+            b_acc = list(b_row.get("accepted_frequencies_hz") or [])
+            per_target.append(
+                {
+                    "target_frequency_hz": hz,
+                    "accepted_frequencies_match": freq_lists_match(c_acc, b_acc, tol_hz=tol_hz),
+                    "baseline_accepted_frequencies_hz": b_acc,
+                    "current_accepted_frequencies_hz": c_acc,
+                }
+            )
+    return {
+        "baseline_path": baseline.get("_baseline_path"),
+        "aggregate_accepted_frequencies_match": freq_lists_match(cur_freqs, base_freqs, tol_hz=tol_hz),
+        "baseline_unique_accepted_frequencies_hz": base_freqs,
+        "current_unique_accepted_frequencies_hz": cur_freqs,
+        "per_target": per_target,
+        "parity_pass": bool(
+            freq_lists_match(cur_freqs, base_freqs, tol_hz=tol_hz)
+            and (not per_target or all(r.get("accepted_frequencies_match") for r in per_target))
+        ),
     }
