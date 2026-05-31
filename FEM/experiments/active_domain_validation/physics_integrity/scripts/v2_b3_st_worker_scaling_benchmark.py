@@ -19,6 +19,7 @@ from petsc4py import PETSc
 import run_v2_B3_trace_coupled_operator_and_seed_transfer_audit as audit
 import v2_b3_dev_solver_benchmark as dev_bench
 import v2_b3_lmid_overnight_validation as lmid_overnight
+import v2_b3_operator_checkpoint_portable as portable_ckpt
 from v2_b3_operator_build_profiler import B3OperatorBuildProfiler
 from v2_b3_block_compose_backend import (
     CLI_BACKEND_ARG,
@@ -433,34 +434,27 @@ def _export_operators(checkpoint: Path, *, built: Dict[str, Any], mesh_level: st
             viewer.destroy()
     meta = _built_metadata_from_built(built, mesh_level=mesh_level)
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    csr_export = portable_ckpt.export_portable_csr_checkpoint(
+        checkpoint,
+        A_active=A_active,
+        M_active=M_active,
+    )
     return {
         "checkpoint_dir": str(checkpoint.resolve()),
         "A_active_binary": str(a_path.resolve()),
         "M_active_binary": str(m_path.resolve()),
         "built_metadata_json": str(meta_path.resolve()),
+        "A_active_csr_npz": str((checkpoint / portable_ckpt.A_CSR_NPZ).resolve()),
+        "M_active_csr_npz": str((checkpoint / portable_ckpt.M_CSR_NPZ).resolve()),
+        "csr_metadata_json": str((checkpoint / portable_ckpt.CSR_METADATA_JSON).resolve()),
+        "portable_csr_export": csr_export,
         **meta,
     }
 
 
 def _verify_operator_export(checkpoint: Path) -> Tuple[bool, List[str], Dict[str, Any]]:
-    """True when PETSc binary operator export artifacts are present on disk."""
-    required = [
-        checkpoint / "A_active.petsc.bin",
-        checkpoint / "M_active.petsc.bin",
-        checkpoint / "built_metadata.json",
-    ]
-    missing = [p.name for p in required if not p.is_file()]
-    info_present = [
-        (checkpoint / "A_active.petsc.bin.info").is_file(),
-        (checkpoint / "M_active.petsc.bin.info").is_file(),
-    ]
-    export_pass = len(missing) == 0
-    detail = {
-        "checkpoint_dir": str(checkpoint.resolve()),
-        "required_files": [p.name for p in required],
-        "missing_files": missing,
-        "petsc_info_sidecars_present": all(info_present),
-    }
+    """True when PETSc binary and portable CSR operator export artifacts are present."""
+    export_pass, missing, detail = portable_ckpt.verify_portable_checkpoint_export(checkpoint)
     return export_pass, missing, detail
 
 
@@ -469,24 +463,12 @@ def _load_operators(checkpoint: Path) -> Tuple[Dict[str, Any], Dict[str, Any], D
     if not meta_path.is_file():
         raise FileNotFoundError(f"missing built metadata: {meta_path}")
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    a_path = checkpoint / "A_active.petsc.bin"
-    m_path = checkpoint / "M_active.petsc.bin"
-    if not a_path.is_file() or not m_path.is_file():
-        raise FileNotFoundError(f"missing operator binary under {checkpoint}")
-
-    def _load_mat(path: Path) -> Any:
-        viewer = PETSc.Viewer().createBinary(str(path), "r", comm=PETSc.COMM_WORLD)
-        try:
-            mat = PETSc.Mat().create(comm=PETSc.COMM_WORLD)
-            mat.load(viewer)
-            audit._petsc_mat_try_assemble(mat)
-            return mat
-        finally:
-            viewer.destroy()
-
-    A_active = _load_mat(a_path)
-    M_active = _load_mat(m_path)
+    A_active, M_active, load_diag = portable_ckpt.load_operators_with_portable_fallback(checkpoint)
     built, reuse_diag = _built_from_metadata(meta, A_active=A_active, M_active=M_active)
+    reuse_diag["B3_ST_scaling_checkpoint_load_diag"] = load_diag
+    if load_diag.get("csr_verification_pass") is False:
+        reuse_diag["B3_ST_scaling_reuse_checkpoint_failure_reason"] = "csr_verification_failed"
+        reuse_diag["B3_ST_scaling_reuse_checkpoint_metadata_schema_pass"] = False
     return built, meta, reuse_diag
 
 
