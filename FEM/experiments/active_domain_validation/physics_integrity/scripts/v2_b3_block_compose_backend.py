@@ -349,6 +349,366 @@ def _annotate_child_nest_pattern_entry(
     return out
 
 
+def _petsc_mat_info_dict(mat: Any) -> Dict[str, Any]:
+    out: Dict[str, Any] = {"type": str(mat.getType()), "shape": list(mat.getSize())}
+    try:
+        info = mat.getInfo()
+        if isinstance(info, dict):
+            for key, val in info.items():
+                out[f"info_{key}"] = _safe_float(val) if isinstance(val, (int, float)) else val
+    except Exception as exc:
+        out["info_error"] = f"{type(exc).__name__}:{exc}"
+    try:
+        out["global_nnz_used"] = int(_audit_helpers()._petsc_mat_global_nnz_used(mat))
+    except Exception as exc:
+        out["global_nnz_used_error"] = f"{type(exc).__name__}:{exc}"
+    return out
+
+
+def _build_petsc_diff_matrix(
+    child: Any,
+    nest_sub: Any,
+    *,
+    structure: Any = None,
+) -> Any:
+    diff = child.duplicate()
+    child.copy(diff)
+    if structure is None:
+        diff.axpy(-1.0, nest_sub)
+    else:
+        diff.axpy(-1.0, nest_sub, structure=structure)
+    diff.assemble()
+    return diff
+
+
+def _scan_diff_matrix_rows(
+    diff_mat: Any,
+    *,
+    child: Any,
+    nest_sub: Any,
+    block_label: str,
+    row_offset: int,
+    col_offset: int,
+) -> Dict[str, Any]:
+    top_heap: List[Any] = []
+    threshold_counts = {key: 0 for key, _val in DIFF_THRESHOLDS}
+    entry_count = 0
+    max_abs = 0.0
+    only_diagonal = True
+    only_bc_identity = True
+    unit_diagonal_count = 0
+    unit_diagonal_bc_count = 0
+    row_bc_cache: Dict[int, bool] = {}
+
+    def _bc_row(r: int) -> bool:
+        cached = row_bc_cache.get(int(r))
+        if cached is not None:
+            return bool(cached)
+        row_child = _row_support_flags(child, r)
+        row_nest = _row_support_flags(nest_sub, r)
+        bc = bool(
+            row_child["identity_like"]
+            or row_nest["identity_like"]
+            or (row_child["zero_row_like"] and row_nest["zero_row_like"])
+        )
+        row_bc_cache[int(r)] = bc
+        return bc
+
+    nrow = int(diff_mat.getSize()[0])
+    traversed_nnz = 0
+    for r in range(nrow):
+        try:
+            cols, vals = diff_mat.getRow(r)
+        except TypeError:
+            rowdat = diff_mat.getRow(r)
+            cols, vals = rowdat[0], rowdat[1]
+        cols_a = np.asarray(cols, dtype=np.int32).ravel()
+        vals_a = np.asarray(vals, dtype=np.float64).ravel()
+        traversed_nnz += int(vals_a.size)
+        for c, v in zip(cols_a.tolist(), vals_a.tolist()):
+            abs_v = abs(float(v))
+            if abs_v <= VALUE_DIFF_MIN:
+                continue
+            entry_count += 1
+            max_abs = max(max_abs, abs_v)
+            on_diag = bool(int(r) == int(c))
+            if not on_diag:
+                only_diagonal = False
+            bc = _bc_row(int(r))
+            if not bc:
+                only_bc_identity = False
+            if on_diag and abs(abs_v - 1.0) <= 1.0e-8:
+                unit_diagonal_count += 1
+                if bc:
+                    unit_diagonal_bc_count += 1
+            for key, thr in DIFF_THRESHOLDS:
+                if abs_v > thr:
+                    threshold_counts[key] += 1
+            _push_top_entry(
+                top_heap,
+                {
+                    "row_local": int(r),
+                    "col_local": int(c),
+                    "row_global": int(r + row_offset),
+                    "col_global": int(c + col_offset),
+                    "block": str(block_label),
+                    "diff_value": _safe_float(v),
+                    "abs_diff": _safe_float(abs_v),
+                    "on_diagonal": on_diag,
+                    "bc_identity_or_zero_row": bc,
+                },
+                limit=20,
+            )
+        try:
+            diff_mat.restoreRow(r)
+        except Exception:
+            pass
+
+    fro_norm = None
+    try:
+        fro_norm = float(diff_mat.norm(PETSc.NormType.FROBENIUS))
+    except Exception:
+        pass
+
+    return {
+        "frobenius_norm": _safe_float(fro_norm),
+        "mat_info": _petsc_mat_info_dict(diff_mat),
+        "getrow_traversed_nnz": int(traversed_nnz),
+        "nonzero_entry_count": int(entry_count),
+        "max_abs": _safe_float(max_abs),
+        "threshold_counts": dict(threshold_counts),
+        "only_on_diagonal": bool(only_diagonal and entry_count > 0),
+        "only_bc_identity_or_zero_rows": bool(only_bc_identity and entry_count > 0),
+        "unit_diagonal_count": int(unit_diagonal_count),
+        "unit_diagonal_bc_identity_count": int(unit_diagonal_bc_count),
+        "top20": _finalize_top_entries(top_heap)[:20],
+        "norm_positive_but_getrow_empty": bool(
+            fro_norm is not None and float(fro_norm) > 1.0e-12 and entry_count == 0
+        ),
+    }
+
+
+def _scipy_csr_frobenius_diff(child: Any, nest_sub: Any) -> Optional[float]:
+    from scipy import sparse
+
+    def _to_csr(mat: Any) -> Any:
+        indptr, indices, data = mat.getValuesCSR()
+        nrow, ncol = mat.getSize()
+        return sparse.csr_matrix(
+            (
+                np.asarray(data, dtype=np.float64),
+                np.asarray(indices, dtype=np.int32),
+                np.asarray(indptr, dtype=np.int32),
+            ),
+            shape=(int(nrow), int(ncol)),
+        )
+
+    csr_c = _to_csr(child)
+    csr_n = _to_csr(nest_sub)
+    diff = csr_c - csr_n
+    if diff.nnz == 0:
+        return 0.0
+    return float(np.linalg.norm(diff.data))
+
+
+def _inspect_child_vs_nest_petsc_diff_matrix(
+    child: Any,
+    nest_sub: Any,
+    *,
+    block_label: str,
+    row_offset: int,
+    col_offset: int,
+    compose_meta: Dict[str, Any],
+    prefix: str,
+    mesh_level: str = "",
+) -> Dict[str, Any]:
+    """Build D = child - nest_block in PETSc and inspect D directly."""
+    audit = _audit_helpers()
+    dp = f"{prefix}_{block_label}_petsc_diff"
+    summary: Dict[str, Any] = {
+        "block_label": str(block_label),
+        "petsc_diff_harmless_unit_diag_bc": False,
+    }
+    diff_mats: List[Any] = []
+    try:
+        child_norm = float(child.norm(PETSc.NormType.FROBENIUS))
+        nest_norm = float(nest_sub.norm(PETSc.NormType.FROBENIUS))
+        petsc_fro = float(audit._petsc_mat_frobenius_difference(child, nest_sub))
+        compose_meta[f"{dp}_child_frobenius_norm"] = _safe_float(child_norm)
+        compose_meta[f"{dp}_nest_block_frobenius_norm"] = _safe_float(nest_norm)
+        compose_meta[f"{dp}_petsc_helper_frobenius_diff"] = _safe_float(petsc_fro)
+        compose_meta[f"{dp}_child_type"] = str(child.getType())
+        compose_meta[f"{dp}_nest_block_type"] = str(nest_sub.getType())
+        compose_meta[f"{dp}_child_mat_info"] = _petsc_mat_info_dict(child)
+        compose_meta[f"{dp}_nest_block_mat_info"] = _petsc_mat_info_dict(nest_sub)
+        print(
+            f"[B3_BLOCK_COMPOSE_child_vs_nest] {block_label} "
+            f"child_norm={child_norm:.16e} nest_norm={nest_norm:.16e} "
+            f"petsc_fro_diff={petsc_fro:.16e}",
+            flush=True,
+        )
+
+        if str(mesh_level) == "L_dev_dense":
+            try:
+                scipy_fro = _scipy_csr_frobenius_diff(child, nest_sub)
+                compose_meta[f"{dp}_scipy_csr_frobenius_diff"] = _safe_float(scipy_fro)
+                print(
+                    f"[B3_BLOCK_COMPOSE_child_vs_nest] {block_label} "
+                    f"scipy_csr_fro_diff={scipy_fro:.16e}",
+                    flush=True,
+                )
+            except Exception as exc_scipy:
+                compose_meta[f"{dp}_scipy_csr_frobenius_diff_unavailable"] = (
+                    f"{type(exc_scipy).__name__}:{exc_scipy}"
+                )
+
+        structure_variants: List[Tuple[str, Any]] = [
+            ("SUBSET_NONZERO_PATTERN", PETSc.Mat.Structure.SUBSET_NONZERO_PATTERN),
+            ("DIFFERENT_NONZERO_PATTERN", PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN),
+            ("DEFAULT", None),
+        ]
+        best_scan: Optional[Dict[str, Any]] = None
+        for struct_label, struct_val in structure_variants:
+            D = _build_petsc_diff_matrix(child, nest_sub, structure=struct_val)
+            diff_mats.append(D)
+            scan = _scan_diff_matrix_rows(
+                D,
+                child=child,
+                nest_sub=nest_sub,
+                block_label=block_label,
+                row_offset=row_offset,
+                col_offset=col_offset,
+            )
+            compose_meta[f"{dp}_scan_{struct_label}_frobenius_norm"] = scan.get("frobenius_norm")
+            compose_meta[f"{dp}_scan_{struct_label}_nonzero_entry_count"] = scan.get("nonzero_entry_count")
+            compose_meta[f"{dp}_scan_{struct_label}_max_abs"] = scan.get("max_abs")
+            compose_meta[f"{dp}_scan_{struct_label}_norm_positive_but_getrow_empty"] = scan.get(
+                "norm_positive_but_getrow_empty"
+            )
+            if best_scan is None or int(scan.get("nonzero_entry_count") or 0) > int(
+                best_scan.get("nonzero_entry_count") or 0
+            ):
+                best_scan = dict(scan)
+                best_scan["structure"] = struct_label
+
+            if scan.get("norm_positive_but_getrow_empty"):
+                compose_meta[f"{dp}_scan_{struct_label}_petsc_norm_getrow_inconsistency"] = True
+                D_aij = None
+                try:
+                    try:
+                        D_aij = D.convert("aij")
+                    except Exception:
+                        D_aij = PETSc.Mat()
+                        D.convert("aij", D_aij)
+                    if D_aij is not None:
+                        D_aij.assemble()
+                        diff_mats.append(D_aij)
+                        try:
+                            D_aij.setOption(PETSc.Mat.Option.IGNORE_ZERO_ENTRIES, False)
+                        except Exception:
+                            pass
+                        scan_aij = _scan_diff_matrix_rows(
+                            D_aij,
+                            child=child,
+                            nest_sub=nest_sub,
+                            block_label=block_label,
+                            row_offset=row_offset,
+                            col_offset=col_offset,
+                        )
+                        compose_meta[f"{dp}_scan_{struct_label}_aij_convert_frobenius_norm"] = scan_aij.get(
+                            "frobenius_norm"
+                        )
+                        compose_meta[f"{dp}_scan_{struct_label}_aij_convert_nonzero_entry_count"] = scan_aij.get(
+                            "nonzero_entry_count"
+                        )
+                        compose_meta[f"{dp}_scan_{struct_label}_aij_convert_top20"] = scan_aij.get("top20")
+                        if int(scan_aij.get("nonzero_entry_count") or 0) > int(
+                            best_scan.get("nonzero_entry_count") or 0
+                        ):
+                            best_scan = dict(scan_aij)
+                            best_scan["structure"] = f"{struct_label}_aij_convert"
+                except Exception as exc_aij:
+                    compose_meta[f"{dp}_scan_{struct_label}_aij_convert_error"] = (
+                        f"{type(exc_aij).__name__}:{exc_aij}"
+                    )
+
+        if best_scan is None:
+            best_scan = {}
+
+        compose_meta[f"{dp}_selected_structure"] = best_scan.get("structure")
+        compose_meta[f"{dp}_frobenius_norm"] = best_scan.get("frobenius_norm")
+        compose_meta[f"{dp}_mat_info"] = best_scan.get("mat_info")
+        compose_meta[f"{dp}_getrow_traversed_nnz"] = best_scan.get("getrow_traversed_nnz")
+        compose_meta[f"{dp}_nonzero_entry_count"] = best_scan.get("nonzero_entry_count")
+        compose_meta[f"{dp}_max_abs"] = best_scan.get("max_abs")
+        compose_meta[f"{dp}_top20"] = best_scan.get("top20") or []
+        compose_meta[f"{dp}_only_on_diagonal"] = best_scan.get("only_on_diagonal")
+        compose_meta[f"{dp}_only_bc_identity_or_zero_rows"] = best_scan.get("only_bc_identity_or_zero_rows")
+        compose_meta[f"{dp}_unit_diagonal_count"] = best_scan.get("unit_diagonal_count")
+        compose_meta[f"{dp}_unit_diagonal_bc_identity_count"] = best_scan.get(
+            "unit_diagonal_bc_identity_count"
+        )
+        for key, _thr in DIFF_THRESHOLDS:
+            tc = (best_scan.get("threshold_counts") or {}).get(key, 0)
+            compose_meta[f"{dp}_count_gt_{key}"] = int(tc)
+
+        norm_pos_empty = bool(
+            best_scan.get("norm_positive_but_getrow_empty")
+            or (
+                float(best_scan.get("frobenius_norm") or 0.0) > 1.0e-12
+                and int(best_scan.get("nonzero_entry_count") or 0) == 0
+            )
+        )
+        compose_meta[f"{dp}_petsc_norm_getrow_inconsistency"] = norm_pos_empty
+        if norm_pos_empty:
+            compose_meta[f"{dp}_petsc_norm_getrow_inconsistency_note"] = (
+                "D.norm > 0 but D.getRow scan found no entries above tolerance; "
+                "likely PETSc explicit-zero / sparsity-pattern representation mismatch."
+            )
+
+        harmless = bool(
+            float(best_scan.get("frobenius_norm") or 0.0) >= 1.0 - 1.0e-8
+            and int(best_scan.get("unit_diagonal_bc_identity_count") or 0) == 1
+            and int(best_scan.get("unit_diagonal_count") or 0) == 1
+            and bool(best_scan.get("only_on_diagonal"))
+            and bool(best_scan.get("only_bc_identity_or_zero_rows"))
+        )
+        summary["petsc_diff_harmless_unit_diag_bc"] = harmless
+        compose_meta[f"{dp}_harmless_unit_diag_bc"] = harmless
+        if harmless:
+            compose_meta[f"{dp}_mathematically_harmless_note"] = (
+                f"{block_label}: PETSc D=child-nest_block has exactly one unit diagonal BC/identity "
+                "entry; shared-stored values may match while sparsity pattern differs. "
+                "compare_pass not auto-waived."
+            )
+        elif norm_pos_empty:
+            compose_meta[f"{dp}_mathematically_harmless_note"] = (
+                f"{block_label}: PETSc Frobenius diff ~{petsc_fro:.6e} but D.getRow scan empty; "
+                "see structure scans and scipy_csr_frobenius_diff."
+            )
+        else:
+            compose_meta[f"{dp}_mathematically_harmless_note"] = (
+                f"{block_label}: inspect petsc_diff top20 and norm fields."
+            )
+        compose_meta[f"{dp}_audit_pass"] = True
+        print(
+            f"[B3_BLOCK_COMPOSE_child_vs_nest] {block_label} "
+            f"D_norm={best_scan.get('frobenius_norm')} D_nnz={best_scan.get('nonzero_entry_count')} "
+            f"D_max_abs={best_scan.get('max_abs')} inconsistency={norm_pos_empty}",
+            flush=True,
+        )
+    except Exception as exc:
+        compose_meta[f"{dp}_audit_pass"] = False
+        compose_meta[f"{dp}_audit_unavailable_reason"] = f"{type(exc).__name__}:{exc}"
+    finally:
+        for mat in diff_mats:
+            try:
+                mat.destroy()
+            except Exception:
+                pass
+    return summary
+
+
 def _record_child_vs_nest_block_pair_detail(
     child: Any,
     nest_sub: Any,
@@ -358,8 +718,19 @@ def _record_child_vs_nest_block_pair_detail(
     col_offset: int,
     compose_meta: Dict[str, Any],
     prefix: str,
+    mesh_level: str = "",
 ) -> Dict[str, Any]:
     """Targeted child-vs-nest diff localization for one diagonal block (Auu/App)."""
+    petsc_summary = _inspect_child_vs_nest_petsc_diff_matrix(
+        child,
+        nest_sub,
+        block_label=block_label,
+        row_offset=row_offset,
+        col_offset=col_offset,
+        compose_meta=compose_meta,
+        prefix=prefix,
+        mesh_level=mesh_level,
+    )
     detail_prefix = f"{prefix}_{block_label}_detail"
     pattern_prefix = f"{prefix}_{block_label}_pattern"
     compose_meta[f"{detail_prefix}_top20"] = []
@@ -374,6 +745,7 @@ def _record_child_vs_nest_block_pair_detail(
         "block_label": str(block_label),
         "harmless_unit_diag_bc": False,
         "pattern_harmless_unit_diag_bc": False,
+        "petsc_diff_harmless_unit_diag_bc": bool(petsc_summary.get("petsc_diff_harmless_unit_diag_bc")),
         "unit_diagonal_diff_count": 0,
         "unit_diagonal_bc_identity_diff_count": 0,
         "unit_diagonal_pattern_only_count": 0,
@@ -615,11 +987,20 @@ def _record_child_vs_nest_block_pair_detail(
             )
         compose_meta[f"{detail_prefix}_audit_pass"] = True
         compose_meta[f"{pattern_prefix}_audit_pass"] = True
+        summary["petsc_diff_harmless_unit_diag_bc"] = bool(
+            petsc_summary.get("petsc_diff_harmless_unit_diag_bc")
+        )
+        summary["pattern_harmless_unit_diag_bc"] = bool(
+            pattern_harmless_unit_diag_bc or summary["petsc_diff_harmless_unit_diag_bc"]
+        )
     except Exception as exc:
         compose_meta[f"{detail_prefix}_audit_pass"] = False
         compose_meta[f"{pattern_prefix}_audit_pass"] = False
         compose_meta[f"{detail_prefix}_audit_unavailable_reason"] = f"{type(exc).__name__}:{exc}"
         compose_meta[f"{pattern_prefix}_audit_unavailable_reason"] = f"{type(exc).__name__}:{exc}"
+        summary["petsc_diff_harmless_unit_diag_bc"] = bool(
+            petsc_summary.get("petsc_diff_harmless_unit_diag_bc")
+        )
     return summary
 
 
@@ -1087,6 +1468,7 @@ def _record_child_vs_nest_block_audit(
                     col_offset=int(c0),
                     compose_meta=compose_meta,
                     prefix=prefix,
+                    mesh_level=mesh_level,
                 )
             if block_label in ("Aup", "Apu"):
                 mate_label = "Apu" if block_label == "Aup" else "Aup"
@@ -1142,7 +1524,10 @@ def _record_child_vs_nest_block_audit(
     app_summary = detail_summaries.get("App") or {}
     pattern_harmless = bool(
         auu_summary.get("pattern_harmless_unit_diag_bc")
-        and app_summary.get("pattern_harmless_unit_diag_bc")
+        or auu_summary.get("petsc_diff_harmless_unit_diag_bc")
+    ) and bool(
+        app_summary.get("pattern_harmless_unit_diag_bc")
+        or app_summary.get("petsc_diff_harmless_unit_diag_bc")
     )
     compose_meta["B3_BLOCK_COMPOSE_compare_A_child_vs_nest_pattern_harmless_bc_candidate"] = pattern_harmless
     compose_meta[f"{prefix}_pattern_harmless_bc_candidate"] = pattern_harmless
