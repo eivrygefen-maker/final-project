@@ -364,9 +364,25 @@ def _apply_benchmark_mumps_petsc_options(
     }
 
 
+def _copy_configure_meta_to_result(result: Dict[str, Any], setup_meta: Dict[str, Any]) -> None:
+    if not setup_meta:
+        return
+    result["configure_meta"] = dict(setup_meta)
+    result["configure_path"] = setup_meta.get("configure_path")
+    result["factor_solver_verification_pass"] = setup_meta.get("factor_solver_verification_pass")
+    result["benchmark_factor_solver_effective"] = setup_meta.get("benchmark_factor_solver_effective")
+    opts = setup_meta.get("petsc_options_written")
+    if opts:
+        result["petsc_options_written"] = dict(opts)
+
+
 def _mumps_policy_chain_for_variant(variant: Dict[str, Any], mesh_level: str) -> List[Optional[str]]:
-    """Single policy for benchmark cases; retry chain only when explicitly requested."""
+    """Single policy for benchmark cases; L_prod production path uses ST scaling retry chain."""
     if variant.get("use_production_st_configure"):
+        if variant.get("mumps_single_policy_only"):
+            return [str(variant.get("production_mumps_policy", "default"))]
+        if str(mesh_level) == "L_prod" or variant.get("use_mumps_retry_chain"):
+            return [str(p) for p in st_scaling._mumps_policy_chain(mesh_level)]
         return [str(variant.get("production_mumps_policy", "default"))]
     if variant.get("mumps_policy_key"):
         return [str(variant["mumps_policy_key"])]
@@ -554,7 +570,13 @@ def run_single_st_benchmark_case(
         "variant": dict(variant),
     }
 
-    result["petsc_options_reset"] = _reset_petsc_options_before_case(case_id)
+    if variant.get("use_production_st_configure"):
+        result["petsc_options_reset"] = {
+            "skipped": True,
+            "reason": "production_st_configure_preserves_st_scaling_mumps_options",
+        }
+    else:
+        result["petsc_options_reset"] = _reset_petsc_options_before_case(case_id)
 
     if variant.get("skip") and variant.get("skip_reason"):
         result["skipped"] = True
@@ -572,7 +594,11 @@ def run_single_st_benchmark_case(
         policy_chain = _mumps_policy_chain_for_variant(variant, mesh_level)
         setup_meta: Dict[str, Any] = {}
         last_exc: Optional[BaseException] = None
+        policies_tried: List[str] = []
+        result["mumps_policies_tried"] = []
         for policy in policy_chain:
+            policies_tried.append(str(policy))
+            result["mumps_policies_tried"] = list(policies_tried)
             if eps is not None:
                 try:
                     eps.destroy()
@@ -602,11 +628,7 @@ def run_single_st_benchmark_case(
                 result["setup_elapsed_seconds"] = _safe_float(setup_s)
                 result["mumps_policy_key_effective"] = str(policy)
                 result["mumps_policy_effective"] = str(policy)
-                result["petsc_options_written"] = dict(setup_meta.get("petsc_options_written") or {})
-                result["configure_meta"] = setup_meta
-                result["configure_path"] = setup_meta.get("configure_path")
-                result["factor_solver_verification_pass"] = setup_meta.get("factor_solver_verification_pass")
-                result["benchmark_factor_solver_effective"] = setup_meta.get("benchmark_factor_solver_effective")
+                _copy_configure_meta_to_result(result, setup_meta)
                 intro = dev_bench._dev_introspect_st_targeting_after_setup(eps)
                 result["effective_target"] = intro.get("B3_DEV_ST_target_effective")
                 result["effective_shift"] = intro.get("B3_DEV_ST_shift_effective")
@@ -617,8 +639,15 @@ def run_single_st_benchmark_case(
                 diag = st_scaling._extract_st_failure_diagnostics(exc)
                 result.update({k: v for k, v in diag.items() if not k.startswith("exception_")})
                 result["failure_reason"] = f"{type(exc).__name__}:{exc}"
+                result["last_failed_mumps_policy"] = str(policy)
+                _copy_configure_meta_to_result(result, setup_meta)
                 if log_path:
-                    _append_log(log_path, traceback.format_exc())
+                    _append_log(
+                        log_path,
+                        f"policy={policy} configure_path={setup_meta.get('configure_path')} "
+                        f"petsc_options={setup_meta.get('petsc_options_written')}\n"
+                        f"{traceback.format_exc()}",
+                    )
 
         if not result["setup_succeeded"]:
             if last_exc is not None:
@@ -626,6 +655,8 @@ def run_single_st_benchmark_case(
                 result["failure_exception_type"] = type(last_exc).__name__
             if not result.get("failure_reason") and last_exc is not None:
                 result["failure_reason"] = f"{type(last_exc).__name__}:{last_exc}"
+            _copy_configure_meta_to_result(result, setup_meta)
+            result["mumps_policies_tried"] = list(policies_tried)
             return result
 
         t1 = time.perf_counter()
@@ -727,12 +758,17 @@ def _summary_table_md(
         solve_s = c.get("solve_elapsed_seconds")
         st_tot = c.get("st_total_elapsed_seconds")
         sp = c.get("parity", {}).get("speedup_vs_baseline_st_total")
-        if sp is None and baseline_st and st_tot:
+        if sp is None and baseline_st and st_tot and str(c.get("case_id")) != str(suite_baseline_case_id):
             sp = baseline_st / float(st_tot) if float(st_tot) > 0 else None
         acc_n = c.get("accepted_mode_count_in_interval")
         parity_ok = c.get("parity", {}).get("parity_pass")
         if str(c.get("case_id")) == str(suite_baseline_case_id):
-            parity_s = "baseline"
+            if c.get("solve_succeeded"):
+                parity_s = "baseline"
+                sp = 1.0
+            else:
+                parity_s = "FAIL (baseline)"
+                sp = None
         elif parity_ok is True:
             parity_s = "match"
         elif parity_ok is False:
@@ -789,6 +825,7 @@ def _factor_solver_variants(package_probe: Dict[str, Any]) -> List[Dict[str, Any
             "factor_solver": BASELINE_FACTOR,
             "use_production_st_configure": True,
             "production_mumps_policy": "default",
+            "use_mumps_retry_chain": True,
             "nev": BASELINE_NEV,
             "ncv": BASELINE_NCV,
             "factor_solver_available": True,
@@ -1055,11 +1092,17 @@ def _run_suite(
                 "baseline_solve_succeeded": (baseline_in_suite or {}).get("solve_succeeded"),
                 "baseline_st_total_seconds": _safe_float(baseline_st),
             }
-        elif cid == suite_baseline_id:
+        elif cid == suite_baseline_id and _baseline_case_is_valid(c):
             c["parity"] = {
                 "parity_pass": True,
                 "parity_notes": ["in_suite_baseline_reference"],
                 "speedup_vs_baseline_st_total": 1.0,
+                "baseline_reference_case_id": suite_baseline_id,
+            }
+        elif cid == suite_baseline_id:
+            c["parity"] = {
+                "parity_pass": None,
+                "parity_notes": ["baseline_row_failed_no_speedup_reference"],
                 "baseline_reference_case_id": suite_baseline_id,
             }
         else:
@@ -1109,7 +1152,11 @@ def _run_suite(
         "",
     ]
     if baseline_in_suite is not None:
-        md_lines.append(f"```json\n{json.dumps(baseline_in_suite.get('petsc_options_written') or {}, indent=2)}\n```")
+        md_lines.append(f"- Baseline policies tried: `{baseline_in_suite.get('mumps_policies_tried')}`")
+        md_lines.append(f"- Baseline last policy: `{baseline_in_suite.get('mumps_policy_effective')}`")
+        md_lines.append(
+            f"```json\n{json.dumps(baseline_in_suite.get('petsc_options_written') or {}, indent=2)}\n```"
+        )
         md_lines.append("")
     md_lines.extend(["## Correctness / parity", ""])
     for c in cases:
