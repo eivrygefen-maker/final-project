@@ -321,6 +321,42 @@ def parse_rich_modal_export_flag(argv: Optional[Sequence[str]]) -> bool:
     return B3_EXPORT_RICH_MODAL_DATA_ARG in argv
 
 
+def build_checkpoint_multi_benchmark_argv(
+    *,
+    checkpoint_dir: str,
+    factor_solver: str,
+    target_set: str,
+    nev: int,
+    ncv: int,
+    output_dir: str,
+    targets_hz: Optional[str] = None,
+    baseline_json: Optional[str] = None,
+    export_rich_modal_data: bool = False,
+) -> List[str]:
+    """Argv for v2_b3_checkpoint_solver_multi_benchmark (Stage B inner runner)."""
+    bench_argv: List[str] = [
+        "--checkpoint-dir",
+        str(checkpoint_dir),
+        "--factor-solver",
+        str(factor_solver),
+        "--target-set",
+        str(target_set),
+        "--nev",
+        str(int(nev)),
+        "--ncv",
+        str(int(ncv)),
+        "--output-dir",
+        str(output_dir),
+    ]
+    if targets_hz:
+        bench_argv.extend(["--targets-hz", str(targets_hz)])
+    if baseline_json:
+        bench_argv.extend(["--baseline-json", str(baseline_json)])
+    if export_rich_modal_data:
+        bench_argv.append(B3_EXPORT_RICH_MODAL_DATA_ARG)
+    return bench_argv
+
+
 def rich_modal_export_manifest_block(*, requested: bool) -> Dict[str, Any]:
     """Metadata block for manifests."""
     return {

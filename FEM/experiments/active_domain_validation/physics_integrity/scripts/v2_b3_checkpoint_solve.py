@@ -14,8 +14,8 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from v2_b3_checkpoint_pipeline_lib import (  # noqa: E402
-    B3_EXPORT_RICH_MODAL_DATA_ARG,
     PIPELINE_SOLVE_MANIFEST,
+    build_checkpoint_multi_benchmark_argv,
     default_solve_output_dir,
     ensure_rich_modal_export_allowed,
     fail_with_messages,
@@ -65,6 +65,10 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 def run_checkpoint_solve(argv: Optional[List[str]] = None) -> int:
     args = _parse_args(argv)
     rich_modal_requested = bool(args.export_rich_modal_data)
+    print(
+        f"[B3_checkpoint_solve] rich_modal_export_requested={rich_modal_requested}",
+        flush=True,
+    )
     ensure_rich_modal_export_allowed(requested=rich_modal_requested, context="B3_checkpoint_solve")
     factor_solver = str(args.factor_solver).strip().lower()
     checkpoint = Path(args.checkpoint_dir).expanduser().resolve()
@@ -120,24 +124,17 @@ def run_checkpoint_solve(argv: Optional[List[str]] = None) -> int:
     }
     write_json(output_dir / PIPELINE_SOLVE_MANIFEST, pre_manifest)
 
-    bench_argv: List[str] = [
-        "--checkpoint-dir",
-        str(checkpoint),
-        "--factor-solver",
-        factor_solver,
-        "--target-set",
-        str(args.target_set),
-        "--nev",
-        str(int(args.nev)),
-        "--ncv",
-        str(int(args.ncv)),
-        "--output-dir",
-        str(output_dir),
-    ]
-    if args.targets_hz:
-        bench_argv.extend(["--targets-hz", str(args.targets_hz)])
-    if args.baseline_json:
-        bench_argv.extend(["--baseline-json", str(args.baseline_json)])
+    bench_argv = build_checkpoint_multi_benchmark_argv(
+        checkpoint_dir=str(checkpoint),
+        factor_solver=factor_solver,
+        target_set=str(args.target_set),
+        nev=int(args.nev),
+        ncv=int(args.ncv),
+        output_dir=str(output_dir),
+        targets_hz=str(args.targets_hz) if args.targets_hz else None,
+        baseline_json=str(args.baseline_json) if args.baseline_json else None,
+        export_rich_modal_data=rich_modal_requested,
+    )
 
     rc = run_checkpoint_solver_multi_benchmark(bench_argv)
 

@@ -18,6 +18,8 @@ if str(SCRIPT_DIR) not in sys.path:
 from v2_b3_operator_checkpoint_portable import load_operators_with_portable_fallback  # noqa: E402
 from v2_b3_petsc_util import mat_shape, write_json_atomic  # noqa: E402
 from v2_b3_rich_modal_lib import (  # noqa: E402
+    MODES_ACTIVE_NPZ,
+    MODES_CATALOG_JSONL,
     RICH_MODAL_DIRNAME,
     RICH_MODAL_MANIFEST_JSON,
     RichModalCollector,
@@ -80,7 +82,7 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         dest="export_rich_modal_data",
         action="store_true",
         default=False,
-        help="Opt-in rich modal export (NOT implemented; disabled by default for benchmarks).",
+        help="Opt-in rich modal export: active eigenvectors under rich_modal/ (disabled by default).",
     )
     if argv is None:
         return parser.parse_args()
@@ -290,9 +292,10 @@ def run_checkpoint_solver_multi_benchmark(argv: Optional[List[str]] = None) -> i
         result["summary"] = build_stable_summary(result)
 
         if rich_collector is not None:
+            rich_dir = output_dir / RICH_MODAL_DIRNAME
             synth_path = checkpoint / SYNTHESIS_METADATA_JSON
             rm_manifest = rich_collector.write_bundle(
-                output_dir / RICH_MODAL_DIRNAME,
+                rich_dir,
                 checkpoint_dir=checkpoint,
                 solve_output_dir=output_dir,
                 factor_solver=factor_solver,
@@ -303,12 +306,24 @@ def run_checkpoint_solver_multi_benchmark(argv: Optional[List[str]] = None) -> i
                 acceptance_interval_hz=[ACCEPTANCE_FREQ_LO_HZ, ACCEPTANCE_FREQ_HI_HZ],
                 synthesis_metadata_path=synth_path,
             )
+            modes_npz = rm_manifest.get("modes_active_npz") or str((rich_dir / MODES_ACTIVE_NPZ).resolve())
+            catalog_path = rm_manifest.get("modes_catalog_jsonl") or str(
+                (rich_dir / MODES_CATALOG_JSONL).resolve()
+            )
             result["rich_modal_export"] = {
                 **rich_modal_export_manifest_block(requested=True),
-                "manifest": str((output_dir / RICH_MODAL_DIRNAME / RICH_MODAL_MANIFEST_JSON).resolve()),
-                "modes_active_npz": rm_manifest.get("modes_active_npz"),
+                "status": "v1_enabled",
+                "rich_modal_dir": str(rich_dir.resolve()),
+                "manifest": str((rich_dir / RICH_MODAL_MANIFEST_JSON).resolve()),
+                "modes_active_npz": modes_npz,
+                "modes_catalog_jsonl": catalog_path,
                 "mode_count": rm_manifest.get("mode_count"),
             }
+            print(
+                f"[B3_checkpoint_solver_multi] rich_modal_export mode_count={rm_manifest.get('mode_count')} "
+                f"dir={rich_dir}",
+                flush=True,
+            )
 
         write_json_atomic(output_dir / "result.json", result)
         _write_result_md(output_dir / "result.md", result)
