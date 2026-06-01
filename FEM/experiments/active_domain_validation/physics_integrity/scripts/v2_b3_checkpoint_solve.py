@@ -14,6 +14,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from v2_b3_checkpoint_pipeline_lib import (  # noqa: E402
+    B3_EXPORT_RICH_MODAL_DATA_ARG,
     PIPELINE_SOLVE_MANIFEST,
     build_checkpoint_multi_benchmark_argv,
     default_solve_output_dir,
