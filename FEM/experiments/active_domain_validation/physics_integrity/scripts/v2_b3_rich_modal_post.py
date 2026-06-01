@@ -14,77 +14,109 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from v2_b3_checkpoint_pipeline_lib import verify_production_stage_environment, fail_with_messages  # noqa: E402
+from v2_b3_checkpoint_pipeline_lib import (  # noqa: E402
+    B3_SYNTHESIS_REGION_DOFS_ARG,
+    B3_SYNTHESIS_REGION_DOFS_ENV,
+    fail_with_messages,
+    resolve_synthesis_region_dofs_mode,
+    verify_production_stage_environment,
+)
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 from v2_b3_rich_modal_lib import (  # noqa: E402
     MODES_ACTIVE_NPZ,
-    MODES_CATALOG_JSONL,
     REGION_DOF_INDICES_NPZ,
-    RICH_MODAL_DIRNAME,
     RICH_MODAL_MANIFEST_JSON,
     RICH_MODAL_POST_SCHEMA,
     SYNTHESIS_METADATA_JSON,
+    build_mode_synthesis_row,
     frequency_dedupe_report,
+    load_region_dof_bundle,
     normalization_convention_v1,
-    prolongate_active_to_W,
-    participation_energy_fraction,
 )
 from v2_b3_st_sinvert_solver_lib import normalize_checkpoint_metadata  # noqa: E402
 
-
-def _load_region_indices(checkpoint: Path, built_meta: Dict[str, Any]) -> Dict[str, np.ndarray]:
-    path = checkpoint / REGION_DOF_INDICES_NPZ
-    if path.is_file():
-        with np.load(path, allow_pickle=False) as z:
-            return {k: np.asarray(z[k]).ravel() for k in z.files if k != "layout"}
-    u_idx = np.asarray(built_meta["u_idx"], dtype=np.int32).ravel()
-    p_idx = np.asarray(built_meta["p_idx"], dtype=np.int32).ravel()
-    return {
-        "u_idx_top": np.asarray([], dtype=np.int32),
-        "u_idx_back": np.asarray([], dtype=np.int32),
-        "u_idx_ribs": np.asarray([], dtype=np.int32),
-        "u_idx_soundhole": np.asarray([], dtype=np.int32),
-        "p_idx_air": p_idx.copy(),
-        "p_idx_all": p_idx.copy(),
-        "u_idx_all": u_idx.copy(),
-    }
+STRUCTURAL_DEFERRED_WARNING = (
+    "Structural region participation and displacement RMS proxies are unavailable "
+    "(region_dof_indices.npz missing or deferred). Values are null, not physical zeros. "
+    "Cavity pressure proxy may still be computed from active pressure DOFs (p_idx_air). "
+    "Re-run Stage A with --B3-synthesis-region-dofs best_effort or Stage C with the same flag."
+)
 
 
-def _audio_output_proxies(
-    x_full: np.ndarray,
-    region: Dict[str, np.ndarray],
-) -> Dict[str, Any]:
-    u_top = region.get("u_idx_top", np.asarray([], dtype=np.int32))
-    u_sh = region.get("u_idx_soundhole", np.asarray([], dtype=np.int32))
-    p_air = region.get("p_idx_air", np.asarray([], dtype=np.int32))
+def _maybe_compute_region_dof_indices(
+    checkpoint: Path,
+    built_meta: Dict[str, Any],
+    *,
+    region_dofs_mode: str,
+    synthesis_meta: Optional[Dict[str, Any]],
+) -> List[str]:
+    """Optional isolated subprocess region locate (Stage C). Returns warning strings."""
+    warnings: List[str] = []
+    if region_dofs_mode != "best_effort":
+        return warnings
+    if (checkpoint / REGION_DOF_INDICES_NPZ).is_file():
+        return warnings
 
-    top_vals = x_full[np.asarray(u_top, dtype=np.int32)] if u_top.size else np.asarray([])
-    sh_vals = x_full[np.asarray(u_sh, dtype=np.int32)] if u_sh.size else np.asarray([])
-    p_vals = x_full[np.asarray(p_air, dtype=np.int32)] if p_air.size else np.asarray([])
+    mesh_level = str(
+        (synthesis_meta or {}).get("mesh_level")
+        or built_meta.get("mesh_level")
+        or "L_prod"
+    )
+    from v2_b3_synthesis_export import export_region_dof_indices_isolated  # noqa: E402
 
-    return {
-        "top_plate_displacement_rms_proxy_v1": float(np.sqrt(np.mean(top_vals**2))) if top_vals.size else 0.0,
-        "soundhole_facet_displacement_rms_proxy_v1": float(np.sqrt(np.mean(sh_vals**2))) if sh_vals.size else 0.0,
-        "cavity_pressure_max_proxy_v1": float(np.max(np.abs(p_vals))) if p_vals.size else 0.0,
-        "proxy_type": "audio_output_proxy_v1",
-        "not_microphone_pressure": True,
-    }
+    print(
+        f"[B3_rich_modal_post] region_dof best_effort subprocess mesh_level={mesh_level}",
+        flush=True,
+    )
+    status, error = export_region_dof_indices_isolated(
+        checkpoint,
+        mesh_level=mesh_level,
+        built_meta=built_meta,
+    )
+    if status != "present":
+        warnings.append(
+            f"Stage C region_dof best_effort did not produce npz: status={status} detail={error}"
+        )
+    else:
+        print(f"[B3_rich_modal_post] region_dof_indices.npz written", flush=True)
+    return warnings
+
+
+def _collect_warnings(region_ctx: Dict[str, Any], extra: List[str]) -> List[str]:
+    warnings = list(extra)
+    if not region_ctx["structural_indices_available"]:
+        warnings.append(STRUCTURAL_DEFERRED_WARNING)
+    return warnings
 
 
 def _write_post_md(path: Path, body: Dict[str, Any]) -> None:
+    warnings = body.get("warnings") or []
     lines = [
         "# Rich modal post (Stage C)",
         "",
         f"- schema: `{body.get('schema')}`",
         f"- checkpoint_dir: `{body.get('checkpoint_dir')}`",
         f"- mode_count: `{body.get('mode_count')}`",
+        f"- region_dof_source: `{body.get('region_dof_source')}`",
+        f"- structural_region_participation_status: `{body.get('structural_region_participation_status')}`",
+        f"- structural_audio_proxy_status: `{body.get('structural_audio_proxy_status')}`",
         f"- frequency_dedupe: `{body.get('frequency_dedupe')}`",
         "",
-        "## Ranking by coverage (participation_top + participation_air_p)",
-        "",
-        "| catalog_index | frequency_hz | st_shift_hz | participation_top | participation_air_p | top_rms_proxy |",
-        "|---------------|--------------|-------------|-------------------|---------------------|---------------|",
     ]
+    if warnings:
+        lines.extend(["## Warnings", ""])
+        for w in warnings:
+            lines.append(f"- {w}")
+        lines.append("")
+
+    lines.extend(
+        [
+            "## Ranking by coverage (participation_top + participation_air_p; null = unavailable)",
+            "",
+            "| catalog_index | frequency_hz | st_shift_hz | participation_top | participation_air_p | top_rms_proxy |",
+            "|---------------|--------------|-------------|-------------------|---------------------|---------------|",
+        ]
+    )
     for row in body.get("modes") or []:
         prox = row.get("audio_output_proxies") or {}
         lines.append(
@@ -101,6 +133,17 @@ def run_rich_modal_post(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--rich-modal-dir", required=True, help="Stage B rich_modal/ directory.")
     parser.add_argument("--output-dir", help="Default: parent of rich-modal-dir / rich_modal_post")
     parser.add_argument("--tolerance-hz", type=float, default=0.1)
+    parser.add_argument(
+        B3_SYNTHESIS_REGION_DOFS_ARG,
+        dest="synthesis_region_dofs",
+        choices=("off", "best_effort"),
+        default="off",
+        metavar="MODE",
+        help=(
+            "Optional Stage C region DOF locate in isolated subprocess (default off). "
+            f"Env: {B3_SYNTHESIS_REGION_DOFS_ENV}=off|best_effort"
+        ),
+    )
     if argv is None:
         args = parser.parse_args()
     else:
@@ -109,6 +152,11 @@ def run_rich_modal_post(argv: Optional[List[str]] = None) -> int:
     ok, messages = verify_production_stage_environment()
     if not ok:
         fail_with_messages("B3_rich_modal_post", messages)
+
+    try:
+        region_dofs_mode = resolve_synthesis_region_dofs_mode(args.synthesis_region_dofs)
+    except ValueError as exc:
+        fail_with_messages("B3_rich_modal_post", [str(exc)])
 
     checkpoint = Path(args.checkpoint_dir).expanduser().resolve()
     rich_dir = Path(args.rich_modal_dir).expanduser().resolve()
@@ -129,6 +177,10 @@ def run_rich_modal_post(argv: Optional[List[str]] = None) -> int:
             [f"missing built_metadata or modes_active: {meta_path} / {modes_path}"],
         )
 
+    synthesis_meta: Optional[Dict[str, Any]] = None
+    if synth_path.is_file():
+        synthesis_meta = json.loads(synth_path.read_text(encoding="utf-8"))
+
     built_meta_raw = json.loads(meta_path.read_text(encoding="utf-8"))
     built_meta, _missing, _schema_pass = normalize_checkpoint_metadata(built_meta_raw)
     built = {
@@ -138,7 +190,26 @@ def run_rich_modal_post(argv: Optional[List[str]] = None) -> int:
         "p_idx": np.asarray(built_meta["p_idx"], dtype=np.int32),
         "n_w": int(built_meta["n_w"]),
     }
-    region = _load_region_indices(checkpoint, built_meta)
+
+    extra_warnings = _maybe_compute_region_dof_indices(
+        checkpoint,
+        built_meta,
+        region_dofs_mode=region_dofs_mode,
+        synthesis_meta=synthesis_meta,
+    )
+    region_ctx = load_region_dof_bundle(checkpoint, built_meta)
+    warnings = _collect_warnings(region_ctx, extra_warnings)
+
+    print(
+        f"[B3_rich_modal_post] structural_indices_available="
+        f"{region_ctx['structural_indices_available']} "
+        f"pressure_indices_available={region_ctx['pressure_indices_available']} "
+        f"region_dof_source={region_ctx['region_dof_source']}",
+        flush=True,
+    )
+    if warnings:
+        for w in warnings:
+            print(f"[B3_rich_modal_post] WARN: {w}", flush=True)
 
     with np.load(modes_path, allow_pickle=False) as z:
         eig = np.asarray(z["eigenvectors_active"], dtype=np.float64)
@@ -156,27 +227,26 @@ def run_rich_modal_post(argv: Optional[List[str]] = None) -> int:
 
     modes_out: List[Dict[str, Any]] = []
     for j in range(n_modes):
-        x_active = eig[:, j]
-        x_full = prolongate_active_to_W(x_active, built)
-        row: Dict[str, Any] = {
-            "catalog_index": int(j),
-            "frequency_hz": float(freq_hz[j]),
-            "lambda_real": float(lam_re[j]),
-            "lambda_imag": float(lam_im[j]),
-            "st_shift_target_hz": float(st_shift[j]),
-            "target_index": int(target_idx[j]),
-            "eps_slot_index": int(eps_slot[j]),
-            "eps_compute_error_relative": float(eps_err[j]),
-            "u_norm_W": float(u_norm[j]),
-            "p_norm_W": float(p_norm[j]),
-            "p_support": float(p_sup[j]),
-            "participation_top": participation_energy_fraction(x_full, region.get("u_idx_top", [])),
-            "participation_back": participation_energy_fraction(x_full, region.get("u_idx_back", [])),
-            "participation_ribs": participation_energy_fraction(x_full, region.get("u_idx_ribs", [])),
-            "participation_air_p": participation_energy_fraction(x_full, region.get("p_idx_air", [])),
-            "audio_output_proxies": _audio_output_proxies(x_full, region),
-        }
-        modes_out.append(row)
+        modes_out.append(
+            build_mode_synthesis_row(
+                catalog_index=int(j),
+                x_active=eig[:, j],
+                built=built,
+                region_ctx=region_ctx,
+                scalars={
+                    "frequency_hz": float(freq_hz[j]),
+                    "lambda_real": float(lam_re[j]),
+                    "lambda_imag": float(lam_im[j]),
+                    "st_shift_target_hz": float(st_shift[j]),
+                    "target_index": int(target_idx[j]),
+                    "eps_slot_index": int(eps_slot[j]),
+                    "eps_compute_error_relative": float(eps_err[j]),
+                    "u_norm_W": float(u_norm[j]),
+                    "p_norm_W": float(p_norm[j]),
+                    "p_support": float(p_sup[j]),
+                },
+            )
+        )
 
     dedupe = frequency_dedupe_report(modes_out, tol_hz=float(args.tolerance_hz))
     body: Dict[str, Any] = {
@@ -184,7 +254,7 @@ def run_rich_modal_post(argv: Optional[List[str]] = None) -> int:
         "checkpoint_dir": str(checkpoint),
         "rich_modal_dir": str(rich_dir),
         "output_dir": str(output_dir),
-        "synthesis_metadata": json.loads(synth_path.read_text(encoding="utf-8")) if synth_path.is_file() else None,
+        "synthesis_metadata": synthesis_meta,
         "rich_modal_manifest": json.loads(rm_manifest_path.read_text(encoding="utf-8"))
         if rm_manifest_path.is_file()
         else None,
@@ -192,9 +262,18 @@ def run_rich_modal_post(argv: Optional[List[str]] = None) -> int:
         "mode_count": len(modes_out),
         "modes": modes_out,
         "frequency_dedupe": dedupe,
-        "region_dof_source": str(checkpoint / REGION_DOF_INDICES_NPZ)
-        if (checkpoint / REGION_DOF_INDICES_NPZ).is_file()
-        else "built_metadata_fallback",
+        "region_dof_source": region_ctx["region_dof_source"],
+        "region_dof_indices_npz": str((checkpoint / REGION_DOF_INDICES_NPZ).resolve())
+        if region_ctx["npz_present"]
+        else None,
+        "region_dof_indices_status": (
+            synthesis_meta.get("region_dof_indices_status") if synthesis_meta else None
+        ),
+        "structural_region_participation_status": region_ctx["structural_region_participation_status"],
+        "structural_audio_proxy_status": region_ctx["structural_audio_proxy_status"],
+        "pressure_region_status": region_ctx["pressure_region_status"],
+        "stage_c_region_dofs_mode": region_dofs_mode,
+        "warnings": warnings,
     }
     write_json_atomic(output_dir / "modes_synthesis.json", body)
     write_json_atomic(
@@ -204,11 +283,16 @@ def run_rich_modal_post(argv: Optional[List[str]] = None) -> int:
             "modes_synthesis_json": str((output_dir / "modes_synthesis.json").resolve()),
             "mode_count": len(modes_out),
             "frequency_dedupe": dedupe,
+            "structural_region_participation_status": body["structural_region_participation_status"],
+            "structural_audio_proxy_status": body["structural_audio_proxy_status"],
+            "region_dof_source": body["region_dof_source"],
+            "warnings": warnings,
         },
     )
     _write_post_md(output_dir / "modes_synthesis.md", body)
     print(
         f"[B3_rich_modal_post] modes={len(modes_out)} duplicate_groups={dedupe.get('duplicate_groups')} "
+        f"structural_status={body['structural_region_participation_status']} "
         f"-> {output_dir / 'modes_synthesis.json'}",
         flush=True,
     )

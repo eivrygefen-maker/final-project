@@ -35,6 +35,8 @@ Duplicates across shifts are **retained** in v1; see `modes_catalog.jsonl` and S
 
 `schema: b3_rich_modal_post_v1` — per-mode region participation + `audio_output_proxies` (e.g. `top_plate_displacement_rms_proxy_v1`, `cavity_pressure_max_proxy_v1`).
 
+When `region_dof_indices.npz` is missing/deferred, structural participation and displacement RMS proxies are **`null`** with `structural_region_participation_status: unavailable_region_indices` (not physical zeros). Cavity pressure proxy may still be computed from `p_idx_air`.
+
 ## Commands
 
 ```bash

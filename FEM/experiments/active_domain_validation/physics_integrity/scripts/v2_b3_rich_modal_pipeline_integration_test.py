@@ -15,6 +15,9 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from v2_b3_rich_modal_lib import (  # noqa: E402
     RichModalCollector,
+    UNAVAILABLE_REGION_INDICES_STATUS,
+    build_mode_synthesis_row,
+    load_region_dof_bundle,
     prolongate_active_to_W,
     frequency_dedupe_report,
     MODES_ACTIVE_NPZ,
@@ -82,8 +85,54 @@ def test_prolongate_and_collector_roundtrip() -> None:
     assert dedupe["duplicate_groups"] >= 1
 
 
+def test_deferred_structural_participation_is_null_not_zero() -> None:
+    built_meta = {
+        "u_idx": [0, 1, 2],
+        "p_idx": [3, 4],
+        "active_local": [0, 1, 2, 3, 4],
+        "free_rows": [0, 1, 2, 3, 4],
+        "n_w": 5,
+    }
+    region_ctx = load_region_dof_bundle(Path("/nonexistent_ckpt"), built_meta)
+    assert region_ctx["structural_indices_available"] is False
+    assert region_ctx["pressure_indices_available"] is True
+    built = {
+        "active_local": np.arange(5, dtype=np.int32),
+        "free_rows": np.arange(5, dtype=np.int32),
+        "u_idx": np.arange(3, dtype=np.int32),
+        "p_idx": np.arange(3, 5, dtype=np.int32),
+        "n_w": 5,
+    }
+    row = build_mode_synthesis_row(
+        catalog_index=0,
+        x_active=np.array([1.0, 0.0, 0.0, 0.5, 0.5]),
+        built=built,
+        region_ctx=region_ctx,
+        scalars={
+            "frequency_hz": 244.0,
+            "lambda_real": 1.0,
+            "lambda_imag": 0.0,
+            "st_shift_target_hz": 244.0,
+            "target_index": 0,
+            "eps_slot_index": 0,
+            "eps_compute_error_relative": 1e-9,
+            "u_norm_W": 1.0,
+            "p_norm_W": 0.5,
+            "p_support": 0.3,
+        },
+    )
+    assert row["participation_top"] is None
+    assert row["participation_back"] is None
+    assert row["structural_region_participation_status"] == UNAVAILABLE_REGION_INDICES_STATUS
+    assert row["participation_air_p"] is not None
+    prox = row["audio_output_proxies"]
+    assert prox["top_plate_displacement_rms_proxy_v1"] is None
+    assert prox["cavity_pressure_max_proxy_v1"] is not None
+
+
 def main() -> int:
     test_prolongate_and_collector_roundtrip()
+    test_deferred_structural_participation_is_null_not_zero()
     print("[B3_rich_modal_integration_test] PASS", flush=True)
     return 0
 

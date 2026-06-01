@@ -28,6 +28,9 @@ RICH_MODAL_SCHEMA = "b3_rich_modal_manifest_v1"
 SYNTHESIS_METADATA_SCHEMA = "b3_synthesis_metadata_v1"
 RICH_MODAL_POST_SCHEMA = "b3_rich_modal_post_v1"
 REGION_DOF_LAYOUT = "B3_W_global_row_indices_via_u_idx_p_idx"
+UNAVAILABLE_REGION_INDICES_STATUS = "unavailable_region_indices"
+REGION_PARTICIPATION_STATUS_AVAILABLE = "available"
+STRUCTURAL_REGION_KEYS = ("u_idx_top", "u_idx_back", "u_idx_ribs", "u_idx_soundhole")
 
 SYNTHESIS_METADATA_JSON = "synthesis_metadata.json"
 REGION_DOF_INDICES_NPZ = "region_dof_indices.npz"
@@ -81,17 +84,198 @@ def prolongate_active_to_W(x_active: np.ndarray, built: Dict[str, Any]) -> np.nd
     return x_full
 
 
-def participation_energy_fraction(x_full: np.ndarray, indices: np.ndarray) -> float:
-    """‖x[indices]‖² / ‖x‖² with safe denominator."""
+def participation_energy_fraction(
+    x_full: np.ndarray,
+    indices: np.ndarray,
+    *,
+    unavailable_if_empty: bool = False,
+) -> Optional[float]:
+    """‖x[indices]‖² / ‖x‖² with safe denominator. Returns None when indices unavailable."""
     idx = np.asarray(indices, dtype=np.int32).ravel()
     if idx.size == 0:
-        return 0.0
+        return None if unavailable_if_empty else 0.0
     x = np.asarray(x_full, dtype=np.float64).ravel()
     total = float(np.dot(x, x))
     if total <= 0.0:
-        return 0.0
+        return None if unavailable_if_empty else 0.0
     part = x[idx]
     return float(np.dot(part, part) / total)
+
+
+def structural_region_indices_available(region: Dict[str, np.ndarray], *, npz_present: bool) -> bool:
+    if not npz_present:
+        return False
+    for key in ("u_idx_top", "u_idx_back", "u_idx_ribs"):
+        if np.asarray(region.get(key, []), dtype=np.int32).size == 0:
+            return False
+    return True
+
+
+def pressure_region_indices_available(region: Dict[str, np.ndarray]) -> bool:
+    return np.asarray(region.get("p_idx_air", []), dtype=np.int32).size > 0
+
+
+def load_region_dof_bundle(
+    checkpoint: Path,
+    built_meta: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Load region index sets; distinguish facet structural (npz) vs pressure (built_meta ok)."""
+    checkpoint = checkpoint.expanduser().resolve()
+    npz_path = checkpoint / REGION_DOF_INDICES_NPZ
+    npz_present = npz_path.is_file()
+    region: Dict[str, np.ndarray]
+    if npz_present:
+        with np.load(npz_path, allow_pickle=False) as z:
+            region = {k: np.asarray(z[k]).ravel() for k in z.files if k != "layout"}
+        source = "region_dof_indices_npz"
+    else:
+        u_idx = np.asarray(built_meta.get("u_idx") or [], dtype=np.int32).ravel()
+        p_idx = np.asarray(built_meta.get("p_idx") or [], dtype=np.int32).ravel()
+        region = {
+            "u_idx_top": np.asarray([], dtype=np.int32),
+            "u_idx_back": np.asarray([], dtype=np.int32),
+            "u_idx_ribs": np.asarray([], dtype=np.int32),
+            "u_idx_soundhole": np.asarray([], dtype=np.int32),
+            "p_idx_air": p_idx.copy(),
+            "p_idx_all": p_idx.copy(),
+            "u_idx_all": u_idx.copy(),
+        }
+        source = "built_metadata_pressure_only"
+
+    structural_ok = structural_region_indices_available(region, npz_present=npz_present)
+    pressure_ok = pressure_region_indices_available(region)
+    return {
+        "region": region,
+        "npz_present": npz_present,
+        "region_dof_source": source,
+        "structural_region_participation_status": (
+            REGION_PARTICIPATION_STATUS_AVAILABLE
+            if structural_ok
+            else UNAVAILABLE_REGION_INDICES_STATUS
+        ),
+        "structural_audio_proxy_status": (
+            REGION_PARTICIPATION_STATUS_AVAILABLE
+            if structural_ok
+            else UNAVAILABLE_REGION_INDICES_STATUS
+        ),
+        "pressure_region_status": (
+            REGION_PARTICIPATION_STATUS_AVAILABLE if pressure_ok else UNAVAILABLE_REGION_INDICES_STATUS
+        ),
+        "structural_indices_available": structural_ok,
+        "pressure_indices_available": pressure_ok,
+    }
+
+
+def audio_output_proxies_v1(
+    x_full: np.ndarray,
+    region: Dict[str, np.ndarray],
+    *,
+    structural_available: bool,
+    pressure_available: bool,
+) -> Dict[str, Any]:
+    u_top = region.get("u_idx_top", np.asarray([], dtype=np.int32))
+    u_sh = region.get("u_idx_soundhole", np.asarray([], dtype=np.int32))
+    p_air = region.get("p_idx_air", np.asarray([], dtype=np.int32))
+
+    proxies: Dict[str, Any] = {
+        "proxy_type": "audio_output_proxy_v1",
+        "not_microphone_pressure": True,
+        "structural_audio_proxy_status": (
+            REGION_PARTICIPATION_STATUS_AVAILABLE
+            if structural_available
+            else UNAVAILABLE_REGION_INDICES_STATUS
+        ),
+        "pressure_audio_proxy_status": (
+            REGION_PARTICIPATION_STATUS_AVAILABLE
+            if pressure_available
+            else UNAVAILABLE_REGION_INDICES_STATUS
+        ),
+        "top_plate_displacement_rms_proxy_v1": None,
+        "soundhole_facet_displacement_rms_proxy_v1": None,
+        "cavity_pressure_max_proxy_v1": None,
+    }
+    if structural_available:
+        top_vals = x_full[np.asarray(u_top, dtype=np.int32)]
+        sh_vals = x_full[np.asarray(u_sh, dtype=np.int32)]
+        proxies["top_plate_displacement_rms_proxy_v1"] = (
+            float(np.sqrt(np.mean(top_vals**2))) if top_vals.size else None
+        )
+        proxies["soundhole_facet_displacement_rms_proxy_v1"] = (
+            float(np.sqrt(np.mean(sh_vals**2))) if sh_vals.size else None
+        )
+    if pressure_available:
+        p_vals = x_full[np.asarray(p_air, dtype=np.int32)]
+        proxies["cavity_pressure_max_proxy_v1"] = (
+            float(np.max(np.abs(p_vals))) if p_vals.size else None
+        )
+    return proxies
+
+
+def build_mode_synthesis_row(
+    *,
+    catalog_index: int,
+    x_active: np.ndarray,
+    built: Dict[str, Any],
+    region_ctx: Dict[str, Any],
+    scalars: Dict[str, Any],
+) -> Dict[str, Any]:
+    region = region_ctx["region"]
+    structural_ok = bool(region_ctx["structural_indices_available"])
+    pressure_ok = bool(region_ctx["pressure_indices_available"])
+    x_full = prolongate_active_to_W(x_active, built)
+    unavail = UNAVAILABLE_REGION_INDICES_STATUS
+
+    row: Dict[str, Any] = {
+        "catalog_index": int(catalog_index),
+        "frequency_hz": scalars["frequency_hz"],
+        "lambda_real": scalars["lambda_real"],
+        "lambda_imag": scalars["lambda_imag"],
+        "st_shift_target_hz": scalars["st_shift_target_hz"],
+        "target_index": scalars["target_index"],
+        "eps_slot_index": scalars["eps_slot_index"],
+        "eps_compute_error_relative": scalars["eps_compute_error_relative"],
+        "u_norm_W": scalars["u_norm_W"],
+        "p_norm_W": scalars["p_norm_W"],
+        "p_support": scalars["p_support"],
+        "structural_region_participation_status": (
+            REGION_PARTICIPATION_STATUS_AVAILABLE if structural_ok else unavail
+        ),
+        "structural_audio_proxy_status": (
+            REGION_PARTICIPATION_STATUS_AVAILABLE if structural_ok else unavail
+        ),
+        "participation_top": (
+            participation_energy_fraction(x_full, region.get("u_idx_top", []))
+            if structural_ok
+            else None
+        ),
+        "participation_back": (
+            participation_energy_fraction(x_full, region.get("u_idx_back", []))
+            if structural_ok
+            else None
+        ),
+        "participation_ribs": (
+            participation_energy_fraction(x_full, region.get("u_idx_ribs", []))
+            if structural_ok
+            else None
+        ),
+        "participation_soundhole": (
+            participation_energy_fraction(x_full, region.get("u_idx_soundhole", []))
+            if structural_ok
+            else None
+        ),
+        "participation_air_p": (
+            participation_energy_fraction(x_full, region.get("p_idx_air", []))
+            if pressure_ok
+            else None
+        ),
+        "audio_output_proxies": audio_output_proxies_v1(
+            x_full,
+            region,
+            structural_available=structural_ok,
+            pressure_available=pressure_ok,
+        ),
+    }
+    return row
 
 
 def scalar_block_norms(x_full: np.ndarray, built: Dict[str, Any]) -> Dict[str, float]:
