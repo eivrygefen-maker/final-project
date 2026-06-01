@@ -182,9 +182,9 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
                 pass
 
 
-def main() -> int:
-    return run_checkpoint_export()
+def main(argv: Optional[List[str]] = None) -> int:
+    return run_checkpoint_export(argv)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -135,6 +136,23 @@ def run_checkpoint_solve(argv: Optional[List[str]] = None) -> int:
         bench_argv.extend(["--baseline-json", str(args.baseline_json)])
 
     rc = run_checkpoint_solver_multi_benchmark(bench_argv)
+
+    result_path = output_dir / "result.json"
+    if result_path.is_file():
+        result_body = json.loads(result_path.read_text(encoding="utf-8"))
+        pre_manifest["stage"] = "solver_mkl_solve"
+        pre_manifest["solve_completed_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        pre_manifest["solve_return_code"] = int(rc)
+        pre_manifest["status"] = result_body.get("status", "FAIL")
+        pre_manifest["summary"] = result_body.get("summary")
+        pre_manifest["result_json"] = str(result_path)
+    else:
+        pre_manifest["stage"] = "solver_mkl_solve"
+        pre_manifest["solve_return_code"] = int(rc)
+        pre_manifest["status"] = "FAIL"
+        pre_manifest["failure_reason"] = "result.json not written"
+    write_json(output_dir / PIPELINE_SOLVE_MANIFEST, pre_manifest)
+
     print(f"[B3_checkpoint_solve] completed rc={rc} output={output_dir / 'result.json'}", flush=True)
     return rc
 

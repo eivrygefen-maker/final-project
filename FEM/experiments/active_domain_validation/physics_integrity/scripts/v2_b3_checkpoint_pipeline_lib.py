@@ -60,6 +60,11 @@ def verify_production_stage_environment() -> Tuple[bool, List[str]]:
             "solver-mkl venv is active; production export requires the project production .venv "
             "(e.g. source ~/final-project/.venv/bin/activate)"
         )
+    elif _venv_path() and not is_production_venv_active():
+        errors.append(
+            f"VIRTUAL_ENV is not the project production .venv (got: {_venv_path()}); "
+            "deactivate solver-mkl and activate production .venv before Stage A export"
+        )
     elif not is_production_venv_active():
         warnings.append("VIRTUAL_ENV unset or unrecognized; continuing if DOLFINx is importable")
 
@@ -92,9 +97,15 @@ def verify_solver_mkl_stage_environment(*, require_mkl_pardiso: bool = True) -> 
     warnings: List[str] = []
 
     if not is_solver_mkl_venv_active():
-        errors.append(
-            "solver-mkl venv is not active; run: source ~/solver-mkl/activate_solver_mkl.sh"
-        )
+        if is_production_venv_active():
+            errors.append(
+                "production .venv is active; Stage B requires solver-mkl "
+                "(e.g. source ~/solver-mkl/activate_solver_mkl.sh)"
+            )
+        else:
+            errors.append(
+                "solver-mkl venv is not active; run: source ~/solver-mkl/activate_solver_mkl.sh"
+            )
 
     try:
         import dolfinx  # noqa: F401
