@@ -7,7 +7,7 @@
 
 | Stage | Script | Always / opt-in | Outputs |
 |-------|--------|-----------------|---------|
-| A | `v2_b3_checkpoint_export.py` | **Always** on PASS | `synthesis_metadata.json`, `region_dof_indices.npz` (best effort) |
+| A | `v2_b3_checkpoint_export.py` | **Always** on PASS | `synthesis_metadata.json`, `checkpoint_export_manifest.json`; `region_dof_indices.npz` only with `--B3-synthesis-region-dofs best_effort` (default **off**) |
 | B | `v2_b3_checkpoint_solve.py` | **Opt-in** flag | `rich_modal/modes_active.npz`, `rich_modal_manifest.json`, `modes_catalog.jsonl` |
 | C | `v2_b3_rich_modal_post.py` | Manual / designated runs | `rich_modal_post/modes_synthesis.json`, `modes_synthesis.md` |
 
@@ -38,8 +38,9 @@ Duplicates across shifts are **retained** in v1; see `modes_catalog.jsonl` and S
 ## Commands
 
 ```bash
-# Stage A (production .venv)
+# Stage A (production .venv) — region DOF locate off by default (avoids dolfinx segfault)
 python .../v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --output-dir "$CKPT"
+# Optional: --B3-synthesis-region-dofs best_effort  (isolated subprocess; may still defer)
 
 # Stage B (solver-mkl, synthesis run only)
 python .../v2_b3_checkpoint_solve.py --checkpoint-dir "$CKPT" --factor-solver mkl_pardiso --target-set full9 --B3-export-rich-modal-data

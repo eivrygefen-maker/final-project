@@ -18,10 +18,13 @@ import v2_b3_dev_solver_benchmark as dev_bench
 from v2_b3_block_compose_backend import CLI_BACKEND_ARG, apply_compose_backend_from_argv
 from v2_b3_checkpoint_pipeline_lib import (
     B3_EXPORT_RICH_MODAL_DATA_ARG,
+    B3_SYNTHESIS_REGION_DOFS_ARG,
+    B3_SYNTHESIS_REGION_DOFS_ENV,
     PIPELINE_EXPORT_MANIFEST,
     default_checkpoint_dir,
     ensure_rich_modal_export_allowed,
     fail_with_messages,
+    resolve_synthesis_region_dofs_mode,
     rich_modal_export_manifest_block,
     verify_checkpoint_complete,
     verify_checkpoint_matrices,
@@ -59,6 +62,16 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=False,
         help="Opt-in rich modal export (active eigenvectors under rich_modal/).",
     )
+    parser.add_argument(
+        B3_SYNTHESIS_REGION_DOFS_ARG,
+        choices=("off", "best_effort"),
+        default=None,
+        metavar="MODE",
+        help=(
+            "Stage A region DOF locate: off (default, no dolfinx locate) or best_effort "
+            f"(isolated subprocess). Env: {B3_SYNTHESIS_REGION_DOFS_ENV}=off|best_effort"
+        ),
+    )
     if argv is None:
         return parser.parse_args()
     return parser.parse_args(argv)
@@ -72,6 +85,10 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
     args = _parse_args(argv)
     rich_modal_requested = bool(args.export_rich_modal_data)
     ensure_rich_modal_export_allowed(requested=rich_modal_requested, context="B3_checkpoint_export")
+    try:
+        region_dofs_mode = resolve_synthesis_region_dofs_mode(args.synthesis_region_dofs)
+    except ValueError as exc:
+        fail_with_messages("B3_checkpoint_export", [str(exc)])
     mesh_level = str(args.mesh_level)
     run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     checkpoint = (
@@ -128,6 +145,7 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
 
         built_meta = json.loads((checkpoint / "built_metadata.json").read_text(encoding="utf-8"))
         synthesis_export: Dict[str, Any] = {}
+        synthesis_warnings: List[str] = []
         try:
             from v2_b3_synthesis_export import write_stage_a_synthesis_artifacts
 
@@ -137,13 +155,39 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
                 built_meta=built_meta,
                 mesh_level=mesh_level,
                 compose_backend=args.compose_backend,
+                region_dofs_mode=region_dofs_mode,
             )
+            warn = synthesis_export.pop("warning", None)
+            if warn:
+                synthesis_warnings.append(str(warn))
         except Exception as exc:
-            synthesis_export = {
-                "synthesis_metadata_json": False,
-                "region_dof_indices_status": "deferred_to_stage_c",
-                "region_dof_indices_error": f"{type(exc).__name__}:{exc}",
-            }
+            synthesis_warnings.append(f"synthesis_artifacts_exception:{type(exc).__name__}:{exc}")
+            try:
+                from v2_b3_synthesis_export import write_stage_a_synthesis_artifacts
+
+                synthesis_export = write_stage_a_synthesis_artifacts(
+                    checkpoint,
+                    built=built,
+                    built_meta=built_meta,
+                    mesh_level=mesh_level,
+                    compose_backend=args.compose_backend,
+                    region_dofs_mode="off",
+                )
+                synthesis_export["recovery"] = "rewrote_synthesis_metadata_with_region_dofs_off"
+                warn = synthesis_export.pop("warning", None)
+                if warn:
+                    synthesis_warnings.append(str(warn))
+            except Exception as exc2:
+                synthesis_export = {
+                    "synthesis_metadata_json": False,
+                    "region_dof_indices_status": "deferred_to_stage_c",
+                    "region_dof_indices_file": None,
+                    "region_dof_indices_mode": "off",
+                    "region_dof_indices_error": f"{type(exc).__name__}:{exc}; recovery:{type(exc2).__name__}:{exc2}",
+                }
+                synthesis_warnings.append(
+                    f"synthesis_metadata_write_failed:{type(exc2).__name__}:{exc2}"
+                )
         elapsed = time.perf_counter() - t0
         manifest: Dict[str, Any] = {
             "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -152,6 +196,7 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
             "mesh_level": mesh_level,
             "checkpoint_dir": str(checkpoint.resolve()),
             "compose_backend": args.compose_backend,
+            "synthesis_region_dofs_mode": region_dofs_mode,
             "operator_build_elapsed_seconds": dev_bench._safe_float(elapsed),
             "export_pass": bool(export_pass),
             "export_missing_files": missing,
@@ -172,6 +217,8 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
             "synthesis_export": synthesis_export,
             "rich_modal_export": rich_modal_export_manifest_block(requested=rich_modal_requested),
         }
+        if synthesis_warnings:
+            manifest["warnings"] = synthesis_warnings
         write_json(checkpoint / PIPELINE_EXPORT_MANIFEST, manifest)
         if manifest["status"] != "PASS":
             print(f"[B3_checkpoint_export] FAIL export/matrix verify -> {checkpoint}", flush=True)

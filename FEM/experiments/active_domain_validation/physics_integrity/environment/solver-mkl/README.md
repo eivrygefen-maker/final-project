@@ -18,7 +18,7 @@ Optional flag (disabled by default; **opt-in for designated synthesis runs**):
 --B3-export-rich-modal-data
 ```
 
-- **Stage A** always writes `synthesis_metadata.json` (+ best-effort `region_dof_indices.npz`) on successful export.
+- **Stage A** always writes `synthesis_metadata.json` + `checkpoint_export_manifest.json` on successful export. Region DOF locate is **off by default** (`--B3-synthesis-region-dofs off`); use `best_effort` only when needed.
 - **Stage B** writes `rich_modal/` active eigenvectors only when the flag is set.
 - **Stage C:** `v2_b3_rich_modal_post.py` (production `.venv`) for region participation and audio output proxies.
 
@@ -47,6 +47,7 @@ export CKPT="FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_
 python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py \
   --mesh-level L_prod \
   --B3-block-compose-backend csr_bulk \
+  --B3-synthesis-region-dofs off \
   --output-dir "$CKPT"
 ```
 
@@ -61,7 +62,7 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
 | `csr_metadata.json` | Shape/nnz/norm metadata |
 | `built_metadata.json` | Active index maps for acceptance |
 | `synthesis_metadata.json` | Mesh, tags, GNHEP/solver physics metadata (v1) |
-| `region_dof_indices.npz` | Best-effort region DOF index sets (v1) |
+| `region_dof_indices.npz` | Optional (`--B3-synthesis-region-dofs best_effort`); default deferred to Stage C |
 | `checkpoint_export_manifest.json` | Export status + verification |
 
 No ST/EPS solve in this stage.

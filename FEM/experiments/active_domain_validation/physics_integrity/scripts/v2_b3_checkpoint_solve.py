@@ -85,7 +85,11 @@ def run_checkpoint_solve(argv: Optional[List[str]] = None) -> int:
         if not mumps_ok:
             fail_with_messages("B3_checkpoint_solve", [f"mumps unavailable: {mumps_err}"])
 
-    ckpt_ok, ckpt_errors, ckpt_detail = verify_checkpoint_complete(checkpoint, require_csr=False)
+    ckpt_ok, ckpt_errors, ckpt_detail = verify_checkpoint_complete(
+        checkpoint,
+        require_csr=False,
+        require_export_manifest=True,
+    )
     if not ckpt_ok:
         fail_with_messages("B3_checkpoint_solve", ckpt_errors)
 

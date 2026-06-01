@@ -18,6 +18,12 @@ PIPELINE_EXPORT_MANIFEST = "checkpoint_export_manifest.json"
 PIPELINE_SOLVE_MANIFEST = "checkpoint_solve_manifest.json"
 
 B3_EXPORT_RICH_MODAL_DATA_ARG = "--B3-export-rich-modal-data"
+B3_SYNTHESIS_REGION_DOFS_ARG = "--B3-synthesis-region-dofs"
+B3_SYNTHESIS_REGION_DOFS_ENV = "B3_SYNTHESIS_REGION_DOFS"
+SYNTHESIS_REGION_DOFS_OFF = frozenset({"off", "safe_off", "0", "false", "no", ""})
+SYNTHESIS_REGION_DOFS_BEST_EFFORT = frozenset(
+    {"best_effort", "best-effort", "on", "1", "true", "yes"}
+)
 
 # Required artifacts before expensive LHS / wide sweeps used for audio, STK, or microphone synthesis.
 RICH_MODAL_EXPORT_CHECKLIST: Tuple[str, ...] = (
@@ -148,10 +154,51 @@ def verify_mumps_available() -> Tuple[bool, Optional[str]]:
         return False, f"{type(exc).__name__}:{exc}"
 
 
+def resolve_synthesis_region_dofs_mode(
+    cli_value: Optional[str] = None,
+    *,
+    env_value: Optional[str] = None,
+) -> str:
+    """Stage A region DOF locate mode: off (default) or best_effort (subprocess isolated)."""
+    raw = cli_value if cli_value is not None else (env_value or os.environ.get(B3_SYNTHESIS_REGION_DOFS_ENV, "off"))
+    token = str(raw).strip().lower()
+    if token in SYNTHESIS_REGION_DOFS_OFF:
+        return "off"
+    if token in SYNTHESIS_REGION_DOFS_BEST_EFFORT:
+        return "best_effort"
+    raise ValueError(
+        f"invalid {B3_SYNTHESIS_REGION_DOFS_ARG}={raw!r}; use off|best_effort "
+        f"(env {B3_SYNTHESIS_REGION_DOFS_ENV})"
+    )
+
+
+def verify_official_export_manifest(checkpoint: Path) -> Tuple[bool, List[str], Dict[str, Any]]:
+    """Stage B requires a completed Stage A export manifest (status PASS)."""
+    checkpoint = checkpoint.expanduser().resolve()
+    manifest_path = checkpoint / PIPELINE_EXPORT_MANIFEST
+    detail: Dict[str, Any] = {"manifest_path": str(manifest_path)}
+    if not manifest_path.is_file():
+        return False, [
+            f"missing {PIPELINE_EXPORT_MANIFEST} — Stage A export incomplete or crashed before manifest write"
+        ], detail
+    try:
+        body = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return False, [f"unreadable {PIPELINE_EXPORT_MANIFEST}: {type(exc).__name__}:{exc}"], detail
+    detail["manifest_status"] = body.get("status")
+    detail["manifest_stage"] = body.get("stage")
+    if body.get("status") != "PASS":
+        return False, [
+            f"{PIPELINE_EXPORT_MANIFEST} status={body.get('status')!r} (expected PASS)"
+        ], detail
+    return True, [], detail
+
+
 def verify_checkpoint_complete(
     checkpoint: Path,
     *,
     require_csr: bool = False,
+    require_export_manifest: bool = False,
 ) -> Tuple[bool, List[str], Dict[str, Any]]:
     from v2_b3_operator_checkpoint_portable import verify_portable_checkpoint_export
 
@@ -174,6 +221,11 @@ def verify_checkpoint_complete(
             print(f"[B3_checkpoint] WARN: {warn}", flush=True)
     if not (checkpoint / "built_metadata.json").is_file():
         errors.append("missing built_metadata.json")
+    if require_export_manifest:
+        man_ok, man_errors, man_detail = verify_official_export_manifest(checkpoint)
+        detail["export_manifest"] = man_detail
+        if not man_ok:
+            errors.extend(man_errors)
     detail["checkpoint_dir"] = str(checkpoint)
     detail["export_pass"] = bool(export_pass)
     detail["csr_required"] = bool(require_csr)
