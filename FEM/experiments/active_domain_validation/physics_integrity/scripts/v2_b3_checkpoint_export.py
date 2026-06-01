@@ -64,6 +64,7 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         B3_SYNTHESIS_REGION_DOFS_ARG,
+        dest="synthesis_region_dofs",
         choices=("off", "best_effort"),
         default=None,
         metavar="MODE",
