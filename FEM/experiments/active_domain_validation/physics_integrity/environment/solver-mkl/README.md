@@ -24,7 +24,7 @@ Optional flag (disabled by default; **opt-in for designated synthesis runs**):
 
 Do **not** pass this flag for solver timing benchmarks.
 
-See `docs/B3_RICH_MODAL_EXPORT_TODO.md`.
+See `docs/B3_RICH_MODAL_EXPORT_TODO.md` and **`docs/B3_OFFICIAL_RICH_PIPELINE_COMMANDS.md`** (validated A+B+C commands).
 
 ## Stage A — Production environment (export only)
 

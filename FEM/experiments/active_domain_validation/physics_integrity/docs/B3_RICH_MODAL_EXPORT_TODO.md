@@ -3,6 +3,8 @@
 **Status:** implemented (v1)  
 **Default:** `--B3-export-rich-modal-data` is **opt-in** on Stage B only.
 
+**Official commands (validated PASS):** [`B3_OFFICIAL_RICH_PIPELINE_COMMANDS.md`](B3_OFFICIAL_RICH_PIPELINE_COMMANDS.md)
+
 ## Pipeline
 
 | Stage | Script | Always / opt-in | Outputs |
