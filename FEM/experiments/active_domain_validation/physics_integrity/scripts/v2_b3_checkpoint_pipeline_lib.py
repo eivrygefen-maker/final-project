@@ -227,8 +227,10 @@ def default_solve_output_dir(*, factor_solver: str, target_set: str) -> Path:
     return SOLVER_BENCHMARKS_ROOT / f"checkpoint_solve_{factor_solver}_{target_set}_{rid}"
 
 
-def default_target_density_output_dir() -> Path:
+def default_target_density_output_dir(*, nev: Optional[int] = None, ncv: Optional[int] = None) -> Path:
     rid = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    if nev is not None and ncv is not None:
+        return SOLVER_BENCHMARKS_ROOT / f"target_density_experiment_nev{int(nev)}_ncv{int(ncv)}_{rid}"
     return SOLVER_BENCHMARKS_ROOT / f"target_density_experiment_{rid}"
 
 

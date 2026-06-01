@@ -118,6 +118,45 @@ def compare_reference_coverage(
     }
 
 
+def load_previous_density_by_spacing(previous_body: Dict[str, Any]) -> Dict[float, Dict[str, Any]]:
+    out: Dict[float, Dict[str, Any]] = {}
+    for row in previous_body.get("spacings") or []:
+        if row.get("spacing_hz") is None:
+            continue
+        out[float(row["spacing_hz"])] = row
+    return out
+
+
+def compare_spacing_to_previous(
+    *,
+    spacing_hz: float,
+    current_coverage: Dict[str, Any],
+    previous_row: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if previous_row is None:
+        return None
+    prev_matched = int(previous_row.get("matched_reference_count") or 0)
+    cur_matched = int(current_coverage.get("matched_reference_count") or 0)
+    prev_ratio = previous_row.get("coverage_ratio")
+    cur_ratio = current_coverage.get("coverage_ratio")
+    return {
+        "previous_matched_reference_count": prev_matched,
+        "previous_missed_reference_count": int(previous_row.get("missed_reference_count") or 0),
+        "previous_coverage_ratio": prev_ratio,
+        "previous_coverage_pass": bool(previous_row.get("coverage_pass")),
+        "matched_reference_delta": cur_matched - prev_matched,
+        "coverage_ratio_delta": (
+            safe_float(float(cur_ratio) - float(prev_ratio))
+            if cur_ratio is not None and prev_ratio is not None
+            else None
+        ),
+        "coverage_improved": bool(cur_matched > prev_matched),
+        "coverage_pass_improved": bool(
+            current_coverage.get("coverage_pass") and not previous_row.get("coverage_pass")
+        ),
+    }
+
+
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -140,7 +179,11 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--tolerance-hz", type=float, default=DEFAULT_TOLERANCE_HZ)
     parser.add_argument(
         "--output-dir",
-        help="Default: solver_benchmarks/target_density_experiment_<utc>/",
+        help="Default: solver_benchmarks/target_density_experiment[_nevN_ncvM]_<utc>/",
+    )
+    parser.add_argument(
+        "--previous-density-result-json",
+        help="Optional prior density_result.json (e.g. nev12/ncv24) for per-spacing coverage comparison.",
     )
     if argv is None:
         return parser.parse_args()
@@ -154,6 +197,9 @@ def _write_density_md(path: Path, body: Dict[str, Any]) -> None:
         f"- generated_utc: `{body.get('generated_utc')}`",
         f"- checkpoint_dir: `{body.get('checkpoint_dir')}`",
         f"- reference_json: `{body.get('reference_json')}`",
+        f"- nev: `{body.get('nev')}`",
+        f"- ncv: `{body.get('ncv')}`",
+        f"- previous_density_result_json: `{body.get('previous_density_result_json')}`",
         f"- factor_solver: `{body.get('factor_solver')}`",
         f"- start_hz: `{body.get('start_hz')}`",
         f"- stop_hz: `{body.get('stop_hz')}`",
@@ -166,17 +212,24 @@ def _write_density_md(path: Path, body: Dict[str, Any]) -> None:
         "## Spacing summary",
         "",
         "| spacing_hz | target_count | total_wall_s | total_st_s | unique_accepted | "
-        "matched_ref | missed_ref | coverage_ratio | coverage_pass | status |",
+        "matched_ref | missed_ref | coverage_ratio | coverage_pass | "
+        "prev_matched | delta | improved | status |",
         "|------------|--------------|--------------|------------|-----------------|"
-        "-------------|------------|----------------|---------------|--------|",
+        "-------------|------------|----------------|---------------|"
+        "-------------|-------|----------|--------|",
     ]
     for row in body.get("spacings") or []:
+        prev_cmp = row.get("previous_comparison") or {}
         lines.append(
             f"| {row.get('spacing_hz')} | {row.get('target_count')} | "
             f"{row.get('total_wall_s')} | {row.get('total_st_s')} | "
             f"{row.get('unique_accepted_count')} | {row.get('matched_reference_count')} | "
             f"{row.get('missed_reference_count')} | {row.get('coverage_ratio')} | "
-            f"{row.get('coverage_pass')} | {row.get('status')} |"
+            f"{row.get('coverage_pass')} | "
+            f"{prev_cmp.get('previous_matched_reference_count', '')} | "
+            f"{prev_cmp.get('matched_reference_delta', '')} | "
+            f"{prev_cmp.get('coverage_improved', '')} | "
+            f"{row.get('status')} |"
         )
     lines.extend(["", "## Per spacing details", ""])
     for row in body.get("spacings") or []:
@@ -189,6 +242,22 @@ def _write_density_md(path: Path, body: Dict[str, Any]) -> None:
                 f"- extra_candidate_frequencies_hz: `{row.get('extra_candidate_frequencies_hz')}`",
                 f"- targets_failed: `{row.get('targets_failed')}`",
                 f"- failure_reason: `{row.get('failure_reason')}`",
+                f"- previous_comparison: `{row.get('previous_comparison')}`",
+                "",
+            ]
+        )
+    prev_summary = body.get("previous_density_comparison")
+    if prev_summary:
+        lines.extend(
+            [
+                "## Previous run comparison",
+                "",
+                f"- previous_density_result_json: `{prev_summary.get('previous_density_result_json')}`",
+                f"- previous_nev: `{prev_summary.get('previous_nev')}`",
+                f"- previous_ncv: `{prev_summary.get('previous_ncv')}`",
+                f"- spacings_compared: `{prev_summary.get('spacings_compared')}`",
+                f"- spacings_improved: `{prev_summary.get('spacings_improved')}`",
+                f"- best_matched_reference_delta: `{prev_summary.get('best_matched_reference_delta')}`",
                 "",
             ]
         )
@@ -199,10 +268,12 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
     args = _parse_args(argv)
     checkpoint = Path(args.checkpoint_dir).expanduser().resolve()
     reference_path = Path(args.reference_json).expanduser().resolve()
+    nev = int(args.nev)
+    ncv = int(args.ncv)
     output_dir = (
         Path(args.output_dir).expanduser().resolve()
         if args.output_dir
-        else default_target_density_output_dir()
+        else default_target_density_output_dir(nev=nev, ncv=ncv)
     )
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -211,6 +282,14 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
     spacings = parse_spacing_list(str(args.spacings_hz))
     start_hz = float(args.start_hz)
     stop_hz = float(args.stop_hz)
+
+    previous_path: Optional[Path] = None
+    previous_body: Optional[Dict[str, Any]] = None
+    previous_by_spacing: Dict[float, Dict[str, Any]] = {}
+    if args.previous_density_result_json:
+        previous_path = Path(args.previous_density_result_json).expanduser().resolve()
+        previous_body = json.loads(previous_path.read_text(encoding="utf-8"))
+        previous_by_spacing = load_previous_density_by_spacing(previous_body)
 
     reference_json = json.loads(reference_path.read_text(encoding="utf-8"))
     reference_freqs = extract_reference_frequencies_hz(reference_json, tol_hz=tol_hz)
@@ -243,11 +322,12 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
         "experiment_kind": "checkpoint_target_density",
         "checkpoint_dir": str(checkpoint),
         "reference_json": str(reference_path),
+        "previous_density_result_json": str(previous_path) if previous_path else None,
         "output_dir": str(output_dir),
         "mesh_level": mesh_level,
         "factor_solver": factor_solver,
-        "nev": int(args.nev),
-        "ncv": int(args.ncv),
+        "nev": nev,
+        "ncv": ncv,
         "start_hz": start_hz,
         "stop_hz": stop_hz,
         "spacings_hz": spacings,
@@ -261,6 +341,7 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
         "matrix_contract": None,
         "spacings": [],
         "sparsest_coverage_pass_spacing_hz": None,
+        "previous_density_comparison": None,
         "status": "FAIL",
         "failure_reason": None,
     }
@@ -291,7 +372,7 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
             generated_targets = generate_spaced_targets_hz(start_hz, stop_hz, spacing_hz)
             print(
                 f"[B3_target_density] spacing={spacing_hz} Hz targets={len(generated_targets)} "
-                f"range=[{generated_targets[0]}, {generated_targets[-1]}]",
+                f"nev={nev} ncv={ncv} range=[{generated_targets[0]}, {generated_targets[-1]}]",
                 flush=True,
             )
             t_spacing0 = time.perf_counter()
@@ -315,8 +396,8 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
                         target_hz=float(target_hz),
                         factor_solver=factor_solver,
                         mesh_level=mesh_level,
-                        nev=int(args.nev),
-                        ncv=int(args.ncv),
+                        nev=nev,
+                        ncv=ncv,
                         target_index=int(ti),
                     )
                 except Exception as exc:
@@ -369,6 +450,13 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
                 "failure_reason": spacing_failure_reason,
                 "per_target": per_target_rows,
             }
+            prev_cmp = compare_spacing_to_previous(
+                spacing_hz=float(spacing_hz),
+                current_coverage=coverage,
+                previous_row=previous_by_spacing.get(float(spacing_hz)),
+            )
+            if prev_cmp is not None:
+                spacing_row["previous_comparison"] = prev_cmp
             spacing_rows.append(spacing_row)
             print(
                 f"[B3_target_density] spacing={spacing_hz} status={spacing_status} "
@@ -381,6 +469,37 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
             float(r["spacing_hz"]) for r in spacing_rows if bool(r.get("coverage_pass"))
         ]
         sparsest_pass = max(passing_spacings) if passing_spacings else None
+
+        if previous_body is not None and previous_path is not None:
+            compared = [
+                r for r in spacing_rows if r.get("previous_comparison") is not None
+            ]
+            improved = [
+                r
+                for r in compared
+                if bool((r.get("previous_comparison") or {}).get("coverage_improved"))
+            ]
+            deltas = [
+                int((r.get("previous_comparison") or {}).get("matched_reference_delta") or 0)
+                for r in compared
+            ]
+            experiment["previous_density_comparison"] = {
+                "previous_density_result_json": str(previous_path),
+                "previous_nev": previous_body.get("nev"),
+                "previous_ncv": previous_body.get("ncv"),
+                "previous_experiment_status": previous_body.get("status"),
+                "spacings_compared": len(compared),
+                "spacings_improved": len(improved),
+                "improved_spacing_hz": [float(r["spacing_hz"]) for r in improved],
+                "best_matched_reference_delta": max(deltas) if deltas else None,
+                "per_spacing": [
+                    {
+                        "spacing_hz": float(r["spacing_hz"]),
+                        **(r.get("previous_comparison") or {}),
+                    }
+                    for r in compared
+                ],
+            }
 
         experiment["spacings"] = spacing_rows
         experiment["sparsest_coverage_pass_spacing_hz"] = sparsest_pass
