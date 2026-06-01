@@ -14,12 +14,13 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from v2_b3_checkpoint_metadata_lib import normalize_checkpoint_metadata  # noqa: E402
 from v2_b3_checkpoint_pipeline_lib import (  # noqa: E402
     B3_SYNTHESIS_REGION_DOFS_ARG,
     B3_SYNTHESIS_REGION_DOFS_ENV,
     fail_with_messages,
     resolve_synthesis_region_dofs_mode,
-    verify_production_stage_environment,
+    verify_rich_modal_post_environment,
 )
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 from v2_b3_rich_modal_lib import (  # noqa: E402
@@ -33,8 +34,6 @@ from v2_b3_rich_modal_lib import (  # noqa: E402
     load_region_dof_bundle,
     normalization_convention_v1,
 )
-from v2_b3_st_sinvert_solver_lib import normalize_checkpoint_metadata  # noqa: E402
-
 STRUCTURAL_DEFERRED_WARNING = (
     "Structural region participation and displacement RMS proxies are unavailable "
     "(region_dof_indices.npz missing or deferred). Values are null, not physical zeros. "
@@ -149,14 +148,16 @@ def run_rich_modal_post(argv: Optional[List[str]] = None) -> int:
     else:
         args = parser.parse_args(argv)
 
-    ok, messages = verify_production_stage_environment()
-    if not ok:
-        fail_with_messages("B3_rich_modal_post", messages)
-
     try:
         region_dofs_mode = resolve_synthesis_region_dofs_mode(args.synthesis_region_dofs)
     except ValueError as exc:
         fail_with_messages("B3_rich_modal_post", [str(exc)])
+
+    ok, messages = verify_rich_modal_post_environment(
+        require_dolfinx=(region_dofs_mode == "best_effort"),
+    )
+    if not ok:
+        fail_with_messages("B3_rich_modal_post", messages)
 
     checkpoint = Path(args.checkpoint_dir).expanduser().resolve()
     rich_dir = Path(args.rich_modal_dir).expanduser().resolve()
@@ -182,7 +183,12 @@ def run_rich_modal_post(argv: Optional[List[str]] = None) -> int:
         synthesis_meta = json.loads(synth_path.read_text(encoding="utf-8"))
 
     built_meta_raw = json.loads(meta_path.read_text(encoding="utf-8"))
-    built_meta, _missing, _schema_pass = normalize_checkpoint_metadata(built_meta_raw)
+    built_meta, missing_keys, schema_pass = normalize_checkpoint_metadata(built_meta_raw)
+    if not schema_pass:
+        fail_with_messages(
+            "B3_rich_modal_post",
+            [f"built_metadata.json invalid or incomplete; missing keys: {missing_keys}"],
+        )
     built = {
         "active_local": np.asarray(built_meta["active_local"], dtype=np.int32),
         "free_rows": np.asarray(built_meta["free_rows"], dtype=np.int32),

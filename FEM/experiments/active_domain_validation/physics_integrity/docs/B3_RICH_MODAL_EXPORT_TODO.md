@@ -47,7 +47,7 @@ python .../v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-bac
 # Stage B (solver-mkl, synthesis run only)
 python .../v2_b3_checkpoint_solve.py --checkpoint-dir "$CKPT" --factor-solver mkl_pardiso --target-set full9 --B3-export-rich-modal-data
 
-# Stage C (production .venv)
+# Stage C (production .venv; numpy only — no petsc4py/dolfinx unless best_effort region DOFs)
 python .../v2_b3_rich_modal_post.py --checkpoint-dir "$CKPT" --rich-modal-dir "$SOLVE_OUT/rich_modal"
 ```
 

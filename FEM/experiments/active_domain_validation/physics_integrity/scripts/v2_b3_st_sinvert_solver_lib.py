@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 from petsc4py import PETSc
 
+from v2_b3_checkpoint_metadata_lib import normalize_checkpoint_metadata
 from v2_b3_petsc_util import mat_shape, petsc_mat_try_assemble, write_json_atomic
 
 ACCEPTANCE_FREQ_LO_HZ = 220.0
@@ -20,20 +21,6 @@ ACCEPTANCE_FREQ_HI_HZ = 265.0
 FACTOR_SHIFT_AMOUNT = 1.0e-8
 L_PROD_ST_FULL9_TARGETS_HZ = [221.5, 227.0, 232.5, 238.0, 243.5, 249.0, 254.5, 260.0, 264.0]
 FREQ_PARITY_TOL_HZ = 0.05
-
-_CHECKPOINT_METADATA_REQUIRED_KEYS = (
-    "mesh_level",
-    "active_dimension",
-    "active_local",
-    "inactive_local",
-    "free_rows",
-    "bc_rows",
-    "u_idx",
-    "p_idx",
-    "n_w",
-    "n_u_b3",
-)
-
 
 def safe_float(x: Any) -> Optional[float]:
     if x is None:
@@ -434,28 +421,6 @@ def collect_accepted_st_modes(
             vr.destroy()
             vi.destroy()
     return nconv, accepted
-
-
-def normalize_checkpoint_metadata(meta: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str], bool]:
-    missing_required = [k for k in _CHECKPOINT_METADATA_REQUIRED_KEYS if k not in meta]
-    if missing_required:
-        return dict(meta), missing_required, False
-    normalized: Dict[str, Any] = dict(meta)
-    inactive_local = np.asarray(meta["inactive_local"], dtype=np.int32).ravel()
-    inactive_n = int(inactive_local.size)
-    for key, default in (
-        ("inactive_structural_count", inactive_n),
-        ("inactive_pressure_count", 0),
-        ("inactive_aup_overlap_count", 0),
-        ("aup_supported_count", 0),
-        ("parent_raw_Auu_exact_zero_count", inactive_n),
-        ("parent_raw_Auu_nonzero_count", 0),
-    ):
-        normalized.setdefault(key, default)
-    active_dim = int(normalized.get("active_dimension", 0))
-    active_local = np.asarray(normalized["active_local"], dtype=np.int32).ravel()
-    schema_pass = bool(active_dim > 0 and int(active_local.size) == active_dim and inactive_n >= 0)
-    return normalized, missing_required, schema_pass
 
 
 def built_from_checkpoint_metadata(

@@ -97,6 +97,38 @@ def verify_production_stage_environment() -> Tuple[bool, List[str]]:
     return len(errors) == 0, errors + [f"WARN:{w}" for w in warnings]
 
 
+def verify_rich_modal_post_environment(*, require_dolfinx: bool = False) -> Tuple[bool, List[str]]:
+    """Stage C post: production .venv, numpy; DOLFINx/PETSc only for region_dof best_effort."""
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    if is_solver_mkl_venv_active():
+        errors.append(
+            "solver-mkl venv is active; Stage C rich modal post requires the project production .venv "
+            "(e.g. source ~/final-project/.venv/bin/activate)"
+        )
+    elif _venv_path() and not is_production_venv_active():
+        warnings.append(
+            f"VIRTUAL_ENV is not the project production .venv (got: {_venv_path()}); "
+            "continuing if numpy is importable"
+        )
+
+    try:
+        import numpy as _np  # noqa: F401
+    except ImportError as exc:
+        errors.append(f"numpy not importable: {type(exc).__name__}:{exc}")
+
+    if require_dolfinx:
+        try:
+            import dolfinx  # noqa: F401
+        except ImportError as exc:
+            errors.append(
+                f"dolfinx required for --B3-synthesis-region-dofs best_effort: {type(exc).__name__}:{exc}"
+            )
+
+    return len(errors) == 0, errors + [f"WARN:{w}" for w in warnings]
+
+
 def verify_solver_mkl_stage_environment(*, require_mkl_pardiso: bool = True) -> Tuple[bool, List[str]]:
     """Solver stage must use solver-mkl venv and optional MKL PARDISO probe."""
     errors: List[str] = []
