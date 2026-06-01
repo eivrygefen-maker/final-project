@@ -234,6 +234,11 @@ def default_target_density_output_dir(*, nev: Optional[int] = None, ncv: Optiona
     return SOLVER_BENCHMARKS_ROOT / f"target_density_experiment_{rid}"
 
 
+def default_target_alignment_output_dir() -> Path:
+    rid = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    return SOLVER_BENCHMARKS_ROOT / f"target_alignment_experiment_{rid}"
+
+
 def write_json(path: Path, body: Dict[str, Any]) -> None:
     from v2_b3_petsc_util import write_json_atomic
 
