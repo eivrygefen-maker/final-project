@@ -351,6 +351,7 @@ def collect_accepted_st_modes(
     target_hz: float,
     freq_lo: float = ACCEPTANCE_FREQ_LO_HZ,
     freq_hi: float = ACCEPTANCE_FREQ_HI_HZ,
+    export_vectors: bool = False,
 ) -> Tuple[int, List[Dict[str, Any]]]:
     from slepc4py import SLEPc
 
@@ -413,16 +414,22 @@ def collect_accepted_st_modes(
                 and support_ok
             )
             if mode_pass:
-                accepted.append(
-                    {
-                        "mode_index": i,
-                        "frequency_hz": float(f_hz),
-                        "lambda_real": lam_re,
-                        "lambda_imag": lam_im,
-                        "eps_compute_error_relative": safe_float(eps_err),
-                        "st_shift_target_hz": float(target_hz),
-                    }
-                )
+                entry: Dict[str, Any] = {
+                    "mode_index": i,
+                    "eps_slot_index": int(i),
+                    "frequency_hz": float(f_hz),
+                    "lambda_real": lam_re,
+                    "lambda_imag": lam_im,
+                    "eps_compute_error_relative": safe_float(eps_err),
+                    "st_shift_target_hz": float(target_hz),
+                    "u_norm_W": safe_float(u_norm),
+                    "p_norm_W": safe_float(p_norm),
+                    "x_norm_W": safe_float(x_norm),
+                    "p_support": safe_float(p_support),
+                }
+                if export_vectors:
+                    entry["x_active"] = x_active.copy()
+                accepted.append(entry)
         finally:
             vr.destroy()
             vi.destroy()
@@ -571,6 +578,7 @@ def run_checkpoint_st_target(
     nev: int,
     ncv: int,
     target_index: Optional[int] = None,
+    export_vectors: bool = False,
 ) -> Dict[str, Any]:
     """Run one EPSSetUp + EPSSolve for a loaded checkpoint (solver-only)."""
     from slepc4py import SLEPc
@@ -681,6 +689,7 @@ def run_checkpoint_st_target(
             A_active,
             built,
             target_hz=float(target_hz),
+            export_vectors=bool(export_vectors),
         )
         accepted_freqs = sorted(float(m["frequency_hz"]) for m in accepted_modes)
         result["converged_mode_count"] = int(nconv)

@@ -29,7 +29,7 @@ RICH_MODAL_EXPORT_CHECKLIST: Tuple[str, ...] = (
     "per_mode_material_plate_participation_for_damping_Q",
 )
 
-RICH_MODAL_EXPORT_STATUS = "not_implemented_opt_in_only"
+RICH_MODAL_EXPORT_STATUS = "v1_active_basis_opt_in"
 
 
 def _venv_path() -> str:
@@ -270,31 +270,23 @@ def parse_rich_modal_export_flag(argv: Optional[Sequence[str]]) -> bool:
 
 
 def rich_modal_export_manifest_block(*, requested: bool) -> Dict[str, Any]:
-    """Metadata block for manifests; export body is not implemented yet."""
+    """Metadata block for manifests."""
     return {
         "requested": bool(requested),
         "enabled_by_default": False,
-        "status": RICH_MODAL_EXPORT_STATUS if requested else "disabled",
+        "status": "v1_enabled" if requested else "disabled",
         "cli_flag": B3_EXPORT_RICH_MODAL_DATA_ARG,
         "required_checklist": list(RICH_MODAL_EXPORT_CHECKLIST),
         "solver_benchmark_default": "disabled",
         "note": (
-            "Rich modal export is opt-in only and not implemented in checkpoint pipeline yet. "
-            "Before LHS or wide sweeps for audio/STK/microphone synthesis, verify checklist items "
-            "in production FOM outputs or future rich-export implementation."
+            "Rich modal v1: Stage B writes active eigenvectors under rich_modal/ when flag set. "
+            "Stage A always writes synthesis_metadata.json on successful export. "
+            "Stage C: v2_b3_rich_modal_post.py for region participation and audio output proxies."
         ),
     }
 
 
 def ensure_rich_modal_export_allowed(*, requested: bool, context: str) -> None:
-    """Fail clearly when opt-in rich export is requested but not implemented."""
+    """Stage B rich export v1; no-op when flag omitted."""
     if not requested:
         return
-    fail_with_messages(
-        context,
-        [
-            f"{B3_EXPORT_RICH_MODAL_DATA_ARG} was requested but rich modal export is not implemented yet",
-            "See physics_integrity/docs/B3_RICH_MODAL_EXPORT_TODO.md for required artifacts",
-            "Disable the flag for solver timing benchmarks (default)",
-        ],
-    )

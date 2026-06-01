@@ -1,61 +1,58 @@
-# TODO: Rich modal export before audio / STK / microphone synthesis
+# Rich modal export v1 (audio / STK readiness)
 
-**Status:** planning / not implemented  
-**Default:** disabled (`--B3-export-rich-modal-data` is opt-in only)
+**Status:** implemented (v1)  
+**Default:** `--B3-export-rich-modal-data` is **opt-in** on Stage B only.
 
-## When this matters
+## Pipeline
 
-Before any **expensive LHS** or **wide frequency sweep** whose results will feed:
+| Stage | Script | Always / opt-in | Outputs |
+|-------|--------|-----------------|---------|
+| A | `v2_b3_checkpoint_export.py` | **Always** on PASS | `synthesis_metadata.json`, `region_dof_indices.npz` (best effort) |
+| B | `v2_b3_checkpoint_solve.py` | **Opt-in** flag | `rich_modal/modes_active.npz`, `rich_modal_manifest.json`, `modes_catalog.jsonl` |
+| C | `v2_b3_rich_modal_post.py` | Manual / designated runs | `rich_modal_post/modes_synthesis.json`, `modes_synthesis.md` |
 
-- audio synthesis,
-- STK modal resonator chains,
-- microphone / listener response, or
-- body-observation post-processing,
+FOM eigensolve remains **undamped**. Material Q / damping belongs in **STK/audio**, not in the eigen solver.
 
-verify that runs export **rich modal data**, not just accepted frequencies and timing summaries.
+Do **not** label outputs as microphone pressure. Use **audio output proxy** or **radiation proxy** wording only.
 
-The solver-mkl checkpoint pipeline (`v2_b3_checkpoint_export.py`, `v2_b3_checkpoint_solve.py`) currently optimizes **operator reuse and ST/EPS timing**. It does **not** by default export synthesis-ready mode shapes.
+## Stage B schema (`rich_modal/modes_active.npz`)
 
-**Solver benchmarks must keep rich export disabled** unless explicitly testing export itself.
+| Array | Description |
+|-------|-------------|
+| `eigenvectors_active` | `(n_active, n_modes)` float64 |
+| `frequency_hz`, `lambda_real`, `lambda_imag` | Per mode |
+| `st_shift_target_hz`, `target_index` | ST provenance |
+| `eps_slot_index`, `eps_compute_error_relative` | SLEPc slot + residual |
+| `u_norm_W`, `p_norm_W`, `p_support`, `x_norm_W` | Scalar participation |
 
-## Required checklist (verify before large sweeps)
+Duplicates across shifts are **retained** in v1; see `modes_catalog.jsonl` and Stage C `frequency_dedupe` report.
 
-| Item | Question to answer |
-|------|------------------|
-| **Eigenvectors / mode shapes** | Are full displacement + pressure mode columns saved (not only Hz)? |
-| **Mode normalization convention** | Documented L2 / mass / GNHEP undo / block scaling used by SLEPc export? |
-| **Excitation coupling** | Bridge / string input DOFs or participation vectors for pluck or drive? |
-| **Output coupling** | Microphone, listener, or body observation locations and pickoff matrices? |
-| **DOF mapping metadata** | `active_local`, `u_idx`, `p_idx`, `free_rows`, `bc_rows`, mesh tags reproducible? |
-| **Per-mode material / plate participation** | Enough data for future damping / Q assignment per mode and region? |
+## Stage A schema (`synthesis_metadata.json`)
 
-## Current production FOM reference (partial)
+`schema: b3_synthesis_metadata_v1` — mesh path, tag protocol, GNHEP scales (when captured), `pressure_dof_scale`, `fsi_coupling_gain`, dimensions, `region_dof_indices_status`.
 
-Production coupled runs via `fem_main_3d.py` may write:
+## Stage C schema (`modes_synthesis.json`)
 
-- `FEM/outputs/modes_3d/coupled_modes_raw.npz` — eigenvector columns + layout
-- XDMF mode shapes for visualization
+`schema: b3_rich_modal_post_v1` — per-mode region participation + `audio_output_proxies` (e.g. `top_plate_displacement_rms_proxy_v1`, `cavity_pressure_max_proxy_v1`).
 
-These are **not** automatically produced by checkpoint solver benchmarks. Confirm layout, normalization, and coupling metadata before reusing checkpoint-only results for synthesis.
+## Commands
 
-## Planned opt-in flag
+```bash
+# Stage A (production .venv)
+python .../v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --output-dir "$CKPT"
 
-```text
---B3-export-rich-modal-data
+# Stage B (solver-mkl, synthesis run only)
+python .../v2_b3_checkpoint_solve.py --checkpoint-dir "$CKPT" --factor-solver mkl_pardiso --target-set full9 --B3-export-rich-modal-data
+
+# Stage C (production .venv)
+python .../v2_b3_rich_modal_post.py --checkpoint-dir "$CKPT" --rich-modal-dir "$SOLVE_OUT/rich_modal"
 ```
 
-- **Default:** off everywhere (including solver benchmarks)
-- **When enabled (future):** attach rich modal artifacts to export/solve output directories
-- **Today:** requesting the flag fails with a clear message pointing to this document
+Timing benchmarks: **omit** `--B3-export-rich-modal-data`.
 
-## Implementation notes (future)
+## Future (v1.1+)
 
-1. Hook after `EPSSolve` in synthesis-oriented paths (not default benchmark path).
-2. Persist normalization convention in JSON sidecar next to mode arrays.
-3. Reuse `built_metadata.json` index maps; extend with bridge/mic pickoff indices.
-4. Keep checkpoint timing benchmarks on frequencies + summary only unless flag explicitly set.
-
-## Related docs
-
-- [environment/solver-mkl/README.md](../environment/solver-mkl/README.md) — two-stage solver pipeline
-- [v2_mesh_convergence/diagnostics/solver_benchmarks/README.md](../v2_mesh_convergence/diagnostics/solver_benchmarks/README.md) — timing benchmarks
+- MAC-based dedupe across shifts
+- float32 option for large LHS
+- Bridge/string pickoff when region is defined
+- External radiation transfer layer (not FEM cavity pressure)

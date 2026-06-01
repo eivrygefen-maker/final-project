@@ -17,6 +17,12 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from v2_b3_operator_checkpoint_portable import load_operators_with_portable_fallback  # noqa: E402
 from v2_b3_petsc_util import mat_shape, write_json_atomic  # noqa: E402
+from v2_b3_rich_modal_lib import (  # noqa: E402
+    RICH_MODAL_DIRNAME,
+    RICH_MODAL_MANIFEST_JSON,
+    RichModalCollector,
+    SYNTHESIS_METADATA_JSON,
+)
 from v2_b3_checkpoint_pipeline_lib import (  # noqa: E402
     B3_EXPORT_RICH_MODAL_DATA_ARG,
     default_solve_output_dir,
@@ -210,6 +216,7 @@ def run_checkpoint_solver_multi_benchmark(argv: Optional[List[str]] = None) -> i
         total_solve = 0.0
         total_st = 0.0
         succeeded = 0
+        rich_collector = RichModalCollector() if rich_modal_requested else None
 
         for ti, target_hz in enumerate(targets_hz):
             print(
@@ -227,8 +234,19 @@ def run_checkpoint_solver_multi_benchmark(argv: Optional[List[str]] = None) -> i
                 nev=int(args.nev),
                 ncv=int(args.ncv),
                 target_index=int(ti),
+                export_vectors=rich_modal_requested,
             )
             per_target_rows.append(row)
+            if rich_modal_requested and row.get("status") == "PASS":
+                for am in row.get("accepted_modes") or []:
+                    if "x_active" in am:
+                        rich_collector.add_mode(
+                            x_active=am["x_active"],
+                            target_index=int(ti),
+                            target_hz=float(target_hz),
+                            record={k: v for k, v in am.items() if k != "x_active"},
+                        )
+                        del am["x_active"]
             if row.get("status") == "PASS":
                 succeeded += 1
                 all_accepted.extend(list(row.get("accepted_frequencies_hz") or []))
@@ -270,6 +288,27 @@ def run_checkpoint_solver_multi_benchmark(argv: Optional[List[str]] = None) -> i
             result["status"] = "FAIL"
 
         result["summary"] = build_stable_summary(result)
+
+        if rich_collector is not None:
+            synth_path = checkpoint / SYNTHESIS_METADATA_JSON
+            rm_manifest = rich_collector.write_bundle(
+                output_dir / RICH_MODAL_DIRNAME,
+                checkpoint_dir=checkpoint,
+                solve_output_dir=output_dir,
+                factor_solver=factor_solver,
+                nev=int(args.nev),
+                ncv=int(args.ncv),
+                target_set=str(args.target_set),
+                targets_hz=targets_hz,
+                acceptance_interval_hz=[ACCEPTANCE_FREQ_LO_HZ, ACCEPTANCE_FREQ_HI_HZ],
+                synthesis_metadata_path=synth_path,
+            )
+            result["rich_modal_export"] = {
+                **rich_modal_export_manifest_block(requested=True),
+                "manifest": str((output_dir / RICH_MODAL_DIRNAME / RICH_MODAL_MANIFEST_JSON).resolve()),
+                "modes_active_npz": rm_manifest.get("modes_active_npz"),
+                "mode_count": rm_manifest.get("mode_count"),
+            }
 
         write_json_atomic(output_dir / "result.json", result)
         _write_result_md(output_dir / "result.md", result)

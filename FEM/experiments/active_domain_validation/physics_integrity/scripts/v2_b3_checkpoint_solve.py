@@ -55,7 +55,7 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         dest="export_rich_modal_data",
         action="store_true",
         default=False,
-        help="Opt-in rich modal export (NOT implemented; disabled by default for benchmarks).",
+        help="Opt-in rich modal export (active eigenvectors under rich_modal/).",
     )
     if argv is None:
         return parser.parse_args()

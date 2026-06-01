@@ -12,13 +12,19 @@ export synthesis-ready mode shapes (eigenvectors, bridge/mic coupling, DOF maps,
 Before expensive LHS or wide sweeps intended for audio, STK, or microphone post-processing, read
 `docs/B3_RICH_MODAL_EXPORT_TODO.md` and verify the required checklist.
 
-Optional future flag (disabled by default; **not implemented yet**):
+Optional flag (disabled by default; **opt-in for designated synthesis runs**):
 
 ```text
 --B3-export-rich-modal-data
 ```
 
-Do **not** pass this flag for solver timing benchmarks. Requesting it today exits with a clear error.
+- **Stage A** always writes `synthesis_metadata.json` (+ best-effort `region_dof_indices.npz`) on successful export.
+- **Stage B** writes `rich_modal/` active eigenvectors only when the flag is set.
+- **Stage C:** `v2_b3_rich_modal_post.py` (production `.venv`) for region participation and audio output proxies.
+
+Do **not** pass this flag for solver timing benchmarks.
+
+See `docs/B3_RICH_MODAL_EXPORT_TODO.md`.
 
 ## Stage A — Production environment (export only)
 
@@ -54,6 +60,8 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
 | `M_active_csr.npz` | Portable CSR fallback |
 | `csr_metadata.json` | Shape/nnz/norm metadata |
 | `built_metadata.json` | Active index maps for acceptance |
+| `synthesis_metadata.json` | Mesh, tags, GNHEP/solver physics metadata (v1) |
+| `region_dof_indices.npz` | Best-effort region DOF index sets (v1) |
 | `checkpoint_export_manifest.json` | Export status + verification |
 
 No ST/EPS solve in this stage.
@@ -71,10 +79,26 @@ export CKPT="FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_
 python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve.py \
   --checkpoint-dir "$CKPT" \
   --factor-solver mkl_pardiso \
-  --target-set full9
+  --target-set full9 \
+  --B3-export-rich-modal-data
 ```
 
-**Writes:** auto-created directory under `v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_<factor>_<set>_<utc>/` containing `result.json`, `result.md`, and `checkpoint_solve_manifest.json` with stable `summary` schema.
+**Writes:** auto-created directory under `solver_benchmarks/checkpoint_solve_<factor>_<set>_<utc>/` with `result.json`, `result.md`, `checkpoint_solve_manifest.json`, and (with flag) `rich_modal/modes_active.npz`.
+
+### Stage C — rich modal post (production `.venv`)
+
+```bash
+source ~/final-project/.venv/bin/activate
+cd ~/final-project
+
+export SOLVE_OUT=".../checkpoint_solve_mkl_pardiso_full9_<utc>"
+
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_rich_modal_post.py \
+  --checkpoint-dir "$CKPT" \
+  --rich-modal-dir "$SOLVE_OUT/rich_modal"
+```
+
+**Writes:** `$SOLVE_OUT/rich_modal_post/modes_synthesis.json` (region participation + audio output proxies; not microphone pressure).
 
 Optional explicit output directory:
 

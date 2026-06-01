@@ -57,7 +57,7 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         dest="export_rich_modal_data",
         action="store_true",
         default=False,
-        help="Opt-in rich modal export (NOT implemented; disabled by default for benchmarks).",
+        help="Opt-in rich modal export (active eigenvectors under rich_modal/).",
     )
     if argv is None:
         return parser.parse_args()
@@ -127,6 +127,23 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
         mat_ok, mat_errors, mat_detail = verify_checkpoint_matrices(checkpoint)
 
         built_meta = json.loads((checkpoint / "built_metadata.json").read_text(encoding="utf-8"))
+        synthesis_export: Dict[str, Any] = {}
+        try:
+            from v2_b3_synthesis_export import write_stage_a_synthesis_artifacts
+
+            synthesis_export = write_stage_a_synthesis_artifacts(
+                checkpoint,
+                built=built,
+                built_meta=built_meta,
+                mesh_level=mesh_level,
+                compose_backend=args.compose_backend,
+            )
+        except Exception as exc:
+            synthesis_export = {
+                "synthesis_metadata_json": False,
+                "region_dof_indices_status": "deferred_to_stage_c",
+                "region_dof_indices_error": f"{type(exc).__name__}:{exc}",
+            }
         elapsed = time.perf_counter() - t0
         manifest: Dict[str, Any] = {
             "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -152,6 +169,7 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
             "production_promotion": "BLOCKED",
             "no_automatic_production_promotion": True,
             "next_stage": "solver-mkl checkpoint solve",
+            "synthesis_export": synthesis_export,
             "rich_modal_export": rich_modal_export_manifest_block(requested=rich_modal_requested),
         }
         write_json(checkpoint / PIPELINE_EXPORT_MANIFEST, manifest)
