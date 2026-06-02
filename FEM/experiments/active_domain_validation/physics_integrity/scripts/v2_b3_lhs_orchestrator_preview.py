@@ -68,7 +68,28 @@ def _stage_initial_statuses(mode: str) -> Tuple[str, str, str]:
     return "PENDING", "PENDING", "SKIPPED"
 
 
-def _build_paths(repo_root: Path, mesh_level: str, run_id: str) -> Dict[str, str]:
+def _format_path(path: Path, *, repo_root: Path, absolute_paths: bool) -> str:
+    if absolute_paths:
+        return str(path.resolve())
+    try:
+        return path.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _repo_root_field(repo_root: Path, *, absolute_paths: bool) -> str:
+    if absolute_paths:
+        return str(repo_root.resolve())
+    return "."
+
+
+def _build_paths(
+    repo_root: Path,
+    mesh_level: str,
+    run_id: str,
+    *,
+    absolute_paths: bool,
+) -> Dict[str, str]:
     base = repo_root / "FEM" / "experiments" / "active_domain_validation" / "physics_integrity"
     checkpoint_dir = (
         base
@@ -86,10 +107,10 @@ def _build_paths(repo_root: Path, mesh_level: str, run_id: str) -> Dict[str, str
     rich_dir = solve_dir / "rich_modal"
     synthesis_dir = solve_dir / "rich_modal_post"
     return {
-        "checkpoint_dir": str(checkpoint_dir),
-        "solve_dir": str(solve_dir),
-        "rich_modal_dir": str(rich_dir),
-        "synthesis_dir": str(synthesis_dir),
+        "checkpoint_dir": _format_path(checkpoint_dir, repo_root=repo_root, absolute_paths=absolute_paths),
+        "solve_dir": _format_path(solve_dir, repo_root=repo_root, absolute_paths=absolute_paths),
+        "rich_modal_dir": _format_path(rich_dir, repo_root=repo_root, absolute_paths=absolute_paths),
+        "synthesis_dir": _format_path(synthesis_dir, repo_root=repo_root, absolute_paths=absolute_paths),
     }
 
 
@@ -128,7 +149,7 @@ def _cmd_stage_c(paths: Dict[str, str]) -> str:
     )
 
 
-def _preview_for_row(repo_root: Path, row: Dict[str, Any]) -> Dict[str, Any]:
+def _preview_for_row(repo_root: Path, row: Dict[str, Any], *, absolute_paths: bool) -> Dict[str, Any]:
     sample_id = str(row.get("sample_id") or "").strip()
     if not sample_id:
         raise ValueError("sample row missing required sample_id")
@@ -139,7 +160,7 @@ def _preview_for_row(repo_root: Path, row: Dict[str, Any]) -> Dict[str, Any]:
     mode = _mode_from_flags(row)
     a_status, b_status, c_status = _stage_initial_statuses(mode)
     placeholder_payload = _has_placeholder_payload(row)
-    paths = _build_paths(repo_root, mesh_level, run_id)
+    paths = _build_paths(repo_root, mesh_level, run_id, absolute_paths=absolute_paths)
 
     policy_rich_requested = bool(row.get("rich_requested"))
     policy_synthesis_requested = bool(row.get("synthesis_requested"))
@@ -241,6 +262,11 @@ def run_preview(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--output-json", required=True)
     parser.add_argument("--output-md", help="Optional markdown output path (default: sibling .md)")
     parser.add_argument("--repo-root", help="Optional explicit repo root (default: auto-detect)")
+    parser.add_argument(
+        "--absolute-paths",
+        action="store_true",
+        help="Emit absolute paths in preview output (default: repo-relative).",
+    )
     parser.add_argument("--force", action="store_true", help="Allow overwrite of preview outputs")
     args = parser.parse_args(argv)
 
@@ -255,7 +281,7 @@ def run_preview(argv: Optional[List[str]] = None) -> int:
         raise SystemExit(f"output exists: {out_md} (use --force)")
 
     rows = _read_jsonl(samples_path)
-    previews = [_preview_for_row(repo_root, row) for row in rows]
+    previews = [_preview_for_row(repo_root, row, absolute_paths=bool(args.absolute_paths)) for row in rows]
 
     summary = {
         "sample_count": len(previews),
@@ -268,8 +294,8 @@ def run_preview(argv: Optional[List[str]] = None) -> int:
     body = {
         "schema": "b3_lhs_orchestrator_preview_v1",
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "samples_jsonl": str(samples_path),
-        "repo_root": str(repo_root),
+        "samples_jsonl": _format_path(samples_path, repo_root=repo_root, absolute_paths=bool(args.absolute_paths)),
+        "repo_root": _repo_root_field(repo_root, absolute_paths=bool(args.absolute_paths)),
         "will_execute": False,
         "notes": [
             "Dry-run preview only: no stage commands executed.",

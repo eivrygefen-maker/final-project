@@ -1,7 +1,7 @@
 # M2.2 dry-run orchestrator preview
 
-- generated_utc: `2026-06-02T11:02:40Z`
-- samples_jsonl: `C:\projects\final-project\final-project\FEM\experiments\active_domain_validation\physics_integrity\pipeline_runs\specs\m2_1_pilot_3_samples.jsonl`
+- generated_utc: `2026-06-02T11:10:09Z`
+- samples_jsonl: `FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/specs/m2_1_pilot_3_samples.jsonl`
 - will_execute: `False`
 
 ## Summary

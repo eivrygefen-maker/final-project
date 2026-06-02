@@ -1,8 +1,8 @@
 {
   "schema": "b3_lhs_orchestrator_preview_v1",
-  "generated_utc": "2026-06-02T11:02:40Z",
-  "samples_jsonl": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\pipeline_runs\\specs\\m2_1_pilot_3_samples.jsonl",
-  "repo_root": "C:\\projects\\final-project\\final-project",
+  "generated_utc": "2026-06-02T11:10:09Z",
+  "samples_jsonl": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/specs/m2_1_pilot_3_samples.jsonl",
+  "repo_root": ".",
   "will_execute": false,
   "notes": [
     "Dry-run preview only: no stage commands executed.",
@@ -51,8 +51,8 @@
         "C": "SKIPPED"
       },
       "predicted_commands": {
-        "stage_a": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --output-dir \"C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_prod_lhs_pilot_001_timing\"",
-        "stage_b": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve.py --checkpoint-dir \"C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_prod_lhs_pilot_001_timing\" --factor-solver mkl_pardiso --target-set full9 --output-dir \"C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\solver_benchmarks\\checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing\"",
+        "stage_a": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing\"",
+        "stage_b": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve.py --checkpoint-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing\" --factor-solver mkl_pardiso --target-set full9 --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing\"",
         "stage_c": null
       },
       "expected_environment": {
@@ -61,10 +61,10 @@
         "stage_c": "production .venv"
       },
       "predicted_output_paths": {
-        "checkpoint_dir": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_prod_lhs_pilot_001_timing",
-        "solve_dir": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\solver_benchmarks\\checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing",
-        "rich_modal_dir": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\solver_benchmarks\\checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing\\rich_modal",
-        "synthesis_dir": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\solver_benchmarks\\checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing\\rich_modal_post",
+        "checkpoint_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing",
+        "solve_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing",
+        "rich_modal_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing/rich_modal",
+        "synthesis_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing/rich_modal_post",
         "note": "preview_expected_only_not_executed"
       },
       "will_execute": false
@@ -103,8 +103,8 @@
         "C": "SKIPPED"
       },
       "predicted_commands": {
-        "stage_a": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --output-dir \"C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_prod_lhs_pilot_002_timing\"",
-        "stage_b": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve.py --checkpoint-dir \"C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_prod_lhs_pilot_002_timing\" --factor-solver mkl_pardiso --target-set full9 --output-dir \"C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\solver_benchmarks\\checkpoint_solve_mkl_pardiso_full9_lhs_pilot_002_timing\"",
+        "stage_a": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_002_timing\"",
+        "stage_b": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve.py --checkpoint-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_002_timing\" --factor-solver mkl_pardiso --target-set full9 --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_002_timing\"",
         "stage_c": null
       },
       "expected_environment": {
@@ -113,10 +113,10 @@
         "stage_c": "production .venv"
       },
       "predicted_output_paths": {
-        "checkpoint_dir": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_prod_lhs_pilot_002_timing",
-        "solve_dir": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\solver_benchmarks\\checkpoint_solve_mkl_pardiso_full9_lhs_pilot_002_timing",
-        "rich_modal_dir": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\solver_benchmarks\\checkpoint_solve_mkl_pardiso_full9_lhs_pilot_002_timing\\rich_modal",
-        "synthesis_dir": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\solver_benchmarks\\checkpoint_solve_mkl_pardiso_full9_lhs_pilot_002_timing\\rich_modal_post",
+        "checkpoint_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_002_timing",
+        "solve_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_002_timing",
+        "rich_modal_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_002_timing/rich_modal",
+        "synthesis_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_002_timing/rich_modal_post",
         "note": "preview_expected_only_not_executed"
       },
       "will_execute": false
@@ -155,9 +155,9 @@
         "C": "PENDING"
       },
       "predicted_commands": {
-        "stage_a": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --output-dir \"C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_prod_lhs_pilot_003_synthesis\"",
-        "stage_b": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve.py --checkpoint-dir \"C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_prod_lhs_pilot_003_synthesis\" --factor-solver mkl_pardiso --target-set full9 --output-dir \"C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\solver_benchmarks\\checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis\" --B3-export-rich-modal-data",
-        "stage_c": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_rich_modal_post.py --checkpoint-dir \"C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_prod_lhs_pilot_003_synthesis\" --rich-modal-dir \"C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\solver_benchmarks\\checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis\\rich_modal\" --output-dir \"C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\solver_benchmarks\\checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis\\rich_modal_post\""
+        "stage_a": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_003_synthesis\"",
+        "stage_b": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve.py --checkpoint-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_003_synthesis\" --factor-solver mkl_pardiso --target-set full9 --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis\" --B3-export-rich-modal-data",
+        "stage_c": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_rich_modal_post.py --checkpoint-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_003_synthesis\" --rich-modal-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis/rich_modal\" --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis/rich_modal_post\""
       },
       "expected_environment": {
         "stage_a": "production .venv",
@@ -165,10 +165,10 @@
         "stage_c": "production .venv"
       },
       "predicted_output_paths": {
-        "checkpoint_dir": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_prod_lhs_pilot_003_synthesis",
-        "solve_dir": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\solver_benchmarks\\checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis",
-        "rich_modal_dir": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\solver_benchmarks\\checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis\\rich_modal",
-        "synthesis_dir": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\solver_benchmarks\\checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis\\rich_modal_post",
+        "checkpoint_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_003_synthesis",
+        "solve_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis",
+        "rich_modal_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis/rich_modal",
+        "synthesis_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis/rich_modal_post",
         "note": "preview_expected_only_not_executed"
       },
       "will_execute": false
