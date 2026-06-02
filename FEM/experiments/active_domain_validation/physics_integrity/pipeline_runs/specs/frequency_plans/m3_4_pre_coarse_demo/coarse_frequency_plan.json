@@ -1,0 +1,291 @@
+{
+  "schema": "b3_coarse_frequency_plan_v1",
+  "generated_utc": "2026-06-02T20:55:03Z",
+  "calibration_status": "not_calibrated_yet",
+  "will_execute": false,
+  "input_summary": {
+    "mode": "dry-run",
+    "checkpoint_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2",
+    "mesh_level": null,
+    "active_dimension": null,
+    "freq_min_hz": 220.0,
+    "freq_max_hz": 265.0,
+    "coarse_step_hz": 5.0,
+    "target_window_half_width_hz": 1.5,
+    "target_set_policy": "custom_coarse_grid_proposal",
+    "reference_result_json": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing_m3exec2/result.json",
+    "solver_acceptance_band_hz": [
+      220.0,
+      265.0
+    ]
+  },
+  "known_evidence": {
+    "full9_targets_hz": [
+      221.5,
+      227.0,
+      232.5,
+      238.0,
+      243.5,
+      249.0,
+      254.5,
+      260.0,
+      264.0
+    ],
+    "full9_span_hz": [
+      221.5,
+      264.0
+    ],
+    "m3_validated_reference_runs": [
+      "lhs_pilot_001_timing_m3exec2"
+    ],
+    "note": "Validated timing pilot band; not the whole physical range"
+  },
+  "coarse_targets_hz": [
+    220.0,
+    225.0,
+    230.0,
+    235.0,
+    240.0,
+    245.0,
+    250.0,
+    255.0,
+    260.0,
+    265.0
+  ],
+  "proposed_regions": [
+    {
+      "region_id": "R_below_full9",
+      "range_hz": [
+        220.0,
+        221.5
+      ],
+      "density_policy": "unknown_until_coarse_scan",
+      "calibration_status": "not_calibrated_yet",
+      "recommended_step_hz": null,
+      "recommended_window_half_width_hz": null,
+      "reason": "Inside planner band but below validated full9 targets"
+    },
+    {
+      "region_id": "R_full9_validated",
+      "range_hz": [
+        221.5,
+        264.0
+      ],
+      "density_policy": "known_validated_band",
+      "calibration_status": "validated_by_m3_pilot_full9",
+      "recommended_step_hz": null,
+      "recommended_window_half_width_hz": 1.5,
+      "reason": "M3 pilot timing 9/9 PASS on m3exec2; historical ~5.5 Hz spacing \u2014 not proven optimal"
+    },
+    {
+      "region_id": "R_above_full9",
+      "range_hz": [
+        264.0,
+        265.0
+      ],
+      "density_policy": "unknown_until_coarse_scan",
+      "calibration_status": "not_calibrated_yet",
+      "recommended_step_hz": null,
+      "recommended_window_half_width_hz": null,
+      "reason": "Inside planner band but above validated full9 targets"
+    }
+  ],
+  "frequency_windows": [
+    {
+      "window_id": "W00",
+      "range_hz": [
+        220.0,
+        225.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W01",
+      "range_hz": [
+        225.0,
+        230.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W02",
+      "range_hz": [
+        230.0,
+        235.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W03",
+      "range_hz": [
+        235.0,
+        240.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W04",
+      "range_hz": [
+        240.0,
+        245.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W05",
+      "range_hz": [
+        245.0,
+        250.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W06",
+      "range_hz": [
+        250.0,
+        255.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W07",
+      "range_hz": [
+        255.0,
+        260.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W08",
+      "range_hz": [
+        260.0,
+        265.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    }
+  ],
+  "stage_b_target_windows": [
+    {
+      "target_hz": 220.0,
+      "window_hz": [
+        218.5,
+        221.5
+      ],
+      "half_width_hz": 1.5,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 225.0,
+      "window_hz": [
+        223.5,
+        226.5
+      ],
+      "half_width_hz": 1.5,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 230.0,
+      "window_hz": [
+        228.5,
+        231.5
+      ],
+      "half_width_hz": 1.5,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 235.0,
+      "window_hz": [
+        233.5,
+        236.5
+      ],
+      "half_width_hz": 1.5,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 240.0,
+      "window_hz": [
+        238.5,
+        241.5
+      ],
+      "half_width_hz": 1.5,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 245.0,
+      "window_hz": [
+        243.5,
+        246.5
+      ],
+      "half_width_hz": 1.5,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 250.0,
+      "window_hz": [
+        248.5,
+        251.5
+      ],
+      "half_width_hz": 1.5,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 255.0,
+      "window_hz": [
+        253.5,
+        256.5
+      ],
+      "half_width_hz": 1.5,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 260.0,
+      "window_hz": [
+        258.5,
+        261.5
+      ],
+      "half_width_hz": 1.5,
+      "reason": "full9 validated target"
+    },
+    {
+      "target_hz": 265.0,
+      "window_hz": [
+        263.5,
+        266.5
+      ],
+      "half_width_hz": 1.5,
+      "reason": "coarse grid proposal (not executed)"
+    }
+  ],
+  "diagnostic_notes": [
+    "Zone density thresholds are not calibrated yet; regions are hypotheses only.",
+    "full9 band is validated M3 pilot evidence, not proof of global spectral coverage.",
+    "Solver acceptance band is 220.0-265.0 Hz in v2_b3_st_sinvert_solver_lib.py.",
+    "First coarse solve should use existing Stage B / target_density_experiment on a PASS checkpoint.",
+    "Do not overwrite m3exec1/m3exec2 runtime diagnostics.",
+    "WARN: checkpoint_dir not found on this host: C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2"
+  ],
+  "next_approved_command_hint": "# After explicit approval \u2014 solver-only, new output dir, isolated solver-mkl env:\n# checkpoint: FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2\npython FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_target_density_experiment.py \\\n  --checkpoint-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2 \\\n  --reference-json FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing_m3exec2/result.json \\\n  --start-hz 220.0 --stop-hz 265.0 --spacings-hz 5.0",
+  "orchestrator_feed_preview": {
+    "future_target_set_name": "coarse_calibrated_v0",
+    "targets_hz_field": "coarse_targets_hz",
+    "note": "Orchestrator full9 hardcoding may need schema extension before LHS"
+  }
+}
