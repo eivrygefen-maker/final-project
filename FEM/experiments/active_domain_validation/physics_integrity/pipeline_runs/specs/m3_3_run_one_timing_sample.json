@@ -1,0 +1,11 @@
+{
+  "sample_id": "lhs_pilot_001_timing",
+  "run_id": "lhs_pilot_001_timing_m3exec1",
+  "mode": "timing",
+  "mesh_level": "L_prod",
+  "target_set": "full9",
+  "selection_reason": "m3_3_single_sample_timing_orchestrator_validation",
+  "rich_requested": false,
+  "synthesis_requested": false,
+  "stage_c_requested": false
+}
