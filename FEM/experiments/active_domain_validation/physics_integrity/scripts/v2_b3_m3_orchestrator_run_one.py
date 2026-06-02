@@ -19,6 +19,35 @@ PLAN_SCHEMA = "b3_m3_orchestrator_run_one_plan_v1"
 
 DEFAULT_PROD_PYTHON = "/home/vboxuser/final-project/.venv/bin/python"
 DEFAULT_SOLVER_PYTHON = "/home/vboxuser/solver-mkl/venv/bin/python"
+DEFAULT_SOLVER_VENV = "/home/vboxuser/solver-mkl/venv"
+
+PETSC_DIR_PROD = "/usr/lib/petscdir/petsc3.15/x86_64-linux-gnu-real"
+SLEPC_DIR_PROD = "/usr/lib/slepcdir/slepc3.15/x86_64-linux-gnu-real"
+
+STAGE_A_ENV_UNSET: Tuple[str, ...] = ()
+STAGE_B_ENV_UNSET: Tuple[str, ...] = ("PYTHONPATH", "PETSC_DIR", "SLEPC_DIR", "PYTHONHOME")
+
+STAGE_A_ENV_PROBE = """
+import sys
+import petsc4py
+print(sys.executable)
+print(petsc4py.__file__)
+import dolfinx  # noqa: F401
+import mpi4py  # noqa: F401
+print("ok")
+""".strip()
+
+STAGE_B_ENV_PROBE = """
+import petsc4py, slepc4py, sys
+print(sys.executable)
+print(petsc4py.__file__)
+print(slepc4py.__file__)
+try:
+    import dolfinx
+    raise SystemExit("unexpected dolfinx importable")
+except ModuleNotFoundError:
+    pass
+""".strip()
 
 SCRIPTS_REL = Path("FEM/experiments/active_domain_validation/physics_integrity/scripts")
 STAGE_A_SCRIPT = "v2_b3_checkpoint_export.py"
@@ -39,7 +68,6 @@ from v2_b3_m3_orchestrator_dry_run import (  # noqa: E402
     _format_path,
     _intended_manifest_path,
     _resolved_core_config,
-    _stage_env_preview,
     _stage_plan,
 )
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
@@ -56,22 +84,132 @@ def _read_run_spec(path: Path) -> Dict[str, Any]:
     return data
 
 
+def _solver_venv_root(solver_python: str) -> Path:
+    return Path(solver_python).resolve().parent.parent
+
+
 def _prod_subprocess_env(*, base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     env = dict(os.environ if base is None else base)
-    petsc = "/usr/lib/petscdir/petsc3.15/x86_64-linux-gnu-real"
-    slepc = "/usr/lib/slepcdir/slepc3.15/x86_64-linux-gnu-real"
     py_parts = [
-        f"{petsc}/lib/python3/dist-packages",
-        f"{slepc}/lib/python3/dist-packages",
+        f"{PETSC_DIR_PROD}/lib/python3/dist-packages",
+        f"{SLEPC_DIR_PROD}/lib/python3/dist-packages",
         "/usr/lib/python3/dist-packages",
     ]
     existing = env.get("PYTHONPATH", "")
     if existing:
         py_parts.append(existing)
-    env["PETSC_DIR"] = petsc
-    env["SLEPC_DIR"] = slepc
+    env["PETSC_DIR"] = PETSC_DIR_PROD
+    env["SLEPC_DIR"] = SLEPC_DIR_PROD
     env["PYTHONPATH"] = ":".join(py_parts)
     return env
+
+
+def _solver_mkl_subprocess_env(*, solver_python: str, base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Isolated solver-mkl env: strip production PETSc PYTHONPATH contamination."""
+    env = dict(os.environ if base is None else base)
+    for key in STAGE_B_ENV_UNSET:
+        env.pop(key, None)
+    venv_root = _solver_venv_root(solver_python)
+    venv_bin = venv_root / "bin"
+    env["VIRTUAL_ENV"] = str(venv_root)
+    path_existing = env.get("PATH", "")
+    env["PATH"] = f"{venv_bin}:{path_existing}" if path_existing else str(venv_bin)
+    return env
+
+
+def _stage_env_preview_m33(*, prod_python: str, solver_python: str) -> Dict[str, Any]:
+    venv_root = str(_solver_venv_root(solver_python))
+    venv_bin = f"{venv_root}/bin"
+    py_path = ":".join(
+        [
+            f"{PETSC_DIR_PROD}/lib/python3/dist-packages",
+            f"{SLEPC_DIR_PROD}/lib/python3/dist-packages",
+            "/usr/lib/python3/dist-packages",
+            "<existing PYTHONPATH if any>",
+        ]
+    )
+    return {
+        "stage_a": {
+            "profile": "production_venv",
+            "python": prod_python,
+            "env_vars": {
+                "PETSC_DIR": PETSC_DIR_PROD,
+                "SLEPC_DIR": SLEPC_DIR_PROD,
+                "PYTHONPATH": py_path,
+            },
+            "unset_env_vars": list(STAGE_A_ENV_UNSET),
+        },
+        "stage_b": {
+            "profile": "solver_mkl_isolated",
+            "python": solver_python,
+            "env_vars": {
+                "VIRTUAL_ENV": venv_root,
+                "PATH": f"{venv_bin}:<existing PATH>",
+            },
+            "unset_env_vars": list(STAGE_B_ENV_UNSET),
+            "isolated_from_stage_a": True,
+            "note": "PYTHONPATH/PETSC_DIR/SLEPC_DIR/PYTHONHOME removed before Stage B",
+        },
+    }
+
+
+def _run_env_probe(
+    *,
+    python: str,
+    script: str,
+    env: Dict[str, str],
+    cwd: Path,
+) -> Tuple[int, str]:
+    proc = subprocess.run(
+        [python, "-c", script],
+        cwd=str(cwd),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    return int(proc.returncode), proc.stdout or ""
+
+
+def _verify_stage_a_env_probe(output: str, prod_python: str) -> Tuple[bool, str]:
+    lines = [ln.strip() for ln in output.strip().splitlines() if ln.strip()]
+    if len(lines) < 3:
+        return False, f"probe_output_incomplete:{output!r}"
+    exe, petsc_file, last = lines[0], lines[1], lines[-1]
+    try:
+        if Path(exe).resolve() != Path(prod_python).resolve():
+            return False, f"executable_mismatch:{exe}"
+    except OSError as exc:
+        return False, f"executable_resolve_error:{exc}"
+    petsc_norm = petsc_file.replace("\\", "/")
+    if PETSC_DIR_PROD not in petsc_norm and "/usr/lib/petscdir/" not in petsc_norm:
+        return False, f"petsc4py_not_system_petsc:{petsc_file}"
+    if last != "ok":
+        return False, f"probe_missing_ok_marker:{last!r}"
+    return True, "ok"
+
+
+def _verify_stage_b_env_probe(output: str, solver_python: str) -> Tuple[bool, str]:
+    lines = [ln.strip() for ln in output.strip().splitlines() if ln.strip()]
+    if len(lines) < 3:
+        return False, f"probe_output_incomplete:{output!r}"
+    exe, petsc_file, slepc_file = lines[0], lines[1], lines[2]
+    venv_marker = str(_solver_venv_root(solver_python)).replace("\\", "/")
+    try:
+        if Path(exe).resolve() != Path(solver_python).resolve():
+            return False, f"executable_mismatch:{exe}"
+    except OSError as exc:
+        return False, f"executable_resolve_error:{exc}"
+    petsc_norm = petsc_file.replace("\\", "/")
+    slepc_norm = slepc_file.replace("\\", "/")
+    if venv_marker not in petsc_norm:
+        return False, f"petsc4py_not_in_solver_venv:{petsc_file}"
+    if venv_marker not in slepc_norm:
+        return False, f"slepc4py_not_in_solver_venv:{slepc_file}"
+    if "unexpected dolfinx importable" in output:
+        return False, "dolfinx_importable_in_solver_env"
+    return True, "ok"
 
 
 def _resolve_paths_abs(
@@ -325,8 +463,18 @@ def _build_plan(
 
     log_dir = PIPELINE_RUNS / "logs"
     logs = {
+        "stage_a_env_probe": _format_path(
+            log_dir / f"run_{run_id}_stageA_env_probe.log",
+            repo_root=repo_root,
+            absolute_paths=absolute_paths,
+        ),
         "stage_a": _format_path(
             log_dir / f"run_{run_id}_stageA.log",
+            repo_root=repo_root,
+            absolute_paths=absolute_paths,
+        ),
+        "stage_b_env_probe": _format_path(
+            log_dir / f"run_{run_id}_stageB_env_probe.log",
             repo_root=repo_root,
             absolute_paths=absolute_paths,
         ),
@@ -357,7 +505,11 @@ def _build_plan(
         "stage_c_note": "SKIPPED — timing-only M3.3; Stage C not executed",
         "commands": commands,
         "argv": argv,
-        "stage_env": _stage_env_preview(prod_python=prod_python, solver_python=solver_python),
+        "stage_env": _stage_env_preview_m33(prod_python=prod_python, solver_python=solver_python),
+        "env_probes": {
+            "stage_a": "runs before Stage A when executing (production env)",
+            "stage_b": "runs before Stage B when executing (isolated solver-mkl env)",
+        },
         "predicted_output_paths": paths_str,
         "logs": logs,
         "preflight": preflight,
@@ -432,14 +584,8 @@ def _build_initial_manifest(
                 "note": "timing-only M3.3 — not executed",
             },
         },
-        "environment": {
-            "stage_a_env": "production_venv",
-            "stage_a_python": prod_python,
-            "stage_b_env": "solver_mkl",
-            "stage_b_python": solver_python,
-            "stage_c_env": "production_venv",
-            "stage_c_executed": False,
-        },
+        "environment": plan.get("stage_env")
+        or _stage_env_preview_m33(prod_python=prod_python, solver_python=solver_python),
         "orchestrator": {
             "schema": "b3_m3_orchestrator_run_one_v1",
             "milestone": "M3.3",
@@ -586,8 +732,45 @@ def _execute_run(
         return 2
 
     paths_abs = {k: Path(v) for k, v in plan["paths_abs"].items()}
-    log_a = PIPELINE_RUNS / "logs" / f"run_{plan['run_id']}_stageA.log"
-    log_b = PIPELINE_RUNS / "logs" / f"run_{plan['run_id']}_stageB.log"
+    run_id = plan["run_id"]
+    log_a_probe = PIPELINE_RUNS / "logs" / f"run_{run_id}_stageA_env_probe.log"
+    log_a = PIPELINE_RUNS / "logs" / f"run_{run_id}_stageA.log"
+    log_b_probe = PIPELINE_RUNS / "logs" / f"run_{run_id}_stageB_env_probe.log"
+    log_b = PIPELINE_RUNS / "logs" / f"run_{run_id}_stageB.log"
+
+    env_a = _prod_subprocess_env()
+    env_b = _solver_mkl_subprocess_env(solver_python=solver_python)
+
+    # Stage A env probe
+    print("[B3_m3_run_one] Stage A env probe", flush=True)
+    rc_a_probe, out_a_probe = _run_env_probe(
+        python=prod_python,
+        script=STAGE_A_ENV_PROBE,
+        env=env_a,
+        cwd=repo_root,
+    )
+    log_a_probe.parent.mkdir(parents=True, exist_ok=True)
+    log_a_probe.write_text(out_a_probe, encoding="utf-8")
+    ok_a_probe, detail_a_probe = _verify_stage_a_env_probe(out_a_probe, prod_python)
+    manifest["stages"]["A"]["env_preflight"] = {
+        "ok": ok_a_probe and rc_a_probe == 0,
+        "exit_code": rc_a_probe,
+        "detail": detail_a_probe,
+        "log": str(log_a_probe),
+    }
+    if rc_a_probe != 0 or not ok_a_probe:
+        manifest["stages"]["A"]["status"] = "FAIL"
+        reason = f"stage_a_env_preflight_failed:rc={rc_a_probe}:verify={detail_a_probe}"
+        manifest["failure_reason"] = reason
+        _finalize_manifest(
+            manifest_path,
+            manifest,
+            terminal_status="FAIL",
+            append_index=append_index,
+            repo_root=repo_root,
+        )
+        print(f"[B3_m3_run_one] FAIL {reason}", flush=True)
+        return 1
 
     # Stage A
     manifest["stages"]["A"]["started_utc"] = _utc_now()
@@ -596,7 +779,7 @@ def _execute_run(
 
     rc_a = _run_subprocess(
         argv_a,
-        env=_prod_subprocess_env(),
+        env=env_a,
         cwd=repo_root,
         log_path=log_a,
         label="Stage A",
@@ -627,6 +810,40 @@ def _execute_run(
     write_json_atomic(manifest_path, manifest)
     print("[B3_m3_run_one] Stage A PASS", flush=True)
 
+    # Stage B env probe (isolated solver-mkl env; must not inherit Stage A PYTHONPATH)
+    print("[B3_m3_run_one] Stage B env probe", flush=True)
+    rc_b_probe, out_b_probe = _run_env_probe(
+        python=solver_python,
+        script=STAGE_B_ENV_PROBE,
+        env=env_b,
+        cwd=repo_root,
+    )
+    log_b_probe.parent.mkdir(parents=True, exist_ok=True)
+    log_b_probe.write_text(out_b_probe, encoding="utf-8")
+    ok_b_probe, detail_b_probe = _verify_stage_b_env_probe(out_b_probe, solver_python)
+    manifest["stages"]["B"]["env_preflight"] = {
+        "ok": ok_b_probe and rc_b_probe == 0,
+        "exit_code": rc_b_probe,
+        "detail": detail_b_probe,
+        "log": str(log_b_probe),
+    }
+    manifest["updated_utc"] = _utc_now()
+    write_json_atomic(manifest_path, manifest)
+
+    if rc_b_probe != 0 or not ok_b_probe:
+        manifest["stages"]["B"]["status"] = "FAIL"
+        reason = f"stage_b_env_preflight_failed:rc={rc_b_probe}:verify={detail_b_probe}"
+        manifest["failure_reason"] = reason
+        _finalize_manifest(
+            manifest_path,
+            manifest,
+            terminal_status="FAIL",
+            append_index=append_index,
+            repo_root=repo_root,
+        )
+        print(f"[B3_m3_run_one] FAIL {reason}", flush=True)
+        return 1
+
     # Stage B
     manifest["stages"]["B"]["started_utc"] = _utc_now()
     manifest["updated_utc"] = _utc_now()
@@ -634,7 +851,7 @@ def _execute_run(
 
     rc_b = _run_subprocess(
         argv_b,
-        env=dict(os.environ),
+        env=env_b,
         cwd=repo_root,
         log_path=log_b,
         label="Stage B",
