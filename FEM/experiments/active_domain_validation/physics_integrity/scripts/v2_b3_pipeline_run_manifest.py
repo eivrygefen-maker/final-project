@@ -19,7 +19,7 @@ SCHEMA = "b3_pipeline_run_manifest_v1"
 ALLOWED_MODES = ("timing", "rich", "synthesis")
 ALLOWED_STATUSES = {"PENDING", "PASS", "FAIL", "SKIPPED"}
 
-REPO_ROOT = SCRIPT_DIR.parents[5]
+REPO_ROOT = SCRIPT_DIR.parents[4]
 PHYSICS_ROOT = SCRIPT_DIR.parent
 DEFAULT_OUTPUT_ROOT = (
     "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs"
@@ -40,11 +40,23 @@ def _utc_run_id_prefix() -> str:
     return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
 
 
-def _resolve_root(path_arg: str) -> Path:
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_root(path_arg: str, *, is_default: bool = False) -> Path:
     p = Path(path_arg).expanduser()
-    if p.is_absolute():
-        return p
-    return (REPO_ROOT / p).resolve()
+    resolved = p.resolve() if p.is_absolute() else (REPO_ROOT / p).resolve()
+    if is_default and not _is_within(resolved, REPO_ROOT):
+        raise ValueError(
+            "default --output-root resolved outside repository root; "
+            f"resolved={resolved} repo_root={REPO_ROOT}"
+        )
+    return resolved
 
 
 def _mk_run_id(*, run_id: Optional[str], tag: Optional[str]) -> str:
@@ -219,7 +231,10 @@ def run_manifest_cli(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     payload = _manifest_for_args(args)
-    out_root = _resolve_root(args.output_root)
+    out_root = _resolve_root(
+        args.output_root,
+        is_default=(str(args.output_root) == DEFAULT_OUTPUT_ROOT),
+    )
     manifest_path = out_root / "manifests" / f"run_{payload['run_id']}.json"
     if manifest_path.exists() and not args.force:
         raise SystemExit(

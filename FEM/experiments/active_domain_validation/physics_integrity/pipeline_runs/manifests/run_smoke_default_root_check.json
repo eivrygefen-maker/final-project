@@ -1,0 +1,46 @@
+{
+  "schema": "b3_pipeline_run_manifest_v1",
+  "run_id": "smoke_default_root_check",
+  "created_utc": "2026-06-02T09:30:41Z",
+  "source": {
+    "mesh_level": "L_prod",
+    "mesh_convergence_manifest": "FEM/experiments/active_domain_validation/physics_integrity/configs/v2_mesh_convergence_manifest.json",
+    "core_config": "FEM/experiments/active_domain_validation/physics_integrity/configs/coupled_physical_core_v2.json"
+  },
+  "policy": {
+    "mode": "timing",
+    "rich_export": false,
+    "stage_c_requested": false,
+    "selection_reason": "smoke"
+  },
+  "stages": {
+    "A": {
+      "status": "PENDING",
+      "script": "scripts/v2_b3_checkpoint_export.py",
+      "command": null,
+      "checkpoint_dir": null,
+      "export_manifest": null
+    },
+    "B": {
+      "status": "PENDING",
+      "script": "scripts/v2_b3_checkpoint_solve.py",
+      "command": null,
+      "solve_dir": null,
+      "result_json": null,
+      "rich_modal_requested": false,
+      "rich_modal_dir": null
+    },
+    "C": {
+      "status": "SKIPPED",
+      "script": "scripts/v2_b3_rich_modal_post.py",
+      "command": null,
+      "synthesis_dir": null,
+      "modes_synthesis_json": null
+    }
+  },
+  "environment": {
+    "stage_a_env": "production_venv",
+    "stage_b_env": "solver_mkl",
+    "stage_c_env": "production_venv"
+  }
+}
