@@ -49,21 +49,44 @@ def _sha256_file(path: Path) -> str:
 
 def _resolve_core_config_provenance(core_config_arg: Optional[str]) -> Tuple[Optional[Path], Dict[str, Any]]:
     canonical = DEFAULT_CORE_CONFIG.resolve()
-    if not core_config_arg:
-        return None, {
-            "core_config_mode": "default",
-            "core_config_path": str(canonical),
-            "core_config_sha256": _sha256_file(canonical),
+    canonical_body = json.loads(canonical.read_text(encoding="utf-8"))
+    canonical_mats = canonical_body.get("materials") or {}
+    canonical_fp = {
+        "top_density": (canonical_mats.get("top") or {}).get("density"),
+        "back_density": (canonical_mats.get("back") or {}).get("density"),
+    }
+
+    def _build_prov(path: Path, mode: str) -> Dict[str, Any]:
+        body = json.loads(path.read_text(encoding="utf-8"))
+        mats = body.get("materials") or {}
+        return {
+            "core_config_mode": mode,
+            "core_config_path": str(path),
+            "core_config_sha256": _sha256_file(path),
             "canonical_core_config_path": str(canonical),
+            "material_fingerprint": {
+                "top_density": (mats.get("top") or {}).get("density"),
+                "back_density": (mats.get("back") or {}).get("density"),
+            },
+            "canonical_material_fingerprint": canonical_fp,
         }
+
+    if not core_config_arg:
+        return None, _build_prov(canonical, mode="default")
     override = Path(core_config_arg).expanduser().resolve()
     if not override.is_file():
         raise FileNotFoundError(f"--core-config not found: {override}")
-    return override, {
-        "core_config_mode": "override",
-        "core_config_path": str(override),
-        "core_config_sha256": _sha256_file(override),
-        "canonical_core_config_path": str(canonical),
+    return override, _build_prov(override, mode="override")
+
+
+def _core_config_manifest_block(prov: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "core_config_provenance": prov,
+        "core_config_mode": prov.get("core_config_mode"),
+        "core_config_path": prov.get("core_config_path"),
+        "core_config_sha256": prov.get("core_config_sha256"),
+        "canonical_core_config_path": prov.get("canonical_core_config_path"),
+        "core_config_material_fingerprint": prov.get("material_fingerprint"),
     }
 
 
@@ -150,6 +173,7 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
             "failure_reason": "preassembly_contract_pass=False",
             "checkpoint_dir": str(checkpoint),
             "precheck": pre,
+            **_core_config_manifest_block(core_config_provenance),
         }
         write_json(checkpoint / PIPELINE_EXPORT_MANIFEST, manifest)
         print(f"[B3_checkpoint_export] FAIL precheck -> {checkpoint / PIPELINE_EXPORT_MANIFEST}", flush=True)
@@ -177,6 +201,7 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
                 "failure_reason": f"operator_contract_failed:{op_payload.get('failure_reason')}",
                 "checkpoint_dir": str(checkpoint),
                 "operator_contract": op_payload,
+                **_core_config_manifest_block(core_config_provenance),
             }
             write_json(checkpoint / PIPELINE_EXPORT_MANIFEST, manifest)
             print(f"[B3_checkpoint_export] FAIL operator contract", flush=True)
@@ -240,7 +265,6 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
             "status": "PASS" if export_pass and mat_ok else "FAIL",
             "mesh_level": mesh_level,
             "checkpoint_dir": str(checkpoint.resolve()),
-            "core_config_provenance": core_config_provenance,
             "compose_backend": args.compose_backend,
             "synthesis_region_dofs_mode": region_dofs_mode,
             "operator_build_elapsed_seconds": dev_bench._safe_float(elapsed),
@@ -262,6 +286,7 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
             "next_stage": "solver-mkl checkpoint solve",
             "synthesis_export": synthesis_export,
             "rich_modal_export": rich_modal_export_manifest_block(requested=rich_modal_requested),
+            **_core_config_manifest_block(core_config_provenance),
         }
         if synthesis_warnings:
             manifest["warnings"] = synthesis_warnings
@@ -281,6 +306,7 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
             "status": "FAIL",
             "failure_reason": f"{type(exc).__name__}:{exc}",
             "checkpoint_dir": str(checkpoint),
+            **_core_config_manifest_block(core_config_provenance),
         }
         write_json(checkpoint / PIPELINE_EXPORT_MANIFEST, manifest)
         print(f"[B3_checkpoint_export] FAIL {exc}", flush=True)

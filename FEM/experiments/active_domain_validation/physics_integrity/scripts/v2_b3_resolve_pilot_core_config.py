@@ -210,7 +210,10 @@ def _resolve_one_sample(
     changed_fields = _apply_material_delta(resolved, material_delta if isinstance(material_delta, dict) else {})
 
     mesh_file = _mesh_file_for_level(mesh_level, repo_root=repo_root)
-    resolved.setdefault("solver", {})["mesh_file"] = mesh_file
+    solver_cfg = resolved.setdefault("solver", {})
+    solver_cfg["mesh_file"] = mesh_file
+    # Preserve official coupled BC policy when not explicitly set.
+    solver_cfg.setdefault("clamp_ribs", False)
 
     overlay_payload = {
         "schema": "b3_pilot_config_overlay_applied_v1",
@@ -247,6 +250,9 @@ def _resolve_one_sample(
         errors.append(f"solver.mesh_file does not reference L_prod: {solver_mesh!r}")
     if MESH_CASE_ID not in solver_mesh.replace("\\", "/"):
         errors.append(f"solver.mesh_file does not reference {MESH_CASE_ID}: {solver_mesh!r}")
+    clamp_ribs = bool((resolved.get("solver") or {}).get("clamp_ribs", False))
+    if clamp_ribs:
+        errors.append("solver.clamp_ribs must be false for official coupled pilot BC policy")
 
     changed_material_values = _build_changed_material_values(
         baseline_cfg,
