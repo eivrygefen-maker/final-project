@@ -113,7 +113,8 @@ Top-level fields for easy inspection:
 | `coarse_targets_hz` | Proposed target list |
 | `coarse_target_count` | Integer |
 | `regions` | Placeholder region table |
-| `executable_feasibility` | What runs today vs blocked slices |
+| `executable_feasibility.executable_now_count` | Targets inside current [220, 265] acceptance |
+| `executable_feasibility.blocked_count` | Targets outside current acceptance |
 | `cost_estimate` | Target count × per-target time range |
 | `recommended_next_step` | Human-readable gate + command template |
 
@@ -215,6 +216,8 @@ No runtime manifests or index from the planner itself.
 5. Post-process → update regions with `estimated_from_first_coarse_scan`.
 
 **Do not:** delete m3exec1 evidence; run wide-band scan pretending acceptance is already wide; parallel L_prod solves with other benchmarks.
+
+**Next:** [`B3_M3_4_GATE_A_ACCEPTANCE_DISCOVERY_MODE.md`](B3_M3_4_GATE_A_ACCEPTANCE_DISCOVERY_MODE.md) — acceptance / discovery-mode design (planning-only).
 
 ---
 

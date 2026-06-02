@@ -139,6 +139,8 @@ def _executable_feasibility(
 ) -> Dict[str, Any]:
     exec_targets = [t for t in coarse_targets if _target_executable_now(t)]
     blocked_targets = [t for t in coarse_targets if not _target_executable_now(t)]
+    executable_now_count = len(exec_targets)
+    blocked_count = len(blocked_targets)
     planning_outside_acceptance = (
         freq_min < ACCEPTANCE_FREQ_LO_HZ - 1.0e-9 or freq_max > ACCEPTANCE_FREQ_HI_HZ + 1.0e-9
     )
@@ -158,9 +160,13 @@ def _executable_feasibility(
         "solver_acceptance_band_hz": [ACCEPTANCE_FREQ_LO_HZ, ACCEPTANCE_FREQ_HI_HZ],
         "executable_now_band_hz": [ACCEPTANCE_FREQ_LO_HZ, ACCEPTANCE_FREQ_HI_HZ],
         "blocked_until_acceptance_extension_hz": blocked_slices,
+        "executable_now_count": executable_now_count,
+        "blocked_count": blocked_count,
+        "executable_now_targets_hz": exec_targets,
+        "blocked_targets_hz": blocked_targets,
         "coarse_target_count_total": len(coarse_targets),
-        "coarse_target_count_executable_now": len(exec_targets),
-        "coarse_target_count_blocked_now": len(blocked_targets),
+        "coarse_target_count_executable_now": executable_now_count,
+        "coarse_target_count_blocked_now": blocked_count,
         "overall_execution_status": overall,
         "code_basis": (
             "collect_accepted_st_modes() in v2_b3_st_sinvert_solver_lib.py filters "

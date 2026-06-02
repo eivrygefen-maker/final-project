@@ -1,6 +1,6 @@
 {
   "schema": "b3_coarse_frequency_plan_v2",
-  "generated_utc": "2026-06-02T21:04:11Z",
+  "generated_utc": "2026-06-02T21:13:14Z",
   "mode": "dry-run",
   "will_execute": false,
   "calibration_status": "not_calibrated_yet",
@@ -18,7 +18,7 @@
     "coarse_step_hz": 15.0,
     "spacing_policy": "uniform",
     "target_window_half_width_hz": 1.5,
-    "reference_result_json": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing_m3exec2/result.json",
+    "reference_result_json": null,
     "solver_acceptance_band_hz": [
       220.0,
       265.0
@@ -183,6 +183,46 @@
         265.0,
         550.0
       ]
+    ],
+    "executable_now_count": 3,
+    "blocked_count": 31,
+    "executable_now_targets_hz": [
+      225.0,
+      240.0,
+      255.0
+    ],
+    "blocked_targets_hz": [
+      60.0,
+      75.0,
+      90.0,
+      105.0,
+      120.0,
+      135.0,
+      150.0,
+      165.0,
+      180.0,
+      195.0,
+      210.0,
+      270.0,
+      285.0,
+      300.0,
+      315.0,
+      330.0,
+      345.0,
+      360.0,
+      375.0,
+      390.0,
+      405.0,
+      420.0,
+      435.0,
+      450.0,
+      465.0,
+      480.0,
+      495.0,
+      510.0,
+      525.0,
+      540.0,
+      550.0
     ],
     "coarse_target_count_total": 34,
     "coarse_target_count_executable_now": 3,
