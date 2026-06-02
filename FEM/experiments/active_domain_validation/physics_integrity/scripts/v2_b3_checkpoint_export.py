@@ -40,7 +40,7 @@ from v2_b3_st_worker_scaling_benchmark import (
     _struct_active_count_policy,
 )
 
-ALLOWED_MESH_LEVELS = frozenset({"L_mid", "L_dev_dense", "L_prod"})
+ALLOWED_MESH_LEVELS = frozenset({"L_mid", "L_dev_dense", "L_prod", "L_scout_coarse"})
 
 
 def _sha256_file(path: Path) -> str:

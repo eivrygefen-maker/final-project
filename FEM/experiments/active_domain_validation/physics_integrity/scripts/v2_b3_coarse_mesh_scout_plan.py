@@ -11,30 +11,31 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
 PHYSICS_ROOT = SCRIPT_DIR.parent
 MANIFEST_PATH = PHYSICS_ROOT / "configs" / "v2_mesh_convergence_manifest.json"
 CONV_MESH = PHYSICS_ROOT / "v2_mesh_convergence" / "mesh"
 CONV_DIAG = PHYSICS_ROOT / "v2_mesh_convergence" / "diagnostics"
 DEFAULT_CASE_ID = "baseline_coupled_v2"
+DEFAULT_RUN_ID = "scout_l_scout_coarse_m34"
 SCOUT_LEVEL_ID = "L_scout_coarse"
-PLAN_SCHEMA = "b3_coarse_mesh_scout_plan_v1"
+PLAN_SCHEMA = "b3_coarse_mesh_scout_plan_v1_1"
+SCOUT_MESH_BUILD_SCRIPT = (
+    "FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+    "run_v2_B3_scout_coarse_mesh_build.py"
+)
 
 PLANNING_BAND_LO_HZ = 60.0
 PLANNING_BAND_HI_HZ = 550.0
 DEFAULT_DISCOVERY_SPACING_HZ = 15.0
 L_PROD_ACTIVE_DIM_REFERENCE = 316_017
 
-# Proposed scout controls (mm targets from operator plan; manifest field names).
-SCOUT_EXPLICIT_CONTROLS_M = {
-    "wood_thickness_size_m": 0.003,
-    "wood_surface_size_m": 0.0085,
-    "air_threshold_size_min_m": 0.011,
-    "air_threshold_size_max_m": 0.055,
-    "air_threshold_dist_min_m": 0.015,
-    "air_threshold_dist_max_m": 0.25,
-}
+from v2_mesh_convergence_mesh import effective_controls_from_level_def  # noqa: E402
 
 WRONG_DIRECTION_RUN_ID = "target_density_discovery_60_550_step15_m3exec2"
+STAGE_B_OUTPUT_STEM = "target_density_discovery_60_550_step15_L_scout_coarse_m34"
 
 
 def _utc_now() -> str:
@@ -147,13 +148,12 @@ def _mesh_level_report(
     build_env = dict(level_def.get("build_env") or {})
     lc_scale = float(level_def.get("lc_scale", 1.0))
     profile = "validation" if "FEM_VALIDATION_MESH" in build_env else "fom"
+    controls = effective_controls_from_level_def(level_def)
     explicit = level_def.get("explicit_controls_m")
     if isinstance(explicit, dict) and explicit:
-        controls = {k: float(v) for k, v in explicit.items()}
-        controls_source = "manifest_explicit_controls_m"
+        controls_source = "effective_controls_from_level_def_with_explicit_overrides"
     else:
-        controls = _controls_for_profile(profile, lc_scale)
-        controls_source = f"computed_{profile}_times_lc_scale"
+        controls_source = f"effective_controls_from_level_def_{profile}_times_lc_scale"
 
     msh = CONV_MESH / level_id / f"{case_id}.msh"
     audit = CONV_MESH / level_id / f"{case_id}_mesh_audit.json"
@@ -178,6 +178,10 @@ def _mesh_level_report(
         "not_authorized_for_final_physics_validation": bool(
             level_def.get("not_authorized_for_final_physics_validation")
         ),
+        "purpose": level_def.get("purpose"),
+        "production_physics": level_def.get("production_physics"),
+        "final_results": level_def.get("final_results"),
+        "modal_density_scout_only": level_def.get("modal_density_scout_only"),
     }
     if audit.is_file():
         try:
@@ -242,11 +246,8 @@ def _stage_a_command_preview(
     )
 
 
-def _mesh_build_command_preview(*, level_id: str, case_id: str) -> str:
-    return (
-        "python FEM/experiments/active_domain_validation/physics_integrity/scripts/"
-        f"run_v2_mesh_convergence.py --levels {level_id} --cases {case_id}"
-    )
+def _mesh_build_command_preview() -> str:
+    return f"python {SCOUT_MESH_BUILD_SCRIPT}"
 
 
 def _stage_b_discovery_preview(
@@ -280,9 +281,12 @@ def build_scout_plan(
     levels = manifest.get("mesh_levels") or {}
     l_prod_def = levels.get("L_prod") or {}
     l_dev_coarse_def = levels.get("L_dev_coarse") or {}
+    scout_def = levels.get(SCOUT_LEVEL_ID) or {}
 
-    prod_controls = _controls_for_profile("fom", float(l_prod_def.get("lc_scale", 1.0)))
-    scout_controls = dict(SCOUT_EXPLICIT_CONTROLS_M)
+    prod_controls = effective_controls_from_level_def(l_prod_def) if l_prod_def else _controls_for_profile(
+        "fom", 1.0
+    )
+    scout_controls = effective_controls_from_level_def(scout_def) if scout_def else {}
 
     core_cfg = core_config or (
         PHYSICS_ROOT
@@ -295,11 +299,7 @@ def build_scout_plan(
 
     scout_msh = CONV_MESH / SCOUT_LEVEL_ID / f"{case_id}.msh"
     ckpt_dir = CONV_DIAG / f"st_worker_scaling_{SCOUT_LEVEL_ID}_{run_id}"
-    stage_b_out = (
-        CONV_DIAG
-        / "solver_benchmarks"
-        / f"scout_density_discovery_{int(PLANNING_BAND_LO_HZ)}_{int(PLANNING_BAND_HI_HZ)}_step{int(DEFAULT_DISCOVERY_SPACING_HZ)}_{run_id}"
-    )
+    stage_b_out = CONV_DIAG / "solver_benchmarks" / STAGE_B_OUTPUT_STEM
 
     mesh_levels_report = [
         _mesh_level_report(lid, ldef, case_id=case_id, repo_root=repo_root, absolute_paths=absolute_paths)
@@ -310,22 +310,24 @@ def build_scout_plan(
     warnings: List[str] = []
     if not l_prod_mesh.is_file():
         warnings.append(f"L_prod mesh file not found on this host: {l_prod_mesh}")
-    if SCOUT_LEVEL_ID not in levels:
-        warnings.append(
-            f"Manifest has no {SCOUT_LEVEL_ID} yet; mesh build and Stage A --mesh-level require manifest + code updates."
-        )
+    if not scout_msh.is_file():
+        warnings.append(f"Scout mesh not built yet: {scout_msh}")
+    if ckpt_dir.is_dir():
+        warnings.append(f"Checkpoint dir already exists (preview only): {ckpt_dir}")
 
+    scout_recognized = SCOUT_LEVEL_ID in levels
     try:
         from v2_b3_checkpoint_export import ALLOWED_MESH_LEVELS  # type: ignore
 
         stage_a_allowed = sorted(ALLOWED_MESH_LEVELS)
     except Exception:
-        stage_a_allowed = ["L_mid", "L_dev_dense", "L_prod"]
+        stage_a_allowed = ["L_mid", "L_dev_dense", "L_prod", SCOUT_LEVEL_ID]
 
-    if SCOUT_LEVEL_ID not in stage_a_allowed:
-        warnings.append(
-            f"v2_b3_checkpoint_export ALLOWED_MESH_LEVELS does not include {SCOUT_LEVEL_ID}; extend before Stage A."
-        )
+    stage_a_allows_scout = SCOUT_LEVEL_ID in stage_a_allowed
+    if not scout_recognized:
+        warnings.append(f"Manifest missing mesh_levels.{SCOUT_LEVEL_ID}")
+    if not stage_a_allows_scout:
+        warnings.append(f"Stage A allowlist missing {SCOUT_LEVEL_ID}")
 
     half_width = DEFAULT_DISCOVERY_SPACING_HZ / 2.0
     plan: Dict[str, Any] = {
@@ -351,6 +353,28 @@ def build_scout_plan(
             },
             "active_dim_reference_m3exec2": L_PROD_ACTIVE_DIM_REFERENCE,
         },
+        "run_id": run_id,
+        "mesh_level": SCOUT_LEVEL_ID,
+        "L_scout_coarse_recognized_in_manifest": scout_recognized,
+        "stage_a_allows_L_scout_coarse": stage_a_allows_scout,
+        "explicit_controls_wired": True,
+        "explicit_controls_env": "FEM_MESH_EXPLICIT_CONTROLS_JSON",
+        "paths": {
+            "mesh": _format_path(scout_msh, repo_root=repo_root, absolute_paths=absolute_paths),
+            "mesh_exists": scout_msh.is_file(),
+            "checkpoint_dir": _format_path(ckpt_dir, repo_root=repo_root, absolute_paths=absolute_paths),
+            "checkpoint_dir_exists": ckpt_dir.is_dir(),
+            "stage_b_discovery_output_dir": _format_path(
+                stage_b_out, repo_root=repo_root, absolute_paths=absolute_paths
+            ),
+        },
+        "implementation_m34_1": {
+            "manifest_entry": scout_recognized,
+            "build_hook": "v2_mesh_convergence_mesh.build_level_mesh + FEM_MESH_EXPLICIT_CONTROLS_JSON",
+            "builder_hook": "FEM/geometry/build_3d_guitar.py",
+            "mesh_build_script": SCOUT_MESH_BUILD_SCRIPT,
+            "stage_a_allowlist": stage_a_allows_scout,
+        },
         "proposed_scout_level": {
             "recommended_id": SCOUT_LEVEL_ID,
             "reuse_L_dev_coarse": False,
@@ -359,14 +383,29 @@ def build_scout_plan(
                 f"(~{_controls_for_profile('validation', 2.0)['wood_surface_size_m']*1000:.0f} mm wood shell), "
                 "not FOM production geometry."
             ),
-            "explicit_controls_m": SCOUT_EXPLICIT_CONTROLS_M,
-            "explicit_controls_mm": {
-                k: round(v * 1000, 3) for k, v in SCOUT_EXPLICIT_CONTROLS_M.items() if k.endswith("_m")
+            "manifest_level_def": scout_def if scout_recognized else None,
+            "explicit_controls_m": scout_def.get("explicit_controls_m") if scout_def else None,
+            "effective_controls_m": scout_controls,
+            "effective_controls_mm": {
+                k: round(v * 1000, 3) for k, v in scout_controls.items() if k.endswith("_m")
             },
-            "implementation_gap": (
-                "explicit_controls_m not applied by build_3d_guitar.py yet; "
-                "requires manifest entry + build_level_mesh/env hook before mesh build."
-            ),
+            "operator_target_mm_mapping": {
+                "plate_thickness_detail": {
+                    "requested_mm": 3.0,
+                    "field": "wood_thickness_size_m",
+                    "resolved_mm": round(scout_controls.get("wood_thickness_size_m", 0) * 1000, 3),
+                },
+                "wood_shell": {
+                    "requested_mm": 8.5,
+                    "field": "wood_surface_size_m",
+                    "resolved_mm": round(scout_controls.get("wood_surface_size_m", 0) * 1000, 3),
+                },
+                "air_graded_min": {
+                    "requested_mm": 11.0,
+                    "field": "air_threshold_size_min_m",
+                    "resolved_mm": round(scout_controls.get("air_threshold_size_min_m", 0) * 1000, 3),
+                },
+            },
         },
         "uniform_lc_scale_compromise_table_fom": _uniform_lc_scale_table(
             "fom", [1.0, 1.21, 1.5, 2.0, 3.0]
@@ -390,7 +429,7 @@ def build_scout_plan(
             "exists": core_cfg.is_file(),
         },
         "command_previews": {
-            "mesh_build": _mesh_build_command_preview(level_id=SCOUT_LEVEL_ID, case_id=case_id),
+            "mesh_build": _mesh_build_command_preview(),
             "stage_a": _stage_a_command_preview(
                 mesh_level=SCOUT_LEVEL_ID,
                 run_id=run_id,
@@ -408,11 +447,10 @@ def build_scout_plan(
             "rule": "spacing_hz / 2 for 15 Hz grid (touching windows)",
         },
         "prerequisites_before_execution": [
-            "Add L_scout_coarse to v2_mesh_convergence_manifest.json",
-            "Wire explicit_controls_m in v2_mesh_convergence_mesh.py / build_3d_guitar.py",
-            "Extend v2_b3_checkpoint_export ALLOWED_MESH_LEVELS",
-            "Build scout .msh on VM (production mesh build env)",
-            "Stage A export on production venv; Stage B on solver-mkl venv",
+            "M3.4.1 code wiring complete (manifest, explicit controls, Stage A allowlist)",
+            "Approve and run mesh build on VM: run_v2_B3_scout_coarse_mesh_build.py",
+            "Stage A export on production venv (after mesh exists)",
+            "Stage B discovery on solver-mkl venv (after checkpoint exists)",
         ],
         "warnings": warnings,
         "documentation": (
@@ -483,7 +521,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Dry-run coarse-mesh modal-density scout inspection (no mesh/solver execution).",
     )
-    parser.add_argument("--run-id", default="scout_plan_preview", help="Suffix for preview checkpoint/output dirs")
+    parser.add_argument(
+        "--run-id",
+        default=DEFAULT_RUN_ID,
+        help="Suffix for preview checkpoint dir (default: scout_l_scout_coarse_m34)",
+    )
     parser.add_argument("--case-id", default=DEFAULT_CASE_ID)
     parser.add_argument("--core-config", type=Path, default=None, help="Overlay core config for Stage A preview")
     parser.add_argument(

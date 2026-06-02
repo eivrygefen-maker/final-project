@@ -81,6 +81,24 @@
       "lc_scale": 1.0,
       "run_gates_on_build": true
     },
+    "L_scout_coarse": {
+      "label": "FOM coarse modal-density scout mesh (planning only; not final physics)",
+      "build_env": {"FEM_ALLOW_FOM": "1"},
+      "lc_scale": 1.0,
+      "explicit_controls_m": {
+        "wood_thickness_size_m": 0.003,
+        "wood_surface_size_m": 0.0085,
+        "air_threshold_size_min_m": 0.011,
+        "air_threshold_size_max_m": 0.055
+      },
+      "purpose": "scout_modal_density_only",
+      "production_physics": false,
+      "final_results": false,
+      "modal_density_scout_only": true,
+      "not_authorized_for_final_physics_validation": true,
+      "run_gates_on_build": true,
+      "lc_scale_rationale": "lc_scale=1.0; per-region sizes via explicit_controls_m (FEM_MESH_EXPLICIT_CONTROLS_JSON) — plate ~3mm, wood shell ~8.5mm, air min ~11mm"
+    },
     "L_check": {
       "label": "optional finer-than-L_prod confirmation",
       "build_env": {"FEM_ALLOW_FOM": "1"},

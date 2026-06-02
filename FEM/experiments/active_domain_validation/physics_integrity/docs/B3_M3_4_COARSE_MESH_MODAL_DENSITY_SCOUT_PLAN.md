@@ -1,9 +1,39 @@
 # B3 M3.4 — Coarse-mesh modal-density scout (planning)
 
-**Status:** Planning and inspection only — no mesh generation, no Stage A/B execution, no cleanup.  
+**Status:** M3.4.1 mesh-level support **implemented** (manifest + explicit controls + Stage A allowlist). **No mesh build, Stage A, or Stage B executed** until VM approval.  
 **Supersedes (strategy):** Wide-band discovery on the **full `L_prod` checkpoint** as the primary modal-density scout. See [`B3_M3_4_PRE_COARSE_FREQUENCY_PLANNER.md`](B3_M3_4_PRE_COARSE_FREQUENCY_PLANNER.md) for frequency-grid / discovery-flag mechanics **after** a scout checkpoint exists.  
-**Tool:** `scripts/v2_b3_coarse_mesh_scout_plan.py` (dry-run report, `will_execute=false`)  
+**Tools:** `scripts/v2_b3_coarse_mesh_scout_plan.py` (dry-run), `scripts/run_v2_B3_scout_coarse_mesh_build.py` (mesh build — not run yet)  
 **Wrong-direction evidence (discard):** `target_density_discovery_60_550_step15_m3exec2` on `L_prod` — expensive mesh + env/setup failure; not zone calibration input.
+
+---
+
+## M3.4.1 implementation status (2026-06-02)
+
+| Item | Status |
+|------|--------|
+| `L_scout_coarse` in `v2_mesh_convergence_manifest.json` | **Done** — `purpose=scout_modal_density_only`, `production_physics=false`, `final_results=false` |
+| Explicit per-region controls | **Done** — `explicit_controls_m` → `FEM_MESH_EXPLICIT_CONTROLS_JSON` in `build_3d_guitar.py` |
+| `effective_controls_from_level_def()` | **Done** — `v2_mesh_convergence_mesh.py` |
+| Stage A `--mesh-level L_scout_coarse` | **Done** — `v2_b3_checkpoint_export.py` allowlist |
+| Mesh build entrypoint | **Done** — `run_v2_B3_scout_coarse_mesh_build.py` (not executed) |
+| Mesh file / checkpoint | **Pending VM approval** |
+
+### Operator mm → manifest / builder field mapping (`L_scout_coarse`)
+
+| Operator target | mm | Manifest / env JSON key | `build_3d_guitar.py` variable |
+|-----------------|-----|-------------------------|-------------------------------|
+| Plate / thickness / detail | **3** | `wood_thickness_size_m` = `0.003` | `wood_thickness_size` |
+| Wood shell (top/back/ribs) | **8.5** | `wood_surface_size_m` = `0.0085` | `wood_surface_size` |
+| Air graded min | **11** | `air_threshold_size_min_m` = `0.011` | `air_threshold_size_min` |
+| Air graded max (control) | *(55)* | `air_threshold_size_max_m` = `0.055` | `air_threshold_size_max` |
+
+FOM distance bands unchanged at scout level: `air_threshold_dist_min_m` = `0.015`, `air_threshold_dist_max_m` = `0.25` (from FOM base × `lc_scale=1.0`).
+
+**Preview paths** (`run_id=scout_l_scout_coarse_m34`):
+
+- Mesh: `v2_mesh_convergence/mesh/L_scout_coarse/baseline_coupled_v2.msh`
+- Checkpoint: `v2_mesh_convergence/diagnostics/st_worker_scaling_L_scout_coarse_scout_l_scout_coarse_m34`
+- Stage B output: `v2_mesh_convergence/diagnostics/solver_benchmarks/target_density_discovery_60_550_step15_L_scout_coarse_m34`
 
 ---
 
@@ -87,26 +117,23 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2
 
 ## 4. Existing coarse / scout checkpoints?
 
-| Artifact | Expected on disk | This workspace |
-|----------|------------------|----------------|
-| `mesh/L_prod/baseline_coupled_v2.msh` | After prod mesh build | **Not present** (no `.msh` under `v2_mesh_convergence/`) |
-| `mesh/L_dev_coarse/...` | After dev coarse build | **Not present** |
-| `diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2` | M3 PASS checkpoint | **Not present** (VM artifact; referenced in specs) |
-| Any `L_scout_coarse` checkpoint | N/A — level **not defined yet** | **No** |
-
-**Conclusion:** No local scout checkpoint; M3 `L_prod` checkpoint exists only on the execution VM unless copied back.
+| Artifact | Status |
+|----------|--------|
+| `mesh/L_scout_coarse/baseline_coupled_v2.msh` | **Not built** (awaiting VM approval) |
+| `st_worker_scaling_L_scout_coarse_scout_l_scout_coarse_m34` | **Not exported** |
+| M3 `L_prod` m3exec2 checkpoint | VM artifact (reference only) |
 
 ---
 
-## 5. Stage A command to build a coarse scout checkpoint (preview only)
+## 5. Stage A / mesh build commands (preview only — M3.4.1)
 
-**Prerequisites (not done in this planning step):**
+**Mesh build** (production/FOM mesh environment; not run until approved):
 
-1. Add manifest level **`L_scout_coarse`** (see §7–8).
-2. Build mesh: `v2_mesh_convergence/mesh/L_scout_coarse/baseline_coupled_v2.msh`.
-3. Extend Stage A `--mesh-level` choices to include `L_scout_coarse` (or map scout mesh via `--core-config` with explicit `solver.mesh_file` while keeping export contract).
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_B3_scout_coarse_mesh_build.py
+```
 
-**Dry-run Stage A preview** (after mesh exists; production venv; timing overlay example):
+**Stage A** (after mesh exists; production venv):
 
 ```bash
 python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py \
@@ -114,17 +141,10 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
   --B3-block-compose-backend csr_bulk \
   --B3-synthesis-region-dofs off \
   --core-config "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_001_timing/resolved_core_config.json" \
-  --output-dir "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_scout_coarse_scout_m1"
+  --output-dir "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_scout_coarse_scout_l_scout_coarse_m34"
 ```
 
-**Mesh-build preview** (new level — pattern mirrors `run_v2_B3_dev_coarse_mesh_build.py` but FOM env):
-
-```bash
-python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_mesh_convergence.py \
-  --levels L_scout_coarse --cases baseline_coupled_v2
-```
-
-*(Requires `L_scout_coarse` in manifest and, for non-uniform sizing, small `build_level_mesh` / `build_3d_guitar.py` extension — see §8.)*
+Dry-run inspection: `v2_b3_coarse_mesh_scout_plan.py --run-id scout_l_scout_coarse_m34`
 
 ---
 
@@ -132,51 +152,25 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2
 
 | Candidate | Verdict |
 |-----------|---------|
-| **`L_scout_coarse`** | **Recommended** — FOM geometry, explicit scout controls, not confused with validation `L_dev_*` smoke meshes |
-| Reuse **`L_dev_coarse`** | **Reject** — validation pipeline (`FEM_VALIDATION_MESH`); at `lc_scale=2.0` effective sizes are ~**28 mm** wood / **6 mm** plate / **18 mm** air min — far from scout targets and wrong CAD profile |
+| **`L_scout_coarse`** | **In manifest (M3.4.1)** — FOM geometry, explicit scout controls |
+| Reuse **`L_dev_coarse`** | **Reject** — validation pipeline (`FEM_VALIDATION_MESH`); at `lc_scale=2.0` effective sizes are ~**28 mm** wood / **6 mm** plate / **18 mm** air min |
 
 ---
 
-## 7. Mapping proposed scout sizing (~3 / ~8.5 / ~11 mm)
+## 7. Mapping scout sizing (~3 / ~8.5 / ~11 mm) — implemented
 
-**Target (operator compromise, mm):**
+**Target vs `L_prod` (verified):**
 
-| Region | `L_prod` (verified) | Scout target |
-|--------|---------------------|--------------|
-| Plate / thickness | 1 | **~3** |
-| Wood shell | 7 | **~8–9** |
-| Air (min) | 4 | **~10–12** |
+| Region | `L_prod` (mm) | `L_scout_coarse` (mm) | Field |
+|--------|---------------|------------------------|-------|
+| Plate / thickness | 1 | **3** | `wood_thickness_size_m` |
+| Wood shell | 7 | **8.5** | `wood_surface_size_m` |
+| Air (min) | 4 | **11** | `air_threshold_size_min_m` |
+| Air (max control) | 50 | **55** | `air_threshold_size_max_m` |
 
-**Uniform `FEM_MESH_LC_SCALE` on FOM cannot hit all three simultaneously:**
+**Wiring:** `v2_mesh_convergence_manifest.json` → `build_level_mesh()` sets `FEM_MESH_EXPLICIT_CONTROLS_JSON` → `build_3d_guitar.py` applies overrides after `FEM_MESH_LC_SCALE`.
 
-| `lc_scale` | Plate mm | Wood mm | Air min mm |
-|------------|----------|---------|------------|
-| 1.0 (`L_prod`) | 1.0 | 7.0 | 4.0 |
-| 1.21 | 1.2 | 8.5 | 4.8 |
-| 1.5 | 1.5 | 10.5 | 6.0 |
-| 3.0 | 3.0 | 21.0 | 12.0 |
-
-**Recommended manifest entry (explicit controls, `lc_scale=1.0`):**
-
-```json
-"L_scout_coarse": {
-  "label": "FOM coarse modal-density scout (planning only; not final validation)",
-  "build_env": {"FEM_ALLOW_FOM": "1"},
-  "lc_scale": 1.0,
-  "explicit_controls_m": {
-    "wood_thickness_size_m": 0.003,
-    "wood_surface_size_m": 0.0085,
-    "air_threshold_size_min_m": 0.011,
-    "air_threshold_size_max_m": 0.055
-  },
-  "run_gates_on_build": true,
-  "solver_smoke_test_only": false,
-  "modal_density_scout_only": true,
-  "not_authorized_for_final_physics_validation": true
-}
-```
-
-**Implementation note:** `explicit_controls_m` is **not** wired today; `build_3d_guitar.py` only reads env profile + `FEM_MESH_LC_SCALE`. Safest follow-up: teach `v2_mesh_convergence_mesh.py` to pass optional per-field env overrides (or a single `FEM_MESH_EXPLICIT_CONTROLS_JSON`). Until then, **`lc_scale≈1.2–1.5`** is a fallback compromise (closer on wood/air, plate still finer than 3 mm unless scale ≥ 3).
+Uniform `FEM_MESH_LC_SCALE` alone cannot hit 3 / 8.5 / 11 mm simultaneously (see scout plan `uniform_lc_scale_compromise_table_fom`); explicit controls are required.
 
 ---
 
@@ -264,15 +258,15 @@ Planner artifact schema can reuse `b3_coarse_frequency_plan_v2` **after** checkp
 
 ---
 
-## 14. Safest first non-execution step (this milestone)
+## 14. Next safe steps (post M3.4.1)
 
-1. Run `v2_b3_coarse_mesh_scout_plan.py` (dry-run JSON/MD report).
-2. Confirm manifest/code sizing table vs operator targets (§7).
-3. Review prerequisite code changes (`L_scout_coarse`, explicit controls, Stage A mesh-level allowlist).
-4. Approve mesh build + Stage A on VM.
-5. Only then: Stage B discovery on scout checkpoint.
+1. On VM: `python .../v2_b3_coarse_mesh_scout_plan.py --run-id scout_l_scout_coarse_m34` (verify `will_execute=false`, controls 3 / 8.5 / 11 mm).
+2. **Approve** `run_v2_B3_scout_coarse_mesh_build.py` (mesh only).
+3. Re-run scout plan; confirm `mesh_exists=true`.
+4. **Approve** Stage A export → checkpoint dir above.
+5. **Approve** Stage B discovery → `target_density_discovery_60_550_step15_L_scout_coarse_m34`.
 
-**Explicitly out of scope until approved:** Gmsh build, Stage A export, Stage B solves, deleting `m3exec*` or wrong-direction run dirs.
+**Still out of scope until approved:** mesh build, Stage A, Stage B, deleting wrong-direction `L_prod` density diagnostic.
 
 ---
 

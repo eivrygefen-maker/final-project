@@ -557,6 +557,49 @@ def create_guitar_mesh():
             flush=True,
         )
 
+    _explicit_raw = os.environ.get("FEM_MESH_EXPLICIT_CONTROLS_JSON", "").strip()
+    if _explicit_raw:
+        _ov = json.loads(_explicit_raw)
+        if not isinstance(_ov, dict):
+            raise ValueError("FEM_MESH_EXPLICIT_CONTROLS_JSON must be a JSON object")
+        _manifest_to_var = {
+            "wood_surface_size_m": "wood_surface_size",
+            "wood_thickness_size_m": "wood_thickness_size",
+            "air_threshold_size_min_m": "air_threshold_size_min",
+            "air_threshold_size_max_m": "air_threshold_size_max",
+            "air_threshold_dist_min_m": "air_threshold_dist_min",
+            "air_threshold_dist_max_m": "air_threshold_dist_max",
+        }
+        _sizes = {
+            "wood_surface_size": wood_surface_size,
+            "wood_thickness_size": wood_thickness_size,
+            "air_threshold_size_min": air_threshold_size_min,
+            "air_threshold_size_max": air_threshold_size_max,
+            "air_threshold_dist_min": air_threshold_dist_min,
+            "air_threshold_dist_max": air_threshold_dist_max,
+        }
+        for mk, mv in _ov.items():
+            if mk not in _manifest_to_var:
+                raise ValueError(
+                    f"unsupported FEM_MESH_EXPLICIT_CONTROLS_JSON key {mk!r}; "
+                    f"allowed: {sorted(_manifest_to_var)}"
+                )
+            _sizes[_manifest_to_var[mk]] = float(mv)
+        wood_surface_size = _sizes["wood_surface_size"]
+        wood_thickness_size = _sizes["wood_thickness_size"]
+        air_threshold_size_min = _sizes["air_threshold_size_min"]
+        air_threshold_size_max = _sizes["air_threshold_size_max"]
+        air_threshold_dist_min = _sizes["air_threshold_dist_min"]
+        air_threshold_dist_max = _sizes["air_threshold_dist_max"]
+        print(
+            "[diag] FEM_MESH_EXPLICIT_CONTROLS_JSON applied: "
+            f"wood_surface={wood_surface_size*1000:.3f}mm, "
+            f"wood_thickness={wood_thickness_size*1000:.3f}mm, "
+            f"air_min={air_threshold_size_min*1000:.3f}mm, "
+            f"air_max={air_threshold_size_max*1000:.3f}mm",
+            flush=True,
+        )
+
     # Display: uniform 12 mm (visualization only). Preview/FOM: graded fields unchanged.
     if is_display:
         mesh_size = DISPLAY_GLOBAL_LC_M
