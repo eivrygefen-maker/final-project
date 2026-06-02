@@ -141,6 +141,8 @@ def _preview_for_row(repo_root: Path, row: Dict[str, Any]) -> Dict[str, Any]:
     placeholder_payload = _has_placeholder_payload(row)
     paths = _build_paths(repo_root, mesh_level, run_id)
 
+    policy_rich_requested = bool(row.get("rich_requested"))
+    policy_synthesis_requested = bool(row.get("synthesis_requested"))
     rich = mode in ("rich", "synthesis")
     c_requested = mode == "synthesis"
 
@@ -148,6 +150,8 @@ def _preview_for_row(repo_root: Path, row: Dict[str, Any]) -> Dict[str, Any]:
     if placeholder_payload:
         warnings.append("placeholder_parameter_payload")
         warnings.append("physical_lhs_ready=false")
+    if policy_synthesis_requested and not policy_rich_requested:
+        warnings.append("synthesis_implies_rich_export")
 
     return {
         "sample_id": sample_id,
@@ -163,8 +167,9 @@ def _preview_for_row(repo_root: Path, row: Dict[str, Any]) -> Dict[str, Any]:
         "warnings": warnings,
         "policy_flags": {
             "timing_only": bool(row.get("timing_only")),
-            "rich_requested": bool(row.get("rich_requested")),
-            "synthesis_requested": bool(row.get("synthesis_requested")),
+            "rich_requested": policy_rich_requested,
+            "synthesis_requested": policy_synthesis_requested,
+            "effective_rich_requested": bool(rich),
         },
         "initial_stage_status": {"A": a_status, "B": b_status, "C": c_status},
         "predicted_commands": {

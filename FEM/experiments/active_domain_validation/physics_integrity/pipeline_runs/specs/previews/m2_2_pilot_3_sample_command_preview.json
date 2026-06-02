@@ -1,6 +1,6 @@
 {
   "schema": "b3_lhs_orchestrator_preview_v1",
-  "generated_utc": "2026-06-02T10:56:24Z",
+  "generated_utc": "2026-06-02T11:02:40Z",
   "samples_jsonl": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\pipeline_runs\\specs\\m2_1_pilot_3_samples.jsonl",
   "repo_root": "C:\\projects\\final-project\\final-project",
   "will_execute": false,
@@ -42,7 +42,8 @@
       "policy_flags": {
         "timing_only": true,
         "rich_requested": false,
-        "synthesis_requested": false
+        "synthesis_requested": false,
+        "effective_rich_requested": false
       },
       "initial_stage_status": {
         "A": "PENDING",
@@ -93,7 +94,8 @@
       "policy_flags": {
         "timing_only": true,
         "rich_requested": false,
-        "synthesis_requested": false
+        "synthesis_requested": false,
+        "effective_rich_requested": false
       },
       "initial_stage_status": {
         "A": "PENDING",
@@ -144,7 +146,8 @@
       "policy_flags": {
         "timing_only": false,
         "rich_requested": true,
-        "synthesis_requested": true
+        "synthesis_requested": true,
+        "effective_rich_requested": true
       },
       "initial_stage_status": {
         "A": "PENDING",
