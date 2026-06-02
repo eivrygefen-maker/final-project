@@ -1,6 +1,6 @@
 {
   "schema": "b3_coarse_scout_lhs_batch_plan_v1",
-  "generated_utc": "2026-06-02T22:55:12Z",
+  "generated_utc": "2026-06-02T23:01:13Z",
   "dry_run": true,
   "will_execute": false,
   "mesh_level": "L_scout_coarse",
@@ -17,11 +17,16 @@
   "env": {
     "stage_a": {
       "python": "/home/vboxuser/final-project/.venv/bin/python",
-      "profile": "production_venv"
+      "prod_venv": "/home/vboxuser/final-project/.venv",
+      "profile": "production_venv_strict",
+      "VIRTUAL_ENV_set": "/home/vboxuser/final-project/.venv",
+      "PETSC_DIR": "/usr/lib/petscdir/petsc3.15/x86_64-linux-gnu-real",
+      "note": "Does not inherit parent VIRTUAL_ENV; PATH strips solver-mkl/bin"
     },
     "stage_b": {
       "python": "/home/vboxuser/solver-mkl/venv/bin/python",
-      "profile": "solver_mkl_isolated",
+      "solver_venv": "/home/vboxuser/solver-mkl/venv",
+      "profile": "solver_mkl_isolated_strict",
       "unset": [
         "PYTHONPATH",
         "PETSC_DIR",
@@ -51,9 +56,9 @@
       "density_pass": false,
       "skip_stage_a": false,
       "skip_stage_b": false,
-      "stage_a_cmd": "/home/vboxuser/final-project/.venv/bin/python C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\scripts\\v2_b3_checkpoint_export.py --mesh-level L_scout_coarse --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/scout_lhs_pilot_001_timing_m34/resolved_core_config.json --output-dir C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_scout_coarse_scout_lhs_pilot_001_timing_m34",
-      "stage_b_cmd": "/home/vboxuser/solver-mkl/venv/bin/python C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\scripts\\v2_b3_checkpoint_target_density_experiment.py --checkpoint-dir C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_scout_coarse_scout_lhs_pilot_001_timing_m34 --reference-json C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\pipeline_runs\\specs\\scout_discovery_reference_stub.json --start-hz 60.0 --stop-hz 550.0 --spacings-hz 7.5 --B3-discovery-mode --discovery-band-hz 60.0 550.0 --target-window-half-width-hz 3.75 --output-dir C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\solver_benchmarks\\target_density_discovery_60_550_step7p5_scout_lhs_pilot_001_timing_m34",
-      "readiness_status": "PENDING_MESH"
+      "stage_a_cmd": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_scout_coarse --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/scout_lhs_pilot_001_timing_m34/resolved_core_config.json --output-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_scout_coarse_scout_lhs_pilot_001_timing_m34",
+      "stage_b_cmd": "/home/vboxuser/solver-mkl/venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_target_density_experiment.py --checkpoint-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_scout_coarse_scout_lhs_pilot_001_timing_m34 --reference-json FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/specs/scout_discovery_reference_stub.json --start-hz 60.0 --stop-hz 550.0 --spacings-hz 7.5 --B3-discovery-mode --discovery-band-hz 60.0 550.0 --target-window-half-width-hz 3.75 --output-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/target_density_discovery_60_550_step7p5_scout_lhs_pilot_001_timing_m34",
+      "readiness_status": "REUSED"
     },
     {
       "sample_id": "lhs_pilot_002_timing",
@@ -75,9 +80,9 @@
       "density_pass": false,
       "skip_stage_a": false,
       "skip_stage_b": false,
-      "stage_a_cmd": "/home/vboxuser/final-project/.venv/bin/python C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\scripts\\v2_b3_checkpoint_export.py --mesh-level L_scout_coarse --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/scout_lhs_pilot_002_timing_m34/resolved_core_config.json --output-dir C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_scout_coarse_scout_lhs_pilot_002_timing_m34",
-      "stage_b_cmd": "/home/vboxuser/solver-mkl/venv/bin/python C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\scripts\\v2_b3_checkpoint_target_density_experiment.py --checkpoint-dir C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_scout_coarse_scout_lhs_pilot_002_timing_m34 --reference-json C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\pipeline_runs\\specs\\scout_discovery_reference_stub.json --start-hz 60.0 --stop-hz 550.0 --spacings-hz 7.5 --B3-discovery-mode --discovery-band-hz 60.0 550.0 --target-window-half-width-hz 3.75 --output-dir C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\solver_benchmarks\\target_density_discovery_60_550_step7p5_scout_lhs_pilot_002_timing_m34",
-      "readiness_status": "PENDING_MESH"
+      "stage_a_cmd": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_scout_coarse --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/scout_lhs_pilot_002_timing_m34/resolved_core_config.json --output-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_scout_coarse_scout_lhs_pilot_002_timing_m34",
+      "stage_b_cmd": "/home/vboxuser/solver-mkl/venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_target_density_experiment.py --checkpoint-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_scout_coarse_scout_lhs_pilot_002_timing_m34 --reference-json FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/specs/scout_discovery_reference_stub.json --start-hz 60.0 --stop-hz 550.0 --spacings-hz 7.5 --B3-discovery-mode --discovery-band-hz 60.0 550.0 --target-window-half-width-hz 3.75 --output-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/target_density_discovery_60_550_step7p5_scout_lhs_pilot_002_timing_m34",
+      "readiness_status": "REUSED"
     },
     {
       "sample_id": "lhs_pilot_003_synthesis",
@@ -99,9 +104,9 @@
       "density_pass": false,
       "skip_stage_a": false,
       "skip_stage_b": false,
-      "stage_a_cmd": "/home/vboxuser/final-project/.venv/bin/python C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\scripts\\v2_b3_checkpoint_export.py --mesh-level L_scout_coarse --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/scout_lhs_pilot_003_synthesis_m34/resolved_core_config.json --output-dir C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_scout_coarse_scout_lhs_pilot_003_synthesis_m34",
-      "stage_b_cmd": "/home/vboxuser/solver-mkl/venv/bin/python C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\scripts\\v2_b3_checkpoint_target_density_experiment.py --checkpoint-dir C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_scout_coarse_scout_lhs_pilot_003_synthesis_m34 --reference-json C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\pipeline_runs\\specs\\scout_discovery_reference_stub.json --start-hz 60.0 --stop-hz 550.0 --spacings-hz 7.5 --B3-discovery-mode --discovery-band-hz 60.0 550.0 --target-window-half-width-hz 3.75 --output-dir C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\solver_benchmarks\\target_density_discovery_60_550_step7p5_scout_lhs_pilot_003_synthesis_m34",
-      "readiness_status": "PENDING_MESH"
+      "stage_a_cmd": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_scout_coarse --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/scout_lhs_pilot_003_synthesis_m34/resolved_core_config.json --output-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_scout_coarse_scout_lhs_pilot_003_synthesis_m34",
+      "stage_b_cmd": "/home/vboxuser/solver-mkl/venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_target_density_experiment.py --checkpoint-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_scout_coarse_scout_lhs_pilot_003_synthesis_m34 --reference-json FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/specs/scout_discovery_reference_stub.json --start-hz 60.0 --stop-hz 550.0 --spacings-hz 7.5 --B3-discovery-mode --discovery-band-hz 60.0 550.0 --target-window-half-width-hz 3.75 --output-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/target_density_discovery_60_550_step7p5_scout_lhs_pilot_003_synthesis_m34",
+      "readiness_status": "REUSED"
     },
     {
       "sample_id": "lhs_scout_ext_004",
@@ -123,9 +128,9 @@
       "density_pass": false,
       "skip_stage_a": false,
       "skip_stage_b": false,
-      "stage_a_cmd": "/home/vboxuser/final-project/.venv/bin/python C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\scripts\\v2_b3_checkpoint_export.py --mesh-level L_scout_coarse --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/scout_lhs_scout_ext_004_m34/resolved_core_config.json --output-dir C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_scout_coarse_scout_lhs_scout_ext_004_m34",
-      "stage_b_cmd": "/home/vboxuser/solver-mkl/venv/bin/python C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\scripts\\v2_b3_checkpoint_target_density_experiment.py --checkpoint-dir C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_scout_coarse_scout_lhs_scout_ext_004_m34 --reference-json C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\pipeline_runs\\specs\\scout_discovery_reference_stub.json --start-hz 60.0 --stop-hz 550.0 --spacings-hz 7.5 --B3-discovery-mode --discovery-band-hz 60.0 550.0 --target-window-half-width-hz 3.75 --output-dir C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\solver_benchmarks\\target_density_discovery_60_550_step7p5_scout_lhs_scout_ext_004_m34",
-      "readiness_status": "PENDING_MESH"
+      "stage_a_cmd": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_scout_coarse --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/scout_lhs_scout_ext_004_m34/resolved_core_config.json --output-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_scout_coarse_scout_lhs_scout_ext_004_m34",
+      "stage_b_cmd": "/home/vboxuser/solver-mkl/venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_target_density_experiment.py --checkpoint-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_scout_coarse_scout_lhs_scout_ext_004_m34 --reference-json FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/specs/scout_discovery_reference_stub.json --start-hz 60.0 --stop-hz 550.0 --spacings-hz 7.5 --B3-discovery-mode --discovery-band-hz 60.0 550.0 --target-window-half-width-hz 3.75 --output-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/target_density_discovery_60_550_step7p5_scout_lhs_scout_ext_004_m34",
+      "readiness_status": "REUSED"
     },
     {
       "sample_id": "lhs_scout_ext_005",
@@ -147,9 +152,9 @@
       "density_pass": false,
       "skip_stage_a": false,
       "skip_stage_b": false,
-      "stage_a_cmd": "/home/vboxuser/final-project/.venv/bin/python C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\scripts\\v2_b3_checkpoint_export.py --mesh-level L_scout_coarse --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/scout_lhs_scout_ext_005_m34/resolved_core_config.json --output-dir C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_scout_coarse_scout_lhs_scout_ext_005_m34",
-      "stage_b_cmd": "/home/vboxuser/solver-mkl/venv/bin/python C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\scripts\\v2_b3_checkpoint_target_density_experiment.py --checkpoint-dir C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_scout_coarse_scout_lhs_scout_ext_005_m34 --reference-json C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\pipeline_runs\\specs\\scout_discovery_reference_stub.json --start-hz 60.0 --stop-hz 550.0 --spacings-hz 7.5 --B3-discovery-mode --discovery-band-hz 60.0 550.0 --target-window-half-width-hz 3.75 --output-dir C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\solver_benchmarks\\target_density_discovery_60_550_step7p5_scout_lhs_scout_ext_005_m34",
-      "readiness_status": "PENDING_MESH"
+      "stage_a_cmd": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_scout_coarse --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/scout_lhs_scout_ext_005_m34/resolved_core_config.json --output-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_scout_coarse_scout_lhs_scout_ext_005_m34",
+      "stage_b_cmd": "/home/vboxuser/solver-mkl/venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_target_density_experiment.py --checkpoint-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_scout_coarse_scout_lhs_scout_ext_005_m34 --reference-json FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/specs/scout_discovery_reference_stub.json --start-hz 60.0 --stop-hz 550.0 --spacings-hz 7.5 --B3-discovery-mode --discovery-band-hz 60.0 550.0 --target-window-half-width-hz 3.75 --output-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/target_density_discovery_60_550_step7p5_scout_lhs_scout_ext_005_m34",
+      "readiness_status": "REUSED"
     }
   ],
   "sample_count_note": "5 samples: 3 pilot + 2 synthetic extensions (lhs_scout_ext_004/005). Replace JSONL when additional LHS material specs are available for 6-8."

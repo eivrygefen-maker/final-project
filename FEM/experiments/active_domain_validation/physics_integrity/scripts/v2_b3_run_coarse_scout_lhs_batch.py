@@ -33,8 +33,45 @@ STAGE_A_SCRIPT = str(SCRIPTS_REL / "v2_b3_checkpoint_export.py")
 STAGE_B_SCRIPT = str(SCRIPTS_REL / "v2_b3_checkpoint_target_density_experiment.py")
 
 DEFAULT_PROD_PYTHON = "/home/vboxuser/final-project/.venv/bin/python"
+DEFAULT_PROD_VENV = "/home/vboxuser/final-project/.venv"
 DEFAULT_SOLVER_PYTHON = "/home/vboxuser/solver-mkl/venv/bin/python"
 SOLVER_MKL_VENV = "/home/vboxuser/solver-mkl/venv"
+
+PETSC_DIR_PROD = "/usr/lib/petscdir/petsc3.15/x86_64-linux-gnu-real"
+SLEPC_DIR_PROD = "/usr/lib/slepcdir/slepc3.15/x86_64-linux-gnu-real"
+STAGE_B_ENV_UNSET: Tuple[str, ...] = ("PYTHONPATH", "PETSC_DIR", "SLEPC_DIR", "PYTHONHOME")
+
+STAGE_A_ENV_PROBE = """
+import os
+import sys
+import petsc4py
+print(sys.executable)
+print(petsc4py.__file__)
+print(os.environ.get("VIRTUAL_ENV", ""))
+import dolfinx  # noqa: F401
+import mpi4py  # noqa: F401
+print("ok")
+""".strip()
+
+STAGE_B_ENV_PROBE = """
+import os
+import petsc4py
+import slepc4py
+import sys
+print(sys.executable)
+print(petsc4py.__file__)
+print(slepc4py.__file__)
+print(os.environ.get("VIRTUAL_ENV", ""))
+try:
+    import dolfinx
+    raise SystemExit("unexpected dolfinx importable")
+except ModuleNotFoundError:
+    pass
+print("ok")
+""".strip()
+
+# Minimal inherited keys for subprocess (avoid parent VIRTUAL_ENV / PYTHONPATH).
+_SUBPROCESS_INHERIT_KEYS = ("HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "TERM")
 
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
@@ -42,10 +79,7 @@ if str(SCRIPT_DIR) not in sys.path:
 from v2_b3_m3_orchestrator_run_one import (  # noqa: E402
     DEFAULT_PROD_PYTHON as M3_PROD_PYTHON,
     DEFAULT_SOLVER_PYTHON as M3_SOLVER_PYTHON,
-    STAGE_B_ENV_UNSET,
-    _prod_subprocess_env,
     _run_subprocess,
-    _solver_mkl_subprocess_env,
     _verify_stage_a_export,
 )
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
@@ -70,6 +104,213 @@ from v2_b3_resolve_pilot_core_config import (  # noqa: E402
 
 def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _venv_root_from_python(python_exe: str, *, fallback: str) -> Path:
+    p = Path(python_exe).expanduser()
+    if p.name in ("python", "python3") and p.parent.name == "bin":
+        return p.parent.parent.resolve()
+    return Path(fallback).expanduser().resolve()
+
+
+def _path_without_venv_bins(path_str: str, *, exclude_venv_roots: List[Path]) -> str:
+    """Drop PATH entries under excluded venv roots (e.g. solver-mkl, production .venv)."""
+    if not path_str:
+        return ""
+    exclude = [str(v.resolve()) for v in exclude_venv_roots]
+    kept: List[str] = []
+    for part in path_str.split(os.pathsep):
+        if not part:
+            continue
+        part_res = str(Path(part).resolve())
+        skip = False
+        for root in exclude:
+            if part_res == root or part_res.startswith(root + os.sep):
+                skip = True
+                break
+        if not skip:
+            kept.append(part)
+    return os.pathsep.join(kept)
+
+
+def _minimal_subprocess_base() -> Dict[str, str]:
+    return {k: os.environ[k] for k in _SUBPROCESS_INHERIT_KEYS if k in os.environ}
+
+
+def _prod_subprocess_env_strict(
+    *,
+    prod_python: str,
+    prod_venv: str,
+) -> Dict[str, str]:
+    """Isolated production env; never inherit parent VIRTUAL_ENV (solver-mkl guard)."""
+    venv_root = Path(prod_venv).expanduser().resolve()
+    venv_bin = venv_root / "bin"
+    prod_root = _venv_root_from_python(prod_python, fallback=prod_venv)
+    solver_root = Path(SOLVER_MKL_VENV).expanduser().resolve()
+    env = _minimal_subprocess_base()
+    env["VIRTUAL_ENV"] = str(venv_root)
+    base_path = _path_without_venv_bins(os.environ.get("PATH", ""), exclude_venv_roots=[solver_root, prod_root])
+    env["PATH"] = f"{venv_bin}{os.pathsep}{base_path}" if base_path else str(venv_bin)
+    env["PETSC_DIR"] = PETSC_DIR_PROD
+    env["SLEPC_DIR"] = SLEPC_DIR_PROD
+    env["PYTHONPATH"] = os.pathsep.join(
+        [
+            f"{PETSC_DIR_PROD}/lib/python3/dist-packages",
+            f"{SLEPC_DIR_PROD}/lib/python3/dist-packages",
+            "/usr/lib/python3/dist-packages",
+        ]
+    )
+    env.pop("PYTHONHOME", None)
+    return env
+
+
+def _solver_mkl_subprocess_env_strict(
+    *,
+    solver_python: str,
+    solver_venv: str,
+) -> Dict[str, str]:
+    """Isolated solver-mkl env; strip production PETSc PYTHONPATH contamination."""
+    venv_root = Path(solver_venv).expanduser().resolve()
+    venv_bin = venv_root / "bin"
+    prod_root = Path(DEFAULT_PROD_VENV).expanduser().resolve()
+    env = _minimal_subprocess_base()
+    for key in STAGE_B_ENV_UNSET:
+        env.pop(key, None)
+    env["VIRTUAL_ENV"] = str(venv_root)
+    base_path = _path_without_venv_bins(os.environ.get("PATH", ""), exclude_venv_roots=[venv_root, prod_root])
+    env["PATH"] = f"{venv_bin}{os.pathsep}{base_path}" if base_path else str(venv_bin)
+    env.pop("PYTHONHOME", None)
+    return env
+
+
+def _run_env_probe(
+    *,
+    python: str,
+    script: str,
+    env: Dict[str, str],
+    cwd: Path,
+) -> Tuple[int, str]:
+    proc = subprocess.run(
+        [python, "-c", script],
+        cwd=str(cwd),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    return int(proc.returncode), proc.stdout or ""
+
+
+def _verify_stage_a_env_probe(
+    output: str,
+    *,
+    prod_python: str,
+    prod_venv: str,
+) -> Tuple[bool, str]:
+    lines = [ln.strip() for ln in output.strip().splitlines() if ln.strip()]
+    if len(lines) < 4:
+        return False, f"probe_output_incomplete:{output!r}"
+    exe, petsc_file, virtual_env, last = lines[0], lines[1], lines[2], lines[-1]
+    try:
+        if Path(exe).resolve() != Path(prod_python).expanduser().resolve():
+            return False, f"executable_mismatch:{exe}"
+    except OSError as exc:
+        return False, f"executable_resolve_error:{exc}"
+    petsc_norm = petsc_file.replace("\\", "/")
+    if PETSC_DIR_PROD not in petsc_norm and "/usr/lib/petscdir/" not in petsc_norm:
+        return False, f"petsc4py_not_system_petsc:{petsc_file}"
+    venv_norm = virtual_env.replace("\\", "/")
+    prod_norm = str(Path(prod_venv).expanduser().resolve()).replace("\\", "/")
+    if "solver-mkl" in venv_norm:
+        return False, f"virtual_env_solver_mkl:{virtual_env}"
+    if prod_norm not in venv_norm and venv_norm != prod_norm:
+        return False, f"virtual_env_mismatch:{virtual_env}"
+    if last != "ok":
+        return False, f"probe_missing_ok_marker:{last!r}"
+    return True, "ok"
+
+
+def _verify_stage_b_env_probe(
+    output: str,
+    *,
+    solver_python: str,
+    solver_venv: str,
+) -> Tuple[bool, str]:
+    lines = [ln.strip() for ln in output.strip().splitlines() if ln.strip()]
+    if len(lines) < 5:
+        return False, f"probe_output_incomplete:{output!r}"
+    exe, petsc_file, slepc_file, virtual_env, last = lines[0], lines[1], lines[2], lines[3], lines[-1]
+    venv_marker = str(Path(solver_venv).expanduser().resolve()).replace("\\", "/")
+    try:
+        if Path(exe).resolve() != Path(solver_python).expanduser().resolve():
+            return False, f"executable_mismatch:{exe}"
+    except OSError as exc:
+        return False, f"executable_resolve_error:{exc}"
+    petsc_norm = petsc_file.replace("\\", "/")
+    slepc_norm = slepc_file.replace("\\", "/")
+    if venv_marker not in petsc_norm:
+        return False, f"petsc4py_not_in_solver_venv:{petsc_file}"
+    if venv_marker not in slepc_norm:
+        return False, f"slepc4py_not_in_solver_venv:{slepc_file}"
+    if "solver-mkl" not in virtual_env.replace("\\", "/"):
+        return False, f"virtual_env_not_solver_mkl:{virtual_env}"
+    if "unexpected dolfinx importable" in output:
+        return False, "dolfinx_importable_in_solver_env"
+    if last != "ok":
+        return False, f"probe_missing_ok_marker:{last!r}"
+    return True, "ok"
+
+
+def _run_stage_env_probes(
+    *,
+    repo_root: Path,
+    prod_python: str,
+    prod_venv: str,
+    solver_python: str,
+    solver_venv: str,
+    log_dir: Path,
+) -> Tuple[bool, Dict[str, Any]]:
+    """Probe Stage A and Stage B env before any sample work."""
+    log_dir.mkdir(parents=True, exist_ok=True)
+    env_a = _prod_subprocess_env_strict(prod_python=prod_python, prod_venv=prod_venv)
+    env_b = _solver_mkl_subprocess_env_strict(solver_python=solver_python, solver_venv=solver_venv)
+
+    rc_a, out_a = _run_env_probe(
+        python=prod_python, script=STAGE_A_ENV_PROBE, env=env_a, cwd=repo_root
+    )
+    log_a = log_dir / "stage_a_env_probe.log"
+    log_a.write_text(out_a, encoding="utf-8")
+    ok_a, detail_a = _verify_stage_a_env_probe(out_a, prod_python=prod_python, prod_venv=prod_venv)
+
+    rc_b, out_b = _run_env_probe(
+        python=solver_python, script=STAGE_B_ENV_PROBE, env=env_b, cwd=repo_root
+    )
+    log_b = log_dir / "stage_b_env_probe.log"
+    log_b.write_text(out_b, encoding="utf-8")
+    ok_b, detail_b = _verify_stage_b_env_probe(
+        out_b, solver_python=solver_python, solver_venv=solver_venv
+    )
+
+    payload = {
+        "stage_a": {
+            "ok": bool(rc_a == 0 and ok_a),
+            "exit_code": rc_a,
+            "detail": detail_a,
+            "log": str(log_a),
+            "VIRTUAL_ENV": env_a.get("VIRTUAL_ENV"),
+            "PATH_head": (env_a.get("PATH") or "").split(os.pathsep)[:3],
+        },
+        "stage_b": {
+            "ok": bool(rc_b == 0 and ok_b),
+            "exit_code": rc_b,
+            "detail": detail_b,
+            "log": str(log_b),
+            "VIRTUAL_ENV": env_b.get("VIRTUAL_ENV"),
+            "PATH_head": (env_b.get("PATH") or "").split(os.pathsep)[:3],
+        },
+    }
+    return bool(payload["stage_a"]["ok"] and payload["stage_b"]["ok"]), payload
 
 
 def _detect_repo_root(start: Path) -> Path:
@@ -666,10 +907,18 @@ def build_batch_plan(
             "half_width_hz": half_width_hz,
         },
         "env": {
-            "stage_a": {"python": prod_python, "profile": "production_venv"},
+            "stage_a": {
+                "python": prod_python,
+                "prod_venv": DEFAULT_PROD_VENV,
+                "profile": "production_venv_strict",
+                "VIRTUAL_ENV_set": DEFAULT_PROD_VENV,
+                "PETSC_DIR": PETSC_DIR_PROD,
+                "note": "Does not inherit parent VIRTUAL_ENV; PATH strips solver-mkl/bin",
+            },
             "stage_b": {
                 "python": solver_python,
-                "profile": "solver_mkl_isolated",
+                "solver_venv": SOLVER_MKL_VENV,
+                "profile": "solver_mkl_isolated_strict",
                 "unset": list(STAGE_B_ENV_UNSET),
             },
         },
@@ -694,7 +943,9 @@ def run_batch(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--dry-run", action="store_true", default=False)
     parser.add_argument("--force", action="store_true", default=False)
     parser.add_argument("--prod-python", default=os.environ.get("B3_PROD_PYTHON", M3_PROD_PYTHON))
+    parser.add_argument("--prod-venv", default=os.environ.get("B3_PROD_VENV", DEFAULT_PROD_VENV))
     parser.add_argument("--solver-python", default=os.environ.get("B3_SOLVER_PYTHON", M3_SOLVER_PYTHON))
+    parser.add_argument("--solver-venv", default=os.environ.get("B3_SOLVER_MKL_VENV", SOLVER_MKL_VENV))
     parser.add_argument("--reference-json", default=str(DEFAULT_REFERENCE_STUB))
     parser.add_argument(
         "--bin-width-hz",
@@ -741,8 +992,28 @@ def run_batch(argv: Optional[List[str]] = None) -> int:
         print(f"[scout_batch] FAIL shared mesh missing: {plan.get('mesh_file')}", flush=True)
         return 2
 
-    env_a = _prod_subprocess_env()
-    env_b = _solver_mkl_subprocess_env(solver_python=str(args.solver_python), solver_venv=SOLVER_MKL_VENV)
+    prod_venv = str(args.prod_venv)
+    solver_venv = str(args.solver_venv)
+    env_probe_log_dir = PIPELINE_RUNS / "logs" / "scout_lhs_batch_env_probe"
+    print("[scout_batch] Stage A/B environment probes (strict isolation)", flush=True)
+    ok_probe, probe_payload = _run_stage_env_probes(
+        repo_root=repo_root,
+        prod_python=str(args.prod_python),
+        prod_venv=prod_venv,
+        solver_python=str(args.solver_python),
+        solver_venv=solver_venv,
+        log_dir=env_probe_log_dir,
+    )
+    write_json_atomic(SUMMARY_DIR / "env_probe.json", probe_payload)
+    print(f"[scout_batch] env_probe stage_a_ok={probe_payload['stage_a']['ok']} stage_b_ok={probe_payload['stage_b']['ok']}", flush=True)
+    if not ok_probe:
+        print("[scout_batch] FAIL environment probe; see pipeline_runs/logs/scout_lhs_batch_env_probe/", flush=True)
+        return 2
+
+    env_a = _prod_subprocess_env_strict(prod_python=str(args.prod_python), prod_venv=prod_venv)
+    env_b = _solver_mkl_subprocess_env_strict(
+        solver_python=str(args.solver_python), solver_venv=solver_venv
+    )
 
     sample_reports: List[Dict[str, Any]] = []
     failures = 0

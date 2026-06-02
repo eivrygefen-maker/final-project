@@ -296,6 +296,8 @@ Per sample `scout_<sample_id>_m34`:
 
 Dry-run then real run from repo root on VM (mesh must exist).
 
+**Env isolation (M3.4.2 fix):** The batch runner must **not** inherit `VIRTUAL_ENV` from an active `solver-mkl` shell. Stage A uses `_prod_subprocess_env_strict` (`VIRTUAL_ENV=/home/vboxuser/final-project/.venv`, system PETSc `PYTHONPATH`); Stage B uses `_solver_mkl_subprocess_env_strict` (unset `PYTHONPATH`/`PETSC_DIR`/`SLEPC_DIR`/`PYTHONHOME`). Env probes run once before the sample loop (`pipeline_runs/logs/scout_lhs_batch_env_probe/`).
+
 ## 16. Workflow summary
 
 ```text
