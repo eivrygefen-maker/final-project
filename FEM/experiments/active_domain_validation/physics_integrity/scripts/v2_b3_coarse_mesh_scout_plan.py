@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
 import json
 import math
 import sys
@@ -15,7 +17,11 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 PHYSICS_ROOT = SCRIPT_DIR.parent
+BASELINE_CORE_CONFIG = PHYSICS_ROOT / "configs" / "coupled_physical_core_v2.json"
+CONFIG_OVERLAYS_ROOT = PHYSICS_ROOT / "pipeline_runs" / "config_overlays"
 MANIFEST_PATH = PHYSICS_ROOT / "configs" / "v2_mesh_convergence_manifest.json"
+BASELINE_TOP_DENSITY = 450.0
+BASELINE_BACK_DENSITY = 830.0
 CONV_MESH = PHYSICS_ROOT / "v2_mesh_convergence" / "mesh"
 CONV_DIAG = PHYSICS_ROOT / "v2_mesh_convergence" / "diagnostics"
 DEFAULT_CASE_ID = "baseline_coupled_v2"
@@ -62,6 +68,181 @@ def _format_path(path: Path, *, repo_root: Path, absolute_paths: bool) -> str:
 
 def _load_manifest() -> Dict[str, Any]:
     return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    return _sha256_bytes(path.read_bytes())
+
+
+def _sha256_json(payload: Any) -> str:
+    text = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return _sha256_bytes(text.encode("utf-8"))
+
+
+def _scout_overlay_dir(run_id: str) -> Path:
+    return CONFIG_OVERLAYS_ROOT / run_id
+
+
+def _scout_mesh_file_rel(*, case_id: str = DEFAULT_CASE_ID) -> str:
+    return (
+        Path("FEM")
+        / "experiments"
+        / "active_domain_validation"
+        / "physics_integrity"
+        / "v2_mesh_convergence"
+        / "mesh"
+        / SCOUT_LEVEL_ID
+        / f"{case_id}.msh"
+    ).as_posix()
+
+
+def _ensure_scout_overlay_artifacts(
+    run_id: str,
+    *,
+    case_id: str,
+    repo_root: Path,
+) -> Dict[str, Any]:
+    """Write or refresh scout baseline overlay (no Stage A execution)."""
+    overlay_dir = _scout_overlay_dir(run_id)
+    overlay_dir.mkdir(parents=True, exist_ok=True)
+    baseline_path = BASELINE_CORE_CONFIG.resolve()
+    baseline_cfg = json.loads(baseline_path.read_text(encoding="utf-8"))
+    baseline_sha = _sha256_file(baseline_path)
+    mesh_file_rel = _scout_mesh_file_rel(case_id=case_id)
+    mesh_file_abs = (repo_root / mesh_file_rel).resolve()
+
+    resolved = copy.deepcopy(baseline_cfg)
+    solver = resolved.setdefault("solver", {})
+    solver["mesh_file"] = mesh_file_rel
+    solver["clamp_ribs"] = False
+
+    resolved_path = overlay_dir / "resolved_core_config.json"
+    overlay_path = overlay_dir / "overlay_applied.json"
+    readiness_path = overlay_dir / "readiness_check.json"
+
+    overlay_payload = {
+        "schema": "b3_scout_config_overlay_applied_v1",
+        "generated_utc": _utc_now(),
+        "run_id": run_id,
+        "purpose": "scout_modal_density_only",
+        "base_config_path": _format_path(baseline_path, repo_root=repo_root, absolute_paths=False),
+        "base_config_sha256": baseline_sha,
+        "mesh_level": SCOUT_LEVEL_ID,
+        "mesh_case_id": case_id,
+        "mesh_file": mesh_file_rel,
+        "geometry_delta": {},
+        "material_delta": {},
+        "requires_mesh_regeneration": False,
+        "fields_changed": {
+            "solver.mesh_file": mesh_file_rel,
+            "solver.clamp_ribs": "false",
+        },
+        "overlay_payload_sha256": "",
+    }
+    overlay_payload["overlay_payload_sha256"] = _sha256_json(
+        {k: v for k, v in overlay_payload.items() if k != "overlay_payload_sha256"}
+    )
+
+    resolved_path.write_text(json.dumps(resolved, indent=2), encoding="utf-8")
+    overlay_path.write_text(json.dumps(overlay_payload, indent=2), encoding="utf-8")
+    resolved_sha = _sha256_file(resolved_path)
+
+    mats = resolved.get("materials") or {}
+    top_density = float((mats.get("top") or {}).get("density", float("nan")))
+    back_density = float((mats.get("back") or {}).get("density", float("nan")))
+    clamp_ribs = bool((resolved.get("solver") or {}).get("clamp_ribs", True))
+    mesh_exists = mesh_file_abs.is_file()
+
+    errors: List[str] = []
+    warnings: List[str] = []
+    if abs(top_density - BASELINE_TOP_DENSITY) > 1e-9:
+        errors.append(f"top.density must be {BASELINE_TOP_DENSITY}, got {top_density}")
+    if abs(back_density - BASELINE_BACK_DENSITY) > 1e-9:
+        errors.append(f"back.density must be {BASELINE_BACK_DENSITY}, got {back_density}")
+    if clamp_ribs:
+        errors.append("solver.clamp_ribs must be false")
+    if SCOUT_LEVEL_ID not in mesh_file_rel.replace("\\", "/"):
+        errors.append(f"solver.mesh_file must reference {SCOUT_LEVEL_ID}")
+    if "L_prod" in mesh_file_rel.replace("\\", "/"):
+        errors.append("solver.mesh_file must not reference L_prod")
+    if not mesh_exists:
+        warnings.append(f"mesh file not found yet: {mesh_file_rel}")
+
+    readiness_status = "PASS" if (not errors and mesh_exists) else ("PENDING_MESH" if not errors else "FAIL")
+
+    readiness = {
+        "schema": "b3_scout_config_readiness_check_v1",
+        "generated_utc": _utc_now(),
+        "run_id": run_id,
+        "status": readiness_status,
+        "purpose": "scout_modal_density_only",
+        "base_config_path": overlay_payload["base_config_path"],
+        "resolved_config_path": _format_path(resolved_path, repo_root=repo_root, absolute_paths=False),
+        "overlay_applied_path": _format_path(overlay_path, repo_root=repo_root, absolute_paths=False),
+        "mesh_level": SCOUT_LEVEL_ID,
+        "mesh_case_id": case_id,
+        "mesh_file": mesh_file_rel,
+        "mesh_file_exists": mesh_exists,
+        "solver_clamp_ribs": clamp_ribs,
+        "effective_materials": {"top.density": top_density, "back.density": back_density},
+        "baseline_material_fingerprint": (
+            abs(top_density - BASELINE_TOP_DENSITY) < 1e-9
+            and abs(back_density - BASELINE_BACK_DENSITY) < 1e-9
+        ),
+        "lhs_perturbation_applied": False,
+        "material_delta_empty": True,
+        "sha256": {
+            "baseline_config": baseline_sha,
+            "resolved_config": resolved_sha,
+            "overlay_payload": overlay_payload["overlay_payload_sha256"],
+        },
+        "physical_scout_ready": bool(not errors and mesh_exists),
+        "warnings": warnings,
+        "errors": errors,
+    }
+    readiness_path.write_text(json.dumps(readiness, indent=2), encoding="utf-8")
+
+    return {
+        "overlay_dir": overlay_dir,
+        "resolved_path": resolved_path,
+        "overlay_path": overlay_path,
+        "readiness_path": readiness_path,
+        "readiness": readiness,
+        "resolved": resolved,
+        "mesh_file_rel": mesh_file_rel,
+        "mesh_exists": mesh_exists,
+        "top_density": top_density,
+        "back_density": back_density,
+        "clamp_ribs": clamp_ribs,
+    }
+
+
+def _print_compact_summary(plan: Dict[str, Any]) -> None:
+    summary = plan.get("summary") or {}
+    print("[scout_plan] --- compact summary ---", flush=True)
+    for key in (
+        "will_execute",
+        "mesh_exists",
+        "checkpoint_dir_exists",
+        "core_config_path",
+        "core_config_mesh_file",
+        "top_density",
+        "back_density",
+        "clamp_ribs",
+        "readiness_status",
+        "mesh_controls_mm_plate_wood_air_min",
+    ):
+        if key in summary:
+            print(f"[scout_plan] {key} = {summary[key]}", flush=True)
+    stage_a = (plan.get("command_previews") or {}).get("stage_a") or ""
+    if "scout_l_scout_coarse_m34" in stage_a or SCOUT_LEVEL_ID in stage_a:
+        uses_scout_cfg = "config_overlays" in stage_a and "lhs_pilot" not in stage_a
+        print(f"[scout_plan] stage_a_uses_scout_core_config = {uses_scout_cfg}", flush=True)
+    print("[scout_plan] --- end summary ---", flush=True)
 
 
 def _controls_for_profile(
@@ -288,16 +469,17 @@ def build_scout_plan(
     )
     scout_controls = effective_controls_from_level_def(scout_def) if scout_def else {}
 
-    core_cfg = core_config or (
-        PHYSICS_ROOT
-        / "pipeline_runs"
-        / "config_overlays"
-        / "lhs_pilot_001_timing"
-        / "resolved_core_config.json"
-    )
+    overlay_art = _ensure_scout_overlay_artifacts(run_id, case_id=case_id, repo_root=repo_root)
+    readiness = overlay_art["readiness"]
+    core_cfg = core_config or overlay_art["resolved_path"]
+    if "lhs_pilot" in str(core_cfg).replace("\\", "/"):
+        raise ValueError(
+            "Refusing lhs_pilot overlay for scout plan; use dedicated scout config_overlays/<run_id>/"
+        )
     core_cfg_rel = _format_path(core_cfg, repo_root=repo_root, absolute_paths=False)
 
     scout_msh = CONV_MESH / SCOUT_LEVEL_ID / f"{case_id}.msh"
+    mesh_exists = bool(overlay_art["mesh_exists"])
     ckpt_dir = CONV_DIAG / f"st_worker_scaling_{SCOUT_LEVEL_ID}_{run_id}"
     stage_b_out = CONV_DIAG / "solver_benchmarks" / STAGE_B_OUTPUT_STEM
 
@@ -310,8 +492,10 @@ def build_scout_plan(
     warnings: List[str] = []
     if not l_prod_mesh.is_file():
         warnings.append(f"L_prod mesh file not found on this host: {l_prod_mesh}")
-    if not scout_msh.is_file():
+    if not mesh_exists:
         warnings.append(f"Scout mesh not built yet: {scout_msh}")
+    if readiness.get("status") == "FAIL":
+        warnings.extend([f"readiness: {e}" for e in readiness.get("errors") or []])
     if ckpt_dir.is_dir():
         warnings.append(f"Checkpoint dir already exists (preview only): {ckpt_dir}")
 
@@ -330,10 +514,43 @@ def build_scout_plan(
         warnings.append(f"Stage A allowlist missing {SCOUT_LEVEL_ID}")
 
     half_width = DEFAULT_DISCOVERY_SPACING_HZ / 2.0
+    scout_mm = scout_controls
+    summary: Dict[str, Any] = {
+        "will_execute": False,
+        "run_id": run_id,
+        "mesh_level": SCOUT_LEVEL_ID,
+        "mesh_exists": mesh_exists,
+        "checkpoint_dir_exists": ckpt_dir.is_dir(),
+        "core_config_path": core_cfg_rel,
+        "core_config_mesh_file": overlay_art["mesh_file_rel"],
+        "top_density": overlay_art["top_density"],
+        "back_density": overlay_art["back_density"],
+        "clamp_ribs": overlay_art["clamp_ribs"],
+        "readiness_status": readiness.get("status"),
+        "baseline_material_fingerprint": readiness.get("baseline_material_fingerprint"),
+        "lhs_perturbation_applied": readiness.get("lhs_perturbation_applied"),
+        "mesh_controls_mm_plate_wood_air_min": (
+            f"{scout_mm.get('wood_thickness_size_m', 0)*1000:g} / "
+            f"{scout_mm.get('wood_surface_size_m', 0)*1000:g} / "
+            f"{scout_mm.get('air_threshold_size_min_m', 0)*1000:g}"
+        ),
+    }
     plan: Dict[str, Any] = {
         "schema": PLAN_SCHEMA,
         "generated_at_utc": _utc_now(),
         "will_execute": False,
+        "summary": summary,
+        "scout_core_config_overlay": {
+            "overlay_dir": _format_path(overlay_art["overlay_dir"], repo_root=repo_root, absolute_paths=absolute_paths),
+            "resolved_core_config": core_cfg_rel,
+            "overlay_applied": _format_path(
+                overlay_art["overlay_path"], repo_root=repo_root, absolute_paths=absolute_paths
+            ),
+            "readiness_check": _format_path(
+                overlay_art["readiness_path"], repo_root=repo_root, absolute_paths=absolute_paths
+            ),
+            "readiness_status": readiness.get("status"),
+        },
         "strategy": "coarse_fem_mesh_modal_density_scout",
         "supersedes_wrong_direction": {
             "run_id": WRONG_DIRECTION_RUN_ID,
@@ -361,7 +578,7 @@ def build_scout_plan(
         "explicit_controls_env": "FEM_MESH_EXPLICIT_CONTROLS_JSON",
         "paths": {
             "mesh": _format_path(scout_msh, repo_root=repo_root, absolute_paths=absolute_paths),
-            "mesh_exists": scout_msh.is_file(),
+            "mesh_exists": mesh_exists,
             "checkpoint_dir": _format_path(ckpt_dir, repo_root=repo_root, absolute_paths=absolute_paths),
             "checkpoint_dir_exists": ckpt_dir.is_dir(),
             "stage_b_discovery_output_dir": _format_path(
@@ -427,6 +644,11 @@ def build_scout_plan(
         "core_config": {
             "path": _format_path(core_cfg, repo_root=repo_root, absolute_paths=absolute_paths),
             "exists": core_cfg.is_file(),
+            "mesh_file": overlay_art["mesh_file_rel"],
+            "top_density": overlay_art["top_density"],
+            "back_density": overlay_art["back_density"],
+            "clamp_ribs": overlay_art["clamp_ribs"],
+            "uses_lhs_pilot_overlay": False,
         },
         "command_previews": {
             "mesh_build": _mesh_build_command_preview(),
@@ -462,6 +684,7 @@ def build_scout_plan(
 
 
 def _write_markdown(plan: Dict[str, Any], path: Path) -> None:
+    summary = plan.get("summary") or {}
     lines = [
         "# Coarse-mesh modal-density scout plan (dry-run)",
         "",
@@ -469,9 +692,18 @@ def _write_markdown(plan: Dict[str, Any], path: Path) -> None:
         f"- **will_execute:** `{plan.get('will_execute')}`",
         f"- **Strategy:** {plan.get('strategy')}",
         "",
-        "## L_prod verified sizing (mm)",
+        "## Compact summary",
         "",
     ]
+    for key, val in summary.items():
+        lines.append(f"- **{key}:** `{val}`")
+    lines.extend(
+        [
+            "",
+            "## L_prod verified sizing (mm)",
+            "",
+        ]
+    )
     v = plan.get("verified_l_prod_sizing") or {}
     for k, val in (v.get("effective_controls_mm") or {}).items():
         lines.append(f"- `{k}`: **{val}**")
@@ -531,21 +763,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=PHYSICS_ROOT / "pipeline_runs" / "specs" / "scout_plans" / "preview",
-        help="Directory for scout_plan.json and scout_plan.md",
+        default=None,
+        help="Directory for scout_plan.json (default: pipeline_runs/specs/scout_plans/<run_id>)",
     )
     parser.add_argument("--absolute-paths", action="store_true", help="Emit absolute paths in JSON")
     args = parser.parse_args(argv)
 
     repo_root = _detect_repo_root(SCRIPT_DIR)
-    out_dir: Path = args.output_dir
+    run_id = str(args.run_id)
+    out_dir: Path = args.output_dir or (
+        PHYSICS_ROOT / "pipeline_runs" / "specs" / "scout_plans" / run_id
+    )
     if not out_dir.is_absolute():
         out_dir = (repo_root / out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     plan = build_scout_plan(
         repo_root=repo_root,
-        run_id=str(args.run_id),
+        run_id=run_id,
         case_id=str(args.case_id),
         core_config=args.core_config.resolve() if args.core_config else None,
         absolute_paths=bool(args.absolute_paths),
@@ -559,6 +794,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"[scout_plan] will_execute={plan['will_execute']}", flush=True)
     print(f"[scout_plan] wrote {json_path}", flush=True)
     print(f"[scout_plan] wrote {md_path}", flush=True)
+    _print_compact_summary(plan)
     for w in plan.get("warnings") or []:
         print(f"[scout_plan] WARN: {w}", flush=True)
     return 0

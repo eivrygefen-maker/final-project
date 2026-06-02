@@ -133,6 +133,15 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2
 python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_B3_scout_coarse_mesh_build.py
 ```
 
+**Scout baseline core config** (M3.4.1 — not LHS pilot overlay):
+
+`pipeline_runs/config_overlays/scout_l_scout_coarse_m34/resolved_core_config.json`
+
+- Baseline materials: top **450.0**, back **830.0** (no LHS delta)
+- `solver.mesh_file` → `mesh/L_scout_coarse/baseline_coupled_v2.msh` (not `L_prod`)
+- `solver.clamp_ribs` = **false**
+- Companion: `overlay_applied.json`, `readiness_check.json` (refreshed by scout plan dry-run)
+
 **Stage A** (after mesh exists; production venv):
 
 ```bash
@@ -140,9 +149,11 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
   --mesh-level L_scout_coarse \
   --B3-block-compose-backend csr_bulk \
   --B3-synthesis-region-dofs off \
-  --core-config "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_001_timing/resolved_core_config.json" \
+  --core-config "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/scout_l_scout_coarse_m34/resolved_core_config.json" \
   --output-dir "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_scout_coarse_scout_l_scout_coarse_m34"
 ```
+
+Do **not** use `config_overlays/lhs_pilot_001_timing/resolved_core_config.json` for scout Stage A.
 
 Dry-run inspection: `v2_b3_coarse_mesh_scout_plan.py --run-id scout_l_scout_coarse_m34`
 
