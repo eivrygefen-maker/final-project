@@ -7,7 +7,7 @@
 - zone_policy_status: `not_calibrated_yet`
 - freq_range_hz: `[60.0, 550.0]`
 - coarse_step_hz: `15.0`
-- target_window_half_width_hz: `7.5` (source: `spacing_over_2`)
+- target_window_half_width_hz: `1.5` (source: `explicit_override`)
 - recommended_target_window_half_width_hz: `7.5`
 - coarse_target_count: `34`
 - execution_status: `executable_with_discovery_mode_opt_in`
@@ -32,10 +32,17 @@
 
 Gate A discovery mode is implemented (opt-in). 1) Approve coarse scan plan (15 Hz uniform, exclusive VM). 2) Run density experiment with --B3-discovery-mode on a new output dir. 3) Post-process unique_accepted_frequencies_hz per window; calibrate zones.
 
+
+## Coverage gap warning
+
+- pair_gap_count: `33`
+- max_uncovered_gap_hz: `12.0`
+
 - Planning band 60–550 Hz is the guitar/modal exploration target; 220–265 Hz is validated full9 reference only.
 - Zone density thresholds are not_calibrated_yet; regions are placeholders.
 - Gate A: opt-in --B3-discovery-mode uses discovery_band + per-target window (Option C).
 - Discovery half-width default: effective_coarse_spacing_hz / 2 (touching windows at grid step).
 - Default full9 / timing runs without discovery flags keep legacy [220, 265] acceptance.
 - Do not overwrite m3exec1/m3exec2 runtime diagnostics.
-- WARN: checkpoint_dir not found on this host: C:\projects\final-project\final-project\FEM\experiments\active_domain_validation\physics_integrity\v2_mesh_convergence\diagnostics\st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2
+- WARN: discovery half-width 1.5 Hz < spacing/2 (7.5 Hz); 33 adjacent target pairs leave frequency gaps (max uncovered 12.0 Hz). Use --target-window-half-width-hz >= spacing/2 for coarse discovery.
+- WARN: checkpoint_dir not found on this host: C:\projects\final-project\final-project\x

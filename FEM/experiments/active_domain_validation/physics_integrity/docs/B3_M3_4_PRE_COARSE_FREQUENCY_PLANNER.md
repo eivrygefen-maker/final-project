@@ -110,6 +110,10 @@ Top-level fields for easy inspection:
 | `zone_policy_status` | `not_calibrated_yet` |
 | `input_summary.freq_range_hz` | e.g. `[60, 550]` |
 | `input_summary.coarse_step_hz` | e.g. `15` (null if adaptive) |
+| `input_summary.target_window_half_width_hz` | Applied half-width (default: `coarse_step_hz / 2`) |
+| `input_summary.recommended_target_window_half_width_hz` | `spacing / 2` for touching adjacent windows |
+| `discovery_window_policy` | How half-width was chosen (`spacing_over_2` vs `explicit_override`) |
+| `discovery_coverage_analysis` | Gap warnings when `2 * half_width < spacing` |
 | `coarse_targets_hz` | Proposed target list |
 | `coarse_target_count` | Integer |
 | `regions` | Placeholder region table |
@@ -199,7 +203,27 @@ Planner → approved plan JSON → JSONL run specs with `targets_hz` → orchest
 
 ---
 
-## 8. Relationship to orchestrator
+## 8. Discovery window half-width (coarse scan)
+
+Per-target discovery acceptance uses `± target_window_half_width_hz` around each shift center. For a uniform coarse grid, adjacent windows should **touch** at the nominal step:
+
+```text
+target_window_half_width_hz = coarse_step_hz / 2
+```
+
+| `coarse_step_hz` | Recommended `--target-window-half-width-hz` |
+|------------------|---------------------------------------------|
+| 15 | **7.5** |
+| 10 | 5.0 |
+| 20 | 10.0 |
+
+The planner applies this when `--target-window-half-width-hz` is **omitted** (`discovery_half_width_source: spacing_over_2`).
+
+If a **smaller** value is set (e.g. 1.5 Hz with 15 Hz spacing), `discovery_coverage_analysis.has_coverage_gaps` is true and diagnostic notes warn that up to **12 Hz** can fall between adjacent target windows. Do not use 1.5 Hz for 15 Hz coarse discovery; that width is only appropriate for narrow full9 reference context.
+
+---
+
+## 9. Relationship to orchestrator
 
 Frequency planner **feeds** target policy; orchestrator **executes** Stage A/B with env isolation, manifests, fail-stop.
 
@@ -207,7 +231,7 @@ No runtime manifests or index from the planner itself.
 
 ---
 
-## 9. Safest next non-destructive steps
+## 10. Safest next non-destructive steps
 
 1. **VM dry-run** 60–550 Hz plan (see §10).
 2. **Review** acceptance-band extension proposal (code + policy).
@@ -221,7 +245,7 @@ No runtime manifests or index from the planner itself.
 
 ---
 
-## 10. Dry-run command (60–550 Hz)
+## 11. Dry-run command (60–550 Hz)
 
 ```bash
 python -m py_compile FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_frequency_coarse_planner.py
@@ -249,13 +273,13 @@ python .../v2_b3_frequency_coarse_planner.py \
 
 ---
 
-## 11. First actual scan recommendation (after gates)
+## 12. First actual scan recommendation (after gates)
 
 | Step | Action |
 |------|--------|
 | **Gate A** | Acceptance-band / discovery-mode code review |
 | **Gate B** | Approve spacing (15 Hz uniform) + checkpoint + exclusive VM |
-| **Scan** | `v2_b3_checkpoint_target_density_experiment.py` or `v2_b3_checkpoint_solve.py --targets-hz <list>` on **new** output dir |
+| **Scan** | `v2_b3_checkpoint_target_density_experiment.py` with `--B3-discovery-mode`, band 60–550, spacing 15, **`--target-window-half-width-hz 7.5`** (or omit half-width on planner-driven command) on **new** output dir |
 | **Measure** | Wall time per target; update `cost_estimate` assumptions |
 | **Calibrate** | Regions + spacing from data; set `zone_policy_status` → `estimated_from_first_coarse_scan` |
 

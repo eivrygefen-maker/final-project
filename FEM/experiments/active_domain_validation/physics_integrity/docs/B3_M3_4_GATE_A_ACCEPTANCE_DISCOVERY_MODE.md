@@ -231,7 +231,9 @@ Mirror discovery block in `checkpoint_solve_manifest.json` for audit (same keys 
 
 ### 6.2 Overlapping target windows
 
-With `half_width=7.5` and `step=15`, adjacent targets have touching windows — same mode may appear in multiple per-target lists. **Do not** sum per-target counts for density; always dedupe before window binning.
+Default coarse discovery half-width: **`coarse_step_hz / 2`** (planner applies when CLI half-width omitted). For `step=15`, use **`--target-window-half-width-hz 7.5`** so adjacent windows touch. Smaller half-widths leave coverage gaps between targets.
+
+Same mode may still appear in multiple per-target lists when windows overlap. **Do not** sum per-target counts for density; always dedupe before window binning.
 
 ### 6.3 Optional future field
 
@@ -269,7 +271,7 @@ After Gate A implementation + approved scan:
 | Checkpoint | `st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2` |
 | Discovery band | 60–550 Hz |
 | Target spacing | 15 Hz uniform (~34 targets) |
-| Window half-width | 7.5 Hz (starting hypothesis; tune after review) |
+| Window half-width | **`spacing_hz / 2`** (7.5 Hz for 15 Hz coarse grid) |
 | Solver | `mkl_pardiso`, solver-mkl venv, isolated env (M3.3 pattern) |
 | Output | **New** dir under `v2_mesh_convergence/diagnostics/solver_benchmarks/` e.g. `discovery_coarse_60_550_15hz_<utc>/` |
 | Concurrency | **Exclusive** VM solver slot (~1–4 h estimated) |
@@ -330,7 +332,7 @@ Execute **220–265 Hz only** with **current** acceptance (no code change) — v
 | # | Question | Suggested default |
 |---|----------|-------------------|
 | 1 | Implement Option C? | **Yes** |
-| 2 | Default `target_window_half_width_hz` in discovery? | **7.5** (half of 15 Hz step) |
+| 2 | Default `target_window_half_width_hz` in discovery? | **`coarse_step_hz / 2`** (e.g. **7.5** when spacing is 15 Hz); planner applies this when CLI half-width omitted |
 | 3 | Record converged-but-rejected modes in discovery? | Optional `converged_modes` already present; add summary counts only |
 | 4 | Extend density experiment or only checkpoint_solve? | Both via shared `run_checkpoint_st_target` |
 | 5 | First scan 60–550 vs narrow slice? | **60–550 after Gate A**; narrow slice only if Gate A slips |

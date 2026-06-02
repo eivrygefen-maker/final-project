@@ -23,7 +23,7 @@ L_PROD_ST_FULL9_TARGETS_HZ = [221.5, 227.0, 232.5, 238.0, 243.5, 249.0, 254.5, 2
 
 PLANNING_BAND_LO_HZ = 60.0
 PLANNING_BAND_HI_HZ = 550.0
-DEFAULT_DISCOVERY_HALF_WIDTH_HZ = 7.5
+ADAPTIVE_V0_MIN_SEGMENT_STEP_HZ = 10.0
 FULL9_REF_LO_HZ = min(L_PROD_ST_FULL9_TARGETS_HZ)
 FULL9_REF_HI_HZ = max(L_PROD_ST_FULL9_TARGETS_HZ)
 
@@ -57,6 +57,85 @@ def _format_path(path: Path, *, repo_root: Path, absolute_paths: bool) -> str:
         return path.resolve().relative_to(repo_root.resolve()).as_posix()
     except ValueError:
         return path.as_posix()
+
+
+def _effective_coarse_spacing_hz(
+    *,
+    coarse_step_hz: Optional[float],
+    spacing_policy: str,
+) -> float:
+    """Spacing used for discovery half-width default (spacing/2)."""
+    if spacing_policy == "adaptive_v0":
+        return float(ADAPTIVE_V0_MIN_SEGMENT_STEP_HZ)
+    return float(coarse_step_hz if coarse_step_hz is not None else 15.0)
+
+
+def _resolve_discovery_half_width_hz(
+    *,
+    coarse_step_hz: Optional[float],
+    spacing_policy: str,
+    explicit_half_width_hz: Optional[float],
+) -> Dict[str, Any]:
+    """
+    Default discovery half-width = effective_coarse_spacing / 2 (touching adjacent windows).
+    """
+    spacing = _effective_coarse_spacing_hz(
+        coarse_step_hz=coarse_step_hz, spacing_policy=spacing_policy
+    )
+    recommended = spacing / 2.0
+    if explicit_half_width_hz is None:
+        applied = recommended
+        source = "spacing_over_2"
+        override = None
+    else:
+        applied = float(explicit_half_width_hz)
+        source = "explicit_override"
+        override = applied
+    return {
+        "effective_coarse_spacing_hz": spacing,
+        "recommended_half_width_hz": recommended,
+        "applied_half_width_hz": applied,
+        "half_width_source": source,
+        "explicit_override_hz": override,
+        "rule": "target_window_half_width_hz = coarse_step_hz / 2 unless --target-window-half-width-hz set",
+    }
+
+
+def _coverage_gap_analysis(
+    coarse_targets: Sequence[float],
+    *,
+    half_width_hz: float,
+    coarse_spacing_hz: float,
+) -> Dict[str, Any]:
+    """Warn when adjacent target windows do not meet (2 * half < spacing)."""
+    targets = sorted(float(t) for t in coarse_targets)
+    gaps: List[Dict[str, Any]] = []
+    max_gap_hz = 0.0
+    for t0, t1 in zip(targets, targets[1:]):
+        spacing = float(t1) - float(t0)
+        if spacing <= 0:
+            continue
+        uncovered = spacing - 2.0 * float(half_width_hz)
+        if uncovered > 1.0e-6:
+            gaps.append(
+                {
+                    "between_targets_hz": [t0, t1],
+                    "target_spacing_hz": spacing,
+                    "uncovered_gap_hz": round(uncovered, 4),
+                }
+            )
+            max_gap_hz = max(max_gap_hz, uncovered)
+    touching = 2.0 * float(half_width_hz) >= float(coarse_spacing_hz) - 1.0e-9
+    return {
+        "coarse_spacing_hz_for_touching_check": float(coarse_spacing_hz),
+        "half_width_hz": float(half_width_hz),
+        "adjacent_windows_touch_when": "2 * half_width >= target_spacing",
+        "windows_touch_at_nominal_spacing": touching,
+        "pair_gaps": gaps,
+        "pair_gap_count": len(gaps),
+        "max_uncovered_gap_hz": round(max_gap_hz, 4) if gaps else 0.0,
+        "has_coverage_gaps": len(gaps) > 0,
+    }
 
 
 def _coarse_targets_hz(freq_min: float, freq_max: float, step_hz: float) -> List[float]:
@@ -409,6 +488,9 @@ def _write_plan_md(path: Path, body: Dict[str, Any]) -> None:
         f"- zone_policy_status: `{body.get('zone_policy_status')}`",
         f"- freq_range_hz: `{inp.get('freq_range_hz')}`",
         f"- coarse_step_hz: `{inp.get('coarse_step_hz')}`",
+        f"- target_window_half_width_hz: `{inp.get('target_window_half_width_hz')}` "
+        f"(source: `{inp.get('discovery_half_width_source')}`)",
+        f"- recommended_target_window_half_width_hz: `{inp.get('recommended_target_window_half_width_hz')}`",
         f"- coarse_target_count: `{len(body.get('coarse_targets_hz') or [])}`",
         f"- execution_status: `{feas.get('overall_execution_status')}`",
         "",
@@ -448,6 +530,18 @@ def _write_plan_md(path: Path, body: Dict[str, Any]) -> None:
             "",
         ]
     )
+    cov = body.get("discovery_coverage_analysis") or {}
+    if cov.get("has_coverage_gaps"):
+        lines.extend(
+            [
+                "",
+                "## Coverage gap warning",
+                "",
+                f"- pair_gap_count: `{cov.get('pair_gap_count')}`",
+                f"- max_uncovered_gap_hz: `{cov.get('max_uncovered_gap_hz')}`",
+                "",
+            ]
+        )
     for note in body.get("diagnostic_notes") or []:
         lines.append(f"- {note}")
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -462,7 +556,7 @@ def build_plan(
     freq_max_hz: float,
     coarse_step_hz: Optional[float],
     spacing_policy: str,
-    target_window_half_width_hz: float,
+    explicit_target_window_half_width_hz: Optional[float],
     mode: str,
     absolute_paths: bool,
     assume_gate_a_discovery: bool,
@@ -478,7 +572,20 @@ def build_plan(
         step_used = float(coarse_step_hz if coarse_step_hz is not None else 15.0)
         coarse_targets = _coarse_targets_hz(freq_min_hz, freq_max_hz, step_used)
 
-    window_width = max(step_used or 15.0, 10.0)
+    discovery_window = _resolve_discovery_half_width_hz(
+        coarse_step_hz=step_used,
+        spacing_policy=spacing_policy,
+        explicit_half_width_hz=explicit_target_window_half_width_hz,
+    )
+    half_width_hz = float(discovery_window["applied_half_width_hz"])
+    eff_spacing = float(discovery_window["effective_coarse_spacing_hz"])
+    coverage = _coverage_gap_analysis(
+        coarse_targets,
+        half_width_hz=half_width_hz,
+        coarse_spacing_hz=eff_spacing,
+    )
+
+    window_width = max(step_used or eff_spacing, 10.0)
     ckpt_str = _format_path(checkpoint_dir, repo_root=repo_root, absolute_paths=absolute_paths)
 
     mesh_level = None
@@ -526,9 +633,22 @@ def build_plan(
         "Planning band 60–550 Hz is the guitar/modal exploration target; 220–265 Hz is validated full9 reference only.",
         "Zone density thresholds are not_calibrated_yet; regions are placeholders.",
         "Gate A: opt-in --B3-discovery-mode uses discovery_band + per-target window (Option C).",
+        "Discovery half-width default: effective_coarse_spacing_hz / 2 (touching windows at grid step).",
         "Default full9 / timing runs without discovery flags keep legacy [220, 265] acceptance.",
         "Do not overwrite m3exec1/m3exec2 runtime diagnostics.",
     ]
+    if coverage["has_coverage_gaps"]:
+        diagnostic_notes.append(
+            f"WARN: discovery half-width {half_width_hz} Hz < spacing/2 ({eff_spacing / 2} Hz); "
+            f"{coverage['pair_gap_count']} adjacent target pairs leave frequency gaps "
+            f"(max uncovered {coverage['max_uncovered_gap_hz']} Hz). "
+            "Use --target-window-half-width-hz >= spacing/2 for coarse discovery."
+        )
+    elif discovery_window["half_width_source"] == "explicit_override" and half_width_hz < eff_spacing / 2 - 1.0e-9:
+        diagnostic_notes.append(
+            f"WARN: explicit half-width {half_width_hz} Hz is narrower than recommended "
+            f"{discovery_window['recommended_half_width_hz']} Hz (spacing/2); scan may miss modes between targets."
+        )
     if not checkpoint_dir.is_dir():
         diagnostic_notes.append(f"WARN: checkpoint_dir not found on this host: {checkpoint_dir}")
 
@@ -537,7 +657,7 @@ def build_plan(
         spacing_rec=spacing_rec,
         ckpt_str=ckpt_str,
         ref_str=ref_str,
-        target_window_half_width_hz=target_window_half_width_hz,
+        target_window_half_width_hz=half_width_hz,
     )
 
     return {
@@ -557,7 +677,11 @@ def build_plan(
             "freq_max_hz": float(freq_max_hz),
             "coarse_step_hz": step_used,
             "spacing_policy": spacing_policy,
-            "target_window_half_width_hz": float(target_window_half_width_hz),
+            "target_window_half_width_hz": half_width_hz,
+            "target_window_half_width_explicit_hz": discovery_window.get("explicit_override_hz"),
+            "discovery_half_width_source": discovery_window["half_width_source"],
+            "recommended_target_window_half_width_hz": discovery_window["recommended_half_width_hz"],
+            "effective_coarse_spacing_hz": eff_spacing,
             "reference_result_json": ref_str,
             "solver_acceptance_band_hz": [ACCEPTANCE_FREQ_LO_HZ, ACCEPTANCE_FREQ_HI_HZ],
             "validated_full9_reference_band_hz": [FULL9_REF_LO_HZ, FULL9_REF_HI_HZ],
@@ -572,11 +696,13 @@ def build_plan(
         "coarse_target_count": len(coarse_targets),
         "regions": regions,
         "spacing_recommendation": spacing_rec,
+        "discovery_window_policy": discovery_window,
+        "discovery_coverage_analysis": coverage,
         "executable_feasibility": feasibility,
         "cost_estimate": cost,
         "frequency_windows": _window_bins(freq_min_hz, freq_max_hz, window_width_hz=window_width),
         "stage_b_target_windows": _stage_b_windows(
-            coarse_targets, half_width_hz=target_window_half_width_hz
+            coarse_targets, half_width_hz=half_width_hz
         ),
         "diagnostic_notes": diagnostic_notes,
         "recommended_next_step": recommended,
@@ -606,7 +732,15 @@ def run_planner(argv: Optional[List[str]] = None) -> int:
         default="uniform",
         help="uniform uses --coarse-step-hz; adaptive_v0 uses 20/10/20 Hz segments.",
     )
-    parser.add_argument("--target-window-half-width-hz", type=float, default=1.5)
+    parser.add_argument(
+        "--target-window-half-width-hz",
+        type=float,
+        default=None,
+        help=(
+            "Discovery per-target half-width (Hz). Default: coarse_step_hz/2 for uniform grid, "
+            "or finest adaptive segment/2. Omit for touching windows at nominal spacing."
+        ),
+    )
     parser.add_argument("--reference-result-json", help="Optional validated result.json")
     parser.add_argument("--mode", choices=("dry-run", "execute"), default="dry-run")
     parser.add_argument(
@@ -659,7 +793,7 @@ def run_planner(argv: Optional[List[str]] = None) -> int:
         freq_max_hz=float(args.freq_max_hz),
         coarse_step_hz=step,
         spacing_policy=str(args.spacing_policy),
-        target_window_half_width_hz=float(args.target_window_half_width_hz),
+        explicit_target_window_half_width_hz=args.target_window_half_width_hz,
         mode=str(args.mode),
         absolute_paths=bool(args.absolute_paths),
         assume_gate_a_discovery=bool(args.assume_gate_a_discovery),
@@ -681,6 +815,7 @@ def run_planner(argv: Optional[List[str]] = None) -> int:
     print(
         f"[B3_freq_planner] mode={body['mode']} will_execute={body['will_execute']} "
         f"targets={body['coarse_target_count']} step={body['input_summary']['coarse_step_hz']} "
+        f"half_width={body['input_summary']['target_window_half_width_hz']} "
         f"range={body['input_summary']['freq_range_hz']} "
         f"execution_status={feas['overall_execution_status']}",
         flush=True,

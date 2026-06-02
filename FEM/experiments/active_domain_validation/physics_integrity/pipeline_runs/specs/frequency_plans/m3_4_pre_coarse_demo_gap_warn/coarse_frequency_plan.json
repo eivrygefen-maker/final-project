@@ -1,13 +1,13 @@
 {
   "gate_a_implementation": "option_c_opt_in_discovery_mode",
   "schema": "b3_coarse_frequency_plan_v2",
-  "generated_utc": "2026-06-02T21:27:10Z",
+  "generated_utc": "2026-06-02T21:27:19Z",
   "mode": "dry-run",
   "will_execute": false,
   "calibration_status": "not_calibrated_yet",
   "zone_policy_status": "not_calibrated_yet",
   "input_summary": {
-    "checkpoint_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2",
+    "checkpoint_dir": "x",
     "mesh_level": null,
     "active_dimension": null,
     "freq_range_hz": [
@@ -18,9 +18,9 @@
     "freq_max_hz": 550.0,
     "coarse_step_hz": 15.0,
     "spacing_policy": "uniform",
-    "target_window_half_width_hz": 7.5,
-    "target_window_half_width_explicit_hz": null,
-    "discovery_half_width_source": "spacing_over_2",
+    "target_window_half_width_hz": 1.5,
+    "target_window_half_width_explicit_hz": 1.5,
+    "discovery_half_width_source": "explicit_override",
     "recommended_target_window_half_width_hz": 7.5,
     "effective_coarse_spacing_hz": 15.0,
     "reference_result_json": null,
@@ -169,20 +169,285 @@
   "discovery_window_policy": {
     "effective_coarse_spacing_hz": 15.0,
     "recommended_half_width_hz": 7.5,
-    "applied_half_width_hz": 7.5,
-    "half_width_source": "spacing_over_2",
-    "explicit_override_hz": null,
+    "applied_half_width_hz": 1.5,
+    "half_width_source": "explicit_override",
+    "explicit_override_hz": 1.5,
     "rule": "target_window_half_width_hz = coarse_step_hz / 2 unless --target-window-half-width-hz set"
   },
   "discovery_coverage_analysis": {
     "coarse_spacing_hz_for_touching_check": 15.0,
-    "half_width_hz": 7.5,
+    "half_width_hz": 1.5,
     "adjacent_windows_touch_when": "2 * half_width >= target_spacing",
-    "windows_touch_at_nominal_spacing": true,
-    "pair_gaps": [],
-    "pair_gap_count": 0,
-    "max_uncovered_gap_hz": 0.0,
-    "has_coverage_gaps": false
+    "windows_touch_at_nominal_spacing": false,
+    "pair_gaps": [
+      {
+        "between_targets_hz": [
+          60.0,
+          75.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          75.0,
+          90.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          90.0,
+          105.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          105.0,
+          120.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          120.0,
+          135.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          135.0,
+          150.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          150.0,
+          165.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          165.0,
+          180.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          180.0,
+          195.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          195.0,
+          210.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          210.0,
+          225.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          225.0,
+          240.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          240.0,
+          255.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          255.0,
+          270.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          270.0,
+          285.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          285.0,
+          300.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          300.0,
+          315.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          315.0,
+          330.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          330.0,
+          345.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          345.0,
+          360.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          360.0,
+          375.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          375.0,
+          390.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          390.0,
+          405.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          405.0,
+          420.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          420.0,
+          435.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          435.0,
+          450.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          450.0,
+          465.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          465.0,
+          480.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          480.0,
+          495.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          495.0,
+          510.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          510.0,
+          525.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          525.0,
+          540.0
+        ],
+        "target_spacing_hz": 15.0,
+        "uncovered_gap_hz": 12.0
+      },
+      {
+        "between_targets_hz": [
+          540.0,
+          550.0
+        ],
+        "target_spacing_hz": 10.0,
+        "uncovered_gap_hz": 7.0
+      }
+    ],
+    "pair_gap_count": 33,
+    "max_uncovered_gap_hz": 12.0,
+    "has_coverage_gaps": true
   },
   "executable_feasibility": {
     "planning_band_hz": [
@@ -609,340 +874,340 @@
     {
       "target_hz": 60.0,
       "window_hz": [
-        52.5,
-        67.5
+        58.5,
+        61.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 75.0,
       "window_hz": [
-        67.5,
-        82.5
+        73.5,
+        76.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 90.0,
       "window_hz": [
-        82.5,
-        97.5
+        88.5,
+        91.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 105.0,
       "window_hz": [
-        97.5,
-        112.5
+        103.5,
+        106.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 120.0,
       "window_hz": [
-        112.5,
-        127.5
+        118.5,
+        121.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 135.0,
       "window_hz": [
-        127.5,
-        142.5
+        133.5,
+        136.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 150.0,
       "window_hz": [
-        142.5,
-        157.5
+        148.5,
+        151.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 165.0,
       "window_hz": [
-        157.5,
-        172.5
+        163.5,
+        166.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 180.0,
       "window_hz": [
-        172.5,
-        187.5
+        178.5,
+        181.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 195.0,
       "window_hz": [
-        187.5,
-        202.5
+        193.5,
+        196.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 210.0,
       "window_hz": [
-        202.5,
-        217.5
+        208.5,
+        211.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 225.0,
       "window_hz": [
-        217.5,
-        232.5
+        223.5,
+        226.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": true,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 240.0,
       "window_hz": [
-        232.5,
-        247.5
+        238.5,
+        241.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": true,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 255.0,
       "window_hz": [
-        247.5,
-        262.5
+        253.5,
+        256.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": true,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 270.0,
       "window_hz": [
-        262.5,
-        277.5
+        268.5,
+        271.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 285.0,
       "window_hz": [
-        277.5,
-        292.5
+        283.5,
+        286.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 300.0,
       "window_hz": [
-        292.5,
-        307.5
+        298.5,
+        301.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 315.0,
       "window_hz": [
-        307.5,
-        322.5
+        313.5,
+        316.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 330.0,
       "window_hz": [
-        322.5,
-        337.5
+        328.5,
+        331.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 345.0,
       "window_hz": [
-        337.5,
-        352.5
+        343.5,
+        346.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 360.0,
       "window_hz": [
-        352.5,
-        367.5
+        358.5,
+        361.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 375.0,
       "window_hz": [
-        367.5,
-        382.5
+        373.5,
+        376.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 390.0,
       "window_hz": [
-        382.5,
-        397.5
+        388.5,
+        391.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 405.0,
       "window_hz": [
-        397.5,
-        412.5
+        403.5,
+        406.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 420.0,
       "window_hz": [
-        412.5,
-        427.5
+        418.5,
+        421.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 435.0,
       "window_hz": [
-        427.5,
-        442.5
+        433.5,
+        436.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 450.0,
       "window_hz": [
-        442.5,
-        457.5
+        448.5,
+        451.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 465.0,
       "window_hz": [
-        457.5,
-        472.5
+        463.5,
+        466.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 480.0,
       "window_hz": [
-        472.5,
-        487.5
+        478.5,
+        481.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 495.0,
       "window_hz": [
-        487.5,
-        502.5
+        493.5,
+        496.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 510.0,
       "window_hz": [
-        502.5,
-        517.5
+        508.5,
+        511.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 525.0,
       "window_hz": [
-        517.5,
-        532.5
+        523.5,
+        526.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 540.0,
       "window_hz": [
-        532.5,
-        547.5
+        538.5,
+        541.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
       "target_hz": 550.0,
       "window_hz": [
-        542.5,
-        557.5
+        548.5,
+        551.5
       ],
-      "half_width_hz": 7.5,
+      "half_width_hz": 1.5,
       "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     }
@@ -954,7 +1219,8 @@
     "Discovery half-width default: effective_coarse_spacing_hz / 2 (touching windows at grid step).",
     "Default full9 / timing runs without discovery flags keep legacy [220, 265] acceptance.",
     "Do not overwrite m3exec1/m3exec2 runtime diagnostics.",
-    "WARN: checkpoint_dir not found on this host: C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2"
+    "WARN: discovery half-width 1.5 Hz < spacing/2 (7.5 Hz); 33 adjacent target pairs leave frequency gaps (max uncovered 12.0 Hz). Use --target-window-half-width-hz >= spacing/2 for coarse discovery.",
+    "WARN: checkpoint_dir not found on this host: C:\\projects\\final-project\\final-project\\x"
   ],
   "recommended_next_step": {
     "summary": "Gate A discovery mode is implemented (opt-in). 1) Approve coarse scan plan (15 Hz uniform, exclusive VM). 2) Run density experiment with --B3-discovery-mode on a new output dir. 3) Post-process unique_accepted_frequencies_hz per window; calibrate zones.",
@@ -965,16 +1231,16 @@
       60.0,
       550.0
     ],
-    "suggested_target_window_half_width_hz": 7.5,
+    "suggested_target_window_half_width_hz": 1.5,
     "gate_a_cli_flags": [
       "--B3-discovery-mode",
       "--discovery-band-hz",
       "60.0",
       "550.0",
       "--target-window-half-width-hz",
-      "7.5"
+      "1.5"
     ],
-    "suggested_command_after_approval": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_target_density_experiment.py \\\n  --checkpoint-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2 \\\n  --reference-json FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing_m3exec2/result.json \\\n  --start-hz 60.0 --stop-hz 550.0 --spacings-hz 15.0 \\\n  --B3-discovery-mode --discovery-band-hz 60.0 550.0 --target-window-half-width-hz 7.5",
+    "suggested_command_after_approval": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_target_density_experiment.py \\\n  --checkpoint-dir x \\\n  --reference-json FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing_m3exec2/result.json \\\n  --start-hz 60.0 --stop-hz 550.0 --spacings-hz 15.0 \\\n  --B3-discovery-mode --discovery-band-hz 60.0 550.0 --target-window-half-width-hz 1.5",
     "default_full9_unchanged": "python .../v2_b3_checkpoint_solve.py --checkpoint-dir <ckpt> --target-set full9  # no discovery flags \u2192 legacy [220,265] acceptance"
   },
   "orchestrator_feed_preview": {
