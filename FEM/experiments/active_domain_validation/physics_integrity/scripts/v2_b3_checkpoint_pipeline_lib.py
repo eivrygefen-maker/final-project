@@ -18,6 +18,9 @@ PIPELINE_EXPORT_MANIFEST = "checkpoint_export_manifest.json"
 PIPELINE_SOLVE_MANIFEST = "checkpoint_solve_manifest.json"
 
 B3_EXPORT_RICH_MODAL_DATA_ARG = "--B3-export-rich-modal-data"
+B3_DISCOVERY_MODE_ARG = "--B3-discovery-mode"
+B3_DISCOVERY_BAND_HZ_ARG = "--discovery-band-hz"
+B3_TARGET_WINDOW_HALF_WIDTH_HZ_ARG = "--target-window-half-width-hz"
 B3_SYNTHESIS_REGION_DOFS_ARG = "--B3-synthesis-region-dofs"
 B3_SYNTHESIS_REGION_DOFS_ENV = "B3_SYNTHESIS_REGION_DOFS"
 SYNTHESIS_REGION_DOFS_OFF = frozenset({"off", "safe_off", "0", "false", "no", ""})
@@ -353,6 +356,54 @@ def parse_rich_modal_export_flag(argv: Optional[Sequence[str]]) -> bool:
     return B3_EXPORT_RICH_MODAL_DATA_ARG in argv
 
 
+def add_b3_discovery_cli_arguments(parser: Any) -> None:
+    """Opt-in wide-band discovery acceptance (Gate A / Option C)."""
+    parser.add_argument(
+        B3_DISCOVERY_MODE_ARG,
+        dest="discovery_mode",
+        action="store_true",
+        help="Opt-in discovery acceptance: global band + per-target window (default: legacy 220–265).",
+    )
+    parser.add_argument(
+        B3_DISCOVERY_BAND_HZ_ARG,
+        dest="discovery_band_hz",
+        nargs=2,
+        type=float,
+        metavar=("LO", "HI"),
+        help="Discovery global band in Hz (required with --B3-discovery-mode).",
+    )
+    parser.add_argument(
+        B3_TARGET_WINDOW_HALF_WIDTH_HZ_ARG,
+        dest="target_window_half_width_hz",
+        type=float,
+        help="Half-width Hz around each shift target (required with --B3-discovery-mode).",
+    )
+
+
+def extend_argv_with_discovery_options(
+    argv: List[str],
+    *,
+    discovery_mode: bool = False,
+    discovery_band_hz: Optional[Sequence[float]] = None,
+    target_window_half_width_hz: Optional[float] = None,
+) -> List[str]:
+    if not discovery_mode:
+        return argv
+    out = list(argv)
+    out.append(B3_DISCOVERY_MODE_ARG)
+    if discovery_band_hz is not None:
+        out.extend(
+            [
+                B3_DISCOVERY_BAND_HZ_ARG,
+                str(float(discovery_band_hz[0])),
+                str(float(discovery_band_hz[1])),
+            ]
+        )
+    if target_window_half_width_hz is not None:
+        out.extend([B3_TARGET_WINDOW_HALF_WIDTH_HZ_ARG, str(float(target_window_half_width_hz))])
+    return out
+
+
 def build_checkpoint_multi_benchmark_argv(
     *,
     checkpoint_dir: str,
@@ -364,6 +415,9 @@ def build_checkpoint_multi_benchmark_argv(
     targets_hz: Optional[str] = None,
     baseline_json: Optional[str] = None,
     export_rich_modal_data: bool = False,
+    discovery_mode: bool = False,
+    discovery_band_hz: Optional[Sequence[float]] = None,
+    target_window_half_width_hz: Optional[float] = None,
 ) -> List[str]:
     """Argv for v2_b3_checkpoint_solver_multi_benchmark (Stage B inner runner)."""
     bench_argv: List[str] = [
@@ -386,7 +440,12 @@ def build_checkpoint_multi_benchmark_argv(
         bench_argv.extend(["--baseline-json", str(baseline_json)])
     if export_rich_modal_data:
         bench_argv.append(B3_EXPORT_RICH_MODAL_DATA_ARG)
-    return bench_argv
+    return extend_argv_with_discovery_options(
+        bench_argv,
+        discovery_mode=discovery_mode,
+        discovery_band_hz=discovery_band_hz,
+        target_window_half_width_hz=target_window_half_width_hz,
+    )
 
 
 def rich_modal_export_manifest_block(*, requested: bool) -> Dict[str, Any]:

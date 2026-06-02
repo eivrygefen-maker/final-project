@@ -8,7 +8,7 @@
 - freq_range_hz: `[60.0, 550.0]`
 - coarse_step_hz: `15.0`
 - coarse_target_count: `34`
-- execution_status: `requires_acceptance_band/general_target_set_support_before_execution`
+- execution_status: `executable_with_discovery_mode_opt_in`
 
 ## Regions (placeholder — not calibrated)
 
@@ -28,11 +28,11 @@
 
 ## Recommended next step
 
-1) Review acceptance-band extension for 60–550 Hz. 2) Approve spacing (recommend 15 Hz uniform or adaptive_v0). 3) Run solver-only coarse scan on new output dir with isolated solver-mkl env. 4) Post-process mode counts per window; calibrate zones from data.
+Gate A discovery mode is implemented (opt-in). 1) Approve coarse scan plan (15 Hz uniform, exclusive VM). 2) Run density experiment with --B3-discovery-mode on a new output dir. 3) Post-process unique_accepted_frequencies_hz per window; calibrate zones.
 
 - Planning band 60–550 Hz is the guitar/modal exploration target; 220–265 Hz is validated full9 reference only.
 - Zone density thresholds are not_calibrated_yet; regions are placeholders.
-- Solver acceptance hard-limited to 220.0–265.0 Hz in v2_b3_st_sinvert_solver_lib.py (collect_accepted_st_modes).
-- Wide-band coarse scan is NOT executable for mode discovery until acceptance-band extension is reviewed.
+- Gate A: opt-in --B3-discovery-mode uses discovery_band + per-target window (Option C).
+- Default full9 / timing runs without discovery flags keep legacy [220, 265] acceptance.
 - Do not overwrite m3exec1/m3exec2 runtime diagnostics.
 - WARN: checkpoint_dir not found on this host: C:\projects\final-project\final-project\FEM\experiments\active_domain_validation\physics_integrity\v2_mesh_convergence\diagnostics\st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2

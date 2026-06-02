@@ -16,6 +16,7 @@ if str(SCRIPT_DIR) not in sys.path:
 from v2_b3_checkpoint_pipeline_lib import (  # noqa: E402
     B3_EXPORT_RICH_MODAL_DATA_ARG,
     PIPELINE_SOLVE_MANIFEST,
+    add_b3_discovery_cli_arguments,
     build_checkpoint_multi_benchmark_argv,
     default_solve_output_dir,
     ensure_rich_modal_export_allowed,
@@ -58,6 +59,7 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=False,
         help="Opt-in rich modal export (active eigenvectors under rich_modal/).",
     )
+    add_b3_discovery_cli_arguments(parser)
     if argv is None:
         return parser.parse_args()
     return parser.parse_args(argv)
@@ -135,6 +137,9 @@ def run_checkpoint_solve(argv: Optional[List[str]] = None) -> int:
         targets_hz=str(args.targets_hz) if args.targets_hz else None,
         baseline_json=str(args.baseline_json) if args.baseline_json else None,
         export_rich_modal_data=rich_modal_requested,
+        discovery_mode=bool(getattr(args, "discovery_mode", False)),
+        discovery_band_hz=getattr(args, "discovery_band_hz", None),
+        target_window_half_width_hz=getattr(args, "target_window_half_width_hz", None),
     )
 
     rc = run_checkpoint_solver_multi_benchmark(bench_argv)

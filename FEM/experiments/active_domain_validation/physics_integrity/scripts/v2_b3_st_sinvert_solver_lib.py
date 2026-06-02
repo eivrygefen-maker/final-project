@@ -22,6 +22,115 @@ FACTOR_SHIFT_AMOUNT = 1.0e-8
 L_PROD_ST_FULL9_TARGETS_HZ = [221.5, 227.0, 232.5, 238.0, 243.5, 249.0, 254.5, 260.0, 264.0]
 FREQ_PARITY_TOL_HZ = 0.05
 
+ACCEPTANCE_POLICY_LEGACY = "legacy_global_interval"
+ACCEPTANCE_POLICY_DISCOVERY = "discovery_band_and_target_window"
+
+
+class AcceptanceConfig:
+    """Mode frequency acceptance policy for checkpoint ST solves."""
+
+    def __init__(
+        self,
+        *,
+        policy: str = ACCEPTANCE_POLICY_LEGACY,
+        freq_lo: float = ACCEPTANCE_FREQ_LO_HZ,
+        freq_hi: float = ACCEPTANCE_FREQ_HI_HZ,
+        discovery_band_hz: Optional[Tuple[float, float]] = None,
+        target_window_half_width_hz: Optional[float] = None,
+    ) -> None:
+        self.policy = str(policy)
+        self.freq_lo = float(freq_lo)
+        self.freq_hi = float(freq_hi)
+        self.discovery_band_hz = discovery_band_hz
+        self.target_window_half_width_hz = (
+            float(target_window_half_width_hz)
+            if target_window_half_width_hz is not None
+            else None
+        )
+
+    @classmethod
+    def legacy(cls) -> AcceptanceConfig:
+        return cls(policy=ACCEPTANCE_POLICY_LEGACY)
+
+    @classmethod
+    def discovery(
+        cls,
+        *,
+        band_lo_hz: float,
+        band_hi_hz: float,
+        target_window_half_width_hz: float,
+    ) -> AcceptanceConfig:
+        if band_hi_hz <= band_lo_hz:
+            raise ValueError(f"discovery band invalid: [{band_lo_hz}, {band_hi_hz}]")
+        if target_window_half_width_hz <= 0.0:
+            raise ValueError(
+                f"target_window_half_width_hz must be positive, got {target_window_half_width_hz}"
+            )
+        return cls(
+            policy=ACCEPTANCE_POLICY_DISCOVERY,
+            discovery_band_hz=(float(band_lo_hz), float(band_hi_hz)),
+            target_window_half_width_hz=float(target_window_half_width_hz),
+        )
+
+    @property
+    def discovery_mode(self) -> bool:
+        return self.policy == ACCEPTANCE_POLICY_DISCOVERY
+
+    def mode_frequency_inside(self, f_hz: float, *, target_hz: float) -> bool:
+        if f_hz is None:
+            return False
+        f = float(f_hz)
+        if self.discovery_mode:
+            if self.discovery_band_hz is None or self.target_window_half_width_hz is None:
+                raise RuntimeError("discovery policy missing band or window half-width")
+            lo, hi = self.discovery_band_hz
+            half = float(self.target_window_half_width_hz)
+            return (
+                lo <= f <= hi
+                and abs(f - float(target_hz)) <= half + 1.0e-9
+            )
+        return self.freq_lo <= f <= self.freq_hi
+
+    def per_target_window_hz(self, target_hz: float) -> Optional[List[float]]:
+        if not self.discovery_mode or self.target_window_half_width_hz is None:
+            return None
+        t = float(target_hz)
+        half = float(self.target_window_half_width_hz)
+        return [t - half, t + half]
+
+    def to_result_fields(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {
+            "discovery_mode": bool(self.discovery_mode),
+            "accepted_frequency_policy": self.policy,
+            "legacy_acceptance_interval_hz": [ACCEPTANCE_FREQ_LO_HZ, ACCEPTANCE_FREQ_HI_HZ],
+            "acceptance_interval_hz": [self.freq_lo, self.freq_hi],
+            "dedupe_tolerance_hz": FREQ_PARITY_TOL_HZ,
+        }
+        if self.discovery_mode and self.discovery_band_hz is not None:
+            out["discovery_band_hz"] = list(self.discovery_band_hz)
+            out["target_window_half_width_hz"] = self.target_window_half_width_hz
+            out["acceptance_interval_hz"] = list(self.discovery_band_hz)
+        return out
+
+
+def resolve_acceptance_config(
+    *,
+    discovery_mode: bool = False,
+    discovery_band_hz: Optional[Sequence[float]] = None,
+    target_window_half_width_hz: Optional[float] = None,
+) -> AcceptanceConfig:
+    if not discovery_mode:
+        return AcceptanceConfig.legacy()
+    if discovery_band_hz is None or len(discovery_band_hz) != 2:
+        raise ValueError("--B3-discovery-mode requires --discovery-band-hz LO HI")
+    if target_window_half_width_hz is None:
+        raise ValueError("--B3-discovery-mode requires --target-window-half-width-hz")
+    return AcceptanceConfig.discovery(
+        band_lo_hz=float(discovery_band_hz[0]),
+        band_hi_hz=float(discovery_band_hz[1]),
+        target_window_half_width_hz=float(target_window_half_width_hz),
+    )
+
 def safe_float(x: Any) -> Optional[float]:
     if x is None:
         return None
@@ -336,11 +445,18 @@ def collect_accepted_st_modes(
     built: Dict[str, Any],
     *,
     target_hz: float,
+    acceptance_config: Optional[AcceptanceConfig] = None,
     freq_lo: float = ACCEPTANCE_FREQ_LO_HZ,
     freq_hi: float = ACCEPTANCE_FREQ_HI_HZ,
     export_vectors: bool = False,
 ) -> Tuple[int, List[Dict[str, Any]]]:
     from slepc4py import SLEPc
+
+    cfg = acceptance_config or AcceptanceConfig(
+        policy=ACCEPTANCE_POLICY_LEGACY,
+        freq_lo=float(freq_lo),
+        freq_hi=float(freq_hi),
+    )
 
     nconv = int(eps.getConverged())
     accepted: List[Dict[str, Any]] = []
@@ -362,7 +478,7 @@ def collect_accepted_st_modes(
             lam_im = float(np.imag(complex(lam)))
             finite = bool(math.isfinite(lam_re) and math.isfinite(lam_im))
             f_hz = lambda_hz_from_eigenvalue(lam_re, lam_im)
-            inside = bool(f_hz is not None and freq_lo <= float(f_hz) <= freq_hi)
+            inside = cfg.mode_frequency_inside(f_hz, target_hz=float(target_hz))
             eps_err = float("nan")
             try:
                 eps_err = float(eps.computeError(i, SLEPc.EPS.ErrorType.RELATIVE))
@@ -544,10 +660,12 @@ def run_checkpoint_st_target(
     ncv: int,
     target_index: Optional[int] = None,
     export_vectors: bool = False,
+    acceptance_config: Optional[AcceptanceConfig] = None,
 ) -> Dict[str, Any]:
     """Run one EPSSetUp + EPSSolve for a loaded checkpoint (solver-only)."""
     from slepc4py import SLEPc
 
+    cfg = acceptance_config or AcceptanceConfig.legacy()
     target_lambda = float(hz_to_lambda_sq(float(target_hz)))
     fs = str(factor_solver).strip().lower()
     result: Dict[str, Any] = {
@@ -577,6 +695,10 @@ def run_checkpoint_st_target(
         "failure_reason": None,
         "failure_class": None,
     }
+    result.update(cfg.to_result_fields())
+    win = cfg.per_target_window_hz(float(target_hz))
+    if win is not None:
+        result["per_target_acceptance_window_hz"] = win
 
     if fs == "mumps":
         policies = mumps_policy_chain(mesh_level=mesh_level)
@@ -654,6 +776,7 @@ def run_checkpoint_st_target(
             A_active,
             built,
             target_hz=float(target_hz),
+            acceptance_config=cfg,
             export_vectors=bool(export_vectors),
         )
         accepted_freqs = sorted(float(m["frequency_hz"]) for m in accepted_modes)

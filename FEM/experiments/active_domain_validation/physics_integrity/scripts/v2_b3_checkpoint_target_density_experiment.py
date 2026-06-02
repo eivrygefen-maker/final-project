@@ -13,7 +13,10 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from v2_b3_checkpoint_pipeline_lib import default_target_density_output_dir  # noqa: E402
+from v2_b3_checkpoint_pipeline_lib import (  # noqa: E402
+    add_b3_discovery_cli_arguments,
+    default_target_density_output_dir,
+)
 from v2_b3_operator_checkpoint_portable import load_operators_with_portable_fallback  # noqa: E402
 from v2_b3_petsc_util import mat_shape, write_json_atomic  # noqa: E402
 from v2_b3_st_sinvert_solver_lib import (  # noqa: E402
@@ -22,8 +25,10 @@ from v2_b3_st_sinvert_solver_lib import (  # noqa: E402
     built_from_checkpoint_metadata,
     deduplicate_frequencies_hz,
     extract_summary_view,
+    FREQ_PARITY_TOL_HZ,
     mat_global_nnz_used,
     parse_hz_list,
+    resolve_acceptance_config,
     run_checkpoint_st_target,
     safe_float,
     threading_env_snapshot,
@@ -185,6 +190,7 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--previous-density-result-json",
         help="Optional prior density_result.json (e.g. nev12/ncv24) for per-spacing coverage comparison.",
     )
+    add_b3_discovery_cli_arguments(parser)
     if argv is None:
         return parser.parse_args()
     return parser.parse_args(argv)
@@ -316,6 +322,11 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
 
     built_meta = json.loads(meta_path.read_text(encoding="utf-8"))
     mesh_level = str(built_meta.get("mesh_level") or "unknown")
+    acceptance_cfg = resolve_acceptance_config(
+        discovery_mode=bool(getattr(args, "discovery_mode", False)),
+        discovery_band_hz=getattr(args, "discovery_band_hz", None),
+        target_window_half_width_hz=getattr(args, "target_window_half_width_hz", None),
+    )
 
     experiment: Dict[str, Any] = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -333,6 +344,8 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
         "spacings_hz": spacings,
         "tolerance_hz": tol_hz,
         "acceptance_interval_hz": [ACCEPTANCE_FREQ_LO_HZ, ACCEPTANCE_FREQ_HI_HZ],
+        **acceptance_cfg.to_result_fields(),
+        "dedupe_tolerance_hz": FREQ_PARITY_TOL_HZ,
         "reference_unique_accepted_count": len(reference_freqs),
         "reference_unique_accepted_frequencies_hz": reference_freqs,
         "versions": version_snapshot(),
@@ -399,6 +412,7 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
                         nev=nev,
                         ncv=ncv,
                         target_index=int(ti),
+                        acceptance_config=acceptance_cfg,
                     )
                 except Exception as exc:
                     row = {

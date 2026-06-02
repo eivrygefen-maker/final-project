@@ -1,6 +1,6 @@
 # B3 M3.4 Gate A — Acceptance / discovery mode (planning-only)
 
-**Status:** Planning-only — no Stage B execution, no code changes authorized by this document.  
+**Status:** Design spec — **Option C implemented** in solver/Stage B CLI (opt-in). No Stage B execution authorized by this document.  
 **Blocks:** Wide-band coarse scan (60–550 Hz) per M3.4-pre `execution_status=requires_acceptance_band/general_target_set_support_before_execution`  
 **Related:** [`B3_M3_4_PRE_COARSE_FREQUENCY_PLANNER.md`](B3_M3_4_PRE_COARSE_FREQUENCY_PLANNER.md), M3.3 `m3exec2` PASS
 

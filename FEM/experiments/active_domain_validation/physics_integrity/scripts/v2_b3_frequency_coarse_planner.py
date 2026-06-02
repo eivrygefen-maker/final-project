@@ -23,6 +23,7 @@ L_PROD_ST_FULL9_TARGETS_HZ = [221.5, 227.0, 232.5, 238.0, 243.5, 249.0, 254.5, 2
 
 PLANNING_BAND_LO_HZ = 60.0
 PLANNING_BAND_HI_HZ = 550.0
+DEFAULT_DISCOVERY_HALF_WIDTH_HZ = 7.5
 FULL9_REF_LO_HZ = min(L_PROD_ST_FULL9_TARGETS_HZ)
 FULL9_REF_HI_HZ = max(L_PROD_ST_FULL9_TARGETS_HZ)
 
@@ -130,35 +131,65 @@ def _spacing_alternatives(freq_min: float, freq_max: float) -> List[Dict[str, An
     return rows
 
 
-def _target_executable_now(target_hz: float) -> bool:
+def _target_executable_legacy(target_hz: float) -> bool:
     return ACCEPTANCE_FREQ_LO_HZ <= float(target_hz) <= ACCEPTANCE_FREQ_HI_HZ
 
 
+def _target_executable_discovery(
+    target_hz: float,
+    *,
+    band_lo: float,
+    band_hi: float,
+) -> bool:
+    return band_lo <= float(target_hz) <= band_hi
+
+
 def _executable_feasibility(
-    *, freq_min: float, freq_max: float, coarse_targets: Sequence[float]
+    *,
+    freq_min: float,
+    freq_max: float,
+    coarse_targets: Sequence[float],
+    assume_gate_a_discovery: bool = False,
+    discovery_band_hz: Optional[Tuple[float, float]] = None,
 ) -> Dict[str, Any]:
-    exec_targets = [t for t in coarse_targets if _target_executable_now(t)]
-    blocked_targets = [t for t in coarse_targets if not _target_executable_now(t)]
+    band = discovery_band_hz or (float(freq_min), float(freq_max))
+
+    if assume_gate_a_discovery:
+        exec_targets = [
+            t for t in coarse_targets if _target_executable_discovery(t, band_lo=band[0], band_hi=band[1])
+        ]
+        blocked_targets = [t for t in coarse_targets if t not in exec_targets]
+        overall = "executable_with_discovery_mode_opt_in"
+        legacy_note = "Gate A implemented; use --B3-discovery-mode on Stage B / density experiment."
+    else:
+        exec_targets = [t for t in coarse_targets if _target_executable_legacy(t)]
+        blocked_targets = [t for t in coarse_targets if not _target_executable_legacy(t)]
+        planning_outside_acceptance = (
+            freq_min < ACCEPTANCE_FREQ_LO_HZ - 1.0e-9 or freq_max > ACCEPTANCE_FREQ_HI_HZ + 1.0e-9
+        )
+        if planning_outside_acceptance:
+            overall = "requires_acceptance_band/general_target_set_support_before_execution"
+        else:
+            overall = "executable_with_current_stage_b_acceptance_filter"
+        legacy_note = (
+            "Default Stage B (no discovery flags) uses legacy acceptance [220, 265] Hz only."
+        )
+
     executable_now_count = len(exec_targets)
     blocked_count = len(blocked_targets)
-    planning_outside_acceptance = (
-        freq_min < ACCEPTANCE_FREQ_LO_HZ - 1.0e-9 or freq_max > ACCEPTANCE_FREQ_HI_HZ + 1.0e-9
-    )
-    if planning_outside_acceptance:
-        overall = "requires_acceptance_band/general_target_set_support_before_execution"
-    else:
-        overall = "executable_with_current_stage_b_acceptance_filter"
 
     blocked_slices: List[List[float]] = []
-    if freq_min < ACCEPTANCE_FREQ_LO_HZ:
-        blocked_slices.append([float(freq_min), float(ACCEPTANCE_FREQ_LO_HZ)])
-    if freq_max > ACCEPTANCE_FREQ_HI_HZ:
-        blocked_slices.append([float(ACCEPTANCE_FREQ_HI_HZ), float(freq_max)])
+    if not assume_gate_a_discovery:
+        if freq_min < ACCEPTANCE_FREQ_LO_HZ:
+            blocked_slices.append([float(freq_min), float(ACCEPTANCE_FREQ_LO_HZ)])
+        if freq_max > ACCEPTANCE_FREQ_HI_HZ:
+            blocked_slices.append([float(ACCEPTANCE_FREQ_HI_HZ), float(freq_max)])
 
     return {
         "planning_band_hz": [float(freq_min), float(freq_max)],
         "solver_acceptance_band_hz": [ACCEPTANCE_FREQ_LO_HZ, ACCEPTANCE_FREQ_HI_HZ],
-        "executable_now_band_hz": [ACCEPTANCE_FREQ_LO_HZ, ACCEPTANCE_FREQ_HI_HZ],
+        "discovery_band_hz_assumed": list(band) if assume_gate_a_discovery else None,
+        "executable_now_band_hz": list(band) if assume_gate_a_discovery else [ACCEPTANCE_FREQ_LO_HZ, ACCEPTANCE_FREQ_HI_HZ],
         "blocked_until_acceptance_extension_hz": blocked_slices,
         "executable_now_count": executable_now_count,
         "blocked_count": blocked_count,
@@ -167,12 +198,9 @@ def _executable_feasibility(
         "coarse_target_count_total": len(coarse_targets),
         "coarse_target_count_executable_now": executable_now_count,
         "coarse_target_count_blocked_now": blocked_count,
+        "assume_gate_a_discovery": bool(assume_gate_a_discovery),
         "overall_execution_status": overall,
-        "code_basis": (
-            "collect_accepted_st_modes() in v2_b3_st_sinvert_solver_lib.py filters "
-            "accepted modes to inside acceptance interval; targets outside 220–265 Hz "
-            "may run ST but will not record out-of-band modes as accepted."
-        ),
+        "code_basis": legacy_note,
     }
 
 
@@ -285,7 +313,7 @@ def _stage_b_windows(
                 "target_hz": hz_f,
                 "window_hz": [hz_f - half_width_hz, hz_f + half_width_hz],
                 "half_width_hz": float(half_width_hz),
-                "executable_with_current_acceptance": _target_executable_now(hz_f),
+                "executable_with_legacy_acceptance": _target_executable_legacy(hz_f),
                 "reason": (
                     "full9 validated reference target"
                     if hz_f in L_PROD_ST_FULL9_TARGETS_HZ
@@ -296,36 +324,73 @@ def _stage_b_windows(
     return out
 
 
+def _gate_a_cli_flags(
+    *,
+    band_lo: float,
+    band_hi: float,
+    half_width_hz: float,
+) -> List[str]:
+    return [
+        "--B3-discovery-mode",
+        "--discovery-band-hz",
+        str(float(band_lo)),
+        str(float(band_hi)),
+        "--target-window-half-width-hz",
+        str(float(half_width_hz)),
+    ]
+
+
 def _recommended_next_step(
     *,
     feasibility: Dict[str, Any],
     spacing_rec: Dict[str, Any],
     ckpt_str: str,
+    ref_str: Optional[str],
+    target_window_half_width_hz: float,
 ) -> Dict[str, Any]:
     step = spacing_rec.get("recommended_first_pass_hz")
+    ref = ref_str or (
+        "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/"
+        "diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_"
+        "lhs_pilot_001_timing_m3exec2/result.json"
+    )
+    discovery_flags = " ".join(
+        _gate_a_cli_flags(
+            band_lo=PLANNING_BAND_LO_HZ,
+            band_hi=PLANNING_BAND_HI_HZ,
+            half_width_hz=target_window_half_width_hz,
+        )
+    )
+    cmd = (
+        "python FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+        "v2_b3_checkpoint_target_density_experiment.py \\\n"
+        f"  --checkpoint-dir {ckpt_str} \\\n"
+        f"  --reference-json {ref} \\\n"
+        f"  --start-hz {PLANNING_BAND_LO_HZ} --stop-hz {PLANNING_BAND_HI_HZ} "
+        f"--spacings-hz {step} \\\n"
+        f"  {discovery_flags}"
+    )
     return {
         "summary": (
-            "1) Review acceptance-band extension for 60–550 Hz. "
-            "2) Approve spacing (recommend 15 Hz uniform or adaptive_v0). "
-            "3) Run solver-only coarse scan on new output dir with isolated solver-mkl env. "
-            "4) Post-process mode counts per window; calibrate zones from data."
+            "Gate A discovery mode is implemented (opt-in). "
+            "1) Approve coarse scan plan (15 Hz uniform, exclusive VM). "
+            "2) Run density experiment with --B3-discovery-mode on a new output dir. "
+            "3) Post-process unique_accepted_frequencies_hz per window; calibrate zones."
         ),
-        "blocked_until": (
-            None
-            if feasibility.get("overall_execution_status") == "executable_with_current_stage_b_acceptance_filter"
-            else "acceptance_band_extension_review"
-        ),
-        "first_executable_slice_now_hz": [ACCEPTANCE_FREQ_LO_HZ, ACCEPTANCE_FREQ_HI_HZ],
+        "blocked_until": None,
+        "gate_a_status": "implemented_option_c",
         "suggested_spacing_hz": step,
-        "suggested_command_after_approval": (
-            "# After acceptance-band support is reviewed/implemented:\n"
-            f"# checkpoint: {ckpt_str}\n"
-            "python FEM/experiments/active_domain_validation/physics_integrity/scripts/"
-            "v2_b3_checkpoint_target_density_experiment.py \\\n"
-            f"  --checkpoint-dir {ckpt_str} \\\n"
-            "  --reference-json <full9_result.json> \\\n"
-            f"  --start-hz {PLANNING_BAND_LO_HZ} --stop-hz {PLANNING_BAND_HI_HZ} "
-            f"--spacings-hz {step}"
+        "suggested_discovery_band_hz": [PLANNING_BAND_LO_HZ, PLANNING_BAND_HI_HZ],
+        "suggested_target_window_half_width_hz": float(target_window_half_width_hz),
+        "gate_a_cli_flags": _gate_a_cli_flags(
+            band_lo=PLANNING_BAND_LO_HZ,
+            band_hi=PLANNING_BAND_HI_HZ,
+            half_width_hz=target_window_half_width_hz,
+        ),
+        "suggested_command_after_approval": cmd,
+        "default_full9_unchanged": (
+            "python .../v2_b3_checkpoint_solve.py --checkpoint-dir <ckpt> "
+            "--target-set full9  # no discovery flags → legacy [220,265] acceptance"
         ),
     }
 
@@ -400,6 +465,7 @@ def build_plan(
     target_window_half_width_hz: float,
     mode: str,
     absolute_paths: bool,
+    assume_gate_a_discovery: bool,
 ) -> Dict[str, Any]:
     if mode != "dry-run":
         raise ValueError(f"only mode=dry-run is implemented in M3.4-pre; got {mode!r}")
@@ -431,7 +497,11 @@ def build_plan(
         ref_str = _format_path(reference_result_json, repo_root=repo_root, absolute_paths=absolute_paths)
 
     feasibility = _executable_feasibility(
-        freq_min=freq_min_hz, freq_max=freq_max_hz, coarse_targets=coarse_targets
+        freq_min=freq_min_hz,
+        freq_max=freq_max_hz,
+        coarse_targets=coarse_targets,
+        assume_gate_a_discovery=assume_gate_a_discovery,
+        discovery_band_hz=(freq_min_hz, freq_max_hz),
     )
     cost = _cost_and_parallel_estimate(
         coarse_targets=coarse_targets,
@@ -455,19 +525,23 @@ def build_plan(
     diagnostic_notes = [
         "Planning band 60–550 Hz is the guitar/modal exploration target; 220–265 Hz is validated full9 reference only.",
         "Zone density thresholds are not_calibrated_yet; regions are placeholders.",
-        f"Solver acceptance hard-limited to {ACCEPTANCE_FREQ_LO_HZ}–{ACCEPTANCE_FREQ_HI_HZ} Hz in "
-        "v2_b3_st_sinvert_solver_lib.py (collect_accepted_st_modes).",
-        "Wide-band coarse scan is NOT executable for mode discovery until acceptance-band extension is reviewed.",
+        "Gate A: opt-in --B3-discovery-mode uses discovery_band + per-target window (Option C).",
+        "Default full9 / timing runs without discovery flags keep legacy [220, 265] acceptance.",
         "Do not overwrite m3exec1/m3exec2 runtime diagnostics.",
     ]
     if not checkpoint_dir.is_dir():
         diagnostic_notes.append(f"WARN: checkpoint_dir not found on this host: {checkpoint_dir}")
 
     recommended = _recommended_next_step(
-        feasibility=feasibility, spacing_rec=spacing_rec, ckpt_str=ckpt_str
+        feasibility=feasibility,
+        spacing_rec=spacing_rec,
+        ckpt_str=ckpt_str,
+        ref_str=ref_str,
+        target_window_half_width_hz=target_window_half_width_hz,
     )
 
     return {
+        "gate_a_implementation": "option_c_opt_in_discovery_mode",
         "schema": PLAN_SCHEMA,
         "generated_utc": _utc_now(),
         "mode": mode,
@@ -542,6 +616,11 @@ def run_planner(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--repo-root")
     parser.add_argument("--absolute-paths", action="store_true")
     parser.add_argument("--force", action="store_true", help="Overwrite plan outputs")
+    parser.add_argument(
+        "--assume-gate-a-discovery",
+        action="store_true",
+        help="Feasibility counts assume --B3-discovery-mode over planning band (post Gate A).",
+    )
     args = parser.parse_args(argv)
 
     if args.mode == "execute":
@@ -583,11 +662,18 @@ def run_planner(argv: Optional[List[str]] = None) -> int:
         target_window_half_width_hz=float(args.target_window_half_width_hz),
         mode=str(args.mode),
         absolute_paths=bool(args.absolute_paths),
+        assume_gate_a_discovery=bool(args.assume_gate_a_discovery),
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     write_json_atomic(json_path, body)
     _write_plan_md(md_path, body)
+    preview_path = out_dir / "command_preview_gate_a.txt"
+    preview_path.write_text(
+        str((body.get("recommended_next_step") or {}).get("suggested_command_after_approval") or "")
+        + "\n",
+        encoding="utf-8",
+    )
 
     feas = body["executable_feasibility"]
     print(f"[B3_freq_planner] wrote {json_path}", flush=True)

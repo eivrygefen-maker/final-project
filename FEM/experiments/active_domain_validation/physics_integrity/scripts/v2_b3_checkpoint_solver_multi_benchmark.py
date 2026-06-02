@@ -27,6 +27,7 @@ from v2_b3_rich_modal_lib import (  # noqa: E402
 )
 from v2_b3_checkpoint_pipeline_lib import (  # noqa: E402
     B3_EXPORT_RICH_MODAL_DATA_ARG,
+    add_b3_discovery_cli_arguments,
     default_solve_output_dir,
     ensure_rich_modal_export_allowed,
     rich_modal_export_manifest_block,
@@ -34,6 +35,7 @@ from v2_b3_checkpoint_pipeline_lib import (  # noqa: E402
 from v2_b3_st_sinvert_solver_lib import (  # noqa: E402
     ACCEPTANCE_FREQ_HI_HZ,
     ACCEPTANCE_FREQ_LO_HZ,
+    FREQ_PARITY_TOL_HZ,
     L_PROD_ST_FULL9_TARGETS_HZ,
     built_from_checkpoint_metadata,
     compare_checkpoint_results_to_baseline,
@@ -41,6 +43,7 @@ from v2_b3_st_sinvert_solver_lib import (  # noqa: E402
     deduplicate_frequencies_hz,
     mat_global_nnz_used,
     parse_hz_list,
+    resolve_acceptance_config,
     run_checkpoint_st_target,
     safe_float,
     threading_env_snapshot,
@@ -84,6 +87,7 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=False,
         help="Opt-in rich modal export: active eigenvectors under rich_modal/ (disabled by default).",
     )
+    add_b3_discovery_cli_arguments(parser)
     if argv is None:
         return parser.parse_args()
     return parser.parse_args(argv)
@@ -154,6 +158,11 @@ def run_checkpoint_solver_multi_benchmark(argv: Optional[List[str]] = None) -> i
     output_dir.mkdir(parents=True, exist_ok=True)
 
     targets_hz = _resolve_targets(args)
+    acceptance_cfg = resolve_acceptance_config(
+        discovery_mode=bool(getattr(args, "discovery_mode", False)),
+        discovery_band_hz=getattr(args, "discovery_band_hz", None),
+        target_window_half_width_hz=getattr(args, "target_window_half_width_hz", None),
+    )
 
     meta_path = checkpoint / "built_metadata.json"
     if not meta_path.is_file():
@@ -180,6 +189,7 @@ def run_checkpoint_solver_multi_benchmark(argv: Optional[List[str]] = None) -> i
         "nev": int(args.nev),
         "ncv": int(args.ncv),
         "acceptance_interval_hz": [ACCEPTANCE_FREQ_LO_HZ, ACCEPTANCE_FREQ_HI_HZ],
+        **acceptance_cfg.to_result_fields(),
         "versions": version_snapshot(),
         "threading_env": threading_env_snapshot(),
         "checkpoint_load": None,
@@ -237,6 +247,7 @@ def run_checkpoint_solver_multi_benchmark(argv: Optional[List[str]] = None) -> i
                 ncv=int(args.ncv),
                 target_index=int(ti),
                 export_vectors=rich_modal_requested,
+                acceptance_config=acceptance_cfg,
             )
             per_target_rows.append(row)
             if rich_modal_requested and row.get("status") == "PASS":
@@ -271,6 +282,7 @@ def run_checkpoint_solver_multi_benchmark(argv: Optional[List[str]] = None) -> i
             "total_wall_seconds": safe_float(wall_s),
             "unique_accepted_frequencies_hz": unique_accepted,
             "unique_accepted_mode_count": len(unique_accepted),
+            "dedupe_tolerance_hz": FREQ_PARITY_TOL_HZ,
         }
 
         if args.baseline_json:
@@ -303,7 +315,11 @@ def run_checkpoint_solver_multi_benchmark(argv: Optional[List[str]] = None) -> i
                 ncv=int(args.ncv),
                 target_set=str(args.target_set),
                 targets_hz=targets_hz,
-                acceptance_interval_hz=[ACCEPTANCE_FREQ_LO_HZ, ACCEPTANCE_FREQ_HI_HZ],
+                acceptance_interval_hz=list(
+                    acceptance_cfg.discovery_band_hz
+                    if acceptance_cfg.discovery_mode and acceptance_cfg.discovery_band_hz
+                    else (ACCEPTANCE_FREQ_LO_HZ, ACCEPTANCE_FREQ_HI_HZ)
+                ),
                 synthesis_metadata_path=synth_path,
             )
             modes_npz = rm_manifest.get("modes_active_npz") or str((rich_dir / MODES_ACTIVE_NPZ).resolve())

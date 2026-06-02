@@ -1,6 +1,7 @@
 {
+  "gate_a_implementation": "option_c_opt_in_discovery_mode",
   "schema": "b3_coarse_frequency_plan_v2",
-  "generated_utc": "2026-06-02T21:13:14Z",
+  "generated_utc": "2026-06-02T21:18:55Z",
   "mode": "dry-run",
   "will_execute": false,
   "calibration_status": "not_calibrated_yet",
@@ -170,28 +171,18 @@
       220.0,
       265.0
     ],
+    "discovery_band_hz_assumed": [
+      60.0,
+      550.0
+    ],
     "executable_now_band_hz": [
-      220.0,
-      265.0
+      60.0,
+      550.0
     ],
-    "blocked_until_acceptance_extension_hz": [
-      [
-        60.0,
-        220.0
-      ],
-      [
-        265.0,
-        550.0
-      ]
-    ],
-    "executable_now_count": 3,
-    "blocked_count": 31,
+    "blocked_until_acceptance_extension_hz": [],
+    "executable_now_count": 34,
+    "blocked_count": 0,
     "executable_now_targets_hz": [
-      225.0,
-      240.0,
-      255.0
-    ],
-    "blocked_targets_hz": [
       60.0,
       75.0,
       90.0,
@@ -203,6 +194,9 @@
       180.0,
       195.0,
       210.0,
+      225.0,
+      240.0,
+      255.0,
       270.0,
       285.0,
       300.0,
@@ -224,11 +218,13 @@
       540.0,
       550.0
     ],
+    "blocked_targets_hz": [],
     "coarse_target_count_total": 34,
-    "coarse_target_count_executable_now": 3,
-    "coarse_target_count_blocked_now": 31,
-    "overall_execution_status": "requires_acceptance_band/general_target_set_support_before_execution",
-    "code_basis": "collect_accepted_st_modes() in v2_b3_st_sinvert_solver_lib.py filters accepted modes to inside acceptance interval; targets outside 220\u2013265 Hz may run ST but will not record out-of-band modes as accepted."
+    "coarse_target_count_executable_now": 34,
+    "coarse_target_count_blocked_now": 0,
+    "assume_gate_a_discovery": true,
+    "overall_execution_status": "executable_with_discovery_mode_opt_in",
+    "code_basis": "Gate A implemented; use --B3-discovery-mode on Stage B / density experiment."
   },
   "cost_estimate": {
     "coarse_target_count": 34,
@@ -595,7 +591,7 @@
         61.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -605,7 +601,7 @@
         76.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -615,7 +611,7 @@
         91.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -625,7 +621,7 @@
         106.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -635,7 +631,7 @@
         121.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -645,7 +641,7 @@
         136.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -655,7 +651,7 @@
         151.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -665,7 +661,7 @@
         166.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -675,7 +671,7 @@
         181.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -685,7 +681,7 @@
         196.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -695,7 +691,7 @@
         211.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -705,7 +701,7 @@
         226.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": true,
+      "executable_with_legacy_acceptance": true,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -715,7 +711,7 @@
         241.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": true,
+      "executable_with_legacy_acceptance": true,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -725,7 +721,7 @@
         256.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": true,
+      "executable_with_legacy_acceptance": true,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -735,7 +731,7 @@
         271.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -745,7 +741,7 @@
         286.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -755,7 +751,7 @@
         301.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -765,7 +761,7 @@
         316.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -775,7 +771,7 @@
         331.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -785,7 +781,7 @@
         346.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -795,7 +791,7 @@
         361.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -805,7 +801,7 @@
         376.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -815,7 +811,7 @@
         391.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -825,7 +821,7 @@
         406.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -835,7 +831,7 @@
         421.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -845,7 +841,7 @@
         436.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -855,7 +851,7 @@
         451.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -865,7 +861,7 @@
         466.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -875,7 +871,7 @@
         481.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -885,7 +881,7 @@
         496.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -895,7 +891,7 @@
         511.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -905,7 +901,7 @@
         526.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -915,7 +911,7 @@
         541.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -925,27 +921,38 @@
         551.5
       ],
       "half_width_hz": 1.5,
-      "executable_with_current_acceptance": false,
+      "executable_with_legacy_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     }
   ],
   "diagnostic_notes": [
     "Planning band 60\u2013550 Hz is the guitar/modal exploration target; 220\u2013265 Hz is validated full9 reference only.",
     "Zone density thresholds are not_calibrated_yet; regions are placeholders.",
-    "Solver acceptance hard-limited to 220.0\u2013265.0 Hz in v2_b3_st_sinvert_solver_lib.py (collect_accepted_st_modes).",
-    "Wide-band coarse scan is NOT executable for mode discovery until acceptance-band extension is reviewed.",
+    "Gate A: opt-in --B3-discovery-mode uses discovery_band + per-target window (Option C).",
+    "Default full9 / timing runs without discovery flags keep legacy [220, 265] acceptance.",
     "Do not overwrite m3exec1/m3exec2 runtime diagnostics.",
     "WARN: checkpoint_dir not found on this host: C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2"
   ],
   "recommended_next_step": {
-    "summary": "1) Review acceptance-band extension for 60\u2013550 Hz. 2) Approve spacing (recommend 15 Hz uniform or adaptive_v0). 3) Run solver-only coarse scan on new output dir with isolated solver-mkl env. 4) Post-process mode counts per window; calibrate zones from data.",
-    "blocked_until": "acceptance_band_extension_review",
-    "first_executable_slice_now_hz": [
-      220.0,
-      265.0
-    ],
+    "summary": "Gate A discovery mode is implemented (opt-in). 1) Approve coarse scan plan (15 Hz uniform, exclusive VM). 2) Run density experiment with --B3-discovery-mode on a new output dir. 3) Post-process unique_accepted_frequencies_hz per window; calibrate zones.",
+    "blocked_until": null,
+    "gate_a_status": "implemented_option_c",
     "suggested_spacing_hz": 15.0,
-    "suggested_command_after_approval": "# After acceptance-band support is reviewed/implemented:\n# checkpoint: FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2\npython FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_target_density_experiment.py \\\n  --checkpoint-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2 \\\n  --reference-json <full9_result.json> \\\n  --start-hz 60.0 --stop-hz 550.0 --spacings-hz 15.0"
+    "suggested_discovery_band_hz": [
+      60.0,
+      550.0
+    ],
+    "suggested_target_window_half_width_hz": 1.5,
+    "gate_a_cli_flags": [
+      "--B3-discovery-mode",
+      "--discovery-band-hz",
+      "60.0",
+      "550.0",
+      "--target-window-half-width-hz",
+      "1.5"
+    ],
+    "suggested_command_after_approval": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_target_density_experiment.py \\\n  --checkpoint-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2 \\\n  --reference-json FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing_m3exec2/result.json \\\n  --start-hz 60.0 --stop-hz 550.0 --spacings-hz 15.0 \\\n  --B3-discovery-mode --discovery-band-hz 60.0 550.0 --target-window-half-width-hz 1.5",
+    "default_full9_unchanged": "python .../v2_b3_checkpoint_solve.py --checkpoint-dir <ckpt> --target-set full9  # no discovery flags \u2192 legacy [220,265] acceptance"
   },
   "orchestrator_feed_preview": {
     "future_target_set_name": "coarse_calibrated_v0",
