@@ -1,22 +1,31 @@
 {
-  "schema": "b3_coarse_frequency_plan_v1",
-  "generated_utc": "2026-06-02T20:55:03Z",
-  "calibration_status": "not_calibrated_yet",
+  "schema": "b3_coarse_frequency_plan_v2",
+  "generated_utc": "2026-06-02T21:04:11Z",
+  "mode": "dry-run",
   "will_execute": false,
+  "calibration_status": "not_calibrated_yet",
+  "zone_policy_status": "not_calibrated_yet",
   "input_summary": {
-    "mode": "dry-run",
     "checkpoint_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2",
     "mesh_level": null,
     "active_dimension": null,
-    "freq_min_hz": 220.0,
-    "freq_max_hz": 265.0,
-    "coarse_step_hz": 5.0,
+    "freq_range_hz": [
+      60.0,
+      550.0
+    ],
+    "freq_min_hz": 60.0,
+    "freq_max_hz": 550.0,
+    "coarse_step_hz": 15.0,
+    "spacing_policy": "uniform",
     "target_window_half_width_hz": 1.5,
-    "target_set_policy": "custom_coarse_grid_proposal",
     "reference_result_json": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing_m3exec2/result.json",
     "solver_acceptance_band_hz": [
       220.0,
       265.0
+    ],
+    "validated_full9_reference_band_hz": [
+      221.5,
+      264.0
     ]
   },
   "known_evidence": {
@@ -38,64 +47,180 @@
     "m3_validated_reference_runs": [
       "lhs_pilot_001_timing_m3exec2"
     ],
-    "note": "Validated timing pilot band; not the whole physical range"
+    "note": "full9 is a validated reference slice inside the 60\u2013550 Hz planning band"
   },
   "coarse_targets_hz": [
-    220.0,
+    60.0,
+    75.0,
+    90.0,
+    105.0,
+    120.0,
+    135.0,
+    150.0,
+    165.0,
+    180.0,
+    195.0,
+    210.0,
     225.0,
-    230.0,
-    235.0,
     240.0,
-    245.0,
-    250.0,
     255.0,
-    260.0,
-    265.0
+    270.0,
+    285.0,
+    300.0,
+    315.0,
+    330.0,
+    345.0,
+    360.0,
+    375.0,
+    390.0,
+    405.0,
+    420.0,
+    435.0,
+    450.0,
+    465.0,
+    480.0,
+    495.0,
+    510.0,
+    525.0,
+    540.0,
+    550.0
   ],
-  "proposed_regions": [
+  "coarse_target_count": 34,
+  "regions": [
     {
-      "region_id": "R_below_full9",
+      "region_id": "R_low_60_220",
       "range_hz": [
-        220.0,
+        60.0,
         221.5
       ],
       "density_policy": "unknown_until_coarse_scan",
       "calibration_status": "not_calibrated_yet",
       "recommended_step_hz": null,
-      "recommended_window_half_width_hz": null,
-      "reason": "Inside planner band but below validated full9 targets"
+      "reason": "Low/mid guitar band; requires acceptance-band extension before Stage B discovery"
     },
     {
-      "region_id": "R_full9_validated",
+      "region_id": "R_full9_validated_220_265",
       "range_hz": [
         221.5,
         264.0
       ],
-      "density_policy": "known_validated_band",
+      "density_policy": "validated_reference_slice",
       "calibration_status": "validated_by_m3_pilot_full9",
       "recommended_step_hz": null,
-      "recommended_window_half_width_hz": 1.5,
-      "reason": "M3 pilot timing 9/9 PASS on m3exec2; historical ~5.5 Hz spacing \u2014 not proven optimal"
+      "reason": "M3 m3exec2 timing 9/9 PASS; overlaps solver acceptance band; not the full 60\u2013550 Hz planning range"
     },
     {
-      "region_id": "R_above_full9",
+      "region_id": "R_mid_high_265_550",
       "range_hz": [
         264.0,
-        265.0
+        550.0
       ],
       "density_policy": "unknown_until_coarse_scan",
       "calibration_status": "not_calibrated_yet",
       "recommended_step_hz": null,
-      "recommended_window_half_width_hz": null,
-      "reason": "Inside planner band but above validated full9 targets"
+      "reason": "Upper guitar/modal band; requires acceptance-band extension before Stage B discovery"
     }
   ],
+  "spacing_recommendation": {
+    "recommended_first_pass_hz": 15.0,
+    "recommended_policy": "uniform_15hz",
+    "rationale": "15 Hz over 60\u2013550 Hz yields ~34 targets \u2014 coarse enough for discovery, not assuming 5 Hz is correct band-wide. 10 Hz (~50 targets) if first pass shows gaps; 20 Hz (~26 targets) if runtime too high. Blocked until acceptance band supports full planning range.",
+    "alternatives": [
+      {
+        "policy": "uniform_10hz",
+        "coarse_step_hz": 10.0,
+        "coarse_target_count": 50,
+        "calibration_status": "not_calibrated_yet",
+        "notes": "moderate cost"
+      },
+      {
+        "policy": "uniform_15hz",
+        "coarse_step_hz": 15.0,
+        "coarse_target_count": 34,
+        "calibration_status": "not_calibrated_yet",
+        "notes": "recommended first pass"
+      },
+      {
+        "policy": "uniform_20hz",
+        "coarse_step_hz": 20.0,
+        "coarse_target_count": 26,
+        "calibration_status": "not_calibrated_yet",
+        "notes": "coarser discovery"
+      },
+      {
+        "policy": "adaptive_v0",
+        "coarse_step_hz": null,
+        "coarse_target_count": 30,
+        "segment_steps_hz": [
+          20.0,
+          10.0,
+          20.0
+        ],
+        "calibration_status": "not_calibrated_yet",
+        "notes": "20 Hz wings + 10 Hz around 200\u2013280 Hz; planning hypothesis only"
+      }
+    ]
+  },
+  "executable_feasibility": {
+    "planning_band_hz": [
+      60.0,
+      550.0
+    ],
+    "solver_acceptance_band_hz": [
+      220.0,
+      265.0
+    ],
+    "executable_now_band_hz": [
+      220.0,
+      265.0
+    ],
+    "blocked_until_acceptance_extension_hz": [
+      [
+        60.0,
+        220.0
+      ],
+      [
+        265.0,
+        550.0
+      ]
+    ],
+    "coarse_target_count_total": 34,
+    "coarse_target_count_executable_now": 3,
+    "coarse_target_count_blocked_now": 31,
+    "overall_execution_status": "requires_acceptance_band/general_target_set_support_before_execution",
+    "code_basis": "collect_accepted_st_modes() in v2_b3_st_sinvert_solver_lib.py filters accepted modes to inside acceptance interval; targets outside 220\u2013265 Hz may run ST but will not record out-of-band modes as accepted."
+  },
+  "cost_estimate": {
+    "coarse_target_count": 34,
+    "estimated_stage_b_wall_seconds_range": [
+      4080.0,
+      16320.0
+    ],
+    "estimated_stage_b_wall_minutes_range": [
+      68.0,
+      272.0
+    ],
+    "assumptions": {
+      "per_target_wall_seconds_range": [
+        120.0,
+        480.0
+      ],
+      "basis": "Conservative extrapolation from L_prod m3exec2 class (~316k active DOF); measure from first approved slice.",
+      "active_dimension": null,
+      "mesh_level": null
+    },
+    "parallel_execution_guidance": {
+      "dry_run": "Safe to run in parallel with other work (no solver).",
+      "actual_solver_scan": "Run alone on VM: MKL/PETSc ST solves are CPU/RAM heavy on L_prod; do not assume a few minutes for wide-band scans; avoid concurrent solver benchmarks.",
+      "recommended_concurrency": "exclusive_solver_slot"
+    }
+  },
   "frequency_windows": [
     {
       "window_id": "W00",
       "range_hz": [
-        220.0,
-        225.0
+        60.0,
+        75.0
       ],
       "mode_count": null,
       "modes_per_hz": null,
@@ -104,8 +229,8 @@
     {
       "window_id": "W01",
       "range_hz": [
-        225.0,
-        230.0
+        75.0,
+        90.0
       ],
       "mode_count": null,
       "modes_per_hz": null,
@@ -114,8 +239,8 @@
     {
       "window_id": "W02",
       "range_hz": [
-        230.0,
-        235.0
+        90.0,
+        105.0
       ],
       "mode_count": null,
       "modes_per_hz": null,
@@ -124,8 +249,8 @@
     {
       "window_id": "W03",
       "range_hz": [
-        235.0,
-        240.0
+        105.0,
+        120.0
       ],
       "mode_count": null,
       "modes_per_hz": null,
@@ -134,8 +259,8 @@
     {
       "window_id": "W04",
       "range_hz": [
-        240.0,
-        245.0
+        120.0,
+        135.0
       ],
       "mode_count": null,
       "modes_per_hz": null,
@@ -144,8 +269,8 @@
     {
       "window_id": "W05",
       "range_hz": [
-        245.0,
-        250.0
+        135.0,
+        150.0
       ],
       "mode_count": null,
       "modes_per_hz": null,
@@ -154,8 +279,8 @@
     {
       "window_id": "W06",
       "range_hz": [
-        250.0,
-        255.0
+        150.0,
+        165.0
       ],
       "mode_count": null,
       "modes_per_hz": null,
@@ -164,8 +289,8 @@
     {
       "window_id": "W07",
       "range_hz": [
-        255.0,
-        260.0
+        165.0,
+        180.0
       ],
       "mode_count": null,
       "modes_per_hz": null,
@@ -174,8 +299,248 @@
     {
       "window_id": "W08",
       "range_hz": [
-        260.0,
-        265.0
+        180.0,
+        195.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W09",
+      "range_hz": [
+        195.0,
+        210.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W10",
+      "range_hz": [
+        210.0,
+        225.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W11",
+      "range_hz": [
+        225.0,
+        240.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W12",
+      "range_hz": [
+        240.0,
+        255.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W13",
+      "range_hz": [
+        255.0,
+        270.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W14",
+      "range_hz": [
+        270.0,
+        285.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W15",
+      "range_hz": [
+        285.0,
+        300.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W16",
+      "range_hz": [
+        300.0,
+        315.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W17",
+      "range_hz": [
+        315.0,
+        330.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W18",
+      "range_hz": [
+        330.0,
+        345.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W19",
+      "range_hz": [
+        345.0,
+        360.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W20",
+      "range_hz": [
+        360.0,
+        375.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W21",
+      "range_hz": [
+        375.0,
+        390.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W22",
+      "range_hz": [
+        390.0,
+        405.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W23",
+      "range_hz": [
+        405.0,
+        420.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W24",
+      "range_hz": [
+        420.0,
+        435.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W25",
+      "range_hz": [
+        435.0,
+        450.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W26",
+      "range_hz": [
+        450.0,
+        465.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W27",
+      "range_hz": [
+        465.0,
+        480.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W28",
+      "range_hz": [
+        480.0,
+        495.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W29",
+      "range_hz": [
+        495.0,
+        510.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W30",
+      "range_hz": [
+        510.0,
+        525.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W31",
+      "range_hz": [
+        525.0,
+        540.0
+      ],
+      "mode_count": null,
+      "modes_per_hz": null,
+      "calibration_status": "not_calibrated_yet"
+    },
+    {
+      "window_id": "W32",
+      "range_hz": [
+        540.0,
+        550.0
       ],
       "mode_count": null,
       "modes_per_hz": null,
@@ -184,12 +549,113 @@
   ],
   "stage_b_target_windows": [
     {
-      "target_hz": 220.0,
+      "target_hz": 60.0,
       "window_hz": [
-        218.5,
-        221.5
+        58.5,
+        61.5
       ],
       "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 75.0,
+      "window_hz": [
+        73.5,
+        76.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 90.0,
+      "window_hz": [
+        88.5,
+        91.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 105.0,
+      "window_hz": [
+        103.5,
+        106.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 120.0,
+      "window_hz": [
+        118.5,
+        121.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 135.0,
+      "window_hz": [
+        133.5,
+        136.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 150.0,
+      "window_hz": [
+        148.5,
+        151.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 165.0,
+      "window_hz": [
+        163.5,
+        166.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 180.0,
+      "window_hz": [
+        178.5,
+        181.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 195.0,
+      "window_hz": [
+        193.5,
+        196.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 210.0,
+      "window_hz": [
+        208.5,
+        211.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -199,24 +665,7 @@
         226.5
       ],
       "half_width_hz": 1.5,
-      "reason": "coarse grid proposal (not executed)"
-    },
-    {
-      "target_hz": 230.0,
-      "window_hz": [
-        228.5,
-        231.5
-      ],
-      "half_width_hz": 1.5,
-      "reason": "coarse grid proposal (not executed)"
-    },
-    {
-      "target_hz": 235.0,
-      "window_hz": [
-        233.5,
-        236.5
-      ],
-      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": true,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -226,24 +675,7 @@
         241.5
       ],
       "half_width_hz": 1.5,
-      "reason": "coarse grid proposal (not executed)"
-    },
-    {
-      "target_hz": 245.0,
-      "window_hz": [
-        243.5,
-        246.5
-      ],
-      "half_width_hz": 1.5,
-      "reason": "coarse grid proposal (not executed)"
-    },
-    {
-      "target_hz": 250.0,
-      "window_hz": [
-        248.5,
-        251.5
-      ],
-      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": true,
       "reason": "coarse grid proposal (not executed)"
     },
     {
@@ -253,39 +685,230 @@
         256.5
       ],
       "half_width_hz": 1.5,
+      "executable_with_current_acceptance": true,
       "reason": "coarse grid proposal (not executed)"
     },
     {
-      "target_hz": 260.0,
+      "target_hz": 270.0,
       "window_hz": [
-        258.5,
-        261.5
+        268.5,
+        271.5
       ],
       "half_width_hz": 1.5,
-      "reason": "full9 validated target"
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
     },
     {
-      "target_hz": 265.0,
+      "target_hz": 285.0,
       "window_hz": [
-        263.5,
-        266.5
+        283.5,
+        286.5
       ],
       "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 300.0,
+      "window_hz": [
+        298.5,
+        301.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 315.0,
+      "window_hz": [
+        313.5,
+        316.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 330.0,
+      "window_hz": [
+        328.5,
+        331.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 345.0,
+      "window_hz": [
+        343.5,
+        346.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 360.0,
+      "window_hz": [
+        358.5,
+        361.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 375.0,
+      "window_hz": [
+        373.5,
+        376.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 390.0,
+      "window_hz": [
+        388.5,
+        391.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 405.0,
+      "window_hz": [
+        403.5,
+        406.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 420.0,
+      "window_hz": [
+        418.5,
+        421.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 435.0,
+      "window_hz": [
+        433.5,
+        436.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 450.0,
+      "window_hz": [
+        448.5,
+        451.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 465.0,
+      "window_hz": [
+        463.5,
+        466.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 480.0,
+      "window_hz": [
+        478.5,
+        481.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 495.0,
+      "window_hz": [
+        493.5,
+        496.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 510.0,
+      "window_hz": [
+        508.5,
+        511.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 525.0,
+      "window_hz": [
+        523.5,
+        526.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 540.0,
+      "window_hz": [
+        538.5,
+        541.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
+      "reason": "coarse grid proposal (not executed)"
+    },
+    {
+      "target_hz": 550.0,
+      "window_hz": [
+        548.5,
+        551.5
+      ],
+      "half_width_hz": 1.5,
+      "executable_with_current_acceptance": false,
       "reason": "coarse grid proposal (not executed)"
     }
   ],
   "diagnostic_notes": [
-    "Zone density thresholds are not calibrated yet; regions are hypotheses only.",
-    "full9 band is validated M3 pilot evidence, not proof of global spectral coverage.",
-    "Solver acceptance band is 220.0-265.0 Hz in v2_b3_st_sinvert_solver_lib.py.",
-    "First coarse solve should use existing Stage B / target_density_experiment on a PASS checkpoint.",
+    "Planning band 60\u2013550 Hz is the guitar/modal exploration target; 220\u2013265 Hz is validated full9 reference only.",
+    "Zone density thresholds are not_calibrated_yet; regions are placeholders.",
+    "Solver acceptance hard-limited to 220.0\u2013265.0 Hz in v2_b3_st_sinvert_solver_lib.py (collect_accepted_st_modes).",
+    "Wide-band coarse scan is NOT executable for mode discovery until acceptance-band extension is reviewed.",
     "Do not overwrite m3exec1/m3exec2 runtime diagnostics.",
     "WARN: checkpoint_dir not found on this host: C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\diagnostics\\st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2"
   ],
-  "next_approved_command_hint": "# After explicit approval \u2014 solver-only, new output dir, isolated solver-mkl env:\n# checkpoint: FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2\npython FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_target_density_experiment.py \\\n  --checkpoint-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2 \\\n  --reference-json FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing_m3exec2/result.json \\\n  --start-hz 220.0 --stop-hz 265.0 --spacings-hz 5.0",
+  "recommended_next_step": {
+    "summary": "1) Review acceptance-band extension for 60\u2013550 Hz. 2) Approve spacing (recommend 15 Hz uniform or adaptive_v0). 3) Run solver-only coarse scan on new output dir with isolated solver-mkl env. 4) Post-process mode counts per window; calibrate zones from data.",
+    "blocked_until": "acceptance_band_extension_review",
+    "first_executable_slice_now_hz": [
+      220.0,
+      265.0
+    ],
+    "suggested_spacing_hz": 15.0,
+    "suggested_command_after_approval": "# After acceptance-band support is reviewed/implemented:\n# checkpoint: FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2\npython FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_target_density_experiment.py \\\n  --checkpoint-dir FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing_m3exec2 \\\n  --reference-json <full9_result.json> \\\n  --start-hz 60.0 --stop-hz 550.0 --spacings-hz 15.0"
+  },
   "orchestrator_feed_preview": {
     "future_target_set_name": "coarse_calibrated_v0",
-    "targets_hz_field": "coarse_targets_hz",
-    "note": "Orchestrator full9 hardcoding may need schema extension before LHS"
+    "note": "Planner feeds orchestrator via approved targets_hz / JSONL after calibration"
   }
 }
