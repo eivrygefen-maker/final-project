@@ -64,3 +64,4 @@ FEM/experiments/active_domain_validation/physics_integrity/diagnostics/
 FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/manifests/run_*.json
 FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/index/runs_index.jsonl
 FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/logs/
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/
