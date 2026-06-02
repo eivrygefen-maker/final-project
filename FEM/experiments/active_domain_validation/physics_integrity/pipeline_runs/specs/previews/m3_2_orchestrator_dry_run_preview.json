@@ -1,0 +1,269 @@
+{
+  "schema": "b3_m3_orchestrator_dry_run_v1",
+  "generated_utc": "2026-06-02T18:52:21Z",
+  "samples_jsonl": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/specs/m3_2_dry_run_samples.jsonl",
+  "repo_root": ".",
+  "will_execute": false,
+  "notes": [
+    "M3.2 dry-run only: no Stage A/B/C execution.",
+    "No runtime manifests under pipeline_runs/manifests/.",
+    "No runs_index.jsonl append.",
+    "No subprocess stage calls."
+  ],
+  "summary": {
+    "sample_count": 3,
+    "timing_count": 2,
+    "synthesis_count": 1,
+    "ready_count": 3,
+    "blocker_count": 0
+  },
+  "samples": [
+    {
+      "sample_id": "lhs_pilot_001_timing",
+      "run_id": "lhs_pilot_001_timing_m3dry",
+      "mode": "timing",
+      "selection_reason": "lhs_timing_baseline_m3dry",
+      "mesh_level": "L_prod",
+      "target_set": "full9",
+      "resolved_core_config": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_001_timing/resolved_core_config.json",
+      "intended_runtime_manifest": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/manifests/run_lhs_pilot_001_timing_m3dry.json",
+      "stage_plan": {
+        "A": "PENDING",
+        "B": "PENDING",
+        "C": "SKIPPED"
+      },
+      "commands": {
+        "stage_a": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_001_timing/resolved_core_config.json\" --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing_m3dry\"",
+        "stage_b": "/home/vboxuser/solver-mkl/venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve.py --checkpoint-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing_m3dry\" --factor-solver mkl_pardiso --target-set full9 --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing_m3dry\"",
+        "stage_c": null
+      },
+      "stage_env": {
+        "stage_a": {
+          "profile": "production_venv",
+          "python": "/home/vboxuser/final-project/.venv/bin/python",
+          "env_vars": {
+            "PETSC_DIR": "/usr/lib/petscdir/petsc3.15/x86_64-linux-gnu-real",
+            "SLEPC_DIR": "/usr/lib/slepcdir/slepc3.15/x86_64-linux-gnu-real",
+            "PYTHONPATH": "$PETSC_DIR/lib/python3/dist-packages:$SLEPC_DIR/lib/python3/dist-packages:/usr/lib/python3/dist-packages:$PYTHONPATH"
+          }
+        },
+        "stage_b": {
+          "profile": "solver_mkl",
+          "python": "/home/vboxuser/solver-mkl/venv/bin/python",
+          "env_vars": {}
+        },
+        "stage_c": {
+          "profile": "production_venv",
+          "python": "/home/vboxuser/final-project/.venv/bin/python",
+          "env_vars": {
+            "PETSC_DIR": "/usr/lib/petscdir/petsc3.15/x86_64-linux-gnu-real",
+            "SLEPC_DIR": "/usr/lib/slepcdir/slepc3.15/x86_64-linux-gnu-real",
+            "PYTHONPATH": "$PETSC_DIR/lib/python3/dist-packages:$SLEPC_DIR/lib/python3/dist-packages:/usr/lib/python3/dist-packages:$PYTHONPATH"
+          }
+        }
+      },
+      "predicted_output_paths": {
+        "checkpoint_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing_m3dry",
+        "solve_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing_m3dry",
+        "rich_modal_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing_m3dry/rich_modal",
+        "synthesis_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing_m3dry/rich_modal_post",
+        "resolved_core_config": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_001_timing/resolved_core_config.json",
+        "note": "dry_run_preview_only_not_created"
+      },
+      "preflight": {
+        "checks": {
+          "stage_a_script_exists": true,
+          "stage_b_script_exists": true,
+          "stage_c_script_exists": true,
+          "prod_python_exists_on_host": false,
+          "solver_python_exists_on_host": false,
+          "resolved_core_config_exists": true,
+          "solver_clamp_ribs": false,
+          "checkpoint_dir_exists": false,
+          "solve_dir_exists": false,
+          "policy_rich_requested": false,
+          "policy_synthesis_requested": false,
+          "policy_stage_c_requested": false,
+          "stage_c_skipped_for_timing": true
+        },
+        "warnings": [
+          "prod_python_not_found_on_host:vm_path_expected",
+          "solver_python_not_found_on_host:vm_path_expected"
+        ],
+        "blockers": [],
+        "ready": true
+      },
+      "warnings": [
+        "prod_python_not_found_on_host:vm_path_expected",
+        "solver_python_not_found_on_host:vm_path_expected"
+      ],
+      "blockers": [],
+      "will_execute": false
+    },
+    {
+      "sample_id": "lhs_pilot_002_timing",
+      "run_id": "lhs_pilot_002_timing_m3dry",
+      "mode": "timing",
+      "selection_reason": "lhs_timing_baseline_m3dry",
+      "mesh_level": "L_prod",
+      "target_set": "full9",
+      "resolved_core_config": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_002_timing/resolved_core_config.json",
+      "intended_runtime_manifest": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/manifests/run_lhs_pilot_002_timing_m3dry.json",
+      "stage_plan": {
+        "A": "PENDING",
+        "B": "PENDING",
+        "C": "SKIPPED"
+      },
+      "commands": {
+        "stage_a": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_002_timing/resolved_core_config.json\" --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_002_timing_m3dry\"",
+        "stage_b": "/home/vboxuser/solver-mkl/venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve.py --checkpoint-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_002_timing_m3dry\" --factor-solver mkl_pardiso --target-set full9 --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_002_timing_m3dry\"",
+        "stage_c": null
+      },
+      "stage_env": {
+        "stage_a": {
+          "profile": "production_venv",
+          "python": "/home/vboxuser/final-project/.venv/bin/python",
+          "env_vars": {
+            "PETSC_DIR": "/usr/lib/petscdir/petsc3.15/x86_64-linux-gnu-real",
+            "SLEPC_DIR": "/usr/lib/slepcdir/slepc3.15/x86_64-linux-gnu-real",
+            "PYTHONPATH": "$PETSC_DIR/lib/python3/dist-packages:$SLEPC_DIR/lib/python3/dist-packages:/usr/lib/python3/dist-packages:$PYTHONPATH"
+          }
+        },
+        "stage_b": {
+          "profile": "solver_mkl",
+          "python": "/home/vboxuser/solver-mkl/venv/bin/python",
+          "env_vars": {}
+        },
+        "stage_c": {
+          "profile": "production_venv",
+          "python": "/home/vboxuser/final-project/.venv/bin/python",
+          "env_vars": {
+            "PETSC_DIR": "/usr/lib/petscdir/petsc3.15/x86_64-linux-gnu-real",
+            "SLEPC_DIR": "/usr/lib/slepcdir/slepc3.15/x86_64-linux-gnu-real",
+            "PYTHONPATH": "$PETSC_DIR/lib/python3/dist-packages:$SLEPC_DIR/lib/python3/dist-packages:/usr/lib/python3/dist-packages:$PYTHONPATH"
+          }
+        }
+      },
+      "predicted_output_paths": {
+        "checkpoint_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_002_timing_m3dry",
+        "solve_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_002_timing_m3dry",
+        "rich_modal_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_002_timing_m3dry/rich_modal",
+        "synthesis_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_002_timing_m3dry/rich_modal_post",
+        "resolved_core_config": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_002_timing/resolved_core_config.json",
+        "note": "dry_run_preview_only_not_created"
+      },
+      "preflight": {
+        "checks": {
+          "stage_a_script_exists": true,
+          "stage_b_script_exists": true,
+          "stage_c_script_exists": true,
+          "prod_python_exists_on_host": false,
+          "solver_python_exists_on_host": false,
+          "resolved_core_config_exists": true,
+          "solver_clamp_ribs": false,
+          "checkpoint_dir_exists": false,
+          "solve_dir_exists": false,
+          "policy_rich_requested": false,
+          "policy_synthesis_requested": false,
+          "policy_stage_c_requested": false,
+          "stage_c_skipped_for_timing": true
+        },
+        "warnings": [
+          "prod_python_not_found_on_host:vm_path_expected",
+          "solver_python_not_found_on_host:vm_path_expected"
+        ],
+        "blockers": [],
+        "ready": true
+      },
+      "warnings": [
+        "prod_python_not_found_on_host:vm_path_expected",
+        "solver_python_not_found_on_host:vm_path_expected"
+      ],
+      "blockers": [],
+      "will_execute": false
+    },
+    {
+      "sample_id": "lhs_pilot_003_synthesis",
+      "run_id": "lhs_pilot_003_synthesis_m3dry",
+      "mode": "synthesis",
+      "selection_reason": "lhs_synthesis_subset_v0_m3dry",
+      "mesh_level": "L_prod",
+      "target_set": "full9",
+      "resolved_core_config": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_003_synthesis/resolved_core_config.json",
+      "intended_runtime_manifest": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/manifests/run_lhs_pilot_003_synthesis_m3dry.json",
+      "stage_plan": {
+        "A": "PENDING",
+        "B": "PENDING",
+        "C": "PENDING"
+      },
+      "commands": {
+        "stage_a": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_003_synthesis/resolved_core_config.json\" --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_003_synthesis_m3dry\"",
+        "stage_b": "/home/vboxuser/solver-mkl/venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve.py --checkpoint-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_003_synthesis_m3dry\" --factor-solver mkl_pardiso --target-set full9 --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis_m3dry\" --B3-export-rich-modal-data",
+        "stage_c": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_rich_modal_post.py --checkpoint-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_003_synthesis_m3dry\" --rich-modal-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis_m3dry/rich_modal\" --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis_m3dry/rich_modal_post\""
+      },
+      "stage_env": {
+        "stage_a": {
+          "profile": "production_venv",
+          "python": "/home/vboxuser/final-project/.venv/bin/python",
+          "env_vars": {
+            "PETSC_DIR": "/usr/lib/petscdir/petsc3.15/x86_64-linux-gnu-real",
+            "SLEPC_DIR": "/usr/lib/slepcdir/slepc3.15/x86_64-linux-gnu-real",
+            "PYTHONPATH": "$PETSC_DIR/lib/python3/dist-packages:$SLEPC_DIR/lib/python3/dist-packages:/usr/lib/python3/dist-packages:$PYTHONPATH"
+          }
+        },
+        "stage_b": {
+          "profile": "solver_mkl",
+          "python": "/home/vboxuser/solver-mkl/venv/bin/python",
+          "env_vars": {}
+        },
+        "stage_c": {
+          "profile": "production_venv",
+          "python": "/home/vboxuser/final-project/.venv/bin/python",
+          "env_vars": {
+            "PETSC_DIR": "/usr/lib/petscdir/petsc3.15/x86_64-linux-gnu-real",
+            "SLEPC_DIR": "/usr/lib/slepcdir/slepc3.15/x86_64-linux-gnu-real",
+            "PYTHONPATH": "$PETSC_DIR/lib/python3/dist-packages:$SLEPC_DIR/lib/python3/dist-packages:/usr/lib/python3/dist-packages:$PYTHONPATH"
+          }
+        }
+      },
+      "predicted_output_paths": {
+        "checkpoint_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_003_synthesis_m3dry",
+        "solve_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis_m3dry",
+        "rich_modal_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis_m3dry/rich_modal",
+        "synthesis_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis_m3dry/rich_modal_post",
+        "resolved_core_config": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_003_synthesis/resolved_core_config.json",
+        "note": "dry_run_preview_only_not_created"
+      },
+      "preflight": {
+        "checks": {
+          "stage_a_script_exists": true,
+          "stage_b_script_exists": true,
+          "stage_c_script_exists": true,
+          "prod_python_exists_on_host": false,
+          "solver_python_exists_on_host": false,
+          "resolved_core_config_exists": true,
+          "solver_clamp_ribs": false,
+          "checkpoint_dir_exists": false,
+          "solve_dir_exists": false,
+          "synthesis_dir_exists": false,
+          "policy_rich_requested": true,
+          "policy_synthesis_requested": true,
+          "policy_stage_c_requested": true,
+          "stage_c_skipped_for_timing": false
+        },
+        "warnings": [
+          "prod_python_not_found_on_host:vm_path_expected",
+          "solver_python_not_found_on_host:vm_path_expected"
+        ],
+        "blockers": [],
+        "ready": true
+      },
+      "warnings": [
+        "prod_python_not_found_on_host:vm_path_expected",
+        "solver_python_not_found_on_host:vm_path_expected"
+      ],
+      "blockers": [],
+      "will_execute": false
+    }
+  ]
+}
