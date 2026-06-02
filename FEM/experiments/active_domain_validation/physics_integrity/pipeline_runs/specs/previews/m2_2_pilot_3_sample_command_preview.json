@@ -1,6 +1,6 @@
 {
   "schema": "b3_lhs_orchestrator_preview_v1",
-  "generated_utc": "2026-06-02T11:10:09Z",
+  "generated_utc": "2026-06-02T11:47:38Z",
   "samples_jsonl": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/specs/m2_1_pilot_3_samples.jsonl",
   "repo_root": ".",
   "will_execute": false,
@@ -14,7 +14,7 @@
     "timing_count": 2,
     "rich_count": 1,
     "synthesis_count": 1,
-    "placeholder_warning_count": 3
+    "placeholder_warning_count": 0
   },
   "samples": [
     {
@@ -29,16 +29,18 @@
         "core_config": "FEM/experiments/active_domain_validation/physics_integrity/configs/coupled_physical_core_v2.json"
       },
       "parameter_payload": {
-        "note": "placeholder_near_baseline_delta",
+        "note": "m2_3_near_baseline_material_only",
         "geometry_delta": {},
-        "material_delta": {}
+        "material_delta": {
+          "top": {
+            "density": 445.5
+          }
+        },
+        "requires_mesh_regeneration": false
       },
-      "placeholder_parameter_payload": true,
-      "physical_lhs_ready": false,
-      "warnings": [
-        "placeholder_parameter_payload",
-        "physical_lhs_ready=false"
-      ],
+      "placeholder_parameter_payload": false,
+      "physical_lhs_ready": true,
+      "warnings": [],
       "policy_flags": {
         "timing_only": true,
         "rich_requested": false,
@@ -51,10 +53,11 @@
         "C": "SKIPPED"
       },
       "predicted_commands": {
-        "stage_a": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing\"",
+        "stage_a": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_001_timing/resolved_core_config.json\" --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing\"",
         "stage_b": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve.py --checkpoint-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_001_timing\" --factor-solver mkl_pardiso --target-set full9 --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing\"",
         "stage_c": null
       },
+      "resolved_core_config": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_001_timing/resolved_core_config.json",
       "expected_environment": {
         "stage_a": "production .venv",
         "stage_b": "solver-mkl",
@@ -65,7 +68,8 @@
         "solve_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing",
         "rich_modal_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing/rich_modal",
         "synthesis_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_001_timing/rich_modal_post",
-        "note": "preview_expected_only_not_executed"
+        "note": "preview_expected_only_not_executed",
+        "resolved_core_config": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_001_timing/resolved_core_config.json"
       },
       "will_execute": false
     },
@@ -81,16 +85,18 @@
         "core_config": "FEM/experiments/active_domain_validation/physics_integrity/configs/coupled_physical_core_v2.json"
       },
       "parameter_payload": {
-        "note": "placeholder_near_baseline_delta",
+        "note": "m2_3_near_baseline_material_only",
         "geometry_delta": {},
-        "material_delta": {}
+        "material_delta": {
+          "back": {
+            "density": 842.45
+          }
+        },
+        "requires_mesh_regeneration": false
       },
-      "placeholder_parameter_payload": true,
-      "physical_lhs_ready": false,
-      "warnings": [
-        "placeholder_parameter_payload",
-        "physical_lhs_ready=false"
-      ],
+      "placeholder_parameter_payload": false,
+      "physical_lhs_ready": true,
+      "warnings": [],
       "policy_flags": {
         "timing_only": true,
         "rich_requested": false,
@@ -103,10 +109,11 @@
         "C": "SKIPPED"
       },
       "predicted_commands": {
-        "stage_a": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_002_timing\"",
+        "stage_a": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_002_timing/resolved_core_config.json\" --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_002_timing\"",
         "stage_b": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve.py --checkpoint-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_002_timing\" --factor-solver mkl_pardiso --target-set full9 --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_002_timing\"",
         "stage_c": null
       },
+      "resolved_core_config": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_002_timing/resolved_core_config.json",
       "expected_environment": {
         "stage_a": "production .venv",
         "stage_b": "solver-mkl",
@@ -117,7 +124,8 @@
         "solve_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_002_timing",
         "rich_modal_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_002_timing/rich_modal",
         "synthesis_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_002_timing/rich_modal_post",
-        "note": "preview_expected_only_not_executed"
+        "note": "preview_expected_only_not_executed",
+        "resolved_core_config": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_002_timing/resolved_core_config.json"
       },
       "will_execute": false
     },
@@ -133,16 +141,18 @@
         "core_config": "FEM/experiments/active_domain_validation/physics_integrity/configs/coupled_physical_core_v2.json"
       },
       "parameter_payload": {
-        "note": "placeholder_near_baseline_delta",
+        "note": "m2_3_near_baseline_material_only",
         "geometry_delta": {},
-        "material_delta": {}
+        "material_delta": {
+          "top": {
+            "density": 456.75
+          }
+        },
+        "requires_mesh_regeneration": false
       },
-      "placeholder_parameter_payload": true,
-      "physical_lhs_ready": false,
-      "warnings": [
-        "placeholder_parameter_payload",
-        "physical_lhs_ready=false"
-      ],
+      "placeholder_parameter_payload": false,
+      "physical_lhs_ready": true,
+      "warnings": [],
       "policy_flags": {
         "timing_only": false,
         "rich_requested": true,
@@ -155,10 +165,11 @@
         "C": "PENDING"
       },
       "predicted_commands": {
-        "stage_a": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_003_synthesis\"",
+        "stage_a": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_003_synthesis/resolved_core_config.json\" --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_003_synthesis\"",
         "stage_b": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve.py --checkpoint-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_003_synthesis\" --factor-solver mkl_pardiso --target-set full9 --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis\" --B3-export-rich-modal-data",
         "stage_c": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_rich_modal_post.py --checkpoint-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_prod_lhs_pilot_003_synthesis\" --rich-modal-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis/rich_modal\" --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis/rich_modal_post\""
       },
+      "resolved_core_config": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_003_synthesis/resolved_core_config.json",
       "expected_environment": {
         "stage_a": "production .venv",
         "stage_b": "solver-mkl",
@@ -169,7 +180,8 @@
         "solve_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis",
         "rich_modal_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis/rich_modal",
         "synthesis_dir": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/checkpoint_solve_mkl_pardiso_full9_lhs_pilot_003_synthesis/rich_modal_post",
-        "note": "preview_expected_only_not_executed"
+        "note": "preview_expected_only_not_executed",
+        "resolved_core_config": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_003_synthesis/resolved_core_config.json"
       },
       "will_execute": false
     }

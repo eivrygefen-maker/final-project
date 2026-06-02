@@ -290,6 +290,9 @@ def _built_metadata_from_built(built: Dict[str, Any], *, mesh_level: str) -> Dic
         meta["inactive_aup_overlap_count"] = 0
         meta["parent_raw_Auu_exact_zero_count"] = inactive_n
         meta["parent_raw_Auu_nonzero_count"] = 0
+    prov = built.get("core_config_provenance")
+    if isinstance(prov, dict) and prov:
+        meta["core_config_provenance"] = dict(prov)
     return meta
 
 

@@ -114,15 +114,45 @@ def _build_paths(
     }
 
 
-def _cmd_stage_a(paths: Dict[str, str], mesh_level: str) -> str:
-    return (
+def _resolved_core_config_path(
+    repo_root: Path,
+    sample_id: str,
+    *,
+    absolute_paths: bool,
+) -> Optional[str]:
+    rel = (
+        Path("FEM")
+        / "experiments"
+        / "active_domain_validation"
+        / "physics_integrity"
+        / "pipeline_runs"
+        / "config_overlays"
+        / sample_id
+        / "resolved_core_config.json"
+    )
+    candidate = repo_root / rel
+    if not candidate.is_file():
+        return None
+    return _format_path(candidate, repo_root=repo_root, absolute_paths=absolute_paths)
+
+
+def _cmd_stage_a(
+    paths: Dict[str, str],
+    mesh_level: str,
+    *,
+    core_config: Optional[str] = None,
+) -> str:
+    cmd = (
         "python FEM/experiments/active_domain_validation/physics_integrity/scripts/"
         "v2_b3_checkpoint_export.py "
         f"--mesh-level {mesh_level} "
         "--B3-block-compose-backend csr_bulk "
         "--B3-synthesis-region-dofs off "
-        f"--output-dir \"{paths['checkpoint_dir']}\""
     )
+    if core_config:
+        cmd += f"--core-config \"{core_config}\" "
+    cmd += f"--output-dir \"{paths['checkpoint_dir']}\""
+    return cmd
 
 
 def _cmd_stage_b(paths: Dict[str, str], *, rich: bool) -> str:
@@ -161,6 +191,11 @@ def _preview_for_row(repo_root: Path, row: Dict[str, Any], *, absolute_paths: bo
     a_status, b_status, c_status = _stage_initial_statuses(mode)
     placeholder_payload = _has_placeholder_payload(row)
     paths = _build_paths(repo_root, mesh_level, run_id, absolute_paths=absolute_paths)
+    core_config = None
+    if not placeholder_payload:
+        core_config = _resolved_core_config_path(
+            repo_root, sample_id, absolute_paths=absolute_paths
+        )
 
     policy_rich_requested = bool(row.get("rich_requested"))
     policy_synthesis_requested = bool(row.get("synthesis_requested"))
@@ -173,6 +208,15 @@ def _preview_for_row(repo_root: Path, row: Dict[str, Any], *, absolute_paths: bo
         warnings.append("physical_lhs_ready=false")
     if policy_synthesis_requested and not policy_rich_requested:
         warnings.append("synthesis_implies_rich_export")
+    if not placeholder_payload and core_config is None:
+        warnings.append("resolved_core_config_missing_run_m2_4_1_resolver_first")
+
+    predicted_output_paths = {
+        **paths,
+        "note": "preview_expected_only_not_executed",
+    }
+    if core_config:
+        predicted_output_paths["resolved_core_config"] = core_config
 
     return {
         "sample_id": sample_id,
@@ -194,19 +238,17 @@ def _preview_for_row(repo_root: Path, row: Dict[str, Any], *, absolute_paths: bo
         },
         "initial_stage_status": {"A": a_status, "B": b_status, "C": c_status},
         "predicted_commands": {
-            "stage_a": _cmd_stage_a(paths, mesh_level=mesh_level),
+            "stage_a": _cmd_stage_a(paths, mesh_level=mesh_level, core_config=core_config),
             "stage_b": _cmd_stage_b(paths, rich=rich),
             "stage_c": _cmd_stage_c(paths) if c_requested else None,
         },
+        "resolved_core_config": core_config,
         "expected_environment": {
             "stage_a": "production .venv",
             "stage_b": "solver-mkl",
             "stage_c": "production .venv",
         },
-        "predicted_output_paths": {
-            **paths,
-            "note": "preview_expected_only_not_executed",
-        },
+        "predicted_output_paths": predicted_output_paths,
         "will_execute": False,
     }
 

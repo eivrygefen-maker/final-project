@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+PHYSICS_ROOT = SCRIPT_DIR.parent
+DEFAULT_CORE_CONFIG = PHYSICS_ROOT / "configs" / "coupled_physical_core_v2.json"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
@@ -38,6 +41,30 @@ from v2_b3_st_worker_scaling_benchmark import (
 )
 
 ALLOWED_MESH_LEVELS = frozenset({"L_mid", "L_dev_dense", "L_prod"})
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _resolve_core_config_provenance(core_config_arg: Optional[str]) -> Tuple[Optional[Path], Dict[str, Any]]:
+    canonical = DEFAULT_CORE_CONFIG.resolve()
+    if not core_config_arg:
+        return None, {
+            "core_config_mode": "default",
+            "core_config_path": str(canonical),
+            "core_config_sha256": _sha256_file(canonical),
+            "canonical_core_config_path": str(canonical),
+        }
+    override = Path(core_config_arg).expanduser().resolve()
+    if not override.is_file():
+        raise FileNotFoundError(f"--core-config not found: {override}")
+    return override, {
+        "core_config_mode": "override",
+        "core_config_path": str(override),
+        "core_config_sha256": _sha256_file(override),
+        "canonical_core_config_path": str(canonical),
+    }
 
 
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -73,6 +100,15 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
             f"(isolated subprocess). Env: {B3_SYNTHESIS_REGION_DOFS_ENV}=off|best_effort"
         ),
     )
+    parser.add_argument(
+        "--core-config",
+        dest="core_config",
+        default=None,
+        help=(
+            "Optional resolved core config JSON (e.g. pipeline_runs/config_overlays/.../resolved_core_config.json). "
+            f"Default: {DEFAULT_CORE_CONFIG.name}"
+        ),
+    )
     if argv is None:
         return parser.parse_args()
     return parser.parse_args(argv)
@@ -89,6 +125,10 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
     try:
         region_dofs_mode = resolve_synthesis_region_dofs_mode(args.synthesis_region_dofs)
     except ValueError as exc:
+        fail_with_messages("B3_checkpoint_export", [str(exc)])
+    try:
+        core_config_path, core_config_provenance = _resolve_core_config_provenance(args.core_config)
+    except FileNotFoundError as exc:
         fail_with_messages("B3_checkpoint_export", [str(exc)])
     mesh_level = str(args.mesh_level)
     run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -125,6 +165,8 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
             mesh_level=mesh_level,
             struct_active_count_policy=_struct_active_count_policy(mesh_level),
             operator_build_profile=None,
+            core_config_path=core_config_path,
+            core_config_provenance=core_config_provenance,
         )
         op_payload: Dict[str, Any] = {}
         contract_pass = _st_scaling_operator_contract_pass(op_payload, built=built, mesh_level=mesh_level)
@@ -157,6 +199,7 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
                 mesh_level=mesh_level,
                 compose_backend=args.compose_backend,
                 region_dofs_mode=region_dofs_mode,
+                core_config_provenance=core_config_provenance,
             )
             warn = synthesis_export.pop("warning", None)
             if warn:
@@ -173,6 +216,7 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
                     mesh_level=mesh_level,
                     compose_backend=args.compose_backend,
                     region_dofs_mode="off",
+                    core_config_provenance=core_config_provenance,
                 )
                 synthesis_export["recovery"] = "rewrote_synthesis_metadata_with_region_dofs_off"
                 warn = synthesis_export.pop("warning", None)
@@ -196,6 +240,7 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
             "status": "PASS" if export_pass and mat_ok else "FAIL",
             "mesh_level": mesh_level,
             "checkpoint_dir": str(checkpoint.resolve()),
+            "core_config_provenance": core_config_provenance,
             "compose_backend": args.compose_backend,
             "synthesis_region_dofs_mode": region_dofs_mode,
             "operator_build_elapsed_seconds": dev_bench._safe_float(elapsed),

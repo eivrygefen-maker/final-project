@@ -70,6 +70,7 @@ def _assemble_reduced_coupled_replay(
     coupling_enabled: bool = True,
     capture_parent_raw_blocks: bool = False,
     operator_build_profile: Any = None,
+    core_config_path: Optional[Path] = None,
 ) -> Tuple[Any, Any, dict]:
     """Proven v2 post replay: solve_evp=False + pressure-restriction replay audit."""
     prof = operator_build_profile
@@ -77,7 +78,12 @@ def _assemble_reduced_coupled_replay(
         prof.begin_replay()
         prof.attach_fem3d()
     try:
-        cfg = copy.deepcopy(json.loads(V2_CONFIG.read_text(encoding="utf-8")))
+        config_source = (
+            Path(core_config_path).expanduser().resolve()
+            if core_config_path is not None
+            else V2_CONFIG
+        )
+        cfg = copy.deepcopy(json.loads(config_source.read_text(encoding="utf-8")))
         sc = cfg.setdefault("solver", {})
         sc["mesh_file"] = str(mesh_path.resolve())
         sc["coupled_physical_core_v2_diagnosis"] = True
@@ -89,14 +95,15 @@ def _assemble_reduced_coupled_replay(
         sc["coupled_air_pressure_restriction_replay_audit"] = True
         sc["gnhep_block_frobenius_normalize"] = True
         sc["b3_raw_parent_block_capture_no_eps_diagnostic"] = bool(capture_parent_raw_blocks)
-        cfg["geometry"] = sample_geometry(sample)
-        mats = sample.get("materials") or {}
-        if mats.get("top_wood_id") or mats.get("back_wood_id"):
-            apply_wood_ids_to_config(
-                cfg,
-                top_wood_id=mats.get("top_wood_id"),
-                back_wood_id=mats.get("back_wood_id"),
-            )
+        if core_config_path is None:
+            cfg["geometry"] = sample_geometry(sample)
+            mats = sample.get("materials") or {}
+            if mats.get("top_wood_id") or mats.get("back_wood_id"):
+                apply_wood_ids_to_config(
+                    cfg,
+                    top_wood_id=mats.get("top_wood_id"),
+                    back_wood_id=mats.get("back_wood_id"),
+                )
 
         _msh, _W, A, M = fem3d._solve_coupled_evp(
             mesh_file=mesh_path.resolve(),

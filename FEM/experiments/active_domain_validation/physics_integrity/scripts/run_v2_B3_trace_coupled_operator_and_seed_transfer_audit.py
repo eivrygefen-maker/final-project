@@ -3335,6 +3335,8 @@ def _b3_build_corrected_structural_active_operators(
     mesh_level: str = "L_mid",
     struct_active_count_policy: str = "L_mid_exact",
     operator_build_profile: Any = None,
+    core_config_path: Optional[Path] = None,
+    core_config_provenance: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build copy-fixed B3 free pencil and structural active-set reduced A_active/M_active."""
     prof = operator_build_profile or B3OperatorBuildProfiler.maybe_from_env()
@@ -3362,6 +3364,7 @@ def _b3_build_corrected_structural_active_operators(
         coupling_enabled=True,
         capture_parent_raw_blocks=True,
         operator_build_profile=prof,
+        core_config_path=core_config_path,
     )
     p_air_collapsed = np.asarray(
         cfg.get("_coupled_air_p_air_collapsed_indices", np.asarray([], dtype=np.int32)),
@@ -3549,7 +3552,7 @@ def _b3_build_corrected_structural_active_operators(
     _register_mat_for_destroy(mats_to_destroy, A_active, seen=mat_destroy_seen)
     _register_mat_for_destroy(mats_to_destroy, M_active, seen=mat_destroy_seen)
     prof.end("active_reduction")
-    return {
+    out: Dict[str, Any] = {
         "A_parent": A_parent,
         "M_parent": M_parent,
         "A_b3": A_b3,
@@ -3570,6 +3573,9 @@ def _b3_build_corrected_structural_active_operators(
         "inactive_local": inactive_local,
         "operator_build_profile": prof,
     }
+    if core_config_provenance:
+        out["core_config_provenance"] = dict(core_config_provenance)
+    return out
 
 
 def _b3_jd_struct_active_record_active_operator_contract(

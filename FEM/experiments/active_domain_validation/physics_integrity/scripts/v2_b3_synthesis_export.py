@@ -127,6 +127,7 @@ def _build_synthesis_metadata_body(
     region_status: str,
     region_error: Optional[str],
     region_dofs_mode: SynthesisRegionDofsMode,
+    core_config_provenance: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     mesh_file = mesh_path(str(mesh_level), CASE_ID)
     physics = _default_solver_physics()
@@ -135,7 +136,7 @@ def _build_synthesis_metadata_body(
     p_idx = np.asarray(built_meta.get("p_idx") or built.get("p_idx") or [], dtype=np.int32)
     n_p = int(p_idx.size) if p_idx.size else 0
 
-    return {
+    body: Dict[str, Any] = {
         "schema": SYNTHESIS_METADATA_SCHEMA,
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "mesh_file": str(mesh_file.resolve()) if mesh_file.is_file() else str(mesh_file),
@@ -160,6 +161,10 @@ def _build_synthesis_metadata_body(
         "region_dof_indices_error": region_error,
         "layout": REGION_DOF_LAYOUT,
     }
+    prov = core_config_provenance or built_meta.get("core_config_provenance")
+    if isinstance(prov, dict) and prov:
+        body["core_config_provenance"] = dict(prov)
+    return body
 
 
 def export_region_dof_indices_isolated(
@@ -226,6 +231,7 @@ def write_stage_a_synthesis_artifacts(
     mesh_level: str,
     compose_backend: str,
     region_dofs_mode: SynthesisRegionDofsMode = "off",
+    core_config_provenance: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     checkpoint = checkpoint.expanduser().resolve()
     mode: SynthesisRegionDofsMode = region_dofs_mode if region_dofs_mode in ("off", "best_effort") else "off"
@@ -250,6 +256,7 @@ def write_stage_a_synthesis_artifacts(
         region_status=region_status,
         region_error=region_error,
         region_dofs_mode=mode,
+        core_config_provenance=core_config_provenance,
     )
     write_json_atomic(checkpoint / SYNTHESIS_METADATA_JSON, body)
 
