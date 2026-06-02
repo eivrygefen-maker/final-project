@@ -93,6 +93,42 @@ def _mesh_file_for_level(mesh_level: str, *, repo_root: Path) -> str:
     return rel.as_posix()
 
 
+def _coerce_json_number(val: Any) -> Any:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return float(val)
+    return val
+
+
+def _build_changed_material_values(
+    baseline_cfg: Dict[str, Any],
+    resolved: Dict[str, Any],
+    material_delta: Dict[str, Any],
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Per-plate field map: baseline vs resolved for each key in material_delta."""
+    out: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    base_mats = baseline_cfg.get("materials") or {}
+    res_mats = resolved.get("materials") or {}
+    if not isinstance(material_delta, dict):
+        return out
+    for plate in ("top", "back"):
+        plate_delta = material_delta.get(plate)
+        if not isinstance(plate_delta, dict) or not plate_delta:
+            continue
+        base_block = base_mats.get(plate) if isinstance(base_mats.get(plate), dict) else {}
+        res_block = res_mats.get(plate) if isinstance(res_mats.get(plate), dict) else {}
+        for field in plate_delta:
+            base_val = base_block.get(field) if isinstance(base_block, dict) else None
+            res_val = res_block.get(field) if isinstance(res_block, dict) else None
+            entry: Dict[str, Any] = {
+                "baseline": _coerce_json_number(base_val) if isinstance(base_val, (int, float)) else base_val,
+                "resolved": _coerce_json_number(res_val) if isinstance(res_val, (int, float)) else res_val,
+            }
+            out.setdefault(plate, {})[field] = entry
+    return out
+
+
 def _apply_material_delta(cfg: Dict[str, Any], material_delta: Dict[str, Any]) -> Dict[str, str]:
     """Merge material_delta into cfg['materials']; return dotted keys changed."""
     changed: Dict[str, str] = {}
@@ -212,10 +248,18 @@ def _resolve_one_sample(
     if MESH_CASE_ID not in solver_mesh.replace("\\", "/"):
         errors.append(f"solver.mesh_file does not reference {MESH_CASE_ID}: {solver_mesh!r}")
 
+    changed_material_values = _build_changed_material_values(
+        baseline_cfg,
+        resolved,
+        material_delta if isinstance(material_delta, dict) else {},
+    )
+
     if not material_delta:
         errors.append("material_delta is empty")
     elif not changed_fields:
-        warnings.append("material_delta present but no material fields changed vs baseline copy")
+        errors.append("material_delta present but no material fields changed vs baseline copy")
+    elif not changed_material_values:
+        errors.append("changed_material_values is empty despite non-empty material_delta")
 
     geom_empty = isinstance(geometry_delta, dict) and len(geometry_delta) == 0
     mat_nonempty = isinstance(material_delta, dict) and len(material_delta) > 0
@@ -231,11 +275,9 @@ def _resolve_one_sample(
         else None,
     }
 
-    resolved_sha256 = _sha256_json(resolved)
     write_json_atomic(resolved_path, resolved)
+    resolved_sha256 = _sha256_file(resolved_path)
     write_json_atomic(overlay_path, {**overlay_payload, "overlay_payload_sha256": overlay_sha256})
-    if _sha256_file(resolved_path) != resolved_sha256:
-        warnings.append("resolved config file sha256 differs from pre-write hash (re-read mismatch unlikely)")
 
     post_baseline_sha256 = _sha256_file(base_config_path)
     if post_baseline_sha256 != baseline_sha256:
@@ -251,6 +293,7 @@ def _resolve_one_sample(
         "resolved_config_path": _repo_relative(resolved_path, repo_root=repo_root),
         "overlay_applied_path": _repo_relative(overlay_path, repo_root=repo_root),
         "effective_materials": effective_materials,
+        "changed_material_values": changed_material_values,
         "material_fields_changed": changed_fields,
         "sha256": {
             "baseline_config": baseline_sha256,
@@ -273,6 +316,8 @@ def _resolve_one_sample(
         "resolved_config_path": str(resolved_path),
         "readiness_path": str(readiness_path),
         "effective_materials": effective_materials,
+        "changed_material_values": changed_material_values,
+        "warnings": warnings,
         "errors": errors,
     }
 
@@ -348,11 +393,15 @@ def run_resolve(argv: Optional[List[str]] = None) -> int:
     print(f"[B3_resolve_pilot_config] samples={len(results)} pass={n_pass} fail={n_fail}", flush=True)
     for r in results:
         em = r["effective_materials"]
+        cmv = r.get("changed_material_values") or {}
         print(
             f"[B3_resolve_pilot_config] {r['sample_id']}: status={r['status']} "
-            f"top.density={em.get('top.density')} back.density={em.get('back.density')}",
+            f"top.density={em.get('top.density')} back.density={em.get('back.density')} "
+            f"changed={list(cmv.keys()) or 'none'}",
             flush=True,
         )
+        for w in r.get("warnings") or []:
+            print(f"[B3_resolve_pilot_config]   WARN: {w}", flush=True)
         for err in r.get("errors") or []:
             print(f"[B3_resolve_pilot_config]   ERROR: {err}", flush=True)
     print("[B3_resolve_pilot_config] no Stage A/B/C execution performed", flush=True)
