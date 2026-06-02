@@ -1,0 +1,14 @@
+{
+  "status": "PASS",
+  "note": "Discovery-only scout stub; coverage vs this single frequency is not meaningful for 60-550 Hz zoning.",
+  "aggregate": {
+    "unique_accepted_frequencies_hz": [244.39]
+  },
+  "targets": [
+    {
+      "status": "PASS",
+      "target_hz": 244.39,
+      "accepted_frequencies_hz": [244.39]
+    }
+  ]
+}

@@ -281,7 +281,22 @@ Planner artifact schema can reuse `b3_coarse_frequency_plan_v2` **after** checkp
 
 ---
 
-## 15. Workflow summary
+## 15. Overnight LHS scout batch (M3.4.2)
+
+**Script:** `scripts/v2_b3_run_coarse_scout_lhs_batch.py`  
+**Samples:** `pipeline_runs/specs/m3_4_coarse_scout_lhs_batch.jsonl` (3 pilots + 2 synthetic extensions; add rows for 6–8 when more LHS specs exist)
+
+Per sample `scout_<sample_id>_m34`:
+
+- Overlay: `pipeline_runs/config_overlays/scout_<sample_id>_m34/resolved_core_config.json` (L_scout_coarse mesh, material delta, `clamp_ribs=false`)
+- Stage A → `st_worker_scaling_L_scout_coarse_scout_<sample_id>_m34`
+- Stage B discovery 60–550 Hz, spacing 7.5 Hz, half-width 3.75 Hz
+- Report → `pipeline_runs/scout_density_reports/scout_<sample_id>_m34/`
+- Summary → `pipeline_runs/scout_density_reports/summary/coarse_scout_lhs_zone_consensus.{json,md}`
+
+Dry-run then real run from repo root on VM (mesh must exist).
+
+## 16. Workflow summary
 
 ```text
 1. Inspect mesh levels + sizing          ← this document + scout plan script
