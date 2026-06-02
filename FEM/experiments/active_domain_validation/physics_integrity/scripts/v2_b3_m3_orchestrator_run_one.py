@@ -20,6 +20,7 @@ PLAN_SCHEMA = "b3_m3_orchestrator_run_one_plan_v1"
 DEFAULT_PROD_PYTHON = "/home/vboxuser/final-project/.venv/bin/python"
 DEFAULT_SOLVER_PYTHON = "/home/vboxuser/solver-mkl/venv/bin/python"
 DEFAULT_SOLVER_VENV = "/home/vboxuser/solver-mkl/venv"
+SOLVER_MKL_VENV = DEFAULT_SOLVER_VENV
 
 PETSC_DIR_PROD = "/usr/lib/petscdir/petsc3.15/x86_64-linux-gnu-real"
 SLEPC_DIR_PROD = "/usr/lib/slepcdir/slepc3.15/x86_64-linux-gnu-real"
@@ -84,8 +85,21 @@ def _read_run_spec(path: Path) -> Dict[str, Any]:
     return data
 
 
-def _solver_venv_root(solver_python: str) -> Path:
-    return Path(solver_python).resolve().parent.parent
+def _solver_venv_root(solver_python: str, *, solver_venv: Optional[str] = None) -> Path:
+    """Return venv root without resolving python (venv/bin/python is often a symlink)."""
+    if solver_venv:
+        return Path(solver_venv).expanduser()
+    env_override = os.environ.get("SOLVER_MKL_VENV", "").strip()
+    if env_override:
+        return Path(env_override).expanduser()
+    p = Path(solver_python).expanduser()
+    if p.name in ("python", "python3") and p.parent.name == "bin":
+        return p.parent.parent
+    return Path(SOLVER_MKL_VENV)
+
+
+def _solver_venv_bin(solver_python: str, *, solver_venv: Optional[str] = None) -> Path:
+    return _solver_venv_root(solver_python, solver_venv=solver_venv) / "bin"
 
 
 def _prod_subprocess_env(*, base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
@@ -104,22 +118,29 @@ def _prod_subprocess_env(*, base: Optional[Dict[str, str]] = None) -> Dict[str, 
     return env
 
 
-def _solver_mkl_subprocess_env(*, solver_python: str, base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def _solver_mkl_subprocess_env(
+    *,
+    solver_python: str,
+    solver_venv: Optional[str] = None,
+    base: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
     """Isolated solver-mkl env: strip production PETSc PYTHONPATH contamination."""
     env = dict(os.environ if base is None else base)
     for key in STAGE_B_ENV_UNSET:
         env.pop(key, None)
-    venv_root = _solver_venv_root(solver_python)
-    venv_bin = venv_root / "bin"
+    venv_root = _solver_venv_root(solver_python, solver_venv=solver_venv)
+    venv_bin = _solver_venv_bin(solver_python, solver_venv=solver_venv)
     env["VIRTUAL_ENV"] = str(venv_root)
     path_existing = env.get("PATH", "")
     env["PATH"] = f"{venv_bin}:{path_existing}" if path_existing else str(venv_bin)
     return env
 
 
-def _stage_env_preview_m33(*, prod_python: str, solver_python: str) -> Dict[str, Any]:
-    venv_root = str(_solver_venv_root(solver_python))
-    venv_bin = f"{venv_root}/bin"
+def _stage_env_preview_m33(
+    *, prod_python: str, solver_python: str, solver_venv: Optional[str] = None
+) -> Dict[str, Any]:
+    venv_root = str(_solver_venv_root(solver_python, solver_venv=solver_venv))
+    venv_bin = str(_solver_venv_bin(solver_python, solver_venv=solver_venv))
     py_path = ":".join(
         [
             f"{PETSC_DIR_PROD}/lib/python3/dist-packages",
@@ -190,17 +211,25 @@ def _verify_stage_a_env_probe(output: str, prod_python: str) -> Tuple[bool, str]
     return True, "ok"
 
 
-def _verify_stage_b_env_probe(output: str, solver_python: str) -> Tuple[bool, str]:
+def _verify_stage_b_env_probe(
+    output: str, solver_python: str, *, solver_venv: Optional[str] = None
+) -> Tuple[bool, str]:
     lines = [ln.strip() for ln in output.strip().splitlines() if ln.strip()]
     if len(lines) < 3:
         return False, f"probe_output_incomplete:{output!r}"
     exe, petsc_file, slepc_file = lines[0], lines[1], lines[2]
-    venv_marker = str(_solver_venv_root(solver_python)).replace("\\", "/")
-    try:
-        if Path(exe).resolve() != Path(solver_python).resolve():
-            return False, f"executable_mismatch:{exe}"
-    except OSError as exc:
-        return False, f"executable_resolve_error:{exc}"
+    venv_root = _solver_venv_root(solver_python, solver_venv=solver_venv)
+    venv_marker = str(venv_root).replace("\\", "/")
+    exe_path = Path(exe).expanduser()
+    expected_python = Path(solver_python).expanduser()
+    if exe_path != expected_python:
+        try:
+            if exe_path.resolve() != expected_python.resolve():
+                exe_posix = exe_path.as_posix()
+                if not exe_posix.startswith((venv_root / "bin").as_posix()):
+                    return False, f"executable_mismatch:{exe}"
+        except OSError as exc:
+            return False, f"executable_resolve_error:{exc}"
     petsc_norm = petsc_file.replace("\\", "/")
     slepc_norm = slepc_file.replace("\\", "/")
     if venv_marker not in petsc_norm:
@@ -386,6 +415,7 @@ def _build_plan(
     absolute_paths: bool,
     prod_python: str,
     solver_python: str,
+    solver_venv: str,
     for_execution: bool,
 ) -> Dict[str, Any]:
     sample_id = str(spec["sample_id"]).strip()
@@ -505,7 +535,12 @@ def _build_plan(
         "stage_c_note": "SKIPPED — timing-only M3.3; Stage C not executed",
         "commands": commands,
         "argv": argv,
-        "stage_env": _stage_env_preview_m33(prod_python=prod_python, solver_python=solver_python),
+        "stage_env": _stage_env_preview_m33(
+            prod_python=prod_python,
+            solver_python=solver_python,
+            solver_venv=solver_venv,
+        ),
+        "solver_venv": solver_venv,
         "env_probes": {
             "stage_a": "runs before Stage A when executing (production env)",
             "stage_b": "runs before Stage B when executing (isolated solver-mkl env)",
@@ -585,7 +620,11 @@ def _build_initial_manifest(
             },
         },
         "environment": plan.get("stage_env")
-        or _stage_env_preview_m33(prod_python=prod_python, solver_python=solver_python),
+        or _stage_env_preview_m33(
+            prod_python=prod_python,
+            solver_python=solver_python,
+            solver_venv=plan.get("solver_venv"),
+        ),
         "orchestrator": {
             "schema": "b3_m3_orchestrator_run_one_v1",
             "milestone": "M3.3",
@@ -739,7 +778,8 @@ def _execute_run(
     log_b = PIPELINE_RUNS / "logs" / f"run_{run_id}_stageB.log"
 
     env_a = _prod_subprocess_env()
-    env_b = _solver_mkl_subprocess_env(solver_python=solver_python)
+    solver_venv = plan.get("solver_venv") or SOLVER_MKL_VENV
+    env_b = _solver_mkl_subprocess_env(solver_python=solver_python, solver_venv=solver_venv)
 
     # Stage A env probe
     print("[B3_m3_run_one] Stage A env probe", flush=True)
@@ -820,7 +860,9 @@ def _execute_run(
     )
     log_b_probe.parent.mkdir(parents=True, exist_ok=True)
     log_b_probe.write_text(out_b_probe, encoding="utf-8")
-    ok_b_probe, detail_b_probe = _verify_stage_b_env_probe(out_b_probe, solver_python)
+    ok_b_probe, detail_b_probe = _verify_stage_b_env_probe(
+        out_b_probe, solver_python, solver_venv=solver_venv
+    )
     manifest["stages"]["B"]["env_preflight"] = {
         "ok": ok_b_probe and rc_b_probe == 0,
         "exit_code": rc_b_probe,
@@ -913,6 +955,11 @@ def run_one(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument("--prod-python", default=DEFAULT_PROD_PYTHON)
     parser.add_argument("--solver-python", default=DEFAULT_SOLVER_PYTHON)
+    parser.add_argument(
+        "--solver-venv",
+        default=SOLVER_MKL_VENV,
+        help="solver-mkl virtualenv root (default: /home/vboxuser/solver-mkl/venv)",
+    )
     args = parser.parse_args(argv)
 
     repo_root = (
@@ -933,6 +980,7 @@ def run_one(argv: Optional[List[str]] = None) -> int:
         absolute_paths=bool(args.absolute_paths),
         prod_python=str(args.prod_python),
         solver_python=str(args.solver_python),
+        solver_venv=str(args.solver_venv),
         for_execution=not args.dry_run,
     )
     plan["will_execute"] = not args.dry_run and plan["preflight"].get("ready", False)
