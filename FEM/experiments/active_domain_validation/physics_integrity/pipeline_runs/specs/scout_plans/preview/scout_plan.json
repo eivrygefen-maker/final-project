@@ -1,0 +1,299 @@
+{
+  "schema": "b3_coarse_mesh_scout_plan_v1",
+  "generated_at_utc": "2026-06-02T21:53:12Z",
+  "will_execute": false,
+  "strategy": "coarse_fem_mesh_modal_density_scout",
+  "supersedes_wrong_direction": {
+    "run_id": "target_density_discovery_60_550_step15_m3exec2",
+    "reason": "Wide-band discovery on full L_prod checkpoint \u2014 wrong primary scout strategy; discard as zone evidence."
+  },
+  "planning_band_hz": [
+    60.0,
+    550.0
+  ],
+  "verified_l_prod_sizing": {
+    "source_manifest": "FEM/experiments/active_domain_validation/physics_integrity/configs/v2_mesh_convergence_manifest.json",
+    "source_builder": "FEM/geometry/build_3d_guitar.py (FEM_ALLOW_FOM=1, FEM_MESH_LC_SCALE=1)",
+    "manifest_l_prod_source_controls_mm": {
+      "wood_surface_size_m": 7.0,
+      "wood_thickness_size_m": 1.0,
+      "air_threshold_size_min_m": 4.0,
+      "air_threshold_size_max_m": 50.0,
+      "air_threshold_dist_min_m": 15.0,
+      "air_threshold_dist_max_m": 250.0
+    },
+    "effective_controls_mm": {
+      "wood_surface_size_m": 7.0,
+      "wood_thickness_size_m": 1.0,
+      "air_threshold_size_min_m": 4.0,
+      "air_threshold_size_max_m": 50.0
+    },
+    "active_dim_reference_m3exec2": 316017
+  },
+  "proposed_scout_level": {
+    "recommended_id": "L_scout_coarse",
+    "reuse_L_dev_coarse": false,
+    "reuse_rationale": "L_dev_coarse uses FEM_VALIDATION_MESH with lc_scale=2.0 (~28 mm wood shell), not FOM production geometry.",
+    "explicit_controls_m": {
+      "wood_thickness_size_m": 0.003,
+      "wood_surface_size_m": 0.0085,
+      "air_threshold_size_min_m": 0.011,
+      "air_threshold_size_max_m": 0.055,
+      "air_threshold_dist_min_m": 0.015,
+      "air_threshold_dist_max_m": 0.25
+    },
+    "explicit_controls_mm": {
+      "wood_thickness_size_m": 3.0,
+      "wood_surface_size_m": 8.5,
+      "air_threshold_size_min_m": 11.0,
+      "air_threshold_size_max_m": 55.0,
+      "air_threshold_dist_min_m": 15.0,
+      "air_threshold_dist_max_m": 250.0
+    },
+    "implementation_gap": "explicit_controls_m not applied by build_3d_guitar.py yet; requires manifest entry + build_level_mesh/env hook before mesh build."
+  },
+  "uniform_lc_scale_compromise_table_fom": [
+    {
+      "lc_scale": 1.0,
+      "wood_thickness_mm": 1.0,
+      "wood_surface_mm": 7.0,
+      "air_min_mm": 4.0
+    },
+    {
+      "lc_scale": 1.21,
+      "wood_thickness_mm": 1.21,
+      "wood_surface_mm": 8.47,
+      "air_min_mm": 4.84
+    },
+    {
+      "lc_scale": 1.5,
+      "wood_thickness_mm": 1.5,
+      "wood_surface_mm": 10.5,
+      "air_min_mm": 6.0
+    },
+    {
+      "lc_scale": 2.0,
+      "wood_thickness_mm": 2.0,
+      "wood_surface_mm": 14.0,
+      "air_min_mm": 8.0
+    },
+    {
+      "lc_scale": 3.0,
+      "wood_thickness_mm": 3.0,
+      "wood_surface_mm": 21.0,
+      "air_min_mm": 12.0
+    }
+  ],
+  "L_dev_coarse_effective_mm": {
+    "wood_surface_size_m": 28.0,
+    "wood_thickness_size_m": 6.0,
+    "air_threshold_size_min_m": 18.0,
+    "air_threshold_size_max_m": 80.0
+  },
+  "active_dimension_estimate": {
+    "method": "mean_characteristic_length_cubed_scaling",
+    "mean_lc_ratio_scout_over_prod": 1.875,
+    "point_estimate": 47941,
+    "rough_band": [
+      31522,
+      78064
+    ],
+    "prod_active_dim_reference": 316017,
+    "note": "Measure active_dimension from Stage A export after mesh build; estimate is planning-only."
+  },
+  "mesh_levels": [
+    {
+      "mesh_level": "L0",
+      "label": "validation profile (v2 verification mesh)",
+      "build_env": {
+        "FEM_VALIDATION_MESH": "1"
+      },
+      "lc_scale": 1.0,
+      "profile": "validation",
+      "controls_source": "computed_validation_times_lc_scale",
+      "effective_controls_mm": {
+        "wood_surface_size_m": 14.0,
+        "wood_thickness_size_m": 3.0,
+        "air_threshold_size_min_m": 9.0,
+        "air_threshold_size_max_m": 40.0
+      },
+      "mesh_path": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L0/baseline_coupled_v2.msh",
+      "mesh_exists": false,
+      "mesh_audit_path": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L0/baseline_coupled_v2_mesh_audit.json",
+      "mesh_audit_exists": false,
+      "mesh_build_summary_exists": false,
+      "solver_smoke_test_only": false,
+      "not_authorized_for_final_physics_validation": false
+    },
+    {
+      "mesh_level": "L_check",
+      "label": "optional finer-than-L_prod confirmation",
+      "build_env": {
+        "FEM_ALLOW_FOM": "1"
+      },
+      "lc_scale": 0.7071067811865476,
+      "profile": "fom",
+      "controls_source": "computed_fom_times_lc_scale",
+      "effective_controls_mm": {
+        "wood_surface_size_m": 4.95,
+        "wood_thickness_size_m": 0.707,
+        "air_threshold_size_min_m": 2.828,
+        "air_threshold_size_max_m": 35.355
+      },
+      "mesh_path": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_check/baseline_coupled_v2.msh",
+      "mesh_exists": false,
+      "mesh_audit_path": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_check/baseline_coupled_v2_mesh_audit.json",
+      "mesh_audit_exists": false,
+      "mesh_build_summary_exists": false,
+      "solver_smoke_test_only": false,
+      "not_authorized_for_final_physics_validation": false
+    },
+    {
+      "mesh_level": "L_dev_coarse",
+      "label": "coarse development mesh for solver smoke tests only (not final validation)",
+      "build_env": {
+        "FEM_VALIDATION_MESH": "1"
+      },
+      "lc_scale": 2.0,
+      "profile": "validation",
+      "controls_source": "computed_validation_times_lc_scale",
+      "effective_controls_mm": {
+        "wood_surface_size_m": 28.0,
+        "wood_thickness_size_m": 6.0,
+        "air_threshold_size_min_m": 18.0,
+        "air_threshold_size_max_m": 80.0
+      },
+      "mesh_path": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_dev_coarse/baseline_coupled_v2.msh",
+      "mesh_exists": false,
+      "mesh_audit_path": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_dev_coarse/baseline_coupled_v2_mesh_audit.json",
+      "mesh_audit_exists": false,
+      "mesh_build_summary_exists": false,
+      "solver_smoke_test_only": true,
+      "not_authorized_for_final_physics_validation": true
+    },
+    {
+      "mesh_level": "L_dev_dense",
+      "label": "dense development mesh approaching operational resolution (not final validation)",
+      "build_env": {
+        "FEM_VALIDATION_MESH": "1"
+      },
+      "lc_scale": 1.2,
+      "profile": "validation",
+      "controls_source": "computed_validation_times_lc_scale",
+      "effective_controls_mm": {
+        "wood_surface_size_m": 16.8,
+        "wood_thickness_size_m": 3.6,
+        "air_threshold_size_min_m": 10.8,
+        "air_threshold_size_max_m": 48.0
+      },
+      "mesh_path": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_dev_dense/baseline_coupled_v2.msh",
+      "mesh_exists": false,
+      "mesh_audit_path": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_dev_dense/baseline_coupled_v2_mesh_audit.json",
+      "mesh_audit_exists": false,
+      "mesh_build_summary_exists": false,
+      "solver_smoke_test_only": true,
+      "not_authorized_for_final_physics_validation": true
+    },
+    {
+      "mesh_level": "L_dev_refined",
+      "label": "intermediate refined development mesh for mesh-sensitivity and timing comparison (not final validation)",
+      "build_env": {
+        "FEM_VALIDATION_MESH": "1"
+      },
+      "lc_scale": 1.6,
+      "profile": "validation",
+      "controls_source": "computed_validation_times_lc_scale",
+      "effective_controls_mm": {
+        "wood_surface_size_m": 22.4,
+        "wood_thickness_size_m": 4.8,
+        "air_threshold_size_min_m": 14.4,
+        "air_threshold_size_max_m": 64.0
+      },
+      "mesh_path": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_dev_refined/baseline_coupled_v2.msh",
+      "mesh_exists": false,
+      "mesh_audit_path": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_dev_refined/baseline_coupled_v2_mesh_audit.json",
+      "mesh_audit_exists": false,
+      "mesh_build_summary_exists": false,
+      "solver_smoke_test_only": true,
+      "not_authorized_for_final_physics_validation": true
+    },
+    {
+      "mesh_level": "L_mid",
+      "label": "intermediate refinement on validation CAD pipeline",
+      "build_env": {
+        "FEM_VALIDATION_MESH": "1"
+      },
+      "lc_scale": 0.7071067811865476,
+      "profile": "validation",
+      "controls_source": "computed_validation_times_lc_scale",
+      "effective_controls_mm": {
+        "wood_surface_size_m": 9.899,
+        "wood_thickness_size_m": 2.121,
+        "air_threshold_size_min_m": 6.364,
+        "air_threshold_size_max_m": 28.284
+      },
+      "mesh_path": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_mid/baseline_coupled_v2.msh",
+      "mesh_exists": false,
+      "mesh_audit_path": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_mid/baseline_coupled_v2_mesh_audit.json",
+      "mesh_audit_exists": false,
+      "mesh_build_summary_exists": false,
+      "solver_smoke_test_only": false,
+      "not_authorized_for_final_physics_validation": false
+    },
+    {
+      "mesh_level": "L_prod",
+      "label": "production FOM mesh profile (FEM_ALLOW_FOM)",
+      "build_env": {
+        "FEM_ALLOW_FOM": "1"
+      },
+      "lc_scale": 1.0,
+      "profile": "fom",
+      "controls_source": "computed_fom_times_lc_scale",
+      "effective_controls_mm": {
+        "wood_surface_size_m": 7.0,
+        "wood_thickness_size_m": 1.0,
+        "air_threshold_size_min_m": 4.0,
+        "air_threshold_size_max_m": 50.0
+      },
+      "mesh_path": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_prod/baseline_coupled_v2.msh",
+      "mesh_exists": false,
+      "mesh_audit_path": "FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_prod/baseline_coupled_v2_mesh_audit.json",
+      "mesh_audit_exists": false,
+      "mesh_build_summary_exists": false,
+      "solver_smoke_test_only": false,
+      "not_authorized_for_final_physics_validation": false
+    }
+  ],
+  "checkpoints_on_host": [],
+  "stage_a_allowed_mesh_levels": [
+    "L_mid",
+    "L_dev_dense",
+    "L_prod"
+  ],
+  "core_config": {
+    "path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_001_timing/resolved_core_config.json",
+    "exists": true
+  },
+  "command_previews": {
+    "mesh_build": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_mesh_convergence.py --levels L_scout_coarse --cases baseline_coupled_v2",
+    "stage_a": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_scout_coarse --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/lhs_pilot_001_timing/resolved_core_config.json\" --output-dir \"C:/projects/final-project/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_scout_coarse_scout_m34_plan_preview\"",
+    "stage_b_discovery": "python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_target_density_experiment.py --checkpoint-dir \"C:/projects/final-project/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/st_worker_scaling_L_scout_coarse_scout_m34_plan_preview\" --start-hz 60.0 --stop-hz 550.0 --spacings-hz 15.0 --B3-discovery-mode --discovery-band-hz 60.0 550.0 --target-window-half-width-hz 7.5 --output-dir \"C:/projects/final-project/final-project/FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/diagnostics/solver_benchmarks/scout_density_discovery_60_550_step15_scout_m34_plan_preview\""
+  },
+  "discovery_half_width_hz": {
+    "applied": 7.5,
+    "rule": "spacing_hz / 2 for 15 Hz grid (touching windows)"
+  },
+  "prerequisites_before_execution": [
+    "Add L_scout_coarse to v2_mesh_convergence_manifest.json",
+    "Wire explicit_controls_m in v2_mesh_convergence_mesh.py / build_3d_guitar.py",
+    "Extend v2_b3_checkpoint_export ALLOWED_MESH_LEVELS",
+    "Build scout .msh on VM (production mesh build env)",
+    "Stage A export on production venv; Stage B on solver-mkl venv"
+  ],
+  "warnings": [
+    "L_prod mesh file not found on this host: C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\mesh\\L_prod\\baseline_coupled_v2.msh",
+    "Manifest has no L_scout_coarse yet; mesh build and Stage A --mesh-level require manifest + code updates.",
+    "v2_b3_checkpoint_export ALLOWED_MESH_LEVELS does not include L_scout_coarse; extend before Stage A."
+  ],
+  "documentation": "FEM/experiments/active_domain_validation/physics_integrity/docs/B3_M3_4_COARSE_MESH_MODAL_DENSITY_SCOUT_PLAN.md"
+}

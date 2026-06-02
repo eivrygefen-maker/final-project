@@ -4,11 +4,13 @@
 **Follows:** M3.3 orchestrator PASS (`lhs_pilot_001_timing_m3exec2`), [`B3_M3_ORCHESTRATOR_CONTRACT.md`](B3_M3_ORCHESTRATOR_CONTRACT.md)  
 **Tool:** `scripts/v2_b3_frequency_coarse_planner.py` (dry-run only, schema `b3_coarse_frequency_plan_v2`)
 
+> **Strategy correction:** Primary modal-density scouting uses a **coarse FEM mesh** first, not a wide 60–550 Hz scan on the full `L_prod` checkpoint. See [`B3_M3_4_COARSE_MESH_MODAL_DENSITY_SCOUT_PLAN.md`](B3_M3_4_COARSE_MESH_MODAL_DENSITY_SCOUT_PLAN.md) and `scripts/v2_b3_coarse_mesh_scout_plan.py`. This document remains valid for **target-grid / discovery-half-width** planning **after** scout zones exist.
+
 ---
 
 ## 0. Purpose
 
-Before M3.4 synthesis/batch LHS, perform a **data-driven calibration** of modal-density zones across the **guitar/modal planning band (60–550 Hz)**.
+Before M3.4 synthesis/batch LHS, perform a **data-driven calibration** of modal-density zones across the **guitar/modal planning band (60–550 Hz)** — using **coarse-mesh scout results** to inform `L_prod` target sets (not `L_prod` as the primary scout mesh).
 
 The validated `full9` slice (221.5–264.0 Hz) is **reference evidence only**, not the full exploration range.
 
