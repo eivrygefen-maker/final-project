@@ -571,7 +571,8 @@ Reports must show **target counts** and **estimated hours** for uniform vs adapt
 | Single-guitar orchestrator Stages 0–3 (scout path) | **M4.3 done** — `v2_b3_m4_pipeline_run_scout.py` |
 | L_prod worker execution dry-run planner | **M4.4-pre done** — `v2_b3_m4_lprod_worker_dry_run.py` |
 | L_prod execution interfaces + dry-run validation | **M4.4.1a done** — see §12 M4.4.1a |
-| Single-guitar L_prod Stage 4–5–6 (real solve) | M4.4.1b |
+| L_prod mesh + checkpoint only (Stage 4) | **M4.4.1b-0 done** — `v2_b3_m4_lprod_checkpoint_run.py` |
+| Single-guitar L_prod worker solve + aggregation | M4.4.1b |
 | Multi-guitar LHS batch driver | M4.5 |
 | Geometry-delta → remesh trigger in Stage 0 | M4.3+ |
 | Mode NPZ / plot exporters | M4.4 |
@@ -688,6 +689,26 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
 | No `lprod/checkpoint` PASS | Stage A on production `.venv` |
 | Worker solves | `v2_b3_checkpoint_solve_target_list.py` without `--dry-run` on solver-mkl |
 | Aggregation | Real dedupe/catalog (not dry-run reader) |
+
+### M4.4.1b-0 — L_prod mesh + checkpoint only (**done**)
+
+- Script: `scripts/v2_b3_m4_lprod_checkpoint_run.py`
+- Mesh build: `scripts/v2_b3_m4_lprod_mesh_build.py` (sample geometry via `build_3d_guitar.py` / `FEM_ALLOW_FOM`)
+- Production `.venv` only; logs `logs/stage4_env_probe.log`, `stage4_lprod_mesh.log`, `stage4_lprod_checkpoint.log`
+- Baseline mesh copy only when geometry fingerprint matches; otherwise per-sample L_prod build
+- No worker solves, Stage C, or aggregation
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_lprod_checkpoint_run.py \
+  --run-dir FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1 \
+  --dry-run
+
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_lprod_checkpoint_run.py \
+  --run-dir FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1 \
+  --execute
+```
+
+**Exit:** `LPROD_CHECKPOINT_READY`, `stage4_lprod_mesh` / `stage4_lprod_export` PASS, Stages 5–6 `PLANNED_READY`.
 
 ### M4.4.1b — Single-guitar L_prod worker solve + aggregation
 

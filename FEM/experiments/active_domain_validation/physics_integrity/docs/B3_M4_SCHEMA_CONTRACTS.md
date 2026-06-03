@@ -178,4 +178,13 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
   --run-dir .../sample_001_m4dry1 --dry-run
 ```
 
-Next: **M4.4.1b** real L_prod mesh, checkpoint, FCFS workers, aggregation.
+### M4.4.1b-0 — L_prod checkpoint execution
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_lprod_checkpoint_run.py \
+  --run-dir .../sample_001_m4dry1 --execute
+```
+
+Writes: `lprod/resolved_core_config.json`, `lprod/mesh/L_prod/<sample_id>.msh`, `lprod/checkpoint/*`, updated `lprod_mesh_checkpoint_readiness.json`. Terminal: `LPROD_CHECKPOINT_READY`.
+
+Next: **M4.4.1b** FCFS worker solves + aggregation (checkpoint must be PASS).
