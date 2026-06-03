@@ -6,7 +6,7 @@
   "will_execute": false,
   "created_utc": "2026-06-03T07:25:29Z",
   "updated_utc": "2026-06-03T07:25:29Z",
-  "terminal_status": "SCOUT_PASS_TARGET_PLAN_READY",
+  "terminal_status": "LPROD_CHECKPOINT_READY",
   "policy_versions": {
     "scout_policy_version": "v1",
     "zone_policy_version": "v1",
@@ -60,18 +60,10 @@
       "status": "PASS"
     },
     "stage4_lprod_mesh": {
-      "status": "PLANNED",
-      "artifact_paths": [
-        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/lprod/mesh/L_prod/sample_001.msh"
-      ],
-      "command_preview": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_mesh_convergence.py # planned L_prod build for sample sample_001; geometry-aware path TBD M4.3+"
+      "status": "PASS"
     },
     "stage4_lprod_export": {
-      "status": "PLANNED",
-      "artifact_paths": [
-        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/lprod/checkpoint"
-      ],
-      "command_preview": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/sample_001/resolved_core_config.json\" --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/lprod/checkpoint\""
+      "status": "PASS"
     },
     "stage5_workers": {
       "status": "PLANNED",

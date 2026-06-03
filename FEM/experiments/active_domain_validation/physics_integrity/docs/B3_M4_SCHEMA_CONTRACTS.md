@@ -187,4 +187,13 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
 
 Writes: `lprod/resolved_core_config.json`, `lprod/mesh/L_prod/<sample_id>.msh`, `lprod/checkpoint/*`, updated `lprod_mesh_checkpoint_readiness.json`. Terminal: `LPROD_CHECKPOINT_READY`.
 
-Next: **M4.4.1b** FCFS worker solves + aggregation (checkpoint must be PASS).
+### M4.4.1b-1 — single-chunk worker smoke
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_worker_smoke_test.py \
+  --run-dir .../sample_001_m4dry1 --chunk-id sample_001_chunk_04 --execute
+```
+
+Writes per chunk: `env_probe.json`, real `solver_result.json`, `worker_result.json`, `worker_smoke_manifest.json`. Preview: `pipeline_run_manifest.m4_4_worker_smoke_preview.json`.
+
+Next: **M4.4.1b** FCFS all chunks + aggregation (checkpoint must be PASS).

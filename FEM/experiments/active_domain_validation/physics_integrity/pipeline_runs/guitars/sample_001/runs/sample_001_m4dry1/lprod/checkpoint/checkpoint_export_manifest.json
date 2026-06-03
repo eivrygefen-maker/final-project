@@ -1,0 +1,6 @@
+{
+  "status": "PASS",
+  "export_pass": true,
+  "matrix_verify_pass": true,
+  "core_config_mode": "override"
+}
