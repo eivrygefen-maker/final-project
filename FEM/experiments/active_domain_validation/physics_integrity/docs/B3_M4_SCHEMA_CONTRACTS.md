@@ -224,3 +224,14 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
 ```
 
 Remaining batch manifest: `worker_results/remaining_workers_m4_4_1b_4_manifest.json`. Full aggregation (all 11 PASS): `aggregation/aggregation_result.json`, preview `pipeline_run_manifest.m4_4_full_aggregation_preview.json`, `status=AGGREGATION_PASS`, `final_aggregation_ready=true`.
+
+**Status:** M4 single-guitar end-to-end validation **passed** for `sample_001_m4dry1` (VM: 11/11 chunks, 568 deduped modes). Multi-guitar LHS (M4.5) not yet run.
+
+### M4.5-pre — first E2E freeze manifest
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_freeze_first_e2e_run.py \
+  --run-dir .../sample_001_m4dry1 --force
+```
+
+Schema: `m4_first_end_to_end_freeze_v1` in `freeze/first_end_to_end_run_manifest.json`. Does not modify `worker_results/`, `aggregation/`, `lprod/checkpoint/`, or `scout/`.

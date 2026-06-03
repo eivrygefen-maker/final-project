@@ -576,6 +576,7 @@ Reports must show **target counts** and **estimated hours** for uniform vs adapt
 | Limited multi-chunk worker mini-batch | **M4.4.1b-2 done** — `v2_b3_m4_worker_minibatch.py` |
 | Partial aggregation over completed worker results | **M4.4.1b-3 done** — `v2_b3_m4_aggregate_worker_results.py` |
 | Remaining worker chunks + full aggregation | **M4.4.1b-4 done** — `v2_b3_m4_worker_run_remaining.py` |
+| First E2E run freeze + milestone report | **M4.5-pre done** — `v2_b3_m4_freeze_first_e2e_run.py` |
 | Single-guitar L_prod FCFS / promotion | M4.4.1b+ |
 | Multi-guitar LHS batch driver | M4.5 |
 | Geometry-delta → remesh trigger in Stage 0 | M4.3+ |
@@ -791,6 +792,22 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
 ```
 
 Writes: `worker_results/remaining_workers_m4_4_1b_4_manifest.json`, `pipeline_run_manifest.m4_4_workers_complete_preview.json`, final `aggregation/aggregation_result.json`, `pipeline_run_manifest.m4_4_full_aggregation_preview.json` (`terminal_status`: `LPROD_WORKERS_AND_AGGREGATION_PASS`).
+
+**Validated (VM):** `sample_001_m4dry1` — `AGGREGATION_PASS`, 11/11 chunks, 733 raw / 568 deduped modes.
+
+### M4.5-pre — Freeze first successful M4 end-to-end run (**done**)
+
+- Script: `scripts/v2_b3_m4_freeze_first_e2e_run.py` (read-only; no solver)
+- Report: `docs/B3_M4_5_PRE_FIRST_END_TO_END_RUN_REPORT.md`
+- Run-tree freeze: `freeze/first_end_to_end_run_manifest.json`, `artifact_index.json`, summaries
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_freeze_first_e2e_run.py \
+  --run-dir FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1 \
+  --force
+```
+
+Requires essential artifacts: `aggregation/aggregation_result.json` (`AGGREGATION_PASS`), `lprod/lprod_target_plan.json`, L_prod checkpoint manifest, all planned chunk `worker_result.json` PASS.
 
 ### M4.4.1b — Single-guitar L_prod worker solve + aggregation
 
