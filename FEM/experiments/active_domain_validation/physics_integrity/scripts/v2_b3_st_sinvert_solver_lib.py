@@ -37,6 +37,7 @@ class AcceptanceConfig:
         freq_hi: float = ACCEPTANCE_FREQ_HI_HZ,
         discovery_band_hz: Optional[Tuple[float, float]] = None,
         target_window_half_width_hz: Optional[float] = None,
+        per_target_windows_hz: Optional[Dict[float, Tuple[float, float]]] = None,
     ) -> None:
         self.policy = str(policy)
         self.freq_lo = float(freq_lo)
@@ -47,6 +48,7 @@ class AcceptanceConfig:
             if target_window_half_width_hz is not None
             else None
         )
+        self.per_target_windows_hz = dict(per_target_windows_hz) if per_target_windows_hz else None
 
     @classmethod
     def legacy(cls) -> AcceptanceConfig:
@@ -81,20 +83,42 @@ class AcceptanceConfig:
             return False
         f = float(f_hz)
         if self.discovery_mode:
-            if self.discovery_band_hz is None or self.target_window_half_width_hz is None:
-                raise RuntimeError("discovery policy missing band or window half-width")
+            if self.discovery_band_hz is None:
+                raise RuntimeError("discovery policy missing band")
             lo, hi = self.discovery_band_hz
+            if not (lo <= f <= hi):
+                return False
+            t = float(target_hz)
+            if self.per_target_windows_hz:
+                win = self.per_target_windows_hz.get(t)
+                if win is None:
+                    for k, v in self.per_target_windows_hz.items():
+                        if abs(float(k) - t) < 1.0e-4:
+                            win = v
+                            break
+                if win is not None:
+                    return float(win[0]) <= f <= float(win[1]) + 1.0e-9
+            if self.target_window_half_width_hz is None:
+                raise RuntimeError("discovery policy missing window half-width")
             half = float(self.target_window_half_width_hz)
-            return (
-                lo <= f <= hi
-                and abs(f - float(target_hz)) <= half + 1.0e-9
-            )
+            return abs(f - t) <= half + 1.0e-9
         return self.freq_lo <= f <= self.freq_hi
 
     def per_target_window_hz(self, target_hz: float) -> Optional[List[float]]:
-        if not self.discovery_mode or self.target_window_half_width_hz is None:
+        if not self.discovery_mode:
             return None
         t = float(target_hz)
+        if self.per_target_windows_hz:
+            win = self.per_target_windows_hz.get(t)
+            if win is None:
+                for k, v in self.per_target_windows_hz.items():
+                    if abs(float(k) - t) < 1.0e-4:
+                        win = v
+                        break
+            if win is not None:
+                return [float(win[0]), float(win[1])]
+        if self.target_window_half_width_hz is None:
+            return None
         half = float(self.target_window_half_width_hz)
         return [t - half, t + half]
 
@@ -110,6 +134,7 @@ class AcceptanceConfig:
             out["discovery_band_hz"] = list(self.discovery_band_hz)
             out["target_window_half_width_hz"] = self.target_window_half_width_hz
             out["acceptance_interval_hz"] = list(self.discovery_band_hz)
+            out["per_target_windows_from_plan"] = bool(self.per_target_windows_hz)
         return out
 
 

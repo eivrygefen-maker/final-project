@@ -1,0 +1,160 @@
+{
+  "schema": "m4_pipeline_run_manifest_v1",
+  "sample_id": "sample_001",
+  "run_id": "sample_001_m4dry1",
+  "mode": "m4_4_1a_dry_run",
+  "will_execute": false,
+  "created_utc": "2026-06-03T07:25:29Z",
+  "updated_utc": "2026-06-03T08:40:38Z",
+  "terminal_status": "LPROD_WORKER_PLAN_READY",
+  "policy_versions": {
+    "scout_policy_version": "v1",
+    "zone_policy_version": "v1",
+    "chunk_policy_version": "v1"
+  },
+  "frequency_policy": {
+    "band_hz": [
+      60.0,
+      550.0
+    ],
+    "scout_spacing_hz": 7.5,
+    "scout_half_width_hz": 3.75,
+    "zone_spacing_hz": {
+      "ZONE_1_dense": 6.0,
+      "ZONE_2_medium": 9.0,
+      "ZONE_3_sparse": 12.5
+    }
+  },
+  "stages": {
+    "stage0_resolve": {
+      "status": "PLANNED",
+      "artifact_paths": [
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/sample/sample_input.json",
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/sample/sample_resolved_config_manifest.json",
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/sample/readiness_check.json"
+      ],
+      "command_preview": "# resolve overlay for sample_001 (v2_b3_resolve_pilot_core_config.py pattern)"
+    },
+    "stage1_scout_mesh": {
+      "status": "PLANNED",
+      "artifact_paths": [
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/mesh/L_scout_coarse/sample_001.msh"
+      ],
+      "command_preview": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_B3_scout_coarse_mesh_build.py # sample-specific geometry: sample_001 (M4.3+ may pass FEM geometry overrides)"
+    },
+    "stage1_scout_export": {
+      "status": "PLANNED",
+      "artifact_paths": [
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/checkpoint"
+      ],
+      "command_preview": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_scout_coarse --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/sample_001/resolved_core_config.json\" --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/checkpoint\""
+    },
+    "stage2_scout_discovery": {
+      "status": "PLANNED",
+      "artifact_paths": [
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/discovery/density_result.json"
+      ],
+      "command_preview": "/home/vboxuser/solver-mkl/venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_target_density_experiment.py --checkpoint-dir \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/checkpoint\" --start-hz 60.0 --stop-hz 550.0 --spacings-hz 7.5 --B3-discovery-mode --discovery-band-hz 60.0 550.0 --target-window-half-width-hz 3.75 --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/discovery\""
+    },
+    "stage3_zones_plan": {
+      "status": "PASS"
+    },
+    "stage4_lprod_mesh": {
+      "status": "PLANNED_READY",
+      "artifact_paths": [
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/lprod/mesh/L_prod/sample_001.msh"
+      ],
+      "command_preview": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_mesh_convergence.py # planned L_prod build for sample sample_001; geometry-aware path TBD M4.3+"
+    },
+    "stage4_lprod_export": {
+      "status": "PLANNED_READY",
+      "artifact_paths": [
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/lprod/checkpoint"
+      ],
+      "command_preview": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/sample_001/resolved_core_config.json\" --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/lprod/checkpoint\""
+    },
+    "stage5_workers": {
+      "status": "PLANNED_READY",
+      "artifact_paths": [
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results"
+      ],
+      "command_preview": "# FCFS workers W0..W2 (M4.4)"
+    },
+    "stage6_aggregate": {
+      "status": "PLANNED_READY",
+      "artifact_paths": [
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/aggregation/aggregation_result.placeholder.json",
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/aggregation/runtime_summary.placeholder.json"
+      ]
+    }
+  },
+  "output_tree": {
+    "run_root": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1",
+    "sample_dir": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/sample",
+    "scout_dir": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout",
+    "lprod_dir": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/lprod",
+    "worker_results_dir": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results",
+    "aggregation_dir": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/aggregation",
+    "logs_dir": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/logs",
+    "pipeline_run_manifest": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/pipeline_run_manifest.json",
+    "dry_run_summary": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/dry_run_summary.md"
+  },
+  "command_previews": {
+    "scout_mesh_build": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_B3_scout_coarse_mesh_build.py # sample-specific geometry: sample_001 (M4.3+ may pass FEM geometry overrides)",
+    "scout_stage_a": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_scout_coarse --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/sample_001/resolved_core_config.json\" --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/checkpoint\"",
+    "scout_stage_b": "/home/vboxuser/solver-mkl/venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_target_density_experiment.py --checkpoint-dir \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/checkpoint\" --start-hz 60.0 --stop-hz 550.0 --spacings-hz 7.5 --B3-discovery-mode --discovery-band-hz 60.0 550.0 --target-window-half-width-hz 3.75 --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/discovery\"",
+    "lprod_mesh_build": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_mesh_convergence.py # planned L_prod build for sample sample_001; geometry-aware path TBD M4.3+",
+    "lprod_stage_a": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/sample_001/resolved_core_config.json\" --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/lprod/checkpoint\""
+  },
+  "environment_profiles": {
+    "production_fem": {
+      "profile": "production_venv_strict",
+      "python": "/home/vboxuser/final-project/.venv/bin/python",
+      "virtual_env": "/home/vboxuser/final-project/.venv",
+      "used_for": [
+        "stage0_resolve",
+        "stage1_scout_mesh",
+        "stage1_scout_export",
+        "stage4_lprod_mesh",
+        "stage4_lprod_export"
+      ],
+      "env_vars": {
+        "PETSC_DIR": "/usr/lib/petscdir/petsc3.15/x86_64-linux-gnu-real",
+        "SLEPC_DIR": "/usr/lib/slepcdir/slepc3.15/x86_64-linux-gnu-real",
+        "PYTHONPATH": "$PETSC_DIR/lib/python3/dist-packages:$SLEPC_DIR/lib/python3/dist-packages:/usr/lib/python3/dist-packages"
+      },
+      "note": "Build explicit env dict at execution; do not inherit parent VIRTUAL_ENV."
+    },
+    "solver_mkl": {
+      "profile": "solver_mkl_strict",
+      "python": "/home/vboxuser/solver-mkl/venv/bin/python",
+      "virtual_env": "/home/vboxuser/solver-mkl/venv",
+      "used_for": [
+        "stage2_scout_discovery",
+        "stage5_lprod_workers"
+      ],
+      "env_vars": {},
+      "unset_at_execution": [
+        "PYTHONPATH",
+        "PETSC_DIR",
+        "SLEPC_DIR",
+        "PYTHONHOME"
+      ],
+      "note": "Isolated solver-mkl; dolfinx must not import."
+    }
+  },
+  "no_execution_guarantee": true,
+  "planned_workers": 3,
+  "provenance": {
+    "core_config_sha256": null,
+    "mesh_hashes": {
+      "L_scout_coarse": null,
+      "L_prod": null
+    }
+  },
+  "lprod_worker_plan": {
+    "planned_workers": 3,
+    "target_count": 56,
+    "chunk_count": 11
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "schema": "m4_solver_result_v1",
+  "will_execute": false,
+  "mode": "m4_4_1a_dry_run",
+  "status": "DRY_RUN_PLANNED",
+  "benchmark_kind": "checkpoint_solve_target_list",
+  "checkpoint_dir": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\pipeline_runs\\guitars\\sample_001\\runs\\sample_001_m4dry1\\lprod\\checkpoint",
+  "factor_solver": "mkl_pardiso",
+  "targets_hz": [
+    516.25,
+    528.75,
+    541.25,
+    543.75
+  ],
+  "targets": [],
+  "aggregate": {
+    "targets_attempted": 4,
+    "targets_succeeded": 0,
+    "unique_accepted_frequencies_hz": []
+  },
+  "warnings": [
+    "M4.4.1a dry-run placeholder \u2014 no ST solve."
+  ],
+  "generated_utc": "2026-06-03T08:40:38Z"
+}

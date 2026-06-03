@@ -569,7 +569,9 @@ Reports must show **target counts** and **estimated hours** for uniform vs adapt
 | Full-pipeline dry-run planner (prints stage commands, no exec) | **M4.2 done** — `v2_b3_m4_pipeline_dry_run.py` |
 | Stage 3 zone + gapless target planner module | **M4.3 done** — `v2_b3_m4_scout_planner_lib.py` |
 | Single-guitar orchestrator Stages 0–3 (scout path) | **M4.3 done** — `v2_b3_m4_pipeline_run_scout.py` |
-| Single-guitar L_prod Stage 4–5–6 (chunk workers + aggregate) | M4.4 |
+| L_prod worker execution dry-run planner | **M4.4-pre done** — `v2_b3_m4_lprod_worker_dry_run.py` |
+| L_prod execution interfaces + dry-run validation | **M4.4.1a done** — see §12 M4.4.1a |
+| Single-guitar L_prod Stage 4–5–6 (real solve) | M4.4.1b |
 | Multi-guitar LHS batch driver | M4.5 |
 | Geometry-delta → remesh trigger in Stage 0 | M4.3+ |
 | Mode NPZ / plot exporters | M4.4 |
@@ -639,10 +641,58 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
 
 **Exit:** `SCOUT_PASS_TARGET_PLAN_READY` with gapless `lprod/lprod_target_plan.json` from real scout modes.
 
-### M4.4 — Single-guitar L_prod worker solve + aggregation
+### M4.4-pre — L_prod worker dry-run plan (**done**)
 
-- Stages 4–6: L_prod mesh, Stage A, chunker, FCFS workers (1–3), dedupe, catalog, plot, `simulation_manifest.json`.
-- No Stage C by default.
+- Script: `scripts/v2_b3_m4_lprod_worker_dry_run.py`
+- Input: completed M4.3 run (`SCOUT_PASS_TARGET_PLAN_READY`)
+- Plans Stage 4 mesh/checkpoint, Stage 5 per-chunk solver commands, Stage 6 aggregation, FCFS schedule (workers 1/2/3)
+- Documents solver gap: interim `v2_b3_checkpoint_solve.py --targets-hz`; planned `v2_b3_checkpoint_solve_target_list.py --targets-json`
+- `will_execute=false`; writes `pipeline_run_manifest.m4_4_dry_run_preview.json` (does not overwrite main manifest)
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_lprod_worker_dry_run.py \
+  --run-dir FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1 \
+  --workers 3 --dry-run --force
+```
+
+### M4.4.1a — L_prod execution interfaces + dry-run validation (**done**)
+
+- Scripts:
+  - `v2_b3_checkpoint_solve_target_list.py` — `--targets-json` with per-target `window_hz` (`m4_worker_chunk_targets_v1`); `--dry-run` writes placeholders
+  - `v2_b3_m4_lprod_worker_dry_run.py` (extended) — mesh/checkpoint readiness, per-chunk `chunk_targets.json`, `worker_command.sh`, dry-run `worker_result.json` / `solver_result.json`
+  - `v2_b3_m4_aggregation_dry_run.py` — validates chunk assignment and aggregation paths
+  - `v2_b3_m4_lprod_interfaces.py` — shared geometry fingerprint, chunk targets, placeholders
+- `lprod_mesh_status`: `reusable_existing` | `planned_build_required` | `blocked` (geometry hash vs `baseline_coupled_v2`)
+- `lprod_checkpoint_status`: `planned` | `existing_pass` | `blocked`
+- `will_execute=false` on all new artifacts; no L_prod mesh, checkpoint, or worker solves
+
+```bash
+python -m py_compile FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve_target_list.py
+python -m py_compile FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_lprod_worker_dry_run.py
+python -m py_compile FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_aggregation_dry_run.py
+
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_lprod_worker_dry_run.py \
+  --run-dir FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1 \
+  --workers 3 --dry-run --force
+
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_aggregation_dry_run.py \
+  --run-dir FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1 \
+  --dry-run
+```
+
+**Remaining blockers before M4.4.1b real L_prod:**
+
+| Blocker | M4.4.1b action |
+|---------|----------------|
+| Sample geometry ≠ baseline (or `requires_mesh_regeneration`) | Run planned L_prod mesh build + Stage A export |
+| No `lprod/checkpoint` PASS | Stage A on production `.venv` |
+| Worker solves | `v2_b3_checkpoint_solve_target_list.py` without `--dry-run` on solver-mkl |
+| Aggregation | Real dedupe/catalog (not dry-run reader) |
+
+### M4.4.1b — Single-guitar L_prod worker solve + aggregation
+
+- Stages 4–6: L_prod mesh, Stage A, FCFS workers (1–3), dedupe, catalog, plot.
+- No Stage C by default; no rich modal export in v1.
 
 **Exit:** One guitar complete end-to-end with PASS manifests.
 

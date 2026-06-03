@@ -8,7 +8,10 @@ Planning-only data contracts for the full LHS pipeline orchestrator. Authoritati
 **Examples:** `pipeline_runs/schemas/m4/examples/`  
 **Validator:** `scripts/v2_b3_m4_schema_validate_examples.py`  
 **Dry-run planner:** `scripts/v2_b3_m4_pipeline_dry_run.py`  
-**Scout executor (Stages 0–3):** `scripts/v2_b3_m4_pipeline_run_scout.py`
+**Scout executor (Stages 0–3):** `scripts/v2_b3_m4_pipeline_run_scout.py`  
+**L_prod worker dry-run (M4.4-pre / M4.4.1a):** `scripts/v2_b3_m4_lprod_worker_dry_run.py`  
+**Target-list worker solve:** `scripts/v2_b3_checkpoint_solve_target_list.py`  
+**Aggregation dry-run:** `scripts/v2_b3_m4_aggregation_dry_run.py`
 
 ---
 
@@ -146,4 +149,33 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
 
 Writes: `scout/scout_result.json`, `scout/density_zones.json`, `lprod/lprod_target_plan.json`, `lprod/worker_chunk_plan.preview.json` (status `PLANNED_NOT_EXECUTED`). Manifest terminal status: `SCOUT_PASS_TARGET_PLAN_READY`.
 
-Next: **M4.4** L_prod mesh, workers, aggregation.
+### M4.4-pre — L_prod worker execution dry-run
+
+Requires `terminal_status=SCOUT_PASS_TARGET_PLAN_READY`, `lprod/lprod_target_plan.json`, `lprod/worker_chunk_plan.preview.json`.
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_lprod_worker_dry_run.py \
+  --run-dir FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1 \
+  --workers 3 --dry-run --force
+```
+
+Writes under `lprod/`: `lprod_execution_plan.json`, `worker_commands.json`, `aggregation_plan.json` (+ `.md`). Preview manifest: `pipeline_run_manifest.m4_4_dry_run_preview.json` (`LPROD_WORKER_PLAN_READY`, Stages 4–6 `PLANNED_READY`). Does not modify Stage 0–3 PASS artifacts.
+
+### M4.4.1a — L_prod execution interfaces (dry-run)
+
+| Artifact | Schema / path | Notes |
+|----------|---------------|--------|
+| Per-chunk targets | `m4_worker_chunk_targets_v1` → `worker_results/<chunk_id>/chunk_targets.json` | Preserves `window_hz`, `zone_id`, `spacing_hz` per target |
+| Worker command | `worker_results/<chunk_id>/worker_command.sh` | Uses `v2_b3_checkpoint_solve_target_list.py --targets-json` |
+| Worker / solver stubs | `worker_result.json`, `solver_result.json`, `log.txt` | `will_execute=false`, `DRY_RUN_PLANNED` in M4.4.1a |
+| Mesh readiness | `lprod/lprod_mesh_checkpoint_readiness.json` | `lprod_mesh_status`, `lprod_checkpoint_status`, geometry fingerprints |
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_lprod_worker_dry_run.py \
+  --run-dir .../sample_001_m4dry1 --workers 3 --dry-run --force
+
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_aggregation_dry_run.py \
+  --run-dir .../sample_001_m4dry1 --dry-run
+```
+
+Next: **M4.4.1b** real L_prod mesh, checkpoint, FCFS workers, aggregation.

@@ -1,0 +1,62 @@
+{
+  "schema": "m4_worker_chunk_targets_v1",
+  "sample_id": "sample_001",
+  "run_id": "sample_001_m4dry1",
+  "chunk_id": "sample_001_chunk_04",
+  "freq_range_hz": [
+    184.5,
+    220.5
+  ],
+  "targets": [
+    {
+      "target_hz": 184.5,
+      "window_hz": [
+        180.0,
+        189.0
+      ],
+      "zone_id": "ZONE_2_medium",
+      "spacing_hz": 9.0,
+      "source": "adaptive_lprod_target_plan"
+    },
+    {
+      "target_hz": 193.5,
+      "window_hz": [
+        189.0,
+        198.0
+      ],
+      "zone_id": "ZONE_2_medium",
+      "spacing_hz": 9.0,
+      "source": "adaptive_lprod_target_plan"
+    },
+    {
+      "target_hz": 202.5,
+      "window_hz": [
+        198.0,
+        207.0
+      ],
+      "zone_id": "ZONE_2_medium",
+      "spacing_hz": 9.0,
+      "source": "adaptive_lprod_target_plan"
+    },
+    {
+      "target_hz": 211.5,
+      "window_hz": [
+        207.0,
+        216.0
+      ],
+      "zone_id": "ZONE_2_medium",
+      "spacing_hz": 9.0,
+      "source": "adaptive_lprod_target_plan"
+    },
+    {
+      "target_hz": 220.5,
+      "window_hz": [
+        216.0,
+        225.0
+      ],
+      "zone_id": "ZONE_2_medium",
+      "spacing_hz": 9.0,
+      "source": "adaptive_lprod_target_plan"
+    }
+  ]
+}
