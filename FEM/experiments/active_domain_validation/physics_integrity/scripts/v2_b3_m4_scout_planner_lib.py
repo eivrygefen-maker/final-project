@@ -458,6 +458,146 @@ def estimate_runtime_summary(
     }
 
 
+def _zone_for_target_hz(t: float, segments: Sequence[Dict[str, Any]]) -> str:
+    for seg in segments:
+        lo = float(seg["freq_lo_hz"])
+        hi = float(seg["freq_hi_hz"])
+        if lo - 1e-9 <= t <= hi + 1e-9:
+            return str(seg["zone_id"])
+    if segments:
+        return str(segments[-1]["zone_id"])
+    return ZONE_2
+
+
+def _chunk_span_hz(lo: float, hi: float) -> float:
+    return float(hi) - float(lo)
+
+
+def _greedy_partition_indices(
+    indices: List[int],
+    targets: Sequence[float],
+) -> List[Tuple[int, int]]:
+    """Partition sorted target indices into chunks (start, end_exclusive)."""
+    if not indices:
+        return []
+    ranges: List[Tuple[int, int]] = []
+    start = 0
+    n = len(indices)
+    while start < n:
+        end = start + 1
+        lo = float(targets[indices[start]])
+        while end < n:
+            hi = float(targets[indices[end]])
+            span = hi - lo
+            if span > CHUNK_MAX_HZ + 1e-9:
+                break
+            if end + 1 < n:
+                next_hi = float(targets[indices[end + 1]])
+                if next_hi - lo > CHUNK_MAX_HZ + 1e-9:
+                    end += 1
+                    break
+                cur_span = hi - lo
+                if cur_span >= CHUNK_PREF_LO and (next_hi - lo) > CHUNK_PREF_HI + 1e-9:
+                    end += 1
+                    break
+            end += 1
+        ranges.append((start, end))
+        start = end
+    return ranges
+
+
+def _merge_chunk_specs(specs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    lo = min(float(s["lo"]) for s in specs)
+    hi = max(float(s["hi"]) for s in specs)
+    idxs: List[int] = []
+    zones: List[str] = []
+    for s in specs:
+        idxs.extend(s["indices"])
+        for z in s["zone_ids"]:
+            if z not in zones:
+                zones.append(z)
+    return {"lo": lo, "hi": hi, "indices": idxs, "zone_ids": zones}
+
+
+def _merge_small_chunk_specs(specs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge chunks below soft minimum with neighbors when combined span <= soft max."""
+    if len(specs) <= 1:
+        return specs
+    changed = True
+    out = list(specs)
+    while changed:
+        changed = False
+        merged_list: List[Dict[str, Any]] = []
+        i = 0
+        while i < len(out):
+            spec = out[i]
+            span = _chunk_span_hz(spec["lo"], spec["hi"])
+            if span < CHUNK_MIN_HZ - 1e-6:
+                merged = False
+                if i + 1 < len(out):
+                    nxt = out[i + 1]
+                    comb_span = _chunk_span_hz(spec["lo"], nxt["hi"])
+                    if comb_span <= CHUNK_MAX_HZ + 1e-9:
+                        merged_list.append(_merge_chunk_specs([spec, nxt]))
+                        i += 2
+                        changed = True
+                        merged = True
+                if not merged and merged_list:
+                    prev = merged_list[-1]
+                    comb_span = _chunk_span_hz(prev["lo"], spec["hi"])
+                    if comb_span <= CHUNK_MAX_HZ + 1e-9:
+                        merged_list[-1] = _merge_chunk_specs([prev, spec])
+                        i += 1
+                        changed = True
+                        merged = True
+                if not merged:
+                    merged_list.append(spec)
+                    i += 1
+            else:
+                merged_list.append(spec)
+                i += 1
+        out = merged_list
+    return out
+
+
+def _coalesce_adjacent_small_specs(specs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge consecutive same-zone chunks when both are below preferred lo and fit soft max."""
+    if len(specs) <= 1:
+        return specs
+    out: List[Dict[str, Any]] = [specs[0]]
+    for spec in specs[1:]:
+        prev = out[-1]
+        prev_span = _chunk_span_hz(prev["lo"], prev["hi"])
+        span = _chunk_span_hz(spec["lo"], spec["hi"])
+        same_zone = prev["zone_ids"] == spec["zone_ids"]
+        comb = _chunk_span_hz(prev["lo"], spec["hi"])
+        if (
+            same_zone
+            and comb <= CHUNK_MAX_HZ + 1e-9
+            and prev_span < CHUNK_PREF_LO + 1e-9
+            and span < CHUNK_PREF_LO + 1e-9
+        ):
+            out[-1] = _merge_chunk_specs([prev, spec])
+        else:
+            out.append(spec)
+    return out
+
+
+def _validate_target_assignment(
+    *,
+    n_targets: int,
+    chunks: Sequence[Dict[str, Any]],
+) -> None:
+    seen: List[int] = []
+    for c in chunks:
+        for idx in c.get("_indices") or []:
+            seen.append(int(idx))
+    if len(seen) != n_targets:
+        raise ValueError(f"chunk plan assigns {len(seen)} targets, expected {n_targets}")
+    if len(set(seen)) != n_targets:
+        raise ValueError("chunk plan assigns duplicate or missing target indices")
+
+
 def build_worker_chunk_preview(
     segments: Sequence[Dict[str, Any]],
     *,
@@ -468,48 +608,92 @@ def build_worker_chunk_preview(
     targets_hz: Sequence[float],
     target_windows_hz: Sequence[Sequence[float]],
 ) -> Dict[str, Any]:
-    """Chunk plan over band; status PLANNED_NOT_EXECUTED (no worker execution)."""
-    chunks: List[Dict[str, Any]] = []
-    idx = 1
-    for seg in segments:
-        seg_lo = float(seg["freq_lo_hz"])
-        seg_hi = float(seg["freq_hi_hz"])
-        zone_id = str(seg["zone_id"])
-        cursor = seg_lo
-        while cursor < seg_hi - 1e-9:
-            width = CHUNK_PREF_HI
-            chunk_hi = min(seg_hi, cursor + width)
-            span = chunk_hi - cursor
-            if span > CHUNK_MAX_HZ:
-                chunk_hi = cursor + CHUNK_MAX_HZ
-            elif span < CHUNK_MIN_HZ and chunk_hi < seg_hi:
-                chunk_hi = min(seg_hi, cursor + CHUNK_MIN_HZ)
-            t_in = [t for t in targets_hz if cursor - 1e-6 <= t <= chunk_hi + 1e-6]
-            w_in = [
-                list(w)
-                for t, w in zip(targets_hz, target_windows_hz)
-                if cursor - 1e-6 <= t <= chunk_hi + 1e-6
-            ]
-            chunks.append(
+    """Chunk plan over band; every target exactly once; status PLANNED_NOT_EXECUTED."""
+    pairs = sorted(
+        zip(range(len(targets_hz)), targets_hz, target_windows_hz),
+        key=lambda row: float(row[1]),
+    )
+    if not pairs:
+        return {
+            "schema": "m4_worker_chunk_plan_v1",
+            "will_execute": False,
+            "status": "PLANNED_NOT_EXECUTED",
+            "sample_id": sample_id,
+            "run_id": run_id,
+            "generated_utc": _utc_now(),
+            "chunk_policy_version": "v1_1",
+            "frequency_range_hz": [freq_min_hz, freq_max_hz],
+            "chunk_policy": _chunk_policy_meta(),
+            "lprod_target_plan_path": "lprod/lprod_target_plan.json",
+            "chunks": [],
+            "warnings": ["Preview only — workers not executed in M4.3.", "No targets to chunk."],
+        }
+
+    targets = [float(p[1]) for p in pairs]
+    windows = [list(p[2]) for p in pairs]
+    global_indices = [int(p[0]) for p in pairs]
+
+    zone_groups: List[Tuple[str, List[int]]] = []
+    for pos, t in enumerate(targets):
+        z = _zone_for_target_hz(t, segments)
+        if zone_groups and zone_groups[-1][0] == z:
+            zone_groups[-1][1].append(pos)
+        else:
+            zone_groups.append((z, [pos]))
+
+    specs: List[Dict[str, Any]] = []
+    for zone_id, positions in zone_groups:
+        for start, end in _greedy_partition_indices(positions, targets):
+            idxs = [global_indices[positions[i]] for i in range(start, end)]
+            lo = targets[positions[start]]
+            hi = targets[positions[end - 1]]
+            specs.append(
                 {
-                    "chunk_id": f"{sample_id}_chunk_{idx:02d}",
-                    "freq_range_hz": [round(cursor, 6), round(chunk_hi, 6)],
+                    "lo": lo,
+                    "hi": hi,
+                    "indices": idxs,
                     "zone_ids": [zone_id],
-                    "targets_hz": t_in,
-                    "target_windows_hz": w_in,
-                    "target_count": len(t_in),
-                    "estimated_cost": {
-                        "target_count": len(t_in),
-                        "estimated_seconds": len(t_in) * LPROD_SEC_PER_TARGET,
-                        "relative_weight": len(t_in) * LPROD_SEC_PER_TARGET,
-                    },
-                    "status": "PLANNED_NOT_EXECUTED",
-                    "assigned_worker_id": None,
-                    "priority": 0,
                 }
             )
-            cursor = chunk_hi
-            idx += 1
+
+    specs = _merge_small_chunk_specs(specs)
+    specs = _coalesce_adjacent_small_specs(specs)
+
+    chunks: List[Dict[str, Any]] = []
+    for i, spec in enumerate(specs, start=1):
+        idxs = sorted(spec["indices"], key=lambda j: targets_hz[j])
+        t_in = [float(targets_hz[j]) for j in idxs]
+        w_in = [list(target_windows_hz[j]) for j in idxs]
+        lo = min(t_in)
+        hi = max(t_in)
+        chunks.append(
+            {
+                "chunk_id": f"{sample_id}_chunk_{i:02d}",
+                "freq_range_hz": [round(lo, 6), round(hi, 6)],
+                "zone_ids": list(spec["zone_ids"]),
+                "targets_hz": t_in,
+                "target_windows_hz": w_in,
+                "target_count": len(t_in),
+                "estimated_cost": {
+                    "target_count": len(t_in),
+                    "estimated_seconds": len(t_in) * LPROD_SEC_PER_TARGET,
+                    "relative_weight": len(t_in) * LPROD_SEC_PER_TARGET,
+                },
+                "status": "PLANNED_NOT_EXECUTED",
+                "assigned_worker_id": None,
+                "priority": 0,
+                "_indices": idxs,
+            }
+        )
+
+    _validate_target_assignment(n_targets=len(targets_hz), chunks=chunks)
+    for c in chunks:
+        c.pop("_indices", None)
+
+    merge_notes = (
+        f"Greedy partition prefers {CHUNK_PREF_LO}–{CHUNK_PREF_HI} Hz; "
+        f"merged sub-{CHUNK_MIN_HZ} Hz chunks when neighbor span <= {CHUNK_MAX_HZ} Hz."
+    )
     return {
         "schema": "m4_worker_chunk_plan_v1",
         "will_execute": False,
@@ -517,36 +701,59 @@ def build_worker_chunk_preview(
         "sample_id": sample_id,
         "run_id": run_id,
         "generated_utc": _utc_now(),
-        "chunk_policy_version": "v1",
+        "chunk_policy_version": "v1_1",
         "frequency_range_hz": [freq_min_hz, freq_max_hz],
-        "chunk_policy": {
-            "preferred_width_hz": [CHUNK_PREF_LO, CHUNK_PREF_HI],
-            "min_width_hz_soft": CHUNK_MIN_HZ,
-            "max_width_hz_soft": CHUNK_MAX_HZ,
-            "respect_zone_boundaries": True,
-            "note": "Chunk width limits are scheduling preferences, not physics constraints.",
-        },
+        "chunk_policy": _chunk_policy_meta(),
         "lprod_target_plan_path": "lprod/lprod_target_plan.json",
         "chunks": chunks,
-        "warnings": _chunk_preview_warnings(chunks),
+        "warnings": _chunk_preview_warnings(chunks, extra=[merge_notes]),
     }
 
 
-def _chunk_preview_warnings(chunks: Sequence[Dict[str, Any]]) -> List[str]:
-    warnings = ["Preview only — workers not executed in M4.3."]
+def _chunk_policy_meta() -> Dict[str, Any]:
+    return {
+        "preferred_width_hz": [CHUNK_PREF_LO, CHUNK_PREF_HI],
+        "min_width_hz_soft": CHUNK_MIN_HZ,
+        "max_width_hz_soft": CHUNK_MAX_HZ,
+        "respect_zone_boundaries": True,
+        "merge_sub_min_with_neighbor": True,
+        "note": "Chunk width limits are scheduling preferences, not physics constraints.",
+    }
+
+
+def _chunk_preview_warnings(
+    chunks: Sequence[Dict[str, Any]],
+    *,
+    extra: Optional[Sequence[str]] = None,
+) -> List[str]:
+    warnings: List[str] = ["Preview only — workers not executed in M4.3."]
+    if extra:
+        warnings.extend(extra)
+    under_min = 0
+    over_max = 0
+    outside_pref = 0
     for c in chunks:
         fr = c.get("freq_range_hz") or []
         if len(fr) < 2:
             continue
         span = float(fr[1]) - float(fr[0])
         if span < CHUNK_MIN_HZ - 1e-6:
+            under_min += 1
             warnings.append(
                 f"{c.get('chunk_id')}: width {span:.2f} Hz below soft minimum {CHUNK_MIN_HZ} Hz (allowed)"
             )
         elif span > CHUNK_MAX_HZ + 1e-6:
+            over_max += 1
             warnings.append(
                 f"{c.get('chunk_id')}: width {span:.2f} Hz above soft maximum {CHUNK_MAX_HZ} Hz (allowed)"
             )
+        elif span < CHUNK_PREF_LO - 1e-6 or span > CHUNK_PREF_HI + 1e-6:
+            outside_pref += 1
+    if under_min == 0 and over_max == 0:
+        warnings.append(
+            f"All {len(chunks)} chunks within soft min/max; "
+            f"{outside_pref} outside preferred {CHUNK_PREF_LO}–{CHUNK_PREF_HI} Hz band."
+        )
     return warnings
 
 
