@@ -155,18 +155,37 @@ def merge_zone_segments(bins: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return segments
 
 
-def _segment_targets(f_lo: float, f_hi: float, spacing: float) -> List[float]:
-    spacing = float(spacing)
-    if spacing <= 0:
-        raise ValueError("spacing must be positive")
-    out: List[float] = [round(float(f_lo), 6)]
-    t = float(f_lo)
-    while t + spacing < float(f_hi) - 1e-9:
-        t += spacing
-        out.append(round(t, 6))
-    if abs(out[-1] - float(f_hi)) > 1e-6:
-        out.append(round(float(f_hi), 6))
-    return out
+def _merge_intervals(
+    windows: Sequence[Sequence[float]],
+    *,
+    gap_tolerance_hz: float,
+) -> List[Tuple[float, float]]:
+    intervals = sorted((float(w[0]), float(w[1])) for w in windows if len(w) >= 2)
+    merged: List[Tuple[float, float]] = []
+    for lo, hi in intervals:
+        if not merged or lo > merged[-1][1] + gap_tolerance_hz:
+            merged.append((lo, hi))
+        else:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+    return merged
+
+
+def _find_coverage_gaps(
+    merged: Sequence[Tuple[float, float]],
+    *,
+    band_lo: float,
+    band_hi: float,
+    gap_tolerance_hz: float,
+) -> List[Tuple[float, float]]:
+    gaps: List[Tuple[float, float]] = []
+    cursor = float(band_lo)
+    for lo, hi in merged:
+        if lo > cursor + gap_tolerance_hz:
+            gaps.append((cursor, lo))
+        cursor = max(cursor, hi)
+    if cursor < float(band_hi) - gap_tolerance_hz:
+        gaps.append((cursor, float(band_hi)))
+    return gaps
 
 
 def verify_gapless_coverage(
@@ -176,6 +195,7 @@ def verify_gapless_coverage(
     band_lo: float,
     band_hi: float,
     gap_tolerance_hz: float = 0.01,
+    repair_targets_added: int = 0,
 ) -> Dict[str, Any]:
     if not targets_hz or not target_windows_hz:
         return {
@@ -184,36 +204,168 @@ def verify_gapless_coverage(
             "max_gap_hz": float("inf"),
             "gap_tolerance_hz": gap_tolerance_hz,
             "target_count": 0,
+            "gap_count": 0,
+            "gaps_hz": [],
+            "repair_targets_added": repair_targets_added,
+            "merged_window_count": 0,
             "notes": "empty target plan",
         }
-    intervals = sorted(
-        (float(w[0]), float(w[1])) for w in target_windows_hz if len(w) >= 2
+    merged = _merge_intervals(target_windows_hz, gap_tolerance_hz=gap_tolerance_hz)
+    gaps = _find_coverage_gaps(
+        merged, band_lo=band_lo, band_hi=band_hi, gap_tolerance_hz=gap_tolerance_hz
     )
-    merged: List[Tuple[float, float]] = []
-    for lo, hi in intervals:
-        if not merged or lo > merged[-1][1] + gap_tolerance_hz:
-            merged.append((lo, hi))
-        else:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
-
     max_gap = 0.0
-    cursor = float(band_lo)
-    for lo, hi in merged:
-        if lo > cursor + gap_tolerance_hz:
-            max_gap = max(max_gap, lo - cursor)
-        cursor = max(cursor, hi)
-    if cursor < float(band_hi) - gap_tolerance_hz:
-        max_gap = max(max_gap, float(band_hi) - cursor)
+    gaps_hz: List[List[float]] = []
+    for g_lo, g_hi in gaps:
+        span = g_hi - g_lo
+        max_gap = max(max_gap, span)
+        gaps_hz.append([round(g_lo, 6), round(g_hi, 6)])
 
     return {
-        "pass": max_gap <= gap_tolerance_hz,
+        "pass": len(gaps) == 0,
         "band_hz": [band_lo, band_hi],
         "max_gap_hz": round(max_gap, 6),
         "gap_tolerance_hz": gap_tolerance_hz,
         "target_count": len(targets_hz),
+        "gap_count": len(gaps),
+        "gaps_hz": gaps_hz,
+        "repair_targets_added": repair_targets_added,
         "merged_window_count": len(merged),
         "notes": "Union of half-width windows must cover band with no gaps > tolerance.",
     }
+
+
+def _segment_targets_gapless(
+    f_lo: float,
+    f_hi: float,
+    spacing: float,
+    *,
+    zone_id: str,
+) -> List[Dict[str, Any]]:
+    """
+    Segment-local gapless grid: first target at lo+h, step by s, endpoint at hi-h if needed.
+    Short segments use a single midpoint target with half-width covering [lo, hi].
+    """
+    s = float(spacing)
+    if s <= 0:
+        raise ValueError("spacing must be positive")
+    lo = float(f_lo)
+    hi = float(f_hi)
+    h = s / 2.0
+    width = hi - lo
+    if width <= 0:
+        return []
+
+    if width <= 2.0 * h + 1e-9:
+        t_mid = (lo + hi) / 2.0
+        h_eff = width / 2.0 + 1e-6
+        return [
+            {
+                "target_hz": round(t_mid, 6),
+                "zone_id": zone_id,
+                "spacing_hz": s,
+                "half_width_hz": round(h_eff, 6),
+                "source": "segment_short",
+                "segment_lo_hz": lo,
+                "segment_hi_hz": hi,
+            }
+        ]
+
+    entries: List[Dict[str, Any]] = []
+
+    def _add(t: float, *, source: str) -> None:
+        t = round(t, 6)
+        if entries and abs(entries[-1]["target_hz"] - t) < 1e-6:
+            return
+        entries.append(
+            {
+                "target_hz": t,
+                "zone_id": zone_id,
+                "spacing_hz": s,
+                "half_width_hz": round(h, 6),
+                "source": source,
+                "segment_lo_hz": lo,
+                "segment_hi_hz": hi,
+            }
+        )
+
+    _add(lo + h, source="segment_grid")
+    t = lo + h
+    while t + s + h < hi - 1e-9:
+        t += s
+        _add(t, source="segment_grid")
+
+    t_end = hi - h
+    last_hi = entries[-1]["target_hz"] + h
+    if last_hi < hi - 1e-9:
+        _add(t_end, source="segment_endpoint")
+
+    return entries
+
+
+def _entries_to_plan_arrays(
+    entries: List[Dict[str, Any]],
+) -> Tuple[List[float], List[Dict[str, Any]], List[List[float]]]:
+    targets: List[float] = []
+    metadata: List[Dict[str, Any]] = []
+    windows: List[List[float]] = []
+    for e in entries:
+        t = float(e["target_hz"])
+        hw = float(e["half_width_hz"])
+        targets.append(t)
+        metadata.append(dict(e))
+        windows.append([round(t - hw, 6), round(t + hw, 6)])
+    return targets, metadata, windows
+
+
+def _repair_coverage_gaps(
+    entries: List[Dict[str, Any]],
+    *,
+    band_lo: float,
+    band_hi: float,
+    gap_tolerance_hz: float,
+    max_repair_rounds: int = 32,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Insert midpoint repair targets for any uncovered gaps inside the band."""
+    out = list(entries)
+    repairs = 0
+    for _ in range(max_repair_rounds):
+        _, _, windows = _entries_to_plan_arrays(out)
+        merged = _merge_intervals(windows, gap_tolerance_hz=gap_tolerance_hz)
+        gaps = _find_coverage_gaps(
+            merged, band_lo=band_lo, band_hi=band_hi, gap_tolerance_hz=gap_tolerance_hz
+        )
+        if not gaps:
+            break
+        g_lo, g_hi = gaps[0]
+        mid = (g_lo + g_hi) / 2.0
+        span = g_hi - g_lo
+        hw_repair = span / 2.0 + gap_tolerance_hz
+        zone_id = ZONE_2
+        spacing = ZONE_SPACING_HZ[ZONE_2]
+        if out:
+            left = max((e for e in out if e["target_hz"] <= mid + 1e-6), key=lambda e: e["target_hz"], default=None)
+            right = min((e for e in out if e["target_hz"] >= mid - 1e-6), key=lambda e: e["target_hz"], default=None)
+            if left is not None:
+                zone_id = str(left.get("zone_id") or zone_id)
+                spacing = float(left.get("spacing_hz") or spacing)
+            elif right is not None:
+                zone_id = str(right.get("zone_id") or zone_id)
+                spacing = float(right.get("spacing_hz") or spacing)
+        out.append(
+            {
+                "target_hz": round(mid, 6),
+                "zone_id": zone_id,
+                "spacing_hz": spacing,
+                "half_width_hz": round(hw_repair, 6),
+                "source": "coverage_repair",
+                "reason": "gap_between_zone_segments",
+                "repair_gap_hz": [round(g_lo, 6), round(g_hi, 6)],
+            }
+        )
+        out.sort(key=lambda e: float(e["target_hz"]))
+        repairs += 1
+    return out, repairs
 
 
 def build_gapless_target_plan(
@@ -224,36 +376,32 @@ def build_gapless_target_plan(
     freq_min_hz: float,
     freq_max_hz: float,
     zone_policy_version: str = "v1",
+    gap_tolerance_hz: float = 0.01,
 ) -> Dict[str, Any]:
-    targets: List[float] = []
-    metadata: List[Dict[str, Any]] = []
-    windows: List[List[float]] = []
-
+    entries: List[Dict[str, Any]] = []
     for seg in segments:
         f_lo = float(seg["freq_lo_hz"])
         f_hi = float(seg["freq_hi_hz"])
         zone_id = str(seg["zone_id"])
         spacing = float(seg.get("recommended_lprod_spacing_hz") or ZONE_SPACING_HZ[zone_id])
-        hw = spacing / 2.0
-        for t in _segment_targets(f_lo, f_hi, spacing):
-            if targets and abs(targets[-1] - t) < 1e-6:
-                continue
-            targets.append(t)
-            metadata.append(
-                {
-                    "target_hz": t,
-                    "zone_id": zone_id,
-                    "spacing_hz": spacing,
-                    "half_width_hz": hw,
-                }
-            )
-            windows.append([round(t - hw, 6), round(t + hw, 6)])
+        entries.extend(_segment_targets_gapless(f_lo, f_hi, spacing, zone_id=zone_id))
 
+    entries.sort(key=lambda e: float(e["target_hz"]))
+    entries, repair_count = _repair_coverage_gaps(
+        entries,
+        band_lo=freq_min_hz,
+        band_hi=freq_max_hz,
+        gap_tolerance_hz=gap_tolerance_hz,
+    )
+
+    targets, metadata, windows = _entries_to_plan_arrays(entries)
     coverage = verify_gapless_coverage(
         targets,
         windows,
         band_lo=freq_min_hz,
         band_hi=freq_max_hz,
+        gap_tolerance_hz=gap_tolerance_hz,
+        repair_targets_added=repair_count,
     )
     return {
         "schema": "m4_lprod_target_plan_v1",
@@ -262,7 +410,7 @@ def build_gapless_target_plan(
         "run_id": run_id,
         "generated_utc": _utc_now(),
         "zone_policy_version": zone_policy_version,
-        "target_generation_policy": "gapless_grid_v1_half_width_equals_spacing_over_2",
+        "target_generation_policy": "gapless_grid_v2_segment_endpoint_plus_coverage_repair",
         "frequency_range_hz": [freq_min_hz, freq_max_hz],
         "mesh_level": "L_prod",
         "targets_hz": targets,
@@ -373,14 +521,33 @@ def build_worker_chunk_preview(
         "frequency_range_hz": [freq_min_hz, freq_max_hz],
         "chunk_policy": {
             "preferred_width_hz": [CHUNK_PREF_LO, CHUNK_PREF_HI],
-            "min_width_hz": CHUNK_MIN_HZ,
-            "max_width_hz": CHUNK_MAX_HZ,
+            "min_width_hz_soft": CHUNK_MIN_HZ,
+            "max_width_hz_soft": CHUNK_MAX_HZ,
             "respect_zone_boundaries": True,
+            "note": "Chunk width limits are scheduling preferences, not physics constraints.",
         },
         "lprod_target_plan_path": "lprod/lprod_target_plan.json",
         "chunks": chunks,
-        "warnings": ["Preview only — workers not executed in M4.3."],
+        "warnings": _chunk_preview_warnings(chunks),
     }
+
+
+def _chunk_preview_warnings(chunks: Sequence[Dict[str, Any]]) -> List[str]:
+    warnings = ["Preview only — workers not executed in M4.3."]
+    for c in chunks:
+        fr = c.get("freq_range_hz") or []
+        if len(fr) < 2:
+            continue
+        span = float(fr[1]) - float(fr[0])
+        if span < CHUNK_MIN_HZ - 1e-6:
+            warnings.append(
+                f"{c.get('chunk_id')}: width {span:.2f} Hz below soft minimum {CHUNK_MIN_HZ} Hz (allowed)"
+            )
+        elif span > CHUNK_MAX_HZ + 1e-6:
+            warnings.append(
+                f"{c.get('chunk_id')}: width {span:.2f} Hz above soft maximum {CHUNK_MAX_HZ} Hz (allowed)"
+            )
+    return warnings
 
 
 def build_density_zones_document(
@@ -453,7 +620,8 @@ def render_target_plan_md(plan: Dict[str, Any], runtime: Dict[str, Any]) -> str:
         "",
         f"- run_id: `{plan.get('run_id')}`",
         f"- targets: **{len(plan.get('targets_hz') or [])}**",
-        f"- coverage pass: **{cov.get('pass')}** (max gap {cov.get('max_gap_hz')} Hz)",
+        f"- coverage pass: **{cov.get('pass')}** (max gap {cov.get('max_gap_hz')} Hz, "
+        f"repair targets {cov.get('repair_targets_added', 0)})",
         f"- policy: {plan.get('target_generation_policy')}",
         "",
         "## Runtime estimate (planning)",

@@ -446,6 +446,180 @@ def build_execution_plan(
     }
 
 
+def run_stage3_zones_target_plan(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    sample_id: str,
+    run_id: str,
+    freq_min: float,
+    freq_max: float,
+    scout_spacing: float,
+    scout_half_width: float,
+    workers: int,
+    zone_spacing_hz: Dict[str, float],
+    scout_mesh_rel: str,
+    manifest_path: Path,
+) -> int:
+    """Stage 3 only: density zones + gapless L_prod target plan from existing discovery."""
+    logs = run_root / "logs"
+    log3 = logs / "stage3_zones_target_plan.log"
+    discovery_dir = run_root / "scout" / "discovery"
+    density_json = discovery_dir / "density_result.json"
+    checkpoint_dir = run_root / "scout" / "checkpoint"
+    scout_dir = run_root / "scout"
+    lprod_dir = run_root / "lprod"
+
+    ok_d, detail_d, _ = _verify_density_result(density_json)
+    if not ok_d:
+        print(f"[m4_scout] Stage 3 abort: missing or invalid density_result: {detail_d}", flush=True)
+        return 1
+
+    try:
+        density_body = _load_json(density_json)
+        unique_hz = _extract_unique_frequencies(density_body)
+        bins = build_density_bins(
+            unique_hz,
+            freq_min_hz=freq_min,
+            freq_max_hz=freq_max,
+            bin_width_hz=BIN_WIDTH_HZ,
+        )
+        class_meta = classify_bins_percentile(bins)
+        for b in bins:
+            zid = str(b["zone_id"])
+            b["recommended_lprod_spacing_hz"] = float(zone_spacing_hz[zid])
+        segments = merge_zone_segments(bins)
+        for s in segments:
+            s["recommended_lprod_spacing_hz"] = float(zone_spacing_hz[str(s["zone_id"])])
+        density_doc = build_density_zones_document(
+            sample_id=sample_id,
+            run_id=run_id,
+            bins=bins,
+            segments=segments,
+            classification_meta=class_meta,
+            unique_hz=unique_hz,
+            freq_min_hz=freq_min,
+            freq_max_hz=freq_max,
+            bin_width_hz=BIN_WIDTH_HZ,
+            density_result_path=_rel(density_json, repo_root=repo_root),
+        )
+        density_doc["zone_spacing_hz"] = dict(zone_spacing_hz)
+        write_json_atomic(scout_dir / "density_zones.json", density_doc)
+        (scout_dir / "density_zones.md").write_text(
+            render_density_zones_md(density_doc), encoding="utf-8"
+        )
+
+        target_plan = build_gapless_target_plan(
+            segments,
+            sample_id=sample_id,
+            run_id=run_id,
+            freq_min_hz=freq_min,
+            freq_max_hz=freq_max,
+        )
+        cov = target_plan["coverage_check"]
+        if not cov.get("pass"):
+            raise RuntimeError(f"coverage_check failed after repair: {cov}")
+        scout_wall = float(density_body.get("experiment_wall_s") or 0.0)
+        runtime_est = estimate_runtime_summary(
+            target_count=len(target_plan["targets_hz"]),
+            scout_wall_seconds=scout_wall,
+            workers=workers,
+            freq_min_hz=freq_min,
+            freq_max_hz=freq_max,
+        )
+        target_plan["estimated_runtime"] = runtime_est
+        target_plan["density_zones_path"] = _rel(scout_dir / "density_zones.json", repo_root=repo_root)
+        write_json_atomic(lprod_dir / "lprod_target_plan.json", target_plan)
+        (lprod_dir / "lprod_target_plan.md").write_text(
+            render_target_plan_md(target_plan, runtime_est), encoding="utf-8"
+        )
+
+        chunk_preview = build_worker_chunk_preview(
+            segments,
+            sample_id=sample_id,
+            run_id=run_id,
+            freq_min_hz=freq_min,
+            freq_max_hz=freq_max,
+            targets_hz=target_plan["targets_hz"],
+            target_windows_hz=target_plan["target_windows_hz"],
+        )
+        write_json_atomic(lprod_dir / "worker_chunk_plan.preview.json", chunk_preview)
+        (lprod_dir / "worker_chunk_plan.preview.md").write_text(
+            render_chunk_preview_md(chunk_preview), encoding="utf-8"
+        )
+
+        scout_result = {
+            "schema": "m4_scout_result_v1",
+            "will_execute": True,
+            "status": "PASS",
+            "sample_id": sample_id,
+            "run_id": run_id,
+            "generated_utc": _utc_now(),
+            "scout_policy_version": "v1",
+            "mesh_level": MESH_LEVEL,
+            "mesh_path": scout_mesh_rel,
+            "checkpoint_dir": _rel(checkpoint_dir, repo_root=repo_root),
+            "checkpoint_status": "PASS",
+            "discovery": {
+                "frequency_range_hz": [freq_min, freq_max],
+                "spacing_hz": scout_spacing,
+                "half_width_hz": scout_half_width,
+                "discovery_mode": True,
+                "density_result_path": _rel(density_json, repo_root=repo_root),
+                "unique_accepted_count": len(unique_hz),
+                "experiment_status": density_body.get("status"),
+                "experiment_wall_s": scout_wall,
+            },
+            "artifacts": {
+                "density_zones_json": _rel(scout_dir / "density_zones.json", repo_root=repo_root),
+                "lprod_target_plan_json": _rel(lprod_dir / "lprod_target_plan.json", repo_root=repo_root),
+            },
+        }
+        write_json_atomic(scout_dir / "scout_result.json", scout_result)
+        _append_log(
+            log3,
+            f"Stage 3 OK targets={len(target_plan['targets_hz'])} "
+            f"repair={cov.get('repair_targets_added', 0)}\n",
+        )
+    except Exception as exc:
+        _append_log(log3, f"FAIL: {exc}\n")
+        _update_manifest(
+            manifest_path,
+            stage_updates={"stage3_zones_plan": "FAIL"},
+            terminal_status="FAIL",
+            failure_reason=f"stage3_failed:{exc}",
+        )
+        print(f"Stage 3 FAIL: {exc}", flush=True)
+        return 1
+
+    _update_manifest(
+        manifest_path,
+        stage_updates={
+            "stage3_zones_plan": "PASS",
+            "stage4_lprod_mesh": "PLANNED",
+            "stage4_lprod_export": "PLANNED",
+            "stage5_workers": "PLANNED",
+            "stage6_aggregate": "PLANNED",
+        },
+        terminal_status="SCOUT_PASS_TARGET_PLAN_READY",
+        extra={
+            "scout_complete": True,
+            "target_count": len(target_plan["targets_hz"]),
+            "repair_targets_added": cov.get("repair_targets_added", 0),
+            "no_lprod_executed": True,
+        },
+    )
+    print("Stage 3 PASS", flush=True)
+    print(
+        f"coverage_check.pass=true target_count={len(target_plan['targets_hz'])} "
+        f"repair_targets_added={cov.get('repair_targets_added', 0)}",
+        flush=True,
+    )
+    print("SCOUT_PASS_TARGET_PLAN_READY", flush=True)
+    print("no L_prod executed", flush=True)
+    return 0
+
+
 def run_scout_pipeline(
     *,
     repo_root: Path,
@@ -463,6 +637,7 @@ def run_scout_pipeline(
     reference_json: Path,
     force: bool,
     dry_run: bool,
+    stage3_only: bool,
     zone_spacing_hz: Dict[str, float],
 ) -> int:
     sample_id = str(sample["sample_id"])
@@ -485,14 +660,46 @@ def run_scout_pipeline(
         force=force,
     )
 
+    scout_mesh = run_root / "scout" / "mesh" / MESH_LEVEL / f"{sample_id}.msh"
+    scout_mesh_rel = _rel(scout_mesh, repo_root=repo_root)
+
     if dry_run:
         print("[m4_scout] DRY-RUN preview (no execution)", flush=True)
         print(f"[m4_scout] run_root={plan['run_root']}", flush=True)
-        print(f"[m4_scout] skip_mesh={plan['skip_mesh']} skip_checkpoint={plan['skip_checkpoint']} skip_discovery={plan['skip_discovery']}", flush=True)
-        print(f"[m4_scout] mesh: {' '.join(plan['argv_mesh'])}", flush=True)
-        print(f"[m4_scout] stage_a: {' '.join(plan['argv_stage_a'])}", flush=True)
-        print(f"[m4_scout] stage_b: {' '.join(plan['argv_stage_b'])}", flush=True)
+        if stage3_only:
+            print("[m4_scout] mode=stage3_only (would reuse PASS mesh/checkpoint/discovery)", flush=True)
+        else:
+            print(
+                f"[m4_scout] skip_mesh={plan['skip_mesh']} "
+                f"skip_checkpoint={plan['skip_checkpoint']} "
+                f"skip_discovery={plan['skip_discovery']}",
+                flush=True,
+            )
+            print(f"[m4_scout] mesh: {' '.join(plan['argv_mesh'])}", flush=True)
+            print(f"[m4_scout] stage_a: {' '.join(plan['argv_stage_a'])}", flush=True)
+            print(f"[m4_scout] stage_b: {' '.join(plan['argv_stage_b'])}", flush=True)
+        print("[m4_scout] stage3: regenerate density_zones + lprod_target_plan from discovery", flush=True)
         return 0
+
+    if stage3_only:
+        print("[m4_scout] stage3-only: reusing PASS Stages 0–2 artifacts", flush=True)
+        print("Stage 0 PASS / reused", flush=True)
+        print("Stage 1 PASS / reused", flush=True)
+        print("Stage 2 PASS / reused", flush=True)
+        return run_stage3_zones_target_plan(
+            repo_root=repo_root,
+            run_root=run_root,
+            sample_id=sample_id,
+            run_id=run_id,
+            freq_min=freq_min,
+            freq_max=freq_max,
+            scout_spacing=scout_spacing,
+            scout_half_width=scout_half_width,
+            workers=workers,
+            zone_spacing_hz=zone_spacing_hz,
+            scout_mesh_rel=scout_mesh_rel,
+            manifest_path=manifest_path,
+        )
 
     env_probe_path = logs / "env_probe.json"
     if env_probe_path.is_file() and not force:
@@ -519,9 +726,6 @@ def run_scout_pipeline(
         )
         print("[m4_scout] FAIL env probes", flush=True)
         return 1
-
-    scout_mesh = run_root / "scout" / "mesh" / MESH_LEVEL / f"{sample_id}.msh"
-    scout_mesh_rel = _rel(scout_mesh, repo_root=repo_root)
 
     # Stage 0
     log0 = logs / "stage0_config.log"
@@ -668,146 +872,20 @@ def run_scout_pipeline(
     _update_manifest(manifest_path, stage_updates={"stage2_scout_discovery": "PASS"}, terminal_status="RUNNING")
     print("Stage 2 PASS", flush=True)
 
-    # Stage 3 post-process
-    log3 = logs / "stage3_zones_target_plan.log"
-    try:
-        density_body = _load_json(density_json)
-        unique_hz = _extract_unique_frequencies(density_body)
-        bins = build_density_bins(
-            unique_hz,
-            freq_min_hz=freq_min,
-            freq_max_hz=freq_max,
-            bin_width_hz=BIN_WIDTH_HZ,
-        )
-        class_meta = classify_bins_percentile(bins)
-        for b in bins:
-            zid = str(b["zone_id"])
-            b["recommended_lprod_spacing_hz"] = float(zone_spacing_hz[zid])
-        segments = merge_zone_segments(bins)
-        for s in segments:
-            s["recommended_lprod_spacing_hz"] = float(zone_spacing_hz[str(s["zone_id"])])
-        density_doc = build_density_zones_document(
-            sample_id=sample_id,
-            run_id=run_id,
-            bins=bins,
-            segments=segments,
-            classification_meta=class_meta,
-            unique_hz=unique_hz,
-            freq_min_hz=freq_min,
-            freq_max_hz=freq_max,
-            bin_width_hz=BIN_WIDTH_HZ,
-            density_result_path=_rel(density_json, repo_root=repo_root),
-        )
-        density_doc["zone_spacing_hz"] = dict(zone_spacing_hz)
-        scout_dir = run_root / "scout"
-        lprod_dir = run_root / "lprod"
-        write_json_atomic(scout_dir / "density_zones.json", density_doc)
-        (scout_dir / "density_zones.md").write_text(
-            render_density_zones_md(density_doc), encoding="utf-8"
-        )
-
-        target_plan = build_gapless_target_plan(
-            segments,
-            sample_id=sample_id,
-            run_id=run_id,
-            freq_min_hz=freq_min,
-            freq_max_hz=freq_max,
-        )
-        if not target_plan["coverage_check"].get("pass"):
-            raise RuntimeError(
-                f"coverage_check failed: {target_plan['coverage_check']}"
-            )
-        scout_wall = float(density_body.get("experiment_wall_s") or 0.0)
-        runtime_est = estimate_runtime_summary(
-            target_count=len(target_plan["targets_hz"]),
-            scout_wall_seconds=scout_wall,
-            workers=workers,
-            freq_min_hz=freq_min,
-            freq_max_hz=freq_max,
-        )
-        target_plan["estimated_runtime"] = runtime_est
-        target_plan["density_zones_path"] = _rel(scout_dir / "density_zones.json", repo_root=repo_root)
-        write_json_atomic(lprod_dir / "lprod_target_plan.json", target_plan)
-        (lprod_dir / "lprod_target_plan.md").write_text(
-            render_target_plan_md(target_plan, runtime_est), encoding="utf-8"
-        )
-
-        chunk_preview = build_worker_chunk_preview(
-            segments,
-            sample_id=sample_id,
-            run_id=run_id,
-            freq_min_hz=freq_min,
-            freq_max_hz=freq_max,
-            targets_hz=target_plan["targets_hz"],
-            target_windows_hz=target_plan["target_windows_hz"],
-        )
-        write_json_atomic(lprod_dir / "worker_chunk_plan.preview.json", chunk_preview)
-        (lprod_dir / "worker_chunk_plan.preview.md").write_text(
-            render_chunk_preview_md(chunk_preview), encoding="utf-8"
-        )
-
-        scout_result = {
-            "schema": "m4_scout_result_v1",
-            "will_execute": True,
-            "status": "PASS",
-            "sample_id": sample_id,
-            "run_id": run_id,
-            "generated_utc": _utc_now(),
-            "scout_policy_version": "v1",
-            "mesh_level": MESH_LEVEL,
-            "mesh_path": scout_mesh_rel,
-            "checkpoint_dir": _rel(checkpoint_dir, repo_root=repo_root),
-            "checkpoint_status": "PASS",
-            "discovery": {
-                "frequency_range_hz": [freq_min, freq_max],
-                "spacing_hz": scout_spacing,
-                "half_width_hz": scout_half_width,
-                "discovery_mode": True,
-                "density_result_path": _rel(density_json, repo_root=repo_root),
-                "unique_accepted_count": len(unique_hz),
-                "experiment_status": density_body.get("status"),
-                "experiment_wall_s": scout_wall,
-            },
-            "artifacts": {
-                "density_zones_json": _rel(scout_dir / "density_zones.json", repo_root=repo_root),
-                "lprod_target_plan_json": _rel(lprod_dir / "lprod_target_plan.json", repo_root=repo_root),
-            },
-        }
-        write_json_atomic(scout_dir / "scout_result.json", scout_result)
-        _append_log(log3, f"Stage 3 OK targets={len(target_plan['targets_hz'])}\n")
-        stage3 = "PASS"
-    except Exception as exc:
-        stage3 = "FAIL"
-        _append_log(log3, f"FAIL: {exc}\n")
-        _update_manifest(
-            manifest_path,
-            stage_updates={"stage3_zones_plan": "FAIL"},
-            terminal_status="FAIL",
-            failure_reason=f"stage3_failed:{exc}",
-        )
-        print(f"Stage 3 FAIL: {exc}", flush=True)
-        return 1
-
-    _update_manifest(
-        manifest_path,
-        stage_updates={
-            "stage3_zones_plan": "PASS",
-            "stage4_lprod_mesh": "PLANNED",
-            "stage4_lprod_export": "PLANNED",
-            "stage5_workers": "PLANNED",
-            "stage6_aggregate": "PLANNED",
-        },
-        terminal_status="SCOUT_PASS_TARGET_PLAN_READY",
-        extra={
-            "scout_complete": True,
-            "target_count": len(target_plan["targets_hz"]),
-            "no_lprod_executed": True,
-        },
+    return run_stage3_zones_target_plan(
+        repo_root=repo_root,
+        run_root=run_root,
+        sample_id=sample_id,
+        run_id=run_id,
+        freq_min=freq_min,
+        freq_max=freq_max,
+        scout_spacing=scout_spacing,
+        scout_half_width=scout_half_width,
+        workers=workers,
+        zone_spacing_hz=zone_spacing_hz,
+        scout_mesh_rel=scout_mesh_rel,
+        manifest_path=manifest_path,
     )
-    print("Stage 3 PASS", flush=True)
-    print("SCOUT_PASS_TARGET_PLAN_READY", flush=True)
-    print("no L_prod executed", flush=True)
-    return 0
 
 
 def _ensure_run_tree(run_root: Path, sample: Dict[str, Any]) -> None:
@@ -843,6 +921,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--workers", type=int, default=3)
     parser.add_argument("--dry-run", action="store_true", help="Preview only; no subprocess execution.")
     parser.add_argument("--execute-scout", action="store_true", help="Run Stages 0–3.")
+    parser.add_argument(
+        "--stage3-only",
+        action="store_true",
+        help="Reuse PASS mesh/checkpoint/discovery; regenerate Stage 3 only.",
+    )
     parser.add_argument("--force", action="store_true", help="Re-run stages even if PASS artifacts exist.")
     parser.add_argument("--prod-python", default=os.environ.get("B3_PROD_PYTHON", M3_PROD_PYTHON))
     parser.add_argument("--prod-venv", default=os.environ.get("B3_PROD_VENV", DEFAULT_PROD_VENV))
@@ -851,8 +934,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--reference-json", type=Path, default=str(DEFAULT_REFERENCE))
     args = parser.parse_args(argv)
 
+    if args.stage3_only and not args.dry_run:
+        args.execute_scout = True
+
     if not args.dry_run and not args.execute_scout:
-        print("error: specify --dry-run or --execute-scout", file=sys.stderr)
+        print("error: specify --dry-run, --execute-scout, or --stage3-only", file=sys.stderr)
         return 2
 
     repo_root = _detect_repo_root(SCRIPT_DIR)
@@ -877,12 +963,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     reference_json = args.reference_json if args.reference_json.is_absolute() else repo_root / args.reference_json
 
-    if args.execute_scout and run_root.exists() and not args.force:
+    if args.execute_scout and run_root.exists() and not args.force and not args.stage3_only:
         manifest_path = run_root / "pipeline_run_manifest.json"
         if manifest_path.is_file():
             term = _load_json(manifest_path).get("terminal_status")
             if term == "SCOUT_PASS_TARGET_PLAN_READY":
-                print(f"[m4_scout] already complete: {term} (use --force to re-run)", flush=True)
+                print(f"[m4_scout] already complete: {term} (use --force or --stage3-only)", flush=True)
                 return 0
 
     zone_spacing_hz = {
@@ -907,6 +993,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         reference_json=reference_json.resolve(),
         force=bool(args.force),
         dry_run=bool(args.dry_run),
+        stage3_only=bool(args.stage3_only),
         zone_spacing_hz=zone_spacing_hz,
     )
 
