@@ -204,4 +204,13 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
   --chunk-ids sample_001_chunk_08,sample_001_chunk_10,sample_001_chunk_11 --execute
 ```
 
-Next: **M4.4.1b** FCFS all chunks + aggregation (checkpoint must be PASS).
+### M4.4.1b-3 — partial worker-result aggregation (no solver)
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_aggregate_worker_results.py \
+  --run-dir .../sample_001_m4dry1 --partial-ok --execute --force
+```
+
+Writes under `aggregation/`: `partial_aggregation_result.json`, `partial_modes_catalog.jsonl`, `partial_modes_summary.json`, `partial_runtime_summary.json`, `partial_warnings_and_failures.json`, optional `partial_mode_frequency_plot.png`. Preview: `pipeline_run_manifest.m4_4_partial_aggregation_preview.json`. Status when chunks missing: `PARTIAL_AGGREGATION_PASS_WITH_MISSING_CHUNKS`; `final_aggregation_ready=false`.
+
+Next: **M4.4.1b-4** remaining worker chunks (skip/reuse PASS), then full aggregation when all 11 chunks complete.

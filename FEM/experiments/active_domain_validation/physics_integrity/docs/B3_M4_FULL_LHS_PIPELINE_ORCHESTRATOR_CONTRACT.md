@@ -574,7 +574,8 @@ Reports must show **target counts** and **estimated hours** for uniform vs adapt
 | L_prod mesh + checkpoint only (Stage 4) | **M4.4.1b-0 done** — `v2_b3_m4_lprod_checkpoint_run.py` |
 | Single-chunk worker smoke (solver-mkl) | **M4.4.1b-1 done** — `v2_b3_m4_worker_smoke_test.py` |
 | Limited multi-chunk worker mini-batch | **M4.4.1b-2 done** — `v2_b3_m4_worker_minibatch.py` |
-| Single-guitar L_prod worker solve + aggregation | M4.4.1b |
+| Partial aggregation over completed worker results | **M4.4.1b-3 done** — `v2_b3_m4_aggregate_worker_results.py` |
+| Single-guitar L_prod worker solve + aggregation | M4.4.1b-4+ |
 | Multi-guitar LHS batch driver | M4.5 |
 | Geometry-delta → remesh trigger in Stage 0 | M4.3+ |
 | Mode NPZ / plot exporters | M4.4 |
@@ -747,6 +748,27 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
   --run-dir FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1 \
   --chunk-ids sample_001_chunk_08,sample_001_chunk_10,sample_001_chunk_11 --execute
 ```
+
+### M4.4.1b-3 — Partial aggregation over completed worker results (**done**)
+
+- Script: `scripts/v2_b3_m4_aggregate_worker_results.py`
+- Reads `lprod/worker_chunk_plan.preview.json`, `worker_results/*/worker_result.json`, optional `solver_result.json`
+- No solver execution; does not modify worker results
+- Requires `--partial-ok` when planned chunks are missing; writes `partial_*` under `aggregation/`
+- Preview manifest: `pipeline_run_manifest.m4_4_partial_aggregation_preview.json` (`terminal_status`: `PARTIAL_AGGREGATION_READY`, `stage5_workers`: `PARTIAL_PASS`, `stage6_aggregate`: `PARTIAL_READY`)
+- Main `pipeline_run_manifest.json` unchanged; final `aggregation_result.json` blocked until all 11 chunks PASS
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_aggregate_worker_results.py \
+  --run-dir FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1 \
+  --partial-ok --dry-run
+
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_aggregate_worker_results.py \
+  --run-dir FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1 \
+  --partial-ok --execute --force
+```
+
+**Exit (partial):** `status=PARTIAL_AGGREGATION_PASS_WITH_MISSING_CHUNKS`, `final_aggregation_ready=false`.
 
 ### M4.4.1b — Single-guitar L_prod worker solve + aggregation
 

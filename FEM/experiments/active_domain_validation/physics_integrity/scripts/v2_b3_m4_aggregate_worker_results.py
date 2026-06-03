@@ -1,0 +1,632 @@
+#!/usr/bin/env python3
+"""M4.4.1b-3 — aggregate L_prod worker results (partial or full; no solver execution)."""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from v2_b3_m4_worker_run_lib import (  # noqa: E402
+    PASS_LIKE,
+    detect_repo_root,
+    existing_real_worker_result,
+    load_json,
+    rel,
+    utc_now,
+)
+from v2_b3_petsc_util import write_json_atomic  # noqa: E402
+
+DEDUPE_TOLERANCE_HZ = 0.05
+PARTIAL_STATUS = "PARTIAL_AGGREGATION_PASS_WITH_MISSING_CHUNKS"
+FULL_STATUS = "AGGREGATION_PASS"
+TERMINAL_PARTIAL = "PARTIAL_AGGREGATION_READY"
+
+PARTIAL_OUTPUTS = (
+    "partial_aggregation_result.json",
+    "partial_aggregation_result.md",
+    "partial_modes_catalog.jsonl",
+    "partial_modes_summary.json",
+    "partial_runtime_summary.json",
+    "partial_warnings_and_failures.json",
+)
+
+FINAL_OUTPUTS = (
+    "aggregation_result.json",
+    "modes_catalog.jsonl",
+    "modes_summary.json",
+)
+
+
+def _chunk_ids_from_plan(chunk_plan: Dict[str, Any]) -> List[str]:
+    return [str(c.get("chunk_id")) for c in (chunk_plan.get("chunks") or []) if c.get("chunk_id")]
+
+
+def _load_chunk_targets(run_root: Path, chunk_id: str) -> Dict[float, Dict[str, Any]]:
+    path = run_root / "worker_results" / chunk_id / "chunk_targets.json"
+    if not path.is_file():
+        return {}
+    try:
+        doc = load_json(path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    out: Dict[float, Dict[str, Any]] = {}
+    for t in doc.get("targets") or []:
+        if t.get("target_hz") is None:
+            continue
+        hz = float(t["target_hz"])
+        out[hz] = dict(t)
+    return out
+
+
+def _classify_chunk(
+    *,
+    run_root: Path,
+    chunk_id: str,
+) -> Tuple[str, Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Return (classification, worker_result, solver_result)."""
+    chunk_dir = run_root / "worker_results" / chunk_id
+    worker_path = chunk_dir / "worker_result.json"
+    solver_path = chunk_dir / "solver_result.json"
+
+    if not worker_path.is_file():
+        return "missing", None, None
+
+    try:
+        worker = load_json(worker_path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return "missing", None, None
+
+    if worker.get("status") in ("DRY_RUN_PLANNED",) or worker.get("mode") in (
+        "m4_4_1a_dry_run",
+        "m4_4_1b_1_smoke_dry_run",
+    ):
+        if not existing_real_worker_result(worker_path):
+            return "missing", worker, None
+
+    status = str(worker.get("status") or "FAIL")
+    if status == "FAIL":
+        solver = load_json(solver_path) if solver_path.is_file() else None
+        return "failed", worker, solver
+
+    if status in PASS_LIKE or existing_real_worker_result(worker_path):
+        solver = None
+        if solver_path.is_file():
+            try:
+                solver = load_json(solver_path)
+            except (OSError, ValueError, json.JSONDecodeError):
+                solver = None
+        return "completed", worker, solver
+
+    return "missing", worker, None
+
+
+def _collect_mode_records(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    chunk_id: str,
+    worker: Dict[str, Any],
+    solver: Optional[Dict[str, Any]],
+    target_meta: Dict[float, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    worker_rel = rel(run_root / "worker_results" / chunk_id / "worker_result.json", repo_root=repo_root)
+    solver_rel = rel(run_root / "worker_results" / chunk_id / "solver_result.json", repo_root=repo_root)
+
+    if solver and isinstance(solver.get("targets"), list):
+        for row in solver["targets"]:
+            target_hz = row.get("target_frequency_hz") or row.get("target_hz")
+            if target_hz is None:
+                continue
+            t_hz = float(target_hz)
+            meta = target_meta.get(t_hz) or {}
+            mode_list = row.get("accepted_modes") or []
+            if not mode_list:
+                mode_list = row.get("accepted_frequencies_hz") or []
+            for mi, am in enumerate(mode_list):
+                if isinstance(am, dict) and am.get("frequency_hz") is not None:
+                    f_hz = float(am["frequency_hz"])
+                elif isinstance(am, (int, float)):
+                    f_hz = float(am)
+                else:
+                    continue
+                records.append(
+                    {
+                        "frequency_hz": round(f_hz, 6),
+                        "chunk_id": chunk_id,
+                        "target_hz": t_hz,
+                        "zone_id": meta.get("zone_id") or row.get("zone_id"),
+                        "spacing_hz": meta.get("spacing_hz"),
+                        "window_hz": meta.get("window_hz"),
+                        "source": "solver_result.targets.accepted_modes",
+                        "source_worker_result": worker_rel,
+                        "source_solver_result": solver_rel,
+                        "mode_index": mi,
+                        "target_index": row.get("target_index"),
+                    }
+                )
+        if records:
+            return records
+
+    freqs = worker.get("unique_modes") or worker.get("accepted_modes") or []
+    if isinstance(freqs, list) and freqs and isinstance(freqs[0], dict):
+        for mi, am in enumerate(freqs):
+            f_hz = float(am.get("frequency_hz", 0))
+            records.append(
+                {
+                    "frequency_hz": round(f_hz, 6),
+                    "chunk_id": chunk_id,
+                    "target_hz": am.get("target_hz"),
+                    "zone_id": am.get("zone_id"),
+                    "source": "worker_result.unique_modes",
+                    "source_worker_result": worker_rel,
+                    "source_solver_result": solver_rel,
+                    "mode_index": mi,
+                }
+            )
+        return records
+
+    for mi, f_hz in enumerate(freqs if isinstance(freqs, list) else []):
+        f = float(f_hz)
+        meta = target_meta.get(f) or {}
+        nearest_t = None
+        if target_meta:
+            nearest_t = min(target_meta.keys(), key=lambda t: abs(t - f))
+        records.append(
+            {
+                "frequency_hz": round(f, 6),
+                "chunk_id": chunk_id,
+                "target_hz": nearest_t,
+                "zone_id": meta.get("zone_id"),
+                "spacing_hz": meta.get("spacing_hz"),
+                "window_hz": meta.get("window_hz"),
+                "source": "worker_result.unique_modes",
+                "source_worker_result": worker_rel,
+                "source_solver_result": solver_rel,
+                "mode_index": mi,
+            }
+        )
+    return records
+
+
+def _dedupe_catalog(
+    records: Sequence[Dict[str, Any]],
+    *,
+    tol_hz: float,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Return (deduped_catalog, merge_groups)."""
+    if not records:
+        return [], []
+    sorted_recs = sorted(records, key=lambda r: float(r["frequency_hz"]))
+    groups: List[List[Dict[str, Any]]] = [[sorted_recs[0]]]
+    for rec in sorted_recs[1:]:
+        if abs(float(rec["frequency_hz"]) - float(groups[-1][-1]["frequency_hz"])) <= tol_hz:
+            groups[-1].append(rec)
+        else:
+            groups.append([rec])
+
+    deduped: List[Dict[str, Any]] = []
+    merge_meta: List[Dict[str, Any]] = []
+    for group in groups:
+        rep = dict(group[0])
+        rep["frequency_hz"] = round(
+            sum(float(g["frequency_hz"]) for g in group) / len(group), 6
+        )
+        rep["provenance_count"] = len(group)
+        rep["provenance_chunk_ids"] = sorted({str(g["chunk_id"]) for g in group})
+        rep["provenance_sources"] = [g.get("source") for g in group]
+        if len(group) > 1:
+            merge_meta.append(
+                {
+                    "representative_frequency_hz": rep["frequency_hz"],
+                    "merged_count": len(group),
+                    "chunk_ids": rep["provenance_chunk_ids"],
+                }
+            )
+        deduped.append(rep)
+    return deduped, merge_meta
+
+
+def _render_result_md(report: Dict[str, Any]) -> str:
+    lines = [
+        f"# Partial aggregation — {report.get('sample_id')}",
+        "",
+        f"- status: **{report.get('status')}**",
+        f"- partial_ok: **{report.get('partial_ok')}**",
+        f"- final_aggregation_ready: **{report.get('final_aggregation_ready')}**",
+        f"- planned chunks: **{report.get('planned_chunk_count')}**",
+        f"- completed: **{report.get('completed_chunk_count')}**",
+        f"- missing: **{report.get('missing_chunk_count')}**",
+        f"- failed: **{report.get('failed_chunk_count')}**",
+        f"- raw modes: **{report.get('raw_mode_count')}**",
+        f"- deduped modes: **{report.get('deduped_mode_count')}**",
+        f"- dedupe tolerance: **{report.get('dedupe_tolerance_hz')} Hz**",
+        "",
+        "## Completed chunks",
+        "",
+    ]
+    for cid in report.get("completed_chunks") or []:
+        lines.append(f"- `{cid}`")
+    lines.extend(["", "## Missing chunks", ""])
+    for cid in report.get("missing_chunks") or []:
+        lines.append(f"- `{cid}`")
+    if report.get("failed_chunks"):
+        lines.extend(["", "## Failed chunks", ""])
+        for cid in report.get("failed_chunks") or []:
+            lines.append(f"- `{cid}`")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def build_aggregation_report(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    partial_ok: bool,
+) -> Dict[str, Any]:
+    chunk_plan_path = run_root / "lprod" / "worker_chunk_plan.preview.json"
+    target_plan_path = run_root / "lprod" / "lprod_target_plan.json"
+    manifest_path = run_root / "pipeline_run_manifest.json"
+
+    errors: List[str] = []
+    if not chunk_plan_path.is_file():
+        errors.append("missing lprod/worker_chunk_plan.preview.json")
+
+    chunk_plan = load_json(chunk_plan_path) if chunk_plan_path.is_file() else {"chunks": []}
+    target_plan = load_json(target_plan_path) if target_plan_path.is_file() else {}
+    manifest = load_json(manifest_path) if manifest_path.is_file() else {}
+
+    planned_ids = _chunk_ids_from_plan(chunk_plan)
+    completed: List[str] = []
+    missing: List[str] = []
+    failed: List[str] = []
+    chunk_details: List[Dict[str, Any]] = []
+    all_records: List[Dict[str, Any]] = []
+    total_attempted = 0
+    total_passed = 0
+    warnings: List[str] = []
+    failures: List[str] = []
+
+    for chunk_id in planned_ids:
+        classification, worker, solver = _classify_chunk(run_root=run_root, chunk_id=chunk_id)
+        detail: Dict[str, Any] = {
+            "chunk_id": chunk_id,
+            "classification": classification,
+        }
+        if worker:
+            detail["worker_status"] = worker.get("status")
+            detail["targets_attempted"] = worker.get("targets_attempted")
+            detail["targets_passed"] = worker.get("targets_passed")
+            total_attempted += int(worker.get("targets_attempted") or 0)
+            total_passed += int(worker.get("targets_passed") or 0)
+        if classification == "completed" and worker:
+            completed.append(chunk_id)
+            target_meta = _load_chunk_targets(run_root, chunk_id)
+            recs = _collect_mode_records(
+                repo_root=repo_root,
+                run_root=run_root,
+                chunk_id=chunk_id,
+                worker=worker,
+                solver=solver,
+                target_meta=target_meta,
+            )
+            detail["mode_count"] = len(recs)
+            all_records.extend(recs)
+        elif classification == "failed":
+            failed.append(chunk_id)
+            failures.append(f"{chunk_id}: worker_status={worker.get('status') if worker else 'unknown'}")
+        else:
+            missing.append(chunk_id)
+        chunk_details.append(detail)
+
+    if failed and not partial_ok:
+        errors.append(f"failed chunks present ({len(failed)}); use --partial-ok or fix workers")
+
+    if missing and not partial_ok:
+        errors.append(
+            f"missing {len(missing)} of {len(planned_ids)} chunks; pass --partial-ok for partial aggregation"
+        )
+
+    deduped, merge_groups = _dedupe_catalog(all_records, tol_hz=DEDUPE_TOLERANCE_HZ)
+    if merge_groups:
+        warnings.append(
+            f"frequency dedupe merged {len(merge_groups)} groups within {DEDUPE_TOLERANCE_HZ} Hz"
+        )
+
+    final_ready = not missing and not failed and len(completed) == len(planned_ids)
+    if final_ready:
+        status = FULL_STATUS
+    elif errors and not partial_ok:
+        status = "FAIL"
+    elif partial_ok and completed and not failed:
+        status = PARTIAL_STATUS
+    elif partial_ok and completed:
+        status = PARTIAL_STATUS
+        warnings.append("some chunks failed but partial_ok set")
+    else:
+        status = "FAIL"
+
+    return {
+        "schema": "m4_partial_aggregation_result_v1",
+        "will_execute": False,
+        "generated_utc": utc_now(),
+        "sample_id": manifest.get("sample_id") or chunk_plan.get("sample_id"),
+        "run_id": manifest.get("run_id") or chunk_plan.get("run_id"),
+        "status": status,
+        "partial_ok": bool(partial_ok),
+        "final_aggregation_ready": final_ready,
+        "planned_chunk_count": len(planned_ids),
+        "completed_chunk_count": len(completed),
+        "missing_chunk_count": len(missing),
+        "failed_chunk_count": len(failed),
+        "completed_chunks": completed,
+        "missing_chunks": missing,
+        "failed_chunks": failed,
+        "chunk_details": chunk_details,
+        "total_targets_attempted": total_attempted,
+        "total_targets_passed": total_passed,
+        "raw_mode_count": len(all_records),
+        "deduped_mode_count": len(deduped),
+        "dedupe_tolerance_hz": DEDUPE_TOLERANCE_HZ,
+        "dedupe_merge_groups": merge_groups,
+        "frequency_range_hz": target_plan.get("frequency_range_hz"),
+        "unique_modes_hz": [r["frequency_hz"] for r in deduped],
+        "all_mode_records": all_records,
+        "deduped_catalog": deduped,
+        "errors": errors,
+        "warnings": warnings,
+        "failures": failures,
+    }
+
+
+def _write_outputs(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    report: Dict[str, Any],
+    force: bool,
+) -> None:
+    if report.get("final_aggregation_ready"):
+        raise RuntimeError("all chunks complete — use full aggregation path (not implemented in M4.4.1b-3)")
+
+    agg_dir = run_root / "aggregation"
+    agg_dir.mkdir(parents=True, exist_ok=True)
+    paths = {name: agg_dir / name for name in PARTIAL_OUTPUTS}
+    plot_path = agg_dir / "partial_mode_frequency_plot.png"
+
+    for p in list(paths.values()) + [plot_path]:
+        if p.is_file() and not force:
+            raise FileExistsError(f"aggregation output exists (use --force): {p}")
+
+    all_records = list(report.get("all_mode_records") or [])
+    deduped_catalog = list(report.get("deduped_catalog") or [])
+
+    result_body = {k: v for k, v in report.items() if k not in ("all_mode_records", "deduped_catalog")}
+    result_path = paths["partial_aggregation_result.json"]
+    write_json_atomic(result_path, result_body)
+    paths["partial_aggregation_result.md"].write_text(_render_result_md(result_body), encoding="utf-8")
+
+    with paths["partial_modes_catalog.jsonl"].open("w", encoding="utf-8") as fh:
+        for rec in sorted(all_records, key=lambda r: float(r["frequency_hz"])):
+            fh.write(json.dumps(rec, sort_keys=True) + "\n")
+
+    modes_summary = {
+        "schema": "m4_partial_modes_summary_v1",
+        "generated_utc": report.get("generated_utc"),
+        "sample_id": report.get("sample_id"),
+        "run_id": report.get("run_id"),
+        "dedupe_tolerance_hz": DEDUPE_TOLERANCE_HZ,
+        "raw_mode_count": report.get("raw_mode_count"),
+        "deduped_mode_count": report.get("deduped_mode_count"),
+        "unique_modes_hz": report.get("unique_modes_hz"),
+        "frequency_range_hz": report.get("frequency_range_hz"),
+        "by_chunk": [
+            {
+                "chunk_id": d["chunk_id"],
+                "mode_count": d.get("mode_count"),
+                "targets_passed": d.get("targets_passed"),
+            }
+            for d in report.get("chunk_details") or []
+            if d.get("classification") == "completed"
+        ],
+    }
+    write_json_atomic(paths["partial_modes_summary.json"], modes_summary)
+
+    runtime_summary = {
+        "schema": "m4_partial_runtime_summary_v1",
+        "generated_utc": report.get("generated_utc"),
+        "aggregation_only": True,
+        "no_solver_executed": True,
+        "completed_chunk_count": report.get("completed_chunk_count"),
+        "total_targets_attempted": report.get("total_targets_attempted"),
+        "total_targets_passed": report.get("total_targets_passed"),
+        "raw_mode_count": report.get("raw_mode_count"),
+        "deduped_mode_count": report.get("deduped_mode_count"),
+    }
+    write_json_atomic(paths["partial_runtime_summary.json"], runtime_summary)
+
+    warn_fail = {
+        "schema": "m4_partial_warnings_and_failures_v1",
+        "generated_utc": report.get("generated_utc"),
+        "warnings": report.get("warnings") or [],
+        "failures": report.get("failures") or [],
+        "missing_chunks": report.get("missing_chunks") or [],
+        "failed_chunks": report.get("failed_chunks") or [],
+    }
+    write_json_atomic(paths["partial_warnings_and_failures.json"], warn_fail)
+
+    _try_mode_plot(plot_path, deduped_catalog, result_body)
+
+    result_body["output_paths"] = {k: rel(v, repo_root=repo_root) for k, v in paths.items()}
+    result_body["output_paths"]["partial_mode_frequency_plot.png"] = rel(plot_path, repo_root=repo_root)
+    write_json_atomic(result_path, result_body)
+    report["output_paths"] = result_body["output_paths"]
+
+
+def _try_mode_plot(
+    path: Optional[Path],
+    deduped: Sequence[Dict[str, Any]],
+    report: Dict[str, Any],
+) -> None:
+    if path is None or not deduped:
+        return
+    try:
+        import matplotlib.pyplot as plt  # noqa: WPS433
+    except ImportError:
+        report.setdefault("warnings", []).append("matplotlib unavailable; skipped partial_mode_frequency_plot.png")
+        return
+    freqs = [float(r["frequency_hz"]) for r in deduped]
+    if not freqs:
+        return
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.scatter(freqs, [1] * len(freqs), s=12, alpha=0.7)
+    ax.set_xlabel("frequency_hz")
+    ax.set_title(
+        f"Partial modes ({report.get('completed_chunk_count')}/{report.get('planned_chunk_count')} chunks)"
+    )
+    band = report.get("frequency_range_hz") or [60, 550]
+    if len(band) == 2:
+        ax.set_xlim(float(band[0]), float(band[1]))
+    fig.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+
+
+def _write_manifest_preview(
+    *,
+    run_root: Path,
+    manifest: Dict[str, Any],
+    report: Dict[str, Any],
+) -> None:
+    preview = json.loads(json.dumps(manifest))
+    preview["updated_utc"] = utc_now()
+    preview["will_execute"] = False
+    preview["mode"] = "m4_4_1b_3_partial_aggregation"
+    preview["terminal_status"] = TERMINAL_PARTIAL
+    preview["pipeline_terminal_unchanged_note"] = (
+        "main pipeline_run_manifest.json not modified by partial aggregation"
+    )
+    preview["partial_aggregation"] = {
+        "status": report.get("status"),
+        "final_aggregation_ready": report.get("final_aggregation_ready"),
+        "completed_chunks": report.get("completed_chunks"),
+        "missing_chunks": report.get("missing_chunks"),
+        "output_paths": report.get("output_paths"),
+    }
+    stages = preview.setdefault("stages", {})
+    st5 = stages.setdefault("stage5_workers", {})
+    if st5.get("status") not in ("PASS",):
+        st5["status"] = "PARTIAL_PASS"
+    st6 = stages.setdefault("stage6_aggregate", {})
+    st6["status"] = "PARTIAL_READY"
+    st6["partial_aggregation_status"] = report.get("status")
+    st6["updated_utc"] = utc_now()
+    write_json_atomic(run_root / "pipeline_run_manifest.m4_4_partial_aggregation_preview.json", preview)
+
+
+def run_dry_run(*, repo_root: Path, run_root: Path, partial_ok: bool) -> int:
+    report = build_aggregation_report(repo_root=repo_root, run_root=run_root, partial_ok=partial_ok)
+    if report.get("errors") and not partial_ok:
+        print("error: aggregation precheck failed:", file=sys.stderr)
+        for e in report["errors"]:
+            print(f"  - {e}", file=sys.stderr)
+        return 2
+
+    print("will_execute=false")
+    print(f"status={report.get('status')}")
+    print(f"planned_chunks={report.get('planned_chunk_count')}")
+    print(f"completed_chunks={report.get('completed_chunk_count')}")
+    print(f"missing_chunks={report.get('missing_chunk_count')}")
+    print(f"failed_chunks={report.get('failed_chunk_count')}")
+    print(f"completed={report.get('completed_chunks')}")
+    print(f"missing={report.get('missing_chunks')}")
+    print(f"raw_mode_count={report.get('raw_mode_count')}")
+    print(f"deduped_mode_count={report.get('deduped_mode_count')}")
+    print(f"final_aggregation_ready={report.get('final_aggregation_ready')}")
+    print("no solver executed")
+    return 0
+
+
+def run_execute(*, repo_root: Path, run_root: Path, partial_ok: bool, force: bool) -> int:
+    report = build_aggregation_report(repo_root=repo_root, run_root=run_root, partial_ok=partial_ok)
+    if report.get("errors"):
+        print("error: aggregation failed:", file=sys.stderr)
+        for e in report["errors"]:
+            print(f"  - {e}", file=sys.stderr)
+        return 2
+
+    if report.get("status") == "FAIL":
+        print("error: aggregation status FAIL", file=sys.stderr)
+        return 2
+
+    report["will_execute"] = True
+    try:
+        _write_outputs(
+            repo_root=repo_root,
+            run_root=run_root,
+            report=report,
+            force=force,
+        )
+    except FileExistsError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    manifest = load_json(run_root / "pipeline_run_manifest.json")
+    _write_manifest_preview(run_root=run_root, manifest=manifest, report=report)
+
+    print(f"status={report.get('status')}")
+    print(f"planned_chunks={report.get('planned_chunk_count')}")
+    print(f"completed_chunks={report.get('completed_chunk_count')}")
+    print(f"missing_chunks={report.get('missing_chunk_count')}")
+    print(f"raw_mode_count={report.get('raw_mode_count')}")
+    print(f"deduped_mode_count={report.get('deduped_mode_count')}")
+    print(f"terminal_status={TERMINAL_PARTIAL}")
+    print("no solver executed")
+    return 0
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="M4.4.1b-3: aggregate L_prod worker results (partial or full)."
+    )
+    parser.add_argument("--run-dir", type=Path, required=True)
+    parser.add_argument(
+        "--partial-ok",
+        action="store_true",
+        help="Allow aggregation when planned chunks are missing (partial mode).",
+    )
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--force", action="store_true", help="Overwrite existing partial aggregation outputs.")
+    args = parser.parse_args(argv)
+
+    if args.dry_run and args.execute:
+        print("error: use --dry-run or --execute, not both", file=sys.stderr)
+        return 2
+    if not args.dry_run and not args.execute:
+        print("error: specify --dry-run or --execute", file=sys.stderr)
+        return 2
+
+    repo_root = detect_repo_root(SCRIPT_DIR)
+    run_root = args.run_dir if args.run_dir.is_absolute() else repo_root / args.run_dir
+    run_root = run_root.resolve()
+
+    if args.dry_run:
+        return run_dry_run(repo_root=repo_root, run_root=run_root, partial_ok=bool(args.partial_ok))
+    return run_execute(
+        repo_root=repo_root,
+        run_root=run_root,
+        partial_ok=bool(args.partial_ok),
+        force=bool(args.force),
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
