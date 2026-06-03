@@ -134,6 +134,7 @@ def resolve_m4_sample(
     run_root: Path,
     scout_mesh_rel: str,
     force: bool,
+    skip_mesh: bool,
 ) -> Tuple[Dict[str, Any], Dict[str, Any], Path]:
     sample_id = str(sample["sample_id"])
     sample_dir = run_root / "sample"
@@ -143,7 +144,16 @@ def resolve_m4_sample(
 
     if resolved_path.is_file() and readiness_path.is_file() and not force:
         readiness = _load_json(readiness_path)
-        if readiness.get("status") == "PASS":
+        cached_status = readiness.get("status")
+        if cached_status == "PASS":
+            return _load_json(resolved_path), readiness, resolved_path
+        if cached_status == "PENDING_MESH" and not skip_mesh:
+            mesh_abs = (repo_root / scout_mesh_rel).resolve()
+            if mesh_abs.is_file():
+                readiness = dict(readiness)
+                readiness["status"] = "PASS"
+                readiness["mesh_exists"] = {MESH_LEVEL: True}
+                write_json_atomic(readiness_path, readiness)
             return _load_json(resolved_path), readiness, resolved_path
 
     sample_dir.mkdir(parents=True, exist_ok=True)
@@ -174,8 +184,19 @@ def resolve_m4_sample(
     mesh_exists = mesh_abs.is_file()
     mats = resolved.get("materials") or {}
     errors: List[str] = []
-    if not mesh_exists:
-        errors.append(f"scout mesh not found yet: {scout_mesh_rel}")
+    warnings: List[str] = []
+    if mesh_exists:
+        readiness_status = "PASS"
+    elif skip_mesh:
+        readiness_status = "FAIL"
+        errors.append(
+            "scout mesh missing and mesh build/reuse disabled (skip_mesh=True; expected existing PASS mesh)"
+        )
+    else:
+        readiness_status = "PENDING_MESH"
+        warnings.append(
+            f"scout mesh not present yet at {scout_mesh_rel}; Stage 1 will build or copy before checkpoint"
+        )
 
     overlay = {
         "schema": "m4_sample_overlay_applied_v1",
@@ -193,7 +214,9 @@ def resolve_m4_sample(
         "schema": "m4_readiness_check_v1",
         "generated_utc": generated,
         "sample_id": sample_id,
-        "status": "PASS" if (not errors and mesh_exists) else ("PENDING_MESH" if not errors else "FAIL"),
+        "status": readiness_status,
+        "stage0_outcome": "PASS" if readiness_status in ("PASS", "PENDING_MESH") else "FAIL",
+        "mesh_pending_stage1": readiness_status == "PENDING_MESH",
         "resolved_config_path": _rel(resolved_path, repo_root=repo_root),
         "mesh_file": scout_mesh_rel,
         "mesh_exists": {MESH_LEVEL: mesh_exists},
@@ -209,7 +232,7 @@ def resolve_m4_sample(
             else None,
         },
         "changed_material_values": _build_changed_material_values(baseline, resolved, {}),
-        "warnings": [],
+        "warnings": warnings,
         "errors": errors,
     }
     write_json_atomic(readiness_path, readiness)
@@ -510,10 +533,11 @@ def run_scout_pipeline(
             run_root=run_root,
             scout_mesh_rel=scout_mesh_rel,
             force=force,
+            skip_mesh=bool(plan["skip_mesh"]),
         )
         if readiness.get("status") == "PENDING_MESH":
-            _append_log(log0, "readiness PENDING_MESH (mesh build follows in Stage 1)\n")
-        stage0_status = "PASS" if readiness.get("status") in ("PASS", "PENDING_MESH") else "FAIL"
+            _append_log(log0, "readiness PENDING_MESH (Stage 1 will build/copy mesh)\n")
+        stage0_status = str(readiness.get("stage0_outcome") or "FAIL")
     except Exception as exc:
         stage0_status = "FAIL"
         _append_log(log0, f"FAIL: {exc}\n")
@@ -522,7 +546,10 @@ def run_scout_pipeline(
         return 1
 
     _update_manifest(manifest_path, stage_updates={"stage0_resolve": stage0_status}, terminal_status="RUNNING")
-    print("Stage 0 PASS", flush=True)
+    if readiness.get("status") == "PENDING_MESH":
+        print("Stage 0 PASS (PENDING_MESH — Stage 1 will build/copy mesh)", flush=True)
+    else:
+        print("Stage 0 PASS", flush=True)
 
     env_a = _prod_subprocess_env_strict(prod_python=prod_python, prod_venv=prod_venv)
     env_b = _solver_mkl_subprocess_env_strict(solver_python=solver_python, solver_venv=solver_venv)
@@ -530,8 +557,16 @@ def run_scout_pipeline(
     # Stage 1 mesh
     log_mesh = logs / "stage1_scout_mesh.log"
     if plan["skip_mesh"]:
-        _append_log(log_mesh, f"[{_utc_now()}] reuse PASS mesh {scout_mesh_rel}\n")
-        stage1_mesh = "PASS"
+        mesh_ok = _mesh_pass(scout_mesh)
+        if mesh_ok:
+            _append_log(log_mesh, f"[{_utc_now()}] reuse PASS mesh {scout_mesh_rel}\n")
+            stage1_mesh = "PASS"
+        else:
+            _append_log(
+                log_mesh,
+                f"[{_utc_now()}] FAIL: skip_mesh=True but mesh missing at {scout_mesh_rel}\n",
+            )
+            stage1_mesh = "FAIL"
     else:
         rc_mesh = _run_subprocess(
             plan["argv_mesh"],
@@ -554,6 +589,7 @@ def run_scout_pipeline(
                 run_root=run_root,
                 scout_mesh_rel=scout_mesh_rel,
                 force=True,
+                skip_mesh=True,
             )
 
     if stage1_mesh != "PASS":
