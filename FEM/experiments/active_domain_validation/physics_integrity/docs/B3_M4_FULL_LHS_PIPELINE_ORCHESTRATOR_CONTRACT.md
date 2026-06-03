@@ -573,6 +573,7 @@ Reports must show **target counts** and **estimated hours** for uniform vs adapt
 | L_prod execution interfaces + dry-run validation | **M4.4.1a done** — see §12 M4.4.1a |
 | L_prod mesh + checkpoint only (Stage 4) | **M4.4.1b-0 done** — `v2_b3_m4_lprod_checkpoint_run.py` |
 | Single-chunk worker smoke (solver-mkl) | **M4.4.1b-1 done** — `v2_b3_m4_worker_smoke_test.py` |
+| Limited multi-chunk worker mini-batch | **M4.4.1b-2 done** — `v2_b3_m4_worker_minibatch.py` |
 | Single-guitar L_prod worker solve + aggregation | M4.4.1b |
 | Multi-guitar LHS batch driver | M4.5 |
 | Geometry-delta → remesh trigger in Stage 0 | M4.3+ |
@@ -729,6 +730,23 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
 ```
 
 **Exit:** `WORKER_SMOKE_TEST_PASS` in preview/smoke manifest; `worker_result.status` ∈ {`PASS`, `PASS_WITH_WARNING`}.
+
+### M4.4.1b-2 — Limited multi-chunk worker mini-batch (**done**)
+
+- Script: `scripts/v2_b3_m4_worker_minibatch.py`
+- Shared lib: `scripts/v2_b3_m4_worker_run_lib.py`
+- Default chunks: `sample_001_chunk_08`, `sample_001_chunk_10`, `sample_001_chunk_11` (skips smoke PASS `chunk_04` unless `--force`)
+- Writes `worker_results/minibatch_m4_4_1b_2_manifest.json`, `minibatch_m4_4_1b_2_summary.md`, `pipeline_run_manifest.m4_4_worker_minibatch_preview.json`
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_worker_minibatch.py \
+  --run-dir FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1 \
+  --chunk-ids sample_001_chunk_08,sample_001_chunk_10,sample_001_chunk_11 --dry-run
+
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_worker_minibatch.py \
+  --run-dir FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1 \
+  --chunk-ids sample_001_chunk_08,sample_001_chunk_10,sample_001_chunk_11 --execute
+```
 
 ### M4.4.1b — Single-guitar L_prod worker solve + aggregation
 

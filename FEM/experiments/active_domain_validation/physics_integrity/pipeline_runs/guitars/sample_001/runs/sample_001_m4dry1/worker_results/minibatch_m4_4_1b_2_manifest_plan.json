@@ -1,0 +1,122 @@
+{
+  "schema": "m4_worker_minibatch_plan_v1",
+  "will_execute": false,
+  "minibatch_id": "m4_4_1b_2",
+  "sample_id": "sample_001",
+  "run_id": "sample_001_m4dry1",
+  "selected_chunk_ids": [
+    "sample_001_chunk_08",
+    "sample_001_chunk_10",
+    "sample_001_chunk_11"
+  ],
+  "chunks_to_execute": [
+    "sample_001_chunk_08",
+    "sample_001_chunk_10",
+    "sample_001_chunk_11"
+  ],
+  "chunks_to_skip_reuse": [],
+  "chunk_plans": [
+    {
+      "chunk_id": "sample_001_chunk_08",
+      "target_count": 4,
+      "targets_hz": [
+        366.25,
+        378.75,
+        391.25,
+        403.75
+      ],
+      "freq_range_hz": [
+        366.25,
+        403.75
+      ],
+      "argv_solve": [
+        "/home/vboxuser/solver-mkl/venv/bin/python",
+        "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve_target_list.py",
+        "--checkpoint-dir",
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/lprod/checkpoint",
+        "--targets-json",
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results/sample_001_chunk_08/chunk_targets.json",
+        "--factor-solver",
+        "mkl_pardiso",
+        "--output-dir",
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results/sample_001_chunk_08"
+      ],
+      "command_preview": "/home/vboxuser/solver-mkl/venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve_target_list.py --checkpoint-dir \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/lprod/checkpoint\" --targets-json \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results/sample_001_chunk_08/chunk_targets.json\" --factor-solver mkl_pardiso --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results/sample_001_chunk_08\"",
+      "skip_solve": false,
+      "paths": {
+        "chunk_dir": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results/sample_001_chunk_08",
+        "chunk_targets_json": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results/sample_001_chunk_08/chunk_targets.json"
+      },
+      "runnable": true
+    },
+    {
+      "chunk_id": "sample_001_chunk_10",
+      "target_count": 4,
+      "targets_hz": [
+        466.25,
+        478.75,
+        491.25,
+        503.75
+      ],
+      "freq_range_hz": [
+        466.25,
+        503.75
+      ],
+      "argv_solve": [
+        "/home/vboxuser/solver-mkl/venv/bin/python",
+        "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve_target_list.py",
+        "--checkpoint-dir",
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/lprod/checkpoint",
+        "--targets-json",
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results/sample_001_chunk_10/chunk_targets.json",
+        "--factor-solver",
+        "mkl_pardiso",
+        "--output-dir",
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results/sample_001_chunk_10"
+      ],
+      "command_preview": "/home/vboxuser/solver-mkl/venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve_target_list.py --checkpoint-dir \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/lprod/checkpoint\" --targets-json \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results/sample_001_chunk_10/chunk_targets.json\" --factor-solver mkl_pardiso --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results/sample_001_chunk_10\"",
+      "skip_solve": false,
+      "paths": {
+        "chunk_dir": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results/sample_001_chunk_10",
+        "chunk_targets_json": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results/sample_001_chunk_10/chunk_targets.json"
+      },
+      "runnable": true
+    },
+    {
+      "chunk_id": "sample_001_chunk_11",
+      "target_count": 4,
+      "targets_hz": [
+        516.25,
+        528.75,
+        541.25,
+        543.75
+      ],
+      "freq_range_hz": [
+        516.25,
+        543.75
+      ],
+      "argv_solve": [
+        "/home/vboxuser/solver-mkl/venv/bin/python",
+        "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve_target_list.py",
+        "--checkpoint-dir",
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/lprod/checkpoint",
+        "--targets-json",
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results/sample_001_chunk_11/chunk_targets.json",
+        "--factor-solver",
+        "mkl_pardiso",
+        "--output-dir",
+        "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results/sample_001_chunk_11"
+      ],
+      "command_preview": "/home/vboxuser/solver-mkl/venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve_target_list.py --checkpoint-dir \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/lprod/checkpoint\" --targets-json \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results/sample_001_chunk_11/chunk_targets.json\" --factor-solver mkl_pardiso --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results/sample_001_chunk_11\"",
+      "skip_solve": false,
+      "paths": {
+        "chunk_dir": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results/sample_001_chunk_11",
+        "chunk_targets_json": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/worker_results/sample_001_chunk_11/chunk_targets.json"
+      },
+      "runnable": true
+    }
+  ],
+  "exclude_smoke_chunk_by_default": "sample_001_chunk_04",
+  "only_selected_chunks": true,
+  "selection_note": "user --chunk-ids"
+}

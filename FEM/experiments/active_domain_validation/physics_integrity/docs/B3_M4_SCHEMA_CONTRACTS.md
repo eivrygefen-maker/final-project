@@ -196,4 +196,12 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
 
 Writes per chunk: `env_probe.json`, real `solver_result.json`, `worker_result.json`, `worker_smoke_manifest.json`. Preview: `pipeline_run_manifest.m4_4_worker_smoke_preview.json`.
 
+### M4.4.1b-2 — worker mini-batch (2–3 chunks)
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_worker_minibatch.py \
+  --run-dir .../sample_001_m4dry1 \
+  --chunk-ids sample_001_chunk_08,sample_001_chunk_10,sample_001_chunk_11 --execute
+```
+
 Next: **M4.4.1b** FCFS all chunks + aggregation (checkpoint must be PASS).
