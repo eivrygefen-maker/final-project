@@ -455,6 +455,58 @@ def auto_pick_minibatch_chunks(
     return picked[:max_chunks]
 
 
+def chunk_ids_from_worker_plan(run_root: Path) -> List[str]:
+    plan_path = run_root / "lprod" / "worker_chunk_plan.preview.json"
+    if not plan_path.is_file():
+        return []
+    try:
+        plan = load_json(plan_path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+    return [
+        str(c.get("chunk_id"))
+        for c in (plan.get("chunks") or [])
+        if c.get("chunk_id")
+    ]
+
+
+def chunk_worker_pass_status(run_root: Path, chunk_id: str) -> Optional[str]:
+    """Return PASS / PASS_WITH_WARNING when a real worker result exists, else None."""
+    worker_path = run_root / "worker_results" / chunk_id / "worker_result.json"
+    if not existing_real_worker_result(worker_path):
+        return None
+    try:
+        status = str(load_json(worker_path).get("status") or "")
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    if status in PASS_LIKE:
+        return status
+    return None
+
+
+def plan_remaining_worker_chunks(
+    run_root: Path,
+    *,
+    force: bool,
+) -> Dict[str, Any]:
+    """Classify planned chunks into reuse (PASS) vs still to execute."""
+    planned = chunk_ids_from_worker_plan(run_root)
+    preexisting: List[str] = []
+    to_execute: List[str] = []
+    for chunk_id in planned:
+        if chunk_worker_pass_status(run_root, chunk_id) and not force:
+            preexisting.append(chunk_id)
+        else:
+            to_execute.append(chunk_id)
+    return {
+        "planned_chunk_ids": planned,
+        "planned_chunk_count": len(planned),
+        "preexisting_pass_chunks": preexisting,
+        "chunks_to_execute": to_execute,
+        "chunks_to_skip_reuse": preexisting,
+    }
+
+
 def execute_worker_chunk(
     *,
     repo_root: Path,

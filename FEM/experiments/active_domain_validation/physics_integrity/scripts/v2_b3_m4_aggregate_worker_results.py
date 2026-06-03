@@ -26,6 +26,7 @@ DEDUPE_TOLERANCE_HZ = 0.05
 PARTIAL_STATUS = "PARTIAL_AGGREGATION_PASS_WITH_MISSING_CHUNKS"
 FULL_STATUS = "AGGREGATION_PASS"
 TERMINAL_PARTIAL = "PARTIAL_AGGREGATION_READY"
+TERMINAL_FULL = "LPROD_WORKERS_AND_AGGREGATION_PASS"
 
 PARTIAL_OUTPUTS = (
     "partial_aggregation_result.json",
@@ -38,8 +39,11 @@ PARTIAL_OUTPUTS = (
 
 FINAL_OUTPUTS = (
     "aggregation_result.json",
+    "aggregation_result.md",
     "modes_catalog.jsonl",
     "modes_summary.json",
+    "runtime_summary.json",
+    "warnings_and_failures.json",
 )
 
 
@@ -233,12 +237,17 @@ def _dedupe_catalog(
     return deduped, merge_meta
 
 
-def _render_result_md(report: Dict[str, Any]) -> str:
+def _render_result_md(report: Dict[str, Any], *, partial: bool) -> str:
+    title = "Partial aggregation" if partial else "Full aggregation"
     lines = [
-        f"# Partial aggregation — {report.get('sample_id')}",
+        f"# {title} — {report.get('sample_id')}",
         "",
         f"- status: **{report.get('status')}**",
-        f"- partial_ok: **{report.get('partial_ok')}**",
+    ]
+    if partial:
+        lines.append(f"- partial_ok: **{report.get('partial_ok')}**")
+    lines.extend(
+        [
         f"- final_aggregation_ready: **{report.get('final_aggregation_ready')}**",
         f"- planned chunks: **{report.get('planned_chunk_count')}**",
         f"- completed: **{report.get('completed_chunk_count')}**",
@@ -250,12 +259,14 @@ def _render_result_md(report: Dict[str, Any]) -> str:
         "",
         "## Completed chunks",
         "",
-    ]
+        ]
+    )
     for cid in report.get("completed_chunks") or []:
         lines.append(f"- `{cid}`")
-    lines.extend(["", "## Missing chunks", ""])
-    for cid in report.get("missing_chunks") or []:
-        lines.append(f"- `{cid}`")
+    if partial:
+        lines.extend(["", "## Missing chunks", ""])
+        for cid in report.get("missing_chunks") or []:
+            lines.append(f"- `{cid}`")
     if report.get("failed_chunks"):
         lines.extend(["", "## Failed chunks", ""])
         for cid in report.get("failed_chunks") or []:
@@ -352,8 +363,10 @@ def build_aggregation_report(
     else:
         status = "FAIL"
 
+    schema = "m4_aggregation_result_v1" if final_ready else "m4_partial_aggregation_result_v1"
+
     return {
-        "schema": "m4_partial_aggregation_result_v1",
+        "schema": schema,
         "will_execute": False,
         "generated_utc": utc_now(),
         "sample_id": manifest.get("sample_id") or chunk_plan.get("sample_id"),
@@ -385,39 +398,27 @@ def build_aggregation_report(
     }
 
 
-def _write_outputs(
+def _write_common_artifacts(
     *,
     repo_root: Path,
-    run_root: Path,
+    paths: Dict[str, Path],
+    catalog_path: Path,
+    modes_summary_path: Path,
+    runtime_path: Path,
+    warn_fail_path: Path,
+    plot_path: Path,
     report: Dict[str, Any],
-    force: bool,
+    result_body: Dict[str, Any],
+    deduped_catalog: List[Dict[str, Any]],
+    all_records: List[Dict[str, Any]],
+    partial: bool,
 ) -> None:
-    if report.get("final_aggregation_ready"):
-        raise RuntimeError("all chunks complete — use full aggregation path (not implemented in M4.4.1b-3)")
-
-    agg_dir = run_root / "aggregation"
-    agg_dir.mkdir(parents=True, exist_ok=True)
-    paths = {name: agg_dir / name for name in PARTIAL_OUTPUTS}
-    plot_path = agg_dir / "partial_mode_frequency_plot.png"
-
-    for p in list(paths.values()) + [plot_path]:
-        if p.is_file() and not force:
-            raise FileExistsError(f"aggregation output exists (use --force): {p}")
-
-    all_records = list(report.get("all_mode_records") or [])
-    deduped_catalog = list(report.get("deduped_catalog") or [])
-
-    result_body = {k: v for k, v in report.items() if k not in ("all_mode_records", "deduped_catalog")}
-    result_path = paths["partial_aggregation_result.json"]
-    write_json_atomic(result_path, result_body)
-    paths["partial_aggregation_result.md"].write_text(_render_result_md(result_body), encoding="utf-8")
-
-    with paths["partial_modes_catalog.jsonl"].open("w", encoding="utf-8") as fh:
+    with catalog_path.open("w", encoding="utf-8") as fh:
         for rec in sorted(all_records, key=lambda r: float(r["frequency_hz"])):
             fh.write(json.dumps(rec, sort_keys=True) + "\n")
 
     modes_summary = {
-        "schema": "m4_partial_modes_summary_v1",
+        "schema": "m4_partial_modes_summary_v1" if partial else "m4_modes_summary_v1",
         "generated_utc": report.get("generated_utc"),
         "sample_id": report.get("sample_id"),
         "run_id": report.get("run_id"),
@@ -436,35 +437,105 @@ def _write_outputs(
             if d.get("classification") == "completed"
         ],
     }
-    write_json_atomic(paths["partial_modes_summary.json"], modes_summary)
+    write_json_atomic(modes_summary_path, modes_summary)
 
     runtime_summary = {
-        "schema": "m4_partial_runtime_summary_v1",
+        "schema": "m4_partial_runtime_summary_v1" if partial else "m4_runtime_summary_v1",
         "generated_utc": report.get("generated_utc"),
         "aggregation_only": True,
         "no_solver_executed": True,
+        "planned_chunk_count": report.get("planned_chunk_count"),
         "completed_chunk_count": report.get("completed_chunk_count"),
         "total_targets_attempted": report.get("total_targets_attempted"),
         "total_targets_passed": report.get("total_targets_passed"),
         "raw_mode_count": report.get("raw_mode_count"),
         "deduped_mode_count": report.get("deduped_mode_count"),
     }
-    write_json_atomic(paths["partial_runtime_summary.json"], runtime_summary)
+    write_json_atomic(runtime_path, runtime_summary)
 
     warn_fail = {
-        "schema": "m4_partial_warnings_and_failures_v1",
+        "schema": "m4_partial_warnings_and_failures_v1" if partial else "m4_warnings_and_failures_v1",
         "generated_utc": report.get("generated_utc"),
         "warnings": report.get("warnings") or [],
         "failures": report.get("failures") or [],
         "missing_chunks": report.get("missing_chunks") or [],
         "failed_chunks": report.get("failed_chunks") or [],
     }
-    write_json_atomic(paths["partial_warnings_and_failures.json"], warn_fail)
+    write_json_atomic(warn_fail_path, warn_fail)
 
-    _try_mode_plot(plot_path, deduped_catalog, result_body)
+    _try_mode_plot(plot_path, deduped_catalog, result_body, partial=partial)
 
     result_body["output_paths"] = {k: rel(v, repo_root=repo_root) for k, v in paths.items()}
-    result_body["output_paths"]["partial_mode_frequency_plot.png"] = rel(plot_path, repo_root=repo_root)
+    result_body["output_paths"][plot_path.name] = rel(plot_path, repo_root=repo_root)
+
+
+def _write_outputs(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    report: Dict[str, Any],
+    force: bool,
+) -> None:
+    agg_dir = run_root / "aggregation"
+    agg_dir.mkdir(parents=True, exist_ok=True)
+    all_records = list(report.get("all_mode_records") or [])
+    deduped_catalog = list(report.get("deduped_catalog") or [])
+    result_body = {k: v for k, v in report.items() if k not in ("all_mode_records", "deduped_catalog")}
+    final_ready = bool(report.get("final_aggregation_ready"))
+
+    if final_ready:
+        paths = {name: agg_dir / name for name in FINAL_OUTPUTS}
+        plot_path = agg_dir / "mode_frequency_plot.png"
+        for p in list(paths.values()) + [plot_path]:
+            if p.is_file() and not force:
+                raise FileExistsError(f"aggregation output exists (use --force): {p}")
+        result_path = paths["aggregation_result.json"]
+        write_json_atomic(result_path, result_body)
+        paths["aggregation_result.md"].write_text(
+            _render_result_md(result_body, partial=False), encoding="utf-8"
+        )
+        _write_common_artifacts(
+            repo_root=repo_root,
+            paths=paths,
+            catalog_path=paths["modes_catalog.jsonl"],
+            modes_summary_path=paths["modes_summary.json"],
+            runtime_path=paths["runtime_summary.json"],
+            warn_fail_path=paths["warnings_and_failures.json"],
+            plot_path=plot_path,
+            report=report,
+            result_body=result_body,
+            deduped_catalog=deduped_catalog,
+            all_records=all_records,
+            partial=False,
+        )
+        write_json_atomic(result_path, result_body)
+        report["output_paths"] = result_body["output_paths"]
+        return
+
+    paths = {name: agg_dir / name for name in PARTIAL_OUTPUTS}
+    plot_path = agg_dir / "partial_mode_frequency_plot.png"
+    for p in list(paths.values()) + [plot_path]:
+        if p.is_file() and not force:
+            raise FileExistsError(f"aggregation output exists (use --force): {p}")
+    result_path = paths["partial_aggregation_result.json"]
+    write_json_atomic(result_path, result_body)
+    paths["partial_aggregation_result.md"].write_text(
+        _render_result_md(result_body, partial=True), encoding="utf-8"
+    )
+    _write_common_artifacts(
+        repo_root=repo_root,
+        paths=paths,
+        catalog_path=paths["partial_modes_catalog.jsonl"],
+        modes_summary_path=paths["partial_modes_summary.json"],
+        runtime_path=paths["partial_runtime_summary.json"],
+        warn_fail_path=paths["partial_warnings_and_failures.json"],
+        plot_path=plot_path,
+        report=report,
+        result_body=result_body,
+        deduped_catalog=deduped_catalog,
+        all_records=all_records,
+        partial=True,
+    )
     write_json_atomic(result_path, result_body)
     report["output_paths"] = result_body["output_paths"]
 
@@ -473,13 +544,15 @@ def _try_mode_plot(
     path: Optional[Path],
     deduped: Sequence[Dict[str, Any]],
     report: Dict[str, Any],
+    *,
+    partial: bool,
 ) -> None:
     if path is None or not deduped:
         return
     try:
         import matplotlib.pyplot as plt  # noqa: WPS433
     except ImportError:
-        report.setdefault("warnings", []).append("matplotlib unavailable; skipped partial_mode_frequency_plot.png")
+        report.setdefault("warnings", []).append(f"matplotlib unavailable; skipped {path.name}")
         return
     freqs = [float(r["frequency_hz"]) for r in deduped]
     if not freqs:
@@ -487,8 +560,9 @@ def _try_mode_plot(
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.scatter(freqs, [1] * len(freqs), s=12, alpha=0.7)
     ax.set_xlabel("frequency_hz")
+    label = "Partial modes" if partial else "Aggregated modes"
     ax.set_title(
-        f"Partial modes ({report.get('completed_chunk_count')}/{report.get('planned_chunk_count')} chunks)"
+        f"{label} ({report.get('completed_chunk_count')}/{report.get('planned_chunk_count')} chunks)"
     )
     band = report.get("frequency_range_hz") or [60, 550]
     if len(band) == 2:
@@ -529,6 +603,38 @@ def _write_manifest_preview(
     st6["partial_aggregation_status"] = report.get("status")
     st6["updated_utc"] = utc_now()
     write_json_atomic(run_root / "pipeline_run_manifest.m4_4_partial_aggregation_preview.json", preview)
+
+
+def _write_full_manifest_preview(
+    *,
+    run_root: Path,
+    manifest: Dict[str, Any],
+    report: Dict[str, Any],
+) -> None:
+    preview = json.loads(json.dumps(manifest))
+    preview["updated_utc"] = utc_now()
+    preview["will_execute"] = False
+    preview["mode"] = "m4_4_full_aggregation"
+    preview["terminal_status"] = TERMINAL_FULL
+    preview["pipeline_terminal_unchanged_note"] = (
+        "main pipeline_run_manifest.json not modified by full aggregation preview"
+    )
+    preview["full_aggregation"] = {
+        "status": report.get("status"),
+        "final_aggregation_ready": report.get("final_aggregation_ready"),
+        "completed_chunks": report.get("completed_chunks"),
+        "deduped_mode_count": report.get("deduped_mode_count"),
+        "output_paths": report.get("output_paths"),
+    }
+    stages = preview.setdefault("stages", {})
+    st5 = stages.setdefault("stage5_workers", {})
+    st5["status"] = "PASS"
+    st5["updated_utc"] = utc_now()
+    st6 = stages.setdefault("stage6_aggregate", {})
+    st6["status"] = "PASS"
+    st6["aggregation_status"] = report.get("status")
+    st6["updated_utc"] = utc_now()
+    write_json_atomic(run_root / "pipeline_run_manifest.m4_4_full_aggregation_preview.json", preview)
 
 
 def run_dry_run(*, repo_root: Path, run_root: Path, partial_ok: bool) -> int:
@@ -579,22 +685,29 @@ def run_execute(*, repo_root: Path, run_root: Path, partial_ok: bool, force: boo
         return 2
 
     manifest = load_json(run_root / "pipeline_run_manifest.json")
-    _write_manifest_preview(run_root=run_root, manifest=manifest, report=report)
+    if report.get("final_aggregation_ready"):
+        _write_full_manifest_preview(run_root=run_root, manifest=manifest, report=report)
+        terminal = TERMINAL_FULL
+    else:
+        _write_manifest_preview(run_root=run_root, manifest=manifest, report=report)
+        terminal = TERMINAL_PARTIAL
 
     print(f"status={report.get('status')}")
     print(f"planned_chunks={report.get('planned_chunk_count')}")
     print(f"completed_chunks={report.get('completed_chunk_count')}")
     print(f"missing_chunks={report.get('missing_chunk_count')}")
+    print(f"failed_chunks={report.get('failed_chunk_count')}")
     print(f"raw_mode_count={report.get('raw_mode_count')}")
     print(f"deduped_mode_count={report.get('deduped_mode_count')}")
-    print(f"terminal_status={TERMINAL_PARTIAL}")
+    print(f"final_aggregation_ready={report.get('final_aggregation_ready')}")
+    print(f"terminal_status={terminal}")
     print("no solver executed")
     return 0
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="M4.4.1b-3: aggregate L_prod worker results (partial or full)."
+        description="M4.4.1b-3/4: aggregate L_prod worker results (partial or full)."
     )
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument(
@@ -604,7 +717,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--execute", action="store_true")
-    parser.add_argument("--force", action="store_true", help="Overwrite existing partial aggregation outputs.")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing partial or full aggregation outputs.",
+    )
     args = parser.parse_args(argv)
 
     if args.dry_run and args.execute:

@@ -575,7 +575,8 @@ Reports must show **target counts** and **estimated hours** for uniform vs adapt
 | Single-chunk worker smoke (solver-mkl) | **M4.4.1b-1 done** — `v2_b3_m4_worker_smoke_test.py` |
 | Limited multi-chunk worker mini-batch | **M4.4.1b-2 done** — `v2_b3_m4_worker_minibatch.py` |
 | Partial aggregation over completed worker results | **M4.4.1b-3 done** — `v2_b3_m4_aggregate_worker_results.py` |
-| Single-guitar L_prod worker solve + aggregation | M4.4.1b-4+ |
+| Remaining worker chunks + full aggregation | **M4.4.1b-4 done** — `v2_b3_m4_worker_run_remaining.py` |
+| Single-guitar L_prod FCFS / promotion | M4.4.1b+ |
 | Multi-guitar LHS batch driver | M4.5 |
 | Geometry-delta → remesh trigger in Stage 0 | M4.3+ |
 | Mode NPZ / plot exporters | M4.4 |
@@ -769,6 +770,27 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
 ```
 
 **Exit (partial):** `status=PARTIAL_AGGREGATION_PASS_WITH_MISSING_CHUNKS`, `final_aggregation_ready=false`.
+
+### M4.4.1b-4 — Remaining workers + full aggregation (**done**)
+
+- Script: `scripts/v2_b3_m4_worker_run_remaining.py` (skip/reuse PASS chunks; execute missing only)
+- Full aggregation: `scripts/v2_b3_m4_aggregate_worker_results.py` without `--partial-ok` when all 11 chunks PASS
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_worker_run_remaining.py \
+  --run-dir FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1 \
+  --dry-run
+
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_worker_run_remaining.py \
+  --run-dir FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1 \
+  --execute
+
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_aggregate_worker_results.py \
+  --run-dir FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1 \
+  --execute --force
+```
+
+Writes: `worker_results/remaining_workers_m4_4_1b_4_manifest.json`, `pipeline_run_manifest.m4_4_workers_complete_preview.json`, final `aggregation/aggregation_result.json`, `pipeline_run_manifest.m4_4_full_aggregation_preview.json` (`terminal_status`: `LPROD_WORKERS_AND_AGGREGATION_PASS`).
 
 ### M4.4.1b — Single-guitar L_prod worker solve + aggregation
 

@@ -213,4 +213,14 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
 
 Writes under `aggregation/`: `partial_aggregation_result.json`, `partial_modes_catalog.jsonl`, `partial_modes_summary.json`, `partial_runtime_summary.json`, `partial_warnings_and_failures.json`, optional `partial_mode_frequency_plot.png`. Preview: `pipeline_run_manifest.m4_4_partial_aggregation_preview.json`. Status when chunks missing: `PARTIAL_AGGREGATION_PASS_WITH_MISSING_CHUNKS`; `final_aggregation_ready=false`.
 
-Next: **M4.4.1b-4** remaining worker chunks (skip/reuse PASS), then full aggregation when all 11 chunks complete.
+### M4.4.1b-4 — remaining workers + full aggregation
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_worker_run_remaining.py \
+  --run-dir .../sample_001_m4dry1 --execute
+
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_aggregate_worker_results.py \
+  --run-dir .../sample_001_m4dry1 --execute --force
+```
+
+Remaining batch manifest: `worker_results/remaining_workers_m4_4_1b_4_manifest.json`. Full aggregation (all 11 PASS): `aggregation/aggregation_result.json`, preview `pipeline_run_manifest.m4_4_full_aggregation_preview.json`, `status=AGGREGATION_PASS`, `final_aggregation_ready=true`.
