@@ -1,0 +1,42 @@
+{
+  "files.watcherExclude": {
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/node_modules/**": true,
+    "**/.venv/**": true,
+    "**/__pycache__/**": true,
+    "**/.ffcx_cache/**": true,
+    "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/**": true,
+    "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/batches/**": true,
+    "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/scout_density_reports/**": true,
+    "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/**": true,
+    "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/logs/**": true,
+    "**/pipeline_runs/**/worker_results/**": true,
+    "**/pipeline_runs/**/aggregation/**": true,
+    "**/pipeline_runs/**/freeze/**": true,
+    "**/pipeline_runs/**/lprod/checkpoint/**": true
+  },
+  "files.exclude": {
+    "**/.git": true,
+    "**/.venv": true,
+    "**/__pycache__": true,
+    "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars": true,
+    "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/batches": true,
+    "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/scout_density_reports": true,
+    "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays": true,
+    "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/logs": true
+  },
+  "search.exclude": {
+    "**/.venv": true,
+    "**/__pycache__": true,
+    "**/.ffcx_cache": true,
+    "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars": true,
+    "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/batches": true,
+    "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/scout_density_reports": true,
+    "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays": true,
+    "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/logs": true,
+    "**/pipeline_runs/**/worker_results": true,
+    "**/pipeline_runs/**/aggregation": true,
+    "**/pipeline_runs/**/freeze": true
+  }
+}

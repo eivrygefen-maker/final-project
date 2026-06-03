@@ -241,10 +241,10 @@ Batch outputs: `pipeline_runs/batches/m4_5_first3_lhs/{batch_plan,batch_manifest
 
 ```bash
 python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_run_one_sample.py \
-  --run-dir .../guitars/sample_002/runs/sample_002_m45dry1 --execute --workers 3
+  --run-dir .../guitars/sample_003/runs/sample_003_m45dry1 --execute --workers 3 --m45-batch-mode
 ```
 
-Success: `terminal_status=LPROD_WORKERS_AND_AGGREGATION_PASS`, `aggregation/aggregation_result.json` with `AGGREGATION_PASS`, `freeze/sample_e2e_run_manifest.json`. Does not run `sample_003` / `sample_004`.
+Requires `--m45-batch-mode` for `--execute` (samples in `m4_5_small_lhs_batch_first3.json` only). `sample_001` blocked unless `--allow-reference-mutation`. Success: `AGGREGATION_PASS`, `freeze/sample_e2e_run_manifest.json`.
 
 ### M4.5-pre — first E2E freeze manifest
 

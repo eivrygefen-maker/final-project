@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M4.5.2 — run one guitar through the full M4 pipeline (orchestrated stages)."""
+"""M4.5.2+ — run one guitar through the full M4 pipeline (orchestrated stages)."""
 from __future__ import annotations
 
 import argparse
@@ -39,7 +39,11 @@ import v2_b3_m4_lprod_worker_dry_run as worker_plan_mod  # noqa: E402
 import v2_b3_m4_pipeline_run_scout as scout_mod  # noqa: E402
 import v2_b3_m4_worker_run_remaining as workers_mod  # noqa: E402
 
-M45_BLOCKED_SAMPLES = frozenset({"sample_003", "sample_004"})
+REFERENCE_SAMPLE_ID = "sample_001"
+DEFAULT_M45_BATCH_SPEC_REL = (
+    "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/specs/"
+    "m4_5_small_lhs_batch_first3.json"
+)
 DEFAULT_WORKERS = 3
 STAGE_ORDER = ("scout", "worker_plan", "checkpoint", "workers", "aggregate", "freeze")
 
@@ -63,6 +67,75 @@ def _sample_id_from_run(run_root: Path) -> str:
         return run_root.parent.parent.name
     except IndexError:
         return ""
+
+
+def load_m45_batch_allowlist(spec_path: Path) -> Dict[str, str]:
+    """Return {sample_id: expected_run_id} for batch samples (excludes reference)."""
+    spec = load_json(spec_path)
+    exclude = set(spec.get("exclude_from_batch") or [])
+    exclude.add(spec.get("reference_sample_id") or REFERENCE_SAMPLE_ID)
+    out: Dict[str, str] = {}
+    for row in spec.get("samples") or []:
+        sid = str(row.get("sample_id") or "").strip()
+        rid = str(row.get("run_id") or "").strip()
+        if sid and sid not in exclude:
+            out[sid] = rid
+    return out
+
+
+def validate_execution_scope(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    sample_id: str,
+    execute: bool,
+    m45_batch_mode: bool,
+    m45_batch_spec: Path,
+    allow_unlisted_sample: bool,
+    allow_reference_mutation: bool,
+) -> Optional[str]:
+    """Return error message if scope check fails, else None."""
+    if sample_id == REFERENCE_SAMPLE_ID:
+        if allow_reference_mutation:
+            return None
+        return (
+            f"{sample_id} is the frozen M4 reference run; "
+            "use --allow-reference-mutation only if you intend to modify it"
+        )
+
+    if m45_batch_mode:
+        spec_path = m45_batch_spec if m45_batch_spec.is_absolute() else repo_root / m45_batch_spec
+        if not spec_path.is_file():
+            return f"missing M4.5 batch spec: {spec_path}"
+        allowlist = load_m45_batch_allowlist(spec_path)
+        if sample_id not in allowlist:
+            allowed = ", ".join(sorted(allowlist))
+            return (
+                f"{sample_id} is not in M4.5 small batch spec ({spec_path.name}); "
+                f"allowed: {allowed}"
+            )
+        expected_run_id = allowlist[sample_id]
+        if run_root.name != expected_run_id:
+            return (
+                f"run_id={run_root.name!r} does not match batch spec "
+                f"expected {expected_run_id!r} for {sample_id}"
+            )
+        return None
+
+    if allow_unlisted_sample:
+        if execute:
+            print(
+                f"warning: --allow-unlisted-sample permits {sample_id} outside M4.5 batch spec",
+                flush=True,
+            )
+        return None
+
+    if execute:
+        return (
+            "execute requires --m45-batch-mode (sample in m4_5_small_lhs_batch_first3.json) "
+            "or explicit --allow-unlisted-sample override"
+        )
+    return None
 
 
 def _manifest(run_root: Path) -> Dict[str, Any]:
@@ -288,7 +361,10 @@ def run_pipeline(
     force: bool,
     execute: bool,
     stop_after: Optional[str],
-    allowed_sample_id: Optional[str],
+    m45_batch_mode: bool,
+    m45_batch_spec: Path,
+    allow_unlisted_sample: bool,
+    allow_reference_mutation: bool,
     freq_min: float,
     freq_max: float,
     scout_spacing: float,
@@ -302,17 +378,18 @@ def run_pipeline(
         return 2
 
     sample_id = _sample_id_from_run(run_root)
-    if sample_id in M45_BLOCKED_SAMPLES and execute:
-        print(
-            f"error: {sample_id} is blocked for M4.5.2 (run sample_002 only; use M4.5 batch later)",
-            file=sys.stderr,
-        )
-        return 2
-    if allowed_sample_id and sample_id != allowed_sample_id:
-        print(
-            f"error: run sample_id={sample_id!r} does not match --allowed-sample-id={allowed_sample_id!r}",
-            file=sys.stderr,
-        )
+    scope_err = validate_execution_scope(
+        repo_root=repo_root,
+        run_root=run_root,
+        sample_id=sample_id,
+        execute=execute,
+        m45_batch_mode=m45_batch_mode,
+        m45_batch_spec=m45_batch_spec,
+        allow_unlisted_sample=allow_unlisted_sample,
+        allow_reference_mutation=allow_reference_mutation,
+    )
+    if scope_err:
+        print(f"error: {scope_err}", file=sys.stderr)
         return 2
 
     log_path = run_root / "logs" / "m4_run_one_sample.log"
@@ -342,6 +419,7 @@ def run_pipeline(
             "workers": workers,
             "stop_after": stop_after,
             "force": force,
+            "m45_batch_mode": m45_batch_mode,
             "stage_assessment": stages,
         },
     )
@@ -350,6 +428,8 @@ def run_pipeline(
     print(f"sample_id={sample_id}")
     print(f"run_id={run_root.name}")
     print(f"run_dir={rel(run_root, repo_root=repo_root)}")
+    if m45_batch_mode:
+        print("m45_batch_mode=true")
     for name in STAGE_ORDER:
         st = stages[name]
         print(f"  stage_{name}: pass={st['pass']} reuse={st['reuse_status']}")
@@ -374,7 +454,7 @@ def run_pipeline(
         print("no solver executed")
         return 0
 
-    _append_log(log_path, f"[{utc_now()}] M4.5.2 execute begin sample={sample_id} run={run_root.name}")
+    _append_log(log_path, f"[{utc_now()}] M4.5 execute begin sample={sample_id} run={run_root.name}")
 
     runners = [
         ("scout", lambda: _run_stage_scout(run_root=run_root, policy=policy, force=force, execute=True)),
@@ -430,7 +510,7 @@ def run_pipeline(
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="M4.5.2: run one guitar through M4 pipeline (scout→workers→aggregate→freeze)."
+        description="M4.5: run one guitar through M4 pipeline (scout→workers→aggregate→freeze)."
     )
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--dry-run", action="store_true", help="Assess stages and print plan only.")
@@ -438,9 +518,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--force", action="store_true", help="Re-run PASS stages / overwrite outputs.")
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
     parser.add_argument(
-        "--allowed-sample-id",
-        default="sample_002",
-        help="Guard: only this sample_id may --execute (use '' to disable).",
+        "--m45-batch-mode",
+        action="store_true",
+        help="Allow execute only for sample_id/run_id listed in m4_5_small_lhs_batch_first3.json.",
+    )
+    parser.add_argument(
+        "--m45-batch-spec",
+        type=Path,
+        default=DEFAULT_M45_BATCH_SPEC_REL,
+        help="M4.5 small-batch spec JSON (default: m4_5_small_lhs_batch_first3.json).",
+    )
+    parser.add_argument(
+        "--allow-unlisted-sample",
+        action="store_true",
+        help="Override: permit execute for samples outside the M4.5 batch spec.",
+    )
+    parser.add_argument(
+        "--allow-reference-mutation",
+        action="store_true",
+        help=f"Override: permit execute on frozen reference {REFERENCE_SAMPLE_ID}.",
     )
     parser.add_argument(
         "--stop-after",
@@ -477,11 +573,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         force=bool(args.force),
         execute=bool(args.execute),
         stop_after=args.stop_after,
-        allowed_sample_id=(
-            str(args.allowed_sample_id).strip()
-            if str(args.allowed_sample_id or "").strip()
-            else None
-        ),
+        m45_batch_mode=bool(args.m45_batch_mode),
+        m45_batch_spec=args.m45_batch_spec,
+        allow_unlisted_sample=bool(args.allow_unlisted_sample),
+        allow_reference_mutation=bool(args.allow_reference_mutation),
         freq_min=float(args.freq_min_hz),
         freq_max=float(args.freq_max_hz),
         scout_spacing=float(args.scout_spacing_hz),

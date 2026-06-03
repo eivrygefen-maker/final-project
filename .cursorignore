@@ -1,0 +1,20 @@
+# Cursor indexing excludes — mirror .gitignore pipeline runtime policy.
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/batches/
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/scout_density_reports/
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/logs/
+**/__pycache__/
+.venv/
+.ffcx_cache/
+**/*.pyc
+**/*.msh
+**/*.npz
+**/*.h5
+**/*.vtk
+**/*.frd
+**/*.dat
+**/*.log
+temp_modes/
+**/snapshots/
+**/production_runs/

@@ -578,7 +578,7 @@ Reports must show **target counts** and **estimated hours** for uniform vs adapt
 | Remaining worker chunks + full aggregation | **M4.4.1b-4 done** — `v2_b3_m4_worker_run_remaining.py` |
 | First E2E run freeze + milestone report | **M4.5-pre done** — `v2_b3_m4_freeze_first_e2e_run.py` |
 | Small multi-guitar batch dry-run planner | **M4.5.1 done** — `v2_b3_m4_small_batch_dry_run.py` |
-| Single-sample M4 pipeline execution | **M4.5.2 done** — `v2_b3_m4_run_one_sample.py` (sample_002 first) |
+| Single-sample M4 pipeline execution | **M4.5.3** — `v2_b3_m4_run_one_sample.py` + `--m45-batch-mode` (002–004) |
 | Multi-guitar LHS batch execution | M4.5 |
 | Geometry-delta → remesh trigger in Stage 0 | M4.3+ |
 | Mode NPZ / plot exporters | M4.4 |
@@ -835,7 +835,7 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
 ### M4.5.2 — Execute one batch sample (`sample_002`) (**done**)
 
 - Script: `scripts/v2_b3_m4_run_one_sample.py` (orchestrates scout → worker plan → checkpoint → workers → aggregate → freeze)
-- Default guard: `--allowed-sample-id sample_002` (blocks `sample_003` / `sample_004` on `--execute`)
+- Execute guard: `--m45-batch-mode` (only `sample_002`–`004` from `m4_5_small_lhs_batch_first3.json`; blocks frozen `sample_001`)
 - Freeze for non-reference samples: `freeze/sample_e2e_run_manifest.json` (via generalized freeze script)
 
 ```bash
@@ -845,10 +845,26 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
 
 python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_run_one_sample.py \
   --run-dir FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_002/runs/sample_002_m45dry1 \
-  --execute --workers 3
+  --execute --workers 3 --m45-batch-mode
 ```
 
-Optional checkpoints: `--stop-after scout`, `--stop-after checkpoint`, `--stop-after workers`. Reuse PASS stages unless `--force`.
+**Runtime hygiene:** Pipeline outputs under `pipeline_runs/guitars/`, `batches/`, `scout_density_reports/`, etc. are Git- and IDE-ignored by default ([B3_PIPELINE_RUNTIME_HYGIENE.md](B3_PIPELINE_RUNTIME_HYGIENE.md)). Do not commit generated artifacts unless explicitly requested.
+
+### M4.5.3 — Remaining small-batch samples (`sample_003`, `sample_004`)
+
+- Same script; `--execute` requires `--m45-batch-mode` (samples must match `m4_5_small_lhs_batch_first3.json` `sample_id` + `run_id`).
+- `sample_001` rejected unless `--allow-reference-mutation`. Unlisted samples need `--allow-unlisted-sample`.
+
+```bash
+# sample_003 (then sample_004 with run-dir .../sample_004_m45dry1)
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_run_one_sample.py \
+  --run-dir FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_003/runs/sample_003_m45dry1 \
+  --execute --workers 3 --m45-batch-mode
+```
+
+**Exit:** `AGGREGATION_PASS`, all chunks complete, `freeze/sample_e2e_run_manifest.json`. Do not `--force` completed `sample_002`.
+
+Optional checkpoints: `--stop-after scout`, `--stop-after checkpoint`, `--stop-after workers`. Overrides: `--allow-unlisted-sample`, `--allow-reference-mutation` (reference only).
 
 **Manual sequence (same stages):** `v2_b3_m4_pipeline_run_scout.py --execute-scout` → `v2_b3_m4_lprod_worker_dry_run.py` → `v2_b3_m4_lprod_checkpoint_run.py --execute` → `v2_b3_m4_worker_run_remaining.py --execute` → `v2_b3_m4_aggregate_worker_results.py --execute --force` → freeze with `--freeze-prefix auto`.
 

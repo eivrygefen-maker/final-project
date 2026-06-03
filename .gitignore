@@ -1,67 +1,81 @@
+# Python / tooling
 .venv/
-.vscode/
 **/__pycache__/
 **/*.pyc
-/*.npz
-/*.log
-/*.msh
-*.npz
-*.log
-*.msh
-**/snapshots/
-**/production_runs/
-**/comparison/
-FEM/mesh/*.msh
-ROM_DATA/**/*.npz
+.ffcx_cache/
+
+# Editor — share workspace indexing excludes; ignore local launch/tasks
+.vscode/*
+!.vscode/settings.json
+
+# Logs and caches (repo-wide)
 logs/
-.venv/
-.vscode/
-**/__pycache__/
-**/*.pyc
-/*.npz
-/*.log
-/*.msh
-*.npz
 *.log
+*.npz
 *.msh
+**/*.npz
+**/*.log
+**/*.msh
+**/*.smx.npz
+**/*.frd
+**/*.dat
+**/*.h5
+**/*.vtk
+**/*.xdmf
+
+# FEM legacy output trees
 **/snapshots/
 **/production_runs/
 **/comparison/
 FEM/mesh/*.msh
 ROM_DATA/**/*.npz
-# FEM Outputs
 FEM/outputs/modes_3d/*.h5
 FEM/outputs/modes_3d/*.vtk
 FEM/outputs/modes_3d/*.xdmf
-
-# Temporary sparse mode files
 temp_modes/
-*.smx.npz
-# Local FEM/JIT compilation cache
-.ffcx_cache/
 
 # Generated active-domain validation configs
 FEM/experiments/active_domain_validation/configs/sample_*.json
-
-# Generated validation mesh audits and CAD diagnostics
 FEM/experiments/active_domain_validation/mesh/*.json
 FEM/experiments/active_domain_validation/mesh/*.md
 FEM/experiments/active_domain_validation/mesh/*.brep
 FEM/experiments/active_domain_validation/mesh/*.geo
 
-# Generated physics-integrity outputs
+# Physics-integrity experiment outputs (non-pipeline)
 FEM/experiments/active_domain_validation/physics_integrity/*/results/
 FEM/experiments/active_domain_validation/physics_integrity/*/diagnostics/
 FEM/experiments/active_domain_validation/physics_integrity/*/logs/
 FEM/experiments/active_domain_validation/physics_integrity/*/modes/
 FEM/experiments/active_domain_validation/physics_integrity/*/timing/
 FEM/experiments/active_domain_validation/physics_integrity/*/sorting/
-
-# Shared physics-integrity visualization/audit exports
 FEM/experiments/active_domain_validation/physics_integrity/diagnostics/
 
-# Pipeline run runtime data (M1.5+)
+# ---------------------------------------------------------------------------
+# B3 pipeline runtime (M1.5+) — never commit unless explicitly requested.
+# See: FEM/experiments/active_domain_validation/physics_integrity/docs/B3_PIPELINE_RUNTIME_HYGIENE.md
+# ---------------------------------------------------------------------------
+
+# Per-guitar run trees (scout, lprod, mesh, checkpoints, workers, aggregation, freeze)
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/
+
+# Batch execution manifests and indexes produced at runtime
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/batches/
+
+# M3.4 coarse scout density reports and consensus summaries
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/scout_density_reports/
+
+# Resolved overlay configs from pilot/batch prep (regenerable)
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/
+
+# Pipeline-wide runtime logs and per-run manifests
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/logs/
 FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/manifests/run_*.json
 FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/index/runs_index.jsonl
-FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/logs/
-FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/
+
+# Heavy artifacts anywhere under pipeline_runs (belt-and-suspenders)
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/**/worker_results/
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/**/aggregation/
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/**/freeze/
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/**/lprod/checkpoint/
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/**/logs/
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/**/modes_catalog.jsonl
