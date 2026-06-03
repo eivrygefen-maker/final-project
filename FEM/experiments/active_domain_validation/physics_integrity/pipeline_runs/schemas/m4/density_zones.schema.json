@@ -1,0 +1,91 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://final-project.local/schemas/m4/density_zones.schema.json",
+  "title": "M4 density zones (Stage 3)",
+  "description": "Binned modal density and ZONE 1/2/3 classification from scout frequencies.",
+  "type": "object",
+  "required": [
+    "schema",
+    "sample_id",
+    "run_id",
+    "zone_policy_version",
+    "frequency_range_hz",
+    "bin_width_hz",
+    "bins",
+    "segments"
+  ],
+  "properties": {
+    "schema": { "type": "string", "const": "m4_density_zones_v1" },
+    "sample_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "generated_utc": { "type": "string" },
+    "zone_policy_version": { "type": "string", "const": "v1" },
+    "scout_policy_version": { "type": "string" },
+    "frequency_range_hz": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "bin_width_hz": { "type": "number", "minimum": 0 },
+    "dedupe_tolerance_hz": { "type": "number" },
+    "unique_mode_count": { "type": "integer" },
+    "classification_rule": { "type": "string" },
+    "zone_spacing_hz": {
+      "type": "object",
+      "properties": {
+        "ZONE_1_dense": { "type": "number", "const": 6.0 },
+        "ZONE_2_medium": { "type": "number", "const": 9.0 },
+        "ZONE_3_sparse": { "type": "number", "const": 12.5 }
+      }
+    },
+    "bins": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "freq_lo_hz",
+          "freq_hi_hz",
+          "bin_width_hz",
+          "mode_count",
+          "density_modes_per_hz",
+          "zone_id",
+          "recommended_lprod_spacing_hz"
+        ],
+        "properties": {
+          "freq_lo_hz": { "type": "number" },
+          "freq_hi_hz": { "type": "number" },
+          "bin_width_hz": { "type": "number" },
+          "mode_count": { "type": "integer", "minimum": 0 },
+          "density_modes_per_hz": { "type": "number", "minimum": 0 },
+          "zone_id": {
+            "type": "string",
+            "enum": ["ZONE_1_dense", "ZONE_2_medium", "ZONE_3_sparse"]
+          },
+          "recommended_lprod_spacing_hz": { "type": "number" },
+          "mode_frequencies_hz": {
+            "type": "array",
+            "items": { "type": "number" }
+          }
+        }
+      }
+    },
+    "segments": {
+      "type": "array",
+      "description": "Merged contiguous intervals per zone for target planning.",
+      "items": {
+        "type": "object",
+        "required": ["freq_lo_hz", "freq_hi_hz", "zone_id", "recommended_lprod_spacing_hz"],
+        "properties": {
+          "freq_lo_hz": { "type": "number" },
+          "freq_hi_hz": { "type": "number" },
+          "zone_id": {
+            "type": "string",
+            "enum": ["ZONE_1_dense", "ZONE_2_medium", "ZONE_3_sparse"]
+          },
+          "recommended_lprod_spacing_hz": { "type": "number" }
+        }
+      }
+    }
+  }
+}

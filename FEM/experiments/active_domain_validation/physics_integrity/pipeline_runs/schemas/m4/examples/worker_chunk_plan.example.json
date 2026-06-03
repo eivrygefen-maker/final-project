@@ -1,0 +1,89 @@
+{
+  "schema": "m4_worker_chunk_plan_v1",
+  "sample_id": "sample_001",
+  "run_id": "sample_001_m4_20260602T120000Z",
+  "generated_utc": "2026-06-02T12:10:00Z",
+  "chunk_policy_version": "v1",
+  "frequency_range_hz": [60.0, 550.0],
+  "chunk_policy": {
+    "preferred_width_hz": [20.0, 40.0],
+    "min_width_hz": 15.0,
+    "max_width_hz": 50.0,
+    "respect_zone_boundaries": true
+  },
+  "lprod_target_plan_path": "pipeline_runs/guitars/sample_001/runs/sample_001_m4_20260602T120000Z/scout/lprod_target_plan.json",
+  "chunks": [
+    {
+      "chunk_id": "sample_001_chunk_01",
+      "freq_range_hz": [60.0, 95.0],
+      "zone_ids": ["ZONE_1_dense"],
+      "targets_hz": [60.0, 66.0, 72.0, 78.0, 84.0, 90.0],
+      "target_windows_hz": [[57.0, 63.0], [87.0, 93.0]],
+      "target_count": 6,
+      "estimated_cost": { "target_count": 6, "estimated_seconds": 2520.0, "relative_weight": 1.0 },
+      "status": "PENDING",
+      "assigned_worker_id": null,
+      "priority": 0
+    },
+    {
+      "chunk_id": "sample_001_chunk_02",
+      "freq_range_hz": [95.0, 130.0],
+      "zone_ids": ["ZONE_1_dense"],
+      "targets_hz": [96.0, 102.0, 108.0, 114.0, 120.0, 126.0],
+      "target_windows_hz": [[93.0, 99.0], [123.0, 129.0]],
+      "target_count": 6,
+      "estimated_cost": { "target_count": 6, "estimated_seconds": 2520.0, "relative_weight": 1.0 },
+      "status": "PENDING",
+      "assigned_worker_id": null,
+      "priority": 0
+    },
+    {
+      "chunk_id": "sample_001_chunk_03",
+      "freq_range_hz": [130.0, 180.0],
+      "zone_ids": ["ZONE_1_dense"],
+      "targets_hz": [132.0, 138.0, 144.0, 150.0, 156.0, 162.0, 168.0, 174.0, 180.0],
+      "target_windows_hz": [[129.0, 135.0], [177.0, 183.0]],
+      "target_count": 9,
+      "estimated_cost": { "target_count": 9, "estimated_seconds": 3780.0, "relative_weight": 1.35 },
+      "status": "PENDING",
+      "assigned_worker_id": null,
+      "priority": 0
+    },
+    {
+      "chunk_id": "sample_001_chunk_04",
+      "freq_range_hz": [180.0, 220.0],
+      "zone_ids": ["ZONE_2_medium"],
+      "targets_hz": [189.0, 198.0, 207.0, 216.0],
+      "target_windows_hz": [[184.5, 193.5], [211.5, 220.5]],
+      "target_count": 4,
+      "estimated_cost": { "target_count": 4, "estimated_seconds": 1680.0, "relative_weight": 0.9 },
+      "status": "PENDING",
+      "assigned_worker_id": null,
+      "priority": 0
+    },
+    {
+      "chunk_id": "sample_001_chunk_05",
+      "freq_range_hz": [350.0, 400.0],
+      "zone_ids": ["ZONE_2_medium", "ZONE_3_sparse"],
+      "targets_hz": [351.0, 363.5, 376.0, 388.5],
+      "target_windows_hz": [[346.5, 355.5], [382.25, 394.75]],
+      "target_count": 4,
+      "estimated_cost": { "target_count": 4, "estimated_seconds": 1680.0, "relative_weight": 0.95 },
+      "status": "PENDING",
+      "assigned_worker_id": null,
+      "priority": 0
+    },
+    {
+      "chunk_id": "sample_001_chunk_06",
+      "freq_range_hz": [500.0, 550.0],
+      "zone_ids": ["ZONE_3_sparse"],
+      "targets_hz": [501.0, 513.5, 526.0, 538.5, 550.0],
+      "target_windows_hz": [[494.75, 507.25], [543.75, 556.25]],
+      "target_count": 5,
+      "estimated_cost": { "target_count": 5, "estimated_seconds": 2100.0, "relative_weight": 1.1 },
+      "status": "PENDING",
+      "assigned_worker_id": null,
+      "priority": 0
+    }
+  ]
+}

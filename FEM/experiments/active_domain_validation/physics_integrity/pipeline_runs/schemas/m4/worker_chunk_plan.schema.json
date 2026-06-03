@@ -1,0 +1,101 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://final-project.local/schemas/m4/worker_chunk_plan.schema.json",
+  "title": "M4 worker chunk plan (Stage 5)",
+  "description": "FCFS work queue over frequency chunks on L_prod.",
+  "type": "object",
+  "required": [
+    "schema",
+    "sample_id",
+    "run_id",
+    "chunk_policy_version",
+    "frequency_range_hz",
+    "chunks"
+  ],
+  "properties": {
+    "schema": { "type": "string", "const": "m4_worker_chunk_plan_v1" },
+    "sample_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "generated_utc": { "type": "string" },
+    "chunk_policy_version": { "type": "string", "const": "v1" },
+    "frequency_range_hz": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "chunk_policy": {
+      "type": "object",
+      "properties": {
+        "preferred_width_hz": { "type": "array", "items": { "type": "number" } },
+        "min_width_hz": { "type": "number" },
+        "max_width_hz": { "type": "number" },
+        "respect_zone_boundaries": { "type": "boolean" }
+      }
+    },
+    "lprod_target_plan_path": { "type": "string" },
+    "chunks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "chunk_id",
+          "freq_range_hz",
+          "zone_ids",
+          "targets_hz",
+          "target_windows_hz",
+          "estimated_cost",
+          "status",
+          "assigned_worker_id"
+        ],
+        "properties": {
+          "chunk_id": { "type": "string" },
+          "freq_range_hz": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "zone_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["ZONE_1_dense", "ZONE_2_medium", "ZONE_3_sparse"]
+            }
+          },
+          "targets_hz": {
+            "type": "array",
+            "items": { "type": "number" }
+          },
+          "target_windows_hz": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": { "type": "number" },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "target_count": { "type": "integer" },
+          "estimated_cost": {
+            "type": "object",
+            "properties": {
+              "target_count": { "type": "integer" },
+              "estimated_seconds": { "type": "number" },
+              "relative_weight": { "type": "number" }
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": ["PENDING", "ASSIGNED", "RUNNING", "PASS", "FAIL", "SKIPPED"]
+          },
+          "assigned_worker_id": {
+            "type": ["string", "null"]
+          },
+          "priority": { "type": "integer" }
+        }
+      }
+    }
+  }
+}

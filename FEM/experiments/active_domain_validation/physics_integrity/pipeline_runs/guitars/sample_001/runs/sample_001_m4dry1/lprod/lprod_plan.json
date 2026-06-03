@@ -1,0 +1,19 @@
+{
+  "schema": "m4_lprod_plan_v1",
+  "will_execute": false,
+  "sample_id": "sample_001",
+  "run_id": "sample_001_m4dry1",
+  "mesh_level": "L_prod",
+  "planned_mesh_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/lprod/mesh/L_prod/sample_001.msh",
+  "checkpoint_dir": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/lprod/checkpoint",
+  "commands": {
+    "mesh_build": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_mesh_convergence.py # planned L_prod build for sample sample_001; geometry-aware path TBD M4.3+",
+    "stage_a_export": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_prod --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/sample_001/resolved_core_config.json\" --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/lprod/checkpoint\""
+  },
+  "env_profile": "production_fem",
+  "worker_pool": {
+    "planned_workers": 3,
+    "assignment_policy": "fcfs_v1",
+    "chunk_plan_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/lprod/worker_chunk_plan.placeholder.json"
+  }
+}

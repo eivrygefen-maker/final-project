@@ -1,0 +1,42 @@
+{
+  "schema": "m4_lprod_target_plan_v1",
+  "sample_id": "sample_001",
+  "run_id": "sample_001_m4_20260602T120000Z",
+  "generated_utc": "2026-06-02T12:05:00Z",
+  "zone_policy_version": "v1",
+  "target_generation_policy": "gapless_grid_v1_half_width_equals_spacing_over_2",
+  "frequency_range_hz": [60.0, 550.0],
+  "mesh_level": "L_prod",
+  "targets_hz": [
+    60.0, 66.0, 72.0, 78.0, 84.0, 90.0, 96.0, 102.0, 108.0, 114.0, 120.0, 126.0, 132.0, 138.0, 144.0, 150.0, 156.0, 162.0, 168.0, 174.0, 180.0,
+    189.0, 198.0, 207.0, 216.0, 225.0, 234.0, 243.0, 252.0, 261.0, 270.0, 279.0, 288.0, 297.0, 306.0, 315.0, 324.0, 333.0, 342.0, 351.0,
+    363.5, 376.0, 388.5, 401.0, 413.5, 426.0, 438.5, 451.0, 463.5, 476.0, 488.5, 501.0, 513.5, 526.0, 538.5, 550.0
+  ],
+  "target_metadata": [
+    { "target_hz": 60.0, "zone_id": "ZONE_1_dense", "spacing_hz": 6.0, "half_width_hz": 3.0 },
+    { "target_hz": 180.0, "zone_id": "ZONE_1_dense", "spacing_hz": 6.0, "half_width_hz": 3.0 },
+    { "target_hz": 189.0, "zone_id": "ZONE_2_medium", "spacing_hz": 9.0, "half_width_hz": 4.5 },
+    { "target_hz": 351.0, "zone_id": "ZONE_2_medium", "spacing_hz": 9.0, "half_width_hz": 4.5 },
+    { "target_hz": 363.5, "zone_id": "ZONE_3_sparse", "spacing_hz": 12.5, "half_width_hz": 6.25 },
+    { "target_hz": 550.0, "zone_id": "ZONE_3_sparse", "spacing_hz": 12.5, "half_width_hz": 6.25 }
+  ],
+  "target_windows_hz": [
+    [57.0, 63.0],
+    [547.0, 553.0]
+  ],
+  "coverage_check": {
+    "pass": true,
+    "band_hz": [60.0, 550.0],
+    "max_gap_hz": 0.0,
+    "gap_tolerance_hz": 0.01,
+    "target_count": 58,
+    "notes": "Union of half-width windows covers 60-550 Hz with touching intervals; example lists all zone endpoint targets."
+  },
+  "estimated_runtime": {
+    "target_count": 58,
+    "estimated_seconds_per_target": 420.0,
+    "estimated_total_seconds": 24360.0,
+    "placeholder": true
+  },
+  "density_zones_path": "pipeline_runs/guitars/sample_001/runs/sample_001_m4_20260602T120000Z/scout/density_zones.json"
+}

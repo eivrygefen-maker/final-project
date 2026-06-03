@@ -1,0 +1,28 @@
+{
+  "schema": "m4_scout_plan_v1",
+  "will_execute": false,
+  "sample_id": "sample_001",
+  "run_id": "sample_001_m4dry1",
+  "mesh_level": "L_scout_coarse",
+  "mesh_case_id": "baseline_coupled_v2",
+  "sample_specific_mesh": true,
+  "planned_mesh_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/mesh/L_scout_coarse/sample_001.msh",
+  "checkpoint_dir": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/checkpoint",
+  "discovery_dir": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/discovery",
+  "scout_policy": {
+    "version": "v1",
+    "frequency_range_hz": [
+      60.0,
+      550.0
+    ],
+    "spacing_hz": 7.5,
+    "half_width_hz": 3.75,
+    "discovery_mode": true
+  },
+  "commands": {
+    "mesh_build": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_B3_scout_coarse_mesh_build.py # sample-specific geometry: sample_001 (M4.3+ may pass FEM geometry overrides)",
+    "stage_a_export": "/home/vboxuser/final-project/.venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py --mesh-level L_scout_coarse --B3-block-compose-backend csr_bulk --B3-synthesis-region-dofs off --core-config \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays/sample_001/resolved_core_config.json\" --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/checkpoint\"",
+    "stage_b_discovery": "/home/vboxuser/solver-mkl/venv/bin/python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_target_density_experiment.py --checkpoint-dir \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/checkpoint\" --start-hz 60.0 --stop-hz 550.0 --spacings-hz 7.5 --B3-discovery-mode --discovery-band-hz 60.0 550.0 --target-window-half-width-hz 3.75 --output-dir \"FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/discovery\""
+  },
+  "env_profile": "production_fem"
+}

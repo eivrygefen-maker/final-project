@@ -1,0 +1,79 @@
+{
+  "schema": "m4_pipeline_run_manifest_v1",
+  "sample_id": "sample_001",
+  "run_id": "sample_001_m4_20260602T120000Z",
+  "batch_id": "m4_schema_example_batch",
+  "created_utc": "2026-06-02T12:00:00Z",
+  "updated_utc": "2026-06-02T22:00:00Z",
+  "terminal_status": "PARTIAL",
+  "will_execute": false,
+  "policy_versions": {
+    "scout_policy_version": "v1",
+    "zone_policy_version": "v1",
+    "chunk_policy_version": "v1"
+  },
+  "stages": {
+    "stage0_resolve": {
+      "status": "PASS",
+      "started_utc": "2026-06-02T12:00:00Z",
+      "finished_utc": "2026-06-02T12:01:00Z",
+      "artifact_paths": [
+        "pipeline_runs/config_overlays/sample_001/resolved_core_config.json",
+        "pipeline_runs/config_overlays/sample_001/readiness_check.json"
+      ]
+    },
+    "stage1_scout_mesh": {
+      "status": "PASS",
+      "artifact_paths": ["mesh/L_scout_coarse/sample_001.msh"]
+    },
+    "stage1_scout_export": {
+      "status": "PASS",
+      "artifact_paths": ["pipeline_runs/guitars/sample_001/runs/sample_001_m4_20260602T120000Z/scout/checkpoint_export"]
+    },
+    "stage2_scout_discovery": {
+      "status": "PASS",
+      "artifact_paths": [
+        "pipeline_runs/guitars/sample_001/runs/sample_001_m4_20260602T120000Z/scout/density_result.json"
+      ]
+    },
+    "stage3_zones_plan": {
+      "status": "PASS",
+      "artifact_paths": [
+        "pipeline_runs/guitars/sample_001/runs/sample_001_m4_20260602T120000Z/scout/density_zones.json",
+        "pipeline_runs/guitars/sample_001/runs/sample_001_m4_20260602T120000Z/scout/lprod_target_plan.json",
+        "pipeline_runs/guitars/sample_001/runs/sample_001_m4_20260602T120000Z/scout/worker_chunk_plan.json"
+      ]
+    },
+    "stage4_lprod_mesh": {
+      "status": "PENDING",
+      "failure_reason": "m4_schema_example: not executed"
+    },
+    "stage4_lprod_export": {
+      "status": "PENDING"
+    },
+    "stage5_workers": {
+      "status": "PARTIAL",
+      "artifact_paths": [
+        "pipeline_runs/guitars/sample_001/runs/sample_001_m4_20260602T120000Z/worker_results/sample_001_chunk_01_worker_result.json"
+      ]
+    },
+    "stage6_aggregate": {
+      "status": "PARTIAL",
+      "artifact_paths": [
+        "pipeline_runs/guitars/sample_001/runs/sample_001_m4_20260602T120000Z/aggregation/aggregation_result.json"
+      ]
+    }
+  },
+  "provenance": {
+    "core_config_sha256": "example_sha256_placeholder",
+    "mesh_hashes": {
+      "L_scout_coarse": "example_mesh_hash_scout",
+      "L_prod": null
+    },
+    "worker_count": 1
+  },
+  "env_probes": {
+    "stage_a_ok": true,
+    "stage_b_ok": true
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://final-project.local/schemas/m4/sample_input.schema.json",
+  "title": "M4 LHS sample input",
+  "description": "One guitar draw from LHS pool; consumed by Stage 0 resolve.",
+  "type": "object",
+  "required": ["schema", "sample_id", "shape_name"],
+  "additionalProperties": true,
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "m4_sample_input_v1"
+    },
+    "sample_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable logical identity for overlays and reporting."
+    },
+    "shape_name": {
+      "type": "string",
+      "description": "CAD shape profile, e.g. Classical, classic."
+    },
+    "parameters": {
+      "type": "object",
+      "description": "Flat LHS parameter map (dotted keys) from pool generator.",
+      "additionalProperties": {
+        "type": ["number", "string", "boolean", "null"]
+      }
+    },
+    "geometry": {
+      "type": "object",
+      "description": "Optional nested geometry (alternative to dotted keys in parameters).",
+      "properties": {
+        "length": { "type": "number" },
+        "width": { "type": "number" },
+        "depth": { "type": "number" },
+        "top_thickness": { "type": "number" },
+        "back_thickness": { "type": "number" },
+        "hole_radius": { "type": "number" }
+      }
+    },
+    "top_wood_id": { "type": "string" },
+    "back_wood_id": { "type": "string" },
+    "material_delta": {
+      "type": "object",
+      "description": "Override vs baseline materials (M2.4 style)."
+    },
+    "geometry_delta": {
+      "type": "object",
+      "description": "Override vs baseline geometry."
+    },
+    "requires_mesh_regeneration": {
+      "type": "boolean",
+      "default": true
+    },
+    "selection_reason": { "type": "string" },
+    "batch_id": { "type": "string" },
+    "guitar_index": { "type": "integer", "minimum": 0 }
+  },
+  "anyOf": [
+    { "required": ["parameters"] },
+    { "required": ["geometry"] }
+  ]
+}

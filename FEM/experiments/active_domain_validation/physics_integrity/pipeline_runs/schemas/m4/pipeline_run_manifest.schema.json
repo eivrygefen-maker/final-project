@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://final-project.local/schemas/m4/pipeline_run_manifest.schema.json",
+  "title": "M4 simulation run manifest (terminal)",
+  "description": "Terminal orchestrator manifest for one guitar run; extends M1 lifecycle.",
+  "type": "object",
+  "required": ["schema", "sample_id", "run_id", "terminal_status", "stages"],
+  "properties": {
+    "schema": { "type": "string", "const": "m4_pipeline_run_manifest_v1" },
+    "sample_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "batch_id": { "type": "string" },
+    "created_utc": { "type": "string" },
+    "updated_utc": { "type": "string" },
+    "terminal_status": {
+      "type": "string",
+      "enum": ["PASS", "PARTIAL", "FAIL", "PENDING", "RUNNING"]
+    },
+    "policy_versions": {
+      "type": "object",
+      "properties": {
+        "scout_policy_version": { "type": "string" },
+        "zone_policy_version": { "type": "string" },
+        "chunk_policy_version": { "type": "string" }
+      }
+    },
+    "stages": {
+      "type": "object",
+      "description": "Keys: stage0_resolve, stage1_scout_mesh, stage1_scout_export, stage2_scout_discovery, stage3_zones_plan, stage4_lprod_mesh, stage4_lprod_export, stage5_workers, stage6_aggregate",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string" },
+          "started_utc": { "type": "string" },
+          "finished_utc": { "type": "string" },
+          "artifact_paths": { "type": "array", "items": { "type": "string" } },
+          "failure_reason": { "type": "string" }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "mesh_hashes": { "type": "object" },
+        "core_config_sha256": { "type": "string" },
+        "checkpoint_export_sha256": { "type": "string" },
+        "solver_versions": { "type": "object" },
+        "worker_count": { "type": "integer" }
+      }
+    },
+    "env_probes": {
+      "type": "object",
+      "properties": {
+        "stage_a_ok": { "type": "boolean" },
+        "stage_b_ok": { "type": "boolean" }
+      }
+    },
+    "failure_reason": { "type": "string" },
+    "will_execute": { "type": "boolean" }
+  }
+}

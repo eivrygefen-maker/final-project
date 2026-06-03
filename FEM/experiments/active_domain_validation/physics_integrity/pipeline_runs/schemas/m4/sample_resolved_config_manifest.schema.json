@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://final-project.local/schemas/m4/sample_resolved_config_manifest.schema.json",
+  "title": "M4 sample manifest (Stage 0)",
+  "description": "Provenance and paths after resolving physical core config; produced Stage 0.",
+  "type": "object",
+  "required": [
+    "schema",
+    "sample_id",
+    "run_id",
+    "status",
+    "resolved_core_config_path",
+    "readiness_check_path",
+    "mesh_paths"
+  ],
+  "properties": {
+    "schema": { "type": "string", "const": "m4_sample_manifest_v1" },
+    "sample_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "generated_utc": { "type": "string" },
+    "status": { "type": "string", "enum": ["PASS", "FAIL", "PENDING_MESH", "PENDING"] },
+    "resolved_core_config_path": { "type": "string" },
+    "readiness_check_path": { "type": "string" },
+    "overlay_applied_path": { "type": "string" },
+    "core_config_sha256": { "type": "string" },
+    "mesh_paths": {
+      "type": "object",
+      "required": ["scout", "lprod"],
+      "properties": {
+        "scout": {
+          "type": "object",
+          "properties": {
+            "mesh_level": { "type": "string", "const": "L_scout_coarse" },
+            "mesh_file": { "type": "string" },
+            "case_id": { "type": "string" }
+          }
+        },
+        "lprod": {
+          "type": "object",
+          "properties": {
+            "mesh_level": { "type": "string", "const": "L_prod" },
+            "mesh_file": { "type": "string" },
+            "case_id": { "type": "string" }
+          }
+        }
+      }
+    },
+    "solver_policy": {
+      "type": "object",
+      "properties": {
+        "clamp_ribs": { "type": "boolean", "const": false }
+      }
+    },
+    "effective_materials": {
+      "type": "object",
+      "properties": {
+        "top.density": { "type": "number" },
+        "back.density": { "type": "number" }
+      }
+    },
+    "requires_mesh_regeneration": { "type": "boolean" },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "errors": { "type": "array", "items": { "type": "string" } }
+  }
+}

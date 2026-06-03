@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://final-project.local/schemas/m4/worker_result.schema.json",
+  "title": "M4 worker chunk result",
+  "description": "Per-chunk solver output from one FCFS worker (Stage 5).",
+  "type": "object",
+  "required": [
+    "schema",
+    "sample_id",
+    "run_id",
+    "worker_id",
+    "chunk_id",
+    "status",
+    "started_utc",
+    "finished_utc",
+    "targets_attempted",
+    "accepted_modes",
+    "unique_modes",
+    "result_json",
+    "warnings",
+    "errors",
+    "timing",
+    "solver_metadata"
+  ],
+  "properties": {
+    "schema": { "type": "string", "const": "m4_worker_result_v1" },
+    "sample_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "worker_id": { "type": "string" },
+    "chunk_id": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["PASS", "PARTIAL", "FAIL", "RUNNING", "PENDING"]
+    },
+    "started_utc": { "type": "string" },
+    "finished_utc": { "type": "string" },
+    "targets_attempted": {
+      "type": "array",
+      "items": { "type": "number" }
+    },
+    "accepted_modes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "frequency_hz": { "type": "number" },
+          "target_hz": { "type": "number" },
+          "mode_index": { "type": "integer" }
+        }
+      }
+    },
+    "unique_modes": {
+      "type": "array",
+      "items": { "type": "number" }
+    },
+    "result_json": {
+      "type": "string",
+      "description": "Path to detailed per-target result JSON."
+    },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "errors": { "type": "array", "items": { "type": "string" } },
+    "timing": {
+      "type": "object",
+      "properties": {
+        "wall_seconds": { "type": "number" },
+        "solver_seconds": { "type": "number" },
+        "per_target_seconds": { "type": "object" }
+      }
+    },
+    "solver_metadata": {
+      "type": "object",
+      "properties": {
+        "mesh_level": { "type": "string", "const": "L_prod" },
+        "mesh_file": { "type": "string" },
+        "python_executable": { "type": "string" },
+        "env_profile": { "type": "string" },
+        "checkpoint_dir": { "type": "string" }
+      }
+    }
+  }
+}

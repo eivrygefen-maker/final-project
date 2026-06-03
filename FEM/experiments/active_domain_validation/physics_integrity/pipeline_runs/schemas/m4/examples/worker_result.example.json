@@ -1,0 +1,42 @@
+{
+  "schema": "m4_worker_result_v1",
+  "sample_id": "sample_001",
+  "run_id": "sample_001_m4_20260602T120000Z",
+  "worker_id": "W0",
+  "chunk_id": "sample_001_chunk_01",
+  "status": "PASS",
+  "started_utc": "2026-06-02T14:00:00Z",
+  "finished_utc": "2026-06-02T14:42:00Z",
+  "targets_attempted": [60.0, 66.0, 72.0, 78.0, 84.0, 90.0],
+  "accepted_modes": [
+    { "frequency_hz": 61.2, "target_hz": 60.0, "mode_index": 12 },
+    { "frequency_hz": 67.8, "target_hz": 66.0, "mode_index": 13 },
+    { "frequency_hz": 73.1, "target_hz": 72.0, "mode_index": 14 },
+    { "frequency_hz": 79.4, "target_hz": 78.0, "mode_index": 15 },
+    { "frequency_hz": 85.0, "target_hz": 84.0, "mode_index": 16 },
+    { "frequency_hz": 90.6, "target_hz": 90.0, "mode_index": 17 }
+  ],
+  "unique_modes": [61.2, 67.8, 73.1, 79.4, 85.0, 90.6],
+  "result_json": "pipeline_runs/guitars/sample_001/runs/sample_001_m4_20260602T120000Z/worker_results/sample_001_chunk_01_result.json",
+  "warnings": [],
+  "errors": [],
+  "timing": {
+    "wall_seconds": 2520.0,
+    "solver_seconds": 2485.0,
+    "per_target_seconds": {
+      "60.0": 410.0,
+      "66.0": 415.0,
+      "72.0": 412.0,
+      "78.0": 418.0,
+      "84.0": 405.0,
+      "90.0": 425.0
+    }
+  },
+  "solver_metadata": {
+    "mesh_level": "L_prod",
+    "mesh_file": "mesh/L_prod/sample_001.msh",
+    "python_executable": "/opt/fem-prod/bin/python",
+    "env_profile": "prod_strict",
+    "checkpoint_dir": "pipeline_runs/guitars/sample_001/runs/sample_001_m4_20260602T120000Z/lprod/checkpoint_export"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "schema": "m4_aggregation_result_v1",
+  "sample_id": "sample_001",
+  "run_id": "sample_001_m4_20260602T120000Z",
+  "generated_utc": "2026-06-02T22:00:00Z",
+  "all_worker_results": [
+    "pipeline_runs/guitars/sample_001/runs/sample_001_m4_20260602T120000Z/worker_results/sample_001_chunk_01_worker_result.json",
+    "pipeline_runs/guitars/sample_001/runs/sample_001_m4_20260602T120000Z/worker_results/sample_001_chunk_02_worker_result.json",
+    "pipeline_runs/guitars/sample_001/runs/sample_001_m4_20260602T120000Z/worker_results/sample_001_chunk_03_worker_result.json"
+  ],
+  "dedupe_tolerance_hz": 0.5,
+  "unique_modes": [61.2, 67.8, 73.1, 79.4, 85.0, 90.6, 97.1, 103.5, 109.8, 115.2, 121.0, 127.4],
+  "mode_catalog_path": "pipeline_runs/guitars/sample_001/runs/sample_001_m4_20260602T120000Z/aggregation/mode_catalog.json",
+  "modal_npz_path": "pipeline_runs/guitars/sample_001/runs/sample_001_m4_20260602T120000Z/aggregation/modal_modes.npz",
+  "plots": {
+    "mode_density_png": "pipeline_runs/guitars/sample_001/runs/sample_001_m4_20260602T120000Z/aggregation/mode_density_60_550.png",
+    "spectrum_png": "pipeline_runs/guitars/sample_001/runs/sample_001_m4_20260602T120000Z/aggregation/spectrum_overlay.png",
+    "zone_overlay_png": "pipeline_runs/guitars/sample_001/runs/sample_001_m4_20260602T120000Z/aggregation/zone_overlay.png"
+  },
+  "warnings": ["example_partial_worker_set: chunks 04-06 not merged in this stub"],
+  "failures": [],
+  "status": "PARTIAL",
+  "frequency_range_hz": [60.0, 550.0],
+  "mode_count": 12
+}

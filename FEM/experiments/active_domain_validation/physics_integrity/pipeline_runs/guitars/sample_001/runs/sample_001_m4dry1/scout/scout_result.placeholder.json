@@ -1,0 +1,28 @@
+{
+  "schema": "m4_scout_result_v1",
+  "will_execute": false,
+  "status": "PLANNED",
+  "sample_id": "sample_001",
+  "run_id": "sample_001_m4dry1",
+  "scout_policy_version": "v1",
+  "mesh_level": "L_scout_coarse",
+  "mesh_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/mesh/L_scout_coarse/sample_001.msh",
+  "checkpoint_dir": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/checkpoint",
+  "checkpoint_status": "PENDING",
+  "discovery": {
+    "frequency_range_hz": [
+      60.0,
+      550.0
+    ],
+    "spacing_hz": 7.5,
+    "half_width_hz": 3.75,
+    "discovery_mode": true,
+    "density_result_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/discovery/density_result.json",
+    "unique_accepted_count": null,
+    "experiment_status": "PENDING"
+  },
+  "artifacts": {
+    "scout_density_report_json": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/reports/scout_density_report.json",
+    "density_result_json": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/scout/discovery/density_result.json"
+  }
+}

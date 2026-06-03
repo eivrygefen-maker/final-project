@@ -1,0 +1,91 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://final-project.local/schemas/m4/lprod_target_plan.schema.json",
+  "title": "M4 L_prod target plan (Stage 3)",
+  "description": "Gapless discovery target grid on L_prod from zone segments.",
+  "type": "object",
+  "required": [
+    "schema",
+    "sample_id",
+    "run_id",
+    "zone_policy_version",
+    "target_generation_policy",
+    "frequency_range_hz",
+    "targets_hz",
+    "target_windows_hz",
+    "coverage_check",
+    "estimated_runtime"
+  ],
+  "properties": {
+    "schema": { "type": "string", "const": "m4_lprod_target_plan_v1" },
+    "sample_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "generated_utc": { "type": "string" },
+    "zone_policy_version": { "type": "string", "const": "v1" },
+    "target_generation_policy": { "type": "string" },
+    "frequency_range_hz": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "mesh_level": { "type": "string", "const": "L_prod" },
+    "targets_hz": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 1
+    },
+    "target_metadata": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "target_hz": { "type": "number" },
+          "zone_id": {
+            "type": "string",
+            "enum": ["ZONE_1_dense", "ZONE_2_medium", "ZONE_3_sparse"]
+          },
+          "spacing_hz": { "type": "number" },
+          "half_width_hz": { "type": "number" }
+        }
+      }
+    },
+    "target_windows_hz": {
+      "type": "array",
+      "description": "Per target: [lo, hi] acceptance window.",
+      "items": {
+        "type": "array",
+        "items": { "type": "number" },
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "coverage_check": {
+      "type": "object",
+      "required": ["pass", "band_hz", "max_gap_hz"],
+      "properties": {
+        "pass": { "type": "boolean" },
+        "band_hz": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "max_gap_hz": { "type": "number" },
+        "gap_tolerance_hz": { "type": "number" },
+        "target_count": { "type": "integer" },
+        "notes": { "type": "string" }
+      }
+    },
+    "estimated_runtime": {
+      "type": "object",
+      "properties": {
+        "target_count": { "type": "integer" },
+        "estimated_seconds_per_target": { "type": "number" },
+        "estimated_total_seconds": { "type": "number" },
+        "placeholder": { "type": "boolean" }
+      }
+    },
+    "density_zones_path": { "type": "string" }
+  }
+}

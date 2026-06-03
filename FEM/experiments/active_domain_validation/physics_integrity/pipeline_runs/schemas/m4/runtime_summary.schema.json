@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://final-project.local/schemas/m4/runtime_summary.schema.json",
+  "title": "M4 runtime summary",
+  "description": "Batch or per-guitar timing rollup for reporting (M4.5+).",
+  "type": "object",
+  "required": ["schema", "run_id", "sample_id", "stages", "totals"],
+  "properties": {
+    "schema": { "type": "string", "const": "m4_runtime_summary_v1" },
+    "run_id": { "type": "string" },
+    "sample_id": { "type": "string" },
+    "batch_id": { "type": "string" },
+    "generated_utc": { "type": "string" },
+    "stages": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "wall_seconds": { "type": "number" },
+          "status": { "type": "string" },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "totals": {
+      "type": "object",
+      "properties": {
+        "wall_seconds": { "type": "number" },
+        "target_count": { "type": "integer" },
+        "unique_mode_count": { "type": "integer" },
+        "worker_count": { "type": "integer" }
+      }
+    },
+    "worker_timings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "worker_id": { "type": "string" },
+          "chunk_id": { "type": "string" },
+          "wall_seconds": { "type": "number" }
+        }
+      }
+    },
+    "placeholder": { "type": "boolean" }
+  }
+}

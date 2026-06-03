@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://final-project.local/schemas/m4/scout_result.schema.json",
+  "title": "M4 scout bundle summary",
+  "description": "Stages 1–2: scout mesh, checkpoint, discovery density_result reference.",
+  "type": "object",
+  "required": [
+    "schema",
+    "sample_id",
+    "run_id",
+    "scout_policy_version",
+    "mesh_level",
+    "discovery",
+    "artifacts"
+  ],
+  "properties": {
+    "schema": { "type": "string", "const": "m4_scout_result_v1" },
+    "sample_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "generated_utc": { "type": "string" },
+    "scout_policy_version": { "type": "string", "const": "v1" },
+    "mesh_level": { "type": "string", "const": "L_scout_coarse" },
+    "mesh_controls_m": {
+      "type": "object",
+      "properties": {
+        "wood_thickness_size_m": { "type": "number" },
+        "wood_surface_size_m": { "type": "number" },
+        "air_threshold_size_min_m": { "type": "number" },
+        "air_threshold_size_max_m": { "type": "number" }
+      }
+    },
+    "mesh_path": { "type": "string" },
+    "checkpoint_dir": { "type": "string" },
+    "checkpoint_status": { "type": "string", "enum": ["PASS", "FAIL", "PENDING"] },
+    "discovery": {
+      "type": "object",
+      "required": ["frequency_range_hz", "spacing_hz", "half_width_hz", "discovery_mode"],
+      "properties": {
+        "frequency_range_hz": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "spacing_hz": { "type": "number", "const": 7.5 },
+        "half_width_hz": { "type": "number", "const": 3.75 },
+        "discovery_mode": { "type": "boolean" },
+        "density_result_path": { "type": "string" },
+        "unique_accepted_count": { "type": "integer" },
+        "experiment_status": { "type": "string" }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "properties": {
+        "scout_density_report_json": { "type": "string" },
+        "density_result_json": { "type": "string" }
+      }
+    },
+    "status": { "type": "string" }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "schema": "m4_aggregation_result_v1",
+  "will_execute": false,
+  "status": "PLANNED",
+  "sample_id": "sample_001",
+  "run_id": "sample_001_m4dry1",
+  "all_worker_results": [],
+  "dedupe_tolerance_hz": 0.5,
+  "unique_modes": [],
+  "mode_catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/aggregation/mode_catalog.json",
+  "modal_npz_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/aggregation/modal_modes.npz",
+  "plots": {
+    "mode_density_png": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/aggregation/mode_density_60_550.png",
+    "spectrum_png": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/aggregation/spectrum_overlay.png",
+    "zone_overlay_png": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4dry1/aggregation/zone_overlay.png"
+  },
+  "warnings": [
+    "Placeholder aggregation (M4.2)."
+  ],
+  "failures": [],
+  "frequency_range_hz": [
+    60.0,
+    550.0
+  ]
+}

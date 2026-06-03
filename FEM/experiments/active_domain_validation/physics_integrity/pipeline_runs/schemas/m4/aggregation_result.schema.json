@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://final-project.local/schemas/m4/aggregation_result.schema.json",
+  "title": "M4 aggregation result (Stage 6)",
+  "description": "Merged modes, catalog paths, plots after all workers complete.",
+  "type": "object",
+  "required": [
+    "schema",
+    "sample_id",
+    "run_id",
+    "all_worker_results",
+    "dedupe_tolerance_hz",
+    "unique_modes",
+    "mode_catalog_path",
+    "modal_npz_path",
+    "plots",
+    "warnings",
+    "failures",
+    "status"
+  ],
+  "properties": {
+    "schema": { "type": "string", "const": "m4_aggregation_result_v1" },
+    "sample_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "generated_utc": { "type": "string" },
+    "all_worker_results": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Paths to worker_result JSON files."
+    },
+    "dedupe_tolerance_hz": { "type": "number" },
+    "unique_modes": {
+      "type": "array",
+      "items": { "type": "number" }
+    },
+    "mode_catalog_path": { "type": "string" },
+    "modal_npz_path": { "type": "string" },
+    "plots": {
+      "type": "object",
+      "properties": {
+        "mode_density_png": { "type": "string" },
+        "spectrum_png": { "type": "string" },
+        "zone_overlay_png": { "type": "string" }
+      }
+    },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "chunk_id": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["PASS", "PARTIAL", "FAIL"]
+    },
+    "frequency_range_hz": {
+      "type": "array",
+      "items": { "type": "number" }
+    },
+    "mode_count": { "type": "integer" }
+  }
+}
