@@ -23,14 +23,16 @@ from v2_b3_m4_worker_run_lib import (  # noqa: E402
 )
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
-SCHEMA = "m4_first_end_to_end_freeze_v1"
 FREEZE_DIR_NAME = "freeze"
+REFERENCE_SAMPLE_ID = "sample_001"
 REPORT_DOC_REL = (
     "FEM/experiments/active_domain_validation/physics_integrity/docs/"
     "B3_M4_5_PRE_FIRST_END_TO_END_RUN_REPORT.md"
 )
 TERMINAL_E2E = "LPROD_WORKERS_AND_AGGREGATION_PASS"
 AGG_STATUS_PASS = "AGGREGATION_PASS"
+SCOUT_TERMINAL_READY = "SCOUT_PASS_TARGET_PLAN_READY"
+CHECKPOINT_TERMINAL_READY = "LPROD_CHECKPOINT_READY"
 
 NON_GOALS = [
     "Stage C / rich modal export not run",
@@ -48,12 +50,33 @@ NEXT_STEPS = [
     "Cleanup/archive only after small batch passes",
 ]
 
-FREEZE_OUTPUTS = (
-    "first_end_to_end_run_manifest.json",
-    "first_end_to_end_run_summary.md",
-    "artifact_index.json",
-    "artifact_index.md",
-)
+ARTIFACT_INDEX_FILES = ("artifact_index.json", "artifact_index.md")
+
+
+def resolve_freeze_config(
+    sample_id: str,
+    *,
+    freeze_prefix: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Return manifest/summary basename prefix and schema for freeze outputs."""
+    if freeze_prefix:
+        prefix = freeze_prefix.strip().removesuffix("_")
+    elif sample_id == REFERENCE_SAMPLE_ID:
+        prefix = "first_end_to_end"
+    else:
+        prefix = "sample_e2e"
+    schema = (
+        "m4_first_end_to_end_freeze_v1"
+        if prefix == "first_end_to_end"
+        else "m4_sample_e2e_freeze_v1"
+    )
+    return {
+        "prefix": prefix,
+        "schema": schema,
+        "manifest_name": f"{prefix}_run_manifest.json",
+        "summary_name": f"{prefix}_run_summary.md",
+        "write_reference_report": prefix == "first_end_to_end",
+    }
 
 
 def _safe_load(path: Path) -> Optional[Dict[str, Any]]:
@@ -420,9 +443,15 @@ def _render_report_md(payload: Dict[str, Any]) -> str:
 
 def _render_summary_md(payload: Dict[str, Any]) -> str:
     m = payload["key_metrics"]
+    cfg = payload.get("freeze_cfg") or {}
+    title = (
+        "First M4 end-to-end freeze"
+        if cfg.get("prefix") == "first_end_to_end"
+        else "M4 sample E2E freeze"
+    )
     return "\n".join(
         [
-            f"# First M4 end-to-end freeze — {m.get('run_id')}",
+            f"# {title} — {m.get('run_id')}",
             "",
             f"- **status:** {m.get('aggregation_status')}",
             f"- **terminal_status:** {m.get('terminal_status')}",
@@ -452,7 +481,12 @@ def _render_artifact_index_md(artifacts: Sequence[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def build_freeze_payload(*, repo_root: Path, run_root: Path) -> Dict[str, Any]:
+def build_freeze_payload(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    freeze_cfg: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     manifest = _safe_load(run_root / "pipeline_run_manifest.json") or {}
     agg = _safe_load(run_root / "aggregation" / "aggregation_result.json") or {}
     target_plan = _safe_load(run_root / "lprod" / "lprod_target_plan.json")
@@ -460,9 +494,12 @@ def build_freeze_payload(*, repo_root: Path, run_root: Path) -> Dict[str, Any]:
     preview = _safe_load(run_root / "pipeline_run_manifest.m4_4_full_aggregation_preview.json")
     artifacts = _artifact_catalog(run_root, repo_root)
     missing_optional = [a["id"] for a in artifacts if not a.get("exists") and not a.get("essential")]
+    sample_id = str(agg.get("sample_id") or manifest.get("sample_id") or "")
+    cfg = freeze_cfg or resolve_freeze_config(sample_id)
 
     payload: Dict[str, Any] = {
-        "schema": SCHEMA,
+        "schema": cfg["schema"],
+        "freeze_cfg": cfg,
         "generated_utc": utc_now(),
         "sample_id": agg.get("sample_id") or manifest.get("sample_id"),
         "run_id": agg.get("run_id") or manifest.get("run_id"),
@@ -500,15 +537,19 @@ def write_freeze_outputs(
 ) -> Path:
     freeze_dir = run_root / FREEZE_DIR_NAME
     freeze_dir.mkdir(parents=True, exist_ok=True)
+    cfg = payload.get("freeze_cfg") or resolve_freeze_config(str(payload.get("sample_id") or ""))
+    manifest_name = cfg["manifest_name"]
+    summary_name = cfg["summary_name"]
+    output_names = (manifest_name, summary_name) + ARTIFACT_INDEX_FILES
 
-    existing = [freeze_dir / name for name in FREEZE_OUTPUTS if (freeze_dir / name).is_file()]
+    existing = [freeze_dir / name for name in output_names if (freeze_dir / name).is_file()]
     if existing and not force:
         raise FileExistsError(
             f"freeze outputs exist ({len(existing)} files); use --force to overwrite: {freeze_dir}"
         )
 
     manifest_body = {
-        "schema": payload["schema"],
+        "schema": cfg["schema"],
         "generated_utc": payload["generated_utc"],
         "sample_id": payload["sample_id"],
         "run_id": payload["run_id"],
@@ -522,12 +563,11 @@ def write_freeze_outputs(
         "non_goals": payload["non_goals"],
         "next_steps": payload["next_steps"],
         "freeze_dir": rel(freeze_dir, repo_root=repo_root),
-        "report_doc": REPORT_DOC_REL,
+        "freeze_prefix": cfg["prefix"],
+        "report_doc": REPORT_DOC_REL if cfg.get("write_reference_report") else None,
     }
-    write_json_atomic(freeze_dir / "first_end_to_end_run_manifest.json", manifest_body)
-    (freeze_dir / "first_end_to_end_run_summary.md").write_text(
-        _render_summary_md(payload), encoding="utf-8"
-    )
+    write_json_atomic(freeze_dir / manifest_name, manifest_body)
+    (freeze_dir / summary_name).write_text(_render_summary_md(payload), encoding="utf-8")
     write_json_atomic(
         freeze_dir / "artifact_index.json",
         {
@@ -542,11 +582,12 @@ def write_freeze_outputs(
         _render_artifact_index_md(payload["artifact_index"]), encoding="utf-8"
     )
 
-    report_path = repo_root / REPORT_DOC_REL
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    if report_path.is_file() and not force:
-        raise FileExistsError(f"report exists (use --force): {report_path}")
-    report_path.write_text(_render_report_md(payload), encoding="utf-8")
+    if cfg.get("write_reference_report"):
+        report_path = repo_root / REPORT_DOC_REL
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        if report_path.is_file() and not force:
+            raise FileExistsError(f"report exists (use --force): {report_path}")
+        report_path.write_text(_render_report_md(payload), encoding="utf-8")
     return freeze_dir
 
 
@@ -555,6 +596,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         description="M4.5-pre: freeze first successful M4 end-to-end run (read-only)."
     )
     parser.add_argument("--run-dir", type=Path, required=True)
+    parser.add_argument(
+        "--freeze-prefix",
+        choices=("auto", "first_end_to_end", "sample_e2e"),
+        default="auto",
+        help="Freeze manifest basename prefix (auto: sample_001→first_end_to_end, else sample_e2e).",
+    )
     parser.add_argument("--force", action="store_true", help="Overwrite existing freeze/ and report.")
     args = parser.parse_args(argv)
 
@@ -569,7 +616,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"  - {e}", file=sys.stderr)
         return 2
 
-    payload = build_freeze_payload(repo_root=repo_root, run_root=run_root)
+    manifest = _safe_load(run_root / "pipeline_run_manifest.json") or {}
+    sample_id = str(manifest.get("sample_id") or "")
+    freeze_cfg = resolve_freeze_config(
+        sample_id,
+        freeze_prefix=None if args.freeze_prefix == "auto" else args.freeze_prefix,
+    )
+    payload = build_freeze_payload(
+        repo_root=repo_root, run_root=run_root, freeze_cfg=freeze_cfg
+    )
     payload["milestone_validation_errors"] = errors
 
     try:
@@ -584,7 +639,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     m = payload["key_metrics"]
-    print("first M4 end-to-end run freeze written")
+    prefix = (payload.get("freeze_cfg") or {}).get("prefix", "freeze")
+    print(f"M4 freeze written ({prefix})")
     print(f"sample_id={m.get('sample_id')}")
     print(f"run_id={m.get('run_id')}")
     print(f"status={m.get('aggregation_status')}")

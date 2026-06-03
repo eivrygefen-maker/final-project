@@ -1,0 +1,220 @@
+{
+  "schema": "m4_density_zones_v1",
+  "will_execute": false,
+  "status": "PLANNED_NOT_EXECUTED",
+  "sample_id": "sample_003",
+  "run_id": "sample_003_m45dry1",
+  "generated_utc": "2026-06-03T21:40:19Z",
+  "zone_policy_version": "v1",
+  "scout_policy_version": "v1",
+  "frequency_range_hz": [
+    60.0,
+    550.0
+  ],
+  "bin_width_hz": 25.0,
+  "zone_spacing_hz": {
+    "ZONE_1_dense": 6.0,
+    "ZONE_2_medium": 9.0,
+    "ZONE_3_sparse": 12.5
+  },
+  "classification_rule": "pending_scout \u2014 assign ZONE_1_dense / ZONE_2_medium / ZONE_3_sparse after discovery",
+  "allowed_zone_ids": [
+    "ZONE_1_dense",
+    "ZONE_2_medium",
+    "ZONE_3_sparse"
+  ],
+  "bins": [
+    {
+      "freq_lo_hz": 60.0,
+      "freq_hi_hz": 85.0,
+      "bin_width_hz": 25.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    },
+    {
+      "freq_lo_hz": 85.0,
+      "freq_hi_hz": 110.0,
+      "bin_width_hz": 25.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    },
+    {
+      "freq_lo_hz": 110.0,
+      "freq_hi_hz": 135.0,
+      "bin_width_hz": 25.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    },
+    {
+      "freq_lo_hz": 135.0,
+      "freq_hi_hz": 160.0,
+      "bin_width_hz": 25.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    },
+    {
+      "freq_lo_hz": 160.0,
+      "freq_hi_hz": 185.0,
+      "bin_width_hz": 25.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    },
+    {
+      "freq_lo_hz": 185.0,
+      "freq_hi_hz": 210.0,
+      "bin_width_hz": 25.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    },
+    {
+      "freq_lo_hz": 210.0,
+      "freq_hi_hz": 235.0,
+      "bin_width_hz": 25.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    },
+    {
+      "freq_lo_hz": 235.0,
+      "freq_hi_hz": 260.0,
+      "bin_width_hz": 25.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    },
+    {
+      "freq_lo_hz": 260.0,
+      "freq_hi_hz": 285.0,
+      "bin_width_hz": 25.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    },
+    {
+      "freq_lo_hz": 285.0,
+      "freq_hi_hz": 310.0,
+      "bin_width_hz": 25.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    },
+    {
+      "freq_lo_hz": 310.0,
+      "freq_hi_hz": 335.0,
+      "bin_width_hz": 25.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    },
+    {
+      "freq_lo_hz": 335.0,
+      "freq_hi_hz": 360.0,
+      "bin_width_hz": 25.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    },
+    {
+      "freq_lo_hz": 360.0,
+      "freq_hi_hz": 385.0,
+      "bin_width_hz": 25.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    },
+    {
+      "freq_lo_hz": 385.0,
+      "freq_hi_hz": 410.0,
+      "bin_width_hz": 25.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    },
+    {
+      "freq_lo_hz": 410.0,
+      "freq_hi_hz": 435.0,
+      "bin_width_hz": 25.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    },
+    {
+      "freq_lo_hz": 435.0,
+      "freq_hi_hz": 460.0,
+      "bin_width_hz": 25.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    },
+    {
+      "freq_lo_hz": 460.0,
+      "freq_hi_hz": 485.0,
+      "bin_width_hz": 25.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    },
+    {
+      "freq_lo_hz": 485.0,
+      "freq_hi_hz": 510.0,
+      "bin_width_hz": 25.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    },
+    {
+      "freq_lo_hz": 510.0,
+      "freq_hi_hz": 535.0,
+      "bin_width_hz": 25.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    },
+    {
+      "freq_lo_hz": 535.0,
+      "freq_hi_hz": 550.0,
+      "bin_width_hz": 15.0,
+      "mode_count": null,
+      "density_modes_per_hz": null,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null
+    }
+  ],
+  "segments": [
+    {
+      "freq_lo_hz": 60.0,
+      "freq_hi_hz": 550.0,
+      "zone_id": "pending_scout",
+      "recommended_lprod_spacing_hz": null,
+      "note": "Segments assigned after Stage 2 scout discovery (M4.3)."
+    }
+  ],
+  "warnings": [
+    "Placeholder only (M4.2 dry-run). mode_count and zone_id filled after Stage 2."
+  ]
+}

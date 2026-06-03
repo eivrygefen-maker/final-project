@@ -1,0 +1,32 @@
+{
+  "schema": "m4_5_small_lhs_batch_manifest_v1",
+  "will_execute": false,
+  "generated_utc": "2026-06-03T21:40:19Z",
+  "batch_id": "m4_5_first3_lhs",
+  "batch_dir": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/batches/m4_5_first3_lhs",
+  "status": "BATCH_DRY_RUN_PLANNED",
+  "sample_count": 3,
+  "samples": [
+    {
+      "sample_id": "sample_002",
+      "run_id": "sample_002_m45dry1",
+      "reuse_status": "planned_new_run",
+      "run_root": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_002/runs/sample_002_m45dry1",
+      "wrote_run_tree": true
+    },
+    {
+      "sample_id": "sample_003",
+      "run_id": "sample_003_m45dry1",
+      "reuse_status": "planned_new_run",
+      "run_root": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_003/runs/sample_003_m45dry1",
+      "wrote_run_tree": true
+    },
+    {
+      "sample_id": "sample_004",
+      "run_id": "sample_004_m45dry1",
+      "reuse_status": "planned_new_run",
+      "run_root": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_004/runs/sample_004_m45dry1",
+      "wrote_run_tree": true
+    }
+  ]
+}

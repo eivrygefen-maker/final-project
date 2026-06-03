@@ -577,8 +577,9 @@ Reports must show **target counts** and **estimated hours** for uniform vs adapt
 | Partial aggregation over completed worker results | **M4.4.1b-3 done** — `v2_b3_m4_aggregate_worker_results.py` |
 | Remaining worker chunks + full aggregation | **M4.4.1b-4 done** — `v2_b3_m4_worker_run_remaining.py` |
 | First E2E run freeze + milestone report | **M4.5-pre done** — `v2_b3_m4_freeze_first_e2e_run.py` |
-| Single-guitar L_prod FCFS / promotion | M4.4.1b+ |
-| Multi-guitar LHS batch driver | M4.5 |
+| Small multi-guitar batch dry-run planner | **M4.5.1 done** — `v2_b3_m4_small_batch_dry_run.py` |
+| Single-sample M4 pipeline execution | **M4.5.2 done** — `v2_b3_m4_run_one_sample.py` (sample_002 first) |
+| Multi-guitar LHS batch execution | M4.5 |
 | Geometry-delta → remesh trigger in Stage 0 | M4.3+ |
 | Mode NPZ / plot exporters | M4.4 |
 | Cross-guitar batch dashboard | M4.5+ |
@@ -816,7 +817,42 @@ Requires essential artifacts: `aggregation/aggregation_result.json` (`AGGREGATIO
 
 **Exit:** One guitar complete end-to-end with PASS manifests.
 
-### M4.5 — Multi-guitar LHS batch
+### M4.5.1 — Small multi-guitar batch dry-run planner (**done**)
+
+- Script: `scripts/v2_b3_m4_small_batch_dry_run.py`
+- Spec: `pipeline_runs/specs/m4_5_small_lhs_batch_first3.json` (`sample_002`–`sample_004`, run IDs `*_m45dry1`)
+- Reference frozen E2E: `sample_001_m4dry1` (excluded from batch writes)
+- Writes: `pipeline_runs/batches/<batch_id>/` + per-sample dry-run trees when `planned_new_run`
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_small_batch_dry_run.py \
+  --samples-json FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/specs/m4_5_small_lhs_batch_first3.json \
+  --batch-id m4_5_first3_lhs --dry-run --force
+```
+
+**Status:** M4.5.1 small multi-guitar batch dry-run planner added. **No multi-guitar execution yet.**
+
+### M4.5.2 — Execute one batch sample (`sample_002`) (**done**)
+
+- Script: `scripts/v2_b3_m4_run_one_sample.py` (orchestrates scout → worker plan → checkpoint → workers → aggregate → freeze)
+- Default guard: `--allowed-sample-id sample_002` (blocks `sample_003` / `sample_004` on `--execute`)
+- Freeze for non-reference samples: `freeze/sample_e2e_run_manifest.json` (via generalized freeze script)
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_run_one_sample.py \
+  --run-dir FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_002/runs/sample_002_m45dry1 \
+  --dry-run --workers 3
+
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_run_one_sample.py \
+  --run-dir FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_002/runs/sample_002_m45dry1 \
+  --execute --workers 3
+```
+
+Optional checkpoints: `--stop-after scout`, `--stop-after checkpoint`, `--stop-after workers`. Reuse PASS stages unless `--force`.
+
+**Manual sequence (same stages):** `v2_b3_m4_pipeline_run_scout.py --execute-scout` → `v2_b3_m4_lprod_worker_dry_run.py` → `v2_b3_m4_lprod_checkpoint_run.py --execute` → `v2_b3_m4_worker_run_remaining.py --execute` → `v2_b3_m4_aggregate_worker_results.py --execute --force` → freeze with `--freeze-prefix auto`.
+
+### M4.5 — Multi-guitar LHS batch execution
 
 - Outer loop over JSONL; `--continue-on-fail`; batch manifest and `runs_index.jsonl`.
 - Optional concurrency: **one guitar at a time** v1 (no overlapping guitars on same VM).

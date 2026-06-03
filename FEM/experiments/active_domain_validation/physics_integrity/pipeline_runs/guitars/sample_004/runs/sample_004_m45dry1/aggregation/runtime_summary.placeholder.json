@@ -1,0 +1,52 @@
+{
+  "schema": "m4_runtime_summary_v1",
+  "will_execute": false,
+  "placeholder": true,
+  "run_id": "sample_004_m45dry1",
+  "sample_id": "sample_004",
+  "generated_utc": "2026-06-03T21:40:19Z",
+  "stages": {
+    "stage0_resolve": {
+      "wall_seconds": null,
+      "status": "PLANNED"
+    },
+    "stage1_scout_mesh": {
+      "wall_seconds": null,
+      "status": "PLANNED"
+    },
+    "stage1_scout_export": {
+      "wall_seconds": null,
+      "status": "PLANNED"
+    },
+    "stage2_scout_discovery": {
+      "wall_seconds": null,
+      "status": "PLANNED"
+    },
+    "stage3_zones_plan": {
+      "wall_seconds": null,
+      "status": "PLANNED"
+    },
+    "stage4_lprod_mesh": {
+      "wall_seconds": null,
+      "status": "PLANNED"
+    },
+    "stage4_lprod_export": {
+      "wall_seconds": null,
+      "status": "PLANNED"
+    },
+    "stage5_workers": {
+      "wall_seconds": null,
+      "status": "PLANNED"
+    },
+    "stage6_aggregate": {
+      "wall_seconds": null,
+      "status": "PLANNED"
+    }
+  },
+  "totals": {
+    "wall_seconds": null,
+    "target_count": 0,
+    "unique_mode_count": null,
+    "worker_count": 3
+  }
+}

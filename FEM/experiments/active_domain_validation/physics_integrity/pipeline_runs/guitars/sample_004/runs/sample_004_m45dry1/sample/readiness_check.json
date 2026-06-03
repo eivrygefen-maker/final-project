@@ -1,0 +1,13 @@
+{
+  "schema": "m4_readiness_check_v1",
+  "will_execute": false,
+  "sample_id": "sample_004",
+  "run_id": "sample_004_m45dry1",
+  "status": "PLANNED",
+  "mesh_exists": {
+    "L_scout_coarse": false,
+    "L_prod": false
+  },
+  "core_config_readable": false,
+  "notes": "Populated by Stage 0 resolve on execution (M4.3+)."
+}

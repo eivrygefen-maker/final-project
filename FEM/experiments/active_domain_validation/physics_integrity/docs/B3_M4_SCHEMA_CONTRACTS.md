@@ -225,7 +225,26 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
 
 Remaining batch manifest: `worker_results/remaining_workers_m4_4_1b_4_manifest.json`. Full aggregation (all 11 PASS): `aggregation/aggregation_result.json`, preview `pipeline_run_manifest.m4_4_full_aggregation_preview.json`, `status=AGGREGATION_PASS`, `final_aggregation_ready=true`.
 
-**Status:** M4 single-guitar end-to-end validation **passed** for `sample_001_m4dry1` (VM: 11/11 chunks, 568 deduped modes). Multi-guitar LHS (M4.5) not yet run.
+**Status:** M4 single-guitar end-to-end validation **passed** for `sample_001_m4dry1` (VM: 11/11 chunks, 568 deduped modes). Multi-guitar LHS execution (M4.5) not yet run.
+
+### M4.5.1 — small batch dry-run planner
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_small_batch_dry_run.py \
+  --samples-json pipeline_runs/specs/m4_5_small_lhs_batch_first3.json \
+  --batch-id m4_5_first3_lhs --dry-run --force
+```
+
+Batch outputs: `pipeline_runs/batches/m4_5_first3_lhs/{batch_plan,batch_manifest,per_sample_commands}.{json,md}`. Per-sample: `guitars/<sample_id>/runs/<run_id>/m4_5_batch_dry_run_plan.json`. Reuse: `planned_new_run` | `already_complete_reuse` | `resume_possible` | `requires_review`. **No multi-guitar execution yet.**
+
+### M4.5.2 — single-sample execution (`sample_002`)
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_run_one_sample.py \
+  --run-dir .../guitars/sample_002/runs/sample_002_m45dry1 --execute --workers 3
+```
+
+Success: `terminal_status=LPROD_WORKERS_AND_AGGREGATION_PASS`, `aggregation/aggregation_result.json` with `AGGREGATION_PASS`, `freeze/sample_e2e_run_manifest.json`. Does not run `sample_003` / `sample_004`.
 
 ### M4.5-pre — first E2E freeze manifest
 
