@@ -13,3 +13,5 @@
 | `logs/` | Pipeline-wide logs | **Ignored** |
 
 Write all heavy execution output under `guitars/<sample_id>/runs/<run_id>/` (scout, lprod/checkpoint, worker_results, aggregation, freeze, logs).
+
+**Production LHS:** `scripts/v2_b3_m4_lhs_production_batch.py` — see `docs/B3_M4_PRODUCTION_PROMOTION_AUDIT.md`.

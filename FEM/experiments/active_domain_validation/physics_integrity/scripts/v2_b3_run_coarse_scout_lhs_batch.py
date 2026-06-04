@@ -1118,6 +1118,11 @@ def run_batch(argv: Optional[List[str]] = None) -> int:
 
 
 def main() -> int:
+    print(
+        "LEGACY (M3.4): coarse scout-only batch. Full LHS production: "
+        "v2_b3_m4_lhs_production_batch.py",
+        file=sys.stderr,
+    )
     return run_batch()
 
 

@@ -1011,6 +1011,11 @@ def run_one(argv: Optional[List[str]] = None) -> int:
 
 
 def main() -> int:
+    print(
+        "LEGACY (M3.3): for production LHS use "
+        "v2_b3_m4_lhs_production_batch.py or v2_b3_m4_run_one_sample.py --production-mode.",
+        file=sys.stderr,
+    )
     return run_one()
 
 

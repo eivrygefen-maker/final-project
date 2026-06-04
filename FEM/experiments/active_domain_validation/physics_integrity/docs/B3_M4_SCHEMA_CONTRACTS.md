@@ -244,7 +244,7 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_
   --run-dir .../guitars/sample_003/runs/sample_003_m45dry1 --execute --workers 3 --m45-batch-mode
 ```
 
-Requires `--m45-batch-mode` for `--execute` (samples in `m4_5_small_lhs_batch_first3.json` only). `sample_001` blocked unless `--allow-reference-mutation`. Success: `AGGREGATION_PASS`, `freeze/sample_e2e_run_manifest.json`.
+**Production (default):** `v2_b3_m4_lhs_production_batch.py` — multi-sample LHS. **Single:** `v2_b3_m4_run_one_sample.py` with `--production-mode` or `--m45-batch-mode`. `sample_001` blocked unless `--allow-reference-mutation`. Success: `AGGREGATION_PASS`, `freeze/sample_e2e_run_manifest.json`. Audit: `B3_M4_PRODUCTION_PROMOTION_AUDIT.md`.
 
 ### M4.5-pre — first E2E freeze manifest
 

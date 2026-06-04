@@ -48,6 +48,11 @@ git rm -r --cached \
 
 Then commit the `.gitignore` / hygiene update when ready.
 
-## M4.5 execution
+## M4 execution
 
-Use `v2_b3_m4_run_one_sample.py --m45-batch-mode` on the FEM VM. Outputs land under `guitars/<sample_id>/runs/<run_id>/` and remain local to the VM unless you explicitly export or commit them.
+**Production batch (default):** `v2_b3_m4_lhs_production_batch.py --execute`  
+**Single sample:** `v2_b3_m4_run_one_sample.py --production-mode` or `--m45-batch-mode` (validation spec)
+
+Outputs land under `guitars/<sample_id>/runs/<run_id>/` and `batches/<batch_id>/` — local to the VM, not committed unless explicitly requested.
+
+See `docs/B3_M4_PRODUCTION_PROMOTION_AUDIT.md` for promotion mapping and legacy deprecation.

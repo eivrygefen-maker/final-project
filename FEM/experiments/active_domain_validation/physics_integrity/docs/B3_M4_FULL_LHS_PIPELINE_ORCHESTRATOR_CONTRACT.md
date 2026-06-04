@@ -578,7 +578,8 @@ Reports must show **target counts** and **estimated hours** for uniform vs adapt
 | Remaining worker chunks + full aggregation | **M4.4.1b-4 done** — `v2_b3_m4_worker_run_remaining.py` |
 | First E2E run freeze + milestone report | **M4.5-pre done** — `v2_b3_m4_freeze_first_e2e_run.py` |
 | Small multi-guitar batch dry-run planner | **M4.5.1 done** — `v2_b3_m4_small_batch_dry_run.py` |
-| Single-sample M4 pipeline execution | **M4.5.3** — `v2_b3_m4_run_one_sample.py` + `--m45-batch-mode` (002–004) |
+| Production LHS batch | **M4 production** — `v2_b3_m4_lhs_production_batch.py` |
+| Single-sample M4 pipeline | `v2_b3_m4_run_one_sample.py` (`--production-mode` / `--m45-batch-mode`) |
 | Multi-guitar LHS batch execution | M4.5 |
 | Geometry-delta → remesh trigger in Stage 0 | M4.3+ |
 | Mode NPZ / plot exporters | M4.4 |
@@ -868,10 +869,23 @@ Optional checkpoints: `--stop-after scout`, `--stop-after checkpoint`, `--stop-a
 
 **Manual sequence (same stages):** `v2_b3_m4_pipeline_run_scout.py --execute-scout` → `v2_b3_m4_lprod_worker_dry_run.py` → `v2_b3_m4_lprod_checkpoint_run.py --execute` → `v2_b3_m4_worker_run_remaining.py --execute` → `v2_b3_m4_aggregate_worker_results.py --execute --force` → freeze with `--freeze-prefix auto`.
 
-### M4.5 — Multi-guitar LHS batch execution
+### M4 production — Multi-guitar LHS batch execution (**default**)
 
-- Outer loop over JSONL; `--continue-on-fail`; batch manifest and `runs_index.jsonl`.
-- Optional concurrency: **one guitar at a time** v1 (no overlapping guitars on same VM).
+- Script: `scripts/v2_b3_m4_lhs_production_batch.py` (replaces ad-hoc M3/M3.4 batch paths for production).
+- Spec: `pipeline_runs/specs/<real_lhs_samples>.json` (template: `m4_lhs_production_batch.template.json`).
+- Wrapper: `scripts/v2_b3_lhs_production_run.py` → delegates to M4 batch runner.
+- Audit: `docs/B3_M4_PRODUCTION_PROMOTION_AUDIT.md`.
+- Runtime outputs under `pipeline_runs/guitars/` and `batches/` are **gitignored** ([B3_PIPELINE_RUNTIME_HYGIENE.md](B3_PIPELINE_RUNTIME_HYGIENE.md)).
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_lhs_production_batch.py \
+  --samples-json FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/specs/<real_lhs_samples>.json \
+  --batch-id lhs_prod_m4_001 --start-index 5 --max-samples 10 --workers 3 \
+  --execute --continue-on-fail
+```
+
+- One guitar at a time v1 (no overlapping runs on same VM).
+- Legacy: `v2_b3_m3_orchestrator_run_one.py`, `v2_b3_run_coarse_scout_lhs_batch.py` — deprecated, not for new LHS.
 
 **Exit:** N guitars produce N run trees; batch summary reports savings vs uniform 5.5 Hz.
 

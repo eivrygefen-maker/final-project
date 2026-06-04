@@ -83,6 +83,23 @@ def load_m45_batch_allowlist(spec_path: Path) -> Dict[str, str]:
     return out
 
 
+def _sample_in_batch_spec(spec_path: Path, sample_id: str, run_root: Path) -> Optional[str]:
+    """Return error if sample/run not in spec, else None."""
+    if not spec_path.is_file():
+        return f"missing batch spec: {spec_path}"
+    allowlist = load_m45_batch_allowlist(spec_path)
+    if sample_id not in allowlist:
+        allowed = ", ".join(sorted(allowlist))
+        return f"{sample_id} not in batch spec ({spec_path.name}); allowed: {allowed}"
+    expected_run_id = allowlist[sample_id]
+    if run_root.name != expected_run_id:
+        return (
+            f"run_id={run_root.name!r} does not match spec "
+            f"expected {expected_run_id!r} for {sample_id}"
+        )
+    return None
+
+
 def validate_execution_scope(
     *,
     repo_root: Path,
@@ -91,6 +108,8 @@ def validate_execution_scope(
     execute: bool,
     m45_batch_mode: bool,
     m45_batch_spec: Path,
+    production_mode: bool,
+    production_samples_json: Path,
     allow_unlisted_sample: bool,
     allow_reference_mutation: bool,
 ) -> Optional[str]:
@@ -105,21 +124,18 @@ def validate_execution_scope(
 
     if m45_batch_mode:
         spec_path = m45_batch_spec if m45_batch_spec.is_absolute() else repo_root / m45_batch_spec
-        if not spec_path.is_file():
-            return f"missing M4.5 batch spec: {spec_path}"
-        allowlist = load_m45_batch_allowlist(spec_path)
-        if sample_id not in allowlist:
-            allowed = ", ".join(sorted(allowlist))
-            return (
-                f"{sample_id} is not in M4.5 small batch spec ({spec_path.name}); "
-                f"allowed: {allowed}"
-            )
-        expected_run_id = allowlist[sample_id]
-        if run_root.name != expected_run_id:
-            return (
-                f"run_id={run_root.name!r} does not match batch spec "
-                f"expected {expected_run_id!r} for {sample_id}"
-            )
+        err = _sample_in_batch_spec(spec_path, sample_id, run_root)
+        return err
+
+    if production_mode:
+        spec_path = (
+            production_samples_json
+            if production_samples_json.is_absolute()
+            else repo_root / production_samples_json
+        )
+        err = _sample_in_batch_spec(spec_path, sample_id, run_root)
+        if err:
+            return err.replace("batch spec", "production samples spec")
         return None
 
     if allow_unlisted_sample:
@@ -132,7 +148,7 @@ def validate_execution_scope(
 
     if execute:
         return (
-            "execute requires --m45-batch-mode (sample in m4_5_small_lhs_batch_first3.json) "
+            "execute requires --production-mode, --m45-batch-mode (listed batch spec), "
             "or explicit --allow-unlisted-sample override"
         )
     return None
@@ -363,6 +379,8 @@ def run_pipeline(
     stop_after: Optional[str],
     m45_batch_mode: bool,
     m45_batch_spec: Path,
+    production_mode: bool,
+    production_samples_json: Path,
     allow_unlisted_sample: bool,
     allow_reference_mutation: bool,
     freq_min: float,
@@ -385,6 +403,8 @@ def run_pipeline(
         execute=execute,
         m45_batch_mode=m45_batch_mode,
         m45_batch_spec=m45_batch_spec,
+        production_mode=production_mode,
+        production_samples_json=production_samples_json,
         allow_unlisted_sample=allow_unlisted_sample,
         allow_reference_mutation=allow_reference_mutation,
     )
@@ -420,6 +440,7 @@ def run_pipeline(
             "stop_after": stop_after,
             "force": force,
             "m45_batch_mode": m45_batch_mode,
+            "production_mode": production_mode,
             "stage_assessment": stages,
         },
     )
@@ -430,6 +451,8 @@ def run_pipeline(
     print(f"run_dir={rel(run_root, repo_root=repo_root)}")
     if m45_batch_mode:
         print("m45_batch_mode=true")
+    if production_mode:
+        print("production_mode=true")
     for name in STAGE_ORDER:
         st = stages[name]
         print(f"  stage_{name}: pass={st['pass']} reuse={st['reuse_status']}")
@@ -529,6 +552,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="M4.5 small-batch spec JSON (default: m4_5_small_lhs_batch_first3.json).",
     )
     parser.add_argument(
+        "--production-mode",
+        action="store_true",
+        help="Allow execute when sample_id/run_id are listed in --production-samples-json.",
+    )
+    parser.add_argument(
+        "--production-samples-json",
+        type=Path,
+        default=DEFAULT_M45_BATCH_SPEC_REL,
+        help="Production or validation batch spec JSON (with samples[]).",
+    )
+    parser.add_argument(
         "--allow-unlisted-sample",
         action="store_true",
         help="Override: permit execute for samples outside the M4.5 batch spec.",
@@ -575,6 +609,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         stop_after=args.stop_after,
         m45_batch_mode=bool(args.m45_batch_mode),
         m45_batch_spec=args.m45_batch_spec,
+        production_mode=bool(args.production_mode),
+        production_samples_json=args.production_samples_json,
         allow_unlisted_sample=bool(args.allow_unlisted_sample),
         allow_reference_mutation=bool(args.allow_reference_mutation),
         freq_min=float(args.freq_min_hz),

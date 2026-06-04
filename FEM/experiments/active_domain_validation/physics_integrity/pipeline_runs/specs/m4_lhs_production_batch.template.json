@@ -1,0 +1,47 @@
+{
+  "schema": "m4_lhs_production_batch_spec_v1",
+  "batch_id": "lhs_prod_m4_001",
+  "description": "Template for M4 production LHS batches. Copy and expand samples[] from your LHS design (500+ rows).",
+  "reference_sample_id": "sample_001",
+  "reference_run_id": "sample_001_m4dry1",
+  "run_id_suffix": "m4prod1",
+  "exclude_from_batch": ["sample_001"],
+  "frequency_policy": {
+    "band_hz": [60.0, 550.0],
+    "scout_spacing_hz": 7.5,
+    "scout_half_width_hz": 3.75,
+    "zone_spacing_hz": {
+      "ZONE_1_dense": 6.0,
+      "ZONE_2_medium": 9.0,
+      "ZONE_3_sparse": 12.5
+    },
+    "chunk_policy_version": "v1_1",
+    "workers": 3
+  },
+  "samples": [
+    {
+      "sample_id": "sample_005",
+      "run_id": "sample_005_m4prod1",
+      "lhs_source_id": "lhs_row_005",
+      "selection_reason": "production_lhs_slice",
+      "sample_input": {
+        "schema": "m4_sample_input_v1",
+        "sample_id": "sample_005",
+        "shape_name": "classic",
+        "parameters": {
+          "top_wood_id": "mahogany",
+          "back_wood_id": "mahogany",
+          "geometry.length": 0.36,
+          "geometry.width": 0.24,
+          "geometry.depth": 0.108,
+          "geometry.top_thickness": 0.00317,
+          "geometry.back_thickness": 0.00349,
+          "geometry.hole_radius": 0.0446,
+          "material_delta.top.density": 450.0
+        },
+        "requires_mesh_regeneration": false,
+        "lhs_row_note": "Replace with real LHS row from generator"
+      }
+    }
+  ]
+}

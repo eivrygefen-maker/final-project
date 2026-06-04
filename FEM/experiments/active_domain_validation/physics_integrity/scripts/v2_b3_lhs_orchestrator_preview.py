@@ -364,6 +364,10 @@ def run_preview(argv: Optional[List[str]] = None) -> int:
 
 
 def main() -> int:
+    print(
+        "LEGACY (M2): preview only. Production LHS: v2_b3_m4_lhs_production_batch.py",
+        file=sys.stderr,
+    )
     return run_preview()
 
 

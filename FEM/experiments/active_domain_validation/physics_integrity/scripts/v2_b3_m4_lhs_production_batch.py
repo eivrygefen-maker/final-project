@@ -1,0 +1,412 @@
+#!/usr/bin/env python3
+"""M4 production LHS batch runner — scout → L_prod → workers → aggregation (+ freeze)."""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from v2_b3_m4_run_one_sample import (  # noqa: E402
+    REFERENCE_SAMPLE_ID,
+    run_pipeline,
+)
+from v2_b3_m4_small_batch_dry_run import (  # noqa: E402
+    _build_sample_plan,
+    _classify_run_status,
+    _load_batch_spec,
+)
+from v2_b3_m4_worker_run_lib import detect_repo_root, load_json, rel, utc_now  # noqa: E402
+from v2_b3_petsc_util import write_json_atomic  # noqa: E402
+
+PIPELINE_RUNS = SCRIPT_DIR.parent / "pipeline_runs"
+GUITARS_ROOT = PIPELINE_RUNS / "guitars"
+AGG_PASS = "AGGREGATION_PASS"
+TERMINAL_E2E = "LPROD_WORKERS_AND_AGGREGATION_PASS"
+
+
+def _frequency_policy(spec: Dict[str, Any]) -> Dict[str, Any]:
+    return spec.get("frequency_policy") or {}
+
+
+def _select_samples(
+    spec: Dict[str, Any],
+    *,
+    start_index: int,
+    max_samples: Optional[int],
+) -> List[Dict[str, Any]]:
+    exclude = set(spec.get("exclude_from_batch") or [])
+    ref = spec.get("reference_sample_id")
+    if ref:
+        exclude.add(str(ref))
+    rows: List[Dict[str, Any]] = []
+    for entry in spec.get("samples") or []:
+        sid = str(entry.get("sample_id") or "").strip()
+        if not sid or sid in exclude:
+            continue
+        rows.append(entry)
+    if start_index < 0:
+        raise ValueError("--start-index must be >= 0")
+    rows = rows[start_index:]
+    if max_samples is not None:
+        if max_samples < 1:
+            raise ValueError("--max-samples must be >= 1")
+        rows = rows[:max_samples]
+    return rows
+
+
+def _sample_run_root(entry: Dict[str, Any]) -> Path:
+    return GUITARS_ROOT / str(entry["sample_id"]) / "runs" / str(entry["run_id"])
+
+
+def _ensure_run_tree(
+    *,
+    repo_root: Path,
+    spec: Dict[str, Any],
+    entry: Dict[str, Any],
+    batch_id: str,
+    force: bool,
+) -> None:
+    run_root = _sample_run_root(entry)
+    status = _classify_run_status(run_root)
+    if status == "already_complete_reuse" and not force:
+        return
+    if status in ("planned_new_run", "resume_possible", "requires_review") or force:
+        _build_sample_plan(
+            repo_root=repo_root,
+            spec=spec,
+            entry=entry,
+            batch_id=batch_id,
+            force=force or status == "planned_new_run",
+        )
+
+
+def _read_sample_summary(run_root: Path) -> Dict[str, Any]:
+    manifest_path = run_root / "pipeline_run_manifest.json"
+    manifest = load_json(manifest_path) if manifest_path.is_file() else {}
+    agg_path = run_root / "aggregation" / "aggregation_result.json"
+    agg: Dict[str, Any] = {}
+    if agg_path.is_file():
+        try:
+            agg = load_json(agg_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            agg = {}
+    freeze_manifest = run_root / "freeze" / "sample_e2e_run_manifest.json"
+    if not freeze_manifest.is_file():
+        freeze_manifest = run_root / "freeze" / "first_end_to_end_run_manifest.json"
+    return {
+        "terminal_status": manifest.get("terminal_status"),
+        "aggregation_status": agg.get("status"),
+        "planned_chunks": agg.get("planned_chunk_count"),
+        "completed_chunks": agg.get("completed_chunk_count"),
+        "missing_chunks": agg.get("missing_chunk_count"),
+        "failed_chunks": agg.get("failed_chunk_count"),
+        "raw_modes": agg.get("raw_mode_count"),
+        "deduped_modes": agg.get("deduped_mode_count"),
+        "final_aggregation_ready": agg.get("final_aggregation_ready"),
+        "freeze_manifest": rel(freeze_manifest, repo_root=detect_repo_root(SCRIPT_DIR))
+        if freeze_manifest.is_file()
+        else None,
+    }
+
+
+def _run_dry_run_batch(
+    *,
+    repo_root: Path,
+    spec_path: Path,
+    spec: Dict[str, Any],
+    batch_id: str,
+    samples: List[Dict[str, Any]],
+    workers: int,
+    force: bool,
+) -> Dict[str, Any]:
+    fp = _frequency_policy(spec)
+    rows: List[Dict[str, Any]] = []
+    for entry in samples:
+        _ensure_run_tree(
+            repo_root=repo_root,
+            spec=spec,
+            entry=entry,
+            batch_id=batch_id,
+            force=force,
+        )
+        run_root = _sample_run_root(entry)
+        rows.append(
+            {
+                "sample_id": entry["sample_id"],
+                "run_id": entry["run_id"],
+                "run_root": rel(run_root, repo_root=repo_root),
+                "reuse_status": _classify_run_status(run_root),
+                "will_execute": False,
+                "command_preview": (
+                    "python FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+                    f"v2_b3_m4_run_one_sample.py --run-dir {rel(run_root, repo_root=repo_root)} "
+                    f"--execute --workers {workers} --production-mode "
+                    f"--production-samples-json {rel(spec_path, repo_root=repo_root)}"
+                ),
+            }
+        )
+    return {
+        "schema": "m4_lhs_production_batch_plan_v1",
+        "will_execute": False,
+        "generated_utc": utc_now(),
+        "batch_id": batch_id,
+        "spec_path": rel(spec_path, repo_root=repo_root),
+        "sample_count": len(rows),
+        "samples": rows,
+        "safety": {
+            "no_stage_c": True,
+            "no_rich_modal_export": True,
+            "no_audio_stk": True,
+            "no_cleanup": True,
+            "runtime_not_committed": True,
+        },
+    }
+
+
+def run_production_batch(
+    *,
+    repo_root: Path,
+    spec_path: Path,
+    batch_id: str,
+    samples: List[Dict[str, Any]],
+    spec: Dict[str, Any],
+    workers: int,
+    execute: bool,
+    continue_on_fail: bool,
+    force: bool,
+    stop_after: Optional[str],
+    resume: bool,
+) -> Dict[str, Any]:
+    fp = _frequency_policy(spec)
+    band = fp.get("band_hz", [60.0, 550.0])
+    batch_dir = PIPELINE_RUNS / "batches" / batch_id
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    log_path = batch_dir / "batch_execution.log"
+
+    t_batch = time.perf_counter()
+    completed: List[Dict[str, Any]] = []
+    failed: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
+
+    for entry in samples:
+        sid = str(entry["sample_id"])
+        rid = str(entry["run_id"])
+        run_root = _sample_run_root(entry)
+        reuse = _classify_run_status(run_root)
+
+        if sid == REFERENCE_SAMPLE_ID:
+            skipped.append(
+                {
+                    "sample_id": sid,
+                    "run_id": rid,
+                    "reason": "frozen_reference_excluded",
+                }
+            )
+            print(f"[skip] {sid}: frozen reference (not executed in production batch)", flush=True)
+            continue
+
+        if reuse == "already_complete_reuse" and not force:
+            summary = _read_sample_summary(run_root)
+            completed.append(
+                {
+                    "sample_id": sid,
+                    "run_id": rid,
+                    "run_root": rel(run_root, repo_root=repo_root),
+                    "outcome": "reused_complete",
+                    "elapsed_s": 0.0,
+                    **summary,
+                }
+            )
+            print(f"[skip] {sid}: already complete (reuse)", flush=True)
+            continue
+
+        if not execute:
+            continue
+
+        _ensure_run_tree(
+            repo_root=repo_root,
+            spec=spec,
+            entry=entry,
+            batch_id=batch_id,
+            force=force,
+        )
+
+        print(f"[run] {sid} / {rid} ...", flush=True)
+        t0 = time.perf_counter()
+        rc = run_pipeline(
+            repo_root=repo_root,
+            run_root=run_root.resolve(),
+            workers=workers,
+            force=force and not resume,
+            execute=True,
+            stop_after=stop_after,
+            m45_batch_mode=False,
+            m45_batch_spec=spec_path,
+            production_mode=False,
+            production_samples_json=spec_path,
+            allow_unlisted_sample=True,
+            allow_reference_mutation=False,
+            freq_min=float(band[0]),
+            freq_max=float(band[1]),
+            scout_spacing=float(fp.get("scout_spacing_hz", 7.5)),
+            scout_half_width=float(fp.get("scout_half_width_hz", 3.75)),
+            zone_dense=float(fp.get("zone_spacing_hz", {}).get("ZONE_1_dense", 6.0)),
+            zone_medium=float(fp.get("zone_spacing_hz", {}).get("ZONE_2_medium", 9.0)),
+            zone_sparse=float(fp.get("zone_spacing_hz", {}).get("ZONE_3_sparse", 12.5)),
+        )
+        elapsed = time.perf_counter() - t0
+        summary = _read_sample_summary(run_root)
+        row = {
+            "sample_id": sid,
+            "run_id": rid,
+            "run_root": rel(run_root, repo_root=repo_root),
+            "return_code": rc,
+            "elapsed_s": round(elapsed, 2),
+            **summary,
+        }
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(f"{utc_now()} sample={sid} rc={rc} elapsed_s={elapsed:.1f}\n")
+
+        if rc == 0 and summary.get("aggregation_status") == AGG_PASS:
+            row["outcome"] = "pass"
+            completed.append(row)
+            print(f"[pass] {sid}: AGGREGATION_PASS elapsed_s={elapsed:.1f}", flush=True)
+        else:
+            row["outcome"] = "fail"
+            failed.append(row)
+            print(f"[fail] {sid}: rc={rc} aggregation={summary.get('aggregation_status')}", flush=True)
+            if not continue_on_fail:
+                print("error: stopping batch (--continue-on-fail not set)", file=sys.stderr)
+                break
+
+    batch_summary = {
+        "schema": "m4_lhs_production_batch_summary_v1",
+        "generated_utc": utc_now(),
+        "will_execute": execute,
+        "batch_id": batch_id,
+        "batch_dir": rel(batch_dir, repo_root=repo_root),
+        "spec_path": rel(spec_path, repo_root=repo_root),
+        "elapsed_s": round(time.perf_counter() - t_batch, 2),
+        "workers": workers,
+        "continue_on_fail": continue_on_fail,
+        "force": force,
+        "resume": resume,
+        "stop_after": stop_after,
+        "completed_count": len(completed),
+        "failed_count": len(failed),
+        "skipped_count": len(skipped),
+        "completed": completed,
+        "failed": failed,
+        "skipped": skipped,
+    }
+    write_json_atomic(batch_dir / "batch_execution_summary.json", batch_summary)
+    return batch_summary
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="M4 production LHS batch: scout → adaptive L_prod → workers → aggregation."
+    )
+    parser.add_argument("--samples-json", type=Path, required=True, help="Batch spec JSON (samples[]).")
+    parser.add_argument("--batch-id", help="Override spec batch_id.")
+    parser.add_argument("--start-index", type=int, default=0, help="0-based index into samples[] after excludes.")
+    parser.add_argument("--max-samples", type=int, help="Limit number of samples to process.")
+    parser.add_argument("--workers", type=int, default=3)
+    parser.add_argument("--dry-run", action="store_true", help="Plan batch; ensure run trees; no solvers.")
+    parser.add_argument("--execute", action="store_true", help="Run M4 pipeline per sample.")
+    parser.add_argument(
+        "--continue-on-fail",
+        action="store_true",
+        help="Continue to next sample after a failure.",
+    )
+    parser.add_argument("--force", action="store_true", help="Re-run PASS stages / overwrite outputs.")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Reuse PASS stages (default); with --force, re-run even if PASS.",
+    )
+    parser.add_argument(
+        "--stop-after",
+        choices=("scout", "checkpoint", "workers"),
+        help="Stop each sample after this stage (execute mode).",
+    )
+    args = parser.parse_args(argv)
+
+    if args.dry_run and args.execute:
+        print("error: use --dry-run or --execute, not both", file=sys.stderr)
+        return 2
+    if not args.dry_run and not args.execute:
+        print("error: specify --dry-run or --execute", file=sys.stderr)
+        return 2
+    if args.workers < 1:
+        print("error: --workers must be >= 1", file=sys.stderr)
+        return 2
+
+    repo_root = detect_repo_root(SCRIPT_DIR)
+    spec_path = args.samples_json if args.samples_json.is_absolute() else repo_root / args.samples_json
+    if not spec_path.is_file():
+        print(f"error: missing --samples-json: {spec_path}", file=sys.stderr)
+        return 2
+
+    try:
+        spec = _load_batch_spec(spec_path)
+        bid = args.batch_id or str(spec.get("batch_id") or "m4_lhs_production")
+        if spec.get("batch_id") and args.batch_id and spec["batch_id"] != args.batch_id:
+            raise ValueError(f"--batch-id {args.batch_id!r} does not match spec {spec['batch_id']!r}")
+        samples = _select_samples(spec, start_index=args.start_index, max_samples=args.max_samples)
+        if not samples:
+            raise ValueError("no samples selected (check --start-index / --max-samples / excludes)")
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    if args.dry_run:
+        plan = _run_dry_run_batch(
+            repo_root=repo_root,
+            spec_path=spec_path,
+            spec=spec,
+            batch_id=bid,
+            samples=samples,
+            workers=args.workers,
+            force=bool(args.force),
+        )
+        batch_dir = PIPELINE_RUNS / "batches" / bid
+        batch_dir.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(batch_dir / "batch_execution_plan.json", plan)
+        print("will_execute=false")
+        print(f"batch_id={bid}")
+        print(f"sample_count={plan['sample_count']}")
+        for row in plan["samples"]:
+            print(f"  {row['sample_id']}: {row['reuse_status']} -> {row['run_root']}")
+        print(f"wrote {rel(batch_dir / 'batch_execution_plan.json', repo_root=repo_root)}")
+        print("no solver executed")
+        return 0
+
+    summary = run_production_batch(
+        repo_root=repo_root,
+        spec_path=spec_path,
+        batch_id=bid,
+        samples=samples,
+        spec=spec,
+        workers=args.workers,
+        execute=True,
+        continue_on_fail=bool(args.continue_on_fail),
+        force=bool(args.force),
+        stop_after=args.stop_after,
+        resume=bool(args.resume),
+    )
+    print(f"batch_id={bid}")
+    print(f"completed={summary['completed_count']} failed={summary['failed_count']} skipped={summary['skipped_count']}")
+    print(f"summary={rel(PIPELINE_RUNS / 'batches' / bid / 'batch_execution_summary.json', repo_root=repo_root)}")
+    return 1 if summary["failed_count"] else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
