@@ -48,7 +48,48 @@ def _detect_repo_root(start: Path) -> Path:
         if cur.parent == cur:
             break
         cur = cur.parent
-    return start.resolve().parents[5]
+    return start.resolve().parents[4]
+
+
+def bootstrap_fem_import_paths(*, start: Optional[Path] = None) -> Path:
+    """
+    Match B3 checkpoint/audit layout: physics_integrity/scripts + FEM/scripts on sys.path.
+    Required for ``import fem_main_3d`` in the isolated region-DOF worker subprocess.
+    """
+    anchor = (start or SCRIPT_DIR).resolve()
+    script_dir = anchor.parent if anchor.suffix == ".py" else anchor
+    if str(script_dir) not in sys.path:
+        sys.path.insert(0, str(script_dir))
+    repo_root = _detect_repo_root(script_dir)
+    fem_scripts = repo_root / "FEM" / "scripts"
+    if fem_scripts.is_dir() and str(fem_scripts) not in sys.path:
+        sys.path.insert(0, str(fem_scripts))
+    return repo_root
+
+
+def region_dof_subprocess_env(
+    *,
+    repo_root: Path,
+    base_env: Optional[Mapping[str, str]] = None,
+) -> Dict[str, str]:
+    """Subprocess env for region-DOF worker (production python + FEM import paths)."""
+    env = dict(base_env or os.environ)
+    prepend = [
+        str((repo_root / "FEM" / "scripts").resolve()),
+        str(
+            (
+                repo_root
+                / "FEM"
+                / "experiments"
+                / "active_domain_validation"
+                / "physics_integrity"
+                / "scripts"
+            ).resolve()
+        ),
+    ]
+    existing = str(env.get("PYTHONPATH") or "")
+    env["PYTHONPATH"] = os.pathsep.join(prepend + ([existing] if existing else []))
+    return env
 
 
 def resolve_region_dof_mesh_file(
