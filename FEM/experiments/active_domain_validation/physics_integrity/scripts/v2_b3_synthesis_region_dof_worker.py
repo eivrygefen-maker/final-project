@@ -14,9 +14,12 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from v2_b3_synthesis_export import (  # noqa: E402
     REGION_DOF_STATUS_PASS,
+    bootstrap_fem_import_paths,
     export_region_dof_indices_npz,
     region_dof_status_is_pass,
 )
+
+bootstrap_fem_import_paths(start=SCRIPT_DIR)
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
 

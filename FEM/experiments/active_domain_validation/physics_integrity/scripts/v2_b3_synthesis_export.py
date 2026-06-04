@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
 
 import numpy as np
 
@@ -148,6 +149,8 @@ def export_region_dof_indices_npz(
     core_config_path: Optional[Path] = None,
 ) -> Tuple[str, Optional[str]]:
     """Locate region DOFs via DOLFINx; indices are global W rows (u_idx / p_idx)."""
+    bootstrap_fem_import_paths(start=checkpoint)
+
     import dolfinx.mesh as dmesh
     from dolfinx import fem
 
@@ -322,11 +325,16 @@ def export_region_dof_indices_isolated(
     if core_config_path and Path(core_config_path).is_file():
         cmd.extend(["--core-config", str(Path(core_config_path).resolve())])
 
+    repo_root = bootstrap_fem_import_paths(start=checkpoint)
+    sub_env = region_dof_subprocess_env(repo_root=repo_root)
+
     proc_error: Optional[str] = None
     proc_tail = ""
     try:
         proc = subprocess.run(
             cmd,
+            cwd=str(repo_root),
+            env=sub_env,
             capture_output=True,
             text=True,
             timeout=REGION_DOF_SUBPROCESS_TIMEOUT_S,

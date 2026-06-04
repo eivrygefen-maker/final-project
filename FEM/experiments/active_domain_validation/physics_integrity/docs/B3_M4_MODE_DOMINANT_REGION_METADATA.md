@@ -36,6 +36,8 @@ Per accepted ST mode, the worker solve path records which subsystem dominates (t
 
 **Fix (indices):** B3 `u_idx = arange(n_u_b3)` — shell trace facet DOF rows map **directly** to W u-block rows (not via `parent_index_per_trace_dof`). Status `BEST_EFFORT_PASS`. **Back includes ribs** in `back_participation`.
 
+**Fix (imports):** isolated `v2_b3_synthesis_region_dof_worker.py` bootstraps `FEM/scripts` on `sys.path` / `PYTHONPATH` (same as B3 audit) so `import fem_main_3d` works in the production subprocess.
+
 ## Availability estimate
 
 | Input | Available in target-list solve? |
