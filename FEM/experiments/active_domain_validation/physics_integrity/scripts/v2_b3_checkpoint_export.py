@@ -215,8 +215,21 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
         synthesis_export: Dict[str, Any] = {}
         synthesis_warnings: List[str] = []
         try:
-            from v2_b3_synthesis_export import write_stage_a_synthesis_artifacts
+            from v2_b3_synthesis_export import (
+                resolve_region_dof_mesh_file,
+                write_stage_a_synthesis_artifacts,
+            )
 
+            mesh_file, mesh_resolve = resolve_region_dof_mesh_file(
+                checkpoint,
+                mesh_level=mesh_level,
+                built_meta=built_meta,
+                core_config_path=core_config_path,
+            )
+            if mesh_file is not None:
+                built_meta = dict(built_meta)
+                built_meta["region_dof_mesh_file"] = str(mesh_file)
+                write_json(checkpoint / "built_metadata.json", built_meta)
             synthesis_export = write_stage_a_synthesis_artifacts(
                 checkpoint,
                 built=built,
@@ -225,7 +238,10 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
                 compose_backend=args.compose_backend,
                 region_dofs_mode=region_dofs_mode,
                 core_config_provenance=core_config_provenance,
+                core_config_path=core_config_path,
+                python_executable=sys.executable,
             )
+            synthesis_export["region_dof_mesh_resolve"] = mesh_resolve
             warn = synthesis_export.pop("warning", None)
             if warn:
                 synthesis_warnings.append(str(warn))

@@ -124,7 +124,7 @@ def compute_mode_dominant_region_from_norms(
         "back_participation": None,
         "air_participation": air_p,
         "participation_method": "pressure_displacement_norm_proxy_v1",
-        "participation_status": "computed",
+        "participation_status": "fallback",
         "participation_detail": "top/back require region_dof_indices.npz at checkpoint export",
     }
 

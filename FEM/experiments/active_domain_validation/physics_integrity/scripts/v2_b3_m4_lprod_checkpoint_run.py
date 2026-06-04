@@ -54,6 +54,7 @@ from v2_b3_rich_modal_lib import (  # noqa: E402
     SYNTHESIS_METADATA_JSON,
     load_region_dof_bundle,
 )
+from v2_b3_synthesis_export import region_dof_status_is_pass  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 from v2_b3_resolve_pilot_core_config import _repo_relative  # noqa: E402
 from v2_b3_run_coarse_scout_lhs_batch import (  # noqa: E402
@@ -359,7 +360,7 @@ def _log_lprod_region_dof_index_status(
     if readiness_out is not None:
         readiness_out["region_dof_indices"] = summary
 
-    if summary["structural_indices_available"]:
+    if summary["structural_indices_available"] and region_dof_status_is_pass(synth_status):
         msg = (
             f"[{_utc_now()}] region_dof_indices: present "
             f"(source={summary['region_dof_source']}); "

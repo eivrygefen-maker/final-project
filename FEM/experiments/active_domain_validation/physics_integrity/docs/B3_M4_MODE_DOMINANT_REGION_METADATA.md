@@ -28,15 +28,21 @@ Per accepted ST mode, the worker solve path records which subsystem dominates (t
 - Solve hook: `collect_accepted_st_modes()` in `v2_b3_st_sinvert_solver_lib.py` (uses `x_active` already in memory; **does not** set `export_vectors=True`)
 - Region indices: `load_region_dof_bundle()` from `v2_b3_rich_modal_lib.py`
 
+## Root cause (sample_000 blocker — fixed)
+
+`best_effort` was enabled, but export still looked up **`mesh_path(L_prod, baseline_coupled_v2)`** instead of the M4 mesh at `lprod/mesh/L_prod/<sample_id>.msh` from `lprod/resolved_core_config.json`. Missing baseline mesh → `deferred_to_stage_c`, no npz.
+
+**Fix:** `resolve_region_dof_mesh_file()` + trace→global-W mapping via `parent_index_per_trace_dof`; status `BEST_EFFORT_PASS`. **Back includes ribs** in `back_participation`.
+
 ## Availability estimate
 
 | Input | Available in target-list solve? |
 |-------|--------------------------------|
 | Accepted mode vector `x_active` | **Yes** — built for every converged mode before acceptance |
 | `built` row maps (`u_idx`, `p_idx`, `free_rows`, …) | **Yes** — from checkpoint `built_metadata.json` |
-| Top/back facet DOF indices | **Only if** `lprod/checkpoint/region_dof_indices.npz` exists |
+| Top/back facet DOF indices | **Yes** when npz exists (per-sample mesh) |
 
-`region_dof_indices.npz` is produced when L_prod checkpoint export runs with `--B3-synthesis-region-dofs best_effort` (isolated DOLFINx subprocess during `v2_b3_checkpoint_export.py`). **M4 production default** (`v2_b3_m4_lprod_checkpoint_run.py`): `best_effort` via `LPROD_SYNTHESIS_REGION_DOFS_DEFAULT`.
+`region_dof_indices.npz` is produced when L_prod checkpoint runs `--B3-synthesis-region-dofs best_effort` (**M4 default:** `LPROD_SYNTHESIS_REGION_DOFS_DEFAULT`).
 
 If the npz is missing:
 

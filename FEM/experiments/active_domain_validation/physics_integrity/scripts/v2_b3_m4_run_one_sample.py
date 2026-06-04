@@ -6,7 +6,7 @@ import argparse
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -369,12 +369,19 @@ def _run_stage_freeze(
     return 0, "v2_b3_m4_freeze_first_e2e_run.py (generic names)"
 
 
+def _should_force_stage(name: str, *, force: bool, force_stages: Optional[Set[str]]) -> bool:
+    if force:
+        return True
+    return bool(force_stages and name in force_stages)
+
+
 def run_pipeline(
     *,
     repo_root: Path,
     run_root: Path,
     workers: int,
     force: bool,
+    force_stages: Optional[Set[str]] = None,
     execute: bool,
     stop_after: Optional[str],
     m45_batch_mode: bool,
@@ -439,6 +446,7 @@ def run_pipeline(
             "workers": workers,
             "stop_after": stop_after,
             "force": force,
+            "force_stages": sorted(force_stages) if force_stages else None,
             "m45_batch_mode": m45_batch_mode,
             "production_mode": production_mode,
             "stage_assessment": stages,
@@ -480,24 +488,69 @@ def run_pipeline(
     _append_log(log_path, f"[{utc_now()}] M4.5 execute begin sample={sample_id} run={run_root.name}")
 
     runners = [
-        ("scout", lambda: _run_stage_scout(run_root=run_root, policy=policy, force=force, execute=True)),
-        ("worker_plan", lambda: _run_stage_worker_plan(run_root=run_root, workers=workers, force=force)),
-        ("checkpoint", lambda: _run_stage_checkpoint(run_root=run_root, force=force, execute=True)),
-        ("workers", lambda: _run_stage_workers(run_root=run_root, force=force, execute=True)),
-        ("aggregate", lambda: _run_stage_aggregate(run_root=run_root, force=force, execute=True)),
-        ("freeze", lambda: _run_stage_freeze(repo_root=repo_root, run_root=run_root, sample_id=sample_id, force=force)),
+        (
+            "scout",
+            lambda sf=force_stages: _run_stage_scout(
+                run_root=run_root,
+                policy=policy,
+                force=_should_force_stage("scout", force=force, force_stages=sf),
+                execute=True,
+            ),
+        ),
+        (
+            "worker_plan",
+            lambda sf=force_stages: _run_stage_worker_plan(
+                run_root=run_root,
+                workers=workers,
+                force=_should_force_stage("worker_plan", force=force, force_stages=sf),
+            ),
+        ),
+        (
+            "checkpoint",
+            lambda sf=force_stages: _run_stage_checkpoint(
+                run_root=run_root,
+                force=_should_force_stage("checkpoint", force=force, force_stages=sf),
+                execute=True,
+            ),
+        ),
+        (
+            "workers",
+            lambda sf=force_stages: _run_stage_workers(
+                run_root=run_root,
+                force=_should_force_stage("workers", force=force, force_stages=sf),
+                execute=True,
+            ),
+        ),
+        (
+            "aggregate",
+            lambda sf=force_stages: _run_stage_aggregate(
+                run_root=run_root,
+                force=_should_force_stage("aggregate", force=force, force_stages=sf),
+                execute=True,
+            ),
+        ),
+        (
+            "freeze",
+            lambda sf=force_stages: _run_stage_freeze(
+                repo_root=repo_root,
+                run_root=run_root,
+                sample_id=sample_id,
+                force=_should_force_stage("freeze", force=force, force_stages=sf),
+            ),
+        ),
     ]
 
     for idx, (name, run_fn) in enumerate(runners):
         st = stages[name]
-        if st["pass"] and not force:
+        stage_force = _should_force_stage(name, force=force, force_stages=force_stages)
+        if st["pass"] and not stage_force:
             print(f"[skip] {name}: already PASS (reuse)", flush=True)
             _append_log(log_path, f"[{utc_now()}] skip {name} PASS reuse")
             if STOP_AFTER_RANK.get(stop_after or "", 999) == idx:
                 break
             continue
 
-        if st["reuse_status"] == "resume_possible" and not force and name not in ("worker_plan",):
+        if st["reuse_status"] == "resume_possible" and not stage_force and name not in ("worker_plan",):
             print(f"[resume] {name}: prior partial artifacts; attempting stage", flush=True)
 
         print(f"[run] {name} ...", flush=True)
@@ -577,6 +630,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         choices=tuple(STOP_AFTER_RANK.keys()),
         help="Stop after scout, checkpoint, or workers (execute mode).",
     )
+    parser.add_argument("--force-checkpoint", action="store_true", help="Re-run checkpoint stage even if PASS.")
+    parser.add_argument("--force-workers", action="store_true", help="Re-run worker stage even if PASS.")
+    parser.add_argument("--force-aggregation", action="store_true", help="Re-run aggregation even if PASS.")
     parser.add_argument("--freq-min-hz", type=float, default=60.0)
     parser.add_argument("--freq-max-hz", type=float, default=550.0)
     parser.add_argument("--scout-spacing-hz", type=float, default=7.5)
@@ -600,11 +656,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     run_root = args.run_dir if args.run_dir.is_absolute() else repo_root / args.run_dir
     run_root = run_root.resolve()
 
+    force_stages: Optional[Set[str]] = None
+    if args.force_checkpoint or args.force_workers or args.force_aggregation:
+        force_stages = set()
+        if args.force_checkpoint:
+            force_stages.add("checkpoint")
+        if args.force_workers:
+            force_stages.add("workers")
+        if args.force_aggregation:
+            force_stages.add("aggregate")
+
     return run_pipeline(
         repo_root=repo_root,
         run_root=run_root,
         workers=int(args.workers),
         force=bool(args.force),
+        force_stages=force_stages,
         execute=bool(args.execute),
         stop_after=args.stop_after,
         m45_batch_mode=bool(args.m45_batch_mode),

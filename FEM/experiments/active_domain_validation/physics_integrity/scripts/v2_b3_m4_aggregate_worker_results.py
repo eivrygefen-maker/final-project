@@ -228,7 +228,7 @@ def _dedupe_catalog(
         rep["provenance_chunk_ids"] = sorted({str(g["chunk_id"]) for g in group})
         rep["provenance_sources"] = [g.get("source") for g in group]
         for g in group:
-            if g.get("participation_status") == "computed":
+            if g.get("participation_status") in ("computed", "fallback"):
                 merge_participation_into_catalog_record(rep, g)
                 break
         else:
@@ -433,7 +433,7 @@ def _write_common_artifacts(
     for rec in deduped_catalog:
         dom = str(rec.get("dominant_region") or "unknown")
         region_counts[dom] = region_counts.get(dom, 0) + 1
-        if rec.get("participation_status") == "computed":
+        if rec.get("participation_status") in ("computed", "fallback"):
             participation_computed += 1
 
     modes_summary = {

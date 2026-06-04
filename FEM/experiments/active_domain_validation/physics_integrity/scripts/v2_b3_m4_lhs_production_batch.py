@@ -7,7 +7,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -183,6 +183,7 @@ def run_production_batch(
     force: bool,
     stop_after: Optional[str],
     resume: bool,
+    force_stages: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
     fp = _frequency_policy(spec)
     band = fp.get("band_hz", [60.0, 550.0])
@@ -337,6 +338,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         choices=("scout", "checkpoint", "workers"),
         help="Stop each sample after this stage (execute mode).",
     )
+    parser.add_argument("--force-checkpoint", action="store_true", help="Re-run checkpoint only.")
+    parser.add_argument("--force-workers", action="store_true", help="Re-run workers only.")
+    parser.add_argument("--force-aggregation", action="store_true", help="Re-run aggregation only.")
     args = parser.parse_args(argv)
 
     if args.dry_run and args.execute:
@@ -389,6 +393,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("no solver executed")
         return 0
 
+    force_stages: Optional[Set[str]] = None
+    if args.force_checkpoint or args.force_workers or args.force_aggregation:
+        force_stages = set()
+        if args.force_checkpoint:
+            force_stages.add("checkpoint")
+        if args.force_workers:
+            force_stages.add("workers")
+        if args.force_aggregation:
+            force_stages.add("aggregate")
+
     summary = run_production_batch(
         repo_root=repo_root,
         spec_path=spec_path,
@@ -401,6 +415,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         force=bool(args.force),
         stop_after=args.stop_after,
         resume=bool(args.resume),
+        force_stages=force_stages,
     )
     print(f"batch_id={bid}")
     print(f"completed={summary['completed_count']} failed={summary['failed_count']} skipped={summary['skipped_count']}")
