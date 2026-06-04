@@ -279,6 +279,9 @@ def build_execution_plan(
         else:
             mesh_action = "build_sample_geometry"
 
+    # --force re-exports checkpoint; it must not rebuild an existing run-tree mesh.
+    skip_mesh = mesh_ok and mesh_action == "reuse_run_tree"
+
     return {
         "schema": "m4_lprod_checkpoint_run_plan_v1",
         "will_execute": False,
@@ -289,7 +292,7 @@ def build_execution_plan(
         "lprod_mesh_status": readiness.get("lprod_mesh_status"),
         "lprod_checkpoint_status": readiness.get("lprod_checkpoint_status"),
         "readiness": readiness,
-        "skip_mesh": mesh_ok and not force,
+        "skip_mesh": skip_mesh,
         "skip_checkpoint": ckpt_ok and not force,
         "paths": {
             "lprod_mesh": lprod_mesh_rel,
@@ -530,17 +533,30 @@ def run_execute(
         return 1
 
     log_mesh = logs / "stage4_lprod_mesh.log"
+    mesh_action = str(plan.get("mesh_action"))
     if plan["skip_mesh"]:
         if _mesh_pass(lprod_mesh):
-            _append_log(log_mesh, f"[{_utc_now()}] reuse existing run-tree mesh {lprod_mesh_rel}\n")
+            _append_log(
+                log_mesh,
+                f"[{_utc_now()}] [B3_lprod_mesh] status=PASS mesh_action={mesh_action} "
+                f"mesh_path={lprod_mesh.resolve()}\n",
+            )
             stage4_mesh = "PASS"
         else:
             _append_log(log_mesh, f"[{_utc_now()}] FAIL skip_mesh but mesh missing\n")
             stage4_mesh = "FAIL"
     else:
-        mesh_action = str(plan.get("mesh_action"))
         try:
-            if mesh_action == "copy_baseline_mesh":
+            if mesh_action == "reuse_run_tree":
+                if not _mesh_pass(lprod_mesh):
+                    raise FileNotFoundError(f"reuse_run_tree but mesh missing: {lprod_mesh}")
+                _append_log(
+                    log_mesh,
+                    f"[{_utc_now()}] [B3_lprod_mesh] status=PASS mesh_action=reuse_run_tree "
+                    f"mesh_path={lprod_mesh.resolve()}\n",
+                )
+                rc_mesh = 0
+            elif mesh_action == "copy_baseline_mesh":
                 _append_log(log_mesh, f"[{_utc_now()}] geometry matches baseline — copy {BASELINE_L_PROD_MESH}\n")
                 _install_mesh_from_src(
                     src=BASELINE_L_PROD_MESH,
@@ -709,7 +725,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--dry-run", action="store_true", help="Plan only; no mesh/checkpoint execution.")
     parser.add_argument("--execute", action="store_true", help="Run Stage 4 mesh + checkpoint export.")
-    parser.add_argument("--force", action="store_true", help="Rebuild mesh / re-export checkpoint even if PASS.")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-export checkpoint even if PASS; does not rebuild existing run-tree L_prod mesh.",
+    )
     parser.add_argument("--prod-python", default=DEFAULT_PROD_PYTHON)
     parser.add_argument("--prod-venv", default=DEFAULT_PROD_VENV)
     args = parser.parse_args(argv)
