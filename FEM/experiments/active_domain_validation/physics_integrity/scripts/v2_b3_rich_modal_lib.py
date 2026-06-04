@@ -105,10 +105,10 @@ def participation_energy_fraction(
 def structural_region_indices_available(region: Dict[str, np.ndarray], *, npz_present: bool) -> bool:
     if not npz_present:
         return False
-    for key in ("u_idx_top", "u_idx_back", "u_idx_ribs"):
-        if np.asarray(region.get(key, []), dtype=np.int32).size == 0:
-            return False
-    return True
+    top_n = np.asarray(region.get("u_idx_top", []), dtype=np.int32).size
+    back_n = np.asarray(region.get("u_idx_back", []), dtype=np.int32).size
+    ribs_n = np.asarray(region.get("u_idx_ribs", []), dtype=np.int32).size
+    return top_n > 0 and (back_n > 0 or ribs_n > 0)
 
 
 def pressure_region_indices_available(region: Dict[str, np.ndarray]) -> bool:

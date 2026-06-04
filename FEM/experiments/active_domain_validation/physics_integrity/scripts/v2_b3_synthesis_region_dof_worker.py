@@ -50,8 +50,10 @@ def main(argv: list[str] | None = None) -> int:
             core_config_path=core_config,
         )
     except Exception as exc:
+        import traceback
+
         status = "deferred_to_stage_c"
-        error = f"{type(exc).__name__}:{exc}"
+        error = f"{type(exc).__name__}:{exc}; {traceback.format_exc()[-1200:]}"
 
     write_json_atomic(
         result_path,

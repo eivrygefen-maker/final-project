@@ -43,6 +43,9 @@ from v2_b3_m4_lprod_interfaces import (  # noqa: E402
 )
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 from v2_b3_resolve_pilot_core_config import _repo_relative  # noqa: E402
+from v2_b3_m4_runtime_provenance import (  # noqa: E402
+    production_worker_thread_settings,
+)
 from v2_b3_run_coarse_scout_lhs_batch import (  # noqa: E402
     STAGE_B_ENV_PROBE,
     _path_for_subprocess,
@@ -624,3 +627,139 @@ def execute_worker_chunk(
         "wall_seconds": time.perf_counter() - t0,
         **summary,
     }
+
+
+def production_worker_subprocess_env(
+    *,
+    solver_python: str,
+    solver_venv: str,
+) -> Dict[str, str]:
+    """Solver-mkl env with single-thread BLAS per worker process (FCFS parallelism)."""
+    env = _solver_mkl_subprocess_env_strict(
+        solver_python=solver_python,
+        solver_venv=solver_venv,
+    )
+    env.update(production_worker_thread_settings(env))
+    return env
+
+
+def _parallel_chunk_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Process-pool entry: one L_prod chunk solve (picklable)."""
+    return execute_worker_chunk(
+        repo_root=Path(job["repo_root"]),
+        run_root=Path(job["run_root"]),
+        chunk_id=str(job["chunk_id"]),
+        solver_python=str(job["solver_python"]),
+        solver_venv=str(job["solver_venv"]),
+        force=bool(job.get("force")),
+        env_b=dict(job["env_b"]),
+        env_probe_body=job.get("env_probe_body"),
+        run_env_probe=False,
+        worker_id=str(job.get("worker_id", "fcfs")),
+        mode=str(job.get("mode", "m4_fcfs_worker")),
+        minibatch_id=job.get("minibatch_id"),
+        label_prefix=str(job.get("label_prefix", "worker_fcfs")),
+    )
+
+
+def run_chunks_fcfs_parallel(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    chunk_ids: Sequence[str],
+    solver_python: str,
+    solver_venv: str,
+    force: bool,
+    env_b: Dict[str, str],
+    env_probe_body: Dict[str, Any],
+    n_workers: int,
+    minibatch_id: Optional[str] = None,
+    label_prefix: str = "worker_fcfs",
+    stop_on_fail: bool = True,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    FCFS pool: up to n_workers concurrent chunk subprocesses; next chunk starts when a slot frees.
+    Returns (chunk_results in submission order, workers_actual_parallel).
+    """
+    from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+
+    n_workers = max(1, int(n_workers))
+    workers_actual = min(n_workers, max(1, len(chunk_ids)))
+    if workers_actual <= 1 or len(chunk_ids) <= 1:
+        results: List[Dict[str, Any]] = []
+        for i, chunk_id in enumerate(chunk_ids):
+            results.append(
+                execute_worker_chunk(
+                    repo_root=repo_root,
+                    run_root=run_root,
+                    chunk_id=chunk_id,
+                    solver_python=solver_python,
+                    solver_venv=solver_venv,
+                    force=force,
+                    env_b=env_b,
+                    env_probe_body=env_probe_body,
+                    run_env_probe=False,
+                    worker_id=f"fcfs_W{i % workers_actual}",
+                    mode="m4_fcfs_worker",
+                    minibatch_id=minibatch_id,
+                    label_prefix=label_prefix,
+                )
+            )
+            if stop_on_fail and results[-1].get("status") == "FAIL" and results[-1].get("action") == "executed":
+                break
+        return results, 1 if len(chunk_ids) <= 1 else workers_actual
+
+    pending = list(chunk_ids)
+    order = list(chunk_ids)
+    future_to_chunk: Dict[Any, str] = {}
+    result_by_chunk: Dict[str, Dict[str, Any]] = {}
+    slot = 0
+
+    with ProcessPoolExecutor(max_workers=workers_actual) as pool:
+        while pending or future_to_chunk:
+            while pending and len(future_to_chunk) < workers_actual:
+                chunk_id = pending.pop(0)
+                job = {
+                    "repo_root": str(repo_root.resolve()),
+                    "run_root": str(run_root.resolve()),
+                    "chunk_id": chunk_id,
+                    "solver_python": solver_python,
+                    "solver_venv": solver_venv,
+                    "force": force,
+                    "env_b": env_b,
+                    "env_probe_body": env_probe_body,
+                    "worker_id": f"fcfs_W{slot % workers_actual}",
+                    "mode": "m4_fcfs_worker",
+                    "minibatch_id": minibatch_id,
+                    "label_prefix": label_prefix,
+                }
+                slot += 1
+                future_to_chunk[pool.submit(_parallel_chunk_job, job)] = chunk_id
+
+            if not future_to_chunk:
+                break
+            done, _ = wait(future_to_chunk, return_when=FIRST_COMPLETED)
+            for fut in done:
+                cid = future_to_chunk.pop(fut)
+                try:
+                    result_by_chunk[cid] = fut.result()
+                except Exception as exc:
+                    result_by_chunk[cid] = {
+                        "chunk_id": cid,
+                        "action": "executed",
+                        "status": "FAIL",
+                        "errors": [f"fcfs_worker_exception:{type(exc).__name__}:{exc}"],
+                        "wall_seconds": None,
+                    }
+                if stop_on_fail:
+                    row = result_by_chunk[cid]
+                    if row.get("status") == "FAIL" and row.get("action") in ("executed", "failed_precheck"):
+                        pending.clear()
+                        break
+
+        if stop_on_fail and future_to_chunk:
+            for fut in list(future_to_chunk):
+                fut.cancel()
+            future_to_chunk.clear()
+
+    return [result_by_chunk[cid] for cid in order if cid in result_by_chunk], workers_actual

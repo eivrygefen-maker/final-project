@@ -72,7 +72,9 @@ def _maybe_compute_region_dof_indices(
         mesh_level=mesh_level,
         built_meta=built_meta,
     )
-    if status != "present":
+    from v2_b3_synthesis_export import region_dof_status_is_pass  # noqa: E402
+
+    if not region_dof_status_is_pass(status):
         warnings.append(
             f"Stage C region_dof best_effort did not produce npz: status={status} detail={error}"
         )

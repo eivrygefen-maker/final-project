@@ -13,6 +13,10 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from v2_b3_m4_runtime_provenance import (  # noqa: E402
+    collect_m4_runtime_provenance,
+    production_worker_thread_settings,
+)
 from v2_b3_m4_worker_run_lib import (  # noqa: E402
     PASS_LIKE,
     TERMINAL_CHECKPOINT_READY,
@@ -21,6 +25,8 @@ from v2_b3_m4_worker_run_lib import (  # noqa: E402
     execute_worker_chunk,
     load_json,
     plan_remaining_worker_chunks,
+    production_worker_subprocess_env,
+    run_chunks_fcfs_parallel,
     run_solver_env_probe,
     utc_now,
     validate_chunk_preconditions,
@@ -29,7 +35,6 @@ from v2_b3_m4_worker_run_lib import (  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 from v2_b3_run_coarse_scout_lhs_batch import (  # noqa: E402
     DEFAULT_SOLVER_PYTHON,
-    _solver_mkl_subprocess_env_strict,
 )
 
 DEFAULT_SOLVER_VENV = "/home/vboxuser/solver-mkl/venv"
@@ -183,6 +188,7 @@ def run_execute(
     solver_venv: str,
     force: bool,
     stop_on_fail: bool,
+    n_workers: int,
 ) -> int:
     manifest_path = run_root / "pipeline_run_manifest.json"
     manifest = load_json(manifest_path)
@@ -216,9 +222,11 @@ def run_execute(
     if not plan["chunks_to_execute"] and plan["preexisting_pass_chunks"]:
         print("note: all planned chunks already PASS; nothing to execute", flush=True)
 
-    env_b = _solver_mkl_subprocess_env_strict(
+    n_workers = max(1, int(n_workers))
+    env_b = production_worker_subprocess_env(
         solver_python=solver_python, solver_venv=solver_venv
     )
+    thread_settings = production_worker_thread_settings(env_b)
     t_wall0 = time.perf_counter()
     env_pass, env_body = run_solver_env_probe(
         repo_root=repo_root,
@@ -234,10 +242,20 @@ def run_execute(
     print(f"checkpoint PASS ({TERMINAL_CHECKPOINT_READY})", flush=True)
     print(f"preexisting_pass={plan.get('preexisting_pass_chunks')}", flush=True)
     print(f"to_execute={plan.get('chunks_to_execute')}", flush=True)
+    print(
+        f"workers_requested={n_workers} thread_settings={thread_settings}",
+        flush=True,
+    )
 
     chunk_results: List[Dict[str, Any]] = []
+    result_by_chunk: Dict[str, Dict[str, Any]] = {}
+    workers_actual = 1
+    skip_reuse = set(plan.get("chunks_to_skip_reuse") or [])
+
     for i, chunk_id in enumerate(planned_ids):
-        print(f"[remaining] chunk {i + 1}/{len(planned_ids)}: {chunk_id}", flush=True)
+        if chunk_id not in skip_reuse:
+            continue
+        print(f"[remaining] chunk {i + 1}/{len(planned_ids)}: {chunk_id} (reuse)", flush=True)
         result = execute_worker_chunk(
             repo_root=repo_root,
             run_root=run_root,
@@ -248,25 +266,58 @@ def run_execute(
             env_b=env_b,
             env_probe_body=env_body,
             run_env_probe=False,
-            worker_id=f"remaining_W{i}",
+            worker_id=f"remaining_reuse_{i}",
             mode="m4_4_1b_4_worker_remaining",
             minibatch_id=REMAINING_ID,
             label_prefix="worker_remaining",
         )
-        chunk_results.append(result)
+        result_by_chunk[chunk_id] = result
         print(
-            f"  {chunk_id}: action={result.get('action')} status={result.get('status')} "
-            f"exit={result.get('solve_exit_code')} "
-            f"targets={result.get('targets_passed')}/{result.get('targets_attempted')}",
+            f"  {chunk_id}: action={result.get('action')} status={result.get('status')}",
             flush=True,
         )
-        if (
-            stop_on_fail
-            and result.get("status") == "FAIL"
-            and result.get("action") in ("executed", "failed_precheck")
-        ):
-            print(f"error: stopping after FAIL on {chunk_id}", file=sys.stderr)
-            break
+
+    to_execute = [cid for cid in planned_ids if cid in plan.get("chunks_to_execute", [])]
+    if to_execute:
+        print(
+            f"[remaining] FCFS parallel execute n_workers={n_workers} chunks={len(to_execute)}",
+            flush=True,
+        )
+        parallel_results, workers_actual = run_chunks_fcfs_parallel(
+            repo_root=repo_root,
+            run_root=run_root,
+            chunk_ids=to_execute,
+            solver_python=solver_python,
+            solver_venv=solver_venv,
+            force=force,
+            env_b=env_b,
+            env_probe_body=env_body,
+            n_workers=n_workers,
+            minibatch_id=REMAINING_ID,
+            label_prefix="worker_remaining",
+            stop_on_fail=stop_on_fail,
+        )
+        for j, result in enumerate(parallel_results):
+            chunk_id = result.get("chunk_id")
+            print(
+                f"[remaining] chunk done {j + 1}/{len(to_execute)}: {chunk_id} "
+                f"action={result.get('action')} status={result.get('status')} "
+                f"exit={result.get('solve_exit_code')} "
+                f"targets={result.get('targets_passed')}/{result.get('targets_attempted')} "
+                f"wall_s={result.get('wall_seconds')}",
+                flush=True,
+            )
+            result_by_chunk[chunk_id] = result
+            if (
+                stop_on_fail
+                and result.get("status") == "FAIL"
+                and result.get("action") in ("executed", "failed_precheck")
+            ):
+                print(f"error: stopping after FAIL on {chunk_id}", file=sys.stderr)
+                break
+
+    chunk_results = [result_by_chunk[cid] for cid in planned_ids if cid in result_by_chunk]
+    print(f"workers_actual_parallel={workers_actual}", flush=True)
 
     wall_s = time.perf_counter() - t_wall0
     executed = [r["chunk_id"] for r in chunk_results if r.get("action") == "executed"]
@@ -305,8 +356,20 @@ def run_execute(
         "env_probe_ok": True,
         "stop_on_fail": stop_on_fail,
         "only_missing_chunks_executed": True,
+        "workers_requested": n_workers,
+        "workers_actual_parallel": workers_actual,
+        "worker_thread_settings": thread_settings,
+        "execution_mode": "fcfs_process_pool" if workers_actual > 1 else "sequential",
     }
     write_json_atomic(worker_root / REMAINING_MANIFEST, report)
+    write_json_atomic(
+        run_root / "m4_sample_runtime_provenance.json",
+        collect_m4_runtime_provenance(
+            run_root=run_root,
+            workers_requested=n_workers,
+            worker_remaining_manifest=report,
+        ),
+    )
     (worker_root / REMAINING_SUMMARY_MD).write_text(_render_summary_md(report), encoding="utf-8")
 
     preview = json.loads(json.dumps(manifest))
@@ -354,6 +417,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     parser.add_argument("--solver-python", default=DEFAULT_SOLVER_PYTHON)
     parser.add_argument("--solver-venv", default=DEFAULT_SOLVER_VENV)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Max concurrent chunk solver processes (FCFS). Default 1 = sequential.",
+    )
     args = parser.parse_args(argv)
 
     if args.dry_run and args.execute:
@@ -361,6 +430,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
     if not args.dry_run and not args.execute:
         print("error: specify --dry-run or --execute", file=sys.stderr)
+        return 2
+    if int(args.workers) < 1:
+        print("error: --workers must be >= 1", file=sys.stderr)
         return 2
 
     repo_root = detect_repo_root(SCRIPT_DIR)
@@ -381,6 +453,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         solver_venv=str(args.solver_venv),
         force=bool(args.force),
         stop_on_fail=not bool(args.no_stop_on_fail),
+        n_workers=int(args.workers),
     )
 
 

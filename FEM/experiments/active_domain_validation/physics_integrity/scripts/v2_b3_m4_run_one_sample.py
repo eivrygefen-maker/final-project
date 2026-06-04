@@ -321,10 +321,11 @@ def _run_stage_checkpoint(
 def _run_stage_workers(
     *,
     run_root: Path,
+    workers: int,
     force: bool,
     execute: bool,
 ) -> Tuple[int, str]:
-    argv = ["--run-dir", str(run_root)]
+    argv = ["--run-dir", str(run_root), "--workers", str(workers)]
     if execute:
         argv.append("--execute")
         if force:
@@ -471,7 +472,7 @@ def run_pipeline(
             ("scout", lambda: _run_stage_scout(run_root=run_root, policy=policy, force=False, execute=False)),
             ("worker_plan", lambda: _run_stage_worker_plan(run_root=run_root, workers=workers, force=False)),
             ("checkpoint", lambda: _run_stage_checkpoint(run_root=run_root, force=False, execute=False)),
-            ("workers", lambda: _run_stage_workers(run_root=run_root, force=False, execute=False)),
+            ("workers", lambda: _run_stage_workers(run_root=run_root, workers=workers, force=False, execute=False)),
             ("aggregate", lambda: _run_stage_aggregate(run_root=run_root, force=False, execute=False)),
         ]
         for name, run_fn in preview_runners:
@@ -517,6 +518,7 @@ def run_pipeline(
             "workers",
             lambda sf=force_stages: _run_stage_workers(
                 run_root=run_root,
+                workers=workers,
                 force=_should_force_stage("workers", force=force, force_stages=sf),
                 execute=True,
             ),
@@ -579,6 +581,18 @@ def run_pipeline(
         print(f"completed_chunks={agg.get('completed_chunk_count')}/{agg.get('planned_chunk_count')}")
         print(f"deduped_modes={agg.get('deduped_mode_count')}")
         print(f"final_aggregation_ready={agg.get('final_aggregation_ready')}")
+    try:
+        from v2_b3_m4_runtime_provenance import collect_m4_runtime_provenance  # noqa: E402
+
+        prov = collect_m4_runtime_provenance(run_root=run_root, workers_requested=workers)
+        write_json_atomic(run_root / "m4_sample_runtime_provenance.json", prov)
+        print(
+            f"participation_computed_count={prov.get('participation_computed_count')} "
+            f"workers_actual_parallel={prov.get('workers_actual_parallel')}",
+            flush=True,
+        )
+    except Exception:
+        pass
     print(f"terminal_status={_manifest(run_root).get('terminal_status')}")
     print("pipeline execute finished")
     return 0

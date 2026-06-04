@@ -98,24 +98,15 @@ def resolve_region_dof_mesh_file(
     return None, f"mesh_missing; tried: {'; '.join(tried)}"
 
 
-def _trace_rows_to_global_w(
-    trace_rows: np.ndarray,
-    parent_index_per_trace_dof: np.ndarray,
-    u_idx_w: np.ndarray,
-) -> np.ndarray:
-    """Map shell-trace DOF rows to global B3 W row indices via parent u block."""
-    parent_map = np.asarray(parent_index_per_trace_dof, dtype=np.int32).ravel()
-    u_idx_w = np.asarray(u_idx_w, dtype=np.int32).ravel()
-    trace_rows = np.asarray(trace_rows, dtype=np.int32).ravel()
-    out: List[int] = []
-    for tr in trace_rows:
-        if 0 <= int(tr) < parent_map.size:
-            pu = int(parent_map[int(tr)])
-            if 0 <= pu < u_idx_w.size:
-                out.append(int(u_idx_w[pu]))
-    if not out:
+def _trace_rows_to_b3_u_w(trace_rows: np.ndarray, *, n_u_b3: int) -> np.ndarray:
+    """Map shell-trace displacement DOF rows to B3 monolithic W u-block rows (0..n_u_b3-1)."""
+    tr = np.asarray(trace_rows, dtype=np.int32).ravel()
+    if tr.size == 0 or n_u_b3 <= 0:
         return np.asarray([], dtype=np.int32)
-    return np.unique(np.asarray(out, dtype=np.int32))
+    valid = tr[(tr >= 0) & (tr < int(n_u_b3))]
+    if valid.size == 0:
+        return np.asarray([], dtype=np.int32)
+    return np.unique(valid.astype(np.int32, copy=False))
 
 
 def _default_solver_physics() -> Dict[str, float]:
@@ -161,9 +152,6 @@ def export_region_dof_indices_npz(
     from dolfinx import fem
 
     import fem_main_3d as fem3d
-    from run_v2_B3_trace_coupled_operator_and_seed_transfer_audit import (  # noqa: E402
-        _build_c2_trace_to_parent_transfer,
-    )
 
     checkpoint = checkpoint.expanduser().resolve()
     if mesh_file is None or not mesh_file.is_file():
@@ -195,38 +183,28 @@ def export_region_dof_indices_npz(
         dofs = fem3d._locate_facet_displacement_dofs(V_u_trace, shell_mesh, facets)
         return np.unique(np.asarray(dofs, dtype=np.int32).ravel())
 
-    tmeta = _build_c2_trace_to_parent_transfer(
-        msh,
-        facet_tags,
-        shell_facets=shell_facets,
-        tag_top=TAG_TOP,
-        tag_back=TAG_BACK,
-        tag_ribs=TAG_RIBS,
-    )
-    if not tmeta.get("ok"):
-        return "deferred_to_stage_c", f"trace_to_parent_transfer_failed:{tmeta.get('failure_detail')}"
-
-    parent_map = np.asarray(tmeta.get("parent_index_per_trace_dof", []), dtype=np.int32).ravel()
-    if parent_map.size == 0:
-        return "deferred_to_stage_c", "parent_index_per_trace_dof_empty"
-
-    u_idx_w = np.asarray(built_meta.get("u_idx") or [], dtype=np.int32).ravel()
+    n_u_b3 = int(built_meta.get("n_u_b3") or built_meta.get("n_u") or 0)
     p_idx_all = np.asarray(built_meta.get("p_idx") or [], dtype=np.int32).ravel()
-    if u_idx_w.size == 0:
-        return "deferred_to_stage_c", "built_metadata_missing_u_idx"
+    if n_u_b3 <= 0:
+        return "deferred_to_stage_c", "built_metadata_missing_n_u_b3"
 
     trace_top = _trace_u_rows(f_top)
     trace_back = _trace_u_rows(f_back)
     trace_ribs = _trace_u_rows(f_ribs)
     trace_soundhole = _trace_u_rows(f_soundhole)
 
-    u_idx_top = _trace_rows_to_global_w(trace_top, parent_map, u_idx_w)
-    u_idx_back = _trace_rows_to_global_w(trace_back, parent_map, u_idx_w)
-    u_idx_ribs = _trace_rows_to_global_w(trace_ribs, parent_map, u_idx_w)
-    u_idx_soundhole = _trace_rows_to_global_w(trace_soundhole, parent_map, u_idx_w)
+    # B3 checkpoint u_idx = arange(n_u_b3): trace shell DOF rows are W u-block row indices.
+    u_idx_top = _trace_rows_to_b3_u_w(trace_top, n_u_b3=n_u_b3)
+    u_idx_back = _trace_rows_to_b3_u_w(trace_back, n_u_b3=n_u_b3)
+    u_idx_ribs = _trace_rows_to_b3_u_w(trace_ribs, n_u_b3=n_u_b3)
+    u_idx_soundhole = _trace_rows_to_b3_u_w(trace_soundhole, n_u_b3=n_u_b3)
 
     if u_idx_top.size == 0 and u_idx_back.size == 0:
-        return "deferred_to_stage_c", "no_structural_region_dofs_mapped_to_W"
+        return (
+            "deferred_to_stage_c",
+            f"no_b3_u_region_dofs: trace_top={trace_top.size} trace_back={trace_back.size} "
+            f"trace_ribs={trace_ribs.size} n_u_b3={n_u_b3}",
+        )
 
     p_idx_air = p_idx_all.copy()
 
@@ -238,7 +216,7 @@ def export_region_dof_indices_npz(
         u_idx_soundhole=u_idx_soundhole,
         p_idx_air=p_idx_air,
         p_idx_all=p_idx_all,
-        u_idx_all=u_idx_w.copy(),
+        u_idx_all=np.arange(n_u_b3, dtype=np.int32),
         region_dof_mesh_file=np.asarray([str(mesh_file.resolve())]),
         layout=np.asarray([REGION_DOF_LAYOUT]),
         back_includes_ribs=np.asarray([True]),
@@ -345,6 +323,7 @@ def export_region_dof_indices_isolated(
         cmd.extend(["--core-config", str(Path(core_config_path).resolve())])
 
     proc_error: Optional[str] = None
+    proc_tail = ""
     try:
         proc = subprocess.run(
             cmd,
@@ -353,9 +332,9 @@ def export_region_dof_indices_isolated(
             timeout=REGION_DOF_SUBPROCESS_TIMEOUT_S,
             check=False,
         )
+        proc_tail = (proc.stderr or proc.stdout or "").strip()[-800:]
         if proc.returncode != 0:
-            tail = (proc.stderr or proc.stdout or "").strip()[-800:]
-            proc_error = f"subprocess_exit_{proc.returncode}" + (f":{tail}" if tail else "")
+            proc_error = f"subprocess_exit_{proc.returncode}" + (f":{proc_tail}" if proc_tail else "")
     except subprocess.TimeoutExpired:
         proc_error = "region_dof_subprocess_timeout"
     except Exception as exc:
@@ -372,7 +351,10 @@ def export_region_dof_indices_isolated(
         status = str(body.get("status") or "deferred_to_stage_c")
         return status, body.get("error")
 
-    return "deferred_to_stage_c", proc_error or "region_dof_subprocess_no_result"
+    detail = proc_error or "region_dof_subprocess_no_result"
+    if proc_tail and proc_tail not in detail:
+        detail = f"{detail}; {proc_tail}"
+    return "deferred_to_stage_c", detail
 
 
 def write_stage_a_synthesis_artifacts(
@@ -447,4 +429,11 @@ def write_stage_a_synthesis_artifacts(
     }
     if warning:
         out["warning"] = warning
+        print(f"[B3_synthesis_export] {warning}", flush=True)
+    elif region_dof_status_is_pass(region_status):
+        print(
+            f"[B3_synthesis_export] region_dof_indices_status={region_status} "
+            f"npz={checkpoint / REGION_DOF_INDICES_NPZ}",
+            flush=True,
+        )
     return out

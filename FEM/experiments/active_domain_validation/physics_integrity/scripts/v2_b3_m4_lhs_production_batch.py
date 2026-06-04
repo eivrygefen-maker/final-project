@@ -22,6 +22,7 @@ from v2_b3_m4_small_batch_dry_run import (  # noqa: E402
     _classify_run_status,
     _load_batch_spec,
 )
+from v2_b3_m4_runtime_provenance import collect_m4_runtime_provenance  # noqa: E402
 from v2_b3_m4_worker_run_lib import detect_repo_root, load_json, rel, utc_now  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
@@ -87,7 +88,7 @@ def _ensure_run_tree(
         )
 
 
-def _read_sample_summary(run_root: Path) -> Dict[str, Any]:
+def _read_sample_summary(run_root: Path, *, workers_requested: int = 1) -> Dict[str, Any]:
     manifest_path = run_root / "pipeline_run_manifest.json"
     manifest = load_json(manifest_path) if manifest_path.is_file() else {}
     agg_path = run_root / "aggregation" / "aggregation_result.json"
@@ -100,6 +101,29 @@ def _read_sample_summary(run_root: Path) -> Dict[str, Any]:
     freeze_manifest = run_root / "freeze" / "sample_e2e_run_manifest.json"
     if not freeze_manifest.is_file():
         freeze_manifest = run_root / "freeze" / "first_end_to_end_run_manifest.json"
+    prov_path = run_root / "m4_sample_runtime_provenance.json"
+    prov: Dict[str, Any] = {}
+    if prov_path.is_file():
+        try:
+            prov = load_json(prov_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            prov = {}
+    if not prov:
+        try:
+            prov = collect_m4_runtime_provenance(
+                run_root=run_root, workers_requested=workers_requested
+            )
+        except Exception:
+            prov = {}
+
+    rt_path = run_root / "aggregation" / "runtime_summary.json"
+    runtime: Dict[str, Any] = {}
+    if rt_path.is_file():
+        try:
+            runtime = load_json(rt_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            runtime = {}
+
     return {
         "terminal_status": manifest.get("terminal_status"),
         "aggregation_status": agg.get("status"),
@@ -107,9 +131,27 @@ def _read_sample_summary(run_root: Path) -> Dict[str, Any]:
         "completed_chunks": agg.get("completed_chunk_count"),
         "missing_chunks": agg.get("missing_chunk_count"),
         "failed_chunks": agg.get("failed_chunk_count"),
-        "raw_modes": agg.get("raw_mode_count"),
-        "deduped_modes": agg.get("deduped_mode_count"),
+        "raw_modes": agg.get("raw_mode_count") or prov.get("raw_mode_count"),
+        "deduped_modes": agg.get("deduped_mode_count") or prov.get("deduped_mode_count"),
         "final_aggregation_ready": agg.get("final_aggregation_ready"),
+        "pipeline_version": prov.get("pipeline_version") or runtime.get("pipeline_version"),
+        "model_version": prov.get("model_version") or runtime.get("model_version"),
+        "operator_version": prov.get("operator_version") or runtime.get("operator_version"),
+        "mesh_level": prov.get("mesh_level") or runtime.get("mesh_level"),
+        "target_policy": prov.get("target_policy") or runtime.get("target_policy"),
+        "chunk_policy": prov.get("chunk_policy") or runtime.get("chunk_policy"),
+        "solver_backend": prov.get("solver_backend") or runtime.get("solver_backend"),
+        "workers_requested": prov.get("workers_requested") or runtime.get("workers_requested"),
+        "workers_actual_parallel": prov.get("workers_actual_parallel")
+        or runtime.get("workers_actual_parallel"),
+        "worker_thread_settings": prov.get("worker_thread_settings")
+        or runtime.get("worker_thread_settings"),
+        "stage_wall_times_s": prov.get("stage_wall_times_s") or runtime.get("stage_wall_times_s"),
+        "chunk_wall_times": prov.get("chunk_wall_times") or runtime.get("chunk_wall_times"),
+        "participation_computed_count": prov.get("participation_computed_count")
+        or runtime.get("participation_computed_count"),
+        "dominant_region_counts": prov.get("dominant_region_counts")
+        or runtime.get("dominant_region_counts"),
         "freeze_manifest": rel(freeze_manifest, repo_root=detect_repo_root(SCRIPT_DIR))
         if freeze_manifest.is_file()
         else None,
@@ -214,7 +256,7 @@ def run_production_batch(
             continue
 
         if reuse == "already_complete_reuse" and not force:
-            summary = _read_sample_summary(run_root)
+            summary = _read_sample_summary(run_root, workers_requested=workers)
             completed.append(
                 {
                     "sample_id": sid,
@@ -263,7 +305,7 @@ def run_production_batch(
             zone_sparse=float(fp.get("zone_spacing_hz", {}).get("ZONE_3_sparse", 12.5)),
         )
         elapsed = time.perf_counter() - t0
-        summary = _read_sample_summary(run_root)
+        summary = _read_sample_summary(run_root, workers_requested=workers)
         row = {
             "sample_id": sid,
             "run_id": rid,
@@ -295,7 +337,15 @@ def run_production_batch(
         "batch_dir": rel(batch_dir, repo_root=repo_root),
         "spec_path": rel(spec_path, repo_root=repo_root),
         "elapsed_s": round(time.perf_counter() - t_batch, 2),
+        "pipeline_version": "M4 production",
+        "model_version": "V2",
+        "operator_version": "B3",
+        "mesh_level": "L_prod",
+        "target_policy": "adaptive_lprod_zones_v1",
+        "chunk_policy": "lprod_target_plan_fcfs",
+        "solver_backend": "mkl_pardiso",
         "workers": workers,
+        "workers_requested": workers,
         "continue_on_fail": continue_on_fail,
         "force": force,
         "resume": resume,

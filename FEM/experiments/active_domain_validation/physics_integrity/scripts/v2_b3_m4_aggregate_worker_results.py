@@ -471,7 +471,25 @@ def _write_common_artifacts(
         "total_targets_passed": report.get("total_targets_passed"),
         "raw_mode_count": report.get("raw_mode_count"),
         "deduped_mode_count": report.get("deduped_mode_count"),
+        "participation_computed_count": modes_summary.get("participation_computed_count"),
+        "dominant_region_counts": modes_summary.get("dominant_region_counts"),
     }
+    try:
+        from v2_b3_m4_runtime_provenance import (  # noqa: E402
+            collect_m4_runtime_provenance,
+            merge_runtime_summary,
+        )
+
+        run_root = runtime_path.parent.parent
+        prov = collect_m4_runtime_provenance(
+            run_root=run_root,
+            workers_requested=int(
+                (load_json(run_root / "m4_run_one_sample_plan.json") or {}).get("workers") or 1
+            ),
+        )
+        runtime_summary = merge_runtime_summary(runtime_summary, prov)
+    except Exception:
+        pass
     write_json_atomic(runtime_path, runtime_summary)
 
     warn_fail = {

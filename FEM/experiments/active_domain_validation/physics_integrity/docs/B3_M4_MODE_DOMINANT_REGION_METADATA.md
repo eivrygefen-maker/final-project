@@ -32,7 +32,9 @@ Per accepted ST mode, the worker solve path records which subsystem dominates (t
 
 `best_effort` was enabled, but export still looked up **`mesh_path(L_prod, baseline_coupled_v2)`** instead of the M4 mesh at `lprod/mesh/L_prod/<sample_id>.msh` from `lprod/resolved_core_config.json`. Missing baseline mesh → `deferred_to_stage_c`, no npz.
 
-**Fix:** `resolve_region_dof_mesh_file()` + trace→global-W mapping via `parent_index_per_trace_dof`; status `BEST_EFFORT_PASS`. **Back includes ribs** in `back_participation`.
+**Fix (mesh):** `resolve_region_dof_mesh_file()` uses per-sample `lprod/resolved_core_config.json` mesh path.
+
+**Fix (indices):** B3 `u_idx = arange(n_u_b3)` — shell trace facet DOF rows map **directly** to W u-block rows (not via `parent_index_per_trace_dof`). Status `BEST_EFFORT_PASS`. **Back includes ribs** in `back_participation`.
 
 ## Availability estimate
 
