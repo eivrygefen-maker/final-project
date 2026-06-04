@@ -474,6 +474,7 @@ def collect_accepted_st_modes(
     freq_lo: float = ACCEPTANCE_FREQ_LO_HZ,
     freq_hi: float = ACCEPTANCE_FREQ_HI_HZ,
     export_vectors: bool = False,
+    region_ctx: Optional[Dict[str, Any]] = None,
 ) -> Tuple[int, List[Dict[str, Any]]]:
     from slepc4py import SLEPc
 
@@ -557,6 +558,23 @@ def collect_accepted_st_modes(
                 }
                 if export_vectors:
                     entry["x_active"] = x_active.copy()
+                try:
+                    from v2_b3_mode_region_participation import attach_participation_to_accepted_mode
+
+                    attach_participation_to_accepted_mode(
+                        entry,
+                        x_active=x_active,
+                        built=built,
+                        region_ctx=region_ctx,
+                    )
+                except Exception as exc:
+                    entry["dominant_region"] = "unknown"
+                    entry["top_participation"] = None
+                    entry["back_participation"] = None
+                    entry["air_participation"] = None
+                    entry["participation_method"] = "not_available"
+                    entry["participation_status"] = "not_available"
+                    entry["participation_detail"] = f"participation_attach_failed:{type(exc).__name__}"
                 accepted.append(entry)
         finally:
             vr.destroy()
@@ -686,6 +704,7 @@ def run_checkpoint_st_target(
     target_index: Optional[int] = None,
     export_vectors: bool = False,
     acceptance_config: Optional[AcceptanceConfig] = None,
+    region_ctx: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run one EPSSetUp + EPSSolve for a loaded checkpoint (solver-only)."""
     from slepc4py import SLEPc
@@ -803,6 +822,7 @@ def run_checkpoint_st_target(
             target_hz=float(target_hz),
             acceptance_config=cfg,
             export_vectors=bool(export_vectors),
+            region_ctx=region_ctx,
         )
         accepted_freqs = sorted(float(m["frequency_hz"]) for m in accepted_modes)
         result["converged_mode_count"] = int(nconv)

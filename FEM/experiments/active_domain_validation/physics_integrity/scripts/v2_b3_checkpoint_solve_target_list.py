@@ -29,6 +29,7 @@ from v2_b3_m4_lprod_interfaces import (  # noqa: E402
     validate_chunk_targets_doc,
 )
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
+from v2_b3_rich_modal_lib import load_region_dof_bundle  # noqa: E402
 
 ALLOWED_FACTOR_SOLVERS = ("mkl_pardiso", "mumps")
 STAGE_B_PLANNED = "v2_b3_checkpoint_solve_target_list.py"
@@ -108,6 +109,14 @@ def _run_real_solve(
 
     built_meta = json.loads(meta_path.read_text(encoding="utf-8"))
     mesh_level = str(built_meta.get("mesh_level") or "unknown")
+    region_ctx = load_region_dof_bundle(checkpoint, built_meta)
+    if not region_ctx.get("structural_indices_available"):
+        print(
+            "[B3_checkpoint_solve_target_list] warning: region_dof_indices.npz missing; "
+            "top/back participation unavailable (air may use p_idx from built_metadata). "
+            "Re-run M4 L_prod checkpoint (best_effort region export) if this is a new production run.",
+            flush=True,
+        )
 
     result: Dict[str, Any] = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -121,6 +130,10 @@ def _run_real_solve(
         "targets_hz": targets_hz,
         "nev": int(args.nev),
         "ncv": int(args.ncv),
+        "region_dof_source": region_ctx.get("region_dof_source"),
+        "structural_region_participation_status": region_ctx.get(
+            "structural_region_participation_status"
+        ),
         **acceptance_cfg.to_result_fields(),
         "versions": version_snapshot(),
         "threading_env": threading_env_snapshot(),
@@ -174,6 +187,7 @@ def _run_real_solve(
                 target_index=int(ti),
                 export_vectors=False,
                 acceptance_config=acceptance_cfg,
+                region_ctx=region_ctx,
             )
             per_target_rows.append(row)
             if row.get("status") == "PASS":
@@ -213,6 +227,23 @@ def _run_real_solve(
             except Exception:
                 pass
 
+    mode_records: List[Dict[str, Any]] = []
+    for trow in result.get("targets") or []:
+        for m in trow.get("accepted_modes") or []:
+            if isinstance(m, dict) and m.get("frequency_hz") is not None:
+                mode_records.append(
+                    {
+                        "frequency_hz": float(m["frequency_hz"]),
+                        "target_frequency_hz": trow.get("target_frequency_hz"),
+                        "dominant_region": m.get("dominant_region"),
+                        "top_participation": m.get("top_participation"),
+                        "back_participation": m.get("back_participation"),
+                        "air_participation": m.get("air_participation"),
+                        "participation_method": m.get("participation_method"),
+                        "participation_status": m.get("participation_status"),
+                    }
+                )
+
     write_json_atomic(output_dir / "solver_result.json", result)
     worker_body = {
         "schema": "m4_worker_result_v1",
@@ -222,6 +253,7 @@ def _run_real_solve(
         "targets_attempted": len(targets_hz),
         "targets_passed": int((result.get("aggregate") or {}).get("targets_succeeded") or 0),
         "accepted_modes": (result.get("aggregate") or {}).get("unique_accepted_frequencies_hz") or [],
+        "accepted_mode_records": mode_records,
         "unique_modes": (result.get("aggregate") or {}).get("unique_accepted_frequencies_hz") or [],
         "timing": {
             "wall_seconds": (result.get("aggregate") or {}).get("total_wall_seconds"),

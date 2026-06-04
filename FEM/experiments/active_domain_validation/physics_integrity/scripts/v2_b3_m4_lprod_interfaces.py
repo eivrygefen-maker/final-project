@@ -14,6 +14,8 @@ V2_MESH_ROOT = PHYSICS_ROOT / "v2_mesh_convergence"
 
 CHUNK_TARGETS_SCHEMA = "m4_worker_chunk_targets_v1"
 LPROD_MESH_LEVEL = "L_prod"
+# M4 production default: lightweight region_dof_indices.npz for top/back/air participation (not Stage C).
+LPROD_SYNTHESIS_REGION_DOFS_DEFAULT = "best_effort"
 BASELINE_CASE_ID = "baseline_coupled_v2"
 BASELINE_L_PROD_MESH = V2_MESH_ROOT / "mesh" / LPROD_MESH_LEVEL / f"{BASELINE_CASE_ID}.msh"
 
@@ -171,7 +173,7 @@ def evaluate_lprod_mesh_checkpoint_readiness(
         f"python {SCRIPTS_REL.as_posix()}/v2_b3_checkpoint_export.py "
         f"--mesh-level {LPROD_MESH_LEVEL} "
         "--B3-block-compose-backend csr_bulk "
-        "--B3-synthesis-region-dofs off "
+        f"--B3-synthesis-region-dofs {LPROD_SYNTHESIS_REGION_DOFS_DEFAULT} "
         f'--core-config "{rel_path_fn(resolved_lprod if resolved_lprod.is_file() else resolved_sample, repo_root=repo_root)}" '
         f'--output-dir "{rel_path_fn(checkpoint_dir, repo_root=repo_root)}"'
     )

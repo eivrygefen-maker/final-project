@@ -44,9 +44,15 @@ from v2_b3_m4_lprod_interfaces import (  # noqa: E402
     BASELINE_GEOMETRY,
     BASELINE_L_PROD_MESH,
     LPROD_MESH_LEVEL,
+    LPROD_SYNTHESIS_REGION_DOFS_DEFAULT,
     evaluate_lprod_mesh_checkpoint_readiness,
     extract_geometry_dict,
     geometries_match,
+)
+from v2_b3_rich_modal_lib import (  # noqa: E402
+    REGION_DOF_INDICES_NPZ,
+    SYNTHESIS_METADATA_JSON,
+    load_region_dof_bundle,
 )
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 from v2_b3_resolve_pilot_core_config import _repo_relative  # noqa: E402
@@ -298,7 +304,7 @@ def build_execution_plan(
             "--B3-block-compose-backend",
             "csr_bulk",
             "--B3-synthesis-region-dofs",
-            "off",
+            LPROD_SYNTHESIS_REGION_DOFS_DEFAULT,
             "--core-config",
             resolved_lprod_rel,
             "--output-dir",
@@ -316,6 +322,62 @@ def _fix_mesh_argv(plan: Dict[str, Any], *, repo_root: Path, run_root: Path, sam
         "--run-dir",
         _rel(run_root, repo_root=repo_root),
     ]
+
+
+def _log_lprod_region_dof_index_status(
+    *,
+    checkpoint_dir: Path,
+    log_path: Path,
+    readiness_out: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Record region DOF index availability; warn if top/back masks missing (non-blocking)."""
+    built_path = checkpoint_dir / "built_metadata.json"
+    built_meta: Dict[str, Any] = {}
+    if built_path.is_file():
+        try:
+            built_meta = _load_json(built_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            built_meta = {}
+
+    ctx = load_region_dof_bundle(checkpoint_dir, built_meta)
+    synth_status = None
+    synth_path = checkpoint_dir / SYNTHESIS_METADATA_JSON
+    if synth_path.is_file():
+        try:
+            synth_status = _load_json(synth_path).get("region_dof_indices_status")
+        except (OSError, ValueError, json.JSONDecodeError):
+            synth_status = None
+
+    summary = {
+        "region_dof_indices_npz": (checkpoint_dir / REGION_DOF_INDICES_NPZ).is_file(),
+        "region_dof_source": ctx.get("region_dof_source"),
+        "structural_indices_available": bool(ctx.get("structural_indices_available")),
+        "pressure_indices_available": bool(ctx.get("pressure_indices_available")),
+        "synthesis_region_dof_indices_status": synth_status,
+        "synthesis_region_dofs_mode": LPROD_SYNTHESIS_REGION_DOFS_DEFAULT,
+    }
+    if readiness_out is not None:
+        readiness_out["region_dof_indices"] = summary
+
+    if summary["structural_indices_available"]:
+        msg = (
+            f"[{_utc_now()}] region_dof_indices: present "
+            f"(source={summary['region_dof_source']}); "
+            "worker solves may compute top/back/air participation."
+        )
+        _append_log(log_path, msg + "\n")
+        print(msg, flush=True)
+    else:
+        warn = (
+            f"[{_utc_now()}] warning: top/back region DOF indices unavailable "
+            f"(npz={summary['region_dof_indices_npz']}, "
+            f"synthesis_status={synth_status!r}, source={summary['region_dof_source']}). "
+            "Worker participation will use air/norm fallback only; production continues."
+        )
+        _append_log(log_path, warn + "\n")
+        print(warn, flush=True)
+
+    return summary
 
 
 def _validate_inputs(
@@ -605,6 +667,11 @@ def run_execute(
     readiness_out["stage4_completed_utc"] = _utc_now()
     if active_dim is not None:
         readiness_out["active_dimension"] = active_dim
+    _log_lprod_region_dof_index_status(
+        checkpoint_dir=checkpoint_dir,
+        log_path=log_ckpt,
+        readiness_out=readiness_out,
+    )
     write_json_atomic(run_root / "lprod" / "lprod_mesh_checkpoint_readiness.json", readiness_out)
 
     _update_manifest(

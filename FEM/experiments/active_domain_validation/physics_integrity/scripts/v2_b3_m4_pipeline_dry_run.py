@@ -129,12 +129,13 @@ def _cmd_stage_a(
     mesh_level: str,
     core_config: str,
     output_dir: str,
+    synthesis_region_dofs: str = "off",
 ) -> str:
     return (
         f"{prod_python} {STAGE_A_SCRIPT} "
         f"--mesh-level {mesh_level} "
         "--B3-block-compose-backend csr_bulk "
-        "--B3-synthesis-region-dofs off "
+        f"--B3-synthesis-region-dofs {synthesis_region_dofs} "
         f'--core-config "{core_config}" '
         f'--output-dir "{output_dir}"'
     )
@@ -321,11 +322,14 @@ def build_dry_run_plan(
         half_width_hz=scout_half_width_hz,
     )
     cmd_lprod_mesh = _cmd_lprod_mesh_placeholder(prod_python=prod_python, sample_id=sample_id)
+    from v2_b3_m4_lprod_interfaces import LPROD_SYNTHESIS_REGION_DOFS_DEFAULT  # noqa: E402
+
     cmd_lprod_a = _cmd_stage_a(
         prod_python=prod_python,
         mesh_level="L_prod",
         core_config=core_config_planned,
         output_dir=_rel(lprod_checkpoint, repo_root=repo_root),
+        synthesis_region_dofs=LPROD_SYNTHESIS_REGION_DOFS_DEFAULT,
     )
 
     bins, segments = _placeholder_density_bins(

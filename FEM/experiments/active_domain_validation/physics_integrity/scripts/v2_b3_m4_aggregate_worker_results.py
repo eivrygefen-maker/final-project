@@ -12,6 +12,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from v2_b3_mode_region_participation import merge_participation_into_catalog_record  # noqa: E402
 from v2_b3_m4_worker_run_lib import (  # noqa: E402
     PASS_LIKE,
     detect_repo_root,
@@ -140,21 +141,22 @@ def _collect_mode_records(
                     f_hz = float(am)
                 else:
                     continue
-                records.append(
-                    {
-                        "frequency_hz": round(f_hz, 6),
-                        "chunk_id": chunk_id,
-                        "target_hz": t_hz,
-                        "zone_id": meta.get("zone_id") or row.get("zone_id"),
-                        "spacing_hz": meta.get("spacing_hz"),
-                        "window_hz": meta.get("window_hz"),
-                        "source": "solver_result.targets.accepted_modes",
-                        "source_worker_result": worker_rel,
-                        "source_solver_result": solver_rel,
-                        "mode_index": mi,
-                        "target_index": row.get("target_index"),
-                    }
-                )
+                rec = {
+                    "frequency_hz": round(f_hz, 6),
+                    "chunk_id": chunk_id,
+                    "target_hz": t_hz,
+                    "zone_id": meta.get("zone_id") or row.get("zone_id"),
+                    "spacing_hz": meta.get("spacing_hz"),
+                    "window_hz": meta.get("window_hz"),
+                    "source": "solver_result.targets.accepted_modes",
+                    "source_worker_result": worker_rel,
+                    "source_solver_result": solver_rel,
+                    "mode_index": mi,
+                    "target_index": row.get("target_index"),
+                }
+                if isinstance(am, dict):
+                    merge_participation_into_catalog_record(rec, am)
+                records.append(rec)
         if records:
             return records
 
@@ -225,6 +227,15 @@ def _dedupe_catalog(
         rep["provenance_count"] = len(group)
         rep["provenance_chunk_ids"] = sorted({str(g["chunk_id"]) for g in group})
         rep["provenance_sources"] = [g.get("source") for g in group]
+        for g in group:
+            if g.get("participation_status") == "computed":
+                merge_participation_into_catalog_record(rep, g)
+                break
+        else:
+            for g in group:
+                if g.get("dominant_region"):
+                    merge_participation_into_catalog_record(rep, g)
+                    break
         if len(group) > 1:
             merge_meta.append(
                 {
@@ -417,6 +428,14 @@ def _write_common_artifacts(
         for rec in sorted(all_records, key=lambda r: float(r["frequency_hz"])):
             fh.write(json.dumps(rec, sort_keys=True) + "\n")
 
+    region_counts: Dict[str, int] = {}
+    participation_computed = 0
+    for rec in deduped_catalog:
+        dom = str(rec.get("dominant_region") or "unknown")
+        region_counts[dom] = region_counts.get(dom, 0) + 1
+        if rec.get("participation_status") == "computed":
+            participation_computed += 1
+
     modes_summary = {
         "schema": "m4_partial_modes_summary_v1" if partial else "m4_modes_summary_v1",
         "generated_utc": report.get("generated_utc"),
@@ -427,6 +446,8 @@ def _write_common_artifacts(
         "deduped_mode_count": report.get("deduped_mode_count"),
         "unique_modes_hz": report.get("unique_modes_hz"),
         "frequency_range_hz": report.get("frequency_range_hz"),
+        "dominant_region_counts": region_counts,
+        "participation_computed_count": participation_computed,
         "by_chunk": [
             {
                 "chunk_id": d["chunk_id"],
