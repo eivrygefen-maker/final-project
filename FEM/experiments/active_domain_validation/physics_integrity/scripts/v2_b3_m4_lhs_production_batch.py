@@ -13,6 +13,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from v2_b3_m4_lhs_pool_bridge import classify_sample_outcome  # noqa: E402
 from v2_b3_m4_run_one_sample import (  # noqa: E402
     REFERENCE_SAMPLE_ID,
     run_pipeline,
@@ -352,22 +353,23 @@ def run_production_batch(
             "started_at": None,
             **summary,
         }
-        if rc != 0 and summary.get("aggregation_status") != AGG_PASS:
-            row["error_message"] = (
-                f"return_code={rc} aggregation_status={summary.get('aggregation_status')}"
-            )
+        outcome, err_msg = classify_sample_outcome(return_code=rc, summary=summary)
+        row["outcome"] = outcome
+        if err_msg:
+            row["error_message"] = err_msg
         with log_path.open("a", encoding="utf-8") as fh:
-            fh.write(f"{utc_now()} sample={sid} rc={rc} elapsed_s={elapsed:.1f}\n")
+            fh.write(
+                f"{utc_now()} sample={sid} rc={rc} outcome={outcome} elapsed_s={elapsed:.1f}\n"
+            )
 
         if on_sample_finish is not None:
             on_sample_finish(row)
 
-        if rc == 0 and summary.get("aggregation_status") == AGG_PASS:
-            row["outcome"] = "pass"
+        if outcome in ("pass", "reused_complete", "pass_freeze_warning"):
             completed.append(row)
-            print(f"[pass] {sid}: AGGREGATION_PASS elapsed_s={elapsed:.1f}", flush=True)
+            label = "AGGREGATION_PASS" if outcome == "pass" else outcome.upper()
+            print(f"[pass] {sid}: {label} elapsed_s={elapsed:.1f}", flush=True)
         else:
-            row["outcome"] = "fail"
             failed.append(row)
             print(f"[fail] {sid}: rc={rc} aggregation={summary.get('aggregation_status')}", flush=True)
             if not continue_on_fail:

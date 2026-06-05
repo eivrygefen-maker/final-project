@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from v2_b3_m4_worker_run_lib import detect_repo_root, load_json, rel, utc_now  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
@@ -28,11 +29,20 @@ DEFAULT_BATCH_ID_PREFIX = "lhs_prod_m4"
 REFERENCE_SAMPLE_ID = "sample_001"
 AGG_PASS = "AGGREGATION_PASS"
 
+# Sidecar status (lowercase legacy + uppercase LHS-aligned)
 STATUS_PENDING = "pending"
 STATUS_RUNNING = "running"
 STATUS_PASS = "pass"
 STATUS_FAIL = "fail"
 STATUS_SKIPPED = "skipped"
+
+LHS_PENDING = "PENDING"
+LHS_RUNNING = "RUNNING"
+LHS_COMPLETED = "COMPLETED"
+LHS_FAILED = "FAILED"
+LHS_FAILED_RETRYABLE = "FAILED_RETRYABLE"
+
+OUTCOME_PASS_FREEZE_WARNING = "pass_freeze_warning"
 
 DEFAULT_FREQUENCY_POLICY: Dict[str, Any] = {
     "band_hz": [60.0, 550.0],
@@ -281,14 +291,23 @@ def select_lhs_samples(
         run_id = f"{sid}_{run_id_suffix}"
         st = get_sample_status(status_doc, sid)
         cur_status = str(st.get("status") or STATUS_PENDING)
+        entry_status = normalize_lhs_entry_status(entry.get("status"))
+
+        if skip_completed and is_lhs_entry_completed(entry, run_id=run_id):
+            skipped.append({"sample_id": sid, "reason": "lhs_pool_completed", "run_id": run_id})
+            continue
 
         if skip_completed and _is_completed_status(st, run_id=run_id):
-            skipped.append({"sample_id": sid, "reason": "already_pass", "run_id": run_id})
+            skipped.append({"sample_id": sid, "reason": "sidecar_already_pass", "run_id": run_id})
+            continue
+
+        if include_only_pending and entry_status == LHS_COMPLETED and not force_sample:
+            skipped.append({"sample_id": sid, "reason": "lhs_pool_completed", "run_id": run_id})
             continue
 
         if include_only_pending and cur_status == STATUS_PASS and not force_sample:
             if str(st.get("run_id") or "") == run_id:
-                skipped.append({"sample_id": sid, "reason": "status_pass", "run_id": run_id})
+                skipped.append({"sample_id": sid, "reason": "sidecar_status_pass", "run_id": run_id})
                 continue
 
         if len(selected) >= max_samples:
@@ -354,7 +373,11 @@ def status_row_from_run_summary(
         "sample_id": sample_id,
         "lhs_row_index": lhs_row_index,
         "run_id": run_id,
-        "status": STATUS_PASS if outcome == "pass" else (STATUS_FAIL if outcome == "fail" else outcome),
+        "status": (
+            STATUS_PASS
+            if outcome in ("pass", "reused_complete", OUTCOME_PASS_FREEZE_WARNING)
+            else (STATUS_FAIL if outcome == "fail" else outcome)
+        ),
         "batch_id": batch_id,
         "pipeline_version": summary.get("pipeline_version") or PIPELINE_VERSION,
         "run_dir": str(run_root),
@@ -374,3 +397,262 @@ def status_row_from_run_summary(
 
 def make_batch_id(*, prefix: str = DEFAULT_BATCH_ID_PREFIX) -> str:
     return f"{prefix}_{utc_now()[:10].replace('-', '')}"
+
+
+def normalize_lhs_entry_status(raw: Any) -> str:
+    value = str(raw or LHS_PENDING).strip().upper()
+    aliases = {
+        "PASS": LHS_COMPLETED,
+        "COMPLETED": LHS_COMPLETED,
+        "PENDING": LHS_PENDING,
+        "RUNNING": LHS_RUNNING,
+        "FAILED": LHS_FAILED,
+        "FAIL": LHS_FAILED,
+        "FAILED_RETRYABLE": LHS_FAILED_RETRYABLE,
+    }
+    return aliases.get(value, value if value in aliases.values() else LHS_PENDING)
+
+
+def is_lhs_entry_completed(entry: Mapping[str, Any], *, run_id: str) -> bool:
+    status = normalize_lhs_entry_status(entry.get("status"))
+    if status != LHS_COMPLETED:
+        return False
+    last_run = str(entry.get("last_run_id") or "")
+    return not last_run or last_run == run_id
+
+
+def read_run_production_summary(run_root: Path, *, workers_requested: int = 3) -> Dict[str, Any]:
+    """Lightweight run summary from aggregation/manifest (no solver execution)."""
+    manifest_path = run_root / "pipeline_run_manifest.json"
+    manifest = load_json(manifest_path) if manifest_path.is_file() else {}
+    agg_path = run_root / "aggregation" / "aggregation_result.json"
+    agg: Dict[str, Any] = {}
+    if agg_path.is_file():
+        try:
+            agg = load_json(agg_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            agg = {}
+    ms_path = run_root / "aggregation" / "modes_summary.json"
+    modes_summary: Dict[str, Any] = {}
+    if ms_path.is_file():
+        try:
+            modes_summary = load_json(ms_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            modes_summary = {}
+    audio_summary = modes_summary.get("audio_coupling_summary") or {}
+    prov_path = run_root / "m4_sample_runtime_provenance.json"
+    prov: Dict[str, Any] = {}
+    if prov_path.is_file():
+        try:
+            prov = load_json(prov_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            prov = {}
+    return {
+        "terminal_status": manifest.get("terminal_status"),
+        "aggregation_status": agg.get("status"),
+        "planned_chunks": agg.get("planned_chunk_count"),
+        "completed_chunks": agg.get("completed_chunk_count"),
+        "missing_chunks": agg.get("missing_chunk_count"),
+        "failed_chunks": agg.get("failed_chunk_count"),
+        "raw_modes": agg.get("raw_mode_count"),
+        "deduped_modes": agg.get("deduped_mode_count"),
+        "final_aggregation_ready": agg.get("final_aggregation_ready"),
+        "participation_computed_count": modes_summary.get("participation_computed_count")
+        or prov.get("participation_computed_count"),
+        "audio_coupling_computed_count": modes_summary.get("audio_coupling_computed_count")
+        or audio_summary.get("audio_coupling_computed_count"),
+        "workers_actual_parallel": prov.get("workers_actual_parallel"),
+        "pipeline_version": prov.get("pipeline_version") or PIPELINE_VERSION,
+    }
+
+
+def is_run_usably_complete(summary: Mapping[str, Any]) -> bool:
+    return (
+        str(summary.get("aggregation_status") or "") == AGG_PASS
+        and int(summary.get("failed_chunks") or 0) == 0
+        and int(summary.get("missing_chunks") or 0) == 0
+        and bool(summary.get("final_aggregation_ready"))
+    )
+
+
+def classify_sample_outcome(
+    *,
+    return_code: int,
+    summary: Mapping[str, Any],
+) -> Tuple[str, Optional[str]]:
+    """Return (outcome, error_message). Usable aggregation pass is never a hard fail."""
+    if is_run_usably_complete(summary):
+        if return_code == 0:
+            return "pass", None
+        return (
+            OUTCOME_PASS_FREEZE_WARNING,
+            f"return_code={return_code} aggregation_status={summary.get('aggregation_status')} "
+            f"(freeze/terminal repairable)",
+        )
+    if str(summary.get("aggregation_status") or "") == AGG_PASS:
+        return (
+            OUTCOME_PASS_FREEZE_WARNING,
+            f"return_code={return_code} chunks_failed={summary.get('failed_chunks')} "
+            f"missing={summary.get('missing_chunks')}",
+        )
+    return (
+        "fail",
+        f"return_code={return_code} aggregation_status={summary.get('aggregation_status')}",
+    )
+
+
+def patch_lhs_pool_entry(entry: Dict[str, Any], *, patch: Mapping[str, Any]) -> None:
+    entry.update(patch)
+
+
+def lhs_pool_entry_patch_from_run(
+    *,
+    run_id: str,
+    run_dir: str,
+    batch_id: Optional[str],
+    outcome: str,
+    summary: Mapping[str, Any],
+    elapsed_s: float,
+    started_at: Optional[str],
+    error_message: Optional[str] = None,
+) -> Dict[str, Any]:
+    if outcome in ("pass", "reused_complete", OUTCOME_PASS_FREEZE_WARNING):
+        lhs_status = LHS_COMPLETED
+    elif outcome == "fail":
+        lhs_status = LHS_FAILED
+    else:
+        lhs_status = LHS_PENDING
+    return {
+        "status": lhs_status,
+        "last_run_id": run_id,
+        "last_run_dir": run_dir,
+        "last_batch_id": batch_id,
+        "last_started_at": started_at,
+        "last_finished_at": utc_now(),
+        "last_elapsed_s": round(float(elapsed_s), 2),
+        "last_aggregation_status": summary.get("aggregation_status"),
+        "last_deduped_mode_count": summary.get("deduped_modes"),
+        "last_participation_computed_count": summary.get("participation_computed_count"),
+        "last_audio_coupling_computed_count": summary.get("audio_coupling_computed_count"),
+        "last_error": error_message,
+        "error": error_message,
+    }
+
+
+def write_lhs_pool_with_backup(lhs_path: Path, pool: Mapping[str, Any]) -> Path:
+    lhs_path = lhs_path.expanduser().resolve()
+    lhs_path.parent.mkdir(parents=True, exist_ok=True)
+    stamp = utc_now().replace(":", "").replace("-", "")
+    backup = lhs_path.parent / f"lhs_pool.backup_{stamp}.json"
+    if lhs_path.is_file():
+        shutil.copy2(lhs_path, backup)
+    write_json_atomic(lhs_path, dict(pool))
+    return backup
+
+
+def sync_lhs_pool_entry(
+    pool: Dict[str, Any],
+    *,
+    sample_id: str,
+    patch: Mapping[str, Any],
+) -> None:
+    for entry in pool.get("entries") or []:
+        if str(entry.get("id")) == sample_id:
+            patch_lhs_pool_entry(entry, patch=patch)
+            break
+
+
+def reconcile_existing_runs(
+    *,
+    repo_root: Path,
+    pool: Dict[str, Any],
+    lhs_path: Path,
+    run_id_suffix: str = DEFAULT_RUN_ID_SUFFIX,
+    repair_freeze: bool = True,
+    batch_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Scan run trees for valid AGGREGATION_PASS outputs; repair freeze/terminal; update LHS pool.
+    Does not rerun workers.
+    """
+    from v2_b3_m4_freeze_first_e2e_run import repair_run_freeze_and_terminal  # noqa: E402
+
+    guitars_root = (
+        repo_root
+        / "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars"
+    )
+    rows: List[Dict[str, Any]] = []
+    repaired = 0
+    completed = 0
+    failed = 0
+    bid = batch_id or f"reconcile_{utc_now()[:10].replace('-', '')}"
+
+    for i, entry in enumerate(pool.get("entries") or []):
+        sid = str(entry.get("id") or "").strip()
+        if not sid:
+            continue
+        run_id = f"{sid}_{run_id_suffix}"
+        run_root = guitars_root / sid / "runs" / run_id
+        row: Dict[str, Any] = {
+            "sample_id": sid,
+            "lhs_row_index": i,
+            "run_id": run_id,
+            "run_root": rel(run_root, repo_root=repo_root) if run_root.is_dir() else None,
+            "action": "skip_no_run_dir",
+        }
+        if not run_root.is_dir():
+            rows.append(row)
+            continue
+
+        summary = read_run_production_summary(run_root)
+        row.update(summary)
+        if not is_run_usably_complete(summary):
+            row["action"] = "skip_not_usable"
+            failed += 1
+            rows.append(row)
+            continue
+
+        freeze_rc = 0
+        freeze_msg = "aggregation_pass"
+        if repair_freeze:
+            freeze_rc, freeze_msg = repair_run_freeze_and_terminal(
+                repo_root=repo_root,
+                run_root=run_root,
+                sample_id=sid,
+                force=False,
+            )
+        summary = read_run_production_summary(run_root)
+        outcome = "pass" if freeze_rc == 0 else OUTCOME_PASS_FREEZE_WARNING
+        if freeze_rc == 0:
+            repaired += 1
+
+        lhs_patch = lhs_pool_entry_patch_from_run(
+            run_id=run_id,
+            run_dir=str(run_root),
+            batch_id=bid,
+            outcome=outcome,
+            summary=summary,
+            elapsed_s=0.0,
+            started_at=None,
+            error_message=None if freeze_rc == 0 else freeze_msg,
+        )
+        sync_lhs_pool_entry(pool, sample_id=sid, patch=lhs_patch)
+        row["action"] = "reconciled_completed"
+        row["outcome"] = outcome
+        row["freeze_repair"] = freeze_msg
+        row["freeze_rc"] = freeze_rc
+        completed += 1
+        rows.append(row)
+
+    backup = write_lhs_pool_with_backup(lhs_path, pool)
+    return {
+        "schema": "m4_lhs_reconcile_report_v1",
+        "generated_utc": utc_now(),
+        "run_id_suffix": run_id_suffix,
+        "lhs_json": rel(lhs_path, repo_root=repo_root),
+        "lhs_backup": rel(backup, repo_root=repo_root),
+        "reconciled_completed_count": completed,
+        "freeze_repaired_count": repaired,
+        "not_usable_count": failed,
+        "samples": rows,
+    }

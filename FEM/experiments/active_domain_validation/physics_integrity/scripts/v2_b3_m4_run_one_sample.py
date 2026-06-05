@@ -13,11 +13,14 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from v2_b3_m4_freeze_first_e2e_run import (  # noqa: E402
+    AGG_PASS_FREEZE_WARNING,
     AGG_STATUS_PASS,
     CHECKPOINT_TERMINAL_READY,
     SCOUT_TERMINAL_READY,
     TERMINAL_E2E,
     build_freeze_payload,
+    freeze_outputs_present,
+    promote_pipeline_terminal_status,
     resolve_freeze_config,
     write_freeze_outputs,
     _validate_milestone,
@@ -220,8 +223,7 @@ def _stage_pass_aggregate(run_root: Path) -> bool:
 
 
 def _stage_pass_freeze(run_root: Path, sample_id: str) -> bool:
-    cfg = resolve_freeze_config(sample_id)
-    return (run_root / "freeze" / cfg["manifest_name"]).is_file()
+    return freeze_outputs_present(run_root)
 
 
 def assess_stages(run_root: Path) -> Dict[str, Dict[str, Any]]:
@@ -357,16 +359,28 @@ def _run_stage_freeze(
     sample_id: str,
     force: bool,
 ) -> Tuple[int, str]:
+    if freeze_outputs_present(run_root) and not force:
+        promote_pipeline_terminal_status(run_root, aggregation_status=AGG_STATUS_PASS)
+        return 0, "freeze already present (idempotent accept)"
     errors = _validate_milestone(run_root=run_root)
     if errors:
         return 2, "freeze validation failed"
     cfg = resolve_freeze_config(sample_id)
     payload = build_freeze_payload(repo_root=repo_root, run_root=run_root, freeze_cfg=cfg)
     try:
-        write_freeze_outputs(repo_root=repo_root, run_root=run_root, payload=payload, force=force)
+        write_freeze_outputs(
+            repo_root=repo_root,
+            run_root=run_root,
+            payload=payload,
+            force=force,
+            idempotent=True,
+        )
     except FileExistsError:
+        if freeze_outputs_present(run_root):
+            promote_pipeline_terminal_status(run_root, aggregation_status=AGG_STATUS_PASS)
+            return 0, "freeze outputs exist (accepted)"
         return 2, "freeze outputs exist"
-    return 0, "v2_b3_m4_freeze_first_e2e_run.py (generic names)"
+    return 0, "v2_b3_m4_freeze_first_e2e_run.py (canonical sample_e2e)"
 
 
 def _should_force_stage(name: str, *, force: bool, force_stages: Optional[Set[str]]) -> bool:
@@ -565,8 +579,23 @@ def run_pipeline(
         print(f"  {name}: rc={rc} elapsed_s={elapsed:.1f}", flush=True)
 
         if rc != 0:
-            print(f"error: stage {name} failed (rc={rc}); stopping pipeline", file=sys.stderr)
-            return rc
+            if name == "freeze" and _stage_pass_aggregate(run_root):
+                promote_pipeline_terminal_status(
+                    run_root,
+                    aggregation_status=AGG_STATUS_PASS,
+                )
+                print(
+                    f"warning: freeze rc={rc} but {AGG_STATUS_PASS}; "
+                    f"continuing as {AGG_PASS_FREEZE_WARNING}",
+                    flush=True,
+                )
+                rc = 0
+            else:
+                print(f"error: stage {name} failed (rc={rc}); stopping pipeline", file=sys.stderr)
+                return rc
+
+        if name == "aggregate" and rc == 0:
+            promote_pipeline_terminal_status(run_root, aggregation_status=AGG_STATUS_PASS)
 
         if idx >= stop_rank:
             print(f"stop-after={stop_after} reached", flush=True)
@@ -592,6 +621,8 @@ def run_pipeline(
         )
     except Exception:
         pass
+    if _stage_pass_aggregate(run_root):
+        promote_pipeline_terminal_status(run_root, aggregation_status=AGG_STATUS_PASS)
     print(f"terminal_status={_manifest(run_root).get('terminal_status')}")
     print("pipeline execute finished")
     return 0

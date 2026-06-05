@@ -13,24 +13,29 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
     DEFAULT_RUN_ID_SUFFIX,
+    LHS_RUNNING,
+    OUTCOME_PASS_FREEZE_WARNING,
     REFERENCE_SAMPLE_ID,
     STATUS_FAIL,
     STATUS_PASS,
     STATUS_RUNNING,
-    STATUS_SKIPPED,
     append_runs_index_row,
     build_batch_sample_entry,
     build_lhs_batch_spec,
+    lhs_pool_entry_patch_from_run,
     lhs_pool_status_path,
     lhs_runs_index_path,
     load_lhs_pool,
     load_lhs_pool_status,
     make_batch_id,
+    reconcile_existing_runs,
     select_lhs_samples,
     specs_generated_dir,
     status_row_from_run_summary,
+    sync_lhs_pool_entry,
     update_sample_status,
     write_lhs_pool_status,
+    write_lhs_pool_with_backup,
     write_per_sample_spec,
 )
 from v2_b3_m4_lhs_production_batch import run_production_batch  # noqa: E402
@@ -50,7 +55,10 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
             "Example:\n"
             "  python FEM/experiments/active_domain_validation/physics_integrity/scripts/"
             "run_m4_production_pipeline.py --lhs-json ROM/classic/lhs_pool.json "
-            "--max-samples 10 --workers 3 --execute --continue-on-fail"
+            "--max-samples 10 --workers 3 --execute --continue-on-fail\n\n"
+            "Reconcile existing runs without re-solving:\n"
+            "  python FEM/.../run_m4_production_pipeline.py --lhs-json ROM/classic/lhs_pool.json "
+            "--reconcile-existing-runs"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -67,6 +75,11 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--start-index", type=int, default=0, help="0-based LHS entries[] start index.")
     parser.add_argument("--end-index", type=int, help="Inclusive LHS entries[] end index.")
     parser.add_argument("--force-sample", help="Run only this sample_id (e.g. sample_005).")
+    parser.add_argument(
+        "--reconcile-existing-runs",
+        action="store_true",
+        help="Scan run trees, repair freeze/terminal, update lhs_pool.json + sidecar (no workers).",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Plan only; write specs/status previews.")
     parser.add_argument("--execute", action="store_true", help="Run M4 pipeline for selected samples.")
     parser.add_argument(
@@ -83,13 +96,13 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--skip-completed",
         action="store_true",
         default=True,
-        help="Skip samples with pass status for current run_id_suffix (default: true).",
+        help="Skip samples with COMPLETED status in lhs_pool.json (default: true).",
     )
     parser.add_argument(
         "--no-skip-completed",
         action="store_false",
         dest="skip_completed",
-        help="Include samples already marked pass (use with --force to re-run).",
+        help="Include samples already marked COMPLETED (use with --force to re-run).",
     )
     parser.add_argument(
         "--exclude-reference",
@@ -161,15 +174,55 @@ def _build_selected_batch(
     return batch_spec, spec_path
 
 
+def _sync_lhs_running(pool: Dict[str, Any], *, sample_id: str, run_id: str, batch_id: str) -> None:
+    sync_lhs_pool_entry(
+        pool,
+        sample_id=sample_id,
+        patch={
+            "status": LHS_RUNNING,
+            "last_run_id": run_id,
+            "last_batch_id": batch_id,
+            "last_started_at": utc_now(),
+            "last_error": None,
+            "error": None,
+        },
+    )
+
+
+def _sync_lhs_from_finish(
+    pool: Dict[str, Any],
+    *,
+    row: Dict[str, Any],
+    batch_id: str,
+) -> None:
+    sid = str(row["sample_id"])
+    outcome = str(row.get("outcome") or "fail")
+    patch = lhs_pool_entry_patch_from_run(
+        run_id=str(row.get("run_id") or ""),
+        run_dir=str(row.get("run_root_abs") or row.get("run_root") or ""),
+        batch_id=batch_id,
+        outcome=outcome,
+        summary=row,
+        elapsed_s=float(row.get("elapsed_s") or 0.0),
+        started_at=row.get("started_at"),
+        error_message=row.get("error_message"),
+    )
+    sync_lhs_pool_entry(pool, sample_id=sid, patch=patch)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parse_args(argv)
-    if args.dry_run and args.execute:
+    if args.reconcile_existing_runs:
+        if args.execute or args.dry_run:
+            print("error: --reconcile-existing-runs cannot combine with --execute/--dry-run", file=sys.stderr)
+            return 2
+    elif args.dry_run and args.execute:
         print("error: use --dry-run or --execute, not both", file=sys.stderr)
         return 2
-    if not args.dry_run and not args.execute:
-        print("error: specify --dry-run or --execute", file=sys.stderr)
+    elif not args.dry_run and not args.execute and not args.reconcile_existing_runs:
+        print("error: specify --dry-run, --execute, or --reconcile-existing-runs", file=sys.stderr)
         return 2
-    if args.max_samples < 1:
+    if not args.reconcile_existing_runs and args.max_samples < 1:
         print("error: --max-samples must be >= 1", file=sys.stderr)
         return 2
     if args.workers < 1:
@@ -192,12 +245,55 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     run_id_suffix = str(args.run_id_suffix).strip() or DEFAULT_RUN_ID_SUFFIX
-    batch_id = args.batch_id or make_batch_id()
     lhs_rel = rel(lhs_path, repo_root=repo_root)
-    exclude_reference = bool(args.exclude_reference) and not bool(args.include_reference)
-
     status_path = lhs_pool_status_path(repo_root)
     index_path = lhs_runs_index_path(repo_root)
+
+    if args.reconcile_existing_runs:
+        report = reconcile_existing_runs(
+            repo_root=repo_root,
+            pool=pool,
+            lhs_path=lhs_path,
+            run_id_suffix=run_id_suffix,
+            repair_freeze=True,
+        )
+        status_doc = load_lhs_pool_status(
+            status_path,
+            lhs_path=lhs_path,
+            run_id_suffix=run_id_suffix,
+            repo_root=repo_root,
+        )
+        for row in report.get("samples") or []:
+            if row.get("action") != "reconciled_completed":
+                continue
+            sid = str(row["sample_id"])
+            outcome = str(row.get("outcome") or "pass")
+            patch = status_row_from_run_summary(
+                sample_id=sid,
+                lhs_row_index=int(row.get("lhs_row_index") or 0),
+                run_id=str(row.get("run_id") or ""),
+                batch_id=report.get("generated_utc", "reconcile"),
+                run_root=repo_root / str(row.get("run_root") or ""),
+                outcome=outcome,
+                elapsed_s=0.0,
+                summary=row,
+                error_message=row.get("last_error"),
+            )
+            update_sample_status(status_doc, sample_id=sid, patch=patch)
+            append_runs_index_row(index_path, {"event": "reconcile", **patch})
+        write_lhs_pool_status(status_path, status_doc)
+        out_path = specs_generated_dir(repo_root) / f"reconcile_{utc_now()[:10].replace('-', '')}.json"
+        write_json_atomic(out_path, report)
+        print(f"reconciled_completed={report.get('reconciled_completed_count')}")
+        print(f"freeze_repaired={report.get('freeze_repaired_count')}")
+        print(f"lhs_pool={lhs_rel}")
+        print(f"lhs_backup={report.get('lhs_backup')}")
+        print(f"report={rel(out_path, repo_root=repo_root)}")
+        return 0
+
+    batch_id = args.batch_id or make_batch_id()
+    exclude_reference = bool(args.exclude_reference) and not bool(args.include_reference)
+
     status_doc = load_lhs_pool_status(
         status_path,
         lhs_path=lhs_path,
@@ -275,6 +371,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
 
     def _on_sample_start(sid: str, run_id: str, lhs_row_index: int) -> None:
+        _sync_lhs_running(pool, sample_id=sid, run_id=run_id, batch_id=batch_id)
+        write_lhs_pool_with_backup(lhs_path, pool)
         update_sample_status(
             status_doc,
             sample_id=sid,
@@ -302,9 +400,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     def _on_sample_finish(row: Dict[str, Any]) -> None:
         sid = str(row["sample_id"])
         outcome = str(row.get("outcome") or STATUS_FAIL)
-        status = STATUS_PASS if outcome == "pass" else STATUS_FAIL
-        if outcome == "reused_complete":
-            status = STATUS_PASS
+        _sync_lhs_from_finish(pool, row=row, batch_id=batch_id)
+        write_lhs_pool_with_backup(lhs_path, pool)
+        status = STATUS_PASS if outcome in ("pass", "reused_complete", OUTCOME_PASS_FREEZE_WARNING) else STATUS_FAIL
         patch = status_row_from_run_summary(
             sample_id=sid,
             lhs_row_index=int(row.get("lhs_row_index") or 0),
@@ -351,6 +449,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"completed={summary['completed_count']} failed={summary['failed_count']} "
         f"skipped={summary['skipped_count']}"
     )
+    print(f"lhs_pool={lhs_rel}")
     print(f"status={rel(status_path, repo_root=repo_root)}")
     print(f"index={rel(index_path, repo_root=repo_root)}")
     return 1 if summary.get("failed_count") else 0

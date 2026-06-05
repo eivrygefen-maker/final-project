@@ -24,6 +24,11 @@ from v2_b3_m4_worker_run_lib import (  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
 FREEZE_DIR_NAME = "freeze"
+CANONICAL_FREEZE_PREFIX = "sample_e2e"
+CANONICAL_FREEZE_MANIFEST = "sample_e2e_run_manifest.json"
+CANONICAL_FREEZE_SUMMARY = "sample_e2e_run_summary.md"
+LEGACY_FREEZE_MANIFESTS = ("first_end_to_end_run_manifest.json",)
+AGG_PASS_FREEZE_WARNING = "AGGREGATION_PASS_FREEZE_WARNING"
 REFERENCE_SAMPLE_ID = "sample_001"
 REPORT_DOC_REL = (
     "FEM/experiments/active_domain_validation/physics_integrity/docs/"
@@ -61,10 +66,8 @@ def resolve_freeze_config(
     """Return manifest/summary basename prefix and schema for freeze outputs."""
     if freeze_prefix:
         prefix = freeze_prefix.strip().removesuffix("_")
-    elif sample_id == REFERENCE_SAMPLE_ID:
-        prefix = "first_end_to_end"
     else:
-        prefix = "sample_e2e"
+        prefix = CANONICAL_FREEZE_PREFIX
     schema = (
         "m4_first_end_to_end_freeze_v1"
         if prefix == "first_end_to_end"
@@ -77,6 +80,58 @@ def resolve_freeze_config(
         "summary_name": f"{prefix}_run_summary.md",
         "write_reference_report": prefix == "first_end_to_end",
     }
+
+
+def existing_freeze_manifest_paths(run_root: Path) -> List[Path]:
+    freeze_dir = run_root / FREEZE_DIR_NAME
+    if not freeze_dir.is_dir():
+        return []
+    found: List[Path] = []
+    canonical = freeze_dir / CANONICAL_FREEZE_MANIFEST
+    if canonical.is_file():
+        found.append(canonical)
+    for name in LEGACY_FREEZE_MANIFESTS:
+        legacy = freeze_dir / name
+        if legacy.is_file() and legacy not in found:
+            found.append(legacy)
+    cfg = resolve_freeze_config("")
+    alt = freeze_dir / cfg["manifest_name"]
+    if alt.is_file() and alt not in found:
+        found.append(alt)
+    return found
+
+
+def freeze_outputs_present(run_root: Path) -> bool:
+    return bool(existing_freeze_manifest_paths(run_root))
+
+
+def promote_pipeline_terminal_status(
+    run_root: Path,
+    *,
+    terminal_status: str = TERMINAL_E2E,
+    aggregation_status: Optional[str] = None,
+) -> None:
+    """Update main pipeline_run_manifest.json after successful workers/aggregation."""
+    manifest_path = run_root / "pipeline_run_manifest.json"
+    manifest = _safe_load(manifest_path) or {}
+    manifest["terminal_status"] = terminal_status
+    manifest["updated_utc"] = utc_now()
+    stages = manifest.setdefault("stages", {})
+    for key in ("stage5_workers", "stage6_aggregate"):
+        st = stages.setdefault(key, {})
+        if str(st.get("status")) not in ("PASS",):
+            st["status"] = "PASS"
+        st["updated_utc"] = utc_now()
+    if aggregation_status:
+        stages.setdefault("stage6_aggregate", {})["aggregation_status"] = aggregation_status
+    freeze_st = stages.setdefault("stage6_freeze", {})
+    if freeze_outputs_present(run_root):
+        freeze_st["status"] = "PASS"
+    elif str(aggregation_status or "") == AGG_STATUS_PASS:
+        freeze_st["status"] = "PASS_WITH_WARNING"
+        freeze_st["warning"] = AGG_PASS_FREEZE_WARNING
+    freeze_st["updated_utc"] = utc_now()
+    write_json_atomic(manifest_path, manifest)
 
 
 def _safe_load(path: Path) -> Optional[Dict[str, Any]]:
@@ -534,6 +589,7 @@ def write_freeze_outputs(
     run_root: Path,
     payload: Dict[str, Any],
     force: bool,
+    idempotent: bool = False,
 ) -> Path:
     freeze_dir = run_root / FREEZE_DIR_NAME
     freeze_dir.mkdir(parents=True, exist_ok=True)
@@ -542,11 +598,20 @@ def write_freeze_outputs(
     summary_name = cfg["summary_name"]
     output_names = (manifest_name, summary_name) + ARTIFACT_INDEX_FILES
 
+    canonical_path = freeze_dir / CANONICAL_FREEZE_MANIFEST
     existing = [freeze_dir / name for name in output_names if (freeze_dir / name).is_file()]
     if existing and not force:
-        raise FileExistsError(
-            f"freeze outputs exist ({len(existing)} files); use --force to overwrite: {freeze_dir}"
-        )
+        if (idempotent or freeze_outputs_present(run_root)) and canonical_path.is_file():
+            promote_pipeline_terminal_status(
+                run_root,
+                terminal_status=str(payload.get("terminal_status") or TERMINAL_E2E),
+                aggregation_status=str(payload.get("status") or AGG_STATUS_PASS),
+            )
+            return freeze_dir
+        if not (idempotent or freeze_outputs_present(run_root)):
+            raise FileExistsError(
+                f"freeze outputs exist ({len(existing)} files); use --force to overwrite: {freeze_dir}"
+            )
 
     manifest_body = {
         "schema": cfg["schema"],
@@ -585,10 +650,51 @@ def write_freeze_outputs(
     if cfg.get("write_reference_report"):
         report_path = repo_root / REPORT_DOC_REL
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        if report_path.is_file() and not force:
+        if report_path.is_file() and not force and not idempotent:
             raise FileExistsError(f"report exists (use --force): {report_path}")
-        report_path.write_text(_render_report_md(payload), encoding="utf-8")
+        elif not report_path.is_file() or force:
+            report_path.write_text(_render_report_md(payload), encoding="utf-8")
+    promote_pipeline_terminal_status(
+        run_root,
+        terminal_status=str(payload.get("terminal_status") or TERMINAL_E2E),
+        aggregation_status=str(payload.get("status") or AGG_STATUS_PASS),
+    )
     return freeze_dir
+
+
+def repair_run_freeze_and_terminal(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    sample_id: str,
+    force: bool = False,
+) -> tuple[int, str]:
+    """
+    Idempotent freeze repair for runs with AGGREGATION_PASS.
+    Accepts legacy freeze manifests; writes canonical sample_e2e outputs when missing.
+    """
+    errors = _validate_milestone(run_root=run_root)
+    if errors:
+        return 2, "; ".join(errors)
+    cfg = resolve_freeze_config(sample_id)
+    payload = build_freeze_payload(repo_root=repo_root, run_root=run_root, freeze_cfg=cfg)
+    try:
+        write_freeze_outputs(
+            repo_root=repo_root,
+            run_root=run_root,
+            payload=payload,
+            force=force,
+            idempotent=True,
+        )
+    except FileExistsError as exc:
+        if freeze_outputs_present(run_root):
+            promote_pipeline_terminal_status(
+                run_root,
+                aggregation_status=str(payload.get("status") or AGG_STATUS_PASS),
+            )
+            return 0, "freeze accepted (existing outputs)"
+        return 2, str(exc)
+    return 0, "freeze repaired"
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -633,6 +739,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             run_root=run_root,
             payload=payload,
             force=bool(args.force),
+            idempotent=not bool(args.force),
         )
     except FileExistsError as exc:
         print(f"error: {exc}", file=sys.stderr)
