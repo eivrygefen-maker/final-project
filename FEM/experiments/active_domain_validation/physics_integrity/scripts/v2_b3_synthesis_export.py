@@ -31,6 +31,7 @@ PHYSICS_CONFIG = SCRIPT_DIR.parent / "configs" / "coupled_physical_core_v2.json"
 REGION_DOF_WORKER = SCRIPT_DIR / "v2_b3_synthesis_region_dof_worker.py"
 REGION_DOF_SUBPROCESS_TIMEOUT_S = 600
 REGION_DOF_STATUS_PASS = "BEST_EFFORT_PASS"
+REGION_DOF_SOURCE_OPERATOR_BUILD = "operator_build_context"
 
 TAG_TOP = 1
 TAG_SOUNDHOLE = 2
@@ -181,6 +182,55 @@ def region_dof_status_is_pass(status: Optional[str]) -> bool:
     return str(status or "") in ("present", REGION_DOF_STATUS_PASS)
 
 
+def _region_arr(region_dof_build: Mapping[str, Any], key: str) -> np.ndarray:
+    val = region_dof_build.get(key)
+    if val is None:
+        return np.asarray([], dtype=np.int32)
+    return np.asarray(val, dtype=np.int32).ravel()
+
+
+def export_region_dof_indices_from_operator_build(
+    checkpoint: Path,
+    *,
+    region_dof_build: Mapping[str, Any],
+) -> Tuple[str, Optional[str]]:
+    """Write region_dof_indices.npz from Stage A operator build masks (in-process, no subprocess)."""
+    checkpoint = checkpoint.expanduser().resolve()
+    u_idx_top = _region_arr(region_dof_build, "u_idx_top")
+    u_idx_back = _region_arr(region_dof_build, "u_idx_back")
+    u_idx_ribs = _region_arr(region_dof_build, "u_idx_ribs")
+    u_idx_soundhole = _region_arr(region_dof_build, "u_idx_soundhole")
+    p_idx_all = _region_arr(region_dof_build, "p_idx_all")
+    if p_idx_all.size == 0:
+        p_idx_all = _region_arr(region_dof_build, "p_idx_air")
+    u_idx_all = _region_arr(region_dof_build, "u_idx_all")
+    mesh_file = str(region_dof_build.get("region_dof_mesh_file") or "")
+    source = str(region_dof_build.get("region_dof_source") or REGION_DOF_SOURCE_OPERATOR_BUILD)
+
+    if u_idx_top.size == 0 and u_idx_back.size == 0 and u_idx_ribs.size == 0:
+        counts = region_dof_build.get("counts") or {}
+        return (
+            "deferred_to_stage_c",
+            f"operator_build_context_empty_structural counts={counts}",
+        )
+
+    np.savez_compressed(
+        checkpoint / REGION_DOF_INDICES_NPZ,
+        u_idx_top=u_idx_top,
+        u_idx_back=u_idx_back,
+        u_idx_ribs=u_idx_ribs,
+        u_idx_soundhole=u_idx_soundhole,
+        p_idx_air=p_idx_all.copy(),
+        p_idx_all=p_idx_all.copy(),
+        u_idx_all=u_idx_all,
+        region_dof_mesh_file=np.asarray([mesh_file]),
+        region_dof_source=np.asarray([source]),
+        layout=np.asarray([str(region_dof_build.get("layout") or REGION_DOF_LAYOUT)]),
+        back_includes_ribs=np.asarray([bool(region_dof_build.get("back_includes_ribs", True))]),
+    )
+    return REGION_DOF_STATUS_PASS, None
+
+
 def export_region_dof_indices_npz(
     checkpoint: Path,
     *,
@@ -318,6 +368,11 @@ def _build_synthesis_metadata_body(
         "region_dof_indices_error": region_error,
         "layout": REGION_DOF_LAYOUT,
         "back_includes_ribs": True,
+        "region_dof_source": (
+            REGION_DOF_SOURCE_OPERATOR_BUILD
+            if region_dof_status_is_pass(region_status)
+            else None
+        ),
     }
     prov = core_config_provenance or built_meta.get("core_config_provenance")
     if isinstance(prov, dict) and prov:
@@ -430,20 +485,21 @@ def write_stage_a_synthesis_artifacts(
 
     region_status = "deferred_to_stage_c"
     region_error: Optional[str] = None
+    region_source: Optional[str] = None
     if mode == "off":
         region_error = "disabled_default_no_dolfinx_locate"
     else:
-        if mesh_file is None:
-            region_error = mesh_resolve
-        else:
-            region_status, region_error = export_region_dof_indices_isolated(
+        region_dof_build = built.get("region_dof_build") if isinstance(built, dict) else None
+        if isinstance(region_dof_build, dict) and region_dof_build:
+            region_status, region_error = export_region_dof_indices_from_operator_build(
                 checkpoint,
-                mesh_level=mesh_level,
-                built_meta=built_meta,
-                mesh_file=mesh_file,
-                core_config_path=core_config_path,
-                python_executable=python_executable,
+                region_dof_build=region_dof_build,
             )
+            region_source = str(
+                region_dof_build.get("region_dof_source") or REGION_DOF_SOURCE_OPERATOR_BUILD
+            )
+        else:
+            region_error = "operator_build_context_missing_region_dof_build"
 
     body = _build_synthesis_metadata_body(
         checkpoint,
@@ -475,6 +531,7 @@ def write_stage_a_synthesis_artifacts(
         "region_dof_indices_error": region_error,
         "region_dof_indices_file": body["region_dof_indices_file"],
         "region_dof_mesh_resolve": mesh_resolve,
+        "region_dof_source": region_source or body.get("region_dof_source"),
     }
     if warning:
         out["warning"] = warning
@@ -482,6 +539,7 @@ def write_stage_a_synthesis_artifacts(
     elif region_dof_status_is_pass(region_status):
         print(
             f"[B3_synthesis_export] region_dof_indices_status={region_status} "
+            f"source={region_source or REGION_DOF_SOURCE_OPERATOR_BUILD} "
             f"npz={checkpoint / REGION_DOF_INDICES_NPZ}",
             flush=True,
         )

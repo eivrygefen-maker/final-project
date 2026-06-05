@@ -248,9 +248,11 @@ _MASS_DECOMPOSITION_EVIDENCE_KEYS = (
 )
 
 TAG_TOP = 1
+TAG_SOUNDHOLE = 2
 TAG_BACK = 3
 TAG_RIBS = 4
 TAG_FIX = 5
+REGION_DOF_LAYOUT_B3_W = "B3_W_global_row_indices_via_u_idx_p_idx"
 
 
 def _safe_float(x: Any) -> Any:
@@ -3328,6 +3330,75 @@ def _b3_struct_active_candidate_origin_policy_pass(
     )
 
 
+def _b3_trace_region_u_rows(
+    *,
+    V_u_trace: Any,
+    shell_mesh: Any,
+    mt_trace: Any,
+    tag: int,
+    n_u_b3: int,
+) -> np.ndarray:
+    """B3 trace-shell facet DOFs as monolithic W u-block row indices (0..n_u_b3-1)."""
+    facets = np.asarray(mt_trace.find(int(tag)), dtype=np.int32).ravel()
+    if facets.size == 0 or n_u_b3 <= 0:
+        return np.asarray([], dtype=np.int32)
+    dofs = np.asarray(
+        fem3d._locate_facet_displacement_dofs(V_u_trace, shell_mesh, facets),
+        dtype=np.int32,
+    ).ravel()
+    if dofs.size == 0:
+        return np.asarray([], dtype=np.int32)
+    valid = dofs[(dofs >= 0) & (dofs < int(n_u_b3))]
+    if valid.size == 0:
+        return np.asarray([], dtype=np.int32)
+    return np.unique(valid.astype(np.int32, copy=False))
+
+
+def _b3_capture_region_dof_indices_for_checkpoint(
+    *,
+    V_u_trace: Any,
+    shell_mesh: Any,
+    mt_trace: Any,
+    n_u_b3: int,
+    p_idx: np.ndarray,
+    mesh_file: Path,
+) -> Dict[str, Any]:
+    """Capture top/back/ribs/air region masks from the in-flight operator build (no second FEM session)."""
+    u_idx_top = _b3_trace_region_u_rows(
+        V_u_trace=V_u_trace, shell_mesh=shell_mesh, mt_trace=mt_trace, tag=TAG_TOP, n_u_b3=n_u_b3
+    )
+    u_idx_back = _b3_trace_region_u_rows(
+        V_u_trace=V_u_trace, shell_mesh=shell_mesh, mt_trace=mt_trace, tag=TAG_BACK, n_u_b3=n_u_b3
+    )
+    u_idx_ribs = _b3_trace_region_u_rows(
+        V_u_trace=V_u_trace, shell_mesh=shell_mesh, mt_trace=mt_trace, tag=TAG_RIBS, n_u_b3=n_u_b3
+    )
+    u_idx_soundhole = _b3_trace_region_u_rows(
+        V_u_trace=V_u_trace, shell_mesh=shell_mesh, mt_trace=mt_trace, tag=TAG_SOUNDHOLE, n_u_b3=n_u_b3
+    )
+    p_idx_all = np.asarray(p_idx, dtype=np.int32).ravel()
+    return {
+        "u_idx_top": u_idx_top,
+        "u_idx_back": u_idx_back,
+        "u_idx_ribs": u_idx_ribs,
+        "u_idx_soundhole": u_idx_soundhole,
+        "p_idx_air": p_idx_all.copy(),
+        "p_idx_all": p_idx_all.copy(),
+        "u_idx_all": np.arange(int(n_u_b3), dtype=np.int32),
+        "region_dof_source": "operator_build_context",
+        "region_dof_mesh_file": str(Path(mesh_file).resolve()),
+        "layout": REGION_DOF_LAYOUT_B3_W,
+        "back_includes_ribs": True,
+        "counts": {
+            "u_idx_top": int(u_idx_top.size),
+            "u_idx_back": int(u_idx_back.size),
+            "u_idx_ribs": int(u_idx_ribs.size),
+            "u_idx_soundhole": int(u_idx_soundhole.size),
+            "p_idx_air": int(p_idx_all.size),
+        },
+    }
+
+
 def _b3_build_corrected_structural_active_operators(
     *,
     mats_to_destroy: List[Any],
@@ -3552,6 +3623,21 @@ def _b3_build_corrected_structural_active_operators(
     _register_mat_for_destroy(mats_to_destroy, A_active, seen=mat_destroy_seen)
     _register_mat_for_destroy(mats_to_destroy, M_active, seen=mat_destroy_seen)
     prof.end("active_reduction")
+    region_dof_build = _b3_capture_region_dof_indices_for_checkpoint(
+        V_u_trace=V_u_trace,
+        shell_mesh=shell_mesh,
+        mt_trace=mt_trace,
+        n_u_b3=n_u_b3,
+        p_idx=np.asarray(p_idx, dtype=np.int32).ravel(),
+        mesh_file=Path(mesh_file),
+    )
+    _rdb_counts = region_dof_build.get("counts") or {}
+    print(
+        "[B3_region_dof] operator_build_context captured trace-shell region masks: "
+        f"top={_rdb_counts.get('u_idx_top')} back={_rdb_counts.get('u_idx_back')} "
+        f"ribs={_rdb_counts.get('u_idx_ribs')} p_air={_rdb_counts.get('p_idx_air')}",
+        flush=True,
+    )
     out: Dict[str, Any] = {
         "A_parent": A_parent,
         "M_parent": M_parent,
@@ -3572,6 +3658,7 @@ def _b3_build_corrected_structural_active_operators(
         "active_local": active_local,
         "inactive_local": inactive_local,
         "operator_build_profile": prof,
+        "region_dof_build": region_dof_build,
     }
     if core_config_provenance:
         out["core_config_provenance"] = dict(core_config_provenance)

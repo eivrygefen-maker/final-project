@@ -293,6 +293,14 @@ def _built_metadata_from_built(built: Dict[str, Any], *, mesh_level: str) -> Dic
     prov = built.get("core_config_provenance")
     if isinstance(prov, dict) and prov:
         meta["core_config_provenance"] = dict(prov)
+    rdb = built.get("region_dof_build")
+    if isinstance(rdb, dict):
+        meta["region_dof_build_summary"] = {
+            "source": rdb.get("region_dof_source", "operator_build_context"),
+            "counts": dict(rdb.get("counts") or {}),
+            "region_dof_mesh_file": rdb.get("region_dof_mesh_file"),
+            "back_includes_ribs": bool(rdb.get("back_includes_ribs", True)),
+        }
     return meta
 
 

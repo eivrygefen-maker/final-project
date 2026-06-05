@@ -126,8 +126,16 @@ def load_region_dof_bundle(
     region: Dict[str, np.ndarray]
     if npz_present:
         with np.load(npz_path, allow_pickle=False) as z:
-            region = {k: np.asarray(z[k]).ravel() for k in z.files if k != "layout"}
-        source = "region_dof_indices_npz"
+            region = {
+                k: np.asarray(z[k]).ravel()
+                for k in z.files
+                if k not in ("layout", "region_dof_source", "region_dof_mesh_file", "back_includes_ribs")
+            }
+        if "region_dof_source" in z.files:
+            raw_src = z["region_dof_source"]
+            source = str(np.asarray(raw_src).ravel()[0]) if np.asarray(raw_src).size else "region_dof_indices_npz"
+        else:
+            source = "region_dof_indices_npz"
     else:
         u_idx = np.asarray(built_meta.get("u_idx") or [], dtype=np.int32).ravel()
         p_idx = np.asarray(built_meta.get("p_idx") or [], dtype=np.int32).ravel()

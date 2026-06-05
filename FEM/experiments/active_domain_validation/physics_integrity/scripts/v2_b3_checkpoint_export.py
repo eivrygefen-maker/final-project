@@ -119,8 +119,8 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=None,
         metavar="MODE",
         help=(
-            "Stage A region DOF locate: off (default, no dolfinx locate) or best_effort "
-            f"(isolated subprocess). Env: {B3_SYNTHESIS_REGION_DOFS_ENV}=off|best_effort"
+            "Stage A region DOF export: off or best_effort "
+            f"(in-process from operator build context; no subprocess). Env: {B3_SYNTHESIS_REGION_DOFS_ENV}=off|best_effort"
         ),
     )
     parser.add_argument(
