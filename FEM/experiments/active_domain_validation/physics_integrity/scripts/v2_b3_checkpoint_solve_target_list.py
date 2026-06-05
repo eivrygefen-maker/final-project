@@ -29,6 +29,7 @@ from v2_b3_m4_lprod_interfaces import (  # noqa: E402
     validate_chunk_targets_doc,
 )
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
+from v2_b3_mode_audio_coupling import AUDIO_COUPLING_FIELD_KEYS  # noqa: E402
 from v2_b3_rich_modal_lib import load_region_dof_bundle  # noqa: E402
 
 ALLOWED_FACTOR_SOLVERS = ("mkl_pardiso", "mumps")
@@ -231,18 +232,20 @@ def _run_real_solve(
     for trow in result.get("targets") or []:
         for m in trow.get("accepted_modes") or []:
             if isinstance(m, dict) and m.get("frequency_hz") is not None:
-                mode_records.append(
-                    {
-                        "frequency_hz": float(m["frequency_hz"]),
-                        "target_frequency_hz": trow.get("target_frequency_hz"),
-                        "dominant_region": m.get("dominant_region"),
-                        "top_participation": m.get("top_participation"),
-                        "back_participation": m.get("back_participation"),
-                        "air_participation": m.get("air_participation"),
-                        "participation_method": m.get("participation_method"),
-                        "participation_status": m.get("participation_status"),
-                    }
-                )
+                row = {
+                    "frequency_hz": float(m["frequency_hz"]),
+                    "target_frequency_hz": trow.get("target_frequency_hz"),
+                    "dominant_region": m.get("dominant_region"),
+                    "top_participation": m.get("top_participation"),
+                    "back_participation": m.get("back_participation"),
+                    "air_participation": m.get("air_participation"),
+                    "participation_method": m.get("participation_method"),
+                    "participation_status": m.get("participation_status"),
+                }
+                for key in AUDIO_COUPLING_FIELD_KEYS:
+                    if key in m:
+                        row[key] = m[key]
+                mode_records.append(row)
 
     write_json_atomic(output_dir / "solver_result.json", result)
     worker_body = {

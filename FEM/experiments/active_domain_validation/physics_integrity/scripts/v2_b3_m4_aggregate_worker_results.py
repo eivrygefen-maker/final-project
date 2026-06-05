@@ -12,6 +12,11 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from v2_b3_mode_audio_coupling import (  # noqa: E402
+    STK_ROM_GUIDANCE,
+    merge_audio_coupling_into_catalog_record,
+    summarize_audio_coupling,
+)
 from v2_b3_mode_region_participation import (  # noqa: E402
     STK_DAMPING_GUIDANCE,
     enrich_participation_catalog_metadata,
@@ -161,6 +166,7 @@ def _collect_mode_records(
                 }
                 if isinstance(am, dict):
                     merge_participation_into_catalog_record(rec, am)
+                    merge_audio_coupling_into_catalog_record(rec, am)
                 records.append(rec)
         if records:
             return records
@@ -180,6 +186,7 @@ def _collect_mode_records(
                 "mode_index": mi,
             }
             merge_participation_into_catalog_record(rec, am)
+            merge_audio_coupling_into_catalog_record(rec, am)
             records.append(rec)
         return records
 
@@ -235,12 +242,19 @@ def _dedupe_catalog(
         for g in group:
             if g.get("participation_status") in ("computed", "fallback"):
                 merge_participation_into_catalog_record(rep, g)
+                merge_audio_coupling_into_catalog_record(rep, g)
                 break
         else:
             for g in group:
                 if g.get("dominant_region"):
                     merge_participation_into_catalog_record(rep, g)
+                    merge_audio_coupling_into_catalog_record(rep, g)
                     break
+            else:
+                for g in group:
+                    if g.get("audio_coupling_status") in ("computed", "partial", "proxy"):
+                        merge_audio_coupling_into_catalog_record(rep, g)
+                        break
         if len(group) > 1:
             merge_meta.append(
                 {
@@ -453,6 +467,7 @@ def _write_common_artifacts(
         if rec.get("participation_status") in ("computed", "fallback"):
             participation_computed += 1
 
+    audio_summary = summarize_audio_coupling(deduped_catalog)
     modes_summary = {
         "schema": "m4_partial_modes_summary_v1" if partial else "m4_modes_summary_v1",
         "generated_utc": report.get("generated_utc"),
@@ -468,6 +483,13 @@ def _write_common_artifacts(
         "coupling_class_counts": coupling_counts,
         "share_summary": summarize_participation_shares(deduped_catalog),
         "stk_damping_guidance": STK_DAMPING_GUIDANCE,
+        "audio_coupling_computed_count": audio_summary.get("audio_coupling_computed_count"),
+        "bridge_coupling_available_count": audio_summary.get("bridge_coupling_available_count"),
+        "mic_proxy_available_count": audio_summary.get("mic_proxy_available_count"),
+        "radiation_proxy_summary": audio_summary.get("radiation_proxy_summary"),
+        "modal_norm_summary": audio_summary.get("modal_norm_summary"),
+        "audio_coupling_summary": audio_summary,
+        "stk_rom_guidance": STK_ROM_GUIDANCE,
         "participation_computed_count": participation_computed,
         "by_chunk": [
             {
@@ -498,6 +520,13 @@ def _write_common_artifacts(
         "coupling_class_counts": modes_summary.get("coupling_class_counts"),
         "share_summary": modes_summary.get("share_summary"),
         "stk_damping_guidance": modes_summary.get("stk_damping_guidance"),
+        "audio_coupling_computed_count": modes_summary.get("audio_coupling_computed_count"),
+        "bridge_coupling_available_count": modes_summary.get("bridge_coupling_available_count"),
+        "mic_proxy_available_count": modes_summary.get("mic_proxy_available_count"),
+        "radiation_proxy_summary": modes_summary.get("radiation_proxy_summary"),
+        "modal_norm_summary": modes_summary.get("modal_norm_summary"),
+        "audio_coupling_summary": modes_summary.get("audio_coupling_summary"),
+        "stk_rom_guidance": modes_summary.get("stk_rom_guidance"),
     }
     try:
         from v2_b3_m4_runtime_provenance import (  # noqa: E402

@@ -575,6 +575,19 @@ def collect_accepted_st_modes(
                     entry["participation_method"] = "not_available"
                     entry["participation_status"] = "not_available"
                     entry["participation_detail"] = f"participation_attach_failed:{type(exc).__name__}"
+                try:
+                    from v2_b3_mode_audio_coupling import attach_audio_coupling_to_accepted_mode
+
+                    attach_audio_coupling_to_accepted_mode(
+                        entry,
+                        x_active=x_active,
+                        built=built,
+                        region_ctx=region_ctx,
+                    )
+                except Exception as exc:
+                    entry["audio_coupling_status"] = "not_available"
+                    entry["audio_coupling_method"] = "lightweight_modal_coupling_v1"
+                    entry["audio_coupling_detail"] = f"audio_coupling_attach_failed:{type(exc).__name__}"
                 accepted.append(entry)
         finally:
             vr.destroy()

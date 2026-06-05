@@ -63,6 +63,8 @@ else:
 
 Weight Q/damping contributions by `top_share`, `back_share`, `air_share`. Use `coupling_class` for routing hints (e.g. `top_back_mixed` modes need blended wood damping). `dominant_region` is a summary label only.
 
+For excitation/output scalars (`bridge_excitation_coupling`, `radiation_proxy`, `mic_output_proxy`, `modal_norm`), see [B3_M4_MODE_AUDIO_COUPLING_METADATA.md](B3_M4_MODE_AUDIO_COUPLING_METADATA.md).
+
 ## Where it is written
 
 | Artifact | Path |
