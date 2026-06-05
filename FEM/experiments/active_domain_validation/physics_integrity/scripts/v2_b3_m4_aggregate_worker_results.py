@@ -12,7 +12,12 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from v2_b3_mode_region_participation import merge_participation_into_catalog_record  # noqa: E402
+from v2_b3_mode_region_participation import (  # noqa: E402
+    STK_DAMPING_GUIDANCE,
+    enrich_participation_catalog_metadata,
+    merge_participation_into_catalog_record,
+    summarize_participation_shares,
+)
 from v2_b3_m4_worker_run_lib import (  # noqa: E402
     PASS_LIKE,
     detect_repo_root,
@@ -164,18 +169,18 @@ def _collect_mode_records(
     if isinstance(freqs, list) and freqs and isinstance(freqs[0], dict):
         for mi, am in enumerate(freqs):
             f_hz = float(am.get("frequency_hz", 0))
-            records.append(
-                {
-                    "frequency_hz": round(f_hz, 6),
-                    "chunk_id": chunk_id,
-                    "target_hz": am.get("target_hz"),
-                    "zone_id": am.get("zone_id"),
-                    "source": "worker_result.unique_modes",
-                    "source_worker_result": worker_rel,
-                    "source_solver_result": solver_rel,
-                    "mode_index": mi,
-                }
-            )
+            rec = {
+                "frequency_hz": round(f_hz, 6),
+                "chunk_id": chunk_id,
+                "target_hz": am.get("target_hz"),
+                "zone_id": am.get("zone_id"),
+                "source": "worker_result.unique_modes",
+                "source_worker_result": worker_rel,
+                "source_solver_result": solver_rel,
+                "mode_index": mi,
+            }
+            merge_participation_into_catalog_record(rec, am)
+            records.append(rec)
         return records
 
     for mi, f_hz in enumerate(freqs if isinstance(freqs, list) else []):
@@ -409,6 +414,12 @@ def build_aggregation_report(
     }
 
 
+def _enrich_catalog_participation(records: Sequence[Dict[str, Any]]) -> None:
+    for rec in records:
+        if rec.get("participation_status") in ("computed", "fallback"):
+            enrich_participation_catalog_metadata(rec)
+
+
 def _write_common_artifacts(
     *,
     repo_root: Path,
@@ -424,15 +435,21 @@ def _write_common_artifacts(
     all_records: List[Dict[str, Any]],
     partial: bool,
 ) -> None:
+    _enrich_catalog_participation(all_records)
+    _enrich_catalog_participation(deduped_catalog)
+
     with catalog_path.open("w", encoding="utf-8") as fh:
         for rec in sorted(all_records, key=lambda r: float(r["frequency_hz"])):
             fh.write(json.dumps(rec, sort_keys=True) + "\n")
 
     region_counts: Dict[str, int] = {}
+    coupling_counts: Dict[str, int] = {}
     participation_computed = 0
     for rec in deduped_catalog:
         dom = str(rec.get("dominant_region") or "unknown")
         region_counts[dom] = region_counts.get(dom, 0) + 1
+        coupling = str(rec.get("coupling_class") or "weak_or_unknown")
+        coupling_counts[coupling] = coupling_counts.get(coupling, 0) + 1
         if rec.get("participation_status") in ("computed", "fallback"):
             participation_computed += 1
 
@@ -447,6 +464,10 @@ def _write_common_artifacts(
         "unique_modes_hz": report.get("unique_modes_hz"),
         "frequency_range_hz": report.get("frequency_range_hz"),
         "dominant_region_counts": region_counts,
+        "normalized_dominant_region_counts": region_counts,
+        "coupling_class_counts": coupling_counts,
+        "share_summary": summarize_participation_shares(deduped_catalog),
+        "stk_damping_guidance": STK_DAMPING_GUIDANCE,
         "participation_computed_count": participation_computed,
         "by_chunk": [
             {
@@ -473,6 +494,10 @@ def _write_common_artifacts(
         "deduped_mode_count": report.get("deduped_mode_count"),
         "participation_computed_count": modes_summary.get("participation_computed_count"),
         "dominant_region_counts": modes_summary.get("dominant_region_counts"),
+        "normalized_dominant_region_counts": modes_summary.get("normalized_dominant_region_counts"),
+        "coupling_class_counts": modes_summary.get("coupling_class_counts"),
+        "share_summary": modes_summary.get("share_summary"),
+        "stk_damping_guidance": modes_summary.get("stk_damping_guidance"),
     }
     try:
         from v2_b3_m4_runtime_provenance import (  # noqa: E402

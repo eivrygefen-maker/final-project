@@ -2,7 +2,9 @@
 """Lightweight per-mode dominant-region metadata (solve-time, no rich modal export)."""
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Optional
+import math
+import statistics
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -26,6 +28,185 @@ def participation_fields_not_available(*, reason: str, method: str = "not_availa
     }
 
 
+PARTICIPATION_SCORES_SEMANTICS = (
+    "non_partitioning_energy_fractions_v1: "
+    "top/back/air scores are ‖x[region]‖²/‖x‖² and may overlap (not a partition of unity). "
+    "Use top_share/back_share/air_share for STK damping weights."
+)
+
+STK_DAMPING_GUIDANCE = (
+    "Do not use hard dominant_region alone for damping. "
+    "Weight Q/damping by top_share, back_share, air_share (normalized over available scores)."
+)
+
+
+def _participation_score_value(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(score) or score < 0.0:
+        return None
+    return score
+
+
+def compute_participation_shares(
+    *,
+    top_score: Optional[float],
+    back_score: Optional[float],
+    air_score: Optional[float],
+) -> Dict[str, Optional[float]]:
+    """Normalize participation scores to shares that sum to 1 (STK damping weights)."""
+    raw = {
+        "top": _participation_score_value(top_score),
+        "back": _participation_score_value(back_score),
+        "air": _participation_score_value(air_score),
+    }
+    present = {k: v for k, v in raw.items() if v is not None}
+    total = float(sum(present.values()))
+    if total <= 0.0:
+        return {"top_share": None, "back_share": None, "air_share": None, "share_denominator": 0.0}
+    return {
+        "top_share": (present["top"] / total) if "top" in present else None,
+        "back_share": (present["back"] / total) if "back" in present else None,
+        "air_share": (present["air"] / total) if "air" in present else None,
+        "share_denominator": total,
+    }
+
+
+def dominant_region_from_shares(
+    *,
+    top_share: Optional[float],
+    back_share: Optional[float],
+    air_share: Optional[float],
+    min_share: float = 1.0e-12,
+) -> str:
+    candidates: Dict[str, float] = {}
+    for name, share in (("top", top_share), ("back", back_share), ("air", air_share)):
+        if share is not None and float(share) >= min_share:
+            candidates[name] = float(share)
+    if not candidates:
+        return "unknown"
+    return max(candidates, key=candidates.get)
+
+
+def secondary_region_from_shares(
+    *,
+    top_share: Optional[float],
+    back_share: Optional[float],
+    air_share: Optional[float],
+    dominant_region: str,
+    min_share: float = 0.1,
+) -> Optional[str]:
+    shares = {
+        "top": top_share,
+        "back": back_share,
+        "air": air_share,
+    }
+    ordered = sorted(
+        ((name, float(s)) for name, s in shares.items() if s is not None and float(s) >= min_share),
+        key=lambda row: row[1],
+        reverse=True,
+    )
+    for name, _ in ordered:
+        if name != dominant_region:
+            return name
+    return None
+
+
+def coupling_class_from_shares(
+    *,
+    dominant_region: str,
+    top_share: Optional[float],
+    back_share: Optional[float],
+    air_share: Optional[float],
+    mixed_threshold: float = 0.25,
+    air_dominant_threshold: float = 0.5,
+) -> str:
+    top_s = float(top_share or 0.0)
+    back_s = float(back_share or 0.0)
+    air_s = float(air_share or 0.0)
+    if top_s >= mixed_threshold and back_s >= mixed_threshold:
+        return "top_back_mixed"
+    if air_s >= air_dominant_threshold:
+        return "air_dominant"
+    if dominant_region in ("top", "back", "air"):
+        return f"{dominant_region}_dominant"
+    return "weak_or_unknown"
+
+
+def enrich_participation_catalog_metadata(record: Dict[str, Any]) -> None:
+    """
+    Add normalized shares + coupling metadata from raw participation scores.
+    Safe to call at aggregation time on existing solver rows (no re-solve).
+    """
+    top_score = _participation_score_value(record.get("top_participation"))
+    back_score = _participation_score_value(record.get("back_participation"))
+    air_score = _participation_score_value(record.get("air_participation"))
+
+    if top_score is not None:
+        record["top_participation_score"] = top_score
+    if back_score is not None:
+        record["back_participation_score"] = back_score
+    if air_score is not None:
+        record["air_participation_score"] = air_score
+
+    record["participation_scores_semantics"] = PARTICIPATION_SCORES_SEMANTICS
+
+    shares = compute_participation_shares(
+        top_score=top_score,
+        back_score=back_score,
+        air_score=air_score,
+    )
+    record.update(shares)
+
+    dominant = dominant_region_from_shares(
+        top_share=shares.get("top_share"),
+        back_share=shares.get("back_share"),
+        air_share=shares.get("air_share"),
+    )
+    record["dominant_region"] = dominant
+    record["secondary_region"] = secondary_region_from_shares(
+        top_share=shares.get("top_share"),
+        back_share=shares.get("back_share"),
+        air_share=shares.get("air_share"),
+        dominant_region=dominant,
+    )
+    record["coupling_class"] = coupling_class_from_shares(
+        dominant_region=dominant,
+        top_share=shares.get("top_share"),
+        back_share=shares.get("back_share"),
+        air_share=shares.get("air_share"),
+    )
+
+
+def summarize_participation_shares(records: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Aggregate share statistics for modes_summary.json."""
+    out: Dict[str, Any] = {}
+    for key in ("top_share", "back_share", "air_share"):
+        vals = [
+            float(r[key])
+            for r in records
+            if r.get(key) is not None and math.isfinite(float(r[key]))
+        ]
+        if not vals:
+            out[key] = {"count": 0}
+            continue
+        out[key] = {
+            "count": len(vals),
+            "median": float(statistics.median(vals)),
+            "mean": float(statistics.mean(vals)),
+            "max": float(max(vals)),
+            "min": float(min(vals)),
+        }
+    out["top_share_ge_0.25_count"] = sum(
+        1 for r in records if (r.get("top_share") is not None and float(r["top_share"]) >= 0.25)
+    )
+    return out
+
+
 def _pick_dominant_region(
     *,
     top: Optional[float],
@@ -33,16 +214,14 @@ def _pick_dominant_region(
     air: Optional[float],
     min_fraction: float = 1.0e-8,
 ) -> str:
-    candidates: Dict[str, float] = {}
-    if top is not None and top >= min_fraction:
-        candidates["top"] = float(top)
-    if back is not None and back >= min_fraction:
-        candidates["back"] = float(back)
-    if air is not None and air >= min_fraction:
-        candidates["air"] = float(air)
-    if not candidates:
-        return "unknown"
-    return max(candidates, key=candidates.get)
+    """Legacy argmax on raw scores (solve-time); aggregation recomputes from shares."""
+    shares = compute_participation_shares(top_score=top, back_score=back, air_score=air)
+    return dominant_region_from_shares(
+        top_share=shares.get("top_share"),
+        back_share=shares.get("back_share"),
+        air_share=shares.get("air_share"),
+        min_share=min_fraction,
+    )
 
 
 def compute_mode_dominant_region_metadata(
@@ -171,3 +350,5 @@ def merge_participation_into_catalog_record(record: Dict[str, Any], mode: Mappin
     ):
         if key in mode:
             record[key] = mode[key]
+    if record.get("participation_status") in ("computed", "fallback"):
+        enrich_participation_catalog_metadata(record)
