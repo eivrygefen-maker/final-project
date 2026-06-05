@@ -13,7 +13,8 @@ if str(SCRIPT_DIR) not in sys.path:
 from v2_b3_m4_lhs_production_batch import main as m4_batch_main  # noqa: E402
 
 _LEGACY_MSG = (
-    "DEPRECATED: use v2_b3_m4_lhs_production_batch.py (M4 is the default production LHS path). "
+    "DEPRECATED: use run_m4_production_pipeline.py for LHS pool production "
+    "(or v2_b3_m4_lhs_production_batch.py with a hand-written batch spec). "
     "This wrapper remains for compatibility only."
 )
 

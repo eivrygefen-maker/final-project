@@ -71,6 +71,9 @@ FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_
 FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/logs/
 FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/manifests/run_*.json
 FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/index/runs_index.jsonl
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/index/lhs_production_runs_index.jsonl
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/index/lhs_pool_status.json
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/specs/generated/
 
 # Heavy artifacts anywhere under pipeline_runs (belt-and-suspenders)
 FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/**/worker_results/

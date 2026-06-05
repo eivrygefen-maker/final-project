@@ -27,7 +27,11 @@ POSITIONAL=()
 
 usage() {
   cat <<'EOF'
-LHS FEM pipeline (wraps FEM/scripts/run_pipeline.py).
+LHS FEM pipeline (wraps FEM/scripts/run_pipeline.py) — LEGACY ROM snapshot path.
+
+  For B3 M4 physics production (scout/L_prod/workers/aggregation), use:
+    python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_m4_production_pipeline.py \\
+      --lhs-json ROM/classic/lhs_pool.json --max-samples 10 --workers 3 --execute
 
   ./run_pipeline.sh 15                 Single run (--sample-id 15)
   ./run_pipeline.sh sample_015         Single run (explicit pool key)

@@ -70,10 +70,9 @@ def _sample_id_from_run(run_root: Path) -> str:
 
 
 def load_m45_batch_allowlist(spec_path: Path) -> Dict[str, str]:
-    """Return {sample_id: expected_run_id} for batch samples (excludes reference)."""
+    """Return {sample_id: expected_run_id} for batch samples (honors exclude_from_batch only)."""
     spec = load_json(spec_path)
     exclude = set(spec.get("exclude_from_batch") or [])
-    exclude.add(spec.get("reference_sample_id") or REFERENCE_SAMPLE_ID)
     out: Dict[str, str] = {}
     for row in spec.get("samples") or []:
         sid = str(row.get("sample_id") or "").strip()

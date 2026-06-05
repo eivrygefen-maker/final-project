@@ -5,7 +5,7 @@
   "reference_sample_id": "sample_001",
   "reference_run_id": "sample_001_m4dry1",
   "run_id_suffix": "m4prod1",
-  "exclude_from_batch": ["sample_001"],
+  "exclude_from_batch": [],
   "frequency_policy": {
     "band_hz": [60.0, 550.0],
     "scout_spacing_hz": 7.5,

@@ -7,7 +7,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -43,9 +43,6 @@ def _select_samples(
     max_samples: Optional[int],
 ) -> List[Dict[str, Any]]:
     exclude = set(spec.get("exclude_from_batch") or [])
-    ref = spec.get("reference_sample_id")
-    if ref:
-        exclude.add(str(ref))
     rows: List[Dict[str, Any]] = []
     for entry in spec.get("samples") or []:
         sid = str(entry.get("sample_id") or "").strip()
@@ -124,6 +121,15 @@ def _read_sample_summary(run_root: Path, *, workers_requested: int = 1) -> Dict[
         except (OSError, ValueError, json.JSONDecodeError):
             runtime = {}
 
+    ms_path = run_root / "aggregation" / "modes_summary.json"
+    modes_summary: Dict[str, Any] = {}
+    if ms_path.is_file():
+        try:
+            modes_summary = load_json(ms_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            modes_summary = {}
+    audio_summary = modes_summary.get("audio_coupling_summary") or {}
+
     return {
         "terminal_status": manifest.get("terminal_status"),
         "aggregation_status": agg.get("status"),
@@ -149,7 +155,14 @@ def _read_sample_summary(run_root: Path, *, workers_requested: int = 1) -> Dict[
         "stage_wall_times_s": prov.get("stage_wall_times_s") or runtime.get("stage_wall_times_s"),
         "chunk_wall_times": prov.get("chunk_wall_times") or runtime.get("chunk_wall_times"),
         "participation_computed_count": prov.get("participation_computed_count")
-        or runtime.get("participation_computed_count"),
+        or runtime.get("participation_computed_count")
+        or modes_summary.get("participation_computed_count"),
+        "audio_coupling_computed_count": (
+            prov.get("audio_coupling_computed_count")
+            or runtime.get("audio_coupling_computed_count")
+            or modes_summary.get("audio_coupling_computed_count")
+            or audio_summary.get("audio_coupling_computed_count")
+        ),
         "dominant_region_counts": prov.get("dominant_region_counts")
         or runtime.get("dominant_region_counts"),
         "freeze_manifest": rel(freeze_manifest, repo_root=detect_repo_root(SCRIPT_DIR))
@@ -226,6 +239,13 @@ def run_production_batch(
     stop_after: Optional[str],
     resume: bool,
     force_stages: Optional[Set[str]] = None,
+    production_mode: bool = True,
+    exclude_reference: bool = False,
+    allow_reference_mutation: bool = False,
+    skip_completed: bool = True,
+    lhs_index_by_sid: Optional[Mapping[str, int]] = None,
+    on_sample_start: Optional[Callable[[str, str, int], None]] = None,
+    on_sample_finish: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     fp = _frequency_policy(spec)
     band = fp.get("band_hz", [60.0, 550.0])
@@ -244,7 +264,7 @@ def run_production_batch(
         run_root = _sample_run_root(entry)
         reuse = _classify_run_status(run_root)
 
-        if sid == REFERENCE_SAMPLE_ID:
+        if sid == REFERENCE_SAMPLE_ID and exclude_reference and not allow_reference_mutation:
             skipped.append(
                 {
                     "sample_id": sid,
@@ -252,21 +272,26 @@ def run_production_batch(
                     "reason": "frozen_reference_excluded",
                 }
             )
-            print(f"[skip] {sid}: frozen reference (not executed in production batch)", flush=True)
+            print(f"[skip] {sid}: reference excluded (--exclude-reference)", flush=True)
             continue
 
-        if reuse == "already_complete_reuse" and not force:
+        if reuse == "already_complete_reuse" and skip_completed and not force:
             summary = _read_sample_summary(run_root, workers_requested=workers)
-            completed.append(
-                {
-                    "sample_id": sid,
-                    "run_id": rid,
-                    "run_root": rel(run_root, repo_root=repo_root),
-                    "outcome": "reused_complete",
-                    "elapsed_s": 0.0,
-                    **summary,
-                }
-            )
+            row = {
+                "sample_id": sid,
+                "run_id": rid,
+                "lhs_row_index": int(
+                    (lhs_index_by_sid or {}).get(sid) or entry.get("lhs_row_index") or 0
+                ),
+                "run_root": rel(run_root, repo_root=repo_root),
+                "run_root_abs": str(run_root.resolve()),
+                "outcome": "reused_complete",
+                "elapsed_s": 0.0,
+                **summary,
+            }
+            completed.append(row)
+            if on_sample_finish is not None:
+                on_sample_finish(row)
             print(f"[skip] {sid}: already complete (reuse)", flush=True)
             continue
 
@@ -281,21 +306,31 @@ def run_production_batch(
             force=force,
         )
 
+        lhs_row_index = int(
+            (lhs_index_by_sid or {}).get(sid)
+            or entry.get("lhs_row_index")
+            or 0
+        )
+        if on_sample_start is not None:
+            on_sample_start(sid, rid, lhs_row_index)
+
         print(f"[run] {sid} / {rid} ...", flush=True)
         t0 = time.perf_counter()
+        stage_force = force and not resume
         rc = run_pipeline(
             repo_root=repo_root,
             run_root=run_root.resolve(),
             workers=workers,
-            force=force and not resume,
+            force=stage_force,
+            force_stages=force_stages,
             execute=True,
             stop_after=stop_after,
             m45_batch_mode=False,
             m45_batch_spec=spec_path,
-            production_mode=False,
+            production_mode=production_mode,
             production_samples_json=spec_path,
-            allow_unlisted_sample=True,
-            allow_reference_mutation=False,
+            allow_unlisted_sample=not production_mode,
+            allow_reference_mutation=allow_reference_mutation,
             freq_min=float(band[0]),
             freq_max=float(band[1]),
             scout_spacing=float(fp.get("scout_spacing_hz", 7.5)),
@@ -309,13 +344,23 @@ def run_production_batch(
         row = {
             "sample_id": sid,
             "run_id": rid,
+            "lhs_row_index": lhs_row_index,
             "run_root": rel(run_root, repo_root=repo_root),
+            "run_root_abs": str(run_root.resolve()),
             "return_code": rc,
             "elapsed_s": round(elapsed, 2),
+            "started_at": None,
             **summary,
         }
+        if rc != 0 and summary.get("aggregation_status") != AGG_PASS:
+            row["error_message"] = (
+                f"return_code={rc} aggregation_status={summary.get('aggregation_status')}"
+            )
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(f"{utc_now()} sample={sid} rc={rc} elapsed_s={elapsed:.1f}\n")
+
+        if on_sample_finish is not None:
+            on_sample_finish(row)
 
         if rc == 0 and summary.get("aggregation_status") == AGG_PASS:
             row["outcome"] = "pass"
@@ -361,6 +406,12 @@ def run_production_batch(
     return batch_summary
 
 
+_BATCH_HINT = (
+    "Tip: for LHS pool runs, prefer run_m4_production_pipeline.py "
+    "(auto specs + status index from ROM/classic/lhs_pool.json)."
+)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="M4 production LHS batch: scout → adaptive L_prod → workers → aggregation."
@@ -392,6 +443,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--force-workers", action="store_true", help="Re-run workers only.")
     parser.add_argument("--force-aggregation", action="store_true", help="Re-run aggregation only.")
     args = parser.parse_args(argv)
+    if not any(a in ("-h", "--help") for a in (argv or sys.argv[1:])):
+        print(_BATCH_HINT, file=sys.stderr)
 
     if args.dry_run and args.execute:
         print("error: use --dry-run or --execute, not both", file=sys.stderr)
@@ -466,6 +519,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         stop_after=args.stop_after,
         resume=bool(args.resume),
         force_stages=force_stages,
+        production_mode=True,
+        exclude_reference=REFERENCE_SAMPLE_ID in set(spec.get("exclude_from_batch") or []),
+        allow_reference_mutation=False,
+        skip_completed=not bool(args.force),
     )
     print(f"batch_id={bid}")
     print(f"completed={summary['completed_count']} failed={summary['failed_count']} skipped={summary['skipped_count']}")
