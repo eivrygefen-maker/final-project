@@ -65,16 +65,36 @@ def main(argv: list[str] | None = None) -> int:
         if not npz.is_file():
             print("FAIL region_dof_indices.npz not written", file=sys.stderr)
             return 1
-        with np.load(npz, allow_pickle=False) as z:
-            if int(z["u_idx_top"].size) != 3:
-                print("FAIL u_idx_top size", file=sys.stderr)
-                return 1
-            src = str(np.asarray(z["region_dof_source"]).ravel()[0])
-            if src != mod.REGION_DOF_SOURCE_OPERATOR_BUILD:
-                print(f"FAIL region_dof_source={src}", file=sys.stderr)
-                return 1
+        from v2_b3_rich_modal_lib import load_region_dof_bundle
+
+        built_meta = {
+            "u_idx": list(range(50)),
+            "p_idx": [100, 101],
+            "n_u_b3": 50,
+            "n_w": 152,
+            "active_dimension": 10,
+            "active_local": list(range(10)),
+            "inactive_local": [],
+            "free_rows": list(range(152)),
+            "bc_rows": [],
+        }
+        ctx = load_region_dof_bundle(ckpt, built_meta)
+        if not ctx.get("npz_present"):
+            print("FAIL load_region_dof_bundle npz_present", file=sys.stderr)
+            return 1
+        if not ctx.get("structural_indices_available"):
+            print("FAIL structural_indices_available", file=sys.stderr)
+            return 1
+        if ctx.get("region_dof_source") != mod.REGION_DOF_SOURCE_OPERATOR_BUILD:
+            print(f"FAIL region_dof_source={ctx.get('region_dof_source')}", file=sys.stderr)
+            return 1
+        top_n = int(np.asarray(ctx["region"]["u_idx_top"]).size)
+        if top_n != 3:
+            print(f"FAIL u_idx_top size={top_n}", file=sys.stderr)
+            return 1
 
     print("PASS export_region_dof_indices_from_operator_build writes npz")
+    print("PASS load_region_dof_bundle reads npz after context close")
     print(f"PASS region_dof_source={mod.REGION_DOF_SOURCE_OPERATOR_BUILD}")
 
     if args.require_fem:

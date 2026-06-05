@@ -115,6 +115,38 @@ def pressure_region_indices_available(region: Dict[str, np.ndarray]) -> bool:
     return np.asarray(region.get("p_idx_air", []), dtype=np.int32).size > 0
 
 
+_NPZ_SCALAR_META_KEYS = frozenset(
+    {"layout", "region_dof_source", "region_dof_mesh_file", "back_includes_ribs"}
+)
+
+
+def _npz_scalar_str(z: Any, key: str, *, default: Optional[str] = None) -> Optional[str]:
+    if key not in z.files:
+        return default
+    try:
+        arr = np.asarray(z[key]).ravel()
+    except (KeyError, TypeError, ValueError):
+        return default
+    if arr.size == 0:
+        return default
+    item = arr[0]
+    if isinstance(item, bytes):
+        return item.decode("utf-8", errors="replace")
+    return str(item)
+
+
+def _npz_scalar_bool(z: Any, key: str, *, default: bool = False) -> bool:
+    if key not in z.files:
+        return default
+    try:
+        arr = np.asarray(z[key]).ravel()
+    except (KeyError, TypeError, ValueError):
+        return default
+    if arr.size == 0:
+        return default
+    return bool(arr[0])
+
+
 def load_region_dof_bundle(
     checkpoint: Path,
     built_meta: Dict[str, Any],
@@ -124,18 +156,17 @@ def load_region_dof_bundle(
     npz_path = checkpoint / REGION_DOF_INDICES_NPZ
     npz_present = npz_path.is_file()
     region: Dict[str, np.ndarray]
+    source = "built_metadata_pressure_only"
+    back_includes_ribs = True
     if npz_present:
         with np.load(npz_path, allow_pickle=False) as z:
-            region = {
-                k: np.asarray(z[k]).ravel()
-                for k in z.files
-                if k not in ("layout", "region_dof_source", "region_dof_mesh_file", "back_includes_ribs")
-            }
-        if "region_dof_source" in z.files:
-            raw_src = z["region_dof_source"]
-            source = str(np.asarray(raw_src).ravel()[0]) if np.asarray(raw_src).size else "region_dof_indices_npz"
-        else:
-            source = "region_dof_indices_npz"
+            region = {}
+            for k in z.files:
+                if k in _NPZ_SCALAR_META_KEYS:
+                    continue
+                region[k] = np.asarray(z[k], dtype=np.int32).ravel().copy()
+            source = _npz_scalar_str(z, "region_dof_source", default="region_dof_indices_npz") or "region_dof_indices_npz"
+            back_includes_ribs = _npz_scalar_bool(z, "back_includes_ribs", default=True)
     else:
         u_idx = np.asarray(built_meta.get("u_idx") or [], dtype=np.int32).ravel()
         p_idx = np.asarray(built_meta.get("p_idx") or [], dtype=np.int32).ravel()
@@ -148,7 +179,6 @@ def load_region_dof_bundle(
             "p_idx_all": p_idx.copy(),
             "u_idx_all": u_idx.copy(),
         }
-        source = "built_metadata_pressure_only"
 
     structural_ok = structural_region_indices_available(region, npz_present=npz_present)
     pressure_ok = pressure_region_indices_available(region)
@@ -156,6 +186,7 @@ def load_region_dof_bundle(
         "region": region,
         "npz_present": npz_present,
         "region_dof_source": source,
+        "back_includes_ribs": back_includes_ribs,
         "structural_region_participation_status": (
             REGION_PARTICIPATION_STATUS_AVAILABLE
             if structural_ok
