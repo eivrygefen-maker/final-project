@@ -39,6 +39,7 @@ from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
     write_per_sample_spec,
 )
 from v2_b3_m4_lhs_production_batch import run_production_batch  # noqa: E402
+from v2_b3_m4_shared_export import detect_shared_root  # noqa: E402
 from v2_b3_m4_worker_run_lib import detect_repo_root, rel, utc_now  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
@@ -122,6 +123,12 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--stop-after",
         choices=("scout", "checkpoint", "workers"),
         help="Stop each sample after this stage.",
+    )
+    parser.add_argument(
+        "--shared-root",
+        type=Path,
+        default=None,
+        help="Shared export root (default: auto-detect /media/sf_gmar).",
     )
     return parser.parse_args(argv)
 
@@ -250,12 +257,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     index_path = lhs_runs_index_path(repo_root)
 
     if args.reconcile_existing_runs:
+        shared_root = detect_shared_root(args.shared_root)
+        if shared_root is None:
+            print("warning: shared export skipped during reconcile: shared root not found", flush=True)
+        else:
+            print(f"shared_root={rel(shared_root, repo_root=repo_root)}", flush=True)
         report = reconcile_existing_runs(
             repo_root=repo_root,
             pool=pool,
             lhs_path=lhs_path,
             run_id_suffix=run_id_suffix,
             repair_freeze=True,
+            shared_root=shared_root,
         )
         status_doc = load_lhs_pool_status(
             status_path,
@@ -370,6 +383,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         not exclude_reference and any(r["sample_id"] == REFERENCE_SAMPLE_ID for r in selection)
     )
 
+    shared_root = detect_shared_root(args.shared_root)
+    if shared_root is None:
+        print("warning: shared export skipped: shared root not found", flush=True)
+    else:
+        print(f"shared_root={rel(shared_root, repo_root=repo_root)}", flush=True)
+
     def _on_sample_start(sid: str, run_id: str, lhs_row_index: int) -> None:
         _sync_lhs_running(pool, sample_id=sid, run_id=run_id, batch_id=batch_id)
         write_lhs_pool_with_backup(lhs_path, pool)
@@ -442,6 +461,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         lhs_index_by_sid=lhs_index_by_sid,
         on_sample_start=_on_sample_start,
         on_sample_finish=_on_sample_finish,
+        shared_root=shared_root,
     )
 
     write_json_atomic(specs_generated_dir(repo_root) / f"{batch_id}_summary.json", summary)

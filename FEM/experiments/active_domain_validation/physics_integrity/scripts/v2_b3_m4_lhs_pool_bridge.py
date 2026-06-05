@@ -570,6 +570,7 @@ def reconcile_existing_runs(
     run_id_suffix: str = DEFAULT_RUN_ID_SUFFIX,
     repair_freeze: bool = True,
     batch_id: Optional[str] = None,
+    shared_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Scan run trees for valid AGGREGATION_PASS outputs; repair freeze/terminal; update LHS pool.
@@ -626,6 +627,21 @@ def reconcile_existing_runs(
         if freeze_rc == 0:
             repaired += 1
 
+        shared_export = None
+        shared_export_warning = None
+        try:
+            from v2_b3_m4_shared_export import try_export_sample_to_shared  # noqa: E402
+
+            shared_export, shared_export_warning = try_export_sample_to_shared(
+                run_root=run_root,
+                sample_id=sid,
+                run_id=run_id,
+                shared_root=shared_root,
+                repo_root=repo_root,
+            )
+        except Exception as exc:
+            shared_export_warning = f"shared export skipped: {exc}"
+
         lhs_patch = lhs_pool_entry_patch_from_run(
             run_id=run_id,
             run_dir=str(run_root),
@@ -641,6 +657,10 @@ def reconcile_existing_runs(
         row["outcome"] = outcome
         row["freeze_repair"] = freeze_msg
         row["freeze_rc"] = freeze_rc
+        if shared_export:
+            row["shared_export"] = shared_export
+        if shared_export_warning:
+            row["shared_export_warning"] = shared_export_warning
         completed += 1
         rows.append(row)
 

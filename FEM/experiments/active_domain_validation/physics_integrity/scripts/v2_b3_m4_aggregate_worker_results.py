@@ -556,10 +556,18 @@ def _write_common_artifacts(
     }
     write_json_atomic(warn_fail_path, warn_fail)
 
-    _try_mode_plot(plot_path, deduped_catalog, result_body, partial=partial)
+    extra_plots = _try_mode_plots(
+        agg_dir=plot_path.parent,
+        deduped=deduped_catalog,
+        report=result_body,
+        partial=partial,
+        frequency_plot_path=plot_path,
+    )
 
     result_body["output_paths"] = {k: rel(v, repo_root=repo_root) for k, v in paths.items()}
     result_body["output_paths"][plot_path.name] = rel(plot_path, repo_root=repo_root)
+    for name, p in extra_plots.items():
+        result_body["output_paths"][name] = rel(p, repo_root=repo_root)
 
 
 def _write_outputs(
@@ -633,37 +641,182 @@ def _write_outputs(
     report["output_paths"] = result_body["output_paths"]
 
 
-def _try_mode_plot(
-    path: Optional[Path],
-    deduped: Sequence[Dict[str, Any]],
-    report: Dict[str, Any],
-    *,
-    partial: bool,
-) -> None:
-    if path is None or not deduped:
-        return
-    try:
-        import matplotlib.pyplot as plt  # noqa: WPS433
-    except ImportError:
-        report.setdefault("warnings", []).append(f"matplotlib unavailable; skipped {path.name}")
-        return
-    freqs = [float(r["frequency_hz"]) for r in deduped]
-    if not freqs:
-        return
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.scatter(freqs, [1] * len(freqs), s=12, alpha=0.7)
-    ax.set_xlabel("frequency_hz")
-    label = "Partial modes" if partial else "Aggregated modes"
-    ax.set_title(
-        f"{label} ({report.get('completed_chunk_count')}/{report.get('planned_chunk_count')} chunks)"
-    )
+COUPLING_CLASS_COLORS = {
+    "top_back_mixed": "#e67e22",
+    "back_dominant": "#3498db",
+    "top_dominant": "#2ecc71",
+    "air_dominant": "#9b59b6",
+    "weak_or_unknown": "#95a5a6",
+}
+
+DOMINANT_REGION_MARKERS = {
+    "top": "^",
+    "back": "s",
+    "air": "o",
+    "unknown": "x",
+}
+
+
+def _mode_scalar(rec: Mapping[str, Any], key: str, *, fallbacks: Sequence[str] = ()) -> Optional[float]:
+    for name in (key,) + tuple(fallbacks):
+        val = rec.get(name)
+        if val is None:
+            continue
+        try:
+            out = float(val)
+        except (TypeError, ValueError):
+            continue
+        if out == out:  # finite
+            return out
+    return None
+
+
+def _apply_freq_band(ax: Any, report: Mapping[str, Any]) -> None:
     band = report.get("frequency_range_hz") or [60, 550]
     if len(band) == 2:
         ax.set_xlim(float(band[0]), float(band[1]))
-    fig.tight_layout()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, dpi=120)
-    plt.close(fig)
+
+
+def _try_mode_plots(
+    *,
+    agg_dir: Path,
+    deduped: Sequence[Dict[str, Any]],
+    report: Dict[str, Any],
+    partial: bool,
+    frequency_plot_path: Path,
+) -> Dict[str, Path]:
+    """Write frequency-only and audio-relevant mode plots from catalog metadata."""
+    out: Dict[str, Path] = {}
+    if not deduped:
+        return out
+    try:
+        import matplotlib.pyplot as plt  # noqa: WPS433
+    except ImportError:
+        report.setdefault("warnings", []).append("matplotlib unavailable; skipped mode plots")
+        return out
+
+    agg_dir.mkdir(parents=True, exist_ok=True)
+    chunk_note = f"{report.get('completed_chunk_count')}/{report.get('planned_chunk_count')} chunks"
+    label = "Partial modes" if partial else "Aggregated modes"
+
+    # Legacy frequency-only plot (y=1)
+    freqs = [float(r["frequency_hz"]) for r in deduped]
+    if freqs:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.scatter(freqs, [1.0] * len(freqs), s=12, alpha=0.7, c="#7f8c8d")
+        ax.set_xlabel("frequency_hz")
+        ax.set_ylabel("mode index (unit)")
+        ax.set_title(f"{label} — frequency only ({chunk_note})")
+        _apply_freq_band(ax, report)
+        fig.tight_layout()
+        frequency_plot_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(frequency_plot_path, dpi=120)
+        plt.close(fig)
+
+    def _scatter_by_coupling(
+        *,
+        y_key: str,
+        y_label: str,
+        filename: str,
+        fallbacks: Sequence[str] = (),
+        size_scale: float = 120.0,
+    ) -> None:
+        groups: Dict[str, List[Tuple[float, float]]] = {}
+        for rec in deduped:
+            yv = _mode_scalar(rec, y_key, fallbacks=fallbacks)
+            if yv is None:
+                continue
+            cc = str(rec.get("coupling_class") or "weak_or_unknown")
+            groups.setdefault(cc, []).append((float(rec["frequency_hz"]), yv))
+        if not groups:
+            report.setdefault("warnings", []).append(f"no data for plot {filename}")
+            return
+        fig, ax = plt.subplots(figsize=(11, 4.5))
+        for cc, pts in sorted(groups.items()):
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            sizes = [max(8.0, min(80.0, size_scale * abs(y))) for y in ys]
+            ax.scatter(
+                xs,
+                ys,
+                s=sizes,
+                alpha=0.75,
+                label=cc,
+                c=COUPLING_CLASS_COLORS.get(cc, "#95a5a6"),
+                edgecolors="white",
+                linewidths=0.3,
+            )
+        ax.set_xlabel("frequency_hz")
+        ax.set_ylabel(y_label)
+        ax.set_title(f"{label} — {y_label} by coupling_class ({chunk_note})")
+        ax.legend(loc="upper right", fontsize=8, framealpha=0.85)
+        _apply_freq_band(ax, report)
+        fig.tight_layout()
+        path = agg_dir / filename
+        fig.savefig(path, dpi=120)
+        plt.close(fig)
+        out[filename] = path
+
+    _scatter_by_coupling(
+        y_key="radiation_proxy",
+        y_label="radiation_proxy",
+        filename="mode_frequency_vs_radiation_proxy.png",
+        fallbacks=("mic_output_proxy",),
+        size_scale=200.0,
+    )
+    _scatter_by_coupling(
+        y_key="mic_output_proxy",
+        y_label="mic_output_proxy",
+        filename="mode_frequency_vs_mic_output_proxy.png",
+        size_scale=200.0,
+    )
+    _scatter_by_coupling(
+        y_key="bridge_excitation_coupling",
+        y_label="bridge_excitation_coupling",
+        filename="mode_frequency_vs_bridge_excitation.png",
+        fallbacks=("bridge_excitation_abs",),
+        size_scale=200.0,
+    )
+
+    # Top/back/air shares — three series
+    share_groups: Dict[str, List[Tuple[float, float]]] = {
+        "top_share": [],
+        "back_share": [],
+        "air_share": [],
+    }
+    for rec in deduped:
+        fh = float(rec["frequency_hz"])
+        for sk in share_groups:
+            sv = _mode_scalar(rec, sk)
+            if sv is not None:
+                share_groups[sk].append((fh, sv))
+    if any(share_groups.values()):
+        fig, ax = plt.subplots(figsize=(11, 4.5))
+        share_colors = {"top_share": "#2ecc71", "back_share": "#3498db", "air_share": "#9b59b6"}
+        for sk, pts in share_groups.items():
+            if not pts:
+                continue
+            ax.scatter(
+                [p[0] for p in pts],
+                [p[1] for p in pts],
+                s=22,
+                alpha=0.65,
+                label=sk,
+                c=share_colors.get(sk, "#7f8c8d"),
+            )
+        ax.set_xlabel("frequency_hz")
+        ax.set_ylabel("normalized share")
+        ax.set_ylim(0.0, 1.0)
+        ax.set_title(f"{label} — top/back/air shares ({chunk_note})")
+        ax.legend(loc="upper right", fontsize=8)
+        _apply_freq_band(ax, report)
+        fig.tight_layout()
+        share_path = agg_dir / "mode_frequency_vs_top_back_air_share.png"
+        fig.savefig(share_path, dpi=120)
+        plt.close(fig)
+        out[share_path.name] = share_path
+
+    return out
 
 
 def _write_manifest_preview(

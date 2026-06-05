@@ -14,6 +14,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from v2_b3_m4_lhs_pool_bridge import classify_sample_outcome  # noqa: E402
+from v2_b3_m4_shared_export import try_export_sample_to_shared  # noqa: E402
 from v2_b3_m4_run_one_sample import (  # noqa: E402
     REFERENCE_SAMPLE_ID,
     run_pipeline,
@@ -247,6 +248,7 @@ def run_production_batch(
     lhs_index_by_sid: Optional[Mapping[str, int]] = None,
     on_sample_start: Optional[Callable[[str, str, int], None]] = None,
     on_sample_finish: Optional[Callable[[Dict[str, Any]], None]] = None,
+    shared_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     fp = _frequency_policy(spec)
     band = fp.get("band_hz", [60.0, 550.0])
@@ -290,6 +292,18 @@ def run_production_batch(
                 "elapsed_s": 0.0,
                 **summary,
             }
+            export_manifest, export_warn = try_export_sample_to_shared(
+                run_root=run_root,
+                sample_id=sid,
+                run_id=rid,
+                shared_root=shared_root,
+                repo_root=repo_root,
+            )
+            if export_manifest:
+                row["shared_export"] = export_manifest
+            if export_warn:
+                row["shared_export_warning"] = export_warn
+                print(f"[warn] {sid}: {export_warn}", flush=True)
             completed.append(row)
             if on_sample_finish is not None:
                 on_sample_finish(row)
@@ -366,6 +380,20 @@ def run_production_batch(
             on_sample_finish(row)
 
         if outcome in ("pass", "reused_complete", "pass_freeze_warning"):
+            export_manifest, export_warn = try_export_sample_to_shared(
+                run_root=run_root,
+                sample_id=sid,
+                run_id=rid,
+                shared_root=shared_root,
+                repo_root=repo_root,
+            )
+            if export_manifest:
+                row["shared_export"] = export_manifest
+            if export_warn:
+                row["shared_export_warning"] = export_warn
+                print(f"[warn] {sid}: {export_warn}", flush=True)
+            elif export_manifest and export_manifest.get("shared_plot_path"):
+                print(f"[export] {sid}: {export_manifest.get('shared_plot_path')}", flush=True)
             completed.append(row)
             label = "AGGREGATION_PASS" if outcome == "pass" else outcome.upper()
             print(f"[pass] {sid}: {label} elapsed_s={elapsed:.1f}", flush=True)
