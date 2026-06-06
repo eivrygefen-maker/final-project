@@ -11,10 +11,14 @@
 |-------|--------|
 | **M4 FOM production** | Working — `modes_catalog.jsonl` + LHS pool tracking |
 | **Legacy ROM (`ROMManager`)** | Working offline/online — separate FOM engine, snapshot-based POD |
-| **Bridge M4 FOM → ROM** | **Does not exist** |
-| **ROM vs M4 FOM comparison** | **Does not exist** (only ad-hoc `ROMManager.compare` rerunning legacy FOM) |
+| **Bridge M4 FOM → ROM** | **M4 modal surrogate** (`m4_modal_surrogate.{json,npz}`) — see `M4_ROM_BUILD_AND_SURROGATE.md` |
+| **ROM vs M4 FOM comparison** | **`run_m4_rom_compare.py`** (uses surrogate or legacy basis if present) |
 
-Safest path: add a **read-only post-FOM ROM compare lane** that reads completed M4 aggregation outputs and runs legacy `solve_online` on the same LHS parameters, without blocking overnight FOM batches.
+**Update 2026-06-05:** `reduced_basis.npz` is not required for Phase-1. Build surrogate from completed FOM catalogs first:
+
+```bash
+python FEM/.../scripts/build_m4_rom_from_completed_fom.py --lhs-json ROM/classic/lhs_pool.json --completed-only --max-samples 16
+```
 
 ---
 
