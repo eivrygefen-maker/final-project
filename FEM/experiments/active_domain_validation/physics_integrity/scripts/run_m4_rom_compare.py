@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import traceback
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -85,6 +86,11 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--write-csv", action="store_true", help="Also write per-mode CSV under ROM/.../comparisons/.")
     parser.add_argument("--no-project-copy", action="store_true", help="Keep comparison only under run_dir/rom/.")
     parser.add_argument("--dry-run", action="store_true", help="List selected samples only.")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print full traceback to stderr when ROM compare fails.",
+    )
     return parser.parse_args(argv)
 
 
@@ -172,6 +178,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             pool=pool,
             exclude_target_from_training=bool(args.exclude_target_from_training),
             leave_one_out=bool(args.leave_one_out),
+            debug=bool(args.debug),
         )
         comparison = cmp_result.get("comparison")
         if comparison and comparison.get("status") == "COMPLETED":
@@ -195,6 +202,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         else:
             failed += 1
             print(f"  compare failed: {cmp_result.get('error')}", flush=True)
+            tb = cmp_result.get("traceback")
+            if tb:
+                print(tb, file=sys.stderr, flush=True)
 
         lhs_patch = cmp_result.get("lhs_patch")
         if lhs_patch:

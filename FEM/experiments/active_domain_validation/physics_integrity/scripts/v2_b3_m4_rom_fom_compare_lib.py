@@ -6,8 +6,10 @@ import json
 import statistics
 import sys
 import time
+import traceback
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
     AGG_PASS,
@@ -87,26 +89,44 @@ def _import_rom_manager(repo_root: Path):
     return ROMManager(base_dir=repo_root)
 
 
-def _import_surrogate_helpers():
-    from v2_b3_m4_modal_surrogate_lib import (  # noqa: WPS433
-        build_holdout_surrogate_model,
-        load_surrogate_model,
-        predict_modal_catalog,
-        predict_modal_frequencies,
-        production_surrogate_training_sample_ids,
-        resolve_active_rom_backend,
-        surrogate_json_path,
-    )
+@dataclass(frozen=True)
+class SurrogateHelpers:
+    load_surrogate_model: Callable[..., Any]
+    predict_modal_catalog: Callable[..., Any]
+    predict_modal_frequencies: Callable[..., Any]
+    resolve_active_rom_backend: Callable[..., Any]
+    surrogate_json_path: Callable[..., Any]
+    build_holdout_surrogate_model: Callable[..., Any]
+    production_surrogate_training_sample_ids: Callable[..., Any]
 
-    return (
-        load_surrogate_model,
-        predict_modal_catalog,
-        predict_modal_frequencies,
-        resolve_active_rom_backend,
-        surrogate_json_path,
-        build_holdout_surrogate_model,
-        production_surrogate_training_sample_ids,
-    )
+
+_SURROGATE_HELPERS: Optional[SurrogateHelpers] = None
+
+
+def get_surrogate_helpers() -> SurrogateHelpers:
+    """Lazy import/cache of M4 surrogate helpers (named fields, no tuple unpacking)."""
+    global _SURROGATE_HELPERS
+    if _SURROGATE_HELPERS is None:
+        from v2_b3_m4_modal_surrogate_lib import (  # noqa: WPS433
+            build_holdout_surrogate_model,
+            load_surrogate_model,
+            predict_modal_catalog,
+            predict_modal_frequencies,
+            production_surrogate_training_sample_ids,
+            resolve_active_rom_backend,
+            surrogate_json_path,
+        )
+
+        _SURROGATE_HELPERS = SurrogateHelpers(
+            load_surrogate_model=load_surrogate_model,
+            predict_modal_catalog=predict_modal_catalog,
+            predict_modal_frequencies=predict_modal_frequencies,
+            resolve_active_rom_backend=resolve_active_rom_backend,
+            surrogate_json_path=surrogate_json_path,
+            build_holdout_surrogate_model=build_holdout_surrogate_model,
+            production_surrogate_training_sample_ids=production_surrogate_training_sample_ids,
+        )
+    return _SURROGATE_HELPERS
 
 
 def resolve_validation_metadata(
@@ -540,18 +560,14 @@ def _run_m4_surrogate_prediction(
     surrogate_model: Optional[Mapping[str, Any]] = None,
     validation_meta: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    (
-        load_surrogate_model,
-        _,
-        predict_modal_catalog,
-        _,
-        surrogate_json_path,
-        _,
-        _,
-    ) = _import_surrogate_helpers()
+    helpers = get_surrogate_helpers()
     t0 = time.perf_counter()
-    model = dict(surrogate_model) if surrogate_model is not None else load_surrogate_model(repo_root, shape_name)
-    out = predict_modal_catalog(model, parameters, nev=int(nev))
+    model = (
+        dict(surrogate_model)
+        if surrogate_model is not None
+        else helpers.load_surrogate_model(repo_root, shape_name)
+    )
+    out = helpers.predict_modal_catalog(model, parameters, nev=int(nev))
     elapsed = time.perf_counter() - t0
     freqs = [float(f) for f in (out.get("frequencies_hz") or [])]
     predicted_modes = list(out.get("predicted_modes") or [])
@@ -560,7 +576,7 @@ def _run_m4_surrogate_prediction(
     source = (
         f"holdout:{','.join(model.get('excluded_sample_ids') or [])}"
         if holdout
-        else str(surrogate_json_path(repo_root, shape_name))
+        else str(helpers.surrogate_json_path(repo_root, shape_name))
     )
     train_ids = list((validation_meta or {}).get("training_sample_ids") or [])
     if not train_ids:
@@ -631,8 +647,12 @@ def run_rom_online_prediction(
     1) M4 modal surrogate trained from modes_catalog.jsonl (preferred)
     2) Legacy POD reduced_basis.npz + operator projection (optional fallback)
     """
-    _, _, resolve_active_rom_backend, _, _, _ = _import_surrogate_helpers()
-    backend = "m4_surrogate" if surrogate_model is not None else resolve_active_rom_backend(repo_root, shape_name)
+    helpers = get_surrogate_helpers()
+    backend = (
+        "m4_surrogate"
+        if surrogate_model is not None
+        else helpers.resolve_active_rom_backend(repo_root, shape_name)
+    )
     t0 = time.perf_counter()
     try:
         if backend == "m4_surrogate":
@@ -1336,8 +1356,8 @@ def _production_validation_meta(
     shape_name: str,
     target_sample_id: str,
 ) -> Dict[str, Any]:
-    _, _, _, _, _, production_surrogate_training_sample_ids = _import_surrogate_helpers()
-    train_ids, _ = production_surrogate_training_sample_ids(repo_root, shape_name)
+    helpers = get_surrogate_helpers()
+    train_ids, _ = helpers.production_surrogate_training_sample_ids(repo_root, shape_name)
     if str(target_sample_id) in train_ids:
         return resolve_validation_metadata(
             target_sample_id=target_sample_id,
@@ -1361,11 +1381,11 @@ def _prepare_holdout_prediction(
     nev: int,
     leave_one_out: bool,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    _, _, _, _, build_holdout_surrogate_model, _ = _import_surrogate_helpers()
+    helpers = get_surrogate_helpers()
     target = str(context["sample_id"])
     shape = str(context["shape_name"])
     excluded = [target]
-    model, training_rows = build_holdout_surrogate_model(
+    model, training_rows = helpers.build_holdout_surrogate_model(
         repo_root=repo_root,
         pool=pool,
         shape_name=shape,
@@ -1475,6 +1495,7 @@ def maybe_run_rom_compare(
     pool: Optional[Mapping[str, Any]] = None,
     exclude_target_from_training: bool = False,
     leave_one_out: bool = False,
+    debug: bool = False,
 ) -> Dict[str, Any]:
     """Compare ROM vs M4 FOM catalog; never raises when nonblocking=True."""
     result: Dict[str, Any] = {
@@ -1581,9 +1602,13 @@ def maybe_run_rom_compare(
         result["lhs_patch"] = lhs_patch
         return result
     except Exception as exc:
+        tb = traceback.format_exc()
         if not nonblocking:
             raise
         result["error"] = str(exc)
+        result["traceback"] = tb
+        if debug:
+            print(tb, file=sys.stderr, flush=True)
         fail_comparison = {
             "schema": ROM_FOM_COMPARISON_SCHEMA,
             "generated_utc": utc_now(),
