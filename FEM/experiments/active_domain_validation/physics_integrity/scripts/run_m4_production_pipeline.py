@@ -39,6 +39,11 @@ from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
     write_per_sample_spec,
 )
 from v2_b3_m4_lhs_production_batch import run_production_batch  # noqa: E402
+from v2_b3_m4_rom_fom_compare_lib import (  # noqa: E402
+    DEFAULT_MAX_MATCH_DISTANCE_HZ,
+    DEFAULT_ROM_NEV,
+    sync_lhs_pool_rom_fields,
+)
 from v2_b3_m4_production_control import (  # noqa: E402
     clear_stop_after_current,
     is_stop_after_current_requested,
@@ -145,6 +150,40 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--clear-stop",
         action="store_true",
         help="Clear STOP_AFTER_CURRENT_SAMPLE before/without running a batch.",
+    )
+    parser.add_argument(
+        "--run-rom-prepredict",
+        action="store_true",
+        help="Run ROM online prediction before each sample FOM pipeline.",
+    )
+    parser.add_argument(
+        "--run-rom-compare",
+        action="store_true",
+        help="Compare ROM vs M4 FOM after AGGREGATION_PASS (frequency matching).",
+    )
+    parser.add_argument(
+        "--rom-nonblocking",
+        action="store_true",
+        default=True,
+        help="ROM failures do not fail FOM sample (default: true).",
+    )
+    parser.add_argument(
+        "--rom-blocking",
+        action="store_false",
+        dest="rom_nonblocking",
+        help="Propagate ROM failures as sample failures (not recommended).",
+    )
+    parser.add_argument(
+        "--rom-max-match-distance-hz",
+        type=float,
+        default=DEFAULT_MAX_MATCH_DISTANCE_HZ,
+        help="Greedy ROM/FOM frequency match tolerance in Hz.",
+    )
+    parser.add_argument(
+        "--rom-nev",
+        type=int,
+        default=DEFAULT_ROM_NEV,
+        help="ROM modes to request (0 = all basis modes).",
     )
     return parser.parse_args(argv)
 
@@ -471,7 +510,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         sid = str(row["sample_id"])
         outcome = str(row.get("outcome") or STATUS_FAIL)
         _sync_lhs_from_finish(pool, row=row, batch_id=batch_id)
-        write_lhs_pool_with_backup(lhs_path, pool)
+        rom_patch = row.get("rom_lhs_patch")
+        if isinstance(rom_patch, dict) and rom_patch:
+            sync_lhs_pool_rom_fields(pool, sample_id=sid, lhs_patch=rom_patch, lhs_path=lhs_path)
+        else:
+            write_lhs_pool_with_backup(lhs_path, pool)
         status = STATUS_PASS if outcome in ("pass", "reused_complete", OUTCOME_PASS_FREEZE_WARNING) else STATUS_FAIL
         patch = status_row_from_run_summary(
             sample_id=sid,
@@ -513,6 +556,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         on_sample_start=_on_sample_start,
         on_sample_finish=_on_sample_finish,
         shared_root=shared_root,
+        run_rom_prepredict=bool(args.run_rom_prepredict),
+        run_rom_compare=bool(args.run_rom_compare),
+        rom_nonblocking=bool(args.rom_nonblocking),
+        rom_nev=int(args.rom_nev),
+        rom_max_match_distance_hz=float(args.rom_max_match_distance_hz),
+        pool=pool,
     )
 
     write_json_atomic(specs_generated_dir(repo_root) / f"{batch_id}_summary.json", summary)

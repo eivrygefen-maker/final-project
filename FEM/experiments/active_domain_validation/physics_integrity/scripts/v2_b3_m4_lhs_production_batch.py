@@ -15,6 +15,13 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from v2_b3_m4_lhs_pool_bridge import classify_sample_outcome  # noqa: E402
 from v2_b3_m4_production_control import is_stop_after_current_requested  # noqa: E402
+from v2_b3_m4_rom_fom_compare_lib import (  # noqa: E402
+    DEFAULT_MAX_MATCH_DISTANCE_HZ,
+    DEFAULT_ROM_NEV,
+    maybe_run_rom_compare,
+    maybe_run_rom_prepredict,
+    resolve_sample_context,
+)
 from v2_b3_m4_shared_export import try_export_sample_to_shared  # noqa: E402
 from v2_b3_m4_run_one_sample import (  # noqa: E402
     REFERENCE_SAMPLE_ID,
@@ -250,6 +257,12 @@ def run_production_batch(
     on_sample_start: Optional[Callable[[str, str, int], None]] = None,
     on_sample_finish: Optional[Callable[[Dict[str, Any]], None]] = None,
     shared_root: Optional[Path] = None,
+    run_rom_prepredict: bool = False,
+    run_rom_compare: bool = False,
+    rom_nonblocking: bool = True,
+    rom_nev: int = DEFAULT_ROM_NEV,
+    rom_max_match_distance_hz: float = DEFAULT_MAX_MATCH_DISTANCE_HZ,
+    pool: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     fp = _frequency_policy(spec)
     band = fp.get("band_hz", [60.0, 550.0])
@@ -299,12 +312,13 @@ def run_production_batch(
 
         if reuse == "already_complete_reuse" and skip_completed and not force:
             summary = _read_sample_summary(run_root, workers_requested=workers)
+            lhs_row_index = int(
+                (lhs_index_by_sid or {}).get(sid) or entry.get("lhs_row_index") or 0
+            )
             row = {
                 "sample_id": sid,
                 "run_id": rid,
-                "lhs_row_index": int(
-                    (lhs_index_by_sid or {}).get(sid) or entry.get("lhs_row_index") or 0
-                ),
+                "lhs_row_index": lhs_row_index,
                 "run_root": rel(run_root, repo_root=repo_root),
                 "run_root_abs": str(run_root.resolve()),
                 "outcome": "reused_complete",
@@ -323,6 +337,37 @@ def run_production_batch(
             if export_warn:
                 row["shared_export_warning"] = export_warn
                 print(f"[warn] {sid}: {export_warn}", flush=True)
+
+            if run_rom_compare and pool is not None and str(summary.get("aggregation_status") or "") == AGG_PASS:
+                try:
+                    rom_context = resolve_sample_context(
+                        pool=pool,
+                        sample_id=sid,
+                        run_id=rid,
+                        run_root=run_root,
+                        repo_root=repo_root,
+                    )
+                    cmp_result = maybe_run_rom_compare(
+                        repo_root=repo_root,
+                        run_root=run_root,
+                        context=rom_context,
+                        nev=int(rom_nev),
+                        max_match_distance_hz=float(rom_max_match_distance_hz),
+                        nonblocking=bool(rom_nonblocking),
+                        copy_to_project=True,
+                        write_csv=False,
+                        rerun_rom_if_missing=True,
+                    )
+                    row["rom_compare"] = {
+                        "status": (cmp_result.get("comparison") or {}).get("status"),
+                        "error": cmp_result.get("error"),
+                        "paths": cmp_result.get("paths"),
+                    }
+                    if cmp_result.get("lhs_patch"):
+                        row["rom_lhs_patch"] = cmp_result["lhs_patch"]
+                except Exception as exc:
+                    print(f"[warn] {sid}: ROM compare on reuse failed: {exc}", flush=True)
+
             completed.append(row)
             if on_sample_finish is not None:
                 on_sample_finish(row)
@@ -347,6 +392,34 @@ def run_production_batch(
         )
         if on_sample_start is not None:
             on_sample_start(sid, rid, lhs_row_index)
+
+        rom_context = None
+        if (run_rom_prepredict or run_rom_compare) and pool is not None:
+            try:
+                rom_context = resolve_sample_context(
+                    pool=pool,
+                    sample_id=sid,
+                    run_id=rid,
+                    run_root=run_root,
+                    repo_root=repo_root,
+                )
+            except Exception as exc:
+                rom_context = None
+                print(f"[warn] {sid}: ROM context unavailable: {exc}", flush=True)
+
+        if run_rom_prepredict and rom_context is not None:
+            prep = maybe_run_rom_prepredict(
+                repo_root=repo_root,
+                run_root=run_root,
+                context=rom_context,
+                nev=int(rom_nev),
+                nonblocking=bool(rom_nonblocking),
+            )
+            print(
+                f"[rom-prepredict] {sid}: status={prep.get('status')} "
+                f"modes={len(prep.get('frequencies_hz') or [])}",
+                flush=True,
+            )
 
         print(f"[run] {sid} / {rid} ...", flush=True)
         t0 = time.perf_counter()
@@ -413,6 +486,45 @@ def run_production_batch(
                 print(f"[warn] {sid}: {export_warn}", flush=True)
             elif export_manifest and export_manifest.get("shared_plot_path"):
                 print(f"[export] {sid}: {export_manifest.get('shared_plot_path')}", flush=True)
+
+            if (
+                run_rom_compare
+                and rom_context is not None
+                and str(summary.get("aggregation_status") or "") == AGG_PASS
+            ):
+                cmp_result = maybe_run_rom_compare(
+                    repo_root=repo_root,
+                    run_root=run_root,
+                    context=rom_context,
+                    nev=int(rom_nev),
+                    max_match_distance_hz=float(rom_max_match_distance_hz),
+                    nonblocking=bool(rom_nonblocking),
+                    copy_to_project=True,
+                    write_csv=False,
+                    rerun_rom_if_missing=not run_rom_prepredict,
+                )
+                row["rom_compare"] = {
+                    "status": (cmp_result.get("comparison") or {}).get("status"),
+                    "error": cmp_result.get("error"),
+                    "paths": cmp_result.get("paths"),
+                    "matched_mode_count": (cmp_result.get("comparison") or {}).get(
+                        "matched_mode_count"
+                    ),
+                    "mean_abs_error_hz": (cmp_result.get("comparison") or {}).get(
+                        "mean_abs_error_hz"
+                    ),
+                }
+                if cmp_result.get("lhs_patch"):
+                    row["rom_lhs_patch"] = cmp_result["lhs_patch"]
+                if cmp_result.get("error"):
+                    print(f"[warn] {sid}: ROM compare failed: {cmp_result['error']}", flush=True)
+                else:
+                    print(
+                        f"[rom-compare] {sid}: status={row['rom_compare'].get('status')} "
+                        f"matched={row['rom_compare'].get('matched_mode_count')}",
+                        flush=True,
+                    )
+
             completed.append(row)
             label = "AGGREGATION_PASS" if outcome == "pass" else outcome.upper()
             print(f"[pass] {sid}: {label} elapsed_s={elapsed:.1f}", flush=True)
