@@ -21,8 +21,10 @@ from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
 from v2_b3_m4_worker_run_lib import detect_repo_root, load_json, rel, utc_now  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
-ROM_PREDICTION_SCHEMA = "rom_prediction_pre_fom_v1"
-ROM_FOM_COMPARISON_SCHEMA = "rom_fom_comparison_v2"
+ROM_PREDICTION_SCHEMA_V1 = "rom_prediction_pre_fom_v1"
+ROM_PREDICTION_SCHEMA_V2 = "m4_rom_prediction_v2"
+ROM_PREDICTION_SCHEMA = ROM_PREDICTION_SCHEMA_V2
+ROM_FOM_COMPARISON_SCHEMA = "rom_fom_comparison_v3"
 ROM_INDEX_SCHEMA = "rom_fom_comparison_index_v1"
 ACCURACY_HISTORY_SCHEMA = "rom_accuracy_history_v1"
 ACCURACY_SUMMARY_SCHEMA = "rom_accuracy_summary_v1"
@@ -46,6 +48,14 @@ VALIDATION_LEAVE_ONE_OUT = "leave_one_out"
 ROM_STATUS_COMPLETED = "COMPLETED"
 ROM_STATUS_FAILED = "FAILED"
 ROM_STATUS_SKIPPED = "SKIPPED"
+
+
+def _median(vals: Sequence[float]) -> Optional[float]:
+    return round(statistics.median(vals), 8) if vals else None
+
+
+def _mae(vals: Sequence[float]) -> Optional[float]:
+    return round(statistics.mean(vals), 8) if vals else None
 
 ROM_COMPARE_COMPLETED = "COMPLETED"
 ROM_COMPARE_FAILED = "FAILED"
@@ -81,6 +91,7 @@ def _import_surrogate_helpers():
     from v2_b3_m4_modal_surrogate_lib import (  # noqa: WPS433
         build_holdout_surrogate_model,
         load_surrogate_model,
+        predict_modal_catalog,
         predict_modal_frequencies,
         production_surrogate_training_sample_ids,
         resolve_active_rom_backend,
@@ -89,6 +100,7 @@ def _import_surrogate_helpers():
 
     return (
         load_surrogate_model,
+        predict_modal_catalog,
         predict_modal_frequencies,
         resolve_active_rom_backend,
         surrogate_json_path,
@@ -267,6 +279,42 @@ def load_fom_modes_catalog(catalog_path: Path) -> List[Dict[str, Any]]:
             modes.append(dict(rec))
     modes.sort(key=lambda r: float(r["frequency_hz"]))
     return modes
+
+
+def _nearest_mode_by_frequency(
+    modes: Sequence[Mapping[str, Any]],
+    target_hz: float,
+) -> Dict[str, Any]:
+    best: Dict[str, Any] = {}
+    best_d = float("inf")
+    for m in modes:
+        try:
+            f = float(m.get("frequency_hz"))
+        except (TypeError, ValueError):
+            continue
+        d = abs(f - target_hz)
+        if d < best_d:
+            best_d = d
+            best = dict(m)
+    return best
+
+
+def _enrich_matches_with_phase2_scalars(
+    matches: List[Dict[str, Any]],
+    *,
+    rom_modes: Sequence[Mapping[str, Any]],
+    fom_modes: Sequence[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    from v2_b3_m4_rom_scalar_fields import enrich_match_with_phase2_fields  # noqa: WPS433
+
+    enriched: List[Dict[str, Any]] = []
+    for m in matches:
+        rom_hz = float(m.get("rom_frequency_hz") or 0.0)
+        fom_hz = float(m.get("fom_frequency_hz") or 0.0)
+        rom_mode = _nearest_mode_by_frequency(rom_modes, rom_hz)
+        fom_mode = _nearest_mode_by_frequency(fom_modes, fom_hz)
+        enriched.append(enrich_match_with_phase2_fields(m, rom_mode=rom_mode, fom_mode=fom_mode))
+    return enriched
 
 
 def _unavailable_mode_record(frequency_hz: float) -> Dict[str, Any]:
@@ -494,7 +542,8 @@ def _run_m4_surrogate_prediction(
 ) -> Dict[str, Any]:
     (
         load_surrogate_model,
-        predict_modal_frequencies,
+        _,
+        predict_modal_catalog,
         _,
         surrogate_json_path,
         _,
@@ -502,10 +551,11 @@ def _run_m4_surrogate_prediction(
     ) = _import_surrogate_helpers()
     t0 = time.perf_counter()
     model = dict(surrogate_model) if surrogate_model is not None else load_surrogate_model(repo_root, shape_name)
-    out = predict_modal_frequencies(model, parameters, nev=int(nev))
+    out = predict_modal_catalog(model, parameters, nev=int(nev))
     elapsed = time.perf_counter() - t0
     freqs = [float(f) for f in (out.get("frequencies_hz") or [])]
-    modes = [_unavailable_mode_record(f) for f in freqs]
+    predicted_modes = list(out.get("predicted_modes") or [])
+    modes = predicted_modes if predicted_modes else [_unavailable_mode_record(f) for f in freqs]
     holdout = bool(model.get("holdout_validation"))
     source = (
         f"holdout:{','.join(model.get('excluded_sample_ids') or [])}"
@@ -526,7 +576,9 @@ def _run_m4_surrogate_prediction(
         "num_basis_modes": int(model.get("training_sample_count") or len(train_ids)),
         "training_sample_ids": train_ids,
         "frequencies_hz": [round(f, 6) for f in freqs],
+        "predicted_modes": modes,
         "modes": modes,
+        "rom_prediction_runtime_s": round(elapsed, 4),
         "error": None,
         "raw": out,
         "validation_meta": dict(validation_meta) if validation_meta else None,
@@ -627,8 +679,14 @@ def build_rom_prediction_document(
     context: Mapping[str, Any],
     prediction: Mapping[str, Any],
 ) -> Dict[str, Any]:
+    predicted_modes = list(prediction.get("predicted_modes") or prediction.get("modes") or [])
+    has_scalars = any(
+        m.get("top_share") is not None or m.get("radiation_proxy") is not None for m in predicted_modes
+    )
+    schema = ROM_PREDICTION_SCHEMA_V2 if has_scalars else ROM_PREDICTION_SCHEMA_V1
+    runtime_s = prediction.get("rom_prediction_runtime_s") or prediction.get("runtime_s")
     return {
-        "schema": ROM_PREDICTION_SCHEMA,
+        "schema": schema,
         "generated_utc": utc_now(),
         "sample_id": context["sample_id"],
         "lhs_row_index": context["lhs_row_index"],
@@ -636,16 +694,20 @@ def build_rom_prediction_document(
         "parameters": dict(context.get("parameters") or {}),
         "run_id": context.get("run_id"),
         "status": prediction.get("status"),
+        "prediction_method": prediction.get("method"),
         "method": prediction.get("method"),
         "source": prediction.get("source"),
         "confidence": prediction.get("confidence"),
-        "runtime_s": prediction.get("runtime_s"),
+        "runtime_s": runtime_s,
+        "rom_prediction_runtime_s": runtime_s,
         "nev_requested": prediction.get("nev_requested"),
         "nev_returned": prediction.get("nev_returned"),
         "num_basis_modes": prediction.get("num_basis_modes"),
+        "training_sample_count": _training_sample_count_from_prediction(prediction),
         "training_sample_count_at_prediction": _training_sample_count_from_prediction(prediction),
         "frequencies_hz": list(prediction.get("frequencies_hz") or []),
-        "modes": list(prediction.get("modes") or []),
+        "predicted_modes": predicted_modes,
+        "modes": predicted_modes,
         "error": prediction.get("error"),
     }
 
@@ -689,7 +751,17 @@ def build_rom_fom_comparison(
         fom_modes=fom_modes_band,
         max_match_distance_hz=max_match_distance_hz,
     )
+    rom_predicted_modes = list(rom_prediction.get("predicted_modes") or rom_prediction.get("modes") or [])
+    if rom_predicted_modes:
+        matches = _enrich_matches_with_phase2_scalars(
+            matches,
+            rom_modes=rom_predicted_modes,
+            fom_modes=fom_modes_band,
+        )
     metrics = _error_metrics(matches)
+    from v2_b3_m4_rom_scalar_fields import compute_phase2_scalar_metrics  # noqa: WPS433
+
+    phase2_block = compute_phase2_scalar_metrics(matches) if rom_predicted_modes else {}
     vmeta = dict(validation_meta or rom_prediction.get("validation_meta") or {})
     if not vmeta:
         train_ids = list(rom_prediction.get("training_sample_ids") or [])
@@ -771,7 +843,12 @@ def build_rom_fom_comparison(
         "unmatched_rom_count": match_meta["unmatched_rom_count"],
         "unmatched_fom_count": match_meta["unmatched_fom_count"],
         **metrics,
+        **phase2_block,
         "per_mode_matches": matches,
+        "rom_prediction_runtime_s": rom_prediction.get("rom_prediction_runtime_s")
+        or rom_prediction.get("runtime_s"),
+        "rom_comparison_runtime_s": None,
+        "total_rom_runtime_s": None,
         "rom_frequencies_hz": rom_freqs,
         "rom_frequencies_hz_total": [round(float(f), 6) for f in rom_freqs_all],
         "fom_frequencies_hz": [round(float(r["frequency_hz"]), 6) for r in fom_modes_band],
@@ -903,6 +980,18 @@ ACCURACY_HISTORY_FIELDS: Tuple[str, ...] = (
     "p90_relative_error",
     "median_abs_error_hz",
     "mean_abs_error_hz",
+    "top_share_mae",
+    "back_share_mae",
+    "air_share_mae",
+    "radiation_proxy_relative_error_median",
+    "mic_output_proxy_relative_error_median",
+    "coupling_class_accuracy",
+    "dominant_region_accuracy",
+    "audio_weighted_frequency_error",
+    "audio_weighted_output_proxy_error",
+    "rom_prediction_runtime_s",
+    "rom_comparison_runtime_s",
+    "total_rom_runtime_s",
     "meets_target",
     "meets_target_meaningful",
     "status",
@@ -928,6 +1017,30 @@ def _comparison_to_history_row(comparison: Mapping[str, Any]) -> Dict[str, Any]:
         "p90_relative_error": comparison.get("p90_relative_error"),
         "median_abs_error_hz": comparison.get("median_abs_error_hz"),
         "mean_abs_error_hz": comparison.get("mean_abs_error_hz"),
+        "top_share_mae": (comparison.get("phase2_scalar_metrics") or {}).get("top_share_mae"),
+        "back_share_mae": (comparison.get("phase2_scalar_metrics") or {}).get("back_share_mae"),
+        "air_share_mae": (comparison.get("phase2_scalar_metrics") or {}).get("air_share_mae"),
+        "radiation_proxy_relative_error_median": (
+            (comparison.get("phase2_scalar_metrics") or {}).get("radiation_proxy_relative_error_median")
+        ),
+        "mic_output_proxy_relative_error_median": (
+            (comparison.get("phase2_scalar_metrics") or {}).get("mic_output_proxy_relative_error_median")
+        ),
+        "coupling_class_accuracy": (comparison.get("phase2_scalar_metrics") or {}).get(
+            "coupling_class_accuracy"
+        ),
+        "dominant_region_accuracy": (comparison.get("phase2_scalar_metrics") or {}).get(
+            "dominant_region_accuracy"
+        ),
+        "audio_weighted_frequency_error": (comparison.get("phase2_scalar_metrics") or {}).get(
+            "audio_weighted_frequency_error"
+        ),
+        "audio_weighted_output_proxy_error": (comparison.get("phase2_scalar_metrics") or {}).get(
+            "audio_weighted_output_proxy_error"
+        ),
+        "rom_prediction_runtime_s": comparison.get("rom_prediction_runtime_s"),
+        "rom_comparison_runtime_s": comparison.get("rom_comparison_runtime_s"),
+        "total_rom_runtime_s": comparison.get("total_rom_runtime_s"),
         "meets_target": spec.get("meets_target"),
         "meets_target_meaningful": spec.get("meets_target_meaningful"),
         "status": comparison.get("status"),
@@ -974,7 +1087,10 @@ def _coerce_history_numeric(row: Mapping[str, Any]) -> Dict[str, Any]:
             out[key] = None
             continue
         try:
-            out[key] = float(val) if "error" in key or "hz" in key else int(float(val))
+            if key == "training_sample_count_at_prediction" or key == "matched_mode_count":
+                out[key] = int(float(val))
+            else:
+                out[key] = float(val)
         except (TypeError, ValueError):
             out[key] = None
     for key in ("meets_target", "meets_target_meaningful", "training_includes_target", "accuracy_meaningful"):
@@ -1023,28 +1139,106 @@ def build_accuracy_summary(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     ]
     meets = [bool(r.get("meets_target")) for r in parsed if r.get("meets_target") is not None]
 
-    by_training: Dict[int, List[float]] = {}
+    def _stk_block(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+        if not rows:
+            return {}
+        return {
+            "top_share_mae_median": _median(
+                [float(r["top_share_mae"]) for r in rows if r.get("top_share_mae") not in (None, "")]
+            ),
+            "radiation_proxy_rel_error_median": _median(
+                [
+                    float(r["radiation_proxy_relative_error_median"])
+                    for r in rows
+                    if r.get("radiation_proxy_relative_error_median") not in (None, "")
+                ]
+            ),
+            "mic_output_proxy_rel_error_median": _median(
+                [
+                    float(r["mic_output_proxy_relative_error_median"])
+                    for r in rows
+                    if r.get("mic_output_proxy_relative_error_median") not in (None, "")
+                ]
+            ),
+            "audio_weighted_frequency_error_mean": _mae(
+                [
+                    float(r["audio_weighted_frequency_error"])
+                    for r in rows
+                    if r.get("audio_weighted_frequency_error") not in (None, "")
+                ]
+            ),
+        }
+
+    def _class_block(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+        accs = [
+            float(r["coupling_class_accuracy"])
+            for r in rows
+            if r.get("coupling_class_accuracy") not in (None, "")
+        ]
+        doms = [
+            float(r["dominant_region_accuracy"])
+            for r in rows
+            if r.get("dominant_region_accuracy") not in (None, "")
+        ]
+        return {
+            "coupling_class_accuracy_mean": _mae(accs),
+            "dominant_region_accuracy_mean": _mae(doms),
+        }
+
+    def _runtime_block(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+        preds = [
+            float(r["rom_prediction_runtime_s"])
+            for r in rows
+            if r.get("rom_prediction_runtime_s") not in (None, "")
+        ]
+        cmps = [
+            float(r["rom_comparison_runtime_s"])
+            for r in rows
+            if r.get("rom_comparison_runtime_s") not in (None, "")
+        ]
+        totals = [
+            float(r["total_rom_runtime_s"]) for r in rows if r.get("total_rom_runtime_s") not in (None, "")
+        ]
+        return {
+            "rom_prediction_runtime_s_median": _median(preds),
+            "rom_comparison_runtime_s_median": _median(cmps),
+            "total_rom_runtime_s_median": _median(totals),
+        }
+
+    by_training: Dict[int, List[Dict[str, Any]]] = {}
     for r in meaningful:
         tc = r.get("training_sample_count_at_prediction")
-        med = r.get("median_relative_error")
-        if tc is None or med is None or med != med:
+        if tc is None:
             continue
-        by_training.setdefault(int(tc), []).append(float(med))
+        by_training.setdefault(int(tc), []).append(dict(r))
 
     training_breakdown = []
     for tc in sorted(by_training):
-        vals = by_training[tc]
+        rows_tc = by_training[tc]
+        freq_vals = [
+            float(r["median_relative_error"])
+            for r in rows_tc
+            if r.get("median_relative_error") is not None and r["median_relative_error"] == r["median_relative_error"]
+        ]
         training_breakdown.append(
             {
                 "training_sample_count_at_prediction": tc,
-                "comparison_count": len(vals),
-                "median_of_median_relative_error": round(statistics.median(vals), 8),
-                "mean_of_median_relative_error": round(statistics.mean(vals), 8),
-                "samples_meeting_target": sum(1 for v in vals if v <= TARGET_MEDIAN_RELATIVE_ERROR),
+                "comparison_count": len(rows_tc),
+                "frequency_accuracy": {
+                    "median_of_median_relative_error": round(statistics.median(freq_vals), 8)
+                    if freq_vals
+                    else None,
+                    "mean_of_median_relative_error": round(statistics.mean(freq_vals), 8) if freq_vals else None,
+                    "samples_meeting_target": sum(1 for v in freq_vals if v <= TARGET_MEDIAN_RELATIVE_ERROR),
+                },
+                "stk_audio_scalar_accuracy": _stk_block(rows_tc),
+                "classification_accuracy": _class_block(rows_tc),
+                "runtime": _runtime_block(rows_tc),
             }
         )
 
     leakage = [r for r in parsed if not bool(r.get("accuracy_meaningful"))]
+
     return {
         "schema": ACCURACY_SUMMARY_SCHEMA,
         "generated_utc": utc_now(),
@@ -1057,6 +1251,22 @@ def build_accuracy_summary(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
         "aggregate_all_comparisons": _aggregate_accuracy_block(parsed),
         "aggregate_meaningful_only": _aggregate_accuracy_block(meaningful),
         "aggregate": _aggregate_accuracy_block(meaningful),
+        "frequency_accuracy": {
+            "meaningful_only": _aggregate_accuracy_block(meaningful),
+            "all_comparisons": _aggregate_accuracy_block(parsed),
+        },
+        "stk_audio_scalar_accuracy": {
+            "meaningful_only": _stk_block(meaningful),
+            "all_comparisons": _stk_block(parsed),
+        },
+        "classification_accuracy": {
+            "meaningful_only": _class_block(meaningful),
+            "all_comparisons": _class_block(parsed),
+        },
+        "runtime": {
+            "meaningful_only": _runtime_block(meaningful),
+            "all_comparisons": _runtime_block(parsed),
+        },
         "by_training_sample_count": training_breakdown,
     }
 
@@ -1108,6 +1318,13 @@ def lhs_pool_rom_patch_from_comparison(comparison: Mapping[str, Any]) -> Dict[st
         "last_rom_accuracy_meaningful": comparison.get("accuracy_meaningful"),
         "last_rom_validation_mode": comparison.get("validation_mode"),
         "last_rom_training_sample_count": comparison.get("training_sample_count_at_prediction"),
+        "last_rom_prediction_runtime_s": comparison.get("rom_prediction_runtime_s"),
+        "last_rom_comparison_runtime_s": comparison.get("rom_comparison_runtime_s"),
+        "last_rom_total_runtime_s": comparison.get("total_rom_runtime_s"),
+        "last_rom_top_share_mae": (comparison.get("phase2_scalar_metrics") or {}).get("top_share_mae"),
+        "last_rom_coupling_class_accuracy": (comparison.get("phase2_scalar_metrics") or {}).get(
+            "coupling_class_accuracy"
+        ),
         "last_rom_error": comparison.get("last_rom_error"),
     }
     return patch
@@ -1266,6 +1483,7 @@ def maybe_run_rom_compare(
         "lhs_patch": None,
         "error": None,
     }
+    t_compare = time.perf_counter()
     try:
         catalog_path = run_root / "aggregation" / "modes_catalog.jsonl"
         fom_modes = load_fom_modes_catalog(catalog_path)
@@ -1342,6 +1560,19 @@ def maybe_run_rom_compare(
             copy_to_project=copy_to_project,
             write_csv=write_csv,
         )
+        cmp_elapsed = time.perf_counter() - t_compare
+        pred_runtime = float(
+            comparison.get("rom_prediction_runtime_s")
+            or (rom_doc or {}).get("rom_prediction_runtime_s")
+            or (rom_doc or {}).get("runtime_s")
+            or 0.0
+        )
+        comparison["rom_comparison_runtime_s"] = round(cmp_elapsed, 4)
+        comparison["total_rom_runtime_s"] = round(pred_runtime + cmp_elapsed, 4)
+        write_json_atomic(paths["run_comparison"], dict(comparison))
+        if copy_to_project and "project_comparison" in paths:
+            write_json_atomic(paths["project_comparison"], dict(comparison))
+
         comparison["last_rom_comparison_path"] = rel(paths["run_comparison"], repo_root=repo_root)
         lhs_patch = lhs_pool_rom_patch_from_comparison(comparison)
         lhs_patch["last_rom_comparison_path"] = comparison["last_rom_comparison_path"]

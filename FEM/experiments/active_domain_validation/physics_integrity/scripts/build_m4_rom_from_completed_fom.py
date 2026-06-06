@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build lightweight M4 modal frequency surrogate from completed FOM aggregation outputs."""
+"""Build M4 Phase-2 modal surrogate (frequencies + STK scalars) from completed FOM catalogs."""
 from __future__ import annotations
 
 import argparse
@@ -27,8 +27,8 @@ DEFAULT_LHS_REL = "ROM/classic/lhs_pool.json"
 def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Train M4 Phase-1 ROM surrogate from completed FOM modes_catalog.jsonl files. "
-            "Writes ROM/<shape>/m4_modal_surrogate.{json,npz} — no eigenvectors required."
+            "Train M4 Phase-2 ROM surrogate from completed FOM modes_catalog.jsonl files. "
+            "Writes ROM/<shape>/m4_modal_surrogate.{json,npz} (frequencies + scalars, no eigenvectors)."
         ),
         epilog=(
             "Example:\n"
@@ -140,7 +140,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"report={rel(report_path, repo_root=repo_root)}")
     print(
         "next: python FEM/.../run_m4_rom_compare.py "
-        f"--lhs-json {rel(lhs_path, repo_root=repo_root)} --force-sample <sample_id>"
+        f"--lhs-json {rel(lhs_path, repo_root=repo_root)} "
+        "--force-sample <sample_id> --exclude-target-from-training"
     )
     return 0
 

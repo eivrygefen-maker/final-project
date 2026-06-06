@@ -15,10 +15,20 @@ from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
     load_lhs_pool,
 )
 from v2_b3_m4_rom_fom_compare_lib import load_fom_modes_catalog  # noqa: E402
+from v2_b3_m4_rom_scalar_fields import (  # noqa: E402
+    PHASE2_CATEGORICAL_FIELDS,
+    PHASE2_NUMERIC_FIELDS,
+    PHASE2_PREDICTION_METHOD,
+    _encode_categorical,
+    categorical_vocab_for_field,
+    predict_mode_scalars_at_frequency,
+)
 from v2_b3_m4_worker_run_lib import detect_repo_root, load_json, rel, utc_now  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
-SURROGATE_SCHEMA = "m4_modal_surrogate_v1"
+SURROGATE_SCHEMA_V1 = "m4_modal_surrogate_v1"
+SURROGATE_SCHEMA_V2 = "m4_modal_surrogate_v2"
+SURROGATE_SCHEMA = SURROGATE_SCHEMA_V2
 MANIFEST_SCHEMA = "m4_rom_model_manifest_v1"
 
 SURROGATE_JSON_NAME = "m4_modal_surrogate.json"
@@ -27,7 +37,9 @@ MANIFEST_JSON_NAME = "rom_model_manifest.json"
 LEGACY_BASIS_NAME = "reduced_basis.npz"
 
 DEFAULT_K_NEIGHBORS = 5
-DEFAULT_PREDICTION_METHOD = "knn_idw_sorted_modes"
+DEFAULT_PREDICTION_METHOD_V1 = "knn_idw_sorted_modes"
+DEFAULT_PREDICTION_METHOD_V2 = "knn_idw_modal_surrogate_v2"
+DEFAULT_PREDICTION_METHOD = DEFAULT_PREDICTION_METHOD_V2
 
 GEOMETRY_KEYS: Tuple[str, ...] = (
     "geometry.length",
@@ -142,8 +154,10 @@ def write_rom_model_manifest(
         "m4_surrogate_npz": SURROGATE_NPZ_NAME,
         "legacy_basis_npz": LEGACY_BASIS_NAME,
         "training_sample_count": int(training_sample_count),
+        "surrogate_schema": SURROGATE_SCHEMA_V2,
+        "phase2_scalar_fields": True,
         "notes": (
-            "M4 surrogate trains from aggregation/modes_catalog.jsonl frequencies only. "
+            "M4 surrogate trains from aggregation/modes_catalog.jsonl (frequencies + scalar metadata). "
             "Legacy reduced_basis.npz requires full eigenvector snapshots and is optional."
         ),
     }
@@ -166,6 +180,7 @@ def collect_completed_fom_training_rows(
     training: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
     excluded = {str(s).strip() for s in (exclude_sample_ids or []) if str(s).strip()}
+    pool_shape = str(pool.get("shape_name") or "classic")
 
     for i, entry in enumerate(pool.get("entries") or []):
         sid = str(entry.get("id") or "").strip()
@@ -234,8 +249,10 @@ def collect_completed_fom_training_rows(
                 "run_id": run_id,
                 "run_root": rel(run_root, repo_root=repo_root),
                 "catalog_path": rel(catalog_path, repo_root=repo_root),
+                "shape_name": pool_shape,
                 "parameters": params,
                 "frequencies_hz": freqs,
+                "mode_catalog": modes,
                 "mode_count": len(freqs),
             }
         )
@@ -263,15 +280,48 @@ def build_surrogate_from_training_rows(
     mode_counts = np.array([len(r["frequencies_hz"]) for r in training_rows], dtype=np.int32)
     max_modes = int(mode_counts.max())
     freq_matrix = np.full((len(training_rows), max_modes), np.nan, dtype=np.float64)
+    scalar_arrays: Dict[str, np.ndarray] = {
+        field: np.full((len(training_rows), max_modes), np.nan, dtype=np.float64)
+        for field in PHASE2_NUMERIC_FIELDS
+    }
+    cat_arrays: Dict[str, np.ndarray] = {
+        field: np.full((len(training_rows), max_modes), -1, dtype=np.int32)
+        for field in PHASE2_CATEGORICAL_FIELDS
+    }
+
     for i, row in enumerate(training_rows):
         freqs = row["frequencies_hz"]
         freq_matrix[i, : len(freqs)] = np.asarray(freqs, dtype=np.float64)
+        catalog = list(row.get("mode_catalog") or [])
+        for j, mode in enumerate(catalog[:max_modes]):
+            for field in PHASE2_NUMERIC_FIELDS:
+                val = mode.get(field)
+                try:
+                    scalar_arrays[field][i, j] = float(val) if val is not None else np.nan
+                except (TypeError, ValueError):
+                    scalar_arrays[field][i, j] = np.nan
+            for field in PHASE2_CATEGORICAL_FIELDS:
+                vocab = categorical_vocab_for_field(field)
+                cat_arrays[field][i, j] = _encode_categorical(mode.get(field), vocab)
+
+    arrays: Dict[str, Any] = {
+        "feature_matrix_norm": x_norm,
+        "frequencies": freq_matrix,
+        "mode_counts": mode_counts,
+        "feature_mean": mean,
+        "feature_std": std,
+    }
+    for field, arr in scalar_arrays.items():
+        arrays[f"scalar__{field}"] = arr
+    for field, arr in cat_arrays.items():
+        arrays[f"cat__{field}"] = arr
 
     return {
-        "schema": SURROGATE_SCHEMA,
+        "schema": SURROGATE_SCHEMA_V2,
         "generated_utc": utc_now(),
         "shape_name": shape_name,
-        "method": DEFAULT_PREDICTION_METHOD,
+        "method": DEFAULT_PREDICTION_METHOD_V2,
+        "scalar_alignment": "nearest_frequency_per_neighbor",
         "k_neighbors": int(min(k_neighbors, len(training_rows))),
         "feature_names": list(FEATURE_NAMES),
         "wood_ids": list(WOOD_IDS),
@@ -289,13 +339,9 @@ def build_surrogate_from_training_rows(
         "mode_count_min": int(mode_counts.min()),
         "mode_count_max": int(mode_counts.max()),
         "mode_count_median": float(np.median(mode_counts)),
-        "arrays": {
-            "feature_matrix_norm": x_norm,
-            "frequencies": freq_matrix,
-            "mode_counts": mode_counts,
-            "feature_mean": mean,
-            "feature_std": std,
-        },
+        "phase2_numeric_fields": list(PHASE2_NUMERIC_FIELDS),
+        "phase2_categorical_fields": list(PHASE2_CATEGORICAL_FIELDS),
+        "arrays": arrays,
     }
 
 
@@ -310,15 +356,18 @@ def save_surrogate_model(repo_root: Path, model: Mapping[str, Any]) -> Dict[str,
     npz_path = surrogate_npz_path(repo_root, shape)
 
     write_json_atomic(json_path, json_body)
-    np.savez(
-        npz_path,
-        feature_matrix_norm=np.asarray(arrays["feature_matrix_norm"], dtype=np.float64),
-        frequencies=np.asarray(arrays["frequencies"], dtype=np.float64),
-        mode_counts=np.asarray(arrays["mode_counts"], dtype=np.int32),
-        feature_mean=np.asarray(arrays["feature_mean"], dtype=np.float64),
-        feature_std=np.asarray(arrays["feature_std"], dtype=np.float64),
-        k_neighbors=np.array([int(model.get("k_neighbors") or DEFAULT_K_NEIGHBORS)], dtype=np.int32),
-    )
+    npz_payload = {
+        "feature_matrix_norm": np.asarray(arrays["feature_matrix_norm"], dtype=np.float64),
+        "frequencies": np.asarray(arrays["frequencies"], dtype=np.float64),
+        "mode_counts": np.asarray(arrays["mode_counts"], dtype=np.int32),
+        "feature_mean": np.asarray(arrays["feature_mean"], dtype=np.float64),
+        "feature_std": np.asarray(arrays["feature_std"], dtype=np.float64),
+        "k_neighbors": np.array([int(model.get("k_neighbors") or DEFAULT_K_NEIGHBORS)], dtype=np.int32),
+    }
+    for key, val in arrays.items():
+        if key.startswith(("scalar__", "cat__")):
+            npz_payload[key] = np.asarray(val)
+    np.savez(npz_path, **npz_payload)
     manifest = write_rom_model_manifest(
         repo_root,
         shape,
@@ -338,24 +387,54 @@ def load_surrogate_model(repo_root: Path, shape_name: str) -> Dict[str, Any]:
         )
     meta = load_json(json_path)
     with np.load(npz_path, allow_pickle=False) as z:
-        meta["arrays"] = {
+        arrays: Dict[str, Any] = {
             "feature_matrix_norm": np.asarray(z["feature_matrix_norm"], dtype=np.float64),
             "frequencies": np.asarray(z["frequencies"], dtype=np.float64),
             "mode_counts": np.asarray(z["mode_counts"], dtype=np.int32),
             "feature_mean": np.asarray(z["feature_mean"], dtype=np.float64),
             "feature_std": np.asarray(z["feature_std"], dtype=np.float64),
         }
+        for name in z.files:
+            if name.startswith(("scalar__", "cat__")):
+                arrays[name] = np.asarray(z[name])
+        meta["arrays"] = arrays
         if "k_neighbors" in z.files:
             meta["k_neighbors"] = int(np.asarray(z["k_neighbors"]).reshape(-1)[0])
     return meta
 
 
-def predict_modal_frequencies(
+def _neighbor_catalog_from_arrays(
+    arrays: Mapping[str, Any],
+    row_index: int,
+    mode_count: int,
+) -> List[Dict[str, Any]]:
+    """Reconstruct sorted mode dicts from stored training arrays."""
+    from v2_b3_m4_rom_scalar_fields import decode_categorical  # noqa: WPS433
+
+    modes: List[Dict[str, Any]] = []
+    for j in range(mode_count):
+        rec: Dict[str, Any] = {
+            "frequency_hz": float(arrays["frequencies"][row_index, j]),
+        }
+        for field in PHASE2_NUMERIC_FIELDS:
+            key = f"scalar__{field}"
+            if key in arrays:
+                val = float(arrays[key][row_index, j])
+                rec[field] = None if val != val else val
+        for field in PHASE2_CATEGORICAL_FIELDS:
+            key = f"cat__{field}"
+            if key in arrays:
+                idx = int(arrays[key][row_index, j])
+                vocab = categorical_vocab_for_field(field)
+                rec[field] = decode_categorical(idx, vocab)
+        modes.append(rec)
+    return modes
+
+
+def _select_neighbors(
     model: Mapping[str, Any],
     parameters: Mapping[str, Any],
-    *,
-    nev: int = 0,
-) -> Dict[str, Any]:
+) -> Tuple[np.ndarray, np.ndarray, List[str], np.ndarray]:
     arrays = model["arrays"]
     x = encode_lhs_parameters(parameters)
     x_norm = (x - arrays["feature_mean"]) / arrays["feature_std"]
@@ -366,38 +445,91 @@ def predict_modal_frequencies(
     nn_idx = np.argsort(dists)[:k]
     weights = 1.0 / (dists[nn_idx] + 1e-8) ** 2
     weights = weights / weights.sum()
-
-    neighbor_freqs: List[np.ndarray] = []
-    neighbor_ids: List[str] = []
     samples = list(model.get("training_samples") or [])
+    neighbor_ids: List[str] = []
     for j in nn_idx:
-        count = int(arrays["mode_counts"][j])
-        freqs = np.asarray(arrays["frequencies"][j, :count], dtype=np.float64)
-        neighbor_freqs.append(freqs)
         if j < len(samples):
             neighbor_ids.append(str(samples[j].get("sample_id") or f"train_{j}"))
         else:
             neighbor_ids.append(f"train_{j}")
+    return nn_idx, weights, neighbor_ids, dists
+
+
+def predict_modal_catalog(
+    model: Mapping[str, Any],
+    parameters: Mapping[str, Any],
+    *,
+    nev: int = 0,
+) -> Dict[str, Any]:
+    """Phase-2: predict frequencies (sorted-index IDW) + scalars (nearest-frequency IDW)."""
+    arrays = model["arrays"]
+    nn_idx, weights, neighbor_ids, dists = _select_neighbors(model, parameters)
+    k = len(nn_idx)
+
+    neighbor_freqs: List[np.ndarray] = []
+    neighbor_catalogs: List[List[Dict[str, Any]]] = []
+    for j in nn_idx:
+        count = int(arrays["mode_counts"][j])
+        freqs = np.asarray(arrays["frequencies"][j, :count], dtype=np.float64)
+        neighbor_freqs.append(freqs)
+        neighbor_catalogs.append(_neighbor_catalog_from_arrays(arrays, int(j), count))
 
     min_count = min(len(f) for f in neighbor_freqs)
-    if nev > 0:
-        mode_out = min(int(nev), min_count)
-    else:
-        mode_out = min_count
+    mode_out = min(int(nev), min_count) if nev > 0 else min_count
 
-    pred = np.zeros(mode_out, dtype=np.float64)
+    pred_freqs = np.zeros(mode_out, dtype=np.float64)
     for m in range(mode_out):
-        pred[m] = np.average([float(f[m]) for f in neighbor_freqs], weights=weights)
+        pred_freqs[m] = np.average([float(f[m]) for f in neighbor_freqs], weights=weights)
+
+    predicted_modes: List[Dict[str, Any]] = []
+    for mi, f_hz in enumerate(pred_freqs.tolist()):
+        mode_rec = predict_mode_scalars_at_frequency(
+            target_hz=float(f_hz),
+            neighbor_catalogs=neighbor_catalogs,
+            neighbor_weights=list(weights),
+        )
+        mode_rec["mode_index"] = int(mi)
+        predicted_modes.append(mode_rec)
+
+    schema = str(model.get("schema") or SURROGATE_SCHEMA_V1)
+    method = (
+        DEFAULT_PREDICTION_METHOD_V2
+        if schema == SURROGATE_SCHEMA_V2
+        else str(model.get("method") or DEFAULT_PREDICTION_METHOD_V1)
+    )
 
     return {
-        "frequencies_hz": [round(float(f), 6) for f in pred.tolist()],
+        "frequencies_hz": [round(float(f), 6) for f in pred_freqs.tolist()],
+        "predicted_modes": predicted_modes,
         "nev_returned": int(mode_out),
         "k_neighbors_used": int(k),
         "neighbor_sample_ids": neighbor_ids,
         "neighbor_distances": [round(float(dists[i]), 6) for i in nn_idx],
-        "method": str(model.get("method") or DEFAULT_PREDICTION_METHOD),
+        "method": method,
+        "scalar_alignment": "nearest_frequency_per_neighbor",
         "source_json": SURROGATE_JSON_NAME,
         "source_npz": SURROGATE_NPZ_NAME,
+        "surrogate_schema": schema,
+    }
+
+
+def predict_modal_frequencies(
+    model: Mapping[str, Any],
+    parameters: Mapping[str, Any],
+    *,
+    nev: int = 0,
+) -> Dict[str, Any]:
+    out = predict_modal_catalog(model, parameters, nev=nev)
+    return {
+        "frequencies_hz": out["frequencies_hz"],
+        "nev_returned": out["nev_returned"],
+        "k_neighbors_used": out["k_neighbors_used"],
+        "neighbor_sample_ids": out["neighbor_sample_ids"],
+        "neighbor_distances": out.get("neighbor_distances"),
+        "method": out["method"],
+        "source_json": out["source_json"],
+        "source_npz": out["source_npz"],
+        "predicted_modes": out.get("predicted_modes"),
     }
 
 

@@ -176,6 +176,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         comparison = cmp_result.get("comparison")
         if comparison and comparison.get("status") == "COMPLETED":
             ok += 1
+            p2 = comparison.get("phase2_scalar_metrics") or {}
             print(
                 f"  compare status=COMPLETED "
                 f"validation={comparison.get('validation_mode')} "
@@ -183,6 +184,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 f"train_includes_target={comparison.get('training_includes_target')} "
                 f"matched={comparison.get('matched_mode_count')} "
                 f"median_rel={comparison.get('median_relative_error')} "
+                f"top_share_mae={p2.get('top_share_mae')} "
+                f"radiation_rel_med={p2.get('radiation_proxy_relative_error_median')} "
+                f"coupling_acc={p2.get('coupling_class_accuracy')} "
+                f"dom_region_acc={p2.get('dominant_region_accuracy')} "
+                f"rom_runtime_s={comparison.get('total_rom_runtime_s')} "
                 f"path={comparison.get('last_rom_comparison_path')}",
                 flush=True,
             )
