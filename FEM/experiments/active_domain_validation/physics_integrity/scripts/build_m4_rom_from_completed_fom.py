@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build M4 Phase-2 modal surrogate (frequencies + STK scalars) from completed FOM catalogs."""
+"""Build M4 Intensity ROM v2.1 surrogate (deduped catalogs + log/norm intensity) from FOM."""
 from __future__ import annotations
 
 import argparse
@@ -27,8 +27,8 @@ DEFAULT_LHS_REL = "ROM/classic/lhs_pool.json"
 def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Train M4 Phase-2 ROM surrogate from completed FOM modes_catalog.jsonl files. "
-            "Writes ROM/<shape>/m4_modal_surrogate.{json,npz} (frequencies + scalars, no eigenvectors)."
+            "Train M4 Intensity ROM v2.1 from completed FOM catalogs (ROM-side dedupe, log/norm intensity). "
+            "Writes ROM/<shape>/m4_modal_surrogate.{json,npz} — no eigenvectors, no FOM changes."
         ),
         epilog=(
             "Example:\n"
@@ -121,12 +121,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     paths = save_surrogate_model(repo_root, model)
     report = {
-        "schema": "m4_rom_build_report_v1",
+        "schema": "m4_rom_build_report_v2_1",
         "generated_utc": model["generated_utc"],
         "shape_name": shape_name,
+        "model_version": model.get("model_version"),
+        "surrogate_schema": model.get("schema"),
         "training_sample_count": model["training_sample_count"],
         "mode_count_median": model["mode_count_median"],
         "method": model["method"],
+        "rom_training_catalog_source": model.get("rom_training_catalog_source"),
+        "rom_training_dedupe_tolerance_hz": model.get("rom_training_dedupe_tolerance_hz"),
+        "rom_training_raw_mode_count": model.get("rom_training_raw_mode_count"),
+        "rom_training_deduped_mode_count": model.get("rom_training_deduped_mode_count"),
+        "rom_training_raw_mode_count_median": model.get("rom_training_raw_mode_count_median"),
+        "rom_training_deduped_mode_count_median": model.get("rom_training_deduped_mode_count_median"),
+        "intensity_log_epsilon": model.get("intensity_log_epsilon"),
+        "normalization_percentile": model.get("normalization_percentile"),
         "outputs": {k: rel(v, repo_root=repo_root) for k, v in paths.items()},
         "training_samples": model["training_samples"],
         "skipped": skipped,

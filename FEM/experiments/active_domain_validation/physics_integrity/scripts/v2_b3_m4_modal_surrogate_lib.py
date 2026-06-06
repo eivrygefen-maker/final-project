@@ -14,13 +14,24 @@ from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
     is_lhs_entry_completed,
     load_lhs_pool,
 )
-from v2_b3_m4_rom_fom_compare_lib import load_fom_modes_catalog  # noqa: E402
+from v2_b3_m4_rom_fom_compare_lib import load_fom_modes_catalog_deduped  # noqa: E402
 from v2_b3_m4_rom_scalar_fields import (  # noqa: E402
+    ACCURACY_BAND_HZ_DEFAULT,
+    INTENSITY_DERIVED_FIELDS,
+    INTENSITY_FIELDS,
+    INTENSITY_LOG_EPSILON,
+    MODEL_VERSION_V2_1,
+    NORMALIZATION_PERCENTILE,
+    PHASE2_1_PREDICTION_METHOD,
     PHASE2_CATEGORICAL_FIELDS,
     PHASE2_NUMERIC_FIELDS,
     PHASE2_PREDICTION_METHOD,
+    ROM_DEDUPE_TOLERANCE_HZ,
+    ROM_TRAINING_CATALOG_SOURCE,
     _encode_categorical,
+    append_intensity_derivatives_to_prediction,
     categorical_vocab_for_field,
+    enrich_catalog_intensity_derivatives,
     predict_mode_scalars_at_frequency,
 )
 from v2_b3_m4_worker_run_lib import detect_repo_root, load_json, rel, utc_now  # noqa: E402
@@ -28,7 +39,8 @@ from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
 SURROGATE_SCHEMA_V1 = "m4_modal_surrogate_v1"
 SURROGATE_SCHEMA_V2 = "m4_modal_surrogate_v2"
-SURROGATE_SCHEMA = SURROGATE_SCHEMA_V2
+SURROGATE_SCHEMA_V2_1 = "m4_modal_surrogate_v2_1"
+SURROGATE_SCHEMA = SURROGATE_SCHEMA_V2_1
 MANIFEST_SCHEMA = "m4_rom_model_manifest_v1"
 
 SURROGATE_JSON_NAME = "m4_modal_surrogate.json"
@@ -39,7 +51,8 @@ LEGACY_BASIS_NAME = "reduced_basis.npz"
 DEFAULT_K_NEIGHBORS = 5
 DEFAULT_PREDICTION_METHOD_V1 = "knn_idw_sorted_modes"
 DEFAULT_PREDICTION_METHOD_V2 = "knn_idw_modal_surrogate_v2"
-DEFAULT_PREDICTION_METHOD = DEFAULT_PREDICTION_METHOD_V2
+DEFAULT_PREDICTION_METHOD_V2_1 = PHASE2_1_PREDICTION_METHOD
+DEFAULT_PREDICTION_METHOD = DEFAULT_PREDICTION_METHOD_V2_1
 
 GEOMETRY_KEYS: Tuple[str, ...] = (
     "geometry.length",
@@ -154,8 +167,11 @@ def write_rom_model_manifest(
         "m4_surrogate_npz": SURROGATE_NPZ_NAME,
         "legacy_basis_npz": LEGACY_BASIS_NAME,
         "training_sample_count": int(training_sample_count),
-        "surrogate_schema": SURROGATE_SCHEMA_V2,
+        "model_version": MODEL_VERSION_V2_1,
+        "surrogate_schema": SURROGATE_SCHEMA_V2_1,
+        "prediction_method": DEFAULT_PREDICTION_METHOD_V2_1,
         "phase2_scalar_fields": True,
+        "intensity_v2_1": True,
         "notes": (
             "M4 surrogate trains from aggregation/modes_catalog.jsonl (frequencies + scalar metadata). "
             "Legacy reduced_basis.npz requires full eigenvector snapshots and is optional."
@@ -216,7 +232,7 @@ def collect_completed_fom_training_rows(
             continue
 
         try:
-            modes = load_fom_modes_catalog(catalog_path)
+            raw_modes, modes, dedupe_meta = load_fom_modes_catalog_deduped(catalog_path)
             freqs = [float(m["frequency_hz"]) for m in modes]
         except (OSError, ValueError, FileNotFoundError) as exc:
             skipped.append({"sample_id": sid, "reason": "catalog_read_error", "error": str(exc)})
@@ -242,6 +258,13 @@ def collect_completed_fom_training_rows(
             except (OSError, ValueError, json.JSONDecodeError):
                 pass
 
+        enriched_catalog, p95_map = enrich_catalog_intensity_derivatives(
+            modes,
+            band=ACCURACY_BAND_HZ_DEFAULT,
+            epsilon=INTENSITY_LOG_EPSILON,
+            percentile=NORMALIZATION_PERCENTILE,
+        )
+
         training.append(
             {
                 "sample_id": sid,
@@ -252,8 +275,11 @@ def collect_completed_fom_training_rows(
                 "shape_name": pool_shape,
                 "parameters": params,
                 "frequencies_hz": freqs,
-                "mode_catalog": modes,
+                "mode_catalog": enriched_catalog,
                 "mode_count": len(freqs),
+                "raw_mode_count": int(dedupe_meta.get("raw_mode_count") or len(raw_modes)),
+                "deduped_mode_count": int(dedupe_meta.get("deduped_mode_count") or len(modes)),
+                "intensity_p95_map": p95_map,
             }
         )
         if max_samples is not None and len(training) >= max_samples:
@@ -280,9 +306,10 @@ def build_surrogate_from_training_rows(
     mode_counts = np.array([len(r["frequencies_hz"]) for r in training_rows], dtype=np.int32)
     max_modes = int(mode_counts.max())
     freq_matrix = np.full((len(training_rows), max_modes), np.nan, dtype=np.float64)
+    all_numeric_fields = list(PHASE2_NUMERIC_FIELDS) + list(INTENSITY_DERIVED_FIELDS)
     scalar_arrays: Dict[str, np.ndarray] = {
         field: np.full((len(training_rows), max_modes), np.nan, dtype=np.float64)
-        for field in PHASE2_NUMERIC_FIELDS
+        for field in all_numeric_fields
     }
     cat_arrays: Dict[str, np.ndarray] = {
         field: np.full((len(training_rows), max_modes), -1, dtype=np.int32)
@@ -294,7 +321,7 @@ def build_surrogate_from_training_rows(
         freq_matrix[i, : len(freqs)] = np.asarray(freqs, dtype=np.float64)
         catalog = list(row.get("mode_catalog") or [])
         for j, mode in enumerate(catalog[:max_modes]):
-            for field in PHASE2_NUMERIC_FIELDS:
+            for field in all_numeric_fields:
                 val = mode.get(field)
                 try:
                     scalar_arrays[field][i, j] = float(val) if val is not None else np.nan
@@ -316,13 +343,26 @@ def build_surrogate_from_training_rows(
     for field, arr in cat_arrays.items():
         arrays[f"cat__{field}"] = arr
 
+    raw_counts = [int(r.get("raw_mode_count") or r.get("mode_count") or 0) for r in training_rows]
+    dedup_counts = [int(r.get("deduped_mode_count") or r.get("mode_count") or 0) for r in training_rows]
+
     return {
-        "schema": SURROGATE_SCHEMA_V2,
+        "schema": SURROGATE_SCHEMA_V2_1,
+        "model_version": MODEL_VERSION_V2_1,
         "generated_utc": utc_now(),
         "shape_name": shape_name,
-        "method": DEFAULT_PREDICTION_METHOD_V2,
+        "method": DEFAULT_PREDICTION_METHOD_V2_1,
         "scalar_alignment": "nearest_frequency_per_neighbor",
+        "frequency_alignment": "sorted_index_idw",
         "k_neighbors": int(min(k_neighbors, len(training_rows))),
+        "rom_training_catalog_source": ROM_TRAINING_CATALOG_SOURCE,
+        "rom_training_dedupe_tolerance_hz": ROM_DEDUPE_TOLERANCE_HZ,
+        "intensity_log_epsilon": INTENSITY_LOG_EPSILON,
+        "normalization_percentile": NORMALIZATION_PERCENTILE,
+        "rom_training_raw_mode_count": int(sum(raw_counts)),
+        "rom_training_deduped_mode_count": int(sum(dedup_counts)),
+        "rom_training_raw_mode_count_median": float(np.median(raw_counts)) if raw_counts else 0.0,
+        "rom_training_deduped_mode_count_median": float(np.median(dedup_counts)) if dedup_counts else 0.0,
         "feature_names": list(FEATURE_NAMES),
         "wood_ids": list(WOOD_IDS),
         "training_sample_count": len(training_rows),
@@ -332,10 +372,14 @@ def build_surrogate_from_training_rows(
                 "lhs_row_index": r["lhs_row_index"],
                 "run_id": r["run_id"],
                 "mode_count": r["mode_count"],
+                "raw_mode_count": r.get("raw_mode_count"),
+                "deduped_mode_count": r.get("deduped_mode_count"),
                 "catalog_path": r.get("catalog_path"),
             }
             for r in training_rows
         ],
+        "intensity_fields": list(INTENSITY_FIELDS),
+        "intensity_derived_fields": list(INTENSITY_DERIVED_FIELDS),
         "mode_count_min": int(mode_counts.min()),
         "mode_count_max": int(mode_counts.max()),
         "mode_count_median": float(np.median(mode_counts)),
@@ -416,7 +460,7 @@ def _neighbor_catalog_from_arrays(
         rec: Dict[str, Any] = {
             "frequency_hz": float(arrays["frequencies"][row_index, j]),
         }
-        for field in PHASE2_NUMERIC_FIELDS:
+        for field in PHASE2_NUMERIC_FIELDS + INTENSITY_DERIVED_FIELDS:
             key = f"scalar__{field}"
             if key in arrays:
                 val = float(arrays[key][row_index, j])
@@ -482,21 +526,33 @@ def predict_modal_catalog(
         pred_freqs[m] = np.average([float(f[m]) for f in neighbor_freqs], weights=weights)
 
     predicted_modes: List[Dict[str, Any]] = []
+    schema = str(model.get("schema") or SURROGATE_SCHEMA_V1)
+    is_v21 = schema in (SURROGATE_SCHEMA_V2_1, MODEL_VERSION_V2_1)
+    epsilon = float(model.get("intensity_log_epsilon") or INTENSITY_LOG_EPSILON)
+
     for mi, f_hz in enumerate(pred_freqs.tolist()):
         mode_rec = predict_mode_scalars_at_frequency(
             target_hz=float(f_hz),
             neighbor_catalogs=neighbor_catalogs,
             neighbor_weights=list(weights),
         )
+        if is_v21:
+            append_intensity_derivatives_to_prediction(
+                mode_rec,
+                neighbor_catalogs=neighbor_catalogs,
+                neighbor_weights=list(weights),
+                target_hz=float(f_hz),
+                epsilon=epsilon,
+            )
         mode_rec["mode_index"] = int(mi)
         predicted_modes.append(mode_rec)
 
-    schema = str(model.get("schema") or SURROGATE_SCHEMA_V1)
-    method = (
-        DEFAULT_PREDICTION_METHOD_V2
-        if schema == SURROGATE_SCHEMA_V2
-        else str(model.get("method") or DEFAULT_PREDICTION_METHOD_V1)
-    )
+    if schema == SURROGATE_SCHEMA_V2_1:
+        method = DEFAULT_PREDICTION_METHOD_V2_1
+    elif schema == SURROGATE_SCHEMA_V2:
+        method = DEFAULT_PREDICTION_METHOD_V2
+    else:
+        method = str(model.get("method") or DEFAULT_PREDICTION_METHOD_V1)
 
     return {
         "frequencies_hz": [round(float(f), 6) for f in pred_freqs.tolist()],
@@ -506,7 +562,13 @@ def predict_modal_catalog(
         "neighbor_sample_ids": neighbor_ids,
         "neighbor_distances": [round(float(dists[i]), 6) for i in nn_idx],
         "method": method,
+        "model_version": model.get("model_version"),
         "scalar_alignment": "nearest_frequency_per_neighbor",
+        "frequency_alignment": model.get("frequency_alignment") or "sorted_index_idw",
+        "rom_training_catalog_source": model.get("rom_training_catalog_source"),
+        "rom_training_dedupe_tolerance_hz": model.get("rom_training_dedupe_tolerance_hz"),
+        "intensity_log_epsilon": model.get("intensity_log_epsilon"),
+        "normalization_percentile": model.get("normalization_percentile"),
         "source_json": SURROGATE_JSON_NAME,
         "source_npz": SURROGATE_NPZ_NAME,
         "surrogate_schema": schema,

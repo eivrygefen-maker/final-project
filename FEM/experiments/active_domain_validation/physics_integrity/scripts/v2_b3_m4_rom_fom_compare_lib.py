@@ -25,8 +25,9 @@ from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
 ROM_PREDICTION_SCHEMA_V1 = "rom_prediction_pre_fom_v1"
 ROM_PREDICTION_SCHEMA_V2 = "m4_rom_prediction_v2"
-ROM_PREDICTION_SCHEMA = ROM_PREDICTION_SCHEMA_V2
-ROM_FOM_COMPARISON_SCHEMA = "rom_fom_comparison_v3"
+ROM_PREDICTION_SCHEMA_V2_1 = "m4_rom_prediction_v2_1"
+ROM_PREDICTION_SCHEMA = ROM_PREDICTION_SCHEMA_V2_1
+ROM_FOM_COMPARISON_SCHEMA = "rom_fom_comparison_v4"
 ROM_INDEX_SCHEMA = "rom_fom_comparison_index_v1"
 ACCURACY_HISTORY_SCHEMA = "rom_accuracy_history_v1"
 ACCURACY_SUMMARY_SCHEMA = "rom_accuracy_summary_v1"
@@ -299,6 +300,43 @@ def load_fom_modes_catalog(catalog_path: Path) -> List[Dict[str, Any]]:
             modes.append(dict(rec))
     modes.sort(key=lambda r: float(r["frequency_hz"]))
     return modes
+
+
+def load_fom_modes_catalog_deduped(
+    catalog_path: Path,
+    *,
+    tol_hz: float = 0.05,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
+    """Load raw catalog and return ROM-side deduped modes (does not modify FOM files)."""
+    from v2_b3_m4_aggregate_worker_results import _dedupe_catalog  # noqa: WPS433
+    from v2_b3_m4_rom_scalar_fields import (  # noqa: WPS433
+        ROM_COMPARE_CATALOG_SOURCE,
+        ROM_DEDUPE_TOLERANCE_HZ,
+        ROM_TRAINING_CATALOG_SOURCE,
+    )
+
+    raw_modes = load_fom_modes_catalog(catalog_path)
+    deduped, merge_groups = _dedupe_catalog(raw_modes, tol_hz=float(tol_hz))
+    meta = {
+        "rom_training_catalog_source": ROM_TRAINING_CATALOG_SOURCE,
+        "rom_compare_catalog_source": ROM_COMPARE_CATALOG_SOURCE,
+        "rom_training_dedupe_tolerance_hz": float(tol_hz or ROM_DEDUPE_TOLERANCE_HZ),
+        "raw_mode_count": len(raw_modes),
+        "deduped_mode_count": len(deduped),
+        "dedupe_merge_groups": len(merge_groups),
+    }
+    return raw_modes, deduped, meta
+
+
+def prepare_fom_modes_for_rom_compare(
+    modes: Sequence[Mapping[str, Any]],
+    *,
+    band: Tuple[float, float] = ACCURACY_BAND_HZ,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Optional[float]]]:
+    from v2_b3_m4_rom_scalar_fields import enrich_catalog_intensity_derivatives  # noqa: WPS433
+
+    enriched, p95_map = enrich_catalog_intensity_derivatives(list(modes), band=band)
+    return enriched, p95_map
 
 
 def _nearest_mode_by_frequency(
@@ -584,6 +622,7 @@ def _run_m4_surrogate_prediction(
     return {
         "status": ROM_STATUS_COMPLETED,
         "method": str(out.get("method") or "m4_modal_surrogate"),
+        "model_version": out.get("model_version") or model.get("model_version"),
         "source": source,
         "confidence": "m4_fom_knn_surrogate_holdout" if holdout else "m4_fom_knn_surrogate",
         "runtime_s": round(elapsed, 4),
@@ -595,6 +634,13 @@ def _run_m4_surrogate_prediction(
         "predicted_modes": modes,
         "modes": modes,
         "rom_prediction_runtime_s": round(elapsed, 4),
+        "rom_training_catalog_source": out.get("rom_training_catalog_source")
+        or model.get("rom_training_catalog_source"),
+        "rom_training_dedupe_tolerance_hz": out.get("rom_training_dedupe_tolerance_hz")
+        or model.get("rom_training_dedupe_tolerance_hz"),
+        "intensity_log_epsilon": out.get("intensity_log_epsilon") or model.get("intensity_log_epsilon"),
+        "normalization_percentile": out.get("normalization_percentile")
+        or model.get("normalization_percentile"),
         "error": None,
         "raw": out,
         "validation_meta": dict(validation_meta) if validation_meta else None,
@@ -703,10 +749,17 @@ def build_rom_prediction_document(
     has_scalars = any(
         m.get("top_share") is not None or m.get("radiation_proxy") is not None for m in predicted_modes
     )
-    schema = ROM_PREDICTION_SCHEMA_V2 if has_scalars else ROM_PREDICTION_SCHEMA_V1
+    has_v21 = any(m.get("radiation_proxy_log10") is not None for m in predicted_modes)
+    if has_v21:
+        schema = ROM_PREDICTION_SCHEMA_V2_1
+    elif has_scalars:
+        schema = ROM_PREDICTION_SCHEMA_V2
+    else:
+        schema = ROM_PREDICTION_SCHEMA_V1
     runtime_s = prediction.get("rom_prediction_runtime_s") or prediction.get("runtime_s")
     return {
         "schema": schema,
+        "model_version": prediction.get("model_version"),
         "generated_utc": utc_now(),
         "sample_id": context["sample_id"],
         "lhs_row_index": context["lhs_row_index"],
@@ -729,6 +782,10 @@ def build_rom_prediction_document(
         "predicted_modes": predicted_modes,
         "modes": predicted_modes,
         "error": prediction.get("error"),
+        "rom_training_catalog_source": prediction.get("rom_training_catalog_source"),
+        "rom_training_dedupe_tolerance_hz": prediction.get("rom_training_dedupe_tolerance_hz"),
+        "intensity_log_epsilon": prediction.get("intensity_log_epsilon"),
+        "normalization_percentile": prediction.get("normalization_percentile"),
     }
 
 
@@ -761,9 +818,10 @@ def build_rom_fom_comparison(
     fom_catalog_path_rel: Optional[str] = None,
     accuracy_band_hz: Tuple[float, float] = ACCURACY_BAND_HZ,
     validation_meta: Optional[Mapping[str, Any]] = None,
+    fom_catalog_meta: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     rom_freqs_all = list(rom_prediction.get("frequencies_hz") or [])
-    fom_modes_all = list(fom_modes)
+    fom_modes_all, _ = prepare_fom_modes_for_rom_compare(fom_modes, band=accuracy_band_hz)
     rom_freqs = filter_rom_frequencies_to_band(rom_freqs_all, band=accuracy_band_hz)
     fom_modes_band = filter_fom_modes_to_band(fom_modes_all, band=accuracy_band_hz)
     matches, match_meta = greedy_nearest_hz_match(
@@ -853,6 +911,18 @@ def build_rom_fom_comparison(
         "fom_deduped_mode_count": fom_summary.get("deduped_modes") or len(fom_modes_all),
         "fom_deduped_mode_count_in_band": len(fom_modes_band),
         "fom_catalog_path": fom_catalog_path_rel,
+        "model_version": rom_prediction.get("model_version"),
+        "rom_compare_catalog_source": (fom_catalog_meta or {}).get("rom_compare_catalog_source"),
+        "fom_compare_raw_mode_count": (fom_catalog_meta or {}).get("raw_mode_count"),
+        "fom_compare_deduped_mode_count": (fom_catalog_meta or {}).get("deduped_mode_count"),
+        "rom_training_dedupe_tolerance_hz": (fom_catalog_meta or {}).get(
+            "rom_training_dedupe_tolerance_hz"
+        ),
+        "intensity_log_epsilon": (rom_prediction.get("intensity_log_epsilon")),
+        "normalization_percentile": rom_prediction.get("normalization_percentile"),
+        "top_k_fraction": (phase2_block.get("phase2_intensity_metrics_v2_1") or {}).get(
+            "top_k_fraction"
+        ),
         "fom_runtime_s": fom_runtime,
         "rom_mode_count": match_meta["rom_mode_count"],
         "rom_mode_count_total": len(rom_freqs_all),
@@ -1005,6 +1075,19 @@ ACCURACY_HISTORY_FIELDS: Tuple[str, ...] = (
     "air_share_mae",
     "radiation_proxy_relative_error_median",
     "mic_output_proxy_relative_error_median",
+    "bridge_excitation_abs_relative_error_median",
+    "radiation_proxy_log_mae",
+    "mic_output_proxy_log_mae",
+    "bridge_excitation_abs_log_mae",
+    "radiation_proxy_p95_norm_mae",
+    "mic_output_proxy_p95_norm_mae",
+    "bridge_excitation_abs_p95_norm_mae",
+    "radiation_proxy_rank_correlation",
+    "mic_output_proxy_rank_correlation",
+    "bridge_excitation_rank_correlation",
+    "top_k_radiation_overlap",
+    "top_k_mic_overlap",
+    "top_k_bridge_overlap",
     "coupling_class_accuracy",
     "dominant_region_accuracy",
     "audio_weighted_frequency_error",
@@ -1045,6 +1128,45 @@ def _comparison_to_history_row(comparison: Mapping[str, Any]) -> Dict[str, Any]:
         ),
         "mic_output_proxy_relative_error_median": (
             (comparison.get("phase2_scalar_metrics") or {}).get("mic_output_proxy_relative_error_median")
+        ),
+        "bridge_excitation_abs_relative_error_median": (
+            (comparison.get("phase2_scalar_metrics") or {}).get(
+                "bridge_excitation_abs_relative_error_median"
+            )
+        ),
+        "radiation_proxy_log_mae": (comparison.get("phase2_scalar_metrics") or {}).get(
+            "radiation_proxy_log_mae"
+        ),
+        "mic_output_proxy_log_mae": (comparison.get("phase2_scalar_metrics") or {}).get(
+            "mic_output_proxy_log_mae"
+        ),
+        "bridge_excitation_abs_log_mae": (comparison.get("phase2_scalar_metrics") or {}).get(
+            "bridge_excitation_abs_log_mae"
+        ),
+        "radiation_proxy_p95_norm_mae": (comparison.get("phase2_scalar_metrics") or {}).get(
+            "radiation_proxy_p95_norm_mae"
+        ),
+        "mic_output_proxy_p95_norm_mae": (comparison.get("phase2_scalar_metrics") or {}).get(
+            "mic_output_proxy_p95_norm_mae"
+        ),
+        "bridge_excitation_abs_p95_norm_mae": (comparison.get("phase2_scalar_metrics") or {}).get(
+            "bridge_excitation_abs_p95_norm_mae"
+        ),
+        "radiation_proxy_rank_correlation": (comparison.get("phase2_scalar_metrics") or {}).get(
+            "radiation_proxy_rank_correlation"
+        ),
+        "mic_output_proxy_rank_correlation": (comparison.get("phase2_scalar_metrics") or {}).get(
+            "mic_output_proxy_rank_correlation"
+        ),
+        "bridge_excitation_rank_correlation": (comparison.get("phase2_scalar_metrics") or {}).get(
+            "bridge_excitation_rank_correlation"
+        ),
+        "top_k_radiation_overlap": (comparison.get("phase2_scalar_metrics") or {}).get(
+            "top_k_radiation_overlap"
+        ),
+        "top_k_mic_overlap": (comparison.get("phase2_scalar_metrics") or {}).get("top_k_mic_overlap"),
+        "top_k_bridge_overlap": (comparison.get("phase2_scalar_metrics") or {}).get(
+            "top_k_bridge_overlap"
         ),
         "coupling_class_accuracy": (comparison.get("phase2_scalar_metrics") or {}).get(
             "coupling_class_accuracy"
@@ -1093,7 +1215,7 @@ def _write_accuracy_history_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -
 
 def _coerce_history_numeric(row: Mapping[str, Any]) -> Dict[str, Any]:
     out = dict(row)
-    for key in (
+    float_keys = (
         "training_sample_count_at_prediction",
         "matched_mode_count",
         "median_relative_error",
@@ -1101,7 +1223,33 @@ def _coerce_history_numeric(row: Mapping[str, Any]) -> Dict[str, Any]:
         "p90_relative_error",
         "median_abs_error_hz",
         "mean_abs_error_hz",
-    ):
+        "top_share_mae",
+        "back_share_mae",
+        "air_share_mae",
+        "radiation_proxy_relative_error_median",
+        "mic_output_proxy_relative_error_median",
+        "bridge_excitation_abs_relative_error_median",
+        "radiation_proxy_log_mae",
+        "mic_output_proxy_log_mae",
+        "bridge_excitation_abs_log_mae",
+        "radiation_proxy_p95_norm_mae",
+        "mic_output_proxy_p95_norm_mae",
+        "bridge_excitation_abs_p95_norm_mae",
+        "radiation_proxy_rank_correlation",
+        "mic_output_proxy_rank_correlation",
+        "bridge_excitation_rank_correlation",
+        "top_k_radiation_overlap",
+        "top_k_mic_overlap",
+        "top_k_bridge_overlap",
+        "coupling_class_accuracy",
+        "dominant_region_accuracy",
+        "audio_weighted_frequency_error",
+        "audio_weighted_output_proxy_error",
+        "rom_prediction_runtime_s",
+        "rom_comparison_runtime_s",
+        "total_rom_runtime_s",
+    )
+    for key in float_keys:
         val = out.get(key)
         if val in (None, "", "None"):
             out[key] = None
@@ -1178,6 +1326,81 @@ def build_accuracy_summary(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
                     float(r["mic_output_proxy_relative_error_median"])
                     for r in rows
                     if r.get("mic_output_proxy_relative_error_median") not in (None, "")
+                ]
+            ),
+            "bridge_excitation_abs_rel_error_median": _median(
+                [
+                    float(r["bridge_excitation_abs_relative_error_median"])
+                    for r in rows
+                    if r.get("bridge_excitation_abs_relative_error_median") not in (None, "")
+                ]
+            ),
+            "radiation_proxy_log_mae_median": _median(
+                [float(r["radiation_proxy_log_mae"]) for r in rows if r.get("radiation_proxy_log_mae") not in (None, "")]
+            ),
+            "mic_output_proxy_log_mae_median": _median(
+                [float(r["mic_output_proxy_log_mae"]) for r in rows if r.get("mic_output_proxy_log_mae") not in (None, "")]
+            ),
+            "bridge_excitation_abs_log_mae_median": _median(
+                [
+                    float(r["bridge_excitation_abs_log_mae"])
+                    for r in rows
+                    if r.get("bridge_excitation_abs_log_mae") not in (None, "")
+                ]
+            ),
+            "radiation_proxy_p95_norm_mae_median": _median(
+                [
+                    float(r["radiation_proxy_p95_norm_mae"])
+                    for r in rows
+                    if r.get("radiation_proxy_p95_norm_mae") not in (None, "")
+                ]
+            ),
+            "mic_output_proxy_p95_norm_mae_median": _median(
+                [
+                    float(r["mic_output_proxy_p95_norm_mae"])
+                    for r in rows
+                    if r.get("mic_output_proxy_p95_norm_mae") not in (None, "")
+                ]
+            ),
+            "bridge_excitation_abs_p95_norm_mae_median": _median(
+                [
+                    float(r["bridge_excitation_abs_p95_norm_mae"])
+                    for r in rows
+                    if r.get("bridge_excitation_abs_p95_norm_mae") not in (None, "")
+                ]
+            ),
+            "radiation_proxy_rank_correlation_mean": _mae(
+                [
+                    float(r["radiation_proxy_rank_correlation"])
+                    for r in rows
+                    if r.get("radiation_proxy_rank_correlation") not in (None, "")
+                ]
+            ),
+            "top_k_radiation_overlap_mean": _mae(
+                [float(r["top_k_radiation_overlap"]) for r in rows if r.get("top_k_radiation_overlap") not in (None, "")]
+            ),
+            "top_k_mic_overlap_mean": _mae(
+                [float(r["top_k_mic_overlap"]) for r in rows if r.get("top_k_mic_overlap") not in (None, "")]
+            ),
+            "top_k_bridge_overlap_mean": _mae(
+                [
+                    float(r["top_k_bridge_overlap"])
+                    for r in rows
+                    if r.get("top_k_bridge_overlap") not in (None, "")
+                ]
+            ),
+            "bridge_excitation_rank_correlation_mean": _mae(
+                [
+                    float(r["bridge_excitation_rank_correlation"])
+                    for r in rows
+                    if r.get("bridge_excitation_rank_correlation") not in (None, "")
+                ]
+            ),
+            "mic_output_proxy_rank_correlation_mean": _mae(
+                [
+                    float(r["mic_output_proxy_rank_correlation"])
+                    for r in rows
+                    if r.get("mic_output_proxy_rank_correlation") not in (None, "")
                 ]
             ),
             "audio_weighted_frequency_error_mean": _mae(
@@ -1507,7 +1730,7 @@ def maybe_run_rom_compare(
     t_compare = time.perf_counter()
     try:
         catalog_path = run_root / "aggregation" / "modes_catalog.jsonl"
-        fom_modes = load_fom_modes_catalog(catalog_path)
+        _raw_modes, fom_modes, fom_catalog_meta = load_fom_modes_catalog_deduped(catalog_path)
         fom_summary = read_run_production_summary(run_root)
         if str(fom_summary.get("aggregation_status") or "") != AGG_PASS:
             raise RuntimeError(
@@ -1573,6 +1796,7 @@ def maybe_run_rom_compare(
             else None,
             fom_catalog_path_rel=rel(catalog_path, repo_root=repo_root),
             validation_meta=validation_meta,
+            fom_catalog_meta=fom_catalog_meta,
         )
         paths = write_rom_fom_comparison_artifacts(
             repo_root=repo_root,
