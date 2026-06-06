@@ -39,6 +39,12 @@ from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
     write_per_sample_spec,
 )
 from v2_b3_m4_lhs_production_batch import run_production_batch  # noqa: E402
+from v2_b3_m4_production_control import (  # noqa: E402
+    clear_stop_after_current,
+    is_stop_after_current_requested,
+    request_stop_after_current,
+    stop_after_current_path,
+)
 from v2_b3_m4_shared_export import detect_shared_root  # noqa: E402
 from v2_b3_m4_worker_run_lib import detect_repo_root, rel, utc_now  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
@@ -130,6 +136,16 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=None,
         help="Shared export root (default: auto-detect /media/sf_gmar).",
     )
+    parser.add_argument(
+        "--request-stop",
+        action="store_true",
+        help="Request graceful stop after the current sample finishes (writes control file).",
+    )
+    parser.add_argument(
+        "--clear-stop",
+        action="store_true",
+        help="Clear STOP_AFTER_CURRENT_SAMPLE before/without running a batch.",
+    )
     return parser.parse_args(argv)
 
 
@@ -219,6 +235,9 @@ def _sync_lhs_from_finish(
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parse_args(argv)
+    if args.request_stop and args.clear_stop:
+        print("error: use only one of --request-stop / --clear-stop", file=sys.stderr)
+        return 2
     if args.reconcile_existing_runs:
         if args.execute or args.dry_run:
             print("error: --reconcile-existing-runs cannot combine with --execute/--dry-run", file=sys.stderr)
@@ -226,8 +245,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     elif args.dry_run and args.execute:
         print("error: use --dry-run or --execute, not both", file=sys.stderr)
         return 2
-    elif not args.dry_run and not args.execute and not args.reconcile_existing_runs:
-        print("error: specify --dry-run, --execute, or --reconcile-existing-runs", file=sys.stderr)
+    elif (
+        not args.dry_run
+        and not args.execute
+        and not args.reconcile_existing_runs
+        and not args.request_stop
+        and not args.clear_stop
+    ):
+        print(
+            "error: specify --dry-run, --execute, --reconcile-existing-runs, "
+            "--request-stop, or --clear-stop",
+            file=sys.stderr,
+        )
         return 2
     if not args.reconcile_existing_runs and args.max_samples < 1:
         print("error: --max-samples must be >= 1", file=sys.stderr)
@@ -240,6 +269,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     repo_root = detect_repo_root(SCRIPT_DIR)
+
+    if args.request_stop:
+        path = request_stop_after_current(repo_root)
+        print(f"stop_requested=true path={rel(path, repo_root=repo_root)}")
+        print("Current sample (if any) will finish workers/aggregation/freeze/export before exit.")
+        if not args.clear_stop and not args.execute and not args.dry_run and not args.reconcile_existing_runs:
+            return 0
+
+    if args.clear_stop:
+        cleared = clear_stop_after_current(repo_root)
+        print(f"stop_cleared={str(cleared).lower()} path={rel(stop_after_current_path(repo_root), repo_root=repo_root)}")
+        if not args.execute and not args.dry_run and not args.reconcile_existing_runs and not args.request_stop:
+            return 0
+
     lhs_path = _resolve_lhs_path(repo_root, args.lhs_json)
     if not lhs_path.is_file():
         print(f"error: missing --lhs-json: {lhs_path}", file=sys.stderr)
@@ -382,6 +425,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     allow_reference = bool(args.include_reference) or (
         not exclude_reference and any(r["sample_id"] == REFERENCE_SAMPLE_ID for r in selection)
     )
+
+    if is_stop_after_current_requested(repo_root):
+        print(
+            "warning: STOP_AFTER_CURRENT_SAMPLE is already set; "
+            "batch will not start new samples until --clear-stop",
+            flush=True,
+        )
+        return 0
 
     shared_root = detect_shared_root(args.shared_root)
     if shared_root is None:

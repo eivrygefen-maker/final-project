@@ -14,6 +14,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from v2_b3_m4_lhs_pool_bridge import classify_sample_outcome  # noqa: E402
+from v2_b3_m4_production_control import is_stop_after_current_requested  # noqa: E402
 from v2_b3_m4_shared_export import try_export_sample_to_shared  # noqa: E402
 from v2_b3_m4_run_one_sample import (  # noqa: E402
     REFERENCE_SAMPLE_ID,
@@ -260,8 +261,26 @@ def run_production_batch(
     completed: List[Dict[str, Any]] = []
     failed: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
+    stopped_early = False
+    stop_reason: Optional[str] = None
 
     for entry in samples:
+        if is_stop_after_current_requested(repo_root):
+            stopped_early = True
+            stop_reason = "STOP_AFTER_CURRENT_SAMPLE"
+            skipped.append(
+                {
+                    "sample_id": str(entry.get("sample_id")),
+                    "run_id": str(entry.get("run_id")),
+                    "reason": "not_started_stop_after_current",
+                }
+            )
+            print(
+                "[stop] STOP_AFTER_CURRENT_SAMPLE set; not starting further samples",
+                flush=True,
+            )
+            break
+
         sid = str(entry["sample_id"])
         rid = str(entry["run_id"])
         run_root = _sample_run_root(entry)
@@ -431,6 +450,8 @@ def run_production_batch(
         "completed": completed,
         "failed": failed,
         "skipped": skipped,
+        "stopped_early": stopped_early,
+        "stop_reason": stop_reason,
     }
     write_json_atomic(batch_dir / "batch_execution_summary.json", batch_summary)
     return batch_summary
