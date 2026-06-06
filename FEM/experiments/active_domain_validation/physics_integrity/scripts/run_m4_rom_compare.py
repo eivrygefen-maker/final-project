@@ -34,10 +34,12 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         ),
         epilog=(
             "Examples:\n"
+            "  # No-leakage holdout validation on sample_005:\n"
             "  python FEM/.../run_m4_rom_compare.py --lhs-json ROM/classic/lhs_pool.json "
-            "--force-sample sample_005\n"
+            "--force-sample sample_005 --exclude-target-from-training\n\n"
+            "  # Train-included compare (may show leakage / zero error):\n"
             "  python FEM/.../run_m4_rom_compare.py --lhs-json ROM/classic/lhs_pool.json "
-            "--completed-only --max-samples 10 --write-csv"
+            "--force-sample sample_005"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -53,6 +55,22 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         type=float,
         default=DEFAULT_MAX_MATCH_DISTANCE_HZ,
         help="Greedy match tolerance in Hz.",
+    )
+    parser.add_argument(
+        "--exclude-target-from-training",
+        action="store_true",
+        help=(
+            "Build a temporary holdout surrogate excluding the target sample from training. "
+            "Does not overwrite production surrogate."
+        ),
+    )
+    parser.add_argument(
+        "--leave-one-out",
+        action="store_true",
+        help=(
+            "Like --exclude-target-from-training but labels validation_mode=leave_one_out. "
+            "When comparing multiple samples, each target is excluded from its own training set."
+        ),
     )
     parser.add_argument(
         "--run-prepredict",
@@ -88,6 +106,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    holdout = bool(args.exclude_target_from_training or args.leave_one_out)
+
     selection = select_completed_lhs_for_rom_compare(
         pool,
         completed_only=bool(args.completed_only),
@@ -100,6 +120,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     print(f"selected_count={len(selection)} lhs_json={rel(lhs_path, repo_root=repo_root)}")
+    if holdout:
+        print("validation=holdout_no_leakage (temporary surrogate, production model unchanged)")
     for row in selection:
         print(f"  {row['sample_id']} -> {row['run_id']} (lhs_index={row['lhs_row_index']})")
 
@@ -121,13 +143,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         run_root = context["run_root"]
         print(f"[rom] {sid} / {rid} ...", flush=True)
 
-        if args.run_prepredict and not args.compare_only:
+        if args.run_prepredict and not args.compare_only and not holdout:
             prep = maybe_run_rom_prepredict(
                 repo_root=repo_root,
                 run_root=run_root,
                 context=context,
                 nev=int(args.nev),
                 nonblocking=True,
+                pool=pool,
             )
             print(
                 f"  prepredict status={prep.get('status')} "
@@ -145,14 +168,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             nonblocking=True,
             copy_to_project=not bool(args.no_project_copy),
             write_csv=bool(args.write_csv),
-            rerun_rom_if_missing=True,
+            rerun_rom_if_missing=not holdout,
+            pool=pool,
+            exclude_target_from_training=bool(args.exclude_target_from_training),
+            leave_one_out=bool(args.leave_one_out),
         )
         comparison = cmp_result.get("comparison")
         if comparison and comparison.get("status") == "COMPLETED":
             ok += 1
             print(
-                f"  compare status=COMPLETED matched={comparison.get('matched_mode_count')} "
-                f"mean_abs_hz={comparison.get('mean_abs_error_hz')} "
+                f"  compare status=COMPLETED "
+                f"validation={comparison.get('validation_mode')} "
+                f"meaningful={comparison.get('accuracy_meaningful')} "
+                f"train_includes_target={comparison.get('training_includes_target')} "
+                f"matched={comparison.get('matched_mode_count')} "
+                f"median_rel={comparison.get('median_relative_error')} "
                 f"path={comparison.get('last_rom_comparison_path')}",
                 flush=True,
             )

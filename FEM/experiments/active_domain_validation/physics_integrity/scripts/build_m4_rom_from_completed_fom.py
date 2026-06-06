@@ -46,6 +46,12 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--run-id-suffix", default=DEFAULT_RUN_ID_SUFFIX)
     parser.add_argument("--k-neighbors", type=int, default=DEFAULT_K_NEIGHBORS)
     parser.add_argument("--min-mode-count", type=int, default=10)
+    parser.add_argument(
+        "--exclude-sample",
+        action="append",
+        default=[],
+        help="Exclude sample_id(s) from training (repeatable). For manual holdout builds.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="List training rows only.")
     return parser.parse_args(argv)
 
@@ -76,18 +82,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             flush=True,
         )
 
+    exclude_ids = [str(s).strip() for s in (args.exclude_sample or []) if str(s).strip()]
     training, skipped = collect_completed_fom_training_rows(
         repo_root=repo_root,
         pool=pool,
         run_id_suffix=str(args.run_id_suffix),
         completed_only=bool(args.completed_only),
         max_samples=args.max_samples,
+        exclude_sample_ids=exclude_ids or None,
         min_mode_count=int(args.min_mode_count),
     )
 
     print(f"shape_name={shape_name}")
     print(f"lhs_json={rel(lhs_path, repo_root=repo_root)}")
     print(f"training_rows={len(training)} skipped_rows={len(skipped)}")
+    if exclude_ids:
+        print(f"excluded_from_training={exclude_ids}")
     for row in training:
         print(
             f"  {row['sample_id']} modes={row['mode_count']} "

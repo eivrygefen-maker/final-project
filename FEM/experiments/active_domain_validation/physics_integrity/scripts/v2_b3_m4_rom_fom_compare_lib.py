@@ -39,6 +39,10 @@ TOP_RADIATION_MODE_FRACTION = 0.20
 ACCURACY_HISTORY_CSV = "rom_accuracy_history.csv"
 ACCURACY_SUMMARY_JSON = "rom_accuracy_summary.json"
 
+VALIDATION_TRAIN_INCLUDED = "train_included"
+VALIDATION_HOLDOUT = "holdout"
+VALIDATION_LEAVE_ONE_OUT = "leave_one_out"
+
 ROM_STATUS_COMPLETED = "COMPLETED"
 ROM_STATUS_FAILED = "FAILED"
 ROM_STATUS_SKIPPED = "SKIPPED"
@@ -75,13 +79,45 @@ def _import_rom_manager(repo_root: Path):
 
 def _import_surrogate_helpers():
     from v2_b3_m4_modal_surrogate_lib import (  # noqa: WPS433
+        build_holdout_surrogate_model,
         load_surrogate_model,
         predict_modal_frequencies,
+        production_surrogate_training_sample_ids,
         resolve_active_rom_backend,
         surrogate_json_path,
     )
 
-    return load_surrogate_model, predict_modal_frequencies, resolve_active_rom_backend, surrogate_json_path
+    return (
+        load_surrogate_model,
+        predict_modal_frequencies,
+        resolve_active_rom_backend,
+        surrogate_json_path,
+        build_holdout_surrogate_model,
+        production_surrogate_training_sample_ids,
+    )
+
+
+def resolve_validation_metadata(
+    *,
+    target_sample_id: str,
+    training_sample_ids: Sequence[str],
+    excluded_sample_ids: Sequence[str],
+    validation_mode: str,
+) -> Dict[str, Any]:
+    train_ids = [str(s) for s in training_sample_ids if str(s)]
+    excluded = [str(s) for s in excluded_sample_ids if str(s)]
+    includes_target = str(target_sample_id) in train_ids
+    if validation_mode in (VALIDATION_HOLDOUT, VALIDATION_LEAVE_ONE_OUT):
+        includes_target = False
+    meaningful = not includes_target and validation_mode != VALIDATION_TRAIN_INCLUDED
+    return {
+        "validation_mode": validation_mode,
+        "training_includes_target": includes_target,
+        "training_sample_ids": train_ids,
+        "excluded_sample_ids": excluded,
+        "training_sample_count_at_prediction": len(train_ids),
+        "accuracy_meaningful": meaningful,
+    }
 
 
 def rom_dir_for_run(run_root: Path) -> Path:
@@ -371,18 +407,25 @@ def _error_metrics(matches: Sequence[Mapping[str, Any]]) -> Dict[str, Optional[f
     }
 
 
-def _accuracy_spec_block(metrics: Mapping[str, Any]) -> Dict[str, Any]:
+def _accuracy_spec_block(
+    metrics: Mapping[str, Any],
+    *,
+    accuracy_meaningful: bool,
+) -> Dict[str, Any]:
     median_rel = metrics.get("median_relative_error")
-    meets = (
+    meets_raw = (
         median_rel is not None
         and median_rel == median_rel
         and float(median_rel) <= TARGET_MEDIAN_RELATIVE_ERROR
     )
+    meets_meaningful = bool(meets_raw and accuracy_meaningful)
     return {
         "frequency_band_hz": list(ACCURACY_BAND_HZ),
         "primary_metric": PRIMARY_ACCURACY_METRIC,
         "target_median_relative_error": TARGET_MEDIAN_RELATIVE_ERROR,
-        "meets_target": bool(meets) if median_rel is not None else False,
+        "accuracy_meaningful": bool(accuracy_meaningful),
+        "meets_target": bool(meets_raw) if median_rel is not None else False,
+        "meets_target_meaningful": meets_meaningful if median_rel is not None else False,
         "secondary_metrics": [
             "mean_relative_error",
             "p90_relative_error",
@@ -446,27 +489,47 @@ def _run_m4_surrogate_prediction(
     shape_name: str,
     parameters: Mapping[str, Any],
     nev: int,
+    surrogate_model: Optional[Mapping[str, Any]] = None,
+    validation_meta: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    load_surrogate_model, predict_modal_frequencies, _, surrogate_json_path = _import_surrogate_helpers()
+    (
+        load_surrogate_model,
+        predict_modal_frequencies,
+        _,
+        surrogate_json_path,
+        _,
+        _,
+    ) = _import_surrogate_helpers()
     t0 = time.perf_counter()
-    model = load_surrogate_model(repo_root, shape_name)
+    model = dict(surrogate_model) if surrogate_model is not None else load_surrogate_model(repo_root, shape_name)
     out = predict_modal_frequencies(model, parameters, nev=int(nev))
     elapsed = time.perf_counter() - t0
     freqs = [float(f) for f in (out.get("frequencies_hz") or [])]
     modes = [_unavailable_mode_record(f) for f in freqs]
+    holdout = bool(model.get("holdout_validation"))
+    source = (
+        f"holdout:{','.join(model.get('excluded_sample_ids') or [])}"
+        if holdout
+        else str(surrogate_json_path(repo_root, shape_name))
+    )
+    train_ids = list((validation_meta or {}).get("training_sample_ids") or [])
+    if not train_ids:
+        train_ids = [str(s.get("sample_id") or "") for s in (model.get("training_samples") or []) if s.get("sample_id")]
     return {
         "status": ROM_STATUS_COMPLETED,
         "method": str(out.get("method") or "m4_modal_surrogate"),
-        "source": str(surrogate_json_path(repo_root, shape_name)),
-        "confidence": "m4_fom_knn_surrogate",
+        "source": source,
+        "confidence": "m4_fom_knn_surrogate_holdout" if holdout else "m4_fom_knn_surrogate",
         "runtime_s": round(elapsed, 4),
         "nev_requested": int(nev),
         "nev_returned": int(out.get("nev_returned") or len(freqs)),
-        "num_basis_modes": int(model.get("training_sample_count") or 0),
+        "num_basis_modes": int(model.get("training_sample_count") or len(train_ids)),
+        "training_sample_ids": train_ids,
         "frequencies_hz": [round(f, 6) for f in freqs],
         "modes": modes,
         "error": None,
         "raw": out,
+        "validation_meta": dict(validation_meta) if validation_meta else None,
     }
 
 
@@ -508,14 +571,16 @@ def run_rom_online_prediction(
     shape_name: str,
     parameters: Mapping[str, Any],
     nev: int = DEFAULT_ROM_NEV,
+    surrogate_model: Optional[Mapping[str, Any]] = None,
+    validation_meta: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Predict modal frequencies using the best available ROM backend:
     1) M4 modal surrogate trained from modes_catalog.jsonl (preferred)
     2) Legacy POD reduced_basis.npz + operator projection (optional fallback)
     """
-    _, _, resolve_active_rom_backend, _ = _import_surrogate_helpers()
-    backend = resolve_active_rom_backend(repo_root, shape_name)
+    _, _, resolve_active_rom_backend, _, _, _ = _import_surrogate_helpers()
+    backend = "m4_surrogate" if surrogate_model is not None else resolve_active_rom_backend(repo_root, shape_name)
     t0 = time.perf_counter()
     try:
         if backend == "m4_surrogate":
@@ -524,6 +589,8 @@ def run_rom_online_prediction(
                 shape_name=shape_name,
                 parameters=parameters,
                 nev=nev,
+                surrogate_model=surrogate_model,
+                validation_meta=validation_meta,
             )
         if backend == "legacy_basis":
             return _run_legacy_basis_prediction(
@@ -611,6 +678,7 @@ def build_rom_fom_comparison(
     rom_prediction_path_rel: Optional[str] = None,
     fom_catalog_path_rel: Optional[str] = None,
     accuracy_band_hz: Tuple[float, float] = ACCURACY_BAND_HZ,
+    validation_meta: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     rom_freqs_all = list(rom_prediction.get("frequencies_hz") or [])
     fom_modes_all = list(fom_modes)
@@ -622,8 +690,30 @@ def build_rom_fom_comparison(
         max_match_distance_hz=max_match_distance_hz,
     )
     metrics = _error_metrics(matches)
-    training_count = _training_sample_count_from_prediction(rom_prediction)
-    accuracy_spec = _accuracy_spec_block(metrics)
+    vmeta = dict(validation_meta or rom_prediction.get("validation_meta") or {})
+    if not vmeta:
+        train_ids = list(rom_prediction.get("training_sample_ids") or [])
+        target_sid = str(context["sample_id"])
+        includes = target_sid in train_ids
+        vmeta = resolve_validation_metadata(
+            target_sample_id=target_sid,
+            training_sample_ids=train_ids,
+            excluded_sample_ids=[],
+            validation_mode=VALIDATION_TRAIN_INCLUDED if includes else VALIDATION_HOLDOUT,
+        )
+    training_count = int(
+        vmeta.get("training_sample_count_at_prediction")
+        or _training_sample_count_from_prediction(rom_prediction)
+        or 0
+    )
+    accuracy_meaningful = bool(vmeta.get("accuracy_meaningful"))
+    accuracy_spec = _accuracy_spec_block(metrics, accuracy_meaningful=accuracy_meaningful)
+    warnings: List[str] = []
+    if vmeta.get("training_includes_target"):
+        warnings.append(
+            "train_test_leakage: target sample included in surrogate training set; "
+            "accuracy metrics are not meaningful"
+        )
 
     fom_runtime = None
     rt_path_hint = fom_summary.get("runtime_summary_path")
@@ -656,7 +746,12 @@ def build_rom_fom_comparison(
         "parameters": dict(context.get("parameters") or {}),
         "accuracy_spec": accuracy_spec,
         "frequency_band_hz": list(accuracy_band_hz),
+        "validation_mode": vmeta.get("validation_mode"),
+        "training_includes_target": vmeta.get("training_includes_target"),
+        "training_sample_ids": list(vmeta.get("training_sample_ids") or []),
+        "excluded_sample_ids": list(vmeta.get("excluded_sample_ids") or []),
         "training_sample_count_at_prediction": training_count,
+        "accuracy_meaningful": accuracy_meaningful,
         "rom_prediction_status": rom_status,
         "rom_prediction_method": rom_prediction.get("method"),
         "rom_prediction_path": rom_prediction_path_rel,
@@ -682,7 +777,7 @@ def build_rom_fom_comparison(
         "fom_frequencies_hz": [round(float(r["frequency_hz"]), 6) for r in fom_modes_band],
         "fom_frequencies_hz_total": [round(float(r["frequency_hz"]), 6) for r in fom_modes_all],
         "status": compare_status,
-        "warnings": [],
+        "warnings": warnings,
     }
 
 
@@ -732,7 +827,13 @@ def write_rom_fom_comparison_artifacts(
             "training_sample_count_at_prediction": comparison.get(
                 "training_sample_count_at_prediction"
             ),
+            "validation_mode": comparison.get("validation_mode"),
+            "training_includes_target": comparison.get("training_includes_target"),
+            "accuracy_meaningful": comparison.get("accuracy_meaningful"),
             "meets_target": (comparison.get("accuracy_spec") or {}).get("meets_target"),
+            "meets_target_meaningful": (comparison.get("accuracy_spec") or {}).get(
+                "meets_target_meaningful"
+            ),
         }
         with index_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(index_row, sort_keys=True) + "\n")
@@ -790,6 +891,10 @@ ACCURACY_HISTORY_FIELDS: Tuple[str, ...] = (
     "recorded_utc",
     "sample_id",
     "run_id",
+    "validation_mode",
+    "training_includes_target",
+    "accuracy_meaningful",
+    "excluded_sample_ids",
     "training_sample_count_at_prediction",
     "rom_prediction_method",
     "matched_mode_count",
@@ -799,16 +904,22 @@ ACCURACY_HISTORY_FIELDS: Tuple[str, ...] = (
     "median_abs_error_hz",
     "mean_abs_error_hz",
     "meets_target",
+    "meets_target_meaningful",
     "status",
 )
 
 
 def _comparison_to_history_row(comparison: Mapping[str, Any]) -> Dict[str, Any]:
     spec = comparison.get("accuracy_spec") or {}
+    excluded = comparison.get("excluded_sample_ids") or []
     return {
         "recorded_utc": comparison.get("generated_utc") or utc_now(),
         "sample_id": comparison.get("sample_id"),
         "run_id": comparison.get("run_id"),
+        "validation_mode": comparison.get("validation_mode"),
+        "training_includes_target": comparison.get("training_includes_target"),
+        "accuracy_meaningful": comparison.get("accuracy_meaningful"),
+        "excluded_sample_ids": ";".join(str(s) for s in excluded if s),
         "training_sample_count_at_prediction": comparison.get("training_sample_count_at_prediction"),
         "rom_prediction_method": comparison.get("rom_prediction_method"),
         "matched_mode_count": comparison.get("matched_mode_count"),
@@ -818,6 +929,7 @@ def _comparison_to_history_row(comparison: Mapping[str, Any]) -> Dict[str, Any]:
         "median_abs_error_hz": comparison.get("median_abs_error_hz"),
         "mean_abs_error_hz": comparison.get("mean_abs_error_hz"),
         "meets_target": spec.get("meets_target"),
+        "meets_target_meaningful": spec.get("meets_target_meaningful"),
         "status": comparison.get("status"),
     }
 
@@ -865,14 +977,45 @@ def _coerce_history_numeric(row: Mapping[str, Any]) -> Dict[str, Any]:
             out[key] = float(val) if "error" in key or "hz" in key else int(float(val))
         except (TypeError, ValueError):
             out[key] = None
-    meets = out.get("meets_target")
-    if isinstance(meets, str):
-        out["meets_target"] = meets.strip().lower() in ("true", "1", "yes")
+    for key in ("meets_target", "meets_target_meaningful", "training_includes_target", "accuracy_meaningful"):
+        val = out.get(key)
+        if isinstance(val, str):
+            out[key] = val.strip().lower() in ("true", "1", "yes")
     return out
+
+
+def _aggregate_accuracy_block(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    medians = [
+        float(r["median_relative_error"])
+        for r in rows
+        if r.get("median_relative_error") is not None and r["median_relative_error"] == r["median_relative_error"]
+    ]
+    latest = rows[-1] if rows else {}
+    return {
+        "comparison_count": len(rows),
+        "median_of_median_relative_error": round(statistics.median(medians), 8) if medians else None,
+        "mean_of_median_relative_error": round(statistics.mean(medians), 8) if medians else None,
+        "p90_of_median_relative_error": round(_percentile(medians, 90.0), 8) if medians else None,
+        "samples_meeting_target": sum(1 for v in medians if v <= TARGET_MEDIAN_RELATIVE_ERROR),
+        "samples_meeting_target_fraction": round(
+            sum(1 for v in medians if v <= TARGET_MEDIAN_RELATIVE_ERROR) / len(medians), 4
+        )
+        if medians
+        else None,
+        "latest_sample_id": latest.get("sample_id"),
+        "latest_run_id": latest.get("run_id"),
+        "latest_median_relative_error": latest.get("median_relative_error"),
+        "latest_training_sample_count_at_prediction": latest.get("training_sample_count_at_prediction"),
+        "latest_meets_target": latest.get("meets_target"),
+        "latest_meets_target_meaningful": latest.get("meets_target_meaningful"),
+        "latest_validation_mode": latest.get("validation_mode"),
+        "latest_accuracy_meaningful": latest.get("accuracy_meaningful"),
+    }
 
 
 def build_accuracy_summary(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     parsed = [_coerce_history_numeric(r) for r in rows if r.get("status") == ROM_COMPARE_COMPLETED]
+    meaningful = [r for r in parsed if bool(r.get("accuracy_meaningful"))]
     medians = [
         float(r["median_relative_error"])
         for r in parsed
@@ -881,7 +1024,7 @@ def build_accuracy_summary(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     meets = [bool(r.get("meets_target")) for r in parsed if r.get("meets_target") is not None]
 
     by_training: Dict[int, List[float]] = {}
-    for r in parsed:
+    for r in meaningful:
         tc = r.get("training_sample_count_at_prediction")
         med = r.get("median_relative_error")
         if tc is None or med is None or med != med:
@@ -901,34 +1044,19 @@ def build_accuracy_summary(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
             }
         )
 
-    latest = parsed[-1] if parsed else {}
+    leakage = [r for r in parsed if not bool(r.get("accuracy_meaningful"))]
     return {
         "schema": ACCURACY_SUMMARY_SCHEMA,
         "generated_utc": utc_now(),
         "comparison_count": len(parsed),
+        "meaningful_comparison_count": len(meaningful),
+        "leakage_comparison_count": len(leakage),
         "frequency_band_hz": list(ACCURACY_BAND_HZ),
         "primary_metric": PRIMARY_ACCURACY_METRIC,
         "target_median_relative_error": TARGET_MEDIAN_RELATIVE_ERROR,
-        "aggregate": {
-            "median_of_median_relative_error": round(statistics.median(medians), 8) if medians else None,
-            "mean_of_median_relative_error": round(statistics.mean(medians), 8) if medians else None,
-            "p90_of_median_relative_error": round(_percentile(medians, 90.0), 8)
-            if medians
-            else None,
-            "samples_meeting_target": sum(1 for v in medians if v <= TARGET_MEDIAN_RELATIVE_ERROR),
-            "samples_meeting_target_fraction": round(
-                sum(1 for v in medians if v <= TARGET_MEDIAN_RELATIVE_ERROR) / len(medians), 4
-            )
-            if medians
-            else None,
-            "latest_sample_id": latest.get("sample_id"),
-            "latest_run_id": latest.get("run_id"),
-            "latest_median_relative_error": latest.get("median_relative_error"),
-            "latest_training_sample_count_at_prediction": latest.get(
-                "training_sample_count_at_prediction"
-            ),
-            "latest_meets_target": latest.get("meets_target"),
-        },
+        "aggregate_all_comparisons": _aggregate_accuracy_block(parsed),
+        "aggregate_meaningful_only": _aggregate_accuracy_block(meaningful),
+        "aggregate": _aggregate_accuracy_block(meaningful),
         "by_training_sample_count": training_breakdown,
     }
 
@@ -974,11 +1102,75 @@ def lhs_pool_rom_patch_from_comparison(comparison: Mapping[str, Any]) -> Dict[st
         "last_rom_median_abs_error_hz": comparison.get("median_abs_error_hz"),
         "last_rom_max_abs_error_hz": comparison.get("max_abs_error_hz"),
         "last_rom_matched_mode_count": comparison.get("matched_mode_count"),
-        "last_rom_meets_accuracy_target": (comparison.get("accuracy_spec") or {}).get("meets_target"),
+        "last_rom_meets_accuracy_target": (comparison.get("accuracy_spec") or {}).get(
+            "meets_target_meaningful"
+        ),
+        "last_rom_accuracy_meaningful": comparison.get("accuracy_meaningful"),
+        "last_rom_validation_mode": comparison.get("validation_mode"),
         "last_rom_training_sample_count": comparison.get("training_sample_count_at_prediction"),
         "last_rom_error": comparison.get("last_rom_error"),
     }
     return patch
+
+
+def _production_validation_meta(
+    *,
+    repo_root: Path,
+    shape_name: str,
+    target_sample_id: str,
+) -> Dict[str, Any]:
+    _, _, _, _, _, production_surrogate_training_sample_ids = _import_surrogate_helpers()
+    train_ids, _ = production_surrogate_training_sample_ids(repo_root, shape_name)
+    if str(target_sample_id) in train_ids:
+        return resolve_validation_metadata(
+            target_sample_id=target_sample_id,
+            training_sample_ids=train_ids,
+            excluded_sample_ids=[],
+            validation_mode=VALIDATION_TRAIN_INCLUDED,
+        )
+    return resolve_validation_metadata(
+        target_sample_id=target_sample_id,
+        training_sample_ids=train_ids,
+        excluded_sample_ids=[],
+        validation_mode=VALIDATION_HOLDOUT,
+    )
+
+
+def _prepare_holdout_prediction(
+    *,
+    repo_root: Path,
+    pool: Mapping[str, Any],
+    context: Mapping[str, Any],
+    nev: int,
+    leave_one_out: bool,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    _, _, _, _, build_holdout_surrogate_model, _ = _import_surrogate_helpers()
+    target = str(context["sample_id"])
+    shape = str(context["shape_name"])
+    excluded = [target]
+    model, training_rows = build_holdout_surrogate_model(
+        repo_root=repo_root,
+        pool=pool,
+        shape_name=shape,
+        exclude_sample_ids=excluded,
+    )
+    train_ids = [str(r["sample_id"]) for r in training_rows]
+    mode = VALIDATION_LEAVE_ONE_OUT if leave_one_out else VALIDATION_HOLDOUT
+    vmeta = resolve_validation_metadata(
+        target_sample_id=target,
+        training_sample_ids=train_ids,
+        excluded_sample_ids=excluded,
+        validation_mode=mode,
+    )
+    prediction = run_rom_online_prediction(
+        repo_root=repo_root,
+        shape_name=shape,
+        parameters=context["parameters"],
+        nev=nev,
+        surrogate_model=model,
+        validation_meta=vmeta,
+    )
+    return prediction, vmeta
 
 
 def maybe_run_rom_prepredict(
@@ -988,16 +1180,40 @@ def maybe_run_rom_prepredict(
     context: Mapping[str, Any],
     nev: int = DEFAULT_ROM_NEV,
     nonblocking: bool = True,
+    pool: Optional[Mapping[str, Any]] = None,
+    exclude_target_from_training: bool = False,
+    leave_one_out: bool = False,
 ) -> Dict[str, Any]:
     """Run ROM before FOM; never raises when nonblocking=True."""
     try:
-        prediction = run_rom_online_prediction(
-            repo_root=repo_root,
-            shape_name=str(context["shape_name"]),
-            parameters=context["parameters"],
-            nev=nev,
-        )
+        if (exclude_target_from_training or leave_one_out) and pool is not None:
+            prediction, vmeta = _prepare_holdout_prediction(
+                repo_root=repo_root,
+                pool=pool,
+                context=context,
+                nev=nev,
+                leave_one_out=leave_one_out,
+            )
+        else:
+            vmeta = _production_validation_meta(
+                repo_root=repo_root,
+                shape_name=str(context["shape_name"]),
+                target_sample_id=str(context["sample_id"]),
+            )
+            prediction = run_rom_online_prediction(
+                repo_root=repo_root,
+                shape_name=str(context["shape_name"]),
+                parameters=context["parameters"],
+                nev=nev,
+                validation_meta=vmeta,
+            )
         doc = build_rom_prediction_document(context=context, prediction=prediction)
+        doc["validation_meta"] = vmeta
+        doc["validation_mode"] = vmeta.get("validation_mode")
+        doc["training_includes_target"] = vmeta.get("training_includes_target")
+        doc["training_sample_ids"] = list(vmeta.get("training_sample_ids") or [])
+        doc["excluded_sample_ids"] = list(vmeta.get("excluded_sample_ids") or [])
+        doc["accuracy_meaningful"] = vmeta.get("accuracy_meaningful")
         path = write_rom_prediction_pre_fom(run_root, doc)
         doc["path"] = rel(path, repo_root=repo_root)
         return doc
@@ -1039,6 +1255,9 @@ def maybe_run_rom_compare(
     copy_to_project: bool = True,
     write_csv: bool = False,
     rerun_rom_if_missing: bool = True,
+    pool: Optional[Mapping[str, Any]] = None,
+    exclude_target_from_training: bool = False,
+    leave_one_out: bool = False,
 ) -> Dict[str, Any]:
     """Compare ROM vs M4 FOM catalog; never raises when nonblocking=True."""
     result: Dict[str, Any] = {
@@ -1056,18 +1275,53 @@ def maybe_run_rom_compare(
                 f"FOM aggregation not usable: {fom_summary.get('aggregation_status')}"
             )
 
-        rom_doc = load_rom_prediction_pre_fom(run_root)
-        if rom_doc is None or str(rom_doc.get("status")) != ROM_STATUS_COMPLETED:
-            if rerun_rom_if_missing:
-                rom_doc = maybe_run_rom_prepredict(
-                    repo_root=repo_root,
-                    run_root=run_root,
-                    context=context,
-                    nev=nev,
-                    nonblocking=False,
+        use_holdout = bool(exclude_target_from_training or leave_one_out)
+        validation_meta: Optional[Dict[str, Any]] = None
+
+        if use_holdout:
+            if pool is None:
+                raise ValueError("pool required for holdout/leave-one-out ROM validation")
+            rom_doc = maybe_run_rom_prepredict(
+                repo_root=repo_root,
+                run_root=run_root,
+                context=context,
+                nev=nev,
+                nonblocking=False,
+                pool=pool,
+                exclude_target_from_training=exclude_target_from_training,
+                leave_one_out=leave_one_out,
+            )
+            validation_meta = dict(rom_doc.get("validation_meta") or {})
+            if not validation_meta:
+                validation_meta = resolve_validation_metadata(
+                    target_sample_id=str(context["sample_id"]),
+                    training_sample_ids=rom_doc.get("training_sample_ids") or [],
+                    excluded_sample_ids=rom_doc.get("excluded_sample_ids") or [str(context["sample_id"])],
+                    validation_mode=(
+                        VALIDATION_LEAVE_ONE_OUT if leave_one_out else VALIDATION_HOLDOUT
+                    ),
                 )
-            elif rom_doc is None:
-                raise FileNotFoundError(f"ROM pre-prediction missing: {rom_prediction_path(run_root)}")
+        else:
+            rom_doc = load_rom_prediction_pre_fom(run_root)
+            if rom_doc is None or str(rom_doc.get("status")) != ROM_STATUS_COMPLETED:
+                if rerun_rom_if_missing:
+                    rom_doc = maybe_run_rom_prepredict(
+                        repo_root=repo_root,
+                        run_root=run_root,
+                        context=context,
+                        nev=nev,
+                        nonblocking=False,
+                        pool=pool,
+                    )
+                elif rom_doc is None:
+                    raise FileNotFoundError(
+                        f"ROM pre-prediction missing: {rom_prediction_path(run_root)}"
+                    )
+            validation_meta = _production_validation_meta(
+                repo_root=repo_root,
+                shape_name=str(context["shape_name"]),
+                target_sample_id=str(context["sample_id"]),
+            )
 
         comparison = build_rom_fom_comparison(
             context=context,
@@ -1079,6 +1333,7 @@ def maybe_run_rom_compare(
             if rom_prediction_path(run_root).is_file()
             else None,
             fom_catalog_path_rel=rel(catalog_path, repo_root=repo_root),
+            validation_meta=validation_meta,
         )
         paths = write_rom_fom_comparison_artifacts(
             repo_root=repo_root,

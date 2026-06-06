@@ -159,15 +159,20 @@ def collect_completed_fom_training_rows(
     completed_only: bool = True,
     max_samples: Optional[int] = None,
     force_sample: Optional[str] = None,
+    exclude_sample_ids: Optional[Sequence[str]] = None,
     min_mode_count: int = 1,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Return (training_rows, skipped_rows) from completed M4 FOM runs."""
     training: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
+    excluded = {str(s).strip() for s in (exclude_sample_ids or []) if str(s).strip()}
 
     for i, entry in enumerate(pool.get("entries") or []):
         sid = str(entry.get("id") or "").strip()
         if not sid:
+            continue
+        if sid in excluded:
+            skipped.append({"sample_id": sid, "reason": "excluded_from_training"})
             continue
         if force_sample and sid != force_sample:
             continue
@@ -394,3 +399,53 @@ def predict_modal_frequencies(
         "source_json": SURROGATE_JSON_NAME,
         "source_npz": SURROGATE_NPZ_NAME,
     }
+
+
+def production_surrogate_training_sample_ids(
+    repo_root: Path,
+    shape_name: str,
+) -> Tuple[List[str], Optional[Dict[str, Any]]]:
+    """Return (training_sample_ids, model) from on-disk production surrogate."""
+    try:
+        model = load_surrogate_model(repo_root, shape_name)
+    except FileNotFoundError:
+        return [], None
+    ids = [str(s.get("sample_id") or "") for s in (model.get("training_samples") or [])]
+    ids = [s for s in ids if s]
+    return ids, model
+
+
+def build_holdout_surrogate_model(
+    *,
+    repo_root: Path,
+    pool: Mapping[str, Any],
+    shape_name: str,
+    exclude_sample_ids: Sequence[str],
+    run_id_suffix: str = DEFAULT_RUN_ID_SUFFIX,
+    k_neighbors: int = DEFAULT_K_NEIGHBORS,
+    min_mode_count: int = 1,
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """
+    Build an in-memory surrogate excluding holdout sample(s). Does not write production files.
+    """
+    training, skipped = collect_completed_fom_training_rows(
+        repo_root=repo_root,
+        pool=pool,
+        run_id_suffix=run_id_suffix,
+        completed_only=True,
+        max_samples=None,
+        exclude_sample_ids=exclude_sample_ids,
+        min_mode_count=min_mode_count,
+    )
+    if not training:
+        raise ValueError(
+            f"holdout surrogate has no training rows after excluding {list(exclude_sample_ids)}"
+        )
+    model = build_surrogate_from_training_rows(
+        shape_name=shape_name,
+        training_rows=training,
+        k_neighbors=k_neighbors,
+    )
+    model["holdout_validation"] = True
+    model["excluded_sample_ids"] = list(exclude_sample_ids)
+    return model, training

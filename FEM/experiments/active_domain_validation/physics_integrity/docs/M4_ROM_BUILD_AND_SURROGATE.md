@@ -259,7 +259,31 @@ ROM/classic/comparisons/rom_accuracy_history.csv
 ROM/classic/comparisons/rom_accuracy_summary.json
 ```
 
-Use `rom_accuracy_summary.json` → `by_training_sample_count` to answer:
+### No-leakage validation (required before production ROM)
+
+Train-included comparisons can show **zero error** when the target sample was in the surrogate training set. Use holdout mode:
+
+```bash
+python FEM/.../run_m4_rom_compare.py \
+  --lhs-json ROM/classic/lhs_pool.json \
+  --force-sample sample_005 \
+  --exclude-target-from-training
+```
+
+This builds a **temporary in-memory surrogate** (train: all completed except `sample_005`) and does **not** overwrite `ROM/classic/m4_modal_surrogate.*`.
+
+Comparison JSON includes:
+
+```text
+validation_mode: holdout | leave_one_out | train_included
+training_includes_target: true | false
+accuracy_meaningful: true | false
+excluded_sample_ids: [...]
+```
+
+Only trust `accuracy_spec.meets_target_meaningful` when `accuracy_meaningful=true`.
+
+Use `rom_accuracy_summary.json` → `aggregate_meaningful_only` and `by_training_sample_count` to answer:
 
 - After 16 FOM training samples, what is ROM accuracy?
 - After 40 samples, did median relative error improve?
