@@ -195,10 +195,13 @@ def audit_sample(
         return row
 
     raw_modes, deduped, dedupe_meta = load_fom_modes_catalog_deduped(catalog_path)
-    merge_groups = int(dedupe_meta.get("dedupe_merge_groups") or 0)
+    merge_groups = dedupe_meta.get("dedupe_merge_groups")
     row["raw_mode_count"] = len(raw_modes)
     row["deduped_mode_count"] = len(deduped)
-    row["dedupe_merge_groups"] = len(merge_groups)
+    if isinstance(merge_groups, int):
+        row["dedupe_merge_groups"] = merge_groups
+    else:
+        row["dedupe_merge_groups"] = len(merge_groups or ())
     row["catalog_status"] = "ok"
 
     peak_281 = _top_air_mic_modes(raw_modes, band_lo=MIC_CLUSTER_LO, band_hi=MIC_CLUSTER_HI, n=1)
