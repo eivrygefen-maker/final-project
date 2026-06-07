@@ -54,6 +54,11 @@ from v2_b3_m4_shared_export import detect_shared_root  # noqa: E402
 from v2_b3_m4_worker_run_lib import detect_repo_root, rel, utc_now  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
+try:
+    from compact_completed_m4_runs import compact_runs_for_samples  # noqa: E402
+except ImportError:
+    compact_runs_for_samples = None  # type: ignore[misc, assignment]
+
 DEFAULT_LHS_REL = "ROM/classic/lhs_pool.json"
 
 
@@ -306,6 +311,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.include_reference and args.exclude_reference:
         print("error: use only one of --include-reference / --exclude-reference", file=sys.stderr)
         return 2
+    if args.compact_after_sample and args.compact_after_batch:
+        print(
+            "warning: --compact-after-sample uses keep-full-samples only at sample time; "
+            "--compact-after-batch applies keep-full-latest at batch end",
+            flush=True,
+        )
+    if (args.compact_after_sample or args.compact_after_batch) and args.dry_run:
+        print("warning: compaction flags ignored during --dry-run", flush=True)
 
     repo_root = detect_repo_root(SCRIPT_DIR)
 
@@ -534,6 +547,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     samples_for_batch = batch_spec.get("samples") or []
     lhs_index_by_sid = {str(r["sample_id"]): int(r["lhs_row_index"]) for r in selection}
+    compact_keep_full_samples = set(_parse_compact_keep_full_samples(args.compact_keep_full_samples))
 
     summary = run_production_batch(
         repo_root=repo_root,
@@ -569,6 +583,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"completed={summary['completed_count']} failed={summary['failed_count']} "
         f"skipped={summary['skipped_count']}"
     )
+    if summary.get("compaction_status") and summary.get("compaction_status") != "not_run":
+        print(
+            f"compaction_status={summary.get('compaction_status')} "
+            f"compaction_sample_count={summary.get('compaction_sample_count')} "
+            f"compaction_bytes_freed={summary.get('compaction_bytes_freed')} "
+            f"compaction_runtime_s={summary.get('compaction_runtime_s')}",
+            flush=True,
+        )
     print(f"lhs_pool={lhs_rel}")
     print(f"status={rel(status_path, repo_root=repo_root)}")
     print(f"index={rel(index_path, repo_root=repo_root)}")

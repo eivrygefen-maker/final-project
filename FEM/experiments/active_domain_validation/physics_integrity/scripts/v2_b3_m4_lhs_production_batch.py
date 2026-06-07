@@ -36,6 +36,11 @@ from v2_b3_m4_runtime_provenance import collect_m4_runtime_provenance  # noqa: E
 from v2_b3_m4_worker_run_lib import detect_repo_root, load_json, rel, utc_now  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
+try:
+    from compact_completed_m4_runs import compact_one_completed_run  # noqa: E402
+except ImportError:
+    compact_one_completed_run = None  # type: ignore[misc, assignment]
+
 PIPELINE_RUNS = SCRIPT_DIR.parent / "pipeline_runs"
 GUITARS_ROOT = PIPELINE_RUNS / "guitars"
 AGG_PASS = "AGGREGATION_PASS"
@@ -93,6 +98,51 @@ def _ensure_run_tree(
             batch_id=batch_id,
             force=force or status == "planned_new_run",
         )
+
+
+def _maybe_compact_after_sample(
+    *,
+    row: Dict[str, Any],
+    repo_root: Path,
+    pool: Dict[str, Any],
+    compact_after_sample: bool,
+    compact_keep_full_samples: Set[str],
+    compact_nonblocking: bool,
+    run_rom_compare: bool,
+) -> bool:
+    """Compact one sample after production gates. Returns False to stop batch (blocking mode)."""
+    if not compact_after_sample:
+        return True
+    if compact_one_completed_run is None:
+        row["compaction"] = {"status": "failed", "error": "compact_completed_m4_runs import failed"}
+        if not compact_nonblocking:
+            print("error: compaction module unavailable (blocking)", file=sys.stderr)
+            return False
+        return True
+
+    sid = str(row.get("sample_id") or "")
+    rid = str(row.get("run_id") or "")
+    outcome = compact_one_completed_run(
+        repo_root=repo_root,
+        pool=pool,
+        sample_id=sid,
+        run_id=rid,
+        keep_full=sid in compact_keep_full_samples,
+        dry_run=False,
+        production_row=row,
+        run_rom_compare=bool(run_rom_compare),
+        production_trigger=True,
+    )
+    row["compaction"] = outcome.to_dict()
+    print(
+        f"[compact] {sid}: status={outcome.status} deleted_bytes={outcome.deleted_bytes} "
+        f"runtime_s={outcome.runtime_s}",
+        flush=True,
+    )
+    if outcome.status == "failed" and not compact_nonblocking:
+        print(f"error: compaction blocking failure for {sid}: {outcome.error}", file=sys.stderr)
+        return False
+    return True
 
 
 def _read_sample_summary(run_root: Path, *, workers_requested: int = 1) -> Dict[str, Any]:
@@ -263,6 +313,9 @@ def run_production_batch(
     rom_nev: int = DEFAULT_ROM_NEV,
     rom_max_match_distance_hz: float = DEFAULT_MAX_MATCH_DISTANCE_HZ,
     pool: Optional[Dict[str, Any]] = None,
+    compact_after_sample: bool = False,
+    compact_keep_full_samples: Optional[Set[str]] = None,
+    compact_nonblocking: bool = True,
 ) -> Dict[str, Any]:
     fp = _frequency_policy(spec)
     band = fp.get("band_hz", [60.0, 550.0])
@@ -368,9 +421,23 @@ def run_production_batch(
                 except Exception as exc:
                     print(f"[warn] {sid}: ROM compare on reuse failed: {exc}", flush=True)
 
-            completed.append(row)
             if on_sample_finish is not None:
                 on_sample_finish(row)
+
+            if not _maybe_compact_after_sample(
+                row=row,
+                repo_root=repo_root,
+                pool=pool or {},
+                compact_after_sample=bool(compact_after_sample),
+                compact_keep_full_samples=set(compact_keep_full_samples or ()),
+                compact_nonblocking=bool(compact_nonblocking),
+                run_rom_compare=bool(run_rom_compare),
+            ):
+                failed.append(row)
+                print("error: stopping batch after compaction failure (--compact-blocking)", file=sys.stderr)
+                break
+
+            completed.append(row)
             print(f"[skip] {sid}: already complete (reuse)", flush=True)
             continue
 
@@ -468,9 +535,6 @@ def run_production_batch(
                 f"{utc_now()} sample={sid} rc={rc} outcome={outcome} elapsed_s={elapsed:.1f}\n"
             )
 
-        if on_sample_finish is not None:
-            on_sample_finish(row)
-
         if outcome in ("pass", "reused_complete", "pass_freeze_warning"):
             export_manifest, export_warn = try_export_sample_to_shared(
                 run_root=run_root,
@@ -525,6 +589,22 @@ def run_production_batch(
                         flush=True,
                     )
 
+            if on_sample_finish is not None:
+                on_sample_finish(row)
+
+            if not _maybe_compact_after_sample(
+                row=row,
+                repo_root=repo_root,
+                pool=pool or {},
+                compact_after_sample=bool(compact_after_sample),
+                compact_keep_full_samples=set(compact_keep_full_samples or ()),
+                compact_nonblocking=bool(compact_nonblocking),
+                run_rom_compare=bool(run_rom_compare),
+            ):
+                failed.append(row)
+                print("error: stopping batch after compaction failure (--compact-blocking)", file=sys.stderr)
+                break
+
             completed.append(row)
             label = "AGGREGATION_PASS" if outcome == "pass" else outcome.upper()
             print(f"[pass] {sid}: {label} elapsed_s={elapsed:.1f}", flush=True)
@@ -534,6 +614,15 @@ def run_production_batch(
             if not continue_on_fail:
                 print("error: stopping batch (--continue-on-fail not set)", file=sys.stderr)
                 break
+
+    compaction_outcomes = [r.get("compaction") for r in completed if isinstance(r.get("compaction"), dict)]
+    compaction_runtime_s = round(
+        sum(float(c.get("runtime_s") or 0.0) for c in compaction_outcomes),
+        4,
+    )
+    compaction_bytes_freed = sum(int(c.get("deleted_bytes") or 0) for c in compaction_outcomes)
+    compaction_failed_count = sum(1 for c in compaction_outcomes if str(c.get("status")) == "failed")
+    compaction_sample_count = sum(1 for c in compaction_outcomes if str(c.get("status")) == "completed")
 
     batch_summary = {
         "schema": "m4_lhs_production_batch_summary_v1",
@@ -564,6 +653,15 @@ def run_production_batch(
         "skipped": skipped,
         "stopped_early": stopped_early,
         "stop_reason": stop_reason,
+        "compaction_runtime_s": compaction_runtime_s,
+        "compaction_status": (
+            "completed"
+            if compact_after_sample and compaction_failed_count == 0
+            else ("partial_failed" if compact_after_sample and compaction_failed_count else "not_run")
+        ),
+        "compaction_bytes_freed": compaction_bytes_freed,
+        "compaction_sample_count": compaction_sample_count,
+        "compaction_failed_count": compaction_failed_count,
     }
     write_json_atomic(batch_dir / "batch_execution_summary.json", batch_summary)
     return batch_summary

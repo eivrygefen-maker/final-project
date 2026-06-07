@@ -320,7 +320,40 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/compac
   --delete-heavy-after-verify
 ```
 
-### 5. Post-compaction ROM verification
+### 5. Production pipeline integration (auto-compaction)
+
+Optional flags on `run_m4_production_pipeline.py` (all **OFF** by default):
+
+| Flag | Default | Behavior |
+|------|---------|----------|
+| `--compact-after-sample` | off | Compact each sample after ROM compare (keep-full-samples only; no keep-full-latest) |
+| `--compact-after-batch` | off | Compact all completed samples after batch (applies keep-full-latest) |
+| `--compact-keep-full-latest N` | 0 | Batch-end only: keep N newest completed runs full |
+| `--compact-keep-full-samples` | "" | Never compact listed samples |
+| `--compact-nonblocking` | on | Compaction failure = warning; FOM stays COMPLETED |
+| `--compact-blocking` | — | Stop batch on compaction failure |
+
+Per-sample order (when enabled): FOM → aggregation → freeze/export → LHS update → ROM compare → compaction.
+
+Recommended overnight:
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_m4_production_pipeline.py \
+  --lhs-json ROM/classic/lhs_pool.json \
+  --max-samples 10 \
+  --workers 3 \
+  --execute \
+  --continue-on-fail \
+  --run-rom-prepredict \
+  --run-rom-compare \
+  --rom-nonblocking \
+  --compact-after-batch \
+  --compact-keep-full-latest 1 \
+  --compact-keep-full-samples sample_000,sample_001 \
+  --compact-nonblocking
+```
+
+### 6. Post-compaction ROM verification
 
 ```bash
 python FEM/experiments/active_domain_validation/physics_integrity/scripts/build_m4_rom_from_completed_fom.py \

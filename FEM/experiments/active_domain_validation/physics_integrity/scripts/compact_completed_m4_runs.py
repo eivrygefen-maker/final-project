@@ -9,7 +9,8 @@ import json
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass, field
+import time
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -122,6 +123,29 @@ class RunRecord:
     rom_dir_present: bool = False
     aggregation_plots_present: bool = False
     deleted_bytes: int = 0
+
+
+PRODUCTION_PASS_OUTCOMES = frozenset({"pass", "reused_complete", "pass_freeze_warning"})
+
+
+@dataclass
+class CompactionOutcome:
+    sample_id: str
+    run_id: str
+    status: str
+    deleted_bytes: int = 0
+    archivable_bytes: int = 0
+    retained_bytes: int = 0
+    runtime_s: float = 0.0
+    error: Optional[str] = None
+    warnings: List[str] = field(default_factory=list)
+    skip_reason: str = ""
+    keep_full: bool = False
+    rom_rebuild_safe: bool = False
+    compaction_mode: str = MODE_DELETE_WITHOUT_ARCHIVE
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 def _parse_sample_range(text: str) -> List[str]:
@@ -529,7 +553,7 @@ def _write_manifest(run_root: Path, payload: Dict[str, Any]) -> None:
     write_json_atomic(run_root / "compaction" / "compaction_manifest.json", payload)
 
 
-def _build_delete_manifest(rec: RunRecord) -> Dict[str, Any]:
+def _build_delete_manifest(rec: RunRecord, *, production_trigger: bool = False) -> Dict[str, Any]:
     return {
         "schema": MANIFEST_SCHEMA,
         "tool_version": TOOL_VERSION,
@@ -537,6 +561,7 @@ def _build_delete_manifest(rec: RunRecord) -> Dict[str, Any]:
         "run_id": rec.run_id,
         "timestamp": utc_now(),
         "mode": MODE_DELETE_WITHOUT_ARCHIVE,
+        "production_trigger": production_trigger,
         "original_bytes": rec.original_bytes,
         "retained_local_bytes": rec.retained_bytes,
         "deleted_bytes": rec.deleted_bytes,
@@ -552,8 +577,250 @@ def _build_delete_manifest(rec: RunRecord) -> Dict[str, Any]:
     }
 
 
+def production_compaction_preconditions(
+    *,
+    row: Mapping[str, Any],
+    pool_entry: Mapping[str, Any],
+    run_rom_compare: bool,
+) -> Tuple[bool, str, List[str]]:
+    """Gates for auto-compaction after a production batch sample finishes."""
+    warnings: List[str] = []
+    outcome = str(row.get("outcome") or "")
+    if outcome not in PRODUCTION_PASS_OUTCOMES:
+        return False, f"outcome={outcome or 'missing'}", warnings
+
+    if str(row.get("aggregation_status") or "") != AGG_PASS:
+        return False, f"aggregation_status={row.get('aggregation_status') or 'missing'}", warnings
+
+    if not bool(row.get("final_aggregation_ready")):
+        return False, "final_aggregation_ready=false", warnings
+
+    lhs_completed = normalize_lhs_entry_status(pool_entry.get("status")) == LHS_COMPLETED
+    row_passed = outcome in PRODUCTION_PASS_OUTCOMES
+    if not lhs_completed and not row_passed:
+        return False, f"lhs_status={pool_entry.get('status') or 'missing'}", warnings
+
+    if row.get("shared_export") or row.get("shared_export_warning"):
+        pass
+    else:
+        warnings.append("shared_export_not_reported")
+
+    if run_rom_compare:
+        rom_cmp = row.get("rom_compare")
+        if not isinstance(rom_cmp, dict):
+            return False, "rom_compare_not_recorded", warnings
+        if rom_cmp.get("error"):
+            warnings.append(f"rom_compare_error:{rom_cmp.get('error')}")
+
+    return True, "ok", warnings
+
+
+def apply_keep_full_policy(
+    records: Sequence[RunRecord],
+    pool: Mapping[str, Any],
+    *,
+    keep_full_samples: Sequence[str],
+    keep_full_latest: int = 0,
+) -> None:
+    keep_set = set(keep_full_samples)
+    eligible = [r for r in records if r.eligible and not r.already_compacted]
+    if keep_full_latest > 0 and eligible:
+        entry_by_id = {str(e.get("id")): e for e in pool.get("entries") or []}
+
+        def _recency_key(rec: RunRecord) -> str:
+            return _completion_sort_key(entry_by_id.get(rec.sample_id) or {})
+
+        latest_ids = [
+            r.sample_id for r in sorted(eligible, key=_recency_key, reverse=True)[: int(keep_full_latest)]
+        ]
+        keep_set.update(latest_ids)
+    for rec in records:
+        if rec.sample_id in keep_set and rec.eligible:
+            rec.keep_full = True
+            rec.keep_full_reason = (
+                "keep_full_samples" if rec.sample_id in keep_full_samples else "keep_full_latest"
+            )
+
+
+def _record_to_outcome(rec: RunRecord, *, runtime_s: float = 0.0, error: Optional[str] = None) -> CompactionOutcome:
+    return CompactionOutcome(
+        sample_id=rec.sample_id,
+        run_id=rec.run_id,
+        status=rec.status,
+        deleted_bytes=int(rec.deleted_bytes or rec.freed_bytes or 0),
+        archivable_bytes=int(rec.archivable_bytes),
+        retained_bytes=int(rec.retained_bytes),
+        runtime_s=round(runtime_s, 4),
+        error=error,
+        warnings=list(rec.warnings),
+        skip_reason=rec.skip_reason,
+        keep_full=bool(rec.keep_full),
+        rom_rebuild_safe=bool(rec.rom_rebuild_safe),
+        compaction_mode=rec.compaction_mode or MODE_DELETE_WITHOUT_ARCHIVE,
+    )
+
+
+def compact_one_completed_run(
+    *,
+    repo_root: Path,
+    pool: Mapping[str, Any],
+    sample_id: str,
+    run_id: Optional[str] = None,
+    keep_full: bool = False,
+    dry_run: bool = False,
+    production_row: Optional[Mapping[str, Any]] = None,
+    run_rom_compare: bool = False,
+    production_trigger: bool = False,
+) -> CompactionOutcome:
+    """Delete heavy artifacts for one completed run (reuses standalone compaction logic)."""
+    t0 = time.perf_counter()
+    entry = next((e for e in pool.get("entries") or [] if str(e.get("id")) == sample_id), None)
+    if entry is None:
+        return CompactionOutcome(
+            sample_id=sample_id,
+            run_id=run_id or "",
+            status="skipped",
+            skip_reason="not_in_lhs_pool",
+            runtime_s=round(time.perf_counter() - t0, 4),
+        )
+
+    rid = str(run_id or entry.get("last_run_id") or f"{sample_id}_{DEFAULT_RUN_ID_SUFFIX}")
+    rec = _eligible_run(repo_root=repo_root, entry=entry, run_id=rid)
+
+    if production_row is not None:
+        ok, reason, gate_warnings = production_compaction_preconditions(
+            row=production_row,
+            pool_entry=entry,
+            run_rom_compare=run_rom_compare,
+        )
+        rec.warnings.extend(gate_warnings)
+        if not ok:
+            rec.eligible = False
+            rec.skip_reason = f"production_gate:{reason}"
+
+    if keep_full:
+        rec.keep_full = True
+        rec.keep_full_reason = "keep_full_samples"
+
+    if not rec.eligible:
+        return _record_to_outcome(rec, runtime_s=time.perf_counter() - t0)
+
+    if rec.keep_full:
+        rec.status = "keep_full"
+        return _record_to_outcome(rec, runtime_s=time.perf_counter() - t0)
+
+    if rec.already_compacted:
+        return _record_to_outcome(rec, runtime_s=time.perf_counter() - t0)
+
+    try:
+        _process_delete_without_archive(rec, dry_run=dry_run)
+        if not dry_run and rec.status == "completed":
+            manifest = _build_delete_manifest(rec, production_trigger=production_trigger)
+            _write_manifest(rec.run_root, manifest)
+    except Exception as exc:
+        rec.status = "failed"
+        rec.warnings.append(str(exc))
+        return _record_to_outcome(rec, runtime_s=time.perf_counter() - t0, error=str(exc))
+
+    return _record_to_outcome(rec, runtime_s=time.perf_counter() - t0)
+
+
+def compact_runs_for_samples(
+    *,
+    repo_root: Path,
+    pool: Mapping[str, Any],
+    sample_specs: Sequence[Tuple[str, str]],
+    keep_full_samples: Sequence[str] = (),
+    keep_full_latest: int = 0,
+    dry_run: bool = False,
+    production_rows_by_sid: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    run_rom_compare: bool = False,
+    production_trigger: bool = False,
+) -> Dict[str, Any]:
+    """Compact multiple completed runs; applies keep-full-latest at batch scope."""
+    t0 = time.perf_counter()
+    records: List[RunRecord] = []
+    entry_by_id = {str(e.get("id")): e for e in pool.get("entries") or []}
+
+    for sample_id, run_id in sample_specs:
+        entry = entry_by_id.get(sample_id)
+        if entry is None:
+            records.append(
+                RunRecord(
+                    sample_id=sample_id,
+                    run_id=run_id,
+                    run_root=guitars_root(repo_root) / sample_id / "runs" / run_id,
+                    skip_reason="not_in_lhs_pool",
+                )
+            )
+            continue
+        rec = _eligible_run(repo_root=repo_root, entry=entry, run_id=run_id)
+        prod_row = (production_rows_by_sid or {}).get(sample_id)
+        if prod_row is not None:
+            ok, reason, gate_warnings = production_compaction_preconditions(
+                row=prod_row,
+                pool_entry=entry,
+                run_rom_compare=run_rom_compare,
+            )
+            rec.warnings.extend(gate_warnings)
+            if not ok:
+                rec.eligible = False
+                rec.skip_reason = f"production_gate:{reason}"
+        records.append(rec)
+
+    apply_keep_full_policy(
+        records,
+        pool,
+        keep_full_samples=keep_full_samples,
+        keep_full_latest=keep_full_latest,
+    )
+
+    outcomes: List[CompactionOutcome] = []
+    failed = 0
+    freed = 0
+    for rec in records:
+        if not rec.eligible or rec.keep_full or rec.already_compacted:
+            outcomes.append(_record_to_outcome(rec))
+            continue
+        try:
+            _process_delete_without_archive(rec, dry_run=dry_run)
+            if not dry_run and rec.status == "completed":
+                _write_manifest(rec.run_root, _build_delete_manifest(rec, production_trigger=production_trigger))
+            out = _record_to_outcome(rec)
+            outcomes.append(out)
+            if out.status == "failed":
+                failed += 1
+            else:
+                freed += int(out.deleted_bytes)
+        except Exception as exc:
+            rec.status = "failed"
+            rec.warnings.append(str(exc))
+            failed += 1
+            outcomes.append(_record_to_outcome(rec, error=str(exc)))
+
+    compacted_count = sum(1 for o in outcomes if o.status == "completed")
+    return {
+        "schema": "m4_production_compaction_summary_v1",
+        "tool_version": TOOL_VERSION,
+        "compaction_mode": MODE_DELETE_WITHOUT_ARCHIVE,
+        "compaction_status": "completed" if failed == 0 else "partial_failed",
+        "compaction_runtime_s": round(time.perf_counter() - t0, 4),
+        "compaction_sample_count": compacted_count,
+        "compaction_failed_count": failed,
+        "compaction_bytes_freed": freed,
+        "dry_run": dry_run,
+        "keep_full_samples": list(keep_full_samples),
+        "keep_full_latest": int(keep_full_latest),
+        "outcomes": [o.to_dict() for o in outcomes],
+    }
+
+
 def _process_delete_without_archive(rec: RunRecord, *, dry_run: bool) -> None:
     if not rec.eligible or rec.keep_full or rec.already_compacted:
+        if rec.keep_full:
+            rec.status = "keep_full"
+        elif rec.already_compacted:
+            rec.status = "already_compacted"
         return
 
     rec.compaction_mode = MODE_DELETE_WITHOUT_ARCHIVE
@@ -580,7 +847,6 @@ def _process_delete_without_archive(rec: RunRecord, *, dry_run: bool) -> None:
     rec.deleted_bytes = rec.archivable_bytes
     rec.freed_bytes = rec.deleted_bytes
     rec.status = "completed"
-    _write_manifest(rec.run_root, _build_delete_manifest(rec))
 
 
 def _process_record(
@@ -1002,23 +1268,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if rec.eligible:
             completed_ids.append(sid)
 
-    # keep-full-latest uses lhs timestamps
-    eligible_recs = [r for r in records if r.eligible and not r.already_compacted]
-
-    def _recency_key(r: RunRecord) -> str:
-        entry = entry_by_id.get(r.sample_id) or {}
-        return _completion_sort_key(entry)
-
-    latest_ids = [r.sample_id for r in sorted(eligible_recs, key=_recency_key, reverse=True)]
-    keep_full_set = set(keep_full_samples)
-    for sid in latest_ids[: max(0, int(args.keep_full_latest))]:
-        keep_full_set.add(sid)
-    for r in records:
-        if r.sample_id in keep_full_set and r.eligible:
-            r.keep_full = True
-            r.keep_full_reason = (
-                "keep_full_samples" if r.sample_id in keep_full_samples else "keep_full_latest"
-            )
+    apply_keep_full_policy(
+        records,
+        pool,
+        keep_full_samples=keep_full_samples,
+        keep_full_latest=int(args.keep_full_latest),
+    )
 
     recommendations = recommend_representative_full_samples(pool, completed_ids=completed_ids)
 
