@@ -1,8 +1,8 @@
 # M4 Storage and Legacy Cleanup Audit
 
-**Date:** 2026-06-02  
-**Status:** Audit complete — **no deletions performed**. Compaction tooling ready for VM dry-run.  
-**Principle:** Preserve ROM/FOM/LHS/STK paths; archive heavy solve artifacts to shared storage.
+**Date:** 2026-06-02 (updated policy)  
+**Status:** Audit complete — **no deletions performed**. Compaction tooling ready for VM.  
+**Principle:** Most completed FOM runs are retained as **ROM-ready compact runs only**. Only selected representative runs remain full. **Heavy artifacts are not archived by default.**
 
 ---
 
@@ -13,16 +13,18 @@
 | **Disk pressure** | VM root ~53G/59G used; `pipeline_runs/guitars` ≈ **15G** of ~25G `FEM/` |
 | **Per completed sample** | ~380–675 MB total; **~85–95%** is mesh + checkpoint + scout mesh |
 | **ROM minimum** | `aggregation/modes_catalog.jsonl` + `ROM/classic/lhs_pool.json` (+ trained surrogate for compare) |
-| **Safe compaction** | Completed `AGGREGATION_PASS` runs: archive/delete heavy dirs after verified `tar.zst` |
+| **Default policy** | **Direct delete** heavy artifacts after ROM-retention verification (`--delete-heavy-without-archive`) |
+| **Full retention** | Only **2–3 representative** samples kept complete locally (`--keep-full-samples` + `--keep-full-latest`) |
+| **Archiving** | **Optional legacy mode** (`--archive-heavy`) for explicit reference samples only — not default |
 | **Do not touch** | `RUNNING` / `FAILED` / partial / resume-needed runs |
-| **Estimated reclaim** | ~**12–16 GiB** local for ~30 completed samples (conservative VM estimate) |
-| **Shared budget** | Target 20–40 GiB long-term across shapes; zstd archives ~40–60% of heavy raw |
+| **Estimated reclaim** | ~**12–16 GiB** local for ~30–35 completed samples (direct delete, 2–3 kept full) |
+| **Shared budget** | Minimal archive use under new policy; reserve shared space for plots/exports and optional reference archives |
 
 **Tools added:**
 
 | File | Role |
 |------|------|
-| `scripts/compact_completed_m4_runs.py` | Completed-run archive/compaction (default dry-run) |
+| `scripts/compact_completed_m4_runs.py` | Completed-run compaction (`--delete-heavy-without-archive` default policy; dry-run default) |
 | `scripts/audit_m4_legacy_storage.py` | Legacy/large-file worktree audit (read-only) |
 
 ---
@@ -58,7 +60,7 @@ Typical completed sample (`sample_000`):
 | **ACTIVE_REQUIRED** | Current M4/ROM/LHS pipeline reads; keep local |
 | **ACTIVE_OPTIONAL** | Helpful for ops/audit; small; keep unless desperate |
 | **ARCHIVE_RECOMMENDED** | Heavy; archive to shared then may delete locally |
-| **SAFE_TO_DELETE_AFTER_COMPLETION** | Removable after verified archive + completed run |
+| **SAFE_TO_DELETE_AFTER_COMPLETION** | Removable after ROM-retention verify on completed run (no archive required) |
 | **LEGACY_SAFE_TO_REMOVE** | Not used by M4; remove from worktree after approval |
 | **UNKNOWN_REVIEW_REQUIRED** | Manual decision |
 
@@ -164,22 +166,31 @@ Run: `python FEM/.../scripts/audit_m4_legacy_storage.py` → `pipeline_runs/inde
 
 ## Compaction tool behavior
 
+### Default policy: direct delete (no archive)
+
+```text
+--delete-heavy-without-archive   # mutually exclusive with --archive-heavy
+```
+
+Most completed samples become **ROM-ready compact runs**: aggregation, rom, freeze, logs, sample metadata, and small manifests stay local; heavy solve artifacts are deleted after verification. A per-run `compaction/compaction_manifest.json` records deleted paths/bytes (`mode=delete_without_archive`).
+
 ### Eligibility (all must pass)
 
 ```text
 LHS status == COMPLETED
-last_aggregation_status == AGGREGATION_PASS (via aggregation_result.json)
-modes_catalog.jsonl exists and non-empty
-final_aggregation_ready, no missing/failed chunks
-not RUNNING / FAILED / resume-needed
+last_aggregation_status == AGGREGATION_PASS
+modes_catalog.jsonl exists and is readable
+modes_summary.json or aggregation_result.json present
+not RUNNING / FAILED / partial / resume-needed
+not in --keep-full-samples or --keep-full-latest N
 ```
 
-ROM/FOM comparison: reported if missing; **does not block** compaction.
+ROM/FOM comparison and shared-export plots: **reported** if missing; do not block delete.
 
-### Local retention (always)
+### Local retention (always — never deleted)
 
 ```text
-aggregation/   (full tree incl. modes_catalog.jsonl, plots, summaries)
+aggregation/          # modes_catalog.jsonl, modes_summary.json, plots, summaries
 rom/
 freeze/
 logs/
@@ -188,37 +199,42 @@ pipeline_run_manifest.json
 m4_sample_runtime_provenance.json
 small scout/lprod JSON plans
 compaction/compaction_manifest.json
+ROM/classic/          # outside run tree; never touched
 ```
 
-### Heavy archive targets
+### Heavy delete targets (only these paths)
 
 ```text
-lprod/mesh/
 lprod/checkpoint/
 lprod/lprod_checkpoint_verify.json
-scout/mesh/
+lprod/mesh/
 scout/checkpoint/
 scout/discovery/
+scout/mesh/
 worker_results/
 ```
 
-### Archive layout
+### Legacy optional archive mode
+
+For explicit reference samples only:
 
 ```text
-/media/sf_gmar/classic/archives/
-  sample_XXX__<run_id>__heavy.tar.zst
-  sample_XXX__<run_id>__heavy.tar.zst.sha256
-  sample_XXX__<run_id>__heavy.tar.zst.contents.txt
+--archive-heavy --delete-heavy-after-verify --shared-root /media/sf_gmar
 ```
 
-Per-run manifest: `<run_dir>/compaction/compaction_manifest.json`
+Archive layout (when used):
+
+```text
+/media/sf_gmar/classic/archives/sample_XXX__<run_id>__heavy.tar.zst
+```
 
 ### Safety
 
-- Default `--dry-run` (no writes except report)
-- `--delete-heavy-after-verify` requires successful archive + checksum + `tar -tf` + ROM-required files present
-- Refuses delete if shared root missing/unwritable
-- Idempotent if manifest + archive already verified
+- Default `--dry-run` (no deletes; reports planned actions)
+- `--delete-heavy-without-archive` and `--archive-heavy` are **mutually exclusive**
+- Destructive modes disable dry-run unless `--dry-run` is explicitly passed
+- Refuses delete if ROM-required files missing (`rom_rebuild_safe=false`)
+- Idempotent if `compaction_manifest.json` exists and heavy paths already gone
 - No symlink traversal; deletes only under resolved run root
 
 ---
@@ -229,33 +245,30 @@ Per-run manifest: `<run_dir>/compaction/compaction_manifest.json`
 
 | Sample | Reason |
 |--------|--------|
+| `sample_000` | First LHS anchor |
 | `sample_001` | M4 reference E2E / freeze gold run |
-| `sample_000` | First LHS anchor; ROM diagnostics baseline |
-| `sample_005` | ROM v2.2b STK holdout |
-| `sample_013` | ROM v2.2b STK holdout |
-| `sample_024` | ROM v2.2b STK holdout |
-| `sample_027` | ROM v2.2b STK holdout |
+| `sample_034` (or latest completed) | Symbolic high-index / latest reference via `--keep-full-latest 1` |
 
 **Suggested policy for initial cleanup:**
 
 ```text
---keep-full-latest 2          # newest completed stay fully local
---keep-full-samples sample_001,sample_000,sample_005,sample_013,sample_024,sample_027
+--keep-full-latest 1
+--keep-full-samples sample_000,sample_001
 ```
 
-This keeps **6 named + 2 latest** (overlap likely) ≈ **5–8 full runs** — within the 5–10 representative target.
+Keeps **2 named + 1 latest** (likely `sample_034` if newest in `0–34`) ≈ **2–3 full runs** locally. All other completed samples become ROM-ready compact runs only.
 
 ---
 
 ## Estimated space reclaim (VM)
 
-Assumptions: ~30 completed samples in `0–29`, ~550 MB archivable each, 6–8 kept full (~600 MB each).
+Assumptions: ~30–35 completed samples, ~550 MB heavy each, **2–3 kept full** (~600 MB each). Direct delete — **no shared archive** by default.
 
-| Scenario | Local freed | Shared archive (zstd) |
-|----------|-------------|------------------------|
-| 30 samples compacted, 8 kept full | **~12–14 GiB** | **~6–9 GiB** |
-| 35 samples (`0–34`), same policy | **~14–16 GiB** | **~7–10 GiB** |
-| Per sample (heavy only) | **~350–600 MiB** | **~150–350 MiB** |
+| Scenario | Local freed | Shared archive |
+|----------|-------------|----------------|
+| 30 compacted, 3 kept full | **~13–15 GiB** | **0** (default policy) |
+| 35 compacted (`0–34`), 3 kept full | **~15–17 GiB** | **0** |
+| Per compacted sample (heavy only) | **~350–600 MiB** | — |
 
 Retained per compacted sample: **~10–25 MiB** (`aggregation` + `rom` + `freeze` + metadata).
 
@@ -270,18 +283,31 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/compac
   --lhs-json ROM/classic/lhs_pool.json \
   --shape-name classic \
   --sample-range 0-34 \
-  --shared-root /media/sf_gmar \
-  --keep-full-latest 2 \
+  --keep-full-latest 1 \
+  --keep-full-samples sample_000,sample_001 \
+  --delete-heavy-without-archive \
   --dry-run
 ```
 
-### 2. Legacy worktree audit (optional)
+### 2. Direct delete (after review)
+
+```bash
+python FEM/experiments/active_domain_validation/physics_integrity/scripts/compact_completed_m4_runs.py \
+  --lhs-json ROM/classic/lhs_pool.json \
+  --shape-name classic \
+  --sample-range 0-34 \
+  --keep-full-latest 1 \
+  --keep-full-samples sample_000,sample_001 \
+  --delete-heavy-without-archive
+```
+
+### 3. Legacy worktree audit (optional)
 
 ```bash
 python FEM/experiments/active_domain_validation/physics_integrity/scripts/audit_m4_legacy_storage.py
 ```
 
-### 3. Archive + delete (after review)
+### 4. Optional archive mode (reference samples only)
 
 ```bash
 python FEM/experiments/active_domain_validation/physics_integrity/scripts/compact_completed_m4_runs.py \
@@ -289,15 +315,12 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/compac
   --shape-name classic \
   --sample-range 0-34 \
   --shared-root /media/sf_gmar \
-  --keep-full-latest 2 \
-  --keep-full-samples sample_001,sample_000,sample_005,sample_013,sample_024,sample_027 \
+  --keep-full-samples sample_000,sample_001 \
   --archive-heavy \
   --delete-heavy-after-verify
 ```
 
-(`--archive-heavy` disables dry-run automatically unless `--dry-run` is also passed.)
-
-### 4. Post-compaction ROM verification
+### 5. Post-compaction ROM verification
 
 ```bash
 python FEM/experiments/active_domain_validation/physics_integrity/scripts/build_m4_rom_from_completed_fom.py \
@@ -317,12 +340,12 @@ python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_m4
 | `ROM/classic/lhs_pool.json` | Sample parameters, completion status, run IDs |
 | `ROM/classic/m4_modal_surrogate.*` | Production ROM model |
 | Incomplete / failed / running runs | Resume and debugging |
-| `worker_results/` **without archive** | Cannot re-aggregate if catalog corrupted |
-| `lprod/checkpoint/` **without archive** | Cannot re-run workers or resume |
+| `worker_results/` after direct delete | Cannot re-aggregate if catalog corrupted (catalog is the ROM source of truth) |
+| `lprod/checkpoint/` after direct delete | Cannot re-run workers or resume (acceptable for completed ROM-ready runs) |
 | `lhs_pool.json` backups in Git | Manual recovery |
 | M4 production scripts/schemas | Pipeline contracts |
 
-**Re-aggregation caveat:** If `modes_catalog.jsonl` is lost, restore `worker_results/` + `lprod/checkpoint/` from archive before re-running aggregation.
+**Re-aggregation caveat:** Under the default direct-delete policy, re-aggregation is only possible for **keep-full** samples. If `modes_catalog.jsonl` is lost on a compacted run, recovery requires a full FOM re-run.
 
 ---
 
@@ -336,7 +359,7 @@ After compaction of completed runs:
 | `run_m4_rom_compare.py` | **Yes** | Catalog + `aggregation_result.json` + surrogate |
 | STK v2.2b diagnostics | **Yes** | Catalog scalars (`mic_output_proxy`, etc.) |
 | `v2_b3_m4_shared_export.py` | **Yes** | `aggregation/` plots + summaries |
-| M4 resume on compacted sample | **No** | Requires restore from `classic/archives/*.tar.zst` |
+| M4 resume on compacted sample | **No** | Heavy artifacts deleted; only keep-full samples remain resumable |
 | Legacy `ROMManager.solve_online` | **Unchanged** | Still needs `reduced_basis.npz` (separate legacy path) |
 
 ---
@@ -346,7 +369,7 @@ After compaction of completed runs:
 | File | Change |
 |------|--------|
 | `docs/M4_STORAGE_AND_LEGACY_CLEANUP_AUDIT.md` | **New** — this report |
-| `scripts/compact_completed_m4_runs.py` | **New** — compaction workflow |
+| `scripts/compact_completed_m4_runs.py` | **Updated** — `--delete-heavy-without-archive` default policy |
 | `scripts/audit_m4_legacy_storage.py` | **New** — legacy audit JSON |
 | `pipeline_runs/index/legacy_storage_audit.json` | Generated locally (dev; VM may differ) |
 | `pipeline_runs/index/compaction_reports/` | Dry-run report output |

@@ -9,7 +9,6 @@ import json
 import shutil
 import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -34,8 +33,10 @@ from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
 from v2_b3_m4_worker_run_lib import detect_repo_root, rel, utc_now  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
-TOOL_VERSION = "m4_run_compaction_v1"
+TOOL_VERSION = "m4_run_compaction_v2"
 MANIFEST_SCHEMA = "m4_run_compaction_manifest_v1"
+MODE_DELETE_WITHOUT_ARCHIVE = "delete_without_archive"
+MODE_ARCHIVE_HEAVY = "archive_heavy"
 
 # ROM rebuild / compare / STK minimum (code-audited)
 ROM_REQUIRED_REL_PATHS: Tuple[str, ...] = (
@@ -87,9 +88,9 @@ HEAVY_ARCHIVE_REL_FILES: Tuple[str, ...] = (
     "lprod/lprod_checkpoint_verify.json",
 )
 
-V22B_HOLDOUTS = ("sample_000", "sample_005", "sample_013", "sample_024", "sample_027")
 REFERENCE_SAMPLES = ("sample_001",)
-DEFAULT_RECOMMENDED_FULL = tuple(dict.fromkeys((*REFERENCE_SAMPLES, *V22B_HOLDOUTS)))
+SYMBOLIC_FULL_SAMPLES = ("sample_000", "sample_001", "sample_034")
+DEFAULT_RECOMMENDED_FULL = SYMBOLIC_FULL_SAMPLES
 
 
 @dataclass
@@ -116,6 +117,11 @@ class RunRecord:
     retained_paths: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     status: str = "planned"
+    compaction_mode: str = ""
+    rom_rebuild_safe: bool = False
+    rom_dir_present: bool = False
+    aggregation_plots_present: bool = False
+    deleted_bytes: int = 0
 
 
 def _parse_sample_range(text: str) -> List[str]:
@@ -329,22 +335,30 @@ def _eligible_run(
         rec.skip_reason = f"modes_catalog:{cat_detail}"
         return rec
 
-    rom_present, rom_path, rom_src = _rom_comparison_status(run_root, repo_root, entry)
+    rom_present, rom_path, _rom_src = _rom_comparison_status(run_root, repo_root, entry)
     rec.rom_comparison_present = rom_present
     rec.rom_comparison_path = rom_path
     if not rom_present:
         rec.warnings.append("rom_fom_comparison_missing (reported; compaction still allowed)")
 
+    rec.rom_dir_present = (run_root / "rom").is_dir()
+    rec.aggregation_plots_present = _aggregation_plots_present(run_root)
+    rom_safe, retention_warnings, blocking = _verify_rom_retention(run_root)
+    rec.rom_rebuild_safe = rom_safe
+    rec.warnings.extend(retention_warnings)
+    if blocking:
+        rec.skip_reason = f"rom_retention_incomplete:{','.join(blocking)}"
+        return rec
+
     manifest = _existing_manifest(run_root)
-    if manifest and str(manifest.get("status")) in ("completed", "archived_no_delete"):
+    archivable = _collect_archivable_paths(run_root)
+    if manifest and str(manifest.get("status")) in ("completed", "archived_no_delete") and not archivable:
+        rec.already_compacted = True
+        rec.status = "already_compacted"
         archive_path = Path(str(manifest.get("archive_path") or ""))
         if archive_path.is_file():
-            rec.already_compacted = True
-            rec.status = "already_compacted"
             rec.archive_path = str(archive_path)
             rec.sha256 = str(manifest.get("sha256") or "")
-
-    archivable = _collect_archivable_paths(run_root)
     if not archivable and rec.already_compacted:
         rec.eligible = False
         rec.skip_reason = "already_compacted_no_heavy_local"
@@ -386,10 +400,10 @@ def recommend_representative_full_samples(
         reason_parts = []
         if sid in REFERENCE_SAMPLES:
             reason_parts.append("M4 reference E2E run")
-        if sid in V22B_HOLDOUTS:
-            reason_parts.append("ROM v2.2b STK diagnostic holdout")
         if sid == "sample_000":
             reason_parts.append("first LHS anchor")
+        if sid == "sample_034":
+            reason_parts.append("symbolic latest/high-index reference in 0-34 range")
         recs.append(
             {
                 "sample_id": sid,
@@ -473,6 +487,28 @@ def _verify_rom_required(run_root: Path) -> List[str]:
     return missing
 
 
+def _aggregation_plots_present(run_root: Path) -> bool:
+    agg = run_root / "aggregation"
+    if not agg.is_dir():
+        return False
+    return any(agg.glob("mode_frequency*.png")) or (agg / "mode_frequency_plot.png").is_file()
+
+
+def _verify_rom_retention(run_root: Path) -> Tuple[bool, List[str], List[str]]:
+    """Return (rom_rebuild_safe, warnings, blocking_missing)."""
+    warnings: List[str] = []
+    missing = _verify_rom_required(run_root)
+    ms = run_root / "aggregation" / "modes_summary.json"
+    ar = run_root / "aggregation" / "aggregation_result.json"
+    if not ms.is_file() and not ar.is_file():
+        missing.append("aggregation/modes_summary.json_or_aggregation_result.json")
+    if not (run_root / "rom").is_dir():
+        warnings.append("rom/ directory missing (reported; ROM compare cache optional)")
+    if not _aggregation_plots_present(run_root):
+        warnings.append("no aggregation plots found (shared export optional)")
+    return len(missing) == 0, warnings, missing
+
+
 def _delete_archived_paths(run_root: Path, archivable: Sequence[Path]) -> List[str]:
     deleted: List[str] = []
     for p in sorted(archivable, key=lambda x: len(str(x)), reverse=True):
@@ -491,6 +527,60 @@ def _delete_archived_paths(run_root: Path, archivable: Sequence[Path]) -> List[s
 
 def _write_manifest(run_root: Path, payload: Dict[str, Any]) -> None:
     write_json_atomic(run_root / "compaction" / "compaction_manifest.json", payload)
+
+
+def _build_delete_manifest(rec: RunRecord) -> Dict[str, Any]:
+    return {
+        "schema": MANIFEST_SCHEMA,
+        "tool_version": TOOL_VERSION,
+        "sample_id": rec.sample_id,
+        "run_id": rec.run_id,
+        "timestamp": utc_now(),
+        "mode": MODE_DELETE_WITHOUT_ARCHIVE,
+        "original_bytes": rec.original_bytes,
+        "retained_local_bytes": rec.retained_bytes,
+        "deleted_bytes": rec.deleted_bytes,
+        "freed_bytes": rec.deleted_bytes,
+        "deleted_paths": rec.deleted_paths,
+        "retained_paths": rec.retained_paths,
+        "rom_comparison_present": rec.rom_comparison_present,
+        "rom_dir_present": rec.rom_dir_present,
+        "aggregation_plots_present": rec.aggregation_plots_present,
+        "rom_rebuild_safe": rec.rom_rebuild_safe,
+        "warnings": rec.warnings,
+        "status": rec.status,
+    }
+
+
+def _process_delete_without_archive(rec: RunRecord, *, dry_run: bool) -> None:
+    if not rec.eligible or rec.keep_full or rec.already_compacted:
+        return
+
+    rec.compaction_mode = MODE_DELETE_WITHOUT_ARCHIVE
+    archivable = _collect_archivable_paths(rec.run_root)
+    if not archivable:
+        rec.status = "skipped_no_heavy"
+        return
+
+    rom_safe, warnings, blocking = _verify_rom_retention(rec.run_root)
+    rec.rom_rebuild_safe = rom_safe
+    for w in warnings:
+        if w not in rec.warnings:
+            rec.warnings.append(w)
+    if blocking:
+        raise RuntimeError(f"refuse delete: ROM retention incomplete: {blocking}")
+    if not rom_safe:
+        raise RuntimeError("refuse delete: rom_rebuild_safe=false")
+
+    if dry_run:
+        rec.status = "dry_run_planned_delete"
+        return
+
+    rec.deleted_paths = _delete_archived_paths(rec.run_root, archivable)
+    rec.deleted_bytes = rec.archivable_bytes
+    rec.freed_bytes = rec.deleted_bytes
+    rec.status = "completed"
+    _write_manifest(rec.run_root, _build_delete_manifest(rec))
 
 
 def _process_record(
@@ -622,6 +712,7 @@ def _print_summary(
     records: Sequence[RunRecord],
     recommendations: Sequence[Mapping[str, str]],
     dry_run: bool,
+    compaction_mode: str,
 ) -> None:
     eligible = [r for r in records if r.eligible]
     skipped = [r for r in records if not r.eligible]
@@ -629,7 +720,12 @@ def _print_summary(
     planned = [r for r in eligible if not r.keep_full and not r.already_compacted]
 
     print(f"\n=== {title} ===", flush=True)
-    print(f"eligible_completed={len(eligible)} skipped={len(skipped)} keep_full={len(keep_full)} planned_compaction={len(planned)}", flush=True)
+    print(f"compaction_mode={compaction_mode or 'dry_run_plan'}", flush=True)
+    print(
+        f"eligible_completed={len(eligible)} skipped={len(skipped)} "
+        f"keep_full={len(keep_full)} planned_action={len(planned)}",
+        flush=True,
+    )
     print(f"dry_run={dry_run}", flush=True)
 
     if recommendations:
@@ -649,25 +745,52 @@ def _print_summary(
             print(f"  ... +{len(skipped) - 40} more", flush=True)
 
     if keep_full:
-        print("\nkeep_full_local (no archive/delete):", flush=True)
+        print("\nkept_full_samples (heavy artifacts retained locally):", flush=True)
         for r in keep_full:
             print(f"  {r.sample_id}: {r.keep_full_reason}", flush=True)
 
-    est_archive = sum(r.archivable_bytes for r in planned)
-    est_freed = est_archive if dry_run else sum(r.freed_bytes for r in planned)
-    est_retained = sum(r.retained_bytes for r in planned)
-    print(
-        f"\nestimated_archive_bytes={est_archive} (~{est_archive / (1024**3):.2f} GiB)",
-        flush=True,
+    if planned:
+        label = (
+            "planned_direct_delete_samples"
+            if compaction_mode == MODE_DELETE_WITHOUT_ARCHIVE
+            else "planned_compaction_samples"
+        )
+        print(f"\n{label}:", flush=True)
+        for r in planned[:40]:
+            print(
+                f"  {r.sample_id}: archivable={r.archivable_bytes} retained={r.retained_bytes} "
+                f"rom_rebuild_safe={r.rom_rebuild_safe}",
+                flush=True,
+            )
+        if len(planned) > 40:
+            print(f"  ... +{len(planned) - 40} more", flush=True)
+
+    est_freed = (
+        sum(r.archivable_bytes for r in planned)
+        if dry_run
+        else sum(r.deleted_bytes or r.freed_bytes for r in planned)
     )
+    est_retained = sum(r.retained_bytes for r in planned)
+    if compaction_mode == MODE_ARCHIVE_HEAVY:
+        est_archive = sum(r.archivable_bytes for r in planned)
+        print(
+            f"\nestimated_archive_bytes={est_archive} (~{est_archive / (1024**3):.2f} GiB)",
+            flush=True,
+        )
     print(
         f"estimated_local_bytes_freed={est_freed} (~{est_freed / (1024**3):.2f} GiB)",
         flush=True,
     )
-    print(
-        f"estimated_local_bytes_retained={est_retained} (~{est_retained / (1024**2):.1f} MiB per planned run avg)",
-        flush=True,
-    )
+    if planned:
+        avg_ret = est_retained / len(planned)
+        print(
+            f"estimated_local_bytes_retained={est_retained} (~{avg_ret / (1024**2):.1f} MiB per planned run)",
+            flush=True,
+        )
+
+    print("\nrequired_rom_files_retained_per_planned_run:", flush=True)
+    for rel_path in ROM_REQUIRED_REL_PATHS + ("aggregation/modes_summary.json",):
+        print(f"  {rel_path}", flush=True)
 
     if dry_run:
         print("\nno files deleted (dry-run)", flush=True)
@@ -686,7 +809,13 @@ def _write_reports(
         "tool_version": TOOL_VERSION,
         "generated_utc": utc_now(),
         "dry_run": bool(args.dry_run),
+        "compaction_mode": (
+            MODE_DELETE_WITHOUT_ARCHIVE
+            if args.delete_heavy_without_archive
+            else (MODE_ARCHIVE_HEAVY if args.archive_heavy else "dry_run_plan")
+        ),
         "archive_heavy": bool(args.archive_heavy),
+        "delete_heavy_without_archive": bool(args.delete_heavy_without_archive),
         "delete_heavy_after_verify": bool(args.delete_heavy_after_verify),
         "shape_name": args.shape_name,
         "sample_range": args.sample_range,
@@ -704,11 +833,14 @@ def _write_reports(
                 "original_bytes": r.original_bytes,
                 "retained_bytes": r.retained_bytes,
                 "archivable_bytes": r.archivable_bytes,
+                "compaction_mode": r.compaction_mode,
                 "archived_bytes": r.archived_bytes,
+                "deleted_bytes": r.deleted_bytes,
                 "freed_bytes": r.freed_bytes,
                 "archive_path": r.archive_path,
                 "sha256": r.sha256,
                 "rom_comparison_present": r.rom_comparison_present,
+                "rom_rebuild_safe": r.rom_rebuild_safe,
                 "warnings": r.warnings,
                 "archived_paths": r.archived_paths,
                 "deleted_paths": r.deleted_paths,
@@ -731,8 +863,11 @@ def _write_reports(
                 "status",
                 "original_bytes",
                 "archivable_bytes",
+                "deleted_bytes",
                 "freed_bytes",
                 "rom_comparison_present",
+                "rom_rebuild_safe",
+                "compaction_mode",
             ],
         )
         writer.writeheader()
@@ -747,8 +882,11 @@ def _write_reports(
                     "status": r.status,
                     "original_bytes": r.original_bytes,
                     "archivable_bytes": r.archivable_bytes,
+                    "deleted_bytes": r.deleted_bytes,
                     "freed_bytes": r.freed_bytes,
                     "rom_comparison_present": r.rom_comparison_present,
+                    "rom_rebuild_safe": r.rom_rebuild_safe,
+                    "compaction_mode": r.compaction_mode,
                 }
             )
 
@@ -758,11 +896,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Dry-run (default):\n"
+            "Dry-run plan (default):\n"
             "  python .../compact_completed_m4_runs.py --lhs-json ROM/classic/lhs_pool.json "
-            "--shape-name classic --sample-range 0-34 --shared-root /media/sf_gmar --keep-full-latest 2\n\n"
-            "Archive + delete after verify:\n"
-            "  add --archive-heavy --delete-heavy-after-verify --keep-full-samples sample_001,...\n"
+            "--shape-name classic --sample-range 0-34 --keep-full-latest 1 "
+            "--keep-full-samples sample_000,sample_001 --delete-heavy-without-archive --dry-run\n\n"
+            "Direct delete (no archive) for non-keep-full completed samples:\n"
+            "  same command without --dry-run\n\n"
+            "Legacy archive mode (representative full samples only):\n"
+            "  add --archive-heavy --delete-heavy-after-verify --shared-root /media/sf_gmar\n"
         ),
     )
     parser.add_argument("--lhs-json", type=Path, default=Path("ROM/classic/lhs_pool.json"))
@@ -777,27 +918,45 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=True,
         help="Plan only (default). No archives or deletes.",
     )
-    parser.add_argument("--archive-heavy", action="store_true")
-    parser.add_argument("--delete-heavy-after-verify", action="store_true")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--archive-heavy",
+        action="store_true",
+        help="Create tar.zst archives on --shared-root (legacy; for keep-full/reference runs).",
+    )
+    mode_group.add_argument(
+        "--delete-heavy-without-archive",
+        action="store_true",
+        help="Delete heavy artifacts directly after ROM-retention verification (default policy).",
+    )
+    parser.add_argument(
+        "--delete-heavy-after-verify",
+        action="store_true",
+        help="With --archive-heavy: delete local heavy files after archive verify.",
+    )
     parser.add_argument("--report-dir", type=Path, default=None)
     parser.add_argument(
         "--execute",
         action="store_true",
-        help="Force write archives/deletes (disables dry-run).",
+        help="Force destructive action (disables dry-run).",
     )
     args = parser.parse_args(argv)
 
     argv_list = list(argv) if argv is not None else sys.argv[1:]
     explicit_dry_run = "--dry-run" in argv_list
+    destructive_mode = bool(args.archive_heavy or args.delete_heavy_without_archive)
     if args.execute:
         args.dry_run = False
-    elif args.archive_heavy and not explicit_dry_run:
+    elif destructive_mode and not explicit_dry_run:
         args.dry_run = False
     if args.delete_heavy_after_verify and not args.archive_heavy:
         print("error: --delete-heavy-after-verify requires --archive-heavy", file=sys.stderr)
         return 2
-    if args.archive_heavy and args.dry_run:
-        print("note: --archive-heavy with default --dry-run will plan only; add --execute to write archives", flush=True)
+    if destructive_mode and args.dry_run:
+        print(
+            "note: destructive mode with --dry-run will plan only; omit --dry-run or pass --execute to apply",
+            flush=True,
+        )
 
     repo_root = detect_repo_root(SCRIPT_DIR)
     lhs_path = args.lhs_json if args.lhs_json.is_absolute() else repo_root / args.lhs_json
@@ -814,6 +973,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     shared_root: Optional[Path] = None
     if args.archive_heavy or args.delete_heavy_after_verify:
         shared_root = _verify_shared_root(args.shared_root)
+
+    compaction_mode = ""
+    if args.delete_heavy_without_archive:
+        compaction_mode = MODE_DELETE_WITHOUT_ARCHIVE
+    elif args.archive_heavy:
+        compaction_mode = MODE_ARCHIVE_HEAVY
 
     records: List[RunRecord] = []
     completed_ids: List[str] = []
@@ -866,8 +1031,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         title="M4 compaction plan (pre)",
         records=records,
         recommendations=recommendations,
-        dry_run=bool(args.dry_run and not args.archive_heavy),
+        dry_run=bool(args.dry_run),
+        compaction_mode=compaction_mode,
     )
+
+    if args.delete_heavy_without_archive and not args.dry_run:
+        for rec in records:
+            if not rec.eligible or rec.keep_full:
+                continue
+            try:
+                _process_delete_without_archive(rec, dry_run=False)
+            except Exception as exc:
+                rec.status = "failed"
+                rec.warnings.append(str(exc))
+                print(f"error: {rec.sample_id}: {exc}", file=sys.stderr)
+                print("error: aborting further deletes after failure", file=sys.stderr)
+                break
 
     if args.archive_heavy and not args.dry_run:
         for rec in records:
@@ -896,7 +1075,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         title="M4 compaction plan (post)",
         records=records,
         recommendations=recommendations,
-        dry_run=bool(args.dry_run and not args.archive_heavy),
+        dry_run=bool(args.dry_run),
+        compaction_mode=compaction_mode,
     )
     print(f"\nwrote report: {rel(report_dir / 'compaction_report.json', repo_root=repo_root)}", flush=True)
     return 0
