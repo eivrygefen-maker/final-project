@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import statistics
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
@@ -275,6 +276,36 @@ def attach_audio_coupling_to_accepted_mode(
 ) -> None:
     """Mutate accepted-mode dict with lightweight audio coupling scalars."""
     if x_active is not None and region_ctx is not None:
+        import os
+
+        if os.environ.get("B3_MIC_PROXY_MODE") == "aperture_pressure_rms_v1":
+            mask_npz = os.environ.get("B3_EXPERIMENTAL_APERTURE_MASK_NPZ")
+            if mask_npz and Path(mask_npz).is_file():
+                try:
+                    import numpy as np
+                    from v2_b3_mode_audio_coupling_experimental import (  # noqa: WPS433
+                        compute_experimental_audio_coupling,
+                    )
+
+                    with np.load(mask_npz, allow_pickle=False) as z:
+                        p_idx_aperture = np.asarray(z["p_idx_aperture"], dtype=np.int32).ravel()
+                    entry.update(
+                        compute_experimental_audio_coupling(
+                            x_active=x_active,
+                            built=built,
+                            region_ctx=region_ctx,
+                            p_idx_aperture=p_idx_aperture,
+                        )
+                    )
+                    return
+                except Exception as exc:
+                    entry.update(
+                        audio_coupling_fields_not_available(
+                            reason="experimental_aperture_proxy_failed",
+                            detail=f"{type(exc).__name__}:{exc}",
+                        )
+                    )
+                    return
         entry.update(
             compute_lightweight_audio_coupling(
                 x_active=x_active,

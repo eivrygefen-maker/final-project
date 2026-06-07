@@ -3408,13 +3408,22 @@ def _b3_build_corrected_structural_active_operators(
     operator_build_profile: Any = None,
     core_config_path: Optional[Path] = None,
     core_config_provenance: Optional[Dict[str, Any]] = None,
+    operator_mesh_file: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Build copy-fixed B3 free pencil and structural active-set reduced A_active/M_active."""
     prof = operator_build_profile or B3OperatorBuildProfiler.maybe_from_env()
     manifest = load_manifest()
     case = next(c for c in manifest["cases"] if str(c["id"]) == CASE_ID)
     sample = sample_spec_from_case(case)
-    mesh_file = mesh_path(str(mesh_level), CASE_ID)
+    if operator_mesh_file is not None:
+        mesh_file = Path(operator_mesh_file).expanduser().resolve()
+        if not mesh_file.is_file():
+            raise _B3StructActiveBuildError(
+                "validated_b3_inputs",
+                f"operator_mesh_file_missing:{mesh_file}",
+            )
+    else:
+        mesh_file = mesh_path(str(mesh_level), CASE_ID)
     prof.begin("mesh_load_b3_path")
     msh, _cell_tags, facet_tags = fem3d._load_mesh_and_tags(mesh_file)
     f_top = np.asarray(facet_tags.find(TAG_TOP), dtype=np.int32)
@@ -3659,6 +3668,7 @@ def _b3_build_corrected_structural_active_operators(
         "inactive_local": inactive_local,
         "operator_build_profile": prof,
         "region_dof_build": region_dof_build,
+        "operator_mesh_file_used": str(Path(mesh_file).resolve()),
     }
     if core_config_provenance:
         out["core_config_provenance"] = dict(core_config_provenance)

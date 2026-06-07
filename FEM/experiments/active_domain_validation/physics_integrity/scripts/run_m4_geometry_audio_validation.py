@@ -1,135 +1,56 @@
 #!/usr/bin/env python3
 """
-Isolated M4 geometry/audio validation (experimental — does not touch production pipeline).
+Isolated M4 geometry/audio validation (experimental — does not touch production).
 
-Test A: operator provenance audit (no solve).
-Test B: aperture mic-proxy recompute + narrow-band solve plan for two extreme samples.
+Test A: provenance audit on production runs.
+Test B: sample-mesh Stage A + aperture proxy + narrow-band solve on validation run trees.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
-
-import numpy as np
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DOCS_DIR = SCRIPT_DIR.parent / "docs"
-VALIDATION_ROOT_REL = Path(
-    "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/validation/mic_proxy_v1"
-)
 
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from v2_b3_aperture_pressure_mask import (  # noqa: E402
-    aperture_mask_summary,
-    build_aperture_pressure_mask,
-    write_aperture_mask_npz,
+from v2_b3_m4_lhs_pool_bridge import DEFAULT_RUN_ID_SUFFIX, load_lhs_pool  # noqa: E402
+from v2_b3_m4_validation_lib import (  # noqa: E402
+    BAND_281,
+    BAND_390,
+    _production_legacy_peak,
+    attach_aperture_mask,
+    build_narrow_band_chunk_targets,
+    collect_checkpoint_report,
+    collect_solve_band_results,
+    evaluate_validation_gates,
+    prepare_validation_run_tree,
+    validation_run_id,
 )
-from v2_b3_m4_lhs_pool_bridge import DEFAULT_RUN_ID_SUFFIX, lhs_entry_index, load_lhs_pool  # noqa: E402
-from v2_b3_m4_lprod_interfaces import extract_geometry_dict  # noqa: E402
-from v2_b3_m4_rom_fom_compare_lib import load_fom_modes_catalog_deduped  # noqa: E402
-from v2_b3_m4_worker_run_lib import detect_repo_root, load_json, rel  # noqa: E402
-from v2_b3_mode_audio_coupling_experimental import compute_experimental_audio_coupling  # noqa: E402
-from v2_b3_rich_modal_lib import load_region_dof_bundle, prolongate_active_to_W  # noqa: E402
+from v2_b3_m4_worker_run_lib import detect_repo_root, rel  # noqa: E402
+from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
 DEFAULT_LHS = "ROM/classic/lhs_pool.json"
-BANDS = ((270.0, 290.0, "band_281"), (380.0, 400.0, "band_390"))
-NARROW_TARGETS_281 = [272.0, 278.0, 281.5, 286.0]
-NARROW_TARGETS_390 = [382.0, 388.0, 391.5, 396.0]
+DEFAULT_SAMPLES = ("sample_001", "sample_034")
 
 
 def _parse_samples(arg: str) -> List[str]:
     return [p.strip() for p in arg.split(",") if p.strip()]
 
 
-def _estimate_cavity_volume(geom: Mapping[str, float]) -> float:
-    length = float(geom["length"])
-    width = float(geom["width"])
-    depth = float(geom["depth"])
-    top_t = float(geom.get("top_thickness") or 0.003)
-    return length * width * max(depth - 2.0 * top_t, 1e-6)
+def _repo_rel(path: Path, repo_root: Path) -> str:
+    return rel(path, repo_root=repo_root)
 
 
-def pick_extreme_lhs_samples(
-    pool: Mapping[str, Any],
-    *,
-    max_index: int = 35,
-    require_run_id: bool = False,
-) -> Tuple[str, str]:
-    """Pick smallest/largest cavity-volume among sample_000..sample_{max_index}."""
-    scored: List[Tuple[float, str]] = []
-    for entry in pool.get("entries") or []:
-        sid = str(entry.get("id") or "")
-        if not sid.startswith("sample_"):
-            continue
-        try:
-            idx = int(sid.split("_", 1)[1])
-        except (IndexError, ValueError):
-            continue
-        if idx > int(max_index):
-            continue
-        if require_run_id and not entry.get("last_run_id"):
-            continue
-        geom = extract_geometry_dict(entry)
-        if not geom:
-            continue
-        scored.append((_estimate_cavity_volume(geom), sid))
-    if len(scored) < 2:
-        return "sample_001", "sample_034"
-    scored.sort(key=lambda x: x[0])
-    return scored[0][1], scored[-1][1]
-
-
-def _run_root(repo_root: Path, sample_id: str, pool: Mapping[str, Any], run_id_suffix: str) -> Path:
-    idx = lhs_entry_index(pool, sample_id)
-    entry = (pool.get("entries") or [])[idx] if idx is not None else {}
-    run_id = str(entry.get("last_run_id") or f"{sample_id}_{run_id_suffix}")
-    return (
-        repo_root
-        / "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars"
-        / sample_id
-        / "runs"
-        / run_id
-    )
-
-
-def _modes_in_band(modes: Sequence[Mapping[str, Any]], lo: float, hi: float) -> List[Dict[str, Any]]:
-    out = []
-    for m in modes:
-        f = m.get("frequency_hz")
-        if f is None:
-            continue
-        try:
-            fv = float(f)
-        except (TypeError, ValueError):
-            continue
-        if lo <= fv <= hi:
-            out.append(dict(m))
-    out.sort(key=lambda r: float(r["frequency_hz"]))
-    return out
-
-
-def _try_load_mode_vector(worker_dir: Path, mode_index: int) -> Optional[np.ndarray]:
-    for name in ("mode_vector_active.npy", "x_active.npy"):
-        p = worker_dir / name
-        if p.is_file():
-            return np.load(p)
-    rich = worker_dir.parent.parent / "lprod" / "checkpoint" / "rich_modal" / "modes_active.npz"
-    if rich.is_file():
-        z = np.load(rich, allow_pickle=False)
-        if "vectors" in z.files:
-            vecs = z["vectors"]
-            if mode_index < len(vecs):
-                return np.asarray(vecs[mode_index], dtype=np.float64)
-    return None
-
-
-def test_a_provenance(repo_root: Path, samples: Sequence[str]) -> Dict[str, Any]:
+def run_test_a(repo_root: Path, samples: Sequence[str]) -> Dict[str, Any]:
+    json_out = DOCS_DIR / "M4_OPERATOR_PROVENANCE_AUDIT.json"
     cmd = [
         sys.executable,
         str(SCRIPT_DIR / "audit_m4_operator_provenance.py"),
@@ -137,202 +58,334 @@ def test_a_provenance(repo_root: Path, samples: Sequence[str]) -> Dict[str, Any]
         ",".join(samples),
         "--dolfinx",
         "--json-out",
-        str(DOCS_DIR / "M4_OPERATOR_PROVENANCE_AUDIT.json"),
+        str(json_out),
     ]
     proc = subprocess.run(cmd, cwd=str(repo_root), capture_output=True, text=True)
-    return {
+    result: Dict[str, Any] = {
         "command": " ".join(cmd),
         "returncode": proc.returncode,
         "stdout": proc.stdout,
-        "stderr": proc.stderr[-4000:] if proc.stderr else "",
+        "stderr": proc.stderr[-8000:] if proc.stderr else "",
+        "json_out": _repo_rel(json_out, repo_root),
     }
+    if json_out.is_file():
+        try:
+            result["audit"] = json.loads(json_out.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    return result
 
 
-def test_b_proxy_recompute(
+def _stage_a_command(
+    *,
+    repo_root: Path,
+    val_root: Path,
+    generated_mesh: Path,
+    core_config: Path,
+) -> List[str]:
+    return [
+        sys.executable,
+        str(SCRIPT_DIR / "v2_b3_m4_validation_checkpoint_export.py"),
+        "--mesh-level",
+        "L_prod",
+        "--output-dir",
+        str(val_root / "lprod" / "checkpoint"),
+        "--core-config",
+        str(core_config),
+        "--use-sample-operator-mesh",
+        str(generated_mesh),
+        "--B3-synthesis-region-dofs",
+        "best_effort",
+    ]
+
+
+def _narrow_band_solve_command(
+    *,
+    val_root: Path,
+    targets_json: Path,
+) -> List[str]:
+    return [
+        sys.executable,
+        str(SCRIPT_DIR / "v2_b3_checkpoint_solve_target_list.py"),
+        "--checkpoint-dir",
+        str(val_root / "lprod" / "checkpoint"),
+        "--targets-json",
+        str(targets_json),
+        "--output-dir",
+        str(val_root / "validation" / "narrow_band_solve"),
+        "--factor-solver",
+        "mkl_pardiso",
+        "--nev",
+        "8",
+        "--ncv",
+        "16",
+    ]
+
+
+def run_test_b_sample(
     *,
     repo_root: Path,
     pool: Mapping[str, Any],
     sample_id: str,
     run_id_suffix: str,
-    use_sample_mesh: bool,
+    execute: bool,
+    load_dolfinx: bool,
 ) -> Dict[str, Any]:
-    run_root = _run_root(repo_root, sample_id, pool, run_id_suffix)
-    ckpt = run_root / "lprod" / "checkpoint"
-    built_path = ckpt / "built_metadata.json"
-    catalog_path = run_root / "aggregation" / "modes_catalog.jsonl"
-    out: Dict[str, Any] = {"sample_id": sample_id, "run_root": rel(run_root, repo_root=repo_root)}
-
-    if not built_path.is_file() or not catalog_path.is_file():
-        out["status"] = "missing_checkpoint_or_catalog"
+    run_id = validation_run_id(sample_id)
+    out: Dict[str, Any] = {
+        "sample_id": sample_id,
+        "validation_run_id": run_id,
+        "status": "planned",
+    }
+    try:
+        prep = prepare_validation_run_tree(
+            repo_root=repo_root,
+            pool=pool,
+            sample_id=sample_id,
+            run_id_suffix=run_id_suffix,
+        )
+    except FileNotFoundError as exc:
+        out["status"] = "FAIL"
+        out["error"] = str(exc)
         return out
 
-    built = load_json(built_path)
-    geom = extract_geometry_dict((pool.get("entries") or [])[lhs_entry_index(pool, sample_id) or 0])
-    mesh_file = run_root / "lprod" / "mesh" / "L_prod" / f"{sample_id}.msh"
-    if not use_sample_mesh or not mesh_file.is_file():
-        from v2_mesh_convergence_common import mesh_path  # noqa: WPS433
+    val_root: Path = prep["validation_run_root"]
+    prod_root: Path = prep["production_run_root"]
+    generated_mesh: Path = prep["generated_mesh_path"]
+    core_config: Path = prep["resolved_core_config"]
 
-        mesh_file = mesh_path("L_prod", "baseline_coupled_v2")
+    out["validation_run_root"] = _repo_rel(val_root, repo_root)
+    out["production_run_root"] = _repo_rel(prod_root, repo_root)
+    out["generated_mesh_path"] = _repo_rel(generated_mesh, repo_root)
+    out["operator_mesh_path"] = out["generated_mesh_path"]
+    from v2_b3_m4_validation_lib import _sha256_file  # noqa: WPS433
+
+    out["generated_mesh_sha256"] = _sha256_file(generated_mesh)
+
+    stage_a_cmd = _stage_a_command(
+        repo_root=repo_root,
+        val_root=val_root,
+        generated_mesh=generated_mesh,
+        core_config=core_config,
+    )
+    out["stage_a_command"] = " ".join(stage_a_cmd)
+
+    targets_doc = build_narrow_band_chunk_targets(sample_id=sample_id, run_id=run_id)
+    targets_path = val_root / "validation" / "narrow_band_targets.json"
+    targets_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(targets_path, targets_doc)
+    solve_cmd = _narrow_band_solve_command(val_root=val_root, targets_json=targets_path)
+    out["narrow_band_solve_command"] = " ".join(solve_cmd)
+    out["narrow_band_solve_env"] = {
+        "B3_MIC_PROXY_MODE": "aperture_pressure_rms_v1",
+        "B3_EXPERIMENTAL_APERTURE_MASK_NPZ": str(val_root / "validation" / "aperture_pressure_mask.npz"),
+    }
+
+    if not execute:
+        out["status"] = "commands_ready"
+        return out
+
+    proc_a = subprocess.run(stage_a_cmd, cwd=str(repo_root), capture_output=True, text=True)
+    out["stage_a_returncode"] = proc_a.returncode
+    out["stage_a_stdout"] = proc_a.stdout[-4000:]
+    out["stage_a_stderr"] = proc_a.stderr[-4000:]
+    if proc_a.returncode != 0:
+        out["status"] = "FAIL"
+        out["error"] = "validation_stage_a_failed"
+        return out
+
+    ckpt_report = collect_checkpoint_report(
+        repo_root=repo_root,
+        val_root=val_root,
+        generated_mesh=generated_mesh,
+        load_dolfinx=load_dolfinx,
+    )
+    out.update(ckpt_report)
+
+    if not out.get("operator_mesh_matches_generated"):
+        out["status"] = "FAIL"
+        out["error"] = "operator_mesh_matches_generated=false"
+        return out
 
     try:
-        mask = build_aperture_pressure_mask(mesh_file, geometry=geom, built_meta=built)
-        val_dir = repo_root / VALIDATION_ROOT_REL / sample_id
-        write_aperture_mask_npz(val_dir / "aperture_pressure_mask.npz", mask)
-        out["aperture_mask"] = aperture_mask_summary(mask)
+        mask_summary = attach_aperture_mask(
+            val_root=val_root,
+            generated_mesh=generated_mesh,
+            pool=pool,
+            sample_id=sample_id,
+        )
     except Exception as exc:  # noqa: BLE001
-        out["aperture_mask_error"] = f"{type(exc).__name__}:{exc}"
+        out["status"] = "FAIL"
+        out["error"] = f"aperture_mask_failed:{type(exc).__name__}:{exc}"
         return out
 
-    region_ctx = load_region_dof_bundle(ckpt, built)
-    raw_modes, deduped, _ = load_fom_modes_catalog_deduped(catalog_path)
-    comparisons: List[Dict[str, Any]] = []
+    out["p_idx_aperture_count"] = int(mask_summary.get("n_p_aperture_dofs") or 0)
+    out["aperture_coordinate_bbox_min"] = mask_summary.get("coordinate_bbox_min")
+    out["aperture_coordinate_bbox_max"] = mask_summary.get("coordinate_bbox_max")
+    out["aperture_mask_method"] = mask_summary.get("mask_method")
+    out["aperture_mask_npz"] = mask_summary.get("mask_npz_path")
 
-    for lo, hi, band_name in BANDS:
-        for m in _modes_in_band(deduped, lo, hi)[:4]:
-            rec = {
-                "band": band_name,
-                "frequency_hz": m.get("frequency_hz"),
-                "legacy_mic_output_proxy": m.get("mic_output_proxy"),
-                "legacy_mic_output_method": m.get("mic_output_method"),
-                "air_share": m.get("air_share"),
-            }
-            chunk_id = m.get("chunk_id")
-            x_active = None
-            if chunk_id:
-                wr = run_root / "worker_results" / str(chunk_id)
-                x_active = _try_load_mode_vector(wr, int(m.get("mode_index") or 0))
-            if x_active is not None:
-                built_operators = {"active_local": np.asarray(built["active_local"], dtype=np.int32)}
-                # Minimal built dict for prolongation — full solve uses richer built_from_checkpoint_metadata.
-                try:
-                    from v2_b3_operator_checkpoint_portable import built_from_checkpoint_metadata  # noqa: WPS433
-                    from v2_b3_petsc_util import load_operators_with_portable_fallback  # noqa: WPS433
+    legacy_281 = _production_legacy_peak(prod_root, BAND_281)
+    legacy_390 = _production_legacy_peak(prod_root, BAND_390)
+    out["old_mic_proxy_281"] = (legacy_281 or {}).get("mic_output_proxy")
+    out["old_mic_proxy_390"] = (legacy_390 or {}).get("mic_output_proxy")
+    out["old_mic_method_281"] = (legacy_281 or {}).get("mic_output_method")
+    out["production_peak_281_hz"] = (legacy_281 or {}).get("frequency_hz")
+    out["production_peak_390_hz"] = (legacy_390 or {}).get("frequency_hz")
 
-                    A, M, _ = load_operators_with_portable_fallback(ckpt)
-                    built_full, _ = built_from_checkpoint_metadata(built, A_active=A, M_active=M)
-                    exp = compute_experimental_audio_coupling(
-                        x_active=x_active,
-                        built=built_full,
-                        region_ctx=region_ctx,
-                        p_idx_aperture=mask["p_idx_aperture"],
-                    )
-                    rec.update(
-                        {
-                            "experimental_mic_output_proxy": exp.get("mic_output_proxy"),
-                            "experimental_mic_output_method": exp.get("mic_output_method"),
-                            "experimental_mic_ratio_vs_legacy": exp.get("experimental_mic_ratio_vs_legacy"),
-                            "recompute_status": "from_mode_vector",
-                        }
-                    )
-                    A.destroy()
-                    M.destroy()
-                except Exception as exc:  # noqa: BLE001
-                    rec["recompute_status"] = f"vector_recompute_failed:{type(exc).__name__}:{exc}"
-            else:
-                rec["recompute_status"] = "mode_vector_not_retained; narrow_band_solve_required"
-            comparisons.append(rec)
+    env = os.environ.copy()
+    env.update(out["narrow_band_solve_env"])
+    proc_s = subprocess.run(solve_cmd, cwd=str(repo_root), capture_output=True, text=True, env=env)
+    out["narrow_band_solve_returncode"] = proc_s.returncode
+    out["narrow_band_solve_stdout"] = proc_s.stdout[-4000:]
+    out["narrow_band_solve_stderr"] = proc_s.stderr[-4000:]
+    if proc_s.returncode != 0:
+        out["status"] = "FAIL"
+        out["error"] = "narrow_band_solve_failed"
+        return out
 
-    out["band_comparisons"] = comparisons
-    out["status"] = "ok"
+    solve_results = collect_solve_band_results(val_root / "validation" / "narrow_band_solve" / "solver_result.json")
+    out.update(solve_results)
+    out["deduped_modes_270_290_hz"] = solve_results.get("deduped_modes_270_290_hz") or []
+    out["deduped_modes_380_400_hz"] = solve_results.get("deduped_modes_380_400_hz") or []
+
+    if out["deduped_modes_270_290_hz"]:
+        peak = max(
+            out["deduped_modes_270_290_hz"],
+            key=lambda m: float(m.get("mic_output_proxy") or 0.0),
+        )
+        out["new_aperture_mic_proxy_281"] = peak.get("mic_output_proxy")
+        out["new_mic_method_281"] = peak.get("mic_output_method")
+        out["validation_peak_281_hz"] = peak.get("frequency_hz")
+    if out["deduped_modes_380_400_hz"]:
+        peak390 = max(
+            out["deduped_modes_380_400_hz"],
+            key=lambda m: float(m.get("mic_output_proxy") or 0.0),
+        )
+        out["new_aperture_mic_proxy_390"] = peak390.get("mic_output_proxy")
+        out["new_mic_method_390"] = peak390.get("mic_output_method")
+        out["validation_peak_390_hz"] = peak390.get("frequency_hz")
+
+    out["status"] = "PASS" if out.get("solver_status") == "PASS" else "FAIL"
     return out
 
 
-def _narrow_band_commands(repo_root: Path, sample_id: str) -> List[str]:
-    val_dir = repo_root / VALIDATION_ROOT_REL / sample_id
-    targets_path = val_dir / "narrow_band_targets.json"
-    targets_doc = {
-        "schema": "m4_validation_narrow_band_targets_v1",
-        "sample_id": sample_id,
-        "bands_hz": [{"name": "281", "targets_hz": NARROW_TARGETS_281}, {"name": "390", "targets_hz": NARROW_TARGETS_390}],
-        "experimental_env": {
-            "B3_MIC_PROXY_MODE": "aperture_pressure_rms_v1",
-            "B3_EXPERIMENTAL_APERTURE_MASK_NPZ": str(val_dir / "aperture_pressure_mask.npz"),
-        },
+def _production_recommendation(validation_pass: bool) -> Dict[str, Any]:
+    if not validation_pass:
+        return {
+            "decision": "VALIDATION_INCOMPLETE",
+            "action": "Run Test B with --execute on VM; do not change production until validation_pass=true.",
+        }
+    return {
+        "decision": "RERUN_ALL_35_SAMPLES",
+        "required_production_changes": [
+            "Stage A: resolve operator mesh from run-tree lprod/mesh/L_prod/sample_XXX.msh (not baseline_coupled_v2)",
+            "Region DOF export: add p_idx_aperture to region_dof_indices.npz at checkpoint export",
+            "Audio coupling: default mic_output_method=aperture_pressure_rms_proxy_v1",
+            "Aggregation: keep 0.05 Hz dedupe; audit raw duplicate accepts per chunk",
+        ],
+        "migration_commands": [
+            "# 1) Mark production 000-035 pending re-run in tracking (do not auto-delete catalogs)",
+            "# 2) After code fix merged, rerun batch:",
+            "python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_m4_production_pipeline.py \\",
+            "  --lhs-json ROM/classic/lhs_pool.json --samples 0-35 --workers 3 --execute \\",
+            "  --continue-on-fail --run-rom-prepredict --run-rom-compare --rom-nonblocking",
+            "# 3) Do NOT resume sample_036 until validation_pass on new pipeline",
+            "# 4) Discard ROM artifacts trained on pre-fix catalogs; rebuild after new aggregation",
+            "rm -rf FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/*/runs/*/rom/",
+        ],
+        "estimated_rerun_hours_sequential": 26.25,
+        "invalidate_fields": ["frequency_hz", "mic_output_proxy", "ROM intensity targets"],
+        "retain_for_audit": ["existing aggregation/", "M4_OPERATOR_PROVENANCE_AUDIT.json"],
     }
-    val_dir.mkdir(parents=True, exist_ok=True)
-    targets_path.write_text(json.dumps(targets_doc, indent=2) + "\n", encoding="utf-8")
-
-    solve_script = SCRIPT_DIR / "v2_b3_checkpoint_solve_target_list.py"
-    return [
-        (
-            f"export B3_MIC_PROXY_MODE=aperture_pressure_rms_v1\n"
-            f"export B3_EXPERIMENTAL_APERTURE_MASK_NPZ={val_dir / 'aperture_pressure_mask.npz'}\n"
-            f"python {solve_script} \\\n"
-            f"  --checkpoint pipeline_runs/guitars/{sample_id}/runs/<run_id>/lprod/checkpoint \\\n"
-            f"  --targets-json {targets_path} \\\n"
-            f"  --output-dir {val_dir / 'narrow_band_solve'}"
-        )
-    ]
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="M4 geometry/audio validation (experimental, isolated).")
+    parser = argparse.ArgumentParser(description="M4 geometry/audio validation (isolated).")
     parser.add_argument("--lhs-json", type=Path, default=Path(DEFAULT_LHS))
-    parser.add_argument("--samples", default="", help="Two samples; default = LHS volume extremes.")
+    parser.add_argument("--samples", default=",".join(DEFAULT_SAMPLES))
     parser.add_argument("--run-id-suffix", default=DEFAULT_RUN_ID_SUFFIX)
     parser.add_argument("--test-a-only", action="store_true")
     parser.add_argument("--test-b-only", action="store_true")
-    parser.add_argument("--use-sample-mesh-for-mask", action="store_true", help="Build aperture mask on sample Gmsh mesh.")
     parser.add_argument(
-        "--max-sample-index",
-        type=int,
-        default=35,
-        help="When auto-picking extremes, only consider sample_000..sample_N (default 35).",
+        "--execute",
+        action="store_true",
+        help="Run validation Stage A + narrow-band solve (requires DOLFINx/PETSc on VM).",
     )
+    parser.add_argument("--dolfinx", action="store_true", default=True)
+    parser.add_argument("--no-dolfinx", action="store_true")
     parser.add_argument("--json-out", type=Path, default=DOCS_DIR / "M4_GEOMETRY_AUDIO_VALIDATION.json")
     args = parser.parse_args(argv)
 
     repo_root = detect_repo_root(SCRIPT_DIR)
     pool = load_lhs_pool(args.lhs_json if args.lhs_json.is_absolute() else repo_root / args.lhs_json)
-
-    if args.samples:
-        samples = _parse_samples(args.samples)
-        if len(samples) < 2:
-            samples = samples + [pick_extreme_lhs_samples(pool)[1]]
-    else:
-        samples = list(pick_extreme_lhs_samples(pool, max_index=int(args.max_sample_index)))
+    samples = _parse_samples(str(args.samples))
+    load_dolfinx = bool(args.dolfinx) and not bool(args.no_dolfinx)
 
     report: Dict[str, Any] = {
-        "schema": "m4_geometry_audio_validation_v1",
+        "schema": "m4_geometry_audio_validation_v2",
         "samples": samples,
-        "validation_root": str(VALIDATION_ROOT_REL),
-        "production_decision_recommendation": "RERUN_ALL_35_SAMPLES",
-        "decision_rationale": (
-            "Operator assembly uses fixed baseline_coupled_v2 topology; LHS geometry in generated "
-            "Gmsh meshes does not affect eigenvalue problem coordinates. Frequencies are valid only "
-            "for the material-overlay-on-fixed-topology model, not for per-sample body geometry. "
-            "Mic proxy used cavity_pressure_max with empty soundhole mask — audio fields require recompute. "
-            "Full rerun required after wiring sample mesh into Stage A and aperture pressure proxy."
-        ),
+        "execute": bool(args.execute),
+        "test_a_results": None,
+        "test_b_results": [],
+        "validation_pass": None,
+        "decision": None,
+        "gate_failures": [],
     }
 
     if not args.test_b_only:
-        report["test_a_provenance"] = test_a_provenance(repo_root, samples)
-        print(report["test_a_provenance"].get("stdout", ""))
+        report["test_a_results"] = run_test_a(repo_root, samples)
+        print(report["test_a_results"].get("stdout", ""))
 
     if not args.test_a_only:
-        report["test_b_samples"] = [
-            test_b_proxy_recompute(
+        report["test_b_results"] = [
+            run_test_b_sample(
                 repo_root=repo_root,
                 pool=pool,
                 sample_id=sid,
                 run_id_suffix=str(args.run_id_suffix),
-                use_sample_mesh=bool(args.use_sample_mesh_for_mask),
+                execute=bool(args.execute),
+                load_dolfinx=load_dolfinx,
             )
-            for sid in samples[:2]
+            for sid in samples
         ]
-        report["test_b_narrow_band_commands"] = {
-            sid: _narrow_band_commands(repo_root, sid) for sid in samples[:2]
-        }
+        for row in report["test_b_results"]:
+            print(
+                f"test_b {row.get('sample_id')}: status={row.get('status')} "
+                f"mesh_match={row.get('operator_mesh_matches_generated')} "
+                f"aperture_dofs={row.get('p_idx_aperture_count')}"
+            )
+            if row.get("narrow_band_solve_command"):
+                print(f"  solve_cmd: {row['narrow_band_solve_command']}")
+                if row.get("narrow_band_solve_env"):
+                    for k, v in row["narrow_band_solve_env"].items():
+                        print(f"  export {k}={v}")
+
+    if report["test_b_results"]:
+        if args.execute:
+            passed, failures = evaluate_validation_gates(report["test_b_results"])
+            report["gate_failures"] = failures
+            report["validation_pass"] = bool(passed)
+            rec = _production_recommendation(bool(passed))
+            report["decision"] = rec.get("decision")
+            report["production_recommendation"] = rec
+        else:
+            report["validation_pass"] = None
+            report["gate_failures"] = []
+            report["decision"] = "COMMANDS_READY_RUN_WITH_EXECUTE"
+            report["production_recommendation"] = _production_recommendation(False)
+    else:
+        report["decision"] = "TEST_A_ONLY"
 
     out = args.json_out if args.json_out.is_absolute() else repo_root / args.json_out
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"validation_report={rel(out, repo_root=repo_root)}")
-    print(f"recommended_decision={report['production_decision_recommendation']}")
-    for sid in samples[:2]:
-        print(f"  extreme_sample={sid}")
-    return 0
+    print(f"validation_report={_repo_rel(out, repo_root)}")
+    print(f"validation_pass={report.get('validation_pass')}")
+    print(f"decision={report.get('decision')}")
+    if report.get("gate_failures"):
+        print(f"gate_failures={report['gate_failures']}")
+    return 0 if report.get("validation_pass") is not False else 2
 
 
 if __name__ == "__main__":

@@ -1,16 +1,35 @@
 {
-  "decision_rationale": "Operator assembly uses fixed baseline_coupled_v2 topology; LHS geometry in generated Gmsh meshes does not affect eigenvalue problem coordinates. Frequencies are valid only for the material-overlay-on-fixed-topology model, not for per-sample body geometry. Mic proxy used cavity_pressure_max with empty soundhole mask \u2014 audio fields require recompute. Full rerun required after wiring sample mesh into Stage A and aperture pressure proxy.",
-  "production_decision_recommendation": "RERUN_ALL_35_SAMPLES",
-  "samples": [
-    "sample_015",
-    "sample_018"
+  "decision": "VALIDATION_INCOMPLETE",
+  "execute": false,
+  "gate_failures": [
+    "sample_001:operator_mesh_matches_generated=false",
+    "sample_001:p_idx_aperture_count=0",
+    "sample_034:operator_mesh_matches_generated=false",
+    "sample_034:p_idx_aperture_count=0"
   ],
-  "schema": "m4_geometry_audio_validation_v1",
-  "test_a_provenance": {
-    "command": "C:\\Users\\eivry\\AppData\\Local\\Python\\pythoncore-3.14-64\\python.exe C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\scripts\\audit_m4_operator_provenance.py --samples sample_015,sample_018 --dolfinx --json-out C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\docs\\M4_OPERATOR_PROVENANCE_AUDIT.json",
-    "returncode": 0,
-    "stderr": "",
-    "stdout": "audited_samples=2\nidentical_dimension_signature=False\ngenerated_mesh_node_counts_differ=False\nall_soundhole_structural_dofs_empty=True\n  sample_015: gen_nodes=None n_w=None active=None mesh_mismatch=False\n  sample_018: gen_nodes=None n_w=None active=None mesh_mismatch=False\njson_out=FEM/experiments/active_domain_validation/physics_integrity/docs/M4_OPERATOR_PROVENANCE_AUDIT.json\n"
+  "production_recommendation": {
+    "action": "Run Test B with --execute on VM; do not change production until validation_pass=true.",
+    "decision": "VALIDATION_INCOMPLETE"
   },
-  "validation_root": "FEM\\experiments\\active_domain_validation\\physics_integrity\\pipeline_runs\\validation\\mic_proxy_v1"
+  "samples": [
+    "sample_001",
+    "sample_034"
+  ],
+  "schema": "m4_geometry_audio_validation_v2",
+  "test_a_results": null,
+  "test_b_results": [
+    {
+      "error": "production mesh missing: C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\pipeline_runs\\guitars\\sample_001\\runs\\sample_001_m4prod1\\lprod\\mesh\\L_prod\\sample_001.msh",
+      "sample_id": "sample_001",
+      "status": "FAIL",
+      "validation_run_id": "sample_001_geometryfix_validation"
+    },
+    {
+      "error": "production mesh missing: C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\pipeline_runs\\guitars\\sample_034\\runs\\sample_034_m4prod1\\lprod\\mesh\\L_prod\\sample_034.msh",
+      "sample_id": "sample_034",
+      "status": "FAIL",
+      "validation_run_id": "sample_034_geometryfix_validation"
+    }
+  ],
+  "validation_pass": null
 }

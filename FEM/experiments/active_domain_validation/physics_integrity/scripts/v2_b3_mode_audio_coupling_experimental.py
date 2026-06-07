@@ -18,6 +18,8 @@ from v2_b3_mode_audio_coupling import (  # noqa: E402
 from v2_b3_rich_modal_lib import prolongate_active_to_W  # noqa: E402
 
 EXPERIMENTAL_MIC_METHOD = "aperture_pressure_rms_proxy_v1"
+MIC_PROXY_MODE_ENV = "B3_MIC_PROXY_MODE"
+APERTURE_MASK_NPZ_ENV = "B3_EXPERIMENTAL_APERTURE_MASK_NPZ"
 
 
 def _mic_from_aperture_pressure(

@@ -301,6 +301,8 @@ def _built_metadata_from_built(built: Dict[str, Any], *, mesh_level: str) -> Dic
             "region_dof_mesh_file": rdb.get("region_dof_mesh_file"),
             "back_includes_ribs": bool(rdb.get("back_includes_ribs", True)),
         }
+    if built.get("operator_mesh_file_used"):
+        meta["operator_mesh_file_used"] = str(built["operator_mesh_file_used"])
     return meta
 
 
