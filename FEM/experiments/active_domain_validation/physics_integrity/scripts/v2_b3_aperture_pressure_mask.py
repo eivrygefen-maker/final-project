@@ -23,6 +23,26 @@ RADIUS_FACTORS = (1.0, 1.25, 1.5)
 AXIAL_CELL_MULTS = (1, 2, 3)
 
 
+def _as_int32_index_map(value: Any) -> np.ndarray:
+    """Coerce index map without NumPy truth-value tests (never use ``value or []``)."""
+    if value is None:
+        return np.asarray([], dtype=np.int32)
+    return np.asarray(value, dtype=np.int32).ravel()
+
+
+def _as_float64_coords(value: Any) -> np.ndarray:
+    """Coerce coordinate rows without ndarray ``or`` fallbacks."""
+    if value is None:
+        return np.asarray([], dtype=np.float64)
+    return np.asarray(value, dtype=np.float64)
+
+
+def _optional_float(value: Any, default: float) -> float:
+    if value is None:
+        return float(default)
+    return float(value)
+
+
 def _sha256_indices(indices: Sequence[int]) -> str:
     payload = ",".join(str(int(i)) for i in sorted(indices))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -148,7 +168,7 @@ def _load_pressure_layout(
         solve_evp=False,
     )
     try:
-        p_air_cfg = np.asarray(cfg.get("_coupled_air_p_air_collapsed_indices") or [], dtype=np.int32).ravel()
+        p_air_cfg = _as_int32_index_map(cfg.get("_coupled_air_p_air_collapsed_indices"))
         V_p, _ = W.sub(1).collapse()
         p_air_v = np.asarray(
             fem3d._locate_air_volume_pressure_dofs(V_p, msh, cell_tags),
@@ -311,10 +331,10 @@ def diagnose_aperture_pressure_mask(
     dist = np.linalg.norm(air_coords - center.reshape(1, 3), axis=1)
 
     n_u_b3 = int(built_meta.get("n_u_b3") or 0)
-    p_idx = np.asarray(built_meta.get("p_idx") or [], dtype=np.int32).ravel()
-    active_local = np.asarray(built_meta.get("active_local") or [], dtype=np.int32).ravel()
-    free_rows = np.asarray(built_meta.get("free_rows") or [], dtype=np.int32).ravel()
-    bc_rows = np.asarray(built_meta.get("bc_rows") or [], dtype=np.int32).ravel()
+    p_idx = _as_int32_index_map(built_meta.get("p_idx"))
+    active_local = _as_int32_index_map(built_meta.get("active_local"))
+    free_rows = _as_int32_index_map(built_meta.get("free_rows"))
+    bc_rows = _as_int32_index_map(built_meta.get("bc_rows"))
 
     # Legacy bug demo: vertex indexing mistake
     V_p = fem.functionspace(msh, basix_element("Lagrange", msh.basix_cell(), 1))
@@ -337,7 +357,8 @@ def diagnose_aperture_pressure_mask(
         radii_counts[label] = int(np.sum(dist <= factor * radius))
 
     xy_dist = np.linalg.norm(air_coords[:, :2] - center[:2], axis=1)
-    z_dist = np.abs(air_coords[:, 2] - float(aperture.get("plane_z_m") or center[2]))
+    plane_z = _optional_float(aperture.get("plane_z_m"), float(center[2]))
+    z_dist = np.abs(air_coords[:, 2] - plane_z)
     thin_slab_counts = {}
     for am in (1, 2, 3):
         axial_th = float(am) * cell_h
@@ -420,10 +441,10 @@ def build_aperture_pressure_mask(
     )
 
     n_u_b3 = int(built_meta.get("n_u_b3") or 0)
-    p_idx = np.asarray(built_meta.get("p_idx") or [], dtype=np.int32).ravel()
-    bc_rows = set(int(x) for x in np.asarray(built_meta.get("bc_rows") or [], dtype=np.int32).ravel().tolist())
-    active_local = np.asarray(built_meta.get("active_local") or [], dtype=np.int32).ravel()
-    free_rows = np.asarray(built_meta.get("free_rows") or [], dtype=np.int32).ravel()
+    p_idx = _as_int32_index_map(built_meta.get("p_idx"))
+    bc_rows = set(int(x) for x in _as_int32_index_map(built_meta.get("bc_rows")).tolist())
+    active_local = _as_int32_index_map(built_meta.get("active_local"))
+    free_rows = _as_int32_index_map(built_meta.get("free_rows"))
 
     w_rows = np.asarray([n_u_b3 + int(k) for k in positions.tolist()], dtype=np.int32)
     w_rows = w_rows[(w_rows >= 0) & (w_rows < int(built_meta.get("n_w") or (n_u_b3 + p_idx.size)))]
@@ -480,12 +501,12 @@ def build_aperture_pressure_mask(
 
 
 def validate_aperture_mask_contract(mask: Mapping[str, Any], built_meta: Mapping[str, Any]) -> None:
-    p_idx = np.asarray(built_meta.get("p_idx") or [], dtype=np.int32).ravel()
+    p_idx = _as_int32_index_map(built_meta.get("p_idx"))
     n_w = int(built_meta.get("n_w") or 0)
     n_u = int(built_meta.get("n_u_b3") or 0)
-    active_local = np.asarray(built_meta.get("active_local") or [], dtype=np.int32).ravel()
+    active_local = _as_int32_index_map(built_meta.get("active_local"))
     active_dim = int(built_meta.get("active_dimension") or active_local.size or 0)
-    arr = np.asarray(mask.get("p_idx_aperture") or [], dtype=np.int32).ravel()
+    arr = _as_int32_index_map(mask.get("p_idx_aperture"))
     if arr.size == 0:
         raise ValueError("contract_fail: empty p_idx_aperture")
     if arr.size != len(np.unique(arr)):
@@ -494,12 +515,13 @@ def validate_aperture_mask_contract(mask: Mapping[str, Any], built_meta: Mapping
         raise ValueError("contract_fail: indices outside W pressure block")
     if p_idx.size and not np.all(np.isin(arr, p_idx)):
         raise ValueError("contract_fail: indices not in p_idx pressure rows")
-    act = np.asarray(mask.get("p_active_indices") or [], dtype=np.int32).ravel()
+    act = _as_int32_index_map(mask.get("p_active_indices"))
     if act.size and (np.any(act < 0) or np.any(act >= active_dim)):
         raise ValueError("contract_fail: active indices out of bounds")
-    center = np.asarray(mask.get("soundhole_center_m") or [0.0, 0.0, 0.0], dtype=np.float64)
-    radius = float(mask.get("soundhole_radius_m") or 0.0)
-    coords = np.asarray(mask.get("selected_coordinates") or [], dtype=np.float64)
+    center_raw = mask.get("soundhole_center_m")
+    center = _as_float64_coords(center_raw if center_raw is not None else [0.0, 0.0, 0.0])
+    radius = _optional_float(mask.get("soundhole_radius_m"), 0.0)
+    coords = _as_float64_coords(mask.get("selected_coordinates"))
     if coords.size:
         dist = np.linalg.norm(coords - center.reshape(1, 3), axis=1)
         max_allowed = max(2.5 * radius, 0.05)
@@ -530,7 +552,11 @@ def write_aperture_mask_npz(path: Path, mask: Mapping[str, Any]) -> None:
         p_idx_aperture=np.asarray(mask["p_idx_aperture"], dtype=np.int32),
         mask_method=np.asarray([str(mask.get("mask_method") or "")]),
         mic_output_method=np.asarray([str(mask.get("mic_output_method") or "aperture_pressure_rms_proxy_v1")]),
-        soundhole_center_m=np.asarray(mask.get("soundhole_center_m") or [0.0, 0.0, 0.0], dtype=np.float64),
+        soundhole_center_m=_as_float64_coords(
+            mask.get("soundhole_center_m")
+            if mask.get("soundhole_center_m") is not None
+            else [0.0, 0.0, 0.0]
+        ),
         metadata_json=np.asarray([json.dumps(meta, sort_keys=True)]),
     )
 
@@ -546,8 +572,9 @@ def write_aperture_coordinates_csv(path: Path, mask: Mapping[str, Any]) -> None:
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    coords = mask.get("selected_coordinates") or []
-    w_rows = np.asarray(mask.get("p_idx_aperture") or [], dtype=np.int32).ravel()
+    coords_raw = mask.get("selected_coordinates")
+    coords = coords_raw if coords_raw is not None else []
+    w_rows = _as_int32_index_map(mask.get("p_idx_aperture"))
     with path.open("w", encoding="utf-8", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["w_row_index", "x_m", "y_m", "z_m"])
