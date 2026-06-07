@@ -1,0 +1,954 @@
+{
+  "schema": "m4_legacy_storage_audit_v1",
+  "tool_version": "m4_legacy_storage_audit_v1",
+  "generated_utc": "2026-06-07T18:31:19Z",
+  "repo_root": "C:\\projects\\final-project\\final-project",
+  "tree_sizes": [
+    {
+      "path": "pipeline_runs/guitars",
+      "exists": false,
+      "bytes": 0,
+      "classification": "ACTIVE_REQUIRED"
+    },
+    {
+      "path": "ROM/classic",
+      "exists": true,
+      "bytes": 268882,
+      "classification": "ACTIVE_REQUIRED"
+    },
+    {
+      "path": "FEM/SORTING",
+      "exists": true,
+      "bytes": 17092,
+      "classification": "LEGACY_SAFE_TO_REMOVE"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/batches",
+      "exists": true,
+      "bytes": 37699,
+      "classification": "ARCHIVE_RECOMMENDED"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/config_overlays",
+      "exists": true,
+      "bytes": 39310,
+      "classification": "SAFE_TO_DELETE_AFTER_COMPLETION"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/specs/generated",
+      "exists": true,
+      "bytes": 12322,
+      "classification": "ACTIVE_OPTIONAL"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/index",
+      "exists": false,
+      "bytes": 0,
+      "classification": "ACTIVE_OPTIONAL"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/solver_benchmarks",
+      "exists": false,
+      "bytes": 0,
+      "classification": "LEGACY_SAFE_TO_REMOVE"
+    }
+  ],
+  "large_files": [],
+  "script_classifications": [
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/analyze_modes.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/audit_air_mic_proxy_sanity.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "ROM/M4 audit tooling"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/audit_m4_legacy_storage.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "ROM/M4 audit tooling"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/audit_rom_intensity_v22_diagnostics.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "ROM/M4 audit tooling"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/audit_rom_intensity_v22b_stk_gain.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "ROM/M4 audit tooling"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/audit_soundhole_air_adjacency.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "ROM/M4 audit tooling"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/audit_soundhole_aperture_geometry.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "ROM/M4 audit tooling"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/build_m4_rom_from_completed_fom.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 active entry or library"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/build_m4_rom_v22_experimental.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/build_physics_integrity_report.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/capture_baseline_structural_mac_reference.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/compact_completed_m4_runs.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 active entry or library"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/compare_rom_intensity_v21_v22.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "ROM/M4 audit tooling"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/coupled_participation_audit.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/coupled_pressure_domain_audit.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/mode_diagnostics.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/operator_audit.py",
+      "classification": "MOVE_TO_LEGACY_ARCHIVE",
+      "reason": "Legacy M2/M3/B3 diagnostic; superseded by M4"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/physical_core_v2_post.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/physical_fsi_aup_coupling_audit.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/physical_fsi_continuation_post.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/physical_fsi_participation_audit.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/physical_fsi_seed_residual_audit.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/prepare_physics_configs.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_m4_production_pipeline.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 active entry or library"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_m4_rom_compare.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 active entry or library"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_physical_core_v2_validation.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_physics_case.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_B3_dev_coarse_mesh_build.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_B3_dev_dense_mesh_build.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_B3_dev_refined_mesh_build.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_B3_scout_coarse_mesh_build.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_B3_shell_trace_formulation_preservation_preflight.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_B3_trace_coupled_operator_and_seed_transfer_audit.py",
+      "classification": "MOVE_TO_LEGACY_ARCHIVE",
+      "reason": "Legacy M2/M3/B3 diagnostic; superseded by M4"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_clean_adjudication_filter_classification.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_clean_lane_report_only_bundle.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_cleaned_formulation_and_solver_api_preflight.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_cleaned_formulation_B2_vs_B3_architecture_decision.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_cleaned_mass_bearing_formulation_phase1_preflight.py",
+      "classification": "MOVE_TO_LEGACY_ARCHIVE",
+      "reason": "Legacy M2/M3/B3 diagnostic; superseded by M4"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_cleaned_mass_bearing_mapping_construction_and_seed_audit.py",
+      "classification": "MOVE_TO_LEGACY_ARCHIVE",
+      "reason": "Legacy M2/M3/B3 diagnostic; superseded by M4"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_cleaned_mass_bearing_mapping_decision.py",
+      "classification": "MOVE_TO_LEGACY_ARCHIVE",
+      "reason": "Legacy M2/M3/B3 diagnostic; superseded by M4"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_coupled_physical_core_report_only_bundle.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_eps_mapping_impact_inventory.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_existing_pass_replay_recertification.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_l_mid_acoustic_locator_rescue.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_l_mid_coupled_mixed_mode_audit.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_l_mid_mapping_fixed_lossless_adjudication_v1.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_l_mid_mapping_fixed_lossless_adjudication_v1_diagnostic.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_l_mid_mapping_fixed_lossless_nullspace_projected_adjudication_v1_diagnostic.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_l_mid_mapping_fixed_unregularized_baseline_diagnostic.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_l_mid_mapping_fixed_unregularized_persistence_fixed_baseline_diagnostic.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_l_mid_seed_branch_candidate_filter_audit.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_l_mid_seed_branch_filtered_evaluation.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_l_mid_seed_branch_recovery_diagnostic.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_l_mid_seed_branch_recovery_mac_audit.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_l_mid_seed_branch_spurious_mode_audit.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_l_mid_seed_branch_unregularized_offset_diagnostic.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_l_mid_seeded_coupled_retrieval_validation.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_l_mid_true_acoustic_reference_recovery.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_l_mid_unregularized_saved_vector_mass_norm_audit.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_lossless_adjudication_v1_full_pipeline_audit.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_lossless_adjudication_v1_gated_runner.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_lossless_adjudication_v1_mass_null_postmortem.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_lossless_adjudication_v1_Muu_null_basis_certification_and_projection_preflight.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_lossless_adjudication_v1_policy_equivalence_preflight.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_lossless_adjudication_v1_u_active_nullspace_attribution.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_lossless_adjudication_v1_u_mass_rank_and_disjoint_partition_audit.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_lossless_candidate_persistence_self_test.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_lossless_nullspace_projected_adjudication_v1_gated_runner.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_mapping_fixed_candidate_persistence_self_test.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_mapping_fixed_persistence_fixed_full_pipeline_audit.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_mapping_fixed_replacement_runtime_provenance_inventory.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_material_mac_recovery.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_material_structural_harvest_extension.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_material_structural_harvest_post.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_material_structural_subspace_analysis.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_mesh_convergence.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_mesh_convergence_post.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_mesh_preresume_repair.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_mesh_production_preflight.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_physical_core_architecture_audit.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_sensitivity_controlled_suite.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_sensitivity_pilot_large_capture.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_sensitivity_production_stage.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_sensitivity_report_post.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_sensitivity_validation.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_solver_root_cause_and_forward_risk_audit.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_v2_st_singular_mass_preflight.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_verify_runtime_evidence_bundle_consistency.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_block_compose_backend.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_metadata_lib.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_pipeline_lib.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_portable_smoke.py",
+      "classification": "MOVE_TO_LEGACY_ARCHIVE",
+      "reason": "Legacy M2/M3/B3 diagnostic; superseded by M4"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_rich_modal_argv_smoke_test.py",
+      "classification": "MOVE_TO_LEGACY_ARCHIVE",
+      "reason": "Legacy M2/M3/B3 diagnostic; superseded by M4"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve_target_list.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solver_benchmark.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solver_compare.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solver_multi_benchmark.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_target_alignment_experiment.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_target_density_experiment.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_coarse_mesh_scout_plan.py",
+      "classification": "MOVE_TO_LEGACY_ARCHIVE",
+      "reason": "Legacy M2/M3/B3 diagnostic; superseded by M4"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_dev_solver_benchmark.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_diagnostics_cleanup_dry_run.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_frequency_coarse_planner.py",
+      "classification": "MOVE_TO_LEGACY_ARCHIVE",
+      "reason": "Legacy M2/M3/B3 diagnostic; superseded by M4"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_lhs_orchestrator_preview.py",
+      "classification": "MOVE_TO_LEGACY_ARCHIVE",
+      "reason": "Legacy M2/M3/B3 diagnostic; superseded by M4"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_lhs_production_run.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_lmid_overnight_validation.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m3_orchestrator_dry_run.py",
+      "classification": "MOVE_TO_LEGACY_ARCHIVE",
+      "reason": "Legacy M2/M3/B3 diagnostic; superseded by M4"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m3_orchestrator_run_one.py",
+      "classification": "MOVE_TO_LEGACY_ARCHIVE",
+      "reason": "Legacy M2/M3/B3 diagnostic; superseded by M4"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_aggregate_worker_results.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 active entry or library"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_aggregation_dry_run.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_freeze_first_e2e_run.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 active entry or library"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_lhs_pool_bridge.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 active entry or library"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_lhs_production_batch.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 active entry or library"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_lprod_checkpoint_run.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_lprod_interfaces.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_lprod_mesh_build.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_lprod_worker_dry_run.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_modal_surrogate_lib.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 active entry or library"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_pipeline_dry_run.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_pipeline_run_scout.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_production_control.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_rom_fom_compare_lib.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_rom_intensity_v22.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_rom_scalar_fields.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_rom_stk_gain_targets.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_run_one_sample.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 active entry or library"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_runtime_provenance.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_schema_validate_examples.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_scout_planner_lib.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_shared_export.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_small_batch_dry_run.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_worker_minibatch.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_worker_run_lib.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_worker_run_remaining.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_worker_smoke_test.py",
+      "classification": "KEEP_FOR_HISTORY",
+      "reason": "M4 module"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_mode_audio_coupling.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_mode_region_participation.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_operator_build_profiler.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_operator_checkpoint_portable.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_petsc_util.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_pipeline_run_manifest.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_resolve_pilot_core_config.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_rich_modal_lib.py",
+      "classification": "MOVE_TO_LEGACY_ARCHIVE",
+      "reason": "Legacy M2/M3/B3 diagnostic; superseded by M4"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_rich_modal_pipeline_integration_test.py",
+      "classification": "MOVE_TO_LEGACY_ARCHIVE",
+      "reason": "Legacy M2/M3/B3 diagnostic; superseded by M4"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_rich_modal_post.py",
+      "classification": "MOVE_TO_LEGACY_ARCHIVE",
+      "reason": "Legacy M2/M3/B3 diagnostic; superseded by M4"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_run_coarse_scout_lhs_batch.py",
+      "classification": "MOVE_TO_LEGACY_ARCHIVE",
+      "reason": "Legacy M2/M3/B3 diagnostic; superseded by M4"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_st_sinvert_solver_lib.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_st_solver_benchmark.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_st_worker_scaling_benchmark.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_synthesis_export.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_synthesis_region_dof_import_smoke.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_synthesis_region_dof_worker.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_build_coupled_acoustic_seed.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_certified_null_projection_lib.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_clean_adjudication_lane.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_clean_lane_preflight_gate.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_conservative_audit_policy.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_eps_mapping_audit_lib.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_lossless_adjudication_evaluator.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_lossless_nullspace_projected_adjudication_evaluator.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_mapping_fixed_baseline_evaluator.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_mapping_fixed_candidate_persistence.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_material_structural_compare.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_mesh_convergence_common.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_mesh_convergence_mesh.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_seed_branch_candidate_filter.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_sensitivity_common.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_sensitivity_gates.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_sensitivity_locator.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_sensitivity_mesh.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_sensitivity_solve.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_slepc_api_preflight_lib.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_solver_root_cause_static_audit.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_unreg_offset_report_evaluator.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/write_v2_alternative_spectral_formulation_after_st_retirement_plan.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    },
+    {
+      "path": "FEM/experiments/active_domain_validation/physics_integrity/scripts/write_v2_st_singular_mass_rehabilitation_plan.py",
+      "classification": "UNKNOWN_REQUIRES_REVIEW",
+      "reason": "Not in active set; manual review"
+    }
+  ],
+  "notes": [
+    "No files deleted by this audit.",
+    "Worktree classifications require operator approval before removal.",
+    "pipeline_runs/guitars may be absent in dev checkout; sizes are VM-specific."
+  ]
+}
