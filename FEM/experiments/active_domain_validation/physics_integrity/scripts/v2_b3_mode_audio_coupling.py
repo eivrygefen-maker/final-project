@@ -289,14 +289,15 @@ def attach_audio_coupling_to_accepted_mode(
 
                     with np.load(mask_npz, allow_pickle=False) as z:
                         p_idx_aperture = np.asarray(z["p_idx_aperture"], dtype=np.int32).ravel()
-                    entry.update(
-                        compute_experimental_audio_coupling(
-                            x_active=x_active,
-                            built=built,
-                            region_ctx=region_ctx,
-                            p_idx_aperture=p_idx_aperture,
-                        )
+                    exp = compute_experimental_audio_coupling(
+                        x_active=x_active,
+                        built=built,
+                        region_ctx=region_ctx,
+                        p_idx_aperture=p_idx_aperture,
                     )
+                    if "mic_output_method" in z.files:
+                        exp["mic_output_method"] = str(np.asarray(z["mic_output_method"]).item())
+                    entry.update(exp)
                     return
                 except Exception as exc:
                     entry.update(

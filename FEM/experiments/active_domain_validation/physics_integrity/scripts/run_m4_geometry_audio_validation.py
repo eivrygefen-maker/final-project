@@ -33,6 +33,7 @@ from v2_b3_m4_validation_lib import (  # noqa: E402
     evaluate_validation_gates,
     prepare_validation_run_tree,
     validation_run_id,
+    validation_tree_ready,
 )
 from v2_b3_m4_worker_run_lib import detect_repo_root, rel  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
@@ -130,6 +131,8 @@ def run_test_b_sample(
     run_id_suffix: str,
     execute: bool,
     load_dolfinx: bool,
+    reuse_validation_checkpoint: bool = False,
+    mask_and_solve_only: bool = False,
 ) -> Dict[str, Any]:
     run_id = validation_run_id(sample_id)
     out: Dict[str, Any] = {
@@ -143,6 +146,7 @@ def run_test_b_sample(
             pool=pool,
             sample_id=sample_id,
             run_id_suffix=run_id_suffix,
+            reuse_existing=reuse_validation_checkpoint,
         )
     except FileNotFoundError as exc:
         out["status"] = "FAIL"
@@ -185,14 +189,26 @@ def run_test_b_sample(
         out["status"] = "commands_ready"
         return out
 
-    proc_a = subprocess.run(stage_a_cmd, cwd=str(repo_root), capture_output=True, text=True)
-    out["stage_a_returncode"] = proc_a.returncode
-    out["stage_a_stdout"] = proc_a.stdout[-4000:]
-    out["stage_a_stderr"] = proc_a.stderr[-4000:]
-    if proc_a.returncode != 0:
-        out["status"] = "FAIL"
-        out["error"] = "validation_stage_a_failed"
-        return out
+    skip_stage_a = bool(
+        reuse_validation_checkpoint
+        and validation_tree_ready(val_root)
+        and (val_root / "lprod" / "checkpoint" / "built_metadata.json").is_file()
+    )
+    out["reuse_validation_checkpoint"] = skip_stage_a
+    if mask_and_solve_only:
+        skip_stage_a = True
+
+    if not skip_stage_a:
+        proc_a = subprocess.run(stage_a_cmd, cwd=str(repo_root), capture_output=True, text=True)
+        out["stage_a_returncode"] = proc_a.returncode
+        out["stage_a_stdout"] = proc_a.stdout[-4000:]
+        out["stage_a_stderr"] = proc_a.stderr[-4000:]
+        if proc_a.returncode != 0:
+            out["status"] = "FAIL"
+            out["error"] = "validation_stage_a_failed"
+            return out
+    else:
+        out["stage_a_skipped"] = True
 
     ckpt_report = collect_checkpoint_report(
         repo_root=repo_root,
@@ -213,6 +229,8 @@ def run_test_b_sample(
             generated_mesh=generated_mesh,
             pool=pool,
             sample_id=sample_id,
+            core_config_path=core_config,
+            write_diagnostics=True,
         )
     except Exception as exc:  # noqa: BLE001
         out["status"] = "FAIL"
@@ -223,7 +241,11 @@ def run_test_b_sample(
     out["aperture_coordinate_bbox_min"] = mask_summary.get("coordinate_bbox_min")
     out["aperture_coordinate_bbox_max"] = mask_summary.get("coordinate_bbox_max")
     out["aperture_mask_method"] = mask_summary.get("mask_method")
+    out["mic_output_method"] = mask_summary.get("mic_output_method")
     out["aperture_mask_npz"] = mask_summary.get("mask_npz_path")
+    out["narrow_band_solve_env"]["B3_EXPERIMENTAL_APERTURE_MASK_NPZ"] = str(
+        mask_summary.get("mask_npz_path") or out["narrow_band_solve_env"]["B3_EXPERIMENTAL_APERTURE_MASK_NPZ"]
+    )
 
     legacy_281 = _production_legacy_peak(prod_root, BAND_281)
     legacy_390 = _production_legacy_peak(prod_root, BAND_390)
@@ -312,6 +334,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help="Run validation Stage A + narrow-band solve (requires DOLFINx/PETSc on VM).",
     )
+    parser.add_argument(
+        "--reuse-validation-checkpoint",
+        action="store_true",
+        help="Skip Stage A when sample_XXX_geometryfix_validation checkpoint already exists.",
+    )
+    parser.add_argument(
+        "--mask-and-solve-only",
+        action="store_true",
+        help="With --execute: only rebuild aperture mask + narrow-band solve (no Stage A).",
+    )
     parser.add_argument("--dolfinx", action="store_true", default=True)
     parser.add_argument("--no-dolfinx", action="store_true")
     parser.add_argument("--json-out", type=Path, default=DOCS_DIR / "M4_GEOMETRY_AUDIO_VALIDATION.json")
@@ -346,6 +378,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 run_id_suffix=str(args.run_id_suffix),
                 execute=bool(args.execute),
                 load_dolfinx=load_dolfinx,
+                reuse_validation_checkpoint=bool(args.reuse_validation_checkpoint or args.mask_and_solve_only),
+                mask_and_solve_only=bool(args.mask_and_solve_only),
             )
             for sid in samples
         ]

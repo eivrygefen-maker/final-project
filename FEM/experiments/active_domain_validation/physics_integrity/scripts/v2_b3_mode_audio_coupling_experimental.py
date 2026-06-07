@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 import numpy as np
@@ -38,12 +39,23 @@ def _mic_from_aperture_pressure(
     return proxy, EXPERIMENTAL_MIC_METHOD, "proxy"
 
 
+def mic_method_from_mask_npz(mask_npz: Path) -> str:
+    try:
+        with np.load(mask_npz, allow_pickle=False) as z:
+            if "mic_output_method" in z.files:
+                return str(np.asarray(z["mic_output_method"]).item())
+    except (OSError, ValueError, KeyError):
+        pass
+    return EXPERIMENTAL_MIC_METHOD
+
+
 def compute_experimental_audio_coupling(
     *,
     x_active: np.ndarray,
     built: Mapping[str, Any],
     region_ctx: Mapping[str, Any],
     p_idx_aperture: Optional[np.ndarray] = None,
+    mic_output_method: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Production coupling plus experimental aperture-pressure mic proxy override.
@@ -76,7 +88,7 @@ def compute_experimental_audio_coupling(
     out["mic_output_proxy_legacy"] = base.get("mic_output_proxy")
     out["mic_output_method_legacy"] = base.get("mic_output_method")
     out["mic_output_proxy"] = mic_new
-    out["mic_output_method"] = mic_method
+    out["mic_output_method"] = mic_output_method or mic_method
     out["mic_output_status"] = mic_status
     out["audio_coupling_method"] = f"{AUDIO_COUPLING_METHOD}+experimental_aperture_v1"
     out["experimental_aperture_dof_count"] = int(np.asarray(p_idx_aperture).size)

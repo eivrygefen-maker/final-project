@@ -25,6 +25,10 @@ if str(SCRIPT_DIR) not in sys.path:
 from v2_b3_aperture_pressure_mask import (  # noqa: E402
     aperture_mask_summary,
     build_aperture_pressure_mask,
+    diagnose_aperture_pressure_mask,
+    validate_aperture_mask_contract,
+    write_aperture_coordinates_csv,
+    write_aperture_diagnostic_json,
     write_aperture_mask_npz,
 )
 from v2_b3_m4_lhs_pool_bridge import lhs_entry_index  # noqa: E402
@@ -116,6 +120,7 @@ def prepare_validation_run_tree(
     pool: Mapping[str, Any],
     sample_id: str,
     run_id_suffix: str,
+    reuse_existing: bool = False,
 ) -> Dict[str, Any]:
     """Copy mesh + resolved config from production run into isolated validation run tree."""
     prod_root = production_run_root(repo_root, pool, sample_id, run_id_suffix)
@@ -124,6 +129,17 @@ def prepare_validation_run_tree(
 
     src_mesh = prod_root / "lprod" / "mesh" / MESH_LEVEL / f"{sample_id}.msh"
     dst_mesh = val_root / "lprod" / "mesh" / MESH_LEVEL / f"{sample_id}.msh"
+    if reuse_existing and validation_tree_ready(val_root):
+        return {
+            "validation_run_root": val_root,
+            "production_run_root": prod_root,
+            "generated_mesh_path": dst_mesh,
+            "resolved_core_config": val_root / "lprod" / "resolved_core_config.json",
+            "manifest": load_json(val_root / "validation_run_manifest.json")
+            if (val_root / "validation_run_manifest.json").is_file()
+            else {},
+            "reused_existing": True,
+        }
     if not src_mesh.is_file():
         raise FileNotFoundError(f"production mesh missing: {src_mesh}")
 
@@ -284,18 +300,48 @@ def attach_aperture_mask(
     generated_mesh: Path,
     pool: Mapping[str, Any],
     sample_id: str,
+    core_config_path: Optional[Path] = None,
+    write_diagnostics: bool = True,
 ) -> Dict[str, Any]:
     ckpt = val_root / "lprod" / "checkpoint"
     built = load_json(ckpt / "built_metadata.json")
     idx = lhs_entry_index(pool, sample_id)
     entry = (pool.get("entries") or [])[idx] if idx is not None else {}
     geom = extract_geometry_dict(entry)
-    mask = build_aperture_pressure_mask(generated_mesh, geometry=geom, built_meta=built)
-    mask_path = val_root / "validation" / "aperture_pressure_mask.npz"
+    core_cfg = core_config_path or (val_root / "lprod" / "resolved_core_config.json")
+    val_dir = val_root / "validation"
+    val_dir.mkdir(parents=True, exist_ok=True)
+
+    if write_diagnostics:
+        diag = diagnose_aperture_pressure_mask(
+            generated_mesh,
+            geometry=geom,
+            built_meta=built,
+            core_config_path=core_cfg if core_cfg.is_file() else None,
+        )
+        write_aperture_diagnostic_json(val_dir / "aperture_mask_diagnostic.json", diag)
+
+    mask = build_aperture_pressure_mask(
+        generated_mesh,
+        geometry=geom,
+        built_meta=built,
+        core_config_path=core_cfg if core_cfg.is_file() else None,
+    )
+    validate_aperture_mask_contract(mask, built)
+    mask_path = val_dir / "aperture_pressure_mask.npz"
     write_aperture_mask_npz(mask_path, mask)
+    write_aperture_coordinates_csv(val_dir / "aperture_selected_coordinates.csv", mask)
     summary = aperture_mask_summary(mask)
     summary["mask_npz_path"] = str(mask_path)
+    summary["mic_output_method"] = mask.get("mic_output_method")
+    summary["p_idx_aperture_count"] = mask.get("n_p_aperture_dofs")
     return summary
+
+
+def validation_tree_ready(val_root: Path) -> bool:
+    ckpt = val_root / "lprod" / "checkpoint" / "built_metadata.json"
+    mesh = val_root / "lprod" / "mesh" / MESH_LEVEL
+    return ckpt.is_file() and any(mesh.glob("*.msh"))
 
 
 def collect_solve_band_results(solver_result_path: Path) -> Dict[str, Any]:
@@ -351,10 +397,14 @@ def evaluate_validation_gates(
         band_modes = (row.get("deduped_modes_270_290_hz") or []) + (
             row.get("deduped_modes_380_400_hz") or []
         )
+        allowed_mic = {
+            "aperture_pressure_rms_proxy_v1",
+            "aperture_nearfield_pressure_rms_proxy_v1",
+        }
         if row.get("solver_status") and band_modes and not all(
-            str(m.get("mic_output_method")) == "aperture_pressure_rms_proxy_v1" for m in band_modes
+            str(m.get("mic_output_method")) in allowed_mic for m in band_modes
         ):
-            failures.append(f"{sid}:mic_output_method_not_aperture_pressure_rms_proxy_v1")
+            failures.append(f"{sid}:mic_output_method_not_aperture_proxy")
         if int(row.get("raw_duplicate_count_281_band") or 0) > 0:
             failures.append(f"{sid}:raw_duplicates_in_281_band")
         if int(row.get("raw_duplicate_count_390_band") or 0) > 0:

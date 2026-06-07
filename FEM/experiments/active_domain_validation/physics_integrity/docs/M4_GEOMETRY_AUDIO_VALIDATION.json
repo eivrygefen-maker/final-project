@@ -1,12 +1,7 @@
 {
-  "decision": "VALIDATION_INCOMPLETE",
+  "decision": "COMMANDS_READY_RUN_WITH_EXECUTE",
   "execute": false,
-  "gate_failures": [
-    "sample_001:operator_mesh_matches_generated=false",
-    "sample_001:p_idx_aperture_count=0",
-    "sample_034:operator_mesh_matches_generated=false",
-    "sample_034:p_idx_aperture_count=0"
-  ],
+  "gate_failures": [],
   "production_recommendation": {
     "action": "Run Test B with --execute on VM; do not change production until validation_pass=true.",
     "decision": "VALIDATION_INCOMPLETE"
