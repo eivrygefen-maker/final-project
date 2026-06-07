@@ -92,11 +92,9 @@ def csr_structure_and_values_hashes(npz_path: Path) -> Dict[str, Any]:
 
 def dolfinx_mesh_stats(path: Path) -> Dict[str, Any]:
     try:
-        fem_scripts = SCRIPT_DIR.parent.parent.parent / "scripts"
-        if str(fem_scripts) not in sys.path:
-            sys.path.insert(0, str(fem_scripts))
-        import fem_main_3d as fem3d  # noqa: WPS433
+        from v2_b3_synthesis_export import import_fem_main_3d  # noqa: WPS433
 
+        fem3d, _diag = import_fem_main_3d(start=SCRIPT_DIR)
         msh, cell_tags, facet_tags = fem3d._load_mesh_and_tags(path)
         coords = np.asarray(msh.geometry.x)
         tdim = msh.topology.dim
@@ -312,22 +310,32 @@ def attach_aperture_mask(
     val_dir = val_root / "validation"
     val_dir.mkdir(parents=True, exist_ok=True)
 
-    if write_diagnostics:
-        diag = diagnose_aperture_pressure_mask(
+    try:
+        if write_diagnostics:
+            diag = diagnose_aperture_pressure_mask(
+                generated_mesh,
+                geometry=geom,
+                built_meta=built,
+                core_config_path=core_cfg if core_cfg.is_file() else None,
+            )
+            write_aperture_diagnostic_json(val_dir / "aperture_mask_diagnostic.json", diag)
+
+        mask = build_aperture_pressure_mask(
             generated_mesh,
             geometry=geom,
             built_meta=built,
             core_config_path=core_cfg if core_cfg.is_file() else None,
         )
-        write_aperture_diagnostic_json(val_dir / "aperture_mask_diagnostic.json", diag)
+        validate_aperture_mask_contract(mask, built)
+    except ModuleNotFoundError as exc:
+        from v2_b3_synthesis_export import fem_import_diagnostics  # noqa: WPS433
 
-    mask = build_aperture_pressure_mask(
-        generated_mesh,
-        geometry=geom,
-        built_meta=built,
-        core_config_path=core_cfg if core_cfg.is_file() else None,
-    )
-    validate_aperture_mask_contract(mask, built)
+        diag_import = fem_import_diagnostics(start=SCRIPT_DIR)
+        write_aperture_diagnostic_json(
+            val_dir / "fem_import_failure.json",
+            {"error": str(exc), "fem_import_diagnostics": diag_import},
+        )
+        raise RuntimeError(f"fem_main_3d_import_failed:{exc}") from exc
     mask_path = val_dir / "aperture_pressure_mask.npz"
     write_aperture_mask_npz(mask_path, mask)
     write_aperture_coordinates_csv(val_dir / "aperture_selected_coordinates.csv", mask)

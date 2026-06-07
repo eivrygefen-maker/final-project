@@ -116,10 +116,9 @@ def _mesh_counts_from_gmsh(path: Path) -> Dict[str, Any]:
 def _dolfinx_mesh_audit(path: Path) -> Dict[str, Any]:
     """Optional DOLFINx load for coordinate bbox and topology counts."""
     try:
-        bootstrap = SCRIPT_DIR.parent.parent.parent / "scripts"
-        if str(bootstrap) not in sys.path:
-            sys.path.insert(0, str(bootstrap))
-        import fem_main_3d as fem3d  # noqa: WPS433
+        from v2_b3_synthesis_export import import_fem_main_3d  # noqa: WPS433
+
+        fem3d, _diag = import_fem_main_3d(start=SCRIPT_DIR)
 
         msh, cell_tags, facet_tags = fem3d._load_mesh_and_tags(path)
         coords = np.asarray(msh.geometry.x)

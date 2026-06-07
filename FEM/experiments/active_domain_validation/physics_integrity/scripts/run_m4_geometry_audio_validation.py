@@ -233,10 +233,25 @@ def run_test_b_sample(
             write_diagnostics=True,
         )
     except Exception as exc:  # noqa: BLE001
+        out["mask_build_status"] = "FAIL"
         out["status"] = "FAIL"
         out["error"] = f"aperture_mask_failed:{type(exc).__name__}:{exc}"
+        fail_json = val_root / "validation" / "fem_import_failure.json"
+        if fail_json.is_file():
+            try:
+                out["fem_import_failure"] = json.loads(fail_json.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+        if "fem_main_3d" in str(exc) or isinstance(exc, ModuleNotFoundError):
+            try:
+                from v2_b3_synthesis_export import fem_import_diagnostics  # noqa: WPS433
+
+                out["fem_import_diagnostics"] = fem_import_diagnostics(start=SCRIPT_DIR)
+            except Exception:
+                pass
         return out
 
+    out["mask_build_status"] = "PASS"
     out["p_idx_aperture_count"] = int(mask_summary.get("n_p_aperture_dofs") or 0)
     out["aperture_coordinate_bbox_min"] = mask_summary.get("coordinate_bbox_min")
     out["aperture_coordinate_bbox_max"] = mask_summary.get("coordinate_bbox_max")

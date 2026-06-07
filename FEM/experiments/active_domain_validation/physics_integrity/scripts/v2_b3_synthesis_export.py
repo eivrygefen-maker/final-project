@@ -68,6 +68,49 @@ def bootstrap_fem_import_paths(*, start: Optional[Path] = None) -> Path:
     return repo_root
 
 
+def fem_import_diagnostics(*, start: Optional[Path] = None, module_name: str = "fem_main_3d") -> Dict[str, Any]:
+    """Fail-fast context for ``import fem_main_3d`` (validation/subprocess parity with Stage A)."""
+    anchor = (start or SCRIPT_DIR).resolve()
+    script_dir = anchor.parent if anchor.suffix == ".py" else anchor
+    repo_root = bootstrap_fem_import_paths(start=script_dir)
+    fem_scripts = repo_root / "FEM" / "scripts"
+    module_file = fem_scripts / f"{module_name}.py"
+    return {
+        "repo_root": str(repo_root.resolve()),
+        "cwd": str(Path.cwd().resolve()),
+        "sys_executable": sys.executable,
+        "sys_path": [str(Path(p).resolve()) if p else p for p in sys.path],
+        "module_searched": module_name,
+        "fem_scripts_dir": str(fem_scripts.resolve()),
+        "fem_scripts_on_sys_path": str(fem_scripts) in sys.path,
+        "resolved_module_path": str(module_file.resolve()) if module_file.is_file() else None,
+        "module_file_exists": module_file.is_file(),
+    }
+
+
+def import_fem_main_3d(*, start: Optional[Path] = None, module_name: str = "fem_main_3d") -> Tuple[Any, Dict[str, Any]]:
+    """
+    Import ``fem_main_3d`` using the same sys.path bootstrap as B3 Stage A / region-DOF workers.
+
+    On failure, prints diagnostics to stderr and re-raises (never silently returns empty masks).
+    """
+    diag = fem_import_diagnostics(start=start, module_name=module_name)
+    if not diag.get("module_file_exists"):
+        print(json.dumps(diag, indent=2, sort_keys=True), file=sys.stderr)
+        raise ModuleNotFoundError(
+            f"No module named '{module_name}'; expected file missing: {diag.get('resolved_module_path')}"
+        )
+    try:
+        import importlib
+
+        mod = importlib.import_module(module_name)
+        diag["imported_module_file"] = str(Path(mod.__file__).resolve())
+        return mod, diag
+    except ModuleNotFoundError as exc:
+        print(json.dumps(diag, indent=2, sort_keys=True), file=sys.stderr)
+        raise ModuleNotFoundError(f"{exc}; see fem_import_diagnostics on stderr") from exc
+
+
 def region_dof_subprocess_env(
     *,
     repo_root: Path,

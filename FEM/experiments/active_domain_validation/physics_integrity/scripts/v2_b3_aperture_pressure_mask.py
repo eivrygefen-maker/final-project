@@ -2,16 +2,17 @@
 """Experimental sample-specific aperture pressure probe mask (validation-only, not production)."""
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
-import math
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 TAG_SOUNDHOLE = 2
 TAG_TOP = 1
 AIR_VOLUME_TAG = 10
@@ -27,14 +28,10 @@ def _sha256_indices(indices: Sequence[int]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _bootstrap_fem() -> Any:
-    repo_scripts = SCRIPT_DIR.parent.parent.parent / "scripts"
-    import sys
+def _import_fem_main_3d() -> Any:
+    from v2_b3_synthesis_export import import_fem_main_3d  # noqa: WPS433
 
-    if str(repo_scripts) not in sys.path:
-        sys.path.insert(0, str(repo_scripts))
-    import fem_main_3d as fem3d  # noqa: WPS433
-
+    fem3d, _diag = import_fem_main_3d(start=SCRIPT_DIR)
     return fem3d
 
 
@@ -70,7 +67,7 @@ def _soundhole_facet_geometry(
 ) -> Dict[str, Any]:
     from dolfinx import fem  # noqa: WPS433
 
-    fem3d = _bootstrap_fem()
+    fem3d = _import_fem_main_3d()
     soundhole_facets = np.asarray(facet_tags.find(TAG_SOUNDHOLE), dtype=np.int32)
     if soundhole_facets.size == 0:
         hx, hy, hz = soundhole_center_from_geometry(geometry)
@@ -126,7 +123,7 @@ def _load_pressure_layout(
 
     Uses coupled replay (solve_evp=False) to match checkpoint pressure DOF numbering.
     """
-    fem3d = _bootstrap_fem()
+    fem3d = _import_fem_main_3d()
     from basix.ufl import element as basix_element  # noqa: WPS433
     from dolfinx import fem  # noqa: WPS433
 
@@ -297,7 +294,7 @@ def diagnose_aperture_pressure_mask(
     core_config_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Task 1 diagnostic report for empty-mask root cause analysis."""
-    fem3d = _bootstrap_fem()
+    fem3d = _import_fem_main_3d()
     from basix.ufl import element as basix_element  # noqa: WPS433
     from dolfinx import fem  # noqa: WPS433
 
@@ -404,7 +401,7 @@ def build_aperture_pressure_mask(
     Never falls back to global cavity maximum.
     """
     del probe_radius_m  # geometry-relative radii used instead
-    fem3d = _bootstrap_fem()
+    fem3d = _import_fem_main_3d()
 
     mesh_file = Path(mesh_file).expanduser().resolve()
     p_air, dof_coords, msh, cell_tags, facet_tags, V_p = _load_pressure_layout(
