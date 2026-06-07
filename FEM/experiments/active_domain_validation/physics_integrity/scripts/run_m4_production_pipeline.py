@@ -190,7 +190,46 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=DEFAULT_ROM_NEV,
         help="ROM modes to request (0 = all basis modes).",
     )
+    parser.add_argument(
+        "--compact-after-sample",
+        action="store_true",
+        default=False,
+        help="After each completed sample (post ROM compare), delete heavy artifacts (no archive).",
+    )
+    parser.add_argument(
+        "--compact-after-batch",
+        action="store_true",
+        default=False,
+        help="After batch completes, compact completed samples (applies --compact-keep-full-latest).",
+    )
+    parser.add_argument(
+        "--compact-keep-full-latest",
+        type=int,
+        default=0,
+        help="Keep N most recent completed samples fully local (batch-end compaction only).",
+    )
+    parser.add_argument(
+        "--compact-keep-full-samples",
+        default="",
+        help="Comma-separated samples to never compact (e.g. sample_000,sample_001).",
+    )
+    parser.add_argument(
+        "--compact-nonblocking",
+        action="store_true",
+        default=True,
+        help="Compaction failure does not stop batch / fail FOM sample (default).",
+    )
+    parser.add_argument(
+        "--compact-blocking",
+        action="store_false",
+        dest="compact_nonblocking",
+        help="Stop batch if compaction fails.",
+    )
     return parser.parse_args(argv)
+
+
+def _parse_compact_keep_full_samples(text: str) -> List[str]:
+    return [s.strip() for s in str(text).split(",") if s.strip()]
 
 
 def _resolve_lhs_path(repo_root: Path, arg: Path) -> Path:
@@ -576,7 +615,40 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         rom_nev=int(args.rom_nev),
         rom_max_match_distance_hz=float(args.rom_max_match_distance_hz),
         pool=pool,
+        compact_after_sample=bool(args.compact_after_sample) and not bool(args.compact_after_batch),
+        compact_keep_full_samples=compact_keep_full_samples,
+        compact_nonblocking=bool(args.compact_nonblocking),
     )
+
+    if (
+        args.compact_after_batch
+        and args.execute
+        and not args.dry_run
+        and compact_runs_for_samples is not None
+    ):
+        completed_rows = list(summary.get("completed") or [])
+        sample_specs = [(str(r["sample_id"]), str(r["run_id"])) for r in completed_rows]
+        rows_by_sid = {str(r["sample_id"]): r for r in completed_rows}
+        compact_summary = compact_runs_for_samples(
+            repo_root=repo_root,
+            pool=pool,
+            sample_specs=sample_specs,
+            keep_full_samples=sorted(compact_keep_full_samples),
+            keep_full_latest=int(args.compact_keep_full_latest),
+            production_rows_by_sid=rows_by_sid,
+            run_rom_compare=bool(args.run_rom_compare),
+            production_trigger=True,
+        )
+        summary["compaction"] = compact_summary
+        summary["compaction_runtime_s"] = compact_summary.get("compaction_runtime_s")
+        summary["compaction_status"] = compact_summary.get("compaction_status")
+        summary["compaction_bytes_freed"] = compact_summary.get("compaction_bytes_freed")
+        summary["compaction_sample_count"] = compact_summary.get("compaction_sample_count")
+        summary["compaction_failed_count"] = compact_summary.get("compaction_failed_count")
+        if not args.compact_nonblocking and int(compact_summary.get("compaction_failed_count") or 0) > 0:
+            summary["failed_count"] = int(summary.get("failed_count") or 0) + int(
+                compact_summary.get("compaction_failed_count") or 0
+            )
 
     write_json_atomic(specs_generated_dir(repo_root) / f"{batch_id}_summary.json", summary)
     print(

@@ -2,11 +2,13 @@
 """Integration tests for production compaction hooks (synthetic run trees)."""
 from __future__ import annotations
 
+import io
 import json
 import shutil
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -20,6 +22,23 @@ from compact_completed_m4_runs import (  # noqa: E402
     compact_one_completed_run,
     compact_runs_for_samples,
     production_compaction_preconditions,
+)
+from run_m4_production_pipeline import _parse_args  # noqa: E402
+
+COMPACTION_ARG_ATTRS = (
+    "compact_after_sample",
+    "compact_after_batch",
+    "compact_keep_full_latest",
+    "compact_keep_full_samples",
+    "compact_nonblocking",
+)
+COMPACTION_CLI_FLAGS = (
+    "--compact-after-sample",
+    "--compact-after-batch",
+    "--compact-keep-full-latest",
+    "--compact-keep-full-samples",
+    "--compact-nonblocking",
+    "--compact-blocking",
 )
 
 
@@ -58,6 +77,31 @@ def _make_completed_run(run_root: Path, *, sample_id: str, run_id: str) -> None:
     (heavy / "A_active_csr.npz").write_bytes(b"x" * 4096)
     (run_root / "worker_results" / "chunk_01").mkdir(parents=True, exist_ok=True)
     (run_root / "worker_results" / "chunk_01" / "worker_result.json").write_text("{}", encoding="utf-8")
+
+
+class ProductionPipelineParserTests(unittest.TestCase):
+    def test_parse_args_empty_has_compaction_defaults(self) -> None:
+        args = _parse_args([])
+        for attr in COMPACTION_ARG_ATTRS:
+            self.assertTrue(hasattr(args, attr), f"missing attribute: {attr}")
+        self.assertFalse(args.compact_after_sample)
+        self.assertFalse(args.compact_after_batch)
+        self.assertEqual(args.compact_keep_full_latest, 0)
+        self.assertEqual(args.compact_keep_full_samples, "")
+        self.assertTrue(args.compact_nonblocking)
+
+    def test_parse_args_compact_blocking_sets_nonblocking_false(self) -> None:
+        args = _parse_args(["--compact-blocking"])
+        self.assertFalse(args.compact_nonblocking)
+
+    def test_help_lists_compaction_flags(self) -> None:
+        buf = io.StringIO()
+        with self.assertRaises(SystemExit):
+            with redirect_stdout(buf):
+                _parse_args(["--help"])
+        help_text = buf.getvalue()
+        for flag in COMPACTION_CLI_FLAGS:
+            self.assertIn(flag, help_text, f"missing from --help: {flag}")
 
 
 class CompactionProductionIntegrationTests(unittest.TestCase):
