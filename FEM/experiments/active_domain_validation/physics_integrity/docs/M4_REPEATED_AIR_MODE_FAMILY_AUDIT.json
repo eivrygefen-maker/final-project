@@ -1,0 +1,125 @@
+{
+  "chunk_target_audit": [],
+  "cluster_detail": [],
+  "correlations": {
+    "band_281": {
+      "n": 0
+    },
+    "band_390": {
+      "n": 0
+    }
+  },
+  "cross_sample": {
+    "cluster_281hz": {},
+    "cluster_390hz": {},
+    "total_exact_duplicate_groups_281": 0,
+    "total_exact_duplicate_groups_390": 0,
+    "unique_geometry_fingerprints": 3
+  },
+  "dedupe_tolerance_hz": 0.05,
+  "discovered_families": [],
+  "fom_rerun_required": "Run Task 2 full-artifact audit on VM; then Task 5 extreme scouts if still inconclusive.",
+  "full_artifact_reuse": {},
+  "full_artifact_rows": [],
+  "lhs_json": "ROM/classic/lhs_pool.json",
+  "per_sample": [
+    {
+      "back_thickness": 0.0033,
+      "back_wood_id": "rosewood",
+      "catalog_path": null,
+      "catalog_status": "missing",
+      "depth": 0.1,
+      "est_cavity_volume_m3": 0.014664,
+      "geometry_fingerprint": "83b8b20a9fabe191db4a8bf900e984f35c33a5ac8831305130c0b2a4651bb4b9",
+      "helmholtz_estimate_hz": 329.37387093613944,
+      "hole_area_m2": 0.006939778171779853,
+      "hole_area_over_volume": 0.47325273948307783,
+      "hole_radius": 0.047,
+      "length": 0.48,
+      "length_over_width": 1.4769230769230768,
+      "run_id": "sample_000_m4prod1",
+      "sample_id": "sample_000",
+      "scale_indicators_hz": {
+        "c_over_2D": 1715.0,
+        "c_over_2L": 357.2916666666667,
+        "c_over_2W": 527.6923076923076
+      },
+      "top_thickness": 0.003,
+      "top_wood_id": "spruce",
+      "width": 0.325
+    },
+    {
+      "back_thickness": 0.003486079973247386,
+      "back_wood_id": "mahogany",
+      "catalog_path": null,
+      "catalog_status": "missing",
+      "depth": 0.10834781501051131,
+      "est_cavity_volume_m3": 0.008809341549657262,
+      "geometry_fingerprint": "7a08020a199ed23bc2f827fcd11f832245b95d3c28ea9c28f89f4b288396a067",
+      "helmholtz_estimate_hz": 400.4863664660801,
+      "hole_area_m2": 0.006243794644501236,
+      "hole_area_over_volume": 0.7087697314612756,
+      "hole_radius": 0.0445809551562789,
+      "length": 0.3601257286159384,
+      "length_over_width": 1.5017768948465702,
+      "run_id": "sample_001_m4prod1",
+      "sample_id": "sample_001",
+      "scale_indicators_hz": {
+        "c_over_2D": 1582.8653303563344,
+        "c_over_2L": 476.22256998721355,
+        "c_over_2W": 715.180052411251
+      },
+      "top_thickness": 0.0031691636120430777,
+      "top_wood_id": "mahogany",
+      "width": 0.23979975311361468
+    },
+    {
+      "back_thickness": 0.0032084290029265553,
+      "back_wood_id": "spruce",
+      "catalog_path": null,
+      "catalog_status": "missing",
+      "depth": 0.13834295345304212,
+      "est_cavity_volume_m3": 0.028406981061018466,
+      "geometry_fingerprint": "418790865d1a17740afd0c196eae4d3c9e3d1d65490c14ca4cedb98d361a7c7f",
+      "helmholtz_estimate_hz": 223.72076006121196,
+      "hole_area_m2": 0.006162579387104429,
+      "hole_area_over_volume": 0.21693890575232722,
+      "hole_radius": 0.04429006596639686,
+      "length": 0.5058767465408958,
+      "length_over_width": 1.1937439697111774,
+      "run_id": "sample_002_m4prod1",
+      "sample_id": "sample_002",
+      "scale_indicators_hz": {
+        "c_over_2D": 1239.6728255350743,
+        "c_over_2L": 339.01538501757506,
+        "c_over_2W": 404.6975715040432
+      },
+      "top_thickness": 0.002916753639024141,
+      "top_wood_id": "rosewood",
+      "width": 0.4237732372908163
+    }
+  ],
+  "sample_000_comparison": {
+    "status": "sample_000_missing_or_incomplete"
+  },
+  "sample_ids": [
+    "sample_000",
+    "sample_001",
+    "sample_002"
+  ],
+  "schema": "m4_repeated_air_mode_family_audit_v1",
+  "target_coincidence": {
+    "281": {
+      "distinct_target_values": [],
+      "fraction_of_chunk_rows": 0.0,
+      "modes_with_target_within_0p1_hz": 0
+    },
+    "390": {
+      "distinct_target_values": [],
+      "fraction_of_chunk_rows": 0.0,
+      "modes_with_target_within_0p1_hz": 0
+    }
+  },
+  "target_coincidence_prominent": false,
+  "verdict": "INCONCLUSIVE"
+}

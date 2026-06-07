@@ -1,0 +1,1 @@
+sample_id,family_id,band,frequency_hz,mic_output_proxy,radiation_proxy,bridge_excitation_abs,top_share,back_share,air_share,coupling_class,dominant_region,mic_output_method,chunk_id,target_hz,chunk_interval_hz,raw_occurrence_count,deduped_occurrence_count,dedupe_merge_count,provenance_chunk_ids,origin
