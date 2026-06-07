@@ -17,12 +17,17 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from v2_b3_m4_lhs_pool_bridge import load_lhs_pool  # noqa: E402
+from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
+    DEFAULT_RUN_ID_SUFFIX,
+    is_lhs_entry_completed,
+    load_lhs_pool,
+)
 from v2_b3_m4_modal_surrogate_lib import (  # noqa: E402
     DEFAULT_K_NEIGHBORS,
     build_surrogate_from_training_rows,
     collect_completed_fom_training_rows,
     encode_lhs_parameters,
+    guitars_root,
     predict_modal_catalog,
 )
 from v2_b3_m4_rom_fom_compare_lib import (  # noqa: E402
@@ -92,22 +97,78 @@ def _lhs_distance(a: Mapping[str, Any], b: Mapping[str, Any]) -> float:
     return float(np.linalg.norm(xa - xb))
 
 
+def _assert_training_subset(
+    training_sample_ids: Sequence[str],
+    eligible_sample_ids: Sequence[str],
+    *,
+    context: str,
+) -> None:
+    eligible = set(eligible_sample_ids)
+    bad = [str(s) for s in training_sample_ids if str(s) not in eligible]
+    if bad:
+        raise AssertionError(
+            f"{context}: training samples outside eligible universe: {bad[:5]}"
+            f"{'...' if len(bad) > 5 else ''}"
+        )
+
+
+def _discover_eligible_samples(
+    *,
+    repo_root: Path,
+    pool: Mapping[str, Any],
+    requested_sample_ids: Sequence[str],
+    run_id_suffix: str = DEFAULT_RUN_ID_SUFFIX,
+) -> Tuple[List[str], List[Dict[str, Any]], Dict[str, Mapping[str, Any]]]:
+    """Return eligible IDs = requested ∩ COMPLETED ∩ catalog exists."""
+    entries_by_id: Dict[str, Mapping[str, Any]] = {}
+    for entry in pool.get("entries") or []:
+        sid = str(entry.get("id") or "").strip()
+        if sid:
+            entries_by_id[sid] = entry
+
+    eligible_ids: List[str] = []
+    eligible_entries: List[Dict[str, Any]] = []
+    skipped: Dict[str, str] = {}
+
+    for sid in requested_sample_ids:
+        entry = entries_by_id.get(sid)
+        if entry is None:
+            skipped[sid] = "not_in_lhs_pool"
+            continue
+        run_id = str(entry.get("last_run_id") or f"{sid}_{run_id_suffix}")
+        if not is_lhs_entry_completed(entry, run_id=run_id):
+            skipped[sid] = f"status_not_completed:{entry.get('status')}"
+            continue
+        run_root = guitars_root(repo_root) / sid / "runs" / run_id
+        catalog_path = run_root / "aggregation" / "modes_catalog.jsonl"
+        if not catalog_path.is_file():
+            skipped[sid] = "missing_modes_catalog"
+            continue
+        eligible_ids.append(sid)
+        eligible_entries.append(dict(entry))
+
+    return eligible_ids, eligible_entries, skipped
+
+
 def _select_nearest_training_rows(
     *,
-    pool_entries: Sequence[Mapping[str, Any]],
+    eligible_entries: Sequence[Mapping[str, Any]],
+    eligible_sample_ids: Sequence[str],
     target_params: Mapping[str, Any],
     exclude_sample_id: str,
     max_count: int,
 ) -> List[str]:
+    eligible = set(eligible_sample_ids)
     scored: List[Tuple[float, str]] = []
-    for entry in pool_entries:
+    for entry in eligible_entries:
         sid = str(entry.get("id") or "")
-        if not sid or sid == exclude_sample_id:
+        if not sid or sid == exclude_sample_id or sid not in eligible:
             continue
         params = dict(entry.get("parameters") or {})
         scored.append((_lhs_distance(target_params, params), sid))
     scored.sort(key=lambda t: t[0])
-    return [sid for _, sid in scored[: max(1, int(max_count))]]
+    k = min(int(max_count), max(0, len(scored)))
+    return [sid for _, sid in scored[:k]]
 
 
 def _collect_rows_for_samples(
@@ -115,22 +176,28 @@ def _collect_rows_for_samples(
     repo_root: Path,
     pool: Mapping[str, Any],
     sample_ids: Sequence[str],
+    eligible_sample_ids: Sequence[str],
+    context: str,
 ) -> List[Dict[str, Any]]:
-    rows, skipped = collect_completed_fom_training_rows(
-        repo_root=repo_root,
-        pool=pool,
-        completed_only=True,
-        force_sample=None,
-        exclude_sample_ids=[],
-        max_samples=None,
-    )
-    wanted = {str(s) for s in sample_ids}
-    out = [r for r in rows if str(r.get("sample_id")) in wanted]
-    if len(out) != len(wanted):
-        got = {str(r.get("sample_id")) for r in out}
-        missing = sorted(wanted - got)
-        if missing:
-            raise RuntimeError(f"missing completed catalogs for: {missing[:5]}{'...' if len(missing) > 5 else ''}")
+    _assert_training_subset(sample_ids, eligible_sample_ids, context=context)
+    wanted = [str(s) for s in sample_ids]
+    out: List[Dict[str, Any]] = []
+    for sid in wanted:
+        rows, skipped = collect_completed_fom_training_rows(
+            repo_root=repo_root,
+            pool=pool,
+            completed_only=True,
+            force_sample=sid,
+            exclude_sample_ids=[],
+            max_samples=1,
+        )
+        if not rows:
+            reasons = [str(s.get("reason") or "") for s in skipped if s.get("sample_id") == sid]
+            raise RuntimeError(
+                f"{context}: missing completed catalog for {sid}"
+                + (f" ({reasons[0]})" if reasons else "")
+            )
+        out.append(rows[0])
     return out
 
 
@@ -471,8 +538,8 @@ def _alignment_audit(
     }
 
 
-def _repeatability_from_pool(pool: Mapping[str, Any]) -> Dict[str, Any]:
-    entries = [e for e in (pool.get("entries") or []) if e.get("parameters")]
+def _repeatability_from_entries(eligible_entries: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    entries = [e for e in eligible_entries if e.get("parameters")]
     pairs = []
     for i, a in enumerate(entries):
         pa = dict(a.get("parameters") or {})
@@ -508,28 +575,46 @@ def run_diagnostics(
     *,
     repo_root: Path,
     pool: Mapping[str, Any],
-    sample_indices: Sequence[int],
+    requested_sample_ids: Sequence[str],
+    eligible_sample_ids: Sequence[str],
+    eligible_entries: Sequence[Mapping[str, Any]],
     k_neighbors: int,
 ) -> Dict[str, Any]:
-    sample_ids = [_sample_id(i) for i in sample_indices]
-    entries = list(pool.get("entries") or [])
+    if not eligible_sample_ids:
+        raise RuntimeError("no eligible completed samples in requested range")
+
+    entries_by_id = {str(e.get("id")): e for e in eligible_entries}
+    max_train_available = max(0, len(eligible_sample_ids) - 1)
 
     learning_curve: Dict[str, Any] = {}
     for pool_size in LEARNING_POOL_SIZES:
         t0 = time.perf_counter()
         per_sample = []
-        for sid in sample_ids:
-            entry = next((e for e in entries if str(e.get("id")) == sid), None)
+        effective_pool_size = min(int(pool_size), max_train_available)
+        for sid in eligible_sample_ids:
+            entry = entries_by_id.get(sid)
             if entry is None:
                 continue
             params = dict(entry.get("parameters") or {})
             train_ids = _select_nearest_training_rows(
-                pool_entries=entries,
+                eligible_entries=eligible_entries,
+                eligible_sample_ids=eligible_sample_ids,
                 target_params=params,
                 exclude_sample_id=sid,
-                max_count=min(pool_size, len(sample_ids) - 1),
+                max_count=effective_pool_size,
             )
-            train_rows = _collect_rows_for_samples(repo_root=repo_root, pool=pool, sample_ids=train_ids)
+            _assert_training_subset(
+                train_ids,
+                eligible_sample_ids,
+                context=f"learning_curve pool_size={pool_size} holdout={sid}",
+            )
+            train_rows = _collect_rows_for_samples(
+                repo_root=repo_root,
+                pool=pool,
+                sample_ids=train_ids,
+                eligible_sample_ids=eligible_sample_ids,
+                context=f"learning_curve pool_size={pool_size} holdout={sid}",
+            )
             model = build_surrogate_from_training_rows(
                 shape_name=str(pool.get("shape_name") or "classic"),
                 training_rows=train_rows,
@@ -540,9 +625,11 @@ def run_diagnostics(
             metrics = _metrics_from_prediction(prediction=pred, fom_modes=fom_modes)
             metrics["sample_id"] = sid
             metrics["training_pool_size"] = len(train_ids)
+            metrics["training_pool_size_requested"] = effective_pool_size
             per_sample.append(metrics)
         agg = {
             "training_pool_size": pool_size,
+            "training_pool_size_effective": effective_pool_size,
             "sample_count": len(per_sample),
             "elapsed_s": round(time.perf_counter() - t0, 2),
         }
@@ -570,12 +657,20 @@ def run_diagnostics(
         "class_band_aware": [],
     }
 
-    for sid in sample_ids:
-        entry = next((e for e in entries if str(e.get("id")) == sid), None)
-        if entry is None:
-            continue
-        train_ids = [s for s in sample_ids if s != sid]
-        train_rows = _collect_rows_for_samples(repo_root=repo_root, pool=pool, sample_ids=train_ids)
+    for sid in eligible_sample_ids:
+        train_ids = [s for s in eligible_sample_ids if s != sid]
+        _assert_training_subset(
+            train_ids,
+            eligible_sample_ids,
+            context=f"full_holdout holdout={sid}",
+        )
+        train_rows = _collect_rows_for_samples(
+            repo_root=repo_root,
+            pool=pool,
+            sample_ids=train_ids,
+            eligible_sample_ids=eligible_sample_ids,
+            context=f"full_holdout holdout={sid}",
+        )
         model = build_surrogate_from_training_rows(
             shape_name=str(pool.get("shape_name") or "classic"),
             training_rows=train_rows,
@@ -635,18 +730,26 @@ def run_diagnostics(
     return {
         "schema": "m4_rom_intensity_v22_diagnostics_v1",
         "generated_utc": utc_now(),
-        "sample_ids": sample_ids,
-        "sample_count": len(sample_ids),
+        "requested_sample_ids": list(requested_sample_ids),
+        "requested_sample_count": len(requested_sample_ids),
+        "eligible_sample_ids": list(eligible_sample_ids),
+        "eligible_completed_catalog_count": len(eligible_sample_ids),
+        "eligible_sample_range": (
+            f"{eligible_sample_ids[0]}..{eligible_sample_ids[-1]}"
+            if eligible_sample_ids
+            else None
+        ),
         "k_neighbors": int(k_neighbors),
         "frequency_band_hz": list(ACCURACY_BAND_HZ),
         "learning_curve_pool_sizes": list(LEARNING_POOL_SIZES),
-        "v21_full_holdout_29_train": {
+        "v21_full_holdout_loo": {
+            "training_pool_size": max_train_available,
             "aggregate": full_holdout_agg,
             "per_sample": holdout_rows,
         },
         "learning_curve": learning_curve,
         "distance_vs_error": distance_rows,
-        "repeatability_lhs_geometry": _repeatability_from_pool(pool),
+        "repeatability_lhs_geometry": _repeatability_from_entries(eligible_entries),
         "alignment_quality": alignment_rows,
         "baselines": baselines,
     }
@@ -664,12 +767,39 @@ def main() -> int:
     repo_root = detect_repo_root(SCRIPT_DIR)
     pool = load_lhs_pool(args.lhs_json.resolve())
     indices = _parse_sample_range(args.samples)
+    requested_sample_ids = [_sample_id(i) for i in indices]
+    eligible_sample_ids, eligible_entries, skipped = _discover_eligible_samples(
+        repo_root=repo_root,
+        pool=pool,
+        requested_sample_ids=requested_sample_ids,
+    )
+
+    print(f"requested_sample_count={len(requested_sample_ids)}", flush=True)
+    print(f"eligible_completed_catalog_count={len(eligible_sample_ids)}", flush=True)
+    if eligible_sample_ids:
+        print(
+            f"eligible_sample_range={eligible_sample_ids[0]}..{eligible_sample_ids[-1]}",
+            flush=True,
+        )
+    if skipped:
+        print(f"skipped_requested_samples={len(skipped)}", flush=True)
+        for sid in requested_sample_ids:
+            if sid in skipped:
+                print(f"  skip {sid}: {skipped[sid]}", flush=True)
+
+    if not eligible_sample_ids:
+        raise SystemExit("error: no eligible completed catalogs in requested sample range")
+
     report = run_diagnostics(
         repo_root=repo_root,
         pool=pool,
-        sample_indices=indices,
+        requested_sample_ids=requested_sample_ids,
+        eligible_sample_ids=eligible_sample_ids,
+        eligible_entries=eligible_entries,
         k_neighbors=int(args.k_neighbors),
     )
+    if skipped:
+        report["skipped_requested_samples"] = skipped
     args.json_out.parent.mkdir(parents=True, exist_ok=True)
     args.json_out.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     print(f"wrote {rel(args.json_out, repo_root=repo_root)}")
@@ -677,7 +807,7 @@ def main() -> int:
     if args.csv_out is not None:
         import csv
 
-        rows = report.get("v21_full_holdout_29_train", {}).get("per_sample") or []
+        rows = report.get("v21_full_holdout_loo", {}).get("per_sample") or []
         if rows:
             fields = sorted({k for r in rows for k in r.keys()})
             args.csv_out.parent.mkdir(parents=True, exist_ok=True)
