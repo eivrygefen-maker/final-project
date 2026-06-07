@@ -1,0 +1,96 @@
+{
+  "cross_sample": {
+    "all_soundhole_structural_dofs_empty": true,
+    "dimension_signature_groups": {},
+    "generated_mesh_node_counts_differ": false,
+    "identical_A_M_structure_hash_groups": {},
+    "identical_A_M_values_hash_groups": {},
+    "identical_dimension_signature_across_all": false
+  },
+  "per_sample": [
+    {
+      "baseline_l_prod_mesh_path": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\mesh\\L_prod\\baseline_coupled_v2.msh",
+      "checkpoint": {
+        "status": "missing_or_compacted"
+      },
+      "generated_gmsh": {
+        "present": false
+      },
+      "generated_gmsh_dolfinx": {
+        "dolfinx_available": false,
+        "error": "ModuleNotFoundError:No module named 'fem_main_3d'"
+      },
+      "geometry_fingerprint": "79d387fe6c219c2c9776eeb87d12d03157cc91b51a6256df543f300fd09b9e5d",
+      "lhs_geometry": {
+        "back_thickness": 0.00324526835413754,
+        "depth": 0.10124015577185537,
+        "hole_radius": 0.049682602688414734,
+        "length": 0.35858698653661997,
+        "top_thickness": 0.0029502439583068544,
+        "width": 0.23504684537673642
+      },
+      "mesh_mismatch_flag": false,
+      "operator_mesh_canonical_path": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\mesh\\L_prod\\baseline_coupled_v2.msh",
+      "operator_mesh_canonical_sha256": null,
+      "operator_mesh_dolfinx": {
+        "dolfinx_available": false,
+        "error": "ModuleNotFoundError:No module named 'fem_main_3d'"
+      },
+      "provenance_chain": [
+        "LHS entry \u2192 sample_input.json / resolved_core_config.json (materials + geometry metadata)",
+        "Stage 4 mesh build \u2192 FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_015/runs/sample_015_m4prod1/lprod/mesh/L_prod/sample_015.msh (provenance artifact)",
+        "Stage A operator build \u2192 hard-coded FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_prod/baseline_coupled_v2.msh via mesh_path(L_prod, baseline_coupled_v2)",
+        "A/M assembly \u2192 _assemble_reduced_coupled_replay(mesh_file=baseline, core_config=resolved)",
+        "Active restriction \u2192 identical sparsity; values vary with materials"
+      ],
+      "run_id": "sample_015_m4prod1",
+      "run_root": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_015/runs/sample_015_m4prod1",
+      "sample_id": "sample_015"
+    },
+    {
+      "baseline_l_prod_mesh_path": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\mesh\\L_prod\\baseline_coupled_v2.msh",
+      "checkpoint": {
+        "status": "missing_or_compacted"
+      },
+      "generated_gmsh": {
+        "present": false
+      },
+      "generated_gmsh_dolfinx": {
+        "dolfinx_available": false,
+        "error": "ModuleNotFoundError:No module named 'fem_main_3d'"
+      },
+      "geometry_fingerprint": "b3d8a10988ab0e26a496af9b1ee0be52474266356bd081604801436de13a9c64",
+      "lhs_geometry": {
+        "back_thickness": 0.003272315345276317,
+        "depth": 0.14061190591199685,
+        "hole_radius": 0.054116974554189914,
+        "length": 0.5593352630209755,
+        "top_thickness": 0.002974832132069379,
+        "width": 0.3998397787761456
+      },
+      "mesh_mismatch_flag": false,
+      "operator_mesh_canonical_path": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\v2_mesh_convergence\\mesh\\L_prod\\baseline_coupled_v2.msh",
+      "operator_mesh_canonical_sha256": null,
+      "operator_mesh_dolfinx": {
+        "dolfinx_available": false,
+        "error": "ModuleNotFoundError:No module named 'fem_main_3d'"
+      },
+      "provenance_chain": [
+        "LHS entry \u2192 sample_input.json / resolved_core_config.json (materials + geometry metadata)",
+        "Stage 4 mesh build \u2192 FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_018/runs/sample_018_m4prod1/lprod/mesh/L_prod/sample_018.msh (provenance artifact)",
+        "Stage A operator build \u2192 hard-coded FEM/experiments/active_domain_validation/physics_integrity/v2_mesh_convergence/mesh/L_prod/baseline_coupled_v2.msh via mesh_path(L_prod, baseline_coupled_v2)",
+        "A/M assembly \u2192 _assemble_reduced_coupled_replay(mesh_file=baseline, core_config=resolved)",
+        "Active restriction \u2192 identical sparsity; values vary with materials"
+      ],
+      "run_id": "sample_018_m4prod1",
+      "run_root": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_018/runs/sample_018_m4prod1",
+      "sample_id": "sample_018"
+    }
+  ],
+  "root_cause_summary": "Stage A operator assembly uses canonical baseline_coupled_v2 mesh, not per-sample lprod/mesh/L_prod/sample_XXX.msh. Identical W/active_dimension/CSR structure across samples is expected under material-overlay parametric model; mesh_build_summary counts describe a different generated artifact.",
+  "sample_ids": [
+    "sample_015",
+    "sample_018"
+  ],
+  "schema": "m4_operator_provenance_audit_v1"
+}
