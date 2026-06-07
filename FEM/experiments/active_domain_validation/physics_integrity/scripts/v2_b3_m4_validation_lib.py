@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -41,6 +42,13 @@ NARROW_TARGETS_281 = [272.0, 275.0, 278.0, 281.5, 284.0, 287.0]
 NARROW_TARGETS_390 = [382.0, 385.0, 388.0, 391.5, 394.0, 397.0]
 BAND_281 = (270.0, 290.0)
 BAND_390 = (380.0, 400.0)
+
+MASK_ARTIFACT_NAMES = (
+    "aperture_pressure_mask.npz",
+    "aperture_mask_diagnostic.json",
+    "aperture_selected_coordinates.csv",
+)
+MASK_STAGE_FUNCTION = "v2_b3_m4_validation_lib.run_aperture_mask_stage"
 
 
 def validation_run_id(sample_id: str) -> str:
@@ -292,8 +300,75 @@ def collect_checkpoint_report(
     return report
 
 
-def attach_aperture_mask(
+def _mask_stage_context(
     *,
+    repo_root: Path,
+    val_root: Path,
+    generated_mesh: Path,
+    sample_id: str,
+    built: Mapping[str, Any],
+) -> Dict[str, Any]:
+    ckpt = val_root / "lprod" / "checkpoint"
+    region_npz = ckpt / "region_dof_indices.npz"
+    operator_mesh = Path(str(built.get("operator_mesh_file_used") or built.get("region_dof_mesh_file") or generated_mesh))
+    ctx: Dict[str, Any] = {
+        "sample_id": sample_id,
+        "cwd": str(Path.cwd().resolve()),
+        "repo_root": str(repo_root.resolve()),
+        "sys_executable": sys.executable,
+        "operator_mesh_path": str(operator_mesh.resolve()) if operator_mesh.is_file() else str(operator_mesh),
+        "generated_mesh_path": str(generated_mesh.resolve()) if generated_mesh.is_file() else str(generated_mesh),
+        "checkpoint_dir": str(ckpt.resolve()),
+        "region_dof_indices_path": str(region_npz.resolve()) if region_npz.is_file() else None,
+        "validation_dir": str((val_root / "validation").resolve()),
+        "mask_stage_function": MASK_STAGE_FUNCTION,
+    }
+    try:
+        from v2_b3_synthesis_export import fem_import_diagnostics  # noqa: WPS433
+
+        ctx["fem_import_diagnostics"] = fem_import_diagnostics(start=SCRIPT_DIR)
+    except Exception as fem_exc:  # noqa: BLE001
+        ctx["fem_import_diagnostics_error"] = f"{type(fem_exc).__name__}:{fem_exc}"
+    return ctx
+
+
+def write_aperture_mask_failure(
+    val_dir: Path,
+    exc: BaseException,
+    *,
+    context: Mapping[str, Any],
+) -> Path:
+    val_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "exception_type": type(exc).__name__,
+        "exception_message": str(exc),
+        "traceback": traceback.format_exc(),
+        **dict(context),
+    }
+    out = val_dir / "aperture_mask_failure.json"
+    write_json_atomic(out, payload)
+    return out
+
+
+def verify_mask_artifacts(val_dir: Path) -> Tuple[bool, List[str], Dict[str, Any]]:
+    present: Dict[str, Any] = {}
+    missing: List[str] = []
+    for name in MASK_ARTIFACT_NAMES:
+        path = val_dir / name
+        ok = path.is_file()
+        present[name] = {
+            "present": ok,
+            "path": str(path.resolve()),
+            "size_bytes": path.stat().st_size if ok else None,
+        }
+        if not ok:
+            missing.append(name)
+    return len(missing) == 0, missing, present
+
+
+def run_aperture_mask_stage(
+    *,
+    repo_root: Path,
     val_root: Path,
     generated_mesh: Path,
     pool: Mapping[str, Any],
@@ -301,14 +376,39 @@ def attach_aperture_mask(
     core_config_path: Optional[Path] = None,
     write_diagnostics: bool = True,
 ) -> Dict[str, Any]:
+    """
+    Build aperture mask artifacts for an existing validation checkpoint.
+
+    Always invoked after Stage A reuse; never skipped by checkpoint reuse flags.
+    """
     ckpt = val_root / "lprod" / "checkpoint"
-    built = load_json(ckpt / "built_metadata.json")
+    built_path = ckpt / "built_metadata.json"
+    if not built_path.is_file():
+        raise FileNotFoundError(f"checkpoint missing built_metadata.json: {built_path}")
+
+    built = load_json(built_path)
     idx = lhs_entry_index(pool, sample_id)
     entry = (pool.get("entries") or [])[idx] if idx is not None else {}
     geom = extract_geometry_dict(entry)
     core_cfg = core_config_path or (val_root / "lprod" / "resolved_core_config.json")
     val_dir = val_root / "validation"
     val_dir.mkdir(parents=True, exist_ok=True)
+    context = _mask_stage_context(
+        repo_root=repo_root,
+        val_root=val_root,
+        generated_mesh=generated_mesh,
+        sample_id=sample_id,
+        built=built,
+    )
+
+    stage: Dict[str, Any] = {
+        "MASK_STAGE_ENTER": True,
+        "MASK_STAGE_COMMAND": MASK_STAGE_FUNCTION,
+        "sample_id": sample_id,
+        "validation_run_id": validation_run_id(sample_id),
+        "validation_dir": str(val_dir.resolve()),
+    }
+    print(f"MASK_STAGE_ENTER sample={sample_id} function={MASK_STAGE_FUNCTION}")
 
     try:
         if write_diagnostics:
@@ -327,23 +427,72 @@ def attach_aperture_mask(
             core_config_path=core_cfg if core_cfg.is_file() else None,
         )
         validate_aperture_mask_contract(mask, built)
-    except ModuleNotFoundError as exc:
-        from v2_b3_synthesis_export import fem_import_diagnostics  # noqa: WPS433
+        mask_path = val_dir / "aperture_pressure_mask.npz"
+        write_aperture_mask_npz(mask_path, mask)
+        write_aperture_coordinates_csv(val_dir / "aperture_selected_coordinates.csv", mask)
 
-        diag_import = fem_import_diagnostics(start=SCRIPT_DIR)
-        write_aperture_diagnostic_json(
-            val_dir / "fem_import_failure.json",
-            {"error": str(exc), "fem_import_diagnostics": diag_import},
+        ok, missing, present = verify_mask_artifacts(val_dir)
+        if not ok:
+            raise RuntimeError(f"mask_artifact_contract_incomplete:missing={missing}")
+
+        count = int(mask.get("n_p_aperture_dofs") or 0)
+        if count <= 0:
+            raise RuntimeError("mask_artifact_contract_empty:p_idx_aperture_count=0")
+
+        summary = aperture_mask_summary(mask)
+        summary["mask_npz_path"] = str(mask_path.resolve())
+        summary["mic_output_method"] = mask.get("mic_output_method")
+        summary["p_idx_aperture_count"] = count
+        summary["mask_artifacts"] = present
+        stage.update(
+            {
+                "MASK_STAGE_EXIT": True,
+                "MASK_STAGE_STATUS": "PASS",
+                "p_idx_aperture_count": count,
+                "mask_method": mask.get("mask_method"),
+                "mic_output_method": mask.get("mic_output_method"),
+            }
         )
-        raise RuntimeError(f"fem_main_3d_import_failed:{exc}") from exc
-    mask_path = val_dir / "aperture_pressure_mask.npz"
-    write_aperture_mask_npz(mask_path, mask)
-    write_aperture_coordinates_csv(val_dir / "aperture_selected_coordinates.csv", mask)
-    summary = aperture_mask_summary(mask)
-    summary["mask_npz_path"] = str(mask_path)
-    summary["mic_output_method"] = mask.get("mic_output_method")
-    summary["p_idx_aperture_count"] = mask.get("n_p_aperture_dofs")
-    return summary
+        print(f"MASK_STAGE_EXIT sample={sample_id} status=PASS count={count}")
+        return {**summary, "mask_stage": stage}
+    except Exception as exc:  # noqa: BLE001
+        fail_path = write_aperture_mask_failure(val_dir, exc, context=context)
+        stage.update(
+            {
+                "MASK_STAGE_EXIT": True,
+                "MASK_STAGE_STATUS": "FAIL",
+                "mask_build_status": "FAIL",
+                "mask_build_error": f"{type(exc).__name__}:{exc}",
+                "aperture_mask_failure_json": str(fail_path.resolve()),
+            }
+        )
+        print(f"MASK_STAGE_EXIT sample={sample_id} status=FAIL error={type(exc).__name__}:{exc}")
+        raise RuntimeError(f"aperture_mask_stage_failed:{type(exc).__name__}:{exc}") from exc
+
+
+def attach_aperture_mask(
+    *,
+    val_root: Path,
+    generated_mesh: Path,
+    pool: Mapping[str, Any],
+    sample_id: str,
+    core_config_path: Optional[Path] = None,
+    write_diagnostics: bool = True,
+    repo_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    if repo_root is None:
+        from v2_b3_m4_worker_run_lib import detect_repo_root  # noqa: WPS433
+
+        repo_root = detect_repo_root(SCRIPT_DIR)
+    return run_aperture_mask_stage(
+        repo_root=repo_root,
+        val_root=val_root,
+        generated_mesh=generated_mesh,
+        pool=pool,
+        sample_id=sample_id,
+        core_config_path=core_config_path,
+        write_diagnostics=write_diagnostics,
+    )
 
 
 def validation_tree_ready(val_root: Path) -> bool:
@@ -398,9 +547,13 @@ def evaluate_validation_gates(
     struct_hashes: List[str] = []
     for row in test_b_results:
         sid = row.get("sample_id")
+        if row.get("mask_build_status") != "PASS":
+            failures.append(f"{sid}:mask_build_status={row.get('mask_build_status')}")
         if not row.get("operator_mesh_matches_generated"):
             failures.append(f"{sid}:operator_mesh_matches_generated=false")
-        if int(row.get("p_idx_aperture_count") or 0) <= 0:
+        if row.get("p_idx_aperture_count") is None:
+            failures.append(f"{sid}:p_idx_aperture_count_not_built")
+        elif int(row.get("p_idx_aperture_count") or 0) <= 0:
             failures.append(f"{sid}:p_idx_aperture_count=0")
         band_modes = (row.get("deduped_modes_270_290_hz") or []) + (
             row.get("deduped_modes_380_400_hz") or []

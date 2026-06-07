@@ -26,14 +26,15 @@ from v2_b3_m4_validation_lib import (  # noqa: E402
     BAND_281,
     BAND_390,
     _production_legacy_peak,
-    attach_aperture_mask,
     build_narrow_band_chunk_targets,
     collect_checkpoint_report,
     collect_solve_band_results,
     evaluate_validation_gates,
     prepare_validation_run_tree,
+    run_aperture_mask_stage,
     validation_run_id,
     validation_tree_ready,
+    verify_mask_artifacts,
 )
 from v2_b3_m4_worker_run_lib import detect_repo_root, rel  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
@@ -149,6 +150,8 @@ def run_test_b_sample(
             reuse_existing=reuse_validation_checkpoint,
         )
     except FileNotFoundError as exc:
+        out["mask_build_status"] = "NOT_RUN"
+        out["mask_build_error"] = str(exc)
         out["status"] = "FAIL"
         out["error"] = str(exc)
         return out
@@ -174,10 +177,7 @@ def run_test_b_sample(
     )
     out["stage_a_command"] = " ".join(stage_a_cmd)
 
-    targets_doc = build_narrow_band_chunk_targets(sample_id=sample_id, run_id=run_id)
     targets_path = val_root / "validation" / "narrow_band_targets.json"
-    targets_path.parent.mkdir(parents=True, exist_ok=True)
-    write_json_atomic(targets_path, targets_doc)
     solve_cmd = _narrow_band_solve_command(val_root=val_root, targets_json=targets_path)
     out["narrow_band_solve_command"] = " ".join(solve_cmd)
     out["narrow_band_solve_env"] = {
@@ -187,7 +187,14 @@ def run_test_b_sample(
 
     if not execute:
         out["status"] = "commands_ready"
+        out["mask_build_status"] = "NOT_RUN"
+        out["mask_build_note"] = "pass --execute to run mask stage and narrow-band solve"
         return out
+
+    targets_doc = build_narrow_band_chunk_targets(sample_id=sample_id, run_id=run_id)
+    targets_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(targets_path, targets_doc)
+    out["narrow_band_targets_json"] = _repo_rel(targets_path, repo_root)
 
     skip_stage_a = bool(
         reuse_validation_checkpoint
@@ -219,12 +226,15 @@ def run_test_b_sample(
     out.update(ckpt_report)
 
     if not out.get("operator_mesh_matches_generated"):
+        out["mask_build_status"] = "NOT_RUN"
+        out["mask_build_error"] = "operator_mesh_matches_generated=false"
         out["status"] = "FAIL"
         out["error"] = "operator_mesh_matches_generated=false"
         return out
 
     try:
-        mask_summary = attach_aperture_mask(
+        mask_summary = run_aperture_mask_stage(
+            repo_root=repo_root,
             val_root=val_root,
             generated_mesh=generated_mesh,
             pool=pool,
@@ -234,34 +244,47 @@ def run_test_b_sample(
         )
     except Exception as exc:  # noqa: BLE001
         out["mask_build_status"] = "FAIL"
+        out["mask_build_error"] = f"{type(exc).__name__}:{exc}"
         out["status"] = "FAIL"
         out["error"] = f"aperture_mask_failed:{type(exc).__name__}:{exc}"
-        fail_json = val_root / "validation" / "fem_import_failure.json"
+        fail_json = val_root / "validation" / "aperture_mask_failure.json"
         if fail_json.is_file():
             try:
-                out["fem_import_failure"] = json.loads(fail_json.read_text(encoding="utf-8"))
+                out["aperture_mask_failure"] = json.loads(fail_json.read_text(encoding="utf-8"))
             except (OSError, ValueError, json.JSONDecodeError):
                 pass
-        if "fem_main_3d" in str(exc) or isinstance(exc, ModuleNotFoundError):
-            try:
-                from v2_b3_synthesis_export import fem_import_diagnostics  # noqa: WPS433
-
-                out["fem_import_diagnostics"] = fem_import_diagnostics(start=SCRIPT_DIR)
-            except Exception:
-                pass
+        ok, missing, present = verify_mask_artifacts(val_root / "validation")
+        out["mask_artifacts_present"] = present
+        out["mask_artifacts_missing"] = missing
         return out
 
+    out.update(mask_summary.get("mask_stage") or {})
     out["mask_build_status"] = "PASS"
-    out["p_idx_aperture_count"] = int(mask_summary.get("n_p_aperture_dofs") or 0)
+    out["p_idx_aperture_count"] = int(mask_summary.get("p_idx_aperture_count") or 0)
     out["aperture_coordinate_bbox_min"] = mask_summary.get("coordinate_bbox_min")
     out["aperture_coordinate_bbox_max"] = mask_summary.get("coordinate_bbox_max")
     out["aperture_mask_method"] = mask_summary.get("mask_method")
     out["mic_output_method"] = mask_summary.get("mic_output_method")
     out["aperture_mask_npz"] = mask_summary.get("mask_npz_path")
+    out["mask_artifacts_present"] = mask_summary.get("mask_artifacts")
     out["narrow_band_solve_env"]["B3_EXPERIMENTAL_APERTURE_MASK_NPZ"] = str(
         mask_summary.get("mask_npz_path") or out["narrow_band_solve_env"]["B3_EXPERIMENTAL_APERTURE_MASK_NPZ"]
     )
 
+    ok, missing, present = verify_mask_artifacts(val_root / "validation")
+    if not ok or out["p_idx_aperture_count"] <= 0:
+        out["mask_build_status"] = "FAIL"
+        out["mask_build_error"] = (
+            f"mask_artifact_contract_incomplete:missing={missing}"
+            if not ok
+            else "mask_artifact_contract_empty:p_idx_aperture_count=0"
+        )
+        out["status"] = "FAIL"
+        out["error"] = out["mask_build_error"]
+        out["mask_artifacts_missing"] = missing
+        return out
+
+    print(f"NARROW_BAND_SOLVE_ENTER sample={sample_id}")
     legacy_281 = _production_legacy_peak(prod_root, BAND_281)
     legacy_390 = _production_legacy_peak(prod_root, BAND_390)
     out["old_mic_proxy_281"] = (legacy_281 or {}).get("mic_output_proxy")
@@ -399,11 +422,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             for sid in samples
         ]
         for row in report["test_b_results"]:
+            aperture_dofs = row.get("p_idx_aperture_count")
+            aperture_repr = aperture_dofs if aperture_dofs is not None else "NOT_BUILT"
             print(
                 f"test_b {row.get('sample_id')}: status={row.get('status')} "
                 f"mesh_match={row.get('operator_mesh_matches_generated')} "
-                f"aperture_dofs={row.get('p_idx_aperture_count')}"
+                f"mask_build_status={row.get('mask_build_status')} "
+                f"aperture_dofs={aperture_repr}"
             )
+            if row.get("MASK_STAGE_STATUS"):
+                print(f"  MASK_STAGE_STATUS={row.get('MASK_STAGE_STATUS')}")
+            if row.get("mask_build_error"):
+                print(f"  mask_build_error={row.get('mask_build_error')}")
             if row.get("narrow_band_solve_command"):
                 print(f"  solve_cmd: {row['narrow_band_solve_command']}")
                 if row.get("narrow_band_solve_env"):
