@@ -35,6 +35,7 @@ from v2_b3_m4_rom_fom_compare_lib import (  # noqa: E402
     greedy_nearest_hz_match,
     load_fom_modes_catalog_deduped,
     prepare_fom_modes_for_rom_compare,
+    resolve_sample_context,
 )
 from v2_b3_m4_rom_scalar_fields import (  # noqa: E402
     INTENSITY_FIELDS,
@@ -55,6 +56,28 @@ FREQ_BANDS: Tuple[Tuple[float, float], ...] = (
 )
 LEARNING_POOL_SIZES = (8, 12, 16, 20, 24, 29)
 LHS_CLOSE_THRESHOLDS = (0.5, 1.0, 1.5, 2.0)
+
+_DIAGNOSTICS_API_CHECKED = False
+
+
+def _check_diagnostics_api() -> None:
+    """Fail fast before the long diagnostics loop if a required helper is missing."""
+    global _DIAGNOSTICS_API_CHECKED
+    if _DIAGNOSTICS_API_CHECKED:
+        return
+    required: Dict[str, Any] = {
+        "resolve_sample_context": resolve_sample_context,
+        "load_fom_modes_catalog_deduped": load_fom_modes_catalog_deduped,
+        "prepare_fom_modes_for_rom_compare": prepare_fom_modes_for_rom_compare,
+        "greedy_nearest_hz_match": greedy_nearest_hz_match,
+        "predict_modal_catalog": predict_modal_catalog,
+        "build_surrogate_from_training_rows": build_surrogate_from_training_rows,
+        "collect_completed_fom_training_rows": collect_completed_fom_training_rows,
+    }
+    missing = [name for name, obj in required.items() if obj is None]
+    if missing:
+        raise ImportError(f"diagnostics API self-check failed; missing: {missing}")
+    _DIAGNOSTICS_API_CHECKED = True
 
 
 def _parse_sample_range(text: str) -> List[int]:
@@ -118,7 +141,7 @@ def _discover_eligible_samples(
     pool: Mapping[str, Any],
     requested_sample_ids: Sequence[str],
     run_id_suffix: str = DEFAULT_RUN_ID_SUFFIX,
-) -> Tuple[List[str], List[Dict[str, Any]], Dict[str, Mapping[str, Any]]]:
+) -> Tuple[List[str], List[Dict[str, Any]], Dict[str, str]]:
     """Return eligible IDs = requested ∩ COMPLETED ∩ catalog exists."""
     entries_by_id: Dict[str, Mapping[str, Any]] = {}
     for entry in pool.get("entries") or []:
@@ -135,11 +158,15 @@ def _discover_eligible_samples(
         if entry is None:
             skipped[sid] = "not_in_lhs_pool"
             continue
-        run_id = str(entry.get("last_run_id") or f"{sid}_{run_id_suffix}")
+        run_id, run_root = _resolve_run_location(
+            repo_root=repo_root,
+            sample_id=sid,
+            entry=entry,
+            run_id_suffix=run_id_suffix,
+        )
         if not is_lhs_entry_completed(entry, run_id=run_id):
             skipped[sid] = f"status_not_completed:{entry.get('status')}"
             continue
-        run_root = guitars_root(repo_root) / sid / "runs" / run_id
         catalog_path = run_root / "aggregation" / "modes_catalog.jsonl"
         if not catalog_path.is_file():
             skipped[sid] = "missing_modes_catalog"
@@ -201,18 +228,50 @@ def _collect_rows_for_samples(
     return out
 
 
+def _resolve_run_location(
+    *,
+    repo_root: Path,
+    sample_id: str,
+    entry: Mapping[str, Any],
+    run_id_suffix: str = DEFAULT_RUN_ID_SUFFIX,
+) -> Tuple[str, Path]:
+    """Mirror run_m4_rom_compare / select_completed_lhs_for_rom_compare run resolution."""
+    run_id = str(entry.get("last_run_id") or f"{sample_id}_{run_id_suffix}")
+    last_run_dir = entry.get("last_run_dir")
+    if isinstance(last_run_dir, str) and last_run_dir.strip():
+        run_root = Path(last_run_dir.strip())
+        if not run_root.is_absolute():
+            run_root = repo_root / run_root
+    else:
+        run_root = guitars_root(repo_root) / sample_id / "runs" / run_id
+    return run_id, run_root.resolve()
+
+
 def _run_context_for_sample(
     *,
     repo_root: Path,
     pool: Mapping[str, Any],
     sample_id: str,
+    entry: Mapping[str, Any],
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Dict[str, Any]]:
-    from v2_b3_m4_rom_fom_compare_lib import resolve_run_context  # noqa: WPS433
-
-    context = resolve_run_context(repo_root=repo_root, pool=pool, sample_id=sample_id)
-    catalog_path = Path(context["run_root"]) / "aggregation" / "modes_catalog.jsonl"
+    run_id, run_root = _resolve_run_location(
+        repo_root=repo_root,
+        sample_id=sample_id,
+        entry=entry,
+    )
+    context = resolve_sample_context(
+        pool=pool,
+        sample_id=sample_id,
+        run_id=run_id,
+        run_root=run_root,
+        repo_root=repo_root,
+    )
+    catalog_path = run_root / "aggregation" / "modes_catalog.jsonl"
+    if not catalog_path.is_file():
+        raise FileNotFoundError(f"missing FOM catalog: {catalog_path}")
     _raw, deduped, meta = load_fom_modes_catalog_deduped(catalog_path)
     fom_modes, _ = prepare_fom_modes_for_rom_compare(deduped, band=ACCURACY_BAND_HZ)
+    context["fom_catalog_path"] = str(catalog_path)
     return context, fom_modes, meta
 
 
@@ -586,6 +645,17 @@ def run_diagnostics(
     entries_by_id = {str(e.get("id")): e for e in eligible_entries}
     max_train_available = max(0, len(eligible_sample_ids) - 1)
 
+    def _context_for(sid: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Dict[str, Any]]:
+        entry = entries_by_id.get(sid)
+        if entry is None:
+            raise KeyError(f"eligible entry missing for {sid}")
+        return _run_context_for_sample(
+            repo_root=repo_root,
+            pool=pool,
+            sample_id=sid,
+            entry=entry,
+        )
+
     learning_curve: Dict[str, Any] = {}
     for pool_size in LEARNING_POOL_SIZES:
         t0 = time.perf_counter()
@@ -620,7 +690,7 @@ def run_diagnostics(
                 training_rows=train_rows,
                 k_neighbors=min(k_neighbors, len(train_rows)),
             )
-            context, fom_modes, _ = _run_context_for_sample(repo_root=repo_root, pool=pool, sample_id=sid)
+            context, fom_modes, _ = _context_for(sid)
             pred = _predict_v21(model, context["parameters"])
             metrics = _metrics_from_prediction(prediction=pred, fom_modes=fom_modes)
             metrics["sample_id"] = sid
@@ -676,7 +746,7 @@ def run_diagnostics(
             training_rows=train_rows,
             k_neighbors=min(k_neighbors, len(train_rows)),
         )
-        context, fom_modes, _ = _run_context_for_sample(repo_root=repo_root, pool=pool, sample_id=sid)
+        context, fom_modes, _ = _context_for(sid)
         pred = _predict_v21(model, context["parameters"])
         metrics = _metrics_from_prediction(prediction=pred, fom_modes=fom_modes)
         nstats = _neighbor_stats(model, context["parameters"])
@@ -763,6 +833,8 @@ def main() -> int:
     parser.add_argument("--json-out", type=Path, required=True)
     parser.add_argument("--csv-out", type=Path, default=None)
     args = parser.parse_args()
+
+    _check_diagnostics_api()
 
     repo_root = detect_repo_root(SCRIPT_DIR)
     pool = load_lhs_pool(args.lhs_json.resolve())
