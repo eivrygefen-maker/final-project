@@ -155,7 +155,9 @@ def _read_sample_summary(run_root: Path, *, workers_requested: int = 1) -> Dict[
             agg = load_json(agg_path)
         except (OSError, ValueError, json.JSONDecodeError):
             agg = {}
-    freeze_manifest = run_root / "freeze" / "sample_e2e_run_manifest.json"
+    freeze_manifest = run_root / "freeze" / "freeze_manifest.json"
+    if not freeze_manifest.is_file():
+        freeze_manifest = run_root / "freeze" / "sample_e2e_run_manifest.json"
     if not freeze_manifest.is_file():
         freeze_manifest = run_root / "freeze" / "first_end_to_end_run_manifest.json"
     prov_path = run_root / "m4_sample_runtime_provenance.json"
@@ -350,7 +352,7 @@ def run_production_batch(
         sid = str(entry["sample_id"])
         rid = str(entry["run_id"])
         run_root = _sample_run_root(entry)
-        reuse = _classify_run_status(run_root)
+        reuse = _classify_run_status(run_root, production_mode=production_mode)
 
         if sid == REFERENCE_SAMPLE_ID and exclude_reference and not allow_reference_mutation:
             skipped.append(
@@ -544,6 +546,13 @@ def run_production_batch(
         if production_mode and acceptance and not acceptance.get("acceptance_pass"):
             outcome = "fail"
             err_msg = ";".join(acceptance.get("failures") or ["production_acceptance_failed"])
+        if production_mode:
+            from v2_b3_m4_production_freeze import assess_production_completion  # noqa: WPS433
+
+            completion = assess_production_completion(run_root)
+            if not completion["complete"]:
+                outcome = "fail"
+                err_msg = ";".join(completion["failures"])
         row["outcome"] = outcome
         if err_msg:
             row["error_message"] = err_msg

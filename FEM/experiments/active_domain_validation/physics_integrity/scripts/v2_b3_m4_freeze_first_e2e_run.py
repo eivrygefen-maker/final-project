@@ -27,6 +27,7 @@ FREEZE_DIR_NAME = "freeze"
 CANONICAL_FREEZE_PREFIX = "sample_e2e"
 CANONICAL_FREEZE_MANIFEST = "sample_e2e_run_manifest.json"
 CANONICAL_FREEZE_SUMMARY = "sample_e2e_run_summary.md"
+PRODUCTION_FREEZE_MANIFEST = "freeze_manifest.json"
 LEGACY_FREEZE_MANIFESTS = ("first_end_to_end_run_manifest.json",)
 AGG_PASS_FREEZE_WARNING = "AGGREGATION_PASS_FREEZE_WARNING"
 REFERENCE_SAMPLE_ID = "sample_001"
@@ -87,6 +88,9 @@ def existing_freeze_manifest_paths(run_root: Path) -> List[Path]:
     if not freeze_dir.is_dir():
         return []
     found: List[Path] = []
+    production = freeze_dir / PRODUCTION_FREEZE_MANIFEST
+    if production.is_file():
+        found.append(production)
     canonical = freeze_dir / CANONICAL_FREEZE_MANIFEST
     if canonical.is_file():
         found.append(canonical)

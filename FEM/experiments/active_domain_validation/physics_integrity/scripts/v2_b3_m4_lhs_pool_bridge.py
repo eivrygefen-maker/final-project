@@ -589,6 +589,8 @@ def reconcile_existing_runs(
     Scan run trees for valid AGGREGATION_PASS outputs; repair freeze/terminal; update LHS pool.
     Does not rerun workers.
     """
+    from v2_b3_m4_production_contracts import DATASET_VERSION  # noqa: E402
+    from v2_b3_m4_production_freeze import load_sample_input, replay_production_freeze  # noqa: E402
     from v2_b3_m4_freeze_first_e2e_run import repair_run_freeze_and_terminal  # noqa: E402
     from v2_b3_m4_run_status_repair import (  # noqa: E402
         STALE_RUNNING_REPAIR_REASON,
@@ -649,12 +651,28 @@ def reconcile_existing_runs(
         freeze_rc = 0
         freeze_msg = "aggregation_pass"
         if repair_freeze:
-            freeze_rc, freeze_msg = repair_run_freeze_and_terminal(
-                repo_root=repo_root,
-                run_root=run_root,
-                sample_id=sid,
-                force=False,
-            )
+            built_path = run_root / "lprod" / "checkpoint" / "built_metadata.json"
+            production_run = False
+            if built_path.is_file():
+                try:
+                    built_doc = load_json(built_path)
+                    production_run = str(built_doc.get("dataset_version") or "") == DATASET_VERSION
+                except (OSError, ValueError, json.JSONDecodeError):
+                    production_run = False
+            if production_run:
+                freeze_rc, freeze_msg = replay_production_freeze(
+                    repo_root=repo_root,
+                    run_root=run_root,
+                    sample_input=load_sample_input(run_root),
+                    force=False,
+                )
+            else:
+                freeze_rc, freeze_msg = repair_run_freeze_and_terminal(
+                    repo_root=repo_root,
+                    run_root=run_root,
+                    sample_id=sid,
+                    force=False,
+                )
         summary = read_run_production_summary(run_root)
         outcome = "pass" if freeze_rc == 0 else OUTCOME_PASS_FREEZE_WARNING
         if freeze_rc == 0:

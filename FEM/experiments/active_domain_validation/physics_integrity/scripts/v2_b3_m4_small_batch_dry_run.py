@@ -49,7 +49,7 @@ def _load_batch_spec(path: Path) -> Dict[str, Any]:
     return data
 
 
-def _classify_run_status(run_root: Path) -> str:
+def _classify_run_status(run_root: Path, *, production_mode: bool = False) -> str:
     if not run_root.is_dir():
         return "planned_new_run"
 
@@ -58,6 +58,12 @@ def _classify_run_status(run_root: Path) -> str:
         try:
             agg = load_json(agg_path)
             if str(agg.get("status")) == AGG_PASS and agg.get("final_aggregation_ready"):
+                if production_mode:
+                    from v2_b3_m4_production_freeze import production_freeze_complete  # noqa: WPS433
+
+                    if production_freeze_complete(run_root):
+                        return "already_complete_reuse"
+                    return "resume_possible"
                 return "already_complete_reuse"
         except (OSError, ValueError, json.JSONDecodeError):
             pass

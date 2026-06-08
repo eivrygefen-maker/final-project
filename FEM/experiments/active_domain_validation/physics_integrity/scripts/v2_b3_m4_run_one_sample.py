@@ -226,11 +226,15 @@ def _stage_pass_aggregate(run_root: Path) -> bool:
         return False
 
 
-def _stage_pass_freeze(run_root: Path, sample_id: str) -> bool:
+def _stage_pass_freeze(run_root: Path, sample_id: str, *, production_mode: bool = False) -> bool:
+    if production_mode:
+        from v2_b3_m4_production_freeze import production_freeze_complete  # noqa: WPS433
+
+        return production_freeze_complete(run_root)
     return freeze_outputs_present(run_root)
 
 
-def assess_stages(run_root: Path) -> Dict[str, Dict[str, Any]]:
+def assess_stages(run_root: Path, *, production_mode: bool = False) -> Dict[str, Dict[str, Any]]:
     sample_id = _sample_id_from_run(run_root)
     checks = {
         "scout": _stage_pass_scout,
@@ -238,7 +242,7 @@ def assess_stages(run_root: Path) -> Dict[str, Dict[str, Any]]:
         "checkpoint": _stage_pass_checkpoint,
         "workers": _stage_pass_workers,
         "aggregate": _stage_pass_aggregate,
-        "freeze": lambda r: _stage_pass_freeze(r, sample_id),
+        "freeze": lambda r: _stage_pass_freeze(r, sample_id, production_mode=production_mode),
     }
     out: Dict[str, Dict[str, Any]] = {}
     for name, fn in checks.items():
@@ -362,7 +366,22 @@ def _run_stage_freeze(
     run_root: Path,
     sample_id: str,
     force: bool,
+    production_mode: bool = False,
 ) -> Tuple[int, str]:
+    if production_mode:
+        from v2_b3_m4_production_freeze import (  # noqa: WPS433
+            load_sample_input,
+            replay_production_freeze,
+        )
+
+        rc, msg = replay_production_freeze(
+            repo_root=repo_root,
+            run_root=run_root,
+            sample_input=load_sample_input(run_root),
+            force=force,
+        )
+        return rc, msg
+
     if freeze_outputs_present(run_root) and not force:
         promote_pipeline_terminal_status(run_root, aggregation_status=AGG_STATUS_PASS)
         return 0, "freeze already present (idempotent accept)"
@@ -440,7 +459,7 @@ def run_pipeline(
     log_path = run_root / "logs" / "m4_run_one_sample.log"
     stop_rank = STOP_AFTER_RANK.get(stop_after or "", 999)
 
-    stages = assess_stages(run_root)
+    stages = assess_stages(run_root, production_mode=production_mode)
     policy = _policy_argv(
         workers=workers,
         freq_min=freq_min,
@@ -555,6 +574,7 @@ def run_pipeline(
                 run_root=run_root,
                 sample_id=sample_id,
                 force=_should_force_stage("freeze", force=force, force_stages=sf),
+                production_mode=production_mode,
             ),
         ),
     ]
@@ -599,7 +619,7 @@ def run_pipeline(
                     run_root,
                     repair_reason=STALE_RUNNING_REPAIR_REASON,
                 )
-            if name == "freeze" and _stage_pass_aggregate(run_root):
+            if name == "freeze" and _stage_pass_aggregate(run_root) and not production_mode:
                 promote_pipeline_terminal_status(
                     run_root,
                     aggregation_status=AGG_STATUS_PASS,
@@ -641,7 +661,9 @@ def run_pipeline(
         )
     except Exception:
         pass
-    if _stage_pass_aggregate(run_root):
+    if _stage_pass_aggregate(run_root) and not (
+        production_mode and _stage_pass_freeze(run_root, sample_id, production_mode=True)
+    ):
         promote_pipeline_terminal_status(run_root, aggregation_status=AGG_STATUS_PASS)
     print(f"terminal_status={_manifest(run_root).get('terminal_status')}")
     print("pipeline execute finished")

@@ -171,7 +171,8 @@ def evaluate_production_acceptance(
 
     region_ctx = load_region_dof_bundle(ckpt, built)
     region = region_ctx.get("region") or {}
-    p_ap = np.asarray(region.get("p_idx_aperture") or [], dtype=np.int32).ravel()
+    p_raw = region.get("p_idx_aperture")
+    p_ap = np.asarray([] if p_raw is None else p_raw, dtype=np.int32).ravel()
     out["p_idx_aperture_count"] = int(p_ap.size)
     if p_ap.size <= 0:
         out["failures"].append("p_idx_aperture_count<=0")
@@ -179,10 +180,20 @@ def evaluate_production_acceptance(
     if agg_path.is_file():
         agg = json.loads(agg_path.read_text(encoding="utf-8"))
         out["aggregation_status"] = agg.get("status")
-        if str(agg.get("status") or "").upper() not in ("PASS", "PASS_WITH_WARNINGS"):
+        agg_status = str(agg.get("status") or "")
+        if agg_status not in ("AGGREGATION_PASS", "PASS", "PASS_WITH_WARNINGS"):
             out["failures"].append(f"aggregation_status={agg.get('status')}")
+        if not bool(agg.get("final_aggregation_ready")):
+            out["failures"].append("final_aggregation_ready!=true")
     else:
         out["failures"].append("missing_aggregation_result")
+
+    built_ds = str(built.get("dataset_version") or "")
+    out["built_dataset_version"] = built_ds or None
+    if built_ds and built_ds != DATASET_VERSION:
+        out["failures"].append(f"dataset_version={built_ds}")
+    elif not built_ds:
+        out["failures"].append("missing_dataset_version")
 
     mic_methods = set()
     if catalog.is_file():
@@ -205,5 +216,6 @@ def evaluate_production_acceptance(
         out["failures"].append("missing_modes_catalog")
 
     out["rom_compare_present"] = rom_compare.is_file()
+    out["mic_output_method"] = PRODUCTION_MIC_METHOD if not out["failures"] else None
     out["acceptance_pass"] = len(out["failures"]) == 0
     return out
