@@ -245,10 +245,12 @@ def _resolve_run_dir(repo_root: Path, run_dir: Path) -> Tuple[str, str, Path]:
     return rel_parts[0], rel_parts[2], resolved
 
 
-def _strict_precheck_run_root(run_root: Path) -> Tuple[bool, str]:
+def _run_dir_eligibility_gates(run_root: Path) -> Tuple[bool, str]:
+    """Gates for --run-dir: eligibility from the exact run tree only."""
     from v2_b3_m4_physics_identity_lib import (  # noqa: WPS433
         MODE_PROVENANCE_SIDECAR,
         PHYSICS_IDENTITY_MANIFEST,
+        validate_physics_identity_manifest,
     )
 
     summary = read_run_production_summary(run_root)
@@ -265,6 +267,17 @@ def _strict_precheck_run_root(run_root: Path) -> Tuple[bool, str]:
         return False, "physics_identity_manifest_unreadable"
     if not bool(phys.get("production_acceptance_pass")):
         return False, "production_acceptance_pass!=true"
+    failures = list(phys.get("production_acceptance_failures") or [])
+    if failures:
+        return False, f"production_acceptance_failures={failures}"
+
+    ok, man_errs = validate_physics_identity_manifest(phys)
+    if not ok:
+        return False, f"physics_identity_invalid:{','.join(man_errs)}"
+
+    cat_ok, cat_detail = _catalog_readable(run_root / "aggregation" / "modes_catalog.jsonl")
+    if not cat_ok:
+        return False, f"modes_catalog:{cat_detail}"
 
     for rel_path in (
         MODE_PROVENANCE_SIDECAR,
@@ -273,6 +286,11 @@ def _strict_precheck_run_root(run_root: Path) -> Tuple[bool, str]:
         if not (run_root / rel_path).is_file():
             return False, f"missing:{rel_path}"
     return True, "ok"
+
+
+def _strict_precheck_run_root(run_root: Path) -> Tuple[bool, str]:
+    """Lighter precheck for --run-id-suffix explicit selection."""
+    return _run_dir_eligibility_gates(run_root)
 
 
 def resolve_compaction_run_selections(
@@ -484,50 +502,63 @@ def _eligible_run(
     sample_id: Optional[str] = None,
     run_root: Optional[Path] = None,
     explicit_selection: bool = False,
+    run_dir_explicit: bool = False,
 ) -> RunRecord:
-    sid = str(sample_id or (entry or {}).get("id") or "")
+    pool_entry = entry or {}
+    sid = str(sample_id or pool_entry.get("id") or "")
     if run_root is None:
         run_root = guitars_root(repo_root) / sid / "runs" / run_id
     rec = RunRecord(sample_id=sid, run_id=run_id, run_root=run_root)
-
-    if entry is not None and normalize_lhs_entry_status(entry.get("status")) != LHS_COMPLETED:
-        rec.skip_reason = f"lhs_status={entry.get('status')}"
-        return rec
-
-    if entry is not None and not explicit_selection and not is_lhs_entry_completed(entry, run_id=run_id):
-        rec.skip_reason = "lhs_completed_run_id_mismatch"
-        return rec
 
     if not run_root.is_dir():
         rec.skip_reason = "run_root_missing"
         return rec
 
-    if explicit_selection:
-        ok, reason = _strict_precheck_run_root(run_root)
+    if run_dir_explicit:
+        if entry is not None:
+            lhs_status = str(entry.get("status") or "")
+            if normalize_lhs_entry_status(lhs_status) != LHS_COMPLETED:
+                rec.warnings.append(f"lhs_status={lhs_status} (informational; --run-dir uses run-tree gates)")
+        ok, reason = _run_dir_eligibility_gates(run_root)
         if not ok:
-            rec.skip_reason = f"strict_gate:{reason}"
+            rec.skip_reason = f"run_dir_gate:{reason}"
+            return rec
+        summary = read_run_production_summary(run_root)
+    else:
+        if entry is not None and normalize_lhs_entry_status(entry.get("status")) != LHS_COMPLETED:
+            rec.skip_reason = f"lhs_status={entry.get('status')}"
             return rec
 
-    summary = read_run_production_summary(run_root)
-    if _is_resume_needed(entry, summary):
-        rec.skip_reason = "resume_needed_or_incomplete"
-        return rec
+        if entry is not None and not explicit_selection and not is_lhs_entry_completed(entry, run_id=run_id):
+            rec.skip_reason = "lhs_completed_run_id_mismatch"
+            return rec
 
-    agg_status = str(summary.get("aggregation_status") or entry.get("last_aggregation_status") or "")
-    if agg_status != AGG_PASS:
-        rec.skip_reason = f"aggregation_status={agg_status or 'missing'}"
-        return rec
+        if explicit_selection:
+            ok, reason = _strict_precheck_run_root(run_root)
+            if not ok:
+                rec.skip_reason = f"strict_gate:{reason}"
+                return rec
 
-    if not is_run_usably_complete(summary):
-        rec.skip_reason = "aggregation_not_usably_complete"
-        return rec
+        summary = read_run_production_summary(run_root)
+        if _is_resume_needed(pool_entry, summary):
+            rec.skip_reason = "resume_needed_or_incomplete"
+            return rec
 
-    cat_ok, cat_detail = _catalog_readable(run_root / "aggregation" / "modes_catalog.jsonl")
-    if not cat_ok:
-        rec.skip_reason = f"modes_catalog:{cat_detail}"
-        return rec
+        agg_status = str(summary.get("aggregation_status") or pool_entry.get("last_aggregation_status") or "")
+        if agg_status != AGG_PASS:
+            rec.skip_reason = f"aggregation_status={agg_status or 'missing'}"
+            return rec
 
-    rom_present, rom_path, _rom_src = _rom_comparison_status(run_root, repo_root, entry)
+        if not is_run_usably_complete(summary):
+            rec.skip_reason = "aggregation_not_usably_complete"
+            return rec
+
+        cat_ok, cat_detail = _catalog_readable(run_root / "aggregation" / "modes_catalog.jsonl")
+        if not cat_ok:
+            rec.skip_reason = f"modes_catalog:{cat_detail}"
+            return rec
+
+    rom_present, rom_path, _rom_src = _rom_comparison_status(run_root, repo_root, pool_entry)
     rec.rom_comparison_present = rom_present
     rec.rom_comparison_path = rom_path
     if not rom_present:
@@ -1512,6 +1543,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     completed_ids: List[str] = []
     entry_by_id = {str(e.get("id")): e for e in pool.get("entries") or []}
     explicit_selection = bool(args.run_dir or run_id_suffix)
+    run_dir_explicit = bool(args.run_dir)
 
     for sel in selections:
         if sel.ambiguous:
@@ -1536,7 +1568,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             continue
 
         entry = entry_by_id.get(sel.sample_id)
-        if entry is None and not explicit_selection:
+        if entry is None and not (explicit_selection or run_dir_explicit):
             records.append(
                 RunRecord(
                     sample_id=sel.sample_id,
@@ -1553,6 +1585,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             run_id=sel.run_id,
             run_root=sel.run_root,
             explicit_selection=explicit_selection,
+            run_dir_explicit=run_dir_explicit,
         )
         records.append(rec)
         if rec.eligible:
