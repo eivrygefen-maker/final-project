@@ -1645,6 +1645,17 @@ def maybe_run_rom_prepredict(
     leave_one_out: bool = False,
 ) -> Dict[str, Any]:
     """Run ROM before FOM; never raises when nonblocking=True."""
+    import os
+
+    required_ds = os.environ.get("M4_REQUIRED_ROM_DATASET_VERSION", "m4_geometry_corrected_v1")
+    pool_ds = str((pool or {}).get("dataset_version") or "")
+    if pool_ds and pool_ds != required_ds:
+        return {
+            "status": "SKIPPED",
+            "reason": "rom_dataset_version_mismatch",
+            "required_dataset_version": required_ds,
+            "pool_dataset_version": pool_ds,
+        }
     try:
         if (exclude_target_from_training or leave_one_out) and pool is not None:
             prediction, vmeta = _prepare_holdout_prediction(

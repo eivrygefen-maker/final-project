@@ -303,6 +303,22 @@ def _built_metadata_from_built(built: Dict[str, Any], *, mesh_level: str) -> Dic
         }
     if built.get("operator_mesh_file_used"):
         meta["operator_mesh_file_used"] = str(built["operator_mesh_file_used"])
+    for key in (
+        "generated_mesh_file",
+        "operator_mesh_sha256",
+        "generated_mesh_sha256",
+        "operator_mesh_matches_generated",
+        "operator_node_count",
+        "operator_cell_count",
+        "dataset_version",
+    ):
+        if built.get(key) is not None:
+            meta[key] = built.get(key)
+    rdb = built.get("region_dof_build") if isinstance(built.get("region_dof_build"), dict) else {}
+    if rdb.get("p_idx_aperture_count") is not None:
+        meta["p_idx_aperture_count"] = int(rdb.get("p_idx_aperture_count") or 0)
+    if rdb.get("aperture_selection_method"):
+        meta["aperture_selection_method"] = str(rdb.get("aperture_selection_method"))
     return meta
 
 

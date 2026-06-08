@@ -172,8 +172,9 @@ def resolve_region_dof_mesh_file(
         except (OSError, ValueError, json.JSONDecodeError):
             continue
 
-    baseline = mesh_path(str(mesh_level), CASE_ID)
-    candidates.append(("baseline_fallback", baseline))
+    if not built_meta.get("operator_mesh_matches_generated"):
+        baseline = mesh_path(str(mesh_level), CASE_ID)
+        candidates.append(("baseline_fallback", baseline))
 
     tried: List[str] = []
     for label, path in candidates:
@@ -257,20 +258,38 @@ def export_region_dof_indices_from_operator_build(
             f"operator_build_context_empty_structural counts={counts}",
         )
 
-    np.savez_compressed(
-        checkpoint / REGION_DOF_INDICES_NPZ,
-        u_idx_top=u_idx_top,
-        u_idx_back=u_idx_back,
-        u_idx_ribs=u_idx_ribs,
-        u_idx_soundhole=u_idx_soundhole,
-        p_idx_air=p_idx_all.copy(),
-        p_idx_all=p_idx_all.copy(),
-        u_idx_all=u_idx_all,
-        region_dof_mesh_file=np.asarray([mesh_file]),
-        region_dof_source=np.asarray([source]),
-        layout=np.asarray([str(region_dof_build.get("layout") or REGION_DOF_LAYOUT)]),
-        back_includes_ribs=np.asarray([bool(region_dof_build.get("back_includes_ribs", True))]),
-    )
+    p_idx_aperture = _region_arr(region_dof_build, "p_idx_aperture")
+    if p_idx_aperture.size == 0:
+        return (
+            "FAIL",
+            "empty_p_idx_aperture:production_requires_aperture_pressure_mask",
+        )
+
+    npz_kwargs: Dict[str, Any] = {
+        "u_idx_top": u_idx_top,
+        "u_idx_back": u_idx_back,
+        "u_idx_ribs": u_idx_ribs,
+        "u_idx_soundhole": u_idx_soundhole,
+        "p_idx_air": p_idx_all.copy(),
+        "p_idx_all": p_idx_all.copy(),
+        "p_idx_aperture": p_idx_aperture,
+        "u_idx_all": u_idx_all,
+        "region_dof_mesh_file": np.asarray([mesh_file]),
+        "region_dof_source": np.asarray([source]),
+        "layout": np.asarray([str(region_dof_build.get("layout") or REGION_DOF_LAYOUT)]),
+        "back_includes_ribs": np.asarray([bool(region_dof_build.get("back_includes_ribs", True))]),
+        "aperture_selection_method": np.asarray([str(region_dof_build.get("aperture_selection_method") or "")]),
+        "p_idx_aperture_count": np.asarray([int(p_idx_aperture.size)]),
+        "mic_output_method": np.asarray([str(region_dof_build.get("mic_output_method") or "aperture_pressure_rms_proxy_v1")]),
+    }
+    bounds = region_dof_build.get("aperture_coordinate_bounds")
+    if isinstance(bounds, dict):
+        npz_kwargs["aperture_coordinate_bounds_min"] = np.asarray(bounds.get("min") or [0.0, 0.0, 0.0], dtype=np.float64)
+        npz_kwargs["aperture_coordinate_bounds_max"] = np.asarray(bounds.get("max") or [0.0, 0.0, 0.0], dtype=np.float64)
+    npz_kwargs["aperture_facet_count"] = np.asarray([int(region_dof_build.get("aperture_facet_count") or 0)])
+    npz_kwargs["adjacent_air_cell_count"] = np.asarray([int(region_dof_build.get("adjacent_air_cell_count") or 0)])
+
+    np.savez_compressed(checkpoint / REGION_DOF_INDICES_NPZ, **npz_kwargs)
     return REGION_DOF_STATUS_PASS, None
 
 

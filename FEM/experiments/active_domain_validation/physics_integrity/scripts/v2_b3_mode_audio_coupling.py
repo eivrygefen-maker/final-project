@@ -109,10 +109,14 @@ def _mic_output_from_proxies(
     *,
     soundhole_rms: Optional[float],
     cavity_pressure: Optional[float],
+    aperture_pressure: Optional[float],
     radiation_proxy: Optional[float],
     structural_available: bool,
     pressure_available: bool,
+    aperture_available: bool,
 ) -> tuple[Optional[float], str, str]:
+    if aperture_available and aperture_pressure is not None:
+        return aperture_pressure, "aperture_pressure_rms_proxy_v1", "proxy"
     if structural_available and soundhole_rms is not None:
         return soundhole_rms, "soundhole_displacement_rms_proxy_v1", "proxy"
     if pressure_available and cavity_pressure is not None:
@@ -190,6 +194,9 @@ def compute_lightweight_audio_coupling(
         if pressure_ok
         else np.asarray([], dtype=np.float64)
     )
+    p_aperture_idx = np.asarray(region.get("p_idx_aperture", []), dtype=np.int32).ravel()
+    aperture_ok = pressure_ok and p_aperture_idx.size > 0
+    aperture_vals = x_full[p_aperture_idx] if aperture_ok else np.asarray([], dtype=np.float64)
 
     top_rms = _rms(top_vals)
     back_rms = _rms(back_vals)
@@ -202,13 +209,31 @@ def compute_lightweight_audio_coupling(
     air_proxy = _safe_norm_ratio(air_max if air_max is not None else air_rms, modal_norm)
     radiation_proxy = _weighted_radiation_proxy(top=top_proxy, back=back_proxy, air=air_proxy)
 
+    aperture_rms = _rms(aperture_vals)
     mic_proxy, mic_method, mic_status = _mic_output_from_proxies(
         soundhole_rms=_safe_norm_ratio(sh_rms, modal_norm),
         cavity_pressure=air_proxy,
+        aperture_pressure=_safe_norm_ratio(aperture_rms, modal_norm),
         radiation_proxy=radiation_proxy,
         structural_available=structural_ok,
         pressure_available=pressure_ok,
+        aperture_available=aperture_ok,
     )
+
+    import os
+
+    from v2_b3_m4_production_contracts import require_aperture_mask_production  # noqa: WPS433
+
+    if require_aperture_mask_production() and not aperture_ok:
+        return audio_coupling_fields_not_available(
+            reason="empty_p_idx_aperture",
+            detail="production_requires_aperture_pressure_rms_proxy_v1",
+        )
+    if require_aperture_mask_production() and mic_method != "aperture_pressure_rms_proxy_v1":
+        return audio_coupling_fields_not_available(
+            reason="mic_output_method_not_aperture_proxy",
+            detail=f"got {mic_method}",
+        )
 
     if structural_ok and pressure_ok:
         audio_status = "computed"

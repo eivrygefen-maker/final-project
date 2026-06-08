@@ -9,7 +9,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PHYSICS_ROOT = SCRIPT_DIR.parent
@@ -177,6 +177,7 @@ def resolve_lprod_core_config(
     sample_id: str,
     lprod_mesh_rel: str,
     force: bool,
+    sample_input: Optional[Mapping[str, Any]] = None,
 ) -> Path:
     lprod_dir = run_root / "lprod"
     out_path = lprod_dir / "resolved_core_config.json"
@@ -194,6 +195,15 @@ def resolve_lprod_core_config(
     resolved = copy.deepcopy(_load_json(sample_resolved))
     resolved.setdefault("solver", {})["mesh_file"] = lprod_mesh_rel
     resolved.setdefault("solver", {})["clamp_ribs"] = False
+    if sample_input:
+        geom = extract_geometry_dict(sample_input)
+        if geom:
+            resolved["geometry"] = dict(geom)
+            params = resolved.setdefault("parameters", {})
+            if isinstance(params, dict):
+                for key, val in geom.items():
+                    params[f"geometry.{key}"] = float(val)
+    resolved["dataset_version"] = "m4_geometry_corrected_v1"
     write_json_atomic(out_path, resolved)
     return out_path
 
@@ -311,6 +321,8 @@ def build_execution_plan(
             LPROD_SYNTHESIS_REGION_DOFS_DEFAULT,
             "--core-config",
             resolved_lprod_rel,
+            "--operator-mesh-file",
+            lprod_mesh_rel,
             "--output-dir",
             _rel(checkpoint_dir, repo_root=repo_root),
         ],
@@ -521,6 +533,7 @@ def run_execute(
             sample_id=sample_id,
             lprod_mesh_rel=lprod_mesh_rel,
             force=force or not plan["skip_mesh"],
+            sample_input=sample_input,
         )
     except Exception as exc:
         _update_manifest(
@@ -592,6 +605,7 @@ def run_execute(
                 sample_id=sample_id,
                 lprod_mesh_rel=lprod_mesh_rel,
                 force=True,
+                sample_input=sample_input,
             )
 
     if stage4_mesh != "PASS":

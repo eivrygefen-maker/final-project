@@ -485,6 +485,7 @@ def build_aperture_pressure_mask(
         "mic_output_method": mic_method,
         "soundhole_center_m": aperture["center_m"],
         "soundhole_radius_m": aperture["radius_m"],
+        "n_soundhole_facets": int(aperture.get("n_soundhole_facets") or 0),
         "selection_meta": sel_meta,
         "n_p_aperture_dofs": int(w_rows.size),
         "p_idx_aperture": w_rows,
@@ -565,6 +566,43 @@ def write_aperture_diagnostic_json(path: Path, diag: Mapping[str, Any]) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(diag, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def attach_aperture_mask_to_region_dof_build(
+    region_dof_build: Dict[str, Any],
+    *,
+    mesh_file: Path,
+    geometry: Mapping[str, float],
+    built_meta: Mapping[str, Any],
+    core_config_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Production: add p_idx_aperture + metadata to operator-build region_dof_build."""
+    if not geometry:
+        raise RuntimeError("aperture_mask_geometry_missing")
+    mask = build_aperture_pressure_mask(
+        mesh_file,
+        geometry=geometry,
+        built_meta=built_meta,
+        core_config_path=core_config_path,
+    )
+    validate_aperture_mask_contract(mask, built_meta)
+    p_idx = np.asarray(mask["p_idx_aperture"], dtype=np.int32).ravel()
+    sel_meta = mask.get("selection_meta") or {}
+    out = dict(region_dof_build)
+    out["p_idx_aperture"] = p_idx
+    out["aperture_selection_method"] = str(mask.get("mask_method") or "")
+    out["mic_output_method"] = str(mask.get("mic_output_method") or "aperture_pressure_rms_proxy_v1")
+    out["p_idx_aperture_count"] = int(p_idx.size)
+    out["aperture_coordinate_bounds"] = {
+        "min": mask.get("coordinate_bbox_min"),
+        "max": mask.get("coordinate_bbox_max"),
+    }
+    out["aperture_facet_count"] = int(mask.get("n_soundhole_facets") or 0)
+    out["adjacent_air_cell_count"] = int(sel_meta.get("n_adjacent_air_cells") or 0)
+    counts = dict(out.get("counts") or {})
+    counts["p_idx_aperture"] = int(p_idx.size)
+    out["counts"] = counts
+    return out
 
 
 def write_aperture_coordinates_csv(path: Path, mask: Mapping[str, Any]) -> None:

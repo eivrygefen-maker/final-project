@@ -3640,6 +3640,39 @@ def _b3_build_corrected_structural_active_operators(
         p_idx=np.asarray(p_idx, dtype=np.int32).ravel(),
         mesh_file=Path(mesh_file),
     )
+    if core_config_path is not None or operator_mesh_file is not None:
+        try:
+            from v2_b3_aperture_pressure_mask import attach_aperture_mask_to_region_dof_build  # noqa: WPS433
+            from v2_b3_m4_production_contracts import geometry_from_core_config  # noqa: WPS433
+
+            geom = geometry_from_core_config(core_config_path) if core_config_path else {}
+            if operator_mesh_file is not None and not geom:
+                raise _B3StructActiveBuildError(
+                    "aperture_pressure_mask_export",
+                    "geometry_missing_for_sample_operator_mesh",
+                )
+            if geom:
+                built_meta_partial = {
+                    "n_u_b3": int(n_u_b3),
+                    "n_w": int(n_w),
+                    "p_idx": np.asarray(p_idx, dtype=np.int32).ravel().tolist(),
+                    "bc_rows": np.asarray(bc_rows, dtype=np.int32).ravel().tolist(),
+                    "active_local": active_local.astype(np.int32).tolist(),
+                    "free_rows": free_rows.astype(np.int32).tolist(),
+                    "active_dimension": int(active_local.size),
+                }
+                region_dof_build = attach_aperture_mask_to_region_dof_build(
+                    region_dof_build,
+                    mesh_file=Path(mesh_file),
+                    geometry=geom,
+                    built_meta=built_meta_partial,
+                    core_config_path=core_config_path,
+                )
+        except Exception as exc:
+            raise _B3StructActiveBuildError(
+                "aperture_pressure_mask_export",
+                f"{type(exc).__name__}:{exc}",
+            ) from exc
     _rdb_counts = region_dof_build.get("counts") or {}
     print(
         "[B3_region_dof] operator_build_context captured trace-shell region masks: "

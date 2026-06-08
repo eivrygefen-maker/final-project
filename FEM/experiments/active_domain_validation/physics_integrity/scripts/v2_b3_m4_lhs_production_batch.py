@@ -515,6 +515,19 @@ def run_production_batch(
         )
         elapsed = time.perf_counter() - t0
         summary = _read_sample_summary(run_root, workers_requested=workers)
+        acceptance: Dict[str, Any] = {}
+        if production_mode:
+            try:
+                from v2_b3_m4_production_contracts import evaluate_production_acceptance  # noqa: WPS433
+
+                acceptance = evaluate_production_acceptance(
+                    run_root=run_root,
+                    sample_input=entry,
+                )
+                summary["production_acceptance_pass"] = bool(acceptance.get("acceptance_pass"))
+                summary["production_acceptance_failures"] = list(acceptance.get("failures") or [])
+            except Exception as exc:
+                acceptance = {"acceptance_pass": False, "failures": [f"acceptance_eval_error:{exc}"]}
         row = {
             "sample_id": sid,
             "run_id": rid,
@@ -524,9 +537,13 @@ def run_production_batch(
             "return_code": rc,
             "elapsed_s": round(elapsed, 2),
             "started_at": None,
+            "production_acceptance": acceptance,
             **summary,
         }
         outcome, err_msg = classify_sample_outcome(return_code=rc, summary=summary)
+        if production_mode and acceptance and not acceptance.get("acceptance_pass"):
+            outcome = "fail"
+            err_msg = ";".join(acceptance.get("failures") or ["production_acceptance_failed"])
         row["outcome"] = outcome
         if err_msg:
             row["error_message"] = err_msg

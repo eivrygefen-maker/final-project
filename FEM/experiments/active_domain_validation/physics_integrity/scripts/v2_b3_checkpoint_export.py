@@ -34,6 +34,12 @@ from v2_b3_checkpoint_pipeline_lib import (
     verify_production_stage_environment,
     write_json,
 )
+from v2_b3_m4_production_contracts import (  # noqa: E402
+    dolfinx_mesh_counts,
+    resolve_operator_mesh_file,
+    verify_operator_mesh_provenance,
+)
+from v2_b3_m4_worker_run_lib import detect_repo_root  # noqa: E402
 from v2_b3_st_worker_scaling_benchmark import (
     _export_operators,
     _st_scaling_operator_contract_pass,
@@ -132,6 +138,12 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
             f"Default: {DEFAULT_CORE_CONFIG.name}"
         ),
     )
+    parser.add_argument(
+        "--operator-mesh-file",
+        dest="operator_mesh_file",
+        default=None,
+        help="Sample-specific operator mesh for A/M assembly (required for M4 L_prod production).",
+    )
     if argv is None:
         return parser.parse_args()
     return parser.parse_args(argv)
@@ -179,6 +191,18 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
         print(f"[B3_checkpoint_export] FAIL precheck -> {checkpoint / PIPELINE_EXPORT_MANIFEST}", flush=True)
         return 2
 
+    repo_root = detect_repo_root(SCRIPT_DIR)
+    try:
+        operator_mesh = resolve_operator_mesh_file(
+            operator_mesh_arg=Path(args.operator_mesh_file).expanduser().resolve()
+            if args.operator_mesh_file
+            else None,
+            core_config_path=core_config_path,
+            repo_root=repo_root,
+        )
+    except (FileNotFoundError, RuntimeError) as exc:
+        fail_with_messages("B3_checkpoint_export", [str(exc)])
+
     mats: List[Any] = []
     seen: Set[int] = set()
     t0 = time.perf_counter()
@@ -191,9 +215,17 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
             operator_build_profile=None,
             core_config_path=core_config_path,
             core_config_provenance=core_config_provenance,
+            operator_mesh_file=operator_mesh,
         )
         op_payload: Dict[str, Any] = {}
         contract_pass = _st_scaling_operator_contract_pass(op_payload, built=built, mesh_level=mesh_level)
+        built.update(
+            {
+                "generated_mesh_file": str(operator_mesh.resolve()),
+                "operator_mesh_matches_generated": True,
+                "dataset_version": "m4_geometry_corrected_v1",
+            }
+        )
         if not contract_pass:
             manifest = {
                 "stage": "production_checkpoint_export",
@@ -211,7 +243,18 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
         export_pass, missing, export_detail = verify_checkpoint_complete(checkpoint, require_csr=True)
         mat_ok, mat_errors, mat_detail = verify_checkpoint_matrices(checkpoint)
 
-        built_meta = json.loads((checkpoint / "built_metadata.json").read_text(encoding="utf-8"))
+        built_meta_path = checkpoint / "built_metadata.json"
+        built_meta = json.loads(built_meta_path.read_text(encoding="utf-8"))
+        mesh_prov = verify_operator_mesh_provenance(
+            requested_mesh=operator_mesh,
+            generated_mesh=operator_mesh,
+            built=built,
+            built_meta_path=built_meta_path,
+        )
+        mesh_counts = dolfinx_mesh_counts(operator_mesh)
+        built_meta = json.loads(built_meta_path.read_text(encoding="utf-8"))
+        built_meta.update(mesh_counts)
+        write_json(checkpoint / "built_metadata.json", built_meta)
         synthesis_export: Dict[str, Any] = {}
         synthesis_warnings: List[str] = []
         try:
@@ -304,8 +347,12 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
             "rich_modal_export": rich_modal_export_manifest_block(requested=rich_modal_requested),
             **_core_config_manifest_block(core_config_provenance),
         }
+        if str(synthesis_export.get("region_dof_indices_status") or "") == "FAIL":
+            manifest["status"] = "FAIL"
+            manifest["failure_reason"] = synthesis_export.get("region_dof_indices_error")
         if synthesis_warnings:
             manifest["warnings"] = synthesis_warnings
+        manifest["operator_mesh_provenance"] = mesh_prov
         write_json(checkpoint / PIPELINE_EXPORT_MANIFEST, manifest)
         if manifest["status"] != "PASS":
             print(f"[B3_checkpoint_export] FAIL export/matrix verify -> {checkpoint}", flush=True)

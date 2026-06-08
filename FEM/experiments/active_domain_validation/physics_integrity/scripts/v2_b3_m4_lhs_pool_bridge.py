@@ -447,8 +447,20 @@ def read_run_production_summary(run_root: Path, *, workers_requested: int = 3) -
             prov = load_json(prov_path)
         except (OSError, ValueError, json.JSONDecodeError):
             prov = {}
+    built_path = run_root / "lprod" / "checkpoint" / "built_metadata.json"
+    built_meta: Dict[str, Any] = {}
+    if built_path.is_file():
+        try:
+            built_meta = load_json(built_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            built_meta = {}
     return {
         "terminal_status": manifest.get("terminal_status"),
+        "dataset_version": built_meta.get("dataset_version") or manifest.get("dataset_version"),
+        "operator_mesh_matches_generated": built_meta.get("operator_mesh_matches_generated"),
+        "p_idx_aperture_count": built_meta.get("p_idx_aperture_count"),
+        "aperture_selection_method": built_meta.get("aperture_selection_method"),
+        "generated_mesh_sha256": built_meta.get("generated_mesh_sha256"),
         "aggregation_status": agg.get("status"),
         "planned_chunks": agg.get("planned_chunk_count"),
         "completed_chunks": agg.get("completed_chunk_count"),
