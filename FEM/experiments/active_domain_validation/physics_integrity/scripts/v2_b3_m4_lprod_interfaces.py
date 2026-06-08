@@ -28,6 +28,34 @@ GEOMETRY_FINGERPRINT_KEYS = (
     "back_thickness",
 )
 
+# Numeric FEM body dimensions only (meters). Metadata must not appear here.
+GEOMETRY_NUMERIC_KEYS = frozenset(GEOMETRY_FINGERPRINT_KEYS)
+
+GEOMETRY_METADATA_KEYS = frozenset(
+    {
+        "shape_type",
+        "mesh_mode",
+        "shape_name",
+        "dataset_version",
+    }
+)
+
+
+class GeometryNumericCoercionError(ValueError):
+    """Raised when a geometry key expected to be numeric cannot be coerced."""
+
+    def __init__(self, key: str, value: Any) -> None:
+        self.key = key
+        self.value = value
+        super().__init__(f"geometry numeric key {key!r} cannot be coerced to float: {value!r}")
+
+
+def coerce_geometry_numeric(key: str, value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise GeometryNumericCoercionError(key, value) from exc
+
 # Canonical baseline geometry (classic coupled v2 reference body).
 BASELINE_GEOMETRY: Dict[str, float] = {
     "length": 0.48,
@@ -53,18 +81,62 @@ def _load_json(path: Path) -> Dict[str, Any]:
     return data
 
 
+def extract_run_metadata(sample_or_params: Mapping[str, Any]) -> Dict[str, str]:
+    """Non-numeric run metadata (shape, dataset marker) kept separate from body dimensions."""
+    out: Dict[str, str] = {}
+    for top_key in ("shape_name", "dataset_version"):
+        if top_key in sample_or_params and sample_or_params[top_key] is not None:
+            out[top_key] = str(sample_or_params[top_key])
+    meta = sample_or_params.get("m4_run_metadata")
+    if isinstance(meta, dict):
+        for key in ("shape_name", "dataset_version", "shape_type", "mesh_mode"):
+            if key in meta and meta[key] is not None:
+                out[key] = str(meta[key])
+    geom = sample_or_params.get("geometry")
+    if isinstance(geom, dict):
+        for key in GEOMETRY_METADATA_KEYS:
+            if key in geom and geom[key] is not None:
+                out.setdefault(key, str(geom[key]))
+    return out
+
+
 def extract_geometry_dict(sample_or_params: Mapping[str, Any]) -> Dict[str, float]:
-    """Normalize geometry.* parameters or nested geometry dict to short keys."""
+    """Normalize numeric body geometry from parameters, geometry block, or geometry_numeric_parameters."""
     out: Dict[str, float] = {}
+
+    numeric_block = sample_or_params.get("geometry_numeric_parameters")
+    if isinstance(numeric_block, dict):
+        for raw_key, raw_val in numeric_block.items():
+            key = str(raw_key)
+            if key in GEOMETRY_METADATA_KEYS:
+                continue
+            if key not in GEOMETRY_NUMERIC_KEYS:
+                raise GeometryNumericCoercionError(key, raw_val)
+            out[key] = coerce_geometry_numeric(key, raw_val)
+
     params = sample_or_params.get("parameters")
     if isinstance(params, dict):
         for k, v in params.items():
-            if str(k).startswith("geometry."):
-                out[str(k).split(".", 1)[1]] = float(v)
+            ks = str(k)
+            if not ks.startswith("geometry."):
+                continue
+            key = ks.split(".", 1)[1]
+            if key in GEOMETRY_METADATA_KEYS:
+                continue
+            if key not in GEOMETRY_NUMERIC_KEYS:
+                raise GeometryNumericCoercionError(ks, v)
+            out[key] = coerce_geometry_numeric(key, v)
+
     geom = sample_or_params.get("geometry")
     if isinstance(geom, dict):
-        for k, v in geom.items():
-            out[str(k)] = float(v)
+        for raw_key, raw_val in geom.items():
+            key = str(raw_key)
+            if key in GEOMETRY_METADATA_KEYS:
+                continue
+            if key not in GEOMETRY_NUMERIC_KEYS:
+                continue
+            out[key] = coerce_geometry_numeric(key, raw_val)
+
     return out
 
 

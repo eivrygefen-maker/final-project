@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build sample-specific L_prod FOM mesh via v2_mesh_convergence (geometry from M4 run tree)."""
+"""Build sample-specific L_scout_coarse FOM mesh for M4 scout (geometry from run tree)."""
 from __future__ import annotations
 
 import argparse
@@ -19,7 +19,7 @@ from v2_b3_m4_lprod_interfaces import extract_geometry_dict, extract_run_metadat
 from v2_mesh_convergence_common import load_manifest, mesh_path, write_json  # noqa: E402
 from v2_mesh_convergence_mesh import build_level_mesh, effective_controls_from_level_def  # noqa: E402
 
-LEVEL_ID = "L_prod"
+LEVEL_ID = "L_scout_coarse"
 REQUIRED_VOLUME_TAGS = (1, 2, 3, 10)
 REQUIRED_FACET_TAGS = (1, 2, 3, 4, 5)
 
@@ -37,7 +37,7 @@ def _load_sample_input(run_dir: Path) -> Dict[str, Any]:
     return data
 
 
-def build_lprod_mesh_for_case(
+def build_scout_mesh_for_case(
     *,
     sample_id: str,
     geometry: Dict[str, float],
@@ -71,7 +71,7 @@ def build_lprod_mesh_for_case(
     effective = effective_controls_from_level_def(level_def)
 
     summary = {
-        "B3_lprod_mesh_level": LEVEL_ID,
+        "B3_scout_mesh_level": LEVEL_ID,
         "sample_id": sample_id,
         "mesh_path": str(out_msh.resolve()),
         "effective_controls_m": effective,
@@ -81,6 +81,7 @@ def build_lprod_mesh_for_case(
         "facet_tags_ok": bool(facet_ok),
         "geometry": geometry,
         "shape_name": shape_name,
+        "sample_specific_geometry": True,
     }
     write_json(out_msh.parent / f"{sample_id}_mesh_build_summary.json", summary)
 
@@ -94,7 +95,7 @@ def build_lprod_mesh_for_case(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build L_prod mesh for one M4 sample geometry.")
+    parser = argparse.ArgumentParser(description="Build L_scout_coarse mesh for one M4 sample geometry.")
     parser.add_argument("--sample-id", required=True)
     parser.add_argument(
         "--run-dir",
@@ -110,7 +111,7 @@ def main() -> int:
     sample_id = str(args.sample_id)
 
     geometry: Dict[str, float] = {}
-    shape_name = "Classical"
+    shape_name = "classic"
     if args.geometry_json and args.geometry_json.is_file():
         raw = json.loads(args.geometry_json.read_text(encoding="utf-8"))
         geometry = extract_geometry_dict(raw)
@@ -126,22 +127,22 @@ def main() -> int:
         return 2
 
     if not geometry:
-        print("error: empty geometry for L_prod mesh build", file=sys.stderr)
+        print("error: empty geometry for L_scout_coarse mesh build", file=sys.stderr)
         return 2
 
-    result = build_lprod_mesh_for_case(
+    result = build_scout_mesh_for_case(
         sample_id=sample_id,
         geometry=geometry,
         shape_name=shape_name,
     )
-    print(f"[B3_lprod_mesh] status={result.get('status')}", flush=True)
-    print(f"[B3_lprod_mesh] mesh_path={result.get('mesh_path')}", flush=True)
+    print(f"[B3_scout_mesh] status={result.get('status')}", flush=True)
+    print(f"[B3_scout_mesh] mesh_path={result.get('mesh_path')}", flush=True)
     if result.get("summary"):
         s = result["summary"]
-        print(f"[B3_lprod_mesh] n_nodes={s.get('n_nodes')} n_tetra={s.get('n_tetrahedra')}", flush=True)
+        print(f"[B3_scout_mesh] n_nodes={s.get('n_nodes')} n_tetra={s.get('n_tetrahedra')}", flush=True)
     if result.get("build_failed"):
         audit = result.get("audit") or {}
-        print(f"[B3_lprod_mesh] build_failed exit={audit.get('build_exit_code')}", file=sys.stderr)
+        print(f"[B3_scout_mesh] build_failed exit={audit.get('build_exit_code')}", file=sys.stderr)
         return 2
     return 0 if result.get("status") == "PASS" else 2
 

@@ -21,7 +21,7 @@ DEFAULT_REFERENCE = PIPELINE_RUNS / "specs" / "scout_discovery_reference_stub.js
 CONV_MESH = PHYSICS_ROOT / "v2_mesh_convergence" / "mesh"
 SCOUT_MESH_SCRIPT = (
     "FEM/experiments/active_domain_validation/physics_integrity/scripts/"
-    "run_v2_B3_scout_coarse_mesh_build.py"
+    "v2_b3_m4_scout_mesh_build.py"
 )
 STAGE_A_REL = (
     "FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_export.py"
@@ -32,6 +32,7 @@ STAGE_B_REL = (
 )
 MESH_LEVEL = "L_scout_coarse"
 MESH_CASE_BASE = "baseline_coupled_v2"
+BASELINE_SCOUT_MESH = CONV_MESH / MESH_LEVEL / f"{MESH_CASE_BASE}.msh"
 BIN_WIDTH_HZ = 25.0
 
 DEFAULT_PROD_PYTHON = "/home/vboxuser/final-project/.venv/bin/python"
@@ -46,6 +47,12 @@ from v2_b3_m3_orchestrator_run_one import (  # noqa: E402
     DEFAULT_SOLVER_PYTHON as M3_SOLVER_PYTHON,
     _run_subprocess,
     _verify_stage_a_export,
+)
+from v2_b3_m4_lprod_interfaces import (  # noqa: E402
+    BASELINE_GEOMETRY,
+    extract_geometry_dict,
+    geometries_match,
+    geometry_fingerprint,
 )
 from v2_b3_m4_scout_planner_lib import (  # noqa: E402
     ZONE_1,
@@ -164,10 +171,19 @@ def resolve_m4_sample(
     params = sample.get("parameters")
     if not isinstance(params, dict):
         params = {}
-    shape = str(sample.get("shape_name") or "Classical")
+    shape = str(sample.get("shape_name") or "classic")
+    m4_meta = resolved.setdefault("m4_run_metadata", {})
+    if isinstance(m4_meta, dict):
+        m4_meta["shape_name"] = shape
     geom = resolved.setdefault("geometry", {})
     if isinstance(geom, dict):
         geom["shape_type"] = shape
+    sample_geom = extract_geometry_dict(sample)
+    if sample_geom:
+        resolved["geometry_numeric_parameters"] = dict(sample_geom)
+        if isinstance(geom, dict):
+            for key, val in sample_geom.items():
+                geom[key] = val
 
     if params:
         _wood_library_apply(resolved, params, repo_root=repo_root)
@@ -207,6 +223,8 @@ def resolve_m4_sample(
         "mesh_file": scout_mesh_rel,
         "parameters": params,
         "shape_name": shape,
+        "geometry_numeric_parameters": sample_geom,
+        "geometry_fingerprint": geometry_fingerprint(sample_geom) if sample_geom else None,
     }
     write_json_atomic(overlay_path, overlay)
 
@@ -275,17 +293,21 @@ def _mesh_pass(mesh_path: Path) -> bool:
 
 
 def _install_scout_mesh(*, repo_root: Path, sample_id: str, dst: Path) -> None:
-    src = (CONV_MESH / MESH_LEVEL / f"{MESH_CASE_BASE}.msh").resolve()
+    src = (CONV_MESH / MESH_LEVEL / f"{sample_id}.msh").resolve()
     if not src.is_file():
-        raise FileNotFoundError(f"scout mesh build output missing: {src}")
+        raise FileNotFoundError(
+            f"sample-specific scout mesh build output missing: {src} "
+            f"(refusing baseline fallback {MESH_CASE_BASE}.msh)"
+        )
+    if BASELINE_SCOUT_MESH.is_file() and src.resolve() == BASELINE_SCOUT_MESH.resolve():
+        raise RuntimeError(
+            f"scout_mesh_baseline_contamination: refusing to install baseline mesh for {sample_id}"
+        )
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
-    summary_src = CONV_MESH / MESH_LEVEL / f"{MESH_CASE_BASE}_mesh_build_summary.json"
+    summary_src = CONV_MESH / MESH_LEVEL / f"{sample_id}_mesh_build_summary.json"
     if summary_src.is_file():
-        shutil.copy2(
-            summary_src,
-            dst.parent / f"{sample_id}_mesh_build_summary.json",
-        )
+        shutil.copy2(summary_src, dst.parent / f"{sample_id}_mesh_build_summary.json")
 
 
 def _cmd_stage_a(
@@ -294,6 +316,7 @@ def _cmd_stage_a(
     prod_python: str,
     core_config_rel: str,
     checkpoint_dir: Path,
+    operator_mesh_rel: str,
 ) -> List[str]:
     return [
         prod_python,
@@ -306,8 +329,27 @@ def _cmd_stage_a(
         "off",
         "--core-config",
         core_config_rel,
+        "--operator-mesh-file",
+        operator_mesh_rel,
         "--output-dir",
         _path_for_subprocess(checkpoint_dir, repo_root=repo_root),
+    ]
+
+
+def _cmd_scout_mesh_build(
+    *,
+    repo_root: Path,
+    prod_python: str,
+    run_root: Path,
+    sample_id: str,
+) -> List[str]:
+    return [
+        prod_python,
+        _path_for_subprocess(repo_root / SCOUT_MESH_SCRIPT, repo_root=repo_root),
+        "--sample-id",
+        sample_id,
+        "--run-dir",
+        _path_for_subprocess(run_root, repo_root=repo_root),
     ]
 
 
@@ -425,12 +467,18 @@ def build_execution_plan(
             "spacing_hz": scout_spacing,
             "half_width_hz": scout_half_width,
         },
-        "argv_mesh": [prod_python, _path_for_subprocess(repo_root / SCOUT_MESH_SCRIPT, repo_root=repo_root)],
+        "argv_mesh": _cmd_scout_mesh_build(
+            repo_root=repo_root,
+            prod_python=prod_python,
+            run_root=run_root,
+            sample_id=sample_id,
+        ),
         "argv_stage_a": _cmd_stage_a(
             repo_root=repo_root,
             prod_python=prod_python,
             core_config_rel=resolved_rel,
             checkpoint_dir=checkpoint_dir,
+            operator_mesh_rel=scout_mesh_rel,
         ),
         "argv_stage_b": _cmd_stage_b(
             repo_root=repo_root,
@@ -787,6 +835,15 @@ def run_scout_pipeline(
             _append_log(log_mesh, f"mesh install FAIL: {exc}\n")
         stage1_mesh = "PASS" if rc_mesh == 0 and mesh_ok else "FAIL"
         if stage1_mesh == "PASS":
+            sample_geom = extract_geometry_dict(sample)
+            geom_match, _ = (
+                geometries_match(sample_geom, BASELINE_GEOMETRY) if sample_geom else (False, ["no geometry"])
+            )
+            _append_log(
+                log_mesh,
+                f"scout_mesh_provenance: path={scout_mesh_rel} sample_specific=True "
+                f"geometry_matches_baseline={geom_match}\n",
+            )
             resolve_m4_sample(
                 sample,
                 repo_root=repo_root,

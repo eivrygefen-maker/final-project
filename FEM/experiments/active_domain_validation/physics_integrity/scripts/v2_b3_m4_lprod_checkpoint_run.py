@@ -40,6 +40,7 @@ from v2_b3_m3_orchestrator_run_one import (  # noqa: E402
     _run_subprocess,
     _verify_stage_a_export,
 )
+from v2_b3_m4_production_contracts import DATASET_VERSION  # noqa: E402
 from v2_b3_m4_lprod_interfaces import (  # noqa: E402
     BASELINE_GEOMETRY,
     BASELINE_L_PROD_MESH,
@@ -47,6 +48,7 @@ from v2_b3_m4_lprod_interfaces import (  # noqa: E402
     LPROD_SYNTHESIS_REGION_DOFS_DEFAULT,
     evaluate_lprod_mesh_checkpoint_readiness,
     extract_geometry_dict,
+    extract_run_metadata,
     geometries_match,
 )
 from v2_b3_rich_modal_lib import (  # noqa: E402
@@ -198,12 +200,26 @@ def resolve_lprod_core_config(
     if sample_input:
         geom = extract_geometry_dict(sample_input)
         if geom:
-            resolved["geometry"] = dict(geom)
+            resolved["geometry_numeric_parameters"] = dict(geom)
+            geo_block = resolved.setdefault("geometry", {})
+            if isinstance(geo_block, dict):
+                for key, val in geom.items():
+                    geo_block[key] = val
             params = resolved.setdefault("parameters", {})
             if isinstance(params, dict):
                 for key, val in geom.items():
                     params[f"geometry.{key}"] = float(val)
-    resolved["dataset_version"] = "m4_geometry_corrected_v1"
+        meta = extract_run_metadata(sample_input)
+        if meta:
+            m4_meta = resolved.setdefault("m4_run_metadata", {})
+            if isinstance(m4_meta, dict):
+                m4_meta.update(meta)
+            if meta.get("shape_name"):
+                resolved["shape_name"] = str(meta["shape_name"])
+    resolved["dataset_version"] = DATASET_VERSION
+    m4_meta = resolved.setdefault("m4_run_metadata", {})
+    if isinstance(m4_meta, dict):
+        m4_meta["dataset_version"] = DATASET_VERSION
     write_json_atomic(out_path, resolved)
     return out_path
 

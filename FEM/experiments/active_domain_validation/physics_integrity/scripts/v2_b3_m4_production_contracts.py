@@ -40,13 +40,7 @@ def geometry_from_core_config(core_config_path: Optional[Path]) -> Dict[str, flo
         cfg = json.loads(core_config_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
         return {}
-    geom = extract_geometry_dict(cfg)
-    if geom:
-        return geom
-    block = cfg.get("geometry")
-    if isinstance(block, dict):
-        return {str(k): float(v) for k, v in block.items()}
-    return {}
+    return extract_geometry_dict(cfg)
 
 
 def resolve_operator_mesh_file(
