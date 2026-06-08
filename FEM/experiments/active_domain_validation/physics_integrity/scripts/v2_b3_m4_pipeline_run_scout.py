@@ -90,6 +90,7 @@ from v2_b3_run_coarse_scout_lhs_batch import (  # noqa: E402
     _verify_stage_a_env_probe,
     _verify_stage_b_env_probe,
 )
+from v2_b3_m4_production_contracts import DATASET_VERSION, is_strict_production_mode  # noqa: E402
 
 
 def _utc_now() -> str:
@@ -454,7 +455,10 @@ def build_execution_plan(
         ckpt_ok, _ = _verify_stage_a_export(export_manifest)
     dens_ok = False
     if density_json.is_file():
-        dens_ok, _, _ = _verify_density_result(density_json)
+        dens_ok, _, _ = _verify_density_result(
+            density_json,
+            strict=is_strict_production_mode(dataset_version=DATASET_VERSION),
+        )
 
     resolved_rel = _rel(run_root / "sample" / "resolved_core_config.json", repo_root=repo_root)
 
@@ -527,13 +531,19 @@ def run_stage3_zones_target_plan(
     scout_dir = run_root / "scout"
     lprod_dir = run_root / "lprod"
 
-    ok_d, detail_d, _ = _verify_density_result(density_json)
+    strict_density = is_strict_production_mode(dataset_version=DATASET_VERSION)
+    ok_d, detail_d, _ = _verify_density_result(density_json, strict=strict_density)
     if not ok_d:
         print(f"[m4_scout] Stage 3 abort: missing or invalid density_result: {detail_d}", flush=True)
         return 1
 
     try:
         density_body = _load_json(density_json)
+        if strict_density and str(density_body.get("status") or "") != "PASS":
+            raise RuntimeError(
+                f"strict_density_status={density_body.get('status') or 'missing'} "
+                f"sparsest_pass={density_body.get('sparsest_coverage_pass_spacing_hz')}"
+            )
         unique_hz = _extract_unique_frequencies(density_body)
         bins = build_density_bins(
             unique_hz,
@@ -921,7 +931,10 @@ def run_scout_pipeline(
             log_path=log_b,
             label="scout_stage_b",
         )
-        ok_b, detail_b, _ = _verify_density_result(density_json)
+        ok_b, detail_b, _ = _verify_density_result(
+            density_json,
+            strict=is_strict_production_mode(dataset_version=DATASET_VERSION),
+        )
         stage2 = "PASS" if rc_b == 0 and ok_b else "FAIL"
         if stage2 != "PASS":
             _append_log(log_b, f"verify FAIL: {detail_b}\n")

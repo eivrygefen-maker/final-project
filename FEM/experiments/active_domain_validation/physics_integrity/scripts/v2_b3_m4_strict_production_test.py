@@ -25,9 +25,11 @@ from v2_b3_m4_physics_identity_lib import (  # noqa: E402
 )
 from v2_b3_m4_production_contracts import (  # noqa: E402
     DATASET_VERSION,
+    _evaluate_scout_strict_failures,
     is_strict_production_mode,
     require_aperture_mask_production,
 )
+from v2_b3_run_coarse_scout_lhs_batch import _verify_density_result  # noqa: E402
 
 
 class StrictProductionTest(unittest.TestCase):
@@ -238,6 +240,85 @@ class StrictProductionTest(unittest.TestCase):
         self.assertIn("fallback_flag_true:cross_sample_reuse", errs)
         self.assertIn("production_acceptance_pass_inconsistent_with_cross_sample_reuse", errs)
         self.assertIn("production_acceptance_pass!=true", errs)
+
+    def test_strict_density_verify_rejects_partial(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "density_result.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "status": "PARTIAL",
+                        "sparsest_coverage_pass_spacing_hz": None,
+                        "spacings": [
+                            {
+                                "spacing_hz": 7.5,
+                                "coverage_pass": False,
+                                "unique_accepted_count": 3,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            ok, detail, _ = _verify_density_result(path, strict=True)
+            self.assertFalse(ok)
+            self.assertIn("strict_density", detail)
+
+    def test_strict_density_verify_accepts_pass_with_sparsest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "density_result.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "status": "PASS",
+                        "sparsest_coverage_pass_spacing_hz": 7.5,
+                        "spacings": [
+                            {
+                                "spacing_hz": 7.5,
+                                "coverage_pass": True,
+                                "unique_accepted_count": 3,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            ok, detail, _ = _verify_density_result(path, strict=True)
+            self.assertTrue(ok, detail)
+
+    def test_scout_strict_failures_reject_partial_density_and_best_effort(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            discovery = root / "scout" / "discovery"
+            discovery.mkdir(parents=True)
+            (discovery / "density_result.json").write_text(
+                json.dumps(
+                    {
+                        "status": "PARTIAL",
+                        "sparsest_coverage_pass_spacing_hz": None,
+                        "spacings": [{"spacing_hz": 7.5, "coverage_pass": False, "unique_accepted_count": 1}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            scout = root / "scout"
+            scout.mkdir(parents=True, exist_ok=True)
+            (scout / "scout_result.json").write_text(
+                json.dumps({"discovery": {"experiment_status": "PARTIAL"}}),
+                encoding="utf-8",
+            )
+            lprod_ckpt = root / "lprod" / "checkpoint"
+            lprod_ckpt.mkdir(parents=True)
+            (lprod_ckpt / "synthesis_metadata.json").write_text(
+                json.dumps({"region_dof_indices_status": "BEST_EFFORT_PASS"}),
+                encoding="utf-8",
+            )
+            failures = _evaluate_scout_strict_failures(root)
+            self.assertTrue(any("scout_density_reference_coverage" in f for f in failures))
+            self.assertIn("scout_discovery_experiment_status=PARTIAL", failures)
+            self.assertTrue(
+                any("region_dof_indices_status=BEST_EFFORT_PASS" in f for f in failures)
+            )
 
     def test_physics_identity_manifest_validation_requires_aperture(self) -> None:
         man = {

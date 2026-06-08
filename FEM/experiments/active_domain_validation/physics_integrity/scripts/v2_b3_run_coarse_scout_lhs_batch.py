@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PHYSICS_ROOT = SCRIPT_DIR.parent
@@ -493,7 +493,24 @@ def _resolve_scout_sample_overlay(
     }
 
 
-def _verify_density_result(path: Path) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+def _density_reference_coverage_ok(data: Mapping[str, Any]) -> Tuple[bool, str]:
+    status = str(data.get("status") or "")
+    if status != "PASS":
+        return False, f"status={status or 'missing'}"
+    sparsest = data.get("sparsest_coverage_pass_spacing_hz")
+    if sparsest is None:
+        return False, "sparsest_coverage_pass_spacing_hz=None"
+    spacings = data.get("spacings") or []
+    if not any(bool(row.get("coverage_pass")) for row in spacings):
+        return False, "no_spacing_with_coverage_pass"
+    return True, "ok"
+
+
+def _verify_density_result(
+    path: Path,
+    *,
+    strict: bool = False,
+) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
     if not path.is_file():
         return False, f"missing:{path}", None
     try:
@@ -501,7 +518,11 @@ def _verify_density_result(path: Path) -> Tuple[bool, str, Optional[Dict[str, An
     except json.JSONDecodeError as exc:
         return False, f"invalid_json:{exc}", None
     status = str(data.get("status") or "")
-    if status not in ("PASS", "PARTIAL"):
+    if strict:
+        ok, detail = _density_reference_coverage_ok(data)
+        if not ok:
+            return False, f"strict_density:{detail}", data
+    elif status not in ("PASS", "PARTIAL"):
         return False, f"status={status!r}", data
     spacings = data.get("spacings") or []
     if not spacings:

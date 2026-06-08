@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -535,6 +536,9 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
             f"sparsest_pass={sparsest_pass} -> {output_dir / 'density_result.json'}",
             flush=True,
         )
+        strict = str(os.environ.get("M4_STRICT_PRODUCTION") or "").strip() in ("1", "true", "TRUE", "yes")
+        if strict and experiment["status"] == "PARTIAL":
+            return 2
         return 0 if experiment["status"] in ("PASS", "PARTIAL") else 2
     except Exception as exc:
         experiment["failure_reason"] = f"{type(exc).__name__}:{exc}"

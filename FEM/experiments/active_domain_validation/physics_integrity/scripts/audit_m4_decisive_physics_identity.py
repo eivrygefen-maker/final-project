@@ -20,6 +20,7 @@ from v2_b3_m4_lprod_interfaces import extract_geometry_dict, geometry_fingerprin
 from v2_b3_m4_physics_identity_lib import (  # noqa: E402
     build_physics_identity_manifest,
     extract_active_block_hashes,
+    extract_pressure_subblock_hashes,
     mesh_component_hashes,
     scan_cross_sample_path_contamination,
 )
@@ -27,7 +28,8 @@ from v2_b3_m4_production_contracts import evaluate_production_acceptance  # noqa
 from v2_b3_m4_worker_run_lib import detect_repo_root, load_json, rel  # noqa: E402
 
 GUITARS_REL = Path("FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars")
-BAND_529 = (528.0, 531.0)
+BAND_375 = (370.0, 385.0)
+BAND_529 = (528.0, 533.0)
 DEFAULT_OUT = DOCS_DIR / "M4_DECISIVE_PHYSICS_IDENTITY_AUDIT.json"
 
 
@@ -133,16 +135,30 @@ def _hypothesis_verdicts(rows: Sequence[Mapping[str, Any]]) -> Dict[str, str]:
     return v
 
 
+def _resolve_run_id(
+    pool: Mapping[str, Any],
+    sample_id: str,
+    *,
+    run_id_suffix: str,
+    run_id_map: Optional[Mapping[str, str]] = None,
+) -> str:
+    if run_id_map and sample_id in run_id_map:
+        return str(run_id_map[sample_id])
+    entry = next((e for e in pool.get("entries") or [] if str(e.get("id")) == sample_id), {})
+    return str(entry.get("last_run_id") or f"{sample_id}_{run_id_suffix}")
+
+
 def audit_sample(
     *,
     repo_root: Path,
     pool: Mapping[str, Any],
     sample_id: str,
     run_id_suffix: str,
+    run_id_map: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, Any]:
-    entry = next((e for e in pool.get("entries") or [] if str(e.get("id")) == sample_id), {})
-    run_id = str(entry.get("last_run_id") or f"{sample_id}_{run_id_suffix}")
+    run_id = _resolve_run_id(pool, sample_id, run_id_suffix=run_id_suffix, run_id_map=run_id_map)
     run_root = _run_root(repo_root, sample_id, run_id)
+    entry = next((e for e in pool.get("entries") or [] if str(e.get("id")) == sample_id), {})
     sample_input_path = run_root / "sample" / "sample_input.json"
     sample_input = load_json(sample_input_path) if sample_input_path.is_file() else {"sample_id": sample_id}
     geom = extract_geometry_dict(entry.get("parameters") or sample_input)
@@ -171,8 +187,11 @@ def audit_sample(
         identity = {"status": "checkpoint_compacted"}
 
     catalog = run_root / "aggregation" / "modes_catalog.jsonl"
-    band_modes = _modes_in_band(catalog, BAND_529)
+    band_375_modes = _modes_in_band(catalog, BAND_375)
+    band_529_modes = _modes_in_band(catalog, BAND_529)
     bridge_peak = _bridge_outlier(catalog)
+    cavity_p = list((identity.get("masks") or {}).get("p_idx_cavity") or [])
+    pressure_subblocks = extract_pressure_subblock_hashes(ckpt, built, cavity_p_idx=cavity_p)
 
     row: Dict[str, Any] = {
         "sample_id": sample_id,
@@ -187,31 +206,56 @@ def audit_sample(
         "masks": identity.get("masks") or {},
         "A_active_csr": identity.get("A_active_csr"),
         "M_active_csr": identity.get("M_active_csr"),
-        "band_529_modes": band_modes,
+        "band_375_modes": band_375_modes,
+        "band_529_modes": band_529_modes,
         "bridge_outlier_mode": bridge_peak,
+        "pressure_subblocks": pressure_subblocks,
+        "target_plan_frequencies_hz": _target_plan_frequencies(run_root),
     }
-    if band_modes:
-        freqs = [float(m["frequency_hz"]) for m in band_modes]
-        mics = [float(m.get("mic_output_proxy") or 0) for m in band_modes]
-        row["band_529_summary"] = {
-            "count": len(band_modes),
+    for band_key, modes in (("band_375_summary", band_375_modes), ("band_529_summary", band_529_modes)):
+        if not modes:
+            continue
+        freqs = [float(m["frequency_hz"]) for m in modes]
+        mics = [float(m.get("mic_output_proxy") or 0) for m in modes]
+        row[band_key] = {
+            "count": len(modes),
             "freq_min": min(freqs),
             "freq_max": max(freqs),
             "freq_span_hz": max(freqs) - min(freqs),
             "mic_min": min(mics),
             "mic_max": max(mics),
-            "cavity_air_shares": [m.get("cavity_air_share") for m in band_modes],
-            "exterior_air_shares": [m.get("exterior_air_share") for m in band_modes],
-            "fingerprints": [m.get("eigenvector_fingerprint_sha256") for m in band_modes],
-            "lambda_reals": [m.get("lambda_real") for m in band_modes],
+            "cavity_air_shares": [m.get("cavity_air_share") for m in modes],
+            "exterior_air_shares": [m.get("exterior_air_share") for m in modes],
+            "coupling_classes": [m.get("coupling_class") for m in modes],
+            "target_hz": [m.get("target_hz") for m in modes],
+            "chunk_ids": [m.get("chunk_id") for m in modes],
+            "fingerprints": [m.get("eigenvector_fingerprint_sha256") for m in modes],
+            "bridge_excitation_abs": [m.get("bridge_excitation_abs") for m in modes],
+            "lambda_reals": [m.get("lambda_real") for m in modes],
         }
     return row
+
+
+def _target_plan_frequencies(run_root: Path) -> List[float]:
+    plan_path = run_root / "lprod" / "lprod_target_plan.json"
+    if not plan_path.is_file():
+        return []
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+    return [float(x) for x in (plan.get("targets_hz") or [])]
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Decisive M4 physics identity audit (read-only).")
     parser.add_argument("--sample-ids", default="sample_001,sample_002,sample_003")
     parser.add_argument("--run-id-suffix", default="m4prod2")
+    parser.add_argument(
+        "--run-id-map",
+        default="",
+        help='JSON object mapping sample_id to exact run_id, e.g. {"sample_001":"sample_001_m4prod2","sample_002":"sample_002_m4prod2_strict_val"}',
+    )
     parser.add_argument("--lhs-json", type=Path, default=Path("ROM/classic/lhs_pool.json"))
     parser.add_argument("--json-out", type=Path, default=DEFAULT_OUT)
     args = parser.parse_args(argv)
@@ -219,9 +263,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     repo_root = detect_repo_root(SCRIPT_DIR)
     pool = load_lhs_pool(args.lhs_json if args.lhs_json.is_absolute() else repo_root / args.lhs_json)
     sample_ids = _parse_samples(str(args.sample_ids))
+    run_id_map: Dict[str, str] = {}
+    if str(args.run_id_map or "").strip():
+        run_id_map = json.loads(str(args.run_id_map))
 
     rows = [
-        audit_sample(repo_root=repo_root, pool=pool, sample_id=sid, run_id_suffix=str(args.run_id_suffix))
+        audit_sample(
+            repo_root=repo_root,
+            pool=pool,
+            sample_id=sid,
+            run_id_suffix=str(args.run_id_suffix),
+            run_id_map=run_id_map or None,
+        )
         for sid in sample_ids
     ]
 

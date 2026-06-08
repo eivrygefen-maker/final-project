@@ -340,6 +340,79 @@ def evaluate_production_acceptance(
     return out
 
 
+def _evaluate_scout_strict_failures(run_root: Path) -> List[str]:
+    """Fail-fast scout/target-plan gates for m4_geometry_corrected_v1 strict production."""
+    failures: List[str] = []
+    from v2_b3_run_coarse_scout_lhs_batch import _density_reference_coverage_ok  # noqa: WPS433
+
+    density_path = run_root / "scout" / "discovery" / "density_result.json"
+    if density_path.is_file():
+        try:
+            density = json.loads(density_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            failures.append("scout_density_result_unreadable")
+            density = {}
+        if density:
+            ok, detail = _density_reference_coverage_ok(density)
+            if not ok:
+                failures.append(f"scout_density_reference_coverage:{detail}")
+    else:
+        failures.append("missing_scout_density_result")
+
+    scout_result_path = run_root / "scout" / "scout_result.json"
+    if scout_result_path.is_file():
+        try:
+            scout_result = json.loads(scout_result_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            failures.append("scout_result_unreadable")
+            scout_result = {}
+        discovery = scout_result.get("discovery") or {}
+        exp_status = str(discovery.get("experiment_status") or scout_result.get("experiment_status") or "")
+        if exp_status == "PARTIAL":
+            failures.append("scout_discovery_experiment_status=PARTIAL")
+
+    target_plan_path = run_root / "lprod" / "lprod_target_plan.json"
+    if target_plan_path.is_file():
+        try:
+            target_plan = json.loads(target_plan_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            failures.append("lprod_target_plan_unreadable")
+            target_plan = {}
+        if bool(target_plan.get("placeholder")):
+            failures.append("lprod_target_plan_placeholder=true")
+        metadata = target_plan.get("target_metadata") or target_plan.get("targets_metadata") or []
+        if isinstance(metadata, list):
+            repair_count = sum(
+                1
+                for row in metadata
+                if isinstance(row, dict) and str(row.get("source") or "") == "coverage_repair"
+            )
+            if repair_count and density_path.is_file():
+                try:
+                    density = json.loads(density_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError, json.JSONDecodeError):
+                    density = {}
+                if str(density.get("status") or "") != "PASS":
+                    failures.append(f"lprod_target_plan_coverage_repair_from_non_pass_density:{repair_count}")
+
+    for ckpt_rel in ("scout/checkpoint", "lprod/checkpoint"):
+        synth_path = run_root / ckpt_rel / "synthesis_metadata.json"
+        if not synth_path.is_file():
+            continue
+        try:
+            synth = json.loads(synth_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            failures.append(f"{ckpt_rel.replace('/', '_')}_synthesis_metadata_unreadable")
+            continue
+        status = str(synth.get("region_dof_indices_status") or "")
+        if status == "BEST_EFFORT_PASS":
+            failures.append(f"{ckpt_rel.replace('/', '_')}_region_dof_indices_status=BEST_EFFORT_PASS")
+        elif status and status not in ("present",):
+            failures.append(f"{ckpt_rel.replace('/', '_')}_region_dof_indices_status={status}")
+
+    return failures
+
+
 def _evaluate_strict_production_failures(
     *,
     run_root: Path,
@@ -349,7 +422,7 @@ def _evaluate_strict_production_failures(
     core_config_path: Path,
 ) -> List[str]:
     """Additional fail-fast checks for m4_geometry_corrected_v1 (not overridable by env)."""
-    failures: List[str] = []
+    failures: List[str] = list(_evaluate_scout_strict_failures(run_root))
     from v2_b3_m4_physics_identity_lib import (  # noqa: WPS433
         forbidden_solver_fallback_keys,
         scan_cross_sample_path_contamination,

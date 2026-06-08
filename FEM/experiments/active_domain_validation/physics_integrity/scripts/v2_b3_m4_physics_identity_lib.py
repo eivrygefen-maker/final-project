@@ -209,6 +209,70 @@ def extract_active_block_hashes(checkpoint_dir: Path, built_meta: Mapping[str, A
     return out
 
 
+def extract_pressure_subblock_hashes(
+    checkpoint_dir: Path,
+    built_meta: Mapping[str, Any],
+    *,
+    cavity_p_idx: Optional[Sequence[int]] = None,
+) -> Dict[str, Any]:
+    """Hash cavity vs exterior pressure-pressure sub-blocks of A/M (strict isolation audit)."""
+    labels = _active_block_labels(built_meta)
+    out: Dict[str, Any] = {"status": "missing_labels"}
+    if labels is None:
+        return out
+    a_path = checkpoint_dir / "A_active_csr.npz"
+    m_path = checkpoint_dir / "M_active_csr.npz"
+    if not a_path.is_file() or not m_path.is_file():
+        out["status"] = "missing_csr"
+        return out
+    try:
+        a_csr = _load_csr(a_path)
+        m_csr = _load_csr(m_path)
+        p_idx = np.flatnonzero(labels == 1)
+        cavity = np.asarray(list(cavity_p_idx or []), dtype=np.int32).ravel()
+        if cavity.size == 0:
+            out["status"] = "missing_cavity_p_idx"
+            return out
+        cavity_set = set(int(x) for x in cavity.tolist())
+        cavity_rows = np.asarray([i for i, g in enumerate(p_idx) if int(g) in cavity_set], dtype=np.int32)
+        exterior_rows = np.asarray([i for i, g in enumerate(p_idx) if int(g) not in cavity_set], dtype=np.int32)
+
+        def _sub_hash(mat, rows: np.ndarray, cols: np.ndarray) -> Dict[str, Any]:
+            if rows.size == 0 or cols.size == 0:
+                return {"present": False}
+            subm = mat[rows, :][:, cols]
+            return {
+                "present": True,
+                "shape": list(subm.shape),
+                "nnz": int(subm.nnz),
+                "structure_sha256": _sha256_bytes(
+                    json.dumps(subm.shape).encode()
+                    + subm.indptr.tobytes()
+                    + subm.indices.tobytes()
+                ),
+                "values_sha256": _sha256_bytes(np.asarray(subm.data, dtype=np.float64).tobytes()),
+            }
+
+        blocks: Dict[str, Any] = {}
+        for prefix, mat in (("A", a_csr), ("M", m_csr)):
+            blocks[f"{prefix}_pp_cavity"] = _sub_hash(mat, cavity_rows, cavity_rows)
+            blocks[f"{prefix}_pp_exterior"] = _sub_hash(mat, exterior_rows, exterior_rows)
+        out = {
+            "status": "ok",
+            "blocks": blocks,
+            "p_active_count": int(p_idx.size),
+            "p_cavity_count": int(cavity_rows.size),
+            "p_exterior_count": int(exterior_rows.size),
+            "p_cavity_sha256": _sha256_indices(cavity.tolist()),
+            "p_exterior_sha256": _sha256_indices(
+                [int(p_idx[i]) for i in exterior_rows.tolist()]
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        out = {"status": f"error:{type(exc).__name__}", "detail": str(exc)}
+    return out
+
+
 def mesh_component_hashes(mesh_path: Path, *, built_meta: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     """Topology/coordinate hashes and submesh hashes for wood, cavity air, exterior pressure DOFs."""
     out: Dict[str, Any] = {"mesh_path": str(mesh_path), "mesh_file_sha256": _sha256_file(mesh_path)}
