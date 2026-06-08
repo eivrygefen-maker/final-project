@@ -176,6 +176,33 @@ def write_production_freeze_manifest(
     return out_path
 
 
+def write_physics_identity_manifest(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    acceptance: Mapping[str, Any],
+    sample_input: Mapping[str, Any],
+) -> Path:
+    from v2_b3_m4_physics_identity_lib import (  # noqa: WPS433
+        PHYSICS_IDENTITY_MANIFEST,
+        build_physics_identity_manifest,
+        validate_physics_identity_manifest,
+    )
+
+    manifest = build_physics_identity_manifest(
+        run_root=run_root,
+        repo_root=repo_root,
+        sample_input=sample_input,
+        acceptance=acceptance,
+    )
+    ok, errors = validate_physics_identity_manifest(manifest)
+    manifest["manifest_validation_pass"] = ok
+    manifest["manifest_validation_errors"] = errors
+    out_path = run_root / PHYSICS_IDENTITY_MANIFEST
+    write_json_atomic(out_path, manifest)
+    return out_path
+
+
 def replay_production_freeze(
     *,
     repo_root: Path,
@@ -217,6 +244,12 @@ def replay_production_freeze(
                 return 2, str(exc)
 
     write_production_freeze_manifest(
+        repo_root=repo_root,
+        run_root=run_root,
+        acceptance=acceptance,
+        sample_input=sample_doc,
+    )
+    write_physics_identity_manifest(
         repo_root=repo_root,
         run_root=run_root,
         acceptance=acceptance,

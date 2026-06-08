@@ -17,6 +17,10 @@ from v2_b3_mode_audio_coupling import (  # noqa: E402
     merge_audio_coupling_into_catalog_record,
     summarize_audio_coupling,
 )
+from v2_b3_m4_mode_provenance import (  # noqa: E402
+    PROVENANCE_FIELD_KEYS,
+    merge_provenance_into_catalog_record,
+)
 from v2_b3_mode_region_participation import (  # noqa: E402
     STK_DAMPING_GUIDANCE,
     enrich_participation_catalog_metadata,
@@ -167,6 +171,7 @@ def _collect_mode_records(
                 if isinstance(am, dict):
                     merge_participation_into_catalog_record(rec, am)
                     merge_audio_coupling_into_catalog_record(rec, am)
+                    merge_provenance_into_catalog_record(rec, am)
                 records.append(rec)
         if records:
             return records
@@ -187,6 +192,7 @@ def _collect_mode_records(
             }
             merge_participation_into_catalog_record(rec, am)
             merge_audio_coupling_into_catalog_record(rec, am)
+            merge_provenance_into_catalog_record(rec, am)
             records.append(rec)
         return records
 
@@ -454,6 +460,27 @@ def _write_common_artifacts(
 
     with catalog_path.open("w", encoding="utf-8") as fh:
         for rec in sorted(all_records, key=lambda r: float(r["frequency_hz"])):
+            fh.write(json.dumps(rec, sort_keys=True) + "\n")
+
+    prov_path = catalog_path.parent / "mode_provenance.jsonl"
+    deduped_path = catalog_path.parent / "modes_catalog_deduped.jsonl"
+    with prov_path.open("w", encoding="utf-8") as fh:
+        for rec in sorted(all_records, key=lambda r: float(r["frequency_hz"])):
+            prov = {k: rec.get(k) for k in PROVENANCE_FIELD_KEYS if k in rec}
+            prov.update(
+                {
+                    "sample_id": report.get("sample_id"),
+                    "run_id": report.get("run_id"),
+                    "frequency_hz": rec.get("frequency_hz"),
+                    "chunk_id": rec.get("chunk_id"),
+                    "target_hz": rec.get("target_hz"),
+                    "cavity_air_share": rec.get("cavity_air_share"),
+                    "exterior_air_share": rec.get("exterior_air_share"),
+                }
+            )
+            fh.write(json.dumps(prov, sort_keys=True) + "\n")
+    with deduped_path.open("w", encoding="utf-8") as fh:
+        for rec in sorted(deduped_catalog, key=lambda r: float(r["frequency_hz"])):
             fh.write(json.dumps(rec, sort_keys=True) + "\n")
 
     region_counts: Dict[str, int] = {}

@@ -222,14 +222,14 @@ def compute_lightweight_audio_coupling(
 
     import os
 
-    from v2_b3_m4_production_contracts import require_aperture_mask_production  # noqa: WPS433
+    from v2_b3_m4_production_contracts import DATASET_VERSION, require_aperture_mask_production  # noqa: WPS433
 
-    if require_aperture_mask_production() and not aperture_ok:
+    if require_aperture_mask_production(dataset_version=DATASET_VERSION) and not aperture_ok:
         return audio_coupling_fields_not_available(
             reason="empty_p_idx_aperture",
             detail="production_requires_aperture_pressure_rms_proxy_v1",
         )
-    if require_aperture_mask_production() and mic_method != "aperture_pressure_rms_proxy_v1":
+    if require_aperture_mask_production(dataset_version=DATASET_VERSION) and mic_method != "aperture_pressure_rms_proxy_v1":
         return audio_coupling_fields_not_available(
             reason="mic_output_method_not_aperture_proxy",
             detail=f"got {mic_method}",

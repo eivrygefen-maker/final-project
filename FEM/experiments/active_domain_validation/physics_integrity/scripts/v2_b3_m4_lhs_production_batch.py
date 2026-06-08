@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -45,6 +47,86 @@ PIPELINE_RUNS = SCRIPT_DIR.parent / "pipeline_runs"
 GUITARS_ROOT = PIPELINE_RUNS / "guitars"
 AGG_PASS = "AGGREGATION_PASS"
 TERMINAL_E2E = "LPROD_WORKERS_AND_AGGREGATION_PASS"
+RUN_ONE_SAMPLE_SCRIPT = SCRIPT_DIR / "v2_b3_m4_run_one_sample.py"
+
+
+def _isolated_sample_subprocess_env() -> Dict[str, str]:
+    """Fresh interpreter env: strict production cannot be disabled via inherited flags."""
+    env = dict(os.environ)
+    for key in (
+        "B3_ALLOW_CAVITY_MAX_MIC_FALLBACK",
+        "B3_DIAGNOSTIC_MIC_FALLBACK_ONLY",
+        "B3_REQUIRE_APERTURE_MASK",
+    ):
+        env.pop(key, None)
+    env["M4_STRICT_PRODUCTION"] = "1"
+    return env
+
+
+def _run_pipeline_isolated_subprocess(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    spec_path: Path,
+    workers: int,
+    force: bool,
+    force_stages: Optional[Set[str]],
+    stop_after: Optional[str],
+    allow_reference_mutation: bool,
+    freq_min: float,
+    freq_max: float,
+    scout_spacing: float,
+    scout_half_width: float,
+    zone_dense: float,
+    zone_medium: float,
+    zone_sparse: float,
+) -> int:
+    cmd = [
+        sys.executable,
+        str(RUN_ONE_SAMPLE_SCRIPT),
+        "--run-dir",
+        str(run_root),
+        "--execute",
+        "--workers",
+        str(workers),
+        "--production-mode",
+        "--production-samples-json",
+        str(spec_path),
+        "--freq-min-hz",
+        str(freq_min),
+        "--freq-max-hz",
+        str(freq_max),
+        "--scout-spacing-hz",
+        str(scout_spacing),
+        "--scout-half-width-hz",
+        str(scout_half_width),
+        "--zone-spacing-dense-hz",
+        str(zone_dense),
+        "--zone-spacing-medium-hz",
+        str(zone_medium),
+        "--zone-spacing-sparse-hz",
+        str(zone_sparse),
+    ]
+    if force:
+        cmd.append("--force")
+    if allow_reference_mutation:
+        cmd.append("--allow-reference-mutation")
+    if stop_after:
+        cmd.extend(["--stop-after", stop_after])
+    if force_stages:
+        if "checkpoint" in force_stages:
+            cmd.append("--force-checkpoint")
+        if "workers" in force_stages:
+            cmd.append("--force-workers")
+        if "aggregate" in force_stages:
+            cmd.append("--force-aggregation")
+    proc = subprocess.run(
+        cmd,
+        cwd=str(repo_root),
+        env=_isolated_sample_subprocess_env(),
+        check=False,
+    )
+    return int(proc.returncode)
 
 
 def _frequency_policy(spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -318,6 +400,8 @@ def run_production_batch(
     compact_after_sample: bool = False,
     compact_keep_full_samples: Optional[Set[str]] = None,
     compact_nonblocking: bool = True,
+    isolated_subprocess: bool = False,
+    strict_production: bool = False,
 ) -> Dict[str, Any]:
     fp = _frequency_policy(spec)
     band = fp.get("band_hz", [60.0, 550.0])
@@ -432,7 +516,7 @@ def run_production_batch(
                 pool=pool or {},
                 compact_after_sample=bool(compact_after_sample),
                 compact_keep_full_samples=set(compact_keep_full_samples or ()),
-                compact_nonblocking=bool(compact_nonblocking),
+                compact_nonblocking=bool(compact_nonblocking) and not strict_production,
                 run_rom_compare=bool(run_rom_compare),
             ):
                 failed.append(row)
@@ -491,30 +575,52 @@ def run_production_batch(
             )
 
         print(f"[run] {sid} / {rid} ...", flush=True)
+        if strict_production:
+            print(f"[strict] isolated_subprocess={isolated_subprocess} compact_blocking=True", flush=True)
         t0 = time.perf_counter()
         stage_force = force and not resume
-        rc = run_pipeline(
-            repo_root=repo_root,
-            run_root=run_root.resolve(),
-            workers=workers,
-            force=stage_force,
-            force_stages=force_stages,
-            execute=True,
-            stop_after=stop_after,
-            m45_batch_mode=False,
-            m45_batch_spec=spec_path,
-            production_mode=production_mode,
-            production_samples_json=spec_path,
-            allow_unlisted_sample=not production_mode,
-            allow_reference_mutation=allow_reference_mutation,
-            freq_min=float(band[0]),
-            freq_max=float(band[1]),
-            scout_spacing=float(fp.get("scout_spacing_hz", 7.5)),
-            scout_half_width=float(fp.get("scout_half_width_hz", 3.75)),
-            zone_dense=float(fp.get("zone_spacing_hz", {}).get("ZONE_1_dense", 6.0)),
-            zone_medium=float(fp.get("zone_spacing_hz", {}).get("ZONE_2_medium", 9.0)),
-            zone_sparse=float(fp.get("zone_spacing_hz", {}).get("ZONE_3_sparse", 12.5)),
-        )
+        run_root_resolved = run_root.resolve()
+        if isolated_subprocess:
+            rc = _run_pipeline_isolated_subprocess(
+                repo_root=repo_root,
+                run_root=run_root_resolved,
+                spec_path=spec_path,
+                workers=workers,
+                force=stage_force,
+                force_stages=force_stages,
+                stop_after=stop_after,
+                allow_reference_mutation=allow_reference_mutation,
+                freq_min=float(band[0]),
+                freq_max=float(band[1]),
+                scout_spacing=float(fp.get("scout_spacing_hz", 7.5)),
+                scout_half_width=float(fp.get("scout_half_width_hz", 3.75)),
+                zone_dense=float(fp.get("zone_spacing_hz", {}).get("ZONE_1_dense", 6.0)),
+                zone_medium=float(fp.get("zone_spacing_hz", {}).get("ZONE_2_medium", 9.0)),
+                zone_sparse=float(fp.get("zone_spacing_hz", {}).get("ZONE_3_sparse", 12.5)),
+            )
+        else:
+            rc = run_pipeline(
+                repo_root=repo_root,
+                run_root=run_root_resolved,
+                workers=workers,
+                force=stage_force,
+                force_stages=force_stages,
+                execute=True,
+                stop_after=stop_after,
+                m45_batch_mode=False,
+                m45_batch_spec=spec_path,
+                production_mode=production_mode,
+                production_samples_json=spec_path,
+                allow_unlisted_sample=not production_mode,
+                allow_reference_mutation=allow_reference_mutation,
+                freq_min=float(band[0]),
+                freq_max=float(band[1]),
+                scout_spacing=float(fp.get("scout_spacing_hz", 7.5)),
+                scout_half_width=float(fp.get("scout_half_width_hz", 3.75)),
+                zone_dense=float(fp.get("zone_spacing_hz", {}).get("ZONE_1_dense", 6.0)),
+                zone_medium=float(fp.get("zone_spacing_hz", {}).get("ZONE_2_medium", 9.0)),
+                zone_sparse=float(fp.get("zone_spacing_hz", {}).get("ZONE_3_sparse", 12.5)),
+            )
         elapsed = time.perf_counter() - t0
         summary = _read_sample_summary(run_root, workers_requested=workers)
         acceptance: Dict[str, Any] = {}
@@ -624,7 +730,7 @@ def run_production_batch(
                 pool=pool or {},
                 compact_after_sample=bool(compact_after_sample),
                 compact_keep_full_samples=set(compact_keep_full_samples or ()),
-                compact_nonblocking=bool(compact_nonblocking),
+                compact_nonblocking=bool(compact_nonblocking) and not strict_production,
                 run_rom_compare=bool(run_rom_compare),
             ):
                 failed.append(row)

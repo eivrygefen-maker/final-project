@@ -1,0 +1,115 @@
+{
+  "band_529_cross_sample": {
+    "fingerprint_count": 0,
+    "freq_span_hz": null,
+    "unique_fingerprints": 0
+  },
+  "cross_sample": {
+    "A_pp_structure_groups": {},
+    "mesh_topology_groups": {}
+  },
+  "hypotheses": {
+    "H10_duplicate_eigenmodes_overlapping_targets": "REJECTED",
+    "H1_cross_sample_first_batch_reuse": "REJECTED",
+    "H2_same_sample_stale_resume": "INCONCLUSIVE",
+    "H3_identical_acoustic_submesh": "CONFIRMED",
+    "H4_identical_A_pp_M_pp": "REJECTED",
+    "H5_fixed_exterior_air_mode": "INCONCLUSIVE",
+    "H6_cavity_geometry_not_propagating": "INCONCLUSIVE",
+    "H7_target_centre_artifact": "INCONCLUSIVE",
+    "H8_aperture_mask_reuse": "CONFIRMED",
+    "H9_bridge_mask_reuse": "INCONCLUSIVE"
+  },
+  "per_sample": [
+    {
+      "A_active_csr": null,
+      "M_active_csr": null,
+      "band_529_modes": [],
+      "bridge_outlier_mode": null,
+      "geometry": {},
+      "geometry_fingerprint": null,
+      "identity_manifest_present": false,
+      "masks": {},
+      "mesh_components": {
+        "mesh_file_sha256": null,
+        "mesh_path": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\pipeline_runs\\guitars\\sample_001\\runs\\sample_001_m4prod2\\lprod\\mesh\\L_prod\\sample_001.msh",
+        "status": "mesh_missing"
+      },
+      "operator_blocks": {
+        "status": "missing_labels"
+      },
+      "path_contamination": {
+        "contamination_detected": false,
+        "contamination_hits": [],
+        "files_scanned": 0,
+        "sample_id": "sample_001"
+      },
+      "run_id": "sample_001_m4prod2",
+      "run_root": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4prod2",
+      "sample_id": "sample_001"
+    },
+    {
+      "A_active_csr": null,
+      "M_active_csr": null,
+      "band_529_modes": [],
+      "bridge_outlier_mode": null,
+      "geometry": {},
+      "geometry_fingerprint": null,
+      "identity_manifest_present": false,
+      "masks": {},
+      "mesh_components": {
+        "mesh_file_sha256": null,
+        "mesh_path": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\pipeline_runs\\guitars\\sample_002\\runs\\sample_002_m4prod2\\lprod\\mesh\\L_prod\\sample_002.msh",
+        "status": "mesh_missing"
+      },
+      "operator_blocks": {
+        "status": "missing_labels"
+      },
+      "path_contamination": {
+        "contamination_detected": false,
+        "contamination_hits": [],
+        "files_scanned": 0,
+        "sample_id": "sample_002"
+      },
+      "run_id": "sample_002_m4prod2",
+      "run_root": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_002/runs/sample_002_m4prod2",
+      "sample_id": "sample_002"
+    },
+    {
+      "A_active_csr": null,
+      "M_active_csr": null,
+      "band_529_modes": [],
+      "bridge_outlier_mode": null,
+      "geometry": {},
+      "geometry_fingerprint": null,
+      "identity_manifest_present": false,
+      "masks": {},
+      "mesh_components": {
+        "mesh_file_sha256": null,
+        "mesh_path": "C:\\projects\\final-project\\final-project\\FEM\\experiments\\active_domain_validation\\physics_integrity\\pipeline_runs\\guitars\\sample_003\\runs\\sample_003_m4prod2\\lprod\\mesh\\L_prod\\sample_003.msh",
+        "status": "mesh_missing"
+      },
+      "operator_blocks": {
+        "status": "missing_labels"
+      },
+      "path_contamination": {
+        "contamination_detected": false,
+        "contamination_hits": [],
+        "files_scanned": 0,
+        "sample_id": "sample_003"
+      },
+      "run_id": "sample_003_m4prod2",
+      "run_root": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_003/runs/sample_003_m4prod2",
+      "sample_id": "sample_003"
+    }
+  ],
+  "root_cause_529_hz_family": "INDEPENDENT_SOLVES_SIMILAR_AIR_FAMILY",
+  "sample_ids": [
+    "sample_001",
+    "sample_002",
+    "sample_003"
+  ],
+  "samples_000_003_decision": "HOLD pending VM audit with checkpoint or strict validation rerun",
+  "schema": "m4_decisive_physics_identity_audit_v1",
+  "verdict": "INDEPENDENT_SOLVES_SIMILAR_AIR_FAMILY"
+}

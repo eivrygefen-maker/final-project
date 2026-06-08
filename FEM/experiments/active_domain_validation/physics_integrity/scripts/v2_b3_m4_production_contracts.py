@@ -120,7 +120,15 @@ def dolfinx_mesh_counts(mesh_path: Path) -> Dict[str, Optional[int]]:
         return {"operator_node_count": None, "operator_cell_count": None}
 
 
-def require_aperture_mask_production() -> bool:
+def is_strict_production_mode(*, dataset_version: Optional[str] = None) -> bool:
+    """Corrected-dataset production: strict fail-fast; env vars cannot disable."""
+    ds = str(dataset_version or DATASET_VERSION).strip()
+    return ds == DATASET_VERSION
+
+
+def require_aperture_mask_production(*, dataset_version: Optional[str] = None) -> bool:
+    if is_strict_production_mode(dataset_version=dataset_version):
+        return True
     if os.environ.get(ALLOW_CAVITY_MAX_FALLBACK_ENV) == "1":
         return False
     if os.environ.get(DIAGNOSTIC_ONLY_FALLBACK_ENV) == "1":
@@ -142,9 +150,12 @@ def dataset_version_from_core_config(core_config_path: Optional[Path]) -> Option
 
 def aperture_export_required_for_core_config(core_config_path: Optional[Path]) -> bool:
     """True when corrected-dataset production or B3_REQUIRE_APERTURE_MASK mandates aperture export."""
-    if require_aperture_mask_production():
+    ds = dataset_version_from_core_config(core_config_path)
+    if is_strict_production_mode(dataset_version=ds):
         return True
-    return dataset_version_from_core_config(core_config_path) == DATASET_VERSION
+    if require_aperture_mask_production(dataset_version=ds):
+        return True
+    return ds == DATASET_VERSION
 
 
 def resolve_production_region_dofs_mode(
@@ -313,4 +324,115 @@ def evaluate_production_acceptance(
     out["rom_compare_present"] = rom_compare.is_file()
     out["mic_output_method"] = PRODUCTION_MIC_METHOD if not out["failures"] else None
     out["acceptance_pass"] = len(out["failures"]) == 0
+
+    if is_strict_production_mode(dataset_version=DATASET_VERSION):
+        out["failures"].extend(
+            _evaluate_strict_production_failures(
+                run_root=run_root,
+                sample_id=sample_id,
+                built=built,
+                catalog=catalog,
+                core_config_path=lprod / "resolved_core_config.json",
+            )
+        )
+        out["strict_production_mode"] = True
+        out["acceptance_pass"] = len(out["failures"]) == 0
     return out
+
+
+def _evaluate_strict_production_failures(
+    *,
+    run_root: Path,
+    sample_id: str,
+    built: Mapping[str, Any],
+    catalog: Path,
+    core_config_path: Path,
+) -> List[str]:
+    """Additional fail-fast checks for m4_geometry_corrected_v1 (not overridable by env)."""
+    failures: List[str] = []
+    from v2_b3_m4_physics_identity_lib import (  # noqa: WPS433
+        forbidden_solver_fallback_keys,
+        scan_cross_sample_path_contamination,
+    )
+
+    contam = scan_cross_sample_path_contamination(run_root, sample_id=sample_id)
+    if contam.get("contamination_detected"):
+        hits = contam.get("contamination_hits") or []
+        failures.append(f"cross_sample_path_reference:{hits[0].get('other_sample_id')}")
+
+    op_used = str(built.get("operator_mesh_file_used") or "")
+    if sample_id not in op_used.replace("\\", "/"):
+        failures.append("operator_mesh_path_missing_sample_id")
+    if "baseline_coupled_v2" in op_used and sample_id != "sample_000":
+        failures.append("baseline_operator_mesh_selected")
+
+    if core_config_path.is_file():
+        try:
+            cfg = json.loads(core_config_path.read_text(encoding="utf-8"))
+            fb_keys = forbidden_solver_fallback_keys(cfg)
+            if fb_keys:
+                failures.append(f"forbidden_solver_fallback_config:{','.join(fb_keys)}")
+        except (OSError, ValueError, json.JSONDecodeError):
+            failures.append("resolved_core_config_unreadable")
+
+    if catalog.is_file():
+        import json as _json
+
+        bad_participation = 0
+        bad_mic = 0
+        missing_lambda = 0
+        missing_conv = 0
+        solver_fb = 0
+        for line in catalog.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = _json.loads(line)
+            except ValueError:
+                continue
+            ps = str(row.get("participation_status") or "")
+            if ps and ps != "computed":
+                bad_participation += 1
+            mic_m = str(row.get("mic_output_method") or "")
+            if mic_m and mic_m != PRODUCTION_MIC_METHOD:
+                bad_mic += 1
+            if row.get("solver_fallback_used"):
+                solver_fb += 1
+            if row.get("frequency_hz") is not None and row.get("lambda_real") is None:
+                missing_lambda += 1
+            if (
+                row.get("frequency_hz") is not None
+                and row.get("eps_compute_error_relative") is None
+                and row.get("convergence_status") != "converged"
+            ):
+                missing_conv += 1
+        if bad_participation:
+            failures.append(f"participation_status_not_computed:count={bad_participation}")
+        if bad_mic:
+            failures.append(f"mic_method_forbidden:count={bad_mic}")
+        if solver_fb:
+            failures.append(f"solver_fallback_used_in_catalog:count={solver_fb}")
+        if missing_lambda:
+            failures.append(f"missing_lambda_real_in_catalog:count={missing_lambda}")
+        if missing_conv:
+            failures.append(f"missing_convergence_evidence_in_catalog:count={missing_conv}")
+
+    wr = run_root / "worker_results"
+    if wr.is_dir():
+        for chunk_dir in wr.iterdir():
+            if not chunk_dir.is_dir():
+                continue
+            wr_path = chunk_dir / "worker_result.json"
+            if wr_path.is_file():
+                try:
+                    wdoc = json.loads(wr_path.read_text(encoding="utf-8"))
+                    if str(wdoc.get("status") or "") == "PARTIAL":
+                        failures.append(f"worker_partial:{chunk_dir.name}")
+                        break
+                    if str(wdoc.get("status") or "") == "PASS_WITH_WARNING":
+                        failures.append(f"worker_pass_with_warning:{chunk_dir.name}")
+                        break
+                except (OSError, ValueError, json.JSONDecodeError):
+                    pass
+
+    return failures

@@ -258,8 +258,16 @@ def compute_mode_dominant_region_metadata(
         if back_raw is not None or ribs_p is not None:
             back_p = float((back_raw or 0.0) + (ribs_p or 0.0))
         method = "structural_pressure_energy_fraction_v1"
+    cavity_p: Optional[float] = None
+    exterior_p: Optional[float] = None
     if pressure_ok:
         air_p = participation_energy_fraction(x_full, region.get("p_idx_air", []))
+        cavity_idx = region.get("p_idx_cavity")
+        exterior_idx = region.get("p_idx_exterior")
+        if cavity_idx is not None and np.asarray(cavity_idx).size:
+            cavity_p = participation_energy_fraction(x_full, cavity_idx)
+        if exterior_idx is not None and np.asarray(exterior_idx).size:
+            exterior_p = participation_energy_fraction(x_full, exterior_idx)
         if method == "not_available":
             method = "pressure_energy_fraction_v1"
 
@@ -271,11 +279,18 @@ def compute_mode_dominant_region_metadata(
         method = "pressure_energy_fraction_v1"
 
     dominant = _pick_dominant_region(top=top_p, back=back_p, air=air_p)
+    air_total = float((cavity_p or 0.0) + (exterior_p or 0.0))
+    cavity_share = (float(cavity_p) / air_total) if cavity_p is not None and air_total > 0 else None
+    exterior_share = (float(exterior_p) / air_total) if exterior_p is not None and air_total > 0 else None
     return {
         "dominant_region": dominant,
         "top_participation": top_p,
         "back_participation": back_p,
         "air_participation": air_p,
+        "cavity_air_participation": cavity_p,
+        "exterior_air_participation": exterior_p,
+        "cavity_air_share": cavity_share,
+        "exterior_air_share": exterior_share,
         "participation_method": method,
         "participation_status": "computed",
         "participation_detail": str(region_ctx.get("region_dof_source") or ""),
@@ -344,6 +359,10 @@ def merge_participation_into_catalog_record(record: Dict[str, Any], mode: Mappin
         "top_participation",
         "back_participation",
         "air_participation",
+        "cavity_air_participation",
+        "exterior_air_participation",
+        "cavity_air_share",
+        "exterior_air_share",
         "participation_method",
         "participation_status",
         "participation_detail",

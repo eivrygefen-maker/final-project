@@ -191,6 +191,15 @@ def resolve_m4_sample(
     solver = resolved.setdefault("solver", {})
     solver["mesh_file"] = scout_mesh_rel
     solver["clamp_ribs"] = False
+    for forbidden_key in (
+        "eps_interval_fallback",
+        "eps_ciss_fallback_shift_invert",
+        "resolvent_static_fallback",
+    ):
+        solver.pop(forbidden_key, None)
+    m4_meta = resolved.setdefault("m4_run_metadata", {})
+    if isinstance(m4_meta, dict):
+        m4_meta.setdefault("dataset_version", "m4_geometry_corrected_v1")
 
     generated = _utc_now()
     write_json_atomic(resolved_path, resolved)

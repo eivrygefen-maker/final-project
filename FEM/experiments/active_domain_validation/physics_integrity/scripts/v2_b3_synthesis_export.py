@@ -316,7 +316,7 @@ def capture_region_dof_build_from_mesh(
     if not mesh_file.is_file():
         return None, f"mesh_file_missing:{mesh_file}"
 
-    msh, _cell_tags, facet_tags = fem3d._load_mesh_and_tags(mesh_file)
+    msh, cell_tags, facet_tags = fem3d._load_mesh_and_tags(mesh_file)
     tdim = msh.topology.dim
     msh.topology.create_connectivity(tdim - 1, tdim)
 
@@ -340,6 +340,21 @@ def capture_region_dof_build_from_mesh(
     if n_u_b3 <= 0:
         return None, "built_metadata_missing_n_u_b3"
 
+    p_idx_cavity = np.asarray([], dtype=np.int32)
+    p_idx_exterior = np.asarray([], dtype=np.int32)
+    try:
+        cavity_w = np.asarray(
+            fem3d._locate_air_volume_pressure_dofs(msh, cell_tags), dtype=np.int32
+        ).ravel()
+        if cavity_w.size:
+            p_idx_cavity = cavity_w
+            cavity_set = set(int(x) for x in cavity_w)
+            p_idx_exterior = np.asarray(
+                [int(x) for x in p_idx_all if int(x) not in cavity_set], dtype=np.int32
+            )
+    except Exception:
+        pass
+
     u_idx_top = _trace_rows_to_b3_u_w(_trace_u_rows(f_top), n_u_b3=n_u_b3)
     u_idx_back = _trace_rows_to_b3_u_w(_trace_u_rows(f_back), n_u_b3=n_u_b3)
     u_idx_ribs = _trace_rows_to_b3_u_w(_trace_u_rows(f_ribs), n_u_b3=n_u_b3)
@@ -359,17 +374,22 @@ def capture_region_dof_build_from_mesh(
             "u_idx_soundhole": u_idx_soundhole,
             "p_idx_air": p_idx_all.copy(),
             "p_idx_all": p_idx_all.copy(),
+            "p_idx_cavity": p_idx_cavity,
+            "p_idx_exterior": p_idx_exterior,
             "u_idx_all": np.arange(n_u_b3, dtype=np.int32),
             "region_dof_source": REGION_DOF_SOURCE_OPERATOR_BUILD,
             "region_dof_mesh_file": str(mesh_file),
             "layout": REGION_DOF_LAYOUT,
             "back_includes_ribs": True,
+            "aperture_selection_method": "facet_adjacent_air_cell_dofs_v1",
             "counts": {
                 "u_idx_top": int(u_idx_top.size),
                 "u_idx_back": int(u_idx_back.size),
                 "u_idx_ribs": int(u_idx_ribs.size),
                 "u_idx_soundhole": int(u_idx_soundhole.size),
                 "p_idx_air": int(p_idx_all.size),
+                "p_idx_cavity": int(p_idx_cavity.size),
+                "p_idx_exterior": int(p_idx_exterior.size),
             },
         },
         None,

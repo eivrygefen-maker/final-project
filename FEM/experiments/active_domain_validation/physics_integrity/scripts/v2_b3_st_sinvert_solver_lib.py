@@ -588,6 +588,19 @@ def collect_accepted_st_modes(
                     entry["audio_coupling_status"] = "not_available"
                     entry["audio_coupling_method"] = "lightweight_modal_coupling_v1"
                     entry["audio_coupling_detail"] = f"audio_coupling_attach_failed:{type(exc).__name__}"
+                try:
+                    from v2_b3_m4_mode_provenance import attach_mode_provenance
+
+                    attach_mode_provenance(
+                        entry,
+                        x_active=x_active,
+                        built=built,
+                        region_ctx=region_ctx,
+                        solver_backend="mkl_pardiso",
+                        solver_fallback_used=False,
+                    )
+                except Exception as exc:
+                    entry["provenance_attach_error"] = f"{type(exc).__name__}:{exc}"
                 accepted.append(entry)
         finally:
             vr.destroy()

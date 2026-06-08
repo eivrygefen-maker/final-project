@@ -39,6 +39,7 @@ from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
     write_per_sample_spec,
 )
 from v2_b3_m4_lhs_production_batch import run_production_batch  # noqa: E402
+from v2_b3_m4_production_contracts import DATASET_VERSION, is_strict_production_mode  # noqa: E402
 from v2_b3_m4_rom_fom_compare_lib import (  # noqa: E402
     DEFAULT_MAX_MATCH_DISTANCE_HZ,
     DEFAULT_ROM_NEV,
@@ -229,6 +230,30 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         action="store_false",
         dest="compact_nonblocking",
         help="Stop batch if compaction fails.",
+    )
+    parser.add_argument(
+        "--strict-production",
+        action="store_true",
+        default=None,
+        help="Strict fail-fast for m4_geometry_corrected_v1 (default: on for corrected dataset).",
+    )
+    parser.add_argument(
+        "--no-strict-production",
+        action="store_false",
+        dest="strict_production",
+        help="Disable strict production (not allowed for corrected-dataset FOM).",
+    )
+    parser.add_argument(
+        "--isolated-subprocess",
+        action="store_true",
+        default=None,
+        help="Run each sample in a fresh Python subprocess (default: on in strict mode).",
+    )
+    parser.add_argument(
+        "--no-isolated-subprocess",
+        action="store_false",
+        dest="isolated_subprocess",
+        help="Run samples in-process (not recommended for corrected production).",
     )
     return parser.parse_args(argv)
 
@@ -595,6 +620,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     lhs_index_by_sid = {str(r["sample_id"]): int(r["lhs_row_index"]) for r in selection}
     compact_keep_full_samples = set(_parse_compact_keep_full_samples(args.compact_keep_full_samples))
 
+    pool_ds = str(pool.get("dataset_version") or DATASET_VERSION)
+    strict_production = (
+        bool(args.strict_production)
+        if args.strict_production is not None
+        else is_strict_production_mode(dataset_version=pool_ds)
+    )
+    isolated_subprocess = (
+        bool(args.isolated_subprocess)
+        if args.isolated_subprocess is not None
+        else strict_production
+    )
+    compact_after_sample = bool(args.compact_after_sample) or strict_production
+    compact_nonblocking = bool(args.compact_nonblocking) and not strict_production
+    if strict_production and args.execute and not args.dry_run:
+        print(
+            f"strict_production=1 isolated_subprocess={int(isolated_subprocess)} "
+            f"compact_after_sample=1 compact_blocking={int(not compact_nonblocking)}",
+            flush=True,
+        )
+        if args.strict_production is False:
+            print("error: --no-strict-production not allowed for corrected dataset", file=sys.stderr)
+            return 2
+
     summary = run_production_batch(
         repo_root=repo_root,
         spec_path=spec_path,
@@ -622,9 +670,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         rom_nev=int(args.rom_nev),
         rom_max_match_distance_hz=float(args.rom_max_match_distance_hz),
         pool=pool,
-        compact_after_sample=bool(args.compact_after_sample) and not bool(args.compact_after_batch),
+        compact_after_sample=compact_after_sample and not bool(args.compact_after_batch),
         compact_keep_full_samples=compact_keep_full_samples,
-        compact_nonblocking=bool(args.compact_nonblocking),
+        compact_nonblocking=compact_nonblocking,
+        isolated_subprocess=isolated_subprocess,
+        strict_production=strict_production,
     )
 
     if (

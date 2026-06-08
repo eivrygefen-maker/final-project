@@ -42,6 +42,8 @@ MODE_ARCHIVE_HEAVY = "archive_heavy"
 # ROM rebuild / compare / STK minimum (code-audited)
 ROM_REQUIRED_REL_PATHS: Tuple[str, ...] = (
     "aggregation/modes_catalog.jsonl",
+    "aggregation/modes_catalog_deduped.jsonl",
+    "aggregation/mode_provenance.jsonl",
     "aggregation/aggregation_result.json",
 )
 
@@ -605,6 +607,12 @@ def production_compaction_preconditions(
     else:
         warnings.append("shared_export_not_reported")
 
+    terminal = str(row.get("terminal_status") or "")
+    if terminal != "COMPLETED":
+        return False, f"terminal_status={terminal or 'missing'}", warnings
+    if not bool(row.get("production_acceptance_pass")):
+        return False, "production_acceptance_pass!=true", warnings
+
     if run_rom_compare:
         rom_cmp = row.get("rom_compare")
         if not isinstance(rom_cmp, dict):
@@ -713,7 +721,7 @@ def compact_one_completed_run(
         return _record_to_outcome(rec, runtime_s=time.perf_counter() - t0)
 
     try:
-        _process_delete_without_archive(rec, dry_run=dry_run)
+        _process_delete_without_archive(rec, dry_run=dry_run, repo_root=repo_root)
         if not dry_run and rec.status == "completed":
             manifest = _build_delete_manifest(rec, production_trigger=production_trigger)
             _write_manifest(rec.run_root, manifest)
@@ -815,7 +823,43 @@ def compact_runs_for_samples(
     }
 
 
-def _process_delete_without_archive(rec: RunRecord, *, dry_run: bool) -> None:
+def _ensure_pre_compaction_provenance(rec: RunRecord, *, repo_root: Path) -> None:
+    """Write physics_identity_manifest from checkpoint before heavy delete (strict production)."""
+    from v2_b3_m4_physics_identity_lib import PHYSICS_IDENTITY_MANIFEST  # noqa: WPS433
+    from v2_b3_m4_production_contracts import evaluate_production_acceptance  # noqa: WPS433
+    from v2_b3_m4_production_freeze import write_physics_identity_manifest  # noqa: WPS433
+
+    manifest_path = rec.run_root / PHYSICS_IDENTITY_MANIFEST
+    if manifest_path.is_file():
+        return
+    ckpt_built = rec.run_root / "lprod" / "checkpoint" / "built_metadata.json"
+    if not ckpt_built.is_file():
+        raise RuntimeError("refuse compaction: checkpoint missing; cannot write physics_identity_manifest")
+    sample_input_path = rec.run_root / "sample" / "sample_input.json"
+    sample_input: Dict[str, Any] = {"sample_id": rec.sample_id}
+    if sample_input_path.is_file():
+        try:
+            sample_input = json.loads(sample_input_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    acceptance = evaluate_production_acceptance(run_root=rec.run_root, sample_input=sample_input)
+    write_physics_identity_manifest(
+        repo_root=repo_root,
+        run_root=rec.run_root,
+        acceptance=acceptance,
+        sample_input=sample_input,
+    )
+
+
+def _verify_post_compaction_strict(rec: RunRecord) -> None:
+    from v2_b3_m4_physics_identity_lib import verify_post_compaction_contract  # noqa: WPS433
+
+    report = verify_post_compaction_contract(rec.run_root)
+    if not report.get("pass"):
+        raise RuntimeError(f"post_compaction_verify_failed:{report.get('errors')}")
+
+
+def _process_delete_without_archive(rec: RunRecord, *, dry_run: bool, repo_root: Optional[Path] = None) -> None:
     if not rec.eligible or rec.keep_full or rec.already_compacted:
         if rec.keep_full:
             rec.status = "keep_full"
@@ -843,9 +887,12 @@ def _process_delete_without_archive(rec: RunRecord, *, dry_run: bool) -> None:
         rec.status = "dry_run_planned_delete"
         return
 
+    root = repo_root or detect_repo_root(SCRIPT_DIR)
+    _ensure_pre_compaction_provenance(rec, repo_root=root)
     rec.deleted_paths = _delete_archived_paths(rec.run_root, archivable)
     rec.deleted_bytes = rec.archivable_bytes
     rec.freed_bytes = rec.deleted_bytes
+    _verify_post_compaction_strict(rec)
     rec.status = "completed"
 
 
