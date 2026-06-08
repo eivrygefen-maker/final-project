@@ -7,6 +7,7 @@ import hashlib
 import json
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -51,6 +52,20 @@ from v2_b3_st_worker_scaling_benchmark import (
 )
 
 ALLOWED_MESH_LEVELS = frozenset({"L_mid", "L_dev_dense", "L_prod", "L_scout_coarse"})
+REGION_DOF_EXPORT_FAILURE_JSON = "region_dof_export_failure.json"
+
+
+def _write_region_dof_export_failure(checkpoint: Path, exc: BaseException) -> Path:
+    checkpoint = checkpoint.expanduser().resolve()
+    out = checkpoint / REGION_DOF_EXPORT_FAILURE_JSON
+    body = {
+        "schema": "region_dof_export_failure_v1",
+        "error_type": type(exc).__name__,
+        "error_message": str(exc),
+        "traceback": traceback.format_exc(),
+    }
+    write_json(out, body)
+    return out
 
 
 def _sha256_file(path: Path) -> str:
@@ -304,9 +319,13 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
         except Exception as exc:
             synthesis_warnings.append(f"synthesis_artifacts_exception:{type(exc).__name__}:{exc}")
             if aperture_export_required_for_core_config(core_config_path):
+                failure_path = _write_region_dof_export_failure(checkpoint, exc)
                 fail_with_messages(
                     "B3_checkpoint_export",
-                    [f"region_dof_export_failed:{type(exc).__name__}:{exc}"],
+                    [
+                        f"region_dof_export_failed:{type(exc).__name__}:{exc}; "
+                        f"traceback={failure_path}"
+                    ],
                 )
             try:
                 from v2_b3_synthesis_export import write_stage_a_synthesis_artifacts

@@ -228,11 +228,25 @@ def region_dof_status_is_pass(status: Optional[str]) -> bool:
     return str(status or "") in ("present", REGION_DOF_STATUS_PASS)
 
 
-def _region_arr(region_dof_build: Mapping[str, Any], key: str) -> np.ndarray:
-    val = region_dof_build.get(key)
-    if val is None:
+def _coerce_index_map(value: Any) -> np.ndarray:
+    """Coerce index map without NumPy truth-value tests (never use ``value or []``)."""
+    if value is None:
         return np.asarray([], dtype=np.int32)
-    return np.asarray(val, dtype=np.int32).ravel()
+    return np.asarray(value, dtype=np.int32).ravel()
+
+
+def _region_arr(region_dof_build: Mapping[str, Any], key: str) -> np.ndarray:
+    return _coerce_index_map(region_dof_build.get(key))
+
+
+def _coerce_built_p_idx(
+    built_meta: Mapping[str, Any],
+    built: Mapping[str, Any],
+) -> np.ndarray:
+    raw = built_meta.get("p_idx")
+    if raw is None and isinstance(built, dict):
+        raw = built.get("p_idx")
+    return _coerce_index_map(raw)
 
 
 def export_region_dof_indices_from_operator_build(
@@ -322,7 +336,7 @@ def capture_region_dof_build_from_mesh(
         return np.unique(np.asarray(dofs, dtype=np.int32).ravel())
 
     n_u_b3 = int(built_meta.get("n_u_b3") or built_meta.get("n_u") or 0)
-    p_idx_all = np.asarray(built_meta.get("p_idx") or [], dtype=np.int32).ravel()
+    p_idx_all = _coerce_index_map(built_meta.get("p_idx"))
     if n_u_b3 <= 0:
         return None, "built_metadata_missing_n_u_b3"
 
@@ -433,7 +447,7 @@ def _build_synthesis_metadata_body(
     physics = _default_solver_physics()
     gnhep = _gnhep_scales_from_built(built)
     n_u = int(built_meta.get("n_u_b3") or built.get("n_u_b3") or 0)
-    p_idx = np.asarray(built_meta.get("p_idx") or built.get("p_idx") or [], dtype=np.int32)
+    p_idx = _coerce_built_p_idx(built_meta, built)
     n_p = int(p_idx.size) if p_idx.size else 0
 
     body: Dict[str, Any] = {

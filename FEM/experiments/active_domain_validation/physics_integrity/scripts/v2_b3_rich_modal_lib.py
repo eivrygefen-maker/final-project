@@ -309,8 +309,14 @@ def write_region_dof_metadata_json(checkpoint: Path, metadata: Mapping[str, Any]
     return out_path
 
 
+def _coerce_index_map(value: Any) -> np.ndarray:
+    if value is None:
+        return np.asarray([], dtype=np.int32)
+    return np.asarray(value, dtype=np.int32).ravel()
+
+
 def build_region_dof_metadata_from_operator_build(region_dof_build: Mapping[str, Any]) -> Dict[str, Any]:
-    p_idx_aperture = np.asarray(region_dof_build.get("p_idx_aperture") or [], dtype=np.int32).ravel()
+    p_idx_aperture = _coerce_index_map(region_dof_build.get("p_idx_aperture"))
     mesh_file = str(region_dof_build.get("region_dof_mesh_file") or "")
     source = str(region_dof_build.get("region_dof_source") or "operator_build_context")
     metadata: Dict[str, Any] = {
@@ -429,8 +435,8 @@ def load_region_dof_bundle(
             if contract_failures:
                 raise RegionDofSchemaError("; ".join(contract_failures))
     else:
-        u_idx = np.asarray(built_meta.get("u_idx") or [], dtype=np.int32).ravel()
-        p_idx = np.asarray(built_meta.get("p_idx") or [], dtype=np.int32).ravel()
+        u_idx = _coerce_index_map(built_meta.get("u_idx"))
+        p_idx = _coerce_index_map(built_meta.get("p_idx"))
         region = {
             "u_idx_top": np.asarray([], dtype=np.int32),
             "u_idx_back": np.asarray([], dtype=np.int32),
