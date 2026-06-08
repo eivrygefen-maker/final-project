@@ -355,7 +355,11 @@ def _evaluate_scout_strict_failures(run_root: Path) -> List[str]:
         if density:
             ok, detail = _density_reference_coverage_ok(density)
             if not ok:
-                failures.append(f"scout_density_reference_coverage:{detail}")
+                failures.append(f"scout_density_intrinsic:{detail}")
+            if str(density.get("status") or "") == "PARTIAL":
+                failures.append("scout_density_status=PARTIAL")
+            if density.get("coverage_policy") != "intrinsic_discovered_modes_v1":
+                failures.append(f"scout_density_policy={density.get('coverage_policy') or 'missing'}")
     else:
         failures.append("missing_scout_density_result")
 

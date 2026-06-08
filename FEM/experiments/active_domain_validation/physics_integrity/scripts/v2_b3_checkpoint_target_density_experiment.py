@@ -20,6 +20,12 @@ from v2_b3_checkpoint_pipeline_lib import (  # noqa: E402
 )
 from v2_b3_operator_checkpoint_portable import load_operators_with_portable_fallback  # noqa: E402
 from v2_b3_petsc_util import mat_shape, write_json_atomic  # noqa: E402
+from v2_b3_m4_scout_intrinsic_coverage import (  # noqa: E402
+    build_density_provenance_fields,
+    classify_reference_json,
+    evaluate_intrinsic_scout_coverage,
+    production_density_status,
+)
 from v2_b3_st_sinvert_solver_lib import (  # noqa: E402
     ACCEPTANCE_FREQ_HI_HZ,
     ACCEPTANCE_FREQ_LO_HZ,
@@ -299,8 +305,15 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
         previous_by_spacing = load_previous_density_by_spacing(previous_body)
 
     reference_json = json.loads(reference_path.read_text(encoding="utf-8"))
+    reference_meta = classify_reference_json(
+        reference_json,
+        reference_path=str(reference_path),
+        band_lo_hz=start_hz,
+        band_hi_hz=stop_hz,
+    )
     reference_freqs = extract_reference_frequencies_hz(reference_json, tol_hz=tol_hz)
-    if not reference_freqs:
+    use_intrinsic_policy = bool(reference_meta.get("use_intrinsic_policy"))
+    if not reference_freqs and not use_intrinsic_policy:
         body = {
             "status": "FAIL",
             "failure_reason": f"no reference accepted frequencies in {reference_path}",
@@ -439,11 +452,14 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
                 tol_hz=tol_hz,
             )
             spacing_wall_s = time.perf_counter() - t_spacing0
-            spacing_status = "PASS"
-            if targets_failed == len(generated_targets):
-                spacing_status = "FAIL"
-            elif targets_failed > 0:
-                spacing_status = "PARTIAL"
+            if use_intrinsic_policy:
+                spacing_status = "PASS" if targets_failed == 0 else "FAIL"
+            else:
+                spacing_status = "PASS"
+                if targets_failed == len(generated_targets):
+                    spacing_status = "FAIL"
+                elif targets_failed > 0:
+                    spacing_status = "PARTIAL"
 
             spacing_row: Dict[str, Any] = {
                 "spacing_hz": float(spacing_hz),
@@ -459,6 +475,7 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
                 "extra_candidate_frequencies_hz": coverage["extra_candidate_frequencies_hz"],
                 "coverage_ratio": coverage["coverage_ratio"],
                 "coverage_pass": coverage["coverage_pass"],
+                "external_reference_coverage": coverage,
                 "targets_failed": targets_failed,
                 "targets_succeeded": len(generated_targets) - targets_failed,
                 "status": spacing_status,
@@ -479,6 +496,14 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
                 f"wall={spacing_wall_s:.1f}s st={total_st:.1f}s",
                 flush=True,
             )
+
+        intrinsic = evaluate_intrinsic_scout_coverage(
+            spacing_rows=spacing_rows,
+            band_lo_hz=start_hz,
+            band_hi_hz=stop_hz,
+            dedupe_tol_hz=tol_hz,
+        )
+        experiment.update(build_density_provenance_fields(reference_meta=reference_meta, intrinsic=intrinsic))
 
         passing_spacings = [
             float(r["spacing_hz"]) for r in spacing_rows if bool(r.get("coverage_pass"))
@@ -517,29 +542,41 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
             }
 
         experiment["spacings"] = spacing_rows
-        experiment["sparsest_coverage_pass_spacing_hz"] = sparsest_pass
         experiment["experiment_wall_s"] = safe_float(time.perf_counter() - t_experiment0)
 
-        any_pass = any(bool(r.get("coverage_pass")) for r in spacing_rows)
-        all_fail = all(str(r.get("status")) == "FAIL" for r in spacing_rows)
-        if all_fail:
-            experiment["status"] = "FAIL"
-        elif any_pass:
-            experiment["status"] = "PASS"
+        strict = str(os.environ.get("M4_STRICT_PRODUCTION") or "").strip() in ("1", "true", "TRUE", "yes")
+        if use_intrinsic_policy or strict:
+            status, sparsest_intrinsic = production_density_status(
+                reference_meta=reference_meta,
+                intrinsic=intrinsic,
+                spacing_rows=spacing_rows,
+            )
+            experiment["status"] = status
+            experiment["sparsest_coverage_pass_spacing_hz"] = sparsest_intrinsic
+            if status != "PASS":
+                experiment["failure_reason"] = ",".join(intrinsic.get("intrinsic_coverage_failures") or [])
         else:
-            experiment["status"] = "PARTIAL"
+            any_pass = any(bool(r.get("coverage_pass")) for r in spacing_rows)
+            all_fail = all(str(r.get("status")) == "FAIL" for r in spacing_rows)
+            if all_fail:
+                experiment["status"] = "FAIL"
+            elif any_pass:
+                experiment["status"] = "PASS"
+            else:
+                experiment["status"] = "PARTIAL"
+            experiment["sparsest_coverage_pass_spacing_hz"] = sparsest_pass
 
         write_json_atomic(output_dir / "density_result.json", experiment)
         _write_density_md(output_dir / "density_result.md", experiment)
         print(
-            f"[B3_target_density] {experiment['status']} spacings={len(spacing_rows)} "
-            f"sparsest_pass={sparsest_pass} -> {output_dir / 'density_result.json'}",
+            f"[B3_target_density] {experiment['status']} policy={experiment.get('coverage_policy')} "
+            f"intrinsic_pass={experiment.get('intrinsic_coverage_pass')} "
+            f"external_status={experiment.get('external_reference_status')} "
+            f"spacings={len(spacing_rows)} sparsest_pass={experiment.get('sparsest_coverage_pass_spacing_hz')} "
+            f"-> {output_dir / 'density_result.json'}",
             flush=True,
         )
-        strict = str(os.environ.get("M4_STRICT_PRODUCTION") or "").strip() in ("1", "true", "TRUE", "yes")
-        if strict and experiment["status"] == "PARTIAL":
-            return 2
-        return 0 if experiment["status"] in ("PASS", "PARTIAL") else 2
+        return 0 if experiment["status"] == "PASS" else 2
     except Exception as exc:
         experiment["failure_reason"] = f"{type(exc).__name__}:{exc}"
         experiment["experiment_wall_s"] = safe_float(time.perf_counter() - t_experiment0)

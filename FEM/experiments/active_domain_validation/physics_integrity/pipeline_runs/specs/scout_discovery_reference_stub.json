@@ -1,5 +1,8 @@
 {
   "status": "PASS",
+  "reference_classification": "discovery_stub",
+  "external_reference_gate_enabled": false,
+  "non_stub": false,
   "note": "Discovery-only scout stub; coverage vs this single frequency is not meaningful for 60-550 Hz zoning.",
   "aggregate": {
     "unique_accepted_frequencies_hz": [244.39]

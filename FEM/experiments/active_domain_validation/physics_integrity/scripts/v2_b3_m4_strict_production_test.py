@@ -248,7 +248,9 @@ class StrictProductionTest(unittest.TestCase):
                 json.dumps(
                     {
                         "status": "PARTIAL",
-                        "sparsest_coverage_pass_spacing_hz": None,
+                        "coverage_policy": "intrinsic_discovered_modes_v1",
+                        "intrinsic_coverage_pass": False,
+                        "intrinsic_coverage_failures": ["stub"],
                         "spacings": [
                             {
                                 "spacing_hz": 7.5,
@@ -262,27 +264,14 @@ class StrictProductionTest(unittest.TestCase):
             )
             ok, detail, _ = _verify_density_result(path, strict=True)
             self.assertFalse(ok)
-            self.assertIn("strict_density", detail)
+            self.assertIn("status=PARTIAL", detail)
 
-    def test_strict_density_verify_accepts_pass_with_sparsest(self) -> None:
+    def test_strict_density_verify_accepts_intrinsic_pass(self) -> None:
+        from test_m4_scout_intrinsic_coverage import _intrinsic_density_payload, _rich_freqs  # noqa: WPS433
+
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "density_result.json"
-            path.write_text(
-                json.dumps(
-                    {
-                        "status": "PASS",
-                        "sparsest_coverage_pass_spacing_hz": 7.5,
-                        "spacings": [
-                            {
-                                "spacing_hz": 7.5,
-                                "coverage_pass": True,
-                                "unique_accepted_count": 3,
-                            }
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
+            path.write_text(json.dumps(_intrinsic_density_payload(freqs=_rich_freqs())), encoding="utf-8")
             ok, detail, _ = _verify_density_result(path, strict=True)
             self.assertTrue(ok, detail)
 
@@ -295,7 +284,8 @@ class StrictProductionTest(unittest.TestCase):
                 json.dumps(
                     {
                         "status": "PARTIAL",
-                        "sparsest_coverage_pass_spacing_hz": None,
+                        "coverage_policy": "legacy_external_reference",
+                        "intrinsic_coverage_pass": False,
                         "spacings": [{"spacing_hz": 7.5, "coverage_pass": False, "unique_accepted_count": 1}],
                     }
                 ),
@@ -314,7 +304,7 @@ class StrictProductionTest(unittest.TestCase):
                 encoding="utf-8",
             )
             failures = _evaluate_scout_strict_failures(root)
-            self.assertTrue(any("scout_density_reference_coverage" in f for f in failures))
+            self.assertTrue(any("scout_density_intrinsic" in f for f in failures))
             self.assertIn("scout_discovery_experiment_status=PARTIAL", failures)
             self.assertTrue(
                 any("region_dof_indices_status=BEST_EFFORT_PASS" in f for f in failures)

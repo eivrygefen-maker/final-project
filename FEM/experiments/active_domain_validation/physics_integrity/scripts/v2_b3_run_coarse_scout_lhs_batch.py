@@ -494,16 +494,9 @@ def _resolve_scout_sample_overlay(
 
 
 def _density_reference_coverage_ok(data: Mapping[str, Any]) -> Tuple[bool, str]:
-    status = str(data.get("status") or "")
-    if status != "PASS":
-        return False, f"status={status or 'missing'}"
-    sparsest = data.get("sparsest_coverage_pass_spacing_hz")
-    if sparsest is None:
-        return False, "sparsest_coverage_pass_spacing_hz=None"
-    spacings = data.get("spacings") or []
-    if not any(bool(row.get("coverage_pass")) for row in spacings):
-        return False, "no_spacing_with_coverage_pass"
-    return True, "ok"
+    from v2_b3_m4_scout_intrinsic_coverage import intrinsic_density_result_ok  # noqa: WPS433
+
+    return intrinsic_density_result_ok(data)
 
 
 def _verify_density_result(

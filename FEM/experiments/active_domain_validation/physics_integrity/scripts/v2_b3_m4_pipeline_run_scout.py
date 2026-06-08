@@ -539,11 +539,20 @@ def run_stage3_zones_target_plan(
 
     try:
         density_body = _load_json(density_json)
-        if strict_density and str(density_body.get("status") or "") != "PASS":
-            raise RuntimeError(
-                f"strict_density_status={density_body.get('status') or 'missing'} "
-                f"sparsest_pass={density_body.get('sparsest_coverage_pass_spacing_hz')}"
-            )
+        if strict_density:
+            if str(density_body.get("status") or "") != "PASS":
+                raise RuntimeError(
+                    f"strict_density_status={density_body.get('status') or 'missing'} "
+                    f"intrinsic_pass={density_body.get('intrinsic_coverage_pass')}"
+                )
+            if not bool(density_body.get("intrinsic_coverage_pass")):
+                raise RuntimeError(
+                    f"intrinsic_coverage_failures={density_body.get('intrinsic_coverage_failures')}"
+                )
+            if bool(density_body.get("external_reference_gate_enabled")) and (
+                density_body.get("external_reference_classification") == "discovery_stub"
+            ):
+                raise RuntimeError("external_reference_gate_enabled_with_stub")
         unique_hz = _extract_unique_frequencies(density_body)
         bins = build_density_bins(
             unique_hz,
@@ -584,8 +593,20 @@ def run_stage3_zones_target_plan(
             freq_max_hz=freq_max,
         )
         cov = target_plan["coverage_check"]
+        repair_count = int(cov.get("repair_targets_added") or 0)
+        target_plan["raw_discovery_provenance"] = {
+            "intrinsic_coverage_pass": bool(density_body.get("intrinsic_coverage_pass")),
+            "raw_unique_accepted_count": density_body.get("raw_unique_accepted_count"),
+            "raw_max_gap_hz": density_body.get("raw_max_gap_hz"),
+            "coverage_policy": density_body.get("coverage_policy"),
+            "target_plan_repair_targets_added": repair_count,
+        }
         if not cov.get("pass"):
             raise RuntimeError(f"coverage_check failed after repair: {cov}")
+        if repair_count > 0 and not bool(density_body.get("intrinsic_coverage_pass")):
+            raise RuntimeError(
+                f"target_plan_repair_disallowed_without_intrinsic_pass:repair_count={repair_count}"
+            )
         scout_wall = float(density_body.get("experiment_wall_s") or 0.0)
         runtime_est = estimate_runtime_summary(
             target_count=len(target_plan["targets_hz"]),
