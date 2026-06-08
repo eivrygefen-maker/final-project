@@ -47,11 +47,16 @@ def main(argv: list[str] | None = None) -> int:
             "u_idx_soundhole": np.array([], dtype=np.int32),
             "p_idx_air": np.array([100, 101], dtype=np.int32),
             "p_idx_all": np.array([100, 101], dtype=np.int32),
+            "p_idx_aperture": np.array([100], dtype=np.int32),
             "u_idx_all": np.arange(50, dtype=np.int32),
             "region_dof_source": mod.REGION_DOF_SOURCE_OPERATOR_BUILD,
             "region_dof_mesh_file": "/tmp/smoke.msh",
             "layout": mod.REGION_DOF_LAYOUT,
             "back_includes_ribs": True,
+            "aperture_selection_method": "facet_adjacent_air_cell_dofs_v1",
+            "mic_output_method": "aperture_pressure_rms_proxy_v1",
+            "aperture_facet_count": 12,
+            "adjacent_air_cell_count": 8,
             "counts": {"u_idx_top": 3, "u_idx_back": 2, "u_idx_ribs": 1, "p_idx_air": 2},
         }
         status, err = mod.export_region_dof_indices_from_operator_build(
@@ -65,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
         if not npz.is_file():
             print("FAIL region_dof_indices.npz not written", file=sys.stderr)
             return 1
-        from v2_b3_rich_modal_lib import load_region_dof_bundle
+        from v2_b3_rich_modal_lib import REGION_DOF_METADATA_JSON, load_region_dof_bundle
 
         built_meta = {
             "u_idx": list(range(50)),
@@ -91,6 +96,12 @@ def main(argv: list[str] | None = None) -> int:
         top_n = int(np.asarray(ctx["region"]["u_idx_top"]).size)
         if top_n != 3:
             print(f"FAIL u_idx_top size={top_n}", file=sys.stderr)
+            return 1
+        if int(np.asarray(ctx["region"]["p_idx_aperture"]).size) != 1:
+            print("FAIL p_idx_aperture missing after export/load", file=sys.stderr)
+            return 1
+        if not (ckpt / REGION_DOF_METADATA_JSON).is_file():
+            print("FAIL region_dof_metadata.json not written", file=sys.stderr)
             return 1
 
     print("PASS export_region_dof_indices_from_operator_build writes npz")

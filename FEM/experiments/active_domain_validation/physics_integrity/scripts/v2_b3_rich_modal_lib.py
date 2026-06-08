@@ -6,7 +6,7 @@ import json
 import math
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -34,6 +34,59 @@ STRUCTURAL_REGION_KEYS = ("u_idx_top", "u_idx_back", "u_idx_ribs", "u_idx_soundh
 
 SYNTHESIS_METADATA_JSON = "synthesis_metadata.json"
 REGION_DOF_INDICES_NPZ = "region_dof_indices.npz"
+REGION_DOF_METADATA_JSON = "region_dof_metadata.json"
+REGION_DOF_METADATA_SCHEMA = "b3_region_dof_metadata_v1"
+
+REGION_INDEX_KEYS = frozenset(
+    {
+        "u_idx_top",
+        "u_idx_back",
+        "u_idx_ribs",
+        "u_idx_soundhole",
+        "p_idx_air",
+        "p_idx_all",
+        "p_idx_aperture",
+        "u_idx_all",
+    }
+)
+
+REGION_NPZ_STRING_META_KEYS = frozenset(
+    {
+        "layout",
+        "region_dof_source",
+        "region_dof_mesh_file",
+        "aperture_selection_method",
+        "mic_output_method",
+    }
+)
+
+REGION_NPZ_SCALAR_META_KEYS = frozenset(
+    {
+        "back_includes_ribs",
+        "p_idx_aperture_count",
+        "aperture_facet_count",
+        "adjacent_air_cell_count",
+    }
+)
+
+REGION_NPZ_FLOAT_META_KEYS = frozenset(
+    {
+        "aperture_coordinate_bounds_min",
+        "aperture_coordinate_bounds_max",
+    }
+)
+
+REGION_NPZ_ALL_META_KEYS = (
+    REGION_NPZ_STRING_META_KEYS | REGION_NPZ_SCALAR_META_KEYS | REGION_NPZ_FLOAT_META_KEYS
+)
+
+
+class RegionDofSchemaError(ValueError):
+    """Raised when region_dof_indices.npz violates the index/metadata contract."""
+
+
+# Backward-compatible alias (superset of legacy string scalars in mixed NPZ files).
+_NPZ_SCALAR_META_KEYS = REGION_NPZ_STRING_META_KEYS | frozenset({"back_includes_ribs"})
 RICH_MODAL_DIRNAME = "rich_modal"
 RICH_MODAL_MANIFEST_JSON = "rich_modal_manifest.json"
 MODES_ACTIVE_NPZ = "modes_active.npz"
@@ -147,26 +200,234 @@ def _npz_scalar_bool(z: Any, key: str, *, default: bool = False) -> bool:
     return bool(arr[0])
 
 
+def _npz_scalar_int(z: Any, key: str, *, default: Optional[int] = None) -> Optional[int]:
+    if key not in z.files:
+        return default
+    try:
+        arr = np.asarray(z[key]).ravel()
+    except (KeyError, TypeError, ValueError):
+        return default
+    if arr.size == 0:
+        return default
+    try:
+        return int(arr[0])
+    except (TypeError, ValueError):
+        return default
+
+
+def _npz_float_array(z: Any, key: str) -> Optional[List[float]]:
+    if key not in z.files:
+        return None
+    arr = np.asarray(z[key], dtype=np.float64).ravel()
+    if arr.size == 0:
+        return None
+    return [float(v) for v in arr.tolist()]
+
+
+def coerce_region_index_array(key: str, raw: Any) -> np.ndarray:
+    """Coerce one NPZ entry to int32 index vector; fail with key name on non-integer data."""
+    arr = np.asarray(raw)
+    if arr.dtype.kind in ("U", "S"):
+        raise RegionDofSchemaError(
+            f"region index key {key!r} stores string data {arr.ravel()[:1]!r}; expected integer indices"
+        )
+    if arr.dtype == object:
+        raise RegionDofSchemaError(
+            f"region index key {key!r} has object dtype; expected integer indices"
+        )
+    try:
+        out = np.asarray(arr, dtype=np.int32).ravel().copy()
+    except (TypeError, ValueError) as exc:
+        raise RegionDofSchemaError(
+            f"region index key {key!r}: cannot coerce to int32 (value sample={arr.ravel()[:3]!r})"
+        ) from exc
+    return out
+
+
+def _classify_npz_key(key: str, arr: np.ndarray) -> str:
+    if key in REGION_INDEX_KEYS:
+        return "index"
+    if key in REGION_NPZ_ALL_META_KEYS:
+        return "metadata"
+    if np.issubdtype(arr.dtype, np.integer) or arr.dtype == bool:
+        return "index"
+    if np.issubdtype(arr.dtype, np.floating):
+        return "metadata"
+    if arr.dtype.kind in ("U", "S", "O"):
+        return "metadata"
+    return "unknown"
+
+
+def _load_region_metadata_from_npz(z: Any) -> Dict[str, Any]:
+    metadata: Dict[str, Any] = {}
+    for key in REGION_NPZ_STRING_META_KEYS:
+        val = _npz_scalar_str(z, key)
+        if val is not None:
+            metadata[key] = val
+    if "back_includes_ribs" in z.files:
+        metadata["back_includes_ribs"] = _npz_scalar_bool(z, "back_includes_ribs", default=True)
+    for key in ("p_idx_aperture_count", "aperture_facet_count", "adjacent_air_cell_count"):
+        val = _npz_scalar_int(z, key)
+        if val is not None:
+            metadata[key] = val
+    bounds_min = _npz_float_array(z, "aperture_coordinate_bounds_min")
+    bounds_max = _npz_float_array(z, "aperture_coordinate_bounds_max")
+    if bounds_min is not None and bounds_max is not None:
+        metadata["aperture_coordinate_bounds"] = {"min": bounds_min, "max": bounds_max}
+    return metadata
+
+
+def _load_region_indices_from_npz(z: Any) -> Dict[str, np.ndarray]:
+    region: Dict[str, np.ndarray] = {}
+    for key in z.files:
+        arr = np.asarray(z[key])
+        kind = _classify_npz_key(key, arr)
+        if kind == "metadata":
+            continue
+        if kind == "index" or key in REGION_INDEX_KEYS:
+            region[key] = coerce_region_index_array(key, arr)
+            continue
+        raise RegionDofSchemaError(f"unrecognized region_dof_indices.npz key {key!r} dtype={arr.dtype!r}")
+    return region
+
+
+def load_region_dof_metadata_file(path: Path) -> Dict[str, Any]:
+    with path.open(encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict):
+        raise RegionDofSchemaError(f"{path}: expected JSON object for region DOF metadata")
+    return data
+
+
+def write_region_dof_metadata_json(checkpoint: Path, metadata: Mapping[str, Any]) -> Path:
+    checkpoint = checkpoint.expanduser().resolve()
+    body = dict(metadata)
+    body.setdefault("schema", REGION_DOF_METADATA_SCHEMA)
+    body.setdefault("generated_utc", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    out_path = checkpoint / REGION_DOF_METADATA_JSON
+    write_json_atomic(out_path, body)
+    return out_path
+
+
+def build_region_dof_metadata_from_operator_build(region_dof_build: Mapping[str, Any]) -> Dict[str, Any]:
+    p_idx_aperture = np.asarray(region_dof_build.get("p_idx_aperture") or [], dtype=np.int32).ravel()
+    mesh_file = str(region_dof_build.get("region_dof_mesh_file") or "")
+    source = str(region_dof_build.get("region_dof_source") or "operator_build_context")
+    metadata: Dict[str, Any] = {
+        "schema": REGION_DOF_METADATA_SCHEMA,
+        "layout": str(region_dof_build.get("layout") or REGION_DOF_LAYOUT),
+        "region_dof_source": source,
+        "region_dof_mesh_file": mesh_file,
+        "back_includes_ribs": bool(region_dof_build.get("back_includes_ribs", True)),
+        "aperture_selection_method": str(region_dof_build.get("aperture_selection_method") or ""),
+        "mic_output_method": str(
+            region_dof_build.get("mic_output_method") or "aperture_pressure_rms_proxy_v1"
+        ),
+        "p_idx_aperture_count": int(p_idx_aperture.size),
+        "aperture_facet_count": int(region_dof_build.get("aperture_facet_count") or 0),
+        "adjacent_air_cell_count": int(region_dof_build.get("adjacent_air_cell_count") or 0),
+    }
+    bounds = region_dof_build.get("aperture_coordinate_bounds")
+    if isinstance(bounds, dict):
+        metadata["aperture_coordinate_bounds"] = {
+            "min": list(bounds.get("min") or [0.0, 0.0, 0.0]),
+            "max": list(bounds.get("max") or [0.0, 0.0, 0.0]),
+        }
+    return metadata
+
+
+def validate_region_dof_contract(
+    region: Mapping[str, np.ndarray],
+    metadata: Mapping[str, Any],
+    built_meta: Mapping[str, Any],
+    *,
+    require_aperture: bool = False,
+) -> List[str]:
+    """Return validation failure messages (empty list = pass)."""
+    failures: List[str] = []
+    raw_ap = region.get("p_idx_aperture")
+    p_ap = (
+        np.asarray([], dtype=np.int32)
+        if raw_ap is None
+        else np.asarray(raw_ap, dtype=np.int32).ravel()
+    )
+    if require_aperture or "p_idx_aperture" in region:
+        if p_ap.size <= 0:
+            failures.append("p_idx_aperture_count<=0")
+        elif not np.issubdtype(p_ap.dtype, np.integer):
+            failures.append(f"p_idx_aperture_dtype_not_integer:{p_ap.dtype}")
+        else:
+            n_w = int(built_meta.get("n_w") or 0)
+            if n_w > 0 and int(p_ap.max(initial=-1)) >= n_w:
+                failures.append(f"p_idx_aperture_out_of_range:n_w={n_w},max={int(p_ap.max())}")
+        method = str(metadata.get("aperture_selection_method") or "").strip()
+        if p_ap.size > 0 and not method:
+            failures.append("aperture_selection_method_missing")
+        meta_count = metadata.get("p_idx_aperture_count")
+        if p_ap.size > 0 and meta_count is not None and int(meta_count) != int(p_ap.size):
+            failures.append(
+                f"p_idx_aperture_count_mismatch:metadata={meta_count},actual={int(p_ap.size)}"
+            )
+    return failures
+
+
+def split_region_dof_mixed_npz_inplace(checkpoint: Path) -> Dict[str, Any]:
+    """One-time migration: move metadata out of mixed NPZ into region_dof_metadata.json."""
+    checkpoint = checkpoint.expanduser().resolve()
+    npz_path = checkpoint / REGION_DOF_INDICES_NPZ
+    if not npz_path.is_file():
+        raise FileNotFoundError(f"missing {npz_path}")
+    with np.load(npz_path, allow_pickle=False) as z:
+        region = _load_region_indices_from_npz(z)
+        metadata = _load_region_metadata_from_npz(z)
+        mixed_meta_in_npz = any(k in z.files for k in REGION_NPZ_ALL_META_KEYS)
+    if not mixed_meta_in_npz and (checkpoint / REGION_DOF_METADATA_JSON).is_file():
+        return {"status": "SKIP", "reason": "already_split"}
+    np.savez_compressed(npz_path, **region)
+    meta_path = write_region_dof_metadata_json(checkpoint, metadata)
+    return {
+        "status": "PASS",
+        "region_dof_indices_npz": str(npz_path),
+        "region_dof_metadata_json": str(meta_path),
+        "index_keys": sorted(region.keys()),
+        "metadata_keys": sorted(metadata.keys()),
+    }
+
+
 def load_region_dof_bundle(
     checkpoint: Path,
     built_meta: Dict[str, Any],
+    *,
+    validate_aperture: bool = True,
 ) -> Dict[str, Any]:
     """Load region index sets; distinguish facet structural (npz) vs pressure (built_meta ok)."""
     checkpoint = checkpoint.expanduser().resolve()
     npz_path = checkpoint / REGION_DOF_INDICES_NPZ
+    meta_path = checkpoint / REGION_DOF_METADATA_JSON
     npz_present = npz_path.is_file()
     region: Dict[str, np.ndarray]
+    metadata: Dict[str, Any] = {}
     source = "built_metadata_pressure_only"
     back_includes_ribs = True
+    contract_failures: List[str] = []
     if npz_present:
         with np.load(npz_path, allow_pickle=False) as z:
-            region = {}
-            for k in z.files:
-                if k in _NPZ_SCALAR_META_KEYS:
-                    continue
-                region[k] = np.asarray(z[k], dtype=np.int32).ravel().copy()
-            source = _npz_scalar_str(z, "region_dof_source", default="region_dof_indices_npz") or "region_dof_indices_npz"
-            back_includes_ribs = _npz_scalar_bool(z, "back_includes_ribs", default=True)
+            region = _load_region_indices_from_npz(z)
+            metadata = _load_region_metadata_from_npz(z)
+        if meta_path.is_file():
+            file_meta = load_region_dof_metadata_file(meta_path)
+            metadata.update({k: v for k, v in file_meta.items() if k != "schema"})
+        source = str(metadata.get("region_dof_source") or "region_dof_indices_npz")
+        back_includes_ribs = bool(metadata.get("back_includes_ribs", True))
+        if validate_aperture and "p_idx_aperture" in region:
+            contract_failures = validate_region_dof_contract(
+                region,
+                metadata,
+                built_meta,
+                require_aperture=True,
+            )
+            if contract_failures:
+                raise RegionDofSchemaError("; ".join(contract_failures))
     else:
         u_idx = np.asarray(built_meta.get("u_idx") or [], dtype=np.int32).ravel()
         p_idx = np.asarray(built_meta.get("p_idx") or [], dtype=np.int32).ravel()
@@ -184,9 +445,16 @@ def load_region_dof_bundle(
     pressure_ok = pressure_region_indices_available(region)
     return {
         "region": region,
+        "metadata": metadata,
         "npz_present": npz_present,
+        "region_dof_metadata_present": meta_path.is_file(),
         "region_dof_source": source,
         "back_includes_ribs": back_includes_ribs,
+        "aperture_selection_method": metadata.get("aperture_selection_method"),
+        "p_idx_aperture_count": int(np.asarray(region.get("p_idx_aperture", [])).size)
+        if "p_idx_aperture" in region
+        else metadata.get("p_idx_aperture_count"),
+        "contract_validation_failures": contract_failures,
         "structural_region_participation_status": (
             REGION_PARTICIPATION_STATUS_AVAILABLE
             if structural_ok

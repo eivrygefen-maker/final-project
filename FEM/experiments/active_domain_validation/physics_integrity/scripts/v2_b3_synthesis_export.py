@@ -20,9 +20,11 @@ from v2_mesh_convergence_common import mesh_path  # noqa: E402
 from v2_b3_rich_modal_lib import (  # noqa: E402
     REGION_DOF_INDICES_NPZ,
     REGION_DOF_LAYOUT,
+    build_region_dof_metadata_from_operator_build,
     SYNTHESIS_METADATA_JSON,
     SYNTHESIS_METADATA_SCHEMA,
     TAG_PROTOCOL_V1,
+    write_region_dof_metadata_json,
 )
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
@@ -265,7 +267,7 @@ def export_region_dof_indices_from_operator_build(
             "empty_p_idx_aperture:production_requires_aperture_pressure_mask",
         )
 
-    npz_kwargs: Dict[str, Any] = {
+    index_kwargs: Dict[str, Any] = {
         "u_idx_top": u_idx_top,
         "u_idx_back": u_idx_back,
         "u_idx_ribs": u_idx_ribs,
@@ -274,22 +276,12 @@ def export_region_dof_indices_from_operator_build(
         "p_idx_all": p_idx_all.copy(),
         "p_idx_aperture": p_idx_aperture,
         "u_idx_all": u_idx_all,
-        "region_dof_mesh_file": np.asarray([mesh_file]),
-        "region_dof_source": np.asarray([source]),
-        "layout": np.asarray([str(region_dof_build.get("layout") or REGION_DOF_LAYOUT)]),
-        "back_includes_ribs": np.asarray([bool(region_dof_build.get("back_includes_ribs", True))]),
-        "aperture_selection_method": np.asarray([str(region_dof_build.get("aperture_selection_method") or "")]),
-        "p_idx_aperture_count": np.asarray([int(p_idx_aperture.size)]),
-        "mic_output_method": np.asarray([str(region_dof_build.get("mic_output_method") or "aperture_pressure_rms_proxy_v1")]),
     }
-    bounds = region_dof_build.get("aperture_coordinate_bounds")
-    if isinstance(bounds, dict):
-        npz_kwargs["aperture_coordinate_bounds_min"] = np.asarray(bounds.get("min") or [0.0, 0.0, 0.0], dtype=np.float64)
-        npz_kwargs["aperture_coordinate_bounds_max"] = np.asarray(bounds.get("max") or [0.0, 0.0, 0.0], dtype=np.float64)
-    npz_kwargs["aperture_facet_count"] = np.asarray([int(region_dof_build.get("aperture_facet_count") or 0)])
-    npz_kwargs["adjacent_air_cell_count"] = np.asarray([int(region_dof_build.get("adjacent_air_cell_count") or 0)])
-
-    np.savez_compressed(checkpoint / REGION_DOF_INDICES_NPZ, **npz_kwargs)
+    np.savez_compressed(checkpoint / REGION_DOF_INDICES_NPZ, **index_kwargs)
+    metadata = build_region_dof_metadata_from_operator_build(region_dof_build)
+    metadata["region_dof_source"] = source
+    metadata["region_dof_mesh_file"] = mesh_file
+    write_region_dof_metadata_json(checkpoint, metadata)
     return REGION_DOF_STATUS_PASS, None
 
 
@@ -373,9 +365,15 @@ def export_region_dof_indices_npz(
         p_idx_air=p_idx_air,
         p_idx_all=p_idx_all,
         u_idx_all=np.arange(n_u_b3, dtype=np.int32),
-        region_dof_mesh_file=np.asarray([str(mesh_file.resolve())]),
-        layout=np.asarray([REGION_DOF_LAYOUT]),
-        back_includes_ribs=np.asarray([True]),
+    )
+    write_region_dof_metadata_json(
+        checkpoint,
+        {
+            "layout": REGION_DOF_LAYOUT,
+            "region_dof_source": "dolfinx_region_dof_export",
+            "region_dof_mesh_file": str(mesh_file.resolve()),
+            "back_includes_ribs": True,
+        },
     )
     return REGION_DOF_STATUS_PASS, None
 
