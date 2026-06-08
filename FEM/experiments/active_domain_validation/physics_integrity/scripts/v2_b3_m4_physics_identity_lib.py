@@ -28,6 +28,68 @@ CAVITY_AIR_TAG = 10
 
 CANONICAL_SAMPLE_ID_RE = re.compile(r"sample_\d{3}", re.IGNORECASE)
 
+# Physics-bearing inputs only — never scan freeze docs, plots, or generated audit output.
+PHYSICS_SCAN_EXCLUDE_REL: frozenset[str] = frozenset(
+    {
+        "freeze/sample_e2e_run_manifest.json",
+        "freeze/physics_identity_manifest.json",
+        "freeze/freeze_manifest.json",
+        "freeze/first_end_to_end_run_manifest.json",
+    }
+)
+
+PHYSICS_SCAN_GLOBS: Tuple[str, ...] = (
+    "sample/*.json",
+    "scout/*.json",
+    "lprod/*.json",
+    "lprod/checkpoint/*.json",
+    "worker_results/*/*.json",
+    "aggregation/modes_catalog.jsonl",
+    "pipeline_run_manifest.json",
+)
+
+PATH_LIKE_JSON_KEYS: frozenset[str] = frozenset(
+    {
+        "mesh_file",
+        "mesh_path",
+        "operator_mesh_file",
+        "operator_mesh_file_used",
+        "generated_mesh_file",
+        "region_dof_mesh_file",
+        "checkpoint_dir",
+        "source_worker_result",
+        "source_solver_result",
+        "operator_mesh_path",
+        "generated_mesh_path",
+        "run_root",
+        "run_root_abs",
+        "run_dir",
+        "output_dir",
+        "mesh_source_recommended",
+        "sample_mesh_path",
+        "baseline_mesh_path",
+        "checkpoint_dir",
+        "region_dof_indices_file",
+        "region_dof_mesh_file",
+    }
+)
+
+PATH_LIKE_CONTAINER_KEYS: frozenset[str] = frozenset(
+    {
+        "solver",
+        "paths",
+        "geometry_compatibility",
+        "result_paths",
+        "stages",
+        "artifact_paths",
+        "targets",
+        "chunks",
+        "chunk_results",
+    }
+)
+
+COMMAND_PATH_KEYS: frozenset[str] = frozenset({"command", "command_preview"})
+
 
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -245,42 +307,113 @@ def foreign_sample_ids_in_text(text: str, *, current_sample_id: str) -> set[str]
     return found - {current}
 
 
+def _yield_path_strings(value: Any) -> List[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(item) for item in value if isinstance(item, str)]
+    return []
+
+
+def iter_path_like_strings_from_json(obj: Any, *, parent_key: str = "") -> List[str]:
+    """Extract path/source strings from structured JSON (not free-text prose)."""
+    out: List[str] = []
+    if isinstance(obj, dict):
+        for key, val in obj.items():
+            if key in PATH_LIKE_JSON_KEYS:
+                out.extend(_yield_path_strings(val))
+            elif key in COMMAND_PATH_KEYS and isinstance(val, str) and ("/" in val or "\\" in val):
+                out.append(val)
+            elif key in PATH_LIKE_CONTAINER_KEYS or key.endswith("_paths"):
+                out.extend(iter_path_like_strings_from_json(val, parent_key=key))
+            elif isinstance(val, (dict, list)) and key in ("targets", "chunks", "accepted_modes"):
+                out.extend(iter_path_like_strings_from_json(val, parent_key=key))
+    elif isinstance(obj, list):
+        for item in obj:
+            out.extend(iter_path_like_strings_from_json(item, parent_key=parent_key))
+    return out
+
+
+def iter_physics_scan_files(run_root: Path) -> List[Path]:
+    """Enumerate physics-bearing JSON/JSONL files under *run_root* (excludes freeze/reports)."""
+    run_root = run_root.resolve()
+    found: List[Path] = []
+    seen: set[str] = set()
+    for pattern in PHYSICS_SCAN_GLOBS:
+        for path in sorted(run_root.glob(pattern)):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(run_root).as_posix()
+            if rel.startswith("freeze/"):
+                continue
+            if rel in PHYSICS_SCAN_EXCLUDE_REL:
+                continue
+            if rel.endswith((".png", ".md", ".csv")):
+                continue
+            if rel.startswith("aggregation/") and rel != "aggregation/modes_catalog.jsonl":
+                continue
+            if rel in seen:
+                continue
+            seen.add(rel)
+            found.append(path)
+    return found
+
+
+def foreign_sample_ids_in_physics_file(path: Path, *, current_sample_id: str) -> Tuple[set[str], List[str]]:
+    """Return foreign sample ids and path-like strings inspected from one physics file."""
+    current = canonical_sample_id(current_sample_id)
+    path_strings: List[str] = []
+    if path.suffix == ".jsonl":
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except (ValueError, json.JSONDecodeError):
+                continue
+            path_strings.extend(iter_path_like_strings_from_json(row))
+    else:
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return set(), []
+        path_strings.extend(iter_path_like_strings_from_json(doc))
+
+    foreign: set[str] = set()
+    for ps in path_strings:
+        foreign |= foreign_sample_ids_in_text(ps, current_sample_id=current)
+    return foreign, path_strings
+
+
 def scan_cross_sample_path_contamination(
     run_root: Path,
     *,
     sample_id: str,
-    max_files: int = 200,
+    max_files: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Detect references to foreign ``sample_NNN`` ids under *run_root* (not current sample)."""
+    """Detect foreign ``sample_NNN`` in physics path/source fields only (not docs or prose)."""
     current = canonical_sample_id(sample_id)
     hits: List[Dict[str, Any]] = []
-    checked = 0
-    run_root = run_root.resolve()
-    for path in run_root.rglob("*"):
-        if not path.is_file():
-            continue
-        if path.suffix in (".npz", ".bin", ".msh") and path.stat().st_size > 5_000_000:
-            continue
-        checked += 1
-        if checked > max_files:
-            break
-        try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        foreign = sorted(foreign_sample_ids_in_text(text, current_sample_id=current))
+    files = iter_physics_scan_files(run_root)
+    if max_files is not None:
+        files = files[: int(max_files)]
+    for path in files:
+        foreign, inspected = foreign_sample_ids_in_physics_file(path, current_sample_id=current)
         if foreign:
             hits.append(
                 {
-                    "file": str(path.relative_to(run_root)).replace("\\", "/"),
-                    "foreign_sample_ids": foreign,
-                    "other_sample_id": foreign[0],
+                    "file": path.relative_to(run_root.resolve()).as_posix(),
+                    "foreign_sample_ids": sorted(foreign),
+                    "other_sample_id": sorted(foreign)[0],
+                    "path_fields_inspected": inspected[:8],
                 }
             )
     return {
         "sample_id": sample_id,
         "canonical_sample_id": current,
-        "files_scanned": checked,
+        "scan_scope": "physics_path_fields_only",
+        "files_scanned": len(files),
+        "scanned_files": [p.relative_to(run_root.resolve()).as_posix() for p in files],
         "contamination_hits": hits,
         "contamination_detected": len(hits) > 0,
     }
@@ -391,6 +524,11 @@ def build_physics_identity_manifest(
         fb["solver_config_fallback"] = True
     if manifest["path_contamination"].get("contamination_detected"):
         fb["cross_sample_reuse"] = True
+        manifest["production_acceptance_pass"] = False
+        failures = list(manifest.get("production_acceptance_failures") or [])
+        if "cross_sample_path_contamination" not in failures:
+            failures.append("cross_sample_path_contamination")
+        manifest["production_acceptance_failures"] = failures
     return manifest
 
 
@@ -419,7 +557,9 @@ def validate_physics_identity_manifest(manifest: Mapping[str, Any]) -> Tuple[boo
             errors.append(f"fallback_flag_true:{key}")
     if manifest.get("path_contamination", {}).get("contamination_detected"):
         errors.append("cross_sample_path_contamination")
-    if not bool(manifest.get("production_acceptance_pass")):
+    if fb.get("cross_sample_reuse") and bool(manifest.get("production_acceptance_pass")):
+        errors.append("production_acceptance_pass_inconsistent_with_cross_sample_reuse")
+    if not bool(manifest.get("production_acceptance_pass")) or fb.get("cross_sample_reuse"):
         errors.append("production_acceptance_pass!=true")
     return len(errors) == 0, errors
 

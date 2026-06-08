@@ -249,11 +249,16 @@ def replay_production_freeze(
         acceptance=acceptance,
         sample_input=sample_doc,
     )
-    write_physics_identity_manifest(
+    identity_path = write_physics_identity_manifest(
         repo_root=repo_root,
         run_root=run_root,
         acceptance=acceptance,
         sample_input=sample_doc,
     )
+    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    if (identity.get("fallback_flags") or {}).get("cross_sample_reuse"):
+        return 2, "cross_sample_reuse=true_in_physics_identity_manifest"
+    if not bool(identity.get("production_acceptance_pass")):
+        return 2, "; ".join(identity.get("production_acceptance_failures") or ["production_acceptance_failed"])
     promote_production_completed(run_root, acceptance=acceptance)
     return 0, "production freeze finalized"
