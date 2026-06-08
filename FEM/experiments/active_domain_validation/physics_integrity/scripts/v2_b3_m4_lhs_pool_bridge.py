@@ -581,6 +581,7 @@ def reconcile_existing_runs(
     lhs_path: Path,
     run_id_suffix: str = DEFAULT_RUN_ID_SUFFIX,
     repair_freeze: bool = True,
+    repair_stale_running: bool = False,
     batch_id: Optional[str] = None,
     shared_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
@@ -589,6 +590,10 @@ def reconcile_existing_runs(
     Does not rerun workers.
     """
     from v2_b3_m4_freeze_first_e2e_run import repair_run_freeze_and_terminal  # noqa: E402
+    from v2_b3_m4_run_status_repair import (  # noqa: E402
+        STALE_RUNNING_REPAIR_REASON,
+        promote_checkpoint_ready_terminal,
+    )
 
     guitars_root = (
         repo_root
@@ -596,6 +601,7 @@ def reconcile_existing_runs(
     )
     rows: List[Dict[str, Any]] = []
     repaired = 0
+    stale_running_repaired = 0
     completed = 0
     failed = 0
     bid = batch_id or f"reconcile_{utc_now()[:10].replace('-', '')}"
@@ -619,8 +625,23 @@ def reconcile_existing_runs(
 
         summary = read_run_production_summary(run_root)
         row.update(summary)
+        if repair_stale_running:
+            stale_result = promote_checkpoint_ready_terminal(
+                run_root,
+                repair_reason=STALE_RUNNING_REPAIR_REASON,
+            )
+            row["stale_running_repair"] = stale_result
+            if stale_result.get("status") == "PASS":
+                stale_running_repaired += 1
+                summary = read_run_production_summary(run_root)
+                row.update(summary)
+                row["terminal_status"] = summary.get("terminal_status")
         if not is_run_usably_complete(summary):
-            row["action"] = "skip_not_usable"
+            row["action"] = (
+                "stale_running_repaired"
+                if row.get("stale_running_repair", {}).get("status") == "PASS"
+                else "skip_not_usable"
+            )
             failed += 1
             rows.append(row)
             continue
@@ -685,6 +706,7 @@ def reconcile_existing_runs(
         "lhs_backup": rel(backup, repo_root=repo_root),
         "reconciled_completed_count": completed,
         "freeze_repaired_count": repaired,
+        "stale_running_repaired_count": stale_running_repaired,
         "not_usable_count": failed,
         "samples": rows,
     }

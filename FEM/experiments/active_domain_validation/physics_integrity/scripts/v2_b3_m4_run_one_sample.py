@@ -25,6 +25,10 @@ from v2_b3_m4_freeze_first_e2e_run import (  # noqa: E402
     write_freeze_outputs,
     _validate_milestone,
 )
+from v2_b3_m4_run_status_repair import (  # noqa: E402
+    STALE_RUNNING_REPAIR_REASON,
+    maybe_promote_checkpoint_ready_terminal,
+)
 from v2_b3_m4_worker_run_lib import (  # noqa: E402
     chunk_ids_from_worker_plan,
     chunk_worker_pass_status,
@@ -561,6 +565,11 @@ def run_pipeline(
         if st["pass"] and not stage_force:
             print(f"[skip] {name}: already PASS (reuse)", flush=True)
             _append_log(log_path, f"[{utc_now()}] skip {name} PASS reuse")
+            if name == "checkpoint":
+                maybe_promote_checkpoint_ready_terminal(
+                    run_root,
+                    repair_reason="checkpoint_stage_reuse",
+                )
             if STOP_AFTER_RANK.get(stop_after or "", 999) == idx:
                 break
             continue
@@ -578,7 +587,18 @@ def run_pipeline(
         )
         print(f"  {name}: rc={rc} elapsed_s={elapsed:.1f}", flush=True)
 
+        if name == "checkpoint" and rc == 0:
+            maybe_promote_checkpoint_ready_terminal(
+                run_root,
+                repair_reason="checkpoint_stage_complete",
+            )
+
         if rc != 0:
+            if name in ("workers", "aggregate") and _stage_pass_checkpoint(run_root):
+                maybe_promote_checkpoint_ready_terminal(
+                    run_root,
+                    repair_reason=STALE_RUNNING_REPAIR_REASON,
+                )
             if name == "freeze" and _stage_pass_aggregate(run_root):
                 promote_pipeline_terminal_status(
                     run_root,

@@ -17,6 +17,10 @@ from v2_b3_m4_runtime_provenance import (  # noqa: E402
     collect_m4_runtime_provenance,
     production_worker_thread_settings,
 )
+from v2_b3_m4_run_status_repair import (  # noqa: E402
+    clear_worker_active_lock,
+    write_worker_active_lock,
+)
 from v2_b3_m4_worker_run_lib import (  # noqa: E402
     PASS_LIKE,
     TERMINAL_CHECKPOINT_READY,
@@ -283,20 +287,24 @@ def run_execute(
             f"[remaining] FCFS parallel execute n_workers={n_workers} chunks={len(to_execute)}",
             flush=True,
         )
-        parallel_results, workers_actual = run_chunks_fcfs_parallel(
-            repo_root=repo_root,
-            run_root=run_root,
-            chunk_ids=to_execute,
-            solver_python=solver_python,
-            solver_venv=solver_venv,
-            force=force,
-            env_b=env_b,
-            env_probe_body=env_body,
-            n_workers=n_workers,
-            minibatch_id=REMAINING_ID,
-            label_prefix="worker_remaining",
-            stop_on_fail=stop_on_fail,
-        )
+        write_worker_active_lock(run_root)
+        try:
+            parallel_results, workers_actual = run_chunks_fcfs_parallel(
+                repo_root=repo_root,
+                run_root=run_root,
+                chunk_ids=to_execute,
+                solver_python=solver_python,
+                solver_venv=solver_venv,
+                force=force,
+                env_b=env_b,
+                env_probe_body=env_body,
+                n_workers=n_workers,
+                minibatch_id=REMAINING_ID,
+                label_prefix="worker_remaining",
+                stop_on_fail=stop_on_fail,
+            )
+        finally:
+            clear_worker_active_lock(run_root)
         for j, result in enumerate(parallel_results):
             chunk_id = result.get("chunk_id")
             print(

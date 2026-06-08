@@ -97,6 +97,11 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Scan run trees, repair freeze/terminal, update lhs_pool.json + sidecar (no workers).",
     )
+    parser.add_argument(
+        "--repair-stale-running",
+        action="store_true",
+        help="With --reconcile-existing-runs: repair terminal_status RUNNING -> LPROD_CHECKPOINT_READY when safe.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Plan only; write specs/status previews.")
     parser.add_argument("--execute", action="store_true", help="Run M4 pipeline for selected samples.")
     parser.add_argument(
@@ -402,6 +407,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             lhs_path=lhs_path,
             run_id_suffix=run_id_suffix,
             repair_freeze=True,
+            repair_stale_running=bool(args.repair_stale_running),
             shared_root=shared_root,
         )
         status_doc = load_lhs_pool_status(
@@ -433,6 +439,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         write_json_atomic(out_path, report)
         print(f"reconciled_completed={report.get('reconciled_completed_count')}")
         print(f"freeze_repaired={report.get('freeze_repaired_count')}")
+        print(f"stale_running_repaired={report.get('stale_running_repaired_count')}")
         print(f"lhs_pool={lhs_rel}")
         print(f"lhs_backup={report.get('lhs_backup')}")
         print(f"report={rel(out_path, repo_root=repo_root)}")
