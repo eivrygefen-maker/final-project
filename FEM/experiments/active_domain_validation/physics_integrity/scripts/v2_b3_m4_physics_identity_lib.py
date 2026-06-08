@@ -26,10 +26,7 @@ FORBIDDEN_HEAVY_REL_DIRS = (
 WOOD_VOLUME_TAGS = (1, 2, 3)
 CAVITY_AIR_TAG = 10
 
-OTHER_SAMPLE_PATH_RE = re.compile(
-    r"sample_\d{3}(?:/|\\)|sample_\d{3}_",
-    re.IGNORECASE,
-)
+CANONICAL_SAMPLE_ID_RE = re.compile(r"sample_\d{3}", re.IGNORECASE)
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -233,16 +230,32 @@ def mesh_component_hashes(mesh_path: Path, *, built_meta: Optional[Mapping[str, 
     return out
 
 
+def canonical_sample_id(sample_id: str) -> str:
+    """Normalize to ``sample_NNN`` (three-digit index)."""
+    match = CANONICAL_SAMPLE_ID_RE.search(str(sample_id))
+    if not match:
+        raise ValueError(f"invalid sample_id (expected sample_NNN): {sample_id!r}")
+    return match.group(0).lower()
+
+
+def foreign_sample_ids_in_text(text: str, *, current_sample_id: str) -> set[str]:
+    """Return canonical sample IDs in *text* that differ from *current_sample_id*."""
+    current = canonical_sample_id(current_sample_id)
+    found = {m.group(0).lower() for m in CANONICAL_SAMPLE_ID_RE.finditer(str(text))}
+    return found - {current}
+
+
 def scan_cross_sample_path_contamination(
     run_root: Path,
     *,
     sample_id: str,
     max_files: int = 200,
 ) -> Dict[str, Any]:
-    """Detect path references to other sample_ids under run_root."""
-    hits: List[Dict[str, str]] = []
-    own = sample_id.lower()
+    """Detect references to foreign ``sample_NNN`` ids under *run_root* (not current sample)."""
+    current = canonical_sample_id(sample_id)
+    hits: List[Dict[str, Any]] = []
     checked = 0
+    run_root = run_root.resolve()
     for path in run_root.rglob("*"):
         if not path.is_file():
             continue
@@ -255,19 +268,18 @@ def scan_cross_sample_path_contamination(
             text = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        for m in OTHER_SAMPLE_PATH_RE.finditer(text):
-            token = m.group(0).rstrip("/\\").lower()
-            other_sid = token.split("/")[0].split("\\")[0].replace("_chunk", "")
-            if other_sid.startswith("sample_") and other_sid != own:
-                hits.append(
-                    {
-                        "file": str(path.relative_to(run_root)).replace("\\", "/"),
-                        "reference": token,
-                        "other_sample_id": other_sid.split("_chunk")[0],
-                    }
-                )
+        foreign = sorted(foreign_sample_ids_in_text(text, current_sample_id=current))
+        if foreign:
+            hits.append(
+                {
+                    "file": str(path.relative_to(run_root)).replace("\\", "/"),
+                    "foreign_sample_ids": foreign,
+                    "other_sample_id": foreign[0],
+                }
+            )
     return {
         "sample_id": sample_id,
+        "canonical_sample_id": current,
         "files_scanned": checked,
         "contamination_hits": hits,
         "contamination_detected": len(hits) > 0,

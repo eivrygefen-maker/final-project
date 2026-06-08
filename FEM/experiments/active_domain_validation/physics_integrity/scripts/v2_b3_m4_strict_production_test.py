@@ -19,6 +19,7 @@ from v2_b3_m4_mode_provenance import (  # noqa: E402
     eigenvector_sketch_sha256,
 )
 from v2_b3_m4_physics_identity_lib import (  # noqa: E402
+    foreign_sample_ids_in_text,
     scan_cross_sample_path_contamination,
     validate_physics_identity_manifest,
 )
@@ -72,6 +73,64 @@ class StrictProductionTest(unittest.TestCase):
             )
             rep = scan_cross_sample_path_contamination(root, sample_id="sample_002")
             self.assertTrue(rep["contamination_detected"])
+            self.assertEqual(rep["contamination_hits"][0]["foreign_sample_ids"], ["sample_001"])
+
+    def test_current_sample_000_path_reference_passes(self) -> None:
+        text = "guitars/sample_000/runs/sample_000_m4prod2_strict_val/lprod/mesh/L_prod/sample_000.msh"
+        self.assertEqual(foreign_sample_ids_in_text(text, current_sample_id="sample_000"), set())
+
+    def test_current_run_id_reference_passes(self) -> None:
+        text = "run_id=sample_000_m4prod2_strict_val"
+        self.assertEqual(foreign_sample_ids_in_text(text, current_sample_id="sample_000"), set())
+
+    def test_current_chunk_id_reference_passes(self) -> None:
+        text = "worker_results/sample_000_chunk_12/solver_result.json"
+        self.assertEqual(foreign_sample_ids_in_text(text, current_sample_id="sample_000"), set())
+
+    def test_foreign_sample_001_in_sample_000_run_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "lprod" / "resolved_core_config.json"
+            cfg.parent.mkdir(parents=True)
+            cfg.write_text(
+                json.dumps(
+                    {"solver": {"mesh_file": "guitars/sample_001/runs/x/lprod/mesh/L_prod/sample_001.msh"}}
+                ),
+                encoding="utf-8",
+            )
+            rep = scan_cross_sample_path_contamination(root, sample_id="sample_000")
+            self.assertTrue(rep["contamination_detected"])
+            self.assertEqual(rep["contamination_hits"][0]["foreign_sample_ids"], ["sample_001"])
+
+    def test_only_sample_000_references_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "pipeline_run_manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "sample_id": "sample_000",
+                        "run_id": "sample_000_m4prod2_strict_val",
+                        "chunk_id": "sample_000_chunk_04",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            rep = scan_cross_sample_path_contamination(root, sample_id="sample_000")
+            self.assertFalse(rep["contamination_detected"])
+
+    def test_sample_000_plus_sample_002_fails_with_sample_002(self) -> None:
+        text = "sample_000 ok but reused sample_002 checkpoint"
+        foreign = foreign_sample_ids_in_text(text, current_sample_id="sample_000")
+        self.assertEqual(foreign, {"sample_002"})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            note = root / "logs" / "note.txt"
+            note.parent.mkdir(parents=True)
+            note.write_text(text, encoding="utf-8")
+            rep = scan_cross_sample_path_contamination(root, sample_id="sample_000")
+            self.assertTrue(rep["contamination_detected"])
+            self.assertEqual(rep["contamination_hits"][0]["foreign_sample_ids"], ["sample_002"])
 
     def test_physics_identity_manifest_validation_requires_aperture(self) -> None:
         man = {
