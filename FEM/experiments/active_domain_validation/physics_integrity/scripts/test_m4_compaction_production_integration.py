@@ -66,14 +66,41 @@ def _make_completed_run(run_root: Path, *, sample_id: str, run_id: str) -> None:
         '{"frequency_hz": 120.0, "mic_output_proxy": 0.01}\n',
         encoding="utf-8",
     )
+    (run_root / "aggregation" / "modes_catalog_deduped.jsonl").write_text(
+        '{"frequency_hz": 120.0, "mic_output_proxy": 0.01}\n',
+        encoding="utf-8",
+    )
+    (run_root / "aggregation" / "mode_provenance.jsonl").write_text(
+        '{"mode_index": 0, "frequency_hz": 120.0}\n',
+        encoding="utf-8",
+    )
     (run_root / "aggregation" / "mode_frequency_plot.png").write_bytes(b"png")
     _write_json(run_root / "rom" / "rom_fom_comparison.json", {"status": "COMPLETED"})
     _write_json(run_root / "freeze" / "sample_e2e_run_manifest.json", {"status": "ok"})
-    _write_json(run_root / "pipeline_run_manifest.json", {"terminal_status": "LPROD_WORKERS_AND_AGGREGATION_PASS"})
+    _write_json(
+        run_root / "freeze" / "physics_identity_manifest.json",
+        {
+            "schema": "m4_physics_identity_v1",
+            "sample_id": sample_id,
+            "run_id": run_id,
+            "production_acceptance_pass": True,
+            "generated_mesh_sha256": "abc",
+            "operator_mesh_matches_generated": True,
+            "active_dimension": 100,
+            "masks": {"p_idx_aperture_count": 4},
+            "fallback_flags": {"cross_sample_reuse": False},
+            "path_contamination": {"contamination_detected": False},
+        },
+    )
+    _write_json(run_root / "pipeline_run_manifest.json", {"terminal_status": "COMPLETED"})
     _write_json(run_root / "sample" / "sample_input.json", {"sample_id": sample_id})
     (run_root / "logs").mkdir(parents=True, exist_ok=True)
     heavy = run_root / "lprod" / "checkpoint"
     heavy.mkdir(parents=True, exist_ok=True)
+    (heavy / "built_metadata.json").write_text(
+        json.dumps({"dataset_version": "m4_geometry_corrected_v1"}),
+        encoding="utf-8",
+    )
     (heavy / "A_active_csr.npz").write_bytes(b"x" * 4096)
     (run_root / "worker_results" / "chunk_01").mkdir(parents=True, exist_ok=True)
     (run_root / "worker_results" / "chunk_01" / "worker_result.json").write_text("{}", encoding="utf-8")
@@ -134,6 +161,8 @@ class CompactionProductionIntegrationTests(unittest.TestCase):
             "outcome": "pass",
             "aggregation_status": AGG_PASS,
             "final_aggregation_ready": True,
+            "terminal_status": "COMPLETED",
+            "production_acceptance_pass": True,
             "shared_export": {"export_status": "EXPORTED"},
             "rom_compare": {"status": "COMPLETED"},
         }

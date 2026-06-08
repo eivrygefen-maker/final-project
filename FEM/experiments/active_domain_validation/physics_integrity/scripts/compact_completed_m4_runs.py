@@ -202,6 +202,162 @@ def guitars_root(repo_root: Path) -> Path:
     return repo_root / "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars"
 
 
+@dataclass
+class RunSelection:
+    sample_id: str
+    run_id: str
+    run_root: Path
+    ambiguous: bool = False
+    skip_reason: str = ""
+
+
+def _run_id_for_suffix(sample_id: str, run_id_suffix: str) -> str:
+    return f"{sample_id}_{run_id_suffix}"
+
+
+def _list_sample_run_dirs(repo_root: Path, sample_id: str) -> List[Path]:
+    runs_dir = guitars_root(repo_root) / sample_id / "runs"
+    if not runs_dir.is_dir():
+        return []
+    return sorted(
+        (p for p in runs_dir.iterdir() if p.is_dir() and not p.is_symlink()),
+        key=lambda p: p.name,
+    )
+
+
+def _resolve_run_dir(repo_root: Path, run_dir: Path) -> Tuple[str, str, Path]:
+    guitars = guitars_root(repo_root).resolve()
+    candidate = run_dir.expanduser()
+    if not candidate.is_absolute():
+        candidate = repo_root / candidate
+    try:
+        resolved = candidate.resolve(strict=False)
+    except OSError as exc:
+        raise ValueError(f"run_dir_unresolvable:{exc}") from exc
+    if resolved.is_symlink():
+        raise ValueError("run_dir_symlink_not_allowed")
+    try:
+        rel_parts = resolved.relative_to(guitars).parts
+    except ValueError as exc:
+        raise ValueError("run_dir_outside_guitars_runs") from exc
+    if len(rel_parts) != 3 or rel_parts[1] != "runs":
+        raise ValueError(f"run_dir_not_under_guitars_runs:{'/'.join(rel_parts)}")
+    return rel_parts[0], rel_parts[2], resolved
+
+
+def _strict_precheck_run_root(run_root: Path) -> Tuple[bool, str]:
+    from v2_b3_m4_physics_identity_lib import (  # noqa: WPS433
+        MODE_PROVENANCE_SIDECAR,
+        PHYSICS_IDENTITY_MANIFEST,
+    )
+
+    summary = read_run_production_summary(run_root)
+    terminal = str(summary.get("terminal_status") or "")
+    if terminal != "COMPLETED":
+        return False, f"terminal_status={terminal or 'missing'}"
+
+    phys_path = run_root / PHYSICS_IDENTITY_MANIFEST
+    if not phys_path.is_file():
+        return False, "missing_physics_identity_manifest"
+    try:
+        phys = json.loads(phys_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False, "physics_identity_manifest_unreadable"
+    if not bool(phys.get("production_acceptance_pass")):
+        return False, "production_acceptance_pass!=true"
+
+    for rel_path in (
+        MODE_PROVENANCE_SIDECAR,
+        "aggregation/modes_catalog_deduped.jsonl",
+    ):
+        if not (run_root / rel_path).is_file():
+            return False, f"missing:{rel_path}"
+    return True, "ok"
+
+
+def resolve_compaction_run_selections(
+    repo_root: Path,
+    *,
+    sample_ids: Sequence[str],
+    run_dir: Optional[Path] = None,
+    run_id_suffix: Optional[str] = None,
+) -> Tuple[List[RunSelection], List[str]]:
+    errors: List[str] = []
+    if run_dir is not None and run_id_suffix:
+        errors.append("error: --run-dir and --run-id-suffix are mutually exclusive")
+        return [], errors
+
+    if run_dir is not None:
+        try:
+            sample_id, run_id, resolved = _resolve_run_dir(repo_root, run_dir)
+        except ValueError as exc:
+            errors.append(f"error: {exc}")
+            return [], errors
+        return [RunSelection(sample_id=sample_id, run_id=run_id, run_root=resolved)], errors
+
+    suffix = str(run_id_suffix or "").strip()
+    selections: List[RunSelection] = []
+    for sid in sample_ids:
+        candidates = _list_sample_run_dirs(repo_root, sid)
+        if suffix:
+            expected = _run_id_for_suffix(sid, suffix)
+            matched = [p for p in candidates if p.name == expected]
+            if not matched:
+                selections.append(
+                    RunSelection(
+                        sample_id=sid,
+                        run_id=expected,
+                        run_root=guitars_root(repo_root) / sid / "runs" / expected,
+                        skip_reason="run_not_found",
+                    )
+                )
+            elif len(matched) == 1:
+                selections.append(
+                    RunSelection(sample_id=sid, run_id=matched[0].name, run_root=matched[0])
+                )
+            else:
+                selections.append(
+                    RunSelection(
+                        sample_id=sid,
+                        run_id=expected,
+                        run_root=matched[0],
+                        ambiguous=True,
+                        skip_reason="multiple_runs_match_suffix",
+                    )
+                )
+            continue
+
+        if not candidates:
+            selections.append(
+                RunSelection(
+                    sample_id=sid,
+                    run_id="",
+                    run_root=guitars_root(repo_root) / sid / "runs" / "missing",
+                    skip_reason="no_runs_present",
+                )
+            )
+        elif len(candidates) == 1:
+            selections.append(
+                RunSelection(
+                    sample_id=sid,
+                    run_id=candidates[0].name,
+                    run_root=candidates[0],
+                )
+            )
+        else:
+            names = [p.name for p in candidates]
+            selections.append(
+                RunSelection(
+                    sample_id=sid,
+                    run_id="",
+                    run_root=candidates[0],
+                    ambiguous=True,
+                    skip_reason=f"ambiguous_run_selection:{','.join(names)}",
+                )
+            )
+    return selections, errors
+
+
 def _safe_resolve_under(base: Path, child: Path) -> Optional[Path]:
     base = base.resolve()
     try:
@@ -323,24 +479,34 @@ def _estimate_bytes(run_root: Path, archivable: Sequence[Path]) -> Tuple[int, in
 def _eligible_run(
     *,
     repo_root: Path,
-    entry: Mapping[str, Any],
+    entry: Optional[Mapping[str, Any]],
     run_id: str,
+    sample_id: Optional[str] = None,
+    run_root: Optional[Path] = None,
+    explicit_selection: bool = False,
 ) -> RunRecord:
-    sample_id = str(entry.get("id") or "")
-    run_root = guitars_root(repo_root) / sample_id / "runs" / run_id
-    rec = RunRecord(sample_id=sample_id, run_id=run_id, run_root=run_root)
+    sid = str(sample_id or (entry or {}).get("id") or "")
+    if run_root is None:
+        run_root = guitars_root(repo_root) / sid / "runs" / run_id
+    rec = RunRecord(sample_id=sid, run_id=run_id, run_root=run_root)
 
-    if normalize_lhs_entry_status(entry.get("status")) != LHS_COMPLETED:
+    if entry is not None and normalize_lhs_entry_status(entry.get("status")) != LHS_COMPLETED:
         rec.skip_reason = f"lhs_status={entry.get('status')}"
         return rec
 
-    if not is_lhs_entry_completed(entry, run_id=run_id):
+    if entry is not None and not explicit_selection and not is_lhs_entry_completed(entry, run_id=run_id):
         rec.skip_reason = "lhs_completed_run_id_mismatch"
         return rec
 
     if not run_root.is_dir():
         rec.skip_reason = "run_root_missing"
         return rec
+
+    if explicit_selection:
+        ok, reason = _strict_precheck_run_root(run_root)
+        if not ok:
+            rec.skip_reason = f"strict_gate:{reason}"
+            return rec
 
     summary = read_run_production_summary(run_root)
     if _is_resume_needed(entry, summary):
@@ -721,10 +887,12 @@ def compact_one_completed_run(
         return _record_to_outcome(rec, runtime_s=time.perf_counter() - t0)
 
     try:
-        _process_delete_without_archive(rec, dry_run=dry_run, repo_root=repo_root)
-        if not dry_run and rec.status == "completed":
-            manifest = _build_delete_manifest(rec, production_trigger=production_trigger)
-            _write_manifest(rec.run_root, manifest)
+        _process_delete_without_archive(
+            rec,
+            dry_run=dry_run,
+            repo_root=repo_root,
+            production_trigger=production_trigger,
+        )
     except Exception as exc:
         rec.status = "failed"
         rec.warnings.append(str(exc))
@@ -791,9 +959,11 @@ def compact_runs_for_samples(
             outcomes.append(_record_to_outcome(rec))
             continue
         try:
-            _process_delete_without_archive(rec, dry_run=dry_run)
-            if not dry_run and rec.status == "completed":
-                _write_manifest(rec.run_root, _build_delete_manifest(rec, production_trigger=production_trigger))
+            _process_delete_without_archive(
+                rec,
+                dry_run=dry_run,
+                production_trigger=production_trigger,
+            )
             out = _record_to_outcome(rec)
             outcomes.append(out)
             if out.status == "failed":
@@ -859,7 +1029,13 @@ def _verify_post_compaction_strict(rec: RunRecord) -> None:
         raise RuntimeError(f"post_compaction_verify_failed:{report.get('errors')}")
 
 
-def _process_delete_without_archive(rec: RunRecord, *, dry_run: bool, repo_root: Optional[Path] = None) -> None:
+def _process_delete_without_archive(
+    rec: RunRecord,
+    *,
+    dry_run: bool,
+    repo_root: Optional[Path] = None,
+    production_trigger: bool = False,
+) -> None:
     if not rec.eligible or rec.keep_full or rec.already_compacted:
         if rec.keep_full:
             rec.status = "keep_full"
@@ -892,8 +1068,9 @@ def _process_delete_without_archive(rec: RunRecord, *, dry_run: bool, repo_root:
     rec.deleted_paths = _delete_archived_paths(rec.run_root, archivable)
     rec.deleted_bytes = rec.archivable_bytes
     rec.freed_bytes = rec.deleted_bytes
-    _verify_post_compaction_strict(rec)
     rec.status = "completed"
+    _write_manifest(rec.run_root, _build_delete_manifest(rec, production_trigger=production_trigger))
+    _verify_post_compaction_strict(rec)
 
 
 def _process_record(
@@ -1040,6 +1217,11 @@ def _print_summary(
         flush=True,
     )
     print(f"dry_run={dry_run}", flush=True)
+
+    if records:
+        print("\nselected_run_paths:", flush=True)
+        for r in records:
+            print(f"  {r.run_root}", flush=True)
 
     if recommendations:
         print("\nrepresentative_full_retention_recommendation (approve before --keep-full-samples):", flush=True)
@@ -1222,6 +1404,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--lhs-json", type=Path, default=Path("ROM/classic/lhs_pool.json"))
     parser.add_argument("--shape-name", default="classic")
     parser.add_argument("--sample-range", default="0-34")
+    parser.add_argument(
+        "--run-dir",
+        type=Path,
+        default=None,
+        help="Exact run directory under pipeline_runs/guitars/<sample_id>/runs/ (single-run selection).",
+    )
+    parser.add_argument(
+        "--run-id-suffix",
+        default=None,
+        help="With --sample-range: select only runs named <sample_id>_<suffix> (exact match).",
+    )
     parser.add_argument("--shared-root", type=Path, default=Path("/media/sf_gmar"))
     parser.add_argument("--keep-full-latest", type=int, default=2)
     parser.add_argument("--keep-full-samples", default="")
@@ -1282,6 +1475,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     sample_ids = _parse_sample_range(args.sample_range)
     keep_full_samples = _parse_sample_list(args.keep_full_samples)
+    run_id_suffix = str(args.run_id_suffix or "").strip() or None
+
+    selections, selection_errors = resolve_compaction_run_selections(
+        repo_root,
+        sample_ids=sample_ids if args.run_dir is None else [],
+        run_dir=args.run_dir,
+        run_id_suffix=run_id_suffix,
+    )
+    for msg in selection_errors:
+        print(msg, file=sys.stderr)
+        return 2
+
+    ambiguous = [s for s in selections if s.ambiguous]
+    if ambiguous:
+        for sel in ambiguous:
+            print(
+                f"error: ambiguous run selection for {sel.sample_id}: {sel.skip_reason}; "
+                "use --run-dir or --run-id-suffix",
+                file=sys.stderr,
+            )
+        if not args.dry_run:
+            return 2
 
     shared_root: Optional[Path] = None
     if args.archive_heavy or args.delete_heavy_after_verify:
@@ -1296,24 +1511,52 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     records: List[RunRecord] = []
     completed_ids: List[str] = []
     entry_by_id = {str(e.get("id")): e for e in pool.get("entries") or []}
+    explicit_selection = bool(args.run_dir or run_id_suffix)
 
-    for sid in sample_ids:
-        entry = entry_by_id.get(sid)
-        if not entry:
+    for sel in selections:
+        if sel.ambiguous:
             records.append(
                 RunRecord(
-                    sample_id=sid,
-                    run_id="",
-                    run_root=guitars_root(repo_root) / sid / "runs" / "missing",
+                    sample_id=sel.sample_id,
+                    run_id=sel.run_id,
+                    run_root=sel.run_root,
+                    skip_reason=sel.skip_reason or "ambiguous_run_selection",
+                )
+            )
+            continue
+        if sel.skip_reason:
+            records.append(
+                RunRecord(
+                    sample_id=sel.sample_id,
+                    run_id=sel.run_id,
+                    run_root=sel.run_root,
+                    skip_reason=sel.skip_reason,
+                )
+            )
+            continue
+
+        entry = entry_by_id.get(sel.sample_id)
+        if entry is None and not explicit_selection:
+            records.append(
+                RunRecord(
+                    sample_id=sel.sample_id,
+                    run_id=sel.run_id,
+                    run_root=sel.run_root,
                     skip_reason="not_in_lhs_pool",
                 )
             )
             continue
-        run_id = str(entry.get("last_run_id") or f"{sid}_{DEFAULT_RUN_ID_SUFFIX}")
-        rec = _eligible_run(repo_root=repo_root, entry=entry, run_id=run_id)
+        rec = _eligible_run(
+            repo_root=repo_root,
+            entry=entry,
+            sample_id=sel.sample_id,
+            run_id=sel.run_id,
+            run_root=sel.run_root,
+            explicit_selection=explicit_selection,
+        )
         records.append(rec)
         if rec.eligible:
-            completed_ids.append(sid)
+            completed_ids.append(sel.sample_id)
 
     apply_keep_full_policy(
         records,
@@ -1337,17 +1580,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         compaction_mode=compaction_mode,
     )
 
+    exit_code = 0
     if args.delete_heavy_without_archive and not args.dry_run:
         for rec in records:
             if not rec.eligible or rec.keep_full:
                 continue
             try:
-                _process_delete_without_archive(rec, dry_run=False)
+                _process_delete_without_archive(rec, dry_run=False, repo_root=repo_root)
             except Exception as exc:
                 rec.status = "failed"
                 rec.warnings.append(str(exc))
-                print(f"error: {rec.sample_id}: {exc}", file=sys.stderr)
+                print(f"error: {rec.sample_id}/{rec.run_id}: {exc}", file=sys.stderr)
                 print("error: aborting further deletes after failure", file=sys.stderr)
+                exit_code = 1
                 break
 
     if args.archive_heavy and not args.dry_run:
@@ -1381,6 +1626,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         compaction_mode=compaction_mode,
     )
     print(f"\nwrote report: {rel(report_dir / 'compaction_report.json', repo_root=repo_root)}", flush=True)
+
+    if ambiguous and not args.dry_run:
+        return 2
+    if any(r.status == "failed" for r in records):
+        return 1 if exit_code == 0 else exit_code
+    if exit_code:
+        return exit_code
     return 0
 
 
