@@ -128,6 +128,101 @@ def require_aperture_mask_production() -> bool:
     return os.environ.get(REQUIRE_APERTURE_MASK_ENV, "1") == "1"
 
 
+def dataset_version_from_core_config(core_config_path: Optional[Path]) -> Optional[str]:
+    if not core_config_path or not core_config_path.is_file():
+        return None
+    try:
+        cfg = json.loads(core_config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    meta = cfg.get("m4_run_metadata") or {}
+    ds = str(meta.get("dataset_version") or cfg.get("dataset_version") or "").strip()
+    return ds or None
+
+
+def aperture_export_required_for_core_config(core_config_path: Optional[Path]) -> bool:
+    """True when corrected-dataset production or B3_REQUIRE_APERTURE_MASK mandates aperture export."""
+    if require_aperture_mask_production():
+        return True
+    return dataset_version_from_core_config(core_config_path) == DATASET_VERSION
+
+
+def resolve_production_region_dofs_mode(
+    cli_value: Optional[str],
+    *,
+    core_config_path: Optional[Path],
+    env_value: Optional[str] = None,
+) -> str:
+    """Production L_prod: corrected dataset always uses best_effort aperture export."""
+    from v2_b3_checkpoint_pipeline_lib import resolve_synthesis_region_dofs_mode  # noqa: WPS433
+
+    if aperture_export_required_for_core_config(core_config_path):
+        return "best_effort"
+    return resolve_synthesis_region_dofs_mode(cli_value, env_value=env_value)
+
+
+def validate_pre_operator_build_region_dof_contract(
+    *,
+    region_dofs_mode: str,
+    core_config_path: Optional[Path],
+) -> list[str]:
+    errors: list[str] = []
+    if aperture_export_required_for_core_config(core_config_path) and region_dofs_mode != "best_effort":
+        errors.append(
+            f"region_dofs_mode={region_dofs_mode!r} forbidden for production "
+            f"(dataset_version={DATASET_VERSION} or {REQUIRE_APERTURE_MASK_ENV}=1); "
+            "use --B3-synthesis-region-dofs best_effort"
+        )
+    return errors
+
+
+def validate_post_export_region_dof_contract(
+    checkpoint_dir: Path,
+    *,
+    core_config_path: Optional[Path],
+) -> list[str]:
+    if not aperture_export_required_for_core_config(core_config_path):
+        return []
+    from v2_b3_rich_modal_lib import SYNTHESIS_METADATA_JSON, load_region_dof_bundle  # noqa: WPS433
+    from v2_b3_synthesis_export import region_dof_status_is_pass  # noqa: WPS433
+
+    checkpoint_dir = checkpoint_dir.expanduser().resolve()
+    errors: list[str] = []
+    synth_path = checkpoint_dir / SYNTHESIS_METADATA_JSON
+    if synth_path.is_file():
+        try:
+            synth = json.loads(synth_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            synth = {}
+        mode = str(synth.get("region_dof_indices_mode") or "")
+        status = str(synth.get("region_dof_indices_status") or "")
+        if mode == "off":
+            errors.append(
+                f"region_dof_indices_mode=off ({synth.get('region_dof_indices_error')})"
+            )
+        if status == "deferred_to_stage_c":
+            errors.append(
+                f"region_dof_indices_status=deferred_to_stage_c ({synth.get('region_dof_indices_error')})"
+            )
+        if not region_dof_status_is_pass(status):
+            errors.append(f"region_dof_indices_status={status!r}")
+    else:
+        errors.append("missing synthesis_metadata.json")
+
+    built_path = checkpoint_dir / "built_metadata.json"
+    built_meta: Dict[str, Any] = {}
+    if built_path.is_file():
+        try:
+            built_meta = json.loads(built_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            built_meta = {}
+    try:
+        load_region_dof_bundle(checkpoint_dir, built_meta, validate_aperture=True)
+    except Exception as exc:
+        errors.append(f"region_dof_bundle:{type(exc).__name__}:{exc}")
+    return errors
+
+
 def evaluate_production_acceptance(
     *,
     run_root: Path,

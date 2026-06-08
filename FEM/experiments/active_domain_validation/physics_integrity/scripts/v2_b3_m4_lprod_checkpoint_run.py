@@ -40,7 +40,13 @@ from v2_b3_m3_orchestrator_run_one import (  # noqa: E402
     _run_subprocess,
     _verify_stage_a_export,
 )
-from v2_b3_m4_production_contracts import DATASET_VERSION  # noqa: E402
+from v2_b3_m4_production_contracts import (  # noqa: E402
+    DATASET_VERSION,
+    aperture_export_required_for_core_config,
+    resolve_production_region_dofs_mode,
+    validate_post_export_region_dof_contract,
+    validate_pre_operator_build_region_dof_contract,
+)
 from v2_b3_m4_lprod_interfaces import (  # noqa: E402
     BASELINE_GEOMETRY,
     BASELINE_L_PROD_MESH,
@@ -168,6 +174,14 @@ def _verify_lprod_checkpoint_export(
         p = checkpoint_dir / name
         if not p.is_file():
             return False, f"missing {name}", detail
+
+    region_errors = validate_post_export_region_dof_contract(
+        checkpoint_dir,
+        core_config_path=expected_core_config,
+    )
+    if region_errors:
+        detail["region_dof_contract_errors"] = region_errors
+        return False, ";".join(region_errors), detail
 
     return True, "ok", detail
 
@@ -404,10 +418,11 @@ def _log_lprod_region_dof_index_status(
             f"[{_utc_now()}] warning: top/back region DOF indices unavailable "
             f"(npz={summary['region_dof_indices_npz']}, "
             f"synthesis_status={synth_status!r}, source={summary['region_dof_source']}). "
-            "Worker participation will use air/norm fallback only; production continues."
+            "Worker participation will use air/norm fallback only."
         )
         _append_log(log_path, warn + "\n")
         print(warn, flush=True)
+        summary["region_dof_warning"] = warn
 
     return summary
 
@@ -654,8 +669,40 @@ def run_execute(
 
     if plan["skip_checkpoint"]:
         _append_log(log_ckpt, f"[{_utc_now()}] reuse PASS lprod checkpoint\n")
-        stage4_ckpt = "PASS"
+        ok_reuse, detail_reuse, _ = _verify_lprod_checkpoint_export(
+            checkpoint_dir=checkpoint_dir,
+            export_manifest=export_manifest,
+            expected_core_config=resolved_lprod,
+            repo_root=repo_root,
+        )
+        stage4_ckpt = "PASS" if ok_reuse else "FAIL"
+        if not ok_reuse:
+            _append_log(log_ckpt, f"reuse verify FAIL: {detail_reuse}\n")
     else:
+        region_mode = resolve_production_region_dofs_mode(
+            LPROD_SYNTHESIS_REGION_DOFS_DEFAULT,
+            core_config_path=resolved_lprod,
+        )
+        pre_region_errors = validate_pre_operator_build_region_dof_contract(
+            region_dofs_mode=region_mode,
+            core_config_path=resolved_lprod,
+        )
+        if pre_region_errors:
+            _update_manifest(
+                manifest_path,
+                stage_updates={"stage4_lprod_export": "FAIL"},
+                terminal_status="FAIL",
+                failure_reason=";".join(pre_region_errors),
+            )
+            print("Stage 4 FAIL (region-DOF preflight)", file=sys.stderr)
+            for err in pre_region_errors:
+                print(f"  - {err}", file=sys.stderr)
+            return 1
+        if aperture_export_required_for_core_config(resolved_lprod):
+            _append_log(
+                log_ckpt,
+                f"[{_utc_now()}] region_dof_preflight: mode={region_mode} dataset={DATASET_VERSION}\n",
+            )
         rc_a = _run_subprocess(
             plan["argv_stage_a"],
             env=env_a,
@@ -714,12 +761,29 @@ def run_execute(
     readiness_out["stage4_completed_utc"] = _utc_now()
     if active_dim is not None:
         readiness_out["active_dimension"] = active_dim
-    _log_lprod_region_dof_index_status(
+    region_summary = _log_lprod_region_dof_index_status(
         checkpoint_dir=checkpoint_dir,
         log_path=log_ckpt,
         readiness_out=readiness_out,
     )
     write_json_atomic(run_root / "lprod" / "lprod_mesh_checkpoint_readiness.json", readiness_out)
+
+    if aperture_export_required_for_core_config(resolved_lprod):
+        region_errors = validate_post_export_region_dof_contract(
+            checkpoint_dir,
+            core_config_path=resolved_lprod,
+        )
+        if region_errors:
+            _update_manifest(
+                manifest_path,
+                stage_updates={"stage4_lprod_export": "FAIL"},
+                terminal_status="RUNNING",
+                failure_reason=";".join(region_errors),
+            )
+            print("Stage 4 L_prod checkpoint FAIL (region-DOF contract)", file=sys.stderr)
+            for err in region_errors:
+                print(f"  - {err}", file=sys.stderr)
+            return 1
 
     _update_manifest(
         manifest_path,

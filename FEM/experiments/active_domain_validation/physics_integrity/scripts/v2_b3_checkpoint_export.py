@@ -35,8 +35,12 @@ from v2_b3_checkpoint_pipeline_lib import (
     write_json,
 )
 from v2_b3_m4_production_contracts import (  # noqa: E402
+    aperture_export_required_for_core_config,
     dolfinx_mesh_counts,
     resolve_operator_mesh_file,
+    resolve_production_region_dofs_mode,
+    validate_post_export_region_dof_contract,
+    validate_pre_operator_build_region_dof_contract,
     verify_operator_mesh_provenance,
 )
 from v2_b3_m4_worker_run_lib import detect_repo_root  # noqa: E402
@@ -158,13 +162,22 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
     rich_modal_requested = bool(args.export_rich_modal_data)
     ensure_rich_modal_export_allowed(requested=rich_modal_requested, context="B3_checkpoint_export")
     try:
-        region_dofs_mode = resolve_synthesis_region_dofs_mode(args.synthesis_region_dofs)
-    except ValueError as exc:
-        fail_with_messages("B3_checkpoint_export", [str(exc)])
-    try:
         core_config_path, core_config_provenance = _resolve_core_config_provenance(args.core_config)
     except FileNotFoundError as exc:
         fail_with_messages("B3_checkpoint_export", [str(exc)])
+    try:
+        region_dofs_mode = resolve_production_region_dofs_mode(
+            args.synthesis_region_dofs,
+            core_config_path=core_config_path,
+        )
+    except ValueError as exc:
+        fail_with_messages("B3_checkpoint_export", [str(exc)])
+    pre_region_errors = validate_pre_operator_build_region_dof_contract(
+        region_dofs_mode=region_dofs_mode,
+        core_config_path=core_config_path,
+    )
+    if pre_region_errors:
+        fail_with_messages("B3_checkpoint_export", pre_region_errors)
     mesh_level = str(args.mesh_level)
     run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     checkpoint = (
@@ -290,6 +303,11 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
                 synthesis_warnings.append(str(warn))
         except Exception as exc:
             synthesis_warnings.append(f"synthesis_artifacts_exception:{type(exc).__name__}:{exc}")
+            if aperture_export_required_for_core_config(core_config_path):
+                fail_with_messages(
+                    "B3_checkpoint_export",
+                    [f"region_dof_export_failed:{type(exc).__name__}:{exc}"],
+                )
             try:
                 from v2_b3_synthesis_export import write_stage_a_synthesis_artifacts
 
@@ -350,6 +368,14 @@ def run_checkpoint_export(argv: Optional[List[str]] = None) -> int:
         if str(synthesis_export.get("region_dof_indices_status") or "") == "FAIL":
             manifest["status"] = "FAIL"
             manifest["failure_reason"] = synthesis_export.get("region_dof_indices_error")
+        region_contract_errors = validate_post_export_region_dof_contract(
+            checkpoint,
+            core_config_path=core_config_path,
+        )
+        if region_contract_errors:
+            manifest["status"] = "FAIL"
+            manifest["failure_reason"] = ";".join(region_contract_errors)
+            manifest["region_dof_contract_errors"] = region_contract_errors
         if synthesis_warnings:
             manifest["warnings"] = synthesis_warnings
         manifest["operator_mesh_provenance"] = mesh_prov

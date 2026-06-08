@@ -285,32 +285,22 @@ def export_region_dof_indices_from_operator_build(
     return REGION_DOF_STATUS_PASS, None
 
 
-def export_region_dof_indices_npz(
-    checkpoint: Path,
+def capture_region_dof_build_from_mesh(
     *,
-    mesh_level: str,
-    built_meta: Dict[str, Any],
-    mesh_file: Optional[Path] = None,
-    core_config_path: Optional[Path] = None,
-) -> Tuple[str, Optional[str]]:
-    """Locate region DOFs via DOLFINx; indices are global W rows (u_idx / p_idx)."""
-    bootstrap_fem_import_paths(start=checkpoint)
+    mesh_file: Path,
+    built_meta: Mapping[str, Any],
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Rebuild operator-build-style region_dof_build from mesh + built_metadata (no A/M)."""
+    bootstrap_fem_import_paths(start=SCRIPT_DIR)
 
     import dolfinx.mesh as dmesh
     from dolfinx import fem
 
     import fem_main_3d as fem3d
 
-    checkpoint = checkpoint.expanduser().resolve()
-    if mesh_file is None or not mesh_file.is_file():
-        mesh_file, resolve_detail = resolve_region_dof_mesh_file(
-            checkpoint,
-            mesh_level=mesh_level,
-            built_meta=built_meta,
-            core_config_path=core_config_path,
-        )
-        if mesh_file is None:
-            return "deferred_to_stage_c", resolve_detail
+    mesh_file = mesh_file.expanduser().resolve()
+    if not mesh_file.is_file():
+        return None, f"mesh_file_missing:{mesh_file}"
 
     msh, _cell_tags, facet_tags = fem3d._load_mesh_and_tags(mesh_file)
     tdim = msh.topology.dim
@@ -322,7 +312,7 @@ def export_region_dof_indices_npz(
     f_soundhole = np.asarray(facet_tags.find(TAG_SOUNDHOLE), dtype=np.int32)
     shell_facets = np.unique(np.concatenate([f_top, f_back, f_ribs]).astype(np.int32, copy=False))
 
-    shell_mesh, shell_to_parent, _, _ = dmesh.create_submesh(msh, tdim - 1, shell_facets)
+    shell_mesh, _, _, _ = dmesh.create_submesh(msh, tdim - 1, shell_facets)
     V_u_trace = fem.functionspace(shell_mesh, fem3d._displacement_element(shell_mesh, 1))
 
     def _trace_u_rows(facets: np.ndarray) -> np.ndarray:
@@ -334,37 +324,80 @@ def export_region_dof_indices_npz(
     n_u_b3 = int(built_meta.get("n_u_b3") or built_meta.get("n_u") or 0)
     p_idx_all = np.asarray(built_meta.get("p_idx") or [], dtype=np.int32).ravel()
     if n_u_b3 <= 0:
-        return "deferred_to_stage_c", "built_metadata_missing_n_u_b3"
+        return None, "built_metadata_missing_n_u_b3"
 
-    trace_top = _trace_u_rows(f_top)
-    trace_back = _trace_u_rows(f_back)
-    trace_ribs = _trace_u_rows(f_ribs)
-    trace_soundhole = _trace_u_rows(f_soundhole)
-
-    # B3 checkpoint u_idx = arange(n_u_b3): trace shell DOF rows are W u-block row indices.
-    u_idx_top = _trace_rows_to_b3_u_w(trace_top, n_u_b3=n_u_b3)
-    u_idx_back = _trace_rows_to_b3_u_w(trace_back, n_u_b3=n_u_b3)
-    u_idx_ribs = _trace_rows_to_b3_u_w(trace_ribs, n_u_b3=n_u_b3)
-    u_idx_soundhole = _trace_rows_to_b3_u_w(trace_soundhole, n_u_b3=n_u_b3)
+    u_idx_top = _trace_rows_to_b3_u_w(_trace_u_rows(f_top), n_u_b3=n_u_b3)
+    u_idx_back = _trace_rows_to_b3_u_w(_trace_u_rows(f_back), n_u_b3=n_u_b3)
+    u_idx_ribs = _trace_rows_to_b3_u_w(_trace_u_rows(f_ribs), n_u_b3=n_u_b3)
+    u_idx_soundhole = _trace_rows_to_b3_u_w(_trace_u_rows(f_soundhole), n_u_b3=n_u_b3)
 
     if u_idx_top.size == 0 and u_idx_back.size == 0:
-        return (
-            "deferred_to_stage_c",
-            f"no_b3_u_region_dofs: trace_top={trace_top.size} trace_back={trace_back.size} "
-            f"trace_ribs={trace_ribs.size} n_u_b3={n_u_b3}",
+        return None, (
+            f"no_b3_u_region_dofs: top={u_idx_top.size} back={u_idx_back.size} "
+            f"ribs={u_idx_ribs.size} n_u_b3={n_u_b3}"
         )
 
-    p_idx_air = p_idx_all.copy()
+    return (
+        {
+            "u_idx_top": u_idx_top,
+            "u_idx_back": u_idx_back,
+            "u_idx_ribs": u_idx_ribs,
+            "u_idx_soundhole": u_idx_soundhole,
+            "p_idx_air": p_idx_all.copy(),
+            "p_idx_all": p_idx_all.copy(),
+            "u_idx_all": np.arange(n_u_b3, dtype=np.int32),
+            "region_dof_source": REGION_DOF_SOURCE_OPERATOR_BUILD,
+            "region_dof_mesh_file": str(mesh_file),
+            "layout": REGION_DOF_LAYOUT,
+            "back_includes_ribs": True,
+            "counts": {
+                "u_idx_top": int(u_idx_top.size),
+                "u_idx_back": int(u_idx_back.size),
+                "u_idx_ribs": int(u_idx_ribs.size),
+                "u_idx_soundhole": int(u_idx_soundhole.size),
+                "p_idx_air": int(p_idx_all.size),
+            },
+        },
+        None,
+    )
+
+
+def export_region_dof_indices_npz(
+    checkpoint: Path,
+    *,
+    mesh_level: str,
+    built_meta: Dict[str, Any],
+    mesh_file: Optional[Path] = None,
+    core_config_path: Optional[Path] = None,
+) -> Tuple[str, Optional[str]]:
+    """Locate region DOFs via DOLFINx; indices are global W rows (u_idx / p_idx)."""
+    checkpoint = checkpoint.expanduser().resolve()
+    if mesh_file is None or not mesh_file.is_file():
+        mesh_file, resolve_detail = resolve_region_dof_mesh_file(
+            checkpoint,
+            mesh_level=mesh_level,
+            built_meta=built_meta,
+            core_config_path=core_config_path,
+        )
+        if mesh_file is None:
+            return "deferred_to_stage_c", resolve_detail
+
+    region_dof_build, err = capture_region_dof_build_from_mesh(
+        mesh_file=mesh_file,
+        built_meta=built_meta,
+    )
+    if region_dof_build is None:
+        return "deferred_to_stage_c", err
 
     np.savez_compressed(
         checkpoint / REGION_DOF_INDICES_NPZ,
-        u_idx_top=u_idx_top,
-        u_idx_back=u_idx_back,
-        u_idx_ribs=u_idx_ribs,
-        u_idx_soundhole=u_idx_soundhole,
-        p_idx_air=p_idx_air,
-        p_idx_all=p_idx_all,
-        u_idx_all=np.arange(n_u_b3, dtype=np.int32),
+        u_idx_top=region_dof_build["u_idx_top"],
+        u_idx_back=region_dof_build["u_idx_back"],
+        u_idx_ribs=region_dof_build["u_idx_ribs"],
+        u_idx_soundhole=region_dof_build["u_idx_soundhole"],
+        p_idx_air=region_dof_build["p_idx_air"],
+        p_idx_all=region_dof_build["p_idx_all"],
+        u_idx_all=region_dof_build["u_idx_all"],
     )
     write_region_dof_metadata_json(
         checkpoint,
