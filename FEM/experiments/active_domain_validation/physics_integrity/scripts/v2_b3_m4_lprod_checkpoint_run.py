@@ -26,6 +26,17 @@ DEFAULT_PROD_VENV = "/home/vboxuser/final-project/.venv"
 def _mesh_level_from_sample(sample_input: Mapping[str, Any]) -> str:
     profile = resolve_production_mesh_profile(sample_input)
     return profile.mesh_level_id
+
+
+def _dataset_version_from_run_context(
+    plan: Mapping[str, Any],
+    sample_input: Mapping[str, Any],
+) -> str:
+    """Resolved dataset_version from execution plan or validated sample profile."""
+    explicit = plan.get("dataset_version")
+    if explicit:
+        return str(explicit)
+    return str(resolve_production_mesh_profile(sample_input).dataset_version)
 TERMINAL_READY = "LPROD_CHECKPOINT_READY"
 ALLOWED_INPUT_TERMINAL = frozenset(
     {
@@ -766,9 +777,10 @@ def run_execute(
                 print(f"  - {err}", file=sys.stderr)
             return 1
         if aperture_export_required_for_core_config(resolved_lprod):
+            dataset_version = _dataset_version_from_run_context(plan, sample_input)
             _append_log(
                 log_ckpt,
-                f"[{_utc_now()}] region_dof_preflight: mode={region_mode} dataset={DATASET_VERSION}\n",
+                f"[{_utc_now()}] region_dof_preflight: mode={region_mode} dataset={dataset_version}\n",
             )
         rc_a = _run_subprocess(
             plan["argv_stage_a"],

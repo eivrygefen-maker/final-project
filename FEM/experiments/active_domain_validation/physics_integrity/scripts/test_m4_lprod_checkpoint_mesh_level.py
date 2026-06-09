@@ -9,16 +9,20 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+import v2_b3_m4_lprod_checkpoint_run as ckpt_mod  # noqa: E402
 from v2_b3_m4_lprod_checkpoint_run import (  # noqa: E402
+    _dataset_version_from_run_context,
     _fix_mesh_argv,
     _lprod_mesh_paths_from_plan,
     build_execution_plan,
     run_dry_run,
+    run_execute,
 )
 from v2_b3_m4_lprod_interfaces import evaluate_lprod_mesh_checkpoint_readiness  # noqa: E402
 from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
@@ -65,6 +69,19 @@ def _write_checkpoint_inputs(
 
 
 class LprodCheckpointMeshLevelTest(unittest.TestCase):
+    def _prepare_execute_preflight(
+        self,
+        repo: Path,
+        mesh_profile: str,
+    ) -> tuple[Path, dict]:
+        run_root, plan = self._plan_for_profile(repo, mesh_profile)
+        sample_input = json.loads((run_root / "sample" / "sample_input.json").read_text(encoding="utf-8"))
+        mesh_path = run_tree_lprod_mesh_path(run_root, "sample_002", plan["mesh_level_id"])
+        mesh_path.parent.mkdir(parents=True, exist_ok=True)
+        mesh_path.write_bytes(b"x" * 1001)
+        (run_root / "logs").mkdir(parents=True, exist_ok=True)
+        return run_root, plan
+
     def _plan_for_profile(self, repo: Path, mesh_profile: str) -> tuple[Path, dict]:
         resolved = resolve_mesh_profile(
             mesh_profile=mesh_profile,
@@ -180,6 +197,57 @@ class LprodCheckpointMeshLevelTest(unittest.TestCase):
             self.assertEqual(plan["mesh_level_id"], LEVEL_ROM_PROD)
             self.assertIn("L_rom_prod/sample_002.msh", plan["paths"]["lprod_mesh"])
             self.assertNotIn("lprod/mesh/L_prod/", plan["paths"]["lprod_mesh"].replace("\\", "/"))
+
+    def test_dataset_version_from_run_context_rom(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            run_root, plan = self._plan_for_profile(repo, MESH_PROFILE_ROM)
+            sample_input = json.loads((run_root / "sample" / "sample_input.json").read_text(encoding="utf-8"))
+            self.assertEqual(_dataset_version_from_run_context(plan, sample_input), DATASET_VERSION_ROM)
+            line = (
+                f"region_dof_preflight: mode=best_effort "
+                f"dataset={_dataset_version_from_run_context(plan, sample_input)}\n"
+            )
+            self.assertIn(DATASET_VERSION_ROM, line)
+
+    def test_dataset_version_from_run_context_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            run_root, plan = self._plan_for_profile(repo, MESH_PROFILE_REFERENCE)
+            sample_input = json.loads((run_root / "sample" / "sample_input.json").read_text(encoding="utf-8"))
+            self.assertEqual(_dataset_version_from_run_context(plan, sample_input), DATASET_VERSION_REFERENCE)
+
+    def test_run_execute_region_dof_preflight_log_resolves_profile_context(self) -> None:
+        for mesh_profile, expected_ds in (
+            (MESH_PROFILE_ROM, DATASET_VERSION_ROM),
+            (MESH_PROFILE_REFERENCE, DATASET_VERSION_REFERENCE),
+        ):
+            with self.subTest(mesh_profile=mesh_profile):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo = Path(tmp)
+                    run_root, plan = self._prepare_execute_preflight(repo, mesh_profile)
+                    self.assertEqual(plan["mesh_profile"], mesh_profile)
+                    self.assertEqual(plan["dataset_version"], expected_ds)
+                    with (
+                        patch.object(ckpt_mod, "_run_env_probe", return_value=(0, "{}")),
+                        patch.object(ckpt_mod, "_verify_stage_a_env_probe", return_value=(True, "ok")),
+                        patch.object(ckpt_mod, "_run_subprocess", return_value=1),
+                        patch.object(ckpt_mod, "_verify_lprod_checkpoint_export", return_value=(False, "mock", {})),
+                    ):
+                        rc = run_execute(
+                            repo_root=repo,
+                            run_root=run_root,
+                            prod_python="python",
+                            prod_venv="python",
+                            force=False,
+                        )
+                    self.assertEqual(rc, 1)
+                    log_path = run_root / "logs" / "stage4_lprod_checkpoint.log"
+                    self.assertTrue(log_path.is_file(), f"missing checkpoint log for {mesh_profile}")
+                    log_text = log_path.read_text(encoding="utf-8")
+                    self.assertIn("region_dof_preflight", log_text)
+                    self.assertIn(expected_ds, log_text)
+                    self.assertNotIn("DATASET_VERSION", log_text)
 
 
 if __name__ == "__main__":
