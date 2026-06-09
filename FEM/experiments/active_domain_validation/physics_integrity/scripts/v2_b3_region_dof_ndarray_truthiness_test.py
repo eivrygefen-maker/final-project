@@ -64,7 +64,7 @@ def test_export_region_dof_indices_from_operator_build_with_ndarray_masks() -> N
             ckpt,
             region_dof_build=region_dof_build,
         )
-        assert status == "BEST_EFFORT_PASS", err
+        assert status == "PASS", err
         assert (ckpt / "region_dof_indices.npz").is_file()
         assert (ckpt / "region_dof_metadata.json").is_file()
 

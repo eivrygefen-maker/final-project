@@ -32,7 +32,8 @@ CASE_ID = "baseline_coupled_v2"
 PHYSICS_CONFIG = SCRIPT_DIR.parent / "configs" / "coupled_physical_core_v2.json"
 REGION_DOF_WORKER = SCRIPT_DIR / "v2_b3_synthesis_region_dof_worker.py"
 REGION_DOF_SUBPROCESS_TIMEOUT_S = 600
-REGION_DOF_STATUS_PASS = "BEST_EFFORT_PASS"
+REGION_DOF_STATUS_PASS = "PASS"
+REGION_DOF_STATUS_LEGACY_BEST_EFFORT = "BEST_EFFORT_PASS"
 REGION_DOF_SOURCE_OPERATOR_BUILD = "operator_build_context"
 
 TAG_TOP = 1
@@ -225,7 +226,13 @@ def _gnhep_scales_from_built(built: Dict[str, Any]) -> Dict[str, float]:
 
 
 def region_dof_status_is_pass(status: Optional[str]) -> bool:
-    return str(status or "") in ("present", REGION_DOF_STATUS_PASS)
+    """Final contract pass — build mode (best_effort) is provenance only, not a pass token."""
+    token = str(status or "")
+    return token in ("present", REGION_DOF_STATUS_PASS)
+
+
+def region_dof_status_is_ambiguous_legacy(status: Optional[str]) -> bool:
+    return str(status or "") == REGION_DOF_STATUS_LEGACY_BEST_EFFORT
 
 
 def _coerce_index_map(value: Any) -> np.ndarray:

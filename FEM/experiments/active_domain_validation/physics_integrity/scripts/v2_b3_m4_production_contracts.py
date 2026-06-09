@@ -195,7 +195,10 @@ def validate_post_export_region_dof_contract(
     if not aperture_export_required_for_core_config(core_config_path):
         return []
     from v2_b3_rich_modal_lib import SYNTHESIS_METADATA_JSON, load_region_dof_bundle  # noqa: WPS433
-    from v2_b3_synthesis_export import region_dof_status_is_pass  # noqa: WPS433
+    from v2_b3_synthesis_export import (  # noqa: WPS433
+        region_dof_status_is_ambiguous_legacy,
+        region_dof_status_is_pass,
+    )
 
     checkpoint_dir = checkpoint_dir.expanduser().resolve()
     errors: list[str] = []
@@ -215,7 +218,12 @@ def validate_post_export_region_dof_contract(
             errors.append(
                 f"region_dof_indices_status=deferred_to_stage_c ({synth.get('region_dof_indices_error')})"
             )
-        if not region_dof_status_is_pass(status):
+        if region_dof_status_is_ambiguous_legacy(status):
+            errors.append(
+                "region_dof_indices_status=BEST_EFFORT_PASS "
+                "(ambiguous legacy token; require PASS after contract validation)"
+            )
+        elif not region_dof_status_is_pass(status):
             errors.append(f"region_dof_indices_status={status!r}")
     else:
         errors.append("missing synthesis_metadata.json")
@@ -411,10 +419,50 @@ def _evaluate_scout_strict_failures(run_root: Path) -> List[str]:
         status = str(synth.get("region_dof_indices_status") or "")
         if status == "BEST_EFFORT_PASS":
             failures.append(f"{ckpt_rel.replace('/', '_')}_region_dof_indices_status=BEST_EFFORT_PASS")
-        elif status and status not in ("present",):
+        elif status and status not in ("PASS", "present"):
             failures.append(f"{ckpt_rel.replace('/', '_')}_region_dof_indices_status={status}")
 
     return failures
+
+
+def evaluate_production_region_dof_gate(
+    run_root: Path,
+    *,
+    repo_root: Path,
+) -> Tuple[bool, List[str]]:
+    """Fail-fast before workers: scout + L_prod checkpoints need validated region-DOF PASS."""
+    from v2_b3_synthesis_export import region_dof_status_is_ambiguous_legacy  # noqa: WPS433
+
+    errors: List[str] = []
+    lprod_core = run_root / "lprod" / "resolved_core_config.json"
+    scout_core = run_root / "sample" / "resolved_core_config.json"
+    for ckpt_rel, core_config in (
+        ("scout/checkpoint", scout_core if scout_core.is_file() else lprod_core),
+        ("lprod/checkpoint", lprod_core),
+    ):
+        ckpt = run_root / ckpt_rel
+        if not ckpt.is_dir():
+            if ckpt_rel == "lprod/checkpoint":
+                errors.append(f"missing:{ckpt_rel}")
+            continue
+        synth_path = ckpt / "synthesis_metadata.json"
+        if synth_path.is_file():
+            try:
+                synth = json.loads(synth_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                synth = {}
+            status = str(synth.get("region_dof_indices_status") or "")
+            if region_dof_status_is_ambiguous_legacy(status):
+                errors.append(f"{ckpt_rel}:region_dof_indices_status=BEST_EFFORT_PASS")
+            elif status and status not in ("PASS", "present"):
+                errors.append(f"{ckpt_rel}:region_dof_indices_status={status}")
+        contract_errors = validate_post_export_region_dof_contract(
+            ckpt,
+            core_config_path=core_config if core_config.is_file() else None,
+        )
+        for err in contract_errors:
+            errors.append(f"{ckpt_rel}:{err}")
+    return len(errors) == 0, errors
 
 
 def _evaluate_strict_production_failures(

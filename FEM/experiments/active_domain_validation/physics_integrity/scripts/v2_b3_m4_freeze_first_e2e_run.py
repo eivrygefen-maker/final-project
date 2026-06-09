@@ -114,6 +114,7 @@ def promote_pipeline_terminal_status(
     *,
     terminal_status: str = TERMINAL_E2E,
     aggregation_status: Optional[str] = None,
+    allow_freeze_warning: bool = True,
 ) -> None:
     """Update main pipeline_run_manifest.json after successful workers/aggregation."""
     manifest_path = run_root / "pipeline_run_manifest.json"
@@ -131,10 +132,25 @@ def promote_pipeline_terminal_status(
     freeze_st = stages.setdefault("stage6_freeze", {})
     if freeze_outputs_present(run_root):
         freeze_st["status"] = "PASS"
-    elif str(aggregation_status or "") == AGG_STATUS_PASS:
+        freeze_st.pop("warning", None)
+    elif str(aggregation_status or "") == AGG_STATUS_PASS and allow_freeze_warning:
         freeze_st["status"] = "PASS_WITH_WARNING"
         freeze_st["warning"] = AGG_PASS_FREEZE_WARNING
     freeze_st["updated_utc"] = utc_now()
+    write_json_atomic(manifest_path, manifest)
+
+
+def mark_freeze_stage_failed(run_root: Path, *, reason: str) -> None:
+    """Record strict production freeze failure without aggregation-only promotion."""
+    manifest_path = run_root / "pipeline_run_manifest.json"
+    manifest = _safe_load(manifest_path) or {}
+    stages = manifest.setdefault("stages", {})
+    freeze_st = stages.setdefault("stage6_freeze", {})
+    freeze_st["status"] = "FAIL"
+    freeze_st["failure_reason"] = reason
+    freeze_st.pop("warning", None)
+    freeze_st["updated_utc"] = utc_now()
+    manifest["updated_utc"] = utc_now()
     write_json_atomic(manifest_path, manifest)
 
 

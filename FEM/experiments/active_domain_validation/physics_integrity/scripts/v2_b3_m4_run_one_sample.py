@@ -20,6 +20,7 @@ from v2_b3_m4_freeze_first_e2e_run import (  # noqa: E402
     TERMINAL_E2E,
     build_freeze_payload,
     freeze_outputs_present,
+    mark_freeze_stage_failed,
     promote_pipeline_terminal_status,
     resolve_freeze_config,
     write_freeze_outputs,
@@ -191,18 +192,32 @@ def _stage_pass_worker_plan(run_root: Path) -> bool:
     return True
 
 
-def _stage_pass_checkpoint(run_root: Path) -> bool:
+def _stage_pass_checkpoint(run_root: Path, *, production_mode: bool = False) -> bool:
     m = _manifest(run_root)
     if str(m.get("terminal_status")) == CHECKPOINT_TERMINAL_READY:
-        return True
+        if not production_mode:
+            return True
     ck = run_root / "lprod" / "checkpoint" / "checkpoint_export_manifest.json"
     if not ck.is_file():
         return False
     try:
         data = load_json(ck)
-        return bool(data.get("export_pass")) or str(data.get("status")) == "PASS"
+        export_ok = bool(data.get("export_pass")) or str(data.get("status")) == "PASS"
     except (OSError, ValueError, json.JSONDecodeError):
         return False
+    if not export_ok:
+        return False
+    if production_mode:
+        from v2_b3_m4_production_contracts import validate_post_export_region_dof_contract  # noqa: WPS433
+
+        core = run_root / "lprod" / "resolved_core_config.json"
+        contract_errors = validate_post_export_region_dof_contract(
+            run_root / "lprod" / "checkpoint",
+            core_config_path=core if core.is_file() else None,
+        )
+        if contract_errors:
+            return False
+    return True
 
 
 def _stage_pass_workers(run_root: Path) -> bool:
@@ -239,7 +254,7 @@ def assess_stages(run_root: Path, *, production_mode: bool = False) -> Dict[str,
     checks = {
         "scout": _stage_pass_scout,
         "worker_plan": _stage_pass_worker_plan,
-        "checkpoint": _stage_pass_checkpoint,
+        "checkpoint": lambda r: _stage_pass_checkpoint(r, production_mode=production_mode),
         "workers": _stage_pass_workers,
         "aggregate": _stage_pass_aggregate,
         "freeze": lambda r: _stage_pass_freeze(r, sample_id, production_mode=production_mode),
@@ -597,6 +612,25 @@ def run_pipeline(
         if st["reuse_status"] == "resume_possible" and not stage_force and name not in ("worker_plan",):
             print(f"[resume] {name}: prior partial artifacts; attempting stage", flush=True)
 
+        if production_mode and name == "workers":
+            from v2_b3_m4_production_contracts import evaluate_production_region_dof_gate  # noqa: WPS433
+
+            gate_ok, gate_errors = evaluate_production_region_dof_gate(
+                run_root,
+                repo_root=repo_root,
+            )
+            if not gate_ok:
+                err_msg = ";".join(gate_errors)
+                print(
+                    f"error: strict production region-DOF gate blocked workers: {err_msg}",
+                    file=sys.stderr,
+                )
+                _append_log(
+                    log_path,
+                    f"[{utc_now()}] workers blocked region_dof_gate={err_msg}",
+                )
+                return 2
+
         print(f"[run] {name} ...", flush=True)
         t0 = time.perf_counter()
         rc, script_name = run_fn()
@@ -614,11 +648,17 @@ def run_pipeline(
             )
 
         if rc != 0:
-            if name in ("workers", "aggregate") and _stage_pass_checkpoint(run_root):
+            if name in ("workers", "aggregate") and _stage_pass_checkpoint(
+                run_root, production_mode=production_mode
+            ):
                 maybe_promote_checkpoint_ready_terminal(
                     run_root,
                     repair_reason=STALE_RUNNING_REPAIR_REASON,
                 )
+            if name == "freeze" and production_mode:
+                mark_freeze_stage_failed(run_root, reason=script_name if isinstance(script_name, str) else f"rc={rc}")
+                print(f"error: production freeze failed (rc={rc}); stopping pipeline", file=sys.stderr)
+                return rc
             if name == "freeze" and _stage_pass_aggregate(run_root) and not production_mode:
                 promote_pipeline_terminal_status(
                     run_root,
@@ -634,7 +674,7 @@ def run_pipeline(
                 print(f"error: stage {name} failed (rc={rc}); stopping pipeline", file=sys.stderr)
                 return rc
 
-        if name == "aggregate" and rc == 0:
+        if name == "aggregate" and rc == 0 and not production_mode:
             promote_pipeline_terminal_status(run_root, aggregation_status=AGG_STATUS_PASS)
 
         if idx >= stop_rank:
@@ -661,10 +701,12 @@ def run_pipeline(
         )
     except Exception:
         pass
-    if _stage_pass_aggregate(run_root) and not (
-        production_mode and _stage_pass_freeze(run_root, sample_id, production_mode=True)
-    ):
-        promote_pipeline_terminal_status(run_root, aggregation_status=AGG_STATUS_PASS)
+    if _stage_pass_aggregate(run_root):
+        if production_mode:
+            if not _stage_pass_freeze(run_root, sample_id, production_mode=True):
+                mark_freeze_stage_failed(run_root, reason="production_freeze_incomplete")
+        else:
+            promote_pipeline_terminal_status(run_root, aggregation_status=AGG_STATUS_PASS)
     print(f"terminal_status={_manifest(run_root).get('terminal_status')}")
     print("pipeline execute finished")
     return 0

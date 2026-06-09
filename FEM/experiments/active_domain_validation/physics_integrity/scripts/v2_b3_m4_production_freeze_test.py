@@ -110,6 +110,13 @@ def _write_minimal_production_aggregated_run(run_root: Path) -> None:
             "p_idx_aperture_count": 4,
         },
     )
+    write_json_atomic(
+        ckpt / "synthesis_metadata.json",
+        {
+            "region_dof_indices_mode": "best_effort",
+            "region_dof_indices_status": "PASS",
+        },
+    )
     chunk_dir = run_root / "worker_results" / chunk_id
     chunk_dir.mkdir(parents=True)
     write_json_atomic(chunk_dir / "worker_result.json", {"status": "PASS", "unique_modes": [{"f_hz": 100.0}]})
