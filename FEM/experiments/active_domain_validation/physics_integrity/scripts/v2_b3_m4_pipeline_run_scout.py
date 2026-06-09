@@ -521,6 +521,7 @@ def run_stage3_zones_target_plan(
     zone_spacing_hz: Dict[str, float],
     scout_mesh_rel: str,
     manifest_path: Path,
+    explicit_target_plan_path: Optional[Path] = None,
 ) -> int:
     """Stage 3 only: density zones + gapless L_prod target plan from existing discovery."""
     logs = run_root / "logs"
@@ -585,28 +586,43 @@ def run_stage3_zones_target_plan(
             render_density_zones_md(density_doc), encoding="utf-8"
         )
 
-        target_plan = build_gapless_target_plan(
-            segments,
-            sample_id=sample_id,
-            run_id=run_id,
-            freq_min_hz=freq_min,
-            freq_max_hz=freq_max,
-        )
-        cov = target_plan["coverage_check"]
-        repair_count = int(cov.get("repair_targets_added") or 0)
-        target_plan["raw_discovery_provenance"] = {
-            "intrinsic_coverage_pass": bool(density_body.get("intrinsic_coverage_pass")),
-            "raw_unique_accepted_count": density_body.get("raw_unique_accepted_count"),
-            "raw_max_gap_hz": density_body.get("raw_max_gap_hz"),
-            "coverage_policy": density_body.get("coverage_policy"),
-            "target_plan_repair_targets_added": repair_count,
-        }
-        if not cov.get("pass"):
-            raise RuntimeError(f"coverage_check failed after repair: {cov}")
-        if repair_count > 0 and not bool(density_body.get("intrinsic_coverage_pass")):
-            raise RuntimeError(
-                f"target_plan_repair_disallowed_without_intrinsic_pass:repair_count={repair_count}"
+        if explicit_target_plan_path is not None:
+            from v2_b3_m4_mesh_profile_lib import install_explicit_target_plan  # noqa: WPS433
+
+            target_plan = install_explicit_target_plan(
+                run_root=run_root,
+                target_plan_path=explicit_target_plan_path,
+                sample_id=sample_id,
+                run_id=run_id,
             )
+        else:
+            target_plan = build_gapless_target_plan(
+                segments,
+                sample_id=sample_id,
+                run_id=run_id,
+                freq_min_hz=freq_min,
+                freq_max_hz=freq_max,
+            )
+        if explicit_target_plan_path is not None:
+            cov = target_plan.get("coverage_check") or {"pass": True, "repair_targets_added": 0}
+            repair_count = 0
+            target_plan.setdefault("coverage_check", cov)
+        else:
+            cov = target_plan["coverage_check"]
+            repair_count = int(cov.get("repair_targets_added") or 0)
+            target_plan["raw_discovery_provenance"] = {
+                "intrinsic_coverage_pass": bool(density_body.get("intrinsic_coverage_pass")),
+                "raw_unique_accepted_count": density_body.get("raw_unique_accepted_count"),
+                "raw_max_gap_hz": density_body.get("raw_max_gap_hz"),
+                "coverage_policy": density_body.get("coverage_policy"),
+                "target_plan_repair_targets_added": repair_count,
+            }
+            if not cov.get("pass"):
+                raise RuntimeError(f"coverage_check failed after repair: {cov}")
+            if repair_count > 0 and not bool(density_body.get("intrinsic_coverage_pass")):
+                raise RuntimeError(
+                    f"target_plan_repair_disallowed_without_intrinsic_pass:repair_count={repair_count}"
+                )
         scout_wall = float(density_body.get("experiment_wall_s") or 0.0)
         runtime_est = estimate_runtime_summary(
             target_count=len(target_plan["targets_hz"]),
@@ -727,6 +743,7 @@ def run_scout_pipeline(
     dry_run: bool,
     stage3_only: bool,
     zone_spacing_hz: Dict[str, float],
+    explicit_target_plan_path: Optional[Path] = None,
 ) -> int:
     sample_id = str(sample["sample_id"])
     run_id = run_root.name
@@ -787,6 +804,7 @@ def run_scout_pipeline(
             zone_spacing_hz=zone_spacing_hz,
             scout_mesh_rel=scout_mesh_rel,
             manifest_path=manifest_path,
+            explicit_target_plan_path=explicit_target_plan_path,
         )
 
     env_probe_path = logs / "env_probe.json"
@@ -985,6 +1003,7 @@ def run_scout_pipeline(
         zone_spacing_hz=zone_spacing_hz,
         scout_mesh_rel=scout_mesh_rel,
         manifest_path=manifest_path,
+        explicit_target_plan_path=explicit_target_plan_path,
     )
 
 
@@ -1032,6 +1051,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--solver-python", default=os.environ.get("B3_SOLVER_PYTHON", M3_SOLVER_PYTHON))
     parser.add_argument("--solver-venv", default=os.environ.get("B3_SOLVER_MKL_VENV", "/home/vboxuser/solver-mkl/venv"))
     parser.add_argument("--reference-json", type=Path, default=str(DEFAULT_REFERENCE))
+    parser.add_argument(
+        "--target-plan-file",
+        type=Path,
+        help="Validation-only: install explicit frozen lprod_target_plan.json (SHA256 recorded).",
+    )
     args = parser.parse_args(argv)
 
     if args.stage3_only and not args.dry_run:
@@ -1077,6 +1101,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         ZONE_3: float(args.zone_spacing_sparse_hz),
     }
 
+    explicit_tp: Optional[Path] = None
+    if args.target_plan_file:
+        explicit_tp = args.target_plan_file if args.target_plan_file.is_absolute() else repo_root / args.target_plan_file
+
     return run_scout_pipeline(
         repo_root=repo_root,
         run_root=run_root,
@@ -1095,6 +1123,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         dry_run=bool(args.dry_run),
         stage3_only=bool(args.stage3_only),
         zone_spacing_hz=zone_spacing_hz,
+        explicit_target_plan_path=explicit_tp,
     )
 
 

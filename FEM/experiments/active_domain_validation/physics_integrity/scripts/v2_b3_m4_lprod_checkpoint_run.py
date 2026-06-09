@@ -23,7 +23,9 @@ MESH_BUILD_REL = (
 DEFAULT_PROD_PYTHON = "/home/vboxuser/final-project/.venv/bin/python"
 DEFAULT_PROD_VENV = "/home/vboxuser/final-project/.venv"
 
-MESH_LEVEL = "L_prod"
+def _mesh_level_from_sample(sample_input: Mapping[str, Any]) -> str:
+    profile = resolve_production_mesh_profile(sample_input)
+    return profile.mesh_level_id
 TERMINAL_READY = "LPROD_CHECKPOINT_READY"
 ALLOWED_INPUT_TERMINAL = frozenset(
     {
@@ -40,9 +42,19 @@ from v2_b3_m3_orchestrator_run_one import (  # noqa: E402
     _run_subprocess,
     _verify_stage_a_export,
 )
+from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
+    LEVEL_L_PROD_LEGACY,
+    LEVEL_PROD_REFERENCE,
+    canonical_mesh_level_id,
+    convergence_mesh_path,
+    is_production_mesh_level,
+    legacy_run_without_profile,
+    run_tree_lprod_mesh_path,
+    validate_mesh_profile_reuse,
+)
 from v2_b3_m4_production_contracts import (  # noqa: E402
-    DATASET_VERSION,
     aperture_export_required_for_core_config,
+    resolve_production_mesh_profile,
     resolve_production_region_dofs_mode,
     validate_post_export_region_dof_contract,
     validate_pre_operator_build_region_dof_contract,
@@ -73,9 +85,6 @@ from v2_b3_run_coarse_scout_lhs_batch import (  # noqa: E402
     _run_env_probe,
     _verify_stage_a_env_probe,
 )
-from v2_mesh_convergence_common import mesh_path  # noqa: E402
-
-
 def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -158,9 +167,10 @@ def _verify_lprod_checkpoint_export(
         return False, "missing active_dimension", detail
     detail["active_dimension"] = active_dim
 
-    mesh_level = str(data.get("mesh_level") or built.get("mesh_level") or "")
-    if mesh_level != LPROD_MESH_LEVEL:
-        return False, f"mesh_level={mesh_level!r} expected L_prod", detail
+    mesh_level = canonical_mesh_level_id(str(data.get("mesh_level") or built.get("mesh_level") or ""))
+    if not is_production_mesh_level(mesh_level):
+        return False, f"mesh_level={mesh_level!r} not a production mesh level", detail
+    detail["mesh_level_id"] = mesh_level
 
     prov = data.get("core_config_provenance") or {}
     core_path_raw = str(
@@ -230,10 +240,12 @@ def resolve_lprod_core_config(
                 m4_meta.update(meta)
             if meta.get("shape_name"):
                 resolved["shape_name"] = str(meta["shape_name"])
-    resolved["dataset_version"] = DATASET_VERSION
+    profile = resolve_production_mesh_profile(sample_input or {})
+    resolved.update(profile.provenance_fields())
+    resolved["dataset_version"] = profile.dataset_version
     m4_meta = resolved.setdefault("m4_run_metadata", {})
     if isinstance(m4_meta, dict):
-        m4_meta["dataset_version"] = DATASET_VERSION
+        m4_meta.update(profile.provenance_fields())
     write_json_atomic(out_path, resolved)
     return out_path
 
@@ -292,7 +304,9 @@ def build_execution_plan(
 ) -> Dict[str, Any]:
     sample_id = str(sample_input.get("sample_id") or manifest.get("sample_id"))
     run_id = str(manifest.get("run_id") or run_root.name)
-    lprod_mesh = run_root / "lprod" / "mesh" / MESH_LEVEL / f"{sample_id}.msh"
+    profile = resolve_production_mesh_profile(sample_input)
+    mesh_level = profile.mesh_level_id
+    lprod_mesh = run_tree_lprod_mesh_path(run_root, sample_id, mesh_level)
     lprod_mesh_rel = _rel(lprod_mesh, repo_root=repo_root)
     checkpoint_dir = run_root / "lprod" / "checkpoint"
     resolved_lprod = run_root / "lprod" / "resolved_core_config.json"
@@ -305,16 +319,26 @@ def build_execution_plan(
         sample_id=sample_id,
         sample_input=sample_input,
         rel_path_fn=lambda p, **kw: _rel(p, repo_root=repo_root),
+        mesh_level_id=mesh_level,
     )
 
     mesh_ok = _mesh_pass(lprod_mesh)
+    if not mesh_ok and profile.mesh_profile == "reference":
+        legacy_mesh = run_root / "lprod" / "mesh" / LEVEL_L_PROD_LEGACY / f"{sample_id}.msh"
+        if _mesh_pass(legacy_mesh):
+            lprod_mesh = legacy_mesh
+            mesh_ok = True
     ckpt_ok = _checkpoint_pass(export_manifest)
     geom = extract_geometry_dict(sample_input)
     geom_match, _ = geometries_match(geom, BASELINE_GEOMETRY)
 
     mesh_action = "reuse_run_tree"
     if not mesh_ok:
-        if readiness.get("lprod_mesh_status") == "reusable_existing" and geom_match:
+        if (
+            profile.allow_baseline_mesh_reuse
+            and readiness.get("lprod_mesh_status") == "reusable_existing"
+            and geom_match
+        ):
             mesh_action = "copy_baseline_mesh"
         else:
             mesh_action = "build_sample_geometry"
@@ -322,18 +346,31 @@ def build_execution_plan(
     # --force re-exports checkpoint; it must not rebuild an existing run-tree mesh.
     skip_mesh = mesh_ok and mesh_action == "reuse_run_tree"
 
+    profile_reuse_errors: List[str] = []
+    if ckpt_ok and export_manifest.is_file():
+        try:
+            built = _load_json(checkpoint_dir / "built_metadata.json")
+            if not legacy_run_without_profile(sample_input, built):
+                profile_reuse_errors = validate_mesh_profile_reuse(
+                    expected=profile, existing=built, context="checkpoint_reuse"
+                )
+        except (OSError, ValueError, json.JSONDecodeError):
+            profile_reuse_errors = ["checkpoint_reuse:built_metadata_unreadable"]
+
     return {
         "schema": "m4_lprod_checkpoint_run_plan_v1",
         "will_execute": False,
         "sample_id": sample_id,
         "run_id": run_id,
         "run_root": _rel(run_root, repo_root=repo_root),
+        **profile.provenance_fields(),
         "mesh_action": mesh_action,
+        "profile_reuse_errors": profile_reuse_errors,
         "lprod_mesh_status": readiness.get("lprod_mesh_status"),
         "lprod_checkpoint_status": readiness.get("lprod_checkpoint_status"),
         "readiness": readiness,
         "skip_mesh": skip_mesh,
-        "skip_checkpoint": ckpt_ok and not force,
+        "skip_checkpoint": ckpt_ok and not force and not profile_reuse_errors,
         "paths": {
             "lprod_mesh": lprod_mesh_rel,
             "lprod_resolved_core_config": resolved_lprod_rel,
@@ -344,7 +381,7 @@ def build_execution_plan(
             prod_python,
             _path_for_subprocess(repo_root / Path(STAGE_A_REL), repo_root=repo_root),
             "--mesh-level",
-            MESH_LEVEL,
+            mesh_level,
             "--B3-block-compose-backend",
             "csr_bulk",
             "--B3-synthesis-region-dofs",
@@ -360,14 +397,21 @@ def build_execution_plan(
 
 
 def _fix_mesh_argv(plan: Dict[str, Any], *, repo_root: Path, run_root: Path, sample_id: str, prod_python: str) -> None:
-    plan["argv_mesh_build"] = [
+    argv = [
         prod_python,
         _path_for_subprocess(repo_root / Path(MESH_BUILD_REL), repo_root=repo_root),
         "--sample-id",
         sample_id,
         "--run-dir",
         _rel(run_root, repo_root=repo_root),
+        "--mesh-level-id",
+        str(plan.get("mesh_level_id") or LEVEL_PROD_REFERENCE),
     ]
+    if plan.get("mesh_profile"):
+        argv.extend(["--mesh-profile", str(plan["mesh_profile"])])
+    if plan.get("dataset_version"):
+        argv.extend(["--dataset-version", str(plan["dataset_version"])])
+    plan["argv_mesh_build"] = argv
 
 
 def _log_lprod_region_dof_index_status(
@@ -617,7 +661,7 @@ def run_execute(
                     log_path=log_mesh,
                     label="lprod_mesh_build",
                 )
-                built_conv = mesh_path(MESH_LEVEL, sample_id)
+                built_conv = convergence_mesh_path(mesh_level, sample_id)
                 if rc_mesh == 0 and built_conv.is_file():
                     _install_mesh_from_src(src=built_conv, dst=lprod_mesh, sample_id=sample_id)
             else:

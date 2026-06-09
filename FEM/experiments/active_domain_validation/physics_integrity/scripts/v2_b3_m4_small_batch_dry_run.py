@@ -229,6 +229,8 @@ def _build_sample_plan(
         workers=int(fp.get("workers", 3)),
         prod_python="/home/vboxuser/final-project/.venv/bin/python",
         solver_python="/home/vboxuser/solver-mkl/venv/bin/python",
+        mesh_profile=spec.get("mesh_profile") or sample.get("mesh_profile"),
+        dataset_version=spec.get("dataset_version") or sample.get("dataset_version"),
     )
     _patch_plan_for_m45(plan, batch_id=batch_id)
 

@@ -63,6 +63,8 @@ RETAIN_ALWAYS_REL: Tuple[str, ...] = (
     "logs",
     "sample",
     "compaction",
+    "validation",
+    "cleanup",
     "pipeline_run_manifest.json",
     "m4_sample_runtime_provenance.json",
 )

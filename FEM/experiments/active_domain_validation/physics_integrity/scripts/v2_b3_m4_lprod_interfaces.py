@@ -186,10 +186,23 @@ def evaluate_lprod_mesh_checkpoint_readiness(
     sample_id: str,
     sample_input: Mapping[str, Any],
     rel_path_fn,
+    mesh_level_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Decide L_prod mesh/checkpoint reuse vs planned build (M4.4.1a dry-run)."""
+    from v2_b3_m4_mesh_profile_lib import (  # noqa: WPS433
+        LEVEL_L_PROD_LEGACY,
+        resolve_mesh_profile_from_mapping,
+        run_tree_lprod_mesh_path,
+    )
+
+    profile = resolve_mesh_profile_from_mapping(sample_input)
+    level = mesh_level_id or profile.mesh_level_id
     lprod_dir = run_root / "lprod"
-    sample_mesh = lprod_dir / "mesh" / LPROD_MESH_LEVEL / f"{sample_id}.msh"
+    sample_mesh = run_tree_lprod_mesh_path(run_root, sample_id, level)
+    if not sample_mesh.is_file() and profile.mesh_profile == "reference":
+        legacy = lprod_dir / "mesh" / LEVEL_L_PROD_LEGACY / f"{sample_id}.msh"
+        if legacy.is_file():
+            sample_mesh = legacy
     checkpoint_dir = lprod_dir / "checkpoint"
     resolved_lprod = lprod_dir / "resolved_core_config.json"
     resolved_sample = run_root / "sample" / "resolved_core_config.json"
@@ -214,7 +227,12 @@ def evaluate_lprod_mesh_checkpoint_readiness(
         except (OSError, ValueError, json.JSONDecodeError):
             checkpoint_pass = False
 
-    if geom_match and baseline_mesh_exists and not requires_remesh:
+    if (
+        profile.allow_baseline_mesh_reuse
+        and geom_match
+        and baseline_mesh_exists
+        and not requires_remesh
+    ):
         lprod_mesh_status = "reusable_existing"
         mesh_source = rel_path_fn(BASELINE_L_PROD_MESH, repo_root=repo_root)
         mesh_note = (

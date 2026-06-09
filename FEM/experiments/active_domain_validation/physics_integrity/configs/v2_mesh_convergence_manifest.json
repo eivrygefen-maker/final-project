@@ -76,9 +76,46 @@
       "not_authorized_for_final_physics_validation": true
     },
     "L_prod": {
-      "label": "production FOM mesh profile (FEM_ALLOW_FOM)",
+      "label": "production FOM mesh profile alias (L_prod_reference; backward compatibility)",
       "build_env": {"FEM_ALLOW_FOM": "1"},
       "lc_scale": 1.0,
+      "explicit_controls_m": {
+        "wood_thickness_size_m": 0.001,
+        "wood_surface_size_m": 0.007,
+        "air_threshold_size_min_m": 0.004,
+        "air_threshold_size_max_m": 0.05,
+        "air_threshold_dist_min_m": 0.015,
+        "air_threshold_dist_max_m": 0.25
+      },
+      "alias_of": "L_prod_reference",
+      "run_gates_on_build": true
+    },
+    "L_prod_reference": {
+      "label": "production reference FOM mesh (full fidelity; FEM_ALLOW_FOM)",
+      "build_env": {"FEM_ALLOW_FOM": "1"},
+      "lc_scale": 1.0,
+      "explicit_controls_m": {
+        "wood_thickness_size_m": 0.001,
+        "wood_surface_size_m": 0.007,
+        "air_threshold_size_min_m": 0.004,
+        "air_threshold_size_max_m": 0.05,
+        "air_threshold_dist_min_m": 0.015,
+        "air_threshold_dist_max_m": 0.25
+      },
+      "run_gates_on_build": true
+    },
+    "L_rom_prod": {
+      "label": "ROM production mesh profile (ROM_BALANCED; FEM_ALLOW_FOM)",
+      "build_env": {"FEM_ALLOW_FOM": "1"},
+      "lc_scale": 1.0,
+      "explicit_controls_m": {
+        "wood_thickness_size_m": 0.00125,
+        "wood_surface_size_m": 0.0085,
+        "air_threshold_size_min_m": 0.0055,
+        "air_threshold_size_max_m": 0.06,
+        "air_threshold_dist_min_m": 0.015,
+        "air_threshold_dist_max_m": 0.25
+      },
       "run_gates_on_build": true
     },
     "L_scout_coarse": {

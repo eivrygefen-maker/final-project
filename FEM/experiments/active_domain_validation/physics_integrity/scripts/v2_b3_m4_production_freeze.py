@@ -111,6 +111,9 @@ def promote_production_completed(
     manifest["production_acceptance_failures"] = list(acceptance.get("failures") or [])
     manifest["mic_output_method"] = PRODUCTION_MIC_METHOD
     manifest["dataset_version"] = acceptance.get("dataset_version") or DATASET_VERSION
+    for key in ("mesh_profile", "mesh_level_id", "effective_controls_m"):
+        if acceptance.get(key) is not None:
+            manifest[key] = acceptance.get(key)
     stages = manifest.setdefault("stages", {})
     for key in ("stage5_workers", "stage6_aggregate"):
         st = stages.setdefault(key, {})
@@ -160,7 +163,12 @@ def write_production_freeze_manifest(
         "terminal_status": TERMINAL_PRODUCTION_COMPLETED,
         "aggregation_status": agg.get("status") or AGG_STATUS_PASS,
         "final_aggregation_ready": bool(agg.get("final_aggregation_ready")),
-        "dataset_version": built.get("dataset_version") or DATASET_VERSION,
+        "dataset_version": built.get("dataset_version") or acceptance.get("dataset_version") or DATASET_VERSION,
+        "mesh_profile": acceptance.get("mesh_profile") or built.get("mesh_profile"),
+        "mesh_level_id": acceptance.get("mesh_level_id") or built.get("mesh_level_id") or built.get("mesh_level"),
+        "effective_controls_m": acceptance.get("effective_controls_m") or built.get("effective_controls_m"),
+        "generated_mesh_sha256": built.get("generated_mesh_sha256"),
+        "operator_mesh_sha256": built.get("operator_mesh_sha256"),
         "operator_mesh_matches_generated": bool(built.get("operator_mesh_matches_generated")),
         "p_idx_aperture_count": int(acceptance.get("p_idx_aperture_count") or built.get("p_idx_aperture_count") or 0),
         "production_acceptance_pass": bool(acceptance.get("acceptance_pass")),

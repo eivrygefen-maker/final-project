@@ -524,11 +524,13 @@ def build_physics_identity_manifest(
 ) -> Dict[str, Any]:
     """Assemble durable identity manifest from checkpoint (must exist pre-compaction)."""
     from v2_b3_m4_lprod_interfaces import extract_geometry_dict, geometry_fingerprint  # noqa: WPS433
-    from v2_b3_m4_production_contracts import DATASET_VERSION, PRODUCTION_MIC_METHOD  # noqa: WPS433
+    from v2_b3_m4_mesh_profile_lib import resolve_mesh_profile_from_mapping, run_tree_lprod_mesh_path  # noqa: WPS433
+    from v2_b3_m4_production_contracts import PRODUCTION_MIC_METHOD  # noqa: WPS433
 
     run_root = run_root.resolve()
     sample_id = str(sample_input.get("sample_id") or run_root.parent.parent.name)
     run_id = run_root.name
+    profile = resolve_mesh_profile_from_mapping(sample_input)
     ckpt = run_root / "lprod" / "checkpoint"
     built_path = ckpt / "built_metadata.json"
     built: Dict[str, Any] = {}
@@ -536,7 +538,7 @@ def build_physics_identity_manifest(
         built = json.loads(built_path.read_text(encoding="utf-8"))
 
     geom = extract_geometry_dict(sample_input)
-    mesh_path = run_root / "lprod" / "mesh" / "L_prod" / f"{sample_id}.msh"
+    mesh_path = run_tree_lprod_mesh_path(run_root, sample_id, profile.mesh_level_id)
     if not mesh_path.is_file():
         op_mesh = str(built.get("operator_mesh_file_used") or built.get("generated_mesh_file") or "")
         if op_mesh:
@@ -551,7 +553,9 @@ def build_physics_identity_manifest(
         "schema": PHYSICS_IDENTITY_SCHEMA,
         "sample_id": sample_id,
         "run_id": run_id,
-        "dataset_version": built.get("dataset_version") or DATASET_VERSION,
+        "dataset_version": built.get("dataset_version") or profile.dataset_version,
+        **profile.provenance_fields(),
+        "effective_controls_m": profile.effective_controls_m,
         "geometry_fingerprint": geometry_fingerprint(geom) if geom else None,
         "geometry_numeric_parameters": dict(geom) if geom else {},
         "generated_mesh_path": str(mesh_path),

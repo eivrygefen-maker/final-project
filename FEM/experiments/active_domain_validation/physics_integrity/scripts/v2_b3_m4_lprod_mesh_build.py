@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PHYSICS_ROOT = SCRIPT_DIR.parent
@@ -16,10 +16,15 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from v2_b3_m4_lprod_interfaces import extract_geometry_dict, extract_run_metadata  # noqa: E402
+from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
+    LEVEL_PROD_REFERENCE,
+    canonical_mesh_level_id,
+    resolve_mesh_profile_from_mapping,
+)
 from v2_mesh_convergence_common import load_manifest, mesh_path, write_json  # noqa: E402
 from v2_mesh_convergence_mesh import build_level_mesh, effective_controls_from_level_def  # noqa: E402
 
-LEVEL_ID = "L_prod"
+DEFAULT_LEVEL_ID = LEVEL_PROD_REFERENCE
 REQUIRED_VOLUME_TAGS = (1, 2, 3, 10)
 REQUIRED_FACET_TAGS = (1, 2, 3, 4, 5)
 
@@ -42,19 +47,27 @@ def build_lprod_mesh_for_case(
     sample_id: str,
     geometry: Dict[str, float],
     shape_name: str,
+    level_id: str = DEFAULT_LEVEL_ID,
+    mesh_profile: Optional[str] = None,
+    dataset_version: Optional[str] = None,
 ) -> Dict[str, Any]:
+    resolved = resolve_mesh_profile_from_mapping(
+        {"mesh_profile": mesh_profile, "mesh_level_id": level_id, "dataset_version": dataset_version},
+        fallback_dataset_version=dataset_version,
+    )
+    level_id = canonical_mesh_level_id(level_id or resolved.mesh_level_id)
     manifest = load_manifest()
-    level_def = (manifest.get("mesh_levels") or {}).get(LEVEL_ID)
+    level_def = (manifest.get("mesh_levels") or {}).get(level_id)
     if not level_def:
-        raise RuntimeError(f"missing mesh_levels.{LEVEL_ID} in v2_mesh_convergence_manifest.json")
+        raise RuntimeError(f"missing mesh_levels.{level_id} in v2_mesh_convergence_manifest.json")
 
     case = {
         "id": sample_id,
         "geometry": dict(geometry),
         "shape_name": shape_name,
     }
-    audit = build_level_mesh(case, LEVEL_ID, level_def, config_dir=CONFIG_DIR)
-    out_msh = mesh_path(LEVEL_ID, sample_id)
+    audit = build_level_mesh(case, level_id, level_def, config_dir=CONFIG_DIR)
+    out_msh = mesh_path(level_id, sample_id)
 
     if audit.get("build_failed"):
         return {
@@ -71,7 +84,10 @@ def build_lprod_mesh_for_case(
     effective = effective_controls_from_level_def(level_def)
 
     summary = {
-        "B3_lprod_mesh_level": LEVEL_ID,
+        "B3_lprod_mesh_level": level_id,
+        "mesh_profile": resolved.mesh_profile,
+        "mesh_level_id": level_id,
+        "dataset_version": resolved.dataset_version,
         "sample_id": sample_id,
         "mesh_path": str(out_msh.resolve()),
         "effective_controls_m": effective,
@@ -106,6 +122,17 @@ def main() -> int:
         type=Path,
         help="Optional JSON object with geometry keys (overrides run-dir sample).",
     )
+    parser.add_argument(
+        "--mesh-level-id",
+        default=DEFAULT_LEVEL_ID,
+        help=f"Manifest mesh level (default: {DEFAULT_LEVEL_ID}).",
+    )
+    parser.add_argument(
+        "--mesh-profile",
+        choices=("reference", "rom"),
+        help="Production mesh profile (overrides --mesh-level-id when set).",
+    )
+    parser.add_argument("--dataset-version", help="Dataset version paired with mesh profile.")
     args = parser.parse_args()
     sample_id = str(args.sample_id)
 
@@ -133,6 +160,9 @@ def main() -> int:
         sample_id=sample_id,
         geometry=geometry,
         shape_name=shape_name,
+        level_id=str(args.mesh_level_id),
+        mesh_profile=args.mesh_profile,
+        dataset_version=args.dataset_version,
     )
     print(f"[B3_lprod_mesh] status={result.get('status')}", flush=True)
     print(f"[B3_lprod_mesh] mesh_path={result.get('mesh_path')}", flush=True)

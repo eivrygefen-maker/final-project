@@ -39,6 +39,11 @@ from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
     write_per_sample_spec,
 )
 from v2_b3_m4_lhs_production_batch import run_production_batch  # noqa: E402
+from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
+    MESH_PROFILE_REFERENCE,
+    MeshProfileError,
+    resolve_mesh_profile,
+)
 from v2_b3_m4_production_contracts import DATASET_VERSION, is_strict_production_mode  # noqa: E402
 from v2_b3_m4_rom_fom_compare_lib import (  # noqa: E402
     DEFAULT_MAX_MATCH_DISTANCE_HZ,
@@ -255,6 +260,21 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         dest="isolated_subprocess",
         help="Run samples in-process (not recommended for corrected production).",
     )
+    parser.add_argument(
+        "--mesh-profile",
+        choices=("reference", "rom"),
+        default=MESH_PROFILE_REFERENCE,
+        help="Production mesh profile (default: reference = full fidelity mesh).",
+    )
+    parser.add_argument(
+        "--dataset-version",
+        help="Dataset version paired with --mesh-profile (default: canonical per profile).",
+    )
+    parser.add_argument(
+        "--target-plan-file",
+        type=Path,
+        help="Validation-only: explicit frozen target plan JSON (SHA256 recorded; same sample only).",
+    )
     return parser.parse_args(argv)
 
 
@@ -275,6 +295,9 @@ def _build_selected_batch(
     lhs_source_path: str,
     run_id_suffix: str,
     exclude_reference: bool,
+    mesh_profile: str,
+    dataset_version: Optional[str],
+    target_plan_file: Optional[Path],
 ) -> tuple[Dict[str, Any], Path]:
     sample_entries: List[Dict[str, Any]] = []
     for row in selection:
@@ -286,8 +309,13 @@ def _build_selected_batch(
                 run_id_suffix=run_id_suffix,
                 batch_id=batch_id,
                 lhs_source_path=lhs_source_path,
+                mesh_profile=mesh_profile,
+                dataset_version=dataset_version,
             )
         )
+    target_rel: Optional[str] = None
+    if target_plan_file is not None:
+        target_rel = rel(target_plan_file if target_plan_file.is_absolute() else repo_root / target_plan_file, repo_root=repo_root)
     batch_spec = build_lhs_batch_spec(
         pool=pool,
         samples=sample_entries,
@@ -295,6 +323,9 @@ def _build_selected_batch(
         lhs_source_path=lhs_source_path,
         run_id_suffix=run_id_suffix,
         exclude_reference=exclude_reference,
+        mesh_profile=mesh_profile,
+        dataset_version=dataset_version,
+        target_plan_file=target_rel,
     )
     gen_dir = specs_generated_dir(repo_root)
     gen_dir.mkdir(parents=True, exist_ok=True)
@@ -377,6 +408,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.workers < 1:
         print("error: --workers must be >= 1", file=sys.stderr)
         return 2
+    try:
+        mesh_resolved = resolve_mesh_profile(
+            mesh_profile=args.mesh_profile,
+            dataset_version=args.dataset_version,
+        )
+    except MeshProfileError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     if args.include_reference and args.exclude_reference:
         print("error: use only one of --include-reference / --exclude-reference", file=sys.stderr)
         return 2
@@ -390,6 +429,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("warning: compaction flags ignored during --dry-run", flush=True)
 
     repo_root = detect_repo_root(SCRIPT_DIR)
+
+    if args.target_plan_file and not args.dry_run and not args.reconcile_existing_runs:
+        tp = args.target_plan_file if args.target_plan_file.is_absolute() else repo_root / args.target_plan_file
+        if not tp.is_file():
+            print(f"error: --target-plan-file not found: {tp}", file=sys.stderr)
+            return 2
 
     if args.request_stop:
         path = request_stop_after_current(repo_root)
@@ -509,9 +554,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         lhs_source_path=lhs_rel,
         run_id_suffix=run_id_suffix,
         exclude_reference=exclude_reference,
+        mesh_profile=mesh_resolved.mesh_profile,
+        dataset_version=mesh_resolved.dataset_version,
+        target_plan_file=args.target_plan_file,
     )
 
     print(f"batch_id={batch_id}")
+    print(f"mesh_profile={mesh_resolved.mesh_profile}")
+    print(f"mesh_level_id={mesh_resolved.mesh_level_id}")
+    print(f"dataset_version={mesh_resolved.dataset_version}")
+    print(f"effective_controls_m={mesh_resolved.effective_controls_m}")
     print(f"lhs_json={lhs_rel}")
     print(f"spec_path={rel(spec_path, repo_root=repo_root)}")
     print(f"selected_count={len(selection)} skipped_count={len(skipped)}")
@@ -519,6 +571,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"  {row['sample_id']} -> {row['run_id']} (lhs_index={row['lhs_row_index']})")
 
     if args.dry_run:
+        from v2_mesh_convergence_common import mesh_path  # noqa: WPS433
+
+        example_sid = str(selection[0]["sample_id"]) if selection else "sample_000"
+        mesh_out = mesh_path(mesh_resolved.mesh_level_id, example_sid)
         plan = {
             "schema": "m4_production_pipeline_plan_v1",
             "will_execute": False,
@@ -529,6 +585,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "index_path": rel(index_path, repo_root=repo_root),
             "selected": selection,
             "skipped": skipped,
+            **mesh_resolved.provenance_fields(),
+            "expected_mesh_output_path": rel(mesh_out, repo_root=repo_root),
         }
         write_json_atomic(specs_generated_dir(repo_root) / f"{batch_id}_plan.json", plan)
         print("will_execute=false")
@@ -675,6 +733,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         compact_nonblocking=compact_nonblocking,
         isolated_subprocess=isolated_subprocess,
         strict_production=strict_production,
+        mesh_profile=mesh_resolved.mesh_profile,
+        dataset_version=mesh_resolved.dataset_version,
+        target_plan_file=args.target_plan_file,
     )
 
     if (

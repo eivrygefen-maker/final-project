@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -30,8 +33,6 @@ print("mkl_error", p.get("error"))
 REAL_WORKER_STATUSES = frozenset({"PASS", "PASS_WITH_WARNING", "PARTIAL"})
 PASS_LIKE = frozenset({"PASS", "PASS_WITH_WARNING"})
 
-import sys
-
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
@@ -57,6 +58,112 @@ from v2_b3_run_coarse_scout_lhs_batch import (  # noqa: E402
 
 def utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _proc_peak_rss_bytes(pid: int) -> Tuple[Optional[int], str]:
+    """
+    Linux /proc/<pid>/status peak RSS via VmHWM only (true process high-water mark).
+    VmRSS is current resident memory and must not be reported as peak.
+    Returns (bytes, measurement_method).
+    """
+    if sys.platform != "linux":
+        return None, "unavailable_non_linux"
+    try:
+        text = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
+    except OSError:
+        return None, "proc_status_unreadable"
+    vmhwm_kb: Optional[int] = None
+    for line in text.splitlines():
+        if line.startswith("VmHWM:"):
+            parts = line.split()
+            if len(parts) >= 2:
+                try:
+                    vmhwm_kb = int(parts[1])
+                except ValueError:
+                    pass
+            break
+    if vmhwm_kb is None:
+        return None, "vmhwm_unavailable"
+    return vmhwm_kb * 1024, "linux_proc_status_vmhwm"
+
+
+def run_subprocess_with_resource_probe(
+    argv: List[str],
+    *,
+    env: Dict[str, str],
+    cwd: Path,
+    log_path: Path,
+    label: str,
+    poll_interval_s: float = 0.25,
+) -> Tuple[int, Dict[str, Any]]:
+    """Run subprocess and record PID, wall time, peak RSS (Linux), exit status."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    t0 = time.perf_counter()
+    resource: Dict[str, Any] = {
+        "worker_pid": None,
+        "chunk_id": label,
+        "wall_seconds": None,
+        "peak_rss_bytes": None,
+        "max_rss_bytes": None,
+        "rss_measurement_method": None,
+        "exit_status": None,
+        "terminated": False,
+        "killed": False,
+        "child_processes_included": False,
+    }
+    try:
+        proc = subprocess.Popen(
+            argv,
+            cwd=str(cwd),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except OSError as exc:
+        resource["exit_status"] = -1
+        resource["error"] = str(exc)
+        log_path.write_text(f"spawn failed: {exc}\n", encoding="utf-8")
+        return -1, resource
+
+    resource["worker_pid"] = proc.pid
+    peak_rss = 0
+    measurement_method = "linux_proc_status_vmhwm"
+    while proc.poll() is None:
+        rss, method = _proc_peak_rss_bytes(proc.pid)
+        if method:
+            measurement_method = method
+        if rss:
+            peak_rss = max(peak_rss, rss)
+        time.sleep(poll_interval_s)
+
+    output = proc.stdout.read() if proc.stdout else ""
+    rc = int(proc.returncode or 0)
+    final_rss, method = _proc_peak_rss_bytes(proc.pid)
+    if method:
+        measurement_method = method
+    if final_rss:
+        peak_rss = max(peak_rss, final_rss)
+    if peak_rss > 0:
+        resource["peak_rss_bytes"] = peak_rss
+        resource["max_rss_bytes"] = peak_rss
+    resource["rss_measurement_method"] = measurement_method
+    resource["exit_status"] = rc
+    resource["wall_seconds"] = round(time.perf_counter() - t0, 3)
+    if rc < 0:
+        resource["terminated"] = True
+        if rc == -9:
+            resource["killed"] = True
+    log_path.write_text(output or "", encoding="utf-8")
+    tail = "\n".join((output or "").strip().splitlines()[-8:])
+    if tail:
+        print(f"[B3_worker] {label} log tail:\n{tail}", flush=True)
+    print(
+        f"[B3_worker] {label} finished exit_code={rc} "
+        f"max_rss_bytes={resource.get('max_rss_bytes')} wall_s={resource.get('wall_seconds')}",
+        flush=True,
+    )
+    return rc, resource
 
 
 def detect_repo_root(start: Path) -> Path:
@@ -132,8 +239,13 @@ def verify_lprod_checkpoint(checkpoint_dir: Path) -> Tuple[bool, str]:
         if not (checkpoint_dir / name).is_file():
             return False, f"missing {name}"
     built_meta = load_json(checkpoint_dir / "built_metadata.json")
-    if str(built_meta.get("mesh_level") or data.get("mesh_level") or "") != "L_prod":
-        return False, "mesh_level is not L_prod"
+    from v2_b3_m4_mesh_profile_lib import canonical_mesh_level_id, is_production_mesh_level  # noqa: WPS433
+
+    mesh_level = canonical_mesh_level_id(
+        str(built_meta.get("mesh_level") or built_meta.get("mesh_level_id") or data.get("mesh_level") or "")
+    )
+    if not is_production_mesh_level(mesh_level):
+        return False, f"mesh_level is not production: {mesh_level!r}"
     return True, "ok"
 
 
@@ -589,14 +701,14 @@ def execute_worker_chunk(
         }
 
     append_log(log_path, "env_probe PASS\n")
-    rc = _run_subprocess(
+    rc, worker_resource = run_subprocess_with_resource_probe(
         plan["argv_solve"],
         env=env_b,
         cwd=repo_root,
         log_path=log_path,
         label=f"{label_prefix}_{chunk_id}",
     )
-    append_log(log_path, f"solve exit_code={rc}\n")
+    append_log(log_path, f"solve exit_code={rc} resource={json.dumps(worker_resource)}\n")
 
     solver_result = None
     solver_path = chunk_dir / "solver_result.json"
@@ -624,7 +736,8 @@ def execute_worker_chunk(
         "chunk_id": chunk_id,
         "action": "executed",
         "solve_exit_code": rc,
-        "wall_seconds": time.perf_counter() - t0,
+        "wall_seconds": worker_resource.get("wall_seconds") or round(time.perf_counter() - t0, 3),
+        "worker_resource": worker_resource,
         **summary,
     }
 

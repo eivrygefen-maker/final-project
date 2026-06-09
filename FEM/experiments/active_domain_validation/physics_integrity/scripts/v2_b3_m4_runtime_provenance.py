@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Mapping, Optional
 PIPELINE_VERSION = "M4 production"
 MODEL_VERSION = "V2"
 OPERATOR_VERSION = "B3"
-MESH_LEVEL = "L_prod"
+DEFAULT_MESH_LEVEL = "L_prod_reference"
 SOLVER_BACKEND = "mkl_pardiso"
 CHUNK_POLICY = "lprod_target_plan_fcfs"
 TARGET_POLICY = "adaptive_lprod_zones_v1"
@@ -105,12 +105,49 @@ def collect_m4_runtime_provenance(
     if workers_actual <= 0 and wr:
         workers_actual = int(wr.get("workers_requested") or workers_requested)
 
+    mesh_level = str(manifest.get("mesh_level_id") or manifest.get("mesh_level") or DEFAULT_MESH_LEVEL)
+    mesh_profile = manifest.get("mesh_profile")
+    dataset_version = manifest.get("dataset_version")
+    worker_rss: List[Dict[str, Any]] = []
+    if wr:
+        for row in wr.get("chunk_results") or []:
+            if not isinstance(row, dict):
+                continue
+            rss = row.get("worker_resource") or {}
+            if rss:
+                peak = rss.get("peak_rss_bytes") or rss.get("max_rss_bytes")
+                worker_rss.append(
+                    {
+                        "chunk_id": row.get("chunk_id"),
+                        "worker_pid": rss.get("worker_pid"),
+                        "wall_seconds": rss.get("wall_seconds") or row.get("wall_seconds"),
+                        "peak_rss_bytes": peak,
+                        "max_rss_bytes": peak,
+                        "rss_measurement_method": rss.get("rss_measurement_method"),
+                        "exit_status": rss.get("exit_status"),
+                        "terminated": rss.get("terminated"),
+                        "killed": rss.get("killed"),
+                        "child_processes_included": rss.get("child_processes_included", False),
+                    }
+                )
+
+    peak_rss_per_worker = [
+        int(r["peak_rss_bytes"])
+        for r in worker_rss
+        if r.get("peak_rss_bytes") is not None
+    ]
+    workers_parallel_observed = int(wr.get("workers_actual_parallel") or 0) if wr else 0
+    sum_peaks = sum(peak_rss_per_worker) if peak_rss_per_worker else None
+
     out: Dict[str, Any] = {
         "schema": "m4_runtime_provenance_v1",
         "pipeline_version": PIPELINE_VERSION,
         "model_version": MODEL_VERSION,
         "operator_version": OPERATOR_VERSION,
-        "mesh_level": MESH_LEVEL,
+        "mesh_level": mesh_level,
+        "mesh_level_id": mesh_level,
+        "mesh_profile": mesh_profile,
+        "dataset_version": dataset_version,
         "target_policy": TARGET_POLICY,
         "chunk_policy": CHUNK_POLICY,
         "solver_backend": SOLVER_BACKEND,
@@ -130,6 +167,18 @@ def collect_m4_runtime_provenance(
         "aggregation_status": agg.get("status"),
         "sample_id": manifest.get("sample_id"),
         "run_id": manifest.get("run_id"),
+        "worker_resource_records": worker_rss,
+        "peak_rss_bytes_per_worker": peak_rss_per_worker,
+        "peak_rss_bytes_max_worker": max(peak_rss_per_worker) if peak_rss_per_worker else None,
+        "sum_of_individual_worker_peaks_upper_bound": sum_peaks,
+        "workers_parallel_observed": workers_parallel_observed,
+        "rss_aggregate_note": (
+            "peak_rss_bytes_max_worker is max per-worker VmHWM; "
+            "sum_of_individual_worker_peaks_upper_bound is not simultaneous usage"
+            if peak_rss_per_worker
+            else None
+        ),
+        "total_pipeline_wall_seconds": _stage_wall_seconds(manifest, "stage6_aggregate"),
     }
     return out
 

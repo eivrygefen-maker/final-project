@@ -11,9 +11,23 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 import numpy as np
 
 from v2_b3_m4_lprod_interfaces import extract_geometry_dict, geometry_fingerprint  # noqa: E402
+from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
+    DATASET_VERSION_LEGACY,
+    DATASET_VERSION_REFERENCE,
+    DATASET_VERSION_ROM,
+    MeshProfileError,
+    MeshProfileResolved,
+    canonical_mesh_level_id,
+    is_production_mesh_level,
+    resolve_mesh_profile_from_mapping,
+    run_tree_lprod_mesh_path,
+    validate_mesh_profile_reuse,
+    validate_profile_dataset_pairing,
+)
 from v2_b3_rich_modal_lib import REGION_DOF_INDICES_NPZ, load_region_dof_bundle  # noqa: E402
 
-DATASET_VERSION = "m4_geometry_corrected_v1"
+DATASET_VERSION = DATASET_VERSION_LEGACY
+DATASET_VERSIONS_REFERENCE = frozenset({DATASET_VERSION_LEGACY, DATASET_VERSION_REFERENCE})
 REQUIRE_APERTURE_MASK_ENV = "B3_REQUIRE_APERTURE_MASK"
 ALLOW_CAVITY_MAX_FALLBACK_ENV = "B3_ALLOW_CAVITY_MAX_MIC_FALLBACK"
 DIAGNOSTIC_ONLY_FALLBACK_ENV = "B3_DIAGNOSTIC_MIC_FALLBACK_ONLY"
@@ -122,8 +136,34 @@ def dolfinx_mesh_counts(mesh_path: Path) -> Dict[str, Optional[int]]:
 
 def is_strict_production_mode(*, dataset_version: Optional[str] = None) -> bool:
     """Corrected-dataset production: strict fail-fast; env vars cannot disable."""
+    from v2_b3_m4_mesh_profile_lib import STRICT_DATASET_VERSIONS  # noqa: WPS433
+
     ds = str(dataset_version or DATASET_VERSION).strip()
-    return ds == DATASET_VERSION
+    return ds in STRICT_DATASET_VERSIONS
+
+
+def resolve_production_mesh_profile(
+    sample_input: Optional[Mapping[str, Any]] = None,
+    *,
+    mesh_profile: Optional[str] = None,
+    dataset_version: Optional[str] = None,
+) -> MeshProfileResolved:
+    if mesh_profile is not None or dataset_version is not None:
+        return resolve_mesh_profile_from_mapping(
+            {"mesh_profile": mesh_profile, "dataset_version": dataset_version},
+        )
+    return resolve_mesh_profile_from_mapping(sample_input)
+
+
+def enforce_profile_dataset_contract(
+    *,
+    mesh_profile: str,
+    dataset_version: str,
+) -> None:
+    try:
+        validate_profile_dataset_pairing(mesh_profile, dataset_version)
+    except MeshProfileError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def require_aperture_mask_production(*, dataset_version: Optional[str] = None) -> bool:
@@ -255,10 +295,12 @@ def evaluate_production_acceptance(
     catalog = run_root / "aggregation" / "modes_catalog.jsonl"
     rom_compare = run_root / "rom" / "rom_fom_compare_result.json"
 
+    profile = resolve_production_mesh_profile(sample_input)
     out: Dict[str, Any] = {
-        "dataset_version": DATASET_VERSION,
+        "dataset_version": profile.dataset_version,
         "acceptance_pass": False,
         "failures": [],
+        **profile.provenance_fields(),
     }
     if not built_path.is_file():
         out["failures"].append("missing_built_metadata")
@@ -266,7 +308,11 @@ def evaluate_production_acceptance(
 
     built = json.loads(built_path.read_text(encoding="utf-8"))
     sample_id = str(sample_input.get("sample_id") or run_root.parent.parent.name)
-    generated_mesh = lprod / "mesh" / "L_prod" / f"{sample_id}.msh"
+    generated_mesh = run_tree_lprod_mesh_path(run_root, sample_id, profile.mesh_level_id)
+    if not generated_mesh.is_file():
+        legacy = lprod / "mesh" / "L_prod" / f"{sample_id}.msh"
+        if legacy.is_file() and profile.mesh_profile == "reference":
+            generated_mesh = legacy
 
     if not bool(built.get("operator_mesh_matches_generated")):
         out["failures"].append("operator_mesh_matches_generated!=true")
@@ -304,10 +350,21 @@ def evaluate_production_acceptance(
 
     built_ds = str(built.get("dataset_version") or "")
     out["built_dataset_version"] = built_ds or None
-    if built_ds and built_ds != DATASET_VERSION:
+    if built_ds and built_ds != profile.dataset_version:
         out["failures"].append(f"dataset_version={built_ds}")
     elif not built_ds:
         out["failures"].append("missing_dataset_version")
+
+    built_level = canonical_mesh_level_id(str(built.get("mesh_level") or built.get("mesh_level_id") or ""))
+    legacy_ref_level = profile.mesh_profile == "reference" and built_level == "L_prod"
+    if built_level and built_level != profile.mesh_level_id and not legacy_ref_level:
+        out["failures"].append(f"mesh_level_id={built_level}")
+    elif not built_level and sample_input.get("mesh_profile"):
+        out["failures"].append("missing_mesh_level_id")
+
+    if sample_input.get("mesh_profile") or built.get("mesh_profile"):
+        reuse_errors = validate_mesh_profile_reuse(expected=profile, existing=built, context="built_metadata")
+        out["failures"].extend(reuse_errors)
 
     mic_methods = set()
     if catalog.is_file():
@@ -333,7 +390,7 @@ def evaluate_production_acceptance(
     out["mic_output_method"] = PRODUCTION_MIC_METHOD if not out["failures"] else None
     out["acceptance_pass"] = len(out["failures"]) == 0
 
-    if is_strict_production_mode(dataset_version=DATASET_VERSION):
+    if is_strict_production_mode(dataset_version=profile.dataset_version):
         out["failures"].extend(
             _evaluate_strict_production_failures(
                 run_root=run_root,

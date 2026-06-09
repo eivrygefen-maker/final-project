@@ -273,8 +273,18 @@ def build_dry_run_plan(
     workers: int,
     prod_python: str,
     solver_python: str,
+    mesh_profile: Optional[str] = None,
+    dataset_version: Optional[str] = None,
 ) -> Dict[str, Any]:
+    from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
+        apply_mesh_profile_to_sample_input,
+        resolve_mesh_profile,
+    )
+
     sample_id = str(sample["sample_id"])
+    resolved = resolve_mesh_profile(mesh_profile=mesh_profile, dataset_version=dataset_version)
+    sample = apply_mesh_profile_to_sample_input(dict(sample), resolved)
+    lprod_mesh_level = resolved.mesh_level_id
     run_root = GUITARS_ROOT / sample_id / "runs" / run_id
     rel_run = _rel(run_root, repo_root=repo_root)
 
@@ -292,7 +302,7 @@ def build_dry_run_plan(
     scout_mesh = scout_dir / "mesh" / "L_scout_coarse" / f"{sample_id}.msh"
     scout_checkpoint = scout_dir / "checkpoint"
     scout_discovery = scout_dir / "discovery"
-    lprod_mesh = lprod_dir / "mesh" / "L_prod" / f"{sample_id}.msh"
+    lprod_mesh = lprod_dir / "mesh" / lprod_mesh_level / f"{sample_id}.msh"
     lprod_checkpoint = lprod_dir / "checkpoint"
 
     zone_spacing = {
@@ -326,7 +336,7 @@ def build_dry_run_plan(
 
     cmd_lprod_a = _cmd_stage_a(
         prod_python=prod_python,
-        mesh_level="L_prod",
+        mesh_level=lprod_mesh_level,
         core_config=core_config_planned,
         output_dir=_rel(lprod_checkpoint, repo_root=repo_root),
         synthesis_region_dofs=LPROD_SYNTHESIS_REGION_DOFS_DEFAULT,
@@ -388,7 +398,9 @@ def build_dry_run_plan(
         "will_execute": False,
         "sample_id": sample_id,
         "run_id": run_id,
-        "mesh_level": "L_prod",
+        "mesh_level": lprod_mesh_level,
+        "mesh_profile": resolved.mesh_profile,
+        "dataset_version": resolved.dataset_version,
         "planned_mesh_path": _rel(lprod_mesh, repo_root=repo_root),
         "checkpoint_dir": _rel(lprod_checkpoint, repo_root=repo_root),
         "commands": {
@@ -434,7 +446,8 @@ def build_dry_run_plan(
         "zone_policy_version": "v1",
         "target_generation_policy": "pending_scout_v1",
         "frequency_range_hz": [freq_min, freq_max],
-        "mesh_level": "L_prod",
+        "mesh_level": lprod_mesh_level,
+        "mesh_profile": resolved.mesh_profile,
         "targets_hz": [],
         "target_windows_hz": [],
         "target_metadata": [],
@@ -524,7 +537,8 @@ def build_dry_run_plan(
                 "case_id": sample_id,
             },
             "lprod": {
-                "mesh_level": "L_prod",
+                "mesh_level": lprod_mesh_level,
+                "mesh_profile": resolved.mesh_profile,
                 "mesh_file": _rel(lprod_mesh, repo_root=repo_root),
                 "case_id": sample_id,
             },
@@ -546,7 +560,7 @@ def build_dry_run_plan(
         "sample_id": sample_id,
         "run_id": run_id,
         "status": "PLANNED",
-        "mesh_exists": {"L_scout_coarse": False, "L_prod": False},
+        "mesh_exists": {"L_scout_coarse": False, lprod_mesh_level: False},
         "core_config_readable": False,
         "notes": "Populated by Stage 0 resolve on execution (M4.3+).",
     }
@@ -693,9 +707,12 @@ def build_dry_run_plan(
         "environment_profiles": _stage_env_preview(),
         "no_execution_guarantee": True,
         "planned_workers": workers,
+        "mesh_profile": resolved.mesh_profile,
+        "mesh_level_id": lprod_mesh_level,
+        "dataset_version": resolved.dataset_version,
         "provenance": {
             "core_config_sha256": None,
-            "mesh_hashes": {"L_scout_coarse": None, "L_prod": None},
+            "mesh_hashes": {"L_scout_coarse": None, lprod_mesh_level: None},
         },
     }
 
@@ -703,6 +720,8 @@ def build_dry_run_plan(
         "run_root": run_root,
         "rel_run": rel_run,
         "sample_id": sample_id,
+        "lprod_mesh_level": lprod_mesh_level,
+        "mesh_profile": resolved.mesh_profile,
         "files": {
             sample_dir / "sample_input.json": copy.deepcopy(sample),
             sample_dir / "sample_resolved_config_manifest.json": resolved_manifest,
@@ -735,12 +754,13 @@ def _write_tree(plan: Dict[str, Any], *, force: bool) -> None:
         raise FileExistsError(
             f"Run directory already exists (use --force to overwrite): {run_root}"
         )
+    lprod_level = str(plan.get("lprod_mesh_level") or "L_prod_reference")
     for sub in (
         plan["run_root"] / "sample",
         plan["run_root"] / "scout" / "mesh" / "L_scout_coarse",
         plan["run_root"] / "scout" / "checkpoint",
         plan["run_root"] / "scout" / "discovery",
-        plan["run_root"] / "lprod" / "mesh" / "L_prod",
+        plan["run_root"] / "lprod" / "mesh" / lprod_level,
         plan["run_root"] / "lprod" / "checkpoint",
         plan["run_root"] / "worker_results",
         plan["run_root"] / "aggregation",
@@ -837,6 +857,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="Refused: this script is dry-run only.",
     )
     parser.add_argument("--force", action="store_true", help="Overwrite existing run directory.")
+    parser.add_argument(
+        "--mesh-profile",
+        choices=("reference", "rom"),
+        default=None,
+        help="Production mesh profile (default: reference canonical).",
+    )
+    parser.add_argument("--dataset-version", default=None, help="Canonical dataset paired with --mesh-profile.")
     args = parser.parse_args(argv)
 
     if not args.dry_run:
@@ -872,6 +899,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         workers=int(args.workers),
         prod_python=str(args.prod_python),
         solver_python=str(args.solver_python),
+        mesh_profile=args.mesh_profile,
+        dataset_version=args.dataset_version,
     )
 
     try:

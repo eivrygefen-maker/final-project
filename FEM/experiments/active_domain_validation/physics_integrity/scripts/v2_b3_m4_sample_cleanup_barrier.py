@@ -37,7 +37,17 @@ BARRIER_MANIFEST_REL = "cleanup/sample_cleanup_barrier.json"
 FAILURE_RETENTION_REL = "cleanup/sample_failure_retention.json"
 FAILURE_DIAGNOSTIC_REL = "logs/sample_failure_diagnostic.log"
 
-MESH_LEVELS: Tuple[str, ...] = ("L_scout_coarse", "L_prod")
+from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
+    DURABLE_VALIDATION_INPUT_REL,
+    VALIDATION_INPUT_PACKAGE_REL,
+    preserve_target_plan_before_cleanup,
+    production_mesh_levels_for_cleanup,
+)
+from v2_b3_m4_mesh_profile_provenance_lib import (  # noqa: E402
+    preserve_comparison_provenance_before_cleanup,
+)
+
+MESH_LEVELS: Tuple[str, ...] = production_mesh_levels_for_cleanup()
 
 DURABLE_REQUIRED_REL: Tuple[str, ...] = (
     "aggregation/modes_catalog.jsonl",
@@ -191,6 +201,94 @@ def verify_success_durable_outputs(run_root: Path) -> Tuple[bool, List[str]]:
     return len(errors) == 0, errors
 
 
+def load_cleanup_barrier_manifest(run_root: Path) -> Optional[Dict[str, Any]]:
+    path = run_root / BARRIER_MANIFEST_REL
+    if not path.is_file():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def require_cleanup_barrier_passed_for_validation(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    label: str,
+) -> Tuple[bool, Dict[str, Any], List[str]]:
+    """
+    Hard precondition for mesh-profile validation / comparison.
+    Both forbidden_heavy_artifact_count and shared_sample_artifact_count must be 0.
+    """
+    errors: List[str] = []
+    run_root = run_root.resolve()
+    sample_id = run_root.parent.parent.name
+    run_id = run_root.name
+
+    meta: Dict[str, Any] = {
+        "label": label,
+        "sample_id": sample_id,
+        "run_id": run_id,
+        "run_root": str(run_root),
+    }
+
+    failure_report = run_root / FAILURE_REPORT_REL
+    if failure_report.is_file():
+        errors.append(f"{label}:cleanup_failure_report_present")
+        meta["cleanup_failure_report"] = str(failure_report)
+
+    barrier = load_cleanup_barrier_manifest(run_root)
+    if barrier is None:
+        errors.append(f"{label}:missing_cleanup_barrier_manifest")
+        meta["barrier_manifest_present"] = False
+        return False, meta, errors
+
+    meta["barrier_manifest_present"] = True
+    meta["barrier_status"] = barrier.get("status")
+    if str(barrier.get("status")) != "completed":
+        errors.append(f"{label}:cleanup_barrier_status={barrier.get('status')!r}")
+
+    sample_success = bool(barrier.get("sample_success"))
+    meta["sample_success"] = sample_success
+
+    live = verify_cleanup_barrier(
+        repo_root=repo_root,
+        run_root=run_root,
+        sample_id=sample_id,
+        run_id=run_id,
+        sample_success=sample_success,
+    )
+    forbidden = int(live.get("forbidden_heavy_artifact_count") or 0)
+    shared = int(live.get("shared_sample_artifact_count") or 0)
+    meta.update(
+        {
+            "forbidden_heavy_artifact_count": forbidden,
+            "shared_sample_artifact_count": shared,
+            "verification_pass": bool(live.get("pass")),
+            "live_verification_errors": list(live.get("errors") or []),
+        }
+    )
+
+    if forbidden != 0:
+        errors.append(
+            f"{label}:forbidden_heavy_artifact_count={forbidden} "
+            f"({live.get('forbidden_heavy_artifacts_present')})"
+        )
+    if shared != 0:
+        errors.append(
+            f"{label}:shared_sample_artifact_count={shared} "
+            f"({live.get('shared_sample_artifacts_present')})"
+        )
+    if not live.get("pass"):
+        errors.append(f"{label}:cleanup_barrier_verification_failed")
+
+    ok = len(errors) == 0
+    meta["cleanup_barrier_passed"] = ok
+    return ok, meta, errors
+
+
 def verify_cleanup_barrier(
     *,
     repo_root: Path,
@@ -228,6 +326,10 @@ def verify_cleanup_barrier(
         "errors": [],
         "pass": False,
     }
+
+    for rel in DURABLE_VALIDATION_INPUT_REL:
+        if (run_root / rel).is_file():
+            report.setdefault("durable_validation_inputs_present", []).append(rel)
 
     if sample_success:
         durable_ok, durable_errors = verify_success_durable_outputs(run_root)
@@ -428,6 +530,16 @@ def run_sample_cleanup_barrier(
     compaction_payload: Optional[Dict[str, Any]] = None
 
     if sample_success:
+        preserve_target_plan_before_cleanup(
+            run_root=run_root,
+            sample_id=sample_id,
+            run_id=run_id,
+        )
+        preserve_comparison_provenance_before_cleanup(
+            run_root=run_root,
+            sample_id=sample_id,
+            run_id=run_id,
+        )
         if not keep_full:
             if compact_one_completed_run is None:
                 delete_errors.append("compact_module_unavailable")

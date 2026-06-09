@@ -77,6 +77,9 @@ def _run_pipeline_isolated_subprocess(
     zone_dense: float,
     zone_medium: float,
     zone_sparse: float,
+    mesh_profile: Optional[str] = None,
+    dataset_version: Optional[str] = None,
+    target_plan_file: Optional[Path] = None,
 ) -> int:
     cmd = [
         sys.executable,
@@ -117,6 +120,12 @@ def _run_pipeline_isolated_subprocess(
             cmd.append("--force-workers")
         if "aggregate" in force_stages:
             cmd.append("--force-aggregation")
+    if mesh_profile:
+        cmd.extend(["--mesh-profile", str(mesh_profile)])
+    if dataset_version:
+        cmd.extend(["--dataset-version", str(dataset_version)])
+    if target_plan_file is not None:
+        cmd.extend(["--target-plan-file", str(target_plan_file)])
     proc = subprocess.run(
         cmd,
         cwd=str(repo_root),
@@ -422,6 +431,9 @@ def run_production_batch(
     compact_nonblocking: bool = True,
     isolated_subprocess: bool = False,
     strict_production: bool = False,
+    mesh_profile: Optional[str] = None,
+    dataset_version: Optional[str] = None,
+    target_plan_file: Optional[Path] = None,
 ) -> Dict[str, Any]:
     fp = _frequency_policy(spec)
     band = fp.get("band_hz", [60.0, 550.0])
@@ -641,6 +653,9 @@ def run_production_batch(
                 zone_dense=float(fp.get("zone_spacing_hz", {}).get("ZONE_1_dense", 6.0)),
                 zone_medium=float(fp.get("zone_spacing_hz", {}).get("ZONE_2_medium", 9.0)),
                 zone_sparse=float(fp.get("zone_spacing_hz", {}).get("ZONE_3_sparse", 12.5)),
+                mesh_profile=mesh_profile,
+                dataset_version=dataset_version,
+                target_plan_file=target_plan_file,
             )
         elapsed = time.perf_counter() - t0
         summary = _read_sample_summary(run_root, workers_requested=workers)

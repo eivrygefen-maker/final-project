@@ -52,6 +52,11 @@ def _max_gap_hz(freqs: Sequence[float]) -> float:
     return max(gaps) if gaps else float("inf")
 
 
+def per_third_band_counts(freqs: Sequence[float], *, band_lo: float, band_hi: float) -> Dict[str, int]:
+    """Public helper: mode counts in low/mid/high band-thirds."""
+    return _per_third_counts(freqs, band_lo=band_lo, band_hi=band_hi)
+
+
 def _per_third_counts(freqs: Sequence[float], *, band_lo: float, band_hi: float) -> Dict[str, int]:
     width = (float(band_hi) - float(band_lo)) / 3.0
     thirds = {

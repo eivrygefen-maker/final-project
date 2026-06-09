@@ -449,6 +449,9 @@ def run_pipeline(
     zone_dense: float,
     zone_medium: float,
     zone_sparse: float,
+    mesh_profile: Optional[str] = None,
+    dataset_version: Optional[str] = None,
+    target_plan_file: Optional[Path] = None,
 ) -> int:
     if not run_root.is_dir():
         print(f"error: run-dir not found: {run_root}", file=sys.stderr)
@@ -768,6 +771,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--zone-spacing-dense-hz", type=float, default=6.0)
     parser.add_argument("--zone-spacing-medium-hz", type=float, default=9.0)
     parser.add_argument("--zone-spacing-sparse-hz", type=float, default=12.5)
+    parser.add_argument("--mesh-profile", choices=("reference", "rom"))
+    parser.add_argument("--dataset-version")
+    parser.add_argument(
+        "--target-plan-file",
+        type=Path,
+        help="Validation-only explicit frozen target plan (same sample/run).",
+    )
     args = parser.parse_args(argv)
 
     if args.dry_run and args.execute:
@@ -815,6 +825,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         zone_dense=float(args.zone_spacing_dense_hz),
         zone_medium=float(args.zone_spacing_medium_hz),
         zone_sparse=float(args.zone_spacing_sparse_hz),
+        mesh_profile=args.mesh_profile,
+        dataset_version=args.dataset_version,
+        target_plan_file=args.target_plan_file,
     )
 
 

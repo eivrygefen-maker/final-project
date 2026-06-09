@@ -8,6 +8,13 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
+    MESH_PROFILE_REFERENCE,
+    MeshProfileError,
+    MeshProfileResolved,
+    apply_mesh_profile_to_sample_input,
+    resolve_mesh_profile,
+)
 from v2_b3_m4_worker_run_lib import detect_repo_root, load_json, rel, utc_now  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
@@ -107,10 +114,12 @@ def build_sample_input(
     lhs_row_index: int,
     batch_id: str,
     lhs_source_path: str,
+    mesh_profile: Optional[str] = None,
+    dataset_version: Optional[str] = None,
 ) -> Dict[str, Any]:
     sid = str(entry["id"])
     params = dict(entry.get("parameters") or {})
-    return {
+    body = {
         "schema": "m4_sample_input_v1",
         "sample_id": sid,
         "shape_name": str(pool.get("shape_name") or "classic"),
@@ -124,6 +133,11 @@ def build_sample_input(
         "selection_reason": "lhs_pool_auto",
         "lhs_row_note": f"auto from {lhs_source_path}",
     }
+    resolved = resolve_mesh_profile(
+        mesh_profile=mesh_profile or MESH_PROFILE_REFERENCE,
+        dataset_version=dataset_version,
+    )
+    return apply_mesh_profile_to_sample_input(body, resolved)
 
 
 def build_batch_sample_entry(
@@ -134,6 +148,8 @@ def build_batch_sample_entry(
     run_id_suffix: str,
     batch_id: str,
     lhs_source_path: str,
+    mesh_profile: Optional[str] = None,
+    dataset_version: Optional[str] = None,
 ) -> Dict[str, Any]:
     sid = str(entry["id"])
     run_id = f"{sid}_{run_id_suffix}"
@@ -149,6 +165,8 @@ def build_batch_sample_entry(
             lhs_row_index=lhs_row_index,
             batch_id=batch_id,
             lhs_source_path=lhs_source_path,
+            mesh_profile=mesh_profile,
+            dataset_version=dataset_version,
         ),
     }
 
@@ -164,6 +182,9 @@ def build_lhs_batch_spec(
     reference_sample_id: str = REFERENCE_SAMPLE_ID,
     reference_run_id: Optional[str] = None,
     frequency_policy: Optional[Mapping[str, Any]] = None,
+    mesh_profile: Optional[str] = None,
+    dataset_version: Optional[str] = None,
+    target_plan_file: Optional[str] = None,
 ) -> Dict[str, Any]:
     fp = dict(DEFAULT_FREQUENCY_POLICY)
     if frequency_policy:
@@ -172,7 +193,11 @@ def build_lhs_batch_spec(
     if exclude_reference:
         exclude.append(reference_sample_id)
     ref_run = reference_run_id or f"{reference_sample_id}_{run_id_suffix}"
-    return {
+    resolved = resolve_mesh_profile(
+        mesh_profile=mesh_profile or MESH_PROFILE_REFERENCE,
+        dataset_version=dataset_version,
+    )
+    body: Dict[str, Any] = {
         "schema": BATCH_SPEC_SCHEMA,
         "batch_id": batch_id,
         "description": f"Auto-generated M4 production batch from {lhs_source_path}",
@@ -184,7 +209,11 @@ def build_lhs_batch_spec(
         "exclude_from_batch": exclude,
         "frequency_policy": fp,
         "samples": list(samples),
+        **resolved.provenance_fields(),
     }
+    if target_plan_file:
+        body["target_plan_file"] = str(target_plan_file)
+    return body
 
 
 def write_per_sample_spec(
@@ -210,6 +239,11 @@ def write_per_sample_spec(
         "pipeline_version": batch_spec.get("pipeline_version"),
         "frequency_policy": batch_spec.get("frequency_policy"),
         "worker_policy": {"workers": (batch_spec.get("frequency_policy") or {}).get("workers", 3)},
+        "mesh_profile": batch_spec.get("mesh_profile"),
+        "mesh_level_id": batch_spec.get("mesh_level_id"),
+        "dataset_version": batch_spec.get("dataset_version"),
+        "effective_controls_m": batch_spec.get("effective_controls_m"),
+        "target_plan_file": batch_spec.get("target_plan_file"),
         "sample_input": sample_entry.get("sample_input"),
         "generated_utc": utc_now(),
         "result_paths": {
