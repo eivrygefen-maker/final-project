@@ -62,7 +62,6 @@ from v2_b3_m4_production_contracts import (  # noqa: E402
 from v2_b3_m4_lprod_interfaces import (  # noqa: E402
     BASELINE_GEOMETRY,
     BASELINE_L_PROD_MESH,
-    LPROD_MESH_LEVEL,
     LPROD_SYNTHESIS_REGION_DOFS_DEFAULT,
     evaluate_lprod_mesh_checkpoint_readiness,
     extract_geometry_dict,
@@ -414,6 +413,25 @@ def _fix_mesh_argv(plan: Dict[str, Any], *, repo_root: Path, run_root: Path, sam
     plan["argv_mesh_build"] = argv
 
 
+def _lprod_mesh_paths_from_plan(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    sample_id: str,
+    plan: Mapping[str, Any],
+    sample_input: Mapping[str, Any],
+) -> Tuple[str, Path, str]:
+    """Return (mesh_level_id, absolute lprod mesh path, repo-relative mesh path)."""
+    mesh_level = str(plan.get("mesh_level_id") or _mesh_level_from_sample(sample_input))
+    lprod_mesh = run_tree_lprod_mesh_path(run_root, sample_id, mesh_level)
+    if not _mesh_pass(lprod_mesh) and plan.get("mesh_profile") == "reference":
+        legacy_mesh = run_root / "lprod" / "mesh" / LEVEL_L_PROD_LEGACY / f"{sample_id}.msh"
+        if _mesh_pass(legacy_mesh):
+            lprod_mesh = legacy_mesh
+    lprod_mesh_rel = _rel(lprod_mesh, repo_root=repo_root)
+    return mesh_level, lprod_mesh, lprod_mesh_rel
+
+
 def _log_lprod_region_dof_index_status(
     *,
     checkpoint_dir: Path,
@@ -570,8 +588,13 @@ def run_execute(
     )
     _fix_mesh_argv(plan, repo_root=repo_root, run_root=run_root, sample_id=sample_id, prod_python=prod_python)
 
-    lprod_mesh = run_root / "lprod" / "mesh" / MESH_LEVEL / f"{sample_id}.msh"
-    lprod_mesh_rel = _rel(lprod_mesh, repo_root=repo_root)
+    mesh_level, lprod_mesh, lprod_mesh_rel = _lprod_mesh_paths_from_plan(
+        repo_root=repo_root,
+        run_root=run_root,
+        sample_id=sample_id,
+        plan=plan,
+        sample_input=sample_input,
+    )
     checkpoint_dir = run_root / "lprod" / "checkpoint"
     export_manifest = checkpoint_dir / "checkpoint_export_manifest.json"
     readiness = plan.get("readiness") or {}
@@ -796,6 +819,7 @@ def run_execute(
         sample_id=sample_id,
         sample_input=sample_input,
         rel_path_fn=lambda p, **kw: _rel(p, repo_root=repo_root),
+        mesh_level_id=mesh_level,
     )
     readiness_out["lprod_mesh_status"] = "reusable_existing" if _mesh_pass(lprod_mesh) else readiness_out.get(
         "lprod_mesh_status"

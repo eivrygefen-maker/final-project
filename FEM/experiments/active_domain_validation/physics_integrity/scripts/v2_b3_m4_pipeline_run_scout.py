@@ -265,6 +265,15 @@ def resolve_m4_sample(
     }
     write_json_atomic(readiness_path, readiness)
 
+    from v2_b3_m4_mesh_profile_lib import run_tree_lprod_mesh_path  # noqa: WPS433
+    from v2_b3_m4_production_contracts import resolve_production_mesh_profile  # noqa: WPS433
+
+    lprod_profile = resolve_production_mesh_profile(sample)
+    lprod_mesh_level = lprod_profile.mesh_level_id
+    lprod_mesh_file = _rel(
+        run_tree_lprod_mesh_path(run_root, sample_id, lprod_mesh_level),
+        repo_root=repo_root,
+    )
     manifest_stub = {
         "schema": "m4_sample_manifest_v1",
         "sample_id": sample_id,
@@ -275,6 +284,7 @@ def resolve_m4_sample(
         "readiness_check_path": _rel(readiness_path, repo_root=repo_root),
         "overlay_applied_path": _rel(overlay_path, repo_root=repo_root),
         "core_config_sha256": resolved_sha,
+        **lprod_profile.provenance_fields(),
         "mesh_paths": {
             "scout": {
                 "mesh_level": MESH_LEVEL,
@@ -282,8 +292,8 @@ def resolve_m4_sample(
                 "case_id": sample_id,
             },
             "lprod": {
-                "mesh_level": "L_prod",
-                "mesh_file": _rel(run_root / "lprod" / "mesh" / "L_prod" / f"{sample_id}.msh", repo_root=repo_root),
+                "mesh_level": lprod_mesh_level,
+                "mesh_file": lprod_mesh_file,
                 "case_id": sample_id,
             },
         },

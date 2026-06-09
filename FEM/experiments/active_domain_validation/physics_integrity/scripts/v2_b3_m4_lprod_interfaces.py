@@ -261,22 +261,23 @@ def evaluate_lprod_mesh_checkpoint_readiness(
     cmd_stage_a = (
         f"# production .venv\n"
         f"python {SCRIPTS_REL.as_posix()}/v2_b3_checkpoint_export.py "
-        f"--mesh-level {LPROD_MESH_LEVEL} "
+        f"--mesh-level {level} "
         "--B3-block-compose-backend csr_bulk "
         f"--B3-synthesis-region-dofs {LPROD_SYNTHESIS_REGION_DOFS_DEFAULT} "
         f'--core-config "{rel_path_fn(resolved_lprod if resolved_lprod.is_file() else resolved_sample, repo_root=repo_root)}" '
         f'--output-dir "{rel_path_fn(checkpoint_dir, repo_root=repo_root)}"'
     )
     cmd_mesh = (
-        f"# production .venv — sample-specific L_prod mesh when geometry != baseline\n"
-        f"python {SCRIPTS_REL.as_posix()}/run_v2_mesh_convergence.py "
-        f"# planned for {sample_id}; mesh_level={LPROD_MESH_LEVEL}"
+        f"# production .venv — sample-specific production mesh when geometry != baseline\n"
+        f"python {SCRIPTS_REL.as_posix()}/v2_b3_m4_lprod_mesh_build.py "
+        f"# planned for {sample_id}; mesh_level_id={level}"
     )
 
     return {
         "schema": "m4_lprod_mesh_checkpoint_readiness_v1",
         "will_execute": False,
         "sample_id": sample_id,
+        **profile.provenance_fields(),
         "lprod_mesh_status": lprod_mesh_status,
         "lprod_checkpoint_status": lprod_checkpoint_status,
         "geometry_compatibility": {
