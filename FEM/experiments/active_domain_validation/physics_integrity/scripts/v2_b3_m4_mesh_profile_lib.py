@@ -295,6 +295,53 @@ def mesh_profile_from_artifacts(
     return None
 
 
+def derive_reference_controls_from_durable(
+    run_root: Path,
+) -> Tuple[Dict[str, float], List[str], List[str]]:
+    """
+    Read reference mesh controls from durable post-cleanup artifacts only.
+
+    Returns (controls, source_labels, errors). Does not read deleted checkpoints/meshes.
+    """
+    errors: List[str] = []
+    sources: List[str] = []
+    candidates: List[Tuple[str, Path, str]] = [
+        ("freeze/freeze_manifest.json", run_root / "freeze" / "freeze_manifest.json", "effective_controls_m"),
+        (
+            "freeze/physics_identity_manifest.json",
+            run_root / "freeze" / "physics_identity_manifest.json",
+            "effective_controls_m",
+        ),
+        ("pipeline_run_manifest.json", run_root / "pipeline_run_manifest.json", "effective_controls_m"),
+        ("sample/sample_input.json", run_root / "sample" / "sample_input.json", "effective_controls_m"),
+    ]
+    for label, path, key in candidates:
+        if not path.is_file():
+            continue
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            errors.append(f"{label}:unreadable")
+            continue
+        raw = doc.get(key)
+        if not isinstance(raw, dict) or not raw:
+            continue
+        try:
+            controls = {str(k): float(v) for k, v in raw.items()}
+        except (TypeError, ValueError):
+            errors.append(f"{label}:{key}:non_numeric")
+            continue
+        sources.append(f"{label}:{key}")
+        return controls, sources, errors
+
+    errors.append(
+        "missing:effective_controls_m "
+        "(freeze/freeze_manifest.json, freeze/physics_identity_manifest.json, "
+        "pipeline_run_manifest.json, sample/sample_input.json)"
+    )
+    return {}, sources, errors
+
+
 def _controls_equal(a: Mapping[str, Any], b: Mapping[str, Any], *, rtol: float = 1.0e-9) -> bool:
     keys = set(a) | set(b)
     for k in keys:
@@ -629,13 +676,12 @@ def evaluate_legacy_reference_compatibility(
     if not bool(identity.get("operator_mesh_matches_generated")):
         errors.append("operator_mesh_matches_generated!=true")
 
-    controls = (
-        identity.get("effective_controls_m")
-        or sample_in.get("effective_controls_m")
-        or {}
-    )
-    if not _controls_equal(controls, REFERENCE_CONTROLS_M):
+    controls, control_sources, control_errors = derive_reference_controls_from_durable(run_root)
+    meta["reference_controls_sources"] = control_sources
+    errors.extend(control_errors)
+    if controls and not _controls_equal(controls, REFERENCE_CONTROLS_M):
         errors.append("effective_controls_m_not_reference_full_mesh")
+    meta["reference_controls_m"] = controls or None
 
     from v2_b3_m4_lprod_interfaces import extract_geometry_dict  # noqa: WPS433
 

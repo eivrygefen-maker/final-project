@@ -500,12 +500,11 @@ def execute_reset_plan(
 
     lhs_path = repo_root / DEFAULT_LHS_REL
     pool = load_lhs_pool(lhs_path)
-    backup = write_lhs_pool_with_backup(lhs_path, apply_lhs_pool_reset(pool))
+    write_lhs_pool_with_backup(lhs_path, apply_lhs_pool_reset(pool))
     report["actions"].append(
         {
             "action": "reset_lhs_pool",
             "path": DEFAULT_LHS_REL,
-            "backup": rel(backup, repo_root=repo_root),
             "entries_reset": len(plan.get("lhs_entries_to_reset") or []),
             "status": "done",
         }

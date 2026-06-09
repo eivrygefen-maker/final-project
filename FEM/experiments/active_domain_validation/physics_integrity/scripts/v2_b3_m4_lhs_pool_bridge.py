@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -585,15 +584,17 @@ def lhs_pool_entry_patch_from_run(
     }
 
 
-def write_lhs_pool_with_backup(lhs_path: Path, pool: Mapping[str, Any]) -> Path:
+def write_lhs_pool(lhs_path: Path, pool: Mapping[str, Any]) -> Path:
+    """Write lhs_pool.json atomically. No timestamped backup copies."""
     lhs_path = lhs_path.expanduser().resolve()
     lhs_path.parent.mkdir(parents=True, exist_ok=True)
-    stamp = utc_now().replace(":", "").replace("-", "")
-    backup = lhs_path.parent / f"lhs_pool.backup_{stamp}.json"
-    if lhs_path.is_file():
-        shutil.copy2(lhs_path, backup)
     write_json_atomic(lhs_path, dict(pool))
-    return backup
+    return lhs_path
+
+
+def write_lhs_pool_with_backup(lhs_path: Path, pool: Mapping[str, Any]) -> Path:
+    """Backward-compatible alias; backups are intentionally disabled."""
+    return write_lhs_pool(lhs_path, pool)
 
 
 def sync_lhs_pool_entry(
@@ -749,13 +750,13 @@ def reconcile_existing_runs(
         completed += 1
         rows.append(row)
 
-    backup = write_lhs_pool_with_backup(lhs_path, pool)
+    write_lhs_pool(lhs_path, pool)
     return {
         "schema": "m4_lhs_reconcile_report_v1",
         "generated_utc": utc_now(),
         "run_id_suffix": run_id_suffix,
         "lhs_json": rel(lhs_path, repo_root=repo_root),
-        "lhs_backup": rel(backup, repo_root=repo_root),
+        "lhs_backup": None,
         "reconciled_completed_count": completed,
         "freeze_repaired_count": repaired,
         "stale_running_repaired_count": stale_running_repaired,

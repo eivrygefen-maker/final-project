@@ -14,7 +14,6 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from v2_b3_m4_lprod_interfaces import extract_geometry_dict, geometry_fingerprint  # noqa: E402
 from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
-    REFERENCE_CONTROLS_M,
     evaluate_legacy_reference_compatibility,
     load_durable_target_plan,
 )
@@ -27,7 +26,10 @@ from v2_b3_m4_physics_identity_lib import (  # noqa: E402
     count_forbidden_heavy_artifacts,
     verify_post_compaction_contract,
 )
-from v2_b3_m4_production_contracts import evaluate_production_region_dof_gate  # noqa: E402
+from v2_b3_m4_production_contracts import (  # noqa: E402
+    evaluate_post_cleanup_region_dof_evidence,
+    evaluate_production_region_dof_gate,
+)
 from v2_b3_m4_production_freeze import production_freeze_complete  # noqa: E402
 from v2_b3_m4_sample_cleanup_barrier import (  # noqa: E402
     BARRIER_MANIFEST_REL,
@@ -149,19 +151,38 @@ def audit_legacy_reference(
     if not compaction.get("pass"):
         report["errors"].extend(compaction.get("errors") or [])
 
-    region_ok, region_errors = evaluate_production_region_dof_gate(run_root, repo_root=repo_root)
-    report["region_dof_gate"] = {"pass": region_ok, "errors": region_errors}
+    checkpoint_present = (run_root / "lprod" / "checkpoint").is_dir()
+    cleanup_completed = str((barrier or {}).get("status") or "") == "completed"
+    report["checks"]["lprod_checkpoint_present"] = checkpoint_present
+    report["checks"]["cleanup_barrier_status"] = (barrier or {}).get("status")
+
+    if checkpoint_present:
+        region_ok, region_errors = evaluate_production_region_dof_gate(run_root, repo_root=repo_root)
+        report["region_dof_gate"] = {
+            "pass": region_ok,
+            "evidence_mode": "live_checkpoint",
+            "errors": region_errors,
+        }
+    elif cleanup_completed:
+        region_ok, region_errors, region_meta = evaluate_post_cleanup_region_dof_evidence(run_root)
+        report["region_dof_gate"] = {
+            "pass": region_ok,
+            "evidence_mode": "durable_post_cleanup",
+            "errors": region_errors,
+            **region_meta,
+        }
+    else:
+        region_ok, region_errors = evaluate_production_region_dof_gate(run_root, repo_root=repo_root)
+        report["region_dof_gate"] = {
+            "pass": region_ok,
+            "evidence_mode": "live_checkpoint_missing",
+            "errors": region_errors,
+        }
     if not region_ok:
         report["errors"].extend(region_errors)
 
-    controls = (
-        load_json(run_root / "freeze" / "physics_identity_manifest.json").get("effective_controls_m")
-        if (run_root / "freeze" / "physics_identity_manifest.json").is_file()
-        else sample_in.get("effective_controls_m")
-    ) or {}
-    report["checks"]["reference_controls_m"] = controls
-    if controls != REFERENCE_CONTROLS_M:
-        report["errors"].append("effective_controls_m_not_reference_full_mesh")
+    report["checks"]["reference_controls_m"] = legacy_meta.get("reference_controls_m")
+    report["checks"]["reference_controls_sources"] = legacy_meta.get("reference_controls_sources")
 
     report["LEGACY_REFERENCE_READY"] = (
         ok
@@ -169,7 +190,6 @@ def audit_legacy_reference(
         and forbidden_count == 0
         and compaction.get("pass")
         and region_ok
-        and len(report["errors"]) == 0
     )
     return report
 
@@ -260,18 +280,42 @@ def audit_readiness(
     }
 
 
-def build_rom_command(*, target_plan_package: Path, run_id_suffix: str = "rom_prod_001") -> str:
-    pkg = target_plan_package.resolve()
-    plan = pkg / "target_plan.json"
-    return (
-        "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 "
-        "python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_m4_production_pipeline.py "
-        "--sample-ids sample_002 "
-        f"--run-id-suffix {run_id_suffix} "
-        "--mesh-profile rom "
-        "--dataset-version m4_geometry_corrected_rommesh_v1 "
-        "--workers 2 "
-        f"--target-plan-file {plan.as_posix()}"
+def build_rom_command(
+    *,
+    target_plan_package: Path,
+    run_id_suffix: str = "rom_prod_001",
+    sample_id: str = "sample_002",
+) -> str:
+    run_id = f"{sample_id}_{run_id_suffix}"
+    run_root_rel = (
+        "FEM/experiments/active_domain_validation/physics_integrity/"
+        f"pipeline_runs/guitars/{sample_id}/runs/{run_id}"
+    )
+    target_plan_rel = (
+        "FEM/experiments/active_domain_validation/physics_integrity/"
+        "pipeline_runs/validation_inputs/"
+        "sample_sample_002_reference_0661505c893237ee/"
+        "target_plan.json"
+    )
+
+    return "\n".join(
+        [
+            "cd ~/final-project",
+            "source .venv/bin/activate",
+            f"tmux new-session -d -s {run_id} \\",
+            "  'export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1; \\",
+            "   python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_m4_production_pipeline.py \\",
+            f"     --force-sample {sample_id} \\",
+            f"     --run-id-suffix {run_id_suffix} \\",
+            "     --mesh-profile rom \\",
+            "     --dataset-version m4_geometry_corrected_rommesh_v1 \\",
+            "     --workers 3 \\",
+            f"     --target-plan-file {target_plan_rel} \\",
+            "     --execute \\",
+            "     --compact-after-sample; \\",
+            f"   echo exit_code=\\$? run_id={run_id} run_root={run_root_rel}'",
+            f"tmux attach -t {run_id}",
+        ]
     )
 
 

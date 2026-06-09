@@ -31,7 +31,8 @@ from v2_b3_m4_mesh_profile_provenance_lib import (  # noqa: E402
     derive_band_third_counts_from_catalog,
     major_mode_families,
 )
-from v2_b3_m4_validation_readiness_audit import audit_readiness  # noqa: E402
+from v2_b3_m4_validation_readiness_audit import audit_legacy_reference, audit_readiness  # noqa: E402
+from v2_b3_m4_production_contracts import evaluate_post_cleanup_region_dof_evidence  # noqa: E402
 from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
     DATASET_VERSION_LEGACY,
     DATASET_VERSION_REFERENCE,
@@ -495,7 +496,12 @@ class LegacyReferenceCompatibilityTest(unittest.TestCase):
         write_json_atomic(run_root / "freeze" / "physics_identity_manifest.json", identity)
         write_json_atomic(
             run_root / "freeze" / "freeze_manifest.json",
-            {"production_acceptance_pass": True},
+            {
+                "production_acceptance_pass": True,
+                "production_acceptance_failures": [],
+                "effective_controls_m": dict(REFERENCE_CONTROLS_M),
+                "p_idx_aperture_count": 4,
+            },
         )
         write_json_atomic(
             run_root / "compaction" / "compaction_manifest.json",
@@ -800,6 +806,29 @@ class ValidationReadinessAuditTest(unittest.TestCase):
             self.assertEqual(report["FINAL_STATUS"], "BLOCKED")
             self.assertFalse(report["LEGACY_REFERENCE_READY"])
             self.assertFalse(report["TARGET_PLAN_READY"])
+
+
+class ValidationReadinessPostCleanupTest(unittest.TestCase):
+    def test_post_cleanup_region_dof_evidence_passes_without_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            run_root = LegacyReferenceCompatibilityTest()._legacy_run(repo, complete=True)
+            ok, errors, meta = evaluate_post_cleanup_region_dof_evidence(run_root)
+            self.assertTrue(ok, errors)
+            self.assertEqual(meta.get("evidence_mode"), "durable_post_cleanup")
+            self.assertFalse((run_root / "lprod" / "checkpoint").exists())
+
+    def test_legacy_reference_audit_passes_after_cleanup_without_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            run_root = LegacyReferenceCompatibilityTest()._legacy_run(repo, complete=True)
+            report = audit_legacy_reference(repo_root=repo, run_root=run_root)
+            self.assertTrue(report["LEGACY_REFERENCE_READY"], report.get("errors"))
+            self.assertEqual(
+                (report.get("region_dof_gate") or {}).get("evidence_mode"),
+                "durable_post_cleanup",
+            )
+            self.assertFalse((report.get("errors") or []))
 
 
 if __name__ == "__main__":

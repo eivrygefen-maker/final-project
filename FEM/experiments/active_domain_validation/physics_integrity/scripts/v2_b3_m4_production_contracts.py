@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -520,6 +520,137 @@ def evaluate_production_region_dof_gate(
         for err in contract_errors:
             errors.append(f"{ckpt_rel}:{err}")
     return len(errors) == 0, errors
+
+
+_REGION_DOF_FAILURE_MARKERS = (
+    "region_dof",
+    "best_effort_pass",
+    "p_idx_aperture",
+)
+
+
+def _production_failures_imply_region_dof_problem(failures: Sequence[str]) -> List[str]:
+    hits: List[str] = []
+    for item in failures:
+        text = str(item).lower()
+        if any(marker in text for marker in _REGION_DOF_FAILURE_MARKERS):
+            hits.append(str(item))
+    return hits
+
+
+def evaluate_post_cleanup_region_dof_evidence(
+    run_root: Path,
+) -> Tuple[bool, List[str], Dict[str, Any]]:
+    """
+    Derive historical region-DOF PASS from durable post-cleanup artifacts.
+
+    Used when lprod/checkpoint was intentionally removed after cleanup_barrier PASS.
+    Does not weaken the region-DOF requirement: requires production acceptance PASS,
+    aggregation PASS, terminal COMPLETED, and positive aperture-DOF count recorded
+    at freeze time, with no region-DOF-related acceptance failures.
+    """
+    errors: List[str] = []
+    meta: Dict[str, Any] = {
+        "evidence_mode": "durable_post_cleanup",
+        "sources": [],
+    }
+
+    pipeline_path = run_root / "pipeline_run_manifest.json"
+    if not pipeline_path.is_file():
+        errors.append("missing:pipeline_run_manifest.json")
+    else:
+        try:
+            pipeline = json.loads(pipeline_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            errors.append("pipeline_run_manifest.json:unreadable")
+            pipeline = {}
+        terminal = str(pipeline.get("terminal_status") or "")
+        meta["terminal_status"] = terminal or None
+        if terminal != "COMPLETED":
+            errors.append(f"pipeline_run_manifest.json:terminal_status={terminal or 'missing'}")
+
+    agg_path = run_root / "aggregation" / "aggregation_result.json"
+    if not agg_path.is_file():
+        errors.append("missing:aggregation/aggregation_result.json")
+        agg: Dict[str, Any] = {}
+    else:
+        try:
+            agg = json.loads(agg_path.read_text(encoding="utf-8"))
+            meta["sources"].append("aggregation/aggregation_result.json")
+        except (OSError, ValueError, json.JSONDecodeError):
+            errors.append("aggregation/aggregation_result.json:unreadable")
+            agg = {}
+        agg_status = str(agg.get("status") or "")
+        meta["aggregation_status"] = agg_status or None
+        if agg_status not in ("AGGREGATION_PASS", "PASS", "PASS_WITH_WARNINGS"):
+            errors.append(f"aggregation/aggregation_result.json:status={agg_status or 'missing'}")
+        if not bool(agg.get("final_aggregation_ready")):
+            errors.append("aggregation/aggregation_result.json:final_aggregation_ready!=true")
+
+    freeze_path = run_root / "freeze" / "freeze_manifest.json"
+    freeze: Dict[str, Any] = {}
+    if not freeze_path.is_file():
+        errors.append("missing:freeze/freeze_manifest.json")
+    else:
+        try:
+            freeze = json.loads(freeze_path.read_text(encoding="utf-8"))
+            meta["sources"].append("freeze/freeze_manifest.json")
+        except (OSError, ValueError, json.JSONDecodeError):
+            errors.append("freeze/freeze_manifest.json:unreadable")
+        else:
+            if not bool(freeze.get("production_acceptance_pass")):
+                errors.append("freeze/freeze_manifest.json:production_acceptance_pass!=true")
+            freeze_failures = [str(x) for x in (freeze.get("production_acceptance_failures") or [])]
+            region_hits = _production_failures_imply_region_dof_problem(freeze_failures)
+            if region_hits:
+                errors.append(
+                    "freeze/freeze_manifest.json:production_acceptance_failures_region_dof:"
+                    + ";".join(region_hits)
+                )
+
+    identity_path = run_root / "freeze" / "physics_identity_manifest.json"
+    identity: Dict[str, Any] = {}
+    if not identity_path.is_file():
+        errors.append("missing:freeze/physics_identity_manifest.json")
+    else:
+        try:
+            identity = json.loads(identity_path.read_text(encoding="utf-8"))
+            meta["sources"].append("freeze/physics_identity_manifest.json")
+        except (OSError, ValueError, json.JSONDecodeError):
+            errors.append("freeze/physics_identity_manifest.json:unreadable")
+        else:
+            if not bool(identity.get("production_acceptance_pass")):
+                errors.append("freeze/physics_identity_manifest.json:production_acceptance_pass!=true")
+            identity_failures = [str(x) for x in (identity.get("production_acceptance_failures") or [])]
+            region_hits = _production_failures_imply_region_dof_problem(identity_failures)
+            if region_hits:
+                errors.append(
+                    "freeze/physics_identity_manifest.json:production_acceptance_failures_region_dof:"
+                    + ";".join(region_hits)
+                )
+
+    p_count = 0
+    masks = identity.get("masks") if isinstance(identity.get("masks"), dict) else {}
+    if masks.get("p_idx_aperture_count") is not None:
+        p_count = int(masks.get("p_idx_aperture_count") or 0)
+        meta["p_idx_aperture_source"] = "freeze/physics_identity_manifest.json:masks.p_idx_aperture_count"
+    elif freeze.get("p_idx_aperture_count") is not None:
+        p_count = int(freeze.get("p_idx_aperture_count") or 0)
+        meta["p_idx_aperture_source"] = "freeze/freeze_manifest.json:p_idx_aperture_count"
+    elif identity.get("p_idx_aperture_count") is not None:
+        p_count = int(identity.get("p_idx_aperture_count") or 0)
+        meta["p_idx_aperture_source"] = "freeze/physics_identity_manifest.json:p_idx_aperture_count"
+    else:
+        errors.append(
+            "missing:p_idx_aperture_count "
+            "(freeze/physics_identity_manifest.json:masks.p_idx_aperture_count "
+            "or freeze/freeze_manifest.json:p_idx_aperture_count)"
+        )
+    meta["p_idx_aperture_count"] = p_count
+    if p_count <= 0 and "missing:p_idx_aperture_count" not in errors:
+        errors.append(f"p_idx_aperture_count<=0:{p_count}")
+
+    return len(errors) == 0, errors, meta
 
 
 def _evaluate_strict_production_failures(

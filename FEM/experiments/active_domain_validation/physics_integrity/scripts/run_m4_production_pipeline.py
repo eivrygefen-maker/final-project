@@ -511,7 +511,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"freeze_repaired={report.get('freeze_repaired_count')}")
         print(f"stale_running_repaired={report.get('stale_running_repaired_count')}")
         print(f"lhs_pool={lhs_rel}")
-        print(f"lhs_backup={report.get('lhs_backup')}")
         print(f"report={rel(out_path, repo_root=repo_root)}")
         return 0
 
