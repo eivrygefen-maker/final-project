@@ -53,7 +53,12 @@ from v2_b3_m4_runtime_provenance import collect_m4_runtime_provenance  # noqa: E
 from v2_b3_m4_worker_run_lib import detect_repo_root, load_json, rel, utc_now  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
-from v2_b3_m4_sample_cleanup_barrier import run_sample_cleanup_barrier  # noqa: E402
+from compact_completed_m4_runs import compact_one_completed_run  # noqa: E402
+from v2_b3_m4_physics_identity_lib import count_forbidden_heavy_artifacts  # noqa: E402
+from v2_b3_m4_sample_cleanup_barrier import (  # noqa: E402
+    PRODUCTION_PASS_OUTCOMES,
+    run_sample_cleanup_barrier,
+)
 
 PIPELINE_RUNS = SCRIPT_DIR.parent / "pipeline_runs"
 GUITARS_ROOT = PIPELINE_RUNS / "guitars"
@@ -208,7 +213,7 @@ def _ensure_run_tree(
     batch_id: str,
     force: bool,
 ) -> None:
-    run_root = _sample_run_root(entry)
+    run_root = _sample_run_root(entry, repo_root=repo_root)
     status = _classify_run_status(run_root)
     if status == "already_complete_reuse" and not force:
         return
@@ -222,6 +227,169 @@ def _ensure_run_tree(
         )
 
 
+def _assert_compaction_ready_before_cleanup(
+    *,
+    run_root: Path,
+    compact_after_sample: bool,
+    compact_blocking: bool,
+) -> tuple[bool, List[str]]:
+    """Hard gate: compaction manifest present and heavy artifacts removed before cleanup."""
+    if not (compact_after_sample and compact_blocking):
+        return True, []
+    errors: List[str] = []
+    manifest_path = run_root / "compaction" / "compaction_manifest.json"
+    if not manifest_path.is_file():
+        errors.append("missing:compaction/compaction_manifest.json")
+    forbidden_count, forbidden_paths = count_forbidden_heavy_artifacts(run_root)
+    if forbidden_count > 0:
+        errors.append(f"forbidden_heavy_artifacts:{forbidden_paths}")
+    return len(errors) == 0, errors
+
+
+def _run_sample_compaction_for_batch(
+    *,
+    row: Dict[str, Any],
+    repo_root: Path,
+    pool: Dict[str, Any],
+    compact_after_sample: bool,
+    compact_keep_full_samples: Set[str],
+    compact_blocking: bool,
+) -> bool:
+    """Explicit per-sample compaction before cleanup barrier. Returns False to stop batch."""
+    if not compact_after_sample:
+        return True
+
+    sid = str(row.get("sample_id") or "")
+    rid = str(row.get("run_id") or "")
+    run_root = _resolve_run_root_from_row(row, repo_root=repo_root)
+    outcome = str(row.get("outcome") or "")
+    if outcome not in PRODUCTION_PASS_OUTCOMES:
+        return True
+
+    compact_out = compact_one_completed_run(
+        repo_root=repo_root,
+        pool=pool,
+        sample_id=sid,
+        run_id=rid,
+        keep_full=sid in compact_keep_full_samples,
+        dry_run=False,
+        production_row=row,
+        run_rom_compare=False,
+        production_trigger=True,
+        allow_transitional_lhs=True,
+    )
+    compact_dict = compact_out.to_dict()
+    row["compaction"] = compact_dict
+    print(
+        f"[compaction] {sid}: status={compact_out.status} "
+        f"deleted_bytes={compact_out.deleted_bytes} runtime_s={compact_out.runtime_s}",
+        flush=True,
+    )
+
+    if not compact_blocking:
+        return True
+
+    from v2_b3_m4_finalize_completed_run import (  # noqa: WPS433
+        CompactionNotCompletedError,
+        require_compaction_completed,
+    )
+
+    try:
+        require_compaction_completed(
+            run_root=run_root,
+            compact_out=compact_dict,
+            stages={},
+        )
+    except CompactionNotCompletedError as exc:
+        row["compaction_error"] = str(exc)
+        print(f"error: compaction blocking failure for {sid}: {exc}", file=sys.stderr)
+        return False
+
+    ready, pre_errors = _assert_compaction_ready_before_cleanup(
+        run_root=run_root,
+        compact_after_sample=True,
+        compact_blocking=True,
+    )
+    if not ready:
+        row["compaction_pre_cleanup_errors"] = pre_errors
+        print(
+            f"error: compaction pre-cleanup gate failed for {sid}: {pre_errors}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def _run_sample_post_export_finalization(
+    *,
+    row: Dict[str, Any],
+    repo_root: Path,
+    pool: Dict[str, Any],
+    compact_after_sample: bool,
+    compact_keep_full_samples: Set[str],
+    compact_nonblocking: bool,
+    run_rom_compare: bool,
+    use_shadow_rom: bool,
+    strict_production: bool,
+) -> bool:
+    """Compaction → verify manifest → cleanup barrier. Returns False to stop batch."""
+    compact_blocking = bool(strict_production) or not bool(compact_nonblocking)
+    sid = str(row.get("sample_id") or "")
+
+    if not _run_sample_compaction_for_batch(
+        row=row,
+        repo_root=repo_root,
+        pool=pool,
+        compact_after_sample=bool(compact_after_sample),
+        compact_keep_full_samples=compact_keep_full_samples,
+        compact_blocking=compact_blocking,
+    ):
+        return False
+
+    outcome = str(row.get("outcome") or "")
+    if outcome not in PRODUCTION_PASS_OUTCOMES:
+        return _run_sample_cleanup_barrier_for_batch(
+            row=row,
+            repo_root=repo_root,
+            pool=pool,
+            compact_after_sample=bool(compact_after_sample),
+            compact_keep_full_samples=compact_keep_full_samples,
+            compact_nonblocking=compact_nonblocking,
+            run_rom_compare=bool(run_rom_compare) and not bool(use_shadow_rom),
+            strict_production=bool(strict_production),
+            compaction_already_done=False,
+        )
+
+    run_root = _resolve_run_root_from_row(row, repo_root=repo_root)
+    ready, pre_errors = _assert_compaction_ready_before_cleanup(
+        run_root=run_root,
+        compact_after_sample=bool(compact_after_sample),
+        compact_blocking=compact_blocking,
+    )
+    if compact_after_sample and compact_blocking and not ready:
+        row["compaction_pre_cleanup_errors"] = pre_errors
+        print(
+            f"error: refusing cleanup barrier for {sid}; compaction not ready: {pre_errors}",
+            file=sys.stderr,
+        )
+        return False
+
+    compaction_status = str((row.get("compaction") or {}).get("status") or "")
+    compaction_already_done = compaction_status in {"completed", "already_compacted"}
+
+    return _run_sample_cleanup_barrier_for_batch(
+        row=row,
+        repo_root=repo_root,
+        pool=pool,
+        compact_after_sample=bool(compact_after_sample),
+        compact_keep_full_samples=compact_keep_full_samples,
+        compact_nonblocking=compact_nonblocking,
+        run_rom_compare=bool(run_rom_compare) and not bool(use_shadow_rom),
+        strict_production=bool(strict_production),
+        compaction_already_done=compaction_already_done,
+    )
+
+
 def _run_sample_cleanup_barrier_for_batch(
     *,
     row: Dict[str, Any],
@@ -232,6 +400,7 @@ def _run_sample_cleanup_barrier_for_batch(
     compact_nonblocking: bool,
     run_rom_compare: bool,
     strict_production: bool,
+    compaction_already_done: bool = False,
 ) -> bool:
     """Per-sample cleanup barrier. Returns False to stop batch before the next sample."""
     if not compact_after_sample and not strict_production:
@@ -241,6 +410,7 @@ def _run_sample_cleanup_barrier_for_batch(
     rid = str(row.get("run_id") or "")
     run_root = _resolve_run_root_from_row(row, repo_root=repo_root)
     blocking = bool(strict_production) or not bool(compact_nonblocking)
+    keep_full = sid in compact_keep_full_samples or compaction_already_done
     outcome = run_sample_cleanup_barrier(
         repo_root=repo_root,
         run_root=run_root,
@@ -248,12 +418,12 @@ def _run_sample_cleanup_barrier_for_batch(
         run_id=rid,
         row=row,
         pool=pool,
-        keep_full=sid in compact_keep_full_samples,
-        run_rom_compare=bool(run_rom_compare),
+        keep_full=keep_full,
+        run_rom_compare=bool(run_rom_compare) and not compaction_already_done,
         blocking=blocking,
     )
     row["cleanup_barrier"] = outcome.to_dict()
-    if outcome.compaction:
+    if outcome.compaction and not row.get("compaction"):
         row["compaction"] = outcome.compaction
     print(
         f"[cleanup-barrier] {sid}: status={outcome.status} "
@@ -379,7 +549,7 @@ def _run_dry_run_batch(
             batch_id=batch_id,
             force=force,
         )
-        run_root = _sample_run_root(entry)
+        run_root = _sample_run_root(entry, repo_root=repo_root)
         rows.append(
             {
                 "sample_id": entry["sample_id"],
@@ -484,7 +654,7 @@ def run_production_batch(
 
         sid = str(entry["sample_id"])
         rid = str(entry["run_id"])
-        run_root = _sample_run_root(entry)
+        run_root = _sample_run_root(entry, repo_root=repo_root)
         reuse = _classify_run_status(run_root, production_mode=production_mode)
 
         if sid == REFERENCE_SAMPLE_ID and exclude_reference and not allow_reference_mutation:
@@ -559,7 +729,7 @@ def run_production_batch(
             if on_sample_finish is not None:
                 on_sample_finish(row)
 
-            if not _run_sample_cleanup_barrier_for_batch(
+            if not _run_sample_post_export_finalization(
                 row=row,
                 repo_root=repo_root,
                 pool=pool or {},
@@ -567,6 +737,7 @@ def run_production_batch(
                 compact_keep_full_samples=set(compact_keep_full_samples or ()),
                 compact_nonblocking=bool(compact_nonblocking) and not strict_production,
                 run_rom_compare=bool(run_rom_compare),
+                use_shadow_rom=False,
                 strict_production=bool(strict_production),
             ):
                 failed.append(row)
@@ -792,18 +963,21 @@ def run_production_batch(
             elif export_manifest and export_manifest.get("exported_png_paths"):
                 print(f"[export] {sid}: {export_manifest.get('exported_png_paths')[0]}", flush=True)
 
-        if not _run_sample_cleanup_barrier_for_batch(
+        if not _run_sample_post_export_finalization(
             row=row,
             repo_root=repo_root,
             pool=pool or {},
             compact_after_sample=bool(compact_after_sample),
             compact_keep_full_samples=set(compact_keep_full_samples or ()),
             compact_nonblocking=bool(compact_nonblocking) and not strict_production,
-            run_rom_compare=bool(run_rom_compare) or bool(use_shadow_rom),
+            run_rom_compare=bool(run_rom_compare),
+            use_shadow_rom=bool(use_shadow_rom),
             strict_production=bool(strict_production),
         ):
             row["outcome"] = "fail"
-            row["error_message"] = "cleanup_barrier_blocking_failure"
+            row["error_message"] = row.get("compaction_error") or row.get(
+                "compaction_pre_cleanup_errors"
+            ) or "cleanup_barrier_blocking_failure"
             failed.append(row)
             print("error: stopping batch after cleanup barrier failure", file=sys.stderr)
             break
@@ -903,7 +1077,16 @@ def run_production_batch(
                 print("error: stopping batch (--continue-on-fail not set)", file=sys.stderr)
                 break
 
-    compaction_outcomes = [r.get("compaction") for r in completed if isinstance(r.get("compaction"), dict)]
+    all_compaction_rows = [
+        r.get("compaction")
+        for r in (completed + failed)
+        if isinstance(r.get("compaction"), dict)
+    ]
+    compaction_outcomes = [
+        c
+        for c in all_compaction_rows
+        if str(c.get("status") or "") in {"completed", "already_compacted"}
+    ]
     barrier_outcomes = [
         r.get("cleanup_barrier") for r in (completed + failed) if isinstance(r.get("cleanup_barrier"), dict)
     ]
@@ -912,8 +1095,17 @@ def run_production_batch(
         4,
     )
     compaction_bytes_freed = sum(int(c.get("deleted_bytes") or 0) for c in compaction_outcomes)
-    compaction_failed_count = sum(1 for c in compaction_outcomes if str(c.get("status")) == "failed")
-    compaction_sample_count = sum(1 for c in compaction_outcomes if str(c.get("status")) == "completed")
+    compaction_failed_count = sum(
+        1
+        for r in (completed + failed)
+        if r.get("compaction_error")
+        or r.get("compaction_pre_cleanup_errors")
+        or (
+            isinstance(r.get("compaction"), dict)
+            and str(r["compaction"].get("status") or "") in {"failed", "skipped", "planned"}
+        )
+    )
+    compaction_sample_count = len(compaction_outcomes)
     cleanup_barrier_failed_count = sum(
         1 for b in barrier_outcomes if str(b.get("status")) == "failed"
     )
@@ -955,7 +1147,9 @@ def run_production_batch(
         "compaction_runtime_s": compaction_runtime_s,
         "compaction_status": (
             "completed"
-            if compact_after_sample and compaction_failed_count == 0
+            if compact_after_sample
+            and compaction_sample_count > 0
+            and compaction_failed_count == 0
             else ("partial_failed" if compact_after_sample and compaction_failed_count else "not_run")
         ),
         "compaction_bytes_freed": compaction_bytes_freed,

@@ -842,10 +842,12 @@ def production_compaction_preconditions(
 
     if run_rom_compare:
         rom_cmp = row.get("rom_compare")
-        if not isinstance(rom_cmp, dict):
+        rom_shadow_cmp = row.get("rom_shadow_compare")
+        if not isinstance(rom_cmp, dict) and not isinstance(rom_shadow_cmp, dict):
             return False, "rom_compare_not_recorded", warnings
-        if rom_cmp.get("error"):
-            warnings.append(f"rom_compare_error:{rom_cmp.get('error')}")
+        cmp_doc = rom_cmp if isinstance(rom_cmp, dict) else rom_shadow_cmp
+        if cmp_doc.get("error"):
+            warnings.append(f"rom_compare_error:{cmp_doc.get('error')}")
 
     return True, "ok", warnings
 
