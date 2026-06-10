@@ -59,8 +59,17 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         return "\n".join(lines)
 
     freq = report.get("frequencies") or {}
+    retention = report.get("modal_retention") or {}
     lines.extend(
         [
+            "## Mode counts",
+            "",
+            f"- reference raw/deduped: {retention.get('reference_raw_mode_count')}/{retention.get('reference_deduped_mode_count')}",
+            f"- candidate raw/deduped: {retention.get('candidate_raw_mode_count')}/{retention.get('candidate_deduped_mode_count')}",
+            f"- matched: {retention.get('matched_mode_count')}",
+            f"- unmatched reference: {retention.get('unmatched_reference_mode_count')}",
+            f"- unmatched candidate: {retention.get('unmatched_candidate_mode_count')}",
+            "",
             "## Frequency errors (matched modes)",
             "",
             f"- median rel error: {freq.get('global_median_rel_error')}",
@@ -72,9 +81,25 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         ]
     )
     perf = report.get("performance") or {}
-    lines.append(f"- runtime reduction: {perf.get('runtime_reduction_fraction')}")
+    lines.append(f"- total runtime reduction: {perf.get('total_runtime_reduction_fraction')}")
+    lines.append(f"- worker runtime reduction: {perf.get('runtime_reduction_fraction')}")
     lines.append(f"- candidate peak RSS (max worker VmHWM): {perf.get('candidate_peak_rss_bytes_max_worker')}")
+    mesh = report.get("mesh_scale") or {}
+    lines.append(
+        f"- mesh nodes ref/cand: {(mesh.get('reference') or {}).get('nodes')}/"
+        f"{(mesh.get('candidate') or {}).get('nodes')}"
+    )
+    proxy = report.get("proxy_comparison") or {}
+    if proxy.get("normalization_scale_warning"):
+        lines.append("")
+        lines.append("## Proxy scale note")
+        lines.append("- normalization_scale_warning: true (rank/frequency gates prioritized)")
+    rec = report.get("recommendation") or {}
+    lines.append("")
+    lines.append(f"## Recommendation: **{rec.get('recommendation')}**")
+    lines.append(f"- reason: {rec.get('reason')}")
     mac = report.get("mac") or {}
+    lines.append("")
     lines.append(f"- MAC status: {mac.get('MAC_STATUS')}")
     lines.append("")
     lines.append("## Acceptance checks")

@@ -23,15 +23,25 @@ from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
     sha256_file,
     validation_input_manifest_path,
 )
+from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
+    AGG_PASS,
+    find_bookkeeping_reconciliation_report,
+    is_run_usably_complete,
+    read_run_production_summary,
+)
 from v2_b3_m4_physics_identity_lib import (  # noqa: E402
     PHYSICS_IDENTITY_MANIFEST,
     count_forbidden_heavy_artifacts,
     iter_physics_scan_files,
     iter_path_like_strings_from_json,
+    validate_physics_identity_manifest,
 )
 from v2_b3_m4_sample_cleanup_barrier import (  # noqa: E402
     FAILURE_REPORT_REL,
+    collect_shared_sample_artifact_paths,
+    load_cleanup_barrier_manifest,
     require_cleanup_barrier_passed_for_validation,
+    verify_success_durable_outputs,
 )
 from v2_b3_m4_mesh_profile_provenance_lib import (  # noqa: E402
     compare_intrinsic_band_third_coverage,
@@ -89,6 +99,11 @@ EXIT_PASS = 0
 EXIT_ACCEPTANCE_FAIL = 1
 EXIT_PRECONDITION_FAIL = 2
 EXIT_INCOMPLETE = 3
+
+RECOMMEND_ACCEPT_ROM_BALANCED = "ACCEPT_ROM_BALANCED"
+RECOMMEND_ACCEPT_WITH_CAUTION = "ACCEPT_WITH_CAUTION"
+RECOMMEND_REJECT_OR_TIGHTEN_MESH = "REJECT_OR_TIGHTEN_MESH"
+RECOMMEND_INCOMPLETE = "INCOMPLETE"
 
 
 def _mode_id(row: Mapping[str, Any]) -> str:
@@ -231,6 +246,155 @@ def verify_candidate_validation_package(cand_root: Path) -> Tuple[List[str], Dic
     return errors, meta
 
 
+def _freeze_passed(run_root: Path) -> Tuple[bool, List[str]]:
+    errors: List[str] = []
+    freeze_path = run_root / "freeze" / "freeze_manifest.json"
+    if not freeze_path.is_file():
+        for alt in ("freeze/sample_e2e_run_manifest.json", "freeze/first_end_to_end_run_manifest.json"):
+            if (run_root / alt).is_file():
+                freeze_path = run_root / alt
+                break
+    if not freeze_path.is_file():
+        return False, ["missing_freeze_manifest"]
+    try:
+        doc = load_json(freeze_path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False, ["freeze_manifest_unreadable"]
+    if doc.get("production_acceptance_pass") is False:
+        failures = list(doc.get("production_acceptance_failures") or [])
+        if failures:
+            errors.append(f"freeze_production_acceptance_failures={failures}")
+    status = str(doc.get("status") or doc.get("terminal_status") or "")
+    if status and status.lower() not in ("ok", "completed", "pass"):
+        errors.append(f"freeze_status={status}")
+    return len(errors) == 0, errors
+
+
+def verify_reconciled_historical_compare_precondition(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    label: str,
+) -> Tuple[bool, Dict[str, Any], List[str]]:
+    """
+    Alternate compare gate for historically misclassified runs reconciled via bookkeeping.
+
+    Does not rewrite cleanup manifests; requires external bookkeeping report + live evidence.
+    """
+    errors: List[str] = []
+    run_root = run_root.resolve()
+    sample_id = run_root.parent.parent.name
+    run_id = run_root.name
+    meta: Dict[str, Any] = {
+        "label": label,
+        "sample_id": sample_id,
+        "run_id": run_id,
+        "precondition_contract": "reconciled_historical",
+    }
+
+    barrier = load_cleanup_barrier_manifest(run_root)
+    if barrier is None:
+        errors.append(f"{label}:missing_cleanup_barrier_manifest")
+        meta["barrier_manifest_present"] = False
+        return False, meta, errors
+    meta["barrier_manifest_present"] = True
+    meta["barrier_status"] = barrier.get("status")
+    meta["sample_success"] = bool(barrier.get("sample_success"))
+    if str(barrier.get("status") or "") != "completed":
+        errors.append(f"{label}:cleanup_barrier_status={barrier.get('status')!r}")
+
+    recon_doc, recon_path = find_bookkeeping_reconciliation_report(
+        repo_root, sample_id=sample_id, run_id=run_id,
+    )
+    if recon_doc is None:
+        errors.append(f"{label}:missing_bookkeeping_reconciliation_report")
+    else:
+        meta["bookkeeping_reconciliation"] = {
+            "report_path": str(recon_path) if recon_path else None,
+            "outcome": recon_doc.get("outcome"),
+            "generated_utc": recon_doc.get("generated_utc"),
+        }
+
+    summary = read_run_production_summary(run_root)
+    meta["terminal_status"] = summary.get("terminal_status")
+    meta["aggregation_status"] = summary.get("aggregation_status")
+    if str(summary.get("terminal_status") or "") != "COMPLETED":
+        errors.append(f"{label}:terminal_status={summary.get('terminal_status') or 'missing'}")
+    if str(summary.get("aggregation_status") or "") != AGG_PASS:
+        errors.append(f"{label}:aggregation_status={summary.get('aggregation_status') or 'missing'}")
+    if not is_run_usably_complete(summary):
+        errors.append(f"{label}:aggregation_not_usably_complete")
+
+    freeze_ok, freeze_errors = _freeze_passed(run_root)
+    meta["freeze_passed"] = freeze_ok
+    errors.extend(f"{label}:{e}" for e in freeze_errors)
+
+    phys_path = run_root / PHYSICS_IDENTITY_MANIFEST
+    if not phys_path.is_file():
+        errors.append(f"{label}:missing_physics_identity_manifest")
+    else:
+        try:
+            phys = load_json(phys_path)
+            ok, man_errs = validate_physics_identity_manifest(phys)
+            meta["physics_identity_valid"] = ok
+            if not ok:
+                errors.extend(f"{label}:physics_identity:{e}" for e in man_errs)
+        except (OSError, ValueError, json.JSONDecodeError):
+            errors.append(f"{label}:physics_identity_unreadable")
+
+    forbidden_count, forbidden_paths = count_forbidden_heavy_artifacts(run_root)
+    shared_paths = [
+        p for p in collect_shared_sample_artifact_paths(
+            repo_root=repo_root, sample_id=sample_id, run_id=run_id,
+        )
+        if p.exists()
+    ]
+    meta["forbidden_heavy_artifact_count"] = forbidden_count
+    meta["shared_sample_artifact_count"] = len(shared_paths)
+    if forbidden_count != 0:
+        errors.append(f"{label}:forbidden_heavy_artifact_count={forbidden_count}")
+    if shared_paths:
+        errors.append(f"{label}:shared_sample_artifact_count={len(shared_paths)}")
+
+    durable_ok, durable_errors = verify_success_durable_outputs(run_root)
+    meta["durable_outputs_ok"] = durable_ok
+    if not durable_ok:
+        errors.extend(f"{label}:{e}" for e in durable_errors)
+
+    ok = len(errors) == 0
+    meta["cleanup_barrier_passed"] = ok
+    return ok, meta, errors
+
+
+def verify_run_compare_barrier_precondition(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    label: str,
+) -> Tuple[bool, Dict[str, Any], List[str]]:
+    ok, meta, errors = require_cleanup_barrier_passed_for_validation(
+        repo_root=repo_root, run_root=run_root, label=label,
+    )
+    barrier = load_cleanup_barrier_manifest(run_root)
+    sample_success = bool((barrier or {}).get("sample_success"))
+
+    if ok and sample_success:
+        meta["precondition_contract"] = "standard"
+        return True, meta, []
+
+    if barrier is not None and not sample_success:
+        recon_ok, recon_meta, recon_errors = verify_reconciled_historical_compare_precondition(
+            repo_root=repo_root, run_root=run_root, label=label,
+        )
+        if recon_ok:
+            return True, recon_meta, []
+        return False, {**meta, **recon_meta}, errors + recon_errors
+
+    if ok and not sample_success:
+        errors.append(f"{label}:sample_success_false_without_reconciliation")
+    return False, meta, errors
+
+
 def verify_cleanup_preconditions(
     *,
     repo_root: Path,
@@ -240,7 +404,7 @@ def verify_cleanup_preconditions(
     errors: List[str] = []
     meta: Dict[str, Any] = {"reference": {}, "candidate": {}}
     for label, root in (("reference", ref_root), ("candidate", cand_root)):
-        ok, barrier_meta, barrier_errors = require_cleanup_barrier_passed_for_validation(
+        ok, barrier_meta, barrier_errors = verify_run_compare_barrier_precondition(
             repo_root=repo_root, run_root=root, label=label,
         )
         meta[label] = barrier_meta
@@ -447,27 +611,233 @@ def _mac_status(ref_rows: Sequence[Mapping[str, Any]], cand_rows: Sequence[Mappi
     }
 
 
+def _count_catalog_rows(run_root: Path, rel: str) -> int:
+    path = run_root / rel
+    if not path.is_file():
+        return 0
+    return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+
+
+def _spearman_rank_corr(xs: Sequence[float], ys: Sequence[float]) -> Optional[float]:
+    if len(xs) < 2 or len(xs) != len(ys):
+        return None
+    arr_x = np.asarray(xs, dtype=float)
+    arr_y = np.asarray(ys, dtype=float)
+    rx = np.argsort(np.argsort(arr_x))
+    ry = np.argsort(np.argsort(arr_y))
+    corr = np.corrcoef(rx, ry)
+    return float(corr[0, 1]) if corr.shape == (2, 2) else None
+
+
+def _matched_proxy_analysis(
+    ref_rows: Sequence[Mapping[str, Any]],
+    cand_rows: Sequence[Mapping[str, Any]],
+    pairs: Sequence[Tuple[int, int]],
+    *,
+    key: str,
+    signed: bool = False,
+) -> Dict[str, Any]:
+    ref_vals: List[float] = []
+    cand_vals: List[float] = []
+    ratios: List[float] = []
+    signed_diffs: List[float] = []
+    outliers: List[Dict[str, Any]] = []
+    for i, j in pairs:
+        rv = float(ref_rows[i].get(key) or 0.0)
+        cv = float(cand_rows[j].get(key) or 0.0)
+        ref_vals.append(rv)
+        cand_vals.append(cv)
+        if rv != 0.0:
+            ratios.append(cv / rv)
+        if signed:
+            signed_diffs.append(cv - rv)
+        if rv != 0.0 and cv / rv < 0.5:
+            outliers.append(
+                {
+                    "reference_hz": ref_rows[i].get("frequency_hz"),
+                    "candidate_hz": cand_rows[j].get("frequency_hz"),
+                    "reference_value": rv,
+                    "candidate_value": cv,
+                    "ratio": cv / rv if rv else None,
+                    "mode_id": _mode_id(ref_rows[i]),
+                }
+            )
+
+    abs_diffs = [abs(a - b) for a, b in zip(ref_vals, cand_vals)]
+    ratio_arr = np.asarray(ratios, dtype=float) if ratios else np.asarray([], dtype=float)
+    return {
+        "matched_count": len(pairs),
+        "median_abs_difference": float(np.median(abs_diffs)) if abs_diffs else None,
+        "p95_abs_difference": float(np.percentile(abs_diffs, 95)) if abs_diffs else None,
+        "median_signed_difference": float(np.median(signed_diffs)) if signed_diffs else None,
+        "median_amplitude_ratio": float(np.median(ratio_arr)) if ratios else None,
+        "p95_amplitude_ratio": float(np.percentile(ratio_arr, 95)) if ratios else None,
+        "rank_correlation": _spearman_rank_corr(ref_vals, cand_vals),
+        "top10": _top10_analysis(key, ref_rows, cand_rows),
+        "large_negative_rom_outliers": sorted(
+            outliers, key=lambda r: float(r.get("ratio") or 0.0),
+        )[:10],
+        "systematic_rom_larger_than_reference": (
+            float(np.median(ratio_arr)) > 1.1 if ratios else None
+        ),
+    }
+
+
+def _share_difference_stats(
+    ref_rows: Sequence[Mapping[str, Any]],
+    cand_rows: Sequence[Mapping[str, Any]],
+    pairs: Sequence[Tuple[int, int]],
+) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for share in ("top_share", "back_share", "air_share"):
+        diffs = [
+            abs(float(cand_rows[j].get(share) or 0.0) - float(ref_rows[i].get(share) or 0.0))
+            for i, j in pairs
+        ]
+        signed = [
+            float(cand_rows[j].get(share) or 0.0) - float(ref_rows[i].get(share) or 0.0)
+            for i, j in pairs
+        ]
+        out[share] = {
+            "median_abs_difference": float(np.median(diffs)) if diffs else None,
+            "p95_abs_difference": float(np.percentile(diffs, 95)) if diffs else None,
+            "median_signed_difference": float(np.median(signed)) if signed else None,
+        }
+    air_signed = [
+        float(cand_rows[j].get("air_share") or 0.0) - float(ref_rows[i].get("air_share") or 0.0)
+        for i, j in pairs
+    ]
+    out["systematic_air_participation_shift"] = (
+        float(np.median(air_signed)) if air_signed else None
+    )
+    return out
+
+
 def _performance_metrics(ref_rt: Mapping[str, Any], cand_rt: Mapping[str, Any]) -> Dict[str, Any]:
-    ref_wall = float(ref_rt.get("stage_wall_times_s", {}).get("stage5_workers") or ref_rt.get("workers_wall_time_s") or 0)
-    cand_wall = float(cand_rt.get("stage_wall_times_s", {}).get("stage5_workers") or cand_rt.get("workers_wall_time_s") or 0)
+    stages = ("stage1_scout", "stage2_lprod_checkpoint", "stage5_workers")
+    ref_stage = ref_rt.get("stage_wall_times_s") or {}
+    cand_stage = cand_rt.get("stage_wall_times_s") or {}
+    ref_wall = float(ref_stage.get("stage5_workers") or ref_rt.get("workers_wall_time_s") or 0)
+    cand_wall = float(cand_stage.get("stage5_workers") or cand_rt.get("workers_wall_time_s") or 0)
+    ref_total = float(ref_rt.get("total_wall_time_s") or ref_rt.get("elapsed_s") or 0)
+    cand_total = float(cand_rt.get("total_wall_time_s") or cand_rt.get("elapsed_s") or 0)
+    if ref_total <= 0:
+        ref_total = sum(float(ref_stage.get(s) or 0) for s in stages)
+    if cand_total <= 0:
+        cand_total = sum(float(cand_stage.get(s) or 0) for s in stages)
     runtime_reduction = (ref_wall - cand_wall) / ref_wall if ref_wall > 0 else None
+    total_reduction = (ref_total - cand_total) / ref_total if ref_total > 0 else None
     worker_records = list(cand_rt.get("worker_resource_records") or [])
+    ref_worker_records = list(ref_rt.get("worker_resource_records") or [])
     peaks = [
         int(r.get("peak_rss_bytes") or r.get("max_rss_bytes"))
         for r in worker_records
         if r.get("peak_rss_bytes") or r.get("max_rss_bytes")
     ]
+    ref_peaks = [
+        int(r.get("peak_rss_bytes") or r.get("max_rss_bytes"))
+        for r in ref_worker_records
+        if r.get("peak_rss_bytes") or r.get("max_rss_bytes")
+    ]
     peak_max = max(peaks) if peaks else cand_rt.get("peak_rss_bytes_max_worker")
-    sum_peaks = sum(peaks) if peaks else None
+    ref_peak_max = max(ref_peaks) if ref_peaks else ref_rt.get("peak_rss_bytes_max_worker")
+    ram_reduction = None
+    if ref_peak_max and peak_max:
+        ram_reduction = (float(ref_peak_max) - float(peak_max)) / float(ref_peak_max)
     return {
-        "reference_worker_wall_s": ref_wall,
-        "candidate_worker_wall_s": cand_wall,
+        "reference_total_wall_s": ref_total or None,
+        "candidate_total_wall_s": cand_total or None,
+        "total_runtime_reduction_fraction": total_reduction,
+        "reference_scout_wall_s": float(ref_stage.get("stage1_scout") or 0) or None,
+        "candidate_scout_wall_s": float(cand_stage.get("stage1_scout") or 0) or None,
+        "reference_checkpoint_wall_s": float(ref_stage.get("stage2_lprod_checkpoint") or 0) or None,
+        "candidate_checkpoint_wall_s": float(cand_stage.get("stage2_lprod_checkpoint") or 0) or None,
+        "reference_worker_wall_s": ref_wall or None,
+        "candidate_worker_wall_s": cand_wall or None,
         "runtime_reduction_fraction": runtime_reduction,
+        "ram_reduction_fraction": ram_reduction,
+        "reference_peak_rss_bytes_max_worker": ref_peak_max,
         "candidate_peak_rss_bytes_max_worker": peak_max,
-        "candidate_sum_of_individual_worker_peaks_upper_bound": sum_peaks,
+        "candidate_sum_of_individual_worker_peaks_upper_bound": sum(peaks) if peaks else None,
         "candidate_workers_parallel_observed": cand_rt.get("workers_actual_parallel") or cand_rt.get("workers_parallel_observed"),
+        "reference_workers_parallel_observed": ref_rt.get("workers_actual_parallel") or ref_rt.get("workers_parallel_observed"),
         "rss_measurement_note": cand_rt.get("rss_aggregate_note"),
     }
+
+
+def _mesh_scale_metrics(ref_id: Mapping[str, Any], cand_id: Mapping[str, Any]) -> Dict[str, Any]:
+    ref_nodes = ref_id.get("mesh_node_count") or ref_id.get("n_nodes")
+    cand_nodes = cand_id.get("mesh_node_count") or cand_id.get("n_nodes")
+    ref_tetra = ref_id.get("mesh_tetra_count") or ref_id.get("n_tetra")
+    cand_tetra = cand_id.get("mesh_tetra_count") or cand_id.get("n_tetra")
+    node_reduction = None
+    tetra_reduction = None
+    if ref_nodes and cand_nodes:
+        node_reduction = (float(ref_nodes) - float(cand_nodes)) / float(ref_nodes)
+    if ref_tetra and cand_tetra:
+        tetra_reduction = (float(ref_tetra) - float(cand_tetra)) / float(ref_tetra)
+    return {
+        "reference": {
+            "nodes": ref_nodes,
+            "tetrahedra": ref_tetra,
+            "active_dimension": ref_id.get("active_dimension"),
+        },
+        "candidate": {
+            "nodes": cand_nodes,
+            "tetrahedra": cand_tetra,
+            "active_dimension": cand_id.get("active_dimension"),
+        },
+        "node_count_reduction_fraction": node_reduction,
+        "tetra_count_reduction_fraction": tetra_reduction,
+    }
+
+
+def derive_comparison_recommendation(
+    report: Mapping[str, Any],
+    acceptance_evaluation: Mapping[str, Any],
+) -> Dict[str, Any]:
+    if not report.get("comparison_executed"):
+        return {"recommendation": RECOMMEND_INCOMPLETE, "reason": "comparison_not_executed"}
+    if report.get("status") == "INCOMPLETE":
+        return {"recommendation": RECOMMEND_INCOMPLETE, "reason": "mandatory_metrics_missing"}
+
+    ae = dict(acceptance_evaluation or {})
+    hard_fails = [k for k, v in ae.items() if k.endswith("_pass") and v is False]
+    proxy = report.get("proxy_comparison") or {}
+    scale_warning = bool(proxy.get("normalization_scale_warning"))
+    rank_preserved = all(
+        (proxy.get(k) or {}).get("rank_correlation") is None
+        or float((proxy.get(k) or {}).get("rank_correlation") or 0) >= 0.85
+        for k in ("bridge", "mic", "radiation")
+    )
+
+    freq_pass = ae.get("global_median_rel_freq_error_pass") and ae.get("global_p95_rel_freq_error_pass")
+    family_pass = ae.get("mode_family_survival_pass")
+    recall_pass = ae.get("recall_below_350_pass") and ae.get("recall_350_550_pass")
+    coupling_pass = ae.get("coupling_class_agreement_pass")
+
+    if hard_fails and not (scale_warning and rank_preserved and freq_pass and family_pass):
+        if any(k.startswith(("global_", "recall_", "mode_family", "intrinsic")) for k in hard_fails):
+            return {
+                "recommendation": RECOMMEND_REJECT_OR_TIGHTEN_MESH,
+                "reason": "frequency_or_family_gate_failed",
+                "failed_checks": hard_fails,
+            }
+    if scale_warning and rank_preserved and freq_pass and family_pass and recall_pass:
+        return {
+            "recommendation": RECOMMEND_ACCEPT_WITH_CAUTION,
+            "reason": "proxy_scale_differs_rank_and_frequency_preserved",
+            "failed_checks": hard_fails,
+        }
+    if not hard_fails and freq_pass and coupling_pass and recall_pass and family_pass:
+        return {"recommendation": RECOMMEND_ACCEPT_ROM_BALANCED, "reason": "all_mandatory_gates_pass"}
+    if hard_fails:
+        return {
+            "recommendation": RECOMMEND_ACCEPT_WITH_CAUTION if rank_preserved else RECOMMEND_REJECT_OR_TIGHTEN_MESH,
+            "reason": "partial_gate_failure",
+            "failed_checks": hard_fails,
+        }
+    return {"recommendation": RECOMMEND_ACCEPT_WITH_CAUTION, "reason": "mixed_signals"}
 
 
 def evaluate_acceptance(report: Mapping[str, Any]) -> Tuple[Dict[str, Any], bool, bool]:
@@ -633,6 +1003,8 @@ def compare_runs(
 
     ref_rows = load_catalog(ref_root)
     cand_rows = load_catalog(cand_root)
+    ref_raw_count = _count_catalog_rows(ref_root, "aggregation/modes_catalog.jsonl")
+    cand_raw_count = _count_catalog_rows(cand_root, "aggregation/modes_catalog.jsonl")
     if not ref_rows or not cand_rows:
         return {
             "schema": "m4_mesh_profile_compare_v2",
@@ -682,6 +1054,22 @@ def compare_runs(
     coupling = _coupling_agreement(ref_rows, cand_rows, pairs)
     coupling["bridge_top10"] = _top10_analysis("bridge_excitation_abs", ref_rows, cand_rows)
     coupling["mic_top10"] = _top10_analysis("mic_output_proxy", ref_rows, cand_rows)
+    coupling["radiation_top10"] = _top10_analysis("radiation_proxy", ref_rows, cand_rows)
+    share_diffs = _share_difference_stats(ref_rows, cand_rows, pairs)
+    bridge_proxy = _matched_proxy_analysis(
+        ref_rows, cand_rows, pairs, key="bridge_excitation_abs", signed=True,
+    )
+    mic_proxy = _matched_proxy_analysis(ref_rows, cand_rows, pairs, key="mic_output_proxy")
+    radiation_proxy = _matched_proxy_analysis(ref_rows, cand_rows, pairs, key="radiation_proxy")
+    bridge_signed = _matched_proxy_analysis(
+        ref_rows, cand_rows, pairs, key="bridge_excitation_coupling", signed=True,
+    )
+    proxy_scale_warning = False
+    for proxy_doc in (bridge_proxy, mic_proxy, radiation_proxy):
+        ratio = proxy_doc.get("median_amplitude_ratio")
+        rank = proxy_doc.get("rank_correlation")
+        if ratio is not None and (ratio < 0.7 or ratio > 1.4) and (rank is None or rank >= 0.85):
+            proxy_scale_warning = True
     mac = _mac_status(ref_rows, cand_rows, pairs)
     ref_scout, ref_scout_errs = load_durable_scout_intrinsic_summary(ref_root)
     cand_scout, cand_scout_errs = load_durable_scout_intrinsic_summary(cand_root)
@@ -717,9 +1105,13 @@ def compare_runs(
             },
         },
         "modal_retention": {
+            "reference_raw_mode_count": ref_raw_count,
+            "candidate_raw_mode_count": cand_raw_count,
             "reference_deduped_mode_count": len(ref_rows),
             "candidate_deduped_mode_count": len(cand_rows),
             "matched_mode_count": len(pairs),
+            "unmatched_reference_mode_count": len(unmatched_ref),
+            "unmatched_candidate_mode_count": len(unmatched_cand),
             "unmatched_reference_modes": [{"frequency_hz": r.get("frequency_hz"), "mode_id": _mode_id(r)} for r in unmatched_ref],
             "unmatched_candidate_modes": [{"frequency_hz": r.get("frequency_hz"), "mode_id": _mode_id(r)} for r in unmatched_cand],
             "recall_below_350": recall_below_350,
@@ -731,9 +1123,19 @@ def compare_runs(
             "global_median_rel_error": float(np.median(rel_errors)) if rel_errors else None,
             "global_p95_rel_error": float(np.percentile(rel_errors, 95)) if rel_errors else None,
             "global_max_rel_error": float(np.max(rel_errors)) if rel_errors else None,
+            "global_median_abs_error_hz": float(np.median([m["abs_error_hz"] for m in matched])) if matched else None,
+            "global_max_abs_error_hz": float(np.max([m["abs_error_hz"] for m in matched])) if matched else None,
             "bands": band_stats,
         },
         "coupling_output": coupling,
+        "participation_shares": share_diffs,
+        "proxy_comparison": {
+            "normalization_scale_warning": proxy_scale_warning,
+            "bridge": bridge_proxy,
+            "bridge_signed_coupling": bridge_signed,
+            "mic": mic_proxy,
+            "radiation": radiation_proxy,
+        },
         "intrinsic_coverage": intrinsic_cov,
         "mode_family_survival": family_survival,
         "scout_provenance": {
@@ -743,12 +1145,14 @@ def compare_runs(
         },
         "mac": mac,
         "performance": _performance_metrics(_runtime_prov(ref_root), _runtime_prov(cand_root)),
+        "mesh_scale": _mesh_scale_metrics(ref_id, cand_id),
         "acceptance_thresholds": ACCEPTANCE_THRESHOLDS,
     }
 
     ae, acceptance_pass, incomplete = evaluate_acceptance(report)
     report["acceptance_evaluation"] = ae
     report["acceptance_pass"] = acceptance_pass
+    report["recommendation"] = derive_comparison_recommendation(report, ae)
     if incomplete:
         report["status"] = "INCOMPLETE"
         report["comparison_executed"] = True

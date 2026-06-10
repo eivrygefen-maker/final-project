@@ -83,6 +83,32 @@ def specs_generated_dir(repo_root: Path) -> Path:
     )
 
 
+def find_bookkeeping_reconciliation_report(
+    repo_root: Path,
+    *,
+    sample_id: str,
+    run_id: str,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Path]]:
+    """Locate durable bookkeeping reconcile report for a sample/run (read-only)."""
+    gen_dir = specs_generated_dir(repo_root)
+    if not gen_dir.is_dir():
+        return None, None
+    prefix = f"bookkeeping_reconcile_{sample_id}_{run_id}_"
+    for path in sorted(gen_dir.glob(f"{prefix}*.json"), reverse=True):
+        try:
+            doc = load_json(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if (
+            str(doc.get("schema") or "") == "m4_lhs_run_bookkeeping_reconcile_v1"
+            and str(doc.get("sample_id") or "") == sample_id
+            and str(doc.get("run_id") or "") == run_id
+            and str(doc.get("outcome") or "") == "pass"
+        ):
+            return doc, path
+    return None, None
+
+
 def _sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as fh:
