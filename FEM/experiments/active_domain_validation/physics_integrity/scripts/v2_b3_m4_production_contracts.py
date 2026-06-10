@@ -355,12 +355,20 @@ def evaluate_production_acceptance(
     elif not built_ds:
         out["failures"].append("missing_dataset_version")
 
-    built_level = canonical_mesh_level_id(str(built.get("mesh_level") or built.get("mesh_level_id") or ""))
-    legacy_ref_level = profile.mesh_profile == "reference" and built_level == "L_prod"
-    if built_level and built_level != profile.mesh_level_id and not legacy_ref_level:
-        out["failures"].append(f"mesh_level_id={built_level}")
-    elif not built_level and sample_input.get("mesh_profile"):
-        out["failures"].append("missing_mesh_level_id")
+    profile_aware = bool(sample_input.get("mesh_profile") or built.get("mesh_profile"))
+    if profile_aware:
+        built_level = canonical_mesh_level_id(str(built.get("mesh_level_id") or ""))
+        if not built_level:
+            out["failures"].append("missing_mesh_level_id")
+        elif built_level != profile.mesh_level_id:
+            out["failures"].append(f"mesh_level_id={built_level}")
+    else:
+        built_level = canonical_mesh_level_id(str(built.get("mesh_level") or built.get("mesh_level_id") or ""))
+        legacy_ref_level = profile.mesh_profile == "reference" and built_level == "L_prod"
+        if built_level and built_level != profile.mesh_level_id and not legacy_ref_level:
+            out["failures"].append(f"mesh_level_id={built_level}")
+        elif not built_level and sample_input.get("mesh_profile"):
+            out["failures"].append("missing_mesh_level_id")
 
     if sample_input.get("mesh_profile") or built.get("mesh_profile"):
         reuse_errors = validate_mesh_profile_reuse(expected=profile, existing=built, context="built_metadata")

@@ -241,6 +241,12 @@ def verify_lprod_checkpoint(checkpoint_dir: Path) -> Tuple[bool, str]:
     built_meta = load_json(checkpoint_dir / "built_metadata.json")
     from v2_b3_m4_mesh_profile_lib import canonical_mesh_level_id, is_production_mesh_level  # noqa: WPS433
 
+    if built_meta.get("mesh_profile") and built_meta.get("mesh_level_id"):
+        profile_level = canonical_mesh_level_id(str(built_meta.get("mesh_level_id")))
+        if not is_production_mesh_level(profile_level):
+            return False, f"mesh_level_id is not production: {profile_level!r}"
+        return True, "ok"
+
     mesh_level = canonical_mesh_level_id(
         str(built_meta.get("mesh_level") or built_meta.get("mesh_level_id") or data.get("mesh_level") or "")
     )

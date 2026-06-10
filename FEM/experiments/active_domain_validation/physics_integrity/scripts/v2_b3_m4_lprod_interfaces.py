@@ -191,6 +191,7 @@ def evaluate_lprod_mesh_checkpoint_readiness(
     """Decide L_prod mesh/checkpoint reuse vs planned build (M4.4.1a dry-run)."""
     from v2_b3_m4_mesh_profile_lib import (  # noqa: WPS433
         LEVEL_L_PROD_LEGACY,
+        checkpoint_export_mesh_level,
         resolve_mesh_profile_from_mapping,
         run_tree_lprod_mesh_path,
     )
@@ -258,13 +259,15 @@ def evaluate_lprod_mesh_checkpoint_readiness(
     else:
         lprod_checkpoint_status = "planned"
 
+    export_level = checkpoint_export_mesh_level()
     cmd_stage_a = (
         f"# production .venv\n"
         f"python {SCRIPTS_REL.as_posix()}/v2_b3_checkpoint_export.py "
-        f"--mesh-level {level} "
+        f"--mesh-level {export_level} "
         "--B3-block-compose-backend csr_bulk "
         f"--B3-synthesis-region-dofs {LPROD_SYNTHESIS_REGION_DOFS_DEFAULT} "
         f'--core-config "{rel_path_fn(resolved_lprod if resolved_lprod.is_file() else resolved_sample, repo_root=repo_root)}" '
+        f'--operator-mesh-file "{rel_path_fn(sample_mesh, repo_root=repo_root)}" '
         f'--output-dir "{rel_path_fn(checkpoint_dir, repo_root=repo_root)}"'
     )
     cmd_mesh = (

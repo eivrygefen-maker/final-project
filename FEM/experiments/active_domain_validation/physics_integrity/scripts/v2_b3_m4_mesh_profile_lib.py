@@ -65,6 +65,21 @@ LEVEL_ALIASES: Dict[str, str] = {
     LEVEL_L_PROD_LEGACY: LEVEL_PROD_REFERENCE,
 }
 
+# Profile mesh levels (L_prod_reference / L_rom_prod) select build controls and run-tree paths.
+# Stage A / v2_b3_checkpoint_export.py uses a separate fixed export contract level:
+CHECKPOINT_EXPORT_MESH_LEVEL = LEVEL_L_PROD_LEGACY
+
+
+def checkpoint_export_mesh_level() -> str:
+    """
+    Internal Stage A / checkpoint exporter --mesh-level contract.
+
+    Profile selection does not change this value. The selected operator mesh is passed
+    explicitly via --operator-mesh-file; profile identity lives in mesh_profile /
+    mesh_level_id provenance stamped after export.
+    """
+    return CHECKPOINT_EXPORT_MESH_LEVEL
+
 
 class MeshProfileError(ValueError):
     """Invalid mesh profile / dataset pairing or reuse mismatch."""
@@ -364,12 +379,22 @@ def validate_mesh_profile_reuse(
     """Hard-fail list when resume/reuse profile identity does not match."""
     errors: List[str] = []
     ex_profile = str(existing.get("mesh_profile") or "").strip()
-    ex_level = canonical_mesh_level_id(str(existing.get("mesh_level_id") or existing.get("mesh_level") or ""))
+    if ex_profile:
+        ex_level = canonical_mesh_level_id(str(existing.get("mesh_level_id") or ""))
+    else:
+        ex_level = canonical_mesh_level_id(
+            str(existing.get("mesh_level_id") or existing.get("mesh_level") or "")
+        )
     ex_ds = str(existing.get("dataset_version") or "").strip()
 
     if ex_profile and ex_profile != expected.mesh_profile:
         errors.append(f"{context}:mesh_profile_mismatch:{ex_profile}!={expected.mesh_profile}")
-    if ex_level and ex_level != expected.mesh_level_id:
+    if ex_profile:
+        if not ex_level:
+            errors.append(f"{context}:missing_mesh_level_id")
+        elif ex_level != expected.mesh_level_id:
+            errors.append(f"{context}:mesh_level_id_mismatch:{ex_level}!={expected.mesh_level_id}")
+    elif ex_level and ex_level != expected.mesh_level_id:
         errors.append(f"{context}:mesh_level_id_mismatch:{ex_level}!={expected.mesh_level_id}")
     if ex_ds and ex_ds != expected.dataset_version:
         errors.append(f"{context}:dataset_version_mismatch:{ex_ds}!={expected.dataset_version}")

@@ -57,10 +57,12 @@ from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
     LEVEL_L_PROD_LEGACY,
     LEVEL_PROD_REFERENCE,
     canonical_mesh_level_id,
+    checkpoint_export_mesh_level,
     convergence_mesh_path,
     is_production_mesh_level,
     legacy_run_without_profile,
     run_tree_lprod_mesh_path,
+    sha256_file,
     validate_mesh_profile_reuse,
 )
 from v2_b3_m4_production_contracts import (  # noqa: E402
@@ -391,7 +393,7 @@ def build_execution_plan(
             prod_python,
             _path_for_subprocess(repo_root / Path(STAGE_A_REL), repo_root=repo_root),
             "--mesh-level",
-            mesh_level,
+            checkpoint_export_mesh_level(),
             "--B3-block-compose-backend",
             "csr_bulk",
             "--B3-synthesis-region-dofs",
@@ -441,6 +443,35 @@ def _lprod_mesh_paths_from_plan(
             lprod_mesh = legacy_mesh
     lprod_mesh_rel = _rel(lprod_mesh, repo_root=repo_root)
     return mesh_level, lprod_mesh, lprod_mesh_rel
+
+
+def _stamp_checkpoint_profile_provenance(
+    *,
+    checkpoint_dir: Path,
+    lprod_mesh: Path,
+    plan: Mapping[str, Any],
+    sample_input: Mapping[str, Any],
+) -> None:
+    """Overlay profile provenance on exporter built_metadata (export level stays L_prod)."""
+    built_path = checkpoint_dir / "built_metadata.json"
+    if not built_path.is_file():
+        return
+    try:
+        built = _load_json(built_path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return
+    profile = resolve_production_mesh_profile(sample_input)
+    built.update(profile.provenance_fields())
+    built["checkpoint_export_mesh_level"] = checkpoint_export_mesh_level()
+    mesh_sha = sha256_file(lprod_mesh) if lprod_mesh.is_file() else None
+    if mesh_sha:
+        built["generated_mesh_sha256"] = mesh_sha
+        if not built.get("operator_mesh_sha256"):
+            built["operator_mesh_sha256"] = mesh_sha
+    for key in ("mesh_profile", "mesh_level_id", "dataset_version"):
+        if plan.get(key) is not None:
+            built[key] = plan.get(key)
+    write_json_atomic(built_path, built)
 
 
 def _log_lprod_region_dof_index_status(
@@ -817,6 +848,13 @@ def run_execute(
         )
         print("Stage 4 L_prod checkpoint FAIL", flush=True)
         return 1
+
+    _stamp_checkpoint_profile_provenance(
+        checkpoint_dir=checkpoint_dir,
+        lprod_mesh=lprod_mesh,
+        plan=plan,
+        sample_input=sample_input,
+    )
 
     active_dim = None
     if export_manifest.is_file():

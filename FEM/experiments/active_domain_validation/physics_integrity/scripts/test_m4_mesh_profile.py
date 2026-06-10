@@ -53,6 +53,7 @@ from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
     preserve_target_plan_before_cleanup,
     production_mesh_levels_for_cleanup,
     resolve_mesh_profile,
+    checkpoint_export_mesh_level,
     validate_mesh_profile_reuse,
     validate_profile_dataset_pairing,
 )
@@ -291,6 +292,24 @@ class MeshProfileLibTest(unittest.TestCase):
             context="test",
         )
         self.assertTrue(errors)
+
+    def test_checkpoint_export_level_is_l_prod(self) -> None:
+        self.assertEqual(checkpoint_export_mesh_level(), "L_prod")
+
+    def test_reuse_ignores_internal_exporter_mesh_level_when_profile_stamped(self) -> None:
+        expected = resolve_mesh_profile(mesh_profile="rom", dataset_version=DATASET_VERSION_ROM)
+        errors = validate_mesh_profile_reuse(
+            expected=expected,
+            existing={
+                "mesh_profile": "rom",
+                "mesh_level_id": LEVEL_ROM_PROD,
+                "dataset_version": DATASET_VERSION_ROM,
+                "mesh_level": "L_prod",
+                "effective_controls_m": expected.effective_controls_m,
+            },
+            context="checkpoint_reuse",
+        )
+        self.assertFalse(errors)
 
     def test_cleanup_levels_include_both_profiles(self) -> None:
         levels = production_mesh_levels_for_cleanup()
