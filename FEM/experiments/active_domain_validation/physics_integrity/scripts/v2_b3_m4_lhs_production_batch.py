@@ -15,7 +15,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from v2_b3_m4_lhs_pool_bridge import classify_sample_outcome  # noqa: E402
+from v2_b3_m4_lhs_pool_bridge import classify_batch_sample_outcome  # noqa: E402
 from v2_b3_m4_production_control import is_stop_after_current_requested  # noqa: E402
 from v2_b3_m4_rom_fom_compare_lib import (  # noqa: E402
     DEFAULT_MAX_MATCH_DISTANCE_HZ,
@@ -659,6 +659,14 @@ def run_production_batch(
             )
         elapsed = time.perf_counter() - t0
         summary = _read_sample_summary(run_root, workers_requested=workers)
+        sample_doc = entry.get("sample_input")
+        if not isinstance(sample_doc, dict) or not str(sample_doc.get("sample_id") or ""):
+            try:
+                from v2_b3_m4_production_freeze import load_sample_input  # noqa: WPS433
+
+                sample_doc = load_sample_input(run_root)
+            except Exception:
+                sample_doc = entry if isinstance(entry, dict) else {}
         acceptance: Dict[str, Any] = {}
         if production_mode:
             try:
@@ -666,7 +674,7 @@ def run_production_batch(
 
                 acceptance = evaluate_production_acceptance(
                     run_root=run_root,
-                    sample_input=entry,
+                    sample_input=sample_doc,
                 )
                 summary["production_acceptance_pass"] = bool(acceptance.get("acceptance_pass"))
                 summary["production_acceptance_failures"] = list(acceptance.get("failures") or [])
@@ -684,17 +692,29 @@ def run_production_batch(
             "production_acceptance": acceptance,
             **summary,
         }
-        outcome, err_msg = classify_sample_outcome(return_code=rc, summary=summary)
-        if production_mode and acceptance and not acceptance.get("acceptance_pass"):
-            outcome = "fail"
-            err_msg = ";".join(acceptance.get("failures") or ["production_acceptance_failed"])
-        if production_mode:
-            from v2_b3_m4_production_freeze import assess_production_completion  # noqa: WPS433
+        require_cleanup_barrier = bool(compact_after_sample) or bool(strict_production)
+        if not _run_sample_cleanup_barrier_for_batch(
+            row=row,
+            repo_root=repo_root,
+            pool=pool or {},
+            compact_after_sample=bool(compact_after_sample),
+            compact_keep_full_samples=set(compact_keep_full_samples or ()),
+            compact_nonblocking=bool(compact_nonblocking) and not strict_production,
+            run_rom_compare=bool(run_rom_compare),
+            strict_production=bool(strict_production),
+        ):
+            row["outcome"] = "fail"
+            row["error_message"] = "cleanup_barrier_blocking_failure"
+            failed.append(row)
+            print("error: stopping batch after cleanup barrier failure", file=sys.stderr)
+            break
 
-            completion = assess_production_completion(run_root)
-            if not completion["complete"]:
-                outcome = "fail"
-                err_msg = ";".join(completion["failures"])
+        outcome, err_msg = classify_batch_sample_outcome(
+            return_code=rc,
+            summary=summary,
+            cleanup_barrier=row.get("cleanup_barrier"),
+            require_cleanup_barrier=require_cleanup_barrier,
+        )
         row["outcome"] = outcome
         if err_msg:
             row["error_message"] = err_msg
@@ -703,7 +723,7 @@ def run_production_batch(
                 f"{utc_now()} sample={sid} rc={rc} outcome={outcome} elapsed_s={elapsed:.1f}\n"
             )
 
-        if outcome in ("pass", "reused_complete", "pass_freeze_warning"):
+        if outcome == "pass":
             export_manifest, export_warn = try_export_sample_to_shared(
                 run_root=run_root,
                 sample_id=sid,
@@ -760,38 +780,11 @@ def run_production_batch(
             if on_sample_finish is not None:
                 on_sample_finish(row)
 
-            if not _run_sample_cleanup_barrier_for_batch(
-                row=row,
-                repo_root=repo_root,
-                pool=pool or {},
-                compact_after_sample=bool(compact_after_sample),
-                compact_keep_full_samples=set(compact_keep_full_samples or ()),
-                compact_nonblocking=bool(compact_nonblocking) and not strict_production,
-                run_rom_compare=bool(run_rom_compare),
-                strict_production=bool(strict_production),
-            ):
-                failed.append(row)
-                print("error: stopping batch after cleanup barrier failure", file=sys.stderr)
-                break
-
             completed.append(row)
-            label = "AGGREGATION_PASS" if outcome == "pass" else outcome.upper()
-            print(f"[pass] {sid}: {label} elapsed_s={elapsed:.1f}", flush=True)
+            print(f"[pass] {sid}: AGGREGATION_PASS elapsed_s={elapsed:.1f}", flush=True)
         else:
             failed.append(row)
             print(f"[fail] {sid}: rc={rc} aggregation={summary.get('aggregation_status')}", flush=True)
-            if not _run_sample_cleanup_barrier_for_batch(
-                row=row,
-                repo_root=repo_root,
-                pool=pool or {},
-                compact_after_sample=bool(compact_after_sample),
-                compact_keep_full_samples=set(compact_keep_full_samples or ()),
-                compact_nonblocking=bool(compact_nonblocking) and not strict_production,
-                run_rom_compare=bool(run_rom_compare),
-                strict_production=bool(strict_production),
-            ):
-                print("error: stopping batch after failed-sample cleanup barrier failure", file=sys.stderr)
-                break
             if not continue_on_fail:
                 print("error: stopping batch (--continue-on-fail not set)", file=sys.stderr)
                 break

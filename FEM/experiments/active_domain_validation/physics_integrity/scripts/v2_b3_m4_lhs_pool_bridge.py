@@ -520,6 +520,49 @@ def is_run_usably_complete(summary: Mapping[str, Any]) -> bool:
     )
 
 
+TERMINAL_PRODUCTION_COMPLETED = "COMPLETED"
+BATCH_PASS_OUTCOMES = frozenset({"pass", "reused_complete", OUTCOME_PASS_FREEZE_WARNING})
+
+
+def classify_batch_sample_outcome(
+    *,
+    return_code: int,
+    summary: Mapping[str, Any],
+    cleanup_barrier: Optional[Mapping[str, Any]] = None,
+    require_cleanup_barrier: bool = False,
+) -> Tuple[str, Optional[str]]:
+    """
+    Final batch accounting for a finished sample (after pipeline + optional cleanup).
+
+    Success requires substantive run completion, not metadata-only acceptance gates.
+    """
+    errors: List[str] = []
+    if int(return_code) != 0:
+        errors.append(f"return_code={return_code}")
+    if str(summary.get("terminal_status") or "") != TERMINAL_PRODUCTION_COMPLETED:
+        errors.append(f"terminal_status={summary.get('terminal_status') or 'missing'}")
+    if not is_run_usably_complete(summary):
+        errors.append(
+            "aggregation_not_usably_complete:"
+            f"status={summary.get('aggregation_status')}"
+            f":failed_chunks={summary.get('failed_chunks')}"
+            f":missing_chunks={summary.get('missing_chunks')}"
+        )
+    if require_cleanup_barrier:
+        barrier = cleanup_barrier or {}
+        if str(barrier.get("status") or "") != "completed":
+            errors.append(f"cleanup_barrier_status={barrier.get('status') or 'missing'}")
+        forbidden = int(barrier.get("forbidden_heavy_artifact_count") or 0)
+        if forbidden != 0:
+            errors.append(f"forbidden_heavy_artifact_count={forbidden}")
+        shared = int(barrier.get("shared_sample_artifact_count") or 0)
+        if shared != 0:
+            errors.append(f"shared_sample_artifact_count={shared}")
+    if errors:
+        return "fail", ";".join(errors)
+    return "pass", None
+
+
 def classify_sample_outcome(
     *,
     return_code: int,
@@ -607,6 +650,195 @@ def sync_lhs_pool_entry(
         if str(entry.get("id")) == sample_id:
             patch_lhs_pool_entry(entry, patch=patch)
             break
+
+
+def patch_batch_execution_summary_for_sample(
+    *,
+    repo_root: Path,
+    batch_id: str,
+    sample_id: str,
+    run_id: str,
+    outcome: str,
+    row_updates: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Move one sample between failed/completed in batch_execution_summary.json only."""
+    batch_dir = _index_dir(repo_root).parent / "batches" / batch_id
+    summary_path = batch_dir / "batch_execution_summary.json"
+    if not summary_path.is_file():
+        return {"patched": False, "reason": "missing_batch_execution_summary", "batch_dir": str(batch_dir)}
+
+    doc = load_json(summary_path)
+    failed = [dict(row) for row in (doc.get("failed") or []) if isinstance(row, dict)]
+    completed = [dict(row) for row in (doc.get("completed") or []) if isinstance(row, dict)]
+
+    moved: Optional[Dict[str, Any]] = None
+    remaining_failed: List[Dict[str, Any]] = []
+    for row in failed:
+        if str(row.get("sample_id")) == sample_id and str(row.get("run_id")) == run_id:
+            moved = {**row, **dict(row_updates), "outcome": outcome}
+        else:
+            remaining_failed.append(row)
+
+    if moved is None:
+        for row in completed:
+            if str(row.get("sample_id")) == sample_id and str(row.get("run_id")) == run_id:
+                return {
+                    "patched": False,
+                    "reason": "already_in_completed",
+                    "batch_dir": rel(batch_dir, repo_root=repo_root),
+                }
+        return {
+            "patched": False,
+            "reason": "sample_not_found_in_failed",
+            "batch_dir": rel(batch_dir, repo_root=repo_root),
+        }
+
+    if outcome == "pass":
+        completed.append(moved)
+        doc["completed"] = completed
+        doc["failed"] = remaining_failed
+    else:
+        remaining_failed.append(moved)
+        doc["failed"] = remaining_failed
+        doc["completed"] = [row for row in completed if not (
+            str(row.get("sample_id")) == sample_id and str(row.get("run_id")) == run_id
+        )]
+
+    doc["completed_count"] = len(doc.get("completed") or [])
+    doc["failed_count"] = len(doc.get("failed") or [])
+    doc["bookkeeping_reconciled_utc"] = utc_now()
+    write_json_atomic(summary_path, doc)
+    return {
+        "patched": True,
+        "batch_dir": rel(batch_dir, repo_root=repo_root),
+        "summary_path": rel(summary_path, repo_root=repo_root),
+        "completed_count": doc["completed_count"],
+        "failed_count": doc["failed_count"],
+    }
+
+
+def reconcile_run_bookkeeping(
+    *,
+    repo_root: Path,
+    pool: Dict[str, Any],
+    lhs_path: Path,
+    sample_id: str,
+    run_id: str,
+    lhs_row_index: int,
+    batch_id: Optional[str] = None,
+    require_cleanup_barrier: bool = True,
+    return_code: int = 0,
+) -> Dict[str, Any]:
+    """
+    Read-only reconciliation for one completed run: verify artifacts and update LHS sidecars only.
+
+    Does not rerun FEM stages or mutate the run tree.
+    """
+    from v2_b3_m4_sample_cleanup_barrier import load_cleanup_barrier_manifest  # noqa: WPS433
+
+    run_root = sample_run_root(sample_id, run_id)
+    if not run_root.is_dir():
+        raise FileNotFoundError(f"run_root missing: {run_root}")
+
+    summary = read_run_production_summary(run_root)
+    barrier_doc = load_cleanup_barrier_manifest(run_root)
+    barrier_meta: Dict[str, Any] = {}
+    if barrier_doc:
+        verify = barrier_doc.get("verification") if isinstance(barrier_doc.get("verification"), dict) else {}
+        barrier_meta = {
+            "status": barrier_doc.get("status"),
+            "forbidden_heavy_artifact_count": verify.get("forbidden_heavy_artifact_count"),
+            "shared_sample_artifact_count": verify.get("shared_sample_artifact_count"),
+        }
+
+    outcome, err_msg = classify_batch_sample_outcome(
+        return_code=return_code,
+        summary=summary,
+        cleanup_barrier=barrier_meta if barrier_doc else None,
+        require_cleanup_barrier=require_cleanup_barrier and bool(barrier_doc),
+    )
+
+    bid = batch_id or f"bookkeeping_{utc_now()[:10].replace('-', '')}"
+    patch = lhs_pool_entry_patch_from_run(
+        run_id=run_id,
+        run_dir=str(run_root),
+        batch_id=bid,
+        outcome=outcome,
+        summary=summary,
+        elapsed_s=0.0,
+        started_at=None,
+        error_message=err_msg,
+    )
+    sync_lhs_pool_entry(pool, sample_id=sample_id, patch=patch)
+
+    status_path = lhs_pool_status_path(repo_root)
+    status_doc = load_lhs_pool_status(
+        status_path,
+        lhs_path=lhs_path,
+        run_id_suffix=run_id.removeprefix(f"{sample_id}_"),
+        repo_root=repo_root,
+    )
+    status_patch = status_row_from_run_summary(
+        sample_id=sample_id,
+        lhs_row_index=lhs_row_index,
+        run_id=run_id,
+        batch_id=bid,
+        run_root=run_root,
+        outcome=outcome,
+        elapsed_s=0.0,
+        summary=summary,
+        error_message=err_msg,
+    )
+    update_sample_status(status_doc, sample_id=sample_id, patch=status_patch)
+    write_lhs_pool_status(status_path, status_doc)
+
+    index_path = lhs_runs_index_path(repo_root)
+    append_runs_index_row(
+        index_path,
+        {
+            "event": "bookkeeping_reconcile",
+            "sample_id": sample_id,
+            "run_id": run_id,
+            "outcome": outcome,
+            "error_message": err_msg,
+            **status_patch,
+        },
+    )
+
+    write_lhs_pool(lhs_path, pool)
+
+    batch_patch: Dict[str, Any] = {"patched": False, "reason": "batch_id_not_provided"}
+    if batch_id:
+        batch_patch = patch_batch_execution_summary_for_sample(
+            repo_root=repo_root,
+            batch_id=batch_id,
+            sample_id=sample_id,
+            run_id=run_id,
+            outcome=outcome,
+            row_updates={
+                "error_message": err_msg,
+                "terminal_status": summary.get("terminal_status"),
+                "aggregation_status": summary.get("aggregation_status"),
+                "deduped_modes": summary.get("deduped_modes"),
+                "cleanup_barrier": barrier_meta or None,
+            },
+        )
+
+    return {
+        "schema": "m4_lhs_run_bookkeeping_reconcile_v1",
+        "generated_utc": utc_now(),
+        "sample_id": sample_id,
+        "run_id": run_id,
+        "run_root": rel(run_root, repo_root=repo_root),
+        "outcome": outcome,
+        "error_message": err_msg,
+        "summary": summary,
+        "cleanup_barrier": barrier_meta or None,
+        "lhs_pool_updated": True,
+        "status_path": rel(status_path, repo_root=repo_root),
+        "index_path": rel(index_path, repo_root=repo_root),
+        "batch_execution_summary": batch_patch,
+    }
 
 
 def reconcile_existing_runs(
