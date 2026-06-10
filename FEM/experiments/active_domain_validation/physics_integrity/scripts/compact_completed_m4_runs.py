@@ -505,6 +505,7 @@ def _eligible_run(
     run_root: Optional[Path] = None,
     explicit_selection: bool = False,
     run_dir_explicit: bool = False,
+    allow_pending_lhs: bool = False,
 ) -> RunRecord:
     pool_entry = entry or {}
     sid = str(sample_id or pool_entry.get("id") or "")
@@ -527,11 +528,20 @@ def _eligible_run(
             return rec
         summary = read_run_production_summary(run_root)
     else:
-        if entry is not None and normalize_lhs_entry_status(entry.get("status")) != LHS_COMPLETED:
+        if (
+            not allow_pending_lhs
+            and entry is not None
+            and normalize_lhs_entry_status(entry.get("status")) != LHS_COMPLETED
+        ):
             rec.skip_reason = f"lhs_status={entry.get('status')}"
             return rec
 
-        if entry is not None and not explicit_selection and not is_lhs_entry_completed(entry, run_id=run_id):
+        if (
+            not allow_pending_lhs
+            and entry is not None
+            and not explicit_selection
+            and not is_lhs_entry_completed(entry, run_id=run_id)
+        ):
             rec.skip_reason = "lhs_completed_run_id_mismatch"
             return rec
 
@@ -878,6 +888,7 @@ def compact_one_completed_run(
     production_row: Optional[Mapping[str, Any]] = None,
     run_rom_compare: bool = False,
     production_trigger: bool = False,
+    allow_pending_lhs: Optional[bool] = None,
 ) -> CompactionOutcome:
     """Delete heavy artifacts for one completed run (reuses standalone compaction logic)."""
     t0 = time.perf_counter()
@@ -892,7 +903,13 @@ def compact_one_completed_run(
         )
 
     rid = str(run_id or entry.get("last_run_id") or f"{sample_id}_{DEFAULT_RUN_ID_SUFFIX}")
-    rec = _eligible_run(repo_root=repo_root, entry=entry, run_id=rid)
+    pending_lhs_ok = bool(allow_pending_lhs) if allow_pending_lhs is not None else bool(production_trigger)
+    rec = _eligible_run(
+        repo_root=repo_root,
+        entry=entry,
+        run_id=rid,
+        allow_pending_lhs=pending_lhs_ok,
+    )
 
     if production_row is not None:
         ok, reason, gate_warnings = production_compaction_preconditions(
@@ -904,6 +921,8 @@ def compact_one_completed_run(
         if not ok:
             rec.eligible = False
             rec.skip_reason = f"production_gate:{reason}"
+        elif pending_lhs_ok and rec.eligible:
+            rec.skip_reason = ""
 
     if keep_full:
         rec.keep_full = True

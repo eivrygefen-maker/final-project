@@ -225,22 +225,45 @@ class FinalizeAcceptanceRecoveryTests(unittest.TestCase):
             "production_acceptance_failures": [],
             "fem_stages_executed": False,
         }
+        from compact_completed_m4_runs import CompactionOutcome  # noqa: WPS433
+
+        compact_out = CompactionOutcome(
+            sample_id=self.sample_id,
+            run_id=self.run_id,
+            status="completed",
+            deleted_bytes=1024,
+        )
+        export_manifest = {
+            "export_status": "EXPORTED",
+            "summary_export_path": "/tmp/summary.json",
+            "graph_manifest_export_path": "/tmp/graph_manifest.json",
+            "graph_export_entries": [{"copy_status": "copied"}],
+        }
         with patch(
             "v2_b3_m4_finalize_completed_run.ensure_production_acceptance_for_finalization",
             return_value=acceptance_report,
         ):
             with patch(
-                "v2_b3_m4_finalize_completed_run.run_sample_cleanup_barrier",
-                return_value=barrier,
+                "v2_b3_m4_finalize_completed_run.try_export_sample_to_shared",
+                return_value=(export_manifest, None),
             ):
-                report = finalize_completed_run(
-                    repo_root=self.repo,
-                    sample_id=self.sample_id,
-                    run_id=self.run_id,
-                    lhs_path=self.lhs,
-                    shared_root=self.shared,
-                    reconcile_bookkeeping=False,
-                )
+                with patch(
+                    "v2_b3_m4_finalize_completed_run.compact_one_completed_run",
+                    return_value=compact_out,
+                ):
+                    with patch("v2_b3_m4_finalize_completed_run.require_compaction_completed"):
+                        with patch(
+                            "v2_b3_m4_finalize_completed_run.run_sample_cleanup_barrier",
+                            return_value=barrier,
+                        ):
+                            report = finalize_completed_run(
+                                repo_root=self.repo,
+                                sample_id=self.sample_id,
+                                run_id=self.run_id,
+                                lhs_path=self.lhs,
+                                shared_root=self.shared,
+                                reconcile_bookkeeping=False,
+                            )
         self.assertFalse(report["fem_stages_executed"])
         self.assertTrue(report["production_acceptance_pass"])
         self.assertEqual(report["outcome"], "pass")
