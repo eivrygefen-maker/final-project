@@ -41,6 +41,7 @@ from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
 from v2_b3_m4_lhs_production_batch import run_production_batch  # noqa: E402
 from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
     MESH_PROFILE_REFERENCE,
+    MESH_PROFILE_ROM,
     MeshProfileError,
     resolve_mesh_profile,
 )
@@ -263,8 +264,8 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--mesh-profile",
         choices=("reference", "rom"),
-        default=MESH_PROFILE_REFERENCE,
-        help="Production mesh profile (default: reference = full fidelity mesh).",
+        default=MESH_PROFILE_ROM,
+        help="Production mesh profile (default: rom = L_rom_prod; use reference for FOM holdout).",
     )
     parser.add_argument(
         "--dataset-version",
@@ -526,6 +527,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     status_doc["lhs_json"] = lhs_rel
     status_doc["run_id_suffix_default"] = run_id_suffix
 
+    skip_completed = bool(args.skip_completed) and not bool(args.force)
     selection, skipped = select_lhs_samples(
         pool,
         status_doc,
@@ -533,9 +535,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         start_index=int(args.start_index),
         end_index=args.end_index,
         force_sample=args.force_sample,
-        skip_completed=bool(args.skip_completed) and not bool(args.force),
+        skip_completed=skip_completed,
         exclude_reference=exclude_reference,
         run_id_suffix=run_id_suffix,
+        include_only_pending=skip_completed,
     )
 
     if not selection:

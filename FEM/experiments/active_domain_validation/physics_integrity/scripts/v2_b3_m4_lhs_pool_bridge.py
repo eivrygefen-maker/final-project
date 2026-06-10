@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
     MESH_PROFILE_REFERENCE,
+    MESH_PROFILE_ROM,
     MeshProfileError,
     MeshProfileResolved,
     apply_mesh_profile_to_sample_input,
@@ -159,7 +160,7 @@ def build_sample_input(
         "lhs_row_note": f"auto from {lhs_source_path}",
     }
     resolved = resolve_mesh_profile(
-        mesh_profile=mesh_profile or MESH_PROFILE_REFERENCE,
+        mesh_profile=mesh_profile or MESH_PROFILE_ROM,
         dataset_version=dataset_version,
     )
     return apply_mesh_profile_to_sample_input(body, resolved)
@@ -219,7 +220,7 @@ def build_lhs_batch_spec(
         exclude.append(reference_sample_id)
     ref_run = reference_run_id or f"{reference_sample_id}_{run_id_suffix}"
     resolved = resolve_mesh_profile(
-        mesh_profile=mesh_profile or MESH_PROFILE_REFERENCE,
+        mesh_profile=mesh_profile or MESH_PROFILE_ROM,
         dataset_version=dataset_version,
     )
     body: Dict[str, Any] = {
@@ -556,6 +557,8 @@ def classify_batch_sample_outcome(
     summary: Mapping[str, Any],
     cleanup_barrier: Optional[Mapping[str, Any]] = None,
     require_cleanup_barrier: bool = False,
+    shared_export: Optional[Mapping[str, Any]] = None,
+    require_graph_export: bool = False,
 ) -> Tuple[str, Optional[str]]:
     """
     Final batch accounting for a finished sample (after pipeline + optional cleanup).
@@ -578,12 +581,39 @@ def classify_batch_sample_outcome(
         barrier = cleanup_barrier or {}
         if str(barrier.get("status") or "") != "completed":
             errors.append(f"cleanup_barrier_status={barrier.get('status') or 'missing'}")
-        forbidden = int(barrier.get("forbidden_heavy_artifact_count") or 0)
+        verify = barrier.get("verification") if isinstance(barrier.get("verification"), dict) else {}
+        verification_pass = barrier.get("verification_pass")
+        if verification_pass is None:
+            verification_pass = verify.get("pass")
+        if verification_pass is False:
+            errors.append("cleanup_verification_pass=false")
+        forbidden = int(
+            barrier.get("forbidden_heavy_artifact_count")
+            or verify.get("forbidden_heavy_artifact_count")
+            or 0
+        )
         if forbidden != 0:
             errors.append(f"forbidden_heavy_artifact_count={forbidden}")
-        shared = int(barrier.get("shared_sample_artifact_count") or 0)
+        shared = int(
+            barrier.get("shared_sample_artifact_count")
+            or verify.get("shared_sample_artifact_count")
+            or 0
+        )
         if shared != 0:
             errors.append(f"shared_sample_artifact_count={shared}")
+        compaction = barrier.get("compaction") if isinstance(barrier.get("compaction"), dict) else {}
+        if compaction and str(compaction.get("status") or "") == "failed":
+            errors.append(f"compaction_status=failed:{compaction.get('error') or 'unknown'}")
+    if require_graph_export:
+        export_doc = shared_export or {}
+        export_status = str(export_doc.get("export_status") or "missing")
+        if export_status not in ("EXPORTED", "PARTIAL"):
+            errors.append(f"graph_export_status={export_status}")
+        else:
+            entries = list(export_doc.get("graph_export_entries") or [])
+            failed = [e for e in entries if e.get("copy_status") != "copied"]
+            if failed:
+                errors.append(f"graph_copy_failures={len(failed)}")
     if errors:
         return "fail", ";".join(errors)
     return "pass", None

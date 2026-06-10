@@ -112,7 +112,7 @@ def is_production_mesh_level(level_id: str) -> bool:
 
 
 def normalize_mesh_profile(profile: Optional[str]) -> str:
-    p = str(profile or MESH_PROFILE_REFERENCE).strip().lower()
+    p = str(profile or MESH_PROFILE_ROM).strip().lower()
     if p not in MESH_PROFILES:
         raise MeshProfileError(f"unsupported mesh_profile={profile!r}; expected reference|rom")
     return p
@@ -133,7 +133,7 @@ def resolve_mesh_profile(
     dataset_version: Optional[str] = None,
     allow_legacy_dataset: bool = False,
 ) -> MeshProfileResolved:
-    """Resolve profile → level, dataset, controls. Default = reference canonical dataset."""
+    """Resolve profile → level, dataset, controls. Default = ROM production profile."""
     profile = normalize_mesh_profile(mesh_profile)
     level_id = PROFILE_TO_LEVEL[profile]
 

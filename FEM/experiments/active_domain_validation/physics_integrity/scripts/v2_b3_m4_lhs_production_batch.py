@@ -15,7 +15,11 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from v2_b3_m4_lhs_pool_bridge import classify_batch_sample_outcome  # noqa: E402
+from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
+    classify_batch_sample_outcome,
+    classify_sample_outcome,
+    is_run_usably_complete,
+)
 from v2_b3_m4_production_control import is_stop_after_current_requested  # noqa: E402
 from v2_b3_m4_rom_fom_compare_lib import (  # noqa: E402
     DEFAULT_MAX_MATCH_DISTANCE_HZ,
@@ -693,6 +697,27 @@ def run_production_batch(
             **summary,
         }
         require_cleanup_barrier = bool(compact_after_sample) or bool(strict_production)
+        require_graph_export = bool(strict_production) and shared_root is not None
+        prelim_outcome, _ = classify_sample_outcome(return_code=rc, summary=summary)
+        row["outcome"] = prelim_outcome
+
+        if require_graph_export and is_run_usably_complete(summary) and int(rc) == 0:
+            export_manifest, export_warn = try_export_sample_to_shared(
+                run_root=run_root,
+                sample_id=sid,
+                run_id=rid,
+                shared_root=shared_root,
+                repo_root=repo_root,
+                mesh_profile=mesh_profile,
+            )
+            if export_manifest:
+                row["shared_export"] = export_manifest
+            if export_warn:
+                row["shared_export_warning"] = export_warn
+                print(f"[warn] {sid}: {export_warn}", flush=True)
+            elif export_manifest and export_manifest.get("shared_plot_path"):
+                print(f"[export] {sid}: {export_manifest.get('shared_plot_path')}", flush=True)
+
         if not _run_sample_cleanup_barrier_for_batch(
             row=row,
             repo_root=repo_root,
@@ -714,6 +739,8 @@ def run_production_batch(
             summary=summary,
             cleanup_barrier=row.get("cleanup_barrier"),
             require_cleanup_barrier=require_cleanup_barrier,
+            shared_export=row.get("shared_export") if isinstance(row.get("shared_export"), dict) else None,
+            require_graph_export=require_graph_export,
         )
         row["outcome"] = outcome
         if err_msg:
@@ -724,21 +751,6 @@ def run_production_batch(
             )
 
         if outcome == "pass":
-            export_manifest, export_warn = try_export_sample_to_shared(
-                run_root=run_root,
-                sample_id=sid,
-                run_id=rid,
-                shared_root=shared_root,
-                repo_root=repo_root,
-            )
-            if export_manifest:
-                row["shared_export"] = export_manifest
-            if export_warn:
-                row["shared_export_warning"] = export_warn
-                print(f"[warn] {sid}: {export_warn}", flush=True)
-            elif export_manifest and export_manifest.get("shared_plot_path"):
-                print(f"[export] {sid}: {export_manifest.get('shared_plot_path')}", flush=True)
-
             if (
                 run_rom_compare
                 and rom_context is not None

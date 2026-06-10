@@ -80,6 +80,18 @@ class BatchSampleClassificationTests(unittest.TestCase):
         self.assertEqual(outcome, "fail")
         self.assertIn("terminal_status=RUNNING", err or "")
 
+    def test_graph_export_success_required_when_enabled(self) -> None:
+        outcome, err = classify_batch_sample_outcome(
+            return_code=0,
+            summary=_complete_summary(),
+            cleanup_barrier=_completed_cleanup_barrier(),
+            require_cleanup_barrier=True,
+            shared_export={"export_status": "EXPORTED", "graph_export_entries": [{"copy_status": "copied"}]},
+            require_graph_export=True,
+        )
+        self.assertEqual(outcome, "pass")
+        self.assertIsNone(err)
+
 
 if __name__ == "__main__":
     unittest.main()

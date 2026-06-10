@@ -248,8 +248,14 @@ def _make_compare_ready_run(
 
 
 class MeshProfileLibTest(unittest.TestCase):
-    def test_default_profile_is_reference_canonical(self) -> None:
+    def test_default_profile_is_rom_canonical(self) -> None:
         r = resolve_mesh_profile()
+        self.assertEqual(r.mesh_profile, MESH_PROFILE_ROM)
+        self.assertEqual(r.mesh_level_id, LEVEL_ROM_PROD)
+        self.assertEqual(r.dataset_version, DATASET_VERSION_ROM)
+
+    def test_explicit_reference_profile_unchanged(self) -> None:
+        r = resolve_mesh_profile(mesh_profile=MESH_PROFILE_REFERENCE)
         self.assertEqual(r.mesh_profile, MESH_PROFILE_REFERENCE)
         self.assertEqual(r.mesh_level_id, LEVEL_PROD_REFERENCE)
         self.assertEqual(r.dataset_version, DATASET_VERSION_REFERENCE)
