@@ -50,6 +50,8 @@ from v2_b3_m4_mesh_profile_provenance_lib import (  # noqa: E402
     compare_intrinsic_band_third_coverage,
     compare_mode_family_survival,
     load_durable_scout_intrinsic_summary,
+    material_fingerprint,
+    physics_identity_hash,
 )
 from v2_b3_m4_worker_run_lib import load_json  # noqa: E402
 
@@ -308,6 +310,22 @@ def _identity_matches_external_package(
     for key in ("top_wood_id", "back_wood_id"):
         if ref_in.get(key) != cand_in.get(key):
             errors.append(f"material_mismatch:{key}")
+
+    manifest_mat = external.manifest_entry.get("material_fingerprint")
+    if manifest_mat:
+        ref_mat = material_fingerprint(ref_in)
+        cand_mat = material_fingerprint(cand_in)
+        if ref_mat != str(manifest_mat):
+            errors.append("reference_material_fingerprint_mismatch_vs_external_manifest")
+        if cand_mat != str(manifest_mat):
+            errors.append("candidate_material_fingerprint_mismatch_vs_external_manifest")
+
+    manifest_phys = external.manifest_entry.get("physics_identity_hash")
+    if manifest_phys:
+        for label, root in (("reference", ref_root), ("candidate", cand_root)):
+            run_hash = physics_identity_hash(root)
+            if run_hash and run_hash != str(manifest_phys):
+                errors.append(f"{label}_physics_identity_hash_mismatch_vs_external_manifest")
     return errors
 
 

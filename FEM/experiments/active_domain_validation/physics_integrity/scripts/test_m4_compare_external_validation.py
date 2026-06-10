@@ -28,11 +28,14 @@ from test_m4_reconciled_rom_postrun import (  # noqa: E402
 )
 from v2_b3_m4_mesh_profile_compare_lib import compare_exit_code, compare_runs  # noqa: E402
 from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
+    EXTERNAL_VALIDATION_INPUT_PACKAGE_SCHEMA_V1,
     MESH_PROFILE_REFERENCE,
     MESH_PROFILE_ROM,
     VALIDATION_INPUT_PACKAGE_REL,
+    load_external_validation_package,
     load_target_plan_file,
 )
+from v2_b3_m4_mesh_profile_provenance_lib import material_fingerprint  # noqa: E402
 from v2_b3_m4_minimal_rom_compaction import compact_minimal_rom_durable_run  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
@@ -78,6 +81,117 @@ def _write_external_validation_package(
         },
     )
     return pkg, plan_sha
+
+
+def _write_flat_v1_external_validation_package(
+    repo_root: Path,
+    *,
+    sample_id: str,
+    targets_hz: List[float],
+    manifest_sha_override: Optional[str] = None,
+    manifest_targets_override: Optional[List[float]] = None,
+    write_plan: bool = True,
+    ref_root: Optional[Path] = None,
+) -> Tuple[Path, str]:
+    pkg = (
+        repo_root
+        / "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/validation_inputs"
+        / f"sample_{sample_id}_flat_v1_test"
+    )
+    pkg.mkdir(parents=True, exist_ok=True)
+    plan_body: Dict[str, Any] = {
+        "sample_id": sample_id,
+        "targets_hz": targets_hz,
+        "frequency_range_hz": [64.5, 547.0],
+        "coverage_check": {"pass": True},
+    }
+    plan_sha = "0" * 64
+    if write_plan:
+        write_json_atomic(pkg / "target_plan.json", plan_body)
+        _, plan_sha = load_target_plan_file(pkg / "target_plan.json")
+    manifest_targets = manifest_targets_override if manifest_targets_override is not None else targets_hz
+    manifest: Dict[str, Any] = {
+        "schema": EXTERNAL_VALIDATION_INPUT_PACKAGE_SCHEMA_V1,
+        "sample_id": sample_id,
+        "target_plan_sha256": manifest_sha_override or plan_sha,
+        "target_count": len(manifest_targets),
+        "targets_hz": manifest_targets,
+        "frequency_range_hz": [64.5, 547.0],
+        "chunk_count": 13,
+    }
+    if ref_root is not None:
+        sample_in_path = ref_root / "sample" / "sample_input.json"
+        if sample_in_path.is_file():
+            sample_in = json.loads(sample_in_path.read_text(encoding="utf-8"))
+            from v2_b3_m4_lprod_interfaces import extract_geometry_dict, geometry_fingerprint  # noqa: WPS433
+
+            geom = extract_geometry_dict(sample_in)
+            if geom:
+                manifest["geometry_fingerprint"] = geometry_fingerprint(geom)
+            manifest["material_fingerprint"] = material_fingerprint(sample_in)
+    write_json_atomic(pkg / "validation_input_manifest.json", manifest)
+    return pkg, plan_sha
+
+
+class ExternalValidationPackageLoaderTests(unittest.TestCase):
+    def test_valid_flat_v1_package_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            pkg, plan_sha = _write_flat_v1_external_validation_package(
+                repo_root, sample_id="sample_002", targets_hz=TARGETS_HZ,
+            )
+            loaded, errors = load_external_validation_package(pkg)
+            self.assertFalse(errors, errors)
+            assert loaded is not None
+            self.assertEqual(loaded.target_plan_sha256, plan_sha)
+            self.assertEqual(len(loaded.target_plan.get("targets_hz") or []), len(TARGETS_HZ))
+
+    def test_valid_nested_schema_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            pkg, plan_sha = _write_external_validation_package(
+                repo_root, sample_id="sample_002", targets_hz=TARGETS_HZ,
+            )
+            loaded, errors = load_external_validation_package(pkg)
+            self.assertFalse(errors, errors)
+            assert loaded is not None
+            self.assertEqual(loaded.target_plan_sha256, plan_sha)
+
+    def test_flat_v1_sha_mismatch_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            pkg, _ = _write_flat_v1_external_validation_package(
+                repo_root,
+                sample_id="sample_002",
+                targets_hz=TARGETS_HZ,
+                manifest_sha_override="f" * 64,
+            )
+            loaded, errors = load_external_validation_package(pkg)
+            self.assertIsNone(loaded)
+            self.assertIn("external_validation_input_sha256_mismatch", errors)
+
+    def test_flat_v1_target_list_mismatch_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            pkg, _ = _write_flat_v1_external_validation_package(
+                repo_root,
+                sample_id="sample_002",
+                targets_hz=TARGETS_HZ,
+                manifest_targets_override=[111.0, 222.0],
+            )
+            loaded, errors = load_external_validation_package(pkg)
+            self.assertIsNone(loaded)
+            self.assertIn("external_validation_input_targets_hz_mismatch", errors)
+
+    def test_missing_target_plan_json_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            pkg, _ = _write_flat_v1_external_validation_package(
+                repo_root, sample_id="sample_002", targets_hz=TARGETS_HZ, write_plan=False,
+            )
+            loaded, errors = load_external_validation_package(pkg)
+            self.assertIsNone(loaded)
+            self.assertIn("missing_external_target_plan", errors)
 
 
 def _build_historical_pair(
@@ -137,20 +251,16 @@ def _build_historical_pair(
         )
 
     targets = external_targets if external_targets is not None else TARGETS_HZ
-    ext_pkg, plan_sha = _write_external_validation_package(
-        repo_root, sample_id="sample_002", targets_hz=targets,
+    ext_pkg, plan_sha = _write_flat_v1_external_validation_package(
+        repo_root,
+        sample_id="sample_002",
+        targets_hz=targets,
+        ref_root=ref_root,
     )
 
     if ref_lprod_plan:
-        write_json_atomic(
-            ref_root / "lprod" / "lprod_target_plan.json",
-            {
-                "sample_id": "sample_002",
-                "targets_hz": targets,
-                "frequency_range_hz": [60.0, 550.0],
-                "coverage_check": {"pass": True},
-            },
-        )
+        (ref_root / "lprod").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ext_pkg / "target_plan.json", ref_root / "lprod" / "lprod_target_plan.json")
     else:
         (ref_root / "lprod" / "lprod_target_plan.json").unlink(missing_ok=True)
 
@@ -185,15 +295,38 @@ class ExternalValidationCompareTests(unittest.TestCase):
             val_meta = (report.get("cleanup_barrier") or {}).get("validation_input") or {}
             self.assertEqual(val_meta.get("validation_input_contract"), "external_authoritative")
 
+    def test_flat_v1_package_advances_past_external_validation_preconditions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            ref_root, cand_root, ext_pkg = _build_historical_pair(
+                repo_root, ref_lprod_plan=True, cand_validation_package=False,
+            )
+            loaded, load_errors = load_external_validation_package(ext_pkg)
+            self.assertFalse(load_errors, load_errors)
+            self.assertIsNotNone(loaded)
+            self.assertEqual(
+                str((loaded.manifest or {}).get("schema")),
+                EXTERNAL_VALIDATION_INPUT_PACKAGE_SCHEMA_V1,
+            )
+            report = compare_runs(
+                reference_run=ref_root,
+                candidate_run=cand_root,
+                repo_root=repo_root,
+                validation_input_package=ext_pkg,
+            )
+            self.assertTrue(report.get("comparison_executed"), report.get("precondition_errors"))
+            self.assertNotEqual(report.get("status"), "PRECONDITION_FAILED")
+
     def test_external_manifest_sha_mismatch_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             ref_root, cand_root, ext_pkg = _build_historical_pair(repo_root, ref_lprod_plan=True)
-            ext_pkg, _ = _write_external_validation_package(
+            ext_pkg, _ = _write_flat_v1_external_validation_package(
                 repo_root,
                 sample_id="sample_002",
                 targets_hz=TARGETS_HZ,
                 manifest_sha_override="0" * 64,
+                ref_root=ref_root,
             )
             report = compare_runs(
                 reference_run=ref_root,
@@ -210,11 +343,11 @@ class ExternalValidationCompareTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             ref_root, cand_root, ext_pkg = _build_historical_pair(repo_root, ref_lprod_plan=True)
-            ext_pkg, _ = _write_external_validation_package(
+            ext_pkg, _ = _write_flat_v1_external_validation_package(
                 repo_root,
-                sample_id="sample_002",
+                sample_id="sample_999",
                 targets_hz=TARGETS_HZ,
-                plan_sample_id="sample_999",
+                ref_root=ref_root,
             )
             report = compare_runs(
                 reference_run=ref_root,

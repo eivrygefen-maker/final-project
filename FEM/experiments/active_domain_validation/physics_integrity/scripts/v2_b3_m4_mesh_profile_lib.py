@@ -447,6 +447,7 @@ def load_target_plan_file(path: Path) -> Tuple[Dict[str, Any], str]:
 
 
 VALIDATION_INPUT_PACKAGE_SCHEMA = "m4_mesh_validation_input_package_v1"
+EXTERNAL_VALIDATION_INPUT_PACKAGE_SCHEMA_V1 = "m4_external_validation_input_package_v1"
 VALIDATION_INPUT_PACKAGE_REL = "validation/mesh_profile_inputs"
 VALIDATION_INPUT_MANIFEST_NAME = "validation_input_manifest.json"
 DURABLE_VALIDATION_INPUT_REL: Tuple[str, ...] = (
@@ -626,6 +627,65 @@ class ExternalValidationInputPackage:
     manifest_entry: Dict[str, Any]
 
 
+def _resolve_external_validation_manifest_entry(
+    manifest: Mapping[str, Any],
+    *,
+    plan_body: Mapping[str, Any],
+    plan_sha: str,
+) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    """
+    Resolve manifest entry for nested in-run schema or flat external v1 schema.
+
+    Does not mutate the manifest.
+    """
+    errors: List[str] = []
+    nested = [r for r in (manifest.get("inputs") or []) if str(r.get("name")) == "target_plan"]
+    if nested:
+        entry = dict(nested[0])
+        manifest_sha = str(entry.get("sha256") or "")
+        if manifest_sha and manifest_sha != plan_sha:
+            errors.append("external_validation_input_sha256_mismatch")
+        return (entry if not errors else None), errors
+
+    schema = str(manifest.get("schema") or "")
+    if schema != EXTERNAL_VALIDATION_INPUT_PACKAGE_SCHEMA_V1:
+        return None, ["external_validation_input_manifest_missing_target_plan_entry"]
+
+    manifest_sha = str(manifest.get("target_plan_sha256") or "")
+    if not manifest_sha:
+        return None, ["external_validation_input_missing_target_plan_sha256"]
+    if manifest_sha != plan_sha:
+        errors.append("external_validation_input_sha256_mismatch")
+
+    plan_targets = [float(x) for x in (plan_body.get("targets_hz") or [])]
+    manifest_targets = [float(x) for x in (manifest.get("targets_hz") or [])]
+    if manifest_targets and plan_targets and manifest_targets != plan_targets:
+        errors.append("external_validation_input_targets_hz_mismatch")
+    if manifest.get("target_count") is not None and plan_targets:
+        if int(manifest.get("target_count")) != len(plan_targets):
+            errors.append("external_validation_input_target_count_mismatch")
+    if manifest_targets and not plan_targets:
+        errors.append("external_validation_input_missing_targets_hz_in_plan_file")
+
+    if errors:
+        return None, errors
+
+    entry = {
+        "name": "target_plan",
+        "sha256": manifest_sha,
+        "sample_id": manifest.get("sample_id"),
+        "targets_hz": manifest_targets or plan_targets,
+        "target_count": manifest.get("target_count") or len(plan_targets),
+        "frequency_range_hz": manifest.get("frequency_range_hz") or plan_body.get("frequency_range_hz"),
+        "geometry_fingerprint": manifest.get("geometry_fingerprint"),
+        "material_fingerprint": manifest.get("material_fingerprint"),
+        "physics_identity_hash": manifest.get("physics_identity_hash"),
+        "chunk_count": manifest.get("chunk_count"),
+        "schema": schema,
+    }
+    return entry, []
+
+
 def load_external_validation_package(
     package_root: Path,
 ) -> Tuple[Optional[ExternalValidationInputPackage], List[str]]:
@@ -635,6 +695,8 @@ def load_external_validation_package(
     Expected layout:
       <package_root>/target_plan.json
       <package_root>/validation_input_manifest.json
+
+    Supports nested `inputs[]` manifests and flat `m4_external_validation_input_package_v1`.
     """
     errors: List[str] = []
     root = package_root.expanduser().resolve()
@@ -656,15 +718,15 @@ def load_external_validation_package(
     if not isinstance(manifest, dict):
         return None, ["external_validation_input_manifest_not_object"]
 
-    entries = [r for r in (manifest.get("inputs") or []) if str(r.get("name")) == "target_plan"]
-    if not entries:
+    entry, entry_errors = _resolve_external_validation_manifest_entry(
+        manifest,
+        plan_body=plan_body,
+        plan_sha=plan_sha,
+    )
+    if entry_errors:
+        return None, entry_errors
+    if entry is None:
         return None, ["external_validation_input_manifest_missing_target_plan_entry"]
-    entry = entries[0]
-    manifest_sha = str(entry.get("sha256") or "")
-    if manifest_sha and manifest_sha != plan_sha:
-        errors.append("external_validation_input_sha256_mismatch")
-    if errors:
-        return None, errors
 
     return (
         ExternalValidationInputPackage(
