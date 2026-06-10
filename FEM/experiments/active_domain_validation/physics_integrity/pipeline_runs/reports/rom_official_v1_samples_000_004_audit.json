@@ -1,0 +1,589 @@
+{
+  "schema": "rom_official_v1_samples_audit_v1",
+  "generated_utc": "2026-06-10T23:59:00Z",
+  "audit_mode": "read_only",
+  "audit_scope": {
+    "samples": [
+      "sample_000_rom_official_v1",
+      "sample_001_rom_official_v1",
+      "sample_002_rom_official_v1",
+      "sample_003_rom_official_v1",
+      "sample_004_rom_official_v1"
+    ],
+    "expected_profile": {
+      "mesh_profile": "rom",
+      "mesh_level_id": "L_rom_prod",
+      "dataset_version": "m4_geometry_corrected_rommesh_v1",
+      "workers": 3
+    },
+    "batch_id": "lhs_rom_official_v1_20260610",
+    "run_id_suffix": "rom_official_v1"
+  },
+  "evidence_sources": {
+    "run_trees_local": "absent (pipeline_runs/guitars not present on dev workspace)",
+    "run_trees_vm": "present per graph_export_manifest source_path on VM",
+    "shared_summaries": "C:/Users/eivry/OneDrive/Desktop/gmar/classic/summaries/",
+    "shared_plots_windows": "empty (0 PNG files synced to OneDrive plots tree at audit time)",
+    "shared_plots_vm": "exported per manifest copy_status=copied",
+    "lhs_pool_json": "stale on dev machine (pre-reset last_run_id values; not authoritative for official batch)",
+    "prep_spec": "pipeline_runs/specs/generated/lhs_rom_official_v1_20260610_prepare.json"
+  },
+  "part_a_decision": "OFFICIAL_ROM_DATA_BLOCKED",
+  "part_a_blocking_summary": [
+    "No sample passes full production acceptance + cleanup + compaction gates from durable run-tree evidence on this machine.",
+    "sample_000: shared summary reports cleanup_status=failed, compaction_status=planned.",
+    "sample_001..004: cleanup_status and compaction_status null in shared summaries (finalization barrier not confirmed).",
+    "production_acceptance_pass, final_aggregation_ready, failed_chunks, forbidden_heavy_artifact_count not verifiable without VM run trees.",
+    "modes_catalog_deduped.jsonl SHA256 cross-check requires VM run trees (not available locally)."
+  ],
+  "samples": [
+    {
+      "sample_id": "sample_000",
+      "run_id": "sample_000_rom_official_v1",
+      "lhs_index": 0,
+      "profile": {
+        "mesh_profile": "rom",
+        "mesh_level_id": "L_rom_prod",
+        "dataset_version": "m4_geometry_corrected_rommesh_v1",
+        "workers_requested": 3,
+        "workers_actual_parallel": 3,
+        "profile_match": true
+      },
+      "numerical_completion": {
+        "terminal_status": "COMPLETED",
+        "aggregation_status": "AGGREGATION_PASS",
+        "final_aggregation_ready": "unverified_run_tree",
+        "failed_chunks": "unverified_run_tree",
+        "completed_chunks": 12,
+        "planned_chunks": 12,
+        "raw_mode_count": 805,
+        "deduped_mode_count": 676,
+        "pass": "partial_shared_summary_only"
+      },
+      "production_acceptance": {
+        "production_acceptance_pass": "unverified_run_tree",
+        "production_acceptance_failures": "unverified_run_tree",
+        "pass": false
+      },
+      "cleanup_compaction": {
+        "cleanup_status": "failed",
+        "cleanup_verification_pass": "unverified_run_tree",
+        "forbidden_heavy_artifact_count": "unverified_run_tree",
+        "shared_sample_artifact_count": "unverified_run_tree",
+        "compaction_status": "planned",
+        "compaction_manifest_exists": "unverified_run_tree",
+        "pass": false,
+        "known_failure_context": "VM finalization: compaction skipped (transitional LHS + production_acceptance gate); cleanup barrier failed with forbidden_heavy_artifact_count=6 before repo fix"
+      },
+      "durable_outputs": {
+        "aggregation/modes_catalog_deduped.jsonl": "unverified_local",
+        "aggregation/mode_provenance.jsonl": "unverified_local",
+        "aggregation/modes_summary.json": "unverified_local",
+        "aggregation/runtime_summary.json": "unverified_local",
+        "aggregation/aggregation_result.json": "unverified_local",
+        "freeze/freeze_manifest.json": "unverified_local",
+        "freeze/physics_identity_manifest.json": "unverified_local",
+        "sample/sample_input.json": "spec_confirmed",
+        "m4_sample_runtime_provenance.json": "unverified_local"
+      },
+      "shared_output": {
+        "png_count_expected": 4,
+        "png_manifest_export_status": "EXPORTED",
+        "png_windows_synced": false,
+        "summary_json": "present",
+        "graph_export_manifest": "present"
+      },
+      "mesh_identity": {
+        "mesh_level_id": "L_rom_prod",
+        "operator_mesh_hash": "unverified_run_tree",
+        "reference_mesh_used": "unverified_run_tree",
+        "pass": "unverified"
+      },
+      "sample_uniqueness": {
+        "lhs_parameters_unique": true,
+        "deduped_mode_count_unique_vs_batch": true,
+        "plot_sha256_unique_vs_batch": true,
+        "modes_catalog_sha256": "unverified_run_tree"
+      },
+      "data_consistency": {
+        "top_wood_id": "spruce",
+        "back_wood_id": "rosewood",
+        "geometry_fingerprint": "length=0.48 width=0.325 depth=0.1",
+        "scalar_field_summaries": "archive_runtime_summary on shared mount for sample_000 only"
+      },
+      "runtime": {
+        "total_runtime_s": null,
+        "scout_runtime_s": null,
+        "checkpoint_runtime_s": null,
+        "worker_runtime_s": 800.23,
+        "freeze_runtime_s": null,
+        "aggregation_freeze_runtime_s": null,
+        "workers_actual_parallel": 3,
+        "peak_rss_bytes_per_worker_max": 2110537728,
+        "peak_rss_bytes_per_worker_count": 12
+      },
+      "blocking_fields": [
+        "production_acceptance_pass",
+        "cleanup_status",
+        "compaction_status",
+        "cleanup_verification.pass",
+        "forbidden_heavy_artifact_count",
+        "durable_outputs_unverified_locally"
+      ]
+    },
+    {
+      "sample_id": "sample_001",
+      "run_id": "sample_001_rom_official_v1",
+      "lhs_index": 1,
+      "profile": {
+        "mesh_profile": "rom",
+        "mesh_level_id": "L_rom_prod",
+        "dataset_version": "m4_geometry_corrected_rommesh_v1",
+        "workers_requested": 3,
+        "workers_actual_parallel": 3,
+        "profile_match": true
+      },
+      "numerical_completion": {
+        "terminal_status": "COMPLETED",
+        "aggregation_status": "AGGREGATION_PASS",
+        "final_aggregation_ready": "unverified_run_tree",
+        "failed_chunks": "unverified_run_tree",
+        "completed_chunks": 11,
+        "planned_chunks": 11,
+        "raw_mode_count": 739,
+        "deduped_mode_count": 671,
+        "pass": "partial_shared_summary_only"
+      },
+      "production_acceptance": {
+        "production_acceptance_pass": "unverified_run_tree",
+        "production_acceptance_failures": "unverified_run_tree",
+        "pass": false
+      },
+      "cleanup_compaction": {
+        "cleanup_status": null,
+        "cleanup_verification_pass": "unverified_run_tree",
+        "forbidden_heavy_artifact_count": "unverified_run_tree",
+        "shared_sample_artifact_count": "unverified_run_tree",
+        "compaction_status": null,
+        "compaction_manifest_exists": "unverified_run_tree",
+        "pass": false
+      },
+      "durable_outputs": {
+        "all_required": "unverified_local"
+      },
+      "shared_output": {
+        "png_manifest_export_status": "EXPORTED",
+        "png_windows_synced": false,
+        "summary_json": "present"
+      },
+      "sample_uniqueness": {
+        "lhs_parameters_unique": true,
+        "deduped_mode_count_unique_vs_batch": true,
+        "plot_sha256_unique_vs_batch": true
+      },
+      "data_consistency": {
+        "top_wood_id": "mahogany",
+        "back_wood_id": "mahogany"
+      },
+      "runtime": {
+        "total_runtime_s": null,
+        "scout_runtime_s": null,
+        "checkpoint_runtime_s": null,
+        "worker_runtime_s": 408.56,
+        "freeze_runtime_s": null,
+        "workers_actual_parallel": 3,
+        "peak_rss_bytes_per_worker_max": 1194266624
+      },
+      "blocking_fields": [
+        "production_acceptance_pass",
+        "cleanup_status",
+        "compaction_status",
+        "durable_outputs_unverified_locally"
+      ]
+    },
+    {
+      "sample_id": "sample_002",
+      "run_id": "sample_002_rom_official_v1",
+      "lhs_index": 2,
+      "profile": {
+        "mesh_profile": "rom",
+        "mesh_level_id": "L_rom_prod",
+        "dataset_version": "m4_geometry_corrected_rommesh_v1",
+        "workers_requested": 3,
+        "workers_actual_parallel": 3,
+        "profile_match": true
+      },
+      "numerical_completion": {
+        "terminal_status": "COMPLETED",
+        "aggregation_status": "AGGREGATION_PASS",
+        "completed_chunks": 13,
+        "planned_chunks": 13,
+        "raw_mode_count": 754,
+        "deduped_mode_count": 612,
+        "pass": "partial_shared_summary_only"
+      },
+      "production_acceptance": {
+        "pass": false,
+        "production_acceptance_pass": "unverified_run_tree"
+      },
+      "cleanup_compaction": {
+        "cleanup_status": null,
+        "compaction_status": null,
+        "pass": false
+      },
+      "shared_output": {
+        "png_manifest_export_status": "EXPORTED",
+        "summary_json": "present"
+      },
+      "sample_uniqueness": {
+        "lhs_parameters_unique": true,
+        "deduped_mode_count_unique_vs_batch": true,
+        "plot_sha256_unique_vs_batch": true,
+        "note": "deduped_mode_count 612 matches prior sample_002_rom_prod_004 count but plot hashes differ; not catalog duplication"
+      },
+      "data_consistency": {
+        "top_wood_id": "rosewood",
+        "back_wood_id": "spruce"
+      },
+      "runtime": {
+        "worker_runtime_s": 1076.56,
+        "workers_actual_parallel": 3,
+        "peak_rss_bytes_per_worker_max": 3651887104
+      },
+      "blocking_fields": [
+        "production_acceptance_pass",
+        "cleanup_status",
+        "compaction_status"
+      ]
+    },
+    {
+      "sample_id": "sample_003",
+      "run_id": "sample_003_rom_official_v1",
+      "lhs_index": 3,
+      "profile": {
+        "mesh_profile": "rom",
+        "mesh_level_id": "L_rom_prod",
+        "dataset_version": "m4_geometry_corrected_rommesh_v1",
+        "workers_requested": 3,
+        "workers_actual_parallel": 3,
+        "profile_match": true
+      },
+      "numerical_completion": {
+        "terminal_status": "COMPLETED",
+        "aggregation_status": "AGGREGATION_PASS",
+        "completed_chunks": 14,
+        "planned_chunks": 14,
+        "raw_mode_count": 821,
+        "deduped_mode_count": 692,
+        "pass": "partial_shared_summary_only"
+      },
+      "production_acceptance": {
+        "pass": false,
+        "production_acceptance_pass": "unverified_run_tree"
+      },
+      "cleanup_compaction": {
+        "cleanup_status": null,
+        "compaction_status": null,
+        "pass": false
+      },
+      "shared_output": {
+        "png_manifest_export_status": "EXPORTED",
+        "summary_json": "present"
+      },
+      "sample_uniqueness": {
+        "lhs_parameters_unique": true,
+        "deduped_mode_count_unique_vs_batch": true,
+        "plot_sha256_unique_vs_batch": true
+      },
+      "data_consistency": {
+        "top_wood_id": "rosewood",
+        "back_wood_id": "cedar"
+      },
+      "runtime": {
+        "worker_runtime_s": 345.56,
+        "workers_actual_parallel": 3,
+        "peak_rss_bytes_per_worker_max": 1386266624
+      },
+      "blocking_fields": [
+        "production_acceptance_pass",
+        "cleanup_status",
+        "compaction_status"
+      ]
+    },
+    {
+      "sample_id": "sample_004",
+      "run_id": "sample_004_rom_official_v1",
+      "lhs_index": 4,
+      "profile": {
+        "mesh_profile": "rom",
+        "mesh_level_id": "L_rom_prod",
+        "dataset_version": "m4_geometry_corrected_rommesh_v1",
+        "workers_requested": 3,
+        "workers_actual_parallel": 3,
+        "profile_match": true
+      },
+      "numerical_completion": {
+        "terminal_status": "COMPLETED",
+        "aggregation_status": "AGGREGATION_PASS",
+        "completed_chunks": 12,
+        "planned_chunks": 12,
+        "raw_mode_count": 777,
+        "deduped_mode_count": 668,
+        "pass": "partial_shared_summary_only"
+      },
+      "production_acceptance": {
+        "pass": false,
+        "production_acceptance_pass": "unverified_run_tree"
+      },
+      "cleanup_compaction": {
+        "cleanup_status": null,
+        "compaction_status": null,
+        "pass": false
+      },
+      "shared_output": {
+        "png_manifest_export_status": "EXPORTED",
+        "summary_json": "present"
+      },
+      "sample_uniqueness": {
+        "lhs_parameters_unique": true,
+        "deduped_mode_count_unique_vs_batch": true,
+        "plot_sha256_unique_vs_batch": true
+      },
+      "data_consistency": {
+        "top_wood_id": "mahogany",
+        "back_wood_id": "spruce"
+      },
+      "runtime": {
+        "worker_runtime_s": 818.63,
+        "workers_actual_parallel": 3,
+        "peak_rss_bytes_per_worker_max": 2567139328
+      },
+      "blocking_fields": [
+        "production_acceptance_pass",
+        "cleanup_status",
+        "compaction_status"
+      ]
+    }
+  ],
+  "duplicate_contamination_findings": {
+    "cross_sample_plot_sha256_duplicates": [],
+    "deduped_mode_count_collisions": [],
+    "lhs_parameter_collisions": [],
+    "shared_artifact_path_collisions": "none in manifests (run_id-prefixed PNG names)",
+    "modes_catalog_deduped_sha256": "not_computed_run_trees_unavailable",
+    "conclusion": "No cross-sample plot duplication detected in shared exports; numerical mode counts differ across all five samples."
+  },
+  "missing_runtime_fields": {
+    "fields_null_in_all_shared_summaries": [
+      "total_runtime_s",
+      "scout_runtime_s",
+      "checkpoint_runtime_s",
+      "freeze_runtime_s"
+    ],
+    "root_cause": "build_compact_summary_payload reads m4_sample_runtime_provenance.json and aggregation/runtime_summary.json. Provenance writer (v2_b3_m4_runtime_provenance.py) emits total_pipeline_wall_seconds and stage keys stage4_lprod_checkpoint / stage5_workers / stage6_aggregate, while shared export expects total_runtime_s and stage1_scout_mesh / stage2_scout_discovery / stage4_lprod_export / stage6_freeze.",
+    "smallest_future_only_fix": "Add alias fields in provenance merge or map keys in build_compact_summary_payload (no retroactive run mutation). Optionally populate scout/checkpoint wall times from pipeline manifest stage records when present.",
+    "worker_runtime_s_populated_from": "stage_wall_times_s.stage5_workers when present in provenance"
+  },
+  "part_b_rom_architecture": {
+    "model_type": "M4 modal surrogate v2.1 (k-NN IDW over LHS geometry+wood features) with optional legacy POD ROMManager fallback",
+    "feature_vector": [
+      "geometry.length",
+      "geometry.width",
+      "geometry.depth",
+      "geometry.top_thickness",
+      "geometry.hole_radius",
+      "geometry.back_thickness",
+      "top_wood_id (ordinal)",
+      "back_wood_id (ordinal)"
+    ],
+    "prediction_targets": [
+      "frequency_hz (mode list)",
+      "top_share",
+      "back_share",
+      "air_share",
+      "bridge_excitation_coupling",
+      "bridge_excitation_abs",
+      "radiation_proxy",
+      "mic_output_proxy",
+      "modal_norm",
+      "coupling_class",
+      "dominant_region",
+      "secondary_region",
+      "intensity log10 and p95_norm derivatives"
+    ],
+    "training_data_source": "aggregation/modes_catalog.jsonl per completed FOM run (LHS pool last_run_id); no mesh_profile or dataset_version filter in collect_completed_fom_training_rows",
+    "model_storage": "ROM/<shape>/m4_modal_surrogate.{json,npz} + rom_model_manifest.json",
+    "comparison_storage": "run_root/rom/rom_prediction_pre_fom.json, run_root/rom/rom_fom_comparison.json, ROM/classic/comparisons/*",
+    "components": [
+      {
+        "file": "FEM/.../scripts/v2_b3_m4_rom_fom_compare_lib.py",
+        "symbols": [
+          "maybe_run_rom_prepredict",
+          "maybe_run_rom_compare",
+          "run_rom_online_prediction",
+          "build_rom_fom_comparison"
+        ],
+        "inputs": [
+          "LHS parameters",
+          "ROM/classic/m4_modal_surrogate.*",
+          "aggregation/modes_catalog.jsonl"
+        ],
+        "outputs": [
+          "rom/rom_prediction_pre_fom.json",
+          "rom/rom_fom_comparison.json"
+        ],
+        "status": "dormant (opt-in via --run-rom-prepredict / --run-rom-compare)"
+      },
+      {
+        "file": "FEM/.../scripts/v2_b3_m4_modal_surrogate_lib.py",
+        "symbols": [
+          "collect_completed_fom_training_rows",
+          "build_surrogate_from_training_rows",
+          "save_surrogate_model"
+        ],
+        "inputs": [
+          "ROM/classic/lhs_pool.json",
+          "run aggregation/modes_catalog.jsonl"
+        ],
+        "outputs": [
+          "ROM/classic/m4_modal_surrogate.json",
+          "ROM/classic/m4_modal_surrogate.npz"
+        ],
+        "status": "active (standalone training)"
+      },
+      {
+        "file": "FEM/.../scripts/build_m4_rom_from_completed_fom.py",
+        "symbols": ["main"],
+        "status": "active (offline trainer CLI)"
+      },
+      {
+        "file": "FEM/.../scripts/run_m4_rom_compare.py",
+        "symbols": ["main"],
+        "status": "active (standalone compare/holdout)"
+      },
+      {
+        "file": "FEM/.../scripts/v2_b3_m4_lhs_production_batch.py",
+        "symbols": ["run_lhs_production_batch"],
+        "status": "dormant ROM hooks (flags default false); compare runs after cleanup barrier"
+      },
+      {
+        "file": "FEM/.../scripts/run_m4_production_pipeline.py",
+        "symbols": ["main"],
+        "status": "active pipeline; ROM flags off by default"
+      },
+      {
+        "file": "FEM/rom/rom_manager.py",
+        "symbols": ["ROMManager"],
+        "status": "legacy fallback (reduced_basis.npz POD)"
+      },
+      {
+        "file": "FEM/scripts/rom_pipeline.py",
+        "symbols": ["offline", "build-basis", "online"],
+        "status": "legacy"
+      },
+      {
+        "file": "FEM/.../scripts/v2_b3_m4_rom_scalar_fields.py",
+        "symbols": ["PHASE2_*", "predict_mode_scalars_at_frequency"],
+        "status": "active (field schema + metrics)"
+      }
+    ],
+    "must_not_reuse_unchanged": [
+      "collect_completed_fom_training_rows without mesh_profile/dataset_version/run_id_suffix filters",
+      "M4_REQUIRED_ROM_DATASET_VERSION default m4_geometry_corrected_v1 in maybe_run_rom_prepredict",
+      "LHS pool last_run_id driven training selection on stale pool state",
+      "legacy ROMManager / reduced_basis.npz path for L_rom_prod official dataset",
+      "training from modes_catalog.jsonl without modes_catalog_deduped.jsonl parity policy"
+    ],
+    "reusable_unchanged": [
+      "k-NN IDW surrogate core (modal_surrogate_lib predict/train math)",
+      "rom_fom_comparison_v4 matching and scalar MAE metrics",
+      "rom_prediction_pre_fom freeze document schema",
+      "shadow-mode nonblocking error handling",
+      "compaction keep-list for rom/*.json artifacts"
+    ]
+  },
+  "part_c_current_data_only_policy": {
+    "allowed_training_runs": [
+      "sample_000_rom_official_v1",
+      "sample_001_rom_official_v1",
+      "sample_002_rom_official_v1",
+      "sample_003_rom_official_v1",
+      "sample_004_rom_official_v1"
+    ],
+    "explicit_exclusions": [
+      "reference mesh runs",
+      "legacy L_prod runs",
+      "sample_002_rom_prod_004",
+      "synthetic fixtures",
+      "old ROM datasets",
+      "mixed dataset versions",
+      "failed or non-accepted runs"
+    ],
+    "required_filters": {
+      "mesh_profile": "rom",
+      "mesh_level_id": "L_rom_prod",
+      "dataset_version": "m4_geometry_corrected_rommesh_v1",
+      "terminal_status": "COMPLETED",
+      "aggregation_status": "AGGREGATION_PASS",
+      "production_acceptance_pass": true,
+      "cleanup_status": "completed"
+    },
+    "sample_count_assessment": {
+      "pipeline_integration_testing": "enough (5 numerically complete FOM catalogs once finalized)",
+      "basic_model_fitting": "marginal (k=5 neighbors with 5 points is interpolation-only)",
+      "meaningful_validation": "not enough (need holdout; 5 samples cannot support LOO + train)",
+      "production_prediction_quality": "not enough for reliable production accuracy"
+    }
+  },
+  "part_d_target_shadow_pipeline": {
+    "prediction_timing": "A — before Scout, using LHS/sample parameters only (surrogate does not require Scout outputs)",
+    "recommended_sequence": [
+      "1. Resolve sample context from LHS/spec",
+      "2. Load latest eligible surrogate trained only on official ROM-mesh accepted runs",
+      "3. ROM predict + freeze rom/rom_prediction_pre_fom.json (timestamp before FOM)",
+      "4. Scout",
+      "5. Target-plan generation",
+      "6. Checkpoint",
+      "7. Workers (L_rom_prod FOM unchanged)",
+      "8. Aggregation",
+      "9. Freeze",
+      "10. Compare frozen prediction vs aggregation/modes_catalog_deduped.jsonl → rom/rom_vs_fom_comparison.json (alias rom_fom_comparison.json)",
+      "11. If FOM accepted: append to ROM training registry (not LHS alone)",
+      "12. Optional retrain per policy (after N samples or end of batch)",
+      "13. Shared graph export",
+      "14. Compaction",
+      "15. Cleanup (drop temp tensors; keep compact rom JSON + catalog summaries)",
+      "16. Reconcile LHS/bookkeeping",
+      "17. Next sample"
+    ],
+    "durable_artifacts": {
+      "rom/rom_prediction_summary.json": "compact alias of pre_fom doc (recommended new)",
+      "rom/rom_vs_fom_comparison.json": "compact comparison (may alias existing rom_fom_comparison.json)"
+    },
+    "shadow_constraints": [
+      "prediction never changes FOM execution",
+      "prediction never skips solve",
+      "prediction never changes target plan or mesh",
+      "comparison uses frozen pre-FOM prediction only"
+    ]
+  },
+  "part_e_recommendation": "BLOCKED_BEFORE_ROM_RESTORE",
+  "part_e_blockers": [
+    "OFFICIAL_ROM_DATA_BLOCKED — finalize all five runs on VM with updated finalizer",
+    "Reconcile ROM/classic/lhs_pool.json to rom_official_v1 last_run_id values",
+    "Verify production_acceptance_pass and cleanup barrier on each run tree",
+    "Retrain filters and dataset_version gate must be updated before any model build",
+    "No ROM/classic/m4_modal_surrogate.* exists yet for official dataset"
+  ],
+  "vm_verification_commands_read_only": [
+    "python FEM/.../v2_b3_m4_finalize_completed_run.py --sample-id sample_000 --run-id sample_000_rom_official_v1 --diagnose",
+    "python FEM/.../v2_b3_m4_finalize_completed_run.py --sample-id sample_001 --run-id sample_001_rom_official_v1 --diagnose",
+    "repeat for sample_002..004"
+  ],
+  "constraints_confirmed": {
+    "code_modified": false,
+    "fem_launched": false,
+    "model_trained": false,
+    "run_artifacts_modified": false
+  }
+}
