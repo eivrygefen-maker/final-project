@@ -1,0 +1,52 @@
+{
+  "schema": "m4_mesh_profile_compare_v2",
+  "status": "PRECONDITION_FAILED",
+  "comparison_executed": false,
+  "cleanup_barrier_precondition_pass": false,
+  "precondition_errors": [
+    "reference:transient_lprod_target_plan_still_present_post_cleanup",
+    "candidate:transient_lprod_target_plan_still_present_post_cleanup",
+    "candidate:TARGET_PLAN_UNAVAILABLE",
+    "candidate:missing_validation_input_manifest"
+  ],
+  "cleanup_barrier": {
+    "reference": {
+      "label": "reference",
+      "sample_id": "sample_002",
+      "run_id": "sample_002_m4prod2_strict_clean5",
+      "run_root": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_002/runs/sample_002_m4prod2_strict_clean5",
+      "barrier_manifest_present": true,
+      "barrier_status": "completed",
+      "sample_success": true,
+      "forbidden_heavy_artifact_count": 0,
+      "shared_sample_artifact_count": 0,
+      "verification_pass": true,
+      "live_verification_errors": [],
+      "cleanup_barrier_passed": true,
+      "live_forbidden_heavy_artifact_count": 0
+    },
+    "candidate": {
+      "label": "candidate",
+      "sample_id": "sample_002",
+      "run_id": "sample_002_rom_prod_004",
+      "run_root": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_002/runs/sample_002_rom_prod_004",
+      "barrier_manifest_present": true,
+      "barrier_status": "completed",
+      "sample_success": false,
+      "forbidden_heavy_artifact_count": 0,
+      "shared_sample_artifact_count": 0,
+      "verification_pass": true,
+      "live_verification_errors": [],
+      "cleanup_barrier_passed": true,
+      "live_forbidden_heavy_artifact_count": 0
+    },
+    "candidate_reference_run_path_hits": [],
+    "validation_input": {
+      "durable_target_plan_available": false,
+      "durable_target_plan_sha256": null
+    },
+    "cleanup_barrier_precondition_pass": false
+  },
+  "acceptance_pass": false,
+  "exit_code": 2
+}

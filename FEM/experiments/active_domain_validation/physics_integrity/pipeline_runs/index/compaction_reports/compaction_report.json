@@ -1,39 +1,65 @@
 {
   "schema": "m4_run_compaction_report_v1",
   "tool_version": "m4_run_compaction_v2",
-  "generated_utc": "2026-06-08T17:49:35Z",
-  "dry_run": true,
+  "generated_utc": "2026-06-08T18:28:17Z",
+  "dry_run": false,
   "compaction_mode": "delete_without_archive",
   "archive_heavy": false,
   "delete_heavy_without_archive": true,
   "delete_heavy_after_verify": false,
   "shape_name": "classic",
-  "sample_range": "0",
-  "keep_full_latest": 2,
+  "sample_range": "0-34",
+  "keep_full_latest": 0,
   "keep_full_samples": [],
-  "representative_recommendation": [],
+  "representative_recommendation": [
+    {
+      "sample_id": "sample_000",
+      "reason": "first LHS anchor",
+      "top_wood": "spruce",
+      "back_wood": "rosewood"
+    }
+  ],
   "records": [
     {
       "sample_id": "sample_000",
       "run_id": "sample_000_m4prod2_strict_val",
-      "eligible": false,
-      "skip_reason": "run_not_found",
+      "eligible": true,
+      "skip_reason": "",
       "keep_full": false,
-      "status": "planned",
-      "original_bytes": 0,
-      "retained_bytes": 0,
-      "archivable_bytes": 0,
-      "compaction_mode": "",
+      "status": "completed",
+      "original_bytes": 404452272,
+      "retained_bytes": 6914294,
+      "archivable_bytes": 397537978,
+      "compaction_mode": "delete_without_archive",
       "archived_bytes": 0,
-      "deleted_bytes": 0,
-      "freed_bytes": 0,
+      "deleted_bytes": 397537978,
+      "freed_bytes": 397537978,
       "archive_path": "",
       "sha256": "",
-      "rom_comparison_present": false,
-      "rom_rebuild_safe": false,
-      "warnings": [],
-      "archived_paths": [],
-      "deleted_paths": []
+      "rom_comparison_present": true,
+      "rom_rebuild_safe": true,
+      "warnings": [
+        "lhs_status=RUNNING (informational; --run-dir uses run-tree gates)",
+        "rom/ directory missing (reported; ROM compare cache optional)"
+      ],
+      "archived_paths": [
+        "lprod/checkpoint",
+        "lprod/lprod_checkpoint_verify.json",
+        "lprod/mesh",
+        "scout/checkpoint",
+        "scout/discovery",
+        "scout/mesh",
+        "worker_results"
+      ],
+      "deleted_paths": [
+        "lprod/lprod_checkpoint_verify.json",
+        "lprod/checkpoint",
+        "scout/checkpoint",
+        "scout/discovery",
+        "worker_results",
+        "lprod/mesh",
+        "scout/mesh"
+      ]
     }
   ]
 }

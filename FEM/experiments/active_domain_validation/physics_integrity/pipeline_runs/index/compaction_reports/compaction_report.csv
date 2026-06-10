@@ -1,2 +1,2 @@
 sample_id,run_id,eligible,skip_reason,keep_full,status,original_bytes,archivable_bytes,deleted_bytes,freed_bytes,rom_comparison_present,rom_rebuild_safe,compaction_mode
-sample_000,sample_000_m4prod2_strict_val,False,run_not_found,False,planned,0,0,0,0,False,False,
+sample_000,sample_000_m4prod2_strict_val,True,,False,completed,404452272,397537978,397537978,397537978,True,True,delete_without_archive

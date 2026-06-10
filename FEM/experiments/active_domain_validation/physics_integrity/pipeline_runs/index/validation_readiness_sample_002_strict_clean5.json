@@ -1,0 +1,115 @@
+{
+  "schema": "m4_validation_readiness_audit_v1",
+  "sample_id": "sample_002",
+  "reference_run_id": "sample_002_m4prod2_strict_clean5",
+  "candidate_runs": [
+    {
+      "run_id": "sample_002_m4prod2_strict_clean5",
+      "completed": true,
+      "run_root": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_002/runs/sample_002_m4prod2_strict_clean5",
+      "pipeline_mode": "m4_4_1b_0_lprod_checkpoint",
+      "terminal_status": "COMPLETED",
+      "aggregation_status": "AGGREGATION_PASS",
+      "reason": "completed_production_candidate"
+    }
+  ],
+  "LEGACY_REFERENCE_READY": false,
+  "TARGET_PLAN_READY": true,
+  "TARGET_PLAN_UNAVAILABLE": false,
+  "FINAL_STATUS": "BLOCKED",
+  "legacy_reference_audit": {
+    "LEGACY_REFERENCE_READY": false,
+    "checks": {
+      "forbidden_heavy_artifact_count": 0,
+      "cleanup_barrier_status": "completed",
+      "lprod_checkpoint_present": false,
+      "reference_controls_m": null,
+      "reference_controls_sources": []
+    },
+    "errors": [
+      "missing:effective_controls_m (freeze/freeze_manifest.json, freeze/physics_identity_manifest.json, pipeline_run_manifest.json, sample/sample_input.json)"
+    ],
+    "sample_id": "sample_002",
+    "run_id": "sample_002_m4prod2_strict_clean5",
+    "run_root": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_002/runs/sample_002_m4prod2_strict_clean5",
+    "legacy_compatibility": {
+      "legacy_reference_compatibility": false,
+      "resolved_reference_profile": null,
+      "reference_controls_sources": [],
+      "reference_controls_m": null,
+      "cleanup_barrier": {
+        "label": "legacy_reference",
+        "sample_id": "sample_002",
+        "run_id": "sample_002_m4prod2_strict_clean5",
+        "run_root": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_002/runs/sample_002_m4prod2_strict_clean5",
+        "barrier_manifest_present": true,
+        "barrier_status": "completed",
+        "sample_success": true,
+        "forbidden_heavy_artifact_count": 0,
+        "shared_sample_artifact_count": 0,
+        "verification_pass": true,
+        "live_verification_errors": [],
+        "cleanup_barrier_passed": true
+      }
+    },
+    "cleanup_barrier": {
+      "label": "legacy_reference",
+      "sample_id": "sample_002",
+      "run_id": "sample_002_m4prod2_strict_clean5",
+      "run_root": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_002/runs/sample_002_m4prod2_strict_clean5",
+      "barrier_manifest_present": true,
+      "barrier_status": "completed",
+      "sample_success": true,
+      "forbidden_heavy_artifact_count": 0,
+      "shared_sample_artifact_count": 0,
+      "verification_pass": true,
+      "live_verification_errors": [],
+      "cleanup_barrier_passed": true
+    },
+    "compaction_verify": {
+      "run_root": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_002/runs/sample_002_m4prod2_strict_clean5",
+      "physics_identity_manifest_present": true,
+      "mode_provenance_present": true,
+      "freeze_manifest_present": true,
+      "catalog_present": true,
+      "compaction_manifest_present": true,
+      "forbidden_heavy_artifact_count": 0,
+      "forbidden_heavy_artifacts_present": [],
+      "physics_identity_valid": true,
+      "compaction_status": "completed",
+      "pass": true,
+      "errors": []
+    },
+    "region_dof_gate": {
+      "pass": true,
+      "evidence_mode": "durable_post_cleanup",
+      "errors": [],
+      "sources": [
+        "aggregation/aggregation_result.json",
+        "freeze/freeze_manifest.json",
+        "freeze/physics_identity_manifest.json"
+      ],
+      "terminal_status": "COMPLETED",
+      "aggregation_status": "AGGREGATION_PASS",
+      "p_idx_aperture_source": "freeze/physics_identity_manifest.json:masks.p_idx_aperture_count",
+      "p_idx_aperture_count": 1738
+    }
+  },
+  "target_plan_audit": {
+    "TARGET_PLAN_READY": true,
+    "TARGET_PLAN_UNAVAILABLE": false,
+    "reconstruction_method": "reconstructed_exact_from_durable_provenance",
+    "source_artifacts": [
+      {
+        "path": "lprod/worker_chunk_plan.preview.json",
+        "sha256": "7729d5f8e22d6ebc81c2842aaefdf55a85d86f70497d01dd398ef2b20e03fea7"
+      }
+    ],
+    "creation_method": "reconstructed_exact_from_durable_provenance",
+    "errors": [],
+    "package_root": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/validation_inputs/sample_sample_002_reference_0661505c893237ee",
+    "target_plan_sha256": "e23d446fd9b689c3a5d5c50f9bd2e8ba0679b7803bb04218d7301a5b87cb0f67",
+    "target_count": 59,
+    "external_package_root": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/validation_inputs/sample_sample_002_reference_0661505c893237ee"
+  }
+}

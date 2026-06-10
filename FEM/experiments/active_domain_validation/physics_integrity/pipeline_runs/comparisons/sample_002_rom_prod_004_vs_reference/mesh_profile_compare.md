@@ -1,0 +1,40 @@
+# M4 mesh profile comparison
+
+- status: **PRECONDITION_FAILED**
+- comparison_executed: **False**
+- cleanup_barrier_precondition_pass: **False**
+- acceptance_pass: **False**
+- exit_code: **2**
+
+## Precondition failures
+- reference:legacy_lprod_target_plan_semantic_mismatch:frequency_range_hz
+- physical_identity_invariant_mismatch:aperture_policy.p_idx_aperture_count
+- physical_identity_invariant_mismatch:model_version
+- physical_identity_invariant_mismatch:solver_config._worker_harvest_hi_hz
+- physical_identity_invariant_mismatch:solver_config._worker_harvest_lo_hz
+- physical_identity_invariant_mismatch:solver_config._worker_target_hz
+- physical_identity_invariant_mismatch:solver_config.acoustic_reference_hz
+- physical_identity_invariant_mismatch:solver_config.clamp_ribs
+- physical_identity_invariant_mismatch:solver_config.couple_fluid
+- physical_identity_invariant_mismatch:solver_config.coupled_air_pressure_restriction_diagnosis
+- physical_identity_invariant_mismatch:solver_config.coupled_blockwise_assembly
+- physical_identity_invariant_mismatch:solver_config.coupled_physical_core_v2_coupling_enabled
+- physical_identity_invariant_mismatch:solver_config.coupled_physical_core_v2_diagnosis
+- physical_identity_invariant_mismatch:solver_config.eigs_maxiter
+- physical_identity_invariant_mismatch:solver_config.eps_band_solver
+- physical_identity_invariant_mismatch:solver_config.eps_broad_search_hz
+- physical_identity_invariant_mismatch:solver_config.eps_harvest_allow_weak_coupling
+- physical_identity_invariant_mismatch:solver_config.eps_harvest_rank_by_p_frac
+- physical_identity_invariant_mismatch:solver_config.eps_harvest_rank_by_wood
+- physical_identity_invariant_mismatch:solver_config.eps_reject_decoupled_u_only
+- physical_identity_invariant_mismatch:solver_config.eps_reject_sigma_spurious
+- physical_identity_invariant_mismatch:solver_config.fsi_coupling_gain
+- physical_identity_invariant_mismatch:solver_config.fsi_nitsche_enable
+- physical_identity_invariant_mismatch:solver_config.gnhep_block_frobenius_normalize
+- physical_identity_invariant_mismatch:solver_config.num_modes
+- physical_identity_invariant_mismatch:solver_config.physics_integrity_branch
+- physical_identity_invariant_mismatch:solver_config.physics_integrity_capture
+- physical_identity_invariant_mismatch:solver_config.pressure_dof_scale
+- physical_identity_invariant_mismatch:solver_config.pressure_gauge
+- physical_identity_invariant_mismatch:solver_config.shift_invert_target_hz
+- physical_identity_invariant_mismatch:solver_config.soundhole_bc

@@ -18,9 +18,40 @@
         "geometry.hole_radius": 0.047,
         "geometry.back_thickness": 0.0033
       },
-      "status": "pending",
+      "status": "RUNNING",
       "snapshot_file": null,
-      "error": null
+      "error": null,
+      "last_run_id": "sample_000_m4prod2_strict_val",
+      "last_batch_id": "lhs_prod_m4_20260608",
+      "last_started_at": "2026-06-08T15:39:48Z",
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_000/runs/sample_000_m4prod2",
+      "last_finished_at": "2026-06-08T12:12:40Z",
+      "last_elapsed_s": 2959.59,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 615,
+      "last_participation_computed_count": 615,
+      "last_audio_coupling_computed_count": 615,
+      "last_rom_status": "FAILED",
+      "last_rom_comparison_status": "FAILED",
+      "last_rom_comparison_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_000/runs/sample_000_m4prod2/rom/rom_fom_comparison.json",
+      "last_rom_median_relative_error": null,
+      "last_rom_mean_relative_error": null,
+      "last_rom_p90_relative_error": null,
+      "last_rom_mean_abs_error_hz": null,
+      "last_rom_median_abs_error_hz": null,
+      "last_rom_max_abs_error_hz": null,
+      "last_rom_matched_mode_count": 0,
+      "last_rom_meets_accuracy_target": false,
+      "last_rom_accuracy_meaningful": true,
+      "last_rom_validation_mode": "holdout",
+      "last_rom_training_sample_count": 0,
+      "last_rom_prediction_runtime_s": 0.0,
+      "last_rom_comparison_runtime_s": 0.1584,
+      "last_rom_total_runtime_s": 0.1584,
+      "last_rom_top_share_mae": null,
+      "last_rom_coupling_class_accuracy": null,
+      "last_rom_error": null
     },
     {
       "id": "sample_001",
@@ -34,9 +65,20 @@
         "top_wood_id": "mahogany",
         "geometry.back_thickness": 0.003486079973247386
       },
-      "status": "pending",
+      "status": "COMPLETED",
       "snapshot_file": null,
-      "error": null
+      "error": null,
+      "last_run_id": "sample_001_m4prod2",
+      "last_batch_id": "lhs_prod_m4_20260608",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_001/runs/sample_001_m4prod2",
+      "last_finished_at": "2026-06-08T13:04:18Z",
+      "last_elapsed_s": 1786.82,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 652,
+      "last_participation_computed_count": 652,
+      "last_audio_coupling_computed_count": 652
     },
     {
       "id": "sample_002",
@@ -50,9 +92,20 @@
         "top_wood_id": "rosewood",
         "geometry.back_thickness": 0.0032084290029265553
       },
-      "status": "pending",
+      "status": "COMPLETED",
       "snapshot_file": null,
-      "error": null
+      "error": null,
+      "last_run_id": "sample_002_rom_prod_004",
+      "last_batch_id": "lhs_prod_m4_20260610",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_002/runs/sample_002_rom_prod_004",
+      "last_finished_at": "2026-06-10T08:01:07Z",
+      "last_elapsed_s": 0.0,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 612,
+      "last_participation_computed_count": 612,
+      "last_audio_coupling_computed_count": 612
     },
     {
       "id": "sample_003",
@@ -66,9 +119,20 @@
         "top_wood_id": "rosewood",
         "geometry.back_thickness": 0.003392525450745756
       },
-      "status": "pending",
+      "status": "COMPLETED",
       "snapshot_file": null,
-      "error": null
+      "error": null,
+      "last_run_id": "sample_003_m4prod2",
+      "last_batch_id": "lhs_prod_m4_20260608",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_003/runs/sample_003_m4prod2",
+      "last_finished_at": "2026-06-08T14:00:30Z",
+      "last_elapsed_s": 1516.58,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 655,
+      "last_participation_computed_count": 655,
+      "last_audio_coupling_computed_count": 655
     },
     {
       "id": "sample_004",
@@ -82,7 +146,7 @@
         "top_wood_id": "mahogany",
         "geometry.back_thickness": 0.0035285142340265533
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -98,7 +162,7 @@
         "top_wood_id": "spruce",
         "geometry.back_thickness": 0.002785038842267133
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -114,7 +178,7 @@
         "top_wood_id": "mahogany",
         "geometry.back_thickness": 0.0036988857755159083
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -130,7 +194,7 @@
         "top_wood_id": "mahogany",
         "geometry.back_thickness": 0.0034455602579380037
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -146,7 +210,7 @@
         "top_wood_id": "mahogany",
         "geometry.back_thickness": 0.0031830245985501916
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -162,7 +226,7 @@
         "top_wood_id": "spruce",
         "geometry.back_thickness": 0.003168022755454379
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -178,7 +242,7 @@
         "top_wood_id": "spruce",
         "geometry.back_thickness": 0.0035718730972117588
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -194,7 +258,7 @@
         "top_wood_id": "mahogany",
         "geometry.back_thickness": 0.0035052698920927817
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -210,7 +274,7 @@
         "top_wood_id": "mahogany",
         "geometry.back_thickness": 0.0033601612049400107
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -226,7 +290,7 @@
         "top_wood_id": "rosewood",
         "geometry.back_thickness": 0.0037158295390539615
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -242,7 +306,7 @@
         "top_wood_id": "mahogany",
         "geometry.back_thickness": 0.0029250963518015587
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -258,7 +322,7 @@
         "top_wood_id": "rosewood",
         "geometry.back_thickness": 0.00324526835413754
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -274,7 +338,7 @@
         "top_wood_id": "spruce",
         "geometry.back_thickness": 0.003516333618080056
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -290,7 +354,7 @@
         "top_wood_id": "spruce",
         "geometry.back_thickness": 0.00332659743081013
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -306,7 +370,7 @@
         "top_wood_id": "spruce",
         "geometry.back_thickness": 0.003272315345276317
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -322,7 +386,7 @@
         "top_wood_id": "spruce",
         "geometry.back_thickness": 0.0030967762325200708
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -338,7 +402,7 @@
         "top_wood_id": "cedar",
         "geometry.back_thickness": 0.003239045157985475
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -354,7 +418,7 @@
         "top_wood_id": "rosewood",
         "geometry.back_thickness": 0.0029220410117347987
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -370,7 +434,7 @@
         "top_wood_id": "cedar",
         "geometry.back_thickness": 0.0034413752572886804
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -386,7 +450,7 @@
         "top_wood_id": "rosewood",
         "geometry.back_thickness": 0.003523658496635974
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -402,7 +466,7 @@
         "top_wood_id": "spruce",
         "geometry.back_thickness": 0.0027579558959118615
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -418,7 +482,7 @@
         "top_wood_id": "mahogany",
         "geometry.back_thickness": 0.0036772779038442074
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -434,7 +498,7 @@
         "top_wood_id": "rosewood",
         "geometry.back_thickness": 0.003459581789812203
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -450,7 +514,7 @@
         "top_wood_id": "mahogany",
         "geometry.back_thickness": 0.00284747574735429
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -466,7 +530,7 @@
         "top_wood_id": "spruce",
         "geometry.back_thickness": 0.002790108219247069
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -482,7 +546,7 @@
         "top_wood_id": "mahogany",
         "geometry.back_thickness": 0.0033448771646745544
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -498,7 +562,7 @@
         "top_wood_id": "cedar",
         "geometry.back_thickness": 0.0030870716357871007
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -514,7 +578,7 @@
         "top_wood_id": "rosewood",
         "geometry.back_thickness": 0.003103019241011741
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -530,7 +594,7 @@
         "top_wood_id": "rosewood",
         "geometry.back_thickness": 0.003494632762357003
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -546,7 +610,7 @@
         "top_wood_id": "cedar",
         "geometry.back_thickness": 0.003036160752497001
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -562,7 +626,7 @@
         "top_wood_id": "rosewood",
         "geometry.back_thickness": 0.0038213692842936344
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -578,7 +642,7 @@
         "top_wood_id": "spruce",
         "geometry.back_thickness": 0.0028732046010450326
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -594,7 +658,7 @@
         "top_wood_id": "spruce",
         "geometry.back_thickness": 0.002947600901357
       },
-      "status": "pending",
+      "status": "PENDING",
       "snapshot_file": null,
       "error": null
     },
@@ -8022,5 +8086,7 @@
       "snapshot_file": null,
       "error": null
     }
-  ]
+  ],
+  "dataset_version": "m4_geometry_corrected_v1",
+  "reset_utc": "2026-06-08T09:36:17Z"
 }

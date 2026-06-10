@@ -1,0 +1,1542 @@
+{
+  "schema": "m4_mesh_profile_compare_v2",
+  "status": "PRECONDITION_FAILED",
+  "comparison_executed": false,
+  "cleanup_barrier_precondition_pass": false,
+  "precondition_errors": [
+    "reference:legacy_lprod_target_plan_semantic_mismatch:frequency_range_hz",
+    "physical_identity_invariant_mismatch:aperture_policy.p_idx_aperture_count",
+    "physical_identity_invariant_mismatch:model_version",
+    "physical_identity_invariant_mismatch:solver_config._worker_harvest_hi_hz",
+    "physical_identity_invariant_mismatch:solver_config._worker_harvest_lo_hz",
+    "physical_identity_invariant_mismatch:solver_config._worker_target_hz",
+    "physical_identity_invariant_mismatch:solver_config.acoustic_reference_hz",
+    "physical_identity_invariant_mismatch:solver_config.clamp_ribs",
+    "physical_identity_invariant_mismatch:solver_config.couple_fluid",
+    "physical_identity_invariant_mismatch:solver_config.coupled_air_pressure_restriction_diagnosis",
+    "physical_identity_invariant_mismatch:solver_config.coupled_blockwise_assembly",
+    "physical_identity_invariant_mismatch:solver_config.coupled_physical_core_v2_coupling_enabled",
+    "physical_identity_invariant_mismatch:solver_config.coupled_physical_core_v2_diagnosis",
+    "physical_identity_invariant_mismatch:solver_config.eigs_maxiter",
+    "physical_identity_invariant_mismatch:solver_config.eps_band_solver",
+    "physical_identity_invariant_mismatch:solver_config.eps_broad_search_hz",
+    "physical_identity_invariant_mismatch:solver_config.eps_harvest_allow_weak_coupling",
+    "physical_identity_invariant_mismatch:solver_config.eps_harvest_rank_by_p_frac",
+    "physical_identity_invariant_mismatch:solver_config.eps_harvest_rank_by_wood",
+    "physical_identity_invariant_mismatch:solver_config.eps_reject_decoupled_u_only",
+    "physical_identity_invariant_mismatch:solver_config.eps_reject_sigma_spurious",
+    "physical_identity_invariant_mismatch:solver_config.fsi_coupling_gain",
+    "physical_identity_invariant_mismatch:solver_config.fsi_nitsche_enable",
+    "physical_identity_invariant_mismatch:solver_config.gnhep_block_frobenius_normalize",
+    "physical_identity_invariant_mismatch:solver_config.num_modes",
+    "physical_identity_invariant_mismatch:solver_config.physics_integrity_branch",
+    "physical_identity_invariant_mismatch:solver_config.physics_integrity_capture",
+    "physical_identity_invariant_mismatch:solver_config.pressure_dof_scale",
+    "physical_identity_invariant_mismatch:solver_config.pressure_gauge",
+    "physical_identity_invariant_mismatch:solver_config.shift_invert_target_hz",
+    "physical_identity_invariant_mismatch:solver_config.soundhole_bc"
+  ],
+  "cleanup_barrier": {
+    "reference": {
+      "label": "reference",
+      "sample_id": "sample_002",
+      "run_id": "sample_002_m4prod2_strict_clean5",
+      "run_root": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_002/runs/sample_002_m4prod2_strict_clean5",
+      "barrier_manifest_present": true,
+      "barrier_status": "completed",
+      "sample_success": true,
+      "forbidden_heavy_artifact_count": 0,
+      "shared_sample_artifact_count": 0,
+      "verification_pass": true,
+      "live_verification_errors": [],
+      "cleanup_barrier_passed": true,
+      "precondition_contract": "standard",
+      "live_forbidden_heavy_artifact_count": 0
+    },
+    "candidate": {
+      "label": "candidate",
+      "sample_id": "sample_002",
+      "run_id": "sample_002_rom_prod_004",
+      "precondition_contract": "reconciled_historical",
+      "barrier_manifest_present": true,
+      "barrier_status": "completed",
+      "sample_success": false,
+      "bookkeeping_reconciliation": {
+        "report_path": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/specs/generated/bookkeeping_reconcile_sample_002_sample_002_rom_prod_004_20260610.json",
+        "outcome": "pass",
+        "generated_utc": "2026-06-10T08:01:07Z"
+      },
+      "terminal_status": "COMPLETED",
+      "aggregation_status": "AGGREGATION_PASS",
+      "freeze_passed": true,
+      "physics_identity_valid": true,
+      "forbidden_heavy_artifact_count": 0,
+      "shared_sample_artifact_count": 0,
+      "durable_outputs_ok": true,
+      "cleanup_barrier_passed": true,
+      "live_forbidden_heavy_artifact_count": 0
+    },
+    "reference_legacy_lprod_target_plan": {
+      "legacy_lprod_target_plan_present": true,
+      "classification": "legacy_durable_provenance",
+      "sha256": "2d7927b42b77a61edcb1ed98aa6e5b23c69d8c885e778d2d7f0101e015180b7a",
+      "target_count": 59,
+      "target_plan_match_mode": "semantic_mismatch",
+      "raw_sha_match": false,
+      "semantic_differences": [
+        "frequency_range_hz"
+      ]
+    },
+    "candidate_reference_run_path_hits": [],
+    "validation_input": {
+      "validation_input_contract": "external_authoritative",
+      "external_package_root": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/validation_inputs/sample_sample_002_reference_0661505c893237ee",
+      "authoritative_target_plan_sha256": "e23d446fd9b689c3a5d5c50f9bd2e8ba0679b7803bb04218d7301a5b87cb0f67",
+      "authoritative_target_count": 59,
+      "physical_identity": {
+        "physical_identity_invariants_match": false,
+        "allowed_mesh_identity_differences": [
+          "active_dimension",
+          "dataset_version",
+          "effective_controls_m",
+          "generated_mesh_sha256",
+          "mesh_level_id",
+          "mesh_profile",
+          "n_u_b3",
+          "n_w",
+          "operator_mesh_file_used",
+          "operator_mesh_sha256",
+          "run_id"
+        ],
+        "unexpected_identity_differences": [
+          "aperture_policy.p_idx_aperture_count",
+          "model_version",
+          "solver_config._worker_harvest_hi_hz",
+          "solver_config._worker_harvest_lo_hz",
+          "solver_config._worker_target_hz",
+          "solver_config.acoustic_reference_hz",
+          "solver_config.clamp_ribs",
+          "solver_config.couple_fluid",
+          "solver_config.coupled_air_pressure_restriction_diagnosis",
+          "solver_config.coupled_blockwise_assembly",
+          "solver_config.coupled_physical_core_v2_coupling_enabled",
+          "solver_config.coupled_physical_core_v2_diagnosis",
+          "solver_config.eigs_maxiter",
+          "solver_config.eps_band_solver",
+          "solver_config.eps_broad_search_hz",
+          "solver_config.eps_harvest_allow_weak_coupling",
+          "solver_config.eps_harvest_rank_by_p_frac",
+          "solver_config.eps_harvest_rank_by_wood",
+          "solver_config.eps_reject_decoupled_u_only",
+          "solver_config.eps_reject_sigma_spurious",
+          "solver_config.fsi_coupling_gain",
+          "solver_config.fsi_nitsche_enable",
+          "solver_config.gnhep_block_frobenius_normalize",
+          "solver_config.num_modes",
+          "solver_config.physics_integrity_branch",
+          "solver_config.physics_integrity_capture",
+          "solver_config.pressure_dof_scale",
+          "solver_config.pressure_gauge",
+          "solver_config.shift_invert_target_hz",
+          "solver_config.soundhole_bc"
+        ],
+        "reference_invariants": {
+          "sample_id": "sample_002",
+          "geometry_fingerprint": "418790865d1a17740afd0c196eae4d3c9e3d1d65490c14ca4cedb98d361a7c7f",
+          "geometry_numeric_parameters": {
+            "depth": 0.13834295345304212,
+            "hole_radius": 0.04429006596639686,
+            "length": 0.5058767465408958,
+            "top_thickness": 0.002916753639024141,
+            "width": 0.4237732372908163,
+            "back_thickness": 0.0032084290029265553
+          },
+          "material": {
+            "top_wood_id": "rosewood",
+            "back_wood_id": "spruce"
+          },
+          "mic_output_method": "aperture_pressure_rms_proxy_v1",
+          "solver_backend": "mkl_pardiso",
+          "aperture_policy": {
+            "aperture_selection_method": "facet_adjacent_air_cell_dofs_v1",
+            "p_idx_aperture_count": 1738
+          },
+          "fallback_flags": {
+            "solver_fallback_used": false,
+            "mic_method_fallback": false,
+            "participation_fallback": false,
+            "geometry_fallback": false,
+            "baseline_mesh_fallback": false,
+            "cross_sample_reuse": false,
+            "forbidden_solver_config_keys": []
+          },
+          "path_contamination": {
+            "sample_id": "sample_002",
+            "canonical_sample_id": "sample_002",
+            "scan_scope": "physics_path_fields_only",
+            "files_scanned": 90,
+            "scanned_files": [
+              "sample/overlay_applied.json",
+              "sample/readiness_check.json",
+              "sample/resolved_core_config.json",
+              "sample/sample_input.json",
+              "sample/sample_resolved_config_manifest.json",
+              "scout/density_zones.json",
+              "scout/scout_plan.json",
+              "scout/scout_result.json",
+              "scout/scout_result.placeholder.json",
+              "lprod/aggregation_plan.json",
+              "lprod/lprod_checkpoint_verify.json",
+              "lprod/lprod_execution_plan.json",
+              "lprod/lprod_mesh_checkpoint_readiness.json",
+              "lprod/lprod_plan.json",
+              "lprod/lprod_target_plan.json",
+              "lprod/resolved_core_config.json",
+              "lprod/worker_chunk_plan.preview.json",
+              "lprod/worker_commands.json",
+              "lprod/checkpoint/built_metadata.json",
+              "lprod/checkpoint/checkpoint_export_manifest.json",
+              "lprod/checkpoint/csr_metadata.json",
+              "lprod/checkpoint/region_dof_metadata.json",
+              "lprod/checkpoint/synthesis_metadata.json",
+              "worker_results/sample_002_chunk_01/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_01/chunk_targets.json",
+              "worker_results/sample_002_chunk_01/env_probe.json",
+              "worker_results/sample_002_chunk_01/solver_result.json",
+              "worker_results/sample_002_chunk_01/worker_result.json",
+              "worker_results/sample_002_chunk_02/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_02/chunk_targets.json",
+              "worker_results/sample_002_chunk_02/env_probe.json",
+              "worker_results/sample_002_chunk_02/solver_result.json",
+              "worker_results/sample_002_chunk_02/worker_result.json",
+              "worker_results/sample_002_chunk_03/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_03/chunk_targets.json",
+              "worker_results/sample_002_chunk_03/env_probe.json",
+              "worker_results/sample_002_chunk_03/solver_result.json",
+              "worker_results/sample_002_chunk_03/worker_result.json",
+              "worker_results/sample_002_chunk_04/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_04/chunk_targets.json",
+              "worker_results/sample_002_chunk_04/env_probe.json",
+              "worker_results/sample_002_chunk_04/solver_result.json",
+              "worker_results/sample_002_chunk_04/worker_result.json",
+              "worker_results/sample_002_chunk_05/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_05/chunk_targets.json",
+              "worker_results/sample_002_chunk_05/env_probe.json",
+              "worker_results/sample_002_chunk_05/solver_result.json",
+              "worker_results/sample_002_chunk_05/worker_result.json",
+              "worker_results/sample_002_chunk_06/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_06/chunk_targets.json",
+              "worker_results/sample_002_chunk_06/env_probe.json",
+              "worker_results/sample_002_chunk_06/solver_result.json",
+              "worker_results/sample_002_chunk_06/worker_result.json",
+              "worker_results/sample_002_chunk_07/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_07/chunk_targets.json",
+              "worker_results/sample_002_chunk_07/env_probe.json",
+              "worker_results/sample_002_chunk_07/solver_result.json",
+              "worker_results/sample_002_chunk_07/worker_result.json",
+              "worker_results/sample_002_chunk_08/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_08/chunk_targets.json",
+              "worker_results/sample_002_chunk_08/env_probe.json",
+              "worker_results/sample_002_chunk_08/solver_result.json",
+              "worker_results/sample_002_chunk_08/worker_result.json",
+              "worker_results/sample_002_chunk_09/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_09/chunk_targets.json",
+              "worker_results/sample_002_chunk_09/env_probe.json",
+              "worker_results/sample_002_chunk_09/solver_result.json",
+              "worker_results/sample_002_chunk_09/worker_result.json",
+              "worker_results/sample_002_chunk_10/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_10/chunk_targets.json",
+              "worker_results/sample_002_chunk_10/env_probe.json",
+              "worker_results/sample_002_chunk_10/solver_result.json",
+              "worker_results/sample_002_chunk_10/worker_result.json",
+              "worker_results/sample_002_chunk_11/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_11/chunk_targets.json",
+              "worker_results/sample_002_chunk_11/env_probe.json",
+              "worker_results/sample_002_chunk_11/solver_result.json",
+              "worker_results/sample_002_chunk_11/worker_result.json",
+              "worker_results/sample_002_chunk_12/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_12/chunk_targets.json",
+              "worker_results/sample_002_chunk_12/env_probe.json",
+              "worker_results/sample_002_chunk_12/solver_result.json",
+              "worker_results/sample_002_chunk_12/worker_result.json",
+              "worker_results/sample_002_chunk_13/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_13/chunk_targets.json",
+              "worker_results/sample_002_chunk_13/env_probe.json",
+              "worker_results/sample_002_chunk_13/solver_result.json",
+              "worker_results/sample_002_chunk_13/worker_result.json",
+              "aggregation/modes_catalog.jsonl",
+              "pipeline_run_manifest.json"
+            ],
+            "contamination_hits": [],
+            "contamination_detected": false
+          },
+          "frequency_policy": {
+            "band_hz": [
+              60.0,
+              550.0
+            ],
+            "scout_spacing_hz": 7.5,
+            "scout_half_width_hz": 3.75,
+            "zone_spacing_hz": {
+              "ZONE_1_dense": 6.0,
+              "ZONE_2_medium": 9.0,
+              "ZONE_3_sparse": 12.5
+            }
+          },
+          "solver_config": {
+            "num_modes": 12,
+            "shift_invert_target_hz": 244.39,
+            "couple_fluid": true,
+            "soundhole_bc": "pressure_release",
+            "pressure_gauge": "none",
+            "eps_band_solver": "shift_invert",
+            "eps_broad_search_hz": 45.0,
+            "pressure_dof_scale": 30.0,
+            "fsi_coupling_gain": 1.0,
+            "eps_harvest_allow_weak_coupling": true,
+            "eps_harvest_rank_by_wood": false,
+            "eps_harvest_rank_by_p_frac": false,
+            "eps_reject_decoupled_u_only": false,
+            "eps_reject_sigma_spurious": false,
+            "gnhep_block_frobenius_normalize": true,
+            "eigs_maxiter": 3000,
+            "coupled_blockwise_assembly": true,
+            "fsi_nitsche_enable": false,
+            "physics_integrity_capture": true,
+            "_worker_harvest_lo_hz": 220.0,
+            "_worker_harvest_hi_hz": 265.0,
+            "_worker_target_hz": 244.39,
+            "acoustic_reference_hz": 244.39,
+            "coupled_air_pressure_restriction_diagnosis": true,
+            "coupled_physical_core_v2_diagnosis": true,
+            "coupled_physical_core_v2_coupling_enabled": true,
+            "physics_integrity_branch": "coupled-physical-core-v2-244hz",
+            "clamp_ribs": false
+          },
+          "model_version": "m4_geometry_corrected_v1",
+          "region_dof_policy": null,
+          "target_plan_semantic": {
+            "targets_hz": [
+              64.5,
+              73.5,
+              82.5,
+              91.5,
+              100.5,
+              105.5,
+              116.25,
+              128.75,
+              138.0,
+              144.0,
+              150.0,
+              156.0,
+              157.0,
+              166.25,
+              178.75,
+              191.25,
+              203.75,
+              214.5,
+              223.5,
+              230.5,
+              241.25,
+              253.75,
+              263.0,
+              269.0,
+              275.0,
+              281.0,
+              282.0,
+              289.5,
+              298.5,
+              305.5,
+              316.25,
+              328.75,
+              339.5,
+              348.5,
+              355.5,
+              366.25,
+              378.75,
+              391.25,
+              403.75,
+              413.0,
+              419.0,
+              425.0,
+              431.0,
+              432.0,
+              441.25,
+              453.75,
+              466.25,
+              478.75,
+              488.0,
+              494.0,
+              500.0,
+              506.0,
+              512.0,
+              518.0,
+              524.0,
+              530.0,
+              536.0,
+              542.0,
+              547.0
+            ],
+            "target_count": 59,
+            "frequency_range_hz": [
+              64.5,
+              547.0
+            ],
+            "chunk_count": 13,
+            "chunk_layout": [
+              {
+                "chunk_id": "sample_002_chunk_01",
+                "targets_hz": [
+                  64.5,
+                  73.5,
+                  82.5,
+                  91.5,
+                  100.5
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_02",
+                "targets_hz": [
+                  105.5,
+                  116.25,
+                  128.75
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_03",
+                "targets_hz": [
+                  138.0,
+                  144.0,
+                  150.0,
+                  156.0,
+                  157.0
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_04",
+                "targets_hz": [
+                  166.25,
+                  178.75,
+                  191.25,
+                  203.75
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_05",
+                "targets_hz": [
+                  214.5,
+                  223.5,
+                  230.5
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_06",
+                "targets_hz": [
+                  241.25,
+                  253.75,
+                  263.0,
+                  269.0,
+                  275.0,
+                  281.0,
+                  282.0
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_07",
+                "targets_hz": [
+                  289.5,
+                  298.5,
+                  305.5
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_08",
+                "targets_hz": [
+                  316.25,
+                  328.75,
+                  339.5,
+                  348.5,
+                  355.5
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_09",
+                "targets_hz": [
+                  366.25,
+                  378.75,
+                  391.25,
+                  403.75
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_10",
+                "targets_hz": [
+                  413.0,
+                  419.0,
+                  425.0,
+                  431.0,
+                  432.0
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_11",
+                "targets_hz": [
+                  441.25,
+                  453.75,
+                  466.25,
+                  478.75
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_12",
+                "targets_hz": [
+                  488.0,
+                  494.0,
+                  500.0,
+                  506.0,
+                  512.0,
+                  518.0,
+                  524.0
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_13",
+                "targets_hz": [
+                  530.0,
+                  536.0,
+                  542.0,
+                  547.0
+                ]
+              }
+            ]
+          }
+        },
+        "candidate_invariants": {
+          "sample_id": "sample_002",
+          "geometry_fingerprint": "418790865d1a17740afd0c196eae4d3c9e3d1d65490c14ca4cedb98d361a7c7f",
+          "geometry_numeric_parameters": {
+            "depth": 0.13834295345304212,
+            "hole_radius": 0.04429006596639686,
+            "length": 0.5058767465408958,
+            "top_thickness": 0.002916753639024141,
+            "width": 0.4237732372908163,
+            "back_thickness": 0.0032084290029265553
+          },
+          "material": {
+            "top_wood_id": "rosewood",
+            "back_wood_id": "spruce"
+          },
+          "mic_output_method": "aperture_pressure_rms_proxy_v1",
+          "solver_backend": "mkl_pardiso",
+          "aperture_policy": {
+            "aperture_selection_method": "facet_adjacent_air_cell_dofs_v1",
+            "p_idx_aperture_count": 1061
+          },
+          "fallback_flags": {
+            "solver_fallback_used": false,
+            "mic_method_fallback": false,
+            "participation_fallback": false,
+            "geometry_fallback": false,
+            "baseline_mesh_fallback": false,
+            "cross_sample_reuse": false,
+            "forbidden_solver_config_keys": []
+          },
+          "path_contamination": {
+            "sample_id": "sample_002",
+            "canonical_sample_id": "sample_002",
+            "scan_scope": "physics_path_fields_only",
+            "files_scanned": 90,
+            "scanned_files": [
+              "sample/overlay_applied.json",
+              "sample/readiness_check.json",
+              "sample/resolved_core_config.json",
+              "sample/sample_input.json",
+              "sample/sample_resolved_config_manifest.json",
+              "scout/density_zones.json",
+              "scout/scout_plan.json",
+              "scout/scout_result.json",
+              "scout/scout_result.placeholder.json",
+              "lprod/aggregation_plan.json",
+              "lprod/lprod_checkpoint_verify.json",
+              "lprod/lprod_execution_plan.json",
+              "lprod/lprod_mesh_checkpoint_readiness.json",
+              "lprod/lprod_plan.json",
+              "lprod/lprod_target_plan.json",
+              "lprod/resolved_core_config.json",
+              "lprod/worker_chunk_plan.preview.json",
+              "lprod/worker_commands.json",
+              "lprod/checkpoint/built_metadata.json",
+              "lprod/checkpoint/checkpoint_export_manifest.json",
+              "lprod/checkpoint/csr_metadata.json",
+              "lprod/checkpoint/region_dof_metadata.json",
+              "lprod/checkpoint/synthesis_metadata.json",
+              "worker_results/sample_002_chunk_01/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_01/chunk_targets.json",
+              "worker_results/sample_002_chunk_01/env_probe.json",
+              "worker_results/sample_002_chunk_01/solver_result.json",
+              "worker_results/sample_002_chunk_01/worker_result.json",
+              "worker_results/sample_002_chunk_02/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_02/chunk_targets.json",
+              "worker_results/sample_002_chunk_02/env_probe.json",
+              "worker_results/sample_002_chunk_02/solver_result.json",
+              "worker_results/sample_002_chunk_02/worker_result.json",
+              "worker_results/sample_002_chunk_03/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_03/chunk_targets.json",
+              "worker_results/sample_002_chunk_03/env_probe.json",
+              "worker_results/sample_002_chunk_03/solver_result.json",
+              "worker_results/sample_002_chunk_03/worker_result.json",
+              "worker_results/sample_002_chunk_04/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_04/chunk_targets.json",
+              "worker_results/sample_002_chunk_04/env_probe.json",
+              "worker_results/sample_002_chunk_04/solver_result.json",
+              "worker_results/sample_002_chunk_04/worker_result.json",
+              "worker_results/sample_002_chunk_05/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_05/chunk_targets.json",
+              "worker_results/sample_002_chunk_05/env_probe.json",
+              "worker_results/sample_002_chunk_05/solver_result.json",
+              "worker_results/sample_002_chunk_05/worker_result.json",
+              "worker_results/sample_002_chunk_06/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_06/chunk_targets.json",
+              "worker_results/sample_002_chunk_06/env_probe.json",
+              "worker_results/sample_002_chunk_06/solver_result.json",
+              "worker_results/sample_002_chunk_06/worker_result.json",
+              "worker_results/sample_002_chunk_07/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_07/chunk_targets.json",
+              "worker_results/sample_002_chunk_07/env_probe.json",
+              "worker_results/sample_002_chunk_07/solver_result.json",
+              "worker_results/sample_002_chunk_07/worker_result.json",
+              "worker_results/sample_002_chunk_08/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_08/chunk_targets.json",
+              "worker_results/sample_002_chunk_08/env_probe.json",
+              "worker_results/sample_002_chunk_08/solver_result.json",
+              "worker_results/sample_002_chunk_08/worker_result.json",
+              "worker_results/sample_002_chunk_09/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_09/chunk_targets.json",
+              "worker_results/sample_002_chunk_09/env_probe.json",
+              "worker_results/sample_002_chunk_09/solver_result.json",
+              "worker_results/sample_002_chunk_09/worker_result.json",
+              "worker_results/sample_002_chunk_10/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_10/chunk_targets.json",
+              "worker_results/sample_002_chunk_10/env_probe.json",
+              "worker_results/sample_002_chunk_10/solver_result.json",
+              "worker_results/sample_002_chunk_10/worker_result.json",
+              "worker_results/sample_002_chunk_11/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_11/chunk_targets.json",
+              "worker_results/sample_002_chunk_11/env_probe.json",
+              "worker_results/sample_002_chunk_11/solver_result.json",
+              "worker_results/sample_002_chunk_11/worker_result.json",
+              "worker_results/sample_002_chunk_12/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_12/chunk_targets.json",
+              "worker_results/sample_002_chunk_12/env_probe.json",
+              "worker_results/sample_002_chunk_12/solver_result.json",
+              "worker_results/sample_002_chunk_12/worker_result.json",
+              "worker_results/sample_002_chunk_13/checkpoint_solve_manifest.json",
+              "worker_results/sample_002_chunk_13/chunk_targets.json",
+              "worker_results/sample_002_chunk_13/env_probe.json",
+              "worker_results/sample_002_chunk_13/solver_result.json",
+              "worker_results/sample_002_chunk_13/worker_result.json",
+              "aggregation/modes_catalog.jsonl",
+              "pipeline_run_manifest.json"
+            ],
+            "contamination_hits": [],
+            "contamination_detected": false
+          },
+          "frequency_policy": {
+            "band_hz": [
+              60.0,
+              550.0
+            ],
+            "scout_spacing_hz": 7.5,
+            "scout_half_width_hz": 3.75,
+            "zone_spacing_hz": {
+              "ZONE_1_dense": 6.0,
+              "ZONE_2_medium": 9.0,
+              "ZONE_3_sparse": 12.5
+            }
+          },
+          "solver_config": {},
+          "model_version": null,
+          "region_dof_policy": null,
+          "target_plan_semantic": {
+            "targets_hz": [
+              64.5,
+              73.5,
+              82.5,
+              91.5,
+              100.5,
+              105.5,
+              116.25,
+              128.75,
+              138.0,
+              144.0,
+              150.0,
+              156.0,
+              157.0,
+              166.25,
+              178.75,
+              191.25,
+              203.75,
+              214.5,
+              223.5,
+              230.5,
+              241.25,
+              253.75,
+              263.0,
+              269.0,
+              275.0,
+              281.0,
+              282.0,
+              289.5,
+              298.5,
+              305.5,
+              316.25,
+              328.75,
+              339.5,
+              348.5,
+              355.5,
+              366.25,
+              378.75,
+              391.25,
+              403.75,
+              413.0,
+              419.0,
+              425.0,
+              431.0,
+              432.0,
+              441.25,
+              453.75,
+              466.25,
+              478.75,
+              488.0,
+              494.0,
+              500.0,
+              506.0,
+              512.0,
+              518.0,
+              524.0,
+              530.0,
+              536.0,
+              542.0,
+              547.0
+            ],
+            "target_count": 59,
+            "frequency_range_hz": [
+              64.5,
+              547.0
+            ],
+            "chunk_count": 13,
+            "chunk_layout": [
+              {
+                "chunk_id": "sample_002_chunk_01",
+                "targets_hz": [
+                  64.5,
+                  73.5,
+                  82.5,
+                  91.5,
+                  100.5
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_02",
+                "targets_hz": [
+                  105.5,
+                  116.25,
+                  128.75
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_03",
+                "targets_hz": [
+                  138.0,
+                  144.0,
+                  150.0,
+                  156.0,
+                  157.0
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_04",
+                "targets_hz": [
+                  166.25,
+                  178.75,
+                  191.25,
+                  203.75
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_05",
+                "targets_hz": [
+                  214.5,
+                  223.5,
+                  230.5
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_06",
+                "targets_hz": [
+                  241.25,
+                  253.75,
+                  263.0,
+                  269.0,
+                  275.0,
+                  281.0,
+                  282.0
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_07",
+                "targets_hz": [
+                  289.5,
+                  298.5,
+                  305.5
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_08",
+                "targets_hz": [
+                  316.25,
+                  328.75,
+                  339.5,
+                  348.5,
+                  355.5
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_09",
+                "targets_hz": [
+                  366.25,
+                  378.75,
+                  391.25,
+                  403.75
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_10",
+                "targets_hz": [
+                  413.0,
+                  419.0,
+                  425.0,
+                  431.0,
+                  432.0
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_11",
+                "targets_hz": [
+                  441.25,
+                  453.75,
+                  466.25,
+                  478.75
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_12",
+                "targets_hz": [
+                  488.0,
+                  494.0,
+                  500.0,
+                  506.0,
+                  512.0,
+                  518.0,
+                  524.0
+                ]
+              },
+              {
+                "chunk_id": "sample_002_chunk_13",
+                "targets_hz": [
+                  530.0,
+                  536.0,
+                  542.0,
+                  547.0
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "candidate_in_run_target_plan_available": false,
+      "candidate_in_run_target_plan_sha256": null,
+      "candidate_recorded_target_plan_sha256": null,
+      "reference_in_run_target_plan_available": false,
+      "reference_in_run_target_plan_sha256": null,
+      "authoritative_target_plan": {
+        "schema": "m4_lprod_target_plan_v1",
+        "targets_hz": [
+          64.5,
+          73.5,
+          82.5,
+          91.5,
+          100.5,
+          105.5,
+          116.25,
+          128.75,
+          138.0,
+          144.0,
+          150.0,
+          156.0,
+          157.0,
+          166.25,
+          178.75,
+          191.25,
+          203.75,
+          214.5,
+          223.5,
+          230.5,
+          241.25,
+          253.75,
+          263.0,
+          269.0,
+          275.0,
+          281.0,
+          282.0,
+          289.5,
+          298.5,
+          305.5,
+          316.25,
+          328.75,
+          339.5,
+          348.5,
+          355.5,
+          366.25,
+          378.75,
+          391.25,
+          403.75,
+          413.0,
+          419.0,
+          425.0,
+          431.0,
+          432.0,
+          441.25,
+          453.75,
+          466.25,
+          478.75,
+          488.0,
+          494.0,
+          500.0,
+          506.0,
+          512.0,
+          518.0,
+          524.0,
+          530.0,
+          536.0,
+          542.0,
+          547.0
+        ],
+        "target_count": 59,
+        "frequency_range_hz": [
+          64.5,
+          547.0
+        ],
+        "chunks": [
+          {
+            "chunk_id": "sample_002_chunk_01",
+            "freq_range_hz": [
+              64.5,
+              100.5
+            ],
+            "zone_ids": [
+              "ZONE_2_medium"
+            ],
+            "targets_hz": [
+              64.5,
+              73.5,
+              82.5,
+              91.5,
+              100.5
+            ],
+            "target_windows_hz": [
+              [
+                60.0,
+                69.0
+              ],
+              [
+                69.0,
+                78.0
+              ],
+              [
+                78.0,
+                87.0
+              ],
+              [
+                87.0,
+                96.0
+              ],
+              [
+                96.0,
+                105.0
+              ]
+            ],
+            "target_count": 5,
+            "estimated_cost": {
+              "target_count": 5,
+              "estimated_seconds": 475.0,
+              "relative_weight": 475.0
+            },
+            "status": "PLANNED_NOT_EXECUTED",
+            "assigned_worker_id": null,
+            "priority": 0
+          },
+          {
+            "chunk_id": "sample_002_chunk_02",
+            "freq_range_hz": [
+              105.5,
+              128.75
+            ],
+            "zone_ids": [
+              "ZONE_2_medium",
+              "ZONE_3_sparse"
+            ],
+            "targets_hz": [
+              105.5,
+              116.25,
+              128.75
+            ],
+            "target_windows_hz": [
+              [
+                101.0,
+                110.0
+              ],
+              [
+                110.0,
+                122.5
+              ],
+              [
+                122.5,
+                135.0
+              ]
+            ],
+            "target_count": 3,
+            "estimated_cost": {
+              "target_count": 3,
+              "estimated_seconds": 285.0,
+              "relative_weight": 285.0
+            },
+            "status": "PLANNED_NOT_EXECUTED",
+            "assigned_worker_id": null,
+            "priority": 0
+          },
+          {
+            "chunk_id": "sample_002_chunk_03",
+            "freq_range_hz": [
+              138.0,
+              157.0
+            ],
+            "zone_ids": [
+              "ZONE_1_dense"
+            ],
+            "targets_hz": [
+              138.0,
+              144.0,
+              150.0,
+              156.0,
+              157.0
+            ],
+            "target_windows_hz": [
+              [
+                135.0,
+                141.0
+              ],
+              [
+                141.0,
+                147.0
+              ],
+              [
+                147.0,
+                153.0
+              ],
+              [
+                153.0,
+                159.0
+              ],
+              [
+                154.0,
+                160.0
+              ]
+            ],
+            "target_count": 5,
+            "estimated_cost": {
+              "target_count": 5,
+              "estimated_seconds": 475.0,
+              "relative_weight": 475.0
+            },
+            "status": "PLANNED_NOT_EXECUTED",
+            "assigned_worker_id": null,
+            "priority": 0
+          },
+          {
+            "chunk_id": "sample_002_chunk_04",
+            "freq_range_hz": [
+              166.25,
+              203.75
+            ],
+            "zone_ids": [
+              "ZONE_3_sparse"
+            ],
+            "targets_hz": [
+              166.25,
+              178.75,
+              191.25,
+              203.75
+            ],
+            "target_windows_hz": [
+              [
+                160.0,
+                172.5
+              ],
+              [
+                172.5,
+                185.0
+              ],
+              [
+                185.0,
+                197.5
+              ],
+              [
+                197.5,
+                210.0
+              ]
+            ],
+            "target_count": 4,
+            "estimated_cost": {
+              "target_count": 4,
+              "estimated_seconds": 380.0,
+              "relative_weight": 380.0
+            },
+            "status": "PLANNED_NOT_EXECUTED",
+            "assigned_worker_id": null,
+            "priority": 0
+          },
+          {
+            "chunk_id": "sample_002_chunk_05",
+            "freq_range_hz": [
+              214.5,
+              230.5
+            ],
+            "zone_ids": [
+              "ZONE_2_medium"
+            ],
+            "targets_hz": [
+              214.5,
+              223.5,
+              230.5
+            ],
+            "target_windows_hz": [
+              [
+                210.0,
+                219.0
+              ],
+              [
+                219.0,
+                228.0
+              ],
+              [
+                226.0,
+                235.0
+              ]
+            ],
+            "target_count": 3,
+            "estimated_cost": {
+              "target_count": 3,
+              "estimated_seconds": 285.0,
+              "relative_weight": 285.0
+            },
+            "status": "PLANNED_NOT_EXECUTED",
+            "assigned_worker_id": null,
+            "priority": 0
+          },
+          {
+            "chunk_id": "sample_002_chunk_06",
+            "freq_range_hz": [
+              241.25,
+              282.0
+            ],
+            "zone_ids": [
+              "ZONE_3_sparse",
+              "ZONE_1_dense"
+            ],
+            "targets_hz": [
+              241.25,
+              253.75,
+              263.0,
+              269.0,
+              275.0,
+              281.0,
+              282.0
+            ],
+            "target_windows_hz": [
+              [
+                235.0,
+                247.5
+              ],
+              [
+                247.5,
+                260.0
+              ],
+              [
+                260.0,
+                266.0
+              ],
+              [
+                266.0,
+                272.0
+              ],
+              [
+                272.0,
+                278.0
+              ],
+              [
+                278.0,
+                284.0
+              ],
+              [
+                279.0,
+                285.0
+              ]
+            ],
+            "target_count": 7,
+            "estimated_cost": {
+              "target_count": 7,
+              "estimated_seconds": 665.0,
+              "relative_weight": 665.0
+            },
+            "status": "PLANNED_NOT_EXECUTED",
+            "assigned_worker_id": null,
+            "priority": 0
+          },
+          {
+            "chunk_id": "sample_002_chunk_07",
+            "freq_range_hz": [
+              289.5,
+              305.5
+            ],
+            "zone_ids": [
+              "ZONE_2_medium"
+            ],
+            "targets_hz": [
+              289.5,
+              298.5,
+              305.5
+            ],
+            "target_windows_hz": [
+              [
+                285.0,
+                294.0
+              ],
+              [
+                294.0,
+                303.0
+              ],
+              [
+                301.0,
+                310.0
+              ]
+            ],
+            "target_count": 3,
+            "estimated_cost": {
+              "target_count": 3,
+              "estimated_seconds": 285.0,
+              "relative_weight": 285.0
+            },
+            "status": "PLANNED_NOT_EXECUTED",
+            "assigned_worker_id": null,
+            "priority": 0
+          },
+          {
+            "chunk_id": "sample_002_chunk_08",
+            "freq_range_hz": [
+              316.25,
+              355.5
+            ],
+            "zone_ids": [
+              "ZONE_3_sparse",
+              "ZONE_2_medium"
+            ],
+            "targets_hz": [
+              316.25,
+              328.75,
+              339.5,
+              348.5,
+              355.5
+            ],
+            "target_windows_hz": [
+              [
+                310.0,
+                322.5
+              ],
+              [
+                322.5,
+                335.0
+              ],
+              [
+                335.0,
+                344.0
+              ],
+              [
+                344.0,
+                353.0
+              ],
+              [
+                351.0,
+                360.0
+              ]
+            ],
+            "target_count": 5,
+            "estimated_cost": {
+              "target_count": 5,
+              "estimated_seconds": 475.0,
+              "relative_weight": 475.0
+            },
+            "status": "PLANNED_NOT_EXECUTED",
+            "assigned_worker_id": null,
+            "priority": 0
+          },
+          {
+            "chunk_id": "sample_002_chunk_09",
+            "freq_range_hz": [
+              366.25,
+              403.75
+            ],
+            "zone_ids": [
+              "ZONE_3_sparse"
+            ],
+            "targets_hz": [
+              366.25,
+              378.75,
+              391.25,
+              403.75
+            ],
+            "target_windows_hz": [
+              [
+                360.0,
+                372.5
+              ],
+              [
+                372.5,
+                385.0
+              ],
+              [
+                385.0,
+                397.5
+              ],
+              [
+                397.5,
+                410.0
+              ]
+            ],
+            "target_count": 4,
+            "estimated_cost": {
+              "target_count": 4,
+              "estimated_seconds": 380.0,
+              "relative_weight": 380.0
+            },
+            "status": "PLANNED_NOT_EXECUTED",
+            "assigned_worker_id": null,
+            "priority": 0
+          },
+          {
+            "chunk_id": "sample_002_chunk_10",
+            "freq_range_hz": [
+              413.0,
+              432.0
+            ],
+            "zone_ids": [
+              "ZONE_1_dense"
+            ],
+            "targets_hz": [
+              413.0,
+              419.0,
+              425.0,
+              431.0,
+              432.0
+            ],
+            "target_windows_hz": [
+              [
+                410.0,
+                416.0
+              ],
+              [
+                416.0,
+                422.0
+              ],
+              [
+                422.0,
+                428.0
+              ],
+              [
+                428.0,
+                434.0
+              ],
+              [
+                429.0,
+                435.0
+              ]
+            ],
+            "target_count": 5,
+            "estimated_cost": {
+              "target_count": 5,
+              "estimated_seconds": 475.0,
+              "relative_weight": 475.0
+            },
+            "status": "PLANNED_NOT_EXECUTED",
+            "assigned_worker_id": null,
+            "priority": 0
+          },
+          {
+            "chunk_id": "sample_002_chunk_11",
+            "freq_range_hz": [
+              441.25,
+              478.75
+            ],
+            "zone_ids": [
+              "ZONE_3_sparse"
+            ],
+            "targets_hz": [
+              441.25,
+              453.75,
+              466.25,
+              478.75
+            ],
+            "target_windows_hz": [
+              [
+                435.0,
+                447.5
+              ],
+              [
+                447.5,
+                460.0
+              ],
+              [
+                460.0,
+                472.5
+              ],
+              [
+                472.5,
+                485.0
+              ]
+            ],
+            "target_count": 4,
+            "estimated_cost": {
+              "target_count": 4,
+              "estimated_seconds": 380.0,
+              "relative_weight": 380.0
+            },
+            "status": "PLANNED_NOT_EXECUTED",
+            "assigned_worker_id": null,
+            "priority": 0
+          },
+          {
+            "chunk_id": "sample_002_chunk_12",
+            "freq_range_hz": [
+              488.0,
+              524.0
+            ],
+            "zone_ids": [
+              "ZONE_1_dense"
+            ],
+            "targets_hz": [
+              488.0,
+              494.0,
+              500.0,
+              506.0,
+              512.0,
+              518.0,
+              524.0
+            ],
+            "target_windows_hz": [
+              [
+                485.0,
+                491.0
+              ],
+              [
+                491.0,
+                497.0
+              ],
+              [
+                497.0,
+                503.0
+              ],
+              [
+                503.0,
+                509.0
+              ],
+              [
+                509.0,
+                515.0
+              ],
+              [
+                515.0,
+                521.0
+              ],
+              [
+                521.0,
+                527.0
+              ]
+            ],
+            "target_count": 7,
+            "estimated_cost": {
+              "target_count": 7,
+              "estimated_seconds": 665.0,
+              "relative_weight": 665.0
+            },
+            "status": "PLANNED_NOT_EXECUTED",
+            "assigned_worker_id": null,
+            "priority": 0
+          },
+          {
+            "chunk_id": "sample_002_chunk_13",
+            "freq_range_hz": [
+              530.0,
+              547.0
+            ],
+            "zone_ids": [
+              "ZONE_1_dense"
+            ],
+            "targets_hz": [
+              530.0,
+              536.0,
+              542.0,
+              547.0
+            ],
+            "target_windows_hz": [
+              [
+                527.0,
+                533.0
+              ],
+              [
+                533.0,
+                539.0
+              ],
+              [
+                539.0,
+                545.0
+              ],
+              [
+                544.0,
+                550.0
+              ]
+            ],
+            "target_count": 4,
+            "estimated_cost": {
+              "target_count": 4,
+              "estimated_seconds": 380.0,
+              "relative_weight": 380.0
+            },
+            "status": "PLANNED_NOT_EXECUTED",
+            "assigned_worker_id": null,
+            "priority": 0
+          }
+        ],
+        "reconstruction_method": "reconstructed_exact_from_durable_provenance",
+        "source_artifacts": [
+          {
+            "path": "lprod/worker_chunk_plan.preview.json",
+            "sha256": "7729d5f8e22d6ebc81c2842aaefdf55a85d86f70497d01dd398ef2b20e03fea7"
+          }
+        ]
+      }
+    },
+    "cleanup_barrier_precondition_pass": false
+  },
+  "acceptance_pass": false,
+  "exit_code": 2
+}

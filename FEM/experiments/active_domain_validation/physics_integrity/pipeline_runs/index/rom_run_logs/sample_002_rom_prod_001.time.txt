@@ -1,0 +1,24 @@
+Command exited with non-zero status 1
+	Command being timed: "python FEM/experiments/active_domain_validation/physics_integrity/scripts/run_m4_production_pipeline.py --force-sample sample_002 --run-id-suffix rom_prod_001 --mesh-profile rom --dataset-version m4_geometry_corrected_rommesh_v1 --workers 3 --target-plan-file FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/validation_inputs/sample_sample_002_reference_0661505c893237ee/target_plan.json --execute --compact-after-sample"
+	User time (seconds): 1542.11
+	System time (seconds): 176.06
+	Percent of CPU this job got: 305%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 9:23.14
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 2099384
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 14228620
+	Voluntary context switches: 11003
+	Involuntary context switches: 152452
+	Swaps: 0
+	File system inputs: 280
+	File system outputs: 239936
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1

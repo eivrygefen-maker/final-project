@@ -1,0 +1,323 @@
+{
+  "schema": "m4_direct_run_compare_v1",
+  "comparison_executed": true,
+  "reference_run": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_002/runs/sample_002_m4prod2_strict_clean5",
+  "rom_run": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_002/runs/sample_002_rom_prod_004",
+  "match_tolerance_hz": 5.0,
+  "artifacts": {
+    "reference": {
+      "aggregation/modes_catalog_deduped.jsonl": {
+        "present": true,
+        "loaded": false
+      },
+      "aggregation/modes_summary.json": {
+        "present": true,
+        "loaded": true
+      },
+      "aggregation/runtime_summary.json": {
+        "present": true,
+        "loaded": true
+      },
+      "aggregation/aggregation_result.json": {
+        "present": true,
+        "loaded": true
+      },
+      "m4_sample_runtime_provenance.json": {
+        "present": true,
+        "loaded": true
+      },
+      "sample/sample_input.json": {
+        "present": true,
+        "loaded": true
+      },
+      "freeze/freeze_manifest.json": {
+        "present": true,
+        "loaded": true
+      },
+      "freeze/physics_identity_manifest.json": {
+        "present": true,
+        "loaded": true
+      }
+    },
+    "rom": {
+      "aggregation/modes_catalog_deduped.jsonl": {
+        "present": true,
+        "loaded": false
+      },
+      "aggregation/modes_summary.json": {
+        "present": true,
+        "loaded": true
+      },
+      "aggregation/runtime_summary.json": {
+        "present": true,
+        "loaded": true
+      },
+      "aggregation/aggregation_result.json": {
+        "present": true,
+        "loaded": true
+      },
+      "m4_sample_runtime_provenance.json": {
+        "present": true,
+        "loaded": true
+      },
+      "sample/sample_input.json": {
+        "present": true,
+        "loaded": true
+      },
+      "freeze/freeze_manifest.json": {
+        "present": true,
+        "loaded": true
+      },
+      "freeze/physics_identity_manifest.json": {
+        "present": true,
+        "loaded": true
+      }
+    }
+  },
+  "catalog_sources": {
+    "reference": "aggregation/modes_catalog_deduped.jsonl",
+    "rom": "aggregation/modes_catalog_deduped.jsonl"
+  },
+  "mode_counts": {
+    "reference_deduped_modes": 506,
+    "rom_deduped_modes": 612,
+    "count_ratio_rom_over_reference": 1.209486166007905,
+    "status": "AVAILABLE"
+  },
+  "frequency_matching": {
+    "status": "AVAILABLE",
+    "matched_count": 495,
+    "unmatched_reference_count": 11,
+    "unmatched_rom_count": 117,
+    "reference_recall": 0.9782608695652174,
+    "absolute_frequency_error_hz": {
+      "median": 0.25792699999999513,
+      "p95": 1.2121969000000024,
+      "maximum": 4.400866999999948
+    },
+    "relative_frequency_error": {
+      "median": 0.0009073382100994182,
+      "p95": 0.005016783521073264,
+      "maximum": 0.018122450592024424
+    }
+  },
+  "frequency_bands": {
+    "60_150": {
+      "reference_count": 79,
+      "rom_count": 106,
+      "matched_count": 78,
+      "recall": 0.9873417721518988,
+      "median_rel_frequency_error": 0.0015017197298943794,
+      "p95_rel_frequency_error": 0.007923612612852448
+    },
+    "150_250": {
+      "reference_count": 83,
+      "rom_count": 95,
+      "matched_count": 80,
+      "recall": 0.963855421686747,
+      "median_rel_frequency_error": 0.0010508541437755823,
+      "p95_rel_frequency_error": 0.004971458229223647
+    },
+    "250_350": {
+      "reference_count": 115,
+      "rom_count": 131,
+      "matched_count": 112,
+      "recall": 0.9739130434782609,
+      "median_rel_frequency_error": 0.0011515310732087992,
+      "p95_rel_frequency_error": 0.004002782116386289
+    },
+    "350_450": {
+      "reference_count": 94,
+      "rom_count": 117,
+      "matched_count": 91,
+      "recall": 0.9680851063829787,
+      "median_rel_frequency_error": 0.0007339120056007775,
+      "p95_rel_frequency_error": 0.00316481153876519
+    },
+    "450_550": {
+      "reference_count": 135,
+      "rom_count": 163,
+      "matched_count": 134,
+      "recall": 0.9925925925925926,
+      "median_rel_frequency_error": 0.0005427736355981486,
+      "p95_rel_frequency_error": 0.0034686037153285358
+    }
+  },
+  "participation": {
+    "status": "AVAILABLE",
+    "top_share": {
+      "median_abs_difference": 0.030151190760123625,
+      "p95_abs_difference": 0.2854072753107715
+    },
+    "back_share": {
+      "median_abs_difference": 0.035083411191799585,
+      "p95_abs_difference": 0.6096765253829729
+    },
+    "air_share": {
+      "median_abs_difference": 0.004923460105473448,
+      "p95_abs_difference": 0.8978727854408268
+    },
+    "aggregate": {
+      "median_abs_difference": 0.025196484182694823,
+      "p95_abs_difference": 0.6085171969094043
+    }
+  },
+  "coupling_classification": {
+    "status": "AVAILABLE",
+    "coupling_class_agreement": 0.7919191919191919,
+    "coupling_pairs_compared": 495,
+    "dominant_region_agreement": 0.8545454545454545,
+    "dominant_region_pairs_compared": 495
+  },
+  "proxies": {
+    "bridge_excitation_abs": {
+      "status": "AVAILABLE",
+      "field": "bridge_excitation_abs",
+      "matched_count": 495,
+      "spearman_rank_correlation": 0.10043760710144413,
+      "top10_overlap": {
+        "overlap_count": 0,
+        "reference_top10_ids": [
+          "138.136972",
+          "91.38311",
+          "230.768664",
+          "465.525151",
+          "64.469114",
+          "105.93034",
+          "404.03907",
+          "128.448938",
+          "347.800544",
+          "166.733334"
+        ],
+        "candidate_top10_ids": [
+          "418.49831",
+          "177.927279",
+          "222.600778",
+          "229.9317",
+          "213.790246",
+          "91.436507",
+          "65.378863",
+          "155.687293",
+          "150.022396",
+          "81.314325"
+        ]
+      },
+      "median_amplitude_ratio": 1.0305004296506648,
+      "p95_amplitude_ratio": 11.688805748386846,
+      "median_abs_difference": 0.0009635856616141186,
+      "p95_abs_difference": 0.0031346992093624028
+    },
+    "mic_output_proxy": {
+      "status": "AVAILABLE",
+      "field": "mic_output_proxy",
+      "matched_count": 495,
+      "spearman_rank_correlation": 0.6421894602285095,
+      "top10_overlap": {
+        "overlap_count": 0,
+        "reference_top10_ids": [
+          "530.644554",
+          "529.351823",
+          "530.426205",
+          "529.72732",
+          "529.485582",
+          "530.132889",
+          "529.617036",
+          "523.993463",
+          "524.588168",
+          "536.383146"
+        ],
+        "candidate_top10_ids": [
+          "202.909269",
+          "529.11949",
+          "204.804738",
+          "529.249429",
+          "530.317777",
+          "528.945336",
+          "530.827857",
+          "203.920496",
+          "524.129373",
+          "529.762373"
+        ]
+      },
+      "median_amplitude_ratio": 2.3715536361895615,
+      "p95_amplitude_ratio": 16.37111498335802,
+      "median_abs_difference": 1.9722609874808333e-06,
+      "p95_abs_difference": 1.9805252364328536e-05
+    },
+    "radiation_proxy": {
+      "status": "AVAILABLE",
+      "field": "radiation_proxy",
+      "matched_count": 495,
+      "spearman_rank_correlation": 0.20054426332015465,
+      "top10_overlap": {
+        "overlap_count": 0,
+        "reference_top10_ids": [
+          "530.644554",
+          "536.383146",
+          "530.426205",
+          "529.72732",
+          "529.485582",
+          "347.800544",
+          "529.617036",
+          "529.351823",
+          "138.136972",
+          "465.525151"
+        ],
+        "candidate_top10_ids": [
+          "530.317777",
+          "529.11949",
+          "529.249429",
+          "524.129373",
+          "466.753942",
+          "530.827857",
+          "440.466968",
+          "524.181124",
+          "429.824714",
+          "535.262694"
+        ]
+      },
+      "median_amplitude_ratio": 1.1321162273543557,
+      "p95_amplitude_ratio": 7.352908630746107,
+      "median_abs_difference": 0.0006200314401157276,
+      "p95_abs_difference": 0.002033702766937606
+    }
+  },
+  "performance": {
+    "reference_worker_count": 2,
+    "rom_worker_count": 3,
+    "reference_worker_phase_s": 18660.37,
+    "rom_worker_phase_s": 1542.66,
+    "reference_total_pipeline_s": 18660.37,
+    "rom_total_pipeline_s": 1542.66,
+    "reference_peak_rss_bytes_per_worker": null,
+    "rom_peak_rss_bytes_per_worker": 3651870720,
+    "worker_phase_speedup": 12.096229888633916,
+    "total_pipeline_speedup": 12.096229888633916,
+    "rom_samples_per_reference_sample_worker_phase": 12.096229888633916,
+    "rom_samples_per_reference_sample_total_pipeline": 12.096229888633916
+  },
+  "mesh_scale": {
+    "status": "AVAILABLE",
+    "reference": {
+      "nodes": null,
+      "tetrahedra": null,
+      "active_dimension": 418030
+    },
+    "rom": {
+      "nodes": null,
+      "tetrahedra": null,
+      "active_dimension": 216743
+    },
+    "node_count_reduction_percent": null,
+    "tetrahedra_reduction_percent": null,
+    "active_dimension_reduction_percent": 48.15132885199627
+  },
+  "practical_conclusion": {
+    "information_retention_per_sample": 0.9773732560988158,
+    "throughput_gain": 12.096229888633916,
+    "estimated_ROM_samples_per_reference_sample": 12.096229888633916,
+    "recommendation": "FAVOR_ROM_FOR_DIVERSITY",
+    "recommendation_reason": "throughput_gain_outweighs_moderate_per_sample_loss",
+    "guiding_question": "Under the same compute-time budget, is the loss per lightweight sample outweighed by the increased number and diversity of training samples?"
+  }
+}

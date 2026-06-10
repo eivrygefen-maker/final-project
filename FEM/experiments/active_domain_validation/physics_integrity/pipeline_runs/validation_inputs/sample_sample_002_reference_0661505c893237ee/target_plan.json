@@ -1,0 +1,675 @@
+{
+  "schema": "m4_lprod_target_plan_v1",
+  "targets_hz": [
+    64.5,
+    73.5,
+    82.5,
+    91.5,
+    100.5,
+    105.5,
+    116.25,
+    128.75,
+    138.0,
+    144.0,
+    150.0,
+    156.0,
+    157.0,
+    166.25,
+    178.75,
+    191.25,
+    203.75,
+    214.5,
+    223.5,
+    230.5,
+    241.25,
+    253.75,
+    263.0,
+    269.0,
+    275.0,
+    281.0,
+    282.0,
+    289.5,
+    298.5,
+    305.5,
+    316.25,
+    328.75,
+    339.5,
+    348.5,
+    355.5,
+    366.25,
+    378.75,
+    391.25,
+    403.75,
+    413.0,
+    419.0,
+    425.0,
+    431.0,
+    432.0,
+    441.25,
+    453.75,
+    466.25,
+    478.75,
+    488.0,
+    494.0,
+    500.0,
+    506.0,
+    512.0,
+    518.0,
+    524.0,
+    530.0,
+    536.0,
+    542.0,
+    547.0
+  ],
+  "target_count": 59,
+  "frequency_range_hz": [
+    64.5,
+    547.0
+  ],
+  "chunks": [
+    {
+      "chunk_id": "sample_002_chunk_01",
+      "freq_range_hz": [
+        64.5,
+        100.5
+      ],
+      "zone_ids": [
+        "ZONE_2_medium"
+      ],
+      "targets_hz": [
+        64.5,
+        73.5,
+        82.5,
+        91.5,
+        100.5
+      ],
+      "target_windows_hz": [
+        [
+          60.0,
+          69.0
+        ],
+        [
+          69.0,
+          78.0
+        ],
+        [
+          78.0,
+          87.0
+        ],
+        [
+          87.0,
+          96.0
+        ],
+        [
+          96.0,
+          105.0
+        ]
+      ],
+      "target_count": 5,
+      "estimated_cost": {
+        "target_count": 5,
+        "estimated_seconds": 475.0,
+        "relative_weight": 475.0
+      },
+      "status": "PLANNED_NOT_EXECUTED",
+      "assigned_worker_id": null,
+      "priority": 0
+    },
+    {
+      "chunk_id": "sample_002_chunk_02",
+      "freq_range_hz": [
+        105.5,
+        128.75
+      ],
+      "zone_ids": [
+        "ZONE_2_medium",
+        "ZONE_3_sparse"
+      ],
+      "targets_hz": [
+        105.5,
+        116.25,
+        128.75
+      ],
+      "target_windows_hz": [
+        [
+          101.0,
+          110.0
+        ],
+        [
+          110.0,
+          122.5
+        ],
+        [
+          122.5,
+          135.0
+        ]
+      ],
+      "target_count": 3,
+      "estimated_cost": {
+        "target_count": 3,
+        "estimated_seconds": 285.0,
+        "relative_weight": 285.0
+      },
+      "status": "PLANNED_NOT_EXECUTED",
+      "assigned_worker_id": null,
+      "priority": 0
+    },
+    {
+      "chunk_id": "sample_002_chunk_03",
+      "freq_range_hz": [
+        138.0,
+        157.0
+      ],
+      "zone_ids": [
+        "ZONE_1_dense"
+      ],
+      "targets_hz": [
+        138.0,
+        144.0,
+        150.0,
+        156.0,
+        157.0
+      ],
+      "target_windows_hz": [
+        [
+          135.0,
+          141.0
+        ],
+        [
+          141.0,
+          147.0
+        ],
+        [
+          147.0,
+          153.0
+        ],
+        [
+          153.0,
+          159.0
+        ],
+        [
+          154.0,
+          160.0
+        ]
+      ],
+      "target_count": 5,
+      "estimated_cost": {
+        "target_count": 5,
+        "estimated_seconds": 475.0,
+        "relative_weight": 475.0
+      },
+      "status": "PLANNED_NOT_EXECUTED",
+      "assigned_worker_id": null,
+      "priority": 0
+    },
+    {
+      "chunk_id": "sample_002_chunk_04",
+      "freq_range_hz": [
+        166.25,
+        203.75
+      ],
+      "zone_ids": [
+        "ZONE_3_sparse"
+      ],
+      "targets_hz": [
+        166.25,
+        178.75,
+        191.25,
+        203.75
+      ],
+      "target_windows_hz": [
+        [
+          160.0,
+          172.5
+        ],
+        [
+          172.5,
+          185.0
+        ],
+        [
+          185.0,
+          197.5
+        ],
+        [
+          197.5,
+          210.0
+        ]
+      ],
+      "target_count": 4,
+      "estimated_cost": {
+        "target_count": 4,
+        "estimated_seconds": 380.0,
+        "relative_weight": 380.0
+      },
+      "status": "PLANNED_NOT_EXECUTED",
+      "assigned_worker_id": null,
+      "priority": 0
+    },
+    {
+      "chunk_id": "sample_002_chunk_05",
+      "freq_range_hz": [
+        214.5,
+        230.5
+      ],
+      "zone_ids": [
+        "ZONE_2_medium"
+      ],
+      "targets_hz": [
+        214.5,
+        223.5,
+        230.5
+      ],
+      "target_windows_hz": [
+        [
+          210.0,
+          219.0
+        ],
+        [
+          219.0,
+          228.0
+        ],
+        [
+          226.0,
+          235.0
+        ]
+      ],
+      "target_count": 3,
+      "estimated_cost": {
+        "target_count": 3,
+        "estimated_seconds": 285.0,
+        "relative_weight": 285.0
+      },
+      "status": "PLANNED_NOT_EXECUTED",
+      "assigned_worker_id": null,
+      "priority": 0
+    },
+    {
+      "chunk_id": "sample_002_chunk_06",
+      "freq_range_hz": [
+        241.25,
+        282.0
+      ],
+      "zone_ids": [
+        "ZONE_3_sparse",
+        "ZONE_1_dense"
+      ],
+      "targets_hz": [
+        241.25,
+        253.75,
+        263.0,
+        269.0,
+        275.0,
+        281.0,
+        282.0
+      ],
+      "target_windows_hz": [
+        [
+          235.0,
+          247.5
+        ],
+        [
+          247.5,
+          260.0
+        ],
+        [
+          260.0,
+          266.0
+        ],
+        [
+          266.0,
+          272.0
+        ],
+        [
+          272.0,
+          278.0
+        ],
+        [
+          278.0,
+          284.0
+        ],
+        [
+          279.0,
+          285.0
+        ]
+      ],
+      "target_count": 7,
+      "estimated_cost": {
+        "target_count": 7,
+        "estimated_seconds": 665.0,
+        "relative_weight": 665.0
+      },
+      "status": "PLANNED_NOT_EXECUTED",
+      "assigned_worker_id": null,
+      "priority": 0
+    },
+    {
+      "chunk_id": "sample_002_chunk_07",
+      "freq_range_hz": [
+        289.5,
+        305.5
+      ],
+      "zone_ids": [
+        "ZONE_2_medium"
+      ],
+      "targets_hz": [
+        289.5,
+        298.5,
+        305.5
+      ],
+      "target_windows_hz": [
+        [
+          285.0,
+          294.0
+        ],
+        [
+          294.0,
+          303.0
+        ],
+        [
+          301.0,
+          310.0
+        ]
+      ],
+      "target_count": 3,
+      "estimated_cost": {
+        "target_count": 3,
+        "estimated_seconds": 285.0,
+        "relative_weight": 285.0
+      },
+      "status": "PLANNED_NOT_EXECUTED",
+      "assigned_worker_id": null,
+      "priority": 0
+    },
+    {
+      "chunk_id": "sample_002_chunk_08",
+      "freq_range_hz": [
+        316.25,
+        355.5
+      ],
+      "zone_ids": [
+        "ZONE_3_sparse",
+        "ZONE_2_medium"
+      ],
+      "targets_hz": [
+        316.25,
+        328.75,
+        339.5,
+        348.5,
+        355.5
+      ],
+      "target_windows_hz": [
+        [
+          310.0,
+          322.5
+        ],
+        [
+          322.5,
+          335.0
+        ],
+        [
+          335.0,
+          344.0
+        ],
+        [
+          344.0,
+          353.0
+        ],
+        [
+          351.0,
+          360.0
+        ]
+      ],
+      "target_count": 5,
+      "estimated_cost": {
+        "target_count": 5,
+        "estimated_seconds": 475.0,
+        "relative_weight": 475.0
+      },
+      "status": "PLANNED_NOT_EXECUTED",
+      "assigned_worker_id": null,
+      "priority": 0
+    },
+    {
+      "chunk_id": "sample_002_chunk_09",
+      "freq_range_hz": [
+        366.25,
+        403.75
+      ],
+      "zone_ids": [
+        "ZONE_3_sparse"
+      ],
+      "targets_hz": [
+        366.25,
+        378.75,
+        391.25,
+        403.75
+      ],
+      "target_windows_hz": [
+        [
+          360.0,
+          372.5
+        ],
+        [
+          372.5,
+          385.0
+        ],
+        [
+          385.0,
+          397.5
+        ],
+        [
+          397.5,
+          410.0
+        ]
+      ],
+      "target_count": 4,
+      "estimated_cost": {
+        "target_count": 4,
+        "estimated_seconds": 380.0,
+        "relative_weight": 380.0
+      },
+      "status": "PLANNED_NOT_EXECUTED",
+      "assigned_worker_id": null,
+      "priority": 0
+    },
+    {
+      "chunk_id": "sample_002_chunk_10",
+      "freq_range_hz": [
+        413.0,
+        432.0
+      ],
+      "zone_ids": [
+        "ZONE_1_dense"
+      ],
+      "targets_hz": [
+        413.0,
+        419.0,
+        425.0,
+        431.0,
+        432.0
+      ],
+      "target_windows_hz": [
+        [
+          410.0,
+          416.0
+        ],
+        [
+          416.0,
+          422.0
+        ],
+        [
+          422.0,
+          428.0
+        ],
+        [
+          428.0,
+          434.0
+        ],
+        [
+          429.0,
+          435.0
+        ]
+      ],
+      "target_count": 5,
+      "estimated_cost": {
+        "target_count": 5,
+        "estimated_seconds": 475.0,
+        "relative_weight": 475.0
+      },
+      "status": "PLANNED_NOT_EXECUTED",
+      "assigned_worker_id": null,
+      "priority": 0
+    },
+    {
+      "chunk_id": "sample_002_chunk_11",
+      "freq_range_hz": [
+        441.25,
+        478.75
+      ],
+      "zone_ids": [
+        "ZONE_3_sparse"
+      ],
+      "targets_hz": [
+        441.25,
+        453.75,
+        466.25,
+        478.75
+      ],
+      "target_windows_hz": [
+        [
+          435.0,
+          447.5
+        ],
+        [
+          447.5,
+          460.0
+        ],
+        [
+          460.0,
+          472.5
+        ],
+        [
+          472.5,
+          485.0
+        ]
+      ],
+      "target_count": 4,
+      "estimated_cost": {
+        "target_count": 4,
+        "estimated_seconds": 380.0,
+        "relative_weight": 380.0
+      },
+      "status": "PLANNED_NOT_EXECUTED",
+      "assigned_worker_id": null,
+      "priority": 0
+    },
+    {
+      "chunk_id": "sample_002_chunk_12",
+      "freq_range_hz": [
+        488.0,
+        524.0
+      ],
+      "zone_ids": [
+        "ZONE_1_dense"
+      ],
+      "targets_hz": [
+        488.0,
+        494.0,
+        500.0,
+        506.0,
+        512.0,
+        518.0,
+        524.0
+      ],
+      "target_windows_hz": [
+        [
+          485.0,
+          491.0
+        ],
+        [
+          491.0,
+          497.0
+        ],
+        [
+          497.0,
+          503.0
+        ],
+        [
+          503.0,
+          509.0
+        ],
+        [
+          509.0,
+          515.0
+        ],
+        [
+          515.0,
+          521.0
+        ],
+        [
+          521.0,
+          527.0
+        ]
+      ],
+      "target_count": 7,
+      "estimated_cost": {
+        "target_count": 7,
+        "estimated_seconds": 665.0,
+        "relative_weight": 665.0
+      },
+      "status": "PLANNED_NOT_EXECUTED",
+      "assigned_worker_id": null,
+      "priority": 0
+    },
+    {
+      "chunk_id": "sample_002_chunk_13",
+      "freq_range_hz": [
+        530.0,
+        547.0
+      ],
+      "zone_ids": [
+        "ZONE_1_dense"
+      ],
+      "targets_hz": [
+        530.0,
+        536.0,
+        542.0,
+        547.0
+      ],
+      "target_windows_hz": [
+        [
+          527.0,
+          533.0
+        ],
+        [
+          533.0,
+          539.0
+        ],
+        [
+          539.0,
+          545.0
+        ],
+        [
+          544.0,
+          550.0
+        ]
+      ],
+      "target_count": 4,
+      "estimated_cost": {
+        "target_count": 4,
+        "estimated_seconds": 380.0,
+        "relative_weight": 380.0
+      },
+      "status": "PLANNED_NOT_EXECUTED",
+      "assigned_worker_id": null,
+      "priority": 0
+    }
+  ],
+  "reconstruction_method": "reconstructed_exact_from_durable_provenance",
+  "source_artifacts": [
+    {
+      "path": "lprod/worker_chunk_plan.preview.json",
+      "sha256": "7729d5f8e22d6ebc81c2842aaefdf55a85d86f70497d01dd398ef2b20e03fea7"
+    }
+  ]
+}
