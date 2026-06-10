@@ -514,8 +514,23 @@ def read_run_production_summary(run_root: Path, *, workers_requested: int = 3) -
             built_meta = load_json(built_path)
         except (OSError, ValueError, json.JSONDecodeError):
             built_meta = {}
+    production_acceptance_pass = manifest.get("production_acceptance_pass")
+    production_acceptance_failures = manifest.get("production_acceptance_failures")
+    if production_acceptance_pass is None:
+        freeze_path = run_root / "freeze" / "freeze_manifest.json"
+        if freeze_path.is_file():
+            try:
+                freeze = load_json(freeze_path)
+                if "production_acceptance_pass" in freeze:
+                    production_acceptance_pass = freeze.get("production_acceptance_pass")
+                if production_acceptance_failures is None:
+                    production_acceptance_failures = freeze.get("production_acceptance_failures")
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
     return {
         "terminal_status": manifest.get("terminal_status"),
+        "production_acceptance_pass": production_acceptance_pass,
+        "production_acceptance_failures": production_acceptance_failures,
         "dataset_version": built_meta.get("dataset_version") or manifest.get("dataset_version"),
         "operator_mesh_matches_generated": built_meta.get("operator_mesh_matches_generated"),
         "p_idx_aperture_count": built_meta.get("p_idx_aperture_count"),

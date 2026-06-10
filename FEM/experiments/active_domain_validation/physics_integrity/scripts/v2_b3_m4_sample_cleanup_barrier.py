@@ -631,6 +631,14 @@ def run_sample_cleanup_barrier(
     }
     write_json_atomic(run_root / BARRIER_MANIFEST_REL, barrier_doc)
 
+    if verify.get("pass"):
+        failure_report = run_root / FAILURE_REPORT_REL
+        if failure_report.is_file():
+            try:
+                failure_report.unlink()
+            except OSError as exc:
+                delete_errors.append(f"{failure_report}:{exc}")
+
     if not verify.get("pass"):
         _write_cleanup_failure_report(
             run_root=run_root,

@@ -314,18 +314,28 @@ class SharedExportPolicyTests(unittest.TestCase):
             verification_pass=True,
             compaction={"status": "completed"},
         )
+        acceptance_report = {
+            "acceptance_pass": True,
+            "production_acceptance_pass": True,
+            "production_acceptance_failures": [],
+            "fem_stages_executed": False,
+        }
         with patch(
-            "v2_b3_m4_finalize_completed_run.run_sample_cleanup_barrier",
-            return_value=barrier,
+            "v2_b3_m4_finalize_completed_run.ensure_production_acceptance_for_finalization",
+            return_value=acceptance_report,
         ):
-            report = finalize_completed_run(
-                repo_root=repo,
-                sample_id=self.sample_id,
-                run_id=self.run_id,
-                lhs_path=lhs,
-                shared_root=self.shared,
-                reconcile_bookkeeping=False,
-            )
+            with patch(
+                "v2_b3_m4_finalize_completed_run.run_sample_cleanup_barrier",
+                return_value=barrier,
+            ):
+                report = finalize_completed_run(
+                    repo_root=repo,
+                    sample_id=self.sample_id,
+                    run_id=self.run_id,
+                    lhs_path=lhs,
+                    shared_root=self.shared,
+                    reconcile_bookkeeping=False,
+                )
         self.assertFalse(report["fem_stages_executed"])
         self.assertEqual(report["outcome"], "pass")
 

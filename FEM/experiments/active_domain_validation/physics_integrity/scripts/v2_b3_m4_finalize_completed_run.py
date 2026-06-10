@@ -18,6 +18,7 @@ from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
     reconcile_run_bookkeeping,
 )
 from v2_b3_m4_lhs_production_batch import _read_sample_summary  # noqa: E402
+from v2_b3_m4_production_freeze import ensure_production_acceptance_for_finalization  # noqa: E402
 from v2_b3_m4_sample_cleanup_barrier import run_sample_cleanup_barrier  # noqa: E402
 from v2_b3_m4_shared_export import (  # noqa: E402
     detect_shared_root,
@@ -65,7 +66,19 @@ def finalize_completed_run(
     if export_manifest is None or str(export_manifest.get("export_status") or "") != "EXPORTED":
         raise RuntimeError(f"shared_export_failed: {export_warn or export_manifest}")
 
+    acceptance_report = ensure_production_acceptance_for_finalization(
+        repo_root=repo_root,
+        run_root=run_root,
+    )
+    if not bool(acceptance_report.get("acceptance_pass")):
+        failures = acceptance_report.get("production_acceptance_failures") or []
+        raise RuntimeError(f"production_acceptance_failed: {failures or acceptance_report}")
+
     full_summary = _read_sample_summary(run_root, workers_requested=workers_requested)
+    full_summary["production_acceptance_pass"] = bool(acceptance_report.get("production_acceptance_pass"))
+    full_summary["production_acceptance_failures"] = list(
+        acceptance_report.get("production_acceptance_failures") or []
+    )
     prelim_outcome, _ = classify_sample_outcome(return_code=0, summary=full_summary)
     row: Dict[str, Any] = {
         "sample_id": sample_id,
@@ -73,6 +86,7 @@ def finalize_completed_run(
         "outcome": prelim_outcome,
         "return_code": 0,
         "shared_export": export_manifest,
+        "production_acceptance": acceptance_report,
         **full_summary,
     }
 
@@ -132,6 +146,8 @@ def finalize_completed_run(
         "run_root": rel(run_root, repo_root=repo_root),
         "outcome": outcome,
         "shared_export": export_manifest,
+        "production_acceptance": acceptance_report,
+        "production_acceptance_pass": bool(acceptance_report.get("production_acceptance_pass")),
         "cleanup_barrier_status": barrier.status,
         "compaction_status": (barrier.compaction or {}).get("status"),
         "reconcile_report": reconcile_report,
@@ -188,6 +204,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"run_id={args.run_id}")
     print(f"outcome={report.get('outcome')}")
     print(f"graph_export_status={(report.get('shared_export') or {}).get('export_status')}")
+    print(f"production_acceptance_pass={report.get('production_acceptance_pass')}")
     print(f"cleanup_barrier_status={report.get('cleanup_barrier_status')}")
     print(f"compaction_status={report.get('compaction_status')}")
     print(f"report={rel(report_path, repo_root=repo_root)}")

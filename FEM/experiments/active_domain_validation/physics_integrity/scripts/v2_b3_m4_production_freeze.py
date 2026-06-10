@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from v2_b3_m4_freeze_first_e2e_run import (  # noqa: E402
     AGG_STATUS_PASS,
@@ -209,6 +209,147 @@ def write_physics_identity_manifest(
     out_path = run_root / PHYSICS_IDENTITY_MANIFEST
     write_json_atomic(out_path, manifest)
     return out_path
+
+
+def read_production_acceptance_status(run_root: Path) -> Dict[str, Any]:
+    """Read recorded acceptance from durable manifests (no recompute)."""
+    pipeline_path = run_root / "pipeline_run_manifest.json"
+    freeze_path = production_freeze_manifest_path(run_root)
+    identity_path = run_root / "freeze" / "physics_identity_manifest.json"
+
+    pipeline_pass: Optional[bool] = None
+    freeze_pass: Optional[bool] = None
+    identity_pass: Optional[bool] = None
+    failures: List[str] = []
+
+    if pipeline_path.is_file():
+        try:
+            pipeline = json.loads(pipeline_path.read_text(encoding="utf-8"))
+            if "production_acceptance_pass" in pipeline:
+                pipeline_pass = bool(pipeline.get("production_acceptance_pass"))
+            failures = list(pipeline.get("production_acceptance_failures") or failures)
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+
+    if freeze_path.is_file():
+        try:
+            freeze = json.loads(freeze_path.read_text(encoding="utf-8"))
+            if "production_acceptance_pass" in freeze:
+                freeze_pass = bool(freeze.get("production_acceptance_pass"))
+            if not failures:
+                failures = list(freeze.get("production_acceptance_failures") or [])
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+
+    if identity_path.is_file():
+        try:
+            identity = json.loads(identity_path.read_text(encoding="utf-8"))
+            if "production_acceptance_pass" in identity:
+                identity_pass = bool(identity.get("production_acceptance_pass"))
+            if not failures:
+                failures = list(identity.get("production_acceptance_failures") or [])
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+
+    recorded_pass = pipeline_pass if pipeline_pass is not None else freeze_pass
+    if recorded_pass is None:
+        recorded_pass = identity_pass
+
+    return {
+        "production_acceptance_pass": recorded_pass,
+        "production_acceptance_failures": failures,
+        "pipeline_acceptance_pass": pipeline_pass,
+        "freeze_acceptance_pass": freeze_pass,
+        "identity_acceptance_pass": identity_pass,
+    }
+
+
+def physics_identity_manifest_needs_repair(run_root: Path) -> bool:
+    path = run_root / "freeze" / "physics_identity_manifest.json"
+    if not path.is_file():
+        return True
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return True
+    if not bool(doc.get("production_acceptance_pass")):
+        return True
+    mesh_components = doc.get("mesh_components") or {}
+    status = str(mesh_components.get("status") or "")
+    if status.startswith("error:"):
+        return True
+    if mesh_components.get("error"):
+        return True
+    return False
+
+
+def ensure_production_acceptance_for_finalization(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    force_repair: bool = False,
+) -> Dict[str, Any]:
+    """
+    Acceptance-only recovery from durable artifacts. Performs no FEM solve stages.
+
+    Recomputes production acceptance from checkpoint/aggregation artifacts. When
+    acceptance passes, writes or repairs freeze/identity/pipeline manifests.
+    """
+    from v2_b3_m4_production_contracts import evaluate_production_acceptance  # noqa: WPS433
+
+    run_root = run_root.resolve()
+    sample_doc = load_sample_input(run_root)
+    acceptance = evaluate_production_acceptance(run_root=run_root, sample_input=sample_doc)
+    result: Dict[str, Any] = {
+        "acceptance_pass": bool(acceptance.get("acceptance_pass")),
+        "production_acceptance_pass": bool(acceptance.get("acceptance_pass")),
+        "production_acceptance_failures": list(acceptance.get("failures") or []),
+        "recomputed_from_artifacts": True,
+        "manifests_repaired": False,
+        "replay_rc": None,
+        "replay_message": None,
+        "fem_stages_executed": False,
+    }
+    if not acceptance.get("acceptance_pass"):
+        return result
+
+    recorded = read_production_acceptance_status(run_root)
+    needs_repair = (
+        force_repair
+        or not production_freeze_complete(run_root)
+        or recorded.get("production_acceptance_pass") is not True
+        or physics_identity_manifest_needs_repair(run_root)
+    )
+    if not needs_repair:
+        result["production_acceptance_pass"] = True
+        result["acceptance_pass"] = True
+        return result
+
+    rc, msg = replay_production_freeze(
+        repo_root=repo_root,
+        run_root=run_root,
+        sample_input=sample_doc,
+        force=True,
+    )
+    result["manifests_repaired"] = rc == 0
+    result["replay_rc"] = rc
+    result["replay_message"] = msg
+    if rc != 0:
+        result["acceptance_pass"] = False
+        result["production_acceptance_pass"] = False
+        result["production_acceptance_failures"] = [msg]
+        return result
+
+    recorded = read_production_acceptance_status(run_root)
+    pass_ok = bool(acceptance.get("acceptance_pass"))
+    if recorded.get("production_acceptance_pass") is False:
+        pass_ok = False
+    elif recorded.get("production_acceptance_pass") is True:
+        pass_ok = True
+    result["production_acceptance_pass"] = pass_ok
+    result["acceptance_pass"] = pass_ok
+    result["production_acceptance_failures"] = list(recorded.get("production_acceptance_failures") or [])
+    return result
 
 
 def replay_production_freeze(

@@ -288,11 +288,11 @@ def mesh_component_hashes(mesh_path: Path, *, built_meta: Optional[Mapping[str, 
         tdim = msh.topology.dim
         msh.topology.create_connectivity(tdim, 0)
         n_cells = int(msh.topology.index_map(tdim).size_local)
-        conn = msh.geometry.dofmap
+        c2v = msh.topology.connectivity(tdim, 0)
         cells = []
         cell_tag_vals = []
         for c in range(n_cells):
-            nodes = tuple(sorted(int(n) for n in conn.links(c)))
+            nodes = tuple(sorted(int(n) for n in c2v.links(c)))
             cells.append(nodes)
             cell_tag_vals.append(int(cell_tags.values[c]))
         topo_payload = json.dumps(
