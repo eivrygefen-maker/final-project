@@ -615,6 +615,69 @@ def preserve_target_plan_before_cleanup(
     }
 
 
+@dataclass(frozen=True)
+class ExternalValidationInputPackage:
+    """Read-only external immutable validation-input package (not copied into run trees)."""
+
+    package_root: Path
+    target_plan: Dict[str, Any]
+    target_plan_sha256: str
+    manifest: Dict[str, Any]
+    manifest_entry: Dict[str, Any]
+
+
+def load_external_validation_package(
+    package_root: Path,
+) -> Tuple[Optional[ExternalValidationInputPackage], List[str]]:
+    """
+    Load authoritative validation package from an external directory.
+
+    Expected layout:
+      <package_root>/target_plan.json
+      <package_root>/validation_input_manifest.json
+    """
+    errors: List[str] = []
+    root = package_root.expanduser().resolve()
+    plan_path = root / "target_plan.json"
+    man_path = root / VALIDATION_INPUT_MANIFEST_NAME
+    if not plan_path.is_file():
+        errors.append("missing_external_target_plan")
+    if not man_path.is_file():
+        errors.append("missing_external_validation_input_manifest")
+    if errors:
+        return None, errors
+
+    try:
+        plan_body, plan_sha = load_target_plan_file(plan_path)
+        manifest = json.loads(man_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError, MeshProfileError) as exc:
+        return None, [f"external_package_unreadable:{exc}"]
+
+    if not isinstance(manifest, dict):
+        return None, ["external_validation_input_manifest_not_object"]
+
+    entries = [r for r in (manifest.get("inputs") or []) if str(r.get("name")) == "target_plan"]
+    if not entries:
+        return None, ["external_validation_input_manifest_missing_target_plan_entry"]
+    entry = entries[0]
+    manifest_sha = str(entry.get("sha256") or "")
+    if manifest_sha and manifest_sha != plan_sha:
+        errors.append("external_validation_input_sha256_mismatch")
+    if errors:
+        return None, errors
+
+    return (
+        ExternalValidationInputPackage(
+            package_root=root,
+            target_plan=plan_body,
+            target_plan_sha256=plan_sha,
+            manifest=manifest,
+            manifest_entry=entry,
+        ),
+        [],
+    )
+
+
 def load_durable_target_plan(run_root: Path) -> Tuple[Optional[Dict[str, Any]], Optional[str], List[str]]:
     """
     Post-cleanup target plan loader. Never reads lprod/lprod_target_plan.json.

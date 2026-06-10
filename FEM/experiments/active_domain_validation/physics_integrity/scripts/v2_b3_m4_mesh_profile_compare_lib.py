@@ -11,6 +11,7 @@ import numpy as np
 from v2_b3_m4_lprod_interfaces import extract_geometry_dict, geometry_fingerprint  # noqa: E402
 from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
     DATASET_VERSION_ROM,
+    ExternalValidationInputPackage,
     LEVEL_PROD_REFERENCE,
     LEVEL_ROM_PROD,
     MESH_PROFILE_REFERENCE,
@@ -20,6 +21,8 @@ from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
     VALIDATION_INPUT_PACKAGE_REL,
     evaluate_legacy_reference_compatibility,
     load_durable_target_plan,
+    load_external_validation_package,
+    load_target_plan_file,
     sha256_file,
     validation_input_manifest_path,
 )
@@ -215,6 +218,205 @@ def scan_candidate_references_other_run(candidate_root: Path, *, forbidden_root:
     return hits
 
 
+def find_recorded_target_plan_sha256(run_root: Path) -> Optional[str]:
+    """Return recorded target-plan SHA256 from durable run provenance, if present."""
+    keys = (
+        "validation_input_sha256",
+        "target_plan_sha256",
+        "lprod_target_plan_sha256",
+        "validation_input_package_sha256",
+    )
+    rel_paths = (
+        "pipeline_run_manifest.json",
+        "m4_sample_runtime_provenance.json",
+        "sample/sample_resolved_config_manifest.json",
+        "aggregation/runtime_summary.json",
+        "freeze/freeze_manifest.json",
+        "sample/sample_input.json",
+    )
+    for rel in rel_paths:
+        path = run_root / rel
+        if not path.is_file():
+            continue
+        try:
+            doc = load_json(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(doc, dict):
+            continue
+        for key in keys:
+            value = doc.get(key)
+            if isinstance(value, str) and len(value) == 64:
+                return value
+        nested = doc.get("validation_input") or doc.get("target_plan") or {}
+        if isinstance(nested, dict):
+            for key in keys:
+                value = nested.get(key)
+                if isinstance(value, str) and len(value) == 64:
+                    return value
+    return None
+
+
+def _sample_ids_match_runs(
+    *,
+    sample_id: str,
+    ref_root: Path,
+    cand_root: Path,
+    external: ExternalValidationInputPackage,
+) -> List[str]:
+    errors: List[str] = []
+    plan_sid = str(external.target_plan.get("sample_id") or external.manifest.get("sample_id") or "")
+    entry_sid = str(external.manifest_entry.get("sample_id") or "")
+    if plan_sid and plan_sid != sample_id:
+        errors.append(f"external_target_plan_sample_id_mismatch:{plan_sid}!={sample_id}")
+    if entry_sid and entry_sid != sample_id:
+        errors.append(f"external_manifest_sample_id_mismatch:{entry_sid}!={sample_id}")
+    ref_in = load_json(ref_root / "sample" / "sample_input.json") if (ref_root / "sample" / "sample_input.json").is_file() else {}
+    cand_in = load_json(cand_root / "sample" / "sample_input.json") if (cand_root / "sample" / "sample_input.json").is_file() else {}
+    ref_sid = str(ref_in.get("sample_id") or ref_root.parent.parent.name)
+    cand_sid = str(cand_in.get("sample_id") or cand_root.parent.parent.name)
+    if ref_sid != cand_sid:
+        errors.append(f"run_tree_sample_id_mismatch:{ref_sid}!={cand_sid}")
+    if ref_sid != sample_id:
+        errors.append(f"reference_sample_id_mismatch:{ref_sid}!={sample_id}")
+    if cand_sid != sample_id:
+        errors.append(f"candidate_sample_id_mismatch:{cand_sid}!={sample_id}")
+    return errors
+
+
+def _identity_matches_external_package(
+    *,
+    ref_root: Path,
+    cand_root: Path,
+    external: ExternalValidationInputPackage,
+) -> List[str]:
+    errors: List[str] = []
+    ref_in = load_json(ref_root / "sample" / "sample_input.json") if (ref_root / "sample" / "sample_input.json").is_file() else {}
+    cand_in = load_json(cand_root / "sample" / "sample_input.json") if (cand_root / "sample" / "sample_input.json").is_file() else {}
+    geom_r = extract_geometry_dict(ref_in)
+    geom_c = extract_geometry_dict(cand_in)
+    if geometry_fingerprint(geom_r) != geometry_fingerprint(geom_c):
+        errors.append("geometry_fingerprint_mismatch")
+
+    manifest_geom = external.manifest_entry.get("geometry_fingerprint")
+    if manifest_geom:
+        if geometry_fingerprint(geom_r) != str(manifest_geom):
+            errors.append("reference_geometry_fingerprint_mismatch_vs_external_manifest")
+        if geometry_fingerprint(geom_c) != str(manifest_geom):
+            errors.append("candidate_geometry_fingerprint_mismatch_vs_external_manifest")
+
+    for key in ("top_wood_id", "back_wood_id"):
+        if ref_in.get(key) != cand_in.get(key):
+            errors.append(f"material_mismatch:{key}")
+    return errors
+
+
+def verify_legacy_reference_lprod_target_plan(
+    ref_root: Path,
+    *,
+    external: ExternalValidationInputPackage,
+    barrier_meta: Mapping[str, Any],
+) -> Tuple[List[str], Dict[str, Any]]:
+    """
+    Legacy reference runs may retain lprod/lprod_target_plan.json as durable provenance.
+
+    Accept only when cleanup verification is clean and content matches the authoritative package.
+    """
+    meta: Dict[str, Any] = {"legacy_lprod_target_plan_present": False}
+    path = ref_root / "lprod" / "lprod_target_plan.json"
+    if not path.is_file():
+        return [], meta
+
+    meta["legacy_lprod_target_plan_present"] = True
+    forbidden = int(
+        barrier_meta.get("forbidden_heavy_artifact_count")
+        or barrier_meta.get("live_forbidden_heavy_artifact_count")
+        or 0
+    )
+    shared = int(barrier_meta.get("shared_sample_artifact_count") or 0)
+    if str(barrier_meta.get("barrier_status") or "") != "completed":
+        return ["reference:legacy_lprod_target_plan_without_completed_cleanup_barrier"], meta
+    if forbidden != 0 or shared != 0:
+        return ["reference:legacy_lprod_target_plan_with_nonzero_cleanup_artifacts"], meta
+
+    try:
+        body, digest = load_target_plan_file(path)
+    except Exception as exc:
+        return [f"reference:legacy_lprod_target_plan_unreadable:{exc}"], meta
+
+    errors: List[str] = []
+    if digest != external.target_plan_sha256:
+        errors.append("reference:legacy_lprod_target_plan_sha256_mismatch")
+    auth_targets = list(external.target_plan.get("targets_hz") or [])
+    legacy_targets = list(body.get("targets_hz") or [])
+    if legacy_targets != auth_targets:
+        errors.append("reference:legacy_lprod_target_plan_targets_hz_mismatch")
+    meta.update(
+        {
+            "classification": "legacy_durable_provenance",
+            "sha256": digest,
+            "target_count": len(legacy_targets),
+        }
+    )
+    return errors, meta
+
+
+def verify_comparison_validation_input(
+    *,
+    ref_root: Path,
+    cand_root: Path,
+    external_package: Optional[Path] = None,
+) -> Tuple[List[str], Dict[str, Any]]:
+    meta: Dict[str, Any] = {"validation_input_contract": "in_run_package"}
+    if external_package is None:
+        errors, cand_meta = verify_candidate_validation_package(cand_root)
+        meta.update(cand_meta)
+        return errors, meta
+
+    external, load_errors = load_external_validation_package(external_package)
+    if external is None:
+        return [f"external_package:{e}" for e in load_errors], meta
+
+    meta["validation_input_contract"] = "external_authoritative"
+    meta["external_package_root"] = str(external.package_root)
+    meta["authoritative_target_plan_sha256"] = external.target_plan_sha256
+    meta["authoritative_target_count"] = len(external.target_plan.get("targets_hz") or [])
+
+    sample_id = str(external.target_plan.get("sample_id") or external.manifest.get("sample_id") or ref_root.parent.parent.name)
+    errors: List[str] = []
+    errors.extend(_sample_ids_match_runs(sample_id=sample_id, ref_root=ref_root, cand_root=cand_root, external=external))
+    errors.extend(_identity_matches_external_package(ref_root=ref_root, cand_root=cand_root, external=external))
+
+    cand_plan, cand_sha, cand_plan_errs = load_durable_target_plan(cand_root)
+    meta["candidate_in_run_target_plan_available"] = cand_plan is not None
+    meta["candidate_in_run_target_plan_sha256"] = cand_sha
+    if cand_plan is not None:
+        if cand_sha and cand_sha != external.target_plan_sha256:
+            errors.append("candidate:in_run_target_plan_sha256_mismatch_vs_external")
+        if (cand_plan.get("targets_hz") or []) != (external.target_plan.get("targets_hz") or []):
+            errors.append("candidate:in_run_target_plan_targets_hz_mismatch_vs_external")
+    else:
+        if "TARGET_PLAN_UNAVAILABLE" not in cand_plan_errs and cand_plan_errs:
+            errors.extend(f"candidate:{e}" for e in cand_plan_errs)
+
+    recorded_sha = find_recorded_target_plan_sha256(cand_root)
+    meta["candidate_recorded_target_plan_sha256"] = recorded_sha
+    if recorded_sha and recorded_sha != external.target_plan_sha256:
+        errors.append("candidate:recorded_target_plan_sha256_mismatch_vs_external")
+
+    ref_plan, ref_sha, ref_plan_errs = load_durable_target_plan(ref_root)
+    meta["reference_in_run_target_plan_available"] = ref_plan is not None
+    meta["reference_in_run_target_plan_sha256"] = ref_sha
+    if ref_plan is not None:
+        if ref_sha and ref_sha != external.target_plan_sha256:
+            errors.append("reference:in_run_target_plan_sha256_mismatch_vs_external")
+        if (ref_plan.get("targets_hz") or []) != (external.target_plan.get("targets_hz") or []):
+            errors.append("reference:in_run_target_plan_targets_hz_mismatch_vs_external")
+
+    meta["authoritative_target_plan"] = external.target_plan
+    return errors, meta
+
+
 def verify_candidate_validation_package(cand_root: Path) -> Tuple[List[str], Dict[str, Any]]:
     """ROM candidate must have durable validation-input package (no live reference paths)."""
     errors: List[str] = []
@@ -403,6 +605,7 @@ def verify_cleanup_preconditions(
     repo_root: Path,
     ref_root: Path,
     cand_root: Path,
+    validation_input_package: Optional[Path] = None,
 ) -> Tuple[List[str], Dict[str, Any]]:
     errors: List[str] = []
     meta: Dict[str, Any] = {"reference": {}, "candidate": {}}
@@ -418,13 +621,33 @@ def verify_cleanup_preconditions(
             errors.append(f"{label}:live_forbidden_heavy_artifacts={forbidden_paths}")
         if (root / FAILURE_REPORT_REL).is_file():
             errors.append(f"{label}:cleanup_failure_report_present")
-        if (root / "lprod" / "lprod_target_plan.json").is_file():
-            errors.append(f"{label}:transient_lprod_target_plan_still_present_post_cleanup")
+
+    if validation_input_package is None:
+        for label, root in (("reference", ref_root), ("candidate", cand_root)):
+            if (root / "lprod" / "lprod_target_plan.json").is_file():
+                errors.append(f"{label}:transient_lprod_target_plan_still_present_post_cleanup")
+    else:
+        external, ext_errors = load_external_validation_package(validation_input_package)
+        if external is None:
+            errors.extend(f"external_package:{e}" for e in ext_errors)
+        else:
+            legacy_errors, legacy_meta = verify_legacy_reference_lprod_target_plan(
+                ref_root,
+                external=external,
+                barrier_meta=meta.get("reference") or {},
+            )
+            errors.extend(legacy_errors)
+            meta["reference_legacy_lprod_target_plan"] = legacy_meta
+
     cross = scan_candidate_references_other_run(cand_root, forbidden_root=ref_root)
     meta["candidate_reference_run_path_hits"] = cross
     if cross:
         errors.append(f"candidate:references_reference_run_paths:{len(cross)}_hits")
-    val_errors, val_meta = verify_candidate_validation_package(cand_root)
+    val_errors, val_meta = verify_comparison_validation_input(
+        ref_root=ref_root,
+        cand_root=cand_root,
+        external_package=validation_input_package,
+    )
     meta["validation_input"] = val_meta
     errors.extend(val_errors)
     meta["cleanup_barrier_precondition_pass"] = len(errors) == 0
@@ -463,6 +686,8 @@ def verify_physics_identity_equivalence(
     ref_root: Path,
     cand_root: Path,
     ref_legacy_meta: Mapping[str, Any],
+    authoritative_target_plan: Optional[Mapping[str, Any]] = None,
+    authoritative_target_plan_sha256: Optional[str] = None,
 ) -> Tuple[List[str], Dict[str, Any]]:
     errors: List[str] = []
     meta: Dict[str, Any] = {"reference": {}, "candidate": {}, "allowed_differences": []}
@@ -507,8 +732,28 @@ def verify_physics_identity_equivalence(
         "candidate_sha256": cand_sha,
         "reference_available": ref_plan is not None,
         "candidate_available": cand_plan is not None,
+        "authoritative_sha256": authoritative_target_plan_sha256,
     }
-    if "TARGET_PLAN_UNAVAILABLE" in ref_plan_errs or "TARGET_PLAN_UNAVAILABLE" in cand_plan_errs:
+    if authoritative_target_plan is not None and authoritative_target_plan_sha256:
+        auth_targets = list(authoritative_target_plan.get("targets_hz") or [])
+        meta["target_plan"]["authoritative_target_count"] = len(auth_targets)
+        for label, plan, sha in (
+            ("reference", ref_plan, ref_sha),
+            ("candidate", cand_plan, cand_sha),
+        ):
+            if plan is not None:
+                if sha and sha != authoritative_target_plan_sha256:
+                    errors.append(f"{label}:target_plan_sha256_mismatch_vs_authoritative")
+                if list(plan.get("targets_hz") or []) != auth_targets:
+                    errors.append(f"{label}:target_plan_targets_hz_mismatch_vs_authoritative")
+        if ref_plan is None and (ref_root / "lprod" / "lprod_target_plan.json").is_file():
+            try:
+                _legacy_body, legacy_sha = load_target_plan_file(ref_root / "lprod" / "lprod_target_plan.json")
+                if legacy_sha != authoritative_target_plan_sha256:
+                    errors.append("reference:legacy_lprod_target_plan_sha256_mismatch_vs_authoritative")
+            except Exception:
+                errors.append("reference:legacy_lprod_target_plan_unreadable")
+    elif "TARGET_PLAN_UNAVAILABLE" in ref_plan_errs or "TARGET_PLAN_UNAVAILABLE" in cand_plan_errs:
         errors.append("TARGET_PLAN_UNAVAILABLE")
     elif ref_plan_errs or cand_plan_errs:
         errors.extend(ref_plan_errs + cand_plan_errs)
@@ -955,12 +1200,16 @@ def compare_runs(
     reference_run: Path,
     candidate_run: Path,
     repo_root: Path,
+    validation_input_package: Optional[Path] = None,
 ) -> Dict[str, Any]:
     ref_root = reference_run.resolve()
     cand_root = candidate_run.resolve()
 
     cleanup_errors, cleanup_meta = verify_cleanup_preconditions(
-        repo_root=repo_root, ref_root=ref_root, cand_root=cand_root,
+        repo_root=repo_root,
+        ref_root=ref_root,
+        cand_root=cand_root,
+        validation_input_package=validation_input_package,
     )
     if cleanup_errors:
         return {
@@ -988,8 +1237,15 @@ def compare_runs(
             "exit_code": EXIT_PRECONDITION_FAIL,
         }
 
+    val_meta = cleanup_meta.get("validation_input") or {}
+    auth_plan = val_meta.get("authoritative_target_plan")
+    auth_sha = val_meta.get("authoritative_target_plan_sha256")
     phys_errors, phys_meta = verify_physics_identity_equivalence(
-        ref_root=ref_root, cand_root=cand_root, ref_legacy_meta=ref_legacy_meta,
+        ref_root=ref_root,
+        cand_root=cand_root,
+        ref_legacy_meta=ref_legacy_meta,
+        authoritative_target_plan=auth_plan,
+        authoritative_target_plan_sha256=auth_sha,
     )
     if phys_errors:
         return {

@@ -29,12 +29,14 @@ def compare_runs(
     reference_run: Path,
     candidate_run: Path,
     repo_root: Optional[Path] = None,
+    validation_input_package: Optional[Path] = None,
 ) -> Dict[str, Any]:
     root = repo_root or detect_repo_root(SCRIPT_DIR)
     return _compare_runs(
         reference_run=reference_run,
         candidate_run=candidate_run,
         repo_root=root,
+        validation_input_package=validation_input_package,
     )
 
 
@@ -114,6 +116,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--candidate-run", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--repo-root", type=Path, default=None)
+    parser.add_argument(
+        "--validation-input-package",
+        type=Path,
+        default=None,
+        help=(
+            "External immutable validation-input package root containing "
+            "target_plan.json and validation_input_manifest.json."
+        ),
+    )
     args = parser.parse_args(argv)
 
     repo_root = args.repo_root or detect_repo_root(SCRIPT_DIR)
@@ -121,6 +132,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         reference_run=args.reference_run,
         candidate_run=args.candidate_run,
         repo_root=repo_root,
+        validation_input_package=args.validation_input_package,
     )
     out_dir = args.output_dir
     out_dir.mkdir(parents=True, exist_ok=True)
