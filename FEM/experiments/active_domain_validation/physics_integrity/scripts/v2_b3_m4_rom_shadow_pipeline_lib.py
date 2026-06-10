@@ -24,6 +24,7 @@ from v2_b3_m4_official_rom_dataset_lib import (  # noqa: E402
     OFFICIAL_INITIAL_RUN_IDS,
     build_initial_five_run_dataset_report,
     collect_official_rom_training_rows,
+    evaluate_official_rom_run_eligibility,
     load_official_dataset_registry,
     official_dataset_registry_path,
     register_official_rom_dataset_entry,
@@ -525,17 +526,31 @@ def maybe_register_and_retrain(
     shape_name: str = "classic",
     production_acceptance_pass: bool,
     policy: Optional[RetrainPolicy] = None,
+    require_post_cleanup_eligibility: bool = True,
 ) -> Dict[str, Any]:
+    """Register accepted run and optionally retrain. Requires post-cleanup eligibility by default."""
     result: Dict[str, Any] = {"registered": False, "retrained": False}
     if not production_acceptance_pass:
         return result
-    entry = register_official_rom_dataset_entry(
-        repo_root=repo_root,
-        sample_id=sample_id,
-        run_id=run_id,
-        run_root=run_root,
-        shape_name=shape_name,
-    )
+
+    if require_post_cleanup_eligibility:
+        eligible, reasons, _evidence = evaluate_official_rom_run_eligibility(run_root, run_id=run_id)
+        if not eligible:
+            result["blocked_reasons"] = reasons
+            return result
+
+    try:
+        entry = register_official_rom_dataset_entry(
+            repo_root=repo_root,
+            sample_id=sample_id,
+            run_id=run_id,
+            run_root=run_root,
+            shape_name=shape_name,
+        )
+    except ValueError as exc:
+        result["error"] = str(exc)
+        return result
+
     result["registered"] = True
     result["registry_entry"] = entry
 
@@ -556,17 +571,238 @@ def maybe_register_and_retrain(
     if not policy.should_retrain(new_samples_since_last_train=new_count):
         return result
 
-    registry_rows = load_official_dataset_registry(repo_root, shape_name)
-    allowed_run_ids = [str(r["run_id"]) for r in registry_rows if r.get("run_id")]
-    _model, _training, _skipped, report = build_official_rom_surrogate_from_runs(
-        repo_root=repo_root,
-        shape_name=shape_name,
-        require_initial_allowlist=False,
-        allowed_run_ids=allowed_run_ids or None,
-    )
-    result["retrained"] = True
-    result["retrain_report"] = report
+    result["retrain_attempted"] = True
+    try:
+        registry_rows = load_official_dataset_registry(repo_root, shape_name)
+        allowed_run_ids = [str(r["run_id"]) for r in registry_rows if r.get("run_id")]
+        _model, _training, _skipped, report = build_official_rom_surrogate_from_runs(
+            repo_root=repo_root,
+            shape_name=shape_name,
+            require_initial_allowlist=False,
+            allowed_run_ids=allowed_run_ids or None,
+        )
+        result["retrained"] = True
+        result["retrain_status"] = "completed"
+        result["retrain_report"] = report
+    except Exception as exc:
+        result["retrain_status"] = f"failed:{exc}"
     return result
+
+
+SHADOW_STAGE_KEYS: Tuple[str, ...] = (
+    "rom_prediction_present",
+    "rom_prediction_created_before_fom",
+    "rom_comparison_present",
+    "rom_comparison_status",
+    "compaction_status",
+    "cleanup_status",
+    "dataset_registration_attempted",
+    "dataset_registration_status",
+    "retrain_attempted",
+    "retrain_status",
+)
+
+
+def _read_barrier_and_compaction(run_root: Path) -> Tuple[Optional[str], Optional[str], bool]:
+    compaction_status: Optional[str] = None
+    manifest_path = run_root / "compaction" / "compaction_manifest.json"
+    if manifest_path.is_file():
+        try:
+            compaction_status = str(load_json(manifest_path).get("status") or "") or None
+        except (OSError, ValueError, json.JSONDecodeError):
+            compaction_status = None
+    cleanup_status: Optional[str] = None
+    verification_pass = False
+    barrier_path = run_root / "cleanup" / "sample_cleanup_barrier.json"
+    if barrier_path.is_file():
+        try:
+            barrier = load_json(barrier_path)
+            cleanup_status = str(barrier.get("status") or "") or None
+            verify = barrier.get("verification") if isinstance(barrier.get("verification"), dict) else {}
+            verification_pass = bool(verify.get("pass")) if verify else bool(barrier.get("verification_pass"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    return compaction_status, cleanup_status, verification_pass
+
+
+def diagnose_shadow_rom_stages(run_root: Path) -> Dict[str, Any]:
+    """Read-only shadow ROM stage diagnostics for a run tree."""
+    pred_path = rom_prediction_summary_path(run_root)
+    cmp_path = rom_vs_fom_comparison_path(run_root)
+    pred_present = pred_path.is_file()
+    cmp_present = cmp_path.is_file()
+
+    pred_before_fom: Optional[bool] = None
+    if pred_present:
+        try:
+            summary = load_json(pred_path)
+            marker_path = fom_started_marker_path(run_root)
+            if marker_path.is_file():
+                started_doc = load_json(marker_path)
+                pred_perf = summary.get("prediction_recorded_perf_s")
+                started_perf = started_doc.get("started_perf_s")
+                if pred_perf is not None and started_perf is not None:
+                    pred_before_fom = float(pred_perf) < float(started_perf)
+                else:
+                    pred_utc = str(summary.get("prediction_created_utc") or "")
+                    started_utc = str(started_doc.get("started_utc") or "")
+                    pred_before_fom = bool(pred_utc) and bool(started_utc) and pred_utc <= started_utc
+            else:
+                pred_before_fom = True
+        except (OSError, ValueError, json.JSONDecodeError):
+            pred_before_fom = None
+
+    cmp_status: Optional[str] = None
+    if cmp_present:
+        try:
+            cmp_status = str(load_json(cmp_path).get("status") or "") or None
+        except (OSError, ValueError, json.JSONDecodeError):
+            cmp_status = None
+
+    compaction_status, cleanup_status, _verify_pass = _read_barrier_and_compaction(run_root)
+    return {
+        "rom_prediction_present": pred_present,
+        "rom_prediction_created_before_fom": pred_before_fom,
+        "rom_comparison_present": cmp_present,
+        "rom_comparison_status": cmp_status,
+        "compaction_status": compaction_status,
+        "cleanup_status": cleanup_status,
+        "dataset_registration_attempted": None,
+        "dataset_registration_status": None,
+        "retrain_attempted": None,
+        "retrain_status": None,
+    }
+
+
+def verify_rom_prediction_summary(run_root: Path) -> Tuple[bool, Dict[str, Any]]:
+    path = rom_prediction_summary_path(run_root)
+    if not path.is_file():
+        return False, {"error": f"missing:{path.name}"}
+    try:
+        summary = load_json(path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return False, {"error": f"unreadable:{exc}"}
+    if str(summary.get("schema") or "") != PREDICTION_SUMMARY_SCHEMA:
+        return False, {"error": "invalid_schema"}
+    if not summary.get("frozen_prediction_sha256"):
+        return False, {"error": "missing_frozen_prediction_sha256"}
+    frozen_path = frozen_prediction_internal_path(run_root)
+    if not frozen_path.is_file():
+        return False, {"error": "missing_frozen_internal"}
+    return True, summary
+
+
+def ensure_durable_rom_comparison(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    context: Optional[Mapping[str, Any]] = None,
+    max_match_distance_hz: float = DEFAULT_MAX_MATCH_DISTANCE_HZ,
+    reuse_existing: bool = True,
+) -> Dict[str, Any]:
+    """Reuse durable comparison or materialize from frozen prediction + FOM catalog."""
+    cmp_path = rom_vs_fom_comparison_path(run_root)
+    if reuse_existing and cmp_path.is_file():
+        try:
+            doc = load_json(cmp_path)
+            if str(doc.get("schema") or "") == COMPARISON_SUMMARY_SCHEMA:
+                return {
+                    "status": doc.get("status"),
+                    "reused": True,
+                    "comparison_path": rel(cmp_path, repo_root=repo_root),
+                    "matched_mode_count": doc.get("matched_mode_count"),
+                    "blocking": False,
+                }
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+
+    if context is None:
+        frozen_path = frozen_prediction_internal_path(run_root)
+        if frozen_path.is_file():
+            try:
+                frozen = load_json(frozen_path)
+                context = dict(frozen.get("context") or {})
+            except (OSError, ValueError, json.JSONDecodeError):
+                context = None
+    if not context:
+        raise RomShadowIntegrityError("rom_comparison_context_unavailable")
+
+    return run_shadow_rom_compare(
+        repo_root=repo_root,
+        run_root=run_root,
+        context=context,
+        max_match_distance_hz=max_match_distance_hz,
+    )
+
+
+def print_shadow_rom_stages(stages: Mapping[str, Any]) -> None:
+    for key in SHADOW_STAGE_KEYS:
+        print(f"{key}={stages.get(key)!r}")
+
+
+def attempt_register_and_retrain_after_cleanup(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    sample_id: str,
+    run_id: str,
+    shape_name: str = "classic",
+    production_acceptance_pass: bool,
+    policy: Optional[RetrainPolicy] = None,
+) -> Dict[str, Any]:
+    """Register/retrain only after compaction + cleanup eligibility passes."""
+    stages = diagnose_shadow_rom_stages(run_root)
+    stages["dataset_registration_attempted"] = False
+    stages["retrain_attempted"] = False
+    stages["retrain_status"] = "not_attempted"
+
+    if not production_acceptance_pass:
+        stages["dataset_registration_status"] = "skipped_production_acceptance"
+        return {"registered": False, "retrained": False, "shadow_stages": stages}
+
+    compaction_ok = str(stages.get("compaction_status") or "") in ("completed", "already_compacted")
+    cleanup_ok = str(stages.get("cleanup_status") or "") == "completed"
+    if not compaction_ok or not cleanup_ok:
+        stages["dataset_registration_attempted"] = True
+        stages["dataset_registration_status"] = (
+            f"blocked:compaction={stages.get('compaction_status')!r} "
+            f"cleanup={stages.get('cleanup_status')!r}"
+        )
+        return {
+            "registered": False,
+            "retrained": False,
+            "shadow_stages": stages,
+            "blocked_reason": "post_cleanup_gates_not_met",
+        }
+
+    stages["dataset_registration_attempted"] = True
+    reg = maybe_register_and_retrain(
+        repo_root=repo_root,
+        run_root=run_root,
+        sample_id=sample_id,
+        run_id=run_id,
+        shape_name=shape_name,
+        production_acceptance_pass=True,
+        policy=policy,
+        require_post_cleanup_eligibility=True,
+    )
+    if reg.get("registered"):
+        stages["dataset_registration_status"] = "registered"
+    elif reg.get("blocked_reasons"):
+        stages["dataset_registration_status"] = f"blocked:{reg.get('blocked_reasons')}"
+    elif reg.get("error"):
+        stages["dataset_registration_status"] = f"failed:{reg.get('error')}"
+    else:
+        stages["dataset_registration_status"] = "not_registered"
+
+    if reg.get("retrain_attempted"):
+        stages["retrain_attempted"] = True
+        stages["retrain_status"] = reg.get("retrain_status") or ("completed" if reg.get("retrained") else "skipped_policy")
+    elif reg.get("retrained"):
+        stages["retrain_attempted"] = True
+        stages["retrain_status"] = "completed"
+
+    return {**reg, "shadow_stages": stages}
 
 
 def prune_rom_directory_to_durable(run_root: Path) -> List[str]:

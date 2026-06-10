@@ -7,6 +7,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -28,17 +29,22 @@ from v2_b3_m4_official_rom_dataset_lib import (  # noqa: E402
 from v2_b3_m4_rom_shadow_pipeline_lib import (  # noqa: E402
     DURABLE_ROM_JSON_NAMES,
     RetrainPolicy,
+    attempt_register_and_retrain_after_cleanup,
     build_holdout_official_rom_model,
     build_official_rom_surrogate_from_runs,
+    diagnose_shadow_rom_stages,
+    ensure_durable_rom_comparison,
     frozen_prediction_internal_path,
     mark_fom_pipeline_started,
+    maybe_register_and_retrain,
     prune_rom_directory_to_durable,
     rom_prediction_summary_path,
     rom_vs_fom_comparison_path,
     run_shadow_rom_compare_nonblocking,
     run_shadow_rom_prepredict_nonblocking,
+    verify_rom_prediction_summary,
 )
-from v2_b3_m4_rom_fom_compare_lib import resolve_sample_context  # noqa: E402
+from v2_b3_m4_finalize_shadow_rom_completed_run import finalize_shadow_rom_completed_run  # noqa: E402
 
 
 def _guitars_root(repo: Path) -> Path:
@@ -344,6 +350,179 @@ class FinalizeIdempotencyTests(unittest.TestCase):
                 reconcile_bookkeeping=False,
             )
             self.assertEqual(report.get("outcome"), "ALREADY_FINALIZED")
+
+
+def _strip_post_cleanup_gates(run_root: Path) -> None:
+    """Simulate pre-finalization state (FOM done, compaction/cleanup not yet run)."""
+    manifest = run_root / "compaction" / "compaction_manifest.json"
+    barrier = run_root / "cleanup" / "sample_cleanup_barrier.json"
+    if manifest.is_file():
+        manifest.unlink()
+    if barrier.is_file():
+        barrier.unlink()
+
+
+class ShadowFinalizationOrderTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.tmp.name)
+        _seed_five_official_runs(self.repo)
+        build_official_rom_surrogate_from_runs(
+            repo_root=self.repo,
+            shape_name="classic",
+            allowed_run_ids=list(OFFICIAL_INITIAL_RUN_IDS),
+            min_mode_count=1,
+        )
+        self.run_root = _make_official_rom_run(
+            self.repo,
+            sample_id="sample_005",
+            run_id="sample_005_rom_shadow_v1",
+            parameters={
+                "geometry.length": 0.52,
+                "geometry.width": 0.34,
+                "geometry.depth": 0.11,
+                "geometry.top_thickness": 0.0031,
+                "geometry.hole_radius": 0.045,
+                "geometry.back_thickness": 0.0034,
+                "top_wood_id": "maple",
+                "back_wood_id": "cedar",
+            },
+        )
+        self.context = {
+            "sample_id": "sample_005",
+            "run_id": "sample_005_rom_shadow_v1",
+            "shape_name": "classic",
+            "lhs_row_index": 5,
+            "parameters": json.loads((self.run_root / "sample/sample_input.json").read_text())["parameters"],
+        }
+        run_shadow_rom_prepredict_nonblocking(
+            repo_root=self.repo, run_root=self.run_root, context=self.context
+        )
+        mark_fom_pipeline_started(self.run_root)
+        run_shadow_rom_compare_nonblocking(
+            repo_root=self.repo, run_root=self.run_root, context=self.context
+        )
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_registration_before_cleanup_is_blocked(self) -> None:
+        _strip_post_cleanup_gates(self.run_root)
+        reg = attempt_register_and_retrain_after_cleanup(
+            repo_root=self.repo,
+            run_root=self.run_root,
+            sample_id="sample_005",
+            run_id="sample_005_rom_shadow_v1",
+            production_acceptance_pass=True,
+        )
+        self.assertFalse(reg.get("registered"))
+        status = str((reg.get("shadow_stages") or {}).get("dataset_registration_status") or "")
+        self.assertIn("blocked", status)
+
+    def test_registration_after_cleanup_passes(self) -> None:
+        reg = attempt_register_and_retrain_after_cleanup(
+            repo_root=self.repo,
+            run_root=self.run_root,
+            sample_id="sample_005",
+            run_id="sample_005_rom_shadow_v1",
+            production_acceptance_pass=True,
+        )
+        self.assertTrue(reg.get("registered"))
+
+    def test_cleanup_failure_blocks_registration(self) -> None:
+        _write_json(
+            self.run_root / "cleanup" / "sample_cleanup_barrier.json",
+            {"status": "failed", "verification": {"pass": False}},
+        )
+        reg = attempt_register_and_retrain_after_cleanup(
+            repo_root=self.repo,
+            run_root=self.run_root,
+            sample_id="sample_005",
+            run_id="sample_005_rom_shadow_v1",
+            production_acceptance_pass=True,
+        )
+        self.assertFalse(reg.get("registered"))
+
+    def test_low_accuracy_comparison_does_not_block(self) -> None:
+        cmp_path = rom_vs_fom_comparison_path(self.run_root)
+        doc = json.loads(cmp_path.read_text(encoding="utf-8"))
+        doc["median_abs_error_hz"] = 999.0
+        doc["low_accuracy_recorded_only"] = True
+        cmp_path.write_text(json.dumps(doc), encoding="utf-8")
+        cmp = run_shadow_rom_compare_nonblocking(
+            repo_root=self.repo, run_root=self.run_root, context=self.context
+        )
+        self.assertFalse(cmp.get("blocking"))
+
+    def test_missing_prediction_blocks_compare(self) -> None:
+        rom_prediction_summary_path(self.run_root).unlink()
+        cmp = run_shadow_rom_compare_nonblocking(
+            repo_root=self.repo, run_root=self.run_root, context=self.context
+        )
+        self.assertTrue(cmp.get("blocking"))
+
+    def test_reuse_existing_comparison_in_recovery(self) -> None:
+        first_sha = json.loads(rom_vs_fom_comparison_path(self.run_root).read_text())[
+            "frozen_prediction_sha256"
+        ]
+        reused = ensure_durable_rom_comparison(
+            repo_root=self.repo,
+            run_root=self.run_root,
+            context=self.context,
+            reuse_existing=True,
+        )
+        self.assertTrue(reused.get("reused"))
+        second_sha = json.loads(rom_vs_fom_comparison_path(self.run_root).read_text())[
+            "frozen_prediction_sha256"
+        ]
+        self.assertEqual(first_sha, second_sha)
+
+    def test_recovery_does_not_rerun_prepredict(self) -> None:
+        lhs = self.repo / "ROM/classic/lhs_pool.json"
+        lhs.write_text(json.dumps({"shape_name": "classic", "entries": []}), encoding="utf-8")
+        shared = self.repo / "shared"
+        shared.mkdir(parents=True, exist_ok=True)
+        pred_sha_before = json.loads(rom_prediction_summary_path(self.run_root).read_text())[
+            "frozen_prediction_sha256"
+        ]
+        with unittest.mock.patch(
+            "v2_b3_m4_finalize_shadow_rom_completed_run.finalize_completed_run",
+            return_value={"outcome": "pass"},
+        ):
+            report = finalize_shadow_rom_completed_run(
+                repo_root=self.repo,
+                sample_id="sample_005",
+                run_id="sample_005_rom_shadow_v1",
+                lhs_path=lhs,
+                shared_root=shared,
+                reconcile_bookkeeping=False,
+            )
+        pred_sha_after = json.loads(rom_prediction_summary_path(self.run_root).read_text())[
+            "frozen_prediction_sha256"
+        ]
+        self.assertEqual(pred_sha_before, pred_sha_after)
+        self.assertFalse(report.get("rom_prediction_rerun"))
+        self.assertTrue(report.get("rom_dataset_registration", {}).get("registered"))
+
+    def test_prune_retains_two_durable_files(self) -> None:
+        prune_rom_directory_to_durable(self.run_root)
+        remaining = {p.name for p in (self.run_root / "rom").iterdir() if p.is_file()}
+        self.assertEqual(remaining, set(DURABLE_ROM_JSON_NAMES))
+
+    def test_sample_005_recovery_from_post_compare_failure_point(self) -> None:
+        """Simulate VM failure: compare done, registration attempted too early, no compaction/cleanup."""
+        self.assertTrue(rom_vs_fom_comparison_path(self.run_root).is_file())
+        ok, _ = verify_rom_prediction_summary(self.run_root)
+        self.assertTrue(ok)
+        _strip_post_cleanup_gates(self.run_root)
+        reg_pre = attempt_register_and_retrain_after_cleanup(
+            repo_root=self.repo,
+            run_root=self.run_root,
+            sample_id="sample_005",
+            run_id="sample_005_rom_shadow_v1",
+            production_acceptance_pass=True,
+        )
+        self.assertFalse(reg_pre.get("registered"))
 
 
 if __name__ == "__main__":

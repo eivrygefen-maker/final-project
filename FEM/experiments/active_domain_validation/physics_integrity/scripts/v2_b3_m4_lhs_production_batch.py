@@ -31,8 +31,10 @@ from v2_b3_m4_rom_fom_compare_lib import (  # noqa: E402
 from v2_b3_m4_rom_shadow_pipeline_lib import (  # noqa: E402
     DEFAULT_RETRAIN_EVERY_N_NEW_SAMPLES,
     RetrainPolicy,
+    attempt_register_and_retrain_after_cleanup,
+    diagnose_shadow_rom_stages,
     mark_fom_pipeline_started,
-    maybe_register_and_retrain,
+    print_shadow_rom_stages,
     prune_rom_directory_to_durable,
     run_shadow_rom_compare_nonblocking,
     run_shadow_rom_prepredict_nonblocking,
@@ -765,20 +767,6 @@ def run_production_batch(
                     f"matched={cmp_result.get('matched_mode_count')}",
                     flush=True,
                 )
-            if bool(summary.get("production_acceptance_pass")):
-                reg = maybe_register_and_retrain(
-                    repo_root=repo_root,
-                    run_root=run_root,
-                    sample_id=sid,
-                    run_id=rid,
-                    shape_name=str(rom_context.get("shape_name") or "classic"),
-                    production_acceptance_pass=True,
-                    policy=RetrainPolicy(retrain_every_n_new_samples=int(rom_retrain_every_n)),
-                )
-                row["rom_dataset_registration"] = reg
-                if reg.get("retrained"):
-                    print(f"[rom-retrain] {sid}: official model rebuilt", flush=True)
-            prune_rom_directory_to_durable(run_root)
 
         if rom_shadow_blocking:
             row["outcome"] = "fail"
@@ -820,8 +808,32 @@ def run_production_batch(
             print("error: stopping batch after cleanup barrier failure", file=sys.stderr)
             break
 
-        if use_shadow_rom:
+        cleanup_passed = str((row.get("cleanup_barrier") or {}).get("status") or "") == "completed"
+        if use_shadow_rom and rom_context is not None and cleanup_passed:
+            reg = attempt_register_and_retrain_after_cleanup(
+                repo_root=repo_root,
+                run_root=run_root,
+                sample_id=sid,
+                run_id=rid,
+                shape_name=str(rom_context.get("shape_name") or "classic"),
+                production_acceptance_pass=bool(summary.get("production_acceptance_pass")),
+                policy=RetrainPolicy(retrain_every_n_new_samples=int(rom_retrain_every_n)),
+            )
+            row["rom_dataset_registration"] = reg
+            shadow_stages = reg.get("shadow_stages") or diagnose_shadow_rom_stages(run_root)
+            row["rom_shadow_stages"] = shadow_stages
+            print_shadow_rom_stages(shadow_stages)
+            if reg.get("retrained"):
+                print(f"[rom-retrain] {sid}: official model rebuilt", flush=True)
+            elif reg.get("registered"):
+                print(f"[rom-register] {sid}: added to official ROM dataset", flush=True)
             prune_rom_directory_to_durable(run_root)
+        elif use_shadow_rom and rom_context is not None:
+            shadow_stages = diagnose_shadow_rom_stages(run_root)
+            shadow_stages["dataset_registration_attempted"] = False
+            shadow_stages["dataset_registration_status"] = "skipped_cleanup_not_completed"
+            row["rom_shadow_stages"] = shadow_stages
+            print_shadow_rom_stages(shadow_stages)
 
         outcome, err_msg = classify_batch_sample_outcome(
             return_code=rc,
