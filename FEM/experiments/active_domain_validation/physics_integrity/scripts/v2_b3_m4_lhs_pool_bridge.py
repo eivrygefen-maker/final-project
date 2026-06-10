@@ -481,6 +481,66 @@ def is_lhs_entry_completed(entry: Mapping[str, Any], *, run_id: str) -> bool:
     return not last_run or last_run == run_id
 
 
+TRANSITIONAL_LHS_STATUSES = frozenset({LHS_PENDING, LHS_RUNNING})
+BLOCKED_FINALIZATION_LHS_STATUSES = frozenset({LHS_FAILED, LHS_FAILED_RETRYABLE})
+
+
+def completed_run_summary_for_finalization(summary: Mapping[str, Any]) -> bool:
+    """Completed-run evidence required before transitional LHS compaction."""
+    return (
+        str(summary.get("terminal_status") or "") == "COMPLETED"
+        and str(summary.get("aggregation_status") or "") == AGG_PASS
+        and bool(summary.get("final_aggregation_ready"))
+        and is_run_usably_complete(summary)
+    )
+
+
+def evaluate_lhs_finalization_ownership(
+    entry: Mapping[str, Any],
+    *,
+    sample_id: str,
+    run_id: str,
+) -> Dict[str, Any]:
+    """
+    Ownership and transitional-LHS policy for finalization-only compaction.
+
+    Allows PENDING/RUNNING when the pool entry belongs to this sample/run.
+    Rejects FAILED states and mismatched last_run_id.
+    """
+    entry_id = str(entry.get("id") or sample_id)
+    lhs_status = normalize_lhs_entry_status(entry.get("status"))
+    last_run_id = str(entry.get("last_run_id") or "")
+    ownership_match = entry_id == sample_id and (not last_run_id or last_run_id == run_id)
+
+    allowed = False
+    reason = ""
+    if lhs_status in BLOCKED_FINALIZATION_LHS_STATUSES:
+        reason = f"lhs_status_blocked:{lhs_status}"
+    elif entry_id != sample_id:
+        reason = f"lhs_sample_id_mismatch:{entry_id}!={sample_id}"
+    elif last_run_id and last_run_id != run_id:
+        reason = f"lhs_last_run_id_mismatch:{last_run_id}!={run_id}"
+    elif lhs_status == LHS_COMPLETED:
+        allowed = ownership_match
+        reason = "ok_completed" if allowed else "lhs_completed_run_id_mismatch"
+    elif lhs_status in TRANSITIONAL_LHS_STATUSES:
+        allowed = ownership_match
+        reason = "ok_transitional" if allowed else "lhs_run_ownership_mismatch"
+    else:
+        reason = f"lhs_status_unsupported:{lhs_status}"
+
+    transitional_allowed = allowed and lhs_status in TRANSITIONAL_LHS_STATUSES
+    return {
+        "lhs_entry_status": lhs_status,
+        "lhs_entry_last_run_id": last_run_id or None,
+        "finalizing_run_id": run_id,
+        "lhs_run_ownership_match": ownership_match,
+        "transitional_lhs_allowed": transitional_allowed,
+        "allowed": allowed,
+        "reason": reason,
+    }
+
+
 def read_run_production_summary(run_root: Path, *, workers_requested: int = 3) -> Dict[str, Any]:
     """Lightweight run summary from aggregation/manifest (no solver execution)."""
     manifest_path = run_root / "pipeline_run_manifest.json"

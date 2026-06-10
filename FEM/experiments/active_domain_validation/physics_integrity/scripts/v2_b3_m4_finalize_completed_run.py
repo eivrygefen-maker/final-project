@@ -14,6 +14,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from compact_completed_m4_runs import (  # noqa: E402
     compact_one_completed_run,
+    probe_compaction_eligibility,
     production_compaction_preconditions,
 )
 from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
@@ -238,7 +239,22 @@ def diagnose_finalization_state(
         "reason": gate_reason,
         "warnings": gate_warnings,
     }
-    report["lhs_entry_status"] = entry.get("status")
+    eligibility = probe_compaction_eligibility(
+        repo_root=repo_root,
+        pool=pool,
+        sample_id=sample_id,
+        run_id=run_id,
+        production_row=compaction_row,
+        allow_transitional_lhs=True,
+    )
+    report["lhs_eligibility"] = eligibility
+    report["lhs_entry_status"] = eligibility.get("lhs_entry_status") or entry.get("status")
+    report["lhs_entry_last_run_id"] = eligibility.get("lhs_entry_last_run_id")
+    report["finalizing_run_id"] = run_id
+    report["lhs_run_ownership_match"] = eligibility.get("lhs_run_ownership_match")
+    report["transitional_lhs_allowed"] = eligibility.get("transitional_lhs_allowed")
+    report["compaction_eligible"] = eligibility.get("compaction_eligible")
+    stages["compaction_skip_reason"] = eligibility.get("compaction_skip_reason")
 
     heavy_count, heavy_paths = count_forbidden_heavy_artifacts(run_root)
     report["forbidden_heavy_artifact_count"] = heavy_count
@@ -344,7 +360,7 @@ def finalize_completed_run(
         production_row=compaction_row,
         run_rom_compare=False,
         production_trigger=True,
-        allow_pending_lhs=True,
+        allow_transitional_lhs=True,
     )
     compact_dict = compact_out.to_dict()
     stages["compaction_deleted_paths"] = compact_dict.get("deleted_paths")
@@ -470,6 +486,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         write_json_atomic(report_path, report)
         _print_stage_report(report.get("stages") or {})
         print(f"lhs_entry_status={report.get('lhs_entry_status')}")
+        print(f"lhs_entry_last_run_id={report.get('lhs_entry_last_run_id')}")
+        print(f"finalizing_run_id={report.get('finalizing_run_id')}")
+        print(f"lhs_run_ownership_match={report.get('lhs_run_ownership_match')}")
+        print(f"transitional_lhs_allowed={report.get('transitional_lhs_allowed')}")
+        print(f"compaction_eligible={report.get('compaction_eligible')}")
+        print(f"compaction_skip_reason={report.get('stages', {}).get('compaction_skip_reason')}")
         print(f"production_compaction_gate={json.dumps(report.get('production_compaction_gate') or {})}")
         print(f"forbidden_heavy_artifact_count={report.get('forbidden_heavy_artifact_count')}")
         print(f"compaction_row_production_acceptance_pass={(report.get('compaction_row') or {}).get('production_acceptance_pass')}")

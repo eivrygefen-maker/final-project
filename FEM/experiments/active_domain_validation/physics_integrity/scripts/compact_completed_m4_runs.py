@@ -24,7 +24,10 @@ from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
     LHS_COMPLETED,
     LHS_FAILED,
     LHS_FAILED_RETRYABLE,
+    LHS_PENDING,
     LHS_RUNNING,
+    completed_run_summary_for_finalization,
+    evaluate_lhs_finalization_ownership,
     is_lhs_entry_completed,
     is_run_usably_complete,
     load_lhs_pool,
@@ -434,9 +437,20 @@ def _rom_comparison_status(run_root: Path, repo_root: Path, entry: Mapping[str, 
     return False, "", "missing"
 
 
-def _is_resume_needed(entry: Mapping[str, Any], summary: Mapping[str, Any]) -> bool:
+def _is_resume_needed(
+    entry: Mapping[str, Any],
+    summary: Mapping[str, Any],
+    *,
+    allow_transitional_lhs: bool = False,
+) -> bool:
     status = normalize_lhs_entry_status(entry.get("status"))
-    if status in (LHS_RUNNING, LHS_FAILED, LHS_FAILED_RETRYABLE):
+    if status in (LHS_FAILED, LHS_FAILED_RETRYABLE):
+        return True
+    if allow_transitional_lhs and status in (LHS_PENDING, LHS_RUNNING):
+        if completed_run_summary_for_finalization(summary):
+            return False
+        return True
+    if status == LHS_RUNNING:
         return True
     agg = str(summary.get("aggregation_status") or entry.get("last_aggregation_status") or "")
     if agg and agg != AGG_PASS:
@@ -505,7 +519,7 @@ def _eligible_run(
     run_root: Optional[Path] = None,
     explicit_selection: bool = False,
     run_dir_explicit: bool = False,
-    allow_pending_lhs: bool = False,
+    allow_transitional_lhs: bool = False,
 ) -> RunRecord:
     pool_entry = entry or {}
     sid = str(sample_id or pool_entry.get("id") or "")
@@ -528,17 +542,20 @@ def _eligible_run(
             return rec
         summary = read_run_production_summary(run_root)
     else:
-        if (
-            not allow_pending_lhs
-            and entry is not None
-            and normalize_lhs_entry_status(entry.get("status")) != LHS_COMPLETED
-        ):
+        if allow_transitional_lhs and entry is not None:
+            ownership = evaluate_lhs_finalization_ownership(
+                entry,
+                sample_id=sid,
+                run_id=run_id,
+            )
+            if not ownership.get("allowed"):
+                rec.skip_reason = str(ownership.get("reason") or "lhs_finalization_ownership_denied")
+                return rec
+        elif entry is not None and normalize_lhs_entry_status(entry.get("status")) != LHS_COMPLETED:
             rec.skip_reason = f"lhs_status={entry.get('status')}"
             return rec
-
-        if (
-            not allow_pending_lhs
-            and entry is not None
+        elif (
+            entry is not None
             and not explicit_selection
             and not is_lhs_entry_completed(entry, run_id=run_id)
         ):
@@ -552,7 +569,7 @@ def _eligible_run(
                 return rec
 
         summary = read_run_production_summary(run_root)
-        if _is_resume_needed(pool_entry, summary):
+        if _is_resume_needed(pool_entry, summary, allow_transitional_lhs=allow_transitional_lhs):
             rec.skip_reason = "resume_needed_or_incomplete"
             return rec
 
@@ -888,7 +905,7 @@ def compact_one_completed_run(
     production_row: Optional[Mapping[str, Any]] = None,
     run_rom_compare: bool = False,
     production_trigger: bool = False,
-    allow_pending_lhs: Optional[bool] = None,
+    allow_transitional_lhs: Optional[bool] = None,
 ) -> CompactionOutcome:
     """Delete heavy artifacts for one completed run (reuses standalone compaction logic)."""
     t0 = time.perf_counter()
@@ -903,12 +920,14 @@ def compact_one_completed_run(
         )
 
     rid = str(run_id or entry.get("last_run_id") or f"{sample_id}_{DEFAULT_RUN_ID_SUFFIX}")
-    pending_lhs_ok = bool(allow_pending_lhs) if allow_pending_lhs is not None else bool(production_trigger)
+    transitional_lhs_ok = (
+        bool(allow_transitional_lhs) if allow_transitional_lhs is not None else bool(production_trigger)
+    )
     rec = _eligible_run(
         repo_root=repo_root,
         entry=entry,
         run_id=rid,
-        allow_pending_lhs=pending_lhs_ok,
+        allow_transitional_lhs=transitional_lhs_ok,
     )
 
     if production_row is not None:
@@ -921,7 +940,7 @@ def compact_one_completed_run(
         if not ok:
             rec.eligible = False
             rec.skip_reason = f"production_gate:{reason}"
-        elif pending_lhs_ok and rec.eligible:
+        elif transitional_lhs_ok and rec.eligible:
             rec.skip_reason = ""
 
     if keep_full:
@@ -951,6 +970,45 @@ def compact_one_completed_run(
         return _record_to_outcome(rec, runtime_s=time.perf_counter() - t0, error=str(exc))
 
     return _record_to_outcome(rec, runtime_s=time.perf_counter() - t0)
+
+
+def probe_compaction_eligibility(
+    *,
+    repo_root: Path,
+    pool: Mapping[str, Any],
+    sample_id: str,
+    run_id: str,
+    production_row: Optional[Mapping[str, Any]] = None,
+    allow_transitional_lhs: bool = True,
+) -> Dict[str, Any]:
+    """Read-only compaction eligibility probe for finalization diagnostics."""
+    entry = next((e for e in pool.get("entries") or [] if str(e.get("id")) == sample_id), {})
+    ownership = evaluate_lhs_finalization_ownership(entry, sample_id=sample_id, run_id=run_id)
+    rec = _eligible_run(
+        repo_root=repo_root,
+        entry=entry,
+        run_id=run_id,
+        sample_id=sample_id,
+        allow_transitional_lhs=allow_transitional_lhs,
+    )
+    gate_ok: Optional[bool] = None
+    gate_reason = ""
+    if production_row is not None:
+        gate_ok, gate_reason, _ = production_compaction_preconditions(
+            row=production_row,
+            pool_entry=entry,
+            run_rom_compare=False,
+        )
+        if not gate_ok:
+            rec.eligible = False
+            rec.skip_reason = f"production_gate:{gate_reason}"
+    return {
+        **ownership,
+        "compaction_eligible": bool(rec.eligible),
+        "compaction_skip_reason": rec.skip_reason or None,
+        "production_compaction_gate_ok": gate_ok,
+        "production_compaction_gate_reason": gate_reason or None,
+    }
 
 
 def compact_runs_for_samples(

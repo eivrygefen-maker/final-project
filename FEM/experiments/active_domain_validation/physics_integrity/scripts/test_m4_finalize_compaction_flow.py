@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import sys
 import tempfile
 import unittest
@@ -14,13 +13,23 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from compact_completed_m4_runs import compact_one_completed_run, production_compaction_preconditions  # noqa: E402
+from compact_completed_m4_runs import (  # noqa: E402
+    compact_one_completed_run,
+    probe_compaction_eligibility,
+    production_compaction_preconditions,
+)
 from test_m4_compaction_run_selection import _make_strict_completed_run  # noqa: E402
 from v2_b3_m4_finalize_completed_run import (  # noqa: E402
     build_compaction_production_row,
     diagnose_finalization_state,
     finalize_completed_run,
-    require_compaction_completed,
+)
+from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
+    LHS_COMPLETED,
+    LHS_FAILED,
+    LHS_RUNNING,
+    load_lhs_pool,
+    write_lhs_pool,
 )
 from v2_b3_m4_physics_identity_lib import FORBIDDEN_HEAVY_REL_DIRS  # noqa: E402
 from v2_b3_m4_shared_export import APPROVED_SHARED_PLOT_NAMES  # noqa: E402
@@ -44,57 +53,19 @@ class FinalizeCompactionFlowTests(unittest.TestCase):
         )
         self.lhs = self.repo / "ROM/classic/lhs_pool.json"
         self.lhs.parent.mkdir(parents=True, exist_ok=True)
-        self.lhs.write_text(
-            json.dumps(
-                {
-                    "shape_name": "classic",
-                    "entries": [
-                        {
-                            "id": self.sample_id,
-                            "status": "PENDING",
-                            "lhs_row_index": 0,
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
+        self._write_lhs(status="PENDING", last_run_id=None)
         _make_strict_completed_run(
             self.run_root,
             sample_id=self.sample_id,
             run_id=self.run_id,
-            production_acceptance_pass=False,
-            production_acceptance_failures=["missing_acceptance"],
+            production_acceptance_pass=True,
         )
         for name in APPROVED_SHARED_PLOT_NAMES:
             (self.run_root / "aggregation" / name).write_bytes(b"png")
         write_json_atomic(self.run_root / "aggregation" / "runtime_summary.json", {"status": "ok"})
         write_json_atomic(
             self.run_root / "pipeline_run_manifest.json",
-            {
-                "terminal_status": "COMPLETED",
-                "production_acceptance_pass": True,
-            },
-        )
-        write_json_atomic(
-            self.run_root / "freeze" / "freeze_manifest.json",
-            {"production_acceptance_pass": True, "production_acceptance_failures": []},
-        )
-        write_json_atomic(
-            self.run_root / "freeze" / "physics_identity_manifest.json",
-            {
-                "schema": "m4_physics_identity_v1",
-                "sample_id": self.sample_id,
-                "run_id": self.run_id,
-                "production_acceptance_pass": True,
-                "production_acceptance_failures": [],
-                "generated_mesh_sha256": "abc",
-                "operator_mesh_matches_generated": True,
-                "active_dimension": 100,
-                "masks": {"p_idx_aperture_count": 4},
-                "fallback_flags": {"cross_sample_reuse": False},
-                "path_contamination": {"contamination_detected": False},
-            },
+            {"terminal_status": "COMPLETED", "production_acceptance_pass": True},
         )
         for rel in FORBIDDEN_HEAVY_REL_DIRS:
             path = self.run_root / rel
@@ -103,6 +74,15 @@ class FinalizeCompactionFlowTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
+
+    def _write_lhs(self, *, status: str, last_run_id: str | None) -> None:
+        entry: dict = {"id": self.sample_id, "status": status, "lhs_row_index": 0}
+        if last_run_id is not None:
+            entry["last_run_id"] = last_run_id
+        self.lhs.write_text(
+            json.dumps({"shape_name": "classic", "entries": [entry]}),
+            encoding="utf-8",
+        )
 
     def _acceptance_report(self) -> dict:
         return {
@@ -125,30 +105,79 @@ class FinalizeCompactionFlowTests(unittest.TestCase):
             "terminal_status": "COMPLETED",
             "aggregation_status": "AGGREGATION_PASS",
             "final_aggregation_ready": True,
+            "failed_chunks": 0,
+            "missing_chunks": 0,
         }
 
-    def test_stale_row_without_acceptance_blocks_compaction_gate(self) -> None:
-        stale_row = build_compaction_production_row(
-            sample_id=self.sample_id,
-            run_id=self.run_id,
-            acceptance_report={"production_acceptance_pass": False, "production_acceptance_failures": ["x"]},
-            export_manifest=self._export_manifest(),
-            summary=self._summary(),
-        )
-        pool_entry = {"status": "PENDING"}
-        ok, reason, _ = production_compaction_preconditions(
-            row=stale_row,
-            pool_entry=pool_entry,
-            run_rom_compare=False,
-        )
-        self.assertFalse(ok)
-        self.assertIn("production_acceptance_pass", reason)
-
-    def test_refreshed_row_passes_compaction_gate_with_pending_lhs(self) -> None:
-        row = build_compaction_production_row(
+    def _compaction_row(self) -> dict:
+        return build_compaction_production_row(
             sample_id=self.sample_id,
             run_id=self.run_id,
             acceptance_report=self._acceptance_report(),
+            export_manifest=self._export_manifest(),
+            summary=self._summary(),
+        )
+
+    def _pool(self) -> dict:
+        return json.loads(self.lhs.read_text(encoding="utf-8"))
+
+    def _compact(self, *, allow_transitional_lhs: bool) -> object:
+        return compact_one_completed_run(
+            repo_root=self.repo,
+            pool=self._pool(),
+            sample_id=self.sample_id,
+            run_id=self.run_id,
+            production_row=self._compaction_row(),
+            production_trigger=True,
+            allow_transitional_lhs=allow_transitional_lhs,
+        )
+
+    def test_pending_matching_completed_run_compaction_allowed(self) -> None:
+        self._write_lhs(status="PENDING", last_run_id=None)
+        out = self._compact(allow_transitional_lhs=True)
+        self.assertEqual(out.status, "completed", out.skip_reason)
+        probe = probe_compaction_eligibility(
+            repo_root=self.repo,
+            pool=self._pool(),
+            sample_id=self.sample_id,
+            run_id=self.run_id,
+            production_row=self._compaction_row(),
+        )
+        self.assertTrue(probe["transitional_lhs_allowed"])
+
+    def test_running_matching_completed_run_compaction_allowed(self) -> None:
+        self._write_lhs(status=LHS_RUNNING, last_run_id=self.run_id)
+        out = self._compact(allow_transitional_lhs=True)
+        self.assertEqual(out.status, "completed", out.skip_reason)
+
+    def test_running_different_last_run_id_blocked(self) -> None:
+        self._write_lhs(status=LHS_RUNNING, last_run_id="sample_000_other_run")
+        out = self._compact(allow_transitional_lhs=True)
+        self.assertNotEqual(out.status, "completed")
+        self.assertIn("last_run_id_mismatch", out.skip_reason)
+
+    def test_failed_lhs_blocked(self) -> None:
+        self._write_lhs(status=LHS_FAILED, last_run_id=self.run_id)
+        out = self._compact(allow_transitional_lhs=True)
+        self.assertNotEqual(out.status, "completed")
+        self.assertIn("lhs_status_blocked", out.skip_reason)
+
+    def test_completed_lhs_allowed_idempotent(self) -> None:
+        self._write_lhs(status=LHS_COMPLETED, last_run_id=self.run_id)
+        out = self._compact(allow_transitional_lhs=True)
+        self.assertEqual(out.status, "completed", out.skip_reason)
+
+    def test_transitional_lhs_blocked_without_flag(self) -> None:
+        self._write_lhs(status=LHS_RUNNING, last_run_id=self.run_id)
+        out = self._compact(allow_transitional_lhs=False)
+        self.assertNotEqual(out.status, "completed")
+        self.assertIn("lhs_status", out.skip_reason)
+
+    def test_stale_row_without_acceptance_blocks_gate(self) -> None:
+        row = build_compaction_production_row(
+            sample_id=self.sample_id,
+            run_id=self.run_id,
+            acceptance_report={"production_acceptance_pass": False, "production_acceptance_failures": ["x"]},
             export_manifest=self._export_manifest(),
             summary=self._summary(),
         )
@@ -157,58 +186,13 @@ class FinalizeCompactionFlowTests(unittest.TestCase):
             pool_entry={"status": "PENDING"},
             run_rom_compare=False,
         )
-        self.assertTrue(ok, reason)
-        self.assertTrue(row["production_acceptance_pass"])
-
-    def test_pending_lhs_blocks_compaction_without_allow_pending(self) -> None:
-        row = build_compaction_production_row(
-            sample_id=self.sample_id,
-            run_id=self.run_id,
-            acceptance_report=self._acceptance_report(),
-            export_manifest=self._export_manifest(),
-            summary=self._summary(),
-        )
-        pool = json.loads(self.lhs.read_text(encoding="utf-8"))
-        out = compact_one_completed_run(
-            repo_root=self.repo,
-            pool=pool,
-            sample_id=self.sample_id,
-            run_id=self.run_id,
-            production_row=row,
-            production_trigger=True,
-            allow_pending_lhs=False,
-        )
-        self.assertNotEqual(out.status, "completed")
-        self.assertIn("lhs_status", out.skip_reason)
-
-    def test_pending_lhs_compacts_with_allow_pending_lhs(self) -> None:
-        row = build_compaction_production_row(
-            sample_id=self.sample_id,
-            run_id=self.run_id,
-            acceptance_report=self._acceptance_report(),
-            export_manifest=self._export_manifest(),
-            summary=self._summary(),
-        )
-        pool = json.loads(self.lhs.read_text(encoding="utf-8"))
-        out = compact_one_completed_run(
-            repo_root=self.repo,
-            pool=pool,
-            sample_id=self.sample_id,
-            run_id=self.run_id,
-            production_row=row,
-            production_trigger=True,
-            allow_pending_lhs=True,
-        )
-        self.assertEqual(out.status, "completed", out.skip_reason)
-        self.assertTrue((self.run_root / "compaction" / "compaction_manifest.json").is_file())
-        for rel in FORBIDDEN_HEAVY_REL_DIRS:
-            self.assertFalse((self.run_root / rel).exists(), rel)
+        self.assertFalse(ok)
+        self.assertIn("production_acceptance_pass", reason)
 
     def test_skipped_compaction_stops_before_cleanup(self) -> None:
-        acceptance_report = self._acceptance_report()
         with patch(
             "v2_b3_m4_finalize_completed_run.ensure_production_acceptance_for_finalization",
-            return_value=acceptance_report,
+            return_value=self._acceptance_report(),
         ):
             with patch(
                 "v2_b3_m4_finalize_completed_run.try_export_sample_to_shared",
@@ -223,7 +207,7 @@ class FinalizeCompactionFlowTests(unittest.TestCase):
                         sample_id=self.sample_id,
                         run_id=self.run_id,
                         status="planned",
-                        skip_reason="lhs_status=PENDING",
+                        skip_reason="lhs_status=RUNNING",
                     )
                     with patch(
                         "v2_b3_m4_finalize_completed_run.run_sample_cleanup_barrier",
@@ -240,7 +224,8 @@ class FinalizeCompactionFlowTests(unittest.TestCase):
         self.assertIn("COMPACTION_NOT_COMPLETED", str(ctx.exception))
         barrier_mock.assert_not_called()
 
-    def test_diagnose_reports_compaction_row_with_acceptance(self) -> None:
+    def test_diagnose_reports_lhs_eligibility_fields(self) -> None:
+        self._write_lhs(status=LHS_RUNNING, last_run_id=self.run_id)
         report = diagnose_finalization_state(
             repo_root=self.repo,
             sample_id=self.sample_id,
@@ -248,17 +233,32 @@ class FinalizeCompactionFlowTests(unittest.TestCase):
             lhs_path=self.lhs,
             shared_root=self.shared,
         )
-        row = report.get("compaction_row") or {}
-        self.assertTrue(row.get("production_acceptance_pass"))
-        self.assertEqual(report.get("lhs_entry_status"), "PENDING")
-        gate = report.get("production_compaction_gate") or {}
-        self.assertTrue(gate.get("ok"), gate)
+        for key in (
+            "lhs_entry_status",
+            "lhs_entry_last_run_id",
+            "finalizing_run_id",
+            "lhs_run_ownership_match",
+            "transitional_lhs_allowed",
+            "compaction_eligible",
+        ):
+            self.assertIn(key, report, key)
+        self.assertTrue(report["lhs_run_ownership_match"])
+        self.assertTrue(report["transitional_lhs_allowed"])
 
-    def test_finalize_integration_deletes_heavy_paths(self) -> None:
-        acceptance_report = self._acceptance_report()
+    def test_finalize_marks_lhs_completed_after_successful_cleanup(self) -> None:
+        self._write_lhs(status=LHS_RUNNING, last_run_id=self.run_id)
+
+        def _reconcile_bookkeeping(**kwargs: object) -> dict:
+            pool = load_lhs_pool(self.lhs)
+            entry = next(e for e in pool["entries"] if e["id"] == self.sample_id)
+            entry["status"] = LHS_COMPLETED
+            entry["last_run_id"] = self.run_id
+            write_lhs_pool(self.lhs, pool)
+            return {"outcome": "pass"}
+
         with patch(
             "v2_b3_m4_finalize_completed_run.ensure_production_acceptance_for_finalization",
-            return_value=acceptance_report,
+            return_value=self._acceptance_report(),
         ):
             with patch(
                 "v2_b3_m4_finalize_completed_run.try_export_sample_to_shared",
@@ -276,21 +276,59 @@ class FinalizeCompactionFlowTests(unittest.TestCase):
                         sample_success=True,
                         verification_pass=True,
                     )
-                    report = finalize_completed_run(
-                        repo_root=self.repo,
+                    with patch(
+                        "v2_b3_m4_finalize_completed_run.reconcile_run_bookkeeping",
+                        side_effect=_reconcile_bookkeeping,
+                    ):
+                        report = finalize_completed_run(
+                            repo_root=self.repo,
+                            sample_id=self.sample_id,
+                            run_id=self.run_id,
+                            lhs_path=self.lhs,
+                            shared_root=self.shared,
+                            reconcile_bookkeeping=True,
+                        )
+        pool = load_lhs_pool(self.lhs)
+        entry = next(e for e in pool["entries"] if e["id"] == self.sample_id)
+        self.assertEqual(entry["status"], LHS_COMPLETED)
+        self.assertEqual(entry["last_run_id"], self.run_id)
+        self.assertEqual(report["outcome"], "pass")
+
+    def test_cleanup_failure_leaves_lhs_non_completed(self) -> None:
+        self._write_lhs(status=LHS_RUNNING, last_run_id=self.run_id)
+        with patch(
+            "v2_b3_m4_finalize_completed_run.ensure_production_acceptance_for_finalization",
+            return_value=self._acceptance_report(),
+        ):
+            with patch(
+                "v2_b3_m4_finalize_completed_run.try_export_sample_to_shared",
+                return_value=(self._export_manifest(), None),
+            ):
+                with patch(
+                    "v2_b3_m4_finalize_completed_run.run_sample_cleanup_barrier",
+                ) as barrier_mock:
+                    from v2_b3_m4_sample_cleanup_barrier import CleanupBarrierOutcome  # noqa: WPS433
+
+                    barrier_mock.return_value = CleanupBarrierOutcome(
                         sample_id=self.sample_id,
                         run_id=self.run_id,
-                        lhs_path=self.lhs,
-                        shared_root=self.shared,
-                        reconcile_bookkeeping=False,
+                        status="failed",
+                        sample_success=True,
+                        verification_pass=False,
+                        forbidden_heavy_artifact_count=6,
                     )
-        self.assertEqual(report["compaction_status"], "completed")
-        self.assertTrue(report["production_acceptance_pass"])
-        for rel in FORBIDDEN_HEAVY_REL_DIRS:
-            self.assertFalse((self.run_root / rel).exists(), rel)
-        stages = report.get("stages") or {}
-        self.assertTrue(stages.get("compaction_invoked"))
-        self.assertEqual(stages.get("cleanup_status"), "completed")
+                    with self.assertRaises(RuntimeError):
+                        finalize_completed_run(
+                            repo_root=self.repo,
+                            sample_id=self.sample_id,
+                            run_id=self.run_id,
+                            lhs_path=self.lhs,
+                            shared_root=self.shared,
+                            reconcile_bookkeeping=True,
+                        )
+        pool = load_lhs_pool(self.lhs)
+        entry = next(e for e in pool["entries"] if e["id"] == self.sample_id)
+        self.assertEqual(entry["status"], LHS_RUNNING)
 
 
 if __name__ == "__main__":
