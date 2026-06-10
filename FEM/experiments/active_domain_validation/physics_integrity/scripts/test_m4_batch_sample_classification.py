@@ -86,7 +86,12 @@ class BatchSampleClassificationTests(unittest.TestCase):
             summary=_complete_summary(),
             cleanup_barrier=_completed_cleanup_barrier(),
             require_cleanup_barrier=True,
-            shared_export={"export_status": "EXPORTED", "graph_export_entries": [{"copy_status": "copied"}]},
+            shared_export={
+                "export_status": "EXPORTED",
+                "graph_export_entries": [{"copy_status": "copied"}],
+                "summary_export_path": "/tmp/summary.json",
+                "graph_manifest_export_path": "/tmp/graph_export_manifest.json",
+            },
             require_graph_export=True,
         )
         self.assertEqual(outcome, "pass")

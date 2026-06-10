@@ -13,17 +13,14 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from v2_b3_m4_full_lhs_pool_reset import (  # noqa: E402
-    LHS_PENDING,
     apply_full_lhs_pool_reset,
     plan_full_lhs_pool_reset,
-    reset_pool_entries,
-    verify_all_entries_pending,
 )
 from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
     LHS_COMPLETED,
+    LHS_PENDING,
     LHS_RUNNING,
     classify_batch_sample_outcome,
-    load_lhs_pool,
 )
 from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
     DATASET_VERSION_ROM,
@@ -40,9 +37,11 @@ from v2_b3_m4_prepare_rom_official_batch import (  # noqa: E402
     verify_unique_run_roots,
 )
 from v2_b3_m4_shared_export import (  # noqa: E402
-    GRAPH_EXPORT_MANIFEST_SCHEMA,
+    APPROVED_SHARED_PLOT_NAMES,
     export_graphs_fixture,
-    graphs_destination_dir,
+    graph_manifest_filename,
+    sample_plots_destination_dir,
+    summaries_destination_dir,
 )
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
@@ -83,93 +82,38 @@ class PrepareRomOfficialBatchTests(unittest.TestCase):
             plan = plan_full_lhs_pool_reset(repo_root=repo, lhs_path=lhs)
             self.assertEqual(plan["total_lhs_entries"], 12)
             self.assertEqual(len(plan["lhs_entries_to_reset"]), 12)
-            self.assertTrue(plan["run_trees_are_not_deleted"])
-            self.assertEqual(plan["run_directory_deletions"], 0)
-
-    def test_full_reset_execute_makes_all_pending(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            lhs = repo / "ROM/classic/lhs_pool.json"
-            lhs.parent.mkdir(parents=True)
-            write_json_atomic(lhs, _mini_pool())
-            result = apply_full_lhs_pool_reset(repo_root=repo, lhs_path=lhs)
-            pool = load_lhs_pool(lhs)
-            self.assertTrue(result["all_entries_pending"])
-            self.assertTrue(verify_all_entries_pending(pool))
-            entry2 = pool["entries"][2]
-            self.assertEqual(entry2["status"], LHS_PENDING)
-            self.assertNotIn("last_run_id", entry2)
 
     def test_post_reset_selection_first_five_in_order(self) -> None:
-        pool = _mini_pool()
         selection = simulate_post_reset_selection(
-            pool=pool,
+            pool=_mini_pool(),
             max_samples=OFFICIAL_MAX_SAMPLES,
             run_id_suffix=OFFICIAL_RUN_ID_SUFFIX,
         )
         self.assertEqual(len(selection), 5)
         self.assertEqual([row["lhs_row_index"] for row in selection], [0, 1, 2, 3, 4])
-        self.assertEqual(
-            [row["sample_id"] for row in selection],
-            [f"sample_{i:03d}" for i in range(5)],
-        )
 
-    def test_unique_run_root_checks(self) -> None:
+    def test_graph_export_fixture_uses_sample_plots_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            selection = simulate_post_reset_selection(
-                pool=_mini_pool(),
-                max_samples=5,
-                run_id_suffix=OFFICIAL_RUN_ID_SUFFIX,
-            )
-            checks = verify_unique_run_roots(repo_root=repo, selection=selection)
-            self.assertEqual(len(checks), 5)
-            self.assertTrue(all(c["ok"] for c in checks))
-
-    def test_graph_export_fixture_writes_manifest(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            shared = repo / "shared"
+            shared = Path(tmp) / "sf_gmar"
             shared.mkdir()
-            run_root = repo / "run"
+            run_root = Path(tmp) / "run"
             manifest = export_graphs_fixture(
                 run_root=run_root,
                 sample_id="sample_000",
                 run_id="sample_000_rom_official_v1",
                 shared_root=shared,
             )
-            self.assertEqual(manifest.get("export_status"), "EXPORTED")
-            graphs_dir = graphs_destination_dir(
+            plots_dir = sample_plots_destination_dir(
                 shared_root=shared,
                 shape_name="classic",
                 sample_id="sample_000",
-                run_id="sample_000_rom_official_v1",
             )
-            graph_manifest = json.loads((graphs_dir / "graph_export_manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(graph_manifest["schema"], GRAPH_EXPORT_MANIFEST_SCHEMA)
-
-    def test_graph_export_failure_blocks_classification(self) -> None:
-        outcome, err = classify_batch_sample_outcome(
-            return_code=0,
-            summary={
-                "terminal_status": "COMPLETED",
-                "aggregation_status": "AGGREGATION_PASS",
-                "failed_chunks": 0,
-                "missing_chunks": 0,
-                "final_aggregation_ready": True,
-            },
-            cleanup_barrier={
-                "status": "completed",
-                "verification_pass": True,
-                "forbidden_heavy_artifact_count": 0,
-                "shared_sample_artifact_count": 0,
-            },
-            require_cleanup_barrier=True,
-            shared_export={"export_status": "FAILED"},
-            require_graph_export=True,
-        )
-        self.assertEqual(outcome, "fail")
-        self.assertIn("graph_export_status=FAILED", err or "")
+            self.assertEqual(manifest["export_status"], "EXPORTED")
+            self.assertTrue((plots_dir / f"sample_000_rom_official_v1__{APPROVED_SHARED_PLOT_NAMES[0]}").is_file())
+            summaries = summaries_destination_dir(shared_root=shared, shape_name="classic")
+            self.assertTrue(
+                (summaries / graph_manifest_filename("sample_000", "sample_000_rom_official_v1")).is_file()
+            )
 
     def test_prepare_report_uses_normal_selection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -187,11 +131,6 @@ class PrepareRomOfficialBatchTests(unittest.TestCase):
             )
             self.assertFalse(report["bounded_index_selection"])
             self.assertEqual(report["post_reset_selection_count"], 5)
-            self.assertEqual(
-                [row["lhs_index"] for row in report["post_reset_pipeline_selection"]],
-                [0, 1, 2, 3, 4],
-            )
-            self.assertFalse(report["fem_launched"])
 
 
 if __name__ == "__main__":

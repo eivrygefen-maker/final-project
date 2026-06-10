@@ -715,8 +715,8 @@ def run_production_batch(
             if export_warn:
                 row["shared_export_warning"] = export_warn
                 print(f"[warn] {sid}: {export_warn}", flush=True)
-            elif export_manifest and export_manifest.get("shared_plot_path"):
-                print(f"[export] {sid}: {export_manifest.get('shared_plot_path')}", flush=True)
+            elif export_manifest and export_manifest.get("exported_png_paths"):
+                print(f"[export] {sid}: {export_manifest.get('exported_png_paths')[0]}", flush=True)
 
         if not _run_sample_cleanup_barrier_for_batch(
             row=row,

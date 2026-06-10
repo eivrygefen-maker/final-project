@@ -74,7 +74,7 @@ def _make_completed_run(run_root: Path, *, sample_id: str, run_id: str) -> None:
         '{"mode_index": 0, "frequency_hz": 120.0}\n',
         encoding="utf-8",
     )
-    (run_root / "aggregation" / "mode_frequency_plot.png").write_bytes(b"png")
+    (run_root / "aggregation" / "mode_frequency_vs_radiation_proxy.png").write_bytes(b"png")
     _write_json(run_root / "rom" / "rom_fom_comparison.json", {"status": "COMPLETED"})
     _write_json(run_root / "freeze" / "sample_e2e_run_manifest.json", {"status": "ok"})
     _write_json(

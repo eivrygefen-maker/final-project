@@ -43,6 +43,7 @@ from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
     preserve_target_plan_before_cleanup,
     production_mesh_levels_for_cleanup,
 )
+from v2_b3_m4_shared_export import APPROVED_SHARED_PLOT_NAMES  # noqa: E402
 from v2_b3_m4_mesh_profile_provenance_lib import (  # noqa: E402
     preserve_comparison_provenance_before_cleanup,
 )
@@ -166,9 +167,7 @@ def _aggregation_plots_present(run_root: Path) -> bool:
     agg = run_root / "aggregation"
     if not agg.is_dir():
         return False
-    if (agg / "mode_frequency_plot.png").is_file():
-        return True
-    return any(agg.glob("*.png"))
+    return any((agg / name).is_file() for name in APPROVED_SHARED_PLOT_NAMES)
 
 
 def _freeze_manifest_present(run_root: Path) -> bool:

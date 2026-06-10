@@ -239,7 +239,9 @@ class SampleCleanupBarrierTests(unittest.TestCase):
         ok, errors = verify_success_durable_outputs(self.run_root)
         self.assertTrue(ok, errors)
         self.assertTrue((self.run_root / "aggregation" / "mode_provenance.jsonl").is_file())
-        self.assertTrue((self.run_root / "aggregation" / "mode_frequency_plot.png").is_file())
+        self.assertTrue(
+            (self.run_root / "aggregation" / "mode_frequency_vs_radiation_proxy.png").is_file()
+        )
         self.assertTrue((self.run_root / "freeze" / "physics_identity_manifest.json").is_file())
 
     def test_generated_specs_and_shared_mesh_config_removed(self) -> None:

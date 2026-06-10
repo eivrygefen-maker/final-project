@@ -607,13 +607,17 @@ def classify_batch_sample_outcome(
     if require_graph_export:
         export_doc = shared_export or {}
         export_status = str(export_doc.get("export_status") or "missing")
-        if export_status not in ("EXPORTED", "PARTIAL"):
+        if export_status != "EXPORTED":
             errors.append(f"graph_export_status={export_status}")
         else:
             entries = list(export_doc.get("graph_export_entries") or [])
             failed = [e for e in entries if e.get("copy_status") != "copied"]
             if failed:
                 errors.append(f"graph_copy_failures={len(failed)}")
+            if not export_doc.get("summary_export_path"):
+                errors.append("summary_export_missing")
+            if not export_doc.get("graph_manifest_export_path"):
+                errors.append("graph_manifest_export_missing")
     if errors:
         return "fail", ";".join(errors)
     return "pass", None

@@ -32,7 +32,10 @@ from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
     checkpoint_export_mesh_level,
     resolve_mesh_profile,
 )
-from v2_b3_m4_shared_export import graphs_destination_dir  # noqa: E402
+from v2_b3_m4_shared_export import (  # noqa: E402
+    sample_plots_destination_dir,
+    summaries_destination_dir,
+)
 from v2_b3_m4_worker_run_lib import detect_repo_root, rel, utc_now  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
@@ -210,12 +213,15 @@ def build_prepare_report(
         "unique_run_root_checks": run_checks,
         "all_run_roots_unique_and_absent": all(bool(c.get("ok")) for c in run_checks),
         "shared_graph_structure_example": rel(
-            graphs_destination_dir(
+            sample_plots_destination_dir(
                 shared_root=Path("/media/sf_gmar"),
                 shape_name="classic",
                 sample_id=first_sample,
-                run_id=first_run,
             ),
+            repo_root=repo_root,
+        ),
+        "shared_summaries_structure_example": rel(
+            summaries_destination_dir(shared_root=Path("/media/sf_gmar"), shape_name="classic"),
             repo_root=repo_root,
         ),
         "graph_export_blocks_next_sample": True,

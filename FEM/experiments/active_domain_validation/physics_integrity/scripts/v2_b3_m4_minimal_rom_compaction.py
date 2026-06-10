@@ -33,6 +33,7 @@ from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
     MESH_PROFILE_ROM,
     VALIDATION_INPUT_PACKAGE_REL,
 )
+from v2_b3_m4_shared_export import APPROVED_SHARED_PLOT_NAMES  # noqa: E402
 from v2_b3_m4_physics_identity_lib import (  # noqa: E402
     PHYSICS_IDENTITY_MANIFEST,
     count_forbidden_heavy_artifacts,
@@ -137,10 +138,7 @@ def _aggregation_plot_paths(run_root: Path) -> List[Path]:
     agg = run_root / "aggregation"
     if not agg.is_dir():
         return []
-    plots: List[Path] = []
-    for pattern in ("mode_frequency*.png", "mode_frequency_plot.png"):
-        plots.extend(p for p in agg.glob(pattern) if p.is_file())
-    return sorted(set(plots))
+    return [agg / name for name in APPROVED_SHARED_PLOT_NAMES if (agg / name).is_file()]
 
 
 def minimal_rom_retain_rel_paths(run_root: Path) -> Set[str]:

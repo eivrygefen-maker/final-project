@@ -93,7 +93,7 @@ def _make_strict_completed_run(
         '{"mode_index": 0, "frequency_hz": 120.0}\n',
         encoding="utf-8",
     )
-    (run_root / "aggregation" / "mode_frequency_plot.png").write_bytes(b"png")
+    (run_root / "aggregation" / "mode_frequency_vs_radiation_proxy.png").write_bytes(b"png")
     _write_json(
         run_root / "freeze" / "freeze_manifest.json",
         {
