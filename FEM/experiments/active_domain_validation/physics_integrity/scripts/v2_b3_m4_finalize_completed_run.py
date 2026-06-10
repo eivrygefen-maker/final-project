@@ -124,6 +124,49 @@ def _read_compaction_manifest(run_root: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
+def is_run_already_finalized(run_root: Path) -> Tuple[bool, Dict[str, Any]]:
+    """True when production acceptance, compaction, and cleanup are already complete."""
+    evidence: Dict[str, Any] = {}
+    acceptance = read_production_acceptance_status(run_root)
+    evidence["production_acceptance_pass"] = bool(acceptance.get("production_acceptance_pass"))
+    if not evidence["production_acceptance_pass"]:
+        return False, evidence
+
+    manifest = _read_compaction_manifest(run_root)
+    compaction_status = str(manifest.get("status") or "") if manifest else ""
+    evidence["compaction_status"] = compaction_status or None
+    if compaction_status not in ("completed", "already_compacted"):
+        return False, evidence
+    if manifest is None:
+        return False, evidence
+
+    barrier_path = run_root / "cleanup" / "sample_cleanup_barrier.json"
+    if not barrier_path.is_file():
+        return False, evidence
+    try:
+        barrier = load_json(barrier_path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False, evidence
+    cleanup_status = str(barrier.get("status") or "")
+    evidence["cleanup_status"] = cleanup_status
+    if cleanup_status != "completed":
+        return False, evidence
+
+    verify = barrier.get("verification") if isinstance(barrier.get("verification"), dict) else {}
+    verification_pass = bool(verify.get("pass")) if verify else bool(barrier.get("verification_pass"))
+    evidence["cleanup_verification_pass"] = verification_pass
+    if not verification_pass:
+        return False, evidence
+
+    heavy_count, heavy_paths = count_forbidden_heavy_artifacts(run_root)
+    evidence["forbidden_heavy_artifact_count"] = heavy_count
+    evidence["forbidden_heavy_artifacts_present"] = heavy_paths
+    if heavy_count != 0:
+        return False, evidence
+
+    return True, evidence
+
+
 def require_compaction_completed(
     *,
     run_root: Path,
@@ -305,6 +348,20 @@ def finalize_completed_run(
             shared_root=shared_root,
             workers_requested=workers_requested,
         )
+
+    already, already_evidence = is_run_already_finalized(run_root)
+    if already:
+        return {
+            "schema": "m4_finalize_completed_run_v1",
+            "generated_utc": utc_now(),
+            "sample_id": sample_id,
+            "run_id": run_id,
+            "run_root": rel(run_root, repo_root=repo_root),
+            "outcome": "ALREADY_FINALIZED",
+            "already_finalized": True,
+            "already_finalized_evidence": already_evidence,
+            "fem_stages_executed": False,
+        }
 
     stages = _new_stage_report()
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Optional, Sequence
@@ -18,6 +19,11 @@ from v2_b3_m4_modal_surrogate_lib import (  # noqa: E402
     collect_completed_fom_training_rows,
     save_surrogate_model,
 )
+from v2_b3_m4_official_rom_dataset_lib import (  # noqa: E402
+    OFFICIAL_INITIAL_RUN_IDS,
+    build_initial_five_run_dataset_report,
+)
+from v2_b3_m4_rom_shadow_pipeline_lib import build_official_rom_surrogate_from_runs  # noqa: E402
 from v2_b3_m4_worker_run_lib import detect_repo_root, rel  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
@@ -53,6 +59,16 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Exclude sample_id(s) from training (repeatable). For manual holdout builds.",
     )
     parser.add_argument("--dry-run", action="store_true", help="List training rows only.")
+    parser.add_argument(
+        "--official-rom-mesh-only",
+        action="store_true",
+        help="Train only from official L_rom_prod accepted runs (initial allowlist by default).",
+    )
+    parser.add_argument(
+        "--official-initial-only",
+        action="store_true",
+        help="With --official-rom-mesh-only, restrict to the five initial rom_official_v1 runs.",
+    )
     return parser.parse_args(argv)
 
 
@@ -83,6 +99,41 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
 
     exclude_ids = [str(s).strip() for s in (args.exclude_sample or []) if str(s).strip()]
+
+    if bool(args.official_rom_mesh_only):
+        if args.dry_run:
+            from v2_b3_m4_official_rom_dataset_lib import collect_official_rom_training_rows  # noqa: WPS433
+
+            allowed = list(OFFICIAL_INITIAL_RUN_IDS) if args.official_initial_only else None
+            training, skipped = collect_official_rom_training_rows(
+                repo_root=repo_root,
+                exclude_sample_ids=exclude_ids or None,
+                allowed_run_ids=allowed,
+                require_initial_allowlist=bool(args.official_initial_only),
+                min_mode_count=int(args.min_mode_count),
+            )
+            report = build_initial_five_run_dataset_report(
+                repo_root=repo_root,
+                training_rows=training,
+                skipped_rows=skipped,
+            )
+            print(json.dumps(report, indent=2))
+            return 0 if training else 2
+
+        _model, training, skipped, report = build_official_rom_surrogate_from_runs(
+            repo_root=repo_root,
+            shape_name=shape_name,
+            require_initial_allowlist=bool(args.official_initial_only),
+            allowed_run_ids=list(OFFICIAL_INITIAL_RUN_IDS) if args.official_initial_only else None,
+            k_neighbors=int(args.k_neighbors),
+            min_mode_count=int(args.min_mode_count),
+        )
+        report_path = repo_root / "ROM" / shape_name / "m4_official_rom_build_report.json"
+        write_json_atomic(report_path, report)
+        print(f"official_rom_build_report={rel(report_path, repo_root=repo_root)}")
+        print(f"training_rows={len(training)} skipped_rows={len(skipped)}")
+        return 0
+
     training, skipped = collect_completed_fom_training_rows(
         repo_root=repo_root,
         pool=pool,

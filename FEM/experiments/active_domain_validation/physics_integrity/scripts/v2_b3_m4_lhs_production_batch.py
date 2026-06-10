@@ -28,6 +28,15 @@ from v2_b3_m4_rom_fom_compare_lib import (  # noqa: E402
     maybe_run_rom_prepredict,
     resolve_sample_context,
 )
+from v2_b3_m4_rom_shadow_pipeline_lib import (  # noqa: E402
+    DEFAULT_RETRAIN_EVERY_N_NEW_SAMPLES,
+    RetrainPolicy,
+    mark_fom_pipeline_started,
+    maybe_register_and_retrain,
+    prune_rom_directory_to_durable,
+    run_shadow_rom_compare_nonblocking,
+    run_shadow_rom_prepredict_nonblocking,
+)
 from v2_b3_m4_shared_export import try_export_sample_to_shared  # noqa: E402
 from v2_b3_m4_run_one_sample import (  # noqa: E402
     REFERENCE_SAMPLE_ID,
@@ -426,9 +435,11 @@ def run_production_batch(
     shared_root: Optional[Path] = None,
     run_rom_prepredict: bool = False,
     run_rom_compare: bool = False,
+    run_rom_shadow: bool = False,
     rom_nonblocking: bool = True,
     rom_nev: int = DEFAULT_ROM_NEV,
     rom_max_match_distance_hz: float = DEFAULT_MAX_MATCH_DISTANCE_HZ,
+    rom_retrain_every_n: int = DEFAULT_RETRAIN_EVERY_N_NEW_SAMPLES,
     pool: Optional[Dict[str, Any]] = None,
     compact_after_sample: bool = False,
     compact_keep_full_samples: Optional[Set[str]] = None,
@@ -583,8 +594,10 @@ def run_production_batch(
         if on_sample_start is not None:
             on_sample_start(sid, rid, lhs_row_index)
 
+        use_shadow_rom = bool(run_rom_shadow)
+        use_legacy_rom = (bool(run_rom_prepredict) or bool(run_rom_compare)) and not use_shadow_rom
         rom_context = None
-        if (run_rom_prepredict or run_rom_compare) and pool is not None:
+        if (use_shadow_rom or use_legacy_rom) and pool is not None:
             try:
                 rom_context = resolve_sample_context(
                     pool=pool,
@@ -597,7 +610,31 @@ def run_production_batch(
                 rom_context = None
                 print(f"[warn] {sid}: ROM context unavailable: {exc}", flush=True)
 
-        if run_rom_prepredict and rom_context is not None:
+        if use_shadow_rom and rom_context is not None:
+            prep = run_shadow_rom_prepredict_nonblocking(
+                repo_root=repo_root,
+                run_root=run_root,
+                context=rom_context,
+                nev=int(rom_nev),
+                dataset_version=str(dataset_version or ""),
+            )
+            print(
+                f"[rom-shadow-prepredict] {sid}: status={prep.get('status')} "
+                f"modes={prep.get('predicted_mode_count')}",
+                flush=True,
+            )
+            if prep.get("blocking") and not rom_nonblocking:
+                failed.append(
+                    {
+                        "sample_id": sid,
+                        "run_id": rid,
+                        "outcome": "fail",
+                        "error_message": f"rom_shadow_prepredict:{prep.get('error')}",
+                    }
+                )
+                print(f"error: ROM shadow prepredict blocking failure for {sid}", file=sys.stderr)
+                break
+        elif run_rom_prepredict and rom_context is not None:
             prep = maybe_run_rom_prepredict(
                 repo_root=repo_root,
                 run_root=run_root,
@@ -610,6 +647,9 @@ def run_production_batch(
                 f"modes={len(prep.get('frequencies_hz') or [])}",
                 flush=True,
             )
+
+        if use_shadow_rom and rom_context is not None:
+            mark_fom_pipeline_started(run_root)
 
         print(f"[run] {sid} / {rid} ...", flush=True)
         if strict_production:
@@ -701,6 +741,52 @@ def run_production_batch(
         prelim_outcome, _ = classify_sample_outcome(return_code=rc, summary=summary)
         row["outcome"] = prelim_outcome
 
+        rom_shadow_blocking = False
+        if (
+            use_shadow_rom
+            and rom_context is not None
+            and is_run_usably_complete(summary)
+            and int(rc) == 0
+            and str(summary.get("aggregation_status") or "") == AGG_PASS
+        ):
+            cmp_result = run_shadow_rom_compare_nonblocking(
+                repo_root=repo_root,
+                run_root=run_root,
+                context=rom_context,
+                max_match_distance_hz=float(rom_max_match_distance_hz),
+            )
+            row["rom_shadow_compare"] = cmp_result
+            if cmp_result.get("blocking"):
+                rom_shadow_blocking = not bool(rom_nonblocking)
+                print(f"[warn] {sid}: ROM shadow compare integrity issue: {cmp_result.get('error')}", flush=True)
+            else:
+                print(
+                    f"[rom-shadow-compare] {sid}: status={cmp_result.get('status')} "
+                    f"matched={cmp_result.get('matched_mode_count')}",
+                    flush=True,
+                )
+            if bool(summary.get("production_acceptance_pass")):
+                reg = maybe_register_and_retrain(
+                    repo_root=repo_root,
+                    run_root=run_root,
+                    sample_id=sid,
+                    run_id=rid,
+                    shape_name=str(rom_context.get("shape_name") or "classic"),
+                    production_acceptance_pass=True,
+                    policy=RetrainPolicy(retrain_every_n_new_samples=int(rom_retrain_every_n)),
+                )
+                row["rom_dataset_registration"] = reg
+                if reg.get("retrained"):
+                    print(f"[rom-retrain] {sid}: official model rebuilt", flush=True)
+            prune_rom_directory_to_durable(run_root)
+
+        if rom_shadow_blocking:
+            row["outcome"] = "fail"
+            row["error_message"] = "rom_shadow_integrity_failure"
+            failed.append(row)
+            print("error: stopping batch after ROM shadow integrity failure", file=sys.stderr)
+            break
+
         if require_graph_export and is_run_usably_complete(summary) and int(rc) == 0:
             export_manifest, export_warn = try_export_sample_to_shared(
                 run_root=run_root,
@@ -725,7 +811,7 @@ def run_production_batch(
             compact_after_sample=bool(compact_after_sample),
             compact_keep_full_samples=set(compact_keep_full_samples or ()),
             compact_nonblocking=bool(compact_nonblocking) and not strict_production,
-            run_rom_compare=bool(run_rom_compare),
+            run_rom_compare=bool(run_rom_compare) or bool(use_shadow_rom),
             strict_production=bool(strict_production),
         ):
             row["outcome"] = "fail"
@@ -733,6 +819,9 @@ def run_production_batch(
             failed.append(row)
             print("error: stopping batch after cleanup barrier failure", file=sys.stderr)
             break
+
+        if use_shadow_rom:
+            prune_rom_directory_to_durable(run_root)
 
         outcome, err_msg = classify_batch_sample_outcome(
             return_code=rc,
@@ -752,7 +841,8 @@ def run_production_batch(
 
         if outcome == "pass":
             if (
-                run_rom_compare
+                use_legacy_rom
+                and run_rom_compare
                 and rom_context is not None
                 and str(summary.get("aggregation_status") or "") == AGG_PASS
             ):

@@ -54,8 +54,8 @@ ROM_OPTIONAL_REL_PATHS: Tuple[str, ...] = (
     "aggregation/modes_summary.json",
     "aggregation/runtime_summary.json",
     "aggregation/warnings_and_failures.json",
-    "rom/rom_fom_comparison.json",
-    "rom/rom_prediction_pre_fom.json",
+    "rom/rom_vs_fom_comparison.json",
+    "rom/rom_prediction_summary.json",
     "sample/sample_input.json",
 )
 
@@ -418,9 +418,10 @@ def _catalog_readable(path: Path) -> Tuple[bool, str]:
 
 
 def _rom_comparison_status(run_root: Path, repo_root: Path, entry: Mapping[str, Any]) -> Tuple[bool, str, str]:
-    run_cmp = run_root / "rom" / "rom_fom_comparison.json"
-    if run_cmp.is_file():
-        return True, str(run_cmp), "run_tree"
+    for name in ("rom_vs_fom_comparison.json", "rom_fom_comparison.json"):
+        run_cmp = run_root / "rom" / name
+        if run_cmp.is_file():
+            return True, str(run_cmp), "run_tree"
     last_path = str(entry.get("last_rom_comparison_path") or "")
     if last_path:
         p = Path(last_path)

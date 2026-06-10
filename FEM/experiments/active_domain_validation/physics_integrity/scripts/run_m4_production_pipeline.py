@@ -179,6 +179,17 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Compare ROM vs M4 FOM after AGGREGATION_PASS (frequency matching).",
     )
     parser.add_argument(
+        "--run-rom-shadow",
+        action="store_true",
+        help="Official ROM-mesh shadow pipeline (predict before FOM, compare after acceptance).",
+    )
+    parser.add_argument(
+        "--rom-retrain-every-n",
+        type=int,
+        default=5,
+        help="Retrain official ROM model after N newly accepted samples (shadow mode).",
+    )
+    parser.add_argument(
         "--rom-nonblocking",
         action="store_true",
         default=True,
@@ -726,9 +737,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         shared_root=shared_root,
         run_rom_prepredict=bool(args.run_rom_prepredict),
         run_rom_compare=bool(args.run_rom_compare),
+        run_rom_shadow=bool(args.run_rom_shadow),
         rom_nonblocking=bool(args.rom_nonblocking),
         rom_nev=int(args.rom_nev),
         rom_max_match_distance_hz=float(args.rom_max_match_distance_hz),
+        rom_retrain_every_n=int(args.rom_retrain_every_n),
         pool=pool,
         compact_after_sample=compact_after_sample and not bool(args.compact_after_batch),
         compact_keep_full_samples=compact_keep_full_samples,
