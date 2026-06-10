@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -29,6 +32,7 @@ EXCLUDED_SHARED_PLOT_NAMES: Tuple[str, ...] = (
 )
 
 LEGACY_NESTED_SUBFOLDER = "m4_production"
+LEGACY_GRAPHS_DIRNAME = "graphs"
 
 
 def detect_shared_root(explicit: Optional[Path] = None) -> Optional[Path]:
@@ -130,19 +134,98 @@ def _git_head_sha(repo_root: Optional[Path]) -> Optional[str]:
     return proc.stdout.strip()
 
 
-def _copy_plot_with_proof(*, src: Path, dest: Path, plot_name: str) -> Dict[str, Any]:
+def _safe_shared_replace(tmp: Path, dest: Path) -> None:
+    """File-level replace on shared mounts; never directory replace."""
+    try:
+        os.replace(tmp, dest)
+    except OSError:
+        shutil.copy2(tmp, dest)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def _safe_copy_file(*, src: Path, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dest)
-    size = dest.stat().st_size
-    row: Dict[str, Any] = {
-        "plot_name": plot_name,
-        "source_path": str(src),
-        "destination_path": str(dest),
-        "sha256": _sha256_file(dest),
-        "size_bytes": size,
-        "copy_status": "copied" if size > 0 else "failed_empty",
-    }
-    return row
+    tmp = dest.with_name(f".{dest.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        shutil.copy2(src, tmp)
+        _safe_shared_replace(tmp, dest)
+    except Exception:
+        if tmp.is_file():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        shutil.copy2(src, dest)
+
+
+def _safe_write_json_shared(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(dict(payload), indent=2)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        _safe_shared_replace(tmp, path)
+    except Exception:
+        if tmp.is_file():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        path.write_text(text, encoding="utf-8")
+
+
+def _best_effort_unlink_file(path: Path) -> Tuple[bool, Optional[str], bool]:
+    if not path.is_file():
+        return False, None, False
+    try:
+        path.unlink()
+        return True, None, False
+    except OSError as exc:
+        permission = exc.errno in (1, 13) or "not permitted" in str(exc).lower() or "permission" in str(exc).lower()
+        return False, str(exc), permission
+
+
+def _legacy_stale_file_candidates(
+    *,
+    shared_root: Path,
+    shape: str,
+    sample_id: str,
+    run_id: str,
+) -> List[Path]:
+    legacy_names = (
+        f"{sample_id}__{run_id}_mode_frequency_plot.png",
+        f"{sample_id}__{run_id}__mode_frequency_plot.png",
+        run_plot_filename(run_id, "mode_frequency_plot.png"),
+    )
+    candidates: List[Path] = []
+    plots_root = shared_root / shape / "plots"
+    sample_plots = sample_plots_destination_dir(
+        shared_root=shared_root,
+        shape_name=shape,
+        sample_id=sample_id,
+    )
+    for name in legacy_names:
+        candidates.append(plots_root / name)
+        candidates.append(sample_plots / name)
+
+    run_legacy_root = shared_root / shape / LEGACY_NESTED_SUBFOLDER / sample_id / run_id
+    graphs_dir = run_legacy_root / LEGACY_GRAPHS_DIRNAME
+    if graphs_dir.is_dir():
+        for child in graphs_dir.iterdir():
+            if child.is_file():
+                candidates.append(child)
+    if run_legacy_root.is_dir():
+        for child in run_legacy_root.iterdir():
+            if child.is_file():
+                candidates.append(child)
+
+    unique: Dict[str, Path] = {}
+    for path in candidates:
+        unique[str(path)] = path
+    return list(unique.values())
 
 
 def remove_stale_shared_exports_for_run(
@@ -151,34 +234,59 @@ def remove_stale_shared_exports_for_run(
     shape_name: str,
     sample_id: str,
     run_id: str,
-) -> List[str]:
-    """Remove only incorrect exports for this run; never delete unrelated historical exports."""
+) -> Dict[str, Any]:
+    """
+    Best-effort removal of exact stale files for this sample/run only.
+
+    Never deletes, chmods, renames, or recursively removes shared directories.
+  """
     shared_root = shared_root.expanduser().resolve()
     shape = (shape_name or "classic").strip().lower() or "classic"
-    removed: List[str] = []
+    removed_files: List[str] = []
+    errors: List[str] = []
+    permission_errors = 0
 
-    nested = shared_root / shape / LEGACY_NESTED_SUBFOLDER / sample_id / run_id
-    if nested.exists():
-        shutil.rmtree(nested)
-        removed.append(str(nested))
+    for path in _legacy_stale_file_candidates(
+        shared_root=shared_root,
+        shape=shape,
+        sample_id=sample_id,
+        run_id=run_id,
+    ):
+        removed, err, permission = _best_effort_unlink_file(path)
+        if removed:
+            removed_files.append(str(path))
+        elif err:
+            errors.append(f"{path}: {err}")
+            if permission:
+                permission_errors += 1
 
-    legacy_names = (
-        f"{sample_id}__{run_id}_mode_frequency_plot.png",
-        f"{sample_id}__{run_id}__mode_frequency_plot.png",
-        run_plot_filename(run_id, "mode_frequency_plot.png"),
-    )
-    for name in legacy_names:
-        for parent in (shared_root / shape / "plots", sample_plots_destination_dir(
-            shared_root=shared_root,
-            shape_name=shape,
-            sample_id=sample_id,
-        )):
-            path = parent / name
-            if path.is_file():
-                path.unlink()
-                removed.append(str(path))
+    if not errors:
+        status = "COMPLETED"
+    elif permission_errors:
+        status = "SKIPPED_PERMISSION"
+    else:
+        status = "PARTIAL"
 
-    return removed
+    return {
+        "legacy_cleanup_status": status,
+        "legacy_cleanup_errors": errors,
+        "removed_stale_files": removed_files,
+    }
+
+
+def _copy_plot_with_proof(*, src: Path, dest: Path, plot_name: str) -> Dict[str, Any]:
+    _safe_copy_file(src=src, dest=dest)
+    size = dest.stat().st_size
+    digest = _sha256_file(dest)
+    row: Dict[str, Any] = {
+        "plot_name": plot_name,
+        "source_path": str(src),
+        "destination_path": str(dest),
+        "sha256": digest,
+        "size_bytes": size,
+        "copy_status": "copied" if size > 0 else "failed_empty",
+    }
+    return row
 
 
 def build_compact_summary_payload(
@@ -234,6 +342,7 @@ def build_compact_summary_payload(
         "compaction_status": compaction.get("status"),
         "graph_export_status": export_manifest.get("export_status"),
         "graph_destination_paths": graph_destinations,
+        "legacy_cleanup_status": export_manifest.get("legacy_cleanup_status"),
         "git_commit_sha": _git_head_sha(repo_root),
     }
 
@@ -250,11 +359,12 @@ def export_sample_to_shared(
     cleanup_stale_exports: bool = True,
 ) -> Dict[str, Any]:
     """
-  Export approved PNG plots to ``{shared_root}/{shape}/plots/{sample_id}/`` and compact
-  summary + graph manifest to ``{shared_root}/{shape}/summaries/``.
+    Export approved PNG plots to ``{shared_root}/{shape}/plots/{sample_id}/`` and compact
+    summary + graph manifest to ``{shared_root}/{shape}/summaries/``.
 
-  Never raises — returns manifest with export_status EXPORTED | FAILED.
-  """
+    Never raises — returns manifest with export_status EXPORTED | FAILED.
+    Legacy cleanup failures never block successful new exports.
+    """
     run_root = run_root.expanduser().resolve()
     shared_root = shared_root.expanduser().resolve()
     shape = (shape_name or read_shape_name(run_root)).strip().lower() or "classic"
@@ -284,22 +394,26 @@ def export_sample_to_shared(
         "graph_export_entries": [],
         "summary_export_path": None,
         "graph_manifest_export_path": None,
+        "legacy_cleanup_status": "SKIPPED",
+        "legacy_cleanup_errors": [],
         "warnings": [],
         "export_status": "SKIPPED",
         "exported_at": utc_now(),
     }
 
-    try:
-        if cleanup_stale_exports:
-            removed = remove_stale_shared_exports_for_run(
-                shared_root=shared_root,
-                shape_name=shape,
-                sample_id=sample_id,
-                run_id=run_id,
-            )
-            if removed:
-                manifest["removed_stale_exports"] = removed
+    if cleanup_stale_exports:
+        cleanup = remove_stale_shared_exports_for_run(
+            shared_root=shared_root,
+            shape_name=shape,
+            sample_id=sample_id,
+            run_id=run_id,
+        )
+        manifest["legacy_cleanup_status"] = cleanup.get("legacy_cleanup_status")
+        manifest["legacy_cleanup_errors"] = list(cleanup.get("legacy_cleanup_errors") or [])
+        if cleanup.get("removed_stale_files"):
+            manifest["removed_stale_files"] = list(cleanup["removed_stale_files"])
 
+    try:
         plots_dir.mkdir(parents=True, exist_ok=True)
         summaries_dir.mkdir(parents=True, exist_ok=True)
 
@@ -339,7 +453,7 @@ def export_sample_to_shared(
             repo_root=repo_root,
         )
         summary_path = summaries_dir / summary_json_filename(sample_id, run_id)
-        write_json_atomic(summary_path, summary_payload)
+        _safe_write_json_shared(summary_path, summary_payload)
         manifest["summary_export_path"] = str(summary_path)
 
         graph_manifest = {
@@ -354,9 +468,11 @@ def export_sample_to_shared(
             "entries": graph_entries,
             "export_status": "EXPORTED",
             "warnings": warnings,
+            "legacy_cleanup_status": manifest.get("legacy_cleanup_status"),
+            "legacy_cleanup_errors": manifest.get("legacy_cleanup_errors"),
         }
         graph_manifest_path = summaries_dir / graph_manifest_filename(sample_id, run_id)
-        write_json_atomic(graph_manifest_path, graph_manifest)
+        _safe_write_json_shared(graph_manifest_path, graph_manifest)
         manifest["graph_manifest_export_path"] = str(graph_manifest_path)
 
         manifest["warnings"] = warnings

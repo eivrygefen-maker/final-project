@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -29,7 +32,7 @@ from v2_b3_m4_shared_export import (  # noqa: E402
     summaries_destination_dir,
     summary_json_filename,
 )
-from unittest.mock import patch  # noqa: E402
+from v2_b3_m4_shared_export import try_export_sample_to_shared  # noqa: E402
 
 
 class SharedExportPolicyTests(unittest.TestCase):
@@ -171,18 +174,105 @@ class SharedExportPolicyTests(unittest.TestCase):
         plots_dir = self.shared / "classic" / "plots" / self.sample_id
         self.assertFalse(any(p.suffix == ".json" for p in plots_dir.iterdir()))
 
-    def test_legacy_nested_layout_removed(self) -> None:
+    def test_legacy_graphs_permission_error_export_succeeds(self) -> None:
         nested = self.shared / "classic" / "m4_production" / self.sample_id / self.run_id / "graphs"
         nested.mkdir(parents=True)
-        (nested / "old.png").write_bytes(b"x")
-        removed = remove_stale_shared_exports_for_run(
+        stale = nested / f"{self.sample_id}__{self.run_id}_mode_frequency_plot.png"
+        stale.write_bytes(b"stale")
+
+        real_unlink = Path.unlink
+
+        def _unlink_permission(self_path: Path, *args: object, **kwargs: object) -> None:
+            if self_path == stale:
+                raise OSError(1, "Operation not permitted", "graphs")
+            real_unlink(self_path, *args, **kwargs)
+
+        self._write_approved_plots()
+        with patch.object(Path, "unlink", _unlink_permission):
+            with patch.object(shutil, "rmtree", side_effect=AssertionError("rmtree must not run")):
+                manifest = export_sample_to_shared(
+                    run_root=self.run_root,
+                    sample_id=self.sample_id,
+                    run_id=self.run_id,
+                    shared_root=self.shared,
+                )
+
+        self.assertEqual(manifest["export_status"], "EXPORTED")
+        self.assertEqual(manifest["legacy_cleanup_status"], "SKIPPED_PERMISSION")
+        self.assertTrue(any("not permitted" in e.lower() for e in manifest["legacy_cleanup_errors"]))
+        self.assertTrue(nested.is_dir())
+        self.assertTrue(stale.is_file())
+        plots_dir = self.shared / "classic" / "plots" / self.sample_id
+        for name in APPROVED_SHARED_PLOT_NAMES:
+            self.assertTrue((plots_dir / run_plot_filename(self.run_id, name)).is_file())
+
+    def test_no_generic_directory_rmtree_or_chmod(self) -> None:
+        for dirname in ("graphs", "plots", "summaries", "m4_production"):
+            (self.shared / "classic" / dirname).mkdir(parents=True, exist_ok=True)
+        self._write_approved_plots()
+
+        with patch.object(shutil, "rmtree", side_effect=AssertionError("rmtree must not run")):
+            with patch.object(os, "chmod", side_effect=AssertionError("chmod must not run")):
+                export_sample_to_shared(
+                    run_root=self.run_root,
+                    sample_id=self.sample_id,
+                    run_id=self.run_id,
+                    shared_root=self.shared,
+                )
+
+    def test_exact_stale_file_cleanup_best_effort(self) -> None:
+        plots_dir = sample_plots_destination_dir(
+            shared_root=self.shared,
+            shape_name="classic",
+            sample_id=self.sample_id,
+        )
+        plots_dir.mkdir(parents=True)
+        stale_name = run_plot_filename(self.run_id, "mode_frequency_plot.png")
+        stale = plots_dir / stale_name
+        stale.write_bytes(b"stale")
+
+        cleanup = remove_stale_shared_exports_for_run(
             shared_root=self.shared,
             shape_name="classic",
             sample_id=self.sample_id,
             run_id=self.run_id,
         )
-        self.assertTrue(removed)
-        self.assertFalse(nested.exists())
+        self.assertEqual(cleanup["legacy_cleanup_status"], "COMPLETED")
+        self.assertFalse(stale.is_file())
+        self.assertIn(str(stale), cleanup["removed_stale_files"])
+
+    def test_four_pngs_and_two_jsons_sha_verified(self) -> None:
+        self._write_approved_plots()
+        manifest = export_sample_to_shared(
+            run_root=self.run_root,
+            sample_id=self.sample_id,
+            run_id=self.run_id,
+            shared_root=self.shared,
+        )
+        self.assertEqual(manifest["export_status"], "EXPORTED")
+        self.assertEqual(len(manifest["graph_export_entries"]), len(APPROVED_SHARED_PLOT_NAMES))
+        for entry in manifest["graph_export_entries"]:
+            self.assertEqual(entry["copy_status"], "copied")
+            self.assertGreater(entry["size_bytes"], 0)
+            self.assertEqual(len(entry["sha256"]), 64)
+        summaries = summaries_destination_dir(shared_root=self.shared, shape_name="classic")
+        self.assertTrue((summaries / summary_json_filename(self.sample_id, self.run_id)).is_file())
+        self.assertTrue((summaries / graph_manifest_filename(self.sample_id, self.run_id)).is_file())
+
+    def test_required_export_failure_blocks_finalization(self) -> None:
+        self._write_approved_plots()
+        with patch(
+            "v2_b3_m4_shared_export._safe_copy_file",
+            side_effect=OSError(1, "Operation not permitted", "plots"),
+        ):
+            manifest, warn = try_export_sample_to_shared(
+                run_root=self.run_root,
+                sample_id=self.sample_id,
+                run_id=self.run_id,
+                shared_root=self.shared,
+            )
+        self.assertEqual(manifest["export_status"], "FAILED")
+        self.assertIn("shared export failed", warn or "")
 
     def test_missing_present_plot_fails_export(self) -> None:
         agg = self.run_root / "aggregation"
