@@ -26,7 +26,11 @@ from test_m4_reconciled_rom_postrun import (  # noqa: E402
     _write_reconcile_report,
     _write_reconciled_false_success_barrier,
 )
-from v2_b3_m4_mesh_profile_compare_lib import compare_exit_code, compare_runs  # noqa: E402
+from v2_b3_m4_mesh_profile_compare_lib import (  # noqa: E402
+    compare_exit_code,
+    compare_runs,
+    verify_legacy_reference_lprod_target_plan,
+)
 from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
     EXTERNAL_VALIDATION_INPUT_PACKAGE_SCHEMA_V1,
     MESH_PROFILE_REFERENCE,
@@ -35,7 +39,12 @@ from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
     load_external_validation_package,
     load_target_plan_file,
 )
-from v2_b3_m4_mesh_profile_provenance_lib import material_fingerprint  # noqa: E402
+from v2_b3_m4_mesh_profile_provenance_lib import (  # noqa: E402
+    compare_physical_identity_projections,
+    compare_target_plan_semantic,
+    material_fingerprint,
+    physics_identity_hash,
+)
 from v2_b3_m4_minimal_rom_compaction import compact_minimal_rom_durable_run  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
@@ -439,6 +448,109 @@ class ExternalValidationCompareTests(unittest.TestCase):
                 validation_input_package=ext_pkg,
             )
             self.assertTrue(report.get("comparison_executed"), report.get("precondition_errors"))
+
+
+class SemanticValidationIdentityTests(unittest.TestCase):
+    def test_legacy_lprod_different_serialization_same_semantics_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            ext_pkg, _ = _write_flat_v1_external_validation_package(
+                repo_root, sample_id="sample_002", targets_hz=TARGETS_HZ,
+            )
+            loaded, load_errors = load_external_validation_package(ext_pkg)
+            self.assertFalse(load_errors)
+            assert loaded is not None
+            ref_root = (
+                repo_root
+                / "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars"
+                / "sample_002/runs/sample_002_ref"
+            )
+            ref_root.mkdir(parents=True)
+            lprod_plan = {
+                "coverage_check": {"pass": True},
+                "frequency_range_hz": [64.5, 547.0],
+                "sample_id": "sample_002",
+                "targets_hz": TARGETS_HZ,
+            }
+            lprod_path = ref_root / "lprod" / "lprod_target_plan.json"
+            lprod_path.parent.mkdir(parents=True, exist_ok=True)
+            lprod_path.write_text(json.dumps(lprod_plan, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            _, lprod_sha = load_target_plan_file(lprod_path)
+            self.assertNotEqual(lprod_sha, loaded.target_plan_sha256)
+            plan_cmp = compare_target_plan_semantic(
+                lprod_plan,
+                loaded.target_plan,
+                left_sha256=lprod_sha,
+                right_sha256=loaded.target_plan_sha256,
+                left_manifest_chunk_count=13,
+                right_manifest_chunk_count=13,
+            )
+            self.assertTrue(plan_cmp.get("semantic_match"))
+            self.assertEqual(plan_cmp.get("target_plan_match_mode"), "semantic_exact")
+            self.assertFalse(plan_cmp.get("raw_sha_match"))
+            legacy_errors, legacy_meta = verify_legacy_reference_lprod_target_plan(
+                ref_root,
+                external=loaded,
+                barrier_meta={"barrier_status": "completed", "forbidden_heavy_artifact_count": 0, "shared_sample_artifact_count": 0},
+            )
+            self.assertEqual(legacy_errors, [])
+            self.assertEqual(legacy_meta.get("target_plan_match_mode"), "semantic_exact")
+            self.assertFalse(legacy_meta.get("raw_sha_match"))
+
+    def test_target_plan_order_or_content_mismatch_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            left = {"targets_hz": TARGETS_HZ, "frequency_range_hz": [64.5, 547.0]}
+            right = {"targets_hz": list(reversed(TARGETS_HZ)), "frequency_range_hz": [64.5, 547.0]}
+            plan_cmp = compare_target_plan_semantic(left, right)
+            self.assertFalse(plan_cmp.get("semantic_match"))
+            self.assertIn("targets_hz", plan_cmp.get("differences") or [])
+
+    def test_rom_mesh_only_physics_hash_difference_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            ref_root, cand_root, ext_pkg = _build_historical_pair(
+                repo_root, ref_lprod_plan=True, cand_validation_package=False,
+            )
+            self.assertNotEqual(physics_identity_hash(ref_root), physics_identity_hash(cand_root))
+            report = compare_runs(
+                reference_run=ref_root,
+                candidate_run=cand_root,
+                repo_root=repo_root,
+                validation_input_package=ext_pkg,
+            )
+            self.assertTrue(report.get("comparison_executed"), report.get("precondition_errors"))
+            phys = ((report.get("cleanup_barrier") or {}).get("validation_input") or {}).get("physical_identity") or {}
+            self.assertTrue(phys.get("physical_identity_invariants_match"))
+            self.assertTrue(phys.get("allowed_mesh_identity_differences"))
+            self.assertEqual(phys.get("unexpected_identity_differences"), [])
+
+    def test_geometry_material_solver_mismatch_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            ref_root, cand_root, _ext_pkg = _build_historical_pair(
+                repo_root, ref_lprod_plan=False, cand_validation_package=False,
+            )
+            cand_in_path = cand_root / "sample" / "sample_input.json"
+            cand_in = json.loads(cand_in_path.read_text(encoding="utf-8"))
+            cand_in["top_wood_id"] = "cedar"
+            write_json_atomic(cand_in_path, cand_in)
+            write_json_atomic(
+                cand_root / "lprod" / "resolved_core_config.json",
+                {
+                    "solver": {
+                        "eps_eigenvalue_semantics": "slepc_backtransformed",
+                        "rtol": 1e-4,
+                    }
+                },
+            )
+            identity_cmp = compare_physical_identity_projections(ref_root, cand_root)
+            self.assertFalse(identity_cmp.get("physical_identity_invariants_match"))
+            unexpected = identity_cmp.get("unexpected_identity_differences") or []
+            self.assertTrue(
+                any("material" in path or "solver_config" in path for path in unexpected),
+                unexpected,
+            )
 
 
 if __name__ == "__main__":

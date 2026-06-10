@@ -419,3 +419,253 @@ def create_external_validation_input_package(
         }
     )
     return pkg_root, report
+
+
+def _canonical_hz(value: Any) -> float:
+    return round(float(value), 6)
+
+
+def _canonical_hz_list(values: Any) -> List[float]:
+    return [_canonical_hz(v) for v in (values or [])]
+
+
+def _canonical_frequency_range_hz(plan: Mapping[str, Any]) -> Optional[List[float]]:
+    freq_range = plan.get("frequency_range_hz")
+    if isinstance(freq_range, (list, tuple)) and len(freq_range) >= 2:
+        return [_canonical_hz(freq_range[0]), _canonical_hz(freq_range[1])]
+    targets = _canonical_hz_list(plan.get("targets_hz") or [])
+    if targets:
+        return [min(targets), max(targets)]
+    return None
+
+
+def _canonical_chunk_layout(plan: Mapping[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    chunks = plan.get("chunks") or []
+    if not chunks:
+        return None
+    layout: List[Dict[str, Any]] = []
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        layout.append(
+            {
+                "chunk_id": str(chunk.get("chunk_id") or ""),
+                "targets_hz": _canonical_hz_list(chunk.get("targets_hz") or []),
+            }
+        )
+    return layout or None
+
+
+def _resolve_target_plan_chunk_count(
+    plan: Mapping[str, Any],
+    *,
+    manifest_chunk_count: Optional[int] = None,
+) -> int:
+    layout = _canonical_chunk_layout(plan)
+    if layout is not None:
+        return len(layout)
+    if plan.get("chunk_count") is not None:
+        return int(plan.get("chunk_count"))
+    if manifest_chunk_count is not None:
+        return int(manifest_chunk_count)
+    return 0
+
+
+def canonical_target_plan_semantic(
+    plan: Mapping[str, Any],
+    *,
+    manifest_chunk_count: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Canonical semantic view of a target plan (serialization-independent)."""
+    targets_hz = _canonical_hz_list(plan.get("targets_hz") or [])
+    coverage = plan.get("coverage_check") or {}
+    target_count = int(plan.get("target_count") or coverage.get("target_count") or len(targets_hz))
+    return {
+        "targets_hz": targets_hz,
+        "target_count": target_count,
+        "frequency_range_hz": _canonical_frequency_range_hz(plan),
+        "chunk_count": _resolve_target_plan_chunk_count(
+            plan,
+            manifest_chunk_count=manifest_chunk_count,
+        ),
+        "chunk_layout": _canonical_chunk_layout(plan),
+    }
+
+
+def compare_target_plan_semantic(
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+    *,
+    left_sha256: Optional[str] = None,
+    right_sha256: Optional[str] = None,
+    left_manifest_chunk_count: Optional[int] = None,
+    right_manifest_chunk_count: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Compare target plans by semantic content, not raw file bytes."""
+    sem_left = canonical_target_plan_semantic(
+        left,
+        manifest_chunk_count=left_manifest_chunk_count,
+    )
+    sem_right = canonical_target_plan_semantic(
+        right,
+        manifest_chunk_count=right_manifest_chunk_count,
+    )
+    differences: List[str] = []
+    for key in ("targets_hz", "target_count", "frequency_range_hz", "chunk_count"):
+        if sem_left.get(key) != sem_right.get(key):
+            differences.append(key)
+    left_layout = sem_left.get("chunk_layout")
+    right_layout = sem_right.get("chunk_layout")
+    if left_layout is not None and right_layout is not None and left_layout != right_layout:
+        differences.append("chunk_layout")
+    raw_sha_match = bool(left_sha256 and right_sha256 and left_sha256 == right_sha256)
+    semantic_match = len(differences) == 0
+    if semantic_match:
+        match_mode = "raw_exact" if raw_sha_match else "semantic_exact"
+    else:
+        match_mode = "semantic_mismatch"
+    return {
+        "semantic_match": semantic_match,
+        "target_plan_match_mode": match_mode,
+        "raw_sha_match": raw_sha_match,
+        "differences": differences,
+        "left_semantic": sem_left,
+        "right_semantic": sem_right,
+    }
+
+
+MESH_IDENTITY_FIELD_PATHS: Tuple[str, ...] = (
+    "mesh_profile",
+    "mesh_level_id",
+    "dataset_version",
+    "effective_controls_m",
+    "generated_mesh_sha256",
+    "operator_mesh_sha256",
+    "operator_mesh_file_used",
+    "operator_mesh_matches_generated",
+    "active_dimension",
+    "n_u_b3",
+    "n_w",
+    "run_id",
+)
+
+MESH_SOLVER_CONFIG_KEYS: frozenset[str] = frozenset(
+    {"mesh_file", "operator_mesh_file", "generated_mesh_file", "region_dof_mesh_file"}
+)
+
+
+def _canonical_solver_config(solver: Mapping[str, Any]) -> Dict[str, Any]:
+    if not isinstance(solver, dict):
+        return {}
+    return {str(k): v for k, v in solver.items() if str(k) not in MESH_SOLVER_CONFIG_KEYS}
+
+
+def _load_run_json(run_root: Path, rel: str) -> Dict[str, Any]:
+    path = run_root / rel
+    if not path.is_file():
+        return {}
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def build_physical_identity_invariants(
+    run_root: Path,
+    *,
+    target_plan_semantic: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Mesh-independent physical identity projection for cross-profile comparison."""
+    from v2_b3_m4_lprod_interfaces import extract_geometry_dict, geometry_fingerprint  # noqa: WPS433
+    from v2_b3_m4_physics_identity_lib import forbidden_solver_fallback_keys  # noqa: WPS433
+    from v2_b3_m4_production_contracts import PRODUCTION_MIC_METHOD  # noqa: WPS433
+
+    run_root = run_root.resolve()
+    sample_in = _load_run_json(run_root, "sample/sample_input.json")
+    identity = _load_run_json(run_root, "freeze/physics_identity_manifest.json")
+    pipeline = _load_run_json(run_root, "pipeline_run_manifest.json")
+    core_cfg = _load_run_json(run_root, "lprod/resolved_core_config.json")
+    geom = extract_geometry_dict(sample_in)
+    masks = identity.get("masks") or {}
+    solver = _canonical_solver_config(core_cfg.get("solver") or {})
+    fallback_flags = dict(identity.get("fallback_flags") or {})
+    forbidden = forbidden_solver_fallback_keys(core_cfg)
+    if forbidden:
+        fallback_flags["forbidden_solver_config_keys"] = sorted(forbidden)
+
+    projection: Dict[str, Any] = {
+        "sample_id": str(sample_in.get("sample_id") or identity.get("sample_id") or run_root.parent.parent.name),
+        "geometry_fingerprint": geometry_fingerprint(geom) if geom else identity.get("geometry_fingerprint"),
+        "geometry_numeric_parameters": dict(geom) if geom else dict(identity.get("geometry_numeric_parameters") or {}),
+        "material": {
+            "top_wood_id": sample_in.get("top_wood_id"),
+            "back_wood_id": sample_in.get("back_wood_id"),
+        },
+        "mic_output_method": identity.get("mic_output_method") or PRODUCTION_MIC_METHOD,
+        "solver_backend": identity.get("solver_backend") or "mkl_pardiso",
+        "aperture_policy": {
+            "aperture_selection_method": masks.get("aperture_selection_method"),
+            "p_idx_aperture_count": masks.get("p_idx_aperture_count"),
+        },
+        "fallback_flags": fallback_flags,
+        "path_contamination": identity.get("path_contamination") or {},
+        "frequency_policy": pipeline.get("frequency_policy") or {},
+        "solver_config": solver,
+        "model_version": core_cfg.get("model_version") or (core_cfg.get("m4_run_metadata") or {}).get("dataset_version"),
+        "region_dof_policy": _load_run_json(run_root, "lprod/checkpoint/synthesis_metadata.json").get("region_dof_indices_mode"),
+    }
+    if target_plan_semantic is not None:
+        projection["target_plan_semantic"] = dict(target_plan_semantic)
+    return projection
+
+
+def build_mesh_identity_profile(run_root: Path) -> Dict[str, Any]:
+    identity = _load_run_json(run_root, "freeze/physics_identity_manifest.json")
+    sample_in = _load_run_json(run_root, "sample/sample_input.json")
+    profile: Dict[str, Any] = {}
+    for key in MESH_IDENTITY_FIELD_PATHS:
+        if key in identity:
+            profile[key] = identity.get(key)
+    if sample_in.get("mesh_profile"):
+        profile["mesh_profile"] = sample_in.get("mesh_profile")
+    return profile
+
+
+def _dict_diff_paths(left: Any, right: Any, *, prefix: str = "") -> List[str]:
+    if left == right:
+        return []
+    if isinstance(left, Mapping) and isinstance(right, Mapping):
+        paths: List[str] = []
+        keys = sorted(set(left.keys()) | set(right.keys()))
+        for key in keys:
+            child_prefix = f"{prefix}.{key}" if prefix else str(key)
+            if key not in left or key not in right:
+                paths.append(child_prefix)
+                continue
+            paths.extend(_dict_diff_paths(left[key], right[key], prefix=child_prefix))
+        return paths
+    if isinstance(left, list) and isinstance(right, list):
+        if left != right:
+            return [prefix or "root"]
+        return []
+    return [prefix or "root"]
+
+
+def compare_physical_identity_projections(
+    ref_root: Path,
+    cand_root: Path,
+    *,
+    target_plan_semantic: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    ref_inv = build_physical_identity_invariants(ref_root, target_plan_semantic=target_plan_semantic)
+    cand_inv = build_physical_identity_invariants(cand_root, target_plan_semantic=target_plan_semantic)
+    unexpected = _dict_diff_paths(ref_inv, cand_inv)
+    allowed = _dict_diff_paths(build_mesh_identity_profile(ref_root), build_mesh_identity_profile(cand_root))
+    return {
+        "physical_identity_invariants_match": len(unexpected) == 0,
+        "allowed_mesh_identity_differences": allowed,
+        "unexpected_identity_differences": unexpected,
+        "reference_invariants": ref_inv,
+        "candidate_invariants": cand_inv,
+    }

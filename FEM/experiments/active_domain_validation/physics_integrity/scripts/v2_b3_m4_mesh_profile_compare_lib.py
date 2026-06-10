@@ -47,8 +47,11 @@ from v2_b3_m4_sample_cleanup_barrier import (  # noqa: E402
     verify_success_durable_outputs,
 )
 from v2_b3_m4_mesh_profile_provenance_lib import (  # noqa: E402
+    canonical_target_plan_semantic,
     compare_intrinsic_band_third_coverage,
     compare_mode_family_survival,
+    compare_physical_identity_projections,
+    compare_target_plan_semantic,
     load_durable_scout_intrinsic_summary,
     material_fingerprint,
     physics_identity_hash,
@@ -291,8 +294,9 @@ def _identity_matches_external_package(
     ref_root: Path,
     cand_root: Path,
     external: ExternalValidationInputPackage,
-) -> List[str]:
+) -> Tuple[List[str], Dict[str, Any]]:
     errors: List[str] = []
+    meta: Dict[str, Any] = {}
     ref_in = load_json(ref_root / "sample" / "sample_input.json") if (ref_root / "sample" / "sample_input.json").is_file() else {}
     cand_in = load_json(cand_root / "sample" / "sample_input.json") if (cand_root / "sample" / "sample_input.json").is_file() else {}
     geom_r = extract_geometry_dict(ref_in)
@@ -322,11 +326,25 @@ def _identity_matches_external_package(
 
     manifest_phys = external.manifest_entry.get("physics_identity_hash")
     if manifest_phys:
-        for label, root in (("reference", ref_root), ("candidate", cand_root)):
-            run_hash = physics_identity_hash(root)
-            if run_hash and run_hash != str(manifest_phys):
-                errors.append(f"{label}_physics_identity_hash_mismatch_vs_external_manifest")
-    return errors
+        ref_hash = physics_identity_hash(ref_root)
+        if ref_hash and ref_hash != str(manifest_phys):
+            errors.append("reference_physics_identity_hash_mismatch_vs_external_manifest")
+
+    ext_chunk_count = external.manifest_entry.get("chunk_count") or external.manifest.get("chunk_count")
+    target_semantic = canonical_target_plan_semantic(
+        external.target_plan,
+        manifest_chunk_count=ext_chunk_count,
+    )
+    identity_cmp = compare_physical_identity_projections(
+        ref_root,
+        cand_root,
+        target_plan_semantic=target_semantic,
+    )
+    meta["physical_identity"] = identity_cmp
+    if not identity_cmp.get("physical_identity_invariants_match"):
+        for diff in identity_cmp.get("unexpected_identity_differences") or []:
+            errors.append(f"physical_identity_invariant_mismatch:{diff}")
+    return errors, meta
 
 
 def verify_legacy_reference_lprod_target_plan(
@@ -363,17 +381,26 @@ def verify_legacy_reference_lprod_target_plan(
         return [f"reference:legacy_lprod_target_plan_unreadable:{exc}"], meta
 
     errors: List[str] = []
-    if digest != external.target_plan_sha256:
-        errors.append("reference:legacy_lprod_target_plan_sha256_mismatch")
-    auth_targets = list(external.target_plan.get("targets_hz") or [])
-    legacy_targets = list(body.get("targets_hz") or [])
-    if legacy_targets != auth_targets:
-        errors.append("reference:legacy_lprod_target_plan_targets_hz_mismatch")
+    ext_chunk_count = external.manifest_entry.get("chunk_count") or external.manifest.get("chunk_count")
+    plan_cmp = compare_target_plan_semantic(
+        body,
+        external.target_plan,
+        left_sha256=digest,
+        right_sha256=external.target_plan_sha256,
+        left_manifest_chunk_count=ext_chunk_count,
+        right_manifest_chunk_count=ext_chunk_count,
+    )
+    if not plan_cmp.get("semantic_match"):
+        for diff in plan_cmp.get("differences") or []:
+            errors.append(f"reference:legacy_lprod_target_plan_semantic_mismatch:{diff}")
     meta.update(
         {
             "classification": "legacy_durable_provenance",
             "sha256": digest,
-            "target_count": len(legacy_targets),
+            "target_count": len(body.get("targets_hz") or []),
+            "target_plan_match_mode": plan_cmp.get("target_plan_match_mode"),
+            "raw_sha_match": plan_cmp.get("raw_sha_match"),
+            "semantic_differences": plan_cmp.get("differences") or [],
         }
     )
     return errors, meta
@@ -403,7 +430,13 @@ def verify_comparison_validation_input(
     sample_id = str(external.target_plan.get("sample_id") or external.manifest.get("sample_id") or ref_root.parent.parent.name)
     errors: List[str] = []
     errors.extend(_sample_ids_match_runs(sample_id=sample_id, ref_root=ref_root, cand_root=cand_root, external=external))
-    errors.extend(_identity_matches_external_package(ref_root=ref_root, cand_root=cand_root, external=external))
+    identity_errors, identity_meta = _identity_matches_external_package(
+        ref_root=ref_root,
+        cand_root=cand_root,
+        external=external,
+    )
+    errors.extend(identity_errors)
+    meta["physical_identity"] = identity_meta.get("physical_identity") or {}
 
     cand_plan, cand_sha, cand_plan_errs = load_durable_target_plan(cand_root)
     meta["candidate_in_run_target_plan_available"] = cand_plan is not None
@@ -766,9 +799,17 @@ def verify_physics_identity_equivalence(
                     errors.append(f"{label}:target_plan_targets_hz_mismatch_vs_authoritative")
         if ref_plan is None and (ref_root / "lprod" / "lprod_target_plan.json").is_file():
             try:
-                _legacy_body, legacy_sha = load_target_plan_file(ref_root / "lprod" / "lprod_target_plan.json")
-                if legacy_sha != authoritative_target_plan_sha256:
-                    errors.append("reference:legacy_lprod_target_plan_sha256_mismatch_vs_authoritative")
+                legacy_body, legacy_sha = load_target_plan_file(ref_root / "lprod" / "lprod_target_plan.json")
+                legacy_cmp = compare_target_plan_semantic(
+                    legacy_body,
+                    authoritative_target_plan,
+                    left_sha256=legacy_sha,
+                    right_sha256=authoritative_target_plan_sha256,
+                )
+                meta.setdefault("legacy_lprod_target_plan", {}).update(legacy_cmp)
+                if not legacy_cmp.get("semantic_match"):
+                    for diff in legacy_cmp.get("differences") or []:
+                        errors.append(f"reference:legacy_lprod_target_plan_semantic_mismatch_vs_authoritative:{diff}")
             except Exception:
                 errors.append("reference:legacy_lprod_target_plan_unreadable")
     elif "TARGET_PLAN_UNAVAILABLE" in ref_plan_errs or "TARGET_PLAN_UNAVAILABLE" in cand_plan_errs:
