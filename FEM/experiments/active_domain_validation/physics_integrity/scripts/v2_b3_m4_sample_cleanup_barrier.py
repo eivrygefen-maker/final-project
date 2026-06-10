@@ -177,9 +177,15 @@ def _freeze_manifest_present(run_root: Path) -> bool:
     return any((run_root / rel_path).is_file() for rel_path in FREEZE_MANIFEST_FALLBACKS)
 
 
-def verify_success_durable_outputs(run_root: Path) -> Tuple[bool, List[str]]:
+def verify_success_durable_outputs(
+    run_root: Path,
+    *,
+    require_compaction_manifest: bool = True,
+) -> Tuple[bool, List[str]]:
     errors: List[str] = []
     for rel_path in DURABLE_REQUIRED_REL:
+        if rel_path == "compaction/compaction_manifest.json" and not require_compaction_manifest:
+            continue
         if rel_path == "freeze/freeze_manifest.json":
             if not _freeze_manifest_present(run_root):
                 errors.append(f"missing:{rel_path}")

@@ -32,9 +32,12 @@ from v2_b3_m4_mesh_profile_compare_lib import (  # noqa: E402
     verify_run_compare_barrier_precondition,
 )
 from v2_b3_m4_minimal_rom_compaction import (  # noqa: E402
+    EVIDENCE_RECONCILED_HISTORICAL,
+    MANIFEST_SCHEMA,
     MINIMAL_ROM_DELETE_REL_FILES,
     collect_minimal_rom_deletable_paths,
     compact_minimal_rom_durable_run,
+    evaluate_minimal_rom_evidence_mode,
     minimal_rom_retain_rel_paths,
     verify_minimal_rom_retention_sufficient,
 )
@@ -132,7 +135,7 @@ def _stamp_completed_terminal(run_root: Path) -> None:
     write_json_atomic(manifest_path, doc)
 
 
-def _add_compaction_debris(run_root: Path) -> None:
+def _add_compaction_debris(run_root: Path, *, include_forbidden_heavy: bool = False) -> None:
     for rel in (
         "lprod/worker_chunk_plan.preview.json",
         "lprod/lprod_execution_plan.preview.json",
@@ -144,10 +147,15 @@ def _add_compaction_debris(run_root: Path) -> None:
         path = run_root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{}", encoding="utf-8")
-    (run_root / "lprod" / "mesh").mkdir(parents=True, exist_ok=True)
-    (run_root / "lprod" / "mesh" / "placeholder.msh").write_text("mesh", encoding="utf-8")
-    (run_root / "worker_results").mkdir(parents=True, exist_ok=True)
-    (run_root / "worker_results" / "chunk_01.json").write_text("{}", encoding="utf-8")
+    if include_forbidden_heavy:
+        (run_root / "lprod" / "mesh").mkdir(parents=True, exist_ok=True)
+        (run_root / "lprod" / "mesh" / "placeholder.msh").write_text("mesh", encoding="utf-8")
+        (run_root / "worker_results").mkdir(parents=True, exist_ok=True)
+        (run_root / "worker_results" / "chunk_01.json").write_text("{}", encoding="utf-8")
+
+
+def _strip_compaction_manifest(run_root: Path) -> None:
+    shutil.rmtree(run_root / "compaction", ignore_errors=True)
 
 
 def _make_minimal_rom_fixture(
@@ -158,6 +166,7 @@ def _make_minimal_rom_fixture(
     run_id: str,
     reconciled: bool,
     with_compaction_debris: bool = False,
+    without_compaction_manifest: bool = False,
 ) -> None:
     modes = _synthetic_modes()
     _make_compare_ready_run(
@@ -179,6 +188,8 @@ def _make_minimal_rom_fixture(
         _write_reconcile_report(repo_root, sample_id=sample_id, run_id=run_id)
     else:
         _write_barrier_pass(repo_root, run_root, sample_id=sample_id, run_id=run_id)
+    if without_compaction_manifest:
+        _strip_compaction_manifest(run_root)
     if with_compaction_debris:
         _add_compaction_debris(run_root)
 
@@ -325,6 +336,7 @@ class MinimalRomCompactionTests(unittest.TestCase):
                 run_id="sample_002_rom_prod_004",
                 reconciled=True,
                 with_compaction_debris=True,
+                without_compaction_manifest=True,
             )
             deletable = collect_minimal_rom_deletable_paths(run_root)
             deleted_rels = {
@@ -352,6 +364,153 @@ class MinimalRomCompactionTests(unittest.TestCase):
             self.assertTrue((run_root / "aggregation/modes_catalog_deduped.jsonl").is_file())
             ok, errs = verify_minimal_rom_retention_sufficient(run_root)
             self.assertTrue(ok, errs)
+            manifest_path = run_root / "compaction" / f"{MANIFEST_SCHEMA}.json"
+            self.assertTrue(manifest_path.is_file())
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest.get("evidence_mode"), EVIDENCE_RECONCILED_HISTORICAL)
+
+
+class MinimalRomCompactionEvidenceTests(unittest.TestCase):
+    def test_historical_reconciled_without_compaction_manifest_dry_run_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            run_root = (
+                repo_root
+                / "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars"
+                / "sample_002/runs/sample_002_rom_prod_004"
+            )
+            _make_minimal_rom_fixture(
+                run_root,
+                repo_root=repo_root,
+                sample_id="sample_002",
+                run_id="sample_002_rom_prod_004",
+                reconciled=True,
+                without_compaction_manifest=True,
+            )
+            mode, errors, _meta = evaluate_minimal_rom_evidence_mode(
+                repo_root=repo_root,
+                run_root=run_root,
+                sample_id="sample_002",
+                run_id="sample_002_rom_prod_004",
+            )
+            self.assertEqual(mode, EVIDENCE_RECONCILED_HISTORICAL, errors)
+            outcome = compact_minimal_rom_durable_run(
+                repo_root=repo_root,
+                run_root=run_root,
+                sample_id="sample_002",
+                run_id="sample_002_rom_prod_004",
+                dry_run=True,
+            )
+            self.assertEqual(outcome.status, "dry_run")
+            self.assertGreater(len(outcome.retained_paths), 0)
+
+    def test_missing_manifest_without_reconciliation_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            run_root = (
+                repo_root
+                / "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars"
+                / "sample_002/runs/sample_002_rom_prod_004"
+            )
+            _make_minimal_rom_fixture(
+                run_root,
+                repo_root=repo_root,
+                sample_id="sample_002",
+                run_id="sample_002_rom_prod_004",
+                reconciled=False,
+                without_compaction_manifest=True,
+            )
+            _write_reconciled_false_success_barrier(
+                repo_root, run_root, sample_id="sample_002", run_id="sample_002_rom_prod_004",
+            )
+            mode, errors, _meta = evaluate_minimal_rom_evidence_mode(
+                repo_root=repo_root,
+                run_root=run_root,
+                sample_id="sample_002",
+                run_id="sample_002_rom_prod_004",
+            )
+            self.assertIsNone(mode)
+            self.assertTrue(any("bookkeeping" in e for e in errors))
+
+    def test_cleanup_forbidden_shared_nonzero_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            run_root = (
+                repo_root
+                / "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars"
+                / "sample_002/runs/sample_002_rom_prod_004"
+            )
+            _make_minimal_rom_fixture(
+                run_root,
+                repo_root=repo_root,
+                sample_id="sample_002",
+                run_id="sample_002_rom_prod_004",
+                reconciled=True,
+                without_compaction_manifest=True,
+            )
+            (run_root / "worker_results").mkdir(parents=True, exist_ok=True)
+            (run_root / "worker_results" / "chunk_01.json").write_text("{}", encoding="utf-8")
+            mode, errors, _meta = evaluate_minimal_rom_evidence_mode(
+                repo_root=repo_root,
+                run_root=run_root,
+                sample_id="sample_002",
+                run_id="sample_002_rom_prod_004",
+            )
+            self.assertIsNone(mode)
+            self.assertTrue(any("forbidden_heavy" in e for e in errors))
+
+    def test_missing_required_durable_artifact_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            run_root = (
+                repo_root
+                / "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars"
+                / "sample_002/runs/sample_002_rom_prod_004"
+            )
+            _make_minimal_rom_fixture(
+                run_root,
+                repo_root=repo_root,
+                sample_id="sample_002",
+                run_id="sample_002_rom_prod_004",
+                reconciled=True,
+                without_compaction_manifest=True,
+            )
+            (run_root / "aggregation" / "modes_catalog_deduped.jsonl").unlink()
+            mode, errors, meta = evaluate_minimal_rom_evidence_mode(
+                repo_root=repo_root,
+                run_root=run_root,
+                sample_id="sample_002",
+                run_id="sample_002_rom_prod_004",
+            )
+            self.assertIsNone(mode)
+            self.assertTrue(any("missing_required" in e for e in errors))
+            self.assertTrue(meta.get("missing_required_retained"))
+
+    def test_successful_execution_writes_minimal_compaction_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            run_root = (
+                repo_root
+                / "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars"
+                / "sample_002/runs/sample_002_rom_prod_004"
+            )
+            _make_minimal_rom_fixture(
+                run_root,
+                repo_root=repo_root,
+                sample_id="sample_002",
+                run_id="sample_002_rom_prod_004",
+                reconciled=True,
+                without_compaction_manifest=True,
+            )
+            outcome = compact_minimal_rom_durable_run(
+                repo_root=repo_root,
+                run_root=run_root,
+                sample_id="sample_002",
+                run_id="sample_002_rom_prod_004",
+            )
+            self.assertEqual(outcome.status, "completed")
+            manifest_path = run_root / "compaction" / f"{MANIFEST_SCHEMA}.json"
+            self.assertTrue(manifest_path.is_file())
 
 
 class MathematicalCompareTests(unittest.TestCase):

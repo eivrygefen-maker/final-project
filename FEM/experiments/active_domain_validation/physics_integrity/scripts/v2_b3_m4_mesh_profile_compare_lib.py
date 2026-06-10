@@ -356,7 +356,10 @@ def verify_reconciled_historical_compare_precondition(
     if shared_paths:
         errors.append(f"{label}:shared_sample_artifact_count={len(shared_paths)}")
 
-    durable_ok, durable_errors = verify_success_durable_outputs(run_root)
+    durable_ok, durable_errors = verify_success_durable_outputs(
+        run_root,
+        require_compaction_manifest=False,
+    )
     meta["durable_outputs_ok"] = durable_ok
     if not durable_ok:
         errors.extend(f"{label}:{e}" for e in durable_errors)
