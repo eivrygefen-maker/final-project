@@ -1,3 +1,6 @@
+# Local Cursor agent handoff (not for VM / git)
+.cursor/AGENT_CONTEXT.md
+
 # Python / tooling
 .venv/
 **/__pycache__/

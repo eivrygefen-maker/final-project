@@ -1,0 +1,29 @@
+---
+description: Read and update local agent handoff context at session start and after substantive work
+alwaysApply: true
+---
+
+# Agent context handoff
+
+## At the start of every conversation
+
+1. Read `.cursor/AGENT_CONTEXT.md` if it exists (local handoff; gitignored).
+2. Treat it as continuity from prior chats — do not re-discover decisions already recorded there unless verifying against code.
+
+## After every substantive task
+
+Update `.cursor/AGENT_CONTEXT.md`:
+
+- Bump **Last updated** date.
+- Refresh **Current focus** / **Open next steps** / **Session log** (newest entries at top of session log).
+- Add exact commands, paths, and decisions the next agent must not lose.
+- Keep it concise; link to files rather than pasting large logs.
+
+## Do not
+
+- Commit `.cursor/AGENT_CONTEXT.md` (it is gitignored; dev-machine only).
+- Use it as a substitute for reading code when implementing — verify against source.
+
+## Trivial messages
+
+Skip updates for pure Q&A with no project state change (e.g. "what is git?").
