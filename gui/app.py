@@ -31,6 +31,7 @@ DISPLAY_MESH_FILE = BASE_DIR / "FEM" / "mesh" / "display_mesh.msh"
 MESH_FILE = BASE_DIR / "FEM" / "mesh" / "guitar_3d.msh"
 FEM_FOM_JSON = BASE_DIR / "FEM" / "outputs" / "fem_3d_output.json"
 ROM_STK_JSON = BASE_DIR / "FEM" / "outputs" / "rom_stk_body.json"
+NOTE_CACHE_DIR = BASE_DIR / "audio" / "note_cache"
 
 SHAPES_CONFIG = BASE_DIR / "FEM" / "configs" / "rom_shapes.json"
 ROM_ROOT = BASE_DIR / "ROM"
@@ -197,6 +198,8 @@ def _init_session() -> None:
         "_studio_iframe_payload_fp": "",
         "_studio_iframe_initial": None,
         "_studio_param_change_fp": "",
+        "fretboard_wav_bytes": None,
+        "fretboard_play_label": "",
         "_fast_preview_paths_verified": False,
         "show_mesh_overlay": False,
         "mesh_is_dirty": True,
@@ -1728,6 +1731,18 @@ def _render_main_studio(
         st.audio(WAV_OUTPUT.read_bytes(), format="audio/wav")
     elif st.session_state.get("sound_stale") and rom_body_response_ready(rom_fp):
         st.caption("ROM body is ready — click **Generate sound** for the current guitar.")
+
+    with col_ctrl:
+        from note_cache_ui import render_fretboard_panel  # noqa: WPS433
+
+        body_json = Path(st.session_state.get("stk_body_json") or ROM_STK_JSON)
+        render_fretboard_panel(
+            st,
+            repo_root=BASE_DIR,
+            modal_json=body_json if body_json.is_file() else ROM_STK_JSON,
+            geometry_config=CONFIG_PATH,
+            rom_body_ready=rom_body_response_ready(rom_fp),
+        )
 
 
 def main() -> None:
