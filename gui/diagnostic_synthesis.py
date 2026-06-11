@@ -38,6 +38,9 @@ class DiagnosticSynthesisConfig:
     all_mode_broad_contribution: bool = False
     broad_all_mode_strength: float = 0.0
     near_modal_boost: float = 1.0
+    near_modal_energy_target: float = 0.0
+    far_broad_energy_target: float = 0.0
+    far_mode_color_gain: float = 1.0
     high_note_string_direct_scale: float = 1.0
     high_note_body_color_boost: float = 1.0
     high_note_body_to_string_target_ratio: Optional[float] = None
@@ -110,6 +113,33 @@ DIAGNOSTIC_MODES: Dict[str, DiagnosticSynthesisConfig] = {
             "Structural STK v1: per-mode damping, all-mode broad body color, "
             "partial normalization, reduced string dominance (esp. high notes), "
             "safer low-note fundamental handling."
+        ),
+    ),
+    "modal_body_60_40_v1": DiagnosticSynthesisConfig(
+        name="modal_body_60_40_v1",
+        raw_body_variation_preserve=0.50,
+        body_gain_normalization_strength=0.40,
+        final_loudness_normalization_strength=0.38,
+        wide_body_signature=True,
+        wide_body_signature_strength=0.55,
+        wide_body_signature_damping=True,
+        damping_strength=1.0,
+        per_mode_damping_strength=1.0,
+        all_mode_broad_contribution=True,
+        broad_all_mode_strength=0.78,
+        near_modal_boost=1.10,
+        near_modal_energy_target=0.60,
+        far_broad_energy_target=0.40,
+        far_mode_color_gain=1.42,
+        high_note_string_direct_scale=0.62,
+        high_note_body_color_boost=1.45,
+        high_note_body_to_string_target_ratio=6.1,
+        high_note_pitch_layer_scale=0.70,
+        fundamental_anchor_scale=0.45,
+        low_note_fundamental_harmonic_boost=1.18,
+        description=(
+            "60/40 near/far body-color target: stronger far-mode broad contribution, "
+            "share-weighted material damping, partial normalization, f0-based string/body balance."
         ),
     ),
 }
@@ -389,6 +419,12 @@ def summarize_comparison_note(segments: Sequence[Mapping[str, Any]]) -> Dict[str
     centroids = [float(s.get("spectral_centroid_hz") or 0.0) for s in segments]
     decays = [float(s.get("output_decay_slope_db_per_s") or 0.0) for s in segments]
     q_spreads = [float((s.get("damping_q_summary") or {}).get("mode_q_spread") or 0.0) for s in segments]
+    mat_spreads = [
+        float((s.get("damping_q_summary") or {}).get("material_damping_spread") or 0.0) for s in segments
+    ]
+    near_fracs = [float(s.get("near_modal_energy_fraction") or 0.0) for s in segments]
+    far_fracs = [float(s.get("broad_body_energy_fraction") or 0.0) for s in segments]
+    sims = [float(s.get("segment_spectral_similarity_baseline") or 1.0) for s in segments]
     ranked = sorted(segments, key=lambda s: float(s.get("note_reward_score") or 0.0), reverse=True)
     return {
         "rms_spread_db": round(max(rms_vals) - min(rms_vals), 4) if rms_vals else 0.0,
@@ -397,6 +433,13 @@ def summarize_comparison_note(segments: Sequence[Mapping[str, Any]]) -> Dict[str
         "spectral_centroid_spread_hz": round(max(centroids) - min(centroids), 4) if centroids else 0.0,
         "decay_slope_spread_db_per_s": round(max(decays) - min(decays), 4) if decays else 0.0,
         "mode_q_spread_mean": round(sum(q_spreads) / max(len(q_spreads), 1), 4) if q_spreads else 0.0,
+        "material_damping_spread_mean": round(sum(mat_spreads) / max(len(mat_spreads), 1), 6)
+        if mat_spreads
+        else 0.0,
+        "near_modal_energy_fraction_mean": round(sum(near_fracs) / max(len(near_fracs), 1), 4)
+        if near_fracs
+        else 0.0,
+        "far_broad_energy_fraction_mean": round(sum(far_fracs) / max(len(far_fracs), 1), 4) if far_fracs else 0.0,
         "note_reward_spread": round(max(rewards) - min(rewards), 6) if rewards else 0.0,
         "top_note_reward_sample_ids": [r.get("sample_id") for r in ranked[:3]],
         "bottom_note_reward_sample_ids": [r.get("sample_id") for r in ranked[-3:]],
@@ -429,6 +472,7 @@ def summarize_diagnostic_mode(
             note_summary["mid_energy_spread"] = round(max(mids) - min(mids), 6)
             note_summary["high_energy_spread"] = round(max(highs) - min(highs), 6)
         note_summary["average_spectral_similarity"] = float(row.get("average_spectral_similarity") or 1.0)
+        note_summary["spectral_differentiation"] = round(1.0 - note_summary["average_spectral_similarity"], 6)
         per_note[note] = note_summary
         all_rms.extend(float(s.get("final_rms_dbfs") or 0.0) for s in segs)
         all_rewards.extend(float(s.get("note_reward_score") or 0.0) for s in segs)

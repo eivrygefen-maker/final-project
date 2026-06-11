@@ -197,6 +197,8 @@ def segment_metadata_from_synthesis(
         "output_decay_slope_db_per_s": meta.get("output_decay_slope_db_per_s"),
         "near_modal_energy_fraction": meta.get("near_modal_energy_fraction"),
         "broad_body_energy_fraction": meta.get("broad_body_energy_fraction"),
+        "mid_modal_energy_fraction": meta.get("mid_modal_energy_fraction"),
+        "damping_q_summary": meta.get("damping_q_summary") or {},
         "body_gain_normalization_strength": meta.get("body_gain_normalization_strength"),
         "final_loudness_normalization_strength": meta.get("final_loudness_normalization_strength"),
         "spectral_centroid_hz": round(spec["centroid_hz"], 4),

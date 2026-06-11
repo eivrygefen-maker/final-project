@@ -32,6 +32,12 @@ from modal_damping import (  # noqa: E402
     compute_per_mode_damping,
     summarize_mode_damping_records,
 )
+from string_body_balance import (  # noqa: E402
+    body_color_gain_by_f0,
+    fundamental_anchor_scale_by_body_strength,
+    pitch_layer_scale_by_f0,
+    string_direct_scale_by_f0,
+)
 from synthesis_presets import (  # noqa: E402
     BODY_LOW_FREQ_TILT_HZ,
     DEFAULT_SYNTHESIS_PRESET,
@@ -357,6 +363,13 @@ def _near_modal_boost() -> float:
     return 1.0
 
 
+def _far_mode_color_gain() -> float:
+    diag = active_diagnostic()
+    if diag and diag.far_mode_color_gain > 0:
+        return float(diag.far_mode_color_gain)
+    return 1.0
+
+
 def _low_note_fundamental_harmonic_boost() -> float:
     diag = active_diagnostic()
     if diag:
@@ -372,10 +385,19 @@ def _combine_near_and_broad_weights(
     """Returns (combined_weight, near_fraction, broad_fraction)."""
     prox = _harmonic_proximity(f_m, harmonics_hz)
     near_boost = _near_modal_boost()
+    far_color = _far_mode_color_gain()
     w_near = w * (1.0 + (near_boost - 1.0) * prox)
     broad_s = _broad_all_mode_strength()
     far = 1.0 - prox
-    w_broad = w * (BROAD_MODE_MIN_FRACTION + broad_s * (0.22 + 0.78 * far))
+    w_broad = w * (BROAD_MODE_MIN_FRACTION + broad_s * (0.22 + 0.78 * far)) * far_color
+
+    diag = active_diagnostic()
+    if diag and diag.near_modal_energy_target > 0 and diag.far_broad_energy_target > 0:
+        nt = float(diag.near_modal_energy_target)
+        ft = float(diag.far_broad_energy_target)
+        w_near *= nt / 0.55
+        w_broad *= ft / 0.30
+
     total = w_near + w_broad
     if total <= 0:
         return 0.0, 0.0, 0.0
@@ -851,6 +873,7 @@ def synthesize_body_via_transfer_function(
     raw_weights: List[float] = []
     per_mode_damping_records: List[Dict[str, Any]] = []
     near_energy = 0.0
+    mid_energy = 0.0
     broad_energy = 0.0
 
     tune = active_tuning()
@@ -892,8 +915,15 @@ def synthesize_body_via_transfer_function(
     for row, w_eff in zip(mode_rows, softened_weights):
         H_body += w_eff * row["H_m"]
         row["w_eff"] = w_eff
-        near_energy += w_eff * float(row.get("near_frac") or 0.0)
-        broad_energy += w_eff * float(row.get("broad_frac") or 0.0)
+        prox = _harmonic_proximity(float(row["f_m"]), harmonics_hz)
+        near_part = w_eff * float(row.get("near_frac") or 0.0)
+        broad_part = w_eff * float(row.get("broad_frac") or 0.0)
+        if prox >= 0.55:
+            near_energy += near_part + broad_part * 0.25
+        elif prox >= 0.15:
+            mid_energy += near_part + broad_part
+        else:
+            broad_energy += near_part * 0.35 + broad_part
 
     H_body *= hf_env
     if MODAL_MAG_SMOOTH_BINS >= 2:
@@ -950,7 +980,7 @@ def synthesize_body_via_transfer_function(
             }
         )
 
-    energy_total = near_energy + broad_energy
+    energy_total = near_energy + mid_energy + broad_energy
     bw = active_tuning().body_modal_bandwidth_widening
     broaden_info = {
         "body_modal_bandwidth_widening": bw,
@@ -962,7 +992,9 @@ def synthesize_body_via_transfer_function(
         "per_mode_damping": per_mode_damping_records,
         "damping_q_summary": summarize_mode_damping_records(per_mode_damping_records),
         "near_modal_energy_fraction": round(near_energy / max(energy_total, 1e-12), 6),
+        "mid_modal_energy_fraction": round(mid_energy / max(energy_total, 1e-12), 6),
         "broad_body_energy_fraction": round(broad_energy / max(energy_total, 1e-12), 6),
+        "far_modal_energy_fraction": round(broad_energy / max(energy_total, 1e-12), 6),
         "broad_all_mode_strength": _broad_all_mode_strength(),
         "near_modal_boost": _near_modal_boost(),
     }
@@ -1183,13 +1215,15 @@ def _synthesize_note_with_body_response_core(
     hf_rolloff = high_note_string_hf_rolloff_factor(float(frequency_hz), 6)
     soften_t = high_note_pluck_soften_t(frequency_hz)
     diag = active_diagnostic()
-    string_direct_scale = 1.0
-    pitch_layer_scale = 1.0
-    if diag and soften_t > 0:
-        string_direct_scale = float(diag.high_note_string_direct_scale)
-        pitch_layer_scale = float(diag.high_note_pitch_layer_scale)
+    f0 = float(frequency_hz)
+    string_direct_scale = string_direct_scale_by_f0(f0)
+    pitch_layer_scale = pitch_layer_scale_by_f0(f0)
+    if diag and diag.high_note_string_direct_scale < 0.999:
+        string_direct_scale *= 1.0 - soften_t * (1.0 - float(diag.high_note_string_direct_scale))
+    if diag and diag.high_note_pitch_layer_scale < 0.999:
+        pitch_layer_scale *= 1.0 - soften_t * (1.0 - float(diag.high_note_pitch_layer_scale))
     pitch_high_scale = 1.0 - soften_t * (1.0 - tune.high_note_pitch_layer_high_scale)
-    pitch_high_scale *= 1.0 - soften_t * (1.0 - pitch_layer_scale)
+    pitch_high_scale *= pitch_layer_scale
     effective_pluck_gain = tune.string_pluck_gain * pluck_soften * string_direct_scale
     effective_pitch_gain = tune.string_pitch_layer_gain * pluck_soften * pitch_high_scale
     string_pluck = effective_pluck_gain * _direct_attack_tap(
@@ -1229,9 +1263,9 @@ def _synthesize_note_with_body_response_core(
     else:
         body_gain_applied = 0.0
 
-    body_color_boost = 1.0
-    if diag and soften_t > 0:
-        body_color_boost = 1.0 + soften_t * (float(diag.high_note_body_color_boost) - 1.0)
+    body_color_boost = body_color_gain_by_f0(f0)
+    if diag and diag.high_note_body_color_boost > 1.0:
+        body_color_boost *= 1.0 + soften_t * (float(diag.high_note_body_color_boost) - 1.0)
     body_signal = body_raw * body_gain_applied * tune.body_modal_gain * body_color_boost
     body_rms_before_richness_gain = _rms(body_signal)
     body_signal = body_signal * tune.body_modal_richness_gain
@@ -1242,11 +1276,13 @@ def _synthesize_note_with_body_response_core(
     defaults_used.append(f"body_modal_richness_gain={tune.body_modal_richness_gain}")
     body_to_string_rms_ratio_before_loudness = body_rms_before / max(string_rms_before_mix, 1e-12)
     fundamental_anchor_used = float(frequency_hz) <= LOW_NOTE_FUNDAMENTAL_MAX_HZ
-    fundamental_anchor_scale = 1.0
-    if diag:
-        fundamental_anchor_scale = float(diag.fundamental_anchor_scale)
-    if body_rms_before > string_rms_before_mix * 2.5:
-        fundamental_anchor_scale *= 0.72
+    anchor_base = float(diag.fundamental_anchor_scale) if diag else 1.0
+    fundamental_anchor_scale = fundamental_anchor_scale_by_body_strength(
+        f0,
+        body_rms=body_rms_before,
+        string_rms=string_rms_before_mix,
+        base_scale=anchor_base,
+    )
     if fundamental_anchor_used and fundamental_anchor_scale > 0.02:
         anchor = _fundamental_pitch_anchor(
             frequency_hz,
@@ -1436,12 +1472,17 @@ def _synthesize_note_with_body_response_core(
         metadata["diagnostic_mode"] = "baseline_current"
         metadata["body_gain_normalization_strength"] = 1.0
         metadata["final_loudness_normalization_strength"] = 1.0
+    metadata["string_direct_scale_by_f0"] = round(string_direct_scale, 6)
+    metadata["pitch_layer_scale_by_f0"] = round(pitch_layer_scale, 6)
+    metadata["body_color_gain_by_f0"] = round(body_color_boost, 6)
     metadata["high_note_string_direct_scale_applied"] = round(string_direct_scale, 6)
     metadata["high_note_body_color_boost_applied"] = round(body_color_boost, 6)
     metadata["fundamental_anchor_scale_applied"] = round(fundamental_anchor_scale, 6)
     metadata["low_note_fundamental_harmonic_boost"] = round(_low_note_fundamental_harmonic_boost(), 6)
     metadata["near_modal_energy_fraction"] = broaden_info.get("near_modal_energy_fraction")
+    metadata["mid_modal_energy_fraction"] = broaden_info.get("mid_modal_energy_fraction")
     metadata["broad_body_energy_fraction"] = broaden_info.get("broad_body_energy_fraction")
+    metadata["far_modal_energy_fraction"] = broaden_info.get("far_modal_energy_fraction")
     metadata["per_mode_damping_count"] = len(broaden_info.get("per_mode_damping") or [])
     metadata.update(broaden_info.get("damping_q_summary") or {})
     metadata.update(

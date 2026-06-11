@@ -26,7 +26,7 @@ from diagnostic_synthesis import (  # noqa: E402
     list_diagnostic_modes,
 )
 
-DEFAULT_MODES = "baseline_current,modal_damping_body_signature_v1"
+DEFAULT_MODES = "baseline_current,modal_damping_body_signature_v1,modal_body_60_40_v1"
 DEFAULT_NOTES = "A2,A4,E5"
 
 
