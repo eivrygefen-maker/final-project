@@ -1311,21 +1311,31 @@ def render_rom_metrics_dashboard(shape_type: str) -> None:
     st.table(rows)
 
 
-def write_stk_body_json(freqs_hz: Sequence[float], out_path: Path) -> Path:
+def write_stk_body_json(
+    freqs_hz: Sequence[float],
+    out_path: Path,
+    *,
+    prediction: Optional[Dict[str, Any]] = None,
+) -> Path:
     freqs = [float(f) for f in freqs_hz if float(f) > 0.0]
     if not freqs:
         raise ValueError("No modal frequencies for STK.")
     weights = [1.0 / (1.0 + 0.25 * i) for i in range(len(freqs))]
     wmax = max(weights)
     weights = [w / wmax for w in weights]
+    doc: Dict[str, Any] = {
+        "analysis": "rom_online_body",
+        "modes_hz": freqs,
+        "mode_weights": weights,
+        "num_modes": len(freqs),
+        "full_modal_band_hz": [60.0, 550.0],
+    }
+    predicted_modes = list((prediction or {}).get("predicted_modes") or [])
+    if predicted_modes:
+        doc["predicted_modes"] = predicted_modes
+        doc["frequencies_hz"] = freqs
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(
-        json.dumps(
-            {"analysis": "rom_online_body", "modes_hz": freqs, "mode_weights": weights, "num_modes": len(freqs)},
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    out_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
     return out_path
 
 
@@ -1347,7 +1357,7 @@ def run_rom_acoustics(lhs_params: Dict[str, Any], shape_type: str) -> Path:
         st.session_state.rom_frequencies_hz = [float(f) for f in freqs[:ROM_ONLINE_MODES]]
         st.session_state.rom_mode_shapes = dict(prediction)
         st.session_state.rom_backend = "m4_modal_surrogate"
-        write_stk_body_json(freqs, ROM_STK_JSON)
+        write_stk_body_json(freqs, ROM_STK_JSON, prediction=prediction)
         return ROM_STK_JSON
 
     ns = rom_namespace(shape_type)
@@ -1366,7 +1376,7 @@ def run_rom_acoustics(lhs_params: Dict[str, Any], shape_type: str) -> Path:
     st.session_state.rom_frequencies_hz = [float(f) for f in freqs[:ROM_ONLINE_MODES]]
     st.session_state.rom_mode_shapes = dict(result)
     st.session_state.rom_backend = "legacy_reduced_basis"
-    write_stk_body_json(freqs, ROM_STK_JSON)
+    write_stk_body_json(freqs, ROM_STK_JSON, prediction=result if isinstance(result, dict) else None)
     return ROM_STK_JSON
 
 
@@ -1405,40 +1415,35 @@ def append_silence_wav(path: Path, seconds: float) -> None:
         pass
 
 
-def run_stk(*, body_json: Path, top_wood: str) -> None:
-    top_q = material_block_for_id(top_wood)
-    q_mean = (float(top_q["q_min"]) + float(top_q["q_max"])) / 2.0
-    subprocess.run(
-        [
-            str(STK_BINARY),
-            "--fem_json",
-            str(body_json),
-            "--note_hz",
-            str(DEFAULT_STK_NOTE_HZ),
-            "--dur",
-            "3.0",
-            "--mix",
-            "0.98",
-            "--wet_gain",
-            "400",
-            "--out",
-            str(WAV_OUTPUT),
-            "--rad_k",
-            "0.06",
-            "--amp",
-            "0.3",
-            "--seed",
-            "123",
-            "--modes",
-            "0",
-            "--skip",
-            "0",
-            "--q",
-            str(q_mean),
-        ],
-        check=False,
+def run_stk(
+    *,
+    body_json: Path,
+    top_wood: str,
+    note_hz: Optional[float] = None,
+    note_name: str = "A2",
+) -> Dict[str, Any]:
+    """Stage-1 Python body-response synth (fixed excitation, ROM modal filtering)."""
+    from body_response_synth import (  # noqa: WPS433
+        DEFAULT_DURATION_S,
+        DEFAULT_SAMPLE_RATE,
+        load_modal_data_from_path,
+        synthesize_note_with_body_response,
+    )
+
+    pitch_hz = float(note_hz if note_hz is not None else DEFAULT_STK_NOTE_HZ)
+    meta_path = WAV_OUTPUT.with_name(f"{WAV_OUTPUT.stem}_metadata.json")
+    modal_data = load_modal_data_from_path(body_json)
+    metadata = synthesize_note_with_body_response(
+        frequency_hz=pitch_hz,
+        note_name=note_name,
+        duration_s=DEFAULT_DURATION_S,
+        sample_rate=DEFAULT_SAMPLE_RATE,
+        modal_data=modal_data,
+        output_wav=WAV_OUTPUT,
+        output_metadata_json=meta_path,
     )
     append_silence_wav(WAV_OUTPUT, 0.3)
+    return metadata
 
 
 def _render_main_studio(

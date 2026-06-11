@@ -1,0 +1,32 @@
+{
+  "note_name": "E5",
+  "frequency_hz": 659.25,
+  "duration_s": 3.0,
+  "sample_rate": 44100,
+  "modal_mode_count_available": 11,
+  "modal_mode_count_used": 11,
+  "modal_frequency_min_hz": 82.4,
+  "modal_frequency_max_hz": 512.8,
+  "full_modal_band_hz": [
+    60.0,
+    550.0
+  ],
+  "high_frequency_fallback_used": true,
+  "bridge_weighting_used": true,
+  "mic_proxy_used": true,
+  "radiation_proxy_used": true,
+  "q_or_damping_used": true,
+  "defaults_used": [
+    "Q_estimated_from_frequency_and_participation"
+  ],
+  "excitation": {
+    "pluck_position": 0.18,
+    "velocity": 1.0,
+    "string_mix": 0.7636999999999999,
+    "wet_gain": 8.0,
+    "rad_k": 0.06
+  },
+  "output_wav": "audio\\stage1\\E5_body.wav",
+  "peak_before_normalize": 0.3149916714156592,
+  "samples_finite": true
+}
