@@ -36,6 +36,22 @@ ROM_STK_JSON = BASE_DIR / "FEM" / "outputs" / "rom_stk_body.json"
 
 SHAPES_CONFIG = BASE_DIR / "FEM" / "configs" / "rom_shapes.json"
 ROM_ROOT = BASE_DIR / "ROM"
+CLASSIC_PIPELINE_PROFILE: Dict[str, str] = {
+    "shape_name": "classic",
+    "mesh_profile": "rom",
+    "mesh_level_id": "L_rom_prod",
+    "dataset_version": "m4_geometry_corrected_rommesh_v1",
+    "run_id_suffix": "rom_shadow_v1",
+}
+M4_ROM_MANIFEST = ROM_ROOT / "classic" / "rom_model_manifest.json"
+M4_ROM_SURROGATE_JSON = ROM_ROOT / "classic" / "m4_modal_surrogate.json"
+M4_ROM_SURROGATE_NPZ = ROM_ROOT / "classic" / "m4_modal_surrogate.npz"
+M4_ROM_DATASET_REGISTRY = ROM_ROOT / "classic" / "official_rom_dataset.jsonl"
+M4_LHS_POOL = ROM_ROOT / "classic" / "lhs_pool.json"
+M4_PRODUCTION_PIPELINE = (
+    BASE_DIR
+    / "FEM/experiments/active_domain_validation/physics_integrity/scripts/run_m4_production_pipeline.py"
+)
 PACKAGED_ROM_NPZ = BASE_DIR / "FEM" / "SORTING" / "final_guitar_rom.npz"
 SELECTED_MODES_CSV = BASE_DIR / "FEM" / "SORTING" / "selected_modes.csv"
 FALLBACK_MODES_CSV = BASE_DIR / "FEM" / "configs" / "archive" / "selected_modes_SIM1.csv"
@@ -717,6 +733,116 @@ def rom_basis_path(shape_type: str) -> Path:
     return ROM_ROOT / rom_namespace(shape_type) / "reduced_basis.npz"
 
 
+def m4_rom_manifest_path(shape_type: str) -> Path:
+    return ROM_ROOT / rom_namespace(shape_type) / "rom_model_manifest.json"
+
+
+def m4_rom_available(shape_type: str) -> bool:
+    ns = rom_namespace(shape_type)
+    root = ROM_ROOT / ns
+    return (
+        (root / "rom_model_manifest.json").is_file()
+        and (root / "m4_modal_surrogate.json").is_file()
+        and (root / "m4_modal_surrogate.npz").is_file()
+    )
+
+
+def m4_parameters_from_ui(
+    geom: Dict[str, Any],
+    *,
+    top_wood: str,
+    back_wood: str,
+) -> Dict[str, Any]:
+    """Parameter dict for M4 modal surrogate (8-D LHS feature encoding)."""
+    top_t = float(geom.get("top_thickness") or geom.get("thickness") or 0.003)
+    back_t = float(geom.get("back_thickness") or top_t * 1.1)
+    return {
+        "geometry.length": float(geom["length"]),
+        "geometry.width": float(geom["width"]),
+        "geometry.depth": float(geom["depth"]),
+        "geometry.top_thickness": top_t,
+        "geometry.hole_radius": float(geom["hole_radius"]),
+        "geometry.back_thickness": back_t,
+        "top_wood_id": str(top_wood),
+        "back_wood_id": str(back_wood),
+    }
+
+
+def load_m4_rom_manifest(shape_type: str) -> Dict[str, Any]:
+    path = m4_rom_manifest_path(shape_type)
+    if not path.is_file():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        return doc if isinstance(doc, dict) else {}
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def predict_m4_modal_frequencies(
+    geom: Dict[str, Any],
+    *,
+    top_wood: str,
+    back_wood: str,
+    shape_type: str,
+    nev: int = ROM_ONLINE_MODES,
+) -> Tuple[List[float], Dict[str, Any]]:
+    """Online prediction via ROM/classic/m4_modal_surrogate (no FEM)."""
+    m4_scripts = BASE_DIR / "FEM/experiments/active_domain_validation/physics_integrity/scripts"
+    if str(m4_scripts) not in sys.path:
+        sys.path.insert(0, str(m4_scripts))
+    from v2_b3_m4_modal_surrogate_lib import load_surrogate_model, predict_modal_catalog  # noqa: WPS433
+
+    ns = rom_namespace(shape_type)
+    model = load_surrogate_model(BASE_DIR, ns)
+    prediction = predict_modal_catalog(
+        model,
+        m4_parameters_from_ui(geom, top_wood=top_wood, back_wood=back_wood),
+        nev=int(nev),
+    )
+    freqs = [float(f) for f in (prediction.get("frequencies_hz") or [])[:nev]]
+    return freqs, prediction
+
+
+def render_classic_pipeline_status(*, shape_type: str) -> None:
+    """Sidebar: active production profile + ROM availability (classic guitar)."""
+    if rom_namespace(shape_type) != "classic":
+        st.sidebar.caption(f"Shape namespace: `{rom_namespace(shape_type)}` (legacy ROM paths)")
+        return
+    prof = CLASSIC_PIPELINE_PROFILE
+    st.sidebar.markdown("**Classic production profile**")
+    st.sidebar.code(
+        "\n".join(
+            (
+                f"shape_name = {prof['shape_name']}",
+                f"mesh_profile = {prof['mesh_profile']}",
+                f"mesh_level_id = {prof['mesh_level_id']}",
+                f"dataset_version = {prof['dataset_version']}",
+                f"run_id_suffix = {prof['run_id_suffix']}",
+            )
+        ),
+        language=None,
+    )
+    manifest = load_m4_rom_manifest(shape_type)
+    if m4_rom_available(shape_type):
+        count = int(manifest.get("training_sample_count") or manifest.get("total_training_count") or 0)
+        st.sidebar.success(
+            f"M4 ROM model ready · `{M4_ROM_MANIFEST.relative_to(BASE_DIR)}` "
+            f"({count} training samples)"
+        )
+    else:
+        st.sidebar.warning(
+            "M4 ROM model not found. Build with:\n"
+            "`build_m4_rom_from_completed_fom.py --official-rom-mesh-only`"
+        )
+    if M4_ROM_DATASET_REGISTRY.is_file():
+        n_reg = sum(1 for line in M4_ROM_DATASET_REGISTRY.read_text(encoding="utf-8").splitlines() if line.strip())
+        st.sidebar.caption(f"Official dataset registry: {n_reg} entries")
+    if M4_LHS_POOL.is_file():
+        st.sidebar.caption(f"LHS pool: `{M4_LHS_POOL.relative_to(BASE_DIR)}`")
+
+
 def save_config(
     geom: Dict[str, Any],
     *,
@@ -767,8 +893,17 @@ def _run_gmsh(env: Dict[str, str], out_path: Path, label: str) -> None:
     clean = {k: v for k, v in os.environ.items() if k not in ("FEM_ALLOW_PREVIEW", "FEM_ALLOW_DISPLAY", "FEM_ALLOW_FOM")}
     result = subprocess.run(_gmsh_cmd(), capture_output=True, text=True, env={**clean, **env}, cwd=str(BASE_DIR))
     if not out_path.is_file():
-        tail = (result.stderr or result.stdout or "unknown error").strip()
-        raise RuntimeError(f"{label} failed.\n{tail}")
+        combined = "\n".join(
+            line for line in (result.stdout or "").splitlines() + (result.stderr or "").splitlines() if line.strip()
+        )
+        fatal = next((ln for ln in combined.splitlines() if "FATAL:" in ln or "RuntimeError:" in ln), "")
+        tail = combined[-4000:] if combined else "unknown error"
+        detail = fatal or tail
+        raise RuntimeError(
+            f"{label} failed.\n{detail}\n\n"
+            "Check geometry parameters (length, width, depth, top thickness, hole radius) "
+            "and ensure Gmsh/OpenCASCADE is available."
+        )
 
 
 def run_gmsh_sketch() -> None:
@@ -1017,15 +1152,36 @@ def update_rom_online_prediction(
     st.session_state._rom_online_fp = fp
 
     ns = rom_namespace(shape_type)
+    if m4_rom_available(shape_type):
+        try:
+            freqs, prediction = predict_m4_modal_frequencies(
+                geom,
+                top_wood=top_wood,
+                back_wood=back_wood,
+                shape_type=shape_type,
+            )
+            st.session_state.rom_basis_missing = False
+            st.session_state.rom_backend = "m4_modal_surrogate"
+            st.session_state.rom_frequencies_hz = freqs
+            st.session_state.rom_mode_shapes = dict(prediction)
+            st.session_state.rom_solve_elapsed_s = float(prediction.get("runtime_s") or 0.0)
+            st.session_state.rom_solver_error = ""
+            return
+        except Exception as exc:
+            st.session_state.rom_backend = "m4_modal_surrogate"
+            st.session_state.rom_solver_error = f"M4 surrogate: {exc}"
+
     basis = rom_basis_path(shape_type)
     if not basis.is_file():
         st.session_state.rom_basis_missing = True
         st.session_state.rom_frequencies_hz = []
         st.session_state.rom_mode_shapes = {}
-        st.session_state.rom_solver_error = ""
+        if not st.session_state.get("rom_solver_error"):
+            st.session_state.rom_solver_error = ""
         return
 
     st.session_state.rom_basis_missing = False
+    st.session_state.rom_backend = "legacy_reduced_basis"
     manager, err = get_rom_manager()
     if manager is None:
         st.session_state.rom_solver_error = err or "ROMManager unavailable"
@@ -1053,12 +1209,19 @@ def render_rom_metrics_dashboard(shape_type: str) -> None:
     ns = rom_namespace(shape_type)
     basis = rom_basis_path(shape_type)
 
-    if st.session_state.get("rom_basis_missing") or not basis.is_file():
+    backend = str(st.session_state.get("rom_backend") or "")
+    if m4_rom_available(shape_type) and backend == "m4_modal_surrogate":
+        manifest = load_m4_rom_manifest(shape_type)
+        train_n = int(manifest.get("training_sample_count") or manifest.get("total_training_count") or 0)
+        st.caption(
+            f"M4 modal surrogate · `{M4_ROM_MANIFEST.relative_to(BASE_DIR)}` · "
+            f"{train_n} training samples"
+        )
+    elif st.session_state.get("rom_basis_missing") or not basis.is_file():
         st.info(
-            f"No reduced basis found for **{shape_type}** (`ROM/{ns}/reduced_basis.npz`). "
-            "Run an offline LHS batch first:\n\n"
-            f"`python FEM/scripts/rom_pipeline.py collect {ns} --pool-size 8`\n\n"
-            f"`python FEM/scripts/rom_pipeline.py build-basis {ns}`"
+            f"No ROM model for **{shape_type}**. Expected M4 surrogate at "
+            f"`ROM/{ns}/m4_modal_surrogate.{{json,npz}}` or legacy basis "
+            f"`ROM/{ns}/reduced_basis.npz`."
         )
         return
 
@@ -1104,13 +1267,30 @@ def write_stk_body_json(freqs_hz: Sequence[float], out_path: Path) -> Path:
 
 def run_rom_acoustics(lhs_params: Dict[str, Any], shape_type: str) -> Path:
     """Branch A: ROM only — no FOM Gmsh volume mesh."""
+    geom = st.session_state.get("_geom") or {}
+    top_wood = str(st.session_state.get("_top_wood") or "spruce")
+    back_wood = str(st.session_state.get("_back_wood") or "rosewood")
+    if m4_rom_available(shape_type):
+        freqs, prediction = predict_m4_modal_frequencies(
+            geom,
+            top_wood=top_wood,
+            back_wood=back_wood,
+            shape_type=shape_type,
+            nev=0,
+        )
+        if not freqs:
+            raise RuntimeError("M4 modal surrogate returned no frequencies.")
+        st.session_state.rom_frequencies_hz = [float(f) for f in freqs[:ROM_ONLINE_MODES]]
+        st.session_state.rom_mode_shapes = dict(prediction)
+        st.session_state.rom_backend = "m4_modal_surrogate"
+        write_stk_body_json(freqs, ROM_STK_JSON)
+        return ROM_STK_JSON
+
     ns = rom_namespace(shape_type)
     basis = rom_basis_path(shape_type)
     if not basis.is_file():
         raise RuntimeError(
-            f"Reduced basis missing: {basis}\n"
-            f"Run: python FEM/scripts/rom_pipeline.py collect {ns} --pool-size 8\n"
-            f"     python FEM/scripts/rom_pipeline.py build-basis {ns}"
+            f"No ROM model for {shape_type}: missing M4 surrogate and legacy basis {basis}"
         )
     manager, err = get_rom_manager()
     if manager is None:
@@ -1121,6 +1301,7 @@ def run_rom_acoustics(lhs_params: Dict[str, Any], shape_type: str) -> Path:
         raise RuntimeError("ROM solve_online returned no frequencies.")
     st.session_state.rom_frequencies_hz = [float(f) for f in freqs[:ROM_ONLINE_MODES]]
     st.session_state.rom_mode_shapes = dict(result)
+    st.session_state.rom_backend = "legacy_reduced_basis"
     write_stk_body_json(freqs, ROM_STK_JSON)
     return ROM_STK_JSON
 
@@ -1379,8 +1560,9 @@ def main() -> None:
     inject_studio_viewport_css()
 
     _rom_mgr, _rom_init_err = get_rom_manager()
-    if _rom_init_err:
-        st.sidebar.warning(f"ROM engine offline: {_rom_init_err}")
+    if _rom_init_err and not m4_rom_available(saved_shape):
+        st.sidebar.warning(f"Legacy ROM engine offline: {_rom_init_err}")
+    render_classic_pipeline_status(shape_type=saved_shape)
 
     _render_main_studio(saved, saved_solver, saved_shape, saved_fixture)
 
