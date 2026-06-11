@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage-1 body-response synthesis tests (no FEM)."""
+"""Body-response synthesis tests (modal transfer-function model, no FEM)."""
 from __future__ import annotations
 
 import json
@@ -19,6 +19,7 @@ from body_response_synth import (  # noqa: E402
     DEFAULT_SAMPLE_RATE,
     FULL_MODAL_BAND_HZ,
     load_modal_data_from_path,
+    modes_in_validated_band,
     parse_modal_modes,
     synthetic_classic_body_modes,
     synthesize_note_with_body_response,
@@ -47,12 +48,13 @@ class BodyResponseSynthTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def _modal_fixture(self):
-        return {"predicted_modes": synthetic_classic_body_modes()}
+    def _spread_modal_fixture(self, n: int = 55):
+        return {"predicted_modes": synthetic_classic_body_modes(n)}
 
     def test_e2_a4_e5_smoke(self) -> None:
-        modal = self._modal_fixture()
+        modal = self._spread_modal_fixture()
         cases = (("E2", 82.41), ("A4", 440.0), ("E5", 659.25))
+        lo, hi = FULL_MODAL_BAND_HZ
         for name, hz in cases:
             wav = self.out_dir / f"{name}.wav"
             meta_path = self.out_dir / f"{name}.json"
@@ -70,12 +72,42 @@ class BodyResponseSynthTests(unittest.TestCase):
             self.assertGreater(samples.size, 0, name)
             self.assertTrue(np.all(np.isfinite(samples)), name)
             self.assertLessEqual(float(np.max(np.abs(samples))), 1.0 + 1e-6, name)
-            self.assertEqual(meta["note_name"], name)
-            self.assertGreater(meta["modal_mode_count_used"], 0)
+            self.assertEqual(meta["available_modal_count"], 55)
+            self.assertEqual(meta["evaluated_modal_count"], 55)
+            self.assertAlmostEqual(meta["available_modal_frequency_min_hz"], lo, places=0)
+            self.assertAlmostEqual(meta["available_modal_frequency_max_hz"], hi, places=0)
+            self.assertEqual(meta["evaluated_modal_frequency_min_hz"], lo)
+            self.assertEqual(meta["evaluated_modal_frequency_max_hz"], hi)
+            self.assertTrue(meta["pitch_preserved"])
+            self.assertLess(meta["final_dry_to_body_rms_ratio"], 0.12, name)
+            self.assertGreater(
+                meta["body_rms_before_mix"] / max(meta["dry_rms_before_mix"], 1e-9),
+                3.0,
+                name,
+            )
             if name == "E5":
                 self.assertTrue(meta["high_frequency_fallback_used"])
             else:
                 self.assertFalse(meta["high_frequency_fallback_used"])
+
+    def test_a2_evaluates_all_band_modes_not_narrow_subset(self) -> None:
+        modal = self._spread_modal_fixture(40)
+        wav = self.out_dir / "A2.wav"
+        meta = synthesize_note_with_body_response(
+            frequency_hz=110.0,
+            note_name="A2",
+            duration_s=0.35,
+            sample_rate=DEFAULT_SAMPLE_RATE,
+            modal_data=modal,
+            output_wav=wav,
+        )
+        self.assertEqual(meta["evaluated_modal_count"], 40)
+        self.assertGreater(meta["available_modal_frequency_max_hz"], 400.0)
+        self.assertLess(meta["available_modal_frequency_min_hz"], 100.0)
+        top = meta["top_contributing_modes"]
+        self.assertGreater(len(top), 0)
+        nearest = {row["nearest_harmonic_hz"] for row in top}
+        self.assertTrue(any(abs(h - 110.0) < 1.0 or abs(h - 220.0) < 2.0 for h in nearest))
 
     def test_legacy_modes_hz_json(self) -> None:
         modal = {
@@ -85,6 +117,7 @@ class BodyResponseSynthTests(unittest.TestCase):
         }
         modes, _ = parse_modal_modes(modal)
         self.assertEqual(len(modes), 4)
+        self.assertEqual(len(modes_in_validated_band(modes)), 4)
         wav = self.out_dir / "legacy.wav"
         meta = synthesize_note_with_body_response(
             frequency_hz=110.0,
@@ -95,23 +128,28 @@ class BodyResponseSynthTests(unittest.TestCase):
             output_wav=wav,
         )
         self.assertTrue(wav.is_file())
-        self.assertEqual(meta["modal_mode_count_used"], 4)
+        self.assertEqual(meta["evaluated_modal_count"], 4)
+        self.assertEqual(meta["available_modal_count"], 4)
 
     def test_consumes_gui_rom_stk_json_if_present(self) -> None:
         if not ROM_STK_JSON.is_file():
             self.skipTest(f"no {ROM_STK_JSON}")
         modal = load_modal_data_from_path(ROM_STK_JSON)
+        modes, _ = parse_modal_modes(modal)
         wav = self.out_dir / "rom_gui.wav"
         meta = synthesize_note_with_body_response(
-            frequency_hz=82.41,
-            note_name="E2",
+            frequency_hz=110.0,
+            note_name="A2",
             duration_s=0.25,
             sample_rate=DEFAULT_SAMPLE_RATE,
             modal_data=modal,
             output_wav=wav,
         )
         self.assertTrue(wav.is_file())
-        self.assertGreater(meta["modal_mode_count_available"], 0)
+        doc_n = int(modal.get("num_modes") or len(modes))
+        self.assertEqual(meta["available_modal_count"], doc_n)
+        self.assertEqual(meta["evaluated_modal_count"], len(modes_in_validated_band(modes)))
+        self.assertGreater(meta["available_modal_frequency_max_hz"], 200.0)
 
     def test_metadata_fields(self) -> None:
         wav = self.out_dir / "meta.wav"
@@ -121,31 +159,45 @@ class BodyResponseSynthTests(unittest.TestCase):
             note_name="A4",
             duration_s=0.2,
             sample_rate=DEFAULT_SAMPLE_RATE,
-            modal_data=self._modal_fixture(),
+            modal_data=self._spread_modal_fixture(),
             output_wav=wav,
             output_metadata_json=meta_path,
         )
         required = {
             "note_name",
             "frequency_hz",
-            "duration_s",
-            "sample_rate",
-            "modal_mode_count_available",
-            "modal_mode_count_used",
-            "full_modal_band_hz",
+            "pitch_preserved",
+            "synthesis_model",
+            "available_modal_count",
+            "available_modal_frequency_min_hz",
+            "available_modal_frequency_max_hz",
+            "evaluated_modal_count",
+            "active_modal_count_after_threshold",
+            "selected_or_pruned_policy",
+            "harmonics_used_hz",
+            "top_contributing_modes",
             "high_frequency_fallback_used",
-            "bridge_weighting_used",
-            "mic_proxy_used",
-            "radiation_proxy_used",
-            "q_or_damping_used",
-            "defaults_used",
+            "dry_mix",
+            "wet_mix",
+            "direct_string_gain",
+            "body_filter_gain",
+            "dry_rms_before_mix",
+            "body_rms_before_mix",
+            "dry_gain_applied",
+            "body_gain_applied",
+            "final_dry_to_body_rms_ratio",
+            "final_peak_normalization_gain",
+            "q_min",
+            "q_median",
+            "q_max",
             "output_wav",
         }
+        self.assertEqual(meta["direct_string_role"], "attack_pitch_anchor_only")
         self.assertTrue(required.issubset(meta.keys()))
-        self.assertEqual(meta["full_modal_band_hz"], list(FULL_MODAL_BAND_HZ))
         self.assertTrue(meta_path.is_file())
-        on_disk = json.loads(meta_path.read_text(encoding="utf-8"))
-        self.assertEqual(on_disk["note_name"], "A4")
+        row = meta["top_contributing_modes"][0]
+        self.assertIn("bridge_weight", row)
+        self.assertIn("nearest_harmonic_hz", row)
 
 
 if __name__ == "__main__":
