@@ -22,8 +22,9 @@ from v2_b3_m4_modal_surrogate_lib import (  # noqa: E402
 from v2_b3_m4_official_rom_dataset_lib import (  # noqa: E402
     MATURITY_INTEGRATION_ONLY,
     OFFICIAL_INITIAL_RUN_IDS,
+    build_official_rom_full_dataset_report,
     build_initial_five_run_dataset_report,
-    collect_official_rom_training_rows,
+    collect_merged_official_rom_training_rows,
     evaluate_official_rom_run_eligibility,
     load_official_dataset_registry,
     official_dataset_registry_path,
@@ -135,11 +136,13 @@ def build_holdout_official_rom_model(
     k_neighbors: int = DEFAULT_K_NEIGHBORS,
     min_mode_count: int = 1,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
-    training, skipped = collect_official_rom_training_rows(
+    training, skipped, _merge_meta = collect_merged_official_rom_training_rows(
         repo_root=repo_root,
+        shape_name=shape_name,
         exclude_sample_ids=exclude_sample_ids,
         exclude_run_ids=exclude_run_ids,
         min_mode_count=min_mode_count,
+        initial_only=False,
     )
     if not training:
         raise RomShadowIntegrityError(
@@ -169,13 +172,26 @@ def build_official_rom_surrogate_from_runs(
     min_mode_count: int = 10,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
     """Build fresh official ROM surrogate; never loads a previous on-disk model."""
-    run_ids = list(allowed_run_ids) if allowed_run_ids is not None else list(OFFICIAL_INITIAL_RUN_IDS)
-    training, skipped = collect_official_rom_training_rows(
-        repo_root=repo_root,
-        require_initial_allowlist=require_initial_allowlist,
-        allowed_run_ids=run_ids,
-        min_mode_count=min_mode_count,
-    )
+    initial_only = bool(require_initial_allowlist) and allowed_run_ids is None
+    if allowed_run_ids is not None:
+        from v2_b3_m4_official_rom_dataset_lib import collect_official_rom_training_rows  # noqa: WPS433
+
+        training, skipped = collect_official_rom_training_rows(
+            repo_root=repo_root,
+            allowed_run_ids=list(allowed_run_ids),
+            min_mode_count=min_mode_count,
+        )
+        merge_meta = {
+            "created_utc": utc_now(),
+            "requested_run_ids": list(allowed_run_ids),
+        }
+    else:
+        training, skipped, merge_meta = collect_merged_official_rom_training_rows(
+            repo_root=repo_root,
+            shape_name=shape_name,
+            min_mode_count=min_mode_count,
+            initial_only=initial_only,
+        )
     if not training:
         raise ValueError("no official ROM training rows collected")
     model = build_surrogate_from_training_rows(
@@ -186,12 +202,26 @@ def build_official_rom_surrogate_from_runs(
     model["official_rom_mesh_only"] = True
     model["maturity"] = MATURITY_INTEGRATION_ONLY
     model["production_accuracy_validated"] = False
-    paths = save_official_rom_surrogate_model(repo_root, model, training_rows=training)
-    report = build_initial_five_run_dataset_report(
-        repo_root=repo_root,
+    paths = save_official_rom_surrogate_model(
+        repo_root,
+        model,
         training_rows=training,
-        skipped_rows=skipped,
+        merge_meta=merge_meta,
     )
+    if initial_only:
+        report = build_initial_five_run_dataset_report(
+            repo_root=repo_root,
+            training_rows=training,
+            skipped_rows=skipped,
+        )
+    else:
+        report = build_official_rom_full_dataset_report(
+            repo_root=repo_root,
+            shape_name=shape_name,
+            training_rows=training,
+            skipped_rows=skipped,
+            merge_meta=merge_meta,
+        )
     report["model_paths"] = {k: rel(v, repo_root=repo_root) for k, v in paths.items()}
     return model, training, skipped, report
 
@@ -201,6 +231,7 @@ def save_official_rom_surrogate_model(
     model: Mapping[str, Any],
     *,
     training_rows: Sequence[Mapping[str, Any]],
+    merge_meta: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Path]:
     paths = save_surrogate_model(repo_root, model)
     manifest = write_official_rom_model_manifest(
@@ -210,6 +241,7 @@ def save_official_rom_surrogate_model(
         training_rows=training_rows,
         surrogate_schema=str(model.get("schema") or ""),
         prediction_method=str(model.get("method") or ""),
+        merge_meta=merge_meta,
     )
     paths["manifest"] = manifest
     retrain_state_path = repo_root / "ROM" / str(model["shape_name"]) / "rom_retrain_state.json"
@@ -573,13 +605,11 @@ def maybe_register_and_retrain(
 
     result["retrain_attempted"] = True
     try:
-        registry_rows = load_official_dataset_registry(repo_root, shape_name)
-        allowed_run_ids = [str(r["run_id"]) for r in registry_rows if r.get("run_id")]
         _model, _training, _skipped, report = build_official_rom_surrogate_from_runs(
             repo_root=repo_root,
             shape_name=shape_name,
             require_initial_allowlist=False,
-            allowed_run_ids=allowed_run_ids or None,
+            allowed_run_ids=None,
         )
         result["retrained"] = True
         result["retrain_status"] = "completed"

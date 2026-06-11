@@ -373,6 +373,204 @@ def official_training_run_ids_from_registry(
     return [str(r["run_id"]) for r in load_official_dataset_registry(repo_root, shape_name) if r.get("run_id")]
 
 
+def resolve_merged_official_training_run_ids(
+    repo_root: Path,
+    shape_name: str = "classic",
+    *,
+    include_initial_allowlist: bool = True,
+    include_registry: bool = True,
+) -> List[str]:
+    """Union of initial official allowlist + registered shadow runs (stable order, no run_id dupes)."""
+    ordered: List[str] = []
+    seen: Set[str] = set()
+    if include_initial_allowlist:
+        for rid in OFFICIAL_INITIAL_RUN_IDS:
+            if rid not in seen:
+                ordered.append(rid)
+                seen.add(rid)
+    if include_registry:
+        for entry in load_official_dataset_registry(repo_root, shape_name):
+            rid = str(entry.get("run_id") or "").strip()
+            if rid and rid not in seen:
+                ordered.append(rid)
+                seen.add(rid)
+    return ordered
+
+
+def _dedupe_training_rows_by_catalog_sha256(
+    rows: Sequence[Mapping[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    kept: List[Dict[str, Any]] = []
+    dupe_skipped: List[Dict[str, Any]] = []
+    seen_sha: Set[str] = set()
+    for row in rows:
+        sha = str(row.get("catalog_sha256") or "")
+        if sha and sha in seen_sha:
+            dupe_skipped.append(
+                {
+                    "sample_id": row.get("sample_id"),
+                    "run_id": row.get("run_id"),
+                    "reason": "duplicate_catalog_sha256",
+                    "catalog_sha256": sha,
+                }
+            )
+            continue
+        if sha:
+            seen_sha.add(sha)
+        kept.append(dict(row))
+    return kept, dupe_skipped
+
+
+def _training_row_partition_counts(
+    training_rows: Sequence[Mapping[str, Any]],
+    *,
+    repo_root: Path,
+    shape_name: str,
+) -> Tuple[int, int]:
+    initial_ids = set(OFFICIAL_INITIAL_RUN_IDS)
+    registry_ids = {
+        str(r["run_id"]) for r in load_official_dataset_registry(repo_root, shape_name) if r.get("run_id")
+    }
+    initial_count = sum(1 for r in training_rows if str(r.get("run_id") or "") in initial_ids)
+    shadow_count = sum(
+        1
+        for r in training_rows
+        if str(r.get("run_id") or "") in registry_ids
+        and str(r.get("run_id") or "") not in initial_ids
+    )
+    return initial_count, shadow_count
+
+
+def collect_merged_official_rom_training_rows(
+    *,
+    repo_root: Path,
+    shape_name: str = "classic",
+    exclude_sample_ids: Optional[Sequence[str]] = None,
+    exclude_run_ids: Optional[Sequence[str]] = None,
+    min_mode_count: int = 1,
+    initial_only: bool = False,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
+    """Collect official ROM-mesh training rows: initial allowlist + registry shadow runs."""
+    if initial_only:
+        allowed = list(OFFICIAL_INITIAL_RUN_IDS)
+        include_initial = True
+        include_registry = False
+    else:
+        allowed = resolve_merged_official_training_run_ids(
+            repo_root,
+            shape_name,
+            include_initial_allowlist=True,
+            include_registry=True,
+        )
+        include_initial = True
+        include_registry = True
+
+    training, skipped = collect_official_rom_training_rows(
+        repo_root=repo_root,
+        exclude_sample_ids=exclude_sample_ids,
+        exclude_run_ids=exclude_run_ids,
+        allowed_run_ids=allowed,
+        min_mode_count=min_mode_count,
+    )
+    training, sha_dupes = _dedupe_training_rows_by_catalog_sha256(training)
+    skipped.extend(sha_dupes)
+
+    initial_count, shadow_count = _training_row_partition_counts(
+        training,
+        repo_root=repo_root,
+        shape_name=shape_name,
+    )
+    merge_meta = {
+        "schema": "m4_official_rom_full_dataset_merge_v1",
+        "generated_utc": utc_now(),
+        "shape_name": shape_name,
+        "include_initial_allowlist": include_initial,
+        "include_registry": include_registry,
+        "requested_run_ids": allowed,
+        "initial_official_count": initial_count,
+        "registered_shadow_count": shadow_count,
+        "total_training_count": len(training),
+        "training_sample_count": len(training),
+        "training_sample_ids": [str(r["sample_id"]) for r in training],
+        "training_run_ids": [str(r["run_id"]) for r in training],
+        "training_catalog_sha256_values": [r.get("catalog_sha256") for r in training],
+        "mesh_profile": MESH_PROFILE_ROM,
+        "mesh_level_id": LEVEL_ROM_PROD,
+        "dataset_version": DATASET_VERSION_ROM,
+        "created_utc": utc_now(),
+    }
+    return training, skipped, merge_meta
+
+
+def audit_official_rom_training_dataset(
+    *,
+    repo_root: Path,
+    shape_name: str = "classic",
+    min_mode_count: int = 1,
+    initial_only: bool = False,
+) -> Dict[str, Any]:
+    """Read-only audit of eligible official ROM-mesh training samples (no model build)."""
+    training, skipped, merge_meta = collect_merged_official_rom_training_rows(
+        repo_root=repo_root,
+        shape_name=shape_name,
+        min_mode_count=min_mode_count,
+        initial_only=initial_only,
+    )
+    return {
+        **merge_meta,
+        "schema": "m4_official_rom_full_dataset_report_v1",
+        "eligible_training_rows": [
+            {
+                "sample_id": r.get("sample_id"),
+                "run_id": r.get("run_id"),
+                "catalog_sha256": r.get("catalog_sha256"),
+                "mode_count": r.get("mode_count"),
+            }
+            for r in training
+        ],
+        "skipped_rows": list(skipped),
+        "skipped_row_count": len(skipped),
+    }
+
+
+def build_official_rom_full_dataset_report(
+    *,
+    repo_root: Path,
+    shape_name: str,
+    training_rows: Sequence[Mapping[str, Any]],
+    skipped_rows: Sequence[Mapping[str, Any]],
+    merge_meta: Mapping[str, Any],
+    model_paths: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    initial_count, shadow_count = _training_row_partition_counts(
+        training_rows,
+        repo_root=repo_root,
+        shape_name=shape_name,
+    )
+    report: Dict[str, Any] = {
+        "schema": "m4_official_rom_full_dataset_report_v1",
+        "generated_utc": utc_now(),
+        "shape_name": shape_name,
+        "training_sample_count": len(training_rows),
+        "training_sample_ids": [str(r["sample_id"]) for r in training_rows],
+        "training_run_ids": [str(r["run_id"]) for r in training_rows],
+        "training_catalog_sha256_values": [r.get("catalog_sha256") for r in training_rows],
+        "initial_official_count": initial_count,
+        "registered_shadow_count": shadow_count,
+        "total_training_count": len(training_rows),
+        "dataset_version": DATASET_VERSION_ROM,
+        "mesh_profile": MESH_PROFILE_ROM,
+        "mesh_level_id": LEVEL_ROM_PROD,
+        "created_utc": merge_meta.get("created_utc") or utc_now(),
+        "requested_run_ids": list(merge_meta.get("requested_run_ids") or []),
+        "skipped_row_count": len(skipped_rows),
+        "skipped": list(skipped_rows),
+    }
+    if model_paths:
+        report["model_paths"] = dict(model_paths)
+    return report
+
+
 def build_initial_five_run_dataset_report(
     *,
     repo_root: Path,
@@ -420,12 +618,20 @@ def write_official_rom_model_manifest(
     prediction_method: str,
     maturity: str = MATURITY_INTEGRATION_ONLY,
     production_accuracy_validated: bool = False,
+    merge_meta: Optional[Mapping[str, Any]] = None,
 ) -> Path:
     manifest_path = repo_root / "ROM" / shape_name / "rom_model_manifest.json"
     surrogate_json = repo_root / "ROM" / shape_name / "m4_modal_surrogate.json"
+    initial_count, shadow_count = _training_row_partition_counts(
+        training_rows,
+        repo_root=repo_root,
+        shape_name=shape_name,
+    )
+    created_utc = str((merge_meta or {}).get("created_utc") or utc_now())
     body = {
         "schema": "m4_rom_model_manifest_v2",
         "generated_utc": utc_now(),
+        "created_utc": created_utc,
         "shape_name": shape_name,
         "active_backend": "m4_surrogate",
         "m4_surrogate_json": "m4_modal_surrogate.json",
@@ -433,7 +639,12 @@ def write_official_rom_model_manifest(
         "model_version": model_version,
         "training_sample_ids": [str(r["sample_id"]) for r in training_rows],
         "training_run_ids": [str(r["run_id"]) for r in training_rows],
+        "training_catalog_sha256_values": [r.get("catalog_sha256") for r in training_rows],
+        "initial_official_count": initial_count,
+        "registered_shadow_count": shadow_count,
+        "total_training_count": len(training_rows),
         "training_dataset_version": DATASET_VERSION_ROM,
+        "dataset_version": DATASET_VERSION_ROM,
         "mesh_profile": MESH_PROFILE_ROM,
         "mesh_level_id": LEVEL_ROM_PROD,
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
@@ -445,7 +656,7 @@ def write_official_rom_model_manifest(
         "production_accuracy_validated": bool(production_accuracy_validated),
         "legacy_basis_npz": None,
         "git_commit_sha": _git_head_sha(repo_root),
-        "notes": "Official ROM-mesh surrogate only; no legacy POD basis.",
+        "notes": "Official ROM-mesh surrogate: initial allowlist + registered shadow runs.",
     }
     write_json_atomic(manifest_path, body)
     body["model_manifest_sha256"] = _sha256_file(manifest_path)

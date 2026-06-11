@@ -2,6 +2,7 @@
 """Tests for official ROM shadow pipeline (no FEM)."""
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import sys
@@ -23,8 +24,11 @@ from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
 )
 from v2_b3_m4_official_rom_dataset_lib import (  # noqa: E402
     OFFICIAL_INITIAL_RUN_IDS,
+    audit_official_rom_training_dataset,
+    collect_merged_official_rom_training_rows,
     collect_official_rom_training_rows,
     evaluate_official_rom_run_eligibility,
+    official_dataset_registry_path,
 )
 from v2_b3_m4_rom_shadow_pipeline_lib import (  # noqa: E402
     DURABLE_ROM_JSON_NAMES,
@@ -99,13 +103,17 @@ def _make_official_rom_run(
             "shared_sample_artifact_count": 0,
         },
     )
+    try:
+        freq_base = 100.0 + int(sample_id.split("_")[1]) * 17.0
+    except (ValueError, IndexError):
+        freq_base = 100.0
     catalog = run_root / "aggregation" / "modes_catalog_deduped.jsonl"
     catalog.parent.mkdir(parents=True, exist_ok=True)
     catalog.write_text(
             "\n".join(
                 json.dumps(
                     {
-                        "frequency_hz": 100.0 + i * 10.0,
+                        "frequency_hz": freq_base + i * 10.0,
                         "chunk_id": f"chunk_{i:03d}",
                         "top_share": 0.3,
                         "back_share": 0.6,
@@ -134,6 +142,24 @@ def _make_official_rom_run(
         if path.exists():
             shutil.rmtree(path)
     return run_root
+
+
+def _append_registry_entry(repo: Path, *, sample_id: str, run_id: str, catalog_sha256: str) -> None:
+    path = official_dataset_registry_path(repo, "classic")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "schema": "m4_official_rom_dataset_entry_v1",
+        "registered_utc": "2026-06-10T00:00:00Z",
+        "sample_id": sample_id,
+        "run_id": run_id,
+        "shape_name": "classic",
+        "mesh_profile": MESH_PROFILE_ROM,
+        "mesh_level_id": LEVEL_ROM_PROD,
+        "dataset_version": DATASET_VERSION_ROM,
+        "catalog_sha256": catalog_sha256,
+    }
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry) + "\n")
 
 
 def _seed_five_official_runs(repo: Path) -> None:
@@ -523,6 +549,205 @@ class ShadowFinalizationOrderTests(unittest.TestCase):
             production_acceptance_pass=True,
         )
         self.assertFalse(reg_pre.get("registered"))
+
+
+class MergedOfficialRomDatasetTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.tmp.name)
+        _seed_five_official_runs(self.repo)
+        self.shadow_runs: list[tuple[str, str]] = []
+        for i in range(5, 10):
+            sid = f"sample_{i:03d}"
+            rid = f"{sid}_rom_shadow_v1"
+            run_root = _make_official_rom_run(
+                self.repo,
+                sample_id=sid,
+                run_id=rid,
+                parameters={
+                    "geometry.length": 0.5 + i * 0.01,
+                    "geometry.width": 0.33,
+                    "geometry.depth": 0.1,
+                    "geometry.top_thickness": 0.003,
+                    "geometry.hole_radius": 0.046,
+                    "geometry.back_thickness": 0.0033,
+                    "top_wood_id": "maple",
+                    "back_wood_id": "cedar",
+                },
+            )
+            catalog_path = run_root / "aggregation" / "modes_catalog_deduped.jsonl"
+            sha = hashlib.sha256(catalog_path.read_bytes()).hexdigest()
+            _append_registry_entry(self.repo, sample_id=sid, run_id=rid, catalog_sha256=sha)
+            self.shadow_runs.append((sid, rid))
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_merged_collection_includes_initial_and_shadow(self) -> None:
+        training, skipped, meta = collect_merged_official_rom_training_rows(
+            repo_root=self.repo,
+            shape_name="classic",
+            min_mode_count=1,
+        )
+        run_ids = {r["run_id"] for r in training}
+        self.assertTrue(set(OFFICIAL_INITIAL_RUN_IDS).issubset(run_ids))
+        for _sid, rid in self.shadow_runs:
+            self.assertIn(rid, run_ids)
+        self.assertEqual(meta["initial_official_count"], 5)
+        self.assertEqual(meta["registered_shadow_count"], 5)
+        self.assertEqual(meta["total_training_count"], 10)
+        self.assertFalse(skipped)
+
+    def test_reference_and_legacy_excluded_from_merged_collection(self) -> None:
+        legacy = _make_official_rom_run(self.repo, sample_id="sample_099", run_id="sample_099_m4prod2")
+        _write_json(
+            legacy / "sample" / "sample_input.json",
+            {
+                "sample_id": "sample_099",
+                "mesh_profile": "reference",
+                "mesh_level_id": "L_prod_reference",
+                "dataset_version": "m4_geometry_corrected_reference_v1",
+            },
+        )
+        _append_registry_entry(
+            self.repo,
+            sample_id="sample_099",
+            run_id="sample_099_m4prod2",
+            catalog_sha256="deadbeef",
+        )
+        training, _skipped, _meta = collect_merged_official_rom_training_rows(
+            repo_root=self.repo,
+            min_mode_count=1,
+        )
+        run_ids = {r["run_id"] for r in training}
+        self.assertNotIn("sample_099_m4prod2", run_ids)
+
+    def test_duplicate_catalog_sha256_removed(self) -> None:
+        dup_sid = "sample_050"
+        dup_rid = "sample_050_rom_shadow_v1"
+        dup_root = _make_official_rom_run(self.repo, sample_id=dup_sid, run_id=dup_rid)
+        source_catalog = (
+            _guitars_root(self.repo) / "sample_005" / "runs" / "sample_005_rom_shadow_v1"
+            / "aggregation" / "modes_catalog_deduped.jsonl"
+        )
+        dup_catalog = dup_root / "aggregation" / "modes_catalog_deduped.jsonl"
+        dup_catalog.write_bytes(source_catalog.read_bytes())
+        sha = hashlib.sha256(dup_catalog.read_bytes()).hexdigest()
+        _append_registry_entry(self.repo, sample_id=dup_sid, run_id=dup_rid, catalog_sha256=sha)
+        training, skipped, _meta = collect_merged_official_rom_training_rows(
+            repo_root=self.repo,
+            min_mode_count=1,
+        )
+        dup_rows = [r for r in training if r["run_id"] == dup_rid]
+        self.assertEqual(len(dup_rows), 0)
+        self.assertTrue(any(s.get("reason") == "duplicate_catalog_sha256" for s in skipped))
+
+    def test_retrain_uses_full_merged_dataset(self) -> None:
+        build_official_rom_surrogate_from_runs(
+            repo_root=self.repo,
+            shape_name="classic",
+            require_initial_allowlist=True,
+            allowed_run_ids=list(OFFICIAL_INITIAL_RUN_IDS),
+            min_mode_count=1,
+        )
+        shadow_root = _guitars_root(self.repo) / "sample_010" / "runs" / "sample_010_rom_shadow_v1"
+        _make_official_rom_run(
+            self.repo,
+            sample_id="sample_010",
+            run_id="sample_010_rom_shadow_v1",
+        )
+        policy = RetrainPolicy(retrain_every_n_new_samples=1)
+        reg = maybe_register_and_retrain(
+            repo_root=self.repo,
+            run_root=shadow_root,
+            sample_id="sample_010",
+            run_id="sample_010_rom_shadow_v1",
+            production_acceptance_pass=True,
+            policy=policy,
+            require_post_cleanup_eligibility=True,
+        )
+        self.assertTrue(reg.get("retrained"))
+        manifest = json.loads(
+            (self.repo / "ROM/classic/rom_model_manifest.json").read_text(encoding="utf-8")
+        )
+        run_ids = set(manifest["training_run_ids"])
+        self.assertTrue(set(OFFICIAL_INITIAL_RUN_IDS).issubset(run_ids))
+        self.assertGreaterEqual(len(run_ids), 6)
+        self.assertEqual(manifest["initial_official_count"], 5)
+        self.assertGreaterEqual(manifest["registered_shadow_count"], 1)
+        self.assertEqual(manifest["total_training_count"], manifest["training_sample_count"])
+
+    def test_holdout_excludes_current_from_merged_dataset(self) -> None:
+        holdout_sid = "sample_007"
+        holdout_rid = "sample_007_rom_shadow_v1"
+        holdout_root = _make_official_rom_run(self.repo, sample_id=holdout_sid, run_id=holdout_rid)
+        catalog_path = (
+            _guitars_root(self.repo) / holdout_sid / "runs" / holdout_rid
+            / "aggregation" / "modes_catalog_deduped.jsonl"
+        )
+        sha = hashlib.sha256(catalog_path.read_bytes()).hexdigest()
+        _append_registry_entry(self.repo, sample_id=holdout_sid, run_id=holdout_rid, catalog_sha256=sha)
+        build_official_rom_surrogate_from_runs(
+            repo_root=self.repo,
+            shape_name="classic",
+            require_initial_allowlist=True,
+            allowed_run_ids=list(OFFICIAL_INITIAL_RUN_IDS),
+            min_mode_count=1,
+        )
+        context = {
+            "sample_id": holdout_sid,
+            "run_id": holdout_rid,
+            "shape_name": "classic",
+            "lhs_row_index": 7,
+            "parameters": json.loads(
+                (holdout_root / "sample" / "sample_input.json").read_text(encoding="utf-8")
+            )["parameters"],
+        }
+        run_root = holdout_root
+        prep = run_shadow_rom_prepredict_nonblocking(
+            repo_root=self.repo,
+            run_root=run_root,
+            context=context,
+        )
+        self.assertEqual(prep.get("status"), "COMPLETED")
+        train_ids = prep.get("training_sample_ids") or []
+        self.assertNotIn(holdout_sid, train_ids)
+        self.assertGreaterEqual(len(train_ids), 9)
+
+    def test_audit_report_lists_full_eligible_set(self) -> None:
+        report = audit_official_rom_training_dataset(
+            repo_root=self.repo,
+            shape_name="classic",
+            min_mode_count=1,
+        )
+        self.assertEqual(report["schema"], "m4_official_rom_full_dataset_report_v1")
+        self.assertEqual(report["initial_official_count"], 5)
+        self.assertEqual(report["registered_shadow_count"], 5)
+        self.assertEqual(report["total_training_count"], 10)
+        self.assertTrue(set(OFFICIAL_INITIAL_RUN_IDS).issubset(set(report["training_run_ids"])))
+
+    def test_full_rebuild_manifest_includes_initial_and_shadow(self) -> None:
+        _model, training, _skipped, report = build_official_rom_surrogate_from_runs(
+            repo_root=self.repo,
+            shape_name="classic",
+            require_initial_allowlist=False,
+            min_mode_count=1,
+        )
+        run_ids = {r["run_id"] for r in training}
+        self.assertTrue(set(OFFICIAL_INITIAL_RUN_IDS).issubset(run_ids))
+        for _sid, rid in self.shadow_runs:
+            self.assertIn(rid, run_ids)
+        manifest = json.loads(
+            (self.repo / "ROM/classic/rom_model_manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["training_sample_count"], 10)
+        self.assertEqual(manifest["initial_official_count"], 5)
+        self.assertEqual(manifest["registered_shadow_count"], 5)
+        self.assertEqual(report["total_training_count"], 10)
+
+    def test_no_fem_in_merged_dataset_tests(self) -> None:
+        report = audit_official_rom_training_dataset(repo_root=self.repo, min_mode_count=1)
+        self.assertGreater(int(report.get("total_training_count") or 0), 0)
 
 
 if __name__ == "__main__":

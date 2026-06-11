@@ -249,6 +249,8 @@ def _fragment_display_shell_seams(occ, wood_dimtags: list) -> list:
             except Exception as exc:
                 print(f"[diag] display shell seam imprint skipped: {exc}")
 
+        if len(vols) < 2:
+            return wood_dimtags
         frags, _ = occ.fragment(vols, [], removeObject=True, removeTool=False)
         occ.synchronize()
         try:
@@ -3620,6 +3622,7 @@ def create_guitar_mesh():
     z_tol = max(1.0e-4, t, 0.25 * hr)
     use_air_opening_tag = use_air_opening_geom
     soundhole_surfs: list = []
+    all_shell_surfs: list = sorted(wood_boundary_surfs)
     if use_air_opening_tag and not shell_only:
         if not air_boundary_surfs:
             raise RuntimeError(
@@ -3703,6 +3706,16 @@ def create_guitar_mesh():
                 "candidate audit and optional disk imprint. "
                 f"Inspect {cand}, {disk_diag}, {audit_json}"
             )
+    elif shell_only:
+        all_shell_surfs = sorted(wood_boundary_surfs)
+        if not wood_boundary_surfs:
+            raise RuntimeError(
+                f"{mode} mesh: wood shell has no boundary surfaces after CAD booleans; "
+                "check geometry parameters (L, W, D, thickness, hole_radius)."
+            )
+        soundhole_surfs = _select_soundhole_surfaces(
+            all_shell_surfs, z_top_outer, z_tol, hole_x, hole_y, hr
+        )
     elif not shell_only:
         if is_preview:
             all_shell_surfs = sorted(wood_boundary_surfs)

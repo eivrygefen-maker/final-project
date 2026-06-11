@@ -21,6 +21,7 @@ from v2_b3_m4_modal_surrogate_lib import (  # noqa: E402
 )
 from v2_b3_m4_official_rom_dataset_lib import (  # noqa: E402
     OFFICIAL_INITIAL_RUN_IDS,
+    audit_official_rom_training_dataset,
     build_initial_five_run_dataset_report,
 )
 from v2_b3_m4_rom_shadow_pipeline_lib import build_official_rom_surrogate_from_runs  # noqa: E402
@@ -69,6 +70,11 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="With --official-rom-mesh-only, restrict to the five initial rom_official_v1 runs.",
     )
+    parser.add_argument(
+        "--audit-official-dataset",
+        action="store_true",
+        help="Read-only audit of eligible official ROM-mesh training samples (no model build).",
+    )
     return parser.parse_args(argv)
 
 
@@ -100,26 +106,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     exclude_ids = [str(s).strip() for s in (args.exclude_sample or []) if str(s).strip()]
 
+    if bool(args.audit_official_dataset) or (
+        bool(args.official_rom_mesh_only) and args.dry_run
+    ):
+        report = audit_official_rom_training_dataset(
+            repo_root=repo_root,
+            shape_name=shape_name,
+            min_mode_count=int(args.min_mode_count),
+            initial_only=bool(args.official_initial_only),
+        )
+        report_path = repo_root / "ROM" / shape_name / "m4_official_rom_full_dataset_report.json"
+        write_json_atomic(report_path, report)
+        print(json.dumps(report, indent=2))
+        print(f"audit_report={rel(report_path, repo_root=repo_root)}")
+        print(
+            f"eligible_training_count={report.get('total_training_count')} "
+            f"initial_official_count={report.get('initial_official_count')} "
+            f"registered_shadow_count={report.get('registered_shadow_count')}",
+            flush=True,
+        )
+        return 0 if int(report.get("total_training_count") or 0) > 0 else 2
+
     if bool(args.official_rom_mesh_only):
-        if args.dry_run:
-            from v2_b3_m4_official_rom_dataset_lib import collect_official_rom_training_rows  # noqa: WPS433
-
-            allowed = list(OFFICIAL_INITIAL_RUN_IDS) if args.official_initial_only else None
-            training, skipped = collect_official_rom_training_rows(
-                repo_root=repo_root,
-                exclude_sample_ids=exclude_ids or None,
-                allowed_run_ids=allowed,
-                require_initial_allowlist=bool(args.official_initial_only),
-                min_mode_count=int(args.min_mode_count),
-            )
-            report = build_initial_five_run_dataset_report(
-                repo_root=repo_root,
-                training_rows=training,
-                skipped_rows=skipped,
-            )
-            print(json.dumps(report, indent=2))
-            return 0 if training else 2
-
         _model, training, skipped, report = build_official_rom_surrogate_from_runs(
             repo_root=repo_root,
             shape_name=shape_name,
@@ -128,10 +136,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             k_neighbors=int(args.k_neighbors),
             min_mode_count=int(args.min_mode_count),
         )
-        report_path = repo_root / "ROM" / shape_name / "m4_official_rom_build_report.json"
+        report_name = (
+            "m4_official_rom_initial_build_report.json"
+            if args.official_initial_only
+            else "m4_official_rom_full_dataset_report.json"
+        )
+        report_path = repo_root / "ROM" / shape_name / report_name
         write_json_atomic(report_path, report)
+        manifest_path = repo_root / "ROM" / shape_name / "rom_model_manifest.json"
         print(f"official_rom_build_report={rel(report_path, repo_root=repo_root)}")
-        print(f"training_rows={len(training)} skipped_rows={len(skipped)}")
+        print(f"rom_model_manifest={rel(manifest_path, repo_root=repo_root)}")
+        print(
+            f"training_rows={len(training)} skipped_rows={len(skipped)} "
+            f"initial_official_count={report.get('initial_official_count')} "
+            f"registered_shadow_count={report.get('registered_shadow_count')}",
+            flush=True,
+        )
         return 0
 
     training, skipped = collect_completed_fom_training_rows(
