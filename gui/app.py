@@ -176,6 +176,11 @@ def _init_session() -> None:
         "live_preview_fp": "",
         "stk_body_json": "",
         "acoustics_pending": False,
+        "rom_body_ready": False,
+        "rom_body_pending": False,
+        "rom_body_fingerprint": "",
+        "rom_body_error": "",
+        "sound_stale": True,
         "developer_fom_mode": False,
         "show_display_mesh": False,
         "fixture_fp": "",
@@ -640,6 +645,7 @@ def process_fast_preview_event(
     st.session_state._back_wood = back_wood
 
     if action == "param_change":
+        invalidate_rom_and_audio_state()
         st.session_state.mesh_is_dirty = True
         st.session_state.show_mesh_overlay = False
         st.session_state._mesh_overlay_rom_fp = ""
@@ -666,16 +672,19 @@ def process_fast_preview_event(
             fixture_preset=fixture_preset,
             geom_fp=geom_fp,
         )
-        invalidate_physics_state()
+        invalidate_rom_and_audio_state()
         st.session_state.mesh_is_dirty = False
         st.session_state.show_mesh_overlay = True
         st.session_state._mesh_overlay_rom_fp = rom_mesh_fingerprint(
             geom, top_wood=top_wood, back_wood=back_wood
         )
 
-    if action == "run_rom":
+    if action == "save_sync":
+        if not st.session_state.developer_fom_mode:
+            st.session_state.rom_body_pending = True
+    elif action == "run_rom":
         st.session_state.developer_fom_mode = False
-        st.session_state.acoustics_pending = True
+        st.session_state.rom_body_pending = True
     elif action == "run_fem":
         st.session_state.developer_fom_mode = True
         st.session_state._pending_fom_run = True
@@ -1179,13 +1188,102 @@ def get_view_mesh(geom_fp: str) -> Tuple[Optional[Any], bool, str]:
 
 def invalidate_physics_state() -> None:
     """Clear ROM/FEM acoustics results when geometry or materials change."""
+    invalidate_rom_and_audio_state()
+
+
+def invalidate_rom_and_audio_state() -> None:
+    """Mark ROM body response and synthesized audio stale (design changed)."""
     st.session_state.physics_ready = False
     st.session_state.acoustics_pending = False
+    st.session_state.rom_body_ready = False
+    st.session_state.rom_body_pending = False
+    st.session_state.rom_body_fingerprint = ""
+    st.session_state.rom_body_error = ""
     st.session_state.stk_body_json = ""
+    st.session_state.sound_stale = True
 
 
 def invalidate_saved_state() -> None:
-    invalidate_physics_state()
+    invalidate_rom_and_audio_state()
+
+
+def display_mesh_file_ready() -> bool:
+    return DISPLAY_MESH_FILE.is_file() and DISPLAY_MESH_FILE.stat().st_size > 0
+
+
+def rom_body_response_ready(current_rom_fp: str) -> bool:
+    """True when M4 ROM body JSON matches the current design fingerprint."""
+    if st.session_state.get("developer_fom_mode"):
+        path = str(st.session_state.get("stk_body_json") or "")
+        return bool(st.session_state.get("physics_ready")) and bool(path) and Path(path).is_file()
+    if not st.session_state.get("rom_body_ready"):
+        return False
+    if st.session_state.get("rom_body_fingerprint") != current_rom_fp:
+        return False
+    body_json = str(st.session_state.get("stk_body_json") or "")
+    if not body_json or not Path(body_json).is_file():
+        return False
+    return ROM_STK_JSON.is_file() and ROM_STK_JSON.stat().st_size > 0
+
+
+def mark_rom_body_stale_if_design_changed(current_rom_fp: str) -> None:
+    """Invalidate ROM/audio when sliders move without a fresh Save & Sync."""
+    if not st.session_state.get("rom_body_ready"):
+        return
+    if st.session_state.get("rom_body_fingerprint") != current_rom_fp:
+        st.session_state.rom_body_ready = False
+        st.session_state.physics_ready = False
+        st.session_state.sound_stale = True
+        st.session_state.stk_body_json = ""
+
+
+def complete_rom_body_response(
+    lhs_params: Dict[str, Any],
+    shape_type: str,
+    *,
+    rom_fp: str,
+) -> Path:
+    """Run M4 ROM prediction and write ``rom_stk_body.json`` (no FEM)."""
+    stk_path = run_rom_acoustics(lhs_params, shape_type)
+    st.session_state.stk_body_json = str(stk_path)
+    st.session_state.rom_body_ready = True
+    st.session_state.physics_ready = True
+    st.session_state.rom_body_fingerprint = rom_fp
+    st.session_state.rom_body_error = ""
+    st.session_state.rom_body_pending = False
+    st.session_state.sound_stale = True
+    return stk_path
+
+
+def render_rom_body_status(*, current_rom_fp: str) -> None:
+    """Sidebar/control status for ROM body response readiness."""
+    if st.session_state.get("rom_body_pending"):
+        st.caption("ROM body response: preparing…")
+        return
+    if rom_body_response_ready(current_rom_fp):
+        freqs = [float(f) for f in (st.session_state.get("rom_frequencies_hz") or []) if float(f) > 0]
+        if not freqs and ROM_STK_JSON.is_file():
+            try:
+                doc = json.loads(ROM_STK_JSON.read_text(encoding="utf-8"))
+                freqs = [float(f) for f in (doc.get("modes_hz") or []) if float(f) > 0]
+            except (OSError, ValueError, json.JSONDecodeError):
+                freqs = []
+        n_modes = len(freqs)
+        if n_modes:
+            st.caption(
+                f"ROM body response: **ready** · modes: {n_modes} · "
+                f"range: {min(freqs):.0f}–{max(freqs):.0f} Hz"
+            )
+        else:
+            st.caption("ROM body response: **ready**")
+        return
+    err = str(st.session_state.get("rom_body_error") or "").strip()
+    if err:
+        st.warning(f"ROM body response failed: {err}")
+    elif st.session_state.get("rom_body_ready"):
+        st.caption("ROM body response: stale — Save & Sync again")
+    else:
+        st.caption("ROM body response: not ready — Save & Sync to prepare sound")
 
 
 def try_import_rom():
@@ -1483,15 +1581,6 @@ def _render_main_studio(
         )
         st.session_state.developer_fom_mode = mode.startswith("Admin")
 
-        st.subheader("Actions")
-        regen_mesh = st.button("Regenerate Gmsh mesh", use_container_width=True, key="btn_regen_mesh")
-        gen_sound = st.button(
-            "Generate sound",
-            use_container_width=True,
-            disabled=not st.session_state.physics_ready,
-            key="btn_gen_sound",
-        )
-
     iframe_initial = stable_studio_iframe_initial(fp_seed)
 
     with col_vis:
@@ -1525,8 +1614,11 @@ def _render_main_studio(
     if pinned_mesh_fp and rom_fp != pinned_mesh_fp:
         st.session_state.mesh_is_dirty = True
         st.session_state.show_mesh_overlay = False
+        mark_rom_body_stale_if_design_changed(rom_fp)
     elif not pinned_mesh_fp:
         st.session_state.mesh_is_dirty = True
+
+    mark_rom_body_stale_if_design_changed(rom_fp)
 
     lhs_params = lhs_params_from_ui(geom, top_wood=top_wood, back_wood=back_wood)
     st.session_state["_geom"] = geom
@@ -1535,7 +1627,13 @@ def _render_main_studio(
 
     update_rom_online_prediction(geom, top_wood=top_wood, back_wood=back_wood, shape_type=shape)
     with col_ctrl:
+        render_rom_body_status(current_rom_fp=rom_fp)
         render_rom_metrics_dashboard(shape)
+        with st.expander("Debug / ROM tools"):
+            st.caption("Manual ROM re-run (Save & Sync already runs ROM automatically).")
+            if st.button("Run ROM manually", use_container_width=True, key="btn_debug_run_rom"):
+                st.session_state.rom_body_pending = True
+                st.rerun()
 
     with col_vis:
         if st.session_state.get("show_mesh_overlay") and not st.session_state.get(
@@ -1555,6 +1653,15 @@ def _render_main_studio(
             )
 
     with col_ctrl:
+        st.subheader("Actions")
+        regen_mesh = st.button("Regenerate Gmsh mesh", use_container_width=True, key="btn_regen_mesh")
+        gen_sound = st.button(
+            "Generate sound",
+            use_container_width=True,
+            disabled=not rom_body_response_ready(rom_fp),
+            key="btn_gen_sound",
+            help="Enabled after Save & Sync prepares the ROM body response.",
+        )
         if regen_mesh:
             st.session_state.mesh_is_dirty = True
             st.session_state.show_mesh_overlay = False
@@ -1568,21 +1675,27 @@ def _render_main_studio(
                     fixture_preset=fixture_preset,
                     geom_fp=geom_fp,
                 )
-                invalidate_physics_state()
+                invalidate_rom_and_audio_state()
                 st.session_state.mesh_is_dirty = False
                 st.session_state.show_mesh_overlay = True
                 st.session_state._mesh_overlay_rom_fp = rom_fp
+                if not st.session_state.developer_fom_mode:
+                    st.session_state.rom_body_pending = True
                 st.success("Mesh updated — validation view shown over the studio.")
                 st.rerun()
             except Exception as exc:
                 st.error(f"Rebuild failed: {exc}")
 
         if gen_sound:
-            try:
-                with st.spinner("Synthesizing sound…"):
-                    run_stk(body_json=Path(st.session_state.stk_body_json), top_wood=top_wood)
-            except Exception as exc:
-                st.error(f"Sound failed: {exc}")
+            if not rom_body_response_ready(rom_fp):
+                st.warning("ROM body response is stale or missing — Save & Sync first.")
+            else:
+                try:
+                    with st.spinner("Synthesizing sound…"):
+                        run_stk(body_json=Path(st.session_state.stk_body_json), top_wood=top_wood)
+                    st.session_state.sound_stale = False
+                except Exception as exc:
+                    st.error(f"Sound failed: {exc}")
 
     if st.session_state.get("_pending_fom_run") and display_mesh_active(geom_fp):
         st.session_state._pending_fom_run = False
@@ -1596,20 +1709,25 @@ def _render_main_studio(
             except Exception as exc:
                 st.error(f"Full FEM failed: {exc}")
 
-    if st.session_state.acoustics_pending and display_mesh_active(geom_fp):
-        with st.spinner("Computing acoustics…"):
+    if (
+        st.session_state.get("rom_body_pending")
+        and not st.session_state.developer_fom_mode
+        and display_mesh_active(geom_fp)
+        and display_mesh_file_ready()
+    ):
+        with st.spinner("Preparing ROM body response…"):
             try:
-                stk_path = run_acoustics(lhs_params, shape)
-                st.session_state.stk_body_json = str(stk_path)
-                st.session_state.physics_ready = True
-                st.session_state.acoustics_pending = False
+                complete_rom_body_response(lhs_params, shape, rom_fp=rom_fp)
                 st.rerun()
             except Exception as exc:
-                st.session_state.acoustics_pending = False
-                st.error(f"Acoustics failed: {exc}")
+                st.session_state.rom_body_pending = False
+                st.session_state.rom_body_error = str(exc)
+                st.warning(f"ROM body response failed: {exc}")
 
-    if WAV_OUTPUT.is_file() and st.session_state.physics_ready:
+    if WAV_OUTPUT.is_file() and rom_body_response_ready(rom_fp) and not st.session_state.get("sound_stale"):
         st.audio(WAV_OUTPUT.read_bytes(), format="audio/wav")
+    elif st.session_state.get("sound_stale") and rom_body_response_ready(rom_fp):
+        st.caption("ROM body is ready — click **Generate sound** for the current guitar.")
 
 
 def main() -> None:

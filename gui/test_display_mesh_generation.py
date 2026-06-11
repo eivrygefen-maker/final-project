@@ -91,6 +91,8 @@ class GuiPipelineWiringTests(unittest.TestCase):
         self.assertIn("if int(nev) > 0", src)
         self.assertIn("M4 ROM: ready", src)
         self.assertIn("st.table(rows)", src)
+        self.assertIn("rom_body_pending", src)
+        self.assertIn("complete_rom_body_response", src)
 
     def test_app_importable_without_stpyvista_registration(self) -> None:
         gui_app = get_gui_app_module()
