@@ -46,9 +46,10 @@
     }
     .header h2 {
       margin: 0;
-      font-size: 1.15rem;
+      font-size: 1.45rem;
       font-weight: 700;
-      letter-spacing: 0.03em;
+      letter-spacing: 0.04em;
+      color: #ffffff;
     }
     .status {
       font-size: 0.85rem;
@@ -123,9 +124,9 @@
       margin-bottom: 8px;
       letter-spacing: 0.02em;
     }
-    .orientation-legend strong { color: #d4cfc4; font-weight: 600; }
+    .orientation-legend strong { color: #f3f4f6; font-weight: 600; }
     .fretboard-grid-cols {
-      grid-template-columns: 44px repeat(calc(var(--fret-cols, 20) - 1), minmax(30px, 1fr)) minmax(68px, 88px);
+      grid-template-columns: 44px repeat(calc(var(--fret-cols, 20) - 1), minmax(30px, 1fr)) minmax(76px, 96px);
     }
     .fret-labels {
       display: grid;
@@ -135,13 +136,14 @@
     }
     .fret-labels.open-header span.open-col-header {
       font-weight: 700;
-      color: #f5d78e;
-      font-size: 0.72rem;
-      letter-spacing: 0.08em;
+      color: #ffe8a8;
+      font-size: 0.78rem;
+      letter-spacing: 0.1em;
       text-transform: uppercase;
-      background: rgba(245, 215, 142, 0.12);
+      background: rgba(255, 232, 168, 0.22);
       border-radius: 4px 4px 0 0;
-      padding: 2px 0;
+      padding: 3px 0;
+      border: 1px solid rgba(255, 232, 168, 0.35);
     }
     .fret-labels span {
       text-align: center;
@@ -165,14 +167,26 @@
       position: absolute;
       top: 0;
       right: 4px;
-      width: min(88px, 18%);
+      width: min(96px, 20%);
       bottom: 0;
-      background: linear-gradient(90deg, rgba(245, 215, 142, 0.04) 0%, rgba(245, 215, 142, 0.14) 100%);
-      border-left: 2px dashed rgba(245, 215, 142, 0.45);
-      border-right: 5px solid var(--nut);
+      background: linear-gradient(90deg, rgba(255, 232, 168, 0.06) 0%, rgba(255, 232, 168, 0.20) 100%);
+      border-left: 3px dashed rgba(255, 232, 168, 0.55);
+      border-right: 6px solid #fff8f0;
       pointer-events: none;
       z-index: 0;
-      border-radius: 0 2px 2px 0;
+      border-radius: 0 3px 3px 0;
+    }
+    .open-zone-strip::before {
+      content: "OPEN";
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%) rotate(-90deg);
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0.22em;
+      color: rgba(255, 232, 168, 0.28);
+      pointer-events: none;
     }
     .string-line {
       position: absolute;
@@ -209,10 +223,10 @@
       border-left: 2px solid var(--fret-line);
     }
     .fret-cell.open-cell {
-      border-left: 2px dashed rgba(245, 215, 142, 0.55);
+      border-left: 3px dashed rgba(255, 232, 168, 0.65);
       border-right: none;
-      min-width: 68px;
-      background: rgba(245, 215, 142, 0.10);
+      min-width: 76px;
+      background: rgba(255, 232, 168, 0.14);
     }
     .fret-cell.open-cell:hover { background: rgba(255, 120, 80, 0.28); }
     .open-label {
@@ -223,21 +237,21 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 1px;
-      font-size: 0.62rem;
+      gap: 2px;
+      font-size: 0.72rem;
       font-weight: 700;
-      color: #f5e6c8;
-      letter-spacing: 0.02em;
+      color: #fff8f0;
+      letter-spacing: 0.03em;
       pointer-events: none;
       z-index: 3;
-      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
-      line-height: 1.1;
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
+      line-height: 1.15;
     }
     .open-label .open-tag {
-      font-size: 0.52rem;
-      font-weight: 600;
-      color: #f5d78e;
-      letter-spacing: 0.1em;
+      font-size: 0.58rem;
+      font-weight: 700;
+      color: #ffe8a8;
+      letter-spacing: 0.12em;
       text-transform: uppercase;
     }
     .open-string-hit {
@@ -368,7 +382,6 @@
     (function () {
       "use strict";
 
-      var INLAY_FRETS = { 3: 1, 5: 1, 7: 1, 9: 1, 12: 2, 15: 1, 17: 1, 19: 1 };
       /* Low E (6) at top; nut / open strings on the right. */
       var STRING_NUMBERS = [6, 5, 4, 3, 2, 1];
 
@@ -519,8 +532,6 @@
         });
 
         var neckEl = document.getElementById("neck");
-        var oldMarkers = neckEl.querySelector(".fret-markers");
-        if (oldMarkers) oldMarkers.remove();
         var oldStrip = neckEl.querySelector(".open-zone-strip");
         if (oldStrip) oldStrip.remove();
 
@@ -594,24 +605,6 @@
           });
           stringsEl.appendChild(row);
         });
-
-        var markers = document.createElement("div");
-        markers.className = "fret-markers fretboard-grid-cols";
-        fretsDisplay.forEach(function (mf) {
-          var slot = document.createElement("div");
-          slot.className = "fret-marker-slot";
-          if (INLAY_FRETS[mf]) {
-            slot.classList.add("inlay");
-            var dots = INLAY_FRETS[mf];
-            if (dots === 2) {
-              slot.innerHTML = '<span class="fret-dot" style="margin-right:6px"></span><span class="fret-dot"></span>';
-            } else {
-              slot.innerHTML = '<span class="fret-dot"></span>';
-            }
-          }
-          markers.appendChild(slot);
-        });
-        neckEl.appendChild(markers);
       }
 
       function showIdle(message) {

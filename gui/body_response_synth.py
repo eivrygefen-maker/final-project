@@ -19,6 +19,13 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+from synthesis_presets import (  # noqa: E402
+    BODY_LOW_FREQ_TILT_HZ,
+    DEFAULT_SYNTHESIS_PRESET,
+    active_tuning,
+    use_synthesis_preset,
+)
+
 FULL_MODAL_BAND_HZ: Tuple[float, float] = (60.0, 550.0)
 DEFAULT_SAMPLE_RATE = 44100
 DEFAULT_DURATION_S = 3.0
@@ -75,12 +82,8 @@ BODY_DECAY_LOW_NOTE_BLEND = 0.48
 HIGH_NOTE_DECAY_THRESHOLD_HZ = 300.0
 HIGH_NOTE_PLUCK_SOFTEN_THRESHOLD_HZ = 300.0
 HIGH_NOTE_PLUCK_SOFTEN_FULL_HZ = 620.0
-HIGH_NOTE_PLUCK_GAIN_FLOOR = 0.46
 HIGH_NOTE_PLUCK_TRANSIENT_BOOST = 0.75
-HIGH_NOTE_PLUCK_TRANSIENT_REDUCTION = 0.58
-HIGH_NOTE_PITCH_LAYER_ATTACK_SOFTEN = 1.85
-HIGH_NOTE_ATTACK_DECAY_SHORTEN = 0.44
-HIGH_NOTE_HF_ROLLOFF_K_POWER = 0.28
+# Preset-driven (see synthesis_presets.py): gain floor, transient reduction, HF rolloff, etc.
 LOUDNESS_RMS_WINDOW_START_S = 0.025
 LOUDNESS_RMS_WINDOW_END_S = 0.42
 DECAY_EARLY_END_S = 0.28
@@ -314,7 +317,7 @@ def _total_q_with_radiation_loss(
 
 
 def _effective_q_with_bandwidth_widening(q: float) -> float:
-    return max(0.5, float(q) / BODY_MODAL_BANDWIDTH_WIDENING)
+    return max(0.5, float(q) / active_tuning().body_modal_bandwidth_widening)
 
 
 def _complex_mode_response(f_hz: np.ndarray, f_m: float, q: float) -> np.ndarray:
@@ -377,7 +380,8 @@ def high_note_pluck_softening_gain(frequency_hz: float) -> float:
     t = high_note_pluck_soften_t(frequency_hz)
     if t <= 0.0:
         return 1.0
-    return 1.0 - t * (1.0 - HIGH_NOTE_PLUCK_GAIN_FLOOR)
+    floor = active_tuning().high_note_pluck_gain_floor
+    return 1.0 - t * (1.0 - floor)
 
 
 def high_note_string_hf_rolloff_factor(frequency_hz: float, harmonic_index: int) -> float:
@@ -391,7 +395,8 @@ def high_note_string_hf_rolloff_factor(frequency_hz: float, harmonic_index: int)
     if k <= 2:
         return 1.0 - 0.10 * t
     hf = max(0.0, min(1.0, (fk - 700.0) / 2200.0))
-    cut = t * (HIGH_NOTE_HF_ROLLOFF_K_POWER * (k - 2) ** 0.55 + 0.22 * hf)
+    rolloff = active_tuning().high_note_hf_rolloff_k_power
+    cut = t * (rolloff * (k - 2) ** 0.55 + 0.22 * hf)
     return float(max(0.30, 1.0 - cut))
 
 
@@ -558,7 +563,8 @@ def _pluck_attack_envelope(n: int, sample_rate: int, frequency_hz: float) -> np.
     """Short onset emphasis for pluck realism; softer transient for high notes."""
     t = np.arange(n, dtype=np.float64) / float(sample_rate)
     soften_t = high_note_pluck_soften_t(frequency_hz)
-    boost = HIGH_NOTE_PLUCK_TRANSIENT_BOOST * (1.0 - soften_t * HIGH_NOTE_PLUCK_TRANSIENT_REDUCTION)
+    reduction = active_tuning().high_note_pluck_transient_reduction
+    boost = HIGH_NOTE_PLUCK_TRANSIENT_BOOST * (1.0 - soften_t * reduction)
     transient = 1.0 + boost * np.exp(-t / max(PLUCK_TRANSIENT_MS, 1e-4))
     return transient
 
@@ -594,7 +600,8 @@ def _attack_decay_s_for_note(frequency_hz: float) -> float:
     soften_t = high_note_pluck_soften_t(frequency_hz)
     if soften_t <= 0.0:
         return ATTACK_DECAY_S
-    return ATTACK_DECAY_S * (1.0 - soften_t * HIGH_NOTE_ATTACK_DECAY_SHORTEN)
+    shorten = active_tuning().high_note_attack_decay_shorten
+    return ATTACK_DECAY_S * (1.0 - soften_t * shorten)
 
 
 def _direct_attack_tap(dry: np.ndarray, sample_rate: int, frequency_hz: float) -> np.ndarray:
@@ -608,7 +615,8 @@ def _string_pitch_layer(dry: np.ndarray, sample_rate: int, frequency_hz: float) 
     """Controlled harmonic string layer — plucked, not a pure sustained sine."""
     t = np.arange(len(dry), dtype=np.float64) / float(sample_rate)
     soften_t = high_note_pluck_soften_t(frequency_hz)
-    attack_tc = 0.008 * (1.0 + soften_t * (HIGH_NOTE_PITCH_LAYER_ATTACK_SOFTEN - 1.0))
+    soften = active_tuning().high_note_pitch_layer_attack_soften
+    attack_tc = 0.008 * (1.0 + soften_t * (soften - 1.0))
     attack = 1.0 - np.exp(-t / attack_tc)
     decay = np.exp(-t / STRING_PITCH_LAYER_DECAY_S)
     return dry * attack * decay
@@ -763,10 +771,14 @@ def synthesize_body_via_transfer_function(
     q_values: List[float] = []
     raw_weights: List[float] = []
 
+    tune = active_tuning()
     for mode in band_modes:
         f_m = float(mode["frequency_hz"])
         comp = compute_mode_weight_components(mode, defaults_used=defaults_used, flags=flags)
         w = comp["combined"]
+        if tune.body_low_mode_weight < 1.0 and f_m < BODY_LOW_FREQ_TILT_HZ:
+            blend = max(0.0, min(1.0, f_m / BODY_LOW_FREQ_TILT_HZ))
+            w *= tune.body_low_mode_weight + (1.0 - tune.body_low_mode_weight) * blend
         q_wood = estimate_mode_q(mode, f_m, defaults_used)
         q_total = _total_q_with_radiation_loss(
             q_wood,
@@ -830,12 +842,13 @@ def synthesize_body_via_transfer_function(
             }
         )
 
+    bw = active_tuning().body_modal_bandwidth_widening
     broaden_info = {
-        "body_modal_bandwidth_widening": BODY_MODAL_BANDWIDTH_WIDENING,
+        "body_modal_bandwidth_widening": bw,
         "modal_peak_smoothing_applied": MODAL_MAG_SMOOTH_BINS >= 2,
         "top_mode_dominance_before": round(dom_before, 6),
         "top_mode_dominance_after": round(dom_after, 6),
-        "effective_q_scale_or_bandwidth_scale": BODY_MODAL_BANDWIDTH_WIDENING,
+        "effective_q_scale_or_bandwidth_scale": bw,
     }
     return body, contributions, q_values, broaden_info
 
@@ -941,7 +954,32 @@ def synthesize_note_with_body_response(
     output_wav: Path,
     output_metadata_json: Optional[Path] = None,
     velocity: float = DEFAULT_VELOCITY,
+    synthesis_preset: Optional[str] = None,
 ) -> Dict[str, Any]:
+    with use_synthesis_preset(synthesis_preset):
+        return _synthesize_note_with_body_response_core(
+            frequency_hz=frequency_hz,
+            note_name=note_name,
+            duration_s=duration_s,
+            sample_rate=sample_rate,
+            modal_data=modal_data,
+            output_wav=output_wav,
+            output_metadata_json=output_metadata_json,
+            velocity=velocity,
+        )
+
+
+def _synthesize_note_with_body_response_core(
+    frequency_hz: float,
+    note_name: str,
+    duration_s: float,
+    sample_rate: int,
+    modal_data: ModalInput,
+    output_wav: Path,
+    output_metadata_json: Optional[Path] = None,
+    velocity: float = DEFAULT_VELOCITY,
+) -> Dict[str, Any]:
+    tune = active_tuning()
     all_modes, parse_defaults = parse_modal_modes(modal_data)
     band_modes = modes_in_validated_band(all_modes)
     avail_n, avail_min, avail_max = available_modal_stats(all_modes)
@@ -982,7 +1020,9 @@ def synthesize_note_with_body_response(
             note_hz=frequency_hz,
             harmonics_hz=harmonics_hz,
         )
-        defaults_used.append(f"body_modal_bandwidth_widening={BODY_MODAL_BANDWIDTH_WIDENING}")
+        defaults_used.append(f"body_modal_bandwidth_widening={tune.body_modal_bandwidth_widening}")
+        if tune.body_low_mode_weight < 0.999:
+            defaults_used.append(f"body_low_mode_weight={tune.body_low_mode_weight}")
         body_floor = (
             BODY_DECAY_LOW_NOTE_BLEND if float(frequency_hz) <= LOW_NOTE_FUNDAMENTAL_MAX_HZ else 0.0
         )
@@ -1002,8 +1042,10 @@ def synthesize_note_with_body_response(
     pluck_soften = high_note_pluck_softening_gain(frequency_hz)
     high_note_pluck_softening_applied = pluck_soften < 0.999
     hf_rolloff = high_note_string_hf_rolloff_factor(float(frequency_hz), 6)
-    effective_pluck_gain = STRING_PLUCK_GAIN * pluck_soften
-    effective_pitch_gain = STRING_PITCH_LAYER_GAIN * pluck_soften
+    soften_t = high_note_pluck_soften_t(frequency_hz)
+    pitch_high_scale = 1.0 - soften_t * (1.0 - tune.high_note_pitch_layer_high_scale)
+    effective_pluck_gain = tune.string_pluck_gain * pluck_soften
+    effective_pitch_gain = tune.string_pitch_layer_gain * pluck_soften * pitch_high_scale
     string_pluck = effective_pluck_gain * _direct_attack_tap(
         string_excitation, sample_rate, float(frequency_hz)
     )
@@ -1019,10 +1061,10 @@ def synthesize_note_with_body_response(
 
     if body_rms_before_calibration > 1e-15 and string_rms_before_mix > 1e-15:
         body_gain_applied = (
-            BODY_TO_STRING_TARGET_RATIO * string_rms_before_mix / body_rms_before_calibration
+            tune.body_to_string_target_ratio * string_rms_before_mix / body_rms_before_calibration
         )
         defaults_used.append(
-            f"body_gain_calibration_to_target_ratio={BODY_TO_STRING_TARGET_RATIO}"
+            f"body_gain_calibration_to_target_ratio={tune.body_to_string_target_ratio}"
         )
     elif body_rms_before_calibration > 0:
         body_gain_applied = BODY_REFERENCE_GAIN
@@ -1030,14 +1072,14 @@ def synthesize_note_with_body_response(
     else:
         body_gain_applied = 0.0
 
-    body_signal = body_raw * body_gain_applied * BODY_MODAL_GAIN
+    body_signal = body_raw * body_gain_applied * tune.body_modal_gain
     body_rms_before_richness_gain = _rms(body_signal)
-    body_signal = body_signal * BODY_MODAL_RICHNESS_GAIN
+    body_signal = body_signal * tune.body_modal_richness_gain
     body_rms_after_richness_gain = _rms(body_signal)
     body_rms_before = body_rms_after_richness_gain
-    body_modal_gain = BODY_MODAL_GAIN
+    body_modal_gain = tune.body_modal_gain
     mixed = body_signal + string_path
-    defaults_used.append(f"body_modal_richness_gain={BODY_MODAL_RICHNESS_GAIN}")
+    defaults_used.append(f"body_modal_richness_gain={tune.body_modal_richness_gain}")
     body_to_string_rms_ratio_before_loudness = body_rms_before / max(string_rms_before_mix, 1e-12)
     fundamental_anchor_used = float(frequency_hz) <= LOW_NOTE_FUNDAMENTAL_MAX_HZ
     if fundamental_anchor_used:
@@ -1093,7 +1135,7 @@ def synthesize_note_with_body_response(
             "all_modes_in_validated_band_60_550_hz;"
             f"post_response_threshold_rel={CONTRIBUTION_THRESHOLD_REL};"
             "no_per_guitar_H_body_peak_normalize;"
-            f"body_rms_calibration_target_ratio={BODY_TO_STRING_TARGET_RATIO}"
+            f"body_rms_calibration_target_ratio={tune.body_to_string_target_ratio}"
         ),
         "harmonics_used_hz": [round(h, 4) for h in harmonics_hz],
         "top_contributing_modes": top_modes,
@@ -1110,14 +1152,18 @@ def synthesize_note_with_body_response(
         "high_note_pluck_softening_gain": round(pluck_soften, 6),
         "string_hf_rolloff_factor": round(hf_rolloff, 6),
         "effective_string_pluck_gain": round(effective_string_pluck_gain, 6),
+        "synthesis_preset": tune.name,
+        "synthesis_tuning": tune.to_metadata_dict(),
+        "body_low_mode_weight": tune.body_low_mode_weight,
+        "high_note_pitch_layer_high_scale": round(pitch_high_scale, 6),
         "body_modal_gain": round(body_modal_gain, 6),
-        "body_to_string_target_ratio": BODY_TO_STRING_TARGET_RATIO,
+        "body_to_string_target_ratio": tune.body_to_string_target_ratio,
         "body_to_string_rms_ratio_before_loudness": round(body_to_string_rms_ratio_before_loudness, 6),
         "body_to_string_rms_ratio_after_loudness": round(body_to_string_rms_ratio_after_loudness, 6),
         "direct_string_gain": round(string_pluck_gain, 6),
         "body_filter_gain": round(BODY_REFERENCE_GAIN, 6),
         "body_rms_before_calibration": round(body_rms_before_calibration, 8),
-        "body_modal_richness_gain": BODY_MODAL_RICHNESS_GAIN,
+        "body_modal_richness_gain": tune.body_modal_richness_gain,
         "body_rms_before_richness_gain": round(body_rms_before_richness_gain, 8),
         "body_rms_after_richness_gain": round(body_rms_after_richness_gain, 8),
         "dry_mix": round(string_pluck_gain, 6),
@@ -1125,7 +1171,7 @@ def synthesize_note_with_body_response(
         "dry_rms_before_mix": round(string_rms_before_mix, 8),
         "string_rms_before_mix": round(string_rms_before_mix, 8),
         "body_rms_before_mix": round(body_rms_before, 8),
-        "target_body_to_attack_rms_ratio": BODY_TO_STRING_TARGET_RATIO,
+        "target_body_to_attack_rms_ratio": tune.body_to_string_target_ratio,
         "dry_gain_applied": round(string_pluck_gain, 6),
         "body_gain_applied": round(body_gain_applied, 6),
         "final_dry_to_body_rms_ratio": round(final_dry_to_body_rms_ratio, 6),
@@ -1149,7 +1195,7 @@ def synthesize_note_with_body_response(
         "high_note_decay_applied": high_note_decay_applied,
         "body_radiation_summary": round(radiation_summary, 4),
         "body_modal_bandwidth_widening": broaden_info.get(
-            "body_modal_bandwidth_widening", BODY_MODAL_BANDWIDTH_WIDENING
+            "body_modal_bandwidth_widening", tune.body_modal_bandwidth_widening
         ),
         "modal_peak_smoothing_applied": bool(
             broaden_info.get("modal_peak_smoothing_applied", MODAL_MAG_SMOOTH_BINS >= 2)
@@ -1157,7 +1203,7 @@ def synthesize_note_with_body_response(
         "top_mode_dominance_before": broaden_info.get("top_mode_dominance_before"),
         "top_mode_dominance_after": broaden_info.get("top_mode_dominance_after"),
         "effective_q_scale_or_bandwidth_scale": broaden_info.get(
-            "effective_q_scale_or_bandwidth_scale", BODY_MODAL_BANDWIDTH_WIDENING
+            "effective_q_scale_or_bandwidth_scale", tune.body_modal_bandwidth_widening
         ),
         "fade_in_ms": loudness_info.get("fade_in_ms"),
         "fade_out_ms": loudness_info.get("fade_out_ms"),
@@ -1175,12 +1221,17 @@ def synthesize_note_with_body_response(
             "pluck_transient_ms": PLUCK_TRANSIENT_MS,
             "harmonic_rolloff_power": HARMONIC_ROLLOFF_POWER,
             "body_reference_gain": BODY_REFERENCE_GAIN,
-            "string_pluck_gain": STRING_PLUCK_GAIN,
-            "string_pitch_layer_gain": STRING_PITCH_LAYER_GAIN,
-            "body_modal_gain": BODY_MODAL_GAIN,
-            "body_to_string_target_ratio": BODY_TO_STRING_TARGET_RATIO,
-            "body_modal_bandwidth_widening": BODY_MODAL_BANDWIDTH_WIDENING,
-            "body_modal_richness_gain": BODY_MODAL_RICHNESS_GAIN,
+            "string_pluck_gain": tune.string_pluck_gain,
+            "string_pitch_layer_gain": tune.string_pitch_layer_gain,
+            "body_modal_gain": tune.body_modal_gain,
+            "body_to_string_target_ratio": tune.body_to_string_target_ratio,
+            "body_modal_bandwidth_widening": tune.body_modal_bandwidth_widening,
+            "body_modal_richness_gain": tune.body_modal_richness_gain,
+            "body_low_mode_weight": tune.body_low_mode_weight,
+            "synthesis_preset": tune.name,
+            "high_note_pluck_gain_floor": tune.high_note_pluck_gain_floor,
+            "high_note_pluck_transient_reduction": tune.high_note_pluck_transient_reduction,
+            "high_note_hf_rolloff_k_power": tune.high_note_hf_rolloff_k_power,
             "rad_k": FIXED_RAD_K,
             "q_clamp": [Q_MIN, Q_MAX],
             "target_rms_dbfs": TARGET_RMS_DBFS,

@@ -496,17 +496,18 @@ def inject_user_flow_css() -> None:
         """
         <style>
         .user-step-heading {
-            font-size: 1.35rem;
+            font-size: 1.85rem;
             font-weight: 700;
-            letter-spacing: 0.04em;
-            margin: 0 0 0.35rem 0;
-            color: #1f2937;
+            letter-spacing: 0.05em;
+            margin: 0 0 0.45rem 0;
+            color: #f8fafc;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
         }
         .user-step-copy {
-            font-size: 0.95rem;
-            color: #6b7280;
-            margin: 0 0 1rem 0;
-            line-height: 1.45;
+            font-size: 1.0rem;
+            color: #cbd5e1;
+            margin: 0 0 1.1rem 0;
+            line-height: 1.5;
         }
         .user-step-block {
             margin-bottom: 1.75rem;

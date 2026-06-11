@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+"""
+Build sequential comparison WAVs: N guitars × one note per file (no FEM).
+
+Uses M4 modal surrogate + body-response synthesis when available;
+falls back to deterministic synthetic modes per sample for offline tests.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import wave
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+
+import numpy as np
+
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "gui"))
+
+from body_response_synth import (  # noqa: E402
+    DEFAULT_SAMPLE_RATE,
+    concatenate_audio_with_crossfade,
+    read_wav_float_mono,
+    synthesize_note_with_body_response,
+    synthetic_classic_body_modes,
+)
+from synthesis_presets import DEFAULT_SYNTHESIS_PRESET  # noqa: E402
+
+COMPARISON_NOTES: Tuple[Tuple[str, float], ...] = (
+    ("E2", 82.41),
+    ("A2", 110.0),
+    ("A4", 440.0),
+    ("E5", 659.25),
+)
+
+
+def load_lhs_sample_entries(repo_root: Path, *, max_samples: int = 26) -> List[Dict[str, Any]]:
+    pool_path = repo_root / "ROM" / "classic" / "lhs_pool.json"
+    if not pool_path.is_file():
+        return []
+    doc = json.loads(pool_path.read_text(encoding="utf-8"))
+    entries = list(doc.get("entries") or [])
+    rows: List[Dict[str, Any]] = []
+    for entry in entries:
+        sid = str(entry.get("id") or "")
+        if not sid.startswith("sample_"):
+            continue
+        params = dict(entry.get("parameters") or {})
+        if not params:
+            continue
+        rows.append(
+            {
+                "sample_id": sid,
+                "run_id": str(entry.get("last_run_id") or ""),
+                "parameters": params,
+            }
+        )
+        if len(rows) >= int(max_samples):
+            break
+    rows.sort(key=lambda r: str(r.get("sample_id") or ""))
+    return rows
+
+
+def _sample_index(sample_id: str) -> int:
+    try:
+        return int(str(sample_id).split("_")[-1])
+    except ValueError:
+        return 0
+
+
+def synthetic_modal_for_sample(sample_id: str, *, n_modes: int = 55) -> Dict[str, Any]:
+    """Deterministic offline fixture — frequency scale shifts per sample."""
+    idx = _sample_index(sample_id)
+    scale = 0.94 + 0.12 * (idx / max(1, 25))
+    modes = synthetic_classic_body_modes(n_modes)
+    for m in modes:
+        m["frequency_hz"] = round(float(m["frequency_hz"]) * scale, 4)
+    return {"predicted_modes": modes, "analysis": f"synthetic_fixture_{sample_id}"}
+
+
+def modal_data_from_prediction(prediction: Mapping[str, Any]) -> Dict[str, Any]:
+    freqs = [float(f) for f in (prediction.get("frequencies_hz") or [])]
+    weights = [1.0 / (1.0 + 0.25 * i) for i in range(len(freqs))]
+    doc: Dict[str, Any] = {
+        "analysis": "rom_online_body",
+        "modes_hz": freqs,
+        "mode_weights": weights,
+        "num_modes": len(freqs),
+        "full_modal_band_hz": [60.0, 550.0],
+        "frequencies_hz": freqs,
+    }
+    predicted = list(prediction.get("predicted_modes") or [])
+    if predicted:
+        doc["predicted_modes"] = predicted
+    return doc
+
+
+def predict_modal_for_parameters(repo_root: Path, parameters: Mapping[str, Any]) -> Dict[str, Any]:
+    m4_scripts = repo_root / "FEM/experiments/active_domain_validation/physics_integrity/scripts"
+    if str(m4_scripts) not in sys.path:
+        sys.path.insert(0, str(m4_scripts))
+    try:
+        from v2_b3_m4_modal_surrogate_lib import load_surrogate_model, predict_modal_catalog  # noqa: WPS433
+
+        model = load_surrogate_model(repo_root, "classic")
+        return dict(predict_modal_catalog(model, dict(parameters), nev=0))
+    except Exception:
+        return {}
+
+
+def resolve_modal_data_for_sample(
+    repo_root: Path,
+    sample: Mapping[str, Any],
+    *,
+    use_surrogate: bool,
+) -> Dict[str, Any]:
+    sid = str(sample["sample_id"])
+    if use_surrogate:
+        prediction = predict_modal_for_parameters(repo_root, sample.get("parameters") or {})
+        if prediction.get("frequencies_hz") or prediction.get("predicted_modes"):
+            return modal_data_from_prediction(prediction)
+    return synthetic_modal_for_sample(sid)
+
+
+def write_wav_mono(path: Path, samples: np.ndarray, sample_rate: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    x = np.clip(np.asarray(samples, dtype=np.float64), -1.0, 1.0)
+    pcm = (x * 32767.0).astype(np.int16)
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(int(sample_rate))
+        wf.writeframes(pcm.tobytes())
+
+
+def build_comparison_for_note(
+    *,
+    note_name: str,
+    frequency_hz: float,
+    samples: Sequence[Mapping[str, Any]],
+    repo_root: Path,
+    out_wav: Path,
+    duration_s: float,
+    silence_s: float,
+    sample_rate: int,
+    use_surrogate: bool,
+    synthesis_preset: str,
+) -> Dict[str, Any]:
+    segments: List[np.ndarray] = []
+    segment_rows: List[Dict[str, Any]] = []
+    cursor_s = 0.0
+
+    for seg_i, sample in enumerate(samples):
+        sid = str(sample["sample_id"])
+        modal_data = resolve_modal_data_for_sample(repo_root, sample, use_surrogate=use_surrogate)
+        tmp_wav = out_wav.parent / "_tmp" / f"{note_name}_{sid}.wav"
+        synthesize_note_with_body_response(
+            frequency_hz=frequency_hz,
+            note_name=note_name,
+            duration_s=duration_s,
+            sample_rate=sample_rate,
+            modal_data=modal_data,
+            output_wav=tmp_wav,
+            synthesis_preset=synthesis_preset,
+        )
+        audio, sr = read_wav_float_mono(tmp_wav)
+        if sr != sample_rate:
+            raise ValueError(f"sample rate mismatch {sr} != {sample_rate}")
+        if seg_i > 0 and silence_s > 0:
+            segments.append(np.zeros(int(silence_s * sample_rate), dtype=np.float64))
+            cursor_s += silence_s
+        seg_start = cursor_s
+        segments.append(audio)
+        seg_dur = len(audio) / float(sample_rate)
+        segment_rows.append(
+            {
+                "segment_number": seg_i + 1,
+                "sample_id": sid,
+                "run_id": sample.get("run_id"),
+                "note": note_name,
+                "frequency_hz": frequency_hz,
+                "start_time_s": round(seg_start, 4),
+                "duration_s": round(seg_dur, 4),
+                "parameters": dict(sample.get("parameters") or {}),
+            }
+        )
+        cursor_s += seg_dur
+
+    mixed = concatenate_audio_with_crossfade(segments, sample_rate=sample_rate, crossfade_ms=8.0, silence_ms=0.0)
+    write_wav_mono(out_wav, mixed, sample_rate)
+    return {
+        "note": note_name,
+        "frequency_hz": frequency_hz,
+        "wav": str(out_wav.name),
+        "total_duration_s": round(len(mixed) / float(sample_rate), 4),
+        "segment_count": len(segment_rows),
+        "segments": segment_rows,
+    }
+
+
+def build_sample_comparisons(
+    *,
+    repo_root: Path,
+    out_dir: Path,
+    samples: Sequence[Mapping[str, Any]],
+    notes: Sequence[Tuple[str, float]] = COMPARISON_NOTES,
+    duration_s: float = 2.0,
+    silence_s: float = 0.35,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    use_surrogate: bool = True,
+    synthesis_preset: str = DEFAULT_SYNTHESIS_PRESET,
+) -> Dict[str, Any]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    note_rows: List[Dict[str, Any]] = []
+    for note_name, hz in notes:
+        out_wav = out_dir / f"{note_name}_26_guitars.wav"
+        row = build_comparison_for_note(
+            note_name=note_name,
+            frequency_hz=hz,
+            samples=samples,
+            repo_root=repo_root,
+            out_wav=out_wav,
+            duration_s=duration_s,
+            silence_s=silence_s,
+            sample_rate=sample_rate,
+            use_surrogate=use_surrogate,
+            synthesis_preset=synthesis_preset,
+        )
+        note_rows.append(row)
+
+    manifest = {
+        "schema_version": "sample_comparison_v1",
+        "sample_count": len(samples),
+        "sample_ids": [str(s["sample_id"]) for s in samples],
+        "synthesis_preset": synthesis_preset,
+        "silence_between_guitars_s": silence_s,
+        "note_duration_s": duration_s,
+        "sample_rate": sample_rate,
+        "use_surrogate": use_surrogate,
+        "notes": note_rows,
+    }
+    (out_dir / "comparison_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return manifest
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="26-guitar note comparison WAV builder")
+    parser.add_argument("--repo-root", type=Path, default=REPO)
+    parser.add_argument("--out-dir", type=Path, default=REPO / "audio" / "comparison_26_samples")
+    parser.add_argument("--max-samples", type=int, default=26)
+    parser.add_argument("--duration", type=float, default=2.0)
+    parser.add_argument("--silence", type=float, default=0.35)
+    parser.add_argument("--no-surrogate", action="store_true")
+    parser.add_argument("--synthesis-preset", type=str, default=DEFAULT_SYNTHESIS_PRESET)
+    args = parser.parse_args()
+
+    samples = load_lhs_sample_entries(args.repo_root, max_samples=args.max_samples)
+    if not samples:
+        samples = [
+            {"sample_id": f"sample_{i:03d}", "run_id": "", "parameters": {}}
+            for i in range(args.max_samples)
+        ]
+
+    manifest = build_sample_comparisons(
+        repo_root=args.repo_root,
+        out_dir=args.out_dir,
+        samples=samples,
+        duration_s=args.duration,
+        silence_s=args.silence,
+        use_surrogate=not args.no_surrogate,
+        synthesis_preset=args.synthesis_preset,
+    )
+    print(f"Wrote {len(manifest['notes'])} comparison WAVs to {args.out_dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
