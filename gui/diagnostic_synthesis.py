@@ -175,13 +175,16 @@ def use_diagnostic_mode(
     sample_parameters: Optional[Mapping[str, Any]] = None,
 ) -> Iterator[Optional[DiagnosticSynthesisConfig]]:
     global _active_diagnostic, _active_sample_parameters
-    if not mode_name:
-        yield None
-        return
     saved_mode = _active_diagnostic
     saved_params = _active_sample_parameters
-    _active_diagnostic = get_diagnostic_mode(mode_name)
-    _active_sample_parameters = dict(sample_parameters or {})
+    from sample_parameters import normalize_sample_parameters
+
+    if mode_name:
+        _active_diagnostic = get_diagnostic_mode(mode_name)
+    else:
+        _active_diagnostic = None
+    if sample_parameters is not None:
+        _active_sample_parameters = normalize_sample_parameters(sample_parameters)
     try:
         yield _active_diagnostic
     finally:
@@ -418,9 +421,31 @@ def summarize_comparison_note(segments: Sequence[Mapping[str, Any]]) -> Dict[str
     body_ratios = [float(s.get("body_to_string_ratio") or 0.0) for s in segments]
     centroids = [float(s.get("spectral_centroid_hz") or 0.0) for s in segments]
     decays = [float(s.get("output_decay_slope_db_per_s") or 0.0) for s in segments]
-    q_spreads = [float((s.get("damping_q_summary") or {}).get("mode_q_spread") or 0.0) for s in segments]
-    mat_spreads = [
-        float((s.get("damping_q_summary") or {}).get("material_damping_spread") or 0.0) for s in segments
+    q_medians = [float(s.get("mode_q_median") or 0.0) for s in segments if s.get("mode_q_median") is not None]
+    q_fingerprints = [
+        float(s.get("sample_mode_q_fingerprint") or 0.0)
+        for s in segments
+        if s.get("sample_mode_q_fingerprint") is not None
+    ]
+    mat_medians = [
+        float(s.get("material_damping_median") or 0.0) for s in segments if s.get("material_damping_median") is not None
+    ]
+    mat_fingerprints = [
+        float(s.get("sample_material_damping_fingerprint") or 0.0)
+        for s in segments
+        if s.get("sample_material_damping_fingerprint") is not None
+    ]
+    q_spreads_within = [
+        float(s.get("mode_q_spread_within_sample") or (s.get("damping_q_summary") or {}).get("mode_q_spread") or 0.0)
+        for s in segments
+    ]
+    mat_spreads_within = [
+        float(
+            s.get("material_damping_spread_within_sample")
+            or (s.get("damping_q_summary") or {}).get("material_damping_spread")
+            or 0.0
+        )
+        for s in segments
     ]
     near_fracs = [float(s.get("near_modal_energy_fraction") or 0.0) for s in segments]
     far_fracs = [float(s.get("broad_body_energy_fraction") or 0.0) for s in segments]
@@ -432,9 +457,35 @@ def summarize_comparison_note(segments: Sequence[Mapping[str, Any]]) -> Dict[str
         "body_to_string_ratio_spread": round(max(body_ratios) - min(body_ratios), 6) if body_ratios else 0.0,
         "spectral_centroid_spread_hz": round(max(centroids) - min(centroids), 4) if centroids else 0.0,
         "decay_slope_spread_db_per_s": round(max(decays) - min(decays), 4) if decays else 0.0,
-        "mode_q_spread_mean": round(sum(q_spreads) / max(len(q_spreads), 1), 4) if q_spreads else 0.0,
-        "material_damping_spread_mean": round(sum(mat_spreads) / max(len(mat_spreads), 1), 6)
-        if mat_spreads
+        "mode_q_spread_mean": round(max(q_fingerprints or q_medians) - min(q_fingerprints or q_medians), 6)
+        if len(q_fingerprints or q_medians) >= 2
+        else 0.0,
+        "cross_sample_mode_q_median_spread": round(max(q_medians) - min(q_medians), 6)
+        if len(q_medians) >= 2
+        else 0.0,
+        "cross_sample_mode_q_fingerprint_spread": round(max(q_fingerprints) - min(q_fingerprints), 6)
+        if len(q_fingerprints) >= 2
+        else 0.0,
+        "material_damping_spread_mean": round(
+            max(mat_fingerprints or mat_medians) - min(mat_fingerprints or mat_medians), 6
+        )
+        if len(mat_fingerprints or mat_medians) >= 2
+        else 0.0,
+        "cross_sample_material_damping_median_spread": round(
+            max(mat_fingerprints or mat_medians) - min(mat_fingerprints or mat_medians), 6
+        )
+        if len(mat_fingerprints or mat_medians) >= 2
+        else 0.0,
+        "cross_sample_material_fingerprint_spread": round(max(mat_fingerprints) - min(mat_fingerprints), 6)
+        if len(mat_fingerprints) >= 2
+        else 0.0,
+        "within_sample_mode_q_spread_mean": round(sum(q_spreads_within) / max(len(q_spreads_within), 1), 4)
+        if q_spreads_within
+        else 0.0,
+        "within_sample_material_damping_spread_mean": round(
+            sum(mat_spreads_within) / max(len(mat_spreads_within), 1), 6
+        )
+        if mat_spreads_within
         else 0.0,
         "near_modal_energy_fraction_mean": round(sum(near_fracs) / max(len(near_fracs), 1), 4)
         if near_fracs

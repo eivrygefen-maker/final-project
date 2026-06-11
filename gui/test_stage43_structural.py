@@ -63,8 +63,8 @@ class Stage43StructuralTests(unittest.TestCase):
             sample_parameters={"top_wood_id": "maple", "back_wood_id": "rosewood"},
         )
         self.assertGreaterEqual(meta["per_mode_damping_count"], 12)
-        self.assertIn("mode_q_spread", meta)
-        self.assertIn("mode_bandwidth_hz_median", meta)
+        self.assertIn("mode_q_spread", meta.get("damping_q_summary") or {})
+        self.assertIn("mode_bandwidth_hz_median", meta.get("damping_q_summary") or {})
         top = meta["top_contributing_modes"][0]
         self.assertIn("mode_tau_s", top)
         self.assertIn("mode_bandwidth_hz", top)

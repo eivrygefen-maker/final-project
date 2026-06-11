@@ -377,6 +377,45 @@ def _low_note_fundamental_harmonic_boost() -> float:
     return LOW_NOTE_FUNDAMENTAL_HARMONIC_BOOST
 
 
+def _per_mode_broad_color_scale(damp_rec: Mapping[str, Any], comp: Mapping[str, Any]) -> float:
+    """Sample/mode-specific broad-path color — not a uniform EQ curve."""
+    mat = float(damp_rec.get("mode_material_damping") or 1.0)
+    top_c = float(damp_rec.get("top_wood_damping_component") or 0.0)
+    back_c = float(damp_rec.get("back_wood_damping_component") or 0.0)
+    air_c = float(damp_rec.get("air_damping_component") or 0.0)
+    rad = float(comp.get("radiation_weight") or 0.0)
+    bridge = float(comp.get("bridge_weight") or 0.0)
+    return 0.62 + 0.22 * mat + 0.10 * (top_c + back_c) + 0.06 * air_c + 0.12 * rad + 0.04 * bridge
+
+
+def apply_per_mode_tau_envelope(
+    body: np.ndarray,
+    sample_rate: int,
+    mode_rows: Sequence[Mapping[str, Any]],
+    weights: Sequence[float],
+) -> np.ndarray:
+    """Apply per-mode tau_s decay in time domain (not metadata-only)."""
+    n = len(body)
+    if n <= 0 or not mode_rows:
+        return body
+    t = np.arange(n, dtype=np.float64) / float(sample_rate)
+    env = np.zeros(n, dtype=np.float64)
+    total_w = 0.0
+    for row, w in zip(mode_rows, weights):
+        if w <= 0:
+            continue
+        damp = row.get("damping") or {}
+        tau = max(float(damp.get("mode_tau_s") or 0.05), 0.02)
+        env += float(w) * np.exp(-t / tau)
+        total_w += float(w)
+    if total_w <= 0:
+        return body
+    env /= total_w
+    env /= max(float(np.max(env)), 1e-9)
+    blended = 0.38 + 0.62 * env
+    return body * blended
+
+
 def _combine_near_and_broad_weights(
     w: float,
     f_m: float,
@@ -912,12 +951,22 @@ def synthesize_body_via_transfer_function(
         defaults_used.append("top_mode_dominance_softened")
 
     H_body = np.zeros_like(freqs, dtype=np.complex128)
+    H_near = np.zeros_like(freqs, dtype=np.complex128)
+    H_broad = np.zeros_like(freqs, dtype=np.complex128)
     for row, w_eff in zip(mode_rows, softened_weights):
-        H_body += w_eff * row["H_m"]
         row["w_eff"] = w_eff
+        Hm = row["H_m"]
+        nf = float(row.get("near_frac") or 0.0)
+        bf = float(row.get("broad_frac") or 0.0)
+        damp_rec = row.get("damping") or {}
+        comp = row.get("comp") or {}
+        broad_color = _per_mode_broad_color_scale(damp_rec, comp)
+        H_near += w_eff * nf * Hm
+        H_broad += w_eff * bf * Hm * broad_color
+        H_body += w_eff * nf * Hm + w_eff * bf * Hm * broad_color
         prox = _harmonic_proximity(float(row["f_m"]), harmonics_hz)
-        near_part = w_eff * float(row.get("near_frac") or 0.0)
-        broad_part = w_eff * float(row.get("broad_frac") or 0.0)
+        near_part = w_eff * nf
+        broad_part = w_eff * bf * broad_color
         if prox >= 0.55:
             near_energy += near_part + broad_part * 0.25
         elif prox >= 0.15:
@@ -926,6 +975,8 @@ def synthesize_body_via_transfer_function(
             broad_energy += near_part * 0.35 + broad_part
 
     H_body *= hf_env
+    H_near *= hf_env
+    H_broad *= hf_env
     if MODAL_MAG_SMOOTH_BINS >= 2:
         H_body = _smooth_complex_magnitude(H_body, MODAL_MAG_SMOOTH_BINS)
         defaults_used.append("modal_peak_smoothing_applied")
@@ -934,20 +985,19 @@ def synthesize_body_via_transfer_function(
     diag = active_diagnostic()
     broad_sig_strength = 0.0
     if diag and diag.wide_body_signature:
-        broad_sig_strength = float(diag.wide_body_signature_strength)
-    elif _broad_all_mode_strength() > PRODUCTION_BROAD_ALL_MODE_STRENGTH * 0.5:
-        broad_sig_strength = 0.22
+        broad_sig_strength = float(diag.wide_body_signature_strength) * 0.35
     if broad_sig_strength > 0:
         broad_band_gains = compute_broad_body_band_gains(band_modes)
-        H_body *= broad_signature_curve(
-            freqs,
-            broad_band_gains,
-            strength=broad_sig_strength,
-        )
-        defaults_used.append("broad_body_signature_eq")
+        H_broad *= broad_signature_curve(freqs, broad_band_gains, strength=broad_sig_strength)
+        H_body = H_near + H_broad
+        defaults_used.append("broad_path_per_mode_color_plus_weak_band_eq")
 
+    defaults_used.append("far_mode_weights_sample_specific")
+    defaults_used.append("per_mode_q_in_complex_pole_response")
     body_spec = acc_spec * H_body * BODY_REFERENCE_GAIN
     body = np.fft.irfft(body_spec, n=n)
+    body = apply_per_mode_tau_envelope(body, sample_rate, mode_rows, softened_weights)
+    defaults_used.append("per_mode_tau_time_decay_envelope")
 
     contributions: List[Dict[str, Any]] = []
     f0 = max(float(note_hz), 1.0)
@@ -997,6 +1047,9 @@ def synthesize_body_via_transfer_function(
         "far_modal_energy_fraction": round(broad_energy / max(energy_total, 1e-12), 6),
         "broad_all_mode_strength": _broad_all_mode_strength(),
         "near_modal_boost": _near_modal_boost(),
+        "per_mode_q_used_in_frequency_response": True,
+        "per_mode_tau_used_in_time_decay": True,
+        "far_mode_weights_sample_specific": True,
     }
     return body, contributions, q_values, broaden_info
 
@@ -1125,6 +1178,7 @@ def synthesize_note_with_body_response(
     synthesis_preset: Optional[str] = None,
     diagnostic_mode: Optional[str] = None,
     sample_parameters: Optional[Mapping[str, Any]] = None,
+    modal_source: Optional[str] = None,
 ) -> Dict[str, Any]:
     with use_synthesis_preset(synthesis_preset):
         with use_diagnostic_mode(diagnostic_mode, sample_parameters=sample_parameters):
@@ -1137,6 +1191,7 @@ def synthesize_note_with_body_response(
                 output_wav=output_wav,
                 output_metadata_json=output_metadata_json,
                 velocity=velocity,
+                modal_source=modal_source,
             )
 
 
@@ -1149,6 +1204,7 @@ def _synthesize_note_with_body_response_core(
     output_wav: Path,
     output_metadata_json: Optional[Path] = None,
     velocity: float = DEFAULT_VELOCITY,
+    modal_source: Optional[str] = None,
 ) -> Dict[str, Any]:
     tune = active_tuning()
     all_modes, parse_defaults = parse_modal_modes(modal_data)
@@ -1453,12 +1509,30 @@ def _synthesize_note_with_body_response_core(
         "final_rms_dbfs": loudness_info["output_rms_dbfs"],
         "string_gain_applied": round(effective_string_pluck_gain, 6),
         "broad_signature_band_gains": broaden_info.get("broad_signature_band_gains") or {},
-        "damping_q_summary": {
-            "q_min": q_min,
-            "q_median": q_median,
-            "q_max": q_max,
-            "diagnostic_damping_active": bool(diag and diag.wide_body_signature_damping),
-        },
+        "per_mode_damping": broaden_info.get("per_mode_damping") or [],
+        "damping_q_summary": dict(broaden_info.get("damping_q_summary") or {}),
+        "sample_material_damping_fingerprint": round(
+            float(
+                np.mean(
+                    [float(r.get("mode_material_damping") or 1.0) for r in (broaden_info.get("per_mode_damping") or [])]
+                )
+            )
+            if broaden_info.get("per_mode_damping")
+            else 0.0,
+            6,
+        ),
+        "sample_mode_q_fingerprint": round(
+            float(
+                np.mean([float(r.get("mode_q") or r.get("final_mode_q") or 22.0) for r in (broaden_info.get("per_mode_damping") or [])])
+            )
+            if broaden_info.get("per_mode_damping")
+            else 0.0,
+            6,
+        ),
+        "modal_source": modal_source or "unknown",
+        "per_mode_q_used_in_frequency_response": broaden_info.get("per_mode_q_used_in_frequency_response", True),
+        "per_mode_tau_used_in_time_decay": broaden_info.get("per_mode_tau_used_in_time_decay", True),
+        "far_mode_weights_sample_specific": broaden_info.get("far_mode_weights_sample_specific", True),
     }
     if diag:
         metadata["diagnostic_mode"] = diag.name
@@ -1484,7 +1558,6 @@ def _synthesize_note_with_body_response_core(
     metadata["broad_body_energy_fraction"] = broaden_info.get("broad_body_energy_fraction")
     metadata["far_modal_energy_fraction"] = broaden_info.get("far_modal_energy_fraction")
     metadata["per_mode_damping_count"] = len(broaden_info.get("per_mode_damping") or [])
-    metadata.update(broaden_info.get("damping_q_summary") or {})
     metadata.update(
         compute_note_reward_score(
             frequency_hz=float(frequency_hz),

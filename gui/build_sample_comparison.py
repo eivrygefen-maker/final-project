@@ -34,6 +34,7 @@ from diagnostic_synthesis import (  # noqa: E402
     list_diagnostic_modes,
     summarize_diagnostic_mode,
 )
+from sample_parameters import normalize_sample_parameters  # noqa: E402
 from synthesis_presets import DEFAULT_SYNTHESIS_PRESET  # noqa: E402
 
 COMPARISON_NOTES: Tuple[Tuple[str, float], ...] = (
@@ -123,7 +124,23 @@ def modal_data_from_prediction(prediction: Mapping[str, Any]) -> Dict[str, Any]:
     return doc
 
 
+def m4_surrogate_model_available(repo_root: Path, shape_name: str = "classic") -> bool:
+    m4_scripts = repo_root / "FEM/experiments/active_domain_validation/physics_integrity/scripts"
+    if not m4_scripts.is_dir():
+        return False
+    if str(m4_scripts) not in sys.path:
+        sys.path.insert(0, str(m4_scripts))
+    try:
+        from v2_b3_m4_modal_surrogate_lib import surrogate_is_available  # noqa: WPS433
+
+        return bool(surrogate_is_available(repo_root, shape_name))
+    except Exception:
+        return False
+
+
 def predict_modal_for_parameters(repo_root: Path, parameters: Mapping[str, Any]) -> Dict[str, Any]:
+    if not m4_surrogate_model_available(repo_root):
+        return {}
     m4_scripts = repo_root / "FEM/experiments/active_domain_validation/physics_integrity/scripts"
     if str(m4_scripts) not in sys.path:
         sys.path.insert(0, str(m4_scripts))
@@ -141,13 +158,13 @@ def resolve_modal_data_for_sample(
     sample: Mapping[str, Any],
     *,
     use_surrogate: bool,
-) -> Dict[str, Any]:
+) -> Tuple[Dict[str, Any], str]:
     sid = str(sample["sample_id"])
     if use_surrogate:
         prediction = predict_modal_for_parameters(repo_root, sample.get("parameters") or {})
         if prediction.get("frequencies_hz") or prediction.get("predicted_modes"):
-            return modal_data_from_prediction(prediction)
-    return synthetic_modal_for_sample(sid)
+            return modal_data_from_prediction(prediction), "m4_surrogate"
+    return synthetic_modal_for_sample(sid), "synthetic_fallback"
 
 
 def write_wav_mono(path: Path, samples: np.ndarray, sample_rate: int) -> None:
@@ -174,7 +191,8 @@ def segment_metadata_from_synthesis(
     sample_rate: int,
     diagnostic_mode: Optional[str],
 ) -> Dict[str, Any]:
-    params = dict(sample.get("parameters") or {})
+    params = normalize_sample_parameters(sample.get("parameters"))
+    dqs = dict(meta.get("damping_q_summary") or {})
     spec = _spectral_features(audio, sample_rate)
     row: Dict[str, Any] = {
         "segment_number": seg_i + 1,
@@ -192,13 +210,22 @@ def segment_metadata_from_synthesis(
         "string_gain_applied": meta.get("string_gain_applied"),
         "body_to_string_ratio": meta.get("body_to_string_rms_ratio_before_loudness"),
         "broad_signature_band_gains": meta.get("broad_signature_band_gains") or {},
-        "damping_q_summary": meta.get("damping_q_summary") or {},
+        "damping_q_summary": dqs,
+        "mode_q_median": dqs.get("mode_q_median"),
+        "mode_q_spread_within_sample": dqs.get("mode_q_spread"),
+        "material_damping_median": dqs.get("material_damping_median"),
+        "sample_material_damping_fingerprint": meta.get("sample_material_damping_fingerprint"),
+        "sample_mode_q_fingerprint": meta.get("sample_mode_q_fingerprint"),
+        "material_damping_spread_within_sample": dqs.get("material_damping_spread"),
+        "modal_source": meta.get("modal_source"),
+        "per_mode_q_used_in_frequency_response": meta.get("per_mode_q_used_in_frequency_response"),
+        "per_mode_tau_used_in_time_decay": meta.get("per_mode_tau_used_in_time_decay"),
+        "far_mode_weights_sample_specific": meta.get("far_mode_weights_sample_specific"),
         "note_reward_score": meta.get("note_reward_score"),
         "output_decay_slope_db_per_s": meta.get("output_decay_slope_db_per_s"),
         "near_modal_energy_fraction": meta.get("near_modal_energy_fraction"),
         "broad_body_energy_fraction": meta.get("broad_body_energy_fraction"),
         "mid_modal_energy_fraction": meta.get("mid_modal_energy_fraction"),
-        "damping_q_summary": meta.get("damping_q_summary") or {},
         "body_gain_normalization_strength": meta.get("body_gain_normalization_strength"),
         "final_loudness_normalization_strength": meta.get("final_loudness_normalization_strength"),
         "spectral_centroid_hz": round(spec["centroid_hz"], 4),
@@ -231,7 +258,9 @@ def build_comparison_for_note(
 
     for seg_i, sample in enumerate(samples):
         sid = str(sample["sample_id"])
-        modal_data = resolve_modal_data_for_sample(repo_root, sample, use_surrogate=use_surrogate)
+        modal_data, modal_source = resolve_modal_data_for_sample(
+            repo_root, sample, use_surrogate=use_surrogate
+        )
         tmp_wav = out_wav.parent / "_tmp" / f"{note_name}_{sid}.wav"
         meta = synthesize_note_with_body_response(
             frequency_hz=frequency_hz,
@@ -242,7 +271,8 @@ def build_comparison_for_note(
             output_wav=tmp_wav,
             synthesis_preset=synthesis_preset,
             diagnostic_mode=diagnostic_mode,
-            sample_parameters=sample.get("parameters") or {},
+            sample_parameters=normalize_sample_parameters(sample.get("parameters")),
+            modal_source=modal_source,
         )
         audio, sr = read_wav_float_mono(tmp_wav)
         if sr != sample_rate:

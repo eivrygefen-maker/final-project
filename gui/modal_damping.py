@@ -15,10 +15,10 @@ Q_MAX = 75.0
 # Relative damping coefficients (>1 = more damping / lower Q). Spruce reference = 1.0.
 WOOD_DAMPING_COEFF: Dict[str, float] = {
     "spruce": 1.00,
-    "cedar": 0.86,
-    "maple": 1.18,
-    "mahogany": 1.05,
-    "rosewood": 1.14,
+    "cedar": 0.78,
+    "maple": 1.28,
+    "mahogany": 1.08,
+    "rosewood": 1.22,
 }
 AIR_DAMPING_COEFF = 1.22
 COUPLED_DAMPING_COEFF = 1.08
@@ -46,8 +46,11 @@ def _geom(parameters: Mapping[str, Any], key: str, default: float) -> float:
         v = _safe_float(geom.get(key))
         if v is not None:
             return v
-    v = _safe_float(parameters.get(key))
-    return v if v is not None else default
+    for candidate in (f"geometry.{key}", key):
+        v = _safe_float(parameters.get(candidate))
+        if v is not None:
+            return v
+    return default
 
 
 def normalize_participation_shares(mode: Mapping[str, Any]) -> Tuple[float, float, float, float]:
@@ -233,6 +236,7 @@ def summarize_mode_damping_records(records: List[Mapping[str, Any]]) -> Dict[str
         "mode_bandwidth_hz_median": round(sorted(bws)[len(bws) // 2], 4),
         "mode_tau_s_median": round(sorted(taus)[len(taus) // 2], 6),
         "material_damping_min": round(min(mats), 6),
+        "material_damping_median": round(sorted(mats)[len(mats) // 2], 6),
         "material_damping_max": round(max(mats), 6),
         "material_damping_spread": round(max(mats) - min(mats), 6),
         "avg_top_share": round(sum(top_sh) / len(top_sh), 6),
