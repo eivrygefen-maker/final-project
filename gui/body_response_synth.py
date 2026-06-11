@@ -28,6 +28,10 @@ from diagnostic_synthesis import (  # noqa: E402
     compute_note_reward_score,
     use_diagnostic_mode,
 )
+from modal_damping import (  # noqa: E402
+    compute_per_mode_damping,
+    summarize_mode_damping_records,
+)
 from synthesis_presets import (  # noqa: E402
     BODY_LOW_FREQ_TILT_HZ,
     DEFAULT_SYNTHESIS_PRESET,
@@ -75,6 +79,10 @@ FINAL_PEAK_CEILING_DBFS = -1.0
 LOW_NOTE_FUNDAMENTAL_MAX_HZ = 165.0
 FUNDAMENTAL_ANCHOR_GAIN = 0.14
 FUNDAMENTAL_ANCHOR_DECAY_S = 1.35
+LOW_NOTE_FUNDAMENTAL_HARMONIC_BOOST = 1.42
+PRODUCTION_BROAD_ALL_MODE_STRENGTH = 0.18
+BROAD_MODE_MIN_FRACTION = 0.10
+NEAR_HARMONIC_WINDOW_REL = 0.10
 
 # Temporal decay (note / harmonic / body radiation)
 NOTE_DECAY_REF_HZ = 82.41
@@ -294,36 +302,84 @@ def compute_mode_weight_components(
     }
 
 
-def estimate_mode_q(mode: Mapping[str, Any], f_hz: float, defaults_used: List[str]) -> float:
-    damp_scale = _mode_radiation_damping_scale(mode)
+def _per_mode_damping_strength() -> float:
     diag = active_diagnostic()
-    if diag and diag.wide_body_signature_damping:
-        damp_scale *= active_diagnostic_damping_scale(f_hz, diag)
-        defaults_used.append("diagnostic_sample_damping_q_scale")
-    for key in ("Q", "q", "modal_q", "quality_factor"):
-        q = _safe_float(mode.get(key))
-        if q is not None and q > 0:
-            return float(max(Q_MIN, min(Q_MAX, q / damp_scale)))
-
-    air = _safe_float(mode.get("air_share")) or 0.22
-    wood = (_safe_float(mode.get("top_share")) or 0.33) + (_safe_float(mode.get("back_share")) or 0.33)
-    lo, hi = FULL_MODAL_BAND_HZ
-    f_norm = min(max((f_hz - lo) / max(hi - lo, 1.0), 0.0), 1.0)
-    q_est = (42.0 + 28.0 * air + 10.0 * wood) * (1.0 - 0.32 * f_norm)
-    defaults_used.append("Q_estimated_from_frequency_and_participation")
-    if damp_scale > 1.01:
-        defaults_used.append("radiation_air_damping_applied_to_Q")
-    return float(max(Q_MIN, min(Q_MAX, q_est / damp_scale)))
+    if diag is None:
+        return 1.0
+    return max(float(diag.per_mode_damping_strength), float(diag.damping_strength))
 
 
-def active_diagnostic_damping_scale(f_hz: float, diag: Any) -> float:
-    from diagnostic_synthesis import sample_damping_q_scale
-
-    return sample_damping_q_scale(
-        active_sample_parameters(),
+def compute_mode_damping_record(
+    mode: Mapping[str, Any],
+    f_hz: float,
+    defaults_used: List[str],
+) -> Dict[str, Any]:
+    """Per-mode Q/tau/bandwidth — always used in body synthesis."""
+    record = compute_per_mode_damping(
+        mode,
         f_hz,
-        strength=diag.damping_strength,
+        active_sample_parameters(),
+        strength=_per_mode_damping_strength(),
+        rad_k=FIXED_RAD_K,
     )
+    defaults_used.append("per_mode_damping_computed")
+    return record
+
+
+def estimate_mode_q(mode: Mapping[str, Any], f_hz: float, defaults_used: List[str]) -> float:
+    return float(compute_mode_damping_record(mode, f_hz, defaults_used)["mode_q"])
+
+
+def _harmonic_proximity(f_m: float, harmonics_hz: Sequence[float]) -> float:
+    if not harmonics_hz:
+        return 0.0
+    best = 1.0
+    for h in harmonics_hz:
+        hh = max(float(h), 1.0)
+        rel = abs(f_m - hh) / hh
+        best = min(best, rel)
+    if best >= NEAR_HARMONIC_WINDOW_REL * 2.5:
+        return 0.0
+    return float(max(0.0, 1.0 - best / max(NEAR_HARMONIC_WINDOW_REL * 2.5, 1e-9)))
+
+
+def _broad_all_mode_strength() -> float:
+    diag = active_diagnostic()
+    if diag and diag.all_mode_broad_contribution:
+        return float(diag.broad_all_mode_strength)
+    return PRODUCTION_BROAD_ALL_MODE_STRENGTH
+
+
+def _near_modal_boost() -> float:
+    diag = active_diagnostic()
+    if diag and diag.all_mode_broad_contribution:
+        return float(diag.near_modal_boost)
+    return 1.0
+
+
+def _low_note_fundamental_harmonic_boost() -> float:
+    diag = active_diagnostic()
+    if diag:
+        return float(diag.low_note_fundamental_harmonic_boost)
+    return LOW_NOTE_FUNDAMENTAL_HARMONIC_BOOST
+
+
+def _combine_near_and_broad_weights(
+    w: float,
+    f_m: float,
+    harmonics_hz: Sequence[float],
+) -> Tuple[float, float, float]:
+    """Returns (combined_weight, near_fraction, broad_fraction)."""
+    prox = _harmonic_proximity(f_m, harmonics_hz)
+    near_boost = _near_modal_boost()
+    w_near = w * (1.0 + (near_boost - 1.0) * prox)
+    broad_s = _broad_all_mode_strength()
+    far = 1.0 - prox
+    w_broad = w * (BROAD_MODE_MIN_FRACTION + broad_s * (0.22 + 0.78 * far))
+    total = w_near + w_broad
+    if total <= 0:
+        return 0.0, 0.0, 0.0
+    return total, w_near / total, w_broad / total
 
 
 def _total_q_with_radiation_loss(
@@ -444,7 +500,7 @@ def harmonic_series(
         amp = pluck_factor / (k ** HARMONIC_ROLLOFF_POWER)
         amp *= high_note_string_hf_rolloff_factor(f0, k)
         if k == 1 and f0 <= LOW_NOTE_FUNDAMENTAL_MAX_HZ:
-            amp *= 1.55
+            amp *= _low_note_fundamental_harmonic_boost()
         harm_f.append(fk)
         harm_a.append(amp)
     return harm_f, harm_a
@@ -793,6 +849,9 @@ def synthesize_body_via_transfer_function(
     mode_rows: List[Dict[str, Any]] = []
     q_values: List[float] = []
     raw_weights: List[float] = []
+    per_mode_damping_records: List[Dict[str, Any]] = []
+    near_energy = 0.0
+    broad_energy = 0.0
 
     tune = active_tuning()
     for mode in band_modes:
@@ -802,24 +861,25 @@ def synthesize_body_via_transfer_function(
         if tune.body_low_mode_weight < 1.0 and f_m < BODY_LOW_FREQ_TILT_HZ:
             blend = max(0.0, min(1.0, f_m / BODY_LOW_FREQ_TILT_HZ))
             w *= tune.body_low_mode_weight + (1.0 - tune.body_low_mode_weight) * blend
-        q_wood = estimate_mode_q(mode, f_m, defaults_used)
-        q_total = _total_q_with_radiation_loss(
-            q_wood,
-            f_m,
-            FIXED_RAD_K,
-            radiation_proxy=float(comp.get("radiation_weight") or 0.0),
-        )
+        damp_rec = compute_mode_damping_record(mode, f_m, defaults_used)
+        per_mode_damping_records.append(damp_rec)
+        q_total = float(damp_rec["mode_q"])
         flags["q_or_damping_used"] = True
         q_values.append(q_total)
-        raw_weights.append(w)
+        w_combined, near_frac, broad_frac = _combine_near_and_broad_weights(w, f_m, harmonics_hz)
+        raw_weights.append(w_combined)
         H_m = _complex_mode_response(freqs, f_m, q_total)
         mode_rows.append(
             {
                 "mode": mode,
                 "f_m": f_m,
                 "w": w,
+                "w_combined": w_combined,
+                "near_frac": near_frac,
+                "broad_frac": broad_frac,
                 "comp": comp,
                 "q": q_total,
+                "damping": damp_rec,
                 "H_m": H_m,
             }
         )
@@ -832,6 +892,8 @@ def synthesize_body_via_transfer_function(
     for row, w_eff in zip(mode_rows, softened_weights):
         H_body += w_eff * row["H_m"]
         row["w_eff"] = w_eff
+        near_energy += w_eff * float(row.get("near_frac") or 0.0)
+        broad_energy += w_eff * float(row.get("broad_frac") or 0.0)
 
     H_body *= hf_env
     if MODAL_MAG_SMOOTH_BINS >= 2:
@@ -840,14 +902,19 @@ def synthesize_body_via_transfer_function(
 
     broad_band_gains: Dict[str, float] = {}
     diag = active_diagnostic()
+    broad_sig_strength = 0.0
     if diag and diag.wide_body_signature:
+        broad_sig_strength = float(diag.wide_body_signature_strength)
+    elif _broad_all_mode_strength() > PRODUCTION_BROAD_ALL_MODE_STRENGTH * 0.5:
+        broad_sig_strength = 0.22
+    if broad_sig_strength > 0:
         broad_band_gains = compute_broad_body_band_gains(band_modes)
         H_body *= broad_signature_curve(
             freqs,
             broad_band_gains,
-            strength=diag.wide_body_signature_strength,
+            strength=broad_sig_strength,
         )
-        defaults_used.append("diagnostic_wide_body_signature_eq")
+        defaults_used.append("broad_body_signature_eq")
 
     body_spec = acc_spec * H_body * BODY_REFERENCE_GAIN
     body = np.fft.irfft(body_spec, n=n)
@@ -864,6 +931,7 @@ def synthesize_body_via_transfer_function(
         mode_spec = acc_spec * w * H_m * BODY_REFERENCE_GAIN
         energy = float(np.sum(np.abs(mode_spec) ** 2))
         nearest_h = nearest_harmonic_hz(f_m, f0, harmonics_hz)
+        damp_rec = row.get("damping") or {}
         contributions.append(
             {
                 "mode_index": int(mode.get("mode_index", -1)),
@@ -873,10 +941,16 @@ def synthesize_body_via_transfer_function(
                 "mic_weight": round(comp["mic_weight"], 8),
                 "radiation_weight": round(comp["radiation_weight"], 8),
                 "q": round(q_total, 4),
+                "mode_q": damp_rec.get("mode_q"),
+                "mode_damping": damp_rec.get("mode_damping"),
+                "mode_tau_s": damp_rec.get("mode_tau_s"),
+                "mode_bandwidth_hz": damp_rec.get("mode_bandwidth_hz"),
+                "mode_category": damp_rec.get("mode_category"),
                 "nearest_harmonic_hz": round(nearest_h, 4),
             }
         )
 
+    energy_total = near_energy + broad_energy
     bw = active_tuning().body_modal_bandwidth_widening
     broaden_info = {
         "body_modal_bandwidth_widening": bw,
@@ -885,6 +959,12 @@ def synthesize_body_via_transfer_function(
         "top_mode_dominance_after": round(dom_after, 6),
         "effective_q_scale_or_bandwidth_scale": bw,
         "broad_signature_band_gains": broad_band_gains,
+        "per_mode_damping": per_mode_damping_records,
+        "damping_q_summary": summarize_mode_damping_records(per_mode_damping_records),
+        "near_modal_energy_fraction": round(near_energy / max(energy_total, 1e-12), 6),
+        "broad_body_energy_fraction": round(broad_energy / max(energy_total, 1e-12), 6),
+        "broad_all_mode_strength": _broad_all_mode_strength(),
+        "near_modal_boost": _near_modal_boost(),
     }
     return body, contributions, q_values, broaden_info
 
@@ -898,6 +978,7 @@ def apply_loudness_finalize(
     rms_window_start_s: float = LOUDNESS_RMS_WINDOW_START_S,
     rms_window_end_s: float = LOUDNESS_RMS_WINDOW_END_S,
     raw_body_variation_preserve: float = 0.0,
+    loudness_normalization_strength: float = 1.0,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """
     Target-RMS gain (early/mid window), then tanh soft limiter, then peak ceiling.
@@ -914,8 +995,9 @@ def apply_loudness_finalize(
     rms_in = math.sqrt(0.68 * rms_window**2 + 0.32 * rms_full**2)
     if rms_in < 1e-12:
         rms_in = max(rms_window, rms_full, 1e-12)
-    rms_gain = target_rms / max(rms_in, 1e-12)
-    rms_gain = blend_toward_unity(rms_gain, raw_body_variation_preserve)
+    rms_gain_full = target_rms / max(rms_in, 1e-12)
+    preserve = max(raw_body_variation_preserve, 1.0 - max(0.0, min(1.0, loudness_normalization_strength)))
+    rms_gain = blend_toward_unity(rms_gain_full, preserve)
     y = x * rms_gain
 
     peak_pre_limit = float(np.max(np.abs(y))) if y.size else 0.0
@@ -946,6 +1028,8 @@ def apply_loudness_finalize(
         "final_peak_ceiling_dbfs": peak_ceiling_dbfs,
         "rms_gain_applied": rms_gain,
         "raw_body_variation_preserve": raw_body_variation_preserve,
+        "loudness_normalization_strength": loudness_normalization_strength,
+        "rms_gain_before_preserve": rms_gain_full,
         "loudness_rms_window_s": [rms_window_start_s, rms_window_end_s],
         "peak_before_loudness": peak_pre_limit,
         "limiter_used": limiter_used,
@@ -975,13 +1059,17 @@ def write_wav_int16(
         duration_s=duration_s,
     )
     preserve = 0.0 if raw_body_variation_preserve is None else float(raw_body_variation_preserve)
+    loudness_strength = 1.0
     diag = active_diagnostic()
-    if raw_body_variation_preserve is None and diag is not None:
-        preserve = diag.raw_body_variation_preserve
+    if diag is not None:
+        if raw_body_variation_preserve is None:
+            preserve = diag.effective_loudness_preserve()
+        loudness_strength = float(diag.final_loudness_normalization_strength)
     y, loudness_info = apply_loudness_finalize(
         tapered,
         sample_rate,
         raw_body_variation_preserve=preserve,
+        loudness_normalization_strength=loudness_strength,
     )
     loudness_info.update(taper_info)
     pcm = np.clip(y * 32767.0, -32767, 32767).astype(np.int16)
@@ -1094,8 +1182,15 @@ def _synthesize_note_with_body_response_core(
     high_note_pluck_softening_applied = pluck_soften < 0.999
     hf_rolloff = high_note_string_hf_rolloff_factor(float(frequency_hz), 6)
     soften_t = high_note_pluck_soften_t(frequency_hz)
+    diag = active_diagnostic()
+    string_direct_scale = 1.0
+    pitch_layer_scale = 1.0
+    if diag and soften_t > 0:
+        string_direct_scale = float(diag.high_note_string_direct_scale)
+        pitch_layer_scale = float(diag.high_note_pitch_layer_scale)
     pitch_high_scale = 1.0 - soften_t * (1.0 - tune.high_note_pitch_layer_high_scale)
-    effective_pluck_gain = tune.string_pluck_gain * pluck_soften
+    pitch_high_scale *= 1.0 - soften_t * (1.0 - pitch_layer_scale)
+    effective_pluck_gain = tune.string_pluck_gain * pluck_soften * string_direct_scale
     effective_pitch_gain = tune.string_pitch_layer_gain * pluck_soften * pitch_high_scale
     string_pluck = effective_pluck_gain * _direct_attack_tap(
         string_excitation, sample_rate, float(frequency_hz)
@@ -1110,27 +1205,34 @@ def _synthesize_note_with_body_response_core(
     body_rms_before_calibration = _rms(body_raw)
     string_rms_before_mix = _rms(string_path)
 
-    diag = active_diagnostic()
-    variation_preserve = diag.raw_body_variation_preserve if diag else 0.0
+    body_target_ratio = tune.body_to_string_target_ratio
+    if diag and diag.high_note_body_to_string_target_ratio is not None and soften_t > 0:
+        body_target_ratio = (
+            body_target_ratio * (1.0 - soften_t)
+            + float(diag.high_note_body_to_string_target_ratio) * soften_t
+        )
+    body_gain_norm_strength = 1.0
+    variation_preserve = 0.0
+    if diag:
+        body_gain_norm_strength = float(diag.body_gain_normalization_strength)
+        variation_preserve = diag.effective_body_gain_preserve()
     if body_rms_before_calibration > 1e-15 and string_rms_before_mix > 1e-15:
-        calibrated_gain = (
-            tune.body_to_string_target_ratio * string_rms_before_mix / body_rms_before_calibration
-        )
-        body_gain_applied = (
-            calibrated_gain * (1.0 - variation_preserve) + BODY_REFERENCE_GAIN * variation_preserve
-        )
-        defaults_used.append(
-            f"body_gain_calibration_to_target_ratio={tune.body_to_string_target_ratio}"
-        )
-        if variation_preserve > 0:
-            defaults_used.append(f"raw_body_variation_preserve={variation_preserve}")
+        calibrated_gain = body_target_ratio * string_rms_before_mix / body_rms_before_calibration
+        blend_preserve = max(variation_preserve, 1.0 - body_gain_norm_strength)
+        body_gain_applied = calibrated_gain * (1.0 - blend_preserve) + BODY_REFERENCE_GAIN * blend_preserve
+        defaults_used.append(f"body_gain_calibration_to_target_ratio={body_target_ratio}")
+        if blend_preserve > 0:
+            defaults_used.append(f"body_gain_variation_preserve={blend_preserve}")
     elif body_rms_before_calibration > 0:
         body_gain_applied = BODY_REFERENCE_GAIN
         defaults_used.append("body_gain_calibration_fallback")
     else:
         body_gain_applied = 0.0
 
-    body_signal = body_raw * body_gain_applied * tune.body_modal_gain
+    body_color_boost = 1.0
+    if diag and soften_t > 0:
+        body_color_boost = 1.0 + soften_t * (float(diag.high_note_body_color_boost) - 1.0)
+    body_signal = body_raw * body_gain_applied * tune.body_modal_gain * body_color_boost
     body_rms_before_richness_gain = _rms(body_signal)
     body_signal = body_signal * tune.body_modal_richness_gain
     body_rms_after_richness_gain = _rms(body_signal)
@@ -1140,13 +1242,19 @@ def _synthesize_note_with_body_response_core(
     defaults_used.append(f"body_modal_richness_gain={tune.body_modal_richness_gain}")
     body_to_string_rms_ratio_before_loudness = body_rms_before / max(string_rms_before_mix, 1e-12)
     fundamental_anchor_used = float(frequency_hz) <= LOW_NOTE_FUNDAMENTAL_MAX_HZ
-    if fundamental_anchor_used:
-        mixed += _fundamental_pitch_anchor(
+    fundamental_anchor_scale = 1.0
+    if diag:
+        fundamental_anchor_scale = float(diag.fundamental_anchor_scale)
+    if body_rms_before > string_rms_before_mix * 2.5:
+        fundamental_anchor_scale *= 0.72
+    if fundamental_anchor_used and fundamental_anchor_scale > 0.02:
+        anchor = _fundamental_pitch_anchor(
             frequency_hz,
             duration_s,
             sample_rate,
             velocity=velocity,
         )
+        mixed += fundamental_anchor_scale * anchor
         defaults_used.append("low_note_fundamental_anchor")
     defaults_used.append("note_harmonic_frequency_decay_envelope")
     final_dry_to_body_rms_ratio = string_rms_before_mix / max(body_rms_before, 1e-12)
@@ -1320,8 +1428,22 @@ def _synthesize_note_with_body_response_core(
         metadata["diagnostic_mode"] = diag.name
         metadata["diagnostic_config"] = diag.to_metadata_dict()
         metadata["raw_body_variation_preserve"] = variation_preserve
+        metadata["body_gain_normalization_strength"] = body_gain_norm_strength
+        metadata["final_loudness_normalization_strength"] = float(
+            diag.final_loudness_normalization_strength
+        )
     else:
         metadata["diagnostic_mode"] = "baseline_current"
+        metadata["body_gain_normalization_strength"] = 1.0
+        metadata["final_loudness_normalization_strength"] = 1.0
+    metadata["high_note_string_direct_scale_applied"] = round(string_direct_scale, 6)
+    metadata["high_note_body_color_boost_applied"] = round(body_color_boost, 6)
+    metadata["fundamental_anchor_scale_applied"] = round(fundamental_anchor_scale, 6)
+    metadata["low_note_fundamental_harmonic_boost"] = round(_low_note_fundamental_harmonic_boost(), 6)
+    metadata["near_modal_energy_fraction"] = broaden_info.get("near_modal_energy_fraction")
+    metadata["broad_body_energy_fraction"] = broaden_info.get("broad_body_energy_fraction")
+    metadata["per_mode_damping_count"] = len(broaden_info.get("per_mode_damping") or [])
+    metadata.update(broaden_info.get("damping_q_summary") or {})
     metadata.update(
         compute_note_reward_score(
             frequency_hz=float(frequency_hz),
@@ -1331,6 +1453,9 @@ def _synthesize_note_with_body_response_core(
             top_contributing_modes=top_modes,
             late_to_early_rms_db=float(loudness_info.get("late_to_early_rms_db") or 0.0),
             output_decay_slope_db_per_s=float(loudness_info.get("output_decay_slope_db_per_s") or 0.0),
+            broad_body_energy_fraction=float(broaden_info.get("broad_body_energy_fraction") or 0.0),
+            near_modal_energy_fraction=float(broaden_info.get("near_modal_energy_fraction") or 0.0),
+            final_rms_dbfs=float(loudness_info.get("output_rms_dbfs") or 0.0),
         )
     )
     if output_metadata_json is not None:

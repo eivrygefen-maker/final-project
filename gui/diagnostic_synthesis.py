@@ -28,14 +28,37 @@ BROAD_BODY_BANDS_HZ: Tuple[Tuple[float, float], ...] = (
 class DiagnosticSynthesisConfig:
     name: str
     raw_body_variation_preserve: float = 0.0
+    body_gain_normalization_strength: float = 1.0
+    final_loudness_normalization_strength: float = 1.0
     wide_body_signature: bool = False
     wide_body_signature_strength: float = 0.35
     wide_body_signature_damping: bool = False
     damping_strength: float = 0.0
+    per_mode_damping_strength: float = 1.0
+    all_mode_broad_contribution: bool = False
+    broad_all_mode_strength: float = 0.0
+    near_modal_boost: float = 1.0
+    high_note_string_direct_scale: float = 1.0
+    high_note_body_color_boost: float = 1.0
+    high_note_body_to_string_target_ratio: Optional[float] = None
+    high_note_pitch_layer_scale: float = 1.0
+    fundamental_anchor_scale: float = 1.0
+    low_note_fundamental_harmonic_boost: float = 1.55
     description: str = ""
 
     def to_metadata_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+    def effective_body_gain_preserve(self) -> float:
+        """Fraction of raw body gain kept (1 = no calibration)."""
+        if self.raw_body_variation_preserve > 0:
+            return self.raw_body_variation_preserve
+        return max(0.0, min(1.0, 1.0 - self.body_gain_normalization_strength))
+
+    def effective_loudness_preserve(self) -> float:
+        if self.raw_body_variation_preserve > 0 and self.final_loudness_normalization_strength >= 0.999:
+            return self.raw_body_variation_preserve * 0.5
+        return max(0.0, min(1.0, 1.0 - self.final_loudness_normalization_strength))
 
 
 DIAGNOSTIC_MODES: Dict[str, DiagnosticSynthesisConfig] = {
@@ -63,6 +86,31 @@ DIAGNOSTIC_MODES: Dict[str, DiagnosticSynthesisConfig] = {
         wide_body_signature_damping=True,
         damping_strength=0.55,
         description="Wide body signature plus sample-parameter mode damping / Q variation.",
+    ),
+    "modal_damping_body_signature_v1": DiagnosticSynthesisConfig(
+        name="modal_damping_body_signature_v1",
+        raw_body_variation_preserve=0.55,
+        body_gain_normalization_strength=0.45,
+        final_loudness_normalization_strength=0.42,
+        wide_body_signature=True,
+        wide_body_signature_strength=0.52,
+        wide_body_signature_damping=True,
+        damping_strength=1.0,
+        per_mode_damping_strength=1.0,
+        all_mode_broad_contribution=True,
+        broad_all_mode_strength=0.50,
+        near_modal_boost=1.28,
+        high_note_string_direct_scale=0.58,
+        high_note_body_color_boost=1.38,
+        high_note_body_to_string_target_ratio=5.9,
+        high_note_pitch_layer_scale=0.68,
+        fundamental_anchor_scale=0.50,
+        low_note_fundamental_harmonic_boost=1.22,
+        description=(
+            "Structural STK v1: per-mode damping, all-mode broad body color, "
+            "partial normalization, reduced string dominance (esp. high notes), "
+            "safer low-note fundamental handling."
+        ),
     ),
 }
 
@@ -218,6 +266,9 @@ def compute_note_reward_score(
     top_contributing_modes: Sequence[Mapping[str, Any]],
     late_to_early_rms_db: float,
     output_decay_slope_db_per_s: float,
+    broad_body_energy_fraction: float = 0.0,
+    near_modal_energy_fraction: float = 0.0,
+    final_rms_dbfs: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Estimate how strongly the body supports a note (not final loudness alone).
@@ -225,39 +276,57 @@ def compute_note_reward_score(
     Higher score ⇒ more body projection / resonance support for this pitch.
     """
     f0 = max(40.0, float(frequency_hz))
-    harmonics = [f0 * k for k in range(1, 5)]
-    support = 0.0
+    harmonics = [f0 * k for k in range(1, 6)]
+    harmonic_support = 0.0
+    broad_support = 0.0
     for row in top_contributing_modes:
         f_m = float(row.get("mode_frequency_hz") or row.get("frequency_hz") or 0.0)
         w = float(row.get("contribution_weight") or 0.0)
         if f_m <= 0 or w <= 0:
             continue
         nearest = min(harmonics, key=lambda h: abs(h - f_m))
-        if abs(nearest - f_m) <= max(18.0, 0.08 * nearest):
-            support += w
-    support_norm = math.log1p(support * 800.0)
+        rel = abs(nearest - f_m) / max(nearest, 1.0)
+        if rel <= 0.10:
+            harmonic_support += w
+        elif rel <= 0.35:
+            broad_support += w * 0.45
+    harmonic_norm = math.log1p(harmonic_support * 900.0)
+    broad_norm = math.log1p(broad_support * 500.0 + broad_body_energy_fraction * 2.5)
 
-    body_string_log = math.log(max(body_rms_before_mix, 1e-12) / max(string_rms_before_mix, 1e-12))
+    body_over_string = body_rms_before_mix / max(string_rms_before_mix, 1e-12)
     ratio_term = math.log(max(body_to_string_ratio_before_loudness, 1e-6))
+    body_projection = math.log(max(body_over_string, 1e-6))
     sustain_term = max(0.0, min(1.0, (-float(late_to_early_rms_db) - 3.0) / 18.0))
     decay_term = max(0.0, min(1.0, (-float(output_decay_slope_db_per_s) - 5.0) / 35.0))
+    near_term = max(0.0, min(1.0, near_modal_energy_fraction))
 
     score = (
-        0.30 * body_string_log
-        + 0.25 * support_norm
-        + 0.20 * ratio_term
-        + 0.15 * sustain_term
-        + 0.10 * decay_term
+        0.22 * harmonic_norm
+        + 0.18 * broad_norm
+        + 0.18 * body_projection
+        + 0.14 * ratio_term
+        + 0.12 * sustain_term
+        + 0.08 * decay_term
+        + 0.08 * near_term
     )
+    loudness_penalty = 0.0
+    if final_rms_dbfs is not None:
+        loudness_penalty = max(0.0, (float(final_rms_dbfs) + 16.0) * 0.02)
+        score -= loudness_penalty
+
     return {
         "note_reward_score": round(score, 6),
-        "note_reward_body_string_log_ratio": round(body_string_log, 6),
-        "note_reward_harmonic_support": round(support_norm, 6),
+        "note_reward_harmonic_support": round(harmonic_norm, 6),
+        "note_reward_broad_support": round(broad_norm, 6),
+        "note_reward_body_projection": round(body_projection, 6),
+        "note_reward_body_string_ratio_term": round(ratio_term, 6),
         "note_reward_sustain_term": round(sustain_term, 6),
         "note_reward_decay_term": round(decay_term, 6),
+        "note_reward_near_modal_term": round(near_term, 6),
+        "note_reward_loudness_penalty": round(loudness_penalty, 6),
         "note_reward_formula": (
-            "0.30*log(body/string)+0.25*log1p(harmonic_support)+0.20*log(body/string_ratio)"
-            "+0.15*sustain+0.10*decay"
+            "0.22*harmonic+0.18*broad+0.18*body_proj+0.14*ratio+0.12*sustain"
+            "+0.08*decay+0.08*near_modal-loudness_penalty"
         ),
     }
 
@@ -316,10 +385,18 @@ def summarize_comparison_note(segments: Sequence[Mapping[str, Any]]) -> Dict[str
     rms_vals = [float(s.get("final_rms_dbfs") or 0.0) for s in segments]
     raw_body = [float(s.get("raw_body_rms_before_normalization") or 0.0) for s in segments]
     rewards = [float(s.get("note_reward_score") or 0.0) for s in segments]
+    body_ratios = [float(s.get("body_to_string_ratio") or 0.0) for s in segments]
+    centroids = [float(s.get("spectral_centroid_hz") or 0.0) for s in segments]
+    decays = [float(s.get("output_decay_slope_db_per_s") or 0.0) for s in segments]
+    q_spreads = [float((s.get("damping_q_summary") or {}).get("mode_q_spread") or 0.0) for s in segments]
     ranked = sorted(segments, key=lambda s: float(s.get("note_reward_score") or 0.0), reverse=True)
     return {
         "rms_spread_db": round(max(rms_vals) - min(rms_vals), 4) if rms_vals else 0.0,
         "raw_body_rms_spread": round(max(raw_body) - min(raw_body), 8) if raw_body else 0.0,
+        "body_to_string_ratio_spread": round(max(body_ratios) - min(body_ratios), 6) if body_ratios else 0.0,
+        "spectral_centroid_spread_hz": round(max(centroids) - min(centroids), 4) if centroids else 0.0,
+        "decay_slope_spread_db_per_s": round(max(decays) - min(decays), 4) if decays else 0.0,
+        "mode_q_spread_mean": round(sum(q_spreads) / max(len(q_spreads), 1), 4) if q_spreads else 0.0,
         "note_reward_spread": round(max(rewards) - min(rewards), 6) if rewards else 0.0,
         "top_note_reward_sample_ids": [r.get("sample_id") for r in ranked[:3]],
         "bottom_note_reward_sample_ids": [r.get("sample_id") for r in ranked[-3:]],
@@ -363,6 +440,32 @@ def summarize_diagnostic_mode(
         "overall_note_reward_spread": round(max(all_rewards) - min(all_rewards), 6) if all_rewards else 0.0,
         "overall_centroid_spread_hz": round(max(all_centroids) - min(all_centroids), 4) if all_centroids else 0.0,
     }
+
+
+def compare_mode_summaries(
+    summaries: Mapping[str, Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Contrast baseline vs structural (or any two modes) on differentiation metrics."""
+    modes = list(summaries.keys())
+    out: Dict[str, Any] = {"modes": modes, "contrasts": {}}
+    if len(modes) < 2:
+        return out
+    base = summaries.get("baseline_current") or summaries[modes[0]]
+    other_name = "modal_damping_body_signature_v1" if "modal_damping_body_signature_v1" in summaries else modes[-1]
+    other = summaries.get(other_name) or summaries[modes[-1]]
+    for key in (
+        "overall_rms_spread_db",
+        "overall_note_reward_spread",
+        "overall_centroid_spread_hz",
+    ):
+        b = float(base.get(key) or 0.0)
+        o = float(other.get(key) or 0.0)
+        out["contrasts"][key] = {
+            "baseline_current": b,
+            other_name: o,
+            "delta": round(o - b, 6),
+        }
+    return out
 
 
 def flatten_geometry_parameters(parameters: Mapping[str, Any]) -> Dict[str, Any]:

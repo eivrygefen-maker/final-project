@@ -43,6 +43,24 @@ COMPARISON_NOTES: Tuple[Tuple[str, float], ...] = (
     ("E5", 659.25),
 )
 
+NOTE_NAME_TO_HZ: Dict[str, float] = {name: hz for name, hz in COMPARISON_NOTES}
+
+
+def parse_notes_arg(notes_csv: Optional[str]) -> Tuple[Tuple[str, float], ...]:
+    if not notes_csv:
+        return COMPARISON_NOTES
+    out: List[Tuple[str, float]] = []
+    for token in str(notes_csv).split(","):
+        name = token.strip().upper()
+        if not name:
+            continue
+        if name not in NOTE_NAME_TO_HZ:
+            raise ValueError(f"unknown note: {name!r}; use {list(NOTE_NAME_TO_HZ)}")
+        out.append((name, NOTE_NAME_TO_HZ[name]))
+    if not out:
+        raise ValueError("notes list is empty")
+    return tuple(out)
+
 
 def load_lhs_sample_entries(repo_root: Path, *, max_samples: int = 26) -> List[Dict[str, Any]]:
     pool_path = repo_root / "ROM" / "classic" / "lhs_pool.json"
@@ -176,6 +194,11 @@ def segment_metadata_from_synthesis(
         "broad_signature_band_gains": meta.get("broad_signature_band_gains") or {},
         "damping_q_summary": meta.get("damping_q_summary") or {},
         "note_reward_score": meta.get("note_reward_score"),
+        "output_decay_slope_db_per_s": meta.get("output_decay_slope_db_per_s"),
+        "near_modal_energy_fraction": meta.get("near_modal_energy_fraction"),
+        "broad_body_energy_fraction": meta.get("broad_body_energy_fraction"),
+        "body_gain_normalization_strength": meta.get("body_gain_normalization_strength"),
+        "final_loudness_normalization_strength": meta.get("final_loudness_normalization_strength"),
         "spectral_centroid_hz": round(spec["centroid_hz"], 4),
         "spectral_low_energy": round(spec["low_energy"], 6),
         "spectral_mid_energy": round(spec["mid_energy"], 6),

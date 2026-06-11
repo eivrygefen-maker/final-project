@@ -29,6 +29,7 @@ audio/preset_previews/
 audio/comparison_26_samples/
 audio/comparison_26_samples_diagnostic/
 audio/body_difference_diagnostics/
+audio/body_difference_diagnostics_stage43/
 
 # Editor — share workspace indexing excludes; ignore local launch/tasks
 .vscode/*
