@@ -1,24 +1,14 @@
 {
     "geometry": {
-        "design_mode": "Basic (Geometric)",
         "shape_type": "Classical",
         "length": 0.48,
         "width": 0.325,
         "depth": 0.1,
-        "thickness": 0.003,
-        "hole_radius": 0.047,
-        "lower_bout": 0.325,
-        "upper_bout": 0.245945945945946,
-        "waist": 0.20202702702702705,
-        "soundhole_y": 0.0,
-        "vis_mode": "Mesh + Solid",
-        "exploded_view": false,
         "top_thickness": 0.003,
-        "back_thickness": 0.0033000000000000004,
-        "mesh_mode": "fom",
-        "soundhole_x": 0.0,
-        "soundhole_from_neck_ratio": 0.5,
-        "bridge_x": -0.12
+        "hole_radius": 0.047,
+        "top_wood_id": "spruce",
+        "back_wood_id": "rosewood",
+        "fixture_preset": "Standing Upright (Front)"
     },
     "materials": {
         "top": {
@@ -35,7 +25,8 @@
             "G_TR": 50000000.0,
             "q_min": 60,
             "q_max": 80,
-            "color": "#FFF8DC"
+            "color": "#FFF8DC",
+            "wood_id": "spruce"
         },
         "back": {
             "name": "Indian Rosewood",
@@ -51,20 +42,21 @@
             "G_TR": 50000000.0,
             "q_min": 90,
             "q_max": 100,
-            "color": "#3E1F12"
+            "color": "#3E1F12",
+            "wood_id": "rosewood"
         },
         "air": {
-            "density": 1.21,
+            "density": 1.204,
             "speed_of_sound": 343.0
         }
     },
     "solver": {
         "num_modes": 50,
-        "mesh_file": "FEM/mesh/guitar_3d.msh",
+        "mesh_file": "C:\\projects\\final-project\\final-project\\FEM\\mesh\\guitar_3d.msh",
         "shift_invert_target_hz": 60.0,
         "structural_shift_target_hz": 60.0,
         "couple_fluid": true,
-        "clamp_ribs": false,
+        "clamp_ribs": true,
         "structural_only_diagnosis": false,
         "structural_shell_facet_tags": [
             1,
@@ -233,7 +225,8 @@
         "fsi_nitsche_penalty_cap_frac": 0.01,
         "fsi_nitsche_auto_balance": true,
         "fsi_nitsche_a_uu_frac": 0.001,
-        "solver_profile_name": "Quality over Quantity"
+        "solver_profile_name": "Quality over Quantity",
+        "eps_pin_fix_tag5": true
     },
     "results": {
         "modes_hz": [

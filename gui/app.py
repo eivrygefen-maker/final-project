@@ -15,9 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-import pyvista as pv
 import streamlit as st
-from stpyvista import stpyvista
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_PATH = BASE_DIR / "FEM" / "configs" / "guitar_3d.json"
@@ -122,10 +120,53 @@ from wood_library import (  # noqa: E402
     wood_display_name,
 )
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-pv.OFF_SCREEN = True
+_pyvista_module: Any = None
+_stpyvista_callable: Any = None
+_stpyvista_import_error: Optional[str] = None
 
-st.set_page_config(page_title="Guitar Simulator", layout="wide", initial_sidebar_state="collapsed")
+
+def _import_pyvista() -> Any:
+    """Lazy PyVista import — avoids loading VTK at app import time."""
+    global _pyvista_module
+    if _pyvista_module is not None:
+        return _pyvista_module
+    try:
+        import pyvista as pv_mod
+    except ImportError as exc:
+        raise RuntimeError(f"pyvista not installed: {exc}") from exc
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pv_mod.OFF_SCREEN = True
+    _pyvista_module = pv_mod
+    return _pyvista_module
+
+
+def _import_stpyvista() -> Any:
+    """Lazy stpyvista import — defers Streamlit custom-component registration."""
+    global _stpyvista_callable, _stpyvista_import_error
+    if _stpyvista_callable is not None:
+        return _stpyvista_callable
+    if _stpyvista_import_error is not None:
+        raise RuntimeError(_stpyvista_import_error)
+    try:
+        from stpyvista import stpyvista as stpyvista_fn
+    except Exception as exc:
+        _stpyvista_import_error = str(exc)
+        raise RuntimeError(str(exc)) from exc
+    _stpyvista_callable = stpyvista_fn
+    return _stpyvista_callable
+
+
+def _streamlit_script_active() -> bool:
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        return get_script_run_ctx() is not None
+    except Exception:
+        return False
+
+
+if _streamlit_script_active():
+    st.set_page_config(page_title="Guitar Simulator", layout="wide", initial_sidebar_state="collapsed")
 
 
 def _init_session() -> None:
@@ -925,10 +966,14 @@ def hex_to_rgb01(hex_color: str) -> Tuple[float, float, float]:
     return int(h[0:2], 16) / 255.0, int(h[2:4], 16) / 255.0, int(h[4:6], 16) / 255.0
 
 
-def load_surface_mesh(msh_path: Path) -> Optional[pv.PolyData]:
+def load_surface_mesh(msh_path: Path) -> Optional[Any]:
     try:
         import meshio
     except ImportError:
+        return None
+    try:
+        pv = _import_pyvista()
+    except RuntimeError:
         return None
     try:
         msh = meshio.read(str(msh_path))
@@ -960,13 +1005,13 @@ def load_surface_mesh(msh_path: Path) -> Optional[pv.PolyData]:
 
 
 def apply_spatial_colormap(
-    mesh: pv.PolyData,
+    mesh: Any,
     *,
     top_color: str,
     back_color: str,
     body_length: float,
     hole_radius: float,
-) -> pv.PolyData:
+) -> Any:
     centers = mesh.cell_centers().points
     z = centers[:, 2]
     zmax, zmin = float(np.max(z)), float(np.min(z))
@@ -982,7 +1027,7 @@ def apply_spatial_colormap(
 
 
 def render_guitar(
-    mesh: Optional[pv.PolyData],
+    mesh: Optional[Any],
     *,
     top_color: str,
     back_color: str,
@@ -993,6 +1038,15 @@ def render_guitar(
     fixture_preset: str,
     show_mesh_edges: bool = False,
 ) -> None:
+    try:
+        pv = _import_pyvista()
+        stpyvista = _import_stpyvista()
+    except RuntimeError as exc:
+        st.warning(
+            "3D mesh viewer unavailable (PyVista/stpyvista). "
+            f"The display mesh file is still saved on disk. Detail: {exc}"
+        )
+        return
     plotter = pv.Plotter(window_size=[1100, 620], lighting="three lights")
     plotter.background_color = "#f4f4f9"
     if mesh is not None and mesh.n_cells > 0:
@@ -1069,7 +1123,10 @@ def render_validation_mesh_viewport(
         n_cells = f"{dm.n_cells:,} triangles" if dm is not None else "—"
         st.caption(f"`display_mesh.msh` · {n_cells} · source: {mesh_src or 'display_mesh.msh'}")
         try:
-            pv.set_jupyter_backend("static")
+            try:
+                _import_pyvista().set_jupyter_backend("static")
+            except RuntimeError:
+                pass
             render_guitar(
                 mesh,
                 top_color=plot_color_for_wood(top_wood),
@@ -1094,7 +1151,7 @@ def display_mesh_active(geom_fp: str) -> bool:
     )
 
 
-def get_view_mesh(geom_fp: str) -> Tuple[Optional[pv.PolyData], bool, str]:
+def get_view_mesh(geom_fp: str) -> Tuple[Optional[Any], bool, str]:
     """PyVista shows ``display_mesh.msh`` from ``build_3d_guitar.py`` (never FOM volume mesh)."""
     if display_mesh_active(geom_fp):
         mesh = load_surface_mesh(DISPLAY_MESH_FILE)
@@ -1567,4 +1624,5 @@ def main() -> None:
     _render_main_studio(saved, saved_solver, saved_shape, saved_fixture)
 
 
-main()
+if _streamlit_script_active():
+    main()

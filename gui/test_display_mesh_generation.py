@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
@@ -23,13 +24,45 @@ try:
 except ImportError:
     HAS_GMSH = False
 
-try:
-    import pyvista  # noqa: F401
 
-    HAS_GUI_DEPS = True
-except ImportError:
-    HAS_GUI_DEPS = False
+def _streamlit_stub_modules() -> dict[str, mock.MagicMock]:
+    status_cm = mock.MagicMock()
+    status_cm.__enter__ = mock.Mock(return_value=status_cm)
+    status_cm.__exit__ = mock.Mock(return_value=False)
+    st_mod = mock.MagicMock()
+    st_mod.session_state = mock.MagicMock()
+    st_mod.status.return_value = status_cm
+    components_v1 = mock.MagicMock()
+    components_pkg = mock.MagicMock()
+    components_pkg.v1 = components_v1
+    st_mod.components = components_pkg
+    return {
+        "streamlit": st_mod,
+        "streamlit.components": components_pkg,
+        "streamlit.components.v1": components_v1,
+    }
 
+
+_GUI_APP_MODULE: Any = None
+
+
+def get_gui_app_module():
+    """Import gui.app once per process with a Streamlit stub (no stpyvista registration)."""
+    global _GUI_APP_MODULE
+    if _GUI_APP_MODULE is not None:
+        return _GUI_APP_MODULE
+    sys.path.insert(0, str(REPO / "gui"))
+    stubs = _streamlit_stub_modules()
+    stubs["fem_main_3d"] = mock.MagicMock()
+    try:
+        with mock.patch.dict(sys.modules, stubs):
+            import app as gui_app  # noqa: WPS433
+
+            _GUI_APP_MODULE = gui_app
+    except Exception:
+        sys.modules.pop("app", None)
+        raise
+    return _GUI_APP_MODULE
 
 class GeometryDisplayFixTests(unittest.TestCase):
     def test_shell_only_initializes_all_shell_surfs(self) -> None:
@@ -53,12 +86,16 @@ class GuiPipelineWiringTests(unittest.TestCase):
         self.assertIn("M4_ROM_MANIFEST", src)
         self.assertIn("official_rom_dataset.jsonl", src)
         self.assertIn("predict_m4_modal_frequencies", src)
+        self.assertIn("def _import_stpyvista", src)
+        self.assertNotIn("from stpyvista import stpyvista", src.split("def _import_stpyvista")[0])
 
-    @unittest.skipUnless(HAS_GUI_DEPS, "pyvista/streamlit GUI deps not installed")
+    def test_app_importable_without_stpyvista_registration(self) -> None:
+        gui_app = get_gui_app_module()
+        self.assertTrue(callable(gui_app.m4_parameters_from_ui))
+        self.assertIsNone(gui_app._stpyvista_callable)
+
     def test_m4_parameters_from_ui_keys(self) -> None:
-        sys.path.insert(0, str(REPO / "gui"))
-        import app as gui_app  # noqa: WPS433
-
+        gui_app = get_gui_app_module()
         params = gui_app.m4_parameters_from_ui(
             {
                 "length": 0.48,
@@ -74,16 +111,11 @@ class GuiPipelineWiringTests(unittest.TestCase):
         self.assertIn("top_wood_id", params)
         self.assertEqual(params["top_wood_id"], "spruce")
 
-    @unittest.skipUnless(HAS_GUI_DEPS, "pyvista/streamlit GUI deps not installed")
     def test_save_changes_does_not_launch_fem(self) -> None:
-        sys.path.insert(0, str(REPO / "gui"))
-        import app as gui_app  # noqa: WPS433
-
+        gui_app = get_gui_app_module()
         with mock.patch.object(gui_app, "run_gmsh_display") as mock_display, mock.patch.object(
             gui_app, "run_gmsh_fom", side_effect=AssertionError("FOM must not run on save")
-        ), mock.patch("streamlit.status") as mock_status:
-            mock_status.return_value.__enter__ = lambda s: s
-            mock_status.return_value.__exit__ = lambda s, *a: None
+        ):
             gui_app.regenerate_display_mesh(
                 {
                     "shape_type": "Classical",
