@@ -18,6 +18,7 @@ sys.path.insert(0, str(REPO / "gui"))
 from body_response_synth import (  # noqa: E402
     DEFAULT_SAMPLE_RATE,
     FULL_MODAL_BAND_HZ,
+    concatenate_audio_with_crossfade,
     load_modal_data_from_path,
     modes_in_validated_band,
     parse_modal_modes,
@@ -81,9 +82,13 @@ class BodyResponseSynthTests(unittest.TestCase):
             self.assertEqual(meta["evaluated_modal_frequency_min_hz"], lo)
             self.assertEqual(meta["evaluated_modal_frequency_max_hz"], hi)
             self.assertTrue(meta["pitch_preserved"])
-            self.assertLess(meta["final_dry_to_body_rms_ratio"], 0.12, name)
+            self.assertGreater(meta["body_to_string_rms_ratio_before_loudness"], 2.5, name)
+            self.assertLess(meta["body_to_string_rms_ratio_before_loudness"], 8.0, name)
+            self.assertTrue(meta["anti_click_taper_applied"], name)
+            self.assertLess(abs(samples[0]), 0.05, name)
+            self.assertLess(abs(samples[-1]), 0.01, name)
             self.assertGreater(
-                meta["body_rms_before_mix"] / max(meta["dry_rms_before_mix"], 1e-9),
+                meta["body_rms_before_mix"] / max(meta["string_rms_before_mix"], 1e-9),
                 3.0,
                 name,
             )
@@ -237,6 +242,13 @@ class BodyResponseSynthTests(unittest.TestCase):
             "limiter_gain_reduction_db",
             "final_peak_ceiling_dbfs",
             "fundamental_anchor_used",
+            "string_pluck_gain",
+            "body_modal_gain",
+            "body_to_string_rms_ratio_before_loudness",
+            "body_modal_bandwidth_widening",
+            "anti_click_taper_applied",
+            "fade_in_ms",
+            "fade_out_ms",
             "output_decay_slope_db_per_s",
             "early_rms_dbfs",
             "late_rms_dbfs",
@@ -250,12 +262,36 @@ class BodyResponseSynthTests(unittest.TestCase):
             "q_max",
             "output_wav",
         }
-        self.assertEqual(meta["direct_string_role"], "attack_pitch_anchor_only")
+        self.assertEqual(meta["direct_string_role"], "string_pluck_plus_pitch_layer")
         self.assertTrue(required.issubset(meta.keys()))
         self.assertTrue(meta_path.is_file())
         row = meta["top_contributing_modes"][0]
         self.assertIn("bridge_weight", row)
         self.assertIn("nearest_harmonic_hz", row)
+
+    def test_concatenation_crossfade_low_discontinuity(self) -> None:
+        modal = self._spread_modal_fixture()
+        sr = DEFAULT_SAMPLE_RATE
+        paths = []
+        for name, hz in (("E2", 82.41), ("A2", 110.0)):
+            wav = self.out_dir / f"{name}_xf.wav"
+            synthesize_note_with_body_response(
+                frequency_hz=hz,
+                note_name=name,
+                duration_s=0.35,
+                sample_rate=sr,
+                modal_data=modal,
+                output_wav=wav,
+            )
+            paths.append(_read_wav_samples(wav))
+        joined = concatenate_audio_with_crossfade(paths, sr, crossfade_ms=10.0, silence_ms=20.0)
+        self.assertGreater(joined.size, 0)
+        self.assertLess(abs(float(joined[0])), 0.05)
+        self.assertLess(abs(float(joined[-1])), 0.01)
+        mid = len(paths[0]) + 10
+        if mid + 5 < joined.size:
+            jump = float(np.max(np.abs(np.diff(joined[mid : mid + 5]))))
+            self.assertLess(jump, 0.35)
 
 
 if __name__ == "__main__":

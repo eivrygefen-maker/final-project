@@ -1,0 +1,1349 @@
+{
+  "schema_version": "note_cache_v1",
+  "created_utc": "2026-06-11T14:50:42Z",
+  "guitar_fingerprint": "3ea12852c7287f59ed9b460142bd94eb6aa4e647b716416363867cc08c6457d8",
+  "modal_json_path": "C:\\projects\\final-project\\final-project\\FEM\\outputs\\rom_stk_body.json",
+  "modal_json_sha256": "fe95c4ab02878c6a0f02a43e6149dc01b58bfbfe5fdcafd840daff7777da1eb7",
+  "geometry_fingerprint": "2bbe5ff96c15837b99aba444814c446d8c835ce626a31f7ed9ebfc2020377bde",
+  "synthesis_model": "modal_transfer_function_H_body_sum_m_Wm_Hm",
+  "body_modal_richness_gain": 1.2,
+  "builder_version": "stage3_5_v1",
+  "synthesis_constants": {
+    "builder_version": "stage3_5_v1",
+    "synthesis_model": "modal_transfer_function_H_body_sum_m_Wm_Hm",
+    "body_modal_richness_gain": 1.2,
+    "body_modal_gain": 1.0,
+    "body_to_string_target_ratio": 4.2,
+    "string_pluck_gain": 0.1,
+    "string_pitch_layer_gain": 0.055,
+    "body_modal_bandwidth_widening": 1.12,
+    "target_rms_dbfs": -18.0,
+    "final_peak_ceiling_dbfs": -1.0,
+    "harmonic_decay_model": "tau_k = note_base_tau(f0) / (1 + harmonic_decay_factor*(k-1)); partial_freq_scale; body_env = exp(-t/tau_body(f0,radiation))",
+    "preview_crossfade_ms": 10.0,
+    "preview_silence_ms": 40.0,
+    "duration_s": 3.0,
+    "sample_rate": 44100
+  },
+  "fret_count": 19,
+  "tuning": [
+    {
+      "string_number": 6,
+      "open_hz": 82.41,
+      "open_name": "E2"
+    },
+    {
+      "string_number": 5,
+      "open_hz": 110.0,
+      "open_name": "A2"
+    },
+    {
+      "string_number": 4,
+      "open_hz": 146.83,
+      "open_name": "D3"
+    },
+    {
+      "string_number": 3,
+      "open_hz": 196.0,
+      "open_name": "G3"
+    },
+    {
+      "string_number": 2,
+      "open_hz": 246.94,
+      "open_name": "B3"
+    },
+    {
+      "string_number": 1,
+      "open_hz": 329.63,
+      "open_name": "E4"
+    }
+  ],
+  "duration_s": 3.0,
+  "sample_rate": 44100,
+  "unique_note_count": 44,
+  "playable_position_count": 120,
+  "notes": [
+    {
+      "note_id": "A2",
+      "note_name": "A2",
+      "frequency_hz": 110.004152,
+      "wav_path": "wav/A2.wav",
+      "metadata_path": "metadata/A2.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.1733,
+      "output_peak_dbfs": -7.3633
+    },
+    {
+      "note_id": "A3",
+      "note_name": "A3",
+      "frequency_hz": 220.008305,
+      "wav_path": "wav/A3.wav",
+      "metadata_path": "metadata/A3.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.3087,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "A4",
+      "note_name": "A4",
+      "frequency_hz": 439.992856,
+      "wav_path": "wav/A4.wav",
+      "metadata_path": "metadata/A4.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.7553,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "A5",
+      "note_name": "A5",
+      "frequency_hz": 880.006522,
+      "wav_path": "wav/A5.wav",
+      "metadata_path": "metadata/A5.json",
+      "high_frequency_fallback_used": true,
+      "output_rms_dbfs": -23.6308,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "As2",
+      "note_name": "A#2",
+      "frequency_hz": 116.54534,
+      "wav_path": "wav/As2.wav",
+      "metadata_path": "metadata/As2.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.1318,
+      "output_peak_dbfs": -7.4683
+    },
+    {
+      "note_id": "As3",
+      "note_name": "A#3",
+      "frequency_hz": 233.090679,
+      "wav_path": "wav/As3.wav",
+      "metadata_path": "metadata/As3.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.4228,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "As4",
+      "note_name": "A#4",
+      "frequency_hz": 466.169189,
+      "wav_path": "wav/As4.wav",
+      "metadata_path": "metadata/As4.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.7716,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "As5",
+      "note_name": "A#5",
+      "frequency_hz": 932.334433,
+      "wav_path": "wav/As5.wav",
+      "metadata_path": "metadata/As5.json",
+      "high_frequency_fallback_used": true,
+      "output_rms_dbfs": -23.5605,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "B2",
+      "note_name": "B2",
+      "frequency_hz": 123.475486,
+      "wav_path": "wav/B2.wav",
+      "metadata_path": "metadata/B2.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.1485,
+      "output_peak_dbfs": -7.6077
+    },
+    {
+      "note_id": "B3",
+      "note_name": "B3",
+      "frequency_hz": 246.950972,
+      "wav_path": "wav/B3.wav",
+      "metadata_path": "metadata/B3.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.3434,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "B4",
+      "note_name": "B4",
+      "frequency_hz": 493.889052,
+      "wav_path": "wav/B4.wav",
+      "metadata_path": "metadata/B4.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.7741,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "B5",
+      "note_name": "B5",
+      "frequency_hz": 987.773924,
+      "wav_path": "wav/B5.wav",
+      "metadata_path": "metadata/B5.json",
+      "high_frequency_fallback_used": true,
+      "output_rms_dbfs": -23.5515,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "C3",
+      "note_name": "C3",
+      "frequency_hz": 130.817721,
+      "wav_path": "wav/C3.wav",
+      "metadata_path": "metadata/C3.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.2067,
+      "output_peak_dbfs": -7.914
+    },
+    {
+      "note_id": "C4",
+      "note_name": "C4",
+      "frequency_hz": 261.625565,
+      "wav_path": "wav/C4.wav",
+      "metadata_path": "metadata/C4.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.1906,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "C5",
+      "note_name": "C5",
+      "frequency_hz": 523.257223,
+      "wav_path": "wav/C5.wav",
+      "metadata_path": "metadata/C5.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.6726,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "Cs3",
+      "note_name": "C#3",
+      "frequency_hz": 138.596547,
+      "wav_path": "wav/Cs3.wav",
+      "metadata_path": "metadata/Cs3.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.176,
+      "output_peak_dbfs": -7.4888
+    },
+    {
+      "note_id": "Cs4",
+      "note_name": "C#4",
+      "frequency_hz": 277.182631,
+      "wav_path": "wav/Cs4.wav",
+      "metadata_path": "metadata/Cs4.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.0739,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "Cs5",
+      "note_name": "C#5",
+      "frequency_hz": 554.371716,
+      "wav_path": "wav/Cs5.wav",
+      "metadata_path": "metadata/Cs5.json",
+      "high_frequency_fallback_used": true,
+      "output_rms_dbfs": -23.349,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "D3",
+      "note_name": "D3",
+      "frequency_hz": 146.837927,
+      "wav_path": "wav/D3.wav",
+      "metadata_path": "metadata/D3.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.1786,
+      "output_peak_dbfs": -7.5393
+    },
+    {
+      "note_id": "D4",
+      "note_name": "D4",
+      "frequency_hz": 293.664768,
+      "wav_path": "wav/D4.wav",
+      "metadata_path": "metadata/D4.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.2989,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "D5",
+      "note_name": "D5",
+      "frequency_hz": 587.336374,
+      "wav_path": "wav/D5.wav",
+      "metadata_path": "metadata/D5.json",
+      "high_frequency_fallback_used": true,
+      "output_rms_dbfs": -23.3197,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "Ds3",
+      "note_name": "D#3",
+      "frequency_hz": 155.569364,
+      "wav_path": "wav/Ds3.wav",
+      "metadata_path": "metadata/Ds3.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.1606,
+      "output_peak_dbfs": -7.4424
+    },
+    {
+      "note_id": "Ds4",
+      "note_name": "D#4",
+      "frequency_hz": 311.126984,
+      "wav_path": "wav/Ds4.wav",
+      "metadata_path": "metadata/Ds4.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.5381,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "Ds5",
+      "note_name": "D#5",
+      "frequency_hz": 622.249808,
+      "wav_path": "wav/Ds5.wav",
+      "metadata_path": "metadata/Ds5.json",
+      "high_frequency_fallback_used": true,
+      "output_rms_dbfs": -23.4731,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "E2",
+      "note_name": "E2",
+      "frequency_hz": 82.41,
+      "wav_path": "wav/E2.wav",
+      "metadata_path": "metadata/E2.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.1457,
+      "output_peak_dbfs": -7.3529
+    },
+    {
+      "note_id": "E3",
+      "note_name": "E3",
+      "frequency_hz": 164.82,
+      "wav_path": "wav/E3.wav",
+      "metadata_path": "metadata/E3.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.1772,
+      "output_peak_dbfs": -7.6622
+    },
+    {
+      "note_id": "E4",
+      "note_name": "E4",
+      "frequency_hz": 329.627557,
+      "wav_path": "wav/E4.wav",
+      "metadata_path": "metadata/E4.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.621,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "E5",
+      "note_name": "E5",
+      "frequency_hz": 659.250707,
+      "wav_path": "wav/E5.wav",
+      "metadata_path": "metadata/E5.json",
+      "high_frequency_fallback_used": true,
+      "output_rms_dbfs": -23.6104,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "F2",
+      "note_name": "F2",
+      "frequency_hz": 87.310354,
+      "wav_path": "wav/F2.wav",
+      "metadata_path": "metadata/F2.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.104,
+      "output_peak_dbfs": -7.1115
+    },
+    {
+      "note_id": "F3",
+      "note_name": "F3",
+      "frequency_hz": 174.620707,
+      "wav_path": "wav/F3.wav",
+      "metadata_path": "metadata/F3.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -22.2918,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "F4",
+      "note_name": "F4",
+      "frequency_hz": 349.222561,
+      "wav_path": "wav/F4.wav",
+      "metadata_path": "metadata/F4.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.6537,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "F5",
+      "note_name": "F5",
+      "frequency_hz": 698.451794,
+      "wav_path": "wav/F5.wav",
+      "metadata_path": "metadata/F5.json",
+      "high_frequency_fallback_used": true,
+      "output_rms_dbfs": -23.6287,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "Fs2",
+      "note_name": "F#2",
+      "frequency_hz": 92.502097,
+      "wav_path": "wav/Fs2.wav",
+      "metadata_path": "metadata/Fs2.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.1378,
+      "output_peak_dbfs": -7.0418
+    },
+    {
+      "note_id": "Fs3",
+      "note_name": "F#3",
+      "frequency_hz": 185.004195,
+      "wav_path": "wav/Fs3.wav",
+      "metadata_path": "metadata/Fs3.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -22.5432,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "Fs4",
+      "note_name": "F#4",
+      "frequency_hz": 369.988416,
+      "wav_path": "wav/Fs4.wav",
+      "metadata_path": "metadata/Fs4.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.6109,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "Fs5",
+      "note_name": "F#5",
+      "frequency_hz": 739.983899,
+      "wav_path": "wav/Fs5.wav",
+      "metadata_path": "metadata/Fs5.json",
+      "high_frequency_fallback_used": true,
+      "output_rms_dbfs": -23.5765,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "G2",
+      "note_name": "G2",
+      "frequency_hz": 98.002558,
+      "wav_path": "wav/G2.wav",
+      "metadata_path": "metadata/G2.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.0984,
+      "output_peak_dbfs": -7.0651
+    },
+    {
+      "note_id": "G3",
+      "note_name": "G3",
+      "frequency_hz": 196.005117,
+      "wav_path": "wav/G3.wav",
+      "metadata_path": "metadata/G3.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -22.8932,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "G4",
+      "note_name": "G4",
+      "frequency_hz": 391.989072,
+      "wav_path": "wav/G4.wav",
+      "metadata_path": "metadata/G4.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.6843,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "G5",
+      "note_name": "G5",
+      "frequency_hz": 783.996683,
+      "wav_path": "wav/G5.wav",
+      "metadata_path": "metadata/G5.json",
+      "high_frequency_fallback_used": true,
+      "output_rms_dbfs": -23.5126,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "Gs2",
+      "note_name": "G#2",
+      "frequency_hz": 103.830094,
+      "wav_path": "wav/Gs2.wav",
+      "metadata_path": "metadata/Gs2.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.185,
+      "output_peak_dbfs": -7.0563
+    },
+    {
+      "note_id": "Gs3",
+      "note_name": "G#3",
+      "frequency_hz": 207.660187,
+      "wav_path": "wav/Gs3.wav",
+      "metadata_path": "metadata/Gs3.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.1289,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "Gs4",
+      "note_name": "G#4",
+      "frequency_hz": 415.297955,
+      "wav_path": "wav/Gs4.wav",
+      "metadata_path": "metadata/Gs4.json",
+      "high_frequency_fallback_used": false,
+      "output_rms_dbfs": -23.6844,
+      "output_peak_dbfs": -1.0
+    },
+    {
+      "note_id": "Gs5",
+      "note_name": "G#5",
+      "frequency_hz": 830.615551,
+      "wav_path": "wav/Gs5.wav",
+      "metadata_path": "metadata/Gs5.json",
+      "high_frequency_fallback_used": true,
+      "output_rms_dbfs": -23.5512,
+      "output_peak_dbfs": -1.0
+    }
+  ],
+  "positions": [
+    {
+      "string_number": 6,
+      "fret": 0,
+      "frequency_hz": 82.41,
+      "note_id": "E2",
+      "wav_path": "wav/E2.wav"
+    },
+    {
+      "string_number": 6,
+      "fret": 1,
+      "frequency_hz": 87.310354,
+      "note_id": "F2",
+      "wav_path": "wav/F2.wav"
+    },
+    {
+      "string_number": 6,
+      "fret": 2,
+      "frequency_hz": 92.502097,
+      "note_id": "Fs2",
+      "wav_path": "wav/Fs2.wav"
+    },
+    {
+      "string_number": 6,
+      "fret": 3,
+      "frequency_hz": 98.002558,
+      "note_id": "G2",
+      "wav_path": "wav/G2.wav"
+    },
+    {
+      "string_number": 6,
+      "fret": 4,
+      "frequency_hz": 103.830094,
+      "note_id": "Gs2",
+      "wav_path": "wav/Gs2.wav"
+    },
+    {
+      "string_number": 6,
+      "fret": 5,
+      "frequency_hz": 110.004152,
+      "note_id": "A2",
+      "wav_path": "wav/A2.wav"
+    },
+    {
+      "string_number": 6,
+      "fret": 6,
+      "frequency_hz": 116.54534,
+      "note_id": "As2",
+      "wav_path": "wav/As2.wav"
+    },
+    {
+      "string_number": 6,
+      "fret": 7,
+      "frequency_hz": 123.475486,
+      "note_id": "B2",
+      "wav_path": "wav/B2.wav"
+    },
+    {
+      "string_number": 6,
+      "fret": 8,
+      "frequency_hz": 130.817721,
+      "note_id": "C3",
+      "wav_path": "wav/C3.wav"
+    },
+    {
+      "string_number": 6,
+      "fret": 9,
+      "frequency_hz": 138.596547,
+      "note_id": "Cs3",
+      "wav_path": "wav/Cs3.wav"
+    },
+    {
+      "string_number": 6,
+      "fret": 10,
+      "frequency_hz": 146.837927,
+      "note_id": "D3",
+      "wav_path": "wav/D3.wav"
+    },
+    {
+      "string_number": 6,
+      "fret": 11,
+      "frequency_hz": 155.569364,
+      "note_id": "Ds3",
+      "wav_path": "wav/Ds3.wav"
+    },
+    {
+      "string_number": 6,
+      "fret": 12,
+      "frequency_hz": 164.82,
+      "note_id": "E3",
+      "wav_path": "wav/E3.wav"
+    },
+    {
+      "string_number": 6,
+      "fret": 13,
+      "frequency_hz": 174.620707,
+      "note_id": "F3",
+      "wav_path": "wav/F3.wav"
+    },
+    {
+      "string_number": 6,
+      "fret": 14,
+      "frequency_hz": 185.004195,
+      "note_id": "Fs3",
+      "wav_path": "wav/Fs3.wav"
+    },
+    {
+      "string_number": 6,
+      "fret": 15,
+      "frequency_hz": 196.005117,
+      "note_id": "G3",
+      "wav_path": "wav/G3.wav"
+    },
+    {
+      "string_number": 6,
+      "fret": 16,
+      "frequency_hz": 207.660187,
+      "note_id": "Gs3",
+      "wav_path": "wav/Gs3.wav"
+    },
+    {
+      "string_number": 6,
+      "fret": 17,
+      "frequency_hz": 220.008305,
+      "note_id": "A3",
+      "wav_path": "wav/A3.wav"
+    },
+    {
+      "string_number": 6,
+      "fret": 18,
+      "frequency_hz": 233.090679,
+      "note_id": "As3",
+      "wav_path": "wav/As3.wav"
+    },
+    {
+      "string_number": 6,
+      "fret": 19,
+      "frequency_hz": 246.950972,
+      "note_id": "B3",
+      "wav_path": "wav/B3.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 0,
+      "frequency_hz": 110.0,
+      "note_id": "A2",
+      "wav_path": "wav/A2.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 1,
+      "frequency_hz": 116.54094,
+      "note_id": "As2",
+      "wav_path": "wav/As2.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 2,
+      "frequency_hz": 123.470825,
+      "note_id": "B2",
+      "wav_path": "wav/B2.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 3,
+      "frequency_hz": 130.812783,
+      "note_id": "C3",
+      "wav_path": "wav/C3.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 4,
+      "frequency_hz": 138.591315,
+      "note_id": "Cs3",
+      "wav_path": "wav/Cs3.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 5,
+      "frequency_hz": 146.832384,
+      "note_id": "D3",
+      "wav_path": "wav/D3.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 6,
+      "frequency_hz": 155.563492,
+      "note_id": "Ds3",
+      "wav_path": "wav/Ds3.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 7,
+      "frequency_hz": 164.813778,
+      "note_id": "E3",
+      "wav_path": "wav/E3.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 8,
+      "frequency_hz": 174.614116,
+      "note_id": "F3",
+      "wav_path": "wav/F3.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 9,
+      "frequency_hz": 184.997211,
+      "note_id": "Fs3",
+      "wav_path": "wav/Fs3.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 10,
+      "frequency_hz": 195.997718,
+      "note_id": "G3",
+      "wav_path": "wav/G3.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 11,
+      "frequency_hz": 207.652349,
+      "note_id": "Gs3",
+      "wav_path": "wav/Gs3.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 12,
+      "frequency_hz": 220.0,
+      "note_id": "A3",
+      "wav_path": "wav/A3.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 13,
+      "frequency_hz": 233.081881,
+      "note_id": "As3",
+      "wav_path": "wav/As3.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 14,
+      "frequency_hz": 246.941651,
+      "note_id": "B3",
+      "wav_path": "wav/B3.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 15,
+      "frequency_hz": 261.625565,
+      "note_id": "C4",
+      "wav_path": "wav/C4.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 16,
+      "frequency_hz": 277.182631,
+      "note_id": "Cs4",
+      "wav_path": "wav/Cs4.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 17,
+      "frequency_hz": 293.664768,
+      "note_id": "D4",
+      "wav_path": "wav/D4.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 18,
+      "frequency_hz": 311.126984,
+      "note_id": "Ds4",
+      "wav_path": "wav/Ds4.wav"
+    },
+    {
+      "string_number": 5,
+      "fret": 19,
+      "frequency_hz": 329.627557,
+      "note_id": "E4",
+      "wav_path": "wav/E4.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 0,
+      "frequency_hz": 146.83,
+      "note_id": "D3",
+      "wav_path": "wav/D3.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 1,
+      "frequency_hz": 155.560966,
+      "note_id": "Ds3",
+      "wav_path": "wav/Ds3.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 2,
+      "frequency_hz": 164.811103,
+      "note_id": "E3",
+      "wav_path": "wav/E3.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 3,
+      "frequency_hz": 174.611281,
+      "note_id": "F3",
+      "wav_path": "wav/F3.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 4,
+      "frequency_hz": 184.994208,
+      "note_id": "Fs3",
+      "wav_path": "wav/Fs3.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 5,
+      "frequency_hz": 195.994536,
+      "note_id": "G3",
+      "wav_path": "wav/G3.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 6,
+      "frequency_hz": 207.648977,
+      "note_id": "Gs3",
+      "wav_path": "wav/Gs3.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 7,
+      "frequency_hz": 219.996428,
+      "note_id": "A3",
+      "wav_path": "wav/A3.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 8,
+      "frequency_hz": 233.078096,
+      "note_id": "As3",
+      "wav_path": "wav/As3.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 9,
+      "frequency_hz": 246.937641,
+      "note_id": "B3",
+      "wav_path": "wav/B3.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 10,
+      "frequency_hz": 261.621318,
+      "note_id": "C4",
+      "wav_path": "wav/C4.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 11,
+      "frequency_hz": 277.178131,
+      "note_id": "Cs4",
+      "wav_path": "wav/Cs4.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 12,
+      "frequency_hz": 293.66,
+      "note_id": "D4",
+      "wav_path": "wav/D4.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 13,
+      "frequency_hz": 311.121932,
+      "note_id": "Ds4",
+      "wav_path": "wav/Ds4.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 14,
+      "frequency_hz": 329.622205,
+      "note_id": "E4",
+      "wav_path": "wav/E4.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 15,
+      "frequency_hz": 349.222561,
+      "note_id": "F4",
+      "wav_path": "wav/F4.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 16,
+      "frequency_hz": 369.988416,
+      "note_id": "Fs4",
+      "wav_path": "wav/Fs4.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 17,
+      "frequency_hz": 391.989072,
+      "note_id": "G4",
+      "wav_path": "wav/G4.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 18,
+      "frequency_hz": 415.297955,
+      "note_id": "Gs4",
+      "wav_path": "wav/Gs4.wav"
+    },
+    {
+      "string_number": 4,
+      "fret": 19,
+      "frequency_hz": 439.992856,
+      "note_id": "A4",
+      "wav_path": "wav/A4.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 0,
+      "frequency_hz": 196.0,
+      "note_id": "G3",
+      "wav_path": "wav/G3.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 1,
+      "frequency_hz": 207.654766,
+      "note_id": "Gs3",
+      "wav_path": "wav/Gs3.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 2,
+      "frequency_hz": 220.002561,
+      "note_id": "A3",
+      "wav_path": "wav/A3.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 3,
+      "frequency_hz": 233.084595,
+      "note_id": "As3",
+      "wav_path": "wav/As3.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 4,
+      "frequency_hz": 246.944526,
+      "note_id": "B3",
+      "wav_path": "wav/B3.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 5,
+      "frequency_hz": 261.628611,
+      "note_id": "C4",
+      "wav_path": "wav/C4.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 6,
+      "frequency_hz": 277.185858,
+      "note_id": "Cs4",
+      "wav_path": "wav/Cs4.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 7,
+      "frequency_hz": 293.668187,
+      "note_id": "D4",
+      "wav_path": "wav/D4.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 8,
+      "frequency_hz": 311.130606,
+      "note_id": "Ds4",
+      "wav_path": "wav/Ds4.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 9,
+      "frequency_hz": 329.631395,
+      "note_id": "E4",
+      "wav_path": "wav/E4.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 10,
+      "frequency_hz": 349.232298,
+      "note_id": "F4",
+      "wav_path": "wav/F4.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 11,
+      "frequency_hz": 369.998731,
+      "note_id": "Fs4",
+      "wav_path": "wav/Fs4.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 12,
+      "frequency_hz": 392.0,
+      "note_id": "G4",
+      "wav_path": "wav/G4.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 13,
+      "frequency_hz": 415.309533,
+      "note_id": "Gs4",
+      "wav_path": "wav/Gs4.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 14,
+      "frequency_hz": 440.005123,
+      "note_id": "A4",
+      "wav_path": "wav/A4.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 15,
+      "frequency_hz": 466.169189,
+      "note_id": "As4",
+      "wav_path": "wav/As4.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 16,
+      "frequency_hz": 493.889052,
+      "note_id": "B4",
+      "wav_path": "wav/B4.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 17,
+      "frequency_hz": 523.257223,
+      "note_id": "C5",
+      "wav_path": "wav/C5.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 18,
+      "frequency_hz": 554.371716,
+      "note_id": "Cs5",
+      "wav_path": "wav/Cs5.wav"
+    },
+    {
+      "string_number": 3,
+      "fret": 19,
+      "frequency_hz": 587.336374,
+      "note_id": "D5",
+      "wav_path": "wav/D5.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 0,
+      "frequency_hz": 246.94,
+      "note_id": "B3",
+      "wav_path": "wav/B3.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 1,
+      "frequency_hz": 261.623817,
+      "note_id": "C4",
+      "wav_path": "wav/C4.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 2,
+      "frequency_hz": 277.180778,
+      "note_id": "Cs4",
+      "wav_path": "wav/Cs4.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 3,
+      "frequency_hz": 293.662805,
+      "note_id": "D4",
+      "wav_path": "wav/D4.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 4,
+      "frequency_hz": 311.124904,
+      "note_id": "Ds4",
+      "wav_path": "wav/Ds4.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 5,
+      "frequency_hz": 329.625354,
+      "note_id": "E4",
+      "wav_path": "wav/E4.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 6,
+      "frequency_hz": 349.225897,
+      "note_id": "F4",
+      "wav_path": "wav/F4.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 7,
+      "frequency_hz": 369.99195,
+      "note_id": "Fs4",
+      "wav_path": "wav/Fs4.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 8,
+      "frequency_hz": 391.992816,
+      "note_id": "G4",
+      "wav_path": "wav/G4.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 9,
+      "frequency_hz": 415.301922,
+      "note_id": "Gs4",
+      "wav_path": "wav/Gs4.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 10,
+      "frequency_hz": 439.997059,
+      "note_id": "A4",
+      "wav_path": "wav/A4.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 11,
+      "frequency_hz": 466.160646,
+      "note_id": "As4",
+      "wav_path": "wav/As4.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 12,
+      "frequency_hz": 493.88,
+      "note_id": "B4",
+      "wav_path": "wav/B4.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 13,
+      "frequency_hz": 523.247633,
+      "note_id": "C5",
+      "wav_path": "wav/C5.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 14,
+      "frequency_hz": 554.361556,
+      "note_id": "Cs5",
+      "wav_path": "wav/Cs5.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 15,
+      "frequency_hz": 587.32561,
+      "note_id": "D5",
+      "wav_path": "wav/D5.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 16,
+      "frequency_hz": 622.249808,
+      "note_id": "Ds5",
+      "wav_path": "wav/Ds5.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 17,
+      "frequency_hz": 659.250707,
+      "note_id": "E5",
+      "wav_path": "wav/E5.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 18,
+      "frequency_hz": 698.451794,
+      "note_id": "F5",
+      "wav_path": "wav/F5.wav"
+    },
+    {
+      "string_number": 2,
+      "fret": 19,
+      "frequency_hz": 739.983899,
+      "note_id": "Fs5",
+      "wav_path": "wav/Fs5.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 0,
+      "frequency_hz": 329.63,
+      "note_id": "E4",
+      "wav_path": "wav/E4.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 1,
+      "frequency_hz": 349.23082,
+      "note_id": "F4",
+      "wav_path": "wav/F4.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 2,
+      "frequency_hz": 369.997165,
+      "note_id": "Fs4",
+      "wav_path": "wav/Fs4.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 3,
+      "frequency_hz": 391.998341,
+      "note_id": "G4",
+      "wav_path": "wav/G4.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 4,
+      "frequency_hz": 415.307776,
+      "note_id": "Gs4",
+      "wav_path": "wav/Gs4.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 5,
+      "frequency_hz": 440.003261,
+      "note_id": "A4",
+      "wav_path": "wav/A4.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 6,
+      "frequency_hz": 466.167217,
+      "note_id": "As4",
+      "wav_path": "wav/As4.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 7,
+      "frequency_hz": 493.886962,
+      "note_id": "B4",
+      "wav_path": "wav/B4.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 8,
+      "frequency_hz": 523.255009,
+      "note_id": "C5",
+      "wav_path": "wav/C5.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 9,
+      "frequency_hz": 554.369371,
+      "note_id": "Cs5",
+      "wav_path": "wav/Cs5.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 10,
+      "frequency_hz": 587.333889,
+      "note_id": "D5",
+      "wav_path": "wav/D5.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 11,
+      "frequency_hz": 622.258579,
+      "note_id": "Ds5",
+      "wav_path": "wav/Ds5.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 12,
+      "frequency_hz": 659.26,
+      "note_id": "E5",
+      "wav_path": "wav/E5.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 13,
+      "frequency_hz": 698.46164,
+      "note_id": "F5",
+      "wav_path": "wav/F5.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 14,
+      "frequency_hz": 739.99433,
+      "note_id": "Fs5",
+      "wav_path": "wav/Fs5.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 15,
+      "frequency_hz": 783.996683,
+      "note_id": "G5",
+      "wav_path": "wav/G5.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 16,
+      "frequency_hz": 830.615551,
+      "note_id": "Gs5",
+      "wav_path": "wav/Gs5.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 17,
+      "frequency_hz": 880.006522,
+      "note_id": "A5",
+      "wav_path": "wav/A5.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 18,
+      "frequency_hz": 932.334433,
+      "note_id": "As5",
+      "wav_path": "wav/As5.wav"
+    },
+    {
+      "string_number": 1,
+      "fret": 19,
+      "frequency_hz": 987.773924,
+      "note_id": "B5",
+      "wav_path": "wav/B5.wav"
+    }
+  ]
+}

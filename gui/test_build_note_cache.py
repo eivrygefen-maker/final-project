@@ -13,6 +13,7 @@ sys.path.insert(0, str(REPO / "gui"))
 
 from build_note_cache import (  # noqa: E402
     DEFAULT_TUNING,
+    build_frequency_ordered_preview,
     build_note_cache,
     enumerate_fretboard_positions,
     group_unique_pitches,
@@ -20,6 +21,7 @@ from build_note_cache import (  # noqa: E402
     pitch_dedup_key,
     position_frequency,
 )
+from body_response_synth import read_wav_float_mono  # noqa: E402
 from body_response_synth import BODY_MODAL_RICHNESS_GAIN  # noqa: E402
 
 
@@ -85,6 +87,9 @@ class NoteCacheBuilderTests(unittest.TestCase):
             self.assertIn("output_rms_dbfs", meta_doc)
             self.assertIn("output_decay_slope_db_per_s", meta_doc)
             self.assertIn("late_to_early_rms_db", meta_doc)
+            self.assertTrue(meta_doc.get("anti_click_taper_applied"))
+            self.assertIn("body_to_string_rms_ratio_before_loudness", meta_doc)
+            self.assertIn("body_modal_bandwidth_widening", meta_doc)
 
         for pos in on_disk["positions"]:
             wav = cache_root / pos["wav_path"]
@@ -96,6 +101,24 @@ class NoteCacheBuilderTests(unittest.TestCase):
         self.assertEqual(s6f5["note_id"], "A2")
         self.assertEqual(s5f0["note_id"], "A2")
         self.assertEqual(s6f5["wav_path"], s5f0["wav_path"])
+
+    def test_preview_concatenation_near_zero_boundaries(self) -> None:
+        manifest = build_note_cache(
+            modal_json=Path("__missing_modal_for_synthetic__.json"),
+            out_root=self.out_root / "preview",
+            fret_count=3,
+            duration_s=0.2,
+            sample_rate=44100,
+            force=True,
+        )
+        preview = build_frequency_ordered_preview(
+            Path(manifest["cache_root"]),
+            Path(manifest["cache_root"]) / "all_notes_preview.wav",
+        )
+        samples, _ = read_wav_float_mono(Path(preview["preview_wav"]))
+        self.assertGreater(samples.size, 0)
+        self.assertLess(abs(float(samples[0])), 0.05)
+        self.assertLess(abs(float(samples[-1])), 0.01)
 
     def test_high_note_uses_hf_fallback_in_cache(self) -> None:
         manifest = build_note_cache(

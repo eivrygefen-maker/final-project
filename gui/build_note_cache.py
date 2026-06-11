@@ -14,20 +14,33 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+import numpy as np
+
 from body_response_synth import (
+    BODY_MODAL_BANDWIDTH_WIDENING,
+    BODY_MODAL_GAIN,
     BODY_MODAL_RICHNESS_GAIN,
+    BODY_TO_STRING_TARGET_RATIO,
     DEFAULT_DURATION_S,
     DEFAULT_SAMPLE_RATE,
     FINAL_PEAK_CEILING_DBFS,
     HARMONIC_DECAY_MODEL,
+    PREVIEW_CROSSFADE_MS,
+    PREVIEW_SILENCE_MS,
+    STRING_PITCH_LAYER_GAIN,
+    STRING_PLUCK_GAIN,
     TARGET_RMS_DBFS,
+    apply_anti_click_taper,
+    concatenate_audio_with_crossfade,
     load_modal_data_from_path,
+    read_wav_float_mono,
     synthesize_note_with_body_response,
     synthetic_classic_body_modes,
+    write_wav_int16,
 )
 
 NOTE_CACHE_SCHEMA_VERSION = "note_cache_v1"
-NOTE_CACHE_BUILDER_VERSION = "stage3_v1"
+NOTE_CACHE_BUILDER_VERSION = "stage3_5_v1"
 
 # String 6 (low E) .. string 1 (high E); open frequencies in Hz.
 DEFAULT_TUNING: Tuple[Tuple[int, float, str], ...] = (
@@ -124,9 +137,16 @@ def synthesis_version_payload(
         "builder_version": NOTE_CACHE_BUILDER_VERSION,
         "synthesis_model": "modal_transfer_function_H_body_sum_m_Wm_Hm",
         "body_modal_richness_gain": BODY_MODAL_RICHNESS_GAIN,
+        "body_modal_gain": BODY_MODAL_GAIN,
+        "body_to_string_target_ratio": BODY_TO_STRING_TARGET_RATIO,
+        "string_pluck_gain": STRING_PLUCK_GAIN,
+        "string_pitch_layer_gain": STRING_PITCH_LAYER_GAIN,
+        "body_modal_bandwidth_widening": BODY_MODAL_BANDWIDTH_WIDENING,
         "target_rms_dbfs": TARGET_RMS_DBFS,
         "final_peak_ceiling_dbfs": FINAL_PEAK_CEILING_DBFS,
         "harmonic_decay_model": HARMONIC_DECAY_MODEL,
+        "preview_crossfade_ms": PREVIEW_CROSSFADE_MS,
+        "preview_silence_ms": PREVIEW_SILENCE_MS,
         "duration_s": float(duration_s),
         "sample_rate": int(sample_rate),
     }
@@ -297,6 +317,63 @@ def build_note_cache(
     return manifest
 
 
+def build_frequency_ordered_preview(
+    cache_root: Path,
+    output_wav: Path,
+    *,
+    crossfade_ms: float = PREVIEW_CROSSFADE_MS,
+    silence_ms: float = PREVIEW_SILENCE_MS,
+) -> Dict[str, Any]:
+    """Concatenate unique cache notes (low→high Hz) into one preview WAV."""
+    cache_root = Path(cache_root).resolve()
+    manifest_path = cache_root / "note_manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"missing manifest: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    notes = sorted(manifest.get("notes") or [], key=lambda n: float(n["frequency_hz"]))
+    if not notes:
+        raise ValueError(f"no notes in manifest: {manifest_path}")
+
+    segments: List[np.ndarray] = []
+    sample_rate = int(manifest.get("sample_rate") or DEFAULT_SAMPLE_RATE)
+
+    for note in notes:
+        wav_path = cache_root / note["wav_path"]
+        seg, sr = read_wav_float_mono(wav_path)
+        if sr != sample_rate:
+            raise ValueError(f"sample rate mismatch in {wav_path}: {sr} != {sample_rate}")
+        segments.append(seg)
+
+    mixed = concatenate_audio_with_crossfade(
+        segments,
+        sample_rate,
+        crossfade_ms=crossfade_ms,
+        silence_ms=silence_ms,
+    )
+    tapered, taper_info = apply_anti_click_taper(
+        mixed,
+        sample_rate,
+        duration_s=len(mixed) / float(sample_rate),
+    )
+    output_wav = Path(output_wav).resolve()
+    output_wav.parent.mkdir(parents=True, exist_ok=True)
+    loudness_info = write_wav_int16(
+        output_wav,
+        tapered,
+        sample_rate,
+        duration_s=len(tapered) / float(sample_rate),
+    )
+    return {
+        "preview_wav": str(output_wav),
+        "note_count": len(notes),
+        "crossfade_ms": crossfade_ms,
+        "silence_ms": silence_ms,
+        "duration_s": len(tapered) / float(sample_rate),
+        **taper_info,
+        **loudness_info,
+    }
+
+
 def main() -> int:
     repo = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description="Build playable guitar note cache")
@@ -316,6 +393,12 @@ def main() -> int:
         help="Optional guitar geometry config for fingerprint (if file exists)",
     )
     parser.add_argument("--force", action="store_true", help="Regenerate all WAV/metadata")
+    parser.add_argument(
+        "--preview-wav",
+        type=Path,
+        default=None,
+        help="Write concatenated low→high preview WAV (default: <cache>/all_notes_preview.wav)",
+    )
     args = parser.parse_args()
 
     geom = args.geometry_config if args.geometry_config.is_file() else None
@@ -334,6 +417,15 @@ def main() -> int:
         f"unique_notes={manifest['unique_note_count']} "
         f"positions={manifest['playable_position_count']}"
     )
+    preview_path = args.preview_wav
+    if preview_path is None:
+        preview_path = Path(manifest["cache_root"]) / "all_notes_preview.wav"
+    preview_info = build_frequency_ordered_preview(
+        Path(manifest["cache_root"]),
+        preview_path,
+    )
+    print(f"preview_wav={preview_info['preview_wav']}")
+    print(f"preview_notes={preview_info['note_count']} duration_s={preview_info['duration_s']:.2f}")
     return 0
 
 
