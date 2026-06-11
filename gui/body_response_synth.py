@@ -7,7 +7,7 @@ Signal path (physically motivated):
   -> H_body(f) = sum_m W_m H_m(f)  [primary timbre / radiation]
   + small direct attack tap      [pitch anchor / pluck clarity only]
 
-All modes in the validated body band contribute. Final peak normalize once.
+All modes in the validated body band contribute. Final RMS target + soft limiter.
 """
 from __future__ import annotations
 
@@ -38,6 +38,11 @@ Q_MAX = 75.0
 CONTRIBUTION_THRESHOLD_REL = 1e-5
 TOP_CONTRIBUTING_MODES_N = 15
 HARMONIC_ROLLOFF_POWER = 1.15
+TARGET_RMS_DBFS = -18.0
+FINAL_PEAK_CEILING_DBFS = -1.0
+LOW_NOTE_FUNDAMENTAL_MAX_HZ = 165.0
+FUNDAMENTAL_ANCHOR_GAIN = 0.14
+FUNDAMENTAL_ANCHOR_DECAY_S = 1.35
 
 ModalInput = Union[Mapping[str, Any], Sequence[Mapping[str, Any]]]
 
@@ -56,6 +61,31 @@ def _rms(x: np.ndarray) -> float:
     if x.size == 0:
         return 0.0
     return float(math.sqrt(np.mean(np.asarray(x, dtype=np.float64) ** 2)))
+
+
+def _linear_from_dbfs(dbfs: float) -> float:
+    return float(10.0 ** (dbfs / 20.0))
+
+
+def _dbfs_from_linear(amplitude: float) -> float:
+    if amplitude <= 1e-12:
+        return -120.0
+    return float(20.0 * math.log10(amplitude))
+
+
+def _mode_radiation_damping_scale(mode: Mapping[str, Any]) -> float:
+    """Air/radiation increases energy loss (lower effective Q)."""
+    rad = _safe_float(mode.get("radiation_proxy"))
+    air = _safe_float(mode.get("air_share"))
+    mic = _safe_float(mode.get("mic_output_proxy"))
+    scale = 1.0
+    if rad is not None and rad > 0:
+        scale += 0.65 * min(rad, 0.05) / 0.05
+    if air is not None and air > 0:
+        scale += 0.45 * min(air, 0.5)
+    if mic is not None and mic > 0:
+        scale += 0.20 * min(mic, 0.05) / 0.05
+    return max(1.0, min(2.8, scale))
 
 
 def parse_modal_modes(modal_data: ModalInput) -> Tuple[List[Dict[str, Any]], List[str]]:
@@ -191,10 +221,11 @@ def compute_mode_weight_components(
 
 
 def estimate_mode_q(mode: Mapping[str, Any], f_hz: float, defaults_used: List[str]) -> float:
+    damp_scale = _mode_radiation_damping_scale(mode)
     for key in ("Q", "q", "modal_q", "quality_factor"):
         q = _safe_float(mode.get(key))
         if q is not None and q > 0:
-            return float(max(Q_MIN, min(Q_MAX, q)))
+            return float(max(Q_MIN, min(Q_MAX, q / damp_scale)))
 
     air = _safe_float(mode.get("air_share")) or 0.22
     wood = (_safe_float(mode.get("top_share")) or 0.33) + (_safe_float(mode.get("back_share")) or 0.33)
@@ -202,11 +233,21 @@ def estimate_mode_q(mode: Mapping[str, Any], f_hz: float, defaults_used: List[st
     f_norm = min(max((f_hz - lo) / max(hi - lo, 1.0), 0.0), 1.0)
     q_est = (42.0 + 28.0 * air + 10.0 * wood) * (1.0 - 0.32 * f_norm)
     defaults_used.append("Q_estimated_from_frequency_and_participation")
-    return float(max(Q_MIN, min(Q_MAX, q_est)))
+    if damp_scale > 1.01:
+        defaults_used.append("radiation_air_damping_applied_to_Q")
+    return float(max(Q_MIN, min(Q_MAX, q_est / damp_scale)))
 
 
-def _total_q_with_radiation_loss(q_wood: float, f_hz: float, rad_k: float) -> float:
+def _total_q_with_radiation_loss(
+    q_wood: float,
+    f_hz: float,
+    rad_k: float,
+    *,
+    radiation_proxy: float = 0.0,
+) -> float:
     inv_q = (1.0 / max(q_wood, 0.5)) + rad_k * (f_hz / 1000.0)
+    if radiation_proxy > 0:
+        inv_q += 0.035 * radiation_proxy * math.sqrt(max(f_hz, 1.0) / 200.0)
     return max(0.5, 1.0 / max(inv_q, 1e-9))
 
 
@@ -245,8 +286,11 @@ def harmonic_series(
         pluck_factor = abs(math.sin(math.pi * pluck_position * k))
         if pluck_factor < 1e-8:
             continue
+        amp = pluck_factor / (k ** HARMONIC_ROLLOFF_POWER)
+        if k == 1 and f0 <= LOW_NOTE_FUNDAMENTAL_MAX_HZ:
+            amp *= 1.55
         harm_f.append(fk)
-        harm_a.append(pluck_factor / (k ** HARMONIC_ROLLOFF_POWER))
+        harm_a.append(amp)
     return harm_f, harm_a
 
 
@@ -259,8 +303,34 @@ def nearest_harmonic_hz(mode_hz: float, f0: float, harmonics_hz: Sequence[float]
 def _pluck_attack_envelope(n: int, sample_rate: int) -> np.ndarray:
     """Short onset emphasis for pluck realism (deterministic)."""
     t = np.arange(n, dtype=np.float64) / float(sample_rate)
-    transient = 1.0 + 1.8 * np.exp(-t / max(PLUCK_TRANSIENT_MS, 1e-4))
+    transient = 1.0 + 0.75 * np.exp(-t / max(PLUCK_TRANSIENT_MS, 1e-4))
     return transient
+
+
+def _fundamental_pitch_anchor(
+    frequency_hz: float,
+    duration_s: float,
+    sample_rate: int,
+    *,
+    velocity: float = DEFAULT_VELOCITY,
+) -> np.ndarray:
+    """Subtle low-note fundamental anchor — not a dominant pure sine."""
+    f0 = float(frequency_hz)
+    if f0 > LOW_NOTE_FUNDAMENTAL_MAX_HZ:
+        return np.zeros(max(1, int(duration_s * sample_rate)), dtype=np.float64)
+    n = max(1, int(duration_s * sample_rate))
+    t = np.arange(n, dtype=np.float64) / float(sample_rate)
+    attack = 1.0 - np.exp(-t / 0.010)
+    decay = np.exp(-t / FUNDAMENTAL_ANCHOR_DECAY_S)
+    blend = 0.65 + 0.35 * np.exp(-t / 0.25)
+    return (
+        FUNDAMENTAL_ANCHOR_GAIN
+        * velocity
+        * blend
+        * np.sin(2.0 * math.pi * f0 * t)
+        * attack
+        * decay
+    )
 
 
 def _direct_attack_tap(dry: np.ndarray, sample_rate: int) -> np.ndarray:
@@ -284,12 +354,15 @@ def synthesize_plucked_string(
     signal = np.zeros(n, dtype=np.float64)
     f0 = max(1.0, float(frequency_hz))
     harm_f, harm_a = harmonic_series(frequency_hz, sample_rate, pluck_position=pluck_position)
+    max_harm_n = max(1, len(harm_f))
     for fk, ak in zip(harm_f, harm_a):
         amp_k = velocity * amplitude * ak
         k = max(1, int(round(fk / f0)))
-        tau_k = 0.55 + 2.8 / (k ** 0.82)
-        phase = 0.0
-        signal += amp_k * np.sin(2.0 * math.pi * fk * t + phase) * np.exp(-t / tau_k)
+        tau_k = 0.48 + 3.4 / (k ** 0.92)
+        tau_k *= 1.0 + 0.22 * (k / max_harm_n)
+        if f0 <= LOW_NOTE_FUNDAMENTAL_MAX_HZ and k == 1:
+            tau_k *= 1.35
+        signal += amp_k * np.sin(2.0 * math.pi * fk * t) * np.exp(-t / tau_k)
     signal *= _pluck_attack_envelope(n, sample_rate)
     return signal
 
@@ -335,7 +408,12 @@ def synthesize_body_via_transfer_function(
         comp = compute_mode_weight_components(mode, defaults_used=defaults_used, flags=flags)
         w = comp["combined"]
         q_wood = estimate_mode_q(mode, f_m, defaults_used)
-        q_total = _total_q_with_radiation_loss(q_wood, f_m, FIXED_RAD_K)
+        q_total = _total_q_with_radiation_loss(
+            q_wood,
+            f_m,
+            FIXED_RAD_K,
+            radiation_proxy=float(comp.get("radiation_weight") or 0.0),
+        )
         flags["q_or_damping_used"] = True
         q_values.append(q_total)
         H_m = _complex_mode_response(freqs, f_m, q_total)
@@ -383,24 +461,75 @@ def synthesize_body_via_transfer_function(
     return body, contributions, q_values
 
 
-def write_wav_int16(path: Path, samples: np.ndarray, sample_rate: int) -> Tuple[float, float]:
-    """Write mono int16 WAV; return (peak_before_normalize, normalization_gain)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+def apply_loudness_finalize(
+    samples: np.ndarray,
+    *,
+    target_rms_dbfs: float = TARGET_RMS_DBFS,
+    peak_ceiling_dbfs: float = FINAL_PEAK_CEILING_DBFS,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """
+    Target-RMS gain, then tanh soft limiter, then peak ceiling.
+    Avoids loudness collapse from peak-normalizing a short transient only.
+    """
     x = np.asarray(samples, dtype=np.float64)
     if not np.all(np.isfinite(x)):
-        raise ValueError("WAV samples contain NaN or Inf")
-    peak = float(np.max(np.abs(x))) if x.size else 0.0
-    norm_gain = 1.0
-    if peak > 0:
-        norm_gain = 0.95 / peak
-        x = x * norm_gain
-    pcm = np.clip(x * 32767.0, -32767, 32767).astype(np.int16)
+        raise ValueError("Samples contain NaN or Inf")
+
+    target_rms = _linear_from_dbfs(target_rms_dbfs)
+    ceiling = _linear_from_dbfs(peak_ceiling_dbfs)
+    rms_in = _rms(x)
+    rms_gain = target_rms / max(rms_in, 1e-12)
+    y = x * rms_gain
+
+    peak_pre_limit = float(np.max(np.abs(y))) if y.size else 0.0
+    limiter_used = False
+    limiter_gr_db = 0.0
+
+    if peak_pre_limit > ceiling * 0.92:
+        limiter_used = True
+        drive = max(peak_pre_limit / ceiling, 1.0)
+        y = ceiling * np.tanh(y / max(peak_pre_limit, 1e-12) * drive) / math.tanh(drive)
+        peak_after = float(np.max(np.abs(y))) if y.size else 0.0
+        if peak_after > ceiling:
+            y *= ceiling / peak_after
+            peak_after = ceiling
+        if peak_pre_limit > 1e-12:
+            limiter_gr_db = _dbfs_from_linear(peak_after) - _dbfs_from_linear(peak_pre_limit)
+    else:
+        peak_after = peak_pre_limit
+        if peak_after > ceiling:
+            limiter_used = True
+            y *= ceiling / peak_after
+            limiter_gr_db = _dbfs_from_linear(ceiling) - _dbfs_from_linear(peak_after)
+            peak_after = ceiling
+
+    rms_out = _rms(y)
+    info = {
+        "target_rms_dbfs": target_rms_dbfs,
+        "final_peak_ceiling_dbfs": peak_ceiling_dbfs,
+        "rms_gain_applied": rms_gain,
+        "peak_before_loudness": peak_pre_limit,
+        "limiter_used": limiter_used,
+        "limiter_gain_reduction_db": round(limiter_gr_db, 4),
+        "output_rms_dbfs": round(_dbfs_from_linear(rms_out), 4),
+        "output_peak_dbfs": round(_dbfs_from_linear(peak_after), 4),
+        "peak_before_normalize": peak_pre_limit,
+        "final_peak_normalization_gain": rms_gain,
+    }
+    return y, info
+
+
+def write_wav_int16(path: Path, samples: np.ndarray, sample_rate: int) -> Dict[str, Any]:
+    """Write mono int16 WAV after loudness finalize."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    y, loudness_info = apply_loudness_finalize(samples)
+    pcm = np.clip(y * 32767.0, -32767, 32767).astype(np.int16)
     with wave.open(str(path), "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(int(sample_rate))
         wf.writeframes(pcm.tobytes())
-    return peak, norm_gain
+    return loudness_info
 
 
 def synthesize_note_with_body_response(
@@ -474,9 +603,18 @@ def synthesize_note_with_body_response(
     body_signal = body_raw * body_gain_applied
     body_rms_before = _rms(body_signal)
     mixed = body_signal + dry_gain_applied * direct_tap
+    fundamental_anchor_used = float(frequency_hz) <= LOW_NOTE_FUNDAMENTAL_MAX_HZ
+    if fundamental_anchor_used:
+        mixed += _fundamental_pitch_anchor(
+            frequency_hz,
+            duration_s,
+            sample_rate,
+            velocity=velocity,
+        )
+        defaults_used.append("low_note_fundamental_anchor")
     final_dry_to_body_rms_ratio = (dry_gain_applied * dry_rms_before) / max(body_rms_before, 1e-12)
 
-    peak_before, final_peak_normalization_gain = write_wav_int16(Path(output_wav), mixed, sample_rate)
+    loudness_info = write_wav_int16(Path(output_wav), mixed, sample_rate)
 
     hf_fallback = _high_note_hf_fallback(float(frequency_hz))
     max_contrib = max((c["contribution_weight"] for c in contributions), default=0.0)
@@ -534,8 +672,16 @@ def synthesize_note_with_body_response(
         "dry_gain_applied": round(dry_gain_applied, 6),
         "body_gain_applied": round(body_gain_applied, 6),
         "final_dry_to_body_rms_ratio": round(final_dry_to_body_rms_ratio, 6),
-        "final_peak_normalization_gain": round(final_peak_normalization_gain, 6),
-        "peak_before_normalize": peak_before,
+        "fundamental_anchor_used": fundamental_anchor_used,
+        "target_rms_dbfs": loudness_info["target_rms_dbfs"],
+        "final_peak_ceiling_dbfs": loudness_info["final_peak_ceiling_dbfs"],
+        "output_rms_dbfs": loudness_info["output_rms_dbfs"],
+        "output_peak_dbfs": loudness_info["output_peak_dbfs"],
+        "limiter_used": loudness_info["limiter_used"],
+        "limiter_gain_reduction_db": loudness_info["limiter_gain_reduction_db"],
+        "rms_gain_applied": round(loudness_info["rms_gain_applied"], 6),
+        "final_peak_normalization_gain": round(loudness_info["final_peak_normalization_gain"], 6),
+        "peak_before_normalize": loudness_info["peak_before_normalize"],
         "q_min": q_min,
         "q_median": q_median,
         "q_max": q_max,
@@ -549,6 +695,9 @@ def synthesize_note_with_body_response(
             "body_reference_gain": BODY_REFERENCE_GAIN,
             "rad_k": FIXED_RAD_K,
             "q_clamp": [Q_MIN, Q_MAX],
+            "target_rms_dbfs": TARGET_RMS_DBFS,
+            "peak_ceiling_dbfs": FINAL_PEAK_CEILING_DBFS,
+            "fundamental_anchor_gain": FUNDAMENTAL_ANCHOR_GAIN,
         },
         "output_wav": str(output_wav),
         "samples_finite": True,
@@ -594,7 +743,7 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description="Body-response note smoke test")
     parser.add_argument("--modal-json", type=Path, default=None)
-    parser.add_argument("--out-dir", type=Path, default=Path("audio/stage1"))
+    parser.add_argument("--out-dir", type=Path, default=Path("audio/stage1_loudness"))
     parser.add_argument("--duration", type=float, default=DEFAULT_DURATION_S)
     args = parser.parse_args()
 
@@ -621,9 +770,8 @@ def main() -> int:
             output_metadata_json=meta_path,
         )
         print(
-            f"{name}: avail={meta['available_modal_count']} eval={meta['evaluated_modal_count']} "
-            f"body/dry_rms_ratio={meta['body_rms_before_mix'] / max(meta['dry_rms_before_mix'], 1e-9):.1f} "
-            f"hf={meta['high_frequency_fallback_used']}"
+            f"{name}: rms={meta['output_rms_dbfs']:.1f} dBFS peak={meta['output_peak_dbfs']:.1f} dBFS "
+            f"limiter={meta['limiter_used']} hf={meta['high_frequency_fallback_used']}"
         )
     return 0
 

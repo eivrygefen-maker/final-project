@@ -53,7 +53,7 @@ class BodyResponseSynthTests(unittest.TestCase):
 
     def test_e2_a4_e5_smoke(self) -> None:
         modal = self._spread_modal_fixture()
-        cases = (("E2", 82.41), ("A4", 440.0), ("E5", 659.25))
+        cases = (("E2", 82.41), ("A2", 110.0), ("A4", 440.0), ("E5", 659.25))
         lo, hi = FULL_MODAL_BAND_HZ
         for name, hz in cases:
             wav = self.out_dir / f"{name}.wav"
@@ -85,6 +85,12 @@ class BodyResponseSynthTests(unittest.TestCase):
                 3.0,
                 name,
             )
+            self.assertGreater(meta["output_rms_dbfs"], -24.0, name)
+            self.assertLessEqual(meta["output_peak_dbfs"], -0.5, name)
+            self.assertIn("limiter_used", meta)
+            self.assertIn("target_rms_dbfs", meta)
+            if name in ("E2", "A2"):
+                self.assertTrue(meta["fundamental_anchor_used"], name)
             if name == "E5":
                 self.assertTrue(meta["high_frequency_fallback_used"])
             else:
@@ -187,6 +193,13 @@ class BodyResponseSynthTests(unittest.TestCase):
             "body_gain_applied",
             "final_dry_to_body_rms_ratio",
             "final_peak_normalization_gain",
+            "output_rms_dbfs",
+            "output_peak_dbfs",
+            "target_rms_dbfs",
+            "limiter_used",
+            "limiter_gain_reduction_db",
+            "final_peak_ceiling_dbfs",
+            "fundamental_anchor_used",
             "q_min",
             "q_median",
             "q_max",
