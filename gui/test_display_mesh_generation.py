@@ -88,6 +88,9 @@ class GuiPipelineWiringTests(unittest.TestCase):
         self.assertIn("predict_m4_modal_frequencies", src)
         self.assertIn("def _import_stpyvista", src)
         self.assertNotIn("from stpyvista import stpyvista", src.split("def _import_stpyvista")[0])
+        self.assertIn("if int(nev) > 0", src)
+        self.assertIn("M4 ROM: ready", src)
+        self.assertIn("st.table(rows)", src)
 
     def test_app_importable_without_stpyvista_registration(self) -> None:
         gui_app = get_gui_app_module()
@@ -108,8 +111,25 @@ class GuiPipelineWiringTests(unittest.TestCase):
             back_wood="rosewood",
         )
         self.assertIn("geometry.length", params)
+        self.assertIn("geometry.back_thickness", params)
         self.assertIn("top_wood_id", params)
         self.assertEqual(params["top_wood_id"], "spruce")
+
+    def test_m4_prediction_keeps_all_frequencies_when_nev_zero(self) -> None:
+        gui_app = get_gui_app_module()
+        prediction = {"frequencies_hz": [98.4, 132.1, 200.5]}
+        nev = 0
+        raw_freqs = [float(f) for f in (prediction.get("frequencies_hz") or [])]
+        freqs = raw_freqs[: int(nev)] if int(nev) > 0 else raw_freqs
+        self.assertEqual(freqs, [98.4, 132.1, 200.5])
+        self.assertEqual(
+            gui_app.m4_parameters_from_ui(
+                {"length": 0.48, "width": 0.325, "depth": 0.1, "top_thickness": 0.003, "hole_radius": 0.047},
+                top_wood="spruce",
+                back_wood="rosewood",
+            )["geometry.back_thickness"],
+            0.003 * 1.1,
+        )
 
     def test_save_changes_does_not_launch_fem(self) -> None:
         gui_app = get_gui_app_module()

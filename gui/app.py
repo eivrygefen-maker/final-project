@@ -492,12 +492,17 @@ def inject_studio_viewport_css() -> None:
             position: relative !important;
             min-height: {h}px !important;
             overflow: visible !important;
+            display: flex !important;
+            flex-direction: column !important;
+            align-items: center !important;
         }}
         div[data-testid="stCustomComponentV1"] {{
             height: {h}px !important;
             min-height: {h}px !important;
             width: 100% !important;
-            max-width: 100% !important;
+            max-width: min(100%, 1200px) !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
             display: block !important;
             visibility: visible !important;
             opacity: 1 !important;
@@ -510,6 +515,8 @@ def inject_studio_viewport_css() -> None:
             width: 100% !important;
             max-width: 100% !important;
             display: block !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
             visibility: visible !important;
             opacity: 1 !important;
             border: none !important;
@@ -558,7 +565,6 @@ def mount_design_studio_iframe(initial: Dict[str, Any]) -> Optional[Dict[str, An
         initial=initial,
         key="fast_preview_geom",
         height=FAST_PREVIEW_HEIGHT,
-        width=FAST_PREVIEW_WIDTH,
     )
 
 
@@ -842,46 +848,54 @@ def predict_m4_modal_frequencies(
         m4_parameters_from_ui(geom, top_wood=top_wood, back_wood=back_wood),
         nev=int(nev),
     )
-    freqs = [float(f) for f in (prediction.get("frequencies_hz") or [])[:nev]]
+    raw_freqs = [float(f) for f in (prediction.get("frequencies_hz") or [])]
+    if int(nev) > 0:
+        freqs = raw_freqs[: int(nev)]
+    else:
+        freqs = raw_freqs
     return freqs, prediction
 
 
 def render_classic_pipeline_status(*, shape_type: str) -> None:
-    """Sidebar: active production profile + ROM availability (classic guitar)."""
+    """Sidebar: compact ROM status + optional debug expander (classic guitar)."""
     if rom_namespace(shape_type) != "classic":
         st.sidebar.caption(f"Shape namespace: `{rom_namespace(shape_type)}` (legacy ROM paths)")
         return
     prof = CLASSIC_PIPELINE_PROFILE
-    st.sidebar.markdown("**Classic production profile**")
-    st.sidebar.code(
-        "\n".join(
-            (
-                f"shape_name = {prof['shape_name']}",
-                f"mesh_profile = {prof['mesh_profile']}",
-                f"mesh_level_id = {prof['mesh_level_id']}",
-                f"dataset_version = {prof['dataset_version']}",
-                f"run_id_suffix = {prof['run_id_suffix']}",
-            )
-        ),
-        language=None,
-    )
     manifest = load_m4_rom_manifest(shape_type)
     if m4_rom_available(shape_type):
         count = int(manifest.get("training_sample_count") or manifest.get("total_training_count") or 0)
-        st.sidebar.success(
-            f"M4 ROM model ready · `{M4_ROM_MANIFEST.relative_to(BASE_DIR)}` "
-            f"({count} training samples)"
+        st.sidebar.caption(f"M4 ROM: ready, {count} training samples")
+        st.sidebar.caption(
+            f"profile: {prof['shape_name']} / {prof['mesh_profile']} / {prof['mesh_level_id']}"
         )
     else:
-        st.sidebar.warning(
-            "M4 ROM model not found. Build with:\n"
-            "`build_m4_rom_from_completed_fom.py --official-rom-mesh-only`"
+        st.sidebar.warning("M4 ROM: not found")
+    with st.sidebar.expander("Debug / pipeline details"):
+        st.code(
+            "\n".join(
+                (
+                    f"shape_name = {prof['shape_name']}",
+                    f"mesh_profile = {prof['mesh_profile']}",
+                    f"mesh_level_id = {prof['mesh_level_id']}",
+                    f"dataset_version = {prof['dataset_version']}",
+                    f"run_id_suffix = {prof['run_id_suffix']}",
+                )
+            ),
+            language=None,
         )
-    if M4_ROM_DATASET_REGISTRY.is_file():
-        n_reg = sum(1 for line in M4_ROM_DATASET_REGISTRY.read_text(encoding="utf-8").splitlines() if line.strip())
-        st.sidebar.caption(f"Official dataset registry: {n_reg} entries")
-    if M4_LHS_POOL.is_file():
-        st.sidebar.caption(f"LHS pool: `{M4_LHS_POOL.relative_to(BASE_DIR)}`")
+        if m4_rom_available(shape_type):
+            st.caption(f"Manifest: `{M4_ROM_MANIFEST.relative_to(BASE_DIR)}`")
+            st.caption(f"Surrogate: `{M4_ROM_SURROGATE_JSON.relative_to(BASE_DIR)}`")
+        else:
+            st.caption("Build: `build_m4_rom_from_completed_fom.py --official-rom-mesh-only`")
+        if M4_ROM_DATASET_REGISTRY.is_file():
+            n_reg = sum(
+                1 for line in M4_ROM_DATASET_REGISTRY.read_text(encoding="utf-8").splitlines() if line.strip()
+            )
+            st.caption(f"Official dataset registry: {n_reg} entries")
+        if M4_LHS_POOL.is_file():
+            st.caption(f"LHS pool: `{M4_LHS_POOL.relative_to(BASE_DIR)}`")
 
 
 def save_config(
@@ -1261,47 +1275,40 @@ def update_rom_online_prediction(
 
 
 def render_rom_metrics_dashboard(shape_type: str) -> None:
-    """Natural-frequency dashboard fed by the online ROM solver."""
+    """Natural-frequency table fed by the online ROM solver."""
     st.subheader("ROM modes")
     ns = rom_namespace(shape_type)
     basis = rom_basis_path(shape_type)
 
-    backend = str(st.session_state.get("rom_backend") or "")
-    if m4_rom_available(shape_type) and backend == "m4_modal_surrogate":
-        manifest = load_m4_rom_manifest(shape_type)
-        train_n = int(manifest.get("training_sample_count") or manifest.get("total_training_count") or 0)
-        st.caption(
-            f"M4 modal surrogate · `{M4_ROM_MANIFEST.relative_to(BASE_DIR)}` · "
-            f"{train_n} training samples"
-        )
-    elif st.session_state.get("rom_basis_missing") or not basis.is_file():
+    if not m4_rom_available(shape_type) and (
+        st.session_state.get("rom_basis_missing") or not basis.is_file()
+    ):
         st.info(
-            f"No ROM model for **{shape_type}**. Expected M4 surrogate at "
-            f"`ROM/{ns}/m4_modal_surrogate.{{json,npz}}` or legacy basis "
-            f"`ROM/{ns}/reduced_basis.npz`."
+            f"ROM prediction unavailable for **{shape_type}**. "
+            f"Expected `ROM/{ns}/m4_modal_surrogate.{{json,npz}}`."
         )
         return
 
     err = str(st.session_state.get("rom_solver_error") or "").strip()
     if err:
-        st.warning(f"ROM online solve: {err}")
+        st.warning(f"ROM prediction unavailable: {err}")
         return
 
     freqs: List[float] = list(st.session_state.get("rom_frequencies_hz") or [])
-    elapsed = float(st.session_state.get("rom_solve_elapsed_s") or 0.0)
     if not freqs:
-        st.caption("Adjust sliders to predict modes…")
+        st.caption("Move a slider to refresh modal frequencies.")
         return
 
-    st.caption(f"Online ROM · {len(freqs)} modes · {elapsed * 1000.0:.0f} ms")
-    row_size = 5
-    for row_start in range(0, min(len(freqs), ROM_ONLINE_MODES), row_size):
-        cols = st.columns(row_size)
-        for col_ix, col in enumerate(cols):
-            mode_ix = row_start + col_ix
-            if mode_ix >= len(freqs):
-                break
-            col.metric(f"Mode {mode_ix + 1}", f"{freqs[mode_ix]:.1f} Hz")
+    display_n = min(len(freqs), ROM_ONLINE_MODES)
+    elapsed = float(st.session_state.get("rom_solve_elapsed_s") or 0.0)
+    backend = str(st.session_state.get("rom_backend") or "rom")
+    st.caption(f"{backend} · {display_n} modes · {elapsed * 1000.0:.0f} ms")
+
+    rows = [
+        {"Mode": i + 1, "Frequency (Hz)": f"{float(freqs[i]):.1f} Hz"}
+        for i in range(display_n)
+    ]
+    st.table(rows)
 
 
 def write_stk_body_json(freqs_hz: Sequence[float], out_path: Path) -> Path:
