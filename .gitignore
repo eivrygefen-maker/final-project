@@ -21,6 +21,9 @@ audio/**/*.wav
 audio/**/*.json
 !audio/.gitkeep
 
+# Guitar player runtime WAV copies (served by Streamlit component iframe)
+gui/components/guitar_player/runtime_cache/
+
 # Editor — share workspace indexing excludes; ignore local launch/tasks
 .vscode/*
 !.vscode/settings.json

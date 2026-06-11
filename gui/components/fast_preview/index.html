@@ -627,13 +627,13 @@
     const WOOD_COLORS_BUILTIN = {
       spruce: "#C19A6B",
       cedar: "#5D4037",
-      maple: "#C8A574",
+      maple: "#A67C52",
       mahogany: "#795548",
       rosewood: "#3F2A20",
     };
     const WOOD_MATERIAL_OPTS = {
       spruce: { color: "#C19A6B", roughness: 1.0, metalness: 0.0 },
-      maple: { color: "#C8A574", roughness: 0.97, metalness: 0.0 },
+      maple: { color: "#A67C52", roughness: 0.99, metalness: 0.0 },
     };
     state.wood_colors = Object.assign({}, WOOD_COLORS_BUILTIN, state.wood_colors);
 
@@ -875,7 +875,7 @@
       const opts = woodMaterialOpts(woodId);
       const base = opts ? hexColor(opts.color) : woodColorHex(woodId);
       if (key !== "maple") return base;
-      const tint = mesh === meshBackRef ? 0.93 : (mesh === meshSidesRef ? 0.89 : 1.0);
+      const tint = mesh === meshBackRef ? 0.88 : (mesh === meshSidesRef ? 0.84 : 0.92);
       return base.clone().multiplyScalar(tint);
     }
 

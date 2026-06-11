@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Note-cache helpers for Stage 4 fretboard UI (manifest load, position lookup, no synthesis).
+Note-cache helpers for Stage 4 interactive guitar player (manifest, assets, no synthesis on click).
 """
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -21,6 +22,9 @@ from build_note_cache import (
 
 NOTE_CACHE_ROOT_NAME = "note_cache"
 DEFAULT_FRET_COUNT = 19
+
+_GUITAR_PLAYER_COMPONENT_DIR = Path(__file__).resolve().parent / "components" / "guitar_player"
+RUNTIME_CACHE_DIR = _GUITAR_PLAYER_COMPONENT_DIR / "runtime_cache"
 
 
 def note_cache_root(repo_root: Path) -> Path:
@@ -153,13 +157,6 @@ def lookup_position(
     return dict(position_lookup[key])
 
 
-def read_wav_bytes(wav_path: Path) -> bytes:
-    path = Path(wav_path)
-    if not path.is_file():
-        raise FileNotFoundError(path)
-    return path.read_bytes()
-
-
 def preview_wav_path(cache_root: Path) -> Path:
     return Path(cache_root) / "all_notes_preview.wav"
 
@@ -172,7 +169,7 @@ def build_cache_safe(
     geometry_config: Optional[Path] = None,
     force: bool = False,
 ) -> Dict[str, Any]:
-    """Build note cache (no FEM) — wrapper for GUI button."""
+    """Build note cache (no FEM) — used by Generate Sound."""
     geom = geometry_config if geometry_config and geometry_config.is_file() else None
     return build_note_cache(
         modal_json=modal_json,
@@ -183,127 +180,90 @@ def build_cache_safe(
     )
 
 
-def fretboard_note_label(position: Optional[Mapping[str, Any]]) -> str:
-    if not position:
-        return "—"
-    note_id = str(position.get("note_id") or "")
-    return note_id if len(note_id) <= 4 else note_id[:4]
+def prepare_player_assets(cache_root: Path, manifest: Mapping[str, Any]) -> Path:
+    """
+    Copy unique note WAVs (+ preview) into the guitar_player component runtime folder
+    so the iframe can fetch them without Streamlit reruns.
+    """
+    cache_root = Path(cache_root)
+    fingerprint = str(manifest.get("guitar_fingerprint") or cache_root.name)
+    dest = RUNTIME_CACHE_DIR / fingerprint
+    dest.mkdir(parents=True, exist_ok=True)
+
+    for note in manifest.get("notes") or []:
+        note_id = str(note.get("note_id") or "")
+        wav_rel = str(note.get("wav_path") or "")
+        if not note_id or not wav_rel:
+            continue
+        src = cache_root / wav_rel
+        if src.is_file():
+            shutil.copy2(src, dest / f"{note_id}.wav")
+
+    preview_src = preview_wav_path(cache_root)
+    if preview_src.is_file():
+        shutil.copy2(preview_src, dest / "all_notes_preview.wav")
+
+    return dest
 
 
-def render_fretboard_panel(
-    st_module: Any,
+def build_player_payload(
+    resolved: Mapping[str, Any],
     *,
-    repo_root: Path,
-    modal_json: Path,
-    geometry_config: Optional[Path] = None,
-    rom_body_ready: bool,
-) -> None:
-    """Streamlit fretboard section — plays cached WAVs only."""
-    st_module.subheader("Fretboard (note cache)")
-    cache_root = note_cache_root(repo_root)
-    expected_fp = None
-    if modal_json.is_file():
-        expected_fp = expected_note_cache_fingerprint(
-            modal_json=modal_json,
-            geometry_config=geometry_config,
-        )
-    resolved = resolve_note_cache(cache_root, expected_fingerprint=expected_fp)
-    status = resolved["status"]
+    ui_status: str,
+) -> Dict[str, Any]:
+    """
+    JSON passed to the guitar_player Streamlit component.
+
+    ui_status: hidden | building | ready | stale | missing
+    """
+    status = str(ui_status or "hidden").lower()
     manifest = resolved.get("manifest")
-    cache_dir = resolved.get("cache_root")
+    if status not in ("ready", "building") or not manifest:
+        return {"status": status, "positions": [], "fingerprint": ""}
 
-    if status == "missing":
-        st_module.caption("Note cache: **missing**")
-        st_module.info("Generate the note cache first (requires ROM body response).")
-        if rom_body_ready and modal_json.is_file():
-            if st_module.button("Build note cache", key="btn_build_note_cache", use_container_width=True):
-                with st_module.spinner("Building note cache (no live synthesis on fretboard clicks)…"):
-                    try:
-                        build_cache_safe(
-                            modal_json=modal_json,
-                            out_root=cache_root,
-                            geometry_config=geometry_config,
-                            force=True,
-                        )
-                        st_module.session_state.pop("fretboard_wav_bytes", None)
-                        st_module.success("Note cache built.")
-                        st_module.rerun()
-                    except Exception as exc:
-                        st_module.error(f"Note cache build failed: {exc}")
-        return
-
-    fp = resolved.get("guitar_fingerprint") or "?"
-    if status == "stale":
-        st_module.warning(
-            f"Note cache: **stale** — loaded `{fp[:12]}…` "
-            f"(expected `{str(expected_fp)[:12]}…`). Rebuild after Save & Sync."
-        )
-    else:
-        st_module.caption(f"Note cache: **ready** · fingerprint `{fp[:16]}…`")
-
-    if manifest:
-        st_module.caption(
-            f"{manifest.get('unique_note_count', '?')} unique notes · "
-            f"{manifest.get('playable_position_count', '?')} positions · "
-            f"frets 0–{manifest.get('fret_count', '?')}"
+    fingerprint = str(manifest.get("guitar_fingerprint") or resolved.get("guitar_fingerprint") or "")
+    positions: List[Dict[str, Any]] = []
+    for pos in manifest.get("positions") or []:
+        note_id = str(pos.get("note_id") or "")
+        positions.append(
+            {
+                "string": int(pos["string_number"]),
+                "fret": int(pos["fret"]),
+                "note_id": note_id,
+                "wav": f"{note_id}.wav",
+            }
         )
 
-    preview = preview_wav_path(Path(cache_dir)) if cache_dir else None
-    if preview and preview.is_file():
-        if st_module.button("Play all notes preview", key="btn_play_note_cache_preview", use_container_width=True):
-            st_module.session_state["fretboard_wav_bytes"] = read_wav_bytes(preview)
-            st_module.session_state["fretboard_play_label"] = "all_notes_preview"
+    return {
+        "status": status,
+        "fingerprint": fingerprint,
+        "fret_count": int(manifest.get("fret_count") or DEFAULT_FRET_COUNT),
+        "unique_note_count": manifest.get("unique_note_count"),
+        "playable_position_count": manifest.get("playable_position_count"),
+        "positions": positions,
+    }
 
-    lookup = resolved.get("position_lookup") or {}
-    fret_count = int((manifest or {}).get("fret_count") or DEFAULT_FRET_COUNT)
-    frets = list(range(fret_count + 1))
 
-    header_cols = st_module.columns([1] + [1] * len(frets))
-    with header_cols[0]:
-        st_module.caption("Str")
-    for i, fret in enumerate(frets):
-        with header_cols[i + 1]:
-            st_module.caption(str(fret))
-
-    for string_number in (6, 5, 4, 3, 2, 1):
-        row = st_module.columns([1] + [1] * len(frets))
-        with row[0]:
-            st_module.markdown(f"**{string_number}**")
-        for i, fret in enumerate(frets):
-            pos = lookup_position(lookup, string_number, fret)
-            label = fretboard_note_label(pos)
-            with row[i + 1]:
-                if st_module.button(
-                    label,
-                    key=f"fret_s{string_number}_f{fret}",
-                    use_container_width=True,
-                    disabled=pos is None,
-                ):
-                    if pos and cache_dir:
-                        wav = resolve_wav_path(Path(cache_dir), str(pos["wav_path"]))
-                        st_module.session_state["fretboard_wav_bytes"] = read_wav_bytes(wav)
-                        st_module.session_state["fretboard_play_label"] = (
-                            f"S{string_number} F{fret} · {pos.get('note_id', '')}"
-                        )
-
-    wav_bytes = st_module.session_state.get("fretboard_wav_bytes")
-    if wav_bytes:
-        label = st_module.session_state.get("fretboard_play_label") or "note"
-        st_module.caption(f"Playing: {label}")
-        st_module.audio(wav_bytes, format="audio/wav")
-
-    if status == "stale" and rom_body_ready and modal_json.is_file():
-        if st_module.button("Rebuild note cache", key="btn_rebuild_note_cache", use_container_width=True):
-            with st_module.spinner("Rebuilding note cache…"):
-                try:
-                    build_cache_safe(
-                        modal_json=modal_json,
-                        out_root=cache_root,
-                        geometry_config=geometry_config,
-                        force=True,
-                    )
-                    st_module.session_state.pop("fretboard_wav_bytes", None)
-                    st_module.success("Note cache rebuilt.")
-                    st_module.rerun()
-                except Exception as exc:
-                    st_module.error(f"Rebuild failed: {exc}")
+def note_cache_ui_status(
+    *,
+    sound_stale: bool,
+    note_cache_ready_fp: str,
+    expected_fingerprint: Optional[str],
+    resolved: Mapping[str, Any],
+    building: bool = False,
+) -> str:
+    """Derive player UI state for the current guitar session."""
+    if building:
+        return "building"
+    if sound_stale or not note_cache_ready_fp:
+        return "hidden"
+    if not expected_fingerprint:
+        return "hidden"
+    if note_cache_ready_fp != expected_fingerprint:
+        return "stale"
+    cache_status = str(resolved.get("status") or "missing")
+    if cache_status == "missing":
+        return "hidden"
+    if cache_status == "stale":
+        return "stale"
+    return "ready"

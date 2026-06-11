@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Guitar Player</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #1e2128;
+      --panel: #2a2d35;
+      --fretboard: #3d2817;
+      --fretboard-edge: #1a1008;
+      --string: #c8c2b8;
+      --fret-line: #d4cfc4;
+      --nut: #f0ebe3;
+      --fret-marker: rgba(255, 255, 255, 0.22);
+      --fret-marker-dot: rgba(255, 255, 255, 0.55);
+      --cell-hover: rgba(255, 75, 75, 0.28);
+      --cell-active: rgba(255, 75, 75, 0.55);
+      --text: #f3f4f6;
+      --muted: #9ca3af;
+      --accent: #ff4b4b;
+      --radius: 10px;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      font-family: "Source Sans 3", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      overflow: hidden;
+    }
+    .wrap {
+      padding: 12px 16px 16px;
+      max-width: 100%;
+    }
+    .header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .header h2 {
+      margin: 0;
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+    }
+    .status {
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    .status.ready { color: #86efac; }
+    .status.stale { color: #fcd34d; }
+    .status.building { color: #93c5fd; }
+    .now-playing {
+      min-height: 1.4em;
+      font-size: 0.92rem;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .now-playing strong { color: var(--text); }
+    .guitar-shell {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 0;
+      border-radius: var(--radius);
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+    }
+    .headstock {
+      height: 36px;
+      background: linear-gradient(180deg, #4a3728 0%, #2f2118 100%);
+      border-bottom: 2px solid var(--fretboard-edge);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      color: var(--muted);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .neck-scroll {
+      overflow-x: auto;
+      overflow-y: hidden;
+      background: var(--fretboard-edge);
+    }
+    .neck {
+      position: relative;
+      min-width: 100%;
+      background: linear-gradient(180deg, #4a3220 0%, var(--fretboard) 18%, var(--fretboard) 82%, #4a3220 100%);
+      padding: 10px 8px 12px;
+    }
+    .fret-labels {
+      display: grid;
+      grid-template-columns: 44px repeat(var(--fret-cols, 20), minmax(34px, 1fr));
+      gap: 0;
+      margin-bottom: 4px;
+      padding-right: 4px;
+    }
+    .fret-labels span {
+      text-align: center;
+      font-size: 0.68rem;
+      color: var(--muted);
+      user-select: none;
+    }
+    .fret-labels .corner { visibility: hidden; }
+    .strings {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+    .string-row {
+      display: grid;
+      grid-template-columns: 44px repeat(var(--fret-cols, 20), minmax(34px, 1fr));
+      align-items: center;
+      position: relative;
+      height: 34px;
+    }
+    .string-row::after {
+      content: "";
+      position: absolute;
+      left: 44px;
+      right: 4px;
+      top: 50%;
+      height: 1.5px;
+      background: linear-gradient(90deg, var(--string) 0%, #e8e4dc 50%, var(--string) 100%);
+      pointer-events: none;
+      z-index: 1;
+      opacity: 0.85;
+    }
+    .string-row:nth-child(1)::after { height: 1px; opacity: 0.7; }
+    .string-row:nth-child(2)::after { height: 1.2px; }
+    .string-row:nth-child(3)::after { height: 1.4px; }
+    .string-row:nth-child(4)::after { height: 1.6px; }
+    .string-row:nth-child(5)::after { height: 1.8px; }
+    .string-row:nth-child(6)::after { height: 2px; }
+    .string-label {
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--muted);
+      text-align: center;
+      user-select: none;
+      z-index: 2;
+    }
+    .fret-cell {
+      position: relative;
+      height: 100%;
+      cursor: pointer;
+      z-index: 2;
+      border-left: 2px solid var(--fret-line);
+    }
+    .fret-cell:first-of-type {
+      border-left: 5px solid var(--nut);
+    }
+    .fret-cell:hover { background: var(--cell-hover); }
+    .fret-cell.active {
+      background: var(--cell-active);
+      transition: background 0.08s ease-out;
+    }
+    .fret-cell.disabled {
+      cursor: default;
+      opacity: 0.35;
+    }
+    .fret-markers {
+      position: absolute;
+      left: 44px;
+      right: 4px;
+      top: 0;
+      bottom: 0;
+      pointer-events: none;
+      display: grid;
+      grid-template-columns: repeat(var(--fret-cols, 20), minmax(34px, 1fr));
+      z-index: 0;
+    }
+    .fret-marker-slot {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .fret-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--fret-marker-dot);
+      opacity: 0;
+    }
+    .fret-marker-slot.inlay .fret-dot { opacity: 1; }
+    .bridge {
+      height: 14px;
+      background: linear-gradient(180deg, #2a2d35 0%, #1a1c22 100%);
+      border-top: 2px solid #4b5563;
+    }
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      margin-top: 10px;
+      align-items: center;
+    }
+    button.secondary {
+      background: var(--panel);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 8px 14px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    button.secondary:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: #fff;
+    }
+    button.secondary:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+    .idle {
+      padding: 48px 24px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.95rem;
+      line-height: 1.5;
+      border: 1px dashed rgba(255, 255, 255, 0.12);
+      border-radius: var(--radius);
+    }
+    .preload-bar {
+      height: 3px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 2px;
+      margin-top: 8px;
+      overflow: hidden;
+      display: none;
+    }
+    .preload-bar.visible { display: block; }
+    .preload-bar > div {
+      height: 100%;
+      width: 0%;
+      background: var(--accent);
+      transition: width 0.15s ease;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="header">
+      <h2>Guitar Player</h2>
+      <span id="statusBadge" class="status">—</span>
+    </div>
+    <div id="nowPlaying" class="now-playing"></div>
+    <div id="idlePanel" class="idle" hidden>
+      Click <strong>Generate sound</strong> after Save &amp; Sync to build the note cache and open the interactive fretboard.
+    </div>
+    <div id="playerPanel" hidden>
+      <div class="guitar-shell">
+        <div class="headstock">Nut</div>
+        <div class="neck-scroll">
+          <div class="neck" id="neck">
+            <div class="fret-labels" id="fretLabels"></div>
+            <div class="strings" id="strings"></div>
+          </div>
+        </div>
+        <div class="bridge"></div>
+      </div>
+      <div class="preload-bar" id="preloadBar"><div id="preloadFill"></div></div>
+      <div class="toolbar">
+        <button type="button" class="secondary" id="btnPreview" disabled>Play all notes preview</button>
+      </div>
+    </div>
+  </div>
+  <script src="./streamlit_bridge.js"></script>
+  <script>
+    (function () {
+      "use strict";
+
+      var INLAY_FRETS = { 3: 1, 5: 1, 7: 1, 9: 1, 12: 2, 15: 1, 17: 1, 19: 1 };
+      var STRING_NUMBERS = [1, 2, 3, 4, 5, 6];
+
+      var audioCtx = null;
+      var buffers = {};
+      var previewBuffer = null;
+      var activeSource = null;
+      var currentPayloadKey = "";
+      var lastCell = null;
+
+      function ensureAudioContext() {
+        if (!audioCtx) {
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioCtx.state === "suspended") {
+          audioCtx.resume();
+        }
+        return audioCtx;
+      }
+
+      function payloadKey(player) {
+        return String(player.fingerprint || "") + "|" + String(player.status || "");
+      }
+
+      function assetUrl(fingerprint, wavFile) {
+        return "./runtime_cache/" + encodeURIComponent(fingerprint) + "/" + encodeURIComponent(wavFile);
+      }
+
+      function decodeArrayBuffer(buf) {
+        return ensureAudioContext().decodeAudioData(buf.slice(0));
+      }
+
+      function fetchWav(url) {
+        return fetch(url).then(function (res) {
+          if (!res.ok) throw new Error("fetch failed " + url);
+          return res.arrayBuffer();
+        });
+      }
+
+      function preloadNotes(player, onProgress) {
+        var fp = player.fingerprint;
+        var unique = {};
+        (player.positions || []).forEach(function (p) {
+          if (p.wav) unique[p.wav] = true;
+        });
+        var files = Object.keys(unique);
+        var done = 0;
+        buffers = {};
+        previewBuffer = null;
+
+        if (!files.length) return Promise.resolve();
+
+        return files.reduce(function (chain, wav) {
+          return chain.then(function () {
+            return fetchWav(assetUrl(fp, wav))
+              .then(decodeArrayBuffer)
+              .then(function (decoded) {
+                buffers[wav] = decoded;
+                done += 1;
+                if (onProgress) onProgress(done / files.length);
+              });
+          });
+        }, Promise.resolve()).then(function () {
+          var previewUrl = assetUrl(fp, "all_notes_preview.wav");
+          return fetchWav(previewUrl)
+            .then(decodeArrayBuffer)
+            .then(function (decoded) {
+              previewBuffer = decoded;
+            })
+            .catch(function () {
+              previewBuffer = null;
+            });
+        });
+      }
+
+      function stopActive() {
+        if (activeSource) {
+          try { activeSource.stop(0); } catch (e) { /* ignore */ }
+          activeSource = null;
+        }
+      }
+
+      function playBuffer(buf) {
+        if (!buf) return;
+        stopActive();
+        var ctx = ensureAudioContext();
+        var src = ctx.createBufferSource();
+        src.buffer = buf;
+        src.connect(ctx.destination);
+        src.onended = function () {
+          if (activeSource === src) activeSource = null;
+        };
+        activeSource = src;
+        src.start(0);
+      }
+
+      function highlightCell(cell) {
+        if (lastCell) lastCell.classList.remove("active");
+        lastCell = cell;
+        if (cell) {
+          cell.classList.add("active");
+          window.setTimeout(function () {
+            if (lastCell === cell) cell.classList.remove("active");
+          }, 220);
+        }
+      }
+
+      function setStatus(text, cls) {
+        var el = document.getElementById("statusBadge");
+        el.textContent = text;
+        el.className = "status " + (cls || "");
+      }
+
+      function setNowPlaying(text) {
+        document.getElementById("nowPlaying").innerHTML = text || "";
+      }
+
+      function buildFretboard(player) {
+        var fretCount = Number(player.fret_count) || 19;
+        var cols = fretCount + 1;
+        document.documentElement.style.setProperty("--fret-cols", String(cols));
+
+        var lookup = {};
+        (player.positions || []).forEach(function (p) {
+          lookup[p.string + ":" + p.fret] = p;
+        });
+
+        var fretLabels = document.getElementById("fretLabels");
+        fretLabels.innerHTML = "";
+        var corner = document.createElement("span");
+        corner.className = "corner";
+        corner.textContent = " ";
+        fretLabels.appendChild(corner);
+        for (var f = 0; f <= fretCount; f++) {
+          var fl = document.createElement("span");
+          fl.textContent = String(f);
+          fretLabels.appendChild(fl);
+        }
+
+        var stringsEl = document.getElementById("strings");
+        stringsEl.innerHTML = "";
+
+        STRING_NUMBERS.forEach(function (sn) {
+          var row = document.createElement("div");
+          row.className = "string-row";
+          row.dataset.string = String(sn);
+
+          var label = document.createElement("div");
+          label.className = "string-label";
+          label.textContent = "S" + sn;
+          row.appendChild(label);
+
+          for (var fret = 0; fret <= fretCount; fret++) {
+            var cell = document.createElement("div");
+            cell.className = "fret-cell";
+            cell.dataset.string = String(sn);
+            cell.dataset.fret = String(fret);
+            var pos = lookup[sn + ":" + fret];
+            if (!pos) {
+              cell.classList.add("disabled");
+            } else {
+              cell.addEventListener("click", function (ev) {
+                var c = ev.currentTarget;
+                var key = c.dataset.string + ":" + c.dataset.fret;
+                var p = lookup[key];
+                if (!p || !p.wav || !buffers[p.wav]) return;
+                playBuffer(buffers[p.wav]);
+                highlightCell(c);
+                setNowPlaying("<strong>S" + p.string + " F" + p.fret + " · " + p.note_id + "</strong>");
+              });
+            }
+            row.appendChild(cell);
+          }
+          stringsEl.appendChild(row);
+        });
+
+        var markers = document.createElement("div");
+        markers.className = "fret-markers";
+        for (var mf = 0; mf <= fretCount; mf++) {
+          var slot = document.createElement("div");
+          slot.className = "fret-marker-slot";
+          if (INLAY_FRETS[mf]) {
+            slot.classList.add("inlay");
+            var dots = INLAY_FRETS[mf];
+            if (dots === 2) {
+              slot.innerHTML = '<span class="fret-dot" style="margin-right:6px"></span><span class="fret-dot"></span>';
+            } else {
+              slot.innerHTML = '<span class="fret-dot"></span>';
+            }
+          }
+          markers.appendChild(slot);
+        }
+        document.getElementById("neck").appendChild(markers);
+      }
+
+      function showIdle(message) {
+        document.getElementById("idlePanel").hidden = false;
+        document.getElementById("playerPanel").hidden = true;
+        if (message) document.getElementById("idlePanel").textContent = message;
+        setNowPlaying("");
+      }
+
+      function showPlayer() {
+        document.getElementById("idlePanel").hidden = true;
+        document.getElementById("playerPanel").hidden = false;
+      }
+
+      function renderPlayer(player) {
+        var status = String(player.status || "hidden").toLowerCase();
+        var btnPreview = document.getElementById("btnPreview");
+
+        if (status === "hidden" || status === "missing") {
+          setStatus("Waiting for Generate sound", "");
+          showIdle(null);
+          return;
+        }
+        if (status === "stale") {
+          setStatus("Cache stale — regenerate sound", "stale");
+          showIdle("Guitar design changed. Click Generate sound to rebuild the note cache.");
+          return;
+        }
+        if (status === "building") {
+          setStatus("Building note cache…", "building");
+          showIdle("Building note cache…");
+          return;
+        }
+
+        if (status !== "ready" || !player.fingerprint) {
+          setStatus("Unavailable", "");
+          showIdle(null);
+          return;
+        }
+
+        var key = payloadKey(player);
+        showPlayer();
+        setStatus("Ready · " + (player.unique_note_count || "?") + " notes", "ready");
+        buildFretboard(player);
+
+        btnPreview.disabled = true;
+        var bar = document.getElementById("preloadBar");
+        var fill = document.getElementById("preloadFill");
+        bar.classList.add("visible");
+        fill.style.width = "0%";
+
+        if (key !== currentPayloadKey) {
+          currentPayloadKey = key;
+          preloadNotes(player, function (frac) {
+            fill.style.width = Math.round(frac * 100) + "%";
+          }).then(function () {
+            bar.classList.remove("visible");
+            btnPreview.disabled = !previewBuffer;
+          }).catch(function (err) {
+            console.error("preload failed", err);
+            setStatus("Audio preload failed", "stale");
+            bar.classList.remove("visible");
+          });
+        } else {
+          bar.classList.remove("visible");
+          btnPreview.disabled = !previewBuffer;
+        }
+
+        btnPreview.onclick = function () {
+          if (!previewBuffer) return;
+          playBuffer(previewBuffer);
+          setNowPlaying("<strong>All notes preview</strong>");
+        };
+      }
+
+      function onRender(event) {
+        var args = (event.detail && event.detail.args) || {};
+        var player = args.player || { status: "hidden" };
+        renderPlayer(player);
+        if (window.Streamlit) {
+          window.Streamlit.setFrameHeight(520);
+        }
+      }
+
+      if (window.Streamlit && window.Streamlit.events) {
+        window.Streamlit.events.addEventListener(window.Streamlit.RENDER_EVENT, onRender);
+      }
+    })();
+  </script>
+</body>
+</html>

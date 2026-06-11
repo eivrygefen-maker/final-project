@@ -198,8 +198,8 @@ def _init_session() -> None:
         "_studio_iframe_payload_fp": "",
         "_studio_iframe_initial": None,
         "_studio_param_change_fp": "",
-        "fretboard_wav_bytes": None,
-        "fretboard_play_label": "",
+        "note_cache_ready_fp": "",
+        "note_cache_building": False,
         "_fast_preview_paths_verified": False,
         "show_mesh_overlay": False,
         "mesh_is_dirty": True,
@@ -419,7 +419,7 @@ def studio_initial_from_saved(
 STUDIO_WOOD_HEX: Dict[str, str] = {
     "spruce": "#C19A6B",
     "cedar": "#5D4037",
-    "maple": "#C8A574",
+    "maple": "#A67C52",
     "mahogany": "#795548",
     "rosewood": "#3F2A20",
 }
@@ -1204,6 +1204,8 @@ def invalidate_rom_and_audio_state() -> None:
     st.session_state.rom_body_error = ""
     st.session_state.stk_body_json = ""
     st.session_state.sound_stale = True
+    st.session_state.note_cache_ready_fp = ""
+    st.session_state.note_cache_building = False
 
 
 def invalidate_saved_state() -> None:
@@ -1238,6 +1240,7 @@ def mark_rom_body_stale_if_design_changed(current_rom_fp: str) -> None:
         st.session_state.physics_ready = False
         st.session_state.sound_stale = True
         st.session_state.stk_body_json = ""
+        st.session_state.note_cache_ready_fp = ""
 
 
 def complete_rom_body_response(
@@ -1693,11 +1696,49 @@ def _render_main_studio(
             if not rom_body_response_ready(rom_fp):
                 st.warning("ROM body response is stale or missing — Save & Sync first.")
             else:
+                from note_cache_ui import (  # noqa: WPS433
+                    build_cache_safe,
+                    expected_note_cache_fingerprint,
+                    note_cache_root,
+                    note_cache_ui_status,
+                    prepare_player_assets,
+                    resolve_note_cache,
+                )
+
+                body_json = Path(st.session_state.stk_body_json)
+                cache_root = note_cache_root(BASE_DIR)
                 try:
-                    with st.spinner("Synthesizing sound…"):
-                        run_stk(body_json=Path(st.session_state.stk_body_json), top_wood=top_wood)
+                    st.session_state.note_cache_building = True
+                    with st.spinner("Synthesizing sound and building note cache…"):
+                        run_stk(body_json=body_json, top_wood=top_wood)
+                        build_cache_safe(
+                            modal_json=body_json,
+                            out_root=cache_root,
+                            geometry_config=CONFIG_PATH,
+                            force=True,
+                        )
+                        expected_cache_fp = expected_note_cache_fingerprint(
+                            modal_json=body_json,
+                            geometry_config=CONFIG_PATH,
+                        )
+                        resolved = resolve_note_cache(
+                            cache_root,
+                            expected_fingerprint=expected_cache_fp,
+                        )
+                        if resolved.get("status") == "ready" and resolved.get("cache_root"):
+                            prepare_player_assets(
+                                Path(resolved["cache_root"]),
+                                resolved["manifest"],
+                            )
+                            st.session_state.note_cache_ready_fp = str(expected_cache_fp or "")
+                        else:
+                            st.session_state.note_cache_ready_fp = ""
                     st.session_state.sound_stale = False
+                    st.session_state.note_cache_building = False
+                    st.success("Sound and note cache ready — use the guitar player below.")
                 except Exception as exc:
+                    st.session_state.note_cache_building = False
+                    st.session_state.note_cache_ready_fp = ""
                     st.error(f"Sound failed: {exc}")
 
     if st.session_state.get("_pending_fom_run") and display_mesh_active(geom_fp):
@@ -1730,19 +1771,35 @@ def _render_main_studio(
     if WAV_OUTPUT.is_file() and rom_body_response_ready(rom_fp) and not st.session_state.get("sound_stale"):
         st.audio(WAV_OUTPUT.read_bytes(), format="audio/wav")
     elif st.session_state.get("sound_stale") and rom_body_response_ready(rom_fp):
-        st.caption("ROM body is ready — click **Generate sound** for the current guitar.")
+        st.caption("ROM body is ready — click **Generate sound** to synthesize audio and open the guitar player.")
 
-    with col_ctrl:
-        from note_cache_ui import render_fretboard_panel  # noqa: WPS433
+    with col_vis:
+        from components.guitar_player import guitar_player  # noqa: WPS433
+        from note_cache_ui import (  # noqa: WPS433
+            build_player_payload,
+            expected_note_cache_fingerprint,
+            note_cache_root,
+            note_cache_ui_status,
+            resolve_note_cache,
+        )
 
         body_json = Path(st.session_state.get("stk_body_json") or ROM_STK_JSON)
-        render_fretboard_panel(
-            st,
-            repo_root=BASE_DIR,
-            modal_json=body_json if body_json.is_file() else ROM_STK_JSON,
+        modal_json = body_json if body_json.is_file() else ROM_STK_JSON
+        cache_root = note_cache_root(BASE_DIR)
+        expected_cache_fp = expected_note_cache_fingerprint(
+            modal_json=modal_json,
             geometry_config=CONFIG_PATH,
-            rom_body_ready=rom_body_response_ready(rom_fp),
         )
+        resolved = resolve_note_cache(cache_root, expected_fingerprint=expected_cache_fp)
+        ui_status = note_cache_ui_status(
+            sound_stale=bool(st.session_state.get("sound_stale")),
+            note_cache_ready_fp=str(st.session_state.get("note_cache_ready_fp") or ""),
+            expected_fingerprint=expected_cache_fp,
+            resolved=resolved,
+            building=bool(st.session_state.get("note_cache_building")),
+        )
+        player_payload = build_player_payload(resolved, ui_status=ui_status)
+        guitar_player(player=player_payload, key="guitar_player", height=520)
 
 
 def main() -> None:

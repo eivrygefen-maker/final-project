@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Stage 4 fretboard / note-cache UI helpers (no FEM, no Streamlit runtime)."""
+"""Stage 4 interactive guitar player helpers (no FEM, no Streamlit runtime)."""
 from __future__ import annotations
 
 import json
 import sys
 import tempfile
 import unittest
-import wave
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -14,23 +13,15 @@ sys.path.insert(0, str(REPO / "gui"))
 
 from build_note_cache import build_note_cache  # noqa: E402
 from note_cache_ui import (  # noqa: E402
+    build_player_payload,
     build_position_lookup,
     list_manifest_paths,
     lookup_position,
+    note_cache_ui_status,
+    prepare_player_assets,
     resolve_note_cache,
     resolve_wav_path,
 )
-
-
-def _write_silent_wav(path: Path, *, duration_s: float = 0.05, sample_rate: int = 44100) -> None:
-    n = max(1, int(duration_s * sample_rate))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    pcm = b"\x00\x00" * n
-    with wave.open(str(path), "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(sample_rate)
-        wf.writeframes(pcm)
 
 
 class FretboardUiTests(unittest.TestCase):
@@ -98,6 +89,74 @@ class FretboardUiTests(unittest.TestCase):
         )
         self.assertEqual(resolved["status"], "stale")
         self.assertIsNotNone(resolved["manifest"])
+
+    def test_build_player_payload_ready(self) -> None:
+        manifest = build_note_cache(
+            modal_json=Path("__missing_modal__.json"),
+            out_root=self.out_root,
+            fret_count=3,
+            duration_s=0.12,
+            force=True,
+        )
+        cache_root = Path(manifest["cache_root"])
+        resolved = resolve_note_cache(self.out_root, expected_fingerprint=manifest["guitar_fingerprint"])
+        payload = build_player_payload(resolved, ui_status="ready")
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["fingerprint"], manifest["guitar_fingerprint"])
+        self.assertGreater(len(payload["positions"]), 0)
+        self.assertTrue(all("wav" in p and p["wav"].endswith(".wav") for p in payload["positions"]))
+
+    def test_prepare_player_assets_copies_wavs(self) -> None:
+        manifest = build_note_cache(
+            modal_json=Path("__missing_modal__.json"),
+            out_root=self.out_root,
+            fret_count=3,
+            duration_s=0.12,
+            force=True,
+        )
+        cache_root = Path(manifest["cache_root"])
+        doc = json.loads((cache_root / "note_manifest.json").read_text(encoding="utf-8"))
+        dest = prepare_player_assets(cache_root, doc)
+        self.assertTrue(dest.is_dir())
+        first_note = doc["notes"][0]["note_id"]
+        self.assertTrue((dest / f"{first_note}.wav").is_file())
+
+    def test_note_cache_ui_status_hidden_until_generate(self) -> None:
+        manifest = build_note_cache(
+            modal_json=Path("__missing_modal__.json"),
+            out_root=self.out_root,
+            fret_count=3,
+            duration_s=0.12,
+            force=True,
+        )
+        resolved = resolve_note_cache(self.out_root, expected_fingerprint=manifest["guitar_fingerprint"])
+        self.assertEqual(
+            note_cache_ui_status(
+                sound_stale=True,
+                note_cache_ready_fp=manifest["guitar_fingerprint"],
+                expected_fingerprint=manifest["guitar_fingerprint"],
+                resolved=resolved,
+            ),
+            "hidden",
+        )
+        self.assertEqual(
+            note_cache_ui_status(
+                sound_stale=False,
+                note_cache_ready_fp="",
+                expected_fingerprint=manifest["guitar_fingerprint"],
+                resolved=resolved,
+            ),
+            "hidden",
+        )
+        self.assertEqual(
+            note_cache_ui_status(
+                sound_stale=False,
+                note_cache_ready_fp=manifest["guitar_fingerprint"],
+                expected_fingerprint=manifest["guitar_fingerprint"],
+                resolved=resolved,
+            ),
+            "ready",
+        )
 
 
 if __name__ == "__main__":
