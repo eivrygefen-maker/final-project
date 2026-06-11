@@ -55,18 +55,20 @@ class BodyResponseSynthTests(unittest.TestCase):
         modal = self._spread_modal_fixture()
         cases = (("E2", 82.41), ("A2", 110.0), ("A4", 440.0), ("E5", 659.25))
         lo, hi = FULL_MODAL_BAND_HZ
+        decay_by_note: dict[str, dict] = {}
         for name, hz in cases:
             wav = self.out_dir / f"{name}.wav"
             meta_path = self.out_dir / f"{name}.json"
             meta = synthesize_note_with_body_response(
                 frequency_hz=hz,
                 note_name=name,
-                duration_s=0.5,
+                duration_s=3.0,
                 sample_rate=DEFAULT_SAMPLE_RATE,
                 modal_data=modal,
                 output_wav=wav,
                 output_metadata_json=meta_path,
             )
+            decay_by_note[name] = meta
             self.assertTrue(wav.is_file() and wav.stat().st_size > 44, name)
             samples = _read_wav_samples(wav)
             self.assertGreater(samples.size, 0, name)
@@ -85,16 +87,41 @@ class BodyResponseSynthTests(unittest.TestCase):
                 3.0,
                 name,
             )
-            self.assertGreater(meta["output_rms_dbfs"], -24.0, name)
+            rms_floor = -28.0 if name in ("A4", "E5") else -25.5
+            self.assertGreater(meta["output_rms_dbfs"], rms_floor, name)
             self.assertLessEqual(meta["output_peak_dbfs"], -0.5, name)
             self.assertIn("limiter_used", meta)
             self.assertIn("target_rms_dbfs", meta)
+            self.assertIn("output_decay_slope_db_per_s", meta)
+            self.assertIn("late_to_early_rms_db", meta)
+            self.assertIn("note_decay_tau_s", meta)
+            self.assertIn("body_decay_tau_s", meta)
+            self.assertLess(meta["late_to_early_rms_db"], -3.0, name)
             if name in ("E2", "A2"):
                 self.assertTrue(meta["fundamental_anchor_used"], name)
+            if name in ("A4", "E5"):
+                self.assertTrue(meta["high_note_decay_applied"], name)
             if name == "E5":
                 self.assertTrue(meta["high_frequency_fallback_used"])
             else:
                 self.assertFalse(meta["high_frequency_fallback_used"])
+
+        self.assertGreater(
+            decay_by_note["E2"]["note_decay_tau_s"],
+            decay_by_note["A4"]["note_decay_tau_s"],
+        )
+        self.assertGreater(
+            decay_by_note["A4"]["note_decay_tau_s"],
+            decay_by_note["E5"]["note_decay_tau_s"],
+        )
+        self.assertLess(
+            decay_by_note["E5"]["late_to_early_rms_db"],
+            decay_by_note["E2"]["late_to_early_rms_db"],
+        )
+        self.assertLess(
+            decay_by_note["E5"]["output_decay_slope_db_per_s"],
+            decay_by_note["E2"]["output_decay_slope_db_per_s"],
+        )
 
     def test_a2_evaluates_all_band_modes_not_narrow_subset(self) -> None:
         modal = self._spread_modal_fixture(40)
@@ -200,6 +227,14 @@ class BodyResponseSynthTests(unittest.TestCase):
             "limiter_gain_reduction_db",
             "final_peak_ceiling_dbfs",
             "fundamental_anchor_used",
+            "output_decay_slope_db_per_s",
+            "early_rms_dbfs",
+            "late_rms_dbfs",
+            "late_to_early_rms_db",
+            "note_decay_tau_s",
+            "body_decay_tau_s",
+            "harmonic_decay_model",
+            "high_note_decay_applied",
             "q_min",
             "q_median",
             "q_max",

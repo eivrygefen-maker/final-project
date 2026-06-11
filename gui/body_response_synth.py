@@ -44,6 +44,30 @@ LOW_NOTE_FUNDAMENTAL_MAX_HZ = 165.0
 FUNDAMENTAL_ANCHOR_GAIN = 0.14
 FUNDAMENTAL_ANCHOR_DECAY_S = 1.35
 
+# Temporal decay (note / harmonic / body radiation)
+NOTE_DECAY_REF_HZ = 82.41
+NOTE_DECAY_TAU_MIN_S = 0.42
+NOTE_DECAY_TAU_MAX_S = 2.65
+NOTE_DECAY_FREQ_POWER = 0.58
+HARMONIC_DECAY_FACTOR = 0.42
+PARTIAL_FREQ_DECAY_HZ = 280.0
+BODY_DECAY_TAU_MIN_S = 0.32
+BODY_DECAY_TAU_MAX_S = 2.35
+BODY_DECAY_FREQ_POWER = 0.52
+RADIATION_TAU_SHORTENING = 0.58
+BODY_DECAY_LOW_NOTE_BLEND = 0.48
+HIGH_NOTE_DECAY_THRESHOLD_HZ = 300.0
+LOUDNESS_RMS_WINDOW_START_S = 0.025
+LOUDNESS_RMS_WINDOW_END_S = 0.42
+DECAY_EARLY_END_S = 0.28
+DECAY_LATE_START_S = 2.05
+DECAY_SLOPE_T_START_S = 0.10
+DECAY_SLOPE_T_END_S = 2.55
+HARMONIC_DECAY_MODEL = (
+    "tau_k = note_base_tau(f0) / (1 + harmonic_decay_factor*(k-1)); "
+    "partial_freq_scale; body_env = exp(-t/tau_body(f0,radiation))"
+)
+
 ModalInput = Union[Mapping[str, Any], Sequence[Mapping[str, Any]]]
 
 
@@ -61,6 +85,20 @@ def _rms(x: np.ndarray) -> float:
     if x.size == 0:
         return 0.0
     return float(math.sqrt(np.mean(np.asarray(x, dtype=np.float64) ** 2)))
+
+
+def _rms_window(
+    x: np.ndarray,
+    sample_rate: int,
+    start_s: float,
+    end_s: float,
+) -> float:
+    n = len(x)
+    if n == 0:
+        return 0.0
+    i0 = max(0, min(n, int(start_s * sample_rate)))
+    i1 = max(i0 + 1, min(n, int(end_s * sample_rate)))
+    return _rms(x[i0:i1])
 
 
 def _linear_from_dbfs(dbfs: float) -> float:
@@ -300,6 +338,132 @@ def nearest_harmonic_hz(mode_hz: float, f0: float, harmonics_hz: Sequence[float]
     return min(harmonics_hz, key=lambda h: abs(h - mode_hz))
 
 
+def note_base_decay_tau_s(frequency_hz: float) -> float:
+    """Longer sustain for low notes; shorter for high notes."""
+    f0 = max(40.0, float(frequency_hz))
+    tau = NOTE_DECAY_TAU_MAX_S * (NOTE_DECAY_REF_HZ / f0) ** NOTE_DECAY_FREQ_POWER
+    return float(max(NOTE_DECAY_TAU_MIN_S, min(NOTE_DECAY_TAU_MAX_S, tau)))
+
+
+def harmonic_decay_tau_s(frequency_hz: float, harmonic_index: int) -> float:
+    """Per-partial decay: higher k and higher partial frequency → shorter tau."""
+    f0 = max(40.0, float(frequency_hz))
+    k = max(1, int(harmonic_index))
+    base = note_base_decay_tau_s(f0)
+    tau = base / (1.0 + HARMONIC_DECAY_FACTOR * (k - 1))
+    fk = k * f0
+    tau /= 1.0 + 0.22 * (fk / PARTIAL_FREQ_DECAY_HZ) ** 0.9
+    if k == 1 and f0 <= LOW_NOTE_FUNDAMENTAL_MAX_HZ:
+        tau *= 1.28
+    return float(max(0.07, tau))
+
+
+def summarize_body_radiation(band_modes: Sequence[Mapping[str, Any]]) -> float:
+    """0..1 summary of air/radiation heaviness across evaluated modes."""
+    if not band_modes:
+        return 0.0
+    weights: List[float] = []
+    rad_vals: List[float] = []
+    for mode in band_modes:
+        comp = compute_mode_weight_components(mode, defaults_used=[], flags={})
+        w = comp["combined"]
+        rad = _safe_float(mode.get("radiation_proxy")) or 0.0
+        air = _safe_float(mode.get("air_share")) or 0.0
+        rad_vals.append(min(1.0, 0.55 * min(rad / 0.05, 1.0) + 0.45 * min(air, 0.5)))
+        weights.append(w)
+    wsum = sum(weights)
+    if wsum <= 0:
+        return float(np.mean(rad_vals)) if rad_vals else 0.0
+    return float(sum(r * wt for r, wt in zip(rad_vals, weights)) / wsum)
+
+
+def body_decay_tau_s(note_hz: float, radiation_summary: float) -> float:
+    """Body/radiation envelope time constant — high notes and radiating bodies decay faster."""
+    f0 = max(40.0, float(note_hz))
+    tau = BODY_DECAY_TAU_MAX_S * (NOTE_DECAY_REF_HZ / f0) ** BODY_DECAY_FREQ_POWER
+    rad = max(0.0, min(1.0, float(radiation_summary)))
+    shorten = 1.0 - rad * RADIATION_TAU_SHORTENING
+    tau *= max(0.35, shorten)
+    if f0 > HIGH_NOTE_DECAY_THRESHOLD_HZ:
+        tau *= (HIGH_NOTE_DECAY_THRESHOLD_HZ / f0) ** 0.35
+    return float(max(BODY_DECAY_TAU_MIN_S, min(BODY_DECAY_TAU_MAX_S, tau)))
+
+
+def apply_exponential_decay_envelope(
+    signal: np.ndarray,
+    sample_rate: int,
+    tau_s: float,
+    *,
+    floor_mix: float = 0.0,
+) -> np.ndarray:
+    n = len(signal)
+    if n == 0 or tau_s <= 0:
+        return signal
+    t = np.arange(n, dtype=np.float64) / float(sample_rate)
+    # Slight curvature: faster initial loss, smooth tail (not a hard gate).
+    env = np.exp(-t / tau_s) * (0.9 + 0.1 * np.exp(-t / max(tau_s * 0.12, 1e-4)))
+    if floor_mix > 0:
+        env = (1.0 - floor_mix) + floor_mix * env
+    return np.asarray(signal, dtype=np.float64) * env
+
+
+def _decay_analysis_windows(duration_s: float) -> Tuple[float, float, float, float]:
+    """Early/late RMS and log-slope fit windows scaled to note length."""
+    dur = max(0.1, float(duration_s))
+    early_end = min(DECAY_EARLY_END_S, max(0.08, dur * 0.14))
+    late_start = DECAY_LATE_START_S if dur >= 1.5 else dur * 0.58
+    late_start = min(max(late_start, early_end + 0.05), max(early_end + 0.05, dur - 0.04))
+    t_start = min(DECAY_SLOPE_T_START_S, max(0.03, dur * 0.06))
+    t_end = max(t_start + 0.12, min(DECAY_SLOPE_T_END_S, dur * 0.94))
+    return early_end, late_start, t_start, t_end
+
+
+def compute_decay_diagnostics(
+    samples: np.ndarray,
+    sample_rate: int,
+) -> Dict[str, Any]:
+    x = np.asarray(samples, dtype=np.float64)
+    duration_s = len(x) / float(sample_rate) if sample_rate > 0 else 0.0
+    early_end, late_start, t_start, t_end = _decay_analysis_windows(duration_s)
+    early_rms = _rms_window(x, sample_rate, 0.0, early_end)
+    late_rms = _rms_window(x, sample_rate, late_start, duration_s)
+    if early_rms > 1e-12 and late_rms > 0:
+        late_to_early_db = 20.0 * math.log10(late_rms / early_rms)
+    else:
+        late_to_early_db = -120.0
+
+    slope = _estimate_decay_slope_db_per_s(x, sample_rate, t_start_s=t_start, t_end_s=t_end)
+    return {
+        "output_decay_slope_db_per_s": round(slope, 4),
+        "early_rms_dbfs": round(_dbfs_from_linear(early_rms), 4),
+        "late_rms_dbfs": round(_dbfs_from_linear(late_rms), 4),
+        "late_to_early_rms_db": round(late_to_early_db, 4),
+    }
+
+
+def _estimate_decay_slope_db_per_s(
+    samples: np.ndarray,
+    sample_rate: int,
+    *,
+    t_start_s: float = DECAY_SLOPE_T_START_S,
+    t_end_s: float = DECAY_SLOPE_T_END_S,
+) -> float:
+    n = len(samples)
+    i0 = max(0, min(n, int(t_start_s * sample_rate)))
+    i1 = max(i0 + 16, min(n, int(t_end_s * sample_rate)))
+    if i1 <= i0 + 16:
+        return 0.0
+    seg = np.abs(samples[i0:i1])
+    win = max(1, int(0.018 * sample_rate))
+    kernel = np.ones(win, dtype=np.float64) / float(win)
+    env = np.convolve(seg, kernel, mode="same")
+    env = np.maximum(env, 1e-12)
+    log_env = 20.0 * np.log10(env)
+    t = np.arange(len(log_env), dtype=np.float64) / float(sample_rate) + t_start_s
+    slope, _ = np.polyfit(t, log_env, 1)
+    return float(slope)
+
+
 def _pluck_attack_envelope(n: int, sample_rate: int) -> np.ndarray:
     """Short onset emphasis for pluck realism (deterministic)."""
     t = np.arange(n, dtype=np.float64) / float(sample_rate)
@@ -354,14 +518,10 @@ def synthesize_plucked_string(
     signal = np.zeros(n, dtype=np.float64)
     f0 = max(1.0, float(frequency_hz))
     harm_f, harm_a = harmonic_series(frequency_hz, sample_rate, pluck_position=pluck_position)
-    max_harm_n = max(1, len(harm_f))
     for fk, ak in zip(harm_f, harm_a):
         amp_k = velocity * amplitude * ak
         k = max(1, int(round(fk / f0)))
-        tau_k = 0.48 + 3.4 / (k ** 0.92)
-        tau_k *= 1.0 + 0.22 * (k / max_harm_n)
-        if f0 <= LOW_NOTE_FUNDAMENTAL_MAX_HZ and k == 1:
-            tau_k *= 1.35
+        tau_k = harmonic_decay_tau_s(f0, k)
         signal += amp_k * np.sin(2.0 * math.pi * fk * t) * np.exp(-t / tau_k)
     signal *= _pluck_attack_envelope(n, sample_rate)
     return signal
@@ -463,13 +623,16 @@ def synthesize_body_via_transfer_function(
 
 def apply_loudness_finalize(
     samples: np.ndarray,
+    sample_rate: int,
     *,
     target_rms_dbfs: float = TARGET_RMS_DBFS,
     peak_ceiling_dbfs: float = FINAL_PEAK_CEILING_DBFS,
+    rms_window_start_s: float = LOUDNESS_RMS_WINDOW_START_S,
+    rms_window_end_s: float = LOUDNESS_RMS_WINDOW_END_S,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """
-    Target-RMS gain, then tanh soft limiter, then peak ceiling.
-    Avoids loudness collapse from peak-normalizing a short transient only.
+    Target-RMS gain (early/mid window), then tanh soft limiter, then peak ceiling.
+    Windowed RMS avoids lifting a quiet tail when the attack/sustain is louder.
     """
     x = np.asarray(samples, dtype=np.float64)
     if not np.all(np.isfinite(x)):
@@ -477,7 +640,11 @@ def apply_loudness_finalize(
 
     target_rms = _linear_from_dbfs(target_rms_dbfs)
     ceiling = _linear_from_dbfs(peak_ceiling_dbfs)
-    rms_in = _rms(x)
+    rms_window = _rms_window(x, sample_rate, rms_window_start_s, rms_window_end_s)
+    rms_full = _rms(x)
+    rms_in = math.sqrt(0.68 * rms_window**2 + 0.32 * rms_full**2)
+    if rms_in < 1e-12:
+        rms_in = max(rms_window, rms_full, 1e-12)
     rms_gain = target_rms / max(rms_in, 1e-12)
     y = x * rms_gain
 
@@ -508,6 +675,7 @@ def apply_loudness_finalize(
         "target_rms_dbfs": target_rms_dbfs,
         "final_peak_ceiling_dbfs": peak_ceiling_dbfs,
         "rms_gain_applied": rms_gain,
+        "loudness_rms_window_s": [rms_window_start_s, rms_window_end_s],
         "peak_before_loudness": peak_pre_limit,
         "limiter_used": limiter_used,
         "limiter_gain_reduction_db": round(limiter_gr_db, 4),
@@ -516,13 +684,14 @@ def apply_loudness_finalize(
         "peak_before_normalize": peak_pre_limit,
         "final_peak_normalization_gain": rms_gain,
     }
+    info.update(compute_decay_diagnostics(y, sample_rate))
     return y, info
 
 
 def write_wav_int16(path: Path, samples: np.ndarray, sample_rate: int) -> Dict[str, Any]:
     """Write mono int16 WAV after loudness finalize."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    y, loudness_info = apply_loudness_finalize(samples)
+    y, loudness_info = apply_loudness_finalize(samples, sample_rate)
     pcm = np.clip(y * 32767.0, -32767, 32767).astype(np.int16)
     with wave.open(str(path), "wb") as wf:
         wf.setnchannels(1)
@@ -566,6 +735,11 @@ def synthesize_note_with_body_response(
     )
     acc = _string_acceleration(string_excitation)
 
+    radiation_summary = summarize_body_radiation(band_modes)
+    note_decay_tau_s = note_base_decay_tau_s(frequency_hz)
+    body_decay_tau_s_val = body_decay_tau_s(frequency_hz, radiation_summary)
+    high_note_decay_applied = float(frequency_hz) >= HIGH_NOTE_DECAY_THRESHOLD_HZ
+
     if band_modes:
         body_raw, contributions, q_values = synthesize_body_via_transfer_function(
             acc,
@@ -576,6 +750,16 @@ def synthesize_note_with_body_response(
             note_hz=frequency_hz,
             harmonics_hz=harmonics_hz,
         )
+        body_floor = (
+            BODY_DECAY_LOW_NOTE_BLEND if float(frequency_hz) <= LOW_NOTE_FUNDAMENTAL_MAX_HZ else 0.0
+        )
+        body_raw = apply_exponential_decay_envelope(
+            body_raw,
+            sample_rate,
+            body_decay_tau_s_val,
+            floor_mix=body_floor,
+        )
+        defaults_used.append("body_radiation_decay_envelope")
     else:
         body_raw = np.zeros_like(string_excitation)
         contributions = []
@@ -612,6 +796,7 @@ def synthesize_note_with_body_response(
             velocity=velocity,
         )
         defaults_used.append("low_note_fundamental_anchor")
+    defaults_used.append("note_harmonic_frequency_decay_envelope")
     final_dry_to_body_rms_ratio = (dry_gain_applied * dry_rms_before) / max(body_rms_before, 1e-12)
 
     loudness_info = write_wav_int16(Path(output_wav), mixed, sample_rate)
@@ -682,6 +867,15 @@ def synthesize_note_with_body_response(
         "rms_gain_applied": round(loudness_info["rms_gain_applied"], 6),
         "final_peak_normalization_gain": round(loudness_info["final_peak_normalization_gain"], 6),
         "peak_before_normalize": loudness_info["peak_before_normalize"],
+        "output_decay_slope_db_per_s": loudness_info["output_decay_slope_db_per_s"],
+        "early_rms_dbfs": loudness_info["early_rms_dbfs"],
+        "late_rms_dbfs": loudness_info["late_rms_dbfs"],
+        "late_to_early_rms_db": loudness_info["late_to_early_rms_db"],
+        "note_decay_tau_s": round(note_decay_tau_s, 4),
+        "body_decay_tau_s": round(body_decay_tau_s_val, 4),
+        "harmonic_decay_model": HARMONIC_DECAY_MODEL,
+        "high_note_decay_applied": high_note_decay_applied,
+        "body_radiation_summary": round(radiation_summary, 4),
         "q_min": q_min,
         "q_median": q_median,
         "q_max": q_max,
@@ -698,6 +892,13 @@ def synthesize_note_with_body_response(
             "target_rms_dbfs": TARGET_RMS_DBFS,
             "peak_ceiling_dbfs": FINAL_PEAK_CEILING_DBFS,
             "fundamental_anchor_gain": FUNDAMENTAL_ANCHOR_GAIN,
+            "note_decay_tau_s": round(note_decay_tau_s, 4),
+            "body_decay_tau_s": round(body_decay_tau_s_val, 4),
+            "harmonic_decay_factor": HARMONIC_DECAY_FACTOR,
+            "loudness_rms_window_s": [
+                LOUDNESS_RMS_WINDOW_START_S,
+                LOUDNESS_RMS_WINDOW_END_S,
+            ],
         },
         "output_wav": str(output_wav),
         "samples_finite": True,
@@ -771,6 +972,8 @@ def main() -> int:
         )
         print(
             f"{name}: rms={meta['output_rms_dbfs']:.1f} dBFS peak={meta['output_peak_dbfs']:.1f} dBFS "
+            f"slope={meta['output_decay_slope_db_per_s']:.1f} dB/s "
+            f"late/early={meta['late_to_early_rms_db']:.1f} dB "
             f"limiter={meta['limiter_used']} hf={meta['high_frequency_fallback_used']}"
         )
     return 0

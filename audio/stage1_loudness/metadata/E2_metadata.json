@@ -67,7 +67,7 @@
     {
       "mode_index": 29,
       "frequency_hz": 323.15,
-      "contribution_weight": 0.00013191,
+      "contribution_weight": 9.544e-05,
       "bridge_weight": 0.02,
       "mic_weight": 0.008,
       "radiation_weight": 0.008,
@@ -77,7 +77,7 @@
     {
       "mode_index": 21,
       "frequency_hz": 250.56,
-      "contribution_weight": 0.00011189,
+      "contribution_weight": 8.135e-05,
       "bridge_weight": 0.01466667,
       "mic_weight": 0.008,
       "radiation_weight": 0.008,
@@ -87,7 +87,7 @@
     {
       "mode_index": 20,
       "frequency_hz": 241.48,
-      "contribution_weight": 8.902e-05,
+      "contribution_weight": 6.828e-05,
       "bridge_weight": 0.02,
       "mic_weight": 0.007,
       "radiation_weight": 0.005,
@@ -95,29 +95,9 @@
       "nearest_harmonic_hz": 247.23
     },
     {
-      "mode_index": 30,
-      "frequency_hz": 332.22,
-      "contribution_weight": 7.051e-05,
-      "bridge_weight": 0.01466667,
-      "mic_weight": 0.009,
-      "radiation_weight": 0.005,
-      "q": 18.809,
-      "nearest_harmonic_hz": 329.64
-    },
-    {
-      "mode_index": 53,
-      "frequency_hz": 540.93,
-      "contribution_weight": 6.945e-05,
-      "bridge_weight": 0.02,
-      "mic_weight": 0.008,
-      "radiation_weight": 0.008,
-      "q": 13.1838,
-      "nearest_harmonic_hz": 576.87
-    },
-    {
       "mode_index": 11,
       "frequency_hz": 159.81,
-      "contribution_weight": 6.209e-05,
+      "contribution_weight": 5.099e-05,
       "bridge_weight": 0.02,
       "mic_weight": 0.006,
       "radiation_weight": 0.008,
@@ -125,9 +105,29 @@
       "nearest_harmonic_hz": 164.82
     },
     {
+      "mode_index": 53,
+      "frequency_hz": 540.93,
+      "contribution_weight": 4.911e-05,
+      "bridge_weight": 0.02,
+      "mic_weight": 0.008,
+      "radiation_weight": 0.008,
+      "q": 13.1838,
+      "nearest_harmonic_hz": 576.87
+    },
+    {
+      "mode_index": 30,
+      "frequency_hz": 332.22,
+      "contribution_weight": 4.821e-05,
+      "bridge_weight": 0.01466667,
+      "mic_weight": 0.009,
+      "radiation_weight": 0.005,
+      "q": 18.809,
+      "nearest_harmonic_hz": 329.64
+    },
+    {
       "mode_index": 31,
       "frequency_hz": 341.3,
-      "contribution_weight": 4.547e-05,
+      "contribution_weight": 3.232e-05,
       "bridge_weight": 0.01733333,
       "mic_weight": 0.006,
       "radiation_weight": 0.008,
@@ -135,29 +135,9 @@
       "nearest_harmonic_hz": 329.64
     },
     {
-      "mode_index": 50,
-      "frequency_hz": 513.7,
-      "contribution_weight": 3.897e-05,
-      "bridge_weight": 0.02,
-      "mic_weight": 0.009,
-      "radiation_weight": 0.005,
-      "q": 13.8847,
-      "nearest_harmonic_hz": 494.46
-    },
-    {
-      "mode_index": 22,
-      "frequency_hz": 259.63,
-      "contribution_weight": 3.869e-05,
-      "bridge_weight": 0.01733333,
-      "mic_weight": 0.009,
-      "radiation_weight": 0.005,
-      "q": 21.8192,
-      "nearest_harmonic_hz": 247.23
-    },
-    {
       "mode_index": 38,
       "frequency_hz": 404.81,
-      "contribution_weight": 3.861e-05,
+      "contribution_weight": 3.012e-05,
       "bridge_weight": 0.02,
       "mic_weight": 0.009,
       "radiation_weight": 0.005,
@@ -165,29 +145,29 @@
       "nearest_harmonic_hz": 412.05
     },
     {
-      "mode_index": 49,
-      "frequency_hz": 504.63,
-      "contribution_weight": 3.723e-05,
+      "mode_index": 22,
+      "frequency_hz": 259.63,
+      "contribution_weight": 2.975e-05,
       "bridge_weight": 0.01733333,
-      "mic_weight": 0.008,
-      "radiation_weight": 0.008,
-      "q": 13.9002,
-      "nearest_harmonic_hz": 494.46
+      "mic_weight": 0.009,
+      "radiation_weight": 0.005,
+      "q": 21.8192,
+      "nearest_harmonic_hz": 247.23
     },
     {
-      "mode_index": 47,
-      "frequency_hz": 486.48,
-      "contribution_weight": 3.697e-05,
+      "mode_index": 50,
+      "frequency_hz": 513.7,
+      "contribution_weight": 2.974e-05,
       "bridge_weight": 0.02,
-      "mic_weight": 0.006,
-      "radiation_weight": 0.008,
-      "q": 14.3487,
+      "mic_weight": 0.009,
+      "radiation_weight": 0.005,
+      "q": 13.8847,
       "nearest_harmonic_hz": 494.46
     },
     {
       "mode_index": 41,
       "frequency_hz": 432.04,
-      "contribution_weight": 3.566e-05,
+      "contribution_weight": 2.914e-05,
       "bridge_weight": 0.02,
       "mic_weight": 0.008,
       "radiation_weight": 0.008,
@@ -195,23 +175,43 @@
       "nearest_harmonic_hz": 412.05
     },
     {
-      "mode_index": 54,
-      "frequency_hz": 550.0,
-      "contribution_weight": 3.506e-05,
-      "bridge_weight": 0.01466667,
-      "mic_weight": 0.009,
-      "radiation_weight": 0.005,
-      "q": 13.129,
-      "nearest_harmonic_hz": 576.87
+      "mode_index": 47,
+      "frequency_hz": 486.48,
+      "contribution_weight": 2.866e-05,
+      "bridge_weight": 0.02,
+      "mic_weight": 0.006,
+      "radiation_weight": 0.008,
+      "q": 14.3487,
+      "nearest_harmonic_hz": 494.46
+    },
+    {
+      "mode_index": 49,
+      "frequency_hz": 504.63,
+      "contribution_weight": 2.815e-05,
+      "bridge_weight": 0.01733333,
+      "mic_weight": 0.008,
+      "radiation_weight": 0.008,
+      "q": 13.9002,
+      "nearest_harmonic_hz": 494.46
     },
     {
       "mode_index": 19,
       "frequency_hz": 232.41,
-      "contribution_weight": 3.038e-05,
+      "contribution_weight": 2.562e-05,
       "bridge_weight": 0.01733333,
       "mic_weight": 0.006,
       "radiation_weight": 0.008,
       "q": 22.9225,
+      "nearest_harmonic_hz": 247.23
+    },
+    {
+      "mode_index": 17,
+      "frequency_hz": 214.26,
+      "contribution_weight": 2.489e-05,
+      "bridge_weight": 0.02,
+      "mic_weight": 0.008,
+      "radiation_weight": 0.008,
+      "q": 23.8508,
       "nearest_harmonic_hz": 247.23
     }
   ],
@@ -227,32 +227,43 @@
   "direct_string_role": "attack_pitch_anchor_only",
   "direct_string_gain": 0.11,
   "body_filter_gain": 1.0,
-  "body_rms_before_calibration": 1.03e-06,
+  "body_rms_before_calibration": 8.5e-07,
   "dry_mix": 0.11,
-  "wet_mix": 143408.961956,
-  "dry_rms_before_mix": 0.026777,
-  "body_rms_before_mix": 0.14727351,
+  "wet_mix": 173709.168512,
+  "dry_rms_before_mix": 0.02669133,
+  "body_rms_before_mix": 0.14680229,
   "target_body_to_attack_rms_ratio": 5.5,
   "dry_gain_applied": 0.11,
-  "body_gain_applied": 143408.961956,
+  "body_gain_applied": 173709.168512,
   "final_dry_to_body_rms_ratio": 0.02,
   "fundamental_anchor_used": true,
   "target_rms_dbfs": -18.0,
   "final_peak_ceiling_dbfs": -1.0,
-  "output_rms_dbfs": -20.0917,
+  "output_rms_dbfs": -23.5347,
   "output_peak_dbfs": -1.0,
   "limiter_used": true,
-  "limiter_gain_reduction_db": -14.7387,
-  "rms_gain_applied": 0.861753,
-  "final_peak_normalization_gain": 0.861753,
-  "peak_before_normalize": 4.86333853011364,
+  "limiter_gain_reduction_db": -13.9854,
+  "rms_gain_applied": 0.65018,
+  "final_peak_normalization_gain": 0.65018,
+  "peak_before_normalize": 4.4593431817986975,
+  "output_decay_slope_db_per_s": -9.4395,
+  "early_rms_dbfs": -15.3404,
+  "late_rms_dbfs": -39.1936,
+  "late_to_early_rms_db": -23.8532,
+  "note_decay_tau_s": 2.65,
+  "body_decay_tau_s": 2.1029,
+  "harmonic_decay_model": "tau_k = note_base_tau(f0) / (1 + harmonic_decay_factor*(k-1)); partial_freq_scale; body_env = exp(-t/tau_body(f0,radiation))",
+  "high_note_decay_applied": false,
+  "body_radiation_summary": 0.1813,
   "q_min": 13.129025170697997,
   "q_median": 19.630079519977006,
   "q_max": 37.8391666091505,
   "defaults_used": [
     "Q_estimated_from_frequency_and_participation",
     "body_gain_calibration_to_target_ratio=5.5",
+    "body_radiation_decay_envelope",
     "low_note_fundamental_anchor",
+    "note_harmonic_frequency_decay_envelope",
     "radiation_air_damping_applied_to_Q"
   ],
   "excitation": {
@@ -269,7 +280,14 @@
     ],
     "target_rms_dbfs": -18.0,
     "peak_ceiling_dbfs": -1.0,
-    "fundamental_anchor_gain": 0.14
+    "fundamental_anchor_gain": 0.14,
+    "note_decay_tau_s": 2.65,
+    "body_decay_tau_s": 2.1029,
+    "harmonic_decay_factor": 0.42,
+    "loudness_rms_window_s": [
+      0.025,
+      0.42
+    ]
   },
   "output_wav": "audio\\stage1_loudness\\E2_body.wav",
   "samples_finite": true
