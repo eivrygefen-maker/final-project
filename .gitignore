@@ -5,7 +5,21 @@
 .venv/
 **/__pycache__/
 **/*.pyc
+.pytest_cache/
 .ffcx_cache/
+
+# Generated GUI / synth audio outputs (rebuild via build_note_cache.py or Generate sound)
+audio/stage1/
+audio/stage1_balance/
+audio/stage1_loudness/
+audio/note_cache/
+audio/note_cache_preview/
+audio/guitar_sound.wav
+audio/guitar_sound_metadata.json
+audio/*.wav
+audio/**/*.wav
+audio/**/*.json
+!audio/.gitkeep
 
 # Editor — share workspace indexing excludes; ignore local launch/tasks
 .vscode/*
