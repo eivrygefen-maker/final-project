@@ -46,10 +46,12 @@
     }
     .header h2 {
       margin: 0;
-      font-size: 1.45rem;
-      font-weight: 700;
+      font-size: 2.75rem;
+      font-weight: 800;
       letter-spacing: 0.04em;
+      line-height: 1.1;
       color: #ffffff;
+      text-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
     }
     .status {
       font-size: 0.85rem;
@@ -98,18 +100,39 @@
       background: var(--fretboard-edge);
     }
     .bridge-side {
-      flex: 0 0 28px;
+      flex: 0 0 52px;
       writing-mode: vertical-rl;
       transform: rotate(180deg);
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 0.68rem;
-      color: var(--muted);
-      letter-spacing: 0.1em;
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: #e5e7eb;
+      letter-spacing: 0.12em;
       text-transform: uppercase;
-      background: linear-gradient(90deg, #1a1c22 0%, #2a2d35 100%);
-      border-right: 2px solid #4b5563;
+      background: linear-gradient(90deg, #14161a 0%, #2f333c 55%, #3d424d 100%);
+      border-right: 3px solid #6b7280;
+      box-shadow: inset -4px 0 10px rgba(0, 0, 0, 0.35);
+    }
+    .bridge-bar {
+      height: 14px;
+      background: linear-gradient(180deg, #4b5563 0%, #9ca3af 45%, #6b7280 100%);
+      border-top: 2px solid #d1d5db;
+      border-bottom: 1px solid #1f2937;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+      position: relative;
+    }
+    .bridge-bar::after {
+      content: "";
+      position: absolute;
+      left: 52px;
+      right: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      height: 3px;
+      background: linear-gradient(90deg, #78716c 0%, #e7e5e4 50%, #78716c 100%);
+      border-radius: 2px;
     }
     .neck {
       position: relative;
@@ -161,8 +184,28 @@
       display: grid;
       align-items: center;
       position: relative;
-      height: 40px;
+      height: 44px;
     }
+    .string-row::after {
+      content: "";
+      position: absolute;
+      left: 44px;
+      right: 4px;
+      top: 50%;
+      transform: translateY(-50%);
+      height: 2px;
+      border-radius: 2px;
+      background: linear-gradient(90deg, #6b6560 0%, #f5f0e8 42%, #fffaf5 50%, #f5f0e8 58%, #6b6560 100%);
+      box-shadow: 0 0 2px rgba(0, 0, 0, 0.65), 0 1px 3px rgba(255, 255, 255, 0.18);
+      pointer-events: none;
+      z-index: 3;
+    }
+    .string-row[data-string="1"]::after { height: 1.3px; opacity: 0.92; }
+    .string-row[data-string="2"]::after { height: 1.5px; }
+    .string-row[data-string="3"]::after { height: 1.7px; }
+    .string-row[data-string="4"]::after { height: 1.9px; }
+    .string-row[data-string="5"]::after { height: 2.1px; }
+    .string-row[data-string="6"]::after { height: 2.6px; }
     .open-zone-strip {
       position: absolute;
       top: 0;
@@ -188,25 +231,6 @@
       color: rgba(255, 232, 168, 0.28);
       pointer-events: none;
     }
-    .string-line {
-      position: absolute;
-      left: 44px;
-      right: 4px;
-      top: 50%;
-      transform: translateY(-50%);
-      height: 2px;
-      border-radius: 2px;
-      background: linear-gradient(90deg, #8a8478 0%, #f0ebe3 42%, #fff8f0 50%, #f0ebe3 58%, #8a8478 100%);
-      box-shadow: 0 0 1px rgba(0, 0, 0, 0.55), 0 1px 2px rgba(255, 255, 255, 0.12);
-      pointer-events: none;
-      z-index: 1;
-    }
-    .string-row[data-string="1"] .string-line { height: 1.2px; opacity: 0.88; }
-    .string-row[data-string="2"] .string-line { height: 1.4px; }
-    .string-row[data-string="3"] .string-line { height: 1.6px; }
-    .string-row[data-string="4"] .string-line { height: 1.8px; }
-    .string-row[data-string="5"] .string-line { height: 2px; }
-    .string-row[data-string="6"] .string-line { height: 2.4px; }
     .string-label {
       font-size: 0.78rem;
       font-weight: 600;
@@ -219,8 +243,9 @@
       position: relative;
       height: 100%;
       cursor: pointer;
-      z-index: 2;
+      z-index: 4;
       border-left: 2px solid var(--fret-line);
+      background: rgba(0, 0, 0, 0.04);
     }
     .fret-cell.open-cell {
       border-left: 3px dashed rgba(255, 232, 168, 0.65);
@@ -363,13 +388,14 @@
     <div id="playerPanel" hidden>
       <div class="guitar-shell">
         <div class="neck-scroll">
-          <div class="bridge-side">Bridge</div>
+          <div class="bridge-side" title="Bridge — strings terminate here">Bridge</div>
           <div class="neck" id="neck">
             <div class="fret-labels" id="fretLabels"></div>
             <div class="strings" id="strings"></div>
           </div>
-          <div class="headstock">Open strings</div>
+          <div class="headstock">Nut / open</div>
         </div>
+        <div class="bridge-bar" title="Bridge saddle"></div>
       </div>
       <div class="preload-bar" id="preloadBar"><div id="preloadFill"></div></div>
       <div class="toolbar">
@@ -570,10 +596,6 @@
           label.className = "string-label";
           label.textContent = "S" + sn;
           row.appendChild(label);
-
-          var stringLine = document.createElement("div");
-          stringLine.className = "string-line";
-          row.appendChild(stringLine);
 
           fretsDisplay.forEach(function (fret) {
             var cell = document.createElement("div");

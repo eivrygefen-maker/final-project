@@ -46,7 +46,8 @@ class SampleComparisonTests(unittest.TestCase):
         self.assertEqual(segs[0]["segment_number"], 1)
         self.assertTrue((self.out_dir / "A2_26_guitars.wav").is_file())
         doc = json.loads((self.out_dir / "comparison_manifest.json").read_text(encoding="utf-8"))
-        self.assertEqual(doc["schema_version"], "sample_comparison_v1")
+        self.assertEqual(doc["schema_version"], "sample_comparison_v2")
+        self.assertEqual(doc["diagnostic_mode"], "baseline_current")
 
     def test_synthetic_modal_varies_by_sample(self) -> None:
         a = synthetic_modal_for_sample("sample_000")

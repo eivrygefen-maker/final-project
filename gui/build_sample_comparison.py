@@ -26,6 +26,14 @@ from body_response_synth import (  # noqa: E402
     synthesize_note_with_body_response,
     synthetic_classic_body_modes,
 )
+from diagnostic_synthesis import (  # noqa: E402
+    _spectral_features,
+    average_spectral_similarity,
+    flatten_geometry_parameters,
+    get_diagnostic_mode,
+    list_diagnostic_modes,
+    summarize_diagnostic_mode,
+)
 from synthesis_presets import DEFAULT_SYNTHESIS_PRESET  # noqa: E402
 
 COMPARISON_NOTES: Tuple[Tuple[str, float], ...] = (
@@ -135,6 +143,48 @@ def write_wav_mono(path: Path, samples: np.ndarray, sample_rate: int) -> None:
         wf.writeframes(pcm.tobytes())
 
 
+def segment_metadata_from_synthesis(
+    meta: Mapping[str, Any],
+    *,
+    sample: Mapping[str, Any],
+    note_name: str,
+    frequency_hz: float,
+    seg_start: float,
+    seg_dur: float,
+    seg_i: int,
+    audio: np.ndarray,
+    sample_rate: int,
+    diagnostic_mode: Optional[str],
+) -> Dict[str, Any]:
+    params = dict(sample.get("parameters") or {})
+    spec = _spectral_features(audio, sample_rate)
+    row: Dict[str, Any] = {
+        "segment_number": seg_i + 1,
+        "sample_id": str(sample["sample_id"]),
+        "run_id": sample.get("run_id"),
+        "note": note_name,
+        "frequency_hz": frequency_hz,
+        "start_time_s": round(seg_start, 4),
+        "duration_s": round(seg_dur, 4),
+        "parameters": params,
+        "diagnostic_mode": diagnostic_mode or meta.get("diagnostic_mode") or "baseline_current",
+        "raw_body_rms_before_normalization": meta.get("raw_body_rms_before_normalization"),
+        "final_rms_dbfs": meta.get("final_rms_dbfs"),
+        "body_gain_applied": meta.get("body_gain_applied"),
+        "string_gain_applied": meta.get("string_gain_applied"),
+        "body_to_string_ratio": meta.get("body_to_string_rms_ratio_before_loudness"),
+        "broad_signature_band_gains": meta.get("broad_signature_band_gains") or {},
+        "damping_q_summary": meta.get("damping_q_summary") or {},
+        "note_reward_score": meta.get("note_reward_score"),
+        "spectral_centroid_hz": round(spec["centroid_hz"], 4),
+        "spectral_low_energy": round(spec["low_energy"], 6),
+        "spectral_mid_energy": round(spec["mid_energy"], 6),
+        "spectral_high_energy": round(spec["high_energy"], 6),
+    }
+    row.update(flatten_geometry_parameters(params))
+    return row
+
+
 def build_comparison_for_note(
     *,
     note_name: str,
@@ -147,8 +197,10 @@ def build_comparison_for_note(
     sample_rate: int,
     use_surrogate: bool,
     synthesis_preset: str,
+    diagnostic_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     segments: List[np.ndarray] = []
+    segment_audios: List[np.ndarray] = []
     segment_rows: List[Dict[str, Any]] = []
     cursor_s = 0.0
 
@@ -156,7 +208,7 @@ def build_comparison_for_note(
         sid = str(sample["sample_id"])
         modal_data = resolve_modal_data_for_sample(repo_root, sample, use_surrogate=use_surrogate)
         tmp_wav = out_wav.parent / "_tmp" / f"{note_name}_{sid}.wav"
-        synthesize_note_with_body_response(
+        meta = synthesize_note_with_body_response(
             frequency_hz=frequency_hz,
             note_name=note_name,
             duration_s=duration_s,
@@ -164,6 +216,8 @@ def build_comparison_for_note(
             modal_data=modal_data,
             output_wav=tmp_wav,
             synthesis_preset=synthesis_preset,
+            diagnostic_mode=diagnostic_mode,
+            sample_parameters=sample.get("parameters") or {},
         )
         audio, sr = read_wav_float_mono(tmp_wav)
         if sr != sample_rate:
@@ -173,18 +227,21 @@ def build_comparison_for_note(
             cursor_s += silence_s
         seg_start = cursor_s
         segments.append(audio)
+        segment_audios.append(audio)
         seg_dur = len(audio) / float(sample_rate)
         segment_rows.append(
-            {
-                "segment_number": seg_i + 1,
-                "sample_id": sid,
-                "run_id": sample.get("run_id"),
-                "note": note_name,
-                "frequency_hz": frequency_hz,
-                "start_time_s": round(seg_start, 4),
-                "duration_s": round(seg_dur, 4),
-                "parameters": dict(sample.get("parameters") or {}),
-            }
+            segment_metadata_from_synthesis(
+                meta,
+                sample=sample,
+                note_name=note_name,
+                frequency_hz=frequency_hz,
+                seg_start=seg_start,
+                seg_dur=seg_dur,
+                seg_i=seg_i,
+                audio=audio,
+                sample_rate=sample_rate,
+                diagnostic_mode=diagnostic_mode,
+            )
         )
         cursor_s += seg_dur
 
@@ -197,6 +254,7 @@ def build_comparison_for_note(
         "total_duration_s": round(len(mixed) / float(sample_rate), 4),
         "segment_count": len(segment_rows),
         "segments": segment_rows,
+        "average_spectral_similarity": average_spectral_similarity(segment_audios),
     }
 
 
@@ -211,8 +269,12 @@ def build_sample_comparisons(
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     use_surrogate: bool = True,
     synthesis_preset: str = DEFAULT_SYNTHESIS_PRESET,
+    diagnostic_mode: Optional[str] = None,
+    write_mode_summary: bool = True,
 ) -> Dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
+    if diagnostic_mode:
+        get_diagnostic_mode(diagnostic_mode)
     note_rows: List[Dict[str, Any]] = []
     for note_name, hz in notes:
         out_wav = out_dir / f"{note_name}_26_guitars.wav"
@@ -227,14 +289,17 @@ def build_sample_comparisons(
             sample_rate=sample_rate,
             use_surrogate=use_surrogate,
             synthesis_preset=synthesis_preset,
+            diagnostic_mode=diagnostic_mode,
         )
         note_rows.append(row)
 
+    mode_name = diagnostic_mode or "baseline_current"
     manifest = {
-        "schema_version": "sample_comparison_v1",
+        "schema_version": "sample_comparison_v2",
         "sample_count": len(samples),
         "sample_ids": [str(s["sample_id"]) for s in samples],
         "synthesis_preset": synthesis_preset,
+        "diagnostic_mode": mode_name,
         "silence_between_guitars_s": silence_s,
         "note_duration_s": duration_s,
         "sample_rate": sample_rate,
@@ -242,7 +307,18 @@ def build_sample_comparisons(
         "notes": note_rows,
     }
     (out_dir / "comparison_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    if write_mode_summary:
+        summary = summarize_diagnostic_mode(note_rows, diagnostic_mode=mode_name)
+        (out_dir / "mode_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        manifest["mode_summary"] = summary
     return manifest
+
+
+def parse_diagnostic_modes_arg(value: str) -> List[str]:
+    modes = [m.strip() for m in str(value or "").split(",") if m.strip()]
+    for name in modes:
+        get_diagnostic_mode(name)
+    return modes
 
 
 def main() -> int:
@@ -254,6 +330,18 @@ def main() -> int:
     parser.add_argument("--silence", type=float, default=0.35)
     parser.add_argument("--no-surrogate", action="store_true")
     parser.add_argument("--synthesis-preset", type=str, default=DEFAULT_SYNTHESIS_PRESET)
+    parser.add_argument(
+        "--diagnostic-mode",
+        type=str,
+        default=None,
+        help="Single diagnostic synthesis mode (see --diagnostic-modes).",
+    )
+    parser.add_argument(
+        "--diagnostic-modes",
+        type=str,
+        default=None,
+        help="Comma-separated modes; writes one subfolder per mode under --out-dir.",
+    )
     args = parser.parse_args()
 
     samples = load_lhs_sample_entries(args.repo_root, max_samples=args.max_samples)
@@ -263,6 +351,24 @@ def main() -> int:
             for i in range(args.max_samples)
         ]
 
+    if args.diagnostic_modes:
+        modes = parse_diagnostic_modes_arg(args.diagnostic_modes)
+        for mode in modes:
+            mode_dir = args.out_dir / mode
+            build_sample_comparisons(
+                repo_root=args.repo_root,
+                out_dir=mode_dir,
+                samples=samples,
+                duration_s=args.duration,
+                silence_s=args.silence,
+                use_surrogate=not args.no_surrogate,
+                synthesis_preset=args.synthesis_preset,
+                diagnostic_mode=mode,
+            )
+            print(f"Wrote mode {mode} -> {mode_dir}")
+        print(f"Wrote {len(modes)} diagnostic mode folders under {args.out_dir}")
+        return 0
+
     manifest = build_sample_comparisons(
         repo_root=args.repo_root,
         out_dir=args.out_dir,
@@ -271,6 +377,7 @@ def main() -> int:
         silence_s=args.silence,
         use_surrogate=not args.no_surrogate,
         synthesis_preset=args.synthesis_preset,
+        diagnostic_mode=args.diagnostic_mode,
     )
     print(f"Wrote {len(manifest['notes'])} comparison WAVs to {args.out_dir}")
     return 0

@@ -300,7 +300,6 @@
 
       <div class="actions">
         <button type="button" class="primary" id="btnSave">Save &amp; Sync</button>
-        <button type="button" id="btnRom">Run ROM Prediction</button>
         <button type="button" id="btnFem" style="display:none">Run Full FEM</button>
       </div>
     </aside>
@@ -619,7 +618,7 @@
       wood_ids: ["spruce", "cedar", "mahogany", "rosewood", "maple"],
       wood_colors: {},
       templates: {},
-      soundhole_from_neck_ratio: 0.5,
+      soundhole_from_neck_ratio: 0.43,
       bounds_by_shape: {},
     };
 
@@ -640,13 +639,13 @@
     /* Built-in luthier loops (used if Python omits templates on later reruns) */
     const TEMPLATES_BUILTIN = {
       Classical: {
-        nominal_length: 0.48,
-        nominal_width: 0.37,
+        nominal_length: 0.485,
+        nominal_width: 0.365,
         loop: [
-          [0.22,0.045],[0.18,0.11],[0.12,0.14],[0.06,0.13],[0,0.115],
-          [-0.06,0.135],[-0.12,0.175],[-0.18,0.185],[-0.24,0.14],[-0.26,0.07],
-          [-0.27,0],[-0.26,-0.07],[-0.24,-0.14],[-0.18,-0.185],[-0.12,-0.175],
-          [-0.06,-0.135],[0,-0.115],[0.06,-0.13],[0.12,-0.14],[0.18,-0.11],[0.22,-0.045]
+          [0.24,0.04],[0.19,0.105],[0.11,0.132],[0.055,0.122],[0,0.108],
+          [-0.055,0.128],[-0.11,0.168],[-0.175,0.178],[-0.235,0.138],[-0.258,0.068],
+          [-0.268,0],[-0.258,-0.068],[-0.235,-0.138],[-0.175,-0.178],[-0.11,-0.168],
+          [-0.055,-0.128],[0,-0.108],[0.055,-0.122],[0.11,-0.132],[0.19,-0.105],[0.24,-0.04]
         ],
       },
       Dreadnought: {
@@ -1470,8 +1469,8 @@
   function updateModeUi() {
     const admin = state.gui_mode === "admin";
     document.getElementById("modeLabel").textContent = admin ? "Admin (FEM)" : "User (ROM)";
-    document.getElementById("btnRom").style.display = admin ? "none" : "block";
-    document.getElementById("btnFem").style.display = admin ? "block" : "none";
+    const btnFem = document.getElementById("btnFem");
+    if (btnFem) btnFem.style.display = admin ? "block" : "none";
   }
 
     function payload(action) {
@@ -1660,10 +1659,6 @@
     document.getElementById("btnSave").addEventListener("click", () => {
       readSliders();
       setComponentValue(payload("save_sync"));
-    });
-    document.getElementById("btnRom").addEventListener("click", () => {
-      readSliders();
-      setComponentValue(payload("run_rom"));
     });
     document.getElementById("btnFem").addEventListener("click", () => {
       readSliders();

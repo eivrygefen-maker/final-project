@@ -19,6 +19,15 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+from diagnostic_synthesis import (  # noqa: E402
+    active_diagnostic,
+    active_sample_parameters,
+    blend_toward_unity,
+    broad_signature_curve,
+    compute_broad_body_band_gains,
+    compute_note_reward_score,
+    use_diagnostic_mode,
+)
 from synthesis_presets import (  # noqa: E402
     BODY_LOW_FREQ_TILT_HZ,
     DEFAULT_SYNTHESIS_PRESET,
@@ -287,6 +296,10 @@ def compute_mode_weight_components(
 
 def estimate_mode_q(mode: Mapping[str, Any], f_hz: float, defaults_used: List[str]) -> float:
     damp_scale = _mode_radiation_damping_scale(mode)
+    diag = active_diagnostic()
+    if diag and diag.wide_body_signature_damping:
+        damp_scale *= active_diagnostic_damping_scale(f_hz, diag)
+        defaults_used.append("diagnostic_sample_damping_q_scale")
     for key in ("Q", "q", "modal_q", "quality_factor"):
         q = _safe_float(mode.get(key))
         if q is not None and q > 0:
@@ -301,6 +314,16 @@ def estimate_mode_q(mode: Mapping[str, Any], f_hz: float, defaults_used: List[st
     if damp_scale > 1.01:
         defaults_used.append("radiation_air_damping_applied_to_Q")
     return float(max(Q_MIN, min(Q_MAX, q_est / damp_scale)))
+
+
+def active_diagnostic_damping_scale(f_hz: float, diag: Any) -> float:
+    from diagnostic_synthesis import sample_damping_q_scale
+
+    return sample_damping_q_scale(
+        active_sample_parameters(),
+        f_hz,
+        strength=diag.damping_strength,
+    )
 
 
 def _total_q_with_radiation_loss(
@@ -814,6 +837,18 @@ def synthesize_body_via_transfer_function(
     if MODAL_MAG_SMOOTH_BINS >= 2:
         H_body = _smooth_complex_magnitude(H_body, MODAL_MAG_SMOOTH_BINS)
         defaults_used.append("modal_peak_smoothing_applied")
+
+    broad_band_gains: Dict[str, float] = {}
+    diag = active_diagnostic()
+    if diag and diag.wide_body_signature:
+        broad_band_gains = compute_broad_body_band_gains(band_modes)
+        H_body *= broad_signature_curve(
+            freqs,
+            broad_band_gains,
+            strength=diag.wide_body_signature_strength,
+        )
+        defaults_used.append("diagnostic_wide_body_signature_eq")
+
     body_spec = acc_spec * H_body * BODY_REFERENCE_GAIN
     body = np.fft.irfft(body_spec, n=n)
 
@@ -849,6 +884,7 @@ def synthesize_body_via_transfer_function(
         "top_mode_dominance_before": round(dom_before, 6),
         "top_mode_dominance_after": round(dom_after, 6),
         "effective_q_scale_or_bandwidth_scale": bw,
+        "broad_signature_band_gains": broad_band_gains,
     }
     return body, contributions, q_values, broaden_info
 
@@ -861,6 +897,7 @@ def apply_loudness_finalize(
     peak_ceiling_dbfs: float = FINAL_PEAK_CEILING_DBFS,
     rms_window_start_s: float = LOUDNESS_RMS_WINDOW_START_S,
     rms_window_end_s: float = LOUDNESS_RMS_WINDOW_END_S,
+    raw_body_variation_preserve: float = 0.0,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """
     Target-RMS gain (early/mid window), then tanh soft limiter, then peak ceiling.
@@ -878,6 +915,7 @@ def apply_loudness_finalize(
     if rms_in < 1e-12:
         rms_in = max(rms_window, rms_full, 1e-12)
     rms_gain = target_rms / max(rms_in, 1e-12)
+    rms_gain = blend_toward_unity(rms_gain, raw_body_variation_preserve)
     y = x * rms_gain
 
     peak_pre_limit = float(np.max(np.abs(y))) if y.size else 0.0
@@ -907,6 +945,7 @@ def apply_loudness_finalize(
         "target_rms_dbfs": target_rms_dbfs,
         "final_peak_ceiling_dbfs": peak_ceiling_dbfs,
         "rms_gain_applied": rms_gain,
+        "raw_body_variation_preserve": raw_body_variation_preserve,
         "loudness_rms_window_s": [rms_window_start_s, rms_window_end_s],
         "peak_before_loudness": peak_pre_limit,
         "limiter_used": limiter_used,
@@ -926,6 +965,7 @@ def write_wav_int16(
     sample_rate: int,
     *,
     duration_s: Optional[float] = None,
+    raw_body_variation_preserve: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Write mono int16 WAV after anti-click taper and loudness finalize."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -934,7 +974,15 @@ def write_wav_int16(
         sample_rate,
         duration_s=duration_s,
     )
-    y, loudness_info = apply_loudness_finalize(tapered, sample_rate)
+    preserve = 0.0 if raw_body_variation_preserve is None else float(raw_body_variation_preserve)
+    diag = active_diagnostic()
+    if raw_body_variation_preserve is None and diag is not None:
+        preserve = diag.raw_body_variation_preserve
+    y, loudness_info = apply_loudness_finalize(
+        tapered,
+        sample_rate,
+        raw_body_variation_preserve=preserve,
+    )
     loudness_info.update(taper_info)
     pcm = np.clip(y * 32767.0, -32767, 32767).astype(np.int16)
     with wave.open(str(path), "wb") as wf:
@@ -955,18 +1003,21 @@ def synthesize_note_with_body_response(
     output_metadata_json: Optional[Path] = None,
     velocity: float = DEFAULT_VELOCITY,
     synthesis_preset: Optional[str] = None,
+    diagnostic_mode: Optional[str] = None,
+    sample_parameters: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     with use_synthesis_preset(synthesis_preset):
-        return _synthesize_note_with_body_response_core(
-            frequency_hz=frequency_hz,
-            note_name=note_name,
-            duration_s=duration_s,
-            sample_rate=sample_rate,
-            modal_data=modal_data,
-            output_wav=output_wav,
-            output_metadata_json=output_metadata_json,
-            velocity=velocity,
-        )
+        with use_diagnostic_mode(diagnostic_mode, sample_parameters=sample_parameters):
+            return _synthesize_note_with_body_response_core(
+                frequency_hz=frequency_hz,
+                note_name=note_name,
+                duration_s=duration_s,
+                sample_rate=sample_rate,
+                modal_data=modal_data,
+                output_wav=output_wav,
+                output_metadata_json=output_metadata_json,
+                velocity=velocity,
+            )
 
 
 def _synthesize_note_with_body_response_core(
@@ -1059,13 +1110,20 @@ def _synthesize_note_with_body_response_core(
     body_rms_before_calibration = _rms(body_raw)
     string_rms_before_mix = _rms(string_path)
 
+    diag = active_diagnostic()
+    variation_preserve = diag.raw_body_variation_preserve if diag else 0.0
     if body_rms_before_calibration > 1e-15 and string_rms_before_mix > 1e-15:
-        body_gain_applied = (
+        calibrated_gain = (
             tune.body_to_string_target_ratio * string_rms_before_mix / body_rms_before_calibration
+        )
+        body_gain_applied = (
+            calibrated_gain * (1.0 - variation_preserve) + BODY_REFERENCE_GAIN * variation_preserve
         )
         defaults_used.append(
             f"body_gain_calibration_to_target_ratio={tune.body_to_string_target_ratio}"
         )
+        if variation_preserve > 0:
+            defaults_used.append(f"raw_body_variation_preserve={variation_preserve}")
     elif body_rms_before_calibration > 0:
         body_gain_applied = BODY_REFERENCE_GAIN
         defaults_used.append("body_gain_calibration_fallback")
@@ -1247,7 +1305,34 @@ def _synthesize_note_with_body_response_core(
         },
         "output_wav": str(output_wav),
         "samples_finite": True,
+        "raw_body_rms_before_normalization": round(body_rms_before_calibration, 8),
+        "final_rms_dbfs": loudness_info["output_rms_dbfs"],
+        "string_gain_applied": round(effective_string_pluck_gain, 6),
+        "broad_signature_band_gains": broaden_info.get("broad_signature_band_gains") or {},
+        "damping_q_summary": {
+            "q_min": q_min,
+            "q_median": q_median,
+            "q_max": q_max,
+            "diagnostic_damping_active": bool(diag and diag.wide_body_signature_damping),
+        },
     }
+    if diag:
+        metadata["diagnostic_mode"] = diag.name
+        metadata["diagnostic_config"] = diag.to_metadata_dict()
+        metadata["raw_body_variation_preserve"] = variation_preserve
+    else:
+        metadata["diagnostic_mode"] = "baseline_current"
+    metadata.update(
+        compute_note_reward_score(
+            frequency_hz=float(frequency_hz),
+            body_rms_before_mix=body_rms_before,
+            string_rms_before_mix=string_rms_before_mix,
+            body_to_string_ratio_before_loudness=body_to_string_rms_ratio_before_loudness,
+            top_contributing_modes=top_modes,
+            late_to_early_rms_db=float(loudness_info.get("late_to_early_rms_db") or 0.0),
+            output_decay_slope_db_per_s=float(loudness_info.get("output_decay_slope_db_per_s") or 0.0),
+        )
+    )
     if output_metadata_json is not None:
         output_metadata_json.parent.mkdir(parents=True, exist_ok=True)
         output_metadata_json.write_text(json.dumps(metadata, indent=2), encoding="utf-8")

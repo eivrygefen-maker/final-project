@@ -496,12 +496,23 @@ def inject_user_flow_css() -> None:
         """
         <style>
         .user-step-heading {
-            font-size: 1.85rem;
-            font-weight: 700;
-            letter-spacing: 0.05em;
-            margin: 0 0 0.45rem 0;
-            color: #f8fafc;
-            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+            font-size: 3.6rem;
+            font-weight: 800;
+            letter-spacing: 0.04em;
+            line-height: 1.08;
+            margin: 1.25rem 0 0.65rem 0;
+            color: #ffffff;
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+        }
+        .user-gen-sound-heading {
+            font-size: 3.2rem;
+            font-weight: 800;
+            letter-spacing: 0.04em;
+            line-height: 1.1;
+            margin: 1.5rem 0 0.75rem 0;
+            text-align: center;
+            color: #ffffff;
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
         }
         .user-step-copy {
             font-size: 1.0rem;
@@ -514,7 +525,10 @@ def inject_user_flow_css() -> None:
             padding-bottom: 0.25rem;
         }
         .gen-sound-spacer {
-            margin: 1.25rem 0 1.75rem 0;
+            margin: 1.75rem 0 0.5rem 0;
+        }
+        .gen-sound-block {
+            margin: 0.5rem 0 2rem 0;
         }
         section.main button[data-testid="baseButton-primary"] {
             width: min(420px, 100%);
@@ -1706,6 +1720,11 @@ def _render_main_studio(
         )
 
     st.markdown('<div class="gen-sound-spacer"></div>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="user-gen-sound-heading">GENERATE SOUND</p>',
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div class="gen-sound-block">', unsafe_allow_html=True)
     _gc1, _gc2, _gc3 = st.columns([1, 2, 1])
     with _gc2:
         gen_sound = st.button(
@@ -1718,6 +1737,7 @@ def _render_main_studio(
         )
         if not rom_body_response_ready(rom_fp):
             st.caption("Save & Sync first to prepare your guitar for sound generation.")
+    st.markdown("</div>", unsafe_allow_html=True)
 
     if gen_sound:
         if not rom_body_response_ready(rom_fp):

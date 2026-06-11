@@ -27,6 +27,8 @@ gui/components/guitar_player/runtime_cache/
 # Synthesis A/B and sample comparison listening outputs
 audio/preset_previews/
 audio/comparison_26_samples/
+audio/comparison_26_samples_diagnostic/
+audio/body_difference_diagnostics/
 
 # Editor — share workspace indexing excludes; ignore local launch/tasks
 .vscode/*
