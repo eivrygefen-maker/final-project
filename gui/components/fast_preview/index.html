@@ -627,13 +627,13 @@
     const WOOD_COLORS_BUILTIN = {
       spruce: "#C19A6B",
       cedar: "#5D4037",
-      maple: "#E1C699",
+      maple: "#C8A574",
       mahogany: "#795548",
       rosewood: "#3F2A20",
     };
     const WOOD_MATERIAL_OPTS = {
       spruce: { color: "#C19A6B", roughness: 1.0, metalness: 0.0 },
-      maple: { color: "#E1C699", roughness: 1.0, metalness: 0.0 },
+      maple: { color: "#C8A574", roughness: 0.97, metalness: 0.0 },
     };
     state.wood_colors = Object.assign({}, WOOD_COLORS_BUILTIN, state.wood_colors);
 
@@ -870,10 +870,19 @@
       return WOOD_MATERIAL_OPTS[key] || null;
     }
 
+    function resolveWoodSurfaceColor(woodId, mesh) {
+      const key = String(woodId || "").toLowerCase();
+      const opts = woodMaterialOpts(woodId);
+      const base = opts ? hexColor(opts.color) : woodColorHex(woodId);
+      if (key !== "maple") return base;
+      const tint = mesh === meshBackRef ? 0.93 : (mesh === meshSidesRef ? 0.89 : 1.0);
+      return base.clone().multiplyScalar(tint);
+    }
+
     function createWoodMaterial(woodId) {
       const opts = woodMaterialOpts(woodId);
       return new THREE.MeshStandardMaterial({
-        color: opts ? hexColor(opts.color) : woodColorHex(woodId),
+        color: resolveWoodSurfaceColor(woodId, null),
         roughness: opts ? opts.roughness : 1.0,
         metalness: opts ? opts.metalness : 0.0,
         flatShading: false,
@@ -890,7 +899,7 @@
     function applyWoodMaterialToMesh(mesh, woodId) {
       if (!mesh) return;
       const opts = woodMaterialOpts(woodId);
-      const color = opts ? hexColor(opts.color) : woodColorHex(woodId);
+      const color = resolveWoodSurfaceColor(woodId, mesh);
       const applyOne = function (mat) {
         if (!mat) return;
         mat.color.copy(color);

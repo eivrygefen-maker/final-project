@@ -416,7 +416,7 @@ def studio_initial_from_saved(
 STUDIO_WOOD_HEX: Dict[str, str] = {
     "spruce": "#C19A6B",
     "cedar": "#5D4037",
-    "maple": "#E1C699",
+    "maple": "#C8A574",
     "mahogany": "#795548",
     "rosewood": "#3F2A20",
 }

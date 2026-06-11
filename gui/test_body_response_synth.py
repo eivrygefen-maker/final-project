@@ -96,6 +96,13 @@ class BodyResponseSynthTests(unittest.TestCase):
             self.assertIn("late_to_early_rms_db", meta)
             self.assertIn("note_decay_tau_s", meta)
             self.assertIn("body_decay_tau_s", meta)
+            self.assertEqual(meta["body_modal_richness_gain"], 1.2, name)
+            self.assertAlmostEqual(
+                meta["body_rms_after_richness_gain"],
+                meta["body_rms_before_richness_gain"] * 1.2,
+                places=6,
+                msg=name,
+            )
             self.assertLess(meta["late_to_early_rms_db"], -3.0, name)
             if name in ("E2", "A2"):
                 self.assertTrue(meta["fundamental_anchor_used"], name)
@@ -218,6 +225,9 @@ class BodyResponseSynthTests(unittest.TestCase):
             "body_rms_before_mix",
             "dry_gain_applied",
             "body_gain_applied",
+            "body_modal_richness_gain",
+            "body_rms_before_richness_gain",
+            "body_rms_after_richness_gain",
             "final_dry_to_body_rms_ratio",
             "final_peak_normalization_gain",
             "output_rms_dbfs",

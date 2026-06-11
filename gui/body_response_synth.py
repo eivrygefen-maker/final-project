@@ -27,6 +27,7 @@ DEFAULT_VELOCITY = 1.0
 # Fixed excitation (body ROM weights are the main guitar-to-guitar variable).
 FIXED_PLUCK_POSITION = 0.18
 BODY_REFERENCE_GAIN = 1.0
+BODY_MODAL_RICHNESS_GAIN = 1.20
 TARGET_BODY_TO_ATTACK_RMS_RATIO = 5.5
 DIRECT_ATTACK_GAIN = 0.11
 ATTACK_DECAY_S = 0.040
@@ -785,8 +786,12 @@ def synthesize_note_with_body_response(
         body_gain_applied = 0.0
 
     body_signal = body_raw * body_gain_applied
-    body_rms_before = _rms(body_signal)
+    body_rms_before_richness_gain = _rms(body_signal)
+    body_signal = body_signal * BODY_MODAL_RICHNESS_GAIN
+    body_rms_after_richness_gain = _rms(body_signal)
+    body_rms_before = body_rms_after_richness_gain
     mixed = body_signal + dry_gain_applied * direct_tap
+    defaults_used.append(f"body_modal_richness_gain={BODY_MODAL_RICHNESS_GAIN}")
     fundamental_anchor_used = float(frequency_hz) <= LOW_NOTE_FUNDAMENTAL_MAX_HZ
     if fundamental_anchor_used:
         mixed += _fundamental_pitch_anchor(
@@ -849,6 +854,9 @@ def synthesize_note_with_body_response(
         "direct_string_gain": round(dry_gain_applied, 6),
         "body_filter_gain": round(BODY_REFERENCE_GAIN, 6),
         "body_rms_before_calibration": round(body_rms_before_calibration, 8),
+        "body_modal_richness_gain": BODY_MODAL_RICHNESS_GAIN,
+        "body_rms_before_richness_gain": round(body_rms_before_richness_gain, 8),
+        "body_rms_after_richness_gain": round(body_rms_after_richness_gain, 8),
         "dry_mix": round(dry_gain_applied, 6),
         "wet_mix": round(body_gain_applied, 6),
         "dry_rms_before_mix": round(dry_rms_before, 8),
@@ -887,6 +895,7 @@ def synthesize_note_with_body_response(
             "pluck_transient_ms": PLUCK_TRANSIENT_MS,
             "harmonic_rolloff_power": HARMONIC_ROLLOFF_POWER,
             "body_reference_gain": BODY_REFERENCE_GAIN,
+            "body_modal_richness_gain": BODY_MODAL_RICHNESS_GAIN,
             "rad_k": FIXED_RAD_K,
             "q_clamp": [Q_MIN, Q_MAX],
             "target_rms_dbfs": TARGET_RMS_DBFS,
