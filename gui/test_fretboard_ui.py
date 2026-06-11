@@ -13,8 +13,12 @@ sys.path.insert(0, str(REPO / "gui"))
 
 from build_note_cache import build_note_cache  # noqa: E402
 from note_cache_ui import (  # noqa: E402
+    FRETBOARD_DISPLAY_STRING_ORDER,
+    OPEN_STRING_NOTE_IDS,
     build_player_payload,
     build_position_lookup,
+    fretboard_display_fret_order,
+    fretboard_screen_position,
     list_manifest_paths,
     lookup_position,
     note_cache_ui_status,
@@ -120,6 +124,46 @@ class FretboardUiTests(unittest.TestCase):
         self.assertTrue(dest.is_dir())
         first_note = doc["notes"][0]["note_id"]
         self.assertTrue((dest / f"{first_note}.wav").is_file())
+
+    def test_fretboard_orientation_open_low_e_upper_right(self) -> None:
+        fret_count = 19
+        row, col = fretboard_screen_position(6, 0, fret_count=fret_count)
+        self.assertEqual(row, 0)
+        self.assertEqual(col, fret_count)
+        self.assertEqual(FRETBOARD_DISPLAY_STRING_ORDER[0], 6)
+        self.assertEqual(fretboard_display_fret_order(fret_count)[-1], 0)
+        row_e4, col_e4 = fretboard_screen_position(1, 0, fret_count=fret_count)
+        self.assertEqual(row_e4, 5)
+        self.assertEqual(col_e4, fret_count)
+
+    def test_open_string_note_mapping(self) -> None:
+        manifest = build_note_cache(
+            modal_json=Path("__missing_modal__.json"),
+            out_root=self.out_root,
+            fret_count=5,
+            duration_s=0.12,
+            force=True,
+        )
+        doc = json.loads((Path(manifest["cache_root"]) / "note_manifest.json").read_text(encoding="utf-8"))
+        lookup = build_position_lookup(doc)
+        for sn, expected_note in OPEN_STRING_NOTE_IDS.items():
+            pos = lookup_position(lookup, sn, 0)
+            self.assertIsNotNone(pos, f"string {sn} open")
+            self.assertEqual(pos["note_id"], expected_note)
+
+    def test_player_payload_preserves_manifest_positions(self) -> None:
+        manifest = build_note_cache(
+            modal_json=Path("__missing_modal__.json"),
+            out_root=self.out_root,
+            fret_count=5,
+            duration_s=0.12,
+            force=True,
+        )
+        resolved = resolve_note_cache(self.out_root, expected_fingerprint=manifest["guitar_fingerprint"])
+        payload = build_player_payload(resolved, ui_status="ready")
+        s6f5 = next(p for p in payload["positions"] if p["string"] == 6 and p["fret"] == 5)
+        self.assertEqual(s6f5["note_id"], "A2")
+        self.assertTrue(s6f5["wav"].endswith(".wav"))
 
     def test_note_cache_ui_status_hidden_until_generate(self) -> None:
         manifest = build_note_cache(

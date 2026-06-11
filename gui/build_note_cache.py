@@ -40,7 +40,7 @@ from body_response_synth import (
 )
 
 NOTE_CACHE_SCHEMA_VERSION = "note_cache_v1"
-NOTE_CACHE_BUILDER_VERSION = "stage3_5_v1"
+NOTE_CACHE_BUILDER_VERSION = "stage4_polish_v1"
 
 # String 6 (low E) .. string 1 (high E); open frequencies in Hz.
 DEFAULT_TUNING: Tuple[Tuple[int, float, str], ...] = (

@@ -73,6 +73,14 @@ BODY_DECAY_FREQ_POWER = 0.52
 RADIATION_TAU_SHORTENING = 0.58
 BODY_DECAY_LOW_NOTE_BLEND = 0.48
 HIGH_NOTE_DECAY_THRESHOLD_HZ = 300.0
+HIGH_NOTE_PLUCK_SOFTEN_THRESHOLD_HZ = 300.0
+HIGH_NOTE_PLUCK_SOFTEN_FULL_HZ = 620.0
+HIGH_NOTE_PLUCK_GAIN_FLOOR = 0.52
+HIGH_NOTE_PLUCK_TRANSIENT_BOOST = 0.75
+HIGH_NOTE_PLUCK_TRANSIENT_REDUCTION = 0.48
+HIGH_NOTE_PITCH_LAYER_ATTACK_SOFTEN = 1.75
+HIGH_NOTE_ATTACK_DECAY_SHORTEN = 0.38
+HIGH_NOTE_HF_ROLLOFF_K_POWER = 0.24
 LOUDNESS_RMS_WINDOW_START_S = 0.025
 LOUDNESS_RMS_WINDOW_END_S = 0.42
 DECAY_EARLY_END_S = 0.28
@@ -355,6 +363,38 @@ def _hf_transfer_envelope(f_hz: np.ndarray) -> np.ndarray:
     return env
 
 
+def high_note_pluck_soften_t(frequency_hz: float) -> float:
+    """0 below threshold, 1 at/above full soften frequency."""
+    f0 = float(frequency_hz)
+    if f0 <= HIGH_NOTE_PLUCK_SOFTEN_THRESHOLD_HZ:
+        return 0.0
+    span = max(1.0, HIGH_NOTE_PLUCK_SOFTEN_FULL_HZ - HIGH_NOTE_PLUCK_SOFTEN_THRESHOLD_HZ)
+    return float(max(0.0, min(1.0, (f0 - HIGH_NOTE_PLUCK_SOFTEN_THRESHOLD_HZ) / span)))
+
+
+def high_note_pluck_softening_gain(frequency_hz: float) -> float:
+    """Reduce direct string/pluck layer for high notes; low notes unchanged."""
+    t = high_note_pluck_soften_t(frequency_hz)
+    if t <= 0.0:
+        return 1.0
+    return 1.0 - t * (1.0 - HIGH_NOTE_PLUCK_GAIN_FLOOR)
+
+
+def high_note_string_hf_rolloff_factor(frequency_hz: float, harmonic_index: int) -> float:
+    """Extra HF harmonic attenuation for high fundamentals (reduces metallic ping)."""
+    f0 = float(frequency_hz)
+    t = high_note_pluck_soften_t(f0)
+    if t <= 0.0:
+        return 1.0
+    k = max(1, int(harmonic_index))
+    fk = k * f0
+    if k <= 2:
+        return 1.0 - 0.10 * t
+    hf = max(0.0, min(1.0, (fk - 700.0) / 2200.0))
+    cut = t * (HIGH_NOTE_HF_ROLLOFF_K_POWER * (k - 2) ** 0.55 + 0.22 * hf)
+    return float(max(0.30, 1.0 - cut))
+
+
 def harmonic_series(
     frequency_hz: float,
     sample_rate: int,
@@ -374,6 +414,7 @@ def harmonic_series(
         if pluck_factor < 1e-8:
             continue
         amp = pluck_factor / (k ** HARMONIC_ROLLOFF_POWER)
+        amp *= high_note_string_hf_rolloff_factor(f0, k)
         if k == 1 and f0 <= LOW_NOTE_FUNDAMENTAL_MAX_HZ:
             amp *= 1.55
         harm_f.append(fk)
@@ -513,10 +554,12 @@ def _estimate_decay_slope_db_per_s(
     return float(slope)
 
 
-def _pluck_attack_envelope(n: int, sample_rate: int) -> np.ndarray:
-    """Short onset emphasis for pluck realism (deterministic)."""
+def _pluck_attack_envelope(n: int, sample_rate: int, frequency_hz: float) -> np.ndarray:
+    """Short onset emphasis for pluck realism; softer transient for high notes."""
     t = np.arange(n, dtype=np.float64) / float(sample_rate)
-    transient = 1.0 + 0.75 * np.exp(-t / max(PLUCK_TRANSIENT_MS, 1e-4))
+    soften_t = high_note_pluck_soften_t(frequency_hz)
+    boost = HIGH_NOTE_PLUCK_TRANSIENT_BOOST * (1.0 - soften_t * HIGH_NOTE_PLUCK_TRANSIENT_REDUCTION)
+    transient = 1.0 + boost * np.exp(-t / max(PLUCK_TRANSIENT_MS, 1e-4))
     return transient
 
 
@@ -546,17 +589,27 @@ def _fundamental_pitch_anchor(
     )
 
 
-def _direct_attack_tap(dry: np.ndarray, sample_rate: int) -> np.ndarray:
+def _attack_decay_s_for_note(frequency_hz: float) -> float:
+    """High notes: faster attack decay → less harsh metallic pick transient."""
+    soften_t = high_note_pluck_soften_t(frequency_hz)
+    if soften_t <= 0.0:
+        return ATTACK_DECAY_S
+    return ATTACK_DECAY_S * (1.0 - soften_t * HIGH_NOTE_ATTACK_DECAY_SHORTEN)
+
+
+def _direct_attack_tap(dry: np.ndarray, sample_rate: int, frequency_hz: float) -> np.ndarray:
     """Direct string component: short pluck attack for pitch identity."""
     t = np.arange(len(dry), dtype=np.float64) / float(sample_rate)
-    attack_env = np.exp(-t / ATTACK_DECAY_S)
+    attack_env = np.exp(-t / _attack_decay_s_for_note(frequency_hz))
     return dry * attack_env
 
 
-def _string_pitch_layer(dry: np.ndarray, sample_rate: int) -> np.ndarray:
+def _string_pitch_layer(dry: np.ndarray, sample_rate: int, frequency_hz: float) -> np.ndarray:
     """Controlled harmonic string layer — plucked, not a pure sustained sine."""
     t = np.arange(len(dry), dtype=np.float64) / float(sample_rate)
-    attack = 1.0 - np.exp(-t / 0.008)
+    soften_t = high_note_pluck_soften_t(frequency_hz)
+    attack_tc = 0.008 * (1.0 + soften_t * (HIGH_NOTE_PITCH_LAYER_ATTACK_SOFTEN - 1.0))
+    attack = 1.0 - np.exp(-t / attack_tc)
     decay = np.exp(-t / STRING_PITCH_LAYER_DECAY_S)
     return dry * attack * decay
 
@@ -670,7 +723,7 @@ def synthesize_plucked_string(
         k = max(1, int(round(fk / f0)))
         tau_k = harmonic_decay_tau_s(f0, k)
         signal += amp_k * np.sin(2.0 * math.pi * fk * t) * np.exp(-t / tau_k)
-    signal *= _pluck_attack_envelope(n, sample_rate)
+    signal *= _pluck_attack_envelope(n, sample_rate, f0)
     return signal
 
 
@@ -946,11 +999,21 @@ def synthesize_note_with_body_response(
         q_values = []
         defaults_used.append("no_modes_in_validated_band_60_550:body_bypass")
 
-    string_pluck = STRING_PLUCK_GAIN * _direct_attack_tap(string_excitation, sample_rate)
-    string_pitch_layer = STRING_PITCH_LAYER_GAIN * _string_pitch_layer(string_excitation, sample_rate)
+    pluck_soften = high_note_pluck_softening_gain(frequency_hz)
+    high_note_pluck_softening_applied = pluck_soften < 0.999
+    hf_rolloff = high_note_string_hf_rolloff_factor(float(frequency_hz), 6)
+    effective_pluck_gain = STRING_PLUCK_GAIN * pluck_soften
+    effective_pitch_gain = STRING_PITCH_LAYER_GAIN * pluck_soften
+    string_pluck = effective_pluck_gain * _direct_attack_tap(
+        string_excitation, sample_rate, float(frequency_hz)
+    )
+    string_pitch_layer = effective_pitch_gain * _string_pitch_layer(
+        string_excitation, sample_rate, float(frequency_hz)
+    )
     string_path = string_pluck + string_pitch_layer
-    string_pluck_gain = STRING_PLUCK_GAIN
-    string_pitch_layer_gain = STRING_PITCH_LAYER_GAIN
+    string_pluck_gain = effective_pluck_gain
+    string_pitch_layer_gain = effective_pitch_gain
+    effective_string_pluck_gain = effective_pluck_gain + effective_pitch_gain
     body_rms_before_calibration = _rms(body_raw)
     string_rms_before_mix = _rms(string_path)
 
@@ -1043,6 +1106,10 @@ def synthesize_note_with_body_response(
         "direct_string_role": "string_pluck_plus_pitch_layer",
         "string_pluck_gain": round(string_pluck_gain, 6),
         "string_pitch_layer_gain": round(string_pitch_layer_gain, 6),
+        "high_note_pluck_softening_applied": high_note_pluck_softening_applied,
+        "high_note_pluck_softening_gain": round(pluck_soften, 6),
+        "string_hf_rolloff_factor": round(hf_rolloff, 6),
+        "effective_string_pluck_gain": round(effective_string_pluck_gain, 6),
         "body_modal_gain": round(body_modal_gain, 6),
         "body_to_string_target_ratio": BODY_TO_STRING_TARGET_RATIO,
         "body_to_string_rms_ratio_before_loudness": round(body_to_string_rms_ratio_before_loudness, 6),

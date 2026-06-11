@@ -18,7 +18,9 @@ sys.path.insert(0, str(REPO / "gui"))
 from body_response_synth import (  # noqa: E402
     DEFAULT_SAMPLE_RATE,
     FULL_MODAL_BAND_HZ,
+    STRING_PLUCK_GAIN,
     concatenate_audio_with_crossfade,
+    high_note_pluck_softening_gain,
     load_modal_data_from_path,
     modes_in_validated_band,
     parse_modal_modes,
@@ -196,6 +198,42 @@ class BodyResponseSynthTests(unittest.TestCase):
         self.assertEqual(meta["evaluated_modal_count"], len(modes_in_validated_band(modes)))
         self.assertGreater(meta["available_modal_frequency_max_hz"], 200.0)
 
+    def test_high_note_pluck_softening_metadata(self) -> None:
+        modal = self._spread_modal_fixture()
+        e2 = synthesize_note_with_body_response(
+            frequency_hz=82.41,
+            note_name="E2",
+            duration_s=0.35,
+            sample_rate=DEFAULT_SAMPLE_RATE,
+            modal_data=modal,
+            output_wav=self.out_dir / "soft_e2.wav",
+        )
+        a4 = synthesize_note_with_body_response(
+            frequency_hz=440.0,
+            note_name="A4",
+            duration_s=0.35,
+            sample_rate=DEFAULT_SAMPLE_RATE,
+            modal_data=modal,
+            output_wav=self.out_dir / "soft_a4.wav",
+        )
+        e5 = synthesize_note_with_body_response(
+            frequency_hz=659.25,
+            note_name="E5",
+            duration_s=0.35,
+            sample_rate=DEFAULT_SAMPLE_RATE,
+            modal_data=modal,
+            output_wav=self.out_dir / "soft_e5.wav",
+        )
+        self.assertFalse(e2["high_note_pluck_softening_applied"])
+        self.assertAlmostEqual(e2["high_note_pluck_softening_gain"], 1.0, places=4)
+        self.assertAlmostEqual(e2["string_pluck_gain"], STRING_PLUCK_GAIN, places=6)
+        self.assertTrue(a4["high_note_pluck_softening_applied"])
+        self.assertTrue(e5["high_note_pluck_softening_applied"])
+        self.assertLess(e5["high_note_pluck_softening_gain"], a4["high_note_pluck_softening_gain"])
+        self.assertLess(a4["string_pluck_gain"], STRING_PLUCK_GAIN)
+        self.assertLess(e5["string_hf_rolloff_factor"], 1.0)
+        self.assertGreater(e2["body_to_string_rms_ratio_before_loudness"], 2.5)
+
     def test_metadata_fields(self) -> None:
         wav = self.out_dir / "meta.wav"
         meta_path = self.out_dir / "meta.json"
@@ -257,6 +295,10 @@ class BodyResponseSynthTests(unittest.TestCase):
             "body_decay_tau_s",
             "harmonic_decay_model",
             "high_note_decay_applied",
+            "high_note_pluck_softening_applied",
+            "high_note_pluck_softening_gain",
+            "string_hf_rolloff_factor",
+            "effective_string_pluck_gain",
             "q_min",
             "q_median",
             "q_max",

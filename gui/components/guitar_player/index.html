@@ -75,27 +75,47 @@
       box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
     }
     .headstock {
-      height: 36px;
-      background: linear-gradient(180deg, #4a3728 0%, #2f2118 100%);
-      border-bottom: 2px solid var(--fretboard-edge);
+      flex: 0 0 36px;
+      background: linear-gradient(90deg, #2f2118 0%, #4a3728 100%);
+      border-left: 2px solid var(--fretboard-edge);
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 0.75rem;
+      font-size: 0.68rem;
       color: var(--muted);
-      letter-spacing: 0.12em;
+      letter-spacing: 0.08em;
       text-transform: uppercase;
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
     }
     .neck-scroll {
+      display: flex;
+      flex-direction: row;
+      align-items: stretch;
       overflow-x: auto;
       overflow-y: hidden;
       background: var(--fretboard-edge);
     }
+    .bridge-side {
+      flex: 0 0 28px;
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.68rem;
+      color: var(--muted);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      background: linear-gradient(90deg, #1a1c22 0%, #2a2d35 100%);
+      border-right: 2px solid #4b5563;
+    }
     .neck {
       position: relative;
-      min-width: 100%;
+      flex: 1 1 auto;
+      min-width: min(100%, 720px);
       background: linear-gradient(180deg, #4a3220 0%, var(--fretboard) 18%, var(--fretboard) 82%, #4a3220 100%);
-      padding: 10px 8px 12px;
+      padding: 10px 6px 12px 8px;
     }
     .fret-labels {
       display: grid;
@@ -121,26 +141,27 @@
       grid-template-columns: 44px repeat(var(--fret-cols, 20), minmax(34px, 1fr));
       align-items: center;
       position: relative;
-      height: 34px;
+      height: 38px;
     }
-    .string-row::after {
-      content: "";
+    .string-line {
       position: absolute;
       left: 44px;
       right: 4px;
       top: 50%;
-      height: 1.5px;
-      background: linear-gradient(90deg, var(--string) 0%, #e8e4dc 50%, var(--string) 100%);
+      transform: translateY(-50%);
+      height: 2px;
+      border-radius: 2px;
+      background: linear-gradient(90deg, #8a8478 0%, #f0ebe3 42%, #fff8f0 50%, #f0ebe3 58%, #8a8478 100%);
+      box-shadow: 0 0 1px rgba(0, 0, 0, 0.55), 0 1px 2px rgba(255, 255, 255, 0.12);
       pointer-events: none;
       z-index: 1;
-      opacity: 0.85;
     }
-    .string-row:nth-child(1)::after { height: 1px; opacity: 0.7; }
-    .string-row:nth-child(2)::after { height: 1.2px; }
-    .string-row:nth-child(3)::after { height: 1.4px; }
-    .string-row:nth-child(4)::after { height: 1.6px; }
-    .string-row:nth-child(5)::after { height: 1.8px; }
-    .string-row:nth-child(6)::after { height: 2px; }
+    .string-row[data-string="1"] .string-line { height: 1.2px; opacity: 0.88; }
+    .string-row[data-string="2"] .string-line { height: 1.4px; }
+    .string-row[data-string="3"] .string-line { height: 1.6px; }
+    .string-row[data-string="4"] .string-line { height: 1.8px; }
+    .string-row[data-string="5"] .string-line { height: 2px; }
+    .string-row[data-string="6"] .string-line { height: 2.4px; }
     .string-label {
       font-size: 0.78rem;
       font-weight: 600;
@@ -156,8 +177,33 @@
       z-index: 2;
       border-left: 2px solid var(--fret-line);
     }
-    .fret-cell:first-of-type {
-      border-left: 5px solid var(--nut);
+    .fret-cell.open-cell {
+      border-right: 5px solid var(--nut);
+      min-width: 42px;
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .fret-cell.open-cell:hover { background: rgba(255, 75, 75, 0.22); }
+    .open-label {
+      position: absolute;
+      right: 7px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 0.62rem;
+      font-weight: 700;
+      color: #f5e6c8;
+      letter-spacing: 0.02em;
+      pointer-events: none;
+      z-index: 3;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+    }
+    .open-string-hit {
+      position: absolute;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: 46px;
+      cursor: pointer;
+      z-index: 4;
     }
     .fret-cell:hover { background: var(--cell-hover); }
     .fret-cell.active {
@@ -192,11 +238,6 @@
       opacity: 0;
     }
     .fret-marker-slot.inlay .fret-dot { opacity: 1; }
-    .bridge {
-      height: 14px;
-      background: linear-gradient(180deg, #2a2d35 0%, #1a1c22 100%);
-      border-top: 2px solid #4b5563;
-    }
     .toolbar {
       display: flex;
       gap: 10px;
@@ -259,14 +300,14 @@
     </div>
     <div id="playerPanel" hidden>
       <div class="guitar-shell">
-        <div class="headstock">Nut</div>
         <div class="neck-scroll">
+          <div class="bridge-side">Bridge</div>
           <div class="neck" id="neck">
             <div class="fret-labels" id="fretLabels"></div>
             <div class="strings" id="strings"></div>
           </div>
+          <div class="headstock">Nut · Open</div>
         </div>
-        <div class="bridge"></div>
       </div>
       <div class="preload-bar" id="preloadBar"><div id="preloadFill"></div></div>
       <div class="toolbar">
@@ -280,7 +321,8 @@
       "use strict";
 
       var INLAY_FRETS = { 3: 1, 5: 1, 7: 1, 9: 1, 12: 2, 15: 1, 17: 1, 19: 1 };
-      var STRING_NUMBERS = [1, 2, 3, 4, 5, 6];
+      /* Low E (6) at top; nut / open strings on the right. */
+      var STRING_NUMBERS = [6, 5, 4, 3, 2, 1];
 
       var audioCtx = null;
       var buffers = {};
@@ -396,9 +438,31 @@
         document.getElementById("nowPlaying").innerHTML = text || "";
       }
 
+      function displayFretOrder(fretCount) {
+        var order = [];
+        for (var f = fretCount; f >= 0; f--) order.push(f);
+        return order;
+      }
+
+      function attachNoteClick(el, lookup) {
+        el.addEventListener("click", function (ev) {
+          var c = ev.currentTarget;
+          var key = c.dataset.string + ":" + c.dataset.fret;
+          var p = lookup[key];
+          if (!p || !p.wav || !buffers[p.wav]) return;
+          playBuffer(buffers[p.wav]);
+          var cell = c.classList && c.classList.contains("fret-cell")
+            ? c
+            : (c.closest ? c.closest(".fret-cell") : null);
+          highlightCell(cell || c);
+          setNowPlaying("<strong>S" + p.string + " F" + p.fret + " · " + p.note_id + "</strong>");
+        });
+      }
+
       function buildFretboard(player) {
         var fretCount = Number(player.fret_count) || 19;
         var cols = fretCount + 1;
+        var fretsDisplay = displayFretOrder(fretCount);
         document.documentElement.style.setProperty("--fret-cols", String(cols));
 
         var lookup = {};
@@ -406,17 +470,21 @@
           lookup[p.string + ":" + p.fret] = p;
         });
 
+        var neckEl = document.getElementById("neck");
+        var oldMarkers = neckEl.querySelector(".fret-markers");
+        if (oldMarkers) oldMarkers.remove();
+
         var fretLabels = document.getElementById("fretLabels");
         fretLabels.innerHTML = "";
         var corner = document.createElement("span");
         corner.className = "corner";
         corner.textContent = " ";
         fretLabels.appendChild(corner);
-        for (var f = 0; f <= fretCount; f++) {
+        fretsDisplay.forEach(function (f) {
           var fl = document.createElement("span");
-          fl.textContent = String(f);
+          fl.textContent = f === 0 ? "open" : String(f);
           fretLabels.appendChild(fl);
-        }
+        });
 
         var stringsEl = document.getElementById("strings");
         stringsEl.innerHTML = "";
@@ -431,7 +499,11 @@
           label.textContent = "S" + sn;
           row.appendChild(label);
 
-          for (var fret = 0; fret <= fretCount; fret++) {
+          var stringLine = document.createElement("div");
+          stringLine.className = "string-line";
+          row.appendChild(stringLine);
+
+          fretsDisplay.forEach(function (fret) {
             var cell = document.createElement("div");
             cell.className = "fret-cell";
             cell.dataset.string = String(sn);
@@ -440,24 +512,30 @@
             if (!pos) {
               cell.classList.add("disabled");
             } else {
-              cell.addEventListener("click", function (ev) {
-                var c = ev.currentTarget;
-                var key = c.dataset.string + ":" + c.dataset.fret;
-                var p = lookup[key];
-                if (!p || !p.wav || !buffers[p.wav]) return;
-                playBuffer(buffers[p.wav]);
-                highlightCell(c);
-                setNowPlaying("<strong>S" + p.string + " F" + p.fret + " · " + p.note_id + "</strong>");
-              });
+              if (fret === 0) {
+                cell.classList.add("open-cell");
+                var openLbl = document.createElement("span");
+                openLbl.className = "open-label";
+                openLbl.textContent = pos.note_id;
+                cell.appendChild(openLbl);
+                var openHit = document.createElement("div");
+                openHit.className = "open-string-hit";
+                openHit.title = "Open S" + sn + " · " + pos.note_id;
+                attachNoteClick(openHit, lookup);
+                openHit.dataset.string = String(sn);
+                openHit.dataset.fret = "0";
+                cell.appendChild(openHit);
+              }
+              attachNoteClick(cell, lookup);
             }
             row.appendChild(cell);
-          }
+          });
           stringsEl.appendChild(row);
         });
 
         var markers = document.createElement("div");
         markers.className = "fret-markers";
-        for (var mf = 0; mf <= fretCount; mf++) {
+        fretsDisplay.forEach(function (mf) {
           var slot = document.createElement("div");
           slot.className = "fret-marker-slot";
           if (INLAY_FRETS[mf]) {
@@ -470,8 +548,8 @@
             }
           }
           markers.appendChild(slot);
-        }
-        document.getElementById("neck").appendChild(markers);
+        });
+        neckEl.appendChild(markers);
       }
 
       function showIdle(message) {

@@ -23,6 +23,17 @@ from build_note_cache import (
 NOTE_CACHE_ROOT_NAME = "note_cache"
 DEFAULT_FRET_COUNT = 19
 
+# Display order: low E (string 6) at top; nut / open strings on the right column.
+FRETBOARD_DISPLAY_STRING_ORDER: Tuple[int, ...] = (6, 5, 4, 3, 2, 1)
+OPEN_STRING_NOTE_IDS: Dict[int, str] = {
+    6: "E2",
+    5: "A2",
+    4: "D3",
+    3: "G3",
+    2: "B3",
+    1: "E4",
+}
+
 _GUITAR_PLAYER_COMPONENT_DIR = Path(__file__).resolve().parent / "components" / "guitar_player"
 RUNTIME_CACHE_DIR = _GUITAR_PLAYER_COMPONENT_DIR / "runtime_cache"
 
@@ -204,6 +215,27 @@ def prepare_player_assets(cache_root: Path, manifest: Mapping[str, Any]) -> Path
         shutil.copy2(preview_src, dest / "all_notes_preview.wav")
 
     return dest
+
+
+def fretboard_display_fret_order(fret_count: int = DEFAULT_FRET_COUNT) -> List[int]:
+    """Fret columns left→right: highest fret to open (nut on the right)."""
+    n = int(fret_count)
+    return list(range(n, -1, -1))
+
+
+def fretboard_screen_position(
+    string_number: int,
+    fret: int,
+    *,
+    fret_count: int = DEFAULT_FRET_COUNT,
+) -> Tuple[int, int]:
+    """
+    Map manifest (string_number, fret) to display grid (row, col).
+    Row 0 = string 6 (top); col = fret_count = open string at nut (right).
+    """
+    row = FRETBOARD_DISPLAY_STRING_ORDER.index(int(string_number))
+    col = int(fret_count) - int(fret)
+    return row, col
 
 
 def build_player_payload(
