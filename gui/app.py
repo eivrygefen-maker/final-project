@@ -490,6 +490,68 @@ def record_studio_handshake(event: Dict[str, Any]) -> None:
     st.session_state._studio_component_ready = True
 
 
+def inject_user_flow_css() -> None:
+    """Step headings, prominent Generate Sound button, full-width layout."""
+    st.markdown(
+        """
+        <style>
+        .user-step-heading {
+            font-size: 1.35rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            margin: 0 0 0.35rem 0;
+            color: #1f2937;
+        }
+        .user-step-copy {
+            font-size: 0.95rem;
+            color: #6b7280;
+            margin: 0 0 1rem 0;
+            line-height: 1.45;
+        }
+        .user-step-block {
+            margin-bottom: 1.75rem;
+            padding-bottom: 0.25rem;
+        }
+        .gen-sound-spacer {
+            margin: 1.25rem 0 1.75rem 0;
+        }
+        section.main button[data-testid="baseButton-primary"] {
+            width: min(420px, 100%);
+            min-height: 3.25rem;
+            font-size: 1.15rem !important;
+            font-weight: 700 !important;
+            letter-spacing: 0.03em;
+            border-radius: 0.65rem !important;
+            background: linear-gradient(180deg, #22c55e 0%, #16a34a 100%) !important;
+            color: #ffffff !important;
+            border: 1px solid #15803d !important;
+            box-shadow: 0 4px 14px rgba(22, 163, 74, 0.35);
+        }
+        section.main button[data-testid="baseButton-primary"]:hover {
+            background: linear-gradient(180deg, #16a34a 0%, #15803d 100%) !important;
+            border-color: #166534 !important;
+        }
+        section.main button[data-testid="baseButton-primary"]:disabled {
+            background: #9ca3af !important;
+            border-color: #9ca3af !important;
+            box-shadow: none;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_step_heading(step_num: int, title: str, explanation: str) -> None:
+    st.markdown(
+        f'<div class="user-step-block">'
+        f'<p class="user-step-heading">STEP {step_num}: {title}</p>'
+        f'<p class="user-step-copy">{explanation}</p>'
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def inject_studio_viewport_css() -> None:
     """Force studio iframe visible; hide false-positive Streamlit component timeout banner."""
     h = FAST_PREVIEW_HEIGHT
@@ -1573,24 +1635,14 @@ def _render_main_studio(
 
     fp_seed["gui_mode"] = "admin" if st.session_state.developer_fom_mode else "user"
 
-    col_ctrl, col_vis = st.columns([0.2, 0.8], gap="large")
-
-    with col_ctrl:
-        st.subheader("Session")
-        mode_ix = 1 if st.session_state.developer_fom_mode else 0
-        mode = st.radio(
-            "Mode",
-            ("User (ROM)", "Admin (FEM)"),
-            index=mode_ix,
-            horizontal=False,
-            help="Mirrors Design Studio actions; Admin enables Run Full FEM in the studio.",
-        )
-        st.session_state.developer_fom_mode = mode.startswith("Admin")
+    _render_step_heading(
+        1,
+        "DESIGN YOUR GUITAR",
+        "Adjust the guitar shape and materials in the studio below. When ready, click <strong>Save &amp; Sync</strong>.",
+    )
 
     iframe_initial = stable_studio_iframe_initial(fp_seed)
-
-    with col_vis:
-        studio_event = mount_design_studio_iframe(iframe_initial)
+    studio_event = mount_design_studio_iframe(iframe_initial)
 
     process_fast_preview_event(
         studio_event,
@@ -1632,114 +1684,87 @@ def _render_main_studio(
     st.session_state["_back_wood"] = back_wood
 
     update_rom_online_prediction(geom, top_wood=top_wood, back_wood=back_wood, shape_type=shape)
-    with col_ctrl:
-        render_rom_body_status(current_rom_fp=rom_fp)
-        render_rom_metrics_dashboard(shape)
-        with st.expander("Debug / ROM tools"):
-            st.caption("Manual ROM re-run (Save & Sync already runs ROM automatically).")
-            if st.button("Run ROM manually", use_container_width=True, key="btn_debug_run_rom"):
-                st.session_state.rom_body_pending = True
-                st.rerun()
 
-    with col_vis:
-        if st.session_state.get("show_mesh_overlay") and not st.session_state.get(
-            "mesh_is_dirty", True
-        ):
-            render_validation_mesh_viewport(
-                geom,
-                top_wood=top_wood,
-                back_wood=back_wood,
-                geom_fp=geom_fp,
-                fixture_preset=fixture_preset,
-            )
-        elif st.session_state.get("mesh_is_dirty"):
-            st.caption(
-                "Gmsh validation mesh hidden while you edit — click **Save & Sync** "
-                "in the Design Studio or **Regenerate Gmsh mesh** to compile and show the mesh."
-            )
+    _render_step_heading(
+        2,
+        "VIEW THE FULL MODEL OF YOUR GUITAR",
+        "After saving, inspect the full generated guitar model. This is the detailed mesh view of your design.",
+    )
 
-    with col_ctrl:
-        st.subheader("Actions")
-        regen_mesh = st.button("Regenerate Gmsh mesh", use_container_width=True, key="btn_regen_mesh")
+    if st.session_state.get("show_mesh_overlay") and not st.session_state.get("mesh_is_dirty", True):
+        render_validation_mesh_viewport(
+            geom,
+            top_wood=top_wood,
+            back_wood=back_wood,
+            geom_fp=geom_fp,
+            fixture_preset=fixture_preset,
+        )
+    elif st.session_state.get("mesh_is_dirty"):
+        st.caption(
+            "The full model appears here after you click **Save & Sync** in the Design Studio."
+        )
+
+    st.markdown('<div class="gen-sound-spacer"></div>', unsafe_allow_html=True)
+    _gc1, _gc2, _gc3 = st.columns([1, 2, 1])
+    with _gc2:
         gen_sound = st.button(
-            "Generate sound",
+            "Generate Sound",
+            type="primary",
             use_container_width=True,
             disabled=not rom_body_response_ready(rom_fp),
             key="btn_gen_sound",
-            help="Enabled after Save & Sync prepares the ROM body response.",
+            help="Build guitar audio and open the interactive player.",
         )
-        if regen_mesh:
-            st.session_state.mesh_is_dirty = True
-            st.session_state.show_mesh_overlay = False
+        if not rom_body_response_ready(rom_fp):
+            st.caption("Save & Sync first to prepare your guitar for sound generation.")
+
+    if gen_sound:
+        if not rom_body_response_ready(rom_fp):
+            st.warning("ROM body response is stale or missing — Save & Sync first.")
+        else:
+            from note_cache_ui import (  # noqa: WPS433
+                build_cache_safe,
+                expected_note_cache_fingerprint,
+                note_cache_root,
+                prepare_player_assets,
+                resolve_note_cache,
+            )
+
+            body_json = Path(st.session_state.stk_body_json)
+            cache_root = note_cache_root(BASE_DIR)
             try:
-                regenerate_display_mesh(
-                    geom,
-                    top_wood=top_wood,
-                    back_wood=back_wood,
-                    clamp_ribs=clamp_ribs,
-                    pin_neck_fix=pin_neck,
-                    fixture_preset=fixture_preset,
-                    geom_fp=geom_fp,
-                )
-                invalidate_rom_and_audio_state()
-                st.session_state.mesh_is_dirty = False
-                st.session_state.show_mesh_overlay = True
-                st.session_state._mesh_overlay_rom_fp = rom_fp
-                if not st.session_state.developer_fom_mode:
-                    st.session_state.rom_body_pending = True
-                st.success("Mesh updated — validation view shown over the studio.")
-                st.rerun()
+                st.session_state.note_cache_building = True
+                with st.spinner("Synthesizing sound and building note cache…"):
+                    run_stk(body_json=body_json, top_wood=top_wood)
+                    build_cache_safe(
+                        modal_json=body_json,
+                        out_root=cache_root,
+                        geometry_config=CONFIG_PATH,
+                        force=True,
+                    )
+                    expected_cache_fp = expected_note_cache_fingerprint(
+                        modal_json=body_json,
+                        geometry_config=CONFIG_PATH,
+                    )
+                    resolved = resolve_note_cache(
+                        cache_root,
+                        expected_fingerprint=expected_cache_fp,
+                    )
+                    if resolved.get("status") == "ready" and resolved.get("cache_root"):
+                        prepare_player_assets(
+                            Path(resolved["cache_root"]),
+                            resolved["manifest"],
+                        )
+                        st.session_state.note_cache_ready_fp = str(expected_cache_fp or "")
+                    else:
+                        st.session_state.note_cache_ready_fp = ""
+                st.session_state.sound_stale = False
+                st.session_state.note_cache_building = False
+                st.success("Sound ready — play notes on the guitar below.")
             except Exception as exc:
-                st.error(f"Rebuild failed: {exc}")
-
-        if gen_sound:
-            if not rom_body_response_ready(rom_fp):
-                st.warning("ROM body response is stale or missing — Save & Sync first.")
-            else:
-                from note_cache_ui import (  # noqa: WPS433
-                    build_cache_safe,
-                    expected_note_cache_fingerprint,
-                    note_cache_root,
-                    note_cache_ui_status,
-                    prepare_player_assets,
-                    resolve_note_cache,
-                )
-
-                body_json = Path(st.session_state.stk_body_json)
-                cache_root = note_cache_root(BASE_DIR)
-                try:
-                    st.session_state.note_cache_building = True
-                    with st.spinner("Synthesizing sound and building note cache…"):
-                        run_stk(body_json=body_json, top_wood=top_wood)
-                        build_cache_safe(
-                            modal_json=body_json,
-                            out_root=cache_root,
-                            geometry_config=CONFIG_PATH,
-                            force=True,
-                        )
-                        expected_cache_fp = expected_note_cache_fingerprint(
-                            modal_json=body_json,
-                            geometry_config=CONFIG_PATH,
-                        )
-                        resolved = resolve_note_cache(
-                            cache_root,
-                            expected_fingerprint=expected_cache_fp,
-                        )
-                        if resolved.get("status") == "ready" and resolved.get("cache_root"):
-                            prepare_player_assets(
-                                Path(resolved["cache_root"]),
-                                resolved["manifest"],
-                            )
-                            st.session_state.note_cache_ready_fp = str(expected_cache_fp or "")
-                        else:
-                            st.session_state.note_cache_ready_fp = ""
-                    st.session_state.sound_stale = False
-                    st.session_state.note_cache_building = False
-                    st.success("Sound and note cache ready — use the guitar player below.")
-                except Exception as exc:
-                    st.session_state.note_cache_building = False
-                    st.session_state.note_cache_ready_fp = ""
-                    st.error(f"Sound failed: {exc}")
+                st.session_state.note_cache_building = False
+                st.session_state.note_cache_ready_fp = ""
+                st.error(f"Sound failed: {exc}")
 
     if st.session_state.get("_pending_fom_run") and display_mesh_active(geom_fp):
         st.session_state._pending_fom_run = False
@@ -1768,38 +1793,42 @@ def _render_main_studio(
                 st.session_state.rom_body_error = str(exc)
                 st.warning(f"ROM body response failed: {exc}")
 
+    _render_step_heading(
+        3,
+        "LISTEN TO YOUR GUITAR",
+        "Click <strong>Generate Sound</strong> above to prepare the guitar audio. "
+        "Then play individual notes directly on the interactive guitar.",
+    )
+
     if WAV_OUTPUT.is_file() and rom_body_response_ready(rom_fp) and not st.session_state.get("sound_stale"):
         st.audio(WAV_OUTPUT.read_bytes(), format="audio/wav")
-    elif st.session_state.get("sound_stale") and rom_body_response_ready(rom_fp):
-        st.caption("ROM body is ready — click **Generate sound** to synthesize audio and open the guitar player.")
 
-    with col_vis:
-        from components.guitar_player import guitar_player  # noqa: WPS433
-        from note_cache_ui import (  # noqa: WPS433
-            build_player_payload,
-            expected_note_cache_fingerprint,
-            note_cache_root,
-            note_cache_ui_status,
-            resolve_note_cache,
-        )
+    from components.guitar_player import guitar_player  # noqa: WPS433
+    from note_cache_ui import (  # noqa: WPS433
+        build_player_payload,
+        expected_note_cache_fingerprint,
+        note_cache_root,
+        note_cache_ui_status,
+        resolve_note_cache,
+    )
 
-        body_json = Path(st.session_state.get("stk_body_json") or ROM_STK_JSON)
-        modal_json = body_json if body_json.is_file() else ROM_STK_JSON
-        cache_root = note_cache_root(BASE_DIR)
-        expected_cache_fp = expected_note_cache_fingerprint(
-            modal_json=modal_json,
-            geometry_config=CONFIG_PATH,
-        )
-        resolved = resolve_note_cache(cache_root, expected_fingerprint=expected_cache_fp)
-        ui_status = note_cache_ui_status(
-            sound_stale=bool(st.session_state.get("sound_stale")),
-            note_cache_ready_fp=str(st.session_state.get("note_cache_ready_fp") or ""),
-            expected_fingerprint=expected_cache_fp,
-            resolved=resolved,
-            building=bool(st.session_state.get("note_cache_building")),
-        )
-        player_payload = build_player_payload(resolved, ui_status=ui_status)
-        guitar_player(player=player_payload, key="guitar_player", height=520)
+    body_json = Path(st.session_state.get("stk_body_json") or ROM_STK_JSON)
+    modal_json = body_json if body_json.is_file() else ROM_STK_JSON
+    cache_root = note_cache_root(BASE_DIR)
+    expected_cache_fp = expected_note_cache_fingerprint(
+        modal_json=modal_json,
+        geometry_config=CONFIG_PATH,
+    )
+    resolved = resolve_note_cache(cache_root, expected_fingerprint=expected_cache_fp)
+    ui_status = note_cache_ui_status(
+        sound_stale=bool(st.session_state.get("sound_stale")),
+        note_cache_ready_fp=str(st.session_state.get("note_cache_ready_fp") or ""),
+        expected_fingerprint=expected_cache_fp,
+        resolved=resolved,
+        building=bool(st.session_state.get("note_cache_building")),
+    )
+    player_payload = build_player_payload(resolved, ui_status=ui_status)
+    guitar_player(player=player_payload, key="guitar_player", height=560)
 
 
 def main() -> None:
@@ -1811,11 +1840,9 @@ def main() -> None:
     saved_fixture = str(saved.get("fixture_preset", DEFAULT_FIXTURE_PRESET))
     if saved_fixture not in FIXTURE_PRESETS:
         saved_fixture = DEFAULT_FIXTURE_PRESET
-    st.title("GUITAR SIMULATOR")
-    st.caption(
-        "Design Studio: live Three.js preview. **Save & Sync** shows the Gmsh mesh on top; "
-        "change any slider to return to the studio."
-    )
+    st.title("Guitar Simulator")
+    st.caption("Design your guitar, view the full model, then generate sound and play notes interactively.")
+    inject_user_flow_css()
     inject_studio_viewport_css()
 
     _rom_mgr, _rom_init_err = get_rom_manager()
