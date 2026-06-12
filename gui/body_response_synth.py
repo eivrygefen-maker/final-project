@@ -31,11 +31,13 @@ from diagnostic_synthesis import (  # noqa: E402
 from modal_damping import (  # noqa: E402
     compute_per_mode_damping,
     infer_mode_category,
+    normalize_participation_shares,
     summarize_mode_damping_records,
 )
 from string_body_balance import (  # noqa: E402
     body_color_gain_by_f0,
     fundamental_anchor_scale_by_body_strength,
+    low_body_color_strength,
     pitch_layer_scale_by_f0,
     string_direct_scale_by_f0,
 )
@@ -265,28 +267,34 @@ def compute_mode_weight_components(
     if bridge is None:
         coup = _safe_float(mode.get("bridge_excitation_coupling"))
         bridge = abs(coup) if coup is not None else None
-    if bridge is None or bridge <= 0:
+    bridge_missing = bridge is None or bridge <= 0
+    if bridge_missing:
         bridge = 1.0
-        defaults_used.append("bridge_excitation_abs=1.0")
+        if not _radiation_color_v2_active():
+            defaults_used.append("bridge_excitation_abs=1.0")
     else:
         flags["bridge_weighting_used"] = True
     bridge_w = bridge
 
     mic = _safe_float(mode.get("mic_output_proxy"))
-    if mic is not None and mic > 0:
+    mic_missing = mic is None or mic <= 0
+    if not mic_missing:
         flags["mic_proxy_used"] = True
         mic_w = mic
     else:
         mic_w = 1.0
-        defaults_used.append("mic_output_proxy=1.0")
+        if not _radiation_color_v2_active():
+            defaults_used.append("mic_output_proxy=1.0")
 
     rad = _safe_float(mode.get("radiation_proxy"))
-    if rad is not None and rad > 0:
+    rad_missing = rad is None or rad <= 0
+    if not rad_missing:
         flags["radiation_proxy_used"] = True
         rad_w = rad
     else:
         rad_w = 1.0
-        defaults_used.append("radiation_proxy=1.0")
+        if not _radiation_color_v2_active():
+            defaults_used.append("radiation_proxy=1.0")
 
     w = bridge_w * (0.55 * mic_w + 0.45 * rad_w)
     fallback = _safe_float(mode.get("mode_weight_fallback"))
@@ -306,6 +314,9 @@ def compute_mode_weight_components(
         "mic_weight": mic_w,
         "radiation_weight": rad_w,
         "combined": max(w, 1e-12),
+        "bridge_proxy_missing": bridge_missing,
+        "radiation_proxy_missing": rad_missing,
+        "mic_proxy_missing": mic_missing,
     }
 
 
@@ -383,6 +394,138 @@ def _radiation_color_v1_active() -> bool:
     return diag is not None and diag.name == "modal_radiation_color_v1"
 
 
+def _radiation_color_v2_active() -> bool:
+    diag = active_diagnostic()
+    return diag is not None and diag.name == "modal_radiation_color_v2"
+
+
+def _radiation_color_diagnostic_active() -> bool:
+    return _radiation_color_v1_active() or _radiation_color_v2_active()
+
+
+V2_TOP_AMP = 1.05
+V2_BACK_AMP = 0.95
+V2_AIR_AMP = 1.12
+V2_COUPLED_AMP = 1.0
+V2_PROXY_MISSING_FLOOR = 0.12
+
+
+def _proxy_pool_from_modes(band_modes: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    bridges: List[float] = []
+    rads: List[float] = []
+    mics: List[float] = []
+    bridge_missing = rad_missing = mic_missing = 0
+    for mode in band_modes:
+        b = _safe_float(mode.get("bridge_excitation_abs"))
+        if b is None:
+            c = _safe_float(mode.get("bridge_excitation_coupling"))
+            b = abs(c) if c is not None else None
+        if b is None or b <= 0:
+            bridge_missing += 1
+        else:
+            bridges.append(float(b))
+        r = _safe_float(mode.get("radiation_proxy"))
+        if r is None or r <= 0:
+            rad_missing += 1
+        else:
+            rads.append(float(r))
+        m = _safe_float(mode.get("mic_output_proxy"))
+        if m is None or m <= 0:
+            mic_missing += 1
+        else:
+            mics.append(float(m))
+    return {
+        "bridge_max": max(bridges) if bridges else 0.0,
+        "radiation_max": max(rads) if rads else 0.0,
+        "mic_max": max(mics) if mics else 0.0,
+        "bridge_missing_count": bridge_missing,
+        "radiation_missing_count": rad_missing,
+        "mic_missing_count": mic_missing,
+    }
+
+
+def _normalized_proxy(
+    val: Optional[float],
+    pool_max: float,
+    *,
+    missing: bool,
+) -> Tuple[float, bool]:
+    if missing or val is None or val <= 0 or pool_max <= 1e-12:
+        return V2_PROXY_MISSING_FLOOR, True
+    return max(0.08, min(1.0, float(val) / pool_max)), False
+
+
+def _mode_radiation_v2_factors(
+    mode: Mapping[str, Any],
+    damp_rec: Mapping[str, Any],
+    comp: Mapping[str, Any],
+    f_hz: float,
+    pools: Mapping[str, Any],
+    *,
+    note_hz: float,
+) -> Dict[str, Any]:
+    bridge_abs = _safe_float(mode.get("bridge_excitation_abs"))
+    if bridge_abs is None:
+        coup = _safe_float(mode.get("bridge_excitation_coupling"))
+        bridge_abs = abs(coup) if coup is not None else None
+    rad_raw = comp.get("radiation_weight")
+    mic_raw = comp.get("mic_weight")
+    bridge_miss = bool(comp.get("bridge_proxy_missing")) or bridge_abs is None or bridge_abs <= 0
+    bridge, _ = _normalized_proxy(
+        float(bridge_abs) if bridge_abs is not None else None,
+        float(pools.get("bridge_max") or 0),
+        missing=bridge_miss,
+    )
+    rad, rad_miss = _normalized_proxy(
+        float(rad_raw) if rad_raw not in (None, 1.0) else _safe_float(mode.get("radiation_proxy")),
+        float(pools.get("radiation_max") or 0),
+        missing=bool(comp.get("radiation_proxy_missing")),
+    )
+    mic, mic_miss = _normalized_proxy(
+        float(mic_raw) if mic_raw not in (None, 1.0) else _safe_float(mode.get("mic_output_proxy")),
+        float(pools.get("mic_max") or 0),
+        missing=bool(comp.get("mic_proxy_missing")),
+    )
+
+    bridge_gate = bridge**0.75
+    output_transmittance = (0.50 * rad + 0.35 * mic + 0.15 * math.sqrt(max(rad * mic, 1e-9))) ** 0.85
+
+    top_s = float(damp_rec.get("top_share") or 0.0)
+    back_s = float(damp_rec.get("back_share") or 0.0)
+    air_s = float(damp_rec.get("air_share") or 0.0)
+    coupled_s = float(damp_rec.get("coupled_share") or 0.0)
+    if top_s + back_s + air_s < 0.05:
+        top_s, back_s, air_s, coupled_s = normalize_participation_shares(mode)  # type: ignore[misc]
+    mode_category_amp = (
+        top_s * V2_TOP_AMP + back_s * V2_BACK_AMP + air_s * V2_AIR_AMP + coupled_s * V2_COUPLED_AMP
+    )
+    mode_category_amp = max(0.35, min(1.35, mode_category_amp))
+
+    mat = float(damp_rec.get("mode_material_damping") or 1.0)
+    material_amp = max(0.88, min(1.12, 1.0 + 0.10 * (mat - 1.0)))
+    f_balance = (max(f_hz, 60.0) / 200.0) ** 0.08
+
+    # Audible output = bridge excitation gate × radiation transmittance (not independent sources).
+    w_mode = bridge_gate * output_transmittance * mode_category_amp * material_amp * f_balance
+
+    low_s = low_body_color_strength(note_hz)
+    if low_s > 0 and f_hz < 300.0:
+        low_color = mode_category_amp * output_transmittance
+        w_mode *= 1.0 + low_s * 0.42 * max(0.0, low_color - 0.70)
+
+    return {
+        "mode_bridge_gate_factor": round(bridge_gate, 6),
+        "mode_output_transmittance_factor": round(output_transmittance, 6),
+        "mode_category_amplitude_factor": round(mode_category_amp, 6),
+        "mode_material_amplitude_factor": round(material_amp, 6),
+        "mode_final_amplitude_factor": round(max(w_mode, 1e-9), 6),
+        "bridge_proxy_missing": bridge_miss,
+        "radiation_proxy_missing": rad_miss,
+        "mic_proxy_missing": mic_miss,
+        "low_body_color_strength": round(low_s, 6),
+    }
+
+
 def _material_amplitude_factor(damp_rec: Mapping[str, Any]) -> float:
     """Small wood/material tilt on amplitude (±8%), separate from Q damping."""
     mat = float(damp_rec.get("mode_material_damping") or 1.0)
@@ -440,6 +583,22 @@ def _mode_radiation_amplitude_factors(
 
 def _per_mode_broad_color_scale(damp_rec: Mapping[str, Any], comp: Mapping[str, Any]) -> float:
     """Sample/mode-specific broad-path color — not a uniform EQ curve."""
+    if _radiation_color_v2_active():
+        amp_info = {
+            "mode_output_transmittance_factor": float(damp_rec.get("mode_output_transmittance_factor") or 1.0),
+            "mode_category_amplitude_factor": float(damp_rec.get("mode_category_amplitude_factor") or 1.0),
+        }
+        out_t = float(amp_info["mode_output_transmittance_factor"])
+        cat_a = float(amp_info["mode_category_amplitude_factor"])
+        q_bw = float(damp_rec.get("mode_bandwidth_hz") or 6.0)
+        tau = float(damp_rec.get("mode_tau_s") or 0.2)
+        smooth = 0.82 + 0.18 * min(1.0, q_bw / 14.0) * min(1.0, tau / 0.35)
+        low_s = float(damp_rec.get("low_body_color_strength") or 0.0)
+        f_m = float(damp_rec.get("frequency_hz") or 200.0)
+        base = 0.50 + 0.30 * out_t + 0.20 * cat_a
+        if low_s > 0 and f_m < 300.0:
+            base *= 1.0 + low_s * 0.45 * max(0.0, out_t * cat_a - 0.65)
+        return base * smooth
     if _radiation_color_v1_active():
         pseudo_mode = {
             "top_share": damp_rec.get("top_share"),
@@ -989,6 +1148,7 @@ def synthesize_body_via_transfer_function(
     broad_energy = 0.0
 
     tune = active_tuning()
+    proxy_pools = _proxy_pool_from_modes(band_modes) if _radiation_color_v2_active() else {}
     for mode in band_modes:
         f_m = float(mode["frequency_hz"])
         comp = compute_mode_weight_components(mode, defaults_used=defaults_used, flags=flags)
@@ -1000,7 +1160,13 @@ def synthesize_body_via_transfer_function(
         damp_rec["frequency_hz"] = f_m
         per_mode_damping_records.append(damp_rec)
         amp_meta: Dict[str, Any] = {}
-        if _radiation_color_v1_active():
+        if _radiation_color_v2_active():
+            amp_meta = _mode_radiation_v2_factors(
+                mode, damp_rec, comp, f_m, proxy_pools, note_hz=note_hz
+            )
+            w = float(amp_meta["mode_final_amplitude_factor"])
+            damp_rec.update(amp_meta)
+        elif _radiation_color_v1_active():
             amp_meta = _mode_radiation_amplitude_factors(damp_rec, comp, mode, f_m)
             w *= float(amp_meta["mode_amplitude_factor"])
             damp_rec.update(amp_meta)
@@ -1063,7 +1229,7 @@ def synthesize_body_via_transfer_function(
     broad_band_gains: Dict[str, float] = {}
     diag = active_diagnostic()
     broad_sig_strength = 0.0
-    if diag and diag.wide_body_signature and not _radiation_color_v1_active():
+    if diag and diag.wide_body_signature and not _radiation_color_diagnostic_active():
         broad_sig_strength = float(diag.wide_body_signature_strength) * 0.35
     if broad_sig_strength > 0:
         broad_band_gains = compute_broad_body_band_gains(band_modes)
@@ -1136,6 +1302,11 @@ def synthesize_body_via_transfer_function(
         "far_mode_weights_sample_specific": True,
         "far_mode_sample_specificity_score": round(far_specificity, 6),
         "radiation_color_v1_active": _radiation_color_v1_active(),
+        "modal_radiation_color_v2_active": _radiation_color_v2_active(),
+        "bridge_proxy_missing_count": int(proxy_pools.get("bridge_missing_count") or 0),
+        "radiation_proxy_missing_count": int(proxy_pools.get("radiation_missing_count") or 0),
+        "mic_proxy_missing_count": int(proxy_pools.get("mic_missing_count") or 0),
+        "low_body_color_strength": round(low_body_color_strength(note_hz), 6),
     }
     return body, contributions, q_values, broaden_info
 
@@ -1621,6 +1792,20 @@ def _synthesize_note_with_body_response_core(
         "far_mode_weights_sample_specific": broaden_info.get("far_mode_weights_sample_specific", True),
         "far_mode_sample_specificity_score": broaden_info.get("far_mode_sample_specificity_score"),
         "radiation_color_v1_active": broaden_info.get("radiation_color_v1_active", False),
+        "modal_radiation_color_v2_active": broaden_info.get("modal_radiation_color_v2_active", False),
+        "low_body_color_strength": broaden_info.get("low_body_color_strength"),
+        "bridge_proxy_missing_count": broaden_info.get("bridge_proxy_missing_count"),
+        "radiation_proxy_missing_count": broaden_info.get("radiation_proxy_missing_count"),
+        "mic_proxy_missing_count": broaden_info.get("mic_proxy_missing_count"),
+        "raw_body_rms_before_any_gain": round(body_rms_before_calibration, 8),
+        "raw_body_rms_after_modal_weighting": round(body_rms_before_calibration, 8),
+        "body_rms_after_body_gain": round(body_rms_before, 8),
+        "body_to_string_ratio_before_normalization": round(body_to_string_rms_ratio_before_loudness, 6),
+        "body_to_string_ratio_after_normalization": round(
+            body_rms_before / max(string_rms_before_mix, 1e-12), 6
+        ),
+        "applied_body_gain": round(body_gain_applied, 6),
+        "applied_loudness_gain": round(float(loudness_info.get("rms_gain_applied") or 1.0), 6),
     }
     if diag:
         metadata["diagnostic_mode"] = diag.name

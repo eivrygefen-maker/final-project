@@ -169,6 +169,34 @@ DIAGNOSTIC_MODES: Dict[str, DiagnosticSynthesisConfig] = {
             "category/wood amplitude color, sample-specific far modes — no global broad EQ."
         ),
     ),
+    "modal_radiation_color_v2": DiagnosticSynthesisConfig(
+        name="modal_radiation_color_v2",
+        raw_body_variation_preserve=0.58,
+        body_gain_normalization_strength=0.32,
+        final_loudness_normalization_strength=0.30,
+        wide_body_signature=False,
+        wide_body_signature_strength=0.0,
+        wide_body_signature_damping=True,
+        damping_strength=1.0,
+        per_mode_damping_strength=1.0,
+        all_mode_broad_contribution=True,
+        broad_all_mode_strength=0.58,
+        near_modal_boost=1.08,
+        near_modal_energy_target=0.52,
+        far_broad_energy_target=0.48,
+        far_mode_color_gain=1.0,
+        high_note_string_direct_scale=0.56,
+        high_note_body_color_boost=1.58,
+        high_note_body_to_string_target_ratio=5.5,
+        high_note_pitch_layer_scale=0.64,
+        fundamental_anchor_scale=0.34,
+        low_note_fundamental_harmonic_boost=1.04,
+        description=(
+            "Stage 4.7: bridge-gated radiation transmittance — audible strength = "
+            "bridge_gate × output_transmittance × category/material color; "
+            "no independent radiation source; no global far EQ."
+        ),
+    ),
 }
 
 _active_diagnostic: Optional[DiagnosticSynthesisConfig] = None

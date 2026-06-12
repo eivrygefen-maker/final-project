@@ -46,6 +46,16 @@ def pitch_layer_scale_by_f0(f0: float) -> float:
     return low_scale * high_scale
 
 
+def low_body_color_strength(f0: float, *, full_hz: float = 165.0, zero_hz: float = 270.0) -> float:
+    """Continuous low-f0 body-color emphasis (0 above zero_hz, 1 at/below full_hz)."""
+    f0 = max(40.0, float(f0))
+    if f0 >= zero_hz:
+        return 0.0
+    if f0 <= full_hz:
+        return 1.0
+    return 1.0 - _smoothstep(full_hz, zero_hz, f0)
+
+
 def body_color_gain_by_f0(f0: float) -> float:
     """More body color at mid/high where string often dominates."""
     f0 = max(40.0, float(f0))
