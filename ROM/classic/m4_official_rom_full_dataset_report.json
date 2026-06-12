@@ -1,0 +1,203 @@
+{
+  "schema": "m4_official_rom_full_dataset_report_v1",
+  "generated_utc": "2026-06-11T09:32:43Z",
+  "shape_name": "classic",
+  "training_sample_count": 26,
+  "training_sample_ids": [
+    "sample_000",
+    "sample_001",
+    "sample_002",
+    "sample_003",
+    "sample_004",
+    "sample_005",
+    "sample_006",
+    "sample_007",
+    "sample_008",
+    "sample_009",
+    "sample_010",
+    "sample_011",
+    "sample_012",
+    "sample_013",
+    "sample_014",
+    "sample_015",
+    "sample_016",
+    "sample_017",
+    "sample_018",
+    "sample_019",
+    "sample_020",
+    "sample_021",
+    "sample_022",
+    "sample_023",
+    "sample_024",
+    "sample_025"
+  ],
+  "training_run_ids": [
+    "sample_000_rom_official_v1",
+    "sample_001_rom_official_v1",
+    "sample_002_rom_official_v1",
+    "sample_003_rom_official_v1",
+    "sample_004_rom_official_v1",
+    "sample_005_rom_shadow_v1",
+    "sample_006_rom_shadow_v1",
+    "sample_007_rom_shadow_v1",
+    "sample_008_rom_shadow_v1",
+    "sample_009_rom_shadow_v1",
+    "sample_010_rom_shadow_v1",
+    "sample_011_rom_shadow_v1",
+    "sample_012_rom_shadow_v1",
+    "sample_013_rom_shadow_v1",
+    "sample_014_rom_shadow_v1",
+    "sample_015_rom_shadow_v1",
+    "sample_016_rom_shadow_v1",
+    "sample_017_rom_shadow_v1",
+    "sample_018_rom_shadow_v1",
+    "sample_019_rom_shadow_v1",
+    "sample_020_rom_shadow_v1",
+    "sample_021_rom_shadow_v1",
+    "sample_022_rom_shadow_v1",
+    "sample_023_rom_shadow_v1",
+    "sample_024_rom_shadow_v1",
+    "sample_025_rom_shadow_v1"
+  ],
+  "training_catalog_sha256_values": [
+    "97d3abcc0887413a09c9fab34d2111feb0da0fd99ad08e22ec84cf4e8dcacd7c",
+    "45466b95d80f446acfa78be53534b359c8dd6f70969291de74616969e64fad33",
+    "a33a0bab0fa3f6902aa9c748d800eab0c42109933af6e8a05a0be495f0aca0f7",
+    "f23d583bca6b0bfb48b81b57892995ff86caf03b3505b4c25d1a4004b30f5b46",
+    "036dc9ba29ed05c5c72ebd50af1a16cc0bf4986d1aacf18134d4b526c7259123",
+    "d1d8be90e7db12a7106855a1fa952c657f64eef3de31cb32861e19871c2441f3",
+    "ba877d0ad60ab3c9486bc6bd3c66a3e3acee5de26802b39a5d9aef16836f455a",
+    "4091cb2952fc2a68fed4571c28df30013cce4c64ee8b7e02f19b0345ee40071e",
+    "a59a0da5ac6616a2af1a9b69f39084aed82d7d9127d9dbfcf3fa7c7155df2668",
+    "b91995f58dfaee697fe0480cee8b8399efad2b28c49c8e889d26aa093b4dad8a",
+    "b1cf742e4d550ab39c213ed1cdc3b4c78321b20a05d24731263b649c09f7694e",
+    "e7f3d96815750876b9b58abb3442b1051dfba9609012b06c21421feb9c8dcd54",
+    "3540b53eb996e4e05c0a30e73cd4e74747942c19a95abc0c204740e3e5886e6a",
+    "9d5026ec0d0977eede9b16b7bdfc29c3752904f51f75e611c83b3fa8281f148f",
+    "3c52dc93d21b1b85c2bbb7c4ec7a9294bc6640a20101ec2d85e827b4d02da093",
+    "ac24249fe7ee54ca43320b1aa57b8a09baee3318ddbfe1ea39fbcec97b1af662",
+    "008cef30837058c38535f684d0eb38e4e6d7e71a31989647760c9ce0563c8134",
+    "d6056bcf5fb4aead98b025936c8299a2c6cdec132b373263140d723d4b731e2e",
+    "ef80aec597a92c4b099e0159bb1f4ec0257afc79c289537cd96ee8456d4db8e7",
+    "477d3c82f3fc9249cb0763b85d5f60fb937b8d89cbce3db359509ee26eca8b72",
+    "8ce55a334da678a632325084403aeec7623d168d49335bce3fcf2be701c82321",
+    "b2cfcd51009168cc34b16c1248ad489121592fb648b09599a37dba2d0eb18a32",
+    "47fca1727e44b7f8ab48825d4014364c3960c2162b0686971c569a68aef1d4b5",
+    "f2577d62623677418024ad9191b7f2eaf602cb3aeef0e97acadffca189dec59c",
+    "ad025a81aeadca1541286e304b2170241154434d89a809d2ee0591f5f5eaad7d",
+    "c4c15eadd7f095a34c722b6f3de2b02f1d49d69d70dcd63acdf791032a57f404"
+  ],
+  "initial_official_count": 5,
+  "registered_shadow_count": 21,
+  "total_training_count": 26,
+  "dataset_version": "m4_geometry_corrected_rommesh_v1",
+  "mesh_profile": "rom",
+  "mesh_level_id": "L_rom_prod",
+  "created_utc": "2026-06-11T09:32:43Z",
+  "requested_run_ids": [
+    "sample_000_rom_official_v1",
+    "sample_001_rom_official_v1",
+    "sample_002_rom_official_v1",
+    "sample_003_rom_official_v1",
+    "sample_004_rom_official_v1",
+    "sample_005_rom_shadow_v1",
+    "sample_006_rom_shadow_v1",
+    "sample_007_rom_shadow_v1",
+    "sample_008_rom_shadow_v1",
+    "sample_009_rom_shadow_v1",
+    "sample_010_rom_shadow_v1",
+    "sample_011_rom_shadow_v1",
+    "sample_012_rom_shadow_v1",
+    "sample_013_rom_shadow_v1",
+    "sample_014_rom_shadow_v1",
+    "sample_015_rom_shadow_v1",
+    "sample_016_rom_shadow_v1",
+    "sample_017_rom_shadow_v1",
+    "sample_018_rom_shadow_v1",
+    "sample_019_rom_shadow_v1",
+    "sample_020_rom_shadow_v1",
+    "sample_021_rom_shadow_v1",
+    "sample_022_rom_shadow_v1",
+    "sample_023_rom_shadow_v1",
+    "sample_024_rom_shadow_v1",
+    "sample_025_rom_shadow_v1"
+  ],
+  "skipped_row_count": 14,
+  "skipped": [
+    {
+      "sample_id": "sample_000",
+      "run_id": "sample_000_m4prod2",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_000",
+      "run_id": "sample_000_m4prod2_strict_val",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_001",
+      "run_id": "sample_001_m4prod2",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_001",
+      "run_id": "sample_001_m4prod2_geometryfix_smoke",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_002",
+      "run_id": "sample_002_m4prod2",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_002",
+      "run_id": "sample_002_m4prod2_strict_clean4",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_002",
+      "run_id": "sample_002_m4prod2_strict_clean5",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_002",
+      "run_id": "sample_002_m4prod2_strict_val",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_002",
+      "run_id": "sample_002_rom_prod_001",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_002",
+      "run_id": "sample_002_rom_prod_002",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_002",
+      "run_id": "sample_002_rom_prod_003",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_002",
+      "run_id": "sample_002_rom_prod_004",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_003",
+      "run_id": "sample_003_m4prod2",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_026",
+      "run_id": "sample_026_rom_shadow_v1",
+      "reason": "not_in_allowed_run_ids"
+    }
+  ],
+  "model_paths": {
+    "json": "ROM/classic/m4_modal_surrogate.json",
+    "npz": "ROM/classic/m4_modal_surrogate.npz",
+    "manifest": "ROM/classic/rom_model_manifest.json"
+  }
+}

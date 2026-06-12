@@ -1,0 +1,109 @@
+{
+  "schema": "m4_official_rom_initial_dataset_report_v1",
+  "generated_utc": "2026-06-10T17:01:03Z",
+  "allowed_run_ids": [
+    "sample_000_rom_official_v1",
+    "sample_001_rom_official_v1",
+    "sample_002_rom_official_v1",
+    "sample_003_rom_official_v1",
+    "sample_004_rom_official_v1"
+  ],
+  "training_run_ids": [
+    "sample_000_rom_official_v1",
+    "sample_001_rom_official_v1",
+    "sample_002_rom_official_v1",
+    "sample_003_rom_official_v1",
+    "sample_004_rom_official_v1"
+  ],
+  "training_sample_ids": [
+    "sample_000",
+    "sample_001",
+    "sample_002",
+    "sample_003",
+    "sample_004"
+  ],
+  "training_row_count": 5,
+  "skipped_row_count": 13,
+  "catalog_sha256_values": [
+    "97d3abcc0887413a09c9fab34d2111feb0da0fd99ad08e22ec84cf4e8dcacd7c",
+    "45466b95d80f446acfa78be53534b359c8dd6f70969291de74616969e64fad33",
+    "a33a0bab0fa3f6902aa9c748d800eab0c42109933af6e8a05a0be495f0aca0f7",
+    "f23d583bca6b0bfb48b81b57892995ff86caf03b3505b4c25d1a4004b30f5b46",
+    "036dc9ba29ed05c5c72ebd50af1a16cc0bf4986d1aacf18134d4b526c7259123"
+  ],
+  "mesh_profile": "rom",
+  "mesh_level_id": "L_rom_prod",
+  "dataset_version": "m4_geometry_corrected_rommesh_v1",
+  "skipped": [
+    {
+      "sample_id": "sample_000",
+      "run_id": "sample_000_m4prod2",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_000",
+      "run_id": "sample_000_m4prod2_strict_val",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_001",
+      "run_id": "sample_001_m4prod2",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_001",
+      "run_id": "sample_001_m4prod2_geometryfix_smoke",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_002",
+      "run_id": "sample_002_m4prod2",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_002",
+      "run_id": "sample_002_m4prod2_strict_clean4",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_002",
+      "run_id": "sample_002_m4prod2_strict_clean5",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_002",
+      "run_id": "sample_002_m4prod2_strict_val",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_002",
+      "run_id": "sample_002_rom_prod_001",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_002",
+      "run_id": "sample_002_rom_prod_002",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_002",
+      "run_id": "sample_002_rom_prod_003",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_002",
+      "run_id": "sample_002_rom_prod_004",
+      "reason": "not_in_allowed_run_ids"
+    },
+    {
+      "sample_id": "sample_003",
+      "run_id": "sample_003_m4prod2",
+      "reason": "not_in_allowed_run_ids"
+    }
+  ],
+  "model_paths": {
+    "json": "ROM/classic/m4_modal_surrogate.json",
+    "npz": "ROM/classic/m4_modal_surrogate.npz",
+    "manifest": "ROM/classic/rom_model_manifest.json"
+  }
+}

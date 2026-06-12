@@ -1,0 +1,6 @@
+{
+  "schema": "m4_rom_retrain_state_v1",
+  "last_registered_utc": "2026-06-12T05:05:12Z",
+  "new_samples_since_last_train": 1,
+  "last_registered_run_id": "sample_036_rom_shadow_overnight_20260611_2247"
+}
