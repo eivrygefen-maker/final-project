@@ -178,6 +178,14 @@ def write_wav_mono(path: Path, samples: np.ndarray, sample_rate: int) -> None:
         wf.writeframes(pcm.tobytes())
 
 
+def _median_from_per_mode(meta: Mapping[str, Any], key: str) -> Optional[float]:
+    vals = [float(r.get(key)) for r in (meta.get("per_mode_damping") or []) if r.get(key) is not None]
+    if not vals:
+        return None
+    vals.sort()
+    return round(vals[len(vals) // 2], 6)
+
+
 def segment_metadata_from_synthesis(
     meta: Mapping[str, Any],
     *,
@@ -221,6 +229,12 @@ def segment_metadata_from_synthesis(
         "per_mode_q_used_in_frequency_response": meta.get("per_mode_q_used_in_frequency_response"),
         "per_mode_tau_used_in_time_decay": meta.get("per_mode_tau_used_in_time_decay"),
         "far_mode_weights_sample_specific": meta.get("far_mode_weights_sample_specific"),
+        "far_mode_sample_specificity_score": meta.get("far_mode_sample_specificity_score"),
+        "mode_amplitude_factor_median": _median_from_per_mode(meta, "mode_amplitude_factor"),
+        "mode_radiation_factor_median": _median_from_per_mode(meta, "mode_radiation_factor"),
+        "material_amplitude_factor_median": _median_from_per_mode(meta, "material_amplitude_factor"),
+        "radiation_color_v1_active": meta.get("radiation_color_v1_active"),
+        "radiation_color_v1_active": meta.get("radiation_color_v1_active"),
         "note_reward_score": meta.get("note_reward_score"),
         "output_decay_slope_db_per_s": meta.get("output_decay_slope_db_per_s"),
         "near_modal_energy_fraction": meta.get("near_modal_energy_fraction"),

@@ -142,6 +142,33 @@ DIAGNOSTIC_MODES: Dict[str, DiagnosticSynthesisConfig] = {
             "share-weighted material damping, partial normalization, f0-based string/body balance."
         ),
     ),
+    "modal_radiation_color_v1": DiagnosticSynthesisConfig(
+        name="modal_radiation_color_v1",
+        raw_body_variation_preserve=0.52,
+        body_gain_normalization_strength=0.38,
+        final_loudness_normalization_strength=0.36,
+        wide_body_signature=False,
+        wide_body_signature_strength=0.0,
+        wide_body_signature_damping=True,
+        damping_strength=1.0,
+        per_mode_damping_strength=1.0,
+        all_mode_broad_contribution=True,
+        broad_all_mode_strength=0.62,
+        near_modal_boost=1.05,
+        near_modal_energy_target=0.55,
+        far_broad_energy_target=0.45,
+        far_mode_color_gain=1.0,
+        high_note_string_direct_scale=0.60,
+        high_note_body_color_boost=1.50,
+        high_note_body_to_string_target_ratio=6.0,
+        high_note_pitch_layer_scale=0.68,
+        fundamental_anchor_scale=0.42,
+        low_note_fundamental_harmonic_boost=1.12,
+        description=(
+            "Stage 4.6 prototype: separate bridge mobility × radiation transmittance per mode, "
+            "category/wood amplitude color, sample-specific far modes — no global broad EQ."
+        ),
+    ),
 }
 
 _active_diagnostic: Optional[DiagnosticSynthesisConfig] = None

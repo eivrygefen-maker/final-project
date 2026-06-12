@@ -30,6 +30,7 @@ from diagnostic_synthesis import (  # noqa: E402
 )
 from modal_damping import (  # noqa: E402
     compute_per_mode_damping,
+    infer_mode_category,
     summarize_mode_damping_records,
 )
 from string_body_balance import (  # noqa: E402
@@ -377,8 +378,80 @@ def _low_note_fundamental_harmonic_boost() -> float:
     return LOW_NOTE_FUNDAMENTAL_HARMONIC_BOOST
 
 
+def _radiation_color_v1_active() -> bool:
+    diag = active_diagnostic()
+    return diag is not None and diag.name == "modal_radiation_color_v1"
+
+
+def _material_amplitude_factor(damp_rec: Mapping[str, Any]) -> float:
+    """Small wood/material tilt on amplitude (±8%), separate from Q damping."""
+    mat = float(damp_rec.get("mode_material_damping") or 1.0)
+    return max(0.88, min(1.12, 1.0 + 0.08 * (mat - 1.0)))
+
+
+def _mode_color_band_vector(damp_rec: Mapping[str, Any], comp: Mapping[str, Any]) -> List[float]:
+    top = float(damp_rec.get("top_share") or comp.get("top_share") or 0.0)
+    back = float(damp_rec.get("back_share") or 0.0)
+    air = float(damp_rec.get("air_share") or 0.0)
+    coupled = float(damp_rec.get("coupled_share") or 0.0)
+    rad = float(comp.get("radiation_weight") or 0.0)
+    vec = [
+        max(0.0, top * (0.85 + 0.15 * rad)),
+        max(0.0, back * (0.85 + 0.10 * rad)),
+        max(0.0, air * (0.90 + 0.20 * rad)),
+        max(0.0, coupled * 0.80),
+    ]
+    s = sum(vec) or 1.0
+    return [round(v / s, 6) for v in vec]
+
+
+def _mode_radiation_amplitude_factors(
+    damp_rec: Mapping[str, Any],
+    comp: Mapping[str, Any],
+    mode: Mapping[str, Any],
+    f_hz: float,
+) -> Dict[str, Any]:
+    bridge = max(float(comp.get("bridge_weight") or 1.0), 1e-6)
+    rad = max(float(comp.get("radiation_weight") or 1.0), 1e-6)
+    mic = max(float(comp.get("mic_weight") or 1.0), 1e-6)
+    category = infer_mode_category(mode)
+    cat_amp = {"top": 1.06, "back": 0.94, "air": 1.12, "coupled": 1.0}.get(category, 1.0)
+    mobility = bridge**0.82
+    radiation = (0.42 * rad + 0.33 * mic + 0.25 * math.sqrt(rad * mic)) ** 0.88
+    f_eff = (max(f_hz, 60.0) / 200.0) ** 0.10
+    mat_amp = _material_amplitude_factor(damp_rec)
+    color_vec = _mode_color_band_vector(damp_rec, comp)
+    category_color = (
+        0.35 * color_vec[0]
+        + 0.28 * color_vec[1]
+        + 0.27 * color_vec[2]
+        + 0.10 * color_vec[3]
+    )
+    amp = mobility * radiation * cat_amp * mat_amp * f_eff * (0.88 + 0.24 * category_color)
+    return {
+        "mode_amplitude_factor": round(amp, 6),
+        "mode_bridge_coupling_factor": round(mobility, 6),
+        "mode_radiation_factor": round(radiation * f_eff, 6),
+        "material_amplitude_factor": round(mat_amp, 6),
+        "mode_color_band_vector": color_vec,
+        "mode_category": category,
+    }
+
+
 def _per_mode_broad_color_scale(damp_rec: Mapping[str, Any], comp: Mapping[str, Any]) -> float:
     """Sample/mode-specific broad-path color — not a uniform EQ curve."""
+    if _radiation_color_v1_active():
+        pseudo_mode = {
+            "top_share": damp_rec.get("top_share"),
+            "back_share": damp_rec.get("back_share"),
+            "air_share": damp_rec.get("air_share"),
+        }
+        amp_info = _mode_radiation_amplitude_factors(
+            damp_rec, comp, pseudo_mode, float(damp_rec.get("frequency_hz") or 200.0)
+        )
+        vec = amp_info.get("mode_color_band_vector") or [0.25, 0.25, 0.25, 0.25]
+        rad = float(comp.get("radiation_weight") or 0.0)
+        return 0.55 + 0.25 * float(amp_info.get("mode_radiation_factor") or 1.0) + 0.20 * sum(vec[:3])
     mat = float(damp_rec.get("mode_material_damping") or 1.0)
     top_c = float(damp_rec.get("top_wood_damping_component") or 0.0)
     back_c = float(damp_rec.get("back_wood_damping_component") or 0.0)
@@ -924,7 +997,13 @@ def synthesize_body_via_transfer_function(
             blend = max(0.0, min(1.0, f_m / BODY_LOW_FREQ_TILT_HZ))
             w *= tune.body_low_mode_weight + (1.0 - tune.body_low_mode_weight) * blend
         damp_rec = compute_mode_damping_record(mode, f_m, defaults_used)
+        damp_rec["frequency_hz"] = f_m
         per_mode_damping_records.append(damp_rec)
+        amp_meta: Dict[str, Any] = {}
+        if _radiation_color_v1_active():
+            amp_meta = _mode_radiation_amplitude_factors(damp_rec, comp, mode, f_m)
+            w *= float(amp_meta["mode_amplitude_factor"])
+            damp_rec.update(amp_meta)
         q_total = float(damp_rec["mode_q"])
         flags["q_or_damping_used"] = True
         q_values.append(q_total)
@@ -984,7 +1063,7 @@ def synthesize_body_via_transfer_function(
     broad_band_gains: Dict[str, float] = {}
     diag = active_diagnostic()
     broad_sig_strength = 0.0
-    if diag and diag.wide_body_signature:
+    if diag and diag.wide_body_signature and not _radiation_color_v1_active():
         broad_sig_strength = float(diag.wide_body_signature_strength) * 0.35
     if broad_sig_strength > 0:
         broad_band_gains = compute_broad_body_band_gains(band_modes)
@@ -1031,6 +1110,11 @@ def synthesize_body_via_transfer_function(
         )
 
     energy_total = near_energy + mid_energy + broad_energy
+    broad_colors = [
+        _per_mode_broad_color_scale(row.get("damping") or {}, row.get("comp") or {})
+        for row in mode_rows
+    ]
+    far_specificity = float(np.std(broad_colors) / max(float(np.mean(broad_colors)), 1e-9)) if broad_colors else 0.0
     bw = active_tuning().body_modal_bandwidth_widening
     broaden_info = {
         "body_modal_bandwidth_widening": bw,
@@ -1050,6 +1134,8 @@ def synthesize_body_via_transfer_function(
         "per_mode_q_used_in_frequency_response": True,
         "per_mode_tau_used_in_time_decay": True,
         "far_mode_weights_sample_specific": True,
+        "far_mode_sample_specificity_score": round(far_specificity, 6),
+        "radiation_color_v1_active": _radiation_color_v1_active(),
     }
     return body, contributions, q_values, broaden_info
 
@@ -1533,6 +1619,8 @@ def _synthesize_note_with_body_response_core(
         "per_mode_q_used_in_frequency_response": broaden_info.get("per_mode_q_used_in_frequency_response", True),
         "per_mode_tau_used_in_time_decay": broaden_info.get("per_mode_tau_used_in_time_decay", True),
         "far_mode_weights_sample_specific": broaden_info.get("far_mode_weights_sample_specific", True),
+        "far_mode_sample_specificity_score": broaden_info.get("far_mode_sample_specificity_score"),
+        "radiation_color_v1_active": broaden_info.get("radiation_color_v1_active", False),
     }
     if diag:
         metadata["diagnostic_mode"] = diag.name
