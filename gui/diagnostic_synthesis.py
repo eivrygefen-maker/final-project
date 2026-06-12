@@ -169,6 +169,25 @@ DIAGNOSTIC_MODES: Dict[str, DiagnosticSynthesisConfig] = {
             "category/wood amplitude color, sample-specific far modes — no global broad EQ."
         ),
     ),
+    "body_audibility_balance_probe_v1": DiagnosticSynthesisConfig(
+        name="body_audibility_balance_probe_v1",
+        raw_body_variation_preserve=0.62,
+        body_gain_normalization_strength=0.28,
+        final_loudness_normalization_strength=0.26,
+        wide_body_signature=False,
+        all_mode_broad_contribution=True,
+        broad_all_mode_strength=0.55,
+        high_note_string_direct_scale=0.52,
+        high_note_body_color_boost=1.62,
+        high_note_body_to_string_target_ratio=5.8,
+        high_note_pitch_layer_scale=0.62,
+        fundamental_anchor_scale=0.30,
+        low_note_fundamental_harmonic_boost=1.02,
+        description=(
+            "Stage 4.8 probe: slightly reduce direct string, increase body audibility, "
+            "preserve raw variation — continuous f0 scaling only."
+        ),
+    ),
     "modal_radiation_color_v2": DiagnosticSynthesisConfig(
         name="modal_radiation_color_v2",
         raw_body_variation_preserve=0.58,

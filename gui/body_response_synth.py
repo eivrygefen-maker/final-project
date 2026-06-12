@@ -1129,6 +1129,8 @@ def synthesize_body_via_transfer_function(
     flags: Dict[str, bool],
     note_hz: float,
     harmonics_hz: Sequence[float],
+    layer_filter: Optional[str] = None,
+    use_bridge_mobility_proxy: bool = False,
 ) -> Tuple[np.ndarray, List[Dict[str, Any]], List[float], Dict[str, Any]]:
     """
     H_body(f) = sum_m W_m H_m(f) on bridge acceleration spectrum.
@@ -1149,10 +1151,26 @@ def synthesize_body_via_transfer_function(
 
     tune = active_tuning()
     proxy_pools = _proxy_pool_from_modes(band_modes) if _radiation_color_v2_active() else {}
+    mobility_meta: Dict[str, Any] = {}
+    if use_bridge_mobility_proxy:
+        from bridge_mobility_proxy import bridge_body_coupling_factor, compute_body_mass_proxies
+
+        mobility_meta = compute_body_mass_proxies(active_sample_parameters())
     for mode in band_modes:
         f_m = float(mode["frequency_hz"])
         comp = compute_mode_weight_components(mode, defaults_used=defaults_used, flags=flags)
         w = comp["combined"]
+        if use_bridge_mobility_proxy:
+            bridge_raw = float(comp.get("bridge_weight") or 1.0)
+            coupled, mrec = bridge_body_coupling_factor(
+                mode, active_sample_parameters(), existing_bridge=bridge_raw
+            )
+            scale = coupled / max(bridge_raw, 1e-9)
+            w *= scale
+            comp = dict(comp)
+            comp["bridge_weight"] = coupled
+            comp["bridge_mobility_scale"] = scale
+            mobility_meta = {**mobility_meta, **mrec}
         if tune.body_low_mode_weight < 1.0 and f_m < BODY_LOW_FREQ_TILT_HZ:
             blend = max(0.0, min(1.0, f_m / BODY_LOW_FREQ_TILT_HZ))
             w *= tune.body_low_mode_weight + (1.0 - tune.body_low_mode_weight) * blend
@@ -1206,9 +1224,19 @@ def synthesize_body_via_transfer_function(
         damp_rec = row.get("damping") or {}
         comp = row.get("comp") or {}
         broad_color = _per_mode_broad_color_scale(damp_rec, comp)
-        H_near += w_eff * nf * Hm
-        H_broad += w_eff * bf * Hm * broad_color
-        H_body += w_eff * nf * Hm + w_eff * bf * Hm * broad_color
+        rad_w = float(comp.get("radiation_weight") or 1.0)
+        mic_w = float(comp.get("mic_weight") or 1.0)
+        rad_only = (0.55 * rad_w + 0.45 * mic_w) ** 0.9
+        if layer_filter == "near":
+            H_body += w_eff * nf * Hm
+        elif layer_filter == "far":
+            H_body += w_eff * bf * Hm * broad_color
+        elif layer_filter == "radiation":
+            H_body += w_eff * rad_only * (nf * Hm + bf * Hm * broad_color)
+        else:
+            H_near += w_eff * nf * Hm
+            H_broad += w_eff * bf * Hm * broad_color
+            H_body += w_eff * nf * Hm + w_eff * bf * Hm * broad_color
         prox = _harmonic_proximity(float(row["f_m"]), harmonics_hz)
         near_part = w_eff * nf
         broad_part = w_eff * bf * broad_color
@@ -1307,6 +1335,9 @@ def synthesize_body_via_transfer_function(
         "radiation_proxy_missing_count": int(proxy_pools.get("radiation_missing_count") or 0),
         "mic_proxy_missing_count": int(proxy_pools.get("mic_missing_count") or 0),
         "low_body_color_strength": round(low_body_color_strength(note_hz), 6),
+        "layer_filter": layer_filter or "full",
+        "bridge_mobility_proxy_active": use_bridge_mobility_proxy,
+        "bridge_mobility_summary": mobility_meta if use_bridge_mobility_proxy else {},
     }
     return body, contributions, q_values, broaden_info
 
