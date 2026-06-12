@@ -1,0 +1,18 @@
+{
+  "sample_id": "sample_000",
+  "frequencies_hz_count": 512,
+  "modal_weights_count": 54,
+  "params_hash": "56fa7518403d3212",
+  "envelope_meta": {
+    "mode_count": 54,
+    "G_peak": 0.998668
+  },
+  "dmax_db": 4.5,
+  "top_effective_mass_proxy": 0.00043056,
+  "back_effective_mass_proxy": 0.00051645,
+  "body_air_volume_proxy": 0.01317108,
+  "mixed_body_mass_proxy": 0.00046921,
+  "bridge_mobility_proxy": 1.002449,
+  "top_wood_density_rel": 1.0,
+  "back_wood_density_rel": 1.14
+}

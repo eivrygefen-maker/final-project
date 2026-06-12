@@ -350,6 +350,55 @@ DIAGNOSTIC_MODES: Dict[str, DiagnosticSynthesisConfig] = {
             "no independent radiation source; no global far EQ."
         ),
     ),
+    "modal_body_hybrid_v4_core": DiagnosticSynthesisConfig(
+        name="modal_body_hybrid_v4_core",
+        raw_body_variation_preserve=0.50,
+        body_gain_normalization_strength=0.36,
+        final_loudness_normalization_strength=0.34,
+        description="Stage 5.0 V4 core: f0-continuous baseline/v1 hybrid only.",
+    ),
+    "modal_body_hybrid_v4_contrast_imprint_only": DiagnosticSynthesisConfig(
+        name="modal_body_hybrid_v4_contrast_imprint_only",
+        raw_body_variation_preserve=0.50,
+        body_gain_normalization_strength=0.36,
+        final_loudness_normalization_strength=0.34,
+        description="Stage 5.0 V4: hybrid + harmonic contrast imprint.",
+    ),
+    "modal_body_hybrid_v4_contrast_body_layer_only": DiagnosticSynthesisConfig(
+        name="modal_body_hybrid_v4_contrast_body_layer_only",
+        raw_body_variation_preserve=0.50,
+        body_gain_normalization_strength=0.36,
+        final_loudness_normalization_strength=0.34,
+        description="Stage 5.0 V4: hybrid + small contrast body residual layer.",
+    ),
+    "modal_body_hybrid_v4_mobility_light_only": DiagnosticSynthesisConfig(
+        name="modal_body_hybrid_v4_mobility_light_only",
+        raw_body_variation_preserve=0.50,
+        body_gain_normalization_strength=0.36,
+        final_loudness_normalization_strength=0.34,
+        description="Stage 5.0 V4: hybrid + light bounded mobility in envelope.",
+    ),
+    "modal_body_hybrid_v4_full": DiagnosticSynthesisConfig(
+        name="modal_body_hybrid_v4_full",
+        raw_body_variation_preserve=0.52,
+        body_gain_normalization_strength=0.34,
+        final_loudness_normalization_strength=0.32,
+        description="Stage 5.0 V4 full: hybrid + contrast imprint + body layer + mobility.",
+    ),
+    "modal_body_hybrid_v4": DiagnosticSynthesisConfig(
+        name="modal_body_hybrid_v4",
+        raw_body_variation_preserve=0.52,
+        body_gain_normalization_strength=0.34,
+        final_loudness_normalization_strength=0.32,
+        description="Stage 5.0 V4 alias — same as modal_body_hybrid_v4_full.",
+    ),
+    "stk_body_transfer_v4": DiagnosticSynthesisConfig(
+        name="stk_body_transfer_v4",
+        raw_body_variation_preserve=0.52,
+        body_gain_normalization_strength=0.34,
+        final_loudness_normalization_strength=0.32,
+        description="Stage 5.0 V4 alias (stk_body_transfer_v4).",
+    ),
 }
 
 _active_diagnostic: Optional[DiagnosticSynthesisConfig] = None

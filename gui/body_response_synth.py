@@ -1523,7 +1523,30 @@ def synthesize_note_with_body_response(
     diagnostic_mode: Optional[str] = None,
     sample_parameters: Optional[Mapping[str, Any]] = None,
     modal_source: Optional[str] = None,
+    repo_root: Optional[Path] = None,
+    sample_id: Optional[str] = None,
 ) -> Dict[str, Any]:
+    from body_hybrid_v4 import get_v4_ablation, synthesize_hybrid_v4_note
+
+    if get_v4_ablation(diagnostic_mode):
+        root = repo_root or Path(__file__).resolve().parents[1]
+        sid = sample_id or str((sample_parameters or {}).get("sample_id") or "sample_000")
+        return synthesize_hybrid_v4_note(
+            frequency_hz=frequency_hz,
+            note_name=note_name,
+            duration_s=duration_s,
+            sample_rate=sample_rate,
+            modal_data=modal_data,
+            output_wav=output_wav,
+            output_metadata_json=output_metadata_json,
+            velocity=velocity,
+            sample_parameters=sample_parameters,
+            modal_source=modal_source,
+            diagnostic_mode=str(diagnostic_mode),
+            synthesis_preset=synthesis_preset,
+            repo_root=root,
+            sample_id=sid,
+        )
     with use_synthesis_preset(synthesis_preset):
         with use_diagnostic_mode(diagnostic_mode, sample_parameters=sample_parameters):
             return _synthesize_note_with_body_response_core(
