@@ -391,7 +391,22 @@ def _low_note_fundamental_harmonic_boost() -> float:
 
 def _radiation_color_v1_active() -> bool:
     diag = active_diagnostic()
-    return diag is not None and diag.name == "modal_radiation_color_v1"
+    if diag is None:
+        return False
+    if diag.name == "modal_radiation_color_v1":
+        return True
+    from body_signature_v3 import is_v3_family_mode
+
+    return is_v3_family_mode(diag.name)
+
+
+def _body_signature_v3_ablation():
+    diag = active_diagnostic()
+    if diag is None:
+        return None
+    from body_signature_v3 import get_v3_ablation
+
+    return get_v3_ablation(diag.name)
 
 
 def _radiation_color_v2_active() -> bool:
@@ -609,6 +624,13 @@ def _per_mode_broad_color_scale(damp_rec: Mapping[str, Any], comp: Mapping[str, 
             damp_rec, comp, pseudo_mode, float(damp_rec.get("frequency_hz") or 200.0)
         )
         vec = amp_info.get("mode_color_band_vector") or [0.25, 0.25, 0.25, 0.25]
+        v3 = _body_signature_v3_ablation()
+        if v3 and v3.far_color:
+            from body_signature_v3 import far_color_factor_v3
+
+            mob = float(damp_rec.get("mobility_factor_m") or 1.0)
+            rad_f = float(damp_rec.get("radiation_factor_m") or amp_info.get("mode_radiation_factor") or 1.0)
+            return far_color_factor_v3(damp_rec, comp, radiation_factor=rad_f, mobility_factor=mob)
         rad = float(comp.get("radiation_weight") or 0.0)
         return 0.55 + 0.25 * float(amp_info.get("mode_radiation_factor") or 1.0) + 0.20 * sum(vec[:3])
     mat = float(damp_rec.get("mode_material_damping") or 1.0)
@@ -1150,7 +1172,11 @@ def synthesize_body_via_transfer_function(
     broad_energy = 0.0
 
     tune = active_tuning()
-    proxy_pools = _proxy_pool_from_modes(band_modes) if _radiation_color_v2_active() else {}
+    v3_ablation = _body_signature_v3_ablation()
+    from body_signature_v3 import proxy_pools_from_modes as v3_proxy_pools
+
+    v3_pools = v3_proxy_pools(band_modes) if v3_ablation else {}
+    proxy_pools = _proxy_pool_from_modes(band_modes) if _radiation_color_v2_active() else v3_pools
     mobility_meta: Dict[str, Any] = {}
     if use_bridge_mobility_proxy:
         from bridge_mobility_proxy import bridge_body_coupling_factor, compute_body_mass_proxies
@@ -1186,7 +1212,27 @@ def synthesize_body_via_transfer_function(
             damp_rec.update(amp_meta)
         elif _radiation_color_v1_active():
             amp_meta = _mode_radiation_amplitude_factors(damp_rec, comp, mode, f_m)
-            w *= float(amp_meta["mode_amplitude_factor"])
+            v3_has_modifiers = v3_ablation is not None and (
+                v3_ablation.low_f0_imprint or v3_ablation.mobility or v3_ablation.far_color
+            )
+            if v3_has_modifiers:
+                from body_signature_v3 import decompose_modal_amplitude_v3
+
+                decomp = decompose_modal_amplitude_v3(
+                    mode,
+                    damp_rec,
+                    comp,
+                    f_m,
+                    amp_meta,
+                    v3_pools,
+                    ablation=v3_ablation,
+                    parameters=active_sample_parameters(),
+                    note_hz=note_hz,
+                )
+                w *= float(decomp["final_modal_amp_m"]) / max(float(decomp["v1_modal_amp_m"]), 1e-9)
+                amp_meta = {**amp_meta, **decomp}
+            else:
+                w *= float(amp_meta["mode_amplitude_factor"])
             damp_rec.update(amp_meta)
         q_total = float(damp_rec["mode_q"])
         flags["q_or_damping_used"] = True
@@ -1331,6 +1377,16 @@ def synthesize_body_via_transfer_function(
         "far_mode_sample_specificity_score": round(far_specificity, 6),
         "radiation_color_v1_active": _radiation_color_v1_active(),
         "modal_radiation_color_v2_active": _radiation_color_v2_active(),
+        "body_signature_v3_active": v3_ablation is not None,
+        "body_signature_v3_ablation": (
+            {
+                "low_f0_imprint": v3_ablation.low_f0_imprint,
+                "mobility": v3_ablation.mobility,
+                "far_color": v3_ablation.far_color,
+            }
+            if v3_ablation
+            else {}
+        ),
         "bridge_proxy_missing_count": int(proxy_pools.get("bridge_missing_count") or 0),
         "radiation_proxy_missing_count": int(proxy_pools.get("radiation_missing_count") or 0),
         "mic_proxy_missing_count": int(proxy_pools.get("mic_missing_count") or 0),
@@ -1577,6 +1633,32 @@ def _synthesize_note_with_body_response_core(
         string_excitation, sample_rate, float(frequency_hz)
     )
     string_path = string_pluck + string_pitch_layer
+    v3_ablation = _body_signature_v3_ablation()
+    body_signature_envelope_meta: Dict[str, Any] = {}
+    if v3_ablation and v3_ablation.low_f0_imprint and band_modes:
+        from body_signature_v3 import (
+            apply_harmonic_body_imprint,
+            build_body_signature_envelope,
+            low_f0_imprint_strength,
+        )
+
+        imprint_strength = low_f0_imprint_strength(float(frequency_hz))
+        if imprint_strength > 1e-6:
+            env = build_body_signature_envelope(
+                band_modes, float(frequency_hz), len(string_excitation), sample_rate
+            )
+            string_path = apply_harmonic_body_imprint(
+                string_path,
+                sample_rate,
+                float(frequency_hz),
+                env,
+                strength=imprint_strength,
+            )
+            body_signature_envelope_meta = {
+                "low_f0_imprint_strength": round(imprint_strength, 6),
+                "body_signature_envelope_applied": True,
+            }
+            defaults_used.append("v3_low_f0_harmonic_body_imprint")
     string_pluck_gain = effective_pluck_gain
     string_pitch_layer_gain = effective_pitch_gain
     effective_string_pluck_gain = effective_pluck_gain + effective_pitch_gain
@@ -1824,6 +1906,9 @@ def _synthesize_note_with_body_response_core(
         "far_mode_sample_specificity_score": broaden_info.get("far_mode_sample_specificity_score"),
         "radiation_color_v1_active": broaden_info.get("radiation_color_v1_active", False),
         "modal_radiation_color_v2_active": broaden_info.get("modal_radiation_color_v2_active", False),
+        "body_signature_v3_active": broaden_info.get("body_signature_v3_active", False),
+        "body_signature_v3_ablation": broaden_info.get("body_signature_v3_ablation", {}),
+        "body_signature_envelope_meta": body_signature_envelope_meta,
         "low_body_color_strength": broaden_info.get("low_body_color_strength"),
         "bridge_proxy_missing_count": broaden_info.get("bridge_proxy_missing_count"),
         "radiation_proxy_missing_count": broaden_info.get("radiation_proxy_missing_count"),

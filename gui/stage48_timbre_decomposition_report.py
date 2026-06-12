@@ -186,6 +186,32 @@ def correlate_layer_with_data(
     }
 
 
+def compute_normalization_impact(
+    layer_metrics: Mapping[str, Mapping[str, Any]],
+    note: str,
+) -> Dict[str, Any]:
+    """delta_final_minus_raw = final_norm_spectral_diff - raw_pre_norm_spectral_diff."""
+
+    def _layer_diff(layer: str) -> float:
+        return float(layer_metrics.get(f"{note}/{layer}", {}).get("spectral_differentiation") or 0.0)
+
+    raw_d = _layer_diff("body_only_raw_pre_norm")
+    final_d = _layer_diff("body_only_final_norm")
+    full_d = _layer_diff("full_mix_baseline")
+    delta_final_minus_raw = final_d - raw_d
+    delta_full_minus_final_norm = full_d - final_d
+    return {
+        "raw_pre_norm_spectral_diff": round(raw_d, 6),
+        "final_norm_spectral_diff": round(final_d, 6),
+        "full_mix_spectral_diff": round(full_d, 6),
+        "delta_final_minus_raw": round(delta_final_minus_raw, 6),
+        "delta_full_minus_final_norm": round(delta_full_minus_final_norm, 6),
+        "final_norm_reduces_diff": delta_final_minus_raw < -1e-6,
+        "final_norm_increases_diff": delta_final_minus_raw > 1e-6,
+        "full_mix_reduces_vs_final_norm": delta_full_minus_final_norm < -1e-6,
+    }
+
+
 def build_stage48_report(
     *,
     build_manifest: Mapping[str, Any],
@@ -237,14 +263,15 @@ def build_stage48_report(
 
     body_raw_a2 = _diff("A2", "body_only_raw_pre_norm")
     full_a2 = _diff("A2", "full_mix_baseline")
-    norm_impact_a2 = body_raw_a2 - _diff("A2", "body_only_final_norm")
+    norm_a2 = compute_normalization_impact(layer_metrics, "A2")
 
     answers = {
         "body_only_differs_clearly": body_raw_a2 > 0.0008 or any(
             _diff(n, "body_only_raw_pre_norm") > 0.001 for n in notes
         ),
         "full_mix_hides_body_differences": full_a2 < body_raw_a2 * 0.65,
-        "normalization_reduces_differences": norm_impact_a2 > 0.0002,
+        "normalization_reduces_differences": norm_a2["final_norm_reduces_diff"],
+        "normalization_increases_differences": norm_a2["final_norm_increases_diff"],
         "highest_differentiation_layer": {
             n: per_note_ranking[n][0][0] if per_note_ranking[n] else None for n in notes
         },
@@ -283,19 +310,7 @@ def build_stage48_report(
         },
         "listening_pack_paths": build_manifest.get("listening_packs"),
         "answers": answers,
-        "normalization_impact": {
-            note: {
-                "raw_vs_final_norm": round(
-                    _diff(note, "body_only_raw_pre_norm") - _diff(note, "body_only_final_norm"),
-                    6,
-                ),
-                "raw_vs_full_mix": round(
-                    _diff(note, "body_only_raw_pre_norm") - _diff(note, "full_mix_baseline"),
-                    6,
-                ),
-            }
-            for note in notes
-        },
+        "normalization_impact": {note: compute_normalization_impact(layer_metrics, note) for note in notes},
         "fem_launched": False,
     }
 
@@ -334,7 +349,10 @@ def _render_md(report: Mapping[str, Any]) -> str:
 
     lines.append("## Normalization impact")
     for note, impact in (report.get("normalization_impact") or {}).items():
-        lines.append(f"- **{note}**: raw→final_norm Δdiff={impact.get('raw_vs_final_norm')}, raw→full_mix Δdiff={impact.get('raw_vs_full_mix')}")
+        lines.append(
+            f"- **{note}**: delta_final_minus_raw={impact.get('delta_final_minus_raw')}, "
+            f"delta_full_minus_final_norm={impact.get('delta_full_minus_final_norm')}"
+        )
     lines.append("")
 
     lines.append("## Confirmation")
