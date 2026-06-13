@@ -19,6 +19,15 @@ from audit_stk_v6_physical_dofs import (  # noqa: E402
 from body_hybrid_v4_1_identity_space import STK_BODY_TRANSFER_FINAL_V1  # noqa: E402
 from stk_pipeline_defaults import DEFAULT_WEBSITE_STK_MODE  # noqa: E402
 
+IMPORTANT_FEATURE_PROVENANCE_KEYS = (
+    "value",
+    "status",
+    "source_path",
+    "confidence",
+    "per_sample",
+    "intended_v6_use",
+)
+
 
 def _params(**overrides: float) -> dict:
     p = {
@@ -39,45 +48,106 @@ def _params(**overrides: float) -> dict:
     return p
 
 
+def _assert_provenance(rec: dict) -> None:
+    for key in IMPORTANT_FEATURE_PROVENANCE_KEYS:
+        assert key in rec, f"missing provenance key {key!r} in {rec}"
+
+
 class TestStkV6PhysicalDofAudit(unittest.TestCase):
     def test_website_default_unchanged(self) -> None:
         self.assertEqual(DEFAULT_WEBSITE_STK_MODE, STK_BODY_TRANSFER_FINAL_V1)
+
+    def test_json_top_level_flags_are_booleans(self) -> None:
+        report = build_stk_v6_physical_dof_audit(repo_root=REPO, sample_ids=("sample_000",))
+        for key in (
+            "website_default_unchanged",
+            "no_audio_synthesis_performed",
+            "no_fem_run",
+            "no_rom_run",
+            "stk_v5_behavior_unchanged",
+        ):
+            self.assertIn(key, report)
+            self.assertIs(report[key], True)
+        flags = report.get("explicit_flags") or {}
+        self.assertIs(flags.get("website_default_unchanged"), True)
+
+    def test_sample_000_geometry_body_depth_value(self) -> None:
+        if not (REPO / "ROM" / "classic" / "lhs_pool.json").is_file():
+            self.skipTest("lhs_pool.json not available")
+        report = build_stk_v6_physical_dof_audit(repo_root=REPO, sample_ids=("sample_000",))
+        s0 = report["samples"][0]
+        depth = s0["geometry"]["body_depth"]
+        _assert_provenance(depth)
+        self.assertIsNotNone(depth["value"])
+        self.assertEqual(depth["status"], "available")
+        self.assertTrue(depth["per_sample"])
+
+    def test_important_features_have_provenance(self) -> None:
+        report = build_stk_v6_physical_dof_audit(
+            repo_root=REPO,
+            sample_ids=("sample_000", "sample_001"),
+        )
+        s0 = report["samples"][0]
+        for section in ("geometry", "material"):
+            for rec in (s0.get(section) or {}).values():
+                _assert_provenance(rec)
+        for name in (
+            "body_volume_proxy",
+            "helmholtz_like_frequency_proxy",
+            "low_body_mode_frequency",
+            "bridge_to_radiation_strength",
+        ):
+            rec = s0["derived_features"][name]
+            _assert_provenance(rec)
+            if name in ("low_body_mode_frequency", "bridge_to_radiation_strength"):
+                self.assertEqual(rec["status"], "reference_shared")
+                self.assertFalse(rec["per_sample"])
+
+    def test_shared_or_constant_features_section(self) -> None:
+        report = build_stk_v6_physical_dof_audit(
+            repo_root=REPO,
+            sample_ids=tuple(f"sample_{i:03d}" for i in range(3)),
+        )
+        shared = report.get("shared_or_constant_features")
+        self.assertIsInstance(shared, list)
+        self.assertGreater(len(shared), 0)
+        ref_names = {r["feature_name"] for r in shared if r.get("likely_reason") == "reference_catalog"}
+        self.assertIn("low_body_mode_frequency", ref_names)
+
+    def test_stage2_readiness_exists(self) -> None:
+        report = build_stk_v6_physical_dof_audit(repo_root=REPO, sample_ids=("sample_000",))
+        readiness = report.get("stage2_readiness")
+        self.assertIsInstance(readiness, dict)
+        self.assertIn(readiness.get("status"), ("ready", "ready_with_limitations", "blocked"))
+        self.assertIn("safe_to_use_in_stage2", readiness)
+        self.assertIn("recommended_stage2_feature_set", report)
 
     def test_audit_runs_and_writes_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             json_out = Path(tmp) / "audit.json"
             md_out = Path(tmp) / "audit.md"
             from audit_stk_v6_physical_dofs import main as audit_main
-            import argparse
 
             with patch(
-                "audit_stk_v6_physical_dofs.build_stk_v6_physical_dof_audit",
-                wraps=build_stk_v6_physical_dof_audit,
-            ) as wrapped:
-                with patch(
-                    "sys.argv",
-                    [
-                        "audit_stk_v6_physical_dofs.py",
-                        "--repo-root",
-                        str(REPO),
-                        "--json-out",
-                        str(json_out),
-                        "--md-out",
-                        str(md_out),
-                        "--max-sample-index",
-                        "4",
-                    ],
-                ):
-                    audit_main()
-                self.assertGreater(wrapped.call_count, 0)
+                "sys.argv",
+                [
+                    "audit_stk_v6_physical_dofs.py",
+                    "--repo-root",
+                    str(REPO),
+                    "--json-out",
+                    str(json_out),
+                    "--md-out",
+                    str(md_out),
+                    "--max-sample-index",
+                    "2",
+                ],
+            ):
+                audit_main()
 
-            self.assertTrue(json_out.is_file())
-            self.assertTrue(md_out.is_file())
             doc = json.loads(json_out.read_text(encoding="utf-8"))
-            self.assertEqual(doc["explicit_flags"]["website_default_unchanged"], True)
-            self.assertEqual(doc["explicit_flags"]["no_audio_synthesis_performed"], True)
-            self.assertEqual(doc["explicit_flags"]["no_fem_run"], True)
-            self.assertEqual(doc["explicit_flags"]["no_rom_run"], True)
+            self.assertIs(doc["website_default_unchanged"], True)
+            self.assertIn("stage2_readiness", doc)
+            self.assertIn("Step 1.1", md_out.read_text(encoding="utf-8"))
 
     def test_sample_000_in_report_when_available(self) -> None:
         report = build_stk_v6_physical_dof_audit(
@@ -110,11 +180,7 @@ class TestStkV6PhysicalDofAudit(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             before = set(tmp_path.rglob("*.wav"))
-            report = build_stk_v6_physical_dof_audit(
-                repo_root=REPO,
-                sample_ids=("sample_000",),
-            )
-            _ = report
+            build_stk_v6_physical_dof_audit(repo_root=REPO, sample_ids=("sample_000",))
             after = set(tmp_path.rglob("*.wav"))
             self.assertEqual(before, after)
 

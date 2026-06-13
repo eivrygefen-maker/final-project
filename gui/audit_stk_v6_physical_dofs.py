@@ -32,7 +32,7 @@ from modal_damping import WOOD_DAMPING_COEFF, compute_per_mode_damping, infer_mo
 from sample_parameters import normalize_sample_parameters  # noqa: E402
 from stk_pipeline_defaults import DEFAULT_WEBSITE_STK_MODE  # noqa: E402
 
-REPORT_VERSION = "stk_v6_physical_dof_audit_v1"
+REPORT_VERSION = "stk_v6_physical_dof_audit_v1_1"
 DEFAULT_SAMPLE_IDS = tuple(f"sample_{i:03d}" for i in range(10))
 DEFAULT_JSON_OUT = REPO / "audio" / "debug_reports" / "stk_v6_physical_dof_audit.json"
 DEFAULT_MD_OUT = REPO / "audio" / "debug_reports" / "stk_v6_physical_dof_audit.md"
@@ -347,6 +347,86 @@ def _field_record(
         "intended_v6_use": v6_use,
         "notes": notes,
     }
+
+
+def _provenance(
+    *,
+    value: Any,
+    status: str,
+    source_path: str,
+    confidence: str,
+    per_sample: bool,
+    intended_v6_use: str,
+    notes: str = "",
+) -> Dict[str, Any]:
+    """Normalized feature record for Step 2 consumption."""
+    rec: Dict[str, Any] = {
+        "value": value,
+        "status": status,
+        "source_path": source_path,
+        "confidence": confidence,
+        "per_sample": bool(per_sample),
+        "intended_v6_use": intended_v6_use,
+    }
+    if notes:
+        rec["notes"] = notes
+    return rec
+
+
+def _records_to_provenance_dict(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    per_sample: bool,
+    status_override: Optional[str] = None,
+) -> Dict[str, Dict[str, Any]]:
+    status_map = {
+        "available": "available",
+        "derived": "derived",
+        "missing": "missing",
+        "fallback": "fallback",
+        "reference_shared": "reference_shared",
+    }
+    out: Dict[str, Dict[str, Any]] = {}
+    for r in records:
+        st = status_override or status_map.get(str(r.get("status") or ""), str(r.get("status") or "missing"))
+        out[str(r["name"])] = _provenance(
+            value=r.get("value"),
+            status=st,
+            source_path=str(r.get("source_key_path") or ""),
+            confidence=str(r.get("confidence") or "low"),
+            per_sample=per_sample,
+            intended_v6_use=str(r.get("intended_v6_use") or ""),
+            notes=str(r.get("notes") or ""),
+        )
+    return out
+
+
+REFERENCE_SHARED_FEATURE_NAMES = (
+    "low_body_mode_frequency",
+    "bridge_to_radiation_strength",
+    "air_to_structural_ratio",
+    "top_to_back_ratio",
+    "aperture_to_top_radiation_ratio",
+    "modal_density_by_band",
+    "top_radiation_gain_proxy",
+    "soundhole_radiation_gain_proxy",
+    "low_body_mode_q_or_decay",
+)
+
+PER_SAMPLE_DERIVED_FEATURE_NAMES = (
+    "body_area_proxy",
+    "body_volume_proxy",
+    "soundhole_area",
+    "helmholtz_like_frequency_proxy",
+    "cavity_q_proxy",
+    "cavity_decay_proxy",
+    "high_frequency_absorption_proxy",
+    "mass_loading_proxy",
+    "body_decay_scale_proxy",
+    "cavity_contribution_proxy",
+    "modal_density_by_band_sample_grid",
+    "low_body_mode_frequency_sample_grid",
+)
 
 
 def _pearson(xs: Sequence[float], ys: Sequence[float]) -> Optional[float]:
@@ -790,17 +870,86 @@ def inspect_modal_availability(
     }
 
 
-def compute_derived_v6_features(
+def compute_reference_catalog_aggregates(
+    reference_modes: Sequence[Mapping[str, Any]],
+    *,
+    reference_path: str,
+) -> Dict[str, Dict[str, Any]]:
+    """Aggregates from shared reference ROM catalog — identical for every sample in this audit."""
+    band = modes_in_validated_band(reference_modes)
+    if not band:
+        return {}
+
+    bridges = [float(m.get("bridge_excitation_abs") or 0) for m in band]
+    rads = [float(m.get("radiation_proxy") or 0) for m in band]
+    tops = [float(m.get("top_share") or 0) for m in band]
+    backs = [float(m.get("back_share") or 0) for m in band]
+    airs = [float(m.get("air_share") or 0) for m in band]
+    apertures = [float(m.get("air_pressure_proxy") or 0) for m in band]
+    freqs = [float(m["frequency_hz"]) for m in band]
+    low_f = round(min(freqs), 3)
+
+    raw: Dict[str, Any] = {
+        "low_body_mode_frequency": low_f,
+        "top_radiation_gain_proxy": round(statistics.mean(rads), 8) if rads else None,
+        "soundhole_radiation_gain_proxy": (
+            round(statistics.mean(apertures), 8) if any(a > 0 for a in apertures) else None
+        ),
+        "bridge_to_radiation_strength": (
+            round(statistics.mean(bridges) / max(statistics.mean(rads), 1e-12), 6)
+            if bridges and rads
+            else None
+        ),
+        "top_to_back_ratio": (
+            round(statistics.mean(tops) / max(statistics.mean(backs), 1e-12), 6)
+            if tops and backs
+            else None
+        ),
+        "air_to_structural_ratio": (
+            round(statistics.mean(airs) / max(statistics.mean(tops) + statistics.mean(backs), 1e-12), 6)
+            if airs
+            else None
+        ),
+        "aperture_to_top_radiation_ratio": (
+            round(statistics.mean(apertures) / max(statistics.mean(rads), 1e-12), 6)
+            if apertures and rads and any(a > 0 for a in apertures)
+            else None
+        ),
+        "modal_density_by_band": _modal_density_by_band(freqs),
+        "low_body_mode_q_or_decay": {
+            "mode_q": None,
+            "mode_tau_s": None,
+            "source": "reference_catalog_lowest_mode_q_not_stored",
+        },
+    }
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, val in raw.items():
+        out[name] = _provenance(
+            value=val,
+            status="reference_shared",
+            source_path=reference_path,
+            confidence="high",
+            per_sample=False,
+            intended_v6_use=(
+                "Single-guitar V6 skeleton routing ratios — not safe for multi-guitar differentiation"
+            ),
+            notes="Identical across all samples unless per-sample modal catalog is loaded",
+        )
+    return out
+
+
+def compute_per_sample_derived_features(
     params: Mapping[str, Any],
     *,
     signature_cache: Mapping[str, Any],
-    reference_modes: Sequence[Mapping[str, Any]],
-) -> Dict[str, Any]:
-    """Safe derived features for V6 routing design."""
+) -> Dict[str, Dict[str, Any]]:
+    """Derived features that vary per sample from LHS geometry/material + body_signature cache."""
     p = normalize_sample_parameters(params)
     cav = _compute_cavity_geometry_proxy(p)
     mass = compute_body_mass_proxies(p)
-    out: Dict[str, Any] = {
+
+    raw: Dict[str, Any] = {
         "body_area_proxy": cav.get("body_area_proxy"),
         "body_volume_proxy": cav.get("body_volume_proxy"),
         "soundhole_area": cav.get("soundhole_area_used"),
@@ -813,76 +962,69 @@ def compute_derived_v6_features(
             0.5 * (float(cav.get("material_top_damping") or 1.0) + float(cav.get("material_back_damping") or 1.0)),
             4,
         ),
+        "cavity_contribution_proxy": cav.get("cavity_gain"),
+        "bridge_mobility_proxy": mass.get("bridge_mobility_proxy"),
     }
-
-    band = modes_in_validated_band(reference_modes)
-    if band:
-        bridges = [float(m.get("bridge_excitation_abs") or 0) for m in band]
-        rads = [float(m.get("radiation_proxy") or 0) for m in band]
-        tops = [float(m.get("top_share") or 0) for m in band]
-        backs = [float(m.get("back_share") or 0) for m in band]
-        airs = [float(m.get("air_share") or 0) for m in band]
-        apertures = [float(m.get("air_pressure_proxy") or 0) for m in band]
-        out["top_radiation_gain_proxy"] = round(statistics.mean(rads), 8) if rads else None
-        out["soundhole_radiation_gain_proxy"] = (
-            round(statistics.mean(apertures), 8) if any(a > 0 for a in apertures) else None
-        )
-        out["bridge_to_radiation_strength"] = (
-            round(statistics.mean(bridges) / max(statistics.mean(rads), 1e-12), 6)
-            if bridges and rads
-            else None
-        )
-        out["top_to_back_ratio"] = (
-            round(statistics.mean(tops) / max(statistics.mean(backs), 1e-12), 6)
-            if tops and backs
-            else None
-        )
-        out["air_to_structural_ratio"] = (
-            round(statistics.mean(airs) / max(statistics.mean(tops) + statistics.mean(backs), 1e-12), 6)
-            if airs
-            else None
-        )
-        out["aperture_to_top_radiation_ratio"] = (
-            round(statistics.mean(apertures) / max(statistics.mean(rads), 1e-12), 6)
-            if apertures and rads and any(a > 0 for a in apertures)
-            else None
-        )
-        out["low_body_mode_frequency"] = round(min(float(m["frequency_hz"]) for m in band), 3)
-        damp = compute_per_mode_damping(band[0], float(band[0]["frequency_hz"]), p)
-        out["low_body_mode_q_or_decay"] = {
-            "mode_q": damp.get("final_mode_q"),
-            "mode_tau_s": damp.get("mode_tau_s"),
-            "source": "derived_from_reference_catalog_lowest_band_mode",
-        }
-        out["modal_density_by_band"] = _modal_density_by_band([float(m["frequency_hz"]) for m in band])
-        out["_reference_catalog_note"] = (
-            "Radiation/participation aggregates use reference ROM catalog — not sample-specific in this audit"
-        )
-    else:
-        for key in (
-            "top_radiation_gain_proxy",
-            "soundhole_radiation_gain_proxy",
-            "bridge_to_radiation_strength",
-            "top_to_back_ratio",
-            "air_to_structural_ratio",
-            "aperture_to_top_radiation_ratio",
-            "low_body_mode_frequency",
-            "low_body_mode_q_or_decay",
-            "modal_density_by_band",
-        ):
-            out[key] = None
-        out["_reference_catalog_note"] = "Reference modal catalog unavailable — aggregates not computed"
 
     sig_status = signature_cache.get("status")
     if sig_status == "available" and signature_cache.get("modal_density_by_band_on_grid"):
-        out["modal_density_by_band_sample_grid"] = signature_cache["modal_density_by_band_on_grid"]
-        out["low_body_mode_frequency_sample_grid"] = signature_cache.get("low_grid_frequency_hz")
+        raw["modal_density_by_band_sample_grid"] = signature_cache["modal_density_by_band_on_grid"]
+        raw["low_body_mode_frequency_sample_grid"] = signature_cache.get("low_grid_frequency_hz")
     else:
-        out["modal_density_by_band_sample_grid"] = None
-        out["low_body_mode_frequency_sample_grid"] = None
+        raw["modal_density_by_band_sample_grid"] = None
+        raw["low_body_mode_frequency_sample_grid"] = None
 
-    out["cavity_contribution_proxy"] = cav.get("cavity_gain")
+    use_notes = {
+        "body_area_proxy": "Cavity/radiation area estimate",
+        "body_volume_proxy": "Helmholtz / cavity air mass",
+        "soundhole_area": "Aperture / Helmholtz stiffness",
+        "helmholtz_like_frequency_proxy": "Low-body air resonance target",
+        "cavity_q_proxy": "Cavity mode Q target",
+        "cavity_decay_proxy": "Cavity tail / sustain target",
+        "high_frequency_absorption_proxy": "E5 metallicity damping target",
+        "mass_loading_proxy": "Bridge mobility / modal mass loading",
+        "body_decay_scale_proxy": "Material damping aggregate",
+        "cavity_contribution_proxy": "Cavity gain proxy",
+        "bridge_mobility_proxy": "Bridge admittance scaling",
+        "modal_density_by_band_sample_grid": "Per-sample transfer envelope band counts",
+        "low_body_mode_frequency_sample_grid": "Lowest frequency on cached admittance grid",
+    }
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, val in raw.items():
+        if name in ("modal_density_by_band_sample_grid", "low_body_mode_frequency_sample_grid"):
+            st = "available" if val is not None else "missing"
+            conf = "medium" if val is not None else "low"
+            src = "ROM/classic/body_signature_cache/{sample_id}.npz"
+        else:
+            st = "derived"
+            conf = "medium"
+            src = "derived:geometry/material via _compute_cavity_geometry_proxy / compute_body_mass_proxies"
+        out[name] = _provenance(
+            value=val,
+            status=st,
+            source_path=src,
+            confidence=conf,
+            per_sample=True,
+            intended_v6_use=use_notes.get(name, "V6 per-sample driver"),
+        )
     return out
+
+
+def compute_derived_v6_features(
+    params: Mapping[str, Any],
+    *,
+    signature_cache: Mapping[str, Any],
+    reference_modes: Sequence[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Legacy flat dict — kept for sanity-check helpers; prefer normalized schema."""
+    per = compute_per_sample_derived_features(params, signature_cache=signature_cache)
+    flat = {k: v["value"] for k, v in per.items()}
+    ref_path = str(REFERENCE_MODAL_PATH)
+    ref = compute_reference_catalog_aggregates(reference_modes, reference_path=ref_path)
+    for k, v in ref.items():
+        flat[k] = v["value"]
+    return flat
 
 
 def classify_v6_feature_availability(
@@ -950,41 +1092,382 @@ def classify_v6_feature_availability(
     return classification
 
 
-def run_physical_sanity_checks(samples_derived: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
-    def _derived(s: Mapping[str, Any]) -> Mapping[str, Any]:
-        return s.get("derived_features") or {}
+def _build_geometry_provenance(params: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
+    records = inspect_geometry_fields(params)
+    by_name = {r["name"]: r for r in records}
+    keys = (
+        "body_length",
+        "body_width",
+        "body_depth",
+        "top_thickness",
+        "back_thickness",
+        "soundhole_radius",
+        "body_area_proxy",
+        "body_volume_proxy",
+        "soundhole_area",
+    )
+    out: Dict[str, Dict[str, Any]] = {}
+    for key in keys:
+        r = by_name.get(key)
+        if r is None:
+            out[key] = _provenance(
+                value=None,
+                status="missing",
+                source_path=f"geometry.{key}",
+                confidence="low",
+                per_sample=True,
+                intended_v6_use="V6 geometry driver",
+                notes="Not found in LHS parameters",
+            )
+            continue
+        per_sample = key not in ("body_area_proxy", "body_volume_proxy", "soundhole_area")
+        st = str(r.get("status") or "missing")
+        if st == "available":
+            status = "available"
+        elif st == "derived":
+            status = "derived"
+        elif st == "fallback":
+            status = "fallback"
+        else:
+            status = "missing"
+        out[key] = _provenance(
+            value=r.get("value"),
+            status=status,
+            source_path=str(r.get("source_key_path") or ""),
+            confidence=str(r.get("confidence") or "low"),
+            per_sample=True,
+            intended_v6_use=str(r.get("intended_v6_use") or ""),
+            notes=str(r.get("notes") or ""),
+        )
+    return out
 
-    vols = [float(_derived(s)["body_volume_proxy"]) for s in samples_derived if _derived(s).get("body_volume_proxy")]
-    helm = [
-        float(_derived(s)["helmholtz_like_frequency_proxy"])
-        for s in samples_derived
-        if _derived(s).get("helmholtz_like_frequency_proxy")
+
+def _build_material_provenance(params: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
+    records = inspect_material_fields(params)
+    keep = (
+        "top_wood_id",
+        "back_wood_id",
+        "top_density_proxy",
+        "back_density_proxy",
+        "top_damping_coeff_proxy",
+        "back_damping_coeff_proxy",
+        "top_effective_mass_proxy",
+        "back_effective_mass_proxy",
+        "body_air_volume_proxy",
+        "bridge_mobility_proxy",
+    )
+    by_name = {r["name"]: r for r in records}
+    out: Dict[str, Dict[str, Any]] = {}
+    for key in keep:
+        r = by_name.get(key)
+        if not r:
+            continue
+        st = str(r.get("status") or "missing")
+        status = {"available": "available", "derived": "derived", "fallback": "fallback"}.get(st, st)
+        out[key] = _provenance(
+            value=r.get("value"),
+            status=status,
+            source_path=str(r.get("source_key_path") or ""),
+            confidence=str(r.get("confidence") or "low"),
+            per_sample=True,
+            intended_v6_use=str(r.get("intended_v6_use") or ""),
+            notes=str(r.get("notes") or ""),
+        )
+    return out
+
+
+def build_normalized_sample_record(
+    *,
+    sample: Mapping[str, Any],
+    repo_root: Path,
+    reference_summary: Mapping[str, Any],
+    reference_schema_keys: Sequence[str],
+    reference_aggregates: Mapping[str, Dict[str, Any]],
+    ref_path: str,
+) -> Dict[str, Any]:
+    params = sample.get("parameters") or {}
+    geometry = _build_geometry_provenance(params)
+    material = _build_material_provenance(params)
+    modal_avail = inspect_modal_availability(
+        repo_root=repo_root,
+        sample=sample,
+        reference_summary=reference_summary,
+        reference_schema_keys=reference_schema_keys,
+    )
+    per_sample_derived = compute_per_sample_derived_features(
+        params,
+        signature_cache=modal_avail["body_signature_cache"],
+    )
+
+    modal: Dict[str, Dict[str, Any]] = {}
+    for key in (
+        "m4_surrogate_model_files_present",
+        "per_sample_modal_catalog_on_disk",
+        "modal_source_for_v6",
+    ):
+        val = modal_avail.get(key)
+        modal[key] = _provenance(
+            value=val,
+            status="available" if val else "missing",
+            source_path="lhs_pool.json / filesystem check",
+            confidence="high",
+            per_sample=key != "m4_surrogate_model_files_present",
+            intended_v6_use="Modal catalog availability for V6",
+        )
+    modal["body_signature_cache_status"] = _provenance(
+        value=modal_avail["body_signature_cache"].get("status"),
+        status="available" if modal_avail["body_signature_cache"].get("status") == "available" else "missing",
+        source_path="ROM/classic/body_signature_cache/{sample_id}.npz",
+        confidence="high",
+        per_sample=True,
+        intended_v6_use="Admittance envelope cross-check",
+    )
+
+    derived_features: Dict[str, Dict[str, Any]] = {}
+    derived_features.update(per_sample_derived)
+    derived_features.update(reference_aggregates)
+
+    stage2_usable: Dict[str, str] = {}
+    for fname, rec in {**geometry, **material, **derived_features}.items():
+        if rec.get("per_sample") and rec.get("status") in ("available", "derived"):
+            stage2_usable[fname] = "safe_per_sample_driver"
+        elif not rec.get("per_sample") and rec.get("status") == "reference_shared":
+            stage2_usable[fname] = "reference_shared_single_guitar_only"
+        elif rec.get("status") == "fallback":
+            stage2_usable[fname] = "fallback_caution"
+        elif rec.get("status") == "missing":
+            stage2_usable[fname] = "missing"
+
+    missing_critical = [
+        name
+        for name, rec in {**geometry, **material}.items()
+        if rec.get("status") == "missing"
     ]
-    hole_areas = [
-        float(_derived(s)["soundhole_area"])
-        for s in samples_derived
-        if _derived(s).get("soundhole_area")
-    ]
-    damp_scales = [
-        float(_derived(s)["body_decay_scale_proxy"])
-        for s in samples_derived
-        if _derived(s).get("body_decay_scale_proxy")
-    ]
-    depth_only = [
-        float(s["geometry_depth"])
-        for s in samples_derived
-        if s.get("geometry_depth") is not None
-    ]
-    helm_only = [
-        float(_derived(s)["helmholtz_like_frequency_proxy"])
-        for s in samples_derived
-        if _derived(s).get("helmholtz_like_frequency_proxy")
-    ]
-    cavity_decays = [
-        float(_derived(s)["cavity_decay_proxy"])
-        for s in samples_derived
-        if _derived(s).get("cavity_decay_proxy")
-    ]
+    for name in ("scale_length", "bridge_position"):
+        missing_critical.append(name)
+
+    feature_class = classify_v6_feature_availability(
+        geometry=[{"name": k, **v} for k, v in geometry.items()],
+        materials=[{"name": k, **v} for k, v in material.items()],
+        modal_block=modal_avail,
+        derived={k: v.get("value") for k, v in derived_features.items()},
+    )
+
+    return {
+        "sample_id": str(sample["sample_id"]),
+        "run_id": sample.get("run_id"),
+        "geometry": geometry,
+        "material": material,
+        "modal": modal,
+        "derived_features": derived_features,
+        "stage2_usable_features": stage2_usable,
+        "missing_critical_fields": sorted(set(missing_critical)),
+        "v6_feature_classification": feature_class,
+        "_modal_availability_detail": modal_avail,
+    }
+
+
+def detect_shared_or_constant_features(
+    samples: Sequence[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Find features identical across all samples — likely reference/shared, not per-sample."""
+    if len(samples) < 2:
+        return []
+
+    watch = set(REFERENCE_SHARED_FEATURE_NAMES) | set(PER_SAMPLE_DERIVED_FEATURE_NAMES)
+    rows: List[Dict[str, Any]] = []
+
+    for fname in sorted(watch):
+        values: List[Any] = []
+        per_sample_flags: List[bool] = []
+        statuses: List[str] = []
+        for s in samples:
+            rec = (s.get("derived_features") or {}).get(fname)
+            if not rec:
+                continue
+            values.append(rec.get("value"))
+            per_sample_flags.append(bool(rec.get("per_sample")))
+            statuses.append(str(rec.get("status") or ""))
+
+        if len(values) < 2:
+            continue
+
+        def _norm(v: Any) -> str:
+            if isinstance(v, dict):
+                return json.dumps(v, sort_keys=True)
+            return json.dumps(v)
+
+        unique = {_norm(v) for v in values}
+        if len(unique) != 1:
+            continue
+
+        all_per_sample = all(per_sample_flags) if per_sample_flags else False
+        st_set = set(statuses)
+        if "reference_shared" in st_set:
+            reason = "reference_catalog"
+        elif all_per_sample:
+            reason = "unknown"
+        else:
+            reason = "constant_default"
+
+        safe_stage2 = fname in PER_SAMPLE_DERIVED_FEATURE_NAMES and not all_per_sample
+        safe_multi = all_per_sample and reason != "reference_catalog"
+
+        rows.append(
+            {
+                "feature_name": fname,
+                "value": values[0],
+                "likely_reason": reason,
+                "safe_for_stage2_single_guitar": fname in PER_SAMPLE_DERIVED_FEATURE_NAMES or reason == "reference_catalog",
+                "safe_for_multi_guitar_differentiation": safe_multi,
+                "per_sample_flag_in_schema": all(per_sample_flags) if per_sample_flags else False,
+                "statuses_seen": sorted(st_set),
+                "warning": (
+                    "Identical across samples but marked per_sample — verify data source"
+                    if all_per_sample and reason == "unknown"
+                    else (
+                        "Reference/shared value — do not use for multi-guitar differentiation"
+                        if reason == "reference_catalog" or fname in REFERENCE_SHARED_FEATURE_NAMES
+                        else None
+                    )
+                ),
+            }
+        )
+    return rows
+
+
+def build_recommended_stage2_feature_set() -> Dict[str, List[str]]:
+    return {
+        "safe_per_sample_drivers": [
+            "body_depth",
+            "body_length",
+            "body_width",
+            "body_area_proxy",
+            "body_volume_proxy",
+            "soundhole_radius",
+            "soundhole_area",
+            "helmholtz_like_frequency_proxy",
+            "cavity_decay_proxy",
+            "cavity_q_proxy",
+            "top_wood_id",
+            "back_wood_id",
+            "top_density_proxy",
+            "back_density_proxy",
+            "top_damping_coeff_proxy",
+            "back_damping_coeff_proxy",
+            "mass_loading_proxy",
+            "high_frequency_absorption_proxy",
+            "bridge_mobility_proxy",
+            "modal_density_by_band_sample_grid",
+            "low_body_mode_frequency_sample_grid",
+        ],
+        "shared_reference_drivers_single_guitar_skeleton": [
+            "low_body_mode_frequency",
+            "modal_density_by_band",
+            "top_to_back_ratio",
+            "air_to_structural_ratio",
+            "bridge_to_radiation_strength",
+            "aperture_to_top_radiation_ratio",
+            "top_radiation_gain_proxy",
+            "soundhole_radiation_gain_proxy",
+            "reference modal frequencies",
+            "reference participation shares (top/back/air)",
+        ],
+        "risky_drivers_multi_guitar_differentiation": [
+            "low_body_mode_frequency (reference_shared)",
+            "bridge_to_radiation_strength (reference_shared)",
+            "air_to_structural_ratio (reference_shared)",
+            "top_to_back_ratio (reference_shared)",
+            "aperture_to_top_radiation_ratio (reference_shared)",
+            "modal_density_by_band (reference_shared)",
+            "any fallback Helmholtz clamp at 85/128 Hz boundary",
+            "wood-ID damping tables without measured material_delta",
+        ],
+    }
+
+
+def build_stage2_readiness(
+    *,
+    samples: Sequence[Mapping[str, Any]],
+    shared_features: Sequence[Mapping[str, Any]],
+    global_missing: Sequence[str],
+) -> Dict[str, Any]:
+    ref_shared = [r for r in shared_features if r.get("likely_reason") == "reference_catalog"]
+    per_sample_vary = any(
+        len({s["geometry"]["body_depth"]["value"] for s in samples if s.get("geometry")}) > 1
+        for _ in [0]
+    ) if samples else False
+
+    safe = build_recommended_stage2_feature_set()["safe_per_sample_drivers"]
+    caution = build_recommended_stage2_feature_set()["risky_drivers_multi_guitar_differentiation"]
+
+    status = "ready_with_limitations"
+    if not samples:
+        status = "blocked"
+    elif not per_sample_vary:
+        status = "blocked"
+
+    return {
+        "status": status,
+        "single_guitar_v6_skeleton": (
+            "Proceed using per-sample geometry/cavity/material proxies plus reference modal "
+            "catalog for routing architecture (top/back/air/soundhole stems)."
+        ),
+        "multi_guitar_differentiation": (
+            "Limited to geometry, wood IDs, mass/mobility, and body_signature cache until "
+            "per-sample predicted_modes are loaded (M4 surrogate inference — not run in this audit)."
+        ),
+        "main_limitations": [
+            "Per-sample modal catalog not loaded in Step 1 audit (no ROM run)",
+            f"{len(ref_shared)} features are reference_shared and identical across samples",
+            "scale_length and bridge_position absent from LHS pool",
+            "material_delta / elastic moduli not available",
+        ],
+        "must_not_assume": [
+            "Reference modal radiation ratios differ between guitars",
+            "low_body_mode_frequency from reference catalog is sample-specific",
+            "Helmholtz proxy equals FEM cavity mode",
+            "mic_output_proxy equals soundhole radiation",
+        ],
+        "safe_to_use_in_stage2": safe,
+        "requires_fallback_or_caution": caution + list(global_missing),
+    }
+
+
+def run_physical_sanity_checks(samples_derived: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    def _val(s: Mapping[str, Any], section: str, key: str) -> Optional[float]:
+        block = s.get(section) or {}
+        rec = block.get(key) if isinstance(block, dict) else None
+        if isinstance(rec, dict):
+            v = rec.get("value")
+            try:
+                return float(v) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _derived(s: Mapping[str, Any], key: str) -> Optional[float]:
+        rec = (s.get("derived_features") or {}).get(key)
+        if isinstance(rec, dict):
+            v = rec.get("value")
+            try:
+                return float(v) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    vols = [_derived(s, "body_volume_proxy") for s in samples_derived]
+    vols = [v for v in vols if v is not None]
+    helm = [_derived(s, "helmholtz_like_frequency_proxy") for s in samples_derived]
+    helm = [v for v in helm if v is not None]
+    hole_areas = [_derived(s, "soundhole_area") for s in samples_derived]
+    hole_areas = [v for v in hole_areas if v is not None]
+    damp_scales = [_derived(s, "body_decay_scale_proxy") for s in samples_derived]
+    damp_scales = [v for v in damp_scales if v is not None]
+    depth_only = [_val(s, "geometry", "body_depth") for s in samples_derived]
+    depth_only = [v for v in depth_only if v is not None]
+    cavity_decays = [_derived(s, "cavity_decay_proxy") for s in samples_derived]
+    cavity_decays = [v for v in cavity_decays if v is not None]
 
     checks = {
         "larger_volume_lowers_helmholtz": {
@@ -995,14 +1478,14 @@ def run_physical_sanity_checks(samples_derived: Sequence[Mapping[str, Any]]) -> 
         },
         "larger_soundhole_raises_helmholtz": {
             "expected": "positive correlation between soundhole_area and helmholtz_like_frequency_proxy",
-            "correlation": _pearson(hole_areas, helm_only),
-            "supported": (_pearson(hole_areas, helm_only) or 0) > 0.1 if len(hole_areas) >= 3 else None,
+            "correlation": _pearson(hole_areas, helm),
+            "supported": (_pearson(hole_areas, helm) or 0) > 0.1 if len(hole_areas) >= 3 else None,
             "sample_count": len(hole_areas),
         },
         "deeper_body_lowers_helmholtz": {
             "expected": "negative correlation between body_depth and helmholtz_like_frequency_proxy",
-            "correlation": _pearson(depth_only, helm_only),
-            "supported": (_pearson(depth_only, helm_only) or 0) < -0.1 if len(depth_only) >= 3 else None,
+            "correlation": _pearson(depth_only, helm),
+            "supported": (_pearson(depth_only, helm) or 0) < -0.1 if len(depth_only) >= 3 else None,
             "sample_count": len(depth_only),
         },
         "higher_damping_shorter_sustain_proxy": {
@@ -1023,19 +1506,13 @@ def run_physical_sanity_checks(samples_derived: Sequence[Mapping[str, Any]]) -> 
         },
         "mass_loading_affects_mobility": {
             "expected": "mass_loading_proxy varies across LHS samples",
-            "supported": len(
-                {round(float(_derived(s)["mass_loading_proxy"]), 6) for s in samples_derived if _derived(s).get("mass_loading_proxy")}
-            )
+            "supported": len({round(v, 6) for v in [_derived(s, "mass_loading_proxy") for s in samples_derived] if v is not None})
             > 1,
         },
         "hf_absorption_reduces_e5_metallicity_risk": {
             "expected": "high_frequency_absorption_proxy varies with wood/depth",
             "supported": len(
-                {
-                    round(float(_derived(s)["high_frequency_absorption_proxy"]), 4)
-                    for s in samples_derived
-                    if _derived(s).get("high_frequency_absorption_proxy")
-                }
+                {round(v, 4) for v in [_derived(s, "high_frequency_absorption_proxy") for s in samples_derived] if v is not None}
             )
             > 1,
             "notes": "Proxy exists; listening link not validated in this audit",
@@ -1059,41 +1536,22 @@ def build_stk_v6_physical_dof_audit(
     ref_modes, ref_path, ref_defaults = _load_reference_modal_catalog(repo_root)
     ref_summary = _modal_field_summary(ref_modes)
     ref_schema = _collect_modal_schema_keys(ref_modes)
+    reference_aggregates = compute_reference_catalog_aggregates(ref_modes, reference_path=ref_path)
 
     per_sample: List[Dict[str, Any]] = []
     for sample in samples:
-        params = sample.get("parameters") or {}
-        geometry = inspect_geometry_fields(params)
-        materials = inspect_material_fields(params)
-        modal = inspect_modal_availability(
-            repo_root=repo_root,
-            sample=sample,
-            reference_summary=ref_summary,
-            reference_schema_keys=ref_schema,
-        )
-        derived = compute_derived_v6_features(
-            params,
-            signature_cache=modal["body_signature_cache"],
-            reference_modes=ref_modes,
-        )
-        feature_class = classify_v6_feature_availability(
-            geometry=geometry,
-            materials=materials,
-            modal_block=modal,
-            derived=derived,
-        )
         per_sample.append(
-            {
-                "sample_id": str(sample["sample_id"]),
-                "run_id": sample.get("run_id"),
-                "geometry_fields": geometry,
-                "material_fields": materials,
-                "modal_availability": modal,
-                "derived_features": derived,
-                "v6_feature_classification": feature_class,
-                "geometry_depth": _g(normalize_sample_parameters(params), "depth"),
-            }
+            build_normalized_sample_record(
+                sample=sample,
+                repo_root=repo_root,
+                reference_summary=ref_summary,
+                reference_schema_keys=ref_schema,
+                reference_aggregates=reference_aggregates,
+                ref_path=ref_path,
+            )
         )
+
+    shared_or_constant = detect_shared_or_constant_features(per_sample)
 
     global_missing = [
         "scale_length",
@@ -1103,30 +1561,28 @@ def build_stk_v6_physical_dof_audit(
         "material_delta / parameter_payload in lhs_pool",
         "per-sample predicted_modes JSON on disk (inference required)",
     ]
-    for s in per_sample:
-        for feat, cls in s["v6_feature_classification"].items():
-            if cls == "missing_and_not_safe_to_infer" and feat not in (
-                "per_sample_modal_catalog_on_disk",
-            ):
-                label = V6_CRITICAL_FEATURES.get(feat, feat)
-                if label not in global_missing:
-                    global_missing.append(f"{feat}: {label}")
     sanity = run_physical_sanity_checks(per_sample)
+    recommended_stage2 = build_recommended_stage2_feature_set()
+    stage2_readiness = build_stage2_readiness(
+        samples=per_sample,
+        shared_features=shared_or_constant,
+        global_missing=global_missing,
+    )
 
     recommendations = [
         "Stage 2: build V6 routed stems (top / back / soundhole / cavity) using participation + aperture proxies",
-        "Cache or load per-sample predicted_modes without full ROM batch — M4 surrogate files are present",
+        "Load per-sample predicted_modes via M4 surrogate before multi-guitar differentiation",
         "Add scale length and bridge position to LHS schema for pluck→bridge routing",
-        "Replace wood-ID damping lookup with material_delta stiffness/damping when FEM overlay is wired",
-        "Separate mic_output_proxy from soundhole radiation — prefer air_pressure_proxy for aperture stem",
-        "Use body_signature_cache transfer envelope as admittance sanity check against modal bank sum",
-        "Do not use late EQ/reverb as cavity model — derive cavity from geometry proxies already available",
+        "Use only per_sample=true features for guitar-to-guitar contrast in Stage 2 listening tests",
+        "Reference_shared modal aggregates OK for single-guitar skeleton only",
     ]
 
     return {
         "report_version": REPORT_VERSION,
         "timestamp": _utc_now(),
-        "status": "stk_v6_step1_physical_dof_audit_only_not_solved",
+        "status": "stk_v6_step1_1_audit_schema_cleanup_not_solved",
+        "step": "1.1",
+        "schema_note": "Normalized sample.geometry/material/modal/derived_features with provenance per feature",
         "requested_sample_ids": list(sample_ids),
         "audited_sample_ids": found_ids,
         "sample_limitation": (
@@ -1135,19 +1591,22 @@ def build_stk_v6_physical_dof_audit(
             else f"Only {len(found_ids)} of {len(sample_ids)} requested samples found in lhs_pool.json"
         ),
         "website_default": DEFAULT_WEBSITE_STK_MODE,
+        "website_default_unchanged": True,
+        "no_audio_synthesis_performed": True,
+        "no_fem_run": True,
+        "no_rom_run": True,
+        "stk_v5_behavior_unchanged": True,
         "reference_modal_catalog": {
             "path": ref_path,
             "parse_defaults": ref_defaults,
             "schema_keys": ref_schema,
             "summary": ref_summary,
+            "reference_aggregates": reference_aggregates,
         },
         "samples": per_sample,
-        "field_inventory": {
-            "geometry_field_names": [r["name"] for r in per_sample[0]["geometry_fields"]] if per_sample else [],
-            "material_field_names": [r["name"] for r in per_sample[0]["material_fields"]] if per_sample else [],
-            "modal_schema_keys_from_reference": ref_schema,
-        },
-        "derived_feature_names": list(per_sample[0]["derived_features"].keys()) if per_sample else [],
+        "shared_or_constant_features": shared_or_constant,
+        "stage2_readiness": stage2_readiness,
+        "recommended_stage2_feature_set": recommended_stage2,
         "missing_critical_fields": sorted(set(global_missing)),
         "v6_critical_feature_descriptions": V6_CRITICAL_FEATURES,
         "dof_influence_map": DOF_INFLUENCE_MAP,
@@ -1167,78 +1626,106 @@ def build_stk_v6_physical_dof_audit(
 
 
 def write_markdown_report(report: Mapping[str, Any], path: Path) -> None:
+    readiness = report.get("stage2_readiness") or {}
+    rec = report.get("recommended_stage2_feature_set") or {}
     lines: List[str] = [
-        "# STK V6 physical DOF audit (Step 1)",
+        "# STK V6 physical DOF audit (Step 1.1)",
         "",
         f"**Status:** {report.get('status')}",
+        f"**Step:** {report.get('step', '1.1')} — schema cleanup & Stage 2 readiness",
         f"**Generated:** {report.get('timestamp')}",
         "",
-        "This audit inventories geometry, material, modal, and derived degrees of freedom.",
+        report.get("schema_note", ""),
+        "",
         "**No audio synthesis was performed. Website default and production paths were not changed.**",
         "",
         f"- Website default (unchanged): `{report.get('website_default')}`",
+        f"- Top-level flags: website_default_unchanged={report.get('website_default_unchanged')}, "
+        f"no_audio={report.get('no_audio_synthesis_performed')}, no_fem={report.get('no_fem_run')}, "
+        f"no_rom={report.get('no_rom_run')}",
         f"- Samples audited: {', '.join(report.get('audited_sample_ids') or [])}",
     ]
     if report.get("sample_limitation"):
         lines.append(f"- **Limitation:** {report['sample_limitation']}")
-    lines.extend(["", "## Summary", ""])
 
-    if report.get("samples"):
-        lines.append("### Sample table (derived proxies)")
-        lines.append("")
-        lines.append("| sample | depth | volume proxy | Helmholtz proxy | soundhole area | bridge mobility |")
-        lines.append("|--------|-------|--------------|-----------------|----------------|-----------------|")
-        for s in report["samples"]:
-            d = s["derived_features"]
-            depth = next((f["value"] for f in s["geometry_fields"] if f["name"] == "body_depth"), None)
+    lines.extend(
+        [
+            "",
+            "## Stage 2 readiness",
+            "",
+            f"- **Status:** `{readiness.get('status')}`",
+            f"- Single-guitar skeleton: {readiness.get('single_guitar_v6_skeleton')}",
+            f"- Multi-guitar differentiation: {readiness.get('multi_guitar_differentiation')}",
+            "",
+            "**Main limitations:**",
+        ]
+    )
+    for item in readiness.get("main_limitations") or []:
+        lines.append(f"- {item}")
+
+    lines.extend(["", "**Must not assume:**"])
+    for item in readiness.get("must_not_assume") or []:
+        lines.append(f"- {item}")
+
+    lines.extend(["", "## Per-sample safe drivers (geometry / cavity)"])
+    lines.append("")
+    lines.append("| sample | body_depth | volume_proxy | Helmholtz | soundhole_area | bridge_mobility |")
+    lines.append("|--------|------------|--------------|-----------|----------------|-----------------|")
+    for s in report.get("samples") or []:
+        geo = s.get("geometry") or {}
+        mat = s.get("material") or {}
+        der = s.get("derived_features") or {}
+        lines.append(
+            f"| {s.get('sample_id')} "
+            f"| {geo.get('body_depth', {}).get('value')} "
+            f"| {der.get('body_volume_proxy', {}).get('value')} "
+            f"| {der.get('helmholtz_like_frequency_proxy', {}).get('value')} "
+            f"| {der.get('soundhole_area', {}).get('value')} "
+            f"| {mat.get('bridge_mobility_proxy', {}).get('value')} |"
+        )
+
+    lines.extend(["", "## Shared / reference drivers (single-guitar skeleton only)", ""])
+    lines.append("These are **reference_shared** — identical across samples in this audit:")
+    lines.append("")
+    for row in report.get("shared_or_constant_features") or []:
+        if row.get("likely_reason") == "reference_catalog":
             lines.append(
-                f"| {s['sample_id']} | {depth} | {d.get('body_volume_proxy')} | "
-                f"{d.get('helmholtz_like_frequency_proxy')} | {d.get('soundhole_area')} | "
-                f"{next((f['value'] for f in s['material_fields'] if f['name']=='bridge_mobility_proxy'), None)} |"
+                f"- `{row.get('feature_name')}` = {row.get('value')} "
+                f"(safe multi-guitar: {row.get('safe_for_multi_guitar_differentiation')})"
             )
 
-    lines.extend(["", "## Available DOFs", ""])
-    lines.append("- **Geometry (LHS pool):** length, width, depth, top/back thickness, hole radius")
-    lines.append("- **Materials (LHS pool):** top_wood_id, back_wood_id + derived density/damping/mass proxies")
-    lines.append("- **Modal (reference catalog schema):** participation shares, bridge excitation, radiation/aperture proxies")
-    lines.append("- **Cached per sample:** body_signature transfer envelope (npz) for sample_000..009")
+    lines.extend(["", "### Recommended Stage 2 feature set", ""])
+    lines.append("**A. Safe per-sample drivers:**")
+    for item in rec.get("safe_per_sample_drivers") or []:
+        lines.append(f"- `{item}`")
+    lines.append("")
+    lines.append("**B. Shared reference (single-guitar skeleton):**")
+    for item in rec.get("shared_reference_drivers_single_guitar_skeleton") or []:
+        lines.append(f"- `{item}`")
+    lines.append("")
+    lines.append("**C. Risky for multi-guitar differentiation:**")
+    for item in rec.get("risky_drivers_multi_guitar_differentiation") or []:
+        lines.append(f"- {item}")
 
-    lines.extend(["", "## Derived DOFs", ""])
-    for name in report.get("derived_feature_names") or []:
-        lines.append(f"- `{name}`")
-
-    lines.extend(["", "## Missing / fallback DOFs", ""])
+    lines.extend(
+        [
+            "",
+            "## Warning",
+            "",
+            "Step 2 may build a **single-guitar V6 skeleton** using reference modal features, but "
+            "**multi-guitar differentiation must not rely on shared modal/radiation aggregates** "
+            "as if they were per-sample. Load per-sample modal catalogs first.",
+            "",
+            "## Missing / fallback DOFs",
+            "",
+        ]
+    )
     for item in report.get("missing_critical_fields") or []:
         lines.append(f"- {item}")
 
     lines.extend(["", "## Physical sanity checks", ""])
     for key, chk in (report.get("physical_sanity_checks") or {}).items():
         lines.append(f"- **{key}:** supported={chk.get('supported')} correlation={chk.get('correlation')}")
-
-    lines.extend(["", "## Most promising V6 features", ""])
-    for item in (
-        "Geometry-driven cavity proxies (depth, volume, soundhole area)",
-        "ROM catalog participation shares → routed radiation stems",
-        "air_pressure_proxy for soundhole path",
-        "bridge_excitation_abs for admittance-weighted excitation",
-        "Wood-ID-weighted damping with participation shares",
-        "body_signature_cache admittance envelope for cross-check",
-    ):
-        lines.append(f"- {item}")
-
-    lines.extend(["", "## Weakest / riskiest assumptions", ""])
-    for item in (
-        "Helmholtz proxy is scalar calibration — not FEM cavity mode",
-        "Wood density/damping tables are discrete, not per-sample measured",
-        "Reference modal catalog used for aggregate radiation stats — not per-sample in audit",
-        "scale_length / bridge_position absent — pluck routing incomplete",
-        "mic_output_proxy is not soundhole-specific",
-    ):
-        lines.append(f"- {item}")
-
-    lines.extend(["", "## Recommended next modeling targets (Stage 2)", ""])
-    for rec in report.get("recommendations_for_v6_stage2") or []:
-        lines.append(f"- {rec}")
 
     lines.extend(
         [
@@ -1250,7 +1737,7 @@ def write_markdown_report(report: Mapping[str, Any], path: Path) -> None:
             "- No FEM or ROM batch executed",
             "- STK V5 behavior not modified",
             "",
-            "*STK V6 is not solved — this is Step 1 data/DOF audit only.*",
+            "*STK V6 is not solved — Step 1.1 schema cleanup only. Do not proceed to Step 2 synthesis yet.*",
             "",
         ]
     )
