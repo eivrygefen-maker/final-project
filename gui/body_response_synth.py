@@ -1532,9 +1532,31 @@ def synthesize_note_with_body_response(
         is_v4_1_identity_space_mode,
         synthesize_v4_1_identity_space_note,
     )
+    from body_response_first_v4_2 import (
+        is_v4_2_body_response_first_mode,
+        synthesize_body_response_first_v4_2_note,
+    )
 
     root = repo_root or Path(__file__).resolve().parents[1]
     sid = sample_id or str((sample_parameters or {}).get("sample_id") or "sample_000")
+
+    if is_v4_2_body_response_first_mode(diagnostic_mode):
+        return synthesize_body_response_first_v4_2_note(
+            frequency_hz=frequency_hz,
+            note_name=note_name,
+            duration_s=duration_s,
+            sample_rate=sample_rate,
+            modal_data=modal_data,
+            output_wav=output_wav,
+            output_metadata_json=output_metadata_json,
+            velocity=velocity,
+            sample_parameters=sample_parameters,
+            modal_source=modal_source,
+            diagnostic_mode=str(diagnostic_mode),
+            synthesis_preset=synthesis_preset,
+            repo_root=root,
+            sample_id=sid,
+        )
 
     if is_v4_1_identity_space_mode(diagnostic_mode):
         return synthesize_v4_1_identity_space_note(

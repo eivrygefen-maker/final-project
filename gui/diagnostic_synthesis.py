@@ -497,6 +497,20 @@ DIAGNOSTIC_MODES: Dict[str, DiagnosticSynthesisConfig] = {
         final_loudness_normalization_strength=0.34,
         description="Stage 5.1E sample-relative identity contrast (strong).",
     ),
+    "modal_body_response_first_v4_2": DiagnosticSynthesisConfig(
+        name="modal_body_response_first_v4_2",
+        raw_body_variation_preserve=0.55,
+        body_gain_normalization_strength=0.25,
+        final_loudness_normalization_strength=0.28,
+        description="Stage 5.2A body-response-first H_guitar,note (diagnostic, not V4.1).",
+    ),
+    "stk_body_response_first_v4_2": DiagnosticSynthesisConfig(
+        name="stk_body_response_first_v4_2",
+        raw_body_variation_preserve=0.55,
+        body_gain_normalization_strength=0.25,
+        final_loudness_normalization_strength=0.28,
+        description="Stage 5.2A body-response-first alias.",
+    ),
 }
 
 _active_diagnostic: Optional[DiagnosticSynthesisConfig] = None
