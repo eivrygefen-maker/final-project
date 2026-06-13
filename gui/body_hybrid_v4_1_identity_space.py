@@ -11,6 +11,7 @@ import json
 import math
 import tempfile
 import wave
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -25,15 +26,243 @@ from sample_parameters import normalize_sample_parameters
 IDENTITY_SPACE_MODES: Tuple[str, ...] = (
     "modal_body_hybrid_v4_1_identity_space",
     "stk_body_transfer_v4_1_identity_space",
+    "modal_body_hybrid_v4_1_identity_light",
+    "modal_body_hybrid_v4_1_identity_medium",
+    "modal_body_hybrid_v4_1_identity_strong",
+    "stk_body_transfer_v4_1_identity_sweep",
 )
 
-# Bounded modifier ranges (diagnostic-only)
+# Default/light bounds (Stage 5.1C baseline — diagnostic only)
 IDENTITY_EPSILON = 0.18
 HARMONIC_GAIN_MAX = 0.12
 FUNDAMENTAL_GAIN_MAX = 0.025
 RESIDUAL_GAIN_MAX = 0.08
 RMS_GUARD_MAX_DB = 1.5
 PEAK_CLIP_DBFS = -0.5
+
+PERCEPTUAL_AXIS_NAMES: Tuple[str, ...] = (
+    "brightness_centroid",
+    "low_mid_warmth",
+    "high_freq_rolloff",
+    "attack_bloom",
+    "decay_sustain",
+    "body_resonance_density",
+)
+
+
+@dataclass(frozen=True)
+class IdentityStrengthProfile:
+    name: str
+    identity_epsilon: float
+    harmonic_gain_max: float
+    fundamental_gain_max: float
+    residual_gain_max: float
+    rms_guard_max_db: float
+    axis_gain_scale: float
+    band_eq_max_db: float
+
+
+STRENGTH_PROFILES: Dict[str, IdentityStrengthProfile] = {
+    "light": IdentityStrengthProfile(
+        name="light",
+        identity_epsilon=0.18,
+        harmonic_gain_max=0.12,
+        fundamental_gain_max=0.025,
+        residual_gain_max=0.08,
+        rms_guard_max_db=1.5,
+        axis_gain_scale=1.0,
+        band_eq_max_db=0.35,
+    ),
+    "medium": IdentityStrengthProfile(
+        name="medium",
+        identity_epsilon=0.35,
+        harmonic_gain_max=0.20,
+        fundamental_gain_max=0.035,
+        residual_gain_max=0.14,
+        rms_guard_max_db=2.0,
+        axis_gain_scale=1.75,
+        band_eq_max_db=0.85,
+    ),
+    "strong": IdentityStrengthProfile(
+        name="strong",
+        identity_epsilon=0.55,
+        harmonic_gain_max=0.30,
+        fundamental_gain_max=0.04,
+        residual_gain_max=0.22,
+        rms_guard_max_db=2.5,
+        axis_gain_scale=2.6,
+        band_eq_max_db=1.35,
+    ),
+}
+
+MODE_TO_STRENGTH: Dict[str, str] = {
+    "modal_body_hybrid_v4_1_identity_space": "light",
+    "stk_body_transfer_v4_1_identity_space": "light",
+    "modal_body_hybrid_v4_1_identity_light": "light",
+    "modal_body_hybrid_v4_1_identity_medium": "medium",
+    "modal_body_hybrid_v4_1_identity_strong": "strong",
+    "stk_body_transfer_v4_1_identity_sweep": "medium",
+}
+
+
+def strength_profile_for_mode(mode_name: Optional[str]) -> Optional[IdentityStrengthProfile]:
+    key = MODE_TO_STRENGTH.get(str(mode_name or ""))
+    if not key:
+        return None
+    return STRENGTH_PROFILES[key]
+
+
+def is_v4_1_identity_space_mode(mode_name: Optional[str]) -> bool:
+    return str(mode_name or "") in IDENTITY_SPACE_MODES
+
+
+def _feat(feats: Mapping[str, float], key: str, default: float = 0.0) -> float:
+    return float(feats.get(key, default))
+
+
+def compute_perceptual_axes(z_body: Mapping[str, Any]) -> Dict[str, float]:
+    """Bounded projection from z_body to six perceptual timbre axes."""
+    f = z_body.get("features") or {}
+
+    def _blend(keys: Sequence[str], weights: Optional[Sequence[float]] = None) -> float:
+        ws = weights or [1.0] * len(keys)
+        num = sum(_feat(f, k) * w for k, w in zip(keys, ws))
+        den = sum(abs(w) for w in ws) or 1.0
+        return max(-1.0, min(1.0, num / den))
+
+    axes = {
+        "brightness_centroid": _blend(
+            ("high_body_color", "share_air_mean", "geom_hole_to_area", "mat_top_damping"),
+            (1.1, 0.7, 0.5, -0.35),
+        ),
+        "low_mid_warmth": _blend(
+            ("low_body_color", "mid_body_color", "share_back_mean", "geom_depth", "geom_air_volume"),
+            (1.0, 0.8, 0.9, 0.6, 0.5),
+        ),
+        "high_freq_rolloff": _blend(
+            ("q_fingerprint", "high_body_color", "mid_body_color", "geom_top_thickness"),
+            (-0.9, 0.6, -0.5, 0.45),
+        ),
+        "attack_bloom": _blend(
+            ("bridge_mobility", "bridge_rank_median", "eff_mass_median", "mass_mixed"),
+            (1.0, 0.8, -0.7, -0.4),
+        ),
+        "decay_sustain": _blend(
+            ("q_spread", "q_fingerprint", "mat_top_damping", "mat_back_damping"),
+            (0.9, -0.8, 0.5, 0.5),
+        ),
+        "body_resonance_density": _blend(
+            (
+                "modal_density_60_120",
+                "modal_density_120_180",
+                "modal_density_180_280",
+                "modal_near_60_120",
+                "modal_near_180_280",
+                "rad_rank_median",
+            ),
+            (1.0, 0.9, 0.8, 0.7, 0.6, 0.5),
+        ),
+    }
+    return {k: round(v, 6) for k, v in axes.items()}
+
+
+def compute_harmonic_gains(
+    z_body: Mapping[str, Any],
+    *,
+    frequency_hz: float,
+    profile: Optional[IdentityStrengthProfile] = None,
+) -> List[float]:
+    """Bounded log-domain gains per harmonic 1..8 from perceptual axes."""
+    prof = profile or STRENGTH_PROFILES["light"]
+    axes = compute_perceptual_axes(z_body)
+    b = axes["brightness_centroid"]
+    w = axes["low_mid_warmth"]
+    r = axes["high_freq_rolloff"]
+    a = axes["attack_bloom"]
+    d = axes["decay_sustain"]
+    m = axes["body_resonance_density"]
+    scale = prof.axis_gain_scale * prof.harmonic_gain_max
+
+    axis_by_harmonic = [
+        0.15 * w + 0.10 * m,  # h1 fundamental — minimal
+        0.55 * w + 0.45 * m,
+        0.50 * w + 0.40 * m,
+        0.35 * b + 0.30 * a + 0.20 * w,
+        0.40 * b + 0.35 * a,
+        0.30 * b + 0.25 * r + 0.20 * d,
+        0.25 * r + 0.35 * d,
+        0.20 * r + 0.40 * d,
+    ]
+    gains: List[float] = []
+    for k, raw in enumerate(axis_by_harmonic, start=1):
+        cap = prof.fundamental_gain_max if k == 1 else prof.harmonic_gain_max
+        val = max(-cap, min(cap, raw * scale))
+        gains.append(round(val, 6))
+    return gains
+
+
+def apply_perceptual_band_shaping(
+    audio: np.ndarray,
+    *,
+    frequency_hz: float,
+    sample_rate: int,
+    axes: Mapping[str, float],
+    profile: IdentityStrengthProfile,
+) -> np.ndarray:
+    """Band EQ from perceptual axes — low/mid/high bands, bounded dB."""
+    x = np.asarray(audio, dtype=np.float64)
+    n = len(x)
+    if n < 64:
+        return x.copy()
+    spec = np.fft.rfft(x)
+    freqs = np.fft.rfftfreq(n, d=1.0 / float(sample_rate))
+    f0 = float(frequency_hz)
+    low_gain_db = profile.band_eq_max_db * (
+        0.55 * axes.get("low_mid_warmth", 0.0) + 0.45 * axes.get("body_resonance_density", 0.0)
+    )
+    mid_gain_db = profile.band_eq_max_db * (
+        0.45 * axes.get("brightness_centroid", 0.0) + 0.35 * axes.get("attack_bloom", 0.0)
+    )
+    high_gain_db = profile.band_eq_max_db * (
+        0.50 * axes.get("high_freq_rolloff", 0.0) + 0.35 * axes.get("decay_sustain", 0.0)
+    )
+    out = spec.copy()
+    for i, f_hz in enumerate(freqs):
+        if f_hz < f0 * 1.8:
+            db = low_gain_db
+        elif f_hz < f0 * 5.0:
+            db = mid_gain_db
+        else:
+            db = high_gain_db
+        out[i] *= 10.0 ** (db / 20.0)
+    return np.asarray(np.fft.irfft(out, n=n), dtype=np.float64)
+
+
+def compare_audio_to_reference(
+    audio: np.ndarray,
+    reference: np.ndarray,
+) -> Dict[str, Any]:
+    """RMS / peak difference vs V4.1 reference (diagnostic)."""
+    a = np.asarray(audio, dtype=np.float64)
+    b = np.asarray(reference, dtype=np.float64)
+    n = min(len(a), len(b))
+    if n < 8:
+        return {"rms_diff_db_vs_reference": None, "max_abs_diff": None, "likely_audible": False}
+    a, b = a[:n], b[:n]
+    diff = a - b
+    ref_rms = max(_rms(b), 1e-12)
+    diff_rms = _rms(diff)
+    rms_diff_db = 20.0 * math.log10(max(diff_rms, 1e-15) / ref_rms)
+    max_abs = float(np.max(np.abs(diff)))
+    max_abs_db = 20.0 * math.log10(max(max_abs, 1e-15) / ref_rms)
+    return {
+        "rms_diff_db_vs_reference": round(rms_diff_db, 4),
+        "max_abs_diff": round(max_abs, 8),
+        "max_abs_diff_db_vs_reference_rms": round(max_abs_db, 4),
+        "likely_audible": rms_diff_db > -45.0,
+        "layer_active_gate_pass": rms_diff_db > -45.0,
+    }
+
 
 # Typical LHS geometry ranges for feature normalization
 _GEOM_RANGES: Dict[str, Tuple[float, float]] = {
@@ -60,10 +289,6 @@ _WOOD_EMBED: Dict[str, Tuple[float, float]] = {
     "mahogany": (0.25, 1.05),
     "rosewood": (0.45, 1.12),
 }
-
-
-def is_v4_1_identity_space_mode(mode_name: Optional[str]) -> bool:
-    return str(mode_name or "") in IDENTITY_SPACE_MODES
 
 
 def _norm_range(val: float, lo: float, hi: float) -> float:
@@ -249,20 +474,112 @@ def build_body_identity_vector(
     }
 
 
-def compute_harmonic_gains(z_body: Mapping[str, Any], *, frequency_hz: float) -> List[float]:
-    """Bounded log-domain gains per harmonic 1..8."""
-    feats = z_body.get("features") or {}
-    keys = sorted(feats.keys())
-    if not keys:
-        return [0.0] * 8
-    vec = np.asarray([float(feats[k]) for k in keys], dtype=np.float64)
-    gains: List[float] = []
-    for k in range(1, 9):
-        seed = np.sin(np.arange(len(vec)) * (k + 1) * 0.73 + float(frequency_hz) * 1e-4)
-        raw = float(np.dot(vec, seed) / max(len(vec), 1))
-        cap = FUNDAMENTAL_GAIN_MAX if k == 1 else HARMONIC_GAIN_MAX
-        gains.append(max(-cap, min(cap, raw * 0.35)))
-    return gains
+def synthesize_v4_1_identity_space_note(
+    *,
+    frequency_hz: float,
+    note_name: str,
+    duration_s: float,
+    sample_rate: int,
+    modal_data: ModalInput,
+    output_wav: Path,
+    output_metadata_json: Optional[Path],
+    velocity: float,
+    sample_parameters: Optional[Mapping[str, Any]],
+    modal_source: Optional[str],
+    diagnostic_mode: str,
+    synthesis_preset: Optional[str],
+    repo_root: Path,
+    sample_id: str,
+) -> Dict[str, Any]:
+    """V4.1 full base + bounded identity-space layer (strength from diagnostic mode)."""
+    profile = strength_profile_for_mode(diagnostic_mode) or STRENGTH_PROFILES["light"]
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        base_meta = synthesize_hybrid_v4_1_note(
+            frequency_hz=frequency_hz,
+            note_name=note_name,
+            duration_s=duration_s,
+            sample_rate=sample_rate,
+            modal_data=modal_data,
+            output_wav=tmp_path,
+            output_metadata_json=None,
+            velocity=velocity,
+            sample_parameters=sample_parameters,
+            modal_source=modal_source,
+            diagnostic_mode="modal_body_hybrid_v4_1_full",
+            synthesis_preset=synthesis_preset,
+            repo_root=repo_root,
+            sample_id=sample_id,
+        )
+        base_audio, _ = read_wav_float_mono(tmp_path)
+
+        z_body = build_body_identity_vector(
+            parameters=sample_parameters,
+            modal_data=modal_data,
+            frequency_hz=frequency_hz,
+            repo_root=repo_root,
+            sample_id=sample_id,
+        )
+        axes = compute_perceptual_axes(z_body)
+        h_gains = compute_harmonic_gains(z_body, frequency_hz=frequency_hz, profile=profile)
+        band_shaped = apply_perceptual_band_shaping(
+            base_audio,
+            frequency_hz=frequency_hz,
+            sample_rate=sample_rate,
+            axes=axes,
+            profile=profile,
+        )
+        harmonic_shaped = apply_harmonic_identity_shaping(
+            band_shaped,
+            frequency_hz=frequency_hz,
+            sample_rate=sample_rate,
+            harmonic_gains=h_gains,
+        )
+        blended = apply_identity_residual(
+            base_audio,
+            harmonic_shaped,
+            epsilon=profile.identity_epsilon,
+            residual_gain_max=profile.residual_gain_max,
+        )
+        final, guard = apply_rms_guard(blended, base_audio, max_db=profile.rms_guard_max_db)
+        vs_ref = compare_audio_to_reference(final, base_audio)
+
+        peak_db = 20.0 * math.log10(max(float(np.max(np.abs(final))), 1e-12))
+        _write_wav(Path(output_wav), final, sample_rate)
+
+        meta = dict(base_meta)
+        meta.update(
+            {
+                "diagnostic_mode": diagnostic_mode,
+                "body_hybrid_v4_1_identity_space_active": True,
+                "v4_1_base_preserved": True,
+                "identity_strength_profile": profile.name,
+                "identity_epsilon": profile.identity_epsilon,
+                "harmonic_gains": h_gains,
+                "perceptual_axes": axes,
+                "harmonic_gain_bounds": {
+                    "fundamental_max": profile.fundamental_gain_max,
+                    "harmonic_2_8_max": profile.harmonic_gain_max,
+                    "residual_max": profile.residual_gain_max,
+                    "band_eq_max_db": profile.band_eq_max_db,
+                    "axis_gain_scale": profile.axis_gain_scale,
+                },
+                "body_identity_vector": z_body,
+                "identity_rms_guard": guard,
+                "identity_vs_v41_reference": vs_ref,
+                "output_peak_dbfs": round(peak_db, 4),
+                "clipping_avoided": peak_db < PEAK_CLIP_DBFS,
+            }
+        )
+        if output_metadata_json:
+            output_metadata_json.write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")
+        return meta
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def apply_harmonic_identity_shaping(
@@ -303,9 +620,10 @@ def apply_identity_residual(
     shaped: np.ndarray,
     *,
     epsilon: float = IDENTITY_EPSILON,
+    residual_gain_max: float = RESIDUAL_GAIN_MAX,
 ) -> np.ndarray:
     residual = shaped - base
-    cap = RESIDUAL_GAIN_MAX * float(np.max(np.abs(base)) + 1e-12)
+    cap = residual_gain_max * float(np.max(np.abs(base)) + 1e-12)
     residual = np.clip(residual, -cap, cap)
     return base + float(epsilon) * residual
 
@@ -341,94 +659,6 @@ def _write_wav(path: Path, audio: np.ndarray, sample_rate: int) -> None:
         wf.setsampwidth(2)
         wf.setframerate(int(sample_rate))
         wf.writeframes(pcm.tobytes())
-
-
-def synthesize_v4_1_identity_space_note(
-    *,
-    frequency_hz: float,
-    note_name: str,
-    duration_s: float,
-    sample_rate: int,
-    modal_data: ModalInput,
-    output_wav: Path,
-    output_metadata_json: Optional[Path],
-    velocity: float,
-    sample_parameters: Optional[Mapping[str, Any]],
-    modal_source: Optional[str],
-    diagnostic_mode: str,
-    synthesis_preset: Optional[str],
-    repo_root: Path,
-    sample_id: str,
-) -> Dict[str, Any]:
-    """V4.1 full base + bounded identity-space harmonic/residual layer."""
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        tmp_path = Path(tmp.name)
-    try:
-        base_meta = synthesize_hybrid_v4_1_note(
-            frequency_hz=frequency_hz,
-            note_name=note_name,
-            duration_s=duration_s,
-            sample_rate=sample_rate,
-            modal_data=modal_data,
-            output_wav=tmp_path,
-            output_metadata_json=None,
-            velocity=velocity,
-            sample_parameters=sample_parameters,
-            modal_source=modal_source,
-            diagnostic_mode="modal_body_hybrid_v4_1_full",
-            synthesis_preset=synthesis_preset,
-            repo_root=repo_root,
-            sample_id=sample_id,
-        )
-        base_audio, _ = read_wav_float_mono(tmp_path)
-
-        z_body = build_body_identity_vector(
-            parameters=sample_parameters,
-            modal_data=modal_data,
-            frequency_hz=frequency_hz,
-            repo_root=repo_root,
-            sample_id=sample_id,
-        )
-        h_gains = compute_harmonic_gains(z_body, frequency_hz=frequency_hz)
-        shaped = apply_harmonic_identity_shaping(
-            base_audio,
-            frequency_hz=frequency_hz,
-            sample_rate=sample_rate,
-            harmonic_gains=h_gains,
-        )
-        blended = apply_identity_residual(base_audio, shaped, epsilon=IDENTITY_EPSILON)
-        final, guard = apply_rms_guard(blended, base_audio, max_db=RMS_GUARD_MAX_DB)
-
-        peak_db = 20.0 * math.log10(max(float(np.max(np.abs(final))), 1e-12))
-        _write_wav(Path(output_wav), final, sample_rate)
-
-        meta = dict(base_meta)
-        meta.update(
-            {
-                "diagnostic_mode": diagnostic_mode,
-                "body_hybrid_v4_1_identity_space_active": True,
-                "v4_1_base_preserved": True,
-                "identity_epsilon": IDENTITY_EPSILON,
-                "harmonic_gains": [round(g, 6) for g in h_gains],
-                "harmonic_gain_bounds": {
-                    "fundamental_max": FUNDAMENTAL_GAIN_MAX,
-                    "harmonic_2_8_max": HARMONIC_GAIN_MAX,
-                    "residual_max": RESIDUAL_GAIN_MAX,
-                },
-                "body_identity_vector": z_body,
-                "identity_rms_guard": guard,
-                "output_peak_dbfs": round(peak_db, 4),
-                "clipping_avoided": peak_db < PEAK_CLIP_DBFS,
-            }
-        )
-        if output_metadata_json:
-            output_metadata_json.write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")
-        return meta
-    finally:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def physical_distance(z_a: Mapping[str, Any], z_b: Mapping[str, Any]) -> float:

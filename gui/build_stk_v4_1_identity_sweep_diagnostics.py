@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Stage 5.1C STK V4.1 identity-space diagnostics builder (A3 default)."""
+"""Stage 5.1D STK V4.1 identity strength sweep diagnostics (A3 default)."""
 from __future__ import annotations
 
 import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -16,6 +16,7 @@ sys.path.insert(0, str(REPO / "gui"))
 from body_hybrid_v4_1_identity_space import (  # noqa: E402
     audio_timbre_vector,
     build_body_identity_vector,
+    compare_audio_to_reference,
     distance_consistency_report,
     is_v4_1_identity_space_mode,
 )
@@ -32,14 +33,17 @@ from build_sample_comparison import (  # noqa: E402
 from diagnostic_synthesis import average_spectral_similarity, summarize_diagnostic_mode  # noqa: E402
 from sample_parameters import normalize_sample_parameters  # noqa: E402
 from stage48_timbre_decomposition_report import _attack_time_ms, _spectral_flux  # noqa: E402
-from stage51c_stk_v4_1_identity_space_report import build_stage51c_identity_space_report  # noqa: E402
+from stage51d_stk_v4_1_identity_sweep_report import build_stage51d_identity_sweep_report  # noqa: E402
 from synthesis_presets import DEFAULT_SYNTHESIS_PRESET  # noqa: E402
 
-DEFAULT_OUT = REPO / "audio" / "stk_v4_1_identity_space_diagnostics"
+DEFAULT_OUT = REPO / "audio" / "stk_v4_1_identity_sweep_diagnostics"
 DEFAULT_NOTES = "A3"
+V41_MODE = "modal_body_hybrid_v4_1_full"
 DEFAULT_MODES = (
-    "baseline_current,modal_radiation_color_v1,"
-    "modal_body_hybrid_v4_1_full,modal_body_hybrid_v4_1_identity_space"
+    "modal_body_hybrid_v4_1_full,"
+    "modal_body_hybrid_v4_1_identity_light,"
+    "modal_body_hybrid_v4_1_identity_medium,"
+    "modal_body_hybrid_v4_1_identity_strong"
 )
 
 
@@ -54,6 +58,7 @@ def _segment_row(
     sample_rate: int,
     diagnostic_mode: str,
     z_body: Optional[Mapping[str, Any]] = None,
+    vs_v41: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     row = segment_metadata_from_synthesis(
         meta,
@@ -78,10 +83,18 @@ def _segment_row(
     row["timbre_vector"] = audio_timbre_vector(audio, sample_rate=sample_rate, segment_meta=row)
     if z_body is not None:
         row["body_identity_vector"] = z_body
+    if vs_v41 is not None:
+        row["vs_v41_reference"] = vs_v41
+    if meta.get("identity_vs_v41_reference"):
+        row["vs_v41_reference"] = meta["identity_vs_v41_reference"]
+    if meta.get("perceptual_axes"):
+        row["perceptual_axes"] = meta["perceptual_axes"]
+    if meta.get("identity_strength_profile"):
+        row["identity_strength_profile"] = meta["identity_strength_profile"]
     return row
 
 
-def build_v4_1_identity_space_diagnostics(
+def build_v4_1_identity_sweep_diagnostics(
     *,
     repo_root: Path,
     out_dir: Path,
@@ -101,6 +114,7 @@ def build_v4_1_identity_space_diagnostics(
     mode_summaries: Dict[str, Any] = {}
     distance_samples_by_mode: Dict[str, List[Dict[str, Any]]] = {m: [] for m in modes}
     stitched: List[str] = []
+    v41_audio_cache: Dict[Tuple[str, str], np.ndarray] = {}
 
     for mode in modes:
         mode_dir = out_dir / mode
@@ -140,6 +154,15 @@ def build_v4_1_identity_space_diagnostics(
                 )
                 audio, _ = read_wav_float_mono(wav)
                 segments.append(audio)
+
+                vs_v41: Optional[Dict[str, Any]] = None
+                if mode == V41_MODE:
+                    v41_audio_cache[(note_name, sid)] = audio.copy()
+                elif is_v4_1_identity_space_mode(mode):
+                    ref = v41_audio_cache.get((note_name, sid))
+                    if ref is not None:
+                        vs_v41 = compare_audio_to_reference(audio, ref)
+
                 seg = _segment_row(
                     meta,
                     sample=sample,
@@ -150,6 +173,7 @@ def build_v4_1_identity_space_diagnostics(
                     sample_rate=sample_rate,
                     diagnostic_mode=mode,
                     z_body=z_body if is_v4_1_identity_space_mode(mode) else None,
+                    vs_v41=vs_v41,
                 )
                 seg_rows.append(seg)
                 distance_samples_by_mode[mode].append(
@@ -185,7 +209,7 @@ def build_v4_1_identity_space_diagnostics(
     }
 
     manifest = {
-        "stage": "5.1C",
+        "stage": "5.1D",
         "out_dir": str(out_dir),
         "sample_ids": [str(s["sample_id"]) for s in samples],
         "notes": [n for n, _ in notes],
@@ -199,20 +223,20 @@ def build_v4_1_identity_space_diagnostics(
     (out_dir / "build_manifest.json").write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
 
     report_dir = repo_root / "audio" / "debug_reports"
-    build_stage51c_identity_space_report(
+    build_stage51d_identity_sweep_report(
         mode_summaries=mode_summaries,
         distance_by_mode=distance_by_mode,
         notes=[n for n, _ in notes],
         modes=modes,
         build_manifest=manifest,
-        out_json=report_dir / "stage51c_stk_v4_1_identity_space_report.json",
-        out_md=report_dir / "stage51c_stk_v4_1_identity_space_report.md",
+        out_json=report_dir / "stage51d_stk_v4_1_identity_sweep_report.json",
+        out_md=report_dir / "stage51d_stk_v4_1_identity_sweep_report.md",
     )
     return manifest
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Stage 5.1C V4.1 identity-space diagnostics (A3 default)")
+    parser = argparse.ArgumentParser(description="Stage 5.1D V4.1 identity strength sweep (A3 default)")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--max-samples", type=int, default=10)
     parser.add_argument("--notes", type=str, default=DEFAULT_NOTES)
@@ -226,7 +250,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     use_surrogate = not args.no_surrogate
     if use_surrogate and not m4_surrogate_model_available(REPO):
         raise RuntimeError("M4 surrogate missing — use --no-surrogate for offline tests")
-    manifest = build_v4_1_identity_space_diagnostics(
+    manifest = build_v4_1_identity_sweep_diagnostics(
         repo_root=REPO,
         out_dir=args.out_dir,
         notes=notes,

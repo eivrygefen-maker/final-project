@@ -441,6 +441,34 @@ DIAGNOSTIC_MODES: Dict[str, DiagnosticSynthesisConfig] = {
         final_loudness_normalization_strength=0.34,
         description="Stage 5.1C identity-space alias.",
     ),
+    "modal_body_hybrid_v4_1_identity_light": DiagnosticSynthesisConfig(
+        name="modal_body_hybrid_v4_1_identity_light",
+        raw_body_variation_preserve=0.50,
+        body_gain_normalization_strength=0.36,
+        final_loudness_normalization_strength=0.34,
+        description="Stage 5.1D V4.1 + identity layer (light strength).",
+    ),
+    "modal_body_hybrid_v4_1_identity_medium": DiagnosticSynthesisConfig(
+        name="modal_body_hybrid_v4_1_identity_medium",
+        raw_body_variation_preserve=0.50,
+        body_gain_normalization_strength=0.36,
+        final_loudness_normalization_strength=0.34,
+        description="Stage 5.1D V4.1 + identity layer (medium strength).",
+    ),
+    "modal_body_hybrid_v4_1_identity_strong": DiagnosticSynthesisConfig(
+        name="modal_body_hybrid_v4_1_identity_strong",
+        raw_body_variation_preserve=0.50,
+        body_gain_normalization_strength=0.36,
+        final_loudness_normalization_strength=0.34,
+        description="Stage 5.1D V4.1 + identity layer (strong strength).",
+    ),
+    "stk_body_transfer_v4_1_identity_sweep": DiagnosticSynthesisConfig(
+        name="stk_body_transfer_v4_1_identity_sweep",
+        raw_body_variation_preserve=0.50,
+        body_gain_normalization_strength=0.36,
+        final_loudness_normalization_strength=0.34,
+        description="Stage 5.1D identity sweep alias (medium strength).",
+    ),
 }
 
 _active_diagnostic: Optional[DiagnosticSynthesisConfig] = None
