@@ -34,10 +34,25 @@ IDENTITY_SPACE_MODES: Tuple[str, ...] = (
     "stk_body_transfer_v4_1_identity_contrast",
     "modal_body_hybrid_v4_1_identity_contrast_medium",
     "modal_body_hybrid_v4_1_identity_contrast_strong",
+    "modal_body_hybrid_v4_1_identity_contrast_hybrid",
+    "stk_body_transfer_v4_1_identity_contrast_hybrid",
+    "modal_body_hybrid_v4_1_identity_contrast_hybrid_25_75",
+    "modal_body_hybrid_v4_1_identity_contrast_hybrid_40_60",
+    "modal_body_hybrid_v4_1_identity_contrast_hybrid_50_50",
 )
 
 DZ_BODY_CLIP = 2.5
 IQR_FLOOR = 0.15
+HYBRID_RMS_GUARD_DB = 2.75
+HYBRID_AUDIBILITY_MIN_DB = -40.0
+HYBRID_AUDIBILITY_TARGET_DB = -26.0
+HYBRID_AUDIBILITY_MAX_DB = -18.0
+
+HYBRID_BLEND_RATIOS: Dict[str, Tuple[float, float]] = {
+    "25_75": (0.25, 0.75),
+    "40_60": (0.40, 0.60),
+    "50_50": (0.50, 0.50),
+}
 
 # Default/light bounds (Stage 5.1C baseline — diagnostic only)
 IDENTITY_EPSILON = 0.18
@@ -144,7 +159,27 @@ def strength_profile_for_mode(mode_name: Optional[str]) -> Optional[IdentityStre
 
 
 def is_contrast_identity_mode(mode_name: Optional[str]) -> bool:
-    return "identity_contrast" in str(mode_name or "")
+    m = str(mode_name or "")
+    return "identity_contrast" in m and "identity_contrast_hybrid" not in m
+
+
+def is_hybrid_identity_mode(mode_name: Optional[str]) -> bool:
+    return "identity_contrast_hybrid" in str(mode_name or "")
+
+
+def requires_identity_contrast_context(mode_name: Optional[str]) -> bool:
+    return is_contrast_identity_mode(mode_name) or is_hybrid_identity_mode(mode_name)
+
+
+def hybrid_blend_for_mode(mode_name: Optional[str]) -> Tuple[float, float]:
+    """Return (absolute_weight, contrast_weight) for hybrid modes."""
+    m = str(mode_name or "")
+    for tag, (a, b) in HYBRID_BLEND_RATIOS.items():
+        if m.endswith(tag) or f"hybrid_{tag}" in m:
+            return a, b
+    if is_hybrid_identity_mode(m):
+        return HYBRID_BLEND_RATIOS["40_60"]
+    return 0.40, 0.60
 
 
 def is_v4_1_identity_space_mode(mode_name: Optional[str]) -> bool:
@@ -588,6 +623,88 @@ def build_body_identity_vector(
     }
 
 
+def compute_identity_layer_residual(
+    base: np.ndarray,
+    *,
+    frequency_hz: float,
+    sample_rate: int,
+    feature_source: Mapping[str, Any],
+    profile: IdentityStrengthProfile,
+    contrast: bool = False,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Full identity layer residual (layered - base) with bounded shaping."""
+    axes = compute_perceptual_axes(feature_source, contrast=contrast)
+    h_gains = compute_harmonic_gains(
+        feature_source,
+        frequency_hz=frequency_hz,
+        profile=profile,
+        axes=axes,
+        contrast=contrast,
+    )
+    band_shaped = apply_perceptual_band_shaping(
+        base,
+        frequency_hz=frequency_hz,
+        sample_rate=sample_rate,
+        axes=axes,
+        profile=profile,
+    )
+    harmonic_shaped = apply_harmonic_identity_shaping(
+        band_shaped,
+        frequency_hz=frequency_hz,
+        sample_rate=sample_rate,
+        harmonic_gains=h_gains,
+    )
+    layered = apply_identity_residual(
+        base,
+        harmonic_shaped,
+        epsilon=profile.identity_epsilon,
+        residual_gain_max=profile.residual_gain_max,
+    )
+    residual = layered - base
+    return residual, {
+        "perceptual_axes": axes,
+        "harmonic_gains": h_gains,
+        "profile": profile.name,
+        "residual_rms": round(_rms(residual), 8),
+    }
+
+
+def apply_hybrid_audibility_floor(
+    audio: np.ndarray,
+    reference: np.ndarray,
+    *,
+    min_db: float = HYBRID_AUDIBILITY_MIN_DB,
+    target_db: float = HYBRID_AUDIBILITY_TARGET_DB,
+    max_db: float = HYBRID_AUDIBILITY_MAX_DB,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Scale hybrid residual toward audible -30..-22 dB band vs V4.1 base."""
+    a = np.asarray(audio, dtype=np.float64)
+    b = np.asarray(reference, dtype=np.float64)
+    n = min(len(a), len(b))
+    if n < 8:
+        return a.copy(), {"audibility_adjusted": False}
+    a, b = a[:n], b[:n]
+    diff = a - b
+    ref_rms = max(_rms(b), 1e-12)
+    diff_rms = _rms(diff)
+    rms_db = 20.0 * math.log10(max(diff_rms, 1e-15) / ref_rms)
+    gain = 1.0
+    if rms_db < min_db:
+        gain = 10.0 ** ((target_db - rms_db) / 20.0)
+    elif rms_db > max_db:
+        gain = 10.0 ** ((max_db - rms_db) / 20.0)
+    if abs(gain - 1.0) < 0.02:
+        return a, {"audibility_adjusted": False, "rms_diff_db_before": round(rms_db, 4)}
+    out = b + gain * diff
+    out_rms_db = 20.0 * math.log10(max(_rms(out - b), 1e-15) / ref_rms)
+    return out, {
+        "audibility_adjusted": True,
+        "audibility_gain": round(gain, 6),
+        "rms_diff_db_before": round(rms_db, 4),
+        "rms_diff_db_after": round(out_rms_db, 4),
+    }
+
+
 def synthesize_v4_1_identity_space_note(
     *,
     frequency_hz: float,
@@ -606,6 +723,7 @@ def synthesize_v4_1_identity_space_note(
     sample_id: str,
 ) -> Dict[str, Any]:
     """V4.1 full base + bounded identity-space layer (strength from diagnostic mode)."""
+    hybrid_active = is_hybrid_identity_mode(diagnostic_mode)
     profile = strength_profile_for_mode(diagnostic_mode) or STRENGTH_PROFILES["light"]
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         tmp_path = Path(tmp.name)
@@ -635,48 +753,90 @@ def synthesize_v4_1_identity_space_note(
             repo_root=repo_root,
             sample_id=sample_id,
         )
-        contrast_active = is_contrast_identity_mode(diagnostic_mode)
         contrast_ctx = (sample_parameters or {}).get("identity_contrast_context") or {}
-        if contrast_active and contrast_ctx.get("dz_body"):
-            axis_source = contrast_ctx["dz_body"]
-            axes = compute_perceptual_axes(axis_source, contrast=True)
-            h_gains = compute_harmonic_gains(
-                axis_source,
+
+        if hybrid_active:
+            strong_prof = STRENGTH_PROFILES["strong"]
+            contrast_prof = STRENGTH_PROFILES["contrast_strong"]
+            abs_w, contrast_w = hybrid_blend_for_mode(diagnostic_mode)
+            res_abs, meta_abs = compute_identity_layer_residual(
+                base_audio,
                 frequency_hz=frequency_hz,
-                profile=profile,
-                axes=axes,
+                sample_rate=sample_rate,
+                feature_source=z_body,
+                profile=strong_prof,
+                contrast=False,
+            )
+            dz_body = contrast_ctx.get("dz_body") or z_body
+            res_contrast, meta_contrast = compute_identity_layer_residual(
+                base_audio,
+                frequency_hz=frequency_hz,
+                sample_rate=sample_rate,
+                feature_source=dz_body,
+                profile=contrast_prof,
                 contrast=True,
             )
+            combined_residual = abs_w * res_abs + contrast_w * res_contrast
+            peak_base = float(np.max(np.abs(base_audio)) + 1e-12)
+            cap = max(strong_prof.residual_gain_max, contrast_prof.residual_gain_max) * peak_base
+            combined_residual = np.clip(combined_residual, -cap, cap)
+            blended = base_audio + combined_residual
+            blended, audibility_info = apply_hybrid_audibility_floor(blended, base_audio)
+            final, guard = apply_rms_guard(blended, base_audio, max_db=HYBRID_RMS_GUARD_DB)
+            vs_ref = compare_audio_to_reference(final, base_audio)
+            h_gains = meta_contrast.get("harmonic_gains")
+            axes = meta_contrast.get("perceptual_axes")
+            hybrid_meta = {
+                "hybrid_blend_absolute": abs_w,
+                "hybrid_blend_contrast": contrast_w,
+                "absolute_layer": meta_abs,
+                "contrast_layer": meta_contrast,
+                "hybrid_audibility": audibility_info,
+            }
+            contrast_active = True
         else:
-            axis_source = z_body
-            axes = compute_perceptual_axes(z_body, contrast=False)
-            h_gains = compute_harmonic_gains(
-                z_body,
+            contrast_active = is_contrast_identity_mode(diagnostic_mode)
+            if contrast_active and contrast_ctx.get("dz_body"):
+                axis_source = contrast_ctx["dz_body"]
+                axes = compute_perceptual_axes(axis_source, contrast=True)
+                h_gains = compute_harmonic_gains(
+                    axis_source,
+                    frequency_hz=frequency_hz,
+                    profile=profile,
+                    axes=axes,
+                    contrast=True,
+                )
+            else:
+                axis_source = z_body
+                axes = compute_perceptual_axes(z_body, contrast=False)
+                h_gains = compute_harmonic_gains(
+                    z_body,
+                    frequency_hz=frequency_hz,
+                    profile=profile,
+                    axes=axes,
+                )
+            band_shaped = apply_perceptual_band_shaping(
+                base_audio,
                 frequency_hz=frequency_hz,
-                profile=profile,
+                sample_rate=sample_rate,
                 axes=axes,
+                profile=profile,
             )
-        band_shaped = apply_perceptual_band_shaping(
-            base_audio,
-            frequency_hz=frequency_hz,
-            sample_rate=sample_rate,
-            axes=axes,
-            profile=profile,
-        )
-        harmonic_shaped = apply_harmonic_identity_shaping(
-            band_shaped,
-            frequency_hz=frequency_hz,
-            sample_rate=sample_rate,
-            harmonic_gains=h_gains,
-        )
-        blended = apply_identity_residual(
-            base_audio,
-            harmonic_shaped,
-            epsilon=profile.identity_epsilon,
-            residual_gain_max=profile.residual_gain_max,
-        )
-        final, guard = apply_rms_guard(blended, base_audio, max_db=profile.rms_guard_max_db)
-        vs_ref = compare_audio_to_reference(final, base_audio)
+            harmonic_shaped = apply_harmonic_identity_shaping(
+                band_shaped,
+                frequency_hz=frequency_hz,
+                sample_rate=sample_rate,
+                harmonic_gains=h_gains,
+            )
+            blended = apply_identity_residual(
+                base_audio,
+                harmonic_shaped,
+                epsilon=profile.identity_epsilon,
+                residual_gain_max=profile.residual_gain_max,
+            )
+            final, guard = apply_rms_guard(blended, base_audio, max_db=profile.rms_guard_max_db)
+            vs_ref = compare_audio_to_reference(final, base_audio)
+            hybrid_meta = None
 
         peak_db = 20.0 * math.log10(max(float(np.max(np.abs(final))), 1e-12))
         _write_wav(Path(output_wav), final, sample_rate)
@@ -687,8 +847,9 @@ def synthesize_v4_1_identity_space_note(
                 "diagnostic_mode": diagnostic_mode,
                 "body_hybrid_v4_1_identity_space_active": True,
                 "v4_1_base_preserved": True,
-                "identity_strength_profile": profile.name,
-                "identity_epsilon": profile.identity_epsilon,
+                "identity_hybrid_active": hybrid_active,
+                "identity_strength_profile": profile.name if not hybrid_active else "hybrid",
+                "identity_epsilon": profile.identity_epsilon if not hybrid_active else None,
                 "harmonic_gains": h_gains,
                 "perceptual_axes": axes,
                 "harmonic_gain_bounds": {
@@ -697,11 +858,22 @@ def synthesize_v4_1_identity_space_note(
                     "residual_max": profile.residual_gain_max,
                     "band_eq_max_db": profile.band_eq_max_db,
                     "axis_gain_scale": profile.axis_gain_scale,
+                }
+                if not hybrid_active
+                else {
+                    "absolute_profile": "strong",
+                    "contrast_profile": "contrast_strong",
+                    "hybrid_rms_guard_db": HYBRID_RMS_GUARD_DB,
                 },
                 "body_identity_vector": z_body,
                 "identity_contrast_active": contrast_active,
-                "identity_contrast_context": contrast_ctx if contrast_active else None,
-                "perceptual_axes_source": "dz_body" if contrast_active else "z_body",
+                "identity_contrast_context": contrast_ctx if requires_identity_contrast_context(diagnostic_mode) else None,
+                "perceptual_axes_source": (
+                    "hybrid_abs+contrast"
+                    if hybrid_active
+                    else ("dz_body" if contrast_active else "z_body")
+                ),
+                "identity_hybrid": hybrid_meta,
                 "identity_rms_guard": guard,
                 "identity_vs_v41_reference": vs_ref,
                 "output_peak_dbfs": round(peak_db, 4),

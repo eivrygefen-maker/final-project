@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage 5.1E STK V4.1 sample-relative identity contrast diagnostics (A3 default)."""
+"""Stage 5.1F STK V4.1 identity+contrast hybrid diagnostics (A3 default)."""
 from __future__ import annotations
 
 import argparse
@@ -19,7 +19,6 @@ from body_hybrid_v4_1_identity_space import (  # noqa: E402
     build_body_identity_vector,
     compare_audio_to_reference,
     distance_consistency_report,
-    is_contrast_identity_mode,
     is_v4_1_identity_space_mode,
     nearest_neighbor_preservation_report,
     requires_identity_contrast_context,
@@ -37,17 +36,19 @@ from build_sample_comparison import (  # noqa: E402
 from diagnostic_synthesis import average_spectral_similarity, summarize_diagnostic_mode  # noqa: E402
 from sample_parameters import normalize_sample_parameters  # noqa: E402
 from stage48_timbre_decomposition_report import _attack_time_ms, _spectral_flux  # noqa: E402
-from stage51e_stk_v4_1_identity_contrast_report import build_stage51e_identity_contrast_report  # noqa: E402
+from stage51f_stk_v4_1_identity_contrast_hybrid_report import build_stage51f_identity_contrast_hybrid_report  # noqa: E402
 from synthesis_presets import DEFAULT_SYNTHESIS_PRESET  # noqa: E402
 
-DEFAULT_OUT = REPO / "audio" / "stk_v4_1_identity_contrast_diagnostics"
+DEFAULT_OUT = REPO / "audio" / "stk_v4_1_identity_contrast_hybrid_diagnostics"
 DEFAULT_NOTES = "A3"
 V41_MODE = "modal_body_hybrid_v4_1_full"
 DEFAULT_MODES = (
     "modal_body_hybrid_v4_1_full,"
     "modal_body_hybrid_v4_1_identity_strong,"
-    "modal_body_hybrid_v4_1_identity_contrast_medium,"
-    "modal_body_hybrid_v4_1_identity_contrast_strong"
+    "modal_body_hybrid_v4_1_identity_contrast_strong,"
+    "modal_body_hybrid_v4_1_identity_contrast_hybrid_25_75,"
+    "modal_body_hybrid_v4_1_identity_contrast_hybrid_40_60,"
+    "modal_body_hybrid_v4_1_identity_contrast_hybrid_50_50"
 )
 
 
@@ -91,12 +92,8 @@ def _segment_row(
         row["vs_v41_reference"] = vs_v41
     if meta.get("identity_vs_v41_reference"):
         row["vs_v41_reference"] = meta["identity_vs_v41_reference"]
-    if meta.get("perceptual_axes"):
-        row["perceptual_axes"] = meta["perceptual_axes"]
-    if meta.get("identity_strength_profile"):
-        row["identity_strength_profile"] = meta["identity_strength_profile"]
-    if meta.get("identity_contrast_context"):
-        row["identity_contrast_context"] = meta["identity_contrast_context"]
+    if meta.get("identity_hybrid"):
+        row["identity_hybrid"] = meta["identity_hybrid"]
     return row
 
 
@@ -107,7 +104,6 @@ def _precompute_z_bodies(
     notes: Sequence[Tuple[str, float]],
     use_surrogate: bool,
 ) -> Dict[str, Dict[str, Mapping[str, Any]]]:
-    """note -> sample_id -> z_body."""
     by_note: Dict[str, Dict[str, Mapping[str, Any]]] = {}
     for note_name, frequency_hz in notes:
         z_map: Dict[str, Mapping[str, Any]] = {}
@@ -127,7 +123,7 @@ def _precompute_z_bodies(
     return by_note
 
 
-def build_v4_1_identity_contrast_diagnostics(
+def build_v4_1_identity_contrast_hybrid_diagnostics(
     *,
     repo_root: Path,
     out_dir: Path,
@@ -173,10 +169,7 @@ def build_v4_1_identity_contrast_diagnostics(
                 params = normalize_sample_parameters(sample.get("parameters"))
                 params = {**params, "sample_id": sid}
                 if requires_identity_contrast_context(mode):
-                    params = {
-                        **params,
-                        "identity_contrast_context": contrast_ctx_note.get(sid),
-                    }
+                    params = {**params, "identity_contrast_context": contrast_ctx_note.get(sid)}
                 modal_data, modal_source = resolve_modal_data_for_sample(
                     repo_root, sample, use_surrogate=use_surrogate
                 )
@@ -254,7 +247,7 @@ def build_v4_1_identity_contrast_diagnostics(
     }
 
     manifest = {
-        "stage": "5.1E",
+        "stage": "5.1F",
         "out_dir": str(out_dir),
         "sample_ids": [str(s["sample_id"]) for s in samples],
         "notes": [n for n, _ in notes],
@@ -265,29 +258,25 @@ def build_v4_1_identity_contrast_diagnostics(
         "stitched_files": stitched,
         "distance_consistency_by_mode": distance_by_mode,
         "nearest_neighbor_by_mode": nn_by_mode,
-        "contrast_reference_by_note": {
-            note: (next(iter(ctx.values())).get("z_ref") if ctx else None)
-            for note, ctx in contrast_context_by_note.items()
-        },
     }
     (out_dir / "build_manifest.json").write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
 
     report_dir = repo_root / "audio" / "debug_reports"
-    build_stage51e_identity_contrast_report(
+    build_stage51f_identity_contrast_hybrid_report(
         mode_summaries=mode_summaries,
         distance_by_mode=distance_by_mode,
         nn_by_mode=nn_by_mode,
         notes=[n for n, _ in notes],
         modes=modes,
         build_manifest=manifest,
-        out_json=report_dir / "stage51e_stk_v4_1_identity_contrast_report.json",
-        out_md=report_dir / "stage51e_stk_v4_1_identity_contrast_report.md",
+        out_json=report_dir / "stage51f_stk_v4_1_identity_contrast_hybrid_report.json",
+        out_md=report_dir / "stage51f_stk_v4_1_identity_contrast_hybrid_report.md",
     )
     return manifest
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Stage 5.1E V4.1 sample-relative identity contrast (A3 default)")
+    parser = argparse.ArgumentParser(description="Stage 5.1F V4.1 identity+contrast hybrid diagnostics")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--max-samples", type=int, default=10)
     parser.add_argument("--notes", type=str, default=DEFAULT_NOTES)
@@ -301,7 +290,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     use_surrogate = not args.no_surrogate
     if use_surrogate and not m4_surrogate_model_available(REPO):
         raise RuntimeError("M4 surrogate missing — use --no-surrogate for offline tests")
-    manifest = build_v4_1_identity_contrast_diagnostics(
+    manifest = build_v4_1_identity_contrast_hybrid_diagnostics(
         repo_root=REPO,
         out_dir=args.out_dir,
         notes=notes,
