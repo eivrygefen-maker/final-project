@@ -669,12 +669,27 @@ DIAGNOSTIC_MODES: Dict[str, DiagnosticSynthesisConfig] = {
         final_loudness_normalization_strength=0.10,
         description="STK V6.2.1 soft pluck tail alpha — minimal click, body-forward (diagnostic only).",
     ),
-    "stk_v6_2_1_more_string_body_alpha": DiagnosticSynthesisConfig(
-        name="stk_v6_2_1_more_string_body_alpha",
+    # STK V6.2.2 — onset/tail repair (diagnostic only, A4 review scope)
+    "stk_v6_2_2_single_onset_soft_tail_alpha": DiagnosticSynthesisConfig(
+        name="stk_v6_2_2_single_onset_soft_tail_alpha",
         raw_body_variation_preserve=0.70,
         body_gain_normalization_strength=0.0,
         final_loudness_normalization_strength=0.10,
-        description="STK V6.2.1 more string/body alpha — warmer early string, HF damped (diagnostic only).",
+        description="STK V6.2.2 single onset soft tail — coherent attack, tail continuity (diagnostic only).",
+    ),
+    "stk_v6_2_2_no_thump_body_tail_alpha": DiagnosticSynthesisConfig(
+        name="stk_v6_2_2_no_thump_body_tail_alpha",
+        raw_body_variation_preserve=0.70,
+        body_gain_normalization_strength=0.0,
+        final_loudness_normalization_strength=0.10,
+        description="STK V6.2.2 no thump body tail — anti-boom low/mid limit (diagnostic only).",
+    ),
+    "stk_v6_2_2_v5_body_v6_pluck_hybrid_alpha": DiagnosticSynthesisConfig(
+        name="stk_v6_2_2_v5_body_v6_pluck_hybrid_alpha",
+        raw_body_variation_preserve=0.70,
+        body_gain_normalization_strength=0.0,
+        final_loudness_normalization_strength=0.10,
+        description="STK V6.2.2 V5 body / V6 pluck hybrid — smoother tail + guitar pluck (diagnostic only).",
     ),
 }
 
