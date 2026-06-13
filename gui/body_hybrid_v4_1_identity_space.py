@@ -39,6 +39,13 @@ IDENTITY_SPACE_MODES: Tuple[str, ...] = (
     "modal_body_hybrid_v4_1_identity_contrast_hybrid_25_75",
     "modal_body_hybrid_v4_1_identity_contrast_hybrid_40_60",
     "modal_body_hybrid_v4_1_identity_contrast_hybrid_50_50",
+    "modal_body_hybrid_v4_1_identity_contrast_g_20_80",
+    "modal_body_hybrid_v4_1_identity_contrast_g_25_75",
+    "modal_body_hybrid_v4_1_identity_contrast_g_30_70",
+    "modal_body_hybrid_v4_1_identity_contrast_g_25_75_decay",
+    "modal_body_hybrid_v4_1_identity_contrast_g_25_75_bridge",
+    "modal_body_hybrid_v4_1_identity_contrast_g_25_75_full",
+    "stk_body_transfer_v4_1_identity_contrast_g",
 )
 
 DZ_BODY_CLIP = 2.5
@@ -47,11 +54,21 @@ HYBRID_RMS_GUARD_DB = 2.75
 HYBRID_AUDIBILITY_MIN_DB = -40.0
 HYBRID_AUDIBILITY_TARGET_DB = -26.0
 HYBRID_AUDIBILITY_MAX_DB = -18.0
+G_DECAY_STRENGTH = 0.22
+G_BRIDGE_BLEND = 0.65
+G_BRIDGE_FUNDAMENTAL_MAX = 0.035
+G_BRIDGE_HARMONIC_MAX = 0.35
 
 HYBRID_BLEND_RATIOS: Dict[str, Tuple[float, float]] = {
     "25_75": (0.25, 0.75),
     "40_60": (0.40, 0.60),
     "50_50": (0.50, 0.50),
+}
+
+G_BLEND_RATIOS: Dict[str, Tuple[float, float]] = {
+    "20_80": (0.20, 0.80),
+    "25_75": (0.25, 0.75),
+    "30_70": (0.30, 0.70),
 }
 
 # Default/light bounds (Stage 5.1C baseline — diagnostic only)
@@ -167,8 +184,17 @@ def is_hybrid_identity_mode(mode_name: Optional[str]) -> bool:
     return "identity_contrast_hybrid" in str(mode_name or "")
 
 
+def is_g_identity_mode(mode_name: Optional[str]) -> bool:
+    m = str(mode_name or "")
+    return "identity_contrast_g_" in m or m.endswith("identity_contrast_g")
+
+
 def requires_identity_contrast_context(mode_name: Optional[str]) -> bool:
-    return is_contrast_identity_mode(mode_name) or is_hybrid_identity_mode(mode_name)
+    return (
+        is_contrast_identity_mode(mode_name)
+        or is_hybrid_identity_mode(mode_name)
+        or is_g_identity_mode(mode_name)
+    )
 
 
 def hybrid_blend_for_mode(mode_name: Optional[str]) -> Tuple[float, float]:
@@ -180,6 +206,187 @@ def hybrid_blend_for_mode(mode_name: Optional[str]) -> Tuple[float, float]:
     if is_hybrid_identity_mode(m):
         return HYBRID_BLEND_RATIOS["40_60"]
     return 0.40, 0.60
+
+
+def g_config_for_mode(mode_name: Optional[str]) -> Dict[str, Any]:
+    """Stage 5.1G: blend ratio + optional decay/bridge physical components."""
+    m = str(mode_name or "")
+    if m == "stk_body_transfer_v4_1_identity_contrast_g":
+        return {
+            "absolute_weight": 0.25,
+            "contrast_weight": 0.75,
+            "decay_active": True,
+            "bridge_active": True,
+        }
+    use_decay = "_decay" in m or "_full" in m
+    use_bridge = "_bridge" in m or "_full" in m
+    abs_w, contrast_w = G_BLEND_RATIOS["25_75"]
+    for tag, (a, b) in G_BLEND_RATIOS.items():
+        if f"g_{tag}" in m:
+            abs_w, contrast_w = a, b
+            break
+    return {
+        "absolute_weight": abs_w,
+        "contrast_weight": contrast_w,
+        "decay_active": use_decay,
+        "bridge_active": use_bridge,
+    }
+
+
+def compute_decay_axis(z_body: Mapping[str, Any]) -> float:
+    """Physical decay axis from Q/damping/bridge/modal density/participation."""
+    f = z_body.get("features") or {}
+    near_harm = (
+        _feat(f, "modal_near_60_120")
+        + _feat(f, "modal_near_120_180")
+        + _feat(f, "modal_near_180_280")
+    ) / 3.0
+    mat_damp = 0.5 * (_feat(f, "mat_top_damping") + _feat(f, "mat_back_damping"))
+    participation = (
+        _feat(f, "share_back_mean") + _feat(f, "share_top_mean") + _feat(f, "share_air_mean")
+    ) / 3.0
+    raw = (
+        0.35 * _feat(f, "q_spread")
+        - 0.25 * mat_damp
+        + 0.25 * _feat(f, "bridge_mobility")
+        + 0.30 * near_harm
+        + 0.20 * participation
+    )
+    return max(-1.0, min(1.0, raw))
+
+
+def compute_bridge_axis(z_body: Mapping[str, Any]) -> float:
+    """Body-aware bridge energy-transfer axis (no raw string/radiation gain)."""
+    f = z_body.get("features") or {}
+    near_harm = (
+        _feat(f, "modal_near_60_120")
+        + _feat(f, "modal_near_120_180")
+        + _feat(f, "modal_near_180_280")
+    ) / 3.0
+    inv_mass = -_feat(f, "eff_mass_median")
+    raw = (
+        0.30 * _feat(f, "bridge_rank_median")
+        + 0.25 * _feat(f, "bridge_mobility")
+        + 0.20 * inv_mass
+        + 0.25 * near_harm
+        + 0.15 * 0.5 * (_feat(f, "share_top_mean") + _feat(f, "share_back_mean"))
+        + 0.10 * 0.5 * (_feat(f, "rad_rank_median") + _feat(f, "mic_rank_median"))
+    )
+    return max(-1.0, min(1.0, raw))
+
+
+def compute_bridge_harmonic_gains(bridge_axis: float) -> List[float]:
+    """Harmonic gains for bridge coupling — h2–h5 dominant, fundamental minimal."""
+    scale = max(-1.0, min(1.0, float(bridge_axis)))
+    coeffs = [0.12, 0.85, 0.80, 0.75, 0.70, 0.45, 0.35, 0.30]
+    gains: List[float] = []
+    for k, coeff in enumerate(coeffs, start=1):
+        cap = G_BRIDGE_FUNDAMENTAL_MAX if k == 1 else G_BRIDGE_HARMONIC_MAX
+        val = scale * coeff * G_BRIDGE_HARMONIC_MAX
+        gains.append(round(max(-cap, min(cap, val)), 6))
+    return gains
+
+
+def apply_decay_differentiation_to_residual(
+    residual: np.ndarray,
+    z_body: Mapping[str, Any],
+    *,
+    sample_rate: int,
+    decay_strength: float = G_DECAY_STRENGTH,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Gentle time-envelope tilt on body residual only (early bloom / late sustain)."""
+    del sample_rate  # envelope is normalized-time based
+    r = np.asarray(residual, dtype=np.float64)
+    n = len(r)
+    if n < 8:
+        return r.copy(), {"decay_axis": 0.0, "decay_active": False}
+    decay_axis = compute_decay_axis(z_body)
+    f = z_body.get("features") or {}
+    early_gain = 1.0 + 0.06 * _feat(f, "bridge_mobility")
+    late_gain = math.exp(decay_axis * decay_strength * 0.35)
+    t = np.linspace(0.0, 1.0, n)
+    env = early_gain * np.exp(-3.0 * t) + late_gain * (1.0 - np.exp(-3.0 * t))
+    env = env / max(float(np.sqrt(np.mean(env**2))), 1e-9)
+    shaped = r * env
+    return shaped, {
+        "decay_axis": round(decay_axis, 6),
+        "decay_strength": decay_strength,
+        "early_gain": round(early_gain, 6),
+        "late_gain": round(late_gain, 6),
+        "decay_active": True,
+    }
+
+
+def apply_bridge_coupling_to_residual(
+    residual: np.ndarray,
+    *,
+    frequency_hz: float,
+    sample_rate: int,
+    z_body: Mapping[str, Any],
+    blend: float = G_BRIDGE_BLEND,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Harmonic-dependent body coupling on residual — same string, guitar-dependent transfer."""
+    r = np.asarray(residual, dtype=np.float64)
+    bridge_axis = compute_bridge_axis(z_body)
+    h_gains = compute_bridge_harmonic_gains(bridge_axis)
+    if float(np.max(np.abs(r))) < 1e-15:
+        return r.copy(), {"bridge_axis": round(bridge_axis, 6), "bridge_active": False}
+    shaped = apply_harmonic_identity_shaping(
+        r,
+        frequency_hz=frequency_hz,
+        sample_rate=sample_rate,
+        harmonic_gains=h_gains,
+    )
+    alpha = max(0.0, min(1.0, float(blend)))
+    out = (1.0 - alpha) * r + alpha * shaped
+    return out, {
+        "bridge_axis": round(bridge_axis, 6),
+        "bridge_harmonic_gains": h_gains,
+        "bridge_blend": alpha,
+        "bridge_active": True,
+    }
+
+
+def compose_hybrid_contrast_residual(
+    base_audio: np.ndarray,
+    *,
+    frequency_hz: float,
+    sample_rate: int,
+    z_body: Mapping[str, Any],
+    dz_body: Mapping[str, Any],
+    abs_w: float,
+    contrast_w: float,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Blend identity_strong + contrast_strong layer residuals (5.1F/G core)."""
+    strong_prof = STRENGTH_PROFILES["strong"]
+    contrast_prof = STRENGTH_PROFILES["contrast_strong"]
+    res_abs, meta_abs = compute_identity_layer_residual(
+        base_audio,
+        frequency_hz=frequency_hz,
+        sample_rate=sample_rate,
+        feature_source=z_body,
+        profile=strong_prof,
+        contrast=False,
+    )
+    res_contrast, meta_contrast = compute_identity_layer_residual(
+        base_audio,
+        frequency_hz=frequency_hz,
+        sample_rate=sample_rate,
+        feature_source=dz_body,
+        profile=contrast_prof,
+        contrast=True,
+    )
+    combined = abs_w * res_abs + contrast_w * res_contrast
+    peak_base = float(np.max(np.abs(base_audio)) + 1e-12)
+    cap = max(strong_prof.residual_gain_max, contrast_prof.residual_gain_max) * peak_base
+    combined = np.clip(combined, -cap, cap)
+    return combined, {
+        "hybrid_blend_absolute": abs_w,
+        "hybrid_blend_contrast": contrast_w,
+        "absolute_layer": meta_abs,
+        "contrast_layer": meta_contrast,
+        "residual_cap": cap,
+    }
 
 
 def is_v4_1_identity_space_mode(mode_name: Optional[str]) -> bool:
@@ -724,6 +931,7 @@ def synthesize_v4_1_identity_space_note(
 ) -> Dict[str, Any]:
     """V4.1 full base + bounded identity-space layer (strength from diagnostic mode)."""
     hybrid_active = is_hybrid_identity_mode(diagnostic_mode)
+    g_active = is_g_identity_mode(diagnostic_mode)
     profile = strength_profile_for_mode(diagnostic_mode) or STRENGTH_PROFILES["light"]
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         tmp_path = Path(tmp.name)
@@ -754,43 +962,69 @@ def synthesize_v4_1_identity_space_note(
             sample_id=sample_id,
         )
         contrast_ctx = (sample_parameters or {}).get("identity_contrast_context") or {}
+        dz_body = contrast_ctx.get("dz_body") or z_body
 
-        if hybrid_active:
-            strong_prof = STRENGTH_PROFILES["strong"]
-            contrast_prof = STRENGTH_PROFILES["contrast_strong"]
-            abs_w, contrast_w = hybrid_blend_for_mode(diagnostic_mode)
-            res_abs, meta_abs = compute_identity_layer_residual(
+        if g_active:
+            g_cfg = g_config_for_mode(diagnostic_mode)
+            abs_w = float(g_cfg["absolute_weight"])
+            contrast_w = float(g_cfg["contrast_weight"])
+            combined_residual, hybrid_core = compose_hybrid_contrast_residual(
                 base_audio,
                 frequency_hz=frequency_hz,
                 sample_rate=sample_rate,
-                feature_source=z_body,
-                profile=strong_prof,
-                contrast=False,
+                z_body=z_body,
+                dz_body=dz_body,
+                abs_w=abs_w,
+                contrast_w=contrast_w,
             )
-            dz_body = contrast_ctx.get("dz_body") or z_body
-            res_contrast, meta_contrast = compute_identity_layer_residual(
-                base_audio,
-                frequency_hz=frequency_hz,
-                sample_rate=sample_rate,
-                feature_source=dz_body,
-                profile=contrast_prof,
-                contrast=True,
-            )
-            combined_residual = abs_w * res_abs + contrast_w * res_contrast
-            peak_base = float(np.max(np.abs(base_audio)) + 1e-12)
-            cap = max(strong_prof.residual_gain_max, contrast_prof.residual_gain_max) * peak_base
-            combined_residual = np.clip(combined_residual, -cap, cap)
+            g_physical: Dict[str, Any] = {}
+            if g_cfg["decay_active"]:
+                combined_residual, decay_meta = apply_decay_differentiation_to_residual(
+                    combined_residual,
+                    z_body,
+                    sample_rate=sample_rate,
+                )
+                g_physical["decay"] = decay_meta
+            if g_cfg["bridge_active"]:
+                combined_residual, bridge_meta = apply_bridge_coupling_to_residual(
+                    combined_residual,
+                    frequency_hz=frequency_hz,
+                    sample_rate=sample_rate,
+                    z_body=z_body,
+                )
+                g_physical["bridge"] = bridge_meta
             blended = base_audio + combined_residual
             blended, audibility_info = apply_hybrid_audibility_floor(blended, base_audio)
             final, guard = apply_rms_guard(blended, base_audio, max_db=HYBRID_RMS_GUARD_DB)
             vs_ref = compare_audio_to_reference(final, base_audio)
-            h_gains = meta_contrast.get("harmonic_gains")
-            axes = meta_contrast.get("perceptual_axes")
+            h_gains = hybrid_core.get("contrast_layer", {}).get("harmonic_gains")
+            axes = hybrid_core.get("contrast_layer", {}).get("perceptual_axes")
             hybrid_meta = {
-                "hybrid_blend_absolute": abs_w,
-                "hybrid_blend_contrast": contrast_w,
-                "absolute_layer": meta_abs,
-                "contrast_layer": meta_contrast,
+                **hybrid_core,
+                "g_config": g_cfg,
+                "g_physical": g_physical,
+                "hybrid_audibility": audibility_info,
+            }
+            contrast_active = True
+        elif hybrid_active:
+            abs_w, contrast_w = hybrid_blend_for_mode(diagnostic_mode)
+            combined_residual, hybrid_core = compose_hybrid_contrast_residual(
+                base_audio,
+                frequency_hz=frequency_hz,
+                sample_rate=sample_rate,
+                z_body=z_body,
+                dz_body=dz_body,
+                abs_w=abs_w,
+                contrast_w=contrast_w,
+            )
+            blended = base_audio + combined_residual
+            blended, audibility_info = apply_hybrid_audibility_floor(blended, base_audio)
+            final, guard = apply_rms_guard(blended, base_audio, max_db=HYBRID_RMS_GUARD_DB)
+            vs_ref = compare_audio_to_reference(final, base_audio)
+            h_gains = hybrid_core.get("contrast_layer", {}).get("harmonic_gains")
+            axes = hybrid_core.get("contrast_layer", {}).get("perceptual_axes")
+            hybrid_meta = {
+                **hybrid_core,
                 "hybrid_audibility": audibility_info,
             }
             contrast_active = True
@@ -848,8 +1082,11 @@ def synthesize_v4_1_identity_space_note(
                 "body_hybrid_v4_1_identity_space_active": True,
                 "v4_1_base_preserved": True,
                 "identity_hybrid_active": hybrid_active,
-                "identity_strength_profile": profile.name if not hybrid_active else "hybrid",
-                "identity_epsilon": profile.identity_epsilon if not hybrid_active else None,
+                "identity_g_active": g_active,
+                "identity_strength_profile": (
+                    profile.name if not (hybrid_active or g_active) else ("g_physical" if g_active else "hybrid")
+                ),
+                "identity_epsilon": profile.identity_epsilon if not (hybrid_active or g_active) else None,
                 "harmonic_gains": h_gains,
                 "perceptual_axes": axes,
                 "harmonic_gain_bounds": {
@@ -859,21 +1096,28 @@ def synthesize_v4_1_identity_space_note(
                     "band_eq_max_db": profile.band_eq_max_db,
                     "axis_gain_scale": profile.axis_gain_scale,
                 }
-                if not hybrid_active
+                if not (hybrid_active or g_active)
                 else {
                     "absolute_profile": "strong",
                     "contrast_profile": "contrast_strong",
                     "hybrid_rms_guard_db": HYBRID_RMS_GUARD_DB,
+                    "g_decay_strength": G_DECAY_STRENGTH if g_active else None,
+                    "g_bridge_blend": G_BRIDGE_BLEND if g_active else None,
                 },
                 "body_identity_vector": z_body,
                 "identity_contrast_active": contrast_active,
                 "identity_contrast_context": contrast_ctx if requires_identity_contrast_context(diagnostic_mode) else None,
                 "perceptual_axes_source": (
-                    "hybrid_abs+contrast"
-                    if hybrid_active
-                    else ("dz_body" if contrast_active else "z_body")
+                    "g_hybrid_abs+contrast+physical"
+                    if g_active
+                    else (
+                        "hybrid_abs+contrast"
+                        if hybrid_active
+                        else ("dz_body" if contrast_active else "z_body")
+                    )
                 ),
-                "identity_hybrid": hybrid_meta,
+                "identity_hybrid": hybrid_meta if (hybrid_active or g_active) else None,
+                "identity_g": hybrid_meta if g_active else None,
                 "identity_rms_guard": guard,
                 "identity_vs_v41_reference": vs_ref,
                 "output_peak_dbfs": round(peak_db, 4),
