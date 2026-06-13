@@ -617,6 +617,35 @@ DIAGNOSTIC_MODES: Dict[str, DiagnosticSynthesisConfig] = {
         final_loudness_normalization_strength=0.28,
         description="Stage 5.2A body-response-first alias.",
     ),
+    # STK V5.0-alpha — body-dominant balance validation (diagnostic only)
+    "stk_v5_alpha_body_dominant": DiagnosticSynthesisConfig(
+        name="stk_v5_alpha_body_dominant",
+        raw_body_variation_preserve=0.68,
+        body_gain_normalization_strength=0.0,
+        final_loudness_normalization_strength=0.18,
+        description="STK V5 alpha — body dominant (20/80 RMS-matched mix, diagnostic only).",
+    ),
+    "v5_alpha_s10_b90": DiagnosticSynthesisConfig(
+        name="v5_alpha_s10_b90",
+        raw_body_variation_preserve=0.68,
+        body_gain_normalization_strength=0.0,
+        final_loudness_normalization_strength=0.18,
+        description="STK V5 alpha variant: 10% direct string / 90% body (RMS-matched).",
+    ),
+    "v5_alpha_s20_b80": DiagnosticSynthesisConfig(
+        name="v5_alpha_s20_b80",
+        raw_body_variation_preserve=0.68,
+        body_gain_normalization_strength=0.0,
+        final_loudness_normalization_strength=0.18,
+        description="STK V5 alpha variant: 20% direct string / 80% body (RMS-matched).",
+    ),
+    "v5_alpha_s35_b65": DiagnosticSynthesisConfig(
+        name="v5_alpha_s35_b65",
+        raw_body_variation_preserve=0.68,
+        body_gain_normalization_strength=0.0,
+        final_loudness_normalization_strength=0.18,
+        description="STK V5 alpha variant: 35% direct string / 65% body (RMS-matched).",
+    ),
 }
 
 _active_diagnostic: Optional[DiagnosticSynthesisConfig] = None

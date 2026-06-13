@@ -34,6 +34,46 @@ from body_response_synth import (
 from sample_parameters import normalize_sample_parameters
 
 V5_SKELETON_VERSION = "stk_v5_skeleton_v0"
+V5_ALPHA_VERSION = "stk_v5_alpha_v0"
+
+STK_V5_ALPHA_BODY_DOMINANT = "stk_v5_alpha_body_dominant"
+STK_V5_ALPHA_GUI_LABEL = "STK V5 alpha — body dominant"
+
+# (direct_string_gain, body_gain) — RMS-matched perceptual weights
+V5_ALPHA_VARIANTS: Dict[str, Tuple[float, float]] = {
+    STK_V5_ALPHA_BODY_DOMINANT: (0.20, 0.80),
+    "v5_alpha_s10_b90": (0.10, 0.90),
+    "v5_alpha_s20_b80": (0.20, 0.80),
+    "v5_alpha_s35_b65": (0.35, 0.65),
+}
+
+V5_ALPHA_LOUDNESS_STRENGTH = 0.18
+V5_ALPHA_VARIATION_PRESERVE = 0.68
+V5_ALPHA_PEAK_CEILING_DBFS = -0.5
+
+
+def list_v5_alpha_mode_names() -> List[str]:
+    return list(V5_ALPHA_VARIANTS.keys())
+
+
+def resolve_v5_alpha_variant(experiment_or_mode: str) -> Tuple[str, float, float]:
+    """Return (canonical_name, direct_string_gain, body_gain)."""
+    key = str(experiment_or_mode or STK_V5_ALPHA_BODY_DOMINANT).strip()
+    if key not in V5_ALPHA_VARIANTS:
+        raise ValueError(f"unknown V5 alpha variant: {key!r}")
+    s_gain, b_gain = V5_ALPHA_VARIANTS[key]
+    return key, float(s_gain), float(b_gain)
+
+
+def is_v5_alpha_experiment(name: str) -> bool:
+    n = str(name or "")
+    return n in V5_ALPHA_VARIANTS or n.startswith("v5_alpha_")
+
+
+def _peak_dbfs(audio: np.ndarray) -> Tuple[float, bool]:
+    peak = float(np.max(np.abs(np.asarray(audio, dtype=np.float64))))
+    peak_db = 20.0 * math.log10(max(peak, 1e-12))
+    return round(peak_db, 4), peak < 1.0
 
 
 def _band_energy(audio: np.ndarray, sample_rate: int, lo_hz: float, hi_hz: float) -> float:
@@ -122,6 +162,181 @@ def compute_realism_metrics(
         "guitar_realism_sanity_score": guitar_realism_score,
         "radiation_contribution_proxy": round(hi_e / max(lo_e + mid_e, 1e-12), 6),
     }
+
+
+def enrich_metrics_with_levels(metrics: Dict[str, Any], audio: np.ndarray) -> Dict[str, Any]:
+    peak_db, clipping_ok = _peak_dbfs(audio)
+    out = dict(metrics)
+    out["peak_dbfs"] = peak_db
+    out["clipping_avoided"] = clipping_ok
+    return out
+
+
+def rms_matched_body_dominant_mix(
+    body: np.ndarray,
+    dry_string: np.ndarray,
+    *,
+    body_weight: float,
+    string_weight: float,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """
+    Mix body and direct string with unit-RMS branches so weights ≈ perceptual contribution.
+
+    output = body_weight * (body/rms_body) + string_weight * (string/rms_string)
+    """
+    body = np.asarray(body, dtype=np.float64)
+    dry_string = np.asarray(dry_string, dtype=np.float64)
+    b_rms = _rms(body)
+    s_rms = _rms(dry_string)
+    b_unit = body / max(b_rms, 1e-12)
+    s_unit = dry_string / max(s_rms, 1e-12)
+    body_branch = float(body_weight) * b_unit
+    string_branch = float(string_weight) * s_unit
+    mixed = body_branch + string_branch
+    b_in_mix = _rms(body_branch)
+    s_in_mix = _rms(string_branch)
+    return mixed, {
+        "body_weight": round(float(body_weight), 4),
+        "string_weight": round(float(string_weight), 4),
+        "body_rms_raw": round(b_rms, 8),
+        "string_rms_raw": round(s_rms, 8),
+        "body_rms_in_mix": round(b_in_mix, 8),
+        "string_rms_in_mix": round(s_in_mix, 8),
+        "body_to_string_in_mix_ratio": round(b_in_mix / max(s_in_mix, 1e-12), 6),
+        "string_dominance_in_mix": round(s_in_mix / max(b_in_mix + s_in_mix, 1e-12), 6),
+    }
+
+
+def render_v5_alpha_body_radiation_path(
+    *,
+    frequency_hz: float,
+    duration_s: float,
+    sample_rate: int,
+    modal_data: ModalInput,
+    sample_parameters: Optional[Mapping[str, Any]] = None,
+    repo_root: Optional[Any] = None,
+    sample_id: str = "sample_000",
+    velocity: float = DEFAULT_VELOCITY,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+    """
+    V5 alpha body path: pluck → bridge accel → admittance bank → radiation scale.
+    Returns (body_radiated, dry_string_path, meta).
+    """
+    from body_response_first_v4_2 import build_body_transfer_function_v4_2
+
+    f0 = float(frequency_hz)
+    layers = decompose_baseline_layers(
+        frequency_hz=f0,
+        duration_s=duration_s,
+        sample_rate=sample_rate,
+        modal_data=modal_data,
+        velocity=velocity,
+    )
+    dry_string = layers["string_path"]
+    string_excitation = layers["string_excitation"]
+    bridge_force = _string_acceleration(string_excitation)
+    n = len(string_excitation)
+
+    all_modes, _ = parse_modal_modes(modal_data)
+    band_modes = modes_in_validated_band(all_modes)
+    params = normalize_sample_parameters(sample_parameters)
+
+    if band_modes:
+        H_adm, mode_rows, h_summary = build_body_transfer_function_v4_2(
+            sample_rate=sample_rate,
+            n_samples=n,
+            band_modes=band_modes,
+            frequency_hz=f0,
+            parameters=params,
+            repo_root=repo_root,
+            sample_id=sample_id,
+        )
+        bridge_spec = np.fft.rfft(bridge_force)
+        body_audio = np.real(np.fft.irfft(bridge_spec * H_adm, n=n))
+    else:
+        mode_rows = []
+        h_summary = {"mode_count": 0}
+        body_audio = layers["body_raw"].copy()
+
+    rad_pool = [float(m.get("radiation_proxy") or 0.0) for m in band_modes]
+    rad_mean = float(np.mean(rad_pool)) if rad_pool else 0.0
+    rad_scale = 0.85 + 0.35 * min(1.0, rad_mean)
+    body_radiated = body_audio * rad_scale
+
+    meta = {
+        "body_path": "bridge_accel→H_admittance_v4_2→radiation_scale",
+        "mode_count": len(mode_rows),
+        "H_summary": h_summary,
+        "radiation_scale": round(rad_scale, 6),
+        "body_rms_radiated": round(_rms(body_radiated), 8),
+        "string_rms_dry": round(_rms(dry_string), 8),
+    }
+    return body_radiated, dry_string, meta
+
+
+def synthesize_v5_alpha_body_dominant(
+    *,
+    frequency_hz: float,
+    duration_s: float,
+    sample_rate: int,
+    modal_data: ModalInput,
+    variant: str = STK_V5_ALPHA_BODY_DOMINANT,
+    sample_parameters: Optional[Mapping[str, Any]] = None,
+    repo_root: Optional[Any] = None,
+    sample_id: str = "sample_000",
+    velocity: float = DEFAULT_VELOCITY,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """STK V5.0-alpha: body-dominant RMS-matched mix (diagnostic only)."""
+    variant_name, string_gain, body_gain = resolve_v5_alpha_variant(variant)
+    body_radiated, dry_string, path_meta = render_v5_alpha_body_radiation_path(
+        frequency_hz=frequency_hz,
+        duration_s=duration_s,
+        sample_rate=sample_rate,
+        modal_data=modal_data,
+        sample_parameters=sample_parameters,
+        repo_root=repo_root,
+        sample_id=sample_id,
+        velocity=velocity,
+    )
+    mixed, mix_meta = rms_matched_body_dominant_mix(
+        body_radiated,
+        dry_string,
+        body_weight=body_gain,
+        string_weight=string_gain,
+    )
+    tapered, taper_info = apply_anti_click_taper(mixed, sample_rate, duration_s=duration_s)
+    final, loudness_info = apply_loudness_finalize(
+        tapered,
+        sample_rate,
+        loudness_normalization_strength=V5_ALPHA_LOUDNESS_STRENGTH,
+        raw_body_variation_preserve=V5_ALPHA_VARIATION_PRESERVE,
+    )
+    peak_db, clipping_ok = _peak_dbfs(final)
+    if peak_db > V5_ALPHA_PEAK_CEILING_DBFS:
+        scale = 10.0 ** ((V5_ALPHA_PEAK_CEILING_DBFS - peak_db) / 20.0)
+        final = final * scale
+        peak_db, clipping_ok = _peak_dbfs(final)
+        loudness_info = {**loudness_info, "peak_limit_scale": round(scale, 6)}
+
+    meta = {
+        "diagnostic_mode": variant_name,
+        "v5_alpha_version": V5_ALPHA_VERSION,
+        "user_label": STK_V5_ALPHA_GUI_LABEL,
+        "variant": variant_name,
+        "direct_string_gain": string_gain,
+        "body_gain": body_gain,
+        "mix_formula": "body_gain*body/rms(body) + direct_string_gain*string/rms(string)",
+        "path_meta": path_meta,
+        "mix_metrics": mix_meta,
+        "string_rms": mix_meta["string_rms_in_mix"],
+        "body_rms": mix_meta["body_rms_in_mix"],
+        "taper_info": taper_info,
+        "loudness_info": loudness_info,
+        "peak_dbfs": peak_db,
+        "clipping_avoided": clipping_ok,
+        "output_rms_dbfs": loudness_info.get("output_rms_dbfs"),
+    }
+    return final, meta
 
 
 def decompose_baseline_layers(
@@ -399,6 +614,19 @@ def synthesize_mode_to_wav(
         )
         meta = {"experiment": exp, **sk_meta}
         write_wav_int16(out, audio, sample_rate, duration_s=duration_s)
+    elif is_v5_alpha_experiment(exp):
+        audio, alpha_meta = synthesize_v5_alpha_body_dominant(
+            frequency_hz=frequency_hz,
+            duration_s=duration_s,
+            sample_rate=sample_rate,
+            modal_data=modal_data,
+            variant=exp,
+            sample_parameters=sample_parameters,
+            repo_root=repo_root,
+            sample_id=sample_id,
+        )
+        meta = {"experiment": exp, **alpha_meta}
+        write_wav_int16(out, audio, sample_rate, duration_s=duration_s)
     else:
         meta = synthesize_note_with_body_response(
             frequency_hz=frequency_hz,
@@ -418,18 +646,28 @@ def synthesize_mode_to_wav(
     from body_response_synth import read_wav_float_mono
 
     audio_read, _ = read_wav_float_mono(out)
-    layers = decompose_baseline_layers(
-        frequency_hz=frequency_hz,
-        duration_s=duration_s,
-        sample_rate=sample_rate,
-        modal_data=modal_data,
-    )
-    metrics = compute_realism_metrics(
+    if meta.get("mix_metrics"):
+        mix = meta["mix_metrics"]
+        str_rms = float(mix.get("string_rms_in_mix") or 0.0)
+        bod_rms = float(mix.get("body_rms_in_mix") or 0.0)
+    else:
+        layers = decompose_baseline_layers(
+            frequency_hz=frequency_hz,
+            duration_s=duration_s,
+            sample_rate=sample_rate,
+            modal_data=modal_data,
+        )
+        str_rms = float(meta.get("string_rms") or layers["string_rms"])
+        bod_rms = float(meta.get("body_rms") or layers["body_rms_raw"])
+    metrics = enrich_metrics_with_levels(
+        compute_realism_metrics(
+            audio_read,
+            sample_rate=sample_rate,
+            frequency_hz=frequency_hz,
+            string_rms=str_rms,
+            body_rms=bod_rms,
+        ),
         audio_read,
-        sample_rate=sample_rate,
-        frequency_hz=frequency_hz,
-        string_rms=float(meta.get("string_rms") or layers["string_rms"]),
-        body_rms=float(meta.get("body_rms") or layers["body_rms_raw"]),
     )
     meta["realism_metrics"] = metrics
     return meta
