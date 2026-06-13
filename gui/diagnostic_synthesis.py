@@ -581,6 +581,28 @@ DIAGNOSTIC_MODES: Dict[str, DiagnosticSynthesisConfig] = {
         final_loudness_normalization_strength=0.32,
         description="Stage 5.1G alias (25/75 full physical mode).",
     ),
+    # Current default STK body/identity candidate — numerically identical to g_30_70
+    "stk_body_transfer_final_v1": DiagnosticSynthesisConfig(
+        name="stk_body_transfer_final_v1",
+        raw_body_variation_preserve=0.52,
+        body_gain_normalization_strength=0.34,
+        final_loudness_normalization_strength=0.32,
+        description="Stage 5.1H final STK candidate (alias → g_30_70, Physical Body Identity v1).",
+    ),
+    "modal_body_hybrid_v4_1_identity_contrast_g_30_70_de_thump": DiagnosticSynthesisConfig(
+        name="modal_body_hybrid_v4_1_identity_contrast_g_30_70_de_thump",
+        raw_body_variation_preserve=0.52,
+        body_gain_normalization_strength=0.34,
+        final_loudness_normalization_strength=0.32,
+        description="Stage 5.1H safety variant: g_30_70 + residual onset de-thump.",
+    ),
+    "stk_body_transfer_final_v1_de_thump_candidate": DiagnosticSynthesisConfig(
+        name="stk_body_transfer_final_v1_de_thump_candidate",
+        raw_body_variation_preserve=0.52,
+        body_gain_normalization_strength=0.34,
+        final_loudness_normalization_strength=0.32,
+        description="Stage 5.1H de-thump safety alias (→ g_30_70_de_thump).",
+    ),
     "modal_body_response_first_v4_2": DiagnosticSynthesisConfig(
         name="modal_body_response_first_v4_2",
         raw_body_variation_preserve=0.55,

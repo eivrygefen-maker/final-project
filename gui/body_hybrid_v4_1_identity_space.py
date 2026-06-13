@@ -46,7 +46,24 @@ IDENTITY_SPACE_MODES: Tuple[str, ...] = (
     "modal_body_hybrid_v4_1_identity_contrast_g_25_75_bridge",
     "modal_body_hybrid_v4_1_identity_contrast_g_25_75_full",
     "stk_body_transfer_v4_1_identity_contrast_g",
+    # Stage 5.1H — current default STK body/identity candidate (alias → g_30_70)
+    "stk_body_transfer_final_v1",
+    "modal_body_hybrid_v4_1_identity_contrast_g_30_70_de_thump",
+    "stk_body_transfer_final_v1_de_thump_candidate",
 )
+
+# Stage 5.1H — frozen final STK candidate (GUI/ROM default; canonical diagnostic name below)
+STK_BODY_TRANSFER_FINAL_V1 = "stk_body_transfer_final_v1"
+STK_FINAL_CANDIDATE_CANONICAL = "modal_body_hybrid_v4_1_identity_contrast_g_30_70"
+STK_FINAL_GUI_LABEL = "Physical Body Identity v1"
+STK_FINAL_DE_THUMP_CANONICAL = "modal_body_hybrid_v4_1_identity_contrast_g_30_70_de_thump"
+STK_BODY_TRANSFER_FINAL_V1_DE_THUMP = "stk_body_transfer_final_v1_de_thump_candidate"
+
+DE_THUMP_ONSET_MS = 60.0
+DE_THUMP_BLEND_MS = 30.0
+DE_THUMP_HP_HZ = 100.0
+DE_THUMP_LF_ATTENUATION_DB = 6.0
+DE_THUMP_ATTACK_SCALE = 0.72
 
 DZ_BODY_CLIP = 2.5
 IQR_FLOOR = 0.15
@@ -186,7 +203,37 @@ def is_hybrid_identity_mode(mode_name: Optional[str]) -> bool:
 
 def is_g_identity_mode(mode_name: Optional[str]) -> bool:
     m = str(mode_name or "")
-    return "identity_contrast_g_" in m or m.endswith("identity_contrast_g")
+    return (
+        "identity_contrast_g_" in m
+        or m.endswith("identity_contrast_g")
+        or m == STK_BODY_TRANSFER_FINAL_V1
+        or m == STK_BODY_TRANSFER_FINAL_V1_DE_THUMP
+    )
+
+
+def is_de_thump_mode(mode_name: Optional[str]) -> bool:
+    m = str(mode_name or "")
+    return m.endswith("_de_thump") or m.endswith("_de_thump_candidate")
+
+
+def is_final_stk_candidate_mode(mode_name: Optional[str]) -> bool:
+    m = str(mode_name or "")
+    return m in (
+        STK_BODY_TRANSFER_FINAL_V1,
+        STK_FINAL_CANDIDATE_CANONICAL,
+        STK_BODY_TRANSFER_FINAL_V1_DE_THUMP,
+        STK_FINAL_DE_THUMP_CANONICAL,
+    )
+
+
+def canonical_stk_final_mode(mode_name: Optional[str]) -> str:
+    """Resolve final alias to canonical diagnostic mode name."""
+    m = str(mode_name or "")
+    if m == STK_BODY_TRANSFER_FINAL_V1:
+        return STK_FINAL_CANDIDATE_CANONICAL
+    if m == STK_BODY_TRANSFER_FINAL_V1_DE_THUMP:
+        return STK_FINAL_DE_THUMP_CANONICAL
+    return m
 
 
 def requires_identity_contrast_context(mode_name: Optional[str]) -> bool:
@@ -211,6 +258,39 @@ def hybrid_blend_for_mode(mode_name: Optional[str]) -> Tuple[float, float]:
 def g_config_for_mode(mode_name: Optional[str]) -> Dict[str, Any]:
     """Stage 5.1G: blend ratio + optional decay/bridge physical components."""
     m = str(mode_name or "")
+    if m == STK_BODY_TRANSFER_FINAL_V1:
+        return {
+            "absolute_weight": G_BLEND_RATIOS["30_70"][0],
+            "contrast_weight": G_BLEND_RATIOS["30_70"][1],
+            "decay_active": False,
+            "bridge_active": False,
+            "de_thump_active": False,
+            "canonical_mode": STK_FINAL_CANDIDATE_CANONICAL,
+            "final_alias": True,
+        }
+    if m == STK_BODY_TRANSFER_FINAL_V1_DE_THUMP:
+        return {
+            "absolute_weight": G_BLEND_RATIOS["30_70"][0],
+            "contrast_weight": G_BLEND_RATIOS["30_70"][1],
+            "decay_active": False,
+            "bridge_active": False,
+            "de_thump_active": True,
+            "canonical_mode": STK_FINAL_DE_THUMP_CANONICAL,
+            "final_alias": True,
+        }
+    if m.endswith("_de_thump") or m.endswith("_de_thump_candidate"):
+        abs_w, contrast_w = G_BLEND_RATIOS["30_70"]
+        for tag, (a, b) in G_BLEND_RATIOS.items():
+            if f"g_{tag}" in m:
+                abs_w, contrast_w = a, b
+                break
+        return {
+            "absolute_weight": abs_w,
+            "contrast_weight": contrast_w,
+            "decay_active": False,
+            "bridge_active": False,
+            "de_thump_active": True,
+        }
     if m == "stk_body_transfer_v4_1_identity_contrast_g":
         return {
             "absolute_weight": 0.25,
@@ -230,6 +310,51 @@ def g_config_for_mode(mode_name: Optional[str]) -> Dict[str, Any]:
         "contrast_weight": contrast_w,
         "decay_active": use_decay,
         "bridge_active": use_bridge,
+        "de_thump_active": False,
+    }
+
+
+def apply_residual_de_thump(
+    residual: np.ndarray,
+    *,
+    sample_rate: int,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Attenuate artificial low thump on identity residual onset (30–80 ms), preserve sustain."""
+    r = np.asarray(residual, dtype=np.float64)
+    n = len(r)
+    sr = float(sample_rate)
+    if n < 32:
+        return r.copy(), {"de_thump_active": False}
+
+    onset_end = int(DE_THUMP_ONSET_MS * 1e-3 * sr)
+    blend_end = min(n, onset_end + int(DE_THUMP_BLEND_MS * 1e-3 * sr))
+    onset_end = min(onset_end, n)
+
+    onset = r[:onset_end].copy()
+    if len(onset) >= 8:
+        spec = np.fft.rfft(onset)
+        freqs = np.fft.rfftfreq(len(onset), d=1.0 / sr)
+        hp = float(DE_THUMP_HP_HZ)
+        for i, f_hz in enumerate(freqs):
+            if f_hz < hp:
+                att_db = DE_THUMP_LF_ATTENUATION_DB * (1.0 - f_hz / max(hp, 1e-6))
+                spec[i] *= 10.0 ** (att_db / 20.0)
+        onset = np.fft.irfft(spec, n=len(onset))
+        onset = onset * float(DE_THUMP_ATTACK_SCALE)
+
+    out = r.copy()
+    out[:onset_end] = onset
+    if blend_end > onset_end:
+        fade = np.linspace(1.0, 0.0, blend_end - onset_end)
+        out[onset_end:blend_end] = (
+            onset[-len(fade) :] * fade + r[onset_end:blend_end] * (1.0 - fade)
+        )
+
+    return out, {
+        "de_thump_active": True,
+        "de_thump_onset_ms": DE_THUMP_ONSET_MS,
+        "de_thump_hp_hz": DE_THUMP_HP_HZ,
+        "de_thump_attack_scale": DE_THUMP_ATTACK_SCALE,
     }
 
 
@@ -993,6 +1118,12 @@ def synthesize_v4_1_identity_space_note(
                     z_body=z_body,
                 )
                 g_physical["bridge"] = bridge_meta
+            if g_cfg.get("de_thump_active"):
+                combined_residual, de_thump_meta = apply_residual_de_thump(
+                    combined_residual,
+                    sample_rate=sample_rate,
+                )
+                g_physical["de_thump"] = de_thump_meta
             blended = base_audio + combined_residual
             blended, audibility_info = apply_hybrid_audibility_floor(blended, base_audio)
             final, guard = apply_rms_guard(blended, base_audio, max_db=HYBRID_RMS_GUARD_DB)
@@ -1083,6 +1214,12 @@ def synthesize_v4_1_identity_space_note(
                 "v4_1_base_preserved": True,
                 "identity_hybrid_active": hybrid_active,
                 "identity_g_active": g_active,
+                "identity_final_stk_candidate": is_final_stk_candidate_mode(diagnostic_mode),
+                "identity_final_canonical_mode": (
+                    canonical_stk_final_mode(diagnostic_mode)
+                    if is_final_stk_candidate_mode(diagnostic_mode)
+                    else None
+                ),
                 "identity_strength_profile": (
                     profile.name if not (hybrid_active or g_active) else ("g_physical" if g_active else "hybrid")
                 ),
