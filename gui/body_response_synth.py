@@ -1527,10 +1527,30 @@ def synthesize_note_with_body_response(
     sample_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     from body_hybrid_v4 import get_v4_ablation, synthesize_hybrid_v4_note
+    from body_hybrid_v4_1 import get_v4_1_ablation, synthesize_hybrid_v4_1_note
+
+    root = repo_root or Path(__file__).resolve().parents[1]
+    sid = sample_id or str((sample_parameters or {}).get("sample_id") or "sample_000")
+
+    if get_v4_1_ablation(diagnostic_mode):
+        return synthesize_hybrid_v4_1_note(
+            frequency_hz=frequency_hz,
+            note_name=note_name,
+            duration_s=duration_s,
+            sample_rate=sample_rate,
+            modal_data=modal_data,
+            output_wav=output_wav,
+            output_metadata_json=output_metadata_json,
+            velocity=velocity,
+            sample_parameters=sample_parameters,
+            modal_source=modal_source,
+            diagnostic_mode=str(diagnostic_mode),
+            synthesis_preset=synthesis_preset,
+            repo_root=root,
+            sample_id=sid,
+        )
 
     if get_v4_ablation(diagnostic_mode):
-        root = repo_root or Path(__file__).resolve().parents[1]
-        sid = sample_id or str((sample_parameters or {}).get("sample_id") or "sample_000")
         return synthesize_hybrid_v4_note(
             frequency_hz=frequency_hz,
             note_name=note_name,
@@ -1572,6 +1592,7 @@ def _synthesize_note_with_body_response_core(
     output_metadata_json: Optional[Path] = None,
     velocity: float = DEFAULT_VELOCITY,
     modal_source: Optional[str] = None,
+    dry_mix_only: bool = False,
 ) -> Dict[str, Any]:
     tune = active_tuning()
     all_modes, parse_defaults = parse_modal_modes(modal_data)
@@ -1743,6 +1764,18 @@ def _synthesize_note_with_body_response_core(
         defaults_used.append("low_note_fundamental_anchor")
     defaults_used.append("note_harmonic_frequency_decay_envelope")
     final_dry_to_body_rms_ratio = string_rms_before_mix / max(body_rms_before, 1e-12)
+
+    if dry_mix_only:
+        return {
+            "dry_mix": np.asarray(mixed, dtype=np.float64),
+            "branch_baseline_rms": round(_rms(mixed), 8),
+            "string_rms_before_mix": round(string_rms_before_mix, 8),
+            "body_rms_before_mix": round(body_rms_before, 8),
+            "body_gain_applied": round(body_gain_applied, 6),
+            "defaults_used": defaults_used,
+            "note_name": note_name,
+            "frequency_hz": float(frequency_hz),
+        }
 
     loudness_info = write_wav_int16(
         Path(output_wav),

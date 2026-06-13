@@ -399,6 +399,34 @@ DIAGNOSTIC_MODES: Dict[str, DiagnosticSynthesisConfig] = {
         final_loudness_normalization_strength=0.32,
         description="Stage 5.0 V4 alias (stk_body_transfer_v4).",
     ),
+    "modal_body_hybrid_v4_1_core": DiagnosticSynthesisConfig(
+        name="modal_body_hybrid_v4_1_core",
+        raw_body_variation_preserve=0.50,
+        body_gain_normalization_strength=0.36,
+        final_loudness_normalization_strength=0.34,
+        description="Stage 5.1 V4.1 strict f0 hybrid — baseline/v1 endpoints only.",
+    ),
+    "modal_body_hybrid_v4_1_full": DiagnosticSynthesisConfig(
+        name="modal_body_hybrid_v4_1_full",
+        raw_body_variation_preserve=0.50,
+        body_gain_normalization_strength=0.36,
+        final_loudness_normalization_strength=0.34,
+        description="Stage 5.1 V4.1 full (currently same as core).",
+    ),
+    "modal_body_hybrid_v4_1": DiagnosticSynthesisConfig(
+        name="modal_body_hybrid_v4_1",
+        raw_body_variation_preserve=0.50,
+        body_gain_normalization_strength=0.36,
+        final_loudness_normalization_strength=0.34,
+        description="Stage 5.1 V4.1 alias — same as core.",
+    ),
+    "stk_body_transfer_v4_1": DiagnosticSynthesisConfig(
+        name="stk_body_transfer_v4_1",
+        raw_body_variation_preserve=0.50,
+        body_gain_normalization_strength=0.36,
+        final_loudness_normalization_strength=0.34,
+        description="Stage 5.1 V4.1 alias (stk_body_transfer_v4_1).",
+    ),
 }
 
 _active_diagnostic: Optional[DiagnosticSynthesisConfig] = None
