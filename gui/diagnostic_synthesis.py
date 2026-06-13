@@ -469,6 +469,34 @@ DIAGNOSTIC_MODES: Dict[str, DiagnosticSynthesisConfig] = {
         final_loudness_normalization_strength=0.34,
         description="Stage 5.1D identity sweep alias (medium strength).",
     ),
+    "modal_body_hybrid_v4_1_identity_contrast": DiagnosticSynthesisConfig(
+        name="modal_body_hybrid_v4_1_identity_contrast",
+        raw_body_variation_preserve=0.50,
+        body_gain_normalization_strength=0.36,
+        final_loudness_normalization_strength=0.34,
+        description="Stage 5.1E V4.1 + sample-relative identity contrast (medium).",
+    ),
+    "stk_body_transfer_v4_1_identity_contrast": DiagnosticSynthesisConfig(
+        name="stk_body_transfer_v4_1_identity_contrast",
+        raw_body_variation_preserve=0.50,
+        body_gain_normalization_strength=0.36,
+        final_loudness_normalization_strength=0.34,
+        description="Stage 5.1E identity contrast alias.",
+    ),
+    "modal_body_hybrid_v4_1_identity_contrast_medium": DiagnosticSynthesisConfig(
+        name="modal_body_hybrid_v4_1_identity_contrast_medium",
+        raw_body_variation_preserve=0.50,
+        body_gain_normalization_strength=0.36,
+        final_loudness_normalization_strength=0.34,
+        description="Stage 5.1E sample-relative identity contrast (medium).",
+    ),
+    "modal_body_hybrid_v4_1_identity_contrast_strong": DiagnosticSynthesisConfig(
+        name="modal_body_hybrid_v4_1_identity_contrast_strong",
+        raw_body_variation_preserve=0.50,
+        body_gain_normalization_strength=0.36,
+        final_loudness_normalization_strength=0.34,
+        description="Stage 5.1E sample-relative identity contrast (strong).",
+    ),
 }
 
 _active_diagnostic: Optional[DiagnosticSynthesisConfig] = None

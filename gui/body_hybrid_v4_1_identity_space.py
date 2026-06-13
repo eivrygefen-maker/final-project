@@ -30,7 +30,14 @@ IDENTITY_SPACE_MODES: Tuple[str, ...] = (
     "modal_body_hybrid_v4_1_identity_medium",
     "modal_body_hybrid_v4_1_identity_strong",
     "stk_body_transfer_v4_1_identity_sweep",
+    "modal_body_hybrid_v4_1_identity_contrast",
+    "stk_body_transfer_v4_1_identity_contrast",
+    "modal_body_hybrid_v4_1_identity_contrast_medium",
+    "modal_body_hybrid_v4_1_identity_contrast_strong",
 )
+
+DZ_BODY_CLIP = 2.5
+IQR_FLOOR = 0.15
 
 # Default/light bounds (Stage 5.1C baseline — diagnostic only)
 IDENTITY_EPSILON = 0.18
@@ -93,6 +100,26 @@ STRENGTH_PROFILES: Dict[str, IdentityStrengthProfile] = {
         axis_gain_scale=2.6,
         band_eq_max_db=1.35,
     ),
+    "contrast_medium": IdentityStrengthProfile(
+        name="contrast_medium",
+        identity_epsilon=0.45,
+        harmonic_gain_max=0.25,
+        fundamental_gain_max=0.04,
+        residual_gain_max=0.18,
+        rms_guard_max_db=2.5,
+        axis_gain_scale=2.6,
+        band_eq_max_db=1.2,
+    ),
+    "contrast_strong": IdentityStrengthProfile(
+        name="contrast_strong",
+        identity_epsilon=0.65,
+        harmonic_gain_max=0.35,
+        fundamental_gain_max=0.04,
+        residual_gain_max=0.25,
+        rms_guard_max_db=3.0,
+        axis_gain_scale=3.0,
+        band_eq_max_db=1.8,
+    ),
 }
 
 MODE_TO_STRENGTH: Dict[str, str] = {
@@ -102,6 +129,10 @@ MODE_TO_STRENGTH: Dict[str, str] = {
     "modal_body_hybrid_v4_1_identity_medium": "medium",
     "modal_body_hybrid_v4_1_identity_strong": "strong",
     "stk_body_transfer_v4_1_identity_sweep": "medium",
+    "modal_body_hybrid_v4_1_identity_contrast": "contrast_medium",
+    "stk_body_transfer_v4_1_identity_contrast": "contrast_medium",
+    "modal_body_hybrid_v4_1_identity_contrast_medium": "contrast_medium",
+    "modal_body_hybrid_v4_1_identity_contrast_strong": "contrast_strong",
 }
 
 
@@ -112,6 +143,10 @@ def strength_profile_for_mode(mode_name: Optional[str]) -> Optional[IdentityStre
     return STRENGTH_PROFILES[key]
 
 
+def is_contrast_identity_mode(mode_name: Optional[str]) -> bool:
+    return "identity_contrast" in str(mode_name or "")
+
+
 def is_v4_1_identity_space_mode(mode_name: Optional[str]) -> bool:
     return str(mode_name or "") in IDENTITY_SPACE_MODES
 
@@ -120,13 +155,20 @@ def _feat(feats: Mapping[str, float], key: str, default: float = 0.0) -> float:
     return float(feats.get(key, default))
 
 
-def compute_perceptual_axes(z_body: Mapping[str, Any]) -> Dict[str, float]:
-    """Bounded projection from z_body to six perceptual timbre axes."""
+def compute_perceptual_axes(
+    z_body: Mapping[str, Any],
+    *,
+    contrast: bool = False,
+) -> Dict[str, float]:
+    """Bounded projection from z_body (or dz_body) to six perceptual timbre axes."""
     f = z_body.get("features") or {}
 
     def _blend(keys: Sequence[str], weights: Optional[Sequence[float]] = None) -> float:
         ws = weights or [1.0] * len(keys)
-        num = sum(_feat(f, k) * w for k, w in zip(keys, ws))
+        if contrast:
+            num = sum((_feat(f, k) / DZ_BODY_CLIP) * w for k, w in zip(keys, ws))
+        else:
+            num = sum(_feat(f, k) * w for k, w in zip(keys, ws))
         den = sum(abs(w) for w in ws) or 1.0
         return max(-1.0, min(1.0, num / den))
 
@@ -166,21 +208,93 @@ def compute_perceptual_axes(z_body: Mapping[str, Any]) -> Dict[str, float]:
     return {k: round(v, 6) for k, v in axes.items()}
 
 
+def compute_robust_identity_reference(
+    z_bodies: Sequence[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Robust batch reference: per-feature median and IQR across sample set."""
+    keys = sorted({k for z in z_bodies for k in (z.get("features") or {}).keys()})
+    median_features: Dict[str, float] = {}
+    iqr_features: Dict[str, float] = {}
+    for key in keys:
+        vals = np.asarray(
+            [float((z.get("features") or {}).get(key, 0.0)) for z in z_bodies],
+            dtype=np.float64,
+        )
+        if len(vals) == 0:
+            continue
+        q25, q50, q75 = np.percentile(vals, [25, 50, 75])
+        median_features[key] = round(float(q50), 6)
+        iqr_features[key] = round(max(float(q75 - q25), IQR_FLOOR), 6)
+    return {
+        "median_features": median_features,
+        "iqr_features": iqr_features,
+        "field_names": keys,
+        "sample_count": len(z_bodies),
+    }
+
+
+def compute_dz_body(
+    z_body: Mapping[str, Any],
+    reference: Mapping[str, Any],
+    *,
+    clip: float = DZ_BODY_CLIP,
+) -> Dict[str, Any]:
+    """Sample-relative contrast vector: robust z-score clipped to ±clip."""
+    feats = z_body.get("features") or {}
+    med = reference.get("median_features") or {}
+    iqr = reference.get("iqr_features") or {}
+    keys = sorted(set(feats.keys()) | set(med.keys()))
+    dz_feats: Dict[str, float] = {}
+    for key in keys:
+        num = float(feats.get(key, 0.0)) - float(med.get(key, 0.0))
+        den = float(iqr.get(key, IQR_FLOOR))
+        raw = num / den
+        dz_feats[key] = round(max(-clip, min(clip, raw)), 6)
+    field_names = sorted(dz_feats.keys())
+    return {
+        "features": dz_feats,
+        "vector": [dz_feats[k] for k in field_names],
+        "field_names": field_names,
+        "clip_limit": clip,
+    }
+
+
+def build_batch_contrast_context(
+    z_bodies_by_sample: Mapping[str, Mapping[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Per-sample dz_body + shared z_ref for a note batch."""
+    z_list = list(z_bodies_by_sample.values())
+    if not z_list:
+        return {}
+    z_ref = compute_robust_identity_reference(z_list)
+    out: Dict[str, Dict[str, Any]] = {}
+    for sid, z_body in z_bodies_by_sample.items():
+        dz_body = compute_dz_body(z_body, z_ref)
+        out[str(sid)] = {
+            "z_ref": z_ref,
+            "z_body": z_body,
+            "dz_body": dz_body,
+        }
+    return out
+
+
 def compute_harmonic_gains(
     z_body: Mapping[str, Any],
     *,
     frequency_hz: float,
     profile: Optional[IdentityStrengthProfile] = None,
+    axes: Optional[Mapping[str, float]] = None,
+    contrast: bool = False,
 ) -> List[float]:
     """Bounded log-domain gains per harmonic 1..8 from perceptual axes."""
     prof = profile or STRENGTH_PROFILES["light"]
-    axes = compute_perceptual_axes(z_body)
-    b = axes["brightness_centroid"]
-    w = axes["low_mid_warmth"]
-    r = axes["high_freq_rolloff"]
-    a = axes["attack_bloom"]
-    d = axes["decay_sustain"]
-    m = axes["body_resonance_density"]
+    ax = dict(axes) if axes is not None else compute_perceptual_axes(z_body, contrast=contrast)
+    b = ax["brightness_centroid"]
+    w = ax["low_mid_warmth"]
+    r = ax["high_freq_rolloff"]
+    a = ax["attack_bloom"]
+    d = ax["decay_sustain"]
+    m = ax["body_resonance_density"]
     scale = prof.axis_gain_scale * prof.harmonic_gain_max
 
     axis_by_harmonic = [
@@ -521,8 +635,27 @@ def synthesize_v4_1_identity_space_note(
             repo_root=repo_root,
             sample_id=sample_id,
         )
-        axes = compute_perceptual_axes(z_body)
-        h_gains = compute_harmonic_gains(z_body, frequency_hz=frequency_hz, profile=profile)
+        contrast_active = is_contrast_identity_mode(diagnostic_mode)
+        contrast_ctx = (sample_parameters or {}).get("identity_contrast_context") or {}
+        if contrast_active and contrast_ctx.get("dz_body"):
+            axis_source = contrast_ctx["dz_body"]
+            axes = compute_perceptual_axes(axis_source, contrast=True)
+            h_gains = compute_harmonic_gains(
+                axis_source,
+                frequency_hz=frequency_hz,
+                profile=profile,
+                axes=axes,
+                contrast=True,
+            )
+        else:
+            axis_source = z_body
+            axes = compute_perceptual_axes(z_body, contrast=False)
+            h_gains = compute_harmonic_gains(
+                z_body,
+                frequency_hz=frequency_hz,
+                profile=profile,
+                axes=axes,
+            )
         band_shaped = apply_perceptual_band_shaping(
             base_audio,
             frequency_hz=frequency_hz,
@@ -566,6 +699,9 @@ def synthesize_v4_1_identity_space_note(
                     "axis_gain_scale": profile.axis_gain_scale,
                 },
                 "body_identity_vector": z_body,
+                "identity_contrast_active": contrast_active,
+                "identity_contrast_context": contrast_ctx if contrast_active else None,
+                "perceptual_axes_source": "dz_body" if contrast_active else "z_body",
                 "identity_rms_guard": guard,
                 "identity_vs_v41_reference": vs_ref,
                 "output_peak_dbfs": round(peak_db, 4),
@@ -760,6 +896,68 @@ def distance_consistency_report(
         "audio_distances": audio,
         "spearman_rho": rho,
         "pairs_sample": pairs[:15],
+    }
+
+
+def nearest_neighbor_preservation_report(
+    samples: Sequence[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Check whether nearest physical neighbors stay closer in audio space."""
+    n = len(samples)
+    if n < 3:
+        return {"nn_preservation_rate": None, "pair_count": 0}
+    preserved = 0
+    nn_pairs: List[Dict[str, Any]] = []
+    for i in range(n):
+        si = samples[i]
+        phys_dists: List[Tuple[int, float]] = []
+        audio_dists: List[float] = []
+        for j in range(n):
+            if i == j:
+                continue
+            sj = samples[j]
+            pd = physical_distance(si.get("z_body") or {}, sj.get("z_body") or {})
+            ad = audio_distance(si.get("timbre") or [], sj.get("timbre") or [])
+            phys_dists.append((j, pd))
+            audio_dists.append(ad)
+        nn_j, nn_phys = min(phys_dists, key=lambda t: t[1])
+        ad_nn = audio_distance(si.get("timbre") or [], samples[nn_j].get("timbre") or [])
+        med_audio = float(np.median(audio_dists)) if audio_dists else ad_nn
+        ok = ad_nn <= med_audio
+        if ok:
+            preserved += 1
+        nn_pairs.append(
+            {
+                "sample": si.get("sample_id"),
+                "nearest_neighbor": samples[nn_j].get("sample_id"),
+                "physical_distance_nn": round(nn_phys, 6),
+                "audio_distance_nn": round(ad_nn, 6),
+                "audio_distance_median": round(med_audio, 6),
+                "preserved": ok,
+            }
+        )
+    per_sample_rhos: List[float] = []
+    for i in range(n):
+        phys_row = []
+        audio_row = []
+        for j in range(n):
+            if i == j:
+                continue
+            phys_row.append(
+                physical_distance(samples[i].get("z_body") or {}, samples[j].get("z_body") or {})
+            )
+            audio_row.append(
+                audio_distance(samples[i].get("timbre") or [], samples[j].get("timbre") or [])
+            )
+        rho = spearman_correlation(phys_row, audio_row)
+        if rho is not None:
+            per_sample_rhos.append(float(rho))
+    return {
+        "nn_preservation_rate": round(preserved / n, 4),
+        "nn_preservation_count": preserved,
+        "sample_count": n,
+        "mean_local_spearman": round(float(np.mean(per_sample_rhos)), 6) if per_sample_rhos else None,
+        "pairs_sample": nn_pairs[:10],
     }
 
 
