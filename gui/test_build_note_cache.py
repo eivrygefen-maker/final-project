@@ -71,7 +71,8 @@ class NoteCacheBuilderTests(unittest.TestCase):
         with open(manifest_path, encoding="utf-8") as fh:
             on_disk = json.load(fh)
 
-        self.assertEqual(on_disk["schema_version"], "note_cache_v1")
+        self.assertEqual(on_disk["schema_version"], "note_cache_v2")
+        self.assertEqual(on_disk["stk_model_alias"], "stk_body_transfer_final_v1")
         self.assertEqual(on_disk["fret_count"], 5)
         self.assertEqual(on_disk["playable_position_count"], 6 * 6)
         self.assertLess(on_disk["unique_note_count"], on_disk["playable_position_count"])
@@ -83,13 +84,10 @@ class NoteCacheBuilderTests(unittest.TestCase):
             self.assertTrue(wav.is_file() and wav.stat().st_size > 44, note["note_id"])
             self.assertTrue(meta.is_file(), note["note_id"])
             meta_doc = json.loads(meta.read_text(encoding="utf-8"))
-            self.assertEqual(meta_doc["body_modal_richness_gain"], BODY_MODAL_RICHNESS_GAIN)
-            self.assertIn("output_rms_dbfs", meta_doc)
-            self.assertIn("output_decay_slope_db_per_s", meta_doc)
-            self.assertIn("late_to_early_rms_db", meta_doc)
-            self.assertTrue(meta_doc.get("anti_click_taper_applied"))
-            self.assertIn("body_to_string_rms_ratio_before_loudness", meta_doc)
-            self.assertIn("body_modal_bandwidth_widening", meta_doc)
+            self.assertEqual(meta_doc.get("diagnostic_mode"), "stk_body_transfer_final_v1")
+            norm = meta_doc.get("normalization_diagnostics") or {}
+            self.assertIn("output_rms_dbfs", norm if norm else meta_doc)
+            self.assertIn("output_peak_dbfs", meta_doc)
 
         for pos in on_disk["positions"]:
             wav = cache_root / pos["wav_path"]

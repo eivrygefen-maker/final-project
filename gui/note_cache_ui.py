@@ -80,6 +80,7 @@ def expected_note_cache_fingerprint(
     fret_count: int = DEFAULT_FRET_COUNT,
     duration_s: float = DEFAULT_DURATION_S,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
+    stk_mode_alias: Optional[str] = None,
 ) -> Optional[str]:
     modal_json = Path(modal_json)
     if not modal_json.is_file():
@@ -93,6 +94,7 @@ def expected_note_cache_fingerprint(
         duration_s=duration_s,
         sample_rate=sample_rate,
         geometry_fingerprint=geom_fp,
+        stk_model_alias=stk_mode_alias,
     )
 
 
@@ -179,6 +181,10 @@ def build_cache_safe(
     fret_count: int = DEFAULT_FRET_COUNT,
     geometry_config: Optional[Path] = None,
     force: bool = False,
+    stk_mode_alias: Optional[str] = None,
+    sample_parameters: Optional[Mapping[str, Any]] = None,
+    precompute_bundle: Optional[Mapping[str, Any]] = None,
+    repo_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Build note cache (no FEM) — used by Generate Sound."""
     geom = geometry_config if geometry_config and geometry_config.is_file() else None
@@ -188,6 +194,10 @@ def build_cache_safe(
         fret_count=fret_count,
         geometry_config=geom,
         force=force,
+        stk_mode_alias=stk_mode_alias,
+        sample_parameters=sample_parameters,
+        precompute_bundle=precompute_bundle,
+        repo_root=repo_root,
     )
 
 

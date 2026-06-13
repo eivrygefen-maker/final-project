@@ -38,9 +38,18 @@ from body_response_synth import (
     synthetic_classic_body_modes,
     write_wav_int16,
 )
+from stk_pipeline_defaults import (
+    DEFAULT_WEBSITE_STK_LABEL,
+    DEFAULT_WEBSITE_STK_MODE,
+    STK_PIPELINE_MODEL_VERSION,
+    WEBSITE_SAMPLE_ID,
+    enrich_sample_parameters_for_note,
+    resolve_pipeline_stk_mode_alias,
+    user_label_for_stk_mode,
+)
 
-NOTE_CACHE_SCHEMA_VERSION = "note_cache_v1"
-NOTE_CACHE_BUILDER_VERSION = "stage4_1_v1"
+NOTE_CACHE_SCHEMA_VERSION = "note_cache_v2"
+NOTE_CACHE_BUILDER_VERSION = "stage5_1h_stk_final_v1"
 
 # String 6 (low E) .. string 1 (high E); open frequencies in Hz.
 DEFAULT_TUNING: Tuple[Tuple[int, float, str], ...] = (
@@ -132,10 +141,15 @@ def synthesis_version_payload(
     *,
     duration_s: float,
     sample_rate: int,
+    stk_model_alias: Optional[str] = None,
 ) -> Dict[str, Any]:
+    alias = resolve_pipeline_stk_mode_alias(override=stk_model_alias)
     return {
         "builder_version": NOTE_CACHE_BUILDER_VERSION,
         "synthesis_model": "modal_transfer_function_H_body_sum_m_Wm_Hm",
+        "stk_model_alias": alias,
+        "stk_model_user_label": user_label_for_stk_mode(alias),
+        "stk_pipeline_model_version": STK_PIPELINE_MODEL_VERSION,
         "body_modal_richness_gain": BODY_MODAL_RICHNESS_GAIN,
         "body_modal_gain": BODY_MODAL_GAIN,
         "body_to_string_target_ratio": BODY_TO_STRING_TARGET_RATIO,
@@ -168,13 +182,18 @@ def compute_guitar_fingerprint(
     duration_s: float,
     sample_rate: int,
     geometry_fingerprint: Optional[str] = None,
+    stk_model_alias: Optional[str] = None,
 ) -> str:
     payload = {
         "modal_json_sha256": modal_json_sha256,
         "fret_count": int(fret_count),
         "tuning_hz": [round(float(f), 6) for f in tuning_hz],
         "geometry_fingerprint": geometry_fingerprint or "",
-        **synthesis_version_payload(duration_s=duration_s, sample_rate=sample_rate),
+        **synthesis_version_payload(
+            duration_s=duration_s,
+            sample_rate=sample_rate,
+            stk_model_alias=stk_model_alias,
+        ),
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -201,6 +220,10 @@ def build_note_cache(
     tuning: Sequence[Tuple[int, float, str]] = DEFAULT_TUNING,
     geometry_config: Optional[Path] = None,
     force: bool = False,
+    stk_mode_alias: Optional[str] = None,
+    sample_parameters: Optional[Mapping[str, Any]] = None,
+    precompute_bundle: Optional[Mapping[str, Any]] = None,
+    repo_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     modal_json = Path(modal_json).resolve()
     out_root = Path(out_root).resolve()
@@ -216,6 +239,16 @@ def build_note_cache(
 
     tuning_hz = tuning_open_frequencies(tuning)
     geom_fp = optional_geometry_fingerprint(geometry_config)
+    stk_alias = resolve_pipeline_stk_mode_alias(override=stk_mode_alias)
+    if precompute_bundle:
+        base_params = dict(precompute_bundle.get("sample_parameters") or {})
+        if not stk_mode_alias and precompute_bundle.get("model_alias"):
+            stk_alias = str(precompute_bundle["model_alias"])
+    elif sample_parameters:
+        base_params = dict(sample_parameters)
+    else:
+        base_params = {}
+
     guitar_fp = compute_guitar_fingerprint(
         modal_json_sha256=modal_sha,
         fret_count=fret_count,
@@ -223,7 +256,9 @@ def build_note_cache(
         duration_s=duration_s,
         sample_rate=sample_rate,
         geometry_fingerprint=geom_fp,
+        stk_model_alias=stk_alias,
     )
+    root = repo_root or Path(__file__).resolve().parents[1]
 
     cache_root = out_root / guitar_fp
     wav_dir = cache_root / "wav"
@@ -244,6 +279,14 @@ def build_note_cache(
         meta_path = meta_dir / f"{note_id}.json"
 
         if force or not wav_path.is_file() or not meta_path.is_file():
+            note_params = enrich_sample_parameters_for_note(
+                base_parameters=base_params,
+                modal_data=modal_data,
+                frequency_hz=hz,
+                stk_mode_alias=stk_alias,
+                sample_id=WEBSITE_SAMPLE_ID,
+                repo_root=root,
+            )
             synth_meta = synthesize_note_with_body_response(
                 frequency_hz=hz,
                 note_name=entry["note_name"],
@@ -252,6 +295,10 @@ def build_note_cache(
                 modal_data=modal_data,
                 output_wav=wav_path,
                 output_metadata_json=meta_path,
+                diagnostic_mode=stk_alias,
+                sample_parameters=note_params,
+                repo_root=root,
+                sample_id=WEBSITE_SAMPLE_ID,
             )
         else:
             synth_meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -291,11 +338,15 @@ def build_note_cache(
         "modal_json_sha256": modal_sha,
         "geometry_fingerprint": geom_fp,
         "synthesis_model": "modal_transfer_function_H_body_sum_m_Wm_Hm",
+        "stk_model_alias": stk_alias,
+        "stk_model_user_label": user_label_for_stk_mode(stk_alias),
+        "stk_pipeline_model_version": STK_PIPELINE_MODEL_VERSION,
         "body_modal_richness_gain": BODY_MODAL_RICHNESS_GAIN,
         "builder_version": NOTE_CACHE_BUILDER_VERSION,
         "synthesis_constants": synthesis_version_payload(
             duration_s=duration_s,
             sample_rate=sample_rate,
+            stk_model_alias=stk_alias,
         ),
         "fret_count": int(fret_count),
         "tuning": [

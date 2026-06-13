@@ -183,6 +183,7 @@ def _init_session() -> None:
         "rom_body_error": "",
         "sound_stale": True,
         "developer_fom_mode": False,
+        "stk_debug_mode_alias": "",
         "show_display_mesh": False,
         "fixture_fp": "",
         "_clamp_ribs": DEFAULT_CLAMP_RIBS,
@@ -1335,7 +1336,70 @@ def complete_rom_body_response(
     st.session_state.rom_body_error = ""
     st.session_state.rom_body_pending = False
     st.session_state.sound_stale = True
+    try:
+        from stk_final_v1_precompute_cache import trigger_stk_precompute_if_ready  # noqa: WPS433
+
+        trigger_stk_precompute_if_ready(
+            repo_root=BASE_DIR,
+            modal_json=stk_path,
+            lhs_params=lhs_params,
+            geometry_config=CONFIG_PATH,
+            stk_mode_alias=website_stk_mode_alias(),
+            developer_debug=bool(st.session_state.get("developer_fom_mode")),
+        )
+    except Exception:
+        pass
     return stk_path
+
+
+def website_stk_mode_alias() -> str:
+    """Pipeline STK alias for Generate (default: frozen final v1)."""
+    from stk_pipeline_defaults import (  # noqa: WPS433
+        DEFAULT_WEBSITE_STK_MODE,
+        resolve_pipeline_stk_mode_alias,
+    )
+
+    override = str(st.session_state.get("stk_debug_mode_alias") or "").strip()
+    if st.session_state.get("developer_fom_mode") and override:
+        return resolve_pipeline_stk_mode_alias(
+            override=override,
+            developer_debug=True,
+        )
+    return DEFAULT_WEBSITE_STK_MODE
+
+
+def website_stk_user_label() -> str:
+    from stk_pipeline_defaults import user_label_for_stk_mode  # noqa: WPS433
+
+    return user_label_for_stk_mode(website_stk_mode_alias())
+
+
+def render_stk_debug_controls() -> None:
+    """Developer-only STK mode override (de-thump safety variant)."""
+    if not st.session_state.get("developer_fom_mode"):
+        return
+    from stk_pipeline_defaults import (  # noqa: WPS433
+        DEFAULT_WEBSITE_STK_MODE,
+        debug_stk_mode_options,
+        user_label_for_stk_mode,
+    )
+
+    labels = {alias: label for alias, label in debug_stk_mode_options()}
+    options = [DEFAULT_WEBSITE_STK_MODE] + [
+        alias for alias in labels if alias != DEFAULT_WEBSITE_STK_MODE
+    ]
+    current = website_stk_mode_alias()
+    if current not in options:
+        current = DEFAULT_WEBSITE_STK_MODE
+    with st.sidebar.expander("STK synthesis (debug)"):
+        picked = st.selectbox(
+            "Body transfer mode",
+            options=options,
+            index=options.index(current),
+            format_func=lambda alias: user_label_for_stk_mode(alias),
+            key="stk_debug_mode_select",
+        )
+        st.session_state.stk_debug_mode_alias = picked
 
 
 def render_rom_body_status(*, current_rom_fp: str) -> None:
@@ -1602,18 +1666,45 @@ def run_stk(
     top_wood: str,
     note_hz: Optional[float] = None,
     note_name: str = "A2",
+    lhs_params: Optional[Dict[str, Any]] = None,
+    stk_mode_alias: Optional[str] = None,
+    precompute_bundle: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Stage-1 Python body-response synth (fixed excitation, ROM modal filtering)."""
+    """Stage-1 Python body-response synth (frozen STK final v1 default)."""
     from body_response_synth import (  # noqa: WPS433
         DEFAULT_DURATION_S,
         DEFAULT_SAMPLE_RATE,
         load_modal_data_from_path,
         synthesize_note_with_body_response,
     )
+    from stk_pipeline_defaults import (  # noqa: WPS433
+        WEBSITE_SAMPLE_ID,
+        enrich_sample_parameters_for_note,
+        resolve_pipeline_stk_mode_alias,
+    )
 
     pitch_hz = float(note_hz if note_hz is not None else DEFAULT_STK_NOTE_HZ)
     meta_path = WAV_OUTPUT.with_name(f"{WAV_OUTPUT.stem}_metadata.json")
     modal_data = load_modal_data_from_path(body_json)
+    alias = resolve_pipeline_stk_mode_alias(override=stk_mode_alias)
+    if precompute_bundle:
+        base_params = dict(precompute_bundle.get("sample_parameters") or {})
+        if precompute_bundle.get("model_alias"):
+            alias = str(precompute_bundle["model_alias"])
+    elif lhs_params:
+        from stk_pipeline_defaults import lhs_params_to_sample_parameters  # noqa: WPS433
+
+        base_params = lhs_params_to_sample_parameters(lhs_params)
+    else:
+        base_params = {"top_wood_id": top_wood}
+    note_params = enrich_sample_parameters_for_note(
+        base_parameters=base_params,
+        modal_data=modal_data,
+        frequency_hz=pitch_hz,
+        stk_mode_alias=alias,
+        sample_id=WEBSITE_SAMPLE_ID,
+        repo_root=BASE_DIR,
+    )
     metadata = synthesize_note_with_body_response(
         frequency_hz=pitch_hz,
         note_name=note_name,
@@ -1622,6 +1713,10 @@ def run_stk(
         modal_data=modal_data,
         output_wav=WAV_OUTPUT,
         output_metadata_json=meta_path,
+        diagnostic_mode=alias,
+        sample_parameters=note_params,
+        repo_root=BASE_DIR,
+        sample_id=WEBSITE_SAMPLE_ID,
     )
     append_silence_wav(WAV_OUTPUT, 0.3)
     return metadata
@@ -1725,6 +1820,7 @@ def _render_main_studio(
         unsafe_allow_html=True,
     )
     st.markdown('<div class="gen-sound-block">', unsafe_allow_html=True)
+    st.caption(f"Synthesis: **{website_stk_user_label()}**")
     _gc1, _gc2, _gc3 = st.columns([1, 2, 1])
     with _gc2:
         gen_sound = st.button(
@@ -1753,19 +1849,45 @@ def _render_main_studio(
 
             body_json = Path(st.session_state.stk_body_json)
             cache_root = note_cache_root(BASE_DIR)
+            stk_alias = website_stk_mode_alias()
             try:
+                from body_response_synth import load_modal_data_from_path  # noqa: WPS433
+                from stk_final_v1_precompute_cache import ensure_stk_precompute_cache  # noqa: WPS433
+                from stk_pipeline_defaults import lhs_params_to_sample_parameters  # noqa: WPS433
+
+                modal_data = load_modal_data_from_path(body_json)
+                precompute_bundle, _pre_report = ensure_stk_precompute_cache(
+                    repo_root=BASE_DIR,
+                    modal_json=body_json,
+                    modal_data=modal_data,
+                    lhs_params=lhs_params,
+                    geometry_config=CONFIG_PATH,
+                    stk_mode_alias=stk_alias,
+                    developer_debug=bool(st.session_state.get("developer_fom_mode")),
+                )
                 st.session_state.note_cache_building = True
                 with st.spinner("Synthesizing sound and building note cache…"):
-                    run_stk(body_json=body_json, top_wood=top_wood)
+                    run_stk(
+                        body_json=body_json,
+                        top_wood=top_wood,
+                        lhs_params=lhs_params,
+                        stk_mode_alias=stk_alias,
+                        precompute_bundle=precompute_bundle,
+                    )
                     build_cache_safe(
                         modal_json=body_json,
                         out_root=cache_root,
                         geometry_config=CONFIG_PATH,
                         force=True,
+                        stk_mode_alias=stk_alias,
+                        sample_parameters=lhs_params_to_sample_parameters(lhs_params),
+                        precompute_bundle=precompute_bundle,
+                        repo_root=BASE_DIR,
                     )
                     expected_cache_fp = expected_note_cache_fingerprint(
                         modal_json=body_json,
                         geometry_config=CONFIG_PATH,
+                        stk_mode_alias=stk_alias,
                     )
                     resolved = resolve_note_cache(
                         cache_root,
@@ -1839,6 +1961,7 @@ def _render_main_studio(
     expected_cache_fp = expected_note_cache_fingerprint(
         modal_json=modal_json,
         geometry_config=CONFIG_PATH,
+        stk_mode_alias=website_stk_mode_alias(),
     )
     resolved = resolve_note_cache(cache_root, expected_fingerprint=expected_cache_fp)
     ui_status = note_cache_ui_status(
@@ -1870,6 +1993,7 @@ def main() -> None:
     if _rom_init_err and not m4_rom_available(saved_shape):
         st.sidebar.warning(f"Legacy ROM engine offline: {_rom_init_err}")
     render_classic_pipeline_status(shape_type=saved_shape)
+    render_stk_debug_controls()
 
     _render_main_studio(saved, saved_solver, saved_shape, saved_fixture)
 
