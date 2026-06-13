@@ -49,10 +49,100 @@ from stk_v6_2_audit_features import (
 )
 
 V6_2_VERSION = "stk_v6_2_physical_routing_alpha_v0"
+V6_2_1_VERSION = "stk_v6_2_1_balance_repair_v0"
 STK_V6_2_MODE = "stk_v6_2_physical_routing_alpha"
 STK_V6_2_GUI_LABEL = "STK V6.2 physical routing alpha"
+
+V6_2_1_MODES: Dict[str, str] = {
+    "stk_v6_2_1_balanced_tail_alpha": "STK V6.2.1 balanced tail alpha",
+    "stk_v6_2_1_soft_pluck_tail_alpha": "STK V6.2.1 soft pluck tail alpha",
+    "stk_v6_2_1_more_string_body_alpha": "STK V6.2.1 more string/body alpha",
+}
+
 DEFAULT_DURATION_S = 2.5
 E5_METALLICITY_THRESHOLD = 0.08
+
+# V6.2 original mix weights (preserved for stk_v6_2_physical_routing_alpha)
+V6_2_ORIGINAL_STEM_GAINS = {
+    "pluck_attack_stem": 1.05,
+    "direct_string_short_stem": 0.90,
+    "bridge_body_stem": 0.55,
+    "top_radiation_stem": 0.72,
+    "soundhole_air_stem": 0.58,
+    "cavity_body_tail_stem": 0.68,
+}
+
+V6_2_1_VARIANTS: Dict[str, Dict[str, Any]] = {
+    "stk_v6_2_1_balanced_tail_alpha": {
+        "pluck_gain": 0.38,
+        "pluck_brightness": 0.50,
+        "pluck_deriv_weight": 0.10,
+        "pluck_envelope_power": 0.88,
+        "direct_gain": 0.36,
+        "direct_decay_s": 0.24,
+        "direct_gate_end_s": 0.30,
+        "cavity_tail_boost": 1.45,
+        "soundhole_boost": 1.35,
+        "top_sustain_boost": 1.25,
+        "bridge_boost": 1.15,
+        "stem_gains": {
+            "pluck_attack_stem": 0.38,
+            "direct_string_short_stem": 0.72,
+            "bridge_body_stem": 0.78,
+            "top_radiation_stem": 1.05,
+            "soundhole_air_stem": 0.95,
+            "cavity_body_tail_stem": 1.15,
+        },
+        "norm_method": "sustain_window_rms",
+        "sustain_target_rms": 0.048,
+    },
+    "stk_v6_2_1_soft_pluck_tail_alpha": {
+        "pluck_gain": 0.24,
+        "pluck_brightness": 0.38,
+        "pluck_deriv_weight": 0.06,
+        "pluck_envelope_power": 0.95,
+        "direct_gain": 0.32,
+        "direct_decay_s": 0.20,
+        "direct_gate_end_s": 0.26,
+        "cavity_tail_boost": 1.55,
+        "soundhole_boost": 1.40,
+        "top_sustain_boost": 1.30,
+        "bridge_boost": 1.20,
+        "stem_gains": {
+            "pluck_attack_stem": 0.24,
+            "direct_string_short_stem": 0.65,
+            "bridge_body_stem": 0.82,
+            "top_radiation_stem": 1.10,
+            "soundhole_air_stem": 1.00,
+            "cavity_body_tail_stem": 1.22,
+        },
+        "norm_method": "sustain_window_rms",
+        "sustain_target_rms": 0.050,
+    },
+    "stk_v6_2_1_more_string_body_alpha": {
+        "pluck_gain": 0.32,
+        "pluck_brightness": 0.55,
+        "pluck_deriv_weight": 0.08,
+        "pluck_envelope_power": 0.90,
+        "direct_gain": 0.48,
+        "direct_decay_s": 0.30,
+        "direct_gate_end_s": 0.38,
+        "cavity_tail_boost": 1.35,
+        "soundhole_boost": 1.25,
+        "top_sustain_boost": 1.20,
+        "bridge_boost": 1.10,
+        "stem_gains": {
+            "pluck_attack_stem": 0.32,
+            "direct_string_short_stem": 0.88,
+            "bridge_body_stem": 0.75,
+            "top_radiation_stem": 1.00,
+            "soundhole_air_stem": 0.90,
+            "cavity_body_tail_stem": 1.08,
+        },
+        "norm_method": "sustain_window_rms",
+        "sustain_target_rms": 0.046,
+    },
+}
 
 STEM_NAMES = (
     "pluck_attack_stem",
@@ -127,6 +217,8 @@ def _build_pluck_attack_stem(
     attack_ms: float,
     brightness: float,
     metallic_damping: float,
+    deriv_weight: float = 0.28,
+    envelope_power: float = 0.62,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     x = np.asarray(string_excitation, dtype=np.float64)
     n = len(x)
@@ -140,11 +232,11 @@ def _build_pluck_attack_stem(
         d = np.diff(seg)
         deriv[1:attack_n] = d
         deriv[0] = d[0]
-    env = np.sin(0.5 * math.pi * t / max(t[-1], 1e-6)) ** 0.62
+    env = np.sin(0.5 * math.pi * t / max(t[-1], 1e-6)) ** float(envelope_power)
     nail = env * (
-        0.50 * seg
-        + 0.28 * deriv
-        + 0.22 * brightness * np.sin(2 * math.pi * f0 * 2.05 * t)
+        0.58 * seg
+        + float(deriv_weight) * deriv
+        + 0.18 * brightness * np.sin(2 * math.pi * f0 * 2.05 * t)
     )
     out = np.zeros(n, dtype=np.float64)
     out[:attack_n] = nail
@@ -154,7 +246,13 @@ def _build_pluck_attack_stem(
         frequency_hz=f0,
         hf_absorb=metallic_damping,
     )
-    return out, {"pluck_attack_ms": attack_ms, "pluck_brightness": brightness, "pluck_metallic_damping": metallic_damping}
+    return out, {
+        "pluck_attack_ms": attack_ms,
+        "pluck_brightness": brightness,
+        "pluck_metallic_damping": metallic_damping,
+        "pluck_deriv_weight": deriv_weight,
+        "pluck_envelope_power": envelope_power,
+    }
 
 
 def _build_direct_string_short_stem(
@@ -163,15 +261,24 @@ def _build_direct_string_short_stem(
     sample_rate: int,
     decay_s: float,
     gain: float,
+    gate_end_s: float = 0.14,
+    gate_fade_s: float = 0.045,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     x = np.asarray(string_excitation, dtype=np.float64)
     sr = int(sample_rate)
     t = np.arange(len(x), dtype=np.float64) / sr
     env = np.exp(-t / max(float(decay_s), 0.02))
     gate = np.ones_like(t)
-    gate[t > 0.14] *= np.exp(-(t[t > 0.14] - 0.14) / 0.045)
+    ge = float(gate_end_s)
+    gf = float(gate_fade_s)
+    gate[t > ge] *= np.exp(-(t[t > ge] - ge) / max(gf, 0.02))
     out = gain * x * env * gate
-    return out, {"direct_string_gain": gain, "direct_string_decay_s": decay_s}
+    return out, {
+        "direct_string_gain": gain,
+        "direct_string_decay_s": decay_s,
+        "direct_string_gate_end_s": ge,
+        "direct_string_gate_fade_s": gf,
+    }
 
 
 def _build_bridge_body_stem(
@@ -216,10 +323,11 @@ def _build_top_radiation_stem(
     top_damping: float,
     hf_absorb: float,
     radiation_gain: Optional[float],
+    sustain_boost: float = 1.0,
 ) -> np.ndarray:
     x = np.asarray(bridge_body, dtype=np.float64)
     rad_g = float(radiation_gain or 0.0001) * 8000.0
-    top = x * max(0.25, min(0.85, float(top_share))) * (0.75 + 0.35 * min(1.0, rad_g))
+    top = x * max(0.25, min(0.85, float(top_share))) * (0.75 + 0.35 * min(1.0, rad_g)) * float(sustain_boost)
     top = _apply_note_hf_damping(
         top,
         sample_rate=sample_rate,
@@ -237,6 +345,7 @@ def _build_soundhole_air_stem(
     cavity_q: float,
     soundhole_gain: Optional[float],
     hf_absorb: float,
+    soundhole_boost: float = 1.0,
 ) -> np.ndarray:
     x = np.asarray(bridge_body, dtype=np.float64)
     n = len(x)
@@ -246,7 +355,7 @@ def _build_soundhole_air_stem(
     ir = _damped_resonator_ir(helmholtz_hz, cavity_q, g, n, sr)
     air = np.convolve(drv, ir, mode="same")
     body_rms = float(np.sqrt(np.mean(x**2))) + 1e-12
-    air *= body_rms * 0.75
+    air *= body_rms * 0.75 * float(soundhole_boost)
     spec = np.fft.rfft(air)
     freqs = np.fft.rfftfreq(n, d=1.0 / sr)
     spec[freqs > 900] *= 0.35
@@ -263,6 +372,7 @@ def _build_cavity_body_tail_stem(
     cavity_q: float,
     mass_loading: float,
     hf_absorb: float,
+    tail_boost: float = 1.0,
 ) -> np.ndarray:
     x = np.asarray(bridge_body, dtype=np.float64)
     n = len(x)
@@ -276,7 +386,7 @@ def _build_cavity_body_tail_stem(
     drv = x * env
     tail = np.convolve(drv / (float(np.sqrt(np.mean(drv**2))) + 1e-12), ir, mode="same")
     tail_rms = float(np.sqrt(np.mean(tail**2))) + 1e-12
-    tail *= float(np.sqrt(np.mean(x**2))) / tail_rms * 0.65
+    tail *= float(np.sqrt(np.mean(x**2))) / tail_rms * 0.65 * float(tail_boost)
     spec = np.fft.rfft(tail)
     freqs = np.fft.rfftfreq(n, d=1.0 / sr)
     spec[freqs > 1800] *= max(0.08, 0.35 - hf_absorb * 0.4)
@@ -297,6 +407,131 @@ def _time_to_decay_db(audio: np.ndarray, sample_rate: int, db: float) -> Optiona
     if len(idx) == 0:
         return None
     return round(float(idx[0]) / float(sample_rate), 4)
+
+
+def _window_rms(audio: np.ndarray, start_s: float, end_s: float, sample_rate: int) -> float:
+    x = np.asarray(audio, dtype=np.float64)
+    sr = int(sample_rate)
+    i0 = max(0, int(start_s * sr))
+    i1 = min(len(x), int(end_s * sr))
+    if i1 <= i0:
+        return 0.0
+    return float(np.sqrt(np.mean(x[i0:i1] ** 2)))
+
+
+def _soft_limit_attack(audio: np.ndarray, sample_rate: int, *, attack_ms: float = 35.0) -> np.ndarray:
+    x = np.asarray(audio, dtype=np.float64).copy()
+    sr = int(sample_rate)
+    n_atk = max(1, int(sr * attack_ms / 1000.0))
+    seg = x[:n_atk]
+    peak = float(np.max(np.abs(seg)))
+    if peak > 0.55:
+        x[:n_atk] = seg * (0.55 / peak)
+    return x
+
+
+def _finalize_mix_with_strategy(
+    mixed: np.ndarray,
+    *,
+    sample_rate: int,
+    duration_s: float,
+    norm_method: str,
+    sustain_target_rms: float = 0.045,
+    loudness_strength: float = 0.14,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    x = np.asarray(mixed, dtype=np.float64)
+    sr = int(sample_rate)
+    info: Dict[str, Any] = {"norm_method": norm_method}
+
+    mixed_taper, taper_info = apply_anti_click_taper(x, sr, duration_s=duration_s)
+    info["taper_info"] = taper_info
+
+    if norm_method == "sustain_window_rms":
+        body_rms = _window_rms(mixed_taper, 0.20, 0.80, sr)
+        tail_rms_pre = _window_rms(mixed_taper, 1.0, min(duration_s, 2.5), sr)
+        scale = float(sustain_target_rms) / max(body_rms, 1e-12)
+        scaled = mixed_taper * scale
+        scaled = _soft_limit_attack(scaled, sr)
+        peak = float(np.max(np.abs(scaled)))
+        if peak > 0.94:
+            scaled = scaled * (0.92 / peak)
+        final = scaled
+        info.update(
+            {
+                "sustain_window_rms_pre_norm": round(body_rms, 8),
+                "tail_window_rms_pre_norm": round(tail_rms_pre, 8),
+                "sustain_target_rms": sustain_target_rms,
+                "sustain_scale_applied": round(scale, 6),
+                "attack_soft_limit_ms": 35.0,
+            }
+        )
+    else:
+        final, loudness_info = apply_loudness_finalize(
+            mixed_taper,
+            sr,
+            loudness_normalization_strength=loudness_strength,
+            raw_body_variation_preserve=0.70,
+        )
+        info["loudness_info"] = loudness_info
+
+    peak_db, clip_ok = _peak_dbfs(final)
+    if peak_db > -0.5:
+        final = final * (10.0 ** ((-0.5 - peak_db) / 20.0))
+        peak_db, clip_ok = _peak_dbfs(final)
+    info["peak_dbfs"] = peak_db
+    info["clipping_avoided"] = clip_ok
+    return final, info
+
+
+def compute_balance_diagnostics(
+    audio: np.ndarray,
+    *,
+    sample_rate: int,
+    frequency_hz: float,
+    duration_s: float = DEFAULT_DURATION_S,
+) -> Dict[str, Any]:
+    x = np.asarray(audio, dtype=np.float64)
+    sr = int(sample_rate)
+    attack_rms = _window_rms(x, 0.0, 0.05, sr)
+    body_rms = _window_rms(x, 0.20, 0.80, sr)
+    tail_rms = _window_rms(x, 1.0, min(duration_s, 2.5), sr)
+    atk_body = attack_rms / max(body_rms, 1e-12)
+    atk_tail = attack_rms / max(tail_rms, 1e-12)
+    very_hi = _band_energy(x, sr, 3500.0, 12000.0)
+    mid_lo = _band_energy(x, sr, 0.0, 3500.0)
+    hi_met = very_hi / max(mid_lo, 1e-12)
+    pluck_click = float(np.sqrt(np.mean(x[: max(1, int(0.012 * sr))] ** 2))) / max(attack_rms, 1e-12)
+    drum_tap = min(1.0, max(0.0, (pluck_click - 0.55) * 1.8 + (atk_tail - 8.0) * 0.04))
+    sustain_body = min(1.0, body_rms / max(attack_rms * 0.35, 1e-12))
+    tail_aud = min(1.0, tail_rms / max(body_rms * 0.55, 1e-12))
+    warnings: List[str] = []
+    if atk_tail > 12.0:
+        warnings.append("attack_to_tail_ratio too high — sustain likely inaudible after pluck")
+    if tail_rms < 0.008:
+        warnings.append("tail_rms_1_2p5s too low — body tail may disappear")
+    if pluck_click > 1.35:
+        warnings.append("pluck_click_index high — percussive click risk")
+    if drum_tap > 0.55:
+        warnings.append("drum_tap_risk_score high — attack may sound like drum tap")
+    if attack_rms > 0.12 and tail_rms < attack_rms * 0.08:
+        warnings.append("final_mix mostly transient — tail crushed by attack")
+    f0 = float(frequency_hz)
+    if f0 >= 620.0 and hi_met > E5_METALLICITY_THRESHOLD:
+        warnings.append("E5 metallicity still high")
+    return {
+        "attack_rms_0_50ms": round(attack_rms, 8),
+        "body_rms_200_800ms": round(body_rms, 8),
+        "tail_rms_1_2p5s": round(tail_rms, 8),
+        "attack_to_body_ratio": round(atk_body, 6),
+        "attack_to_tail_ratio": round(atk_tail, 6),
+        "tail_audibility_score": round(tail_aud, 4),
+        "pluck_click_index": round(pluck_click, 6),
+        "drum_tap_risk_score": round(drum_tap, 4),
+        "sustain_body_presence_score": round(sustain_body, 4),
+        "metallicity_index": round(hi_met, 6),
+        "balance_warnings": warnings,
+        "balance_pass": len(warnings) == 0,
+    }
 
 
 def compute_stem_metrics(
@@ -354,8 +589,15 @@ def synthesize_v6_2_physical_routing(
     sample_id: str = "sample_000",
     repo_root: Optional[Path] = None,
     velocity: float = DEFAULT_VELOCITY,
+    variant: str = STK_V6_2_MODE,
 ) -> Tuple[Dict[str, np.ndarray], np.ndarray, Dict[str, Any]]:
-    """Build all V6.2 stems and final mix for one note."""
+    """Build all V6.2/V6.2.1 stems and final mix for one note."""
+    is_v621 = variant in V6_2_1_VARIANTS
+    vcfg = V6_2_1_VARIANTS.get(variant, {})
+    diagnostic_mode = variant if is_v621 else STK_V6_2_MODE
+    user_label = V6_2_1_MODES.get(variant, STK_V6_2_GUI_LABEL)
+    version_tag = V6_2_1_VERSION if is_v621 else V6_2_VERSION
+
     sample_rec = get_sample_record(audit, sample_id)
     feat = collect_features_for_synthesis(audit, sample_id)
     params = normalize_sample_parameters(sample_parameters)
@@ -375,6 +617,30 @@ def synthesize_v6_2_physical_routing(
     pluck_decay = 0.055 if float(frequency_hz) >= 500 else 0.075
     pluck_brightness = 0.85 if float(frequency_hz) < 500 else 0.65
     pluck_metallic = hf_abs + (0.12 if float(frequency_hz) >= 620 else 0.05)
+    pluck_deriv = 0.28
+    pluck_env_pow = 0.62
+    direct_gain = 0.32 if float(frequency_hz) >= 500 else 0.38
+    direct_gate_end = 0.14
+    cavity_boost = 1.0
+    soundhole_boost = 1.0
+    top_boost = 1.0
+    bridge_boost = 1.0
+    norm_method = "global_loudness_finalize"
+    sustain_target = 0.045
+
+    if is_v621:
+        pluck_brightness = float(vcfg.get("pluck_brightness", pluck_brightness))
+        pluck_deriv = float(vcfg.get("pluck_deriv_weight", 0.10))
+        pluck_env_pow = float(vcfg.get("pluck_envelope_power", 0.88))
+        direct_gain = float(vcfg.get("direct_gain", direct_gain))
+        pluck_decay = float(vcfg.get("direct_decay_s", 0.24))
+        direct_gate_end = float(vcfg.get("direct_gate_end_s", 0.30))
+        cavity_boost = float(vcfg.get("cavity_tail_boost", 1.35))
+        soundhole_boost = float(vcfg.get("soundhole_boost", 1.25))
+        top_boost = float(vcfg.get("top_sustain_boost", 1.20))
+        bridge_boost = float(vcfg.get("bridge_boost", 1.10))
+        norm_method = str(vcfg.get("norm_method", "sustain_window_rms"))
+        sustain_target = float(vcfg.get("sustain_target_rms", 0.045))
 
     string_excitation = synthesize_plucked_string(
         frequency_hz,
@@ -391,20 +657,24 @@ def synthesize_v6_2_physical_routing(
         attack_ms=pluck_ms,
         brightness=pluck_brightness,
         metallic_damping=pluck_metallic,
+        deriv_weight=pluck_deriv,
+        envelope_power=pluck_env_pow,
     )
-    pluck_stem *= 0.95
+    pluck_stem *= 0.95 if not is_v621 else 1.0
 
     direct_stem, direct_meta = _build_direct_string_short_stem(
         string_excitation,
         sample_rate=sample_rate,
         decay_s=pluck_decay,
-        gain=0.32 if float(frequency_hz) >= 500 else 0.38,
+        gain=direct_gain,
+        gate_end_s=direct_gate_end,
+        gate_fade_s=0.08 if is_v621 else 0.045,
     )
     direct_stem = _apply_note_hf_damping(
         direct_stem,
         sample_rate=sample_rate,
         frequency_hz=frequency_hz,
-        hf_absorb=hf_abs,
+        hf_absorb=hf_abs + (0.06 if float(frequency_hz) >= 620 else 0.0),
     )
 
     bridge_stem, bridge_meta = _build_bridge_body_stem(
@@ -417,6 +687,7 @@ def synthesize_v6_2_physical_routing(
         sample_id=sample_id,
         mobility=mobility,
     )
+    bridge_stem = bridge_stem * float(bridge_boost)
 
     top_stem = _build_top_radiation_stem(
         bridge_stem,
@@ -426,6 +697,7 @@ def synthesize_v6_2_physical_routing(
         top_damping=top_damp,
         hf_absorb=hf_abs,
         radiation_gain=rad_gain,
+        sustain_boost=top_boost,
     )
 
     soundhole_stem = _build_soundhole_air_stem(
@@ -435,6 +707,7 @@ def synthesize_v6_2_physical_routing(
         cavity_q=cav_q,
         soundhole_gain=hole_gain,
         hf_absorb=hf_abs,
+        soundhole_boost=soundhole_boost,
     )
 
     cavity_stem = _build_cavity_body_tail_stem(
@@ -444,16 +717,10 @@ def synthesize_v6_2_physical_routing(
         cavity_q=cav_q,
         mass_loading=mass_load,
         hf_absorb=hf_abs,
+        tail_boost=cavity_boost,
     )
 
-    stem_gains = {
-        "pluck_attack_stem": 1.05,
-        "direct_string_short_stem": 0.90,
-        "bridge_body_stem": 0.55,
-        "top_radiation_stem": 0.72,
-        "soundhole_air_stem": 0.58,
-        "cavity_body_tail_stem": 0.68,
-    }
+    stem_gains = dict(V6_2_ORIGINAL_STEM_GAINS if not is_v621 else vcfg.get("stem_gains", V6_2_ORIGINAL_STEM_GAINS))
     stems = {
         "pluck_attack_stem": pluck_stem,
         "direct_string_short_stem": direct_stem,
@@ -463,17 +730,15 @@ def synthesize_v6_2_physical_routing(
         "cavity_body_tail_stem": cavity_stem,
     }
     mixed = sum(stem_gains[k] * stems[k] for k in stems)
-    mixed, taper_info = apply_anti_click_taper(mixed, sample_rate, duration_s=duration_s)
-    final, loudness_info = apply_loudness_finalize(
+    final, finalize_info = _finalize_mix_with_strategy(
         mixed,
-        sample_rate,
-        loudness_normalization_strength=0.14,
-        raw_body_variation_preserve=0.70,
+        sample_rate=sample_rate,
+        duration_s=duration_s,
+        norm_method=norm_method,
+        sustain_target_rms=sustain_target,
     )
-    peak_db, clip_ok = _peak_dbfs(final)
-    if peak_db > -0.5:
-        final = final * (10.0 ** ((-0.5 - peak_db) / 20.0))
-        peak_db, clip_ok = _peak_dbfs(final)
+    peak_db = finalize_info.get("peak_dbfs")
+    clip_ok = finalize_info.get("clipping_avoided")
 
     stem_rms = {k: _rms(v) for k, v in stems.items()}
     total_stem_rms = sum(stem_rms.values()) + 1e-12
@@ -491,6 +756,13 @@ def synthesize_v6_2_physical_routing(
     )
     string_dom = str_sus / max(str_sus + body_sus, 1e-12)
 
+    balance = compute_balance_diagnostics(
+        final,
+        sample_rate=sample_rate,
+        frequency_hz=frequency_hz,
+        duration_s=duration_s,
+    )
+
     provenance_used: Dict[str, Any] = {}
     for name, rec in feat.items():
         provenance_used[name] = {
@@ -502,10 +774,17 @@ def synthesize_v6_2_physical_routing(
             "used_for": _feature_used_for(name),
         }
 
+    norm_desc = (
+        "sustain-window RMS normalization (200–800 ms) with attack soft-limit — avoids pluck-dominated peak norm"
+        if norm_method == "sustain_window_rms"
+        else "single global timbre-preserving finalize on stem sum (stems not individually RMS-normalized)"
+    )
+
     meta = {
-        "diagnostic_mode": STK_V6_2_MODE,
-        "v6_2_version": V6_2_VERSION,
-        "user_label": STK_V6_2_GUI_LABEL,
+        "diagnostic_mode": diagnostic_mode,
+        "v6_2_version": version_tag,
+        "user_label": user_label,
+        "variant": variant,
         "sample_id": sample_id,
         "frequency_hz": frequency_hz,
         "duration_s": duration_s,
@@ -513,9 +792,9 @@ def synthesize_v6_2_physical_routing(
         "bridge_meta": bridge_meta,
         "stem_gains": stem_gains,
         "stem_contribution_ratios": stem_ratios,
-        "taper_info": taper_info,
-        "loudness_info": loudness_info,
-        "normalization": "single global timbre-preserving finalize on stem sum (stems not individually RMS-normalized)",
+        "finalize_info": finalize_info,
+        "normalization": norm_desc,
+        "norm_method": norm_method,
         "back_side_stem": "omitted — no per-sample back radiation path in audit; back_share used only via reference routing ratios",
         "feature_provenance_used": provenance_used,
         "string_dominance_ratio_sustain_window": round(string_dom, 6),
@@ -533,14 +812,24 @@ def synthesize_v6_2_physical_routing(
         ),
         "soundhole_contribution_proxy": stem_ratios.get("soundhole_air_stem"),
         "top_radiation_contribution_proxy": stem_ratios.get("top_radiation_stem"),
+        "balance_diagnostics": balance,
         "peak_dbfs": peak_db,
         "clipping_avoided": clip_ok,
         "limitations": [
-            "V6.2 does not prove multi-guitar differentiation yet.",
+            "V6.2/V6.2.1 does not prove multi-guitar differentiation yet.",
             "Reference modal catalog used for routing architecture (reference_shared features).",
             "Single guitar sample_000 only.",
         ],
     }
+    if "cavity_body_tail_contribution" not in meta or meta.get("cavity_body_tail_contribution") is None:
+        meta["cavity_body_tail_contribution"] = stem_ratios.get("cavity_body_tail_stem")
+    if is_v621:
+        meta["v6_2_1_changes_from_v6_2"] = [
+            "Reduced pluck_attack_stem gain and derivative click component",
+            "Smoother pluck envelope; longer direct_string decay (180–350 ms gate)",
+            "Raised cavity/top/soundhole sustain stem gains",
+            "Sustain-window RMS normalization instead of attack-dominated peak norm",
+        ]
     stems["final_mix"] = final
     return stems, final, meta
 
@@ -605,6 +894,8 @@ def metrics_for_stems_and_final(
                 "cavity_contribution_proxy",
                 "soundhole_contribution_proxy",
                 "top_radiation_contribution_proxy",
+                "balance_diagnostics",
+                "norm_method",
             ):
                 if k in final_meta:
                     m[k] = final_meta[k]

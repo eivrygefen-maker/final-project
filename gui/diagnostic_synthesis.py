@@ -654,6 +654,28 @@ DIAGNOSTIC_MODES: Dict[str, DiagnosticSynthesisConfig] = {
         final_loudness_normalization_strength=0.14,
         description="STK V6.2 physical routing alpha — routed stems, single-guitar skeleton (diagnostic only).",
     ),
+    # STK V6.2.1 — balance repair variants (diagnostic only)
+    "stk_v6_2_1_balanced_tail_alpha": DiagnosticSynthesisConfig(
+        name="stk_v6_2_1_balanced_tail_alpha",
+        raw_body_variation_preserve=0.70,
+        body_gain_normalization_strength=0.0,
+        final_loudness_normalization_strength=0.10,
+        description="STK V6.2.1 balanced tail alpha — softer pluck, sustain-window norm (diagnostic only).",
+    ),
+    "stk_v6_2_1_soft_pluck_tail_alpha": DiagnosticSynthesisConfig(
+        name="stk_v6_2_1_soft_pluck_tail_alpha",
+        raw_body_variation_preserve=0.70,
+        body_gain_normalization_strength=0.0,
+        final_loudness_normalization_strength=0.10,
+        description="STK V6.2.1 soft pluck tail alpha — minimal click, body-forward (diagnostic only).",
+    ),
+    "stk_v6_2_1_more_string_body_alpha": DiagnosticSynthesisConfig(
+        name="stk_v6_2_1_more_string_body_alpha",
+        raw_body_variation_preserve=0.70,
+        body_gain_normalization_strength=0.0,
+        final_loudness_normalization_strength=0.10,
+        description="STK V6.2.1 more string/body alpha — warmer early string, HF damped (diagnostic only).",
+    ),
 }
 
 _active_diagnostic: Optional[DiagnosticSynthesisConfig] = None
