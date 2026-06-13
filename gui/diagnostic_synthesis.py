@@ -427,6 +427,20 @@ DIAGNOSTIC_MODES: Dict[str, DiagnosticSynthesisConfig] = {
         final_loudness_normalization_strength=0.34,
         description="Stage 5.1 V4.1 alias (stk_body_transfer_v4_1).",
     ),
+    "modal_body_hybrid_v4_1_identity_space": DiagnosticSynthesisConfig(
+        name="modal_body_hybrid_v4_1_identity_space",
+        raw_body_variation_preserve=0.50,
+        body_gain_normalization_strength=0.36,
+        final_loudness_normalization_strength=0.34,
+        description="Stage 5.1C V4.1 + bounded continuous body-identity layer (diagnostic).",
+    ),
+    "stk_body_transfer_v4_1_identity_space": DiagnosticSynthesisConfig(
+        name="stk_body_transfer_v4_1_identity_space",
+        raw_body_variation_preserve=0.50,
+        body_gain_normalization_strength=0.36,
+        final_loudness_normalization_strength=0.34,
+        description="Stage 5.1C identity-space alias.",
+    ),
 }
 
 _active_diagnostic: Optional[DiagnosticSynthesisConfig] = None

@@ -1026,31 +1026,65 @@ def write_rom_fom_comparison_artifacts(
     return out
 
 
+COMPARISON_CSV_BASE_FIELDS: Tuple[str, ...] = (
+    "sample_id",
+    "lhs_row_index",
+    "run_id",
+    "rom_frequency_hz",
+    "fom_frequency_hz",
+    "abs_error_hz",
+    "relative_error",
+    "fom_coupling_class",
+    "rom_coupling_class",
+    "fom_dominant_region",
+    "rom_dominant_region",
+    "fom_radiation_proxy",
+    "rom_radiation_proxy",
+    "fom_mic_output_proxy",
+    "rom_mic_output_proxy",
+    "fom_bridge_excitation_abs",
+    "rom_bridge_excitation_abs",
+    "fom_top_share",
+    "rom_top_share",
+    "fom_back_share",
+    "rom_back_share",
+    "fom_air_share",
+    "rom_air_share",
+)
+
+
+def _comparison_csv_fieldnames(rows: Sequence[Mapping[str, Any]], base: Mapping[str, Any]) -> List[str]:
+    """Stable core columns first, then any extra per-mode keys sorted alphabetically."""
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for key in COMPARISON_CSV_BASE_FIELDS:
+        if key not in seen:
+            ordered.append(key)
+            seen.add(key)
+    extra_keys: set[str] = set()
+    for src in (base, *rows):
+        for key in src.keys():
+            if key not in seen:
+                extra_keys.add(str(key))
+    ordered.extend(sorted(extra_keys))
+    return ordered
+
+
 def _write_comparison_csv(path: Path, comparison: Mapping[str, Any]) -> None:
     import csv
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    fields = [
-        "sample_id",
-        "lhs_row_index",
-        "run_id",
-        "rom_frequency_hz",
-        "fom_frequency_hz",
-        "abs_error_hz",
-        "relative_error",
-        "fom_coupling_class",
-        "fom_radiation_proxy",
-        "fom_mic_output_proxy",
-    ]
+    base = {
+        "sample_id": comparison.get("sample_id"),
+        "lhs_row_index": comparison.get("lhs_row_index"),
+        "run_id": comparison.get("run_id"),
+    }
+    mode_rows = list(comparison.get("per_mode_matches") or [])
+    fields = _comparison_csv_fieldnames(mode_rows, base)
     with path.open("w", encoding="utf-8", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
-        base = {
-            "sample_id": comparison.get("sample_id"),
-            "lhs_row_index": comparison.get("lhs_row_index"),
-            "run_id": comparison.get("run_id"),
-        }
-        for row in comparison.get("per_mode_matches") or []:
+        for row in mode_rows:
             writer.writerow({**base, **row})
 
 

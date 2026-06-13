@@ -39,8 +39,11 @@ from synthesis_presets import DEFAULT_SYNTHESIS_PRESET  # noqa: E402
 
 COMPARISON_NOTES: Tuple[Tuple[str, float], ...] = (
     ("E2", 82.41),
+    ("E3", 164.81),
     ("A2", 110.0),
+    ("A3", 220.0),
     ("A4", 440.0),
+    ("D4", 293.66),
     ("E5", 659.25),
 )
 
