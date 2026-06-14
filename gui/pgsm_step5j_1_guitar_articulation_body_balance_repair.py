@@ -94,7 +94,7 @@ HIGH_FREQ_THRESHOLD_HZ = 2000.0
 UPPER_MID_LO_HZ = 500.0
 UPPER_MID_HI_HZ = 2000.0
 
-# v2.3 — E5 high-note radiation coherence guard; preserve v2.2 top articulation.
+# v2.4 — E5 comb guard on actual modal weights (v2.3 guard was inert when cluster_damp==1).
 TOP_PLATE_MODAL_GAIN = 1.14
 TOP_ATTACK_MID_HZ = 640.0
 TOP_ATTACK_BAND_HZ = 220.0
@@ -108,13 +108,18 @@ TOP_CLUSTER_REGULARITY_DAMP = 0.20
 TOP_ARTICULATION_ROLLOFF_START_HZ = 1180.0
 COMB_RISK_CLUSTER_DAMP_THRESHOLD = 0.90
 COMB_RISK_TOP_SOFT_CAP = 0.68
-HIGH_NOTE_RAD_GUARD_LO_HZ = 560.0
-HIGH_NOTE_RAD_GUARD_HI_HZ = 1420.0
-HIGH_NOTE_RAD_GUARD_CENTER_HZ = 880.0
-HIGH_NOTE_RAD_GUARD_BAND_HZ = 380.0
-HIGH_NOTE_RAD_COHERENCE_STRENGTH = 0.24
-HIGH_NOTE_RAD_GUARD_MIN = 0.74
-HIGH_NOTE_BODY_GUARD_TAU_PRESERVE = 0.58
+E5_COMB_BAND_LO_HZ = 560.0
+E5_COMB_BAND_HI_HZ = 1420.0
+E5_COMB_BAND_CENTER_HZ = 880.0
+E5_COMB_BAND_WIDTH_HZ = 380.0
+E5_COMB_LOCAL_WINDOW_HZ = 130.0
+E5_COMB_LOCAL_MIN_MODES = 3
+E5_COMB_REGULARITY_THRESHOLD = 0.96
+E5_COMB_CLUSTER_DAMP_STRENGTH = 0.42
+E5_COMB_DAMP_FLOOR = 0.62
+E5_COMB_BODY_TAU_PRESERVE = 0.58
+E5_COMB_REDIST_TO_BACK = 0.44
+E5_COMB_REDIST_TO_AIR = 0.56
 BACK_PLATE_MODAL_GAIN = 1.11
 BACK_WARMTH_MID_HZ = 560.0
 BACK_WARMTH_BAND_HZ = 300.0
@@ -231,16 +236,16 @@ def build_body_weighting_v2_contract() -> Dict[str, Any]:
         _term(
             "radiation_band_weight",
             f"rad_band_v2: rolloff f_ref={RADIATION_F_REF_HZ}, exp={RADIATION_F_ROLLOFF_EXP}, "
-            f"dual harmonic_preservation; high_note_radiation_coherence_guard "
-            f"{HIGH_NOTE_RAD_GUARD_LO_HZ}-{HIGH_NOTE_RAD_GUARD_HI_HZ}Hz",
+            f"dual harmonic_preservation; e5_comb_guard on body+rad weights "
+            f"{E5_COMB_BAND_LO_HZ}-{E5_COMB_BAND_HI_HZ}Hz",
             "H2-H8 ratio improved; E5 comb risk reduced on radiation_sum/final_output",
         ),
         _term(
             "high_note_radiation_coherence_guard",
-            f"smooth modal guard {HIGH_NOTE_RAD_GUARD_LO_HZ}-{HIGH_NOTE_RAD_GUARD_HI_HZ}Hz, "
-            f"cluster-aware; τ-preserves attack",
-            "E5 final_output comb_score below {COMB_ECHO_FAIL_THRESHOLD}",
-            limitations="Modal weights only; comb-risk clusters in E5-sensitive band",
+            f"e5_comb_sensitive_mode_factors: local cluster regularity in "
+            f"{E5_COMB_BAND_LO_HZ}-{E5_COMB_BAND_HI_HZ}Hz applied to body+rad weights",
+            f"E5 radiation_sum/final_output comb_score below {COMB_ECHO_FAIL_THRESHOLD}",
+            limitations="Precomputed per-mode factors; τ-preserves attack; redistributes to back/air",
         ),
         _term(
             "combined_body_radiation_weight",
@@ -345,53 +350,64 @@ def rebalance_comb_risk_top_only(
     return wt_new, wb + excess * 0.38, wai + excess * 0.62
 
 
-def high_note_radiation_coherence_guard(
-    f_hz: float,
-    cluster_damp: float,
-    all_freqs: Sequence[float],
-) -> float:
-    """Comb-aware smooth guard in E5-sensitive modal band (560–1420 Hz)."""
-    if f_hz < HIGH_NOTE_RAD_GUARD_LO_HZ:
-        return 1.0
-    if f_hz > HIGH_NOTE_RAD_GUARD_HI_HZ:
-        excess = f_hz - HIGH_NOTE_RAD_GUARD_HI_HZ
-        return 1.0 / (1.0 + (excess / 400.0) ** 1.05)
-    band = math.exp(
-        -((f_hz - HIGH_NOTE_RAD_GUARD_CENTER_HZ) ** 2)
-        / (2.0 * HIGH_NOTE_RAD_GUARD_BAND_HZ ** 2)
+def compute_e5_comb_sensitive_mode_factors(mode_freqs: Sequence[float]) -> Dict[float, float]:
+    """Precompute per-mode damp in E5 band from local modal spacing regularity (comb risk)."""
+    factors: Dict[float, float] = {float(f): 1.0 for f in mode_freqs}
+    band = sorted(f for f in mode_freqs if E5_COMB_BAND_LO_HZ <= f <= E5_COMB_BAND_HI_HZ)
+    if len(band) < E5_COMB_LOCAL_MIN_MODES:
+        return factors
+    global_spacings = np.diff(band)
+    global_reg = (
+        float(np.std(global_spacings) / max(float(np.mean(global_spacings)), 1.0))
+        if global_spacings.size
+        else 1.0
     )
-    coherence_risk = max(0.0, 1.0 - cluster_damp)
-    guard = 1.0 - HIGH_NOTE_RAD_COHERENCE_STRENGTH * band * coherence_risk
-    local = sorted(
-        f for f in all_freqs if HIGH_NOTE_RAD_GUARD_LO_HZ <= f <= HIGH_NOTE_RAD_GUARD_HI_HZ
-    )
-    if len(local) >= 4:
+    for f in band:
+        local = sorted(g for g in band if abs(g - f) <= E5_COMB_LOCAL_WINDOW_HZ)
+        if len(local) < E5_COMB_LOCAL_MIN_MODES:
+            continue
         spacings = np.diff(local)
-        if spacings.size:
-            regularity = float(np.std(spacings) / max(float(np.mean(spacings)), 1.0))
-            if regularity < 0.94:
-                guard *= 1.0 / (1.0 + 0.16 * (0.94 - regularity) * band)
-    return max(guard, HIGH_NOTE_RAD_GUARD_MIN)
+        if not spacings.size:
+            continue
+        local_reg = float(np.std(spacings) / max(float(np.mean(spacings)), 1.0))
+        band_env = math.exp(
+            -((f - E5_COMB_BAND_CENTER_HZ) ** 2) / (2.0 * E5_COMB_BAND_WIDTH_HZ ** 2)
+        )
+        damp = 1.0
+        if local_reg < E5_COMB_REGULARITY_THRESHOLD:
+            severity = (E5_COMB_REGULARITY_THRESHOLD - local_reg) / E5_COMB_REGULARITY_THRESHOLD
+            damp = 1.0 / (1.0 + E5_COMB_CLUSTER_DAMP_STRENGTH * severity * band_env)
+        if global_reg < E5_COMB_REGULARITY_THRESHOLD:
+            g_sev = (E5_COMB_REGULARITY_THRESHOLD - global_reg) / E5_COMB_REGULARITY_THRESHOLD
+            damp = min(damp, 1.0 / (1.0 + 0.18 * g_sev * band_env))
+        factors[float(f)] = max(damp, E5_COMB_DAMP_FLOOR)
+    return factors
 
 
-def apply_high_note_body_coherence_guard(
+def apply_e5_comb_sensitive_guard(
     wt: float,
     wb: float,
     wai: float,
-    wrad: float,
     *,
     f_hz: float,
     tau_s: float,
-    cluster_damp: float,
-    all_freqs: Sequence[float],
+    e5_factor: float,
 ) -> Tuple[float, float, float, float]:
-    """Damp HF comb-prone radiation/body modes; preserve short-τ attack contribution."""
-    hf_guard = high_note_radiation_coherence_guard(f_hz, cluster_damp, all_freqs)
-    if hf_guard >= 0.999:
-        return wt, wb, wai, wrad
+    """Apply precomputed E5 comb factor to body weights and recompute radiation_sum."""
+    wrad_before = (wt + wb) * 0.52 + wai * 0.48
+    if e5_factor >= 0.999:
+        return wt, wb, wai, wrad_before
     tau_preserve = math.exp(-tau_s / TOP_ATTACK_TAU_SCALE_S)
-    body_blend = 1.0 - (1.0 - hf_guard) * (1.0 - HIGH_NOTE_BODY_GUARD_TAU_PRESERVE * tau_preserve)
-    return wt * body_blend, wb * body_blend, wai * body_blend, wrad * hf_guard
+    body_blend = 1.0 - (1.0 - e5_factor) * (1.0 - E5_COMB_BODY_TAU_PRESERVE * tau_preserve)
+    wt_g = wt * body_blend
+    wb_g = wb * body_blend
+    wai_g = wai * body_blend
+    removed = (wt + wb + wai) - (wt_g + wb_g + wai_g)
+    wt_out = wt_g
+    wb_out = wb_g + removed * E5_COMB_REDIST_TO_BACK
+    wai_out = wai_g + removed * E5_COMB_REDIST_TO_AIR
+    wrad_out = (wt_out + wb_out) * 0.52 + wai_out * 0.48
+    return wt_out, wb_out, wai_out, wrad_out
 
 
 def air_frequency_balance(f_hz: float) -> float:
@@ -467,6 +483,8 @@ def compute_step5j_1_modal_kernels_decomposed(
     *,
     duration_s: float = DEFAULT_DURATION_S,
     sr: int = NUMERIC_SR,
+    apply_e5_comb_guard: bool = True,
+    track_unguarded_reference: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
     modes = modal_weights.get("modes") or []
     n = int(duration_s * sr)
@@ -475,10 +493,20 @@ def compute_step5j_1_modal_kernels_decomposed(
     h_back = np.zeros(n, dtype=np.float64)
     h_air = np.zeros(n, dtype=np.float64)
     h_radiation = np.zeros(n, dtype=np.float64)
+    h_combined_ref = np.zeros(n, dtype=np.float64) if track_unguarded_reference else None
+    h_radiation_ref = np.zeros(n, dtype=np.float64) if track_unguarded_reference else None
 
     w_rad_vals = [float(row.get("W_rad") or 0.0) for row in modes]
     w_rad_median = max(float(np.median(w_rad_vals)) if w_rad_vals else 1.0, 1e-12)
     mode_freqs = [float(row["frequency_hz"]) for row in modes]
+    e5_comb_factors = compute_e5_comb_sensitive_mode_factors(mode_freqs)
+
+    rad_weight_before = 0.0
+    rad_weight_after = 0.0
+    comb_band_weight_before = 0.0
+    comb_band_weight_after = 0.0
+    guarded_mode_count = 0
+    factor_samples: List[float] = []
 
     for row in modes:
         f_i = float(row["frequency_hz"])
@@ -498,17 +526,29 @@ def compute_step5j_1_modal_kernels_decomposed(
         wb = wr * (back / region) * BACK_PLATE_MODAL_GAIN * rad_w * back_warmth_weight(f_i)
         wai = wa * (air / region) * AIR_CAVITY_MODAL_GAIN * rad_w * air_frequency_balance(f_i)
         wt, wb, wai = rebalance_comb_risk_top_only(wt, wb, wai, cluster_damp)
-        wrad = (wt + wb) * 0.52 + wai * 0.48
-        wt, wb, wai, wrad = apply_high_note_body_coherence_guard(
-            wt,
-            wb,
-            wai,
-            wrad,
-            f_hz=f_i,
-            tau_s=tau,
-            cluster_damp=cluster_damp,
-            all_freqs=mode_freqs,
-        )
+        wrad_before = (wt + wb) * 0.52 + wai * 0.48
+
+        e5_factor = e5_comb_factors.get(f_i, 1.0)
+        if track_unguarded_reference and h_combined_ref is not None and h_radiation_ref is not None:
+            h_combined_ref += (wt + wb + wai) * kernel
+            h_radiation_ref += wrad_before * kernel
+
+        if apply_e5_comb_guard:
+            wt, wb, wai, wrad = apply_e5_comb_sensitive_guard(
+                wt, wb, wai, f_hz=f_i, tau_s=tau, e5_factor=e5_factor
+            )
+        else:
+            wrad = wrad_before
+
+        in_comb_band = E5_COMB_BAND_LO_HZ <= f_i <= E5_COMB_BAND_HI_HZ
+        if in_comb_band:
+            comb_band_weight_before += wrad_before
+            comb_band_weight_after += wrad
+        rad_weight_before += wrad_before
+        rad_weight_after += wrad
+        if e5_factor < 0.999:
+            guarded_mode_count += 1
+            factor_samples.append(e5_factor)
 
         h_top += wt * kernel
         h_back += wb * kernel
@@ -516,14 +556,31 @@ def compute_step5j_1_modal_kernels_decomposed(
         h_radiation += wrad * kernel
 
     h_combined = h_top + h_back + h_air
-    meta = {
-        "weighting_version": "v2.3",
+    meta: Dict[str, Any] = {
+        "weighting_version": "v2.4",
         "mode_count": len(modes),
         "output_weights_only": True,
         "q_tau_unchanged": True,
         "frequencies_unchanged": True,
         "h0_causal_near_zero": bool(abs(h_combined[0]) < 1e-6),
+        "e5_radiation_guard_applied": bool(apply_e5_comb_guard and guarded_mode_count > 0),
+        "e5_guarded_mode_count": guarded_mode_count,
+        "e5_guard_weight_before_after_summary": {
+            "radiation_sum_weight_before": round(rad_weight_before, 6),
+            "radiation_sum_weight_after": round(rad_weight_after, 6),
+            "radiation_sum_weight_delta": round(rad_weight_after - rad_weight_before, 6),
+            "comb_sensitive_band_weight_before": round(comb_band_weight_before, 6),
+            "comb_sensitive_band_weight_after": round(comb_band_weight_after, 6),
+            "mean_e5_factor": round(float(np.mean(factor_samples)) if factor_samples else 1.0, 4),
+            "min_e5_factor": round(min(factor_samples) if factor_samples else 1.0, 4),
+        },
+        "e5_comb_factors_in_band": sum(
+            1 for f in mode_freqs if E5_COMB_BAND_LO_HZ <= f <= E5_COMB_BAND_HI_HZ
+        ),
     }
+    if track_unguarded_reference and h_combined_ref is not None and h_radiation_ref is not None:
+        meta["h_combined_unguarded_ref"] = h_combined_ref.astype(np.float64)
+        meta["h_radiation_unguarded_ref"] = h_radiation_ref.astype(np.float64)
     return (
         h_combined.astype(np.float64),
         h_top.astype(np.float64),
@@ -532,6 +589,61 @@ def compute_step5j_1_modal_kernels_decomposed(
         h_radiation.astype(np.float64),
         meta,
     )
+
+
+def build_e5_radiation_guard_analysis(
+    *,
+    string_force: np.ndarray,
+    h_combined: np.ndarray,
+    h_radiation: np.ndarray,
+    kernel_meta: Mapping[str, Any],
+    sr: int,
+    note: str = "E5",
+) -> Dict[str, Any]:
+    """Before/after comb scores proving E5 guard affects radiation_sum and final_output."""
+    h_ref_c = kernel_meta.get("h_combined_unguarded_ref")
+    h_ref_r = kernel_meta.get("h_radiation_unguarded_ref")
+    guard_summary = kernel_meta.get("e5_guard_weight_before_after_summary") or {}
+    out: Dict[str, Any] = {
+        "applicable": True,
+        "e5_radiation_guard_applied": kernel_meta.get("e5_radiation_guard_applied"),
+        "e5_guarded_mode_count": kernel_meta.get("e5_guarded_mode_count"),
+        "e5_guard_weight_before_after_summary": guard_summary,
+        "e5_radiation_sum_delta_vs_unguarded_proxy": guard_summary.get("radiation_sum_weight_delta"),
+        "e5_comb_sensitive_band_energy_before_after": {
+            "before": guard_summary.get("comb_sensitive_band_weight_before"),
+            "after": guard_summary.get("comb_sensitive_band_weight_after"),
+        },
+    }
+    if h_ref_c is not None and h_ref_r is not None:
+        y_out_before, _ = apply_listening_render_step5j_1(
+            synthesize_modal_body_response(string_force, h_ref_c), note=note
+        )
+        y_rad_before, _ = apply_listening_render_step5j_1(
+            synthesize_modal_body_response(string_force, h_ref_r), note=note
+        )
+        y_out_after, _ = apply_listening_render_step5j_1(
+            synthesize_modal_body_response(string_force, h_combined), note=note
+        )
+        y_rad_after, _ = apply_listening_render_step5j_1(
+            synthesize_modal_body_response(string_force, h_radiation), note=note
+        )
+        out["e5_radiation_sum_comb_score_before_guard"] = round(
+            compute_comb_echo_score(y_rad_before, sr), 4
+        )
+        out["e5_radiation_sum_comb_score_after_guard"] = round(
+            compute_comb_echo_score(y_rad_after, sr), 4
+        )
+        out["e5_final_output_comb_score_before_guard"] = round(
+            compute_comb_echo_score(y_out_before, sr), 4
+        )
+        out["e5_final_output_comb_score_after_guard"] = round(
+            compute_comb_echo_score(y_out_after, sr), 4
+        )
+    else:
+        out["e5_radiation_sum_comb_score_before_guard"] = None
+        out["e5_radiation_sum_comb_score_after_guard"] = None
+    return out
 
 
 def _segment_energy(y: np.ndarray, i0: int, i1: int) -> float:
@@ -1053,8 +1165,14 @@ def build_pgsm_step5j_1_report(
     freq_tau_fp = _modal_freq_tau_fingerprint(state["modal_weights"])
     cal_weights = state["modal_weights"]
     h_combined, h_top, h_back, h_air, h_rad, kernel_meta = compute_step5j_1_modal_kernels_decomposed(
-        cal_weights, duration_s=duration_s
+        cal_weights,
+        duration_s=duration_s,
+        apply_e5_comb_guard=True,
+        track_unguarded_reference=True,
     )
+    kernel_meta_report = {
+        k: v for k, v in kernel_meta.items() if not (k.startswith("h_") and hasattr(v, "shape"))
+    }
     modal_freqs = [float(m["frequency_hz"]) for m in cal_weights.get("modes") or []]
     sr = NUMERIC_SR
     n = int(duration_s * sr)
@@ -1069,6 +1187,7 @@ def build_pgsm_step5j_1_report(
     baselines_5j: Dict[str, Any] = {}
     baselines_53: Dict[str, Any] = {}
     e5_analysis: Dict[str, Any] = {"applicable": False}
+    e5_radiation_guard_analysis: Dict[str, Any] = {"applicable": False}
     comb_echo_score_by_note: Dict[str, float] = {}
     comb_echo_score_by_stem: Dict[str, Dict[str, float]] = {}
     dominant_comb_echo_stem_by_note: Dict[str, str] = {}
@@ -1181,6 +1300,14 @@ def build_pgsm_step5j_1_report(
         )
         if note == "E5":
             e5_analysis = e5_src
+            e5_radiation_guard_analysis = build_e5_radiation_guard_analysis(
+                string_force=string_force,
+                h_combined=h_combined,
+                h_radiation=h_rad,
+                kernel_meta=kernel_meta,
+                sr=sr,
+                note=note,
+            )
 
         paths = _output_paths(out_audio, note)
         if write_wav:
@@ -1309,7 +1436,8 @@ def build_pgsm_step5j_1_report(
             "pluck_attack_unchanged": True,
         },
         "body_weighting_v2_contract": weighting_v2,
-        "modal_kernel_meta": kernel_meta,
+        "modal_kernel_meta": kernel_meta_report,
+        "E5_radiation_guard_analysis": e5_radiation_guard_analysis,
         "modal_state_fingerprint": modal_fp,
         "modal_freq_tau_fingerprint": freq_tau_fp,
         "organ_like_diagnosis": per_note_organ,
@@ -1359,6 +1487,7 @@ def write_markdown_report(report: Mapping[str, Any], path: Path) -> None:
     stems = report.get("per_note_stem_energy_summary") or {}
     art = report.get("per_note_articulation_metrics") or {}
     e5 = report.get("E5_peak_source_analysis") or {}
+    e5g = report.get("E5_radiation_guard_analysis") or {}
     comp = report.get("comparison_vs_step5j") or {}
     obj = report.get("objective_test_results") or {}
 
@@ -1412,6 +1541,22 @@ def write_markdown_report(report: Mapping[str, Any], path: Path) -> None:
     if e5.get("applicable"):
         lines.append(f"- Peak: {e5.get('peak_dbfs')} dBFS, flag={e5.get('E5_peak_flag')}")
         lines.append(f"- Dominant stem: {e5.get('dominant_peak_stem')}")
+    lines.extend(["", "## E5 radiation guard", ""])
+    if e5g.get("applicable"):
+        lines.append(f"- guard_applied: {e5g.get('e5_radiation_guard_applied')}")
+        lines.append(f"- guarded_mode_count: {e5g.get('e5_guarded_mode_count')}")
+        lines.append(
+            f"- rad_comb before/after: {e5g.get('e5_radiation_sum_comb_score_before_guard')}"
+            f" → {e5g.get('e5_radiation_sum_comb_score_after_guard')}"
+        )
+        lines.append(
+            f"- final_comb before/after: {e5g.get('e5_final_output_comb_score_before_guard')}"
+            f" → {e5g.get('e5_final_output_comb_score_after_guard')}"
+        )
+        summary = e5g.get("e5_guard_weight_before_after_summary") or {}
+        lines.append(
+            f"- radiation_sum_weight delta: {summary.get('radiation_sum_weight_delta')}"
+        )
     lines.extend(["", "## Comparison vs Step 5J", ""])
     for note in NOTE_SET:
         c = comp.get(note) or {}

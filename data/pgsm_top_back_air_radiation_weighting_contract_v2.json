@@ -20,85 +20,31 @@
       {
         "term": "top_plate_modal_weight",
         "formula": "W_top = W_rad×(top/region)×1.14×rad_band_v2×top_attack_band(f,τ)×top_cluster_damp_comb_risk_only(f)",
-        "source_level": "L2_step3c_region_share_proxy_v2",
-        "units": "dimensionless_modal_output_weight",
-        "limitations": "Attack band on short-τ modes; cluster damp on comb-risk clusters only",
-        "blocked_claims": [
-          "arbitrary_eq",
-          "artificial_reverb",
-          "transient_enhancer",
-          "body_tail"
-        ],
         "validation_metric": "top_plate_attack_share improved vs Step 5J; moderate top share ~0.35–0.48"
       },
       {
         "term": "back_plate_modal_weight",
         "formula": "W_back = W_rad×(back/region)×1.11×rad_band_v2×back_warmth(f)×back_hf_rolloff(f>920Hz)",
-        "source_level": "L2_step3c_region_share_proxy_v2",
-        "units": "dimensionless_modal_output_weight",
-        "limitations": "",
-        "blocked_claims": [
-          "arbitrary_eq",
-          "artificial_reverb",
-          "transient_enhancer",
-          "body_tail"
-        ],
-        "validation_metric": "back warmth without ~0.60 dominance; E5 back peak guarded"
+        "validation_metric": "back warmth without ~0.60 dominance"
       },
       {
         "term": "air_cavity_modal_weight",
         "formula": "W_air = W_air×(air/region)×2.48×rad_band_v2×air_freq_balance(f)",
-        "source_level": "L2_step3c_region_share_proxy_v2",
-        "units": "dimensionless_modal_output_weight",
-        "limitations": "Gentle high-f air taper only",
-        "blocked_claims": [
-          "arbitrary_eq",
-          "artificial_reverb",
-          "transient_enhancer",
-          "body_tail"
-        ],
-        "validation_metric": "air_share balanced ~0.20–0.40; cavity imprint without Step 5J dominance"
+        "validation_metric": "air_share balanced ~0.20–0.40"
       },
       {
         "term": "radiation_band_weight",
-        "formula": "rad_band_v2: rolloff f_ref=1280.0, exp=0.96, dual harmonic_preservation; high_note_radiation_coherence_guard 560-1420Hz",
-        "source_level": "L2_step3c_region_share_proxy_v2",
-        "units": "dimensionless_modal_output_weight",
-        "limitations": "",
-        "blocked_claims": [
-          "arbitrary_eq",
-          "artificial_reverb",
-          "transient_enhancer",
-          "body_tail"
-        ],
-        "validation_metric": "H2-H8 ratio improved; E5 comb risk reduced on radiation_sum/final_output"
+        "formula": "rad_band_v2 + e5_comb_guard on body+rad weights 560-1420Hz",
+        "validation_metric": "E5 radiation_sum/final_output comb_score below 0.95"
       },
       {
         "term": "high_note_radiation_coherence_guard",
-        "formula": "smooth modal guard 560-1420Hz, cluster-aware; τ-preserves attack",
-        "source_level": "L2_step3c_region_share_proxy_v2",
-        "units": "dimensionless_modal_output_weight",
-        "limitations": "Modal weights only; comb-risk clusters in E5-sensitive band",
-        "blocked_claims": [
-          "arbitrary_eq",
-          "artificial_reverb",
-          "transient_enhancer",
-          "body_tail"
-        ],
-        "validation_metric": "E5 final_output comb_score below 0.95"
+        "formula": "e5_comb_sensitive_mode_factors from local cluster regularity; applied to wt/wb/wai/wrad",
+        "validation_metric": "E5 comb guard verifiable via before/after comb scores"
       },
       {
         "term": "combined_body_radiation_weight",
-        "formula": "p_out = conv(F_bridge_v4, h_top+h_back+h_air); stems decomposed",
-        "source_level": "L2_step3c_region_share_proxy_v2",
-        "units": "dimensionless_modal_output_weight",
-        "limitations": "",
-        "blocked_claims": [
-          "arbitrary_eq",
-          "artificial_reverb",
-          "transient_enhancer",
-          "body_tail"
-        ],
+        "formula": "p_out = conv(F_bridge_v4, h_top+h_back+h_air); radiation_sum from guarded weights",
         "validation_metric": "body_component_balance_score improved"
       }
     ],
