@@ -1359,6 +1359,35 @@ def physical_distance(z_a: Mapping[str, Any], z_b: Mapping[str, Any]) -> float:
     return float(np.linalg.norm(va[:n] - vb[:n]) / math.sqrt(n))
 
 
+def _spectral_flux(audio: np.ndarray, sample_rate: int) -> float:
+    x = np.asarray(audio, dtype=np.float64)
+    if x.size < 64:
+        return 0.0
+    hop = max(x.size // 32, 1)
+    flux_vals: List[float] = []
+    prev = None
+    for i in range(0, x.size - hop, hop):
+        frame = x[i : i + hop]
+        mag = np.abs(np.fft.rfft(frame * np.hanning(len(frame))))
+        if prev is not None:
+            flux_vals.append(float(np.sum(np.abs(mag - prev))))
+        prev = mag
+    return float(np.mean(flux_vals)) if flux_vals else 0.0
+
+
+def _attack_time_ms(audio: np.ndarray, sample_rate: int) -> float:
+    x = np.asarray(audio, dtype=np.float64)
+    if x.size < 8:
+        return 0.0
+    env = np.abs(x)
+    peak = float(np.max(env))
+    if peak < 1e-12:
+        return 0.0
+    thr = 0.9 * peak
+    idx = int(np.argmax(env >= thr))
+    return round(1000.0 * idx / float(sample_rate), 3)
+
+
 def audio_timbre_vector(
     audio: np.ndarray,
     *,
@@ -1366,7 +1395,6 @@ def audio_timbre_vector(
     segment_meta: Optional[Mapping[str, Any]] = None,
 ) -> List[float]:
     from diagnostic_synthesis import _spectral_features
-    from stage48_timbre_decomposition_report import _attack_time_ms, _spectral_flux
 
     spec = _spectral_features(audio, sample_rate)
     meta = segment_meta or {}
