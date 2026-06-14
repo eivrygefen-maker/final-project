@@ -71,23 +71,8 @@ def _rel_path(path: Path, repo_root: Path) -> str:
 
 
 def _pick_recommended(v622_results: Mapping[str, Mapping[str, Any]]) -> str:
-    best_mode = "none"
-    best_score = -1e9
-    for mode, rec in v622_results.items():
-        d = rec.get("v622_diagnostics") or {}
-        score = (
-            (1.0 if d.get("onset_coherence_pass") else -0.5)
-            + float(d.get("tail_continuity_ratio") or 0.0) * 2.0
-            - float(d.get("double_pluck_risk_score") or 0.0) * 1.5
-            - float(d.get("thump_index_0_300ms") or 0.0) * 0.08
-            - float(d.get("drum_tap_risk_score") or 0.0) * 1.2
-        )
-        if score > best_score:
-            best_score = score
-            best_mode = mode
-    if best_score < 0.0:
-        return "none — all variants still show onset/thump/tail issues"
-    return str(best_mode)
+    # V6.3 quarantine: never recommend V6.2.2 variants
+    return "none — quarantined in STK V6.3 (do not recommend V6.2.2 variants)"
 
 
 def write_markdown_report(report: Mapping[str, Any], path: Path) -> None:

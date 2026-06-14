@@ -675,21 +675,29 @@ DIAGNOSTIC_MODES: Dict[str, DiagnosticSynthesisConfig] = {
         raw_body_variation_preserve=0.70,
         body_gain_normalization_strength=0.0,
         final_loudness_normalization_strength=0.10,
-        description="STK V6.2.2 single onset soft tail — coherent attack, tail continuity (diagnostic only).",
+        description="[QUARANTINED — do not recommend] STK V6.2.2 single onset soft tail.",
     ),
     "stk_v6_2_2_no_thump_body_tail_alpha": DiagnosticSynthesisConfig(
         name="stk_v6_2_2_no_thump_body_tail_alpha",
         raw_body_variation_preserve=0.70,
         body_gain_normalization_strength=0.0,
         final_loudness_normalization_strength=0.10,
-        description="STK V6.2.2 no thump body tail — anti-boom low/mid limit (diagnostic only).",
+        description="[QUARANTINED — do not recommend] STK V6.2.2 no thump body tail.",
     ),
     "stk_v6_2_2_v5_body_v6_pluck_hybrid_alpha": DiagnosticSynthesisConfig(
         name="stk_v6_2_2_v5_body_v6_pluck_hybrid_alpha",
         raw_body_variation_preserve=0.70,
         body_gain_normalization_strength=0.0,
         final_loudness_normalization_strength=0.10,
-        description="STK V6.2.2 V5 body / V6 pluck hybrid — smoother tail + guitar pluck (diagnostic only).",
+        description="[QUARANTINED — do not recommend] STK V6.2.2 V5 body / V6 pluck hybrid.",
+    ),
+    # STK V6.3 — clean pluck/body rebuild after artifact quarantine
+    "stk_v6_3_clean_pluck_body_alpha": DiagnosticSynthesisConfig(
+        name="stk_v6_3_clean_pluck_body_alpha",
+        raw_body_variation_preserve=0.72,
+        body_gain_normalization_strength=0.0,
+        final_loudness_normalization_strength=0.08,
+        description="STK V6.3 clean pluck/body — unified excitation, no resonator pulse (diagnostic only).",
     ),
 }
 
