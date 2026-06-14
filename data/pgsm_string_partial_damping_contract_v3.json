@@ -1,0 +1,113 @@
+{
+  "contract_version": "pgsm_step5i_2_string_decay_floor_peak_balance_repair_v1",
+  "string_partial_damping_contract_v3": {
+    "contract_id": "pgsm_string_partial_damping_v3",
+    "supersedes": "pgsm_string_partial_damping_v2",
+    "implements_multi_decay_term": "string_partial_decay_only",
+    "future_body_radiation_note": "True natural decay floor ultimately depends on top/back/air/radiation/coupling in Step 5J/5K; not faked here.",
+    "not_implemented_terms": [
+      "top_plate_decay",
+      "back_plate_decay",
+      "air_cavity_decay",
+      "radiation_decay",
+      "bridge_coupling_loss"
+    ],
+    "pluck_position_ratio": 0.18,
+    "partial_amplitude_law": "sin(pi*n*pluck_position)/n",
+    "onset_ramp_ms": 4.0,
+    "terms": [
+      {
+        "term": "base_string_decay_by_string_id",
+        "formula": "tau_base[string_id]; bass > treble, slightly reduced vs v2",
+        "values": {
+          "string_6": 3.35,
+          "string_5": 3.15,
+          "string_4": 2.85,
+          "string_3": 2.6,
+          "string_2": 2.3,
+          "string_1": 2.0
+        },
+        "source_level": "L2_literature_fallback_v3",
+        "objective_metric": "measurable decay over 5.5 s without collapsing sustain"
+      },
+      {
+        "term": "harmonic_order_loss",
+        "formula": "harmonic_factor = k^1.22",
+        "source_level": "L2_diagnostic_proxy_v3",
+        "objective_metric": "high k partials decay faster than low k"
+      },
+      {
+        "term": "frequency_dependent_loss",
+        "formula": "freq_factor = 1 + 0.00032*f_k + 0.00085*max(0,f_k-2000.0)",
+        "source_level": "L2_diagnostic_proxy_v3",
+        "objective_metric": "high-frequency partials lose energy via shorter tau"
+      },
+      {
+        "term": "fret_contact_loss_proxy",
+        "formula": "fret_factor = 1 + 0.042*fret + 0.009*max(0,fret-5)",
+        "source_level": "L2_diagnostic_proxy_v3",
+        "objective_metric": "high-fret notes damp faster"
+      },
+      {
+        "term": "material_internal_loss_proxy",
+        "formula": "material_factor = MATERIAL_INTERNAL_LOSS[string_id]",
+        "source_level": "L2_nylon_classical_fallback_v3",
+        "objective_metric": "string_1 strongest internal loss"
+      },
+      {
+        "term": "bridge_nut_boundary_loss_proxy",
+        "formula": "boundary_factor = 1 + 0.048*sqrt(k)",
+        "source_level": "L2_diagnostic_proxy_v3",
+        "objective_metric": "boundary loss increases with partial order"
+      },
+      {
+        "term": "low_partial_long_decay_control",
+        "formula": "tau_k capped indirectly via late_decay_leakage; bass tau_base reduced modestly vs v2",
+        "source_level": "L2_diagnostic_proxy_v3",
+        "limitations": "Not a hard gate; low partials retain initial sustain then leak",
+        "objective_metric": "A2/A3 show measurable decay over 5.5 s"
+      },
+      {
+        "term": "late_decay_leakage_proxy",
+        "formula": "exp(-leak_k * smooth_ramp(t)) after t>0.75s; leak_k = 0.52/k^0.82",
+        "source_level": "L2_diagnostic_proxy_v3",
+        "limitations": "Smooth causal leakage representing bridge/body/radiation energy loss proxy",
+        "blocked_claims": [
+          "hard_gate",
+          "fade_out_trick",
+          "body_radiation_implemented"
+        ],
+        "objective_metric": "final 0.5 s energy << initial 0.5 s"
+      },
+      {
+        "term": "high_note_peak_balance_proxy",
+        "formula": "extra tau divisor on k<=4 for string_1 fret>=5: 1 + 0.045*fret",
+        "source_level": "L2_diagnostic_proxy_v3",
+        "limitations": "Damping only; optional diagnostic RMS target -23 dBFS for A4/E5",
+        "blocked_claims": [
+          "arbitrary_eq",
+          "spectral_gain_cut"
+        ],
+        "objective_metric": "A4/E5 piercing proxy reduced vs Step 5I.1"
+      },
+      {
+        "term": "combined_partial_tau",
+        "formula": "amplitude_k(t) = A_k * exp(-t/tau_k) * exp(-leak_k*ramp(t)) * sin(2*pi*f_k*t)",
+        "source_level": "L2_diagnostic_combined_proxy_v3",
+        "objective_metric": "monotonic tau_k; time-varying leakage smooth and causal"
+      }
+    ]
+  },
+  "duration_policy": {
+    "default_duration_s": 5.5,
+    "allowed_range_s": [
+      4.5,
+      6.0
+    ],
+    "applied_duration_s": 5.5,
+    "reason": "5.5 s exposes low-partial decay floor; 4.5 s was insufficient for -20 dB on A2/A3",
+    "no_trim": true,
+    "no_hard_gate": true,
+    "no_artificial_tail": true
+  }
+}
