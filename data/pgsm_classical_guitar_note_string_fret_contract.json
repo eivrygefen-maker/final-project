@@ -1,0 +1,257 @@
+{
+  "contract_version": "pgsm_step5h_note_string_fret_contract_v1",
+  "instrument_type": "classical_guitar",
+  "scale_length_m": 0.65,
+  "scale_length_source_level": "L2_literature_fallback",
+  "strings": [
+    {
+      "string_id": "string_6",
+      "open_note": "E2",
+      "open_frequency_hz": 82.4069,
+      "nominal_role": "bass_low",
+      "nylon_classical_fallback_status": "nylon_classical_literature_fallback",
+      "linear_density_status": "unresolved_or_literature_fallback",
+      "linear_density_proxy_kg_m": 0.0018,
+      "tension_status": "derived_only_if_linear_density_known",
+      "exact_tension_claim_blocked": true
+    },
+    {
+      "string_id": "string_5",
+      "open_note": "A2",
+      "open_frequency_hz": 110.0,
+      "nominal_role": "bass_mid",
+      "nylon_classical_fallback_status": "nylon_classical_literature_fallback",
+      "linear_density_status": "unresolved_or_literature_fallback",
+      "linear_density_proxy_kg_m": 0.0018,
+      "tension_status": "derived_only_if_linear_density_known",
+      "exact_tension_claim_blocked": true
+    },
+    {
+      "string_id": "string_4",
+      "open_note": "D3",
+      "open_frequency_hz": 146.8324,
+      "nominal_role": "mid_low",
+      "nylon_classical_fallback_status": "nylon_classical_literature_fallback",
+      "linear_density_status": "unresolved_or_literature_fallback",
+      "linear_density_proxy_kg_m": 0.0018,
+      "tension_status": "derived_only_if_linear_density_known",
+      "exact_tension_claim_blocked": true
+    },
+    {
+      "string_id": "string_3",
+      "open_note": "G3",
+      "open_frequency_hz": 195.9977,
+      "nominal_role": "mid",
+      "nylon_classical_fallback_status": "nylon_classical_literature_fallback",
+      "linear_density_status": "unresolved_or_literature_fallback",
+      "linear_density_proxy_kg_m": 0.0018,
+      "tension_status": "derived_only_if_linear_density_known",
+      "exact_tension_claim_blocked": true
+    },
+    {
+      "string_id": "string_2",
+      "open_note": "B3",
+      "open_frequency_hz": 246.9417,
+      "nominal_role": "mid_high",
+      "nylon_classical_fallback_status": "nylon_classical_literature_fallback",
+      "linear_density_status": "unresolved_or_literature_fallback",
+      "linear_density_proxy_kg_m": 0.0018,
+      "tension_status": "derived_only_if_linear_density_known",
+      "exact_tension_claim_blocked": true
+    },
+    {
+      "string_id": "string_1",
+      "open_note": "E4",
+      "open_frequency_hz": 329.6276,
+      "nominal_role": "treble",
+      "nylon_classical_fallback_status": "nylon_classical_literature_fallback",
+      "linear_density_status": "unresolved_or_literature_fallback",
+      "linear_density_proxy_kg_m": 0.0018,
+      "tension_status": "derived_only_if_linear_density_known",
+      "exact_tension_claim_blocked": true
+    }
+  ],
+  "fret_effective_length_model": {
+    "model_id": "equal_temperament_fret_length_v1",
+    "effective_length_m": "scale_length_m / 2^(fret/12)",
+    "frequency_hz": "open_frequency_hz * 2^(fret/12)",
+    "scale_length_m": 0.65,
+    "acceptance_rules": {
+      "frequency_error_cents_near_zero_for_et_candidates": true,
+      "effective_length_le_scale_length": true,
+      "integer_fret_for_physical_playable": true,
+      "diagnostic_reference_only_must_be_labeled": true
+    }
+  },
+  "preferred_diagnostic_mapping": {
+    "A2": {
+      "note": "A2",
+      "string_id": "string_5",
+      "open_note": "A2",
+      "fret": 0,
+      "open_frequency_hz": 110.0,
+      "target_frequency_hz": 110.0,
+      "computed_frequency_hz": 110.0,
+      "frequency_error_cents": 0.0,
+      "effective_length_m": 0.65,
+      "exact_open_string_claim_allowed": true,
+      "physical_playable_candidate": true,
+      "diagnostic_reference_only": false,
+      "extended_high_fret_candidate": false,
+      "within_default_max_fret": true,
+      "limitation": "Open-string mapping; exact open-string claim allowed when open note matches target."
+    },
+    "A3": {
+      "note": "A3",
+      "string_id": "string_4",
+      "open_note": "D3",
+      "fret": 7,
+      "open_frequency_hz": 146.8324,
+      "target_frequency_hz": 220.0,
+      "computed_frequency_hz": 220.000024,
+      "frequency_error_cents": 0.000189,
+      "effective_length_m": 0.433823,
+      "exact_open_string_claim_allowed": false,
+      "physical_playable_candidate": true,
+      "diagnostic_reference_only": false,
+      "extended_high_fret_candidate": false,
+      "within_default_max_fret": true,
+      "limitation": "Equal-temperament fretted mapping on string_4; physical playable candidate within conservative fret range."
+    },
+    "A4": {
+      "note": "A4",
+      "string_id": "string_1",
+      "open_note": "E4",
+      "fret": 5,
+      "open_frequency_hz": 329.6276,
+      "target_frequency_hz": 440.0,
+      "computed_frequency_hz": 440.000058,
+      "frequency_error_cents": 0.000226,
+      "effective_length_m": 0.48695,
+      "exact_open_string_claim_allowed": false,
+      "physical_playable_candidate": true,
+      "diagnostic_reference_only": false,
+      "extended_high_fret_candidate": false,
+      "within_default_max_fret": true,
+      "limitation": "Equal-temperament fretted mapping on string_1; physical playable candidate within conservative fret range."
+    },
+    "E5": {
+      "note": "E5",
+      "string_id": "string_1",
+      "open_note": "E4",
+      "fret": 12,
+      "open_frequency_hz": 329.6276,
+      "target_frequency_hz": 659.255118865,
+      "computed_frequency_hz": 659.2552,
+      "frequency_error_cents": 0.000213,
+      "effective_length_m": 0.325,
+      "exact_open_string_claim_allowed": false,
+      "physical_playable_candidate": true,
+      "diagnostic_reference_only": false,
+      "extended_high_fret_candidate": false,
+      "within_default_max_fret": true,
+      "limitation": "Equal-temperament fretted mapping on string_1; physical playable candidate within conservative fret range."
+    }
+  },
+  "stk_readiness_contract": {
+    "stk_integration_allowed": false,
+    "reason": "note_string_fret_contract_ready_but_damping_and_radiation_updates_pending",
+    "future_stk_note_entries": [
+      {
+        "note_name": "A2",
+        "midi_note_number": 45,
+        "frequency_hz": 110.0,
+        "string_id": "string_5",
+        "fret": 0,
+        "effective_length_m": 0.65,
+        "pluck_position_ratio_relative_to_string": 0.18,
+        "bridge_position_ratio": 1.0,
+        "string_decay_profile_id": "classical_nylon_unresolved_damping_v1",
+        "body_modal_response_id": "pgsm_step3c_calibrated_modal_v1",
+        "cavity_response_proxy_id": "pgsm_modal_air_cavity_proxy_v1",
+        "radiation_profile_id": "pgsm_radiation_weighting_unresolved_v1",
+        "fallback_level": "L2_literature_fallback",
+        "blocked_claims": [
+          "exact_string_tension",
+          "measured_linear_density",
+          "validated_pluck_transient",
+          "real_guitar_equivalence",
+          "stk_integration_active"
+        ]
+      },
+      {
+        "note_name": "A3",
+        "midi_note_number": 57,
+        "frequency_hz": 220.0,
+        "string_id": "string_4",
+        "fret": 7,
+        "effective_length_m": 0.433823,
+        "pluck_position_ratio_relative_to_string": 0.18,
+        "bridge_position_ratio": 1.0,
+        "string_decay_profile_id": "classical_nylon_unresolved_damping_v1",
+        "body_modal_response_id": "pgsm_step3c_calibrated_modal_v1",
+        "cavity_response_proxy_id": "pgsm_modal_air_cavity_proxy_v1",
+        "radiation_profile_id": "pgsm_radiation_weighting_unresolved_v1",
+        "fallback_level": "L2_literature_fallback",
+        "blocked_claims": [
+          "exact_string_tension",
+          "measured_linear_density",
+          "validated_pluck_transient",
+          "real_guitar_equivalence",
+          "stk_integration_active"
+        ]
+      },
+      {
+        "note_name": "A4",
+        "midi_note_number": 69,
+        "frequency_hz": 440.0,
+        "string_id": "string_1",
+        "fret": 5,
+        "effective_length_m": 0.48695,
+        "pluck_position_ratio_relative_to_string": 0.18,
+        "bridge_position_ratio": 1.0,
+        "string_decay_profile_id": "classical_nylon_unresolved_damping_v1",
+        "body_modal_response_id": "pgsm_step3c_calibrated_modal_v1",
+        "cavity_response_proxy_id": "pgsm_modal_air_cavity_proxy_v1",
+        "radiation_profile_id": "pgsm_radiation_weighting_unresolved_v1",
+        "fallback_level": "L2_literature_fallback",
+        "blocked_claims": [
+          "exact_string_tension",
+          "measured_linear_density",
+          "validated_pluck_transient",
+          "real_guitar_equivalence",
+          "stk_integration_active"
+        ]
+      },
+      {
+        "note_name": "E5",
+        "midi_note_number": 76,
+        "frequency_hz": 659.255118865,
+        "string_id": "string_1",
+        "fret": 12,
+        "effective_length_m": 0.325,
+        "pluck_position_ratio_relative_to_string": 0.18,
+        "bridge_position_ratio": 1.0,
+        "string_decay_profile_id": "classical_nylon_unresolved_damping_v1",
+        "body_modal_response_id": "pgsm_step3c_calibrated_modal_v1",
+        "cavity_response_proxy_id": "pgsm_modal_air_cavity_proxy_v1",
+        "radiation_profile_id": "pgsm_radiation_weighting_unresolved_v1",
+        "fallback_level": "L2_literature_fallback",
+        "blocked_claims": [
+          "exact_string_tension",
+          "measured_linear_density",
+          "validated_pluck_transient",
+          "real_guitar_equivalence",
+          "stk_integration_active"
+        ]
+      }
+    ],
+    "prepared_fields_only": true
+  },
+  "blocked_claims": [
+    "Final synthesis",
+    "STK integration",
+    "Real-guitar equivalence",
+    "Exact measured string tension"
+  ]
+}
