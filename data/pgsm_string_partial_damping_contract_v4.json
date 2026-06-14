@@ -1,0 +1,113 @@
+{
+  "contract_version": "pgsm_step5i_3_absolute_frequency_damping_pluck_balance_v1",
+  "string_partial_damping_contract_v4": {
+    "contract_id": "pgsm_string_partial_damping_v4",
+    "supersedes": "pgsm_string_partial_damping_v3",
+    "implements_multi_decay_term": "string_partial_decay_and_pluck_excitation_only",
+    "future_body_radiation_note": "True natural decay floor depends on top/back/air/radiation/coupling in Step 5J/5K.",
+    "not_implemented_terms": [
+      "top_plate_decay",
+      "back_plate_decay",
+      "air_cavity_decay",
+      "radiation_decay",
+      "bridge_coupling_loss"
+    ],
+    "pluck_position_ratio": 0.18,
+    "partial_amplitude_law": "sin(pi*n*pluck_position)/n",
+    "pluck_attack": {
+      "enabled": true,
+      "duration_ms": 5.5,
+      "decay_tau_ms": 2.2,
+      "base_amplitude": 0.14,
+      "treble_amplitude_scale": 0.62
+    },
+    "onset_ramp_ms": 4.0,
+    "terms": [
+      {
+        "term": "base_string_decay_by_string_id",
+        "formula": "sigma_string_base[string_id]; bass < treble sigma (longer tau)",
+        "values": {
+          "string_6": 0.28,
+          "string_5": 0.3,
+          "string_4": 0.34,
+          "string_3": 0.38,
+          "string_2": 0.42,
+          "string_1": 0.48
+        },
+        "source_level": "L2_literature_fallback_v4",
+        "objective_metric": "bass strings sustain longer via lower sigma_base"
+      },
+      {
+        "term": "harmonic_order_loss",
+        "formula": "sigma_harmonic = k^0.28",
+        "source_level": "L2_diagnostic_proxy_v4",
+        "objective_metric": "secondary to absolute frequency; high k partials decay faster"
+      },
+      {
+        "term": "absolute_frequency_loss",
+        "formula": "sigma_freq_1 * f_k with sigma_freq_1=0.0092",
+        "source_level": "L2_diagnostic_proxy_v4",
+        "objective_metric": "tau decreases with absolute partial frequency f_k = k*f0"
+      },
+      {
+        "term": "frequency_band_loss",
+        "formula": "sigma_freq_2 * max(0, f_k - 950.0)^2 with sigma_freq_2=4.5e-08",
+        "source_level": "L2_diagnostic_proxy_v4",
+        "objective_metric": "internal friction / low-pass round-trip loss above f_break"
+      },
+      {
+        "term": "fret_contact_loss_proxy",
+        "formula": "1 + 0.022*fret + 0.012*max(0,fret-5)",
+        "source_level": "L2_diagnostic_proxy_v4",
+        "objective_metric": "high-fret contact increases sigma"
+      },
+      {
+        "term": "material_internal_loss_proxy",
+        "formula": "sigma_material = MATERIAL_INTERNAL_LOSS[string_id]",
+        "source_level": "L2_nylon_classical_fallback_v4",
+        "objective_metric": "string_1 strongest internal loss"
+      },
+      {
+        "term": "bridge_nut_boundary_loss_proxy",
+        "formula": "1 + 0.018*sqrt(k)",
+        "source_level": "L2_diagnostic_proxy_v4",
+        "objective_metric": "boundary reflection loss increases with partial order"
+      },
+      {
+        "term": "late_decay_leakage_proxy",
+        "formula": "exp(-leak_k * smooth_ramp(t)) after t>0.75s; leak_k = 0.48/k^0.8",
+        "source_level": "L2_diagnostic_proxy_v4",
+        "limitations": "Smooth causal leakage; not a hard gate",
+        "objective_metric": "low partials lose energy in late window"
+      },
+      {
+        "term": "high_note_peak_balance_proxy",
+        "formula": "extra sigma boost on k<=4 for string_1 fret>=5: 1 + 0.038*fret; pluck attack scaled for treble",
+        "source_level": "L2_diagnostic_proxy_v4",
+        "limitations": "Damping and excitation only; optional diagnostic RMS -23 dBFS for A4/E5",
+        "blocked_claims": [
+          "arbitrary_eq"
+        ],
+        "objective_metric": "A4/E5 peak/piercing reduced vs Step 5I.2"
+      },
+      {
+        "term": "combined_partial_tau",
+        "formula": "sigma_k = product(terms); tau_k = 1/sigma_k; amplitude_k(t) includes leakage",
+        "source_level": "L2_diagnostic_combined_proxy_v4",
+        "objective_metric": "H1 tau monotonic with note pitch: A2 > A3 > A4 > E5"
+      }
+    ]
+  },
+  "duration_policy": {
+    "default_duration_s": 5.5,
+    "allowed_range_s": [
+      4.5,
+      6.0
+    ],
+    "applied_duration_s": 5.5,
+    "reason": "5.5 s diagnostic window for absolute-frequency decay proportionality",
+    "no_trim": true,
+    "no_hard_gate": true,
+    "no_artificial_tail": true
+  }
+}
