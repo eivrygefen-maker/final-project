@@ -564,19 +564,16 @@ def run_dimensional_sanity() -> Dict[str, Any]:
 
 
 def load_v6_lessons(repo_root: Path) -> Dict[str, Any]:
-    lessons: Dict[str, Any] = {}
-    for name in (
-        "stk_v6_3_artifact_quarantine_report.json",
-        "stk_v6_4_current_anchor_repair_report.json",
-    ):
-        p = repo_root / "audio" / "debug_reports" / name
-        if p.is_file():
-            doc = json.loads(p.read_text(encoding="utf-8"))
-            lessons[name] = {
-                "root_cause": doc.get("root_cause_statement") or doc.get("sound_base_rejected", {}).get("reason_summary"),
-                "bad_artifact_body_tail": doc.get("bad_artifact_in_body_tail_stem"),
-            }
-    return lessons
+    """Documented V6 failure modes (reports removed in PGSM Step 1.1 cleanup)."""
+    _ = repo_root
+    return {
+        "v6_methodology_failure": (
+            "V6.2–V6.4 treated body/cavity as separate delayed layers (body_tail stem, "
+            "Helmholtz IR late convolve, ramp-in resonator) causing double plucks, thumps, "
+            "artificial echo, tail collapse, and end artifacts."
+        ),
+        "pgsm_rule": "Body response must be causal F_bridge(t) at t=0 — no independent body-tail stem.",
+    }
 
 
 def build_pgsm_step1_report(
