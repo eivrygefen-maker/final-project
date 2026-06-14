@@ -19,8 +19,10 @@ from pgsm_physical_factor_registry import write_pgsm_step1_reports  # noqa: E402
 from pgsm_step1_1_cleanup import (  # noqa: E402
     DELETED_AUDIO_DIRS,
     DELETED_CODE_FILES,
+    DELETED_DEBUG_REPORT_FILES,
     KEPT_FILES,
     REJECTED_DIAGNOSTIC_MODES,
+    delete_obsolete_artifacts,
     verify_cleanup_status,
     write_cleanup_reports,
 )
@@ -28,6 +30,36 @@ from stk_pipeline_defaults import DEFAULT_WEBSITE_STK_MODE  # noqa: E402
 
 
 class TestPgsmStep11Cleanup(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        delete_obsolete_artifacts(repo_root=REPO)
+
+    def test_delete_obsolete_artifacts_idempotent(self) -> None:
+        delete_obsolete_artifacts(repo_root=REPO)
+        second = delete_obsolete_artifacts(repo_root=REPO)
+        self.assertEqual(second["removed_audio_dirs"], [])
+        self.assertEqual(second["removed_debug_reports"], [])
+        self.assertEqual(second["removed_code_files"], [])
+        status = verify_cleanup_status(repo_root=REPO)
+        self.assertEqual(status["audio_dirs_remaining"], [])
+        self.assertEqual(status["debug_reports_remaining"], [])
+
+    def test_delete_removes_staged_leftover_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "audio" / "stk_v6_3_review_audio").mkdir(parents=True)
+            (root / "audio" / "debug_reports").mkdir(parents=True)
+            (root / "audio" / "debug_reports" / "stk_v6_3_artifact_quarantine_report.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            (root / "audio" / "debug_reports" / "stk_v6_physical_dof_audit.json").write_text("{}", encoding="utf-8")
+            result = delete_obsolete_artifacts(repo_root=root)
+            self.assertIn("audio/stk_v6_3_review_audio", result["removed_audio_dirs"])
+            self.assertTrue(
+                any("stk_v6_3_artifact_quarantine" in p for p in result["removed_debug_reports"])
+            )
+            self.assertTrue((root / "audio" / "debug_reports" / "stk_v6_physical_dof_audit.json").is_file())
+
     def test_pgsm_step1_tests_still_pass(self) -> None:
         proc = subprocess.run(
             [sys.executable, "-m", "unittest", "test_pgsm_physical_factor_registry", "-v"],
