@@ -1,7 +1,7 @@
 {
   "schema": "m4_modal_surrogate_v2_1",
   "model_version": "m4_modal_surrogate_v2_1_intensity",
-  "generated_utc": "2026-06-12T04:28:01Z",
+  "generated_utc": "2026-06-12T22:06:16Z",
   "shape_name": "classic",
   "method": "knn_idw_modal_surrogate_v2_1",
   "scalar_alignment": "nearest_frequency_per_neighbor",
@@ -11,8 +11,8 @@
   "rom_training_dedupe_tolerance_hz": 0.05,
   "intensity_log_epsilon": 1e-12,
   "normalization_percentile": 95,
-  "rom_training_raw_mode_count": 23729,
-  "rom_training_deduped_mode_count": 23729,
+  "rom_training_raw_mode_count": 43753,
+  "rom_training_deduped_mode_count": 43753,
   "rom_training_raw_mode_count_median": 665.0,
   "rom_training_deduped_mode_count_median": 665.0,
   "feature_names": [
@@ -32,7 +32,7 @@
     "rosewood",
     "maple"
   ],
-  "training_sample_count": 36,
+  "training_sample_count": 66,
   "training_samples": [
     {
       "sample_id": "sample_000",
@@ -357,6 +357,276 @@
       "raw_mode_count": 676,
       "deduped_mode_count": 676,
       "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_035/runs/sample_035_rom_shadow_overnight_20260611_2247/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_036",
+      "lhs_row_index": 36,
+      "run_id": "sample_036_rom_shadow_overnight_20260611_2247",
+      "mode_count": 678,
+      "raw_mode_count": 678,
+      "deduped_mode_count": 678,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_036/runs/sample_036_rom_shadow_overnight_20260611_2247/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_037",
+      "lhs_row_index": 37,
+      "run_id": "sample_037_rom_shadow_continuation_20260612_1136",
+      "mode_count": 651,
+      "raw_mode_count": 651,
+      "deduped_mode_count": 651,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_037/runs/sample_037_rom_shadow_continuation_20260612_1136/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_038",
+      "lhs_row_index": 38,
+      "run_id": "sample_038_rom_shadow_continuation_20260612_1136",
+      "mode_count": 688,
+      "raw_mode_count": 688,
+      "deduped_mode_count": 688,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_038/runs/sample_038_rom_shadow_continuation_20260612_1136/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_039",
+      "lhs_row_index": 39,
+      "run_id": "sample_039_rom_shadow_continuation_20260612_1136",
+      "mode_count": 674,
+      "raw_mode_count": 674,
+      "deduped_mode_count": 674,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_039/runs/sample_039_rom_shadow_continuation_20260612_1136/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_040",
+      "lhs_row_index": 40,
+      "run_id": "sample_040_rom_shadow_continuation_20260612_1136",
+      "mode_count": 626,
+      "raw_mode_count": 626,
+      "deduped_mode_count": 626,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_040/runs/sample_040_rom_shadow_continuation_20260612_1136/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_041",
+      "lhs_row_index": 41,
+      "run_id": "sample_041_rom_shadow_continuation_20260612_1136",
+      "mode_count": 637,
+      "raw_mode_count": 637,
+      "deduped_mode_count": 637,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_041/runs/sample_041_rom_shadow_continuation_20260612_1136/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_042",
+      "lhs_row_index": 42,
+      "run_id": "sample_042_rom_shadow_continuation_20260612_1136",
+      "mode_count": 617,
+      "raw_mode_count": 617,
+      "deduped_mode_count": 617,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_042/runs/sample_042_rom_shadow_continuation_20260612_1136/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_043",
+      "lhs_row_index": 43,
+      "run_id": "sample_043_rom_shadow_continuation_20260612_1136",
+      "mode_count": 678,
+      "raw_mode_count": 678,
+      "deduped_mode_count": 678,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_043/runs/sample_043_rom_shadow_continuation_20260612_1136/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_044",
+      "lhs_row_index": 44,
+      "run_id": "sample_044_rom_shadow_continuation_20260612_1136",
+      "mode_count": 679,
+      "raw_mode_count": 679,
+      "deduped_mode_count": 679,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_044/runs/sample_044_rom_shadow_continuation_20260612_1136/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_045",
+      "lhs_row_index": 45,
+      "run_id": "sample_045_rom_shadow_continuation_20260612_1136",
+      "mode_count": 746,
+      "raw_mode_count": 746,
+      "deduped_mode_count": 746,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_045/runs/sample_045_rom_shadow_continuation_20260612_1136/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_046",
+      "lhs_row_index": 46,
+      "run_id": "sample_046_rom_shadow_continuation_20260612_1136",
+      "mode_count": 650,
+      "raw_mode_count": 650,
+      "deduped_mode_count": 650,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_046/runs/sample_046_rom_shadow_continuation_20260612_1136/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_047",
+      "lhs_row_index": 47,
+      "run_id": "sample_047_rom_shadow_continuation_20260612_1136",
+      "mode_count": 635,
+      "raw_mode_count": 635,
+      "deduped_mode_count": 635,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_047/runs/sample_047_rom_shadow_continuation_20260612_1136/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_048",
+      "lhs_row_index": 48,
+      "run_id": "sample_048_rom_shadow_continuation_20260612_1136",
+      "mode_count": 670,
+      "raw_mode_count": 670,
+      "deduped_mode_count": 670,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_048/runs/sample_048_rom_shadow_continuation_20260612_1136/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_049",
+      "lhs_row_index": 49,
+      "run_id": "sample_049_rom_shadow_continuation_20260612_1136",
+      "mode_count": 700,
+      "raw_mode_count": 700,
+      "deduped_mode_count": 700,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_049/runs/sample_049_rom_shadow_continuation_20260612_1136/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_050",
+      "lhs_row_index": 50,
+      "run_id": "sample_050_rom_shadow_continuation_20260612_1136",
+      "mode_count": 698,
+      "raw_mode_count": 698,
+      "deduped_mode_count": 698,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_050/runs/sample_050_rom_shadow_continuation_20260612_1136/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_051",
+      "lhs_row_index": 51,
+      "run_id": "sample_051_rom_shadow_continuation_20260612_1136",
+      "mode_count": 684,
+      "raw_mode_count": 684,
+      "deduped_mode_count": 684,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_051/runs/sample_051_rom_shadow_continuation_20260612_1136/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_052",
+      "lhs_row_index": 52,
+      "run_id": "sample_052_rom_shadow_continuation_20260612_1136",
+      "mode_count": 692,
+      "raw_mode_count": 692,
+      "deduped_mode_count": 692,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_052/runs/sample_052_rom_shadow_continuation_20260612_1136/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_053",
+      "lhs_row_index": 53,
+      "run_id": "sample_053_rom_shadow_continuation_20260612_1136",
+      "mode_count": 684,
+      "raw_mode_count": 684,
+      "deduped_mode_count": 684,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_053/runs/sample_053_rom_shadow_continuation_20260612_1136/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_054",
+      "lhs_row_index": 54,
+      "run_id": "sample_054_rom_shadow_continuation_20260612_1136",
+      "mode_count": 664,
+      "raw_mode_count": 664,
+      "deduped_mode_count": 664,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_054/runs/sample_054_rom_shadow_continuation_20260612_1136/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_055",
+      "lhs_row_index": 55,
+      "run_id": "sample_055_rom_shadow_continuation_20260612_1136",
+      "mode_count": 673,
+      "raw_mode_count": 673,
+      "deduped_mode_count": 673,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_055/runs/sample_055_rom_shadow_continuation_20260612_1136/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_056",
+      "lhs_row_index": 56,
+      "run_id": "sample_056_rom_shadow_continuation_20260612_2045",
+      "mode_count": 646,
+      "raw_mode_count": 646,
+      "deduped_mode_count": 646,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_056/runs/sample_056_rom_shadow_continuation_20260612_2045/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_057",
+      "lhs_row_index": 57,
+      "run_id": "sample_057_rom_shadow_continuation_20260612_2045",
+      "mode_count": 660,
+      "raw_mode_count": 660,
+      "deduped_mode_count": 660,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_057/runs/sample_057_rom_shadow_continuation_20260612_2045/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_058",
+      "lhs_row_index": 58,
+      "run_id": "sample_058_rom_shadow_continuation_20260612_2045",
+      "mode_count": 720,
+      "raw_mode_count": 720,
+      "deduped_mode_count": 720,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_058/runs/sample_058_rom_shadow_continuation_20260612_2045/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_059",
+      "lhs_row_index": 59,
+      "run_id": "sample_059_rom_shadow_continuation_20260612_2045",
+      "mode_count": 656,
+      "raw_mode_count": 656,
+      "deduped_mode_count": 656,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_059/runs/sample_059_rom_shadow_continuation_20260612_2045/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_060",
+      "lhs_row_index": 60,
+      "run_id": "sample_060_rom_shadow_continuation_20260612_2045",
+      "mode_count": 655,
+      "raw_mode_count": 655,
+      "deduped_mode_count": 655,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_060/runs/sample_060_rom_shadow_continuation_20260612_2045/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_061",
+      "lhs_row_index": 61,
+      "run_id": "sample_061_rom_shadow_continuation_20260612_2045",
+      "mode_count": 652,
+      "raw_mode_count": 652,
+      "deduped_mode_count": 652,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_061/runs/sample_061_rom_shadow_continuation_20260612_2045/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_062",
+      "lhs_row_index": 62,
+      "run_id": "sample_062_rom_shadow_continuation_20260612_2045",
+      "mode_count": 654,
+      "raw_mode_count": 654,
+      "deduped_mode_count": 654,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_062/runs/sample_062_rom_shadow_continuation_20260612_2045/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_063",
+      "lhs_row_index": 63,
+      "run_id": "sample_063_rom_shadow_continuation_20260612_2045",
+      "mode_count": 624,
+      "raw_mode_count": 624,
+      "deduped_mode_count": 624,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_063/runs/sample_063_rom_shadow_continuation_20260612_2045/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_064",
+      "lhs_row_index": 64,
+      "run_id": "sample_064_rom_shadow_continuation_20260612_2045",
+      "mode_count": 656,
+      "raw_mode_count": 656,
+      "deduped_mode_count": 656,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_064/runs/sample_064_rom_shadow_continuation_20260612_2045/aggregation/modes_catalog_deduped.jsonl"
+    },
+    {
+      "sample_id": "sample_065",
+      "lhs_row_index": 65,
+      "run_id": "sample_065_rom_shadow_continuation_20260612_2045",
+      "mode_count": 677,
+      "raw_mode_count": 677,
+      "deduped_mode_count": 677,
+      "catalog_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_065/runs/sample_065_rom_shadow_continuation_20260612_2045/aggregation/modes_catalog_deduped.jsonl"
     }
   ],
   "intensity_fields": [
@@ -373,7 +643,7 @@
     "bridge_excitation_abs_p95_norm"
   ],
   "mode_count_min": 581,
-  "mode_count_max": 712,
+  "mode_count_max": 746,
   "mode_count_median": 665.0,
   "phase2_numeric_fields": [
     "top_share",

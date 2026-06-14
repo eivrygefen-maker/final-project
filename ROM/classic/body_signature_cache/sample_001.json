@@ -1,11 +1,11 @@
 {
   "sample_id": "sample_001",
   "frequencies_hz_count": 512,
-  "modal_weights_count": 54,
+  "modal_weights_count": 671,
   "params_hash": "340889c9cae8ea69",
   "envelope_meta": {
-    "mode_count": 54,
-    "G_peak": 0.998716
+    "mode_count": 671,
+    "G_peak": 0.996412
   },
   "dmax_db": 4.5,
   "top_effective_mass_proxy": 0.00026438,

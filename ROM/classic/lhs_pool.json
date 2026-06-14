@@ -290,7 +290,27 @@
       "last_aggregation_status": "AGGREGATION_PASS",
       "last_deduped_mode_count": 644,
       "last_participation_computed_count": 644,
-      "last_audio_coupling_computed_count": 644
+      "last_audio_coupling_computed_count": 644,
+      "last_rom_status": "COMPLETED",
+      "last_rom_comparison_status": "COMPLETED",
+      "last_rom_comparison_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_010/runs/sample_010_rom_shadow_v1/rom/rom_fom_comparison.json",
+      "last_rom_median_relative_error": 0.02202059,
+      "last_rom_mean_relative_error": 0.02660578,
+      "last_rom_p90_relative_error": 0.061585,
+      "last_rom_mean_abs_error_hz": 6.58166,
+      "last_rom_median_abs_error_hz": 6.310463,
+      "last_rom_max_abs_error_hz": 14.988007,
+      "last_rom_matched_mode_count": 603,
+      "last_rom_meets_accuracy_target": true,
+      "last_rom_accuracy_meaningful": true,
+      "last_rom_validation_mode": "leave_one_out",
+      "last_rom_training_sample_count": 66,
+      "last_rom_prediction_runtime_s": 8.5369,
+      "last_rom_comparison_runtime_s": 12.1121,
+      "last_rom_total_runtime_s": 20.649,
+      "last_rom_top_share_mae": 0.05668075,
+      "last_rom_coupling_class_accuracy": 0.8806,
+      "last_rom_error": null
     },
     {
       "id": "sample_011",
@@ -550,7 +570,27 @@
       "last_aggregation_status": "AGGREGATION_PASS",
       "last_deduped_mode_count": 691,
       "last_participation_computed_count": 691,
-      "last_audio_coupling_computed_count": 691
+      "last_audio_coupling_computed_count": 691,
+      "last_rom_status": "COMPLETED",
+      "last_rom_comparison_status": "COMPLETED",
+      "last_rom_comparison_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_020/runs/sample_020_rom_shadow_v1/rom/rom_fom_comparison.json",
+      "last_rom_median_relative_error": 0.02318867,
+      "last_rom_mean_relative_error": 0.02482628,
+      "last_rom_p90_relative_error": 0.04606669,
+      "last_rom_mean_abs_error_hz": 6.889496,
+      "last_rom_median_abs_error_hz": 6.397388,
+      "last_rom_max_abs_error_hz": 14.993765,
+      "last_rom_matched_mode_count": 629,
+      "last_rom_meets_accuracy_target": true,
+      "last_rom_accuracy_meaningful": true,
+      "last_rom_validation_mode": "leave_one_out",
+      "last_rom_training_sample_count": 66,
+      "last_rom_prediction_runtime_s": 8.432,
+      "last_rom_comparison_runtime_s": 11.8818,
+      "last_rom_total_runtime_s": 20.3138,
+      "last_rom_top_share_mae": 0.06674231,
+      "last_rom_coupling_class_accuracy": 0.6328,
+      "last_rom_error": null
     },
     {
       "id": "sample_021",
@@ -940,7 +980,27 @@
       "last_aggregation_status": "AGGREGATION_PASS",
       "last_deduped_mode_count": 676,
       "last_participation_computed_count": 676,
-      "last_audio_coupling_computed_count": 676
+      "last_audio_coupling_computed_count": 676,
+      "last_rom_status": "COMPLETED",
+      "last_rom_comparison_status": "COMPLETED",
+      "last_rom_comparison_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_035/runs/sample_035_rom_shadow_overnight_20260611_2247/rom/rom_fom_comparison.json",
+      "last_rom_median_relative_error": 0.01264337,
+      "last_rom_mean_relative_error": 0.01996397,
+      "last_rom_p90_relative_error": 0.04283659,
+      "last_rom_mean_abs_error_hz": 4.861923,
+      "last_rom_median_abs_error_hz": 3.416736,
+      "last_rom_max_abs_error_hz": 14.938389,
+      "last_rom_matched_mode_count": 602,
+      "last_rom_meets_accuracy_target": true,
+      "last_rom_accuracy_meaningful": true,
+      "last_rom_validation_mode": "leave_one_out",
+      "last_rom_training_sample_count": 66,
+      "last_rom_prediction_runtime_s": 8.3391,
+      "last_rom_comparison_runtime_s": 11.8375,
+      "last_rom_total_runtime_s": 20.1766,
+      "last_rom_top_share_mae": 0.0622915,
+      "last_rom_coupling_class_accuracy": 0.8389,
+      "last_rom_error": null
     },
     {
       "id": "sample_036",
@@ -980,12 +1040,19 @@
         "top_wood_id": "maple",
         "geometry.back_thickness": 0.0037939083271611015
       },
-      "status": "RUNNING",
+      "status": "COMPLETED",
       "error": null,
-      "last_run_id": "sample_037_rom_shadow_overnight_20260611_2247",
-      "last_batch_id": "lhs_rom_shadow_overnight_20260611_2247",
-      "last_started_at": "2026-06-12T05:05:12Z",
-      "last_error": null
+      "last_run_id": "sample_037_rom_shadow_continuation_20260612_1136",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_1136",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_037/runs/sample_037_rom_shadow_continuation_20260612_1136",
+      "last_finished_at": "2026-06-12T09:21:35Z",
+      "last_elapsed_s": 2701.41,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 651,
+      "last_participation_computed_count": 651,
+      "last_audio_coupling_computed_count": 651
     },
     {
       "id": "sample_038",
@@ -999,8 +1066,19 @@
         "top_wood_id": "rosewood",
         "geometry.back_thickness": 0.0028014308532569904
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_038_rom_shadow_continuation_20260612_1136",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_1136",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_038/runs/sample_038_rom_shadow_continuation_20260612_1136",
+      "last_finished_at": "2026-06-12T09:34:27Z",
+      "last_elapsed_s": 758.75,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 688,
+      "last_participation_computed_count": 688,
+      "last_audio_coupling_computed_count": 688
     },
     {
       "id": "sample_039",
@@ -1014,8 +1092,19 @@
         "top_wood_id": "spruce",
         "geometry.back_thickness": 0.003816441541332489
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_039_rom_shadow_continuation_20260612_1136",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_1136",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_039/runs/sample_039_rom_shadow_continuation_20260612_1136",
+      "last_finished_at": "2026-06-12T09:54:45Z",
+      "last_elapsed_s": 1207.23,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 674,
+      "last_participation_computed_count": 674,
+      "last_audio_coupling_computed_count": 674
     },
     {
       "id": "sample_040",
@@ -1029,8 +1118,19 @@
         "top_wood_id": "cedar",
         "geometry.back_thickness": 0.0037652605665325256
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_040_rom_shadow_continuation_20260612_1136",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_1136",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_040/runs/sample_040_rom_shadow_continuation_20260612_1136",
+      "last_finished_at": "2026-06-12T10:17:52Z",
+      "last_elapsed_s": 1372.58,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 626,
+      "last_participation_computed_count": 626,
+      "last_audio_coupling_computed_count": 626
     },
     {
       "id": "sample_041",
@@ -1044,8 +1144,19 @@
         "top_wood_id": "mahogany",
         "geometry.back_thickness": 0.0038329627150219293
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_041_rom_shadow_continuation_20260612_1136",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_1136",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_041/runs/sample_041_rom_shadow_continuation_20260612_1136",
+      "last_finished_at": "2026-06-12T10:51:18Z",
+      "last_elapsed_s": 1992.99,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 637,
+      "last_participation_computed_count": 637,
+      "last_audio_coupling_computed_count": 637
     },
     {
       "id": "sample_042",
@@ -1059,8 +1170,19 @@
         "top_wood_id": "maple",
         "geometry.back_thickness": 0.0030312544848912866
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_042_rom_shadow_continuation_20260612_1136",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_1136",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_042/runs/sample_042_rom_shadow_continuation_20260612_1136",
+      "last_finished_at": "2026-06-12T11:34:02Z",
+      "last_elapsed_s": 2552.48,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 617,
+      "last_participation_computed_count": 617,
+      "last_audio_coupling_computed_count": 617
     },
     {
       "id": "sample_043",
@@ -1074,8 +1196,19 @@
         "top_wood_id": "rosewood",
         "geometry.back_thickness": 0.0029024616713676137
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_043_rom_shadow_continuation_20260612_1136",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_1136",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_043/runs/sample_043_rom_shadow_continuation_20260612_1136",
+      "last_finished_at": "2026-06-12T11:54:15Z",
+      "last_elapsed_s": 1199.97,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 678,
+      "last_participation_computed_count": 678,
+      "last_audio_coupling_computed_count": 678
     },
     {
       "id": "sample_044",
@@ -1089,8 +1222,19 @@
         "top_wood_id": "cedar",
         "geometry.back_thickness": 0.003159275181679551
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_044_rom_shadow_continuation_20260612_1136",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_1136",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_044/runs/sample_044_rom_shadow_continuation_20260612_1136",
+      "last_finished_at": "2026-06-12T12:23:33Z",
+      "last_elapsed_s": 1745.02,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 679,
+      "last_participation_computed_count": 679,
+      "last_audio_coupling_computed_count": 679
     },
     {
       "id": "sample_045",
@@ -1104,8 +1248,19 @@
         "top_wood_id": "spruce",
         "geometry.back_thickness": 0.003079255463212258
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_045_rom_shadow_continuation_20260612_1136",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_1136",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_045/runs/sample_045_rom_shadow_continuation_20260612_1136",
+      "last_finished_at": "2026-06-12T12:37:02Z",
+      "last_elapsed_s": 794.15,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 746,
+      "last_participation_computed_count": 746,
+      "last_audio_coupling_computed_count": 746
     },
     {
       "id": "sample_046",
@@ -1119,8 +1274,19 @@
         "top_wood_id": "maple",
         "geometry.back_thickness": 0.003013498716600379
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_046_rom_shadow_continuation_20260612_1136",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_1136",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_046/runs/sample_046_rom_shadow_continuation_20260612_1136",
+      "last_finished_at": "2026-06-12T13:27:46Z",
+      "last_elapsed_s": 3031.8,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 650,
+      "last_participation_computed_count": 650,
+      "last_audio_coupling_computed_count": 650
     },
     {
       "id": "sample_047",
@@ -1134,8 +1300,19 @@
         "top_wood_id": "maple",
         "geometry.back_thickness": 0.0031321563343259316
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_047_rom_shadow_continuation_20260612_1136",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_1136",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_047/runs/sample_047_rom_shadow_continuation_20260612_1136",
+      "last_finished_at": "2026-06-12T13:48:11Z",
+      "last_elapsed_s": 1211.21,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 635,
+      "last_participation_computed_count": 635,
+      "last_audio_coupling_computed_count": 635
     },
     {
       "id": "sample_048",
@@ -1149,8 +1326,19 @@
         "top_wood_id": "maple",
         "geometry.back_thickness": 0.0031223221212365554
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_048_rom_shadow_continuation_20260612_1136",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_1136",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_048/runs/sample_048_rom_shadow_continuation_20260612_1136",
+      "last_finished_at": "2026-06-12T14:23:35Z",
+      "last_elapsed_s": 2112.17,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 670,
+      "last_participation_computed_count": 670,
+      "last_audio_coupling_computed_count": 670
     },
     {
       "id": "sample_049",
@@ -1164,8 +1352,19 @@
         "top_wood_id": "cedar",
         "geometry.back_thickness": 0.0035408856523289393
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_049_rom_shadow_continuation_20260612_1136",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_1136",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_049/runs/sample_049_rom_shadow_continuation_20260612_1136",
+      "last_finished_at": "2026-06-12T14:53:36Z",
+      "last_elapsed_s": 1788.3,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 700,
+      "last_participation_computed_count": 700,
+      "last_audio_coupling_computed_count": 700
     },
     {
       "id": "sample_050",
@@ -1179,8 +1378,39 @@
         "top_wood_id": "rosewood",
         "geometry.back_thickness": 0.0037302868902537797
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_050_rom_shadow_continuation_20260612_1136",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_1136",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_050/runs/sample_050_rom_shadow_continuation_20260612_1136",
+      "last_finished_at": "2026-06-12T15:07:32Z",
+      "last_elapsed_s": 818.74,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 698,
+      "last_participation_computed_count": 698,
+      "last_audio_coupling_computed_count": 698,
+      "last_rom_status": "COMPLETED",
+      "last_rom_comparison_status": "COMPLETED",
+      "last_rom_comparison_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_050/runs/sample_050_rom_shadow_continuation_20260612_1136/rom/rom_fom_comparison.json",
+      "last_rom_median_relative_error": 0.02353886,
+      "last_rom_mean_relative_error": 0.02769065,
+      "last_rom_p90_relative_error": 0.05656848,
+      "last_rom_mean_abs_error_hz": 8.013964,
+      "last_rom_median_abs_error_hz": 8.952509,
+      "last_rom_max_abs_error_hz": 14.966732,
+      "last_rom_matched_mode_count": 635,
+      "last_rom_meets_accuracy_target": true,
+      "last_rom_accuracy_meaningful": true,
+      "last_rom_validation_mode": "leave_one_out",
+      "last_rom_training_sample_count": 66,
+      "last_rom_prediction_runtime_s": 8.501,
+      "last_rom_comparison_runtime_s": 11.9704,
+      "last_rom_total_runtime_s": 20.4714,
+      "last_rom_top_share_mae": 0.0768691,
+      "last_rom_coupling_class_accuracy": 0.6173,
+      "last_rom_error": null
     },
     {
       "id": "sample_051",
@@ -1194,8 +1424,19 @@
         "top_wood_id": "maple",
         "geometry.back_thickness": 0.003219640939493787
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_051_rom_shadow_continuation_20260612_1136",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_1136",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_051/runs/sample_051_rom_shadow_continuation_20260612_1136",
+      "last_finished_at": "2026-06-12T15:45:01Z",
+      "last_elapsed_s": 2237.91,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 684,
+      "last_participation_computed_count": 684,
+      "last_audio_coupling_computed_count": 684
     },
     {
       "id": "sample_052",
@@ -1209,8 +1450,19 @@
         "top_wood_id": "cedar",
         "geometry.back_thickness": 0.003539219579324312
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_052_rom_shadow_continuation_20260612_1136",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_1136",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_052/runs/sample_052_rom_shadow_continuation_20260612_1136",
+      "last_finished_at": "2026-06-12T16:25:43Z",
+      "last_elapsed_s": 2428.07,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 692,
+      "last_participation_computed_count": 692,
+      "last_audio_coupling_computed_count": 692
     },
     {
       "id": "sample_053",
@@ -1224,8 +1476,19 @@
         "top_wood_id": "rosewood",
         "geometry.back_thickness": 0.0030580334505719295
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_053_rom_shadow_continuation_20260612_1136",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_1136",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_053/runs/sample_053_rom_shadow_continuation_20260612_1136",
+      "last_finished_at": "2026-06-12T16:38:07Z",
+      "last_elapsed_s": 732.08,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 684,
+      "last_participation_computed_count": 684,
+      "last_audio_coupling_computed_count": 684
     },
     {
       "id": "sample_054",
@@ -1239,8 +1502,19 @@
         "top_wood_id": "mahogany",
         "geometry.back_thickness": 0.0034259557504185776
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_054_rom_shadow_continuation_20260612_1136",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_1136",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_054/runs/sample_054_rom_shadow_continuation_20260612_1136",
+      "last_finished_at": "2026-06-12T17:12:39Z",
+      "last_elapsed_s": 2062.34,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 664,
+      "last_participation_computed_count": 664,
+      "last_audio_coupling_computed_count": 664
     },
     {
       "id": "sample_055",
@@ -1254,8 +1528,19 @@
         "top_wood_id": "cedar",
         "geometry.back_thickness": 0.002919317155276975
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_055_rom_shadow_continuation_20260612_1136",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_1136",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_055/runs/sample_055_rom_shadow_continuation_20260612_1136",
+      "last_finished_at": "2026-06-12T17:31:04Z",
+      "last_elapsed_s": 1091.99,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 673,
+      "last_participation_computed_count": 673,
+      "last_audio_coupling_computed_count": 673
     },
     {
       "id": "sample_056",
@@ -1269,8 +1554,19 @@
         "top_wood_id": "maple",
         "geometry.back_thickness": 0.0030184903086399777
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_056_rom_shadow_continuation_20260612_2045",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_2045",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_056/runs/sample_056_rom_shadow_continuation_20260612_2045",
+      "last_finished_at": "2026-06-12T18:14:29Z",
+      "last_elapsed_s": 1727.37,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 646,
+      "last_participation_computed_count": 646,
+      "last_audio_coupling_computed_count": 646
     },
     {
       "id": "sample_057",
@@ -1284,8 +1580,19 @@
         "top_wood_id": "mahogany",
         "geometry.back_thickness": 0.0028586312476801268
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_057_rom_shadow_continuation_20260612_2045",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_2045",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_057/runs/sample_057_rom_shadow_continuation_20260612_2045",
+      "last_finished_at": "2026-06-12T18:29:40Z",
+      "last_elapsed_s": 896.72,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 660,
+      "last_participation_computed_count": 660,
+      "last_audio_coupling_computed_count": 660
     },
     {
       "id": "sample_058",
@@ -1299,8 +1606,19 @@
         "top_wood_id": "spruce",
         "geometry.back_thickness": 0.0031925451575310513
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_058_rom_shadow_continuation_20260612_2045",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_2045",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_058/runs/sample_058_rom_shadow_continuation_20260612_2045",
+      "last_finished_at": "2026-06-12T18:48:33Z",
+      "last_elapsed_s": 1119.6,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 720,
+      "last_participation_computed_count": 720,
+      "last_audio_coupling_computed_count": 720
     },
     {
       "id": "sample_059",
@@ -1314,8 +1632,19 @@
         "top_wood_id": "mahogany",
         "geometry.back_thickness": 0.0037921266636720234
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_059_rom_shadow_continuation_20260612_2045",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_2045",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_059/runs/sample_059_rom_shadow_continuation_20260612_2045",
+      "last_finished_at": "2026-06-12T19:03:45Z",
+      "last_elapsed_s": 901.97,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 656,
+      "last_participation_computed_count": 656,
+      "last_audio_coupling_computed_count": 656
     },
     {
       "id": "sample_060",
@@ -1329,8 +1658,19 @@
         "top_wood_id": "cedar",
         "geometry.back_thickness": 0.0027649207064579756
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_060_rom_shadow_continuation_20260612_2045",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_2045",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_060/runs/sample_060_rom_shadow_continuation_20260612_2045",
+      "last_finished_at": "2026-06-12T19:41:15Z",
+      "last_elapsed_s": 2235.61,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 655,
+      "last_participation_computed_count": 655,
+      "last_audio_coupling_computed_count": 655
     },
     {
       "id": "sample_061",
@@ -1344,8 +1684,19 @@
         "top_wood_id": "rosewood",
         "geometry.back_thickness": 0.002906718207695113
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_061_rom_shadow_continuation_20260612_2045",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_2045",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_061/runs/sample_061_rom_shadow_continuation_20260612_2045",
+      "last_finished_at": "2026-06-12T20:10:49Z",
+      "last_elapsed_s": 1761.44,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 652,
+      "last_participation_computed_count": 652,
+      "last_audio_coupling_computed_count": 652
     },
     {
       "id": "sample_062",
@@ -1359,8 +1710,19 @@
         "top_wood_id": "rosewood",
         "geometry.back_thickness": 0.003413806360277085
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_062_rom_shadow_continuation_20260612_2045",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_2045",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_062/runs/sample_062_rom_shadow_continuation_20260612_2045",
+      "last_finished_at": "2026-06-12T20:51:32Z",
+      "last_elapsed_s": 2430.02,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 654,
+      "last_participation_computed_count": 654,
+      "last_audio_coupling_computed_count": 654
     },
     {
       "id": "sample_063",
@@ -1374,8 +1736,19 @@
         "top_wood_id": "cedar",
         "geometry.back_thickness": 0.0027765992239598557
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_063_rom_shadow_continuation_20260612_2045",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_2045",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_063/runs/sample_063_rom_shadow_continuation_20260612_2045",
+      "last_finished_at": "2026-06-12T21:13:05Z",
+      "last_elapsed_s": 1278.97,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 624,
+      "last_participation_computed_count": 624,
+      "last_audio_coupling_computed_count": 624
     },
     {
       "id": "sample_064",
@@ -1389,8 +1762,19 @@
         "top_wood_id": "mahogany",
         "geometry.back_thickness": 0.003786209523889288
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_064_rom_shadow_continuation_20260612_2045",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_2045",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_064/runs/sample_064_rom_shadow_continuation_20260612_2045",
+      "last_finished_at": "2026-06-12T21:27:15Z",
+      "last_elapsed_s": 835.75,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 656,
+      "last_participation_computed_count": 656,
+      "last_audio_coupling_computed_count": 656
     },
     {
       "id": "sample_065",
@@ -1404,8 +1788,39 @@
         "top_wood_id": "spruce",
         "geometry.back_thickness": 0.0032828417136302967
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_065_rom_shadow_continuation_20260612_2045",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_2045",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_065/runs/sample_065_rom_shadow_continuation_20260612_2045",
+      "last_finished_at": "2026-06-12T22:06:17Z",
+      "last_elapsed_s": 2323.88,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 677,
+      "last_participation_computed_count": 677,
+      "last_audio_coupling_computed_count": 677,
+      "last_rom_status": "COMPLETED",
+      "last_rom_comparison_status": "COMPLETED",
+      "last_rom_comparison_path": "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_065/runs/sample_065_rom_shadow_continuation_20260612_2045/rom/rom_fom_comparison.json",
+      "last_rom_median_relative_error": 0.01755239,
+      "last_rom_mean_relative_error": 0.01979324,
+      "last_rom_p90_relative_error": 0.03911971,
+      "last_rom_mean_abs_error_hz": 5.997305,
+      "last_rom_median_abs_error_hz": 5.044903,
+      "last_rom_max_abs_error_hz": 14.995615,
+      "last_rom_matched_mode_count": 580,
+      "last_rom_meets_accuracy_target": true,
+      "last_rom_accuracy_meaningful": true,
+      "last_rom_validation_mode": "leave_one_out",
+      "last_rom_training_sample_count": 66,
+      "last_rom_prediction_runtime_s": 8.3249,
+      "last_rom_comparison_runtime_s": 11.7644,
+      "last_rom_total_runtime_s": 20.0893,
+      "last_rom_top_share_mae": 0.08139129,
+      "last_rom_coupling_class_accuracy": 0.7207,
+      "last_rom_error": null
     },
     {
       "id": "sample_066",
@@ -1419,8 +1834,19 @@
         "top_wood_id": "spruce",
         "geometry.back_thickness": 0.0027532077484557224
       },
-      "status": "PENDING",
-      "error": null
+      "status": "COMPLETED",
+      "error": null,
+      "last_run_id": "sample_066_rom_shadow_continuation_20260612_2045",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_2045",
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": "/home/vboxuser/final-project/FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/sample_066/runs/sample_066_rom_shadow_continuation_20260612_2045",
+      "last_finished_at": "2026-06-12T22:28:26Z",
+      "last_elapsed_s": 1317.71,
+      "last_aggregation_status": "AGGREGATION_PASS",
+      "last_deduped_mode_count": 671,
+      "last_participation_computed_count": 671,
+      "last_audio_coupling_computed_count": 671
     },
     {
       "id": "sample_067",
@@ -1434,8 +1860,12 @@
         "top_wood_id": "cedar",
         "geometry.back_thickness": 0.0036314538641151945
       },
-      "status": "PENDING",
-      "error": null
+      "status": "RUNNING",
+      "error": null,
+      "last_run_id": "sample_067_rom_shadow_continuation_20260612_2045",
+      "last_batch_id": "lhs_rom_shadow_continuation_20260612_2045",
+      "last_started_at": "2026-06-12T22:28:26Z",
+      "last_error": null
     },
     {
       "id": "sample_068",
