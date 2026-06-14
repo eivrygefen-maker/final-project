@@ -76,6 +76,8 @@ from pgsm_step5j_top_back_air_radiation_weighting_refinement import (
 from stk_pipeline_defaults import DEFAULT_WEBSITE_STK_MODE
 
 PGSM_STEP5J_1_VERSION = "pgsm_step5j_1_guitar_articulation_body_balance_repair_v1"
+# Must match unittest gate; script and tests share this mode cap for deterministic pass/fail.
+VALIDATION_MAX_MODES = 100
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPORT_JSON = (
     REPO_ROOT / "audio" / "debug_reports" / "pgsm_step5j_1_guitar_articulation_body_balance_repair.json"
@@ -726,6 +728,53 @@ def build_readiness_after_step5j_1(objective_pass: bool) -> Dict[str, Any]:
     }
 
 
+def enrich_artifact_guard_results(
+    artifact: Mapping[str, Any],
+    per_note_metrics: Mapping[str, Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Attach per-note artifact flags and failed guard field names for VM diagnosis."""
+    per_note_flags = {
+        note: {
+            "no_comb_echo": (per_note_metrics.get(note) or {}).get("no_comb_echo"),
+            "no_hf_spike": (per_note_metrics.get(note) or {}).get("no_hf_spike"),
+            "no_second_onset": (per_note_metrics.get(note) or {}).get("no_second_onset"),
+            "no_end_rise": (per_note_metrics.get(note) or {}).get("no_end_rise"),
+            "no_hard_gate": (per_note_metrics.get(note) or {}).get("no_hard_gate"),
+            "note_pass": (per_note_metrics.get(note) or {}).get("pass"),
+        }
+        for note in NOTE_SET
+    }
+    failed_guard_fields = [
+        key
+        for key, value in artifact.items()
+        if key not in ("pass", "per_note_flags", "failed_guard_fields") and not value
+    ]
+    return {
+        **dict(artifact),
+        "failed_guard_fields": failed_guard_fields,
+        "per_note_flags": per_note_flags,
+    }
+
+
+def validate_report_internal_consistency(report: Mapping[str, Any]) -> Dict[str, Any]:
+    """Ensure artifact guard, objective all_pass, and readiness agree on one build."""
+    objective = report.get("objective_test_results") or {}
+    artifact = report.get("artifact_guard_results") or {}
+    readiness = report.get("readiness_after_step5j_1") or {}
+    issues: List[str] = []
+    if objective.get("artifact_guard_pass") != artifact.get("pass"):
+        issues.append("objective.artifact_guard_pass != artifact_guard_results.pass")
+    all_pass = bool(objective.get("all_pass"))
+    ready = readiness.get("current_status") == READINESS_AFTER
+    if all_pass != ready:
+        issues.append("objective.all_pass != readiness.current_status readiness")
+    validation = report.get("validation_results") or {}
+    if validation and validation is not objective:
+        if validation.get("all_pass") != all_pass:
+            issues.append("validation_results.all_pass != objective_test_results.all_pass")
+    return {"pass": not issues, "issues": issues}
+
+
 def build_pgsm_step5j_1_report(
     *,
     repo_root: Optional[Path] = None,
@@ -736,6 +785,7 @@ def build_pgsm_step5j_1_report(
 ) -> Dict[str, Any]:
     root = Path(repo_root or REPO_ROOT)
     out_audio = Path(audio_dir or AUDIO_DIR)
+    mode_cap = VALIDATION_MAX_MODES if max_modes is None else max_modes
 
     step5j = load_step_report(_report_path(root, "pgsm_step5j_top_back_air_radiation_weighting_refinement.json"))
     step5i_3 = load_step_report(_report_path(root, "pgsm_step5i_3_absolute_frequency_damping_pluck_balance.json"))
@@ -750,7 +800,7 @@ def build_pgsm_step5j_1_report(
     fp_before = collect_all_previous_audio_fingerprints(root)
     upstream = verify_upstream_readiness(step5j, step5i_3, step5h, preferred)
 
-    state = build_calibrated_modal_state(root, max_modes=max_modes)
+    state = build_calibrated_modal_state(root, max_modes=mode_cap)
     modal_fp = _modal_state_fingerprint(state)
     freq_tau_fp = _modal_freq_tau_fingerprint(state["modal_weights"])
     cal_weights = state["modal_weights"]
@@ -913,7 +963,10 @@ def build_pgsm_step5j_1_report(
     preserved = fp_before == fp_after
     comp5j = {n: _comparison_entry(per_note_metrics[n], baselines_5j[n], ref="step5j") for n in NOTE_SET}
     comp53 = {n: _comparison_entry(per_note_metrics[n], baselines_53[n], ref="step5i_3") for n in NOTE_SET}
-    artifact = build_artifact_guard(per_note_metrics)
+    artifact = enrich_artifact_guard_results(
+        build_artifact_guard(per_note_metrics),
+        per_note_metrics,
+    )
     honest = build_honest_failure_flags(per_note_metrics)
 
     air_reduced_ok = all(
@@ -956,9 +1009,10 @@ def build_pgsm_step5j_1_report(
     objective["all_pass"] = bool(all(objective.values()))
     readiness = build_readiness_after_step5j_1(objective["all_pass"])
 
-    return {
+    report_body: Dict[str, Any] = {
         "report_version": PGSM_STEP5J_1_VERSION,
         "timestamp": _utc_now(),
+        "validation_max_modes": mode_cap,
         "status": "pgsm_step5j_1_guitar_articulation_body_balance_repair_complete",
         "why_step5j_1_needed": [
             "Step 5J air/cavity stem dominated (A2 ~0.84, A3 ~0.79, E5 ~0.72)",
@@ -1019,6 +1073,8 @@ def build_pgsm_step5j_1_report(
             "It does not integrate STK and does not prove realism."
         ),
     }
+    report_body["internal_consistency_check"] = validate_report_internal_consistency(report_body)
+    return report_body
 
 
 def write_markdown_report(report: Mapping[str, Any], path: Path) -> None:
@@ -1116,7 +1172,7 @@ def write_pgsm_step5j_1_reports(
 
 
 def main() -> None:
-    report = write_pgsm_step5j_1_reports()
+    report = write_pgsm_step5j_1_reports(max_modes=VALIDATION_MAX_MODES)
     rg = report.get("readiness_after_step5j_1") or {}
     obj = report.get("objective_test_results") or {}
     print(f"Wrote {REPORT_JSON}")

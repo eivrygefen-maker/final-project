@@ -2,6 +2,7 @@
 """PGSM Step 5J.1 — guitar articulation and body balance repair tests."""
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -16,13 +17,17 @@ from pgsm_step5e_string_driven_bridge_force_repair import ENERGY_FIRST_10MS_MAX 
 from pgsm_step5j_top_back_air_radiation_weighting_refinement import READINESS_AFTER as READINESS_STEP5J  # noqa: E402
 from pgsm_step5j_1_guitar_articulation_body_balance_repair import (  # noqa: E402
     AIR_CAVITY_MODAL_GAIN,
+    DATA_JSON,
     PGSM_STEP5J_1_VERSION,
     READINESS_AFTER,
+    REPORT_JSON,
+    VALIDATION_MAX_MODES,
     build_body_weighting_v2_contract,
     build_pgsm_step5j_1_report,
     collect_all_previous_audio_fingerprints,
     compute_step5j_1_modal_kernels_decomposed,
     radiation_band_weight_v2,
+    validate_report_internal_consistency,
     write_pgsm_step5j_1_reports,
 )
 from pgsm_step5j_top_back_air_radiation_weighting_refinement import (  # noqa: E402
@@ -32,7 +37,6 @@ from pgsm_step4a_single_note_diagnostic_audio import build_calibrated_modal_stat
 from pgsm_step5i_3_absolute_frequency_damping_pluck_balance import DEFAULT_DURATION_S  # noqa: E402
 from stk_pipeline_defaults import DEFAULT_WEBSITE_STK_MODE  # noqa: E402
 
-MAX_MODES_TEST = 100
 REQUIRED_TERMS = (
     "top_plate_modal_weight",
     "back_plate_modal_weight",
@@ -48,12 +52,16 @@ class TestPgsmStep5j1GuitarArticulationBodyBalanceRepair(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        """Build and write the Step 5J.1 report once; tests use this in-memory build only."""
         cls._shared_wav_dir = REPO / "audio" / "pgsm_step5j_1_guitar_articulation_body_balance_repair"
-        cls._shared_report = build_pgsm_step5j_1_report(
+        cls._shared_report = write_pgsm_step5j_1_reports(
             repo_root=REPO,
+            json_path=REPORT_JSON,
+            md_path=REPORT_JSON.with_suffix(".md"),
+            data_path=DATA_JSON,
             audio_dir=cls._shared_wav_dir,
             write_wav=True,
-            max_modes=MAX_MODES_TEST,
+            max_modes=VALIDATION_MAX_MODES,
         )
 
     def setUp(self) -> None:
@@ -62,6 +70,29 @@ class TestPgsmStep5j1GuitarArticulationBodyBalanceRepair(unittest.TestCase):
     def _report(self) -> dict:
         assert self._shared_report is not None
         return self._shared_report
+
+    def test_validation_max_modes_documented(self) -> None:
+        self.assertEqual(self._report().get("validation_max_modes"), VALIDATION_MAX_MODES)
+
+    def test_report_internal_consistency(self) -> None:
+        check = validate_report_internal_consistency(self._report())
+        self.assertTrue(check.get("pass"), msg=str(check.get("issues")))
+
+    def test_disk_report_matches_shared_build(self) -> None:
+        self.assertTrue(REPORT_JSON.is_file(), "setUpClass must write the Step 5J.1 JSON report")
+        disk = json.loads(REPORT_JSON.read_text(encoding="utf-8"))
+        shared_obj = self._report().get("objective_test_results") or {}
+        disk_obj = disk.get("objective_test_results") or {}
+        self.assertEqual(disk_obj.get("all_pass"), shared_obj.get("all_pass"))
+        self.assertEqual(
+            (disk.get("artifact_guard_results") or {}).get("pass"),
+            (self._report().get("artifact_guard_results") or {}).get("pass"),
+        )
+        self.assertEqual(
+            (disk.get("readiness_after_step5j_1") or {}).get("current_status"),
+            (self._report().get("readiness_after_step5j_1") or {}).get("current_status"),
+        )
+        self.assertEqual(disk.get("validation_max_modes"), VALIDATION_MAX_MODES)
 
     def test_step5j_report_loads(self) -> None:
         self.assertIsNotNone(self._report().get("step5j_loaded"))
@@ -90,7 +121,7 @@ class TestPgsmStep5j1GuitarArticulationBodyBalanceRepair(unittest.TestCase):
                 repo_root=REPO,
                 audio_dir=REPO / "audio" / "_tmp_step5j1_subproc",
                 write_wav=False,
-                max_modes=MAX_MODES_TEST,
+                max_modes=VALIDATION_MAX_MODES,
             )
             mock_run.assert_not_called()
             mock_popen.assert_not_called()
@@ -167,7 +198,10 @@ class TestPgsmStep5j1GuitarArticulationBodyBalanceRepair(unittest.TestCase):
         for note in ("A2", "A3", "E5"):
             c = comp.get(note) or {}
             if c.get("step5j_air_share") is not None:
-                self.assertLessEqual(float(c.get("step5j_1_air_share") or 1), float(c.get("step5j_air_share") or 0) + 0.01)
+                self.assertLessEqual(
+                    float(c.get("step5j_1_air_share") or 1),
+                    float(c.get("step5j_air_share") or 0) + 0.01,
+                )
 
     def test_top_attack_improved_or_flagged(self) -> None:
         obj = self._report().get("objective_test_results") or {}
@@ -186,16 +220,21 @@ class TestPgsmStep5j1GuitarArticulationBodyBalanceRepair(unittest.TestCase):
         self.assertGreater(mid, high * 0.5)
 
     def test_kernels_causal(self) -> None:
-        state = build_calibrated_modal_state(REPO, max_modes=MAX_MODES_TEST)
+        state = build_calibrated_modal_state(REPO, max_modes=VALIDATION_MAX_MODES)
         h, _, _, _, _, meta = compute_step5j_1_modal_kernels_decomposed(
             state["modal_weights"], duration_s=DEFAULT_DURATION_S
         )
         self.assertTrue(meta.get("h0_causal_near_zero"))
         self.assertGreater(float(abs(h).max()), 0.0)
 
+    def test_objective_artifact_guard_consistent(self) -> None:
+        obj = self._report().get("objective_test_results") or {}
+        art = self._report().get("artifact_guard_results") or {}
+        self.assertEqual(art.get("pass"), obj.get("artifact_guard_pass"))
+
     def test_no_forbidden_artifacts(self) -> None:
         art = self._report().get("artifact_guard_results") or {}
-        self.assertTrue(art.get("pass"))
+        self.assertTrue(art.get("pass"), msg=str(art.get("failed_guard_fields")))
 
     def test_energy_first_10ms(self) -> None:
         for note in NOTE_SET:
@@ -209,7 +248,11 @@ class TestPgsmStep5j1GuitarArticulationBodyBalanceRepair(unittest.TestCase):
 
     def test_readiness_diagnostic_only(self) -> None:
         rg = self._report().get("readiness_after_step5j_1") or {}
-        self.assertEqual(rg.get("current_status"), READINESS_AFTER)
+        obj = self._report().get("objective_test_results") or {}
+        if obj.get("all_pass"):
+            self.assertEqual(rg.get("current_status"), READINESS_AFTER)
+        else:
+            self.assertEqual(rg.get("current_status"), "failed_guitar_articulation_body_balance_repair")
         self.assertFalse(rg.get("stk_integration_allowed"))
 
     def test_objective_all_pass(self) -> None:
@@ -243,9 +286,11 @@ class TestPgsmStep5j1GuitarArticulationBodyBalanceRepair(unittest.TestCase):
                 data_path=root / "data" / "contract_v2.json",
                 audio_dir=root / "audio" / "step5j1_test",
                 write_wav=True,
-                max_modes=MAX_MODES_TEST,
+                max_modes=VALIDATION_MAX_MODES,
             )
             self.assertEqual(report.get("report_version"), PGSM_STEP5J_1_VERSION)
+            self.assertEqual(report.get("validation_max_modes"), VALIDATION_MAX_MODES)
+            self.assertTrue(validate_report_internal_consistency(report).get("pass"))
 
 
 if __name__ == "__main__":
