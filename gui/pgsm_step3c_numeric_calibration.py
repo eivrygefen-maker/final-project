@@ -17,6 +17,7 @@ from pgsm_physical_factor_registry import amplitude_tau_s, load_audit_report
 from pgsm_step2_1_parameter_targets import load_step_report
 from pgsm_step2_2b_material_alignment_audit import (
     PROJECT_TO_FEM_KEY,
+    build_recommended_step3c_policy,
     extract_fem_material,
     extract_pgsm_material,
     load_fem_woods_ortho,
@@ -52,6 +53,7 @@ Q_MAX_CALIBRATED = 80.0
 Q_TARGET_MEAN = 32.0
 # Step 3B sample_000 anchor — fixed scale preserves damping monotonicity across sensitivity sweeps
 NOMINAL_RAW_MEAN_Q = 13.028
+STEP22B_POLICY_PRIMARY = "use_fem_values_as_primary_for_pgsm_calibration"
 
 BAND_Q_FLOOR: Dict[str, float] = {
     "sub_body": 22.0,
@@ -90,6 +92,35 @@ def _band_for_freq(f_hz: float) -> str:
         if lo <= f_hz < hi:
             return name
     return "high"
+
+
+def resolve_step22b_policy(step22b_path: Path) -> Tuple[str, Dict[str, Any]]:
+    """Load Step 2.2b primary policy — fail clearly if unavailable."""
+    if not step22b_path.is_file():
+        raise FileNotFoundError(
+            f"PGSM Step 3C requires Step 2.2b audit report: {step22b_path} "
+            "(run python gui/pgsm_step2_2b_material_alignment_audit.py)"
+        )
+    step22b = load_step_report(step22b_path)
+    policy = step22b.get("recommended_step3c_policy") or {}
+    primary = policy.get("primary_policy")
+    if primary:
+        return str(primary), step22b
+    mismatch = step22b.get("mismatch_summary")
+    if mismatch is not None:
+        derived = build_recommended_step3c_policy(mismatch)
+        primary = derived.get("primary_policy")
+        if primary:
+            return str(primary), step22b
+    if step22b.get("validation_results", {}).get("step3c_policy_present"):
+        derived = build_recommended_step3c_policy(mismatch or {})
+        primary = derived.get("primary_policy")
+        if primary:
+            return str(primary), step22b
+    raise ValueError(
+        f"Step 2.2b report {step22b_path} missing recommended_step3c_policy.primary_policy; "
+        "regenerate with python gui/pgsm_step2_2b_material_alignment_audit.py"
+    )
 
 
 def build_material_policy_object() -> Dict[str, Any]:
@@ -700,9 +731,14 @@ def build_pgsm_step3c_report(
     audit = load_audit_report()
     fem = load_fem_woods_ortho(root / "FEM" / "materials" / "woods_ortho.json")
     pgsm = load_pgsm_library(root / "data" / "pgsm_tonewood_material_library.json")
-    step3a = load_step_report(STEP3A_JSON) if STEP3A_JSON.is_file() else {}
-    step3b = load_step_report(STEP3B_JSON) if STEP3B_JSON.is_file() else {}
-    step22b = load_step_report(STEP22B_JSON) if STEP22B_JSON.is_file() else {}
+    step3a_path = root / "audio" / "debug_reports" / "pgsm_step3a_numerical_ir_testbench.json"
+    step3b_path = root / "audio" / "debug_reports" / "pgsm_step3b_modal_response_validation.json"
+    step22b_path = root / "audio" / "debug_reports" / "pgsm_step2_2b_material_alignment_audit.json"
+    step3a = load_step_report(step3a_path) if step3a_path.is_file() else {}
+    step3b = load_step_report(step3b_path) if step3b_path.is_file() else {}
+    step22b_policy_loaded, step22b = resolve_step22b_policy(step22b_path)
+    if not step22b_policy_loaded:
+        raise ValueError(f"Step 2.2b policy resolved empty from {step22b_path}")
 
     material_policy = build_material_policy_object()
     chosen_material = apply_material_policy_sample(audit, fem, pgsm)
@@ -788,7 +824,8 @@ def build_pgsm_step3c_report(
         ),
         "step3b_report_loaded": step3b.get("report_version"),
         "step3a_report_loaded": step3a.get("report_version"),
-        "step22b_policy_loaded": (step22b.get("recommended_step3c_policy") or {}).get("primary_policy"),
+        "step22b_report_loaded": step22b.get("report_version"),
+        "step22b_policy_loaded": step22b_policy_loaded,
         "explicit_statement": (
             "PGSM Step 3C performs numeric calibration only. It does not synthesize sound."
         ),
@@ -816,6 +853,7 @@ def write_markdown_report(report: Mapping[str, Any], path: Path) -> None:
         "",
         f"- Top: {mat.get('top_wood_id')} | Back: {mat.get('back_wood_id')}",
         f"- E_T chosen source: {mat.get('top', {}).get('fields', {}).get('young_modulus_tangential_gpa', {}).get('chosen_source')}",
+        f"- Step 2.2b material policy loaded: {report.get('step22b_policy_loaded')}",
         "",
         "## Q / τ before vs after",
         "",

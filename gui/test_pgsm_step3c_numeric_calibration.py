@@ -91,7 +91,28 @@ class TestPgsmStep3cNumericCalibration(unittest.TestCase):
     def test_step3b_and_step22b_reports_load(self) -> None:
         report = self._report()
         self.assertIsNotNone(report.get("step3b_report_loaded"))
-        self.assertEqual(report.get("step22b_policy_loaded"), "use_fem_values_as_primary_for_pgsm_calibration")
+        self.assertIsNotNone(report.get("step22b_report_loaded"))
+        self.assertEqual(
+            report.get("step22b_policy_loaded"),
+            "use_fem_values_as_primary_for_pgsm_calibration",
+        )
+
+    def test_written_json_includes_step22b_policy(self) -> None:
+        write_pgsm_step3c_reports(
+            repo_root=REPO,
+            json_path=self.tmp / "contract.json",
+            md_path=self.tmp / "contract.md",
+        )
+        doc = json.loads((self.tmp / "contract.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            doc.get("step22b_policy_loaded"),
+            "use_fem_values_as_primary_for_pgsm_calibration",
+        )
+        md = (self.tmp / "contract.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "Step 2.2b material policy loaded: use_fem_values_as_primary_for_pgsm_calibration",
+            md,
+        )
 
     def test_fem_primary_material_policy(self) -> None:
         mat = apply_material_policy_sample(self.audit, self.fem, self.pgsm)
