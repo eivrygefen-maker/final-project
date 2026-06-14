@@ -1,0 +1,197 @@
+{
+  "contract_version": "pgsm_step5i_1_string_damping_duration_harshness_repair_v1",
+  "string_partial_damping_contract_v2": {
+    "contract_id": "pgsm_string_partial_damping_v2",
+    "supersedes": "pgsm_string_partial_damping_v1",
+    "implements_multi_decay_term": "string_partial_decay_only",
+    "not_implemented_terms": [
+      "top_plate_decay",
+      "back_plate_decay",
+      "air_cavity_decay",
+      "radiation_decay",
+      "bridge_coupling_loss"
+    ],
+    "step5i_v1_changes": {
+      "harmonic_exponent": "0.92 -> 1.20",
+      "high_freq_extra_above_2khz": true,
+      "treble_material_loss_increased": true,
+      "diagnostic_duration_s": "2.5 -> 4.5"
+    },
+    "pluck_position_ratio": 0.18,
+    "partial_amplitude_law": "sin(pi*n*pluck_position)/n",
+    "onset_ramp_ms": 4.0,
+    "inharmonicity": {
+      "level": "L2_fallback_placeholder",
+      "b": 0.0002
+    },
+    "terms": [
+      {
+        "term": "base_string_decay_by_string_id",
+        "formula": "tau_base[string_id] seconds; bass longer than treble",
+        "values": {
+          "string_6": 3.55,
+          "string_5": 3.35,
+          "string_4": 3.05,
+          "string_3": 2.8,
+          "string_2": 2.5,
+          "string_1": 2.25
+        },
+        "source_level": "L2_literature_fallback_v2",
+        "units": "seconds",
+        "limitations": "Diagnostic proxy; bass sustain preserved vs treble.",
+        "blocked_claims": [
+          "measured_string_damping"
+        ],
+        "objective_metric": "tau_base differs across string_id"
+      },
+      {
+        "term": "harmonic_order_loss",
+        "formula": "harmonic_factor = k^1.2",
+        "source_level": "L2_diagnostic_proxy_v2",
+        "units": "dimensionless divisor",
+        "limitations": "Stronger than Step 5I k^0.92; range 1.10\u20131.30 motivated.",
+        "blocked_claims": [
+          "arbitrary_eq"
+        ],
+        "objective_metric": "high k partials have clearly shorter tau_k"
+      },
+      {
+        "term": "frequency_dependent_loss",
+        "formula": "freq_factor = 1 + 0.00028*f_k + 0.00075*max(0, f_k-2000.0)",
+        "source_level": "L2_diagnostic_proxy_v2",
+        "units": "dimensionless divisor",
+        "limitations": "Extra loss above 2 kHz via decay time, not spectral EQ.",
+        "blocked_claims": [
+          "spectral_eq_shaping"
+        ],
+        "objective_metric": "partials above 2 kHz decay faster audibly"
+      },
+      {
+        "term": "fret_contact_loss_proxy",
+        "formula": "fret_factor = 1 + 0.038 * fret",
+        "source_level": "L2_diagnostic_proxy_v2",
+        "units": "dimensionless divisor",
+        "limitations": "Modest increase vs Step 5I for fretted notes.",
+        "blocked_claims": [
+          "measured_fret_contact"
+        ],
+        "objective_metric": "fretted notes damp faster than open"
+      },
+      {
+        "term": "material_internal_loss_proxy",
+        "formula": "material_factor = MATERIAL_INTERNAL_LOSS[string_id]",
+        "source_level": "L2_nylon_classical_fallback_v2",
+        "units": "dimensionless divisor",
+        "limitations": "Stronger treble-string internal loss for string_1/string_2.",
+        "blocked_claims": [
+          "measured_linear_density"
+        ],
+        "objective_metric": "string_1 material_factor > string_5"
+      },
+      {
+        "term": "bridge_nut_boundary_loss_proxy",
+        "formula": "boundary_factor = 1 + 0.042 * sqrt(k)",
+        "source_level": "L2_diagnostic_proxy_v2",
+        "units": "dimensionless divisor",
+        "limitations": "Higher partial boundary loss proxy.",
+        "blocked_claims": [
+          "measured_bridge_admittance"
+        ],
+        "objective_metric": "boundary_factor increases with k"
+      },
+      {
+        "term": "combined_partial_tau",
+        "formula": "tau_k = tau_base / (harmonic_factor * freq_factor * fret_factor * material_factor * boundary_factor)",
+        "source_level": "L2_diagnostic_combined_proxy_v2",
+        "units": "seconds",
+        "limitations": "Time-domain partial decay only; replaces Step 5I v1 law in Step 5I.1 generator.",
+        "blocked_claims": [
+          "real_guitar_equivalence"
+        ],
+        "objective_metric": "monotonic tau_k vs k; steeper high-partial decay than Step 5I"
+      }
+    ]
+  },
+  "duration_policy": {
+    "default_duration_s": 4.5,
+    "allowed_range_s": [
+      3.0,
+      6.0
+    ],
+    "applied_duration_s": 4.5,
+    "no_trim": true,
+    "no_hard_gate": true,
+    "no_artificial_tail": true,
+    "full_natural_decay_window": true
+  },
+  "note_string_fret_mapping_used": {
+    "A2": {
+      "note": "A2",
+      "string_id": "string_5",
+      "open_note": "A2",
+      "fret": 0,
+      "open_frequency_hz": 110.0,
+      "target_frequency_hz": 110.0,
+      "computed_frequency_hz": 110.0,
+      "frequency_error_cents": 0.0,
+      "effective_length_m": 0.65,
+      "exact_open_string_claim_allowed": true,
+      "physical_playable_candidate": true,
+      "diagnostic_reference_only": false,
+      "extended_high_fret_candidate": false,
+      "within_default_max_fret": true,
+      "limitation": "Open-string mapping; exact open-string claim allowed when open note matches target."
+    },
+    "A3": {
+      "note": "A3",
+      "string_id": "string_4",
+      "open_note": "D3",
+      "fret": 7,
+      "open_frequency_hz": 146.8324,
+      "target_frequency_hz": 220.0,
+      "computed_frequency_hz": 220.000024,
+      "frequency_error_cents": 0.000189,
+      "effective_length_m": 0.433823,
+      "exact_open_string_claim_allowed": false,
+      "physical_playable_candidate": true,
+      "diagnostic_reference_only": false,
+      "extended_high_fret_candidate": false,
+      "within_default_max_fret": true,
+      "limitation": "Equal-temperament fretted mapping on string_4; physical playable candidate within conservative fret range."
+    },
+    "A4": {
+      "note": "A4",
+      "string_id": "string_1",
+      "open_note": "E4",
+      "fret": 5,
+      "open_frequency_hz": 329.6276,
+      "target_frequency_hz": 440.0,
+      "computed_frequency_hz": 440.000058,
+      "frequency_error_cents": 0.000226,
+      "effective_length_m": 0.48695,
+      "exact_open_string_claim_allowed": false,
+      "physical_playable_candidate": true,
+      "diagnostic_reference_only": false,
+      "extended_high_fret_candidate": false,
+      "within_default_max_fret": true,
+      "limitation": "Equal-temperament fretted mapping on string_1; physical playable candidate within conservative fret range."
+    },
+    "E5": {
+      "note": "E5",
+      "string_id": "string_1",
+      "open_note": "E4",
+      "fret": 12,
+      "open_frequency_hz": 329.6276,
+      "target_frequency_hz": 659.255118865,
+      "computed_frequency_hz": 659.2552,
+      "frequency_error_cents": 0.000213,
+      "effective_length_m": 0.325,
+      "exact_open_string_claim_allowed": false,
+      "physical_playable_candidate": true,
+      "diagnostic_reference_only": false,
+      "extended_high_fret_candidate": false,
+      "within_default_max_fret": true,
+      "limitation": "Equal-temperament fretted mapping on string_1; physical playable candidate within conservative fret range."
+    }
+  }
+}
