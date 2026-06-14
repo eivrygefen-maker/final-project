@@ -26,6 +26,7 @@ from pgsm_step3c_numeric_calibration import (  # noqa: E402
     load_pgsm_library,
     normalize_admittance_output,
     project_region_weights,
+    verify_damping_monotonicity,
     write_pgsm_step3c_reports,
 )
 from pgsm_physical_factor_registry import load_audit_report  # noqa: E402
@@ -131,12 +132,19 @@ class TestPgsmStep3cNumericCalibration(unittest.TestCase):
         from pgsm_step3a_numerical_ir_testbench import build_parameter_pack
 
         pack = build_parameter_pack(self.audit)
-        raw_lo = compute_modal_weights(rom["predicted_modes"][:50], pack, damping_scale=1.3)
-        raw_hi = compute_modal_weights(rom["predicted_modes"][:50], pack, damping_scale=0.7)
         mat = apply_material_policy_sample(self.audit, self.fem, self.pgsm)
-        _, s_lo = calibrate_q_tau_modes(raw_lo["modes"], mat)
-        _, s_hi = calibrate_q_tau_modes(raw_hi["modes"], mat)
-        self.assertLess(s_lo["after"]["mean_tau_s"], s_hi["after"]["mean_tau_s"])
+        mono = verify_damping_monotonicity(
+            rom["predicted_modes"][:80], pack, mat
+        )
+        self.assertTrue(mono["pass"], mono)
+        by = mono["by_damping_scale"]
+        low, nom, high = by["low_damping"], by["nominal"], by["high_damping"]
+        self.assertGreater(low["mean_Q_clamped"], nom["mean_Q_clamped"])
+        self.assertGreater(nom["mean_Q_clamped"], high["mean_Q_clamped"])
+        self.assertGreater(low["mean_tau_s_clamped"], nom["mean_tau_s_clamped"])
+        self.assertGreater(nom["mean_tau_s_clamped"], high["mean_tau_s_clamped"])
+        self.assertTrue(mono["Q_monotonic_unclamped"])
+        self.assertTrue(mono["tau_monotonic_unclamped"])
 
     def test_region_weights_sum_and_bounds(self) -> None:
         reg = project_region_weights(0.214, 0.766, 0.019)

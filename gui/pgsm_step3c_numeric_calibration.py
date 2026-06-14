@@ -50,6 +50,8 @@ FIGURES_DIR = REPO_ROOT / "audio" / "debug_reports" / "pgsm_step3c_figures"
 Q_MIN_CALIBRATED = 20.0
 Q_MAX_CALIBRATED = 80.0
 Q_TARGET_MEAN = 32.0
+# Step 3B sample_000 anchor — fixed scale preserves damping monotonicity across sensitivity sweeps
+NOMINAL_RAW_MEAN_Q = 13.028
 
 BAND_Q_FLOOR: Dict[str, float] = {
     "sub_body": 22.0,
@@ -75,6 +77,12 @@ def _sci(x: float, sig: int = 4) -> str:
     if x == 0.0:
         return "0"
     return f"{x:.{sig}e}"
+
+
+def _trapz_compat(y: Sequence[float] | np.ndarray, x: Sequence[float] | np.ndarray) -> float:
+    if hasattr(np, "trapezoid"):
+        return float(np.trapezoid(y, x))
+    return float(np.trapz(y, x))
 
 
 def _band_for_freq(f_hz: float) -> str:
@@ -242,9 +250,25 @@ def _band_stats(modes: Sequence[Mapping[str, Any]], q_key: str = "Q_total") -> D
     }
 
 
+def _calibration_scale(reference_raw_mean_q: float) -> float:
+    """Fixed anchor scale — do not re-normalize per batch (preserves damping ordering)."""
+    anchor = max(float(reference_raw_mean_q), 1.0)
+    scale = Q_TARGET_MEAN / anchor
+    return float(np.clip(scale, Q_MIN_CALIBRATED / anchor, Q_MAX_CALIBRATED / anchor))
+
+
+def _material_q_factor(mat_q_hint: Optional[float]) -> float:
+    """Uniform multiplicative factor from FEM material Q — monotonic in q_raw."""
+    if mat_q_hint is None:
+        return 1.0
+    return float(np.clip(1.0 + 0.05 * (float(mat_q_hint) / Q_TARGET_MEAN - 1.0), 0.95, 1.1))
+
+
 def calibrate_q_tau_modes(
     modes: Sequence[Mapping[str, Any]],
     material: Mapping[str, Any],
+    *,
+    reference_raw_mean_q: float = NOMINAL_RAW_MEAN_Q,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Numeric Q/tau calibration — labeled targets, not measurements."""
     raw_modes = [dict(m) for m in modes]
@@ -255,33 +279,39 @@ def calibrate_q_tau_modes(
     mat_q_hint = None
     if top_q and back_q:
         mat_q_hint = 0.5 * (float(top_q) + float(back_q))
-
-    raw_mean = max(raw_stats["mean_Q"], 1.0)
-    scale = Q_TARGET_MEAN / raw_mean
-    scale = min(scale, Q_MAX_CALIBRATED / raw_mean)
-    scale = max(scale, Q_MIN_CALIBRATED / raw_mean)
+    mat_factor = _material_q_factor(mat_q_hint)
+    scale = _calibration_scale(reference_raw_mean_q)
 
     calibrated: List[Dict[str, Any]] = []
+    unclamped_qs: List[float] = []
+    unclamped_taus: List[float] = []
     for m in raw_modes:
         row = dict(m)
         f_i = float(row["frequency_hz"])
         band = _band_for_freq(f_i)
         q_raw = float(row["Q_total"])
-        q_scaled = q_raw * scale
+        q_unclamped = q_raw * scale * mat_factor
         q_floor = BAND_Q_FLOOR.get(band, Q_MIN_CALIBRATED)
-        if mat_q_hint:
-            q_scaled = 0.7 * q_scaled + 0.3 * mat_q_hint
-        q_cal = float(np.clip(max(q_scaled, q_floor), Q_MIN_CALIBRATED, Q_MAX_CALIBRATED))
+        q_cal = float(np.clip(max(q_unclamped, q_floor), Q_MIN_CALIBRATED, Q_MAX_CALIBRATED))
+        tau_unclamped = amplitude_tau_s(q_unclamped, f_i)
         tau_cal = amplitude_tau_s(q_cal, f_i)
+        unclamped_qs.append(q_unclamped)
+        unclamped_taus.append(tau_unclamped)
         row["Q_raw"] = round(q_raw, 3)
         row["Q_total"] = round(q_cal, 3)
         row["Q_calibrated"] = round(q_cal, 3)
+        row["Q_calibrated_unclamped"] = round(q_unclamped, 3)
         row["tau_raw_s"] = row.get("tau_s")
         row["tau_s"] = round(tau_cal, 6)
+        row["tau_unclamped_s"] = round(tau_unclamped, 6)
         row["calibration_label"] = "numeric_target_not_measurement"
         calibrated.append(row)
 
     cal_stats = _band_stats(calibrated, "Q_calibrated")
+    unclamped_stats = {
+        "mean_Q": round(float(np.mean(unclamped_qs)), 3) if unclamped_qs else 0.0,
+        "mean_tau_s": round(float(np.mean(unclamped_taus)), 6) if unclamped_taus else 0.0,
+    }
     warn_before = sum(
         1 for b in raw_stats["bands"].values() if b.get("median_Q", 99) < 20
     )
@@ -293,9 +323,13 @@ def calibrate_q_tau_modes(
         "Q_min_calibrated_target": Q_MIN_CALIBRATED,
         "Q_max_calibrated_target": Q_MAX_CALIBRATED,
         "Q_target_mean_calibration": Q_TARGET_MEAN,
+        "reference_raw_mean_Q_anchor": reference_raw_mean_q,
         "scale_factor_applied": round(scale, 4),
+        "material_q_factor": round(mat_factor, 4),
+        "fixed_anchor_scale": True,
         "before": raw_stats,
         "after": cal_stats,
+        "unclamped_after": unclamped_stats,
         "mean_Q_increase": cal_stats["mean_Q"] > raw_stats["mean_Q"],
         "warning_band_count_before": warn_before,
         "warning_band_count_after": warn_after,
@@ -305,6 +339,50 @@ def calibrate_q_tau_modes(
         "calibration_label": "numeric_target_not_measurement",
     }
     return calibrated, summary
+
+
+def verify_damping_monotonicity(
+    modes: Sequence[Mapping[str, Any]],
+    pack: Mapping[str, Any],
+    material: Mapping[str, Any],
+    *,
+    reference_raw_mean_q: float = NOMINAL_RAW_MEAN_Q,
+    damping_scales: Tuple[float, float, float] = (0.7, 1.0, 1.3),
+) -> Dict[str, Any]:
+    """Confirm higher damping_scale lowers calibrated Q/tau (non-saturated region)."""
+    labels = ("low_damping", "nominal", "high_damping")
+    by_scale: Dict[str, Dict[str, Any]] = {}
+    for label, ds in zip(labels, damping_scales):
+        raw = compute_modal_weights(modes, pack, damping_scale=ds)
+        _, summary = calibrate_q_tau_modes(
+            raw["modes"], material, reference_raw_mean_q=reference_raw_mean_q
+        )
+        by_scale[label] = {
+            "damping_scale": ds,
+            "mean_Q_clamped": summary["after"]["mean_Q"],
+            "mean_tau_s_clamped": summary["after"]["mean_tau_s"],
+            "mean_Q_unclamped": summary["unclamped_after"]["mean_Q"],
+            "mean_tau_s_unclamped": summary["unclamped_after"]["mean_tau_s"],
+        }
+
+    low, nom, high = by_scale["low_damping"], by_scale["nominal"], by_scale["high_damping"]
+    q_mono = low["mean_Q_clamped"] > nom["mean_Q_clamped"] > high["mean_Q_clamped"]
+    tau_mono = (
+        low["mean_tau_s_clamped"] > nom["mean_tau_s_clamped"] > high["mean_tau_s_clamped"]
+    )
+    q_mono_u = low["mean_Q_unclamped"] > nom["mean_Q_unclamped"] > high["mean_Q_unclamped"]
+    tau_mono_u = (
+        low["mean_tau_s_unclamped"] > nom["mean_tau_s_unclamped"] > high["mean_tau_s_unclamped"]
+    )
+
+    return {
+        "by_damping_scale": by_scale,
+        "Q_monotonic_clamped": q_mono,
+        "tau_monotonic_clamped": tau_mono,
+        "Q_monotonic_unclamped": q_mono_u,
+        "tau_monotonic_unclamped": tau_mono_u,
+        "pass": q_mono and tau_mono,
+    }
 
 
 def project_region_weights(
@@ -397,7 +475,7 @@ def normalize_admittance_output(adm: Mapping[str, Any]) -> Dict[str, Any]:
 
     y_max = float(abs_y.max())
     y_norm_peak = abs_y / max(y_max, 1e-20)
-    area = float(np.trapezoid(abs_y, freqs)) if freqs.size > 1 else y_max
+    area = _trapz_compat(abs_y, freqs) if freqs.size > 1 else y_max
     y_norm_area = abs_y / max(area, 1e-20)
 
     peaks = adm.get("detected_peaks") or []
@@ -532,6 +610,7 @@ def run_objective_tests(
             ),
             "warnings_reduced": q_summary.get("warning_band_count_after", 99)
             <= q_summary.get("warning_band_count_before", 0),
+            "damping_monotonicity": q_summary.get("damping_monotonicity", {}).get("pass"),
             "pass": True,
         },
         "region_weights": {
@@ -636,7 +715,19 @@ def build_pgsm_step3c_report(
     raw_weights = compute_modal_weights(modes, pack)
     raw_modes = raw_weights.get("modes") or []
 
-    calibrated_modes, q_summary = calibrate_q_tau_modes(raw_modes, chosen_material)
+    reference_q = float(
+        (step3b.get("modal_q_tau_validation") or {}).get("mean_Q_total") or NOMINAL_RAW_MEAN_Q
+    )
+
+    calibrated_modes, q_summary = calibrate_q_tau_modes(
+        raw_modes, chosen_material, reference_raw_mean_q=reference_q
+    )
+    mono_modes = rom.get("predicted_modes") or []
+    if max_modes is not None:
+        mono_modes = mono_modes[: min(max_modes, 80)]
+    q_summary["damping_monotonicity"] = verify_damping_monotonicity(
+        mono_modes, pack, chosen_material, reference_raw_mean_q=reference_q
+    )
 
     reg_raw = step3b.get("region_contribution_validation") or {}
     raw_frac = {
@@ -733,7 +824,8 @@ def write_markdown_report(report: Mapping[str, Any], path: Path) -> None:
         f"| Before | {q.get('before', {}).get('mean_Q')} | {q.get('before', {}).get('mean_tau_s')} |",
         f"| After | {q.get('after', {}).get('mean_Q')} | {q.get('after', {}).get('mean_tau_s')} |",
         "",
-        f"Scale factor: {q.get('scale_factor_applied')} (calibration target, not measurement)",
+        f"Scale factor: {q.get('scale_factor_applied')} (fixed anchor; calibration target, not measurement)",
+        f"Damping monotonicity: {q.get('damping_monotonicity', {}).get('pass')}",
         "",
         "## Region weights",
         "",

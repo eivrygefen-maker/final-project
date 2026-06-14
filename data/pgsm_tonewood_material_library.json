@@ -1,7 +1,7 @@
 {
   "_pgsm_companion_notice": "PGSM tonewood material fallback/calibration library. NOT a replacement for FEM/materials/woods_ortho.json or project geometry/material data.",
   "library_version": "pgsm_step2_2_tonewood_material_library_v1",
-  "generated_utc": "2026-06-14T07:35:58Z",
+  "generated_utc": "2026-06-14T07:54:17Z",
   "cross_reference_fem_file": "FEM/materials/woods_ortho.json",
   "source_reference_registry": [
     {
