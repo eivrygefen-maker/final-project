@@ -94,24 +94,37 @@ HIGH_FREQ_THRESHOLD_HZ = 2000.0
 UPPER_MID_LO_HZ = 500.0
 UPPER_MID_HI_HZ = 2000.0
 
-# v2 body weighting — output weights only; f/Q/tau unchanged
-TOP_PLATE_MODAL_GAIN = 1.20
-TOP_ARTICULATION_MID_HZ = 650.0
-TOP_ARTICULATION_BAND_HZ = 280.0
-TOP_ARTICULATION_MID_BOOST = 0.28
-BACK_PLATE_MODAL_GAIN = 1.14
-AIR_CAVITY_MODAL_GAIN = 2.35
-AIR_FREQ_ATTENUATION_SCALE_HZ = 680.0
-AIR_FREQ_ATTENUATION_POWER = 1.08
-RADIATION_F_REF_HZ = 1250.0
-RADIATION_F_ROLLOFF_EXP = 1.08
-HARMONIC_PRESERVATION_CENTER_HZ = 720.0
-HARMONIC_PRESERVATION_WIDTH_HZ = 480.0
-HARMONIC_PRESERVATION_BOOST = 0.26
-RADIATION_TREBLE_GUARD_COEFF = 8.0e-7
-RADIATION_TREBLE_GUARD_START_HZ = 1500.0
-TOP_ARTICULATION_ROLLOFF_START_HZ = 1200.0
-E5_PEAK_TREBLE_RMS_DBFS = -25.0
+# v2.1 body weighting — output weights only; f/Q/tau unchanged
+# Rebalanced after v2 overcorrected to top-dominant (~0.77) comb-like response.
+TOP_PLATE_MODAL_GAIN = 1.06
+TOP_ARTICULATION_MID_HZ = 620.0
+TOP_ARTICULATION_BAND_HZ = 240.0
+TOP_ARTICULATION_MID_BOOST = 0.15
+TOP_MODE_SHARE_SOFT_CAP = 0.58
+TOP_REDIST_TO_BACK = 0.42
+TOP_REDIST_TO_AIR = 0.58
+TOP_CLUSTER_DAMP_WINDOW_HZ = 48.0
+TOP_CLUSTER_DAMP_THRESHOLD = 3
+TOP_CLUSTER_DAMP_STRENGTH = 0.24
+TOP_ARTICULATION_ROLLOFF_START_HZ = 1050.0
+BACK_PLATE_MODAL_GAIN = 1.28
+BACK_WARMTH_MID_HZ = 560.0
+BACK_WARMTH_BAND_HZ = 300.0
+BACK_WARMTH_MID_BOOST = 0.14
+AIR_CAVITY_MODAL_GAIN = 2.82
+AIR_FREQ_ATTENUATION_SCALE_HZ = 920.0
+AIR_FREQ_ATTENUATION_POWER = 0.82
+RADIATION_F_REF_HZ = 1280.0
+RADIATION_F_ROLLOFF_EXP = 0.96
+HARMONIC_PRESERVATION_CENTER_HZ = 660.0
+HARMONIC_PRESERVATION_CENTER_UPPER_HZ = 1180.0
+HARMONIC_PRESERVATION_WIDTH_HZ = 520.0
+HARMONIC_PRESERVATION_BOOST = 0.34
+HARMONIC_PRESERVATION_BOOST_UPPER = 0.20
+RADIATION_TREBLE_GUARD_COEFF = 9.5e-7
+RADIATION_TREBLE_GUARD_START_HZ = 1580.0
+E5_PEAK_TREBLE_RMS_DBFS = -26.0
+COMB_ECHO_FAIL_THRESHOLD = 0.95
 
 AIR_DOMINANCE_THRESHOLD = 0.55
 H1_DOMINANCE_ORGAN_THRESHOLD = 0.72
@@ -188,25 +201,26 @@ def build_body_weighting_v2_contract() -> Dict[str, Any]:
     terms = [
         _term(
             "top_plate_modal_weight",
-            f"W_top = W_rad×(top/region)×{TOP_PLATE_MODAL_GAIN}×rad_band_v2×top_articulation_midband(f)",
-            "top_plate_attack_share improved vs Step 5J",
-            limitations="Causal per-mode articulation boost; not post-hoc transient enhancer",
+            f"W_top = W_rad×(top/region)×{TOP_PLATE_MODAL_GAIN}×rad_band_v2×top_articulation_midband(f)"
+            f"×top_cluster_damp(f); soft_cap={TOP_MODE_SHARE_SOFT_CAP}",
+            "top_plate_attack_share improved vs Step 5J without top monopoly",
+            limitations="Causal per-mode articulation boost; cluster damp reduces comb-prone top coherence",
         ),
         _term(
             "back_plate_modal_weight",
-            f"W_back = W_rad×(back/region)×{BACK_PLATE_MODAL_GAIN}×rad_band_v2",
-            "back warmth present without dominating",
+            f"W_back = W_rad×(back/region)×{BACK_PLATE_MODAL_GAIN}×rad_band_v2×back_warmth_midband(f)",
+            "back warmth supports body without top-only coherence",
         ),
         _term(
             "air_cavity_modal_weight",
             f"W_air = W_air×(air/region)×{AIR_CAVITY_MODAL_GAIN}×rad_band_v2×air_freq_balance(f)",
-            "air_share reduced vs Step 5J; cavity imprint retained",
-            limitations="High-f air modes attenuated to avoid organ-like sustain",
+            "air_share balanced vs Step 5J; cavity imprint retained without dominance",
+            limitations="Gentle high-f air taper only; air not crushed to ~0.09",
         ),
         _term(
             "radiation_band_weight",
-            f"rad_band_v2: gentler rolloff f_ref={RADIATION_F_REF_HZ}, exp={RADIATION_F_ROLLOFF_EXP}, "
-            f"harmonic_preservation boost H2-H6",
+            f"rad_band_v2: rolloff f_ref={RADIATION_F_REF_HZ}, exp={RADIATION_F_ROLLOFF_EXP}, "
+            f"dual harmonic_preservation bands H2-H6/H3-H7",
             "H2-H8 ratio improved; organ_like_purity reduced or flagged",
         ),
         _term(
@@ -243,11 +257,47 @@ def build_body_weighting_v2_contract() -> Dict[str, Any]:
 def top_articulation_weight(f_hz: float, top_share: float) -> float:
     """Band-limited mid-frequency top boost for pluck articulation without total top dominance."""
     mid = math.exp(-((f_hz - TOP_ARTICULATION_MID_HZ) ** 2) / (2.0 * TOP_ARTICULATION_BAND_HZ ** 2))
-    boost = 1.0 + TOP_ARTICULATION_MID_BOOST * mid * (0.5 + 0.5 * top_share)
+    boost = 1.0 + TOP_ARTICULATION_MID_BOOST * mid * (0.45 + 0.55 * top_share)
     if f_hz > TOP_ARTICULATION_ROLLOFF_START_HZ:
         excess = f_hz - TOP_ARTICULATION_ROLLOFF_START_HZ
-        boost *= 1.0 / (1.0 + (excess / 600.0) ** 1.1)
+        boost *= 1.0 / (1.0 + (excess / 520.0) ** 1.15)
     return boost
+
+
+def back_warmth_weight(f_hz: float) -> float:
+    mid = math.exp(-((f_hz - BACK_WARMTH_MID_HZ) ** 2) / (2.0 * BACK_WARMTH_BAND_HZ ** 2))
+    return 1.0 + BACK_WARMTH_MID_BOOST * mid
+
+
+def top_cluster_coherence_damp(f_hz: float, all_freqs: Sequence[float]) -> float:
+    """Reduce top weight where modal neighbors cluster with regular spacing (comb risk)."""
+    cluster_count = sum(1 for f in all_freqs if abs(f - f_hz) <= TOP_CLUSTER_DAMP_WINDOW_HZ)
+    factor = 1.0
+    if cluster_count > TOP_CLUSTER_DAMP_THRESHOLD:
+        factor *= 1.0 / (
+            1.0 + TOP_CLUSTER_DAMP_STRENGTH * (cluster_count - TOP_CLUSTER_DAMP_THRESHOLD)
+        )
+    local = sorted(f for f in all_freqs if abs(f - f_hz) <= TOP_CLUSTER_DAMP_WINDOW_HZ * 2.8)
+    if len(local) >= 5:
+        spacings = np.diff(local)
+        if spacings.size:
+            regularity = float(np.std(spacings) / max(float(np.mean(spacings)), 1.0))
+            if regularity < 0.92:
+                factor *= 1.0 / (1.0 + 0.30 * (0.92 - regularity))
+    return factor
+
+
+def rebalance_mode_stem_weights(wt: float, wb: float, wai: float) -> Tuple[float, float, float]:
+    """Per-mode soft cap on top share; redistribute excess to back/air (causal weighting only)."""
+    total = wt + wb + wai
+    if total <= 0.0:
+        return wt, wb, wai
+    top_frac = wt / total
+    if top_frac <= TOP_MODE_SHARE_SOFT_CAP:
+        return wt, wb, wai
+    wt_new = TOP_MODE_SHARE_SOFT_CAP * total
+    excess = wt - wt_new
+    return wt_new, wb + excess * TOP_REDIST_TO_BACK, wai + excess * TOP_REDIST_TO_AIR
 
 
 def air_frequency_balance(f_hz: float) -> float:
@@ -257,13 +307,63 @@ def air_frequency_balance(f_hz: float) -> float:
 def radiation_band_weight_v2(f_hz: float, w_rad: float, *, w_rad_median: float) -> float:
     rad_norm = w_rad / max(w_rad_median, 1e-12)
     f_rolloff = 1.0 / (1.0 + (f_hz / RADIATION_F_REF_HZ) ** RADIATION_F_ROLLOFF_EXP)
-    harmonic_preservation = 1.0 + HARMONIC_PRESERVATION_BOOST * math.exp(
+    hp_lower = 1.0 + HARMONIC_PRESERVATION_BOOST * math.exp(
         -((f_hz - HARMONIC_PRESERVATION_CENTER_HZ) ** 2)
         / (2.0 * HARMONIC_PRESERVATION_WIDTH_HZ ** 2)
     )
+    hp_upper = 1.0 + HARMONIC_PRESERVATION_BOOST_UPPER * math.exp(
+        -((f_hz - HARMONIC_PRESERVATION_CENTER_UPPER_HZ) ** 2)
+        / (2.0 * HARMONIC_PRESERVATION_WIDTH_HZ ** 2)
+    )
+    harmonic_preservation = hp_lower + hp_upper - 1.0
     treble_excess = max(0.0, f_hz - RADIATION_TREBLE_GUARD_START_HZ)
     treble_guard = 1.0 / (1.0 + RADIATION_TREBLE_GUARD_COEFF * treble_excess ** 2)
     return rad_norm * f_rolloff * harmonic_preservation * treble_guard
+
+
+def compute_comb_echo_score(y: np.ndarray, sr: int) -> float:
+    """Echo comb pattern score from spectral peak spacing regularity (lower is better)."""
+    n = len(y)
+    if n < 256:
+        return 0.0
+    spec = np.abs(np.fft.rfft(y * np.hanning(n)))
+    freqs = np.fft.rfftfreq(n, 1.0 / sr)
+    spec_db = 20.0 * np.log10(np.maximum(spec, 1e-12))
+    peak_indices: List[int] = []
+    for i in range(2, len(spec_db) - 2):
+        if spec_db[i] > spec_db[i - 1] and spec_db[i] > spec_db[i + 1]:
+            if spec_db[i] > spec_db.max() - 40.0:
+                peak_indices.append(i)
+    if len(peak_indices) < 5:
+        return 0.0
+    spacings = np.diff([freqs[i] for i in peak_indices[:8]])
+    if spacings.size == 0:
+        return 0.0
+    return float(np.std(spacings) / max(float(np.mean(spacings)), 1.0))
+
+
+def compute_stem_comb_echo_scores(
+    *,
+    string_force: np.ndarray,
+    y_top: np.ndarray,
+    y_back: np.ndarray,
+    y_air: np.ndarray,
+    y_combined: np.ndarray,
+    sr: int,
+    note: str,
+) -> Dict[str, float]:
+    """Comb score for final output and each body stem (listening-normalized for level parity)."""
+    stems = {
+        "final_output": y_combined,
+        "string_force_conv_top": y_top,
+        "string_force_conv_back": y_back,
+        "string_force_conv_air": y_air,
+    }
+    scores: Dict[str, float] = {}
+    for name, y_raw in stems.items():
+        y_listen, _ = apply_listening_render_step5j_1(y_raw, note=note)
+        scores[name] = round(compute_comb_echo_score(y_listen, sr), 4)
+    return scores
 
 
 def compute_step5j_1_modal_kernels_decomposed(
@@ -282,6 +382,7 @@ def compute_step5j_1_modal_kernels_decomposed(
 
     w_rad_vals = [float(row.get("W_rad") or 0.0) for row in modes]
     w_rad_median = max(float(np.median(w_rad_vals)) if w_rad_vals else 1.0, 1e-12)
+    mode_freqs = [float(row["frequency_hz"]) for row in modes]
 
     for row in modes:
         f_i = float(row["frequency_hz"])
@@ -294,10 +395,19 @@ def compute_step5j_1_modal_kernels_decomposed(
         region = max(top + back + air, 1e-9)
         rad_w = radiation_band_weight_v2(f_i, wr, w_rad_median=w_rad_median)
         kernel = np.exp(-t / tau) * np.sin(2.0 * math.pi * f_i * t)
+        cluster_damp = top_cluster_coherence_damp(f_i, mode_freqs)
 
-        wt = wr * (top / region) * TOP_PLATE_MODAL_GAIN * rad_w * top_articulation_weight(f_i, top)
-        wb = wr * (back / region) * BACK_PLATE_MODAL_GAIN * rad_w
+        wt = (
+            wr
+            * (top / region)
+            * TOP_PLATE_MODAL_GAIN
+            * rad_w
+            * top_articulation_weight(f_i, top)
+            * cluster_damp
+        )
+        wb = wr * (back / region) * BACK_PLATE_MODAL_GAIN * rad_w * back_warmth_weight(f_i)
         wai = wa * (air / region) * AIR_CAVITY_MODAL_GAIN * rad_w * air_frequency_balance(f_i)
+        wt, wb, wai = rebalance_mode_stem_weights(wt, wb, wai)
         wrad = (wt + wb) * 0.52 + wai * 0.48
 
         h_top += wt * kernel
@@ -307,7 +417,7 @@ def compute_step5j_1_modal_kernels_decomposed(
 
     h_combined = h_top + h_back + h_air
     meta = {
-        "weighting_version": "v2",
+        "weighting_version": "v2.1",
         "mode_count": len(modes),
         "output_weights_only": True,
         "q_tau_unchanged": True,
@@ -374,6 +484,7 @@ def compute_articulation_metrics(
         "harmonic_purity_proxy": round(float(hnr.get("harmonic_to_noise_ratio_db") or 0.0), 3),
         "h1_dominance_ratio": round(h1 / h_sum, 6),
         "h2_h8_total_ratio": round(h2_h8 / h_sum, 6),
+        "h2_h8_energy_ratio": round(h2_h8 / h_sum, 6),
         "spectral_flatness": round(flatness, 6),
         "transient_to_sustain_ratio": round(transient_to_sustain, 4),
         "attack_definition_proxy": round(e_early_top / max(e_early_main, 1e-12), 4),
@@ -411,12 +522,16 @@ def compute_organ_like_diagnosis(
         b_top = float(baseline_step5j.get("top_plate_attack_share") or 0.0)
         top_attack_improved = top_attack > b_top + 0.02 or top_attack >= 0.22
 
-    balance = 1.0 - abs(air_share - 0.35) - abs(float(stem_summary.get("top_share") or 0) - 0.40)
+    balance = 1.0 - abs(air_share - 0.32) - abs(float(stem_summary.get("top_share") or 0) - 0.42)
     return {
         "organ_like_purity_flag": organ_like_purity,
         "air_dominance_flag": air_dominance,
         "weak_guitar_articulation_flag": weak_guitar_articulation,
         "air_dominance_ratio": round(air_share, 6),
+        "top_dominance_ratio": round(float(stem_summary.get("top_share") or 0.0), 6),
+        "back_balance_ratio": round(float(stem_summary.get("back_share") or 0.0), 6),
+        "air_balance_ratio": round(air_share, 6),
+        "h2_h8_energy_ratio": round(h2_h8, 6),
         "body_component_balance_score": round(balance, 4),
         "air_dominance_reduced_vs_step5j": air_reduced,
         "top_plate_attack_improved_vs_step5j": top_attack_improved,
@@ -454,6 +569,9 @@ def compute_stem_energy_summary(
         "top_share": round(e_top / max(body_sum, 1e-12), 6),
         "back_share": round(e_back / max(body_sum, 1e-12), 6),
         "air_share": round(e_air / max(body_sum, 1e-12), 6),
+        "top_dominance_ratio": round(e_top / max(body_sum, 1e-12), 6),
+        "back_balance_ratio": round(e_back / max(body_sum, 1e-12), 6),
+        "air_balance_ratio": round(e_air / max(body_sum, 1e-12), 6),
         "body_to_string_energy_ratio": round(_signal_energy(body_weighted) / max(_signal_energy(string_force), 1e-12), 6),
         "top_plate_attack_share": articulation.get("top_plate_attack_share"),
         "air_cavity_sustain_share": articulation.get("air_cavity_sustain_share"),
@@ -661,6 +779,7 @@ def evaluate_per_note(
         "no_hard_gate": not hard_gate,
         "no_hf_spike": modal.get("no_hf_spike"),
         "no_comb_echo": modal.get("no_comb_echo"),
+        "comb_echo_score": modal.get("echo_comb_pattern_score"),
         "not_click_dominant": click_score < 0.45,
         "active_duration_sufficient": decay.get("active_duration_minus_60_dbfs_ms", 0) >= min_active,
         "pass": bool(
@@ -731,11 +850,16 @@ def build_readiness_after_step5j_1(objective_pass: bool) -> Dict[str, Any]:
 def enrich_artifact_guard_results(
     artifact: Mapping[str, Any],
     per_note_metrics: Mapping[str, Mapping[str, Any]],
+    *,
+    comb_echo_score_by_note: Optional[Mapping[str, float]] = None,
+    comb_echo_score_by_stem: Optional[Mapping[str, Mapping[str, float]]] = None,
+    dominant_comb_echo_stem_by_note: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, Any]:
     """Attach per-note artifact flags and failed guard field names for VM diagnosis."""
     per_note_flags = {
         note: {
             "no_comb_echo": (per_note_metrics.get(note) or {}).get("no_comb_echo"),
+            "comb_echo_score": (per_note_metrics.get(note) or {}).get("comb_echo_score"),
             "no_hf_spike": (per_note_metrics.get(note) or {}).get("no_hf_spike"),
             "no_second_onset": (per_note_metrics.get(note) or {}).get("no_second_onset"),
             "no_end_rise": (per_note_metrics.get(note) or {}).get("no_end_rise"),
@@ -747,12 +871,36 @@ def enrich_artifact_guard_results(
     failed_guard_fields = [
         key
         for key, value in artifact.items()
-        if key not in ("pass", "per_note_flags", "failed_guard_fields") and not value
+        if key
+        not in (
+            "pass",
+            "per_note_flags",
+            "failed_guard_fields",
+            "comb_echo_score_by_note",
+            "comb_echo_score_by_stem",
+            "dominant_comb_echo_stem",
+        )
+        and not value
     ]
+    dominant_global = None
+    if dominant_comb_echo_stem_by_note:
+        worst_note = max(
+            dominant_comb_echo_stem_by_note,
+            key=lambda n: float((comb_echo_score_by_note or {}).get(n) or 0.0),
+            default="",
+        )
+        dominant_global = {
+            "note": worst_note,
+            "stem": dominant_comb_echo_stem_by_note.get(worst_note),
+            "comb_echo_score": (comb_echo_score_by_note or {}).get(worst_note),
+        }
     return {
         **dict(artifact),
         "failed_guard_fields": failed_guard_fields,
         "per_note_flags": per_note_flags,
+        "comb_echo_score_by_note": dict(comb_echo_score_by_note or {}),
+        "comb_echo_score_by_stem": {k: dict(v) for k, v in (comb_echo_score_by_stem or {}).items()},
+        "dominant_comb_echo_stem": dominant_global,
     }
 
 
@@ -821,6 +969,9 @@ def build_pgsm_step5j_1_report(
     baselines_5j: Dict[str, Any] = {}
     baselines_53: Dict[str, Any] = {}
     e5_analysis: Dict[str, Any] = {"applicable": False}
+    comb_echo_score_by_note: Dict[str, float] = {}
+    comb_echo_score_by_stem: Dict[str, Dict[str, float]] = {}
+    dominant_comb_echo_stem_by_note: Dict[str, str] = {}
 
     step5j_stems = step5j.get("per_note_stem_energy_summary") or {}
 
@@ -839,6 +990,22 @@ def build_pgsm_step5j_1_report(
         y_rad = synthesize_modal_body_response(string_force, h_rad)
         body_raw = synthesize_modal_body_response(string_force, h_combined)
         main_listening, listen_info = apply_listening_render_step5j_1(body_raw, note=note)
+
+        stem_comb = compute_stem_comb_echo_scores(
+            string_force=string_force,
+            y_top=y_top,
+            y_back=y_back,
+            y_air=y_air,
+            y_combined=main_listening,
+            sr=sr,
+            note=note,
+        )
+        comb_echo_score_by_note[note] = stem_comb.get("final_output", 0.0)
+        comb_echo_score_by_stem[note] = stem_comb
+        dominant_comb_echo_stem_by_note[note] = max(
+            stem_comb,
+            key=lambda k: float(stem_comb.get(k) or 0.0),
+        )
 
         articulation = compute_articulation_metrics(
             main_listening,
@@ -966,6 +1133,9 @@ def build_pgsm_step5j_1_report(
     artifact = enrich_artifact_guard_results(
         build_artifact_guard(per_note_metrics),
         per_note_metrics,
+        comb_echo_score_by_note=comb_echo_score_by_note,
+        comb_echo_score_by_stem=comb_echo_score_by_stem,
+        dominant_comb_echo_stem_by_note=dominant_comb_echo_stem_by_note,
     )
     honest = build_honest_failure_flags(per_note_metrics)
 
@@ -1119,6 +1289,18 @@ def write_markdown_report(report: Mapping[str, Any], path: Path) -> None:
         lines.append(
             f"| {note} | {s.get('top_share')} | {s.get('back_share')} | {s.get('air_share')} | "
             f"{a.get('top_plate_attack_share')} |"
+        )
+
+    lines.extend(["", "## Comb echo diagnosis", ""])
+    ag = report.get("artifact_guard_results") or {}
+    lines.append(f"- failed_guard_fields: {ag.get('failed_guard_fields')}")
+    for note in NOTE_SET:
+        score = (ag.get("comb_echo_score_by_note") or {}).get(note)
+        dom = (ag.get("comb_echo_score_by_stem") or {}).get(note) or {}
+        worst_stem = max(dom, key=lambda k: float(dom.get(k) or 0.0), default="") if dom else ""
+        lines.append(
+            f"- **{note}**: comb_score={score}, worst_stem={worst_stem} "
+            f"({dom.get(worst_stem) if worst_stem else 'n/a'})"
         )
 
     lines.extend(["", "## E5 peak source", ""])

@@ -180,6 +180,19 @@ class TestPgsmStep5j1GuitarArticulationBodyBalanceRepair(unittest.TestCase):
             self.assertIn("organ_like_purity_flag", o)
             self.assertIn("air_dominance_flag", o)
             self.assertIn("weak_guitar_articulation_flag", o)
+            self.assertIn("top_dominance_ratio", o)
+            self.assertIn("back_balance_ratio", o)
+            self.assertIn("air_balance_ratio", o)
+            self.assertIn("h2_h8_energy_ratio", o)
+
+    def test_comb_echo_diagnostics_present(self) -> None:
+        art = self._report().get("artifact_guard_results") or {}
+        self.assertIn("comb_echo_score_by_note", art)
+        self.assertIn("comb_echo_score_by_stem", art)
+        self.assertIn("dominant_comb_echo_stem", art)
+        for note in NOTE_SET:
+            self.assertIn(note, art.get("comb_echo_score_by_note") or {})
+            self.assertIn(note, art.get("comb_echo_score_by_stem") or {})
 
     def test_articulation_metrics_computed(self) -> None:
         art = self._report().get("per_note_articulation_metrics") or {}
@@ -187,6 +200,7 @@ class TestPgsmStep5j1GuitarArticulationBodyBalanceRepair(unittest.TestCase):
             a = art.get(note) or {}
             self.assertIn("h1_dominance_ratio", a)
             self.assertIn("h2_h8_total_ratio", a)
+            self.assertIn("h2_h8_energy_ratio", a)
             self.assertIn("top_plate_attack_share", a)
             self.assertIn("air_cavity_sustain_share", a)
             self.assertIn("transient_to_sustain_ratio", a)
