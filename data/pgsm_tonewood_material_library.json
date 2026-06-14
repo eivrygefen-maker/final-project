@@ -1,0 +1,1274 @@
+{
+  "_pgsm_companion_notice": "PGSM tonewood material fallback/calibration library. NOT a replacement for FEM/materials/woods_ortho.json or project geometry/material data.",
+  "library_version": "pgsm_step2_2_tonewood_material_library_v1",
+  "generated_utc": "2026-06-14T07:35:58Z",
+  "cross_reference_fem_file": "FEM/materials/woods_ortho.json",
+  "source_reference_registry": [
+    {
+      "source_reference_id": "SRC_USDA_WHB_2010",
+      "title": "Wood Handbook: Wood as an Engineering Material",
+      "authors": "USDA Forest Products Laboratory",
+      "year": 2010,
+      "source_type": "book",
+      "url": "https://www.fpl.fs.usda.gov/publications/fplgtr/fplgtr190.pdf",
+      "used_for": [
+        "density",
+        "young_modulus",
+        "anisotropy_ratios"
+      ],
+      "notes": "General Technical Report FPL-GTR-190; Table 4-3a metric mechanical properties at 12% MC",
+      "confidence": "high"
+    },
+    {
+      "source_reference_id": "SRC_BREMAUD_2014",
+      "title": "Acoustical properties of wood in string instruments soundboards and tuned idiophones: biological and cultural diversity",
+      "authors": "Bremaud, I.",
+      "year": 2014,
+      "source_type": "paper",
+      "url": "https://doi.org/10.1093/jxb/ert221",
+      "used_for": [
+        "damping_loss_factor",
+        "tonewood_selection_context"
+      ],
+      "notes": "Review of mechanical and damping properties relevant to musical instrument soundboards",
+      "confidence": "high"
+    },
+    {
+      "source_reference_id": "SRC_WEGST_2006",
+      "title": "Wood for sound",
+      "authors": "Wegst, U.G.K.",
+      "year": 2006,
+      "source_type": "paper",
+      "url": "https://doi.org/10.3732/ajb.93.10.1439",
+      "notes": "Am J Bot 93(10):1439-1448; stiffness-to-weight and damping in tonewoods",
+      "used_for": [
+        "stiffness_to_weight_proxy",
+        "damping_context"
+      ],
+      "confidence": "high"
+    },
+    {
+      "source_reference_id": "SRC_BUCUR_2006",
+      "title": "Acoustics of Wood",
+      "authors": "Bucur, V.",
+      "year": 2006,
+      "source_type": "book",
+      "used_for": [
+        "damping_loss_factor",
+        "speed_of_sound",
+        "internal_friction"
+      ],
+      "notes": "Springer; internal friction tan delta order 10^-3\u201310^-2 for wood at audio frequencies",
+      "confidence": "high"
+    },
+    {
+      "source_reference_id": "SRC_FLETCHER_ROSSING_1998",
+      "title": "The Physics of Musical Instruments",
+      "authors": "Fletcher, N.H.; Rossing, T.D.",
+      "year": 1998,
+      "source_type": "book",
+      "used_for": [
+        "speed_of_sound_proxy",
+        "plate_stiffness_context"
+      ],
+      "notes": "2nd ed.; c \u2248 sqrt(E/\u03c1) for longitudinal wave in plates",
+      "confidence": "medium"
+    },
+    {
+      "source_reference_id": "SRC_USDA_CYPRESS",
+      "title": "USDA Wood Handbook \u2014 Mediterranean cypress (Cupressus sempervirens) species data",
+      "authors": "USDA Forest Products Laboratory",
+      "year": 2010,
+      "source_type": "dataset",
+      "url": "https://www.fpl.fs.usda.gov/",
+      "used_for": [
+        "cypress_mediterranean"
+      ],
+      "notes": "Species table in FPL-GTR-190; used for cypress entry only",
+      "confidence": "medium"
+    },
+    {
+      "source_reference_id": "SRC_PGSM_GENERIC_FALLBACK",
+      "title": "PGSM generic top/back wood aggregate (low-confidence fallback)",
+      "authors": "PGSM Step 2.2",
+      "year": 2026,
+      "source_type": "fallback_estimate",
+      "used_for": [
+        "generic_top_wood",
+        "generic_back_wood"
+      ],
+      "notes": "Aggregate of USDA softwood/hardwood typical ranges; NOT measured per sample",
+      "confidence": "low"
+    }
+  ],
+  "wood_entries": {
+    "spruce_sitka": {
+      "wood_id": "spruce_sitka",
+      "common_name": "Sitka spruce (Picea sitchensis)",
+      "role_allowed": [
+        "top",
+        "back",
+        "sides",
+        "bridge"
+      ],
+      "density_kg_m3": {
+        "min": 370,
+        "typical": 430,
+        "max": 470,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "high",
+        "value_status": "literature_range",
+        "units": "kg/m\u00b3",
+        "limitations": ""
+      },
+      "young_modulus_longitudinal_gpa": {
+        "min": 9.0,
+        "typical": 10.8,
+        "max": 12.5,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "high",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "young_modulus_radial_gpa": {
+        "min": 0.55,
+        "typical": 0.84,
+        "max": 1.1,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "high",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": "E_R \u2248 0.078 E_L per USDA Ch.4 ratios"
+      },
+      "young_modulus_tangential_gpa": {
+        "min": 0.35,
+        "typical": 0.46,
+        "max": 0.65,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "high",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": "E_T \u2248 0.043 E_L per USDA Ch.4 ratios"
+      },
+      "anisotropy_ratio_longitudinal_to_radial": {
+        "min": 10.0,
+        "typical": 12.9,
+        "max": 18.0,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "high",
+        "value_status": "literature_range",
+        "units": "ratio",
+        "limitations": ""
+      },
+      "damping_loss_factor": {
+        "min": 0.003,
+        "typical": 0.007,
+        "max": 0.015,
+        "source_reference_id": "SRC_BUCUR_2006",
+        "confidence": "medium",
+        "value_status": "literature_range",
+        "units": "dimensionless",
+        "limitations": "Internal friction tan \u03b4 order; Bremaud/Bucur review range"
+      },
+      "speed_of_sound_longitudinal_m_s": {
+        "min": 4600,
+        "typical": 5010,
+        "max": 5400,
+        "source_reference_id": "SRC_FLETCHER_ROSSING_1998",
+        "confidence": "medium",
+        "value_status": "inferred",
+        "units": "m/s",
+        "limitations": "sqrt(E_L/\u03c1) from typical values"
+      },
+      "fem_woods_ortho_cross_ref": "spruce_sitka",
+      "limitations": "Literature range at ~12% moisture; not measured on project samples."
+    },
+    "cedar_western": {
+      "wood_id": "cedar_western",
+      "common_name": "Western red cedar (Thuja plicata)",
+      "role_allowed": [
+        "top",
+        "back",
+        "sides"
+      ],
+      "density_kg_m3": {
+        "min": 320,
+        "typical": 380,
+        "max": 430,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "high",
+        "value_status": "literature_range",
+        "units": "kg/m\u00b3",
+        "limitations": ""
+      },
+      "young_modulus_longitudinal_gpa": {
+        "min": 7.0,
+        "typical": 8.8,
+        "max": 10.5,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "high",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "young_modulus_radial_gpa": {
+        "min": 0.45,
+        "typical": 0.65,
+        "max": 0.85,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "medium",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "young_modulus_tangential_gpa": {
+        "min": 0.3,
+        "typical": 0.42,
+        "max": 0.55,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "medium",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "anisotropy_ratio_longitudinal_to_radial": {
+        "min": 9.0,
+        "typical": 13.5,
+        "max": 18.0,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "medium",
+        "value_status": "literature_range",
+        "units": "ratio",
+        "limitations": ""
+      },
+      "damping_loss_factor": {
+        "min": 0.004,
+        "typical": 0.009,
+        "max": 0.018,
+        "source_reference_id": "SRC_BREMAUD_2014",
+        "confidence": "medium",
+        "value_status": "literature_range",
+        "units": "dimensionless",
+        "limitations": ""
+      },
+      "speed_of_sound_longitudinal_m_s": {
+        "min": 4200,
+        "typical": 4810,
+        "max": 5300,
+        "source_reference_id": "SRC_FLETCHER_ROSSING_1998",
+        "confidence": "medium",
+        "value_status": "inferred",
+        "units": "m/s",
+        "limitations": ""
+      },
+      "fem_woods_ortho_cross_ref": "cedar_western",
+      "limitations": "Literature range at ~12% moisture; not measured on project samples."
+    },
+    "rosewood_indian": {
+      "wood_id": "rosewood_indian",
+      "common_name": "Indian rosewood (Dalbergia latifolia)",
+      "role_allowed": [
+        "back",
+        "sides",
+        "bridge"
+      ],
+      "density_kg_m3": {
+        "min": 750,
+        "typical": 830,
+        "max": 920,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "high",
+        "value_status": "literature_range",
+        "units": "kg/m\u00b3",
+        "limitations": ""
+      },
+      "young_modulus_longitudinal_gpa": {
+        "min": 10.0,
+        "typical": 11.5,
+        "max": 13.5,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "high",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "young_modulus_radial_gpa": {
+        "min": 0.55,
+        "typical": 0.7,
+        "max": 0.95,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "medium",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "young_modulus_tangential_gpa": {
+        "min": 0.45,
+        "typical": 0.6,
+        "max": 0.85,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "medium",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "anisotropy_ratio_longitudinal_to_radial": {
+        "min": 12.0,
+        "typical": 16.4,
+        "max": 22.0,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "medium",
+        "value_status": "literature_range",
+        "units": "ratio",
+        "limitations": ""
+      },
+      "damping_loss_factor": {
+        "min": 0.005,
+        "typical": 0.01,
+        "max": 0.02,
+        "source_reference_id": "SRC_BUCUR_2006",
+        "confidence": "medium",
+        "value_status": "literature_range",
+        "units": "dimensionless",
+        "limitations": ""
+      },
+      "speed_of_sound_longitudinal_m_s": {
+        "min": 3400,
+        "typical": 3720,
+        "max": 4100,
+        "source_reference_id": "SRC_FLETCHER_ROSSING_1998",
+        "confidence": "medium",
+        "value_status": "inferred",
+        "units": "m/s",
+        "limitations": ""
+      },
+      "fem_woods_ortho_cross_ref": "rosewood_indian",
+      "limitations": "Literature range at ~12% moisture; not measured on project samples."
+    },
+    "mahogany_honduran": {
+      "wood_id": "mahogany_honduran",
+      "common_name": "Honduran / bigleaf mahogany (Swietenia macrophylla)",
+      "role_allowed": [
+        "back",
+        "sides",
+        "top",
+        "bridge"
+      ],
+      "density_kg_m3": {
+        "min": 480,
+        "typical": 540,
+        "max": 600,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "high",
+        "value_status": "literature_range",
+        "units": "kg/m\u00b3",
+        "limitations": ""
+      },
+      "young_modulus_longitudinal_gpa": {
+        "min": 9.0,
+        "typical": 10.5,
+        "max": 12.0,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "high",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "young_modulus_radial_gpa": {
+        "min": 0.5,
+        "typical": 0.7,
+        "max": 0.9,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "medium",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "young_modulus_tangential_gpa": {
+        "min": 0.4,
+        "typical": 0.55,
+        "max": 0.75,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "medium",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "anisotropy_ratio_longitudinal_to_radial": {
+        "min": 11.0,
+        "typical": 15.0,
+        "max": 20.0,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "medium",
+        "value_status": "literature_range",
+        "units": "ratio",
+        "limitations": ""
+      },
+      "damping_loss_factor": {
+        "min": 0.004,
+        "typical": 0.008,
+        "max": 0.016,
+        "source_reference_id": "SRC_BUCUR_2006",
+        "confidence": "medium",
+        "value_status": "literature_range",
+        "units": "dimensionless",
+        "limitations": ""
+      },
+      "speed_of_sound_longitudinal_m_s": {
+        "min": 4000,
+        "typical": 4410,
+        "max": 4800,
+        "source_reference_id": "SRC_FLETCHER_ROSSING_1998",
+        "confidence": "medium",
+        "value_status": "inferred",
+        "units": "m/s",
+        "limitations": ""
+      },
+      "fem_woods_ortho_cross_ref": "mahogany_honduran",
+      "limitations": "Literature range at ~12% moisture; not measured on project samples."
+    },
+    "maple_hard": {
+      "wood_id": "maple_hard",
+      "common_name": "Hard maple (Acer saccharum / Acer spp.)",
+      "role_allowed": [
+        "back",
+        "sides",
+        "neck",
+        "bridge"
+      ],
+      "density_kg_m3": {
+        "min": 600,
+        "typical": 680,
+        "max": 750,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "high",
+        "value_status": "literature_range",
+        "units": "kg/m\u00b3",
+        "limitations": ""
+      },
+      "young_modulus_longitudinal_gpa": {
+        "min": 10.0,
+        "typical": 12.0,
+        "max": 13.5,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "high",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "young_modulus_radial_gpa": {
+        "min": 0.6,
+        "typical": 0.85,
+        "max": 1.1,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "medium",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "young_modulus_tangential_gpa": {
+        "min": 0.5,
+        "typical": 0.75,
+        "max": 1.0,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "medium",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "anisotropy_ratio_longitudinal_to_radial": {
+        "min": 11.0,
+        "typical": 14.1,
+        "max": 18.0,
+        "source_reference_id": "SRC_USDA_WHB_2010",
+        "confidence": "medium",
+        "value_status": "literature_range",
+        "units": "ratio",
+        "limitations": ""
+      },
+      "damping_loss_factor": {
+        "min": 0.004,
+        "typical": 0.009,
+        "max": 0.018,
+        "source_reference_id": "SRC_BUCUR_2006",
+        "confidence": "medium",
+        "value_status": "literature_range",
+        "units": "dimensionless",
+        "limitations": ""
+      },
+      "speed_of_sound_longitudinal_m_s": {
+        "min": 3800,
+        "typical": 4200,
+        "max": 4600,
+        "source_reference_id": "SRC_FLETCHER_ROSSING_1998",
+        "confidence": "medium",
+        "value_status": "inferred",
+        "units": "m/s",
+        "limitations": ""
+      },
+      "fem_woods_ortho_cross_ref": "maple_hard",
+      "limitations": "Literature range at ~12% moisture; not measured on project samples."
+    },
+    "cypress_mediterranean": {
+      "wood_id": "cypress_mediterranean",
+      "common_name": "Mediterranean cypress (Cupressus sempervirens)",
+      "role_allowed": [
+        "top",
+        "back",
+        "sides"
+      ],
+      "density_kg_m3": {
+        "min": 480,
+        "typical": 560,
+        "max": 640,
+        "source_reference_id": "SRC_USDA_CYPRESS",
+        "confidence": "medium",
+        "value_status": "literature_range",
+        "units": "kg/m\u00b3",
+        "limitations": ""
+      },
+      "young_modulus_longitudinal_gpa": {
+        "min": 7.0,
+        "typical": 8.5,
+        "max": 10.0,
+        "source_reference_id": "SRC_USDA_CYPRESS",
+        "confidence": "medium",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "young_modulus_radial_gpa": {
+        "min": 0.4,
+        "typical": 0.55,
+        "max": 0.75,
+        "source_reference_id": "SRC_USDA_CYPRESS",
+        "confidence": "low",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "young_modulus_tangential_gpa": {
+        "min": 0.3,
+        "typical": 0.45,
+        "max": 0.6,
+        "source_reference_id": "SRC_USDA_CYPRESS",
+        "confidence": "low",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "anisotropy_ratio_longitudinal_to_radial": {
+        "min": 10.0,
+        "typical": 15.5,
+        "max": 20.0,
+        "source_reference_id": "SRC_USDA_CYPRESS",
+        "confidence": "low",
+        "value_status": "literature_range",
+        "units": "ratio",
+        "limitations": ""
+      },
+      "damping_loss_factor": {
+        "min": 0.005,
+        "typical": 0.01,
+        "max": 0.02,
+        "source_reference_id": "SRC_BUCUR_2006",
+        "confidence": "low",
+        "value_status": "literature_range",
+        "units": "dimensionless",
+        "limitations": ""
+      },
+      "speed_of_sound_longitudinal_m_s": {
+        "min": 3600,
+        "typical": 3890,
+        "max": 4300,
+        "source_reference_id": "SRC_FLETCHER_ROSSING_1998",
+        "confidence": "low",
+        "value_status": "inferred",
+        "units": "m/s",
+        "limitations": ""
+      },
+      "fem_woods_ortho_cross_ref": null,
+      "limitations": "Literature range at ~12% moisture; not measured on project samples."
+    },
+    "generic_top_wood": {
+      "wood_id": "generic_top_wood",
+      "common_name": "Generic softwood soundboard aggregate",
+      "role_allowed": [
+        "top"
+      ],
+      "density_kg_m3": {
+        "min": 350,
+        "typical": 420,
+        "max": 480,
+        "source_reference_id": "SRC_PGSM_GENERIC_FALLBACK",
+        "confidence": "low",
+        "value_status": "literature_range",
+        "units": "kg/m\u00b3",
+        "limitations": ""
+      },
+      "young_modulus_longitudinal_gpa": {
+        "min": 8.0,
+        "typical": 10.0,
+        "max": 12.0,
+        "source_reference_id": "SRC_PGSM_GENERIC_FALLBACK",
+        "confidence": "low",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "young_modulus_radial_gpa": {
+        "min": 0.45,
+        "typical": 0.7,
+        "max": 1.0,
+        "source_reference_id": "SRC_PGSM_GENERIC_FALLBACK",
+        "confidence": "low",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "young_modulus_tangential_gpa": {
+        "min": 0.3,
+        "typical": 0.45,
+        "max": 0.65,
+        "source_reference_id": "SRC_PGSM_GENERIC_FALLBACK",
+        "confidence": "low",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "anisotropy_ratio_longitudinal_to_radial": {
+        "min": 8.0,
+        "typical": 13.0,
+        "max": 18.0,
+        "source_reference_id": "SRC_PGSM_GENERIC_FALLBACK",
+        "confidence": "low",
+        "value_status": "literature_range",
+        "units": "ratio",
+        "limitations": ""
+      },
+      "damping_loss_factor": {
+        "min": 0.004,
+        "typical": 0.008,
+        "max": 0.015,
+        "source_reference_id": "SRC_PGSM_GENERIC_FALLBACK",
+        "confidence": "low",
+        "value_status": "literature_range",
+        "units": "dimensionless",
+        "limitations": ""
+      },
+      "speed_of_sound_longitudinal_m_s": {
+        "min": 4300,
+        "typical": 4880,
+        "max": 5400,
+        "source_reference_id": "SRC_PGSM_GENERIC_FALLBACK",
+        "confidence": "low",
+        "value_status": "inferred",
+        "units": "m/s",
+        "limitations": ""
+      },
+      "fem_woods_ortho_cross_ref": null,
+      "limitations": "Literature range at ~12% moisture; not measured on project samples."
+    },
+    "generic_back_wood": {
+      "wood_id": "generic_back_wood",
+      "common_name": "Generic hardwood back/side aggregate",
+      "role_allowed": [
+        "back",
+        "sides"
+      ],
+      "density_kg_m3": {
+        "min": 500,
+        "typical": 650,
+        "max": 850,
+        "source_reference_id": "SRC_PGSM_GENERIC_FALLBACK",
+        "confidence": "low",
+        "value_status": "literature_range",
+        "units": "kg/m\u00b3",
+        "limitations": ""
+      },
+      "young_modulus_longitudinal_gpa": {
+        "min": 9.0,
+        "typical": 11.0,
+        "max": 13.0,
+        "source_reference_id": "SRC_PGSM_GENERIC_FALLBACK",
+        "confidence": "low",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "young_modulus_radial_gpa": {
+        "min": 0.5,
+        "typical": 0.75,
+        "max": 1.0,
+        "source_reference_id": "SRC_PGSM_GENERIC_FALLBACK",
+        "confidence": "low",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "young_modulus_tangential_gpa": {
+        "min": 0.4,
+        "typical": 0.6,
+        "max": 0.85,
+        "source_reference_id": "SRC_PGSM_GENERIC_FALLBACK",
+        "confidence": "low",
+        "value_status": "literature_range",
+        "units": "GPa",
+        "limitations": ""
+      },
+      "anisotropy_ratio_longitudinal_to_radial": {
+        "min": 10.0,
+        "typical": 14.0,
+        "max": 20.0,
+        "source_reference_id": "SRC_PGSM_GENERIC_FALLBACK",
+        "confidence": "low",
+        "value_status": "literature_range",
+        "units": "ratio",
+        "limitations": ""
+      },
+      "damping_loss_factor": {
+        "min": 0.005,
+        "typical": 0.01,
+        "max": 0.02,
+        "source_reference_id": "SRC_PGSM_GENERIC_FALLBACK",
+        "confidence": "low",
+        "value_status": "literature_range",
+        "units": "dimensionless",
+        "limitations": ""
+      },
+      "speed_of_sound_longitudinal_m_s": {
+        "min": 3500,
+        "typical": 4110,
+        "max": 4600,
+        "source_reference_id": "SRC_PGSM_GENERIC_FALLBACK",
+        "confidence": "low",
+        "value_status": "inferred",
+        "units": "m/s",
+        "limitations": ""
+      },
+      "fem_woods_ortho_cross_ref": null,
+      "limitations": "Literature range at ~12% moisture; not measured on project samples."
+    }
+  },
+  "derived_proxies_by_wood_id": {
+    "spruce_sitka": {
+      "density_proxy_kg_m3": 430.0,
+      "stiffness_proxy_Pa": 10800000000.0,
+      "damping_proxy": 0.007,
+      "anisotropy_proxy": 12.9,
+      "stiffness_to_weight_proxy": {
+        "value": 25116279.07,
+        "formula": "E_longitudinal / density",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "Pa/(kg/m\u00b3)",
+        "allowed_use": "numeric_calibration_L2_fallback",
+        "limitations": "Proxy only; not measured plate stiffness"
+      },
+      "speed_of_sound_proxy_m_s": {
+        "value": 5011.61,
+        "formula": "sqrt(E_longitudinal / density)",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "m/s",
+        "allowed_use": "sensitivity_and_calibration",
+        "limitations": "Longitudinal wave speed approximation; not plate bending"
+      },
+      "radiation_ratio_proxy": {
+        "value": 11.65491725,
+        "formula": "sqrt(E_longitudinal / density^3)",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "dimensionless_relative",
+        "allowed_use": "relative_radiation_weighting_proxy",
+        "limitations": "NOT arbitrary audio gain; relative only"
+      },
+      "mass_loading_proxy_factor": {
+        "value": 1.0,
+        "formula": "density / density_spruce_reference",
+        "inputs_used": [
+          "density_kg_m3.typical"
+        ],
+        "units": "dimensionless",
+        "allowed_use": "mass_loading_sensitivity",
+        "limitations": "Thickness and area not included"
+      },
+      "damping_proxy_detail": {
+        "value": 0.007,
+        "formula": "damping_loss_factor.typical (tan \u03b4 literature range)",
+        "inputs_used": [
+          "damping_loss_factor.typical"
+        ],
+        "units": "dimensionless",
+        "allowed_use": "modal_Q_calibration_L2",
+        "limitations": "Frequency-dependent; room-temperature literature band"
+      },
+      "E_radial_typical_Pa": 840000000.0
+    },
+    "cedar_western": {
+      "density_proxy_kg_m3": 380.0,
+      "stiffness_proxy_Pa": 8800000000.0,
+      "damping_proxy": 0.009,
+      "anisotropy_proxy": 13.5,
+      "stiffness_to_weight_proxy": {
+        "value": 23157894.74,
+        "formula": "E_longitudinal / density",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "Pa/(kg/m\u00b3)",
+        "allowed_use": "numeric_calibration_L2_fallback",
+        "limitations": "Proxy only; not measured plate stiffness"
+      },
+      "speed_of_sound_proxy_m_s": {
+        "value": 4812.27,
+        "formula": "sqrt(E_longitudinal / density)",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "m/s",
+        "allowed_use": "sensitivity_and_calibration",
+        "limitations": "Longitudinal wave speed approximation; not plate bending"
+      },
+      "radiation_ratio_proxy": {
+        "value": 12.66385535,
+        "formula": "sqrt(E_longitudinal / density^3)",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "dimensionless_relative",
+        "allowed_use": "relative_radiation_weighting_proxy",
+        "limitations": "NOT arbitrary audio gain; relative only"
+      },
+      "mass_loading_proxy_factor": {
+        "value": 0.8837,
+        "formula": "density / density_spruce_reference",
+        "inputs_used": [
+          "density_kg_m3.typical"
+        ],
+        "units": "dimensionless",
+        "allowed_use": "mass_loading_sensitivity",
+        "limitations": "Thickness and area not included"
+      },
+      "damping_proxy_detail": {
+        "value": 0.009,
+        "formula": "damping_loss_factor.typical (tan \u03b4 literature range)",
+        "inputs_used": [
+          "damping_loss_factor.typical"
+        ],
+        "units": "dimensionless",
+        "allowed_use": "modal_Q_calibration_L2",
+        "limitations": "Frequency-dependent; room-temperature literature band"
+      },
+      "E_radial_typical_Pa": 650000000.0
+    },
+    "rosewood_indian": {
+      "density_proxy_kg_m3": 830.0,
+      "stiffness_proxy_Pa": 11500000000.0,
+      "damping_proxy": 0.01,
+      "anisotropy_proxy": 16.4,
+      "stiffness_to_weight_proxy": {
+        "value": 13855421.69,
+        "formula": "E_longitudinal / density",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "Pa/(kg/m\u00b3)",
+        "allowed_use": "numeric_calibration_L2_fallback",
+        "limitations": "Proxy only; not measured plate stiffness"
+      },
+      "speed_of_sound_proxy_m_s": {
+        "value": 3722.29,
+        "formula": "sqrt(E_longitudinal / density)",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "m/s",
+        "allowed_use": "sensitivity_and_calibration",
+        "limitations": "Longitudinal wave speed approximation; not plate bending"
+      },
+      "radiation_ratio_proxy": {
+        "value": 4.48468332,
+        "formula": "sqrt(E_longitudinal / density^3)",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "dimensionless_relative",
+        "allowed_use": "relative_radiation_weighting_proxy",
+        "limitations": "NOT arbitrary audio gain; relative only"
+      },
+      "mass_loading_proxy_factor": {
+        "value": 1.9302,
+        "formula": "density / density_spruce_reference",
+        "inputs_used": [
+          "density_kg_m3.typical"
+        ],
+        "units": "dimensionless",
+        "allowed_use": "mass_loading_sensitivity",
+        "limitations": "Thickness and area not included"
+      },
+      "damping_proxy_detail": {
+        "value": 0.01,
+        "formula": "damping_loss_factor.typical (tan \u03b4 literature range)",
+        "inputs_used": [
+          "damping_loss_factor.typical"
+        ],
+        "units": "dimensionless",
+        "allowed_use": "modal_Q_calibration_L2",
+        "limitations": "Frequency-dependent; room-temperature literature band"
+      },
+      "E_radial_typical_Pa": 700000000.0
+    },
+    "mahogany_honduran": {
+      "density_proxy_kg_m3": 540.0,
+      "stiffness_proxy_Pa": 10500000000.0,
+      "damping_proxy": 0.008,
+      "anisotropy_proxy": 15.0,
+      "stiffness_to_weight_proxy": {
+        "value": 19444444.44,
+        "formula": "E_longitudinal / density",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "Pa/(kg/m\u00b3)",
+        "allowed_use": "numeric_calibration_L2_fallback",
+        "limitations": "Proxy only; not measured plate stiffness"
+      },
+      "speed_of_sound_proxy_m_s": {
+        "value": 4409.59,
+        "formula": "sqrt(E_longitudinal / density)",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "m/s",
+        "allowed_use": "sensitivity_and_calibration",
+        "limitations": "Longitudinal wave speed approximation; not plate bending"
+      },
+      "radiation_ratio_proxy": {
+        "value": 8.16589911,
+        "formula": "sqrt(E_longitudinal / density^3)",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "dimensionless_relative",
+        "allowed_use": "relative_radiation_weighting_proxy",
+        "limitations": "NOT arbitrary audio gain; relative only"
+      },
+      "mass_loading_proxy_factor": {
+        "value": 1.2558,
+        "formula": "density / density_spruce_reference",
+        "inputs_used": [
+          "density_kg_m3.typical"
+        ],
+        "units": "dimensionless",
+        "allowed_use": "mass_loading_sensitivity",
+        "limitations": "Thickness and area not included"
+      },
+      "damping_proxy_detail": {
+        "value": 0.008,
+        "formula": "damping_loss_factor.typical (tan \u03b4 literature range)",
+        "inputs_used": [
+          "damping_loss_factor.typical"
+        ],
+        "units": "dimensionless",
+        "allowed_use": "modal_Q_calibration_L2",
+        "limitations": "Frequency-dependent; room-temperature literature band"
+      },
+      "E_radial_typical_Pa": 700000000.0
+    },
+    "maple_hard": {
+      "density_proxy_kg_m3": 680.0,
+      "stiffness_proxy_Pa": 12000000000.0,
+      "damping_proxy": 0.009,
+      "anisotropy_proxy": 14.1,
+      "stiffness_to_weight_proxy": {
+        "value": 17647058.82,
+        "formula": "E_longitudinal / density",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "Pa/(kg/m\u00b3)",
+        "allowed_use": "numeric_calibration_L2_fallback",
+        "limitations": "Proxy only; not measured plate stiffness"
+      },
+      "speed_of_sound_proxy_m_s": {
+        "value": 4200.84,
+        "formula": "sqrt(E_longitudinal / density)",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "m/s",
+        "allowed_use": "sensitivity_and_calibration",
+        "limitations": "Longitudinal wave speed approximation; not plate bending"
+      },
+      "radiation_ratio_proxy": {
+        "value": 6.17770625,
+        "formula": "sqrt(E_longitudinal / density^3)",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "dimensionless_relative",
+        "allowed_use": "relative_radiation_weighting_proxy",
+        "limitations": "NOT arbitrary audio gain; relative only"
+      },
+      "mass_loading_proxy_factor": {
+        "value": 1.5814,
+        "formula": "density / density_spruce_reference",
+        "inputs_used": [
+          "density_kg_m3.typical"
+        ],
+        "units": "dimensionless",
+        "allowed_use": "mass_loading_sensitivity",
+        "limitations": "Thickness and area not included"
+      },
+      "damping_proxy_detail": {
+        "value": 0.009,
+        "formula": "damping_loss_factor.typical (tan \u03b4 literature range)",
+        "inputs_used": [
+          "damping_loss_factor.typical"
+        ],
+        "units": "dimensionless",
+        "allowed_use": "modal_Q_calibration_L2",
+        "limitations": "Frequency-dependent; room-temperature literature band"
+      },
+      "E_radial_typical_Pa": 850000000.0
+    },
+    "cypress_mediterranean": {
+      "density_proxy_kg_m3": 560.0,
+      "stiffness_proxy_Pa": 8500000000.0,
+      "damping_proxy": 0.01,
+      "anisotropy_proxy": 15.5,
+      "stiffness_to_weight_proxy": {
+        "value": 15178571.43,
+        "formula": "E_longitudinal / density",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "Pa/(kg/m\u00b3)",
+        "allowed_use": "numeric_calibration_L2_fallback",
+        "limitations": "Proxy only; not measured plate stiffness"
+      },
+      "speed_of_sound_proxy_m_s": {
+        "value": 3895.97,
+        "formula": "sqrt(E_longitudinal / density)",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "m/s",
+        "allowed_use": "sensitivity_and_calibration",
+        "limitations": "Longitudinal wave speed approximation; not plate bending"
+      },
+      "radiation_ratio_proxy": {
+        "value": 6.95708681,
+        "formula": "sqrt(E_longitudinal / density^3)",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "dimensionless_relative",
+        "allowed_use": "relative_radiation_weighting_proxy",
+        "limitations": "NOT arbitrary audio gain; relative only"
+      },
+      "mass_loading_proxy_factor": {
+        "value": 1.3023,
+        "formula": "density / density_spruce_reference",
+        "inputs_used": [
+          "density_kg_m3.typical"
+        ],
+        "units": "dimensionless",
+        "allowed_use": "mass_loading_sensitivity",
+        "limitations": "Thickness and area not included"
+      },
+      "damping_proxy_detail": {
+        "value": 0.01,
+        "formula": "damping_loss_factor.typical (tan \u03b4 literature range)",
+        "inputs_used": [
+          "damping_loss_factor.typical"
+        ],
+        "units": "dimensionless",
+        "allowed_use": "modal_Q_calibration_L2",
+        "limitations": "Frequency-dependent; room-temperature literature band"
+      },
+      "E_radial_typical_Pa": 550000000.0
+    },
+    "generic_top_wood": {
+      "density_proxy_kg_m3": 420.0,
+      "stiffness_proxy_Pa": 10000000000.0,
+      "damping_proxy": 0.008,
+      "anisotropy_proxy": 13.0,
+      "stiffness_to_weight_proxy": {
+        "value": 23809523.81,
+        "formula": "E_longitudinal / density",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "Pa/(kg/m\u00b3)",
+        "allowed_use": "numeric_calibration_L2_fallback",
+        "limitations": "Proxy only; not measured plate stiffness"
+      },
+      "speed_of_sound_proxy_m_s": {
+        "value": 4879.5,
+        "formula": "sqrt(E_longitudinal / density)",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "m/s",
+        "allowed_use": "sensitivity_and_calibration",
+        "limitations": "Longitudinal wave speed approximation; not plate bending"
+      },
+      "radiation_ratio_proxy": {
+        "value": 11.61785801,
+        "formula": "sqrt(E_longitudinal / density^3)",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "dimensionless_relative",
+        "allowed_use": "relative_radiation_weighting_proxy",
+        "limitations": "NOT arbitrary audio gain; relative only"
+      },
+      "mass_loading_proxy_factor": {
+        "value": 0.9767,
+        "formula": "density / density_spruce_reference",
+        "inputs_used": [
+          "density_kg_m3.typical"
+        ],
+        "units": "dimensionless",
+        "allowed_use": "mass_loading_sensitivity",
+        "limitations": "Thickness and area not included"
+      },
+      "damping_proxy_detail": {
+        "value": 0.008,
+        "formula": "damping_loss_factor.typical (tan \u03b4 literature range)",
+        "inputs_used": [
+          "damping_loss_factor.typical"
+        ],
+        "units": "dimensionless",
+        "allowed_use": "modal_Q_calibration_L2",
+        "limitations": "Frequency-dependent; room-temperature literature band"
+      },
+      "E_radial_typical_Pa": 700000000.0
+    },
+    "generic_back_wood": {
+      "density_proxy_kg_m3": 650.0,
+      "stiffness_proxy_Pa": 11000000000.0,
+      "damping_proxy": 0.01,
+      "anisotropy_proxy": 14.0,
+      "stiffness_to_weight_proxy": {
+        "value": 16923076.92,
+        "formula": "E_longitudinal / density",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "Pa/(kg/m\u00b3)",
+        "allowed_use": "numeric_calibration_L2_fallback",
+        "limitations": "Proxy only; not measured plate stiffness"
+      },
+      "speed_of_sound_proxy_m_s": {
+        "value": 4113.77,
+        "formula": "sqrt(E_longitudinal / density)",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "m/s",
+        "allowed_use": "sensitivity_and_calibration",
+        "limitations": "Longitudinal wave speed approximation; not plate bending"
+      },
+      "radiation_ratio_proxy": {
+        "value": 6.32887193,
+        "formula": "sqrt(E_longitudinal / density^3)",
+        "inputs_used": [
+          "young_modulus_longitudinal_gpa.typical",
+          "density_kg_m3.typical"
+        ],
+        "units": "dimensionless_relative",
+        "allowed_use": "relative_radiation_weighting_proxy",
+        "limitations": "NOT arbitrary audio gain; relative only"
+      },
+      "mass_loading_proxy_factor": {
+        "value": 1.5116,
+        "formula": "density / density_spruce_reference",
+        "inputs_used": [
+          "density_kg_m3.typical"
+        ],
+        "units": "dimensionless",
+        "allowed_use": "mass_loading_sensitivity",
+        "limitations": "Thickness and area not included"
+      },
+      "damping_proxy_detail": {
+        "value": 0.01,
+        "formula": "damping_loss_factor.typical (tan \u03b4 literature range)",
+        "inputs_used": [
+          "damping_loss_factor.typical"
+        ],
+        "units": "dimensionless",
+        "allowed_use": "modal_Q_calibration_L2",
+        "limitations": "Frequency-dependent; room-temperature literature band"
+      },
+      "E_radial_typical_Pa": 750000000.0
+    }
+  },
+  "project_wood_id_mapping": {
+    "spruce": {
+      "library_wood_id": "spruce_sitka",
+      "fem_woods_ortho_key": "spruce_sitka",
+      "resolved": true,
+      "confidence": "high"
+    },
+    "cedar": {
+      "library_wood_id": "cedar_western",
+      "fem_woods_ortho_key": "cedar_western",
+      "resolved": true,
+      "confidence": "high"
+    },
+    "rosewood": {
+      "library_wood_id": "rosewood_indian",
+      "fem_woods_ortho_key": "rosewood_indian",
+      "resolved": true,
+      "confidence": "high"
+    },
+    "mahogany": {
+      "library_wood_id": "mahogany_honduran",
+      "fem_woods_ortho_key": "mahogany_honduran",
+      "resolved": true,
+      "confidence": "high"
+    },
+    "maple": {
+      "library_wood_id": "maple_hard",
+      "fem_woods_ortho_key": "maple_hard",
+      "resolved": true,
+      "confidence": "high"
+    },
+    "cypress": {
+      "library_wood_id": "cypress_mediterranean",
+      "fem_woods_ortho_key": null,
+      "resolved": true,
+      "confidence": "medium"
+    }
+  }
+}
