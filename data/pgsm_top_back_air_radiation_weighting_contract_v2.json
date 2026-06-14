@@ -19,7 +19,7 @@
     "terms": [
       {
         "term": "top_plate_modal_weight",
-        "formula": "W_top = W_rad×(top/region)×1.17×rad_band_v2×top_attack_band(f,τ)×top_cluster_damp_comb_risk_only(f)",
+        "formula": "W_top = W_rad×(top/region)×1.14×rad_band_v2×top_attack_band(f,τ)×top_cluster_damp_comb_risk_only(f)",
         "source_level": "L2_step3c_region_share_proxy_v2",
         "units": "dimensionless_modal_output_weight",
         "limitations": "Attack band on short-τ modes; cluster damp on comb-risk clusters only",
@@ -29,7 +29,7 @@
           "transient_enhancer",
           "body_tail"
         ],
-        "validation_metric": "top_plate_attack_share improved vs Step 5J; moderate top share ~0.20–0.40"
+        "validation_metric": "top_plate_attack_share improved vs Step 5J; moderate top share ~0.35–0.48"
       },
       {
         "term": "back_plate_modal_weight",
@@ -61,7 +61,7 @@
       },
       {
         "term": "radiation_band_weight",
-        "formula": "rad_band_v2: rolloff f_ref=1280.0, exp=0.96, dual harmonic_preservation bands H2-H6/H3-H7",
+        "formula": "rad_band_v2: rolloff f_ref=1280.0, exp=0.96, dual harmonic_preservation; high_note_radiation_coherence_guard 560-1420Hz",
         "source_level": "L2_step3c_region_share_proxy_v2",
         "units": "dimensionless_modal_output_weight",
         "limitations": "",
@@ -71,7 +71,21 @@
           "transient_enhancer",
           "body_tail"
         ],
-        "validation_metric": "H2-H8 ratio improved; organ_like_purity reduced or flagged"
+        "validation_metric": "H2-H8 ratio improved; E5 comb risk reduced on radiation_sum/final_output"
+      },
+      {
+        "term": "high_note_radiation_coherence_guard",
+        "formula": "smooth modal guard 560-1420Hz, cluster-aware; τ-preserves attack",
+        "source_level": "L2_step3c_region_share_proxy_v2",
+        "units": "dimensionless_modal_output_weight",
+        "limitations": "Modal weights only; comb-risk clusters in E5-sensitive band",
+        "blocked_claims": [
+          "arbitrary_eq",
+          "artificial_reverb",
+          "transient_enhancer",
+          "body_tail"
+        ],
+        "validation_metric": "E5 final_output comb_score below 0.95"
       },
       {
         "term": "combined_body_radiation_weight",
@@ -89,7 +103,7 @@
       }
     ],
     "gains": {
-      "top_plate_modal_gain": 1.17,
+      "top_plate_modal_gain": 1.14,
       "back_plate_modal_gain": 1.11,
       "air_cavity_modal_gain": 2.48,
       "radiation_f_ref_hz": 1280.0,

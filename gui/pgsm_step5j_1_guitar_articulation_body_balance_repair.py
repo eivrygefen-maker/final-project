@@ -94,8 +94,8 @@ HIGH_FREQ_THRESHOLD_HZ = 2000.0
 UPPER_MID_LO_HZ = 500.0
 UPPER_MID_HI_HZ = 2000.0
 
-# v2.2 body weighting — middle balance after v2.1 over-suppressed top via global soft cap.
-TOP_PLATE_MODAL_GAIN = 1.17
+# v2.3 — E5 high-note radiation coherence guard; preserve v2.2 top articulation.
+TOP_PLATE_MODAL_GAIN = 1.14
 TOP_ATTACK_MID_HZ = 640.0
 TOP_ATTACK_BAND_HZ = 220.0
 TOP_ATTACK_MID_BOOST = 0.32
@@ -108,6 +108,13 @@ TOP_CLUSTER_REGULARITY_DAMP = 0.20
 TOP_ARTICULATION_ROLLOFF_START_HZ = 1180.0
 COMB_RISK_CLUSTER_DAMP_THRESHOLD = 0.90
 COMB_RISK_TOP_SOFT_CAP = 0.68
+HIGH_NOTE_RAD_GUARD_LO_HZ = 560.0
+HIGH_NOTE_RAD_GUARD_HI_HZ = 1420.0
+HIGH_NOTE_RAD_GUARD_CENTER_HZ = 880.0
+HIGH_NOTE_RAD_GUARD_BAND_HZ = 380.0
+HIGH_NOTE_RAD_COHERENCE_STRENGTH = 0.24
+HIGH_NOTE_RAD_GUARD_MIN = 0.74
+HIGH_NOTE_BODY_GUARD_TAU_PRESERVE = 0.58
 BACK_PLATE_MODAL_GAIN = 1.11
 BACK_WARMTH_MID_HZ = 560.0
 BACK_WARMTH_BAND_HZ = 300.0
@@ -206,7 +213,7 @@ def build_body_weighting_v2_contract() -> Dict[str, Any]:
             "top_plate_modal_weight",
             f"W_top = W_rad×(top/region)×{TOP_PLATE_MODAL_GAIN}×rad_band_v2"
             f"×top_attack_band(f,τ)×top_cluster_damp_comb_risk_only(f)",
-            "top_plate_attack_share improved vs Step 5J; moderate top share ~0.20–0.40",
+            "top_plate_attack_share improved vs Step 5J; moderate top share ~0.35–0.48",
             limitations="Attack band on short-τ modes; cluster damp on comb-risk clusters only",
         ),
         _term(
@@ -224,8 +231,16 @@ def build_body_weighting_v2_contract() -> Dict[str, Any]:
         _term(
             "radiation_band_weight",
             f"rad_band_v2: rolloff f_ref={RADIATION_F_REF_HZ}, exp={RADIATION_F_ROLLOFF_EXP}, "
-            f"dual harmonic_preservation bands H2-H6/H3-H7",
-            "H2-H8 ratio improved; organ_like_purity reduced or flagged",
+            f"dual harmonic_preservation; high_note_radiation_coherence_guard "
+            f"{HIGH_NOTE_RAD_GUARD_LO_HZ}-{HIGH_NOTE_RAD_GUARD_HI_HZ}Hz",
+            "H2-H8 ratio improved; E5 comb risk reduced on radiation_sum/final_output",
+        ),
+        _term(
+            "high_note_radiation_coherence_guard",
+            f"smooth modal guard {HIGH_NOTE_RAD_GUARD_LO_HZ}-{HIGH_NOTE_RAD_GUARD_HI_HZ}Hz, "
+            f"cluster-aware; τ-preserves attack",
+            "E5 final_output comb_score below {COMB_ECHO_FAIL_THRESHOLD}",
+            limitations="Modal weights only; comb-risk clusters in E5-sensitive band",
         ),
         _term(
             "combined_body_radiation_weight",
@@ -330,6 +345,55 @@ def rebalance_comb_risk_top_only(
     return wt_new, wb + excess * 0.38, wai + excess * 0.62
 
 
+def high_note_radiation_coherence_guard(
+    f_hz: float,
+    cluster_damp: float,
+    all_freqs: Sequence[float],
+) -> float:
+    """Comb-aware smooth guard in E5-sensitive modal band (560–1420 Hz)."""
+    if f_hz < HIGH_NOTE_RAD_GUARD_LO_HZ:
+        return 1.0
+    if f_hz > HIGH_NOTE_RAD_GUARD_HI_HZ:
+        excess = f_hz - HIGH_NOTE_RAD_GUARD_HI_HZ
+        return 1.0 / (1.0 + (excess / 400.0) ** 1.05)
+    band = math.exp(
+        -((f_hz - HIGH_NOTE_RAD_GUARD_CENTER_HZ) ** 2)
+        / (2.0 * HIGH_NOTE_RAD_GUARD_BAND_HZ ** 2)
+    )
+    coherence_risk = max(0.0, 1.0 - cluster_damp)
+    guard = 1.0 - HIGH_NOTE_RAD_COHERENCE_STRENGTH * band * coherence_risk
+    local = sorted(
+        f for f in all_freqs if HIGH_NOTE_RAD_GUARD_LO_HZ <= f <= HIGH_NOTE_RAD_GUARD_HI_HZ
+    )
+    if len(local) >= 4:
+        spacings = np.diff(local)
+        if spacings.size:
+            regularity = float(np.std(spacings) / max(float(np.mean(spacings)), 1.0))
+            if regularity < 0.94:
+                guard *= 1.0 / (1.0 + 0.16 * (0.94 - regularity) * band)
+    return max(guard, HIGH_NOTE_RAD_GUARD_MIN)
+
+
+def apply_high_note_body_coherence_guard(
+    wt: float,
+    wb: float,
+    wai: float,
+    wrad: float,
+    *,
+    f_hz: float,
+    tau_s: float,
+    cluster_damp: float,
+    all_freqs: Sequence[float],
+) -> Tuple[float, float, float, float]:
+    """Damp HF comb-prone radiation/body modes; preserve short-τ attack contribution."""
+    hf_guard = high_note_radiation_coherence_guard(f_hz, cluster_damp, all_freqs)
+    if hf_guard >= 0.999:
+        return wt, wb, wai, wrad
+    tau_preserve = math.exp(-tau_s / TOP_ATTACK_TAU_SCALE_S)
+    body_blend = 1.0 - (1.0 - hf_guard) * (1.0 - HIGH_NOTE_BODY_GUARD_TAU_PRESERVE * tau_preserve)
+    return wt * body_blend, wb * body_blend, wai * body_blend, wrad * hf_guard
+
+
 def air_frequency_balance(f_hz: float) -> float:
     return 1.0 / (1.0 + (f_hz / AIR_FREQ_ATTENUATION_SCALE_HZ) ** AIR_FREQ_ATTENUATION_POWER)
 
@@ -378,16 +442,18 @@ def compute_stem_comb_echo_scores(
     y_top: np.ndarray,
     y_back: np.ndarray,
     y_air: np.ndarray,
+    y_rad: np.ndarray,
     y_combined: np.ndarray,
     sr: int,
     note: str,
 ) -> Dict[str, float]:
-    """Comb score for final output and each body stem (listening-normalized for level parity)."""
+    """Comb score for final output and each body/radiation stem (listening-normalized)."""
     stems = {
         "final_output": y_combined,
         "string_force_conv_top": y_top,
         "string_force_conv_back": y_back,
         "string_force_conv_air": y_air,
+        "radiation_sum": y_rad,
     }
     scores: Dict[str, float] = {}
     for name, y_raw in stems.items():
@@ -433,6 +499,16 @@ def compute_step5j_1_modal_kernels_decomposed(
         wai = wa * (air / region) * AIR_CAVITY_MODAL_GAIN * rad_w * air_frequency_balance(f_i)
         wt, wb, wai = rebalance_comb_risk_top_only(wt, wb, wai, cluster_damp)
         wrad = (wt + wb) * 0.52 + wai * 0.48
+        wt, wb, wai, wrad = apply_high_note_body_coherence_guard(
+            wt,
+            wb,
+            wai,
+            wrad,
+            f_hz=f_i,
+            tau_s=tau,
+            cluster_damp=cluster_damp,
+            all_freqs=mode_freqs,
+        )
 
         h_top += wt * kernel
         h_back += wb * kernel
@@ -441,7 +517,7 @@ def compute_step5j_1_modal_kernels_decomposed(
 
     h_combined = h_top + h_back + h_air
     meta = {
-        "weighting_version": "v2.2",
+        "weighting_version": "v2.3",
         "mode_count": len(modes),
         "output_weights_only": True,
         "q_tau_unchanged": True,
@@ -1020,6 +1096,7 @@ def build_pgsm_step5j_1_report(
             y_top=y_top,
             y_back=y_back,
             y_air=y_air,
+            y_rad=y_rad,
             y_combined=main_listening,
             sr=sr,
             note=note,
@@ -1265,6 +1342,10 @@ def build_pgsm_step5j_1_report(
         "explicit_statement": (
             "PGSM Step 5J.1 repairs diagnostic guitar articulation and body balance only. "
             "It does not integrate STK and does not prove realism."
+        ),
+        "harmonic_richness_limitation_note": (
+            "H2-H8 energy may remain low for A3/A4/E5 under output-weight-only body balance; "
+            "Step 5K bridge coupling or later excitation/body interaction may be required."
         ),
     }
     report_body["internal_consistency_check"] = validate_report_internal_consistency(report_body)
