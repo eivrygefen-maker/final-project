@@ -697,7 +697,22 @@ DIAGNOSTIC_MODES: Dict[str, DiagnosticSynthesisConfig] = {
         raw_body_variation_preserve=0.72,
         body_gain_normalization_strength=0.0,
         final_loudness_normalization_strength=0.08,
-        description="STK V6.3 clean pluck/body — unified excitation, no resonator pulse (diagnostic only).",
+        description="[REJECTED sound base] STK V6.3 clean pluck/body — filtered/unnatural (diagnostic only).",
+    ),
+    # STK V6.4 — current_final_v1 anchored repair (diagnostic only)
+    "stk_v6_4_current_anchor_soft_attack_alpha": DiagnosticSynthesisConfig(
+        name="stk_v6_4_current_anchor_soft_attack_alpha",
+        raw_body_variation_preserve=0.72,
+        body_gain_normalization_strength=0.0,
+        final_loudness_normalization_strength=0.08,
+        description="STK V6.4 current anchor soft attack — repair current_final_v1 attack only (diagnostic).",
+    ),
+    "stk_v6_4_current_anchor_sustain_smooth_alpha": DiagnosticSynthesisConfig(
+        name="stk_v6_4_current_anchor_sustain_smooth_alpha",
+        raw_body_variation_preserve=0.72,
+        body_gain_normalization_strength=0.0,
+        final_loudness_normalization_strength=0.08,
+        description="STK V6.4 current anchor sustain smooth — anchor + mild sustain reshape (diagnostic).",
     ),
 }
 
