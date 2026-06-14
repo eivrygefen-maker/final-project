@@ -1,0 +1,897 @@
+{
+  "contract_version": "pgsm_step5i_string_partial_damping_refinement_v1",
+  "string_partial_damping_contract": {
+    "contract_id": "pgsm_string_partial_damping_v1",
+    "implements_multi_decay_term": "string_partial_decay_only",
+    "not_implemented_terms": [
+      "top_plate_decay",
+      "back_plate_decay",
+      "air_cavity_decay",
+      "radiation_decay",
+      "bridge_coupling_loss"
+    ],
+    "step5e_replaced_law": "tau_k = 2.8 / k^0.65 (global, all notes)",
+    "pluck_position_ratio": 0.18,
+    "partial_amplitude_law": "sin(pi*n*pluck_position)/n",
+    "onset_ramp_ms": 4.0,
+    "inharmonicity": {
+      "level": "L2_fallback_placeholder",
+      "b": 0.0002
+    },
+    "terms": [
+      {
+        "term": "base_string_decay_by_string_id",
+        "formula": "tau_base[string_id] seconds (literature-proxy open-string sustain)",
+        "values": {
+          "string_6": 3.4,
+          "string_5": 3.15,
+          "string_4": 2.85,
+          "string_3": 2.65,
+          "string_2": 2.35,
+          "string_1": 2.05
+        },
+        "source_level": "L2_literature_fallback",
+        "units": "seconds",
+        "limitations": "Not measured per-string damping; bass strings assigned longer base tau.",
+        "blocked_claims": [
+          "measured_string_damping",
+          "exact_nylon_loss_coefficient"
+        ],
+        "objective_metric": "tau_base differs across string_id"
+      },
+      {
+        "term": "harmonic_order_loss",
+        "formula": "harmonic_factor = k^0.92",
+        "source_level": "L2_diagnostic_proxy",
+        "units": "dimensionless divisor on tau",
+        "limitations": "Steeper than Step 5E k^0.65; not validated against measurements.",
+        "blocked_claims": [
+          "validated_partial_Q_per_harmonic"
+        ],
+        "objective_metric": "tau_k decreases monotonically with harmonic order k"
+      },
+      {
+        "term": "frequency_dependent_loss",
+        "formula": "freq_factor = 1 + 0.00016 * f_k",
+        "source_level": "L2_diagnostic_proxy",
+        "units": "dimensionless divisor on tau",
+        "limitations": "High-frequency partials lose energy faster; not arbitrary EQ.",
+        "blocked_claims": [
+          "spectral_eq_shaping"
+        ],
+        "objective_metric": "higher f_k yields shorter tau_k"
+      },
+      {
+        "term": "fret_contact_loss_proxy",
+        "formula": "fret_factor = 1 + 0.028 * fret",
+        "source_level": "L2_diagnostic_proxy",
+        "units": "dimensionless divisor on tau",
+        "limitations": "Fretted notes include modest contact damping vs open strings.",
+        "blocked_claims": [
+          "measured_fret_contact_impedance"
+        ],
+        "objective_metric": "fret>0 increases damping vs open string on same string"
+      },
+      {
+        "term": "material_internal_loss_proxy",
+        "formula": "material_factor = MATERIAL_INTERNAL_LOSS[string_id]",
+        "source_level": "L2_nylon_classical_literature_fallback",
+        "units": "dimensionless divisor on tau",
+        "limitations": "Treble strings proxy shorter sustain; not measured linear density loss.",
+        "blocked_claims": [
+          "measured_internal_friction"
+        ],
+        "objective_metric": "treble string_id has larger material_factor"
+      },
+      {
+        "term": "bridge_nut_boundary_loss_proxy",
+        "formula": "boundary_factor = 1 + 0.032 * sqrt(k)",
+        "source_level": "L2_diagnostic_proxy",
+        "units": "dimensionless divisor on tau",
+        "limitations": "Boundary reflection loss increases with partial order proxy.",
+        "blocked_claims": [
+          "measured_bridge_admittance_per_partial"
+        ],
+        "objective_metric": "boundary_factor increases with k"
+      },
+      {
+        "term": "combined_partial_tau",
+        "formula": "tau_k = tau_base / (harmonic_factor * freq_factor * fret_factor * material_factor * boundary_factor)",
+        "source_level": "L2_diagnostic_combined_proxy",
+        "units": "seconds",
+        "limitations": "Diagnostic physics proxy only; replaces Step 5E global tau_k in Step 5I generator.",
+        "blocked_claims": [
+          "real_guitar_equivalence",
+          "validated_damping_model"
+        ],
+        "objective_metric": "per-note tau table; high k shorter tau than low k"
+      }
+    ],
+    "blocked_claims": [
+      "Measured string damping",
+      "Arbitrary EQ",
+      "Real-guitar equivalence",
+      "Final synthesis readiness"
+    ]
+  },
+  "note_string_fret_mapping_used": {
+    "A2": {
+      "note": "A2",
+      "string_id": "string_5",
+      "open_note": "A2",
+      "fret": 0,
+      "open_frequency_hz": 110.0,
+      "target_frequency_hz": 110.0,
+      "computed_frequency_hz": 110.0,
+      "frequency_error_cents": 0.0,
+      "effective_length_m": 0.65,
+      "exact_open_string_claim_allowed": true,
+      "physical_playable_candidate": true,
+      "diagnostic_reference_only": false,
+      "extended_high_fret_candidate": false,
+      "within_default_max_fret": true,
+      "limitation": "Open-string mapping; exact open-string claim allowed when open note matches target."
+    },
+    "A3": {
+      "note": "A3",
+      "string_id": "string_4",
+      "open_note": "D3",
+      "fret": 7,
+      "open_frequency_hz": 146.8324,
+      "target_frequency_hz": 220.0,
+      "computed_frequency_hz": 220.000024,
+      "frequency_error_cents": 0.000189,
+      "effective_length_m": 0.433823,
+      "exact_open_string_claim_allowed": false,
+      "physical_playable_candidate": true,
+      "diagnostic_reference_only": false,
+      "extended_high_fret_candidate": false,
+      "within_default_max_fret": true,
+      "limitation": "Equal-temperament fretted mapping on string_4; physical playable candidate within conservative fret range."
+    },
+    "A4": {
+      "note": "A4",
+      "string_id": "string_1",
+      "open_note": "E4",
+      "fret": 5,
+      "open_frequency_hz": 329.6276,
+      "target_frequency_hz": 440.0,
+      "computed_frequency_hz": 440.000058,
+      "frequency_error_cents": 0.000226,
+      "effective_length_m": 0.48695,
+      "exact_open_string_claim_allowed": false,
+      "physical_playable_candidate": true,
+      "diagnostic_reference_only": false,
+      "extended_high_fret_candidate": false,
+      "within_default_max_fret": true,
+      "limitation": "Equal-temperament fretted mapping on string_1; physical playable candidate within conservative fret range."
+    },
+    "E5": {
+      "note": "E5",
+      "string_id": "string_1",
+      "open_note": "E4",
+      "fret": 12,
+      "open_frequency_hz": 329.6276,
+      "target_frequency_hz": 659.255118865,
+      "computed_frequency_hz": 659.2552,
+      "frequency_error_cents": 0.000213,
+      "effective_length_m": 0.325,
+      "exact_open_string_claim_allowed": false,
+      "physical_playable_candidate": true,
+      "diagnostic_reference_only": false,
+      "extended_high_fret_candidate": false,
+      "within_default_max_fret": true,
+      "limitation": "Equal-temperament fretted mapping on string_1; physical playable candidate within conservative fret range."
+    }
+  },
+  "per_note_partial_tau_summary": {
+    "A2": {
+      "string_id": "string_5",
+      "fret": 0,
+      "f0_hz": 110.0,
+      "partials": [
+        {
+          "k": 1,
+          "f_k_hz": 110.022,
+          "tau_k_refined_s": 2.940709,
+          "tau_k_step5e_s": 2.8,
+          "breakdown": {
+            "tau_base_s": 3.15,
+            "harmonic_factor": 1.0,
+            "freq_factor": 1.017604,
+            "fret_factor": 1.0,
+            "material_factor": 1.02,
+            "boundary_factor": 1.032
+          }
+        },
+        {
+          "k": 2,
+          "f_k_hz": 220.176,
+          "tau_k_refined_s": 1.508358,
+          "tau_k_step5e_s": 1.784385,
+          "breakdown": {
+            "tau_base_s": 3.15,
+            "harmonic_factor": 1.892115,
+            "freq_factor": 1.035228,
+            "fret_factor": 1.0,
+            "material_factor": 1.02,
+            "boundary_factor": 1.045255
+          }
+        },
+        {
+          "k": 3,
+          "f_k_hz": 330.594,
+          "tau_k_refined_s": 1.011454,
+          "tau_k_step5e_s": 1.370974,
+          "breakdown": {
+            "tau_base_s": 3.15,
+            "harmonic_factor": 2.747588,
+            "freq_factor": 1.052895,
+            "fret_factor": 1.0,
+            "material_factor": 1.02,
+            "boundary_factor": 1.055426
+          }
+        },
+        {
+          "k": 4,
+          "f_k_hz": 441.408,
+          "tau_k_refined_s": 0.757244,
+          "tau_k_step5e_s": 1.137153,
+          "breakdown": {
+            "tau_base_s": 3.15,
+            "harmonic_factor": 3.5801,
+            "freq_factor": 1.070625,
+            "fret_factor": 1.0,
+            "material_factor": 1.02,
+            "boundary_factor": 1.064
+          }
+        },
+        {
+          "k": 5,
+          "f_k_hz": 552.75,
+          "tau_k_refined_s": 0.602337,
+          "tau_k_step5e_s": 0.98362,
+          "breakdown": {
+            "tau_base_s": 3.15,
+            "harmonic_factor": 4.395947,
+            "freq_factor": 1.08844,
+            "fret_factor": 1.0,
+            "material_factor": 1.02,
+            "boundary_factor": 1.071554
+          }
+        },
+        {
+          "k": 6,
+          "f_k_hz": 664.752,
+          "tau_k_refined_s": 0.497899,
+          "tau_k_step5e_s": 0.873695,
+          "breakdown": {
+            "tau_base_s": 3.15,
+            "harmonic_factor": 5.198753,
+            "freq_factor": 1.10636,
+            "fret_factor": 1.0,
+            "material_factor": 1.02,
+            "boundary_factor": 1.078384
+          }
+        },
+        {
+          "k": 7,
+          "f_k_hz": 777.546,
+          "tau_k_refined_s": 0.42267,
+          "tau_k_step5e_s": 0.790395,
+          "breakdown": {
+            "tau_base_s": 3.15,
+            "harmonic_factor": 5.990874,
+            "freq_factor": 1.124407,
+            "fret_factor": 1.0,
+            "material_factor": 1.02,
+            "boundary_factor": 1.084664
+          }
+        },
+        {
+          "k": 8,
+          "f_k_hz": 891.264,
+          "tau_k_refined_s": 0.365884,
+          "tau_k_step5e_s": 0.724685,
+          "breakdown": {
+            "tau_base_s": 3.15,
+            "harmonic_factor": 6.773962,
+            "freq_factor": 1.142602,
+            "fret_factor": 1.0,
+            "material_factor": 1.02,
+            "boundary_factor": 1.09051
+          }
+        },
+        {
+          "k": 9,
+          "f_k_hz": 1006.038,
+          "tau_k_refined_s": 0.321497,
+          "tau_k_step5e_s": 0.671275,
+          "breakdown": {
+            "tau_base_s": 3.15,
+            "harmonic_factor": 7.549238,
+            "freq_factor": 1.160966,
+            "fret_factor": 1.0,
+            "material_factor": 1.02,
+            "boundary_factor": 1.096
+          }
+        },
+        {
+          "k": 10,
+          "f_k_hz": 1122.0,
+          "tau_k_refined_s": 0.285852,
+          "tau_k_step5e_s": 0.626842,
+          "breakdown": {
+            "tau_base_s": 3.15,
+            "harmonic_factor": 8.317638,
+            "freq_factor": 1.17952,
+            "fret_factor": 1.0,
+            "material_factor": 1.02,
+            "boundary_factor": 1.101193
+          }
+        },
+        {
+          "k": 11,
+          "f_k_hz": 1239.282,
+          "tau_k_refined_s": 0.256603,
+          "tau_k_step5e_s": 0.589186,
+          "breakdown": {
+            "tau_base_s": 3.15,
+            "harmonic_factor": 9.079904,
+            "freq_factor": 1.198285,
+            "fret_factor": 1.0,
+            "material_factor": 1.02,
+            "boundary_factor": 1.106132
+          }
+        },
+        {
+          "k": 12,
+          "f_k_hz": 1358.016,
+          "tau_k_refined_s": 0.232175,
+          "tau_k_step5e_s": 0.556788,
+          "breakdown": {
+            "tau_base_s": 3.15,
+            "harmonic_factor": 9.836639,
+            "freq_factor": 1.217283,
+            "fret_factor": 1.0,
+            "material_factor": 1.02,
+            "boundary_factor": 1.110851
+          }
+        }
+      ],
+      "high_harmonics_decay_faster_than_low": true,
+      "tau_differs_from_step5e_global": true
+    },
+    "A3": {
+      "string_id": "string_4",
+      "fret": 7,
+      "f0_hz": 220.0,
+      "partials": [
+        {
+          "k": 1,
+          "f_k_hz": 220.044,
+          "tau_k_refined_s": 2.144734,
+          "tau_k_step5e_s": 2.8,
+          "breakdown": {
+            "tau_base_s": 2.85,
+            "harmonic_factor": 1.0,
+            "freq_factor": 1.035207,
+            "fret_factor": 1.196,
+            "material_factor": 1.04,
+            "boundary_factor": 1.032
+          }
+        },
+        {
+          "k": 2,
+          "f_k_hz": 440.352,
+          "tau_k_refined_s": 1.082285,
+          "tau_k_step5e_s": 1.784385,
+          "breakdown": {
+            "tau_base_s": 2.85,
+            "harmonic_factor": 1.892115,
+            "freq_factor": 1.070456,
+            "fret_factor": 1.196,
+            "material_factor": 1.04,
+            "boundary_factor": 1.045255
+          }
+        },
+        {
+          "k": 3,
+          "f_k_hz": 661.188,
+          "tau_k_refined_s": 0.714543,
+          "tau_k_step5e_s": 1.370974,
+          "breakdown": {
+            "tau_base_s": 2.85,
+            "harmonic_factor": 2.747588,
+            "freq_factor": 1.10579,
+            "fret_factor": 1.196,
+            "material_factor": 1.04,
+            "boundary_factor": 1.055426
+          }
+        },
+        {
+          "k": 4,
+          "f_k_hz": 882.816,
+          "tau_k_refined_s": 0.527063,
+          "tau_k_step5e_s": 1.137153,
+          "breakdown": {
+            "tau_base_s": 2.85,
+            "harmonic_factor": 3.5801,
+            "freq_factor": 1.141251,
+            "fret_factor": 1.196,
+            "material_factor": 1.04,
+            "boundary_factor": 1.064
+          }
+        },
+        {
+          "k": 5,
+          "f_k_hz": 1105.5,
+          "tau_k_refined_s": 0.413315,
+          "tau_k_step5e_s": 0.98362,
+          "breakdown": {
+            "tau_base_s": 2.85,
+            "harmonic_factor": 4.395947,
+            "freq_factor": 1.17688,
+            "fret_factor": 1.196,
+            "material_factor": 1.04,
+            "boundary_factor": 1.071554
+          }
+        },
+        {
+          "k": 6,
+          "f_k_hz": 1329.504,
+          "tau_k_refined_s": 0.337013,
+          "tau_k_step5e_s": 0.873695,
+          "breakdown": {
+            "tau_base_s": 2.85,
+            "harmonic_factor": 5.198753,
+            "freq_factor": 1.212721,
+            "fret_factor": 1.196,
+            "material_factor": 1.04,
+            "boundary_factor": 1.078384
+          }
+        },
+        {
+          "k": 7,
+          "f_k_hz": 1555.092,
+          "tau_k_refined_s": 0.282356,
+          "tau_k_step5e_s": 0.790395,
+          "breakdown": {
+            "tau_base_s": 2.85,
+            "harmonic_factor": 5.990874,
+            "freq_factor": 1.248815,
+            "fret_factor": 1.196,
+            "material_factor": 1.04,
+            "boundary_factor": 1.084664
+          }
+        },
+        {
+          "k": 8,
+          "f_k_hz": 1782.528,
+          "tau_k_refined_s": 0.241344,
+          "tau_k_step5e_s": 0.724685,
+          "breakdown": {
+            "tau_base_s": 2.85,
+            "harmonic_factor": 6.773962,
+            "freq_factor": 1.285204,
+            "fret_factor": 1.196,
+            "material_factor": 1.04,
+            "boundary_factor": 1.09051
+          }
+        },
+        {
+          "k": 9,
+          "f_k_hz": 2012.076,
+          "tau_k_refined_s": 0.209487,
+          "tau_k_step5e_s": 0.671275,
+          "breakdown": {
+            "tau_base_s": 2.85,
+            "harmonic_factor": 7.549238,
+            "freq_factor": 1.321932,
+            "fret_factor": 1.196,
+            "material_factor": 1.04,
+            "boundary_factor": 1.096
+          }
+        },
+        {
+          "k": 10,
+          "f_k_hz": 2244.0,
+          "tau_k_refined_s": 0.184071,
+          "tau_k_step5e_s": 0.626842,
+          "breakdown": {
+            "tau_base_s": 2.85,
+            "harmonic_factor": 8.317638,
+            "freq_factor": 1.35904,
+            "fret_factor": 1.196,
+            "material_factor": 1.04,
+            "boundary_factor": 1.101193
+          }
+        },
+        {
+          "k": 11,
+          "f_k_hz": 2478.564,
+          "tau_k_refined_s": 0.163354,
+          "tau_k_step5e_s": 0.589186,
+          "breakdown": {
+            "tau_base_s": 2.85,
+            "harmonic_factor": 9.079904,
+            "freq_factor": 1.39657,
+            "fret_factor": 1.196,
+            "material_factor": 1.04,
+            "boundary_factor": 1.106132
+          }
+        },
+        {
+          "k": 12,
+          "f_k_hz": 2716.032,
+          "tau_k_refined_s": 0.14617,
+          "tau_k_step5e_s": 0.556788,
+          "breakdown": {
+            "tau_base_s": 2.85,
+            "harmonic_factor": 9.836639,
+            "freq_factor": 1.434565,
+            "fret_factor": 1.196,
+            "material_factor": 1.04,
+            "boundary_factor": 1.110851
+          }
+        }
+      ],
+      "high_harmonics_decay_faster_than_low": true,
+      "tau_differs_from_step5e_global": true
+    },
+    "A4": {
+      "string_id": "string_1",
+      "fret": 5,
+      "f0_hz": 440.0,
+      "partials": [
+        {
+          "k": 1,
+          "f_k_hz": 440.088,
+          "tau_k_refined_s": 1.479874,
+          "tau_k_step5e_s": 2.8,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 1.0,
+            "freq_factor": 1.070414,
+            "fret_factor": 1.14,
+            "material_factor": 1.1,
+            "boundary_factor": 1.032
+          }
+        },
+        {
+          "k": 2,
+          "f_k_hz": 880.704,
+          "tau_k_refined_s": 0.724493,
+          "tau_k_step5e_s": 1.784385,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 1.892115,
+            "freq_factor": 1.140913,
+            "fret_factor": 1.14,
+            "material_factor": 1.1,
+            "boundary_factor": 1.045255
+          }
+        },
+        {
+          "k": 3,
+          "f_k_hz": 1322.376,
+          "tau_k_refined_s": 0.465291,
+          "tau_k_step5e_s": 1.370974,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 2.747588,
+            "freq_factor": 1.21158,
+            "fret_factor": 1.14,
+            "material_factor": 1.1,
+            "boundary_factor": 1.055426
+          }
+        },
+        {
+          "k": 4,
+          "f_k_hz": 1765.632,
+          "tau_k_refined_s": 0.334628,
+          "tau_k_step5e_s": 1.137153,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 3.5801,
+            "freq_factor": 1.282501,
+            "fret_factor": 1.14,
+            "material_factor": 1.1,
+            "boundary_factor": 1.064
+          }
+        },
+        {
+          "k": 5,
+          "f_k_hz": 2211.0,
+          "tau_k_refined_s": 0.256359,
+          "tau_k_step5e_s": 0.98362,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 4.395947,
+            "freq_factor": 1.35376,
+            "fret_factor": 1.14,
+            "material_factor": 1.1,
+            "boundary_factor": 1.071554
+          }
+        },
+        {
+          "k": 6,
+          "f_k_hz": 2659.008,
+          "tau_k_refined_s": 0.204567,
+          "tau_k_step5e_s": 0.873695,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 5.198753,
+            "freq_factor": 1.425441,
+            "fret_factor": 1.14,
+            "material_factor": 1.1,
+            "boundary_factor": 1.078384
+          }
+        },
+        {
+          "k": 7,
+          "f_k_hz": 3110.184,
+          "tau_k_refined_s": 0.167983,
+          "tau_k_step5e_s": 0.790395,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 5.990874,
+            "freq_factor": 1.497629,
+            "fret_factor": 1.14,
+            "material_factor": 1.1,
+            "boundary_factor": 1.084664
+          }
+        },
+        {
+          "k": 8,
+          "f_k_hz": 3565.056,
+          "tau_k_refined_s": 0.14092,
+          "tau_k_step5e_s": 0.724685,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 6.773962,
+            "freq_factor": 1.570409,
+            "fret_factor": 1.14,
+            "material_factor": 1.1,
+            "boundary_factor": 1.09051
+          }
+        },
+        {
+          "k": 9,
+          "f_k_hz": 4024.152,
+          "tau_k_refined_s": 0.120192,
+          "tau_k_step5e_s": 0.671275,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 7.549238,
+            "freq_factor": 1.643864,
+            "fret_factor": 1.14,
+            "material_factor": 1.1,
+            "boundary_factor": 1.096
+          }
+        },
+        {
+          "k": 10,
+          "f_k_hz": 4488.0,
+          "tau_k_refined_s": 0.103884,
+          "tau_k_step5e_s": 0.626842,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 8.317638,
+            "freq_factor": 1.71808,
+            "fret_factor": 1.14,
+            "material_factor": 1.1,
+            "boundary_factor": 1.101193
+          }
+        },
+        {
+          "k": 11,
+          "f_k_hz": 4957.128,
+          "tau_k_refined_s": 0.090772,
+          "tau_k_step5e_s": 0.589186,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 9.079904,
+            "freq_factor": 1.79314,
+            "fret_factor": 1.14,
+            "material_factor": 1.1,
+            "boundary_factor": 1.106132
+          }
+        },
+        {
+          "k": 12,
+          "f_k_hz": 5432.064,
+          "tau_k_refined_s": 0.080041,
+          "tau_k_step5e_s": 0.556788,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 9.836639,
+            "freq_factor": 1.86913,
+            "fret_factor": 1.14,
+            "material_factor": 1.1,
+            "boundary_factor": 1.110851
+          }
+        }
+      ],
+      "high_harmonics_decay_faster_than_low": true,
+      "tau_differs_from_step5e_global": true
+    },
+    "E5": {
+      "string_id": "string_1",
+      "fret": 12,
+      "f0_hz": 659.255118865,
+      "partials": [
+        {
+          "k": 1,
+          "f_k_hz": 659.387,
+          "tau_k_refined_s": 1.222688,
+          "tau_k_step5e_s": 2.8,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 1.0,
+            "freq_factor": 1.105502,
+            "fret_factor": 1.336,
+            "material_factor": 1.1,
+            "boundary_factor": 1.032
+          }
+        },
+        {
+          "k": 2,
+          "f_k_hz": 1319.565,
+          "tau_k_refined_s": 0.582363,
+          "tau_k_step5e_s": 1.784385,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 1.892115,
+            "freq_factor": 1.21113,
+            "fret_factor": 1.336,
+            "material_factor": 1.1,
+            "boundary_factor": 1.045255
+          }
+        },
+        {
+          "k": 3,
+          "f_k_hz": 1981.325,
+          "tau_k_refined_s": 0.365246,
+          "tau_k_step5e_s": 1.370974,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 2.747588,
+            "freq_factor": 1.317012,
+            "fret_factor": 1.336,
+            "material_factor": 1.1,
+            "boundary_factor": 1.055426
+          }
+        },
+        {
+          "k": 4,
+          "f_k_hz": 2645.459,
+          "tau_k_refined_s": 0.257294,
+          "tau_k_step5e_s": 1.137153,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 3.5801,
+            "freq_factor": 1.423273,
+            "fret_factor": 1.336,
+            "material_factor": 1.1,
+            "boundary_factor": 1.064
+          }
+        },
+        {
+          "k": 5,
+          "f_k_hz": 3312.757,
+          "tau_k_refined_s": 0.193546,
+          "tau_k_step5e_s": 0.98362,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 4.395947,
+            "freq_factor": 1.530041,
+            "fret_factor": 1.336,
+            "material_factor": 1.1,
+            "boundary_factor": 1.071554
+          }
+        },
+        {
+          "k": 6,
+          "f_k_hz": 3984.011,
+          "tau_k_refined_s": 0.151955,
+          "tau_k_step5e_s": 0.873695,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 5.198753,
+            "freq_factor": 1.637442,
+            "fret_factor": 1.336,
+            "material_factor": 1.1,
+            "boundary_factor": 1.078384
+          }
+        },
+        {
+          "k": 7,
+          "f_k_hz": 4660.011,
+          "tau_k_refined_s": 0.122977,
+          "tau_k_step5e_s": 0.790395,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 5.990874,
+            "freq_factor": 1.745602,
+            "fret_factor": 1.336,
+            "material_factor": 1.1,
+            "boundary_factor": 1.084664
+          }
+        },
+        {
+          "k": 8,
+          "f_k_hz": 5341.549,
+          "tau_k_refined_s": 0.101817,
+          "tau_k_step5e_s": 0.724685,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 6.773962,
+            "freq_factor": 1.854648,
+            "fret_factor": 1.336,
+            "material_factor": 1.1,
+            "boundary_factor": 1.09051
+          }
+        },
+        {
+          "k": 9,
+          "f_k_hz": 6029.415,
+          "tau_k_refined_s": 0.085811,
+          "tau_k_step5e_s": 0.671275,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 7.549238,
+            "freq_factor": 1.964706,
+            "fret_factor": 1.336,
+            "material_factor": 1.1,
+            "boundary_factor": 1.096
+          }
+        },
+        {
+          "k": 10,
+          "f_k_hz": 6724.402,
+          "tau_k_refined_s": 0.073364,
+          "tau_k_step5e_s": 0.626842,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 8.317638,
+            "freq_factor": 2.075904,
+            "fret_factor": 1.336,
+            "material_factor": 1.1,
+            "boundary_factor": 1.101193
+          }
+        },
+        {
+          "k": 11,
+          "f_k_hz": 7427.3,
+          "tau_k_refined_s": 0.063467,
+          "tau_k_step5e_s": 0.589186,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 9.079904,
+            "freq_factor": 2.188368,
+            "fret_factor": 1.336,
+            "material_factor": 1.1,
+            "boundary_factor": 1.106132
+          }
+        },
+        {
+          "k": 12,
+          "f_k_hz": 8138.9,
+          "tau_k_refined_s": 0.05545,
+          "tau_k_step5e_s": 0.556788,
+          "breakdown": {
+            "tau_base_s": 2.05,
+            "harmonic_factor": 9.836639,
+            "freq_factor": 2.302224,
+            "fret_factor": 1.336,
+            "material_factor": 1.1,
+            "boundary_factor": 1.110851
+          }
+        }
+      ],
+      "high_harmonics_decay_faster_than_low": true,
+      "tau_differs_from_step5e_global": true
+    }
+  }
+}
