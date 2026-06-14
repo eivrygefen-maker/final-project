@@ -1,0 +1,92 @@
+{
+  "contract_version": "pgsm_step5j_top_back_air_radiation_weighting_refinement_v1",
+  "top_back_air_radiation_weighting_contract": {
+    "contract_id": "pgsm_top_back_air_radiation_weighting_v1",
+    "supersedes_combined_ir": "step5i_3_single_body_ir",
+    "implements_step5g_terms": [
+      "top_plate_decay",
+      "back_plate_decay",
+      "air_cavity_decay",
+      "radiation_decay"
+    ],
+    "not_implemented_terms": [
+      "bridge_coupling_loss"
+    ],
+    "modal_frequencies_unchanged": true,
+    "modal_q_tau_unchanged": true,
+    "output_weights_only": true,
+    "terms": [
+      {
+        "term": "top_plate_modal_weight",
+        "formula": "W_top_mode = W_rad \u00d7 (top_share/region) \u00d7 1.18 \u00d7 rad_band_w(f)",
+        "source_level": "L2_step3c_region_share_proxy",
+        "units": "dimensionless_modal_output_weight",
+        "limitations": "Output weight only; tau/f unchanged",
+        "blocked_claims": [
+          "arbitrary_eq",
+          "artificial_reverb",
+          "body_tail"
+        ],
+        "validation_metric": "top_plate_stem_energy_fraction > Step 5I.3 body stem"
+      },
+      {
+        "term": "back_plate_modal_weight",
+        "formula": "W_back_mode = W_rad \u00d7 (back_share/region) \u00d7 1.1 \u00d7 rad_band_w(f)",
+        "source_level": "L2_step3c_region_share_proxy",
+        "units": "dimensionless_modal_output_weight",
+        "limitations": "Not arbitrary low-frequency boost",
+        "blocked_claims": [
+          "arbitrary_eq",
+          "artificial_reverb",
+          "body_tail"
+        ],
+        "validation_metric": "back_plate_stem_energy_fraction measurable"
+      },
+      {
+        "term": "air_cavity_modal_weight",
+        "formula": "W_air_mode = W_air \u00d7 (air_share/region) \u00d7 3.5 \u00d7 rad_band_w(f)",
+        "source_level": "L2_step3c_W_air_helmholtz_proxy",
+        "units": "dimensionless_modal_output_weight",
+        "limitations": "Causal modal sum only; no echo/reverb",
+        "blocked_claims": [
+          "arbitrary_eq",
+          "artificial_reverb",
+          "body_tail"
+        ],
+        "validation_metric": "cavity_air_imprint_score increases vs Step 5I.3"
+      },
+      {
+        "term": "radiation_band_weight",
+        "formula": "rad_band_w(f) = (W_rad_norm) \u00d7 (1/(1+(f/850.0)^1.65)) \u00d7 treble_guard(f>1100.0)",
+        "source_level": "L2_radiation_proxy_frequency_rolloff",
+        "units": "dimensionless_modal_output_weight",
+        "limitations": "Per-mode weight from radiation proxy; not output EQ",
+        "blocked_claims": [
+          "arbitrary_eq",
+          "artificial_reverb",
+          "body_tail"
+        ],
+        "validation_metric": "E5 high-band modal contribution reduced; piercing proxy improves or flagged"
+      },
+      {
+        "term": "combined_body_radiation_weight",
+        "formula": "p_out = conv(F_bridge_v4, h_top + h_back + h_air); h_rad_sum = weighted radiation stem",
+        "source_level": "L2_combined_modal_convolution",
+        "units": "dimensionless_modal_output_weight",
+        "limitations": "Bridge coupling feedback not implemented (Step 5K)",
+        "blocked_claims": [
+          "bridge_coupling_loss",
+          "stk_integration"
+        ],
+        "validation_metric": "body/string energy ratio increases; guitar-body identity score improves"
+      }
+    ],
+    "gains": {
+      "top_plate_modal_gain": 1.18,
+      "back_plate_modal_gain": 1.1,
+      "air_cavity_modal_gain": 3.5,
+      "radiation_f_ref_hz": 850.0,
+      "radiation_f_rolloff_exp": 1.65
+    }
+  }
+}
