@@ -94,26 +94,29 @@ HIGH_FREQ_THRESHOLD_HZ = 2000.0
 UPPER_MID_LO_HZ = 500.0
 UPPER_MID_HI_HZ = 2000.0
 
-# v2.1 body weighting — output weights only; f/Q/tau unchanged
-# Rebalanced after v2 overcorrected to top-dominant (~0.77) comb-like response.
-TOP_PLATE_MODAL_GAIN = 1.06
-TOP_ARTICULATION_MID_HZ = 620.0
-TOP_ARTICULATION_BAND_HZ = 240.0
-TOP_ARTICULATION_MID_BOOST = 0.15
-TOP_MODE_SHARE_SOFT_CAP = 0.58
-TOP_REDIST_TO_BACK = 0.42
-TOP_REDIST_TO_AIR = 0.58
-TOP_CLUSTER_DAMP_WINDOW_HZ = 48.0
-TOP_CLUSTER_DAMP_THRESHOLD = 3
-TOP_CLUSTER_DAMP_STRENGTH = 0.24
-TOP_ARTICULATION_ROLLOFF_START_HZ = 1050.0
-BACK_PLATE_MODAL_GAIN = 1.28
+# v2.2 body weighting — middle balance after v2.1 over-suppressed top via global soft cap.
+TOP_PLATE_MODAL_GAIN = 1.17
+TOP_ATTACK_MID_HZ = 640.0
+TOP_ATTACK_BAND_HZ = 220.0
+TOP_ATTACK_MID_BOOST = 0.32
+TOP_ATTACK_TAU_SCALE_S = 0.050
+TOP_SUSTAIN_TAU_SCALE_S = 0.140
+TOP_CLUSTER_DAMP_WINDOW_HZ = 44.0
+TOP_CLUSTER_DAMP_THRESHOLD = 5
+TOP_CLUSTER_DAMP_STRENGTH = 0.13
+TOP_CLUSTER_REGULARITY_DAMP = 0.20
+TOP_ARTICULATION_ROLLOFF_START_HZ = 1180.0
+COMB_RISK_CLUSTER_DAMP_THRESHOLD = 0.90
+COMB_RISK_TOP_SOFT_CAP = 0.68
+BACK_PLATE_MODAL_GAIN = 1.11
 BACK_WARMTH_MID_HZ = 560.0
 BACK_WARMTH_BAND_HZ = 300.0
-BACK_WARMTH_MID_BOOST = 0.14
-AIR_CAVITY_MODAL_GAIN = 2.82
-AIR_FREQ_ATTENUATION_SCALE_HZ = 920.0
-AIR_FREQ_ATTENUATION_POWER = 0.82
+BACK_WARMTH_MID_BOOST = 0.07
+BACK_HIGH_FREQ_ROLLOFF_START_HZ = 920.0
+BACK_HIGH_FREQ_ROLLOFF_POWER = 1.05
+AIR_CAVITY_MODAL_GAIN = 2.48
+AIR_FREQ_ATTENUATION_SCALE_HZ = 880.0
+AIR_FREQ_ATTENUATION_POWER = 0.88
 RADIATION_F_REF_HZ = 1280.0
 RADIATION_F_ROLLOFF_EXP = 0.96
 HARMONIC_PRESERVATION_CENTER_HZ = 660.0
@@ -201,21 +204,22 @@ def build_body_weighting_v2_contract() -> Dict[str, Any]:
     terms = [
         _term(
             "top_plate_modal_weight",
-            f"W_top = W_rad×(top/region)×{TOP_PLATE_MODAL_GAIN}×rad_band_v2×top_articulation_midband(f)"
-            f"×top_cluster_damp(f); soft_cap={TOP_MODE_SHARE_SOFT_CAP}",
-            "top_plate_attack_share improved vs Step 5J without top monopoly",
-            limitations="Causal per-mode articulation boost; cluster damp reduces comb-prone top coherence",
+            f"W_top = W_rad×(top/region)×{TOP_PLATE_MODAL_GAIN}×rad_band_v2"
+            f"×top_attack_band(f,τ)×top_cluster_damp_comb_risk_only(f)",
+            "top_plate_attack_share improved vs Step 5J; moderate top share ~0.20–0.40",
+            limitations="Attack band on short-τ modes; cluster damp on comb-risk clusters only",
         ),
         _term(
             "back_plate_modal_weight",
-            f"W_back = W_rad×(back/region)×{BACK_PLATE_MODAL_GAIN}×rad_band_v2×back_warmth_midband(f)",
-            "back warmth supports body without top-only coherence",
+            f"W_back = W_rad×(back/region)×{BACK_PLATE_MODAL_GAIN}×rad_band_v2×back_warmth(f)"
+            f"×back_hf_rolloff(f>{BACK_HIGH_FREQ_ROLLOFF_START_HZ}Hz)",
+            "back warmth without ~0.60 dominance; E5 back peak guarded",
         ),
         _term(
             "air_cavity_modal_weight",
             f"W_air = W_air×(air/region)×{AIR_CAVITY_MODAL_GAIN}×rad_band_v2×air_freq_balance(f)",
-            "air_share balanced vs Step 5J; cavity imprint retained without dominance",
-            limitations="Gentle high-f air taper only; air not crushed to ~0.09",
+            "air_share balanced ~0.20–0.40; cavity imprint without Step 5J dominance",
+            limitations="Gentle high-f air taper only",
         ),
         _term(
             "radiation_band_weight",
@@ -254,23 +258,42 @@ def build_body_weighting_v2_contract() -> Dict[str, Any]:
     }
 
 
-def top_articulation_weight(f_hz: float, top_share: float) -> float:
-    """Band-limited mid-frequency top boost for pluck articulation without total top dominance."""
-    mid = math.exp(-((f_hz - TOP_ARTICULATION_MID_HZ) ** 2) / (2.0 * TOP_ARTICULATION_BAND_HZ ** 2))
-    boost = 1.0 + TOP_ARTICULATION_MID_BOOST * mid * (0.45 + 0.55 * top_share)
+def top_attack_band_weight(f_hz: float, top_share: float) -> float:
+    """Narrow mid-frequency attack band; high-f rolloff avoids comb-prone top sustain."""
+    mid = math.exp(-((f_hz - TOP_ATTACK_MID_HZ) ** 2) / (2.0 * TOP_ATTACK_BAND_HZ ** 2))
+    boost = 1.0 + TOP_ATTACK_MID_BOOST * mid * (0.5 + 0.5 * top_share)
     if f_hz > TOP_ARTICULATION_ROLLOFF_START_HZ:
         excess = f_hz - TOP_ARTICULATION_ROLLOFF_START_HZ
-        boost *= 1.0 / (1.0 + (excess / 520.0) ** 1.15)
+        boost *= 1.0 / (1.0 + (excess / 550.0) ** 1.12)
     return boost
+
+
+def top_modal_weight_with_tau_split(
+    f_hz: float,
+    tau_s: float,
+    top_share: float,
+    cluster_damp: float,
+) -> float:
+    """Short-τ modes get attack-band boost; long-τ modes receive comb cluster damp only."""
+    attack_band = top_attack_band_weight(f_hz, top_share)
+    tau_attack = math.exp(-tau_s / TOP_ATTACK_TAU_SCALE_S)
+    attack_mix = 1.0 + (attack_band - 1.0) * tau_attack
+    sustain_tau = 1.0 - math.exp(-tau_s / TOP_SUSTAIN_TAU_SCALE_S)
+    effective_cluster = 1.0 - (1.0 - cluster_damp) * sustain_tau
+    return attack_mix * effective_cluster
 
 
 def back_warmth_weight(f_hz: float) -> float:
     mid = math.exp(-((f_hz - BACK_WARMTH_MID_HZ) ** 2) / (2.0 * BACK_WARMTH_BAND_HZ ** 2))
-    return 1.0 + BACK_WARMTH_MID_BOOST * mid
+    w = 1.0 + BACK_WARMTH_MID_BOOST * mid
+    if f_hz > BACK_HIGH_FREQ_ROLLOFF_START_HZ:
+        excess = f_hz - BACK_HIGH_FREQ_ROLLOFF_START_HZ
+        w *= 1.0 / (1.0 + (excess / 450.0) ** BACK_HIGH_FREQ_ROLLOFF_POWER)
+    return w
 
 
 def top_cluster_coherence_damp(f_hz: float, all_freqs: Sequence[float]) -> float:
-    """Reduce top weight where modal neighbors cluster with regular spacing (comb risk)."""
+    """Reduce top weight only on dense, regularly-spaced modal clusters (comb risk)."""
     cluster_count = sum(1 for f in all_freqs if abs(f - f_hz) <= TOP_CLUSTER_DAMP_WINDOW_HZ)
     factor = 1.0
     if cluster_count > TOP_CLUSTER_DAMP_THRESHOLD:
@@ -283,21 +306,28 @@ def top_cluster_coherence_damp(f_hz: float, all_freqs: Sequence[float]) -> float
         if spacings.size:
             regularity = float(np.std(spacings) / max(float(np.mean(spacings)), 1.0))
             if regularity < 0.92:
-                factor *= 1.0 / (1.0 + 0.30 * (0.92 - regularity))
+                factor *= 1.0 / (1.0 + TOP_CLUSTER_REGULARITY_DAMP * (0.92 - regularity))
     return factor
 
 
-def rebalance_mode_stem_weights(wt: float, wb: float, wai: float) -> Tuple[float, float, float]:
-    """Per-mode soft cap on top share; redistribute excess to back/air (causal weighting only)."""
+def rebalance_comb_risk_top_only(
+    wt: float,
+    wb: float,
+    wai: float,
+    cluster_damp: float,
+) -> Tuple[float, float, float]:
+    """Mild per-mode top cap only when cluster_damp indicates comb risk — not global."""
+    if cluster_damp >= COMB_RISK_CLUSTER_DAMP_THRESHOLD:
+        return wt, wb, wai
     total = wt + wb + wai
     if total <= 0.0:
         return wt, wb, wai
     top_frac = wt / total
-    if top_frac <= TOP_MODE_SHARE_SOFT_CAP:
+    if top_frac <= COMB_RISK_TOP_SOFT_CAP:
         return wt, wb, wai
-    wt_new = TOP_MODE_SHARE_SOFT_CAP * total
+    wt_new = COMB_RISK_TOP_SOFT_CAP * total
     excess = wt - wt_new
-    return wt_new, wb + excess * TOP_REDIST_TO_BACK, wai + excess * TOP_REDIST_TO_AIR
+    return wt_new, wb + excess * 0.38, wai + excess * 0.62
 
 
 def air_frequency_balance(f_hz: float) -> float:
@@ -396,18 +426,12 @@ def compute_step5j_1_modal_kernels_decomposed(
         rad_w = radiation_band_weight_v2(f_i, wr, w_rad_median=w_rad_median)
         kernel = np.exp(-t / tau) * np.sin(2.0 * math.pi * f_i * t)
         cluster_damp = top_cluster_coherence_damp(f_i, mode_freqs)
+        top_w = top_modal_weight_with_tau_split(f_i, tau, top, cluster_damp)
 
-        wt = (
-            wr
-            * (top / region)
-            * TOP_PLATE_MODAL_GAIN
-            * rad_w
-            * top_articulation_weight(f_i, top)
-            * cluster_damp
-        )
+        wt = wr * (top / region) * TOP_PLATE_MODAL_GAIN * rad_w * top_w
         wb = wr * (back / region) * BACK_PLATE_MODAL_GAIN * rad_w * back_warmth_weight(f_i)
         wai = wa * (air / region) * AIR_CAVITY_MODAL_GAIN * rad_w * air_frequency_balance(f_i)
-        wt, wb, wai = rebalance_mode_stem_weights(wt, wb, wai)
+        wt, wb, wai = rebalance_comb_risk_top_only(wt, wb, wai, cluster_damp)
         wrad = (wt + wb) * 0.52 + wai * 0.48
 
         h_top += wt * kernel
@@ -417,7 +441,7 @@ def compute_step5j_1_modal_kernels_decomposed(
 
     h_combined = h_top + h_back + h_air
     meta = {
-        "weighting_version": "v2.1",
+        "weighting_version": "v2.2",
         "mode_count": len(modes),
         "output_weights_only": True,
         "q_tau_unchanged": True,
@@ -522,7 +546,7 @@ def compute_organ_like_diagnosis(
         b_top = float(baseline_step5j.get("top_plate_attack_share") or 0.0)
         top_attack_improved = top_attack > b_top + 0.02 or top_attack >= 0.22
 
-    balance = 1.0 - abs(air_share - 0.32) - abs(float(stem_summary.get("top_share") or 0) - 0.42)
+    balance = 1.0 - abs(air_share - 0.32) - abs(float(stem_summary.get("top_share") or 0) - 0.32)
     return {
         "organ_like_purity_flag": organ_like_purity,
         "air_dominance_flag": air_dominance,

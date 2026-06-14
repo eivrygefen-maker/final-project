@@ -19,21 +19,21 @@
     "terms": [
       {
         "term": "top_plate_modal_weight",
-        "formula": "W_top = W_rad×(top/region)×1.06×rad_band_v2×top_articulation_midband(f)×top_cluster_damp(f); soft_cap=0.58",
+        "formula": "W_top = W_rad×(top/region)×1.17×rad_band_v2×top_attack_band(f,τ)×top_cluster_damp_comb_risk_only(f)",
         "source_level": "L2_step3c_region_share_proxy_v2",
         "units": "dimensionless_modal_output_weight",
-        "limitations": "Causal per-mode articulation boost; cluster damp reduces comb-prone top coherence",
+        "limitations": "Attack band on short-τ modes; cluster damp on comb-risk clusters only",
         "blocked_claims": [
           "arbitrary_eq",
           "artificial_reverb",
           "transient_enhancer",
           "body_tail"
         ],
-        "validation_metric": "top_plate_attack_share improved vs Step 5J without top monopoly"
+        "validation_metric": "top_plate_attack_share improved vs Step 5J; moderate top share ~0.20–0.40"
       },
       {
         "term": "back_plate_modal_weight",
-        "formula": "W_back = W_rad×(back/region)×1.28×rad_band_v2×back_warmth_midband(f)",
+        "formula": "W_back = W_rad×(back/region)×1.11×rad_band_v2×back_warmth(f)×back_hf_rolloff(f>920Hz)",
         "source_level": "L2_step3c_region_share_proxy_v2",
         "units": "dimensionless_modal_output_weight",
         "limitations": "",
@@ -43,21 +43,21 @@
           "transient_enhancer",
           "body_tail"
         ],
-        "validation_metric": "back warmth supports body without top-only coherence"
+        "validation_metric": "back warmth without ~0.60 dominance; E5 back peak guarded"
       },
       {
         "term": "air_cavity_modal_weight",
-        "formula": "W_air = W_air×(air/region)×2.82×rad_band_v2×air_freq_balance(f)",
+        "formula": "W_air = W_air×(air/region)×2.48×rad_band_v2×air_freq_balance(f)",
         "source_level": "L2_step3c_region_share_proxy_v2",
         "units": "dimensionless_modal_output_weight",
-        "limitations": "Gentle high-f air taper only; air not crushed to ~0.09",
+        "limitations": "Gentle high-f air taper only",
         "blocked_claims": [
           "arbitrary_eq",
           "artificial_reverb",
           "transient_enhancer",
           "body_tail"
         ],
-        "validation_metric": "air_share balanced vs Step 5J; cavity imprint retained without dominance"
+        "validation_metric": "air_share balanced ~0.20–0.40; cavity imprint without Step 5J dominance"
       },
       {
         "term": "radiation_band_weight",
@@ -89,9 +89,9 @@
       }
     ],
     "gains": {
-      "top_plate_modal_gain": 1.06,
-      "back_plate_modal_gain": 1.28,
-      "air_cavity_modal_gain": 2.82,
+      "top_plate_modal_gain": 1.17,
+      "back_plate_modal_gain": 1.11,
+      "air_cavity_modal_gain": 2.48,
       "radiation_f_ref_hz": 1280.0,
       "radiation_f_rolloff_exp": 0.96
     }
