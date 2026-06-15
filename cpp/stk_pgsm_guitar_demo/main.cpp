@@ -116,6 +116,9 @@ struct RenderOutcome {
     std::vector<double> audio;
     AudioMetrics metrics;
     std::map<std::string, FactorAuditEntry> factor_audit;
+    double raw_pluck_amplitude = 0.0;
+    double clamped_pluck_amplitude = 0.0;
+    bool pluck_was_clamped = false;
     double applied_string_to_body_send = 0.0;
     double applied_bridge_coupling = 0.0;
     int applied_bridge_smooth_samples = 0;
@@ -531,6 +534,13 @@ static void clearOutputWavs(const std::filesystem::path& dir) {
 static double linToDbfs(double x) { return 20.0 * std::log10(std::max(x, 1e-12)); }
 static double dbfsToLin(double db) { return std::pow(10.0, db / 20.0); }
 
+constexpr double kStkPluckAmpMin = 0.0;
+constexpr double kStkPluckAmpMax = 1.0;
+
+static double clampStkPluckAmplitude(double raw) {
+    return std::max(kStkPluckAmpMin, std::min(raw, kStkPluckAmpMax));
+}
+
 static void applyPeakCeilingOnly(std::vector<double>& y, double ceilingDbfs) {
     double peak = 0.0;
     for (double v : y) peak = std::max(peak, std::abs(v));
@@ -698,8 +708,10 @@ static RenderOutcome renderOne(RenderSpec spec) {
 
     Plucked string;
     string.setFrequency(spec.frequency_hz);
-    string.pluck(spec.excitation_strength * spec.note_excitation_scale
-        * std::pow(spec.phys.bridge_mobility_factor, 0.08));
+    const double rawPluck = spec.excitation_strength * spec.note_excitation_scale
+        * std::pow(spec.phys.bridge_mobility_factor, 0.08);
+    const double clampedPluck = clampStkPluckAmplitude(rawPluck);
+    string.pluck(clampedPluck);
 
     ModalBank body;
     body.build(spec.modes, sr);
@@ -729,6 +741,9 @@ static RenderOutcome renderOne(RenderSpec spec) {
 
     RenderOutcome out;
     out.audio.assign(n, 0.0);
+    out.raw_pluck_amplitude = rawPluck;
+    out.clamped_pluck_amplitude = clampedPluck;
+    out.pluck_was_clamped = rawPluck < kStkPluckAmpMin || rawPluck > kStkPluckAmpMax;
     double stringE = 0.0, bodyE = 0.0;
     for (int i = 0; i < n; ++i) {
         double bodyS = body.process(bridgeDrive[static_cast<size_t>(i)]);
@@ -986,6 +1001,20 @@ static void writeReportV2(const std::filesystem::path& jsonPath, const std::file
     if (!depthSummary.empty()) js << "  \"body_depth_volume_summary\": " << depthSummary << ",\n";
     const std::string knownLimits = extractJsonValueSlice(paramsJson, "known_limitations");
     if (!knownLimits.empty()) js << "  \"known_limitations\": " << knownLimits << ",\n";
+    js << "  \"pluck_amplitude_handling\": \"clamped_to_stk_0_1_range\",\n";
+    js << "  \"pluck_amplitude_audit\": [\n";
+    for (size_t i = 0; i < specs.size(); ++i) {
+        const auto& s = specs[i];
+        const auto& o = outcomes[i];
+        js << "    {";
+        js << "\"sample_id\":\"" << s.sample_id << "\"";
+        js << ",\"note_name\":\"" << s.note_name << "\"";
+        js << ",\"raw_pluck_amplitude\":" << o.raw_pluck_amplitude;
+        js << ",\"clamped_pluck_amplitude\":" << o.clamped_pluck_amplitude;
+        js << ",\"was_clamped\":" << (o.pluck_was_clamped ? "true" : "false");
+        js << "}" << (i + 1 < specs.size() ? ",\n" : "\n");
+    }
+    js << "  ],\n";
     js << "  \"applied_parameter_audit\": [\n";
     for (size_t i = 0; i < specs.size(); ++i) {
         const auto& s = specs[i];
@@ -1001,6 +1030,9 @@ static void writeReportV2(const std::filesystem::path& jsonPath, const std::file
         js << "      \"applied_back_weight\": " << o.applied_back_weight << ",\n";
         js << "      \"applied_air_weight\": " << o.applied_air_weight << ",\n";
         js << "      \"applied_string_direct_weight\": " << o.applied_string_direct_weight << ",\n";
+        js << "      \"raw_pluck_amplitude\": " << o.raw_pluck_amplitude << ",\n";
+        js << "      \"clamped_pluck_amplitude\": " << o.clamped_pluck_amplitude << ",\n";
+        js << "      \"pluck_was_clamped\": " << (o.pluck_was_clamped ? "true" : "false") << ",\n";
         js << "      \"applied_modal_frequencies_hz\": [";
         for (size_t k = 0; k < o.applied_modal_frequencies.size(); ++k)
             js << o.applied_modal_frequencies[k] << (k + 1 < o.applied_modal_frequencies.size() ? ", " : "");
