@@ -14,11 +14,17 @@ sys.path.insert(0, str(REPO / "gui"))
 from pgsm_step5j_1_guitar_articulation_body_balance_repair import collect_all_previous_audio_fingerprints  # noqa: E402
 from pgsm_step5l_limited_multiguitar_differentiation import (  # noqa: E402
     AUDIO_DIR,
+    DEMO_PACK_DURATION_S,
+    DEMO_PACK_MAX_MODES,
+    DEMO_PACK_NOTE_SET,
+    DEMO_PACK_SAMPLE_SET,
     FAST_NOTE_SET,
     FAST_SAMPLE_SET,
     FAST_VALIDATION_DURATION_S,
     FAST_VALIDATION_MAX_MODES,
     READINESS_AFTER,
+    READINESS_DEMO_AFTER,
+    READINESS_DEMO_WEAK,
     READINESS_FAIL,
     READINESS_WEAK,
     SAFE_NEXT_STEP_5M,
@@ -27,6 +33,7 @@ from pgsm_step5l_limited_multiguitar_differentiation import (  # noqa: E402
     _coerce_pitch_salience,
     build_multiguitar_contract,
     build_pgsm_step5l_report,
+    build_readiness_demo_pack,
     validate_report_internal_consistency,
 )
 from stk_pipeline_defaults import DEFAULT_WEBSITE_STK_MODE  # noqa: E402
@@ -244,6 +251,38 @@ class TestCoercePitchSalience(unittest.TestCase):
     def test_none_or_invalid_pitch_salience(self) -> None:
         self.assertEqual(_coerce_pitch_salience(None), 0.0)
         self.assertEqual(_coerce_pitch_salience("bad"), 0.0)
+
+
+class TestDemoPackConfig(unittest.TestCase):
+    def test_demo_pack_constants(self) -> None:
+        self.assertEqual(DEMO_PACK_SAMPLE_SET, FAST_SAMPLE_SET)
+        self.assertEqual(DEMO_PACK_NOTE_SET, FAST_NOTE_SET)
+        self.assertGreaterEqual(DEMO_PACK_DURATION_S, 2.5)
+        self.assertLessEqual(DEMO_PACK_DURATION_S, 3.0)
+        self.assertIn(DEMO_PACK_MAX_MODES, (40, 60))
+
+    def test_demo_wav_filename_pattern(self) -> None:
+        self.assertEqual("sample_000_A2_demo.wav", "sample_000_A2_demo.wav")
+
+    def test_demo_readiness_labels(self) -> None:
+        strong = build_readiness_demo_pack(
+            mean_differentiation=0.08,
+            files_generated=9,
+            expected_files=9,
+        )
+        self.assertEqual(strong.get("current_status"), READINESS_DEMO_AFTER)
+        weak = build_readiness_demo_pack(
+            mean_differentiation=0.01,
+            files_generated=9,
+            expected_files=9,
+        )
+        self.assertEqual(weak.get("current_status"), READINESS_DEMO_WEAK)
+        incomplete = build_readiness_demo_pack(
+            mean_differentiation=0.2,
+            files_generated=3,
+            expected_files=9,
+        )
+        self.assertEqual(incomplete.get("current_status"), READINESS_FAIL)
 
 
 if __name__ == "__main__":

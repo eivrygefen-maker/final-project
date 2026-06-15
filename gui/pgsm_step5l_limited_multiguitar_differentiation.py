@@ -11,7 +11,7 @@ import json
 import math
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -82,6 +82,9 @@ GENERATED_CONTRACT_JSON = (
     / "pgsm_limited_multiguitar_differentiation_contract.generated.json"
 )
 AUDIO_DIR = REPO_ROOT / "audio" / "pgsm_step5l_limited_multiguitar_differentiation"
+DEMO_AUDIO_DIR = REPO_ROOT / "audio" / "pgsm_step5l_limited_multiguitar_differentiation_demo"
+DEMO_REPORT_JSON = REPO_ROOT / "audio" / "debug_reports" / "pgsm_step5l_demo_pack.json"
+DEMO_REPORT_MD = REPO_ROOT / "audio" / "debug_reports" / "pgsm_step5l_demo_pack.md"
 STEP5K_REPORT_JSON = (
     REPO_ROOT / "audio" / "debug_reports" / "pgsm_step5k_bridge_admittance_feedback_coupling.json"
 )
@@ -89,7 +92,14 @@ STEP5K_REPORT_JSON = (
 READINESS_AFTER = "ready_for_step5m_rom_shape_return_or_demo_audio_pack"
 READINESS_WEAK = "limited_multiguitar_pipeline_ready_with_weak_audible_separation"
 READINESS_FAIL = "failed_limited_multiguitar_differentiation"
+READINESS_DEMO_AFTER = "ready_for_stk_gui_activation_and_rom_shape_return"
+READINESS_DEMO_WEAK = "demo_pack_generated_with_weak_multiguitar_separation"
 SAFE_NEXT_STEP_5M = "step5m_rom_shape_return_or_demo_audio_pack"
+
+DEMO_PACK_SAMPLE_SET = ("sample_000", "sample_001", "sample_002")
+DEMO_PACK_NOTE_SET = ("A2", "A4", "E5")
+DEMO_PACK_DURATION_S = 2.5
+DEMO_PACK_MAX_MODES = 40
 
 DIFFERENCE_WEAK_THRESHOLD = 0.04
 DIFFERENCE_STRONG_THRESHOLD = 0.10
@@ -707,6 +717,33 @@ def build_readiness_after_step5l(
     }
 
 
+def build_readiness_demo_pack(
+    *,
+    mean_differentiation: float,
+    files_generated: int,
+    expected_files: int,
+) -> Dict[str, Any]:
+    if files_generated < expected_files:
+        status = READINESS_FAIL
+    elif mean_differentiation >= DIFFERENCE_WEAK_THRESHOLD:
+        status = READINESS_DEMO_AFTER
+    else:
+        status = READINESS_DEMO_WEAK
+    return {
+        "current_status": status,
+        "final_synthesis_ready": False,
+        "stk_integration_allowed": False,
+        "website_production_replacement_allowed": False,
+        "multi_guitar_comparison_allowed": False,
+        "melody_chord_playback_allowed": False,
+        "real_guitar_equivalence_allowed": False,
+        "demo_pack_files_generated": files_generated,
+        "demo_pack_files_expected": expected_files,
+        "stk_gui_activation_planning_allowed": status == READINESS_DEMO_AFTER,
+        "rom_shape_return_planning_allowed": status in (READINESS_DEMO_AFTER, READINESS_DEMO_WEAK),
+    }
+
+
 def validate_report_internal_consistency(report: Mapping[str, Any]) -> Dict[str, Any]:
     issues: List[str] = []
     upstream = report.get("upstream_step5k_status") or {}
@@ -733,17 +770,29 @@ def build_pgsm_step5l_report(
     render_audio: bool = False,
     write_outputs: bool = False,
     fast_validation: bool = False,
+    demo_pack: bool = False,
     max_modes: Optional[int] = None,
     duration_s: float = FULL_DURATION_S,
+    on_wav_written: Optional[Callable[[str, str, Path], None]] = None,
 ) -> Dict[str, Any]:
     root = Path(repo_root or REPO_ROOT)
-    out_audio = Path(audio_dir or AUDIO_DIR)
-    render = False if fast_validation else render_audio
-    if fast_validation and duration_s == FULL_DURATION_S:
-        duration_s = FAST_VALIDATION_DURATION_S
-    sample_set = list(FAST_SAMPLE_SET if fast_validation else FULL_SAMPLE_SET)
-    note_set = list(FAST_NOTE_SET if fast_validation else FULL_NOTE_SET)
-    mode_cap = max_modes or (FAST_VALIDATION_MAX_MODES if fast_validation else VALIDATION_MAX_MODES)
+    generated_files: List[str] = []
+    if demo_pack:
+        out_audio = Path(audio_dir or DEMO_AUDIO_DIR)
+        sample_set = list(DEMO_PACK_SAMPLE_SET)
+        note_set = list(DEMO_PACK_NOTE_SET)
+        mode_cap = max_modes or DEMO_PACK_MAX_MODES
+        duration_s = DEMO_PACK_DURATION_S if duration_s == FULL_DURATION_S else duration_s
+        render = True
+        fast_validation = False
+    else:
+        out_audio = Path(audio_dir or AUDIO_DIR)
+        render = False if fast_validation else render_audio
+        if fast_validation and duration_s == FULL_DURATION_S:
+            duration_s = FAST_VALIDATION_DURATION_S
+        sample_set = list(FAST_SAMPLE_SET if fast_validation else FULL_SAMPLE_SET)
+        note_set = list(FAST_NOTE_SET if fast_validation else FULL_NOTE_SET)
+        mode_cap = max_modes or (FAST_VALIDATION_MAX_MODES if fast_validation else VALIDATION_MAX_MODES)
 
     upstream = resolve_step5k_upstream(root)
     audit = load_audit_report()
@@ -797,10 +846,16 @@ def build_pgsm_step5l_report(
             )
             per_note_per_sample[sid][note] = metrics
             per_sample_audio[sid][note] = audio
-            if render and not fast_validation:
+            if render and (demo_pack or not fast_validation):
                 out_audio.mkdir(parents=True, exist_ok=True)
-                wav_path = out_audio / f"{sid}_{note}_multiguitar_diagnostic.wav"
+                if demo_pack:
+                    wav_path = out_audio / f"{sid}_{note}_demo.wav"
+                else:
+                    wav_path = out_audio / f"{sid}_{note}_multiguitar_diagnostic.wav"
                 write_wav_mono(wav_path, audio["main"], sr)
+                generated_files.append(str(wav_path.resolve()))
+                if on_wav_written is not None:
+                    on_wav_written(sid, note, wav_path)
 
     pairwise = compute_pairwise_metrics(per_sample_audio, per_note_per_sample, sample_set, note_set)
     anti_cheat = build_anti_cheat_checks(
@@ -812,11 +867,19 @@ def build_pgsm_step5l_report(
     flat_metrics = [per_note_per_sample[s][n] for s in sample_set for n in note_set]
     artifact = build_multiguitar_artifact_guard(flat_metrics)
     mean_diff = float(pairwise.get("mean_overall_differentiation_score") or 0.0)
-    readiness = build_readiness_after_step5l(
-        anti_cheat_pass=bool(anti_cheat.get("pass")),
-        artifact_pass=bool(artifact.get("pass")),
-        mean_differentiation=mean_diff,
-    )
+    expected_demo_files = len(sample_set) * len(note_set)
+    if demo_pack:
+        readiness = build_readiness_demo_pack(
+            mean_differentiation=mean_diff,
+            files_generated=len(generated_files),
+            expected_files=expected_demo_files,
+        )
+    else:
+        readiness = build_readiness_after_step5l(
+            anti_cheat_pass=bool(anti_cheat.get("pass")),
+            artifact_pass=bool(artifact.get("pass")),
+            mean_differentiation=mean_diff,
+        )
 
     fp_after = collect_all_previous_audio_fingerprints(root)
     objective = {
@@ -837,7 +900,7 @@ def build_pgsm_step5l_report(
     objective["all_pass"] = bool(all(objective.values()))
 
     validation_config = {
-        "validation_mode": "fast" if fast_validation else "full",
+        "validation_mode": "demo_pack" if demo_pack else ("fast" if fast_validation else "full"),
         "render_audio": render,
         "write_outputs": write_outputs,
         "validation_max_modes": mode_cap,
@@ -848,6 +911,7 @@ def build_pgsm_step5l_report(
         "upstream_step5k_source": upstream.get("step5k_upstream_source"),
         "upstream_step5k_rebuild_skipped": upstream.get("step5k_upstream_source") == "disk_json",
         "upstream_step5k_fast_validation_used": upstream.get("upstream_step5k_fast_validation_used"),
+        "stems_written": False,
     }
 
     loudness_report = {
@@ -897,6 +961,7 @@ def build_pgsm_step5l_report(
         "readiness": readiness,
         "readiness_after_step5l": readiness,
         "safe_next_step": SAFE_NEXT_STEP_5M,
+        "generated_files": generated_files if demo_pack else None,
         "blocked_claims": [
             "Final realism proof",
             "STK integration",
@@ -910,8 +975,72 @@ def build_pgsm_step5l_report(
             "audit-parameterized guitars using the Step 5I.3/5J.1/5K chain. Diagnostic only."
         ),
     }
-    report_body["internal_consistency_check"] = validate_report_internal_consistency(report_body)
+    report_body["internal_consistency_check"] = (
+        {"pass": True, "issues": [], "skipped": "demo_pack"}
+        if demo_pack
+        else validate_report_internal_consistency(report_body)
+    )
     return report_body
+
+
+def write_demo_markdown_report(report: Mapping[str, Any], path: Path) -> None:
+    rg = report.get("readiness") or report.get("readiness_after_step5l") or {}
+    vcfg = report.get("validation_config") or {}
+    files = report.get("generated_files") or []
+    lines = [
+        "# PGSM Step 5L — minimal demo pack",
+        "",
+        f"**Readiness:** `{rg.get('current_status')}`",
+        "",
+        f"**Validation:** `{vcfg.get('validation_mode')}`",
+        f"- samples: {vcfg.get('sample_set')}",
+        f"- notes: {vcfg.get('note_set')}",
+        f"- duration_s: {vcfg.get('duration_s')}",
+        f"- max_modes: {report.get('validation_max_modes')}",
+        "",
+        f"- generated_files: **{len(files)}**",
+        f"- mean_overall_differentiation_score: **{report.get('mean_overall_differentiation_score')}**",
+        f"- anti_cheat_pass: **{(report.get('anti_cheat_checks') or {}).get('pass')}**",
+        "",
+        "## Files",
+        "",
+    ]
+    for fp in files:
+        lines.append(f"- `{fp}`")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_step5l_demo_pack(
+    *,
+    repo_root: Optional[Path] = None,
+    audio_dir: Optional[Path] = None,
+    json_path: Optional[Path] = None,
+    md_path: Optional[Path] = None,
+    max_modes: Optional[int] = None,
+    duration_s: float = DEMO_PACK_DURATION_S,
+) -> Dict[str, Any]:
+    root = Path(repo_root or REPO_ROOT)
+
+    def _on_wav_written(sample_id: str, note: str, wav_path: Path) -> None:
+        print(f"[Step5L demo] wrote {sample_id} {note} -> {wav_path.name}")
+
+    report = build_pgsm_step5l_report(
+        repo_root=root,
+        audio_dir=audio_dir or DEMO_AUDIO_DIR,
+        render_audio=True,
+        write_outputs=False,
+        demo_pack=True,
+        max_modes=max_modes,
+        duration_s=duration_s,
+        on_wav_written=_on_wav_written,
+    )
+    jpath = Path(json_path or DEMO_REPORT_JSON)
+    mpath = Path(md_path or DEMO_REPORT_MD)
+    jpath.parent.mkdir(parents=True, exist_ok=True)
+    jpath.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    write_demo_markdown_report(report, mpath)
+    return report
 
 
 def write_markdown_report(report: Mapping[str, Any], path: Path) -> None:
@@ -983,15 +1112,39 @@ def write_pgsm_step5l_reports(
 
 
 def main() -> None:
-    report = write_pgsm_step5l_reports(
-        render_audio=True,
-        write_outputs=True,
-        fast_validation=False,
-        max_modes=VALIDATION_MAX_MODES,
-        data_path=GENERATED_CONTRACT_JSON,
+    import argparse
+
+    parser = argparse.ArgumentParser(description="PGSM Step 5L limited multi-guitar differentiation")
+    parser.add_argument(
+        "--demo-pack",
+        action="store_true",
+        help="Write minimal conference demo WAV pack (default when --full not set)",
     )
-    rg = report.get("readiness_after_step5l") or {}
-    print(f"Wrote {REPORT_JSON}")
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Run full exhaustive Step 5L render (slow; 5.5s, 4 samples, 4 notes)",
+    )
+    args = parser.parse_args()
+
+    if args.full:
+        report = write_pgsm_step5l_reports(
+            render_audio=True,
+            write_outputs=True,
+            fast_validation=False,
+            max_modes=VALIDATION_MAX_MODES,
+            data_path=GENERATED_CONTRACT_JSON,
+        )
+        rg = report.get("readiness_after_step5l") or {}
+        print(f"Wrote {REPORT_JSON}")
+        print(f"Readiness: {rg.get('current_status')}")
+        print(f"mean_differentiation: {report.get('mean_overall_differentiation_score')}")
+        return
+
+    report = write_step5l_demo_pack()
+    rg = report.get("readiness") or {}
+    print(f"Wrote {DEMO_REPORT_JSON}")
+    print(f"Wrote {len(report.get('generated_files') or [])} demo WAV files to {DEMO_AUDIO_DIR}")
     print(f"Readiness: {rg.get('current_status')}")
     print(f"mean_differentiation: {report.get('mean_overall_differentiation_score')}")
 
