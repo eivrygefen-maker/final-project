@@ -404,6 +404,7 @@
     </div>
   </div>
   <script src="./streamlit_bridge.js"></script>
+  <!-- OVERLAPPING_PLAYBACK_ENABLED: each note click uses new Audio() for chord overlap -->
   <script>
     (function () {
       "use strict";
@@ -516,6 +517,7 @@
       }
 
       /** Play one note via a fresh HTMLAudioElement (overlapping / chord-friendly). */
+      // OVERLAPPING_PLAYBACK_ENABLED
       function playNoteWav(wavFile) {
         if (!wavFile || !currentFingerprint) return;
         if (!overlappingPlayback) {

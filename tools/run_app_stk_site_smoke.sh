@@ -316,7 +316,12 @@ else
   bad "B–E. refresh/FIFO smoke logic"
 fi
 
-if rg -n 'OVERLAPPING_PLAYBACK_ENABLED|enable_overlapping_playback|new Audio\(' gui/components/guitar_player/index.html >/dev/null 2>&1; then
+GUITAR_PLAYER_HTML="${REPO_ROOT}/gui/components/guitar_player/index.html"
+if [[ -f "${GUITAR_PLAYER_HTML}" ]] && {
+  grep -qF 'OVERLAPPING_PLAYBACK_ENABLED' "${GUITAR_PLAYER_HTML}" ||
+  grep -qF 'enable_overlapping_playback' "${GUITAR_PLAYER_HTML}" ||
+  grep -qF 'new Audio(' "${GUITAR_PLAYER_HTML}"
+}; then
   ok "overlapping playback JS support flag"
 else
   bad "overlapping playback JS missing"
