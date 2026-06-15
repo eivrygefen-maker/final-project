@@ -1222,6 +1222,105 @@ def user_facing_stk_status(internal_status: str) -> str:
     return "Preparing guitar sound…"
 
 
+_ENHARMONIC_EQUIV: Dict[str, str] = {
+    "Bb": "A#",
+    "Db": "C#",
+    "Eb": "D#",
+    "Gb": "F#",
+    "Ab": "G#",
+    "A#": "Bb",
+    "C#": "Db",
+    "D#": "Eb",
+    "F#": "Gb",
+    "G#": "Ab",
+}
+
+
+def _note_name_variants(note_name: str) -> List[str]:
+    """Return enharmonic spellings for STK cache lookup (Bb <-> A#, etc.)."""
+    variants: List[str] = [str(note_name).strip()]
+    m = _NOTE_RE.match(str(note_name).strip())
+    if not m:
+        return variants
+    letter, acc, octave = m.group(1), m.group(2) or "", m.group(3)
+    pitch = f"{letter}{acc}"
+    alt = _ENHARMONIC_EQUIV.get(pitch)
+    if alt:
+        variants.append(f"{alt}{octave}")
+    return list(dict.fromkeys(variants))
+
+
+def resolve_stk_note_wav(cache_dir: Path, note_name: str) -> Optional[Path]:
+    """Resolve a STK source WAV, trying sharp/flat spellings."""
+    root = Path(cache_dir)
+    for variant in _note_name_variants(note_name):
+        path = root / f"{variant}.wav"
+        if path.is_file():
+            return path
+    return None
+
+
+def write_minimal_silent_wav(
+    path: Path,
+    *,
+    duration_s: float = 0.25,
+    sample_rate: int = 44100,
+) -> Path:
+    """Write a tiny valid mono PCM WAV (used for preview fallback / tests)."""
+    import wave
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    nframes = max(1, int(sample_rate * duration_s))
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(b"\x00\x00" * nframes)
+    return path
+
+
+def _stitch_preview_wav(sources: Sequence[Path], dest: Path) -> Path:
+    """Concatenate WAVs into all_notes_preview.wav; silent fallback on failure."""
+    import wave
+
+    dest = Path(dest)
+    usable = [Path(s) for s in sources if Path(s).is_file()]
+    if not usable:
+        return write_minimal_silent_wav(dest)
+
+    try:
+        with wave.open(str(usable[0]), "rb") as first:
+            params = first.getparams()
+            frames = [first.readframes(first.getnframes())]
+        for src in usable[1:]:
+            with wave.open(str(src), "rb") as wf:
+                if wf.getparams()[:3] != params[:3]:
+                    continue
+                frames.append(wf.readframes(wf.getnframes()))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(dest), "wb") as out:
+            out.setparams(params)
+            out.writeframes(b"".join(frames))
+        return dest
+    except (wave.Error, OSError):
+        return write_minimal_silent_wav(dest)
+
+
+def _write_stk_preview_wav(dest_dir: Path, cache_dir: Path) -> Path:
+    """Create all_notes_preview.wav for the HTML guitar player."""
+    preview_path = Path(dest_dir) / "all_notes_preview.wav"
+    stitch_sources: List[Path] = []
+    for note_name in DEFAULT_PRIORITY_NOTES:
+        src = resolve_stk_note_wav(cache_dir, note_name)
+        if src is not None:
+            stitch_sources.append(src)
+    if not stitch_sources:
+        for path in sorted(Path(cache_dir).glob("*.wav"))[:3]:
+            stitch_sources.append(path)
+    return _stitch_preview_wav(stitch_sources, preview_path)
+
+
 def prepare_stk_player_assets(cache_dir: Path, fingerprint: str) -> Path:
     """Copy STK note WAVs into the guitar_player runtime folder for iframe playback."""
     from build_note_cache import (  # noqa: WPS433
@@ -1237,13 +1336,17 @@ def prepare_stk_player_assets(cache_dir: Path, fingerprint: str) -> Path:
         shutil.rmtree(dest)
     dest.mkdir(parents=True, exist_ok=True)
 
+    copied_ids: set[str] = set()
     for pos in enumerate_fretboard_positions(DEFAULT_FRET_COUNT):
         hz = float(pos["frequency_hz"])
         note_name = frequency_to_note_name(hz)
         note_id = note_id_from_frequency(hz)
-        src = cache_dir / f"{note_name}.wav"
-        if src.is_file():
+        src = resolve_stk_note_wav(cache_dir, note_name)
+        if src is not None and note_id not in copied_ids:
             shutil.copy2(src, dest / f"{note_id}.wav")
+            copied_ids.add(note_id)
+
+    _write_stk_preview_wav(dest, cache_dir)
     return dest
 
 
@@ -1271,7 +1374,7 @@ def build_stk_player_payload(
         hz = float(pos["frequency_hz"])
         note_name = frequency_to_note_name(hz)
         note_id = note_id_from_frequency(hz)
-        if not (cache_dir / f"{note_name}.wav").is_file():
+        if resolve_stk_note_wav(cache_dir, note_name) is None:
             continue
         positions.append(
             {
@@ -1296,6 +1399,42 @@ def build_stk_player_payload(
     }
 
 
+def validate_stk_player_runtime_cache(
+    payload: Mapping[str, Any],
+    *,
+    runtime_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Verify runtime cache files exist for every mapped fretboard note."""
+    from note_cache_ui import RUNTIME_CACHE_DIR  # noqa: WPS433
+
+    fingerprint = str(payload.get("fingerprint") or "")
+    runtime = Path(runtime_dir) if runtime_dir is not None else RUNTIME_CACHE_DIR / fingerprint
+    positions = list(payload.get("positions") or [])
+    errors: List[str] = []
+
+    if not runtime.is_dir():
+        errors.append(f"runtime cache dir missing: {runtime}")
+    for pos in positions:
+        wav_name = str(pos.get("wav") or "")
+        if not wav_name:
+            errors.append("position missing wav mapping")
+            continue
+        if not (runtime / wav_name).is_file():
+            errors.append(f"missing mapped wav: {wav_name}")
+
+    preview_path = runtime / "all_notes_preview.wav"
+    if not preview_path.is_file():
+        errors.append("missing all_notes_preview.wav")
+
+    return {
+        "ok": not errors and len(positions) > 0,
+        "errors": errors,
+        "runtime_dir": str(runtime).replace("\\", "/"),
+        "position_count": len(positions),
+        "preview_path": str(preview_path).replace("\\", "/") if preview_path.is_file() else "",
+    }
+
+
 def activate_stk_guitar_for_player(
     *,
     cache_dir: Path,
@@ -1304,14 +1443,19 @@ def activate_stk_guitar_for_player(
 ) -> Dict[str, Any]:
     """Stage STK cache for the HTML fretboard player."""
     player_fp = saved_guitar_id or f"stk_{parameter_hash}"
-    prepare_stk_player_assets(Path(cache_dir), player_fp)
+    runtime_dir = prepare_stk_player_assets(Path(cache_dir), player_fp)
     payload = build_stk_player_payload(Path(cache_dir), fingerprint=player_fp, ui_status="ready")
+    validation = validate_stk_player_runtime_cache(payload, runtime_dir=runtime_dir)
+    if not validation.get("ok"):
+        payload = {"status": "hidden", "positions": [], "fingerprint": player_fp}
     return {
         "cache_path": str(Path(cache_dir)).replace("\\", "/"),
         "parameter_hash": parameter_hash,
         "saved_guitar_id": saved_guitar_id,
         "player_fingerprint": player_fp,
         "player_payload": payload,
+        "validation": validation,
+        "runtime_dir": str(runtime_dir).replace("\\", "/"),
     }
 
 

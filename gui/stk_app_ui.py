@@ -41,11 +41,16 @@ def _geometry_summary(geom: Mapping[str, Any], top_wood: str, back_wood: str) ->
 
 def apply_stk_activation_to_session(activation: Mapping[str, Any]) -> None:
     """Persist active STK guitar for the fretboard player."""
+    validation = dict(activation.get("validation") or {})
+    payload = dict(activation.get("player_payload") or {})
+    if not validation.get("ok"):
+        payload = {"status": "hidden", "positions": [], "fingerprint": ""}
     st.session_state.active_stk_cache_path = str(activation.get("cache_path") or "")
     st.session_state.active_stk_parameter_hash = str(activation.get("parameter_hash") or "")
     st.session_state.active_stk_guitar_id = str(activation.get("saved_guitar_id") or "")
     st.session_state.active_stk_player_fp = str(activation.get("player_fingerprint") or "")
-    st.session_state.active_stk_player_payload = dict(activation.get("player_payload") or {})
+    st.session_state.active_stk_player_payload = payload
+    st.session_state.active_stk_player_validation = validation
     st.session_state.sound_stale = False
 
 
@@ -89,7 +94,7 @@ def generate_or_load_ready_guitar(
     back_wood: str,
     rom_physical_summary_path: str = "",
 ) -> Dict[str, Any]:
-    """Generate: save ready guitar to FIFO or load existing duplicate; activate player."""
+    """Save ready guitar to FIFO or load existing duplicate; activate player."""
     _ = repo_root
     parameter_hash = compute_parameter_hash(rom_fp, lhs_params)
     state = refresh_stk_background_job_status(parameter_hash)
@@ -102,6 +107,7 @@ def generate_or_load_ready_guitar(
             saved_guitar_id=str(existing.get("saved_guitar_id") or ""),
         )
         apply_stk_activation_to_session(activation)
+        st.session_state.stk_generate_intent_hash = ""
         return {"action": "loaded_existing", "entry": existing, "activation": activation}
 
     if str(state.get("status")) != "ready" or not state.get("preview_cache_ready"):
@@ -123,6 +129,7 @@ def generate_or_load_ready_guitar(
             saved_guitar_id=str(entry.get("saved_guitar_id") or ""),
         )
         apply_stk_activation_to_session(activation)
+        st.session_state.stk_generate_intent_hash = ""
         return {"action": "loaded_existing", "entry": entry, "activation": activation}
 
     activation = activate_stk_guitar_for_player(
@@ -131,7 +138,71 @@ def generate_or_load_ready_guitar(
         saved_guitar_id=str(entry.get("saved_guitar_id") or ""),
     )
     apply_stk_activation_to_session(activation)
+    st.session_state.stk_generate_intent_hash = ""
     return {"action": "saved_new", "entry": entry, "activation": activation}
+
+
+def request_generate_guitar(
+    *,
+    repo_root: Path,
+    rom_fp: str,
+    lhs_params: Mapping[str, Any],
+    geom: Mapping[str, Any],
+    top_wood: str,
+    back_wood: str,
+    rom_physical_summary_path: str = "",
+) -> Dict[str, Any]:
+    """Generate click: save/load immediately if ready, else store intent for auto-activation."""
+    parameter_hash = compute_parameter_hash(rom_fp, lhs_params)
+    state = refresh_stk_background_job_status(parameter_hash)
+    if str(state.get("status")) == "ready" and state.get("preview_cache_ready"):
+        return generate_or_load_ready_guitar(
+            repo_root=repo_root,
+            rom_fp=rom_fp,
+            lhs_params=lhs_params,
+            geom=geom,
+            top_wood=top_wood,
+            back_wood=back_wood,
+            rom_physical_summary_path=rom_physical_summary_path,
+        )
+
+    st.session_state.stk_generate_intent_hash = parameter_hash
+    return {
+        "action": "intent_stored",
+        "parameter_hash": parameter_hash,
+        "status": str(state.get("status") or "running"),
+    }
+
+
+def fulfill_generate_intent_if_ready(
+    *,
+    repo_root: Path,
+    rom_fp: str,
+    lhs_params: Mapping[str, Any],
+    geom: Mapping[str, Any],
+    top_wood: str,
+    back_wood: str,
+    rom_physical_summary_path: str = "",
+) -> Optional[Dict[str, Any]]:
+    """When STK finishes, auto-save/load if user already clicked Generate."""
+    intent = str(st.session_state.get("stk_generate_intent_hash") or "")
+    if not intent:
+        return None
+    parameter_hash = compute_parameter_hash(rom_fp, lhs_params)
+    if intent != parameter_hash:
+        return None
+    state = refresh_stk_background_job_status(parameter_hash)
+    if str(state.get("status")) != "ready" or not state.get("preview_cache_ready"):
+        return None
+    return generate_or_load_ready_guitar(
+        repo_root=repo_root,
+        rom_fp=rom_fp,
+        lhs_params=lhs_params,
+        geom=geom,
+        top_wood=top_wood,
+        back_wood=back_wood,
+        rom_physical_summary_path=rom_physical_summary_path,
+    )
 
 
 def render_stk_diagnostics_panel(
@@ -187,9 +258,10 @@ def render_stk_diagnostics_panel(
         cols = st.columns(len(COMPARE_NOTES))
         for col, cn in zip(cols, COMPARE_NOTES):
             with col:
+                st.caption(cn)
                 w = get_note_wav(DEFAULT_SOURCE_SAMPLE_ID, cn, cache_dir=cache_entry) if cache_entry.is_dir() else None
                 if w and w.is_file():
-                    st.audio(w.read_bytes(), format="audio/wav", key=f"{base_key}_{row.get('saved_guitar_id')}_{cn}")
+                    st.audio(w.read_bytes(), format="audio/wav")
 
 
 def try_save_current_guitar_to_stack(

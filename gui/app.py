@@ -211,6 +211,8 @@ def _init_session() -> None:
         "active_stk_guitar_id": "",
         "active_stk_player_fp": "",
         "active_stk_player_payload": {},
+        "active_stk_player_validation": {},
+        "stk_generate_intent_hash": "",
         "stk_show_diagnostics": False,
         "_fast_preview_paths_verified": False,
         "show_mesh_overlay": False,
@@ -1305,6 +1307,8 @@ def invalidate_rom_and_audio_state() -> None:
     st.session_state.active_stk_guitar_id = ""
     st.session_state.active_stk_player_fp = ""
     st.session_state.active_stk_player_payload = {}
+    st.session_state.active_stk_player_validation = {}
+    st.session_state.stk_generate_intent_hash = ""
     try:
         from stk_app_audio_service import mark_stk_job_stale  # noqa: WPS433
 
@@ -1867,6 +1871,19 @@ def _render_main_studio(
             st.session_state.stk_note_count = int(
                 stk_job.get("actual_wav_count") or stk_job.get("wav_count") or stk_job.get("note_count") or 0
             )
+            from stk_app_ui import fulfill_generate_intent_if_ready  # noqa: WPS433
+
+            _auto = fulfill_generate_intent_if_ready(
+                repo_root=BASE_DIR,
+                rom_fp=rom_fp,
+                lhs_params=lhs_params,
+                geom=geom,
+                top_wood=top_wood,
+                back_wood=back_wood,
+                rom_physical_summary_path=str(st.session_state.get("stk_body_json") or ""),
+            )
+            if _auto and _auto.get("action") in ("saved_new", "loaded_existing"):
+                st.session_state._stk_auto_generate_message = _auto
         except Exception:
             st.session_state.stk_job_status = "failed"
             st.session_state.stk_preview_cache_ready = False
@@ -1925,10 +1942,10 @@ def _render_main_studio(
         if not rom_body_response_ready(rom_fp):
             st.warning("Save & Sync first to prepare your guitar.")
         else:
-            from stk_app_ui import generate_or_load_ready_guitar  # noqa: WPS433
+            from stk_app_ui import request_generate_guitar  # noqa: WPS433
 
             try:
-                result = generate_or_load_ready_guitar(
+                result = request_generate_guitar(
                     repo_root=BASE_DIR,
                     rom_fp=rom_fp,
                     lhs_params=lhs_params,
@@ -1937,7 +1954,12 @@ def _render_main_studio(
                     back_wood=back_wood,
                     rom_physical_summary_path=str(st.session_state.get("stk_body_json") or ""),
                 )
-                if result.get("action") == "loaded_existing":
+                if result.get("action") == "intent_stored":
+                    st.info(
+                        "Guitar sound is still being prepared. Please wait a little longer. "
+                        "Your guitar will load automatically when ready."
+                    )
+                elif result.get("action") == "loaded_existing":
                     st.info("This guitar is already saved — loaded from comparison stack.")
                 else:
                     st.success(
@@ -1947,6 +1969,15 @@ def _render_main_studio(
                 st.warning(str(exc))
             except Exception as exc:
                 st.error(f"Could not save guitar: {exc}")
+
+    _auto_gen = st.session_state.pop("_stk_auto_generate_message", None)
+    if isinstance(_auto_gen, dict) and _auto_gen.get("action") in ("saved_new", "loaded_existing"):
+        if _auto_gen.get("action") == "loaded_existing":
+            st.info("Guitar sound is ready — loaded from comparison stack.")
+        else:
+            st.success(
+                f"Guitar sound is ready — saved **{_auto_gen.get('entry', {}).get('display_name', 'guitar')}**."
+            )
 
     if st.session_state.get("_pending_fom_run") and display_mesh_active(geom_fp):
         st.session_state._pending_fom_run = False
@@ -2000,9 +2031,18 @@ def _render_main_studio(
             st.warning(f"Could not load saved guitar: {exc}")
 
     active_payload = st.session_state.get("active_stk_player_payload") or {}
+    player_validation = st.session_state.get("active_stk_player_validation") or {}
     if active_payload.get("status") == "ready" and active_payload.get("positions"):
-        player_payload = active_payload
-        player_key = f"guitar_player_{st.session_state.get('active_stk_player_fp') or 'stk'}"
+        if player_validation and not player_validation.get("ok"):
+            st.warning(
+                "Guitar player cache is incomplete: "
+                + ", ".join(player_validation.get("errors") or ["unknown error"])
+            )
+            player_payload = {"status": "hidden", "positions": [], "fingerprint": ""}
+            player_key = "guitar_player_invalid"
+        else:
+            player_payload = active_payload
+            player_key = f"guitar_player_{st.session_state.get('active_stk_player_fp') or 'stk'}"
     elif _stk_status in ("running", "partial_ready", "not_started", "waiting_for_rom"):
         player_payload = {"status": "building", "positions": [], "fingerprint": ""}
         player_key = "guitar_player_building"
