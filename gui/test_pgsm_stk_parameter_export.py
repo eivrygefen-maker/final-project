@@ -30,6 +30,7 @@ class TestPgsmStkParameterExport(unittest.TestCase):
         self.assertEqual(doc["renderer"], RENDERER_TARGET)
         self.assertEqual(doc["python_role"], PYTHON_ROLE)
         self.assertEqual(len(doc["renders"]), 9)
+        self.assertEqual(doc.get("expected_render_count"), 9)
         for row in doc["renders"]:
             self.assertIn(row["sample_id"], SAMPLE_SET)
             self.assertIn(row["note_name"], NOTE_SET)
@@ -90,6 +91,7 @@ class TestPgsmStkParameterExport(unittest.TestCase):
             loaded = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(loaded["export_version"], doc_ver := loaded["export_version"])
             self.assertEqual(len(loaded["renders"]), 9)
+            self.assertEqual(loaded.get("expected_render_count"), 9)
             self.assertEqual(doc_ver, "pgsm_stk_parameter_export_v1")
 
 

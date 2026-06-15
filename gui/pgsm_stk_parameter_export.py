@@ -360,6 +360,7 @@ def build_parameter_export(
         "per_sample_summary": per_sample_summary,
         "per_sample_differences": _per_sample_difference_summary(renders),
         "renders": renders,
+        "expected_render_count": len(SAMPLE_SET) * len(NOTE_SET),
         "expected_wav_files": [expected_wav_filename(s, n) for s in SAMPLE_SET for n in NOTE_SET],
         "limitations": [
             "Python exports parameters only; WAV synthesis is C++/STK on VM.",
