@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lightweight tests for PGSM final guitar demo engine v5 (no synthesis runtime)."""
+"""Lightweight tests for PGSM final guitar demo engine v6 (no synthesis runtime)."""
 from __future__ import annotations
 
 import sys
@@ -7,29 +7,34 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
+
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "gui"))
 
 from pgsm_emergency_guitar_demo_engine import (  # noqa: E402
-    AUDIO_DIR_V5,
+    AUDIO_DIR_V6,
     FINAL_DEMO_VERSION,
     GENTLE_SAMPLE_VOICING,
     NOTE_SET,
     PHYSICAL_CHAIN_STAGES,
     PHYSICAL_FACTOR_KEYS,
     PHYSICAL_MODIFIER_KEYS,
+    READINESS_DOUBLE_PLUCK,
     READINESS_FAIL,
     READINESS_OK,
     READINESS_REVIEW,
     READINESS_WEAK,
     SAMPLE_SET,
     SampleSynthesisState,
+    _align_attack_polarity,
     build_anti_cheat_checks,
     build_emergency_demo_config,
     build_readiness_emergency_demo,
     build_sample_synthesis_state,
     build_synthesis_profile,
     cleanup_sample_state,
+    compute_double_pluck_risk,
     compute_gentle_sample_modifiers,
     compute_guitar_family_consistency_metrics,
     demo_wav_filename,
@@ -40,11 +45,11 @@ from stk_pipeline_defaults import DEFAULT_WEBSITE_STK_MODE  # noqa: E402
 from stk_v6_2_audit_features import load_audit_report  # noqa: E402
 
 
-class TestFinalDemoV5Config(unittest.TestCase):
-    def test_v5_config(self) -> None:
+class TestFinalDemoV6Config(unittest.TestCase):
+    def test_v6_config(self) -> None:
         cfg = build_emergency_demo_config()
         self.assertEqual(cfg.get("final_demo_version"), FINAL_DEMO_VERSION)
-        self.assertEqual(cfg.get("final_demo_version"), "v5_ordered_physical_transfer_chain")
+        self.assertEqual(cfg.get("final_demo_version"), "v6_single_pluck_physical_mix")
         self.assertEqual(len(cfg.get("physical_chain_stages") or []), 7)
         self.assertTrue(cfg.get("diagnostic_exaggeration_for_audible_demo"))
 
@@ -57,13 +62,30 @@ class TestFinalDemoV5Config(unittest.TestCase):
         self.assertEqual(len(PHYSICAL_FACTOR_KEYS), 8)
         self.assertEqual(PHYSICAL_MODIFIER_KEYS, PHYSICAL_FACTOR_KEYS)
 
-    def test_v5_output_filenames_and_folder(self) -> None:
+    def test_v6_output_filenames_and_folder(self) -> None:
         self.assertEqual(
             final_wav_filename("sample_002", "E5"),
             "sample_002_E5_final_guitar.wav",
         )
         self.assertEqual(demo_wav_filename("sample_000", "A2"), "sample_000_A2_final_guitar.wav")
-        self.assertIn("pgsm_final_guitar_demo_v5", str(AUDIO_DIR_V5))
+        self.assertIn("pgsm_final_guitar_demo_v6", str(AUDIO_DIR_V6))
+
+
+class TestOnsetDiagnostics(unittest.TestCase):
+    def test_double_pluck_diagnostic_exists(self) -> None:
+        sr = 44100
+        t = np.arange(int(0.2 * sr)) / sr
+        single = np.exp(-t / 0.02) * np.sin(2 * np.pi * 220 * t)
+        diag = compute_double_pluck_risk(single.astype(np.float64), sr)
+        self.assertIn("double_pluck_risk", diag)
+        self.assertIn("second_peak_ratio", diag)
+
+    def test_polarity_alignment_flips_negative_attack(self) -> None:
+        sr = 44100
+        y = -np.exp(-np.arange(sr) / 500.0)
+        aligned, flipped = _align_attack_polarity(y, sr)
+        self.assertTrue(flipped)
+        self.assertGreater(float(aligned[np.argmax(np.abs(aligned[: sr // 20]))]), 0.0)
 
 
 class TestPhysicalProfiles(unittest.TestCase):
@@ -141,8 +163,16 @@ class TestFamilyConsistencyAndReadiness(unittest.TestCase):
             files_generated=9,
             peaks_controlled=True,
             family_metrics={"too_unrelated": False, "too_similar": False, "pass": True},
+            double_pluck_ok=True,
         )
         self.assertEqual(ok.get("current_status"), READINESS_OK)
+        double = build_readiness_emergency_demo(
+            files_generated=9,
+            peaks_controlled=True,
+            family_metrics={"too_unrelated": False, "too_similar": False, "pass": True},
+            double_pluck_ok=False,
+        )
+        self.assertEqual(double.get("current_status"), READINESS_DOUBLE_PLUCK)
         weak = build_readiness_emergency_demo(
             files_generated=9,
             peaks_controlled=True,
@@ -172,13 +202,15 @@ class TestFamilyConsistencyAndReadiness(unittest.TestCase):
             isolation_reports=isolation,
             family_metrics={"pass": True, "too_similar": False},
             pairwise={"mean_spectral_distance": 0.05},
-            peak_rms_report={"all_peaks_within_target": True, "v5_folder_cleared": True},
+            peak_rms_report={"all_peaks_within_target": True, "v6_folder_cleared": True},
+            double_pluck_ok=True,
         )
         self.assertTrue(ac.get("no_randomization"))
         self.assertTrue(ac.get("no_reverb_echo_body_tail"))
         self.assertTrue(ac.get("per_sample_state_isolated"))
         self.assertTrue(ac.get("no_cross_sample_mutable_state"))
         self.assertTrue(ac.get("no_stale_wav_mix"))
+        self.assertTrue(ac.get("single_pluck_onset"))
 
 
 class TestFinalDemoGuards(unittest.TestCase):
@@ -187,9 +219,12 @@ class TestFinalDemoGuards(unittest.TestCase):
 
         src = Path(mod.__file__).read_text(encoding="utf-8")
         self.assertIn("build_sample_synthesis_state", src)
+        self.assertIn("_shared_excitation_envelope", src)
+        self.assertIn("compute_double_pluck_risk", src)
+        self.assertIn("_align_attack_polarity", src)
         self.assertIn("F_bridge_eff", src)
         self.assertIn("cleanup_sample_state", src)
-        self.assertIn("pgsm_final_guitar_demo_v5", src)
+        self.assertIn("pgsm_final_guitar_demo_v6", src)
         self.assertNotIn("build_v4_string_bridge_force", src)
         self.assertNotIn("apply_listening_render_step5j_1", src)
         self.assertNotIn("subprocess", src)
@@ -205,8 +240,8 @@ class TestFinalDemoGuards(unittest.TestCase):
 
         src = Path(mod.__file__).read_text(encoding="utf-8")
         self.assertIn("_mode_transfer(f_bridge_eff", src)
-        self.assertIn("driven_by", src)
-        self.assertIn("F_bridge_eff", src)
+        self.assertIn("immediate_onset_kernels", src)
+        self.assertIn("np.cos(2.0 * math.pi * f_hz * kt)", src)
 
     def test_website_default_unchanged(self) -> None:
         self.assertIsNotNone(DEFAULT_WEBSITE_STK_MODE)
