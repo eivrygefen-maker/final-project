@@ -66,7 +66,6 @@ from stk_app_audio_service import (
     GUITAR_STACK_ROOT,
     activate_stk_guitar_for_player,
     build_cache_spec_for_hash,
-    cache_is_ready,
     cache_is_ready_for_fretboard,
     cleanup_smoke_test_artifacts,
     compute_parameter_hash,
@@ -100,7 +99,10 @@ assert lookup_note(6, 1, fb_cfg) == "F2"
 assert lookup_note(6, 2, fb_cfg) == "F#2"
 assert lookup_note(6, 3, fb_cfg) == "G2"
 assert lookup_note(5, 3, fb_cfg) == "C3"
+assert lookup_note(2, 1, fb_cfg) == "C4"
+assert lookup_note(1, 12, fb_cfg) == "E5"
 assert lookup_note(1, 19, fb_cfg) == "B5"
+assert note_to_midi("E5") < note_to_midi("B5")
 
 required = build_required_note_set_from_fretboard(int(cfg.get("fret_count") or 19))
 assert required, "fretboard required notes empty"
@@ -236,10 +238,17 @@ except RuntimeError:
 
 cache_old = smoke_test_cache_dir(SMOKE_OLD)
 cache_old.mkdir(parents=True, exist_ok=True)
+# Simulate legacy E2:E5 chromatic subset (insufficient for 19-fret fretboard up to B5).
 for n in ("E2", "F2", "G2", "A2", "B2", "C3", "D3", "E3", "F3", "G3", "A3", "B3", "C4", "D4", "E4", "F4", "G4", "A4", "B4", "C5", "D5", "E5"):
     write_minimal_silent_wav(cache_old / f"{n}.wav", duration_s=0.05)
-assert not cache_is_ready_for_fretboard(cache_old, SMOKE_OLD), "old E2:E5 cache must be incomplete"
-assert cache_is_ready(cache_old, note_range="E2:E5"), "legacy range check still works"
+assert not cache_is_ready_for_fretboard(cache_old, SMOKE_OLD), (
+    "legacy E2:E5 cache must be incomplete for full 19-fret fretboard"
+)
+legacy_audit = run_note_mapping_audit(cache_old, SMOKE_OLD)
+assert not legacy_audit["passed"], "audit must fail for E2:E5-only cache"
+assert legacy_audit.get("missing_required_notes"), "audit must list missing fretboard notes"
+assert "B5" in legacy_audit.get("missing_required_notes", []), legacy_audit
+assert note_to_midi(required[-1]) >= note_to_midi("B5")
 
 set_active_job(SMOKE_READY)
 cache_stale = smoke_test_cache_dir(SMOKE_STALE)
