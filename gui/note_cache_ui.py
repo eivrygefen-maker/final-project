@@ -20,18 +20,20 @@ from build_note_cache import (
     tuning_open_frequencies,
 )
 
+from classical_guitar_fretboard import (
+    get_fret_count,
+    get_tuning,
+    string_key_to_number,
+    string_visual_order_numbers,
+)
+
 NOTE_CACHE_ROOT_NAME = "note_cache"
-DEFAULT_FRET_COUNT = 19
+DEFAULT_FRET_COUNT = get_fret_count()
 
 # Display order: low E (string 6) at top; nut / open strings on the right column.
-FRETBOARD_DISPLAY_STRING_ORDER: Tuple[int, ...] = (6, 5, 4, 3, 2, 1)
+FRETBOARD_DISPLAY_STRING_ORDER: Tuple[int, ...] = tuple(string_visual_order_numbers())
 OPEN_STRING_NOTE_IDS: Dict[int, str] = {
-    6: "E2",
-    5: "A2",
-    4: "D3",
-    3: "G3",
-    2: "B3",
-    1: "E4",
+    string_key_to_number(k): v for k, v in get_tuning().items()
 }
 
 _GUITAR_PLAYER_COMPONENT_DIR = Path(__file__).resolve().parent / "components" / "guitar_player"
@@ -267,11 +269,13 @@ def build_player_payload(
     positions: List[Dict[str, Any]] = []
     for pos in manifest.get("positions") or []:
         note_id = str(pos.get("note_id") or "")
+        note_name = str(pos.get("note_name") or "")
         positions.append(
             {
                 "string": int(pos["string_number"]),
                 "fret": int(pos["fret"]),
                 "note_id": note_id,
+                "note_name": note_name,
                 "wav": f"{note_id}.wav",
             }
         )

@@ -31,6 +31,18 @@ from pgsm_stk_parameter_export import (
 from pgsm_emergency_guitar_demo_engine import compute_v5_physical_factors
 from pgsm_step5l_limited_multiguitar_differentiation import REFERENCE_SAMPLE_ID
 
+from app_stk_config import load_app_stk_config, priority_notes_from_config
+from app_stk_fretboard import (
+    build_fretboard_note_mapping,
+    build_required_note_set_from_fretboard,
+    get_fret_count,
+    normalize_note_name,
+    note_range_label_from_required,
+    note_to_midi,
+    player_fretboard_metadata,
+    run_fretboard_mapping_audit,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 STK_BINARY = REPO_ROOT / "cpp" / "stk_pgsm_guitar_demo" / "build" / "stk_pgsm_guitar_demo"
 APP_NOTE_CACHE_ROOT = REPO_ROOT / "audio" / "app_stk_note_cache"
@@ -43,9 +55,14 @@ NOTE_NAMES: Tuple[str, ...] = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", 
 A4_REFERENCE_HZ = 440.0
 ACCEPTED_STK_DEMO_VERSION = "v4_10_samples"
 MAX_GUITAR_STACK = 3
-DEFAULT_NOTE_RANGE = "E2:E5"
+DEFAULT_NOTE_RANGE = "E2:E5"  # legacy chromatic range; player uses fretboard-derived set
 DEFAULT_SOURCE_SAMPLE_ID = "sample_000"
 DEFAULT_PRIORITY_NOTES: Tuple[str, ...] = ("A2", "A4", "E5")
+CACHE_SPEC_FILE = ".cache_spec.json"
+NOTE_CACHE_VERSION = "app_stk_v3_fretboard_json"
+AUDIT_INCOMPLETE_MSG = (
+    "STK note cache is incomplete for this fretboard; rebuilding required."
+)
 
 STK_JOB_STATUSES = (
     "not_started",
@@ -204,7 +221,7 @@ def note_wav_path(
 
 
 def note_wav_in_cache(cache_dir: Path, note_name: str) -> Path:
-    return Path(cache_dir) / f"{note_name}.wav"
+    return Path(cache_dir) / f"{normalize_note_name(note_name)}.wav"
 
 
 def list_notes_in_cache(cache_dir: Path) -> List[str]:
@@ -272,13 +289,208 @@ def priority_notes_ready(
     return all(note_wav_in_cache(d, n).is_file() for n in priority_notes)
 
 
+def duration_for_note(note_name: str, cfg: Optional[Mapping[str, Any]] = None) -> float:
+    """Per-note render duration from APP config (longer low notes, shorter high)."""
+    c = dict(cfg or load_app_stk_config())
+    midi = note_to_midi(normalize_note_name(note_name))
+    if midi <= 45:
+        return float(c.get("low_note_duration_s", 5.0))
+    if midi >= 76:
+        return float(c.get("high_note_duration_s", 3.8))
+    return float(c.get("default_duration_s", 4.5))
+
+
+def durations_fingerprint(notes: Sequence[str], cfg: Optional[Mapping[str, Any]] = None) -> str:
+    ordered = sorted({normalize_note_name(n) for n in notes}, key=note_to_midi)
+    parts = [f"{n}:{duration_for_note(n, cfg):.2f}" for n in ordered]
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:12]
+
+
+def compute_cache_spec_hash(
+    parameter_hash: str,
+    required_notes: Sequence[str],
+    *,
+    render_mode: str,
+    durations_fp: str,
+) -> str:
+    payload = {
+        "parameter_hash": parameter_hash,
+        "renderer_version": ACCEPTED_STK_DEMO_VERSION,
+        "note_cache_version": NOTE_CACHE_VERSION,
+        "render_mode": render_mode,
+        "required_notes": sorted({normalize_note_name(n) for n in required_notes}, key=note_to_midi),
+        "durations_fingerprint": durations_fp,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def build_cache_spec_for_hash(
+    parameter_hash: str,
+    cfg: Optional[Mapping[str, Any]] = None,
+    fret_count: int = 19,
+    *,
+    render_mode: str = "",
+) -> Dict[str, Any]:
+    c = dict(cfg or load_app_stk_config())
+    required = build_required_note_set_from_fretboard(fret_count)
+    mode = str(render_mode or c.get("render_mode") or "batch")
+    durations_fp = durations_fingerprint(required, c)
+    spec_hash = compute_cache_spec_hash(
+        parameter_hash, required, render_mode=mode, durations_fp=durations_fp
+    )
+    return {
+        "cache_spec_hash": spec_hash,
+        "parameter_hash": parameter_hash,
+        "renderer_version": ACCEPTED_STK_DEMO_VERSION,
+        "note_cache_version": NOTE_CACHE_VERSION,
+        "render_mode": mode,
+        "required_notes": required,
+        "durations_fingerprint": durations_fp,
+        "fretboard_required_note_count": len(required),
+        "lowest_required_note": required[0] if required else "",
+        "highest_required_note": required[-1] if required else "",
+        "default_duration_s": c.get("default_duration_s"),
+        "low_note_duration_s": c.get("low_note_duration_s"),
+        "high_note_duration_s": c.get("high_note_duration_s"),
+    }
+
+
+def read_cache_spec(cache_dir: Path) -> Optional[Dict[str, Any]]:
+    path = Path(cache_dir) / CACHE_SPEC_FILE
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def write_cache_spec(cache_dir: Path, spec: Mapping[str, Any]) -> Path:
+    path = Path(cache_dir) / CACHE_SPEC_FILE
+    _write_json(path, spec)
+    return path
+
+
+def cache_spec_is_compatible(cache_dir: Path, expected_spec_hash: str) -> bool:
+    spec = read_cache_spec(cache_dir)
+    if not spec:
+        return False
+    return str(spec.get("cache_spec_hash") or "") == str(expected_spec_hash)
+
+
+def cache_is_ready_for_fretboard(
+    cache_dir: Path,
+    parameter_hash: str = "",
+    *,
+    cfg: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    """True when cache spec matches and every fretboard note has a WAV."""
+    cache_dir = Path(cache_dir)
+    c = dict(cfg or load_app_stk_config())
+    fret_count = int(c.get("fret_count") or 19)
+    required = build_required_note_set_from_fretboard(fret_count)
+    if parameter_hash:
+        expected = build_cache_spec_for_hash(parameter_hash, c, fret_count)
+        if not cache_spec_is_compatible(cache_dir, expected["cache_spec_hash"]):
+            return False
+    for note in required:
+        if resolve_stk_note_wav(cache_dir, note) is None:
+            return False
+    return True
+
+
 def cache_is_ready(
     cache_dir: Path,
     *,
     note_range: str = DEFAULT_NOTE_RANGE,
+    parameter_hash: str = "",
 ) -> bool:
+    if parameter_hash:
+        return cache_is_ready_for_fretboard(cache_dir, parameter_hash)
     notes = parse_note_range(note_range)
-    return all(note_wav_in_cache(cache_dir, n).is_file() for n in notes)
+    return all(resolve_stk_note_wav(cache_dir, n) is not None for n in notes)
+
+
+def note_mapping_audit_paths(parameter_hash: str) -> Tuple[Path, Path]:
+    stem = f"app_stk_note_mapping_audit_{parameter_hash}"
+    return DEBUG_REPORTS / f"{stem}.json", DEBUG_REPORTS / f"{stem}.md"
+
+
+def run_note_mapping_audit(
+    cache_dir: Path,
+    parameter_hash: str = "",
+    *,
+    cfg: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Audit fretboard positions vs STK cache; writes JSON/MD report."""
+    cache_dir = Path(cache_dir)
+    c = dict(cfg or load_app_stk_config())
+    fret_count = int(c.get("fret_count") or 19)
+    mapping = build_fretboard_note_mapping(fret_count)
+    required = build_required_note_set_from_fretboard(fret_count)
+    generated = sorted(
+        {normalize_note_name(p.stem) for p in cache_dir.glob("*.wav") if p.is_file()},
+        key=note_to_midi,
+    )
+    missing_required: List[str] = []
+    missing_positions: List[Dict[str, Any]] = []
+    for row in mapping:
+        note = str(row["note_name"])
+        if resolve_stk_note_wav(cache_dir, note) is None:
+            missing_positions.append(
+                {
+                    "string": row["string_number"],
+                    "fret": row["fret"],
+                    "note_name": note,
+                }
+            )
+            if note not in missing_required:
+                missing_required.append(note)
+    required_set = set(required)
+    generated_set = set(generated)
+    audit: Dict[str, Any] = {
+        "generated_at": _utc_now(),
+        "parameter_hash": parameter_hash,
+        "cache_dir": str(cache_dir).replace("\\", "/"),
+        "passed": not missing_positions,
+        "fretboard_required_note_count": len(required),
+        "generated_note_count": len(generated),
+        "missing_required_notes": sorted(missing_required, key=note_to_midi),
+        "extra_generated_notes": sorted(generated_set - required_set, key=note_to_midi),
+        "lowest_required_note": required[0] if required else "",
+        "highest_required_note": required[-1] if required else "",
+        "s1_frets_13_19": [
+            {"fret": r["fret"], "note_name": r["note_name"]}
+            for r in mapping
+            if int(r["string_number"]) == 1 and int(r["fret"]) >= 13
+        ],
+        "s2_frets_18_19": [
+            {"fret": r["fret"], "note_name": r["note_name"]}
+            for r in mapping
+            if int(r["string_number"]) == 2 and int(r["fret"]) >= 18
+        ],
+        "missing_positions": missing_positions,
+        "all_notes_preview_exists": (cache_dir / "all_notes_preview.wav").is_file(),
+    }
+    if parameter_hash:
+        json_path, md_path = note_mapping_audit_paths(parameter_hash)
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path.write_text(json.dumps(audit, indent=2) + "\n", encoding="utf-8")
+        md_lines = [
+            f"# APP STK Note Mapping Audit — `{parameter_hash}`",
+            "",
+            f"- **passed**: {audit['passed']}",
+            f"- **fretboard_required_note_count**: {audit['fretboard_required_note_count']}",
+            f"- **generated_note_count**: {audit['generated_note_count']}",
+            f"- **lowest_required_note**: {audit['lowest_required_note']}",
+            f"- **highest_required_note**: {audit['highest_required_note']}",
+            f"- **missing_required_notes**: {audit['missing_required_notes']}",
+            "",
+        ]
+        md_path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+        audit["report_json"] = str(json_path).replace("\\", "/")
+        audit["report_md"] = str(md_path).replace("\\", "/")
+    return audit
 
 
 def _write_json(path: Path, doc: Mapping[str, Any]) -> None:
@@ -407,6 +619,100 @@ def _build_single_note_export(
     }
 
 
+def _build_batch_note_export(
+    *,
+    repo_root: Path,
+    sample_id: str,
+    notes: Sequence[str],
+    durations_by_note: Mapping[str, float],
+    render_subdir: str,
+) -> Dict[str, Any]:
+    physical = load_physical_parameters(sample_id)
+    reference_physical = load_physical_parameters(REFERENCE_SAMPLE_ID)
+    voicing_table = _extended_voicing((sample_id,))
+    factors, _ = compute_v5_physical_factors(
+        physical, reference_physical, sample_id=sample_id, voicing=voicing_table
+    )
+    mix_scales = _compute_v4_continuous_mix(physical, reference_physical, factors)
+    renders: List[Dict[str, Any]] = []
+    for note_name in notes:
+        normalized = normalize_note_name(note_name)
+        stk_rel = f"{render_subdir}/{_stk_render_wav_name(normalized)}"
+        freq = note_name_to_frequency(normalized)
+        duration_s = float(durations_by_note.get(normalized) or durations_by_note.get(note_name) or 4.5)
+        renders.append(
+            build_render_entry(
+                sample_id,
+                normalized,
+                physical=physical,
+                reference_physical=reference_physical,
+                sample_rate=NUMERIC_SR,
+                duration_s=duration_s,
+                repo_root=repo_root,
+                demo_version=ACCEPTED_STK_DEMO_VERSION,
+                perceptual_mix=mix_scales,
+                frequency_hz=freq,
+                output_wav_relpath=stk_rel,
+            )
+        )
+    return {
+        "export_version": "pgsm_stk_app_note_export_v1",
+        "demo_version": "app_stk_note_cache_classical",
+        "generated_at": _utc_now(),
+        "renderer": "stk_cpp",
+        "python_role": "parameter_export_only",
+        "repo_root": str(repo_root),
+        "audio_output_subdir": render_subdir,
+        "sample_id": sample_id,
+        "physical_source": "audit_or_lhs_fallback",
+        "renders": renders,
+        "expected_render_count": len(renders),
+    }
+
+
+def render_notes_batch(
+    *,
+    repo_root: Path,
+    sample_id: str,
+    notes_to_render: Sequence[str],
+    durations_by_note: Mapping[str, float],
+    target_dir: Path,
+    binary: Optional[Path] = None,
+    cache_key: str = "",
+) -> float:
+    """Render all notes in one STK/C++ invocation."""
+    if not notes_to_render:
+        return 0.0
+    root = Path(repo_root)
+    key = cache_key or sample_id
+    tmp_dir = RENDER_TMP_ROOT / key / "batch"
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    rel_subdir = str(tmp_dir.relative_to(root)).replace("\\", "/")
+    normalized_notes = [normalize_note_name(n) for n in notes_to_render]
+    doc = _build_batch_note_export(
+        repo_root=root,
+        sample_id=sample_id,
+        notes=normalized_notes,
+        durations_by_note=durations_by_note,
+        render_subdir=rel_subdir,
+    )
+    params_path = tmp_dir / "params.json"
+    params_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    t0 = time.perf_counter()
+    invoke_stk_renderer(params_path, root, binary=binary)
+    elapsed = time.perf_counter() - t0
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for note_name in normalized_notes:
+        stk_rel = f"{rel_subdir}/{_stk_render_wav_name(note_name)}"
+        stk_out = root / stk_rel
+        if not stk_out.is_file():
+            raise FileNotFoundError(f"STK did not produce expected WAV: {stk_out}")
+        shutil.copy2(stk_out, note_wav_in_cache(target_dir, note_name))
+    return elapsed
+
+
 def invoke_stk_renderer(params_json: Path, repo_root: Path, binary: Optional[Path] = None) -> None:
     exe = Path(binary or stk_binary_path(repo_root))
     if not exe.is_file():
@@ -425,22 +731,24 @@ def render_single_note(
     sample_id: str,
     note_name: str,
     cache_path: Path,
-    duration_s: float = DURATION_S,
+    duration_s: Optional[float] = None,
     binary: Optional[Path] = None,
     cache_key: str = "",
 ) -> float:
+    normalized = normalize_note_name(note_name)
+    dur = float(duration_s if duration_s is not None else duration_for_note(normalized))
     key = cache_key or sample_id
-    tmp_dir = RENDER_TMP_ROOT / key / note_name
+    tmp_dir = RENDER_TMP_ROOT / key / normalized
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir)
     tmp_dir.mkdir(parents=True, exist_ok=True)
     rel_subdir = str(tmp_dir.relative_to(repo_root)).replace("\\", "/")
-    stk_rel = f"{rel_subdir}/{_stk_render_wav_name(note_name)}"
+    stk_rel = f"{rel_subdir}/{_stk_render_wav_name(normalized)}"
     doc = _build_single_note_export(
         repo_root=repo_root,
         sample_id=sample_id,
-        note_name=note_name,
-        duration_s=duration_s,
+        note_name=normalized,
+        duration_s=dur,
         render_subdir=rel_subdir,
         stk_wav_relpath=stk_rel,
     )
@@ -461,27 +769,34 @@ def build_note_library(
     sample_id: str,
     *,
     instrument: str = "classical",
-    note_range: str = DEFAULT_NOTE_RANGE,
+    note_range: str = "",
     output_root: Optional[Path] = None,
     cache_dir: Optional[Path] = None,
-    duration_s: float = DURATION_S,
+    duration_s: Optional[float] = None,
     force: bool = False,
     repo_root: Optional[Path] = None,
     binary: Optional[Path] = None,
     parameter_hash: Optional[str] = None,
     job_status_json: Optional[Path] = None,
     priority_notes: Optional[Sequence[str]] = None,
+    render_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     root = Path(repo_root or REPO_ROOT)
-    notes = order_notes_with_priority(
-        parse_note_range(note_range),
-        priority_notes or DEFAULT_PRIORITY_NOTES,
-    )
+    cfg = load_app_stk_config(root)
+    fret_count = int(cfg.get("fret_count") or 19)
+    prio = list(priority_notes or priority_notes_from_config(cfg))
+    required = build_required_note_set_from_fretboard(fret_count)
+    notes = order_notes_with_priority(required, prio)
+    note_range = note_range or note_range_label_from_required(required)
+    mode = str(render_mode or cfg.get("render_mode") or "batch")
     target_dir = Path(cache_dir) if cache_dir else note_cache_dir(sample_id, instrument, output_root)
     target_dir.mkdir(parents=True, exist_ok=True)
     cache_key = parameter_hash or sample_id
+    spec_doc = build_cache_spec_for_hash(cache_key, cfg, fret_count, render_mode=mode)
+    spec_hash = str(spec_doc["cache_spec_hash"])
     bg_status_path = background_status_path(cache_key) if parameter_hash else None
     started_at = _utc_now()
+    target_runtime_s = float(cfg.get("target_runtime_s") or 180)
 
     timings: Dict[str, float] = {}
     cache_hits = 0
@@ -489,20 +804,32 @@ def build_note_library(
     missing: List[str] = []
     physical = load_physical_parameters(sample_id)
     t_start = time.perf_counter()
+    spec_ok = cache_spec_is_compatible(target_dir, spec_hash) and not force
 
-    def _write_progress(idx: int, note_name: str, job_status: str) -> None:
+    to_render: List[str] = []
+    for note_name in notes:
+        dest = note_wav_in_cache(target_dir, note_name)
+        if spec_ok and dest.is_file():
+            cache_hits += 1
+            timings[note_name] = 0.0
+        else:
+            cache_misses += 1
+            to_render.append(note_name)
+
+    def _write_progress(rendered: int, job_status: str, current_note: str = "") -> None:
         elapsed = round(time.perf_counter() - t_start, 3)
         progress_doc = {
             "parameter_hash": cache_key,
             "status": job_status,
-            "rendered_notes": idx + 1,
+            "rendered_notes": rendered,
             "total_notes": len(notes),
-            "current_note": note_name,
+            "current_note": current_note,
             "output_dir": str(target_dir).replace("\\", "/"),
             "elapsed_time_s": elapsed,
             "started_at": started_at,
             "cache_hit_count": cache_hits,
             "cache_miss_count": cache_misses,
+            "render_mode": mode,
         }
         if job_status_json is not None:
             _write_json(job_status_json, {**progress_doc, "elapsed_s": elapsed})
@@ -515,43 +842,100 @@ def build_note_library(
             {
                 "parameter_hash": cache_key,
                 "status": "running",
-                "rendered_notes": 0,
+                "rendered_notes": cache_hits,
                 "total_notes": len(notes),
                 "output_dir": str(target_dir).replace("\\", "/"),
                 "elapsed_time_s": 0.0,
                 "started_at": started_at,
+                "render_mode": mode,
             },
         )
 
-    for idx, note_name in enumerate(notes):
-        dest = note_wav_in_cache(target_dir, note_name)
-        if dest.is_file() and not force:
-            cache_hits += 1
-            timings[note_name] = 0.0
-        else:
-            cache_misses += 1
-            if not is_active_job(cache_key) and parameter_hash:
-                missing.append(note_name)
+    if to_render:
+        if not is_active_job(cache_key) and parameter_hash:
+            missing.extend(to_render)
+            for note_name in to_render:
                 timings[note_name] = -1.0
-                continue
+        elif mode == "batch":
+            durations_by_note = {
+                normalize_note_name(n): (
+                    float(duration_s) if duration_s is not None else duration_for_note(n, cfg)
+                )
+                for n in to_render
+            }
             try:
-                timings[note_name] = render_single_note(
+                batch_elapsed = render_notes_batch(
                     repo_root=root,
                     sample_id=sample_id,
-                    note_name=note_name,
-                    cache_path=dest,
-                    duration_s=duration_s,
+                    notes_to_render=to_render,
+                    durations_by_note=durations_by_note,
+                    target_dir=target_dir,
                     binary=binary,
                     cache_key=cache_key,
                 )
+                per_note = batch_elapsed / max(len(to_render), 1)
+                for note_name in to_render:
+                    dest = note_wav_in_cache(target_dir, note_name)
+                    if dest.is_file():
+                        timings[note_name] = per_note
+                    else:
+                        missing.append(note_name)
+                        timings[note_name] = -1.0
             except Exception:
-                missing.append(note_name)
-                timings[note_name] = -1.0
+                for note_name in to_render:
+                    try:
+                        dest = note_wav_in_cache(target_dir, note_name)
+                        note_dur = float(duration_s) if duration_s is not None else duration_for_note(
+                            note_name, cfg
+                        )
+                        timings[note_name] = render_single_note(
+                            repo_root=root,
+                            sample_id=sample_id,
+                            note_name=note_name,
+                            cache_path=dest,
+                            duration_s=note_dur,
+                            binary=binary,
+                            cache_key=cache_key,
+                        )
+                    except Exception:
+                        missing.append(note_name)
+                        timings[note_name] = -1.0
+            _write_progress(len(notes) - len(missing), "running", "batch")
+        else:
+            for idx, note_name in enumerate(to_render):
+                dest = note_wav_in_cache(target_dir, note_name)
+                note_dur = float(duration_s) if duration_s is not None else duration_for_note(
+                    note_name, cfg
+                )
+                try:
+                    timings[note_name] = render_single_note(
+                        repo_root=root,
+                        sample_id=sample_id,
+                        note_name=note_name,
+                        cache_path=dest,
+                        duration_s=note_dur,
+                        binary=binary,
+                        cache_key=cache_key,
+                    )
+                except Exception:
+                    missing.append(note_name)
+                    timings[note_name] = -1.0
+                job_status = (
+                    "partial_ready"
+                    if priority_notes_ready(target_dir, prio)
+                    and not cache_is_ready_for_fretboard(target_dir, cache_key, cfg=cfg)
+                    else "running"
+                )
+                _write_progress(cache_hits + idx + 1, job_status, note_name)
 
-        job_status = "partial_ready" if priority_notes_ready(target_dir) and not cache_is_ready(
-            target_dir, note_range=note_range
-        ) else "running"
-        _write_progress(idx, note_name, job_status)
+    write_cache_spec(target_dir, spec_doc)
+    generated_in_cache = [
+        normalize_note_name(p.stem)
+        for p in target_dir.glob("*.wav")
+        if p.is_file() and p.name != "all_notes_preview.wav"
+    ]
+    required_set = set(required)
+    generated_set = set(generated_in_cache)
 
     rendered_times = {k: v for k, v in timings.items() if v > 0}
     total_render = sum(rendered_times.values())
@@ -565,7 +949,7 @@ def build_note_library(
     elif missing:
         readiness = "generated_but_missing_notes"
         job_status = "failed"
-    elif cache_is_ready(target_dir, note_range=note_range):
+    elif cache_is_ready_for_fretboard(target_dir, cache_key, cfg=cfg):
         readiness = "ready_for_app_playback"
         job_status = "ready"
     else:
@@ -603,6 +987,18 @@ def build_note_library(
         },
         "readiness": readiness,
         "status": job_status,
+        "render_mode": mode,
+        "cache_spec_hash": spec_hash,
+        "fretboard_required_note_count": len(required),
+        "generated_note_count": len(generated_set),
+        "missing_required_notes": sorted(required_set - generated_set, key=note_to_midi),
+        "extra_generated_notes": sorted(generated_set - required_set, key=note_to_midi),
+        "lowest_required_note": required[0] if required else "",
+        "highest_required_note": required[-1] if required else "",
+        "required_note_count": len(required),
+        "target_runtime_s": target_runtime_s,
+        "achieved_target": total_render <= target_runtime_s if total_render > 0 else True,
+        "default_duration_s": cfg.get("default_duration_s"),
     }
     if parameter_hash:
         json_path, md_path = library_report_paths_for_hash(parameter_hash, instrument)
@@ -646,7 +1042,11 @@ def _library_report_md(report: Mapping[str, Any]) -> str:
         "",
         f"- **parameter_hash**: {report.get('parameter_hash')}",
         f"- **note_range**: {report.get('note_range')}",
+        f"- **render_mode**: {report.get('render_mode')}",
+        f"- **fretboard_required_note_count**: {report.get('fretboard_required_note_count')}",
+        f"- **highest_required_note**: {report.get('highest_required_note')}",
         f"- **total_render_time_s**: {report.get('total_render_time_s')}",
+        f"- **achieved_target**: {report.get('achieved_target')}",
         f"- **readiness**: {report.get('readiness')}",
         f"- **output_dir**: `{report.get('output_dir')}`",
         "",
@@ -685,7 +1085,7 @@ def _report_ready_for_hash(
     parameter_hash: str,
     output_dir: Path,
     *,
-    note_range: str = DEFAULT_NOTE_RANGE,
+    note_range: str = "",
 ) -> bool:
     """True when library report + WAV count confirm ready for the requested hash."""
     if not report:
@@ -699,26 +1099,37 @@ def _report_ready_for_hash(
         return False
     if not output_dir.is_dir():
         return False
-    expected = int(report.get("note_count") or 0)
+    if report.get("cache_spec_hash"):
+        expected = build_cache_spec_for_hash(parameter_hash)
+        if str(report.get("cache_spec_hash")) != expected["cache_spec_hash"]:
+            return False
+    if not cache_is_ready_for_fretboard(output_dir, parameter_hash):
+        return False
+    expected = int(report.get("fretboard_required_note_count") or report.get("note_count") or 0)
     actual = count_wavs_in_cache(output_dir)
     if expected > 0:
         return actual >= expected
-    return cache_is_ready(output_dir, note_range=note_range)
+    return True
 
 
 def refresh_stk_background_job_status(
     parameter_hash: str,
     *,
-    note_range: str = DEFAULT_NOTE_RANGE,
-    priority_notes: Sequence[str] = DEFAULT_PRIORITY_NOTES,
+    note_range: str = "",
+    priority_notes: Optional[Sequence[str]] = None,
     instrument: str = "classical",
     promote_stack: bool = True,
     cache_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Reconcile subprocess, progress JSON, library report, and WAV files into APP state."""
+    cfg = load_app_stk_config()
+    prio = list(priority_notes or priority_notes_from_config(cfg))
+    fret_count = int(cfg.get("fret_count") or 19)
+    required_notes = build_required_note_set_from_fretboard(fret_count)
+    note_range = note_range or note_range_label_from_required(required_notes)
+    total_notes = len(required_notes)
+
     preview = Path(cache_dir) if cache_dir is not None else preview_cache_dir(parameter_hash, instrument)
-    expected_notes = parse_note_range(note_range)
-    total_notes = len(expected_notes)
 
     job_doc = read_job_status(parameter_hash)
     bg_doc = read_background_status(parameter_hash)
@@ -802,10 +1213,10 @@ def refresh_stk_background_job_status(
     if _report_ready_for_hash(report, parameter_hash, report_out, note_range=note_range):
         return _finalize_ready(report_out)
 
-    if cache_is_ready(preview, note_range=note_range):
+    if cache_is_ready_for_fretboard(preview, parameter_hash, cfg=cfg):
         return _finalize_ready(preview)
 
-    if cache_is_ready(scan_dir, note_range=note_range):
+    if cache_is_ready_for_fretboard(scan_dir, parameter_hash, cfg=cfg):
         return _finalize_ready(scan_dir)
 
     # 2) Explicit failed report for this hash.
@@ -819,7 +1230,7 @@ def refresh_stk_background_job_status(
     if job_doc.get("status") == "running" and pid and not proc_alive:
         if _report_ready_for_hash(report, parameter_hash, report_out, note_range=note_range):
             return _finalize_ready(report_out)
-        if cache_is_ready(preview, note_range=note_range):
+        if cache_is_ready_for_fretboard(preview, parameter_hash, cfg=cfg):
             return _finalize_ready(preview)
         if actual_wav_count > 0 and is_active_hash:
             pass  # fall through to partial/running handling
@@ -830,9 +1241,9 @@ def refresh_stk_background_job_status(
             write_background_status(parameter_hash, result)
             return result
 
-    # 4) Partial / in-progress on matching active hash (or no competing active job).
-    priority_ok = priority_notes_ready(scan_dir, priority_notes)
-    full_ready = cache_is_ready(preview, note_range=note_range)
+  # 4) Partial / in-progress on matching active hash (or no competing active job).
+    priority_ok = priority_notes_ready(scan_dir, prio)
+    full_ready = cache_is_ready_for_fretboard(preview, parameter_hash, cfg=cfg)
 
     if priority_ok and not full_ready and (is_active_hash or actual_wav_count > 0):
         result["status"] = "partial_ready"
@@ -866,7 +1277,7 @@ def refresh_stk_background_job_status(
         result["active_job_hash"] = active_hash
         return result
 
-    if job_doc.get("status") == "ready" and cache_is_ready(preview, note_range=note_range):
+    if job_doc.get("status") == "ready" and cache_is_ready_for_fretboard(preview, parameter_hash, cfg=cfg):
         return _finalize_ready(preview)
 
     result["status"] = str(job_doc.get("status") or bg_doc.get("status") or "not_started")
@@ -878,22 +1289,29 @@ def start_background_note_library_job(
     parameter_hash: str,
     repo_root: Optional[Path] = None,
     sample_id: str = DEFAULT_SOURCE_SAMPLE_ID,
-    note_range: str = DEFAULT_NOTE_RANGE,
+    note_range: str = "",
     instrument: str = "classical",
+    render_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     root = Path(repo_root or REPO_ROOT)
+    cfg = load_app_stk_config(root)
+    fret_count = int(cfg.get("fret_count") or 19)
+    required = build_required_note_set_from_fretboard(fret_count)
+    note_range = note_range or note_range_label_from_required(required)
+    mode = str(render_mode or cfg.get("render_mode") or "batch")
     preview = preview_cache_dir(parameter_hash, instrument)
     preview.mkdir(parents=True, exist_ok=True)
     set_active_job(parameter_hash)
 
-    if cache_is_ready(preview, note_range=note_range):
+    if cache_is_ready_for_fretboard(preview, parameter_hash, cfg=cfg):
         report = {
             "status": "ready",
             "parameter_hash": parameter_hash,
-            "cache_hit_count": len(parse_note_range(note_range)),
+            "cache_hit_count": len(required),
             "cache_miss_count": 0,
             "output_dir": str(preview),
             "readiness": "ready_for_app_playback",
+            "fretboard_required_note_count": len(required),
         }
         write_job_status(parameter_hash, report)
         return report
@@ -912,8 +1330,6 @@ def start_background_note_library_job(
         sample_id,
         "--instrument",
         instrument,
-        "--note-range",
-        note_range,
         "--cache-dir",
         str(preview),
         "--parameter-hash",
@@ -922,8 +1338,10 @@ def start_background_note_library_job(
         str(job_json),
         "--repo-root",
         str(root),
+        "--render-mode",
+        mode,
         "--priority-notes",
-        *DEFAULT_PRIORITY_NOTES,
+        *priority_notes_from_config(cfg),
     ]
     write_job_status(
         parameter_hash,
@@ -933,7 +1351,8 @@ def start_background_note_library_job(
             "output_dir": str(preview),
             "source_sample_id": sample_id,
             "rendered_notes": 0,
-            "total_notes": len(parse_note_range(note_range)),
+            "total_notes": len(required),
+            "render_mode": mode,
         },
     )
     write_background_status(
@@ -943,8 +1362,9 @@ def start_background_note_library_job(
             "started_at": _utc_now(),
             "output_dir": str(preview),
             "rendered_notes": 0,
-            "total_notes": len(parse_note_range(note_range)),
+            "total_notes": len(required),
             "elapsed_time_s": 0.0,
+            "render_mode": mode,
         },
     )
     proc = subprocess.Popen(cmd, cwd=str(root))
@@ -1105,7 +1525,10 @@ def save_guitar_to_stack(
     repo_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Save a fully ready guitar to the FIFO stack (ready entries only, no duplicates)."""
-    _ = repo_root
+    root = Path(repo_root or REPO_ROOT)
+    cfg = load_app_stk_config(root)
+    if not cfg.get("enable_ready_fifo_stack", True):
+        raise RuntimeError("FIFO stack is disabled in APP STK config.")
     existing = find_stack_entry_by_hash(parameter_hash, instrument)
     if existing:
         return {**existing, "_duplicate": True}
@@ -1162,7 +1585,7 @@ def save_guitar_to_stack(
         if str(e.get("status") or "ready") == "ready"
     ]
     snapshots.append(entry)
-    max_n = int(doc.get("max_snapshots") or MAX_GUITAR_STACK)
+    max_n = int(doc.get("max_snapshots") or cfg.get("fifo_max_guitars") or MAX_GUITAR_STACK)
     while len(snapshots) > max_n:
         evicted = snapshots.pop(0)
         _remove_stack_cache(evicted.get("note_cache_path"))
@@ -1253,7 +1676,9 @@ def _note_name_variants(note_name: str) -> List[str]:
 def resolve_stk_note_wav(cache_dir: Path, note_name: str) -> Optional[Path]:
     """Resolve a STK source WAV, trying sharp/flat spellings."""
     root = Path(cache_dir)
-    for variant in _note_name_variants(note_name):
+    candidates = [normalize_note_name(note_name)]
+    candidates.extend(_note_name_variants(note_name))
+    for variant in dict.fromkeys(candidates):
         path = root / f"{variant}.wav"
         if path.is_file():
             return path
@@ -1323,12 +1748,7 @@ def _write_stk_preview_wav(dest_dir: Path, cache_dir: Path) -> Path:
 
 def prepare_stk_player_assets(cache_dir: Path, fingerprint: str) -> Path:
     """Copy STK note WAVs into the guitar_player runtime folder for iframe playback."""
-    from build_note_cache import (  # noqa: WPS433
-        enumerate_fretboard_positions,
-        frequency_to_note_name,
-        note_id_from_frequency,
-    )
-    from note_cache_ui import DEFAULT_FRET_COUNT, RUNTIME_CACHE_DIR  # noqa: WPS433
+    from note_cache_ui import RUNTIME_CACHE_DIR  # noqa: WPS433
 
     cache_dir = Path(cache_dir)
     dest = RUNTIME_CACHE_DIR / fingerprint
@@ -1337,10 +1757,9 @@ def prepare_stk_player_assets(cache_dir: Path, fingerprint: str) -> Path:
     dest.mkdir(parents=True, exist_ok=True)
 
     copied_ids: set[str] = set()
-    for pos in enumerate_fretboard_positions(DEFAULT_FRET_COUNT):
-        hz = float(pos["frequency_hz"])
-        note_name = frequency_to_note_name(hz)
-        note_id = note_id_from_frequency(hz)
+    for row in build_fretboard_note_mapping():
+        note_name = str(row["note_name"])
+        note_id = str(row["note_id"])
         src = resolve_stk_note_wav(cache_dir, note_name)
         if src is not None and note_id not in copied_ids:
             shutil.copy2(src, dest / f"{note_id}.wav")
@@ -1355,31 +1774,27 @@ def build_stk_player_payload(
     *,
     fingerprint: str,
     ui_status: str = "ready",
-    fret_count: int = 19,
+    fret_count: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Build guitar_player component payload from an STK note cache directory."""
-    from build_note_cache import (  # noqa: WPS433
-        enumerate_fretboard_positions,
-        frequency_to_note_name,
-        note_id_from_frequency,
-    )
-
+    cfg = load_app_stk_config()
+    fc = int(fret_count if fret_count is not None else get_fret_count())
     if ui_status not in ("ready", "building"):
         return {"status": ui_status, "positions": [], "fingerprint": ""}
 
     cache_dir = Path(cache_dir)
     positions: List[Dict[str, Any]] = []
     unique_ids: set[str] = set()
-    for pos in enumerate_fretboard_positions(fret_count):
-        hz = float(pos["frequency_hz"])
-        note_name = frequency_to_note_name(hz)
-        note_id = note_id_from_frequency(hz)
+    for row in build_fretboard_note_mapping(fc):
+        note_name = str(row["note_name"])
+        note_id = str(row["note_id"])
         if resolve_stk_note_wav(cache_dir, note_name) is None:
             continue
         positions.append(
             {
-                "string": int(pos["string_number"]),
-                "fret": int(pos["fret"]),
+                "string": int(row["string_number"]),
+                "fret": int(row["fret"]),
+                "note_name": note_name,
                 "note_id": note_id,
                 "wav": f"{note_id}.wav",
             }
@@ -1389,13 +1804,17 @@ def build_stk_player_payload(
     if not positions:
         return {"status": "hidden", "positions": [], "fingerprint": ""}
 
+    fretboard_meta = player_fretboard_metadata()
     return {
         "status": "ready",
         "fingerprint": fingerprint,
-        "fret_count": fret_count,
+        "fret_count": fc,
         "unique_note_count": len(unique_ids),
         "playable_position_count": len(positions),
         "positions": positions,
+        "enable_overlapping_playback": bool(cfg.get("enable_overlapping_playback", True)),
+        "fretboard": fretboard_meta,
+        "string_visual_order_numbers": fretboard_meta.get("string_visual_order_numbers"),
     }
 
 
@@ -1442,20 +1861,66 @@ def activate_stk_guitar_for_player(
     saved_guitar_id: str = "",
 ) -> Dict[str, Any]:
     """Stage STK cache for the HTML fretboard player."""
+    cache_dir = Path(cache_dir)
+    mapping_audit = run_fretboard_mapping_audit(cache_dir=cache_dir)
+    if mapping_audit.get("readiness") == "failed_wrong_note_mapping":
+        validation = {
+            "ok": False,
+            "errors": ["Fretboard mapping validation failed — see app_stk_fretboard_mapping_audit.json"],
+            "runtime_dir": "",
+            "position_count": 0,
+            "preview_path": "",
+            "fretboard_audit": mapping_audit,
+        }
+        return {
+            "cache_path": str(cache_dir).replace("\\", "/"),
+            "parameter_hash": parameter_hash,
+            "saved_guitar_id": saved_guitar_id,
+            "player_fingerprint": saved_guitar_id or f"stk_{parameter_hash}",
+            "player_payload": {"status": "hidden", "positions": [], "fingerprint": ""},
+            "validation": validation,
+            "runtime_dir": "",
+            "fretboard_audit": mapping_audit,
+        }
+
+    audit = run_note_mapping_audit(cache_dir, parameter_hash)
     player_fp = saved_guitar_id or f"stk_{parameter_hash}"
-    runtime_dir = prepare_stk_player_assets(Path(cache_dir), player_fp)
-    payload = build_stk_player_payload(Path(cache_dir), fingerprint=player_fp, ui_status="ready")
+    if not audit.get("passed"):
+        validation = {
+            "ok": False,
+            "errors": [AUDIT_INCOMPLETE_MSG],
+            "runtime_dir": "",
+            "position_count": 0,
+            "preview_path": "",
+            "audit": audit,
+        }
+        return {
+            "cache_path": str(cache_dir).replace("\\", "/"),
+            "parameter_hash": parameter_hash,
+            "saved_guitar_id": saved_guitar_id,
+            "player_fingerprint": player_fp,
+            "player_payload": {"status": "hidden", "positions": [], "fingerprint": player_fp},
+            "validation": validation,
+            "runtime_dir": "",
+            "audit": audit,
+        }
+
+    runtime_dir = prepare_stk_player_assets(cache_dir, player_fp)
+    payload = build_stk_player_payload(cache_dir, fingerprint=player_fp, ui_status="ready")
+    run_fretboard_mapping_audit(cache_dir=cache_dir, player_payload=payload)
     validation = validate_stk_player_runtime_cache(payload, runtime_dir=runtime_dir)
     if not validation.get("ok"):
         payload = {"status": "hidden", "positions": [], "fingerprint": player_fp}
+        validation = {**validation, "errors": validation.get("errors", []) + [AUDIT_INCOMPLETE_MSG]}
     return {
-        "cache_path": str(Path(cache_dir)).replace("\\", "/"),
+        "cache_path": str(cache_dir).replace("\\", "/"),
         "parameter_hash": parameter_hash,
         "saved_guitar_id": saved_guitar_id,
         "player_fingerprint": player_fp,
         "player_payload": payload,
         "validation": validation,
         "runtime_dir": str(runtime_dir).replace("\\", "/"),
+        "audit": audit,
     }
 
 

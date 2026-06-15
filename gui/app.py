@@ -1971,12 +1971,34 @@ def _render_main_studio(
                 st.error(f"Could not save guitar: {exc}")
 
     _auto_gen = st.session_state.pop("_stk_auto_generate_message", None)
-    if isinstance(_auto_gen, dict) and _auto_gen.get("action") in ("saved_new", "loaded_existing"):
+    if isinstance(_auto_gen, dict) and _auto_gen.get("action") in (
+        "saved_new",
+        "loaded_existing",
+        "activated_preview",
+    ):
         if _auto_gen.get("action") == "loaded_existing":
             st.info("Guitar sound is ready — loaded from comparison stack.")
+        elif _auto_gen.get("action") == "activated_preview":
+            st.success("Guitar sound is ready — player loaded.")
         else:
             st.success(
                 f"Guitar sound is ready — saved **{_auto_gen.get('entry', {}).get('display_name', 'guitar')}**."
+            )
+
+    from app_stk_config import load_app_stk_config  # noqa: WPS433
+
+    _stk_cfg = load_app_stk_config(BASE_DIR)
+    _stk_intent = str(st.session_state.get("stk_generate_intent_hash") or "")
+    if _stk_intent or _stk_status in ("running", "partial_ready", "not_started"):
+        _refresh_s = int(_stk_cfg.get("auto_refresh_interval_s") or 12)
+        if not (
+            _stk_status == "ready"
+            and st.session_state.get("stk_preview_cache_ready")
+            and not _stk_intent
+        ):
+            st.markdown(
+                f'<meta http-equiv="refresh" content="{_refresh_s}">',
+                unsafe_allow_html=True,
             )
 
     if st.session_state.get("_pending_fom_run") and display_mesh_active(geom_fp):

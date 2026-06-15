@@ -1,0 +1,19 @@
+{
+  "instrument": "classical",
+  "sample_rate": 44100,
+  "default_duration_s": 4.5,
+  "min_duration_s": 4.0,
+  "low_note_duration_s": 5.0,
+  "high_note_duration_s": 3.8,
+  "fifo_max_guitars": 3,
+  "enable_ready_fifo_stack": true,
+  "enable_generate_intent": true,
+  "enable_overlapping_playback": true,
+  "user_show_stk_progress_detail": false,
+  "debug_diagnostics_default": false,
+  "render_mode": "batch",
+  "priority_notes": ["A2", "A4", "E5"],
+  "fret_count": 19,
+  "auto_refresh_interval_s": 12,
+  "target_runtime_s": 180
+}

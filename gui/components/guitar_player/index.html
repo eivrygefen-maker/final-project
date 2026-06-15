@@ -415,6 +415,9 @@
       var buffers = {};
       var previewBuffer = null;
       var activeSource = null;
+      var activeSources = [];
+      var playingByWav = {};
+      var overlappingPlayback = true;
       var currentPayloadKey = "";
       var lastCell = null;
 
@@ -488,19 +491,40 @@
           try { activeSource.stop(0); } catch (e) { /* ignore */ }
           activeSource = null;
         }
+        activeSources.forEach(function (src) {
+          try { src.stop(0); } catch (e) { /* ignore */ }
+        });
+        activeSources = [];
+        playingByWav = {};
       }
 
-      function playBuffer(buf) {
+      function playBuffer(buf, wavKey) {
         if (!buf) return;
-        stopActive();
         var ctx = ensureAudioContext();
+        if (overlappingPlayback && wavKey && playingByWav[wavKey]) {
+          try { playingByWav[wavKey].stop(0); } catch (e) { /* ignore */ }
+          delete playingByWav[wavKey];
+        }
+        if (!overlappingPlayback) {
+          stopActive();
+        }
         var src = ctx.createBufferSource();
         src.buffer = buf;
         src.connect(ctx.destination);
-        src.onended = function () {
-          if (activeSource === src) activeSource = null;
-        };
-        activeSource = src;
+        if (overlappingPlayback) {
+          activeSources.push(src);
+          if (wavKey) playingByWav[wavKey] = src;
+          src.onended = function () {
+            var i = activeSources.indexOf(src);
+            if (i >= 0) activeSources.splice(i, 1);
+            if (wavKey && playingByWav[wavKey] === src) delete playingByWav[wavKey];
+          };
+        } else {
+          src.onended = function () {
+            if (activeSource === src) activeSource = null;
+          };
+          activeSource = src;
+        }
         src.start(0);
       }
 
@@ -537,17 +561,22 @@
           var key = c.dataset.string + ":" + c.dataset.fret;
           var p = lookup[key];
           if (!p || !p.wav || !buffers[p.wav]) return;
-          playBuffer(buffers[p.wav]);
+          playBuffer(buffers[p.wav], p.wav);
           var cell = c.classList && c.classList.contains("fret-cell")
             ? c
             : (c.closest ? c.closest(".fret-cell") : null);
           highlightCell(cell || c);
-          setNowPlaying("<strong>S" + p.string + " F" + p.fret + " · " + p.note_id + "</strong>");
+          setNowPlaying("<strong>S" + p.string + " F" + p.fret + " · " + (p.note_name || p.note_id) + "</strong>");
         });
       }
 
       function buildFretboard(player) {
         var fretCount = Number(player.fret_count) || 19;
+        if (player.string_visual_order_numbers && player.string_visual_order_numbers.length) {
+          STRING_NUMBERS = player.string_visual_order_numbers.slice();
+        } else if (player.fretboard && player.fretboard.string_visual_order_numbers) {
+          STRING_NUMBERS = player.fretboard.string_visual_order_numbers.slice();
+        }
         var cols = fretCount + 1;
         var fretsDisplay = displayFretOrder(fretCount);
         document.documentElement.style.setProperty("--fret-cols", String(cols));
@@ -611,11 +640,11 @@
                 var openLbl = document.createElement("span");
                 openLbl.className = "open-label";
                 openLbl.innerHTML =
-                  '<span class="open-tag">Open</span><span>' + pos.note_id + "</span>";
+                  '<span class="open-tag">Open</span><span>' + (pos.note_name || pos.note_id) + "</span>";
                 cell.appendChild(openLbl);
                 var openHit = document.createElement("div");
                 openHit.className = "open-string-hit";
-                openHit.title = "Open S" + sn + " · " + pos.note_id;
+                openHit.title = "Open S" + sn + " · " + (pos.note_name || pos.note_id);
                 attachNoteClick(openHit, lookup);
                 openHit.dataset.string = String(sn);
                 openHit.dataset.fret = "0";
@@ -670,6 +699,7 @@
         }
 
         var key = payloadKey(player);
+        overlappingPlayback = player.enable_overlapping_playback !== false;
         showPlayer();
         setStatus("Ready · " + (player.unique_note_count || "?") + " notes", "ready");
         buildFretboard(player);

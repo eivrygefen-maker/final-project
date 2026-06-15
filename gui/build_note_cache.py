@@ -52,14 +52,10 @@ NOTE_CACHE_SCHEMA_VERSION = "note_cache_v2"
 NOTE_CACHE_BUILDER_VERSION = "stage5_1h_stk_final_v1"
 
 # String 6 (low E) .. string 1 (high E); open frequencies in Hz.
-DEFAULT_TUNING: Tuple[Tuple[int, float, str], ...] = (
-    (6, 82.41, "E2"),
-    (5, 110.00, "A2"),
-    (4, 146.83, "D3"),
-    (3, 196.00, "G3"),
-    (2, 246.94, "B3"),
-    (1, 329.63, "E4"),
-)
+# Sourced from config/classical_guitar_fretboard.json (single source of truth).
+from classical_guitar_fretboard import get_default_tuning_tuple
+
+DEFAULT_TUNING: Tuple[Tuple[int, float, str], ...] = get_default_tuning_tuple()
 
 NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 A4_REFERENCE_HZ = 440.0
@@ -97,17 +93,29 @@ def enumerate_fretboard_positions(
     fret_count: int,
     tuning: Sequence[Tuple[int, float, str]] = DEFAULT_TUNING,
 ) -> List[Dict[str, Any]]:
-    """All (string, fret) playable positions with frequency."""
+    """All (string, fret) playable positions with frequency and note names."""
+    from classical_guitar_fretboard import (  # noqa: WPS433
+        note_at_fret,
+        note_id_from_note_name,
+        normalize_note_name,
+        string_number_to_key,
+    )
+
     positions: List[Dict[str, Any]] = []
     for string_number, open_hz, open_name in tuning:
+        string_key = string_number_to_key(string_number)
         for fret in range(int(fret_count) + 1):
             hz = fret_frequency(open_hz, fret)
+            note_name = normalize_note_name(note_at_fret(open_name, fret))
             positions.append(
                 {
                     "string_number": int(string_number),
+                    "string_key": string_key,
                     "fret": int(fret),
                     "frequency_hz": round(hz, 6),
                     "open_string_name": open_name,
+                    "note_name": note_name,
+                    "note_id": note_id_from_note_name(note_name),
                 }
             )
     return positions
@@ -127,12 +135,12 @@ def group_unique_pitches(
     unique: Dict[str, Dict[str, Any]] = {}
     for pos in positions:
         hz = float(pos["frequency_hz"])
-        note_id = pitch_dedup_key(hz)
+        note_id = str(pos.get("note_id") or pitch_dedup_key(hz))
         if note_id not in unique:
             unique[note_id] = {
                 "frequency_hz": hz,
                 "note_id": note_id,
-                "note_name": frequency_to_note_name(hz),
+                "note_name": str(pos.get("note_name") or frequency_to_note_name(hz)),
             }
     return unique
 
@@ -326,6 +334,7 @@ def build_note_cache(
                 "fret": pos["fret"],
                 "frequency_hz": round(float(pos["frequency_hz"]), 6),
                 "note_id": note_row["note_id"],
+                "note_name": str(pos.get("note_name") or note_row.get("note_name") or ""),
                 "wav_path": note_row["wav_path"],
             }
         )

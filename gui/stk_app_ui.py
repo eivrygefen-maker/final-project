@@ -7,6 +7,7 @@ from typing import Any, Dict, Mapping, Optional
 
 import streamlit as st
 
+from app_stk_config import load_app_stk_config
 from stk_app_audio_service import (
     DEFAULT_SOURCE_SAMPLE_ID,
     activate_stk_guitar_for_player,
@@ -21,6 +22,7 @@ from stk_app_audio_service import (
     save_guitar_to_stack,
     stk_binary_path,
     user_facing_stk_status,
+    AUDIT_INCOMPLETE_MSG,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +47,7 @@ def apply_stk_activation_to_session(activation: Mapping[str, Any]) -> None:
     payload = dict(activation.get("player_payload") or {})
     if not validation.get("ok"):
         payload = {"status": "hidden", "positions": [], "fingerprint": ""}
+        st.warning(AUDIT_INCOMPLETE_MSG)
     st.session_state.active_stk_cache_path = str(activation.get("cache_path") or "")
     st.session_state.active_stk_parameter_hash = str(activation.get("parameter_hash") or "")
     st.session_state.active_stk_guitar_id = str(activation.get("saved_guitar_id") or "")
@@ -64,6 +67,8 @@ def render_saved_guitars_row(
     on_load_key: str = "stk_load_guitar",
 ) -> Optional[str]:
     """Saved guitars row near the fretboard player. Returns saved_guitar_id if Load clicked."""
+    if not load_app_stk_config().get("enable_ready_fifo_stack", True):
+        return None
     stack = list_ready_guitar_stack()
     if not stack:
         return None
@@ -95,9 +100,23 @@ def generate_or_load_ready_guitar(
     rom_physical_summary_path: str = "",
 ) -> Dict[str, Any]:
     """Save ready guitar to FIFO or load existing duplicate; activate player."""
-    _ = repo_root
+    cfg = load_app_stk_config(repo_root)
     parameter_hash = compute_parameter_hash(rom_fp, lhs_params)
     state = refresh_stk_background_job_status(parameter_hash)
+
+    if str(state.get("status")) != "ready" or not state.get("preview_cache_ready"):
+        raise RuntimeError(
+            "Guitar sound is still being prepared. Please wait a little longer."
+        )
+
+    if not cfg.get("enable_ready_fifo_stack", True):
+        activation = activate_stk_guitar_for_player(
+            cache_dir=preview_cache_dir(parameter_hash),
+            parameter_hash=parameter_hash,
+        )
+        apply_stk_activation_to_session(activation)
+        st.session_state.stk_generate_intent_hash = ""
+        return {"action": "activated_preview", "activation": activation}
 
     existing = find_stack_entry_by_hash(parameter_hash)
     if existing:
@@ -109,11 +128,6 @@ def generate_or_load_ready_guitar(
         apply_stk_activation_to_session(activation)
         st.session_state.stk_generate_intent_hash = ""
         return {"action": "loaded_existing", "entry": existing, "activation": activation}
-
-    if str(state.get("status")) != "ready" or not state.get("preview_cache_ready"):
-        raise RuntimeError(
-            "Guitar sound is still being prepared. Please wait a little longer."
-        )
 
     display_name = f"Guitar — {top_wood}/{back_wood}"
     entry = save_guitar_to_stack(
@@ -153,6 +167,17 @@ def request_generate_guitar(
     rom_physical_summary_path: str = "",
 ) -> Dict[str, Any]:
     """Generate click: save/load immediately if ready, else store intent for auto-activation."""
+    cfg = load_app_stk_config(repo_root)
+    if not cfg.get("enable_generate_intent", True):
+        return generate_or_load_ready_guitar(
+            repo_root=repo_root,
+            rom_fp=rom_fp,
+            lhs_params=lhs_params,
+            geom=geom,
+            top_wood=top_wood,
+            back_wood=back_wood,
+            rom_physical_summary_path=rom_physical_summary_path,
+        )
     parameter_hash = compute_parameter_hash(rom_fp, lhs_params)
     state = refresh_stk_background_job_status(parameter_hash)
     if str(state.get("status")) == "ready" and state.get("preview_cache_ready"):
@@ -185,6 +210,9 @@ def fulfill_generate_intent_if_ready(
     rom_physical_summary_path: str = "",
 ) -> Optional[Dict[str, Any]]:
     """When STK finishes, auto-save/load if user already clicked Generate."""
+    cfg = load_app_stk_config(repo_root)
+    if not cfg.get("enable_generate_intent", True):
+        return None
     intent = str(st.session_state.get("stk_generate_intent_hash") or "")
     if not intent:
         return None
