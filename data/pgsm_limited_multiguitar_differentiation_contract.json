@@ -1,0 +1,40 @@
+{
+  "contract_version": "pgsm_limited_multiguitar_differentiation_v1",
+  "description": "Static source contract for PGSM Step 5L limited multi-guitar physical differentiation.",
+  "chain": [
+    "pgsm_step5i_3 string force/damping",
+    "pgsm_step5j_1 body balance/articulation",
+    "pgsm_step5k bridge/admittance coupling",
+    "per-sample audit geometry/material/derived proxies"
+  ],
+  "forbidden": [
+    "sample_id_only_gain",
+    "arbitrary_eq",
+    "randomization",
+    "loudness_trick",
+    "stk_integration",
+    "fem_run",
+    "rom_run",
+    "artificial_reverb",
+    "body_tail"
+  ],
+  "required_terms": [
+    "per_sample_physical_parameters",
+    "differentiation_trace",
+    "pairwise_guitar_difference_metrics",
+    "anti_cheat_checks",
+    "loudness_normalization_report"
+  ],
+  "fast_validation": {
+    "sample_set": ["sample_000", "sample_001", "sample_002"],
+    "note_set": ["A2", "A4", "E5"],
+    "max_modes": 32,
+    "duration_s": 0.75
+  },
+  "full_validation": {
+    "sample_set": ["sample_000", "sample_001", "sample_002", "sample_003"],
+    "note_set": ["A2", "A3", "A4", "E5"],
+    "max_modes": 100,
+    "duration_s": 5.5
+  }
+}
