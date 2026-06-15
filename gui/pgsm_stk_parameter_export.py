@@ -19,10 +19,12 @@ from pgsm_emergency_guitar_demo_engine import (
     PHYSICAL_FACTOR_KEYS,
     TARGET_RMS_DBFS,
     V11_VOICING,
+    _bridge_transfer_summary,
     _load_readonly_reference_modes,
-    build_sample_synthesis_state,
+    _pick_reference_modes,
+    compute_v5_physical_factors,
 )
-from pgsm_step3a_numerical_ir_testbench import NUMERIC_SR
+from pgsm_step3a_numerical_ir_testbench import FIXED_PLUCK_POSITION, NUMERIC_SR
 from pgsm_step5a_limited_note_set_diagnostic_audio import NOTE_FREQUENCY_HZ
 from pgsm_step5l_limited_multiguitar_differentiation import (
     REFERENCE_SAMPLE_ID,
@@ -31,6 +33,7 @@ from pgsm_step5l_limited_multiguitar_differentiation import (
 from stk_v6_2_audit_features import load_audit_report
 
 EXPORT_VERSION = "pgsm_stk_parameter_export_v1"
+EXPORT_VERSION_V2 = "pgsm_stk_parameter_export_v2"
 RENDERER_TARGET = "stk_cpp"
 PYTHON_ROLE = "parameter_export_only"
 DURATION_S = 2.5
@@ -39,7 +42,26 @@ NOTE_SET: Tuple[str, ...] = ("A2", "A4", "E5")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_JSON = REPO_ROOT / "audio" / "debug_reports" / "pgsm_stk_demo_parameters.json"
-STK_AUDIO_DIR = REPO_ROOT / "audio" / "pgsm_stk_guitar_demo"
+DEFAULT_OUTPUT_JSON_V2 = REPO_ROOT / "audio" / "debug_reports" / "pgsm_stk_demo_parameters_v2.json"
+
+DEMO_VERSIONS: Dict[str, Dict[str, str]] = {
+    "v1": {
+        "demo_id": "pgsm_stk_guitar_demo",
+        "export_version": EXPORT_VERSION,
+        "audio_subdir": "audio/pgsm_stk_guitar_demo",
+        "params_json": "audio/debug_reports/pgsm_stk_demo_parameters.json",
+        "report_json": "audio/debug_reports/pgsm_stk_guitar_demo_report.json",
+        "report_md": "audio/debug_reports/pgsm_stk_guitar_demo_report.md",
+    },
+    "v2": {
+        "demo_id": "pgsm_stk_guitar_demo_v2",
+        "export_version": EXPORT_VERSION_V2,
+        "audio_subdir": "audio/pgsm_stk_guitar_demo_v2",
+        "params_json": "audio/debug_reports/pgsm_stk_demo_parameters_v2.json",
+        "report_json": "audio/debug_reports/pgsm_stk_guitar_demo_v2_report.json",
+        "report_md": "audio/debug_reports/pgsm_stk_guitar_demo_v2_report.md",
+    },
+}
 
 REQUIRED_RENDER_GROUPS: Tuple[str, ...] = (
     "string_model",
@@ -50,13 +72,57 @@ REQUIRED_RENDER_GROUPS: Tuple[str, ...] = (
     "output_model",
 )
 
+AUDIT_SCALAR_KEYS: Tuple[str, ...] = (
+    "body_size_cavity_factor",
+    "body_depth_m",
+    "body_volume_proxy",
+    "soundhole_area_proxy",
+    "soundhole_radiation_factor",
+    "bridge_mobility_factor",
+    "effective_mass_loading_factor",
+    "top_stiffness_to_weight_factor",
+    "top_damping_factor",
+    "material_loss_factor",
+    "back_density_warmth_factor",
+    "air_helmholtz_factor",
+    "radiation_brightness_factor",
+    "top_weight",
+    "back_weight",
+    "air_weight",
+    "string_body_mix",
+)
+
+MEANINGFUL_SPREAD_THRESHOLD = 0.035
+
 SAMPLE_PROFILES: Dict[str, str] = {
     "sample_000": "balanced_neutral",
     "sample_001": "bright_light_fast",
     "sample_002": "warm_deep_heavy",
 }
 
-# Lightweight fallback when stk_v6 audit JSON is absent (no FEM/ROM load).
+# Applied only when source/LHS spread is too small for audible demo (disclosed in report).
+DIAGNOSTIC_MULTIPLIERS: Dict[str, Dict[str, float]] = {
+    "sample_000": {},
+    "sample_001": {
+        "bridge_mobility_factor": 1.20,
+        "effective_mass_loading_factor": 0.80,
+        "radiation_brightness_factor": 1.20,
+        "top_stiffness_to_weight_factor": 1.15,
+        "air_helmholtz_factor": 0.85,
+        "top_damping_factor": 1.12,
+        "body_size_cavity_factor": 0.90,
+    },
+    "sample_002": {
+        "effective_mass_loading_factor": 1.24,
+        "body_size_cavity_factor": 1.20,
+        "soundhole_radiation_factor": 1.20,
+        "back_density_warmth_factor": 1.28,
+        "radiation_brightness_factor": 0.85,
+        "air_helmholtz_factor": 1.15,
+        "top_damping_factor": 0.90,
+    },
+}
+
 FALLBACK_PHYSICAL: Dict[str, Dict[str, Any]] = {
     "sample_000": {
         "sample_id": "sample_000",
@@ -121,18 +187,25 @@ def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
 
+def demo_config(demo_version: str = "v1") -> Dict[str, str]:
+    if demo_version not in DEMO_VERSIONS:
+        raise ValueError(f"unknown demo_version {demo_version!r}; use v1 or v2")
+    return dict(DEMO_VERSIONS[demo_version])
+
+
 def expected_wav_filename(sample_id: str, note_name: str) -> str:
     return f"{sample_id}_{note_name}_stk_guitar.wav"
 
 
-def expected_wav_paths(repo_root: Optional[Path] = None) -> List[Path]:
+def audio_output_dir(repo_root: Path, demo_version: str = "v1") -> Path:
+    cfg = demo_config(demo_version)
+    return repo_root / cfg["audio_subdir"]
+
+
+def expected_wav_paths(repo_root: Optional[Path] = None, demo_version: str = "v1") -> List[Path]:
     root = Path(repo_root or REPO_ROOT)
-    out_dir = root / "audio" / "pgsm_stk_guitar_demo"
-    return [
-        out_dir / expected_wav_filename(sample_id, note)
-        for sample_id in SAMPLE_SET
-        for note in NOTE_SET
-    ]
+    out_dir = audio_output_dir(root, demo_version)
+    return [out_dir / expected_wav_filename(sample_id, note) for sample_id in SAMPLE_SET for note in NOTE_SET]
 
 
 def load_physical_parameters(
@@ -140,7 +213,6 @@ def load_physical_parameters(
     *,
     audit: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Load per-sample physical proxies from audit JSON or lightweight fallback."""
     if audit is not None:
         return extract_per_sample_physical_parameters(sample_id, audit)
     try:
@@ -153,6 +225,30 @@ def load_physical_parameters(
         return dict(fb)
 
 
+def _soundhole_area_proxy(physical: Mapping[str, Any]) -> float:
+    return float(physical.get("soundhole_area") or physical.get("soundhole_area_proxy") or 0.00636)
+
+
+def _normalized_spread(values: Mapping[str, float]) -> float:
+    nums = [float(v) for v in values.values()]
+    if not nums:
+        return 0.0
+    lo, hi = min(nums), max(nums)
+    mid = sum(nums) / len(nums)
+    if abs(mid) < 1e-9:
+        return hi - lo
+    return (hi - lo) / abs(mid)
+
+
+def _apply_diagnostic_multipliers(factors: Dict[str, float], sample_id: str) -> Dict[str, float]:
+    mults = DIAGNOSTIC_MULTIPLIERS.get(sample_id) or {}
+    out = dict(factors)
+    for key, mult in mults.items():
+        if key in out:
+            out[key] = round(_clamp(float(out[key]) * float(mult), 0.70, 1.35), 6)
+    return out
+
+
 def _note_support(sample_id: str, note_name: str) -> Dict[str, float]:
     base = dict(NOTE_BODY_SUPPORT.get(note_name, NOTE_BODY_SUPPORT["A2"]))
     extra = (PER_SAMPLE_NOTE_SUPPORT.get(note_name) or {}).get(sample_id) or {}
@@ -163,7 +259,6 @@ def _note_support(sample_id: str, note_name: str) -> Dict[str, float]:
 def _string_decay(factors: Mapping[str, float], note_name: str) -> float:
     top_damp = float(factors.get("top_damping_factor") or 1.0)
     brightness = float(factors.get("radiation_brightness_factor") or 1.0)
-    # Higher notes decay faster; bright guitars slightly faster.
     note_scale = {"A2": 0.92, "A4": 1.00, "E5": 1.08}.get(note_name, 1.0)
     sustain = 0.68 / (top_damp ** 0.22 * brightness ** 0.08 * note_scale)
     return round(_clamp(sustain, 0.42, 0.88), 6)
@@ -235,6 +330,124 @@ def _radiation_weights(mix: Mapping[str, Any], factors: Mapping[str, float]) -> 
     }
 
 
+def _sample_audit_row(
+    sample_id: str,
+    *,
+    physical: Mapping[str, Any],
+    factors: Mapping[str, float],
+    mix: Mapping[str, Any],
+    radiation: Mapping[str, float],
+    modes: Sequence[Mapping[str, Any]],
+    string_to_body: float,
+) -> Dict[str, Any]:
+    return {
+        "sample_id": sample_id,
+        "profile": SAMPLE_PROFILES.get(sample_id),
+        "source_physical_raw": {
+            "body_depth_m": physical.get("body_depth_m"),
+            "body_volume_proxy": physical.get("body_volume_proxy"),
+            "soundhole_area_proxy": _soundhole_area_proxy(physical),
+            "bridge_mobility_proxy": physical.get("bridge_mobility_proxy"),
+            "helmholtz_like_frequency_proxy": physical.get("helmholtz_like_frequency_proxy"),
+        },
+        "body_size_cavity_factor": factors.get("body_size_cavity_factor"),
+        "body_depth_m": physical.get("body_depth_m"),
+        "body_volume_proxy": physical.get("body_volume_proxy"),
+        "soundhole_area_proxy": _soundhole_area_proxy(physical),
+        "soundhole_radiation_factor": factors.get("soundhole_radiation_factor"),
+        "bridge_mobility_factor": factors.get("bridge_mobility_factor"),
+        "effective_mass_loading_factor": factors.get("effective_mass_loading_factor"),
+        "top_stiffness_to_weight_factor": factors.get("top_stiffness_to_weight_factor"),
+        "top_damping_factor": factors.get("top_damping_factor"),
+        "material_loss_factor": round(float(factors.get("top_damping_factor") or 1.0) * 0.92, 6),
+        "back_density_warmth_factor": factors.get("back_density_warmth_factor"),
+        "air_helmholtz_factor": factors.get("air_helmholtz_factor"),
+        "radiation_brightness_factor": factors.get("radiation_brightness_factor"),
+        "top_weight": radiation.get("top_weight"),
+        "back_weight": radiation.get("back_weight"),
+        "air_weight": radiation.get("air_weight"),
+        "string_body_mix": {
+            "string_direct": radiation.get("string_direct_weight"),
+            "body_modal": mix.get("body_modal"),
+            "string_to_body_send": string_to_body,
+        },
+        "modal_frequency_hz": [m.get("frequency_hz") for m in modes],
+        "modal_gain": [m.get("gain") for m in modes],
+        "modal_tau_or_q": [m.get("tau_or_q") for m in modes],
+    }
+
+
+def build_physical_difference_audit(
+  renders_a2: Sequence[Mapping[str, Any]],
+    *,
+    per_sample_physical: Mapping[str, Mapping[str, Any]],
+    diagnostic_exaggeration: bool,
+) -> Dict[str, Any]:
+    per_sample: Dict[str, Any] = {}
+    for row in renders_a2:
+        sid = str(row["sample_id"])
+        physical = per_sample_physical[sid]
+        factors = row.get("physical_factors") or {}
+        mix = (V11_VOICING.get(sid) or {}).get("mix") or {}
+        radiation = row.get("radiation_model") or {}
+        modes = (row.get("body_model") or {}).get("modes") or []
+        bridge = row.get("bridge_model") or {}
+        per_sample[sid] = _sample_audit_row(
+            sid,
+            physical=physical,
+            factors=factors,
+            mix=mix,
+            radiation=radiation,
+            modes=modes,
+            string_to_body=float(bridge.get("string_to_body_send") or 0.0),
+        )
+
+    factor_spread: Dict[str, Any] = {}
+    too_small: List[str] = []
+    for key in AUDIT_SCALAR_KEYS:
+        if key == "string_body_mix":
+            vals = {
+                sid: float((per_sample[sid].get("string_body_mix") or {}).get("string_to_body_send") or 0.0)
+                for sid in SAMPLE_SET
+            }
+        else:
+            vals = {sid: float(per_sample[sid].get(key) or 0.0) for sid in SAMPLE_SET}
+        spread = _normalized_spread(vals)
+        status = "meaningful" if spread >= MEANINGFUL_SPREAD_THRESHOLD else "too_small_from_source"
+        if status == "too_small_from_source":
+            too_small.append(key)
+        factor_spread[key] = {
+            "values_by_sample": vals,
+            "min": min(vals.values()),
+            "max": max(vals.values()),
+            "range": max(vals.values()) - min(vals.values()),
+            "normalized_spread": round(spread, 6),
+            "factor_spread_status": status,
+        }
+
+    modal_spread = _normalized_spread(
+        {sid: float((per_sample[sid].get("modal_frequency_hz") or [0.0])[0] or 0.0) for sid in SAMPLE_SET}
+    )
+
+    return {
+        "anchor_note": "A2",
+        "per_sample": per_sample,
+        "factor_spread": factor_spread,
+        "too_small_factors": too_small,
+        "first_modal_frequency_normalized_spread": round(modal_spread, 6),
+        "diagnostic_exaggeration_for_audible_demo": diagnostic_exaggeration,
+        "lhs_note": "Samples originate from LHS database; near-zero spread indicates mapping/export weakening, not identical LHS draws.",
+    }
+
+
+def _needs_diagnostic_exaggeration(audit_preview: Mapping[str, Mapping[str, float]]) -> bool:
+    spreads = [_normalized_spread(vals) for vals in audit_preview.values()]
+    if not spreads:
+        return True
+    meaningful = sum(1 for s in spreads if s >= MEANINGFUL_SPREAD_THRESHOLD)
+    return meaningful < max(4, len(spreads) // 3)
+
+
 def build_render_entry(
     sample_id: str,
     note_name: str,
@@ -244,29 +457,44 @@ def build_render_entry(
     sample_rate: int = NUMERIC_SR,
     duration_s: float = DURATION_S,
     repo_root: Optional[Path] = None,
+    demo_version: str = "v1",
+    factor_multipliers: Optional[Mapping[str, float]] = None,
 ) -> Dict[str, Any]:
-    """Build one STK render parameter block (no audio)."""
     root = Path(repo_root or REPO_ROOT)
+    cfg = demo_config(demo_version)
     readonly_modes = _load_readonly_reference_modes(root)
-    state = build_sample_synthesis_state(
-        sample_id,
-        physical=dict(physical),
-        reference_physical=dict(reference_physical),
-        readonly_modes=readonly_modes,
-        voicing=V11_VOICING,
+
+    factors, _ = compute_v5_physical_factors(
+        physical, reference_physical, sample_id=sample_id, voicing=V11_VOICING
     )
-    factors = state.factors
-    mix = state.mix_ratios
+    if factor_multipliers:
+        for key, mult in factor_multipliers.items():
+            if key in factors:
+                factors[key] = round(_clamp(float(factors[key]) * float(mult), 0.70, 1.35), 6)
+
+    voicing = V11_VOICING[sample_id]
+    pluck = _clamp(FIXED_PLUCK_POSITION + float(voicing.get("pluck_delta") or 0.0), 0.10, 0.20)
+    modes_raw = _pick_reference_modes(readonly_modes, factors)
+    bridge = _bridge_transfer_summary(factors)
+    mix = dict(voicing.get("mix") or {})
+    pluck_position_ratio = round(pluck, 5)
     note_support = _note_support(sample_id, note_name)
-    modes = _modes_for_stk(state.modes, note_support=note_support, factors=factors)
-    bridge = state.bridge_transfer
+    modes = _modes_for_stk(modes_raw, note_support=note_support, factors=factors)
     wav_name = expected_wav_filename(sample_id, note_name)
-    wav_path = root / "audio" / "pgsm_stk_guitar_demo" / wav_name
+    wav_path = root / cfg["audio_subdir"] / wav_name
 
     string_to_body = round(
-        _clamp(1.0 - float(mix.get("string_bridge") or 0.25) + 0.12 * float(factors.get("bridge_mobility_factor") or 1.0) - 0.12, 0.35, 0.92),
+        _clamp(
+            1.0 - float(mix.get("string_bridge") or 0.25)
+            + 0.12 * float(factors.get("bridge_mobility_factor") or 1.0)
+            - 0.12,
+            0.35,
+            0.92,
+        ),
         6,
     )
+    radiation = _radiation_weights(mix, factors)
+    material_loss = round(float(factors.get("top_damping_factor") or 1.0) * 0.92, 6)
 
     return {
         "sample_id": sample_id,
@@ -274,13 +502,22 @@ def build_render_entry(
         "frequency_hz": float(NOTE_FREQUENCY_HZ[note_name]),
         "duration_s": float(duration_s),
         "sample_rate": int(sample_rate),
-        "profile": SAMPLE_PROFILES.get(sample_id, state.voicing_profile),
+        "profile": SAMPLE_PROFILES.get(sample_id, str(voicing.get("profile"))),
         "physical_factors": {k: factors[k] for k in PHYSICAL_FACTOR_KEYS if k in factors},
+        "source_physical_raw": {
+            "body_depth_m": physical.get("body_depth_m"),
+            "body_volume_proxy": physical.get("body_volume_proxy"),
+            "soundhole_area_proxy": _soundhole_area_proxy(physical),
+            "bridge_mobility_proxy": physical.get("bridge_mobility_proxy"),
+            "helmholtz_like_frequency_proxy": physical.get("helmholtz_like_frequency_proxy"),
+        },
         "string_model": {
-            "pluck_position": state.pluck_position_ratio,
+            "pluck_position": pluck_position_ratio,
             "string_decay": _string_decay(factors, note_name),
             "harmonic_brightness": _harmonic_brightness(factors, mix),
-            "excitation_strength": round(_clamp(0.82 + 0.10 * float(factors.get("bridge_mobility_factor") or 1.0), 0.65, 1.15), 6),
+            "excitation_strength": round(
+                _clamp(0.82 + 0.10 * float(factors.get("bridge_mobility_factor") or 1.0), 0.65, 1.15), 6
+            ),
         },
         "bridge_model": {
             "bridge_mobility": round(float(factors.get("bridge_mobility_factor") or 1.0), 6),
@@ -293,6 +530,9 @@ def build_render_entry(
             "effective_mass_loading": round(float(factors.get("effective_mass_loading_factor") or 1.0), 6),
             "body_size_cavity_factor": round(float(factors.get("body_size_cavity_factor") or 1.0), 6),
             "depth_factor": round(float(physical.get("body_depth_m") or 0.10) / 0.10, 6),
+            "body_depth_m": float(physical.get("body_depth_m") or 0.10),
+            "body_volume_proxy": float(physical.get("body_volume_proxy") or 0.013),
+            "soundhole_area_proxy": _soundhole_area_proxy(physical),
             "soundhole_radiation_factor": round(float(factors.get("soundhole_radiation_factor") or 1.0), 6),
             "low_mid_body_support": round(float(note_support.get("low_mid_mode_mult") or 1.0), 6),
             "modes": modes,
@@ -300,13 +540,21 @@ def build_render_entry(
         "material_model": {
             "top_damping": round(float(factors.get("top_damping_factor") or 1.0), 6),
             "back_warmth": round(float(factors.get("back_density_warmth_factor") or 1.0), 6),
-            "material_loss": round(float(factors.get("top_damping_factor") or 1.0) * 0.92, 6),
+            "material_loss": material_loss,
+            "material_loss_factor": material_loss,
             "stiffness_to_weight": round(float(factors.get("top_stiffness_to_weight_factor") or 1.0), 6),
         },
-        "radiation_model": _radiation_weights(mix, factors),
+        "radiation_model": radiation,
+        "string_body_mix": {
+            "string_direct": radiation["string_direct_weight"],
+            "body_modal": float(mix.get("body_modal") or 0.65),
+            "string_to_body_send": string_to_body,
+        },
         "output_model": {
+            "peak_ceiling_dbfs": float(NOTE_PEAK_TARGET_DBFS.get(note_name, -6.0)),
             "peak_target_dbfs": float(NOTE_PEAK_TARGET_DBFS.get(note_name, -6.0)),
-            "loudness_target": float(TARGET_RMS_DBFS),
+            "loudness_reference_dbfs": float(TARGET_RMS_DBFS),
+            "normalize_rms": False,
             "output_wav_path": str(wav_path.relative_to(root)).replace("\\", "/"),
         },
     }
@@ -318,22 +566,49 @@ def build_parameter_export(
     audit: Optional[Mapping[str, Any]] = None,
     sample_rate: int = NUMERIC_SR,
     duration_s: float = DURATION_S,
+    demo_version: str = "v1",
 ) -> Dict[str, Any]:
-    """Assemble full demo parameter JSON for C++/STK renderer."""
     root = Path(repo_root or REPO_ROOT)
+    cfg = demo_config(demo_version)
     reference_physical = load_physical_parameters(REFERENCE_SAMPLE_ID, audit=audit)
+    per_sample_physical: Dict[str, Dict[str, Any]] = {
+        sid: load_physical_parameters(sid, audit=audit) for sid in SAMPLE_SET
+    }
+
+    preview_factors: Dict[str, Dict[str, float]] = {}
+    for sid in SAMPLE_SET:
+        fac, _ = compute_v5_physical_factors(
+            per_sample_physical[sid], reference_physical, sample_id=sid, voicing=V11_VOICING
+        )
+        preview_factors[sid] = {k: float(fac.get(k) or 1.0) for k in PHYSICAL_FACTOR_KEYS}
+
+    preview_spread = {
+        k: {sid: preview_factors[sid].get(k, 1.0) for sid in SAMPLE_SET} for k in PHYSICAL_FACTOR_KEYS
+    }
+    diagnostic = _needs_diagnostic_exaggeration(preview_spread) and demo_version == "v2"
+
     renders: List[Dict[str, Any]] = []
     per_sample_summary: Dict[str, Any] = {}
-
     for sample_id in SAMPLE_SET:
-        physical = load_physical_parameters(sample_id, audit=audit)
+        physical = per_sample_physical[sample_id]
+        mults = DIAGNOSTIC_MULTIPLIERS.get(sample_id) if diagnostic else None
         per_sample_summary[sample_id] = {
             "profile": SAMPLE_PROFILES.get(sample_id),
             "physical_source": "audit_json" if audit is not None else "audit_or_fallback",
             "body_depth_m": physical.get("body_depth_m"),
             "bridge_mobility_proxy": physical.get("bridge_mobility_proxy"),
+            "diagnostic_multipliers_applied": bool(mults),
         }
         for note_name in NOTE_SET:
+            factor_mults = None
+            if mults:
+                base_fac, _ = compute_v5_physical_factors(
+                    physical, reference_physical, sample_id=sample_id, voicing=V11_VOICING
+                )
+                adjusted = _apply_diagnostic_multipliers(dict(base_fac), sample_id)
+                factor_mults = {
+                    k: adjusted[k] / max(float(base_fac.get(k) or 1.0), 1e-9) for k in adjusted
+                }
             renders.append(
                 build_render_entry(
                     sample_id,
@@ -343,20 +618,34 @@ def build_parameter_export(
                     sample_rate=sample_rate,
                     duration_s=duration_s,
                     repo_root=root,
+                    demo_version=demo_version,
+                    factor_multipliers=factor_mults,
                 )
             )
 
+    renders_a2 = [r for r in renders if r.get("note_name") == "A2"]
+    physical_difference_audit = build_physical_difference_audit(
+        renders_a2,
+        per_sample_physical=per_sample_physical,
+        diagnostic_exaggeration=diagnostic,
+    )
+
     return {
-        "export_version": EXPORT_VERSION,
+        "export_version": cfg["export_version"],
+        "demo_version": cfg["demo_id"],
         "generated_at": _utc_now(),
         "renderer": RENDERER_TARGET,
         "python_role": PYTHON_ROLE,
         "repo_root": str(root),
+        "audio_output_subdir": cfg["audio_subdir"],
+        "report_json_path": cfg["report_json"],
+        "report_md_path": cfg["report_md"],
         "sample_set": list(SAMPLE_SET),
         "note_set": list(NOTE_SET),
         "sample_rate": int(sample_rate),
         "duration_s": float(duration_s),
         "physical_factor_keys": list(PHYSICAL_FACTOR_KEYS),
+        "physical_difference_audit": physical_difference_audit,
         "per_sample_summary": per_sample_summary,
         "per_sample_differences": _per_sample_difference_summary(renders),
         "renders": renders,
@@ -366,12 +655,12 @@ def build_parameter_export(
             "Python exports parameters only; WAV synthesis is C++/STK on VM.",
             "Modal catalog is read-only PGSM reference — not live FEM/ROM at export time.",
             "Body response in STK must be driven by bridge force, not an independent pluck.",
+            "v2: peak ceiling only in C++; RMS not forced equal across samples.",
         ],
     }
 
 
 def _per_sample_difference_summary(renders: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
-    """Highlight explicit physical deltas between demo guitars (A2 anchor)."""
     by_sample: Dict[str, Dict[str, Any]] = {}
     for row in renders:
         if row.get("note_name") != "A2":
@@ -405,11 +694,12 @@ def write_parameter_export(
     *,
     repo_root: Optional[Path] = None,
     audit: Optional[Mapping[str, Any]] = None,
+    demo_version: str = "v1",
 ) -> Path:
-    """Write parameter JSON to disk."""
     root = Path(repo_root or REPO_ROOT)
-    out = Path(output_path or (root / "audio" / "debug_reports" / "pgsm_stk_demo_parameters.json"))
-    doc = build_parameter_export(repo_root=root, audit=audit)
+    cfg = demo_config(demo_version)
+    out = Path(output_path or (root / cfg["params_json"]))
+    doc = build_parameter_export(repo_root=root, audit=audit, demo_version=demo_version)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(doc, indent=2, sort_keys=False) + "\n", encoding="utf-8")
     return out
@@ -417,16 +707,23 @@ def write_parameter_export(
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Export PGSM physical parameters for STK/C++ renderer.")
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=DEFAULT_OUTPUT_JSON,
-        help="Output JSON path (default: audio/debug_reports/pgsm_stk_demo_parameters.json)",
-    )
+    parser.add_argument("--output", type=Path, default=None, help="Output JSON path")
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
+    parser.add_argument(
+        "--demo-version",
+        choices=sorted(DEMO_VERSIONS.keys()),
+        default="v1",
+        help="Demo pack version (v2 enables physical audit + diagnostic scaling when needed)",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
-    path = write_parameter_export(args.output, repo_root=args.repo_root)
-    print(f"Wrote STK parameter export: {path}")
+    cfg = demo_config(args.demo_version)
+    default_out = args.repo_root / cfg["params_json"]
+    path = write_parameter_export(
+        args.output or default_out,
+        repo_root=args.repo_root,
+        demo_version=args.demo_version,
+    )
+    print(f"Wrote STK parameter export ({cfg['demo_id']}): {path}")
     print(f"Renders: {len(SAMPLE_SET) * len(NOTE_SET)} (no audio generated)")
     return 0
 
