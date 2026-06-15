@@ -1087,6 +1087,8 @@ def build_render_entry(
     demo_version: str = "v1",
     factor_multipliers: Optional[Mapping[str, float]] = None,
     perceptual_mix: Optional[Mapping[str, float]] = None,
+    frequency_hz: Optional[float] = None,
+    output_wav_relpath: Optional[str] = None,
 ) -> Dict[str, Any]:
     root = Path(repo_root or REPO_ROOT)
     cfg = demo_config(demo_version)
@@ -1114,7 +1116,10 @@ def build_render_entry(
         note_support = _note_support(sample_id, note_name)
     modes = _modes_for_stk(modes_raw, note_support=note_support, factors=factors)
     wav_name = expected_wav_filename(sample_id, note_name)
-    wav_path = root / cfg["audio_subdir"] / wav_name
+    if output_wav_relpath:
+        wav_path = root / Path(output_wav_relpath.replace("\\", "/"))
+    else:
+        wav_path = root / cfg["audio_subdir"] / wav_name
 
     string_to_body = round(
         _clamp(
@@ -1201,11 +1206,16 @@ def build_render_entry(
         _clamp(0.82 + 0.10 * float(factors.get("bridge_mobility_factor") or 1.0), 0.65, 1.15), 6
     )
     note_excitation = _note_excitation_scale(note_name, factors)
+    resolved_frequency_hz = (
+        float(frequency_hz)
+        if frequency_hz is not None
+        else float(NOTE_FREQUENCY_HZ[note_name])
+    )
 
     entry: Dict[str, Any] = {
         "sample_id": sample_id,
         "note_name": note_name,
-        "frequency_hz": float(NOTE_FREQUENCY_HZ[note_name]),
+        "frequency_hz": resolved_frequency_hz,
         "duration_s": float(duration_s),
         "sample_rate": int(sample_rate),
         "profile": SAMPLE_PROFILES.get(sample_id, str(voicing.get("profile"))),

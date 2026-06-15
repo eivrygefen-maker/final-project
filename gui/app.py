@@ -1974,6 +1974,11 @@ def _render_main_studio(
     player_payload = build_player_payload(resolved, ui_status=ui_status)
     guitar_player(player=player_payload, key="guitar_player", height=560)
 
+    with st.expander("STK Classical Guitar (accepted renderer)", expanded=False):
+        from stk_app_ui import render_stk_classical_panel  # noqa: WPS433
+
+        render_stk_classical_panel(repo_root=BASE_DIR, base_key="stk_classical_app")
+
 
 def main() -> None:
     saved = _load_saved_config().get("geometry", {}) or {}
