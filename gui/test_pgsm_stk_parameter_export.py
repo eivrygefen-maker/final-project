@@ -62,6 +62,29 @@ class TestPgsmStkParameterExport(unittest.TestCase):
             self.assertIn("pgsm_stk_guitar_demo_v2", row["output_model"]["output_wav_path"])
             self.assertFalse(row["output_model"].get("normalize_rms", True))
 
+    def test_v3_perceptual_calibration(self) -> None:
+        doc = build_parameter_export(repo_root=REPO, demo_version="v3")
+        self.assertEqual(doc["demo_version"], "pgsm_stk_guitar_demo_v3")
+        policy = doc.get("perceptual_calibration_policy") or {}
+        self.assertTrue(policy.get("diagnostic_exaggeration_for_audible_demo"))
+        a2 = {r["sample_id"]: r for r in doc["renders"] if r["note_name"] == "A2"}
+        self.assertGreater(
+            a2["sample_001"]["string_body_mix"]["direct_string_gain"],
+            a2["sample_000"]["string_body_mix"]["direct_string_gain"],
+        )
+        self.assertLess(
+            a2["sample_002"]["string_body_mix"]["direct_string_gain"],
+            a2["sample_000"]["string_body_mix"]["direct_string_gain"],
+        )
+        self.assertGreater(
+            a2["sample_002"]["body_model"]["body_modal_gain"],
+            a2["sample_001"]["body_model"]["body_modal_gain"],
+        )
+        for row in doc["renders"]:
+            self.assertIn("perceptual_calibration", row)
+            self.assertTrue(row["perceptual_calibration"]["diagnostic_exaggeration_for_audible_demo"])
+            self.assertIn("pgsm_stk_guitar_demo_v3", row["output_model"]["output_wav_path"])
+
     def test_samples_differ_physically(self) -> None:
         doc = build_parameter_export(repo_root=REPO)
         a2 = {r["sample_id"]: r for r in doc["renders"] if r["note_name"] == "A2"}

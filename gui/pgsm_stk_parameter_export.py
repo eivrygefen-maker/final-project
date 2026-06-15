@@ -34,6 +34,7 @@ from stk_v6_2_audit_features import load_audit_report
 
 EXPORT_VERSION = "pgsm_stk_parameter_export_v1"
 EXPORT_VERSION_V2 = "pgsm_stk_parameter_export_v2"
+EXPORT_VERSION_V3 = "pgsm_stk_parameter_export_v3"
 RENDERER_TARGET = "stk_cpp"
 PYTHON_ROLE = "parameter_export_only"
 DURATION_S = 2.5
@@ -60,6 +61,14 @@ DEMO_VERSIONS: Dict[str, Dict[str, str]] = {
         "params_json": "audio/debug_reports/pgsm_stk_demo_parameters_v2.json",
         "report_json": "audio/debug_reports/pgsm_stk_guitar_demo_v2_report.json",
         "report_md": "audio/debug_reports/pgsm_stk_guitar_demo_v2_report.md",
+    },
+    "v3": {
+        "demo_id": "pgsm_stk_guitar_demo_v3",
+        "export_version": EXPORT_VERSION_V3,
+        "audio_subdir": "audio/pgsm_stk_guitar_demo_v3",
+        "params_json": "audio/debug_reports/pgsm_stk_demo_parameters_v3.json",
+        "report_json": "audio/debug_reports/pgsm_stk_guitar_demo_v3_report.json",
+        "report_md": "audio/debug_reports/pgsm_stk_guitar_demo_v3_report.md",
     },
 }
 
@@ -121,6 +130,60 @@ DIAGNOSTIC_MULTIPLIERS: Dict[str, Dict[str, float]] = {
         "air_helmholtz_factor": 1.15,
         "top_damping_factor": 0.90,
     },
+}
+
+# v3 perceptual calibration — always applied on v3 export (disclosed in report).
+V3_FACTOR_MULTIPLIERS: Dict[str, Dict[str, float]] = {
+    "sample_000": {},
+    "sample_001": {
+        "bridge_mobility_factor": 1.28,
+        "effective_mass_loading_factor": 0.75,
+        "radiation_brightness_factor": 1.28,
+        "top_stiffness_to_weight_factor": 1.22,
+        "air_helmholtz_factor": 0.80,
+        "top_damping_factor": 1.28,
+        "body_size_cavity_factor": 0.82,
+        "soundhole_radiation_factor": 0.85,
+        "back_density_warmth_factor": 0.92,
+    },
+    "sample_002": {
+        "effective_mass_loading_factor": 1.28,
+        "body_size_cavity_factor": 1.22,
+        "soundhole_radiation_factor": 1.28,
+        "back_density_warmth_factor": 1.35,
+        "radiation_brightness_factor": 0.78,
+        "air_helmholtz_factor": 1.22,
+        "top_damping_factor": 0.82,
+        "bridge_mobility_factor": 0.88,
+        "top_stiffness_to_weight_factor": 0.94,
+    },
+}
+
+V3_MIX_SCALES: Dict[str, Dict[str, float]] = {
+    "sample_000": {
+        "direct_string_gain": 1.00,
+        "body_modal_gain": 1.00,
+        "string_to_body_send_scale": 1.00,
+    },
+    "sample_001": {
+        "direct_string_gain": 1.28,
+        "body_modal_gain": 0.85,
+        "string_to_body_send_scale": 1.25,
+    },
+    "sample_002": {
+        "direct_string_gain": 0.80,
+        "body_modal_gain": 1.28,
+        "string_to_body_send_scale": 1.12,
+    },
+}
+
+V3_NOTE_MODIFIERS: Dict[Tuple[str, str], Dict[str, float]] = {
+    ("sample_001", "A2"): {"low_mid_gain_scale": 0.82, "tau_low_scale": 0.88, "tau_mid_high_scale": 0.72, "air_scale": 0.78},
+    ("sample_002", "A2"): {"low_mid_gain_scale": 1.32, "tau_low_scale": 1.38, "tau_mid_high_scale": 1.12, "air_scale": 1.18},
+    ("sample_001", "A4"): {"low_mid_gain_scale": 0.92, "tau_low_scale": 0.90, "tau_mid_high_scale": 0.75, "top_brightness_scale": 1.15},
+    ("sample_002", "A4"): {"low_mid_gain_scale": 1.28, "tau_low_scale": 1.32, "tau_mid_high_scale": 1.22, "top_brightness_scale": 0.88},
+    ("sample_001", "E5"): {"low_mid_gain_scale": 0.88, "tau_low_scale": 0.92, "tau_mid_high_scale": 0.70, "top_brightness_scale": 1.12},
+    ("sample_002", "E5"): {"low_mid_gain_scale": 1.22, "tau_low_scale": 1.28, "tau_mid_high_scale": 1.18, "top_brightness_scale": 0.85},
 }
 
 FALLBACK_PHYSICAL: Dict[str, Dict[str, Any]] = {
@@ -189,7 +252,7 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 
 def demo_config(demo_version: str = "v1") -> Dict[str, str]:
     if demo_version not in DEMO_VERSIONS:
-        raise ValueError(f"unknown demo_version {demo_version!r}; use v1 or v2")
+        raise ValueError(f"unknown demo_version {demo_version!r}; use v1, v2, or v3")
     return dict(DEMO_VERSIONS[demo_version])
 
 
@@ -448,6 +511,45 @@ def _needs_diagnostic_exaggeration(audit_preview: Mapping[str, Mapping[str, floa
     return meaningful < max(4, len(spreads) // 3)
 
 
+def _apply_v3_mode_modifiers(
+    modes: List[Dict[str, Any]],
+    *,
+    sample_id: str,
+    note_name: str,
+    body_modal_gain: float,
+) -> List[Dict[str, Any]]:
+    note_mod = V3_NOTE_MODIFIERS.get((sample_id, note_name), {})
+    low_mid_scale = float(note_mod.get("low_mid_gain_scale") or 1.0)
+    tau_low = float(note_mod.get("tau_low_scale") or 1.0)
+    tau_mid_high = float(note_mod.get("tau_mid_high_scale") or 1.0)
+    air_scale = float(note_mod.get("air_scale") or 1.0)
+    top_brightness = float(note_mod.get("top_brightness_scale") or 1.0)
+    out: List[Dict[str, Any]] = []
+    for row in modes:
+        m = dict(row)
+        f_hz = float(m["frequency_hz"])
+        gain = float(m.get("gain") or 0.0) * body_modal_gain
+        tau = float(m.get("tau_or_q") or 0.08)
+        component = str(m.get("component") or "top")
+        if 120.0 <= f_hz <= 450.0:
+            gain *= low_mid_scale
+            tau *= tau_low if f_hz < 260.0 else tau_mid_high
+        elif f_hz < 120.0:
+            tau *= tau_low
+        else:
+            tau *= tau_mid_high
+        if component == "air":
+            gain *= air_scale
+        if component in ("top", "radiation"):
+            gain *= top_brightness
+        m["gain"] = round(gain, 6)
+        m["tau_or_q"] = round(max(tau, 0.015), 6)
+        if m.get("q"):
+            m["q"] = round(max(4.0, math.pi * f_hz * m["tau_or_q"]), 4)
+        out.append(m)
+    return out
+
+
 def build_render_entry(
     sample_id: str,
     note_name: str,
@@ -459,6 +561,7 @@ def build_render_entry(
     repo_root: Optional[Path] = None,
     demo_version: str = "v1",
     factor_multipliers: Optional[Mapping[str, float]] = None,
+    perceptual_mix: Optional[Mapping[str, float]] = None,
 ) -> Dict[str, Any]:
     root = Path(repo_root or REPO_ROOT)
     cfg = demo_config(demo_version)
@@ -468,9 +571,10 @@ def build_render_entry(
         physical, reference_physical, sample_id=sample_id, voicing=V11_VOICING
     )
     if factor_multipliers:
+        lo, hi = (0.65, 1.40) if demo_version == "v3" else (0.70, 1.35)
         for key, mult in factor_multipliers.items():
             if key in factors:
-                factors[key] = round(_clamp(float(factors[key]) * float(mult), 0.70, 1.35), 6)
+                factors[key] = round(_clamp(float(factors[key]) * float(mult), lo, hi), 6)
 
     voicing = V11_VOICING[sample_id]
     pluck = _clamp(FIXED_PLUCK_POSITION + float(voicing.get("pluck_delta") or 0.0), 0.10, 0.20)
@@ -494,9 +598,45 @@ def build_render_entry(
         6,
     )
     radiation = _radiation_weights(mix, factors)
-    material_loss = round(float(factors.get("top_damping_factor") or 1.0) * 0.92, 6)
+    mix_scales = dict(perceptual_mix or {})
+    direct_gain = float(mix_scales.get("direct_string_gain") or 1.0)
+    body_modal_gain = float(mix_scales.get("body_modal_gain") or 1.0)
+    send_scale = float(mix_scales.get("string_to_body_send_scale") or 1.0)
+    if demo_version == "v3":
+        radiation["string_direct_weight"] = round(
+            _clamp(radiation["string_direct_weight"] * direct_gain, 0.12, 0.62), 6
+        )
+        string_to_body = round(_clamp(string_to_body * send_scale, 0.30, 0.98), 6)
+        modes = _apply_v3_mode_modifiers(
+            modes, sample_id=sample_id, note_name=note_name, body_modal_gain=body_modal_gain
+        )
+        body_share = float(mix.get("body_modal") or 0.65) * body_modal_gain
+        radiation["top_weight"] = round(radiation["top_weight"] * (0.92 if sample_id == "sample_002" else 1.0), 6)
+        radiation["back_weight"] = round(
+            radiation["back_weight"] * (1.18 if sample_id == "sample_002" else (0.92 if sample_id == "sample_001" else 1.0)),
+            6,
+        )
+        radiation["air_weight"] = round(
+            radiation["air_weight"] * (1.15 if sample_id == "sample_002" else (0.82 if sample_id == "sample_001" else 1.0)),
+            6,
+        )
+    else:
+        body_share = float(mix.get("body_modal") or 0.65)
 
-    return {
+    material_loss = round(float(factors.get("top_damping_factor") or 1.0) * 0.92, 6)
+    perceptual_calibration: Optional[Dict[str, Any]] = None
+    if demo_version == "v3":
+        perceptual_calibration = {
+            "diagnostic_exaggeration_for_audible_demo": True,
+            "profile": SAMPLE_PROFILES.get(sample_id),
+            "direct_string_gain": direct_gain,
+            "body_modal_gain": body_modal_gain,
+            "string_to_body_send_scale": send_scale,
+            "note_modifiers": V3_NOTE_MODIFIERS.get((sample_id, note_name), {}),
+            "mapping_strength": 1.45,
+        }
+
+    entry: Dict[str, Any] = {
         "sample_id": sample_id,
         "note_name": note_name,
         "frequency_hz": float(NOTE_FREQUENCY_HZ[note_name]),
@@ -535,6 +675,7 @@ def build_render_entry(
             "soundhole_area_proxy": _soundhole_area_proxy(physical),
             "soundhole_radiation_factor": round(float(factors.get("soundhole_radiation_factor") or 1.0), 6),
             "low_mid_body_support": round(float(note_support.get("low_mid_mode_mult") or 1.0), 6),
+            "body_modal_gain": round(body_modal_gain, 6),
             "modes": modes,
         },
         "material_model": {
@@ -547,7 +688,9 @@ def build_render_entry(
         "radiation_model": radiation,
         "string_body_mix": {
             "string_direct": radiation["string_direct_weight"],
-            "body_modal": float(mix.get("body_modal") or 0.65),
+            "direct_string_gain": direct_gain,
+            "body_modal": body_share,
+            "body_modal_gain": body_modal_gain,
             "string_to_body_send": string_to_body,
         },
         "output_model": {
@@ -558,6 +701,9 @@ def build_render_entry(
             "output_wav_path": str(wav_path.relative_to(root)).replace("\\", "/"),
         },
     }
+    if perceptual_calibration is not None:
+        entry["perceptual_calibration"] = perceptual_calibration
+    return entry
 
 
 def build_parameter_export(
@@ -585,19 +731,22 @@ def build_parameter_export(
     preview_spread = {
         k: {sid: preview_factors[sid].get(k, 1.0) for sid in SAMPLE_SET} for k in PHYSICAL_FACTOR_KEYS
     }
-    diagnostic = _needs_diagnostic_exaggeration(preview_spread) and demo_version == "v2"
+    diagnostic = demo_version == "v3" or (_needs_diagnostic_exaggeration(preview_spread) and demo_version == "v2")
+    factor_table = V3_FACTOR_MULTIPLIERS if demo_version == "v3" else DIAGNOSTIC_MULTIPLIERS
 
     renders: List[Dict[str, Any]] = []
     per_sample_summary: Dict[str, Any] = {}
     for sample_id in SAMPLE_SET:
         physical = per_sample_physical[sample_id]
-        mults = DIAGNOSTIC_MULTIPLIERS.get(sample_id) if diagnostic else None
+        mults = factor_table.get(sample_id) if diagnostic else None
+        mix_scales = V3_MIX_SCALES.get(sample_id) if demo_version == "v3" else None
         per_sample_summary[sample_id] = {
             "profile": SAMPLE_PROFILES.get(sample_id),
             "physical_source": "audit_json" if audit is not None else "audit_or_fallback",
             "body_depth_m": physical.get("body_depth_m"),
             "bridge_mobility_proxy": physical.get("bridge_mobility_proxy"),
             "diagnostic_multipliers_applied": bool(mults),
+            "v3_perceptual_calibration": demo_version == "v3",
         }
         for note_name in NOTE_SET:
             factor_mults = None
@@ -605,7 +754,12 @@ def build_parameter_export(
                 base_fac, _ = compute_v5_physical_factors(
                     physical, reference_physical, sample_id=sample_id, voicing=V11_VOICING
                 )
-                adjusted = _apply_diagnostic_multipliers(dict(base_fac), sample_id)
+                adjusted = dict(base_fac)
+                table = V3_FACTOR_MULTIPLIERS if demo_version == "v3" else DIAGNOSTIC_MULTIPLIERS
+                lo, hi = (0.65, 1.40) if demo_version == "v3" else (0.70, 1.35)
+                for key, mult in (table.get(sample_id) or {}).items():
+                    if key in adjusted:
+                        adjusted[key] = round(_clamp(float(adjusted[key]) * float(mult), lo, hi), 6)
                 factor_mults = {
                     k: adjusted[k] / max(float(base_fac.get(k) or 1.0), 1e-9) for k in adjusted
                 }
@@ -620,6 +774,7 @@ def build_parameter_export(
                     repo_root=root,
                     demo_version=demo_version,
                     factor_multipliers=factor_mults,
+                    perceptual_mix=mix_scales,
                 )
             )
 
@@ -630,7 +785,7 @@ def build_parameter_export(
         diagnostic_exaggeration=diagnostic,
     )
 
-    return {
+    doc: Dict[str, Any] = {
         "export_version": cfg["export_version"],
         "demo_version": cfg["demo_id"],
         "generated_at": _utc_now(),
@@ -656,8 +811,18 @@ def build_parameter_export(
             "Modal catalog is read-only PGSM reference — not live FEM/ROM at export time.",
             "Body response in STK must be driven by bridge force, not an independent pluck.",
             "v2: peak ceiling only in C++; RMS not forced equal across samples.",
+            "v3: perceptual calibration for clearer sample differentiation; diagnostic_exaggeration_for_audible_demo.",
         ],
     }
+    if demo_version == "v3":
+        doc["perceptual_calibration_policy"] = {
+            "diagnostic_exaggeration_for_audible_demo": True,
+            "base": "v2_physical_audit",
+            "sample_000": "balanced_neutral_reference",
+            "sample_001": "bright_light_fast_attack_forward",
+            "sample_002": "warm_deep_heavy_body_resonant",
+        }
+    return doc
 
 
 def _per_sample_difference_summary(renders: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
@@ -713,7 +878,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--demo-version",
         choices=sorted(DEMO_VERSIONS.keys()),
         default="v1",
-        help="Demo pack version (v2 enables physical audit + diagnostic scaling when needed)",
+        help="Demo pack version (v2 audit; v3 stronger perceptual differentiation)",
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
     cfg = demo_config(args.demo_version)

@@ -1,5 +1,5 @@
 /**
- * PGSM STK guitar demo renderer — C++/STK (v1 + v2 physical-factor audit path).
+ * PGSM STK guitar demo renderer — C++/STK (v1/v2/v3 physical-factor paths).
  *
  * Body modes are driven by bridge force (smoothed), never a second pluck.
  * v2: peak ceiling only (no RMS equalization); applied-parameter audit + metrics.
@@ -75,6 +75,7 @@ struct AudioMetrics {
     double high_energy_ratio = 0.0;
     double decay_tau_s = 0.0;
     double body_string_energy_ratio = 0.0;
+    double low_mid_120_450_ratio = 0.0;
 };
 
 struct RenderSpec {
@@ -99,6 +100,11 @@ struct RenderSpec {
     double back_weight = 0.28;
     double air_weight = 0.10;
     double string_direct_weight = 0.25;
+    double direct_string_gain = 1.0;
+    double body_modal_gain = 1.0;
+    double string_to_body_send_scale = 1.0;
+    double mapping_strength = 1.0;
+    bool perceptual_v3 = false;
     PhysicalFactors phys;
     std::map<std::string, FactorAuditEntry> factor_audit;
 };
@@ -267,6 +273,9 @@ static DemoConfig parseDemoConfig(const std::string& json) {
     if (!rm.empty()) cfg.reportMdPath = rm;
     std::string dv = parseJsonString(json, "demo_version");
     if (!dv.empty()) cfg.demoVersion = dv;
+    if (cfg.demoVersion.find("v3") != std::string::npos) {
+        cfg.demoVersion = "pgsm_stk_guitar_demo_v3";
+    }
     return cfg;
 }
 
@@ -357,6 +366,7 @@ static void fillPhysicalFromJson(RenderSpec& r, const std::string& block) {
         r.phys.body_volume_proxy = parseJsonNumber(body, "body_volume_proxy", r.phys.body_volume_proxy);
         r.phys.soundhole_area_proxy = parseJsonNumber(body, "soundhole_area_proxy", r.phys.soundhole_area_proxy);
         r.phys.soundhole_radiation_factor = parseJsonNumber(body, "soundhole_radiation_factor", r.phys.soundhole_radiation_factor);
+        r.body_modal_gain = parseJsonNumber(body, "body_modal_gain", r.body_modal_gain);
     }
     if (!mat.empty()) {
         r.phys.top_damping_factor = parseJsonNumber(mat, "top_damping", r.phys.top_damping_factor);
@@ -398,6 +408,22 @@ static RenderSpec parseRenderBlock(const std::string& block) {
         r.back_weight = parseJsonNumber(rm, "back_weight", r.back_weight);
         r.air_weight = parseJsonNumber(rm, "air_weight", r.air_weight);
         r.string_direct_weight = parseJsonNumber(rm, "string_direct_weight", r.string_direct_weight);
+    }
+    const std::string mixModel = extractJsonObjectSlice(block, "string_body_mix");
+    if (!mixModel.empty()) {
+        r.direct_string_gain = parseJsonNumber(mixModel, "direct_string_gain", r.direct_string_gain);
+        r.body_modal_gain = parseJsonNumber(mixModel, "body_modal_gain", r.body_modal_gain);
+        r.string_to_body_send_scale = parseJsonNumber(mixModel, "string_to_body_send_scale", 1.0);
+        const double sd = parseJsonNumber(mixModel, "string_direct", 0.0);
+        if (sd > 0.0) r.string_direct_weight = sd;
+    }
+    const std::string pc = extractJsonObjectSlice(block, "perceptual_calibration");
+    if (!pc.empty()) {
+        r.perceptual_v3 = true;
+        r.mapping_strength = parseJsonNumber(pc, "mapping_strength", 1.45);
+        r.direct_string_gain = parseJsonNumber(pc, "direct_string_gain", r.direct_string_gain);
+        r.body_modal_gain = parseJsonNumber(pc, "body_modal_gain", r.body_modal_gain);
+        r.string_to_body_send_scale = parseJsonNumber(pc, "string_to_body_send_scale", r.string_to_body_send_scale);
     }
     const std::string om = extractJsonObjectSlice(block, "output_model");
     if (!om.empty()) {
@@ -503,38 +529,50 @@ static std::vector<double> smoothBridgeDrive(const std::vector<double>& raw, int
 
 static void applyPhysicalMappings(RenderSpec& r) {
     const auto& p = r.phys;
-    const double holeAreaScale = std::pow(p.soundhole_area_proxy / 0.00636, 0.18);
-    const double volScale = std::pow(p.body_volume_proxy / 0.013, 0.12);
+    const double strength = std::max(1.0, r.mapping_strength);
+    const auto pows = [&](double base, double exp) {
+        return std::pow(base, 1.0 + (strength - 1.0) * exp);
+    };
+    const double holeAreaScale = std::pow(p.soundhole_area_proxy / 0.00636, 0.18 * strength);
+    const double volScale = std::pow(p.body_volume_proxy / 0.013, 0.12 * strength);
 
     for (auto& m : r.modes) {
         if (m.component == "air") {
-            m.frequency_hz *= std::pow(p.air_helmholtz_factor, 0.22);
-            m.gain *= p.soundhole_radiation_factor * holeAreaScale * std::pow(p.air_helmholtz_factor, 0.18);
-            m.tau_or_q *= std::pow(p.effective_mass_loading_factor, 0.12);
+            m.frequency_hz *= pows(p.air_helmholtz_factor, 0.22);
+            m.gain *= p.soundhole_radiation_factor * holeAreaScale * pows(p.air_helmholtz_factor, 0.18);
+            m.tau_or_q *= pows(p.effective_mass_loading_factor, 0.12);
         } else if (m.component == "back") {
-            m.frequency_hz *= std::pow(p.body_size_cavity_factor * p.depth_factor * volScale, 0.10);
-            m.gain *= p.back_density_warmth_factor * std::pow(p.body_size_cavity_factor, 0.14);
-            m.tau_or_q *= std::pow(p.back_density_warmth_factor, 0.10);
+            m.frequency_hz *= pows(p.body_size_cavity_factor * p.depth_factor * volScale, 0.10);
+            m.gain *= p.back_density_warmth_factor * pows(p.body_size_cavity_factor, 0.14);
+            m.tau_or_q *= pows(p.back_density_warmth_factor, 0.10);
         } else if (m.component == "top") {
-            m.frequency_hz *= std::pow(p.top_stiffness_to_weight_factor, 0.14);
-            m.gain *= std::pow(p.top_stiffness_to_weight_factor, 0.22);
-            m.tau_or_q /= std::max(p.material_loss_factor, 0.5);
+            m.frequency_hz *= pows(p.top_stiffness_to_weight_factor, 0.14);
+            m.gain *= pows(p.top_stiffness_to_weight_factor, 0.22);
+            m.tau_or_q /= std::max(p.material_loss_factor, 0.45);
         } else if (m.component == "radiation") {
             m.gain *= p.radiation_brightness_factor;
-            m.tau_or_q /= std::max(p.material_loss_factor, 0.5);
+            m.tau_or_q /= std::max(p.material_loss_factor, 0.45);
+        }
+        if (m.frequency_hz >= 120.0 && m.frequency_hz <= 450.0) {
+            m.gain *= r.body_modal_gain;
+            if (r.perceptual_v3) m.gain *= (m.frequency_hz < 260.0 ? 1.08 : 1.0);
+        } else {
+            m.gain *= std::pow(r.body_modal_gain, 0.85);
         }
         if (m.frequency_hz < 260.0) {
-            m.frequency_hz *= std::pow(p.body_size_cavity_factor * p.depth_factor, 0.06);
-            m.gain *= std::pow(p.body_size_cavity_factor * p.depth_factor * volScale, 0.12);
+            m.frequency_hz *= pows(p.body_size_cavity_factor * p.depth_factor, 0.06);
+            m.gain *= pows(p.body_size_cavity_factor * p.depth_factor * volScale, 0.12);
         }
         m.frequency_hz = std::max(40.0, std::min(m.frequency_hz, r.sample_rate * 0.49));
-        m.tau_or_q = std::max(0.02, m.tau_or_q);
+        m.tau_or_q = std::max(0.015, m.tau_or_q);
     }
 
-    r.harmonic_brightness *= std::pow(p.top_stiffness_to_weight_factor, 0.12) * std::pow(p.radiation_brightness_factor, 0.18);
-    r.top_weight *= std::pow(p.radiation_brightness_factor, 0.20);
-    r.back_weight *= std::pow(p.back_density_warmth_factor, 0.18);
-    r.air_weight *= p.soundhole_radiation_factor * holeAreaScale * std::pow(p.air_helmholtz_factor, 0.15);
+    r.string_direct_weight *= r.direct_string_gain;
+    r.string_to_body_send *= r.string_to_body_send_scale;
+    r.harmonic_brightness *= pows(p.top_stiffness_to_weight_factor, 0.12) * pows(p.radiation_brightness_factor, 0.18);
+    r.top_weight *= pows(p.radiation_brightness_factor, 0.20);
+    r.back_weight *= pows(p.back_density_warmth_factor, 0.18);
+    r.air_weight *= p.soundhole_radiation_factor * holeAreaScale * pows(p.air_helmholtz_factor, 0.15);
 
     const double wsum = r.top_weight + r.back_weight + r.air_weight;
     if (wsum > 1e-9) {
@@ -569,6 +607,8 @@ static void applyPhysicalMappings(RenderSpec& r) {
     setAudit("back_weight", r.back_weight, r.back_weight, "final_radiation_mix");
     setAudit("air_weight", r.air_weight, r.air_weight, "final_radiation_mix");
     setAudit("string_body_mix", r.string_direct_weight, r.string_direct_weight, "string_direct_vs_body_modal_mix");
+    setAudit("direct_string_gain", r.direct_string_gain, r.direct_string_gain, "stk_plucked_direct_path_gain");
+    setAudit("body_modal_gain", r.body_modal_gain, r.body_modal_gain, "body_modal_bank_output_gain");
 }
 
 static AudioMetrics computeMetrics(const std::vector<double>& y, int sr,
@@ -583,7 +623,7 @@ static AudioMetrics computeMetrics(const std::vector<double>& y, int sr,
     m.rms_dbfs = linToDbfs(std::sqrt(sumsq / std::max<size_t>(y.size(), 1)));
 
     const size_t n = y.size();
-    double lowE = 0.0, midE = 0.0, highE = 0.0, weightedF = 0.0, specE = 0.0;
+    double lowMidE = 0.0, highE = 0.0, weightedF = 0.0, specE = 0.0;
     for (size_t k = 1; k < n / 2 && k < 4096; ++k) {
         double re = 0.0, im = 0.0;
         for (size_t t = 0; t < n; ++t) {
@@ -591,17 +631,16 @@ static AudioMetrics computeMetrics(const std::vector<double>& y, int sr,
             re += y[t] * std::cos(ang);
             im -= y[t] * std::sin(ang);
         }
-        double p = (re * re + im * im) / static_cast<double>(n * n);
+        double pwr = (re * re + im * im) / static_cast<double>(n * n);
         double f = k * sr / static_cast<double>(n);
-        specE += p;
-        weightedF += f * p;
-        if (f < 250) lowE += p;
-        else if (f < 1200) midE += p;
-        else highE += p;
+        specE += pwr;
+        weightedF += f * pwr;
+        if (f >= 120.0 && f <= 450.0) lowMidE += pwr;
+        if (f > 1200.0) highE += pwr;
     }
     if (specE > 1e-18) m.spectral_centroid_hz = weightedF / specE;
-    const double lm = lowE + midE;
-    m.low_mid_energy_ratio = lm / std::max(specE, 1e-18);
+    m.low_mid_energy_ratio = lowMidE / std::max(specE, 1e-18);
+    m.low_mid_120_450_ratio = m.low_mid_energy_ratio;
     m.high_energy_ratio = highE / std::max(specE, 1e-18);
 
     size_t peakIdx = 0;
@@ -634,7 +673,7 @@ static RenderOutcome renderOne(RenderSpec spec) {
     body.build(spec.modes, sr);
 
     const double coupling = spec.string_to_body_send * spec.phys.bridge_mobility_factor;
-    const int smoothN = std::max(3, static_cast<int>((0.006 + 0.010 * spec.phys.effective_mass_loading_factor) * sr));
+    const int smoothN = std::max(3, static_cast<int>((0.005 + 0.012 * spec.phys.effective_mass_loading_factor) * sr));
 
     std::vector<double> stringBuf(n), bridgeRaw(n);
     double prev = 0.0;
@@ -664,7 +703,7 @@ static RenderOutcome renderOne(RenderSpec spec) {
         double topP = bodyS * (topAcc / compSum) * spec.top_weight;
         double backP = bodyS * (backAcc / compSum) * spec.back_weight;
         double airP = bodyS * (airAcc / compSum) * spec.air_weight;
-        double bodyMix = topP + backP + airP;
+        double bodyMix = (topP + backP + airP) * std::pow(spec.body_modal_gain, 0.35);
         double str = spec.string_direct_weight * stringBuf[static_cast<size_t>(i)];
         out.audio[static_cast<size_t>(i)] = str + bodyMix;
         stringE += str * str;
@@ -721,7 +760,7 @@ static std::string jsonEscape(const std::string& s) {
 }
 
 static std::string inferBottleneck(const std::vector<RenderOutcome>& outcomes,
-    const std::vector<RenderSpec>& specs, const std::string& auditSlice) {
+    const std::vector<RenderSpec>& specs, const std::string& auditSlice, bool isV3) {
     bool allApplied = true;
     for (const auto& o : outcomes)
         for (const auto& kv : o.factor_audit)
@@ -737,13 +776,73 @@ static std::string inferBottleneck(const std::vector<RenderOutcome>& outcomes,
         if (specs[i].note_name == "A2") rmsBySample[specs[i].sample_id].push_back(outcomes[i].metrics.rms_dbfs);
     if (rmsBySample.size() >= 3) {
         double lo = 1e9, hi = -1e9;
+        double cLo = 1e9, cHi = -1e9;
         for (const auto& kv : rmsBySample) {
             double v = kv.second.empty() ? -120.0 : kv.second[0];
             lo = std::min(lo, v); hi = std::max(hi, v);
         }
-        if (hi - lo < 0.35) return "factors_active_but_need_demo_scaling";
+        for (size_t i = 0; i < outcomes.size(); ++i) {
+            if (specs[i].note_name != "A2") continue;
+            cLo = std::min(cLo, outcomes[i].metrics.spectral_centroid_hz);
+            cHi = std::max(cHi, outcomes[i].metrics.spectral_centroid_hz);
+        }
+        const double rmsSpread = hi - lo;
+        const double centroidSpread = cHi - cLo;
+        if (isV3) {
+            if (centroidSpread >= 90.0 || rmsSpread >= 0.55) return "differentiation_active";
+            if (centroidSpread >= 45.0 || rmsSpread >= 0.30) return "factors_active_but_need_demo_scaling";
+            return "factors_active_but_need_demo_scaling";
+        }
+        if (rmsSpread < 0.35) return "factors_active_but_need_demo_scaling";
     }
     return "differentiation_active";
+}
+
+static std::string readinessStatusV3(const std::string& bottleneck, size_t wavCount,
+    const std::vector<RenderOutcome>& outcomes, const std::vector<RenderSpec>& specs) {
+    if (wavCount != 9) return "audit_failed_missing_factor_application";
+    if (bottleneck == "renderer_not_applying_factors" || bottleneck == "export_missing_factors")
+        return "audit_failed_missing_factor_application";
+
+    bool clipped = false;
+    bool extremeBody = false;
+    for (const auto& o : outcomes) {
+        if (o.metrics.peak_dbfs > -2.5) clipped = true;
+        if (o.metrics.body_string_energy_ratio > 18.0 || o.metrics.body_string_energy_ratio < 0.04)
+            extremeBody = true;
+    }
+    if (clipped || extremeBody) return "demo_generated_but_tone_regression";
+
+    double minCorr = 1.0;
+    const std::vector<std::string> notes = {"A2", "A4", "E5"};
+    const std::vector<std::pair<std::string, std::string>> pairs = {
+        {"sample_000", "sample_001"}, {"sample_000", "sample_002"}, {"sample_001", "sample_002"}};
+    for (const auto& note : notes) {
+        for (const auto& pr : pairs) {
+            const std::vector<double> *a = nullptr, *b = nullptr;
+            for (size_t i = 0; i < specs.size(); ++i) {
+                if (specs[i].note_name == note && specs[i].sample_id == pr.first) a = &outcomes[i].audio;
+                if (specs[i].note_name == note && specs[i].sample_id == pr.second) b = &outcomes[i].audio;
+            }
+            if (a && b) minCorr = std::min(minCorr, pearson(*a, *b));
+        }
+    }
+
+    double centroidSpread = 0.0;
+    double cLo = 1e9, cHi = -1e9;
+    for (size_t i = 0; i < outcomes.size(); ++i) {
+        if (specs[i].note_name != "A2") continue;
+        cLo = std::min(cLo, outcomes[i].metrics.spectral_centroid_hz);
+        cHi = std::max(cHi, outcomes[i].metrics.spectral_centroid_hz);
+    }
+    centroidSpread = cHi - cLo;
+
+    if (bottleneck == "differentiation_active" && centroidSpread >= 70.0 && minCorr < 0.97)
+        return "ready_for_gui_activation";
+    if (centroidSpread < 50.0 && minCorr > 0.94) return "demo_generated_but_differentiation_weak";
+    if (minCorr < 0.55) return "demo_generated_but_tone_regression";
+    if (bottleneck == "differentiation_active") return "ready_for_gui_activation";
+    return "demo_generated_but_differentiation_weak";
 }
 
 static std::string readinessStatus(const std::string& bottleneck, size_t wavCount) {
@@ -762,8 +861,11 @@ static void writeReportV2(const std::filesystem::path& jsonPath, const std::file
     const std::vector<RenderSpec>& specs, const std::vector<RenderOutcome>& outcomes,
     const std::vector<std::string>& written) {
     const std::string auditSlice = extractJsonObjectSlice(paramsJson, "physical_difference_audit");
-    const std::string bottleneck = inferBottleneck(outcomes, specs, auditSlice);
-    const std::string readiness = readinessStatus(bottleneck, written.size());
+    const bool isV3 = cfg.demoVersion.find("v3") != std::string::npos;
+    const std::string bottleneck = inferBottleneck(outcomes, specs, auditSlice, isV3);
+    const std::string readiness = isV3
+        ? readinessStatusV3(bottleneck, written.size(), outcomes, specs)
+        : readinessStatus(bottleneck, written.size());
 
     std::ostringstream js;
     js << "{\n";
@@ -823,10 +925,28 @@ static void writeReportV2(const std::filesystem::path& jsonPath, const std::file
         js << ",\"high_energy_ratio\":" << o.metrics.high_energy_ratio;
         js << ",\"decay_tau_s\":" << o.metrics.decay_tau_s;
         js << ",\"body_string_energy_ratio\":" << o.metrics.body_string_energy_ratio;
+        js << ",\"low_mid_120_450_ratio\":" << o.metrics.low_mid_120_450_ratio;
         js << "}\n";
         js << "    }" << (i + 1 < specs.size() ? ",\n" : "\n");
     }
     js << "  ],\n";
+
+    js << "  \"per_sample_applied_mix_summary\": {\n";
+    const std::vector<std::string> sampleIds = {"sample_000", "sample_001", "sample_002"};
+    for (size_t si = 0; si < sampleIds.size(); ++si) {
+        for (size_t i = 0; i < specs.size(); ++i) {
+            if (specs[i].sample_id != sampleIds[si] || specs[i].note_name != "A2") continue;
+            const auto& o = outcomes[i];
+            js << "    \"" << sampleIds[si] << "\": {";
+            js << "\"string_direct_weight\":" << o.applied_string_direct_weight;
+            js << ",\"body_modal_gain\":" << (specs[i].body_modal_gain);
+            js << ",\"string_to_body_send\":" << o.applied_string_to_body_send;
+            js << ",\"spectral_centroid_hz\":" << o.metrics.spectral_centroid_hz;
+            js << ",\"body_string_energy_ratio\":" << o.metrics.body_string_energy_ratio;
+            js << "}" << (si + 1 < sampleIds.size() ? ",\n" : "\n");
+        }
+    }
+    js << "  },\n";
 
     js << "  \"pairwise_same_note_correlation\": {\n";
     const std::vector<std::string> notes = {"A2", "A4", "E5"};
@@ -843,6 +963,23 @@ static void writeReportV2(const std::filesystem::path& jsonPath, const std::file
             if (a && b) {
                 js << "    \"" << note << "_" << pr.first << "_vs_" << pr.second << "\": "
                    << pearson(*a, *b) << (++pi < notes.size() * pairs.size() ? ",\n" : "\n");
+            }
+        }
+    }
+    js << "  },\n";
+    js << "  \"pairwise_same_note_spectral_centroid_distance_hz\": {\n";
+    pi = 0;
+    for (const auto& note : notes) {
+        for (const auto& pr : pairs) {
+            double ca = 0.0, cb = 0.0;
+            bool ok = false;
+            for (size_t i = 0; i < specs.size(); ++i) {
+                if (specs[i].note_name == note && specs[i].sample_id == pr.first) { ca = outcomes[i].metrics.spectral_centroid_hz; ok = true; }
+                if (specs[i].note_name == note && specs[i].sample_id == pr.second) cb = outcomes[i].metrics.spectral_centroid_hz;
+            }
+            if (ok) {
+                js << "    \"" << note << "_" << pr.first << "_vs_" << pr.second << "\": "
+                   << std::abs(ca - cb) << (++pi < notes.size() * pairs.size() ? ",\n" : "\n");
             }
         }
     }

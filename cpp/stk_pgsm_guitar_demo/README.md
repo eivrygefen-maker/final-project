@@ -35,6 +35,10 @@ python gui/pgsm_stk_parameter_export.py
 # v2 (physical difference audit + factor activation)
 python gui/pgsm_stk_parameter_export.py --demo-version v2
 ./tools/run_stk_pgsm_demo_v2.sh
+
+# v3 (stronger perceptual differentiation)
+python gui/pgsm_stk_parameter_export.py --demo-version v3
+./tools/run_stk_pgsm_demo_v3.sh
 ```
 
 ## Outputs
@@ -42,6 +46,8 @@ python gui/pgsm_stk_parameter_export.py --demo-version v2
 - v1 WAVs: `audio/pgsm_stk_guitar_demo/`
 - v2 WAVs: `audio/pgsm_stk_guitar_demo_v2/`
 - v2 reports: `audio/debug_reports/pgsm_stk_guitar_demo_v2_report.json` and `.md`
+- v3 WAVs: `audio/pgsm_stk_guitar_demo_v3/`
+- v3 reports: `audio/debug_reports/pgsm_stk_guitar_demo_v3_report.json` and `.md`
 
 ## Limitations
 
