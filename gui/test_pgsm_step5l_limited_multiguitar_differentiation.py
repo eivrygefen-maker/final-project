@@ -12,7 +12,6 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "gui"))
 
 from pgsm_step5j_1_guitar_articulation_body_balance_repair import collect_all_previous_audio_fingerprints  # noqa: E402
-from pgsm_step5k_bridge_admittance_feedback_coupling import SAFE_NEXT_STEP_5L  # noqa: E402
 from pgsm_step5l_limited_multiguitar_differentiation import (  # noqa: E402
     AUDIO_DIR,
     FAST_NOTE_SET,
@@ -48,15 +47,18 @@ def _snapshot_wav_directory(audio_dir: Path) -> dict[str, tuple[int, int]]:
 class TestPgsmStep5lLimitedMultiguitarDifferentiation(unittest.TestCase):
     _shared_report: dict | None = None
     _source_contract_hash: str | None = None
+    _step5k_report_hash_before: str | None = None
+    _step5k_report_mtime_before: int | None = None
     _audio_snapshot_before: dict[str, tuple[int, int]] | None = None
     _audio_snapshot_after: dict[str, tuple[int, int]] | None = None
 
     @classmethod
     def setUpClass(cls) -> None:
-        if not STEP5K_REPORT_JSON.is_file():
-            raise unittest.SkipTest("Step 5K report required on disk for Step 5L upstream load")
         if SOURCE_CONTRACT_JSON.is_file():
             cls._source_contract_hash = _file_sha256(SOURCE_CONTRACT_JSON)
+        if STEP5K_REPORT_JSON.is_file():
+            cls._step5k_report_hash_before = _file_sha256(STEP5K_REPORT_JSON)
+            cls._step5k_report_mtime_before = STEP5K_REPORT_JSON.stat().st_mtime_ns
         cls._audio_snapshot_before = _snapshot_wav_directory(AUDIO_DIR)
         cls._shared_report = build_pgsm_step5l_report(
             repo_root=REPO,
@@ -73,10 +75,14 @@ class TestPgsmStep5lLimitedMultiguitarDifferentiation(unittest.TestCase):
 
     def test_validation_mode_fast(self) -> None:
         vcfg = self._report().get("validation_config") or {}
+        upstream = self._report().get("upstream_step5k_status") or {}
         self.assertEqual(vcfg.get("validation_mode"), "fast")
         self.assertFalse(vcfg.get("render_audio"))
         self.assertFalse(vcfg.get("write_outputs"))
-        self.assertTrue(vcfg.get("upstream_step5k_rebuild_skipped"))
+        self.assertEqual(
+            vcfg.get("upstream_step5k_rebuild_skipped"),
+            upstream.get("step5k_upstream_source") == "disk_json",
+        )
         self.assertEqual(vcfg.get("duration_s"), FAST_VALIDATION_DURATION_S)
         self.assertEqual(self._report().get("validation_max_modes"), FAST_VALIDATION_MAX_MODES)
 
@@ -91,8 +97,24 @@ class TestPgsmStep5lLimitedMultiguitarDifferentiation(unittest.TestCase):
     def test_step5k_upstream_loads(self) -> None:
         upstream = self._report().get("upstream_step5k_status") or {}
         self.assertTrue(upstream.get("pass"))
-        self.assertEqual(upstream.get("step5k_upstream_source"), "disk_json")
+        self.assertTrue(upstream.get("upstream_step5k_loaded"))
+        self.assertIn(
+            upstream.get("step5k_upstream_source"),
+            ("disk_json", "in_memory_fast_build"),
+        )
+        self.assertIsInstance(upstream.get("upstream_step5k_fast_validation_used"), bool)
+        if upstream.get("step5k_upstream_source") == "in_memory_fast_build":
+            self.assertTrue(upstream.get("upstream_step5k_fast_validation_used"))
+        else:
+            self.assertFalse(upstream.get("upstream_step5k_fast_validation_used"))
         self.assertTrue(upstream.get("step5l_multiguitar_planning_allowed"))
+
+    def test_step5k_report_not_written_during_fast_test(self) -> None:
+        if self._step5k_report_hash_before is not None:
+            self.assertEqual(_file_sha256(STEP5K_REPORT_JSON), self._step5k_report_hash_before)
+            self.assertEqual(STEP5K_REPORT_JSON.stat().st_mtime_ns, self._step5k_report_mtime_before)
+        else:
+            self.assertFalse(STEP5K_REPORT_JSON.is_file())
 
     def test_report_internal_consistency(self) -> None:
         check = validate_report_internal_consistency(self._report())

@@ -53,6 +53,7 @@ from pgsm_step5j_1_guitar_articulation_body_balance_repair import (
 from pgsm_step5k_bridge_admittance_feedback_coupling import (
     SAFE_NEXT_STEP_5L,
     apply_bridge_admittance_coupling,
+    build_pgsm_step5k_report,
 )
 from sample_parameters import normalize_sample_parameters
 from stk_pipeline_defaults import DEFAULT_WEBSITE_STK_MODE
@@ -144,31 +145,67 @@ def build_multiguitar_contract() -> Dict[str, Any]:
     }
 
 
-def resolve_step5k_upstream(repo_root: Path) -> Dict[str, Any]:
-    """Load Step 5K status from disk only — no heavy Step 5K/5J.1 rebuild in Step 5L."""
-    path = repo_root / "audio" / "debug_reports" / "pgsm_step5k_bridge_admittance_feedback_coupling.json"
-    if not path.is_file():
-        return {
-            "step5k_upstream_source": "missing",
-            "pass": False,
-            "step5l_multiguitar_planning_allowed": False,
-            "documented_limitation_loaded": False,
-        }
-    disk = json.loads(path.read_text(encoding="utf-8"))
-    rg = disk.get("readiness_after_step5k") or {}
+def _disk_step5k_has_planning_fields(report: Mapping[str, Any]) -> bool:
+    """Disk Step 5K JSON is usable when multiguitar planning closure fields are present."""
+    rg = report.get("readiness_after_step5k") or {}
+    return bool(
+        rg.get("step5l_multiguitar_planning_allowed")
+        or report.get("safe_next_step") == SAFE_NEXT_STEP_5L
+        or rg.get("bridge_coupling_diagnostic_completed")
+    )
+
+
+def _verify_upstream_from_step5k_report(
+    step5k: Mapping[str, Any],
+    *,
+    source: str,
+    fast_validation_used: bool,
+) -> Dict[str, Any]:
+    rg = step5k.get("readiness_after_step5k") or {}
     planning = bool(
         rg.get("step5l_multiguitar_planning_allowed")
-        or disk.get("safe_next_step") == SAFE_NEXT_STEP_5L
+        or step5k.get("safe_next_step") == SAFE_NEXT_STEP_5L
     )
     return {
-        "step5k_upstream_source": "disk_json",
-        "step5k_report_version": disk.get("report_version"),
+        "step5k_upstream_source": source,
+        "upstream_step5k_loaded": True,
+        "upstream_step5k_fast_validation_used": fast_validation_used,
+        "step5k_report_version": step5k.get("report_version"),
         "step5k_readiness_status": rg.get("current_status"),
-        "step5k_safe_next_step": disk.get("safe_next_step"),
+        "step5k_safe_next_step": step5k.get("safe_next_step"),
         "step5l_multiguitar_planning_allowed": planning,
-        "documented_limitation_loaded": bool(disk.get("documented_limitation_loaded")),
+        "documented_limitation_loaded": bool(step5k.get("documented_limitation_loaded")),
         "pass": planning,
     }
+
+
+def resolve_step5k_upstream(
+    repo_root: Path,
+    *,
+    prefer_in_memory: bool = False,
+) -> Dict[str, Any]:
+    """Load Step 5K from disk when valid; otherwise build fast in-memory (no disk write)."""
+    path = repo_root / "audio" / "debug_reports" / "pgsm_step5k_bridge_admittance_feedback_coupling.json"
+    if path.is_file() and not prefer_in_memory:
+        disk = json.loads(path.read_text(encoding="utf-8"))
+        if _disk_step5k_has_planning_fields(disk):
+            return _verify_upstream_from_step5k_report(
+                disk,
+                source="disk_json",
+                fast_validation_used=False,
+            )
+
+    in_memory = build_pgsm_step5k_report(
+        repo_root=repo_root,
+        fast_validation=True,
+        render_audio=False,
+        write_outputs=False,
+    )
+    return _verify_upstream_from_step5k_report(
+        in_memory,
+        source="in_memory_fast_build",
+        fast_validation_used=True,
+    )
 
 
 def extract_per_sample_physical_parameters(
@@ -662,6 +699,10 @@ def build_readiness_after_step5l(
 def validate_report_internal_consistency(report: Mapping[str, Any]) -> Dict[str, Any]:
     issues: List[str] = []
     upstream = report.get("upstream_step5k_status") or {}
+    if not upstream.get("upstream_step5k_loaded"):
+        issues.append("upstream_step5k_loaded must be true")
+    if upstream.get("step5k_upstream_source") not in ("disk_json", "in_memory_fast_build"):
+        issues.append("step5k_upstream_source must be disk_json or in_memory_fast_build")
     if not upstream.get("pass"):
         issues.append("upstream_step5k_status.pass must be true")
     if not report.get("no_stk_integration"):
@@ -793,7 +834,9 @@ def build_pgsm_step5l_report(
         "sample_set": sample_set,
         "note_set": note_set,
         "tracked_source_files_modified": False,
-        "upstream_step5k_rebuild_skipped": True,
+        "upstream_step5k_source": upstream.get("step5k_upstream_source"),
+        "upstream_step5k_rebuild_skipped": upstream.get("step5k_upstream_source") == "disk_json",
+        "upstream_step5k_fast_validation_used": upstream.get("upstream_step5k_fast_validation_used"),
     }
 
     loudness_report = {
