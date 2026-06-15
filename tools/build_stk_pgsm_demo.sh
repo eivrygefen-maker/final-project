@@ -28,5 +28,11 @@ mkdir -p "${BUILD_DIR}"
 cmake -S "${REPO_ROOT}/cpp/stk_pgsm_guitar_demo" -B "${BUILD_DIR}" -DSTK_ROOT="${STK_ROOT:-}"
 cmake --build "${BUILD_DIR}" --config Release -j"$(nproc 2>/dev/null || echo 2)"
 
-echo "Built: ${BUILD_DIR}/stk_pgsm_guitar_demo"
+BINARY="${BUILD_DIR}/stk_pgsm_guitar_demo"
+if [[ ! -x "${BINARY}" ]]; then
+  echo "ERROR: C++ build failed — renderer binary not found: ${BINARY}"
+  exit 1
+fi
+
+echo "Built: ${BINARY}"
 echo "Run: ${REPO_ROOT}/tools/run_stk_pgsm_demo.sh"
