@@ -1,182 +1,184 @@
 #!/usr/bin/env python3
-"""Streamlit UI panel for accepted STK classical guitar note library."""
+"""Streamlit UI panel for accepted STK classical guitar (background render + FIFO stack)."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 import streamlit as st
 
 from stk_app_audio_service import (
-    build_note_library,
-    get_latest_note_library_report,
-    get_melody_wav,
+    DEFAULT_SOURCE_SAMPLE_ID,
+    cache_is_ready,
+    compute_parameter_hash,
     get_note_wav,
     list_available_notes,
-    list_available_samples,
     list_guitar_stack,
-    list_melody_ids,
-    load_melody_library,
-    note_cache_dir,
-    push_guitar_snapshot,
+    poll_background_job,
+    preview_cache_dir,
+    read_job_status,
+    save_guitar_to_stack,
     stk_binary_path,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+COMPARE_NOTES = ("A2", "A4", "E5")
 
 
-def _profile_label(sample_id: str) -> str:
-    labels = {
-        "sample_000": "balanced/neutral",
-        "sample_001": "bright/light",
-        "sample_002": "warm/deep",
+def _geometry_summary(geom: Mapping[str, Any], top_wood: str, back_wood: str) -> Dict[str, Any]:
+    return {
+        "length": geom.get("length"),
+        "width": geom.get("width"),
+        "depth": geom.get("depth"),
+        "top_thickness": geom.get("top_thickness"),
+        "hole_radius": geom.get("hole_radius"),
+        "top_wood_id": top_wood,
+        "back_wood_id": back_wood,
     }
-    return labels.get(sample_id, "LHS classical")
 
 
-def render_stk_classical_panel(*, repo_root: Optional[Path] = None, base_key: str = "stk_app") -> None:
+def _status_badge(status: str) -> str:
+    labels = {
+        "not_started": "⏳ not started",
+        "waiting_for_rom": "⏳ waiting for ROM",
+        "running": "🔄 running",
+        "ready": "✅ ready",
+        "failed": "❌ failed",
+        "stale": "⚠️ stale",
+    }
+    return labels.get(status, status)
+
+
+def render_stk_classical_panel(
+    *,
+    repo_root: Optional[Path] = None,
+    base_key: str = "stk_app",
+    rom_fp: str = "",
+    lhs_params: Optional[Mapping[str, Any]] = None,
+    geom: Optional[Mapping[str, Any]] = None,
+    top_wood: str = "",
+    back_wood: str = "",
+    rom_ready: bool = False,
+    rom_pending: bool = False,
+    rom_error: str = "",
+) -> None:
     root = Path(repo_root or REPO_ROOT)
-    st.subheader("STK Classical Guitar Library")
+    st.subheader("STK Classical Guitar")
     st.caption(
-        "Accepted STK/C++ renderer — Python exports parameters only. "
-        "Build a chromatic note cache, play individual notes, or render simple melodies."
+        "Accepted STK/C++ renderer. Save runs ROM; STK note cache builds automatically in the background. "
+        "**Generate Sound** saves the current guitar to the comparison stack when the cache is ready."
     )
 
-    samples = list_available_samples(root)
-    sample_id = st.selectbox(
-        "Guitar sample",
-        options=samples,
-        index=0 if "sample_000" in samples else 0,
-        key=f"{base_key}_sample",
-    )
-    cache_dir = note_cache_dir(sample_id, "classical")
-    cached_notes = list_available_notes(sample_id)
-    latest = get_latest_note_library_report(sample_id)
+    parameter_hash = compute_parameter_hash(rom_fp, lhs_params) if rom_fp else ""
+    preview = preview_cache_dir(parameter_hash) if parameter_hash else None
 
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.metric("Cached notes", len(cached_notes))
-    with col_b:
-        if latest:
-            st.metric("Last total render (s)", latest.get("total_render_time_s", "—"))
-        else:
-            st.metric("Last total render (s)", "—")
-
-    force = st.checkbox("Force regenerate all notes", value=False, key=f"{base_key}_force")
-    binary = stk_binary_path(root)
-    binary_ok = binary.is_file()
-
-    if st.button("Generate STK Note Library", type="primary", key=f"{base_key}_build", disabled=not binary_ok):
-        if not binary_ok:
-            st.error(f"STK binary missing: {binary}")
-        else:
-            with st.spinner("Exporting parameters and rendering notes via STK/C++…"):
-                try:
-                    report = build_note_library(
-                        sample_id,
-                        instrument="classical",
-                        note_range="E2:E5",
-                        force=force,
-                        repo_root=root,
-                        binary=binary,
-                    )
-                    st.session_state[f"{base_key}_last_report"] = report
-                    push_guitar_snapshot(
-                        sample_id=sample_id,
-                        display_name=f"Guitar — {_profile_label(sample_id)}",
-                        physical_summary=report.get("rom_physical_summary") or {},
-                        note_cache_path=report.get("output_dir"),
-                        timing_report_path=report.get("report_json"),
-                    )
-                    if report.get("readiness") == "ready_for_app_playback":
-                        st.success(
-                            f"Library ready — {report['note_count']} notes, "
-                            f"{report['total_render_time_s']} s total "
-                            f"({report['average_time_per_note_s']} s avg/note)"
-                        )
-                    else:
-                        st.warning(f"Readiness: {report.get('readiness')}")
-                except Exception as exc:
-                    st.error(f"STK note library failed: {exc}")
-
-    if not binary_ok:
-        st.info("Build the STK renderer on VM: `tools/build_stk_pgsm_demo.sh`")
-
-    report: Dict[str, Any] = st.session_state.get(f"{base_key}_last_report") or latest or {}
-    if report:
-        st.caption(
-            f"Cache: `{cache_dir}` · hits {report.get('cache_hit_count', 0)} · "
-            f"misses {report.get('cache_miss_count', 0)}"
-        )
-
-    notes = list_available_notes(sample_id)
-    if notes:
-        note_pick = st.selectbox("Note", notes, key=f"{base_key}_note")
-        wav = get_note_wav(sample_id, note_pick)
-        if wav and wav.is_file():
-            st.audio(wav.read_bytes(), format="audio/wav")
+    if rom_pending:
+        rom_status = "running"
+    elif rom_ready:
+        rom_status = "ready"
+    elif rom_error:
+        rom_status = "failed"
     else:
-        st.caption("No cached STK notes yet — click **Generate STK Note Library**.")
+        rom_status = "waiting"
 
-    st.markdown("##### Melodies (from cached notes)")
-    try:
-        melody_ids = list_melody_ids()
-        lib = load_melody_library()
-        id_to_name = {str(m["id"]): str(m.get("display_name") or m["id"]) for m in lib.get("melodies") or []}
-    except FileNotFoundError:
-        melody_ids = []
-        id_to_name = {}
+    st.markdown("##### ROM status")
+    st.write(f"ROM: **{rom_status}**" + (f" — {rom_error}" if rom_error else ""))
 
-    if melody_ids:
-        melody_id = st.selectbox(
-            "Melody",
-            melody_ids,
-            format_func=lambda mid: id_to_name.get(mid, mid),
-            key=f"{base_key}_melody",
-        )
-        mcol1, mcol2 = st.columns(2)
-        melody_out = get_melody_wav(sample_id, melody_id)
-        with mcol1:
-            if st.button("Render melody", key=f"{base_key}_render_melody"):
-                import subprocess
-                import sys
+    stk_status = "waiting_for_rom"
+    job_doc: Dict[str, Any] = {}
+    if not rom_ready:
+        stk_status = "waiting_for_rom"
+    elif parameter_hash:
+        job_doc = poll_background_job(parameter_hash)
+        stk_status = str(job_doc.get("status") or "not_started")
+        if cache_is_ready(preview) and stk_status != "ready":
+            stk_status = "ready"
 
-                cmd = [
-                    sys.executable,
-                    str(root / "tools" / "render_app_stk_melody.py"),
-                    "--sample-id",
-                    sample_id,
-                    "--melody-id",
-                    melody_id,
-                    "--output-dir",
-                    str(root / "audio" / "app_stk_melody_cache" / "classical" / sample_id),
-                ]
-                proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(root))
-                if proc.returncode == 0:
-                    st.success("Melody rendered from cached STK notes.")
-                else:
-                    st.error(proc.stderr or proc.stdout or "Melody render failed")
-        with mcol2:
-            if melody_out and melody_out.is_file():
-                st.caption("Cached melody")
-            else:
-                st.caption("Melody not cached")
-        melody_out = get_melody_wav(sample_id, melody_id)
-        if melody_out and melody_out.is_file():
-            st.audio(melody_out.read_bytes(), format="audio/wav")
+    st.markdown("##### STK background status")
+    st.write(_status_badge(stk_status))
+    if job_doc:
+        rendered = job_doc.get("rendered_notes")
+        total = job_doc.get("total_notes")
+        if rendered is not None and total is not None:
+            st.progress(min(1.0, float(rendered) / max(float(total), 1.0)))
+            st.caption(f"Rendered {rendered} / {total} notes")
+        if job_doc.get("elapsed_s") is not None:
+            st.caption(
+                f"Elapsed {job_doc.get('elapsed_s')} s · "
+                f"hits {job_doc.get('cache_hit_count', 0)} · "
+                f"misses {job_doc.get('cache_miss_count', 0)}"
+            )
+    if preview:
+        st.caption(f"Preview cache: `{preview}`")
 
+    binary_ok = stk_binary_path(root).is_file()
+    if not binary_ok:
+        st.info("Build STK on VM: `tools/build_stk_pgsm_demo.sh`")
+
+    cache_ready = bool(preview and cache_is_ready(preview))
+    notes = list_available_notes(DEFAULT_SOURCE_SAMPLE_ID, cache_dir=preview) if preview else []
+
+    if cache_ready and notes:
+        note_pick = st.selectbox("Preview note", notes, key=f"{base_key}_note")
+        wav = get_note_wav(DEFAULT_SOURCE_SAMPLE_ID, note_pick, cache_dir=preview)
+        if wav:
+            st.audio(wav.read_bytes(), format="audio/wav")
+    elif stk_status == "running":
+        st.caption("STK audio cache is still rendering. Please wait or continue editing.")
+    elif rom_ready:
+        st.caption("STK preview cache not ready yet.")
+
+    st.session_state[f"{base_key}_stk_ready"] = cache_ready
+    st.session_state[f"{base_key}_parameter_hash"] = parameter_hash
+
+    st.markdown("##### FIFO comparison stack (latest 3)")
     stack = list_guitar_stack()
-    if stack:
-        st.markdown("##### Guitar comparison stack (latest 3)")
-        for row in stack:
-            st.caption(f"**{row.get('display_name')}** — `{row.get('sample_id')}` @ {row.get('timestamp')}")
-            compare_notes = ["A2", "A4", "E5"]
-            cols = st.columns(len(compare_notes))
-            for col, cn in zip(cols, compare_notes):
-                w = get_note_wav(str(row.get("sample_id")), cn)
-                with col:
-                    st.write(cn)
-                    if w and w.is_file():
-                        st.audio(w.read_bytes(), format="audio/wav")
-                    else:
-                        st.caption("—")
+    if not stack:
+        st.caption("No saved guitars yet — use **Generate Sound** when STK cache is ready.")
+    for row in reversed(stack):
+        cache_path = Path(str(row.get("note_cache_path") or ""))
+        st.caption(
+            f"**{row.get('display_name')}** · `{row.get('saved_guitar_id')}` · "
+            f"hash `{row.get('parameter_hash', '')[:8]}…`"
+        )
+        if row.get("geometry_summary"):
+            g = row["geometry_summary"]
+            st.caption(
+                f"L={g.get('length')} W={g.get('width')} D={g.get('depth')} · "
+                f"{g.get('top_wood_id')}/{g.get('back_wood_id')}"
+            )
+        cols = st.columns(len(COMPARE_NOTES))
+        for col, cn in zip(cols, COMPARE_NOTES):
+            with col:
+                st.write(cn)
+                w = get_note_wav(DEFAULT_SOURCE_SAMPLE_ID, cn, cache_dir=cache_path) if cache_path.is_dir() else None
+                if w and w.is_file():
+                    st.audio(w.read_bytes(), format="audio/wav")
+                else:
+                    st.caption("—")
+
+
+def try_save_current_guitar_to_stack(
+    *,
+    repo_root: Path,
+    rom_fp: str,
+    lhs_params: Mapping[str, Any],
+    geom: Mapping[str, Any],
+    top_wood: str,
+    back_wood: str,
+    rom_physical_summary_path: str = "",
+) -> Dict[str, Any]:
+    parameter_hash = compute_parameter_hash(rom_fp, lhs_params)
+    job = poll_background_job(parameter_hash)
+    if job.get("status") != "ready" and not cache_is_ready(preview_cache_dir(parameter_hash)):
+        raise RuntimeError(
+            "STK audio cache is still rendering. Please wait or continue editing."
+        )
+    display_name = f"Guitar — {top_wood}/{back_wood}"
+    return save_guitar_to_stack(
+        parameter_hash=parameter_hash,
+        display_name=display_name,
+        geometry_summary=_geometry_summary(geom, top_wood, back_wood),
+        rom_physical_summary_path=rom_physical_summary_path or None,
+        repo_root=repo_root,
+    )
