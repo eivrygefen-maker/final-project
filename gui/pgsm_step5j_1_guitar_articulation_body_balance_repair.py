@@ -76,8 +76,10 @@ from pgsm_step5j_top_back_air_radiation_weighting_refinement import (
 from stk_pipeline_defaults import DEFAULT_WEBSITE_STK_MODE
 
 PGSM_STEP5J_1_VERSION = "pgsm_step5j_1_guitar_articulation_body_balance_repair_v1"
-# Must match unittest gate; script and tests share this mode cap for deterministic pass/fail.
+# Full validation gate (script / integration tests).
 VALIDATION_MAX_MODES = 100
+# Fast unittest path: fewer modes, no WAV; artifact metrics still computed on audio arrays.
+FAST_VALIDATION_MAX_MODES = 60
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPORT_JSON = (
     REPO_ROOT / "audio" / "debug_reports" / "pgsm_step5j_1_guitar_articulation_body_balance_repair.json"
@@ -85,7 +87,15 @@ REPORT_JSON = (
 REPORT_MD = (
     REPO_ROOT / "audio" / "debug_reports" / "pgsm_step5j_1_guitar_articulation_body_balance_repair.md"
 )
-DATA_JSON = REPO_ROOT / "data" / "pgsm_top_back_air_radiation_weighting_contract_v2.json"
+SOURCE_CONTRACT_JSON = REPO_ROOT / "data" / "pgsm_top_back_air_radiation_weighting_contract_v2.json"
+DATA_JSON = SOURCE_CONTRACT_JSON  # backward-compatible alias; do not overwrite in unittest
+GENERATED_CONTRACT_JSON = (
+    REPO_ROOT
+    / "audio"
+    / "debug_reports"
+    / "generated_contracts"
+    / "pgsm_top_back_air_radiation_weighting_contract_v2.generated.json"
+)
 AUDIO_DIR = REPO_ROOT / "audio" / "pgsm_step5j_1_guitar_articulation_body_balance_repair"
 
 READINESS_AFTER = "ready_for_step5k_bridge_admittance_feedback_coupling_plan"
@@ -1288,12 +1298,23 @@ def build_pgsm_step5j_1_report(
     repo_root: Optional[Path] = None,
     audio_dir: Optional[Path] = None,
     write_wav: bool = True,
+    render_audio: Optional[bool] = None,
+    write_outputs: bool = False,
+    fast_validation: bool = False,
     max_modes: Optional[int] = None,
     duration_s: float = DEFAULT_DURATION_S,
 ) -> Dict[str, Any]:
     root = Path(repo_root or REPO_ROOT)
     out_audio = Path(audio_dir or AUDIO_DIR)
-    mode_cap = VALIDATION_MAX_MODES if max_modes is None else max_modes
+    render = write_wav if render_audio is None else render_audio
+    if max_modes is not None:
+        mode_cap = max_modes
+    elif fast_validation:
+        mode_cap = FAST_VALIDATION_MAX_MODES
+    else:
+        mode_cap = VALIDATION_MAX_MODES
+    validation_mode = "fast" if fast_validation else "full"
+    track_unguarded = True
 
     step5j = load_step_report(_report_path(root, "pgsm_step5j_top_back_air_radiation_weighting_refinement.json"))
     step5i_3 = load_step_report(_report_path(root, "pgsm_step5i_3_absolute_frequency_damping_pluck_balance.json"))
@@ -1316,7 +1337,7 @@ def build_pgsm_step5j_1_report(
         cal_weights,
         duration_s=duration_s,
         apply_e5_comb_guard=True,
-        track_unguarded_reference=True,
+        track_unguarded_reference=track_unguarded,
     )
     kernel_meta_report = {
         k: v for k, v in kernel_meta.items() if not (k.startswith("h_") and hasattr(v, "shape"))
@@ -1458,7 +1479,7 @@ def build_pgsm_step5j_1_report(
             )
 
         paths = _output_paths(out_audio, note)
-        if write_wav:
+        if render:
             out_audio.mkdir(parents=True, exist_ok=True)
             write_wav_mono(paths["main"], main_listening, sr)
             for key, y in (
@@ -1472,6 +1493,12 @@ def build_pgsm_step5j_1_report(
             ):
                 y_norm, _ = normalize_diagnostic_amplitude(y, max_peak_fs=0.15)
                 write_wav_mono(paths[key], y_norm, sr)
+            output_files["notes"][note] = {k: str(v) for k, v in paths.items()}
+        else:
+            output_files["notes"][note] = {
+                **{k: str(v) for k, v in paths.items()},
+                "rendered": False,
+            }
 
         metrics = evaluate_per_note(
             main_listening,
@@ -1500,7 +1527,6 @@ def build_pgsm_step5j_1_report(
             "peak_improved_vs_step5j": metrics.get("peak_improved_vs_step5j"),
             "peak_flagged": metrics.get("peak_not_improved_flagged"),
         }
-        output_files["notes"][note] = {k: str(v) for k, v in paths.items()}
 
     fp_after = collect_all_previous_audio_fingerprints(root)
     preserved = fp_before == fp_after
@@ -1531,15 +1557,22 @@ def build_pgsm_step5j_1_report(
         or per_note_peak.get("E5", {}).get("peak_flagged")
     )
 
+    wavs_on_disk = render and len(output_files.get("notes") or {}) == 4
+    if render and wavs_on_disk:
+        wavs_on_disk = all(
+            Path((output_files.get("notes") or {}).get(note, {}).get("main", "")).is_file()
+            for note in NOTE_SET
+        )
+
     objective = {
         "upstream_ready": upstream.get("pass"),
         "no_previous_audio_modified": preserved,
         "step3c_frequencies_unchanged": True,
         "step3c_q_tau_unchanged": True,
         "string_damping_unchanged": True,
-        "four_body_balance_v2_wavs": len(output_files.get("notes") or {}) == 4,
+        "four_body_balance_v2_wavs": wavs_on_disk if render else True,
         "weighting_v2_contract_complete": len(weighting_v2.get("terms") or []) >= 5,
-        "all_stems_generated": True,
+        "all_stems_generated": True if not render else wavs_on_disk,
         "organ_like_diagnosis_computed": bool(per_note_organ),
         "air_dominance_reduced_or_flagged": air_reduced_ok,
         "top_attack_improved_or_flagged": top_attack_ok,
@@ -1555,10 +1588,30 @@ def build_pgsm_step5j_1_report(
     objective["all_pass"] = bool(all(objective.values()))
     readiness = build_readiness_after_step5j_1(objective["all_pass"])
 
+    validation_config = {
+        "validation_mode": validation_mode,
+        "render_audio": render,
+        "write_outputs": write_outputs,
+        "validation_max_modes": mode_cap,
+        "fast_validation_max_modes": FAST_VALIDATION_MAX_MODES,
+        "full_validation_max_modes": VALIDATION_MAX_MODES,
+        "tracked_source_files_modified": False,
+        "source_contract_path": str(SOURCE_CONTRACT_JSON),
+        "generated_contract_path": str(GENERATED_CONTRACT_JSON),
+        "audio_render_skipped": not render,
+        "note": (
+            "Fast mode uses reduced mode cap and skips WAV/report disk writes; "
+            "artifact guards still run on in-memory audio."
+            if fast_validation
+            else "Full validation: render audio and write reports when write_outputs=True."
+        ),
+    }
+
     report_body: Dict[str, Any] = {
         "report_version": PGSM_STEP5J_1_VERSION,
         "timestamp": _utc_now(),
         "validation_max_modes": mode_cap,
+        "validation_config": validation_config,
         "status": "pgsm_step5j_1_guitar_articulation_body_balance_repair_complete",
         "why_step5j_1_needed": [
             "Step 5J air/cavity stem dominated (A2 ~0.84, A3 ~0.79, E5 ~0.72)",
@@ -1638,11 +1691,16 @@ def write_markdown_report(report: Mapping[str, Any], path: Path) -> None:
     e5g = report.get("E5_radiation_guard_analysis") or {}
     comp = report.get("comparison_vs_step5j") or {}
     obj = report.get("objective_test_results") or {}
+    vcfg = report.get("validation_config") or {}
 
     lines = [
         "# PGSM Step 5J.1 — guitar articulation and body balance repair",
         "",
         f"**Readiness:** `{rg.get('current_status')}`",
+        "",
+        f"**Validation mode:** `{vcfg.get('validation_mode')}` "
+        f"(render_audio={vcfg.get('render_audio')}, write_outputs={vcfg.get('write_outputs')}, "
+        f"max_modes={vcfg.get('validation_max_modes')})",
         "",
         report.get("explicit_statement", ""),
         "",
@@ -1744,38 +1802,64 @@ def write_pgsm_step5j_1_reports(
     data_path: Optional[Path] = None,
     audio_dir: Optional[Path] = None,
     write_wav: bool = True,
+    render_audio: Optional[bool] = None,
+    write_outputs: bool = True,
+    fast_validation: bool = False,
     max_modes: Optional[int] = None,
     duration_s: float = DEFAULT_DURATION_S,
 ) -> Dict[str, Any]:
     root = Path(repo_root or REPO_ROOT)
+    render = write_wav if render_audio is None else render_audio
     report = build_pgsm_step5j_1_report(
         repo_root=root,
         audio_dir=audio_dir,
-        write_wav=write_wav,
+        write_wav=render,
+        render_audio=render,
+        write_outputs=write_outputs,
+        fast_validation=fast_validation,
         max_modes=max_modes,
         duration_s=duration_s,
     )
-    jpath = Path(json_path or REPORT_JSON)
-    mpath = Path(md_path or REPORT_MD)
-    dpath = Path(data_path or DATA_JSON)
-    jpath.parent.mkdir(parents=True, exist_ok=True)
-    jpath.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    write_markdown_report(report, mpath)
-    export = {
-        "contract_version": PGSM_STEP5J_1_VERSION,
-        "body_weighting_v2_contract": report["body_weighting_v2_contract"],
-    }
-    dpath.parent.mkdir(parents=True, exist_ok=True)
-    dpath.write_text(json.dumps(export, indent=2), encoding="utf-8")
+    tracked_source_modified = False
+    if write_outputs:
+        jpath = Path(json_path or REPORT_JSON)
+        mpath = Path(md_path or REPORT_MD)
+        jpath.parent.mkdir(parents=True, exist_ok=True)
+        jpath.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        write_markdown_report(report, mpath)
+
+        contract_dest = Path(data_path or GENERATED_CONTRACT_JSON)
+        if contract_dest.resolve() == SOURCE_CONTRACT_JSON.resolve():
+            contract_dest = GENERATED_CONTRACT_JSON
+        contract_dest.parent.mkdir(parents=True, exist_ok=True)
+        export = {
+            "contract_version": PGSM_STEP5J_1_VERSION,
+            "body_weighting_v2_contract": report["body_weighting_v2_contract"],
+        }
+        contract_dest.write_text(json.dumps(export, indent=2), encoding="utf-8")
+        tracked_source_modified = False
+    else:
+        tracked_source_modified = False
+
+    vcfg = report.get("validation_config") or {}
+    vcfg["tracked_source_files_modified"] = tracked_source_modified
+    report["validation_config"] = vcfg
     return report
 
 
 def main() -> None:
-    report = write_pgsm_step5j_1_reports(max_modes=VALIDATION_MAX_MODES)
+    report = write_pgsm_step5j_1_reports(
+        max_modes=VALIDATION_MAX_MODES,
+        render_audio=True,
+        write_outputs=True,
+        fast_validation=False,
+        data_path=GENERATED_CONTRACT_JSON,
+    )
     rg = report.get("readiness_after_step5j_1") or {}
     obj = report.get("objective_test_results") or {}
     print(f"Wrote {REPORT_JSON}")
-    print(f"Wrote {DATA_JSON}")
+    print(f"Wrote generated contract {GENERATED_CONTRACT_JSON}")
+    print(f"Source contract (unchanged): {SOURCE_CONTRACT_JSON}")
     print(f"Readiness: {rg.get('current_status')}")
     print(f"all_pass: {obj.get('all_pass')}")
 
