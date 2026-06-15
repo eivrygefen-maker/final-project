@@ -1634,7 +1634,11 @@ def user_facing_stk_status(internal_status: str) -> str:
     status = str(internal_status or "not_started")
     if status in ("waiting_for_rom",):
         return "Waiting for guitar simulation"
-    if status in ("running", "partial_ready", "not_started", "stale"):
+    if status in ("not_started",):
+        return "Click Generate Sound to build your guitar audio"
+    if status in ("stale",):
+        return "Design changed — click Generate Sound to rebuild audio"
+    if status in ("running", "partial_ready"):
         return "Preparing guitar sound…"
     if status == "ready":
         return "Guitar sound is ready"

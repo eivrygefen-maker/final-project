@@ -18,7 +18,7 @@ _DEFAULTS: Dict[str, Any] = {
     "high_note_duration_s": 3.8,
     "fifo_max_guitars": 3,
     "enable_ready_fifo_stack": True,
-    "enable_generate_intent": True,
+    "enable_generate_intent": False,
     "enable_overlapping_playback": True,
     "user_show_stk_progress_detail": False,
     "debug_diagnostics_default": False,

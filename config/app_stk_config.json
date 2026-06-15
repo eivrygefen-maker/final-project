@@ -7,7 +7,7 @@
   "high_note_duration_s": 3.8,
   "fifo_max_guitars": 3,
   "enable_ready_fifo_stack": true,
-  "enable_generate_intent": true,
+  "enable_generate_intent": false,
   "enable_overlapping_playback": true,
   "user_show_stk_progress_detail": false,
   "debug_diagnostics_default": false,

@@ -270,10 +270,7 @@ class _FakeSt:
         pass
 
 stk_app_ui.st = _FakeSt()
-stk_app_ui.st.session_state = {
-    "stk_generate_intent_hash": SMOKE_READY,
-}
-from stk_app_ui import apply_stk_activation_to_session, fulfill_generate_intent_if_ready
+from stk_app_ui import apply_stk_activation_to_session, generate_or_load_ready_guitar
 
 apply_stk_activation_to_session(activation)
 ss = stk_app_ui.st.session_state
@@ -281,11 +278,9 @@ assert ss.get("active_stk_cache_path"), "active_stk_cache_path not set"
 assert ss.get("active_stk_player_payload"), "active_stk_player_payload not set"
 assert ss.get("active_stk_guitar_id") is not None, "active_stk_guitar_id not set"
 
-stk_app_ui.st.session_state = {
-    "stk_generate_intent_hash": SMOKE_READY,
-}
+stk_app_ui.st.session_state = {}
 
-result = fulfill_generate_intent_if_ready(
+result = generate_or_load_ready_guitar(
     repo_root=root,
     rom_fp="smoke_test_ready_rom",
     lhs_params={"smoke": "ready"},
@@ -293,9 +288,8 @@ result = fulfill_generate_intent_if_ready(
     top_wood="spruce",
     back_wood="mahogany",
 )
-assert result is not None, "generate intent should auto-load when ready"
+assert result is not None, "generate should load ready cache into player"
 assert result.get("action") in ("saved_new", "loaded_existing", "activated_preview")
-assert stk_app_ui.st.session_state.get("stk_generate_intent_hash") == ""
 assert stk_app_ui.st.session_state.get("active_stk_cache_path")
 
 for ph in (SMOKE_READY, SMOKE_PARTIAL, SMOKE_STALE, SMOKE_OLD):
@@ -311,7 +305,7 @@ elif ACTIVE_JOB_FILE.is_file():
 print("smoke_logic_ok")
 PY
 if [[ $? -eq 0 ]]; then
-  ok "B–E. config, fretboard, FIFO, audit, intent, validation"
+  ok "B–E. config, fretboard, FIFO, audit, generate load, validation"
 else
   bad "B–E. refresh/FIFO smoke logic"
 fi

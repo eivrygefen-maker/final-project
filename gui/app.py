@@ -213,6 +213,7 @@ def _init_session() -> None:
         "active_stk_player_payload": {},
         "active_stk_player_validation": {},
         "stk_generate_intent_hash": "",
+        "stk_render_requested": False,
         "stk_show_diagnostics": False,
         "_fast_preview_paths_verified": False,
         "show_mesh_overlay": False,
@@ -1309,6 +1310,7 @@ def invalidate_rom_and_audio_state() -> None:
     st.session_state["active_stk_player_payload"] = {}
     st.session_state["active_stk_player_validation"] = {}
     st.session_state["stk_generate_intent_hash"] = ""
+    st.session_state["stk_render_requested"] = False
     try:
         from stk_app_audio_service import mark_stk_job_stale  # noqa: WPS433
 
@@ -1394,7 +1396,7 @@ def schedule_stk_note_library_after_rom(
     *,
     rom_fp: str,
 ) -> None:
-    """Start background STK note-library build for the current ROM fingerprint."""
+    """Start background STK note-library build (Generate-only; not called after ROM)."""
     try:
         from stk_app_audio_service import (  # noqa: WPS433
             compute_parameter_hash,
@@ -1871,19 +1873,6 @@ def _render_main_studio(
             st.session_state["stk_note_count"] = int(
                 stk_job.get("actual_wav_count") or stk_job.get("wav_count") or stk_job.get("note_count") or 0
             )
-            from stk_app_ui import fulfill_generate_intent_if_ready  # noqa: WPS433
-
-            _auto = fulfill_generate_intent_if_ready(
-                repo_root=BASE_DIR,
-                rom_fp=rom_fp,
-                lhs_params=lhs_params,
-                geom=geom,
-                top_wood=top_wood,
-                back_wood=back_wood,
-                rom_physical_summary_path=str(st.session_state.get("stk_body_json") or ""),
-            )
-            if _auto and _auto.get("action") in ("saved_new", "loaded_existing", "activated_preview"):
-                st.session_state["_stk_auto_generate_message"] = _auto
         except Exception:
             st.session_state["stk_job_status"] = "failed"
             st.session_state["stk_preview_cache_ready"] = False
@@ -1922,6 +1911,11 @@ def _render_main_studio(
     _stk_status = str(st.session_state.get("stk_job_status") or "not_started")
     if not rom_body_response_ready(rom_fp):
         st.caption("Save & Sync first to simulate your guitar and prepare sound.")
+    elif not st.session_state.get("stk_render_requested") and _stk_status in (
+        "not_started",
+        "stale",
+    ):
+        st.caption("Click **Generate Sound** to build your guitar audio.")
     else:
         from stk_app_audio_service import user_facing_stk_status  # noqa: WPS433
 
@@ -1954,10 +1948,10 @@ def _render_main_studio(
                     back_wood=back_wood,
                     rom_physical_summary_path=str(st.session_state.get("stk_body_json") or ""),
                 )
-                if result.get("action") == "intent_stored":
+                if result.get("action") in ("stk_started", "stk_running"):
                     st.info(
-                        "Guitar sound is still being prepared. Please wait a little longer. "
-                        "Your guitar will load automatically when ready."
+                        "Building guitar sound… This may take a few minutes. "
+                        "Click **Generate Sound** again when ready to load the player."
                     )
                 elif result.get("action") == "loaded_existing":
                     st.info("This guitar is already saved — loaded from comparison stack.")
@@ -1970,36 +1964,18 @@ def _render_main_studio(
             except Exception as exc:
                 st.error(f"Could not save guitar: {exc}")
 
-    _auto_gen = st.session_state.pop("_stk_auto_generate_message", None)
-    if isinstance(_auto_gen, dict) and _auto_gen.get("action") in (
-        "saved_new",
-        "loaded_existing",
-        "activated_preview",
-    ):
-        if _auto_gen.get("action") == "loaded_existing":
-            st.info("Guitar sound is ready — loaded from comparison stack.")
-        elif _auto_gen.get("action") == "activated_preview":
-            st.success("Guitar sound is ready — player loaded.")
-        else:
-            st.success(
-                f"Guitar sound is ready — saved **{_auto_gen.get('entry', {}).get('display_name', 'guitar')}**."
-            )
-
     from app_stk_config import load_app_stk_config  # noqa: WPS433
 
     _stk_cfg = load_app_stk_config(BASE_DIR)
-    _stk_intent = str(st.session_state.get("stk_generate_intent_hash") or "")
-    if _stk_intent or _stk_status in ("running", "partial_ready", "not_started"):
+    if (
+        st.session_state.get("stk_render_requested")
+        and _stk_status in ("running", "partial_ready")
+    ):
         _refresh_s = int(_stk_cfg.get("auto_refresh_interval_s") or 12)
-        if not (
-            _stk_status == "ready"
-            and st.session_state.get("stk_preview_cache_ready")
-            and not _stk_intent
-        ):
-            st.markdown(
-                f'<meta http-equiv="refresh" content="{_refresh_s}">',
-                unsafe_allow_html=True,
-            )
+        st.markdown(
+            f'<meta http-equiv="refresh" content="{_refresh_s}">',
+            unsafe_allow_html=True,
+        )
 
     if st.session_state.get("_pending_fom_run") and display_mesh_active(geom_fp):
         st.session_state._pending_fom_run = False
@@ -2022,7 +1998,8 @@ def _render_main_studio(
         with st.spinner("Preparing ROM body response…"):
             try:
                 complete_rom_body_response(lhs_params, shape, rom_fp=rom_fp)
-                schedule_stk_note_library_after_rom(lhs_params, rom_fp=rom_fp)
+                # STK auto-background after Save/ROM is intentionally disabled.
+                # Current stable flow: STK note cache generation starts only from Generate.
                 st.rerun()
             except Exception as exc:
                 st.session_state.rom_body_pending = False

@@ -20,6 +20,7 @@ from stk_app_audio_service import (
     preview_cache_dir,
     refresh_stk_background_job_status,
     save_guitar_to_stack,
+    schedule_stk_after_rom,
     stk_binary_path,
     user_facing_stk_status,
     AUDIT_INCOMPLETE_MSG,
@@ -171,9 +172,12 @@ def request_generate_guitar(
     back_wood: str,
     rom_physical_summary_path: str = "",
 ) -> Dict[str, Any]:
-    """Generate click: save/load immediately if ready, else store intent for auto-activation."""
-    cfg = load_app_stk_config(repo_root)
-    if not cfg.get("enable_generate_intent", True):
+    """Generate click: start STK when needed; save/load player when cache is ready."""
+    parameter_hash = compute_parameter_hash(rom_fp, lhs_params)
+    state = refresh_stk_background_job_status(parameter_hash)
+    status = str(state.get("status") or "not_started")
+
+    if status == "ready" and state.get("preview_cache_ready"):
         return generate_or_load_ready_guitar(
             repo_root=repo_root,
             rom_fp=rom_fp,
@@ -183,8 +187,25 @@ def request_generate_guitar(
             back_wood=back_wood,
             rom_physical_summary_path=rom_physical_summary_path,
         )
-    parameter_hash = compute_parameter_hash(rom_fp, lhs_params)
+
+    if status in ("running", "partial_ready"):
+        _session_set("stk_render_requested", True)
+        _session_set("stk_generate_intent_hash", "")
+        return {
+            "action": "stk_running",
+            "parameter_hash": parameter_hash,
+            "status": status,
+        }
+
+    schedule_stk_after_rom(
+        rom_fp=rom_fp,
+        lhs_params=lhs_params,
+        repo_root=repo_root,
+    )
     state = refresh_stk_background_job_status(parameter_hash)
+    _session_set("stk_render_requested", True)
+    _session_set("stk_generate_intent_hash", "")
+
     if str(state.get("status")) == "ready" and state.get("preview_cache_ready"):
         return generate_or_load_ready_guitar(
             repo_root=repo_root,
@@ -196,9 +217,8 @@ def request_generate_guitar(
             rom_physical_summary_path=rom_physical_summary_path,
         )
 
-    _session_set("stk_generate_intent_hash", parameter_hash)
     return {
-        "action": "intent_stored",
+        "action": "stk_started",
         "parameter_hash": parameter_hash,
         "status": str(state.get("status") or "running"),
     }
