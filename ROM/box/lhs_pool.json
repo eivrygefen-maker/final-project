@@ -1,0 +1,65 @@
+{
+  "shape_name": "box",
+  "shape_type": "box",
+  "sampling": "lhs",
+  "wood_assignment": "unrestricted_5x5",
+  "seed": 456,
+  "total_samples": 500,
+  "mpi_world_size": 0,
+  "entries": [
+    {
+      "id": "box_sample_000",
+      "parameters": {
+        "top_wood_id": "spruce",
+        "back_wood_id": "mahogany",
+        "geometry.shape_type": "box",
+        "geometry.length": 0.46,
+        "geometry.width": 0.38,
+        "geometry.depth": 0.105,
+        "geometry.top_thickness": 0.003,
+        "geometry.hole_radius": 0.042,
+        "geometry.back_thickness": 0.0035
+      },
+      "status": "PENDING",
+      "error": null,
+      "last_run_id": null,
+      "last_batch_id": null,
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": null,
+      "last_finished_at": null,
+      "last_elapsed_s": null,
+      "last_aggregation_status": null,
+      "last_deduped_mode_count": null,
+      "last_participation_computed_count": null,
+      "last_audio_coupling_computed_count": null
+    },
+    {
+      "id": "box_sample_001",
+      "parameters": {
+        "top_wood_id": "cedar",
+        "back_wood_id": "rosewood",
+        "geometry.shape_type": "box",
+        "geometry.length": 0.44,
+        "geometry.width": 0.36,
+        "geometry.depth": 0.098,
+        "geometry.top_thickness": 0.0029,
+        "geometry.hole_radius": 0.040,
+        "geometry.back_thickness": 0.0032
+      },
+      "status": "PENDING",
+      "error": null,
+      "last_run_id": null,
+      "last_batch_id": null,
+      "last_started_at": null,
+      "last_error": null,
+      "last_run_dir": null,
+      "last_finished_at": null,
+      "last_elapsed_s": null,
+      "last_aggregation_status": null,
+      "last_deduped_mode_count": null,
+      "last_participation_computed_count": null,
+      "last_audio_coupling_computed_count": null
+    }
+  ]
+}

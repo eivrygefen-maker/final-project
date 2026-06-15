@@ -8,6 +8,7 @@ from typing import Any, Dict, Mapping, Optional
 import streamlit as st
 
 from app_stk_config import load_app_stk_config
+from app_stk_instrument import default_sample_id  # noqa: WPS433
 from stk_app_audio_service import (
     DEFAULT_SOURCE_SAMPLE_ID,
     activate_stk_guitar_for_player,
@@ -73,11 +74,12 @@ def render_saved_guitars_row(
     *,
     base_key: str = "stk_saved",
     on_load_key: str = "stk_load_guitar",
+    instrument: str = "classical",
 ) -> Optional[str]:
     """Saved guitars row near the fretboard player. Returns saved_guitar_id if Load clicked."""
     if not load_app_stk_config().get("enable_ready_fifo_stack", True):
         return None
-    stack = list_ready_guitar_stack()
+    stack = list_ready_guitar_stack(instrument)
     if not stack:
         return None
 
@@ -97,8 +99,8 @@ def render_saved_guitars_row(
     return loaded_id
 
 
-def _stk_cache_is_loadable(parameter_hash: str, repo_root: Path) -> bool:
-    preview = preview_cache_dir(parameter_hash)
+def _stk_cache_is_loadable(parameter_hash: str, repo_root: Path, instrument: str = "classical") -> bool:
+    preview = preview_cache_dir(parameter_hash, instrument)
     return preview.is_dir() and preview_cache_dir_has_required_notes(preview, load_app_stk_config(repo_root))
 
 
@@ -135,18 +137,19 @@ def generate_or_load_ready_guitar(
     top_wood: str,
     back_wood: str,
     rom_physical_summary_path: str = "",
+    instrument: str = "classical",
 ) -> Dict[str, Any]:
     """Save ready guitar to FIFO or load existing duplicate; activate player."""
     cfg = load_app_stk_config(repo_root)
     parameter_hash = compute_parameter_hash(rom_fp, lhs_params)
-    state = resolve_preview_cache_ready_state(parameter_hash, repo_root=repo_root)
+    state = resolve_preview_cache_ready_state(parameter_hash, instrument=instrument, repo_root=repo_root)
 
     if str(state.get("status")) != "ready" or not state.get("preview_cache_ready"):
         raise RuntimeError(
             "Guitar sound is still being prepared. Please wait a little longer."
         )
 
-    cache_dir = Path(str(state.get("preview_cache_path") or preview_cache_dir(parameter_hash)))
+    cache_dir = Path(str(state.get("preview_cache_path") or preview_cache_dir(parameter_hash, instrument)))
 
     if not cfg.get("enable_ready_fifo_stack", True):
         activation = _activate_ready_preview_cache(
@@ -158,7 +161,7 @@ def generate_or_load_ready_guitar(
         _session_set("stk_generate_intent_hash", "")
         return {"action": "activated_preview", "activation": activation}
 
-    existing = find_stack_entry_by_hash(parameter_hash)
+    existing = find_stack_entry_by_hash(parameter_hash, instrument)
     if existing:
         activation = _activate_ready_preview_cache(
             repo_root=repo_root,
@@ -177,6 +180,7 @@ def generate_or_load_ready_guitar(
         geometry_summary=_geometry_summary(geom, top_wood, back_wood),
         rom_physical_summary_path=rom_physical_summary_path or None,
         repo_root=repo_root,
+        instrument=instrument,
     )
     if entry.get("_duplicate"):
         activation = _activate_ready_preview_cache(
@@ -225,6 +229,7 @@ def poll_stk_render_request(
     top_wood: str,
     back_wood: str,
     rom_physical_summary_path: str = "",
+    instrument: str = "classical",
 ) -> Dict[str, Any]:
     """Refresh STK job status; auto-load player when a Generate request completes."""
     out: Dict[str, Any] = {"polled": False, "result": None}
@@ -242,17 +247,18 @@ def poll_stk_render_request(
         out["result"] = {"action": "stk_request_stale"}
         return out
 
-    state = resolve_preview_cache_ready_state(parameter_hash, repo_root=repo_root)
+    state = resolve_preview_cache_ready_state(parameter_hash, instrument=instrument, repo_root=repo_root)
     status = str(state.get("status") or "not_started")
     preview_ready = bool(state.get("preview_cache_ready")) or _stk_cache_is_loadable(
-        parameter_hash, repo_root
+        parameter_hash, repo_root, instrument
     )
     _session_set("stk_parameter_hash", parameter_hash)
+    _session_set("stk_instrument", instrument)
     _session_set("stk_job_status", status if not preview_ready else "ready")
     _session_set("stk_preview_cache_ready", preview_ready)
     _session_set(
         "stk_preview_cache_path",
-        str(state.get("preview_cache_path") or preview_cache_dir(parameter_hash)).replace("\\", "/"),
+        str(state.get("preview_cache_path") or preview_cache_dir(parameter_hash, instrument)).replace("\\", "/"),
     )
     _session_set(
         "stk_note_count",
@@ -272,7 +278,7 @@ def poll_stk_render_request(
 
     if preview_ready:
         print(
-            f"APP_STK_AUTO_LOAD_READY hash={parameter_hash} cache_dir={preview_cache_dir(parameter_hash)}",
+            f"APP_STK_AUTO_LOAD_READY hash={parameter_hash} cache_dir={preview_cache_dir(parameter_hash, instrument)}",
             flush=True,
         )
         try:
@@ -284,6 +290,7 @@ def poll_stk_render_request(
                 top_wood=top_wood,
                 back_wood=back_wood,
                 rom_physical_summary_path=rom_physical_summary_path,
+                instrument=instrument,
             )
             _clear_stk_render_request()
             out["result"] = result
@@ -305,6 +312,7 @@ def render_stk_render_watch_panel(
     top_wood: str,
     back_wood: str,
     rom_physical_summary_path: str = "",
+    instrument: str = "classical",
 ) -> Optional[Dict[str, Any]]:
     """Show STK build status and auto-load when ready (fragment-safe; no meta refresh)."""
     poll = poll_stk_render_request(
@@ -315,6 +323,7 @@ def render_stk_render_watch_panel(
         top_wood=top_wood,
         back_wood=back_wood,
         rom_physical_summary_path=rom_physical_summary_path,
+        instrument=instrument,
     )
     if not poll.get("polled"):
         return None
@@ -349,14 +358,15 @@ def request_generate_guitar(
     top_wood: str,
     back_wood: str,
     rom_physical_summary_path: str = "",
+    instrument: str = "classical",
 ) -> Dict[str, Any]:
     """Generate click: start STK when needed; auto-load when cache becomes ready."""
     parameter_hash = compute_parameter_hash(rom_fp, lhs_params)
 
-    if _stk_cache_is_loadable(parameter_hash, repo_root):
+    if _stk_cache_is_loadable(parameter_hash, repo_root, instrument):
         _clear_stk_render_request()
         print(
-            f"APP_STK_LOAD_READY_CACHE hash={parameter_hash} cache_dir={preview_cache_dir(parameter_hash)}",
+            f"APP_STK_LOAD_READY_CACHE hash={parameter_hash} cache_dir={preview_cache_dir(parameter_hash, instrument)}",
             flush=True,
         )
         return generate_or_load_ready_guitar(
@@ -367,9 +377,10 @@ def request_generate_guitar(
             top_wood=top_wood,
             back_wood=back_wood,
             rom_physical_summary_path=rom_physical_summary_path,
+            instrument=instrument,
         )
 
-    state = resolve_preview_cache_ready_state(parameter_hash, repo_root=repo_root)
+    state = resolve_preview_cache_ready_state(parameter_hash, instrument=instrument, repo_root=repo_root)
     status = str(state.get("status") or "not_started")
     preview_ready = bool(state.get("preview_cache_ready"))
 
@@ -383,6 +394,7 @@ def request_generate_guitar(
             top_wood=top_wood,
             back_wood=back_wood,
             rom_physical_summary_path=rom_physical_summary_path,
+            instrument=instrument,
         )
 
     if status in ("running", "partial_ready"):
@@ -397,8 +409,10 @@ def request_generate_guitar(
         rom_fp=rom_fp,
         lhs_params=lhs_params,
         repo_root=repo_root,
+        sample_id=default_sample_id(instrument),
+        instrument=instrument,
     )
-    state = resolve_preview_cache_ready_state(parameter_hash, repo_root=repo_root)
+    state = resolve_preview_cache_ready_state(parameter_hash, instrument=instrument, repo_root=repo_root)
     _set_stk_render_request(parameter_hash)
 
     if str(state.get("status")) == "ready" and state.get("preview_cache_ready"):
@@ -411,6 +425,7 @@ def request_generate_guitar(
             top_wood=top_wood,
             back_wood=back_wood,
             rom_physical_summary_path=rom_physical_summary_path,
+            instrument=instrument,
         )
 
     return {
@@ -429,6 +444,7 @@ def fulfill_generate_intent_if_ready(
     top_wood: str,
     back_wood: str,
     rom_physical_summary_path: str = "",
+    instrument: str = "classical",
 ) -> Optional[Dict[str, Any]]:
     """Legacy alias — auto-load uses ``poll_stk_render_request`` / ``stk_render_requested_hash``."""
     poll = poll_stk_render_request(
@@ -439,6 +455,7 @@ def fulfill_generate_intent_if_ready(
         top_wood=top_wood,
         back_wood=back_wood,
         rom_physical_summary_path=rom_physical_summary_path,
+        instrument=instrument,
     )
     return poll.get("result")
 
@@ -452,16 +469,17 @@ def render_stk_diagnostics_panel(
     rom_ready: bool = False,
     rom_pending: bool = False,
     rom_error: str = "",
+    instrument: str = "classical",
 ) -> None:
     """Developer-only STK diagnostics (collapsed by default)."""
     root = Path(repo_root or REPO_ROOT)
     parameter_hash = compute_parameter_hash(rom_fp, lhs_params) if rom_fp else ""
-    preview = preview_cache_dir(parameter_hash) if parameter_hash else None
+    preview = preview_cache_dir(parameter_hash, instrument) if parameter_hash else None
 
     job_doc: Dict[str, Any] = {}
     stk_status = "waiting_for_rom"
     if rom_ready and parameter_hash:
-        job_doc = refresh_stk_background_job_status(parameter_hash)
+        job_doc = refresh_stk_background_job_status(parameter_hash, instrument=instrument)
         stk_status = str(job_doc.get("status") or "not_started")
 
     st.caption(f"Internal status: `{stk_status}` · hash `{parameter_hash[:8]}…`" if parameter_hash else "")
@@ -483,13 +501,13 @@ def render_stk_diagnostics_panel(
             }
         )
     if preview and preview.is_dir():
-        notes = list_available_notes(DEFAULT_SOURCE_SAMPLE_ID, cache_dir=preview)
+        notes = list_available_notes(default_sample_id(instrument), cache_dir=preview)
         st.caption(f"Preview WAV count: {len(notes)}")
     if not stk_binary_path(root).is_file():
         st.caption("STK binary not built on this machine.")
 
-    stack = list_ready_guitar_stack()
-    st.caption(f"Ready FIFO entries: {len(stack)}")
+    stack = list_ready_guitar_stack(instrument)
+    st.caption(f"Ready FIFO entries ({instrument}): {len(stack)}")
     for row in reversed(stack):
         cache_entry = Path(str(row.get("note_cache_path") or ""))
         st.caption(f"`{row.get('saved_guitar_id')}` → `{cache_entry}`")
@@ -497,7 +515,7 @@ def render_stk_diagnostics_panel(
         for col, cn in zip(cols, COMPARE_NOTES):
             with col:
                 st.caption(cn)
-                w = get_note_wav(DEFAULT_SOURCE_SAMPLE_ID, cn, cache_dir=cache_entry) if cache_entry.is_dir() else None
+                w = get_note_wav(default_sample_id(instrument), cn, cache_dir=cache_entry) if cache_entry.is_dir() else None
                 if w and w.is_file():
                     st.audio(w.read_bytes(), format="audio/wav")
 
@@ -511,6 +529,7 @@ def try_save_current_guitar_to_stack(
     top_wood: str,
     back_wood: str,
     rom_physical_summary_path: str = "",
+    instrument: str = "classical",
 ) -> Dict[str, Any]:
     """Backward-compatible alias — ready-only save/load with player activation."""
     return generate_or_load_ready_guitar(
@@ -521,4 +540,5 @@ def try_save_current_guitar_to_stack(
         top_wood=top_wood,
         back_wood=back_wood,
         rom_physical_summary_path=rom_physical_summary_path,
+        instrument=instrument,
     )

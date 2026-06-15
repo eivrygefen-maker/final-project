@@ -34,6 +34,17 @@ from pgsm_emergency_guitar_demo_engine import compute_v5_physical_factors
 from pgsm_step5l_limited_multiguitar_differentiation import REFERENCE_SAMPLE_ID
 
 from app_stk_config import load_app_stk_config, priority_notes_from_config
+from app_stk_instrument import (
+    background_status_stem,
+    debug_reports_subdir,
+    default_sample_id,
+    demo_version_label,
+    job_status_stem,
+    library_report_stem,
+    list_lhs_sample_ids,
+    reference_sample_id,
+    shared_shape_name,
+)
 from app_stk_fretboard import (
     build_fretboard_note_mapping,
     build_note_frequency_hz_table,
@@ -60,7 +71,18 @@ APP_NOTE_CACHE_ROOT = REPO_ROOT / "audio" / "app_stk_note_cache"
 GUITAR_STACK_ROOT = REPO_ROOT / "audio" / "app_stk_guitar_stack"
 RENDER_TMP_ROOT = REPO_ROOT / "audio" / "app_stk_note_cache" / ".render_tmp"
 DEBUG_REPORTS = REPO_ROOT / "audio" / "debug_reports"
-ACTIVE_JOB_FILE = APP_NOTE_CACHE_ROOT / "classical" / ".active_job.json"
+ACTIVE_JOB_FILE = APP_NOTE_CACHE_ROOT / "classical" / ".active_job.json"  # classical default (smoke tests)
+
+
+def active_job_file(instrument: str = "classical") -> Path:
+    return APP_NOTE_CACHE_ROOT / instrument / ".active_job.json"
+
+
+def instrument_debug_reports_root(instrument: str = "classical") -> Path:
+    sub = debug_reports_subdir(instrument)
+    root = DEBUG_REPORTS / sub if sub else DEBUG_REPORTS
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 NOTE_NAMES: Tuple[str, ...] = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 A4_REFERENCE_HZ = 440.0
@@ -122,8 +144,8 @@ def smoke_test_artifact_paths(parameter_hash: str, instrument: str = "classical"
     json_path, md_path = library_report_paths_for_hash(parameter_hash, instrument)
     return [
         smoke_test_cache_dir(parameter_hash, instrument),
-        job_status_path(parameter_hash),
-        background_status_path(parameter_hash),
+        job_status_path(parameter_hash, instrument),
+        background_status_path(parameter_hash, instrument),
         json_path,
         md_path,
     ]
@@ -145,17 +167,20 @@ def saved_guitar_cache_dir(saved_guitar_id: str, instrument: str = "classical") 
     return APP_NOTE_CACHE_ROOT / instrument / f"saved_{saved_guitar_id}"
 
 
-def job_status_path(parameter_hash: str) -> Path:
-    return DEBUG_REPORTS / f"app_stk_background_job_{parameter_hash}.json"
+def job_status_path(parameter_hash: str, instrument: str = "classical") -> Path:
+    stem = job_status_stem(instrument, parameter_hash)
+    return instrument_debug_reports_root(instrument) / f"{stem}.json"
 
 
-def background_status_path(parameter_hash: str) -> Path:
-    return DEBUG_REPORTS / f"app_stk_background_status_{parameter_hash}.json"
+def background_status_path(parameter_hash: str, instrument: str = "classical") -> Path:
+    stem = background_status_stem(instrument, parameter_hash)
+    return instrument_debug_reports_root(instrument) / f"{stem}.json"
 
 
 def library_report_paths_for_hash(parameter_hash: str, instrument: str = "classical") -> Tuple[Path, Path]:
-    stem = f"app_stk_note_library_{instrument}_preview_{parameter_hash}"
-    return DEBUG_REPORTS / f"{stem}_report.json", DEBUG_REPORTS / f"{stem}_report.md"
+    stem = library_report_stem(instrument, parameter_hash)
+    root = instrument_debug_reports_root(instrument)
+    return root / f"{stem}_report.json", root / f"{stem}_report.md"
 
 
 def note_name_to_frequency(note_name: str) -> float:
@@ -233,21 +258,14 @@ def list_notes_in_cache(cache_dir: Path) -> List[str]:
     return sorted(list_note_wavs(cache_dir).keys(), key=note_to_midi)
 
 
-def list_available_samples(repo_root: Optional[Path] = None) -> List[str]:
+def list_available_samples(
+    repo_root: Optional[Path] = None,
+    instrument: str = "classical",
+) -> List[str]:
     root = Path(repo_root or REPO_ROOT)
-    lhs = root / "ROM" / "classic" / "lhs_pool.json"
-    if lhs.is_file():
-        try:
-            pool = json.loads(lhs.read_text(encoding="utf-8"))
-            ids = [
-                str(e.get("id"))
-                for e in pool.get("entries") or []
-                if str(e.get("id", "")).startswith("sample_")
-            ]
-            if ids:
-                return sorted(ids)
-        except (json.JSONDecodeError, OSError):
-            pass
+    ids = list_lhs_sample_ids(root, instrument)
+    if ids:
+        return ids
     return list(SAMPLE_SET_V4)
 
 
@@ -689,8 +707,8 @@ def _write_json(path: Path, doc: Mapping[str, Any]) -> None:
     path.write_text(json.dumps(dict(doc), indent=2) + "\n", encoding="utf-8")
 
 
-def read_job_status(parameter_hash: str) -> Dict[str, Any]:
-    path = job_status_path(parameter_hash)
+def read_job_status(parameter_hash: str, instrument: str = "classical") -> Dict[str, Any]:
+    path = job_status_path(parameter_hash, instrument)
     if not path.is_file():
         return {"parameter_hash": parameter_hash, "status": "not_started"}
     try:
@@ -699,8 +717,12 @@ def read_job_status(parameter_hash: str) -> Dict[str, Any]:
         return {"parameter_hash": parameter_hash, "status": "failed", "error": "corrupt_job_status"}
 
 
-def write_job_status(parameter_hash: str, doc: Mapping[str, Any]) -> Path:
-    path = job_status_path(parameter_hash)
+def write_job_status(
+    parameter_hash: str,
+    doc: Mapping[str, Any],
+    instrument: str = "classical",
+) -> Path:
+    path = job_status_path(parameter_hash, instrument)
     payload = dict(doc)
     payload["parameter_hash"] = parameter_hash
     payload["updated_at"] = _utc_now()
@@ -708,8 +730,8 @@ def write_job_status(parameter_hash: str, doc: Mapping[str, Any]) -> Path:
     return path
 
 
-def read_background_status(parameter_hash: str) -> Dict[str, Any]:
-    path = background_status_path(parameter_hash)
+def read_background_status(parameter_hash: str, instrument: str = "classical") -> Dict[str, Any]:
+    path = background_status_path(parameter_hash, instrument)
     if not path.is_file():
         return {"parameter_hash": parameter_hash, "status": "not_started"}
     try:
@@ -718,8 +740,12 @@ def read_background_status(parameter_hash: str) -> Dict[str, Any]:
         return {"parameter_hash": parameter_hash, "status": "failed", "error": "corrupt_background_status"}
 
 
-def write_background_status(parameter_hash: str, doc: Mapping[str, Any]) -> Path:
-    path = background_status_path(parameter_hash)
+def write_background_status(
+    parameter_hash: str,
+    doc: Mapping[str, Any],
+    instrument: str = "classical",
+) -> Path:
+    path = background_status_path(parameter_hash, instrument)
     payload = dict(doc)
     payload["parameter_hash"] = parameter_hash
     payload["updated_at"] = _utc_now()
@@ -727,37 +753,42 @@ def write_background_status(parameter_hash: str, doc: Mapping[str, Any]) -> Path
     return path
 
 
-def set_active_job(parameter_hash: str) -> None:
-    ACTIVE_JOB_FILE.parent.mkdir(parents=True, exist_ok=True)
+def set_active_job(parameter_hash: str, instrument: str = "classical") -> None:
+    path = active_job_file(instrument)
+    path.parent.mkdir(parents=True, exist_ok=True)
     _write_json(
-        ACTIVE_JOB_FILE,
-        {"parameter_hash": parameter_hash, "updated_at": _utc_now()},
+        path,
+        {"parameter_hash": parameter_hash, "instrument": instrument, "updated_at": _utc_now()},
     )
 
 
-def get_active_job_hash() -> Optional[str]:
-    if not ACTIVE_JOB_FILE.is_file():
+def get_active_job_hash(instrument: str = "classical") -> Optional[str]:
+    path = active_job_file(instrument)
+    if not path.is_file():
         return None
     try:
-        doc = json.loads(ACTIVE_JOB_FILE.read_text(encoding="utf-8"))
+        doc = json.loads(path.read_text(encoding="utf-8"))
         return str(doc.get("parameter_hash") or "") or None
     except (json.JSONDecodeError, OSError):
         return None
 
 
-def is_active_job(parameter_hash: str) -> bool:
-    return get_active_job_hash() == parameter_hash
+def is_active_job(parameter_hash: str, instrument: str = "classical") -> bool:
+    return get_active_job_hash(instrument) == parameter_hash
 
 
-def mark_stk_job_stale(parameter_hash: Optional[str] = None) -> None:
-    active = parameter_hash or get_active_job_hash()
+def mark_stk_job_stale(
+    parameter_hash: Optional[str] = None,
+    instrument: str = "classical",
+) -> None:
+    active = parameter_hash or get_active_job_hash(instrument)
     if not active:
         return
-    status = read_job_status(active)
+    status = read_job_status(active, instrument)
     if status.get("status") == "running":
-        write_job_status(active, {**status, "status": "stale", "stale_reason": "design_or_rom_changed"})
+        write_job_status(active, {**status, "status": "stale", "stale_reason": "design_or_rom_changed"}, instrument)
     elif status.get("status") not in ("ready",):
-        write_job_status(active, {"status": "stale", "stale_reason": "design_or_rom_changed"})
+        write_job_status(active, {"status": "stale", "stale_reason": "design_or_rom_changed"}, instrument)
 
 
 def _stk_render_wav_name(note_name: str) -> str:
@@ -772,9 +803,11 @@ def _build_single_note_export(
     duration_s: float,
     render_subdir: str,
     stk_wav_relpath: str,
+    instrument: str = "classical",
 ) -> Dict[str, Any]:
+    ref_id = reference_sample_id(instrument)
     physical = load_physical_parameters(sample_id)
-    reference_physical = load_physical_parameters(REFERENCE_SAMPLE_ID)
+    reference_physical = load_physical_parameters(ref_id)
     voicing_table = _extended_voicing((sample_id,))
     factors, _ = compute_v5_physical_factors(
         physical, reference_physical, sample_id=sample_id, voicing=voicing_table
@@ -799,7 +832,9 @@ def _build_single_note_export(
     render["explicit_frequency_hz"] = True
     return {
         "export_version": "pgsm_stk_app_note_export_v1",
-        "demo_version": "app_stk_note_cache_classical",
+        "demo_version": demo_version_label(instrument),
+        "instrument": instrument,
+        "shape_type": "box" if instrument == "box" else "classic",
         "generated_at": _utc_now(),
         "renderer": "stk_cpp",
         "python_role": "parameter_export_only",
@@ -822,9 +857,11 @@ def _build_batch_note_export(
     notes: Sequence[str],
     durations_by_note: Mapping[str, float],
     render_subdir: str,
+    instrument: str = "classical",
 ) -> Dict[str, Any]:
+    ref_id = reference_sample_id(instrument)
     physical = load_physical_parameters(sample_id)
-    reference_physical = load_physical_parameters(REFERENCE_SAMPLE_ID)
+    reference_physical = load_physical_parameters(ref_id)
     voicing_table = _extended_voicing((sample_id,))
     factors, _ = compute_v5_physical_factors(
         physical, reference_physical, sample_id=sample_id, voicing=voicing_table
@@ -855,7 +892,9 @@ def _build_batch_note_export(
         renders.append(entry)
     return {
         "export_version": "pgsm_stk_app_note_export_v1",
-        "demo_version": "app_stk_note_cache_classical",
+        "demo_version": demo_version_label(instrument),
+        "instrument": instrument,
+        "shape_type": "box" if instrument == "box" else "classic",
         "generated_at": _utc_now(),
         "renderer": "stk_cpp",
         "python_role": "parameter_export_only",
@@ -870,6 +909,35 @@ def _build_batch_note_export(
     }
 
 
+def export_note_cache_to_shared(
+    cache_dir: Path,
+    instrument: str = "classical",
+    *,
+    repo_root: Optional[Path] = None,
+) -> Optional[Path]:
+    """Copy a ready note cache to ``{SHARED_HOST_DIR}/{shape}/audio/<cache_name>/``."""
+    root = Path(repo_root or REPO_ROOT)
+    cache_dir = Path(cache_dir)
+    if not cache_dir.is_dir():
+        return None
+    try:
+        sys.path.insert(0, str(root / "FEM" / "scripts"))
+        from paths import get_shared_dir  # noqa: WPS433
+
+        dest_root = get_shared_dir(shared_shape_name(instrument), "audio") / cache_dir.name
+        if dest_root.exists():
+            shutil.rmtree(dest_root)
+        shutil.copytree(cache_dir, dest_root)
+        print(
+            f"APP_STK_SHARED_EXPORT instrument={instrument} dest={dest_root}",
+            flush=True,
+        )
+        return dest_root
+    except Exception as exc:
+        print(f"APP_STK_SHARED_EXPORT skipped instrument={instrument} error={exc}", flush=True)
+        return None
+
+
 def render_notes_batch(
     *,
     repo_root: Path,
@@ -879,6 +947,7 @@ def render_notes_batch(
     target_dir: Path,
     binary: Optional[Path] = None,
     cache_key: str = "",
+    instrument: str = "classical",
 ) -> float:
     """Render all notes in one STK/C++ invocation."""
     if not notes_to_render:
@@ -897,6 +966,7 @@ def render_notes_batch(
         notes=normalized_notes,
         durations_by_note=durations_by_note,
         render_subdir=rel_subdir,
+        instrument=instrument,
     )
     params_path = tmp_dir / "params.json"
     params_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
@@ -921,6 +991,7 @@ def render_notes_batch_to_worker_dir(
     durations_by_note: Mapping[str, float],
     worker_dir: Path,
     binary: Optional[Path] = None,
+    instrument: str = "classical",
 ) -> Tuple[float, int]:
     """Render a worker chunk into an isolated temp dir (flat ``{note}.wav`` files)."""
     if not notes_to_render:
@@ -940,6 +1011,7 @@ def render_notes_batch_to_worker_dir(
         notes=normalized_notes,
         durations_by_note=durations_by_note,
         render_subdir=rel_subdir,
+        instrument=instrument,
     )
     params_path = stk_work / "params.json"
     params_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
@@ -1014,6 +1086,7 @@ def render_notes_parallel_batch(
     started_at: str = "",
     priority_notes: Sequence[str] = DEFAULT_PRIORITY_NOTES,
     t_start: float = 0.0,
+    instrument: str = "classical",
 ) -> Tuple[float, List[str], List[Dict[str, Any]]]:
     """Render note chunks in parallel worker dirs, merge to staging, promote to target."""
     root = Path(repo_root)
@@ -1069,9 +1142,9 @@ def render_notes_parallel_batch(
             if job_status_json is not None:
                 _write_json(job_status_json, progress_doc)
             if bg_status_path is not None:
-                write_background_status(key, progress_doc)
+                write_background_status(key, progress_doc, instrument)
             if parameter_hash:
-                write_job_status(key, {**read_job_status(key), **progress_doc})
+                write_job_status(key, {**read_job_status(key, instrument), **progress_doc}, instrument)
 
     def _progress_loop() -> None:
         while not stop_progress.wait(5.0):
@@ -1090,6 +1163,7 @@ def render_notes_parallel_batch(
                 durations_by_note=durations_by_note,
                 worker_dir=worker_dir,
                 binary=binary,
+                instrument=instrument,
             )
             result = {
                 "worker_id": worker_id,
@@ -1200,6 +1274,7 @@ def render_single_note(
     duration_s: Optional[float] = None,
     binary: Optional[Path] = None,
     cache_key: str = "",
+    instrument: str = "classical",
 ) -> float:
     normalized = normalize_note_name(note_name)
     dur = float(duration_s if duration_s is not None else duration_for_note(normalized))
@@ -1217,6 +1292,7 @@ def render_single_note(
         duration_s=dur,
         render_subdir=rel_subdir,
         stk_wav_relpath=stk_rel,
+        instrument=instrument,
     )
     params_path = tmp_dir / "params.json"
     params_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
@@ -1270,7 +1346,7 @@ def build_note_library(
     spec_doc = build_cache_spec_for_hash(cache_key, cfg, fret_count, render_mode=mode)
     spec_hash = str(spec_doc["cache_spec_hash"])
     effective_workers = int(spec_doc.get("parallel_workers") or worker_count)
-    bg_status_path = background_status_path(cache_key) if parameter_hash else None
+    bg_status_path = background_status_path(cache_key, instrument) if parameter_hash else None
     started_at = _utc_now()
     print(
         f"APP_STK_RENDER_MODE {mode} workers={effective_workers} hash={parameter_hash or cache_key}",
@@ -1314,7 +1390,7 @@ def build_note_library(
         if job_status_json is not None:
             _write_json(job_status_json, {**progress_doc, "elapsed_s": elapsed})
         if bg_status_path is not None:
-            write_background_status(cache_key, progress_doc)
+            write_background_status(cache_key, progress_doc, instrument)
 
     if bg_status_path is not None:
         initial_status: Dict[str, Any] = {
@@ -1339,14 +1415,14 @@ def build_note_library(
                 }
                 for idx, chunk in enumerate(split_notes_for_workers(to_render, effective_workers))
             ]
-        write_background_status(cache_key, initial_status)
+        write_background_status(cache_key, initial_status, instrument)
         if parameter_hash:
-            write_job_status(cache_key, {**read_job_status(cache_key), **initial_status})
+            write_job_status(cache_key, {**read_job_status(cache_key, instrument), **initial_status}, instrument)
 
     workers_state: List[Dict[str, Any]] = []
 
     if to_render:
-        if not is_active_job(cache_key) and parameter_hash:
+        if not is_active_job(cache_key, instrument) and parameter_hash:
             missing.extend(to_render)
             for note_name in to_render:
                 timings[note_name] = -1.0
@@ -1377,6 +1453,7 @@ def build_note_library(
                     started_at=started_at,
                     priority_notes=prio,
                     t_start=t_start,
+                    instrument=instrument,
                 )
                 per_note = parallel_elapsed / max(len(to_render), 1)
                 for note_name in to_render:
@@ -1412,6 +1489,7 @@ def build_note_library(
                     target_dir=target_dir,
                     binary=binary,
                     cache_key=cache_key,
+                    instrument=instrument,
                 )
                 per_note = batch_elapsed / max(len(to_render), 1)
                 for note_name in to_render:
@@ -1436,6 +1514,7 @@ def build_note_library(
                             duration_s=note_dur,
                             binary=binary,
                             cache_key=cache_key,
+                            instrument=instrument,
                         )
                     except Exception:
                         missing.append(note_name)
@@ -1494,7 +1573,7 @@ def build_note_library(
     slowest = max(rendered_times, key=rendered_times.get) if rendered_times else None
     fastest = min(rendered_times, key=rendered_times.get) if rendered_times else None
 
-    if parameter_hash and not is_active_job(parameter_hash):
+    if parameter_hash and not is_active_job(parameter_hash, instrument):
         readiness = "stale"
         job_status = "stale"
     elif missing:
@@ -1517,6 +1596,7 @@ def build_note_library(
         "sample_id": sample_id,
         "parameter_hash": parameter_hash,
         "instrument": instrument,
+        "shape_type": "box" if instrument == "box" else "classic",
         "note_range": note_range,
         "note_count": len(notes),
         "notes_requested": notes,
@@ -1567,8 +1647,9 @@ def build_note_library(
     if parameter_hash:
         json_path, md_path = library_report_paths_for_hash(parameter_hash, instrument)
     else:
-        json_path = DEBUG_REPORTS / f"app_stk_note_library_{instrument}_{sample_id}_report.json"
-        md_path = DEBUG_REPORTS / f"app_stk_note_library_{instrument}_{sample_id}_report.md"
+        report_root = instrument_debug_reports_root(instrument)
+        json_path = report_root / f"app_stk_note_library_{instrument}_{sample_id}_report.json"
+        md_path = report_root / f"app_stk_note_library_{instrument}_{sample_id}_report.md"
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     md_path.write_text(_library_report_md(report), encoding="utf-8")
@@ -1583,6 +1664,7 @@ def build_note_library(
                 "rendered_notes": len(notes) - len(missing),
                 "total_notes": len(notes),
             },
+            instrument,
         )
     if bg_status_path is not None:
         write_background_status(
@@ -1596,7 +1678,13 @@ def build_note_library(
                 "report_path": str(json_path),
                 "output_dir": str(target_dir).replace("\\", "/"),
             },
+            instrument,
         )
+    if readiness == "ready_for_app_playback":
+        shared_dest = export_note_cache_to_shared(target_dir, instrument, repo_root=root)
+        if shared_dest:
+            report["shared_export_dir"] = str(shared_dest).replace("\\", "/")
+            json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return report
 
 
@@ -1719,8 +1807,8 @@ def refresh_stk_background_job_status(
 
     preview = Path(cache_dir) if cache_dir is not None else preview_cache_dir(parameter_hash, instrument)
 
-    job_doc = read_job_status(parameter_hash)
-    bg_doc = read_background_status(parameter_hash)
+    job_doc = read_job_status(parameter_hash, instrument)
+    bg_doc = read_background_status(parameter_hash, instrument)
     report = get_latest_note_library_report(
         DEFAULT_SOURCE_SAMPLE_ID, instrument, parameter_hash=parameter_hash
     )
@@ -1752,7 +1840,7 @@ def refresh_stk_background_job_status(
     scan_dir = output_dir if output_dir.is_dir() else preview
     actual_wav_count = count_wavs_in_cache(scan_dir)
 
-    active_hash = get_active_job_hash()
+    active_hash = get_active_job_hash(instrument)
     is_active_hash = active_hash is None or active_hash == parameter_hash
 
     result: Dict[str, Any] = {
@@ -1803,8 +1891,8 @@ def refresh_stk_background_job_status(
                 "pid": None,
             }
         )
-        write_job_status(parameter_hash, {**job_doc, **result})
-        write_background_status(parameter_hash, {**result, "report_path": latest_report_path})
+        write_job_status(parameter_hash, {**job_doc, **result}, instrument)
+        write_background_status(parameter_hash, {**result, "report_path": latest_report_path}, instrument)
         if promote_stack:
             promote_pending_stack_entries(parameter_hash, instrument=instrument)
         return result
@@ -1838,8 +1926,8 @@ def refresh_stk_background_job_status(
         else:
             result["status"] = "failed"
             result["error"] = "subprocess_exited_incomplete"
-            write_job_status(parameter_hash, {**job_doc, **result, "pid": None})
-            write_background_status(parameter_hash, result)
+            write_job_status(parameter_hash, {**job_doc, **result, "pid": None}, instrument)
+            write_background_status(parameter_hash, result, instrument)
             return result
 
   # 4) Partial / in-progress on matching active hash (or no competing active job).
@@ -1930,7 +2018,7 @@ def start_background_note_library_job(
     worker_count = parallel_workers_from_config(cfg) if mode == "parallel_batch" else 1
     preview = preview_cache_dir(parameter_hash, instrument)
     preview.mkdir(parents=True, exist_ok=True)
-    set_active_job(parameter_hash)
+    set_active_job(parameter_hash, instrument)
 
     if cache_is_ready_for_fretboard(preview, parameter_hash, cfg=cfg):
         pos_fields = build_position_wav_report_fields(preview, fret_count=fret_count, cfg=cfg)
@@ -1944,16 +2032,16 @@ def start_background_note_library_job(
             "fretboard_required_note_count": len(required),
             **pos_fields,
         }
-        write_job_status(parameter_hash, report)
+        write_job_status(parameter_hash, report, instrument)
         return report
 
-    existing = read_job_status(parameter_hash)
+    existing = read_job_status(parameter_hash, instrument)
     pid = int(existing.get("pid") or 0)
     if existing.get("status") == "running" and pid and _is_process_running(pid):
         return existing
 
     script = root / "tools" / "build_app_stk_note_library.py"
-    job_json = job_status_path(parameter_hash)
+    job_json = job_status_path(parameter_hash, instrument)
     cmd = [
         sys.executable,
         str(script),
@@ -1987,11 +2075,13 @@ def start_background_note_library_job(
             "started_at": _utc_now(),
             "output_dir": str(preview),
             "source_sample_id": sample_id,
+            "instrument": instrument,
             "rendered_notes": 0,
             "total_notes": len(required),
             "render_mode": mode,
             "worker_count": worker_count,
         },
+        instrument,
     )
     write_background_status(
         parameter_hash,
@@ -1999,16 +2089,22 @@ def start_background_note_library_job(
             "status": "running",
             "started_at": _utc_now(),
             "output_dir": str(preview),
+            "instrument": instrument,
             "rendered_notes": 0,
             "total_notes": len(required),
             "elapsed_time_s": 0.0,
             "render_mode": mode,
             "worker_count": worker_count,
         },
+        instrument,
     )
     proc = subprocess.Popen(cmd, cwd=str(root))
-    write_job_status(parameter_hash, {**read_job_status(parameter_hash), "pid": proc.pid})
-    return read_job_status(parameter_hash)
+    write_job_status(
+        parameter_hash,
+        {**read_job_status(parameter_hash, instrument), "pid": proc.pid},
+        instrument,
+    )
+    return read_job_status(parameter_hash, instrument)
 
 
 def schedule_stk_after_rom(
@@ -2016,15 +2112,19 @@ def schedule_stk_after_rom(
     rom_fp: str,
     lhs_params: Mapping[str, Any],
     repo_root: Optional[Path] = None,
-    sample_id: str = DEFAULT_SOURCE_SAMPLE_ID,
+    sample_id: Optional[str] = None,
+    instrument: str = "classical",
 ) -> Dict[str, Any]:
+    inst = instrument
+    sid = sample_id or default_sample_id(inst)
     parameter_hash = compute_parameter_hash(rom_fp, lhs_params)
-    mark_stk_job_stale()
-    set_active_job(parameter_hash)
+    mark_stk_job_stale(instrument=inst)
+    set_active_job(parameter_hash, inst)
     return start_background_note_library_job(
         parameter_hash=parameter_hash,
         repo_root=repo_root,
-        sample_id=sample_id,
+        sample_id=sid,
+        instrument=inst,
     )
 
 
@@ -2036,7 +2136,8 @@ def get_latest_note_library_report(
     if parameter_hash:
         json_path, _ = library_report_paths_for_hash(parameter_hash, instrument)
     else:
-        json_path = DEBUG_REPORTS / f"app_stk_note_library_{instrument}_{sample_id}_report.json"
+        report_root = instrument_debug_reports_root(instrument)
+        json_path = report_root / f"app_stk_note_library_{instrument}_{sample_id}_report.json"
     if not json_path.is_file():
         return None
     return json.loads(json_path.read_text(encoding="utf-8"))

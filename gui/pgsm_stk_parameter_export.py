@@ -198,6 +198,7 @@ V3_NOTE_MODIFIERS: Dict[Tuple[str, str], Dict[str, float]] = {
 }
 
 LHS_POOL_JSON = REPO_ROOT / "ROM" / "classic" / "lhs_pool.json"
+BOX_LHS_POOL_JSON = REPO_ROOT / "ROM" / "box" / "lhs_pool.json"
 
 
 def sample_set_for_demo(demo_version: str) -> Tuple[str, ...]:
@@ -231,22 +232,29 @@ def _physical_from_lhs_entry(params: Mapping[str, Any], sample_id: str) -> Dict[
     }
 
 
-def _load_lhs_fallback_physical() -> Dict[str, Dict[str, Any]]:
-    if not LHS_POOL_JSON.is_file():
+def _load_lhs_fallback_physical_from_path(pool_path: Path) -> Dict[str, Dict[str, Any]]:
+    if not pool_path.is_file():
         return {}
     try:
-        pool = json.loads(LHS_POOL_JSON.read_text(encoding="utf-8"))
+        pool = json.loads(pool_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
     out: Dict[str, Dict[str, Any]] = {}
     for entry in pool.get("entries") or []:
         sid = str(entry.get("id") or "")
-        if not sid.startswith("sample_"):
+        if not sid:
             continue
         params = entry.get("parameters") or {}
         if not params:
             continue
         out[sid] = _physical_from_lhs_entry(params, sid)
+    return out
+
+
+def _load_lhs_fallback_physical() -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    for pool_path in (LHS_POOL_JSON, BOX_LHS_POOL_JSON):
+        out.update(_load_lhs_fallback_physical_from_path(pool_path))
     return out
 
 

@@ -10,6 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "gui"))
 
 from app_stk_config import load_app_stk_config, priority_notes_from_config  # noqa: E402
+from app_stk_instrument import default_sample_id  # noqa: E402
 from app_stk_fretboard import (  # noqa: E402
     build_required_note_set_from_fretboard,
     note_range_label_from_required,
@@ -27,7 +28,7 @@ from stk_app_audio_service import (  # noqa: E402
 def main(argv=None) -> int:
     cfg = load_app_stk_config(REPO_ROOT)
     parser = argparse.ArgumentParser(description="Build APP STK classical note cache.")
-    parser.add_argument("--sample-id", default="sample_000")
+    parser.add_argument("--sample-id", default=None)
     parser.add_argument("--instrument", default="classical")
     parser.add_argument(
         "--note-range",
@@ -54,9 +55,10 @@ def main(argv=None) -> int:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
     args = parser.parse_args(list(argv) if argv is not None else None)
+    sample_id = str(args.sample_id or default_sample_id(args.instrument))
 
-    if args.sample_id not in list_available_samples(args.repo_root):
-        print(f"WARNING: sample_id {args.sample_id!r} not in LHS pool; proceeding anyway")
+    if sample_id not in list_available_samples(args.repo_root, args.instrument):
+        print(f"WARNING: sample_id {sample_id!r} not in LHS pool; proceeding anyway")
 
     binary = stk_binary_path(args.repo_root)
     if not binary.is_file():
@@ -69,10 +71,10 @@ def main(argv=None) -> int:
     prio = list(args.priority_notes or priority_notes_from_config(cfg))
 
     if args.parameter_hash:
-        set_active_job(args.parameter_hash)
+        set_active_job(args.parameter_hash, args.instrument)
 
     report = build_note_library(
-        args.sample_id,
+        sample_id,
         instrument=args.instrument,
         note_range=note_range,
         output_root=args.output_root,
