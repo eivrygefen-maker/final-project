@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import wave
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -214,6 +215,9 @@ def _init_session() -> None:
         "active_stk_player_validation": {},
         "stk_generate_intent_hash": "",
         "stk_render_requested": False,
+        "stk_render_requested_hash": "",
+        "stk_render_started_at": 0.0,
+        "stk_last_status": "",
         "stk_show_diagnostics": False,
         "_fast_preview_paths_verified": False,
         "show_mesh_overlay": False,
@@ -1311,6 +1315,9 @@ def invalidate_rom_and_audio_state() -> None:
     st.session_state["active_stk_player_validation"] = {}
     st.session_state["stk_generate_intent_hash"] = ""
     st.session_state["stk_render_requested"] = False
+    st.session_state["stk_render_requested_hash"] = ""
+    st.session_state["stk_render_started_at"] = 0.0
+    st.session_state["stk_last_status"] = ""
     try:
         from stk_app_audio_service import mark_stk_job_stale  # noqa: WPS433
 
@@ -1785,6 +1792,38 @@ def run_stk(
     return metadata
 
 
+try:
+    from app_stk_config import load_app_stk_config as _load_stk_cfg_for_poll  # noqa: WPS433
+
+    _STK_POLL_INTERVAL_S = int(_load_stk_cfg_for_poll(BASE_DIR).get("auto_refresh_interval_s") or 12)
+except Exception:
+    _STK_POLL_INTERVAL_S = 12
+
+_STK_RENDER_TERMINAL_ACTIONS = frozenset(
+    {"saved_new", "loaded_existing", "activated_preview", "stk_failed"}
+)
+
+
+def _stk_render_poll_fragment_body() -> None:
+    """Poll STK job in an isolated fragment (Streamlit rerun only — no browser reload)."""
+    if not st.session_state.get("stk_render_requested"):
+        return
+    ctx = st.session_state.get("_stk_watch_ctx")
+    if not isinstance(ctx, dict) or not ctx:
+        return
+    from stk_app_ui import render_stk_render_watch_panel  # noqa: WPS433
+
+    result = render_stk_render_watch_panel(repo_root=BASE_DIR, **ctx)
+    if result and str(result.get("action") or "") in _STK_RENDER_TERMINAL_ACTIONS:
+        st.rerun()
+
+
+if hasattr(st, "fragment"):
+    _stk_render_poll_fragment_body = st.fragment(  # type: ignore[misc]
+        run_every=timedelta(seconds=_STK_POLL_INTERVAL_S)
+    )(_stk_render_poll_fragment_body)
+
+
 def _render_main_studio(
     saved: Dict[str, Any],
     saved_solver: Dict[str, Any],
@@ -1911,6 +1950,15 @@ def _render_main_studio(
     _stk_status = str(st.session_state.get("stk_job_status") or "not_started")
     if not rom_body_response_ready(rom_fp):
         st.caption("Save & Sync first to simulate your guitar and prepare sound.")
+    elif st.session_state.get("stk_render_requested") and _stk_status in (
+        "running",
+        "partial_ready",
+        "not_started",
+    ):
+        st.caption(
+            "Building guitar sound… This may take a few minutes. "
+            "The player will load automatically when ready."
+        )
     elif not st.session_state.get("stk_render_requested") and _stk_status in (
         "not_started",
         "stale",
@@ -1951,7 +1999,7 @@ def _render_main_studio(
                 if result.get("action") in ("stk_started", "stk_running"):
                     st.info(
                         "Building guitar sound… This may take a few minutes. "
-                        "Click **Generate Sound** again when ready to load the player."
+                        "The player will load automatically when ready."
                     )
                 elif result.get("action") == "loaded_existing":
                     st.info("This guitar is already saved — loaded from comparison stack.")
@@ -1964,18 +2012,22 @@ def _render_main_studio(
             except Exception as exc:
                 st.error(f"Could not save guitar: {exc}")
 
-    from app_stk_config import load_app_stk_config  # noqa: WPS433
+    st.session_state["_stk_watch_ctx"] = {
+        "rom_fp": rom_fp,
+        "lhs_params": lhs_params,
+        "geom": geom,
+        "top_wood": top_wood,
+        "back_wood": back_wood,
+        "rom_physical_summary_path": str(st.session_state.get("stk_body_json") or ""),
+    }
+    if st.session_state.get("stk_render_requested"):
+        from stk_app_ui import poll_stk_render_request  # noqa: WPS433
 
-    _stk_cfg = load_app_stk_config(BASE_DIR)
-    if (
-        st.session_state.get("stk_render_requested")
-        and _stk_status in ("running", "partial_ready")
-    ):
-        _refresh_s = int(_stk_cfg.get("auto_refresh_interval_s") or 12)
-        st.markdown(
-            f'<meta http-equiv="refresh" content="{_refresh_s}">',
-            unsafe_allow_html=True,
-        )
+        _poll = poll_stk_render_request(repo_root=BASE_DIR, **st.session_state["_stk_watch_ctx"])
+        _poll_action = str((_poll.get("result") or {}).get("action") or "")
+        if _poll_action in _STK_RENDER_TERMINAL_ACTIONS:
+            st.rerun()
+        _stk_render_poll_fragment_body()
 
     if st.session_state.get("_pending_fom_run") and display_mesh_active(geom_fp):
         st.session_state._pending_fom_run = False
