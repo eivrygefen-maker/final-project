@@ -40,6 +40,7 @@ from app_stk_fretboard import (
     get_fret_count,
     list_ignored_non_note_wavs,
     list_note_wavs,
+    list_position_wav_files,
     normalize_note_name,
     note_range_label_from_required,
     note_to_midi,
@@ -454,8 +455,9 @@ def cache_is_ready_for_fretboard(
     parameter_hash: str = "",
     *,
     cfg: Optional[Mapping[str, Any]] = None,
+    repair_position_wavs: bool = True,
 ) -> bool:
-    """True when cache spec matches and every fretboard note has a WAV."""
+    """True when note WAVs and per-position alias WAVs exist for the fretboard."""
     cache_dir = Path(cache_dir)
     c = dict(cfg or load_app_stk_config())
     fret_count = int(c.get("fret_count") or 19)
@@ -463,11 +465,26 @@ def cache_is_ready_for_fretboard(
     for note in required:
         if resolve_stk_note_wav(cache_dir, note) is None:
             return False
+    missing_positions = list_missing_position_wavs(cache_dir, fret_count, cfg=c)
+    if missing_positions and repair_position_wavs:
+        ensure_position_wav_aliases(
+            cache_dir,
+            fret_count=fret_count,
+            cfg=c,
+            parameter_hash=parameter_hash,
+        )
+        missing_positions = list_missing_position_wavs(cache_dir, fret_count, cfg=c)
+    if missing_positions:
+        return False
+    pos_fields = build_position_wav_report_fields(cache_dir, fret_count=fret_count, cfg=c)
+    spec = read_cache_spec(cache_dir) or {}
     if parameter_hash:
         expected = build_cache_spec_for_hash(parameter_hash, c, fret_count)
         if not cache_spec_is_compatible(cache_dir, expected["cache_spec_hash"]):
-            # Repair spec when all required WAVs exist (e.g. render_mode migration).
             write_cache_spec(cache_dir, expected)
+        write_cache_spec(cache_dir, {**expected, **spec, **pos_fields})
+    elif spec:
+        write_cache_spec(cache_dir, {**spec, **pos_fields})
     return True
 
 
@@ -483,6 +500,22 @@ def preview_cache_dir_has_required_notes(
     return all(resolve_stk_note_wav(cache_dir, note) is not None for note in required)
 
 
+def preview_cache_ready_for_app_playback(
+    cache_dir: Path,
+    parameter_hash: str = "",
+    *,
+    cfg: Optional[Mapping[str, Any]] = None,
+    repair_position_wavs: bool = True,
+) -> bool:
+    """True when note WAVs and position alias WAVs are present for APP playback."""
+    return cache_is_ready_for_fretboard(
+        cache_dir,
+        parameter_hash,
+        cfg=cfg,
+        repair_position_wavs=repair_position_wavs,
+    )
+
+
 def ensure_preview_cache_spec(
     cache_dir: Path,
     parameter_hash: str,
@@ -495,7 +528,12 @@ def ensure_preview_cache_spec(
     fret_count = int(c.get("fret_count") or 19)
     mode = str(render_mode or c.get("render_mode") or "parallel_batch")
     spec = build_cache_spec_for_hash(parameter_hash, c, fret_count, render_mode=mode)
-    write_cache_spec(cache_dir, spec)
+    if preview_cache_dir_has_required_notes(cache_dir, c):
+        ensure_position_wav_aliases(cache_dir, fret_count=fret_count, cfg=c, parameter_hash=parameter_hash)
+        pos_fields = build_position_wav_report_fields(cache_dir, fret_count=fret_count, cfg=c)
+        write_cache_spec(cache_dir, {**spec, **pos_fields})
+    else:
+        write_cache_spec(cache_dir, spec)
 
 
 def resolve_preview_cache_ready_state(
@@ -517,6 +555,9 @@ def resolve_preview_cache_ready_state(
     if state.get("preview_cache_ready"):
         return state
     if not preview.is_dir() or not preview_cache_dir_has_required_notes(preview, cfg):
+        return state
+    ensure_position_wav_aliases(preview, cfg=cfg, parameter_hash=parameter_hash)
+    if not preview_cache_ready_for_app_playback(preview, parameter_hash, cfg=cfg):
         return state
     report = get_latest_note_library_report(
         DEFAULT_SOURCE_SAMPLE_ID, instrument, parameter_hash=parameter_hash
@@ -569,30 +610,42 @@ def run_note_mapping_audit(
     ignored_non_note = list_ignored_non_note_wavs(cache_dir)
     missing_required: List[str] = []
     missing_positions: List[Dict[str, Any]] = []
+    missing_position_wavs: List[str] = []
     for row in mapping:
         note = str(row["note_name"])
+        string_number = int(row["string_number"])
+        fret = int(row["fret"])
+        pos_wav_name = position_runtime_wav_name(string_number, fret)
         if resolve_stk_note_wav(cache_dir, note) is None:
             missing_positions.append(
                 {
-                    "string": row["string_number"],
-                    "fret": row["fret"],
+                    "string": string_number,
+                    "fret": fret,
                     "note_name": note,
+                    "position_wav": pos_wav_name,
                 }
             )
             if note not in missing_required:
                 missing_required.append(note)
+            continue
+        if not (cache_dir / pos_wav_name).is_file():
+            missing_position_wavs.append(pos_wav_name)
     required_set = set(required)
     generated_set = set(generated)
     audit: Dict[str, Any] = {
         "generated_at": _utc_now(),
         "parameter_hash": parameter_hash,
         "cache_dir": str(cache_dir).replace("\\", "/"),
-        "passed": not missing_positions,
+        "passed": not missing_positions and not missing_position_wavs,
         "fretboard_required_note_count": len(required),
         "valid_note_wav_count": len(generated),
         "generated_note_count": len(generated),
+        "position_wav_count": len(list_position_wav_files(cache_dir)),
+        "uses_string_fret_position_mapping": True,
+        "position_mapping_examples": build_position_mapping_examples(cache_dir),
         "ignored_non_note_wavs": ignored_non_note,
         "missing_required_notes": sorted(missing_required, key=note_to_midi),
+        "missing_position_wavs": sorted(missing_position_wavs),
         "extra_valid_notes": sorted(generated_set - required_set, key=note_to_midi),
         "extra_generated_notes": sorted(generated_set - required_set, key=note_to_midi),
         "lowest_required_note": required[0] if required else "",
@@ -1407,15 +1460,25 @@ def build_note_library(
                 )
                 _write_progress(cache_hits + idx + 1, job_status, note_name)
 
-    if missing or not cache_is_ready_for_fretboard(target_dir, cache_key, cfg=cfg):
+    if missing or not preview_cache_dir_has_required_notes(target_dir, cfg=cfg):
         pass  # skip preview until cache complete
-    elif not (target_dir / "all_notes_preview.wav").is_file():
-        _write_stk_preview_wav(target_dir, target_dir)
+    elif preview_cache_dir_has_required_notes(target_dir, cfg=cfg):
+        ensure_position_wav_aliases(
+            target_dir,
+            fret_count=fret_count,
+            cfg=cfg,
+            parameter_hash=parameter_hash or cache_key,
+        )
+        if not (target_dir / "all_notes_preview.wav").is_file():
+            _write_stk_preview_wav(target_dir, target_dir)
 
     write_cache_spec(target_dir, spec_doc)
     generated_in_cache = sorted(list_note_wavs(target_dir).keys(), key=note_to_midi)
     required_set = set(required)
     generated_set = set(generated_in_cache)
+    position_fields = build_position_wav_report_fields(target_dir, fret_count=fret_count, cfg=cfg)
+    if preview_cache_dir_has_required_notes(target_dir, cfg=cfg):
+        write_cache_spec(target_dir, {**spec_doc, **position_fields})
 
     rendered_times = {k: v for k, v in timings.items() if v > 0}
     total_render = sum(rendered_times.values())
@@ -1432,6 +1495,11 @@ def build_note_library(
     elif cache_is_ready_for_fretboard(target_dir, cache_key, cfg=cfg):
         readiness = "ready_for_app_playback"
         job_status = "ready"
+    elif preview_cache_dir_has_required_notes(target_dir, cfg=cfg) and position_fields.get(
+        "missing_position_wavs"
+    ):
+        readiness = "failed_missing_position_wavs"
+        job_status = "failed"
     else:
         readiness = "failed_renderer_or_export"
         job_status = "failed"
@@ -1483,6 +1551,7 @@ def build_note_library(
         "target_runtime_s": target_runtime_s,
         "achieved_target": total_render <= target_runtime_s if total_render > 0 else True,
         "default_duration_s": cfg.get("default_duration_s"),
+        **position_fields,
     }
     if parameter_hash:
         json_path, md_path = library_report_paths_for_hash(parameter_hash, instrument)
@@ -1595,6 +1664,9 @@ def _report_ready_for_hash(
     if not output_dir.is_dir():
         return False
     if not preview_cache_dir_has_required_notes(output_dir):
+        return False
+    ensure_position_wav_aliases(output_dir, parameter_hash=parameter_hash)
+    if list_missing_position_wavs(output_dir):
         return False
     if report.get("cache_spec_hash"):
         expected = build_cache_spec_for_hash(parameter_hash)
@@ -1809,6 +1881,9 @@ def refresh_stk_background_job_status(
     ):
         for candidate in (report_out, preview, scan_dir):
             if candidate.is_dir() and preview_cache_dir_has_required_notes(candidate, cfg):
+                ensure_position_wav_aliases(candidate, cfg=cfg, parameter_hash=parameter_hash)
+                if not preview_cache_ready_for_app_playback(candidate, parameter_hash, cfg=cfg):
+                    continue
                 if parameter_hash:
                     ensure_preview_cache_spec(
                         candidate,
@@ -1819,7 +1894,7 @@ def refresh_stk_background_job_status(
                 return _finalize_ready(candidate)
 
     result["status"] = str(job_doc.get("status") or bg_doc.get("status") or "not_started")
-    if result["status"] == "ready" and preview_cache_dir_has_required_notes(preview, cfg):
+    if result["status"] == "ready" and preview_cache_ready_for_app_playback(preview, parameter_hash, cfg=cfg):
         return _finalize_ready(preview)
     return result
 
@@ -1847,6 +1922,7 @@ def start_background_note_library_job(
     set_active_job(parameter_hash)
 
     if cache_is_ready_for_fretboard(preview, parameter_hash, cfg=cfg):
+        pos_fields = build_position_wav_report_fields(preview, fret_count=fret_count, cfg=cfg)
         report = {
             "status": "ready",
             "parameter_hash": parameter_hash,
@@ -1855,6 +1931,7 @@ def start_background_note_library_job(
             "output_dir": str(preview),
             "readiness": "ready_for_app_playback",
             "fretboard_required_note_count": len(required),
+            **pos_fields,
         }
         write_job_status(parameter_hash, report)
         return report
@@ -2240,6 +2317,130 @@ def resolve_stk_note_wav(cache_dir: Path, note_name: str) -> Optional[Path]:
     return None
 
 
+def list_missing_position_wavs(
+    cache_dir: Path,
+    fret_count: Optional[int] = None,
+    *,
+    cfg: Optional[Mapping[str, Any]] = None,
+) -> List[str]:
+    """Position runtime WAV filenames missing from ``cache_dir`` (note WAV must exist)."""
+    cache_dir = Path(cache_dir)
+    fc = int(fret_count if fret_count is not None else get_fret_count(cfg))
+    missing: List[str] = []
+    for row in build_fretboard_note_mapping(fc, cfg):
+        note_name = str(row["note_name"])
+        if resolve_stk_note_wav(cache_dir, note_name) is None:
+            continue
+        dest_name = position_runtime_wav_name(int(row["string_number"]), int(row["fret"]))
+        if not (cache_dir / dest_name).is_file():
+            missing.append(dest_name)
+    return missing
+
+
+def build_position_mapping_examples(cache_dir: Path) -> Dict[str, str]:
+    """Example position stem -> source note WAV for diagnostics."""
+    from classical_guitar_fretboard import EXPLICIT_VALIDATION_CHECKS, string_key_to_number  # noqa: WPS433
+
+    cache_dir = Path(cache_dir)
+    examples: Dict[str, str] = {}
+    for string_key, fret, expected in EXPLICIT_VALIDATION_CHECKS:
+        sn = string_key_to_number(string_key)
+        key = f"S{sn}_f{fret}"
+        src = resolve_stk_note_wav(cache_dir, expected)
+        examples[key] = src.name if src is not None else ""
+    return examples
+
+
+def build_position_wav_report_fields(
+    cache_dir: Path,
+    *,
+    fret_count: Optional[int] = None,
+    cfg: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Diagnostic counts for note-name vs per-position WAV files in the preview cache."""
+    cache_dir = Path(cache_dir)
+    note_wavs = list_note_wavs(cache_dir)
+    position_wavs = list_position_wav_files(cache_dir)
+    missing = list_missing_position_wavs(cache_dir, fret_count, cfg=cfg)
+    return {
+        "uses_string_fret_position_mapping": True,
+        "note_wav_count": len(note_wavs),
+        "position_wav_count": len(position_wavs),
+        "position_mapping_examples": build_position_mapping_examples(cache_dir),
+        "missing_position_wavs": missing,
+    }
+
+
+def ensure_position_wav_aliases(
+    cache_dir: Path,
+    *,
+    fret_count: Optional[int] = None,
+    cfg: Optional[Mapping[str, Any]] = None,
+    parameter_hash: str = "",
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Copy note-name WAVs into per-string/fret aliases (``S6_f1.wav`` <- ``F2.wav``)."""
+    cache_dir = Path(cache_dir)
+    fc = int(fret_count if fret_count is not None else get_fret_count(cfg))
+    created: List[str] = []
+    skipped: List[str] = []
+    missing_sources: List[Dict[str, Any]] = []
+
+    for row in build_fretboard_note_mapping(fc, cfg):
+        string_number = int(row["string_number"])
+        fret = int(row["fret"])
+        note_name = str(row["note_name"])
+        dest_name = position_runtime_wav_name(string_number, fret)
+        dest = cache_dir / dest_name
+        src = resolve_stk_note_wav(cache_dir, note_name)
+        if src is None:
+            missing_sources.append(
+                {
+                    "string": string_number,
+                    "fret": fret,
+                    "note_name": note_name,
+                    "position_wav": dest_name,
+                }
+            )
+            continue
+        if dest.is_file() and not force:
+            skipped.append(dest_name)
+            continue
+        shutil.copy2(src, dest)
+        created.append(dest_name)
+
+    report_fields = build_position_wav_report_fields(cache_dir, fret_count=fc, cfg=cfg)
+    count = int(report_fields.get("position_wav_count") or 0)
+    hash_label = parameter_hash or str(cache_dir.name).replace("current_preview_", "")
+    if count > 0 and not report_fields.get("missing_position_wavs"):
+        print(f"APP_STK_POSITION_WAVS_READY hash={hash_label} count={count}", flush=True)
+    elif created:
+        print(
+            f"APP_STK_POSITION_WAVS_READY hash={hash_label} count={count} "
+            f"created={len(created)} missing={len(report_fields.get('missing_position_wavs') or [])}",
+            flush=True,
+        )
+
+    spec = read_cache_spec(cache_dir)
+    if spec is not None:
+        write_cache_spec(
+            cache_dir,
+            {
+                **spec,
+                "uses_string_fret_position_mapping": True,
+                "position_wav_count": count,
+                "note_wav_count": report_fields.get("note_wav_count"),
+            },
+        )
+
+    return {
+        "created": created,
+        "skipped": skipped,
+        "missing_sources": missing_sources,
+        **report_fields,
+    }
+
+
 def write_minimal_silent_wav(
     path: Path,
     *,
@@ -2302,25 +2503,23 @@ def _write_stk_preview_wav(dest_dir: Path, cache_dir: Path) -> Path:
 
 
 def prepare_stk_player_assets(cache_dir: Path, fingerprint: str) -> Path:
-    """Copy STK note WAVs into the guitar_player runtime folder for iframe playback."""
+    """Copy per-position WAV aliases into the guitar_player runtime folder for iframe playback."""
     from note_cache_ui import RUNTIME_CACHE_DIR  # noqa: WPS433
 
     cache_dir = Path(cache_dir)
+    ensure_position_wav_aliases(cache_dir)
     dest = RUNTIME_CACHE_DIR / fingerprint
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True, exist_ok=True)
 
-    copied_ids: set[str] = set()
     for row in build_fretboard_note_mapping():
-        note_name = str(row["note_name"])
         string_number = int(row["string_number"])
         fret = int(row["fret"])
         runtime_wav = position_runtime_wav_name(string_number, fret)
-        src = resolve_stk_note_wav(cache_dir, note_name)
-        if src is not None:
+        src = cache_dir / runtime_wav
+        if src.is_file():
             shutil.copy2(src, dest / runtime_wav)
-            copied_ids.add(runtime_wav)
 
     _write_stk_preview_wav(dest, cache_dir)
     return dest
@@ -2345,7 +2544,11 @@ def build_stk_player_payload(
         note_name = str(row["note_name"])
         string_number = int(row["string_number"])
         fret = int(row["fret"])
-        if resolve_stk_note_wav(cache_dir, note_name) is None:
+        source = resolve_stk_note_wav(cache_dir, note_name)
+        if source is None:
+            continue
+        pos_wav = position_runtime_wav_name(string_number, fret)
+        if not (cache_dir / pos_wav).is_file():
             continue
         positions.append(
             {
@@ -2353,7 +2556,8 @@ def build_stk_player_payload(
                 "fret": fret,
                 "note_name": note_name,
                 "note_id": str(row["note_id"]),
-                "wav": position_runtime_wav_name(string_number, fret),
+                "wav": pos_wav,
+                "source_wav": source.name,
             }
         )
 
@@ -2474,6 +2678,11 @@ def activate_stk_guitar_for_player(
     audit = run_note_mapping_audit(cache_dir, parameter_hash)
     player_fp = saved_guitar_id or f"stk_{parameter_hash}"
     if not audit.get("passed"):
+        missing_pos = audit.get("missing_position_wavs") or []
+        if preview_cache_dir_has_required_notes(cache_dir) and missing_pos:
+            ensure_position_wav_aliases(cache_dir, parameter_hash=parameter_hash)
+            audit = run_note_mapping_audit(cache_dir, parameter_hash)
+    if not audit.get("passed"):
         validation = {
             "ok": False,
             "errors": [AUDIT_INCOMPLETE_MSG],
@@ -2481,6 +2690,7 @@ def activate_stk_guitar_for_player(
             "position_count": 0,
             "preview_path": "",
             "audit": audit,
+            "missing_position_wavs": audit.get("missing_position_wavs") or [],
         }
         return {
             "cache_path": str(cache_dir).replace("\\", "/"),

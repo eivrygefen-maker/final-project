@@ -133,9 +133,23 @@ def wav_stem_to_note_name(stem: str) -> Optional[str]:
     s = str(stem).strip()
     if is_helper_wav_stem(s):
         return None
+    if is_position_runtime_wav_stem(s):
+        return None
     if is_valid_note_name(s):
         return normalize_note_name(s)
     return note_id_stem_to_note_name(s)
+
+
+def list_position_wav_files(cache_dir: Path) -> Dict[str, Path]:
+    """Map position runtime WAV filenames (``S6_f1.wav``) to paths in ``cache_dir``."""
+    out: Dict[str, Path] = {}
+    d = Path(cache_dir)
+    if not d.is_dir():
+        return out
+    for path in d.glob("*.wav"):
+        if path.is_file() and is_position_runtime_wav_stem(path.stem):
+            out[path.name] = path
+    return out
 
 
 def list_note_wavs(cache_dir: Path) -> Dict[str, Path]:

@@ -13,6 +13,7 @@ from classical_guitar_fretboard import (  # noqa: F401
     is_valid_note_name,
     list_ignored_non_note_wavs,
     list_note_wavs,
+    list_position_wav_files,
     load_fretboard_config,
     midi_to_note_name,
     normalize_note_name,

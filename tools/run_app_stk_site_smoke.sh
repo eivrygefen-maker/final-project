@@ -73,6 +73,7 @@ from stk_app_audio_service import (
     cache_is_ready_for_fretboard,
     cleanup_smoke_test_artifacts,
     compute_parameter_hash,
+    ensure_position_wav_aliases,
     find_stack_entry_by_hash,
     library_report_paths_for_hash,
     list_ready_guitar_stack,
@@ -226,8 +227,12 @@ assert payload.get("string_visual_order_numbers") == [6, 5, 4, 3, 2, 1]
 s6f1 = next(p for p in payload["positions"] if p["string"] == 6 and p["fret"] == 1)
 assert s6f1.get("note_name") == "F2", s6f1
 assert s6f1.get("wav") == position_runtime_wav_name(6, 1), s6f1
+assert s6f1.get("source_wav") == "F2.wav", s6f1
 pos_checks = validate_player_payload_positions(payload)
 assert all(row["passed"] for row in pos_checks), pos_checks
+cache_path = Path(entry["note_cache_path"])
+for stem in ("S6_f0", "S6_f1", "S6_f2", "S6_f3", "S5_f3", "S2_f1", "S1_f12", "S1_f19"):
+    assert (cache_path / f"{stem}.wav").is_file(), stem
 fb_audit = run_fretboard_mapping_audit(
     cache_dir=Path(entry["note_cache_path"]), player_payload=payload, repo_root=root
 )
@@ -360,6 +365,18 @@ if grep -qF 'uses_string_fret_position_mapping' "${REPO_ROOT}/gui/stk_app_audio_
   ok "string/fret position mapping flag in player payload"
 else
   bad "string/fret position mapping flag missing"
+fi
+
+if grep -qF 'APP_STK_POSITION_WAVS_READY' "${REPO_ROOT}/gui/stk_app_audio_service.py"; then
+  ok "APP_STK_POSITION_WAVS_READY terminal log marker"
+else
+  bad "APP_STK_POSITION_WAVS_READY log marker missing"
+fi
+
+if grep -qF 'ensure_position_wav_aliases' "${REPO_ROOT}/gui/stk_app_audio_service.py"; then
+  ok "ensure_position_wav_aliases repair helper"
+else
+  bad "ensure_position_wav_aliases missing"
 fi
 
 if [[ -f "${REPO_ROOT}/config/classical_guitar_fretboard.json" ]]; then
