@@ -1900,11 +1900,11 @@ def _render_main_studio(
         try:
             from stk_app_audio_service import (  # noqa: WPS433
                 compute_parameter_hash,
-                refresh_stk_background_job_status,
+                resolve_preview_cache_ready_state,
             )
 
             _stk_ph = compute_parameter_hash(rom_fp, lhs_params)
-            stk_job = refresh_stk_background_job_status(_stk_ph)
+            stk_job = resolve_preview_cache_ready_state(_stk_ph, repo_root=BASE_DIR)
             st.session_state["stk_parameter_hash"] = _stk_ph
             st.session_state["stk_job_status"] = str(stk_job.get("status") or "not_started")
             st.session_state["stk_preview_cache_ready"] = bool(stk_job.get("preview_cache_ready"))
@@ -1953,10 +1953,9 @@ def _render_main_studio(
     elif st.session_state.get("stk_render_requested") and _stk_status in (
         "running",
         "partial_ready",
-        "not_started",
     ):
         st.caption(
-            "Building guitar sound… This may take a few minutes. "
+            "Building guitar sound with STK… This may take a few minutes. "
             "The player will load automatically when ready."
         )
     elif not st.session_state.get("stk_render_requested") and _stk_status in (
@@ -1998,15 +1997,16 @@ def _render_main_studio(
                 )
                 if result.get("action") in ("stk_started", "stk_running"):
                     st.info(
-                        "Building guitar sound… This may take a few minutes. "
+                        "Building guitar sound with STK… This may take a few minutes. "
                         "The player will load automatically when ready."
                     )
                 elif result.get("action") == "loaded_existing":
                     st.info("This guitar is already saved — loaded from comparison stack.")
+                elif result.get("action") in ("activated_preview", "saved_new"):
+                    st.success("Guitar sound is ready — play notes on the guitar below.")
                 else:
-                    st.success(
-                        f"Saved **{result['entry'].get('display_name')}** — play notes on the guitar below."
-                    )
+                    name = str((result.get("entry") or {}).get("display_name") or "guitar")
+                    st.success(f"Saved **{name}** — play notes on the guitar below.")
             except RuntimeError as exc:
                 st.warning(str(exc))
             except Exception as exc:
@@ -2025,6 +2025,7 @@ def _render_main_studio(
 
         _poll = poll_stk_render_request(repo_root=BASE_DIR, **st.session_state["_stk_watch_ctx"])
         _poll_action = str((_poll.get("result") or {}).get("action") or "")
+        _stk_status = str(st.session_state.get("stk_job_status") or _stk_status)
         if _poll_action in _STK_RENDER_TERMINAL_ACTIONS:
             st.rerun()
         _stk_render_poll_fragment_body()
@@ -2070,7 +2071,6 @@ def _render_main_studio(
         apply_stk_activation_to_session,
         load_stack_guitar_for_player,
         render_saved_guitars_row,
-        render_stk_diagnostics_panel,
     )
 
     loaded_guitar_id = render_saved_guitars_row(base_key="stk_saved_row")
@@ -2083,7 +2083,20 @@ def _render_main_studio(
 
     active_payload = st.session_state.get("active_stk_player_payload") or {}
     player_validation = st.session_state.get("active_stk_player_validation") or {}
-    if active_payload.get("status") == "ready" and active_payload.get("positions"):
+    _player_ready = (
+        active_payload.get("status") == "ready" and bool(active_payload.get("positions"))
+    )
+    _stk_building = (
+        st.session_state.get("stk_render_requested")
+        and not _player_ready
+        and _stk_status in ("running", "partial_ready", "not_started")
+    )
+    if _stk_building:
+        with st.spinner("Building guitar sound with STK…"):
+            st.caption(
+                "This may take a few minutes. The player will load automatically when ready."
+            )
+    if _player_ready:
         if player_validation and not player_validation.get("ok"):
             st.warning(
                 "Guitar player cache is incomplete: "
@@ -2094,7 +2107,10 @@ def _render_main_studio(
         else:
             player_payload = active_payload
             player_key = f"guitar_player_{st.session_state.get('active_stk_player_fp') or 'stk'}"
-    elif _stk_status in ("running", "partial_ready", "not_started", "waiting_for_rom"):
+    elif _stk_building:
+        player_payload = {"status": "building", "positions": [], "fingerprint": ""}
+        player_key = "guitar_player_building"
+    elif _stk_status in ("running", "partial_ready", "waiting_for_rom"):
         player_payload = {"status": "building", "positions": [], "fingerprint": ""}
         player_key = "guitar_player_building"
     else:
@@ -2103,8 +2119,10 @@ def _render_main_studio(
 
     guitar_player(player=player_payload, key=player_key, height=560)
 
-    with st.expander("Advanced STK diagnostics", expanded=False):
-        if st.checkbox("Show developer diagnostics", key="stk_show_diagnostics"):
+    if st.session_state.get("developer_fom_mode"):
+        from stk_app_ui import render_stk_diagnostics_panel  # noqa: WPS433
+
+        with st.expander("Advanced STK diagnostics (developer)", expanded=False):
             render_stk_diagnostics_panel(
                 repo_root=BASE_DIR,
                 base_key="stk_diag",

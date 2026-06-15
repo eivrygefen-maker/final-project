@@ -62,7 +62,9 @@ from classical_guitar_fretboard import load_fretboard_config, run_fretboard_mapp
 from stk_app_audio_service import (
     ACTIVE_JOB_FILE,
     APP_NOTE_CACHE_ROOT,
+    APP_STK_PARALLEL_WORKERS_ENABLED,
     DEBUG_REPORTS,
+    DEFAULT_APP_STK_WORKERS,
     GUITAR_STACK_ROOT,
     activate_stk_guitar_for_player,
     build_cache_spec_for_hash,
@@ -74,11 +76,13 @@ from stk_app_audio_service import (
     list_ready_guitar_stack,
     load_guitar_stack,
     refresh_stk_background_job_status,
+    render_notes_parallel_batch,
     run_note_mapping_audit,
     save_guitar_stack,
     save_guitar_to_stack,
     set_active_job,
     smoke_test_cache_dir,
+    split_notes_for_workers,
     validate_stk_player_runtime_cache,
     write_cache_spec,
     write_minimal_silent_wav,
@@ -87,6 +91,11 @@ from stk_app_audio_service import (
 cfg = load_app_stk_config(root)
 assert cfg.get("instrument") == "classical"
 assert float(cfg.get("default_duration_s", 0)) >= 4.0
+assert APP_STK_PARALLEL_WORKERS_ENABLED is True
+assert DEFAULT_APP_STK_WORKERS == 3
+assert int(cfg.get("parallel_workers") or 0) == 3
+assert cfg.get("render_mode") == "parallel_batch"
+assert callable(render_notes_parallel_batch)
 
 fb_cfg_path = root / "config" / "classical_guitar_fretboard.json"
 assert fb_cfg_path.is_file(), "missing classical_guitar_fretboard.json"
@@ -106,6 +115,13 @@ assert note_to_midi("E5") < note_to_midi("B5")
 
 required = build_required_note_set_from_fretboard(int(cfg.get("fret_count") or 19))
 assert required, "fretboard required notes empty"
+chunks = split_notes_for_workers(required, 3)
+assert len(chunks) == 3
+assert sum(len(c) for c in chunks) == len(required)
+flat = [n for c in chunks for n in c]
+assert len(flat) == len(set(flat)), "duplicate notes in worker split"
+for n in ("E2", "F2", "F#2", "G2", "C3", "C4", "E5", "B5"):
+    assert n in required, n
 assert note_to_midi(required[-1]) >= note_to_midi("B5"), required
 assert normalize_note_name("Bb4") == "A#4"
 

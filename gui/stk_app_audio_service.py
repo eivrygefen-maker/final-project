@@ -14,7 +14,9 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -62,6 +64,8 @@ DEFAULT_SOURCE_SAMPLE_ID = "sample_000"
 DEFAULT_PRIORITY_NOTES: Tuple[str, ...] = ("A2", "A4", "E5")
 CACHE_SPEC_FILE = ".cache_spec.json"
 NOTE_CACHE_VERSION = "app_stk_v3_fretboard_json"
+APP_STK_PARALLEL_WORKERS_ENABLED = True
+DEFAULT_APP_STK_WORKERS = 3
 AUDIT_INCOMPLETE_MSG = (
     "STK note cache is incomplete for this fretboard; rebuilding required."
 )
@@ -278,6 +282,69 @@ def count_wavs_in_cache(cache_dir: Path) -> int:
     return len(list_notes_in_cache(cache_dir))
 
 
+def parallel_workers_from_config(cfg: Optional[Mapping[str, Any]] = None) -> int:
+    """Worker count for parallel STK note-cache rendering (safe fallback to 1)."""
+    if not APP_STK_PARALLEL_WORKERS_ENABLED:
+        return 1
+    c = dict(cfg or load_app_stk_config())
+    raw = c.get("parallel_workers", c.get("stk_note_render_workers", DEFAULT_APP_STK_WORKERS))
+    try:
+        count = int(raw)
+    except (TypeError, ValueError):
+        count = DEFAULT_APP_STK_WORKERS
+    return max(1, count)
+
+
+def split_notes_for_workers(notes: Sequence[str], worker_count: int) -> List[List[str]]:
+    """Deterministic round-robin split — every note once, no duplicates."""
+    normalized = [normalize_note_name(n) for n in notes]
+    if not normalized:
+        return []
+    count = max(1, min(int(worker_count), len(normalized)))
+    if count <= 1:
+        return [list(normalized)]
+    chunks: List[List[str]] = [[] for _ in range(count)]
+    for idx, note in enumerate(normalized):
+        chunks[idx % count].append(note)
+    return chunks
+
+
+def worker_render_tmp_dir(cache_key: str, worker_id: int) -> Path:
+    return RENDER_TMP_ROOT / cache_key / f"worker_{worker_id}"
+
+
+def parallel_staging_dir(cache_key: str) -> Path:
+    return RENDER_TMP_ROOT / cache_key / "staging"
+
+
+def _count_rendered_notes_in_worker_dirs(cache_key: str, worker_count: int) -> Tuple[int, List[Dict[str, Any]]]:
+    """Count note WAVs per worker temp dir for progress reporting."""
+    workers: List[Dict[str, Any]] = []
+    total = 0
+    for worker_id in range(worker_count):
+        worker_dir = worker_render_tmp_dir(cache_key, worker_id)
+        rendered = len(list_notes_in_cache(worker_dir)) if worker_dir.is_dir() else 0
+        total += rendered
+        workers.append(
+            {
+                "worker_id": worker_id,
+                "status": "running" if worker_dir.is_dir() else "not_started",
+                "rendered_notes": rendered,
+                "output_dir": str(worker_dir).replace("\\", "/"),
+            }
+        )
+    return total, workers
+
+
+def _priority_notes_in_worker_dirs(cache_key: str, worker_count: int, priority_notes: Sequence[str]) -> bool:
+    base = RENDER_TMP_ROOT / cache_key
+    for note in priority_notes:
+        found = any(note_wav_in_cache(base / f"worker_{wid}", note).is_file() for wid in range(worker_count))
+        if not found:
+            return False
+    return True
+
+
 def priority_notes_ready(
     cache_dir: Path,
     priority_notes: Sequence[str] = DEFAULT_PRIORITY_NOTES,
@@ -311,12 +378,14 @@ def compute_cache_spec_hash(
     *,
     render_mode: str,
     durations_fp: str,
+    parallel_workers: int = 1,
 ) -> str:
     payload = {
         "parameter_hash": parameter_hash,
         "renderer_version": ACCEPTED_STK_DEMO_VERSION,
         "note_cache_version": NOTE_CACHE_VERSION,
         "render_mode": render_mode,
+        "parallel_workers": int(parallel_workers) if render_mode == "parallel_batch" else 1,
         "required_notes": sorted({normalize_note_name(n) for n in required_notes}, key=note_to_midi),
         "durations_fingerprint": durations_fp,
     }
@@ -333,9 +402,10 @@ def build_cache_spec_for_hash(
     c = dict(cfg or load_app_stk_config())
     required = build_required_note_set_from_fretboard(fret_count)
     mode = str(render_mode or c.get("render_mode") or "batch")
+    workers = parallel_workers_from_config(c) if mode == "parallel_batch" else 1
     durations_fp = durations_fingerprint(required, c)
     spec_hash = compute_cache_spec_hash(
-        parameter_hash, required, render_mode=mode, durations_fp=durations_fp
+        parameter_hash, required, render_mode=mode, durations_fp=durations_fp, parallel_workers=workers
     )
     return {
         "cache_spec_hash": spec_hash,
@@ -343,6 +413,7 @@ def build_cache_spec_for_hash(
         "renderer_version": ACCEPTED_STK_DEMO_VERSION,
         "note_cache_version": NOTE_CACHE_VERSION,
         "render_mode": mode,
+        "parallel_workers": workers,
         "required_notes": required,
         "durations_fingerprint": durations_fp,
         "fretboard_required_note_count": len(required),
@@ -388,14 +459,79 @@ def cache_is_ready_for_fretboard(
     c = dict(cfg or load_app_stk_config())
     fret_count = int(c.get("fret_count") or 19)
     required = build_required_note_set_from_fretboard(fret_count)
-    if parameter_hash:
-        expected = build_cache_spec_for_hash(parameter_hash, c, fret_count)
-        if not cache_spec_is_compatible(cache_dir, expected["cache_spec_hash"]):
-            return False
     for note in required:
         if resolve_stk_note_wav(cache_dir, note) is None:
             return False
+    if parameter_hash:
+        expected = build_cache_spec_for_hash(parameter_hash, c, fret_count)
+        if not cache_spec_is_compatible(cache_dir, expected["cache_spec_hash"]):
+            # Repair spec when all required WAVs exist (e.g. render_mode migration).
+            write_cache_spec(cache_dir, expected)
     return True
+
+
+def preview_cache_dir_has_required_notes(
+    cache_dir: Path,
+    cfg: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    """True when every fretboard-required note WAV exists (ignores cache spec)."""
+    cache_dir = Path(cache_dir)
+    c = dict(cfg or load_app_stk_config())
+    fret_count = int(c.get("fret_count") or 19)
+    required = build_required_note_set_from_fretboard(fret_count)
+    return all(resolve_stk_note_wav(cache_dir, note) is not None for note in required)
+
+
+def ensure_preview_cache_spec(
+    cache_dir: Path,
+    parameter_hash: str,
+    *,
+    cfg: Optional[Mapping[str, Any]] = None,
+    render_mode: str = "",
+) -> None:
+    """Write or refresh ``.cache_spec.json`` for a complete preview cache directory."""
+    c = dict(cfg or load_app_stk_config())
+    fret_count = int(c.get("fret_count") or 19)
+    mode = str(render_mode or c.get("render_mode") or "parallel_batch")
+    spec = build_cache_spec_for_hash(parameter_hash, c, fret_count, render_mode=mode)
+    write_cache_spec(cache_dir, spec)
+
+
+def resolve_preview_cache_ready_state(
+    parameter_hash: str,
+    *,
+    instrument: str = "classical",
+    promote_stack: bool = True,
+    repo_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Reconcile STK job status; promote to ready when fretboard WAVs exist on disk."""
+    root = Path(repo_root or REPO_ROOT)
+    cfg = load_app_stk_config(root)
+    preview = preview_cache_dir(parameter_hash, instrument)
+    state = refresh_stk_background_job_status(
+        parameter_hash,
+        instrument=instrument,
+        promote_stack=promote_stack,
+    )
+    if state.get("preview_cache_ready"):
+        return state
+    if not preview.is_dir() or not preview_cache_dir_has_required_notes(preview, cfg):
+        return state
+    report = get_latest_note_library_report(
+        DEFAULT_SOURCE_SAMPLE_ID, instrument, parameter_hash=parameter_hash
+    )
+    render_mode = str((report or {}).get("render_mode") or cfg.get("render_mode") or "parallel_batch")
+    ensure_preview_cache_spec(
+        preview,
+        parameter_hash,
+        cfg=cfg,
+        render_mode=render_mode,
+    )
+    return refresh_stk_background_job_status(
+        parameter_hash,
+        instrument=instrument,
+        promote_stack=promote_stack,
+    )
 
 
 def cache_is_ready(
@@ -715,6 +851,272 @@ def render_notes_batch(
     return elapsed
 
 
+def render_notes_batch_to_worker_dir(
+    *,
+    repo_root: Path,
+    sample_id: str,
+    notes_to_render: Sequence[str],
+    durations_by_note: Mapping[str, float],
+    worker_dir: Path,
+    binary: Optional[Path] = None,
+) -> Tuple[float, int]:
+    """Render a worker chunk into an isolated temp dir (flat ``{note}.wav`` files)."""
+    if not notes_to_render:
+        return 0.0, 0
+    root = Path(repo_root)
+    worker_dir = Path(worker_dir)
+    if worker_dir.exists():
+        shutil.rmtree(worker_dir)
+    worker_dir.mkdir(parents=True, exist_ok=True)
+    stk_work = worker_dir / "stk_work"
+    stk_work.mkdir(parents=True, exist_ok=True)
+    rel_subdir = str(stk_work.relative_to(root)).replace("\\", "/")
+    normalized_notes = [normalize_note_name(n) for n in notes_to_render]
+    doc = _build_batch_note_export(
+        repo_root=root,
+        sample_id=sample_id,
+        notes=normalized_notes,
+        durations_by_note=durations_by_note,
+        render_subdir=rel_subdir,
+    )
+    params_path = stk_work / "params.json"
+    params_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    t0 = time.perf_counter()
+    invoke_stk_renderer(params_path, root, binary=binary)
+    elapsed = time.perf_counter() - t0
+    rendered = 0
+    for note_name in normalized_notes:
+        stk_rel = f"{rel_subdir}/{_stk_render_wav_name(note_name)}"
+        stk_out = root / stk_rel
+        if not stk_out.is_file():
+            raise FileNotFoundError(f"STK did not produce expected WAV: {stk_out}")
+        shutil.copy2(stk_out, note_wav_in_cache(worker_dir, note_name))
+        rendered += 1
+    return elapsed, rendered
+
+
+def _merge_worker_outputs_to_staging(
+    *,
+    staging_dir: Path,
+    cache_key: str,
+    worker_count: int,
+    target_dir: Path,
+    cache_hit_notes: Sequence[str],
+) -> None:
+    """Copy cache hits + worker WAVs into staging (no concurrent writes to final cache)."""
+    staging_dir = Path(staging_dir)
+    if staging_dir.exists():
+        shutil.rmtree(staging_dir)
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    for note_name in cache_hit_notes:
+        src = note_wav_in_cache(target_dir, note_name)
+        if src.is_file():
+            shutil.copy2(src, note_wav_in_cache(staging_dir, note_name))
+    for worker_id in range(worker_count):
+        worker_dir = worker_render_tmp_dir(cache_key, worker_id)
+        if not worker_dir.is_dir():
+            continue
+        for note_name in list_notes_in_cache(worker_dir):
+            src = note_wav_in_cache(worker_dir, note_name)
+            dest = note_wav_in_cache(staging_dir, note_name)
+            if src.is_file():
+                shutil.copy2(src, dest)
+
+
+def _promote_staging_to_target(staging_dir: Path, target_dir: Path) -> None:
+    """Atomically promote validated staging cache into the final preview directory."""
+    staging_dir = Path(staging_dir)
+    target_dir = Path(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for path in staging_dir.iterdir():
+        if path.is_file():
+            shutil.copy2(path, target_dir / path.name)
+
+
+def render_notes_parallel_batch(
+    *,
+    repo_root: Path,
+    sample_id: str,
+    notes_to_render: Sequence[str],
+    durations_by_note: Mapping[str, float],
+    target_dir: Path,
+    binary: Optional[Path] = None,
+    cache_key: str = "",
+    worker_count: int = DEFAULT_APP_STK_WORKERS,
+    cache_hit_notes: Sequence[str] = (),
+    parameter_hash: str = "",
+    job_status_json: Optional[Path] = None,
+    bg_status_path: Optional[Path] = None,
+    total_notes: int = 0,
+    cache_hits: int = 0,
+    started_at: str = "",
+    priority_notes: Sequence[str] = DEFAULT_PRIORITY_NOTES,
+    t_start: float = 0.0,
+) -> Tuple[float, List[str], List[Dict[str, Any]]]:
+    """Render note chunks in parallel worker dirs, merge to staging, promote to target."""
+    root = Path(repo_root)
+    key = cache_key or sample_id
+    worker_count = max(1, min(int(worker_count), len(notes_to_render) or 1))
+    chunks = split_notes_for_workers(notes_to_render, worker_count)
+    assigned_counts = [len(c) for c in chunks]
+
+    workers_state: List[Dict[str, Any]] = [
+        {
+            "worker_id": idx,
+            "status": "pending",
+            "assigned_notes": assigned_counts[idx] if idx < len(assigned_counts) else 0,
+            "rendered_notes": 0,
+            "output_dir": str(worker_render_tmp_dir(key, idx)).replace("\\", "/"),
+            "exit_code": None,
+            "elapsed_s": 0.0,
+            "error": "",
+        }
+        for idx in range(worker_count)
+    ]
+    progress_lock = threading.Lock()
+    stop_progress = threading.Event()
+
+    def _write_parallel_progress(job_status: str = "running") -> None:
+        rendered_total, live_workers = _count_rendered_notes_in_worker_dirs(key, worker_count)
+        with progress_lock:
+            for idx, live in enumerate(live_workers):
+                if idx < len(workers_state):
+                    workers_state[idx]["rendered_notes"] = int(live.get("rendered_notes") or 0)
+                    if workers_state[idx].get("status") == "running":
+                        workers_state[idx]["status"] = "running"
+            elapsed = round(time.perf_counter() - t_start, 3)
+            if priority_notes and _priority_notes_in_worker_dirs(key, worker_count, priority_notes):
+                if job_status == "running" and rendered_total < len(notes_to_render):
+                    job_status = "partial_ready"
+            progress_doc: Dict[str, Any] = {
+                "parameter_hash": key,
+                "status": job_status,
+                "render_mode": "parallel_batch",
+                "worker_count": worker_count,
+                "rendered_notes": cache_hits + rendered_total,
+                "total_notes": total_notes or (cache_hits + len(notes_to_render)),
+                "output_dir": str(target_dir).replace("\\", "/"),
+                "elapsed_time_s": elapsed,
+                "elapsed_s": elapsed,
+                "started_at": started_at,
+                "updated_at": _utc_now(),
+                "cache_hit_count": cache_hits,
+                "cache_miss_count": len(notes_to_render),
+                "workers": [dict(w) for w in workers_state],
+            }
+            if job_status_json is not None:
+                _write_json(job_status_json, progress_doc)
+            if bg_status_path is not None:
+                write_background_status(key, progress_doc)
+            if parameter_hash:
+                write_job_status(key, {**read_job_status(key), **progress_doc})
+
+    def _progress_loop() -> None:
+        while not stop_progress.wait(5.0):
+            _write_parallel_progress("running")
+
+    def _run_worker(worker_id: int, chunk: Sequence[str]) -> Dict[str, Any]:
+        worker_dir = worker_render_tmp_dir(key, worker_id)
+        t_worker = time.perf_counter()
+        with progress_lock:
+            workers_state[worker_id]["status"] = "running"
+        try:
+            elapsed, rendered = render_notes_batch_to_worker_dir(
+                repo_root=root,
+                sample_id=sample_id,
+                notes_to_render=chunk,
+                durations_by_note=durations_by_note,
+                worker_dir=worker_dir,
+                binary=binary,
+            )
+            result = {
+                "worker_id": worker_id,
+                "status": "ready",
+                "assigned_notes": len(chunk),
+                "rendered_notes": rendered,
+                "output_dir": str(worker_dir).replace("\\", "/"),
+                "exit_code": 0,
+                "elapsed_s": round(elapsed, 3),
+                "error": "",
+            }
+        except Exception as exc:
+            result = {
+                "worker_id": worker_id,
+                "status": "failed",
+                "assigned_notes": len(chunk),
+                "rendered_notes": len(list_notes_in_cache(worker_dir)) if worker_dir.is_dir() else 0,
+                "output_dir": str(worker_dir).replace("\\", "/"),
+                "exit_code": 1,
+                "elapsed_s": round(time.perf_counter() - t_worker, 3),
+                "error": str(exc),
+            }
+            raise
+        finally:
+            with progress_lock:
+                workers_state[worker_id].update(result)
+            _write_parallel_progress("running")
+        return result
+
+    _write_parallel_progress("running")
+    progress_thread = threading.Thread(target=_progress_loop, daemon=True)
+    progress_thread.start()
+    total_elapsed = 0.0
+    failed_workers: List[Dict[str, Any]] = []
+    try:
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            futures = {
+                pool.submit(_run_worker, idx, chunk): idx
+                for idx, chunk in enumerate(chunks)
+                if chunk
+            }
+            for fut in as_completed(futures):
+                worker_id = futures[fut]
+                try:
+                    fut.result()
+                except Exception as exc:
+                    failed_workers.append({**workers_state[worker_id], "error": str(exc)})
+    finally:
+        stop_progress.set()
+        progress_thread.join(timeout=2.0)
+
+    if failed_workers:
+        _write_parallel_progress("failed")
+        missing = list(notes_to_render)
+        return total_elapsed, missing, workers_state
+
+    staging = parallel_staging_dir(key)
+    _merge_worker_outputs_to_staging(
+        staging_dir=staging,
+        cache_key=key,
+        worker_count=worker_count,
+        target_dir=target_dir,
+        cache_hit_notes=cache_hit_notes,
+    )
+    missing: List[str] = []
+    for note_name in notes_to_render:
+        if not note_wav_in_cache(staging, note_name).is_file():
+            missing.append(note_name)
+    if missing:
+        _write_parallel_progress("failed")
+        return total_elapsed, missing, workers_state
+
+    cfg = load_app_stk_config(root)
+    audit = run_note_mapping_audit(staging, parameter_hash or cache_key, cfg=cfg)
+    if not audit.get("passed"):
+        missing = sorted(audit.get("missing_required_notes") or missing, key=note_to_midi)
+        _write_parallel_progress("failed")
+        return total_elapsed, missing, workers_state
+
+    _write_stk_preview_wav(staging, staging)
+    _promote_staging_to_target(staging, target_dir)
+    total_elapsed = round(time.perf_counter() - t_start, 3)
+    for worker in workers_state:
+        if worker.get("status") != "failed":
+            worker["status"] = "ready"
+    _write_parallel_progress("running")
+    return total_elapsed, missing, workers_state
+
+
 def invoke_stk_renderer(params_json: Path, repo_root: Path, binary: Optional[Path] = None) -> None:
     exe = Path(binary or stk_binary_path(repo_root))
     if not exe.is_file():
@@ -782,20 +1184,30 @@ def build_note_library(
     job_status_json: Optional[Path] = None,
     priority_notes: Optional[Sequence[str]] = None,
     render_mode: Optional[str] = None,
+    parallel_workers: Optional[int] = None,
 ) -> Dict[str, Any]:
     root = Path(repo_root or REPO_ROOT)
     cfg = load_app_stk_config(root)
+    if parallel_workers is not None:
+        cfg = dict(cfg)
+        cfg["parallel_workers"] = max(1, int(parallel_workers))
     fret_count = int(cfg.get("fret_count") or 19)
     prio = list(priority_notes or priority_notes_from_config(cfg))
     required = build_required_note_set_from_fretboard(fret_count)
     notes = order_notes_with_priority(required, prio)
     note_range = note_range or note_range_label_from_required(required)
     mode = str(render_mode or cfg.get("render_mode") or "batch")
+    worker_count = parallel_workers_from_config(cfg)
+    if mode == "parallel_batch" and worker_count <= 1:
+        mode = "batch"
+    elif mode == "batch" and worker_count > 1 and APP_STK_PARALLEL_WORKERS_ENABLED:
+        mode = "parallel_batch"
     target_dir = Path(cache_dir) if cache_dir else note_cache_dir(sample_id, instrument, output_root)
     target_dir.mkdir(parents=True, exist_ok=True)
     cache_key = parameter_hash or sample_id
     spec_doc = build_cache_spec_for_hash(cache_key, cfg, fret_count, render_mode=mode)
     spec_hash = str(spec_doc["cache_spec_hash"])
+    effective_workers = int(spec_doc.get("parallel_workers") or worker_count)
     bg_status_path = background_status_path(cache_key) if parameter_hash else None
     started_at = _utc_now()
     target_runtime_s = float(cfg.get("target_runtime_s") or 180)
@@ -839,25 +1251,85 @@ def build_note_library(
             write_background_status(cache_key, progress_doc)
 
     if bg_status_path is not None:
-        write_background_status(
-            cache_key,
-            {
-                "parameter_hash": cache_key,
-                "status": "running",
-                "rendered_notes": cache_hits,
-                "total_notes": len(notes),
-                "output_dir": str(target_dir).replace("\\", "/"),
-                "elapsed_time_s": 0.0,
-                "started_at": started_at,
-                "render_mode": mode,
-            },
-        )
+        initial_status: Dict[str, Any] = {
+            "parameter_hash": cache_key,
+            "status": "running",
+            "rendered_notes": cache_hits,
+            "total_notes": len(notes),
+            "output_dir": str(target_dir).replace("\\", "/"),
+            "elapsed_time_s": 0.0,
+            "started_at": started_at,
+            "render_mode": mode,
+        }
+        if mode == "parallel_batch" and to_render:
+            initial_status["worker_count"] = effective_workers
+            initial_status["workers"] = [
+                {
+                    "worker_id": idx,
+                    "status": "pending",
+                    "assigned_notes": len(chunk),
+                    "rendered_notes": 0,
+                    "output_dir": str(worker_render_tmp_dir(cache_key, idx)).replace("\\", "/"),
+                }
+                for idx, chunk in enumerate(split_notes_for_workers(to_render, effective_workers))
+            ]
+        write_background_status(cache_key, initial_status)
+        if parameter_hash:
+            write_job_status(cache_key, {**read_job_status(cache_key), **initial_status})
+
+    workers_state: List[Dict[str, Any]] = []
 
     if to_render:
         if not is_active_job(cache_key) and parameter_hash:
             missing.extend(to_render)
             for note_name in to_render:
                 timings[note_name] = -1.0
+        elif mode == "parallel_batch":
+            durations_by_note = {
+                normalize_note_name(n): (
+                    float(duration_s) if duration_s is not None else duration_for_note(n, cfg)
+                )
+                for n in to_render
+            }
+            cache_hit_notes = [n for n in notes if n not in to_render]
+            try:
+                parallel_elapsed, parallel_missing, workers_state = render_notes_parallel_batch(
+                    repo_root=root,
+                    sample_id=sample_id,
+                    notes_to_render=to_render,
+                    durations_by_note=durations_by_note,
+                    target_dir=target_dir,
+                    binary=binary,
+                    cache_key=cache_key,
+                    worker_count=effective_workers,
+                    cache_hit_notes=cache_hit_notes,
+                    parameter_hash=parameter_hash or cache_key,
+                    job_status_json=job_status_json,
+                    bg_status_path=bg_status_path,
+                    total_notes=len(notes),
+                    cache_hits=cache_hits,
+                    started_at=started_at,
+                    priority_notes=prio,
+                    t_start=t_start,
+                )
+                per_note = parallel_elapsed / max(len(to_render), 1)
+                for note_name in to_render:
+                    dest = note_wav_in_cache(target_dir, note_name)
+                    if dest.is_file():
+                        timings[note_name] = per_note
+                    else:
+                        if note_name not in parallel_missing:
+                            parallel_missing.append(note_name)
+                        timings[note_name] = -1.0
+                for note_name in parallel_missing:
+                    if note_name not in missing:
+                        missing.append(note_name)
+            except Exception:
+                for note_name in to_render:
+                    if note_name not in missing:
+                        missing.append(note_name)
+                    timings[note_name] = -1.0
+            _write_progress(len(notes) - len(missing), "running", "parallel_batch")
         elif mode == "batch":
             durations_by_note = {
                 normalize_note_name(n): (
@@ -930,6 +1402,11 @@ def build_note_library(
                 )
                 _write_progress(cache_hits + idx + 1, job_status, note_name)
 
+    if missing or not cache_is_ready_for_fretboard(target_dir, cache_key, cfg=cfg):
+        pass  # skip preview until cache complete
+    elif not (target_dir / "all_notes_preview.wav").is_file():
+        _write_stk_preview_wav(target_dir, target_dir)
+
     write_cache_spec(target_dir, spec_doc)
     generated_in_cache = sorted(list_note_wavs(target_dir).keys(), key=note_to_midi)
     required_set = set(required)
@@ -986,6 +1463,10 @@ def build_note_library(
         "readiness": readiness,
         "status": job_status,
         "render_mode": mode,
+        "worker_count": effective_workers if mode == "parallel_batch" else 1,
+        "workers": workers_state if workers_state else None,
+        "finished_at": _utc_now(),
+        "elapsed_s": round(time.perf_counter() - t_start, 3),
         "cache_spec_hash": spec_hash,
         "fretboard_required_note_count": len(required),
         "generated_note_count": len(generated_set),
@@ -1097,12 +1578,22 @@ def _report_ready_for_hash(
         return False
     if not output_dir.is_dir():
         return False
+    if not preview_cache_dir_has_required_notes(output_dir):
+        return False
     if report.get("cache_spec_hash"):
         expected = build_cache_spec_for_hash(parameter_hash)
         if str(report.get("cache_spec_hash")) != expected["cache_spec_hash"]:
-            return False
-    if not cache_is_ready_for_fretboard(output_dir, parameter_hash):
-        return False
+            ensure_preview_cache_spec(
+                output_dir,
+                parameter_hash,
+                render_mode=str(report.get("render_mode") or expected.get("render_mode") or ""),
+            )
+    if parameter_hash and not cache_spec_is_compatible(output_dir, build_cache_spec_for_hash(parameter_hash)["cache_spec_hash"]):
+        ensure_preview_cache_spec(
+            output_dir,
+            parameter_hash,
+            render_mode=str(report.get("render_mode") or ""),
+        )
     expected = int(report.get("fretboard_required_note_count") or report.get("note_count") or 0)
     actual = count_wavs_in_cache(output_dir)
     if expected > 0:
@@ -1143,6 +1634,14 @@ def refresh_stk_background_job_status(
 
     pid = int(job_doc.get("pid") or bg_doc.get("pid") or 0)
     proc_alive = _is_process_running(pid) if pid else False
+    reported_rendered = int(bg_doc.get("rendered_notes") or job_doc.get("rendered_notes") or 0)
+    workers = job_doc.get("workers") or bg_doc.get("workers")
+    worker_count = int(job_doc.get("worker_count") or bg_doc.get("worker_count") or 0)
+    if isinstance(workers, list) and workers:
+        worker_rendered = sum(int(w.get("rendered_notes") or 0) for w in workers)
+        cache_hits_from_job = int(job_doc.get("cache_hit_count") or bg_doc.get("cache_hit_count") or 0)
+        if worker_rendered > 0:
+            reported_rendered = max(reported_rendered, cache_hits_from_job + worker_rendered)
     output_dir = Path(
         str(
             (report or {}).get("output_dir")
@@ -1153,7 +1652,6 @@ def refresh_stk_background_job_status(
     )
     scan_dir = output_dir if output_dir.is_dir() else preview
     actual_wav_count = count_wavs_in_cache(scan_dir)
-    reported_rendered = int(bg_doc.get("rendered_notes") or job_doc.get("rendered_notes") or 0)
 
     active_hash = get_active_job_hash()
     is_active_hash = active_hash is None or active_hash == parameter_hash
@@ -1178,6 +1676,12 @@ def refresh_stk_background_job_status(
         "cache_hit_count": (report or {}).get("cache_hit_count", job_doc.get("cache_hit_count", 0)),
         "cache_miss_count": (report or {}).get("cache_miss_count", job_doc.get("cache_miss_count", 0)),
     }
+    if isinstance(workers, list) and workers:
+        result["workers"] = workers
+        result["worker_count"] = worker_count or len(workers)
+        result["render_mode"] = (
+            job_doc.get("render_mode") or bg_doc.get("render_mode") or (report or {}).get("render_mode")
+        )
 
     def _sync_counts(ready_dir: Path) -> None:
         actual = count_wavs_in_cache(ready_dir)
@@ -1278,7 +1782,29 @@ def refresh_stk_background_job_status(
     if job_doc.get("status") == "ready" and cache_is_ready_for_fretboard(preview, parameter_hash, cfg=cfg):
         return _finalize_ready(preview)
 
+    if (
+        str(job_doc.get("status") or "") == "ready"
+        or (
+            report
+            and str(report.get("parameter_hash") or parameter_hash) == parameter_hash
+            and report.get("readiness") == "ready_for_app_playback"
+            and report.get("status") == "ready"
+        )
+    ):
+        for candidate in (report_out, preview, scan_dir):
+            if candidate.is_dir() and preview_cache_dir_has_required_notes(candidate, cfg):
+                if parameter_hash:
+                    ensure_preview_cache_spec(
+                        candidate,
+                        parameter_hash,
+                        cfg=cfg,
+                        render_mode=str((report or {}).get("render_mode") or cfg.get("render_mode") or ""),
+                    )
+                return _finalize_ready(candidate)
+
     result["status"] = str(job_doc.get("status") or bg_doc.get("status") or "not_started")
+    if result["status"] == "ready" and preview_cache_dir_has_required_notes(preview, cfg):
+        return _finalize_ready(preview)
     return result
 
 
@@ -1297,6 +1823,8 @@ def start_background_note_library_job(
     required = build_required_note_set_from_fretboard(fret_count)
     note_range = note_range or note_range_label_from_required(required)
     mode = str(render_mode or cfg.get("render_mode") or "batch")
+    if mode == "batch" and parallel_workers_from_config(cfg) > 1 and APP_STK_PARALLEL_WORKERS_ENABLED:
+        mode = "parallel_batch"
     preview = preview_cache_dir(parameter_hash, instrument)
     preview.mkdir(parents=True, exist_ok=True)
     set_active_job(parameter_hash)
@@ -1351,6 +1879,7 @@ def start_background_note_library_job(
             "rendered_notes": 0,
             "total_notes": len(required),
             "render_mode": mode,
+            "worker_count": parallel_workers_from_config(cfg) if mode == "parallel_batch" else 1,
         },
     )
     write_background_status(
@@ -1363,6 +1892,7 @@ def start_background_note_library_job(
             "total_notes": len(required),
             "elapsed_time_s": 0.0,
             "render_mode": mode,
+            "worker_count": parallel_workers_from_config(cfg) if mode == "parallel_batch" else 1,
         },
     )
     proc = subprocess.Popen(cmd, cwd=str(root))
@@ -1531,7 +2061,7 @@ def save_guitar_to_stack(
     if existing:
         return {**existing, "_duplicate": True}
 
-    state = refresh_stk_background_job_status(parameter_hash, instrument=instrument, promote_stack=False)
+    state = resolve_preview_cache_ready_state(parameter_hash, instrument=instrument, promote_stack=False, repo_root=root)
     if parameter_hash != str(state.get("parameter_hash") or ""):
         raise RuntimeError("STK parameter hash mismatch — Save & Sync again.")
 

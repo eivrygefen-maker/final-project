@@ -18,7 +18,9 @@ from stk_app_audio_service import (
     list_ready_guitar_stack,
     load_stack_guitar_for_player,
     preview_cache_dir,
+    preview_cache_dir_has_required_notes,
     refresh_stk_background_job_status,
+    resolve_preview_cache_ready_state,
     save_guitar_to_stack,
     schedule_stk_after_rom,
     stk_binary_path,
@@ -95,6 +97,35 @@ def render_saved_guitars_row(
     return loaded_id
 
 
+def _stk_cache_is_loadable(parameter_hash: str, repo_root: Path) -> bool:
+    preview = preview_cache_dir(parameter_hash)
+    return preview.is_dir() and preview_cache_dir_has_required_notes(preview, load_app_stk_config(repo_root))
+
+
+def _activate_ready_preview_cache(
+    *,
+    repo_root: Path,
+    parameter_hash: str,
+    cache_dir: Path,
+    saved_guitar_id: str = "",
+) -> Dict[str, Any]:
+    """Activate player from a ready preview cache; raise on validation failure."""
+    print(
+        f"APP_STK_LOAD_READY_CACHE hash={parameter_hash} cache_dir={cache_dir}",
+        flush=True,
+    )
+    activation = activate_stk_guitar_for_player(
+        cache_dir=cache_dir,
+        parameter_hash=parameter_hash,
+        saved_guitar_id=saved_guitar_id,
+    )
+    validation = dict(activation.get("validation") or {})
+    if not validation.get("ok"):
+        errors = validation.get("errors") or [AUDIT_INCOMPLETE_MSG]
+        raise RuntimeError(f"Could not load guitar player: {'; '.join(errors)}")
+    return activation
+
+
 def generate_or_load_ready_guitar(
     *,
     repo_root: Path,
@@ -108,17 +139,20 @@ def generate_or_load_ready_guitar(
     """Save ready guitar to FIFO or load existing duplicate; activate player."""
     cfg = load_app_stk_config(repo_root)
     parameter_hash = compute_parameter_hash(rom_fp, lhs_params)
-    state = refresh_stk_background_job_status(parameter_hash)
+    state = resolve_preview_cache_ready_state(parameter_hash, repo_root=repo_root)
 
     if str(state.get("status")) != "ready" or not state.get("preview_cache_ready"):
         raise RuntimeError(
             "Guitar sound is still being prepared. Please wait a little longer."
         )
 
+    cache_dir = Path(str(state.get("preview_cache_path") or preview_cache_dir(parameter_hash)))
+
     if not cfg.get("enable_ready_fifo_stack", True):
-        activation = activate_stk_guitar_for_player(
-            cache_dir=preview_cache_dir(parameter_hash),
+        activation = _activate_ready_preview_cache(
+            repo_root=repo_root,
             parameter_hash=parameter_hash,
+            cache_dir=cache_dir,
         )
         apply_stk_activation_to_session(activation)
         _session_set("stk_generate_intent_hash", "")
@@ -126,9 +160,10 @@ def generate_or_load_ready_guitar(
 
     existing = find_stack_entry_by_hash(parameter_hash)
     if existing:
-        activation = activate_stk_guitar_for_player(
-            cache_dir=Path(str(existing["note_cache_path"])),
+        activation = _activate_ready_preview_cache(
+            repo_root=repo_root,
             parameter_hash=parameter_hash,
+            cache_dir=Path(str(existing["note_cache_path"])),
             saved_guitar_id=str(existing.get("saved_guitar_id") or ""),
         )
         apply_stk_activation_to_session(activation)
@@ -141,20 +176,23 @@ def generate_or_load_ready_guitar(
         display_name=display_name,
         geometry_summary=_geometry_summary(geom, top_wood, back_wood),
         rom_physical_summary_path=rom_physical_summary_path or None,
+        repo_root=repo_root,
     )
     if entry.get("_duplicate"):
-        activation = activate_stk_guitar_for_player(
-            cache_dir=Path(str(entry["note_cache_path"])),
+        activation = _activate_ready_preview_cache(
+            repo_root=repo_root,
             parameter_hash=parameter_hash,
+            cache_dir=Path(str(entry["note_cache_path"])),
             saved_guitar_id=str(entry.get("saved_guitar_id") or ""),
         )
         apply_stk_activation_to_session(activation)
         _session_set("stk_generate_intent_hash", "")
         return {"action": "loaded_existing", "entry": entry, "activation": activation}
 
-    activation = activate_stk_guitar_for_player(
-        cache_dir=Path(str(entry["note_cache_path"])),
+    activation = _activate_ready_preview_cache(
+        repo_root=repo_root,
         parameter_hash=parameter_hash,
+        cache_dir=Path(str(entry["note_cache_path"])),
         saved_guitar_id=str(entry.get("saved_guitar_id") or ""),
     )
     apply_stk_activation_to_session(activation)
@@ -204,12 +242,18 @@ def poll_stk_render_request(
         out["result"] = {"action": "stk_request_stale"}
         return out
 
-    state = refresh_stk_background_job_status(parameter_hash)
+    state = resolve_preview_cache_ready_state(parameter_hash, repo_root=repo_root)
     status = str(state.get("status") or "not_started")
+    preview_ready = bool(state.get("preview_cache_ready")) or _stk_cache_is_loadable(
+        parameter_hash, repo_root
+    )
     _session_set("stk_parameter_hash", parameter_hash)
-    _session_set("stk_job_status", status)
-    _session_set("stk_preview_cache_ready", bool(state.get("preview_cache_ready")))
-    _session_set("stk_preview_cache_path", str(state.get("preview_cache_path") or ""))
+    _session_set("stk_job_status", status if not preview_ready else "ready")
+    _session_set("stk_preview_cache_ready", preview_ready)
+    _session_set(
+        "stk_preview_cache_path",
+        str(state.get("preview_cache_path") or preview_cache_dir(parameter_hash)).replace("\\", "/"),
+    )
     _session_set(
         "stk_note_count",
         int(
@@ -219,26 +263,34 @@ def poll_stk_render_request(
             or 0
         ),
     )
-    _session_set("stk_last_status", status)
+    _session_set("stk_last_status", "ready" if preview_ready else status)
 
     if status == "failed":
         _clear_stk_render_request()
         out["result"] = {"action": "stk_failed", "status": status}
         return out
 
-    if status == "ready" and state.get("preview_cache_ready"):
-        result = generate_or_load_ready_guitar(
-            repo_root=repo_root,
-            rom_fp=rom_fp,
-            lhs_params=lhs_params,
-            geom=geom,
-            top_wood=top_wood,
-            back_wood=back_wood,
-            rom_physical_summary_path=rom_physical_summary_path,
+    if preview_ready:
+        print(
+            f"APP_STK_AUTO_LOAD_READY hash={parameter_hash} cache_dir={preview_cache_dir(parameter_hash)}",
+            flush=True,
         )
-        _clear_stk_render_request()
-        out["result"] = result
-        return out
+        try:
+            result = generate_or_load_ready_guitar(
+                repo_root=repo_root,
+                rom_fp=rom_fp,
+                lhs_params=lhs_params,
+                geom=geom,
+                top_wood=top_wood,
+                back_wood=back_wood,
+                rom_physical_summary_path=rom_physical_summary_path,
+            )
+            _clear_stk_render_request()
+            out["result"] = result
+            return out
+        except Exception as exc:
+            out["result"] = {"action": "stk_load_failed", "error": str(exc)}
+            return out
 
     out["result"] = {"action": "stk_running", "status": status}
     return out
@@ -277,10 +329,12 @@ def render_stk_render_watch_panel(
             name = str(result.get("entry", {}).get("display_name") or "guitar")
             st.success(f"Guitar sound is ready — saved **{name}**.")
     elif action == "stk_failed":
-        st.error("Sound preparation failed — click **Generate Sound** to retry.")
+        st.error("STK rendering failed. Please try **Generate Sound** again.")
+    elif action == "stk_load_failed":
+        st.error(str(result.get("error") or "Could not load guitar player."))
     elif action == "stk_running":
         st.info(
-            "Building guitar sound… This may take a few minutes. "
+            "Building guitar sound with STK… This may take a few minutes. "
             "The player will load automatically when ready."
         )
     return result if action else None
@@ -298,10 +352,28 @@ def request_generate_guitar(
 ) -> Dict[str, Any]:
     """Generate click: start STK when needed; auto-load when cache becomes ready."""
     parameter_hash = compute_parameter_hash(rom_fp, lhs_params)
-    state = refresh_stk_background_job_status(parameter_hash)
-    status = str(state.get("status") or "not_started")
 
-    if status == "ready" and state.get("preview_cache_ready"):
+    if _stk_cache_is_loadable(parameter_hash, repo_root):
+        _clear_stk_render_request()
+        print(
+            f"APP_STK_LOAD_READY_CACHE hash={parameter_hash} cache_dir={preview_cache_dir(parameter_hash)}",
+            flush=True,
+        )
+        return generate_or_load_ready_guitar(
+            repo_root=repo_root,
+            rom_fp=rom_fp,
+            lhs_params=lhs_params,
+            geom=geom,
+            top_wood=top_wood,
+            back_wood=back_wood,
+            rom_physical_summary_path=rom_physical_summary_path,
+        )
+
+    state = resolve_preview_cache_ready_state(parameter_hash, repo_root=repo_root)
+    status = str(state.get("status") or "not_started")
+    preview_ready = bool(state.get("preview_cache_ready"))
+
+    if preview_ready or status == "ready":
         _clear_stk_render_request()
         return generate_or_load_ready_guitar(
             repo_root=repo_root,
@@ -326,7 +398,7 @@ def request_generate_guitar(
         lhs_params=lhs_params,
         repo_root=repo_root,
     )
-    state = refresh_stk_background_job_status(parameter_hash)
+    state = resolve_preview_cache_ready_state(parameter_hash, repo_root=repo_root)
     _set_stk_render_request(parameter_hash)
 
     if str(state.get("status")) == "ready" and state.get("preview_cache_ready"):
