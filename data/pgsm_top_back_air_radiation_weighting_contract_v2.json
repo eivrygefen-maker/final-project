@@ -2,112 +2,18 @@
   "contract_version": "pgsm_step5j_1_guitar_articulation_body_balance_repair_v1",
   "body_weighting_v2_contract": {
     "contract_id": "pgsm_top_back_air_radiation_weighting_v2",
-    "supersedes": "pgsm_top_back_air_radiation_weighting_v1",
-    "implements_step5g_terms": [
-      "top_plate_decay",
-      "back_plate_decay",
-      "air_cavity_decay",
-      "radiation_decay"
-    ],
-    "not_implemented_terms": [
-      "bridge_coupling_loss"
-    ],
-    "modal_frequencies_unchanged": true,
-    "modal_q_tau_unchanged": true,
-    "string_damping_unchanged": true,
-    "output_weights_only": true,
+    "weighting_version": "v2.5",
     "terms": [
       {
-        "term": "top_plate_modal_weight",
-        "formula": "W_top = W_rad\u00d7(top/region)\u00d71.14\u00d7rad_band_v2\u00d7top_attack_band(f,\u03c4)\u00d7top_cluster_damp_comb_risk_only(f)",
-        "source_level": "L2_step3c_region_share_proxy_v2",
-        "units": "dimensionless_modal_output_weight",
-        "limitations": "Attack band on short-\u03c4 modes; cluster damp on comb-risk clusters only",
-        "blocked_claims": [
-          "arbitrary_eq",
-          "artificial_reverb",
-          "transient_enhancer",
-          "body_tail"
-        ],
-        "validation_metric": "top_plate_attack_share improved vs Step 5J; moderate top share ~0.35\u20130.48"
-      },
-      {
-        "term": "back_plate_modal_weight",
-        "formula": "W_back = W_rad\u00d7(back/region)\u00d71.11\u00d7rad_band_v2\u00d7back_warmth(f)\u00d7back_hf_rolloff(f>920.0Hz)",
-        "source_level": "L2_step3c_region_share_proxy_v2",
-        "units": "dimensionless_modal_output_weight",
-        "limitations": "",
-        "blocked_claims": [
-          "arbitrary_eq",
-          "artificial_reverb",
-          "transient_enhancer",
-          "body_tail"
-        ],
-        "validation_metric": "back warmth without ~0.60 dominance; E5 back peak guarded"
-      },
-      {
-        "term": "air_cavity_modal_weight",
-        "formula": "W_air = W_air\u00d7(air/region)\u00d72.48\u00d7rad_band_v2\u00d7air_freq_balance(f)",
-        "source_level": "L2_step3c_region_share_proxy_v2",
-        "units": "dimensionless_modal_output_weight",
-        "limitations": "Gentle high-f air taper only",
-        "blocked_claims": [
-          "arbitrary_eq",
-          "artificial_reverb",
-          "transient_enhancer",
-          "body_tail"
-        ],
-        "validation_metric": "air_share balanced ~0.20\u20130.40; cavity imprint without Step 5J dominance"
-      },
-      {
-        "term": "radiation_band_weight",
-        "formula": "rad_band_v2: rolloff f_ref=1280.0, exp=0.96, dual harmonic_preservation; e5_comb_guard on body+rad weights 560.0-1420.0Hz",
-        "source_level": "L2_step3c_region_share_proxy_v2",
-        "units": "dimensionless_modal_output_weight",
-        "limitations": "",
-        "blocked_claims": [
-          "arbitrary_eq",
-          "artificial_reverb",
-          "transient_enhancer",
-          "body_tail"
-        ],
-        "validation_metric": "H2-H8 ratio improved; E5 comb risk reduced on radiation_sum/final_output"
-      },
-      {
         "term": "high_note_radiation_coherence_guard",
-        "formula": "e5_comb_sensitive_mode_factors: local cluster regularity in 560.0-1420.0Hz applied to body+rad weights",
-        "source_level": "L2_step3c_region_share_proxy_v2",
-        "units": "dimensionless_modal_output_weight",
-        "limitations": "Precomputed per-mode factors; \u03c4-preserves attack; redistributes to back/air",
-        "blocked_claims": [
-          "arbitrary_eq",
-          "artificial_reverb",
-          "transient_enhancer",
-          "body_tail"
-        ],
-        "validation_metric": "E5 radiation_sum/final_output comb_score below 0.95"
-      },
-      {
-        "term": "combined_body_radiation_weight",
-        "formula": "p_out = conv(F_bridge_v4, h_top+h_back+h_air); stems decomposed",
-        "source_level": "L2_step3c_region_share_proxy_v2",
-        "units": "dimensionless_modal_output_weight",
-        "limitations": "",
-        "blocked_claims": [
-          "arbitrary_eq",
-          "artificial_reverb",
-          "transient_enhancer",
-          "body_tail"
-        ],
-        "validation_metric": "body_component_balance_score improved"
+        "formula": "e5_data_driven_guard: rank modes by |conv(F_e5, wrad*h_mode)|^2; damp top contributors + cluster regularity; fallback top-8 if zero candidates",
+        "validation_metric": "e5_guarded_mode_count > 0; radiation_sum_weight_delta != 0; comb before/after on actual kernels"
       }
     ],
     "gains": {
       "top_plate_modal_gain": 1.14,
       "back_plate_modal_gain": 1.11,
-      "air_cavity_modal_gain": 2.48,
-      "radiation_f_ref_hz": 1280.0,
-      "radiation_f_rolloff_exp": 0.96
+      "air_cavity_modal_gain": 2.48
     }
   }
 }

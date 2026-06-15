@@ -108,18 +108,18 @@ TOP_CLUSTER_REGULARITY_DAMP = 0.20
 TOP_ARTICULATION_ROLLOFF_START_HZ = 1180.0
 COMB_RISK_CLUSTER_DAMP_THRESHOLD = 0.90
 COMB_RISK_TOP_SOFT_CAP = 0.68
-E5_COMB_BAND_LO_HZ = 560.0
-E5_COMB_BAND_HI_HZ = 1420.0
-E5_COMB_BAND_CENTER_HZ = 880.0
-E5_COMB_BAND_WIDTH_HZ = 380.0
-E5_COMB_LOCAL_WINDOW_HZ = 130.0
-E5_COMB_LOCAL_MIN_MODES = 3
-E5_COMB_REGULARITY_THRESHOLD = 0.96
-E5_COMB_CLUSTER_DAMP_STRENGTH = 0.42
-E5_COMB_DAMP_FLOOR = 0.62
-E5_COMB_BODY_TAU_PRESERVE = 0.58
-E5_COMB_REDIST_TO_BACK = 0.44
-E5_COMB_REDIST_TO_AIR = 0.56
+# v2.5 — data-driven E5 comb guard from actual radiation_sum contributors (v2.4 fixed band had 0 modes).
+E5_F0_HZ = NOTE_FREQUENCY_HZ["E5"]
+E5_CONTRIB_MIN_FRAC = 0.012
+E5_CONTRIB_TOP_N = 12
+E5_GUARD_DAMP_FLOOR = 0.68
+E5_GUARD_MAX_DAMP_STRENGTH = 0.48
+E5_GUARD_FALLBACK_TOP_N = 8
+E5_GUARD_FALLBACK_DAMP = 0.78
+E5_HARMONIC_MATCH_SIGMA_HZ = 90.0
+E5_CONTRIB_NEIGHBOR_HZ = 140.0
+E5_LEGACY_DIAG_BAND_LO_HZ = 560.0
+E5_LEGACY_DIAG_BAND_HI_HZ = 1420.0
 BACK_PLATE_MODAL_GAIN = 1.11
 BACK_WARMTH_MID_HZ = 560.0
 BACK_WARMTH_BAND_HZ = 300.0
@@ -236,16 +236,15 @@ def build_body_weighting_v2_contract() -> Dict[str, Any]:
         _term(
             "radiation_band_weight",
             f"rad_band_v2: rolloff f_ref={RADIATION_F_REF_HZ}, exp={RADIATION_F_ROLLOFF_EXP}, "
-            f"dual harmonic_preservation; e5_comb_guard on body+rad weights "
-            f"{E5_COMB_BAND_LO_HZ}-{E5_COMB_BAND_HI_HZ}Hz",
+            f"dual harmonic_preservation; e5_data_driven_comb_guard on radiation_sum contributors",
             "H2-H8 ratio improved; E5 comb risk reduced on radiation_sum/final_output",
         ),
         _term(
             "high_note_radiation_coherence_guard",
-            f"e5_comb_sensitive_mode_factors: local cluster regularity in "
-            f"{E5_COMB_BAND_LO_HZ}-{E5_COMB_BAND_HI_HZ}Hz applied to body+rad weights",
+            "e5_data_driven_guard: top radiation_sum contributors for E5 string force; "
+            "cluster-spacing damp; τ-preserves attack",
             f"E5 radiation_sum/final_output comb_score below {COMB_ECHO_FAIL_THRESHOLD}",
-            limitations="Precomputed per-mode factors; τ-preserves attack; redistributes to back/air",
+            limitations="Selected from actual wrad×conv(F_e5,h_mode) contributions, not fixed Hz band",
         ),
         _term(
             "combined_body_radiation_weight",
@@ -350,38 +349,175 @@ def rebalance_comb_risk_top_only(
     return wt_new, wb + excess * 0.38, wai + excess * 0.62
 
 
-def compute_e5_comb_sensitive_mode_factors(mode_freqs: Sequence[float]) -> Dict[float, float]:
-    """Precompute per-mode damp in E5 band from local modal spacing regularity (comb risk)."""
-    factors: Dict[float, float] = {float(f): 1.0 for f in mode_freqs}
-    band = sorted(f for f in mode_freqs if E5_COMB_BAND_LO_HZ <= f <= E5_COMB_BAND_HI_HZ)
-    if len(band) < E5_COMB_LOCAL_MIN_MODES:
-        return factors
-    global_spacings = np.diff(band)
-    global_reg = (
-        float(np.std(global_spacings) / max(float(np.mean(global_spacings)), 1.0))
-        if global_spacings.size
-        else 1.0
+def _compute_unguarded_mode_weights(
+    row: Mapping[str, Any],
+    *,
+    mode_freqs: Sequence[float],
+    w_rad_median: float,
+) -> Dict[str, float]:
+    f_i = float(row["frequency_hz"])
+    tau = max(float(row["tau_s"]), 1e-6)
+    wr = float(row["W_rad"])
+    wa = float(row["W_air"])
+    top = float(row["top_share"])
+    back = float(row["back_share"])
+    air = float(row["air_share"])
+    region = max(top + back + air, 1e-9)
+    rad_w = radiation_band_weight_v2(f_i, wr, w_rad_median=w_rad_median)
+    cluster_damp = top_cluster_coherence_damp(f_i, mode_freqs)
+    top_w = top_modal_weight_with_tau_split(f_i, tau, top, cluster_damp)
+    wt = wr * (top / region) * TOP_PLATE_MODAL_GAIN * rad_w * top_w
+    wb = wr * (back / region) * BACK_PLATE_MODAL_GAIN * rad_w * back_warmth_weight(f_i)
+    wai = wa * (air / region) * AIR_CAVITY_MODAL_GAIN * rad_w * air_frequency_balance(f_i)
+    wt, wb, wai = rebalance_comb_risk_top_only(wt, wb, wai, cluster_damp)
+    wrad = (wt + wb) * 0.52 + wai * 0.48
+    return {
+        "frequency_hz": f_i,
+        "tau_s": tau,
+        "Q_total": float(row.get("Q_total") or 0.0),
+        "wt": wt,
+        "wb": wb,
+        "wai": wai,
+        "wrad_before": wrad,
+        "cluster_damp": cluster_damp,
+    }
+
+
+def _e5_harmonic_proximity(f_hz: float, f0: float = E5_F0_HZ) -> float:
+    return max(
+        math.exp(-((f_hz - k * f0) ** 2) / (2.0 * E5_HARMONIC_MATCH_SIGMA_HZ ** 2))
+        for k in range(1, 13)
     )
-    for f in band:
-        local = sorted(g for g in band if abs(g - f) <= E5_COMB_LOCAL_WINDOW_HZ)
-        if len(local) < E5_COMB_LOCAL_MIN_MODES:
-            continue
-        spacings = np.diff(local)
-        if not spacings.size:
-            continue
-        local_reg = float(np.std(spacings) / max(float(np.mean(spacings)), 1.0))
-        band_env = math.exp(
-            -((f - E5_COMB_BAND_CENTER_HZ) ** 2) / (2.0 * E5_COMB_BAND_WIDTH_HZ ** 2)
+
+
+def compute_e5_data_driven_comb_guard(
+    mode_records: Sequence[Mapping[str, Any]],
+    *,
+    sf_e5: np.ndarray,
+    t: np.ndarray,
+    sr: int,
+) -> Tuple[Dict[int, float], Dict[str, Any]]:
+    """Select E5 radiation_sum contributors and assign per-mode guard factors."""
+    factors: Dict[int, float] = {int(r["mode_index"]): 1.0 for r in mode_records}
+    diag: Dict[str, Any] = {
+        "selection_method": "e5_radiation_sum_contributors",
+        "candidate_mode_count": 0,
+        "no_candidates_reason": None,
+        "fallback_applied": None,
+    }
+    if not mode_records:
+        diag["no_candidates_reason"] = "no_modes"
+        return factors, diag
+
+    enriched: List[Dict[str, Any]] = []
+    total_contrib = 0.0
+    for rec in mode_records:
+        f_i = float(rec["frequency_hz"])
+        tau = max(float(rec["tau_s"]), 1e-6)
+        wrad = float(rec["wrad_before"])
+        kernel = np.exp(-t / tau) * np.sin(2.0 * math.pi * f_i * t)
+        h_mode = wrad * kernel
+        y_mode = synthesize_modal_body_response(sf_e5, h_mode)
+        contrib = float(np.sum(y_mode.astype(np.float64) ** 2))
+        total_contrib += contrib
+        enriched.append({**dict(rec), "contribution_mag": contrib, "harmonic_proximity": _e5_harmonic_proximity(f_i)})
+
+    nonzero_rad = [r for r in enriched if float(r["wrad_before"]) > 1e-15]
+    diag["modes_with_nonzero_radiation_weight"] = len(nonzero_rad)
+    diag["total_radiation_contribution_e5_proxy"] = round(total_contrib, 6)
+
+    if not nonzero_rad:
+        diag["no_candidates_reason"] = "all_wrad_zero"
+        return factors, diag
+
+    threshold = max(total_contrib * E5_CONTRIB_MIN_FRAC, 1e-18)
+    contributors = sorted(
+        [r for r in nonzero_rad if float(r["contribution_mag"]) >= threshold],
+        key=lambda r: float(r["contribution_mag"]),
+        reverse=True,
+    )
+    if not contributors:
+        contributors = sorted(nonzero_rad, key=lambda r: float(r["contribution_mag"]), reverse=True)[
+            :E5_CONTRIB_TOP_N
+        ]
+        diag["no_candidates_reason"] = "used_top_by_wrad_fallback"
+    top_contributors = contributors[:E5_CONTRIB_TOP_N]
+    diag["contributor_count_above_threshold"] = len(contributors)
+
+    contrib_freqs = sorted(float(r["frequency_hz"]) for r in contributors)
+    global_reg = 1.0
+    if len(contrib_freqs) >= 4:
+        spacings = np.diff(contrib_freqs)
+        global_reg = float(np.std(spacings) / max(float(np.mean(spacings)), 1e-12))
+    diag["contributor_spacing_regularity"] = round(global_reg, 4)
+
+    candidate_count = 0
+    for rank, rec in enumerate(contributors):
+        f_i = float(rec["frequency_hz"])
+        contrib_frac = float(rec["contribution_mag"]) / max(total_contrib, 1e-18)
+        harm = float(rec["harmonic_proximity"])
+        local = sorted(
+            float(c["frequency_hz"])
+            for c in contributors
+            if abs(float(c["frequency_hz"]) - f_i) <= E5_CONTRIB_NEIGHBOR_HZ
         )
+        local_reg = 1.0
+        if len(local) >= 3:
+            sp = np.diff(local)
+            local_reg = float(np.std(sp) / max(float(np.mean(sp)), 1e-12))
+
         damp = 1.0
-        if local_reg < E5_COMB_REGULARITY_THRESHOLD:
-            severity = (E5_COMB_REGULARITY_THRESHOLD - local_reg) / E5_COMB_REGULARITY_THRESHOLD
-            damp = 1.0 / (1.0 + E5_COMB_CLUSTER_DAMP_STRENGTH * severity * band_env)
-        if global_reg < E5_COMB_REGULARITY_THRESHOLD:
-            g_sev = (E5_COMB_REGULARITY_THRESHOLD - global_reg) / E5_COMB_REGULARITY_THRESHOLD
-            damp = min(damp, 1.0 / (1.0 + 0.18 * g_sev * band_env))
-        factors[float(f)] = max(damp, E5_COMB_DAMP_FLOOR)
-    return factors
+        in_top = rank < E5_CONTRIB_TOP_N
+        material = contrib_frac >= E5_CONTRIB_MIN_FRAC or rank < 5
+        if in_top and material:
+            regularity_risk = min(global_reg, local_reg)
+            if regularity_risk < 1.0:
+                severity = (1.0 - regularity_risk) * (0.35 + 0.65 * harm) + contrib_frac * 0.4
+                damp = 1.0 / (1.0 + E5_GUARD_MAX_DAMP_STRENGTH * severity)
+            elif rank < 6:
+                damp = 1.0 - (0.10 + 0.14 * contrib_frac) * (0.3 + 0.7 * harm)
+
+        damp = max(damp, E5_GUARD_DAMP_FLOOR)
+        if damp < 0.999:
+            factors[int(rec["mode_index"])] = damp
+            candidate_count += 1
+
+    if candidate_count == 0 and len(top_contributors) >= 3:
+        for rec in top_contributors[:E5_GUARD_FALLBACK_TOP_N]:
+            frac = float(rec["contribution_mag"]) / max(total_contrib, 1e-18)
+            harm = float(rec["harmonic_proximity"])
+            damp = max(
+                E5_GUARD_DAMP_FLOOR,
+                E5_GUARD_FALLBACK_DAMP - 0.22 * frac * (0.4 + 0.6 * harm),
+            )
+            factors[int(rec["mode_index"])] = damp
+            candidate_count += 1
+        diag["fallback_applied"] = "top_radiation_contributors_e5"
+
+    diag["candidate_mode_count"] = candidate_count
+    if candidate_count == 0:
+        diag["no_candidates_reason"] = diag.get("no_candidates_reason") or "no_damp_applied"
+
+    top10: List[Dict[str, Any]] = []
+    for rec in top_contributors[:10]:
+        midx = int(rec["mode_index"])
+        top10.append(
+            {
+                "mode_index": midx,
+                "frequency_hz": round(float(rec["frequency_hz"]), 3),
+                "tau_s": round(float(rec["tau_s"]), 6),
+                "Q_total": round(float(rec.get("Q_total") or 0.0), 4),
+                "wt": round(float(rec["wt"]), 6),
+                "wb": round(float(rec["wb"]), 6),
+                "wai": round(float(rec["wai"]), 6),
+                "wrad_before": round(float(rec["wrad_before"]), 6),
+                "contribution_mag": round(float(rec["contribution_mag"]), 6),
+                "guard_factor": round(factors.get(midx, 1.0), 4),
+                "harmonic_proximity": round(float(rec["harmonic_proximity"]), 4),
+            }
+        )
+    diag["top10_e5_radiation_contributors"] = top10
+    return factors, diag
 
 
 def apply_e5_comb_sensitive_guard(
@@ -393,19 +529,19 @@ def apply_e5_comb_sensitive_guard(
     tau_s: float,
     e5_factor: float,
 ) -> Tuple[float, float, float, float]:
-    """Apply precomputed E5 comb factor to body weights and recompute radiation_sum."""
+    """Apply per-mode E5 comb factor to body weights and recompute radiation_sum."""
     wrad_before = (wt + wb) * 0.52 + wai * 0.48
     if e5_factor >= 0.999:
         return wt, wb, wai, wrad_before
     tau_preserve = math.exp(-tau_s / TOP_ATTACK_TAU_SCALE_S)
-    body_blend = 1.0 - (1.0 - e5_factor) * (1.0 - E5_COMB_BODY_TAU_PRESERVE * tau_preserve)
+    body_blend = 1.0 - (1.0 - e5_factor) * (1.0 - 0.58 * tau_preserve)
     wt_g = wt * body_blend
     wb_g = wb * body_blend
     wai_g = wai * body_blend
     removed = (wt + wb + wai) - (wt_g + wb_g + wai_g)
     wt_out = wt_g
-    wb_out = wb_g + removed * E5_COMB_REDIST_TO_BACK
-    wai_out = wai_g + removed * E5_COMB_REDIST_TO_AIR
+    wb_out = wb_g + removed * 0.44
+    wai_out = wai_g + removed * 0.56
     wrad_out = (wt_out + wb_out) * 0.52 + wai_out * 0.48
     return wt_out, wb_out, wai_out, wrad_out
 
@@ -499,36 +635,36 @@ def compute_step5j_1_modal_kernels_decomposed(
     w_rad_vals = [float(row.get("W_rad") or 0.0) for row in modes]
     w_rad_median = max(float(np.median(w_rad_vals)) if w_rad_vals else 1.0, 1e-12)
     mode_freqs = [float(row["frequency_hz"]) for row in modes]
-    e5_comb_factors = compute_e5_comb_sensitive_mode_factors(mode_freqs)
+
+    mode_records: List[Dict[str, Any]] = []
+    for idx, row in enumerate(modes):
+        weights = _compute_unguarded_mode_weights(row, mode_freqs=mode_freqs, w_rad_median=w_rad_median)
+        mode_records.append({"mode_index": idx, **weights})
+
+    sf_e5, _, _ = build_v4_string_bridge_force(
+        n, sr, E5_F0_HZ, string_id="string_1", fret=12, note="E5"
+    )
+    e5_guard_factors, e5_guard_diag = compute_e5_data_driven_comb_guard(
+        mode_records, sf_e5=sf_e5, t=t, sr=sr
+    )
 
     rad_weight_before = 0.0
     rad_weight_after = 0.0
-    comb_band_weight_before = 0.0
-    comb_band_weight_after = 0.0
+    legacy_band_before = 0.0
+    legacy_band_after = 0.0
     guarded_mode_count = 0
     factor_samples: List[float] = []
 
-    for row in modes:
-        f_i = float(row["frequency_hz"])
-        tau = max(float(row["tau_s"]), 1e-6)
-        wr = float(row["W_rad"])
-        wa = float(row["W_air"])
-        top = float(row["top_share"])
-        back = float(row["back_share"])
-        air = float(row["air_share"])
-        region = max(top + back + air, 1e-9)
-        rad_w = radiation_band_weight_v2(f_i, wr, w_rad_median=w_rad_median)
+    for rec in mode_records:
+        f_i = float(rec["frequency_hz"])
+        tau = max(float(rec["tau_s"]), 1e-6)
+        wt = float(rec["wt"])
+        wb = float(rec["wb"])
+        wai = float(rec["wai"])
+        wrad_before = float(rec["wrad_before"])
         kernel = np.exp(-t / tau) * np.sin(2.0 * math.pi * f_i * t)
-        cluster_damp = top_cluster_coherence_damp(f_i, mode_freqs)
-        top_w = top_modal_weight_with_tau_split(f_i, tau, top, cluster_damp)
+        e5_factor = e5_guard_factors.get(int(rec["mode_index"]), 1.0)
 
-        wt = wr * (top / region) * TOP_PLATE_MODAL_GAIN * rad_w * top_w
-        wb = wr * (back / region) * BACK_PLATE_MODAL_GAIN * rad_w * back_warmth_weight(f_i)
-        wai = wa * (air / region) * AIR_CAVITY_MODAL_GAIN * rad_w * air_frequency_balance(f_i)
-        wt, wb, wai = rebalance_comb_risk_top_only(wt, wb, wai, cluster_damp)
-        wrad_before = (wt + wb) * 0.52 + wai * 0.48
-
-        e5_factor = e5_comb_factors.get(f_i, 1.0)
         if track_unguarded_reference and h_combined_ref is not None and h_radiation_ref is not None:
             h_combined_ref += (wt + wb + wai) * kernel
             h_radiation_ref += wrad_before * kernel
@@ -540,10 +676,9 @@ def compute_step5j_1_modal_kernels_decomposed(
         else:
             wrad = wrad_before
 
-        in_comb_band = E5_COMB_BAND_LO_HZ <= f_i <= E5_COMB_BAND_HI_HZ
-        if in_comb_band:
-            comb_band_weight_before += wrad_before
-            comb_band_weight_after += wrad
+        if E5_LEGACY_DIAG_BAND_LO_HZ <= f_i <= E5_LEGACY_DIAG_BAND_HI_HZ:
+            legacy_band_before += wrad_before
+            legacy_band_after += wrad
         rad_weight_before += wrad_before
         rad_weight_after += wrad
         if e5_factor < 0.999:
@@ -556,27 +691,32 @@ def compute_step5j_1_modal_kernels_decomposed(
         h_radiation += wrad * kernel
 
     h_combined = h_top + h_back + h_air
+    freq_min = min(mode_freqs) if mode_freqs else 0.0
+    freq_max = max(mode_freqs) if mode_freqs else 0.0
     meta: Dict[str, Any] = {
-        "weighting_version": "v2.4",
+        "weighting_version": "v2.5",
         "mode_count": len(modes),
+        "modal_frequency_min_hz": round(freq_min, 3),
+        "modal_frequency_max_hz": round(freq_max, 3),
+        "modes_in_legacy_diag_band_560_1420": sum(
+            1 for f in mode_freqs if E5_LEGACY_DIAG_BAND_LO_HZ <= f <= E5_LEGACY_DIAG_BAND_HI_HZ
+        ),
         "output_weights_only": True,
         "q_tau_unchanged": True,
         "frequencies_unchanged": True,
         "h0_causal_near_zero": bool(abs(h_combined[0]) < 1e-6),
         "e5_radiation_guard_applied": bool(apply_e5_comb_guard and guarded_mode_count > 0),
         "e5_guarded_mode_count": guarded_mode_count,
+        "e5_guard_selection_diagnostics": e5_guard_diag,
         "e5_guard_weight_before_after_summary": {
             "radiation_sum_weight_before": round(rad_weight_before, 6),
             "radiation_sum_weight_after": round(rad_weight_after, 6),
             "radiation_sum_weight_delta": round(rad_weight_after - rad_weight_before, 6),
-            "comb_sensitive_band_weight_before": round(comb_band_weight_before, 6),
-            "comb_sensitive_band_weight_after": round(comb_band_weight_after, 6),
+            "legacy_band_560_1420_weight_before": round(legacy_band_before, 6),
+            "legacy_band_560_1420_weight_after": round(legacy_band_after, 6),
             "mean_e5_factor": round(float(np.mean(factor_samples)) if factor_samples else 1.0, 4),
             "min_e5_factor": round(min(factor_samples) if factor_samples else 1.0, 4),
         },
-        "e5_comb_factors_in_band": sum(
-            1 for f in mode_freqs if E5_COMB_BAND_LO_HZ <= f <= E5_COMB_BAND_HI_HZ
-        ),
     }
     if track_unguarded_reference and h_combined_ref is not None and h_radiation_ref is not None:
         meta["h_combined_unguarded_ref"] = h_combined_ref.astype(np.float64)
@@ -608,12 +748,20 @@ def build_e5_radiation_guard_analysis(
         "applicable": True,
         "e5_radiation_guard_applied": kernel_meta.get("e5_radiation_guard_applied"),
         "e5_guarded_mode_count": kernel_meta.get("e5_guarded_mode_count"),
+        "e5_guard_selection_diagnostics": kernel_meta.get("e5_guard_selection_diagnostics"),
+        "modal_frequency_min_hz": kernel_meta.get("modal_frequency_min_hz"),
+        "modal_frequency_max_hz": kernel_meta.get("modal_frequency_max_hz"),
+        "modes_in_legacy_diag_band_560_1420": kernel_meta.get("modes_in_legacy_diag_band_560_1420"),
         "e5_guard_weight_before_after_summary": guard_summary,
         "e5_radiation_sum_delta_vs_unguarded_proxy": guard_summary.get("radiation_sum_weight_delta"),
         "e5_comb_sensitive_band_energy_before_after": {
-            "before": guard_summary.get("comb_sensitive_band_weight_before"),
-            "after": guard_summary.get("comb_sensitive_band_weight_after"),
+            "before": guard_summary.get("legacy_band_560_1420_weight_before"),
+            "after": guard_summary.get("legacy_band_560_1420_weight_after"),
         },
+        "e5_comb_limitation_note": (
+            "If guard applies with nonzero delta but E5 comb_score remains >= threshold, "
+            "E5 comb risk may require Step 5K bridge/admittance coupling, not more body weighting."
+        ),
     }
     if h_ref_c is not None and h_ref_r is not None:
         y_out_before, _ = apply_listening_render_step5j_1(
@@ -1546,6 +1694,16 @@ def write_markdown_report(report: Mapping[str, Any], path: Path) -> None:
         lines.append(f"- guard_applied: {e5g.get('e5_radiation_guard_applied')}")
         lines.append(f"- guarded_mode_count: {e5g.get('e5_guarded_mode_count')}")
         lines.append(
+            f"- modal_freq range: {e5g.get('modal_frequency_min_hz')}–{e5g.get('modal_frequency_max_hz')} Hz"
+        )
+        lines.append(
+            f"- modes in legacy 560–1420 Hz band: {e5g.get('modes_in_legacy_diag_band_560_1420')}"
+        )
+        sel = e5g.get("e5_guard_selection_diagnostics") or {}
+        lines.append(f"- candidate_mode_count: {sel.get('candidate_mode_count')}")
+        lines.append(f"- no_candidates_reason: {sel.get('no_candidates_reason')}")
+        lines.append(f"- fallback_applied: {sel.get('fallback_applied')}")
+        lines.append(
             f"- rad_comb before/after: {e5g.get('e5_radiation_sum_comb_score_before_guard')}"
             f" → {e5g.get('e5_radiation_sum_comb_score_after_guard')}"
         )
@@ -1557,6 +1715,15 @@ def write_markdown_report(report: Mapping[str, Any], path: Path) -> None:
         lines.append(
             f"- radiation_sum_weight delta: {summary.get('radiation_sum_weight_delta')}"
         )
+        top10 = sel.get("top10_e5_radiation_contributors") or []
+        if top10:
+            lines.append("- top E5 radiation contributors:")
+            for row in top10[:5]:
+                lines.append(
+                    f"  - m{row.get('mode_index')} f={row.get('frequency_hz')}Hz "
+                    f"wrad={row.get('wrad_before')} guard={row.get('guard_factor')} "
+                    f"contrib={row.get('contribution_mag')}"
+                )
     lines.extend(["", "## Comparison vs Step 5J", ""])
     for note in NOTE_SET:
         c = comp.get(note) or {}

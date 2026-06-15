@@ -202,8 +202,15 @@ class TestPgsmStep5j1GuitarArticulationBodyBalanceRepair(unittest.TestCase):
         self.assertIn("e5_guard_weight_before_after_summary", e5g)
         self.assertIn("e5_radiation_sum_comb_score_before_guard", e5g)
         self.assertIn("e5_radiation_sum_comb_score_after_guard", e5g)
+        self.assertIn("e5_guard_selection_diagnostics", e5g)
+        sel = e5g.get("e5_guard_selection_diagnostics") or {}
+        self.assertIn("top10_e5_radiation_contributors", sel)
+        self.assertIn("candidate_mode_count", sel)
         meta = self._report().get("modal_kernel_meta") or {}
         self.assertIn("e5_radiation_guard_applied", meta)
+        self.assertIn("modal_frequency_min_hz", meta)
+        self.assertIn("modal_frequency_max_hz", meta)
+        self.assertEqual(self._report().get("validation_max_modes"), VALIDATION_MAX_MODES)
 
     def test_articulation_metrics_computed(self) -> None:
         art = self._report().get("per_note_articulation_metrics") or {}
