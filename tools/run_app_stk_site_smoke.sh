@@ -55,8 +55,10 @@ from app_stk_fretboard import (
     lookup_note,
     normalize_note_name,
     note_to_midi,
+    position_runtime_wav_name,
     required_notes_cover_high_frets,
     validate_explicit_fretboard_checks,
+    validate_player_payload_positions,
 )
 from classical_guitar_fretboard import load_fretboard_config, run_fretboard_mapping_audit
 from stk_app_audio_service import (
@@ -219,9 +221,13 @@ activation = activate_stk_guitar_for_player(
 )
 payload = activation["player_payload"]
 assert payload.get("enable_overlapping_playback") is True
+assert payload.get("uses_string_fret_position_mapping") is True
 assert payload.get("string_visual_order_numbers") == [6, 5, 4, 3, 2, 1]
 s6f1 = next(p for p in payload["positions"] if p["string"] == 6 and p["fret"] == 1)
 assert s6f1.get("note_name") == "F2", s6f1
+assert s6f1.get("wav") == position_runtime_wav_name(6, 1), s6f1
+pos_checks = validate_player_payload_positions(payload)
+assert all(row["passed"] for row in pos_checks), pos_checks
 fb_audit = run_fretboard_mapping_audit(
     cache_dir=Path(entry["note_cache_path"]), player_payload=payload, repo_root=root
 )
@@ -230,6 +236,7 @@ validation = validate_stk_player_runtime_cache(
     payload, runtime_dir=Path(activation["runtime_dir"])
 )
 assert validation["ok"], validation
+assert validation.get("position_checks_ok") is True, validation
 assert validation.get("preview_wav") == "all_notes_preview.wav"
 runtime = Path(activation["runtime_dir"])
 assert (runtime / "all_notes_preview.wav").is_file()
@@ -327,6 +334,12 @@ else
 fi
 
 GUITAR_PLAYER_HTML="${REPO_ROOT}/gui/components/guitar_player/index.html"
+if [[ -f "${GUITAR_PLAYER_HTML}" ]] && grep -qF 'OVERLAP_DUCKING_ENABLED' "${GUITAR_PLAYER_HTML}"; then
+  ok "overlap ducking JS support flag"
+else
+  bad "overlap ducking JS missing"
+fi
+
 if [[ -f "${GUITAR_PLAYER_HTML}" ]] && {
   grep -qF 'OVERLAPPING_PLAYBACK_ENABLED' "${GUITAR_PLAYER_HTML}" ||
   grep -qF 'enable_overlapping_playback' "${GUITAR_PLAYER_HTML}" ||
@@ -335,6 +348,18 @@ if [[ -f "${GUITAR_PLAYER_HTML}" ]] && {
   ok "overlapping playback JS support flag"
 else
   bad "overlapping playback JS missing"
+fi
+
+if grep -qF 'APP_STK_RENDER_MODE' "${REPO_ROOT}/gui/stk_app_audio_service.py"; then
+  ok "APP_STK_RENDER_MODE terminal log marker"
+else
+  bad "APP_STK_RENDER_MODE log marker missing"
+fi
+
+if grep -qF 'uses_string_fret_position_mapping' "${REPO_ROOT}/gui/stk_app_audio_service.py"; then
+  ok "string/fret position mapping flag in player payload"
+else
+  bad "string/fret position mapping flag missing"
 fi
 
 if [[ -f "${REPO_ROOT}/config/classical_guitar_fretboard.json" ]]; then

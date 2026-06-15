@@ -9,6 +9,7 @@ from classical_guitar_fretboard import (  # noqa: F401
     ensure_fretboard_config_file,
     get_fret_count,
     is_note_wav_path,
+    is_position_runtime_wav_stem,
     is_valid_note_name,
     list_ignored_non_note_wavs,
     list_note_wavs,
@@ -21,10 +22,12 @@ from classical_guitar_fretboard import (  # noqa: F401
     note_range_label_from_required,
     note_to_midi,
     player_fretboard_metadata,
+    position_runtime_wav_name,
     required_notes_cover_high_frets,
     run_fretboard_mapping_audit,
     string_visual_order_numbers,
     validate_explicit_fretboard_checks,
+    validate_player_payload_positions,
 )
 
 # Legacy alias used by note_cache_ui / tests

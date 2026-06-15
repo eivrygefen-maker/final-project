@@ -121,6 +121,8 @@ def is_note_wav_path(path: Path) -> bool:
     stem = Path(path).stem
     if is_helper_wav_stem(stem):
         return False
+    if is_position_runtime_wav_stem(stem):
+        return True
     if is_valid_note_name(stem):
         return True
     return note_id_stem_to_note_name(stem) is not None
@@ -189,6 +191,16 @@ def midi_to_frequency_hz(midi: int) -> float:
 def note_id_from_note_name(note_name: str) -> str:
     """Filesystem-safe id (# -> s) shared by duplicate pitches."""
     return normalize_note_name(note_name).replace("#", "s")
+
+
+def position_runtime_wav_name(string_number: int, fret: int) -> str:
+    """Runtime player WAV filename — one file per physical string/fret cell."""
+    return f"S{int(string_number)}_f{int(fret)}.wav"
+
+
+def is_position_runtime_wav_stem(stem: str) -> bool:
+    """True for per-cell runtime WAV stems like ``S6_f1``."""
+    return bool(re.match(r"^S[1-6]_f\d+$", str(stem).strip()))
 
 
 def string_key_to_number(string_key: str) -> int:
@@ -383,6 +395,36 @@ def validate_explicit_fretboard_checks(
                 "expected": expected,
                 "actual": actual,
                 "passed": actual == normalize_note_name(expected),
+            }
+        )
+    return results
+
+
+def validate_player_payload_positions(
+    player_payload: Mapping[str, Any],
+    cfg: Optional[Mapping[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Verify player payload maps each required string/fret to the fretboard note."""
+    c = dict(cfg or load_fretboard_config())
+    lookup = {
+        (int(p["string"]), int(p["fret"])): p
+        for p in (player_payload.get("positions") or [])
+    }
+    results: List[Dict[str, Any]] = []
+    for string_key, fret, expected in EXPLICIT_VALIDATION_CHECKS:
+        sn = string_key_to_number(string_key)
+        pos = lookup.get((sn, int(fret)))
+        actual = normalize_note_name(str((pos or {}).get("note_name") or "")) if pos else ""
+        wav = str((pos or {}).get("wav") or "")
+        results.append(
+            {
+                "string": string_key,
+                "string_number": sn,
+                "fret": fret,
+                "expected": expected,
+                "actual": actual,
+                "wav": wav,
+                "passed": actual == normalize_note_name(expected) and bool(pos),
             }
         )
     return results

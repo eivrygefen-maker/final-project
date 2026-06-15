@@ -416,6 +416,10 @@
       var OVERLAPPING_PLAYBACK_ENABLED = true;
       var enable_overlapping_playback = true;
       var MAX_OVERLAPPING_VOICES = 24;
+      // OVERLAP_DUCKING_ENABLED: duck older voices when a new note starts.
+      var OVERLAP_DUCKING_ENABLED = true;
+      var DUCK_TARGET_VOLUME = 0.32;
+      var DUCK_FADE_MS = 220;
 
       var audioCtx = null;
       var buffers = {};
@@ -516,6 +520,24 @@
         }
       }
 
+      /** Fade older overlapping voices down so chords stay audible without full buildup. */
+      // OVERLAP_DUCKING_ENABLED
+      function duckActiveNotes(exceptAudio) {
+        if (!OVERLAP_DUCKING_ENABLED || !overlappingPlayback) return;
+        activeHtmlAudios.forEach(function (audio) {
+          if (audio === exceptAudio) return;
+          var startVol = typeof audio.volume === "number" ? audio.volume : 1.0;
+          var target = DUCK_TARGET_VOLUME;
+          var t0 = performance.now();
+          function step(now) {
+            var p = Math.min(1, (now - t0) / DUCK_FADE_MS);
+            audio.volume = startVol + (target - startVol) * p;
+            if (p < 1) requestAnimationFrame(step);
+          }
+          requestAnimationFrame(step);
+        });
+      }
+
       /** Play one note via a fresh HTMLAudioElement (overlapping / chord-friendly). */
       // OVERLAPPING_PLAYBACK_ENABLED
       function playNoteWav(wavFile) {
@@ -525,6 +547,7 @@
         }
         var url = assetUrl(currentFingerprint, wavFile);
         var audio = new Audio(url);
+        duckActiveNotes(audio);
         audio.volume = 1.0;
         activeHtmlAudios.push(audio);
         pruneActiveAudios();
@@ -566,9 +589,27 @@
         document.getElementById("nowPlaying").innerHTML = text || "";
       }
 
-      function displayFretOrder(fretCount) {
+      function resolveStringOrder(player) {
+        if (player.string_visual_order_numbers && player.string_visual_order_numbers.length) {
+          return player.string_visual_order_numbers.slice();
+        }
+        if (player.fretboard && player.fretboard.string_visual_order_numbers) {
+          return player.fretboard.string_visual_order_numbers.slice();
+        }
+        return [6, 5, 4, 3, 2, 1];
+      }
+
+      function displayFretOrder(fretCount, player) {
+        var higherLeft = true;
+        if (player && player.fretboard && player.fretboard.higher_frets_direction === "right") {
+          higherLeft = false;
+        }
         var order = [];
-        for (var f = fretCount; f >= 0; f--) order.push(f);
+        if (higherLeft) {
+          for (var f = fretCount; f >= 0; f--) order.push(f);
+        } else {
+          for (var f = 0; f <= fretCount; f++) order.push(f);
+        }
         return order;
       }
 
@@ -589,18 +630,14 @@
 
       function buildFretboard(player) {
         var fretCount = Number(player.fret_count) || 19;
-        if (player.string_visual_order_numbers && player.string_visual_order_numbers.length) {
-          STRING_NUMBERS = player.string_visual_order_numbers.slice();
-        } else if (player.fretboard && player.fretboard.string_visual_order_numbers) {
-          STRING_NUMBERS = player.fretboard.string_visual_order_numbers.slice();
-        }
+        STRING_NUMBERS = resolveStringOrder(player);
         var cols = fretCount + 1;
-        var fretsDisplay = displayFretOrder(fretCount);
+        var fretsDisplay = displayFretOrder(fretCount, player);
         document.documentElement.style.setProperty("--fret-cols", String(cols));
 
         var lookup = {};
         (player.positions || []).forEach(function (p) {
-          lookup[p.string + ":" + p.fret] = p;
+          lookup[String(p.string) + ":" + String(p.fret)] = p;
         });
 
         var neckEl = document.getElementById("neck");
@@ -648,10 +685,11 @@
             cell.className = "fret-cell";
             cell.dataset.string = String(sn);
             cell.dataset.fret = String(fret);
-            var pos = lookup[sn + ":" + fret];
+            var pos = lookup[String(sn) + ":" + String(fret)];
             if (!pos) {
               cell.classList.add("disabled");
             } else {
+              cell.title = "S" + sn + " fret " + fret + " · " + (pos.note_name || pos.note_id);
               if (fret === 0) {
                 cell.classList.add("open-cell");
                 var openLbl = document.createElement("span");

@@ -44,6 +44,7 @@ from app_stk_fretboard import (
     note_range_label_from_required,
     note_to_midi,
     player_fretboard_metadata,
+    position_runtime_wav_name,
     run_fretboard_mapping_audit,
 )
 
@@ -1210,6 +1211,10 @@ def build_note_library(
     effective_workers = int(spec_doc.get("parallel_workers") or worker_count)
     bg_status_path = background_status_path(cache_key) if parameter_hash else None
     started_at = _utc_now()
+    print(
+        f"APP_STK_RENDER_MODE {mode} workers={effective_workers} hash={parameter_hash or cache_key}",
+        flush=True,
+    )
     target_runtime_s = float(cfg.get("target_runtime_s") or 180)
 
     timings: Dict[str, float] = {}
@@ -1522,6 +1527,8 @@ def _library_report_md(report: Mapping[str, Any]) -> str:
         f"- **parameter_hash**: {report.get('parameter_hash')}",
         f"- **note_range**: {report.get('note_range')}",
         f"- **render_mode**: {report.get('render_mode')}",
+        f"- **worker_count**: {report.get('worker_count')}",
+        f"- **elapsed_s**: {report.get('elapsed_s')}",
         f"- **fretboard_required_note_count**: {report.get('fretboard_required_note_count')}",
         f"- **highest_required_note**: {report.get('highest_required_note')}",
         f"- **total_render_time_s**: {report.get('total_render_time_s')}",
@@ -1530,6 +1537,15 @@ def _library_report_md(report: Mapping[str, Any]) -> str:
         f"- **output_dir**: `{report.get('output_dir')}`",
         "",
     ]
+    workers = report.get("workers") or []
+    if workers:
+        lines.extend(["## Workers", ""])
+        for worker in workers:
+            lines.append(
+                f"- worker {worker.get('worker_id')}: status={worker.get('status')} "
+                f"elapsed_s={worker.get('elapsed_s')} rendered={worker.get('rendered_notes')}"
+            )
+        lines.append("")
     return "\n".join(lines) + "\n"
 
 
@@ -1825,6 +1841,7 @@ def start_background_note_library_job(
     mode = str(render_mode or cfg.get("render_mode") or "batch")
     if mode == "batch" and parallel_workers_from_config(cfg) > 1 and APP_STK_PARALLEL_WORKERS_ENABLED:
         mode = "parallel_batch"
+    worker_count = parallel_workers_from_config(cfg) if mode == "parallel_batch" else 1
     preview = preview_cache_dir(parameter_hash, instrument)
     preview.mkdir(parents=True, exist_ok=True)
     set_active_job(parameter_hash)
@@ -1866,9 +1883,15 @@ def start_background_note_library_job(
         str(root),
         "--render-mode",
         mode,
+        "--parallel-workers",
+        str(worker_count),
         "--priority-notes",
         *priority_notes_from_config(cfg),
     ]
+    print(
+        f"APP_STK_RENDER_MODE {mode} workers={worker_count} hash={parameter_hash}",
+        flush=True,
+    )
     write_job_status(
         parameter_hash,
         {
@@ -1879,7 +1902,7 @@ def start_background_note_library_job(
             "rendered_notes": 0,
             "total_notes": len(required),
             "render_mode": mode,
-            "worker_count": parallel_workers_from_config(cfg) if mode == "parallel_batch" else 1,
+            "worker_count": worker_count,
         },
     )
     write_background_status(
@@ -1892,7 +1915,7 @@ def start_background_note_library_job(
             "total_notes": len(required),
             "elapsed_time_s": 0.0,
             "render_mode": mode,
-            "worker_count": parallel_workers_from_config(cfg) if mode == "parallel_batch" else 1,
+            "worker_count": worker_count,
         },
     )
     proc = subprocess.Popen(cmd, cwd=str(root))
@@ -2291,11 +2314,13 @@ def prepare_stk_player_assets(cache_dir: Path, fingerprint: str) -> Path:
     copied_ids: set[str] = set()
     for row in build_fretboard_note_mapping():
         note_name = str(row["note_name"])
-        note_id = str(row["note_id"])
+        string_number = int(row["string_number"])
+        fret = int(row["fret"])
+        runtime_wav = position_runtime_wav_name(string_number, fret)
         src = resolve_stk_note_wav(cache_dir, note_name)
-        if src is not None and note_id not in copied_ids:
-            shutil.copy2(src, dest / f"{note_id}.wav")
-            copied_ids.add(note_id)
+        if src is not None:
+            shutil.copy2(src, dest / runtime_wav)
+            copied_ids.add(runtime_wav)
 
     _write_stk_preview_wav(dest, cache_dir)
     return dest
@@ -2316,22 +2341,21 @@ def build_stk_player_payload(
 
     cache_dir = Path(cache_dir)
     positions: List[Dict[str, Any]] = []
-    unique_ids: set[str] = set()
     for row in build_fretboard_note_mapping(fc):
         note_name = str(row["note_name"])
-        note_id = str(row["note_id"])
+        string_number = int(row["string_number"])
+        fret = int(row["fret"])
         if resolve_stk_note_wav(cache_dir, note_name) is None:
             continue
         positions.append(
             {
-                "string": int(row["string_number"]),
-                "fret": int(row["fret"]),
+                "string": string_number,
+                "fret": fret,
                 "note_name": note_name,
-                "note_id": note_id,
-                "wav": f"{note_id}.wav",
+                "note_id": str(row["note_id"]),
+                "wav": position_runtime_wav_name(string_number, fret),
             }
         )
-        unique_ids.add(note_id)
 
     if not positions:
         return {"status": "hidden", "positions": [], "fingerprint": ""}
@@ -2341,9 +2365,10 @@ def build_stk_player_payload(
         "status": "ready",
         "fingerprint": fingerprint,
         "fret_count": fc,
-        "unique_note_count": len(unique_ids),
+        "unique_note_count": len({p["note_name"] for p in positions}),
         "playable_position_count": len(positions),
         "positions": positions,
+        "uses_string_fret_position_mapping": True,
         "enable_overlapping_playback": bool(cfg.get("enable_overlapping_playback", True)),
         "fretboard": fretboard_meta,
         "string_visual_order_numbers": fretboard_meta.get("string_visual_order_numbers"),
@@ -2391,12 +2416,24 @@ def validate_stk_player_runtime_cache(
             errors.append(f"missing preview wav: {preview_wav}")
             preview_missing = True
 
+    from classical_guitar_fretboard import validate_player_payload_positions  # noqa: WPS433
+
+    position_checks = validate_player_payload_positions(payload)
+    position_checks_ok = all(row.get("passed") for row in position_checks)
+    if not position_checks_ok:
+        failed = [row for row in position_checks if not row.get("passed")]
+        errors.append(f"player payload position checks failed ({len(failed)} mismatches)")
+    if not payload.get("uses_string_fret_position_mapping"):
+        errors.append("player payload missing uses_string_fret_position_mapping flag")
+
     return {
         "ok": not errors and len(positions) > 0,
         "errors": errors,
         "playable_errors": playable_errors,
         "runtime_dir": str(runtime).replace("\\", "/"),
         "position_count": len(positions),
+        "position_checks_ok": position_checks_ok,
+        "position_checks": position_checks,
         "preview_wav": str(preview_wav) if preview_wav else "",
         "preview_path": str(preview_path).replace("\\", "/")
         if preview_path is not None and preview_path.is_file()
