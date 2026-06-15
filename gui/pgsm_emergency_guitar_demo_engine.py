@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PGSM / STK final guitar demo engine — ordered physical transfer chain.
-v6: single-pluck shared excitation, causal body response, no layered onsets.
+v7: onset-locked single attack, low-mid body support for high notes.
 Diagnostic only; not FEM/ROM/STK production.
 """
 from __future__ import annotations
@@ -28,9 +28,10 @@ from pgsm_step5l_limited_multiguitar_differentiation import (
 )
 from stk_v6_2_audit_features import load_audit_report
 
-ENGINE_VERSION = "pgsm_emergency_guitar_demo_engine_v6"
-FINAL_DEMO_VERSION = "v6_single_pluck_physical_mix"
+ENGINE_VERSION = "pgsm_emergency_guitar_demo_engine_v7"
+FINAL_DEMO_VERSION = "v7_onset_locked_body_supported_guitar"
 EMERGENCY_DEMO_VERSION = FINAL_DEMO_VERSION
+FINAL_DEMO_VERSION_V6 = "v6_single_pluck_physical_mix"
 FINAL_DEMO_VERSION_V5 = "v5_ordered_physical_transfer_chain"
 SR = NUMERIC_SR
 DURATION_S = 2.5
@@ -69,15 +70,18 @@ CORRELATION_FAMILY_LO = 0.35
 CORRELATION_FAMILY_HI = 0.92
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+AUDIO_DIR_V7 = REPO_ROOT / "audio" / "pgsm_final_guitar_demo_v7"
+REPORT_JSON_V7 = REPO_ROOT / "audio" / "debug_reports" / "pgsm_final_guitar_demo_v7_report.json"
+REPORT_MD_V7 = REPO_ROOT / "audio" / "debug_reports" / "pgsm_final_guitar_demo_v7_report.md"
 AUDIO_DIR_V6 = REPO_ROOT / "audio" / "pgsm_final_guitar_demo_v6"
 REPORT_JSON_V6 = REPO_ROOT / "audio" / "debug_reports" / "pgsm_final_guitar_demo_v6_report.json"
 REPORT_MD_V6 = REPO_ROOT / "audio" / "debug_reports" / "pgsm_final_guitar_demo_v6_report.md"
 AUDIO_DIR_V5 = REPO_ROOT / "audio" / "pgsm_final_guitar_demo_v5"
 REPORT_JSON_V5 = REPO_ROOT / "audio" / "debug_reports" / "pgsm_final_guitar_demo_v5_report.json"
 REPORT_MD_V5 = REPO_ROOT / "audio" / "debug_reports" / "pgsm_final_guitar_demo_v5_report.md"
-AUDIO_DIR = AUDIO_DIR_V6
-REPORT_JSON = REPORT_JSON_V6
-REPORT_MD = REPORT_MD_V6
+AUDIO_DIR = AUDIO_DIR_V7
+REPORT_JSON = REPORT_JSON_V7
+REPORT_MD = REPORT_MD_V7
 
 READINESS_OK = "ready_for_stk_gui_activation"
 READINESS_WEAK = "demo_generated_but_differentiation_weak"
@@ -85,10 +89,29 @@ READINESS_REVIEW = "demo_generated_but_physical_chain_needs_review"
 READINESS_DOUBLE_PLUCK = "demo_generated_but_double_pluck_needs_review"
 READINESS_FAIL = "emergency_demo_failed"
 
-EXCITATION_ATTACK_MS = 2.5
-EXCITATION_CONTACT_MS = 7.0
+EXCITATION_ATTACK_MS = 2.0
+EXCITATION_CONTACT_MS = 6.0
+ONSET_LOCK_ATTACK_MS = 2.0
+ONSET_LOCK_WINDOW_MS = 80.0
+ONSET_LOCK_DECAY_TAU_MS = 45.0
 DOUBLE_PLUCK_MIN_DELAY_MS = 18.0
-DOUBLE_PLUCK_SECOND_PEAK_FRAC = 0.45
+DOUBLE_PLUCK_SECOND_PEAK_FRAC = 0.35
+DELAYED_PEAK_REGION_END_MS = 90.0
+
+ONSET_LOCK_SUMMARY: Dict[str, Any] = {
+    "attack_ms": ONSET_LOCK_ATTACK_MS,
+    "window_ms": ONSET_LOCK_WINDOW_MS,
+    "decay_tau_ms": ONSET_LOCK_DECAY_TAU_MS,
+    "applied_to": ["contact_early_tap", "string_bridge", "body_modal"],
+    "body_starts_at_sample_zero": True,
+    "no_body_pre_delay": True,
+}
+
+NOTE_BODY_SUPPORT: Dict[str, Dict[str, float]] = {
+    "A2": {"body_modal_mult": 1.0, "low_mid_mode_mult": 1.0, "high_rad_mult": 1.0},
+    "A4": {"body_modal_mult": 1.08, "low_mid_mode_mult": 1.12, "high_rad_mult": 0.95},
+    "E5": {"body_modal_mult": 1.12, "low_mid_mode_mult": 1.15, "high_rad_mult": 0.90},
+}
 
 PHYSICAL_FACTOR_KEYS: Tuple[str, ...] = (
     "body_size_cavity_factor",
@@ -112,13 +135,52 @@ PHYSICAL_CHAIN_STAGES: Tuple[str, ...] = (
 )
 
 PHYSICAL_CHAIN_SUMMARY: Dict[str, str] = {
-    "A_pluck_contact": "Single shared excitation envelope (2.5ms attack, 7ms contact); no separate click",
-    "B_string_force": "Harmonic F_string gated once by shared envelope; sole primary excitation",
-    "C_bridge_impedance": "F_bridge_eff = bridge_transfer(F_string); same onset timing as string",
-    "D_body_modal_transfer": "y_body = sum conv(F_bridge_eff, H_mode_immediate); cosine-phase kernels",
-    "E_material_damping": "Per-mode tau/Q from wood/material factors",
-    "F_radiation_mix": "Coherent mix: early bridge contact + string residual + body (one onset)",
-    "G_modal_decay_only": "No reverb/echo; modal ring only, second-peak suppression if needed",
+    "A_pluck_contact": "Onset-locked early tap from F_bridge_eff only (3–5% mix)",
+    "B_string_force": "Harmonic F_string with shared excitation envelope",
+    "C_bridge_impedance": "F_bridge_eff immediate; no pre-delay before body",
+    "D_body_modal_transfer": "Body conv starts t=0; onset_lock shapes first 80 ms",
+    "E_material_damping": "Per-mode tau/Q; low-mid body support for A4/E5",
+    "F_radiation_mix": "One guitar event: contact + string + body locked onset",
+    "G_modal_decay_only": "Delayed-peak attenuation 18–90 ms; natural decay after 100 ms",
+}
+
+V7_VOICING: Dict[str, Dict[str, Any]] = {
+    "sample_000": {
+        "profile": "balanced_neutral_classical",
+        "pluck_delta": 0.0,
+        "factors": {k: 1.0 for k in PHYSICAL_FACTOR_KEYS},
+        "mix": {"contact": 0.04, "string_bridge": 0.24, "body_modal": 0.66, "air_share": 0.10},
+    },
+    "sample_001": {
+        "profile": "bright_light_fast_response",
+        "pluck_delta": 0.009,
+        "factors": {
+            "body_size_cavity_factor": 0.90,
+            "top_stiffness_to_weight_factor": 1.10,
+            "top_damping_factor": 1.12,
+            "back_density_warmth_factor": 0.92,
+            "bridge_mobility_factor": 1.08,
+            "effective_mass_loading_factor": 0.88,
+            "air_helmholtz_factor": 0.93,
+            "radiation_brightness_factor": 1.06,
+        },
+        "mix": {"contact": 0.04, "string_bridge": 0.26, "body_modal": 0.64, "air_share": 0.09},
+    },
+    "sample_002": {
+        "profile": "warm_deep_heavy_response",
+        "pluck_delta": -0.011,
+        "factors": {
+            "body_size_cavity_factor": 1.08,
+            "top_stiffness_to_weight_factor": 0.92,
+            "top_damping_factor": 0.90,
+            "back_density_warmth_factor": 1.10,
+            "bridge_mobility_factor": 0.92,
+            "effective_mass_loading_factor": 1.10,
+            "air_helmholtz_factor": 1.06,
+            "radiation_brightness_factor": 0.88,
+        },
+        "mix": {"contact": 0.03, "string_bridge": 0.22, "body_modal": 0.68, "air_share": 0.12},
+    },
 }
 
 V6_VOICING: Dict[str, Dict[str, Any]] = {
@@ -204,7 +266,7 @@ def build_emergency_demo_config() -> Dict[str, Any]:
         "engine_version": ENGINE_VERSION,
         "final_demo_version": FINAL_DEMO_VERSION,
         "emergency_demo_version": EMERGENCY_DEMO_VERSION,
-        "output_folder": str(AUDIO_DIR_V6),
+        "output_folder": str(AUDIO_DIR_V7),
         "physical_chain_stages": list(PHYSICAL_CHAIN_STAGES),
         "physical_factor_keys": list(PHYSICAL_FACTOR_KEYS),
         "sample_set": list(SAMPLE_SET),
@@ -255,7 +317,7 @@ def compute_v5_physical_factors(
     sample_id: str,
 ) -> Tuple[Dict[str, float], List[Dict[str, Any]]]:
     audit = _audit_factor_map(physical, reference)
-    overlay = V6_VOICING[sample_id]["factors"]
+    overlay = V7_VOICING[sample_id]["factors"]
     factors: Dict[str, float] = {}
     trace: List[Dict[str, Any]] = []
     for key in PHYSICAL_FACTOR_KEYS:
@@ -276,7 +338,7 @@ compute_gentle_sample_modifiers = compute_v5_physical_factors
 compute_physical_factors = compute_v5_physical_factors
 PHYSICAL_FACTOR_GROUPS = PHYSICAL_FACTOR_KEYS
 PHYSICAL_MODIFIER_KEYS = PHYSICAL_FACTOR_KEYS
-GENTLE_SAMPLE_VOICING = V6_VOICING
+GENTLE_SAMPLE_VOICING = V7_VOICING
 
 
 def _pick_reference_modes(ref_modes: Sequence[Mapping[str, Any]], factors: Mapping[str, float]) -> List[Dict[str, Any]]:
@@ -347,7 +409,7 @@ def build_sample_synthesis_state(
     readonly_modes: Sequence[Mapping[str, Any]],
 ) -> SampleSynthesisState:
     factors, trace = compute_v5_physical_factors(physical, reference_physical, sample_id=sample_id)
-    voicing = V6_VOICING[sample_id]
+    voicing = V7_VOICING[sample_id]
     pluck = _clamp(FIXED_PLUCK_POSITION + float(voicing.get("pluck_delta") or 0.0), 0.10, 0.20)
     modes = _pick_reference_modes(readonly_modes, factors)
     bridge = _bridge_transfer_summary(factors)
@@ -390,13 +452,28 @@ def cleanup_sample_state(state: SampleSynthesisState) -> None:
 
 
 def build_synthesis_profile(sample_id: str, factors: Mapping[str, float]) -> Dict[str, Any]:
-    voicing = V6_VOICING[sample_id]
+    voicing = V7_VOICING[sample_id]
     return {
         "sample_id": sample_id,
         "voicing_profile": voicing["profile"],
         "pluck_position_ratio": _clamp(FIXED_PLUCK_POSITION + float(voicing.get("pluck_delta") or 0.0), 0.10, 0.20),
         "physical_modifiers": dict(factors),
     }
+
+
+def onset_lock_envelope(n: int, sr: int) -> np.ndarray:
+    """Macro onset lock for first 80 ms: fast rise, smooth early decay, unity after."""
+    win_n = max(int(ONSET_LOCK_WINDOW_MS * 1e-3 * sr), 16)
+    attack_n = max(int(ONSET_LOCK_ATTACK_MS * 1e-3 * sr), 3)
+    env = np.ones(n, dtype=np.float64)
+    ramp = np.sin(np.linspace(0.0, math.pi / 2.0, attack_n)) ** 2
+    env[:attack_n] = ramp
+    tail_n = min(win_n, n) - attack_n
+    if tail_n > 0:
+        tt = np.arange(tail_n, dtype=np.float64) / sr
+        decay_tau = ONSET_LOCK_DECAY_TAU_MS * 1e-3
+        env[attack_n : attack_n + tail_n] = 0.70 + 0.30 * np.exp(-tt / decay_tau)
+    return env
 
 
 def _shared_excitation_envelope(n: int, sr: int) -> np.ndarray:
@@ -492,14 +569,21 @@ def _bridge_transfer(f_string: np.ndarray, sr: int, bridge: Mapping[str, Any]) -
 
 
 def _mode_transfer(exc: np.ndarray, sr: int, mode: Mapping[str, Any], *, note: str = "A4") -> np.ndarray:
-    """Causal modal kernel with immediate onset (cosine phase, no quarter-period delay)."""
+    """Causal modal kernel with immediate onset; low-mid body support for high notes."""
     f_hz = float(mode["frequency_hz"])
     tau = float(mode["tau_s"])
     gain = float(mode["gain"])
     q = max(float(mode.get("q") or 8.0), 1.0)
     role = str(mode.get("role") or "")
+    support = NOTE_BODY_SUPPORT.get(note, NOTE_BODY_SUPPORT["A2"])
     if note == "A2" and role in ("low_body_air_cavity", "low_mid_coupled_body"):
         gain *= 0.62
+    if note in ("A4", "E5"):
+        if 120.0 <= f_hz <= 450.0:
+            gain *= float(support["low_mid_mode_mult"])
+            tau *= 1.20
+        elif f_hz > 850.0:
+            gain *= float(support["high_rad_mult"])
     k_len = min(int(max(tau, 0.018) * sr * 4), len(exc))
     if k_len < 6:
         return np.zeros_like(exc)
@@ -512,46 +596,67 @@ def _mode_transfer(exc: np.ndarray, sr: int, mode: Mapping[str, Any], *, note: s
     return np.convolve(exc.astype(np.float64), kernel, mode="full")[: len(exc)]
 
 
-def _smooth_body_onset(y_body: np.ndarray, sr: int) -> np.ndarray:
-    """Short onset alignment — high initial level, not a delayed fade-in."""
-    sn = max(int(0.0035 * sr), 4)
-    if sn >= len(y_body):
-        return y_body
-    out = y_body.copy()
-    ramp = 0.90 + 0.10 * np.linspace(0.0, 1.0, sn) ** 0.6
-    out[:sn] *= ramp
+def apply_onset_lock_to_body(
+    y_body: np.ndarray,
+    f_bridge_eff: np.ndarray,
+    onset_lock: np.ndarray,
+    sr: int,
+) -> np.ndarray:
+    """Align body early energy with bridge; body active from sample 0."""
+    win_n = min(int(ONSET_LOCK_WINDOW_MS * 1e-3 * sr), len(y_body))
+    out = y_body.astype(np.float64).copy()
+    bridge0 = float(f_bridge_eff[0]) if len(f_bridge_eff) else 0.0
+    if abs(out[0]) < abs(bridge0) * 0.08:
+        out[0] += bridge0 * 0.14
+    if win_n > 1:
+        out[:win_n] *= onset_lock[:win_n]
     return out
 
 
-def _attenuate_second_onset_peak(y_body: np.ndarray, sr: int, excitation: np.ndarray) -> np.ndarray:
-    """Reduce delayed body peaks that read as a second pluck (40–120 ms)."""
-    win = min(int(0.150 * sr), len(y_body))
+def attenuate_delayed_modal_peak(
+    y_body: np.ndarray,
+    sr: int,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Attenuate delayed modal envelope peaks in 18–90 ms without hard gating."""
+    win = min(int(0.180 * sr), len(y_body))
     if win < 32:
-        return y_body
-    exc_peak = float(np.max(np.abs(excitation[:win])))
-    if exc_peak < 1e-12:
-        return y_body
+        return y_body, {"delayed_peak_ratio": 0.0, "attenuation_applied": False}
     env = np.abs(y_body[:win])
     k = max(int(0.002 * sr), 3)
     smooth = np.convolve(env, np.ones(k) / k, mode="same")
     delay_n = int(DOUBLE_PLUCK_MIN_DELAY_MS * 1e-3 * sr)
+    region_end = int(DELAYED_PEAK_REGION_END_MS * 1e-3 * sr)
     first_idx = int(np.argmax(smooth[: max(delay_n, 8)]))
     first_peak = float(smooth[first_idx])
     if first_peak < 1e-12:
-        return y_body
-    search = smooth[delay_n:win]
+        return y_body, {"delayed_peak_ratio": 0.0, "attenuation_applied": False}
+    search_end = min(region_end, win)
+    search = smooth[delay_n:search_end]
     if search.size < 8:
-        return y_body
+        return y_body, {"delayed_peak_ratio": 0.0, "attenuation_applied": False}
     second_idx = int(np.argmax(search)) + delay_n
     second_peak = float(smooth[second_idx])
-    if second_peak > DOUBLE_PLUCK_SECOND_PEAK_FRAC * first_peak:
-        atten = 0.55 + 0.25 * (first_peak / max(second_peak, 1e-12))
-        out = y_body.copy()
-        s0 = max(second_idx - k, 0)
-        s1 = min(second_idx + k * 3, len(out))
-        out[s0:s1] *= _clamp(atten, 0.45, 0.88)
-        return out
-    return y_body
+    ratio = second_peak / first_peak
+    if ratio <= DOUBLE_PLUCK_SECOND_PEAK_FRAC:
+        return y_body, {
+            "delayed_peak_ratio": round(ratio, 4),
+            "attenuation_applied": False,
+            "second_peak_ms": round(1000.0 * second_idx / sr, 3),
+        }
+    out = y_body.copy()
+    s0 = delay_n
+    s1 = min(region_end, len(out))
+    region_len = max(s1 - s0, 1)
+    taper = np.linspace(1.0, 0.52, region_len) ** (0.6 + 0.4 * min(ratio, 1.0))
+    atten = _clamp(0.50 + 0.30 * (first_peak / max(second_peak, 1e-12)), 0.42, 0.82)
+    taper *= atten
+    out[s0:s1] *= taper
+    return out, {
+        "delayed_peak_ratio": round(ratio, 4),
+        "attenuation_applied": True,
+        "second_peak_ms": round(1000.0 * second_idx / sr, 3),
+        "attenuation_region_ms": [round(1000.0 * s0 / sr, 3), round(1000.0 * s1 / sr, 3)],
+    }
 
 
 def _early_contact_from_bridge(f_bridge: np.ndarray, sr: int) -> np.ndarray:
@@ -599,7 +704,7 @@ def _smoothed_envelope(y: np.ndarray, sr: int, win_ms: float = 2.0) -> np.ndarra
 
 
 def compute_double_pluck_risk(y: np.ndarray, sr: int) -> Dict[str, Any]:
-    """Detect second onset peak in first 200 ms above 45% of main peak after 18 ms."""
+    """Detect second onset peak in first 200 ms above threshold after 18 ms."""
     win = min(int(0.200 * sr), len(y))
     if win < 32:
         return {"double_pluck_risk": False, "first_peak_ms": 0.0, "second_peak_ms": None, "second_peak_ratio": 0.0}
@@ -619,6 +724,22 @@ def compute_double_pluck_risk(y: np.ndarray, sr: int) -> Dict[str, Any]:
         "first_peak_ms": round(1000.0 * first_idx / sr, 3),
         "second_peak_ms": round(1000.0 * second_idx / sr, 3) if risk else None,
         "second_peak_ratio": round(ratio, 4),
+    }
+
+
+def compute_low_mid_body_energy_report(y: np.ndarray, sr: int) -> Dict[str, float]:
+    """Relative energy in 120–450 Hz body-support band."""
+    n = len(y)
+    if n < 64:
+        return {"low_mid_body_120_450_ratio": 0.0, "total_energy": 0.0}
+    spec = np.abs(np.fft.rfft(y.astype(np.float64))) ** 2
+    freqs = np.fft.rfftfreq(n, 1.0 / sr)
+    total = float(np.sum(spec)) + 1e-18
+    mask = (freqs >= 120.0) & (freqs <= 450.0)
+    low_mid = float(np.sum(spec[mask]))
+    return {
+        "low_mid_body_120_450_ratio": round(low_mid / total, 6),
+        "total_energy": round(total, 6),
     }
 
 
@@ -661,6 +782,8 @@ def synthesize_note_for_sample(state: SampleSynthesisState, note: str) -> Tuple[
     n = int(DURATION_S * SR)
     factors = state.factors
     excitation = _shared_excitation_envelope(n, SR)
+    onset_lock = onset_lock_envelope(n, SR)
+    body_support = NOTE_BODY_SUPPORT.get(note, NOTE_BODY_SUPPORT["A2"])
     inharm_b = BASE_INHARMONICITY_B * (0.94 + 0.10 * (factors["top_stiffness_to_weight_factor"] - 1.0))
     f_string = _synthesize_f_string(
         n,
@@ -673,6 +796,8 @@ def synthesize_note_for_sample(state: SampleSynthesisState, note: str) -> Tuple[
         excitation=excitation,
     )
     f_bridge_eff = _bridge_transfer(f_string, SR, state.bridge_transfer)
+    win_n = min(int(ONSET_LOCK_WINDOW_MS * 1e-3 * SR), n)
+    f_bridge_eff[:win_n] *= onset_lock[:win_n]
 
     top_sum = back_sum = air_sum = rad_sum = 0.0
     y_body = np.zeros(n, dtype=np.float64)
@@ -692,15 +817,18 @@ def synthesize_note_for_sample(state: SampleSynthesisState, note: str) -> Tuple[
             rad_sum += 1.0
             y_body += comp * float(factors.get("radiation_brightness_factor") or 1.0)
 
-    y_body = _smooth_body_onset(y_body, SR)
-    y_body = _attenuate_second_onset_peak(y_body, SR, f_bridge_eff)
+    y_body = apply_onset_lock_to_body(y_body, f_bridge_eff, onset_lock, SR)
+    y_body, delayed_peak_meta = attenuate_delayed_modal_peak(y_body, SR)
 
     mix = state.mix_ratios
     contact_src = _early_contact_from_bridge(f_bridge_eff, SR)
+    body_mix = float(mix.get("body_modal") or 0.66) * float(body_support["body_modal_mult"])
+    string_mix = float(mix.get("string_bridge") or 0.24)
+    contact_mix = float(mix.get("contact") or 0.04)
     y = (
-        contact_src * float(mix.get("contact") or 0.05)
-        + f_bridge_eff * float(mix.get("string_bridge") or 0.22)
-        + y_body * float(mix.get("body_modal") or 0.68)
+        contact_src * contact_mix
+        + f_bridge_eff * string_mix
+        + y_body * body_mix
     )
     note_scale = {"A2": 0.96, "A4": 0.88, "E5": 0.82}[note]
     y *= note_scale
@@ -711,20 +839,26 @@ def synthesize_note_for_sample(state: SampleSynthesisState, note: str) -> Tuple[
     y_out, polarity_flipped = _align_attack_polarity(y_out, SR)
     onset_diag = compute_double_pluck_risk(y_out, SR)
     low_band = compute_low_band_energy_report(y_out, SR) if note == "A2" else {}
+    low_mid_body = compute_low_mid_body_energy_report(y_out, SR) if note in ("A4", "E5") else {}
     meta = {
         "note": note,
         "f0_hz": f0,
-        "primary_excitation": "F_string_shared_envelope",
+        "primary_excitation": "F_string_onset_locked",
+        "onset_lock_summary": dict(ONSET_LOCK_SUMMARY),
+        "body_support_summary": dict(body_support),
         "shared_excitation_attack_ms": EXCITATION_ATTACK_MS,
         "shared_excitation_contact_ms": EXCITATION_CONTACT_MS,
         "polarity_aligned": polarity_flipped,
         "onset_diagnostics": onset_diag,
         "double_pluck_risk": onset_diag.get("double_pluck_risk"),
+        "delayed_peak_ratio": delayed_peak_meta.get("delayed_peak_ratio"),
+        "delayed_peak_control": delayed_peak_meta,
         "bridge_transfer_summary": dict(state.bridge_transfer),
         "body_modal_transfer_summary": {
             "mode_count": len(state.modes),
             "driven_by": "F_bridge_eff",
             "immediate_onset_kernels": True,
+            "onset_locked_first_80ms": True,
             "top_modes": int(top_sum),
             "back_modes": int(back_sum),
             "air_modes": int(air_sum),
@@ -732,14 +866,20 @@ def synthesize_note_for_sample(state: SampleSynthesisState, note: str) -> Tuple[
         },
         "radiation_summary": {
             "radiation_brightness_factor": factors.get("radiation_brightness_factor"),
-            "mix_body_modal": mix.get("body_modal"),
+            "mix_body_modal": body_mix,
         },
         "partial_decay_summary": {
             "inharmonicity_b": inharm_b,
             "pluck_position_ratio": state.pluck_position_ratio,
         },
-        "mix_ratio_summary": dict(mix),
+        "mix_ratio_summary": {
+            **dict(mix),
+            "effective_body_modal": body_mix,
+            "effective_string_bridge": string_mix,
+            "effective_contact": contact_mix,
+        },
         "low_band_energy_report": low_band,
+        "low_mid_body_energy_report": low_mid_body,
         **levels,
     }
     return y_out, meta
@@ -848,7 +988,9 @@ def build_anti_cheat_checks(
     double_pluck_ok: bool = True,
 ) -> Dict[str, Any]:
     folder_cleared = bool(
-        peak_rms_report.get("v6_folder_cleared") or peak_rms_report.get("v5_folder_cleared")
+        peak_rms_report.get("v7_folder_cleared")
+        or peak_rms_report.get("v6_folder_cleared")
+        or peak_rms_report.get("v5_folder_cleared")
     )
     checks = {
         "no_randomization": True,
@@ -959,7 +1101,10 @@ def _run_final_guitar_demo(
     peak_rms: Dict[str, Dict[str, float]] = {}
     onset_diagnostics: Dict[str, Dict[str, Any]] = {}
     double_pluck_risk_per_file: Dict[str, bool] = {}
+    delayed_peak_ratio_per_file: Dict[str, float] = {}
     low_band_energy: Dict[str, Dict[str, float]] = {}
+    low_mid_body_energy: Dict[str, Dict[str, float]] = {}
+    body_support_by_note: Dict[str, Dict[str, Any]] = {}
 
     for sample_id in SAMPLE_SET:
         physical = extract_per_sample_physical_parameters(sample_id, audit)
@@ -992,8 +1137,12 @@ def _run_final_guitar_demo(
             peak_rms[wav_name] = {"peak_dbfs": meta["peak_dbfs"], "rms_dbfs": meta["rms_dbfs"]}
             onset_diagnostics[wav_name] = meta.get("onset_diagnostics") or {}
             double_pluck_risk_per_file[wav_name] = bool(meta.get("double_pluck_risk"))
+            delayed_peak_ratio_per_file[wav_name] = float(meta.get("delayed_peak_ratio") or 0.0)
             if note == "A2":
                 low_band_energy[wav_name] = meta.get("low_band_energy_report") or {}
+            if note in ("A4", "E5"):
+                low_mid_body_energy[wav_name] = meta.get("low_mid_body_energy_report") or {}
+            body_support_by_note[note] = meta.get("body_support_summary") or NOTE_BODY_SUPPORT.get(note, {})
             print(f"[Final demo {version_label}] wrote {sample_id} {note} -> {wav_name}")
 
         isolation_reports.append(dict(state.isolation_meta))
@@ -1030,6 +1179,7 @@ def _run_final_guitar_demo(
         "emergency_demo_version": final_demo_version,
         "timestamp": _utc_now(),
         "physical_chain_summary": PHYSICAL_CHAIN_SUMMARY,
+        "onset_lock_summary": ONSET_LOCK_SUMMARY,
         "mix_ratio_summary": {sid: voicing[sid]["mix"] for sid in SAMPLE_SET},
         "generated_files": generated_files,
         "per_sample_physical_factors": per_sample_factors,
@@ -1051,9 +1201,12 @@ def _run_final_guitar_demo(
         },
         "onset_diagnostics": onset_diagnostics,
         "double_pluck_risk_per_file": double_pluck_risk_per_file,
+        "delayed_peak_ratio_per_file": delayed_peak_ratio_per_file,
+        "body_support_summary_per_note": body_support_by_note,
         "partial_decay_summary": partial_decay,
         "peak_rms_report": peak_rms_report,
         "low_band_energy_report": low_band_energy,
+        "low_mid_body_energy_report": low_mid_body_energy,
         "same_note_pairwise_correlation": correlation.get("same_note_pairwise_correlation"),
         "max_same_note_correlation": correlation.get("max_correlation"),
         "min_same_note_correlation": correlation.get("min_correlation"),
@@ -1096,6 +1249,25 @@ def _run_final_guitar_demo(
     return report
 
 
+def run_final_guitar_demo_v7(
+    *,
+    repo_root: Optional[Path] = None,
+    audio_dir: Optional[Path] = None,
+    json_path: Optional[Path] = None,
+    md_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    return _run_final_guitar_demo(
+        version_label="v7",
+        final_demo_version=FINAL_DEMO_VERSION,
+        repo_root=repo_root,
+        audio_dir=Path(audio_dir or AUDIO_DIR_V7),
+        json_path=Path(json_path or REPORT_JSON_V7),
+        md_path=Path(md_path or REPORT_MD_V7),
+        voicing=V7_VOICING,
+        folder_cleared_key="v7_folder_cleared",
+    )
+
+
 def run_final_guitar_demo_v6(
     *,
     repo_root: Optional[Path] = None,
@@ -1105,12 +1277,12 @@ def run_final_guitar_demo_v6(
 ) -> Dict[str, Any]:
     return _run_final_guitar_demo(
         version_label="v6",
-        final_demo_version=FINAL_DEMO_VERSION,
+        final_demo_version=FINAL_DEMO_VERSION_V6,
         repo_root=repo_root,
         audio_dir=Path(audio_dir or AUDIO_DIR_V6),
         json_path=Path(json_path or REPORT_JSON_V6),
         md_path=Path(md_path or REPORT_MD_V6),
-        voicing=V6_VOICING,
+        voicing=V7_VOICING,
         folder_cleared_key="v6_folder_cleared",
     )
 
@@ -1129,21 +1301,25 @@ def run_final_guitar_demo_v5(
         audio_dir=Path(audio_dir or AUDIO_DIR_V5),
         json_path=Path(json_path or REPORT_JSON_V5),
         md_path=Path(md_path or REPORT_MD_V5),
-        voicing=V6_VOICING,
+        voicing=V7_VOICING,
         folder_cleared_key="v5_folder_cleared",
     )
 
 
 def run_emergency_guitar_demo(**kwargs: Any) -> Dict[str, Any]:
-    return run_final_guitar_demo_v6(**kwargs)
+    return run_final_guitar_demo_v7(**kwargs)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="PGSM final guitar demo engine")
     parser.add_argument("--final-v5", action="store_true", help="Run legacy v5 output folder")
-    parser.add_argument("--final-v6", action="store_true", help="Run v6 single-pluck physical mix demo")
+    parser.add_argument("--final-v6", action="store_true", help="Run legacy v6 output folder")
+    parser.add_argument("--final-v7", action="store_true", help="Run v7 onset-locked body-supported demo")
     args = parser.parse_args()
-    if args.final_v6:
+    if args.final_v7:
+        report = run_final_guitar_demo_v7()
+        print(f"Wrote {REPORT_JSON_V7}")
+    elif args.final_v6:
         report = run_final_guitar_demo_v6()
         print(f"Wrote {REPORT_JSON_V6}")
     elif args.final_v5:
