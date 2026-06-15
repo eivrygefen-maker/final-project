@@ -1,0 +1,28 @@
+{
+  "contract_version": "pgsm_bridge_admittance_coupling_v1",
+  "description": "Static source contract for PGSM Step 5K minimal bridge/admittance feedback coupling. Runtime exports go to audio/debug_reports/generated_contracts/.",
+  "coupling_model": "F_bridge_eff(omega) = F_string(omega) * C_bridge(omega)",
+  "causal_only": true,
+  "forbidden": [
+    "stk_integration",
+    "fem_run",
+    "rom_run",
+    "artificial_reverb",
+    "body_tail",
+    "arbitrary_eq",
+    "limiter_clipping",
+    "phase_tricks"
+  ],
+  "required_terms": [
+    "bridge_admittance_proxy",
+    "mode_coupling_factor",
+    "causal_coupling_ir",
+    "e5_low_body_mode_comb_target"
+  ],
+  "parameters": {
+    "e5_low_body_lo_hz": 55.0,
+    "e5_low_body_hi_hz": 220.0,
+    "coupling_alpha": 0.42,
+    "min_mode_coupling_factor": 0.72
+  }
+}
