@@ -19,32 +19,86 @@
     "terms": [
       {
         "term": "top_plate_modal_weight",
-        "formula": "W_top = W_rad×(top/region)×1.14×rad_band_v2×top_attack_band(f,τ)×top_cluster_damp_comb_risk_only(f)",
-        "validation_metric": "top_plate_attack_share improved vs Step 5J; moderate top share ~0.35–0.48"
+        "formula": "W_top = W_rad\u00d7(top/region)\u00d71.14\u00d7rad_band_v2\u00d7top_attack_band(f,\u03c4)\u00d7top_cluster_damp_comb_risk_only(f)",
+        "source_level": "L2_step3c_region_share_proxy_v2",
+        "units": "dimensionless_modal_output_weight",
+        "limitations": "Attack band on short-\u03c4 modes; cluster damp on comb-risk clusters only",
+        "blocked_claims": [
+          "arbitrary_eq",
+          "artificial_reverb",
+          "transient_enhancer",
+          "body_tail"
+        ],
+        "validation_metric": "top_plate_attack_share improved vs Step 5J; moderate top share ~0.35\u20130.48"
       },
       {
         "term": "back_plate_modal_weight",
-        "formula": "W_back = W_rad×(back/region)×1.11×rad_band_v2×back_warmth(f)×back_hf_rolloff(f>920Hz)",
-        "validation_metric": "back warmth without ~0.60 dominance"
+        "formula": "W_back = W_rad\u00d7(back/region)\u00d71.11\u00d7rad_band_v2\u00d7back_warmth(f)\u00d7back_hf_rolloff(f>920.0Hz)",
+        "source_level": "L2_step3c_region_share_proxy_v2",
+        "units": "dimensionless_modal_output_weight",
+        "limitations": "",
+        "blocked_claims": [
+          "arbitrary_eq",
+          "artificial_reverb",
+          "transient_enhancer",
+          "body_tail"
+        ],
+        "validation_metric": "back warmth without ~0.60 dominance; E5 back peak guarded"
       },
       {
         "term": "air_cavity_modal_weight",
-        "formula": "W_air = W_air×(air/region)×2.48×rad_band_v2×air_freq_balance(f)",
-        "validation_metric": "air_share balanced ~0.20–0.40"
+        "formula": "W_air = W_air\u00d7(air/region)\u00d72.48\u00d7rad_band_v2\u00d7air_freq_balance(f)",
+        "source_level": "L2_step3c_region_share_proxy_v2",
+        "units": "dimensionless_modal_output_weight",
+        "limitations": "Gentle high-f air taper only",
+        "blocked_claims": [
+          "arbitrary_eq",
+          "artificial_reverb",
+          "transient_enhancer",
+          "body_tail"
+        ],
+        "validation_metric": "air_share balanced ~0.20\u20130.40; cavity imprint without Step 5J dominance"
       },
       {
         "term": "radiation_band_weight",
-        "formula": "rad_band_v2 + e5_comb_guard on body+rad weights 560-1420Hz",
-        "validation_metric": "E5 radiation_sum/final_output comb_score below 0.95"
+        "formula": "rad_band_v2: rolloff f_ref=1280.0, exp=0.96, dual harmonic_preservation; e5_comb_guard on body+rad weights 560.0-1420.0Hz",
+        "source_level": "L2_step3c_region_share_proxy_v2",
+        "units": "dimensionless_modal_output_weight",
+        "limitations": "",
+        "blocked_claims": [
+          "arbitrary_eq",
+          "artificial_reverb",
+          "transient_enhancer",
+          "body_tail"
+        ],
+        "validation_metric": "H2-H8 ratio improved; E5 comb risk reduced on radiation_sum/final_output"
       },
       {
         "term": "high_note_radiation_coherence_guard",
-        "formula": "e5_comb_sensitive_mode_factors from local cluster regularity; applied to wt/wb/wai/wrad",
-        "validation_metric": "E5 comb guard verifiable via before/after comb scores"
+        "formula": "e5_comb_sensitive_mode_factors: local cluster regularity in 560.0-1420.0Hz applied to body+rad weights",
+        "source_level": "L2_step3c_region_share_proxy_v2",
+        "units": "dimensionless_modal_output_weight",
+        "limitations": "Precomputed per-mode factors; \u03c4-preserves attack; redistributes to back/air",
+        "blocked_claims": [
+          "arbitrary_eq",
+          "artificial_reverb",
+          "transient_enhancer",
+          "body_tail"
+        ],
+        "validation_metric": "E5 radiation_sum/final_output comb_score below 0.95"
       },
       {
         "term": "combined_body_radiation_weight",
-        "formula": "p_out = conv(F_bridge_v4, h_top+h_back+h_air); radiation_sum from guarded weights",
+        "formula": "p_out = conv(F_bridge_v4, h_top+h_back+h_air); stems decomposed",
+        "source_level": "L2_step3c_region_share_proxy_v2",
+        "units": "dimensionless_modal_output_weight",
+        "limitations": "",
+        "blocked_claims": [
+          "arbitrary_eq",
+          "artificial_reverb",
+          "transient_enhancer",
+          "body_tail"
+        ],
         "validation_metric": "body_component_balance_score improved"
       }
     ],
