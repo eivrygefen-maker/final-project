@@ -411,13 +411,18 @@
       /* Low E (6) at top; nut / open strings on the right. */
       var STRING_NUMBERS = [6, 5, 4, 3, 2, 1];
 
+      /* Overlapping playback — each click starts a new Audio(); prior notes keep decaying. */
+      var OVERLAPPING_PLAYBACK_ENABLED = true;
+      var enable_overlapping_playback = true;
+      var MAX_OVERLAPPING_VOICES = 24;
+
       var audioCtx = null;
       var buffers = {};
+      var loadedWavs = {};
       var previewBuffer = null;
-      var activeSource = null;
-      var activeSources = [];
-      var playingByWav = {};
+      var activeHtmlAudios = [];
       var overlappingPlayback = true;
+      var currentFingerprint = "";
       var currentPayloadKey = "";
       var lastCell = null;
 
@@ -459,6 +464,7 @@
         var files = Object.keys(unique);
         var done = 0;
         buffers = {};
+        loadedWavs = {};
         previewBuffer = null;
 
         if (!files.length) return Promise.resolve();
@@ -469,6 +475,7 @@
               .then(decodeArrayBuffer)
               .then(function (decoded) {
                 buffers[wav] = decoded;
+                loadedWavs[wav] = true;
                 done += 1;
                 if (onProgress) onProgress(done / files.length);
               });
@@ -479,6 +486,7 @@
             .then(decodeArrayBuffer)
             .then(function (decoded) {
               previewBuffer = decoded;
+              loadedWavs["all_notes_preview.wav"] = true;
             })
             .catch(function () {
               previewBuffer = null;
@@ -486,46 +494,53 @@
         });
       }
 
-      function stopActive() {
-        if (activeSource) {
-          try { activeSource.stop(0); } catch (e) { /* ignore */ }
-          activeSource = null;
-        }
-        activeSources.forEach(function (src) {
-          try { src.stop(0); } catch (e) { /* ignore */ }
+      function stopAllPlayback() {
+        activeHtmlAudios.forEach(function (audio) {
+          try {
+            audio.pause();
+          } catch (e) { /* ignore */ }
+          audio.src = "";
         });
-        activeSources = [];
-        playingByWav = {};
+        activeHtmlAudios = [];
       }
 
-      function playBuffer(buf, wavKey) {
-        if (!buf) return;
-        var ctx = ensureAudioContext();
-        if (overlappingPlayback && wavKey && playingByWav[wavKey]) {
-          try { playingByWav[wavKey].stop(0); } catch (e) { /* ignore */ }
-          delete playingByWav[wavKey];
+      function pruneActiveAudios() {
+        while (activeHtmlAudios.length > MAX_OVERLAPPING_VOICES) {
+          var oldest = activeHtmlAudios.shift();
+          if (!oldest) break;
+          try {
+            oldest.pause();
+          } catch (e) { /* ignore */ }
+          oldest.src = "";
         }
+      }
+
+      /** Play one note via a fresh HTMLAudioElement (overlapping / chord-friendly). */
+      function playNoteWav(wavFile) {
+        if (!wavFile || !currentFingerprint) return;
         if (!overlappingPlayback) {
-          stopActive();
+          stopAllPlayback();
         }
-        var src = ctx.createBufferSource();
-        src.buffer = buf;
-        src.connect(ctx.destination);
-        if (overlappingPlayback) {
-          activeSources.push(src);
-          if (wavKey) playingByWav[wavKey] = src;
-          src.onended = function () {
-            var i = activeSources.indexOf(src);
-            if (i >= 0) activeSources.splice(i, 1);
-            if (wavKey && playingByWav[wavKey] === src) delete playingByWav[wavKey];
-          };
-        } else {
-          src.onended = function () {
-            if (activeSource === src) activeSource = null;
-          };
-          activeSource = src;
-        }
-        src.start(0);
+        var url = assetUrl(currentFingerprint, wavFile);
+        var audio = new Audio(url);
+        audio.volume = 1.0;
+        activeHtmlAudios.push(audio);
+        pruneActiveAudios();
+        audio.addEventListener("ended", function () {
+          var idx = activeHtmlAudios.indexOf(audio);
+          if (idx >= 0) activeHtmlAudios.splice(idx, 1);
+        });
+        audio.play().catch(function (err) {
+          console.warn("note play failed", wavFile, err);
+        });
+        return audio;
+      }
+
+      function playPreviewWav() {
+        if (!currentFingerprint) return;
+        var previewName = "all_notes_preview.wav";
+        if (!loadedWavs[previewName] && !previewBuffer) return;
+        playNoteWav(previewName);
       }
 
       function highlightCell(cell) {
@@ -560,8 +575,8 @@
           var c = ev.currentTarget;
           var key = c.dataset.string + ":" + c.dataset.fret;
           var p = lookup[key];
-          if (!p || !p.wav || !buffers[p.wav]) return;
-          playBuffer(buffers[p.wav], p.wav);
+          if (!p || !p.wav || !loadedWavs[p.wav]) return;
+          playNoteWav(p.wav);
           var cell = c.classList && c.classList.contains("fret-cell")
             ? c
             : (c.closest ? c.closest(".fret-cell") : null);
@@ -699,7 +714,9 @@
         }
 
         var key = payloadKey(player);
-        overlappingPlayback = player.enable_overlapping_playback !== false;
+        currentFingerprint = String(player.fingerprint || "");
+        overlappingPlayback = OVERLAPPING_PLAYBACK_ENABLED && player.enable_overlapping_playback !== false;
+        enable_overlapping_playback = overlappingPlayback;
         showPlayer();
         setStatus("Ready · " + (player.unique_note_count || "?") + " notes", "ready");
         buildFretboard(player);
@@ -716,7 +733,7 @@
             fill.style.width = Math.round(frac * 100) + "%";
           }).then(function () {
             bar.classList.remove("visible");
-            btnPreview.disabled = !previewBuffer;
+            btnPreview.disabled = !(previewBuffer || loadedWavs["all_notes_preview.wav"]);
           }).catch(function (err) {
             console.error("preload failed", err);
             setStatus("Audio preload failed", "stale");
@@ -724,12 +741,11 @@
           });
         } else {
           bar.classList.remove("visible");
-          btnPreview.disabled = !previewBuffer;
+          btnPreview.disabled = !(previewBuffer || loadedWavs["all_notes_preview.wav"]);
         }
 
         btnPreview.onclick = function () {
-          if (!previewBuffer) return;
-          playBuffer(previewBuffer);
+          playPreviewWav();
           setNowPlaying("<strong>All notes preview</strong>");
         };
       }
