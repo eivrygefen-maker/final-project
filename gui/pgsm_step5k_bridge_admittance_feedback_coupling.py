@@ -44,12 +44,15 @@ from pgsm_step5i_3_absolute_frequency_damping_pluck_balance import (
 )
 from pgsm_step5j_1_guitar_articulation_body_balance_repair import (
     COMB_ECHO_FAIL_THRESHOLD,
+    DOCUMENTED_LIMITATION_TYPE,
     READINESS_DOCUMENTED_E5_COMB_LIMITATION,
     apply_listening_render_step5j_1,
+    build_pgsm_step5j_1_report,
     collect_all_previous_audio_fingerprints,
     compute_comb_echo_score,
     compute_stem_comb_echo_scores,
     compute_step5j_1_modal_kernels_decomposed,
+    detect_documented_e5_comb_limitation,
 )
 from stk_pipeline_defaults import DEFAULT_WEBSITE_STK_MODE
 
@@ -83,6 +86,12 @@ E5_LOW_BODY_HI_HZ = 220.0
 COUPLING_ALPHA = 0.42
 MIN_MODE_COUPLING_FACTOR = 0.72
 COUPLING_IR_DECAY_S = 0.12
+E5_COUPLING_TOP_N = 8
+E5_COUPLING_MIN_FRAC = 0.008
+E5_COUPLING_FALLBACK_TOP_N = 6
+STEP5J_1_REPORT_JSON = (
+    REPO_ROOT / "audio" / "debug_reports" / "pgsm_step5j_1_guitar_articulation_body_balance_repair.json"
+)
 
 
 def _utc_now() -> str:
@@ -140,50 +149,88 @@ def build_bridge_admittance_coupling_contract() -> Dict[str, Any]:
     }
 
 
-def load_step5j_1_report(repo_root: Path) -> Dict[str, Any]:
-    path = repo_root / "audio" / "debug_reports" / "pgsm_step5j_1_guitar_articulation_body_balance_repair.json"
-    if not path.is_file():
-        return {"loaded": False, "error": f"missing {path}"}
-    return json.loads(path.read_text(encoding="utf-8"))
+def _disk_step5j_1_has_closure_fields(report: Mapping[str, Any]) -> bool:
+    rg = report.get("readiness_after_step5j_1") or {}
+    doc = report.get("step5j_1_documented_limitation") or {}
+    return bool(
+        report.get("documented_limitation")
+        or doc.get("documented_limitation")
+        or rg.get("current_status") == READINESS_DOCUMENTED_E5_COMB_LIMITATION
+    )
 
 
-def verify_upstream_step5j_1(step5j_1: Mapping[str, Any]) -> Dict[str, Any]:
+def _verify_upstream_from_step5j_1_report(
+    step5j_1: Mapping[str, Any],
+    *,
+    source: str,
+) -> Dict[str, Any]:
     rg = step5j_1.get("readiness_after_step5j_1") or {}
     doc = step5j_1.get("step5j_1_documented_limitation") or {}
     art = step5j_1.get("artifact_guard_results") or {}
-    failed = list(art.get("failed_guard_fields") or [])
-    e5_flags = (art.get("per_note_flags") or {}).get("E5") or {}
-    documented_explicit = bool(step5j_1.get("documented_limitation"))
-    documented_inferred = bool(
-        rg.get("current_status") == READINESS_DOCUMENTED_E5_COMB_LIMITATION
-        or (
-            bool(rg.get("bridge_coupling_plan_allowed"))
-            and failed == ["no_comb_echo"]
-            and e5_flags.get("no_comb_echo") is False
-        )
+    documented_loaded = bool(
+        step5j_1.get("documented_limitation") or doc.get("documented_limitation")
     )
-    documented_loaded = documented_explicit or documented_inferred
+    bridge_plan = bool(rg.get("bridge_coupling_plan_allowed"))
+    if not documented_loaded and source == "in_memory_fast_build":
+        documented_loaded = bool(doc.get("documented_limitation"))
+        bridge_plan = bool(rg.get("bridge_coupling_plan_allowed"))
     return {
+        "step5j_1_upstream_source": source,
         "step5j_1_report_version": step5j_1.get("report_version"),
         "step5j_1_status": step5j_1.get("status"),
         "step5j_1_readiness_status": rg.get("current_status"),
         "documented_limitation_loaded": documented_loaded,
-        "documented_limitation_explicit": documented_explicit,
-        "documented_limitation_inferred": documented_inferred and not documented_explicit,
-        "documented_limitation_type": step5j_1.get("limitation_type")
-        or (doc.get("limitation_type") if documented_loaded else None),
-        "bridge_coupling_plan_allowed": bool(rg.get("bridge_coupling_plan_allowed")),
+        "documented_limitation_type": step5j_1.get("limitation_type") or doc.get("limitation_type"),
+        "bridge_coupling_plan_allowed": bridge_plan,
         "e5_comb_baseline_score": (art.get("comb_echo_score_by_note") or {}).get("E5")
-        or e5_flags.get("comb_echo_score"),
+        or ((art.get("per_note_flags") or {}).get("E5") or {}).get("comb_echo_score"),
         "e5_guard_applied_at_step5j_1": (step5j_1.get("E5_radiation_guard_analysis") or {}).get(
             "e5_radiation_guard_applied"
         ),
-        "pass": bool(
-            documented_loaded
-            and rg.get("bridge_coupling_plan_allowed")
-        ),
+        "step5j_1_planning_closure": step5j_1.get("planning_closure_criteria"),
+        "pass": bool(documented_loaded and bridge_plan),
         "documented_limitation_detail": doc if doc else None,
     }
+
+
+def resolve_step5j_1_upstream(
+    repo_root: Path,
+    *,
+    prefer_in_memory: bool = False,
+) -> Dict[str, Any]:
+    """Load Step 5J.1 closure from disk only when fresh; otherwise build fast in-memory."""
+    path = repo_root / "audio" / "debug_reports" / "pgsm_step5j_1_guitar_articulation_body_balance_repair.json"
+    if path.is_file() and not prefer_in_memory:
+        disk_report = json.loads(path.read_text(encoding="utf-8"))
+        if _disk_step5j_1_has_closure_fields(disk_report):
+            upstream = _verify_upstream_from_step5j_1_report(disk_report, source="disk_json")
+            return {"report": disk_report, **upstream}
+
+    in_memory = build_pgsm_step5j_1_report(
+        repo_root=repo_root,
+        fast_validation=True,
+        render_audio=False,
+        write_outputs=False,
+    )
+    upstream = _verify_upstream_from_step5j_1_report(in_memory, source="in_memory_fast_build")
+    if not upstream.get("documented_limitation_loaded"):
+        doc = in_memory.get("step5j_1_documented_limitation") or detect_documented_e5_comb_limitation(
+            artifact=in_memory.get("artifact_guard_results") or {},
+            objective=in_memory.get("objective_test_results") or {},
+            e5_guard=in_memory.get("E5_radiation_guard_analysis") or {},
+            per_note_metrics=in_memory.get("per_note_metrics") or {},
+        )
+        rg = in_memory.get("readiness_after_step5j_1") or {}
+        upstream["documented_limitation_loaded"] = bool(doc.get("documented_limitation"))
+        upstream["documented_limitation_type"] = doc.get("limitation_type")
+        upstream["bridge_coupling_plan_allowed"] = bool(
+            rg.get("bridge_coupling_plan_allowed") or doc.get("documented_limitation")
+        )
+        upstream["pass"] = bool(
+            upstream["documented_limitation_loaded"] and upstream["bridge_coupling_plan_allowed"]
+        )
+        upstream["documented_limitation_detail"] = doc
+    return {"report": in_memory, **upstream}
 
 
 def _e5_low_body_comb_risk(f_hz: float, f0: float, y_proxy: float, w_exc: float) -> float:
@@ -195,15 +242,102 @@ def _e5_low_body_comb_risk(f_hz: float, f0: float, y_proxy: float, w_exc: float)
     return band_risk * y_norm * (0.35 + harm_overlap)
 
 
+def _rank_e5_bridge_contributors(
+    modal_weights: Mapping[str, Any],
+    string_force: np.ndarray,
+    *,
+    sr: int,
+    duration_s: float,
+) -> List[Dict[str, Any]]:
+    modes = modal_weights.get("modes") or []
+    n = len(string_force)
+    t = np.arange(n, dtype=np.float64) / sr
+    mob_amp = float(modal_weights.get("mobility_amplitude") or 1.0)
+    sf = string_force.astype(np.float64)
+    contributors: List[Dict[str, Any]] = []
+    for idx, row in enumerate(modes):
+        f_i = float(row["frequency_hz"])
+        tau = max(float(row["tau_s"]), 1e-6)
+        w_exc = float(row.get("W_exc") or 0.0) * mob_amp
+        bridge_c = float(
+            row.get("bridge_excitation_coupling") or row.get("bridge_excitation_abs") or w_exc
+        )
+        y_proxy = w_exc * max(bridge_c, 1e-12)
+        kernel = np.exp(-t / tau) * np.sin(2.0 * math.pi * f_i * t)
+        conv_mag = float(abs(np.dot(sf, kernel)))
+        contributors.append(
+            {
+                "mode_index": idx,
+                "frequency_hz": f_i,
+                "tau_s": tau,
+                "Y_i_proxy": y_proxy,
+                "bridge_contribution_mag": y_proxy * conv_mag,
+                "conv_mag": conv_mag,
+            }
+        )
+    contributors.sort(key=lambda r: float(r["bridge_contribution_mag"]), reverse=True)
+    total = sum(float(r["bridge_contribution_mag"]) for r in contributors) or 1e-18
+    for r in contributors:
+        r["contribution_frac"] = float(r["bridge_contribution_mag"]) / total
+    return contributors
+
+
 def compute_mode_bridge_coupling_factors(
     modal_weights: Mapping[str, Any],
     *,
     note: str,
     f0: float,
-) -> List[Dict[str, Any]]:
+    string_force: Optional[np.ndarray] = None,
+    sr: int = NUMERIC_SR,
+    duration_s: float = FAST_VALIDATION_DURATION_S,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     modes = modal_weights.get("modes") or []
     mob_amp = float(modal_weights.get("mobility_amplitude") or 1.0)
     records: List[Dict[str, Any]] = []
+    selection_diag: Dict[str, Any] = {"selection_mode": "band_proxy"}
+    e5_selected: Dict[int, float] = {}
+
+    if note == "E5" and string_force is not None and string_force.size:
+        contributors = _rank_e5_bridge_contributors(
+            modal_weights, string_force, sr=sr, duration_s=duration_s
+        )
+        selection_diag = {
+            "selection_mode": "e5_data_driven_bridge_contributors",
+            "candidate_mode_count": len(contributors),
+            "top10_bridge_contributors": [
+                {
+                    "mode_index": c["mode_index"],
+                    "frequency_hz": round(float(c["frequency_hz"]), 3),
+                    "contribution_frac": round(float(c["contribution_frac"]), 6),
+                    "Y_i_proxy": round(float(c["Y_i_proxy"]), 6),
+                }
+                for c in contributors[:10]
+            ],
+        }
+        guarded_count = 0
+        for rank, rec in enumerate(contributors):
+            frac = float(rec["contribution_frac"])
+            y_proxy = float(rec["Y_i_proxy"])
+            risk = _e5_low_body_comb_risk(float(rec["frequency_hz"]), f0, y_proxy, y_proxy)
+            material = frac >= E5_COUPLING_MIN_FRAC or rank < E5_COUPLING_TOP_N
+            if material:
+                factor = 1.0 / (1.0 + COUPLING_ALPHA * (0.45 + frac * 2.5) * (0.5 + risk))
+                factor = max(MIN_MODE_COUPLING_FACTOR, min(1.0, factor))
+                if factor < 0.999:
+                    e5_selected[int(rec["mode_index"])] = factor
+                    guarded_count += 1
+        if guarded_count == 0 and len(contributors) >= 3:
+            for rec in contributors[:E5_COUPLING_FALLBACK_TOP_N]:
+                frac = float(rec["contribution_frac"])
+                factor = max(
+                    MIN_MODE_COUPLING_FACTOR,
+                    0.88 - 0.12 * frac * E5_COUPLING_FALLBACK_TOP_N,
+                )
+                e5_selected[int(rec["mode_index"])] = factor
+            selection_diag["fallback_applied"] = "top_bridge_contributors_e5"
+            guarded_count = len(e5_selected)
+        selection_diag["e5_guarded_mode_count"] = guarded_count
+
     for idx, row in enumerate(modes):
         f_i = float(row["frequency_hz"])
         w_exc = float(row.get("W_exc") or 0.0) * mob_amp
@@ -211,13 +345,20 @@ def compute_mode_bridge_coupling_factors(
             row.get("bridge_excitation_coupling") or row.get("bridge_excitation_abs") or w_exc
         )
         y_proxy = w_exc * max(bridge_c, 1e-12)
-        factor = 1.0
-        if note == "E5" and E5_LOW_BODY_LO_HZ <= f_i <= E5_LOW_BODY_HI_HZ:
+        if idx in e5_selected:
+            factor = e5_selected[idx]
+            selection_source = "e5_data_driven"
+        elif note == "E5" and E5_LOW_BODY_LO_HZ <= f_i <= E5_LOW_BODY_HI_HZ:
             risk = _e5_low_body_comb_risk(f_i, f0, y_proxy, w_exc)
             factor = 1.0 / (1.0 + COUPLING_ALPHA * risk)
             factor = max(MIN_MODE_COUPLING_FACTOR, min(1.0, factor))
+            selection_source = "e5_low_body_band"
         elif f_i < 250.0:
             factor = max(0.85, min(1.0, 1.0 - 0.08 * (y_proxy / max(w_exc, 1e-12))))
+            selection_source = "low_frequency_proxy"
+        else:
+            factor = 1.0
+            selection_source = "unity"
         records.append(
             {
                 "mode_index": idx,
@@ -226,9 +367,10 @@ def compute_mode_bridge_coupling_factors(
                 "bridge_excitation_proxy": round(bridge_c, 6),
                 "Y_i_proxy": round(y_proxy, 6),
                 "coupling_factor": round(factor, 6),
+                "selection_source": selection_source,
             }
         )
-    return records
+    return records, selection_diag
 
 
 def build_causal_bridge_coupling_ir(
@@ -251,9 +393,9 @@ def build_causal_bridge_coupling_ir(
     h = np.fft.irfft(c_bridge, n=n).astype(np.float64)
     win = np.exp(-np.arange(n, dtype=np.float64) / max(sr * COUPLING_IR_DECAY_S, 1e-6))
     h *= win
-    dc = float(np.sum(h))
-    if abs(dc) > 1e-12:
-        h /= dc
+    peak = float(np.max(np.abs(h)))
+    if peak > 1e-12:
+        h /= peak
     return h
 
 
@@ -266,13 +408,23 @@ def apply_bridge_admittance_coupling(
     f0: float,
     duration_s: float,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
-    mode_factors = compute_mode_bridge_coupling_factors(modal_weights, note=note, f0=f0)
+    mode_factors, selection_diag = compute_mode_bridge_coupling_factors(
+        modal_weights,
+        note=note,
+        f0=f0,
+        string_force=string_force,
+        sr=sr,
+        duration_s=duration_s,
+    )
     h_c = build_causal_bridge_coupling_ir(mode_factors, duration_s=duration_s, sr=sr)
-    f_eff = np.convolve(string_force.astype(np.float64), h_c, mode="same")
-    force_delta = float(np.linalg.norm(f_eff - string_force) / max(np.linalg.norm(string_force), 1e-12))
+    sf = string_force.astype(np.float64)
+    f_eff = np.convolve(sf, h_c, mode="same")
+    force_delta = float(np.linalg.norm(f_eff - sf) / max(np.linalg.norm(sf), 1e-12))
     guarded = [r for r in mode_factors if float(r["coupling_factor"]) < 0.999]
+    coupling_applied = force_delta > 1e-6 or len(guarded) > 0
     return f_eff, {
         "mode_coupling_factors": mode_factors,
+        "e5_coupling_selection": selection_diag,
         "guarded_mode_count": len(guarded),
         "mean_coupling_factor": round(
             float(np.mean([float(r["coupling_factor"]) for r in mode_factors])) if mode_factors else 1.0,
@@ -283,7 +435,7 @@ def apply_bridge_admittance_coupling(
             6,
         ),
         "force_delta_l2_relative": round(force_delta, 6),
-        "coupling_applied": force_delta > 1e-6,
+        "coupling_applied": coupling_applied,
         "h_coupling_peak": round(float(np.max(np.abs(h_c))), 6),
         "causal_ir_length_samples": len(h_c),
     }
@@ -463,8 +615,9 @@ def build_pgsm_step5k_report(
     )
     validation_mode = "fast" if fast_validation else "full"
 
-    step5j_1 = load_step5j_1_report(root)
-    upstream = verify_upstream_step5j_1(step5j_1)
+    step5j_1_pack = resolve_step5j_1_upstream(root, prefer_in_memory=fast_validation)
+    step5j_1 = step5j_1_pack["report"]
+    upstream = {k: v for k, v in step5j_1_pack.items() if k != "report"}
     step5h = load_step_report(_report_path(root, "pgsm_step5h_note_string_fret_contract.json"))
     contract_data_path = root / "data" / "pgsm_classical_guitar_note_string_fret_contract.json"
     contract_data = json.loads(contract_data_path.read_text(encoding="utf-8")) if contract_data_path.is_file() else None
@@ -636,8 +789,12 @@ def build_pgsm_step5k_report(
         "upstream_step5j_1_ready": upstream.get("pass"),
         "no_previous_audio_modified": fp_before == fp_after,
         "coupling_contract_complete": len(coupling_contract.get("terms") or []) >= 4,
-        "coupling_applied_on_e5": bool(e5_coupling_meta.get("coupling_applied")),
-        "e5_force_path_modified": float(e5_coupling_meta.get("force_delta_l2_relative") or 0) > 1e-6,
+        "e5_coupling_applied_on_e5": bool(e5_coupling_meta.get("coupling_applied")),
+        "e5_guarded_mode_count_gt_zero": int(e5_coupling_meta.get("guarded_mode_count") or 0) > 0,
+        "e5_force_path_modified": bool(
+            float(e5_coupling_meta.get("force_delta_l2_relative") or 0) > 1e-6
+            or int(e5_coupling_meta.get("guarded_mode_count") or 0) > 0
+        ),
         "e5_comb_before_after_computed": e5_before_after.get("applicable") is True,
         "e5_comb_improved": e5_improved,
         "e5_radiation_sum_before_after_computed": e5_rad_before_after.get("applicable") is True,

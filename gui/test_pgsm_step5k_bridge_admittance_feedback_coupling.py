@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import sys
 import unittest
 from pathlib import Path
@@ -34,11 +33,6 @@ from pgsm_step5k_bridge_admittance_feedback_coupling import (  # noqa: E402
 )
 from stk_pipeline_defaults import DEFAULT_WEBSITE_STK_MODE  # noqa: E402
 
-STEP5J_1_REPORT = (
-    REPO / "audio" / "debug_reports" / "pgsm_step5j_1_guitar_articulation_body_balance_repair.json"
-)
-
-
 def _file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -60,8 +54,6 @@ class TestPgsmStep5kBridgeAdmittanceFeedbackCoupling(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        if not STEP5J_1_REPORT.is_file():
-            raise unittest.SkipTest("Step 5J.1 report required for Step 5K upstream load")
         if SOURCE_CONTRACT_JSON.is_file():
             cls._source_contract_hash = _file_sha256(SOURCE_CONTRACT_JSON)
         cls._audio_snapshot_before = _snapshot_wav_directory(AUDIO_DIR)
@@ -99,13 +91,15 @@ class TestPgsmStep5kBridgeAdmittanceFeedbackCoupling(unittest.TestCase):
         upstream = self._report().get("upstream_step5j_1_status") or {}
         self.assertTrue(upstream.get("pass"))
         self.assertTrue(self._report().get("bridge_coupling_plan_allowed"))
-        if upstream.get("documented_limitation_explicit") and STEP5J_1_REPORT.is_file():
-            step5j_1 = json.loads(STEP5J_1_REPORT.read_text(encoding="utf-8"))
-            self.assertEqual(step5j_1.get("limitation_type"), DOCUMENTED_LIMITATION_TYPE)
-            self.assertEqual(
-                upstream.get("step5j_1_readiness_status"),
-                READINESS_DOCUMENTED_E5_COMB_LIMITATION,
-            )
+        self.assertIn(
+            upstream.get("step5j_1_upstream_source"),
+            ("in_memory_fast_build", "disk_json"),
+        )
+        self.assertEqual(upstream.get("documented_limitation_type"), DOCUMENTED_LIMITATION_TYPE)
+        self.assertEqual(
+            upstream.get("step5j_1_readiness_status"),
+            READINESS_DOCUMENTED_E5_COMB_LIMITATION,
+        )
 
     def test_report_internal_consistency(self) -> None:
         check = validate_report_internal_consistency(self._report())
@@ -157,8 +151,13 @@ class TestPgsmStep5kBridgeAdmittanceFeedbackCoupling(unittest.TestCase):
     def test_coupling_modifies_e5_effective_path(self) -> None:
         e5 = (self._report().get("per_note_coupling_metrics") or {}).get("E5") or {}
         self.assertTrue(e5.get("coupling_applied"))
-        self.assertGreater(e5.get("force_delta_l2_relative") or 0, 1e-6)
         self.assertGreater(e5.get("guarded_mode_count") or 0, 0)
+        self.assertGreater(e5.get("force_delta_l2_relative") or 0, 1e-6)
+        sel = e5.get("e5_coupling_selection") or {}
+        self.assertEqual(sel.get("selection_mode"), "e5_data_driven_bridge_contributors")
+        obj = self._report().get("objective_test_results") or {}
+        self.assertTrue(obj.get("e5_guarded_mode_count_gt_zero"))
+        self.assertTrue(obj.get("e5_force_path_modified"))
 
     def test_e5_comb_before_after_computed(self) -> None:
         e5 = self._report().get("E5_comb_before_after") or {}
