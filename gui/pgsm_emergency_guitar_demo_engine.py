@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PGSM / STK final guitar demo engine — ordered physical transfer chain.
-v8: v6 rollback base, embedded excitation, per-sample identity, local double-pluck fix.
+v9: v8 base + single-attack onset repair in first 35–45 ms only.
 Diagnostic only; not FEM/ROM/STK production.
 """
 from __future__ import annotations
@@ -28,10 +28,11 @@ from pgsm_step5l_limited_multiguitar_differentiation import (
 )
 from stk_v6_2_audit_features import load_audit_report
 
-ENGINE_VERSION = "pgsm_emergency_guitar_demo_engine_v8"
-FINAL_DEMO_VERSION = "v8_final_physical_guitar_demo"
+ENGINE_VERSION = "pgsm_emergency_guitar_demo_engine_v9"
+FINAL_DEMO_VERSION = "v9_single_attack_enforced_guitar_demo"
 EMERGENCY_DEMO_VERSION = FINAL_DEMO_VERSION
-ROLLBACK_BASE = "v6_or_v5"
+ROLLBACK_BASE = "v8_final_physical_guitar_demo"
+FINAL_DEMO_VERSION_V8 = "v8_final_physical_guitar_demo"
 FINAL_DEMO_VERSION_V7 = "v7_onset_locked_body_supported_guitar"
 FINAL_DEMO_VERSION_V6 = "v6_single_pluck_physical_mix"
 FINAL_DEMO_VERSION_V5 = "v5_ordered_physical_transfer_chain"
@@ -72,6 +73,9 @@ CORRELATION_FAMILY_LO = 0.55
 CORRELATION_FAMILY_HI = 0.92
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+AUDIO_DIR_V9 = REPO_ROOT / "audio" / "pgsm_final_guitar_demo_v9"
+REPORT_JSON_V9 = REPO_ROOT / "audio" / "debug_reports" / "pgsm_final_guitar_demo_v9_report.json"
+REPORT_MD_V9 = REPO_ROOT / "audio" / "debug_reports" / "pgsm_final_guitar_demo_v9_report.md"
 AUDIO_DIR_V8 = REPO_ROOT / "audio" / "pgsm_final_guitar_demo_v8"
 REPORT_JSON_V8 = REPO_ROOT / "audio" / "debug_reports" / "pgsm_final_guitar_demo_v8_report.json"
 REPORT_MD_V8 = REPO_ROOT / "audio" / "debug_reports" / "pgsm_final_guitar_demo_v8_report.md"
@@ -84,9 +88,9 @@ REPORT_MD_V6 = REPO_ROOT / "audio" / "debug_reports" / "pgsm_final_guitar_demo_v
 AUDIO_DIR_V5 = REPO_ROOT / "audio" / "pgsm_final_guitar_demo_v5"
 REPORT_JSON_V5 = REPO_ROOT / "audio" / "debug_reports" / "pgsm_final_guitar_demo_v5_report.json"
 REPORT_MD_V5 = REPO_ROOT / "audio" / "debug_reports" / "pgsm_final_guitar_demo_v5_report.md"
-AUDIO_DIR = AUDIO_DIR_V8
-REPORT_JSON = REPORT_JSON_V8
-REPORT_MD = REPORT_MD_V8
+AUDIO_DIR = AUDIO_DIR_V9
+REPORT_JSON = REPORT_JSON_V9
+REPORT_MD = REPORT_MD_V9
 
 READINESS_OK = "ready_for_stk_gui_activation"
 READINESS_OK_LIMITED = "ready_for_stk_gui_activation_with_known_audio_limitations"
@@ -104,6 +108,12 @@ EARLY_ATTACK_MAX_MS = 25.0
 EARLY_ATTACK_SECOND_FRAC = 0.32
 LOCAL_DELAYED_PEAK_MAX_ATTEN = 0.23
 LOCAL_DELAYED_PEAK_THRESHOLD = 0.35
+
+ONSET_REPAIR_WINDOW_MS = 35.0
+ONSET_REPAIR_CROSSFADE_END_MS = 45.0
+EARLY_ATTACK_SIGNIFICANT_FRAC = 0.28
+EARLY_ATTACK_SECONDARY_FRAC_E5 = 0.25
+EARLY_ATTACK_MIN_DELAY_MS = 3.0
 
 # v7 legacy constants (not used in v8 synthesis path)
 ONSET_LOCK_ATTACK_MS = 2.0
@@ -154,7 +164,7 @@ PHYSICAL_CHAIN_SUMMARY: Dict[str, str] = {
     "D_body_modal_transfer": "y_body = conv(F_bridge_eff, H_mode_sample); per-sample modes",
     "E_material_damping": "Per-sample tau/Q from 8 physical factors",
     "F_radiation_mix": "y = string_bridge_residual + body_modal (one combined onset)",
-    "G_modal_decay_only": "Local limited delayed-peak trim only; no global onset lock",
+    "G_modal_decay_only": "Onset repair first 35–45 ms only; v9 enforce_single_attack_peak",
 }
 
 V8_VOICING: Dict[str, Dict[str, Any]] = {
@@ -318,7 +328,7 @@ def build_emergency_demo_config() -> Dict[str, Any]:
         "engine_version": ENGINE_VERSION,
         "final_demo_version": FINAL_DEMO_VERSION,
         "emergency_demo_version": EMERGENCY_DEMO_VERSION,
-        "output_folder": str(AUDIO_DIR_V8),
+        "output_folder": str(AUDIO_DIR_V9),
         "physical_chain_stages": list(PHYSICAL_CHAIN_STAGES),
         "physical_factor_keys": list(PHYSICAL_FACTOR_KEYS),
         "sample_set": list(SAMPLE_SET),
@@ -948,6 +958,179 @@ def compute_low_band_energy_report(y: np.ndarray, sr: int) -> Dict[str, float]:
     }
 
 
+def _enumerate_early_peaks(env: np.ndarray, sr: int, end_n: int) -> List[Tuple[int, float]]:
+    """Significant local maxima in smoothed onset envelope."""
+    peaks: List[Tuple[int, float]] = []
+    if end_n < 6:
+        return peaks
+    min_spacing = max(int(EARLY_ATTACK_MIN_DELAY_MS * 1e-3 * sr), 2)
+    for i in range(2, end_n - 2):
+        v = float(env[i])
+        if (
+            v >= float(env[i - 1])
+            and v >= float(env[i + 1])
+            and v >= float(env[i - 2]) * 0.97
+            and v >= float(env[i + 2]) * 0.97
+            and v > 1e-12
+        ):
+            peaks.append((i, v))
+    merged: List[Tuple[int, float]] = []
+    for idx, amp in sorted(peaks, key=lambda x: -x[1]):
+        if all(abs(idx - m[0]) >= min_spacing for m in merged):
+            merged.append((idx, amp))
+    merged.sort(key=lambda x: x[0])
+    return merged
+
+
+def _peak_times_and_ratios(peaks: Sequence[Tuple[int, float]], main_amp: float, sr: int) -> Tuple[List[float], List[float]]:
+    main = max(main_amp, 1e-12)
+    times = [round(1000.0 * idx / sr, 3) for idx, _ in peaks]
+    ratios = [round(amp / main, 4) for _, amp in peaks]
+    return times, ratios
+
+
+def _has_secondary_early_attack(
+    peaks: Sequence[Tuple[int, float]],
+    main_idx: int,
+    main_amp: float,
+    sr: int,
+    threshold: float,
+) -> bool:
+    min_delay = max(int(EARLY_ATTACK_MIN_DELAY_MS * 1e-3 * sr), 2)
+    main = max(main_amp, 1e-12)
+    for idx, amp in peaks:
+        if idx > main_idx + min_delay and (amp / main) > threshold:
+            return True
+        if idx < main_idx - min_delay and (amp / main) > threshold and idx > min_delay:
+            return True
+    return False
+
+
+def _build_target_attack_envelope(
+    cross_n: int,
+    sr: int,
+    note: str,
+    sample_id: str,
+    peak_amp: float,
+) -> np.ndarray:
+    """Single-peak target envelope for first 35 ms; crossfade tail to 45 ms."""
+    sample_off = {"sample_000": 0.0, "sample_001": -0.45, "sample_002": 0.35}.get(sample_id, 0.0)
+    if note == "E5":
+        peak_ms = 4.0 + sample_off
+        decay_tau = 0.010
+    elif note == "A4":
+        peak_ms = 5.5 + sample_off
+        decay_tau = 0.013
+    else:
+        peak_ms = 6.5 + sample_off
+        decay_tau = 0.017
+    peak_ms = _clamp(peak_ms, 3.0, 7.5)
+    win_n = min(int(ONSET_REPAIR_WINDOW_MS * 1e-3 * sr), cross_n)
+    peak_n = max(int(peak_ms * 1e-3 * sr), 3)
+    target = np.zeros(cross_n, dtype=np.float64)
+    ramp = np.sin(np.linspace(0.0, math.pi / 2.0, peak_n)) ** 2
+    target[:peak_n] = peak_amp * ramp
+    if win_n > peak_n:
+        tt = np.arange(win_n - peak_n, dtype=np.float64) / sr
+        tail = peak_amp * np.exp(-tt / decay_tau)
+        target[peak_n:win_n] = tail
+        for i in range(peak_n + 1, win_n):
+            target[i] = min(target[i], target[i - 1])
+    if cross_n > win_n:
+        target[win_n:cross_n] = target[win_n - 1] if win_n > 0 else peak_amp * 0.25
+    return target
+
+
+def enforce_single_attack_peak(
+    wave: np.ndarray,
+    sr: int,
+    note: str,
+    sample_id: str,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Post-synthesis onset repair: one dominant attack peak in first 35 ms."""
+    y = np.asarray(wave, dtype=np.float64).copy()
+    n = len(y)
+    win_n = min(int(ONSET_REPAIR_WINDOW_MS * 1e-3 * sr), n)
+    cross_n = min(int(ONSET_REPAIR_CROSSFADE_END_MS * 1e-3 * sr), n)
+    if win_n < 8 or cross_n <= win_n:
+        return y, {"onset_repair_applied": False, "early_double_attack_risk_after": True}
+
+    smooth_ms = {"E5": 0.85, "A4": 1.1, "A2": 1.4}.get(note, 1.0)
+    threshold = EARLY_ATTACK_SECONDARY_FRAC_E5 if note == "E5" else EARLY_ATTACK_SIGNIFICANT_FRAC
+    env = np.maximum(_smoothed_envelope(y[:cross_n], sr, win_ms=smooth_ms), 1e-12)
+    peaks = _enumerate_early_peaks(env, sr, win_n)
+    main_idx = int(np.argmax(env[:win_n]))
+    main_amp = float(env[main_idx])
+    if not peaks:
+        peaks = [(main_idx, main_amp)]
+    before_times, before_ratios = _peak_times_and_ratios(peaks, main_amp, sr)
+    risk_before = _has_secondary_early_attack(peaks, main_idx, main_amp, sr, threshold)
+
+    target = _build_target_attack_envelope(cross_n, sr, note, sample_id, main_amp)
+    gain = np.ones(n, dtype=np.float64)
+    for i in range(cross_n):
+        gain[i] = min(1.0, float(target[i]) / float(env[i]))
+
+    if note == "E5":
+        for idx, amp in peaks:
+            if idx != main_idx and idx < win_n and amp / max(main_amp, 1e-12) > 0.20:
+                half = max(int(0.0025 * sr), 2)
+                s0 = max(idx - half, 0)
+                s1 = min(idx + half, cross_n)
+                dip = 1.0 - _clamp(0.18 + 0.28 * (amp / max(main_amp, 1e-12)), 0.15, 0.38)
+                gain[s0:s1] = np.minimum(gain[s0:s1], dip)
+
+    k = max(int(0.0012 * sr), 3)
+    if cross_n > k * 2:
+        gain[:cross_n] = np.convolve(gain[:cross_n], np.ones(k) / k, mode="same")
+    if cross_n > win_n:
+        gain[win_n:cross_n] = np.linspace(float(gain[win_n - 1]), 1.0, cross_n - win_n)
+    gain[cross_n:] = 1.0
+    gain = np.clip(gain, 0.20, 1.0)
+
+    y_out = y * gain
+    env_after = np.maximum(_smoothed_envelope(y_out[:cross_n], sr, win_ms=smooth_ms), 1e-12)
+    peaks_after = _enumerate_early_peaks(env_after, sr, win_n)
+    main_idx_a = int(np.argmax(env_after[:win_n]))
+    main_amp_a = float(env_after[main_idx_a])
+    if not peaks_after:
+        peaks_after = [(main_idx_a, main_amp_a)]
+    after_times, after_ratios = _peak_times_and_ratios(peaks_after, main_amp_a, sr)
+    risk_after = _has_secondary_early_attack(peaks_after, main_idx_a, main_amp_a, sr, threshold)
+
+    if risk_after:
+        for idx, amp in peaks_after:
+            if idx == main_idx_a:
+                continue
+            if amp / max(main_amp_a, 1e-12) <= threshold:
+                continue
+            half = max(int(0.003 * sr), 2)
+            s0 = max(idx - half, 0)
+            s1 = min(idx + half * 2, win_n)
+            extra = 0.70 if note == "E5" else 0.78
+            y_out[s0:s1] *= extra
+        env_after = np.maximum(_smoothed_envelope(y_out[:cross_n], sr, win_ms=smooth_ms), 1e-12)
+        peaks_after = _enumerate_early_peaks(env_after, sr, win_n)
+        main_idx_a = int(np.argmax(env_after[:win_n]))
+        main_amp_a = float(env_after[main_idx_a])
+        after_times, after_ratios = _peak_times_and_ratios(peaks_after, main_amp_a, sr)
+        risk_after = _has_secondary_early_attack(peaks_after, main_idx_a, main_amp_a, sr, threshold)
+
+    return y_out, {
+        "onset_repair_applied": True,
+        "onset_repair_gain_min": round(float(np.min(gain[:cross_n])), 6),
+        "early_attack_peak_times_ms_before": before_times,
+        "early_attack_peak_ratios_before": before_ratios,
+        "early_attack_peak_times_ms_after": after_times,
+        "early_attack_peak_ratios_after": after_ratios,
+        "early_double_attack_risk_before": risk_before,
+        "early_double_attack_risk_after": risk_after,
+        "repair_window_ms": [0.0, ONSET_REPAIR_CROSSFADE_END_MS],
+        "note": note,
+        "sample_id": sample_id,
+    }
+
+
 def _normalize_note(y: np.ndarray, note: str) -> Tuple[np.ndarray, Dict[str, float]]:
     target_rms = 10.0 ** (TARGET_RMS_DBFS / 20.0)
     out = y * (target_rms / max(_rms(y), 1e-12))
@@ -1016,15 +1199,18 @@ def synthesize_note_for_sample(state: SampleSynthesisState, note: str) -> Tuple[
     if note == "A2":
         y = _apply_a2_control(y, SR, float(factors.get("body_size_cavity_factor") or 1.0))
 
+    y, onset_repair = enforce_single_attack_peak(y, SR, note, state.sample_id)
+
     y_out, levels = _normalize_note(y, note)
     y_out, polarity_flipped = _align_attack_polarity(y_out, SR)
-    early_attack = compute_early_double_attack_risk(y_out, SR)
+    early_attack_after = bool(onset_repair.get("early_double_attack_risk_after"))
     onset_diag = compute_double_pluck_risk(y_out, SR)
     double_pluck_diagnostics = {
         "double_pluck_risk": onset_diag.get("double_pluck_risk"),
-        "early_double_attack_risk": early_attack.get("early_double_attack_risk"),
+        "early_double_attack_risk_before": onset_repair.get("early_double_attack_risk_before"),
+        "early_double_attack_risk_after": early_attack_after,
+        "onset_repair": onset_repair,
         "delayed_peak": delayed_peak_meta,
-        "early_attack": early_attack,
         "onset": onset_diag,
     }
     low_band = compute_low_band_energy_report(y_out, SR) if note == "A2" else {}
@@ -1039,10 +1225,11 @@ def synthesize_note_for_sample(state: SampleSynthesisState, note: str) -> Tuple[
         "no_separate_contact_mix_layer": True,
         "polarity_aligned": polarity_flipped,
         "double_pluck_diagnostics": double_pluck_diagnostics,
-        "double_pluck_risk": bool(
-            onset_diag.get("double_pluck_risk") or early_attack.get("early_double_attack_risk")
-        ),
-        "early_double_attack_risk": early_attack.get("early_double_attack_risk"),
+        "onset_repair_diagnostics": onset_repair,
+        "double_pluck_risk": bool(onset_diag.get("double_pluck_risk") or early_attack_after),
+        "early_double_attack_risk": early_attack_after,
+        "early_double_attack_risk_before": onset_repair.get("early_double_attack_risk_before"),
+        "early_double_attack_risk_after": early_attack_after,
         "delayed_peak_ratio": delayed_peak_meta.get("delayed_peak_ratio"),
         "delayed_peak_attenuation_amount": delayed_peak_meta.get("attenuation_amount"),
         "body_support_summary": dict(body_support),
@@ -1181,7 +1368,8 @@ def build_anti_cheat_checks(
     double_pluck_ok: bool = True,
 ) -> Dict[str, Any]:
     folder_cleared = bool(
-        peak_rms_report.get("v8_folder_cleared")
+        peak_rms_report.get("v9_folder_cleared")
+        or peak_rms_report.get("v8_folder_cleared")
         or peak_rms_report.get("v7_folder_cleared")
         or peak_rms_report.get("v6_folder_cleared")
         or peak_rms_report.get("v5_folder_cleared")
@@ -1309,6 +1497,7 @@ def _run_final_guitar_demo(
     delayed_peak_ratio_per_file: Dict[str, float] = {}
     delayed_peak_attenuation_per_file: Dict[str, float] = {}
     double_pluck_diagnostics: Dict[str, Dict[str, Any]] = {}
+    onset_repair_per_file: Dict[str, Dict[str, Any]] = {}
     low_band_energy: Dict[str, Dict[str, float]] = {}
     low_mid_body_energy: Dict[str, Dict[str, float]] = {}
     body_support_by_note: Dict[str, Dict[str, Any]] = {}
@@ -1347,8 +1536,9 @@ def _run_final_guitar_demo(
             peak_rms[wav_name] = {"peak_dbfs": meta["peak_dbfs"], "rms_dbfs": meta["rms_dbfs"]}
             onset_diagnostics[wav_name] = meta.get("double_pluck_diagnostics") or {}
             double_pluck_diagnostics[wav_name] = meta.get("double_pluck_diagnostics") or {}
+            onset_repair_per_file[wav_name] = meta.get("onset_repair_diagnostics") or {}
             double_pluck_risk_per_file[wav_name] = bool(meta.get("double_pluck_risk"))
-            early_double_attack_per_file[wav_name] = bool(meta.get("early_double_attack_risk"))
+            early_double_attack_per_file[wav_name] = bool(meta.get("early_double_attack_risk_after"))
             delayed_peak_ratio_per_file[wav_name] = float(meta.get("delayed_peak_ratio") or 0.0)
             delayed_peak_attenuation_per_file[wav_name] = float(meta.get("delayed_peak_attenuation_amount") or 0.0)
             if note == "A2":
@@ -1427,8 +1617,10 @@ def _run_final_guitar_demo(
             for sid in SAMPLE_SET
         },
         "double_pluck_diagnostics": double_pluck_diagnostics,
+        "onset_repair_per_file": onset_repair_per_file,
         "double_pluck_risk_per_file": double_pluck_risk_per_file,
         "early_double_attack_risk_per_file": early_double_attack_per_file,
+        "early_double_attack_risk_after_per_file": early_double_attack_per_file,
         "delayed_peak_ratio_per_file": delayed_peak_ratio_per_file,
         "delayed_peak_attenuation_amount_per_file": delayed_peak_attenuation_per_file,
         "body_support_summary_per_note": body_support_by_note,
@@ -1478,6 +1670,25 @@ def _run_final_guitar_demo(
     return report
 
 
+def run_final_guitar_demo_v9(
+    *,
+    repo_root: Optional[Path] = None,
+    audio_dir: Optional[Path] = None,
+    json_path: Optional[Path] = None,
+    md_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    return _run_final_guitar_demo(
+        version_label="v9",
+        final_demo_version=FINAL_DEMO_VERSION,
+        repo_root=repo_root,
+        audio_dir=Path(audio_dir or AUDIO_DIR_V9),
+        json_path=Path(json_path or REPORT_JSON_V9),
+        md_path=Path(md_path or REPORT_MD_V9),
+        voicing=V8_VOICING,
+        folder_cleared_key="v9_folder_cleared",
+    )
+
+
 def run_final_guitar_demo_v8(
     *,
     repo_root: Optional[Path] = None,
@@ -1487,7 +1698,7 @@ def run_final_guitar_demo_v8(
 ) -> Dict[str, Any]:
     return _run_final_guitar_demo(
         version_label="v8",
-        final_demo_version=FINAL_DEMO_VERSION,
+        final_demo_version=FINAL_DEMO_VERSION_V8,
         repo_root=repo_root,
         audio_dir=Path(audio_dir or AUDIO_DIR_V8),
         json_path=Path(json_path or REPORT_JSON_V8),
@@ -1555,7 +1766,7 @@ def run_final_guitar_demo_v5(
 
 
 def run_emergency_guitar_demo(**kwargs: Any) -> Dict[str, Any]:
-    return run_final_guitar_demo_v8(**kwargs)
+    return run_final_guitar_demo_v9(**kwargs)
 
 
 def main() -> None:
@@ -1563,9 +1774,13 @@ def main() -> None:
     parser.add_argument("--final-v5", action="store_true", help="Run legacy v5 output folder")
     parser.add_argument("--final-v6", action="store_true", help="Run legacy v6 output folder")
     parser.add_argument("--final-v7", action="store_true", help="Run legacy v7 output folder")
-    parser.add_argument("--final-v8", action="store_true", help="Run v8 final physical guitar demo")
+    parser.add_argument("--final-v8", action="store_true", help="Run legacy v8 output folder")
+    parser.add_argument("--final-v9", action="store_true", help="Run v9 single-attack enforced demo")
     args = parser.parse_args()
-    if args.final_v8:
+    if args.final_v9:
+        report = run_final_guitar_demo_v9()
+        print(f"Wrote {REPORT_JSON_V9}")
+    elif args.final_v8:
         report = run_final_guitar_demo_v8()
         print(f"Wrote {REPORT_JSON_V8}")
     elif args.final_v7:
