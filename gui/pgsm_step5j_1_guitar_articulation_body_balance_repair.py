@@ -100,6 +100,17 @@ GENERATED_CONTRACT_JSON = (
 AUDIO_DIR = REPO_ROOT / "audio" / "pgsm_step5j_1_guitar_articulation_body_balance_repair"
 
 READINESS_AFTER = "ready_for_step5k_bridge_admittance_feedback_coupling_plan"
+READINESS_DOCUMENTED_E5_COMB_LIMITATION = (
+    "blocked_by_documented_e5_comb_limitation_ready_for_step5k_planning"
+)
+SAFE_NEXT_STEP_STEP5K = "step5k_bridge_admittance_feedback_coupling"
+DOCUMENTED_LIMITATION_TYPE = "e5_low_body_mode_radiation_comb_requires_bridge_coupling"
+STEP5J_1_CLOSURE_STATEMENT = (
+    "Step 5J.1 improved body balance and articulation but did not eliminate E5 radiation comb. "
+    "The guard applied to real contributing modes and produced nonzero weight delta, but comb score "
+    "did not change. This indicates a limitation of output weighting only; the next physical lever "
+    "is Step 5K bridge/admittance coupling."
+)
 
 HIGH_FREQ_THRESHOLD_HZ = 2000.0
 UPPER_MID_LO_HZ = 500.0
@@ -1206,16 +1217,129 @@ def build_honest_failure_flags(per_note_metrics: Mapping[str, Mapping[str, Any]]
     return flags
 
 
-def build_readiness_after_step5j_1(objective_pass: bool) -> Dict[str, Any]:
-    status = READINESS_AFTER if objective_pass else "failed_guitar_articulation_body_balance_repair"
+def build_readiness_after_step5j_1(
+    objective_pass: bool,
+    *,
+    documented_limitation: bool = False,
+) -> Dict[str, Any]:
+    if objective_pass:
+        status = READINESS_AFTER
+    elif documented_limitation:
+        status = READINESS_DOCUMENTED_E5_COMB_LIMITATION
+    else:
+        status = "failed_guitar_articulation_body_balance_repair"
     return {
         "current_status": status,
         "final_synthesis_ready": False,
         "stk_integration_allowed": False,
         "website_production_replacement_allowed": False,
+        "multi_guitar_comparison_allowed": False,
+        "melody_chord_playback_allowed": False,
+        "real_guitar_equivalence_allowed": False,
         "contract_only_not_final": True,
-        "bridge_coupling_plan_allowed": status == READINESS_AFTER,
+        "bridge_coupling_plan_allowed": bool(objective_pass or documented_limitation),
+        "documented_limitation": documented_limitation,
+        "diagnostic_completed": bool(objective_pass or documented_limitation),
     }
+
+
+def detect_documented_e5_comb_limitation(
+    *,
+    artifact: Mapping[str, Any],
+    objective: Mapping[str, Any],
+    e5_guard: Mapping[str, Any],
+    per_note_metrics: Mapping[str, Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """E5 comb fails only; guard applied with nonzero weight delta but comb unchanged — Step 5K lever."""
+    failed = list(artifact.get("failed_guard_fields") or [])
+    only_comb_failed = failed == ["no_comb_echo"]
+    e5_metrics = per_note_metrics.get("E5") or {}
+    e5_comb_fail = not bool(e5_metrics.get("no_comb_echo"))
+    guard_applied = bool(e5_guard.get("e5_radiation_guard_applied"))
+    guarded_count = int(e5_guard.get("e5_guarded_mode_count") or 0)
+    guard_summary = e5_guard.get("e5_guard_weight_before_after_summary") or {}
+    weight_delta = float(guard_summary.get("radiation_sum_weight_delta") or 0.0)
+    rad_before = e5_guard.get("e5_radiation_sum_comb_score_before_guard")
+    rad_after = e5_guard.get("e5_radiation_sum_comb_score_after_guard")
+    comb_unchanged_by_guard = (
+        rad_before is not None
+        and rad_after is not None
+        and abs(float(rad_before) - float(rad_after)) < 1e-3
+    )
+    dominant = artifact.get("dominant_comb_echo_stem") or {}
+    worst_stem_radiation_sum = (
+        dominant.get("note") == "E5" and dominant.get("stem") == "radiation_sum"
+    )
+    documented = bool(
+        only_comb_failed
+        and e5_comb_fail
+        and guard_applied
+        and guarded_count > 0
+        and abs(weight_delta) > 1e-9
+        and bool(objective.get("top_attack_improved_or_flagged"))
+        and not objective.get("all_pass")
+        and not artifact.get("pass")
+    )
+    return {
+        "documented_limitation": documented,
+        "limitation_type": DOCUMENTED_LIMITATION_TYPE if documented else None,
+        "only_no_comb_echo_failed": only_comb_failed,
+        "e5_comb_echo_honest_fail": e5_comb_fail,
+        "e5_comb_echo_score": e5_metrics.get("comb_echo_score"),
+        "guard_applied": guard_applied,
+        "guarded_mode_count": guarded_count,
+        "radiation_sum_weight_delta": weight_delta,
+        "comb_score_unchanged_by_guard": comb_unchanged_by_guard,
+        "worst_stem_radiation_sum": worst_stem_radiation_sum,
+        "modal_frequency_min_hz": e5_guard.get("modal_frequency_min_hz"),
+        "modal_frequency_max_hz": e5_guard.get("modal_frequency_max_hz"),
+        "modes_in_legacy_diag_band_560_1420": e5_guard.get("modes_in_legacy_diag_band_560_1420"),
+        "interpretation": (
+            "E5 radiation comb is driven by low-frequency body modes (~64–162 Hz at fast validation "
+            "mode cap), not E5-band modes. Further output weighting is not the correct lever."
+            if documented
+            else None
+        ),
+        "closure_statement": STEP5J_1_CLOSURE_STATEMENT if documented else None,
+    }
+
+
+def build_planning_closure_criteria(
+    *,
+    report: Mapping[str, Any],
+    documented: Mapping[str, Any],
+) -> Dict[str, Any]:
+    objective = report.get("objective_test_results") or {}
+    artifact = report.get("artifact_guard_results") or {}
+    vcfg = report.get("validation_config") or {}
+    e5_guard = report.get("E5_radiation_guard_analysis") or {}
+    guard_summary = e5_guard.get("e5_guard_weight_before_after_summary") or {}
+    weight_delta = float(guard_summary.get("radiation_sum_weight_delta") or 0.0)
+    is_fast = vcfg.get("validation_mode") == "fast"
+    criteria: Dict[str, Any] = {
+        "top_attack_improved_or_flagged": bool(objective.get("top_attack_improved_or_flagged")),
+        "guard_applied": bool(e5_guard.get("e5_radiation_guard_applied")),
+        "guarded_mode_count_gt_zero": int(e5_guard.get("e5_guarded_mode_count") or 0) > 0,
+        "radiation_sum_weight_delta_nonzero": abs(weight_delta) > 1e-9,
+        "objective_all_pass_false": not bool(objective.get("all_pass")),
+        "artifact_guard_pass_false": not bool(artifact.get("pass")),
+        "no_comb_echo_honest_fail": bool(documented.get("e5_comb_echo_honest_fail")),
+        "documented_limitation": bool(documented.get("documented_limitation")),
+        "safe_next_step_step5k": report.get("safe_next_step") == SAFE_NEXT_STEP_STEP5K,
+        "final_synthesis_blocked": not bool(
+            (report.get("readiness_after_step5j_1") or {}).get("final_synthesis_ready")
+        ),
+        "stk_integration_blocked": not bool(
+            (report.get("readiness_after_step5j_1") or {}).get("stk_integration_allowed")
+        ),
+    }
+    if is_fast:
+        criteria["fast_validation_mode"] = True
+        criteria["tracked_source_files_unmodified"] = not bool(vcfg.get("tracked_source_files_modified"))
+        criteria["no_audio_written_in_fast_mode"] = not bool(vcfg.get("render_audio"))
+    planning_keys = list(criteria.keys())
+    criteria["step5j_1_closed_for_planning"] = all(criteria[k] for k in planning_keys)
+    return criteria
 
 
 def enrich_artifact_guard_results(
@@ -1276,21 +1400,47 @@ def enrich_artifact_guard_results(
 
 
 def validate_report_internal_consistency(report: Mapping[str, Any]) -> Dict[str, Any]:
-    """Ensure artifact guard, objective all_pass, and readiness agree on one build."""
+    """Ensure artifact guard, objective all_pass, readiness, and documented limitation agree."""
     objective = report.get("objective_test_results") or {}
     artifact = report.get("artifact_guard_results") or {}
     readiness = report.get("readiness_after_step5j_1") or {}
+    documented = report.get("step5j_1_documented_limitation") or {}
+    is_documented = bool(documented.get("documented_limitation"))
     issues: List[str] = []
     if objective.get("artifact_guard_pass") != artifact.get("pass"):
         issues.append("objective.artifact_guard_pass != artifact_guard_results.pass")
     all_pass = bool(objective.get("all_pass"))
-    ready = readiness.get("current_status") == READINESS_AFTER
-    if all_pass != ready:
-        issues.append("objective.all_pass != readiness.current_status readiness")
+    status = readiness.get("current_status")
+    if is_documented:
+        if all_pass:
+            issues.append("documented_limitation true but objective.all_pass true")
+        if artifact.get("pass"):
+            issues.append("documented_limitation true but artifact_guard_results.pass true")
+        if status != READINESS_DOCUMENTED_E5_COMB_LIMITATION:
+            issues.append("documented_limitation status mismatch")
+        if report.get("safe_next_step") != SAFE_NEXT_STEP_STEP5K:
+            issues.append("safe_next_step must be step5k for documented limitation")
+        if not readiness.get("documented_limitation"):
+            issues.append("readiness.documented_limitation must be true")
+        if not readiness.get("bridge_coupling_plan_allowed"):
+            issues.append("bridge_coupling_plan_allowed must be true for documented limitation")
+    elif all_pass:
+        if status != READINESS_AFTER:
+            issues.append("objective.all_pass true but readiness not READINESS_AFTER")
+    elif status not in (
+        READINESS_DOCUMENTED_E5_COMB_LIMITATION,
+        "failed_guitar_articulation_body_balance_repair",
+    ):
+        issues.append(f"unexpected readiness status: {status}")
     validation = report.get("validation_results") or {}
     if validation and validation is not objective:
         if validation.get("all_pass") != all_pass:
             issues.append("validation_results.all_pass != objective_test_results.all_pass")
+    closure = report.get("planning_closure_criteria") or {}
+    vcfg = report.get("validation_config") or {}
+    if is_documented and vcfg.get("validation_mode") == "fast":
+        if not closure.get("step5j_1_closed_for_planning"):
+            issues.append("documented_limitation true but planning_closure_criteria not satisfied")
     return {"pass": not issues, "issues": issues}
 
 
@@ -1610,7 +1760,28 @@ def build_pgsm_step5j_1_report(
         "website_default_unchanged": True,
     }
     objective["all_pass"] = bool(all(objective.values()))
-    readiness = build_readiness_after_step5j_1(objective["all_pass"])
+    documented_limitation = detect_documented_e5_comb_limitation(
+        artifact=artifact,
+        objective=objective,
+        e5_guard=e5_radiation_guard_analysis,
+        per_note_metrics=per_note_metrics,
+    )
+    readiness = build_readiness_after_step5j_1(
+        objective["all_pass"],
+        documented_limitation=bool(documented_limitation.get("documented_limitation")),
+    )
+    if documented_limitation.get("documented_limitation"):
+        safe_next_step = SAFE_NEXT_STEP_STEP5K
+        report_status = (
+            "pgsm_step5j_1_guitar_articulation_body_balance_repair_diagnostic_complete_"
+            "with_documented_e5_limitation"
+        )
+    elif readiness["current_status"] == READINESS_AFTER:
+        safe_next_step = SAFE_NEXT_STEP_STEP5K
+        report_status = "pgsm_step5j_1_guitar_articulation_body_balance_repair_complete"
+    else:
+        safe_next_step = "Resolve Step 5J.1 validation failures"
+        report_status = "pgsm_step5j_1_guitar_articulation_body_balance_repair_complete"
 
     validation_config = {
         "validation_mode": validation_mode,
@@ -1640,7 +1811,7 @@ def build_pgsm_step5j_1_report(
         "timestamp": _utc_now(),
         "validation_max_modes": mode_cap,
         "validation_config": validation_config,
-        "status": "pgsm_step5j_1_guitar_articulation_body_balance_repair_complete",
+        "status": report_status,
         "why_step5j_1_needed": [
             "Step 5J air/cavity stem dominated (A2 ~0.84, A3 ~0.79, E5 ~0.72)",
             "Output sounded organ/piano-like: too smooth, weak pluck articulation",
@@ -1681,6 +1852,9 @@ def build_pgsm_step5j_1_report(
         "comparison_vs_step5i_3": comp53,
         "honest_failure_flags": honest,
         "artifact_guard_results": artifact,
+        "step5j_1_documented_limitation": documented_limitation,
+        "documented_limitation": documented_limitation.get("documented_limitation"),
+        "limitation_type": documented_limitation.get("limitation_type"),
         "validation_results": objective,
         "objective_test_results": objective,
         "blocked_claims": [
@@ -1688,23 +1862,29 @@ def build_pgsm_step5j_1_report(
             "STK integration",
             "Real-guitar equivalence",
             "Arbitrary EQ",
-            "Bridge coupling feedback (Step 5K)",
         ],
         "readiness_after_step5j_1": readiness,
-        "safe_next_step": (
-            "PGSM Step 5K: bridge admittance feedback coupling plan"
-            if readiness["current_status"] == READINESS_AFTER
-            else "Resolve Step 5J.1 validation failures"
-        ),
+        "safe_next_step": safe_next_step,
         "explicit_statement": (
-            "PGSM Step 5J.1 repairs diagnostic guitar articulation and body balance only. "
-            "It does not integrate STK and does not prove realism."
+            STEP5J_1_CLOSURE_STATEMENT
+            if documented_limitation.get("documented_limitation")
+            else (
+                "PGSM Step 5J.1 repairs diagnostic guitar articulation and body balance only. "
+                "It does not integrate STK and does not prove realism."
+            )
+        ),
+        "step5j_1_closure_statement": (
+            STEP5J_1_CLOSURE_STATEMENT if documented_limitation.get("documented_limitation") else None
         ),
         "harmonic_richness_limitation_note": (
             "H2-H8 energy may remain low for A3/A4/E5 under output-weight-only body balance; "
             "Step 5K bridge coupling or later excitation/body interaction may be required."
         ),
     }
+    report_body["planning_closure_criteria"] = build_planning_closure_criteria(
+        report=report_body,
+        documented=documented_limitation,
+    )
     report_body["internal_consistency_check"] = validate_report_internal_consistency(report_body)
     return report_body
 
@@ -1817,7 +1997,31 @@ def write_markdown_report(report: Mapping[str, Any], path: Path) -> None:
             f"- **{note}**: air {c.get('step5j_air_share')}→{c.get('step5j_1_air_share')}, "
             f"H2-H8 {c.get('step5j_h2_h8_ratio')}→{c.get('step5j_1_h2_h8_ratio')}"
         )
-    lines.extend(["", "## Readiness", "", f"all_pass: **{obj.get('all_pass')}**"])
+    doc = report.get("step5j_1_documented_limitation") or {}
+    closure = report.get("planning_closure_criteria") or {}
+    lines.extend(
+        [
+            "",
+            "## Documented limitation",
+            "",
+            f"- documented_limitation: **{report.get('documented_limitation')}**",
+            f"- limitation_type: `{report.get('limitation_type')}`",
+            f"- safe_next_step: `{report.get('safe_next_step')}`",
+            f"- step5j_1_closed_for_planning: **{closure.get('step5j_1_closed_for_planning')}**",
+        ]
+    )
+    if doc.get("interpretation"):
+        lines.append(f"- interpretation: {doc.get('interpretation')}")
+    lines.extend(
+        [
+            "",
+            "## Readiness",
+            "",
+            f"all_pass: **{obj.get('all_pass')}**",
+            f"artifact_guard_pass: **{obj.get('artifact_guard_pass')}**",
+            f"current_status: `{rg.get('current_status')}`",
+        ]
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

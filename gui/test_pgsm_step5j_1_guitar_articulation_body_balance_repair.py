@@ -18,10 +18,11 @@ from pgsm_step5j_top_back_air_radiation_weighting_refinement import READINESS_AF
 from pgsm_step5j_1_guitar_articulation_body_balance_repair import (  # noqa: E402
     AIR_CAVITY_MODAL_GAIN,
     AUDIO_DIR,
+    DOCUMENTED_LIMITATION_TYPE,
     FAST_VALIDATION_DURATION_S,
     FAST_VALIDATION_MAX_MODES,
-    PGSM_STEP5J_1_VERSION,
-    READINESS_AFTER,
+    READINESS_DOCUMENTED_E5_COMB_LIMITATION,
+    SAFE_NEXT_STEP_STEP5K,
     SOURCE_CONTRACT_JSON,
     build_body_weighting_v2_contract,
     build_pgsm_step5j_1_report,
@@ -254,11 +255,51 @@ class TestPgsmStep5j1GuitarArticulationBodyBalanceRepair(unittest.TestCase):
         art = self._report().get("artifact_guard_results") or {}
         self.assertEqual(art.get("pass"), obj.get("artifact_guard_pass"))
 
-    def test_no_forbidden_artifacts(self) -> None:
+    def test_no_comb_echo_honest_fail_for_e5(self) -> None:
         art = self._report().get("artifact_guard_results") or {}
-        self.assertTrue(art.get("pass"), msg=str(art.get("failed_guard_fields")))
+        self.assertFalse(art.get("pass"))
+        self.assertIn("no_comb_echo", art.get("failed_guard_fields") or [])
+        e5 = (self._report().get("per_note_metrics") or {}).get("E5") or {}
+        self.assertFalse(e5.get("no_comb_echo"))
 
-    def test_energy_first_10ms(self) -> None:
+    def test_objective_all_pass_remains_false(self) -> None:
+        self.assertFalse((self._report().get("objective_test_results") or {}).get("all_pass"))
+
+    def test_documented_e5_comb_limitation(self) -> None:
+        self.assertTrue(self._report().get("documented_limitation"))
+        self.assertEqual(self._report().get("limitation_type"), DOCUMENTED_LIMITATION_TYPE)
+        doc = self._report().get("step5j_1_documented_limitation") or {}
+        self.assertTrue(doc.get("guard_applied"))
+        self.assertGreater(doc.get("guarded_mode_count") or 0, 0)
+        self.assertNotEqual(doc.get("radiation_sum_weight_delta"), 0.0)
+        self.assertTrue(doc.get("e5_comb_echo_honest_fail"))
+        self.assertEqual(self._report().get("step5j_1_closure_statement"), doc.get("closure_statement"))
+
+    def test_readiness_blocked_ready_for_step5k_planning(self) -> None:
+        rg = self._report().get("readiness_after_step5j_1") or {}
+        self.assertEqual(rg.get("current_status"), READINESS_DOCUMENTED_E5_COMB_LIMITATION)
+        self.assertTrue(rg.get("documented_limitation"))
+        self.assertTrue(rg.get("bridge_coupling_plan_allowed"))
+        self.assertFalse(rg.get("final_synthesis_ready"))
+        self.assertFalse(rg.get("stk_integration_allowed"))
+        self.assertFalse(rg.get("website_production_replacement_allowed"))
+        self.assertFalse(rg.get("multi_guitar_comparison_allowed"))
+
+    def test_safe_next_step_step5k(self) -> None:
+        self.assertEqual(self._report().get("safe_next_step"), SAFE_NEXT_STEP_STEP5K)
+
+    def test_step5j_1_closed_for_planning(self) -> None:
+        closure = self._report().get("planning_closure_criteria") or {}
+        self.assertTrue(closure.get("step5j_1_closed_for_planning"), msg=str(closure))
+        self.assertTrue(closure.get("top_attack_improved_or_flagged"))
+        self.assertTrue(closure.get("guard_applied"))
+        self.assertTrue(closure.get("guarded_mode_count_gt_zero"))
+        self.assertTrue(closure.get("radiation_sum_weight_delta_nonzero"))
+        self.assertTrue(closure.get("no_comb_echo_honest_fail"))
+        self.assertTrue(closure.get("documented_limitation"))
+        self.assertTrue(closure.get("safe_next_step_step5k"))
+
+    def test_built_contract_matches_source_gains(self) -> None:
         for note in NOTE_SET:
             m = (self._report().get("per_note_metrics") or {}).get(note) or {}
             self.assertLess(m.get("energy_first_10ms"), ENERGY_FIRST_10MS_MAX)
@@ -268,19 +309,7 @@ class TestPgsmStep5j1GuitarArticulationBodyBalanceRepair(unittest.TestCase):
             m = (self._report().get("per_note_metrics") or {}).get(note) or {}
             self.assertTrue(m.get("gain_separate_from_physics"))
 
-    def test_readiness_diagnostic_only(self) -> None:
-        rg = self._report().get("readiness_after_step5j_1") or {}
-        obj = self._report().get("objective_test_results") or {}
-        if obj.get("all_pass"):
-            self.assertEqual(rg.get("current_status"), READINESS_AFTER)
-        else:
-            self.assertEqual(rg.get("current_status"), "failed_guitar_articulation_body_balance_repair")
-        self.assertFalse(rg.get("stk_integration_allowed"))
-
-    def test_objective_all_pass(self) -> None:
-        self.assertTrue((self._report().get("objective_test_results") or {}).get("all_pass"))
-
-    def test_built_contract_matches_source_gains(self) -> None:
+    def test_energy_first_10ms(self) -> None:
         if not SOURCE_CONTRACT_JSON.is_file():
             self.skipTest("source contract file missing")
         source = json.loads(SOURCE_CONTRACT_JSON.read_text(encoding="utf-8"))

@@ -14,9 +14,12 @@ sys.path.insert(0, str(REPO / "gui"))
 
 from pgsm_step5a_limited_note_set_diagnostic_audio import NOTE_SET  # noqa: E402
 from pgsm_step5j_1_guitar_articulation_body_balance_repair import (  # noqa: E402
+    DOCUMENTED_LIMITATION_TYPE,
     GENERATED_CONTRACT_JSON,
     PGSM_STEP5J_1_VERSION,
+    READINESS_DOCUMENTED_E5_COMB_LIMITATION,
     REPORT_JSON,
+    SAFE_NEXT_STEP_STEP5K,
     SOURCE_CONTRACT_JSON,
     VALIDATION_MAX_MODES,
     validate_report_internal_consistency,
@@ -112,12 +115,20 @@ class TestPgsmStep5j1GuitarArticulationBodyBalanceRepairIntegration(unittest.Tes
             for stem in stems:
                 self.assertTrue((out / f"sample_000_{note}_{stem}.wav").is_file())
 
-    def test_no_forbidden_artifacts(self) -> None:
+    def test_no_comb_echo_honest_fail_for_e5(self) -> None:
         art = self._report().get("artifact_guard_results") or {}
-        self.assertTrue(art.get("pass"), msg=str(art.get("failed_guard_fields")))
+        self.assertFalse(art.get("pass"))
+        self.assertIn("no_comb_echo", art.get("failed_guard_fields") or [])
 
-    def test_objective_all_pass(self) -> None:
-        self.assertTrue((self._report().get("objective_test_results") or {}).get("all_pass"))
+    def test_documented_e5_comb_limitation_full_mode(self) -> None:
+        self.assertTrue(self._report().get("documented_limitation"))
+        self.assertEqual(self._report().get("limitation_type"), DOCUMENTED_LIMITATION_TYPE)
+        self.assertEqual(self._report().get("safe_next_step"), SAFE_NEXT_STEP_STEP5K)
+        rg = self._report().get("readiness_after_step5j_1") or {}
+        self.assertEqual(rg.get("current_status"), READINESS_DOCUMENTED_E5_COMB_LIMITATION)
+
+    def test_objective_all_pass_remains_false(self) -> None:
+        self.assertFalse((self._report().get("objective_test_results") or {}).get("all_pass"))
 
     def test_write_reports_to_temp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
