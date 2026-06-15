@@ -15,7 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <map>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -104,6 +104,8 @@ struct RenderSpec {
     double body_modal_gain = 1.0;
     double string_to_body_send_scale = 1.0;
     double mapping_strength = 1.0;
+    double note_excitation_scale = 1.0;
+    double high_frequency_radiation_rolloff = 1.0;
     bool perceptual_v3 = false;
     PhysicalFactors phys;
     std::map<std::string, FactorAuditEntry> factor_audit;
@@ -183,6 +185,25 @@ static std::string extractJsonArraySlice(const std::string& json, const std::str
     if (json[i] != '[') throw std::runtime_error("Expected array for key: " + key);
     size_t close = findMatchingDelimiter(json, i, '[', ']');
     return json.substr(i, close - i + 1);
+}
+
+static std::string extractJsonValueSlice(const std::string& json, const std::string& key, size_t start = 0) {
+    size_t keyPos = findJsonKey(json, key, start);
+    if (keyPos == std::string::npos) return "";
+    size_t colon = json.find(':', keyPos);
+    size_t i = colon + 1;
+    skipWs(json, i);
+    if (i >= json.size()) return "";
+    const char c = json[i];
+    if (c == '{') {
+        size_t close = findMatchingDelimiter(json, i, '{', '}');
+        return json.substr(i, close - i + 1);
+    }
+    if (c == '[') {
+        size_t close = findMatchingDelimiter(json, i, '[', ']');
+        return json.substr(i, close - i + 1);
+    }
+    return "";
 }
 
 static std::string extractJsonObjectSlice(const std::string& json, const std::string& key, size_t start = 0) {
@@ -273,7 +294,9 @@ static DemoConfig parseDemoConfig(const std::string& json) {
     if (!rm.empty()) cfg.reportMdPath = rm;
     std::string dv = parseJsonString(json, "demo_version");
     if (!dv.empty()) cfg.demoVersion = dv;
-    if (cfg.demoVersion.find("v3") != std::string::npos) {
+    if (cfg.demoVersion.find("v4_10_samples") != std::string::npos) {
+        // keep full demo id from JSON
+    } else if (cfg.demoVersion.find("v3") != std::string::npos) {
         cfg.demoVersion = "pgsm_stk_guitar_demo_v3";
     }
     return cfg;
@@ -395,6 +418,7 @@ static RenderSpec parseRenderBlock(const std::string& block) {
         r.string_decay = parseJsonNumber(sm, "string_decay", r.string_decay);
         r.harmonic_brightness = parseJsonNumber(sm, "harmonic_brightness", r.harmonic_brightness);
         r.excitation_strength = parseJsonNumber(sm, "excitation_strength", r.excitation_strength);
+        r.note_excitation_scale = parseJsonNumber(sm, "note_excitation_scale", r.note_excitation_scale);
     }
     const std::string bm = extractJsonObjectSlice(block, "bridge_model");
     if (!bm.empty()) {
@@ -408,6 +432,8 @@ static RenderSpec parseRenderBlock(const std::string& block) {
         r.back_weight = parseJsonNumber(rm, "back_weight", r.back_weight);
         r.air_weight = parseJsonNumber(rm, "air_weight", r.air_weight);
         r.string_direct_weight = parseJsonNumber(rm, "string_direct_weight", r.string_direct_weight);
+        r.high_frequency_radiation_rolloff = parseJsonNumber(
+            rm, "high_frequency_radiation_rolloff", r.high_frequency_radiation_rolloff);
     }
     const std::string mixModel = extractJsonObjectSlice(block, "string_body_mix");
     if (!mixModel.empty()) {
@@ -570,6 +596,8 @@ static void applyPhysicalMappings(RenderSpec& r) {
     r.string_direct_weight *= r.direct_string_gain;
     r.string_to_body_send *= r.string_to_body_send_scale;
     r.harmonic_brightness *= pows(p.top_stiffness_to_weight_factor, 0.12) * pows(p.radiation_brightness_factor, 0.18);
+    if (r.high_frequency_radiation_rolloff > 0.0)
+        r.harmonic_brightness *= std::pow(r.high_frequency_radiation_rolloff, 0.35);
     r.top_weight *= pows(p.radiation_brightness_factor, 0.20);
     r.back_weight *= pows(p.back_density_warmth_factor, 0.18);
     r.air_weight *= p.soundhole_radiation_factor * holeAreaScale * pows(p.air_helmholtz_factor, 0.15);
@@ -602,6 +630,8 @@ static void applyPhysicalMappings(RenderSpec& r) {
     setAudit("material_loss_factor", p.material_loss_factor, p.material_loss_factor, "modal_Q_decay");
     setAudit("back_density_warmth_factor", p.back_density_warmth_factor, p.back_density_warmth_factor, "back_mode_gain_tau / back_weight");
     setAudit("air_helmholtz_factor", p.air_helmholtz_factor, p.air_helmholtz_factor, "air_mode_frequency_gain");
+    setAudit("body_depth_m", p.body_depth_m, p.depth_factor, "low_mode_frequency_tau_depth");
+    setAudit("body_volume_proxy", p.body_volume_proxy, volScale, "cavity_mode_gain_volume");
     setAudit("radiation_brightness_factor", p.radiation_brightness_factor, p.radiation_brightness_factor, "radiation_mode_gain / top_weight");
     setAudit("top_weight", parseJsonNumber("", "top_weight", r.top_weight), r.top_weight, "final_radiation_mix");
     setAudit("back_weight", r.back_weight, r.back_weight, "final_radiation_mix");
@@ -667,7 +697,8 @@ static RenderOutcome renderOne(RenderSpec spec) {
 
     Plucked string;
     string.setFrequency(spec.frequency_hz);
-    string.pluck(spec.excitation_strength * std::pow(spec.phys.bridge_mobility_factor, 0.08));
+    string.pluck(spec.excitation_strength * spec.note_excitation_scale
+        * std::pow(spec.phys.bridge_mobility_factor, 0.08));
 
     ModalBank body;
     body.build(spec.modes, sr);
@@ -788,14 +819,66 @@ static std::string inferBottleneck(const std::vector<RenderOutcome>& outcomes,
         }
         const double rmsSpread = hi - lo;
         const double centroidSpread = cHi - cLo;
-        if (isV3) {
-            if (centroidSpread >= 90.0 || rmsSpread >= 0.55) return "differentiation_active";
-            if (centroidSpread >= 45.0 || rmsSpread >= 0.30) return "factors_active_but_need_demo_scaling";
+        const bool isV4 = specs.size() >= 20;
+        if (isV3 || isV4) {
+            const double centroidThresh = isV4 ? 40.0 : 90.0;
+            const double rmsThresh = isV4 ? 0.40 : 0.55;
+            if (centroidSpread >= centroidThresh || rmsSpread >= rmsThresh) return "differentiation_active";
+            if (centroidSpread >= centroidThresh * 0.6 || rmsSpread >= rmsThresh * 0.55)
+                return "factors_active_but_need_demo_scaling";
             return "factors_active_but_need_demo_scaling";
         }
         if (rmsSpread < 0.35) return "factors_active_but_need_demo_scaling";
     }
     return "differentiation_active";
+}
+
+static std::string readinessStatusV4(const std::string& bottleneck, size_t wavCount,
+    const std::vector<RenderOutcome>& outcomes, const std::vector<RenderSpec>& specs,
+    int expectedCount) {
+    if (wavCount != static_cast<size_t>(expectedCount) || expectedCount != 30)
+        return "audit_failed_missing_factor_application";
+    if (bottleneck == "renderer_not_applying_factors" || bottleneck == "export_missing_factors")
+        return "audit_failed_missing_factor_application";
+
+    bool clipped = false;
+    for (const auto& o : outcomes) {
+        if (o.metrics.peak_dbfs > -2.5) clipped = true;
+    }
+    if (clipped) return "demo_generated_but_tone_regression";
+
+    double minCorr = 1.0;
+    std::set<std::string> sampleIds;
+    for (const auto& s : specs) sampleIds.insert(s.sample_id);
+    const std::vector<std::string> notes = {"A2", "A4", "E5"};
+    for (const auto& note : notes) {
+        for (auto itA = sampleIds.begin(); itA != sampleIds.end(); ++itA) {
+            for (auto itB = std::next(itA); itB != sampleIds.end(); ++itB) {
+                const std::vector<double> *a = nullptr, *b = nullptr;
+                for (size_t i = 0; i < specs.size(); ++i) {
+                    if (specs[i].note_name == note && specs[i].sample_id == *itA) a = &outcomes[i].audio;
+                    if (specs[i].note_name == note && specs[i].sample_id == *itB) b = &outcomes[i].audio;
+                }
+                if (a && b) minCorr = std::min(minCorr, pearson(*a, *b));
+            }
+        }
+    }
+
+    double centroidSpread = 0.0;
+    double cLo = 1e9, cHi = -1e9;
+    for (size_t i = 0; i < outcomes.size(); ++i) {
+        if (specs[i].note_name != "A2") continue;
+        cLo = std::min(cLo, outcomes[i].metrics.spectral_centroid_hz);
+        cHi = std::max(cHi, outcomes[i].metrics.spectral_centroid_hz);
+    }
+    centroidSpread = cHi - cLo;
+
+    if (bottleneck == "differentiation_active" && centroidSpread >= 45.0 && minCorr < 0.97)
+        return "ready_for_classical_guitar_stk_acceptance";
+    if (centroidSpread < 35.0 && minCorr > 0.95) return "demo_generated_but_differentiation_weak";
+    if (minCorr < 0.50) return "demo_generated_but_tone_regression";
+    if (centroidSpread >= 35.0 && minCorr < 0.97) return "ready_for_classical_guitar_stk_acceptance";
+    return "demo_generated_but_differentiation_weak";
 }
 
 static std::string readinessStatusV3(const std::string& bottleneck, size_t wavCount,
@@ -861,22 +944,47 @@ static void writeReportV2(const std::filesystem::path& jsonPath, const std::file
     const std::vector<RenderSpec>& specs, const std::vector<RenderOutcome>& outcomes,
     const std::vector<std::string>& written) {
     const std::string auditSlice = extractJsonObjectSlice(paramsJson, "physical_difference_audit");
-    const bool isV3 = cfg.demoVersion.find("v3") != std::string::npos;
-    const std::string bottleneck = inferBottleneck(outcomes, specs, auditSlice, isV3);
-    const std::string readiness = isV3
-        ? readinessStatusV3(bottleneck, written.size(), outcomes, specs)
-        : readinessStatus(bottleneck, written.size());
+    const bool isV4 = cfg.demoVersion.find("v4_10_samples") != std::string::npos;
+    const bool isV3 = !isV4 && cfg.demoVersion.find("v3") != std::string::npos;
+    const int expectedCount = static_cast<int>(parseJsonNumber(paramsJson, "expected_render_count", kExpectedRenderCount));
+    const std::string bottleneck = inferBottleneck(outcomes, specs, auditSlice, isV3 || isV4);
+    const std::string readiness = isV4
+        ? readinessStatusV4(bottleneck, written.size(), outcomes, specs, expectedCount)
+        : (isV3 ? readinessStatusV3(bottleneck, written.size(), outcomes, specs)
+                : readinessStatus(bottleneck, written.size()));
 
     std::ostringstream js;
     js << "{\n";
     js << "  \"demo_version\": \"" << jsonEscape(cfg.demoVersion) << "\",\n";
     js << "  \"renderer\": \"STK/C++\",\n";
     js << "  \"python_role\": \"parameter_export_only\",\n";
+    js << "  \"expected_render_count\": " << expectedCount << ",\n";
+    js << "  \"actual_render_count\": " << written.size() << ",\n";
     js << "  \"render_count\": " << written.size() << ",\n";
     js << "  \"readiness\": \"" << readiness << "\",\n";
     js << "  \"differentiation_bottleneck\": \"" << bottleneck << "\",\n";
     js << "  \"normalization_policy\": \"peak_ceiling_only_no_rms_equalization\",\n";
     if (!auditSlice.empty()) js << "  \"physical_difference_audit\": " << auditSlice << ",\n";
+    const std::string factorMatrix = extractJsonValueSlice(paramsJson, "stk_factor_activation_matrix");
+    if (!factorMatrix.empty()) {
+        js << "  \"stk_factor_activation_matrix\": " << factorMatrix << ",\n";
+    }
+    const std::string weakSummary = extractJsonValueSlice(paramsJson, "missing_or_weak_factor_summary");
+    if (!weakSummary.empty()) {
+        js << "  \"missing_or_weak_factor_summary\": " << weakSummary << ",\n";
+    }
+    const std::string spreadTable = extractJsonObjectSlice(paramsJson, "physical_factor_spread_table");
+    if (!spreadTable.empty()) js << "  \"physical_factor_spread_table\": " << spreadTable << ",\n";
+    const std::string modalSummary = extractJsonObjectSlice(paramsJson, "modal_bank_summary_per_sample");
+    if (!modalSummary.empty()) js << "  \"modal_bank_summary_per_sample\": " << modalSummary << ",\n";
+    const std::string soundholeSummary = extractJsonObjectSlice(paramsJson, "soundhole_radiation_summary");
+    if (!soundholeSummary.empty()) js << "  \"soundhole_radiation_summary\": " << soundholeSummary << ",\n";
+    const std::string dampingSummary = extractJsonObjectSlice(paramsJson, "material_damping_summary");
+    if (!dampingSummary.empty()) js << "  \"material_damping_summary\": " << dampingSummary << ",\n";
+    const std::string depthSummary = extractJsonObjectSlice(paramsJson, "body_depth_volume_summary");
+    if (!depthSummary.empty()) js << "  \"body_depth_volume_summary\": " << depthSummary << ",\n";
+    const std::string knownLimits = extractJsonValueSlice(paramsJson, "known_limitations");
+    if (!knownLimits.empty()) js << "  \"known_limitations\": " << knownLimits << ",\n";
     js << "  \"applied_parameter_audit\": [\n";
     for (size_t i = 0; i < specs.size(); ++i) {
         const auto& s = specs[i];
@@ -932,27 +1040,38 @@ static void writeReportV2(const std::filesystem::path& jsonPath, const std::file
     js << "  ],\n";
 
     js << "  \"per_sample_applied_mix_summary\": {\n";
-    const std::vector<std::string> sampleIds = {"sample_000", "sample_001", "sample_002"};
-    for (size_t si = 0; si < sampleIds.size(); ++si) {
+    std::set<std::string> reportSampleIds;
+    for (const auto& s : specs) reportSampleIds.insert(s.sample_id);
+    size_t mixIdx = 0;
+    const size_t mixTotal = reportSampleIds.size();
+    for (const auto& sid : reportSampleIds) {
         for (size_t i = 0; i < specs.size(); ++i) {
-            if (specs[i].sample_id != sampleIds[si] || specs[i].note_name != "A2") continue;
+            if (specs[i].sample_id != sid || specs[i].note_name != "A2") continue;
             const auto& o = outcomes[i];
-            js << "    \"" << sampleIds[si] << "\": {";
+            js << "    \"" << sid << "\": {";
             js << "\"string_direct_weight\":" << o.applied_string_direct_weight;
             js << ",\"body_modal_gain\":" << (specs[i].body_modal_gain);
             js << ",\"string_to_body_send\":" << o.applied_string_to_body_send;
             js << ",\"spectral_centroid_hz\":" << o.metrics.spectral_centroid_hz;
             js << ",\"body_string_energy_ratio\":" << o.metrics.body_string_energy_ratio;
-            js << "}" << (si + 1 < sampleIds.size() ? ",\n" : "\n");
+            js << "}" << (++mixIdx < mixTotal ? ",\n" : "\n");
         }
     }
     js << "  },\n";
 
     js << "  \"pairwise_same_note_correlation\": {\n";
     const std::vector<std::string> notes = {"A2", "A4", "E5"};
-    const std::vector<std::pair<std::string, std::string>> pairs = {
-        {"sample_000", "sample_001"}, {"sample_000", "sample_002"}, {"sample_001", "sample_002"}};
+    std::vector<std::pair<std::string, std::string>> pairs;
+    if (isV4 || reportSampleIds.size() > 3) {
+        for (auto itA = reportSampleIds.begin(); itA != reportSampleIds.end(); ++itA) {
+            for (auto itB = std::next(itA); itB != reportSampleIds.end(); ++itB)
+                pairs.emplace_back(*itA, *itB);
+        }
+    } else {
+        pairs = {{"sample_000", "sample_001"}, {"sample_000", "sample_002"}, {"sample_001", "sample_002"}};
+    }
     size_t pi = 0;
+    const size_t pairTotal = notes.size() * pairs.size();
     for (const auto& note : notes) {
         for (const auto& pr : pairs) {
             const std::vector<double> *a = nullptr, *b = nullptr;
@@ -962,7 +1081,7 @@ static void writeReportV2(const std::filesystem::path& jsonPath, const std::file
             }
             if (a && b) {
                 js << "    \"" << note << "_" << pr.first << "_vs_" << pr.second << "\": "
-                   << pearson(*a, *b) << (++pi < notes.size() * pairs.size() ? ",\n" : "\n");
+                   << pearson(*a, *b) << (++pi < pairTotal ? ",\n" : "\n");
             }
         }
     }
@@ -979,7 +1098,7 @@ static void writeReportV2(const std::filesystem::path& jsonPath, const std::file
             }
             if (ok) {
                 js << "    \"" << note << "_" << pr.first << "_vs_" << pr.second << "\": "
-                   << std::abs(ca - cb) << (++pi < notes.size() * pairs.size() ? ",\n" : "\n");
+                   << std::abs(ca - cb) << (++pi < pairTotal ? ",\n" : "\n");
             }
         }
     }

@@ -17,9 +17,11 @@ from pgsm_stk_parameter_export import (  # noqa: E402
     RENDERER_TARGET,
     REQUIRED_RENDER_GROUPS,
     SAMPLE_SET,
+    SAMPLE_SET_V4,
     build_parameter_export,
     expected_wav_filename,
     expected_wav_paths,
+    sample_set_for_demo,
     write_parameter_export,
 )
 
@@ -84,6 +86,28 @@ class TestPgsmStkParameterExport(unittest.TestCase):
             self.assertIn("perceptual_calibration", row)
             self.assertTrue(row["perceptual_calibration"]["diagnostic_exaggeration_for_audible_demo"])
             self.assertIn("pgsm_stk_guitar_demo_v3", row["output_model"]["output_wav_path"])
+
+    def test_v4_10_samples_export(self) -> None:
+        doc = build_parameter_export(repo_root=REPO, demo_version="v4_10_samples")
+        self.assertEqual(doc["demo_version"], "pgsm_stk_guitar_demo_v4_10_samples")
+        self.assertEqual(doc.get("expected_render_count"), 30)
+        self.assertEqual(len(doc["renders"]), 30)
+        self.assertEqual(list(doc["sample_set"]), list(SAMPLE_SET_V4))
+        self.assertIn("stk_factor_activation_matrix", doc)
+        self.assertIn("missing_or_weak_factor_summary", doc)
+        self.assertIn("physical_factor_spread_table", doc)
+        self.assertIn("modal_bank_summary_per_sample", doc)
+        matrix = doc["stk_factor_activation_matrix"]
+        self.assertGreaterEqual(len(matrix), 30)
+        for row in doc["renders"]:
+            self.assertIn("pgsm_stk_guitar_demo_v4_10_samples", row["output_model"]["output_wav_path"])
+            self.assertIn("perceptual_calibration", row)
+        paths = expected_wav_paths(REPO, demo_version="v4_10_samples")
+        self.assertEqual(len(paths), 30)
+        self.assertTrue(all("pgsm_stk_guitar_demo_v4_10_samples" in str(p) for p in paths))
+        a2 = {r["sample_id"]: r for r in doc["renders"] if r["note_name"] == "A2"}
+        depths = [float(a2[s]["body_model"]["body_depth_m"]) for s in SAMPLE_SET_V4 if s in a2]
+        self.assertGreater(max(depths) - min(depths), 0.005)
 
     def test_samples_differ_physically(self) -> None:
         doc = build_parameter_export(repo_root=REPO)
