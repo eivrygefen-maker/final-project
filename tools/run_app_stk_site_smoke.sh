@@ -54,11 +54,13 @@ from app_stk_fretboard import (
     build_required_note_set_from_fretboard,
     lookup_note,
     normalize_note_name,
+    note_name_to_frequency_hz,
     note_to_midi,
     position_runtime_wav_name,
     required_notes_cover_high_frets,
     validate_explicit_fretboard_checks,
     validate_player_payload_positions,
+    validate_sharp_note_frequency_checks,
 )
 from classical_guitar_fretboard import load_fretboard_config, run_fretboard_mapping_audit
 from stk_app_audio_service import (
@@ -68,6 +70,7 @@ from stk_app_audio_service import (
     DEBUG_REPORTS,
     DEFAULT_APP_STK_WORKERS,
     GUITAR_STACK_ROOT,
+    NOTE_CACHE_VERSION,
     activate_stk_guitar_for_player,
     build_cache_spec_for_hash,
     cache_is_ready_for_fretboard,
@@ -98,6 +101,7 @@ assert APP_STK_PARALLEL_WORKERS_ENABLED is True
 assert DEFAULT_APP_STK_WORKERS == 3
 assert int(cfg.get("parallel_workers") or 0) == 3
 assert cfg.get("render_mode") == "parallel_batch"
+assert NOTE_CACHE_VERSION == "app_stk_v4_explicit_frequency"
 assert callable(render_notes_parallel_batch)
 
 fb_cfg_path = root / "config" / "classical_guitar_fretboard.json"
@@ -115,6 +119,13 @@ assert lookup_note(2, 1, fb_cfg) == "C4"
 assert lookup_note(1, 12, fb_cfg) == "E5"
 assert lookup_note(1, 19, fb_cfg) == "B5"
 assert note_to_midi("E5") < note_to_midi("B5")
+assert note_to_midi("F#2") - note_to_midi("F2") == 1
+assert note_to_midi("C#3") - note_to_midi("C3") == 1
+sharp_freq = validate_sharp_note_frequency_checks()
+assert all(row["passed"] for row in sharp_freq), sharp_freq
+assert abs(note_name_to_frequency_hz("F#2") - 92.4986056779) < 0.02
+assert abs(note_name_to_frequency_hz("G#2") - 103.8261743949) < 0.02
+assert abs(note_name_to_frequency_hz("A#2") - 116.5409403795) < 0.02
 
 required = build_required_note_set_from_fretboard(int(cfg.get("fret_count") or 19))
 assert required, "fretboard required notes empty"
@@ -365,6 +376,12 @@ if grep -qF 'uses_string_fret_position_mapping' "${REPO_ROOT}/gui/stk_app_audio_
   ok "string/fret position mapping flag in player payload"
 else
   bad "string/fret position mapping flag missing"
+fi
+
+if grep -qF 'explicit_frequency_hz' "${REPO_ROOT}/gui/stk_app_audio_service.py"; then
+  ok "explicit frequency_hz STK render path"
+else
+  bad "explicit frequency_hz missing"
 fi
 
 if grep -qF 'APP_STK_POSITION_WAVS_READY' "${REPO_ROOT}/gui/stk_app_audio_service.py"; then

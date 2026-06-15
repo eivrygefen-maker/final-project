@@ -36,17 +36,22 @@ from pgsm_step5l_limited_multiguitar_differentiation import REFERENCE_SAMPLE_ID
 from app_stk_config import load_app_stk_config, priority_notes_from_config
 from app_stk_fretboard import (
     build_fretboard_note_mapping,
+    build_note_frequency_hz_table,
     build_required_note_set_from_fretboard,
     get_fret_count,
     list_ignored_non_note_wavs,
     list_note_wavs,
     list_position_wav_files,
+    midi_to_frequency_hz,
     normalize_note_name,
+    note_id_from_note_name,
+    note_name_to_frequency_hz,
     note_range_label_from_required,
     note_to_midi,
     player_fretboard_metadata,
     position_runtime_wav_name,
     run_fretboard_mapping_audit,
+    validate_sharp_note_frequency_checks,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -65,7 +70,7 @@ DEFAULT_NOTE_RANGE = "E2:E5"  # legacy chromatic range; player uses fretboard-de
 DEFAULT_SOURCE_SAMPLE_ID = "sample_000"
 DEFAULT_PRIORITY_NOTES: Tuple[str, ...] = ("A2", "A4", "E5")
 CACHE_SPEC_FILE = ".cache_spec.json"
-NOTE_CACHE_VERSION = "app_stk_v3_fretboard_json"
+NOTE_CACHE_VERSION = "app_stk_v4_explicit_frequency"
 APP_STK_PARALLEL_WORKERS_ENABLED = True
 DEFAULT_APP_STK_WORKERS = 3
 AUDIT_INCOMPLETE_MSG = (
@@ -154,16 +159,8 @@ def library_report_paths_for_hash(parameter_hash: str, instrument: str = "classi
 
 
 def note_name_to_frequency(note_name: str) -> float:
-    m = _NOTE_RE.match(str(note_name).strip())
-    if not m:
-        raise ValueError(f"invalid note name: {note_name!r}")
-    letter, acc, octave_s = m.group(1), m.group(2) or "", int(m.group(3))
-    if acc == "b":
-        letter = NOTE_NAMES[(NOTE_NAMES.index(letter) - 1) % 12]
-    if letter not in NOTE_NAMES:
-        raise ValueError(f"unknown pitch class in {note_name!r}")
-    midi = (octave_s + 1) * 12 + NOTE_NAMES.index(letter)
-    return A4_REFERENCE_HZ * (2.0 ** ((midi - 69) / 12.0))
+    """Equal-temperament Hz — delegates to fretboard source of truth (handles sharps)."""
+    return note_name_to_frequency_hz(note_name)
 
 
 def frequency_to_note_name(hz: float) -> str:
@@ -424,6 +421,8 @@ def build_cache_spec_for_hash(
         "default_duration_s": c.get("default_duration_s"),
         "low_note_duration_s": c.get("low_note_duration_s"),
         "high_note_duration_s": c.get("high_note_duration_s"),
+        "explicit_frequency_hz": True,
+        "note_frequency_hz": build_note_frequency_hz_table(required),
     }
 
 
@@ -781,7 +780,7 @@ def _build_single_note_export(
         physical, reference_physical, sample_id=sample_id, voicing=voicing_table
     )
     mix_scales = _compute_v4_continuous_mix(physical, reference_physical, factors)
-    freq = note_name_to_frequency(note_name)
+    freq = note_name_to_frequency_hz(note_name)
     render = build_render_entry(
         sample_id,
         note_name,
@@ -795,6 +794,9 @@ def _build_single_note_export(
         frequency_hz=freq,
         output_wav_relpath=stk_wav_relpath,
     )
+    render["safe_note_id"] = note_id_from_note_name(note_name)
+    render["output_wav"] = f"{normalize_note_name(note_name)}.wav"
+    render["explicit_frequency_hz"] = True
     return {
         "export_version": "pgsm_stk_app_note_export_v1",
         "demo_version": "app_stk_note_cache_classical",
@@ -806,6 +808,8 @@ def _build_single_note_export(
         "sample_id": sample_id,
         "note_name": note_name,
         "physical_source": "audit_or_lhs_fallback",
+        "explicit_frequency_hz": True,
+        "note_frequency_hz": {note_name: freq},
         "renders": [render],
         "expected_render_count": 1,
     }
@@ -830,23 +834,25 @@ def _build_batch_note_export(
     for note_name in notes:
         normalized = normalize_note_name(note_name)
         stk_rel = f"{render_subdir}/{_stk_render_wav_name(normalized)}"
-        freq = note_name_to_frequency(normalized)
+        freq = note_name_to_frequency_hz(normalized)
         duration_s = float(durations_by_note.get(normalized) or durations_by_note.get(note_name) or 4.5)
-        renders.append(
-            build_render_entry(
-                sample_id,
-                normalized,
-                physical=physical,
-                reference_physical=reference_physical,
-                sample_rate=NUMERIC_SR,
-                duration_s=duration_s,
-                repo_root=repo_root,
-                demo_version=ACCEPTED_STK_DEMO_VERSION,
-                perceptual_mix=mix_scales,
-                frequency_hz=freq,
-                output_wav_relpath=stk_rel,
-            )
+        entry = build_render_entry(
+            sample_id,
+            normalized,
+            physical=physical,
+            reference_physical=reference_physical,
+            sample_rate=NUMERIC_SR,
+            duration_s=duration_s,
+            repo_root=repo_root,
+            demo_version=ACCEPTED_STK_DEMO_VERSION,
+            perceptual_mix=mix_scales,
+            frequency_hz=freq,
+            output_wav_relpath=stk_rel,
         )
+        entry["safe_note_id"] = note_id_from_note_name(normalized)
+        entry["output_wav"] = f"{normalized}.wav"
+        entry["explicit_frequency_hz"] = True
+        renders.append(entry)
     return {
         "export_version": "pgsm_stk_app_note_export_v1",
         "demo_version": "app_stk_note_cache_classical",
@@ -857,6 +863,8 @@ def _build_batch_note_export(
         "audio_output_subdir": render_subdir,
         "sample_id": sample_id,
         "physical_source": "audit_or_lhs_fallback",
+        "explicit_frequency_hz": True,
+        "note_frequency_hz": {r["note_name"]: r["frequency_hz"] for r in renders},
         "renders": renders,
         "expected_render_count": len(renders),
     }
@@ -1551,6 +1559,9 @@ def build_note_library(
         "target_runtime_s": target_runtime_s,
         "achieved_target": total_render <= target_runtime_s if total_render > 0 else True,
         "default_duration_s": cfg.get("default_duration_s"),
+        "explicit_frequency_hz": True,
+        "note_frequency_hz": build_note_frequency_hz_table(required),
+        "sharp_note_frequency_validation": validate_sharp_note_frequency_checks(),
         **position_fields,
     }
     if parameter_hash:

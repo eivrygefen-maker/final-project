@@ -15,13 +15,16 @@ from classical_guitar_fretboard import (  # noqa: F401
     list_note_wavs,
     list_position_wav_files,
     load_fretboard_config,
+    midi_to_frequency_hz,
     midi_to_note_name,
     normalize_note_name,
     lookup_note,
     note_at_fret,
     note_id_from_note_name,
+    note_name_to_frequency_hz,
     note_range_label_from_required,
     note_to_midi,
+    build_note_frequency_hz_table,
     player_fretboard_metadata,
     position_runtime_wav_name,
     required_notes_cover_high_frets,
@@ -29,6 +32,7 @@ from classical_guitar_fretboard import (  # noqa: F401
     string_visual_order_numbers,
     validate_explicit_fretboard_checks,
     validate_player_payload_positions,
+    validate_sharp_note_frequency_checks,
 )
 
 # Legacy alias used by note_cache_ui / tests

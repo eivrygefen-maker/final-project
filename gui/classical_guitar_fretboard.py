@@ -76,6 +76,55 @@ EXPLICIT_VALIDATION_CHECKS: Tuple[Tuple[str, int, str], ...] = (
     ("S1", 19, "B5"),
 )
 
+# Sharp-note pitch checks (equal temperament, A4=440) — used by smoke / cache audit.
+SHARP_NOTE_FREQUENCY_CHECKS: Tuple[Tuple[str, float], ...] = (
+    ("F#2", 92.4986056779),
+    ("G#2", 103.8261743949),
+    ("A#2", 116.5409403795),
+    ("C#3", 138.5913154882),
+    ("D#3", 155.5634918610),
+)
+
+
+def validate_sharp_note_frequency_checks(
+    tolerance_hz: float = 0.02,
+) -> List[Dict[str, Any]]:
+    """Verify sharp note names map to correct semitones and Hz (not natural below)."""
+    results: List[Dict[str, Any]] = []
+    for note_name, expected_hz in SHARP_NOTE_FREQUENCY_CHECKS:
+        normalized = normalize_note_name(note_name)
+        natural = normalized.replace("#", "")
+        if natural == normalized:
+            natural = note_name  # fallback
+        actual_hz = note_name_to_frequency_hz(normalized)
+        natural_hz = note_name_to_frequency_hz(natural) if is_valid_note_name(natural) else 0.0
+        semitone_delta = note_to_midi(normalized) - (
+            note_to_midi(natural) if is_valid_note_name(natural) else note_to_midi(normalized) - 1
+        )
+        results.append(
+            {
+                "note_name": normalized,
+                "expected_hz": expected_hz,
+                "actual_hz": round(actual_hz, 10),
+                "natural_note": natural,
+                "natural_hz": round(natural_hz, 10),
+                "semitone_above_natural": semitone_delta,
+                "passed": abs(actual_hz - expected_hz) <= tolerance_hz and semitone_delta == 1,
+            }
+        )
+    return results
+
+
+def build_note_frequency_hz_table(
+    notes: Sequence[str],
+) -> Dict[str, float]:
+    """Expected STK render frequencies for a note set (explicit Hz, not name parsing)."""
+    out: Dict[str, float] = {}
+    for note in notes:
+        name = normalize_note_name(str(note))
+        out[name] = round(note_name_to_frequency_hz(name), 10)
+    return out
+
 
 def normalize_note_name(note_name: str) -> str:
     """Canonical sharp spelling (e.g. Bb4 -> A#4)."""
@@ -185,11 +234,21 @@ def note_to_midi(note_name: str) -> int:
     m = _NOTE_RE.match(normalized)
     if not m:
         raise ValueError(f"invalid note name: {note_name!r}")
-    letter = m.group(1)
-    if letter not in NOTE_NAMES:
-        raise ValueError(f"unknown pitch class in {note_name!r}")
-    octave_s = int(m.group(3))
-    return (octave_s + 1) * 12 + NOTE_NAMES.index(letter)
+    letter, acc, octave_s = m.group(1), m.group(2) or "", int(m.group(3))
+    if acc == "#":
+        pitch = f"{letter}#"
+    elif acc == "b":
+        pitch = _FLAT_TO_SHARP.get(f"{letter}b", letter)
+    else:
+        pitch = letter
+    if pitch not in NOTE_NAMES:
+        raise ValueError(f"unknown pitch class {pitch!r} in {note_name!r}")
+    return (octave_s + 1) * 12 + NOTE_NAMES.index(pitch)
+
+
+def note_name_to_frequency_hz(note_name: str) -> float:
+    """Equal-temperament Hz from normalized note name (A4=440)."""
+    return midi_to_frequency_hz(note_to_midi(note_name))
 
 
 def midi_to_note_name(midi: int, *, use_sharps: bool = True) -> str:
