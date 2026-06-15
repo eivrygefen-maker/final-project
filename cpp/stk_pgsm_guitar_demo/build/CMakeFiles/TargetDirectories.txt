@@ -1,0 +1,7 @@
+/home/vboxuser/final-project/cpp/stk_pgsm_guitar_demo/build/CMakeFiles/stk_pgsm_guitar_demo.dir
+/home/vboxuser/final-project/cpp/stk_pgsm_guitar_demo/build/CMakeFiles/edit_cache.dir
+/home/vboxuser/final-project/cpp/stk_pgsm_guitar_demo/build/CMakeFiles/rebuild_cache.dir
+/home/vboxuser/final-project/cpp/stk_pgsm_guitar_demo/build/CMakeFiles/list_install_components.dir
+/home/vboxuser/final-project/cpp/stk_pgsm_guitar_demo/build/CMakeFiles/install.dir
+/home/vboxuser/final-project/cpp/stk_pgsm_guitar_demo/build/CMakeFiles/install/local.dir
+/home/vboxuser/final-project/cpp/stk_pgsm_guitar_demo/build/CMakeFiles/install/strip.dir

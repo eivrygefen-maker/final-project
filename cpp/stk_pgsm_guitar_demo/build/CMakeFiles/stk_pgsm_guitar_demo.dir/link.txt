@@ -1,0 +1,1 @@
+/usr/bin/c++ CMakeFiles/stk_pgsm_guitar_demo.dir/main.cpp.o -o stk_pgsm_guitar_demo  -Wl,-rpath,/home/vboxuser/stk/build: /home/vboxuser/stk/build/libstk.so -lpthread 
