@@ -21,6 +21,14 @@ AUDIT_MD_PATH = REPO_ROOT / "audio" / "debug_reports" / "app_stk_fretboard_mappi
 NOTE_NAMES: Tuple[str, ...] = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 A4_REFERENCE_HZ = 440.0
 _NOTE_RE = re.compile(r"^([A-G])(#|b)?(\d+)$")
+_NOTE_ID_RE = re.compile(r"^([A-G])(s)?(\d+)$")
+
+# WAV stems that are helpers/previews — not playable fretboard notes.
+HELPER_WAV_STEMS = frozenset(
+    {
+        "all_notes_preview",
+    }
+)
 
 _FLAT_TO_SHARP = {
     "Bb": "A#",
@@ -82,6 +90,78 @@ def normalize_note_name(note_name: str) -> str:
     if acc == "#":
         return f"{letter}#{octave_s}"
     return f"{letter}{octave_s}"
+
+
+def is_valid_note_name(name: str) -> bool:
+    """True when ``name`` matches A–G with optional #/b and octave (no exceptions)."""
+    return bool(_NOTE_RE.match(str(name).strip()))
+
+
+def note_id_stem_to_note_name(stem: str) -> Optional[str]:
+    """Map runtime note-id stems (e.g. Fs2) to normalized note names (F#2)."""
+    s = str(stem).strip()
+    if is_valid_note_name(s):
+        return normalize_note_name(s)
+    m = _NOTE_ID_RE.match(s)
+    if not m:
+        return None
+    letter, sharp, octave_s = m.group(1), m.group(2), m.group(3)
+    candidate = f"{letter}#{octave_s}" if sharp else f"{letter}{octave_s}"
+    if not is_valid_note_name(candidate):
+        return None
+    return normalize_note_name(candidate)
+
+
+def is_helper_wav_stem(stem: str) -> bool:
+    return str(stem).strip() in HELPER_WAV_STEMS
+
+
+def is_note_wav_path(path: Path) -> bool:
+    """True for playable note WAV paths; false for preview/helper/debug WAVs."""
+    stem = Path(path).stem
+    if is_helper_wav_stem(stem):
+        return False
+    if is_valid_note_name(stem):
+        return True
+    return note_id_stem_to_note_name(stem) is not None
+
+
+def wav_stem_to_note_name(stem: str) -> Optional[str]:
+    """Return normalized note name for a WAV stem, or None if not a note file."""
+    s = str(stem).strip()
+    if is_helper_wav_stem(s):
+        return None
+    if is_valid_note_name(s):
+        return normalize_note_name(s)
+    return note_id_stem_to_note_name(s)
+
+
+def list_note_wavs(cache_dir: Path) -> Dict[str, Path]:
+    """Map normalized note names to WAV paths (excludes helper/preview files)."""
+    out: Dict[str, Path] = {}
+    d = Path(cache_dir)
+    if not d.is_dir():
+        return out
+    for path in d.glob("*.wav"):
+        if not path.is_file():
+            continue
+        note_name = wav_stem_to_note_name(path.stem)
+        if note_name is None:
+            continue
+        out[note_name] = path
+    return out
+
+
+def list_ignored_non_note_wavs(cache_dir: Path) -> List[str]:
+    """WAV filenames in ``cache_dir`` that are not valid note files."""
+    d = Path(cache_dir)
+    if not d.is_dir():
+        return []
+    ignored: List[str] = []
+    for path in d.glob("*.wav"):
+        if path.is_file() and not is_note_wav_path(path):
+            ignored.append(path.name)
+    return sorted(ignored)
 
 
 def note_to_midi(note_name: str) -> int:

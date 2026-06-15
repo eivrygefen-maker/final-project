@@ -124,6 +124,15 @@ The HTML fretboard (`components/guitar_player`) plays STK cached WAVs via `activ
 - **Overlapping playback** — each click starts a new `AudioBufferSource`; prior notes decay naturally (chords)
 - Mapping audit blocks player if cache is incomplete
 
+### Note WAVs vs helper files
+
+Each STK note cache contains:
+
+- **Playable note WAVs** — filenames must be valid musical note names (e.g. `E2.wav`, `F#2.wav`, `B5.wav`). Only these are counted toward fretboard coverage and mapping audits.
+- **Optional helper WAVs** — e.g. `all_notes_preview.wav` (stitched preview for the “Play all notes” button). These are **not** notes and are listed as `ignored_non_note_wavs` in audit reports; they must not be parsed as fretboard pitches.
+
+Runtime validation checks mapped playable notes separately from the optional preview file referenced by `preview_wav` in the player payload.
+
 Legacy Python synthesis note cache is **not** used for the STK path.
 
 ## Render performance

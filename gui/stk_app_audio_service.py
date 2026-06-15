@@ -36,6 +36,8 @@ from app_stk_fretboard import (
     build_fretboard_note_mapping,
     build_required_note_set_from_fretboard,
     get_fret_count,
+    list_ignored_non_note_wavs,
+    list_note_wavs,
     normalize_note_name,
     note_range_label_from_required,
     note_to_midi,
@@ -225,10 +227,7 @@ def note_wav_in_cache(cache_dir: Path, note_name: str) -> Path:
 
 
 def list_notes_in_cache(cache_dir: Path) -> List[str]:
-    d = Path(cache_dir)
-    if not d.is_dir():
-        return []
-    return sorted(p.stem for p in d.glob("*.wav") if p.is_file())
+    return sorted(list_note_wavs(cache_dir).keys(), key=note_to_midi)
 
 
 def list_available_samples(repo_root: Optional[Path] = None) -> List[str]:
@@ -428,10 +427,9 @@ def run_note_mapping_audit(
     fret_count = int(c.get("fret_count") or 19)
     mapping = build_fretboard_note_mapping(fret_count)
     required = build_required_note_set_from_fretboard(fret_count)
-    generated = sorted(
-        {normalize_note_name(p.stem) for p in cache_dir.glob("*.wav") if p.is_file()},
-        key=note_to_midi,
-    )
+    note_wavs = list_note_wavs(cache_dir)
+    generated = sorted(note_wavs.keys(), key=note_to_midi)
+    ignored_non_note = list_ignored_non_note_wavs(cache_dir)
     missing_required: List[str] = []
     missing_positions: List[Dict[str, Any]] = []
     for row in mapping:
@@ -454,8 +452,11 @@ def run_note_mapping_audit(
         "cache_dir": str(cache_dir).replace("\\", "/"),
         "passed": not missing_positions,
         "fretboard_required_note_count": len(required),
+        "valid_note_wav_count": len(generated),
         "generated_note_count": len(generated),
+        "ignored_non_note_wavs": ignored_non_note,
         "missing_required_notes": sorted(missing_required, key=note_to_midi),
+        "extra_valid_notes": sorted(generated_set - required_set, key=note_to_midi),
         "extra_generated_notes": sorted(generated_set - required_set, key=note_to_midi),
         "lowest_required_note": required[0] if required else "",
         "highest_required_note": required[-1] if required else "",
@@ -481,7 +482,8 @@ def run_note_mapping_audit(
             "",
             f"- **passed**: {audit['passed']}",
             f"- **fretboard_required_note_count**: {audit['fretboard_required_note_count']}",
-            f"- **generated_note_count**: {audit['generated_note_count']}",
+            f"- **valid_note_wav_count**: {audit['valid_note_wav_count']}",
+            f"- **ignored_non_note_wavs**: {audit['ignored_non_note_wavs']}",
             f"- **lowest_required_note**: {audit['lowest_required_note']}",
             f"- **highest_required_note**: {audit['highest_required_note']}",
             f"- **missing_required_notes**: {audit['missing_required_notes']}",
@@ -929,11 +931,7 @@ def build_note_library(
                 _write_progress(cache_hits + idx + 1, job_status, note_name)
 
     write_cache_spec(target_dir, spec_doc)
-    generated_in_cache = [
-        normalize_note_name(p.stem)
-        for p in target_dir.glob("*.wav")
-        if p.is_file() and p.name != "all_notes_preview.wav"
-    ]
+    generated_in_cache = sorted(list_note_wavs(target_dir).keys(), key=note_to_midi)
     required_set = set(required)
     generated_set = set(generated_in_cache)
 
@@ -1815,6 +1813,7 @@ def build_stk_player_payload(
         "enable_overlapping_playback": bool(cfg.get("enable_overlapping_playback", True)),
         "fretboard": fretboard_meta,
         "string_visual_order_numbers": fretboard_meta.get("string_visual_order_numbers"),
+        "preview_wav": "all_notes_preview.wav",
     }
 
 
@@ -1823,34 +1822,52 @@ def validate_stk_player_runtime_cache(
     *,
     runtime_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Verify runtime cache files exist for every mapped fretboard note."""
+    """Verify runtime cache files exist for mapped playable notes (not helper previews)."""
+    from classical_guitar_fretboard import is_note_wav_path  # noqa: WPS433
     from note_cache_ui import RUNTIME_CACHE_DIR  # noqa: WPS433
 
     fingerprint = str(payload.get("fingerprint") or "")
     runtime = Path(runtime_dir) if runtime_dir is not None else RUNTIME_CACHE_DIR / fingerprint
     positions = list(payload.get("positions") or [])
     errors: List[str] = []
+    playable_errors: List[str] = []
 
     if not runtime.is_dir():
         errors.append(f"runtime cache dir missing: {runtime}")
+
     for pos in positions:
         wav_name = str(pos.get("wav") or "")
         if not wav_name:
-            errors.append("position missing wav mapping")
+            playable_errors.append("position missing wav mapping")
             continue
-        if not (runtime / wav_name).is_file():
-            errors.append(f"missing mapped wav: {wav_name}")
+        wav_path = runtime / wav_name
+        if not is_note_wav_path(wav_path):
+            playable_errors.append(f"mapped wav is not a note file: {wav_name}")
+            continue
+        if not wav_path.is_file():
+            playable_errors.append(f"missing mapped wav: {wav_name}")
 
-    preview_path = runtime / "all_notes_preview.wav"
-    if not preview_path.is_file():
-        errors.append("missing all_notes_preview.wav")
+    errors.extend(playable_errors)
+
+    preview_wav = payload.get("preview_wav")
+    preview_path = runtime / str(preview_wav) if preview_wav else None
+    preview_missing = False
+    if preview_wav:
+        if preview_path is None or not preview_path.is_file():
+            errors.append(f"missing preview wav: {preview_wav}")
+            preview_missing = True
 
     return {
         "ok": not errors and len(positions) > 0,
         "errors": errors,
+        "playable_errors": playable_errors,
         "runtime_dir": str(runtime).replace("\\", "/"),
         "position_count": len(positions),
-        "preview_path": str(preview_path).replace("\\", "/") if preview_path.is_file() else "",
+        "preview_wav": str(preview_wav) if preview_wav else "",
+        "preview_path": str(preview_path).replace("\\", "/")
+        if preview_path is not None and preview_path.is_file()
+        else "",
+        "preview_missing": preview_missing,
     }
 
 

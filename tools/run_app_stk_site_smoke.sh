@@ -175,6 +175,13 @@ assert cache_is_ready_for_fretboard(cache_ready, SMOKE_READY)
 
 audit = run_note_mapping_audit(cache_ready, SMOKE_READY)
 assert audit["passed"], audit
+assert audit.get("all_notes_preview_exists") is True
+assert "all_notes_preview.wav" in audit.get("ignored_non_note_wavs", []), audit
+assert audit.get("valid_note_wav_count") == len(required), audit
+assert lookup_note(6, 1, fb_cfg) == "F2"
+assert lookup_note(6, 2, fb_cfg) == "F#2"
+assert lookup_note(6, 3, fb_cfg) == "G2"
+assert lookup_note(1, 19, fb_cfg) == "B5"
 
 entry = save_guitar_to_stack(
     parameter_hash=SMOKE_READY,
@@ -205,6 +212,7 @@ validation = validate_stk_player_runtime_cache(
     payload, runtime_dir=Path(activation["runtime_dir"])
 )
 assert validation["ok"], validation
+assert validation.get("preview_wav") == "all_notes_preview.wav"
 runtime = Path(activation["runtime_dir"])
 assert (runtime / "all_notes_preview.wav").is_file()
 for pos in payload.get("positions") or []:
