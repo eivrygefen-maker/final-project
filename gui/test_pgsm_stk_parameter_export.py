@@ -44,6 +44,24 @@ class TestPgsmStkParameterExport(unittest.TestCase):
                 self.assertIn("tau_or_q", mode)
                 self.assertIn("component", mode)
 
+    def test_v2_physical_difference_audit(self) -> None:
+        doc = build_parameter_export(repo_root=REPO, demo_version="v2")
+        self.assertEqual(doc["demo_version"], "pgsm_stk_guitar_demo_v2")
+        audit = doc.get("physical_difference_audit") or {}
+        self.assertIn("per_sample", audit)
+        self.assertIn("factor_spread", audit)
+        self.assertEqual(audit.get("anchor_note"), "A2")
+        for sid in SAMPLE_SET:
+            row = audit["per_sample"][sid]
+            self.assertIn("bridge_mobility_factor", row)
+            self.assertIn("modal_frequency_hz", row)
+            self.assertIn("string_body_mix", row)
+        paths = expected_wav_paths(REPO, demo_version="v2")
+        self.assertTrue(all("pgsm_stk_guitar_demo_v2" in str(p) for p in paths))
+        for row in doc["renders"]:
+            self.assertIn("pgsm_stk_guitar_demo_v2", row["output_model"]["output_wav_path"])
+            self.assertFalse(row["output_model"].get("normalize_rms", True))
+
     def test_samples_differ_physically(self) -> None:
         doc = build_parameter_export(repo_root=REPO)
         a2 = {r["sample_id"]: r for r in doc["renders"] if r["note_name"] == "A2"}

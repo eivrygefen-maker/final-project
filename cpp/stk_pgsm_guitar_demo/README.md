@@ -28,17 +28,20 @@ Fails with a clear message if `Stk.h` or `libstk` is missing.
 ## Run (VM)
 
 ```bash
-# 1. Export parameters (Python, no audio)
+# v1 (baseline)
 python gui/pgsm_stk_parameter_export.py
-
-# 2. Render WAVs
 ./tools/run_stk_pgsm_demo.sh
+
+# v2 (physical difference audit + factor activation)
+python gui/pgsm_stk_parameter_export.py --demo-version v2
+./tools/run_stk_pgsm_demo_v2.sh
 ```
 
 ## Outputs
 
-- WAVs: `audio/pgsm_stk_guitar_demo/sample_XXX_{A2|A4|E5}_stk_guitar.wav`
-- Reports: `audio/debug_reports/pgsm_stk_guitar_demo_report.json` and `.md`
+- v1 WAVs: `audio/pgsm_stk_guitar_demo/`
+- v2 WAVs: `audio/pgsm_stk_guitar_demo_v2/`
+- v2 reports: `audio/debug_reports/pgsm_stk_guitar_demo_v2_report.json` and `.md`
 
 ## Limitations
 
