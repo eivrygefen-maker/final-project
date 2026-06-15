@@ -1104,23 +1104,35 @@ def save_guitar_to_stack(
     rom_physical_summary_path: Optional[str] = None,
     repo_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Save current guitar to FIFO stack as ready or pending_audio."""
+    """Save a fully ready guitar to the FIFO stack (ready entries only, no duplicates)."""
     _ = repo_root
+    existing = find_stack_entry_by_hash(parameter_hash, instrument)
+    if existing:
+        return {**existing, "_duplicate": True}
+
     state = refresh_stk_background_job_status(parameter_hash, instrument=instrument, promote_stack=False)
     if parameter_hash != str(state.get("parameter_hash") or ""):
         raise RuntimeError("STK parameter hash mismatch — Save & Sync again.")
 
     stk_status = str(state.get("status") or "not_started")
-
     if stk_status == "failed":
         raise RuntimeError(
             f"STK audio rendering failed: {state.get('error') or 'see debug report'}"
         )
     if stk_status == "stale":
         raise RuntimeError("STK cache is stale for this design — Save & Sync again.")
+    if stk_status != "ready" or not state.get("preview_cache_ready"):
+        raise RuntimeError(
+            "Guitar sound is still being prepared. Please wait a little longer."
+        )
 
     saved_id = f"guitar_{parameter_hash}_{datetime.now(timezone.utc).strftime('%H%M%S')}"
     report = get_latest_note_library_report(source_sample_id, instrument, parameter_hash=parameter_hash)
+    source = _ready_cache_source(state, parameter_hash, instrument)
+    saved_dir = saved_guitar_cache_dir(saved_id, instrument)
+    if saved_dir.exists():
+        shutil.rmtree(saved_dir)
+    shutil.copytree(source, saved_dir)
 
     entry: Dict[str, Any] = {
         "saved_guitar_id": saved_id,
@@ -1133,45 +1145,194 @@ def save_guitar_to_stack(
         "geometry_summary": dict(geometry_summary or {}),
         "rom_physical_summary_path": rom_physical_summary_path,
         "stk_parameter_export": "pgsm_stk_app_note_export_v1",
+        "stk_parameter_json_path": state.get("latest_report_path")
+        or (report.get("report_json") if report else None),
         "timing_report_path": state.get("latest_report_path")
         or (report.get("report_json") if report else None),
+        "note_cache_path": str(saved_dir).replace("\\", "/"),
+        "preview_image_path": None,
         "renderer": "STK/C++",
         "python_role": "parameter_export_only",
+        "status": "ready",
     }
 
-    if stk_status == "ready" and state.get("preview_cache_ready"):
-        source = _ready_cache_source(state, parameter_hash, instrument)
-        saved_dir = saved_guitar_cache_dir(saved_id, instrument)
-        if saved_dir.exists():
-            shutil.rmtree(saved_dir)
-        shutil.copytree(source, saved_dir)
-        entry["status"] = "ready"
-        entry["note_cache_path"] = str(saved_dir).replace("\\", "/")
-    elif stk_status == "partial_ready":
-        entry["status"] = "partial_audio"
-        entry["note_cache_path"] = None
-    elif stk_status in ("running", "not_started"):
-        entry["status"] = "pending_audio"
-        entry["note_cache_path"] = None
-    else:
-        raise RuntimeError(
-            f"Cannot save guitar while STK status is {stk_status!r}."
-        )
-
     doc = load_guitar_stack(instrument)
-    snapshots: List[Dict[str, Any]] = list(doc.get("snapshots") or [])
+    snapshots: List[Dict[str, Any]] = [
+        e for e in (doc.get("snapshots") or [])
+        if str(e.get("status") or "ready") == "ready"
+    ]
     snapshots.append(entry)
     max_n = int(doc.get("max_snapshots") or MAX_GUITAR_STACK)
     while len(snapshots) > max_n:
         evicted = snapshots.pop(0)
-        if str(evicted.get("status") or "") == "ready":
-            _remove_stack_cache(evicted.get("note_cache_path"))
+        _remove_stack_cache(evicted.get("note_cache_path"))
 
     doc["snapshots"] = snapshots
     doc["updated_at"] = _utc_now()
     doc["active_saved_guitar_id"] = saved_id
     save_guitar_stack(doc, instrument)
     return entry
+
+
+def find_stack_entry_by_hash(
+    parameter_hash: str,
+    instrument: str = "classical",
+) -> Optional[Dict[str, Any]]:
+    for entry in reversed(list_guitar_stack(instrument)):
+        if str(entry.get("parameter_hash") or "") != parameter_hash:
+            continue
+        if str(entry.get("status") or "ready") != "ready":
+            continue
+        if not entry.get("note_cache_path"):
+            continue
+        return entry
+    return None
+
+
+def get_stack_entry(
+    saved_guitar_id: str,
+    instrument: str = "classical",
+) -> Optional[Dict[str, Any]]:
+    for entry in list_guitar_stack(instrument):
+        if str(entry.get("saved_guitar_id") or "") == saved_guitar_id:
+            return entry
+    return None
+
+
+def list_ready_guitar_stack(instrument: str = "classical") -> List[Dict[str, Any]]:
+    """FIFO stack entries that are fully ready (user-facing list)."""
+    return [
+        e
+        for e in list_guitar_stack(instrument)
+        if str(e.get("status") or "ready") == "ready" and e.get("note_cache_path")
+    ]
+
+
+def user_facing_stk_status(internal_status: str) -> str:
+    """Map internal STK job status to a short user-facing message."""
+    status = str(internal_status or "not_started")
+    if status in ("waiting_for_rom",):
+        return "Waiting for guitar simulation"
+    if status in ("running", "partial_ready", "not_started", "stale"):
+        return "Preparing guitar sound…"
+    if status == "ready":
+        return "Guitar sound is ready"
+    if status == "failed":
+        return "Sound preparation failed — retry Save & Sync"
+    return "Preparing guitar sound…"
+
+
+def prepare_stk_player_assets(cache_dir: Path, fingerprint: str) -> Path:
+    """Copy STK note WAVs into the guitar_player runtime folder for iframe playback."""
+    from build_note_cache import (  # noqa: WPS433
+        enumerate_fretboard_positions,
+        frequency_to_note_name,
+        note_id_from_frequency,
+    )
+    from note_cache_ui import DEFAULT_FRET_COUNT, RUNTIME_CACHE_DIR  # noqa: WPS433
+
+    cache_dir = Path(cache_dir)
+    dest = RUNTIME_CACHE_DIR / fingerprint
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+
+    for pos in enumerate_fretboard_positions(DEFAULT_FRET_COUNT):
+        hz = float(pos["frequency_hz"])
+        note_name = frequency_to_note_name(hz)
+        note_id = note_id_from_frequency(hz)
+        src = cache_dir / f"{note_name}.wav"
+        if src.is_file():
+            shutil.copy2(src, dest / f"{note_id}.wav")
+    return dest
+
+
+def build_stk_player_payload(
+    cache_dir: Path,
+    *,
+    fingerprint: str,
+    ui_status: str = "ready",
+    fret_count: int = 19,
+) -> Dict[str, Any]:
+    """Build guitar_player component payload from an STK note cache directory."""
+    from build_note_cache import (  # noqa: WPS433
+        enumerate_fretboard_positions,
+        frequency_to_note_name,
+        note_id_from_frequency,
+    )
+
+    if ui_status not in ("ready", "building"):
+        return {"status": ui_status, "positions": [], "fingerprint": ""}
+
+    cache_dir = Path(cache_dir)
+    positions: List[Dict[str, Any]] = []
+    unique_ids: set[str] = set()
+    for pos in enumerate_fretboard_positions(fret_count):
+        hz = float(pos["frequency_hz"])
+        note_name = frequency_to_note_name(hz)
+        note_id = note_id_from_frequency(hz)
+        if not (cache_dir / f"{note_name}.wav").is_file():
+            continue
+        positions.append(
+            {
+                "string": int(pos["string_number"]),
+                "fret": int(pos["fret"]),
+                "note_id": note_id,
+                "wav": f"{note_id}.wav",
+            }
+        )
+        unique_ids.add(note_id)
+
+    if not positions:
+        return {"status": "hidden", "positions": [], "fingerprint": ""}
+
+    return {
+        "status": "ready",
+        "fingerprint": fingerprint,
+        "fret_count": fret_count,
+        "unique_note_count": len(unique_ids),
+        "playable_position_count": len(positions),
+        "positions": positions,
+    }
+
+
+def activate_stk_guitar_for_player(
+    *,
+    cache_dir: Path,
+    parameter_hash: str,
+    saved_guitar_id: str = "",
+) -> Dict[str, Any]:
+    """Stage STK cache for the HTML fretboard player."""
+    player_fp = saved_guitar_id or f"stk_{parameter_hash}"
+    prepare_stk_player_assets(Path(cache_dir), player_fp)
+    payload = build_stk_player_payload(Path(cache_dir), fingerprint=player_fp, ui_status="ready")
+    return {
+        "cache_path": str(Path(cache_dir)).replace("\\", "/"),
+        "parameter_hash": parameter_hash,
+        "saved_guitar_id": saved_guitar_id,
+        "player_fingerprint": player_fp,
+        "player_payload": payload,
+    }
+
+
+def load_stack_guitar_for_player(
+    saved_guitar_id: str,
+    instrument: str = "classical",
+) -> Dict[str, Any]:
+    """Load a saved FIFO guitar into the fretboard player."""
+    entry = get_stack_entry(saved_guitar_id, instrument)
+    if not entry:
+        raise RuntimeError("Saved guitar not found.")
+    if str(entry.get("status") or "") != "ready":
+        raise RuntimeError("Saved guitar is not ready for playback.")
+    cache_path = Path(str(entry.get("note_cache_path") or ""))
+    if not cache_path.is_dir():
+        raise RuntimeError("Saved guitar cache is missing.")
+    return activate_stk_guitar_for_player(
+        cache_dir=cache_path,
+        parameter_hash=str(entry.get("parameter_hash") or ""),
+        saved_guitar_id=saved_guitar_id,
+    )
 
 
 def list_guitar_stack(instrument: str = "classical") -> List[Dict[str, Any]]:

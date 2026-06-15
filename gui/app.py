@@ -206,6 +206,12 @@ def _init_session() -> None:
         "stk_preview_cache_ready": False,
         "stk_preview_cache_path": "",
         "stk_note_count": 0,
+        "active_stk_cache_path": "",
+        "active_stk_parameter_hash": "",
+        "active_stk_guitar_id": "",
+        "active_stk_player_fp": "",
+        "active_stk_player_payload": {},
+        "stk_show_diagnostics": False,
         "_fast_preview_paths_verified": False,
         "show_mesh_overlay": False,
         "mesh_is_dirty": True,
@@ -1294,6 +1300,11 @@ def invalidate_rom_and_audio_state() -> None:
     st.session_state.stk_preview_cache_ready = False
     st.session_state.stk_preview_cache_path = ""
     st.session_state.stk_note_count = 0
+    st.session_state.active_stk_cache_path = ""
+    st.session_state.active_stk_parameter_hash = ""
+    st.session_state.active_stk_guitar_id = ""
+    st.session_state.active_stk_player_fp = ""
+    st.session_state.active_stk_player_payload = {}
     try:
         from stk_app_audio_service import mark_stk_job_stale  # noqa: WPS433
 
@@ -1839,18 +1850,15 @@ def _render_main_studio(
     st.session_state["_top_wood"] = top_wood
     st.session_state["_back_wood"] = back_wood
 
-    stk_cache_ready = False
     stk_job: Dict[str, Any] = {}
     if rom_body_response_ready(rom_fp):
         try:
             from stk_app_audio_service import (  # noqa: WPS433
                 compute_parameter_hash,
-                promote_pending_stack_entries,
                 refresh_stk_background_job_status,
             )
 
             _stk_ph = compute_parameter_hash(rom_fp, lhs_params)
-            promote_pending_stack_entries(_stk_ph)
             stk_job = refresh_stk_background_job_status(_stk_ph)
             st.session_state.stk_parameter_hash = _stk_ph
             st.session_state.stk_job_status = str(stk_job.get("status") or "not_started")
@@ -1859,7 +1867,6 @@ def _render_main_studio(
             st.session_state.stk_note_count = int(
                 stk_job.get("actual_wav_count") or stk_job.get("wav_count") or stk_job.get("note_count") or 0
             )
-            stk_cache_ready = bool(stk_job.get("preview_cache_ready"))
         except Exception:
             st.session_state.stk_job_status = "failed"
             st.session_state.stk_preview_cache_ready = False
@@ -1895,46 +1902,13 @@ def _render_main_studio(
         unsafe_allow_html=True,
     )
     st.markdown('<div class="gen-sound-block">', unsafe_allow_html=True)
-    _rom_status = (
-        "running"
-        if st.session_state.get("rom_body_pending")
-        else "ready"
-        if rom_body_response_ready(rom_fp)
-        else "failed"
-        if st.session_state.get("rom_body_error")
-        else "waiting"
-    )
     _stk_status = str(st.session_state.get("stk_job_status") or "not_started")
-    _stk_note_count = int(
-        st.session_state.get("stk_note_count")
-        or stk_job.get("actual_wav_count")
-        or stk_job.get("wav_count")
-        or 0
-    )
-    st.caption(f"ROM: **{_rom_status}** · STK cache: **{_stk_status}**")
-    if stk_job.get("preview_cache_ready"):
-        st.caption(f"STK cache ready — {_stk_note_count} notes")
-    elif stk_job.get("total_notes"):
-        _actual = stk_job.get("actual_wav_count")
-        if _actual is None:
-            _actual = stk_job.get("wav_count")
-        _reported = stk_job.get("reported_rendered_notes")
-        if _actual is not None:
-            st.caption(f"STK progress: {_actual} / {stk_job.get('total_notes')} notes cached")
-        elif _reported is not None:
-            st.caption(f"STK progress: {_reported} / {stk_job.get('total_notes')} notes")
-        elif stk_job.get("rendered_notes") is not None:
-            st.caption(
-                f"STK progress: {stk_job.get('rendered_notes')} / {stk_job.get('total_notes')} notes"
-            )
-        if stk_job.get("elapsed_time_s") is not None or stk_job.get("elapsed_s") is not None:
-            st.caption(
-                f"Elapsed {stk_job.get('elapsed_time_s') or stk_job.get('elapsed_s')} s"
-            )
-    st.caption(
-        "Accepted STK/C++ renderer — cache builds after ROM. "
-        "**Generate Sound** saves to the comparison stack (ready or pending)."
-    )
+    if not rom_body_response_ready(rom_fp):
+        st.caption("Save & Sync first to simulate your guitar and prepare sound.")
+    else:
+        from stk_app_audio_service import user_facing_stk_status  # noqa: WPS433
+
+        st.caption(user_facing_stk_status(_stk_status))
     _gc1, _gc2, _gc3 = st.columns([1, 2, 1])
     with _gc2:
         gen_sound = st.button(
@@ -1943,28 +1917,18 @@ def _render_main_studio(
             use_container_width=True,
             disabled=not rom_body_response_ready(rom_fp),
             key="btn_gen_sound",
-            help="Save the current guitar to the STK comparison stack.",
+            help="Save this guitar when sound is ready and open the interactive player.",
         )
-        if not rom_body_response_ready(rom_fp):
-            st.caption("Save & Sync first to run ROM and start STK audio.")
-        elif _stk_status == "failed":
-            st.caption("STK rendering failed — check the STK panel below or Save & Sync again.")
-        elif _stk_status in ("running", "partial_ready", "not_started"):
-            st.caption(
-                "STK still rendering — you can save now as pending; audio attaches when ready."
-            )
-        elif stk_cache_ready:
-            st.caption("STK cache ready — save will include full note library.")
     st.markdown("</div>", unsafe_allow_html=True)
 
     if gen_sound:
         if not rom_body_response_ready(rom_fp):
-            st.warning("ROM body response is stale or missing — Save & Sync first.")
+            st.warning("Save & Sync first to prepare your guitar.")
         else:
-            from stk_app_ui import try_save_current_guitar_to_stack  # noqa: WPS433
+            from stk_app_ui import generate_or_load_ready_guitar  # noqa: WPS433
 
             try:
-                entry = try_save_current_guitar_to_stack(
+                result = generate_or_load_ready_guitar(
                     repo_root=BASE_DIR,
                     rom_fp=rom_fp,
                     lhs_params=lhs_params,
@@ -1973,20 +1937,16 @@ def _render_main_studio(
                     back_wood=back_wood,
                     rom_physical_summary_path=str(st.session_state.get("stk_body_json") or ""),
                 )
-                st.session_state.sound_stale = False
-                if str(entry.get("status")) == "pending_audio":
-                    st.success(
-                        f"Saved **{entry.get('display_name')}** as pending — "
-                        "audio will attach when STK finishes."
-                    )
+                if result.get("action") == "loaded_existing":
+                    st.info("This guitar is already saved — loaded from comparison stack.")
                 else:
                     st.success(
-                        f"Saved **{entry.get('display_name')}** to the comparison stack (ready)."
+                        f"Saved **{result['entry'].get('display_name')}** — play notes on the guitar below."
                     )
             except RuntimeError as exc:
                 st.warning(str(exc))
             except Exception as exc:
-                st.error(f"Save to stack failed: {exc}")
+                st.error(f"Could not save guitar: {exc}")
 
     if st.session_state.get("_pending_fom_run") and display_mesh_active(geom_fp):
         st.session_state._pending_fom_run = False
@@ -2019,64 +1979,50 @@ def _render_main_studio(
     _render_step_heading(
         3,
         "LISTEN TO YOUR GUITAR",
-        "STK note audio builds in the background after ROM. Click <strong>Generate Sound</strong> to save "
-        "the current guitar to the comparison stack, then play notes on the interactive guitar.",
+        "After sound is ready, click <strong>Generate Sound</strong> to save your guitar and play notes "
+        "on the interactive fretboard below.",
     )
-
-    if WAV_OUTPUT.is_file() and rom_body_response_ready(rom_fp) and not st.session_state.get("sound_stale"):
-        st.audio(WAV_OUTPUT.read_bytes(), format="audio/wav")
 
     from components.guitar_player import guitar_player  # noqa: WPS433
-    from note_cache_ui import (  # noqa: WPS433
-        build_player_payload,
-        expected_note_cache_fingerprint,
-        note_cache_root,
-        note_cache_ui_status,
-        resolve_note_cache,
+    from stk_app_ui import (  # noqa: WPS433
+        apply_stk_activation_to_session,
+        load_stack_guitar_for_player,
+        render_saved_guitars_row,
+        render_stk_diagnostics_panel,
     )
 
-    body_json = Path(st.session_state.get("stk_body_json") or ROM_STK_JSON)
-    modal_json = body_json if body_json.is_file() else ROM_STK_JSON
-    cache_root = note_cache_root(BASE_DIR)
-    expected_cache_fp = expected_note_cache_fingerprint(
-        modal_json=modal_json,
-        geometry_config=CONFIG_PATH,
-        stk_mode_alias=website_stk_mode_alias(),
-    )
-    resolved = resolve_note_cache(cache_root, expected_fingerprint=expected_cache_fp)
-    ui_status = note_cache_ui_status(
-        sound_stale=bool(st.session_state.get("sound_stale")),
-        note_cache_ready_fp=str(st.session_state.get("note_cache_ready_fp") or ""),
-        expected_fingerprint=expected_cache_fp,
-        resolved=resolved,
-        building=bool(st.session_state.get("note_cache_building")),
-    )
-    player_payload = build_player_payload(resolved, ui_status=ui_status)
-    guitar_player(player=player_payload, key="guitar_player", height=560)
+    loaded_guitar_id = render_saved_guitars_row(base_key="stk_saved_row")
+    if loaded_guitar_id:
+        try:
+            activation = load_stack_guitar_for_player(loaded_guitar_id)
+            apply_stk_activation_to_session(activation)
+        except Exception as exc:
+            st.warning(f"Could not load saved guitar: {exc}")
 
-    with st.expander(
-        "STK Classical Guitar (accepted renderer)",
-        expanded=bool(
-            st.session_state.get("rom_body_pending")
-            or str(st.session_state.get("stk_job_status"))
-            in ("running", "partial_ready", "waiting_for_rom", "ready")
-            or rom_body_response_ready(rom_fp)
-        ),
-    ):
-        from stk_app_ui import render_stk_classical_panel  # noqa: WPS433
+    active_payload = st.session_state.get("active_stk_player_payload") or {}
+    if active_payload.get("status") == "ready" and active_payload.get("positions"):
+        player_payload = active_payload
+        player_key = f"guitar_player_{st.session_state.get('active_stk_player_fp') or 'stk'}"
+    elif _stk_status in ("running", "partial_ready", "not_started", "waiting_for_rom"):
+        player_payload = {"status": "building", "positions": [], "fingerprint": ""}
+        player_key = "guitar_player_building"
+    else:
+        player_payload = {"status": "hidden", "positions": [], "fingerprint": ""}
+        player_key = "guitar_player_idle"
 
-        render_stk_classical_panel(
-            repo_root=BASE_DIR,
-            base_key="stk_classical_app",
-            rom_fp=rom_fp,
-            lhs_params=lhs_params,
-            geom=geom,
-            top_wood=top_wood,
-            back_wood=back_wood,
-            rom_ready=rom_body_response_ready(rom_fp),
-            rom_pending=bool(st.session_state.get("rom_body_pending")),
-            rom_error=str(st.session_state.get("rom_body_error") or ""),
-        )
+    guitar_player(player=player_payload, key=player_key, height=560)
+
+    with st.expander("Advanced STK diagnostics", expanded=False):
+        if st.checkbox("Show developer diagnostics", key="stk_show_diagnostics"):
+            render_stk_diagnostics_panel(
+                repo_root=BASE_DIR,
+                base_key="stk_diag",
+                rom_fp=rom_fp,
+                lhs_params=lhs_params,
+                rom_ready=rom_body_response_ready(rom_fp),
+                rom_pending=bool(st.session_state.get("rom_body_pending")),
+                rom_error=str(st.session_state.get("rom_body_error") or ""),
+            )
 
 
 def main() -> None:
