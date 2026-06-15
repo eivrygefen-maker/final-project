@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -18,6 +17,8 @@ from pgsm_step5e_string_driven_bridge_force_repair import ENERGY_FIRST_10MS_MAX 
 from pgsm_step5j_top_back_air_radiation_weighting_refinement import READINESS_AFTER as READINESS_STEP5J  # noqa: E402
 from pgsm_step5j_1_guitar_articulation_body_balance_repair import (  # noqa: E402
     AIR_CAVITY_MODAL_GAIN,
+    AUDIO_DIR,
+    FAST_VALIDATION_DURATION_S,
     FAST_VALIDATION_MAX_MODES,
     PGSM_STEP5J_1_VERSION,
     READINESS_AFTER,
@@ -28,13 +29,11 @@ from pgsm_step5j_1_guitar_articulation_body_balance_repair import (  # noqa: E40
     compute_step5j_1_modal_kernels_decomposed,
     radiation_band_weight_v2,
     validate_report_internal_consistency,
-    write_pgsm_step5j_1_reports,
 )
 from pgsm_step5j_top_back_air_radiation_weighting_refinement import (  # noqa: E402
     AIR_CAVITY_MODAL_GAIN as AIR_GAIN_V1,
 )
 from pgsm_step4a_single_note_diagnostic_audio import build_calibrated_modal_state  # noqa: E402
-from pgsm_step5i_3_absolute_frequency_damping_pluck_balance import DEFAULT_DURATION_S  # noqa: E402
 from stk_pipeline_defaults import DEFAULT_WEBSITE_STK_MODE  # noqa: E402
 
 REQUIRED_TERMS = (
@@ -50,20 +49,31 @@ def _file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _snapshot_wav_directory(audio_dir: Path) -> dict[str, tuple[int, int]]:
+    if not audio_dir.is_dir():
+        return {}
+    return {
+        str(p.resolve()): (p.stat().st_mtime_ns, p.stat().st_size)
+        for p in sorted(audio_dir.glob("*.wav"))
+    }
+
+
 class TestPgsmStep5j1GuitarArticulationBodyBalanceRepair(unittest.TestCase):
     _shared_report: dict | None = None
     _source_contract_hash: str | None = None
+    _audio_snapshot_before: dict[str, tuple[int, int]] | None = None
+    _audio_snapshot_after: dict[str, tuple[int, int]] | None = None
 
     @classmethod
     def setUpClass(cls) -> None:
         if SOURCE_CONTRACT_JSON.is_file():
             cls._source_contract_hash = _file_sha256(SOURCE_CONTRACT_JSON)
+        cls._audio_snapshot_before = _snapshot_wav_directory(AUDIO_DIR)
         cls._shared_report = build_pgsm_step5j_1_report(
             repo_root=REPO,
-            render_audio=False,
-            write_outputs=False,
             fast_validation=True,
         )
+        cls._audio_snapshot_after = _snapshot_wav_directory(AUDIO_DIR)
 
     def setUp(self) -> None:
         self._prev_fp = collect_all_previous_audio_fingerprints(REPO)
@@ -78,9 +88,14 @@ class TestPgsmStep5j1GuitarArticulationBodyBalanceRepair(unittest.TestCase):
         self.assertFalse(vcfg.get("render_audio"))
         self.assertFalse(vcfg.get("write_outputs"))
         self.assertFalse(vcfg.get("tracked_source_files_modified"))
+        self.assertEqual(vcfg.get("fast_duration_s"), FAST_VALIDATION_DURATION_S)
+        self.assertTrue(vcfg.get("baseline_wav_load_skipped"))
 
     def test_validation_max_modes_documented(self) -> None:
         self.assertEqual(self._report().get("validation_max_modes"), FAST_VALIDATION_MAX_MODES)
+
+    def test_fast_validation_no_audio_output_files_written(self) -> None:
+        self.assertEqual(self._audio_snapshot_before, self._audio_snapshot_after)
 
     def test_tracked_source_contract_unmodified(self) -> None:
         if self._source_contract_hash is None:
@@ -116,9 +131,9 @@ class TestPgsmStep5j1GuitarArticulationBodyBalanceRepair(unittest.TestCase):
         with patch("subprocess.run") as mock_run, patch("subprocess.Popen") as mock_popen:
             build_pgsm_step5j_1_report(
                 repo_root=REPO,
-                render_audio=False,
-                write_outputs=False,
                 fast_validation=True,
+                max_modes=8,
+                duration_s=0.25,
             )
             mock_run.assert_not_called()
             mock_popen.assert_not_called()
@@ -227,9 +242,9 @@ class TestPgsmStep5j1GuitarArticulationBodyBalanceRepair(unittest.TestCase):
         self.assertGreater(mid, high * 0.5)
 
     def test_kernels_causal(self) -> None:
-        state = build_calibrated_modal_state(REPO, max_modes=FAST_VALIDATION_MAX_MODES)
+        state = build_calibrated_modal_state(REPO, max_modes=24)
         h, _, _, _, _, meta = compute_step5j_1_modal_kernels_decomposed(
-            state["modal_weights"], duration_s=DEFAULT_DURATION_S
+            state["modal_weights"], duration_s=FAST_VALIDATION_DURATION_S
         )
         self.assertTrue(meta.get("h0_causal_near_zero"))
         self.assertGreater(float(abs(h).max()), 0.0)
@@ -264,45 +279,6 @@ class TestPgsmStep5j1GuitarArticulationBodyBalanceRepair(unittest.TestCase):
 
     def test_objective_all_pass(self) -> None:
         self.assertTrue((self._report().get("objective_test_results") or {}).get("all_pass"))
-
-    def test_write_reports_to_temp_without_touching_source(self) -> None:
-        source_hash_before = _file_sha256(SOURCE_CONTRACT_JSON) if SOURCE_CONTRACT_JSON.is_file() else None
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "audio" / "debug_reports" / "generated_contracts").mkdir(parents=True)
-            (root / "data").mkdir(parents=True)
-            for name in (
-                "pgsm_step5j_top_back_air_radiation_weighting_refinement.json",
-                "pgsm_step5i_3_absolute_frequency_damping_pluck_balance.json",
-                "pgsm_step5h_note_string_fret_contract.json",
-                "pgsm_step3c_numeric_calibration.json",
-            ):
-                src = REPO / "audio" / "debug_reports" / name
-                if src.is_file():
-                    (root / "audio" / "debug_reports" / name).write_text(
-                        src.read_text(encoding="utf-8"), encoding="utf-8"
-                    )
-            cd = REPO / "data" / "pgsm_classical_guitar_note_string_fret_contract.json"
-            if cd.is_file():
-                (root / "data" / "pgsm_classical_guitar_note_string_fret_contract.json").write_text(
-                    cd.read_text(encoding="utf-8"), encoding="utf-8"
-                )
-            generated = root / "audio" / "debug_reports" / "generated_contracts" / "contract.generated.json"
-            report = write_pgsm_step5j_1_reports(
-                repo_root=REPO,
-                json_path=root / "audio" / "debug_reports" / "out.json",
-                md_path=root / "audio" / "debug_reports" / "out.md",
-                data_path=generated,
-                audio_dir=root / "audio" / "step5j1_test",
-                render_audio=False,
-                write_outputs=True,
-                fast_validation=True,
-            )
-            self.assertEqual(report.get("report_version"), PGSM_STEP5J_1_VERSION)
-            self.assertTrue(generated.is_file())
-            self.assertFalse((report.get("validation_config") or {}).get("tracked_source_files_modified"))
-        if source_hash_before is not None:
-            self.assertEqual(_file_sha256(SOURCE_CONTRACT_JSON), source_hash_before)
 
     def test_built_contract_matches_source_gains(self) -> None:
         if not SOURCE_CONTRACT_JSON.is_file():

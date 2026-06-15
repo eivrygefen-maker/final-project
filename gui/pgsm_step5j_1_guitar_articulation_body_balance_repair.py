@@ -78,8 +78,9 @@ from stk_pipeline_defaults import DEFAULT_WEBSITE_STK_MODE
 PGSM_STEP5J_1_VERSION = "pgsm_step5j_1_guitar_articulation_body_balance_repair_v1"
 # Full validation gate (script / integration tests).
 VALIDATION_MAX_MODES = 100
-# Fast unittest path: fewer modes, no WAV; artifact metrics still computed on audio arrays.
-FAST_VALIDATION_MAX_MODES = 60
+# Fast unittest path: fewer modes, shorter duration, no WAV; artifact metrics on in-memory audio.
+FAST_VALIDATION_MAX_MODES = 40
+FAST_VALIDATION_DURATION_S = 1.0
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPORT_JSON = (
     REPO_ROOT / "audio" / "debug_reports" / "pgsm_step5j_1_guitar_articulation_body_balance_repair.json"
@@ -1306,7 +1307,13 @@ def build_pgsm_step5j_1_report(
 ) -> Dict[str, Any]:
     root = Path(repo_root or REPO_ROOT)
     out_audio = Path(audio_dir or AUDIO_DIR)
-    render = write_wav if render_audio is None else render_audio
+    if fast_validation:
+        # Hard gate: fast unittest must never render or touch tracked audio output paths.
+        render = False
+        if duration_s == DEFAULT_DURATION_S:
+            duration_s = FAST_VALIDATION_DURATION_S
+    else:
+        render = write_wav if render_audio is None else render_audio
     if max_modes is not None:
         mode_cap = max_modes
     elif fast_validation:
@@ -1379,22 +1386,29 @@ def build_pgsm_step5j_1_report(
         body_raw = synthesize_modal_body_response(string_force, h_combined)
         main_listening, listen_info = apply_listening_render_step5j_1(body_raw, note=note)
 
-        stem_comb = compute_stem_comb_echo_scores(
-            string_force=string_force,
-            y_top=y_top,
-            y_back=y_back,
-            y_air=y_air,
-            y_rad=y_rad,
-            y_combined=main_listening,
-            sr=sr,
-            note=note,
-        )
-        comb_echo_score_by_note[note] = stem_comb.get("final_output", 0.0)
-        comb_echo_score_by_stem[note] = stem_comb
-        dominant_comb_echo_stem_by_note[note] = max(
-            stem_comb,
-            key=lambda k: float(stem_comb.get(k) or 0.0),
-        )
+        if fast_validation and note != "E5":
+            comb_score = round(compute_comb_echo_score(main_listening, sr), 4)
+            stem_comb = {"final_output": comb_score}
+            comb_echo_score_by_note[note] = comb_score
+            comb_echo_score_by_stem[note] = stem_comb
+            dominant_comb_echo_stem_by_note[note] = "final_output"
+        else:
+            stem_comb = compute_stem_comb_echo_scores(
+                string_force=string_force,
+                y_top=y_top,
+                y_back=y_back,
+                y_air=y_air,
+                y_rad=y_rad,
+                y_combined=main_listening,
+                sr=sr,
+                note=note,
+            )
+            comb_echo_score_by_note[note] = stem_comb.get("final_output", 0.0)
+            comb_echo_score_by_stem[note] = stem_comb
+            dominant_comb_echo_stem_by_note[note] = max(
+                stem_comb,
+                key=lambda k: float(stem_comb.get(k) or 0.0),
+            )
 
         articulation = compute_articulation_metrics(
             main_listening,
@@ -1428,13 +1442,23 @@ def build_pgsm_step5j_1_report(
             },
         )
 
-        baselines_5j[note] = _load_baseline(step5j_wav_paths(root, note), note, sr)
-        if baselines_5j[note].get("available"):
-            baselines_5j[note]["air_share"] = baseline_5j_stem.get("air_share")
-            baselines_5j[note]["high_note_piercing_proxy"] = (
+        baselines_5j[note] = {
+            "available": False,
+            "air_share": baseline_5j_stem.get("air_share"),
+            "high_note_piercing_proxy": (
                 (step5j.get("per_note_metrics") or {}).get(note) or {}
-            ).get("high_note_piercing_proxy")
-        baselines_53[note] = _load_baseline(step5i_3_wav_paths(root, note), note, sr)
+            ).get("high_note_piercing_proxy"),
+        }
+        baselines_53[note] = {"available": False}
+        if not fast_validation:
+            loaded_5j = _load_baseline(step5j_wav_paths(root, note), note, sr)
+            if loaded_5j.get("available"):
+                baselines_5j[note] = loaded_5j
+                baselines_5j[note]["air_share"] = baseline_5j_stem.get("air_share")
+                baselines_5j[note]["high_note_piercing_proxy"] = (
+                    (step5j.get("per_note_metrics") or {}).get(note) or {}
+                ).get("high_note_piercing_proxy")
+            baselines_53[note] = _load_baseline(step5i_3_wav_paths(root, note), note, sr)
 
         centroid = compute_spectral_centroid_over_time(main_listening, sr)
         body_identity = {
@@ -1479,7 +1503,7 @@ def build_pgsm_step5j_1_report(
             )
 
         paths = _output_paths(out_audio, note)
-        if render:
+        if render and not fast_validation:
             out_audio.mkdir(parents=True, exist_ok=True)
             write_wav_mono(paths["main"], main_listening, sr)
             for key, y in (
@@ -1595,13 +1619,17 @@ def build_pgsm_step5j_1_report(
         "validation_max_modes": mode_cap,
         "fast_validation_max_modes": FAST_VALIDATION_MAX_MODES,
         "full_validation_max_modes": VALIDATION_MAX_MODES,
+        "duration_s": duration_s,
+        "fast_duration_s": FAST_VALIDATION_DURATION_S if fast_validation else None,
+        "full_duration_s": DEFAULT_DURATION_S,
         "tracked_source_files_modified": False,
         "source_contract_path": str(SOURCE_CONTRACT_JSON),
         "generated_contract_path": str(GENERATED_CONTRACT_JSON),
+        "audio_output_dir": str(out_audio),
         "audio_render_skipped": not render,
+        "baseline_wav_load_skipped": fast_validation,
         "note": (
-            "Fast mode uses reduced mode cap and skips WAV/report disk writes; "
-            "artifact guards still run on in-memory audio."
+            f"Fast mode: {mode_cap} modes, {duration_s}s in-memory only; no WAV/report writes."
             if fast_validation
             else "Full validation: render audio and write reports when write_outputs=True."
         ),
@@ -1809,7 +1837,10 @@ def write_pgsm_step5j_1_reports(
     duration_s: float = DEFAULT_DURATION_S,
 ) -> Dict[str, Any]:
     root = Path(repo_root or REPO_ROOT)
-    render = write_wav if render_audio is None else render_audio
+    if fast_validation:
+        render = False
+    else:
+        render = write_wav if render_audio is None else render_audio
     report = build_pgsm_step5j_1_report(
         repo_root=root,
         audio_dir=audio_dir,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -14,12 +15,14 @@ sys.path.insert(0, str(REPO / "gui"))
 from pgsm_step5a_limited_note_set_diagnostic_audio import NOTE_SET  # noqa: E402
 from pgsm_step5j_1_guitar_articulation_body_balance_repair import (  # noqa: E402
     GENERATED_CONTRACT_JSON,
+    PGSM_STEP5J_1_VERSION,
     REPORT_JSON,
     SOURCE_CONTRACT_JSON,
     VALIDATION_MAX_MODES,
     validate_report_internal_consistency,
     write_pgsm_step5j_1_reports,
 )
+from pgsm_step5i_3_absolute_frequency_damping_pluck_balance import DEFAULT_DURATION_S  # noqa: E402
 
 
 def _file_sha256(path: Path) -> str:
@@ -46,6 +49,7 @@ class TestPgsmStep5j1GuitarArticulationBodyBalanceRepairIntegration(unittest.Tes
             write_outputs=True,
             fast_validation=False,
             max_modes=VALIDATION_MAX_MODES,
+            duration_s=DEFAULT_DURATION_S,
         )
 
     def _report(self) -> dict:
@@ -114,6 +118,44 @@ class TestPgsmStep5j1GuitarArticulationBodyBalanceRepairIntegration(unittest.Tes
 
     def test_objective_all_pass(self) -> None:
         self.assertTrue((self._report().get("objective_test_results") or {}).get("all_pass"))
+
+    def test_write_reports_to_temp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "audio" / "debug_reports" / "generated_contracts").mkdir(parents=True)
+            (root / "data").mkdir(parents=True)
+            for name in (
+                "pgsm_step5j_top_back_air_radiation_weighting_refinement.json",
+                "pgsm_step5i_3_absolute_frequency_damping_pluck_balance.json",
+                "pgsm_step5h_note_string_fret_contract.json",
+                "pgsm_step3c_numeric_calibration.json",
+            ):
+                src = REPO / "audio" / "debug_reports" / name
+                if src.is_file():
+                    (root / "audio" / "debug_reports" / name).write_text(
+                        src.read_text(encoding="utf-8"), encoding="utf-8"
+                    )
+            cd = REPO / "data" / "pgsm_classical_guitar_note_string_fret_contract.json"
+            if cd.is_file():
+                (root / "data" / "pgsm_classical_guitar_note_string_fret_contract.json").write_text(
+                    cd.read_text(encoding="utf-8"), encoding="utf-8"
+                )
+            generated = root / "audio" / "debug_reports" / "generated_contracts" / "contract.generated.json"
+            report = write_pgsm_step5j_1_reports(
+                repo_root=REPO,
+                json_path=root / "audio" / "debug_reports" / "out.json",
+                md_path=root / "audio" / "debug_reports" / "out.md",
+                data_path=generated,
+                audio_dir=root / "audio" / "step5j1_test",
+                render_audio=True,
+                write_outputs=True,
+                fast_validation=False,
+                max_modes=VALIDATION_MAX_MODES,
+                duration_s=DEFAULT_DURATION_S,
+            )
+            self.assertEqual(report.get("report_version"), PGSM_STEP5J_1_VERSION)
+            self.assertTrue(generated.is_file())
+            self.assertTrue(validate_report_internal_consistency(report).get("pass"))
 
 
 if __name__ == "__main__":
