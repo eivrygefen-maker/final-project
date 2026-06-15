@@ -131,6 +131,30 @@ class TestV11SourceGuards(unittest.TestCase):
             mock_run.assert_not_called()
             mock_popen.assert_not_called()
 
+    def test_clear_output_wavs_exists_and_scoped(self) -> None:
+        import pgsm_emergency_guitar_demo_engine as mod
+        import tempfile
+
+        src = Path(mod.__file__).read_text(encoding="utf-8")
+        self.assertIn("def _clear_output_wavs", src)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "demo_v11"
+            out.mkdir()
+            keep = out / "report.json"
+            keep.write_text("{}", encoding="utf-8")
+            wav = out / "sample_000_A2_final_guitar.wav"
+            wav.write_bytes(b"RIFF")
+            other = Path(tmp) / "other" / "old.wav"
+            other.parent.mkdir()
+            other.write_bytes(b"RIFF")
+
+            mod._clear_output_wavs(out)
+
+            self.assertFalse(wav.exists())
+            self.assertTrue(keep.exists())
+            self.assertTrue(other.exists())
+
     def test_website_default_unchanged(self) -> None:
         self.assertIsNotNone(DEFAULT_WEBSITE_STK_MODE)
 

@@ -2119,9 +2119,12 @@ def build_readiness(
         "max_secondary_ok": max_secondary_ok,
         "body_second_pluck_ok": body_second_pluck_ok,
     }
-    folder.mkdir(parents=True, exist_ok=True)
-    for wav in folder.glob("*.wav"):
-        wav.unlink()
+
+
+def _clear_output_wavs(out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for wav_path in out_dir.glob("*.wav"):
+        wav_path.unlink()
 
 
 def _note_from_wav_name(wav_name: str) -> str:
