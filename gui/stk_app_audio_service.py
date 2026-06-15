@@ -83,6 +83,34 @@ def preview_cache_dir(parameter_hash: str, instrument: str = "classical") -> Pat
     return APP_NOTE_CACHE_ROOT / instrument / f"current_preview_{parameter_hash}"
 
 
+def smoke_test_cache_dir(parameter_hash: str, instrument: str = "classical") -> Path:
+    """Isolated preview cache path for site smoke tests (never used by the live APP)."""
+    return APP_NOTE_CACHE_ROOT / instrument / f"current_preview_smoke_test_{parameter_hash}"
+
+
+def smoke_test_artifact_paths(parameter_hash: str, instrument: str = "classical") -> List[Path]:
+    json_path, md_path = library_report_paths_for_hash(parameter_hash, instrument)
+    return [
+        smoke_test_cache_dir(parameter_hash, instrument),
+        job_status_path(parameter_hash),
+        background_status_path(parameter_hash),
+        json_path,
+        md_path,
+    ]
+
+
+def cleanup_smoke_test_artifacts(parameter_hash: str, instrument: str = "classical") -> None:
+    """Remove smoke-only cache/report/status files for one test hash."""
+    for path in smoke_test_artifact_paths(parameter_hash, instrument):
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+        elif path.is_file():
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
 def saved_guitar_cache_dir(saved_guitar_id: str, instrument: str = "classical") -> Path:
     return APP_NOTE_CACHE_ROOT / instrument / f"saved_{saved_guitar_id}"
 
@@ -652,6 +680,32 @@ def poll_background_job(parameter_hash: str) -> Dict[str, Any]:
     return refresh_stk_background_job_status(parameter_hash)
 
 
+def _report_ready_for_hash(
+    report: Optional[Mapping[str, Any]],
+    parameter_hash: str,
+    output_dir: Path,
+    *,
+    note_range: str = DEFAULT_NOTE_RANGE,
+) -> bool:
+    """True when library report + WAV count confirm ready for the requested hash."""
+    if not report:
+        return False
+    rep_hash = str(report.get("parameter_hash") or parameter_hash)
+    if rep_hash != parameter_hash:
+        return False
+    if report.get("readiness") != "ready_for_app_playback":
+        return False
+    if report.get("status") != "ready":
+        return False
+    if not output_dir.is_dir():
+        return False
+    expected = int(report.get("note_count") or 0)
+    actual = count_wavs_in_cache(output_dir)
+    if expected > 0:
+        return actual >= expected
+    return cache_is_ready(output_dir, note_range=note_range)
+
+
 def refresh_stk_background_job_status(
     parameter_hash: str,
     *,
@@ -659,12 +713,12 @@ def refresh_stk_background_job_status(
     priority_notes: Sequence[str] = DEFAULT_PRIORITY_NOTES,
     instrument: str = "classical",
     promote_stack: bool = True,
+    cache_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Reconcile subprocess, progress JSON, library report, and WAV files into APP state."""
-    preview = preview_cache_dir(parameter_hash, instrument)
+    preview = Path(cache_dir) if cache_dir is not None else preview_cache_dir(parameter_hash, instrument)
     expected_notes = parse_note_range(note_range)
     total_notes = len(expected_notes)
-    wav_count = count_wavs_in_cache(preview)
 
     job_doc = read_job_status(parameter_hash)
     bg_doc = read_background_status(parameter_hash)
@@ -688,38 +742,49 @@ def refresh_stk_background_job_status(
             or preview
         )
     )
+    scan_dir = output_dir if output_dir.is_dir() else preview
+    actual_wav_count = count_wavs_in_cache(scan_dir)
+    reported_rendered = int(bg_doc.get("rendered_notes") or job_doc.get("rendered_notes") or 0)
+
+    active_hash = get_active_job_hash()
+    is_active_hash = active_hash is None or active_hash == parameter_hash
 
     result: Dict[str, Any] = {
         "parameter_hash": parameter_hash,
         "preview_cache_path": str(preview).replace("\\", "/"),
-        "output_dir": str(output_dir).replace("\\", "/"),
-        "wav_count": wav_count,
+        "output_dir": str(scan_dir).replace("\\", "/"),
+        "actual_wav_count": actual_wav_count,
+        "reported_rendered_notes": reported_rendered,
+        "wav_count": actual_wav_count,
         "note_count": total_notes,
         "total_notes": total_notes,
-        "rendered_notes": int(
-            bg_doc.get("rendered_notes")
-            or job_doc.get("rendered_notes")
-            or wav_count
-        ),
+        "rendered_notes": reported_rendered if reported_rendered > 0 else actual_wav_count,
         "current_note": bg_doc.get("current_note") or job_doc.get("current_note"),
         "elapsed_time_s": bg_doc.get("elapsed_time_s") or job_doc.get("elapsed_s"),
         "elapsed_s": bg_doc.get("elapsed_time_s") or job_doc.get("elapsed_s"),
         "started_at": job_doc.get("started_at") or bg_doc.get("started_at"),
         "latest_report_path": latest_report_path,
         "preview_cache_ready": False,
+        "is_active_hash": is_active_hash,
         "cache_hit_count": (report or {}).get("cache_hit_count", job_doc.get("cache_hit_count", 0)),
         "cache_miss_count": (report or {}).get("cache_miss_count", job_doc.get("cache_miss_count", 0)),
     }
 
+    def _sync_counts(ready_dir: Path) -> None:
+        actual = count_wavs_in_cache(ready_dir)
+        result["actual_wav_count"] = actual
+        result["wav_count"] = actual
+        result["rendered_notes"] = total_notes
+        result["reported_rendered_notes"] = reported_rendered
+
     def _finalize_ready(ready_dir: Path) -> Dict[str, Any]:
+        _sync_counts(ready_dir)
         result.update(
             {
                 "status": "ready",
                 "preview_cache_ready": True,
                 "readiness": "ready_for_app_playback",
-                "rendered_notes": total_notes,
                 "note_count": total_notes,
-                "wav_count": count_wavs_in_cache(ready_dir),
                 "output_dir": str(ready_dir).replace("\\", "/"),
                 "preview_cache_path": str(ready_dir).replace("\\", "/"),
                 "report_path": latest_report_path,
@@ -732,61 +797,77 @@ def refresh_stk_background_job_status(
             promote_pending_stack_entries(parameter_hash, instrument=instrument)
         return result
 
-    active_hash = get_active_job_hash()
-    if active_hash and active_hash != parameter_hash and not cache_is_ready(preview, note_range=note_range):
-        result["status"] = "stale"
-        result["stale_reason"] = "hash_mismatch_active_job"
-        return result
-
-    if report and report.get("readiness") == "ready_for_app_playback" and report.get("status") == "ready":
-        rep_out = Path(str(report.get("output_dir") or preview))
-        rep_wav_count = int(report.get("note_count") or total_notes)
-        if rep_out.is_dir() and (
-            cache_is_ready(rep_out, note_range=note_range)
-            or count_wavs_in_cache(rep_out) >= rep_wav_count
-        ):
-            return _finalize_ready(rep_out)
+    # 1) Ready promotion from this hash's own report/WAVs (independent of active session job).
+    report_out = Path(str((report or {}).get("output_dir") or preview))
+    if _report_ready_for_hash(report, parameter_hash, report_out, note_range=note_range):
+        return _finalize_ready(report_out)
 
     if cache_is_ready(preview, note_range=note_range):
         return _finalize_ready(preview)
 
-    if report and report.get("status") in ("failed", "stale"):
-        result["status"] = str(report["status"])
-        result["error"] = report.get("missing_notes") or report.get("error")
-        return result
+    if cache_is_ready(scan_dir, note_range=note_range):
+        return _finalize_ready(scan_dir)
 
+    # 2) Explicit failed report for this hash.
+    if report and str(report.get("parameter_hash") or parameter_hash) == parameter_hash:
+        if report.get("status") in ("failed",):
+            result["status"] = "failed"
+            result["error"] = report.get("missing_notes") or report.get("error")
+            return result
+
+    # 3) Subprocess exited — re-check report/files before failing.
     if job_doc.get("status") == "running" and pid and not proc_alive:
-        if report and report.get("readiness") == "ready_for_app_playback":
-            rep_out = Path(str(report.get("output_dir") or preview))
-            if cache_is_ready(rep_out, note_range=note_range):
-                return _finalize_ready(rep_out)
+        if _report_ready_for_hash(report, parameter_hash, report_out, note_range=note_range):
+            return _finalize_ready(report_out)
         if cache_is_ready(preview, note_range=note_range):
             return _finalize_ready(preview)
-        result["status"] = "failed"
-        result["error"] = "subprocess_exited_incomplete"
-        write_job_status(parameter_hash, {**job_doc, **result, "pid": None})
-        write_background_status(parameter_hash, result)
-        return result
+        if actual_wav_count > 0 and is_active_hash:
+            pass  # fall through to partial/running handling
+        else:
+            result["status"] = "failed"
+            result["error"] = "subprocess_exited_incomplete"
+            write_job_status(parameter_hash, {**job_doc, **result, "pid": None})
+            write_background_status(parameter_hash, result)
+            return result
 
-    if priority_notes_ready(preview, priority_notes) and not cache_is_ready(
-        preview, note_range=note_range
-    ):
+    # 4) Partial / in-progress on matching active hash (or no competing active job).
+    priority_ok = priority_notes_ready(scan_dir, priority_notes)
+    full_ready = cache_is_ready(preview, note_range=note_range)
+
+    if priority_ok and not full_ready and (is_active_hash or actual_wav_count > 0):
         result["status"] = "partial_ready"
         result["priority_notes_ready"] = True
-        result["rendered_notes"] = max(result["rendered_notes"], wav_count)
+        result["preview_cache_ready"] = False
+        result["rendered_notes"] = reported_rendered if reported_rendered > 0 else actual_wav_count
+        result["wav_count"] = actual_wav_count
         return result
 
-    if proc_alive or job_doc.get("status") == "running":
+    if actual_wav_count > 0 and not full_ready and is_active_hash:
+        result["status"] = "running" if (proc_alive or job_doc.get("status") == "running") else "partial_ready"
+        result["rendered_notes"] = reported_rendered if reported_rendered > 0 else actual_wav_count
+        result["wav_count"] = actual_wav_count
+        return result
+
+    if proc_alive or (job_doc.get("status") == "running" and is_active_hash):
         result["status"] = "running"
-        result["rendered_notes"] = max(int(result["rendered_notes"]), wav_count)
+        result["rendered_notes"] = reported_rendered if reported_rendered > 0 else actual_wav_count
+        result["wav_count"] = actual_wav_count
         return result
 
-    if job_doc.get("status") == "ready":
-        if cache_is_ready(preview, note_range=note_range):
-            return _finalize_ready(preview)
-        result["status"] = "failed"
-        result["error"] = "ready_status_but_cache_incomplete"
+    # 5) Abandoned partial cache while another hash is active → stale (informational).
+    if active_hash and active_hash != parameter_hash:
+        if actual_wav_count > 0 or job_doc.get("status") in ("running", "partial_ready"):
+            result["status"] = "stale"
+            result["stale_reason"] = "hash_mismatch_active_job"
+            result["active_job_hash"] = active_hash
+            return result
+        result["status"] = "stale"
+        result["stale_reason"] = "hash_mismatch_active_job"
+        result["active_job_hash"] = active_hash
         return result
+
+    if job_doc.get("status") == "ready" and cache_is_ready(preview, note_range=note_range):
+        return _finalize_ready(preview)
 
     result["status"] = str(job_doc.get("status") or bg_doc.get("status") or "not_started")
     return result
@@ -928,6 +1009,19 @@ def _remove_stack_cache(path_str: Optional[str]) -> None:
         shutil.rmtree(p, ignore_errors=True)
 
 
+def _ready_cache_source(
+    state: Mapping[str, Any],
+    parameter_hash: str,
+    instrument: str = "classical",
+) -> Path:
+    """Resolve the directory that holds ready WAVs for a hash."""
+    for key in ("preview_cache_path", "output_dir"):
+        candidate = Path(str(state.get(key) or ""))
+        if candidate.is_dir() and count_wavs_in_cache(candidate) > 0:
+            return candidate
+    return preview_cache_dir(parameter_hash, instrument)
+
+
 def promote_pending_stack_entries(
     parameter_hash: Optional[str] = None,
     instrument: str = "classical",
@@ -966,8 +1060,8 @@ def promote_pending_stack_entries(
         if stk_status != "ready" or not state.get("preview_cache_ready"):
             continue
 
-        preview = preview_cache_dir(entry_hash, instrument)
-        if not preview.is_dir():
+        source = _ready_cache_source(state, entry_hash, instrument)
+        if not source.is_dir() or count_wavs_in_cache(source) == 0:
             continue
 
         saved_id = str(entry.get("saved_guitar_id") or "")
@@ -976,7 +1070,7 @@ def promote_pending_stack_entries(
         saved_dir = saved_guitar_cache_dir(saved_id, instrument)
         if saved_dir.exists():
             shutil.rmtree(saved_dir)
-        shutil.copytree(preview, saved_dir)
+        shutil.copytree(source, saved_dir)
 
         report = get_latest_note_library_report(
             str(entry.get("sample_id") or DEFAULT_SOURCE_SAMPLE_ID),
@@ -1017,7 +1111,6 @@ def save_guitar_to_stack(
         raise RuntimeError("STK parameter hash mismatch — Save & Sync again.")
 
     stk_status = str(state.get("status") or "not_started")
-    preview = preview_cache_dir(parameter_hash, instrument)
 
     if stk_status == "failed":
         raise RuntimeError(
@@ -1047,13 +1140,17 @@ def save_guitar_to_stack(
     }
 
     if stk_status == "ready" and state.get("preview_cache_ready"):
+        source = _ready_cache_source(state, parameter_hash, instrument)
         saved_dir = saved_guitar_cache_dir(saved_id, instrument)
         if saved_dir.exists():
             shutil.rmtree(saved_dir)
-        shutil.copytree(preview, saved_dir)
+        shutil.copytree(source, saved_dir)
         entry["status"] = "ready"
         entry["note_cache_path"] = str(saved_dir).replace("\\", "/")
-    elif stk_status in ("running", "partial_ready", "not_started"):
+    elif stk_status == "partial_ready":
+        entry["status"] = "partial_audio"
+        entry["note_cache_path"] = None
+    elif stk_status in ("running", "not_started"):
         entry["status"] = "pending_audio"
         entry["note_cache_path"] = None
     else:

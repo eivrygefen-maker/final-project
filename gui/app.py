@@ -1856,7 +1856,9 @@ def _render_main_studio(
             st.session_state.stk_job_status = str(stk_job.get("status") or "not_started")
             st.session_state.stk_preview_cache_ready = bool(stk_job.get("preview_cache_ready"))
             st.session_state.stk_preview_cache_path = str(stk_job.get("preview_cache_path") or "")
-            st.session_state.stk_note_count = int(stk_job.get("wav_count") or stk_job.get("note_count") or 0)
+            st.session_state.stk_note_count = int(
+                stk_job.get("actual_wav_count") or stk_job.get("wav_count") or stk_job.get("note_count") or 0
+            )
             stk_cache_ready = bool(stk_job.get("preview_cache_ready"))
         except Exception:
             st.session_state.stk_job_status = "failed"
@@ -1903,19 +1905,32 @@ def _render_main_studio(
         else "waiting"
     )
     _stk_status = str(st.session_state.get("stk_job_status") or "not_started")
-    _stk_note_count = int(st.session_state.get("stk_note_count") or stk_job.get("wav_count") or 0)
+    _stk_note_count = int(
+        st.session_state.get("stk_note_count")
+        or stk_job.get("actual_wav_count")
+        or stk_job.get("wav_count")
+        or 0
+    )
     st.caption(f"ROM: **{_rom_status}** · STK cache: **{_stk_status}**")
     if stk_job.get("preview_cache_ready"):
         st.caption(f"STK cache ready — {_stk_note_count} notes")
-    elif stk_job.get("rendered_notes") is not None and stk_job.get("total_notes"):
-        st.caption(
-            f"STK progress: {stk_job.get('rendered_notes')} / {stk_job.get('total_notes')} notes"
-            + (
-                f" · {stk_job.get('elapsed_time_s') or stk_job.get('elapsed_s')} s elapsed"
-                if stk_job.get("elapsed_time_s") is not None or stk_job.get("elapsed_s") is not None
-                else ""
+    elif stk_job.get("total_notes"):
+        _actual = stk_job.get("actual_wav_count")
+        if _actual is None:
+            _actual = stk_job.get("wav_count")
+        _reported = stk_job.get("reported_rendered_notes")
+        if _actual is not None:
+            st.caption(f"STK progress: {_actual} / {stk_job.get('total_notes')} notes cached")
+        elif _reported is not None:
+            st.caption(f"STK progress: {_reported} / {stk_job.get('total_notes')} notes")
+        elif stk_job.get("rendered_notes") is not None:
+            st.caption(
+                f"STK progress: {stk_job.get('rendered_notes')} / {stk_job.get('total_notes')} notes"
             )
-        )
+        if stk_job.get("elapsed_time_s") is not None or stk_job.get("elapsed_s") is not None:
+            st.caption(
+                f"Elapsed {stk_job.get('elapsed_time_s') or stk_job.get('elapsed_s')} s"
+            )
     st.caption(
         "Accepted STK/C++ renderer — cache builds after ROM. "
         "**Generate Sound** saves to the comparison stack (ready or pending)."

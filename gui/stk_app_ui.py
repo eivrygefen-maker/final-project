@@ -46,6 +46,7 @@ def _status_badge(status: str) -> str:
         "failed": "❌ failed",
         "stale": "⚠️ stale",
         "pending_audio": "⏳ pending audio",
+        "partial_audio": "🎵 partial audio",
         "failed_audio": "❌ failed audio",
     }
     return labels.get(status, status)
@@ -116,13 +117,28 @@ def render_stk_classical_panel(
 
     st.markdown("##### STK background status")
     st.write(_status_badge(stk_status))
+    if stk_status == "stale":
+        st.warning("Previous STK job is stale because parameters changed.")
+        st.caption("Save & Sync starts the correct cache for the current design.")
 
     if job_doc:
-        rendered = job_doc.get("rendered_notes")
+        actual = job_doc.get("actual_wav_count")
+        if actual is None:
+            actual = job_doc.get("wav_count")
+        reported = job_doc.get("reported_rendered_notes")
         total = job_doc.get("total_notes")
-        if rendered is not None and total is not None:
-            st.progress(min(1.0, float(rendered) / max(float(total), 1.0)))
-            st.caption(f"Rendered {rendered} / {total} notes")
+        if actual is not None and total is not None:
+            st.progress(min(1.0, float(actual) / max(float(total), 1.0)))
+            if reported is not None and int(reported) != int(actual):
+                st.caption(
+                    f"Cached {actual} / {total} notes "
+                    f"(progress file reports {reported})"
+                )
+            else:
+                st.caption(f"Cached {actual} / {total} notes")
+        elif job_doc.get("rendered_notes") is not None and total is not None:
+            st.progress(min(1.0, float(job_doc.get("rendered_notes")) / max(float(total), 1.0)))
+            st.caption(f"Rendered {job_doc.get('rendered_notes')} / {total} notes")
         elapsed = job_doc.get("elapsed_time_s")
         if elapsed is None:
             elapsed = job_doc.get("elapsed_s")
@@ -192,6 +208,8 @@ def render_stk_classical_panel(
         cache_entry = Path(str(row.get("note_cache_path") or ""))
         if entry_status == "pending_audio":
             st.caption("Audio pending — will attach when STK cache completes.")
+        elif entry_status == "partial_audio":
+            st.caption("Partial audio saved — full library still rendering.")
         elif entry_status == "failed_audio":
             st.caption(f"Audio failed: {row.get('error', 'see STK report')}")
         elif cache_entry.is_dir():

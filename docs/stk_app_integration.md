@@ -124,7 +124,13 @@ chmod +x tools/run_app_stk_site_smoke.sh
 ./tools/run_app_stk_site_smoke.sh
 ```
 
-Verifies: refresh promotes completed report → ready, FIFO ready/pending/promote, note listing from WAV files, imports. No melody JSON required. No full 37-note render.
+Uses **isolated** `current_preview_smoke_test_<hash>/` directories and cleans up its own artifacts. Does not depend on real user preview caches, manual site testing leftovers, or melodies. Verifies refresh promotion, partial/stale handling, and FIFO pending→ready promotion without a 37-note render.
+
+### Status notes
+
+- `stale` is normal when parameters changed and an old hash no longer matches the active job.
+- `partial_ready` means priority notes (A2/A4/E5) exist but the full E2:E5 library is still rendering.
+- Refresh promotes `ready` from a hash's own report + WAV count, independent of which hash is the active session job.
 
 ## Preserved validation paths
 
