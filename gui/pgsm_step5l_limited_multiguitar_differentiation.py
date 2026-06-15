@@ -103,6 +103,17 @@ def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
 
+def _coerce_pitch_salience(value: Any) -> float:
+    if isinstance(value, dict):
+        return float(value.get("pitch_salience") or value.get("value") or 0.0)
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def build_multiguitar_contract() -> Dict[str, Any]:
     return {
         "contract_id": "pgsm_limited_multiguitar_differentiation_v1",
@@ -477,7 +488,7 @@ def synthesize_sample_note(
     centroid = compute_spectral_centroid_over_time(main, sr)
     comb_score = round(compute_comb_echo_score(main, sr), 4)
     pitch_sal = compute_pitch_salience(main, sr, f0)
-    pitch_sal_val = float(pitch_sal.get("pitch_salience") or 0.0)
+    pitch_sal_val = _coerce_pitch_salience(pitch_sal)
     e10 = _energy_share_first_ms(main, sr, 10.0)
     second_onset = detect_second_onset_sustained(main, sr)
     click_score = compute_click_dominance_score(main, sr, energy_first_10ms=e10)

@@ -24,6 +24,7 @@ from pgsm_step5l_limited_multiguitar_differentiation import (  # noqa: E402
     SAFE_NEXT_STEP_5M,
     SOURCE_CONTRACT_JSON,
     STEP5K_REPORT_JSON,
+    _coerce_pitch_salience,
     build_multiguitar_contract,
     build_pgsm_step5l_report,
     validate_report_internal_consistency,
@@ -230,6 +231,19 @@ class TestPgsmStep5lLimitedMultiguitarDifferentiation(unittest.TestCase):
     def test_multiguitar_contract(self) -> None:
         contract = build_multiguitar_contract()
         self.assertGreaterEqual(len(contract.get("physical_drivers") or []), 5)
+
+
+class TestCoercePitchSalience(unittest.TestCase):
+    def test_dict_pitch_salience(self) -> None:
+        self.assertEqual(_coerce_pitch_salience({"pitch_salience": 0.82}), 0.82)
+        self.assertEqual(_coerce_pitch_salience({"value": 0.65}), 0.65)
+
+    def test_float_pitch_salience(self) -> None:
+        self.assertEqual(_coerce_pitch_salience(0.91), 0.91)
+
+    def test_none_or_invalid_pitch_salience(self) -> None:
+        self.assertEqual(_coerce_pitch_salience(None), 0.0)
+        self.assertEqual(_coerce_pitch_salience("bad"), 0.0)
 
 
 if __name__ == "__main__":
