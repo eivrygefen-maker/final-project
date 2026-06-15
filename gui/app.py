@@ -1297,18 +1297,18 @@ def invalidate_rom_and_audio_state() -> None:
     st.session_state.sound_stale = True
     st.session_state.note_cache_ready_fp = ""
     st.session_state.note_cache_building = False
-    st.session_state.stk_parameter_hash = ""
-    st.session_state.stk_job_status = "not_started"
-    st.session_state.stk_preview_cache_ready = False
-    st.session_state.stk_preview_cache_path = ""
-    st.session_state.stk_note_count = 0
-    st.session_state.active_stk_cache_path = ""
-    st.session_state.active_stk_parameter_hash = ""
-    st.session_state.active_stk_guitar_id = ""
-    st.session_state.active_stk_player_fp = ""
-    st.session_state.active_stk_player_payload = {}
-    st.session_state.active_stk_player_validation = {}
-    st.session_state.stk_generate_intent_hash = ""
+    st.session_state["stk_parameter_hash"] = ""
+    st.session_state["stk_job_status"] = "not_started"
+    st.session_state["stk_preview_cache_ready"] = False
+    st.session_state["stk_preview_cache_path"] = ""
+    st.session_state["stk_note_count"] = 0
+    st.session_state["active_stk_cache_path"] = ""
+    st.session_state["active_stk_parameter_hash"] = ""
+    st.session_state["active_stk_guitar_id"] = ""
+    st.session_state["active_stk_player_fp"] = ""
+    st.session_state["active_stk_player_payload"] = {}
+    st.session_state["active_stk_player_validation"] = {}
+    st.session_state["stk_generate_intent_hash"] = ""
     try:
         from stk_app_audio_service import mark_stk_job_stale  # noqa: WPS433
 
@@ -1406,10 +1406,10 @@ def schedule_stk_note_library_after_rom(
             lhs_params=lhs_params,
             repo_root=BASE_DIR,
         )
-        st.session_state.stk_parameter_hash = compute_parameter_hash(rom_fp, lhs_params)
-        st.session_state.stk_job_status = str(job.get("status") or "running")
+        st.session_state["stk_parameter_hash"] = compute_parameter_hash(rom_fp, lhs_params)
+        st.session_state["stk_job_status"] = str(job.get("status") or "running")
     except Exception as exc:
-        st.session_state.stk_job_status = "failed"
+        st.session_state["stk_job_status"] = "failed"
         st.session_state.rom_body_error = str(exc)
 
 
@@ -1864,11 +1864,11 @@ def _render_main_studio(
 
             _stk_ph = compute_parameter_hash(rom_fp, lhs_params)
             stk_job = refresh_stk_background_job_status(_stk_ph)
-            st.session_state.stk_parameter_hash = _stk_ph
-            st.session_state.stk_job_status = str(stk_job.get("status") or "not_started")
-            st.session_state.stk_preview_cache_ready = bool(stk_job.get("preview_cache_ready"))
-            st.session_state.stk_preview_cache_path = str(stk_job.get("preview_cache_path") or "")
-            st.session_state.stk_note_count = int(
+            st.session_state["stk_parameter_hash"] = _stk_ph
+            st.session_state["stk_job_status"] = str(stk_job.get("status") or "not_started")
+            st.session_state["stk_preview_cache_ready"] = bool(stk_job.get("preview_cache_ready"))
+            st.session_state["stk_preview_cache_path"] = str(stk_job.get("preview_cache_path") or "")
+            st.session_state["stk_note_count"] = int(
                 stk_job.get("actual_wav_count") or stk_job.get("wav_count") or stk_job.get("note_count") or 0
             )
             from stk_app_ui import fulfill_generate_intent_if_ready  # noqa: WPS433
@@ -1882,15 +1882,15 @@ def _render_main_studio(
                 back_wood=back_wood,
                 rom_physical_summary_path=str(st.session_state.get("stk_body_json") or ""),
             )
-            if _auto and _auto.get("action") in ("saved_new", "loaded_existing"):
-                st.session_state._stk_auto_generate_message = _auto
+            if _auto and _auto.get("action") in ("saved_new", "loaded_existing", "activated_preview"):
+                st.session_state["_stk_auto_generate_message"] = _auto
         except Exception:
-            st.session_state.stk_job_status = "failed"
-            st.session_state.stk_preview_cache_ready = False
+            st.session_state["stk_job_status"] = "failed"
+            st.session_state["stk_preview_cache_ready"] = False
     elif st.session_state.get("rom_body_pending"):
-        st.session_state.stk_job_status = "waiting_for_rom"
+        st.session_state["stk_job_status"] = "waiting_for_rom"
     elif not st.session_state.get("rom_body_ready"):
-        st.session_state.stk_job_status = "waiting_for_rom"
+        st.session_state["stk_job_status"] = "waiting_for_rom"
 
     update_rom_online_prediction(geom, top_wood=top_wood, back_wood=back_wood, shape_type=shape)
 

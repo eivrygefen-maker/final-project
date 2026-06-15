@@ -29,6 +29,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 COMPARE_NOTES = ("A2", "A4", "E5")
 
 
+def _session_set(key: str, value: Any) -> None:
+    """Write session state (works with Streamlit SessionState and plain dict mocks)."""
+    st.session_state[key] = value
+
+
 def _geometry_summary(geom: Mapping[str, Any], top_wood: str, back_wood: str) -> Dict[str, Any]:
     return {
         "length": geom.get("length"),
@@ -48,13 +53,13 @@ def apply_stk_activation_to_session(activation: Mapping[str, Any]) -> None:
     if not validation.get("ok"):
         payload = {"status": "hidden", "positions": [], "fingerprint": ""}
         st.warning(AUDIT_INCOMPLETE_MSG)
-    st.session_state.active_stk_cache_path = str(activation.get("cache_path") or "")
-    st.session_state.active_stk_parameter_hash = str(activation.get("parameter_hash") or "")
-    st.session_state.active_stk_guitar_id = str(activation.get("saved_guitar_id") or "")
-    st.session_state.active_stk_player_fp = str(activation.get("player_fingerprint") or "")
-    st.session_state.active_stk_player_payload = payload
-    st.session_state.active_stk_player_validation = validation
-    st.session_state.sound_stale = False
+    _session_set("active_stk_cache_path", str(activation.get("cache_path") or ""))
+    _session_set("active_stk_parameter_hash", str(activation.get("parameter_hash") or ""))
+    _session_set("active_stk_guitar_id", str(activation.get("saved_guitar_id") or ""))
+    _session_set("active_stk_player_fp", str(activation.get("player_fingerprint") or ""))
+    _session_set("active_stk_player_payload", payload)
+    _session_set("active_stk_player_validation", validation)
+    _session_set("sound_stale", False)
 
 
 def render_user_stk_status_line(stk_status: str) -> None:
@@ -115,7 +120,7 @@ def generate_or_load_ready_guitar(
             parameter_hash=parameter_hash,
         )
         apply_stk_activation_to_session(activation)
-        st.session_state.stk_generate_intent_hash = ""
+        _session_set("stk_generate_intent_hash", "")
         return {"action": "activated_preview", "activation": activation}
 
     existing = find_stack_entry_by_hash(parameter_hash)
@@ -126,7 +131,7 @@ def generate_or_load_ready_guitar(
             saved_guitar_id=str(existing.get("saved_guitar_id") or ""),
         )
         apply_stk_activation_to_session(activation)
-        st.session_state.stk_generate_intent_hash = ""
+        _session_set("stk_generate_intent_hash", "")
         return {"action": "loaded_existing", "entry": existing, "activation": activation}
 
     display_name = f"Guitar — {top_wood}/{back_wood}"
@@ -143,7 +148,7 @@ def generate_or_load_ready_guitar(
             saved_guitar_id=str(entry.get("saved_guitar_id") or ""),
         )
         apply_stk_activation_to_session(activation)
-        st.session_state.stk_generate_intent_hash = ""
+        _session_set("stk_generate_intent_hash", "")
         return {"action": "loaded_existing", "entry": entry, "activation": activation}
 
     activation = activate_stk_guitar_for_player(
@@ -152,7 +157,7 @@ def generate_or_load_ready_guitar(
         saved_guitar_id=str(entry.get("saved_guitar_id") or ""),
     )
     apply_stk_activation_to_session(activation)
-    st.session_state.stk_generate_intent_hash = ""
+    _session_set("stk_generate_intent_hash", "")
     return {"action": "saved_new", "entry": entry, "activation": activation}
 
 
@@ -191,7 +196,7 @@ def request_generate_guitar(
             rom_physical_summary_path=rom_physical_summary_path,
         )
 
-    st.session_state.stk_generate_intent_hash = parameter_hash
+    _session_set("stk_generate_intent_hash", parameter_hash)
     return {
         "action": "intent_stored",
         "parameter_hash": parameter_hash,
