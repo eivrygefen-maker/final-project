@@ -45,13 +45,22 @@ ACCEPTED_STK_DEMO_VERSION = "v4_10_samples"
 MAX_GUITAR_STACK = 3
 DEFAULT_NOTE_RANGE = "E2:E5"
 DEFAULT_SOURCE_SAMPLE_ID = "sample_000"
+DEFAULT_PRIORITY_NOTES: Tuple[str, ...] = ("A2", "A4", "E5")
 
 STK_JOB_STATUSES = (
     "not_started",
     "waiting_for_rom",
     "running",
+    "partial_ready",
     "ready",
     "failed",
+    "stale",
+)
+
+STACK_ENTRY_STATUSES = (
+    "pending_audio",
+    "ready",
+    "failed_audio",
     "stale",
 )
 
@@ -82,6 +91,10 @@ def job_status_path(parameter_hash: str) -> Path:
     return DEBUG_REPORTS / f"app_stk_background_job_{parameter_hash}.json"
 
 
+def background_status_path(parameter_hash: str) -> Path:
+    return DEBUG_REPORTS / f"app_stk_background_status_{parameter_hash}.json"
+
+
 def library_report_paths_for_hash(parameter_hash: str, instrument: str = "classical") -> Tuple[Path, Path]:
     stem = f"app_stk_note_library_{instrument}_preview_{parameter_hash}"
     return DEBUG_REPORTS / f"{stem}_report.json", DEBUG_REPORTS / f"{stem}_report.md"
@@ -105,6 +118,23 @@ def frequency_to_note_name(hz: float) -> str:
     midi_round = int(round(midi))
     octave = (midi_round // 12) - 1
     return f"{NOTE_NAMES[midi_round % 12]}{octave}"
+
+
+def order_notes_with_priority(
+    notes: Sequence[str],
+    priority_notes: Sequence[str] = DEFAULT_PRIORITY_NOTES,
+) -> List[str]:
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for note_name in priority_notes:
+        if note_name in notes and note_name not in seen:
+            ordered.append(note_name)
+            seen.add(note_name)
+    for note_name in notes:
+        if note_name not in seen:
+            ordered.append(note_name)
+            seen.add(note_name)
+    return ordered
 
 
 def parse_note_range(spec: str) -> List[str]:
@@ -200,6 +230,20 @@ def list_available_notes(
     return list_notes_in_cache(note_cache_dir(sample_id, instrument, output_root))
 
 
+def count_wavs_in_cache(cache_dir: Path) -> int:
+    return len(list_notes_in_cache(cache_dir))
+
+
+def priority_notes_ready(
+    cache_dir: Path,
+    priority_notes: Sequence[str] = DEFAULT_PRIORITY_NOTES,
+) -> bool:
+    d = Path(cache_dir)
+    if not d.is_dir():
+        return False
+    return all(note_wav_in_cache(d, n).is_file() for n in priority_notes)
+
+
 def cache_is_ready(
     cache_dir: Path,
     *,
@@ -226,6 +270,25 @@ def read_job_status(parameter_hash: str) -> Dict[str, Any]:
 
 def write_job_status(parameter_hash: str, doc: Mapping[str, Any]) -> Path:
     path = job_status_path(parameter_hash)
+    payload = dict(doc)
+    payload["parameter_hash"] = parameter_hash
+    payload["updated_at"] = _utc_now()
+    _write_json(path, payload)
+    return path
+
+
+def read_background_status(parameter_hash: str) -> Dict[str, Any]:
+    path = background_status_path(parameter_hash)
+    if not path.is_file():
+        return {"parameter_hash": parameter_hash, "status": "not_started"}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"parameter_hash": parameter_hash, "status": "failed", "error": "corrupt_background_status"}
+
+
+def write_background_status(parameter_hash: str, doc: Mapping[str, Any]) -> Path:
+    path = background_status_path(parameter_hash)
     payload = dict(doc)
     payload["parameter_hash"] = parameter_hash
     payload["updated_at"] = _utc_now()
@@ -379,12 +442,18 @@ def build_note_library(
     binary: Optional[Path] = None,
     parameter_hash: Optional[str] = None,
     job_status_json: Optional[Path] = None,
+    priority_notes: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     root = Path(repo_root or REPO_ROOT)
-    notes = parse_note_range(note_range)
+    notes = order_notes_with_priority(
+        parse_note_range(note_range),
+        priority_notes or DEFAULT_PRIORITY_NOTES,
+    )
     target_dir = Path(cache_dir) if cache_dir else note_cache_dir(sample_id, instrument, output_root)
     target_dir.mkdir(parents=True, exist_ok=True)
     cache_key = parameter_hash or sample_id
+    bg_status_path = background_status_path(cache_key) if parameter_hash else None
+    started_at = _utc_now()
 
     timings: Dict[str, float] = {}
     cache_hits = 0
@@ -392,6 +461,39 @@ def build_note_library(
     missing: List[str] = []
     physical = load_physical_parameters(sample_id)
     t_start = time.perf_counter()
+
+    def _write_progress(idx: int, note_name: str, job_status: str) -> None:
+        elapsed = round(time.perf_counter() - t_start, 3)
+        progress_doc = {
+            "parameter_hash": cache_key,
+            "status": job_status,
+            "rendered_notes": idx + 1,
+            "total_notes": len(notes),
+            "current_note": note_name,
+            "output_dir": str(target_dir).replace("\\", "/"),
+            "elapsed_time_s": elapsed,
+            "started_at": started_at,
+            "cache_hit_count": cache_hits,
+            "cache_miss_count": cache_misses,
+        }
+        if job_status_json is not None:
+            _write_json(job_status_json, {**progress_doc, "elapsed_s": elapsed})
+        if bg_status_path is not None:
+            write_background_status(cache_key, progress_doc)
+
+    if bg_status_path is not None:
+        write_background_status(
+            cache_key,
+            {
+                "parameter_hash": cache_key,
+                "status": "running",
+                "rendered_notes": 0,
+                "total_notes": len(notes),
+                "output_dir": str(target_dir).replace("\\", "/"),
+                "elapsed_time_s": 0.0,
+                "started_at": started_at,
+            },
+        )
 
     for idx, note_name in enumerate(notes):
         dest = note_wav_in_cache(target_dir, note_name)
@@ -418,21 +520,10 @@ def build_note_library(
                 missing.append(note_name)
                 timings[note_name] = -1.0
 
-        if job_status_json is not None:
-            _write_json(
-                job_status_json,
-                {
-                    "parameter_hash": cache_key,
-                    "status": "running",
-                    "rendered_notes": idx + 1,
-                    "total_notes": len(notes),
-                    "cache_hit_count": cache_hits,
-                    "cache_miss_count": cache_misses,
-                    "elapsed_s": round(time.perf_counter() - t_start, 3),
-                    "current_note": note_name,
-                    "updated_at": _utc_now(),
-                },
-            )
+        job_status = "partial_ready" if priority_notes_ready(target_dir) and not cache_is_ready(
+            target_dir, note_range=note_range
+        ) else "running"
+        _write_progress(idx, note_name, job_status)
 
     rendered_times = {k: v for k, v in timings.items() if v > 0}
     total_render = sum(rendered_times.values())
@@ -505,6 +596,19 @@ def build_note_library(
                 "total_notes": len(notes),
             },
         )
+    if bg_status_path is not None:
+        write_background_status(
+            cache_key,
+            {
+                **report,
+                "status": job_status,
+                "rendered_notes": len(notes) - len(missing),
+                "total_notes": len(notes),
+                "elapsed_time_s": round(total_render, 3),
+                "report_path": str(json_path),
+                "output_dir": str(target_dir).replace("\\", "/"),
+            },
+        )
     return report
 
 
@@ -544,28 +648,148 @@ def _is_process_running(pid: int) -> bool:
 
 
 def poll_background_job(parameter_hash: str) -> Dict[str, Any]:
-    status = read_job_status(parameter_hash)
-    preview = preview_cache_dir(parameter_hash)
-    if cache_is_ready(preview) and is_active_job(parameter_hash):
-        if status.get("status") != "ready":
-            write_job_status(parameter_hash, {**status, "status": "ready", "output_dir": str(preview)})
-        status = read_job_status(parameter_hash)
-        status["status"] = "ready"
-        return status
-    pid = int(status.get("pid") or 0)
-    if status.get("status") == "running" and pid and not _is_process_running(pid):
-        if cache_is_ready(preview) and is_active_job(parameter_hash):
-            write_job_status(parameter_hash, {**status, "status": "ready", "pid": None})
-            status["status"] = "ready"
-        elif not is_active_job(parameter_hash):
-            write_job_status(parameter_hash, {**status, "status": "stale", "pid": None})
-            status["status"] = "stale"
-        else:
-            write_job_status(parameter_hash, {**status, "status": "failed", "pid": None})
-            status["status"] = "failed"
-    if not is_active_job(parameter_hash) and status.get("status") == "running":
-        status["status"] = "stale"
-    return status
+    """Backward-compatible alias — always refreshes from disk/subprocess state."""
+    return refresh_stk_background_job_status(parameter_hash)
+
+
+def refresh_stk_background_job_status(
+    parameter_hash: str,
+    *,
+    note_range: str = DEFAULT_NOTE_RANGE,
+    priority_notes: Sequence[str] = DEFAULT_PRIORITY_NOTES,
+    instrument: str = "classical",
+    promote_stack: bool = True,
+) -> Dict[str, Any]:
+    """Reconcile subprocess, progress JSON, library report, and WAV files into APP state."""
+    preview = preview_cache_dir(parameter_hash, instrument)
+    expected_notes = parse_note_range(note_range)
+    total_notes = len(expected_notes)
+    wav_count = count_wavs_in_cache(preview)
+
+    job_doc = read_job_status(parameter_hash)
+    bg_doc = read_background_status(parameter_hash)
+    report = get_latest_note_library_report(
+        DEFAULT_SOURCE_SAMPLE_ID, instrument, parameter_hash=parameter_hash
+    )
+    report_json_path, _ = library_report_paths_for_hash(parameter_hash, instrument)
+    latest_report_path = ""
+    if report and report.get("report_json"):
+        latest_report_path = str(report["report_json"])
+    elif report_json_path.is_file():
+        latest_report_path = str(report_json_path)
+
+    pid = int(job_doc.get("pid") or bg_doc.get("pid") or 0)
+    proc_alive = _is_process_running(pid) if pid else False
+    output_dir = Path(
+        str(
+            (report or {}).get("output_dir")
+            or bg_doc.get("output_dir")
+            or job_doc.get("output_dir")
+            or preview
+        )
+    )
+
+    result: Dict[str, Any] = {
+        "parameter_hash": parameter_hash,
+        "preview_cache_path": str(preview).replace("\\", "/"),
+        "output_dir": str(output_dir).replace("\\", "/"),
+        "wav_count": wav_count,
+        "note_count": total_notes,
+        "total_notes": total_notes,
+        "rendered_notes": int(
+            bg_doc.get("rendered_notes")
+            or job_doc.get("rendered_notes")
+            or wav_count
+        ),
+        "current_note": bg_doc.get("current_note") or job_doc.get("current_note"),
+        "elapsed_time_s": bg_doc.get("elapsed_time_s") or job_doc.get("elapsed_s"),
+        "elapsed_s": bg_doc.get("elapsed_time_s") or job_doc.get("elapsed_s"),
+        "started_at": job_doc.get("started_at") or bg_doc.get("started_at"),
+        "latest_report_path": latest_report_path,
+        "preview_cache_ready": False,
+        "cache_hit_count": (report or {}).get("cache_hit_count", job_doc.get("cache_hit_count", 0)),
+        "cache_miss_count": (report or {}).get("cache_miss_count", job_doc.get("cache_miss_count", 0)),
+    }
+
+    def _finalize_ready(ready_dir: Path) -> Dict[str, Any]:
+        result.update(
+            {
+                "status": "ready",
+                "preview_cache_ready": True,
+                "readiness": "ready_for_app_playback",
+                "rendered_notes": total_notes,
+                "note_count": total_notes,
+                "wav_count": count_wavs_in_cache(ready_dir),
+                "output_dir": str(ready_dir).replace("\\", "/"),
+                "preview_cache_path": str(ready_dir).replace("\\", "/"),
+                "report_path": latest_report_path,
+                "pid": None,
+            }
+        )
+        write_job_status(parameter_hash, {**job_doc, **result})
+        write_background_status(parameter_hash, {**result, "report_path": latest_report_path})
+        if promote_stack:
+            promote_pending_stack_entries(parameter_hash, instrument=instrument)
+        return result
+
+    active_hash = get_active_job_hash()
+    if active_hash and active_hash != parameter_hash and not cache_is_ready(preview, note_range=note_range):
+        result["status"] = "stale"
+        result["stale_reason"] = "hash_mismatch_active_job"
+        return result
+
+    if report and report.get("readiness") == "ready_for_app_playback" and report.get("status") == "ready":
+        rep_out = Path(str(report.get("output_dir") or preview))
+        rep_wav_count = int(report.get("note_count") or total_notes)
+        if rep_out.is_dir() and (
+            cache_is_ready(rep_out, note_range=note_range)
+            or count_wavs_in_cache(rep_out) >= rep_wav_count
+        ):
+            return _finalize_ready(rep_out)
+
+    if cache_is_ready(preview, note_range=note_range):
+        return _finalize_ready(preview)
+
+    if report and report.get("status") in ("failed", "stale"):
+        result["status"] = str(report["status"])
+        result["error"] = report.get("missing_notes") or report.get("error")
+        return result
+
+    if job_doc.get("status") == "running" and pid and not proc_alive:
+        if report and report.get("readiness") == "ready_for_app_playback":
+            rep_out = Path(str(report.get("output_dir") or preview))
+            if cache_is_ready(rep_out, note_range=note_range):
+                return _finalize_ready(rep_out)
+        if cache_is_ready(preview, note_range=note_range):
+            return _finalize_ready(preview)
+        result["status"] = "failed"
+        result["error"] = "subprocess_exited_incomplete"
+        write_job_status(parameter_hash, {**job_doc, **result, "pid": None})
+        write_background_status(parameter_hash, result)
+        return result
+
+    if priority_notes_ready(preview, priority_notes) and not cache_is_ready(
+        preview, note_range=note_range
+    ):
+        result["status"] = "partial_ready"
+        result["priority_notes_ready"] = True
+        result["rendered_notes"] = max(result["rendered_notes"], wav_count)
+        return result
+
+    if proc_alive or job_doc.get("status") == "running":
+        result["status"] = "running"
+        result["rendered_notes"] = max(int(result["rendered_notes"]), wav_count)
+        return result
+
+    if job_doc.get("status") == "ready":
+        if cache_is_ready(preview, note_range=note_range):
+            return _finalize_ready(preview)
+        result["status"] = "failed"
+        result["error"] = "ready_status_but_cache_incomplete"
+        return result
+
+    result["status"] = str(job_doc.get("status") or bg_doc.get("status") or "not_started")
+    return result
 
 
 def start_background_note_library_job(
@@ -617,6 +841,8 @@ def start_background_note_library_job(
         str(job_json),
         "--repo-root",
         str(root),
+        "--priority-notes",
+        *DEFAULT_PRIORITY_NOTES,
     ]
     write_job_status(
         parameter_hash,
@@ -627,6 +853,17 @@ def start_background_note_library_job(
             "source_sample_id": sample_id,
             "rendered_notes": 0,
             "total_notes": len(parse_note_range(note_range)),
+        },
+    )
+    write_background_status(
+        parameter_hash,
+        {
+            "status": "running",
+            "started_at": _utc_now(),
+            "output_dir": str(preview),
+            "rendered_notes": 0,
+            "total_notes": len(parse_note_range(note_range)),
+            "elapsed_time_s": 0.0,
         },
     )
     proc = subprocess.Popen(cmd, cwd=str(root))
@@ -691,6 +928,78 @@ def _remove_stack_cache(path_str: Optional[str]) -> None:
         shutil.rmtree(p, ignore_errors=True)
 
 
+def promote_pending_stack_entries(
+    parameter_hash: Optional[str] = None,
+    instrument: str = "classical",
+) -> List[Dict[str, Any]]:
+    """Attach preview cache to pending FIFO entries when STK becomes ready."""
+    doc = load_guitar_stack(instrument)
+    snapshots: List[Dict[str, Any]] = list(doc.get("snapshots") or [])
+    promoted: List[Dict[str, Any]] = []
+    changed = False
+
+    for entry in snapshots:
+        if str(entry.get("status") or "") != "pending_audio":
+            continue
+        entry_hash = str(entry.get("parameter_hash") or "")
+        if parameter_hash and entry_hash != parameter_hash:
+            continue
+        if not entry_hash:
+            entry["status"] = "stale"
+            changed = True
+            continue
+
+        state = refresh_stk_background_job_status(
+            entry_hash, instrument=instrument, promote_stack=False
+        )
+        if entry_hash != str(state.get("parameter_hash") or ""):
+            entry["status"] = "stale"
+            changed = True
+            continue
+
+        stk_status = str(state.get("status") or "")
+        if stk_status == "failed":
+            entry["status"] = "failed_audio"
+            entry["error"] = state.get("error")
+            changed = True
+            continue
+        if stk_status != "ready" or not state.get("preview_cache_ready"):
+            continue
+
+        preview = preview_cache_dir(entry_hash, instrument)
+        if not preview.is_dir():
+            continue
+
+        saved_id = str(entry.get("saved_guitar_id") or "")
+        if not saved_id:
+            continue
+        saved_dir = saved_guitar_cache_dir(saved_id, instrument)
+        if saved_dir.exists():
+            shutil.rmtree(saved_dir)
+        shutil.copytree(preview, saved_dir)
+
+        report = get_latest_note_library_report(
+            str(entry.get("sample_id") or DEFAULT_SOURCE_SAMPLE_ID),
+            instrument,
+            parameter_hash=entry_hash,
+        )
+        entry["status"] = "ready"
+        entry["note_cache_path"] = str(saved_dir).replace("\\", "/")
+        entry["timing_report_path"] = (
+            state.get("latest_report_path")
+            or (report.get("report_json") if report else None)
+        )
+        entry["promoted_at"] = _utc_now()
+        promoted.append(entry)
+        changed = True
+
+    if changed:
+        doc["snapshots"] = snapshots
+        doc["updated_at"] = _utc_now()
+        save_guitar_stack(doc, instrument)
+    return promoted
+
+
 def save_guitar_to_stack(
     *,
     parameter_hash: str,
@@ -701,24 +1010,26 @@ def save_guitar_to_stack(
     rom_physical_summary_path: Optional[str] = None,
     repo_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Promote preview cache to a stable saved guitar id and push onto FIFO stack."""
-    preview = preview_cache_dir(parameter_hash, instrument)
-    if not cache_is_ready(preview):
-        raise RuntimeError("STK preview cache is not ready")
+    """Save current guitar to FIFO stack as ready or pending_audio."""
+    _ = repo_root
+    state = refresh_stk_background_job_status(parameter_hash, instrument=instrument, promote_stack=False)
+    if parameter_hash != str(state.get("parameter_hash") or ""):
+        raise RuntimeError("STK parameter hash mismatch — Save & Sync again.")
 
-    report = get_latest_note_library_report(source_sample_id, instrument, parameter_hash=parameter_hash)
-    if report is None:
-        report = read_job_status(parameter_hash)
+    stk_status = str(state.get("status") or "not_started")
+    preview = preview_cache_dir(parameter_hash, instrument)
+
+    if stk_status == "failed":
+        raise RuntimeError(
+            f"STK audio rendering failed: {state.get('error') or 'see debug report'}"
+        )
+    if stk_status == "stale":
+        raise RuntimeError("STK cache is stale for this design — Save & Sync again.")
 
     saved_id = f"guitar_{parameter_hash}_{datetime.now(timezone.utc).strftime('%H%M%S')}"
-    saved_dir = saved_guitar_cache_dir(saved_id, instrument)
-    if saved_dir.exists():
-        shutil.rmtree(saved_dir)
-    shutil.copytree(preview, saved_dir)
+    report = get_latest_note_library_report(source_sample_id, instrument, parameter_hash=parameter_hash)
 
-    doc = load_guitar_stack(instrument)
-    snapshots: List[Dict[str, Any]] = list(doc.get("snapshots") or [])
-    entry = {
+    entry: Dict[str, Any] = {
         "saved_guitar_id": saved_id,
         "guitar_id": saved_id,
         "sample_id": source_sample_id,
@@ -729,16 +1040,35 @@ def save_guitar_to_stack(
         "geometry_summary": dict(geometry_summary or {}),
         "rom_physical_summary_path": rom_physical_summary_path,
         "stk_parameter_export": "pgsm_stk_app_note_export_v1",
-        "note_cache_path": str(saved_dir).replace("\\", "/"),
-        "timing_report_path": report.get("report_json") if report else None,
+        "timing_report_path": state.get("latest_report_path")
+        or (report.get("report_json") if report else None),
         "renderer": "STK/C++",
         "python_role": "parameter_export_only",
     }
+
+    if stk_status == "ready" and state.get("preview_cache_ready"):
+        saved_dir = saved_guitar_cache_dir(saved_id, instrument)
+        if saved_dir.exists():
+            shutil.rmtree(saved_dir)
+        shutil.copytree(preview, saved_dir)
+        entry["status"] = "ready"
+        entry["note_cache_path"] = str(saved_dir).replace("\\", "/")
+    elif stk_status in ("running", "partial_ready", "not_started"):
+        entry["status"] = "pending_audio"
+        entry["note_cache_path"] = None
+    else:
+        raise RuntimeError(
+            f"Cannot save guitar while STK status is {stk_status!r}."
+        )
+
+    doc = load_guitar_stack(instrument)
+    snapshots: List[Dict[str, Any]] = list(doc.get("snapshots") or [])
     snapshots.append(entry)
     max_n = int(doc.get("max_snapshots") or MAX_GUITAR_STACK)
     while len(snapshots) > max_n:
         evicted = snapshots.pop(0)
-        _remove_stack_cache(evicted.get("note_cache_path"))
+        if str(evicted.get("status") or "") == "ready":
+            _remove_stack_cache(evicted.get("note_cache_path"))
 
     doc["snapshots"] = snapshots
     doc["updated_at"] = _utc_now()

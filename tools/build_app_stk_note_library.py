@@ -10,6 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "gui"))
 
 from stk_app_audio_service import (  # noqa: E402
+    DEFAULT_PRIORITY_NOTES,
     build_note_library,
     list_available_samples,
     set_active_job,
@@ -26,6 +27,7 @@ def main(argv=None) -> int:
     parser.add_argument("--cache-dir", type=Path, default=None, help="Flat preview/saved cache directory")
     parser.add_argument("--parameter-hash", default=None)
     parser.add_argument("--job-status-json", type=Path, default=None)
+    parser.add_argument("--priority-notes", nargs="*", default=list(DEFAULT_PRIORITY_NOTES))
     parser.add_argument("--duration-s", type=float, default=2.5)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
@@ -55,6 +57,7 @@ def main(argv=None) -> int:
         binary=binary,
         parameter_hash=args.parameter_hash,
         job_status_json=args.job_status_json,
+        priority_notes=args.priority_notes,
     )
     print(f"Readiness: {report['readiness']}")
     print(f"Status: {report.get('status', report['readiness'])}")

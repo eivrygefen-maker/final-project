@@ -203,6 +203,9 @@ def _init_session() -> None:
         "note_cache_building": False,
         "stk_parameter_hash": "",
         "stk_job_status": "not_started",
+        "stk_preview_cache_ready": False,
+        "stk_preview_cache_path": "",
+        "stk_note_count": 0,
         "_fast_preview_paths_verified": False,
         "show_mesh_overlay": False,
         "mesh_is_dirty": True,
@@ -1288,6 +1291,9 @@ def invalidate_rom_and_audio_state() -> None:
     st.session_state.note_cache_building = False
     st.session_state.stk_parameter_hash = ""
     st.session_state.stk_job_status = "not_started"
+    st.session_state.stk_preview_cache_ready = False
+    st.session_state.stk_preview_cache_path = ""
+    st.session_state.stk_note_count = 0
     try:
         from stk_app_audio_service import mark_stk_job_stale  # noqa: WPS433
 
@@ -1839,21 +1845,22 @@ def _render_main_studio(
         try:
             from stk_app_audio_service import (  # noqa: WPS433
                 compute_parameter_hash,
-                poll_background_job,
-                preview_cache_dir,
-                cache_is_ready,
+                promote_pending_stack_entries,
+                refresh_stk_background_job_status,
             )
 
             _stk_ph = compute_parameter_hash(rom_fp, lhs_params)
-            stk_job = poll_background_job(_stk_ph)
+            promote_pending_stack_entries(_stk_ph)
+            stk_job = refresh_stk_background_job_status(_stk_ph)
             st.session_state.stk_parameter_hash = _stk_ph
             st.session_state.stk_job_status = str(stk_job.get("status") or "not_started")
-            stk_cache_ready = (
-                str(stk_job.get("status")) == "ready"
-                and cache_is_ready(preview_cache_dir(_stk_ph))
-            )
+            st.session_state.stk_preview_cache_ready = bool(stk_job.get("preview_cache_ready"))
+            st.session_state.stk_preview_cache_path = str(stk_job.get("preview_cache_path") or "")
+            st.session_state.stk_note_count = int(stk_job.get("wav_count") or stk_job.get("note_count") or 0)
+            stk_cache_ready = bool(stk_job.get("preview_cache_ready"))
         except Exception:
             st.session_state.stk_job_status = "failed"
+            st.session_state.stk_preview_cache_ready = False
     elif st.session_state.get("rom_body_pending"):
         st.session_state.stk_job_status = "waiting_for_rom"
     elif not st.session_state.get("rom_body_ready"):
@@ -1896,47 +1903,48 @@ def _render_main_studio(
         else "waiting"
     )
     _stk_status = str(st.session_state.get("stk_job_status") or "not_started")
+    _stk_note_count = int(st.session_state.get("stk_note_count") or stk_job.get("wav_count") or 0)
     st.caption(f"ROM: **{_rom_status}** · STK cache: **{_stk_status}**")
-    if stk_job.get("rendered_notes") is not None and stk_job.get("total_notes"):
+    if stk_job.get("preview_cache_ready"):
+        st.caption(f"STK cache ready — {_stk_note_count} notes")
+    elif stk_job.get("rendered_notes") is not None and stk_job.get("total_notes"):
         st.caption(
             f"STK progress: {stk_job.get('rendered_notes')} / {stk_job.get('total_notes')} notes"
             + (
-                f" · {stk_job.get('elapsed_s')} s elapsed"
-                if stk_job.get("elapsed_s") is not None
+                f" · {stk_job.get('elapsed_time_s') or stk_job.get('elapsed_s')} s elapsed"
+                if stk_job.get("elapsed_time_s") is not None or stk_job.get("elapsed_s") is not None
                 else ""
             )
         )
-    st.caption("Accepted STK/C++ renderer — note cache builds automatically after ROM.")
+    st.caption(
+        "Accepted STK/C++ renderer — cache builds after ROM. "
+        "**Generate Sound** saves to the comparison stack (ready or pending)."
+    )
     _gc1, _gc2, _gc3 = st.columns([1, 2, 1])
     with _gc2:
         gen_sound = st.button(
             "Generate Sound",
             type="primary",
             use_container_width=True,
-            disabled=not rom_body_response_ready(rom_fp) or not stk_cache_ready,
+            disabled=not rom_body_response_ready(rom_fp),
             key="btn_gen_sound",
-            help="Save the current guitar to the STK comparison stack (requires ready audio cache).",
+            help="Save the current guitar to the STK comparison stack.",
         )
         if not rom_body_response_ready(rom_fp):
-            st.caption("Save & Sync first to run ROM and prepare STK audio.")
-        elif not stk_cache_ready:
-            if _stk_status == "running":
-                st.caption(
-                    "STK audio cache is still rendering. Please wait or continue editing."
-                )
-            elif _stk_status == "failed":
-                st.caption("STK rendering failed — check the STK panel below.")
-            else:
-                st.caption("Waiting for STK background render after ROM.")
+            st.caption("Save & Sync first to run ROM and start STK audio.")
+        elif _stk_status == "failed":
+            st.caption("STK rendering failed — check the STK panel below or Save & Sync again.")
+        elif _stk_status in ("running", "partial_ready", "not_started"):
+            st.caption(
+                "STK still rendering — you can save now as pending; audio attaches when ready."
+            )
+        elif stk_cache_ready:
+            st.caption("STK cache ready — save will include full note library.")
     st.markdown("</div>", unsafe_allow_html=True)
 
     if gen_sound:
         if not rom_body_response_ready(rom_fp):
             st.warning("ROM body response is stale or missing — Save & Sync first.")
-        elif not stk_cache_ready:
-            st.warning(
-                "STK audio cache is still rendering. Please wait or continue editing."
-            )
         else:
             from stk_app_ui import try_save_current_guitar_to_stack  # noqa: WPS433
 
@@ -1951,9 +1959,15 @@ def _render_main_studio(
                     rom_physical_summary_path=str(st.session_state.get("stk_body_json") or ""),
                 )
                 st.session_state.sound_stale = False
-                st.success(
-                    f"Saved **{entry.get('display_name')}** to the comparison stack."
-                )
+                if str(entry.get("status")) == "pending_audio":
+                    st.success(
+                        f"Saved **{entry.get('display_name')}** as pending — "
+                        "audio will attach when STK finishes."
+                    )
+                else:
+                    st.success(
+                        f"Saved **{entry.get('display_name')}** to the comparison stack (ready)."
+                    )
             except RuntimeError as exc:
                 st.warning(str(exc))
             except Exception as exc:
@@ -2029,8 +2043,9 @@ def _render_main_studio(
         "STK Classical Guitar (accepted renderer)",
         expanded=bool(
             st.session_state.get("rom_body_pending")
-            or str(st.session_state.get("stk_job_status")) in ("running", "waiting_for_rom")
-            or (rom_body_response_ready(rom_fp) and not stk_cache_ready)
+            or str(st.session_state.get("stk_job_status"))
+            in ("running", "partial_ready", "waiting_for_rom", "ready")
+            or rom_body_response_ready(rom_fp)
         ),
     ):
         from stk_app_ui import render_stk_classical_panel  # noqa: WPS433

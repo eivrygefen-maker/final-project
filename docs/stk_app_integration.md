@@ -17,22 +17,23 @@ Python does **not** synthesize guitar body/string audio for this path.
 
 1. **Save & Sync** — updates GMSH geometry and runs the ROM pipeline (unchanged).
 2. **After ROM succeeds** — STK note-library rendering starts automatically in the background (non-blocking).
-3. **Generate Sound** — does **not** start STK from zero. It saves the current guitar into the FIFO comparison stack when the preview cache is ready.
-4. **Playback** — uses cached STK note WAVs from preview or saved stack directories.
+3. **Status refresh** — on every Streamlit rerun, `refresh_stk_background_job_status()` reconciles subprocess state, progress JSON, library report, and WAV files. When the report says `ready_for_app_playback` with 37 notes, the UI promotes `running` → `ready` even if the job file was stale.
+4. **Generate Sound** — save/confirm action (does **not** start STK). If cache is ready, saves immediately with `status: ready`. If STK is still running, saves as `status: pending_audio` and attaches cache automatically when the matching `parameter_hash` completes.
+5. **Playback** — uses cached STK note WAVs from preview or saved stack directories. Note list is populated from actual `*.wav` files in the cache directory.
 
-Melody support (dropdown, `melodies.json`, melody cache) is **future work** and not part of this step.
+Melody support is **future work** and not part of this step.
 
 ## Pipeline
 
 ```
 User design → Save & Sync → GMSH + ROM
     → parameter_hash = SHA256(rom_fp + lhs_params)[:16]
-    → background STK job (subprocess)
+    → background STK job (subprocess, priority A2/A4/E5 first)
     → gui/pgsm_stk_parameter_export.py (build_render_entry, v4_10_samples)
     → STK parameter JSON (one note per render)
     → stk_pgsm_guitar_demo (C++/STK)
     → audio/app_stk_note_cache/classical/current_preview_<hash>/<Note>.wav
-    → Generate Sound → promote preview → saved_<guitar_id>/ + FIFO stack
+    → Generate Sound → saved_<guitar_id>/ + FIFO stack (ready or pending_audio)
 ```
 
 ## STK job statuses
@@ -42,11 +43,30 @@ User design → Save & Sync → GMSH + ROM
 | `not_started` | No job for current hash |
 | `waiting_for_rom` | ROM not ready yet |
 | `running` | Background subprocess rendering notes |
+| `partial_ready` | Priority notes A2/A4/E5 ready; full E2:E5 still rendering |
 | `ready` | Preview cache complete (37 notes E2:E5) |
 | `failed` | Renderer or export error |
-| `stale` | Design changed while job was running; result ignored |
+| `stale` | Design/hash mismatch; result ignored |
+
+FIFO stack entry statuses: `pending_audio`, `ready`, `failed_audio`, `stale`.
 
 Cache hit: if `current_preview_<hash>/` already has all notes, the job is marked ready immediately without rerendering.
+
+## Priority notes
+
+Background jobs render **A2, A4, E5 first**, then the remaining E2:E5 chromatic notes. This improves perceived readiness (~35 s for first useful playback vs ~270–432 s for the full library depending on hardware).
+
+CLI:
+
+```bash
+python tools/build_app_stk_note_library.py \
+  --priority-notes A2 A4 E5 \
+  ...
+```
+
+## Runtime
+
+Full E2:E5 chromatic library (37 notes) has been observed at approximately **270–432 s** total render time on VM hardware (~7–12 s per note).
 
 ## Generate all notes (VM — reference library)
 
@@ -56,16 +76,6 @@ chmod +x tools/run_app_stk_note_library_classical_sample_000.sh
 ./tools/run_app_stk_note_library_classical_sample_000.sh
 ```
 
-Or directly:
-
-```bash
-python tools/build_app_stk_note_library.py \
-  --sample-id sample_000 \
-  --instrument classical \
-  --note-range E2:E5 \
-  --output-root audio/app_stk_note_cache
-```
-
 Background APP jobs use additional flags:
 
 ```bash
@@ -73,21 +83,19 @@ python tools/build_app_stk_note_library.py \
   --sample-id sample_000 \
   --cache-dir audio/app_stk_note_cache/classical/current_preview_<hash> \
   --parameter-hash <hash> \
-  --job-status-json audio/debug_reports/app_stk_background_job_<hash>.json
+  --job-status-json audio/debug_reports/app_stk_background_job_<hash>.json \
+  --priority-notes A2 A4 E5
 ```
-
-- **37 notes** for E2:E5 chromatic (~270 s total on reference hardware)
-- Cache hits skip STK when WAV exists (unless `--force`)
 
 ## APP integration modules
 
 | Module | Role |
 |--------|------|
-| `gui/stk_app_audio_service.py` | Parameter hash, preview cache, background jobs, FIFO stack |
-| `gui/stk_app_ui.py` | Streamlit panel (ROM/STK status, preview playback, comparison stack) |
-| `gui/app.py` | Wires ROM completion → `schedule_stk_after_rom`, Generate → stack save |
+| `gui/stk_app_audio_service.py` | `refresh_stk_background_job_status`, priority render order, FIFO pending promotion |
+| `gui/stk_app_ui.py` | Streamlit panel (note list, A2/A4/E5 quick play, stack status) |
+| `gui/app.py` | ROM → `schedule_stk_after_rom`, refresh on rerun, Generate → stack save |
 | `tools/build_app_stk_note_library.py` | CLI / subprocess note library builder |
-| `tools/run_app_stk_site_smoke.sh` | Lightweight import/path smoke (no browser, no full render) |
+| `tools/run_app_stk_site_smoke.sh` | Lightweight import/path/refresh smoke |
 
 Streamlit: **Step 3 → expander “STK Classical Guitar (accepted renderer)”**
 
@@ -97,16 +105,17 @@ Streamlit: **Step 3 → expander “STK Classical Guitar (accepted renderer)”*
 |------|----------|
 | `audio/app_stk_note_cache/classical/current_preview_<hash>/` | Active preview note WAVs |
 | `audio/app_stk_note_cache/classical/saved_<guitar_id>/` | Promoted stack-owned caches |
-| `audio/app_stk_note_cache/classical/sample_000/` | Reference VM library (legacy layout) |
-| `audio/app_stk_note_cache/.render_tmp/` | Per-note STK render temp (safe to delete) |
 | `audio/app_stk_guitar_stack/classical/stack_index.json` | Last 3 guitar snapshots (FIFO, max 3) |
-| `audio/debug_reports/app_stk_background_job_<hash>.json` | Background job progress/status |
+| `audio/debug_reports/app_stk_background_status_<hash>.json` | Per-note progress during render |
+| `audio/debug_reports/app_stk_background_job_<hash>.json` | Job status snapshot |
+| `audio/debug_reports/app_stk_note_library_classical_preview_<hash>_report.json` | Final timing/readiness report |
 
 ## FIFO comparison stack
 
-- Max **3** saved guitars (`stack_index.json`).
-- On 4th save: oldest entry removed and its `saved_<id>/` cache deleted.
-- Each entry includes: `saved_guitar_id`, `display_name`, `timestamp`, `parameter_hash`, `geometry_summary`, `rom_physical_summary_path`, `note_cache_path`, `timing_report_path`, `source_sample_id`.
+- Max **3** saved guitars.
+- Generate while STK is running → `pending_audio`; auto-promoted to `ready` when matching hash completes.
+- Generate when STK is ready → immediate `ready` with copied cache.
+- `parameter_hash` is the authority for matching pending entries to completed caches.
 
 ## Site smoke (VM)
 
@@ -115,21 +124,16 @@ chmod +x tools/run_app_stk_site_smoke.sh
 ./tools/run_app_stk_site_smoke.sh
 ```
 
-Checks: STK binary/build script, Python imports, optional `sample_000` cache, FIFO stack read/write, creatable cache paths. Does **not** require melodies or run a full 37-note render.
+Verifies: refresh promotes completed report → ready, FIFO ready/pending/promote, note listing from WAV files, imports. No melody JSON required. No full 37-note render.
 
 ## Preserved validation paths
-
-These remain unchanged:
 
 - `tools/run_app_stk_note_library_classical_sample_000.sh`
 - `tools/run_stk_pgsm_demo_v4_10_samples.sh`
 - `tools/run_stk_classical_final_acceptance.sh`
-- v3 demo and reports
 
 ## Future work
 
-- Wire user-designed guitar (`website` sample) through ROM → physical export (beyond `sample_000` interim)
+- Wire user-designed guitar through ROM → physical export (beyond `sample_000` interim)
 - Melody library and UI
-- Extend note range above E5
-- Box-shape STK pipeline
-- Interactive fretboard player using STK note cache instead of Python synthesis cache
+- Interactive fretboard player using STK note cache
