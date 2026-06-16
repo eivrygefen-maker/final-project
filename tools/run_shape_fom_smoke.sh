@@ -145,6 +145,13 @@ else
   bad "STK/audio executable reference in FOM scripts (see grep hits above)"
 fi
 
+GEOM_CONTRACT="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_geometry_numeric_contract_test.py"
+if python3 "${GEOM_CONTRACT}" >/tmp/shape_fom_smoke_geom_contract.log 2>&1; then
+  ok "geometry numeric/metadata contract (box shape_type)"
+else
+  bad "geometry numeric contract failed (see /tmp/shape_fom_smoke_geom_contract.log)"
+fi
+
 echo ""
 echo "Smoke: ${PASS} passed, ${FAIL} failed"
 [[ "${FAIL}" -eq 0 ]]

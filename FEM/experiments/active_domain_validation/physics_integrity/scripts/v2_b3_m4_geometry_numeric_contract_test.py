@@ -14,12 +14,15 @@ if str(SCRIPT_DIR) not in sys.path:
 from v2_b3_m4_lprod_interfaces import (  # noqa: E402
     GEOMETRY_NUMERIC_KEYS,
     GeometryNumericCoercionError,
+    apply_sample_geometry_to_resolved_config,
     coerce_geometry_numeric,
     extract_geometry_dict,
     extract_run_metadata,
     geometry_fingerprint,
 )
+from v2_b3_m4_lprod_checkpoint_run import resolve_lprod_core_config  # noqa: E402
 from v2_b3_m4_production_contracts import DATASET_VERSION, geometry_from_core_config  # noqa: E402
+from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
 
 def _production_like_config() -> dict:
@@ -125,6 +128,85 @@ def test_lhs_sample_input_shape() -> None:
     assert len(geom) == 6
 
 
+def test_box_sample_input_skips_shape_type_float() -> None:
+    sample = {
+        "schema": "m4_sample_input_v1",
+        "sample_id": "box_sample_000",
+        "shape_name": "box",
+        "geometry_shape_type": "Box",
+        "gmsh_shape_type": "Box",
+        "lhs_path": "ROM/box/lhs_pool.json",
+        "parameters": {
+            "geometry.length": 0.401307,
+            "geometry.width": 0.365581,
+            "geometry.depth": 0.114949,
+            "geometry.hole_radius": 0.038594,
+            "geometry.top_thickness": 0.003483,
+            "geometry.back_thickness": 0.0038313,
+            "geometry.shape_type": "Box",
+            "top_wood_id": "mahogany",
+            "back_wood_id": "cedar",
+        },
+    }
+    geom = extract_geometry_dict(sample)
+    meta = extract_run_metadata(sample)
+    assert "shape_type" not in geom
+    assert set(geom.keys()) == set(GEOMETRY_NUMERIC_KEYS)
+    assert meta["geometry_shape_type"] == "Box"
+    assert meta["shape_name"] == "box"
+    resolved = {"solver": {"mesh_file": "lprod/mesh/L_prod/box_sample_000.msh"}}
+    resolution = apply_sample_geometry_to_resolved_config(resolved, sample_input=sample)
+    assert resolution["numeric_parameter_count"] == 6
+    assert resolution["geometry_shape_type"] == "Box"
+    assert resolved["parameters"]["geometry.shape_type"] == "Box"
+    assert isinstance(resolved["parameters"]["geometry.length"], float)
+
+
+def test_resolve_lprod_core_config_box_shape_type() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        repo_root = Path(tmp)
+        run_root = repo_root / "guitars" / "box_sample_000" / "runs" / "box_sample_000_box_fom_v1"
+        sample_dir = run_root / "sample"
+        lprod_dir = run_root / "lprod"
+        sample_dir.mkdir(parents=True)
+        lprod_dir.mkdir(parents=True)
+        sample = {
+            "sample_id": "box_sample_000",
+            "shape_name": "box",
+            "geometry_shape_type": "Box",
+            "gmsh_shape_type": "Box",
+            "lhs_path": "ROM/box/lhs_pool.json",
+            "parameters": {
+                "geometry.length": 0.401307,
+                "geometry.width": 0.365581,
+                "geometry.depth": 0.114949,
+                "geometry.hole_radius": 0.038594,
+                "geometry.top_thickness": 0.003483,
+                "geometry.back_thickness": 0.0038313,
+                "geometry.shape_type": "Box",
+                "top_wood_id": "mahogany",
+                "back_wood_id": "cedar",
+            },
+        }
+        write_json_atomic(sample_dir / "sample_input.json", sample)
+        write_json_atomic(
+            sample_dir / "resolved_core_config.json",
+            {"solver": {"mesh_file": "scout/mesh/L_scout_coarse/box_sample_000.msh"}},
+        )
+        out = resolve_lprod_core_config(
+            repo_root=repo_root,
+            run_root=run_root,
+            sample_id="box_sample_000",
+            lprod_mesh_rel="lprod/mesh/L_prod/box_sample_000.msh",
+            force=True,
+            sample_input=sample,
+        )
+        body = json.loads(out.read_text(encoding="utf-8"))
+        assert body["parameters"]["geometry.shape_type"] == "Box"
+        assert body["lprod_config_resolution"]["geometry_shape_type"] == "Box"
+        assert body["lprod_config_resolution"]["numeric_parameter_count"] == 6
+
+
 def main() -> int:
     tests = [
         test_extract_geometry_skips_metadata,
@@ -132,6 +214,8 @@ def main() -> int:
         test_geometry_from_core_config_file,
         test_coerce_geometry_numeric_reports_key,
         test_lhs_sample_input_shape,
+        test_box_sample_input_skips_shape_type_float,
+        test_resolve_lprod_core_config_box_shape_type,
     ]
     for fn in tests:
         fn()

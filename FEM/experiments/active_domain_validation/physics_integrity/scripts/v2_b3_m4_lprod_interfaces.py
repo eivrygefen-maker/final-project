@@ -84,19 +84,44 @@ def _load_json(path: Path) -> Dict[str, Any]:
 def extract_run_metadata(sample_or_params: Mapping[str, Any]) -> Dict[str, str]:
     """Non-numeric run metadata (shape, dataset marker) kept separate from body dimensions."""
     out: Dict[str, str] = {}
-    for top_key in ("shape_name", "dataset_version"):
+    for top_key in (
+        "shape_name",
+        "dataset_version",
+        "geometry_shape_type",
+        "gmsh_shape_type",
+        "lhs_path",
+        "lhs_source_path",
+    ):
         if top_key in sample_or_params and sample_or_params[top_key] is not None:
             out[top_key] = str(sample_or_params[top_key])
+    if "lhs_path" not in out and out.get("lhs_source_path"):
+        out["lhs_path"] = out["lhs_source_path"]
     meta = sample_or_params.get("m4_run_metadata")
     if isinstance(meta, dict):
-        for key in ("shape_name", "dataset_version", "shape_type", "mesh_mode"):
+        for key in (
+            "shape_name",
+            "dataset_version",
+            "shape_type",
+            "mesh_mode",
+            "geometry_shape_type",
+            "gmsh_shape_type",
+            "lhs_path",
+        ):
             if key in meta and meta[key] is not None:
-                out[key] = str(meta[key])
+                out.setdefault(key, str(meta[key]))
     geom = sample_or_params.get("geometry")
     if isinstance(geom, dict):
         for key in GEOMETRY_METADATA_KEYS:
             if key in geom and geom[key] is not None:
                 out.setdefault(key, str(geom[key]))
+    params = sample_or_params.get("parameters")
+    if isinstance(params, dict):
+        st = params.get("geometry.shape_type")
+        if st is not None:
+            out.setdefault("shape_type", str(st))
+            out.setdefault("geometry_shape_type", str(st))
+    if out.get("geometry_shape_type") and not out.get("gmsh_shape_type"):
+        out.setdefault("gmsh_shape_type", out["geometry_shape_type"])
     return out
 
 
@@ -116,9 +141,6 @@ def extract_geometry_dict(sample_or_params: Mapping[str, Any]) -> Dict[str, floa
 
     params = sample_or_params.get("parameters")
     if isinstance(params, dict):
-        st = params.get("geometry.shape_type")
-        if st is not None:
-            out.setdefault("shape_type", str(st))
         for k, v in params.items():
             ks = str(k)
             if not ks.startswith("geometry."):
@@ -141,6 +163,66 @@ def extract_geometry_dict(sample_or_params: Mapping[str, Any]) -> Dict[str, floa
             out[key] = coerce_geometry_numeric(key, raw_val)
 
     return out
+
+
+def apply_sample_geometry_to_resolved_config(
+    resolved: Dict[str, Any],
+    *,
+    sample_input: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Merge numeric geometry and string metadata into a resolved core config (Stage 4)."""
+    geom_numeric = extract_geometry_dict(sample_input)
+    meta = extract_run_metadata(sample_input)
+
+    resolved["geometry_numeric_parameters"] = dict(geom_numeric)
+    geo_block = resolved.setdefault("geometry", {})
+    if isinstance(geo_block, dict):
+        for key, val in geom_numeric.items():
+            geo_block[key] = float(val)
+        shape_type = (
+            meta.get("geometry_shape_type")
+            or meta.get("shape_type")
+            or sample_input.get("geometry_shape_type")
+        )
+        if shape_type:
+            geo_block["shape_type"] = str(shape_type)
+
+    params = resolved.setdefault("parameters", {})
+    metadata_param_count = 0
+    if isinstance(params, dict):
+        for key, val in geom_numeric.items():
+            params[f"geometry.{key}"] = float(val)
+        src_params = sample_input.get("parameters")
+        if isinstance(src_params, dict):
+            for meta_key in ("geometry.shape_type", "top_wood_id", "back_wood_id"):
+                if src_params.get(meta_key) is not None:
+                    params[str(meta_key)] = str(src_params[meta_key])
+                    metadata_param_count += 1
+
+    for top_key in ("shape_name", "geometry_shape_type", "gmsh_shape_type", "lhs_path"):
+        val = sample_input.get(top_key) or meta.get(top_key)
+        if val is not None:
+            resolved[top_key] = str(val)
+
+    m4_meta = resolved.setdefault("m4_run_metadata", {})
+    if isinstance(m4_meta, dict):
+        m4_meta.update({k: v for k, v in meta.items() if v is not None})
+
+    resolution = {
+        "shape_name": str(resolved.get("shape_name") or meta.get("shape_name") or ""),
+        "geometry_shape_type": str(
+            resolved.get("geometry_shape_type")
+            or meta.get("geometry_shape_type")
+            or meta.get("shape_type")
+            or ""
+        ),
+        "gmsh_shape_type": str(resolved.get("gmsh_shape_type") or meta.get("gmsh_shape_type") or ""),
+        "lhs_path": str(resolved.get("lhs_path") or meta.get("lhs_path") or ""),
+        "numeric_parameter_count": len(geom_numeric),
+        "metadata_parameter_count": metadata_param_count,
+    }
+    resolved["lprod_config_resolution"] = resolution
+    return resolution
 
 
 def geometry_fingerprint(geometry: Mapping[str, float], *, rel_tol: float = 1.0e-6) -> str:

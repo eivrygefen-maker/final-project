@@ -76,6 +76,7 @@ from v2_b3_m4_lprod_interfaces import (  # noqa: E402
     BASELINE_GEOMETRY,
     BASELINE_L_PROD_MESH,
     LPROD_SYNTHESIS_REGION_DOFS_DEFAULT,
+    apply_sample_geometry_to_resolved_config,
     evaluate_lprod_mesh_checkpoint_readiness,
     extract_geometry_dict,
     extract_run_metadata,
@@ -234,24 +235,16 @@ def resolve_lprod_core_config(
     resolved.setdefault("solver", {})["mesh_file"] = lprod_mesh_rel
     resolved.setdefault("solver", {})["clamp_ribs"] = False
     if sample_input:
-        geom = extract_geometry_dict(sample_input)
-        if geom:
-            resolved["geometry_numeric_parameters"] = dict(geom)
-            geo_block = resolved.setdefault("geometry", {})
-            if isinstance(geo_block, dict):
-                for key, val in geom.items():
-                    geo_block[key] = val
-            params = resolved.setdefault("parameters", {})
-            if isinstance(params, dict):
-                for key, val in geom.items():
-                    params[f"geometry.{key}"] = float(val)
-        meta = extract_run_metadata(sample_input)
-        if meta:
-            m4_meta = resolved.setdefault("m4_run_metadata", {})
-            if isinstance(m4_meta, dict):
-                m4_meta.update(meta)
-            if meta.get("shape_name"):
-                resolved["shape_name"] = str(meta["shape_name"])
+        resolution = apply_sample_geometry_to_resolved_config(resolved, sample_input=sample_input)
+        print(
+            f"[B3_lprod_config] shape_name={resolution.get('shape_name')} "
+            f"geometry_shape_type={resolution.get('geometry_shape_type')} "
+            f"gmsh_shape_type={resolution.get('gmsh_shape_type')} "
+            f"lhs_path={resolution.get('lhs_path')} "
+            f"numeric_parameter_count={resolution.get('numeric_parameter_count')} "
+            f"metadata_parameter_count={resolution.get('metadata_parameter_count')}",
+            flush=True,
+        )
     profile = resolve_production_mesh_profile(sample_input or {})
     resolved.update(profile.provenance_fields())
     resolved["dataset_version"] = profile.dataset_version
