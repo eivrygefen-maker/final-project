@@ -34,7 +34,7 @@ do
   fi
 done
 
-if grep -q '--shape' "${M4_SCRIPT}"; then
+if grep -q -- '--shape' "${M4_SCRIPT}"; then
   ok "run_m4_production_pipeline.py accepts --shape"
 else
   bad "run_m4_production_pipeline.py missing --shape"
@@ -99,10 +99,22 @@ else
   bad "missing docs/m4_acoustic_opening_policy.md"
 fi
 
-if ! grep -qi 'stk\|wav\|app_stk' "${OVERNIGHT}" "${GEN_SCRIPT}" 2>/dev/null; then
-  ok "no STK/audio in FOM overnight/generator scripts"
+# Fail only on executable STK/audio tool references — not comments or FOM field names
+# (e.g. "No STK" in comments, last_audio_coupling_computed_count in LHS schema).
+_stk_exec_pattern='build_app_stk_note_library|run_app_stk|app_stk_note_cache|stk_pgsm|stk_app_audio'
+_stk_hits=""
+for _f in "${OVERNIGHT}" "${GEN_SCRIPT}"; do
+  if [[ -f "${_f}" ]]; then
+    _line_hits="$(grep -nE "${_stk_exec_pattern}" "${_f}" 2>/dev/null || true)"
+    if [[ -n "${_line_hits}" ]]; then
+      _stk_hits="${_stk_hits}${_f}:${_line_hits}"$'\n'
+    fi
+  fi
+done
+if [[ -z "${_stk_hits}" ]]; then
+  ok "no STK/audio executable refs in FOM overnight/generator scripts"
 else
-  bad "STK/audio reference in FOM scripts"
+  bad "STK/audio executable reference in FOM scripts (see grep hits above)"
 fi
 
 echo ""
