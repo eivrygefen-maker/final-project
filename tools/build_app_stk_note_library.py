@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "gui"))
 
 from app_stk_config import load_app_stk_config, priority_notes_from_config  # noqa: E402
-from app_stk_instrument import default_sample_id  # noqa: E402
+from app_stk_instrument import default_sample_id_for_shape  # noqa: E402
 from app_stk_fretboard import (  # noqa: E402
     build_required_note_set_from_fretboard,
     note_range_label_from_required,
@@ -29,7 +29,11 @@ def main(argv=None) -> int:
     cfg = load_app_stk_config(REPO_ROOT)
     parser = argparse.ArgumentParser(description="Build APP STK classical note cache.")
     parser.add_argument("--sample-id", default=None)
-    parser.add_argument("--instrument", default="classical")
+    parser.add_argument(
+        "--shape-type",
+        default="Classical",
+        help="UI shape label (Classical, Box, …) — picks default LHS sample when --sample-id omitted",
+    )
     parser.add_argument(
         "--note-range",
         default="",
@@ -55,9 +59,9 @@ def main(argv=None) -> int:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
     args = parser.parse_args(list(argv) if argv is not None else None)
-    sample_id = str(args.sample_id or default_sample_id(args.instrument))
+    sample_id = str(args.sample_id or default_sample_id_for_shape(args.shape_type))
 
-    if sample_id not in list_available_samples(args.repo_root, args.instrument):
+    if sample_id not in list_available_samples(args.repo_root, shape_type=args.shape_type):
         print(f"WARNING: sample_id {sample_id!r} not in LHS pool; proceeding anyway")
 
     binary = stk_binary_path(args.repo_root)
@@ -71,11 +75,10 @@ def main(argv=None) -> int:
     prio = list(args.priority_notes or priority_notes_from_config(cfg))
 
     if args.parameter_hash:
-        set_active_job(args.parameter_hash, args.instrument)
+        set_active_job(args.parameter_hash)
 
     report = build_note_library(
         sample_id,
-        instrument=args.instrument,
         note_range=note_range,
         output_root=args.output_root,
         cache_dir=args.cache_dir,

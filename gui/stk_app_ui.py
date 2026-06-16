@@ -8,7 +8,7 @@ from typing import Any, Dict, Mapping, Optional
 import streamlit as st
 
 from app_stk_config import load_app_stk_config
-from app_stk_instrument import default_sample_id  # noqa: WPS433
+from app_stk_instrument import default_sample_id_for_shape  # noqa: WPS433
 from stk_app_audio_service import (
     DEFAULT_SOURCE_SAMPLE_ID,
     activate_stk_guitar_for_player,
@@ -253,7 +253,6 @@ def poll_stk_render_request(
         parameter_hash, repo_root, instrument
     )
     _session_set("stk_parameter_hash", parameter_hash)
-    _session_set("stk_instrument", instrument)
     _session_set("stk_job_status", status if not preview_ready else "ready")
     _session_set("stk_preview_cache_ready", preview_ready)
     _session_set(
@@ -409,8 +408,7 @@ def request_generate_guitar(
         rom_fp=rom_fp,
         lhs_params=lhs_params,
         repo_root=repo_root,
-        sample_id=default_sample_id(instrument),
-        instrument=instrument,
+        sample_id=default_sample_id_for_shape(str(geom.get("shape_type") or "Classical")),
     )
     state = resolve_preview_cache_ready_state(parameter_hash, instrument=instrument, repo_root=repo_root)
     _set_stk_render_request(parameter_hash)
@@ -475,6 +473,14 @@ def render_stk_diagnostics_panel(
     root = Path(repo_root or REPO_ROOT)
     parameter_hash = compute_parameter_hash(rom_fp, lhs_params) if rom_fp else ""
     preview = preview_cache_dir(parameter_hash, instrument) if parameter_hash else None
+    shape = "Classical"
+    if lhs_params:
+        shape = str(
+            lhs_params.get("geometry.shape_type")
+            or lhs_params.get("shape_type")
+            or "Classical"
+        )
+    sample_id = default_sample_id_for_shape(shape)
 
     job_doc: Dict[str, Any] = {}
     stk_status = "waiting_for_rom"
@@ -501,13 +507,13 @@ def render_stk_diagnostics_panel(
             }
         )
     if preview and preview.is_dir():
-        notes = list_available_notes(default_sample_id(instrument), cache_dir=preview)
+        notes = list_available_notes(sample_id, cache_dir=preview)
         st.caption(f"Preview WAV count: {len(notes)}")
     if not stk_binary_path(root).is_file():
         st.caption("STK binary not built on this machine.")
 
     stack = list_ready_guitar_stack(instrument)
-    st.caption(f"Ready FIFO entries ({instrument}): {len(stack)}")
+    st.caption(f"Ready FIFO entries: {len(stack)}")
     for row in reversed(stack):
         cache_entry = Path(str(row.get("note_cache_path") or ""))
         st.caption(f"`{row.get('saved_guitar_id')}` → `{cache_entry}`")
@@ -515,7 +521,7 @@ def render_stk_diagnostics_panel(
         for col, cn in zip(cols, COMPARE_NOTES):
             with col:
                 st.caption(cn)
-                w = get_note_wav(default_sample_id(instrument), cn, cache_dir=cache_entry) if cache_entry.is_dir() else None
+                w = get_note_wav(sample_id, cn, cache_dir=cache_entry) if cache_entry.is_dir() else None
                 if w and w.is_file():
                     st.audio(w.read_bytes(), format="audio/wav")
 

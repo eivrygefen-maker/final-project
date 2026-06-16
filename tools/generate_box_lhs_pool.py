@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate or extend the BOX LHS pool (``ROM/box/lhs_pool.json``)."""
+"""Generate or extend the BOX LHS pool for FOM/FEM/ROM (``ROM/box/lhs_pool.json``)."""
 from __future__ import annotations
 
 import argparse
@@ -13,17 +13,21 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_POOL_PATH = REPO_ROOT / "ROM" / "box" / "lhs_pool.json"
 DEFAULT_COUNT = 40
 DEFAULT_SEED = 20260616
+DEFAULT_FOM_RUN_ID_SUFFIX = "box_fom_v1"
+M4_GUITARS_ROOT = (
+    REPO_ROOT
+    / "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars"
+)
 
 WOOD_IDS: Tuple[str, ...] = ("spruce", "cedar", "mahogany", "rosewood", "maple")
 
-# Conservative BOX geometry bounds (pipeline-compatible keys from existing BOX LHS).
+# Conservative BOX geometry bounds — same keys as classic M4 LHS (7D + woods).
 DEFAULT_BOX_BOUNDS: Dict[str, Any] = {
     "geometry.length": {"min": 0.40, "max": 0.52},
     "geometry.width": {"min": 0.32, "max": 0.42},
     "geometry.depth": {"min": 0.06, "max": 0.16},
     "geometry.top_thickness": {"min": 0.0025, "max": 0.0035},
     "geometry.hole_radius": {"min": 0.035, "max": 0.048},
-    "geometry.back_thickness": {"min": 0.0028, "max": 0.0040},
     "top_wood_id": list(WOOD_IDS),
     "back_wood_id": list(WOOD_IDS),
 }
@@ -45,6 +49,16 @@ PENDING_ENTRY_TEMPLATE: Dict[str, Any] = {
 }
 
 
+def _finalize_lhs_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply FEM wood/thickness finalization (``geometry.back_thickness`` from top)."""
+    fem_scripts = REPO_ROOT / "FEM" / "scripts"
+    if str(fem_scripts) not in sys.path:
+        sys.path.insert(0, str(fem_scripts))
+    from wood_library import finalize_lhs_thickness_params  # noqa: WPS433
+
+    return finalize_lhs_thickness_params(params)
+
+
 def box_sample_id(index: int) -> str:
     return f"box_sample_{int(index):03d}"
 
@@ -57,6 +71,18 @@ def parse_box_sample_index(sample_id: str) -> Optional[int]:
         return int(raw.split("_")[-1])
     except ValueError:
         return None
+
+
+def box_fom_run_id(sample_id: str, run_id_suffix: str = DEFAULT_FOM_RUN_ID_SUFFIX) -> str:
+    return f"{sample_id}_{run_id_suffix}"
+
+
+def box_fom_run_root(
+    repo_root: Path,
+    sample_id: str,
+    run_id_suffix: str = DEFAULT_FOM_RUN_ID_SUFFIX,
+) -> Path:
+    return M4_GUITARS_ROOT / sample_id / "runs" / box_fom_run_id(sample_id, run_id_suffix)
 
 
 def _latin_hypercube_unit(n_samples: int, n_dim: int, seed: int):
@@ -96,7 +122,6 @@ def _bounds_from_pool(pool: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 def _infer_bounds_from_entries(entries: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
-    """Widen defaults using numeric ranges observed in existing entries."""
     bounds = deepcopy(DEFAULT_BOX_BOUNDS)
     numeric_keys = (
         "geometry.length",
@@ -126,7 +151,7 @@ def _infer_bounds_from_entries(entries: Sequence[Mapping[str, Any]]) -> Dict[str
         if not vals:
             continue
         lo, hi = min(vals), max(vals)
-        spec = bounds[key]
+        spec = bounds.get(key)
         if isinstance(spec, dict):
             spec["min"] = min(float(spec["min"]), lo)
             spec["max"] = max(float(spec["max"]), hi)
@@ -139,8 +164,8 @@ def _infer_bounds_from_entries(entries: Sequence[Mapping[str, Any]]) -> Dict[str
 
 def _build_parameters_row(cols: Mapping[str, Sequence[Any]], index: int) -> Dict[str, Any]:
     params = {k: cols[k][index] for k in sorted(cols.keys())}
-    params["geometry.shape_type"] = "box"
-    return params
+    params["geometry.shape_type"] = "Box"
+    return _finalize_lhs_params(params)
 
 
 def _blank_entry(sample_id: str, parameters: Mapping[str, Any]) -> Dict[str, Any]:
@@ -166,6 +191,65 @@ def load_pool(path: Path) -> Dict[str, Any]:
         return doc if isinstance(doc, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def pool_entry_for_sample(pool: Mapping[str, Any], sample_id: str) -> Optional[Dict[str, Any]]:
+    for entry in pool.get("entries") or []:
+        if str(entry.get("id")) == sample_id:
+            return dict(entry)
+    return None
+
+
+def is_box_fom_sample_completed(
+    repo_root: Path,
+    sample_id: str,
+    *,
+    run_id_suffix: str = DEFAULT_FOM_RUN_ID_SUFFIX,
+    pool_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """True when LHS pool marks sample COMPLETED for the expected FOM run id."""
+    root = Path(repo_root)
+    path = Path(pool_path or DEFAULT_POOL_PATH)
+    run_id = box_fom_run_id(sample_id, run_id_suffix)
+    run_root = box_fom_run_root(root, sample_id, run_id_suffix)
+    out: Dict[str, Any] = {
+        "sample_id": sample_id,
+        "run_id": run_id,
+        "ready": False,
+        "run_root": str(run_root).replace("\\", "/"),
+        "lhs_pool": str(path).replace("\\", "/"),
+    }
+    pool = load_pool(path)
+    entry = pool_entry_for_sample(pool, sample_id)
+    if entry is None:
+        out["reason"] = "missing_lhs_entry"
+        return out
+
+    status = str(entry.get("status") or "PENDING").upper()
+    last_run = str(entry.get("last_run_id") or "")
+    agg_status = str(entry.get("last_aggregation_status") or "")
+    out["lhs_status"] = status
+    out["last_run_id"] = last_run
+    out["last_aggregation_status"] = agg_status
+
+    if status == "COMPLETED" and (not last_run or last_run == run_id):
+        out["ready"] = True
+        out["reason"] = "lhs_pool_completed"
+        return out
+
+    agg_json = run_root / "aggregation" / "aggregation_result.json"
+    if agg_json.is_file():
+        try:
+            agg = json.loads(agg_json.read_text(encoding="utf-8"))
+            if str(agg.get("aggregation_status") or "") == "AGGREGATION_PASS":
+                out["ready"] = True
+                out["reason"] = "aggregation_pass_on_disk"
+                return out
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    out["reason"] = "incomplete"
+    return out
 
 
 def build_pool_document(
@@ -214,59 +298,6 @@ def write_pool(path: Path, doc: Mapping[str, Any]) -> None:
     tmp.replace(path)
 
 
-def box_sample_cache_dir(repo_root: Path, sample_id: str) -> Path:
-    return Path(repo_root) / "audio" / "app_stk_note_cache" / "box" / sample_id
-
-
-def box_sample_report_json(repo_root: Path, sample_id: str) -> Path:
-    return (
-        Path(repo_root)
-        / "audio"
-        / "debug_reports"
-        / "box"
-        / f"app_stk_note_library_box_{sample_id}_report.json"
-    )
-
-
-def is_box_sample_ready(repo_root: Path, sample_id: str) -> Dict[str, Any]:
-    """Return readiness info for one BOX sample cache (no STK invocation)."""
-    root = Path(repo_root)
-    cache_dir = box_sample_cache_dir(root, sample_id)
-    report_path = box_sample_report_json(root, sample_id)
-    out: Dict[str, Any] = {
-        "sample_id": sample_id,
-        "ready": False,
-        "cache_dir": str(cache_dir).replace("\\", "/"),
-        "report_json": str(report_path).replace("\\", "/"),
-    }
-    if not cache_dir.is_dir():
-        out["reason"] = "cache_missing"
-        return out
-
-    sys.path.insert(0, str(root / "gui"))
-    from stk_app_audio_service import cache_is_ready_for_fretboard  # noqa: WPS433
-
-    if cache_is_ready_for_fretboard(cache_dir):
-        out["ready"] = True
-        out["reason"] = "cache_complete"
-        return out
-
-    if report_path.is_file():
-        try:
-            report = json.loads(report_path.read_text(encoding="utf-8"))
-            if report.get("readiness") == "ready_for_app_playback" and report.get("status") == "ready":
-                out["ready"] = True
-                out["reason"] = "report_ready"
-                return out
-        except (OSError, json.JSONDecodeError):
-            pass
-
-    pos_wav = cache_dir / "S6_f2.wav"
-    out["reason"] = "incomplete"
-    out["has_position_alias"] = pos_wav.is_file()
-    return out
-
-
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--count", type=int, default=DEFAULT_COUNT)
@@ -274,11 +305,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--pool-path", type=Path, default=DEFAULT_POOL_PATH)
     parser.add_argument("--force", action="store_true", help="Replace existing BOX entries with fresh LHS rows")
     parser.add_argument("--dry-run", action="store_true", help="Compute pool but do not write JSON")
-    parser.add_argument("--check-ready", metavar="SAMPLE_ID", default="", help="Check one sample cache readiness")
+    parser.add_argument(
+        "--check-fom-ready",
+        metavar="SAMPLE_ID",
+        default="",
+        help="Check whether a BOX FOM/M4 sample is already COMPLETED",
+    )
+    parser.add_argument(
+        "--run-id-suffix",
+        default=DEFAULT_FOM_RUN_ID_SUFFIX,
+        help="FOM run id suffix used with --check-fom-ready",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
-    if args.check_ready:
-        status = is_box_sample_ready(REPO_ROOT, args.check_ready)
+    if args.check_fom_ready:
+        status = is_box_fom_sample_completed(
+            REPO_ROOT,
+            args.check_fom_ready,
+            run_id_suffix=str(args.run_id_suffix),
+            pool_path=args.pool_path,
+        )
         print(json.dumps(status, indent=2))
         return 0 if status.get("ready") else 1
 
@@ -306,9 +352,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 0
 
-    if not args.dry_run:
-        write_pool(args.pool_path, doc)
-
+    write_pool(args.pool_path, doc)
     print(f"BOX_LHS_READY path={args.pool_path.as_posix()} count={len(doc['entries'])}")
     return 0
 

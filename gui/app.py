@@ -1363,9 +1363,7 @@ def mark_rom_body_stale_if_design_changed(current_rom_fp: str) -> None:
         try:
             from stk_app_audio_service import mark_stk_job_stale  # noqa: WPS433
 
-            mark_stk_job_stale(
-                instrument=str(st.session_state.get("stk_instrument") or "classical")
-            )
+            mark_stk_job_stale()
         except Exception:
             pass
 
@@ -1898,11 +1896,6 @@ def _render_main_studio(
     st.session_state["_top_wood"] = top_wood
     st.session_state["_back_wood"] = back_wood
 
-    from app_stk_instrument import instrument_from_shape as _instrument_from_shape  # noqa: WPS433
-
-    stk_instrument = _instrument_from_shape(shape)
-    st.session_state["stk_instrument"] = stk_instrument
-
     stk_job: Dict[str, Any] = {}
     if rom_body_response_ready(rom_fp):
         try:
@@ -1913,7 +1906,7 @@ def _render_main_studio(
 
             _stk_ph = compute_parameter_hash(rom_fp, lhs_params)
             stk_job = resolve_preview_cache_ready_state(
-                _stk_ph, instrument=stk_instrument, repo_root=BASE_DIR
+                _stk_ph, repo_root=BASE_DIR
             )
             st.session_state["stk_parameter_hash"] = _stk_ph
             st.session_state["stk_job_status"] = str(stk_job.get("status") or "not_started")
@@ -2004,7 +1997,6 @@ def _render_main_studio(
                     top_wood=top_wood,
                     back_wood=back_wood,
                     rom_physical_summary_path=str(st.session_state.get("stk_body_json") or ""),
-                    instrument=stk_instrument,
                 )
                 if result.get("action") in ("stk_started", "stk_running"):
                     st.info(
@@ -2030,7 +2022,6 @@ def _render_main_studio(
         "top_wood": top_wood,
         "back_wood": back_wood,
         "rom_physical_summary_path": str(st.session_state.get("stk_body_json") or ""),
-        "instrument": stk_instrument,
     }
     if st.session_state.get("stk_render_requested"):
         from stk_app_ui import poll_stk_render_request  # noqa: WPS433
@@ -2085,10 +2076,10 @@ def _render_main_studio(
         render_saved_guitars_row,
     )
 
-    loaded_guitar_id = render_saved_guitars_row(base_key="stk_saved_row", instrument=stk_instrument)
+    loaded_guitar_id = render_saved_guitars_row(base_key="stk_saved_row")
     if loaded_guitar_id:
         try:
-            activation = load_stack_guitar_for_player(loaded_guitar_id, stk_instrument)
+            activation = load_stack_guitar_for_player(loaded_guitar_id)
             apply_stk_activation_to_session(activation)
         except Exception as exc:
             st.warning(f"Could not load saved guitar: {exc}")
@@ -2143,7 +2134,6 @@ def _render_main_studio(
                 rom_ready=rom_body_response_ready(rom_fp),
                 rom_pending=bool(st.session_state.get("rom_body_pending")),
                 rom_error=str(st.session_state.get("rom_body_error") or ""),
-                instrument=stk_instrument,
             )
 
 

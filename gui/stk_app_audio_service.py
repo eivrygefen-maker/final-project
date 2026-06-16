@@ -35,15 +35,9 @@ from pgsm_step5l_limited_multiguitar_differentiation import REFERENCE_SAMPLE_ID
 
 from app_stk_config import load_app_stk_config, priority_notes_from_config
 from app_stk_instrument import (
-    background_status_stem,
-    debug_reports_subdir,
-    default_sample_id,
-    demo_version_label,
-    job_status_stem,
-    library_report_stem,
     list_lhs_sample_ids,
-    reference_sample_id,
-    shared_shape_name,
+    reference_sample_id_for,
+    shape_type_label_from_sample_id,
 )
 from app_stk_fretboard import (
     build_fretboard_note_mapping,
@@ -79,10 +73,9 @@ def active_job_file(instrument: str = "classical") -> Path:
 
 
 def instrument_debug_reports_root(instrument: str = "classical") -> Path:
-    sub = debug_reports_subdir(instrument)
-    root = DEBUG_REPORTS / sub if sub else DEBUG_REPORTS
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    del instrument  # unified STK — flat debug_reports layout
+    DEBUG_REPORTS.mkdir(parents=True, exist_ok=True)
+    return DEBUG_REPORTS
 
 NOTE_NAMES: Tuple[str, ...] = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 A4_REFERENCE_HZ = 440.0
@@ -168,18 +161,19 @@ def saved_guitar_cache_dir(saved_guitar_id: str, instrument: str = "classical") 
 
 
 def job_status_path(parameter_hash: str, instrument: str = "classical") -> Path:
-    stem = job_status_stem(instrument, parameter_hash)
-    return instrument_debug_reports_root(instrument) / f"{stem}.json"
+    del instrument
+    return instrument_debug_reports_root() / f"app_stk_background_job_{parameter_hash}.json"
 
 
 def background_status_path(parameter_hash: str, instrument: str = "classical") -> Path:
-    stem = background_status_stem(instrument, parameter_hash)
-    return instrument_debug_reports_root(instrument) / f"{stem}.json"
+    del instrument
+    return instrument_debug_reports_root() / f"app_stk_background_status_{parameter_hash}.json"
 
 
 def library_report_paths_for_hash(parameter_hash: str, instrument: str = "classical") -> Tuple[Path, Path]:
-    stem = library_report_stem(instrument, parameter_hash)
-    root = instrument_debug_reports_root(instrument)
+    del instrument
+    root = instrument_debug_reports_root()
+    stem = f"app_stk_note_library_classical_preview_{parameter_hash}"
     return root / f"{stem}_report.json", root / f"{stem}_report.md"
 
 
@@ -261,9 +255,15 @@ def list_notes_in_cache(cache_dir: Path) -> List[str]:
 def list_available_samples(
     repo_root: Optional[Path] = None,
     instrument: str = "classical",
+    *,
+    shape_type: Optional[str] = None,
 ) -> List[str]:
+    del instrument
     root = Path(repo_root or REPO_ROOT)
-    ids = list_lhs_sample_ids(root, instrument)
+    if shape_type:
+        ids = list_lhs_sample_ids(root, shape_type)
+    else:
+        ids = list_lhs_sample_ids(root, "Classical") + list_lhs_sample_ids(root, "Box")
     if ids:
         return ids
     return list(SAMPLE_SET_V4)
@@ -805,7 +805,7 @@ def _build_single_note_export(
     stk_wav_relpath: str,
     instrument: str = "classical",
 ) -> Dict[str, Any]:
-    ref_id = reference_sample_id(instrument)
+    ref_id = reference_sample_id_for(sample_id)
     physical = load_physical_parameters(sample_id)
     reference_physical = load_physical_parameters(ref_id)
     voicing_table = _extended_voicing((sample_id,))
@@ -830,11 +830,12 @@ def _build_single_note_export(
     render["safe_note_id"] = note_id_from_note_name(note_name)
     render["output_wav"] = f"{normalize_note_name(note_name)}.wav"
     render["explicit_frequency_hz"] = True
+    shape_label = shape_type_label_from_sample_id(sample_id)
     return {
         "export_version": "pgsm_stk_app_note_export_v1",
-        "demo_version": demo_version_label(instrument),
-        "instrument": instrument,
-        "shape_type": "box" if instrument == "box" else "classic",
+        "demo_version": "app_stk_note_cache_classical",
+        "instrument": "classical",
+        "shape_type": shape_label,
         "generated_at": _utc_now(),
         "renderer": "stk_cpp",
         "python_role": "parameter_export_only",
@@ -859,7 +860,7 @@ def _build_batch_note_export(
     render_subdir: str,
     instrument: str = "classical",
 ) -> Dict[str, Any]:
-    ref_id = reference_sample_id(instrument)
+    ref_id = reference_sample_id_for(sample_id)
     physical = load_physical_parameters(sample_id)
     reference_physical = load_physical_parameters(ref_id)
     voicing_table = _extended_voicing((sample_id,))
@@ -867,6 +868,7 @@ def _build_batch_note_export(
         physical, reference_physical, sample_id=sample_id, voicing=voicing_table
     )
     mix_scales = _compute_v4_continuous_mix(physical, reference_physical, factors)
+    shape_label = shape_type_label_from_sample_id(sample_id)
     renders: List[Dict[str, Any]] = []
     for note_name in notes:
         normalized = normalize_note_name(note_name)
@@ -892,9 +894,9 @@ def _build_batch_note_export(
         renders.append(entry)
     return {
         "export_version": "pgsm_stk_app_note_export_v1",
-        "demo_version": demo_version_label(instrument),
-        "instrument": instrument,
-        "shape_type": "box" if instrument == "box" else "classic",
+        "demo_version": "app_stk_note_cache_classical",
+        "instrument": "classical",
+        "shape_type": shape_label,
         "generated_at": _utc_now(),
         "renderer": "stk_cpp",
         "python_role": "parameter_export_only",
@@ -911,7 +913,7 @@ def _build_batch_note_export(
 
 def export_note_cache_to_shared(
     cache_dir: Path,
-    instrument: str = "classical",
+    sample_id: str,
     *,
     repo_root: Optional[Path] = None,
 ) -> Optional[Path]:
@@ -924,17 +926,18 @@ def export_note_cache_to_shared(
         sys.path.insert(0, str(root / "FEM" / "scripts"))
         from paths import get_shared_dir  # noqa: WPS433
 
-        dest_root = get_shared_dir(shared_shape_name(instrument), "audio") / cache_dir.name
+        shape = shape_type_label_from_sample_id(sample_id)
+        dest_root = get_shared_dir(shape, "audio") / cache_dir.name
         if dest_root.exists():
             shutil.rmtree(dest_root)
         shutil.copytree(cache_dir, dest_root)
         print(
-            f"APP_STK_SHARED_EXPORT instrument={instrument} dest={dest_root}",
+            f"APP_STK_SHARED_EXPORT shape={shape} dest={dest_root}",
             flush=True,
         )
         return dest_root
     except Exception as exc:
-        print(f"APP_STK_SHARED_EXPORT skipped instrument={instrument} error={exc}", flush=True)
+        print(f"APP_STK_SHARED_EXPORT skipped shape={sample_id} error={exc}", flush=True)
         return None
 
 
@@ -1595,8 +1598,8 @@ def build_note_library(
         "generated_at": _utc_now(),
         "sample_id": sample_id,
         "parameter_hash": parameter_hash,
-        "instrument": instrument,
-        "shape_type": "box" if instrument == "box" else "classic",
+        "instrument": "classical",
+        "shape_type": shape_type_label_from_sample_id(sample_id),
         "note_range": note_range,
         "note_count": len(notes),
         "notes_requested": notes,
@@ -1681,7 +1684,7 @@ def build_note_library(
             instrument,
         )
     if readiness == "ready_for_app_playback":
-        shared_dest = export_note_cache_to_shared(target_dir, instrument, repo_root=root)
+        shared_dest = export_note_cache_to_shared(target_dir, sample_id, repo_root=root)
         if shared_dest:
             report["shared_export_dir"] = str(shared_dest).replace("\\", "/")
             json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
@@ -2116,7 +2119,7 @@ def schedule_stk_after_rom(
     instrument: str = "classical",
 ) -> Dict[str, Any]:
     inst = instrument
-    sid = sample_id or default_sample_id(inst)
+    sid = sample_id or DEFAULT_SOURCE_SAMPLE_ID
     parameter_hash = compute_parameter_hash(rom_fp, lhs_params)
     mark_stk_job_stale(instrument=inst)
     set_active_job(parameter_hash, inst)
