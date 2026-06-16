@@ -154,6 +154,7 @@ def build_sample_input(
         resolve_shape_config,
         shape_from_pool,
     )
+    from m4_shape_context import resolve_shape_context  # noqa: WPS433
 
     shape_key = shape_from_pool(pool)
     shape_cfg = resolve_shape_config(shape_key)
@@ -161,14 +162,18 @@ def build_sample_input(
         dict(entry.get("parameters") or {}),
         shape_key=shape_key,
     )
-    shape_ctx = shape_cfg.shape_context_fields(lhs_path=lhs_source_path)
+    shape_ctx = resolve_shape_context(shape_key, lhs_path=lhs_source_path, repo_root=repo_root)
+    shape_ctx_fields = shape_cfg.shape_context_fields(lhs_path=lhs_source_path)
     body = {
         "schema": "m4_sample_input_v1",
         "sample_id": sid,
-        "shape_name": shape_cfg.shape_key,
-        "geometry_shape_type": shape_cfg.geometry_shape_type,
-        "gmsh_shape_type": shape_cfg.gmsh_shape_type,
+        "shape_name": shape_ctx.shape_name,
+        "geometry_shape_type": shape_ctx.geometry_shape_type,
+        "gmsh_shape_type": shape_ctx.gmsh_shape_type,
         "lhs_path": lhs_source_path,
+        "rom_output_root": shape_ctx.rom_output_root,
+        "shared_export_key": shape_ctx.shared_export_key,
+        "scout_density_policy": shape_ctx.scout_density_policy,
         "acoustic_opening_policy": shape_cfg.acoustic_opening_policy(),
         "parameters": params,
         "top_wood_id": params.get("top_wood_id"),
@@ -179,7 +184,7 @@ def build_sample_input(
         "batch_id": batch_id,
         "selection_reason": "lhs_pool_auto",
         "lhs_row_note": f"auto from {lhs_source_path}",
-        **shape_ctx,
+        **shape_ctx_fields,
     }
     resolved = resolve_mesh_profile(
         mesh_profile=mesh_profile or MESH_PROFILE_ROM,

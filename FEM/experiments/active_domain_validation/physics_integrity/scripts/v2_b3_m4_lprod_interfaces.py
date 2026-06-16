@@ -171,21 +171,28 @@ def apply_sample_geometry_to_resolved_config(
     sample_input: Mapping[str, Any],
 ) -> Dict[str, Any]:
     """Merge numeric geometry and string metadata into a resolved core config (Stage 4)."""
-    geom_numeric = extract_geometry_dict(sample_input)
-    meta = extract_run_metadata(sample_input)
+    repo_scripts = Path(__file__).resolve().parents[5] / "FEM" / "scripts"
+    import sys
 
-    resolved["geometry_numeric_parameters"] = dict(geom_numeric)
-    geo_block = resolved.setdefault("geometry", {})
-    if isinstance(geo_block, dict):
-        for key, val in geom_numeric.items():
-            geo_block[key] = float(val)
-        shape_type = (
-            meta.get("geometry_shape_type")
-            or meta.get("shape_type")
-            or sample_input.get("geometry_shape_type")
-        )
-        if shape_type:
-            geo_block["shape_type"] = str(shape_type)
+    if str(repo_scripts) not in sys.path:
+        sys.path.insert(0, str(repo_scripts))
+    from m4_shape_context import (  # noqa: WPS433
+        apply_shape_context_to_resolved_config,
+        resolve_shape_context_from_sample_input,
+    )
+
+    geom_numeric = extract_geometry_dict(sample_input)
+    legacy = str(sample_input.get("shape_name") or "classic") == "classic"
+    ctx = resolve_shape_context_from_sample_input(
+        sample_input,
+        legacy_classic_default=legacy,
+    )
+    apply_shape_context_to_resolved_config(
+        resolved,
+        ctx,
+        geometry_numeric=geom_numeric or None,
+    )
+    meta = extract_run_metadata(sample_input)
 
     params = resolved.setdefault("parameters", {})
     metadata_param_count = 0
@@ -199,25 +206,11 @@ def apply_sample_geometry_to_resolved_config(
                     params[str(meta_key)] = str(src_params[meta_key])
                     metadata_param_count += 1
 
-    for top_key in ("shape_name", "geometry_shape_type", "gmsh_shape_type", "lhs_path"):
-        val = sample_input.get(top_key) or meta.get(top_key)
-        if val is not None:
-            resolved[top_key] = str(val)
-
-    m4_meta = resolved.setdefault("m4_run_metadata", {})
-    if isinstance(m4_meta, dict):
-        m4_meta.update({k: v for k, v in meta.items() if v is not None})
-
     resolution = {
-        "shape_name": str(resolved.get("shape_name") or meta.get("shape_name") or ""),
-        "geometry_shape_type": str(
-            resolved.get("geometry_shape_type")
-            or meta.get("geometry_shape_type")
-            or meta.get("shape_type")
-            or ""
-        ),
-        "gmsh_shape_type": str(resolved.get("gmsh_shape_type") or meta.get("gmsh_shape_type") or ""),
-        "lhs_path": str(resolved.get("lhs_path") or meta.get("lhs_path") or ""),
+        "shape_name": ctx.shape_name,
+        "geometry_shape_type": ctx.geometry_shape_type,
+        "gmsh_shape_type": ctx.gmsh_shape_type,
+        "lhs_path": ctx.lhs_path or str(meta.get("lhs_path") or ""),
         "numeric_parameter_count": len(geom_numeric),
         "metadata_parameter_count": metadata_param_count,
     }

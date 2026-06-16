@@ -155,38 +155,32 @@ def main() -> int:
     sample_id = str(args.sample_id)
 
     geometry: Dict[str, float] = {}
-    shape_name = "classic"
-    geometry_shape_type: Optional[str] = None
     if args.geometry_json and args.geometry_json.is_file():
         raw = json.loads(args.geometry_json.read_text(encoding="utf-8"))
         geometry = extract_geometry_dict(raw)
-        meta = extract_run_metadata(raw)
-        shape_name = str(meta.get("shape_name") or raw.get("shape_name") or shape_name)
-        geometry_shape_type = str(
-            raw.get("geometry_shape_type")
-            or meta.get("geometry_shape_type")
-            or meta.get("shape_type")
-            or shape_name
-        )
-        gmsh_shape_type = str(raw.get("gmsh_shape_type") or meta.get("gmsh_shape_type") or "")
-        lhs_path = str(meta.get("lhs_path") or raw.get("lhs_path") or "")
+        sample_doc = raw
     elif args.run_dir:
-        sample = _load_sample_input(args.run_dir.expanduser().resolve())
-        geometry = extract_geometry_dict(sample)
-        meta = extract_run_metadata(sample)
-        shape_name = str(meta.get("shape_name") or sample.get("shape_name") or shape_name)
-        repo_root = Path(__file__).resolve().parents[5]
-        fem_scripts = repo_root / "FEM" / "scripts"
-        if str(fem_scripts) not in sys.path:
-            sys.path.insert(0, str(fem_scripts))
-        from m4_shape_registry import resolve_geometry_shape_type  # noqa: WPS433
-
-        geometry_shape_type = resolve_geometry_shape_type(sample_input=sample)
-        gmsh_shape_type = resolve_shape_config(shape_name).gmsh_shape_type
-        lhs_path = str(meta.get("lhs_path") or sample.get("lhs_path") or "")
+        sample_doc = _load_sample_input(args.run_dir.expanduser().resolve())
+        geometry = extract_geometry_dict(sample_doc)
     else:
         print("error: provide --run-dir or --geometry-json", file=sys.stderr)
         return 2
+
+    repo_root = Path(__file__).resolve().parents[5]
+    fem_scripts = repo_root / "FEM" / "scripts"
+    if str(fem_scripts) not in sys.path:
+        sys.path.insert(0, str(fem_scripts))
+    from m4_shape_context import resolve_shape_context_from_sample_input  # noqa: WPS433
+
+    legacy = str(sample_doc.get("shape_name") or "classic") == "classic"
+    shape_ctx = resolve_shape_context_from_sample_input(
+        sample_doc,
+        legacy_classic_default=legacy,
+    )
+    shape_name = shape_ctx.shape_name
+    geometry_shape_type = shape_ctx.geometry_shape_type
+    gmsh_shape_type = shape_ctx.gmsh_shape_type
+    lhs_path = shape_ctx.lhs_path
 
     if not geometry:
         print("error: empty geometry for L_prod mesh build", file=sys.stderr)

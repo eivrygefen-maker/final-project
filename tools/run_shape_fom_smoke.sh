@@ -160,10 +160,16 @@ else
 fi
 
 MESH_SHAPE_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_mesh_shape_contract_test.py"
+SHAPE_CONTEXT_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_shape_context_test.py"
 if python3 "${MESH_SHAPE_TEST}" >/tmp/shape_fom_smoke_mesh_shape.log 2>&1; then
   ok "mesh shape manifest + scout/prod consistency"
 else
   bad "mesh shape contract tests failed (see /tmp/shape_fom_smoke_mesh_shape.log)"
+fi
+if python3 "${SHAPE_CONTEXT_TEST}" >/tmp/shape_fom_smoke_shape_context.log 2>&1; then
+  ok "unified ShapeContext + stage artifact contract"
+else
+  bad "shape context tests failed (see /tmp/shape_fom_smoke_shape_context.log)"
 fi
 INSPECT_SCRIPT="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/inspect_shape_mesh_aperture.py"
 BOX_FOM_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_box_fom_validation_test.py"

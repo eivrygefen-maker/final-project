@@ -175,19 +175,22 @@ def resolve_m4_sample(
     params = sample.get("parameters")
     if not isinstance(params, dict):
         params = {}
-    shape = str(sample.get("shape_name") or "classic")
-    m4_meta = resolved.setdefault("m4_run_metadata", {})
-    if isinstance(m4_meta, dict):
-        m4_meta["shape_name"] = shape
-    geom = resolved.setdefault("geometry", {})
-    if isinstance(geom, dict):
-        geom["shape_type"] = shape
+    fem_scripts = repo_root / "FEM" / "scripts"
+    if str(fem_scripts) not in sys.path:
+        sys.path.insert(0, str(fem_scripts))
+    from m4_shape_context import (  # noqa: WPS433
+        apply_shape_context_to_resolved_config,
+        resolve_shape_context_from_sample_input,
+    )
+
+    shape_ctx = resolve_shape_context_from_sample_input(sample, legacy_classic_default=True)
     sample_geom = extract_geometry_dict(sample)
-    if sample_geom:
-        resolved["geometry_numeric_parameters"] = dict(sample_geom)
-        if isinstance(geom, dict):
-            for key, val in sample_geom.items():
-                geom[key] = val
+    apply_shape_context_to_resolved_config(
+        resolved,
+        shape_ctx,
+        geometry_numeric=sample_geom or None,
+    )
+    shape = shape_ctx.shape_name
 
     if params:
         _wood_library_apply(resolved, params, repo_root=repo_root)
@@ -236,6 +239,8 @@ def resolve_m4_sample(
         "mesh_file": scout_mesh_rel,
         "parameters": params,
         "shape_name": shape,
+        "geometry_shape_type": shape_ctx.geometry_shape_type,
+        "gmsh_shape_type": shape_ctx.gmsh_shape_type,
         "geometry_numeric_parameters": sample_geom,
         "geometry_fingerprint": geometry_fingerprint(sample_geom) if sample_geom else None,
     }

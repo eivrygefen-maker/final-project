@@ -33,34 +33,23 @@ def resolve_case_shape_metadata(
     *,
     sample_input: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, str]:
-    shape_name = str(case.get("shape_name") or "classic")
     repo_scripts = Path(__file__).resolve().parents[5] / "FEM" / "scripts"
     import sys
 
     scripts_str = str(repo_scripts)
     if scripts_str not in sys.path:
         sys.path.insert(0, scripts_str)
-    from m4_shape_registry import resolve_geometry_shape_type, resolve_shape_config  # noqa: WPS433
+    from m4_shape_context import resolve_shape_context_from_sample_input  # noqa: WPS433
 
-    cfg = resolve_shape_config(shape_name)
-    geometry_shape_type = str(
-        case.get("geometry_shape_type")
-        or case.get("shape_type")
-        or (case.get("geometry") or {}).get("shape_type")
-        or (sample_input or {}).get("geometry_shape_type")
-        or resolve_geometry_shape_type(sample_input=sample_input or case)
-        or cfg.geometry_shape_type
+    merged: Dict[str, Any] = dict(case)
+    if sample_input:
+        merged.update(sample_input)
+    legacy = str(merged.get("shape_name") or "classic") == "classic"
+    ctx = resolve_shape_context_from_sample_input(
+        merged,
+        legacy_classic_default=legacy,
     )
-    gmsh_shape_type = str(
-        case.get("gmsh_shape_type")
-        or (sample_input or {}).get("gmsh_shape_type")
-        or cfg.gmsh_shape_type
-    )
-    return {
-        "shape_name": shape_name,
-        "geometry_shape_type": geometry_shape_type,
-        "gmsh_shape_type": gmsh_shape_type,
-    }
+    return ctx.to_mesh_metadata()
 
 
 def build_mesh_manifest(

@@ -181,13 +181,17 @@ def _manifest(run_root: Path) -> Dict[str, Any]:
 def _stage_pass_scout(run_root: Path) -> bool:
     m = _manifest(run_root)
     if str(m.get("terminal_status")) == SCOUT_TERMINAL_READY:
-        return True
+        from v2_b3_m4_stage_artifact_contract import validate_scout_terminal_artifacts  # noqa: WPS433
+
+        ok, _ = validate_scout_terminal_artifacts(run_root)
+        return ok
     st3 = (m.get("stages") or {}).get("stage3_zones_plan") or {}
     if str(st3.get("status")) != "PASS":
         return False
-    return (run_root / "lprod" / "lprod_target_plan.json").is_file() and (
-        run_root / "scout" / "density_zones.json"
-    ).is_file()
+    from v2_b3_m4_stage_artifact_contract import validate_scout_terminal_artifacts  # noqa: WPS433
+
+    ok, _ = validate_scout_terminal_artifacts(run_root)
+    return ok
 
 
 def _stage_pass_worker_plan(run_root: Path) -> bool:

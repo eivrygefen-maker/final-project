@@ -80,6 +80,9 @@ class M4ShapeConfig:
             "geometry_shape_type": self.geometry_shape_type,
             "gmsh_shape_type": self.gmsh_shape_type,
             "lhs_path": lhs_path,
+            "rom_output_root": self.rom_dir_rel,
+            "shared_export_key": self.shared_export_key,
+            "scout_density_policy": self.scout_density_policy,
             "acoustic_opening_policy": self.acoustic_opening_policy(),
         }
 
@@ -232,6 +235,7 @@ def resolve_geometry_shape_type(
     pool: Optional[Mapping[str, Any]] = None,
     parameters: Optional[Mapping[str, Any]] = None,
     sample_input: Optional[Mapping[str, Any]] = None,
+    legacy_classic_default: bool = True,
 ) -> str:
     if sample_input:
         if sample_input.get("geometry_shape_type"):
@@ -246,7 +250,12 @@ def resolve_geometry_shape_type(
         return str(parameters["geometry.shape_type"])
     if pool:
         return resolve_shape_config(shape_from_pool(pool)).geometry_shape_type
-    return resolve_shape_config("classic").geometry_shape_type
+    if legacy_classic_default:
+        return resolve_shape_config("classic").geometry_shape_type
+    raise ValueError(
+        "geometry_shape_type cannot be resolved: provide sample_input.shape_name, "
+        "geometry_shape_type, or parameters['geometry.shape_type']"
+    )
 
 
 def ensure_parameters_shape_type(
