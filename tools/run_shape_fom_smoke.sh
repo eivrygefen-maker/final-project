@@ -159,6 +159,25 @@ else
   bad "reuse integrity tests failed (see /tmp/shape_fom_smoke_reuse_integrity.log)"
 fi
 
+MESH_SHAPE_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_mesh_shape_contract_test.py"
+if python3 "${MESH_SHAPE_TEST}" >/tmp/shape_fom_smoke_mesh_shape.log 2>&1; then
+  ok "mesh shape manifest + scout/prod consistency"
+else
+  bad "mesh shape contract tests failed (see /tmp/shape_fom_smoke_mesh_shape.log)"
+fi
+INSPECT_SCRIPT="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/inspect_shape_mesh_aperture.py"
+BOX_FOM_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_box_fom_validation_test.py"
+if [[ -f "${INSPECT_SCRIPT}" ]]; then
+  ok "present inspect_shape_mesh_aperture.py"
+else
+  bad "missing inspect_shape_mesh_aperture.py"
+fi
+if python3 "${BOX_FOM_TEST}" >/tmp/shape_fom_smoke_box_fom_validation.log 2>&1; then
+  ok "BOX FOM validation (terminal promote, mesh inspect, full-clean)"
+else
+  bad "BOX FOM validation tests failed (see /tmp/shape_fom_smoke_box_fom_validation.log)"
+fi
+
 echo ""
 echo "Smoke: ${PASS} passed, ${FAIL} failed"
 [[ "${FAIL}" -eq 0 ]]

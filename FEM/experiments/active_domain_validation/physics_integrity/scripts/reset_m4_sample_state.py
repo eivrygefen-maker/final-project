@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -20,6 +21,7 @@ from v2_b3_m4_lhs_pool_bridge import (  # noqa: E402
     update_sample_status,
     write_lhs_pool_status,
 )
+from v2_b3_m4_production_freeze import TERMINAL_PRODUCTION_COMPLETED  # noqa: E402
 from v2_b3_m4_reuse_integrity_lib import (  # noqa: E402
     checkpoint_artifact_contract_pass,
     quarantine_stale_downstream_artifacts,
@@ -29,11 +31,31 @@ from v2_b3_m4_reuse_integrity_lib import (  # noqa: E402
     scout_artifact_contract_pass,
     terminal_status_rank,
 )
+from v2_b3_m4_sample_cleanup_barrier import collect_shared_sample_artifact_paths  # noqa: E402
+from v2_b3_m4_mesh_manifest_lib import collect_global_mesh_cache_paths_resolved  # noqa: E402
 from v2_b3_m4_worker_run_lib import detect_repo_root, rel, utc_now  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
 GUITARS_REL = Path(
     "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars"
+)
+
+FULL_CLEAN_RUN_DIRS: Tuple[str, ...] = (
+    "scout",
+    "lprod",
+    "worker_results",
+    "aggregation",
+    "freeze",
+    "compaction",
+    "mesh_inspection",
+)
+
+FULL_CLEAN_RUN_FILES: Tuple[str, ...] = (
+    "pipeline_run_manifest.m4_4_full_aggregation_preview.json",
+    "pipeline_run_manifest.m4_4_partial_aggregation_preview.json",
+    "m4_run_one_sample_plan.json",
+    "m4_sample_runtime_provenance.json",
+    "stale_running_repair.json",
 )
 
 
@@ -49,12 +71,110 @@ def _target_terminal_after_reset(run_root: Path, *, production_mode: bool) -> st
     return "PLANNED"
 
 
+def _delete_paths(paths: Sequence[Path]) -> List[str]:
+    deleted: List[str] = []
+    for path in paths:
+        if not path.exists():
+            continue
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        deleted.append(str(path))
+    return deleted
+
+
+def full_clean_sample_run(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    sample_id: str,
+    run_id: str,
+    keep_failure_diagnostics: bool = True,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    run_root = run_root.expanduser().resolve()
+    manifest = read_manifest(run_root)
+    terminal = str(manifest.get("terminal_status") or "")
+    if terminal == TERMINAL_PRODUCTION_COMPLETED:
+        return {
+            "status": "SKIP",
+            "reason": "run_production_completed_refusing_full_clean",
+            "terminal_status": terminal,
+        }
+
+    report: Dict[str, Any] = {
+        "mode": "full-clean",
+        "sample_id": sample_id,
+        "run_id": run_id,
+        "previous_terminal_status": terminal,
+        "dry_run": dry_run,
+        "deleted": [],
+    }
+    if dry_run:
+        report["status"] = "DRY_RUN"
+        report["would_delete_run_dirs"] = list(FULL_CLEAN_RUN_DIRS)
+        return report
+
+    for rel_dir in FULL_CLEAN_RUN_DIRS:
+        path = run_root / rel_dir
+        if path.exists():
+            shutil.rmtree(path)
+            report["deleted"].append(rel_dir)
+
+    for rel_file in FULL_CLEAN_RUN_FILES:
+        path = run_root / rel_file
+        if path.is_file():
+            path.unlink()
+            report["deleted"].append(rel_file)
+
+    shared = collect_shared_sample_artifact_paths(
+        repo_root=repo_root,
+        sample_id=sample_id,
+        run_id=run_id,
+    )
+    global_mesh = collect_global_mesh_cache_paths_resolved(repo_root, sample_id)
+    for path in global_mesh:
+        if path not in shared:
+            shared.append(path)
+    report["deleted"].extend(_delete_paths(shared))
+
+    manifest_path = run_root / "pipeline_run_manifest.json"
+    if manifest_path.is_file():
+        body = {
+            "schema": "m4_pipeline_run_manifest_v1",
+            "sample_id": sample_id,
+            "run_id": run_id,
+            "terminal_status": "PLANNED",
+            "updated_utc": utc_now(),
+            "reset_mode": "full-clean",
+            "stages": {},
+        }
+        write_json_atomic(manifest_path, body)
+        report["deleted"].append("pipeline_run_manifest.json:reset_to_planned")
+
+    if not keep_failure_diagnostics:
+        for rel_path in (
+            "cleanup/sample_failure_retention.json",
+            "logs/sample_failure_diagnostic.log",
+        ):
+            path = run_root / rel_path
+            if path.is_file():
+                path.unlink()
+                report["deleted"].append(rel_path)
+
+    report["status"] = "PASS"
+    report["terminal_status"] = "PLANNED"
+    return report
+
+
 def reset_sample_run_state(
     *,
     repo_root: Path,
     run_root: Path,
     sample_id: str,
     run_id: str,
+    mode: str = "repair",
     keep_failure_diagnostics: bool = True,
     production_mode: bool = True,
     reset_pool_status: bool = True,
@@ -63,6 +183,7 @@ def reset_sample_run_state(
     run_root = run_root.expanduser().resolve()
     report: Dict[str, Any] = {
         "schema": "m4_reset_sample_state_v1",
+        "mode": mode,
         "sample_id": sample_id,
         "run_id": run_id,
         "run_root": str(run_root),
@@ -77,6 +198,28 @@ def reset_sample_run_state(
 
     manifest = read_manifest(run_root)
     report["previous_terminal_status"] = str(manifest.get("terminal_status") or "")
+
+    if mode == "full-clean":
+        full = full_clean_sample_run(
+            repo_root=repo_root,
+            run_root=run_root,
+            sample_id=sample_id,
+            run_id=run_id,
+            keep_failure_diagnostics=keep_failure_diagnostics,
+            dry_run=dry_run,
+        )
+        report.update(full)
+        if dry_run or full.get("status") == "SKIP":
+            if reset_pool_status and not dry_run and full.get("status") != "SKIP":
+                pass
+            elif full.get("status") == "SKIP":
+                return report
+        elif reset_pool_status:
+            _reset_pool_status(repo_root, sample_id=sample_id, run_id=run_id)
+            report["actions"].append("reset_lhs_pool_status")
+        if report.get("status") != "SKIP":
+            report["status"] = full.get("status", "PASS")
+        return report
 
     if dry_run:
         report["status"] = "DRY_RUN"
@@ -139,30 +282,34 @@ def reset_sample_run_state(
                 report["actions"].append(f"deleted:{rel_path}")
 
     if reset_pool_status:
-        status_path = lhs_pool_status_path(repo_root)
-        lhs_default = repo_root / "ROM/classic/lhs_pool.json"
-        status_doc = load_lhs_pool_status(
-            status_path,
-            lhs_path=lhs_default,
-            run_id_suffix=run_id.removeprefix(f"{sample_id}_"),
-            repo_root=repo_root,
-        )
-        update_sample_status(
-            status_doc,
-            sample_id=sample_id,
-            patch={
-                "sample_id": sample_id,
-                "status": STATUS_PENDING,
-                "run_id": run_id,
-                "updated_utc": utc_now(),
-                "reset_reason": "reset_m4_sample_state",
-            },
-        )
-        write_lhs_pool_status(status_path, status_doc)
+        _reset_pool_status(repo_root, sample_id=sample_id, run_id=run_id)
         report["actions"].append("reset_lhs_pool_status")
 
     report["status"] = "PASS"
     return report
+
+
+def _reset_pool_status(repo_root: Path, *, sample_id: str, run_id: str) -> None:
+    status_path = lhs_pool_status_path(repo_root)
+    lhs_default = repo_root / "ROM/classic/lhs_pool.json"
+    status_doc = load_lhs_pool_status(
+        status_path,
+        lhs_path=lhs_default,
+        run_id_suffix=run_id.removeprefix(f"{sample_id}_"),
+        repo_root=repo_root,
+    )
+    update_sample_status(
+        status_doc,
+        sample_id=sample_id,
+        patch={
+            "sample_id": sample_id,
+            "status": STATUS_PENDING,
+            "run_id": run_id,
+            "updated_utc": utc_now(),
+            "reset_reason": "reset_m4_sample_state",
+        },
+    )
+    write_lhs_pool_status(status_path, status_doc)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -171,6 +318,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--repo-root", type=Path, default=None)
     parser.add_argument("--shape", default="", help="Optional shape label for logging only.")
+    parser.add_argument(
+        "--mode",
+        choices=("repair", "full-clean"),
+        default="repair",
+        help="repair=quarantine stale downstream; full-clean=delete runtime dirs and start from zero",
+    )
     parser.add_argument(
         "--keep-failure-diagnostics",
         action="store_true",
@@ -196,6 +349,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         run_root=run_root,
         sample_id=sample_id,
         run_id=run_id,
+        mode=str(args.mode),
         keep_failure_diagnostics=bool(args.keep_failure_diagnostics),
         reset_pool_status=not bool(args.no_pool_status_reset),
         dry_run=bool(args.dry_run),
@@ -203,7 +357,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(json.dumps(report, indent=2, sort_keys=True))
     if args.shape:
         print(f"shape={args.shape} run_dir={rel(run_root, repo_root=repo_root)}")
-    return 0 if report.get("status") in ("PASS", "DRY_RUN") else 2
+    return 0 if report.get("status") in ("PASS", "DRY_RUN", "SKIP") else 2
 
 
 if __name__ == "__main__":

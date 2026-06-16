@@ -936,6 +936,21 @@ def run_scout_pipeline(
     _update_manifest(manifest_path, stage_updates={"stage1_scout_mesh": "PASS"}, terminal_status="RUNNING")
     print("Stage 1 PASS", flush=True)
 
+    from v2_b3_m4_mesh_manifest_lib import assert_scout_mesh_shape_gate  # noqa: WPS433
+
+    shape_ok, shape_detail = assert_scout_mesh_shape_gate(mesh_path=scout_mesh, sample=sample)
+    _append_log(log_mesh, f"[{_utc_now()}] {shape_detail}\n")
+    print(shape_detail, flush=True)
+    if not shape_ok:
+        _update_manifest(
+            manifest_path,
+            stage_updates={"stage1_scout_mesh": "FAIL"},
+            terminal_status="FAIL",
+            failure_reason="scout_mesh_shape_mismatch",
+        )
+        print("Stage 1 FAIL (mesh shape gate)", flush=True)
+        return 1
+
     checkpoint_dir = run_root / "scout" / "checkpoint"
     export_manifest = checkpoint_dir / "checkpoint_export_manifest.json"
     log_ckpt = logs / "stage1_scout_checkpoint.log"

@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PHYSICS_ROOT = SCRIPT_DIR.parent
@@ -42,16 +42,36 @@ def build_scout_mesh_for_case(
     sample_id: str,
     geometry: Dict[str, float],
     shape_name: str,
+    geometry_shape_type: Optional[str] = None,
+    gmsh_shape_type: Optional[str] = None,
+    lhs_path: str = "",
 ) -> Dict[str, Any]:
     manifest = load_manifest()
     level_def = (manifest.get("mesh_levels") or {}).get(LEVEL_ID)
     if not level_def:
         raise RuntimeError(f"missing mesh_levels.{LEVEL_ID} in v2_mesh_convergence_manifest.json")
 
+    repo_root = Path(__file__).resolve().parents[5]
+    fem_scripts = repo_root / "FEM" / "scripts"
+    if str(fem_scripts) not in sys.path:
+        sys.path.insert(0, str(fem_scripts))
+    from m4_shape_registry import resolve_geometry_shape_type, resolve_shape_config  # noqa: WPS433
+
+    cfg = resolve_shape_config(shape_name)
+    geom_shape_type = str(
+        geometry_shape_type
+        or resolve_geometry_shape_type(parameters={"geometry.shape_type": cfg.geometry_shape_type})
+        or cfg.geometry_shape_type
+    )
+    gmsh_type = str(gmsh_shape_type or cfg.gmsh_shape_type)
+
     case = {
         "id": sample_id,
         "geometry": dict(geometry),
         "shape_name": shape_name,
+        "geometry_shape_type": geom_shape_type,
+        "gmsh_shape_type": gmsh_type,
+        "lhs_path": lhs_path,
     }
     audit = build_level_mesh(case, LEVEL_ID, level_def, config_dir=CONFIG_DIR)
     out_msh = mesh_path(LEVEL_ID, sample_id)
@@ -81,6 +101,8 @@ def build_scout_mesh_for_case(
         "facet_tags_ok": bool(facet_ok),
         "geometry": geometry,
         "shape_name": shape_name,
+        "geometry_shape_type": geom_shape_type,
+        "gmsh_shape_type": gmsh_type,
         "sample_specific_geometry": True,
     }
     write_json(out_msh.parent / f"{sample_id}_mesh_build_summary.json", summary)
@@ -112,16 +134,31 @@ def main() -> int:
 
     geometry: Dict[str, float] = {}
     shape_name = "classic"
+    geometry_shape_type: Optional[str] = None
+    gmsh_shape_type: Optional[str] = None
+    lhs_path = ""
     if args.geometry_json and args.geometry_json.is_file():
         raw = json.loads(args.geometry_json.read_text(encoding="utf-8"))
         geometry = extract_geometry_dict(raw)
         meta = extract_run_metadata(raw)
         shape_name = str(meta.get("shape_name") or raw.get("shape_name") or shape_name)
+        geometry_shape_type = str(raw.get("geometry_shape_type") or meta.get("geometry_shape_type") or "")
+        gmsh_shape_type = str(raw.get("gmsh_shape_type") or meta.get("gmsh_shape_type") or "")
+        lhs_path = str(meta.get("lhs_path") or raw.get("lhs_path") or "")
     elif args.run_dir:
         sample = _load_sample_input(args.run_dir.expanduser().resolve())
         geometry = extract_geometry_dict(sample)
         meta = extract_run_metadata(sample)
         shape_name = str(meta.get("shape_name") or sample.get("shape_name") or shape_name)
+        lhs_path = str(meta.get("lhs_path") or sample.get("lhs_path") or "")
+        repo_root = Path(__file__).resolve().parents[5]
+        fem_scripts = repo_root / "FEM" / "scripts"
+        if str(fem_scripts) not in sys.path:
+            sys.path.insert(0, str(fem_scripts))
+        from m4_shape_registry import resolve_geometry_shape_type, resolve_shape_config  # noqa: WPS433
+
+        geometry_shape_type = resolve_geometry_shape_type(sample_input=sample)
+        gmsh_shape_type = resolve_shape_config(shape_name).gmsh_shape_type
     else:
         print("error: provide --run-dir or --geometry-json", file=sys.stderr)
         return 2
@@ -134,6 +171,14 @@ def main() -> int:
         sample_id=sample_id,
         geometry=geometry,
         shape_name=shape_name,
+        geometry_shape_type=geometry_shape_type or None,
+        gmsh_shape_type=gmsh_shape_type or None,
+        lhs_path=lhs_path,
+    )
+    print(
+        f"[B3_scout_mesh] shape_name={shape_name} geometry.shape_type={geometry_shape_type} "
+        f"gmsh_shape_type={gmsh_shape_type or result.get('summary', {}).get('gmsh_shape_type')}",
+        flush=True,
     )
     print(f"[B3_scout_mesh] status={result.get('status')}", flush=True)
     print(f"[B3_scout_mesh] mesh_path={result.get('mesh_path')}", flush=True)

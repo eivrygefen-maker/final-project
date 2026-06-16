@@ -82,6 +82,16 @@ def build_level_mesh(
     *,
     config_dir: Path,
 ) -> Dict[str, Any]:
+    from v2_b3_m4_mesh_manifest_lib import (  # noqa: WPS433
+        build_mesh_manifest,
+        format_mesh_reuse_rejected,
+        invalidate_stale_mesh_files,
+        resolve_case_shape_metadata,
+        validate_mesh_reuse,
+        write_mesh_manifest,
+        mesh_manifest_path,
+    )
+
     case_id = str(case["id"])
     out_msh = mesh_path(level_id, case_id)
     out_audit = mesh_audit_path(level_id, case_id)
@@ -90,24 +100,47 @@ def build_level_mesh(
     explicit_controls = level_def.get("explicit_controls_m") or {}
     resolved_controls = effective_controls_from_level_def(level_def)
 
+    shape_meta = resolve_case_shape_metadata(case)
+    geometry = dict(case.get("geometry") or {})
+    lhs_path = str(case.get("lhs_path") or "")
+
     if out_msh.is_file() and out_audit.is_file():
-        audit = json.loads(out_audit.read_text(encoding="utf-8"))
-        audit["reused_existing_mesh"] = True
-        audit["effective_controls_m"] = resolved_controls
-        return audit
+        reuse_ok, reuse_reason, existing_manifest = validate_mesh_reuse(
+            out_msh,
+            sample_id=case_id,
+            mesh_level=level_id,
+            shape_name=shape_meta["shape_name"],
+            geometry_shape_type=shape_meta["geometry_shape_type"],
+            gmsh_shape_type=shape_meta["gmsh_shape_type"],
+            geometry=geometry,
+            lhs_path=lhs_path,
+        )
+        if reuse_ok:
+            audit = json.loads(out_audit.read_text(encoding="utf-8"))
+            audit["reused_existing_mesh"] = True
+            audit["mesh_manifest_validated"] = True
+            audit["effective_controls_m"] = resolved_controls
+            return audit
+        existing_shape = str((existing_manifest or {}).get("geometry_shape_type") or "unknown")
+        print(
+            format_mesh_reuse_rejected(
+                reason=reuse_reason,
+                existing_shape=existing_shape,
+                expected_shape=shape_meta["geometry_shape_type"],
+                mesh_path=out_msh,
+            ),
+            flush=True,
+        )
+        invalidate_stale_mesh_files(out_msh)
 
     config_dir.mkdir(parents=True, exist_ok=True)
     CONV_MESH.joinpath(level_id).mkdir(parents=True, exist_ok=True)
     cfg_path = config_dir / f"{level_id}_{case_id}.json"
     cfg = json.loads(SOURCE_CONFIG.read_text(encoding="utf-8"))
-    geom_shape_type = (
-        case.get("geometry_shape_type")
-        or case.get("shape_type")
-        or (case.get("geometry") or {}).get("shape_type")
-    )
+    geom_shape_type = shape_meta["geometry_shape_type"]
     cfg["geometry"] = sample_geometry(
-        {"geometry": case.get("geometry") or {}},
-        shape_type=str(geom_shape_type) if geom_shape_type else None,
+        {"geometry": geometry},
+        shape_type=str(geom_shape_type),
     )
     cfg.setdefault("solver", {})["mesh_file"] = str(out_msh.resolve())
     cfg_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
@@ -148,4 +181,16 @@ def build_level_mesh(
         audit["explicit_controls_m"] = explicit_controls
     audit["effective_controls_m"] = resolved_controls
     write_json(out_audit, audit)
+    manifest_body = build_mesh_manifest(
+        sample_id=case_id,
+        shape_name=shape_meta["shape_name"],
+        geometry_shape_type=shape_meta["geometry_shape_type"],
+        gmsh_shape_type=shape_meta["gmsh_shape_type"],
+        mesh_level=level_id,
+        mesh_path=out_msh,
+        geometry=geometry,
+        lhs_path=lhs_path,
+    )
+    write_mesh_manifest(mesh_manifest_path(out_msh), manifest_body)
+    audit["mesh_manifest_path"] = str(mesh_manifest_path(out_msh))
     return audit

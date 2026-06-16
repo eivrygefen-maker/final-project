@@ -961,6 +961,9 @@ def run_execute(*, repo_root: Path, run_root: Path, partial_ok: bool, force: boo
     if report.get("final_aggregation_ready"):
         _write_full_manifest_preview(run_root=run_root, manifest=manifest, report=report)
         terminal = TERMINAL_FULL
+        from v2_b3_m4_terminal_status_lib import promote_after_aggregation_pass  # noqa: WPS433
+
+        promote_after_aggregation_pass(run_root)
     else:
         _write_manifest_preview(run_root=run_root, manifest=manifest, report=report)
         terminal = TERMINAL_PARTIAL

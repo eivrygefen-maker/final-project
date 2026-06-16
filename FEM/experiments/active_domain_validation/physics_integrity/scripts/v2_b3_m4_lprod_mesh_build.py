@@ -51,6 +51,8 @@ def build_lprod_mesh_for_case(
     mesh_profile: Optional[str] = None,
     dataset_version: Optional[str] = None,
     geometry_shape_type: Optional[str] = None,
+    gmsh_shape_type: Optional[str] = None,
+    lhs_path: str = "",
 ) -> Dict[str, Any]:
     resolved = resolve_mesh_profile_from_mapping(
         {"mesh_profile": mesh_profile, "mesh_level_id": level_id, "dataset_version": dataset_version},
@@ -62,11 +64,23 @@ def build_lprod_mesh_for_case(
     if not level_def:
         raise RuntimeError(f"missing mesh_levels.{level_id} in v2_mesh_convergence_manifest.json")
 
+    repo_root = Path(__file__).resolve().parents[5]
+    fem_scripts = repo_root / "FEM" / "scripts"
+    if str(fem_scripts) not in sys.path:
+        sys.path.insert(0, str(fem_scripts))
+    from m4_shape_registry import resolve_shape_config  # noqa: WPS433
+
+    shape_cfg = resolve_shape_config(shape_name)
+    geom_shape_type = str(geometry_shape_type or shape_cfg.geometry_shape_type)
+    gmsh_type = str(gmsh_shape_type or shape_cfg.gmsh_shape_type)
+
     case = {
         "id": sample_id,
         "geometry": dict(geometry),
         "shape_name": shape_name,
-        "geometry_shape_type": geometry_shape_type or shape_name,
+        "geometry_shape_type": geom_shape_type,
+        "gmsh_shape_type": gmsh_type,
+        "lhs_path": lhs_path,
     }
     audit = build_level_mesh(case, level_id, level_def, config_dir=CONFIG_DIR)
     out_msh = mesh_path(level_id, sample_id)
@@ -99,6 +113,8 @@ def build_lprod_mesh_for_case(
         "facet_tags_ok": bool(facet_ok),
         "geometry": geometry,
         "shape_name": shape_name,
+        "geometry_shape_type": geom_shape_type,
+        "gmsh_shape_type": gmsh_type,
     }
     write_json(out_msh.parent / f"{sample_id}_mesh_build_summary.json", summary)
 
@@ -148,9 +164,12 @@ def main() -> int:
         shape_name = str(meta.get("shape_name") or raw.get("shape_name") or shape_name)
         geometry_shape_type = str(
             raw.get("geometry_shape_type")
+            or meta.get("geometry_shape_type")
             or meta.get("shape_type")
             or shape_name
         )
+        gmsh_shape_type = str(raw.get("gmsh_shape_type") or meta.get("gmsh_shape_type") or "")
+        lhs_path = str(meta.get("lhs_path") or raw.get("lhs_path") or "")
     elif args.run_dir:
         sample = _load_sample_input(args.run_dir.expanduser().resolve())
         geometry = extract_geometry_dict(sample)
@@ -163,6 +182,8 @@ def main() -> int:
         from m4_shape_registry import resolve_geometry_shape_type  # noqa: WPS433
 
         geometry_shape_type = resolve_geometry_shape_type(sample_input=sample)
+        gmsh_shape_type = resolve_shape_config(shape_name).gmsh_shape_type
+        lhs_path = str(meta.get("lhs_path") or sample.get("lhs_path") or "")
     else:
         print("error: provide --run-dir or --geometry-json", file=sys.stderr)
         return 2
@@ -179,9 +200,12 @@ def main() -> int:
         mesh_profile=args.mesh_profile,
         dataset_version=args.dataset_version,
         geometry_shape_type=geometry_shape_type,
+        gmsh_shape_type=gmsh_shape_type,
+        lhs_path=lhs_path,
     )
     print(
-        f"[B3_lprod_mesh] shape_name={shape_name} geometry.shape_type={geometry_shape_type}",
+        f"[B3_lprod_mesh] shape_name={shape_name} geometry.shape_type={geometry_shape_type} "
+        f"gmsh_shape_type={gmsh_shape_type}",
         flush=True,
     )
     print(f"[B3_lprod_mesh] status={result.get('status')}", flush=True)

@@ -732,6 +732,18 @@ def run_execute(
 
         stage4_mesh = "PASS" if rc_mesh == 0 and mesh_ok else "FAIL"
         if stage4_mesh == "PASS":
+            from v2_b3_m4_mesh_manifest_lib import assert_scout_lprod_shape_consistency  # noqa: WPS433
+
+            scout_mesh = run_root / "scout" / "mesh" / "L_scout_coarse" / f"{sample_id}.msh"
+            if scout_mesh.is_file() and lprod_mesh.is_file():
+                consistent, consistency_detail = assert_scout_lprod_shape_consistency(
+                    scout_mesh_path=scout_mesh,
+                    lprod_mesh_path=lprod_mesh,
+                )
+                _append_log(log_mesh, f"[{_utc_now()}] {consistency_detail}\n")
+                print(consistency_detail, flush=True)
+                if not consistent:
+                    stage4_mesh = "FAIL"
             resolve_lprod_core_config(
                 repo_root=repo_root,
                 run_root=run_root,

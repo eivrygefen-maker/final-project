@@ -37,6 +37,11 @@ from v2_b3_m4_reuse_integrity_lib import (  # noqa: E402
     quarantine_stale_downstream_artifacts,
     repair_inconsistent_reuse_state,
 )
+from v2_b3_m4_terminal_status_lib import (  # noqa: E402
+    check_terminal_status_consistency,
+    promote_after_aggregation_pass,
+    reconcile_terminal_status_before_freeze,
+)
 from v2_b3_m4_worker_run_lib import (  # noqa: E402
     chunk_ids_from_worker_plan,
     chunk_worker_pass_status,
@@ -647,13 +652,20 @@ def run_pipeline(
                 )
                 return 2
 
-        if production_mode and name == "freeze" and not stages["aggregate"]["pass"]:
-            print(
-                "error: freeze blocked — aggregate stage is not a valid PASS reuse "
-                f"(reuse={stages['aggregate'].get('reuse_status')})",
-                file=sys.stderr,
-            )
-            return 2
+        if production_mode and name == "freeze":
+            reconcile = reconcile_terminal_status_before_freeze(run_root)
+            stages = assess_stages(run_root, production_mode=production_mode)
+            if not reconcile.get("consistent"):
+                for msg in reconcile.get("errors") or []:
+                    print(f"error: {msg}", file=sys.stderr)
+                return 2
+            if not stages["aggregate"]["pass"]:
+                print(
+                    "error: freeze blocked — aggregate stage is not a valid PASS reuse "
+                    f"(reuse={stages['aggregate'].get('reuse_status')})",
+                    file=sys.stderr,
+                )
+                return 2
 
         print(f"[run] {name} ...", flush=True)
         t0 = time.perf_counter()
@@ -703,8 +715,25 @@ def run_pipeline(
                 print(f"error: stage {name} failed (rc={rc}); stopping pipeline", file=sys.stderr)
                 return rc
 
-        if name == "aggregate" and rc == 0 and not production_mode:
-            promote_pipeline_terminal_status(run_root, aggregation_status=AGG_STATUS_PASS)
+        if name == "aggregate" and rc == 0:
+            promote = promote_after_aggregation_pass(run_root)
+            if promote.get("promoted"):
+                _append_log(
+                    log_path,
+                    f"[{utc_now()}] terminal_promoted_after_aggregate "
+                    f"terminal={promote.get('manifest_terminal')}",
+                )
+            ok, term_errors = check_terminal_status_consistency(
+                run_root, context="post_aggregate"
+            )
+            if not ok:
+                for msg in term_errors:
+                    print(f"error: {msg}", file=sys.stderr)
+                return 2
+            stages = assess_stages(run_root, production_mode=production_mode)
+
+        if rc == 0 and name in ("scout", "worker_plan", "checkpoint", "workers"):
+            stages = assess_stages(run_root, production_mode=production_mode)
 
         if idx >= stop_rank:
             print(f"stop-after={stop_after} reached", flush=True)
@@ -732,7 +761,21 @@ def run_pipeline(
         pass
     if _stage_pass_aggregate(run_root):
         if production_mode:
-            if not _stage_pass_freeze(run_root, sample_id, production_mode=True):
+            if _stage_pass_freeze(run_root, sample_id, production_mode=True):
+                from v2_b3_m4_post_run_residue_audit import (  # noqa: WPS433
+                    format_post_run_residue_audit_line,
+                    run_post_run_residue_audit,
+                )
+
+                audit = run_post_run_residue_audit(
+                    repo_root=repo_root,
+                    run_root=run_root,
+                    sample_id=sample_id,
+                    run_id=run_root.name,
+                    require_zero_forbidden=False,
+                )
+                print(format_post_run_residue_audit_line(audit), flush=True)
+            else:
                 mark_freeze_stage_failed(run_root, reason="production_freeze_incomplete")
         else:
             promote_pipeline_terminal_status(run_root, aggregation_status=AGG_STATUS_PASS)

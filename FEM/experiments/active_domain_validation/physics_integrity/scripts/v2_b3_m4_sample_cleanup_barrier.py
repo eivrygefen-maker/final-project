@@ -97,6 +97,7 @@ def _mesh_sidecar_paths(mesh_dir: Path, level_id: str, sample_id: str) -> List[P
     base = mesh_dir / level_id
     names = (
         f"{sample_id}.msh",
+        f"{sample_id}.mesh_manifest.json",
         f"{sample_id}_mesh_build_summary.json",
         f"{sample_id}_mesh_audit.json",
         f"{sample_id}_build.log",
@@ -598,6 +599,22 @@ def run_sample_cleanup_barrier(
         )
         deleted_shared.extend(shared_deleted)
         delete_errors.extend(shared_errors)
+        try:
+            from v2_b3_m4_post_run_residue_audit import (  # noqa: WPS433
+                format_post_run_residue_audit_line,
+                run_post_run_residue_audit,
+            )
+
+            residue = run_post_run_residue_audit(
+                repo_root=repo_root,
+                run_root=run_root,
+                sample_id=sample_id,
+                run_id=run_id,
+            )
+            if not residue.get("pass"):
+                delete_errors.append(format_post_run_residue_audit_line(residue))
+        except ImportError:
+            pass
     else:
         _write_failure_retention(
             run_root=run_root,
