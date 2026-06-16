@@ -663,9 +663,34 @@ def run_stage3_zones_target_plan(
             targets_hz=target_plan["targets_hz"],
             target_windows_hz=target_plan["target_windows_hz"],
         )
-        write_json_atomic(lprod_dir / "worker_chunk_plan.preview.json", chunk_preview)
-        (lprod_dir / "worker_chunk_plan.preview.md").write_text(
-            render_chunk_preview_md(chunk_preview), encoding="utf-8"
+        chunk_preview["target_count"] = len(target_plan["targets_hz"])
+        chunk_preview["chunk_count"] = len(chunk_preview.get("chunks") or [])
+        chunk_preview["planned_workers"] = int(workers)
+        sample_input_path = run_root / "sample" / "sample_input.json"
+        if sample_input_path.is_file():
+            sample_input = _load_json(sample_input_path)
+            fem_scripts = repo_root / "FEM" / "scripts"
+            if str(fem_scripts) not in sys.path:
+                sys.path.insert(0, str(fem_scripts))
+            from m4_shape_context import resolve_shape_context_from_sample_input  # noqa: WPS433
+
+            legacy = str(sample_input.get("shape_name") or "classic") == "classic"
+            ctx = resolve_shape_context_from_sample_input(
+                sample_input,
+                legacy_classic_default=legacy,
+            )
+            chunk_preview["shape_context"] = ctx.to_dict()
+
+        from v2_b3_m4_stage_artifact_contract import (  # noqa: WPS433
+            assert_scout_terminal_contract_or_raise,
+            format_scout_stage_contract_pass_line,
+            write_worker_chunk_preview_artifacts,
+        )
+
+        write_worker_chunk_preview_artifacts(
+            lprod_dir=lprod_dir,
+            chunk_preview=chunk_preview,
+            md_renderer=render_chunk_preview_md,
         )
 
         scout_result = {
@@ -701,6 +726,13 @@ def run_stage3_zones_target_plan(
             f"Stage 3 OK targets={len(target_plan['targets_hz'])} "
             f"repair={cov.get('repair_targets_added', 0)}\n",
         )
+        target_count, chunk_count = assert_scout_terminal_contract_or_raise(run_root)
+        contract_line = format_scout_stage_contract_pass_line(
+            target_count=target_count,
+            chunk_count=chunk_count,
+        )
+        _append_log(log3, f"{contract_line}\n")
+        print(contract_line, flush=True)
     except Exception as exc:
         _append_log(log3, f"FAIL: {exc}\n")
         _update_manifest(

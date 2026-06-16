@@ -35,6 +35,7 @@ from v2_b3_m4_stage_artifact_contract import (  # noqa: E402
     validate_scout_terminal_artifacts,
     validate_worker_plan_artifacts,
 )
+from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
 
 def test_classic_resolves_to_classical() -> None:
@@ -165,7 +166,10 @@ def test_stage_contract_is_shape_agnostic() -> None:
         for rel in SCOUT_TERMINAL_ARTIFACTS:
             path = run_root / rel
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("{}", encoding="utf-8")
+            if "density_result" in rel:
+                write_json_atomic(path, {"status": "PASS"})
+            else:
+                path.write_text("{}", encoding="utf-8")
         ok2, errors2 = validate_scout_terminal_artifacts(run_root)
         assert ok2 is True
         assert errors2 == []

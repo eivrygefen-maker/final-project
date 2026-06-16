@@ -106,16 +106,18 @@ def clear_worker_active_lock(run_root: Path) -> None:
 
 
 def _scout_pass(run_root: Path) -> bool:
+    from v2_b3_m4_stage_artifact_contract import validate_scout_terminal_artifacts  # noqa: WPS433
+
     manifest_path = run_root / "pipeline_run_manifest.json"
     manifest = load_json(manifest_path) if manifest_path.is_file() else {}
     if str(manifest.get("terminal_status") or "") == SCOUT_TERMINAL_READY:
-        return True
+        ok, _ = validate_scout_terminal_artifacts(run_root)
+        return ok
     st3 = (manifest.get("stages") or {}).get("stage3_zones_plan") or {}
     if str(st3.get("status") or "") != "PASS":
         return False
-    return (run_root / "lprod" / "lprod_target_plan.json").is_file() and (
-        run_root / "scout" / "density_zones.json"
-    ).is_file()
+    ok, _ = validate_scout_terminal_artifacts(run_root)
+    return ok
 
 
 def _worker_plan_pass(run_root: Path) -> bool:

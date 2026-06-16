@@ -166,10 +166,17 @@ if python3 "${MESH_SHAPE_TEST}" >/tmp/shape_fom_smoke_mesh_shape.log 2>&1; then
 else
   bad "mesh shape contract tests failed (see /tmp/shape_fom_smoke_mesh_shape.log)"
 fi
+SHAPE_CONTEXT_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_shape_context_test.py"
 if python3 "${SHAPE_CONTEXT_TEST}" >/tmp/shape_fom_smoke_shape_context.log 2>&1; then
-  ok "unified ShapeContext + stage artifact contract"
+  ok "unified ShapeContext"
 else
   bad "shape context tests failed (see /tmp/shape_fom_smoke_shape_context.log)"
+fi
+STAGE_ARTIFACT_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_stage_artifact_contract_test.py"
+if python3 "${STAGE_ARTIFACT_TEST}" >/tmp/shape_fom_smoke_stage_artifact.log 2>&1; then
+  ok "scout stage artifact contract (preview JSON ownership)"
+else
+  bad "stage artifact contract tests failed (see /tmp/shape_fom_smoke_stage_artifact.log)"
 fi
 INSPECT_SCRIPT="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/inspect_shape_mesh_aperture.py"
 BOX_FOM_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_box_fom_validation_test.py"

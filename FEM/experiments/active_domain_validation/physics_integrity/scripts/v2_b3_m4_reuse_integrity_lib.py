@@ -19,6 +19,12 @@ from v2_b3_m4_production_freeze import (  # noqa: E402
     TERMINAL_PRODUCTION_COMPLETED,
     production_freeze_complete,
 )
+from v2_b3_m4_stage_artifact_contract import (  # noqa: E402
+    SCOUT_CHUNK_PREVIEW_JSON_REL,
+    SCOUT_TERMINAL_ARTIFACTS,
+    validate_scout_terminal_artifacts,
+    WORKER_PLAN_OUTPUT_ARTIFACTS,
+)
 from v2_b3_m4_worker_run_lib import (  # noqa: E402
     chunk_ids_from_worker_plan,
     chunk_worker_pass_status,
@@ -30,12 +36,10 @@ from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 REUSE_INTEGRITY_FAIL = "REUSE_INTEGRITY_FAIL"
 QUARANTINE_SCHEMA = "m4_stale_reuse_quarantine_v1"
 
-WORKER_PLAN_REL_PATHS: Tuple[str, ...] = (
-    "lprod/lprod_execution_plan.json",
-    "lprod/worker_commands.json",
+# Scout Stage 3 owns the chunk preview JSON; worker_plan consumes it and must not delete it.
+WORKER_PLAN_REL_PATHS: Tuple[str, ...] = WORKER_PLAN_OUTPUT_ARTIFACTS + (
     "lprod/aggregation_plan.json",
     "lprod/lprod_mesh_checkpoint_readiness.json",
-    "lprod/worker_chunk_plan.preview.json",
 )
 
 WORKER_PLAN_OPTIONAL_REL: Tuple[str, ...] = (
@@ -108,16 +112,18 @@ def format_integrity_fail(
 def scout_artifact_contract_pass(run_root: Path) -> bool:
     manifest = read_manifest(run_root)
     if str(manifest.get("terminal_status")) == SCOUT_TERMINAL_READY:
-        return True
+        ok, _ = validate_scout_terminal_artifacts(run_root)
+        return ok
     st3 = (manifest.get("stages") or {}).get("stage3_zones_plan") or {}
     if str(st3.get("status")) != "PASS":
         return False
-    return (run_root / "lprod" / "lprod_target_plan.json").is_file() and (
-        run_root / "scout" / "density_zones.json"
-    ).is_file()
+    ok, _ = validate_scout_terminal_artifacts(run_root)
+    return ok
 
 
 def worker_plan_artifact_contract_pass(run_root: Path) -> bool:
+    if not (run_root / SCOUT_CHUNK_PREVIEW_JSON_REL).is_file():
+        return False
     for rel in WORKER_PLAN_REL_PATHS:
         if not (run_root / rel).is_file():
             return False
@@ -444,7 +450,7 @@ def quarantine_stale_downstream_artifacts(
 
 
 def remove_stale_worker_plan_outputs(run_root: Path) -> List[str]:
-    """Remove partial dry-run plan files that are not a valid worker_plan PASS contract."""
+    """Remove partial worker_plan outputs only — never scout-owned chunk preview JSON."""
     if worker_plan_artifact_contract_pass(run_root):
         return []
     removed: List[str] = []

@@ -42,6 +42,27 @@ def _write_chunk_targets(run_root: Path, chunk_id: str = "sample_000_chunk_01") 
     )
 
 
+def _write_scout_terminal_contract(run_root: Path) -> None:
+    (run_root / "scout" / "discovery").mkdir(parents=True, exist_ok=True)
+    write_json_atomic(run_root / "scout" / "discovery" / "density_result.json", {"status": "PASS"})
+    write_json_atomic(run_root / "scout" / "density_zones.json", {"zones": []})
+    write_json_atomic(run_root / "lprod" / "lprod_target_plan.json", {"targets_hz": [200.0]})
+    write_json_atomic(run_root / "scout" / "scout_result.json", {"status": "PASS"})
+    write_json_atomic(
+        run_root / "lprod" / "worker_chunk_plan.preview.json",
+        {
+            "chunks": [
+                {
+                    "chunk_id": "sample_000_chunk_01",
+                    "freq_range_hz": [190.0, 210.0],
+                    "target_count": 1,
+                    "targets_hz": [200.0],
+                }
+            ]
+        },
+    )
+
+
 def _write_worker_plan_contract(run_root: Path) -> None:
     write_json_atomic(
         run_root / "lprod" / "worker_chunk_plan.preview.json",
@@ -179,8 +200,7 @@ def test_stale_execution_plan_alone_not_worker_plan_pass() -> None:
 def test_completed_classic_state_reuses() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         run_root = Path(tmp)
-        write_json_atomic(run_root / "scout" / "density_zones.json", {"zones": []})
-        write_json_atomic(run_root / "lprod" / "lprod_target_plan.json", {"targets_hz": [200.0]})
+        _write_scout_terminal_contract(run_root)
         _write_worker_plan_contract(run_root)
         _write_minimal_checkpoint(run_root)
         _write_worker_pass(run_root)
