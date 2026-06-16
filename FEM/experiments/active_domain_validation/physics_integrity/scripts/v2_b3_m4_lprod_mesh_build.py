@@ -50,6 +50,7 @@ def build_lprod_mesh_for_case(
     level_id: str = DEFAULT_LEVEL_ID,
     mesh_profile: Optional[str] = None,
     dataset_version: Optional[str] = None,
+    geometry_shape_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     resolved = resolve_mesh_profile_from_mapping(
         {"mesh_profile": mesh_profile, "mesh_level_id": level_id, "dataset_version": dataset_version},
@@ -65,6 +66,7 @@ def build_lprod_mesh_for_case(
         "id": sample_id,
         "geometry": dict(geometry),
         "shape_name": shape_name,
+        "geometry_shape_type": geometry_shape_type or shape_name,
     }
     audit = build_level_mesh(case, level_id, level_def, config_dir=CONFIG_DIR)
     out_msh = mesh_path(level_id, sample_id)
@@ -137,17 +139,30 @@ def main() -> int:
     sample_id = str(args.sample_id)
 
     geometry: Dict[str, float] = {}
-    shape_name = "Classical"
+    shape_name = "classic"
+    geometry_shape_type: Optional[str] = None
     if args.geometry_json and args.geometry_json.is_file():
         raw = json.loads(args.geometry_json.read_text(encoding="utf-8"))
         geometry = extract_geometry_dict(raw)
         meta = extract_run_metadata(raw)
         shape_name = str(meta.get("shape_name") or raw.get("shape_name") or shape_name)
+        geometry_shape_type = str(
+            raw.get("geometry_shape_type")
+            or meta.get("shape_type")
+            or shape_name
+        )
     elif args.run_dir:
         sample = _load_sample_input(args.run_dir.expanduser().resolve())
         geometry = extract_geometry_dict(sample)
         meta = extract_run_metadata(sample)
         shape_name = str(meta.get("shape_name") or sample.get("shape_name") or shape_name)
+        repo_root = Path(__file__).resolve().parents[5]
+        fem_scripts = repo_root / "FEM" / "scripts"
+        if str(fem_scripts) not in sys.path:
+            sys.path.insert(0, str(fem_scripts))
+        from m4_shape_registry import resolve_geometry_shape_type  # noqa: WPS433
+
+        geometry_shape_type = resolve_geometry_shape_type(sample_input=sample)
     else:
         print("error: provide --run-dir or --geometry-json", file=sys.stderr)
         return 2
@@ -163,6 +178,11 @@ def main() -> int:
         level_id=str(args.mesh_level_id),
         mesh_profile=args.mesh_profile,
         dataset_version=args.dataset_version,
+        geometry_shape_type=geometry_shape_type,
+    )
+    print(
+        f"[B3_lprod_mesh] shape_name={shape_name} geometry.shape_type={geometry_shape_type}",
+        flush=True,
     )
     print(f"[B3_lprod_mesh] status={result.get('status')}", flush=True)
     print(f"[B3_lprod_mesh] mesh_path={result.get('mesh_path')}", flush=True)

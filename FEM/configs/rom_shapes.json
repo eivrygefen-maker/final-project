@@ -23,6 +23,14 @@
           "Box"
         ]
       }
+    },
+    "acoustic": {
+      "base_config": "FEM/configs/guitar_3d.json",
+      "parameter_sweep": {
+        "geometry.shape_type": [
+          "Acoustic"
+        ]
+      }
     }
   }
 }

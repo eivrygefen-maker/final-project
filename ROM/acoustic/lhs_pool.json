@@ -1,23 +1,23 @@
 {
-  "shape_name": "box",
-  "shape_type": "box",
+  "shape_name": "acoustic",
+  "shape_type": "acoustic",
   "sampling": "lhs",
   "wood_assignment": "unrestricted_5x5",
   "seed": 20260616,
-  "total_samples": 500,
+  "total_samples": 100,
   "mpi_world_size": 0,
   "lhs_bounds": {
     "geometry.length": {
-      "min": 0.4,
-      "max": 0.52
+      "min": 0.45,
+      "max": 0.7
     },
     "geometry.width": {
-      "min": 0.32,
-      "max": 0.42
+      "min": 0.3,
+      "max": 0.55
     },
     "geometry.depth": {
-      "min": 0.06,
-      "max": 0.16
+      "min": 0.1,
+      "max": 0.2
     },
     "geometry.top_thickness": {
       "min": 0.0025,
@@ -25,7 +25,7 @@
     },
     "geometry.hole_radius": {
       "min": 0.035,
-      "max": 0.048
+      "max": 0.055
     },
     "top_wood_id": [
       "spruce",
@@ -44,16 +44,16 @@
   },
   "entries": [
     {
-      "id": "box_sample_000",
+      "id": "acoustic_sample_000",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.114949,
-        "geometry.hole_radius": 0.038594,
-        "geometry.length": 0.401307,
+        "geometry.depth": 0.154949,
+        "geometry.hole_radius": 0.040528,
+        "geometry.length": 0.452723,
         "geometry.top_thickness": 0.003483,
-        "geometry.width": 0.365581,
+        "geometry.width": 0.413952,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0038313
       },
       "status": "PENDING",
@@ -71,16 +71,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_001",
+      "id": "acoustic_sample_001",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.154854,
-        "geometry.hole_radius": 0.040914,
-        "geometry.length": 0.452705,
+        "geometry.depth": 0.194854,
+        "geometry.hole_radius": 0.044098,
+        "geometry.length": 0.559803,
         "geometry.top_thickness": 0.002955,
-        "geometry.width": 0.370403,
+        "geometry.width": 0.426007,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0032505000000000004
       },
       "status": "PENDING",
@@ -98,16 +98,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_002",
+      "id": "acoustic_sample_002",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.079856,
-        "geometry.hole_radius": 0.045028,
-        "geometry.length": 0.400625,
+        "geometry.depth": 0.119856,
+        "geometry.hole_radius": 0.050428,
+        "geometry.length": 0.451302,
         "geometry.top_thickness": 0.003177,
-        "geometry.width": 0.3453,
+        "geometry.width": 0.363249,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0034947000000000003
       },
       "status": "PENDING",
@@ -125,16 +125,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_003",
+      "id": "acoustic_sample_003",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.150831,
-        "geometry.hole_radius": 0.036777,
-        "geometry.length": 0.438545,
+        "geometry.depth": 0.190831,
+        "geometry.hole_radius": 0.037734,
+        "geometry.length": 0.530303,
         "geometry.top_thickness": 0.003186,
-        "geometry.width": 0.372996,
+        "geometry.width": 0.432489,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0035046000000000005
       },
       "status": "PENDING",
@@ -152,16 +152,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_004",
+      "id": "acoustic_sample_004",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.133173,
-        "geometry.hole_radius": 0.039166,
-        "geometry.length": 0.414302,
+        "geometry.depth": 0.173173,
+        "geometry.hole_radius": 0.04141,
+        "geometry.length": 0.479796,
         "geometry.top_thickness": 0.003043,
-        "geometry.width": 0.374472,
+        "geometry.width": 0.436181,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0033473000000000005
       },
       "status": "PENDING",
@@ -179,16 +179,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_005",
+      "id": "acoustic_sample_005",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.066702,
-        "geometry.hole_radius": 0.043606,
-        "geometry.length": 0.472173,
+        "geometry.depth": 0.106702,
+        "geometry.hole_radius": 0.04824,
+        "geometry.length": 0.600361,
         "geometry.top_thickness": 0.002745,
-        "geometry.width": 0.417234,
+        "geometry.width": 0.543084,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0030195000000000005
       },
       "status": "PENDING",
@@ -206,16 +206,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_006",
+      "id": "acoustic_sample_006",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.083865,
-        "geometry.hole_radius": 0.038994,
-        "geometry.length": 0.444332,
+        "geometry.depth": 0.123865,
+        "geometry.hole_radius": 0.041144,
+        "geometry.length": 0.542359,
         "geometry.top_thickness": 0.003396,
-        "geometry.width": 0.321304,
+        "geometry.width": 0.303259,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0037356000000000004
       },
       "status": "PENDING",
@@ -233,16 +233,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_007",
+      "id": "acoustic_sample_007",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.09797,
-        "geometry.hole_radius": 0.039462,
-        "geometry.length": 0.436514,
+        "geometry.depth": 0.13797,
+        "geometry.hole_radius": 0.041865,
+        "geometry.length": 0.526072,
         "geometry.top_thickness": 0.002634,
-        "geometry.width": 0.33468,
+        "geometry.width": 0.3367,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0028974000000000005
       },
       "status": "PENDING",
@@ -260,16 +260,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_008",
+      "id": "acoustic_sample_008",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.081233,
-        "geometry.hole_radius": 0.038307,
-        "geometry.length": 0.474914,
+        "geometry.depth": 0.121233,
+        "geometry.hole_radius": 0.040088,
+        "geometry.length": 0.60607,
         "geometry.top_thickness": 0.003274,
-        "geometry.width": 0.358483,
+        "geometry.width": 0.396208,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0036014000000000003
       },
       "status": "PENDING",
@@ -287,16 +287,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_009",
+      "id": "acoustic_sample_009",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.07779,
-        "geometry.hole_radius": 0.035568,
-        "geometry.length": 0.467839,
+        "geometry.depth": 0.11779,
+        "geometry.hole_radius": 0.035873,
+        "geometry.length": 0.591331,
         "geometry.top_thickness": 0.003057,
-        "geometry.width": 0.389733,
+        "geometry.width": 0.474333,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0033627
       },
       "status": "PENDING",
@@ -314,16 +314,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_010",
+      "id": "acoustic_sample_010",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.089435,
-        "geometry.hole_radius": 0.039781,
-        "geometry.length": 0.420005,
+        "geometry.depth": 0.129435,
+        "geometry.hole_radius": 0.042355,
+        "geometry.length": 0.491676,
         "geometry.top_thickness": 0.003368,
-        "geometry.width": 0.392722,
+        "geometry.width": 0.481804,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0037048000000000003
       },
       "status": "PENDING",
@@ -341,16 +341,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_011",
+      "id": "acoustic_sample_011",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.155438,
-        "geometry.hole_radius": 0.045605,
-        "geometry.length": 0.485883,
+        "geometry.depth": 0.195438,
+        "geometry.hole_radius": 0.051316,
+        "geometry.length": 0.628924,
         "geometry.top_thickness": 0.003306,
-        "geometry.width": 0.332543,
+        "geometry.width": 0.331357,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0036366000000000002
       },
       "status": "PENDING",
@@ -368,16 +368,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_012",
+      "id": "acoustic_sample_012",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.135131,
-        "geometry.hole_radius": 0.037067,
-        "geometry.length": 0.488834,
+        "geometry.depth": 0.175131,
+        "geometry.hole_radius": 0.03818,
+        "geometry.length": 0.635072,
         "geometry.top_thickness": 0.002846,
-        "geometry.width": 0.322044,
+        "geometry.width": 0.305109,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0031306000000000003
       },
       "status": "PENDING",
@@ -395,16 +395,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_013",
+      "id": "acoustic_sample_013",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.124832,
-        "geometry.hole_radius": 0.046551,
-        "geometry.length": 0.476306,
+        "geometry.depth": 0.164832,
+        "geometry.hole_radius": 0.052771,
+        "geometry.length": 0.608971,
         "geometry.top_thickness": 0.002673,
-        "geometry.width": 0.353708,
+        "geometry.width": 0.384271,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0029403000000000003
       },
       "status": "PENDING",
@@ -422,16 +422,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_014",
+      "id": "acoustic_sample_014",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.147477,
-        "geometry.hole_radius": 0.044924,
-        "geometry.length": 0.483073,
+        "geometry.depth": 0.187477,
+        "geometry.hole_radius": 0.050267,
+        "geometry.length": 0.623069,
         "geometry.top_thickness": 0.003406,
-        "geometry.width": 0.320513,
+        "geometry.width": 0.301284,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0037466000000000005
       },
       "status": "PENDING",
@@ -449,16 +449,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_015",
+      "id": "acoustic_sample_015",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.075708,
-        "geometry.hole_radius": 0.040669,
-        "geometry.length": 0.49309,
+        "geometry.depth": 0.115708,
+        "geometry.hole_radius": 0.043722,
+        "geometry.length": 0.643938,
         "geometry.top_thickness": 0.002517,
-        "geometry.width": 0.416324,
+        "geometry.width": 0.540809,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0027687000000000002
       },
       "status": "PENDING",
@@ -476,16 +476,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_016",
+      "id": "acoustic_sample_016",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.143028,
-        "geometry.hole_radius": 0.046879,
-        "geometry.length": 0.510796,
+        "geometry.depth": 0.183028,
+        "geometry.hole_radius": 0.053275,
+        "geometry.length": 0.680824,
         "geometry.top_thickness": 0.002762,
-        "geometry.width": 0.366242,
+        "geometry.width": 0.415605,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0030382000000000004
       },
       "status": "PENDING",
@@ -503,16 +503,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_017",
+      "id": "acoustic_sample_017",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.094767,
-        "geometry.hole_radius": 0.04727,
-        "geometry.length": 0.513227,
+        "geometry.depth": 0.134767,
+        "geometry.hole_radius": 0.053878,
+        "geometry.length": 0.68589,
         "geometry.top_thickness": 0.002598,
-        "geometry.width": 0.340457,
+        "geometry.width": 0.351142,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0028578
       },
       "status": "PENDING",
@@ -530,16 +530,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_018",
+      "id": "acoustic_sample_018",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.082835,
-        "geometry.hole_radius": 0.044345,
-        "geometry.length": 0.519243,
+        "geometry.depth": 0.122835,
+        "geometry.hole_radius": 0.049377,
+        "geometry.length": 0.698423,
         "geometry.top_thickness": 0.002559,
-        "geometry.width": 0.3361,
+        "geometry.width": 0.340249,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0028149000000000004
       },
       "status": "PENDING",
@@ -557,16 +557,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_019",
+      "id": "acoustic_sample_019",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.070463,
-        "geometry.hole_radius": 0.04165,
-        "geometry.length": 0.504177,
+        "geometry.depth": 0.110463,
+        "geometry.hole_radius": 0.045231,
+        "geometry.length": 0.667035,
         "geometry.top_thickness": 0.00329,
-        "geometry.width": 0.408352,
+        "geometry.width": 0.520881,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0036190000000000003
       },
       "status": "PENDING",
@@ -584,16 +584,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_020",
+      "id": "acoustic_sample_020",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.099902,
-        "geometry.hole_radius": 0.043145,
-        "geometry.length": 0.411437,
+        "geometry.depth": 0.139902,
+        "geometry.hole_radius": 0.04753,
+        "geometry.length": 0.473826,
         "geometry.top_thickness": 0.003331,
-        "geometry.width": 0.41886,
+        "geometry.width": 0.547149,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0036641000000000004
       },
       "status": "PENDING",
@@ -611,16 +611,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_021",
+      "id": "acoustic_sample_021",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.10193,
-        "geometry.hole_radius": 0.04036,
-        "geometry.length": 0.412374,
+        "geometry.depth": 0.14193,
+        "geometry.hole_radius": 0.043246,
+        "geometry.length": 0.475779,
         "geometry.top_thickness": 0.002821,
-        "geometry.width": 0.346076,
+        "geometry.width": 0.365191,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0031031000000000006
       },
       "status": "PENDING",
@@ -638,16 +638,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_022",
+      "id": "acoustic_sample_022",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.085194,
-        "geometry.hole_radius": 0.044572,
-        "geometry.length": 0.463186,
+        "geometry.depth": 0.125194,
+        "geometry.hole_radius": 0.049726,
+        "geometry.length": 0.581637,
         "geometry.top_thickness": 0.002899,
-        "geometry.width": 0.401219,
+        "geometry.width": 0.503048,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0031889
       },
       "status": "PENDING",
@@ -665,16 +665,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_023",
+      "id": "acoustic_sample_023",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.092297,
-        "geometry.hole_radius": 0.043741,
-        "geometry.length": 0.50812,
+        "geometry.depth": 0.132297,
+        "geometry.hole_radius": 0.048448,
+        "geometry.length": 0.675249,
         "geometry.top_thickness": 0.003323,
-        "geometry.width": 0.333572,
+        "geometry.width": 0.333931,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0036553
       },
       "status": "PENDING",
@@ -692,16 +692,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_024",
+      "id": "acoustic_sample_024",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.12002,
-        "geometry.hole_radius": 0.047878,
-        "geometry.length": 0.458126,
+        "geometry.depth": 0.16002,
+        "geometry.hole_radius": 0.054812,
+        "geometry.length": 0.571095,
         "geometry.top_thickness": 0.002523,
-        "geometry.width": 0.396334,
+        "geometry.width": 0.490836,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0027753000000000005
       },
       "status": "PENDING",
@@ -719,16 +719,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_025",
+      "id": "acoustic_sample_025",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.134982,
-        "geometry.hole_radius": 0.044746,
-        "geometry.length": 0.439806,
+        "geometry.depth": 0.174982,
+        "geometry.hole_radius": 0.049994,
+        "geometry.length": 0.532929,
         "geometry.top_thickness": 0.003379,
-        "geometry.width": 0.324326,
+        "geometry.width": 0.310816,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0037169000000000004
       },
       "status": "PENDING",
@@ -746,16 +746,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_026",
+      "id": "acoustic_sample_026",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.084604,
-        "geometry.hole_radius": 0.043862,
-        "geometry.length": 0.509859,
+        "geometry.depth": 0.124604,
+        "geometry.hole_radius": 0.048634,
+        "geometry.length": 0.678873,
         "geometry.top_thickness": 0.003063,
-        "geometry.width": 0.376245,
+        "geometry.width": 0.440613,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0033693000000000004
       },
       "status": "PENDING",
@@ -773,16 +773,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_027",
+      "id": "acoustic_sample_027",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.121025,
-        "geometry.hole_radius": 0.038737,
-        "geometry.length": 0.490634,
+        "geometry.depth": 0.161025,
+        "geometry.hole_radius": 0.040749,
+        "geometry.length": 0.638821,
         "geometry.top_thickness": 0.002941,
-        "geometry.width": 0.411774,
+        "geometry.width": 0.529436,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0032351000000000003
       },
       "status": "PENDING",
@@ -800,16 +800,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_028",
+      "id": "acoustic_sample_028",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.098002,
-        "geometry.hole_radius": 0.037828,
-        "geometry.length": 0.515701,
+        "geometry.depth": 0.138002,
+        "geometry.hole_radius": 0.03935,
+        "geometry.length": 0.691043,
         "geometry.top_thickness": 0.002817,
-        "geometry.width": 0.407886,
+        "geometry.width": 0.519716,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0030987000000000002
       },
       "status": "PENDING",
@@ -827,16 +827,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_029",
+      "id": "acoustic_sample_029",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.118592,
-        "geometry.hole_radius": 0.041043,
-        "geometry.length": 0.464412,
+        "geometry.depth": 0.158592,
+        "geometry.hole_radius": 0.044296,
+        "geometry.length": 0.584192,
         "geometry.top_thickness": 0.002697,
-        "geometry.width": 0.403146,
+        "geometry.width": 0.507865,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0029667000000000005
       },
       "status": "PENDING",
@@ -854,16 +854,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_030",
+      "id": "acoustic_sample_030",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.111682,
-        "geometry.hole_radius": 0.046391,
-        "geometry.length": 0.484431,
+        "geometry.depth": 0.151682,
+        "geometry.hole_radius": 0.052525,
+        "geometry.length": 0.625898,
         "geometry.top_thickness": 0.003195,
-        "geometry.width": 0.361755,
+        "geometry.width": 0.404388,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0035145000000000003
       },
       "status": "PENDING",
@@ -881,16 +881,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_031",
+      "id": "acoustic_sample_031",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.137119,
-        "geometry.hole_radius": 0.037609,
-        "geometry.length": 0.433772,
+        "geometry.depth": 0.177119,
+        "geometry.hole_radius": 0.039013,
+        "geometry.length": 0.520358,
         "geometry.top_thickness": 0.003494,
-        "geometry.width": 0.402848,
+        "geometry.width": 0.507119,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0038434000000000003
       },
       "status": "PENDING",
@@ -908,16 +908,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_032",
+      "id": "acoustic_sample_032",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.153284,
-        "geometry.hole_radius": 0.044434,
-        "geometry.length": 0.446425,
+        "geometry.depth": 0.193284,
+        "geometry.hole_radius": 0.049514,
+        "geometry.length": 0.546719,
         "geometry.top_thickness": 0.00347,
-        "geometry.width": 0.342536,
+        "geometry.width": 0.356341,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0038170000000000005
       },
       "status": "PENDING",
@@ -935,16 +935,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_033",
+      "id": "acoustic_sample_033",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.15253,
-        "geometry.hole_radius": 0.045366,
-        "geometry.length": 0.416568,
+        "geometry.depth": 0.19253,
+        "geometry.hole_radius": 0.050948,
+        "geometry.length": 0.484516,
         "geometry.top_thickness": 0.002612,
-        "geometry.width": 0.378789,
+        "geometry.width": 0.446973,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0028732000000000002
       },
       "status": "PENDING",
@@ -962,16 +962,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_034",
+      "id": "acoustic_sample_034",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.117933,
-        "geometry.hole_radius": 0.047031,
-        "geometry.length": 0.479958,
+        "geometry.depth": 0.157933,
+        "geometry.hole_radius": 0.05351,
+        "geometry.length": 0.616578,
         "geometry.top_thickness": 0.002543,
-        "geometry.width": 0.347551,
+        "geometry.width": 0.368877,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0027973000000000004
       },
       "status": "PENDING",
@@ -989,16 +989,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_035",
+      "id": "acoustic_sample_035",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.146191,
-        "geometry.hole_radius": 0.035894,
-        "geometry.length": 0.506797,
+        "geometry.depth": 0.186191,
+        "geometry.hole_radius": 0.036375,
+        "geometry.length": 0.672494,
         "geometry.top_thickness": 0.003419,
-        "geometry.width": 0.343218,
+        "geometry.width": 0.358045,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0037609000000000006
       },
       "status": "PENDING",
@@ -1016,16 +1016,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_036",
+      "id": "acoustic_sample_036",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.074107,
-        "geometry.hole_radius": 0.03566,
-        "geometry.length": 0.470429,
+        "geometry.depth": 0.114107,
+        "geometry.hole_radius": 0.036016,
+        "geometry.length": 0.596726,
         "geometry.top_thickness": 0.003031,
-        "geometry.width": 0.419201,
+        "geometry.width": 0.548003,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0033341
       },
       "status": "PENDING",
@@ -1043,16 +1043,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_037",
+      "id": "acoustic_sample_037",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.0601,
-        "geometry.hole_radius": 0.046245,
-        "geometry.length": 0.487175,
+        "geometry.depth": 0.1001,
+        "geometry.hole_radius": 0.0523,
+        "geometry.length": 0.631614,
         "geometry.top_thickness": 0.002506,
-        "geometry.width": 0.373152,
+        "geometry.width": 0.432879,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0027566
       },
       "status": "PENDING",
@@ -1070,16 +1070,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_038",
+      "id": "acoustic_sample_038",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.086587,
-        "geometry.hole_radius": 0.043416,
-        "geometry.length": 0.459766,
+        "geometry.depth": 0.126587,
+        "geometry.hole_radius": 0.047947,
+        "geometry.length": 0.574512,
         "geometry.top_thickness": 0.002965,
-        "geometry.width": 0.404535,
+        "geometry.width": 0.511337,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0032615000000000005
       },
       "status": "PENDING",
@@ -1097,16 +1097,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_039",
+      "id": "acoustic_sample_039",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.14822,
-        "geometry.hole_radius": 0.047778,
-        "geometry.length": 0.449986,
+        "geometry.depth": 0.18822,
+        "geometry.hole_radius": 0.054659,
+        "geometry.length": 0.554138,
         "geometry.top_thickness": 0.003162,
-        "geometry.width": 0.377933,
+        "geometry.width": 0.444833,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0034782000000000003
       },
       "status": "PENDING",
@@ -1124,16 +1124,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_040",
+      "id": "acoustic_sample_040",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.139018,
-        "geometry.hole_radius": 0.036038,
-        "geometry.length": 0.424645,
+        "geometry.depth": 0.179018,
+        "geometry.hole_radius": 0.036597,
+        "geometry.length": 0.501345,
         "geometry.top_thickness": 0.003226,
-        "geometry.width": 0.39886,
+        "geometry.width": 0.497149,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0035486000000000003
       },
       "status": "PENDING",
@@ -1151,16 +1151,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_041",
+      "id": "acoustic_sample_041",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.145953,
-        "geometry.hole_radius": 0.036584,
-        "geometry.length": 0.434819,
+        "geometry.depth": 0.185953,
+        "geometry.hole_radius": 0.037437,
+        "geometry.length": 0.52254,
         "geometry.top_thickness": 0.003017,
-        "geometry.width": 0.375023,
+        "geometry.width": 0.437558,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0033187000000000004
       },
       "status": "PENDING",
@@ -1178,16 +1178,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_042",
+      "id": "acoustic_sample_042",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.090119,
-        "geometry.hole_radius": 0.04289,
-        "geometry.length": 0.518762,
+        "geometry.depth": 0.130119,
+        "geometry.hole_radius": 0.047139,
+        "geometry.length": 0.697421,
         "geometry.top_thickness": 0.003387,
-        "geometry.width": 0.387938,
+        "geometry.width": 0.469844,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0037257
       },
       "status": "PENDING",
@@ -1205,16 +1205,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_043",
+      "id": "acoustic_sample_043",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.116763,
-        "geometry.hole_radius": 0.0393,
-        "geometry.length": 0.456386,
+        "geometry.depth": 0.156763,
+        "geometry.hole_radius": 0.041615,
+        "geometry.length": 0.567472,
         "geometry.top_thickness": 0.002803,
-        "geometry.width": 0.400578,
+        "geometry.width": 0.501446,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0030833
       },
       "status": "PENDING",
@@ -1232,16 +1232,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_044",
+      "id": "acoustic_sample_044",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.102434,
-        "geometry.hole_radius": 0.047637,
-        "geometry.length": 0.442015,
+        "geometry.depth": 0.142434,
+        "geometry.hole_radius": 0.054441,
+        "geometry.length": 0.537532,
         "geometry.top_thickness": 0.002839,
-        "geometry.width": 0.414796,
+        "geometry.width": 0.53699,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0031229
       },
       "status": "PENDING",
@@ -1259,16 +1259,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_045",
+      "id": "acoustic_sample_045",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.067739,
-        "geometry.hole_radius": 0.036888,
-        "geometry.length": 0.500077,
+        "geometry.depth": 0.107739,
+        "geometry.hole_radius": 0.037905,
+        "geometry.length": 0.658495,
         "geometry.top_thickness": 0.003292,
-        "geometry.width": 0.412628,
+        "geometry.width": 0.53157,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0036212
       },
       "status": "PENDING",
@@ -1286,16 +1286,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_046",
+      "id": "acoustic_sample_046",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.138689,
-        "geometry.hole_radius": 0.046801,
-        "geometry.length": 0.498918,
+        "geometry.depth": 0.178689,
+        "geometry.hole_radius": 0.053155,
+        "geometry.length": 0.656079,
         "geometry.top_thickness": 0.003244,
-        "geometry.width": 0.380163,
+        "geometry.width": 0.450406,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0035684000000000002
       },
       "status": "PENDING",
@@ -1313,16 +1313,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_047",
+      "id": "acoustic_sample_047",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.132054,
-        "geometry.hole_radius": 0.037983,
-        "geometry.length": 0.466111,
+        "geometry.depth": 0.172054,
+        "geometry.hole_radius": 0.039589,
+        "geometry.length": 0.587731,
         "geometry.top_thickness": 0.003073,
-        "geometry.width": 0.369357,
+        "geometry.width": 0.423392,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0033803000000000006
       },
       "status": "PENDING",
@@ -1340,16 +1340,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_048",
+      "id": "acoustic_sample_048",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.119096,
-        "geometry.hole_radius": 0.04541,
-        "geometry.length": 0.40692,
+        "geometry.depth": 0.159096,
+        "geometry.hole_radius": 0.051016,
+        "geometry.length": 0.464417,
         "geometry.top_thickness": 0.002911,
-        "geometry.width": 0.357806,
+        "geometry.width": 0.394515,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0032021000000000003
       },
       "status": "PENDING",
@@ -1367,16 +1367,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_049",
+      "id": "acoustic_sample_049",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.061873,
-        "geometry.hole_radius": 0.042703,
-        "geometry.length": 0.488654,
+        "geometry.depth": 0.101873,
+        "geometry.hole_radius": 0.046851,
+        "geometry.length": 0.634696,
         "geometry.top_thickness": 0.003453,
-        "geometry.width": 0.331633,
+        "geometry.width": 0.329083,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0037983
       },
       "status": "PENDING",
@@ -1394,16 +1394,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_050",
+      "id": "acoustic_sample_050",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.095675,
-        "geometry.hole_radius": 0.038462,
-        "geometry.length": 0.481742,
+        "geometry.depth": 0.135675,
+        "geometry.hole_radius": 0.040325,
+        "geometry.length": 0.620296,
         "geometry.top_thickness": 0.002582,
-        "geometry.width": 0.397366,
+        "geometry.width": 0.493415,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0028402
       },
       "status": "PENDING",
@@ -1421,16 +1421,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_051",
+      "id": "acoustic_sample_051",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.093708,
-        "geometry.hole_radius": 0.041903,
-        "geometry.length": 0.410518,
+        "geometry.depth": 0.133708,
+        "geometry.hole_radius": 0.04562,
+        "geometry.length": 0.471912,
         "geometry.top_thickness": 0.00343,
-        "geometry.width": 0.38567,
+        "geometry.width": 0.464176,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0037730000000000003
       },
       "status": "PENDING",
@@ -1448,16 +1448,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_052",
+      "id": "acoustic_sample_052",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.159079,
-        "geometry.hole_radius": 0.039668,
-        "geometry.length": 0.430699,
+        "geometry.depth": 0.199079,
+        "geometry.hole_radius": 0.042182,
+        "geometry.length": 0.513957,
         "geometry.top_thickness": 0.003151,
-        "geometry.width": 0.379817,
+        "geometry.width": 0.449544,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0034661000000000006
       },
       "status": "PENDING",
@@ -1475,16 +1475,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_053",
+      "id": "acoustic_sample_053",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.096022,
-        "geometry.hole_radius": 0.038066,
-        "geometry.length": 0.462085,
+        "geometry.depth": 0.136022,
+        "geometry.hole_radius": 0.039717,
+        "geometry.length": 0.579343,
         "geometry.top_thickness": 0.002788,
-        "geometry.width": 0.406186,
+        "geometry.width": 0.515464,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0030668
       },
       "status": "PENDING",
@@ -1502,16 +1502,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_054",
+      "id": "acoustic_sample_054",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.104262,
-        "geometry.hole_radius": 0.037488,
-        "geometry.length": 0.480932,
+        "geometry.depth": 0.144262,
+        "geometry.hole_radius": 0.038828,
+        "geometry.length": 0.618609,
         "geometry.top_thickness": 0.003113,
-        "geometry.width": 0.368755,
+        "geometry.width": 0.421886,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0034243000000000003
       },
       "status": "PENDING",
@@ -1529,16 +1529,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_055",
+      "id": "acoustic_sample_055",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.131206,
-        "geometry.hole_radius": 0.043012,
-        "geometry.length": 0.478828,
+        "geometry.depth": 0.171206,
+        "geometry.hole_radius": 0.047326,
+        "geometry.length": 0.614225,
         "geometry.top_thickness": 0.002706,
-        "geometry.width": 0.388254,
+        "geometry.width": 0.470635,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0029766000000000003
       },
       "status": "PENDING",
@@ -1556,16 +1556,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_056",
+      "id": "acoustic_sample_056",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.151094,
-        "geometry.hole_radius": 0.040749,
-        "geometry.length": 0.420953,
+        "geometry.depth": 0.191094,
+        "geometry.hole_radius": 0.043844,
+        "geometry.length": 0.493651,
         "geometry.top_thickness": 0.002687,
-        "geometry.width": 0.363987,
+        "geometry.width": 0.409967,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0029557000000000003
       },
       "status": "PENDING",
@@ -1583,16 +1583,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_057",
+      "id": "acoustic_sample_057",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.106548,
-        "geometry.hole_radius": 0.040302,
-        "geometry.length": 0.404871,
+        "geometry.depth": 0.146548,
+        "geometry.hole_radius": 0.043157,
+        "geometry.length": 0.460149,
         "geometry.top_thickness": 0.002715,
-        "geometry.width": 0.325838,
+        "geometry.width": 0.314594,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0029865
       },
       "status": "PENDING",
@@ -1610,16 +1610,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_058",
+      "id": "acoustic_sample_058",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.130464,
-        "geometry.hole_radius": 0.038202,
-        "geometry.length": 0.427099,
+        "geometry.depth": 0.170464,
+        "geometry.hole_radius": 0.039926,
+        "geometry.length": 0.506455,
         "geometry.top_thickness": 0.002609,
-        "geometry.width": 0.386312,
+        "geometry.width": 0.46578,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0028699000000000003
       },
       "status": "PENDING",
@@ -1637,16 +1637,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_059",
+      "id": "acoustic_sample_059",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.157109,
-        "geometry.hole_radius": 0.043998,
-        "geometry.length": 0.464962,
+        "geometry.depth": 0.197109,
+        "geometry.hole_radius": 0.048844,
+        "geometry.length": 0.585337,
         "geometry.top_thickness": 0.003476,
-        "geometry.width": 0.352957,
+        "geometry.width": 0.382392,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0038236000000000003
       },
       "status": "PENDING",
@@ -1664,16 +1664,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_060",
+      "id": "acoustic_sample_060",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.063643,
-        "geometry.hole_radius": 0.043571,
-        "geometry.length": 0.471992,
+        "geometry.depth": 0.103643,
+        "geometry.hole_radius": 0.048186,
+        "geometry.length": 0.599983,
         "geometry.top_thickness": 0.003432,
-        "geometry.width": 0.394006,
+        "geometry.width": 0.485015,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0037752000000000007
       },
       "status": "PENDING",
@@ -1691,16 +1691,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_061",
+      "id": "acoustic_sample_061",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.136871,
-        "geometry.hole_radius": 0.046001,
-        "geometry.length": 0.502798,
+        "geometry.depth": 0.176871,
+        "geometry.hole_radius": 0.051925,
+        "geometry.length": 0.664162,
         "geometry.top_thickness": 0.00298,
-        "geometry.width": 0.328169,
+        "geometry.width": 0.320421,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.003278
       },
       "status": "PENDING",
@@ -1718,16 +1718,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_062",
+      "id": "acoustic_sample_062",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.068607,
-        "geometry.hole_radius": 0.036054,
-        "geometry.length": 0.431276,
+        "geometry.depth": 0.108607,
+        "geometry.hole_radius": 0.036622,
+        "geometry.length": 0.515158,
         "geometry.top_thickness": 0.002779,
-        "geometry.width": 0.355807,
+        "geometry.width": 0.389517,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0030569
       },
       "status": "PENDING",
@@ -1745,16 +1745,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_063",
+      "id": "acoustic_sample_063",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.107016,
-        "geometry.hole_radius": 0.043215,
-        "geometry.length": 0.441857,
+        "geometry.depth": 0.147016,
+        "geometry.hole_radius": 0.047639,
+        "geometry.length": 0.537203,
         "geometry.top_thickness": 0.002539,
-        "geometry.width": 0.326263,
+        "geometry.width": 0.315657,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0027929
       },
       "status": "PENDING",
@@ -1772,16 +1772,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_064",
+      "id": "acoustic_sample_064",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.12636,
-        "geometry.hole_radius": 0.04749,
-        "geometry.length": 0.447179,
+        "geometry.depth": 0.16636,
+        "geometry.hole_radius": 0.054216,
+        "geometry.length": 0.54829,
         "geometry.top_thickness": 0.00312,
-        "geometry.width": 0.351088,
+        "geometry.width": 0.377719,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.003432
       },
       "status": "PENDING",
@@ -1799,16 +1799,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_065",
+      "id": "acoustic_sample_065",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.142284,
-        "geometry.hole_radius": 0.041485,
-        "geometry.length": 0.456432,
+        "geometry.depth": 0.182284,
+        "geometry.hole_radius": 0.044977,
+        "geometry.length": 0.567566,
         "geometry.top_thickness": 0.00286,
-        "geometry.width": 0.339786,
+        "geometry.width": 0.349464,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0031460000000000004
       },
       "status": "PENDING",
@@ -1826,16 +1826,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_066",
+      "id": "acoustic_sample_066",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.14405,
-        "geometry.hole_radius": 0.04479,
-        "geometry.length": 0.423329,
+        "geometry.depth": 0.18405,
+        "geometry.hole_radius": 0.050062,
+        "geometry.length": 0.498603,
         "geometry.top_thickness": 0.003089,
-        "geometry.width": 0.390586,
+        "geometry.width": 0.476465,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0033979000000000006
       },
       "status": "PENDING",
@@ -1853,16 +1853,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_067",
+      "id": "acoustic_sample_067",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.113012,
-        "geometry.hole_radius": 0.035286,
-        "geometry.length": 0.514855,
+        "geometry.depth": 0.153012,
+        "geometry.hole_radius": 0.03544,
+        "geometry.length": 0.689282,
         "geometry.top_thickness": 0.002725,
-        "geometry.width": 0.348588,
+        "geometry.width": 0.37147,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0029975
       },
       "status": "PENDING",
@@ -1880,16 +1880,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_068",
+      "id": "acoustic_sample_068",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.091357,
-        "geometry.hole_radius": 0.045736,
-        "geometry.length": 0.469388,
+        "geometry.depth": 0.131357,
+        "geometry.hole_radius": 0.051516,
+        "geometry.length": 0.594558,
         "geometry.top_thickness": 0.002995,
-        "geometry.width": 0.344717,
+        "geometry.width": 0.361794,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0032945
       },
       "status": "PENDING",
@@ -1907,16 +1907,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_069",
+      "id": "acoustic_sample_069",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.109003,
-        "geometry.hole_radius": 0.046064,
-        "geometry.length": 0.507703,
+        "geometry.depth": 0.149003,
+        "geometry.hole_radius": 0.052022,
+        "geometry.length": 0.674381,
         "geometry.top_thickness": 0.002987,
-        "geometry.width": 0.413018,
+        "geometry.width": 0.532544,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0032857000000000003
       },
       "status": "PENDING",
@@ -1934,16 +1934,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_070",
+      "id": "acoustic_sample_070",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.073774,
-        "geometry.hole_radius": 0.041285,
-        "geometry.length": 0.408613,
+        "geometry.depth": 0.113774,
+        "geometry.hole_radius": 0.044669,
+        "geometry.length": 0.467943,
         "geometry.top_thickness": 0.003342,
-        "geometry.width": 0.349144,
+        "geometry.width": 0.372859,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0036762
       },
       "status": "PENDING",
@@ -1961,16 +1961,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_071",
+      "id": "acoustic_sample_071",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.062994,
-        "geometry.hole_radius": 0.04256,
-        "geometry.length": 0.450595,
+        "geometry.depth": 0.102994,
+        "geometry.hole_radius": 0.046631,
+        "geometry.length": 0.555405,
         "geometry.top_thickness": 0.003139,
-        "geometry.width": 0.359268,
+        "geometry.width": 0.398169,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0034529
       },
       "status": "PENDING",
@@ -1988,16 +1988,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_072",
+      "id": "acoustic_sample_072",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.071857,
-        "geometry.hole_radius": 0.042302,
-        "geometry.length": 0.473552,
+        "geometry.depth": 0.111857,
+        "geometry.hole_radius": 0.046233,
+        "geometry.length": 0.603232,
         "geometry.top_thickness": 0.0028,
-        "geometry.width": 0.335845,
+        "geometry.width": 0.339612,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0030800000000000003
       },
       "status": "PENDING",
@@ -2015,16 +2015,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_073",
+      "id": "acoustic_sample_073",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.112949,
-        "geometry.hole_radius": 0.039153,
-        "geometry.length": 0.417481,
+        "geometry.depth": 0.152949,
+        "geometry.hole_radius": 0.04139,
+        "geometry.length": 0.486419,
         "geometry.top_thickness": 0.002569,
-        "geometry.width": 0.338643,
+        "geometry.width": 0.346607,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0028259000000000005
       },
       "status": "PENDING",
@@ -2042,16 +2042,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_074",
+      "id": "acoustic_sample_074",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.127399,
-        "geometry.hole_radius": 0.042537,
-        "geometry.length": 0.407315,
+        "geometry.depth": 0.167399,
+        "geometry.hole_radius": 0.046595,
+        "geometry.length": 0.465239,
         "geometry.top_thickness": 0.003092,
-        "geometry.width": 0.415471,
+        "geometry.width": 0.538677,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0034012000000000005
       },
       "status": "PENDING",
@@ -2069,16 +2069,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_075",
+      "id": "acoustic_sample_075",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.103126,
-        "geometry.hole_radius": 0.036315,
-        "geometry.length": 0.517219,
+        "geometry.depth": 0.143126,
+        "geometry.hole_radius": 0.037023,
+        "geometry.length": 0.694206,
         "geometry.top_thickness": 0.002571,
-        "geometry.width": 0.41013,
+        "geometry.width": 0.525325,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0028281
       },
       "status": "PENDING",
@@ -2096,16 +2096,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_076",
+      "id": "acoustic_sample_076",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.140717,
-        "geometry.hole_radius": 0.04719,
-        "geometry.length": 0.41906,
+        "geometry.depth": 0.180717,
+        "geometry.hole_radius": 0.053754,
+        "geometry.length": 0.489709,
         "geometry.top_thickness": 0.003236,
-        "geometry.width": 0.393382,
+        "geometry.width": 0.483456,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0035596000000000004
       },
       "status": "PENDING",
@@ -2123,16 +2123,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_077",
+      "id": "acoustic_sample_077",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.125365,
-        "geometry.hole_radius": 0.046645,
-        "geometry.length": 0.429796,
+        "geometry.depth": 0.165365,
+        "geometry.hole_radius": 0.052916,
+        "geometry.length": 0.512075,
         "geometry.top_thickness": 0.002653,
-        "geometry.width": 0.354801,
+        "geometry.width": 0.387001,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0029183000000000004
       },
       "status": "PENDING",
@@ -2150,16 +2150,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_078",
+      "id": "acoustic_sample_078",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.065926,
-        "geometry.hole_radius": 0.036256,
-        "geometry.length": 0.453883,
+        "geometry.depth": 0.105926,
+        "geometry.hole_radius": 0.036932,
+        "geometry.length": 0.562256,
         "geometry.top_thickness": 0.003256,
-        "geometry.width": 0.36402,
+        "geometry.width": 0.410049,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0035816000000000003
       },
       "status": "PENDING",
@@ -2177,16 +2177,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_079",
+      "id": "acoustic_sample_079",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.100894,
-        "geometry.hole_radius": 0.045243,
-        "geometry.length": 0.437289,
+        "geometry.depth": 0.140894,
+        "geometry.hole_radius": 0.050758,
+        "geometry.length": 0.527686,
         "geometry.top_thickness": 0.003318,
-        "geometry.width": 0.381671,
+        "geometry.width": 0.454177,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0036498000000000004
       },
       "status": "PENDING",
@@ -2204,16 +2204,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_080",
+      "id": "acoustic_sample_080",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.080419,
-        "geometry.hole_radius": 0.042239,
-        "geometry.length": 0.493988,
+        "geometry.depth": 0.120419,
+        "geometry.hole_radius": 0.046137,
+        "geometry.length": 0.645808,
         "geometry.top_thickness": 0.003263,
-        "geometry.width": 0.382714,
+        "geometry.width": 0.456786,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0035893
       },
       "status": "PENDING",
@@ -2231,16 +2231,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_081",
+      "id": "acoustic_sample_081",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.088972,
-        "geometry.hole_radius": 0.041112,
-        "geometry.length": 0.49481,
+        "geometry.depth": 0.128972,
+        "geometry.hole_radius": 0.044403,
+        "geometry.length": 0.64752,
         "geometry.top_thickness": 0.003216,
-        "geometry.width": 0.32919,
+        "geometry.width": 0.322975,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0035376000000000006
       },
       "status": "PENDING",
@@ -2258,16 +2258,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_082",
+      "id": "acoustic_sample_082",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.108169,
-        "geometry.hole_radius": 0.038859,
-        "geometry.length": 0.500994,
+        "geometry.depth": 0.148169,
+        "geometry.hole_radius": 0.040936,
+        "geometry.length": 0.660404,
         "geometry.top_thickness": 0.002752,
-        "geometry.width": 0.350716,
+        "geometry.width": 0.376791,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0030272000000000003
       },
       "status": "PENDING",
@@ -2285,16 +2285,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_083",
+      "id": "acoustic_sample_083",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.12399,
-        "geometry.hole_radius": 0.041553,
-        "geometry.length": 0.448249,
+        "geometry.depth": 0.16399,
+        "geometry.hole_radius": 0.045081,
+        "geometry.length": 0.550519,
         "geometry.top_thickness": 0.003022,
-        "geometry.width": 0.34159,
+        "geometry.width": 0.353975,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0033242000000000002
       },
       "status": "PENDING",
@@ -2312,16 +2312,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_084",
+      "id": "acoustic_sample_084",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.069298,
-        "geometry.hole_radius": 0.047392,
-        "geometry.length": 0.425984,
+        "geometry.depth": 0.109298,
+        "geometry.hole_radius": 0.054065,
+        "geometry.length": 0.504133,
         "geometry.top_thickness": 0.003149,
-        "geometry.width": 0.367903,
+        "geometry.width": 0.419758,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0034639000000000002
       },
       "status": "PENDING",
@@ -2339,16 +2339,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_085",
+      "id": "acoustic_sample_085",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.072856,
-        "geometry.hole_radius": 0.03526,
-        "geometry.length": 0.477318,
+        "geometry.depth": 0.112856,
+        "geometry.hole_radius": 0.0354,
+        "geometry.length": 0.61108,
         "geometry.top_thickness": 0.002642,
-        "geometry.width": 0.360623,
+        "geometry.width": 0.401557,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0029062
       },
       "status": "PENDING",
@@ -2366,16 +2366,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_086",
+      "id": "acoustic_sample_086",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.158667,
-        "geometry.hole_radius": 0.042119,
-        "geometry.length": 0.51166,
+        "geometry.depth": 0.198667,
+        "geometry.hole_radius": 0.045952,
+        "geometry.length": 0.682625,
         "geometry.top_thickness": 0.002907,
-        "geometry.width": 0.409193,
+        "geometry.width": 0.522983,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0031977
       },
       "status": "PENDING",
@@ -2393,16 +2393,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_087",
+      "id": "acoustic_sample_087",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.115228,
-        "geometry.hole_radius": 0.041801,
-        "geometry.length": 0.428476,
+        "geometry.depth": 0.155228,
+        "geometry.hole_radius": 0.045462,
+        "geometry.length": 0.509325,
         "geometry.top_thickness": 0.0031,
-        "geometry.width": 0.399348,
+        "geometry.width": 0.498369,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0034100000000000003
       },
       "status": "PENDING",
@@ -2420,16 +2420,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_088",
+      "id": "acoustic_sample_088",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.064679,
-        "geometry.hole_radius": 0.037208,
-        "geometry.length": 0.505218,
+        "geometry.depth": 0.104679,
+        "geometry.hole_radius": 0.038398,
+        "geometry.length": 0.669203,
         "geometry.top_thickness": 0.002877,
-        "geometry.width": 0.371592,
+        "geometry.width": 0.42898,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0031647
       },
       "status": "PENDING",
@@ -2447,16 +2447,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_089",
+      "id": "acoustic_sample_089",
       "parameters": {
         "back_wood_id": "cedar",
-        "geometry.depth": 0.076822,
-        "geometry.hole_radius": 0.040584,
-        "geometry.length": 0.422119,
+        "geometry.depth": 0.116822,
+        "geometry.hole_radius": 0.04359,
+        "geometry.length": 0.49608,
         "geometry.top_thickness": 0.003009,
-        "geometry.width": 0.384938,
+        "geometry.width": 0.462346,
         "top_wood_id": "spruce",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0033099
       },
       "status": "PENDING",
@@ -2474,16 +2474,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_090",
+      "id": "acoustic_sample_090",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.12247,
-        "geometry.hole_radius": 0.039974,
-        "geometry.length": 0.402965,
+        "geometry.depth": 0.16247,
+        "geometry.hole_radius": 0.042652,
+        "geometry.length": 0.456177,
         "geometry.top_thickness": 0.002926,
-        "geometry.width": 0.405789,
+        "geometry.width": 0.514474,
         "top_wood_id": "rosewood",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0032186000000000003
       },
       "status": "PENDING",
@@ -2501,16 +2501,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_091",
+      "id": "acoustic_sample_091",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.110093,
-        "geometry.hole_radius": 0.037384,
-        "geometry.length": 0.496521,
+        "geometry.depth": 0.150093,
+        "geometry.hole_radius": 0.038667,
+        "geometry.length": 0.651085,
         "geometry.top_thickness": 0.002884,
-        "geometry.width": 0.327246,
+        "geometry.width": 0.318115,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0031724
       },
       "status": "PENDING",
@@ -2528,16 +2528,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_092",
+      "id": "acoustic_sample_092",
       "parameters": {
         "back_wood_id": "rosewood",
-        "geometry.depth": 0.128492,
-        "geometry.hole_radius": 0.03986,
-        "geometry.length": 0.414645,
+        "geometry.depth": 0.168492,
+        "geometry.hole_radius": 0.042477,
+        "geometry.length": 0.48051,
         "geometry.top_thickness": 0.002626,
-        "geometry.width": 0.337668,
+        "geometry.width": 0.344169,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0028886000000000003
       },
       "status": "PENDING",
@@ -2555,16 +2555,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_093",
+      "id": "acoustic_sample_093",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.105831,
-        "geometry.hole_radius": 0.036431,
-        "geometry.length": 0.404599,
+        "geometry.depth": 0.145831,
+        "geometry.hole_radius": 0.037202,
+        "geometry.length": 0.459581,
         "geometry.top_thickness": 0.002938,
-        "geometry.width": 0.330776,
+        "geometry.width": 0.32694,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0032318000000000004
       },
       "status": "PENDING",
@@ -2582,16 +2582,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_094",
+      "id": "acoustic_sample_094",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.156673,
-        "geometry.hole_radius": 0.044109,
-        "geometry.length": 0.454037,
+        "geometry.depth": 0.196673,
+        "geometry.hole_radius": 0.049014,
+        "geometry.length": 0.562576,
         "geometry.top_thickness": 0.002852,
-        "geometry.width": 0.362917,
+        "geometry.width": 0.407294,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0031372
       },
       "status": "PENDING",
@@ -2609,16 +2609,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_095",
+      "id": "acoustic_sample_095",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.07899,
-        "geometry.hole_radius": 0.0351,
-        "geometry.length": 0.444692,
+        "geometry.depth": 0.11899,
+        "geometry.hole_radius": 0.035154,
+        "geometry.length": 0.543109,
         "geometry.top_thickness": 0.002663,
-        "geometry.width": 0.383152,
+        "geometry.width": 0.45788,
         "top_wood_id": "cedar",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0029293
       },
       "status": "PENDING",
@@ -2636,16 +2636,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_096",
+      "id": "acoustic_sample_096",
       "parameters": {
         "back_wood_id": "maple",
-        "geometry.depth": 0.141323,
-        "geometry.hole_radius": 0.045812,
-        "geometry.length": 0.432665,
+        "geometry.depth": 0.181323,
+        "geometry.hole_radius": 0.051634,
+        "geometry.length": 0.518053,
         "geometry.top_thickness": 0.003205,
-        "geometry.width": 0.323601,
+        "geometry.width": 0.309003,
         "top_wood_id": "mahogany",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0035255000000000004
       },
       "status": "PENDING",
@@ -2663,16 +2663,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_097",
+      "id": "acoustic_sample_097",
       "parameters": {
         "back_wood_id": "spruce",
-        "geometry.depth": 0.087165,
-        "geometry.hole_radius": 0.040123,
-        "geometry.length": 0.491906,
+        "geometry.depth": 0.127165,
+        "geometry.hole_radius": 0.042881,
+        "geometry.length": 0.64147,
         "geometry.top_thickness": 0.003359,
-        "geometry.width": 0.391566,
+        "geometry.width": 0.478915,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0036949
       },
       "status": "PENDING",
@@ -2690,16 +2690,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_098",
+      "id": "acoustic_sample_098",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.129078,
-        "geometry.hole_radius": 0.035493,
-        "geometry.length": 0.460044,
+        "geometry.depth": 0.169078,
+        "geometry.hole_radius": 0.035759,
+        "geometry.length": 0.575091,
         "geometry.top_thickness": 0.002733,
-        "geometry.width": 0.356195,
+        "geometry.width": 0.390489,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0030063000000000004
       },
       "status": "PENDING",
@@ -2717,16 +2717,16 @@
       "last_audio_coupling_computed_count": null
     },
     {
-      "id": "box_sample_099",
+      "id": "acoustic_sample_099",
       "parameters": {
         "back_wood_id": "mahogany",
-        "geometry.depth": 0.149703,
-        "geometry.hole_radius": 0.037222,
-        "geometry.length": 0.497409,
+        "geometry.depth": 0.189703,
+        "geometry.hole_radius": 0.038419,
+        "geometry.length": 0.652935,
         "geometry.top_thickness": 0.003444,
-        "geometry.width": 0.395695,
+        "geometry.width": 0.489236,
         "top_wood_id": "maple",
-        "geometry.shape_type": "Box",
+        "geometry.shape_type": "Acoustic",
         "geometry.back_thickness": 0.0037884000000000004
       },
       "status": "PENDING",

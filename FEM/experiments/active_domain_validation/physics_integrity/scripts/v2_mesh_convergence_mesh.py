@@ -100,7 +100,15 @@ def build_level_mesh(
     CONV_MESH.joinpath(level_id).mkdir(parents=True, exist_ok=True)
     cfg_path = config_dir / f"{level_id}_{case_id}.json"
     cfg = json.loads(SOURCE_CONFIG.read_text(encoding="utf-8"))
-    cfg["geometry"] = sample_geometry({"geometry": case.get("geometry") or {}})
+    geom_shape_type = (
+        case.get("geometry_shape_type")
+        or case.get("shape_type")
+        or (case.get("geometry") or {}).get("shape_type")
+    )
+    cfg["geometry"] = sample_geometry(
+        {"geometry": case.get("geometry") or {}},
+        shape_type=str(geom_shape_type) if geom_shape_type else None,
+    )
     cfg.setdefault("solver", {})["mesh_file"] = str(out_msh.resolve())
     cfg_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 

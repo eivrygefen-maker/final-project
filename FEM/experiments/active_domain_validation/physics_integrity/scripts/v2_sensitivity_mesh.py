@@ -7,7 +7,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 EXPERIMENT_ROOT = Path(__file__).resolve().parents[2]
@@ -17,22 +17,56 @@ MESH_DIR = SENS_ROOT / "mesh"
 CONFIG_DIR = SENS_ROOT / "configs"
 SOURCE_CONFIG = REPO_ROOT / "FEM" / "configs" / "guitar_3d.json"
 
-NOMINAL_GEOMETRY = {
-    "shape_type": "Classical",
-    "length": 0.48,
-    "width": 0.325,
-    "depth": 0.10,
-    "top_thickness": 0.003,
-    "back_thickness": 0.0033,
-    "hole_radius": 0.047,
-    "mesh_mode": "fom",
+NOMINAL_GEOMETRY_BY_SHAPE: Dict[str, Dict[str, Any]] = {
+    "Classical": {
+        "shape_type": "Classical",
+        "length": 0.48,
+        "width": 0.325,
+        "depth": 0.10,
+        "top_thickness": 0.003,
+        "back_thickness": 0.0033,
+        "hole_radius": 0.047,
+        "mesh_mode": "fom",
+    },
+    "Box": {
+        "shape_type": "Box",
+        "length": 0.46,
+        "width": 0.36,
+        "depth": 0.10,
+        "top_thickness": 0.003,
+        "back_thickness": 0.0033,
+        "hole_radius": 0.042,
+        "mesh_mode": "fom",
+    },
+    "Acoustic": {
+        "shape_type": "Acoustic",
+        "length": 0.50,
+        "width": 0.40,
+        "depth": 0.12,
+        "top_thickness": 0.003,
+        "back_thickness": 0.0033,
+        "hole_radius": 0.045,
+        "mesh_mode": "fom",
+    },
 }
 
+NOMINAL_GEOMETRY = dict(NOMINAL_GEOMETRY_BY_SHAPE["Classical"])
 
-def sample_geometry(sample: Dict[str, Any]) -> Dict[str, Any]:
-    geom = dict(NOMINAL_GEOMETRY)
-    geom.update(sample.get("geometry") or {})
-    if "back_thickness" not in (sample.get("geometry") or {}):
+
+def sample_geometry(sample: Dict[str, Any], *, shape_type: Optional[str] = None) -> Dict[str, Any]:
+    geom_in = dict(sample.get("geometry") or {})
+    st = (
+        shape_type
+        or geom_in.get("shape_type")
+        or sample.get("shape_type")
+        or sample.get("geometry_shape_type")
+        or "Classical"
+    )
+    base = dict(NOMINAL_GEOMETRY_BY_SHAPE.get(str(st), NOMINAL_GEOMETRY))
+    base["shape_type"] = str(st)
+    geom = dict(base)
+    geom.update(geom_in)
+    if "back_thickness" not in geom_in and "back_thickness" not in geom:
         geom["back_thickness"] = float(geom["top_thickness"]) * 1.1
     return geom
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -144,11 +145,31 @@ def build_sample_input(
     dataset_version: Optional[str] = None,
 ) -> Dict[str, Any]:
     sid = str(entry["id"])
-    params = dict(entry.get("parameters") or {})
+    repo_root = detect_repo_root(SCRIPT_DIR)
+    fem_scripts = repo_root / "FEM" / "scripts"
+    if str(fem_scripts) not in sys.path:
+        sys.path.insert(0, str(fem_scripts))
+    from m4_shape_registry import (  # noqa: WPS433
+        ensure_parameters_shape_type,
+        resolve_shape_config,
+        shape_from_pool,
+    )
+
+    shape_key = shape_from_pool(pool)
+    shape_cfg = resolve_shape_config(shape_key)
+    params = ensure_parameters_shape_type(
+        dict(entry.get("parameters") or {}),
+        shape_key=shape_key,
+    )
+    shape_ctx = shape_cfg.shape_context_fields(lhs_path=lhs_source_path)
     body = {
         "schema": "m4_sample_input_v1",
         "sample_id": sid,
-        "shape_name": str(pool.get("shape_name") or "classic"),
+        "shape_name": shape_cfg.shape_key,
+        "geometry_shape_type": shape_cfg.geometry_shape_type,
+        "gmsh_shape_type": shape_cfg.gmsh_shape_type,
+        "lhs_path": lhs_source_path,
+        "acoustic_opening_policy": shape_cfg.acoustic_opening_policy(),
         "parameters": params,
         "top_wood_id": params.get("top_wood_id"),
         "back_wood_id": params.get("back_wood_id"),
@@ -158,6 +179,7 @@ def build_sample_input(
         "batch_id": batch_id,
         "selection_reason": "lhs_pool_auto",
         "lhs_row_note": f"auto from {lhs_source_path}",
+        **shape_ctx,
     }
     resolved = resolve_mesh_profile(
         mesh_profile=mesh_profile or MESH_PROFILE_ROM,

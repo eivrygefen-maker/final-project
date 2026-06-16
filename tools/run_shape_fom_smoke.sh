@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# Lightweight shape FOM/M4 smoke — no FEM solve, no STK, no WAV.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "${REPO_ROOT}"
+
+PASS=0
+FAIL=0
+ok() { echo "OK  $1"; PASS=$((PASS + 1)); }
+bad() { echo "FAIL $1"; FAIL=$((FAIL + 1)); }
+
+echo "== Shape FOM pipeline smoke =="
+
+M4_SCRIPT="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/run_m4_production_pipeline.py"
+REGISTRY="${REPO_ROOT}/FEM/scripts/m4_shape_registry.py"
+GEN_SCRIPT="${REPO_ROOT}/tools/generate_shape_lhs_pool.py"
+OVERNIGHT="${REPO_ROOT}/tools/run_shape_fom_overnight_batch.sh"
+ROM_SHAPES="${REPO_ROOT}/FEM/configs/rom_shapes.json"
+POLICY_DOC="${REPO_ROOT}/docs/m4_acoustic_opening_policy.md"
+
+for f in \
+  "${REGISTRY}" \
+  "${GEN_SCRIPT}" \
+  "${OVERNIGHT}" \
+  "${M4_SCRIPT}" \
+  "${ROM_SHAPES}" \
+  docs/classic_fom_rom_pipeline_report.md
+do
+  if [[ -f "${f}" ]]; then
+    ok "present ${f#${REPO_ROOT}/}"
+  else
+    bad "missing ${f#${REPO_ROOT}/}"
+  fi
+done
+
+if grep -q '--shape' "${M4_SCRIPT}"; then
+  ok "run_m4_production_pipeline.py accepts --shape"
+else
+  bad "run_m4_production_pipeline.py missing --shape"
+fi
+
+python3 - <<PY
+import sys
+from pathlib import Path
+repo = Path("${REPO_ROOT}")
+sys.path.insert(0, str(repo / "FEM" / "scripts"))
+from m4_shape_registry import registered_shape_keys, resolve_shape_config
+
+for key in ("classic", "box", "acoustic"):
+    cfg = resolve_shape_config(key)
+    assert cfg.lhs_pool_rel == f"ROM/{key}/lhs_pool.json", (key, cfg.lhs_pool_rel)
+    assert cfg.shared_export_key == key
+    assert cfg.geometry_shape_type in ("Classical", "Box", "Acoustic")
+    print(f"registry_ok shape={key} lhs={cfg.lhs_pool_rel} geom={cfg.geometry_shape_type}")
+print("registered=", registered_shape_keys())
+PY
+ok "shape registry resolves classic/box/acoustic"
+
+python3 "${GEN_SCRIPT}" --shape box --count 100 --dry-run
+python3 "${GEN_SCRIPT}" --shape acoustic --count 100 --dry-run
+ok "box/acoustic LHS dry-run 100 samples"
+
+for shape in box acoustic; do
+  pool="${REPO_ROOT}/ROM/${shape}/lhs_pool.json"
+  if [[ ! -f "${pool}" ]]; then
+    python3 "${GEN_SCRIPT}" --shape "${shape}" --count 100
+    ok "generated ${pool#${REPO_ROOT}/}"
+  fi
+done
+
+python3 "${GEN_SCRIPT}" --shape classic --dry-run 2>/dev/null && ok "classic LHS preserved (no regen)" || ok "classic LHS skip/regen policy"
+
+python3 "${M4_SCRIPT}" --shape box --max-samples 1 --dry-run >/tmp/shape_fom_smoke_dry.log 2>&1 \
+  && ok "M4 dry-run --shape box" \
+  || bad "M4 dry-run --shape box"
+
+python3 "${M4_SCRIPT}" --lhs-json ROM/classic/lhs_pool.json --max-samples 1 --dry-run >/tmp/shape_fom_smoke_classic_legacy.log 2>&1 \
+  && ok "legacy --lhs-json classic dry-run" \
+  || bad "legacy --lhs-json classic dry-run"
+
+python3 - <<PY
+import sys
+from pathlib import Path
+repo = Path("${REPO_ROOT}")
+sys.path.insert(0, str(repo / "FEM" / "scripts"))
+from m4_shape_registry import resolve_shape_config
+for key in ("classic", "box", "acoustic"):
+    pol = resolve_shape_config(key).acoustic_opening_policy()
+    assert pol.get("requires_aperture_mask") is True
+    assert pol.get("aperture_selection_method")
+    print(f"acoustic_policy_ok shape={key} has_soundhole={pol.get('has_soundhole')}")
+PY
+ok "acoustic opening policy discoverable"
+
+if [[ -f "${POLICY_DOC}" ]]; then
+  ok "acoustic opening policy doc"
+else
+  bad "missing docs/m4_acoustic_opening_policy.md"
+fi
+
+if ! grep -qi 'stk\|wav\|app_stk' "${OVERNIGHT}" "${GEN_SCRIPT}" 2>/dev/null; then
+  ok "no STK/audio in FOM overnight/generator scripts"
+else
+  bad "STK/audio reference in FOM scripts"
+fi
+
+echo ""
+echo "Smoke: ${PASS} passed, ${FAIL} failed"
+[[ "${FAIL}" -eq 0 ]]

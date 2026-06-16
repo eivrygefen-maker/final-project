@@ -116,6 +116,9 @@ def extract_geometry_dict(sample_or_params: Mapping[str, Any]) -> Dict[str, floa
 
     params = sample_or_params.get("parameters")
     if isinstance(params, dict):
+        st = params.get("geometry.shape_type")
+        if st is not None:
+            out.setdefault("shape_type", str(st))
         for k, v in params.items():
             ks = str(k)
             if not ks.startswith("geometry."):

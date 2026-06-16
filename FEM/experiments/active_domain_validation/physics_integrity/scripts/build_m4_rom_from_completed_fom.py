@@ -45,8 +45,18 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--lhs-json", type=Path, default=Path(DEFAULT_LHS_REL))
-    parser.add_argument("--shape-name", default="classic")
+    parser.add_argument("--lhs-json", type=Path, default=None)
+    parser.add_argument(
+        "--shape",
+        choices=("classic", "box", "acoustic"),
+        default=None,
+        help="Shape namespace (resolves LHS when --lhs-json omitted).",
+    )
+    parser.add_argument(
+        "--shape-name",
+        default=None,
+        help="Deprecated alias for --shape.",
+    )
     parser.add_argument("--completed-only", action="store_true", default=True)
     parser.add_argument("--include-incomplete", action="store_false", dest="completed_only")
     parser.add_argument("--max-samples", type=int, default=None)
@@ -85,9 +95,27 @@ def _resolve_lhs(repo_root: Path, arg: Path) -> Path:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parse_args(argv)
     repo_root = detect_repo_root(SCRIPT_DIR)
-    lhs_path = _resolve_lhs(repo_root, args.lhs_json)
+    fem_scripts = repo_root / "FEM" / "scripts"
+    if str(fem_scripts) not in sys.path:
+        sys.path.insert(0, str(fem_scripts))
+    from m4_shape_registry import (  # noqa: WPS433
+        infer_shape_from_lhs_path,
+        normalize_shape_key,
+        resolve_shape_config,
+    )
+
+    shape_arg = args.shape or args.shape_name
+    if args.lhs_json is not None:
+        lhs_path = _resolve_lhs(repo_root, args.lhs_json)
+        shape_key = normalize_shape_key(shape_arg) if shape_arg else (
+            infer_shape_from_lhs_path(lhs_path) or "classic"
+        )
+    else:
+        shape_key = normalize_shape_key(shape_arg or "classic")
+        lhs_path = resolve_shape_config(shape_key).lhs_pool_path(repo_root)
+
     if not lhs_path.is_file():
-        print(f"error: missing --lhs-json: {lhs_path}", file=sys.stderr)
+        print(f"error: missing LHS pool: {lhs_path}", file=sys.stderr)
         return 2
 
     try:
@@ -97,10 +125,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     pool_shape = str(pool.get("shape_name") or "classic")
-    shape_name = str(args.shape_name or pool_shape)
+    shape_name = shape_key
     if shape_name != pool_shape:
         print(
-            f"warning: --shape-name={shape_name} differs from pool shape_name={pool_shape}",
+            f"warning: shape={shape_name} differs from pool shape_name={pool_shape}",
             flush=True,
         )
 

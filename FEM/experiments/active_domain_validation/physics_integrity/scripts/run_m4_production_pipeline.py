@@ -67,6 +67,7 @@ except ImportError:
     compact_runs_for_samples = None  # type: ignore[misc, assignment]
 
 DEFAULT_LHS_REL = "ROM/classic/lhs_pool.json"
+REGISTERED_SHAPES = ("classic", "box", "acoustic")
 
 
 def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
@@ -78,6 +79,10 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         epilog=(
             "Example:\n"
             "  python FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+            "run_m4_production_pipeline.py --shape classic "
+            "--max-samples 10 --workers 3 --execute --continue-on-fail\n\n"
+            "Legacy explicit LHS path (still supported):\n"
+            "  python FEM/experiments/active_domain_validation/physics_integrity/scripts/"
             "run_m4_production_pipeline.py --lhs-json ROM/classic/lhs_pool.json "
             "--max-samples 10 --workers 3 --execute --continue-on-fail\n\n"
             "Reconcile existing runs without re-solving:\n"
@@ -87,10 +92,16 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
+        "--shape",
+        choices=REGISTERED_SHAPES,
+        default=None,
+        help="Shape namespace (classic, box, acoustic). Resolves LHS pool when --lhs-json omitted.",
+    )
+    parser.add_argument(
         "--lhs-json",
         type=Path,
-        default=Path(DEFAULT_LHS_REL),
-        help=f"LHS design pool JSON (default: {DEFAULT_LHS_REL}).",
+        default=None,
+        help=f"LHS design pool JSON (default: from --shape or {DEFAULT_LHS_REL}).",
     )
     parser.add_argument("--max-samples", type=int, default=1, help="Max samples to run this invocation.")
     parser.add_argument("--workers", type=int, default=3)
@@ -298,6 +309,41 @@ def _resolve_lhs_path(repo_root: Path, arg: Path) -> Path:
     return arg if arg.is_absolute() else repo_root / arg
 
 
+def _resolve_shape_and_lhs(
+    repo_root: Path,
+    *,
+    shape_arg: Optional[str],
+    lhs_arg: Optional[Path],
+) -> tuple[str, Path]:
+    fem_scripts = repo_root / "FEM" / "scripts"
+    if str(fem_scripts) not in sys.path:
+        sys.path.insert(0, str(fem_scripts))
+    from m4_shape_registry import (  # noqa: WPS433
+        infer_shape_from_lhs_path,
+        normalize_shape_key,
+        resolve_shape_config,
+    )
+
+    if lhs_arg is not None:
+        lhs_path = _resolve_lhs_path(repo_root, lhs_arg)
+        if shape_arg:
+            shape_key = normalize_shape_key(shape_arg)
+            expected = resolve_shape_config(shape_key).lhs_pool_path(repo_root)
+            if lhs_path.resolve() != expected.resolve():
+                print(
+                    f"warning: --shape={shape_key} differs from --lhs-json={lhs_path}; "
+                    f"using explicit --lhs-json",
+                    flush=True,
+                )
+        else:
+            shape_key = infer_shape_from_lhs_path(lhs_path) or "classic"
+        return shape_key, lhs_path
+
+    shape_key = normalize_shape_key(shape_arg or "classic")
+    lhs_path = resolve_shape_config(shape_key).lhs_pool_path(repo_root)
+    return shape_key, lhs_path
+
+
 def _build_selected_batch(
     *,
     repo_root: Path,
@@ -461,10 +507,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not args.execute and not args.dry_run and not args.reconcile_existing_runs and not args.request_stop:
             return 0
 
-    lhs_path = _resolve_lhs_path(repo_root, args.lhs_json)
+    shape_key, lhs_path = _resolve_shape_and_lhs(
+        repo_root,
+        shape_arg=args.shape,
+        lhs_arg=args.lhs_json,
+    )
     if not lhs_path.is_file():
-        print(f"error: missing --lhs-json: {lhs_path}", file=sys.stderr)
+        print(f"error: missing LHS pool: {lhs_path}", file=sys.stderr)
         return 2
+
+    fem_scripts = repo_root / "FEM" / "scripts"
+    if str(fem_scripts) not in sys.path:
+        sys.path.insert(0, str(fem_scripts))
+    from m4_shape_registry import resolve_shape_config  # noqa: WPS433
+
+    shape_cfg = resolve_shape_config(shape_key)
+    print(
+        f"M4_SHAPE_CONTEXT shape_name={shape_cfg.shape_key} "
+        f"geometry.shape_type={shape_cfg.geometry_shape_type} "
+        f"gmsh_shape_type={shape_cfg.gmsh_shape_type} "
+        f"lhs_path={rel(lhs_path, repo_root=repo_root)} "
+        f"acoustic_opening_policy={shape_cfg.acoustic_opening_policy().get('aperture_selection_method')}",
+        flush=True,
+    )
 
     try:
         pool = load_lhs_pool(lhs_path)

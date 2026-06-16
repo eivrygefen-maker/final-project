@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -11,7 +12,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_POOL_PATH = REPO_ROOT / "ROM" / "box" / "lhs_pool.json"
-DEFAULT_COUNT = 40
+DEFAULT_COUNT = 100
 DEFAULT_SEED = 20260616
 DEFAULT_FOM_RUN_ID_SUFFIX = "box_fom_v1"
 M4_GUITARS_ROOT = (
@@ -299,62 +300,40 @@ def write_pool(path: Path, doc: Mapping[str, Any]) -> None:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Backward-compatible BOX LHS CLI — delegates to tools/generate_shape_lhs_pool.py."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--count", type=int, default=DEFAULT_COUNT)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--pool-path", type=Path, default=DEFAULT_POOL_PATH)
-    parser.add_argument("--force", action="store_true", help="Replace existing BOX entries with fresh LHS rows")
-    parser.add_argument("--dry-run", action="store_true", help="Compute pool but do not write JSON")
-    parser.add_argument(
-        "--check-fom-ready",
-        metavar="SAMPLE_ID",
-        default="",
-        help="Check whether a BOX FOM/M4 sample is already COMPLETED",
-    )
-    parser.add_argument(
-        "--run-id-suffix",
-        default=DEFAULT_FOM_RUN_ID_SUFFIX,
-        help="FOM run id suffix used with --check-fom-ready",
-    )
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--check-fom-ready", metavar="SAMPLE_ID", default="")
+    parser.add_argument("--run-id-suffix", default=DEFAULT_FOM_RUN_ID_SUFFIX)
     args = parser.parse_args(list(argv) if argv is not None else None)
 
-    if args.check_fom_ready:
-        status = is_box_fom_sample_completed(
-            REPO_ROOT,
-            args.check_fom_ready,
-            run_id_suffix=str(args.run_id_suffix),
-            pool_path=args.pool_path,
-        )
-        print(json.dumps(status, indent=2))
-        return 0 if status.get("ready") else 1
-
-    count = max(1, int(args.count))
-    existing = load_pool(args.pool_path)
-    doc = build_pool_document(count=count, seed=int(args.seed), existing=existing, force=bool(args.force))
-
-    preserved = 0
-    created = 0
-    if existing.get("entries"):
-        old_ids = {str(e.get("id")) for e in existing.get("entries") or []}
-        for entry in doc["entries"]:
-            sid = str(entry.get("id"))
-            if sid in old_ids and not args.force:
-                preserved += 1
-            else:
-                created += 1
-    else:
-        created = len(doc["entries"])
-
+    gen = REPO_ROOT / "tools" / "generate_shape_lhs_pool.py"
+    cmd = [
+        sys.executable,
+        str(gen),
+        "--shape",
+        "box",
+        "--count",
+        str(args.count),
+        "--seed",
+        str(args.seed),
+        "--pool-path",
+        str(args.pool_path),
+        "--run-id-suffix",
+        str(args.run_id_suffix),
+    ]
+    if args.force:
+        cmd.append("--force")
     if args.dry_run:
-        print(
-            f"BOX_LHS_DRY_RUN path={args.pool_path.as_posix()} "
-            f"count={len(doc['entries'])} preserved={preserved} created={created}"
-        )
-        return 0
-
-    write_pool(args.pool_path, doc)
-    print(f"BOX_LHS_READY path={args.pool_path.as_posix()} count={len(doc['entries'])}")
-    return 0
+        cmd.append("--dry-run")
+    if args.check_fom_ready:
+        cmd.extend(["--check-fom-ready", args.check_fom_ready])
+    proc = subprocess.run(cmd, cwd=str(REPO_ROOT))
+    return int(proc.returncode)
 
 
 if __name__ == "__main__":
