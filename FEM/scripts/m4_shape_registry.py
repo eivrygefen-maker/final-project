@@ -16,7 +16,7 @@ PRODUCTION_MIC_METHOD = "aperture_pressure_rms_proxy_v1"
 
 # Scout Stage-2 density acceptance policies (see v2_b3_m4_scout_intrinsic_coverage.py).
 SCOUT_DENSITY_POLICY_CLASSIC = "intrinsic_discovered_modes_v1"
-SCOUT_DENSITY_POLICY_BOX = "box_discovered_modes_v1"
+SCOUT_DENSITY_POLICY_BOX = "box_discovered_modes_v2"
 SCOUT_DENSITY_POLICY_ACOUSTIC = "acoustic_discovered_modes_v1"
 REGISTERED_SCOUT_DENSITY_POLICIES: tuple[str, ...] = (
     SCOUT_DENSITY_POLICY_CLASSIC,

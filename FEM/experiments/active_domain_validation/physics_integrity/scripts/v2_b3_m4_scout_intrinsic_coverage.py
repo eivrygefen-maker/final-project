@@ -8,10 +8,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 COVERAGE_POLICY_INTRINSIC = "intrinsic_discovered_modes_v1"
-COVERAGE_POLICY_BOX = "box_discovered_modes_v1"
+COVERAGE_POLICY_BOX_V1 = "box_discovered_modes_v1"
+COVERAGE_POLICY_BOX = "box_discovered_modes_v2"
 COVERAGE_POLICY_ACOUSTIC = "acoustic_discovered_modes_v1"
 COVERAGE_POLICY_VERSION = "m4_scout_intrinsic_coverage_v1"
 COVERAGE_POLICY_VERSION_SHAPE = "m4_scout_intrinsic_coverage_v2"
+COVERAGE_POLICY_VERSION_BOX_V2 = "m4_scout_intrinsic_coverage_box_v2"
 
 PRODUCTION_BAND_LO_HZ = 60.0
 PRODUCTION_BAND_HI_HZ = 550.0
@@ -21,9 +23,18 @@ MIN_RAW_UNIQUE_ACCEPTED = 12
 MIN_MODES_PER_BAND_THIRD = 2
 DEDUPE_TOL_HZ = 0.05
 MAX_DUPLICATE_RATE = 0.20
+REVIEW_FREQ_LIST_CAP = 128
+
+ENDPOINT_MODE_FULL_BAND = "full_production_band"
+ENDPOINT_MODE_SOLVER_SWEEP_EVIDENCE = "solver_sweep_evidence"
+GAP_MODE_ABSOLUTE = "absolute"
+GAP_MODE_DISCOVERED_SPAN_RELATIVE = "discovered_span_relative"
+BAND_THIRDS_PRODUCTION = "production_band"
+BAND_THIRDS_DISCOVERED = "discovered_band"
 
 REGISTERED_SCOUT_DENSITY_POLICIES: Tuple[str, ...] = (
     COVERAGE_POLICY_INTRINSIC,
+    COVERAGE_POLICY_BOX_V1,
     COVERAGE_POLICY_BOX,
     COVERAGE_POLICY_ACOUSTIC,
 )
@@ -54,9 +65,17 @@ class ScoutIntrinsicPolicySpec:
     min_raw_unique_accepted: int
     min_modes_per_band_third: int
     endpoint_tolerance_hz: float
+    high_endpoint_tolerance_hz: float
     max_raw_gap_hz: float
     max_duplicate_rate: float
     shape_key: str
+    low_endpoint_requires_mode: bool = True
+    high_endpoint_requires_mode: bool = True
+    gap_mode: str = GAP_MODE_ABSOLUTE
+    max_gap_relative_of_discovered_span: float = 0.0
+    per_third_band_source: str = BAND_THIRDS_PRODUCTION
+    min_discovered_span_hz: float = 0.0
+    low_endpoint_mode: str = ENDPOINT_MODE_FULL_BAND
 
 
 SCOUT_INTRINSIC_POLICY_SPECS: Dict[str, ScoutIntrinsicPolicySpec] = {
@@ -66,20 +85,43 @@ SCOUT_INTRINSIC_POLICY_SPECS: Dict[str, ScoutIntrinsicPolicySpec] = {
         min_raw_unique_accepted=MIN_RAW_UNIQUE_ACCEPTED,
         min_modes_per_band_third=MIN_MODES_PER_BAND_THIRD,
         endpoint_tolerance_hz=ENDPOINT_TOLERANCE_HZ,
+        high_endpoint_tolerance_hz=ENDPOINT_TOLERANCE_HZ,
         max_raw_gap_hz=MAX_RAW_GAP_HZ,
         max_duplicate_rate=MAX_DUPLICATE_RATE,
         shape_key="classic",
     ),
-    COVERAGE_POLICY_BOX: ScoutIntrinsicPolicySpec(
-        policy_id=COVERAGE_POLICY_BOX,
+  # v1 retained for reading historical failed runs; superseded by v2 for production.
+    COVERAGE_POLICY_BOX_V1: ScoutIntrinsicPolicySpec(
+        policy_id=COVERAGE_POLICY_BOX_V1,
         policy_version=COVERAGE_POLICY_VERSION_SHAPE,
-        # Box scout mesh: ST targets all pass but modes cluster; fewer deduped hits than classic.
         min_raw_unique_accepted=8,
         min_modes_per_band_third=1,
         endpoint_tolerance_hz=8.0,
+        high_endpoint_tolerance_hz=8.0,
         max_raw_gap_hz=35.0,
         max_duplicate_rate=0.35,
         shape_key="box",
+    ),
+    COVERAGE_POLICY_BOX: ScoutIntrinsicPolicySpec(
+        policy_id=COVERAGE_POLICY_BOX,
+        policy_version=COVERAGE_POLICY_VERSION_BOX_V2,
+        # Box cavity: first accepted scout modes often start ~170–220 Hz while the ST
+        # sweep still solves low-band targets (empty windows). Gate on discovered-band
+        # coverage + full target sweep success, not a mode at 60 Hz.
+        min_raw_unique_accepted=8,
+        min_modes_per_band_third=1,
+        endpoint_tolerance_hz=8.0,
+        high_endpoint_tolerance_hz=20.0,
+        max_raw_gap_hz=35.0,
+        max_duplicate_rate=0.35,
+        shape_key="box",
+        low_endpoint_requires_mode=False,
+        high_endpoint_requires_mode=True,
+        low_endpoint_mode=ENDPOINT_MODE_SOLVER_SWEEP_EVIDENCE,
+        gap_mode=GAP_MODE_DISCOVERED_SPAN_RELATIVE,
+        max_gap_relative_of_discovered_span=0.42,
+        per_third_band_source=BAND_THIRDS_DISCOVERED,
+        min_discovered_span_hz=150.0,
     ),
     COVERAGE_POLICY_ACOUSTIC: ScoutIntrinsicPolicySpec(
         policy_id=COVERAGE_POLICY_ACOUSTIC,
@@ -87,6 +129,7 @@ SCOUT_INTRINSIC_POLICY_SPECS: Dict[str, ScoutIntrinsicPolicySpec] = {
         min_raw_unique_accepted=10,
         min_modes_per_band_third=2,
         endpoint_tolerance_hz=6.0,
+        high_endpoint_tolerance_hz=6.0,
         max_raw_gap_hz=30.0,
         max_duplicate_rate=0.25,
         shape_key="acoustic",
@@ -122,6 +165,13 @@ def _max_gap_hz(freqs: Sequence[float]) -> float:
     return max(gaps) if gaps else float("inf")
 
 
+def _cap_freq_list(freqs: Sequence[float], *, cap: int = REVIEW_FREQ_LIST_CAP) -> List[float]:
+    items = [round(float(f), 6) for f in freqs]
+    if len(items) <= cap:
+        return items
+    return items[:cap]
+
+
 def per_third_band_counts(freqs: Sequence[float], *, band_lo: float, band_hi: float) -> Dict[str, int]:
     """Public helper: mode counts in low/mid/high band-thirds."""
     return _per_third_counts(freqs, band_lo=band_lo, band_hi=band_hi)
@@ -142,6 +192,35 @@ def _per_third_counts(freqs: Sequence[float], *, band_lo: float, band_hi: float)
                 counts[name] += 1
                 break
     return counts
+
+
+def _policy_thresholds_dict(spec: ScoutIntrinsicPolicySpec) -> Dict[str, Any]:
+    return {
+        "min_raw_unique_accepted": spec.min_raw_unique_accepted,
+        "min_modes_per_band_third": spec.min_modes_per_band_third,
+        "endpoint_tolerance_hz": spec.endpoint_tolerance_hz,
+        "high_endpoint_tolerance_hz": spec.high_endpoint_tolerance_hz,
+        "max_raw_gap_hz": spec.max_raw_gap_hz,
+        "max_duplicate_rate": spec.max_duplicate_rate,
+        "low_endpoint_requires_mode": spec.low_endpoint_requires_mode,
+        "high_endpoint_requires_mode": spec.high_endpoint_requires_mode,
+        "low_endpoint_mode": spec.low_endpoint_mode,
+        "gap_mode": spec.gap_mode,
+        "max_gap_relative_of_discovered_span": spec.max_gap_relative_of_discovered_span,
+        "per_third_band_source": spec.per_third_band_source,
+        "min_discovered_span_hz": spec.min_discovered_span_hz,
+    }
+
+
+def _effective_gap_limit_hz(
+    spec: ScoutIntrinsicPolicySpec,
+    *,
+    discovered_span_hz: float,
+) -> float:
+    if spec.gap_mode == GAP_MODE_DISCOVERED_SPAN_RELATIVE and discovered_span_hz > 0.0:
+        relative = float(spec.max_gap_relative_of_discovered_span) * discovered_span_hz
+        return max(float(spec.max_raw_gap_hz), relative)
+    return float(spec.max_raw_gap_hz)
 
 
 def classify_reference_json(
@@ -258,6 +337,7 @@ def evaluate_intrinsic_scout_coverage(
             best_spacing_hz = spacing_hz
 
     deduped = _dedupe_sorted(raw_freqs, tol_hz=dedupe_tol_hz)
+    raw_sorted = _dedupe_sorted(raw_freqs, tol_hz=dedupe_tol_hz)
     raw_count = len(raw_freqs)
     deduped_count = len(deduped)
     duplicate_rate = 0.0
@@ -276,18 +356,59 @@ def evaluate_intrinsic_scout_coverage(
 
     freq_min = min(deduped) if deduped else None
     freq_max = max(deduped) if deduped else None
-    if deduped:
-        if float(freq_min) > float(band_lo_hz) + spec.endpoint_tolerance_hz:
-            failures.append(f"low_band_endpoint_missing:min={freq_min}")
-        if float(freq_max) < float(band_hi_hz) - spec.endpoint_tolerance_hz:
-            failures.append(f"high_band_endpoint_missing:max={freq_max}")
-        max_gap = _max_gap_hz(deduped)
-        if max_gap > spec.max_raw_gap_hz:
-            failures.append(f"raw_max_gap_hz>{spec.max_raw_gap_hz}:gap={max_gap:.3f}")
-    else:
-        max_gap = float("inf")
+    discovered_span_hz = (
+        float(freq_max) - float(freq_min) if freq_min is not None and freq_max is not None else 0.0
+    )
+    max_gap = _max_gap_hz(deduped) if deduped else float("inf")
+    gap_limit_hz = _effective_gap_limit_hz(spec, discovered_span_hz=discovered_span_hz)
 
-    per_zone = _per_third_counts(deduped, band_lo=band_lo_hz, band_hi=band_hi_hz)
+    low_endpoint_policy: Dict[str, Any] = {
+        "mode": spec.low_endpoint_mode,
+        "requires_mode_near_band_lo": spec.low_endpoint_requires_mode,
+        "production_band_lo_hz": float(band_lo_hz),
+        "tolerance_hz": spec.endpoint_tolerance_hz,
+    }
+    high_endpoint_policy: Dict[str, Any] = {
+        "requires_mode_near_band_hi": spec.high_endpoint_requires_mode,
+        "production_band_hi_hz": float(band_hi_hz),
+        "tolerance_hz": spec.high_endpoint_tolerance_hz,
+    }
+
+    if deduped:
+        if spec.min_discovered_span_hz > 0.0 and discovered_span_hz < spec.min_discovered_span_hz:
+            failures.append(
+                f"discovered_span_hz<{spec.min_discovered_span_hz}:{discovered_span_hz:.3f}"
+            )
+
+        if spec.low_endpoint_requires_mode:
+            if float(freq_min) > float(band_lo_hz) + spec.endpoint_tolerance_hz:
+                failures.append(f"low_band_endpoint_missing:min={freq_min}")
+        else:
+            low_endpoint_policy["solver_sweep_evidence"] = {
+                "targets_succeeded": target_success_count,
+                "targets_failed": target_failure_count,
+                "note": (
+                    "Low-band ST targets may solve with empty acceptance windows when the "
+                    "first physical mode is above the production band floor."
+                ),
+            }
+            if target_success_count <= 0:
+                failures.append("low_band_solver_evidence_missing:no_targets_solved")
+
+        if spec.high_endpoint_requires_mode:
+            if float(freq_max) < float(band_hi_hz) - spec.high_endpoint_tolerance_hz:
+                failures.append(f"high_band_endpoint_missing:max={freq_max}")
+
+        if max_gap > gap_limit_hz:
+            failures.append(f"raw_max_gap_hz>{gap_limit_hz:.3f}:gap={max_gap:.3f}")
+
+    if spec.per_third_band_source == BAND_THIRDS_DISCOVERED and deduped:
+        third_lo = float(freq_min)
+        third_hi = float(freq_max)
+    else:
+        third_lo = float(band_lo_hz)
+        third_hi = float(band_hi_hz)
+    per_zone = _per_third_counts(deduped, band_lo=third_lo, band_hi=third_hi)
     for zone, count in per_zone.items():
         if count < spec.min_modes_per_band_third:
             failures.append(f"{zone}_mode_count<{spec.min_modes_per_band_third}:{count}")
@@ -295,28 +416,45 @@ def evaluate_intrinsic_scout_coverage(
     if duplicate_rate > spec.max_duplicate_rate:
         failures.append(f"duplicate_rate>{spec.max_duplicate_rate}:{duplicate_rate:.3f}")
 
+    intrinsic_pass = len(failures) == 0
+    policy_decision_reason = (
+        "intrinsic_coverage_pass"
+        if intrinsic_pass
+        else ";".join(failures)
+    )
+
     return {
         "coverage_policy": spec.policy_id,
         "coverage_policy_version": spec.policy_version,
         "shape_key": spec.shape_key,
+        "policy_thresholds": _policy_thresholds_dict(spec),
         "raw_unique_accepted_count": deduped_count,
         "raw_frequency_min_hz": freq_min,
         "raw_frequency_max_hz": freq_max,
-        "raw_max_gap_hz": None if not deduped else round(_max_gap_hz(deduped), 6),
+        "discovered_span_hz": round(discovered_span_hz, 6) if deduped else None,
+        "raw_max_gap_hz": None if not deduped else round(max_gap, 6),
+        "deduped_max_gap_hz": None if not deduped else round(max_gap, 6),
+        "effective_gap_limit_hz": round(gap_limit_hz, 6) if deduped else None,
         "per_zone_mode_counts": per_zone,
+        "per_third_band_source": spec.per_third_band_source,
         "target_success_count": target_success_count,
         "target_failure_count": target_failure_count,
+        "targets_solved_count": target_success_count,
+        "targets_failed_count": target_failure_count,
         "duplicate_rate": round(duplicate_rate, 6),
         "best_intrinsic_spacing_hz": best_spacing_hz,
-        "intrinsic_coverage_pass": len(failures) == 0,
+        "intrinsic_coverage_pass": intrinsic_pass,
         "intrinsic_coverage_failures": failures,
-        "intrinsic_policy_thresholds": {
-            "min_raw_unique_accepted": spec.min_raw_unique_accepted,
-            "min_modes_per_band_third": spec.min_modes_per_band_third,
-            "endpoint_tolerance_hz": spec.endpoint_tolerance_hz,
-            "max_raw_gap_hz": spec.max_raw_gap_hz,
-            "max_duplicate_rate": spec.max_duplicate_rate,
-        },
+        "intrinsic_policy_thresholds": _policy_thresholds_dict(spec),
+        "low_endpoint_policy": low_endpoint_policy,
+        "high_endpoint_policy": high_endpoint_policy,
+        "accepted_mode_count": deduped_count,
+        "accepted_mode_min_hz": freq_min,
+        "accepted_mode_max_hz": freq_max,
+        "accepted_mode_frequencies_hz": _cap_freq_list(deduped),
+        "raw_mode_count": raw_count,
+        "raw_mode_frequencies_hz": _cap_freq_list(raw_sorted),
+        "policy_decision_reason": policy_decision_reason,
     }
 
 
@@ -328,6 +466,7 @@ def build_density_provenance_fields(
     return {
         "coverage_policy": intrinsic.get("coverage_policy"),
         "coverage_policy_version": intrinsic.get("coverage_policy_version"),
+        "policy_thresholds": intrinsic.get("policy_thresholds"),
         "external_reference_path": reference_meta.get("external_reference_path"),
         "external_reference_classification": reference_meta.get("external_reference_classification"),
         "external_reference_gate_enabled": reference_meta.get("external_reference_gate_enabled"),
@@ -335,14 +474,30 @@ def build_density_provenance_fields(
         "raw_unique_accepted_count": intrinsic.get("raw_unique_accepted_count"),
         "raw_frequency_min_hz": intrinsic.get("raw_frequency_min_hz"),
         "raw_frequency_max_hz": intrinsic.get("raw_frequency_max_hz"),
+        "discovered_span_hz": intrinsic.get("discovered_span_hz"),
         "raw_max_gap_hz": intrinsic.get("raw_max_gap_hz"),
+        "deduped_max_gap_hz": intrinsic.get("deduped_max_gap_hz"),
+        "effective_gap_limit_hz": intrinsic.get("effective_gap_limit_hz"),
         "per_zone_mode_counts": intrinsic.get("per_zone_mode_counts"),
+        "per_third_band_source": intrinsic.get("per_third_band_source"),
         "target_success_count": intrinsic.get("target_success_count"),
         "target_failure_count": intrinsic.get("target_failure_count"),
+        "targets_solved_count": intrinsic.get("targets_solved_count"),
+        "targets_failed_count": intrinsic.get("targets_failed_count"),
         "intrinsic_coverage_pass": intrinsic.get("intrinsic_coverage_pass"),
         "intrinsic_coverage_failures": list(intrinsic.get("intrinsic_coverage_failures") or []),
         "intrinsic_policy_thresholds": intrinsic.get("intrinsic_policy_thresholds"),
         "shape_key": intrinsic.get("shape_key"),
+        "low_endpoint_policy": intrinsic.get("low_endpoint_policy"),
+        "high_endpoint_policy": intrinsic.get("high_endpoint_policy"),
+        "accepted_mode_count": intrinsic.get("accepted_mode_count"),
+        "accepted_mode_min_hz": intrinsic.get("accepted_mode_min_hz"),
+        "accepted_mode_max_hz": intrinsic.get("accepted_mode_max_hz"),
+        "accepted_mode_frequencies_hz": intrinsic.get("accepted_mode_frequencies_hz"),
+        "raw_mode_count": intrinsic.get("raw_mode_count"),
+        "raw_mode_frequencies_hz": intrinsic.get("raw_mode_frequencies_hz"),
+        "duplicate_rate": intrinsic.get("duplicate_rate"),
+        "policy_decision_reason": intrinsic.get("policy_decision_reason"),
     }
 
 

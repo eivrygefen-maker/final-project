@@ -91,7 +91,7 @@ def _make_partial_failed_run(
         discovery / "density_result.json",
         {
             "status": "FAIL",
-            "coverage_policy": "box_discovered_modes_v1",
+            "coverage_policy": "box_discovered_modes_v2",
             "intrinsic_coverage_pass": False,
             "intrinsic_coverage_failures": ["raw_unique_accepted_count<8:5"],
             "spacings": [

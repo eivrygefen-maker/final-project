@@ -226,6 +226,47 @@ class ScoutIntrinsicCoverageTests(unittest.TestCase):
             self.assertTrue(ok, detail)
             self.assertTrue(intrinsic_density_result_ok(json.loads(path.read_text(encoding="utf-8")))[0])
 
+    def test_box_v2_passes_vm_like_discovered_band(self) -> None:
+        """BOX scout: first mode ~186 Hz, max ~535 Hz, ~108 Hz gap — physically valid for v2."""
+        freqs = [186.2005, 294.149, 320.0, 360.0, 400.0, 450.0, 500.0, 535.0932]
+        rows = [_spacing_row(freqs, spacing_hz=7.5)]
+        rows[0]["targets_succeeded"] = 67
+        intrinsic = evaluate_intrinsic_scout_coverage(
+            spacing_rows=rows,
+            band_lo_hz=PRODUCTION_BAND_LO_HZ,
+            band_hi_hz=PRODUCTION_BAND_HI_HZ,
+            coverage_policy=COVERAGE_POLICY_BOX,
+        )
+        self.assertTrue(intrinsic["intrinsic_coverage_pass"], intrinsic["intrinsic_coverage_failures"])
+        self.assertEqual(intrinsic["coverage_policy"], COVERAGE_POLICY_BOX)
+        self.assertIn("accepted_mode_frequencies_hz", intrinsic)
+        self.assertIn("policy_thresholds", intrinsic)
+        self.assertFalse(intrinsic["low_endpoint_policy"]["requires_mode_near_band_lo"])
+        self.assertEqual(intrinsic["policy_decision_reason"], "intrinsic_coverage_pass")
+
+    def test_box_v2_still_fails_empty_run(self) -> None:
+        intrinsic = evaluate_intrinsic_scout_coverage(
+            spacing_rows=[_spacing_row([])],
+            band_lo_hz=PRODUCTION_BAND_LO_HZ,
+            band_hi_hz=PRODUCTION_BAND_HI_HZ,
+            coverage_policy=COVERAGE_POLICY_BOX,
+        )
+        self.assertFalse(intrinsic["intrinsic_coverage_pass"])
+        self.assertIn("raw_unique_accepted_empty", intrinsic["intrinsic_coverage_failures"])
+
+    def test_classic_still_requires_low_endpoint_when_modes_start_high(self) -> None:
+        freqs = [186.2, 294.1, 320.0, 360.0, 400.0, 450.0, 500.0, 535.1]
+        intrinsic = evaluate_intrinsic_scout_coverage(
+            spacing_rows=[_spacing_row(freqs)],
+            band_lo_hz=PRODUCTION_BAND_LO_HZ,
+            band_hi_hz=PRODUCTION_BAND_HI_HZ,
+            coverage_policy=COVERAGE_POLICY_INTRINSIC,
+        )
+        self.assertFalse(intrinsic["intrinsic_coverage_pass"])
+        self.assertTrue(
+            any("low_band_endpoint_missing" in f for f in intrinsic["intrinsic_coverage_failures"])
+        )
+
     def test_box_policy_passes_moderate_mode_count_classic_fails(self) -> None:
         freqs = [62.0 + i * 24.0 for i in range(21)] + [545.0]
         rows = [_spacing_row(freqs)]

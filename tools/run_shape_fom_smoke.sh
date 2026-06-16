@@ -69,7 +69,7 @@ from v2_b3_m4_scout_intrinsic_coverage import is_registered_scout_density_policy
 
 expected = {
     "classic": "intrinsic_discovered_modes_v1",
-    "box": "box_discovered_modes_v1",
+    "box": "box_discovered_modes_v2",
     "acoustic": "acoustic_discovered_modes_v1",
 }
 for key, policy in expected.items():
@@ -80,6 +80,8 @@ for key, policy in expected.items():
 assert SCOUT_DISCOVERY_REL == "scout/discovery"
 assert density_result_path(repo / "run").name == "density_result.json"
 assert len(REGISTERED_SCOUT_DENSITY_POLICIES) == 3
+from v2_b3_m4_scout_intrinsic_coverage import COVERAGE_POLICY_BOX_V1
+assert is_registered_scout_density_policy(COVERAGE_POLICY_BOX_V1)
 PY
 ok "scout density policies + failure artifact path discoverable"
 
