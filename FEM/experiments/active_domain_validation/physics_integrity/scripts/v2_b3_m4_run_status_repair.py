@@ -16,8 +16,14 @@ if str(SCRIPT_DIR) not in sys.path:
 from v2_b3_m4_freeze_first_e2e_run import (  # noqa: E402
     CHECKPOINT_TERMINAL_READY,
     SCOUT_TERMINAL_READY,
+    TERMINAL_E2E,
 )
 from v2_b3_m4_lhs_pool_bridge import is_run_usably_complete, read_run_production_summary  # noqa: E402
+from v2_b3_m4_production_freeze import TERMINAL_PRODUCTION_COMPLETED  # noqa: E402
+from v2_b3_m4_reuse_integrity_lib import (  # noqa: E402
+    quarantine_stale_downstream_artifacts,
+    terminal_status_rank,
+)
 from v2_b3_m4_worker_run_lib import (  # noqa: E402
     TERMINAL_CHECKPOINT_READY,
     chunk_ids_from_worker_plan,
@@ -239,6 +245,24 @@ def promote_checkpoint_ready_terminal(
     manifest_path = run_root / "pipeline_run_manifest.json"
     manifest = load_json(manifest_path) if manifest_path.is_file() else {}
     prev = str(previous_status if previous_status is not None else manifest.get("terminal_status") or "")
+    prev_rank = terminal_status_rank(prev)
+    checkpoint_rank = terminal_status_rank(TERMINAL_CHECKPOINT_READY)
+    e2e_rank = terminal_status_rank(TERMINAL_E2E)
+    completed_rank = terminal_status_rank(TERMINAL_PRODUCTION_COMPLETED)
+
+    if prev_rank >= completed_rank:
+        return {
+            "status": "SKIP",
+            "reason": "run_production_completed",
+            "previous_status": prev,
+        }
+
+    if prev_rank >= e2e_rank:
+        return {
+            "status": "SKIP",
+            "reason": "terminal_already_at_or_beyond_workers",
+            "previous_status": prev,
+        }
 
     if prev == TERMINAL_CHECKPOINT_READY:
         return {
@@ -260,6 +284,11 @@ def promote_checkpoint_ready_terminal(
     else:
         if is_run_usably_complete(read_run_production_summary(run_root)):
             return {"status": "SKIP", "reason": "run_complete", "previous_status": prev}
+        if _workers_complete(run_root):
+            quarantine_stale_downstream_artifacts(
+                run_root,
+                reason="promote_checkpoint_stale_downstream",
+            )
         ckpt_ok, checks = _checkpoint_artifacts_ready(run_root)
         if not ckpt_ok or not _scout_pass(run_root) or not _worker_plan_pass(run_root):
             return {

@@ -433,6 +433,24 @@ def _delete_failed_run_heavy(
         reason="failed_sample_heavy_cleanup",
     )
 
+    try:
+        from v2_b3_m4_reuse_integrity_lib import (  # noqa: WPS433
+            has_downstream_stale_evidence,
+            quarantine_stale_downstream_artifacts,
+            remove_stale_worker_plan_outputs,
+            repair_inconsistent_reuse_state,
+        )
+
+        repair_inconsistent_reuse_state(run_root, production_mode=True)
+        if has_downstream_stale_evidence(run_root):
+            quarantine_stale_downstream_artifacts(
+                run_root,
+                reason="failed_sample_heavy_cleanup",
+            )
+        remove_stale_worker_plan_outputs(run_root)
+    except ImportError:
+        pass
+
     deleted: List[str] = []
     errors: List[str] = []
     archivable = _collect_archivable_paths(run_root)

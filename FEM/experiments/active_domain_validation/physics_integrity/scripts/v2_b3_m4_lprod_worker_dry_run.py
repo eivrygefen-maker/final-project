@@ -626,12 +626,16 @@ def run_dry_run(
     force: bool,
 ) -> int:
     lprod_dir = run_root / "lprod"
-    for name in PLAN_OUTPUTS:
-        path = lprod_dir / name
-        if path.is_file() and not force:
-            raise FileExistsError(
-                f"L_prod dry-run output exists (use --force): {path}"
-            )
+    if not force:
+        from v2_b3_m4_reuse_integrity_lib import (  # noqa: WPS433
+            remove_stale_worker_plan_outputs,
+            worker_plan_artifact_contract_pass,
+        )
+
+        if worker_plan_artifact_contract_pass(run_root):
+            print("skip: worker_plan PASS contract already satisfied (reuse)", flush=True)
+            return 0
+        remove_stale_worker_plan_outputs(run_root)
 
     manifest_path = run_root / "pipeline_run_manifest.json"
     target_plan_path = lprod_dir / "lprod_target_plan.json"

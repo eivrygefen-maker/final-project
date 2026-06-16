@@ -152,6 +152,13 @@ else
   bad "geometry numeric contract failed (see /tmp/shape_fom_smoke_geom_contract.log)"
 fi
 
+REUSE_INTEGRITY_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_reuse_integrity_test.py"
+if python3 "${REUSE_INTEGRITY_TEST}" >/tmp/shape_fom_smoke_reuse_integrity.log 2>&1; then
+  ok "M4 reuse integrity (stale PASS / terminal mismatch)"
+else
+  bad "reuse integrity tests failed (see /tmp/shape_fom_smoke_reuse_integrity.log)"
+fi
+
 echo ""
 echo "Smoke: ${PASS} passed, ${FAIL} failed"
 [[ "${FAIL}" -eq 0 ]]

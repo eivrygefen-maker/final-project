@@ -30,6 +30,13 @@ from v2_b3_m4_run_status_repair import (  # noqa: E402
     STALE_RUNNING_REPAIR_REASON,
     maybe_promote_checkpoint_ready_terminal,
 )
+from v2_b3_m4_reuse_integrity_lib import (  # noqa: E402
+    assess_stages_with_integrity,
+    collect_integrity_failures,
+    earliest_rerun_stage,
+    quarantine_stale_downstream_artifacts,
+    repair_inconsistent_reuse_state,
+)
 from v2_b3_m4_worker_run_lib import (  # noqa: E402
     chunk_ids_from_worker_plan,
     chunk_worker_pass_status,
@@ -250,28 +257,7 @@ def _stage_pass_freeze(run_root: Path, sample_id: str, *, production_mode: bool 
 
 
 def assess_stages(run_root: Path, *, production_mode: bool = False) -> Dict[str, Dict[str, Any]]:
-    sample_id = _sample_id_from_run(run_root)
-    checks = {
-        "scout": _stage_pass_scout,
-        "worker_plan": _stage_pass_worker_plan,
-        "checkpoint": lambda r: _stage_pass_checkpoint(r, production_mode=production_mode),
-        "workers": _stage_pass_workers,
-        "aggregate": _stage_pass_aggregate,
-        "freeze": lambda r: _stage_pass_freeze(r, sample_id, production_mode=production_mode),
-    }
-    out: Dict[str, Dict[str, Any]] = {}
-    for name, fn in checks.items():
-        passed = fn(run_root)
-        if passed:
-            reuse = "PASS_reuse"
-        elif name == "scout" and run_root.is_dir() and (run_root / "scout").is_dir():
-            reuse = "resume_possible"
-        elif run_root.is_dir():
-            reuse = "resume_possible"
-        else:
-            reuse = "planned_new"
-        out[name] = {"pass": passed, "reuse_status": reuse}
-    return out
+    return assess_stages_with_integrity(run_root, production_mode=production_mode)
 
 
 def _policy_argv(
@@ -477,7 +463,34 @@ def run_pipeline(
     log_path = run_root / "logs" / "m4_run_one_sample.log"
     stop_rank = STOP_AFTER_RANK.get(stop_after or "", 999)
 
+    if execute:
+        repair = repair_inconsistent_reuse_state(run_root, production_mode=production_mode)
+        if repair.get("repaired"):
+            _append_log(
+                log_path,
+                f"[{utc_now()}] reuse_integrity_repair actions={repair.get('actions')}",
+            )
+
     stages = assess_stages(run_root, production_mode=production_mode)
+    integrity_failures = collect_integrity_failures(stages)
+    if execute and integrity_failures:
+        for msg in integrity_failures:
+            print(f"error: {msg}", file=sys.stderr)
+        rerun = earliest_rerun_stage(stages)
+        reset_hint = (
+            "python FEM/experiments/active_domain_validation/physics_integrity/scripts/"
+            f"reset_m4_sample_state.py --sample-id {sample_id} --run-id {run_root.name}"
+        )
+        print(
+            f"error: stale reuse state is inconsistent; rerun from stage={rerun or 'scout'} "
+            f"after reset. Try: {reset_hint}",
+            file=sys.stderr,
+        )
+        _append_log(
+            log_path,
+            f"[{utc_now()}] reuse_integrity_fail failures={integrity_failures}",
+        )
+        return 2
     policy = _policy_argv(
         workers=workers,
         freq_min=freq_min,
@@ -634,6 +647,14 @@ def run_pipeline(
                 )
                 return 2
 
+        if production_mode and name == "freeze" and not stages["aggregate"]["pass"]:
+            print(
+                "error: freeze blocked — aggregate stage is not a valid PASS reuse "
+                f"(reuse={stages['aggregate'].get('reuse_status')})",
+                file=sys.stderr,
+            )
+            return 2
+
         print(f"[run] {name} ...", flush=True)
         t0 = time.perf_counter()
         rc, script_name = run_fn()
@@ -651,6 +672,11 @@ def run_pipeline(
             )
 
         if rc != 0:
+            if name in ("workers", "aggregate"):
+                quarantine_stale_downstream_artifacts(
+                    run_root,
+                    reason=f"{name}_stage_failed",
+                )
             if name in ("workers", "aggregate") and _stage_pass_checkpoint(
                 run_root, production_mode=production_mode
             ):
