@@ -316,6 +316,8 @@ def _mesh_pass(mesh_path: Path) -> bool:
 
 
 def _install_scout_mesh(*, repo_root: Path, sample_id: str, dst: Path) -> None:
+    from v2_b3_m4_mesh_manifest_lib import install_mesh_with_sidecars  # noqa: WPS433
+
     src = (CONV_MESH / MESH_LEVEL / f"{sample_id}.msh").resolve()
     if not src.is_file():
         raise FileNotFoundError(
@@ -326,11 +328,7 @@ def _install_scout_mesh(*, repo_root: Path, sample_id: str, dst: Path) -> None:
         raise RuntimeError(
             f"scout_mesh_baseline_contamination: refusing to install baseline mesh for {sample_id}"
         )
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
-    summary_src = CONV_MESH / MESH_LEVEL / f"{sample_id}_mesh_build_summary.json"
-    if summary_src.is_file():
-        shutil.copy2(summary_src, dst.parent / f"{sample_id}_mesh_build_summary.json")
+    install_mesh_with_sidecars(src_msh=src, dst_msh=dst, sample_id=sample_id)
 
 
 def _cmd_stage_a(

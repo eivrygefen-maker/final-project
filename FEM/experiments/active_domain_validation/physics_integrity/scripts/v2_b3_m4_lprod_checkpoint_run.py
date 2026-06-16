@@ -256,18 +256,11 @@ def resolve_lprod_core_config(
 
 
 def _install_mesh_from_src(*, src: Path, dst: Path, sample_id: str) -> None:
+    from v2_b3_m4_mesh_manifest_lib import install_mesh_with_sidecars  # noqa: WPS433
+
     if not src.is_file():
         raise FileNotFoundError(f"L_prod mesh source missing: {src}")
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
-    summary_candidates = [
-        src.parent / f"{src.stem.replace('.msh', '')}_mesh_build_summary.json",
-        src.parent / f"{sample_id}_mesh_build_summary.json",
-    ]
-    for summary_src in summary_candidates:
-        if summary_src.is_file():
-            shutil.copy2(summary_src, dst.parent / f"{sample_id}_mesh_build_summary.json")
-            break
+    install_mesh_with_sidecars(src_msh=src, dst_msh=dst, sample_id=sample_id)
 
 
 def _update_manifest(

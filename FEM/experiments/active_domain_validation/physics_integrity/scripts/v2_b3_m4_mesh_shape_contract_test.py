@@ -21,9 +21,12 @@ from v2_b3_m4_mesh_manifest_lib import (  # noqa: E402
     assert_scout_lprod_shape_consistency,
     assert_scout_mesh_shape_gate,
     build_mesh_manifest,
+    collect_global_mesh_cache_paths_resolved,
     format_mesh_reuse_rejected,
+    install_mesh_with_sidecars,
     invalidate_stale_mesh_files,
     mesh_manifest_path,
+    resolve_mesh_validation_context,
     validate_mesh_reuse,
     write_mesh_manifest,
 )
@@ -111,6 +114,218 @@ def test_missing_manifest_rejects_reuse() -> None:
         )
         assert ok is False
         assert reason == "missing_manifest"
+        rejected = format_mesh_reuse_rejected(
+            reason=reason,
+            existing_shape="missing",
+            expected_shape="Box",
+            mesh_path=mesh,
+            manifest_path=mesh_manifest_path(mesh),
+        )
+        assert "expected_manifest=" in rejected
+
+
+def test_install_mesh_with_sidecars_copies_manifest() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        global_dir = root / "global" / "L_scout_coarse"
+        run_dir = root / "run" / "scout" / "mesh" / "L_scout_coarse"
+        global_dir.mkdir(parents=True)
+        src = global_dir / "box_sample_000.msh"
+        dst = run_dir / "box_sample_000.msh"
+        src.write_text("mesh-bytes", encoding="utf-8")
+        geom = {
+            "length": 0.46,
+            "width": 0.36,
+            "depth": 0.10,
+            "top_thickness": 0.003,
+            "hole_radius": 0.042,
+        }
+        write_mesh_manifest(
+            mesh_manifest_path(src),
+            build_mesh_manifest(
+                sample_id="box_sample_000",
+                shape_name="box",
+                geometry_shape_type="Box",
+                gmsh_shape_type="Box",
+                mesh_level="L_scout_coarse",
+                mesh_path=src,
+                geometry=geom,
+            ),
+        )
+        (global_dir / "box_sample_000_mesh_build_summary.json").write_text("{}", encoding="utf-8")
+
+        report = install_mesh_with_sidecars(src_msh=src, dst_msh=dst, sample_id="box_sample_000")
+        assert dst.is_file()
+        assert mesh_manifest_path(dst).is_file()
+        assert "mesh_manifest" in report["copied"]
+        manifest = json.loads(mesh_manifest_path(dst).read_text(encoding="utf-8"))
+        assert manifest["run_dir_mesh_path"] == str(dst)
+        assert manifest["canonical_mesh_path"] == str(src)
+        assert manifest["geometry_shape_type"] == "Box"
+
+
+def test_scout_mesh_shape_gate_passes_with_run_dir_manifest() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        mesh = Path(tmp) / "box_sample_000.msh"
+        mesh.write_text("fake", encoding="utf-8")
+        geom = {
+            "length": 0.46,
+            "width": 0.36,
+            "depth": 0.10,
+            "top_thickness": 0.003,
+            "hole_radius": 0.042,
+        }
+        write_mesh_manifest(
+            mesh_manifest_path(mesh),
+            build_mesh_manifest(
+                sample_id="box_sample_000",
+                shape_name="box",
+                geometry_shape_type="Box",
+                gmsh_shape_type="Box",
+                mesh_level="L_scout_coarse",
+                mesh_path=mesh,
+                geometry=geom,
+            ),
+        )
+        sample = {
+            "sample_id": "box_sample_000",
+            "shape_name": "box",
+            "geometry_shape_type": "Box",
+            "geometry": geom,
+        }
+        ok, detail = assert_scout_mesh_shape_gate(mesh_path=mesh, sample=sample)
+        assert ok is True
+        assert "SCOUT_MESH_SHAPE_ASSERT" in detail
+        assert "status=PASS" in detail
+        assert "SCOUT_MESH_VALIDATED_SOURCE run_dir" in detail
+
+
+def test_scout_mesh_shape_gate_repairs_manifest_from_global() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        global_dir = root / "mesh" / "L_scout_coarse"
+        global_dir.mkdir(parents=True)
+        global_mesh = global_dir / "box_sample_000.msh"
+        run_mesh = root / "run" / "box_sample_000.msh"
+        global_mesh.write_text("global", encoding="utf-8")
+        run_mesh.parent.mkdir(parents=True, exist_ok=True)
+        run_mesh.write_text("run", encoding="utf-8")
+        geom = {"length": 0.46, "width": 0.36, "depth": 0.10, "top_thickness": 0.003, "hole_radius": 0.042}
+        write_mesh_manifest(
+            mesh_manifest_path(global_mesh),
+            build_mesh_manifest(
+                sample_id="box_sample_000",
+                shape_name="box",
+                geometry_shape_type="Box",
+                gmsh_shape_type="Box",
+                mesh_level="L_scout_coarse",
+                mesh_path=global_mesh,
+                geometry=geom,
+            ),
+        )
+        sample = {"sample_id": "box_sample_000", "shape_name": "box", "geometry": geom}
+        with mock.patch("v2_mesh_convergence_common.CONV_MESH", root / "mesh"):
+            ok, detail = assert_scout_mesh_shape_gate(mesh_path=run_mesh, sample=sample)
+        assert ok is True
+        assert mesh_manifest_path(run_mesh).is_file()
+        assert "run_dir_repaired_from_global" in detail
+
+
+def test_lprod_install_matches_scout_manifest_convention() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = root / "global" / "box_sample_000.msh"
+        dst = root / "lprod" / "box_sample_000.msh"
+        src.parent.mkdir(parents=True)
+        src.write_text("mesh", encoding="utf-8")
+        write_mesh_manifest(
+            mesh_manifest_path(src),
+            build_mesh_manifest(
+                sample_id="box_sample_000",
+                shape_name="box",
+                geometry_shape_type="Box",
+                gmsh_shape_type="Box",
+                mesh_level="L_rom_prod",
+                mesh_path=src,
+                geometry={"length": 0.46},
+            ),
+        )
+        install_mesh_with_sidecars(src_msh=src, dst_msh=dst, sample_id="box_sample_000")
+        assert mesh_manifest_path(dst).is_file()
+        ok, detail = assert_scout_lprod_shape_consistency(
+            scout_mesh_path=dst,
+            lprod_mesh_path=dst,
+        )
+        assert ok is True
+        assert "SCOUT_LPROD_SHAPE_CONSISTENCY_PASS" in detail
+
+
+def test_full_clean_removes_run_dir_mesh_manifests() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        repo_root = Path(tmp)
+        run_root = (
+            repo_root
+            / "FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars"
+            / "box_sample_000/runs/box_sample_000_box_fom_v1"
+        )
+        scout_mesh_dir = run_root / "scout/mesh/L_scout_coarse"
+        scout_mesh_dir.mkdir(parents=True)
+        mesh = scout_mesh_dir / "box_sample_000.msh"
+        mesh.write_text("mesh", encoding="utf-8")
+        write_mesh_manifest(
+            mesh_manifest_path(mesh),
+            build_mesh_manifest(
+                sample_id="box_sample_000",
+                shape_name="box",
+                geometry_shape_type="Box",
+                gmsh_shape_type="Box",
+                mesh_level="L_scout_coarse",
+                mesh_path=mesh,
+                geometry={"length": 0.46},
+            ),
+        )
+        (run_root / "pipeline_run_manifest.json").write_text(
+            json.dumps({"terminal_status": "RUNNING"}),
+            encoding="utf-8",
+        )
+        report = full_clean_sample_run(
+            repo_root=repo_root,
+            run_root=run_root,
+            sample_id="box_sample_000",
+            run_id="box_sample_000_box_fom_v1",
+        )
+        assert report["status"] == "PASS"
+        assert not scout_mesh_dir.exists()
+
+
+def test_collect_global_mesh_cache_includes_manifest() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        level_dir = root / "mesh" / "L_scout_coarse"
+        level_dir.mkdir(parents=True)
+        mesh = level_dir / "box_sample_000.msh"
+        mesh.write_text("mesh", encoding="utf-8")
+        manifest = mesh_manifest_path(mesh)
+        manifest.write_text("{}", encoding="utf-8")
+        with mock.patch("v2_mesh_convergence_common.CONV_MESH", root / "mesh"):
+            found = collect_global_mesh_cache_paths_resolved(root, "box_sample_000")
+        assert mesh in found
+        assert manifest in found
+
+
+def test_scout_mesh_shape_gate_fails_with_missing_manifest_message() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        mesh = Path(tmp) / "box_sample_000.msh"
+        mesh.write_text("fake", encoding="utf-8")
+        sample = {
+            "sample_id": "box_sample_000",
+            "shape_name": "box",
+            "geometry": {"length": 0.46},
+        }
+        ok, detail = assert_scout_mesh_shape_gate(mesh_path=mesh, sample=sample)
+        assert ok is False
+        assert "expected_manifest=" in detail
+        assert "SCOUT_MESH_MANIFEST_EXISTS" in detail
 
 
 def test_scout_mesh_shape_gate_fails_classical_for_box() -> None:
@@ -145,6 +360,7 @@ def test_scout_mesh_shape_gate_fails_classical_for_box() -> None:
         assert ok is False
         assert "SCOUT_MESH_SHAPE_ASSERT" in detail
         assert "FAIL" in detail
+        assert "mesh_manifest_shape=Classical" in detail
 
 
 def test_scout_lprod_shape_consistency_pass() -> None:
@@ -207,8 +423,15 @@ def main() -> int:
         test_scout_mesh_case_includes_box_shape_type,
         test_mismatched_manifest_rejects_reuse,
         test_missing_manifest_rejects_reuse,
+        test_install_mesh_with_sidecars_copies_manifest,
+        test_scout_mesh_shape_gate_passes_with_run_dir_manifest,
+        test_scout_mesh_shape_gate_repairs_manifest_from_global,
+        test_scout_mesh_shape_gate_fails_with_missing_manifest_message,
         test_scout_mesh_shape_gate_fails_classical_for_box,
         test_scout_lprod_shape_consistency_pass,
+        test_lprod_install_matches_scout_manifest_convention,
+        test_full_clean_removes_run_dir_mesh_manifests,
+        test_collect_global_mesh_cache_includes_manifest,
         test_invalidate_stale_mesh_files,
     ]
     for fn in tests:

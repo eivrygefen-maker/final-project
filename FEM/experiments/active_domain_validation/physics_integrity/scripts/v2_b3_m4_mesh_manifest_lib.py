@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -183,11 +184,119 @@ def format_mesh_reuse_rejected(
     existing_shape: str,
     expected_shape: str,
     mesh_path: Path,
+    manifest_path: Optional[Path] = None,
 ) -> str:
-    return (
+    line = (
         f"{MESH_REUSE_REJECTED} reason={reason} existing={existing_shape} "
         f"expected={expected_shape} mesh={mesh_path}"
     )
+    if reason == "missing_manifest" and manifest_path is not None:
+        line += f" expected_manifest={manifest_path}"
+    return line
+
+
+def _mesh_install_sidecar_sources(src_msh: Path, sample_id: str) -> List[Path]:
+    parent = src_msh.parent
+    stem = src_msh.stem
+    candidates = (
+        parent / f"{sample_id}_mesh_build_summary.json",
+        parent / f"{stem}_mesh_build_summary.json",
+        mesh_audit_path_for(src_msh),
+        parent / f"{sample_id}_mesh_audit.json",
+        parent / f"{sample_id}_build.log",
+    )
+    seen: set[Path] = set()
+    found: List[Path] = []
+    for path in candidates:
+        resolved = path.resolve()
+        if resolved in seen or not path.is_file():
+            continue
+        seen.add(resolved)
+        found.append(path)
+    return found
+
+
+def install_mesh_with_sidecars(*, src_msh: Path, dst_msh: Path, sample_id: str) -> Dict[str, Any]:
+    src_msh = src_msh.expanduser().resolve()
+    dst_msh = dst_msh.expanduser().resolve()
+    if not src_msh.is_file():
+        raise FileNotFoundError(f"mesh source missing: {src_msh}")
+
+    src_manifest = mesh_manifest_path(src_msh)
+    if not src_manifest.is_file():
+        raise FileNotFoundError(
+            f"mesh manifest missing at source: {src_manifest} (mesh={src_msh})"
+        )
+
+    dst_msh.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src_msh, dst_msh)
+
+    manifest = json.loads(src_manifest.read_text(encoding="utf-8"))
+    manifest["canonical_mesh_path"] = str(src_msh)
+    manifest["run_dir_mesh_path"] = str(dst_msh)
+    manifest["installed_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    dst_manifest = mesh_manifest_path(dst_msh)
+    write_mesh_manifest(dst_manifest, manifest)
+
+    copied = ["mesh", "mesh_manifest"]
+    for sidecar_src in _mesh_install_sidecar_sources(src_msh, sample_id):
+        sidecar_dst = dst_msh.parent / sidecar_src.name
+        shutil.copy2(sidecar_src, sidecar_dst)
+        copied.append(sidecar_src.name)
+
+    return {
+        "src_msh": str(src_msh),
+        "dst_msh": str(dst_msh),
+        "dst_manifest": str(dst_manifest),
+        "copied": copied,
+    }
+
+
+def resolve_mesh_validation_context(
+    mesh_path: Path,
+    *,
+    sample_id: str,
+    mesh_level: str = "L_scout_coarse",
+) -> Tuple[Path, Path, str, List[str]]:
+    """Resolve mesh + manifest for validation; repair run-dir manifest from global when possible."""
+    from v2_mesh_convergence_common import CONV_MESH  # noqa: WPS433
+
+    diag: List[str] = []
+    run_mesh = mesh_path.expanduser().resolve()
+    global_mesh = (CONV_MESH / mesh_level / f"{sample_id}.msh").resolve()
+    run_manifest = mesh_manifest_path(run_mesh)
+    global_manifest = mesh_manifest_path(global_mesh)
+
+    def _log_exists(label: str, path: Path) -> None:
+        diag.append(f"SCOUT_MESH_{label} path={path} exists={path.is_file()}")
+
+    _log_exists("EXISTS", run_mesh)
+    _log_exists("MANIFEST_EXISTS", run_manifest)
+
+    if run_mesh.is_file() and run_manifest.is_file():
+        diag.append("SCOUT_MESH_VALIDATED_SOURCE run_dir")
+        return run_mesh, run_manifest, "run_dir", diag
+
+    if run_mesh.is_file() and global_mesh.is_file() and global_manifest.is_file():
+        manifest = json.loads(global_manifest.read_text(encoding="utf-8"))
+        manifest["canonical_mesh_path"] = str(global_mesh)
+        manifest["run_dir_mesh_path"] = str(run_mesh)
+        write_mesh_manifest(run_manifest, manifest)
+        diag.append(f"SCOUT_MESH_MANIFEST_EXISTS path={run_manifest} exists=True")
+        diag.append("SCOUT_MESH_VALIDATED_SOURCE run_dir_repaired_from_global")
+        return run_mesh, run_manifest, "run_dir_repaired_from_global", diag
+
+    if not run_mesh.is_file() and global_mesh.is_file():
+        _log_exists("EXISTS", global_mesh)
+        _log_exists("MANIFEST_EXISTS", global_manifest)
+        if global_manifest.is_file():
+            diag.append("SCOUT_MESH_VALIDATED_SOURCE global")
+            return global_mesh, global_manifest, "global", diag
+
+    target = run_mesh if run_mesh.is_file() else global_mesh
+    expected_manifest = mesh_manifest_path(target) if target.is_file() else run_manifest
+    diag.append("SCOUT_MESH_VALIDATED_SOURCE missing")
+    return target, expected_manifest, "missing", diag
 
 
 def invalidate_stale_mesh_files(mesh_path: Path) -> List[str]:
@@ -251,8 +360,13 @@ def assert_scout_mesh_shape_gate(
         sample_input=sample,
     )
     geometry = extract_geometry_dict(sample)
-    ok, reason, manifest = validate_mesh_reuse(
+    validated_mesh, expected_manifest, _source, diag = resolve_mesh_validation_context(
         mesh_path,
+        sample_id=sample_id,
+        mesh_level="L_scout_coarse",
+    )
+    ok, reason, manifest = validate_mesh_reuse(
+        validated_mesh,
         sample_id=sample_id,
         mesh_level="L_scout_coarse",
         shape_name=shape_name,
@@ -273,10 +387,11 @@ def assert_scout_mesh_shape_gate(
             reason=reason,
             existing_shape=existing,
             expected_shape=shape_meta["geometry_shape_type"],
-            mesh_path=mesh_path,
+            mesh_path=validated_mesh,
+            manifest_path=expected_manifest if reason == "missing_manifest" else None,
         )
-        return False, f"{line} {rejected}"
-    return True, line
+        return False, "\n".join(diag + [line, rejected])
+    return True, "\n".join(diag + [line])
 
 
 def assert_scout_lprod_shape_consistency(
