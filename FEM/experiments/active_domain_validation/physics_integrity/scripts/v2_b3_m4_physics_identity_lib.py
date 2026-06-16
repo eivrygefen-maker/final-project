@@ -633,8 +633,12 @@ def validate_physics_identity_manifest(manifest: Mapping[str, Any]) -> Tuple[boo
 
 
 def count_forbidden_heavy_artifacts(run_root: Path) -> Tuple[int, List[str]]:
+    from v2_b3_m4_scout_discovery_diagnostics import scout_discovery_is_diagnostic_only  # noqa: WPS433
+
     present: List[str] = []
     for rel in FORBIDDEN_HEAVY_REL_DIRS:
+        if rel == "scout/discovery" and scout_discovery_is_diagnostic_only(run_root):
+            continue
         p = run_root / rel
         if p.exists():
             present.append(rel)

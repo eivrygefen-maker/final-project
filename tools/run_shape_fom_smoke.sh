@@ -57,6 +57,32 @@ print("registered=", registered_shape_keys())
 PY
 ok "shape registry resolves classic/box/acoustic"
 
+python3 - <<PY
+import sys
+from pathlib import Path
+repo = Path("${REPO_ROOT}")
+sys.path.insert(0, str(repo / "FEM" / "scripts"))
+sys.path.insert(0, str(repo / "FEM" / "experiments" / "active_domain_validation" / "physics_integrity" / "scripts"))
+from m4_shape_registry import resolve_shape_config, REGISTERED_SCOUT_DENSITY_POLICIES
+from v2_b3_m4_scout_discovery_diagnostics import density_result_path, SCOUT_DISCOVERY_REL
+from v2_b3_m4_scout_intrinsic_coverage import is_registered_scout_density_policy
+
+expected = {
+    "classic": "intrinsic_discovered_modes_v1",
+    "box": "box_discovered_modes_v1",
+    "acoustic": "acoustic_discovered_modes_v1",
+}
+for key, policy in expected.items():
+    cfg = resolve_shape_config(key)
+    assert cfg.scout_density_policy == policy, (key, cfg.scout_density_policy)
+    assert is_registered_scout_density_policy(policy)
+    print(f"scout_density_policy_ok shape={key} policy={policy}")
+assert SCOUT_DISCOVERY_REL == "scout/discovery"
+assert density_result_path(repo / "run").name == "density_result.json"
+assert len(REGISTERED_SCOUT_DENSITY_POLICIES) == 3
+PY
+ok "scout density policies + failure artifact path discoverable"
+
 python3 "${GEN_SCRIPT}" --shape box --count 100 --dry-run
 python3 "${GEN_SCRIPT}" --shape acoustic --count 100 --dry-run
 ok "box/acoustic LHS dry-run 100 samples"

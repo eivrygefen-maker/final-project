@@ -25,6 +25,7 @@ from v2_b3_m4_scout_intrinsic_coverage import (  # noqa: E402
     classify_reference_json,
     evaluate_intrinsic_scout_coverage,
     production_density_status,
+    resolve_scout_intrinsic_policy_spec,
 )
 from v2_b3_st_sinvert_solver_lib import (  # noqa: E402
     ACCEPTANCE_FREQ_HI_HZ,
@@ -46,6 +47,51 @@ DEFAULT_START_HZ = 221.5
 DEFAULT_STOP_HZ = 264.0
 DEFAULT_SPACINGS_HZ = "6,8,10,15,20"
 DEFAULT_TOLERANCE_HZ = 0.1
+
+
+def _detect_repo_root(start: Path) -> Path:
+    cur = start.resolve()
+    while cur.parent != cur:
+        if (cur / ".git").exists():
+            return cur
+        cur = cur.parent
+    raise RuntimeError("Could not detect repository root (missing .git ancestor)")
+
+
+def _resolve_shape_key_from_checkpoint(checkpoint_dir: Path) -> str:
+    """Infer M4 shape from run tree sample_input (namespaced by sample_id)."""
+    run_root = checkpoint_dir.resolve().parent.parent
+    sample_inp = run_root / "sample" / "sample_input.json"
+    if not sample_inp.is_file():
+        return "classic"
+    try:
+        body = json.loads(sample_inp.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "classic"
+    repo_root = _detect_repo_root(SCRIPT_DIR)
+    fem_scripts = repo_root / "FEM" / "scripts"
+    if str(fem_scripts) not in sys.path:
+        sys.path.insert(0, str(fem_scripts))
+    from m4_shape_registry import infer_shape_from_sample_id, shape_from_pool  # noqa: WPS433
+
+    sample_id = str(body.get("sample_id") or "")
+    if sample_id:
+        return infer_shape_from_sample_id(sample_id)
+    if body.get("shape_name"):
+        return shape_from_pool(body)
+    return "classic"
+
+
+def _resolve_scout_density_policy(checkpoint_dir: Path) -> Tuple[str, str]:
+    shape_key = _resolve_shape_key_from_checkpoint(checkpoint_dir)
+    repo_root = _detect_repo_root(SCRIPT_DIR)
+    fem_scripts = repo_root / "FEM" / "scripts"
+    if str(fem_scripts) not in sys.path:
+        sys.path.insert(0, str(fem_scripts))
+    from m4_shape_registry import scout_density_policy_for_shape  # noqa: WPS433
+
+    policy = scout_density_policy_for_shape(shape_key)
+    return shape_key, policy
 
 
 def generate_spaced_targets_hz(
@@ -336,6 +382,8 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
 
     built_meta = json.loads(meta_path.read_text(encoding="utf-8"))
     mesh_level = str(built_meta.get("mesh_level") or "unknown")
+    shape_key, coverage_policy = _resolve_scout_density_policy(checkpoint)
+    resolve_scout_intrinsic_policy_spec(coverage_policy)
     acceptance_cfg = resolve_acceptance_config(
         discovery_mode=bool(getattr(args, "discovery_mode", False)),
         discovery_band_hz=getattr(args, "discovery_band_hz", None),
@@ -350,6 +398,8 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
         "previous_density_result_json": str(previous_path) if previous_path else None,
         "output_dir": str(output_dir),
         "mesh_level": mesh_level,
+        "shape_name": shape_key,
+        "scout_density_policy_requested": coverage_policy,
         "factor_solver": factor_solver,
         "nev": nev,
         "ncv": ncv,
@@ -502,8 +552,13 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
             band_lo_hz=start_hz,
             band_hi_hz=stop_hz,
             dedupe_tol_hz=tol_hz,
+            coverage_policy=coverage_policy,
         )
         experiment.update(build_density_provenance_fields(reference_meta=reference_meta, intrinsic=intrinsic))
+        experiment["scout_density_policy_requested"] = coverage_policy
+        experiment["shape_name"] = shape_key
+        if intrinsic.get("coverage_policy") != coverage_policy:
+            experiment["scout_density_policy_resolved"] = intrinsic.get("coverage_policy")
 
         passing_spacings = [
             float(r["spacing_hz"]) for r in spacing_rows if bool(r.get("coverage_pass"))
@@ -570,6 +625,7 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
         _write_density_md(output_dir / "density_result.md", experiment)
         print(
             f"[B3_target_density] {experiment['status']} policy={experiment.get('coverage_policy')} "
+            f"shape={shape_key} requested_policy={coverage_policy} "
             f"intrinsic_pass={experiment.get('intrinsic_coverage_pass')} "
             f"external_status={experiment.get('external_reference_status')} "
             f"spacings={len(spacing_rows)} sparsest_pass={experiment.get('sparsest_coverage_pass_spacing_hz')} "

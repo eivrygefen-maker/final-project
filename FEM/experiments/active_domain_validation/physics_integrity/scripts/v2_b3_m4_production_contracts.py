@@ -418,6 +418,8 @@ def _evaluate_scout_strict_failures(run_root: Path) -> List[str]:
     failures: List[str] = []
     from v2_b3_run_coarse_scout_lhs_batch import _density_reference_coverage_ok  # noqa: WPS433
 
+    from v2_b3_m4_scout_intrinsic_coverage import is_registered_scout_density_policy  # noqa: WPS433
+
     density_path = run_root / "scout" / "discovery" / "density_result.json"
     if density_path.is_file():
         try:
@@ -431,8 +433,9 @@ def _evaluate_scout_strict_failures(run_root: Path) -> List[str]:
                 failures.append(f"scout_density_intrinsic:{detail}")
             if str(density.get("status") or "") == "PARTIAL":
                 failures.append("scout_density_status=PARTIAL")
-            if density.get("coverage_policy") != "intrinsic_discovered_modes_v1":
-                failures.append(f"scout_density_policy={density.get('coverage_policy') or 'missing'}")
+            policy = str(density.get("coverage_policy") or "")
+            if not is_registered_scout_density_policy(policy):
+                failures.append(f"scout_density_policy={policy or 'missing'}")
     else:
         failures.append("missing_scout_density_result")
 

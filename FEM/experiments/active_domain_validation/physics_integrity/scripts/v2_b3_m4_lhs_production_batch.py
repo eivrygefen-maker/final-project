@@ -426,7 +426,7 @@ def _run_sample_cleanup_barrier_for_batch(
     if outcome.compaction and not row.get("compaction"):
         row["compaction"] = outcome.compaction
     print(
-        f"[cleanup-barrier] {sid}: status={outcome.status} "
+        f"[cleanup-barrier] sample={sid} status={outcome.status} "
         f"forbidden={outcome.forbidden_heavy_artifact_count} "
         f"shared={outcome.shared_sample_artifact_count} "
         f"runtime_s={outcome.runtime_s}",

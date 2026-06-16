@@ -47,6 +47,9 @@ from v2_b3_m4_shared_export import APPROVED_SHARED_PLOT_NAMES  # noqa: E402
 from v2_b3_m4_mesh_profile_provenance_lib import (  # noqa: E402
     preserve_comparison_provenance_before_cleanup,
 )
+from v2_b3_m4_scout_discovery_diagnostics import (  # noqa: E402
+    preserve_scout_discovery_failure_diagnostics,
+)
 
 MESH_LEVELS: Tuple[str, ...] = production_mesh_levels_for_cleanup()
 
@@ -425,9 +428,16 @@ def _delete_failed_run_heavy(
     if _collect_archivable_paths is None or _delete_archived_paths is None:
         return [], ["compact_module_unavailable"]
 
+    preserve_scout_discovery_failure_diagnostics(
+        run_root,
+        reason="failed_sample_heavy_cleanup",
+    )
+
     deleted: List[str] = []
     errors: List[str] = []
     archivable = _collect_archivable_paths(run_root)
+    discovery_root = run_root / "scout" / "discovery"
+    archivable = [p for p in archivable if p != discovery_root]
     extra_dirs = (
         run_root / "scout" / "mesh",
         run_root / "lprod" / "mesh",

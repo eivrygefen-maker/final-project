@@ -14,6 +14,16 @@ ROM_SHAPES_PATH = REPO_ROOT / "FEM" / "configs" / "rom_shapes.json"
 APERTURE_SELECTION_METHOD = "facet_adjacent_air_cell_dofs_v1"
 PRODUCTION_MIC_METHOD = "aperture_pressure_rms_proxy_v1"
 
+# Scout Stage-2 density acceptance policies (see v2_b3_m4_scout_intrinsic_coverage.py).
+SCOUT_DENSITY_POLICY_CLASSIC = "intrinsic_discovered_modes_v1"
+SCOUT_DENSITY_POLICY_BOX = "box_discovered_modes_v1"
+SCOUT_DENSITY_POLICY_ACOUSTIC = "acoustic_discovered_modes_v1"
+REGISTERED_SCOUT_DENSITY_POLICIES: tuple[str, ...] = (
+    SCOUT_DENSITY_POLICY_CLASSIC,
+    SCOUT_DENSITY_POLICY_BOX,
+    SCOUT_DENSITY_POLICY_ACOUSTIC,
+)
+
 
 @dataclass(frozen=True)
 class M4ShapeConfig:
@@ -29,6 +39,7 @@ class M4ShapeConfig:
     has_soundhole: bool
     requires_aperture_mask: bool
     soundhole_note: str
+    scout_density_policy: str = SCOUT_DENSITY_POLICY_CLASSIC
     base_config_rel: str = "FEM/configs/guitar_3d.json"
 
     @property
@@ -104,6 +115,7 @@ _SHAPE_REGISTRY: Dict[str, M4ShapeConfig] = {
         has_soundhole=True,
         requires_aperture_mask=True,
         soundhole_note="Classical soundhole via geometry.hole_radius; aperture mask enforced in production.",
+        scout_density_policy=SCOUT_DENSITY_POLICY_CLASSIC,
     ),
     "box": M4ShapeConfig(
         shape_key="box",
@@ -118,6 +130,7 @@ _SHAPE_REGISTRY: Dict[str, M4ShapeConfig] = {
         has_soundhole=True,
         requires_aperture_mask=True,
         soundhole_note="Box LHS includes geometry.hole_radius; same global aperture mask policy as classic.",
+        scout_density_policy=SCOUT_DENSITY_POLICY_BOX,
     ),
     "acoustic": M4ShapeConfig(
         shape_key="acoustic",
@@ -132,8 +145,17 @@ _SHAPE_REGISTRY: Dict[str, M4ShapeConfig] = {
         has_soundhole=True,
         requires_aperture_mask=True,
         soundhole_note="Acoustic/dreadnought body uses acoustic.step; hole_radius swept in LHS.",
+        scout_density_policy=SCOUT_DENSITY_POLICY_ACOUSTIC,
     ),
 }
+
+
+def is_registered_scout_density_policy(policy: str) -> bool:
+    return str(policy or "") in REGISTERED_SCOUT_DENSITY_POLICIES
+
+
+def scout_density_policy_for_shape(shape_key: str) -> str:
+    return resolve_shape_config(shape_key).scout_density_policy
 
 
 def registered_shape_keys() -> tuple[str, ...]:
@@ -178,6 +200,7 @@ def resolve_shape_config(shape_key: str) -> M4ShapeConfig:
             has_soundhole=cfg.has_soundhole,
             requires_aperture_mask=cfg.requires_aperture_mask,
             soundhole_note=cfg.soundhole_note,
+            scout_density_policy=cfg.scout_density_policy,
             base_config_rel=base,
         )
     return cfg

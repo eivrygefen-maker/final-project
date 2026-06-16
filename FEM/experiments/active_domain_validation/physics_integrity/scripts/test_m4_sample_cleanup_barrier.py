@@ -85,6 +85,25 @@ def _make_partial_failed_run(
     scout_mesh = run_root / "scout" / "mesh" / "L_scout_coarse" / f"{sample_id}.msh"
     scout_mesh.parent.mkdir(parents=True, exist_ok=True)
     scout_mesh.write_text("mesh", encoding="utf-8")
+    discovery = run_root / "scout" / "discovery"
+    discovery.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        discovery / "density_result.json",
+        {
+            "status": "FAIL",
+            "coverage_policy": "box_discovered_modes_v1",
+            "intrinsic_coverage_pass": False,
+            "intrinsic_coverage_failures": ["raw_unique_accepted_count<8:5"],
+            "spacings": [
+                {
+                    "spacing_hz": 7.5,
+                    "status": "PASS",
+                    "unique_accepted_count": 5,
+                    "per_target": [{"target_index": 0, "status": "PASS"}],
+                }
+            ],
+        },
+    )
     (run_root / "worker_results" / "chunk_01").mkdir(parents=True, exist_ok=True)
     (run_root / "worker_results" / "chunk_01" / "worker_result.json").write_text("{}", encoding="utf-8")
 
@@ -203,6 +222,10 @@ class SampleCleanupBarrierTests(unittest.TestCase):
         self.assertEqual(outcome.shared_sample_artifact_count, 0)
         self.assertTrue((failed_root / "cleanup" / "sample_failure_retention.json").is_file())
         self.assertTrue((failed_root / "logs" / "sample_failure_diagnostic.log").is_file())
+        density = failed_root / "scout" / "discovery" / "density_result.json"
+        self.assertTrue(density.is_file(), "failed scout density_result must survive cleanup")
+        body = json.loads(density.read_text(encoding="utf-8"))
+        self.assertNotIn("per_target", json.dumps(body.get("spacings") or []))
         count, _ = count_forbidden_heavy_artifacts(failed_root)
         self.assertEqual(count, 0)
 

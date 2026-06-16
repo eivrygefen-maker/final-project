@@ -91,6 +91,9 @@ from v2_b3_run_coarse_scout_lhs_batch import (  # noqa: E402
     _verify_stage_b_env_probe,
 )
 from v2_b3_m4_production_contracts import DATASET_VERSION, is_strict_production_mode  # noqa: E402
+from v2_b3_m4_scout_discovery_diagnostics import (  # noqa: E402
+    ensure_scout_discovery_failure_artifacts,
+)
 
 
 def _utc_now() -> str:
@@ -987,6 +990,10 @@ def run_scout_pipeline(
         stage2 = "PASS" if rc_b == 0 and ok_b else "FAIL"
         if stage2 != "PASS":
             _append_log(log_b, f"verify FAIL: {detail_b}\n")
+            ensure_scout_discovery_failure_artifacts(
+                run_root,
+                reason="stage2_scout_discovery_verify_failed",
+            )
 
     if stage2 != "PASS":
         _update_manifest(

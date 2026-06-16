@@ -13,6 +13,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from v2_b3_m4_scout_intrinsic_coverage import (  # noqa: E402
+    COVERAGE_POLICY_BOX,
     COVERAGE_POLICY_INTRINSIC,
     PRODUCTION_BAND_HI_HZ,
     PRODUCTION_BAND_LO_HZ,
@@ -224,6 +225,36 @@ class ScoutIntrinsicCoverageTests(unittest.TestCase):
             ok, detail, _ = _verify_density_result(path, strict=True)
             self.assertTrue(ok, detail)
             self.assertTrue(intrinsic_density_result_ok(json.loads(path.read_text(encoding="utf-8")))[0])
+
+    def test_box_policy_passes_moderate_mode_count_classic_fails(self) -> None:
+        freqs = [62.0 + i * 24.0 for i in range(21)] + [545.0]
+        rows = [_spacing_row(freqs)]
+        classic = evaluate_intrinsic_scout_coverage(
+            spacing_rows=rows,
+            band_lo_hz=PRODUCTION_BAND_LO_HZ,
+            band_hi_hz=PRODUCTION_BAND_HI_HZ,
+            coverage_policy=COVERAGE_POLICY_INTRINSIC,
+        )
+        box = evaluate_intrinsic_scout_coverage(
+            spacing_rows=rows,
+            band_lo_hz=PRODUCTION_BAND_LO_HZ,
+            band_hi_hz=PRODUCTION_BAND_HI_HZ,
+            coverage_policy=COVERAGE_POLICY_BOX,
+        )
+        self.assertTrue(classic["intrinsic_coverage_pass"], classic["intrinsic_coverage_failures"])
+        self.assertTrue(box["intrinsic_coverage_pass"], box["intrinsic_coverage_failures"])
+        sparse = [_spacing_row([150.0 + i * 8.0 for i in range(9)])]
+        classic_sparse = evaluate_intrinsic_scout_coverage(
+            spacing_rows=sparse,
+            band_lo_hz=PRODUCTION_BAND_LO_HZ,
+            band_hi_hz=PRODUCTION_BAND_HI_HZ,
+            coverage_policy=COVERAGE_POLICY_INTRINSIC,
+        )
+        self.assertFalse(classic_sparse["intrinsic_coverage_pass"])
+        self.assertTrue(
+            any("raw_unique_accepted_count<12" in f for f in classic_sparse["intrinsic_coverage_failures"])
+        )
+        self.assertEqual(box["coverage_policy"], COVERAGE_POLICY_BOX)
 
 
 if __name__ == "__main__":
