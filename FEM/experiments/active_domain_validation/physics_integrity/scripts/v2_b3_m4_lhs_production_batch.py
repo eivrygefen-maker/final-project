@@ -266,6 +266,24 @@ def _run_sample_compaction_for_batch(
     if outcome not in PRODUCTION_PASS_OUTCOMES:
         return True
 
+    from v2_b3_m4_production_freeze import TERMINAL_PRODUCTION_COMPLETED  # noqa: WPS433
+
+    terminal = str(row.get("terminal_status") or "")
+    if terminal and terminal != TERMINAL_PRODUCTION_COMPLETED:
+        deferred = {
+            "status": "deferred",
+            "skip_reason": f"freeze_pending:terminal_status={terminal}",
+            "deleted_bytes": 0,
+            "runtime_s": 0.0,
+        }
+        row["compaction"] = deferred
+        print(
+            f"[compaction] {sid}: deferred until freeze completes "
+            f"(terminal_status={terminal})",
+            flush=True,
+        )
+        return True
+
     compact_out = compact_one_completed_run(
         repo_root=repo_root,
         pool=pool,
@@ -361,6 +379,20 @@ def _run_sample_post_export_finalization(
         )
 
     run_root = _resolve_run_root_from_row(row, repo_root=repo_root)
+    compaction_status = str((row.get("compaction") or {}).get("status") or "")
+    if compaction_status == "deferred":
+        return _run_sample_cleanup_barrier_for_batch(
+            row=row,
+            repo_root=repo_root,
+            pool=pool,
+            compact_after_sample=bool(compact_after_sample),
+            compact_keep_full_samples=compact_keep_full_samples,
+            compact_nonblocking=compact_nonblocking,
+            run_rom_compare=bool(run_rom_compare) and not bool(use_shadow_rom),
+            strict_production=bool(strict_production),
+            compaction_already_done=False,
+        )
+
     ready, pre_errors = _assert_compaction_ready_before_cleanup(
         run_root=run_root,
         compact_after_sample=bool(compact_after_sample),
@@ -375,7 +407,7 @@ def _run_sample_post_export_finalization(
         return False
 
     compaction_status = str((row.get("compaction") or {}).get("status") or "")
-    compaction_already_done = compaction_status in {"completed", "already_compacted"}
+    compaction_already_done = compaction_status in {"completed", "already_compacted", "deferred"}
 
     return _run_sample_cleanup_barrier_for_batch(
         row=row,

@@ -178,6 +178,12 @@ if python3 "${STAGE_ARTIFACT_TEST}" >/tmp/shape_fom_smoke_stage_artifact.log 2>&
 else
   bad "stage artifact contract tests failed (see /tmp/shape_fom_smoke_stage_artifact.log)"
 fi
+TERMINAL_RECON_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_terminal_reconciliation_test.py"
+if python3 "${TERMINAL_RECON_TEST}" >/tmp/shape_fom_smoke_terminal_recon.log 2>&1; then
+  ok "failure_retention reconciliation + compaction deferral"
+else
+  bad "terminal reconciliation tests failed (see /tmp/shape_fom_smoke_terminal_recon.log)"
+fi
 INSPECT_SCRIPT="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/inspect_shape_mesh_aperture.py"
 BOX_FOM_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_box_fom_validation_test.py"
 if [[ -f "${INSPECT_SCRIPT}" ]]; then

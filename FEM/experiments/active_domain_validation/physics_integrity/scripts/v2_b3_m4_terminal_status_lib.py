@@ -17,12 +17,15 @@ from v2_b3_m4_reuse_integrity_lib import (  # noqa: E402
     read_manifest,
     terminal_status_rank,
 )
-from v2_b3_m4_worker_run_lib import load_json  # noqa: E402
+from v2_b3_m4_worker_run_lib import load_json, utc_now  # noqa: E402
+from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
 TERMINAL_STATUS_INCONSISTENCY = "TERMINAL_STATUS_INCONSISTENCY"
 AGG_PREVIEW_REL = "pipeline_run_manifest.m4_4_full_aggregation_preview.json"
 AGG_RESULT_REL = "aggregation/aggregation_result.json"
 FAILURE_RETENTION_REL = "cleanup/sample_failure_retention.json"
+FAILURE_RETENTION_ARCHIVE_REL = "cleanup/sample_failure_retention.archived.json"
+FAILURE_RETENTION_RECONCILED = "FAILURE_RETENTION_RECONCILED"
 
 
 def _safe_terminal(path: Path, key: str = "terminal_status") -> str:
@@ -82,13 +85,84 @@ def promote_after_aggregation_pass(run_root: Path) -> Dict[str, Any]:
     if terminal_status_rank(prev) >= terminal_status_rank(expected):
         out["reason"] = "manifest_already_at_or_beyond_expected"
         out["manifest_terminal"] = prev
-        return out
-
-    promote_pipeline_terminal_status(run_root, terminal_status=expected, aggregation_status=AGG_STATUS_PASS)
-    out["promoted"] = True
-    out["manifest_terminal"] = expected
-    out["reason"] = "promoted_after_aggregation_pass"
+    else:
+        promote_pipeline_terminal_status(run_root, terminal_status=expected, aggregation_status=AGG_STATUS_PASS)
+        out["promoted"] = True
+        out["manifest_terminal"] = expected
+        out["reason"] = "promoted_after_aggregation_pass"
+    out["failure_retention"] = reconcile_failure_retention(run_root)
     return out
+
+
+def reconcile_failure_retention(run_root: Path) -> Dict[str, Any]:
+    """
+    Clear stale failure-retention sidecars when the authoritative manifest has advanced.
+
+    Retention is for failed-run diagnostics only; it must not block a later successful stage.
+    """
+    run_root = run_root.expanduser().resolve()
+    retention_path = run_root / FAILURE_RETENTION_REL
+    result: Dict[str, Any] = {
+        "action": "none",
+        "previous": "",
+        "current": "",
+    }
+    if not retention_path.is_file():
+        return result
+
+    manifest_terminal = str(read_manifest(run_root).get("terminal_status") or "")
+    try:
+        retention = load_json(retention_path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        retention_path.unlink(missing_ok=True)
+        result["action"] = "cleared_unreadable"
+        return result
+
+    retention_terminal = str(retention.get("terminal_status") or "")
+    result["previous"] = retention_terminal
+    result["current"] = manifest_terminal
+
+    if not manifest_terminal:
+        return result
+
+    if retention_terminal == manifest_terminal:
+        return result
+
+    manifest_rank = terminal_status_rank(manifest_terminal)
+    retention_rank = terminal_status_rank(retention_terminal)
+
+    if manifest_rank > retention_rank:
+        archive_path = run_root / FAILURE_RETENTION_ARCHIVE_REL
+        archive_body = {
+            **retention,
+            "archived_utc": utc_now(),
+            "archived_reason": "manifest_advanced_past_retention",
+            "manifest_terminal_at_reconcile": manifest_terminal,
+        }
+        write_json_atomic(archive_path, archive_body)
+        retention_path.unlink(missing_ok=True)
+        result["action"] = "cleared"
+        print(
+            f"{FAILURE_RETENTION_RECONCILED} action=cleared "
+            f"previous={retention_terminal} current={manifest_terminal}",
+            flush=True,
+        )
+        return result
+
+    if retention_rank > manifest_rank:
+        retention["reconciled_utc"] = utc_now()
+        retention["reconciled_manifest_terminal"] = manifest_terminal
+        retention["reconciled_note"] = "retention_rank_higher_than_manifest_review"
+        write_json_atomic(retention_path, retention)
+        result["action"] = "updated"
+        print(
+            f"{FAILURE_RETENTION_RECONCILED} action=updated "
+            f"previous={retention_terminal} current={manifest_terminal}",
+            flush=True,
+        )
+        return result
+
+    return result
 
 
 def check_terminal_status_consistency(
@@ -98,6 +172,7 @@ def check_terminal_status_consistency(
 ) -> Tuple[bool, List[str]]:
     """Return (ok, errors). Fail if authoritative sources disagree after aggregation PASS."""
     run_root = run_root.expanduser().resolve()
+    reconcile_failure_retention(run_root)
     sources = collect_terminal_status_sources(run_root)
     errors: List[str] = []
     manifest = sources["manifest"]
@@ -125,12 +200,13 @@ def check_terminal_status_consistency(
         )
 
     retention = sources["failure_retention"]
-    if expected and retention and terminal_status_rank(retention) < terminal_status_rank(manifest):
-        if manifest and retention != manifest:
-            errors.append(
-                f"{TERMINAL_STATUS_INCONSISTENCY} "
-                f"manifest={manifest} failure_retention={retention}"
-            )
+    retention_path = run_root / FAILURE_RETENTION_REL
+    if retention_path.is_file() and manifest and retention and retention != manifest:
+        errors.append(
+            f"{TERMINAL_STATUS_INCONSISTENCY} "
+            f"manifest={manifest} failure_retention={retention}"
+            + (f" context={context}" if context else "")
+        )
 
     return len(errors) == 0, errors
 
@@ -138,6 +214,7 @@ def check_terminal_status_consistency(
 def reconcile_terminal_status_before_freeze(run_root: Path) -> Dict[str, Any]:
     """Promote manifest if aggregation PASS but terminal still checkpoint-ready."""
     promote = promote_after_aggregation_pass(run_root)
+    reconcile_failure_retention(run_root)
     ok, errors = check_terminal_status_consistency(run_root, context="pre_freeze")
     return {
         "promote": promote,
