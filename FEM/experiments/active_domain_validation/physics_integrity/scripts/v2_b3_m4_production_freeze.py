@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from v2_b3_m4_freeze_first_e2e_run import (  # noqa: E402
     AGG_STATUS_PASS,
@@ -24,12 +24,53 @@ from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
 PRODUCTION_FREEZE_MANIFEST = "freeze_manifest.json"
 PRODUCTION_FREEZE_SCHEMA = "m4_production_freeze_v1"
+FREEZE_FAILURE_REPORT = "freeze_failure_report.json"
 TERMINAL_PRODUCTION_COMPLETED = "COMPLETED"
 FREEZE_DIR_NAME = "freeze"
 
 
 def production_freeze_manifest_path(run_root: Path) -> Path:
     return run_root / FREEZE_DIR_NAME / PRODUCTION_FREEZE_MANIFEST
+
+
+def write_freeze_failure_report(
+    run_root: Path,
+    *,
+    failure_reason: str,
+    failures: Sequence[str],
+    acceptance: Optional[Mapping[str, Any]] = None,
+) -> Path:
+    freeze_dir = run_root / FREEZE_DIR_NAME
+    freeze_dir.mkdir(parents=True, exist_ok=True)
+    body: Dict[str, Any] = {
+        "schema": "m4_freeze_failure_report_v1",
+        "generated_utc": utc_now(),
+        "failure_reason": failure_reason,
+        "failures": list(failures),
+    }
+    if acceptance:
+        body["aggregation_freeze_eligible"] = acceptance.get("aggregation_freeze_eligible")
+        body["worker_chunk_warnings"] = list(acceptance.get("worker_chunk_warnings") or [])
+    out_path = freeze_dir / FREEZE_FAILURE_REPORT
+    write_json_atomic(out_path, body)
+    return out_path
+
+
+def _freeze_fail(
+    run_root: Path,
+    *,
+    failure_reason: str,
+    failures: Sequence[str],
+    acceptance: Optional[Mapping[str, Any]] = None,
+) -> Tuple[int, str]:
+    write_freeze_failure_report(
+        run_root,
+        failure_reason=failure_reason,
+        failures=failures,
+        acceptance=acceptance,
+    )
+    detail = failure_reason or "; ".join(failures) or "production_freeze_failed"
+    return 2, detail
 
 
 def load_sample_input(run_root: Path) -> Dict[str, Any]:
@@ -125,6 +166,10 @@ def promote_production_completed(
     freeze_st = stages.setdefault("stage6_freeze", {})
     freeze_st["status"] = "PASS"
     freeze_st.pop("warning", None)
+    freeze_st.pop("warnings", None)
+    warn_chunks = list(acceptance.get("acceptance_warnings") or acceptance.get("worker_chunk_warnings") or [])
+    if warn_chunks:
+        freeze_st["warnings"] = warn_chunks
     freeze_st["updated_utc"] = utc_now()
     freeze_st["artifact_paths"] = [
         f"{FREEZE_DIR_NAME}/{PRODUCTION_FREEZE_MANIFEST}",
@@ -177,6 +222,8 @@ def write_production_freeze_manifest(
         "deduped_mode_count": agg.get("deduped_mode_count"),
         "completed_chunk_count": agg.get("completed_chunk_count"),
         "planned_chunk_count": agg.get("planned_chunk_count"),
+        "worker_chunk_warnings": list(acceptance.get("worker_chunk_warnings") or []),
+        "acceptance_warnings": list(acceptance.get("acceptance_warnings") or []),
         "freeze_dir": rel(freeze_dir, repo_root=repo_root),
     }
     out_path = production_freeze_manifest_path(run_root)
@@ -366,15 +413,21 @@ def replay_production_freeze(
     run_root = run_root.resolve()
     errors = _validate_milestone(run_root=run_root)
     if errors:
-        return 2, "; ".join(errors)
+        return _freeze_fail(run_root, failure_reason="milestone_validation_failed", failures=errors)
 
     sample_doc = dict(sample_input or load_sample_input(run_root))
     acceptance = evaluate_production_acceptance(run_root=run_root, sample_input=sample_doc)
     if not acceptance.get("acceptance_pass"):
-        return 2, "; ".join(acceptance.get("failures") or ["production_acceptance_failed"])
+        failures = list(acceptance.get("failures") or ["production_acceptance_failed"])
+        return _freeze_fail(
+            run_root,
+            failure_reason=failures[0],
+            failures=failures,
+            acceptance=acceptance,
+        )
 
     if production_freeze_complete(run_root) and not force:
-        return 0, "production freeze already complete"
+        return 0, "v2_b3_m4_production_freeze.replay_production_freeze (already complete)"
 
     sample_id = str(sample_doc.get("sample_id") or run_root.parent.parent.name)
     if not freeze_outputs_present(run_root) or force:
@@ -390,7 +443,12 @@ def replay_production_freeze(
             )
         except FileExistsError as exc:
             if not freeze_outputs_present(run_root):
-                return 2, str(exc)
+                return _freeze_fail(
+                    run_root,
+                    failure_reason="freeze_outputs_exist",
+                    failures=[str(exc)],
+                    acceptance=acceptance,
+                )
 
     write_production_freeze_manifest(
         repo_root=repo_root,
@@ -406,8 +464,19 @@ def replay_production_freeze(
     )
     identity = json.loads(identity_path.read_text(encoding="utf-8"))
     if (identity.get("fallback_flags") or {}).get("cross_sample_reuse"):
-        return 2, "cross_sample_reuse=true_in_physics_identity_manifest"
+        return _freeze_fail(
+            run_root,
+            failure_reason="cross_sample_reuse=true_in_physics_identity_manifest",
+            failures=["cross_sample_reuse=true_in_physics_identity_manifest"],
+            acceptance=acceptance,
+        )
     if not bool(identity.get("production_acceptance_pass")):
-        return 2, "; ".join(identity.get("production_acceptance_failures") or ["production_acceptance_failed"])
+        id_failures = list(identity.get("production_acceptance_failures") or ["production_acceptance_failed"])
+        return _freeze_fail(
+            run_root,
+            failure_reason=id_failures[0],
+            failures=id_failures,
+            acceptance=acceptance,
+        )
     promote_production_completed(run_root, acceptance=acceptance)
-    return 0, "production freeze finalized"
+    return 0, "v2_b3_m4_production_freeze.replay_production_freeze"

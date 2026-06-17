@@ -184,6 +184,12 @@ if python3 "${TERMINAL_RECON_TEST}" >/tmp/shape_fom_smoke_terminal_recon.log 2>&
 else
   bad "terminal reconciliation tests failed (see /tmp/shape_fom_smoke_terminal_recon.log)"
 fi
+FREEZE_GATE_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_freeze_gate_test.py"
+if python3 "${FREEZE_GATE_TEST}" >/tmp/shape_fom_smoke_freeze_gate.log 2>&1; then
+  ok "freeze gate (PASS_WITH_WARNING workers + aggregation authority)"
+else
+  bad "freeze gate tests failed (see /tmp/shape_fom_smoke_freeze_gate.log)"
+fi
 INSPECT_SCRIPT="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/inspect_shape_mesh_aperture.py"
 BOX_FOM_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_box_fom_validation_test.py"
 if [[ -f "${INSPECT_SCRIPT}" ]]; then

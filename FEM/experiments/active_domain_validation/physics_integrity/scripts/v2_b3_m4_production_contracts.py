@@ -24,6 +24,7 @@ from v2_b3_m4_mesh_profile_lib import (  # noqa: E402
     validate_mesh_profile_reuse,
     validate_profile_dataset_pairing,
 )
+from v2_b3_m4_freeze_first_e2e_run import AGG_STATUS_PASS, TERMINAL_E2E  # noqa: E402
 from v2_b3_rich_modal_lib import REGION_DOF_INDICES_NPZ, load_region_dof_bundle  # noqa: E402
 
 DATASET_VERSION = DATASET_VERSION_LEGACY
@@ -282,6 +283,61 @@ def validate_post_export_region_dof_contract(
     return errors
 
 
+def aggregation_authoritative_for_freeze(
+    run_root: Path,
+    *,
+    agg: Optional[Mapping[str, Any]] = None,
+) -> Tuple[bool, List[str]]:
+    """
+    Aggregation result is authoritative for freeze when workers+aggregate completed cleanly.
+
+    Worker PASS_WITH_WARNING does not invalidate this when chunk counts and failed/missing lists are empty.
+    """
+    failures: List[str] = []
+    from v2_b3_m4_reuse_integrity_lib import read_manifest, terminal_status_rank  # noqa: WPS433
+
+    if agg is None:
+        agg_path = run_root / "aggregation" / "aggregation_result.json"
+        if not agg_path.is_file():
+            return False, ["missing_aggregation_result"]
+        try:
+            agg = json.loads(agg_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return False, ["aggregation_result_unreadable"]
+
+    if str(agg.get("status") or "") != AGG_STATUS_PASS:
+        failures.append(f"aggregation_status={agg.get('status')}")
+    if not bool(agg.get("final_aggregation_ready")):
+        failures.append("final_aggregation_ready!=true")
+
+    planned = agg.get("planned_chunk_count")
+    completed = agg.get("completed_chunk_count")
+    if planned is None or completed is None:
+        failures.append("aggregation_missing_chunk_counts")
+    elif int(planned) != int(completed):
+        failures.append(f"aggregation_incomplete:planned={planned}:completed={completed}")
+
+    failed_list = [str(x) for x in (agg.get("failed_chunks") or [])]
+    failed_count = agg.get("failed_chunk_count")
+    if failed_count is None:
+        failed_count = len(failed_list)
+    if int(failed_count or 0) > 0 or failed_list:
+        failures.append(f"aggregation_failed_chunks:{failed_list or failed_count}")
+
+    missing_list = [str(x) for x in (agg.get("missing_chunks") or [])]
+    missing_count = agg.get("missing_chunk_count")
+    if missing_count is None:
+        missing_count = len(missing_list)
+    if int(missing_count or 0) > 0 or missing_list:
+        failures.append(f"aggregation_missing_chunks:{missing_list or missing_count}")
+
+    terminal = str(read_manifest(run_root).get("terminal_status") or "")
+    if terminal_status_rank(terminal) < terminal_status_rank(TERMINAL_E2E):
+        failures.append(f"terminal_status={terminal or 'missing'}")
+
+    return len(failures) == 0, failures
+
+
 def evaluate_production_acceptance(
     *,
     run_root: Path,
@@ -337,15 +393,15 @@ def evaluate_production_acceptance(
     if p_ap.size <= 0:
         out["failures"].append("p_idx_aperture_count<=0")
 
+    agg: Optional[Dict[str, Any]] = None
     if agg_path.is_file():
         agg = json.loads(agg_path.read_text(encoding="utf-8"))
         out["aggregation_status"] = agg.get("status")
-        agg_status = str(agg.get("status") or "")
-        if agg_status not in ("AGGREGATION_PASS", "PASS", "PASS_WITH_WARNINGS"):
-            out["failures"].append(f"aggregation_status={agg.get('status')}")
-        if not bool(agg.get("final_aggregation_ready")):
-            out["failures"].append("final_aggregation_ready!=true")
+        agg_eligible, agg_gate_failures = aggregation_authoritative_for_freeze(run_root, agg=agg)
+        out["aggregation_freeze_eligible"] = agg_eligible
+        out["failures"].extend(agg_gate_failures)
     else:
+        out["aggregation_freeze_eligible"] = False
         out["failures"].append("missing_aggregation_result")
 
     built_ds = str(built.get("dataset_version") or "")
@@ -399,15 +455,17 @@ def evaluate_production_acceptance(
     out["acceptance_pass"] = len(out["failures"]) == 0
 
     if is_strict_production_mode(dataset_version=profile.dataset_version):
-        out["failures"].extend(
-            _evaluate_strict_production_failures(
-                run_root=run_root,
-                sample_id=sample_id,
-                built=built,
-                catalog=catalog,
-                core_config_path=lprod / "resolved_core_config.json",
-            )
+        strict_failures, worker_warnings = _evaluate_strict_production_failures(
+            run_root=run_root,
+            sample_id=sample_id,
+            built=built,
+            catalog=catalog,
+            core_config_path=lprod / "resolved_core_config.json",
+            agg=agg,
         )
+        out["failures"].extend(strict_failures)
+        out["worker_chunk_warnings"] = worker_warnings
+        out["acceptance_warnings"] = list(worker_warnings)
         out["strict_production_mode"] = True
         out["acceptance_pass"] = len(out["failures"]) == 0
     return out
@@ -671,9 +729,14 @@ def _evaluate_strict_production_failures(
     built: Mapping[str, Any],
     catalog: Path,
     core_config_path: Path,
-) -> List[str]:
+    agg: Optional[Mapping[str, Any]] = None,
+) -> Tuple[List[str], List[str]]:
     """Additional fail-fast checks for m4_geometry_corrected_v1 (not overridable by env)."""
     failures: List[str] = list(_evaluate_scout_strict_failures(run_root))
+    worker_warnings: List[str] = []
+    agg_authoritative = False
+    if agg is not None:
+        agg_authoritative, _ = aggregation_authoritative_for_freeze(run_root, agg=agg)
     from v2_b3_m4_physics_identity_lib import (  # noqa: WPS433
         forbidden_solver_fallback_keys,
         scan_cross_sample_path_contamination,
@@ -754,9 +817,12 @@ def _evaluate_strict_production_failures(
                         failures.append(f"worker_partial:{chunk_dir.name}")
                         break
                     if str(wdoc.get("status") or "") == "PASS_WITH_WARNING":
-                        failures.append(f"worker_pass_with_warning:{chunk_dir.name}")
-                        break
+                        tag = f"worker_pass_with_warning:{chunk_dir.name}"
+                        if agg_authoritative:
+                            worker_warnings.append(tag)
+                        else:
+                            failures.append(tag)
                 except (OSError, ValueError, json.JSONDecodeError):
                     pass
 
-    return failures
+    return failures, worker_warnings

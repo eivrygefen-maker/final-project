@@ -19,6 +19,7 @@ from v2_b3_m4_freeze_first_e2e_run import (  # noqa: E402
     mark_freeze_stage_failed,
     promote_pipeline_terminal_status,
 )
+from v2_b3_m4_mesh_profile_lib import DATASET_VERSION_REFERENCE  # noqa: E402
 from v2_b3_m4_production_contracts import (  # noqa: E402
     DATASET_VERSION,
     evaluate_production_region_dof_gate,
@@ -217,7 +218,7 @@ class RegionDofStrictContractTests(unittest.TestCase):
             built_doc = json.loads(built.read_text(encoding="utf-8"))
             built_doc.update(
                 {
-                    "dataset_version": DATASET_VERSION,
+                    "dataset_version": DATASET_VERSION_REFERENCE,
                     "operator_mesh_matches_generated": True,
                     "generated_mesh_sha256": "abc123",
                     "operator_mesh_file_used": "guitars/sample_001/runs/sample_001_smoke/lprod/mesh/L_prod/sample_001.msh",
