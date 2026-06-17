@@ -475,6 +475,7 @@ def collect_accepted_st_modes(
     freq_hi: float = ACCEPTANCE_FREQ_HI_HZ,
     export_vectors: bool = False,
     region_ctx: Optional[Dict[str, Any]] = None,
+    rejection_tally: Optional[Dict[str, int]] = None,
 ) -> Tuple[int, List[Dict[str, Any]]]:
     from slepc4py import SLEPc
 
@@ -602,6 +603,25 @@ def collect_accepted_st_modes(
                 except Exception as exc:
                     entry["provenance_attach_error"] = f"{type(exc).__name__}:{exc}"
                 accepted.append(entry)
+            elif rejection_tally is not None:
+                if not finite or nonfinite:
+                    rejection_tally["nonfinite_eigenvalue"] = rejection_tally.get("nonfinite_eigenvalue", 0) + 1
+                elif f_hz is None or float(f_hz) <= 0.0:
+                    rejection_tally["non_positive_frequency"] = rejection_tally.get("non_positive_frequency", 0) + 1
+                elif not inside:
+                    rejection_tally["outside_acceptance_window"] = rejection_tally.get("outside_acceptance_window", 0) + 1
+                elif not eps_ok:
+                    rejection_tally["residual_too_large"] = rejection_tally.get("residual_too_large", 0) + 1
+                elif not si_pass:
+                    rejection_tally["inactive_dof_violation"] = rejection_tally.get("inactive_dof_violation", 0) + 1
+                elif not d_pass:
+                    rejection_tally["boundary_dof_violation"] = rejection_tally.get("boundary_dof_violation", 0) + 1
+                elif lambda_one:
+                    rejection_tally["lambda_near_unity"] = rejection_tally.get("lambda_near_unity", 0) + 1
+                elif not support_ok:
+                    rejection_tally["support_participation_fail"] = rejection_tally.get("support_participation_fail", 0) + 1
+                else:
+                    rejection_tally["other_reject"] = rejection_tally.get("other_reject", 0) + 1
         finally:
             vr.destroy()
             vi.destroy()
@@ -841,6 +861,7 @@ def run_checkpoint_st_target(
             return result
 
         nconv, converged_modes = collect_converged_modes(eps, A_active)
+        rejection_tally: Dict[str, int] = {}
         _nconv2, accepted_modes = collect_accepted_st_modes(
             eps,
             A_active,
@@ -849,6 +870,7 @@ def run_checkpoint_st_target(
             acceptance_config=cfg,
             export_vectors=bool(export_vectors),
             region_ctx=region_ctx,
+            rejection_tally=rejection_tally,
         )
         accepted_freqs = sorted(float(m["frequency_hz"]) for m in accepted_modes)
         result["converged_mode_count"] = int(nconv)
@@ -856,6 +878,7 @@ def run_checkpoint_st_target(
         result["accepted_mode_count_in_interval"] = len(accepted_modes)
         result["accepted_modes"] = accepted_modes
         result["accepted_frequencies_hz"] = accepted_freqs
+        result["candidate_rejection_tally"] = dict(rejection_tally)
         result["peak_rss_mb"] = peak_rss_mb()
         result["st_total_elapsed_seconds"] = safe_float(time.perf_counter() - t_st0)
         result["status"] = "PASS"

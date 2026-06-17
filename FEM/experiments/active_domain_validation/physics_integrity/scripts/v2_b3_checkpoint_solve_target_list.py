@@ -13,6 +13,10 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from v2_b3_m4_target_candidate_audit_lib import (  # noqa: E402
+    append_target_candidate_audit_row,
+    build_target_candidate_audit_row,
+)
 from v2_b3_checkpoint_pipeline_lib import (  # noqa: E402
     PIPELINE_SOLVE_MANIFEST,
     fail_with_messages,
@@ -170,6 +174,7 @@ def _run_real_solve(
         total_st = 0.0
         succeeded = 0
 
+        chunk_target_rows = list(chunk_targets.get("targets") or [])
         for ti, target_hz in enumerate(targets_hz):
             print(
                 f"[B3_checkpoint_solve_target_list] target {ti + 1}/{len(targets_hz)} "
@@ -191,6 +196,15 @@ def _run_real_solve(
                 region_ctx=region_ctx,
             )
             per_target_rows.append(row)
+            target_meta = chunk_target_rows[ti] if ti < len(chunk_target_rows) else {}
+            append_target_candidate_audit_row(
+                output_dir,
+                build_target_candidate_audit_row(
+                    chunk_id=str(chunk_targets.get("chunk_id") or ""),
+                    target_row=row,
+                    target_meta=target_meta,
+                ),
+            )
             if row.get("status") == "PASS":
                 succeeded += 1
                 all_accepted.extend(list(row.get("accepted_frequencies_hz") or []))
