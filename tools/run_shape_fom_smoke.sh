@@ -239,7 +239,7 @@ else
 fi
 MODAL_DISCOVERY_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_modal_discovery_audit_test.py"
 if python3 "${MODAL_DISCOVERY_TEST}" >/tmp/shape_fom_smoke_modal_discovery.log 2>&1; then
-  ok "modal discovery audit (BOX mode-count diagnosis)"
+  ok "modal discovery audit + target candidate audit durability (17 tests)"
 else
   bad "modal discovery audit tests failed (see /tmp/shape_fom_smoke_modal_discovery.log)"
 fi

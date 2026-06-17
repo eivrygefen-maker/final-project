@@ -23,12 +23,20 @@ from v2_b3_m4_modal_discovery_audit_lib import (  # noqa: E402
     TARGETS_PASSED_NOTE,
     build_modal_discovery_audit,
     classify_modal_discovery_issue,
+    render_modal_discovery_audit_markdown,
     write_modal_discovery_audit,
 )
 from v2_b3_m4_target_candidate_audit_lib import (  # noqa: E402
+    MERGED_AUDIT_REL_AGG,
+    MERGED_AUDIT_REL_VALIDATION,
+    append_target_candidate_audit_row,
     build_target_candidate_audit_row,
+    ensure_target_candidate_audit_durable,
+    merge_target_candidate_audit_for_run,
+    normalize_target_candidate_audit_row,
     write_target_candidate_audit_jsonl,
 )
+from v2_b3_m4_minimal_rom_compaction import collect_minimal_rom_deletable_paths  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
 
 
@@ -148,6 +156,125 @@ def _write_box_like_run(
             run_root / "compaction" / "compaction_manifest.json",
             {"schema": "m4_run_compaction_manifest_v1", "status": "PASS"},
         )
+
+
+def _write_per_chunk_target_audits(run_root: Path, *, rows_per_chunk: int = 2) -> None:
+    for chunk_dir in (run_root / "worker_results").iterdir():
+        if not chunk_dir.is_dir():
+            continue
+        for i in range(rows_per_chunk):
+            append_target_candidate_audit_row(
+                chunk_dir,
+                build_target_candidate_audit_row(
+                    chunk_id=chunk_dir.name,
+                    target_row={
+                        "target_frequency_hz": 100.0 + i * 10.0,
+                        "status": "PASS",
+                        "factor_solver": "mkl_pardiso",
+                        "nev": 12,
+                        "converged_mode_count": 1 if i == 0 else 0,
+                        "accepted_mode_count_in_interval": 1 if i == 0 else 0,
+                        "candidate_rejection_tally": {"outside_acceptance_window": 1} if i else {},
+                    },
+                    target_meta={"window_hz": [95.0, 105.0]},
+                ),
+            )
+
+
+def test_worker_append_writes_per_chunk_audit_jsonl():
+    with tempfile.TemporaryDirectory() as td:
+        chunk_dir = Path(td) / "chunk_a"
+        append_target_candidate_audit_row(
+            chunk_dir,
+            build_target_candidate_audit_row(
+                chunk_id="chunk_a",
+                target_row={"target_frequency_hz": 188.0, "status": "PASS"},
+            ),
+        )
+        audit_path = chunk_dir / "target_candidate_audit.jsonl"
+        assert audit_path.is_file()
+        row = json.loads(audit_path.read_text(encoding="utf-8").strip())
+        assert row["chunk_id"] == "chunk_a"
+        assert "candidate_count_after_window" in row
+        assert row["rejection_reasons"] == {}
+
+
+def test_required_audit_keys_present_even_when_null():
+    row = normalize_target_candidate_audit_row({"chunk_id": "c1", "target_hz": 188.0})
+    for key in (
+        "chunk_id",
+        "target_hz",
+        "target_window_hz",
+        "solver_factor",
+        "requested_eigenpairs",
+        "candidate_count_raw",
+        "candidate_count_after_residual",
+        "candidate_count_after_window",
+        "candidate_count_after_physical_filters",
+        "accepted_mode_count",
+        "rejected_candidate_count",
+        "rejection_reasons",
+        "min_residual",
+        "accepted_frequencies_hz",
+        "raw_candidate_frequencies_hz",
+    ):
+        assert key in row
+
+
+def test_merge_creates_run_level_target_candidate_audit():
+    with tempfile.TemporaryDirectory() as td:
+        run_root = Path(td)
+        _write_box_like_run(run_root, with_worker_results=True)
+        _write_per_chunk_target_audits(run_root, rows_per_chunk=1)
+        meta = merge_target_candidate_audit_for_run(run_root)
+        assert meta["target_row_count"] == 12
+        assert (run_root / MERGED_AUDIT_REL_AGG).is_file()
+        assert (run_root / MERGED_AUDIT_REL_VALIDATION).is_file()
+
+
+def test_compaction_deletable_paths_do_not_include_merged_audit():
+    with tempfile.TemporaryDirectory() as td:
+        run_root = Path(td)
+        _write_box_like_run(run_root, with_worker_results=True)
+        _write_per_chunk_target_audits(run_root, rows_per_chunk=1)
+        merge_target_candidate_audit_for_run(run_root)
+        deletable = {p.relative_to(run_root).as_posix() for p in collect_minimal_rom_deletable_paths(run_root)}
+        assert MERGED_AUDIT_REL_AGG not in deletable
+        assert MERGED_AUDIT_REL_VALIDATION not in deletable
+        assert "worker_results" in deletable or any(p.startswith("worker_results/") for p in deletable)
+
+
+def test_ensure_durable_survives_worker_results_removal():
+    with tempfile.TemporaryDirectory() as td:
+        run_root = Path(td)
+        _write_box_like_run(run_root, with_worker_results=True, compacted=True)
+        _write_per_chunk_target_audits(run_root, rows_per_chunk=2)
+        ensure_target_candidate_audit_durable(run_root)
+        shutil_rmtree = __import__("shutil").rmtree
+        worker_root = run_root / "worker_results"
+        if worker_root.is_dir():
+            shutil_rmtree(worker_root)
+        assert (run_root / MERGED_AUDIT_REL_AGG).is_file()
+        report = build_modal_discovery_audit(run_root=run_root, shape_name="box")
+        assert report["candidate_level_diagnostics_available"] is True
+        assert report["target_candidate_audit_merged_present"] is True
+        assert report["classification"] != "WORKER_DIAGNOSTICS_MISSING"
+        loss = report.get("candidate_loss_analysis") or {}
+        assert loss.get("total_targets") == 24
+        assert "## Candidate loss analysis" in render_modal_discovery_audit_markdown(report)
+
+
+def test_audit_reads_merged_after_compaction_without_workers():
+    with tempfile.TemporaryDirectory() as td:
+        run_root = Path(td)
+        _write_box_like_run(run_root, with_worker_results=True, compacted=True)
+        _write_per_chunk_target_audits(run_root, rows_per_chunk=1)
+        merge_target_candidate_audit_for_run(run_root)
+        __import__("shutil").rmtree(run_root / "worker_results")
+        report = build_modal_discovery_audit(run_root=run_root, shape_name="box")
+        assert report["worker_results_present_at_audit_time"] is False
+        assert report["candidate_level_diagnostics_available"] is True
+        assert report["candidate_diagnostics_source"] == MERGED_AUDIT_REL_AGG
 
 
 def test_audit_reads_aggregation_and_chunk_plan():
@@ -318,6 +445,12 @@ def main() -> int:
         test_target_candidate_audit_row_builder,
         test_classify_dedup_not_aggressive_for_box,
         test_candidate_audit_jsonl_roundtrip,
+        test_worker_append_writes_per_chunk_audit_jsonl,
+        test_required_audit_keys_present_even_when_null,
+        test_merge_creates_run_level_target_candidate_audit,
+        test_compaction_deletable_paths_do_not_include_merged_audit,
+        test_ensure_durable_survives_worker_results_removal,
+        test_audit_reads_merged_after_compaction_without_workers,
     ]
     failed = 0
     for fn in tests:

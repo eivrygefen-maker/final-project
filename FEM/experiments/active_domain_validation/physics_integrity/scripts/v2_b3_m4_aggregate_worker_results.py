@@ -637,6 +637,22 @@ def _write_outputs(
             partial=False,
         )
         write_json_atomic(result_path, result_body)
+        try:
+            from v2_b3_m4_target_candidate_audit_lib import merge_target_candidate_audit_for_run  # noqa: WPS433
+
+            chunk_ids = [str(d.get("chunk_id")) for d in (report.get("chunk_details") or []) if d.get("chunk_id")]
+            audit_meta = merge_target_candidate_audit_for_run(run_root, chunk_ids=chunk_ids)
+            result_body["target_candidate_audit_merged"] = audit_meta
+            if audit_meta.get("target_row_count"):
+                result_body["output_paths"]["target_candidate_audit_merged.jsonl"] = rel(
+                    agg_dir / "target_candidate_audit_merged.jsonl",
+                    repo_root=repo_root,
+                )
+        except Exception as exc:
+            result_body.setdefault("warnings", []).append(
+                f"target_candidate_audit_merge_failed:{type(exc).__name__}:{exc}"
+            )
+        write_json_atomic(result_path, result_body)
         report["output_paths"] = result_body["output_paths"]
         return
 

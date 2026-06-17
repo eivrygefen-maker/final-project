@@ -9,8 +9,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from v2_b3_m4_target_candidate_audit_lib import (  # noqa: E402
+    MERGED_AUDIT_REL_AGG,
+    MERGED_AUDIT_REL_VALIDATION,
     TARGET_CANDIDATE_AUDIT_FILENAME,
-    load_target_candidate_audit_rows,
+    audit_instrumentation_complete,
+    build_candidate_loss_analysis,
+    collect_chunk_target_candidate_rows,
+    collect_run_target_candidate_rows,
+    durable_chunk_audit_path,
+    load_merged_target_candidate_audit_rows,
+    merged_audit_path_agg,
 )
 
 AUDIT_SCHEMA = "m4_modal_discovery_audit_v1"
@@ -181,7 +189,8 @@ def _audit_chunk(
     worker = _load_json(worker_path) if worker_path.is_file() else {}
     solver = _load_json(solver_path) if solver_path.is_file() else {}
     chunk_targets = _load_json(chunk_targets_path) if chunk_targets_path.is_file() else {}
-    candidate_rows = load_target_candidate_audit_rows(chunk_dir)
+    candidate_rows = collect_chunk_target_candidate_rows(run_root, chunk_id)
+    durable_audit_path = durable_chunk_audit_path(run_root, chunk_id)
 
     targets_attempted = worker.get("targets_attempted")
     if targets_attempted is None and agg_detail:
@@ -215,7 +224,8 @@ def _audit_chunk(
         "chunk_id": chunk_id,
         "worker_result_present": worker_path.is_file(),
         "solver_result_present": solver_path.is_file(),
-        "target_candidate_audit_present": audit_jsonl_path.is_file(),
+        "target_candidate_audit_present": audit_jsonl_path.is_file() or durable_audit_path.is_file(),
+        "durable_target_candidate_audit_present": durable_audit_path.is_file(),
         "chunk_targets_present": chunk_targets_path.is_file(),
         "classification": (agg_detail or {}).get("classification"),
         "worker_status": worker.get("status") or (agg_detail or {}).get("worker_status"),
@@ -264,10 +274,21 @@ def classify_modal_discovery_issue(
     zone_contribution: Mapping[str, int],
     aggregate_rejection_tally: Mapping[str, int],
     avg_converged_per_target: Optional[float],
+    candidate_loss_classification: Optional[str] = None,
 ) -> str:
     freq_hi = None
     if frequency_range_hz and len(frequency_range_hz) >= 2:
         freq_hi = _finite_or_none(frequency_range_hz[1])
+
+    if candidate_level_diagnostics_available and candidate_loss_classification:
+        if candidate_loss_classification == "AUDIT_INCOMPLETE":
+            return "WORKER_DIAGNOSTICS_MISSING"
+        if candidate_loss_classification in (
+            "SOLVER_RETURNS_TOO_FEW_CANDIDATES",
+            "CANDIDATE_FILTER_TOO_STRICT",
+            "ACCEPTANCE_OR_AGGREGATION_LOSS",
+        ):
+            return candidate_loss_classification
 
     if not candidate_level_diagnostics_available:
         if dedup_removed <= max(2, int(0.15 * max(raw_mode_count, 1))):
@@ -364,35 +385,63 @@ def build_modal_discovery_audit(
     compaction = _compaction_state(run_root)
     worker_results_present = compaction["worker_results_dir_present"] and compaction["worker_chunk_dir_count"] > 0
 
-    all_per_target: List[Dict[str, Any]] = []
-    for ca in chunk_audits:
-        all_per_target.extend(list(ca.get("per_target_diagnostics") or []))
+    merged_rows, merged_source = collect_run_target_candidate_rows(run_root, chunk_ids)
+    if merged_rows:
+        by_chunk: Dict[str, List[Dict[str, Any]]] = {}
+        for row in merged_rows:
+            cid = str(row.get("chunk_id") or "unknown")
+            by_chunk.setdefault(cid, []).append(row)
+        for ca in chunk_audits:
+            cid = str(ca.get("chunk_id"))
+            if cid in by_chunk:
+                ca["per_target_diagnostics"] = by_chunk[cid]
+                ca["target_candidate_audit_present"] = True
+
+    all_per_target: List[Dict[str, Any]] = list(merged_rows) if merged_rows else []
+    if not all_per_target:
+        for ca in chunk_audits:
+            all_per_target.extend(list(ca.get("per_target_diagnostics") or []))
+
+    merged_audit_present = merged_audit_path_agg(run_root).is_file() or (
+        run_root / MERGED_AUDIT_REL_VALIDATION
+    ).is_file()
 
     candidate_audit_files = sum(1 for ca in chunk_audits if ca.get("target_candidate_audit_present"))
     solver_files = sum(1 for ca in chunk_audits if ca.get("solver_result_present"))
 
-    has_target_level = bool(all_per_target)
+    instrumentation_ok, instrumentation_missing = audit_instrumentation_complete(all_per_target)
     candidate_level_diagnostics_available = bool(
-        has_target_level
-        and (
-            candidate_audit_files > 0
-            or solver_files > 0
-            or any(
+        merged_audit_present
+        or (all_per_target and instrumentation_ok)
+        or (
+            all_per_target
+            and any(
                 r.get("candidate_count_raw") is not None or r.get("accepted_mode_count") is not None
                 for r in all_per_target
             )
         )
     )
 
+    candidate_loss_analysis = build_candidate_loss_analysis(all_per_target) if all_per_target else {
+        "audit_completeness": "AUDIT_INCOMPLETE",
+        "audit_incomplete_reasons": ["no_target_candidate_rows"],
+        "loss_classification": "AUDIT_INCOMPLETE",
+    }
+
     missing_diagnostics: List[str] = []
     if not candidate_level_diagnostics_available:
         if compaction["compaction_already_applied"] and not compaction["heavy_worker_artifacts_present"]:
             missing_diagnostics.append("worker heavy artifacts removed by compaction")
+        if not merged_audit_present:
+            missing_diagnostics.append(MERGED_AUDIT_REL_AGG)
+            missing_diagnostics.append(MERGED_AUDIT_REL_VALIDATION)
         if candidate_audit_files == 0:
-            missing_diagnostics.append(f"worker_results/*/target_candidate_audit.jsonl")
+            missing_diagnostics.append("worker_results/*/target_candidate_audit.jsonl")
         if solver_files == 0:
             missing_diagnostics.append("worker_results/*/solver_result.json targets[]")
         missing_diagnostics.extend(_missing_worker_diagnostic_fields(all_per_target))
+    elif not instrumentation_ok:
+        missing_diagnostics.extend(instrumentation_missing)
 
     aggregate_rejection: Dict[str, int] = {}
     converged_samples: List[float] = []
@@ -431,6 +480,7 @@ def build_modal_discovery_audit(
         zone_contribution=zone_contribution,
         aggregate_rejection_tally=aggregate_rejection,
         avg_converged_per_target=avg_converged,
+        candidate_loss_classification=candidate_loss_analysis.get("loss_classification"),
     )
 
     recommendations: List[str] = []
@@ -485,6 +535,10 @@ def build_modal_discovery_audit(
         "worker_results_present_at_audit_time": worker_results_present,
         "compaction_state": compaction,
         "candidate_level_diagnostics_available": candidate_level_diagnostics_available,
+        "candidate_diagnostics_source": merged_source if merged_rows else ("per_chunk" if all_per_target else "none"),
+        "target_candidate_audit_merged_present": merged_audit_present,
+        "audit_completeness": candidate_loss_analysis.get("audit_completeness"),
+        "candidate_loss_analysis": candidate_loss_analysis,
         "missing_diagnostics": sorted(set(missing_diagnostics)),
         "classification": classification,
         "classification_candidates": list(CLASSIFICATIONS),
@@ -496,6 +550,8 @@ def build_modal_discovery_audit(
             "aggregation_result": str(run_root / "aggregation" / "aggregation_result.json"),
             "worker_chunk_plan_preview": str(run_root / "lprod" / "worker_chunk_plan.preview.json"),
             "lprod_target_plan": str(run_root / "lprod" / "lprod_target_plan.json"),
+            "target_candidate_audit_merged_agg": str(merged_audit_path_agg(run_root)),
+            "target_candidate_audit_merged_validation": str(run_root / MERGED_AUDIT_REL_VALIDATION),
         },
     }
 
@@ -543,7 +599,29 @@ def render_modal_discovery_audit_markdown(report: Mapping[str, Any]) -> str:
     comp = report.get("compaction_state") or {}
     lines.append(f"- compaction_already_applied: `{comp.get('compaction_already_applied')}`")
     lines.append(f"- heavy_worker_artifacts_present: `{comp.get('heavy_worker_artifacts_present')}`")
+    lines.append(f"- target_candidate_audit_merged_present: `{report.get('target_candidate_audit_merged_present')}`")
+    lines.append(f"- candidate_diagnostics_source: `{report.get('candidate_diagnostics_source')}`")
+    lines.append(f"- audit_completeness: `{report.get('audit_completeness')}`")
     lines.append("")
+
+    loss = report.get("candidate_loss_analysis") or {}
+    if report.get("candidate_level_diagnostics_available") and loss:
+        lines.extend(["## Candidate loss analysis", ""])
+        lines.append(f"- loss_classification: `{loss.get('loss_classification')}`")
+        lines.append(f"- total_targets: `{loss.get('total_targets')}`")
+        lines.append(f"- total_raw_candidates: `{loss.get('total_raw_candidates')}`")
+        lines.append(f"- total_accepted_modes: `{loss.get('total_accepted_modes')}`")
+        lines.append(f"- total_rejected_candidates: `{loss.get('total_rejected_candidates')}`")
+        lines.append(f"- targets_with_zero_raw_candidates: `{loss.get('targets_with_zero_raw_candidates')}`")
+        lines.append(
+            f"- targets_with_raw_candidates_zero_accepted: "
+            f"`{loss.get('targets_with_raw_candidates_zero_accepted')}`"
+        )
+        lines.append(f"- rejection_reason_histogram: `{json.dumps(loss.get('rejection_reason_histogram') or {}, sort_keys=True)}`")
+        lines.append(f"- requested_eigenpairs_summary: `{json.dumps(loss.get('requested_eigenpairs_summary') or {}, sort_keys=True)}`")
+        lines.append(f"- solver_factor_summary: `{json.dumps(loss.get('solver_factor_summary') or {}, sort_keys=True)}`")
+        lines.append(f"- acceptance_window_summary: `{json.dumps(loss.get('acceptance_window_summary') or {}, sort_keys=True)}`")
+        lines.append("")
 
     if not report.get("candidate_level_diagnostics_available"):
         lines.extend(

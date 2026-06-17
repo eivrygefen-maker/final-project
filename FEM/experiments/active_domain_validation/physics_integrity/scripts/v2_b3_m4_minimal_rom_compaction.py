@@ -65,6 +65,8 @@ MINIMAL_ROM_RETAIN_REQUIRED_FILES: Tuple[str, ...] = (
 
 MINIMAL_ROM_RETAIN_OPTIONAL_FILES: Tuple[str, ...] = (
     "aggregation/warnings_and_failures.json",
+    "aggregation/target_candidate_audit_merged.jsonl",
+    "validation/target_candidate_audit_merged.jsonl",
     "freeze/artifact_index.json",
     "freeze/sample_e2e_run_manifest.json",
     "sample/sample_resolved_config_manifest.json",
@@ -427,6 +429,17 @@ def compact_minimal_rom_durable_run(
         outcome.errors = gate_errors
         outcome.runtime_s = round(time.perf_counter() - t0, 4)
         return outcome
+
+    try:
+        from v2_b3_m4_target_candidate_audit_lib import ensure_target_candidate_audit_durable  # noqa: WPS433
+
+        audit_persist = ensure_target_candidate_audit_durable(run_root)
+        if audit_persist.get("target_row_count"):
+            outcome.warnings.append(
+                f"target_candidate_audit_persisted rows={audit_persist.get('target_row_count')}"
+            )
+    except Exception as exc:
+        outcome.warnings.append(f"target_candidate_audit_persist_failed:{type(exc).__name__}:{exc}")
 
     deletable = collect_minimal_rom_deletable_paths(run_root)
     outcome.retained_paths = sorted(minimal_rom_retain_rel_paths(run_root))
