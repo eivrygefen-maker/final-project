@@ -15,6 +15,7 @@ PROFILES_CONFIG_PATH = REPO_ROOT / "configs" / "shape_validation_profiles.json"
 # Frozen reference baseline — do not change thresholds without a new profile_id revision.
 CLASSIC_LOCKED_PROFILE_ID = "classical_guitar_reference_v1_locked"
 CLASSIC_LEGACY_PROFILE_ALIAS = "classical_guitar_reference_v1"
+CLASSIC_REFERENCE_BASELINE = "classic_lhs_67_simulations"
 
 _LOCKED_PROFILE_FIELD_KEYS = frozenset(
     {
@@ -38,7 +39,7 @@ _BUILTIN_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "profile_id": CLASSIC_LOCKED_PROFILE_ID,
         "profile_type": "classical_reference",
         "locked": True,
-        "reference_baseline": "classic_lhs_6_simulations",
+        "reference_baseline": CLASSIC_REFERENCE_BASELINE,
         "mode_count_min": 8,
         "mode_count_warn_below": 10,
         "deduped_mode_count_min": 8,
@@ -50,7 +51,7 @@ _BUILTIN_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "air_share_policy": "classical_reference",
         "frequency_band_policy": "classical_body_modes",
         "notes": (
-            "Locked classical guitar reference baseline (6 existing CLASSIC simulations). "
+            "Locked classical guitar reference baseline (67 existing CLASSIC simulations). "
             "Thresholds are frozen; advisory validator only — does not alter production acceptance."
         ),
     },

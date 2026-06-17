@@ -20,6 +20,7 @@ from m4_shape_context import resolve_shape_context  # noqa: E402
 from m4_shape_validation_profile import (  # noqa: E402
     CLASSIC_LOCKED_PROFILE_ID,
     CLASSIC_LEGACY_PROFILE_ALIAS,
+    CLASSIC_REFERENCE_BASELINE,
     classic_locked_profile_snapshot,
     register_custom_shape_validation_profile,
     resolve_shape_validation_profile,
@@ -180,6 +181,15 @@ def test_classic_resolves_locked_reference_profile() -> None:
     assert ctx.shape_validation_profile_id == CLASSIC_LOCKED_PROFILE_ID
     assert ctx.physical_acceptance_profile["profile_type"] == "classical_reference"
     assert ctx.physical_acceptance_profile.get("locked") is True
+    assert prof.to_dict().get("reference_baseline") == CLASSIC_REFERENCE_BASELINE
+
+
+def test_classic_locked_profile_reports_67_sim_reference_baseline() -> None:
+    snapshot = classic_locked_profile_snapshot()
+    assert snapshot["reference_baseline"] == CLASSIC_REFERENCE_BASELINE
+    assert snapshot["reference_baseline"] == "classic_lhs_67_simulations"
+    prof = resolve_shape_validation_profile("classic")
+    assert prof.to_dict().get("reference_baseline") == "classic_lhs_67_simulations"
 
 
 def test_classic_legacy_alias_resolves_to_locked() -> None:
@@ -350,6 +360,7 @@ def test_baseline_insufficient_sample_count() -> None:
 def main() -> int:
     tests = [
         test_classic_resolves_locked_reference_profile,
+        test_classic_locked_profile_reports_67_sim_reference_baseline,
         test_classic_legacy_alias_resolves_to_locked,
         test_classic_locked_profile_immune_to_config_drift,
         test_box_profile_does_not_alter_classic_resolution,

@@ -214,16 +214,17 @@ from pathlib import Path
 repo = Path("${REPO_ROOT}")
 sys.path.insert(0, str(repo / "FEM" / "scripts"))
 from m4_shape_context import resolve_shape_context
-from m4_shape_validation_profile import CLASSIC_LOCKED_PROFILE_ID, resolve_shape_validation_profile
+from m4_shape_validation_profile import CLASSIC_LOCKED_PROFILE_ID, CLASSIC_REFERENCE_BASELINE, resolve_shape_validation_profile
 ctx = resolve_shape_context("classic")
 assert ctx.geometry_shape_type == "Classical", ctx.geometry_shape_type
 prof = resolve_shape_validation_profile("classic")
 assert prof.profile_id == CLASSIC_LOCKED_PROFILE_ID, prof.profile_id
 assert prof.locked is True
+assert prof.to_dict().get("reference_baseline") == CLASSIC_REFERENCE_BASELINE, prof.to_dict().get("reference_baseline")
 assert ctx.shape_validation_profile_id == CLASSIC_LOCKED_PROFILE_ID
-print("classic_locked_baseline_ok profile=", prof.profile_id)
+print("classic_locked_baseline_ok profile=", prof.profile_id, "reference_baseline=", CLASSIC_REFERENCE_BASELINE)
 PY
-ok "CLASSIC locked reference profile (6-sim baseline unchanged)"
+ok "CLASSIC locked reference profile (67-sim baseline unchanged)"
 EVAL_SHAPE_SCRIPT="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/evaluate_shape_physical_acceptance.py"
 if [[ -f "${EVAL_SHAPE_SCRIPT}" ]]; then
   ok "present evaluate_shape_physical_acceptance.py"

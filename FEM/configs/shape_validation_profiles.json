@@ -4,7 +4,7 @@
     "classical_guitar_reference_v1_locked": {
       "profile_type": "classical_reference",
       "locked": true,
-      "reference_baseline": "classic_lhs_6_simulations",
+      "reference_baseline": "classic_lhs_67_simulations",
       "mode_count_min": 8,
       "mode_count_warn_below": 10,
       "deduped_mode_count_min": 8,
@@ -15,7 +15,7 @@
       "top_back_air_share_policy": "classical_reference",
       "air_share_policy": "classical_reference",
       "frequency_band_policy": "classical_body_modes",
-      "notes": "Locked classical reference baseline for 6 existing CLASSIC simulations. Thresholds must not drift."
+      "notes": "Locked classical reference baseline for 67 existing CLASSIC simulations. Thresholds must not drift."
     },
     "classical_guitar_reference_v1": {
       "alias_of": "classical_guitar_reference_v1_locked",
