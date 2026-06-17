@@ -557,7 +557,7 @@ def run_stage3_zones_target_plan(
     try:
         density_body = _load_json(density_json)
         if strict_density:
-            if str(density_body.get("status") or "") != "PASS":
+            if str(density_body.get("status") or "") not in ("PASS", "PASS_WITH_WARNING"):
                 raise RuntimeError(
                     f"strict_density_status={density_body.get('status') or 'missing'} "
                     f"intrinsic_pass={density_body.get('intrinsic_coverage_pass')}"

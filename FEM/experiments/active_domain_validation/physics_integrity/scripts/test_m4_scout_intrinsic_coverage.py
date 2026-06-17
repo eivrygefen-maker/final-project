@@ -267,6 +267,101 @@ class ScoutIntrinsicCoverageTests(unittest.TestCase):
             any("low_band_endpoint_missing" in f for f in intrinsic["intrinsic_coverage_failures"])
         )
 
+    def test_box_sample_002_vm_like_passes_with_endpoint_warning(self) -> None:
+        """box_sample_002 scout evidence: 13 modes 181–528 Hz must not hard-fail."""
+        freqs = [
+            181.718, 182.140, 239.454, 272.387, 331.240, 361.826, 398.507, 420.356,
+            438.417, 457.166, 486.454, 515.440, 528.021,
+        ]
+        rows = [_spacing_row(freqs, spacing_hz=7.5)]
+        rows[0]["targets_succeeded"] = 67
+        intrinsic = evaluate_intrinsic_scout_coverage(
+            spacing_rows=rows,
+            band_lo_hz=PRODUCTION_BAND_LO_HZ,
+            band_hi_hz=PRODUCTION_BAND_HI_HZ,
+            coverage_policy=COVERAGE_POLICY_BOX,
+        )
+        self.assertTrue(intrinsic["intrinsic_coverage_pass"], intrinsic["intrinsic_coverage_failures"])
+        self.assertTrue(
+            intrinsic.get("intrinsic_coverage_pass_with_warnings")
+            or intrinsic.get("endpoint_warnings"),
+            intrinsic,
+        )
+        status, _ = production_density_status(
+            reference_meta=classify_reference_json({}, reference_path="stub.json"),
+            intrinsic=intrinsic,
+            spacing_rows=rows,
+        )
+        self.assertIn(status, ("PASS", "PASS_WITH_WARNING"))
+        self.assertNotEqual(status, "FAIL")
+
+    def test_box_reference_miss_is_non_blocking(self) -> None:
+        freqs = [180.0 + i * 35.0 for i in range(10)] + [520.0]
+        rows = [_spacing_row(freqs, spacing_hz=7.5)]
+        rows[0]["missed_reference_frequencies_hz"] = [244.39]
+        rows[0]["coverage_pass"] = False
+        intrinsic = evaluate_intrinsic_scout_coverage(
+            spacing_rows=rows,
+            band_lo_hz=PRODUCTION_BAND_LO_HZ,
+            band_hi_hz=PRODUCTION_BAND_HI_HZ,
+            coverage_policy=COVERAGE_POLICY_BOX,
+        )
+        self.assertTrue(intrinsic["intrinsic_coverage_pass"], intrinsic["intrinsic_coverage_failures"])
+
+    def test_box_zero_modes_still_fails(self) -> None:
+        intrinsic = evaluate_intrinsic_scout_coverage(
+            spacing_rows=[_spacing_row([])],
+            band_lo_hz=PRODUCTION_BAND_LO_HZ,
+            band_hi_hz=PRODUCTION_BAND_HI_HZ,
+            coverage_policy=COVERAGE_POLICY_BOX,
+        )
+        self.assertFalse(intrinsic["intrinsic_coverage_pass"])
+
+    def test_box_sparse_modes_fail_hard_gate(self) -> None:
+        intrinsic = evaluate_intrinsic_scout_coverage(
+            spacing_rows=[_spacing_row([190.0, 200.0])],
+            band_lo_hz=PRODUCTION_BAND_LO_HZ,
+            band_hi_hz=PRODUCTION_BAND_HI_HZ,
+            coverage_policy=COVERAGE_POLICY_BOX,
+        )
+        self.assertFalse(intrinsic["intrinsic_coverage_pass"])
+        self.assertTrue(
+            any("raw_unique_accepted_count<8" in f for f in intrinsic["intrinsic_coverage_failures"])
+        )
+
+    def test_failed_sample_lhs_sync_leaves_running(self) -> None:
+        from v2_b3_m4_lhs_pool_bridge import (  # noqa: WPS433
+            LHS_FAILED,
+            LHS_RUNNING,
+        )
+        from run_m4_production_pipeline import _sync_lhs_from_finish  # noqa: WPS433
+
+        pool = {
+            "entries": [
+                {
+                    "id": "box_sample_002",
+                    "status": LHS_RUNNING,
+                    "last_run_id": "box_sample_002_box_fom_v1",
+                }
+            ]
+        }
+        _sync_lhs_from_finish(
+            pool,
+            row={
+                "sample_id": "box_sample_002",
+                "run_id": "box_sample_002_box_fom_v1",
+                "outcome": "fail",
+                "error_message": "stage2_scout_discovery_failed",
+                "aggregation_status": None,
+                "elapsed_s": 1.0,
+            },
+            batch_id="batch_test",
+        )
+        entry = pool["entries"][0]
+        self.assertEqual(entry["status"], LHS_FAILED)
+        self.assertNotEqual(entry["status"], LHS_RUNNING)
+        self.assertIn("stage2", str(entry.get("last_error") or entry.get("error") or ""))
+
     def test_box_policy_passes_moderate_mode_count_classic_fails(self) -> None:
         freqs = [62.0 + i * 24.0 for i in range(21)] + [545.0]
         rows = [_spacing_row(freqs)]

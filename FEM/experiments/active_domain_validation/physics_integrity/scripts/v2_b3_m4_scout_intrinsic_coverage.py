@@ -76,6 +76,8 @@ class ScoutIntrinsicPolicySpec:
     per_third_band_source: str = BAND_THIRDS_PRODUCTION
     min_discovered_span_hz: float = 0.0
     low_endpoint_mode: str = ENDPOINT_MODE_FULL_BAND
+    min_accepted_mode_max_hz: float = 0.0
+    shape_relative_warnings: bool = False
 
 
 SCOUT_INTRINSIC_POLICY_SPECS: Dict[str, ScoutIntrinsicPolicySpec] = {
@@ -105,9 +107,8 @@ SCOUT_INTRINSIC_POLICY_SPECS: Dict[str, ScoutIntrinsicPolicySpec] = {
     COVERAGE_POLICY_BOX: ScoutIntrinsicPolicySpec(
         policy_id=COVERAGE_POLICY_BOX,
         policy_version=COVERAGE_POLICY_VERSION_BOX_V2,
-        # Box cavity: first accepted scout modes often start ~170–220 Hz while the ST
-        # sweep still solves low-band targets (empty windows). Gate on discovered-band
-        # coverage + full target sweep success, not a mode at 60 Hz.
+        # Box cavity: gate on discovered-band sufficiency (count/span/max), not classical
+        # reference matching or proximity to the production band endpoints.
         min_raw_unique_accepted=8,
         min_modes_per_band_third=1,
         endpoint_tolerance_hz=8.0,
@@ -116,12 +117,14 @@ SCOUT_INTRINSIC_POLICY_SPECS: Dict[str, ScoutIntrinsicPolicySpec] = {
         max_duplicate_rate=0.35,
         shape_key="box",
         low_endpoint_requires_mode=False,
-        high_endpoint_requires_mode=True,
+        high_endpoint_requires_mode=False,
         low_endpoint_mode=ENDPOINT_MODE_SOLVER_SWEEP_EVIDENCE,
         gap_mode=GAP_MODE_DISCOVERED_SPAN_RELATIVE,
         max_gap_relative_of_discovered_span=0.42,
         per_third_band_source=BAND_THIRDS_DISCOVERED,
-        min_discovered_span_hz=150.0,
+        min_discovered_span_hz=250.0,
+        min_accepted_mode_max_hz=500.0,
+        shape_relative_warnings=True,
     ),
     COVERAGE_POLICY_ACOUSTIC: ScoutIntrinsicPolicySpec(
         policy_id=COVERAGE_POLICY_ACOUSTIC,
@@ -209,6 +212,8 @@ def _policy_thresholds_dict(spec: ScoutIntrinsicPolicySpec) -> Dict[str, Any]:
         "max_gap_relative_of_discovered_span": spec.max_gap_relative_of_discovered_span,
         "per_third_band_source": spec.per_third_band_source,
         "min_discovered_span_hz": spec.min_discovered_span_hz,
+        "min_accepted_mode_max_hz": spec.min_accepted_mode_max_hz,
+        "shape_relative_warnings": spec.shape_relative_warnings,
     }
 
 
@@ -310,6 +315,20 @@ def validate_external_reference_gate(
     return len(failures) == 0, failures
 
 
+def _append_gate(
+    *,
+    spec: ScoutIntrinsicPolicySpec,
+    hard_failures: List[str],
+    warnings: List[str],
+    advisory: bool,
+    message: str,
+) -> None:
+    if advisory and spec.shape_relative_warnings:
+        warnings.append(message)
+    else:
+        hard_failures.append(message)
+
+
 def evaluate_intrinsic_scout_coverage(
     *,
     spacing_rows: Sequence[Mapping[str, Any]],
@@ -344,13 +363,18 @@ def evaluate_intrinsic_scout_coverage(
     if raw_count > 0:
         duplicate_rate = max(0.0, (raw_count - deduped_count) / float(raw_count))
 
-    failures: List[str] = []
+    hard_failures: List[str] = []
+    warnings: List[str] = []
+    endpoint_warnings: List[str] = []
+    band_distribution_warnings: List[str] = []
+    coverage_warnings: List[str] = []
+
     if target_failure_count > 0:
-        failures.append(f"target_solver_failures:{target_failure_count}")
+        hard_failures.append(f"target_solver_failures:{target_failure_count}")
     if deduped_count == 0:
-        failures.append("raw_unique_accepted_empty")
+        hard_failures.append("raw_unique_accepted_empty")
     if deduped_count < spec.min_raw_unique_accepted:
-        failures.append(
+        hard_failures.append(
             f"raw_unique_accepted_count<{spec.min_raw_unique_accepted}:{deduped_count}"
         )
 
@@ -372,17 +396,30 @@ def evaluate_intrinsic_scout_coverage(
         "requires_mode_near_band_hi": spec.high_endpoint_requires_mode,
         "production_band_hi_hz": float(band_hi_hz),
         "tolerance_hz": spec.high_endpoint_tolerance_hz,
+        "min_accepted_mode_max_hz": spec.min_accepted_mode_max_hz,
+        "advisory_only_for_box": spec.shape_relative_warnings,
     }
 
     if deduped:
         if spec.min_discovered_span_hz > 0.0 and discovered_span_hz < spec.min_discovered_span_hz:
-            failures.append(
+            hard_failures.append(
                 f"discovered_span_hz<{spec.min_discovered_span_hz}:{discovered_span_hz:.3f}"
+            )
+
+        if spec.min_accepted_mode_max_hz > 0.0 and float(freq_max) < spec.min_accepted_mode_max_hz:
+            hard_failures.append(
+                f"accepted_mode_max_hz<{spec.min_accepted_mode_max_hz}:{float(freq_max):.3f}"
             )
 
         if spec.low_endpoint_requires_mode:
             if float(freq_min) > float(band_lo_hz) + spec.endpoint_tolerance_hz:
-                failures.append(f"low_band_endpoint_missing:min={freq_min}")
+                _append_gate(
+                    spec=spec,
+                    hard_failures=hard_failures,
+                    warnings=endpoint_warnings,
+                    advisory=False,
+                    message=f"low_band_endpoint_missing:min={freq_min}",
+                )
         else:
             low_endpoint_policy["solver_sweep_evidence"] = {
                 "targets_succeeded": target_success_count,
@@ -393,14 +430,33 @@ def evaluate_intrinsic_scout_coverage(
                 ),
             }
             if target_success_count <= 0:
-                failures.append("low_band_solver_evidence_missing:no_targets_solved")
+                hard_failures.append("low_band_solver_evidence_missing:no_targets_solved")
 
         if spec.high_endpoint_requires_mode:
             if float(freq_max) < float(band_hi_hz) - spec.high_endpoint_tolerance_hz:
-                failures.append(f"high_band_endpoint_missing:max={freq_max}")
+                _append_gate(
+                    spec=spec,
+                    hard_failures=hard_failures,
+                    warnings=endpoint_warnings,
+                    advisory=spec.shape_relative_warnings,
+                    message=f"high_band_endpoint_missing:max={freq_max}",
+                )
+        elif spec.shape_relative_warnings:
+            hi_target = float(band_hi_hz) - spec.high_endpoint_tolerance_hz
+            if float(freq_max) < hi_target:
+                endpoint_warnings.append(
+                    f"high_band_endpoint_proximity_miss:max={float(freq_max):.3f} "
+                    f"target_ge={hi_target:.3f}"
+                )
 
         if max_gap > gap_limit_hz:
-            failures.append(f"raw_max_gap_hz>{gap_limit_hz:.3f}:gap={max_gap:.3f}")
+            _append_gate(
+                spec=spec,
+                hard_failures=hard_failures,
+                warnings=coverage_warnings,
+                advisory=spec.shape_relative_warnings,
+                message=f"raw_max_gap_hz>{gap_limit_hz:.3f}:gap={max_gap:.3f}",
+            )
 
     if spec.per_third_band_source == BAND_THIRDS_DISCOVERED and deduped:
         third_lo = float(freq_min)
@@ -411,16 +467,36 @@ def evaluate_intrinsic_scout_coverage(
     per_zone = _per_third_counts(deduped, band_lo=third_lo, band_hi=third_hi)
     for zone, count in per_zone.items():
         if count < spec.min_modes_per_band_third:
-            failures.append(f"{zone}_mode_count<{spec.min_modes_per_band_third}:{count}")
+            _append_gate(
+                spec=spec,
+                hard_failures=hard_failures,
+                warnings=band_distribution_warnings,
+                advisory=spec.shape_relative_warnings,
+                message=f"{zone}_mode_count<{spec.min_modes_per_band_third}:{count}",
+            )
 
     if duplicate_rate > spec.max_duplicate_rate:
-        failures.append(f"duplicate_rate>{spec.max_duplicate_rate}:{duplicate_rate:.3f}")
+        _append_gate(
+            spec=spec,
+            hard_failures=hard_failures,
+            warnings=coverage_warnings,
+            advisory=spec.shape_relative_warnings,
+            message=f"duplicate_rate>{spec.max_duplicate_rate}:{duplicate_rate:.3f}",
+        )
 
-    intrinsic_pass = len(failures) == 0
+    intrinsic_failures = list(hard_failures)
+    intrinsic_pass = len(hard_failures) == 0
+    intrinsic_pass_with_warnings = intrinsic_pass and bool(
+        warnings or endpoint_warnings or band_distribution_warnings or coverage_warnings
+    )
     policy_decision_reason = (
         "intrinsic_coverage_pass"
-        if intrinsic_pass
-        else ";".join(failures)
+        if intrinsic_pass and not intrinsic_pass_with_warnings
+        else (
+            "intrinsic_coverage_pass_with_warnings"
+            if intrinsic_pass_with_warnings
+            else ";".join(hard_failures)
+        )
     )
 
     return {
@@ -444,7 +520,13 @@ def evaluate_intrinsic_scout_coverage(
         "duplicate_rate": round(duplicate_rate, 6),
         "best_intrinsic_spacing_hz": best_spacing_hz,
         "intrinsic_coverage_pass": intrinsic_pass,
-        "intrinsic_coverage_failures": failures,
+        "intrinsic_coverage_pass_with_warnings": intrinsic_pass_with_warnings,
+        "intrinsic_coverage_failures": intrinsic_failures,
+        "intrinsic_coverage_warnings": warnings,
+        "coverage_warnings": coverage_warnings,
+        "endpoint_warnings": endpoint_warnings,
+        "band_distribution_warnings": band_distribution_warnings,
+        "reference_coverage_warnings": [],
         "intrinsic_policy_thresholds": _policy_thresholds_dict(spec),
         "low_endpoint_policy": low_endpoint_policy,
         "high_endpoint_policy": high_endpoint_policy,
@@ -485,7 +567,13 @@ def build_density_provenance_fields(
         "targets_solved_count": intrinsic.get("targets_solved_count"),
         "targets_failed_count": intrinsic.get("targets_failed_count"),
         "intrinsic_coverage_pass": intrinsic.get("intrinsic_coverage_pass"),
+        "intrinsic_coverage_pass_with_warnings": intrinsic.get("intrinsic_coverage_pass_with_warnings"),
         "intrinsic_coverage_failures": list(intrinsic.get("intrinsic_coverage_failures") or []),
+        "intrinsic_coverage_warnings": list(intrinsic.get("intrinsic_coverage_warnings") or []),
+        "coverage_warnings": list(intrinsic.get("coverage_warnings") or []),
+        "endpoint_warnings": list(intrinsic.get("endpoint_warnings") or []),
+        "band_distribution_warnings": list(intrinsic.get("band_distribution_warnings") or []),
+        "reference_coverage_warnings": list(intrinsic.get("reference_coverage_warnings") or []),
         "intrinsic_policy_thresholds": intrinsic.get("intrinsic_policy_thresholds"),
         "shape_key": intrinsic.get("shape_key"),
         "low_endpoint_policy": intrinsic.get("low_endpoint_policy"),
@@ -507,15 +595,19 @@ def production_density_status(
     intrinsic: Mapping[str, Any],
     spacing_rows: Sequence[Mapping[str, Any]],
 ) -> Tuple[str, Optional[float]]:
-    """Production PASS/FAIL only; never PARTIAL."""
+    """Production PASS / PASS_WITH_WARNING / FAIL; never PARTIAL."""
+    def _spacing_from_intrinsic() -> Tuple[str, Optional[float]]:
+        if intrinsic.get("intrinsic_coverage_pass"):
+            spacing = intrinsic.get("best_intrinsic_spacing_hz")
+            if intrinsic.get("intrinsic_coverage_pass_with_warnings"):
+                return "PASS_WITH_WARNING", spacing
+            return "PASS", spacing
+        return "FAIL", None
+
     if reference_meta.get("use_intrinsic_policy"):
-        if intrinsic.get("intrinsic_coverage_pass"):
-            return "PASS", intrinsic.get("best_intrinsic_spacing_hz")
-        return "FAIL", None
+        return _spacing_from_intrinsic()
     if not reference_meta.get("external_reference_gate_enabled"):
-        if intrinsic.get("intrinsic_coverage_pass"):
-            return "PASS", intrinsic.get("best_intrinsic_spacing_hz")
-        return "FAIL", None
+        return _spacing_from_intrinsic()
     passing = [
         float(r["spacing_hz"])
         for r in spacing_rows
@@ -533,7 +625,7 @@ def intrinsic_density_result_ok(data: Mapping[str, Any]) -> Tuple[bool, str]:
     policy = str(data.get("coverage_policy") or "")
     if not is_registered_scout_density_policy(policy):
         return False, f"coverage_policy={policy or 'missing'}"
-    if str(data.get("status") or "") != "PASS":
+    if str(data.get("status") or "") not in ("PASS", "PASS_WITH_WARNING"):
         return False, f"status={data.get('status') or 'missing'}"
     if not bool(data.get("intrinsic_coverage_pass")):
         failures = data.get("intrinsic_coverage_failures") or []

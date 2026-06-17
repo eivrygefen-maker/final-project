@@ -554,6 +554,24 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
             dedupe_tol_hz=tol_hz,
             coverage_policy=coverage_policy,
         )
+        ref_warnings: List[str] = []
+        for row in spacing_rows:
+            missed = list(row.get("missed_reference_frequencies_hz") or [])
+            if missed:
+                ref_warnings.append(
+                    f"spacing_hz={row.get('spacing_hz')}:missed_reference_count={len(missed)}"
+                )
+        if ref_warnings and intrinsic.get("shape_key") == "box":
+            intrinsic["reference_coverage_warnings"] = ref_warnings
+            intrinsic["intrinsic_coverage_pass_with_warnings"] = bool(
+                intrinsic.get("intrinsic_coverage_pass")
+                and (
+                    ref_warnings
+                    or intrinsic.get("endpoint_warnings")
+                    or intrinsic.get("band_distribution_warnings")
+                    or intrinsic.get("coverage_warnings")
+                )
+            )
         experiment.update(build_density_provenance_fields(reference_meta=reference_meta, intrinsic=intrinsic))
         experiment["scout_density_policy_requested"] = coverage_policy
         experiment["shape_name"] = shape_key
@@ -608,8 +626,18 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
             )
             experiment["status"] = status
             experiment["sparsest_coverage_pass_spacing_hz"] = sparsest_intrinsic
-            if status != "PASS":
+            if status == "FAIL":
                 experiment["failure_reason"] = ",".join(intrinsic.get("intrinsic_coverage_failures") or [])
+            elif status == "PASS_WITH_WARNING":
+                warn_parts: List[str] = []
+                for key in (
+                    "endpoint_warnings",
+                    "band_distribution_warnings",
+                    "coverage_warnings",
+                    "reference_coverage_warnings",
+                ):
+                    warn_parts.extend(list(intrinsic.get(key) or []))
+                experiment["coverage_warning_summary"] = warn_parts
         else:
             any_pass = any(bool(r.get("coverage_pass")) for r in spacing_rows)
             all_fail = all(str(r.get("status")) == "FAIL" for r in spacing_rows)
@@ -632,7 +660,7 @@ def run_target_density_experiment(argv: Optional[List[str]] = None) -> int:
             f"-> {output_dir / 'density_result.json'}",
             flush=True,
         )
-        return 0 if experiment["status"] == "PASS" else 2
+        return 0 if experiment["status"] in ("PASS", "PASS_WITH_WARNING") else 2
     except Exception as exc:
         experiment["failure_reason"] = f"{type(exc).__name__}:{exc}"
         experiment["experiment_wall_s"] = safe_float(time.perf_counter() - t_experiment0)

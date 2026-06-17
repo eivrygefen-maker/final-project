@@ -941,6 +941,18 @@ def run_production_batch(
             "production_acceptance": acceptance,
             **summary,
         }
+        manifest_path = run_root / "pipeline_run_manifest.json"
+        if manifest_path.is_file():
+            try:
+                from v2_b3_m4_worker_run_lib import load_json as _load_manifest  # noqa: WPS433
+
+                manifest_doc = _load_manifest(manifest_path)
+                if manifest_doc.get("failure_reason"):
+                    row["pipeline_failure_reason"] = manifest_doc.get("failure_reason")
+                    if not row.get("error_message"):
+                        row["error_message"] = str(manifest_doc.get("failure_reason"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
         require_cleanup_barrier = bool(compact_after_sample) or bool(strict_production)
         require_graph_export = bool(strict_production) and shared_root is not None
         prelim_outcome, _ = classify_sample_outcome(return_code=rc, summary=summary)
@@ -1104,6 +1116,8 @@ def run_production_batch(
             print(f"[pass] {sid}: AGGREGATION_PASS elapsed_s={elapsed:.1f}", flush=True)
         else:
             failed.append(row)
+            if on_sample_finish is not None:
+                on_sample_finish(row)
             print(f"[fail] {sid}: rc={rc} aggregation={summary.get('aggregation_status')}", flush=True)
             if not continue_on_fail:
                 print("error: stopping batch (--continue-on-fail not set)", file=sys.stderr)

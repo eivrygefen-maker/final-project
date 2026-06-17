@@ -515,7 +515,7 @@ def _verify_density_result(
         ok, detail = _density_reference_coverage_ok(data)
         if not ok:
             return False, f"strict_density:{detail}", data
-    elif status not in ("PASS", "PARTIAL"):
+    elif status not in ("PASS", "PASS_WITH_WARNING", "PARTIAL"):
         return False, f"status={status!r}", data
     spacings = data.get("spacings") or []
     if not spacings:

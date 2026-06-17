@@ -250,6 +250,13 @@ else
   bad "missing evaluate_modal_discovery_audit.py"
 fi
 LHS_GUARD_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_lhs_pool_guard_test.py"
+SCOUT_INTRINSIC_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/test_m4_scout_intrinsic_coverage.py"
+if python3 "${SCOUT_INTRINSIC_TEST}" >/tmp/shape_fom_smoke_scout_intrinsic.log 2>&1; then
+  ok "BOX scout intrinsic coverage policy (shape-relative gates)"
+else
+  bad "scout intrinsic coverage tests failed (see /tmp/shape_fom_smoke_scout_intrinsic.log)"
+fi
+
 if python3 "${LHS_GUARD_TEST}" >/tmp/shape_fom_smoke_lhs_guard.log 2>&1; then
   ok "LHS pool truncation guard + in-place status updates"
 else
