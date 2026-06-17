@@ -249,6 +249,12 @@ if [[ -f "${EVAL_MODAL_AUDIT}" ]]; then
 else
   bad "missing evaluate_modal_discovery_audit.py"
 fi
+LHS_GUARD_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_lhs_pool_guard_test.py"
+if python3 "${LHS_GUARD_TEST}" >/tmp/shape_fom_smoke_lhs_guard.log 2>&1; then
+  ok "LHS pool truncation guard + in-place status updates"
+else
+  bad "LHS pool guard tests failed (see /tmp/shape_fom_smoke_lhs_guard.log)"
+fi
 
 echo ""
 echo "Smoke: ${PASS} passed, ${FAIL} failed"

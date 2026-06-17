@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -789,17 +790,77 @@ def lhs_pool_entry_patch_from_run(
     }
 
 
-def write_lhs_pool(lhs_path: Path, pool: Mapping[str, Any]) -> Path:
-    """Write lhs_pool.json atomically. No timestamped backup copies."""
+def lhs_pool_entry_count(pool: Mapping[str, Any]) -> int:
+    entries = pool.get("entries")
+    return len(entries) if isinstance(entries, list) else 0
+
+
+class LhsPoolTruncationError(RuntimeError):
+    """Raised when a write would shrink entries[] without explicit regeneration."""
+
+
+def backup_lhs_pool(lhs_path: Path) -> Optional[Path]:
+    """Write ``lhs_pool.json.bak.<timestamp>`` before mutating the pool."""
     lhs_path = lhs_path.expanduser().resolve()
+    if not lhs_path.is_file():
+        return None
+    ts = utc_now().replace(":", "").replace("-", "")
+    bak_path = lhs_path.with_name(f"{lhs_path.name}.bak.{ts}")
+    shutil.copy2(lhs_path, bak_path)
+    return bak_path
+
+
+def write_lhs_pool(
+    lhs_path: Path,
+    pool: Mapping[str, Any],
+    *,
+    explicit_lhs_regeneration: bool = False,
+) -> Path:
+    """
+    Write lhs_pool.json atomically with truncation guard and timestamped backup.
+
+    Status updates must preserve all entries. Pass explicit_lhs_regeneration=True only
+    for deliberate pool regeneration/reset commands.
+    """
+    lhs_path = lhs_path.expanduser().resolve()
+    original_n = 0
+    if lhs_path.is_file():
+        try:
+            original_n = lhs_pool_entry_count(load_lhs_pool(lhs_path))
+        except ValueError:
+            try:
+                original_n = lhs_pool_entry_count(load_json(lhs_path))
+            except (OSError, ValueError, json.JSONDecodeError):
+                original_n = 0
+
+    new_n = lhs_pool_entry_count(pool)
+    if (
+        not explicit_lhs_regeneration
+        and original_n > 0
+        and new_n < original_n
+    ):
+        raise LhsPoolTruncationError(
+            f"LHS_POOL_TRUNCATION_GUARD_FAIL original_entries={original_n} new_entries={new_n}"
+        )
+
+    backup_lhs_pool(lhs_path)
     lhs_path.parent.mkdir(parents=True, exist_ok=True)
     write_json_atomic(lhs_path, dict(pool))
     return lhs_path
 
 
-def write_lhs_pool_with_backup(lhs_path: Path, pool: Mapping[str, Any]) -> Path:
-    """Backward-compatible alias; backups are intentionally disabled."""
-    return write_lhs_pool(lhs_path, pool)
+def write_lhs_pool_with_backup(
+    lhs_path: Path,
+    pool: Mapping[str, Any],
+    *,
+    explicit_lhs_regeneration: bool = False,
+) -> Path:
+    """Write lhs_pool.json with backup + truncation guard."""
+    return write_lhs_pool(
+        lhs_path,
+        pool,
+        explicit_lhs_regeneration=explicit_lhs_regeneration,
+    )
 
 
 def sync_lhs_pool_entry(

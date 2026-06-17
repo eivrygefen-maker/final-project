@@ -172,7 +172,7 @@ def apply_full_lhs_pool_reset(
     )
     pool = load_lhs_pool(lhs_path)
     pool = reset_pool_entries(pool)
-    write_lhs_pool_with_backup(lhs_path, pool)
+    write_lhs_pool_with_backup(lhs_path, pool, explicit_lhs_regeneration=True)
 
     status_path = lhs_pool_status_path(repo_root)
     status_path.parent.mkdir(parents=True, exist_ok=True)

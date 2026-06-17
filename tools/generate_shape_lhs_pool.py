@@ -12,8 +12,14 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FEM_SCRIPTS = REPO_ROOT / "FEM" / "scripts"
+M4_SCRIPTS = (
+    REPO_ROOT
+    / "FEM/experiments/active_domain_validation/physics_integrity/scripts"
+)
 if str(FEM_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(FEM_SCRIPTS))
+if str(M4_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(M4_SCRIPTS))
 
 from m4_shape_registry import (  # noqa: E402
     ensure_parameters_shape_type,
@@ -24,6 +30,7 @@ from m4_shape_registry import (  # noqa: E402
     registered_shape_keys,
 )
 from wood_library import finalize_lhs_thickness_params  # noqa: E402
+from v2_b3_m4_lhs_pool_bridge import write_lhs_pool  # noqa: E402
 
 M4_GUITARS_ROOT = (
     REPO_ROOT
@@ -107,6 +114,31 @@ def load_pool(path: Path) -> Dict[str, Any]:
         return {}
 
 
+def resolve_target_pool_size(
+    *,
+    shape_key: str,
+    count: int,
+    existing: Optional[Mapping[str, Any]] = None,
+    force: bool = False,
+) -> int:
+    """Pool size for generation: never shrink an existing pool unless --force regen."""
+    cfg = resolve_shape_config(shape_key)
+    existing = dict(existing or {})
+    entries_in = list(existing.get("entries") or [])
+    existing_n = len(entries_in)
+    total_samples = int(existing.get("total_samples") or 0)
+    requested = max(int(count), 0)
+
+    if force and existing_n == 0:
+        return max(requested, cfg.default_lhs_count)
+    if force:
+        return max(requested, cfg.default_lhs_count)
+
+    if existing_n > 0 or total_samples > 0:
+        return max(existing_n, total_samples, requested, cfg.default_lhs_count)
+    return max(requested, cfg.default_lhs_count)
+
+
 def build_pool_document(
     *,
     shape_key: str,
@@ -124,15 +156,26 @@ def build_pool_document(
     if not bounds:
         raise ValueError(f"no LHS bounds for shape {shape_key!r}; use regenerate_lhs_pool for classic")
 
-    lhs_rows = generate_lhs_rows(count, seed, bounds, shape_key=shape_key)
+    target_count = resolve_target_pool_size(
+        shape_key=shape_key,
+        count=count,
+        existing=existing,
+        force=force,
+    )
+    lhs_rows = generate_lhs_rows(target_count, seed, bounds, shape_key=shape_key)
     out_entries: List[Dict[str, Any]] = []
 
-    for idx in range(count):
+    for idx in range(target_count):
         sid = cfg.sample_id(idx)
         if not force and sid in by_id:
             out_entries.append(by_id[sid])
             continue
         out_entries.append(_blank_entry(sid, lhs_rows[idx]))
+
+    known_ids = {cfg.sample_id(i) for i in range(target_count)}
+    for sid in sorted(by_id.keys()):
+        if sid not in known_ids:
+            out_entries.append(by_id[sid])
 
     return {
         "shape_name": cfg.shape_key,
@@ -140,18 +183,15 @@ def build_pool_document(
         "sampling": "lhs",
         "wood_assignment": str(existing.get("wood_assignment") or "unrestricted_5x5"),
         "seed": int(seed),
-        "total_samples": int(max(int(existing.get("total_samples") or 0), count)),
+        "total_samples": int(max(int(existing.get("total_samples") or 0), target_count)),
         "mpi_world_size": int(existing.get("mpi_world_size") or 0),
         "lhs_bounds": bounds,
         "entries": out_entries,
     }
 
 
-def write_pool(path: Path, doc: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(dict(doc), indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+def write_pool(path: Path, doc: Mapping[str, Any], *, explicit_regeneration: bool = False) -> None:
+    write_lhs_pool(path, doc, explicit_lhs_regeneration=explicit_regeneration)
 
 
 def fom_run_id(sample_id: str, run_id_suffix: str) -> str:
@@ -247,6 +287,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help="Permit regenerating ROM/classic/lhs_pool.json (default: refused).",
     )
+    parser.add_argument(
+        "--ensure-existing",
+        action="store_true",
+        help="Extend missing pool rows only; never shrink entries (safe before batch runs).",
+    )
     parser.add_argument("--check-fom-ready", metavar="SAMPLE_ID", default="")
     parser.add_argument("--run-id-suffix", default="m4prod1")
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -282,6 +327,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return generate_classic_via_regenerate(count, int(args.seed), dry_run=bool(args.dry_run))
 
     existing = load_pool(pool_path)
+    if args.ensure_existing and existing:
+        count = resolve_target_pool_size(
+            shape_key=shape_key,
+            count=0,
+            existing=existing,
+            force=False,
+        )
     doc = build_pool_document(
         shape_key=shape_key,
         count=count,
@@ -297,7 +349,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 0
 
-    write_pool(pool_path, doc)
+    write_pool(pool_path, doc, explicit_regeneration=bool(args.force))
     print(f"SHAPE_LHS_READY shape={shape_key} path={pool_path.as_posix()} count={len(doc['entries'])}")
     return 0
 

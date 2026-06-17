@@ -158,11 +158,13 @@ if [[ "${SHAPE_LOWER}" == "classic" && "${ALLOW_CLASSIC_REGEN}" != "1" ]]; then
   fi
   log "SHAPE_FOM_LHS_SKIP classic pool preserved path=${LHS_PATH}"
 else
-  GEN_ARGS=(python3 "${GEN_SCRIPT}" --shape "${SHAPE_LOWER}" --count "${COUNT}" --pool-path "${LHS_PATH}")
-  if [[ "${SHAPE_LOWER}" == "classic" ]]; then
-    GEN_ARGS+=(--allow-classic-regen)
+  if [[ -f "${LHS_PATH}" ]]; then
+    log "SHAPE_FOM_LHS_ENSURE preserve_existing path=${LHS_PATH}"
+    python3 "${GEN_SCRIPT}" --shape "${SHAPE_LOWER}" --pool-path "${LHS_PATH}" --ensure-existing
+  else
+    log "SHAPE_FOM_LHS_CREATE path=${LHS_PATH}"
+    python3 "${GEN_SCRIPT}" --shape "${SHAPE_LOWER}" --pool-path "${LHS_PATH}"
   fi
-  "${GEN_ARGS[@]}"
 fi
 
 SAMPLE_PREFIX="$(python3 - <<PY
@@ -181,14 +183,15 @@ prefix = "${SAMPLE_PREFIX}"
 print(sum(1 for e in pool.get("entries") or [] if str(e.get("id","")).startswith(prefix)))
 PY
 )"
-if [[ "${SAMPLE_COUNT}" -lt "${COUNT}" ]]; then
-  log "SHAPE_FOM_FAIL lhs_count=${SAMPLE_COUNT} expected_at_least=${COUNT}"
+if [[ "${SAMPLE_COUNT}" -lt "$((START + COUNT))" ]]; then
+  log "SHAPE_FOM_FAIL lhs_count=${SAMPLE_COUNT} expected_at_least=$((START + COUNT))"
   BATCH_EXIT=2
   exit 2
 fi
 
+END_IDX=$((START + COUNT))
 idx="${START}"
-while [[ "${idx}" -lt "${COUNT}" ]]; do
+while [[ "${idx}" -lt "${END_IDX}" ]]; do
   sample_id="$(printf '%s%03d' "${SAMPLE_PREFIX}" "${idx}")"
   run_root="${FOM_RUNS_ROOT}/${sample_id}/runs/${sample_id}_${RUN_ID_SUFFIX}"
 
@@ -245,7 +248,7 @@ if [[ "${COMPLETED}" -ge 1 ]]; then
   BATCH_EXIT=0
   exit 0
 fi
-if [[ "${SKIPPED}" -ge "$((COUNT - START))" ]] && [[ "${FAILED}" -eq 0 ]]; then
+if [[ "${SKIPPED}" -ge "${COUNT}" ]] && [[ "${FAILED}" -eq 0 ]]; then
   BATCH_EXIT=0
   exit 0
 fi
