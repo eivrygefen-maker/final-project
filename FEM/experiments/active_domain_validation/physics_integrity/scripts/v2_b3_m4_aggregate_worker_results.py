@@ -652,6 +652,54 @@ def _write_outputs(
             result_body.setdefault("warnings", []).append(
                 f"target_candidate_audit_merge_failed:{type(exc).__name__}:{exc}"
             )
+        try:
+            from v2_b3_m4_box_raw_modal_discovery_lib import (  # noqa: WPS433
+                box_raw_modal_discovery_enabled,
+                load_catalog_rows,
+                merge_box_raw_catalogs_for_run,
+                write_raw_diagnostic_plots,
+                RAW_SOLVER_CATALOG_AGG,
+                UNFILTERED_CATALOG_AGG,
+                ACCEPTED_FILTERED_CATALOG_AGG,
+            )
+
+            sample_id = str(result_body.get("sample_id") or "")
+            run_id = str(result_body.get("run_id") or "")
+            shape_name = "box" if sample_id.startswith("box_") else (
+                "acoustic" if sample_id.startswith("acoustic_") else "classic"
+            )
+            if box_raw_modal_discovery_enabled(shape_name=shape_name) or any(
+                (run_root / "worker_results" / cid / "raw_modal_diagnostic.jsonl").is_file()
+                for cid in [str(d.get("chunk_id")) for d in (report.get("chunk_details") or []) if d.get("chunk_id")]
+            ):
+                chunk_ids = [
+                    str(d.get("chunk_id")) for d in (report.get("chunk_details") or []) if d.get("chunk_id")
+                ]
+                raw_meta = merge_box_raw_catalogs_for_run(
+                    run_root,
+                    sample_id=sample_id,
+                    run_id=run_id,
+                    shape_name=shape_name,
+                    chunk_ids=chunk_ids,
+                    accepted_records=all_records,
+                )
+                result_body["box_raw_modal_discovery"] = raw_meta
+                raw_rows = load_catalog_rows(run_root, RAW_SOLVER_CATALOG_AGG)
+                unfiltered_rows = load_catalog_rows(run_root, UNFILTERED_CATALOG_AGG)
+                accepted_rows = load_catalog_rows(run_root, ACCEPTED_FILTERED_CATALOG_AGG)
+                if raw_rows:
+                    plot_paths = write_raw_diagnostic_plots(
+                        agg_dir=agg_dir,
+                        raw_rows=raw_rows,
+                        accepted_rows=accepted_rows,
+                        analysis={"rejection_reason_histogram": raw_meta},
+                    )
+                    for name, p in plot_paths.items():
+                        result_body["output_paths"][name] = rel(p, repo_root=repo_root)
+        except Exception as exc:
+            result_body.setdefault("warnings", []).append(
+                f"box_raw_modal_discovery_merge_failed:{type(exc).__name__}:{exc}"
+            )
         write_json_atomic(result_path, result_body)
         report["output_paths"] = result_body["output_paths"]
         return

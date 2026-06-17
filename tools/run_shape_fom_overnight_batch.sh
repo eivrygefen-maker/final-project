@@ -54,10 +54,18 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
 export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
 export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
+export SHAPE="${SHAPE_LOWER}"
+if [[ -n "${BOX_RAW_MODAL_DISCOVERY:-}" ]]; then
+  export BOX_RAW_MODAL_DISCOVERY
+fi
 
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
 log() { echo "$*"; }
+
+if [[ -n "${BOX_RAW_MODAL_DISCOVERY:-}" ]]; then
+  log "SHAPE_FOM_BOX_RAW_MODAL_DISCOVERY enabled=${BOX_RAW_MODAL_DISCOVERY}"
+fi
 
 append_result() {
   local sample_id="$1" index="$2" status="$3" elapsed_s="${4:-0}" exit_code="${5:-0}" run_root="$6"

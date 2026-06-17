@@ -8,6 +8,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from v2_b3_m4_box_raw_modal_discovery_lib import (  # noqa: E402
+    ACCEPTED_FILTERED_CATALOG_AGG,
+    ACCEPTED_FILTERED_CATALOG_VAL,
+    RAW_SOLVER_CATALOG_AGG,
+    RAW_SOLVER_CATALOG_VAL,
+    UNFILTERED_CATALOG_AGG,
+    UNFILTERED_CATALOG_VAL,
+    build_raw_vs_filtered_analysis,
+    load_catalog_rows,
+)
 from v2_b3_m4_target_candidate_audit_lib import (  # noqa: E402
     MERGED_AUDIT_REL_AGG,
     MERGED_AUDIT_REL_VALIDATION,
@@ -33,6 +43,11 @@ CLASSIFICATIONS = (
     "FREQUENCY_RANGE_TOO_NARROW",
     "WORKER_DIAGNOSTICS_MISSING",
     "BOUNDARY_OR_MESH_SUPPRESSION_SUSPECTED",
+    "FILTERS_REJECT_VALID_BOX_MODES",
+    "TARGET_WINDOW_TOO_STRICT",
+    "MUSICAL_FILTER_BIASED",
+    "CLASSIC_SHAPE_ASSUMPTION_SUSPECTED",
+    "RAW_DIAGNOSTIC_INCOMPLETE",
     "UNKNOWN",
 )
 
@@ -504,6 +519,31 @@ def build_modal_discovery_audit(
             + (" ..." if len(empty_chunks) > 6 else "")
         )
 
+    raw_catalog_rows = load_catalog_rows(run_root, RAW_SOLVER_CATALOG_VAL)
+    if not raw_catalog_rows:
+        raw_catalog_rows = load_catalog_rows(run_root, RAW_SOLVER_CATALOG_AGG)
+    unfiltered_catalog_rows = load_catalog_rows(run_root, UNFILTERED_CATALOG_VAL)
+    if not unfiltered_catalog_rows:
+        unfiltered_catalog_rows = load_catalog_rows(run_root, UNFILTERED_CATALOG_AGG)
+    accepted_catalog_rows = load_catalog_rows(run_root, ACCEPTED_FILTERED_CATALOG_VAL)
+    if not accepted_catalog_rows:
+        accepted_catalog_rows = load_catalog_rows(run_root, ACCEPTED_FILTERED_CATALOG_AGG)
+
+    raw_vs_filtered_analysis: Optional[Dict[str, Any]] = None
+    box_raw_catalog_present = bool(raw_catalog_rows)
+    if raw_catalog_rows:
+        raw_vs_filtered_analysis = build_raw_vs_filtered_analysis(
+            raw_rows=raw_catalog_rows,
+            unfiltered_rows=unfiltered_catalog_rows,
+            accepted_rows=accepted_catalog_rows,
+            deduped_mode_count=deduped_mode_count,
+            chunk_audits=chunk_audits,
+        )
+        if str(shape_name).lower() == "box":
+            loss_cls = raw_vs_filtered_analysis.get("loss_classification")
+            if loss_cls and loss_cls not in ("UNKNOWN", "ACCEPTANCE_OR_AGGREGATION_LOSS"):
+                classification = str(loss_cls)
+
     return {
         "schema": AUDIT_SCHEMA,
         "generated_utc": utc_now(),
@@ -539,6 +579,8 @@ def build_modal_discovery_audit(
         "target_candidate_audit_merged_present": merged_audit_present,
         "audit_completeness": candidate_loss_analysis.get("audit_completeness"),
         "candidate_loss_analysis": candidate_loss_analysis,
+        "box_raw_catalog_present": box_raw_catalog_present,
+        "raw_vs_filtered_analysis": raw_vs_filtered_analysis,
         "missing_diagnostics": sorted(set(missing_diagnostics)),
         "classification": classification,
         "classification_candidates": list(CLASSIFICATIONS),
@@ -552,6 +594,8 @@ def build_modal_discovery_audit(
             "lprod_target_plan": str(run_root / "lprod" / "lprod_target_plan.json"),
             "target_candidate_audit_merged_agg": str(merged_audit_path_agg(run_root)),
             "target_candidate_audit_merged_validation": str(run_root / MERGED_AUDIT_REL_VALIDATION),
+            "raw_solver_candidate_catalog": str(run_root / RAW_SOLVER_CATALOG_VAL),
+            "unfiltered_mode_catalog": str(run_root / UNFILTERED_CATALOG_VAL),
         },
     }
 
@@ -621,6 +665,23 @@ def render_modal_discovery_audit_markdown(report: Mapping[str, Any]) -> str:
         lines.append(f"- requested_eigenpairs_summary: `{json.dumps(loss.get('requested_eigenpairs_summary') or {}, sort_keys=True)}`")
         lines.append(f"- solver_factor_summary: `{json.dumps(loss.get('solver_factor_summary') or {}, sort_keys=True)}`")
         lines.append(f"- acceptance_window_summary: `{json.dumps(loss.get('acceptance_window_summary') or {}, sort_keys=True)}`")
+        lines.append("")
+
+    rvf = report.get("raw_vs_filtered_analysis") or {}
+    if rvf:
+        lines.extend(["## Raw vs filtered mode discovery", ""])
+        lines.append(f"- loss_classification: `{rvf.get('loss_classification')}`")
+        lines.append(f"- total_solver_candidates: `{rvf.get('total_solver_candidates')}`")
+        lines.append(f"- total_unfiltered_candidates: `{rvf.get('total_unfiltered_candidates')}`")
+        lines.append(f"- total_normally_accepted_modes: `{rvf.get('total_normally_accepted_modes')}`")
+        lines.append(f"- deduped_final_modes: `{rvf.get('deduped_final_modes')}`")
+        lines.append(f"- total_rejected_by_normal_filters: `{rvf.get('total_rejected_by_normal_filters')}`")
+        lines.append(f"- percentage_kept: `{rvf.get('percentage_kept')}`")
+        lines.append(
+            f"- rejection_reason_histogram: `{json.dumps(rvf.get('rejection_reason_histogram') or {}, sort_keys=True)}`"
+        )
+        lines.append(f"- raw_catalog_frequency_span_hz: `{rvf.get('raw_catalog_frequency_span_hz')}`")
+        lines.append(f"- filtered_catalog_frequency_span_hz: `{rvf.get('filtered_catalog_frequency_span_hz')}`")
         lines.append("")
 
     if not report.get("candidate_level_diagnostics_available"):

@@ -238,10 +238,16 @@ else
   bad "missing collect_shape_validation_baseline.py"
 fi
 MODAL_DISCOVERY_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_modal_discovery_audit_test.py"
+BOX_RAW_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_box_raw_modal_discovery_test.py"
 if python3 "${MODAL_DISCOVERY_TEST}" >/tmp/shape_fom_smoke_modal_discovery.log 2>&1; then
   ok "modal discovery audit + target candidate audit durability (17 tests)"
 else
   bad "modal discovery audit tests failed (see /tmp/shape_fom_smoke_modal_discovery.log)"
+fi
+if python3 "${BOX_RAW_TEST}" >/tmp/shape_fom_smoke_box_raw_modal.log 2>&1; then
+  ok "BOX raw modal discovery diagnostic (9 tests)"
+else
+  bad "BOX raw modal discovery tests failed (see /tmp/shape_fom_smoke_box_raw_modal.log)"
 fi
 EVAL_MODAL_AUDIT="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/evaluate_modal_discovery_audit.py"
 if [[ -f "${EVAL_MODAL_AUDIT}" ]]; then

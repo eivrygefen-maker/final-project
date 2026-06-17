@@ -628,6 +628,201 @@ def collect_accepted_st_modes(
     return nconv, accepted
 
 
+def _residual_status(eps_err: float, *, eps_ok: bool) -> str:
+    if not math.isfinite(eps_err):
+        return "UNKNOWN"
+    if eps_ok:
+        return "PASS"
+    return "WARNING"
+
+
+def _normal_filter_rejection_reasons(
+    *,
+    finite: bool,
+    nonfinite: bool,
+    f_hz: Optional[float],
+    inside: bool,
+    eps_ok: bool,
+    si_pass: bool,
+    d_pass: bool,
+    lambda_one: bool,
+    support_ok: bool,
+) -> List[str]:
+    reasons: List[str] = []
+    if not finite or nonfinite:
+        reasons.append("nonfinite_eigenvalue")
+    if f_hz is None or float(f_hz) <= 0.0:
+        reasons.append("non_positive_frequency")
+    if not inside:
+        reasons.append("outside_acceptance_window")
+    if not eps_ok:
+        reasons.append("residual_too_large")
+    if not si_pass:
+        reasons.append("inactive_dof_violation")
+    if not d_pass:
+        reasons.append("boundary_dof_violation")
+    if lambda_one:
+        reasons.append("lambda_near_unity")
+    if not support_ok:
+        reasons.append("support_participation_fail")
+    return reasons
+
+
+def _passes_numerical_sanity(
+    *,
+    finite: bool,
+    nonfinite: bool,
+    f_hz: Optional[float],
+    si_pass: bool,
+    d_pass: bool,
+) -> bool:
+    return bool(
+        finite
+        and not nonfinite
+        and f_hz is not None
+        and float(f_hz) > 0.0
+        and si_pass
+        and d_pass
+    )
+
+
+def collect_all_st_mode_candidates(
+    eps: Any,
+    A_active: Any,
+    built: Dict[str, Any],
+    *,
+    target_hz: float,
+    acceptance_config: Optional[AcceptanceConfig] = None,
+    export_vectors: bool = False,
+    region_ctx: Optional[Dict[str, Any]] = None,
+    attach_coupling: bool = False,
+) -> Tuple[int, List[Dict[str, Any]]]:
+    """
+  Record every converged eigenpair with normal-filter evaluation (no rejection).
+
+  Used by BOX_RAW_MODAL_DISCOVERY diagnostic mode only; does not change acceptance.
+  """
+    from slepc4py import SLEPc
+
+    cfg = acceptance_config or AcceptanceConfig.legacy()
+    nconv = int(eps.getConverged())
+    candidates: List[Dict[str, Any]] = []
+    free_rows = np.asarray(built["free_rows"], dtype=np.int32).ravel()
+    bc_rows = np.unique(np.asarray(built["bc_rows"], dtype=np.int32).ravel())
+    active_local = np.asarray(built["active_local"], dtype=np.int32).ravel()
+    inactive_local = np.asarray(built["inactive_local"], dtype=np.int32).ravel()
+    u_idx = np.asarray(built["u_idx"], dtype=np.int32).ravel()
+    p_idx = np.asarray(built["p_idx"], dtype=np.int32).ravel()
+    n_w = int(built["n_w"])
+    n_free = int(free_rows.size)
+    win = cfg.per_target_window_hz(float(target_hz))
+
+    for i in range(nconv):
+        vr = A_active.createVecRight()
+        vi = A_active.createVecRight()
+        try:
+            lam = eps.getEigenpair(i, vr, vi)
+            lam_re = float(np.real(complex(lam)))
+            lam_im = float(np.imag(complex(lam)))
+            finite = bool(math.isfinite(lam_re) and math.isfinite(lam_im))
+            f_hz = lambda_hz_from_eigenvalue(lam_re, lam_im)
+            inside = cfg.mode_frequency_inside(f_hz, target_hz=float(target_hz))
+            eps_err = float("nan")
+            try:
+                eps_err = float(eps.computeError(i, SLEPc.EPS.ErrorType.RELATIVE))
+            except Exception:
+                pass
+            eps_ok = bool(math.isfinite(eps_err) and eps_err <= 1.0e-4)
+            x_active = np.asarray(vr.getArray(readonly=True), dtype=np.float64).ravel().copy()
+            x_free = np.zeros(n_free, dtype=np.float64)
+            x_free[active_local] = x_active
+            x_full = np.zeros(n_w, dtype=np.float64)
+            x_full[free_rows] = x_free
+            si_norm = float(np.linalg.norm(x_free[inactive_local])) if inactive_local.size else 0.0
+            d_norm = float(np.linalg.norm(x_full[bc_rows])) if bc_rows.size else 0.0
+            x_norm = float(np.linalg.norm(x_full))
+            si_pass = bool(si_norm <= 1.0e-8 * max(1.0, x_norm))
+            d_pass = bool(d_norm <= 1.0e-8 * max(1.0, x_norm))
+            u_norm = float(np.linalg.norm(np.abs(x_full[u_idx])))
+            p_norm = float(np.linalg.norm(np.abs(x_full[p_idx])))
+            p_support = p_norm / max(x_norm, 1.0e-30)
+            support_ok = bool(u_norm > 1.0e-8 and (p_support > 1.0e-6 or (u_norm > 1.0e-8 and p_norm <= 1.0e-8)))
+            lambda_one = bool(
+                lambda_near_unity_signature(f_hz)
+                or (abs(lam_re - 1.0) <= 1.0e-6 and abs(lam_im) <= 1.0e-9)
+            )
+            nonfinite = bool(not finite or math.isinf(lam_re) or math.isinf(lam_im))
+            rejection_reasons = _normal_filter_rejection_reasons(
+                finite=finite,
+                nonfinite=nonfinite,
+                f_hz=f_hz,
+                inside=inside,
+                eps_ok=eps_ok,
+                si_pass=si_pass,
+                d_pass=d_pass,
+                lambda_one=lambda_one,
+                support_ok=support_ok,
+            )
+            mode_pass = not rejection_reasons
+            entry: Dict[str, Any] = {
+                "mode_index": i,
+                "candidate_rank": int(i),
+                "eps_slot_index": int(i),
+                "frequency_hz": safe_float(f_hz),
+                "lambda_real": lam_re,
+                "lambda_imag": lam_im,
+                "eps_compute_error_relative": safe_float(eps_err),
+                "residual": safe_float(eps_err),
+                "residual_status": _residual_status(eps_err, eps_ok=eps_ok),
+                "st_shift_target_hz": float(target_hz),
+                "inside_target_window": bool(inside),
+                "target_window_hz": list(win) if win is not None else None,
+                "would_pass_normal_filters": bool(mode_pass),
+                "normal_filter_rejection_reasons": rejection_reasons,
+                "passes_numerical_sanity": _passes_numerical_sanity(
+                    finite=finite,
+                    nonfinite=nonfinite,
+                    f_hz=f_hz,
+                    si_pass=si_pass,
+                    d_pass=d_pass,
+                ),
+                "u_norm_W": safe_float(u_norm),
+                "p_norm_W": safe_float(p_norm),
+                "x_norm_W": safe_float(x_norm),
+                "p_support": safe_float(p_support),
+            }
+            if export_vectors:
+                entry["x_active"] = x_active.copy()
+            if attach_coupling:
+                try:
+                    from v2_b3_mode_region_participation import attach_participation_to_accepted_mode
+
+                    attach_participation_to_accepted_mode(
+                        entry,
+                        x_active=x_active,
+                        built=built,
+                        region_ctx=region_ctx,
+                    )
+                except Exception:
+                    entry.setdefault("dominant_region", None)
+                try:
+                    from v2_b3_mode_audio_coupling import attach_audio_coupling_to_accepted_mode
+
+                    attach_audio_coupling_to_accepted_mode(
+                        entry,
+                        x_active=x_active,
+                        built=built,
+                        region_ctx=region_ctx,
+                    )
+                except Exception:
+                    pass
+            candidates.append(entry)
+        finally:
+            vr.destroy()
+            vi.destroy()
+    return nconv, candidates
+
+
 def built_from_checkpoint_metadata(
     meta: Dict[str, Any],
     *,
@@ -751,6 +946,7 @@ def run_checkpoint_st_target(
     export_vectors: bool = False,
     acceptance_config: Optional[AcceptanceConfig] = None,
     region_ctx: Optional[Dict[str, Any]] = None,
+    raw_diagnostic: bool = False,
 ) -> Dict[str, Any]:
     """Run one EPSSetUp + EPSSolve for a loaded checkpoint (solver-only)."""
     from slepc4py import SLEPc
@@ -879,6 +1075,22 @@ def run_checkpoint_st_target(
         result["accepted_modes"] = accepted_modes
         result["accepted_frequencies_hz"] = accepted_freqs
         result["candidate_rejection_tally"] = dict(rejection_tally)
+        if raw_diagnostic:
+            _nconv3, diagnostic_candidates = collect_all_st_mode_candidates(
+                eps,
+                A_active,
+                built,
+                target_hz=float(target_hz),
+                acceptance_config=cfg,
+                export_vectors=False,
+                region_ctx=region_ctx,
+                attach_coupling=True,
+            )
+            result["diagnostic_candidates"] = diagnostic_candidates
+            result["diagnostic_candidate_count"] = len(diagnostic_candidates)
+            result["diagnostic_unfiltered_count"] = sum(
+                1 for c in diagnostic_candidates if c.get("passes_numerical_sanity")
+            )
         result["peak_rss_mb"] = peak_rss_mb()
         result["st_total_elapsed_seconds"] = safe_float(time.perf_counter() - t_st0)
         result["status"] = "PASS"

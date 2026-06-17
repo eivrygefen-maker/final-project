@@ -17,6 +17,11 @@ from v2_b3_m4_target_candidate_audit_lib import (  # noqa: E402
     append_target_candidate_audit_row,
     build_target_candidate_audit_row,
 )
+from v2_b3_m4_box_raw_modal_discovery_lib import (  # noqa: E402
+    box_raw_modal_discovery_enabled,
+    resolve_worker_shape_name,
+    write_worker_diagnostic_from_solver_targets,
+)
 from v2_b3_checkpoint_pipeline_lib import (  # noqa: E402
     PIPELINE_SOLVE_MANIFEST,
     fail_with_messages,
@@ -101,6 +106,8 @@ def _run_real_solve(
     factor_solver = str(args.factor_solver).strip().lower()
     targets_hz = [float(t["target_hz"]) for t in (chunk_targets.get("targets") or [])]
     acceptance_cfg = acceptance_config_from_chunk_targets(chunk_targets)
+    shape_name = resolve_worker_shape_name(chunk_targets)
+    raw_diagnostic = box_raw_modal_discovery_enabled(shape_name=shape_name)
 
     meta_path = checkpoint / "built_metadata.json"
     if not meta_path.is_file():
@@ -139,6 +146,8 @@ def _run_real_solve(
         "structural_region_participation_status": region_ctx.get(
             "structural_region_participation_status"
         ),
+        "box_raw_modal_discovery": raw_diagnostic,
+        "shape_name": shape_name,
         **acceptance_cfg.to_result_fields(),
         "versions": version_snapshot(),
         "threading_env": threading_env_snapshot(),
@@ -194,6 +203,7 @@ def _run_real_solve(
                 export_vectors=False,
                 acceptance_config=acceptance_cfg,
                 region_ctx=region_ctx,
+                raw_diagnostic=raw_diagnostic,
             )
             per_target_rows.append(row)
             target_meta = chunk_target_rows[ti] if ti < len(chunk_target_rows) else {}
@@ -261,6 +271,14 @@ def _run_real_solve(
                         row[key] = m[key]
                 mode_records.append(row)
 
+    if raw_diagnostic:
+        diag_count = write_worker_diagnostic_from_solver_targets(
+            output_dir=output_dir,
+            chunk_targets=chunk_targets,
+            solver_targets=list(result.get("targets") or []),
+            shape_name=shape_name,
+        )
+        result["raw_modal_diagnostic_count"] = diag_count
     write_json_atomic(output_dir / "solver_result.json", result)
     worker_body = {
         "schema": "m4_worker_result_v1",
@@ -279,6 +297,7 @@ def _run_real_solve(
         },
         "warnings": [],
         "errors": [result["failure_reason"]] if result.get("failure_reason") else [],
+        "box_raw_modal_discovery": raw_diagnostic,
         "solver_result_json": str(output_dir / "solver_result.json"),
         "generated_utc": result.get("generated_utc"),
     }
