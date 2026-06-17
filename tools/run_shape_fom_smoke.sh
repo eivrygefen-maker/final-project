@@ -202,6 +202,40 @@ if python3 "${BOX_FOM_TEST}" >/tmp/shape_fom_smoke_box_fom_validation.log 2>&1; 
 else
   bad "BOX FOM validation tests failed (see /tmp/shape_fom_smoke_box_fom_validation.log)"
 fi
+SHAPE_PHYSICAL_TEST="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_shape_physical_acceptance_test.py"
+if python3 "${SHAPE_PHYSICAL_TEST}" >/tmp/shape_fom_smoke_shape_physical.log 2>&1; then
+  ok "shape-aware physical validation profiles + evaluator"
+else
+  bad "shape physical acceptance tests failed (see /tmp/shape_fom_smoke_shape_physical.log)"
+fi
+python3 - <<PY
+import sys
+from pathlib import Path
+repo = Path("${REPO_ROOT}")
+sys.path.insert(0, str(repo / "FEM" / "scripts"))
+from m4_shape_context import resolve_shape_context
+from m4_shape_validation_profile import CLASSIC_LOCKED_PROFILE_ID, resolve_shape_validation_profile
+ctx = resolve_shape_context("classic")
+assert ctx.geometry_shape_type == "Classical", ctx.geometry_shape_type
+prof = resolve_shape_validation_profile("classic")
+assert prof.profile_id == CLASSIC_LOCKED_PROFILE_ID, prof.profile_id
+assert prof.locked is True
+assert ctx.shape_validation_profile_id == CLASSIC_LOCKED_PROFILE_ID
+print("classic_locked_baseline_ok profile=", prof.profile_id)
+PY
+ok "CLASSIC locked reference profile (6-sim baseline unchanged)"
+EVAL_SHAPE_SCRIPT="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/evaluate_shape_physical_acceptance.py"
+if [[ -f "${EVAL_SHAPE_SCRIPT}" ]]; then
+  ok "present evaluate_shape_physical_acceptance.py"
+else
+  bad "missing evaluate_shape_physical_acceptance.py"
+fi
+BASELINE_SCRIPT="${REPO_ROOT}/FEM/experiments/active_domain_validation/physics_integrity/scripts/collect_shape_validation_baseline.py"
+if [[ -f "${BASELINE_SCRIPT}" ]]; then
+  ok "present collect_shape_validation_baseline.py"
+else
+  bad "missing collect_shape_validation_baseline.py"
+fi
 
 echo ""
 echo "Smoke: ${PASS} passed, ${FAIL} failed"

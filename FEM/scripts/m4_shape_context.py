@@ -2,7 +2,7 @@
 """Resolved shape context for the shared M4 FOM/ROM pipeline (all body shapes)."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
@@ -11,6 +11,10 @@ from m4_shape_registry import (  # noqa: E402
     resolve_geometry_shape_type,
     resolve_shape_config,
     shape_from_pool,
+)
+from m4_shape_validation_profile import (  # noqa: E402
+    ShapeValidationProfile,
+    resolve_shape_validation_profile,
 )
 
 
@@ -28,9 +32,11 @@ class ShapeContext:
     shared_export_key: str
     scout_density_policy: str
     base_config_rel: str
+    shape_validation_profile_id: str = ""
+    physical_acceptance_profile: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        out = {
             "shape_name": self.shape_name,
             "geometry_shape_type": self.geometry_shape_type,
             "gmsh_shape_type": self.gmsh_shape_type,
@@ -40,6 +46,11 @@ class ShapeContext:
             "scout_density_policy": self.scout_density_policy,
             "base_config_rel": self.base_config_rel,
         }
+        if self.shape_validation_profile_id:
+            out["shape_validation_profile_id"] = self.shape_validation_profile_id
+        if self.physical_acceptance_profile:
+            out["physical_acceptance_profile"] = dict(self.physical_acceptance_profile)
+        return out
 
     def to_sample_input_fields(self) -> Dict[str, Any]:
         return {
@@ -58,6 +69,22 @@ class ShapeContext:
         }
 
 
+def _attach_validation_profile(ctx: ShapeContext) -> ShapeContext:
+    profile = resolve_shape_validation_profile(ctx.shape_name)
+    return ShapeContext(
+        shape_name=ctx.shape_name,
+        geometry_shape_type=ctx.geometry_shape_type,
+        gmsh_shape_type=ctx.gmsh_shape_type,
+        lhs_path=ctx.lhs_path,
+        rom_output_root=ctx.rom_output_root,
+        shared_export_key=ctx.shared_export_key,
+        scout_density_policy=ctx.scout_density_policy,
+        base_config_rel=ctx.base_config_rel,
+        shape_validation_profile_id=profile.profile_id,
+        physical_acceptance_profile=profile.to_dict(),
+    )
+
+
 def _shape_context_from_config(
     cfg: M4ShapeConfig,
     *,
@@ -65,7 +92,7 @@ def _shape_context_from_config(
     repo_root: Optional[Path] = None,
 ) -> ShapeContext:
     rom_root = str(cfg.rom_dir(repo_root))
-    return ShapeContext(
+    ctx = ShapeContext(
         shape_name=cfg.shape_key,
         geometry_shape_type=cfg.geometry_shape_type,
         gmsh_shape_type=cfg.gmsh_shape_type,
@@ -75,6 +102,7 @@ def _shape_context_from_config(
         scout_density_policy=cfg.scout_density_policy,
         base_config_rel=cfg.base_config_rel,
     )
+    return _attach_validation_profile(ctx)
 
 
 def resolve_shape_context(
@@ -170,6 +198,23 @@ def resolve_shape_context_from_sample_input(
     )
     if not legacy_classic_default or shape_name != "classic":
         _validate_non_classic_geometry(ctx)
+    profile_id = str(sample_input.get("shape_validation_profile_id") or "")
+    if profile_id:
+        profile = resolve_shape_validation_profile(shape_name, profile_id=profile_id)
+        ctx = ShapeContext(
+            shape_name=ctx.shape_name,
+            geometry_shape_type=ctx.geometry_shape_type,
+            gmsh_shape_type=ctx.gmsh_shape_type,
+            lhs_path=ctx.lhs_path,
+            rom_output_root=ctx.rom_output_root,
+            shared_export_key=ctx.shared_export_key,
+            scout_density_policy=ctx.scout_density_policy,
+            base_config_rel=ctx.base_config_rel,
+            shape_validation_profile_id=profile.profile_id,
+            physical_acceptance_profile=profile.to_dict(),
+        )
+    else:
+        ctx = _attach_validation_profile(ctx)
     return ctx
 
 
@@ -210,3 +255,7 @@ def apply_shape_context_to_resolved_config(
         }
 
     resolved["shape_context"] = ctx.to_dict()
+    if ctx.shape_validation_profile_id:
+        resolved["shape_validation_profile_id"] = ctx.shape_validation_profile_id
+    if ctx.physical_acceptance_profile:
+        resolved["physical_acceptance_profile"] = dict(ctx.physical_acceptance_profile)

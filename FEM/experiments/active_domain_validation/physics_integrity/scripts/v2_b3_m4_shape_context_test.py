@@ -51,6 +51,8 @@ def test_box_resolves_to_box() -> None:
     assert ctx.geometry_shape_type == "Box"
     assert ctx.gmsh_shape_type == "Box"
     assert ctx.scout_density_policy == "box_discovered_modes_v2"
+    assert ctx.shape_validation_profile_id == "box_body_plausibility_v1"
+    assert ctx.physical_acceptance_profile.get("profile_type") == "shape_relative_body_validation"
 
 
 def test_acoustic_resolves_to_acoustic() -> None:

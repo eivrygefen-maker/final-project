@@ -1,0 +1,58 @@
+{
+  "schema": "m4_shape_validation_profiles_v1",
+  "profiles": {
+    "classical_guitar_reference_v1_locked": {
+      "profile_type": "classical_reference",
+      "locked": true,
+      "reference_baseline": "classic_lhs_6_simulations",
+      "mode_count_min": 8,
+      "mode_count_warn_below": 10,
+      "deduped_mode_count_min": 8,
+      "allow_worker_pass_with_warning_after_aggregation": false,
+      "bridge_coupling_policy": "stricter_guitar_like",
+      "radiation_policy": "guitar_like",
+      "mic_output_policy": "guitar_like",
+      "top_back_air_share_policy": "classical_reference",
+      "air_share_policy": "classical_reference",
+      "frequency_band_policy": "classical_body_modes",
+      "notes": "Locked classical reference baseline for 6 existing CLASSIC simulations. Thresholds must not drift."
+    },
+    "classical_guitar_reference_v1": {
+      "alias_of": "classical_guitar_reference_v1_locked",
+      "notes": "Deprecated alias — resolves to locked classic baseline for backward compatibility."
+    },
+    "box_body_plausibility_v1": {
+      "profile_type": "shape_relative_body_validation",
+      "mode_count_min": 6,
+      "mode_count_warn_below": 8,
+      "deduped_mode_count_min": 6,
+      "allow_worker_pass_with_warning_after_aggregation": true,
+      "bridge_coupling_policy": "relative_relaxed",
+      "radiation_policy": "relative_quantile",
+      "mic_output_policy": "relative_quantile",
+      "top_back_air_share_policy": "shape_relative",
+      "air_share_policy": "volume_scaled",
+      "frequency_band_policy": "geometry_scaled",
+      "notes": "Box body judged relative to simple cavity/plate behavior, not classical guitar criteria."
+    },
+    "acoustic_guitar_reference_v1": {
+      "profile_type": "acoustic_reference",
+      "mode_count_min": 8,
+      "mode_count_warn_below": 10,
+      "deduped_mode_count_min": 8,
+      "allow_worker_pass_with_warning_after_aggregation": true,
+      "bridge_coupling_policy": "guitar_like",
+      "radiation_policy": "guitar_like",
+      "mic_output_policy": "guitar_like",
+      "top_back_air_share_policy": "acoustic_reference",
+      "air_share_policy": "acoustic_reference",
+      "frequency_band_policy": "geometry_scaled",
+      "notes": "Acoustic/dreadnought body reference with geometry-scaled frequency expectations."
+    }
+  },
+  "shape_defaults": {
+    "classic": "classical_guitar_reference_v1_locked",
+    "box": "box_body_plausibility_v1",
+    "acoustic": "acoustic_guitar_reference_v1"
+  }
+}
