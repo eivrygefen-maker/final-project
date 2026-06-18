@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import sys
+import shutil
 import types
 import unittest
 from pathlib import Path
+from uuid import uuid4
 from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[1]
@@ -44,6 +46,32 @@ class TestStkNoteLibraryStartupCommand(unittest.TestCase):
         self.assertIn("--shape-type", cmd)
         self.assertEqual(cmd[cmd.index("--shape-type") + 1], "Classical")
         self.assertEqual(cmd[cmd.index("--sample-id") + 1], "sample_000")
+
+    def test_parallel_staging_promotes_sharp_note_wavs_to_final_cache(self) -> None:
+        root = REPO / f".tmp_stk_promotion_test_{uuid4().hex}"
+        staging = root / ".render_tmp" / "hashsharp" / "staging"
+        final = root / "audio" / "app_stk_note_cache" / "classical" / "current_preview_hashsharp"
+        try:
+            staging.mkdir(parents=True)
+            for note in ("E2", "F#2", "A2", "C#5"):
+                (staging / f"{note}.wav").write_bytes(b"RIFF....WAVEfmt ")
+
+            result = audio_service.finalize_parallel_staging_cache(
+                staging_dir=staging,
+                target_dir=final,
+                parameter_hash="hashsharp",
+                cfg={"fret_count": 19, "render_mode": "parallel_batch", "parallel_workers": 3},
+                required_notes=("E2", "F#2", "A2", "C#5"),
+            )
+
+            self.assertTrue((final / "E2.wav").is_file())
+            self.assertTrue((final / "F#2.wav").is_file())
+            self.assertTrue((final / "C#5.wav").is_file())
+            self.assertGreaterEqual(result["generated_note_count"], 4)
+            self.assertGreaterEqual(result["note_wav_count"], 4)
+            self.assertEqual(result["missing_required_notes"], [])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
     def test_same_hash_running_job_does_not_launch_duplicate(self) -> None:
         existing = {"status": "running", "pid": 1234, "parameter_hash": "hash1"}

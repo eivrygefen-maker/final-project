@@ -1072,6 +1072,46 @@ def _promote_staging_to_target(staging_dir: Path, target_dir: Path) -> None:
             shutil.copy2(path, target_dir / path.name)
 
 
+def finalize_parallel_staging_cache(
+    *,
+    staging_dir: Path,
+    target_dir: Path,
+    parameter_hash: str,
+    cfg: Optional[Mapping[str, Any]] = None,
+    render_mode: str = "parallel_batch",
+    fret_count: Optional[int] = None,
+    required_notes: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    """Promote staged worker WAVs to final preview cache, then count final files."""
+    c = dict(cfg or load_app_stk_config())
+    fc = int(fret_count if fret_count is not None else get_fret_count(c))
+    required = list(required_notes or build_required_note_set_from_fretboard(fc))
+    staging = Path(staging_dir)
+    target = Path(target_dir)
+    _promote_staging_to_target(staging, target)
+    ensure_position_wav_aliases(
+        target,
+        fret_count=fc,
+        cfg=c,
+        parameter_hash=parameter_hash,
+        force=True,
+    )
+    spec = build_cache_spec_for_hash(parameter_hash, c, fc, render_mode=render_mode)
+    position_fields = build_position_wav_report_fields(target, fret_count=fc, cfg=c)
+    write_cache_spec(target, {**spec, **position_fields})
+    generated = sorted(list_note_wavs(target).keys(), key=note_to_midi)
+    required_set = set(required)
+    generated_set = set(generated)
+    return {
+        "output_dir": str(target).replace("\\", "/"),
+        "generated_note_count": len(generated_set),
+        "note_wav_count": len(generated_set),
+        "missing_required_notes": sorted(required_set - generated_set, key=note_to_midi),
+        "extra_generated_notes": sorted(generated_set - required_set, key=note_to_midi),
+        **position_fields,
+    }
+
+
 def render_notes_parallel_batch(
     *,
     repo_root: Path,
@@ -1242,14 +1282,21 @@ def render_notes_parallel_batch(
         return total_elapsed, missing, workers_state
 
     cfg = load_app_stk_config(root)
-    audit = run_note_mapping_audit(staging, parameter_hash or cache_key, cfg=cfg)
+    _write_stk_preview_wav(staging, staging)
+    finalize_parallel_staging_cache(
+        staging_dir=staging,
+        target_dir=target_dir,
+        parameter_hash=parameter_hash or cache_key,
+        cfg=cfg,
+        render_mode="parallel_batch",
+        required_notes=build_required_note_set_from_fretboard(int(cfg.get("fret_count") or 19)),
+    )
+    audit = run_note_mapping_audit(target_dir, parameter_hash or cache_key, cfg=cfg)
     if not audit.get("passed"):
         missing = sorted(audit.get("missing_required_notes") or missing, key=note_to_midi)
         _write_parallel_progress("failed")
         return total_elapsed, missing, workers_state
 
-    _write_stk_preview_wav(staging, staging)
-    _promote_staging_to_target(staging, target_dir)
     total_elapsed = round(time.perf_counter() - t_start, 3)
     for worker in workers_state:
         if worker.get("status") != "failed":
@@ -2101,10 +2148,6 @@ def start_background_note_library_job(
         render_mode=mode,
         parallel_workers=worker_count,
         priority_notes=priority_notes_from_config(cfg),
-    )
-    print(
-        f"APP_STK_RENDER_MODE {mode} workers={worker_count} hash={parameter_hash}",
-        flush=True,
     )
     write_job_status(
         parameter_hash,
