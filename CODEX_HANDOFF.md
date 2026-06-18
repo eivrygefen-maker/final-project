@@ -1,52 +1,58 @@
 # CODEX_HANDOFF.md
 
 ## Files changed
-- `gui/stk_app_audio_service.py`
-- `gui/test_stk_note_library_startup_command.py`
+- `gui/app.py`
 - `CODEX_HANDOFF.md`
 
-## Root cause of final WAV count = 0
-- `parallel_batch` rendered worker WAVs correctly into `.render_tmp/<hash>/worker_*`.
-- Worker outputs were merged into `.render_tmp/<hash>/staging`.
-- The code audited `staging` before creating per-position WAV aliases and before final cache promotion.
-- That made validation fail early, so `current_preview_<hash>` kept only `.cache_spec.json`.
+## Recent Guitars storage
+- Stored in Streamlit `st.session_state["recent_guitars"]`.
+- Active playable guitar snapshot stored in `st.session_state["active_recent_guitar_record"]`.
+- Session-only persistence; no database or runtime output files.
 
-## Finalization/promotion fix
-- Added `finalize_parallel_staging_cache()`.
-- It promotes `staging/*.wav` into the final preview cache.
-- It preserves sharp note filenames such as `F#2.wav`, `A#4.wav`, `C#5.wav`.
-- It creates/refreshes per-position aliases in the final cache.
-- It writes cache spec metadata with final-cache counts.
-- `render_notes_parallel_batch()` now promotes first, then validates/counts the final output directory.
+## FIFO / swap behavior
+- Capacity is 3.
+- Save/Sync clears the active player state, but first pushes the previous active guitar only if its STK cache is playable.
+- Loading a recent guitar removes it from its old slot.
+- The previously active guitar moves to slot 1.
+- Duplicate hashes/cache paths are removed.
+- Oldest entries beyond 3 are dropped.
 
-## Duplicate startup/logging
-- The repeated `APP_STK_RENDER_MODE ...` line was duplicate logging:
-- parent startup printed it before `subprocess.Popen()`;
-- child builder printed the same line inside `build_note_library()`.
-- Removed the parent print so the line now represents the actual builder process.
-- Same-hash idempotency from the prior fix remains in place before process launch.
+## Metadata shown
+- Top/back woods.
+- Length, width, depth.
+- Soundhole radius.
+- Short parameter hash.
+- Each occupied slot has a `Load` button.
+
+## Preview
+- Uses a compact placeholder/metadata preview, not a real HTML/SVG capture yet.
+- Record structure keeps the design payload so preview capture can be added later.
+
+## Cache / regeneration behavior
+- Recent entries require an existing cache with required playable note WAVs.
+- Loading a recent guitar activates the existing STK cache directly.
+- Loading clears `stk_render_requested`, so it does not start or poll generation.
 
 ## CLASSIC-only confirmation
-- No BOX or ACOUSTIC UI choices were reintroduced.
-- STK note-library path remains Classical/sample_000.
-- No FEM/ROM/STK physics or synthesis algorithm changed.
+- No BOX or ACOUSTIC UI choices were added.
+- Shape payloads remain forced to `Classical`.
+- No FEM/ROM/STK physics, solver, synthesis, WAV generation, or CLASSIC data behavior changed.
 
 ## Lightweight checks run
-- `python -m py_compile gui\stk_app_audio_service.py gui\test_stk_note_library_startup_command.py tools\build_app_stk_note_library.py`
-- `python gui\test_stk_note_library_startup_command.py`
-- `rg -n -e "APP_STK_RENDER_MODE" -e "--instrument" gui\stk_app_audio_service.py gui\test_stk_note_library_startup_command.py tools\build_app_stk_note_library.py tools\run_app_stk_note_library_classical_sample_000.sh`
+- `python -m py_compile gui/app.py gui/stk_app_ui.py gui/stk_app_audio_service.py gui/test_stk_note_library_startup_command.py`
+- `python gui/test_stk_note_library_startup_command.py`
 
 ## VM commands to verify
 ```bash
 git pull
 python gui/test_stk_note_library_startup_command.py
-python -m py_compile gui/stk_app_audio_service.py tools/build_app_stk_note_library.py
+python -m py_compile gui/app.py gui/stk_app_ui.py gui/stk_app_audio_service.py
 streamlit run gui/app.py
 ```
 
-## Expected VM signs
-- Worker WAVs are promoted into `audio/app_stk_note_cache/classical/current_preview_<hash>/`.
-- Final cache contains note WAVs, including sharp-note filenames.
-- `generated_note_count` and `note_wav_count` are nonzero.
-- `missing_required_notes` is not all 44 when staging contains the required WAVs.
-- Only one `APP_STK_RENDER_MODE ... hash=...` line appears per builder process.
+## Expected website signs
+- Website remains Classical-only with no shape selector.
+- Generate still opens the clickable guitar only when STK cache is ready.
+- Recent guitars panel appears under the clickable guitar.
+- Up to 3 playable previous guitars appear with Load buttons.
+- Loading a recent guitar reuses its cache and does not restart STK generation.

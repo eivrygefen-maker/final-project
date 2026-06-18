@@ -13,7 +13,7 @@ import sys
 import wave
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import streamlit as st
@@ -95,6 +95,7 @@ TOP_Z_BAND_FRAC = 0.10
 HOLE_VIS_COLOR = "#0c0c0c"
 SHELL_VIS_TAGS = frozenset({1, 2, 3, 4})
 DEFAULT_STK_NOTE_HZ = 110.0
+RECENT_GUITAR_CAPACITY = 3
 
 FIXTURE_PRESETS = (
     "Standing Angled (3D)",
@@ -216,6 +217,8 @@ def _init_session() -> None:
         "active_stk_player_fp": "",
         "active_stk_player_payload": {},
         "active_stk_player_validation": {},
+        "active_recent_guitar_record": {},
+        "recent_guitars": [],
         "stk_generate_intent_hash": "",
         "stk_render_requested": False,
         "stk_render_requested_hash": "",
@@ -1287,6 +1290,9 @@ def invalidate_physics_state() -> None:
 
 def invalidate_rom_and_audio_state() -> None:
     """Mark ROM body response and synthesized audio stale (design changed)."""
+    current_active = st.session_state.get("active_recent_guitar_record") or {}
+    if current_active:
+        push_recent_guitar_fifo(current_active)
     st.session_state.physics_ready = False
     st.session_state.acoustics_pending = False
     st.session_state.rom_body_ready = False
@@ -1308,6 +1314,7 @@ def invalidate_rom_and_audio_state() -> None:
     st.session_state["active_stk_player_fp"] = ""
     st.session_state["active_stk_player_payload"] = {}
     st.session_state["active_stk_player_validation"] = {}
+    st.session_state["active_recent_guitar_record"] = {}
     st.session_state["stk_generate_intent_hash"] = ""
     st.session_state["stk_render_requested"] = False
     st.session_state["stk_render_requested_hash"] = ""
@@ -1405,6 +1412,189 @@ def schedule_stk_note_library_after_rom(
     except Exception as exc:
         st.session_state["stk_job_status"] = "failed"
         st.session_state.rom_body_error = str(exc)
+
+
+def _recent_geom_metadata(geom: Mapping[str, Any], top_wood: str, back_wood: str) -> Dict[str, Any]:
+    return {
+        "top_wood": str(top_wood),
+        "back_wood": str(back_wood),
+        "length": float(geom.get("length") or 0.0),
+        "width": float(geom.get("width") or 0.0),
+        "depth": float(geom.get("depth") or 0.0),
+        "hole_radius": float(geom.get("hole_radius") or 0.0),
+    }
+
+
+def build_recent_guitar_record(
+    *,
+    parameter_hash: str,
+    cache_dir: str,
+    geom: Mapping[str, Any],
+    top_wood: str,
+    back_wood: str,
+    saved_guitar_id: str = "",
+    player_fingerprint: str = "",
+) -> Dict[str, Any]:
+    """Session-only recent guitar record; references an already-ready STK cache."""
+    meta = _recent_geom_metadata(geom, top_wood, back_wood)
+    return {
+        "parameter_hash": str(parameter_hash),
+        "sample_id": "sample_000",
+        "cache_dir": str(cache_dir),
+        "saved_guitar_id": str(saved_guitar_id),
+        "player_fingerprint": str(player_fingerprint),
+        "metadata": meta,
+        "studio_payload": {
+            **dict(geom),
+            "shape_type": CLASSIC_SHAPE_LABEL,
+            "top_wood_id": str(top_wood),
+            "back_wood_id": str(back_wood),
+        },
+        "label": f"{str(top_wood).title()} / {str(back_wood).title()}",
+        "short_id": str(parameter_hash)[:8],
+    }
+
+
+def recent_record_is_playable(record: Mapping[str, Any]) -> bool:
+    cache = Path(str(record.get("cache_dir") or ""))
+    if not record.get("parameter_hash") or not cache.is_dir():
+        return False
+    try:
+        from stk_app_audio_service import (  # noqa: WPS433
+            preview_cache_dir_has_required_notes,
+        )
+
+        return preview_cache_dir_has_required_notes(cache)
+    except Exception:
+        return False
+
+
+def push_recent_guitar_fifo(record: Mapping[str, Any]) -> None:
+    """Push one playable previous guitar to session FIFO, deduped by hash/cache."""
+    if not recent_record_is_playable(record):
+        return
+    incoming = dict(record)
+    in_hash = str(incoming.get("parameter_hash") or "")
+    in_cache = str(incoming.get("cache_dir") or "")
+    recents = [
+        dict(r)
+        for r in (st.session_state.get("recent_guitars") or [])
+        if str(r.get("parameter_hash") or "") != in_hash
+        and str(r.get("cache_dir") or "") != in_cache
+    ]
+    recents.insert(0, incoming)
+    st.session_state["recent_guitars"] = recents[:RECENT_GUITAR_CAPACITY]
+
+
+def set_active_recent_record_from_current_design(
+    geom: Mapping[str, Any],
+    *,
+    top_wood: str,
+    back_wood: str,
+) -> None:
+    parameter_hash = str(st.session_state.get("active_stk_parameter_hash") or "")
+    cache_dir = str(st.session_state.get("active_stk_cache_path") or "")
+    payload = st.session_state.get("active_stk_player_payload") or {}
+    if not parameter_hash or not cache_dir or payload.get("status") != "ready":
+        return
+    st.session_state["active_recent_guitar_record"] = build_recent_guitar_record(
+        parameter_hash=parameter_hash,
+        cache_dir=cache_dir,
+        geom=geom,
+        top_wood=top_wood,
+        back_wood=back_wood,
+        saved_guitar_id=str(st.session_state.get("active_stk_guitar_id") or ""),
+        player_fingerprint=str(st.session_state.get("active_stk_player_fp") or ""),
+    )
+
+
+def apply_recent_record_to_design(record: Mapping[str, Any]) -> None:
+    payload = sanitize_studio_payload(dict(record.get("studio_payload") or {}))
+    geom, top_wood, back_wood = geom_from_studio_event(payload)
+    rom_fp = rom_mesh_fingerprint(geom, top_wood=top_wood, back_wood=back_wood)
+    st.session_state["_fast_preview_geom"] = payload
+    st.session_state["_geom"] = geom
+    st.session_state["_top_wood"] = top_wood
+    st.session_state["_back_wood"] = back_wood
+    st.session_state.rom_body_ready = True
+    st.session_state.rom_body_fingerprint = rom_fp
+    st.session_state.physics_ready = True
+    st.session_state.sound_stale = False
+    if ROM_STK_JSON.exists():
+        st.session_state.stk_body_json = str(ROM_STK_JSON)
+    st.session_state["stk_parameter_hash"] = str(record.get("parameter_hash") or "")
+    st.session_state["stk_job_status"] = "ready"
+    st.session_state["stk_preview_cache_ready"] = True
+    st.session_state["stk_preview_cache_path"] = str(record.get("cache_dir") or "")
+    st.session_state["show_clickable_guitar_requested"] = True
+    st.session_state["stk_render_requested"] = False
+    st.session_state["stk_render_requested_hash"] = ""
+
+
+def load_recent_guitar_at_index(index: int) -> None:
+    recents = [dict(r) for r in (st.session_state.get("recent_guitars") or [])]
+    if index < 0 or index >= len(recents):
+        return
+    selected = recents.pop(index)
+    current = st.session_state.get("active_recent_guitar_record") or {}
+    if current:
+        recents = [
+            r for r in recents
+            if str(r.get("parameter_hash") or "") != str(current.get("parameter_hash") or "")
+        ]
+        recents.insert(0, dict(current))
+    st.session_state["recent_guitars"] = recents[:RECENT_GUITAR_CAPACITY]
+    try:
+        from stk_app_audio_service import activate_stk_guitar_for_player  # noqa: WPS433
+        from stk_app_ui import apply_stk_activation_to_session  # noqa: WPS433
+
+        activation = activate_stk_guitar_for_player(
+            cache_dir=Path(str(selected.get("cache_dir") or "")),
+            parameter_hash=str(selected.get("parameter_hash") or ""),
+            saved_guitar_id=str(selected.get("saved_guitar_id") or ""),
+        )
+        apply_stk_activation_to_session(activation)
+        apply_recent_record_to_design(selected)
+        st.session_state["active_recent_guitar_record"] = selected
+    except Exception as exc:
+        st.warning(f"Could not load recent guitar: {exc}")
+
+
+def render_recent_guitars_panel() -> None:
+    recents = [dict(r) for r in (st.session_state.get("recent_guitars") or [])][:RECENT_GUITAR_CAPACITY]
+    st.markdown("##### Recent guitars")
+    cols = st.columns(RECENT_GUITAR_CAPACITY)
+    for idx, col in enumerate(cols):
+        with col:
+            if idx >= len(recents):
+                st.caption("Empty slot")
+                st.markdown(
+                    "<div style='height:96px;border:1px dashed rgba(255,255,255,.25);"
+                    "border-radius:6px;'></div>",
+                    unsafe_allow_html=True,
+                )
+                continue
+            rec = recents[idx]
+            meta = dict(rec.get("metadata") or {})
+            top = str(meta.get("top_wood") or "").title()
+            back = str(meta.get("back_wood") or "").title()
+            st.markdown(
+                "<div style='height:76px;border:1px solid rgba(255,255,255,.18);"
+                "border-radius:6px;padding:8px;background:linear-gradient(135deg,#6f4b2f,#c79b62);'>"
+                "<div style='height:28px;border-radius:50%;border:2px solid rgba(20,10,5,.75);"
+                "width:28px;margin:16px auto 0;'></div></div>",
+                unsafe_allow_html=True,
+            )
+            st.caption(f"**{top}/{back}**")
+            length = float(meta.get("length") or 0)
+            width = float(meta.get("width") or 0)
+            depth = float(meta.get("depth") or 0)
+            hole = float(meta.get("hole_radius") or 0)
+            st.caption(f"L {length:.3f} / W {width:.3f} / D {depth:.3f}")
+            st.caption(f"Hole {hole:.3f} / `{rec.get('short_id')}`")
+            if st.button("Load", key=f"recent_guitar_load_{idx}_{rec.get('short_id')}", use_container_width=True):
+                load_recent_guitar_at_index(idx)
+                st.rerun()
 
 
 def website_stk_mode_alias() -> str:
@@ -2060,19 +2250,6 @@ def _render_main_studio(
     )
 
     from components.guitar_player import guitar_player  # noqa: WPS433
-    from stk_app_ui import (  # noqa: WPS433
-        apply_stk_activation_to_session,
-        load_stack_guitar_for_player,
-        render_saved_guitars_row,
-    )
-
-    loaded_guitar_id = render_saved_guitars_row(base_key="stk_saved_row")
-    if loaded_guitar_id:
-        try:
-            activation = load_stack_guitar_for_player(loaded_guitar_id)
-            apply_stk_activation_to_session(activation)
-        except Exception as exc:
-            st.warning(f"Could not load saved guitar: {exc}")
 
     active_payload = st.session_state.get("active_stk_player_payload") or {}
     player_validation = st.session_state.get("active_stk_player_validation") or {}
@@ -2119,6 +2296,13 @@ def _render_main_studio(
         player_key = "guitar_player_idle"
 
     guitar_player(player=player_payload, key=player_key, height=560)
+    if _player_ready and player_payload.get("status") == "ready":
+        set_active_recent_record_from_current_design(
+            geom,
+            top_wood=top_wood,
+            back_wood=back_wood,
+        )
+    render_recent_guitars_panel()
 
     if st.session_state.get("developer_fom_mode"):
         from stk_app_ui import render_stk_diagnostics_panel  # noqa: WPS433
