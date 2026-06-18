@@ -224,6 +224,11 @@ def _init_session() -> None:
         "active_stk_parameter_hash": "",
         "active_stk_guitar_id": "",
         "active_stk_player_fp": "",
+        "active_player_hash": "",
+        "active_player_cache_dir": "",
+        "loaded_player_hash": "",
+        "loaded_player_cache_dir": "",
+        "active_stk_player_key": "",
         "active_stk_player_payload": {},
         "active_stk_player_validation": {},
         "active_recent_guitar_record": {},
@@ -658,11 +663,14 @@ def verify_fast_preview_component_paths() -> bool:
         ("streamlit_bridge.js", bridge_path, os.path.isfile(bridge_path)),
     )
     all_ok = True
+    debug_assets = bool(os.environ.get("APP_DEBUG_FAST_PREVIEW"))
     for label, path, ok in checks:
         abs_path = os.path.abspath(path)
-        print(f"DEBUG fast_preview: {label} -> {abs_path} exists={ok}", flush=True)
+        if debug_assets:
+            print(f"DEBUG fast_preview: {label} -> {abs_path} exists={ok}", flush=True)
         all_ok = all_ok and ok
-    print(f"DEBUG fast_preview: all assets OK={all_ok}", flush=True)
+    if debug_assets:
+        print(f"DEBUG fast_preview: all assets OK={all_ok}", flush=True)
     return all_ok
 
 
@@ -1321,6 +1329,11 @@ def invalidate_rom_and_audio_state() -> None:
     st.session_state["active_stk_parameter_hash"] = ""
     st.session_state["active_stk_guitar_id"] = ""
     st.session_state["active_stk_player_fp"] = ""
+    st.session_state["active_player_hash"] = ""
+    st.session_state["active_player_cache_dir"] = ""
+    st.session_state["loaded_player_hash"] = ""
+    st.session_state["loaded_player_cache_dir"] = ""
+    st.session_state["active_stk_player_key"] = ""
     st.session_state["active_stk_player_payload"] = {}
     st.session_state["active_stk_player_validation"] = {}
     st.session_state["active_recent_guitar_record"] = {}
@@ -1618,6 +1631,10 @@ def apply_recent_record_to_design(record: Mapping[str, Any]) -> None:
     st.session_state["stk_job_status"] = "ready"
     st.session_state["stk_preview_cache_ready"] = True
     st.session_state["stk_preview_cache_path"] = str(record.get("cache_dir") or "")
+    st.session_state["active_player_hash"] = str(record.get("parameter_hash") or "")
+    st.session_state["active_player_cache_dir"] = str(record.get("cache_dir") or "")
+    st.session_state["loaded_player_hash"] = str(record.get("parameter_hash") or "")
+    st.session_state["loaded_player_cache_dir"] = str(record.get("cache_dir") or "")
     st.session_state["show_clickable_guitar_requested"] = True
     st.session_state["stk_render_requested"] = False
     st.session_state["stk_render_requested_hash"] = ""
@@ -2374,7 +2391,7 @@ def _render_main_studio(
             player_key = "guitar_player_invalid"
         else:
             player_payload = active_payload
-            player_key = f"guitar_player_{st.session_state.get('active_stk_player_fp') or 'stk'}"
+            player_key = f"guitar_player_{st.session_state.get('active_stk_player_key') or st.session_state.get('active_stk_player_fp') or 'stk'}"
     elif _stk_building:
         player_payload = {"status": "building", "positions": [], "fingerprint": ""}
         player_key = "guitar_player_building"

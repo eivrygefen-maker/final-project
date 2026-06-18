@@ -134,6 +134,73 @@ class TestStkNoteLibraryStartupCommand(unittest.TestCase):
         self.assertEqual(result["action"], "stk_failed")
         self.assertFalse(hasattr(stk_app_ui, "schedule_stk_after_rom"))
 
+    def test_activation_latches_stable_player_hash_and_cache_dir(self) -> None:
+        sys.modules["streamlit"].session_state.clear()
+        activation = {
+            "cache_path": "audio/app_stk_note_cache/classical/current_preview_hash4",
+            "parameter_hash": "hash4",
+            "saved_guitar_id": "",
+            "player_fingerprint": "stk_hash4",
+            "player_payload": {"status": "ready", "positions": [{"wav": "S6_f0.wav"}]},
+            "validation": {"ok": True},
+        }
+
+        stk_app_ui.apply_stk_activation_to_session(activation)
+        ss = sys.modules["streamlit"].session_state
+
+        self.assertEqual(ss["active_player_hash"], "hash4")
+        self.assertEqual(ss["loaded_player_hash"], "hash4")
+        self.assertTrue(ss["active_player_cache_dir"].endswith("current_preview_hash4"))
+        self.assertTrue(ss["active_stk_player_key"])
+
+    def test_existing_saved_stack_does_not_replace_current_preview_activation(self) -> None:
+        sys.modules["streamlit"].session_state.clear()
+        preview = Path("audio/app_stk_note_cache/classical/current_preview_hash5")
+        saved = Path("audio/app_stk_note_cache/classical/saved_guitar_hash5_123")
+        captured = {}
+
+        def fake_activate(*, repo_root, parameter_hash, cache_dir, saved_guitar_id=""):
+            captured["cache_dir"] = str(cache_dir)
+            return {
+                "cache_path": str(cache_dir),
+                "parameter_hash": parameter_hash,
+                "saved_guitar_id": saved_guitar_id,
+                "player_fingerprint": f"stk_{parameter_hash}",
+                "player_payload": {"status": "ready", "positions": [{"wav": "S6_f0.wav"}]},
+                "validation": {"ok": True},
+            }
+
+        with (
+            patch.object(stk_app_ui, "load_app_stk_config", return_value={"enable_ready_fifo_stack": True}),
+            patch.object(stk_app_ui, "compute_parameter_hash", return_value="hash5"),
+            patch.object(
+                stk_app_ui,
+                "resolve_preview_cache_ready_state",
+                return_value={"status": "ready", "preview_cache_ready": True, "preview_cache_path": str(preview)},
+            ),
+            patch.object(
+                stk_app_ui,
+                "find_stack_entry_by_hash",
+                return_value={"saved_guitar_id": "saved_hash5", "note_cache_path": str(saved)},
+            ),
+            patch.object(stk_app_ui, "_activate_ready_preview_cache", side_effect=fake_activate),
+        ):
+            result = stk_app_ui.generate_or_load_ready_guitar(
+                repo_root=Path("."),
+                rom_fp="rom",
+                lhs_params={},
+                geom={"shape_type": "Classical"},
+                top_wood="spruce",
+                back_wood="rosewood",
+            )
+
+        self.assertEqual(result["action"], "loaded_existing")
+        self.assertEqual(captured["cache_dir"], str(preview))
+        self.assertEqual(
+            sys.modules["streamlit"].session_state["active_player_cache_dir"],
+            str(preview).replace("\\", "/"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

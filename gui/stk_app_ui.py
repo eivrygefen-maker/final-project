@@ -36,6 +36,34 @@ def _session_set(key: str, value: Any) -> None:
     st.session_state[key] = value
 
 
+def _norm_cache_path(path: Any) -> str:
+    return str(path or "").replace("\\", "/")
+
+
+def _player_key(parameter_hash: str, cache_path: str, player_fingerprint: str) -> str:
+    raw = f"{parameter_hash}|{cache_path}|{player_fingerprint}"
+    return "".join(ch if ch.isalnum() else "_" for ch in raw)[-120:]
+
+
+def _log_once(key: str, message: str) -> None:
+    seen_key = f"_logged_{key}"
+    if st.session_state.get(seen_key):
+        return
+    _session_set(seen_key, True)
+    print(message, flush=True)
+
+
+def _active_player_matches(parameter_hash: str, cache_dir: Path) -> bool:
+    cache_path = _norm_cache_path(cache_dir)
+    payload = dict(st.session_state.get("active_stk_player_payload") or {})
+    return (
+        str(st.session_state.get("active_player_hash") or "") == str(parameter_hash)
+        and _norm_cache_path(st.session_state.get("active_player_cache_dir")) == cache_path
+        and payload.get("status") == "ready"
+        and bool(payload.get("positions"))
+    )
+
+
 def _geometry_summary(geom: Mapping[str, Any], top_wood: str, back_wood: str) -> Dict[str, Any]:
     return {
         "length": geom.get("length"),
@@ -55,10 +83,18 @@ def apply_stk_activation_to_session(activation: Mapping[str, Any]) -> None:
     if not validation.get("ok"):
         payload = {"status": "hidden", "positions": [], "fingerprint": ""}
         st.warning(AUDIT_INCOMPLETE_MSG)
-    _session_set("active_stk_cache_path", str(activation.get("cache_path") or ""))
-    _session_set("active_stk_parameter_hash", str(activation.get("parameter_hash") or ""))
+    cache_path = _norm_cache_path(activation.get("cache_path"))
+    parameter_hash = str(activation.get("parameter_hash") or "")
+    player_fp = str(activation.get("player_fingerprint") or "")
+    _session_set("active_stk_cache_path", cache_path)
+    _session_set("active_stk_parameter_hash", parameter_hash)
     _session_set("active_stk_guitar_id", str(activation.get("saved_guitar_id") or ""))
-    _session_set("active_stk_player_fp", str(activation.get("player_fingerprint") or ""))
+    _session_set("active_stk_player_fp", player_fp)
+    _session_set("active_player_hash", parameter_hash)
+    _session_set("active_player_cache_dir", cache_path)
+    _session_set("loaded_player_hash", parameter_hash)
+    _session_set("loaded_player_cache_dir", cache_path)
+    _session_set("active_stk_player_key", _player_key(parameter_hash, cache_path, player_fp))
     _session_set("active_stk_player_payload", payload)
     _session_set("active_stk_player_validation", validation)
     _session_set("sound_stale", False)
@@ -110,9 +146,9 @@ def _activate_ready_preview_cache(
     saved_guitar_id: str = "",
 ) -> Dict[str, Any]:
     """Activate player from a ready preview cache; raise on validation failure."""
-    print(
+    _log_once(
+        f"load_ready_cache_{parameter_hash}_{_player_key(parameter_hash, _norm_cache_path(cache_dir), saved_guitar_id)}",
         f"APP_STK_LOAD_READY_CACHE hash={parameter_hash} cache_dir={cache_dir}",
-        flush=True,
     )
     activation = activate_stk_guitar_for_player(
         cache_dir=cache_dir,
@@ -150,6 +186,9 @@ def generate_or_load_ready_guitar(
     cache_dir = Path(str(state.get("preview_cache_path") or preview_cache_dir(parameter_hash, instrument)))
 
     if not cfg.get("enable_ready_fifo_stack", True):
+        if _active_player_matches(parameter_hash, cache_dir):
+            _session_set("stk_generate_intent_hash", "")
+            return {"action": "activated_preview", "activation": None, "already_loaded": True}
         activation = _activate_ready_preview_cache(
             repo_root=repo_root,
             parameter_hash=parameter_hash,
@@ -161,11 +200,13 @@ def generate_or_load_ready_guitar(
 
     existing = find_stack_entry_by_hash(parameter_hash, instrument)
     if existing:
+        if _active_player_matches(parameter_hash, cache_dir):
+            _session_set("stk_generate_intent_hash", "")
+            return {"action": "loaded_existing", "entry": existing, "activation": None, "already_loaded": True}
         activation = _activate_ready_preview_cache(
             repo_root=repo_root,
             parameter_hash=parameter_hash,
-            cache_dir=Path(str(existing["note_cache_path"])),
-            saved_guitar_id=str(existing.get("saved_guitar_id") or ""),
+            cache_dir=cache_dir,
         )
         apply_stk_activation_to_session(activation)
         _session_set("stk_generate_intent_hash", "")
@@ -181,21 +222,25 @@ def generate_or_load_ready_guitar(
         instrument=instrument,
     )
     if entry.get("_duplicate"):
+        if _active_player_matches(parameter_hash, cache_dir):
+            _session_set("stk_generate_intent_hash", "")
+            return {"action": "loaded_existing", "entry": entry, "activation": None, "already_loaded": True}
         activation = _activate_ready_preview_cache(
             repo_root=repo_root,
             parameter_hash=parameter_hash,
-            cache_dir=Path(str(entry["note_cache_path"])),
-            saved_guitar_id=str(entry.get("saved_guitar_id") or ""),
+            cache_dir=cache_dir,
         )
         apply_stk_activation_to_session(activation)
         _session_set("stk_generate_intent_hash", "")
         return {"action": "loaded_existing", "entry": entry, "activation": activation}
 
+    if _active_player_matches(parameter_hash, cache_dir):
+        _session_set("stk_generate_intent_hash", "")
+        return {"action": "saved_new", "entry": entry, "activation": None, "already_loaded": True}
     activation = _activate_ready_preview_cache(
         repo_root=repo_root,
         parameter_hash=parameter_hash,
-        cache_dir=Path(str(entry["note_cache_path"])),
-        saved_guitar_id=str(entry.get("saved_guitar_id") or ""),
+        cache_dir=cache_dir,
     )
     apply_stk_activation_to_session(activation)
     _session_set("stk_generate_intent_hash", "")
@@ -279,9 +324,10 @@ def poll_stk_render_request(
         return out
 
     if preview_ready:
-        print(
-            f"APP_STK_AUTO_LOAD_READY hash={parameter_hash} cache_dir={preview_cache_dir(parameter_hash, instrument)}",
-            flush=True,
+        ready_cache = preview_cache_dir(parameter_hash, instrument)
+        _log_once(
+            f"auto_load_ready_{parameter_hash}_{_norm_cache_path(ready_cache)}",
+            f"APP_STK_AUTO_LOAD_READY hash={parameter_hash} cache_dir={ready_cache}",
         )
         try:
             result = generate_or_load_ready_guitar(
@@ -366,11 +412,12 @@ def request_generate_guitar(
     parameter_hash = compute_parameter_hash(rom_fp, lhs_params)
     _set_stk_render_request(parameter_hash)
 
+    ready_cache = preview_cache_dir(parameter_hash, instrument)
+    if _active_player_matches(parameter_hash, ready_cache):
+        _clear_stk_render_request()
+        return {"action": "activated_preview", "activation": None, "already_loaded": True}
+
     if _stk_cache_is_loadable(parameter_hash, repo_root, instrument):
-        print(
-            f"APP_STK_LOAD_READY_CACHE hash={parameter_hash} cache_dir={preview_cache_dir(parameter_hash, instrument)}",
-            flush=True,
-        )
         return generate_or_load_ready_guitar(
             repo_root=repo_root,
             rom_fp=rom_fp,

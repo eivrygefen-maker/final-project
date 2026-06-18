@@ -85,6 +85,7 @@ DEFAULT_NOTE_RANGE = "E2:E5"  # legacy chromatic range; player uses fretboard-de
 DEFAULT_SOURCE_SAMPLE_ID = "sample_000"
 DEFAULT_PRIORITY_NOTES: Tuple[str, ...] = ("A2", "A4", "E5")
 CACHE_SPEC_FILE = ".cache_spec.json"
+_POSITION_READY_LOGGED: set[str] = set()
 NOTE_CACHE_VERSION = "app_stk_v4_explicit_frequency"
 APP_STK_PARALLEL_WORKERS_ENABLED = True
 DEFAULT_APP_STK_WORKERS = 3
@@ -2604,14 +2605,20 @@ def ensure_position_wav_aliases(
     report_fields = build_position_wav_report_fields(cache_dir, fret_count=fc, cfg=cfg)
     count = int(report_fields.get("position_wav_count") or 0)
     hash_label = parameter_hash or str(cache_dir.name).replace("current_preview_", "")
+    cache_key = str(cache_dir).replace("\\", "/")
+    log_key = f"{hash_label}|{cache_key}|{count}"
     if count > 0 and not report_fields.get("missing_position_wavs"):
-        print(f"APP_STK_POSITION_WAVS_READY hash={hash_label} count={count}", flush=True)
+        if log_key not in _POSITION_READY_LOGGED:
+            _POSITION_READY_LOGGED.add(log_key)
+            print(f"APP_STK_POSITION_WAVS_READY hash={hash_label} count={count}", flush=True)
     elif created:
-        print(
-            f"APP_STK_POSITION_WAVS_READY hash={hash_label} count={count} "
-            f"created={len(created)} missing={len(report_fields.get('missing_position_wavs') or [])}",
-            flush=True,
-        )
+        if log_key not in _POSITION_READY_LOGGED:
+            _POSITION_READY_LOGGED.add(log_key)
+            print(
+                f"APP_STK_POSITION_WAVS_READY hash={hash_label} count={count} "
+                f"created={len(created)} missing={len(report_fields.get('missing_position_wavs') or [])}",
+                flush=True,
+            )
 
     spec = read_cache_spec(cache_dir)
     if spec is not None:
