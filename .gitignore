@@ -113,3 +113,6 @@ FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/**/free
 FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/**/lprod/checkpoint/
 FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/**/logs/
 FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/**/modes_catalog.jsonl
+
+# Local Codex handoff file
+CODEX_HANDOFF.md
