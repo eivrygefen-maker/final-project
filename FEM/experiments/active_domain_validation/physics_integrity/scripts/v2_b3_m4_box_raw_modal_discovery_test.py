@@ -170,6 +170,24 @@ def test_box_bypass_keeps_residual_rejection():
     assert bypass is False
 
 
+def test_box_bypass_keeps_discovery_band_rejection():
+    accepted, bypass = _normal_filter_acceptance_decision(
+        finite=True,
+        nonfinite=False,
+        f_hz=742.8,
+        inside=False,
+        eps_ok=True,
+        si_pass=True,
+        d_pass=True,
+        lambda_one=False,
+        support_ok=True,
+        box_bypass_target_window_acceptance=True,
+        inside_discovery_band=False,
+    )
+    assert accepted is False
+    assert bypass is False
+
+
 def test_resolve_worker_shape_from_sample_id():
     assert resolve_worker_shape_name({"sample_id": "box_sample_000"}) == "box"
     assert resolve_worker_shape_name({"sample_id": "sample_000"}) == "classic"
@@ -431,6 +449,7 @@ def main() -> int:
         test_classic_rejects_candidate_outside_target_window,
         test_box_bypass_accepts_outside_target_window_when_other_filters_pass,
         test_box_bypass_keeps_residual_rejection,
+        test_box_bypass_keeps_discovery_band_rejection,
         test_resolve_worker_shape_from_sample_id,
         test_catalog_row_includes_rejection_reasons,
         test_worker_diagnostic_writes_rejected_candidates,

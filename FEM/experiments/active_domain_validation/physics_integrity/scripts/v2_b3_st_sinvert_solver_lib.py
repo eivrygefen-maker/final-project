@@ -78,7 +78,7 @@ class AcceptanceConfig:
     def discovery_mode(self) -> bool:
         return self.policy == ACCEPTANCE_POLICY_DISCOVERY
 
-    def mode_frequency_inside(self, f_hz: float, *, target_hz: float) -> bool:
+    def mode_frequency_inside_discovery_band(self, f_hz: Optional[float]) -> bool:
         if f_hz is None:
             return False
         f = float(f_hz)
@@ -86,7 +86,15 @@ class AcceptanceConfig:
             if self.discovery_band_hz is None:
                 raise RuntimeError("discovery policy missing band")
             lo, hi = self.discovery_band_hz
-            if not (lo <= f <= hi):
+            return bool(lo <= f <= hi)
+        return bool(self.freq_lo <= f <= self.freq_hi)
+
+    def mode_frequency_inside(self, f_hz: float, *, target_hz: float) -> bool:
+        if f_hz is None:
+            return False
+        f = float(f_hz)
+        if self.discovery_mode:
+            if not self.mode_frequency_inside_discovery_band(f):
                 return False
             t = float(target_hz)
             if self.per_target_windows_hz:
@@ -507,6 +515,7 @@ def collect_accepted_st_modes(
             finite = bool(math.isfinite(lam_re) and math.isfinite(lam_im))
             f_hz = lambda_hz_from_eigenvalue(lam_re, lam_im)
             inside = cfg.mode_frequency_inside(f_hz, target_hz=float(target_hz))
+            inside_discovery_band = cfg.mode_frequency_inside_discovery_band(f_hz)
             eps_err = float("nan")
             try:
                 eps_err = float(eps.computeError(i, SLEPc.EPS.ErrorType.RELATIVE))
@@ -543,6 +552,7 @@ def collect_accepted_st_modes(
                 lambda_one=lambda_one,
                 support_ok=support_ok,
                 box_bypass_target_window_acceptance=box_bypass_target_window_acceptance,
+                inside_discovery_band=inside_discovery_band,
             )
             if mode_pass:
                 entry: Dict[str, Any] = {
@@ -686,9 +696,12 @@ def _normal_filter_acceptance_decision(
     lambda_one: bool,
     support_ok: bool,
     box_bypass_target_window_acceptance: bool = False,
+    inside_discovery_band: bool = True,
 ) -> Tuple[bool, bool]:
     window_ok = bool(inside)
-    bypass_applied = bool(box_bypass_target_window_acceptance and not window_ok)
+    bypass_applied = bool(
+        box_bypass_target_window_acceptance and inside_discovery_band and not window_ok
+    )
     if bypass_applied:
         window_ok = True
     accepted = bool(
@@ -766,6 +779,7 @@ def collect_all_st_mode_candidates(
             finite = bool(math.isfinite(lam_re) and math.isfinite(lam_im))
             f_hz = lambda_hz_from_eigenvalue(lam_re, lam_im)
             inside = cfg.mode_frequency_inside(f_hz, target_hz=float(target_hz))
+            inside_discovery_band = cfg.mode_frequency_inside_discovery_band(f_hz)
             eps_err = float("nan")
             try:
                 eps_err = float(eps.computeError(i, SLEPc.EPS.ErrorType.RELATIVE))
@@ -813,6 +827,7 @@ def collect_all_st_mode_candidates(
                 lambda_one=lambda_one,
                 support_ok=support_ok,
                 box_bypass_target_window_acceptance=box_bypass_target_window_acceptance,
+                inside_discovery_band=inside_discovery_band,
             )
             entry: Dict[str, Any] = {
                 "mode_index": i,
