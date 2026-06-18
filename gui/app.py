@@ -96,6 +96,15 @@ HOLE_VIS_COLOR = "#0c0c0c"
 SHELL_VIS_TAGS = frozenset({1, 2, 3, 4})
 DEFAULT_STK_NOTE_HZ = 110.0
 RECENT_GUITAR_CAPACITY = 3
+RECENT_GUITAR_WOOD_COLORS = {
+    "spruce": ("#d8b16a", "#8a5a32"),
+    "cedar": ("#b96b3c", "#75412d"),
+    "maple": ("#e2c58b", "#9c7046"),
+    "rosewood": ("#7b3f2d", "#3b2019"),
+    "mahogany": ("#9c5638", "#4b2a1e"),
+    "ebony": ("#34302b", "#171513"),
+    "default": ("#c89555", "#5a3524"),
+}
 
 FIXTURE_PRESETS = (
     "Standing Angled (3D)",
@@ -1425,6 +1434,88 @@ def _recent_geom_metadata(geom: Mapping[str, Any], top_wood: str, back_wood: str
     }
 
 
+def _recent_preview_clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, float(value)))
+
+
+def _recent_wood_colors(top_wood: str, back_wood: str) -> Tuple[str, str]:
+    top_key = str(top_wood or "").strip().lower()
+    back_key = str(back_wood or "").strip().lower()
+    top_color = RECENT_GUITAR_WOOD_COLORS.get(top_key, RECENT_GUITAR_WOOD_COLORS["default"])[0]
+    back_color = RECENT_GUITAR_WOOD_COLORS.get(back_key, RECENT_GUITAR_WOOD_COLORS["default"])[1]
+    return top_color, back_color
+
+
+def build_recent_guitar_preview_svg(record_or_payload: Mapping[str, Any]) -> str:
+    """Build a deterministic mini classical guitar preview from saved design data."""
+    record = dict(record_or_payload)
+    meta = dict(record.get("metadata") or {})
+    if not meta:
+        payload = sanitize_studio_payload(dict(record.get("studio_payload") or record))
+        geom, top_wood, back_wood = geom_from_studio_event(payload)
+        meta = _recent_geom_metadata(geom, top_wood, back_wood)
+    top_color, back_color = _recent_wood_colors(
+        str(meta.get("top_wood") or ""),
+        str(meta.get("back_wood") or ""),
+    )
+    length = _recent_preview_clamp(float(meta.get("length") or 1.0), 0.6, 1.4)
+    width = _recent_preview_clamp(float(meta.get("width") or 0.36), 0.20, 0.60)
+    depth = _recent_preview_clamp(float(meta.get("depth") or 0.08), 0.04, 0.18)
+    hole = _recent_preview_clamp(float(meta.get("hole_radius") or 0.045), 0.018, 0.090)
+
+    body_w = _recent_preview_clamp(42.0 + (width - 0.30) * 120.0, 36.0, 64.0)
+    body_h = _recent_preview_clamp(52.0 + (length - 0.85) * 34.0, 46.0, 70.0)
+    waist_w = _recent_preview_clamp(body_w * (0.44 + depth * 1.2), body_w * 0.44, body_w * 0.66)
+    upper_w = body_w * 0.72
+    lower_w = body_w
+    soundhole_r = _recent_preview_clamp(hole * 135.0, 4.5, 11.0)
+    body_x = 74.0
+    body_y = 76.0
+    neck_top = body_y - body_h / 2.0 - 42.0
+    neck_bottom = body_y - body_h / 2.0 + 8.0
+    bridge_y = body_y + body_h * 0.22
+    rosette = "#2f2119" if top_color != "#34302b" else "#d2b36f"
+
+    return f"""
+<svg viewBox="0 0 148 132" width="100%" height="124" role="img" aria-label="Recent classical guitar preview"
+     xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="148" height="132" rx="7" fill="rgba(255,255,255,0.035)"/>
+  <g transform="rotate(-7 74 66)">
+    <rect x="69" y="{neck_top:.1f}" width="10" height="{neck_bottom - neck_top:.1f}" rx="3" fill="{back_color}"/>
+    <rect x="66" y="{neck_top - 13:.1f}" width="16" height="15" rx="3" fill="{back_color}"/>
+    <path d="M {body_x:.1f} {body_y - body_h / 2:.1f}
+             C {body_x - upper_w / 2:.1f} {body_y - body_h / 2 + 5:.1f},
+               {body_x - waist_w / 2:.1f} {body_y - 4:.1f},
+               {body_x - lower_w / 2:.1f} {body_y + body_h / 5:.1f}
+             C {body_x - lower_w / 2:.1f} {body_y + body_h / 2:.1f},
+               {body_x - lower_w / 5:.1f} {body_y + body_h / 2 + 3:.1f},
+               {body_x:.1f} {body_y + body_h / 2:.1f}
+             C {body_x + lower_w / 5:.1f} {body_y + body_h / 2 + 3:.1f},
+               {body_x + lower_w / 2:.1f} {body_y + body_h / 2:.1f},
+               {body_x + lower_w / 2:.1f} {body_y + body_h / 5:.1f}
+             C {body_x + waist_w / 2:.1f} {body_y - 4:.1f},
+               {body_x + upper_w / 2:.1f} {body_y - body_h / 2 + 5:.1f},
+               {body_x:.1f} {body_y - body_h / 2:.1f} Z"
+          fill="{top_color}" stroke="{back_color}" stroke-width="4"/>
+    <ellipse cx="{body_x:.1f}" cy="{body_y - body_h * 0.13:.1f}" rx="{soundhole_r + 2.3:.1f}" ry="{soundhole_r + 2.3:.1f}"
+             fill="none" stroke="{rosette}" stroke-width="2"/>
+    <circle cx="{body_x:.1f}" cy="{body_y - body_h * 0.13:.1f}" r="{soundhole_r:.1f}" fill="#17110d"/>
+    <rect x="{body_x - body_w * 0.23:.1f}" y="{bridge_y:.1f}" width="{body_w * 0.46:.1f}" height="6" rx="2" fill="{back_color}"/>
+    <g stroke="rgba(255,255,255,0.50)" stroke-width="0.65">
+      <line x1="70.5" y1="{neck_top - 6:.1f}" x2="{body_x - 7:.1f}" y2="{bridge_y + 3:.1f}"/>
+      <line x1="72.8" y1="{neck_top - 6:.1f}" x2="{body_x - 2:.1f}" y2="{bridge_y + 3:.1f}"/>
+      <line x1="75.2" y1="{neck_top - 6:.1f}" x2="{body_x + 2:.1f}" y2="{bridge_y + 3:.1f}"/>
+      <line x1="77.5" y1="{neck_top - 6:.1f}" x2="{body_x + 7:.1f}" y2="{bridge_y + 3:.1f}"/>
+    </g>
+    <g stroke="rgba(255,255,255,0.35)" stroke-width="0.8">
+      <line x1="68" x2="80" y1="{neck_top + 10:.1f}" y2="{neck_top + 10:.1f}"/>
+      <line x1="68" x2="80" y1="{neck_top + 21:.1f}" y2="{neck_top + 21:.1f}"/>
+      <line x1="68" x2="80" y1="{neck_top + 32:.1f}" y2="{neck_top + 32:.1f}"/>
+    </g>
+  </g>
+</svg>""".strip()
+
+
 def build_recent_guitar_record(
     *,
     parameter_hash: str,
@@ -1452,6 +1543,7 @@ def build_recent_guitar_record(
         },
         "label": f"{str(top_wood).title()} / {str(back_wood).title()}",
         "short_id": str(parameter_hash)[:8],
+        "preview_svg": build_recent_guitar_preview_svg({"metadata": meta}),
     }
 
 
@@ -1578,11 +1670,13 @@ def render_recent_guitars_panel() -> None:
             meta = dict(rec.get("metadata") or {})
             top = str(meta.get("top_wood") or "").title()
             back = str(meta.get("back_wood") or "").title()
+            preview_svg = str(rec.get("preview_svg") or build_recent_guitar_preview_svg(rec))
             st.markdown(
-                "<div style='height:76px;border:1px solid rgba(255,255,255,.18);"
-                "border-radius:6px;padding:8px;background:linear-gradient(135deg,#6f4b2f,#c79b62);'>"
-                "<div style='height:28px;border-radius:50%;border:2px solid rgba(20,10,5,.75);"
-                "width:28px;margin:16px auto 0;'></div></div>",
+                "<div style='height:132px;border:1px solid rgba(255,255,255,.18);"
+                "border-radius:6px;padding:4px;background:rgba(255,255,255,.035);"
+                "overflow:hidden;'>"
+                f"{preview_svg}"
+                "</div>",
                 unsafe_allow_html=True,
             )
             st.caption(f"**{top}/{back}**")
