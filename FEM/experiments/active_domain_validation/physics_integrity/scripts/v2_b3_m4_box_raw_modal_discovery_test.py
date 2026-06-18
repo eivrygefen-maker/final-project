@@ -28,6 +28,10 @@ from v2_b3_m4_worker_run_lib import production_worker_subprocess_env  # noqa: E4
 from v2_b3_m4_minimal_rom_compaction import collect_minimal_rom_deletable_paths  # noqa: E402
 from v2_b3_m4_modal_discovery_audit_lib import build_modal_discovery_audit  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
+from v2_b3_st_sinvert_solver_lib import (  # noqa: E402
+    _normal_filter_acceptance_decision,
+    _normal_filter_rejection_reasons,
+)
 
 
 def _synthetic_candidate(
@@ -89,6 +93,81 @@ def test_production_worker_env_propagates_box_raw_discovery_context():
             os.environ["SHAPE"] = old_shape
         else:
             os.environ.pop("SHAPE", None)
+
+
+def test_classic_rejects_candidate_outside_target_window():
+    accepted, bypass = _normal_filter_acceptance_decision(
+        finite=True,
+        nonfinite=False,
+        f_hz=240.0,
+        inside=False,
+        eps_ok=True,
+        si_pass=True,
+        d_pass=True,
+        lambda_one=False,
+        support_ok=True,
+        box_bypass_target_window_acceptance=False,
+    )
+    reasons = _normal_filter_rejection_reasons(
+        finite=True,
+        nonfinite=False,
+        f_hz=240.0,
+        inside=False,
+        eps_ok=True,
+        si_pass=True,
+        d_pass=True,
+        lambda_one=False,
+        support_ok=True,
+    )
+    assert accepted is False
+    assert bypass is False
+    assert reasons == ["outside_acceptance_window"]
+
+
+def test_box_bypass_accepts_outside_target_window_when_other_filters_pass():
+    accepted, bypass = _normal_filter_acceptance_decision(
+        finite=True,
+        nonfinite=False,
+        f_hz=240.0,
+        inside=False,
+        eps_ok=True,
+        si_pass=True,
+        d_pass=True,
+        lambda_one=False,
+        support_ok=True,
+        box_bypass_target_window_acceptance=True,
+    )
+    reasons = _normal_filter_rejection_reasons(
+        finite=True,
+        nonfinite=False,
+        f_hz=240.0,
+        inside=False,
+        eps_ok=True,
+        si_pass=True,
+        d_pass=True,
+        lambda_one=False,
+        support_ok=True,
+    )
+    assert accepted is True
+    assert bypass is True
+    assert reasons == ["outside_acceptance_window"]
+
+
+def test_box_bypass_keeps_residual_rejection():
+    accepted, bypass = _normal_filter_acceptance_decision(
+        finite=True,
+        nonfinite=False,
+        f_hz=240.0,
+        inside=False,
+        eps_ok=False,
+        si_pass=True,
+        d_pass=True,
+        lambda_one=False,
+        support_ok=True,
+        box_bypass_target_window_acceptance=True,
+    )
+    assert accepted is False
+    assert bypass is False
 
 
 def test_resolve_worker_shape_from_sample_id():
@@ -348,6 +427,10 @@ def test_modal_audit_includes_raw_vs_filtered_section():
 def main() -> int:
     tests = [
         test_box_raw_enabled_only_for_box_with_env,
+        test_production_worker_env_propagates_box_raw_discovery_context,
+        test_classic_rejects_candidate_outside_target_window,
+        test_box_bypass_accepts_outside_target_window_when_other_filters_pass,
+        test_box_bypass_keeps_residual_rejection,
         test_resolve_worker_shape_from_sample_id,
         test_catalog_row_includes_rejection_reasons,
         test_worker_diagnostic_writes_rejected_candidates,

@@ -108,6 +108,7 @@ def _run_real_solve(
     acceptance_cfg = acceptance_config_from_chunk_targets(chunk_targets)
     shape_name = resolve_worker_shape_name(chunk_targets)
     raw_diagnostic = box_raw_modal_discovery_enabled(shape_name=shape_name)
+    box_bypass_target_window_acceptance = shape_name == "box"
 
     meta_path = checkpoint / "built_metadata.json"
     if not meta_path.is_file():
@@ -148,6 +149,7 @@ def _run_real_solve(
         ),
         "box_raw_modal_discovery": raw_diagnostic,
         "shape_name": shape_name,
+        "box_bypass_target_window_acceptance": box_bypass_target_window_acceptance,
         **acceptance_cfg.to_result_fields(),
         "versions": version_snapshot(),
         "threading_env": threading_env_snapshot(),
@@ -204,6 +206,7 @@ def _run_real_solve(
                 acceptance_config=acceptance_cfg,
                 region_ctx=region_ctx,
                 raw_diagnostic=raw_diagnostic,
+                box_bypass_target_window_acceptance=box_bypass_target_window_acceptance,
             )
             per_target_rows.append(row)
             target_meta = chunk_target_rows[ti] if ti < len(chunk_target_rows) else {}
@@ -298,6 +301,7 @@ def _run_real_solve(
         "warnings": [],
         "errors": [result["failure_reason"]] if result.get("failure_reason") else [],
         "box_raw_modal_discovery": raw_diagnostic,
+        "box_bypass_target_window_acceptance": box_bypass_target_window_acceptance,
         "solver_result_json": str(output_dir / "solver_result.json"),
         "generated_utc": result.get("generated_utc"),
     }
