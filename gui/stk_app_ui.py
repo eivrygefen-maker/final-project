@@ -10,7 +10,6 @@ import streamlit as st
 from app_stk_config import load_app_stk_config
 from app_stk_instrument import default_sample_id_for_shape  # noqa: WPS433
 from stk_app_audio_service import (
-    DEFAULT_SOURCE_SAMPLE_ID,
     activate_stk_guitar_for_player,
     compute_parameter_hash,
     find_stack_entry_by_hash,
@@ -23,7 +22,6 @@ from stk_app_audio_service import (
     refresh_stk_background_job_status,
     resolve_preview_cache_ready_state,
     save_guitar_to_stack,
-    schedule_stk_after_rom,
     stk_binary_path,
     user_facing_stk_status,
     AUDIT_INCOMPLETE_MSG,
@@ -218,6 +216,11 @@ def _set_stk_render_request(parameter_hash: str) -> None:
     _session_set("stk_render_requested", True)
     _session_set("stk_render_requested_hash", parameter_hash)
     _session_set("stk_render_started_at", time.time())
+    _session_set("show_clickable_guitar_requested", True)
+    _session_set(
+        "generate_request_count",
+        int(st.session_state.get("generate_request_count") or 0) + 1,
+    )
 
 
 def poll_stk_render_request(
@@ -359,11 +362,11 @@ def request_generate_guitar(
     rom_physical_summary_path: str = "",
     instrument: str = "classical",
 ) -> Dict[str, Any]:
-    """Generate click: start STK when needed; auto-load when cache becomes ready."""
+    """Generate click: request display only; never start or restart STK."""
     parameter_hash = compute_parameter_hash(rom_fp, lhs_params)
+    _set_stk_render_request(parameter_hash)
 
     if _stk_cache_is_loadable(parameter_hash, repo_root, instrument):
-        _clear_stk_render_request()
         print(
             f"APP_STK_LOAD_READY_CACHE hash={parameter_hash} cache_dir={preview_cache_dir(parameter_hash, instrument)}",
             flush=True,
@@ -384,7 +387,6 @@ def request_generate_guitar(
     preview_ready = bool(state.get("preview_cache_ready"))
 
     if preview_ready or status == "ready":
-        _clear_stk_render_request()
         return generate_or_load_ready_guitar(
             repo_root=repo_root,
             rom_fp=rom_fp,
@@ -396,40 +398,25 @@ def request_generate_guitar(
             instrument=instrument,
         )
 
-    if status in ("running", "partial_ready"):
-        _set_stk_render_request(parameter_hash)
+    if status == "failed":
+        return {
+            "action": "stk_failed",
+            "parameter_hash": parameter_hash,
+            "status": status,
+            "error": state.get("error"),
+        }
+
+    if status in ("running", "partial_ready", "not_started", "waiting_for_rom", "stale"):
         return {
             "action": "stk_running",
             "parameter_hash": parameter_hash,
             "status": status,
         }
 
-    schedule_stk_after_rom(
-        rom_fp=rom_fp,
-        lhs_params=lhs_params,
-        repo_root=repo_root,
-        sample_id=default_sample_id_for_shape(str(geom.get("shape_type") or "Classical")),
-    )
-    state = resolve_preview_cache_ready_state(parameter_hash, instrument=instrument, repo_root=repo_root)
-    _set_stk_render_request(parameter_hash)
-
-    if str(state.get("status")) == "ready" and state.get("preview_cache_ready"):
-        _clear_stk_render_request()
-        return generate_or_load_ready_guitar(
-            repo_root=repo_root,
-            rom_fp=rom_fp,
-            lhs_params=lhs_params,
-            geom=geom,
-            top_wood=top_wood,
-            back_wood=back_wood,
-            rom_physical_summary_path=rom_physical_summary_path,
-            instrument=instrument,
-        )
-
     return {
-        "action": "stk_started",
+        "action": "stk_running",
         "parameter_hash": parameter_hash,
-        "status": str(state.get("status") or "running"),
+        "status": status,
     }
 
 

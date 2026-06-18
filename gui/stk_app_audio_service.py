@@ -2059,6 +2059,16 @@ def start_background_note_library_job(
     if mode == "batch" and parallel_workers_from_config(cfg) > 1 and APP_STK_PARALLEL_WORKERS_ENABLED:
         mode = "parallel_batch"
     worker_count = parallel_workers_from_config(cfg) if mode == "parallel_batch" else 1
+
+    existing = read_job_status(parameter_hash, instrument)
+    pid = int(existing.get("pid") or 0)
+    if str(existing.get("status") or "") in ("running", "ready", "partial_ready", "failed"):
+        return existing
+    if pid and not _is_process_running(pid):
+        refreshed = refresh_stk_background_job_status(parameter_hash, instrument=instrument)
+        if str(refreshed.get("status") or "") in ("running", "ready", "partial_ready", "failed"):
+            return refreshed
+
     preview = preview_cache_dir(parameter_hash, instrument)
     preview.mkdir(parents=True, exist_ok=True)
     set_active_job(parameter_hash, instrument)
@@ -2077,11 +2087,6 @@ def start_background_note_library_job(
         }
         write_job_status(parameter_hash, report, instrument)
         return report
-
-    existing = read_job_status(parameter_hash, instrument)
-    pid = int(existing.get("pid") or 0)
-    if existing.get("status") == "running" and pid and _is_process_running(pid):
-        return existing
 
     script = root / "tools" / "build_app_stk_note_library.py"
     job_json = job_status_path(parameter_hash, instrument)
@@ -2151,7 +2156,6 @@ def schedule_stk_after_rom(
     inst = instrument
     sid = sample_id or DEFAULT_SOURCE_SAMPLE_ID
     parameter_hash = compute_parameter_hash(rom_fp, lhs_params)
-    mark_stk_job_stale(instrument=inst)
     set_active_job(parameter_hash, inst)
     return start_background_note_library_job(
         parameter_hash=parameter_hash,
@@ -2410,9 +2414,9 @@ def user_facing_stk_status(internal_status: str) -> str:
     if status in ("waiting_for_rom",):
         return "Waiting for guitar simulation"
     if status in ("not_started",):
-        return "Click Generate Sound to build your guitar audio"
+        return "Preparing guitar sound will start after Save & Sync"
     if status in ("stale",):
-        return "Design changed — click Generate Sound to rebuild audio"
+        return "Design changed - Save & Sync to prepare updated sound"
     if status in ("running", "partial_ready"):
         return "Preparing guitar sound…"
     if status == "ready":

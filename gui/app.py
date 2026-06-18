@@ -220,6 +220,8 @@ def _init_session() -> None:
         "stk_render_requested": False,
         "stk_render_requested_hash": "",
         "stk_render_started_at": 0.0,
+        "generate_request_count": 0,
+        "show_clickable_guitar_requested": False,
         "stk_last_status": "",
         "stk_show_diagnostics": False,
         "_fast_preview_paths_verified": False,
@@ -1310,14 +1312,9 @@ def invalidate_rom_and_audio_state() -> None:
     st.session_state["stk_render_requested"] = False
     st.session_state["stk_render_requested_hash"] = ""
     st.session_state["stk_render_started_at"] = 0.0
+    st.session_state["generate_request_count"] = 0
+    st.session_state["show_clickable_guitar_requested"] = False
     st.session_state["stk_last_status"] = ""
-    try:
-        from stk_app_audio_service import mark_stk_job_stale  # noqa: WPS433
-
-        for _inst in ("classical", "box"):
-            mark_stk_job_stale(instrument=_inst)
-    except Exception:
-        pass
 
 
 def invalidate_saved_state() -> None:
@@ -1353,12 +1350,6 @@ def mark_rom_body_stale_if_design_changed(current_rom_fp: str) -> None:
         st.session_state.sound_stale = True
         st.session_state.stk_body_json = ""
         st.session_state.note_cache_ready_fp = ""
-        try:
-            from stk_app_audio_service import mark_stk_job_stale  # noqa: WPS433
-
-            mark_stk_job_stale()
-        except Exception:
-            pass
 
 
 def complete_rom_body_response(
@@ -1397,7 +1388,7 @@ def schedule_stk_note_library_after_rom(
     *,
     rom_fp: str,
 ) -> None:
-    """Start background STK note-library build (Generate-only; not called after ROM)."""
+    """Start background STK note-library build after Save/ROM, idempotent by hash."""
     try:
         from stk_app_audio_service import (  # noqa: WPS433
             compute_parameter_hash,
@@ -1944,21 +1935,26 @@ def _render_main_studio(
     )
     st.markdown('<div class="gen-sound-block">', unsafe_allow_html=True)
     _stk_status = str(st.session_state.get("stk_job_status") or "not_started")
+    _generate_requested = bool(st.session_state.get("show_clickable_guitar_requested"))
     if not rom_body_response_ready(rom_fp):
         st.caption("Save & Sync first to simulate your guitar and prepare sound.")
-    elif st.session_state.get("stk_render_requested") and _stk_status in (
+    elif _generate_requested and _stk_status in (
         "running",
         "partial_ready",
+        "not_started",
+        "waiting_for_rom",
     ):
         st.caption(
             "Building guitar sound with STK… This may take a few minutes. "
             "The player will load automatically when ready."
         )
-    elif not st.session_state.get("stk_render_requested") and _stk_status in (
+    elif not _generate_requested and _stk_status in (
         "not_started",
         "stale",
+        "running",
+        "partial_ready",
     ):
-        st.caption("Click **Generate Sound** to build your guitar audio.")
+        st.caption("Sound is preparing in the background. Click **Generate Sound** when you want to open the player.")
     else:
         from stk_app_audio_service import user_facing_stk_status  # noqa: WPS433
 
@@ -2047,8 +2043,9 @@ def _render_main_studio(
         with st.spinner("Preparing ROM body response…"):
             try:
                 complete_rom_body_response(lhs_params, shape, rom_fp=rom_fp)
-                # STK auto-background after Save/ROM is intentionally disabled.
-                # Current stable flow: STK note cache generation starts only from Generate.
+                schedule_stk_note_library_after_rom(lhs_params, rom_fp=rom_fp)
+                # STK note cache generation starts automatically after Save/ROM.
+                # Generate only records display intent for the clickable guitar.
                 st.rerun()
             except Exception as exc:
                 st.session_state.rom_body_pending = False
@@ -2079,11 +2076,15 @@ def _render_main_studio(
 
     active_payload = st.session_state.get("active_stk_player_payload") or {}
     player_validation = st.session_state.get("active_stk_player_validation") or {}
+    _show_player_requested = bool(st.session_state.get("show_clickable_guitar_requested"))
     _player_ready = (
-        active_payload.get("status") == "ready" and bool(active_payload.get("positions"))
+        _show_player_requested
+        and active_payload.get("status") == "ready"
+        and bool(active_payload.get("positions"))
     )
     _stk_building = (
-        st.session_state.get("stk_render_requested")
+        _show_player_requested
+        and st.session_state.get("stk_render_requested")
         and not _player_ready
         and _stk_status in ("running", "partial_ready", "not_started")
     )
@@ -2106,9 +2107,13 @@ def _render_main_studio(
     elif _stk_building:
         player_payload = {"status": "building", "positions": [], "fingerprint": ""}
         player_key = "guitar_player_building"
-    elif _stk_status in ("running", "partial_ready", "waiting_for_rom"):
+    elif _show_player_requested and _stk_status in ("running", "partial_ready", "waiting_for_rom"):
         player_payload = {"status": "building", "positions": [], "fingerprint": ""}
         player_key = "guitar_player_building"
+    elif _show_player_requested and _stk_status == "failed":
+        st.error("Guitar sound cache is incomplete. Please Save & Sync again before opening the player.")
+        player_payload = {"status": "hidden", "positions": [], "fingerprint": ""}
+        player_key = "guitar_player_failed"
     else:
         player_payload = {"status": "hidden", "positions": [], "fingerprint": ""}
         player_key = "guitar_player_idle"
