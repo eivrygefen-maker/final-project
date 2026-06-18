@@ -26,7 +26,7 @@ echo "Step 2: generate note library (E2:E5 chromatic)"
 START_TS="$(date +%s)"
 python3 tools/build_app_stk_note_library.py \
   --sample-id sample_000 \
-  --instrument classical \
+  --shape-type Classical \
   --note-range E2:E5 \
   --output-root "${REPO_ROOT}/audio/app_stk_note_cache" \
   --duration-s 2.5

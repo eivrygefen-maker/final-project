@@ -2003,6 +2003,44 @@ def refresh_stk_background_job_status(
     return result
 
 
+def build_note_library_startup_command(
+    *,
+    script: Path,
+    root: Path,
+    sample_id: str,
+    shape_type: str,
+    cache_dir: Path,
+    parameter_hash: str,
+    job_status_json: Path,
+    render_mode: str,
+    parallel_workers: int,
+    priority_notes: Sequence[str],
+) -> List[str]:
+    """Build the supported CLI for ``tools/build_app_stk_note_library.py``."""
+    return [
+        sys.executable,
+        str(script),
+        "--sample-id",
+        str(sample_id),
+        "--shape-type",
+        str(shape_type),
+        "--cache-dir",
+        str(cache_dir),
+        "--parameter-hash",
+        str(parameter_hash),
+        "--job-status-json",
+        str(job_status_json),
+        "--repo-root",
+        str(root),
+        "--render-mode",
+        str(render_mode),
+        "--parallel-workers",
+        str(parallel_workers),
+        "--priority-notes",
+        *priority_notes,
+    ]
+
+
 def start_background_note_library_job(
     *,
     parameter_hash: str,
@@ -2047,28 +2085,18 @@ def start_background_note_library_job(
 
     script = root / "tools" / "build_app_stk_note_library.py"
     job_json = job_status_path(parameter_hash, instrument)
-    cmd = [
-        sys.executable,
-        str(script),
-        "--sample-id",
-        sample_id,
-        "--instrument",
-        instrument,
-        "--cache-dir",
-        str(preview),
-        "--parameter-hash",
-        parameter_hash,
-        "--job-status-json",
-        str(job_json),
-        "--repo-root",
-        str(root),
-        "--render-mode",
-        mode,
-        "--parallel-workers",
-        str(worker_count),
-        "--priority-notes",
-        *priority_notes_from_config(cfg),
-    ]
+    cmd = build_note_library_startup_command(
+        script=script,
+        root=root,
+        sample_id=sample_id,
+        shape_type="Classical",
+        cache_dir=preview,
+        parameter_hash=parameter_hash,
+        job_status_json=job_json,
+        render_mode=mode,
+        parallel_workers=worker_count,
+        priority_notes=priority_notes_from_config(cfg),
+    )
     print(
         f"APP_STK_RENDER_MODE {mode} workers={worker_count} hash={parameter_hash}",
         flush=True,
