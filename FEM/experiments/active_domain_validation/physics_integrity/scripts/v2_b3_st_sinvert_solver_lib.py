@@ -485,6 +485,8 @@ def collect_accepted_st_modes(
     region_ctx: Optional[Dict[str, Any]] = None,
     rejection_tally: Optional[Dict[str, int]] = None,
     box_bypass_target_window_acceptance: bool = False,
+    target_index: Optional[int] = None,
+    source_sigma_lambda: Optional[float] = None,
 ) -> Tuple[int, List[Dict[str, Any]]]:
     from slepc4py import SLEPc
 
@@ -563,6 +565,12 @@ def collect_accepted_st_modes(
                     "lambda_imag": lam_im,
                     "eps_compute_error_relative": safe_float(eps_err),
                     "st_shift_target_hz": float(target_hz),
+                    "distance_to_target_hz": safe_float(abs(float(f_hz) - float(target_hz))),
+                    "acceptance_target_hz": float(target_hz),
+                    "acceptance_window_hz": list(win) if (win := cfg.per_target_window_hz(float(target_hz))) is not None else None,
+                    "inside_acceptance_window_at_decision": bool(inside),
+                    "source_target_index": target_index,
+                    "source_sigma_lambda": safe_float(source_sigma_lambda),
                     "u_norm_W": safe_float(u_norm),
                     "p_norm_W": safe_float(p_norm),
                     "x_norm_W": safe_float(x_norm),
@@ -571,8 +579,7 @@ def collect_accepted_st_modes(
                 if bypass_applied:
                     entry["box_target_window_bypass_applied"] = True
                     entry["inside_target_window"] = False
-                    win = cfg.per_target_window_hz(float(target_hz))
-                    entry["target_window_hz"] = list(win) if win is not None else None
+                    entry["target_window_hz"] = entry["acceptance_window_hz"]
                 if export_vectors:
                     entry["x_active"] = x_active.copy()
                 try:
@@ -748,6 +755,8 @@ def collect_all_st_mode_candidates(
     region_ctx: Optional[Dict[str, Any]] = None,
     attach_coupling: bool = False,
     box_bypass_target_window_acceptance: bool = False,
+    target_index: Optional[int] = None,
+    source_sigma_lambda: Optional[float] = None,
 ) -> Tuple[int, List[Dict[str, Any]]]:
     """
   Record every converged eigenpair with normal-filter evaluation (no rejection).
@@ -840,6 +849,12 @@ def collect_all_st_mode_candidates(
                 "residual": safe_float(eps_err),
                 "residual_status": _residual_status(eps_err, eps_ok=eps_ok),
                 "st_shift_target_hz": float(target_hz),
+                "distance_to_target_hz": safe_float(abs(float(f_hz) - float(target_hz))) if f_hz is not None else None,
+                "acceptance_target_hz": float(target_hz),
+                "acceptance_window_hz": list(win) if win is not None else None,
+                "inside_acceptance_window_at_decision": bool(inside),
+                "source_target_index": target_index,
+                "source_sigma_lambda": safe_float(source_sigma_lambda),
                 "inside_target_window": bool(inside),
                 "target_window_hz": list(win) if win is not None else None,
                 "would_pass_normal_filters": bool(mode_pass),
@@ -1135,6 +1150,8 @@ def run_checkpoint_st_target(
             region_ctx=region_ctx,
             rejection_tally=rejection_tally,
             box_bypass_target_window_acceptance=box_bypass_target_window_acceptance,
+            target_index=target_index,
+            source_sigma_lambda=target_lambda,
         )
         accepted_freqs = sorted(float(m["frequency_hz"]) for m in accepted_modes)
         result["converged_mode_count"] = int(nconv)
@@ -1154,6 +1171,8 @@ def run_checkpoint_st_target(
                 region_ctx=region_ctx,
                 attach_coupling=True,
                 box_bypass_target_window_acceptance=box_bypass_target_window_acceptance,
+                target_index=target_index,
+                source_sigma_lambda=target_lambda,
             )
             result["diagnostic_candidates"] = diagnostic_candidates
             result["diagnostic_candidate_count"] = len(diagnostic_candidates)

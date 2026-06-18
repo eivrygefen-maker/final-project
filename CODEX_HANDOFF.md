@@ -1,76 +1,70 @@
 # CODEX_HANDOFF.md
 
 ## Files inspected
+- `FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_box_raw_modal_discovery_lib.py`
 - `FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_st_sinvert_solver_lib.py`
 - `FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve_target_list.py`
+- `FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_minimal_rom_compaction.py`
 - `FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_aggregate_worker_results.py`
-- `FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_box_raw_modal_discovery_lib.py`
 
-## Tiny safety/reporting changes made
-- Preserved the broad discovery band when BOX bypasses only the per-target window.
-- Added `box_target_window_bypass_applied` to BOX raw catalog rows/CSV.
-- Added a lightweight test that BOX bypass does not accept out-of-band candidates.
+## Root cause / strongest hypothesis
+- Strongest hypothesis: reporting blind spot, not dedupe.
+- Prior raw catalog rows did not carry `box_target_window_bypass_applied`, so VM saw `None` even when BOX bypass could have made `would_pass_normal_filters=True`.
+- `would_pass_normal_filters=True` with large target distance can occur when BOX target-window bypass is active and other checks pass.
+- Also fixed a safety issue: BOX bypass now preserves the broad discovery band and bypasses only the per-target window.
 
-## Exact reason modes repeat
-- Sigma is passed per target, but every target accepts all converged Ritz pairs returned by SLEPc.
-- `collect_accepted_st_modes()` loops `eps.getEigenpair(i)` for all converged slots and appends every passing mode.
-- There is no post-solve ranking by `abs(frequency_hz - target_hz)`.
-- There is no per-target novelty rule before aggregation.
-- Therefore if many target solves return the same stable BOX Ritz pairs, those same frequencies are accepted repeatedly and dedupe later collapses them to 15 true clusters.
+## Reporting bug or acceptance bug
+- Reporting bug for `box_target_window_bypass_applied=None`.
+- Acceptance behavior is intentional from the BOX-only target-window bypass, but needed clearer diagnostics.
+- No evidence found that raw catalog `target_hz` is rewritten by aggregation.
 
-## Sigma / shift usage
-- `target_lambda = (2*pi*target_hz)^2` in `run_checkpoint_st_target()`.
-- `configure_eps_krylovschur_sinvert()` sets:
-  - `eps.setWhichEigenpairs(SLEPc.EPS.Which.TARGET_MAGNITUDE)`
-  - `eps.setTarget(target_lambda)`
-  - `st.setType(SINVERT)`
-  - `st.setShift(target_lambda)`
-- Static code review says sigma is wired correctly.
-- VM should confirm `configure_meta.target_lambda` changes with `target_frequency_hz`.
+## Raw row target metadata path
+- `run_checkpoint_st_target()` creates per-target `diagnostic_candidates`.
+- `write_worker_diagnostic_from_solver_targets()` iterates each solver `target_row`.
+- `build_catalog_row()` attaches `target_hz` from that same `target_row`.
+- `merge_box_raw_catalogs_for_run()` concatenates `worker_results/<chunk>/raw_modal_diagnostic.jsonl`; it does not copy rows into other target contexts.
 
-## Candidate sorting
-- Solver candidates are consumed in SLEPc EPS slot order.
-- `accepted_frequencies_hz` is sorted by absolute frequency only after acceptance.
-- Aggregation sorts by absolute frequency for catalog/dedupe.
-- No code sorts candidates by distance to the requested target.
+## Compaction
+- Yes, compaction can remove `worker_results`.
+- `v2_b3_m4_minimal_rom_compaction.py` retains validation/aggregation raw catalogs but treats top-level `worker_results` as deletable.
+- That explains `solver_result files: 0` after compaction.
 
-## nev / ncv / which / sigma suitability
-- Current worker defaults are `nev=12`, `ncv=24`, `which=TARGET_MAGNITUDE`.
-- This is CLASSIC-era policy reused by BOX.
-- It can repeatedly return the same nearby/easy Ritz set across many BOX targets.
-- For BOX discovery, the missing piece is target-aware candidate selection/novelty, not dedupe and not wider frequency bands.
-
-## Dedupe
-- Dedupe is behaving correctly.
-- It groups repeated accepted rows by frequency tolerance and reports 15 true frequency clusters.
-- Do not disable or widen dedupe.
-
-## Minimal BOX-only fix proposal
-- Do not change CLASSIC.
-- Add BOX-only post-solve diagnostics first: per target, record candidate distance to target and rank by distance.
-- Then add BOX-only acceptance policy that keeps only the nearest in-band candidates per target, or only candidates inside a local target neighborhood, while preserving residual/sanity/physical checks.
-- If repeats persist, test a BOX-only solver policy variant: larger `nev/ncv` or `TARGET_REAL` vs `TARGET_MAGNITUDE`, validated on VM only.
-- Keep dedupe unchanged.
+## Diagnostic-only changes made
+- Added raw catalog fields:
+  - `distance_to_target_hz`
+  - `acceptance_target_hz`
+  - `acceptance_window_hz`
+  - `inside_acceptance_window_at_decision`
+  - `box_target_window_bypass_applied`
+  - `source_target_index`
+  - `source_chunk_id`
+  - `source_sigma_lambda`
+- Added these fields to CSV where relevant.
+- Added lightweight test that target/window/sigma metadata stays separate between two target rows.
 
 ## CLASSIC risk
-- Investigation: PASS.
-- Tiny safety/reporting changes are BOX diagnostic / BOX bypass scoped.
-- Proposed solver policy changes would be MEDIUM unless strictly shape-gated and backed by CLASSIC unchanged tests.
+- PASS.
+- Changes are BOX raw diagnostic/reporting scoped plus a BOX bypass safety guard.
+- No CLASSIC solver, assembly, boundary, dedupe, or frequency-range change.
 
 ## Lightweight tests
 - Passed:
   - `python -m py_compile FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_st_sinvert_solver_lib.py`
   - `python -m py_compile FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_box_raw_modal_discovery_lib.py`
   - `python -m py_compile FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_box_raw_modal_discovery_test.py`
-  - `python -m py_compile FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_checkpoint_solve_target_list.py`
 
 ## VM validation commands
 ```bash
 git pull
 python3 FEM/experiments/active_domain_validation/physics_integrity/scripts/v2_b3_m4_box_raw_modal_discovery_test.py
+
 RUN="FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/box_sample_000/runs/box_sample_000_box_fom_v1"
-jq '.targets[] | {target:.target_frequency_hz, lambda:.target_lambda, cfg:.configure_meta}' "$RUN/worker_results/"*/solver_result.json | head -80
-jq -r '.targets[] as $t | ($t.accepted_modes[]? | (.frequency_hz-$t.target_frequency_hz) as $d | [.frequency_hz,$t.target_frequency_hz,(if $d < 0 then -$d else $d end)] | @tsv)' "$RUN/worker_results/"*/solver_result.json | sort -n | head -80
-jq -r '.rows[] | (.frequency_hz-.target_hz) as $d | [.frequency_hz,.target_hz,(if $d < 0 then -$d else $d end),.box_target_window_bypass_applied] | @tsv' "$RUN/validation/raw_solver_candidate_catalog.json" | sort -n | head -80
-jq '.dedupe_merge_groups | length' "$RUN/aggregation/aggregation_result.json"
+rm -rf "$RUN"
+SHAPE=box START=0 COUNT=1 WORKERS=3 BOX_RAW_MODAL_DISCOVERY=1 bash tools/run_shape_fom_overnight_batch.sh
+
+RUN="FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/guitars/box_sample_000/runs/box_sample_000_box_fom_v1"
+jq '.rows[0] | keys' "$RUN/validation/raw_solver_candidate_catalog.json"
+jq -r '.rows[] | select(.would_pass_normal_filters==true) | [.frequency_hz,.target_hz,.distance_to_target_hz,.inside_acceptance_window_at_decision,.box_target_window_bypass_applied,.source_target_index,.source_sigma_lambda] | @tsv' "$RUN/validation/raw_solver_candidate_catalog.json" | sort -n | head -80
+jq -r '.rows[] | select(.would_pass_normal_filters==true and .inside_acceptance_window_at_decision==false) | [.frequency_hz,.target_hz,.box_target_window_bypass_applied] | @tsv' "$RUN/validation/raw_solver_candidate_catalog.json" | head -40
+find "$RUN/worker_results" -name solver_result.json | wc -l
 ```

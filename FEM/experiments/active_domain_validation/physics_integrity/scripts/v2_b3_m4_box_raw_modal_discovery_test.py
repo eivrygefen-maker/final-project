@@ -214,6 +214,53 @@ def test_catalog_row_includes_rejection_reasons():
     assert row["bridge_excitation_proxy"] is None
 
 
+def test_catalog_row_keeps_source_target_metadata_separate():
+    row_a = build_catalog_row(
+        sample_id="box_sample_000",
+        run_id="box_sample_000_box_fom_v1",
+        shape="box",
+        chunk_id="box_sample_000_chunk_01",
+        target_hz=184.0,
+        target_row={
+            "target_index": 1,
+            "target_lambda": 1336000.0,
+            "per_target_acceptance_window_hz": [181.0, 187.0],
+        },
+        candidate={
+            **_synthetic_candidate(freq=184.5, target_hz=184.0, pass_filters=True, reasons=[]),
+            "source_target_index": 1,
+            "source_sigma_lambda": 1336000.0,
+        },
+        candidate_rank=0,
+    )
+    row_b = build_catalog_row(
+        sample_id="box_sample_000",
+        run_id="box_sample_000_box_fom_v1",
+        shape="box",
+        chunk_id="box_sample_000_chunk_01",
+        target_hz=236.0,
+        target_row={
+            "target_index": 7,
+            "target_lambda": 2199000.0,
+            "per_target_acceptance_window_hz": [233.0, 239.0],
+        },
+        candidate={
+            **_synthetic_candidate(freq=184.5, target_hz=236.0, pass_filters=False, reasons=["outside_acceptance_window"]),
+            "source_target_index": 7,
+            "source_sigma_lambda": 2199000.0,
+        },
+        candidate_rank=0,
+    )
+    assert row_a["acceptance_target_hz"] == 184.0
+    assert row_a["acceptance_window_hz"] == [179.0, 189.0]
+    assert row_a["source_target_index"] == 1
+    assert row_b["acceptance_target_hz"] == 236.0
+    assert row_b["acceptance_window_hz"] == [231.0, 241.0]
+    assert row_b["source_target_index"] == 7
+    assert row_b["distance_to_target_hz"] == 51.5
+    assert row_b["source_sigma_lambda"] == 2199000.0
+
+
 def test_worker_diagnostic_writes_rejected_candidates():
     with tempfile.TemporaryDirectory() as td:
         out = Path(td)
@@ -452,6 +499,7 @@ def main() -> int:
         test_box_bypass_keeps_discovery_band_rejection,
         test_resolve_worker_shape_from_sample_id,
         test_catalog_row_includes_rejection_reasons,
+        test_catalog_row_keeps_source_target_metadata_separate,
         test_worker_diagnostic_writes_rejected_candidates,
         test_merge_creates_raw_and_unfiltered_catalogs,
         test_raw_catalogs_not_in_compaction_deletable,

@@ -33,7 +33,11 @@ CATALOG_CSV_FIELDS: Tuple[str, ...] = (
     "chunk_id",
     "target_hz",
     "frequency_hz",
+    "distance_to_target_hz",
     "source_stage",
+    "source_chunk_id",
+    "source_target_index",
+    "source_sigma_lambda",
     "solver_factor",
     "requested_eigenpairs",
     "candidate_rank",
@@ -41,6 +45,9 @@ CATALOG_CSV_FIELDS: Tuple[str, ...] = (
     "residual_status",
     "inside_target_window",
     "target_window_hz",
+    "acceptance_target_hz",
+    "acceptance_window_hz",
+    "inside_acceptance_window_at_decision",
     "would_pass_normal_filters",
     "normal_filter_rejection_reasons",
     "box_target_window_bypass_applied",
@@ -108,14 +115,25 @@ def build_catalog_row(
     win = candidate.get("target_window_hz")
     if win is None:
         win = target_row.get("per_target_acceptance_window_hz")
+    freq = candidate.get("frequency_hz")
+    distance_to_target = candidate.get("distance_to_target_hz")
+    if distance_to_target is None and freq is not None:
+        try:
+            distance_to_target = abs(float(freq) - float(target_hz))
+        except (TypeError, ValueError):
+            distance_to_target = None
     return {
         "sample_id": sample_id,
         "run_id": run_id,
         "shape": shape,
         "chunk_id": chunk_id,
         "target_hz": float(target_hz),
-        "frequency_hz": candidate.get("frequency_hz"),
+        "frequency_hz": freq,
+        "distance_to_target_hz": distance_to_target,
         "source_stage": "worker_target_solve",
+        "source_chunk_id": chunk_id,
+        "source_target_index": candidate.get("source_target_index", target_row.get("target_index")),
+        "source_sigma_lambda": candidate.get("source_sigma_lambda", target_row.get("target_lambda")),
         "solver_factor": target_row.get("factor_solver_effective") or target_row.get("factor_solver"),
         "requested_eigenpairs": target_row.get("nev"),
         "candidate_rank": int(candidate_rank),
@@ -123,6 +141,12 @@ def build_catalog_row(
         "residual_status": candidate.get("residual_status") or "UNKNOWN",
         "inside_target_window": candidate.get("inside_target_window"),
         "target_window_hz": win,
+        "acceptance_target_hz": candidate.get("acceptance_target_hz", target_hz),
+        "acceptance_window_hz": candidate.get("acceptance_window_hz", win),
+        "inside_acceptance_window_at_decision": candidate.get(
+            "inside_acceptance_window_at_decision",
+            candidate.get("inside_target_window"),
+        ),
         "would_pass_normal_filters": candidate.get("would_pass_normal_filters"),
         "normal_filter_rejection_reasons": list(candidate.get("normal_filter_rejection_reasons") or []),
         "box_target_window_bypass_applied": bool(candidate.get("box_target_window_bypass_applied")),
@@ -218,7 +242,7 @@ def _write_catalog_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         writer.writeheader()
         for row in rows:
             out = dict(row)
-            for key in ("target_window_hz", "normal_filter_rejection_reasons"):
+            for key in ("target_window_hz", "acceptance_window_hz", "normal_filter_rejection_reasons"):
                 if key in out and not isinstance(out[key], str):
                     out[key] = json.dumps(out[key], sort_keys=True)
             writer.writerow(out)
