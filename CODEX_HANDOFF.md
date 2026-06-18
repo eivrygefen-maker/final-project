@@ -4,34 +4,29 @@
 - `gui/app.py`
 - `CODEX_HANDOFF.md`
 
-## Recent Guitars storage
-- Stored in Streamlit `st.session_state["recent_guitars"]`.
-- Active playable guitar snapshot stored in `st.session_state["active_recent_guitar_record"]`.
-- Session-only persistence; no database or runtime output files.
+## Mini guitar preview generation
+- Recent Guitar records now store `preview_svg`.
+- SVG is generated deterministically from saved session design metadata.
+- No browser screenshot capture, `html2canvas`, external tools, or assets.
+- Older session records without `preview_svg` generate it lazily at render time.
 
-## FIFO / swap behavior
-- Capacity is 3.
-- Save/Sync clears the active player state, but first pushes the previous active guitar only if its STK cache is playable.
-- Loading a recent guitar removes it from its old slot.
-- The previously active guitar moves to slot 1.
-- Duplicate hashes/cache paths are removed.
-- Oldest entries beyond 3 are dropped.
+## Parameters affecting preview
+- `top_wood` controls body/top color.
+- `back_wood` controls side/neck/accent color.
+- `length` affects body height.
+- `width` affects body width.
+- `depth` affects waist/body fullness.
+- `hole_radius` affects soundhole/rosette size.
 
-## Metadata shown
-- Top/back woods.
-- Length, width, depth.
-- Soundhole radius.
-- Short parameter hash.
-- Each occupied slot has a `Load` button.
+## Missing metadata handling
+- Falls back to sanitized stored studio payload if metadata is absent.
+- Falls back to default classical guitar dimensions/colors if fields are missing.
 
-## Preview
-- Uses a compact placeholder/metadata preview, not a real HTML/SVG capture yet.
-- Record structure keeps the design payload so preview capture can be added later.
-
-## Cache / regeneration behavior
-- Recent entries require an existing cache with required playable note WAVs.
-- Loading a recent guitar activates the existing STK cache directly.
-- Loading clears `stk_render_requested`, so it does not start or poll generation.
+## Recent Guitars behavior
+- FIFO/session-state behavior remains unchanged.
+- `Load` still activates the existing ready STK cache directly.
+- Loading a recent guitar still clears `stk_render_requested`, so it does not start generation.
+- Recent entries still require an existing playable note cache.
 
 ## CLASSIC-only confirmation
 - No BOX or ACOUSTIC UI choices were added.
@@ -51,8 +46,7 @@ streamlit run gui/app.py
 ```
 
 ## Expected website signs
-- Website remains Classical-only with no shape selector.
-- Generate still opens the clickable guitar only when STK cache is ready.
-- Recent guitars panel appears under the clickable guitar.
-- Up to 3 playable previous guitars appear with Load buttons.
+- Recent Guitars cards appear under the clickable guitar.
+- Occupied cards show a compact stylized guitar preview, metadata, short hash, and `Load`.
+- Different woods/dimensions visibly affect the mini preview.
 - Loading a recent guitar reuses its cache and does not restart STK generation.
