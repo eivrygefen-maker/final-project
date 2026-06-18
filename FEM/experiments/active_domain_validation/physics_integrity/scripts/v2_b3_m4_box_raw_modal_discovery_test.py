@@ -24,6 +24,7 @@ from v2_b3_m4_box_raw_modal_discovery_lib import (  # noqa: E402
     resolve_worker_shape_name,
     write_worker_diagnostic_from_solver_targets,
 )
+from v2_b3_m4_worker_run_lib import production_worker_subprocess_env  # noqa: E402
 from v2_b3_m4_minimal_rom_compaction import collect_minimal_rom_deletable_paths  # noqa: E402
 from v2_b3_m4_modal_discovery_audit_lib import build_modal_discovery_audit  # noqa: E402
 from v2_b3_petsc_util import write_json_atomic  # noqa: E402
@@ -65,6 +66,29 @@ def test_box_raw_enabled_only_for_box_with_env():
             os.environ["BOX_RAW_MODAL_DISCOVERY"] = old
         else:
             os.environ.pop("BOX_RAW_MODAL_DISCOVERY", None)
+
+
+def test_production_worker_env_propagates_box_raw_discovery_context():
+    old_raw = os.environ.get("BOX_RAW_MODAL_DISCOVERY")
+    old_shape = os.environ.get("SHAPE")
+    try:
+        os.environ["BOX_RAW_MODAL_DISCOVERY"] = "1"
+        os.environ["SHAPE"] = "box"
+        env = production_worker_subprocess_env(
+            solver_python="/tmp/solver-mkl/bin/python",
+            solver_venv="/tmp/solver-mkl",
+        )
+        assert env["BOX_RAW_MODAL_DISCOVERY"] == "1"
+        assert env["SHAPE"] == "box"
+    finally:
+        if old_raw is not None:
+            os.environ["BOX_RAW_MODAL_DISCOVERY"] = old_raw
+        else:
+            os.environ.pop("BOX_RAW_MODAL_DISCOVERY", None)
+        if old_shape is not None:
+            os.environ["SHAPE"] = old_shape
+        else:
+            os.environ.pop("SHAPE", None)
 
 
 def test_resolve_worker_shape_from_sample_id():

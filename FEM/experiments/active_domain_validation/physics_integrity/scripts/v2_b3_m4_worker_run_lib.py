@@ -32,6 +32,7 @@ print("mkl_error", p.get("error"))
 
 REAL_WORKER_STATUSES = frozenset({"PASS", "PASS_WITH_WARNING", "PARTIAL"})
 PASS_LIKE = frozenset({"PASS", "PASS_WITH_WARNING"})
+WORKER_CONTEXT_ENV_KEYS = ("SHAPE", "BOX_RAW_MODAL_DISCOVERY")
 
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
@@ -758,6 +759,10 @@ def production_worker_subprocess_env(
         solver_python=solver_python,
         solver_venv=solver_venv,
     )
+    for key in WORKER_CONTEXT_ENV_KEYS:
+        value = os.environ.get(key)
+        if value is not None:
+            env[key] = value
     env.update(production_worker_thread_settings(env))
     return env
 
