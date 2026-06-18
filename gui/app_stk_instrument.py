@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shape/ROM path helpers — one unified STK renderer; inputs vary by shape."""
+"""Website STK instrument helpers."""
 from __future__ import annotations
 
 import json
@@ -8,12 +8,10 @@ from typing import Any, Dict, Mapping
 
 
 def rom_shape_namespace(shape_type: str) -> str:
-    """Map UI shape label to ROM directory name (``ROM/<namespace>/``)."""
-    st = str(shape_type or "").strip().lower()
-    if "box" in st:
-        return "box"
-    if "dreadnought" in st:
-        return "dreadnought"
+    """Map any website request to the validated CLASSIC ROM namespace."""
+    # BOX and ACOUSTIC are experimental and frozen for now; website generation
+    # must stay on the validated CLASSIC path.
+    del shape_type
     return "classic"
 
 
@@ -23,21 +21,18 @@ def lhs_pool_path(repo_root: Path, shape_type: str = "Classical") -> Path:
 
 
 def default_sample_id_for_shape(shape_type: str = "Classical") -> str:
-    if "box" in str(shape_type or "").strip().lower():
-        return "box_sample_000"
+    del shape_type
     return "sample_000"
 
 
 def reference_sample_id_for(sample_id: str) -> str:
     """Reference sample for voicing / mix scaling within one LHS pool."""
-    if str(sample_id).startswith("box_sample_"):
-        return "box_sample_000"
+    del sample_id
     return "sample_000"
 
 
 def shape_type_label_from_sample_id(sample_id: str) -> str:
-    if str(sample_id).startswith("box_sample_"):
-        return "box"
+    del sample_id
     return "classic"
 
 
@@ -54,12 +49,10 @@ def load_lhs_pool(repo_root: Path, shape_type: str = "Classical") -> Dict[str, A
 
 def list_lhs_sample_ids(repo_root: Path, shape_type: str = "Classical") -> list[str]:
     pool = load_lhs_pool(repo_root, shape_type)
-    ns = rom_shape_namespace(shape_type)
-    prefix = "box_sample_" if ns == "box" else "sample_"
     ids = [
         str(entry.get("id"))
         for entry in pool.get("entries") or []
-        if str(entry.get("id", "")).startswith(prefix)
+        if str(entry.get("id", "")).startswith("sample_")
     ]
     return sorted(ids)
 
@@ -70,7 +63,7 @@ def lhs_entry_parameters(
     shape_type: str | None = None,
 ) -> Mapping[str, Any] | None:
     if shape_type is None:
-        shape_type = "Box" if str(sample_id).startswith("box_sample_") else "Classical"
+        shape_type = "Classical"
     pool = load_lhs_pool(repo_root, shape_type)
     for entry in pool.get("entries") or []:
         if str(entry.get("id")) == sample_id:

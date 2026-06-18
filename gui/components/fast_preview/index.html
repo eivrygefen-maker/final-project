@@ -270,12 +270,9 @@
       <p class="sub">ROM/LHS parameters only — instant Three.js preview. Save &amp; Sync pushes to Gmsh/PyVista.</p>
       <div class="mode-pill" id="modeLabel">User (ROM)</div>
 
-      <label for="shapeSelect">Shape</label>
-      <select id="shapeSelect">
-        <option value="Classical">Classical (Torres)</option>
-        <option value="Dreadnought">Dreadnought / Acoustic</option>
-        <option value="Box">Box (debug)</option>
-      </select>
+      <!-- BOX and ACOUSTIC are experimental and frozen for now; the website
+           opens directly on the validated CLASSIC guitar. -->
+      <input type="hidden" id="shapeSelect" value="Classical" />
 
       <label>Length L (m) <span class="val" id="lengthVal">—</span></label>
       <input type="range" id="length" step="0.005" />
@@ -545,7 +542,7 @@
       return Number.isFinite(n) ? n : fallback;
     }
 
-  /** Per-shape ROM baselines (meters). Classic / Dreadnought (acoustic) / Box debug. */
+  /** CLASSIC website baseline. BOX / ACOUSTIC templates are frozen out of UI. */
     const SHAPE_TEMPLATE_DEFAULTS = {
       Classical: {
         length: 0.480,
@@ -672,7 +669,7 @@
     let lastRomRangeDragId = null;
     function readDomSliderValues() {
       return {
-        shape_type: document.getElementById("shapeSelect")?.value || state.shape_type,
+        shape_type: "Classical",
         length: num(document.getElementById("length")?.value, state.length),
         width: num(document.getElementById("width")?.value, state.width),
         depth: num(document.getElementById("depth")?.value, state.depth),
@@ -713,7 +710,7 @@
         const k = ROM_GEOM_KEYS[i];
         if (!hasOwnPayloadKey(data, k)) continue;
         if (k === "shape_type") {
-          if (String(data[k]) !== String(dom.shape_type)) return true;
+          if (String(data[k]) !== "Classical") return true;
         } else if (Math.abs(num(data[k]) - num(dom[k])) > 1e-6) {
           return true;
         }
@@ -755,7 +752,7 @@
       ROM_GEOM_KEYS.forEach((k) => {
         state[k] = dom[k];
       });
-      state.shape_type = dom.shape_type;
+      state.shape_type = "Classical";
       state.top_wood_id = domTopWood;
       state.back_wood_id = domBackWood;
 
@@ -763,12 +760,16 @@
         let domVal;
         if (k === "top_wood_id") domVal = domTopWood;
         else if (k === "back_wood_id") domVal = domBackWood;
-        else if (k === "shape_type") domVal = dom.shape_type;
+        else if (k === "shape_type") domVal = "Classical";
         else domVal = dom[k];
         if (k === "top_wood_id" || k === "back_wood_id") {
           if (!incomingWoodDiffers(k, data)) return;
         }
-        if (acceptIncomingRomKey(k, data, domVal)) state[k] = data[k];
+        if (k === "shape_type") {
+          state[k] = "Classical";
+        } else if (acceptIncomingRomKey(k, data, domVal)) {
+          state[k] = data[k];
+        }
       });
 
       if (data.gui_mode) state.gui_mode = data.gui_mode;
@@ -1377,9 +1378,8 @@
     }
 
     function applyShapeTemplateToDom(shapeType) {
-      const key = SHAPE_TEMPLATE_DEFAULTS[shapeType]
-        ? shapeType
-        : "Classical";
+      const key = "Classical";
+      void shapeType;
       const tmpl = SHAPE_TEMPLATE_DEFAULTS[key];
       state.shape_type = key;
       state.length = tmpl.length;
@@ -1434,7 +1434,7 @@
       const newL = num(document.getElementById("length").value, state.length);
       const newW = num(document.getElementById("width").value, state.width);
       const preserveHole = Boolean(opts && opts.preserveHoleRadius);
-      state.shape_type = document.getElementById("shapeSelect").value || "Classical";
+      state.shape_type = "Classical";
       state.length = newL;
       state.width = newW;
       state.depth = num(document.getElementById("depth").value, state.depth);
@@ -1578,16 +1578,21 @@
       isMaterialChangeOnly = false;
       const prevRomFp = lastRomFp;
       mergeRomStateDelta(data);
+      state.shape_type = "Classical";
       if (!state.bounds && state.bounds_by_shape && state.bounds_by_shape[state.shape_type]) {
         state.bounds = state.bounds_by_shape[state.shape_type];
       }
       if (hasOwnPayloadKey(data, "shape_type")) {
         const shapeEl = document.getElementById("shapeSelect");
-        if (shapeEl && shapeEl.value !== state.shape_type) shapeEl.value = state.shape_type;
+        if (shapeEl && shapeEl.value !== "Classical") shapeEl.value = "Classical";
       }
       fillWoodSelects();
       ROM_GEOM_KEYS.forEach((key) => {
-        if (hasOwnPayloadKey(data, key)) state[key] = data[key];
+        if (key === "shape_type") {
+          state[key] = "Classical";
+        } else if (hasOwnPayloadKey(data, key)) {
+          state[key] = data[key];
+        }
       });
       state.hole_radius = softLimitHoleRadius(
         state.length,
@@ -1640,10 +1645,7 @@
     document.addEventListener("pointerup", endRomRangeDrag);
     document.addEventListener("pointercancel", endRomRangeDrag);
     document.addEventListener("mouseup", endRomRangeDrag);
-    document.getElementById("shapeSelect").addEventListener("change", () => {
-      const shapeType = document.getElementById("shapeSelect").value || "Classical";
-      applyShapeTemplateToDom(shapeType);
-    });
+    document.getElementById("shapeSelect").value = "Classical";
 
     document.getElementById("topWood").addEventListener("change", function () {
       state.top_wood_id = document.getElementById("topWood").value || "spruce";

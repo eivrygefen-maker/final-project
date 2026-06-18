@@ -102,6 +102,9 @@ FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/manifes
 FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/index/runs_index.jsonl
 FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/index/lhs_production_runs_index.jsonl
 FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/index/lhs_pool_status.json
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/index/*/*_fom_overnight_batch_*.log
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/index/*/*_fom_overnight_batch_*_summary.json
+FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/index/*/*_fom_overnight_batch_*_results.jsonl
 FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/specs/generated/
 FEM/experiments/active_domain_validation/physics_integrity/pipeline_runs/control/
 ROM/classic/lhs_pool.backup_*.json

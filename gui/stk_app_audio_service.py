@@ -263,7 +263,9 @@ def list_available_samples(
     if shape_type:
         ids = list_lhs_sample_ids(root, shape_type)
     else:
-        ids = list_lhs_sample_ids(root, "Classical") + list_lhs_sample_ids(root, "Box")
+        # BOX and ACOUSTIC are experimental and frozen for now; website sample
+        # discovery is intentionally CLASSIC-only.
+        ids = list_lhs_sample_ids(root, "Classical")
     if ids:
         return ids
     return list(SAMPLE_SET_V4)

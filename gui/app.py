@@ -56,8 +56,11 @@ PACKAGED_ROM_NPZ = BASE_DIR / "FEM" / "SORTING" / "final_guitar_rom.npz"
 SELECTED_MODES_CSV = BASE_DIR / "FEM" / "SORTING" / "selected_modes.csv"
 FALLBACK_MODES_CSV = BASE_DIR / "FEM" / "configs" / "archive" / "selected_modes_SIM1.csv"
 
-SHAPE_OPTIONS = ("Classical", "Dreadnought", "Box")
-ROM_NAMESPACE = {"Classical": "classic", "Dreadnought": "dreadnought", "Box": "box"}
+# BOX and ACOUSTIC are experimental and frozen for now; the website exposes
+# only the validated CLASSIC guitar path.
+CLASSIC_SHAPE_LABEL = "Classical"
+SHAPE_OPTIONS = (CLASSIC_SHAPE_LABEL,)
+ROM_NAMESPACE = {CLASSIC_SHAPE_LABEL: "classic"}
 HOLE_RADIUS_MAX_M = 0.08
 SOUNDHOLE_FROM_NECK_RATIO = 0.5
 ROM_HOLE_RADIUS_BOUNDS = (0.035, 0.055)
@@ -253,11 +256,7 @@ def soundhole_center_x(body_length: float) -> float:
 
 def rom_lwd_bounds(shape_type: str) -> Dict[str, Tuple[float, float]]:
     """Match ``ROMManager._shape_length_width_depth_bounds`` (LHS training box)."""
-    stl = str(shape_type).strip().lower()
-    if "dreadnought" in stl or "acoustic" in stl:
-        return {"length": (0.45, 0.70), "width": (0.30, 0.55), "depth": (0.10, 0.20)}
-    if "box" in stl:
-        return {"length": (0.10, 1.00), "width": (0.10, 0.80), "depth": (0.01, 0.50)}
+    del shape_type
     return {"length": (0.35, 0.60), "width": (0.20, 0.45), "depth": (0.08, 0.15)}
 
 
@@ -348,9 +347,8 @@ def _round_studio_dim(v: Any, ndigits: int = 5) -> float:
 def sanitize_studio_payload(data: Optional[Dict[str, Any]], shape_type: str = "Classical") -> Dict[str, Any]:
     """Strip legacy bout/waist keys; keep only ROM 7D + component metadata."""
     src = dict(data or {})
-    shape = str(src.get("shape_type", shape_type)).strip()
-    if shape not in SHAPE_OPTIONS:
-        shape = shape_type if shape_type in SHAPE_OPTIONS else "Classical"
+    del shape_type
+    shape = CLASSIC_SHAPE_LABEL
     rom_def = rom_defaults(shape)
     width = src.get("width")
     if width is None:
@@ -402,17 +400,11 @@ def sanitize_studio_payload(data: Optional[Dict[str, Any]], shape_type: str = "C
 def export_luthier_templates() -> Dict[str, Dict[str, Any]]:
     """Closed-loop control points for the Design Studio (matches Python STEP blueprints)."""
     cdef = get_luthier_gui_defaults("Classical")
-    adef = get_luthier_gui_defaults("Dreadnought")
     return {
         "Classical": {
             "loop": _loop_to_xy(CLASSICAL_LOOP),
             "nominal_length": float(NOMINAL_LENGTH_CLASSICAL),
             "nominal_width": float(cdef["width"]),
-        },
-        "Dreadnought": {
-            "loop": _loop_to_xy(ACOUSTIC_LOOP),
-            "nominal_length": float(NOMINAL_LENGTH_ACOUSTIC),
-            "nominal_width": float(adef["width"]),
         },
     }
 
@@ -881,7 +873,8 @@ def lhs_params_from_ui(geom: Dict[str, Any], *, top_wood: str, back_wood: str) -
 
 
 def rom_namespace(shape_type: str) -> str:
-    return ROM_NAMESPACE.get(str(shape_type).strip(), "classic")
+    del shape_type
+    return "classic"
 
 
 def rom_basis_path(shape_type: str) -> Path:
@@ -1851,7 +1844,7 @@ def _render_main_studio(
     _render_step_heading(
         1,
         "DESIGN YOUR GUITAR",
-        "Adjust the guitar shape and materials in the studio below. When ready, click <strong>Save &amp; Sync</strong>.",
+        "Adjust the classical guitar dimensions and materials in the studio below. When ready, click <strong>Save &amp; Sync</strong>.",
     )
 
     iframe_initial = stable_studio_iframe_initial(fp_seed)
@@ -2140,9 +2133,7 @@ def _render_main_studio(
 def main() -> None:
     saved = _load_saved_config().get("geometry", {}) or {}
     saved_solver = _load_saved_config().get("solver", {}) or {}
-    saved_shape = str(saved.get("shape_type", "Classical"))
-    if saved_shape not in SHAPE_OPTIONS:
-        saved_shape = "Classical"
+    saved_shape = CLASSIC_SHAPE_LABEL
     saved_fixture = str(saved.get("fixture_preset", DEFAULT_FIXTURE_PRESET))
     if saved_fixture not in FIXTURE_PRESETS:
         saved_fixture = DEFAULT_FIXTURE_PRESET
