@@ -1677,6 +1677,8 @@ def apply_recent_record_to_design(record: Mapping[str, Any]) -> None:
     st.session_state.sound_stale = False
     if ROM_STK_JSON.exists():
         st.session_state.stk_body_json = str(ROM_STK_JSON)
+    st.session_state["recent_guitar_preview_image_path"] = str(record.get("preview_image_path") or "")
+    st.session_state["recent_guitar_preview_source"] = str(record.get("preview_source") or "")
     st.session_state["stk_parameter_hash"] = str(record.get("parameter_hash") or "")
     st.session_state["stk_job_status"] = "ready"
     st.session_state["stk_preview_cache_ready"] = True
@@ -1690,6 +1692,38 @@ def apply_recent_record_to_design(record: Mapping[str, Any]) -> None:
     st.session_state["stk_render_requested_hash"] = ""
 
 
+def restore_recent_display_mesh(record: Mapping[str, Any]) -> None:
+    """Refresh the displayed Gmsh mesh for a loaded Recent Guitar without touching STK."""
+    payload = sanitize_studio_payload(dict(record.get("studio_payload") or {}))
+    geom, top_wood, back_wood = geom_from_studio_event(payload)
+    geom_fp = geometry_fingerprint(
+        geom,
+        top_wood,
+        back_wood,
+        clamp_ribs=DEFAULT_CLAMP_RIBS,
+        pin_neck_fix=DEFAULT_PIN_NECK_FIX,
+        fixture_preset=DEFAULT_FIXTURE_PRESET,
+    )
+    st.session_state.mesh_is_dirty = True
+    st.session_state.show_mesh_overlay = False
+    regenerate_display_mesh(
+        geom,
+        top_wood=top_wood,
+        back_wood=back_wood,
+        clamp_ribs=DEFAULT_CLAMP_RIBS,
+        pin_neck_fix=DEFAULT_PIN_NECK_FIX,
+        fixture_preset=DEFAULT_FIXTURE_PRESET,
+        geom_fp=geom_fp,
+    )
+    st.session_state.mesh_is_dirty = False
+    st.session_state.show_mesh_overlay = True
+    st.session_state._mesh_overlay_rom_fp = rom_mesh_fingerprint(
+        geom,
+        top_wood=top_wood,
+        back_wood=back_wood,
+    )
+
+
 def load_recent_guitar_at_index(index: int) -> None:
     recents = [dict(r) for r in (st.session_state.get("recent_guitars") or [])]
     if index < 0 or index >= len(recents):
@@ -1697,9 +1731,12 @@ def load_recent_guitar_at_index(index: int) -> None:
     selected = recents.pop(index)
     current = st.session_state.get("active_recent_guitar_record") or {}
     if current:
+        current_hash = str(current.get("parameter_hash") or "")
+        current_cache = str(current.get("cache_dir") or "")
         recents = [
             r for r in recents
-            if str(r.get("parameter_hash") or "") != str(current.get("parameter_hash") or "")
+            if str(r.get("parameter_hash") or "") != current_hash
+            and str(r.get("cache_dir") or "") != current_cache
         ]
         recents.insert(0, dict(current))
     st.session_state["recent_guitars"] = recents[:RECENT_GUITAR_CAPACITY]
@@ -1714,6 +1751,7 @@ def load_recent_guitar_at_index(index: int) -> None:
         )
         apply_stk_activation_to_session(activation)
         apply_recent_record_to_design(selected)
+        restore_recent_display_mesh(selected)
         st.session_state["active_recent_guitar_record"] = selected
     except Exception as exc:
         st.warning(f"Could not load recent guitar: {exc}")
