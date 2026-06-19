@@ -33,6 +33,7 @@ audio/body_difference_diagnostics/
 audio/body_difference_diagnostics_stage43/
 audio/body_difference_diagnostics_stage44/
 audio/debug_reports/
+audio/diagnostics/
 
 # Editor — share workspace indexing excludes; ignore local launch/tasks
 .vscode/*
