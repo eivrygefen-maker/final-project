@@ -1,68 +1,94 @@
 # CODEX_HANDOFF.md
 
-## Root cause of player not rendering
-- Ready cache detection was not latched to one stable active player state.
-- Generate/auto-load detected `current_preview_<hash>` as ready, then the ready-stack path could activate `saved_guitar_<hash>_<timestamp>` for the same hash.
-- The active cache/fingerprint could therefore be reprocessed across reruns instead of settling into one player payload/key.
-
-## Root cause of repeated logs
-- Readiness checks and auto-load ran on repeated Streamlit reruns.
-- Load logs were emitted before checking whether the same hash/cache was already active.
-- Position WAV readiness was printed every time aliases were verified.
-
-## Session-state / latch fix
-- Added stable active player fields:
-- `active_player_hash`
-- `active_player_cache_dir`
-- `loaded_player_hash`
-- `loaded_player_cache_dir`
-- `active_stk_player_key`
-- `apply_stk_activation_to_session()` now sets these alongside the existing `active_stk_*` fields.
-- Repeated Generate/auto-load for an already-active hash/cache returns without reactivating the player.
-
-## Canonical cache_dir rule
-- Current active Generate/auto-load now prefers `current_preview_<hash>`.
-- `saved_guitar_<hash>_<timestamp>` remains valid for explicit Recent/stack loading only.
-- The component key now uses `active_stk_player_key`, derived from hash/cache/fingerprint.
-
-## Recent Guitars behavior
-- FIFO behavior remains unchanged.
-- Loading a Recent Guitar still activates its stored cache directly.
-- Loading a Recent Guitar still clears `stk_render_requested` and does not start STK generation.
-
-## Component / logging fix
-- `guitar_player()` still receives the existing player payload.
-- Its Streamlit key is now stable for the active hash/cache/fingerprint.
-- `DEBUG fast_preview...` logs now require `APP_DEBUG_FAST_PREVIEW`.
-- `APP_STK_POSITION_WAVS_READY`, `APP_STK_LOAD_READY_CACHE`, and `APP_STK_AUTO_LOAD_READY` are guarded per readiness/load transition.
-
-## CLASSIC-only confirmation
-- No BOX or ACOUSTIC UI choices were added.
-- Shape payloads remain Classical-only.
-- No FEM/ROM/STK physics, solver, synthesis, or WAV generation behavior changed.
-
 ## Files changed
 - `gui/app.py`
-- `gui/stk_app_ui.py`
-- `gui/stk_app_audio_service.py`
-- `gui/test_stk_note_library_startup_command.py`
 - `CODEX_HANDOFF.md`
+
+## Files inspected
+- `gui/app.py`
+- `gui/stk_app_audio_service.py`
+- `gui/stk_pipeline_defaults.py`
+- `gui/body_response_synth.py`
+- `gui/body_hybrid_v4_1_identity_space.py`
+- `gui/pgsm_stk_parameter_export.py`
+- `gui/pgsm_emergency_guitar_demo_engine.py`
+- `gui/modal_damping.py`
+- `gui/sample_parameters.py`
+- `tools/write_stk_classical_final_acceptance.py`
+
+## Recent guitar preview change
+- Recent Guitar SVG previews now show body-only.
+- Removed neck/headstock, bridge, strings, and fret details.
+- Kept body outline/silhouette, top color, side/accent stroke, soundhole/rosette, and proportions.
+- Length/width/depth/hole radius still drive the mini body shape.
+- FIFO, Load behavior, cache reuse, and session-only persistence are unchanged.
+
+## Current sound-determination flow
+- Website design creates `lhs_params`: shape, length, width, depth, top thickness, hole radius, top wood, back wood.
+- ROM/M4 readiness and STK cache hash are derived from ROM fingerprint plus `lhs_params`.
+- `schedule_stk_note_library_after_rom()` starts the CLASSIC note-cache job after ROM.
+- `stk_app_audio_service` builds per-note render JSON with note frequency, duration, physical factors, modal/mix data, and output path.
+- STK/C++ renders note WAVs into worker/staging/final cache.
+- Player uses final cache WAVs plus per-string/fret aliases.
+
+## Parameters already influencing sound
+- Geometry: length, width, depth, top thickness, hole radius.
+- Materials: top/back wood IDs via damping, density/warmth, stiffness/mass proxies.
+- Modal data: mode frequencies, gains, Q/tau, participation shares, radiation/mic/bridge proxies.
+- Mix/coupling: direct string gain, body modal gain, string-to-body send, radiation weights.
+- Per-note factors: note frequency, duration, harmonic/pluck behavior, high-note softening.
+- Identity layer: final website mode is `stk_body_transfer_final_v1`, aliasing to v4.1 identity contrast g_30_70.
+
+## What varies between guitars
+- User-visible geometry and woods vary directly.
+- Derived physical factors vary after conservative clamps around 1.0.
+- Body identity vector varies from geometry, woods, modal statistics, mass proxies, radiation/mic/bridge ranks, and damping.
+- Cache hash varies with the design, so saved guitars get separate note caches.
+
+## Sound-control categories
+- Decay/damping: wood damping coefficients, per-mode damping, Q/tau, top damping factor, note duration, identity decay layer.
+- Body vs string mix: string/body send, direct string gain, body modal gain, body-to-string calibration.
+- Brightness/warmth: radiation brightness, top/back weights, harmonic gains, high-frequency rolloff, wood/material proxies.
+- Modal emphasis: mode frequencies/gains, participation shares, low/mid support, bridge/mic/radiation proxies.
+- Coupling/resonance: bridge mobility, effective modal mass, soundhole/air/cavity factors.
+- Attack/sustain: pluck position/gain, transient softening, decay tau, body residual shaping.
+
+## Flattening points
+- Physical factor clamps are conservative, often keeping changes near 1.0.
+- Loudness/peak normalization reduces level differences by design.
+- Body gain calibration targets a stable body/string ratio, preserving timbre more than loudness spread.
+- Identity residual has RMS/audibility guards, avoiding extreme contrast.
+
+## Safe contrast opportunities
+- Slightly strengthen existing bounded factors only: body modal gain, string-to-body send, radiation brightness, modal tau spread.
+- Use already-available design/ROM variables: cavity volume, hole/area ratio, bridge mobility, modal density/Q spread, top/back damping.
+- Prefer band-limited changes, especially 120-450 Hz body modes and controlled harmonic bands.
+- Keep loudness normalization; increase timbral contrast rather than raw volume.
+
+## Unsafe ideas to avoid
+- Random per-guitar differences.
+- Unbounded EQ/gain or bypassing limiter/normalization.
+- Changing FEM/ROM solver outputs to chase audio differences.
+- Broad synthetic detuning unrelated to modal/geometry data.
+- Reintroducing BOX/ACOUSTIC website choices.
+
+## Recommended next step
+- Add a diagnostic-only contrast audit comparing 2-3 cached Classical guitars: factor spread, identity-vector spread, body/string ratio, spectral centroid, decay slope.
+- If weak, implement one small bounded tuning pass later: +10-15% spread on existing body modal/radiation/decay factors.
+
+## CLASSIC risk
+- LOW for this task.
+- Code change is UI-only Recent preview SVG.
+- Sound pipeline was inspected only; no solver, ROM, STK synthesis, or WAV generation logic changed.
 
 ## Lightweight checks run
 - `python -m py_compile gui/app.py gui/stk_app_ui.py gui/stk_app_audio_service.py gui/test_stk_note_library_startup_command.py`
 - `python gui/test_stk_note_library_startup_command.py`
 
-## VM commands to verify
+## VM validation suggestions
 ```bash
 git pull
 python gui/test_stk_note_library_startup_command.py
 python -m py_compile gui/app.py gui/stk_app_ui.py gui/stk_app_audio_service.py
 streamlit run gui/app.py
 ```
-
-## Expected VM signs
-- Pressing Generate with ready cache renders the clickable guitar.
-- Auto-load after cache completion renders once.
-- Active current playback uses `current_preview_<hash>`.
-- Recent Load uses the selected stored cache and does not regenerate STK.
-- Ready/load log lines stop repeating on every rerun.

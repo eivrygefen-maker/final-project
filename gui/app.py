@@ -1484,18 +1484,14 @@ def build_recent_guitar_preview_svg(record_or_payload: Mapping[str, Any]) -> str
     soundhole_r = _recent_preview_clamp(hole * 135.0, 4.5, 11.0)
     body_x = 74.0
     body_y = 76.0
-    neck_top = body_y - body_h / 2.0 - 42.0
-    neck_bottom = body_y - body_h / 2.0 + 8.0
-    bridge_y = body_y + body_h * 0.22
     rosette = "#2f2119" if top_color != "#34302b" else "#d2b36f"
+    soundhole_y = body_y - body_h * 0.13
 
     return f"""
-<svg viewBox="0 0 148 132" width="100%" height="124" role="img" aria-label="Recent classical guitar preview"
+<svg viewBox="0 0 148 132" width="100%" height="124" role="img" aria-label="Recent classical guitar body preview"
      xmlns="http://www.w3.org/2000/svg">
   <rect x="0" y="0" width="148" height="132" rx="7" fill="rgba(255,255,255,0.035)"/>
-  <g transform="rotate(-7 74 66)">
-    <rect x="69" y="{neck_top:.1f}" width="10" height="{neck_bottom - neck_top:.1f}" rx="3" fill="{back_color}"/>
-    <rect x="66" y="{neck_top - 13:.1f}" width="16" height="15" rx="3" fill="{back_color}"/>
+  <g transform="rotate(-5 74 76)">
     <path d="M {body_x:.1f} {body_y - body_h / 2:.1f}
              C {body_x - upper_w / 2:.1f} {body_y - body_h / 2 + 5:.1f},
                {body_x - waist_w / 2:.1f} {body_y - 4:.1f},
@@ -1510,21 +1506,14 @@ def build_recent_guitar_preview_svg(record_or_payload: Mapping[str, Any]) -> str
                {body_x + upper_w / 2:.1f} {body_y - body_h / 2 + 5:.1f},
                {body_x:.1f} {body_y - body_h / 2:.1f} Z"
           fill="{top_color}" stroke="{back_color}" stroke-width="4"/>
-    <ellipse cx="{body_x:.1f}" cy="{body_y - body_h * 0.13:.1f}" rx="{soundhole_r + 2.3:.1f}" ry="{soundhole_r + 2.3:.1f}"
+    <path d="M {body_x - body_w * 0.25:.1f} {body_y - body_h * 0.33:.1f}
+             C {body_x - body_w * 0.06:.1f} {body_y - body_h * 0.43:.1f},
+               {body_x + body_w * 0.06:.1f} {body_y - body_h * 0.43:.1f},
+               {body_x + body_w * 0.25:.1f} {body_y - body_h * 0.33:.1f}"
+          fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="1.1"/>
+    <ellipse cx="{body_x:.1f}" cy="{soundhole_y:.1f}" rx="{soundhole_r + 2.3:.1f}" ry="{soundhole_r + 2.3:.1f}"
              fill="none" stroke="{rosette}" stroke-width="2"/>
-    <circle cx="{body_x:.1f}" cy="{body_y - body_h * 0.13:.1f}" r="{soundhole_r:.1f}" fill="#17110d"/>
-    <rect x="{body_x - body_w * 0.23:.1f}" y="{bridge_y:.1f}" width="{body_w * 0.46:.1f}" height="6" rx="2" fill="{back_color}"/>
-    <g stroke="rgba(255,255,255,0.50)" stroke-width="0.65">
-      <line x1="70.5" y1="{neck_top - 6:.1f}" x2="{body_x - 7:.1f}" y2="{bridge_y + 3:.1f}"/>
-      <line x1="72.8" y1="{neck_top - 6:.1f}" x2="{body_x - 2:.1f}" y2="{bridge_y + 3:.1f}"/>
-      <line x1="75.2" y1="{neck_top - 6:.1f}" x2="{body_x + 2:.1f}" y2="{bridge_y + 3:.1f}"/>
-      <line x1="77.5" y1="{neck_top - 6:.1f}" x2="{body_x + 7:.1f}" y2="{bridge_y + 3:.1f}"/>
-    </g>
-    <g stroke="rgba(255,255,255,0.35)" stroke-width="0.8">
-      <line x1="68" x2="80" y1="{neck_top + 10:.1f}" y2="{neck_top + 10:.1f}"/>
-      <line x1="68" x2="80" y1="{neck_top + 21:.1f}" y2="{neck_top + 21:.1f}"/>
-      <line x1="68" x2="80" y1="{neck_top + 32:.1f}" y2="{neck_top + 32:.1f}"/>
-    </g>
+    <circle cx="{body_x:.1f}" cy="{soundhole_y:.1f}" r="{soundhole_r:.1f}" fill="#17110d"/>
   </g>
 </svg>""".strip()
 
