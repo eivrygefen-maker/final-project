@@ -1663,10 +1663,15 @@ def set_active_recent_record_from_current_design(
     )
 
 
-def apply_recent_record_to_design(record: Mapping[str, Any]) -> None:
+def apply_recent_record_to_design(
+    record: Mapping[str, Any],
+    *,
+    cache_playable: Optional[bool] = None,
+) -> None:
     payload = sanitize_studio_payload(dict(record.get("studio_payload") or {}))
     geom, top_wood, back_wood = geom_from_studio_event(payload)
     rom_fp = rom_mesh_fingerprint(geom, top_wood=top_wood, back_wood=back_wood)
+    playable = recent_record_is_playable(record) if cache_playable is None else bool(cache_playable)
     st.session_state["_fast_preview_geom"] = payload
     st.session_state["_geom"] = geom
     st.session_state["_top_wood"] = top_wood
@@ -1680,16 +1685,17 @@ def apply_recent_record_to_design(record: Mapping[str, Any]) -> None:
     st.session_state["recent_guitar_preview_image_path"] = str(record.get("preview_image_path") or "")
     st.session_state["recent_guitar_preview_source"] = str(record.get("preview_source") or "")
     st.session_state["stk_parameter_hash"] = str(record.get("parameter_hash") or "")
-    st.session_state["stk_job_status"] = "ready"
-    st.session_state["stk_preview_cache_ready"] = True
+    st.session_state["stk_job_status"] = "ready" if playable else "failed"
+    st.session_state["stk_preview_cache_ready"] = playable
     st.session_state["stk_preview_cache_path"] = str(record.get("cache_dir") or "")
     st.session_state["active_player_hash"] = str(record.get("parameter_hash") or "")
     st.session_state["active_player_cache_dir"] = str(record.get("cache_dir") or "")
     st.session_state["loaded_player_hash"] = str(record.get("parameter_hash") or "")
     st.session_state["loaded_player_cache_dir"] = str(record.get("cache_dir") or "")
-    st.session_state["show_clickable_guitar_requested"] = True
+    st.session_state["show_clickable_guitar_requested"] = playable
     st.session_state["stk_render_requested"] = False
     st.session_state["stk_render_requested_hash"] = ""
+    st.session_state["stk_generate_intent_hash"] = ""
 
 
 def restore_recent_display_mesh(record: Mapping[str, Any]) -> None:
@@ -1744,14 +1750,30 @@ def load_recent_guitar_at_index(index: int) -> None:
         from stk_app_audio_service import activate_stk_guitar_for_player  # noqa: WPS433
         from stk_app_ui import apply_stk_activation_to_session  # noqa: WPS433
 
+        restore_recent_display_mesh(selected)
+        cache_playable = recent_record_is_playable(selected)
+        apply_recent_record_to_design(selected, cache_playable=cache_playable)
+        if not cache_playable:
+            st.session_state["active_recent_guitar_record"] = selected
+            st.warning("Recent guitar cache is incomplete. Save & Sync again before playing it.")
+            return
         activation = activate_stk_guitar_for_player(
             cache_dir=Path(str(selected.get("cache_dir") or "")),
             parameter_hash=str(selected.get("parameter_hash") or ""),
             saved_guitar_id=str(selected.get("saved_guitar_id") or ""),
         )
+        validation = dict(activation.get("validation") or {})
+        payload = dict(activation.get("player_payload") or {})
+        if not validation.get("ok") or payload.get("status") != "ready" or not payload.get("positions"):
+            st.session_state["show_clickable_guitar_requested"] = False
+            st.session_state["active_recent_guitar_record"] = selected
+            st.warning("Recent guitar player cache is incomplete. Save & Sync again before playing it.")
+            return
         apply_stk_activation_to_session(activation)
-        apply_recent_record_to_design(selected)
-        restore_recent_display_mesh(selected)
+        st.session_state["show_clickable_guitar_requested"] = True
+        st.session_state["stk_render_requested"] = False
+        st.session_state["stk_render_requested_hash"] = ""
+        st.session_state["stk_generate_intent_hash"] = ""
         st.session_state["active_recent_guitar_record"] = selected
     except Exception as exc:
         st.warning(f"Could not load recent guitar: {exc}")

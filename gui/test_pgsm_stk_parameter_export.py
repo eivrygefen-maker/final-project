@@ -12,6 +12,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "gui"))
 
 from pgsm_stk_parameter_export import (  # noqa: E402
+    CLASSIC_AUDIBLE_IDENTITY_CONTRAST,
     NOTE_SET,
     PYTHON_ROLE,
     RENDERER_TARGET,
@@ -108,6 +109,18 @@ class TestPgsmStkParameterExport(unittest.TestCase):
         a2 = {r["sample_id"]: r for r in doc["renders"] if r["note_name"] == "A2"}
         depths = [float(a2[s]["body_model"]["body_depth_m"]) for s in SAMPLE_SET_V4 if s in a2]
         self.assertGreater(max(depths) - min(depths), 0.005)
+
+    def test_v4_classic_audible_identity_contrast_metadata(self) -> None:
+        doc = build_parameter_export(repo_root=REPO, demo_version="v4_10_samples")
+        self.assertGreater(CLASSIC_AUDIBLE_IDENTITY_CONTRAST, 0.0)
+        self.assertLessEqual(CLASSIC_AUDIBLE_IDENTITY_CONTRAST, 0.20)
+        for row in doc["renders"]:
+            cal = row.get("perceptual_calibration") or {}
+            contrast = cal.get("classic_audible_identity_contrast") or {}
+            self.assertTrue(contrast.get("enabled"))
+            self.assertEqual(contrast.get("strength"), round(CLASSIC_AUDIBLE_IDENTITY_CONTRAST, 6))
+            self.assertLess(row["string_body_mix"]["direct_string_gain"], 1.34)
+            self.assertGreater(row["body_model"]["body_modal_gain"], 0.72)
 
     def test_samples_differ_physically(self) -> None:
         doc = build_parameter_export(repo_root=REPO)

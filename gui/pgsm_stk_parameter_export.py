@@ -113,6 +113,7 @@ AUDIT_SCALAR_KEYS: Tuple[str, ...] = (
 )
 
 MEANINGFUL_SPREAD_THRESHOLD = 0.035
+CLASSIC_AUDIBLE_IDENTITY_CONTRAST = 0.12
 
 SAMPLE_PROFILES: Dict[str, str] = {
     "sample_000": "balanced_neutral",
@@ -782,6 +783,58 @@ def _compute_v4_continuous_mix(
     }
 
 
+def _spread_around_one(value: float, strength: float, lo: float, hi: float) -> float:
+    return _clamp(1.0 + (float(value) - 1.0) * (1.0 + strength), lo, hi)
+
+
+def _apply_classic_audible_identity_contrast(
+    *,
+    factors: Mapping[str, float],
+    mix_scales: Mapping[str, float],
+    strength: float = CLASSIC_AUDIBLE_IDENTITY_CONTRAST,
+) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, Any]]:
+    """Small Classical-only emphasis of existing physical/body identity factors."""
+    if strength <= 0.0:
+        return dict(factors), dict(mix_scales), {"enabled": False, "strength": 0.0}
+    s = _clamp(float(strength), 0.0, 0.20)
+    out_factors = dict(factors)
+    out_mix = dict(mix_scales)
+    if "radiation_brightness_factor" in out_factors:
+        out_factors["radiation_brightness_factor"] = round(
+            _spread_around_one(float(out_factors["radiation_brightness_factor"]), 0.60 * s, 0.78, 1.28),
+            6,
+        )
+    if "top_damping_factor" in out_factors:
+        out_factors["top_damping_factor"] = round(
+            _spread_around_one(float(out_factors["top_damping_factor"]), 0.45 * s, 0.78, 1.32),
+            6,
+        )
+    direct_base = float(out_mix.get("direct_string_gain") or 1.0)
+    body_base = float(out_mix.get("body_modal_gain") or 1.0)
+    send_base = float(out_mix.get("string_to_body_send_scale") or 1.0)
+    out_mix["direct_string_gain"] = round(
+        _clamp(_spread_around_one(direct_base, 0.55 * s, 0.68, 1.36) * (1.0 - 0.25 * s), 0.66, 1.34),
+        6,
+    )
+    out_mix["body_modal_gain"] = round(
+        _clamp(_spread_around_one(body_base, 0.70 * s, 0.68, 1.44) * (1.0 + 0.45 * s), 0.72, 1.48),
+        6,
+    )
+    out_mix["string_to_body_send_scale"] = round(
+        _clamp(_spread_around_one(send_base, 0.55 * s, 0.72, 1.34) * (1.0 + 0.35 * s), 0.74, 1.36),
+        6,
+    )
+    return out_factors, out_mix, {
+        "enabled": True,
+        "strength": round(s, 6),
+        "direct_string_gain_multiplier": round(out_mix["direct_string_gain"] / max(direct_base, 1e-9), 6),
+        "body_modal_gain_multiplier": round(out_mix["body_modal_gain"] / max(body_base, 1e-9), 6),
+        "string_to_body_send_multiplier": round(out_mix["string_to_body_send_scale"] / max(send_base, 1e-9), 6),
+        "radiation_brightness_spread_multiplier": round(1.0 + 0.60 * s, 6),
+        "top_damping_spread_multiplier": round(1.0 + 0.45 * s, 6),
+    }
+
+
 def _stretch_factors_preserving_rank(
     factors: Dict[str, float],
     all_by_sample: Mapping[str, Mapping[str, float]],
@@ -1118,6 +1171,13 @@ def build_render_entry(
     bridge = _bridge_transfer_summary(factors)
     mix = dict(voicing.get("mix") or {})
     pluck_position_ratio = round(pluck, 5)
+    mix_scales = dict(perceptual_mix or {})
+    audible_identity_contrast: Dict[str, Any] = {"enabled": False, "strength": 0.0}
+    if demo_version == "v4_10_samples":
+        factors, mix_scales, audible_identity_contrast = _apply_classic_audible_identity_contrast(
+            factors=factors,
+            mix_scales=mix_scales,
+        )
     if demo_version == "v4_10_samples":
         note_support = _v4_note_support(sample_id, note_name, factors, physical)
     else:
@@ -1140,7 +1200,6 @@ def build_render_entry(
         6,
     )
     radiation = _radiation_weights(mix, factors)
-    mix_scales = dict(perceptual_mix or {})
     direct_gain = float(mix_scales.get("direct_string_gain") or 1.0)
     body_modal_gain = float(mix_scales.get("body_modal_gain") or 1.0)
     send_scale = float(mix_scales.get("string_to_body_send_scale") or 1.0)
@@ -1208,6 +1267,7 @@ def build_render_entry(
             "string_to_body_send_scale": send_scale,
             "mapping_strength": 1.35,
             "continuous_physical_mix": True,
+            "classic_audible_identity_contrast": audible_identity_contrast,
         }
 
     excitation = round(

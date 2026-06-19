@@ -6,6 +6,7 @@
 **/__pycache__/
 **/*.pyc
 .pytest_cache/
+.codex_tmp/
 .ffcx_cache/
 
 # Generated GUI / synth audio outputs (rebuild via build_note_cache.py or Generate sound)
