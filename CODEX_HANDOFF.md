@@ -1,11 +1,16 @@
 # CODEX_HANDOFF.md
 
 ## Files changed
+- `gui/components/fast_preview/index.html`
 - `gui/app.py`
+- `.gitignore`
+- `docs/diagnostics/classical_sound_determination_report.json`
+- `docs/diagnostics/classical_sound_determination_summary.md`
 - `CODEX_HANDOFF.md`
 
 ## Files inspected
 - `gui/app.py`
+- `gui/components/fast_preview/index.html`
 - `gui/stk_app_audio_service.py`
 - `gui/stk_pipeline_defaults.py`
 - `gui/body_response_synth.py`
@@ -14,81 +19,72 @@
 - `gui/pgsm_emergency_guitar_demo_engine.py`
 - `gui/modal_damping.py`
 - `gui/sample_parameters.py`
-- `tools/write_stk_classical_final_acceptance.py`
 
-## Recent guitar preview change
-- Recent Guitar SVG previews now show body-only.
-- Removed neck/headstock, bridge, strings, and fret details.
-- Kept body outline/silhouette, top color, side/accent stroke, soundhole/rosette, and proportions.
-- Length/width/depth/hole radius still drive the mini body shape.
-- FIFO, Load behavior, cache reuse, and session-only persistence are unchanged.
+## Preview source used
+- Preferred source is the actual Three.js fast-preview canvas.
+- On Save & Sync, the component captures `canvas.toDataURL("image/png")`.
+- Python decodes the PNG and stores it locally.
 
-## Current sound-determination flow
-- Website design creates `lhs_params`: shape, length, width, depth, top thickness, hole radius, top wood, back wood.
-- ROM/M4 readiness and STK cache hash are derived from ROM fingerprint plus `lhs_params`.
-- `schedule_stk_note_library_after_rom()` starts the CLASSIC note-cache job after ROM.
-- `stk_app_audio_service` builds per-note render JSON with note frequency, duration, physical factors, modal/mix data, and output path.
-- STK/C++ renders note WAVs into worker/staging/final cache.
-- Player uses final cache WAVs plus per-string/fret aliases.
+## Preview storage
+- Stored under `gui/recent_guitar_previews/recent_guitar_<hash>.png`.
+- Directory is ignored in `.gitignore` because previews are local UI/session artifacts.
+- Recent Guitar records store `preview_image_path` and `preview_source`.
 
-## Parameters already influencing sound
-- Geometry: length, width, depth, top thickness, hole radius.
-- Materials: top/back wood IDs via damping, density/warmth, stiffness/mass proxies.
-- Modal data: mode frequencies, gains, Q/tau, participation shares, radiation/mic/bridge proxies.
-- Mix/coupling: direct string gain, body modal gain, string-to-body send, radiation weights.
-- Per-note factors: note frequency, duration, harmonic/pluck behavior, high-note softening.
-- Identity layer: final website mode is `stk_body_transfer_final_v1`, aliasing to v4.1 identity contrast g_30_70.
+## Fallback behavior
+- If canvas capture or PNG decode fails, no error is shown.
+- Recent cards fall back to the existing synthetic SVG preview.
+- FIFO, Load behavior, and STK cache reuse are unchanged.
 
-## What varies between guitars
-- User-visible geometry and woods vary directly.
-- Derived physical factors vary after conservative clamps around 1.0.
-- Body identity vector varies from geometry, woods, modal statistics, mass proxies, radiation/mic/bridge ranks, and damping.
-- Cache hash varies with the design, so saved guitars get separate note caches.
+## Sound report
+- JSON: `docs/diagnostics/classical_sound_determination_report.json`
+- Markdown: `docs/diagnostics/classical_sound_determination_summary.md`
+- Report is diagnostic-only; no sound generation code was changed.
 
-## Sound-control categories
-- Decay/damping: wood damping coefficients, per-mode damping, Q/tau, top damping factor, note duration, identity decay layer.
-- Body vs string mix: string/body send, direct string gain, body modal gain, body-to-string calibration.
-- Brightness/warmth: radiation brightness, top/back weights, harmonic gains, high-frequency rolloff, wood/material proxies.
-- Modal emphasis: mode frequencies/gains, participation shares, low/mid support, bridge/mic/radiation proxies.
-- Coupling/resonance: bridge mobility, effective modal mass, soundhole/air/cavity factors.
-- Attack/sustain: pluck position/gain, transient softening, decay tau, body residual shaping.
+## What determines sound
+- Direct inputs: woods, length, width, depth, top thickness, hole radius.
+- Derived factors: damping/Q/tau, body vs string mix, radiation brightness, bridge mobility, modal gains/participation, identity contrast layer.
+- Current website mode uses `stk_body_transfer_final_v1`, aliasing to v4.1 identity contrast `g_30_70`.
 
-## Flattening points
-- Physical factor clamps are conservative, often keeping changes near 1.0.
-- Loudness/peak normalization reduces level differences by design.
-- Body gain calibration targets a stable body/string ratio, preserving timbre more than loudness spread.
-- Identity residual has RMS/audibility guards, avoiding extreme contrast.
+## What flattens contrast
+- Conservative physical-factor clamps near 1.0.
+- RMS/peak normalization.
+- Body gain calibration toward a stable body/string ratio.
+- Identity residual RMS/audibility guards.
+- Fallback physical data if per-guitar audit data is missing.
 
-## Safe contrast opportunities
-- Slightly strengthen existing bounded factors only: body modal gain, string-to-body send, radiation brightness, modal tau spread.
-- Use already-available design/ROM variables: cavity volume, hole/area ratio, bridge mobility, modal density/Q spread, top/back damping.
-- Prefer band-limited changes, especially 120-450 Hz body modes and controlled harmonic bands.
-- Keep loudness normalization; increase timbral contrast rather than raw volume.
+## Safe later opportunities
+- Slight bounded increases to existing body modal gain, string-to-body send, radiation brightness, and modal tau/Q spread.
+- Prefer band-limited changes around physically relevant body bands.
+- Use existing geometry/ROM/identity features only.
 
-## Unsafe ideas to avoid
-- Random per-guitar differences.
-- Unbounded EQ/gain or bypassing limiter/normalization.
-- Changing FEM/ROM solver outputs to chase audio differences.
-- Broad synthetic detuning unrelated to modal/geometry data.
-- Reintroducing BOX/ACOUSTIC website choices.
-
-## Recommended next step
-- Add a diagnostic-only contrast audit comparing 2-3 cached Classical guitars: factor spread, identity-vector spread, body/string ratio, spectral centroid, decay slope.
-- If weak, implement one small bounded tuning pass later: +10-15% spread on existing body modal/radiation/decay factors.
+## Unsafe ideas
+- Random differences.
+- Unbounded EQ/gain or bypassed limiter.
+- FEM/ROM solver changes for audio contrast.
+- Synthetic detuning unrelated to modal/geometry data.
+- Reintroducing BOX/ACOUSTIC.
 
 ## CLASSIC risk
-- LOW for this task.
-- Code change is UI-only Recent preview SVG.
-- Sound pipeline was inspected only; no solver, ROM, STK synthesis, or WAV generation logic changed.
+- LOW.
+- UI preview capture and diagnostic documentation only.
+- No FEM/ROM/STK physics, solver, WAV generation, or CLASSIC behavior changed.
 
 ## Lightweight checks run
 - `python -m py_compile gui/app.py gui/stk_app_ui.py gui/stk_app_audio_service.py gui/test_stk_note_library_startup_command.py`
 - `python gui/test_stk_note_library_startup_command.py`
+- `python -m json.tool docs/diagnostics/classical_sound_determination_report.json`
 
-## VM validation suggestions
+## VM verification steps
 ```bash
 git pull
 python gui/test_stk_note_library_startup_command.py
 python -m py_compile gui/app.py gui/stk_app_ui.py gui/stk_app_audio_service.py
+python -m json.tool docs/diagnostics/classical_sound_determination_report.json
 streamlit run gui/app.py
 ```
+
+## Expected VM signs
+- Save & Sync creates `gui/recent_guitar_previews/recent_guitar_<hash>.png`.
+- Recent Guitar cards show the captured fast-preview image.
+- If capture is unavailable, cards still show the synthetic fallback.
+- Sound report files can be opened directly from `docs/diagnostics/`.

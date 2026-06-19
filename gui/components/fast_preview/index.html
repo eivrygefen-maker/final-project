@@ -1272,7 +1272,7 @@
 
         checkpoint = 1;
         console.log("CHECKPOINT 1: Renderer setup");
-        renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+        renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, preserveDrawingBuffer: true });
         renderer.setSize(w, h);
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         renderer.shadowMap.enabled = true;
@@ -1489,6 +1489,19 @@
       };
     }
 
+    function capturePreviewImageDataUrl() {
+      try {
+        if (!renderer || !scene || !camera) return "";
+        renderFrame();
+        const canvas = renderer.domElement || document.getElementById("viewport");
+        if (!canvas || typeof canvas.toDataURL !== "function") return "";
+        return canvas.toDataURL("image/png");
+      } catch (err) {
+        console.warn("[Design Studio] preview snapshot failed:", err);
+        return "";
+      }
+    }
+
     function sync3dFromState(skipDomRead) {
       try {
         if (!skipDomRead) readSliders();
@@ -1660,7 +1673,13 @@
 
     document.getElementById("btnSave").addEventListener("click", () => {
       readSliders();
-      setComponentValue(payload("save_sync"));
+      const msg = payload("save_sync");
+      const preview = capturePreviewImageDataUrl();
+      if (preview) {
+        msg.preview_image_data_url = preview;
+        msg.preview_source = "fast_preview_canvas";
+      }
+      setComponentValue(msg);
     });
     document.getElementById("btnFem").addEventListener("click", () => {
       readSliders();

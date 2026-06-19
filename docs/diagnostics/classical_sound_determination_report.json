@@ -1,0 +1,102 @@
+{
+  "report": "classical_sound_determination",
+  "scope": "diagnostic_only_code_inspection",
+  "website_mode": "CLASSIC_ONLY",
+  "sound_generation_changed": false,
+  "files_inspected": [
+    "gui/app.py",
+    "gui/stk_app_audio_service.py",
+    "gui/stk_pipeline_defaults.py",
+    "gui/body_response_synth.py",
+    "gui/body_hybrid_v4_1_identity_space.py",
+    "gui/pgsm_stk_parameter_export.py",
+    "gui/pgsm_emergency_guitar_demo_engine.py",
+    "gui/modal_damping.py",
+    "gui/sample_parameters.py",
+    "tools/write_stk_classical_final_acceptance.py"
+  ],
+  "end_to_end_flow": [
+    "Design Studio emits Classical geometry/material parameters.",
+    "gui/app.py converts them to LHS parameters: shape, length, width, depth, top_thickness, hole_radius, top_wood, back_wood.",
+    "ROM/M4 readiness and STK parameter hash use ROM fingerprint plus LHS parameters.",
+    "After Save/ROM, gui/stk_app_audio_service.py schedules the Classical note-library job.",
+    "The note-library export builds one STK render entry per note with explicit note frequency, duration, physical factors, modal data, mix/coupling values, and output path.",
+    "STK/C++ renders WAV files into worker/staging/final cache; aliases are created for string/fret playback.",
+    "The website player loads the final cache through the guitar_player component."
+  ],
+  "direct_design_inputs_affecting_sound": {
+    "woods": "top/back wood IDs affect damping coefficients, material factors, identity vector, and physical factor exports.",
+    "length_width_depth": "affect ROM fingerprint/hash, physical geometry proxies, mass/air/cavity/body identity features, and damping scale.",
+    "top_thickness": "affects top stiffness/weight, damping scale, and identity features.",
+    "hole_radius": "affects soundhole/air/cavity/radiation factors and identity features."
+  },
+  "derived_factors_affecting_stk": {
+    "damping_decay": [
+      "WOOD_DAMPING_COEFF",
+      "per-mode damping/Q/tau",
+      "top_damping_factor",
+      "geometry damping scale",
+      "note duration"
+    ],
+    "body_string_mix": [
+      "direct_string_gain",
+      "body_modal_gain",
+      "string_to_body_send_scale",
+      "body-to-string calibration"
+    ],
+    "radiation_brightness": [
+      "radiation_brightness_factor",
+      "top/back/air radiation weights",
+      "high-frequency rolloff",
+      "harmonic identity gains"
+    ],
+    "bridge_coupling_mobility": [
+      "bridge_mobility_factor",
+      "effective modal mass",
+      "string-to-body send",
+      "bridge coupling residual layer"
+    ],
+    "modal_identity": [
+      "modal frequencies",
+      "modal gains",
+      "Q/tau",
+      "top/back/air/coupled participation",
+      "body identity vector",
+      "v4.1 identity contrast g_30_70"
+    ]
+  },
+  "contrast_flattening_points": [
+    "Physical factor clamps keep many derived values close to 1.0.",
+    "Final RMS/peak normalization reduces raw loudness differences.",
+    "Body gain calibration targets a stable body/string ratio.",
+    "Identity residual has audibility and RMS guards.",
+    "Fallback physical data may reduce differentiation if per-guitar audit data is missing."
+  ],
+  "safe_future_contrast_opportunities": [
+    "Slightly increase spread of existing body_modal_gain and string_to_body_send_scale.",
+    "Band-limit stronger modal emphasis to physically relevant body bands, especially 120-450 Hz.",
+    "Slightly expand modal tau/Q spread through existing damping mappings.",
+    "Use existing radiation_brightness_factor and top/back/air weights for brightness/warmth contrast.",
+    "Use already available cavity, soundhole, bridge mobility, mass, and identity-vector features."
+  ],
+  "unsafe_ideas_to_avoid": [
+    "Random guitar-to-guitar offsets.",
+    "Unbounded EQ/gain boosts.",
+    "Bypassing limiter or loudness normalization.",
+    "Changing FEM/ROM solver behavior to force audio contrast.",
+    "Synthetic detuning unrelated to modal/geometry data.",
+    "Reintroducing BOX or ACOUSTIC website options."
+  ],
+  "local_cache_comparison": {
+    "attempted": true,
+    "status": "no_local_classical_app_stk_cache_found_in_codex_workspace",
+    "compared_guitars": [],
+    "notes": "VM should have runtime caches; inspect audio/app_stk_note_cache/classical/current_preview_* and saved_guitar_* there."
+  },
+  "recommended_next_step": {
+    "type": "diagnostic_first",
+    "summary": "Run a small VM cache audit over 2-3 existing Classical guitars comparing parameter hashes, cache specs, note metadata, factor spread, body/string ratios, decay slopes, and brightness/radiation metrics before changing synthesis.",
+    "possible_later_change": "If the audit confirms weak differentiation, apply one bounded tuning pass to existing body modal/radiation/decay factors, around 10-15 percent, with no solver changes."
+  },
+  "classic_risk": "LOW: report only; no sound generation code changed."
+}

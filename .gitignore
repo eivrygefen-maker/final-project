@@ -23,6 +23,7 @@ audio/**/*.json
 
 # Guitar player runtime WAV copies (served by Streamlit component iframe)
 gui/components/guitar_player/runtime_cache/
+gui/recent_guitar_previews/
 
 # Synthesis A/B and sample comparison listening outputs
 audio/preset_previews/

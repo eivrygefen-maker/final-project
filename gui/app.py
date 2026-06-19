@@ -11,6 +11,8 @@ import os
 import subprocess
 import sys
 import wave
+import base64
+import hashlib
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -33,6 +35,7 @@ MESH_FILE = BASE_DIR / "FEM" / "mesh" / "guitar_3d.msh"
 FEM_FOM_JSON = BASE_DIR / "FEM" / "outputs" / "fem_3d_output.json"
 ROM_STK_JSON = BASE_DIR / "FEM" / "outputs" / "rom_stk_body.json"
 NOTE_CACHE_DIR = BASE_DIR / "audio" / "note_cache"
+RECENT_GUITAR_PREVIEW_DIR = BASE_DIR / "gui" / "recent_guitar_previews"
 
 SHAPES_CONFIG = BASE_DIR / "FEM" / "configs" / "rom_shapes.json"
 ROM_ROOT = BASE_DIR / "ROM"
@@ -233,6 +236,8 @@ def _init_session() -> None:
         "active_stk_player_validation": {},
         "active_recent_guitar_record": {},
         "recent_guitars": [],
+        "recent_guitar_preview_image_path": "",
+        "recent_guitar_preview_source": "",
         "stk_generate_intent_hash": "",
         "stk_render_requested": False,
         "stk_render_requested_hash": "",
@@ -724,6 +729,41 @@ def geom_from_studio_event(event: Dict[str, Any]) -> Tuple[Dict[str, Any], str, 
     return geom, top_wood, back_wood
 
 
+def persist_recent_guitar_preview_image(
+    event: Mapping[str, Any],
+    *,
+    geom: Mapping[str, Any],
+    top_wood: str,
+    back_wood: str,
+) -> Optional[Path]:
+    """Persist a fast-preview canvas data URL for Recent Guitar cards."""
+    data_url = str(event.get("preview_image_data_url") or "")
+    prefix = "data:image/png;base64,"
+    if not data_url.startswith(prefix):
+        return None
+    try:
+        raw = base64.b64decode(data_url[len(prefix):], validate=True)
+    except (ValueError, TypeError):
+        return None
+    if not raw:
+        return None
+    fingerprint_payload = {
+        **dict(geom),
+        "top_wood_id": top_wood,
+        "back_wood_id": back_wood,
+    }
+    preview_id = hashlib.sha256(
+        json.dumps(fingerprint_payload, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:16]
+    RECENT_GUITAR_PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+    path = RECENT_GUITAR_PREVIEW_DIR / f"recent_guitar_{preview_id}.png"
+    try:
+        path.write_bytes(raw)
+    except OSError:
+        return None
+    return path
+
+
 def process_fast_preview_event(
     event: Optional[Dict[str, Any]],
     *,
@@ -772,6 +812,16 @@ def process_fast_preview_event(
         pin_neck_fix=pin_neck,
         fixture_preset=fixture_preset,
     )
+    if action == "save_sync":
+        image_path = persist_recent_guitar_preview_image(
+            event,
+            geom=geom,
+            top_wood=top_wood,
+            back_wood=back_wood,
+        )
+        if image_path:
+            st.session_state["recent_guitar_preview_image_path"] = str(image_path)
+            st.session_state["recent_guitar_preview_source"] = str(event.get("preview_source") or "fast_preview_canvas")
 
     if action in ("save_sync", "run_rom", "run_fem"):
         st.session_state.mesh_is_dirty = True
@@ -1527,6 +1577,8 @@ def build_recent_guitar_record(
     back_wood: str,
     saved_guitar_id: str = "",
     player_fingerprint: str = "",
+    preview_image_path: str = "",
+    preview_source: str = "",
 ) -> Dict[str, Any]:
     """Session-only recent guitar record; references an already-ready STK cache."""
     meta = _recent_geom_metadata(geom, top_wood, back_wood)
@@ -1545,8 +1597,15 @@ def build_recent_guitar_record(
         },
         "label": f"{str(top_wood).title()} / {str(back_wood).title()}",
         "short_id": str(parameter_hash)[:8],
+        "preview_image_path": str(preview_image_path),
+        "preview_source": str(preview_source or "synthetic_svg_fallback"),
         "preview_svg": build_recent_guitar_preview_svg({"metadata": meta}),
     }
+
+
+def recent_preview_image_path(record: Mapping[str, Any]) -> Optional[Path]:
+    path = Path(str(record.get("preview_image_path") or ""))
+    return path if path.is_file() else None
 
 
 def recent_record_is_playable(record: Mapping[str, Any]) -> bool:
@@ -1599,6 +1658,8 @@ def set_active_recent_record_from_current_design(
         back_wood=back_wood,
         saved_guitar_id=str(st.session_state.get("active_stk_guitar_id") or ""),
         player_fingerprint=str(st.session_state.get("active_stk_player_fp") or ""),
+        preview_image_path=str(st.session_state.get("recent_guitar_preview_image_path") or ""),
+        preview_source=str(st.session_state.get("recent_guitar_preview_source") or ""),
     )
 
 
@@ -1676,15 +1737,19 @@ def render_recent_guitars_panel() -> None:
             meta = dict(rec.get("metadata") or {})
             top = str(meta.get("top_wood") or "").title()
             back = str(meta.get("back_wood") or "").title()
-            preview_svg = str(rec.get("preview_svg") or build_recent_guitar_preview_svg(rec))
-            st.markdown(
-                "<div style='height:132px;border:1px solid rgba(255,255,255,.18);"
-                "border-radius:6px;padding:4px;background:rgba(255,255,255,.035);"
-                "overflow:hidden;'>"
-                f"{preview_svg}"
-                "</div>",
-                unsafe_allow_html=True,
-            )
+            image_path = recent_preview_image_path(rec)
+            if image_path is not None:
+                st.image(str(image_path), use_container_width=True)
+            else:
+                preview_svg = str(rec.get("preview_svg") or build_recent_guitar_preview_svg(rec))
+                st.markdown(
+                    "<div style='height:160px;border:1px solid rgba(255,255,255,.18);"
+                    "border-radius:6px;padding:4px;background:rgba(255,255,255,.035);"
+                    "overflow:hidden;'>"
+                    f"{preview_svg}"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
             st.caption(f"**{top}/{back}**")
             length = float(meta.get("length") or 0)
             width = float(meta.get("width") or 0)
