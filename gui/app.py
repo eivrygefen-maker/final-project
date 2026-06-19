@@ -215,6 +215,8 @@ def _init_session() -> None:
         "_studio_handshake_id": "",
         "_studio_iframe_payload_fp": "",
         "_studio_iframe_initial": None,
+        "_forced_studio_payload_fp": "",
+        "_forced_studio_ignore_count": 0,
         "_studio_param_change_fp": "",
         "note_cache_ready_fp": "",
         "note_cache_building": False,
@@ -482,6 +484,12 @@ def studio_iframe_payload_fp(payload: Dict[str, Any]) -> str:
     return json.dumps(subset, sort_keys=True, default=str)
 
 
+def studio_payload_geometry_fp(payload: Mapping[str, Any]) -> str:
+    clean = sanitize_studio_payload(dict(payload))
+    subset = {k: clean.get(k) for k in STUDIO_ROM_PAYLOAD_KEYS}
+    return json.dumps(subset, sort_keys=True, default=str)
+
+
 def studio_payload_for_iframe(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Payload for the Design Studio iframe (templates omitted after first send)."""
     out = studio_payload_for_component(payload)
@@ -729,6 +737,23 @@ def geom_from_studio_event(event: Dict[str, Any]) -> Tuple[Dict[str, Any], str, 
     return geom, top_wood, back_wood
 
 
+def force_active_studio_payload(payload: Mapping[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any], str, str]:
+    """Replace active design-studio state and force the iframe props to refresh."""
+    clean = sanitize_studio_payload(dict(payload))
+    geom, top_wood, back_wood = geom_from_studio_event(clean)
+    st.session_state["_fast_preview_geom"] = clean
+    st.session_state["fast_preview_geom"] = clean
+    st.session_state["_geom"] = geom
+    st.session_state["_top_wood"] = top_wood
+    st.session_state["_back_wood"] = back_wood
+    st.session_state["_studio_iframe_payload_fp"] = ""
+    st.session_state["_studio_iframe_initial"] = None
+    st.session_state["_studio_event_id"] = ""
+    st.session_state["_forced_studio_payload_fp"] = studio_payload_geometry_fp(clean)
+    st.session_state["_forced_studio_ignore_count"] = 2
+    return clean, geom, top_wood, back_wood
+
+
 def persist_recent_guitar_preview_image(
     event: Mapping[str, Any],
     *,
@@ -791,6 +816,15 @@ def process_fast_preview_event(
     st.session_state._studio_event_id = eid
 
     clean = sanitize_studio_payload(event)
+    forced_fp = str(st.session_state.get("_forced_studio_payload_fp") or "")
+    forced_ignore = int(st.session_state.get("_forced_studio_ignore_count") or 0)
+    if forced_fp and studio_payload_geometry_fp(clean) != forced_fp and forced_ignore > 0:
+        st.session_state["_forced_studio_ignore_count"] = forced_ignore - 1
+        return
+    if forced_fp and studio_payload_geometry_fp(clean) == forced_fp:
+        st.session_state["_forced_studio_payload_fp"] = ""
+        st.session_state["_forced_studio_ignore_count"] = 0
+
     geom, top_wood, back_wood = geom_from_studio_event(clean)
     st.session_state._fast_preview_geom = clean
     st.session_state._geom = geom
@@ -1579,9 +1613,22 @@ def build_recent_guitar_record(
     player_fingerprint: str = "",
     preview_image_path: str = "",
     preview_source: str = "",
+    studio_payload: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Session-only recent guitar record; references an already-ready STK cache."""
-    meta = _recent_geom_metadata(geom, top_wood, back_wood)
+    full_payload = sanitize_studio_payload(
+        dict(
+            studio_payload
+            or {
+                **dict(geom),
+                "shape_type": CLASSIC_SHAPE_LABEL,
+                "top_wood_id": str(top_wood),
+                "back_wood_id": str(back_wood),
+            }
+        )
+    )
+    full_geom, full_top, full_back = geom_from_studio_event(full_payload)
+    meta = _recent_geom_metadata(full_geom, full_top, full_back)
     return {
         "parameter_hash": str(parameter_hash),
         "sample_id": "sample_000",
@@ -1589,13 +1636,8 @@ def build_recent_guitar_record(
         "saved_guitar_id": str(saved_guitar_id),
         "player_fingerprint": str(player_fingerprint),
         "metadata": meta,
-        "studio_payload": {
-            **dict(geom),
-            "shape_type": CLASSIC_SHAPE_LABEL,
-            "top_wood_id": str(top_wood),
-            "back_wood_id": str(back_wood),
-        },
-        "label": f"{str(top_wood).title()} / {str(back_wood).title()}",
+        "studio_payload": full_payload,
+        "label": f"{str(full_top).title()} / {str(full_back).title()}",
         "short_id": str(parameter_hash)[:8],
         "preview_image_path": str(preview_image_path),
         "preview_source": str(preview_source or "synthetic_svg_fallback"),
@@ -1660,6 +1702,12 @@ def set_active_recent_record_from_current_design(
         player_fingerprint=str(st.session_state.get("active_stk_player_fp") or ""),
         preview_image_path=str(st.session_state.get("recent_guitar_preview_image_path") or ""),
         preview_source=str(st.session_state.get("recent_guitar_preview_source") or ""),
+        studio_payload=st.session_state.get("_fast_preview_geom") or {
+            **dict(geom),
+            "shape_type": CLASSIC_SHAPE_LABEL,
+            "top_wood_id": top_wood,
+            "back_wood_id": back_wood,
+        },
     )
 
 
@@ -1669,13 +1717,9 @@ def apply_recent_record_to_design(
     cache_playable: Optional[bool] = None,
 ) -> None:
     payload = sanitize_studio_payload(dict(record.get("studio_payload") or {}))
-    geom, top_wood, back_wood = geom_from_studio_event(payload)
+    payload, geom, top_wood, back_wood = force_active_studio_payload(payload)
     rom_fp = rom_mesh_fingerprint(geom, top_wood=top_wood, back_wood=back_wood)
     playable = recent_record_is_playable(record) if cache_playable is None else bool(cache_playable)
-    st.session_state["_fast_preview_geom"] = payload
-    st.session_state["_geom"] = geom
-    st.session_state["_top_wood"] = top_wood
-    st.session_state["_back_wood"] = back_wood
     st.session_state.rom_body_ready = True
     st.session_state.rom_body_fingerprint = rom_fp
     st.session_state.physics_ready = True
